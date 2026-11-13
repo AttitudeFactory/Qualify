@@ -27,6 +27,7 @@ from qualify_shared.objects.keys import TenantPrefixViolation
 
 from qualify_api.http.deps import Principal, current_principal
 from qualify_api.publishing.client import PublishError
+from qualify_api.publishing.platforms import UnsupportedPlatform
 from qualify_api.publishing.service import (
     PublishService,
     PublishState,
@@ -143,6 +144,9 @@ async def start_attempt(
         )
     except UnknownConnection:
         raise HTTPException(status_code=404, detail="unknown connection") from None
+    except UnsupportedPlatform:
+        # 2026-11-12: only Instagram is publishable; refused before any write.
+        raise HTTPException(status_code=422, detail="platform not publishable") from None
     except TenantPrefixViolation:
         raise HTTPException(status_code=422, detail="media key outside tenant prefix") from None
     except ValueError as exc:

@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Publicar varias fotos</title>
+<!--
+  Maqueta estática para docs/mockups/publicar-varias-imagenes.md (ux-designer, 2026-11-12). NO es
+  código de la app: colores aproximados a los pasos de Radix que ya usa el sistema (oscuro, acento
+  teal, gris slate; instagram = pink, facebook = blue de T.PLATFORM_SCALE). Ningún color nuevo:
+  cada variable de abajo nombra el token que representa. Las «fotos» son degradados de ejemplo.
+-->
+<style>
+  :root {
+    --bg: #111113;          /* --color-background */
+    --panel: #18191b;       /* --color-panel-solid */
+    --card: #1f2124;        /* --q-card-fill aprox. */
+    --field: #141517;       /* --q-field-fill */
+    --edge: #2e3135;        /* gray-5 (BORDER) */
+    --text: #edeef0;        /* gray-12 */
+    --muted: #b0b4ba;       /* gray-11 */
+    --faint: #777b84;       /* gray-9 */
+    --accent: #12a594;      /* teal-9 */
+    --accent-11: #0bd8b6;   /* teal-11 */
+    --accent-a4: rgba(18,165,148,.22);
+    --warn-11: #ffca16; --warn-a3: rgba(255,202,22,.12); --warn-a6: rgba(255,202,22,.35);
+    --ok-11: #3dd68c;   --ok-a3: rgba(61,214,140,.12);   --ok-a6: rgba(61,214,140,.35);
+    --err-11: #ff977d;  --err-a3: rgba(255,151,125,.12); --err-a6: rgba(255,151,125,.4);
+    --ig: #d6409f; --fb: #3e63dd;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.45 "IBM Plex Sans", system-ui, sans-serif; padding: 24px 16px; }
+  h1.doc { font-size: 22px; margin: 0 0 4px; }
+  h2.doc { font-size: 17px; margin: 40px 0 6px; border-top: 1px solid var(--edge); padding-top: 22px; }
+  p.doc { color: var(--muted); margin: 0 0 16px; max-width: 78ch; }
+  .row { display: flex; flex-wrap: wrap; gap: 28px; align-items: flex-start; }
+  .row > div { min-width: 0; max-width: 100%; }
+  .label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; margin: 0 0 8px; }
+  .note { font-size: 12.5px; color: var(--muted); max-width: 360px; margin-top: 8px; }
+  .note b { color: var(--text); }
+  .muted { color: var(--muted); } .small { font-size: 12.5px; } .tiny { font-size: 11.5px; }
+  /* teléfono con el marco de pasos (§4.5) */
+  .phone { width: 360px; max-width: 100%; background: var(--panel); border: 1px solid var(--edge);
+    border-radius: 28px; padding: 14px 14px 10px; display: flex; flex-direction: column; }
+  .head .top { display: flex; justify-content: space-between; align-items: center; min-height: 44px; }
+  .head .back { color: var(--accent-11); font-size: 14px; }
+  .head .count { font-size: 12.5px; color: var(--muted); }
+  .bar { height: 4px; border-radius: 4px; background: var(--edge); margin: 2px 0 10px; overflow: hidden; }
+  .bar i { display: block; height: 100%; background: var(--accent); }
+  .h1 { font-size: 21px; font-weight: 700; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 13.5px; margin: 0 0 12px; }
+  .body { flex: 1; }
+  .foot { border-top: 1px solid var(--edge); margin: 12px -14px 0; padding: 10px 14px 0; }
+  .foot .act { display: flex; gap: 8px; }
+  .foot .later { text-align: center; color: var(--muted); font-size: 13px; padding: 8px 0 2px; min-height: 36px; }
+  .reason { font-size: 12px; color: var(--muted); margin-bottom: 6px; text-align: right; }
+  .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 44px;
+    padding: 0 14px; border-radius: 14px; font-weight: 650; border: 1px solid var(--edge);
+    background: var(--card); color: var(--text); font-size: 14px; white-space: nowrap; }
+  .btn.solid { background: linear-gradient(135deg, var(--accent), #0d9b8a 60%, #1fb5a2); border-color: transparent; color: #fff; flex: 1; }
+  .btn.soft-accent { background: var(--accent-a4); border-color: rgba(18,165,148,.45); color: var(--accent-11); }
+  .btn.wide { width: 100%; }
+  .btn.busy { opacity: .75; }
+  /* choice_card */
+  .choice { display: flex; gap: 12px; align-items: flex-start; background: var(--card); border: 1px solid var(--edge);
+    border-radius: 18px; padding: 12px; margin-bottom: 10px; min-height: 44px; position: relative; }
+  .choice.on { border: 2px solid var(--accent); background: linear-gradient(0deg, var(--accent-a4), var(--accent-a4)), var(--card); }
+  .choice.off { border-style: dashed; opacity: .62; }
+  .choice .ico { width: 22px; height: 22px; stroke: var(--accent-11); fill: none; stroke-width: 2; flex: none; margin-top: 2px; }
+  .choice .t { font-weight: 600; }
+  .choice .d { font-size: 13px; color: var(--muted); }
+  .check { position: absolute; right: 10px; top: 10px; width: 20px; height: 20px; border-radius: 50%; background: var(--accent);
+    display: grid; place-items: center; color: #fff; font-size: 12px; font-weight: 800; }
+  /* fotos de ejemplo: un mural de 3×2 partido */
+  .ph { background: linear-gradient(135deg, #0d5e57 0%, #12a594 35%, #f3c96b 60%, #d6409f 100%); }
+  .m1 { background-size: 300% 200%; background-position: 0 0; }   .m2 { background-size: 300% 200%; background-position: 50% 0; }
+  .m3 { background-size: 300% 200%; background-position: 100% 0; } .m4 { background-size: 300% 200%; background-position: 0 100%; }
+  .m5 { background-size: 300% 200%; background-position: 50% 100%; } .m6 { background-size: 300% 200%; background-position: 100% 100%; }
+  .sq { background: radial-gradient(circle at 40% 40%, #f3c96b, #a35a1d 70%); }
+  .vt { background: linear-gradient(180deg, #3e63dd, #12a594); }
+  /* galería del paso 1 */
+  .gal { display: flex; flex-wrap: wrap; gap: 10px; }
+  .tile { width: 96px; height: 96px; border-radius: 14px; position: relative; border: 1px solid var(--edge); }
+  .pos { position: absolute; left: 6px; top: 6px; background: rgba(0,0,0,.55); border: 1px solid rgba(255,255,255,.25);
+    color: #fff; font-size: 11.5px; font-weight: 700; border-radius: 999px; min-width: 22px; height: 22px; display: grid; place-items: center; padding: 0 6px; }
+  .x { position: absolute; right: -6px; top: -6px; width: 28px; height: 28px; border-radius: 50%; background: rgba(0,0,0,.6);
+    border: 1px solid rgba(255,255,255,.3); color: var(--err-11); display: grid; place-items: center; font-size: 14px; }
+  .add { border: 1px dashed var(--edge); background: var(--field); display: grid; place-items: center; color: var(--muted); font-size: 12.5px; }
+  /* lista ordenable (DragCard + sort_handle + ⋯) */
+  .sortrow { display: flex; align-items: center; gap: 10px; background: var(--card); border: 1px solid var(--edge);
+    border-radius: 16px; padding: 6px; margin-bottom: 8px; min-height: 68px; }
+  .sortrow.lifted { border-color: var(--accent); box-shadow: 0 10px 24px rgba(0,0,0,.5); transform: scale(1.02); }
+  .grip { width: 44px; height: 44px; display: grid; place-items: center; color: var(--muted); font-size: 18px; letter-spacing: -2px; flex: none; }
+  .thumb { width: 56px; height: 56px; border-radius: 12px; flex: none; border: 1px solid var(--edge); }
+  .sortrow .nm { flex: 1; font-weight: 600; font-size: 14px; }
+  .more { width: 44px; height: 44px; display: grid; place-items: center; color: var(--muted); font-size: 20px; flex: none; border-radius: 12px; }
+  .badge { display: inline-block; font-size: 11px; font-weight: 650; padding: 1px 8px; border-radius: 999px; background: #24272b; border: 1px solid var(--edge); color: var(--muted); margin-left: 6px; }
+  .pill { display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 650; white-space: nowrap; }
+  .p-warn { background: var(--warn-a3); color: var(--warn-11); border: 1px solid var(--warn-a6); }
+  .p-ok { background: var(--ok-a3); color: var(--ok-11); border: 1px solid var(--ok-a6); }
+  .p-err { background: var(--err-a3); color: var(--err-11); border: 1px solid var(--err-a6); }
+  .p-neutral { background: #24272b; color: var(--muted); border: 1px solid var(--edge); }
+  /* grilla del perfil (mural) */
+  .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; border-radius: 10px; overflow: hidden; }
+  .cell { aspect-ratio: 3 / 4; position: relative; }
+  .cell .pos { left: 5px; top: 5px; }
+  .cell .more { position: absolute; right: 0; top: 0; color: #fff; text-shadow: 0 1px 3px rgba(0,0,0,.8); }
+  .cell.before { background: repeating-linear-gradient(135deg, #1b1d20 0 8px, #202226 8px 16px); display: grid; place-items: center; color: var(--faint); font-size: 12px; }
+  .cell.lifted { outline: 2px solid var(--accent); outline-offset: -2px; transform: scale(1.04); z-index: 2; box-shadow: 0 10px 24px rgba(0,0,0,.6); }
+  .cell .st { position: absolute; left: 5px; bottom: 5px; }
+  .cell.wait { filter: grayscale(.85) brightness(.55); }
+  .film { position: absolute; right: 8px; bottom: 8px; color: #fff; font-size: 11px; background: rgba(0,0,0,.55); border-radius: 6px; padding: 0 5px; }
+  /* callouts */
+  .callout { border-radius: 16px; padding: 10px 12px; font-size: 13.5px; margin: 10px 0; display: flex; gap: 10px; }
+  .callout .ci { flex: none; font-weight: 800; }
+  .c-warn { background: var(--warn-a3); border: 1px solid var(--warn-a6); }
+  .c-warn .ci { color: var(--warn-11); }
+  .c-err { background: var(--err-a3); border: 1px solid var(--err-a6); }
+  .c-err .ci { color: var(--err-11); }
+  .c-ok { background: var(--ok-a3); border: 1px solid var(--ok-a6); }
+  .c-ok .ci { color: var(--ok-11); }
+  .hint { font-size: 12.5px; color: var(--muted); margin: 6px 0; }
+  /* campos */
+  .field-label { font-size: 13px; font-weight: 600; margin: 0 0 4px; }
+  .ta { background: var(--field); border: 1px solid var(--edge); border-radius: 12px; padding: 9px 10px; min-height: 64px; font-size: 14px; color: var(--text); }
+  .ta.empty { color: var(--faint); }
+  .desc { display: flex; gap: 10px; background: var(--card); border: 1px solid var(--edge); border-radius: 16px; padding: 10px; margin-bottom: 8px; }
+  .desc .grow { flex: 1; min-width: 0; }
+  .review { display: flex; gap: 8px; align-items: flex-start; font-weight: 600; margin: 10px 0; }
+  .review .ico { color: var(--accent-11); }
+  .minis { display: flex; gap: 4px; flex-wrap: wrap; }
+  .minis span { width: 40px; height: 53px; border-radius: 6px; border: 1px solid var(--edge); }
+  /* progreso */
+  .prog { text-align: center; padding: 6px 0 10px; }
+  .prog .t { font-weight: 650; font-size: 16px; }
+  .track { height: 8px; border-radius: 8px; background: var(--edge); overflow: hidden; margin: 10px auto 4px; max-width: 280px; }
+  .track i { display: block; height: 100%; background: var(--accent); }
+  /* menú ⋯ y diálogo */
+  .menu { background: #23262a; border: 1px solid var(--edge); border-radius: 18px; padding: 6px; width: 220px; box-shadow: 0 12px 30px rgba(0,0,0,.45); }
+  .menu div { padding: 11px 12px; border-radius: 12px; font-size: 14px; min-height: 44px; }
+  .menu div + div { border-top: 1px solid var(--edge); border-radius: 0; }
+  .menu .danger { color: var(--err-11); }
+  .dialog { background: #23262a; border: 1px solid var(--edge); border-radius: 22px; padding: 16px; box-shadow: 0 16px 40px rgba(0,0,0,.55); }
+  .dialog .dt { font-weight: 700; font-size: 17px; margin-bottom: 6px; }
+  .acct { display: flex; align-items: center; gap: 8px; }
+  .dotp { width: 22px; height: 22px; border-radius: 7px; display: grid; place-items: center; color: #fff; font-size: 11px; font-weight: 800; flex: none; }
+  table { border-collapse: separate; border-spacing: 0; background: var(--card); border: 1px solid var(--edge); border-radius: 16px; overflow: hidden; font-size: 13.5px; }
+  th, td { padding: 9px 12px; border-bottom: 1px solid var(--edge); text-align: left; vertical-align: top; }
+  thead th { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+  .tablewrap { overflow-x: auto; max-width: 100%; }
+  @media (prefers-reduced-motion: reduce) { .sortrow.lifted, .cell.lifted { transform: none; } }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></symbol>
+  <symbol id="i-car" viewBox="0 0 24 24"><rect x="6" y="4" width="12" height="16" rx="2"/><path d="M2 7v10M22 7v10"/></symbol>
+  <symbol id="i-story" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" stroke-dasharray="3 3"/></symbol>
+</svg>
+
+<h1 class="doc">Publicar ahora, con varias fotos</h1>
+<p class="doc">Maqueta de <code>docs/mockups/publicar-varias-imagenes.md</code> (los textos finales y cada estado están allí).
+Celular de 360 px con el marco de pasos del sistema (cabeza fija, pie fijo). Recorrido de ejemplo: el dueño de una
+shawarmería sube 6 fotos que forman un mural, con un solo Instagram conectado (por eso son 4 pasos: el de la cuenta se salta).</p>
+
+<div class="tablewrap">
+<table>
+  <thead><tr><th>#</th><th>Paso</th><th>La única decisión</th><th>Aparece</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td>¿Qué vas a publicar?</td><td>qué fotos o videos</td><td>siempre</td></tr>
+    <tr><td>2</td><td>¿Cómo sale? · ¿Cómo salen?</td><td>publicación / historia · carrusel / una por una / historias</td><td>siempre</td></tr>
+    <tr><td>3</td><td>El orden (carrusel · mural · historias)</td><td>el orden</td><td>2 o más archivos</td></tr>
+    <tr><td>4</td><td>¿En qué Instagram sale?</td><td>la cuenta</td><td>2 o más Instagram</td></tr>
+    <tr><td>5</td><td>Revisa y publica</td><td>descripciones y «Publicar»</td><td>siempre</td></tr>
+  </tbody>
+</table>
+</div>
+
+<!-- ============================================================ A -->
+<h2 class="doc">A · Paso 1 y paso 2: qué publicar y cómo salen</h2>
+<div class="row">
+  <div>
+    <p class="label">Paso 1 de 4 · 6 fotos elegidas</p>
+    <div class="phone">
+      <div class="head"><div class="top"><span class="back">‹ Inicio</span><span class="count">Paso 1 de 4</span></div>
+        <div class="bar"><i style="width:25%"></i></div><div class="h1">¿Qué vas a publicar?</div></div>
+      <div class="body">
+        <div class="gal">
+          <div class="tile ph m1"><span class="pos">1</span><span class="x">✕</span></div>
+          <div class="tile ph m2"><span class="pos">2</span><span class="x">✕</span></div>
+          <div class="tile ph m3"><span class="pos">3</span><span class="x">✕</span></div>
+          <div class="tile ph m4"><span class="pos">4</span><span class="x">✕</span></div>
+          <div class="tile ph m6"><span class="pos">5</span><span class="x">✕</span></div>
+          <div class="tile ph m5"><span class="pos">6</span><span class="x">✕</span></div>
+          <div class="tile add">＋<br>Agregar</div>
+        </div>
+        <p class="hint">En el paso siguiente eliges si salen juntas o una por una.</p>
+      </div>
+      <div class="foot"><div class="act"><span class="btn solid">Siguiente</span></div><div class="later">Seguir después</div></div>
+    </div>
+    <p class="note">Igual que hoy, menos la línea «Con dos o más, salen juntas…», que ya no es cierta. Las fotos 5 y 6
+      quedaron cambiadas a propósito: se arreglan en el paso 3.</p>
+  </div>
+
+  <div>
+    <p class="label">Paso 2 de 4 · con 2 o más</p>
+    <div class="phone">
+      <div class="head"><div class="top"><span class="back">‹ Inicio</span><span class="count">Paso 2 de 4</span></div>
+        <div class="bar"><i style="width:50%"></i></div><div class="h1">¿Cómo salen?</div></div>
+      <div class="body" role="radiogroup" aria-label="Cómo salen">
+        <div class="choice"><svg class="ico"><use href="#i-car"/></svg><div><div class="t">Juntas en un carrusel</div>
+          <div class="d">Una sola publicación que se desliza, con una descripción.</div></div></div>
+        <div class="choice on"><span class="check">✓</span><svg class="ico"><use href="#i-grid"/></svg><div><div class="t">Una por una</div>
+          <div class="d">Cada foto es su propia publicación, con su descripción. Así se arma un mural en tu perfil.</div></div></div>
+        <div class="choice"><svg class="ico"><use href="#i-story"/></svg><div><div class="t">Como historias</div>
+          <div class="d">Una historia por cada foto o video, una tras otra. Se ven 24 horas, sin texto.</div></div></div>
+      </div>
+      <div class="foot"><div class="act"><span class="btn">Atrás</span><span class="btn solid">Siguiente</span></div><div class="later">Seguir después</div></div>
+    </div>
+    <p class="note">Una sola pregunta. Preelegida: la última opción usada; la primera vez, el carrusel (lo de hoy).</p>
+  </div>
+
+  <div>
+    <p class="label">Paso 2 · con 1 archivo · con 10 archivos</p>
+    <div class="phone" style="margin-bottom:14px">
+      <div class="head"><div class="top"><span class="back">‹ Inicio</span><span class="count">Paso 2 de 3</span></div>
+        <div class="bar"><i style="width:66%"></i></div><div class="h1">¿Cómo sale?</div></div>
+      <div class="body">
+        <div class="choice on"><span class="check">✓</span><svg class="ico"><use href="#i-grid"/></svg><div><div class="t">Publicación en tu perfil</div>
+          <div class="d">Queda en tu perfil, con su descripción.</div></div></div>
+        <div class="choice"><svg class="ico"><use href="#i-story"/></svg><div><div class="t">Historia (24 h)</div>
+          <div class="d">Se ve durante 24 horas, sin texto.</div></div></div>
+      </div>
+    </div>
+    <div class="phone">
+      <div class="body">
+        <div class="choice off"><svg class="ico"><use href="#i-grid"/></svg><div><div class="t">Una por una</div>
+          <div class="d">Una por una llega hasta 9. Quita 1 en el paso anterior.</div></div></div>
+      </div>
+    </div>
+    <p class="note">Con <b>1 archivo</b> no hay pregunta de carrusel ni paso de orden: 3 pasos. Con <b>10</b>, «Una por una»
+      se ve apagada con su motivo, nunca escondida.</p>
+  </div>
+</div>
+
+<!-- ============================================================ B -->
+<h2 class="doc">B · Paso 3, una por una: «Así se verá tu perfil»</h2>
+<div class="row">
+  <div>
+    <p class="label">Paso 3 de 4 · arrastrando la foto 5 a su lugar</p>
+    <div class="phone">
+      <div class="head"><div class="top"><span class="back">‹ Inicio</span><span class="count">Paso 3 de 4</span></div>
+        <div class="bar"><i style="width:75%"></i></div><div class="h1">Así se verá tu perfil</div></div>
+      <div class="body">
+        <p class="sub">Ordénalas como quieres verlas en tu perfil. Nosotros las publicamos en el orden correcto para que el mural quede armado.</p>
+        <p class="hint">Mantén presionada una foto y muévela, o toca ⋯.</p>
+        <div class="grid3">
+          <div class="cell ph m1"><span class="pos">1</span><span class="more" aria-label="Opciones de la foto 1">⋯</span></div>
+          <div class="cell ph m2"><span class="pos">2</span><span class="more">⋯</span></div>
+          <div class="cell ph m3"><span class="pos">3</span><span class="more">⋯</span></div>
+          <div class="cell ph m4"><span class="pos">4</span><span class="more">⋯</span></div>
+          <div class="cell ph m5 lifted"><span class="pos">5</span><span class="more">⋯</span></div>
+          <div class="cell ph m6"><span class="pos">6</span><span class="more">⋯</span></div>
+        </div>
+        <p class="hint" style="margin-top:10px">Si después publicas una sola cosa, tu mural se corre un lugar. Si publicas de a 3, se mantiene.</p>
+      </div>
+      <div class="foot"><div class="act"><span class="btn">Atrás</span><span class="btn solid">Siguiente</span></div><div class="later">Seguir después</div></div>
+    </div>
+    <p class="note">La posición 1 es la de arriba a la izquierda: la que se ve primero en el perfil. El dueño ordena lo que ve;
+      <b>publicar al revés lo hace Qualify</b>. El aviso del mural va una vez, gris, al pie.</p>
+  </div>
+
+  <div>
+    <p class="label">Con 5 fotos · el «⋯» abierto</p>
+    <div class="phone">
+      <div class="body">
+        <div class="grid3">
+          <div class="cell ph m1"><span class="pos">1</span><span class="more">⋯</span></div>
+          <div class="cell ph m2"><span class="pos">2</span><span class="more">⋯</span></div>
+          <div class="cell ph m3"><span class="pos">3</span><span class="more">⋯</span></div>
+          <div class="cell vt"><span class="pos">4</span><span class="more">⋯</span><span class="film">▶ video</span></div>
+          <div class="cell sq"><span class="pos">5</span><span class="more" style="background:rgba(18,165,148,.35)">⋯</span></div>
+          <div class="cell before" aria-hidden="true">Antes</div>
+        </div>
+        <p class="hint">Con 3, 6 o 9 tus filas quedan completas. Con 5, la última fila lleva una publicación que ya tenías.</p>
+        <div class="menu" style="margin:8px 0 0 auto">
+          <div>Primero</div><div>Subir uno</div><div class="muted">Bajar uno</div><div>Último</div><div class="danger">Quitar</div>
+        </div>
+      </div>
+    </div>
+    <p class="note">La loseta «Antes» (tenue, sin foto) muestra qué queda al lado. Un video lleva su marca. El «⋯» es la vía
+      sin arrastre (teclado, lector de pantalla). «Bajar uno» queda gris en la última.</p>
+  </div>
+</div>
+
+<!-- ============================================================ C -->
+<h2 class="doc">C · Paso 3, carrusel e historias: una lista que se ordena</h2>
+<div class="row">
+  <div>
+    <p class="label">Carrusel · formas distintas</p>
+    <div class="phone">
+      <div class="head"><div class="top"><span class="back">‹ Inicio</span><span class="count">Paso 3 de 4</span></div>
+        <div class="bar"><i style="width:75%"></i></div><div class="h1">Elige el orden del carrusel</div></div>
+      <div class="body">
+        <p class="hint">Mantén presionada una foto y muévela, o toca ⋯.</p>
+        <div class="sortrow"><span class="grip">⋮⋮</span><span class="thumb sq"></span><span class="nm">Foto 1<span class="badge">Portada</span></span><span class="more">⋯</span></div>
+        <div class="sortrow lifted"><span class="grip">⋮⋮</span><span class="thumb vt"></span><span class="nm">Video 2</span><span class="more">⋯</span></div>
+        <div class="sortrow"><span class="grip">⋮⋮</span><span class="thumb ph m2"></span><span class="nm">Foto 3</span><span class="more">⋯</span></div>
+        <div class="callout c-warn"><span class="ci">!</span><span>Instagram corta todas a la forma de la primera (cuadrada). Si alguna se ve cortada, pon primero la que tiene la forma que quieres.</span></div>
+      </div>
+      <div class="foot"><div class="act"><span class="btn">Atrás</span><span class="btn solid">Siguiente</span></div><div class="later">Seguir después</div></div>
+    </div>
+    <p class="note">El aviso <b>solo aparece si las formas no coinciden</b>; si todas son iguales, no se dice nada. Cuando un
+      movimiento cambia la portada, se actualiza y se anuncia («Ahora la portada es el video 2: todas salen verticales.»).</p>
+  </div>
+
+  <div>
+    <p class="label">Historias</p>
+    <div class="phone">
+      <div class="head"><div class="top"><span class="back">‹ Inicio</span><span class="count">Paso 3 de 4</span></div>
+        <div class="bar"><i style="width:75%"></i></div><div class="h1">¿En qué orden se ven?</div></div>
+      <div class="body">
+        <p class="sub">Se publican en este orden: la primera es la que se ve primero.</p>
+        <div class="sortrow"><span class="grip">⋮⋮</span><span class="thumb ph m1"></span><span class="nm">Foto 1</span><span class="more">⋯</span></div>
+        <div class="sortrow"><span class="grip">⋮⋮</span><span class="thumb vt"></span><span class="nm">Video 2</span><span class="more">⋯</span></div>
+        <div class="sortrow"><span class="grip">⋮⋮</span><span class="thumb sq"></span><span class="nm">Foto 3</span><span class="more">⋯</span></div>
+      </div>
+      <div class="foot"><div class="act"><span class="btn">Atrás</span><span class="btn solid">Siguiente</span></div><div class="later">Seguir después</div></div>
+    </div>
+    <p class="note">Mismas filas que «Ordenar tu menú» de WhatsApp: asa de 44 px + «⋯» (Primero · Subir uno · Bajar uno ·
+      Último · Quitar). «Quitar» deja un toast con «Deshacer».</p>
+  </div>
+
+  <div>
+    <p class="label">Paso 4 (solo con 2 o más Instagram)</p>
+    <div class="phone">
+      <div class="head"><div class="top"><span class="back">‹ Inicio</span><span class="count">Paso 4 de 5</span></div>
+        <div class="bar"><i style="width:80%"></i></div><div class="h1">¿En qué Instagram sale?</div></div>
+      <div class="body" role="radiogroup" aria-label="Cuenta">
+        <div class="choice on"><span class="check">✓</span><div class="acct"><span class="dotp" style="background:var(--ig)">IG</span><div><div class="t">@bianki</div><div class="d">Instagram</div></div></div></div>
+        <div class="choice"><div class="acct"><span class="dotp" style="background:var(--ig)">IG</span><div><div class="t">@polette</div><div class="d">Instagram</div></div></div></div>
+        <div class="choice off"><div class="acct"><span class="dotp" style="background:var(--fb)">f</span><div><div class="t">Bianki</div><div class="d">Facebook · Todavía no publicamos en Facebook desde aquí.</div></div></div></div>
+      </div>
+      <div class="foot"><div class="act"><span class="btn">Atrás</span><span class="btn solid">Siguiente</span></div><div class="later">Seguir después</div></div>
+    </div>
+    <p class="note">Tarjetas en vez de lista desplegable. <b>WhatsApp no aparece.</b> Facebook, apagada con el motivo escrito
+      (no en un <code>title</code>, que en el teléfono no se ve). Con un solo Instagram, este paso no existe.</p>
+  </div>
+</div>
+
+<!-- ============================================================ D -->
+<h2 class="doc">D · Paso 4 de 4: revisa y publica (una por una)</h2>
+<div class="row">
+  <div>
+    <p class="label">Paso 4 de 4 · descripción por foto</p>
+    <div class="phone">
+      <div class="head"><div class="top"><span class="back">‹ Inicio</span><span class="count">Paso 4 de 4</span></div>
+        <div class="bar"><i style="width:100%"></i></div><div class="h1">Revisa y publica</div></div>
+      <div class="body">
+        <div class="review"><span class="ico">➤</span><span>Salen ahora en Instagram @bianki: 6 publicaciones, una tras otra, en el orden de tu mural. Tarda unos minutos.</span></div>
+        <div class="desc"><span class="thumb ph m1"></span><div class="grow">
+          <div class="field-label">Descripción de la foto 1 (opcional)</div>
+          <div class="ta">¡Llegó el combo vecino! Desliza para ver el mural completo 👉</div>
+          <span class="btn soft-accent" style="margin-top:8px;min-height:44px;font-size:13px">Usar este texto en las demás</span></div></div>
+        <div class="desc"><span class="thumb ph m2"></span><div class="grow">
+          <div class="field-label">Descripción de la foto 2 (opcional)</div>
+          <div class="ta empty">Ej.: Hoy combo vecino a mitad de precio hasta las 9 p. m.</div></div></div>
+        <div class="desc"><span class="thumb ph m3"></span><div class="grow">
+          <div class="field-label">Descripción de la foto 3 (opcional)</div>
+          <div class="ta empty">Ej.: Hoy combo vecino a mitad de precio hasta las 9 p. m.</div></div></div>
+        <p class="tiny muted" style="text-align:center">… fotos 4 a 6</p>
+      </div>
+      <div class="foot"><div class="act"><span class="btn">Atrás</span><span class="btn solid">Publicar las 6</span></div><div class="later">Seguir después</div></div>
+    </div>
+    <p class="note">Vacía <b>permitida</b>: nada bloquea «Publicar». «Usar este texto en las demás» llena solo las vacías, con
+      «Deshacer» (hipótesis: le cuesta escribir; perfil §5, pregunta 5).</p>
+  </div>
+
+  <div>
+    <p class="label">Carrusel · historias (resumen)</p>
+    <div class="phone" style="margin-bottom:14px">
+      <div class="body">
+        <div class="review"><span class="ico">➤</span><span>Sale ahora en Instagram @bianki: una publicación con 3 fotos y videos que se deslizan.</span></div>
+        <div class="minis"><span class="sq"></span><span class="vt"></span><span class="ph m2"></span></div>
+        <div class="field-label" style="margin-top:12px">Descripción (opcional)</div>
+        <div class="ta empty">Ej.: Hoy combo vecino a mitad de precio hasta las 9 p. m.</div>
+        <p class="hint">Sale tal como la escribas.</p>
+      </div>
+      <div class="foot"><div class="act"><span class="btn">Atrás</span><span class="btn solid">Publicar en Instagram</span></div></div>
+    </div>
+    <div class="phone">
+      <div class="body">
+        <div class="review"><span class="ico">➤</span><span>Salen ahora en Instagram @bianki: 3 historias, en este orden (se ven 24 horas).</span></div>
+        <p class="hint">Las historias salen sin texto.</p>
+      </div>
+      <div class="foot"><div class="act"><span class="btn">Atrás</span><span class="btn solid">Publicar las 3 historias</span></div></div>
+    </div>
+    <p class="note">Con varias historias no aparece «Abrir en Instagram ↗» (abre un solo archivo); con una, sigue como hoy.</p>
+  </div>
+</div>
+
+<!-- ============================================================ E -->
+<h2 class="doc">E · Publicando, una falla y el final</h2>
+<div class="row">
+  <div>
+    <p class="label">Publicando 2 de 6</p>
+    <div class="phone">
+      <div class="head"><div class="top"><span class="back" style="color:var(--faint)">‹ Inicio</span><span class="count">Paso 4 de 4</span></div>
+        <div class="bar"><i style="width:100%"></i></div><div class="h1">Revisa y publica</div></div>
+      <div class="body">
+        <div class="prog" aria-live="polite"><div class="t">Publicando 2 de 6…</div>
+          <div class="small muted">Deja esta pantalla abierta hasta que terminen. Puede tardar unos minutos.</div>
+          <div class="track" role="progressbar" aria-valuenow="17" aria-valuemin="0" aria-valuemax="100"><i style="width:17%"></i></div></div>
+        <div class="grid3">
+          <div class="cell ph m1 wait"><span class="pos">1</span><span class="st pill p-neutral">En espera</span></div>
+          <div class="cell ph m2 wait"><span class="pos">2</span><span class="st pill p-neutral">En espera</span></div>
+          <div class="cell ph m3 wait"><span class="pos">3</span><span class="st pill p-neutral">En espera</span></div>
+          <div class="cell ph m4 wait"><span class="pos">4</span><span class="st pill p-neutral">En espera</span></div>
+          <div class="cell ph m5"><span class="pos">5</span><span class="st pill p-warn">Publicando…</span></div>
+          <div class="cell ph m6"><span class="pos">6</span><span class="st pill p-ok">Publicada</span></div>
+        </div>
+      </div>
+      <div class="foot"><div class="act"><span class="btn solid busy">Publicando…</span></div></div>
+    </div>
+    <p class="note">El mural se va armando <b>de la última a la primera</b>, como quedará en el perfil. El contador cuenta
+      publicaciones, no posiciones. Estado siempre con texto, nunca solo color.</p>
+  </div>
+
+  <div>
+    <p class="label">Una no salió</p>
+    <div class="phone">
+      <div class="head"><div class="top"><span class="back">‹ Inicio</span><span class="count">Paso 4 de 4</span></div>
+        <div class="bar"><i style="width:100%"></i></div><div class="h1">Revisa y publica</div></div>
+      <div class="body">
+        <div class="callout c-err"><span class="ci">✕</span><div>
+          <b>Salieron 3 de 6. La foto 3 no salió.</b><br>
+          <span class="muted">Instagram no respondió a tiempo. Vuelve a intentarlo en un momento.</span><br>
+          Las que salieron ya están en tu perfil. Si continúas, seguimos desde la foto 3 y tu mural queda en orden.</div></div>
+        <div class="grid3">
+          <div class="cell ph m1 wait"><span class="pos">1</span><span class="st pill p-neutral">En espera</span></div>
+          <div class="cell ph m2 wait"><span class="pos">2</span><span class="st pill p-neutral">En espera</span></div>
+          <div class="cell ph m3"><span class="pos">3</span><span class="st pill p-err">No salió</span></div>
+          <div class="cell ph m4"><span class="pos">4</span><span class="st pill p-ok">Publicada</span></div>
+          <div class="cell ph m5"><span class="pos">5</span><span class="st pill p-ok">Publicada</span></div>
+          <div class="cell ph m6"><span class="pos">6</span><span class="st pill p-ok">Publicada</span></div>
+        </div>
+      </div>
+      <div class="foot"><div class="act"><span class="btn">Dejar así</span><span class="btn solid">Continuar desde la foto 3</span></div></div>
+    </div>
+    <p class="note">La serie se detiene: saltar una desarmaría el mural. El motivo es el que ya da el servicio. «Dejar así»
+      pide confirmación en el mural («¿Dejar el mural sin terminar?»).</p>
+  </div>
+
+  <div>
+    <p class="label">Si intenta salir · el final</p>
+    <div class="dialog" style="max-width:360px;margin-bottom:14px">
+      <div class="dt">¿Salir mientras se publican?</div>
+      <div class="small muted" style="margin-bottom:12px">Las que ya salieron se quedan en tu perfil. Las 4 que faltan no se publicarán.</div>
+      <div style="display:flex;gap:8px"><span class="btn" style="flex:1">Salir igual</span><span class="btn solid">Seguir aquí</span></div>
+    </div>
+    <div class="phone">
+      <div class="body">
+        <div class="callout c-ok" style="flex-direction:column">
+          <div><span class="ci">✓</span> <b>Listo, tus 6 publicaciones ya están en Instagram. Tu mural quedó armado.</b></div>
+          <span class="btn solid wide">Ver mi semana</span>
+          <span class="btn wide">Publicar otra</span>
+        </div>
+        <div class="callout c-warn"><span class="ci">!</span><div>Te quedaron 4 sin publicar de tu mural.
+          <div style="display:flex;gap:8px;margin-top:8px"><span class="btn">Descartar</span><span class="btn solid">Continuar</span></div></div></div>
+      </div>
+    </div>
+    <p class="note">Arriba: el aviso al tocar el menú, «‹ Inicio» o el «atrás» del teléfono (cerrar la pestaña usa el aviso del
+      navegador). Abajo: el final persistente y, si volvió a «Publicar» con piezas pendientes, el aviso para seguir.</p>
+  </div>
+</div>
+
+<p class="doc" style="margin-top:36px">Desktop: el mismo marco de pasos, centrado en el panel (ancho de lectura); la grilla del mural
+no pasa de ~420 px de ancho para que se parezca al perfil del teléfono, y el pie se pega al borde inferior del panel.</p>
+</body>
+</html>

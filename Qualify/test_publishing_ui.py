@@ -141,6 +141,35 @@ def test_active_connections_filters_to_status_active() -> None:
     assert options[0].platform == "instagram"
 
 
+def test_publish_offers_instagram_lists_facebook_off_and_hides_whatsapp() -> None:
+    """Founder, 2026-11-12: only Instagram can be chosen in «Publicar»; Facebook is listed
+    switched off with its reason (inside the card); WhatsApp (and TikTok) are not offered."""
+    rows = [
+        _connection_row(id="c-ig", platform="instagram"),
+        _connection_row(id="c-fb", platform="facebook", external_username="bianki"),
+        _connection_row(id="c-wa", platform="whatsapp"),
+        _connection_row(id="c-tt", platform="tiktok"),
+    ]
+    with _patched(connections_for=lambda _tenant: rows):
+        options = publishing_provider.active_connections(_TENANT)
+    by_id = {o.id: o for o in options}
+    assert set(by_id) == {"c-ig", "c-fb"}
+    assert by_id["c-ig"].selectable is True and by_id["c-ig"].note == ""
+    assert by_id["c-ig"].handle == "@puntoservis"
+    assert by_id["c-fb"].selectable is False
+    assert by_id["c-fb"].note == "Todavía no publicamos en Facebook desde aquí."
+
+
+def test_publish_choice_reads_the_backends_single_source_of_truth() -> None:
+    """The selectable platforms come from `PUBLISHABLE_PLATFORMS`, never a literal here."""
+    from qualify_api.publishing import PUBLISHABLE_PLATFORMS
+
+    assert "PUBLISHABLE_PLATFORMS" in inspect.getsource(publishing_provider.publish_choice)
+    for platform in PUBLISHABLE_PLATFORMS:
+        assert publishing_provider.publish_choice(platform)[:2] == (True, True)
+    assert publishing_provider.publish_choice("whatsapp") == (False, False, "")
+
+
 def test_active_connections_projects_no_extra_fields() -> None:
     """The selector needs id/username/platform only — nothing else from `ConnectionVM`
     (capabilities, scopes, verification timestamps) should leak into this projection."""

@@ -62,7 +62,7 @@ class FakePublishClient:
 
 
 class Harness:
-    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def __init__(self, monkeypatch: pytest.MonkeyPatch, *, platform: str = "instagram") -> None:
         monkeypatch.setenv("QUALIFY_DEV_PRINCIPALS", f"tok-pub:{TENANT}:{USER}")
         self.store = MemoryStore()
         self.client = FakePublishClient()
@@ -73,7 +73,7 @@ class Harness:
         class Connections:
             def read(self, *, tenant_id: UUID, connection_id: UUID) -> ConnectionTarget | None:
                 if (tenant_id, connection_id) == (TENANT, CONNECTION):
-                    return ConnectionTarget(ig_user_id="ig-9", status="active")
+                    return ConnectionTarget(ig_user_id="ig-9", status="active", platform=platform)
                 return None
 
         class Factory:
@@ -251,3 +251,17 @@ def test_staging_rejections_map_to_client_errors(harness: Harness) -> None:
         headers=AUTH,
     )
     assert response.status_code == 422
+
+
+@pytest.mark.parametrize("platform", ["whatsapp", "facebook"])
+def test_start_refuses_a_non_instagram_connection_with_422(
+    monkeypatch: pytest.MonkeyPatch, platform: str
+) -> None:
+    h = Harness(monkeypatch, platform=platform)
+    media_key = h.stage()
+
+    response = h.start("op-wa", media_key)
+
+    assert response.status_code == 422
+    assert h.repo.rows == {}
+    assert h.client.calls["create"] == 0

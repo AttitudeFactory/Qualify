@@ -127,7 +127,9 @@ def _service(client: FakePublishClient, store: MemoryStore, connection_id: UUID)
         def read(self, *, tenant_id: UUID, connection_id: UUID) -> ConnectionTarget | None:
             # The fake client never checks this value against anything — only the
             # connection's `status` (checked by `PublishService.start`) matters here.
-            return ConnectionTarget(ig_user_id="ig-fake-user", status="active")
+            return ConnectionTarget(
+                ig_user_id="ig-fake-user", status="active", platform="instagram"
+            )
 
     class Factory:
         async def client_for(self, *, tenant_id: UUID, connection_id: UUID) -> FakePublishClient:

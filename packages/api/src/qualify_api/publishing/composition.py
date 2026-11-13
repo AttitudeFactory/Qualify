@@ -81,7 +81,9 @@ class PostgresConnectionTargetReader:
             )
             if row is None:
                 return None
-            return ConnectionTarget(ig_user_id=row.external_account_id, status=row.status)
+            return ConnectionTarget(
+                ig_user_id=row.external_account_id, status=row.status, platform=row.platform
+            )
 
 
 class ResolverPublishClientFactory:
@@ -169,6 +171,25 @@ def production_staging_service() -> MediaStagingService:
     )
 
 
+async def _guard_before_staging(
+    *, tenant_id: UUID, connection_id: UUID, idempotency_key: str
+) -> PublishState | None:
+    """Everything that must hold before a single byte goes to R2: the connection exists in
+    this tenant and is publishable (`UnknownConnection` / `platforms.UnsupportedPlatform`),
+    and — if this key already names an attempt — that attempt's state, so the caller returns
+    it instead of staging again. Both reads are synchronous DB calls, run off the loop."""
+    service = production_publish_service()
+    await asyncio.to_thread(
+        service.require_publishable_connection, tenant_id=tenant_id, connection_id=connection_id
+    )
+    return await asyncio.to_thread(
+        service.existing_attempt_state,
+        tenant_id=tenant_id,
+        connection_id=connection_id,
+        idempotency_key=idempotency_key,
+    )
+
+
 async def stage_and_start_publish(
     *,
     tenant_id: UUID,
@@ -195,8 +216,19 @@ async def stage_and_start_publish(
 
     S5 (m-24849192): the acting login's membership is checked fresh before anything is
     staged or started (`require_acting_member`; no-op for system callers).
+
+    2026-11-12: the connection's platform is checked BEFORE staging — a WhatsApp or
+    Facebook account raises `platforms.UnsupportedPlatform` with nothing uploaded and no
+    attempt row. And a retried call (same `idempotency_key` on the same connection) returns
+    the existing attempt's state without staging the bytes again; `uq_attempt_idempotency`
+    inside `start()` still guards the race where two calls stage concurrently.
     """
     await asyncio.to_thread(require_acting_member, tenant_id)
+    existing = await _guard_before_staging(
+        tenant_id=tenant_id, connection_id=connection_id, idempotency_key=idempotency_key
+    )
+    if existing is not None:
+        return existing
     staged = await asyncio.to_thread(
         production_staging_service().stage_media,
         tenant_id=tenant_id,
@@ -318,6 +350,12 @@ async def stage_and_start_many_publish(
         raise TooManyItems(len(items))
     # S5 (m-24849192): fresh membership of the acting login, before any byte is staged.
     await asyncio.to_thread(require_acting_member, tenant_id)
+    # 2026-11-12: platform guard + retried-key short-circuit, before any byte is staged.
+    existing = await _guard_before_staging(
+        tenant_id=tenant_id, connection_id=connection_id, idempotency_key=idempotency_key
+    )
+    if existing is not None:
+        return existing
 
     # QUA-102 discovery follow-up — `attempt_id` does not exist yet at `staging_start`
     # (write-ahead only happens in `start_many`, below); `staging_end` is logged AFTER
