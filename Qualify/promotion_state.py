@@ -1371,7 +1371,7 @@ class PromotionState(rx.State):
         try:
             with acting_login(UUID(context[1])):
                 rows, zone = await asyncio.to_thread(
-                    load_sources, UUID(context[0]), piece, event_id, True, story
+                    load_sources, UUID(context[0]), piece, event_id, True, story=story
                 )
         except Exception as exc:
             logger.warning("promotion sources read failed: %s", type(exc).__name__)
