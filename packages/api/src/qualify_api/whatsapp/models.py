@@ -755,7 +755,7 @@ class BrandSeasonalMedia(Base):
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
-# --- 0157 (m-25017356, ADR 48): the WhatsApp catalog upload -------------------------------
+# --- 0158 (m-25017356, ADR 48): the WhatsApp catalog upload -------------------------------
 
 CATALOG_SOURCES: tuple[str, ...] = ("qualify", "manual")
 CATALOG_ACCESS_STATES: tuple[str, ...] = ("ok", "missing_permission", "auth_error")
@@ -779,7 +779,7 @@ CATALOG_RUN_STATUSES: tuple[str, ...] = (
 
 class WhatsAppCatalog(Base):
     """The Commerce Manager catalog connected by hand to a brand's WABA and registered by
-    `qualify_api.whatsapp.catalog_sync.connect` (0157, ADR 48 §3). One per WABA and one
+    `qualify_api.whatsapp.catalog_sync.connect` (0158, ADR 48 §3). One per WABA and one
     per brand. `access_state` is set by the worker when Meta refuses the token."""
 
     __tablename__ = "whatsapp_catalogs"
@@ -837,7 +837,7 @@ class WhatsAppCatalog(Base):
 
 
 class WhatsAppCatalogSyncRun(Base):
-    """One `items_batch` call (0157): the outbox the worker drains. `request_key` makes a
+    """One `items_batch` call (0158): the outbox the worker drains. `request_key` makes a
     repeated request a no-op; the rows are never deleted by the app (provenance)."""
 
     __tablename__ = "whatsapp_catalog_sync_runs"
@@ -894,7 +894,7 @@ class WhatsAppCatalogSyncRun(Base):
 
 
 class WhatsAppCatalogItem(Base):
-    """One product ever sent to the catalog (0157). `retailer_id` is fixed at the first
+    """One product ever sent to the catalog (0158). `retailer_id` is fixed at the first
     send and never recalculated (`qualify_app` cannot UPDATE it); `product_id` goes NULL
     when the product is deleted, so the item can still be deleted in Meta."""
 

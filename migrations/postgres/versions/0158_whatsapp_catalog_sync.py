@@ -1,7 +1,7 @@
 """WhatsApp catalog sync: Galería products uploaded to the Meta Commerce catalog (m-25017356)
 
-Revision ID: 0157
-Revises: 0156
+Revision ID: 0158
+Revises: 0157
 Create Date: 2026-11-12
 
 ADR 48 (`docs/adr-48-catalogo-whatsapp-carga-por-api.md` §3), épica m-25017354. Qualify
@@ -46,8 +46,8 @@ from alembic import op
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 
-revision = "0157"
-down_revision = "0156"
+revision = "0158"
+down_revision = "0157"
 branch_labels = None
 depends_on = None
 
