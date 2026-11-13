@@ -866,16 +866,26 @@ def _seen_footer(m: MessageVM) -> rx.Component:
 
 def _story_line(m: MessageVM, size: str) -> rx.Component:
     """The story line: «Respondió a tu historia» (m-24789646, B5) or «Te mencionó en su
-    historia» (m-25017817), linked to the story while Meta's expiring URL lasts."""
+    historia» (m-25017817), linked to the story while Meta's expiring URL lasts. The
+    link is a 44 px target (N12, as «Ver anuncio») and says it opens another tab."""
     return rx.hstack(
         rx.cond(
             m.story_mention,
-            rx.icon(STORY_MENTION_ICON, size=T.ICON_SM, color=T.TEXT_FAINT),
-            rx.icon(STORY_REPLY_ICON, size=T.ICON_SM, color=T.TEXT_FAINT),
+            rx.icon(STORY_MENTION_ICON, size=T.ICON_SM, color=T.TEXT_FAINT, aria_hidden="true"),
+            rx.icon(STORY_REPLY_ICON, size=T.ICON_SM, color=T.TEXT_FAINT, aria_hidden="true"),
         ),
         rx.cond(
             m.story_href != "",
-            rx.link(m.story_label, href=m.story_href, is_external=True, size=size),
+            rx.link(
+                m.story_label,
+                href=m.story_href,
+                is_external=True,
+                size=size,
+                aria_label=m.story_link_label,
+                min_height="44px",
+                display="inline-flex",
+                align_items="center",
+            ),
             rx.text(m.story_label, size=size, color=T.TEXT_MUTED),
         ),
         spacing="1",

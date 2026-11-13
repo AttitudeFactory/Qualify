@@ -45,6 +45,7 @@ from .conversations_vm import (
     NO_MESSAGES_YET,
     OUTBOUND_PREFIX,
     QUIET_ACCESS_KINDS,
+    STORY_LIFETIME,
     STORY_MENTION_ICON,
     STORY_MENTION_LABEL,
     TAP_ICON,
@@ -687,7 +688,9 @@ def test_draft_vm_words_the_review_verdict() -> None:
     assert review.needs_review and "requiere revisión" in review.note
     assert review.claims == "envíos · precio"
     assert suggestion_refusal_label("last_message_outbound").startswith("Ya respondiste")
-    assert suggestion_refusal_label("inbound_without_text").startswith("El último mensaje")
+    assert suggestion_refusal_label("inbound_without_text").startswith(
+        "Este mensaje no tiene texto"
+    )
     assert suggestion_refusal_label("window_closed").startswith("Ya no se puede")
     assert suggestion_refusal_label("whatever").startswith("No se pudo sugerir")
 
@@ -1168,3 +1171,75 @@ def test_template_rows_carry_their_buttons() -> None:
         ("web_url", "Ver catálogo", "https://bianki.co", ""),
     ]
     assert row.buttons_label == "Con botones: Por aquí · Ver catálogo"
+
+
+# --- story line: lifetime, accessible name, touch target (m-25017817 UX review) ---------
+
+
+@pytest.mark.parametrize(
+    ("changes", "label"),
+    [
+        ({}, "Te mencionó en su historia"),
+        (
+            {
+                "story_mention": False,
+                "story_mention_basis": None,
+                "story_mention_id": None,
+                "story_mention_url": None,
+                "text": "qué rico",
+                "story_reply_id": "1790",
+                "story_reply_url": "https://cdn/their-story",
+            },
+            "Respondió a tu historia",
+        ),
+    ],
+)
+def test_the_story_link_lives_24_hours_then_reads_as_gone(
+    changes: dict[str, object], label: str
+) -> None:
+    young = _mention(**changes)
+    vm = build_message_vm(young, now=NOW, zone=ZONE)
+    assert (vm.story_label, vm.story_href) == (label, "https://cdn/their-story")
+    assert vm.story_link_label == f"{label} (se abre en otra pestaña)"
+    just_before = NOW - STORY_LIFETIME + timedelta(minutes=1)
+    still = dataclasses.replace(young, posted_at=just_before, ingested_at=just_before)
+    assert build_message_vm(still, now=NOW, zone=ZONE).story_href != ""
+    old_at = NOW - STORY_LIFETIME - timedelta(minutes=1)
+    old = build_message_vm(
+        dataclasses.replace(young, posted_at=old_at, ingested_at=old_at), now=NOW, zone=ZONE
+    )
+    assert (old.story_label, old.story_href, old.story_link_label) == (
+        f"{label} (ya no está disponible)",
+        "",
+        "",
+    )
+    # No posted_at: the ingestion instant stands in.
+    fallback = dataclasses.replace(young, posted_at=None, ingested_at=old_at)
+    assert build_message_vm(fallback, now=NOW, zone=ZONE).story_href == ""
+    assert STORY_LIFETIME == timedelta(hours=24)
+
+
+def test_the_list_preview_keeps_the_short_story_words() -> None:
+    row = build_thread_row(
+        _view(_thread(inbound=NOW - timedelta(days=3))),
+        ThreadExtra(preview_story_mention=True),
+        now=NOW,
+        zone=ZONE,
+    )
+    assert row.preview == "Te mencionó en su historia"
+
+
+def test_the_no_text_refusal_tells_what_to_do() -> None:
+    assert suggestion_refusal_label("inbound_without_text") == (
+        "Este mensaje no tiene texto, así que no hay nada que sugerir. Escribe tu respuesta abajo."
+    )
+
+
+def test_the_story_link_is_a_44px_target_with_an_accessible_name() -> None:
+    from .conversations_page import _story_line
+    from .conversations_state import ConversationsState
+
+    rendered = str(_story_line(ConversationsState.messages[0], "1").render())
+    assert "story_link_label" in rendered and "aria-label" in rendered.replace("_", "-")
+    assert "44px" in rendered
+    assert "aria-hidden" in rendered.replace("_", "-")

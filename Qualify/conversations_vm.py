@@ -221,7 +221,9 @@ _TICK_LABELS: dict[str, str] = {
 #: `suggest.GATE_*` → what the toast says when no suggestion is possible.
 SUGGESTION_REFUSALS: dict[str, str] = {
     "last_message_outbound": "Ya respondiste el último mensaje: no hay nada nuevo que sugerir.",
-    "inbound_without_text": "El último mensaje es un adjunto sin texto: no hay qué sugerir.",
+    "inbound_without_text": (
+        "Este mensaje no tiene texto, así que no hay nada que sugerir. Escribe tu respuesta abajo."
+    ),
     "window_closed": "Ya no se puede responder a esta conversación (pasaron 24 h).",
     "no_messages": "Esta conversación todavía no tiene mensajes.",
 }
@@ -841,6 +843,8 @@ class MessageVM:
     # the bubble's own content instead of a bare «Mensaje» under it.
     story_label: str = ""
     story_href: str = ""
+    # The link's accessible name: it opens in another tab ("" when there is no link).
+    story_link_label: str = ""
     story_mention: bool = False
     story_inline: bool = False
     # m-24789472: where an inbound message came from when the person tapped it instead of
@@ -857,6 +861,25 @@ STORY_MENTION_LABEL: Final = "Te mencionó en su historia"
 #: The Lucide icons of the two story lines (bubble and list preview).
 STORY_REPLY_ICON: Final = "circle-dashed"
 STORY_MENTION_ICON: Final = "at-sign"
+#: Meta's story lifetime: a story (and the CDN URL Meta gave for it) disappears 24 h
+#: after it was posted, so past this age the story line is no longer a link.
+STORY_LIFETIME: Final = timedelta(hours=24)
+#: Appended to the bubble's story line once the story is gone (not to the list preview).
+STORY_GONE_SUFFIX: Final = " (ya no está disponible)"
+#: Appended to a link's accessible name when it opens in another tab.
+NEW_TAB_SUFFIX: Final = " (se abre en otra pestaña)"
+
+
+def _story_gone(sent: datetime | None, now: datetime) -> bool:
+    """True once a message about a story is older than Meta's story lifetime. The
+    message's own instant stands in for the story's (a mention or reply comes after it)."""
+    if sent is None:
+        return False
+    if (sent.tzinfo is None) != (now.tzinfo is None):
+        sent = sent.replace(tzinfo=now.tzinfo) if now.tzinfo else sent.replace(tzinfo=None)
+    return now - sent >= STORY_LIFETIME
+
+
 #: m-25017173: the composer's send button says the same as WhatsApp's («Enviar»).
 SEND_LABEL: Final = "Enviar"
 #: The Lucide icon next to a tapped message's origin (bubble and list preview).
@@ -929,6 +952,9 @@ def build_message_vm(
         story_href = getattr(message, "story_reply_url", None) or ""
     else:
         story_label = story_href = ""
+    if story_label and _story_gone(message.posted_at or message.ingested_at, now):
+        # Meta's URL died with the story: plain words, no dead link.
+        story_label, story_href = story_label + STORY_GONE_SUFFIX, ""
     tapped = (
         None
         if outbound
@@ -953,6 +979,7 @@ def build_message_vm(
         media_src=media_src if control else "",
         story_label=story_label,
         story_href=story_href,
+        story_link_label=story_label + NEW_TAB_SUFFIX if story_href else "",
         story_mention=mention,
         story_inline=inline,
         choice_label=tapped or "",
