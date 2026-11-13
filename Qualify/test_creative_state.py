@@ -349,6 +349,7 @@ def test_more_than_five_tags_warns_without_blocking(monkeypatch) -> None:
     state = _state(monkeypatch)
     state.edit_hashtags = " ".join(f"#t{i}" for i in range(6))
     state.edit_mode = False
+    state.draft = _tags_draft(can_edit=True)  # in review: «Editar texto» is there
     assert state.hashtags_over_notice == (
         "Tienes 6 etiquetas. Con 5 bien elegidas basta: toca «Editar texto» y quita las "
         "que sobren. Igual puedes aprobar y publicar."
@@ -358,6 +359,29 @@ def test_more_than_five_tags_warns_without_blocking(monkeypatch) -> None:
     state.add_hashtag(" ".join(f"x{i}" for i in range(40)))
     assert len(state.edit_hashtag_chips) == 30  # the hard cap still holds
     assert state.hashtag_count_label == "30 de 5 recomendadas"
+
+
+def _tags_draft(*, can_edit: bool) -> DraftVM:
+    return DraftVM(
+        draft_id="d1",
+        status="generated" if can_edit else "published",
+        status_label="Por revisar" if can_edit else "Publicada",
+        status_tone="gray",
+        variants=(),
+        can_edit=can_edit,
+    )
+
+
+def test_no_over_five_notice_on_a_piece_that_cannot_be_edited(monkeypatch) -> None:
+    """m-25026376 (re-review): a scheduled or published piece has no «Editar texto» and
+    is already out — the notice would point at nothing, so it is not shown."""
+    state = _state(monkeypatch)
+    state.edit_hashtags = " ".join(f"#t{i}" for i in range(8))
+    state.edit_mode = False
+    state.draft = _tags_draft(can_edit=False)
+    assert state.hashtags_over_notice == ""
+    state.draft = None
+    assert state.hashtags_over_notice == ""
 
 
 def test_caption_rules_show_under_the_caption(monkeypatch) -> None:

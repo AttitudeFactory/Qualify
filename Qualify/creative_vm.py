@@ -34,7 +34,7 @@ from qualify_creative.queue_errors import (
     UNCERTAIN_VIDEO_TEXT,
     uncertain_error,
 )
-from qualify_creative.schemas import CopyPayload, ImagePolicy
+from qualify_creative.schemas import HASHTAG_HARD_LIMIT, CopyPayload, ImagePolicy
 
 from .ask_more_vm import balance_with_extras
 
@@ -1810,7 +1810,7 @@ _HASHTAG_STOPWORDS: frozenset[str] = frozenset(
     your from have will just more about into
     """.split()
 )
-HASHTAG_LIMIT = 30  # what Meta's API accepts per post (IG User Media `caption`)
+HASHTAG_LIMIT = HASHTAG_HARD_LIMIT  # what Meta's API accepts per post
 #: m-25026376 (founder, 2026-11-13): five well-chosen tags. The Instagram app keeps posts
 #: to five, but the API takes up to 30 — so more than five only warns, never blocks.
 HASHTAG_RECOMMENDED = 5
@@ -2298,12 +2298,18 @@ def hashtag_count_label(count: int, recommended: int = HASHTAG_RECOMMENDED) -> s
 
 
 def hashtags_over_notice(
-    count: int, *, editing: bool = True, recommended: int = HASHTAG_RECOMMENDED
+    count: int,
+    *,
+    editing: bool = True,
+    can_edit: bool = True,
+    recommended: int = HASHTAG_RECOMMENDED,
 ) -> str:
     """One line when a publication carries more than the recommended tags. It informs
     only: the owner can still approve and publish (the API takes up to 30). The gesture
-    named is the real one: the chips' × while editing, «Editar texto» otherwise."""
-    if count <= recommended:
+    named is the real one: the chips' × while editing, «Editar texto» otherwise. A piece
+    that can no longer be edited (scheduled, published) gets nothing: there is nothing
+    left to do about it."""
+    if count <= recommended or not (editing or can_edit):
         return ""
     how = "toca la × para quitar" if editing else "toca «Editar texto» y quita"
     return (

@@ -1158,6 +1158,18 @@ def test_the_over_five_notice_appears_only_past_five() -> None:
         "sobren. Igual puedes aprobar y publicar."
     )
     assert "«Editar texto»" in hashtags_over_notice(7, editing=False)
+    # A scheduled or published piece cannot be edited: no notice at all.
+    assert hashtags_over_notice(7, editing=False, can_edit=False) == ""
+
+
+def test_the_thirty_cap_is_one_shared_constant() -> None:
+    from qualify_creative.schemas import HASHTAG_HARD_LIMIT
+
+    from .creative_vm import HASHTAG_LIMIT, failure_label
+
+    assert HASHTAG_LIMIT == HASHTAG_HARD_LIMIT == 30
+    text = failure_label("hashtag_policy", "31 hashtags, above the brand maximum of 30")
+    assert text == "Hay 31 etiquetas y tu marca permite como máximo 30."
 
 
 def test_the_counter_shows_the_advice_not_the_cap() -> None:

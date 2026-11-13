@@ -748,6 +748,29 @@ def test_a_human_edit_may_carry_more_tags_than_the_brand_maximum() -> None:
     service.approve(tenant_id=TENANT_ID, draft_id=draft_id, variant_id=variant_id, user_id=USER_ID)
 
 
+def test_a_human_edit_is_still_capped_at_thirty_tags() -> None:
+    """m-25026376: the lifted ceiling stops at what Meta's API takes (30), server-side."""
+    router = FakeRouter([ok_outcome(copy_dict())])
+    service, repo, _ = make_service(router=router, kit=make_kit(), voice=make_voice())
+    _, variant_id = _generated_draft_with_variant(service, repo)
+    thirty = CopyPayload.model_validate({**copy_dict(), "hashtags": [f"t{i}" for i in range(30)]})
+    assert (
+        service.edit_variant(
+            tenant_id=TENANT_ID, variant_id=variant_id, copy=thirty, user_id=USER_ID
+        )
+        == ()
+    )
+    assert len(repo.variants[variant_id].edited_copy["hashtags"]) == 30
+    over = CopyPayload.model_validate({**copy_dict(), "hashtags": [f"t{i}" for i in range(31)]})
+    failures = service.edit_variant(
+        tenant_id=TENANT_ID, variant_id=variant_id, copy=over, user_id=USER_ID
+    )
+    assert [(f.rule, f.detail) for f in failures] == [
+        ("hashtag_policy", "31 hashtags, above the brand maximum of 30")
+    ]
+    assert len(repo.variants[variant_id].edited_copy["hashtags"]) == 30  # kept the last good
+
+
 def test_a_human_edit_still_honours_the_banned_tags_and_the_minimum() -> None:
     kit = make_kit(hashtag_policy={"minimum": 1, "maximum": 5, "always": [], "never": ["ad"]})
     router = FakeRouter([ok_outcome(copy_dict())])

@@ -1807,7 +1807,11 @@ class CreativeState(rx.State):
     @rx.var
     def hashtags_over_notice(self) -> str:
         """m-25026376: one line past five tags — a notice, never a block."""
-        return hashtags_over_notice(len(hashtag_list(self.edit_hashtags)), editing=self.edit_mode)
+        return hashtags_over_notice(
+            len(hashtag_list(self.edit_hashtags)),
+            editing=self.edit_mode,
+            can_edit=self.draft is not None and self.draft.can_edit,
+        )
 
     @rx.var
     def cta_chips(self) -> list[str]:
