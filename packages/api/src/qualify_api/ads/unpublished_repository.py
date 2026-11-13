@@ -12,6 +12,7 @@ from sqlalchemy import text
 
 from qualify_api.ads.client import MarketingSettings
 from qualify_api.ads.unpublished import (
+    UPLOAD_UNCERTAIN,
     ImageAdForm,
     ImageSelection,
     ImageSource,
@@ -285,7 +286,8 @@ class UnpublishedRepository:
             if changed.rowcount != 1:
                 raise UnpublishedUnavailable(
                     "No pudimos confirmar la carga en Meta. "
-                    "Pide ayuda para revisarla antes de continuar."
+                    "Pide ayuda para revisarla antes de continuar.",
+                    reason=UPLOAD_UNCERTAIN,
                 )
 
     def claim_video(
@@ -380,5 +382,6 @@ class UnpublishedRepository:
             if changed.rowcount != 1:
                 raise UnpublishedUnavailable(
                     "No pudimos confirmar la carga del video en Meta. "
-                    "Pide ayuda para revisarla antes de continuar."
+                    "Pide ayuda para revisarla antes de continuar.",
+                    reason=UPLOAD_UNCERTAIN,
                 )

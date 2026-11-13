@@ -242,8 +242,9 @@ async def test_duration_and_dimensions_are_refused_before_any_network_call(video
 @pytest.mark.asyncio
 async def test_processing_video_builds_nothing_until_meta_reports_ready(video):
     obj, selected, actor, client, _ = video
-    with pytest.raises(UnpublishedUnavailable, match="todavía está preparando tu video"):
+    with pytest.raises(UnpublishedUnavailable, match="todavía está preparando tu video") as waiting:
         await prepare(video)
+    assert waiting.value.reason == "video_processing"
     assert len(client.video_uploads) == 2 and client.upload_calls == 2
     assert client.video_uploads[0] == mp4(40, 50)
     assert not any(row["_resource"] != "advideos" for row in client.objects.values())
@@ -280,8 +281,9 @@ async def test_a_failed_send_is_unknown_and_never_sent_again(video):
     (row,) = obj.recipes.videos.values()
     assert row["state"] == "unknown" and row["video_id"] == "900"
     client.video_failure = False
-    with pytest.raises(UnpublishedUnavailable, match="Pide ayuda"):
+    with pytest.raises(UnpublishedUnavailable, match="Pide ayuda") as uncertain:
         await prepare(video)
+    assert uncertain.value.reason == "upload_uncertain"
     assert len(client.video_uploads) == 1
 
 
