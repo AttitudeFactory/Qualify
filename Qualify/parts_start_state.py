@@ -62,6 +62,8 @@ def apply_to_creative(
         return False
     if story:
         creative.brief_topic = story
+        # m-25017274 review: cards written for the old text never stay under the new one
+        creative._forget_context_versions()
     creative._reel_removed = []
     creative._set_reel_plan(entries)
     # no reel's «Este reel no cambia de escena.» rides on a plan without one

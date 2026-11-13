@@ -3,10 +3,10 @@ backend (QUA-106 V1 redesign). Same posture `publishing_provider.py` documents f
 its own reads/writes: a direct in-process projection over the published seam, no
 HTTP hop.
 
-Publishing a Story is NOT here — `stories_state.py` calls `publishing_provider.
-start_publish`/`poll_publish` directly (`media_product_type="STORIES"`), the exact
-same seam `/publish` uses. This module only ever projects Meta's trending-audio
-reference list.
+Publishing a historia is NOT here — `publish_engine.py` (driven by `PublishState`)
+sends it through `publishing_provider.start_publish`/`poll_publish`
+(`media_product_type="STORIES"`), the same seam as any publication. This module only
+ever projects Meta's trending-audio reference list.
 """
 
 from __future__ import annotations

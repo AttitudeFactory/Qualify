@@ -49,7 +49,7 @@ SELECT
   (SELECT count(*)
      FROM interaction_followups f
      JOIN messages m ON m.id = f.origin_message_id
-    WHERE f.status = 'open') AS buyers,
+    WHERE f.status = 'open' AND m.unsent_at IS NULL) AS buyers,
   (SELECT count(*)
      FROM comment_reply_drafts d
      JOIN messages m ON m.id = d.message_id

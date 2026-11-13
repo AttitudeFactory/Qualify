@@ -226,7 +226,9 @@ class Harness:
         # without needing to remember to pass one in.
         self.linker = media_linker if media_linker is not None else FakeMediaLinker()
         self.targets = {
-            (TENANT, CONNECTION): ConnectionTarget(ig_user_id=IG_USER, status=connection_status)
+            (TENANT, CONNECTION): ConnectionTarget(
+                ig_user_id=IG_USER, status=connection_status, platform="instagram"
+            )
         }
         harness = self
 
@@ -1888,7 +1890,7 @@ async def test_start_image_never_writes_status_uploading() -> None:
 
     class Connections:
         def read(self, *, tenant_id: UUID, connection_id: UUID) -> ConnectionTarget | None:
-            return ConnectionTarget(ig_user_id=IG_USER, status="active")
+            return ConnectionTarget(ig_user_id=IG_USER, status="active", platform="instagram")
 
     class Factory:
         async def client_for(self, *, tenant_id: UUID, connection_id: UUID):
@@ -1935,7 +1937,7 @@ async def test_start_image_requires_a_configured_media_linker() -> None:
 
     class Connections:
         def read(self, *, tenant_id: UUID, connection_id: UUID) -> ConnectionTarget | None:
-            return ConnectionTarget(ig_user_id=IG_USER, status="active")
+            return ConnectionTarget(ig_user_id=IG_USER, status="active", platform="instagram")
 
     class Factory:
         async def client_for(self, *, tenant_id: UUID, connection_id: UUID):

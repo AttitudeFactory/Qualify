@@ -46,7 +46,8 @@ class FakeTrendAudioClientFactory:
 
 def _connections(target: ConnectionTarget | None = None) -> FakeConnections:
     return FakeConnections(
-        target or ConnectionTarget(ig_user_id="17841448653847824", status="active")
+        target
+        or ConnectionTarget(ig_user_id="17841448653847824", status="active", platform="instagram")
     )
 
 

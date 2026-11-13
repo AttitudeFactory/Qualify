@@ -455,3 +455,26 @@ def test_a_picture_without_letters_keeps_the_avatar_fallback() -> None:
     rule = css[css.index(".q-chat-avatar .q-chat-avatar__over .rt-AvatarRoot") :]
     assert "background: transparent" in rule[: rule.index("}")]
     assert ".q-chat-avatar__over {" in css and "position: absolute" in css
+
+
+def test_a_chat_whose_person_unsent_everything() -> None:
+    """m-25018661 merged with m-25017844: the erased message is gone from the thread, so
+    the row previews what is left (the business's own «Tú: …», or «Sin mensajes
+    todavía»), with no waiting dot, no bold name and no closed-window pill; the open
+    chat's header keeps «no queda ningún mensaje de esta persona»."""
+    only_ours = ig_thread(inbound=None, outbound=IG_NOW - timedelta(hours=1))
+    vm = ig_build(
+        ig_view(only_ours),
+        ThreadExtra(preview="claro, te esperamos", preview_direction="outbound"),
+        now=IG_NOW,
+        zone=IG_ZONE,
+    )
+    row = ig_chat_row(vm)
+    assert row.preview == "Tú: claro, te esperamos" and row.preview_icon == ""
+    assert not row.waiting and row.pill_label == ""
+    assert row.aria_label == "Cliente de Instagram, por Instagram"
+    assert vm.window_label.startswith("Ya no puedes responder: no queda ningún mensaje")
+    nothing_left = ig_chat_row(
+        ig_build(ig_view(ig_thread(inbound=None)), None, now=IG_NOW, zone=IG_ZONE)
+    )
+    assert nothing_left.preview == "Sin mensajes todavía" and not nothing_left.waiting
