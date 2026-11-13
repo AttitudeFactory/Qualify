@@ -20,9 +20,11 @@ dábamos por hechas (§9.2).
 ## 0. La respuesta corta
 
 - **¿Dónde vive hoy el catálogo de un cliente?** Donde vive su WhatsApp. La cuenta de WhatsApp de
-  Bianki se creó dentro del **portafolio comercial «Qualify.co»** (el nuestro, verificado el
-  2026-10-05), así que su catálogo se crea allí también y Qualify lo maneja con el token de **nuestro
-  usuario del sistema**. Es el **Modelo A**: rápido, sin App Review, pero **los activos son de
+  Bianki se creó dentro del **portafolio comercial «Qualify.co»** (nuestra cuenta de empresa en
+  Meta, verificada el 2026-10-05), así que su catálogo se crea allí también y Qualify lo maneja con
+  el token de **nuestro usuario del sistema** (un acceso automático que no depende de ninguna
+  persona). Es el **Modelo A**: rápido, sin App Review (la aprobación que Meta exige para trabajar
+  con datos de negocios ajenos), pero **los activos son de
   Qualify, no del cliente**, y Qualify paga a Meta sus mensajes.
 - **¿Por qué «Qualify.co»?** Porque Meta solo deja trabajar sin App Review con los datos de **tu
   propio negocio** `[V N-1]`. Poner los activos del cliente dentro de nuestro portafolio es la forma
@@ -119,13 +121,15 @@ recuperar ese costo existe pero estaba vacío en producción (m-24955649).
 - **Si el cliente se va:** Meta documenta cómo un cliente **deja a un socio** cuando la cuenta es
   suya (migración de la cuenta de mensajería, sin re-verificar el número) `[V N-20]`, y cómo
   compartir su cuenta con otro socio. **No documenta cómo sacar una cuenta de WhatsApp o un número
-  de un portafolio que no es del cliente** `[NO VERIFICADO]`; y para cuentas del modelo nuevo
-  «el número no se puede mover entre cuentas» por la vía de migración entre socios `[V N-18]`
-(la página general solo dice que se puede migrar «de una WABA a otra», sin hablar de portafolios
-`[V N-19]`). Esto
-  **contradice** el «se migra el número» de `plan-modulo-whatsapp-cloud-api.md` §3.2 (escrito antes
-  del modelo nuevo). El catálogo tampoco tiene una transferencia documentada entre portafolios
-  `[NO VERIFICADO]`; se puede recrear desde Qualify (Galería es la fuente, ADR 48).
+  de un portafolio que no es del cliente** `[NO VERIFICADO]`. Lo que sí dicen sus páginas: para
+  cuentas del modelo nuevo «el número no se puede mover entre cuentas» por la vía de migración
+  entre socios `[V N-18]`, y la página general habla de migrar «de una WABA a otra» sin mencionar
+  portafolios `[V N-19]`. `plan-modulo-whatsapp-cloud-api.md` §3.2 **no cubre este caso**: allí
+  «se migra el número (Meta lo permite entre WABAs del mismo portafolio)», que es mover a Bianki
+  a otra cuenta **dentro de Qualify.co**, no sacarlo hacia el portafolio de un cliente. La salida
+  entre portafolios es un hueco, no una contradicción. El catálogo tampoco tiene una transferencia
+  documentada entre portafolios `[NO VERIFICADO]`; se puede recrear desde Qualify (Galería es la
+  fuente, ADR 48).
 - **Escala:** todos los números comparten el límite de mensajería y el método de pago del
   portafolio; 20 números por portafolio verificado (plan §2.4). Un incidente de calidad en un
   cliente afecta al portafolio de todos `[H]`.
@@ -213,7 +217,7 @@ sistema. **No lo evita para WhatsApp.**
 | ¿Nuestro usuario del sistema llega a lo compartido? | Sí: los usuarios del sistema ven cuentas «owned by, or shared with, your business portfolio» | `[V N-2]` |
 | ¿Basta acceso estándar sobre WABAs compartidas? | **No.** «The partner's app must have Advanced access for every permission it uses on your accounts»; sin él, error 200 | `[V N-3]` |
 | ¿Basta acceso estándar sobre un catálogo compartido? | La página del permiso habla de «businesses that grant you access» y la regla general exige revisión para datos «que no posees o administras»; **no dice si compartido = administrado** | **`[NO VERIFICADO]`** |
-| ¿Es la vía que usa un Tech Provider? | No. El Tech Provider usa el registro integrado y tokens BISU `[V N-2][V N-8]`; la asignación de socio es la vía de agencias y de Solution Partners (catálogo del cliente compartido con el socio, o creado bajo el id del socio `[V N-16]`) | `[V]` |
+| ¿Es la vía que usa un Tech Provider? | No. El Tech Provider usa el registro integrado y tokens BISU `[V N-2][V N-8]`. Meta describe para socios el catálogo del cliente compartido con el socio, o creado bajo el id del socio `[V N-16]`; que la asignación de socio sea «la vía de agencias y de Solution Partners» es lectura nuestra `[H]` | `[V]` / `[H]` |
 
 **Por qué ADR 29 eligió delegar a la app y no compartir con el portafolio**, ahora con WhatsApp:
 (1) para WhatsApp **ambos caminos piden el mismo App Review** `[V N-3]`, así que compartir no compra
@@ -342,12 +346,12 @@ cliente del Modelo B usa el catálogo sin sincronización desde Galería — la 
    obligatorio en 2028) `[V N-4]`: el código usa `waba_id` y `phone_number_id`, que siguen válidos
    hasta la fase 3. Deuda fechada, no urgente.
 
-### 9.2 Lo que contradice docs anteriores (sin elegir en silencio)
+### 9.2 Lo que contradice o deja sin cubrir docs anteriores (sin elegir en silencio)
 
 | Afirmación anterior | Dónde | Lo que dice Meta hoy | Qué lo zanja |
 |---|---|---|---|
 | Tech Provider exige **Access Verification** | `plan-modulo-whatsapp-cloud-api.md` §2.2; m-24789561 «In Progress» | «Access Verification is no longer required» `[V N-12]`; pero el registro integrado aún la nombra para subir el límite a 200 `[V N-6]` | Leer el anuncio del blog (2026-10-09 `[S]`) y mirar el estado en el panel de la app; si se confirma, **cerrar o re-alcanzar m-24789561** (lo hace el hilo principal) |
-| La Bianki puede migrar su número a otra WABA | plan §3.2 | En el modelo nuevo «el número no se puede mover entre cuentas» (migración entre socios) `[V N-18]` | Preguntar a soporte de Meta, o probar con un número de prueba |
+| «Se migra el número (Meta lo permite entre WABAs del mismo portafolio)» | plan §3.2 | No lo contradice: es **otro caso**. Meta no documenta sacar un número hacia **otro portafolio**; en el modelo nuevo «el número no se puede mover entre cuentas» por migración entre socios `[V N-18]`, y la página general solo habla de «una WABA a otra» `[V N-19]` | Preguntar a soporte de Meta, o probar con un número de prueba (P-2) |
 | Mensajes de servicio gratis en ventana | plan §2.5 | Cobrados desde 2026-10-01 pasados 1.000/número/mes (`opciones-catalogo-whatsapp.md` §2.3, `[V]` 2026-11-03) | Ya zanjado; plan §2.5 está desactualizado |
 | La WABA como un solo objeto | todos los docs de WhatsApp | Cuenta de WhatsApp + cuenta de mensajería; el `waba_id` nombra la segunda `[V N-4]` | Nada que probar; actualizar vocabulario al tocar esos docs |
 | Etapa 0-bis de ADR 29 (probar BISU sin App Review con un negocio que el fundador controla) | ADR 29 §10.3, V-TP-7 | Facebook Login for Business mantiene la regla de prueba («role on the app and full control of the client business») `[V N-14]`; pero para WhatsApp «no podrás incorporar clientes hasta tener acceso avanzado» `[V N-6]`, y las WABAs creadas desde la propia app no pasan por el registro integrado (plan §2.3) | Prueba P-3 abajo. **No cambia el ruling de ADR 29**, solo su calendario |
