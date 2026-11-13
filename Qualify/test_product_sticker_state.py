@@ -634,6 +634,6 @@ async def test_the_product_stickers_are_never_archived() -> None:
     state._brand = str(BRAND)
     events = [e async for e in SeasonalState.archive.fn(state, "productos")]
     assert events == [] and not state.seasons[0].archived
-    assert [s.key for s in state.library] == ["productos"]  # shown: one is approved
+    assert [s.key for s in state.shelf] == ["productos"]  # shown: one is approved
     state.seasons = [build_season("productos", "De tus productos", False, [_media("ready")])]
-    assert state.library == []  # nothing approved yet: no row in Tu marca
+    assert state.shelf == [] and [s.key for s in state.to_review] == ["productos"]

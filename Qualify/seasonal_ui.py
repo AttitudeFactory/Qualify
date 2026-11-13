@@ -235,7 +235,7 @@ def brand_section() -> rx.Component:
                                 S.month_spend != "",
                                 rx.text(S.month_spend, size="2", color=T.TEXT_MUTED),
                             ),
-                            rx.foreach(S.library, _season_row),
+                            rx.foreach(S.shelf, _season_row),
                             rx.cond(
                                 S.archived.length() > 0,
                                 rx.el.details(

@@ -179,12 +179,14 @@ class SeasonalState(rx.State):
 
     @rx.var
     def library(self) -> list[SeasonVM]:
-        # m-25017912: «De tus productos» shows up once one of them is approved
-        return [
-            s
-            for s in order_seasons(self.seasons, self.current_key)
-            if not s.archived and (s.key != PRODUCT_SEASON_KEY or s.approved_pieces)
-        ]
+        return [s for s in order_seasons(self.seasons, self.current_key) if not s.archived]
+
+    @rx.var
+    def shelf(self) -> list[SeasonVM]:
+        """Tu marca's rows: the library, with «De tus productos» only once one of them is
+        approved (m-25017912 — «Nada aprobado todavía» says nothing there; Por aprobar
+        still shows the ones waiting)."""
+        return [s for s in self.library if s.key != PRODUCT_SEASON_KEY or s.approved_pieces]
 
     @rx.var
     def archived(self) -> list[SeasonVM]:
