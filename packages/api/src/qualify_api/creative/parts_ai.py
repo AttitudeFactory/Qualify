@@ -293,6 +293,10 @@ class PartsBrief:
     brand: AngleBrand = field(default_factory=AngleBrand)
     product: AngleProduct | None = None
     target_seconds: int = DEFAULT_TARGET_SECONDS
+    #: m-25026509: who the video talks to («¿A quién le habla este video?»); None =
+    #: «Sin preferencia», and the prompt is exactly as before. A chosen angle's own level
+    #: wins over it.
+    awareness_level: AwarenessLevel | None = None
 
 
 @dataclass(frozen=True)
@@ -435,6 +439,12 @@ def propose_user_prompt(brief: PartsBrief, angle: CreativeAngle | None = None) -
         )
         lines.extend(f"- {perk}" for perk in brand.perks)
         lines.append("")
+    level = (angle.awareness_level if angle is not None else None) or brief.awareness_level
+    level_line = (
+        f"Nivel de consciencia del público: {level.value} — {_LEVEL_GUIDANCE[level]}."
+        if level in _LEVEL_GUIDANCE
+        else ""
+    )
     if angle is not None:
         lines.extend(
             [
@@ -444,12 +454,12 @@ def propose_user_prompt(brief: PartsBrief, angle: CreativeAngle | None = None) -
                 f"Invitación: {angle.cta or '(sin invitación)'}",
             ]
         )
-        if angle.awareness_level in _LEVEL_GUIDANCE:
-            lines.append(
-                f"Nivel de consciencia del público: {angle.awareness_level.value} — "
-                f"{_LEVEL_GUIDANCE[angle.awareness_level]}."
-            )
+        if level_line:
+            lines.append(level_line)
         lines.append("")
+    elif level_line:
+        # m-25026509: the owner's answer to «¿A quién le habla este video?», no angle
+        lines.extend(["== A quién le habla el video ==", level_line, ""])
     target = _target(brief.target_seconds)
     lines.append(
         f"Duración total: como máximo {target} segundos, y no menos de "
