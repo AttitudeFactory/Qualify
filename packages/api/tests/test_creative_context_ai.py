@@ -1,5 +1,6 @@
-"""«Potenciar con IA» on the generator's context (§ request 2026-10-20), over a fake
-Claude client: what the model is given, what comes back, and the refusals."""
+"""«Mejorar mi texto» on the generator's context (§ request 2026-10-20; three versions
+since m-25017274), over a fake Claude client: what the model is given, what comes back,
+and the refusals."""
 
 from __future__ import annotations
 
@@ -12,9 +13,12 @@ from qualify_creative.schemas import BrandKit, ToneAxes
 
 from qualify_api.claude_tools import Attribution as _Attribution
 from qualify_api.creative.context_ai import (
+    APPROACHES,
     CONTEXT_MAX_CHARS,
+    CONTEXT_PROMPT_VERSION,
     OUTPUT_MARGIN_CHARS,
     PROPOSAL_MAX_CHARS,
+    SCENE_APPROACHES,
     SCENE_MAX_CHARS,
     TOOL_NAME,
     ContextInput,
@@ -46,7 +50,17 @@ class FakeClient:
         self.messages = FakeMessages(responses)
 
 
-def _answer(context: str, added: list[str] | None = None, stop: str = "tool_use") -> Any:
+def _answer(
+    context: str | list[str],
+    added: list[str] | None = None,
+    stop: str = "tool_use",
+    scene: bool = False,
+) -> Any:
+    """The tool call of one press: `context` is the three versions, or one text that every
+    approach repeats with a different ending (so they stay distinct) — or exactly the same
+    when it would not survive validation anyway."""
+    keys = [key for key, _ in (SCENE_APPROACHES if scene else APPROACHES)]
+    texts = context if isinstance(context, list) else [context] * len(keys)
     return SimpleNamespace(
         model="claude-sonnet-5-5-20261001",
         stop_reason=stop,
@@ -55,7 +69,7 @@ def _answer(context: str, added: list[str] | None = None, stop: str = "tool_use"
             SimpleNamespace(
                 type="tool_use",
                 name=TOOL_NAME,
-                input={"context": context, "added_facts": added or []},
+                input={**dict(zip(keys, texts, strict=True)), "added_facts": added or []},
             )
         ],
     )
@@ -117,23 +131,35 @@ def test_the_brand_typeface_is_in_the_brand_kit_lines() -> None:
     assert "Tipografía" not in render_request(_input(), _kit())
 
 
-def test_the_rewrite_comes_back_with_what_the_model_added() -> None:
-    client = FakeClient([_answer("Quiero mostrar la smash doble…", ["2x1"])])
+THREE = [
+    "Quiero la smash doble con papas, promo de fin de semana. Pide por WhatsApp.",
+    "Quiero que se vea la smash doble jugosa, papas doradas: promo de fin de semana.",
+    "Quiero contarte que este fin de semana la smash doble con papas está en promo.",
+]
+
+
+def test_the_rewrite_comes_back_as_three_versions_with_what_the_model_added() -> None:
+    client = FakeClient([_answer(THREE, ["2x1"])])
     proposal = enhance_context(
         _input(), _kit(), client_factory=lambda key: client, attribution=TEST_ATTRIBUTION
     )
-    assert proposal.text == "Quiero mostrar la smash doble…"
+    assert [v.text for v in proposal.versions] == THREE
+    assert [v.approach for v in proposal.versions] == ["directa", "descriptiva", "cercana"]
     assert proposal.added_facts == ("2x1",)
+    assert proposal.prompt_version == CONTEXT_PROMPT_VERSION == "context-v4-three-versions"
     assert proposal.input_tokens == 500 and proposal.output_tokens == 120
     (call,) = client.messages.calls
     assert call["model"] == "claude-sonnet-5-5"
     assert call["tools"][0]["name"] == TOOL_NAME and call["tools"][0]["strict"] is True
+    schema = call["tools"][0]["input_schema"]
+    assert schema["required"] == ["directa", "descriptiva", "cercana", "added_facts"]
     assert "NO inventes hechos" in call["system"][0]["text"]
+    assert "TRES versiones" in call["system"][0]["text"]
 
 
 def test_a_long_scene_is_refused_instead_of_losing_important_instructions() -> None:
     long = ("Una mano sostiene la hamburguesa. " * 40).strip() + " No cambies el uniforme."
-    client = FakeClient([_answer(long)])
+    client = FakeClient([_answer(long, scene=True)])
     with pytest.raises(ContextTooLong) as error:
         enhance_context(
             _input(scene=True),
@@ -245,15 +271,18 @@ def test_current_product_capacities_remain_and_include_final_spaces(scene: bool)
     message = render_request(data, None)
     assert f"OBJETIVO: hasta {PROPOSAL_MAX_CHARS - OUTPUT_MARGIN_CHARS}" in message
     raw = "  " + "a" * (PROPOSAL_MAX_CHARS - 2) + "\n b  "
-    client = FakeClient([_answer(raw)])
+    client = FakeClient([_answer(raw, scene=scene)])
     result = enhance_context(
         data, None, client_factory=lambda key: client, attribution=TEST_ATTRIBUTION
     )
-    assert len(result.text) == PROPOSAL_MAX_CHARS
-    assert result.text.endswith(" b")
-    assert result.prompt_version == "context-v3-compact-300"
-    schema_text = client.messages.calls[0]["tools"][0]["input_schema"]["properties"]
-    assert str(PROPOSAL_MAX_CHARS) in schema_text["context"]["description"]
+    assert len(result.versions) == 1  # the other two repeat it and are dropped
+    (version,) = result.versions
+    assert len(version.text) == PROPOSAL_MAX_CHARS
+    assert version.text.endswith(" b")
+    assert result.prompt_version == "context-v4-three-versions"
+    properties = client.messages.calls[0]["tools"][0]["input_schema"]["properties"]
+    first = (SCENE_APPROACHES if scene else APPROACHES)[0][0]
+    assert str(PROPOSAL_MAX_CHARS) in properties[first]["description"]
 
 
 @pytest.mark.parametrize("raw", ["", "   \t\n", "🍔 👩🏽‍🍳"])
@@ -311,7 +340,7 @@ def test_named_emoji_request_cannot_disappear_during_cleanup() -> None:
 
 @pytest.mark.parametrize("scene", [False, True])
 def test_automatic_proposal_301_is_rejected_even_when_manual_field_can_hold_it(scene: bool) -> None:
-    client = FakeClient([_answer("x" * 301)])
+    client = FakeClient([_answer("x" * 301, scene=scene)])
     with pytest.raises(ContextTooLong) as error:
         enhance_context(
             _input(scene=scene),
@@ -363,3 +392,85 @@ def test_explicit_literal_internal_spaces_count_towards_proposal_limit() -> None
     literal = "A" + " " * 299 + "B"
     with pytest.raises(ContextTooLong):
         validate_context_proposal(literal, max_chars=300, source_text=f"Escribe «{literal}».")
+
+
+# -- m-25017274: three distinct versions, «Otra versión», the publication's kind -------
+
+
+def test_the_request_names_the_kind_the_format_and_the_approaches() -> None:
+    message = render_request(
+        _input(content_type="Promoción", format="Reel (video corto) 9:16"), _kit()
+    )
+    for expected in (
+        "TIPO DE PUBLICACIÓN: Promoción",
+        "FORMATO: Reel (video corto) 9:16",
+        "PRODUCTO: Smash doble",
+        "- directa: MÁS DIRECTA",
+        "- descriptiva: MÁS DESCRIPTIVA",
+        "- cercana: MÁS CERCANA",
+    ):
+        assert expected in message, expected
+    assert "VERSIONES YA MOSTRADAS" not in message
+    scene = render_request(_input(scene=True), None)
+    assert "- producto: EL PRODUCTO DE CERCA" in scene and "- directa:" not in scene
+
+
+def test_otra_version_sends_the_versions_already_shown_and_drops_a_repeat() -> None:
+    shown = tuple(THREE)
+    fresh = [
+        "Quiero la smash doble con papas este fin de semana, en promo.",
+        THREE[1] + "  ",  # the model repeated a card already shown: dropped
+        "Quiero hablarte como a un vecino: el fin de semana la smash doble va en promo.",
+    ]
+    client = FakeClient([_answer(fresh)])
+    proposal = enhance_context(
+        _input(previous_versions=shown),
+        _kit(),
+        client_factory=lambda key: client,
+        attribution=TEST_ATTRIBUTION,
+    )
+    message = client.messages.calls[0]["messages"][0]["content"]
+    assert "VERSIONES YA MOSTRADAS" in message
+    for text in shown:
+        assert f"- {text}" in message
+    # the ORIGINAL text is what gets rewritten, never a card
+    assert message.rstrip().endswith(_input().text)
+    assert [v.approach for v in proposal.versions] == ["directa", "cercana"]
+    assert all(v.text not in shown for v in proposal.versions)
+
+
+def test_only_the_newest_previous_versions_are_sent() -> None:
+    shown = tuple(f"Versión vieja número {n} de la smash doble" for n in range(20))
+    message = render_request(_input(previous_versions=shown), None)
+    assert "número 19" in message and "número 11" in message
+    assert "número 10 " not in message
+
+
+def test_a_version_equal_to_the_original_or_another_is_dropped() -> None:
+    original = _input().text
+    client = FakeClient([_answer([original.upper() + ".", THREE[1], THREE[1]])])
+    proposal = enhance_context(
+        _input(), None, client_factory=lambda key: client, attribution=TEST_ATTRIBUTION
+    )
+    assert [v.text for v in proposal.versions] == [THREE[1]]
+
+
+def test_one_bad_version_is_dropped_and_the_others_kept() -> None:
+    client = FakeClient([_answer([THREE[0], "x" * 301, "🍔 " + THREE[2]])])
+    proposal = enhance_context(
+        _input(), None, client_factory=lambda key: client, attribution=TEST_ATTRIBUTION
+    )
+    assert [v.text for v in proposal.versions] == [THREE[0]]
+
+
+def test_when_every_version_fails_the_most_useful_refusal_is_raised() -> None:
+    client = FakeClient([_answer(["🍔 hola", "x" * 301, ""])])
+    with pytest.raises(ContextTooLong):
+        enhance_context(
+            _input(), None, client_factory=lambda key: client, attribution=TEST_ATTRIBUTION
+        )
+    client = FakeClient([_answer([_input().text, _input().text, _input().text])])
+    with pytest.raises(ContextUnavailable):
+        enhance_context(
+            _input(), None, client_factory=lambda key: client, attribution=TEST_ATTRIBUTION
+        )
