@@ -15,7 +15,7 @@ import re
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, Literal, Protocol
+from typing import IO, Any, Literal, Protocol
 
 import httpx
 
@@ -31,6 +31,7 @@ Payload = Mapping[str, Any]
 BeforeWrite = Callable[[], Awaitable[None] | None]
 Resource = Literal["campaigns", "adsets", "adcreatives", "ads"]
 RESOURCES = frozenset({"campaigns", "adsets", "adcreatives", "ads"})
+VIDEO_CHUNK_BYTES = 16 * 1024 * 1024  # local ceiling on the window Meta may ask for
 
 
 @dataclass(frozen=True)
@@ -44,6 +45,11 @@ class MarketingSettings:
     @property
     def graph_url(self) -> str:
         return f"https://graph.facebook.com/{self.api_version}"
+
+    @property
+    def video_url(self) -> str:
+        # The official SDK's VideoUploader posts advideos to graph-video (FacebookSession).
+        return f"https://graph-video.facebook.com/{self.api_version}"
 
     @classmethod
     def from_env(cls) -> MarketingSettings:
@@ -91,6 +97,15 @@ def _id(value: str) -> str:
     if not re.fullmatch(r"[0-9]+", value):
         raise ValueError("expected a numeric Meta object id")
     return value
+
+
+def _offset(value: Any) -> int:
+    # Meta sends upload offsets as decimal strings.
+    if type(value) is int and value >= 0:
+        return value
+    if not isinstance(value, str) or not value.isdigit():
+        raise ValueError("invalid upload offset")
+    return int(value)
 
 
 def _validate(params: Payload) -> None:
@@ -217,6 +232,8 @@ class MarketingClient:
         params: Payload,
         *,
         before_write: BeforeWrite | None = None,
+        files: Mapping[str, Any] | None = None,
+        base: str | None = None,
     ) -> dict[str, Any]:
         encoded = _encode(params)
         async with self._lock:
@@ -232,14 +249,14 @@ class MarketingClient:
             # carry full request URLs/headers. Never log request/response bodies.
             failed = False
             try:
-                url = f"{self._settings.graph_url}/{path}"
+                url = f"{base or self._settings.graph_url}/{path}"
                 if method == "GET":
                     response = await self._client.get(
                         url, params=encoded, timeout=30, follow_redirects=False
                     )
                 else:
                     response = await self._client.post(
-                        url, data=encoded, timeout=30, follow_redirects=False
+                        url, data=encoded, files=files, timeout=30, follow_redirects=False
                     )
             except httpx.HTTPError:
                 failed = True
@@ -315,6 +332,78 @@ class MarketingClient:
         if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", value):
             raise MarketingError(UNKNOWN_WRITE_MESSAGE, outcome_unknown=True)
         return value
+
+    async def upload_video(
+        self,
+        stream: IO[bytes],
+        size: int,
+        *,
+        before_write: BeforeWrite,
+        started: Callable[[str], None],
+    ) -> str:
+        """Chunked `advideos` upload (start → transfer → finish), one chunk in memory at a time.
+
+        `started(video_id)` runs as soon as Meta names the video, before any byte is sent, so
+        the caller can persist it. Every failure after `start` is an unknown outcome: the
+        caller must never send the file again on its own.
+        """
+        from qualify_api.ads.unpublished import MAX_VIDEO_BYTES
+
+        if type(size) is not int or not 0 < size <= MAX_VIDEO_BYTES:
+            raise ValueError("invalid advertising video size")
+        path, base = f"{self._account}/advideos", self._settings.video_url
+        answer = await self._request(
+            "POST",
+            path,
+            {"upload_phase": "start", "file_size": size},
+            before_write=before_write,
+            base=base,
+        )
+        video, session = answer.get("video_id"), answer.get("upload_session_id")
+        if not isinstance(video, str) or not video.isdigit() or not isinstance(session, str):
+            raise MarketingError(UNKNOWN_WRITE_MESSAGE, outcome_unknown=True)
+        started(video)
+        try:
+            sent = 0
+            while True:
+                low, high = (_offset(answer.get(key)) for key in ("start_offset", "end_offset"))
+                if low == high == sent == size:
+                    break
+                if low != sent or not low < high <= size or high - low > VIDEO_CHUNK_BYTES:
+                    raise ValueError("unexpected upload window")
+                chunk = await asyncio.to_thread(stream.read, high - low)  # blocking I/O
+                if len(chunk) != high - low:
+                    raise ValueError("short read")
+                answer = await self._request(
+                    "POST",
+                    path,
+                    {"upload_phase": "transfer", "upload_session_id": session, "start_offset": low},
+                    files={"video_file_chunk": ("chunk", chunk, "application/octet-stream")},
+                    base=base,
+                )
+                sent = high
+            done = await self._request(
+                "POST", path, {"upload_phase": "finish", "upload_session_id": session}, base=base
+            )
+            if done.get("success") is not True:
+                raise ValueError("finish not confirmed")
+        except (MarketingError, ValueError, OSError):
+            raise MarketingError(UNKNOWN_WRITE_MESSAGE, outcome_unknown=True) from None
+        return video
+
+    async def video_status(self, video_id: str) -> str:
+        """One bounded read: `ready`, `processing` or `error` (expired counts as error)."""
+        payload = await self._request("GET", _id(video_id), {"fields": "id,status"})
+        status = payload.get("status")
+        value = status.get("video_status") if isinstance(status, dict) else None
+        if payload.get("id") != video_id or value not in {
+            "ready",
+            "processing",
+            "error",
+            "expired",
+        }:
+            raise MarketingError(READ_ERROR_MESSAGE)
+        return "error" if value == "expired" else value
 
     async def validate(self, resource: Resource, *, params: Payload) -> None:
         """Meta validate_only never substitutes for a create expecting a remote ID."""

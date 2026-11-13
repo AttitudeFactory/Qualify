@@ -140,8 +140,9 @@ class Client(FakeMarketingClient):
         return value
 
     async def read_object(self, identifier, *, fields):
+        # Like Graph, only the requested fields come back (FakeMarketingClient honours them).
         async with self.read_lock:
-            return deepcopy(self.objects[identifier])
+            return await FakeMarketingClient._request(self, "GET", identifier, {"fields": fields})
 
     async def children(self, parent, *, resource):
         field = "campaign_id" if resource == "adsets" else "adset_id"
@@ -290,7 +291,7 @@ async def test_changed_r2_bytes_and_source_never_activate(service, monkeypatch):
         data, format="PNG"
     )
     store.objects[selected.feed.object_key] = data.getvalue()
-    with pytest.raises(UnpublishedUnavailable, match="imágenes cambiaron"):
+    with pytest.raises(UnpublishedUnavailable, match="cambiaron"):
         await obj.confirm(
             tenant_id=selected.tenant_id,
             recipe_id=preview.recipe_id,
