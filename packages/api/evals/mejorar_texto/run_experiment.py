@@ -70,29 +70,146 @@ def new_numbers(text: str, source: str) -> list[str]:
     return [n for n in re.findall(r"\d+", text) if n not in known]
 
 
-_TEXT_WORDS = re.compile(
-    r"\b(precios?|letreros?|carteles|cartel|etiquetas?|r[óo]tulos?|avisos?|pancartas?|"
-    r"textos?|letras?|escrito|escrita|pizarras?)\b",
-    re.IGNORECASE,
-)
+#: The eval's own judge (m-25017274 review): written apart from the product's filter
+#: (`context_ai.scene_text_request`) and STRICTER, so «0» here does not just confirm that
+#: filter. It works on word tokens, not on the product's regexes; it flags any «menú»,
+#: «etiqueta», offer word, «Nx1», «se lee», «que diga», «WhatsApp», any figure of 3+
+#: digits or with a thousands separator, «$», and «<number or number word> mil». The
+#: owner's own words are NOT exempt. A term is excused only when the word (or article)
+#: right before it is a negation.
+_JUDGE_TERMS = {
+    "precio",
+    "precios",
+    "cuesta",
+    "vale",
+    "valor",
+    "oferta",
+    "ofertas",
+    "promo",
+    "promoción",
+    "promocion",
+    "descuento",
+    "gratis",
+    "pesos",
+    "dólares",
+    "dolares",
+    "letrero",
+    "letreros",
+    "cartel",
+    "carteles",
+    "rótulo",
+    "rotulo",
+    "rótulos",
+    "aviso",
+    "avisos",
+    "anuncio",
+    "anuncios",
+    "valla",
+    "vallas",
+    "pancarta",
+    "pancartas",
+    "banner",
+    "pizarra",
+    "pizarras",
+    "pizarrón",
+    "pizarron",
+    "menú",
+    "menu",
+    "menús",
+    "carta",
+    "etiqueta",
+    "etiquetas",
+    "sticker",
+    "stickers",
+    "calcomanía",
+    "calcomania",
+    "placa",
+    "texto",
+    "textos",
+    "letra",
+    "letras",
+    "escrito",
+    "escrita",
+    "escritos",
+    "escritas",
+    "palabra",
+    "palabras",
+    "frase",
+    "frases",
+    "leyenda",
+    "título",
+    "titulo",
+    "tipografía",
+    "tipografia",
+    "legible",
+    "número",
+    "numero",
+    "cifra",
+    "whatsapp",
+}
+_JUDGE_PHRASES = ("se lee", "que diga", "que dice", "se lea")
+_NEGATORS = {"sin", "ni", "no", "nada", "ningún", "ningun", "ninguna", "tampoco"}
+_ARTICLES = {"el", "la", "los", "las", "un", "una", "de", "ningún", "ninguna", "hay", "lleva"}
+_NUMBER_WORDS = {
+    "un",
+    "dos",
+    "tres",
+    "cuatro",
+    "cinco",
+    "seis",
+    "siete",
+    "ocho",
+    "nueve",
+    "diez",
+    "once",
+    "doce",
+    "trece",
+    "catorce",
+    "quince",
+    "dieciséis",
+    "diecisiete",
+    "dieciocho",
+    "diecinueve",
+    "veinte",
+    "veintiún",
+    "veintidós",
+    "veintitrés",
+    "veinticuatro",
+    "veinticinco",
+    "treinta",
+    "cuarenta",
+    "cincuenta",
+    "sesenta",
+    "setenta",
+    "ochenta",
+    "noventa",
+    "cien",
+    "ciento",
+}
 
 
 def asks_for_text(text: str, case: dict[str, Any]) -> bool:
-    """A scene version that asks for something written in the image (eval-side check)."""
-    own = case["text"].casefold()
-    negated = re.compile(r"\b(?:sin|ni|no|ningún|ninguna|nada(?: de)?)\s+(?:\w+\s+){0,2}$", re.I)
-    if any(
-        m.group(0).casefold() not in own and not negated.search(text[: m.start()])
-        for m in _TEXT_WORDS.finditer(text)
-    ):
+    """A scene version that asks for something written in the image (strict judge)."""
+    del case  # the owner's words are not exempt for the judge
+    low = text.casefold()
+    if "$" in low or any(phrase in low for phrase in _JUDGE_PHRASES):
         return True
-    if "$" in text and "$" not in case["text"]:
+    if re.search(r"\d\s*x\s*\d", low) or re.search(r"\d{3,}|\d{1,3}[.,]\d{3}", low):
         return True
-    digits = lambda t: {re.sub(r"\D", "", m) for m in re.findall(r"\d(?:[\d.,]*\d)?", t)}  # noqa: E731
-    facts = set().union(*(digits(str(v)) for _, v in case.get("highlights", ()))) - digits(
-        case["text"]
-    )
-    return bool(facts & digits(text))
+    tokens = re.findall(r"\w+", low)
+    for i, token in enumerate(tokens):
+        if token == "mil" and i and (tokens[i - 1].isdigit() or tokens[i - 1] in _NUMBER_WORDS):
+            return True
+        if token not in _JUDGE_TERMS:
+            continue
+        before = tokens[max(0, i - 2) : i]
+        negated = bool(before) and (
+            before[-1] in _NEGATORS
+            or (len(before) == 2 and before[-1] in _ARTICLES and before[0] in _NEGATORS)
+        )
+        if not negated:
+            return True
+    return False
 
 
 def _mean(values: list[float]) -> float:

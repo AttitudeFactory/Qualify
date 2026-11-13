@@ -225,6 +225,59 @@ Lo que queda abierto y se reporta, no se esconde:
     app. Solo se comprobó en una maqueta local con la misma
     estructura: el campo queda a 12 px bajo el encabezado fijo. Antes quedaba debajo de él.
 
+### Adenda tras la revisión de código: filtro final y juez independiente (mismo día)
+
+La revisión encontró que el filtro se pasaba de estricto en unos casos y se quedaba corto en
+otros. También encontró que la medida «pide texto en la imagen» copiaba la lista de palabras
+del propio filtro: el «0 de 33» se confirmaba en parte a sí mismo.
+
+**Cambios en el filtro (`scene_text_request`):**
+
+- Las cifras solo cuentan si vienen de un dato con forma de precio: lleva un signo o una
+  palabra de moneda, o una cifra de 4 dígitos o más. «2 shawarmas», «las 2 de la tarde» y
+  «vaso de 500 ml» pasan.
+- El precio también se detecta escrito como «22 mil» o «veintidós mil».
+- Términos nuevos: anuncio, valla, pizarra o pizarrón, sticker o calcomanía, escritos o
+  escritas, leyenda, tipografía, valor.
+- «menú» solo cuenta en frases de menú escrito: «menú en la pared», «menú escrito», «en la
+  pizarra», «colgado», «impreso». La palabra sola no: «el plato del menú del día» describe
+  comida, y en más de 150 versiones de escena medidas nunca pidió escritura. Se sacó
+  «tablero», porque también es la tabla de madera donde se sirve.
+- Una negación solo vale justo antes del término que niega: «sin texto», «ni carteles»,
+  «nada escrito», «sin ningún letrero», «no lleva texto». En «sin sombras y precio visible»
+  la versión se descarta.
+- Las palabras del dueño se comparan como palabras enteras: «contexto» ya no deja pasar
+  «texto». La única excepción es «etiqueta», la etiqueta impresa del producto. Un precio o un
+  cartel que pide el dueño también se descarta, porque la imagen no lo lleva igual.
+- Las versiones descartadas se mandan como «ya mostradas» en la pulsación siguiente, para no
+  pagar otra vez por el mismo texto. Si no queda ninguna, el dueño lee «No pudimos mejorar tu
+  texto esta vez. Tu texto quedó igual: puedes crear así o intentarlo de nuevo.».
+
+**Juez independiente de la evaluación (`asks_for_text` en `run_experiment.py`):**
+
+- Está escrito aparte del filtro y es más estricto. Trabaja sobre palabras sueltas, no con las
+  expresiones regulares del producto.
+- Marca cualquier «menú», «etiqueta» o «carta». También palabras de oferta (precio, oferta,
+  promoción, descuento, gratis, valor), «Nx1», «se lee», «que diga», «WhatsApp» y «número».
+- Marca cualquier cifra de 3 dígitos o más, o con separador de miles, el signo «$» y
+  «<número o número en palabras> mil».
+- Las palabras del dueño no tienen excepción.
+- Un término solo se perdona si la palabra anterior, o la anterior a un artículo, es una
+  negación.
+
+| Escenas con precio (6 casos, 2 pulsaciones) | Antes `context-v4-three-versions` | Después, filtro final |
+|---|---|---|
+| Versiones que el juez independiente marca como «pide texto en la imagen» | **24 de 36** | **0 de 36** |
+| Versiones con «WhatsApp» (llamado que se dibujaría) | 12 de 36 | 0 de 36 |
+| Versiones descartadas por el filtro | — | 0 de 36 |
+| Similitud entre versiones de una pulsación / entre pulsaciones (máximo) | 0,207 / 0,485 | 0,166 / 0,287 |
+| Costo por pulsación | US$0,0063 | US$0,0063 |
+
+- Las corridas anteriores del prompt v5, juzgadas con el juez nuevo, también dan 0. Los textos
+  de publicación no cambiaron en esta adenda: el prompt es el mismo y el filtro solo actúa en
+  escenas.
+- **Gasto de la adenda:** US$0,075. Total de MEJORAR-TEXTO-002: ≈ US$0,50.
+
 ---
 
 <a id="mejorar-texto-001"></a>

@@ -117,7 +117,7 @@ Detalle, tabla completa y lo que queda sin medir: [`pruebas.md` § MEJORAR-TEXTO
 |---|---|
 | Versión de prompt | `context-v5-scene-no-text` (antes `context-v4-three-versions`) |
 | Cambio | en una ESCENA solo se describe lo que se ve; «Datos clave» orientan, nunca se escriben; filtro determinista `scene_text_request` descarta la versión que pide precio, letrero, etiqueta, texto, «$» o una cifra de «Datos clave» (las negaciones y las palabras del propio dueño pasan) |
-| Resultado medido | escenas con precio que piden texto en la imagen: 24 de 36 → 0 de 33; textos de publicación sin regresión (similitud entre pulsaciones 0,683 → 0,548, el precio se conserva) |
+| Resultado medido | escenas con precio que piden texto en la imagen, según un juez de la evaluación independiente del filtro y más estricto: 24 de 36 → 0 de 36; textos de publicación sin regresión (similitud entre pulsaciones 0,683 → 0,548, el precio se conserva) |
 | Costo medido | US$0,0058 por pulsación en escena, US$0,0068 en texto |
 
 Detalle: [`pruebas.md` § MEJORAR-TEXTO-002](pruebas.md#mejorar-texto-002).
