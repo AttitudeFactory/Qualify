@@ -22,6 +22,135 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
 
 ---
 
+<a id="escena-sin-letras-001"></a>
+
+## ESCENA-SIN-LETRAS-001 — La escena de Seedream sin letras ni botones: compilador de prompts 3 frente a 4, en pares (m-25017275) — 2026-11-13
+
+- **Por qué:** dos historias reales de Bianki (9:16) salieron con botones falsos y letras sin
+  sentido dibujados dentro de la escena: «Ubicación» (caballete con el logo y un shawarma en la
+  calle; una píldora verde «BERIRN NON») y «Tu shawarma de carne te espera aquí» (mano con el
+  shawarma en el local; «. DARCLIO» y una píldora roja). La rama
+  `fix/m-25017275-seedream-sin-letras-ni-botones` sube `PROMPT_COMPILER_VERSION` de 3 a 4. Con el
+  compilador 4, `ad_scene_prompt` (imagen publicitaria) y `carousel_scene_prompt` (diapositiva de
+  galería) dejan de anunciar «un titular y un botón se ponen encima después» y piden una
+  fotografía limpia: sin texto nuevo ni elementos gráficos encima, y solo las letras reales del
+  producto, su empaque y el logo entregado. El fundador autorizó el 2026-11-13 un banco pagado
+  de **US$3 como máximo**, con fotos del catálogo de Bianki y las salidas solo en el disco local.
+- **Modelo:** `dola-seedream-5-0-pro-260628`, el `DEFAULT_SEEDREAM_MODEL` de
+  `byteplus_ark.py`, por el identificador del modelo. Este modelo no cede datos (ficha
+  [seedream-5-0-pro.md](seedream-5-0-pro.md)). Tamaños de producción (`SCENE_SIZES`): 9:16 a
+  1080×1920 y 4:5 a 1280×1600, los dos en el tramo de US$0,045. `watermark: false`, JPEG, sin
+  semilla. Las imágenes se mandan como en producción (`_data_url` → `to_reference_jpeg`).
+- **Entradas:** 5 fotos del catálogo de Bianki (tenant `7607da58-…`): shawarma de carne, shawarma
+  de pollo, salchipapa, papas y combo de carne con 7UP, Colombiana y Pepsi. También el isotipo
+  de su Brand Kit. Todo se leyó de R2 de producción **solo para lectura** (`list_objects_v2` +
+  `get_object`) y se guardó fuera de git. **Nada se escribió ni se borró en R2 ni en la base.**
+  Brand Kit de prueba: paleta real de Bianki (`#c5093b #ffcd00 #00b188 #231f20 #ffffff`) y letra
+  `Unbounded`. El posicionamiento y el tono están escritos para la prueba.
+- **Diseño:** 12 encargos en pares (mismo encargo, mismas referencias y mismo tamaño; solo
+  cambia `prompt_compiler_version`), cada uno **2 veces** = **24 pares, 48 imágenes**. Se
+  generó solo la escena cruda, sin componer nada.
+  - 8 imágenes publicitarias (`static_flyer`): 5 en 9:16 y 3 en 4:5.
+  - 2 galerías de 2 diapositivas cada una (gancho y llamada a la acción).
+  - Hay casos con foto del producto, con logo en la escena (6 de 10) y solo escena (F5, F6).
+  - 7 de los 10 encargos traen llamada a la acción, ubicación u horario.
+  - F1 y F2 reproducen las dos historias del defecto.
+  - Arnés: `packages/api/evals/scene_text_v4/` (`run.py`, `cases.json`, `contact_sheet.py`).
+    Cada POST pasó por `LedgerTransport` con la tabla `v9`.
+- **Puntuación:** la hizo una persona (este agente), mirando cada una de las 48 imágenes, sin
+  juez automático.
+  - (a) texto inventado: cualquier letra que no esté en el producto, su empaque o el logo;
+  - (b) botón, píldora, cinta, franja o elemento de interfaz;
+  - (c) letras reales conservadas cuando la referencia las traía;
+  - (d) zonas de arriba y abajo tranquilas;
+  - (e) calidad y fidelidad al producto, de 1 a 5.
+  - Aparte se anotó el logo pegado como disco flotante y no sobre una superficie.
+
+### Resultados (24 pares)
+
+| Criterio | Compilador 3 | Compilador 4 |
+|---|---|---|
+| (a) Texto inventado | **15/24** | **4/24** |
+| (b) Botón, píldora, cinta o franja | **7/24** | **0/24** |
+| (a) o (b), alguno de los dos | 15/24 | 4/24 |
+| (c) Letras reales del envase conservadas (botellas del combo) | 4/4 | 4/4 |
+| (d) Arriba y abajo tranquilos | 12/24 | 21/24 |
+| (e) Calidad media (1–5) | 3,79 | 3,88 (12 pares iguales, 7 mejores, 5 peores) |
+| Logo como disco flotante | 3/24 | 3/24 |
+
+- **En pares:** en 11 pares falla solo el 3; en **0 pares falla solo el 4**; en 4 fallan los
+  dos; en 9 no falla ninguno. Prueba de signos sobre los 11 pares discordantes: p ≈ 0,001 para
+  (a)/(b). Para los botones solos, 7 a 0: p ≈ 0,016.
+- **Imagen publicitaria** (`ad_scene_prompt`, 16 pares): texto inventado 11/16 → **1/16**.
+  - El único caso del 4 son formas de neón desenfocadas al fondo que parecen letras (F3, rep. 2).
+  - El defecto del fundador se reprodujo con el 3 en 4 de 4 imágenes de F1 y F2: letreros
+    inventados («Korner Center»), titulares sin sentido y píldoras («Nigler», «SIBTRNOW»).
+  - Con el 4 las mismas 4 imágenes salieron limpias.
+- **Galería** (`carousel_scene_prompt`, 8 pares): texto inventado **4/8 → 3/8**. Aquí el
+  compilador 4 casi no mejora:
+  - **G2, diapositiva de gancho sin logo: 2 de 2 con titular en colores de la marca en los dos
+    compiladores.** Con el 3: «SALLHE PAPA» y «SIFUUYAPA». Con el 4: «UNUBND» y «Unblountd
+    biabel», que es **el nombre de la letra «Unbounded» dibujado como titular**.
+    - `_image_typefaces_cue_v4` nombra la letra y quitó el «without drawing any letters» que
+      tenía la línea del 3 en la galería.
+    - Hipótesis fuerte, no probada: el nombre de la letra en el prompt se dibuja.
+  - G2, diapositiva de llamada a la acción, rep. 1, compilador 4: letrero de tienda con letras
+    sin sentido y **un letrero de McDonald's (marca de un tercero)** al fondo. Pasó 1 vez en 2.
+- **Otros fallos del 4 que no son texto:**
+  - recortes de papel y piezas de plástico en los colores de la marca, tirados en la mesa
+    (F6 2/2 y F7 rep. 2): la línea de la paleta «as props» se toma literal;
+  - cinco manos amontonadas (F8 rep. 1);
+  - logo alterado con un aro rojo (F2 rep. 2);
+  - logo flotante encima de la botella de Colombiana (F4 rep. 2).
+  - Con el 3 el logo flotante aparece las mismas veces (3/24).
+- **Fallos del 3 que el 4 quitó:**
+  - titulares inventados con el nombre de la marca: «Bianki» en grande y un empaque inventado
+    «bianki sabe bien · ensalada fresca» en F5, donde no se mandó logo;
+  - franjas blancas de marco (F8 rep. 2);
+  - bloques de cinta con letras (F7 rep. 2).
+
+### Costo
+
+- **Gasto: US$2,322** de un tope de US$3, según la bitácora de `LedgerTransport`.
+  - 48 imágenes buenas: US$0,045 cada una, más US$0,003 por la segunda referencia en los casos
+    con logo.
+  - US$0,09 por 2 cortes de conexión en F5 rep. 1 compilador 3 (`ReadTimeout`,
+    `RemoteProtocolError`). Se anotaron al peor caso; puede que BytePlus no los haya cobrado.
+  - 15 intentos fallidos por una caída de DNS local (`ConnectError`): US$0, nunca llegaron.
+- Mediana: 40 s por imagen.
+- Costo por pieza: **sin cambio**. El compilador 4 no agrega llamadas ni referencias; el prompt
+  crece unos 130 caracteres.
+
+### Veredicto
+
+**Publicar (ship).** Para la imagen publicitaria, el compilador 4 corrige el defecto reportado:
+botones 7 → 0 y texto inventado 11/16 → 1/16. En ningún par quedó peor que el 3 en texto o
+botones, y no baja la calidad.
+
+Lo que queda abierto y se reporta, no se esconde:
+
+- **La galería no queda resuelta.** La diapositiva de gancho sin logo sigue dibujando un
+  titular (2/2), ahora con el nombre de la letra.
+- **Seguimiento propuesto (compilador 5):** quitar el nombre de la letra de todo prompt de
+  Seedream, porque a un modelo de imagen no le sirve como estilo y se dibuja. Medirlo con la
+  diapositiva G2-s1 (US$0,09 por par).
+- **Muestra pequeña:** una marca, un rubro, 12 encargos, 2 repeticiones, sin semilla fija. El
+  efecto en la imagen publicitaria es grande y consistente. Los fallos de la galería (3 de 8) y
+  el letrero de una marca de un tercero (1 de 24) no tienen poder para dar una tasa.
+
+### Lo que no se midió
+
+- Formatos feed 1:1 y reel. Tampoco la ruta del primer cuadro de video ni la escena con fondo
+  propio (`background_key`).
+- Otras marcas y rubros. Bianki es un negocio del fundador.
+- Pieza compuesta: no se probó si las zonas tranquilas sirven de verdad bajo el gancho y la
+  llamada a la acción de Remotion.
+- Ningún juez automático. La puntuación es de una sola persona y no tiene segunda anotación.
+- El cobro real de los dos cortes de conexión. Se puede verificar en la facturación de
+  ModelArk (T+1).
+
+---
+
 <a id="stickers-kawaii-001"></a>
 
 ## STICKERS-KAWAII-001 — Banco pagado: sticker con un personaje tierno del producto (Seedream 5.0 pro) y recorte por color plano frente a `layer_decomposition` (m-25017372) — 2026-11-12
