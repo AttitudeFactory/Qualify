@@ -2366,6 +2366,11 @@ async def test_an_edit_hides_the_cards_and_drops_the_mark(
     assert state.context_enhance_note.startswith(module._ENHANCE_ADDED_VERSIONS)
     spec = state.choose_context_version(1)
     assert spec is not None and state.context_chosen == 1
+    # live 2026-11-13: scrollIntoView left the field under the sticky header; the
+    # script aligns it under `.q-page-header` in the box that scrolls, and never focuses
+    script = str(spec)
+    assert module.CONTEXT_FIELD_ID in script and "q-page-header" in script
+    assert "scrollBy" in script and "scrollIntoView" not in script and "focus" not in script
     state.brief_topic = _THREE[1] + " y gaseosa"
     assert state.context_chosen == -1 and state.context_text_edited
 

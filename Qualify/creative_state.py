@@ -321,6 +321,33 @@ def _scroll_to_view() -> rx.event.EventSpec:
     )
 
 
+def _scroll_field_into_view(element_id: str) -> rx.event.EventSpec:
+    """m-25017274 (live 2026-11-13): after a «Mejorar mi texto» card is tapped the view
+    stayed on the cards. `rx.scroll_to` is `scrollIntoView(true)`: it puts the field's
+    top at the top of the box that scrolls (`main.q-panel` on a phone), i.e. UNDER the
+    sticky page header. Same alignment as `_ALIGN_VIEW_JS` for `#q-cr-view`, which works
+    in production: find the box that really scrolls, put the field just under the
+    header, smoothly, then correct once after the new text re-rendered. No focus: on a
+    phone that would open the keyboard over the field."""
+    return rx.call_script(
+        "(() => { const align = (smooth) => {"
+        f" const field = document.getElementById({json.dumps(element_id)});"
+        " if (!field) return;"
+        " let box = field.parentElement;"
+        " while (box && box !== document.body && !(/(auto|scroll)/.test("
+        "getComputedStyle(box).overflowY) && box.scrollHeight > box.clientHeight)) {"
+        " box = box.parentElement; }"
+        " const scroller = box && box !== document.body ? box : document.scrollingElement;"
+        " const head = field.closest('main')?.querySelector('.q-page-header');"
+        " const floor = head ? head.getBoundingClientRect().bottom : 0;"
+        " const delta = field.getBoundingClientRect().top - floor - 12;"
+        " if (smooth || Math.abs(delta) > 4) {"
+        " scroller.scrollBy({top: delta, behavior: smooth ? 'smooth' : 'auto'}); }"
+        " };"
+        " setTimeout(() => align(true), 60); setTimeout(() => align(false), 600); })()"
+    )
+
+
 #: UI-3: «Deshacer» after «Quitar» — the keyboard lands on it (UX review).
 REEL_PART_UNDO_ID = "reel-part-undo"
 #: UI-3: a part's «Antes» / «Después» (`…-<key>`): the keyboard stays on it after a move.
@@ -8592,7 +8619,7 @@ class CreativeState(rx.State):
         self._set_context_text(self.context_versions[index].get("text", ""))
         self.context_choice = index
         self.context_enhance_error = ""
-        return rx.scroll_to(CONTEXT_FIELD_ID)
+        return _scroll_field_into_view(CONTEXT_FIELD_ID)
 
     @rx.event
     def undo_enhance_context(self) -> None:
