@@ -24,6 +24,7 @@ from qualify_creative.video.fit import (
 )
 from qualify_creative.video.join import JoinClip, JoinedVideo, JoinError, join_clips
 from qualify_creative.video.normalize import (
+    FfmpegUnavailable,
     FfmpegVideoNormalizer,
     NormalizedVideo,
     VideoNormalizer,
@@ -39,6 +40,15 @@ from qualify_creative.video.shots import (
     VideoSourceError,
     detect_shots,
     sample_frames,
+)
+from qualify_creative.video.still import (
+    POSTER_TIMEOUT_SECONDS,
+    VideoFacts,
+    VideoStill,
+    VideoStillError,
+    poster_from_video_file,
+    probe_video_file,
+    video_still,
 )
 
 __all__ = [
@@ -77,4 +87,12 @@ __all__ = [
     "VideoNormalizer",
     "is_video_filename",
     "join_clips",
+    "FfmpegUnavailable",
+    "POSTER_TIMEOUT_SECONDS",
+    "VideoFacts",
+    "VideoStill",
+    "VideoStillError",
+    "poster_from_video_file",
+    "probe_video_file",
+    "video_still",
 ]

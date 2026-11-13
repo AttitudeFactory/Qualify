@@ -300,6 +300,7 @@ def _post_option(
                 account_label=account,
                 media_types=output.media_types,
                 image_size=output.image_size,
+                video_seconds=output.video_seconds,
                 preferred_destination=destination_for_product_type(output.media_product_type),
             )
         )
@@ -322,6 +323,7 @@ def _post_option(
         has_live_event=post.has_live_event,
         media_types=post.media_types,
         image_size=post.image_size,
+        video_seconds=post.video_seconds,
         preferred_destination=destination_for_product_type(post.media_product_type),
         lifecycle_status=post.lifecycle_status,
         **_campaign_fields(post),
