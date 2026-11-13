@@ -289,6 +289,7 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
     from .catalog_group_state import CatalogGroupState
     from .catalog_order_state import CatalogOrderState
     from .catalog_state import CatalogState
+    from .catalog_whatsapp_state import CatalogWhatsAppState
     from .clarity_state import ClarityState
     from .connections_state import ConnectionsState
     from .conversations_state import ConversationsState
@@ -412,6 +413,9 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
         # m-24955838 «Agrupa tus productos»: the products without a category, the
         # proposed groups and the last move («Deshacer»)
         CatalogGroupState,
+        # m-25017357 Galería › WhatsApp catalog: the per-product states, the plan the
+        # owner is confirming and the products sent from this tab
+        CatalogWhatsAppState,
         # m-24955648 «Formas de pago»: the business's methods, the open form and the QR
         # parked for it
         WhatsAppPaymentsState,

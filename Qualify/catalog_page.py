@@ -90,6 +90,15 @@ from .catalog_vm import (
     ProductMediaVM,
     ProductVM,
 )
+from .catalog_whatsapp_page import (
+    bulk_block,
+    card_badge,
+    confirm_dialog,
+    delete_note,
+    editor_block,
+    problems_filter,
+)
+from .catalog_whatsapp_state import CatalogWhatsAppState
 from .pinterest_ui import pinterest_section
 from .ui import (
     DragCard,
@@ -950,6 +959,8 @@ def _editor_body() -> rx.Component:
             align="center",
             spacing="3",
         ),
+        # m-25017357: «En WhatsApp» — only with a catalog connected
+        editor_block(),
         rx.vstack(
             rx.hstack(
                 rx.icon("pencil-line", size=T.ICON_SM, color=T.TEXT_MUTED),
@@ -1098,6 +1109,7 @@ def _delete_product_dialog() -> rx.Component:
                 "publicaciones. Las publicaciones que ya hiciste con él no cambian.",
                 size="2",
             ),
+            delete_note(),
             rx.flex(
                 rx.alert_dialog.cancel(
                     rx.button(
@@ -1218,6 +1230,8 @@ def _product_card(product: rx.Var[ProductVM]) -> rx.Component:
                     product.price_label != "",
                     tone_badge(product.price_label, "ok", icon="tag"),
                 ),
+                # m-25017357: at most one WhatsApp badge (none for «not there yet»)
+                card_badge(product),
                 rx.spacer(),
                 rx.cond(
                     product.photo_count == 0,
@@ -1762,6 +1776,7 @@ def catalog_index() -> rx.Component:
             _leave_dialog(),
             _delete_product_dialog(),
             _remove_media_dialog(),
+            confirm_dialog(),
             # `?ordenar=1` (WhatsApp step 3's «Cambiar el orden») opens the ordering;
             # the drag script is the photos' own (it guards against running twice)
             rx.box(
@@ -1771,10 +1786,13 @@ def catalog_index() -> rx.Component:
                     CatalogGroupState.arrive,
                     # CM-2: «Fotos y videos de tu negocio» reads its media and jobs
                     CatalogGalleryState.arrive,
+                    # m-25017357: the products' state in the WhatsApp catalog
+                    CatalogWhatsAppState.arrive,
                     rx.call_script(_RANK_DRAG_JS),
                 ],
                 on_unmount=[
                     CatalogGalleryState.leave,
+                    CatalogWhatsAppState.leave,
                     CatalogCutState.page_left,
                     CatalogChooseState.page_left,
                 ],
@@ -1800,8 +1818,10 @@ def catalog_index() -> rx.Component:
                                 section(
                                     "Productos",
                                     group_notice(),
+                                    bulk_block(),
                                     rx.flex(
                                         _missing_photo_filter(),
+                                        problems_filter(),
                                         _order_button(),
                                         spacing="2",
                                         wrap="wrap",
