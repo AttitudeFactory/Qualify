@@ -90,6 +90,10 @@ MentionAnalyzer = Callable[..., None]
 class Outcome:
     status: str
     error: str | None = None
+    # m-25018661: settle by DELETING the change (and its delivery's raw body) instead of
+    # keeping it — for a change whose payload holds content Qualify must not keep (a
+    # message the person already unsent). Still counted under `status`.
+    erase: bool = False
 
 
 Handler = Callable[[ClaimedEvent], Awaitable[Outcome]]
@@ -111,6 +115,8 @@ class Queue(Protocol):
     def fail(
         self, *, event_id: UUID, worker_id: str, now: datetime, attempts: int, error: str
     ) -> str | None: ...
+
+    def erase(self, *, event_id: UUID, worker_id: str) -> bool: ...
 
 
 @dataclass
@@ -403,6 +409,9 @@ class Processor:
         return report
 
     def _settle(self, event: ClaimedEvent, outcome: Outcome) -> str | None:
+        if outcome.erase:
+            erased = self._queue.erase(event_id=event.id, worker_id=self._worker_id)
+            return outcome.status if erased else None
         ok = self._queue.settle(
             event_id=event.id,
             worker_id=self._worker_id,
@@ -501,6 +510,8 @@ def production_processor(*, worker_id: str) -> Processor:
                 resolve=resolve_external_account,
                 sync=production_sync_service(),
                 attribute_ad=attribute_inbound_message,
+                # m-25018661: an unsend also deletes the changes that still carry the text.
+                erase_events=WebhookQueue().erase_message_events,
             ),
             # Meegle onboarding (plan-altas-meegle M1): `meegle:2001|1005|2004`, only when
             # QUALIFY_MEEGLE_* is set; otherwise those events stay `unsupported`.

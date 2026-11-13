@@ -25,6 +25,15 @@ ONLY from inbound messages; `last_message_at` is inbox ordering only.
 «pendiente / leído / respondido» state (`service.attention_state`) is derived, never
 stored, so it cannot drift.
 
+## Unsent messages (m-25018661, 0157)
+
+`unsend_message` erases one unsent inbound DM in one transaction: tombstone in
+`message_unsends`, the row redacted in place (`unsent_at`, hidden by `deleted_at`), its
+`proposed` drafts discarded, the thread's instants recomputed from what remains.
+`insert_message` refuses a tombstoned `mid` under the same per-message advisory lock, so
+neither the poll nor a late webhook brings it back. `list_threads` leaves out a thread whose
+every message was unsent.
+
 The sync-state methods are three narrow upserts (`save_access`, `sync_started`,
 `sync_finished`) rather than one "save everything": a crash between them leaves a row
 that says exactly how far the sync got.
@@ -133,6 +142,32 @@ class MessageRecord:
         return choice_label(self.choice_kind, self.choice_payload, self.text)
 
 
+STORE_CREATED = "created"
+STORE_DUPLICATE = "duplicate"
+STORE_UNSENT = "unsent"
+
+
+@dataclass(frozen=True)
+class StoreResult:
+    """`store_message`'s outcome. `thread_id` is None only for `STORE_UNSENT`, which
+    touched nothing — no thread created, no instant moved."""
+
+    outcome: str  # STORE_CREATED | STORE_DUPLICATE | STORE_UNSENT
+    thread_id: UUID | None
+    thread_created: bool = False
+
+
+@dataclass(frozen=True)
+class UnsendResult:
+    """What erasing one unsent message did (m-25018661). Ids and counts only."""
+
+    tombstone_created: bool  # False = this `mid` was already unsent (a redelivery)
+    message_redacted: bool  # a stored inbound row was erased by THIS call
+    outbound: bool  # the `mid` is a message the account sent: nothing was touched
+    thread_id: UUID | None  # the thread recomputed, when a row was found
+    drafts_discarded: int = 0
+
+
 @dataclass(frozen=True)
 class SyncStateRecord:
     connection_id: UUID
@@ -161,6 +196,18 @@ class ConversationRepository(Protocol):
     def insert_message(
         self, *, tenant_id: UUID, thread_id: UUID, connection_id: UUID, message: RemoteMessage
     ) -> bool: ...
+
+    def store_message(
+        self,
+        *,
+        tenant_id: UUID,
+        connection_id: UUID,
+        channel: str,
+        counterpart_external_id: str,
+        external_conversation_id: str | None,
+        message: RemoteMessage,
+        at: datetime | None,
+    ) -> StoreResult: ...
 
     def bump_thread_activity(
         self,
@@ -206,6 +253,21 @@ class ConversationRepository(Protocol):
     def hide_message(
         self, *, tenant_id: UUID, thread_id: UUID, message_id: UUID, now: datetime
     ) -> bool: ...
+
+    def unsent_ids(
+        self, *, tenant_id: UUID, connection_id: UUID, external_message_ids: Sequence[str]
+    ) -> set[str]: ...
+
+    def unsend_message(
+        self,
+        *,
+        tenant_id: UUID,
+        connection_id: UUID,
+        external_message_id: str,
+        now: datetime,
+        source_event_id: UUID | None,
+        pipeline_version: str,
+    ) -> UnsendResult: ...
 
     def get_sync_state(
         self, *, tenant_id: UUID, connection_id: UUID, channel: str
@@ -355,6 +417,9 @@ _INSERT_MESSAGE = text(
                WHEN {_RD} THEN NULL
                ELSE messages.story_mention_url END
      WHERE messages.direction = 'inbound'
+       -- An unsent row (m-25018661) is refused before this statement runs, under the
+       -- message's lock; this keeps every fill (the author's handle included) off it anyway.
+       AND messages.unsent_at IS NULL
        AND ({_RF}
             OR (messages.choice_kind IS NULL AND EXCLUDED.choice_kind IS NOT NULL)
             OR (messages.author_username IS NULL AND EXCLUDED.author_username IS NOT NULL)
@@ -393,6 +458,100 @@ _BUMP_THREAD = text(
     """
 )
 
+# --- Unsent messages (m-25018661, 0157) ------------------------------------------------
+#
+# One advisory lock per `(connection, mid)`, taken by the insert AND by the unsend in their
+# own transactions: whichever commits first, the other sees it. Without it an unsend could
+# commit between the insert's tombstone check and its INSERT (poll and webhook run in
+# different processes), and the message would be stored with its text after the unsend.
+_LOCK_MESSAGE_KEY = text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))")
+
+_IS_UNSENT = text(
+    """
+    SELECT 1 FROM message_unsends
+     WHERE connection_id = :connection_id AND external_message_id = :mid
+    """
+)
+
+_UNSENT_IDS = text(
+    """
+    SELECT external_message_id FROM message_unsends
+     WHERE connection_id = :connection_id AND external_message_id IN :mids
+    """
+).bindparams(bindparam("mids", expanding=True))
+
+_FIND_FOR_UNSEND = text(
+    """
+    SELECT id, thread_id, direction, unsent_at FROM messages
+     WHERE connection_id = :connection_id AND external_message_id = :mid
+       FOR UPDATE
+    """
+)
+
+_INSERT_UNSEND = text(
+    """
+    INSERT INTO message_unsends (tenant_id, connection_id, external_message_id, unsent_at,
+                                 source_event_id, pipeline_version)
+    VALUES (:tenant_id, :connection_id, :mid, :now, :source_event_id, :pipeline_version)
+    ON CONFLICT (connection_id, external_message_id) DO NOTHING
+    RETURNING id
+    """
+)
+
+# Every column that carries what the person wrote or sent goes; ids and instants stay
+# (`ck_message_unsent_redacted` in 0157 enforces it). `deleted_at` hides the row from every
+# listing that already hides «Eliminar para mí».
+_REDACT_MESSAGE = text(
+    """
+    UPDATE messages
+       SET text = NULL, author_username = NULL, media_type = NULL, media_url = NULL,
+           media_object_key = NULL, media_id = NULL, media_mime = NULL,
+           raw_payload_r2_key = NULL, story_reply_id = NULL, story_reply_url = NULL,
+           story_mention = false, story_mention_id = NULL, story_mention_url = NULL,
+           story_mention_basis = NULL, choice_kind = NULL, choice_payload = NULL,
+           deleted_at = COALESCE(deleted_at, CAST(:now AS timestamptz)),
+           unsent_at = CAST(:now AS timestamptz)
+     WHERE id = :message_id AND direction = 'inbound' AND unsent_at IS NULL
+    """
+)
+
+# A suggested reply nobody decided yet answers a message that no longer exists: it is
+# discarded and its text erased (it was written from the unsent message), and so is the
+# tapped option its grounding carries (`suggest.py`, `choice`), like the row's `choice_*`.
+# A draft a person already accepted, edited or sent is the business's own message.
+_DISCARD_DRAFTS = text(
+    """
+    UPDATE conversation_drafts
+       SET status = 'discarded', generated_text = '', final_text = NULL,
+           grounding = grounding - 'choice',
+           decided_at = CAST(:now AS timestamptz)
+     WHERE message_id = :message_id AND status = 'proposed'
+    """
+)
+
+# The thread's instants from what remains. Unlike `_BUMP_THREAD` this may move them
+# BACKWARDS (or to NULL): the unsent message no longer opens the 24 h window nor orders the
+# inbox. `status` is left alone (a person's choice).
+_RECOMPUTE_THREAD = text(
+    """
+    UPDATE threads
+       SET last_inbound_at = (SELECT max(COALESCE(m.posted_at, m.ingested_at)) FROM messages m
+                               WHERE m.thread_id = :thread_id AND m.direction = 'inbound'
+                                 AND m.unsent_at IS NULL),
+           last_message_at = (SELECT max(COALESCE(m.posted_at, m.ingested_at)) FROM messages m
+                               WHERE m.thread_id = :thread_id AND m.unsent_at IS NULL)
+     WHERE id = :thread_id
+    """
+)
+
+
+_LOCK_THREAD = text("SELECT 1 FROM threads WHERE id = :thread_id FOR NO KEY UPDATE")
+
+
+def _message_lock_key(connection_id: UUID, external_message_id: str) -> str:
+    return f"qualify:message:{connection_id}:{external_message_id}"
+
+
 _THREAD_COLUMNS = """
     t.id, t.tenant_id, t.connection_id, t.channel, t.external_thread_id,
     t.external_conversation_id, t.status, t.assigned_agent_id, t.last_message_at,
@@ -402,11 +561,21 @@ _THREAD_COLUMNS = """
       WHERE m.thread_id = t.id AND m.direction = 'outbound') AS last_outbound_at
 """
 
+# A thread whose every message was unsent (m-25018661) is not listed: nothing of it is left
+# to show. A thread with no messages at all (e.g. created by an Ice Breaker setup) still is.
+_NOT_ONLY_UNSENT = """
+       AND (NOT EXISTS (SELECT 1 FROM messages u
+                         WHERE u.thread_id = t.id AND u.unsent_at IS NOT NULL)
+            OR EXISTS (SELECT 1 FROM messages v
+                        WHERE v.thread_id = t.id AND v.unsent_at IS NULL))
+"""
+
 _LIST_THREADS = text(
     f"""
     SELECT {_THREAD_COLUMNS}
       FROM threads t
      WHERE t.channel IN :channels
+       {_NOT_ONLY_UNSENT}
      ORDER BY t.last_message_at DESC NULLS LAST, t.created_at DESC, t.id
      LIMIT :limit
     """
@@ -417,6 +586,7 @@ _LIST_THREADS_FOR_CONNECTION = text(
     SELECT {_THREAD_COLUMNS}
       FROM threads t
      WHERE t.channel IN :channels AND t.connection_id = :connection_id
+       {_NOT_ONLY_UNSENT}
      ORDER BY t.last_message_at DESC NULLS LAST, t.created_at DESC, t.id
      LIMIT :limit
     """
@@ -529,6 +699,35 @@ _SYNC_FINISHED = text(
 )
 
 
+def _insert_params(
+    tenant_id: UUID, thread_id: UUID, connection_id: UUID, message: RemoteMessage
+) -> dict[str, object]:
+    return {
+        "id": uuid4(),
+        "tenant_id": tenant_id,
+        "thread_id": thread_id,
+        "connection_id": connection_id,
+        "external_message_id": message.external_message_id,
+        "direction": message.direction,
+        "author_external_id": message.author_external_id,
+        "author_username": message.author_username,
+        "text": message.text,
+        "posted_at": message.posted_at,
+        "shape_version": message.shape_version,
+        "media_type": message.media_type,
+        "media_url": message.media_url,
+        "story_reply_id": message.story_reply_id,
+        "story_reply_url": message.story_reply_url,
+        "choice_kind": message.choice_kind,
+        "choice_payload": message.choice_payload,
+        "story_mention": message.story_mention,
+        "story_mention_id": message.story_mention_id,
+        "story_mention_url": message.story_mention_url,
+        "story_mention_basis": message.story_mention_basis,
+        "story_reply_confirmed": message.story_reply_confirmed,
+    }
+
+
 def _thread_record(row: object) -> ThreadRecord:
     r = row  # a SQLAlchemy Row; attribute access by column label
     return ThreadRecord(
@@ -583,34 +782,85 @@ class PostgresConversationRepository:
         self, *, tenant_id: UUID, thread_id: UUID, connection_id: UUID, message: RemoteMessage
     ) -> bool:
         with tenant_session(tenant_id) as session:
+            # m-25018661: an unsent `mid` is never stored again, whichever path brings it.
+            session.execute(
+                _LOCK_MESSAGE_KEY,
+                {"key": _message_lock_key(connection_id, message.external_message_id)},
+            )
+            if (
+                session.execute(
+                    _IS_UNSENT,
+                    {"connection_id": connection_id, "mid": message.external_message_id},
+                ).first()
+                is not None
+            ):
+                return False
             result = session.execute(
-                _INSERT_MESSAGE,
+                _INSERT_MESSAGE, _insert_params(tenant_id, thread_id, connection_id, message)
+            ).first()
+            return bool(result is not None and result.created)
+
+    def store_message(
+        self,
+        *,
+        tenant_id: UUID,
+        connection_id: UUID,
+        channel: str,
+        counterpart_external_id: str,
+        external_conversation_id: str | None,
+        message: RemoteMessage,
+        at: datetime | None,
+    ) -> StoreResult:
+        """Thread upsert + insert + activity bump of ONE message, in one transaction under
+        the message's advisory lock (m-25018661). An `unsend_message` of the same `mid`
+        takes that lock too, so it commits either wholly before (this refuses: no thread,
+        no bump) or wholly after (its recompute is absolute and runs on a locked thread
+        row). No ordering leaves the thread pointing at an unsent message."""
+        if not counterpart_external_id:
+            raise ValueError("a thread needs the counterpart's external id")
+        with tenant_session(tenant_id) as session:
+            session.execute(
+                _LOCK_MESSAGE_KEY,
+                {"key": _message_lock_key(connection_id, message.external_message_id)},
+            )
+            if (
+                session.execute(
+                    _IS_UNSENT,
+                    {"connection_id": connection_id, "mid": message.external_message_id},
+                ).first()
+                is not None
+            ):
+                return StoreResult(outcome=STORE_UNSENT, thread_id=None)
+            thread = session.execute(
+                _UPSERT_THREAD,
                 {
                     "id": uuid4(),
                     "tenant_id": tenant_id,
-                    "thread_id": thread_id,
                     "connection_id": connection_id,
-                    "external_message_id": message.external_message_id,
-                    "direction": message.direction,
-                    "author_external_id": message.author_external_id,
-                    "author_username": message.author_username,
-                    "text": message.text,
-                    "posted_at": message.posted_at,
-                    "shape_version": message.shape_version,
-                    "media_type": message.media_type,
-                    "media_url": message.media_url,
-                    "story_reply_id": message.story_reply_id,
-                    "story_reply_url": message.story_reply_url,
-                    "choice_kind": message.choice_kind,
-                    "choice_payload": message.choice_payload,
-                    "story_mention": message.story_mention,
-                    "story_mention_id": message.story_mention_id,
-                    "story_mention_url": message.story_mention_url,
-                    "story_mention_basis": message.story_mention_basis,
-                    "story_reply_confirmed": message.story_reply_confirmed,
+                    "channel": channel,
+                    "counterpart": counterpart_external_id,
+                    "conversation_id": external_conversation_id,
+                    "open": THREAD_OPEN,
                 },
+            ).one()
+            inserted = session.execute(
+                _INSERT_MESSAGE, _insert_params(tenant_id, thread.id, connection_id, message)
             ).first()
-            return bool(result is not None and result.created)
+            session.execute(
+                _BUMP_THREAD,
+                {
+                    "thread_id": thread.id,
+                    "inbound": at if message.direction == "inbound" else None,
+                    "message_at": at,
+                    "open": THREAD_OPEN,
+                },
+            )
+        created = bool(inserted is not None and inserted.created)
+        return StoreResult(
+            outcome=STORE_CREATED if created else STORE_DUPLICATE,
+            thread_id=thread.id,
+            thread_created=bool(thread.created),
+        )
 
     def bump_thread_activity(
         self,
@@ -744,6 +994,88 @@ class PostgresConversationRepository:
                 _HIDE_MESSAGE, {"message_id": message_id, "thread_id": thread_id, "now": now}
             )
             return result.rowcount == 1
+
+    def unsent_ids(
+        self, *, tenant_id: UUID, connection_id: UUID, external_message_ids: Sequence[str]
+    ) -> set[str]:
+        if not external_message_ids:
+            return set()
+        with tenant_session(tenant_id) as session:
+            rows = session.execute(
+                _UNSENT_IDS,
+                {"connection_id": connection_id, "mids": list(external_message_ids)},
+            ).all()
+        return {row.external_message_id for row in rows}
+
+    def unsend_message(
+        self,
+        *,
+        tenant_id: UUID,
+        connection_id: UUID,
+        external_message_id: str,
+        now: datetime,
+        source_event_id: UUID | None,
+        pipeline_version: str,
+    ) -> UnsendResult:
+        """Erase one unsent inbound message, in ONE transaction: the tombstone, the row's
+        content, its undecided drafts, the thread's instants. Idempotent: a redelivery
+        finds the tombstone and an already redacted row and changes nothing. A `mid` the
+        account itself sent is left untouched (no tombstone either)."""
+        if not external_message_id:
+            raise ValueError("an unsend needs the message's external id")
+        params = {"connection_id": connection_id, "mid": external_message_id}
+        with tenant_session(tenant_id) as session:
+            session.execute(
+                _LOCK_MESSAGE_KEY, {"key": _message_lock_key(connection_id, external_message_id)}
+            )
+            row = session.execute(_FIND_FOR_UNSEND, params).first()
+            if row is not None and row.direction != "inbound":
+                return UnsendResult(
+                    tombstone_created=False,
+                    message_redacted=False,
+                    outbound=True,
+                    thread_id=row.thread_id,
+                )
+            created = (
+                session.execute(
+                    _INSERT_UNSEND,
+                    {
+                        **params,
+                        "tenant_id": tenant_id,
+                        "now": now,
+                        "source_event_id": source_event_id,
+                        "pipeline_version": pipeline_version,
+                    },
+                ).first()
+                is not None
+            )
+            if row is None:
+                return UnsendResult(
+                    tombstone_created=created,
+                    message_redacted=False,
+                    outbound=False,
+                    thread_id=None,
+                )
+            redacted = (
+                session.execute(_REDACT_MESSAGE, {"message_id": row.id, "now": now}).rowcount == 1
+            )
+            drafts = 0
+            if redacted:
+                drafts = session.execute(
+                    _DISCARD_DRAFTS, {"message_id": row.id, "now": now}
+                ).rowcount
+                # Lock the thread FIRST, in its own statement: a concurrent `store_message`
+                # of another message that holds the row commits before the recompute takes
+                # its snapshot, so its message is counted (READ COMMITTED, per statement).
+                session.execute(_LOCK_THREAD, {"thread_id": row.thread_id})
+                session.execute(_RECOMPUTE_THREAD, {"thread_id": row.thread_id})
+        return UnsendResult(
+            tombstone_created=created,
+            message_redacted=redacted,
+            outbound=False,
+            thread_id=row.thread_id,
+            drafts_discarded=drafts,
+        )
 
     def get_sync_state(
         self, *, tenant_id: UUID, connection_id: UUID, channel: str
@@ -914,6 +1246,10 @@ class MemoryConversationRepository:
         self._threads: dict[UUID, _MemoryThread] = {}
         self._by_natural_key: dict[tuple[UUID, str, str], UUID] = {}
         self._message_keys: set[tuple[UUID, str]] = set()
+        # m-25018661: the tombstones `(connection_id, mid)` with their tenant, and the
+        # threads that lost a message to an unsend (listed only while something remains).
+        self.unsends: dict[tuple[UUID, str], UUID] = {}
+        self._threads_with_unsent: set[UUID] = set()
         self.sync_states: dict[tuple[UUID, str], SyncStateRecord] = {}
         # Which tenant a connection's sync state belongs to (the FK's job in Postgres).
         self._tenant_of: dict[UUID, UUID] = {}
@@ -970,6 +1306,8 @@ class MemoryConversationRepository:
         if entry is None:
             raise LookupError(f"no thread {thread_id} in tenant {tenant_id}")
         key = (connection_id, message.external_message_id)
+        if self.unsends.get(key) == tenant_id:
+            return False
         if key in self._message_keys:
             self._merge_story(entry, message)
             self._fill_choice(entry, message)
@@ -1044,6 +1382,45 @@ class MemoryConversationRepository:
             ):
                 entry.messages[index] = replace(stored, author_username=message.author_username)
 
+    def store_message(
+        self,
+        *,
+        tenant_id: UUID,
+        connection_id: UUID,
+        channel: str,
+        counterpart_external_id: str,
+        external_conversation_id: str | None,
+        message: RemoteMessage,
+        at: datetime | None,
+    ) -> StoreResult:
+        """The Postgres rules (one transaction there; one call here)."""
+        if self.unsends.get((connection_id, message.external_message_id)) == tenant_id:
+            return StoreResult(outcome=STORE_UNSENT, thread_id=None)
+        upsert = self.upsert_thread(
+            tenant_id=tenant_id,
+            connection_id=connection_id,
+            channel=channel,
+            counterpart_external_id=counterpart_external_id,
+            external_conversation_id=external_conversation_id,
+        )
+        created = self.insert_message(
+            tenant_id=tenant_id,
+            thread_id=upsert.thread_id,
+            connection_id=connection_id,
+            message=message,
+        )
+        self.bump_thread_activity(
+            tenant_id=tenant_id,
+            thread_id=upsert.thread_id,
+            last_inbound_at=at if message.direction == "inbound" else None,
+            last_message_at=at,
+        )
+        return StoreResult(
+            outcome=STORE_CREATED if created else STORE_DUPLICATE,
+            thread_id=upsert.thread_id,
+            thread_created=upsert.created,
+        )
+
     def bump_thread_activity(
         self,
         *,
@@ -1086,6 +1463,7 @@ class MemoryConversationRepository:
             if entry.record.tenant_id == tenant_id
             and entry.record.channel in wanted
             and (connection_id is None or entry.record.connection_id == connection_id)
+            and (entry.messages or entry.record.id not in self._threads_with_unsent)
         ]
         rows.sort(
             key=lambda r: (
@@ -1171,6 +1549,72 @@ class MemoryConversationRepository:
         before = len(entry.messages)
         entry.messages = [m for m in entry.messages if m.id != message_id]
         return len(entry.messages) < before
+
+    def unsent_ids(
+        self, *, tenant_id: UUID, connection_id: UUID, external_message_ids: Sequence[str]
+    ) -> set[str]:
+        return {
+            mid
+            for mid in external_message_ids
+            if self.unsends.get((connection_id, mid)) == tenant_id
+        }
+
+    def unsend_message(
+        self,
+        *,
+        tenant_id: UUID,
+        connection_id: UUID,
+        external_message_id: str,
+        now: datetime,
+        source_event_id: UUID | None,
+        pipeline_version: str,
+    ) -> UnsendResult:
+        """The Postgres rules, in memory: the unsent row leaves the thread (what Postgres
+        redacts and hides), the thread's instants are recomputed from what remains."""
+        if not external_message_id:
+            raise ValueError("an unsend needs the message's external id")
+        key = (connection_id, external_message_id)
+        found: tuple[_MemoryThread, MessageRecord] | None = None
+        for entry in self._threads.values():
+            if entry.record.tenant_id != tenant_id or entry.record.connection_id != connection_id:
+                continue
+            for message in entry.messages:
+                if message.external_message_id == external_message_id:
+                    found = (entry, message)
+        if found is not None and found[1].direction != "inbound":
+            return UnsendResult(
+                tombstone_created=False,
+                message_redacted=False,
+                outbound=True,
+                thread_id=found[0].record.id,
+            )
+        created = key not in self.unsends
+        if created:
+            self.unsends[key] = tenant_id
+        if found is None:
+            return UnsendResult(
+                tombstone_created=created, message_redacted=False, outbound=False, thread_id=None
+            )
+        entry, message = found
+        entry.messages = [m for m in entry.messages if m.id != message.id]
+        self._threads_with_unsent.add(entry.record.id)
+        inbound = [
+            _as_utc(m.posted_at or m.ingested_at)
+            for m in entry.messages
+            if m.direction == "inbound"
+        ]
+        every = [_as_utc(m.posted_at or m.ingested_at) for m in entry.messages]
+        entry.record = replace(
+            entry.record,
+            last_inbound_at=max(inbound) if inbound else None,
+            last_message_at=max(every) if every else None,
+        )
+        return UnsendResult(
+            tombstone_created=created,
+            message_redacted=True,
+            outbound=False,
+            thread_id=entry.record.id,
+        )
 
     # -- sync state -----------------------------------------------------------------
 

@@ -23,13 +23,15 @@ _FILES = (
     "planner_provider.py",
     "planner_state.py",
     "planner_vm.py",
+    "publish_engine.py",
+    "publish_hub_state.py",
+    "publish_wizard_vm.py",
     "publishing_page.py",
     "publishing_provider.py",
     "publishing_state.py",
     "publishing_vm.py",
     "stories_page.py",
     "stories_provider.py",
-    "stories_state.py",
     "stories_vm.py",
     "trending_panel.py",
 )
@@ -133,45 +135,49 @@ def test_the_scheduled_confirmation_says_day_and_hour() -> None:
 
 
 def test_publishing_errors_say_what_to_do_next() -> None:
-    from . import publishing_state, stories_state
+    # Since 2026-11-12 one engine carries every failure's words (StoriesState is gone).
+    from . import publish_engine
 
-    for module in (publishing_state, stories_state):
-        assert module._NO_TENANT == (
-            "No encontramos tu negocio en esta sesión. Cierra sesión y vuelve a entrar."
-        )
-        assert module._NOT_CONFIGURED == (
-            "No podemos subir archivos en este momento. Inténtalo en unos minutos; si sigue, "
-            "escríbenos."
-        )
-        assert module._POLL_FAILED == (
-            "No sabemos todavía si se publicó. Revisa tu Instagram en unos minutos antes de "
-            "volver a intentarlo, para no publicarlo dos veces."
-        )
-        assert module._UNSUPPORTED_IMAGE_FORMAT == (
-            "Esta foto no se puede usar tal cual. Desde tu celular, compártela como “JPG” o "
-            "haz una captura de pantalla y súbela."
-        )
+    assert publish_engine.NO_TENANT == (
+        "No encontramos tu negocio en esta sesión. Cierra sesión y vuelve a entrar."
+    )
+    assert publish_engine.NOT_CONFIGURED == (
+        "No podemos subir archivos en este momento. Inténtalo en unos minutos; si sigue, "
+        "escríbenos."
+    )
+    assert publish_engine.POLL_FAILED == (
+        "No sabemos todavía si se publicó. Revisa tu Instagram en unos minutos antes de "
+        "volver a intentarlo, para no publicarlo dos veces."
+    )
+    assert publish_engine.UNSUPPORTED_IMAGE_FORMAT == (
+        "Esta foto no se puede usar tal cual. Desde tu celular, compártela como “JPG” o "
+        "haz una captura de pantalla y súbela."
+    )
+    assert publish_engine.UNSUPPORTED_PLATFORM == (
+        "Desde aquí solo publicamos en Instagram. Elige tu cuenta de Instagram e "
+        "inténtalo de nuevo."
+    )
 
 
 def test_unsupported_files_and_waits_speak_of_instagram_not_meta() -> None:
-    from . import publishing_state, stories_state
+    from . import publishing_state
+    from .publish_wizard_vm import MODE_STORIES, MODE_STORY, wait_text
 
     assert publishing_state._UNSUPPORTED_FORMAT == (
         "Ese archivo no se puede publicar en Instagram. Sube una foto o un video tal como salen "
         "de la cámara de tu celular."
     )
-    assert stories_state._UNSUPPORTED_FORMAT == (
-        "Ese archivo no se puede publicar como historia. Sube una foto o un video tal como salen "
-        "de la cámara de tu celular."
-    )
-    assert stories_state._WAIT_EXPLANATION == (
-        "Instagram está preparando tu historia. Puede tardar unos minutos."
+    assert (
+        wait_text(MODE_STORY)
+        == wait_text(MODE_STORIES)
+        == ("Instagram está preparando tu historia. Puede tardar unos minutos.")
     )
     for name in (
+        "publish_engine.py",
+        "publish_wizard_vm.py",
         "publishing_page.py",
         "publishing_state.py",
         "stories_page.py",
-        "stories_state.py",
     ):
         for _, text in _client_strings(name):
             assert "Meta" not in text, f"{name}: {text!r}"

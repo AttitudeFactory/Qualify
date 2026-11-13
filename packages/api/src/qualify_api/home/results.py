@@ -50,12 +50,12 @@ class ResultsCounts:
 
 _INBOUND_WEEK = """
     (SELECT count(*) FROM messages m JOIN threads t ON t.id = m.thread_id
-      WHERE t.channel = '{channel}' AND m.direction = 'inbound'
+      WHERE t.channel = '{channel}' AND m.direction = 'inbound' AND m.unsent_at IS NULL
         AND COALESCE(m.posted_at, m.ingested_at) >= :since)
 """
 _PEOPLE_WEEK = """
     (SELECT count(DISTINCT t.id) FROM messages m JOIN threads t ON t.id = m.thread_id
-      WHERE t.channel = '{channel}' AND m.direction = 'inbound'
+      WHERE t.channel = '{channel}' AND m.direction = 'inbound' AND m.unsent_at IS NULL
         AND COALESCE(m.posted_at, m.ingested_at) >= :since)
 """
 

@@ -2,7 +2,7 @@
 redesign). Publishing itself has no Stories-specific VM anymore — `/stories` reuses
 `publishing_vm.ConnectionOptionVM`/`PendingItemVM`/`PublishAttemptVM` directly, the
 exact same types `/publish` uses, since it is the exact same publish flow underneath
-(`media_product_type="STORIES"` is the only difference, chosen in `stories_state.py`).
+(`media_product_type="STORIES"` is the only difference, chosen by `publish_engine.plan_jobs`).
 
 Kept free of Reflex and network imports so a whitelist-style test can assert this
 stays true as the module grows, same convention `publishing_vm.py`/`creative_vm.py`

@@ -220,6 +220,7 @@ _DELETE_DIRECT = (
     "comment_reply_drafts",
     "comment_intent_results",
     "comment_sentiment_results",
+    "message_unsends",  # 0157 (m-25018661): unsent-DM tombstones, ids only
     "messages",
     "threads",
     "monitored_media",

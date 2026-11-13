@@ -540,7 +540,10 @@ def test_unsent_bubbles_say_sending_or_why_not() -> None:
         now=NOW,
         zone=ZONE,
     )
-    assert failed.tick == "failed" and "24 h" in failed.error_label
+    assert failed.tick == "failed"
+    assert failed.error_label == (
+        "No se envió: Instagram ya no permite responder a esta conversación."
+    )
     media = build_unsent_vm(
         UnsentItem(
             id="o3",
@@ -1243,3 +1246,31 @@ def test_the_story_link_is_a_44px_target_with_an_accessible_name() -> None:
     assert "story_link_label" in rendered and "aria-label" in rendered.replace("_", "-")
     assert "44px" in rendered
     assert "aria-hidden" in rendered.replace("_", "-")
+
+
+# --- unsent messages erased (m-25018661) ------------------------------------------------
+
+
+def test_no_inbound_left_says_so_instead_of_the_24_hours() -> None:
+    only_ours = build_thread_row(
+        _view(_thread(inbound=None, outbound=NOW - timedelta(hours=1))), None, now=NOW, zone=ZONE
+    )
+    assert only_ours.window_label == (
+        "Ya no puedes responder: no queda ningún mensaje de esta persona. "
+        "Cuando vuelva a escribir, podrás responder de nuevo."
+    )
+    assert not only_ours.window_open and only_ours.window_short == WINDOW_CLOSED_SHORT
+    expired = build_thread_row(
+        _view(_thread(inbound=NOW - timedelta(hours=30))), None, now=NOW, zone=ZONE
+    )
+    assert expired.window_label == WINDOW_CLOSED_NOTICE
+    assert "24 h" in WINDOW_CLOSED_NOTICE
+
+
+def test_window_closed_failures_no_longer_claim_the_24_hours() -> None:
+    assert failure_label("window_closed") == (
+        "No se envió: Instagram ya no permite responder a esta conversación."
+    )
+    assert suggestion_refusal_label("window_closed") == (
+        "Ya no se puede responder a esta conversación."
+    )
