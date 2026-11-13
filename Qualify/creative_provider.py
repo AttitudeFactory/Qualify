@@ -227,6 +227,7 @@ def load_kit_form(tenant_id: UUID, brand_id: UUID) -> KitFormVM | None:
         has_logo=kit.logo_asset_key is not None,
         has_template=kit.template_asset_key is not None,
         ads_destination_url=kit.ads_destination_url or "",
+        business_perks="\n".join(kit.business_perks),
     )
 
 
@@ -247,8 +248,13 @@ def save_kit(
     form: KitFormVM,
     *,
     adopt_voice: bool = True,
+    business_perks: tuple[str, ...] | None = None,
 ) -> None:
     """Parse the form back into the pydantic kit and upsert it through the service.
+
+    `business_perks` (0163) joins the kit only when given: the service keeps the stored
+    list for a kit built without it, so every save but «Lo que ofrece tu negocio»'s own
+    passes None and cannot wipe it; `()` clears it.
 
     The image policy, logo/template/reference keys are preserved from the stored kit —
     this form does not edit them, and an upsert must not erase what it does not model.
@@ -279,6 +285,8 @@ def save_kit(
         "font_body": form.font_body.strip(),
         "ads_destination_url": form.ads_destination_url.strip() or None,
     }
+    if business_perks is not None:
+        data["business_perks"] = business_perks
     if current is not None:
         # Fields this form does not edit keep their stored values.
         data.update(

@@ -81,6 +81,8 @@ from qualify_creative.enums import (
 )
 from qualify_creative.scene_plan import ScenePlanError
 from qualify_creative.schemas import (
+    BUSINESS_PERK_MAX_CHARS,
+    BUSINESS_PERKS_MAX,
     CLIP_IMAGE_ROLES,
     HIGHLIGHT_KEY_MAX,
     HIGHLIGHT_VALUE_MAX,
@@ -218,6 +220,7 @@ from .creative_vm import (
     needs_brand_fix,
     not_enough_creations_text,
     parse_owner_price,
+    perks_count_label,
     phrase_list,
     prefill_price_fact,
     presenter_fallback_text,
@@ -1040,6 +1043,13 @@ _KIT_PILL_FIELDS = {
     "cta": "kit_cta_patterns",
     "banned": "kit_banned_words",
     "claims": "kit_forbidden_claims",
+    "perks": "kit_business_perks",
+}
+#: The lists the kit itself caps (`qualify_creative.schemas`): pill key → (how many
+#: values, how many characters each). The editor holds the owner to them as they type,
+#: so what is saved is what they see — the kit would otherwise trim it silently.
+KIT_PILL_LIMITS: dict[str, tuple[int, int]] = {
+    "perks": (BUSINESS_PERKS_MAX, BUSINESS_PERK_MAX_CHARS),
 }
 
 
@@ -1246,11 +1256,14 @@ class CreativeState(rx.State):
     #: `BrandWizardState.font_files` — brandboard assets, not kit fields.
     kit_font_heading: str = ""
     kit_font_body: str = ""
+    #: «Lo que ofrece tu negocio» (`BrandKit.business_perks`), one per line like the
+    #: other lists. Only that section's «Guardar» writes it (`save_brand_kit(perks=…)`).
+    kit_business_perks: str = ""
     #: What each list's pill input holds before Enter (`_KIT_PILL_FIELDS` keys). The
     #: lists themselves stay the newline-joined `kit_*` strings above.
     #: The whole Brand Kit is being saved (`brand_finish.save_brand_kit`).
     kit_saving: bool = False
-    kit_pill_drafts: dict[str, str] = {key: "" for key in ("do", "dont", "cta", "banned", "claims")}
+    kit_pill_drafts: dict[str, str] = {key: "" for key in _KIT_PILL_FIELDS}
     #: The one pill being edited in place on ¿Todo correcto? (§ request 2026-09-30):
     #: its list (`_KIT_PILL_FIELDS` key, "" = none), its index and the text so far.
     kit_pill_edit_field: str = ""
@@ -3138,6 +3151,7 @@ class CreativeState(rx.State):
         self.kit_palette = form.palette_rgb
         self.kit_font_heading = form.font_heading
         self.kit_font_body = form.font_body
+        self.kit_business_perks = form.business_perks
 
     def tone_is_custom(self) -> bool:
         """Any of the four axes moved off `TONE_DEFAULT`."""
@@ -3169,6 +3183,7 @@ class CreativeState(rx.State):
             palette_rgb=self.kit_palette,
             font_heading=self.kit_font_heading,
             font_body=self.kit_font_body,
+            business_perks=self.kit_business_perks,
         )
 
     # -- explicit setters (this Reflex version generates none) ----------------
@@ -3280,6 +3295,25 @@ class CreativeState(rx.State):
     def kit_claims_items(self) -> list[str]:
         return _pill_items(self.kit_forbidden_claims)
 
+    @rx.var
+    def kit_perks_items(self) -> list[str]:
+        return _pill_items(self.kit_business_perks)
+
+    @rx.var
+    def kit_perks_summary(self) -> str:
+        """The closed section's one line: «Estacionamiento gratis · Pago en cuotas»."""
+        return " · ".join(_pill_items(self.kit_business_perks))
+
+    @rx.var
+    def kit_perks_full(self) -> bool:
+        """«Lo que ofrece tu negocio» holds as many as the kit keeps: no more «+»."""
+        return len(_pill_items(self.kit_business_perks)) >= BUSINESS_PERKS_MAX
+
+    @rx.var
+    def kit_perks_count_label(self) -> str:
+        """«3 de 12» — how many the owner has, against the kit's limit."""
+        return perks_count_label(len(_pill_items(self.kit_business_perks)))
+
     @rx.event
     def set_kit_pill_draft(self, field: str, value: str) -> None:
         if field in _KIT_PILL_FIELDS:
@@ -3296,9 +3330,14 @@ class CreativeState(rx.State):
         if attr is None:
             return
         value = " ".join(self.kit_pill_drafts.get(field, "").split())
+        max_items, max_chars = KIT_PILL_LIMITS.get(field, (0, 0))
+        if max_chars:
+            # the input already stops at the limit; this only guards a pasted value
+            value = value[:max_chars].strip()
         if value:
             items = _pill_items(getattr(self, attr))
-            if value.casefold() not in {item.casefold() for item in items}:
+            full = bool(max_items) and len(items) >= max_items
+            if not full and value.casefold() not in {item.casefold() for item in items}:
                 setattr(self, attr, "\n".join([*items, value]))
         self.kit_pill_drafts = {**self.kit_pill_drafts, field: ""}
         if self.kit_pill_adding == field:
@@ -3370,6 +3409,9 @@ class CreativeState(rx.State):
             items = _pill_items(getattr(self, attr))
             if 0 <= index < len(items):
                 value = " ".join(self.kit_pill_edit_value.split())
+                max_chars = KIT_PILL_LIMITS.get(self.kit_pill_edit_field, (0, 0))[1]
+                if max_chars:
+                    value = value[:max_chars].strip()
                 others = {item.casefold() for i, item in enumerate(items) if i != index}
                 if not value or value.casefold() in others:
                     del items[index]
