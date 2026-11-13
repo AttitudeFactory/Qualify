@@ -31,7 +31,7 @@ from qualify_api.planner.models import CalendarEvent
 from qualify_api.planner.permalinks import Outcome as LinkOutcome
 from qualify_api.planner.permalinks import fill_recent_permalinks
 from qualify_api.planner.publish_backfill import PIPELINE_VERSION, Deps, probe, run_backfill
-from qualify_api.publishing.models import PublishAttempt
+from qualify_api.publishing.models import PublishAttempt, PublishAttemptChild
 from qualify_api.tenancy.models import Brand, Tenant, TenantMember, User
 
 pytestmark = pytest.mark.db
@@ -196,11 +196,13 @@ def _attempt(
     settled: bool = True,
     status: str = "published",
     raw_key: str | None = None,
+    connection_id: UUID | None = None,
+    children: tuple[str, ...] = (),
 ) -> UUID:
     with tenant_session(world.tenant_id) as session:
         row = PublishAttempt(
             tenant_id=world.tenant_id,
-            connection_id=world.connection_id,
+            connection_id=connection_id or world.connection_id,
             idempotency_key=f"web:{uuid4()}",
             caption="Shawarma 2x1",
             media_product_type=product,
@@ -213,7 +215,43 @@ def _attempt(
         )
         session.add(row)
         session.flush()
+        for position, key in enumerate(children):
+            session.add(
+                PublishAttemptChild(
+                    tenant_id=world.tenant_id,
+                    attempt_id=row.id,
+                    position=position,
+                    media_object_key=key,
+                    media_content_type="image/jpeg",
+                    media_product_type="IMAGE",
+                    status="finished",
+                )
+            )
+        session.flush()
         return row.id
+
+
+def _second_connection(world: World) -> UUID:
+    with tenant_session(world.tenant_id) as session:
+        first = session.get(SocialConnection, world.connection_id)
+        assert first is not None
+        conn = SocialConnection(
+            tenant_id=world.tenant_id,
+            brand_id=world.brand_id,
+            platform_app_id=first.platform_app_id,
+            platform="instagram",
+            account_type="business",
+            external_account_id=f"ig-{uuid4()}",
+            linked_page_id="page-2",
+            granted_scopes=["basic"],
+            status="active",
+            access_posture="development",
+            current_credential_version=0,
+            connected_by_user_id=world.user_id,
+        )
+        session.add(conn)
+        session.flush()
+        return conn.id
 
 
 def _media_id(world: World, attempt_id: UUID) -> str:
@@ -598,3 +636,183 @@ def test_the_fake_bucket_is_write_once_under_t_like_production() -> None:
     store.put("t/x/a", io.BytesIO(b"1"), "image/jpeg")
     with pytest.raises(RuntimeError):
         store.put("t/x/a", io.BytesIO(b"2"), "image/jpeg")
+
+
+# -- bursts («Una por una») -----------------------------------------------------------------
+
+NINE_GAPS = (0, 6, 12, 8, 10, 7, 11, 9, 12)
+
+
+def _starts(gaps: tuple[int, ...], origin: datetime = BASE) -> list[datetime]:
+    out, at = [], origin
+    for gap in gaps:
+        at = at + timedelta(seconds=gap)
+        out.append(at)
+    return out
+
+
+def _assets_by_attempt(world: World) -> dict[UUID, tuple[str, dict]]:
+    with tenant_session(world.tenant_id) as session:
+        rows = session.execute(
+            select(
+                CalendarEvent.publish_attempt_id,
+                creative.ImageAsset.object_key,
+                creative.ImageAsset.params,
+            ).join(creative.ImageAsset, creative.ImageAsset.draft_id == CalendarEvent.post_id)
+        ).all()
+    return {row[0]: (row[1], row[2]) for row in rows}
+
+
+def _answer_all(harness: Harness, world: World, attempts: list[UUID]) -> None:
+    for attempt in attempts:
+        media_id = _media_id(world, attempt)
+        harness.reader.answers[media_id] = _ig(media_id)
+
+
+@pytest.mark.parametrize("offset", [0, 4, -4])
+async def test_nine_images_one_by_one_get_their_originals_in_order(
+    harness: Harness, offset: int
+) -> None:
+    world = _world()
+    attempts, files = [], []
+    for start in _starts(NINE_GAPS):
+        attempts.append(_attempt(world, start))
+        files.append(world.folder + uuid4().hex)
+        harness.store.seed(files[-1], JPEG, start - timedelta(seconds=1.5 - offset))
+
+    dry = await run_backfill(tenant_id=world.tenant_id, deps=harness.deps())
+    assert [line.detail.split(":")[0] for line in dry.lines] == [
+        f"burst {k}/9" for k in range(1, 10)
+    ]
+    report = await run_backfill(tenant_id=world.tenant_id, deps=harness.deps(), execute=True)
+
+    assert [line.action.value for line in report.lines] == ["original"] * 9
+    assets = _assets_by_attempt(world)
+    assert [assets[a][0] for a in attempts] == files
+    assert [assets[a][1]["match_rule"] for a in attempts] == [f"burst {k}/9" for k in range(1, 10)]
+    assert {reuse for reuse, *_ in _pieces(world)} == {"recurrente"}
+
+
+async def test_a_failed_attempt_in_a_burst_keeps_its_file_from_everyone(
+    harness: Harness,
+) -> None:
+    world = _world()
+    starts = _starts((0, 8, 9, 10, 7))
+    attempts, files = [], []
+    for index, start in enumerate(starts):
+        status = "failed" if index == 2 else "published"
+        attempts.append(_attempt(world, start, status=status))
+        files.append(world.folder + uuid4().hex)
+        harness.store.seed(files[-1], JPEG, start - timedelta(seconds=2))
+
+    report = await run_backfill(tenant_id=world.tenant_id, deps=harness.deps(), execute=True)
+
+    assert len(report.lines) == 4 and all(line.action.value == "original" for line in report.lines)
+    assets = _assets_by_attempt(world)
+    assert attempts[2] not in assets
+    assert files[2] not in {key for key, _ in assets.values()}
+    assert [assets[a][0] for i, a in enumerate(attempts) if i != 2] == [
+        f for i, f in enumerate(files) if i != 2
+    ]
+
+
+async def test_a_replayed_extra_file_leaves_the_whole_burst_doubtful(harness: Harness) -> None:
+    world = _world()
+    starts = _starts((0, 8, 9))
+    attempts = [_attempt(world, start) for start in starts]
+    for start in starts:
+        harness.store.seed(world.folder + uuid4().hex, JPEG, start - timedelta(seconds=2))
+    harness.store.seed(world.folder + uuid4().hex, JPEG, starts[1] - timedelta(seconds=4))
+    _answer_all(harness, world, attempts)
+
+    report = await run_backfill(tenant_id=world.tenant_id, deps=harness.deps(), execute=True)
+
+    assert [line.action.value for line in report.lines] == ["instagram_copy"] * 3
+    assert all("3 attempts to pair but 4" in line.detail for line in report.lines)
+    assert {reuse for reuse, *_ in _pieces(world)} == {"promocional"}
+
+
+async def test_a_carousel_inside_a_burst_is_recorded_from_its_children(
+    harness: Harness,
+) -> None:
+    world = _world()
+    starts = _starts((0, 9, 10, 8))
+    children = tuple(world.folder + uuid4().hex for _ in range(3))
+    for key in children:
+        harness.store.seed(key, JPEG, starts[1] - timedelta(seconds=3))
+    attempts, files = [], {}
+    for index, start in enumerate(starts):
+        if index == 1:
+            attempts.append(_attempt(world, start, product="CAROUSEL", children=children))
+            continue
+        attempts.append(_attempt(world, start))
+        files[attempts[-1]] = world.folder + uuid4().hex
+        harness.store.seed(files[attempts[-1]], JPEG, start - timedelta(seconds=1))
+
+    report = await run_backfill(tenant_id=world.tenant_id, deps=harness.deps(), execute=True)
+
+    actions = {line.attempt_id: line.action.value for line in report.lines}
+    assert actions[attempts[1]] == "carousel_children"
+    assert [actions[a] for a in files] == ["original"] * 3
+    assets = _assets_by_attempt(world)
+    assert {a: assets[a][0] for a in files} == files
+    assert [assets[a][1]["match_rule"] for a in files] == ["burst 1/3", "burst 2/3", "burst 3/3"]
+
+
+async def test_bursts_on_two_connections_never_mix(harness: Harness) -> None:
+    world = _world()
+    other = _second_connection(world)
+    other_folder = f"t/{world.tenant_id}/media/{other}/"
+    owners: dict[UUID, str] = {}
+    for start in _starts((0, 8, 9)):
+        for conn, folder, shift in ((None, world.folder, 0), (other, other_folder, 2)):
+            at = start + timedelta(seconds=shift)
+            attempt = _attempt(world, at, connection_id=conn)
+            owners[attempt] = folder + uuid4().hex
+            harness.store.seed(owners[attempt], JPEG, at - timedelta(seconds=1))
+
+    report = await run_backfill(tenant_id=world.tenant_id, deps=harness.deps(), execute=True)
+
+    assert [line.action.value for line in report.lines] == ["original"] * 6
+    assets = _assets_by_attempt(world)
+    assert {a: assets[a][0] for a in owners} == owners
+
+
+async def test_a_burst_interrupted_by_the_budget_continues_with_the_same_files(
+    harness: Harness,
+) -> None:
+    world = _world()
+    attempts, files = [], []
+    for start in _starts((0, 7, 9, 8)):
+        attempts.append(_attempt(world, start))
+        files.append(world.folder + uuid4().hex)
+        harness.store.seed(files[-1], JPEG, start - timedelta(seconds=2))
+    _answer_all(harness, world, attempts)
+    harness.budget.left = 2
+
+    first = await run_backfill(tenant_id=world.tenant_id, deps=harness.deps(), execute=True)
+    assert len(first.lines) == 2 and first.stopped
+    harness.budget.left = 100
+    second = await run_backfill(tenant_id=world.tenant_id, deps=harness.deps(), execute=True)
+
+    assert [line.action.value for line in second.lines] == ["original"] * 2
+    assets = _assets_by_attempt(world)
+    assert [assets[a][0] for a in attempts] == files
+
+
+async def test_an_image_and_a_reel_in_one_burst_pair_when_their_bytes_fit(
+    harness: Harness,
+) -> None:
+    world = _world()
+    starts = _starts((0, 10))
+    image = _attempt(world, starts[0])
+    reel = _attempt(world, starts[1], product="REELS")
+    image_file, reel_file = world.folder + uuid4().hex, world.folder + uuid4().hex
+    harness.store.seed(image_file, JPEG, starts[0] - timedelta(seconds=1))
+    harness.store.seed(reel_file, MP4, starts[1] - timedelta(seconds=3))
+
+    report = await run_backfill(tenant_id=world.tenant_id, deps=harness.deps(), execute=True)
+
+    assert [line.action.value for line in report.lines] == ["original", "original"]
+    assets = _assets_by_attempt(world)
+    assert (assets[image][0], assets[reel][0]) == (image_file, reel_file)

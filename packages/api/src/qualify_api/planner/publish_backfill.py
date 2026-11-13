@@ -57,9 +57,32 @@ window is a «Publicar» file (32 lower-case hex), is not referenced anywhere (a
 a carousel child, a scheduled post, a piece's asset, brief or preview), and its first
 bytes fit the attempt's type: a JPEG of at most 8 MB for an IMAGE, an MP4/QuickTime
 header for a reel, either for a story. Zero objects, two or more, or one whose bytes do
-not fit → DOUBTFUL → Instagram's copy, never a guessed file. In a burst sent one by one
-at ≥ 30 s intervals every image gets its own file; images sent faster fall back to
-Instagram's copy — never a wrong one.
+not fit → DOUBTFUL by this rule.
+
+## The burst rule (`pair_burst`), tried only when the window rule is doubtful
+
+«Una por una» stages item k's file, starts its attempt, waits until it settles, then
+stages item k+1 — so its attempts are usually under 30 s apart and the window rule
+refuses all of them. A BURST is a maximal run of consecutive attempts on one connection
+(any kind, any status: a failed attempt staged a file too) each started less than 30 s
+(`MIN_GAP`) after the previous one — exactly the attempts the window rule calls
+crowded. Its file window runs from the first attempt's lower bound (as above) to the
+last attempt's start + 5 s.
+
+The attempts that take part are the single ones whose file is not attributed yet; a
+carousel staged several files, all referenced through its children, and an attempt
+whose key or recorded piece already names its file owns a referenced file: neither takes
+part. The unreferenced «Publicar» files in the window are sorted by `LastModified`, the
+attempts by start, and paired by rank — **only if the counts are equal**, every pair's
+bytes fit its attempt's type, and the order is the engine's: file k is not later than
+attempt k's start + 5 s, nor earlier than attempt k−1's start − 5 s (a uniform clock
+offset under 5 s keeps that; a re-ordering does not). Anything else — one file too many
+(an old replay re-staged a file without a new attempt), one too few, a type mismatch, an
+out-of-order pair — leaves the WHOLE burst doubtful: never a partial pairing. A failed or
+unsettled attempt in the burst consumes its file; only published, unrecorded ones are
+recorded.
+
+DOUBTFUL by both rules → Instagram's copy, never a guessed file.
 
 ## Provenance and what the owner sees
 
@@ -104,7 +127,7 @@ from sqlalchemy import select, union
 
 from qualify_api.connections.models import SocialConnection
 from qualify_api.creative import models as creative
-from qualify_api.creative.own_media import OwnMediaItem
+from qualify_api.creative.own_media import OwnMediaItem, request_key_for
 from qualify_api.inbox.media_client import MediaSummary
 from qualify_api.inbox.thumbnails import PictureFetcher, ThumbnailUnavailable
 from qualify_api.planner.immediate import (
@@ -139,9 +162,6 @@ from qualify_api.publishing.service import MEDIA_TYPE_CAROUSEL
 
 #: `pipeline_version` of the pieces this backfill writes (distinct from `publish-now-v1`).
 PIPELINE_VERSION = "publish-backfill-v1"
-MATCH_RULE = (
-    "window(max(start-120s,prev_start+5s),start+5s];neighbours>=30s;one_unreferenced_publicar_file"
-)
 WINDOW_BACK = timedelta(seconds=120)
 SKEW = timedelta(seconds=5)
 #: Neighbouring attempts closer than this make a match doubtful: 20 s for the staging
@@ -208,6 +228,7 @@ class Match:
     content_type: str | None
     reason: str
     window: tuple[datetime, datetime]
+    rule: str = "window"  # which rule decided: `window` or `burst k/N`
 
     @property
     def clear(self) -> bool:
@@ -271,6 +292,99 @@ def match_single(
     return Match(
         only.key, content_type, f"only file in the window, {content_type} {only.size} B", window
     )
+
+
+@dataclass(frozen=True)
+class ConnectionAttempt:
+    """One attempt on the connection, any kind and status — what the burst rule reads.
+    `assigned_key` is the file it is already known to own: its own recorded key (0159
+    onwards) or the asset of the piece already recorded for it."""
+
+    id: UUID
+    started_at: datetime
+    product: str
+    assigned_key: str | None = None
+
+
+@dataclass(frozen=True)
+class BurstPairing:
+    """The burst rule's verdict for one burst: every staging attempt's file, or why the
+    WHOLE burst stays doubtful (never a partial pairing)."""
+
+    size: int
+    pairs: dict[UUID, Match]
+    doubtful: str | None
+
+
+def bursts(attempts: list[ConnectionAttempt]) -> list[list[ConnectionAttempt]]:
+    """Maximal runs of consecutive attempts (by start) each started less than `MIN_GAP`
+    after the previous one — exactly the attempts `crowding` makes doubtful."""
+    runs: list[list[ConnectionAttempt]] = []
+    for attempt in sorted(attempts, key=lambda a: (a.started_at, str(a.id))):
+        if runs and attempt.started_at - runs[-1][-1].started_at < MIN_GAP:
+            runs[-1].append(attempt)
+        else:
+            runs.append([attempt])
+    return runs
+
+
+def stages_one_file(attempt: ConnectionAttempt) -> bool:
+    """A single attempt whose staged file is still unattributed. A carousel staged
+    several files, all referenced through its children; an attempt with an assigned key
+    already owns a referenced file: neither takes part in the pairing."""
+    return attempt.product in _SINGLE_TYPES and attempt.assigned_key is None
+
+
+def pair_burst(
+    burst: list[ConnectionAttempt],
+    *,
+    previous_start: datetime | None,
+    objects: Iterable[StoredObject],
+    folder: str,
+    referenced: frozenset[str] | set[str],
+    content_types: Mapping[str, str | None],
+) -> BurstPairing:
+    """The burst rule (module docstring). Pure: the caller lists and sniffs."""
+    window = (window_for(burst[0].started_at, previous_start)[0], burst[-1].started_at + SKEW)
+    stagers = [attempt for attempt in burst if stages_one_file(attempt)]
+    files = sorted(
+        (
+            obj
+            for obj in objects
+            if is_publicar_file(obj.key, folder)
+            and obj.key not in referenced
+            and in_window(obj, window)
+        ),
+        key=lambda obj: (obj.last_modified, obj.key),
+    )
+    size = len(burst)
+
+    def doubtful(reason: str) -> BurstPairing:
+        return BurstPairing(size, {}, f"burst of {size}: {reason}")
+
+    if not stagers:
+        return doubtful("no attempt left to pair")
+    if len(files) != len(stagers):
+        return doubtful(f"{len(stagers)} attempts to pair but {len(files)} unreferenced files")
+    pairs: dict[UUID, Match] = {}
+    for index, (obj, attempt) in enumerate(zip(files, stagers, strict=True)):
+        rank = f"{index + 1}/{len(stagers)}"
+        content_type = content_types.get(obj.key)
+        if not fits(attempt.product, content_type, obj.size):
+            return doubtful(f"file {rank} does not fit {attempt.product} ({content_type})")
+        assert obj.last_modified is not None  # `in_window` checked it
+        if obj.last_modified > attempt.started_at + SKEW:
+            return doubtful(f"file {rank} was written after its attempt started")
+        if index and obj.last_modified < stagers[index - 1].started_at - SKEW:
+            return doubtful(f"file {rank} was written before the previous attempt started")
+        pairs[attempt.id] = Match(
+            obj.key,
+            content_type,
+            f"file {rank} of the burst, {content_type} {obj.size} B",
+            window,
+            rule=f"burst {rank}",
+        )
+    return BurstPairing(size, pairs, None)
 
 
 # -- what is read from the database ---------------------------------------------------------
@@ -352,16 +466,31 @@ def candidates(
         return [Candidate(*row) for row in session.execute(query).all()]
 
 
-def attempt_starts(*, tenant_id: UUID, connection_id: UUID) -> list[datetime]:
-    """Every attempt's start on the connection (any kind, any status), ascending."""
+def connection_attempts(*, tenant_id: UUID, connection_id: UUID) -> list[ConnectionAttempt]:
+    """Every attempt on the connection (any kind, any status), ascending, with the file
+    it already owns: its recorded key, else the first asset of its recorded piece."""
     with tenant_session(tenant_id) as session:
-        return list(
-            session.scalars(
-                select(PublishAttempt.started_at)
-                .where(PublishAttempt.connection_id == connection_id)
-                .order_by(PublishAttempt.started_at)
-            ).all()
-        )
+        rows = session.execute(
+            select(
+                PublishAttempt.id,
+                PublishAttempt.started_at,
+                PublishAttempt.media_product_type,
+                PublishAttempt.media_object_key,
+            )
+            .where(PublishAttempt.connection_id == connection_id)
+            .order_by(PublishAttempt.started_at, PublishAttempt.id)
+        ).all()
+        keys = {request_key_for(row[0]): row[0] for row in rows}
+        owned: dict[UUID, str] = {}
+        if keys:
+            for request_key, object_key in session.execute(
+                select(creative.ContentDraft.request_key, creative.ImageAsset.object_key)
+                .join(creative.ImageAsset, creative.ImageAsset.draft_id == creative.ContentDraft.id)
+                .where(creative.ContentDraft.request_key.in_(keys))
+                .order_by(creative.ImageAsset.position)
+            ).all():
+                owned.setdefault(keys[request_key], object_key)
+    return [ConnectionAttempt(row[0], row[1], row[2], row[3] or owned.get(row[0])) for row in rows]
 
 
 def referenced_keys(*, tenant_id: UUID, folder: str) -> set[str]:
@@ -477,6 +606,7 @@ def _resolve(
     referenced: set[str],
     starts: list[datetime],
     sniffed: dict[str, str | None],
+    burst: BurstPairing | None = None,
 ) -> tuple[Action, Match | None, str]:
     """What the media is — without writing anything."""
     if candidate.product == MEDIA_TYPE_CAROUSEL:
@@ -509,10 +639,17 @@ def _resolve(
         referenced=referenced,
         content_types=sniffed,
     )
-    low, high = (moment.astimezone(UTC).strftime("%H:%M:%S") for moment in window)
+    if not match.clear and burst is not None and burst.size > 1:
+        paired = burst.pairs.get(candidate.id)
+        if paired is not None:
+            match = paired
+        else:
+            match = Match(None, None, f"{match.reason}; {burst.doubtful}", match.window)
+    low, high = (moment.astimezone(UTC).strftime("%H:%M:%S") for moment in match.window)
     detail = f"{match.reason} ({low},{high}]"
     if match.clear:
-        return Action.ORIGINAL, match, f"{match.key.rsplit('/', 1)[-1]}: {detail}"  # type: ignore[union-attr]
+        name = match.key.rsplit("/", 1)[-1]  # type: ignore[union-attr]
+        return Action.ORIGINAL, match, f"{match.rule}: {name}: {detail}"
     if candidate.product in (MEDIA_TYPE_REELS, MEDIA_TYPE_VIDEO):
         return Action.SKIP, match, f"video without a clear file: {detail}"
     return Action.INSTAGRAM_COPY, match, f"doubtful: {detail}"
@@ -553,6 +690,51 @@ async def _copy_from_instagram(
     return key, content_type
 
 
+@dataclass
+class _ConnectionState:
+    folder: str
+    objects: list[StoredObject]
+    referenced: set[str]
+    starts: list[datetime]
+    bursts: dict[UUID, BurstPairing]
+
+
+def _connection_state(
+    *, tenant_id: UUID, connection_id: UUID, gate: ObjectGate, sniffed: dict[str, str | None]
+) -> _ConnectionState:
+    """Everything the rules read about one connection, read once and before any write:
+    its staged objects, the referenced keys, its attempts and every burst's pairing."""
+    folder = f"{tenant_prefix(tenant_id)}media/{connection_id}/"
+    objects = gate.list_connection_media(tenant_id, connection_id)
+    referenced = referenced_keys(tenant_id=tenant_id, folder=folder)
+    attempts = connection_attempts(tenant_id=tenant_id, connection_id=connection_id)
+    verdicts: dict[UUID, BurstPairing] = {}
+    previous: datetime | None = None
+    for run in bursts(attempts):
+        if len(run) > 1:
+            low = window_for(run[0].started_at, previous)[0]
+            window = (low, run[-1].started_at + SKEW)
+            for obj in objects:
+                if (
+                    obj.key not in sniffed
+                    and is_publicar_file(obj.key, folder)
+                    and obj.key not in referenced
+                    and in_window(obj, window)
+                ):
+                    sniffed[obj.key] = _sniff_object(gate, tenant_id, obj.key)
+            verdict = pair_burst(
+                run,
+                previous_start=previous,
+                objects=objects,
+                folder=folder,
+                referenced=referenced,
+                content_types=sniffed,
+            )
+            verdicts.update({attempt.id: verdict for attempt in run})
+        previous = run[-1].started_at
+    return _ConnectionState(folder, objects, referenced, [a.started_at for a in attempts], verdicts)
+
+
 async def run_backfill(
     *,
     tenant_id: UUID,
@@ -572,21 +754,23 @@ async def run_backfill(
         report.stopped = "the tenant has no user to attribute the pieces to"
         return report
     budget = deps.budget or (LedgerBudget() if execute else None)
-    per_connection: dict[UUID, tuple[list[StoredObject], set[str], list[datetime], str]] = {}
+    per_connection: dict[UUID, _ConnectionState] = {}
     readers: dict[UUID, MediaReader | None] = {}
     sniffed: dict[str, str | None] = {}
 
     for index, candidate in enumerate(pending):
         conn = candidate.connection_id
         if conn not in per_connection:
-            folder = f"{tenant_prefix(tenant_id)}media/{conn}/"
-            per_connection[conn] = (
-                deps.gate.list_connection_media(tenant_id, conn),
-                referenced_keys(tenant_id=tenant_id, folder=folder),
-                attempt_starts(tenant_id=tenant_id, connection_id=conn),
-                folder,
+            per_connection[conn] = _connection_state(
+                tenant_id=tenant_id, connection_id=conn, gate=deps.gate, sniffed=sniffed
             )
-        objects, referenced, starts, folder = per_connection[conn]
+        state = per_connection[conn]
+        objects, referenced, starts, folder = (
+            state.objects,
+            state.referenced,
+            state.starts,
+            state.folder,
+        )
         action, match, detail = _resolve(
             candidate,
             tenant_id=tenant_id,
@@ -596,6 +780,7 @@ async def run_backfill(
             referenced=referenced,
             starts=starts,
             sniffed=sniffed,
+            burst=state.bursts.get(candidate.id),
         )
         if match is not None and match.key is not None:
             referenced.add(match.key)  # never handed to a second attempt in this run
@@ -663,7 +848,8 @@ async def run_backfill(
                 reuse_type=ReuseType.RECURRENTE,
                 asset_params=(
                     ("match", action.value),
-                    ("match_rule", MATCH_RULE),
+                    ("match_rule", match.rule),
+                    ("match_reason", match.reason),
                     ("source_attempt_id", str(candidate.id)),
                 ),
             )
@@ -688,7 +874,8 @@ async def run_backfill(
                 reuse_type=ReuseType.PROMOCIONAL,  # view-only: «Ya salió», never re-offered
                 asset_params=(
                     ("match", action.value),
-                    ("match_rule", MATCH_RULE),
+                    ("match_rule", "instagram_copy"),
+                    ("match_reason", match.reason if match is not None else detail),
                     ("instagram_media_id", media.id),
                     ("source_attempt_id", str(candidate.id)),
                 ),

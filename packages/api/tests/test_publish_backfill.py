@@ -21,11 +21,15 @@ from qualify_api.planner.permalinks import (
     instagram_permalink,
 )
 from qualify_api.planner.publish_backfill import (
+    ConnectionAttempt,
+    bursts,
     fits,
     is_publicar_file,
     main,
     match_single,
+    pair_burst,
     sniff,
+    stages_one_file,
     window_for,
 )
 from qualify_api.planner.tick import TickRunner
@@ -417,3 +421,139 @@ def test_the_cli_requires_a_tenant(capsys: pytest.CaptureFixture[str]) -> None:
 def test_the_cli_refuses_contradictory_flags(argv: list[str]) -> None:
     with pytest.raises(SystemExit):
         main(["--tenant", str(TENANT), *argv], deps=object())  # type: ignore[arg-type]
+
+
+# -- the burst rule («Una por una») ---------------------------------------------------------
+
+
+def _burst(gaps: list[int], products: list[str] | None = None) -> list[ConnectionAttempt]:
+    starts, at = [], T0
+    for gap in [0, *gaps]:
+        at = at + timedelta(seconds=gap)
+        starts.append(at)
+    products = products or ["IMAGE"] * len(starts)
+    return [ConnectionAttempt(uuid4(), s, p) for s, p in zip(starts, products, strict=True)]
+
+
+def _staged(burst: list[ConnectionAttempt], *, lead: float = 1.5, offset: float = 0.0):  # noqa: ANN202
+    return [
+        _obj(_hex(), a.started_at - timedelta(seconds=lead) + timedelta(seconds=offset))
+        for a in burst
+        if stages_one_file(a)
+    ]
+
+
+def _pair(burst, objects, *, referenced=(), types=None):  # noqa: ANN001, ANN202
+    types = types if types is not None else {o.key: JPEG for o in objects}
+    return pair_burst(
+        burst,
+        previous_start=None,
+        objects=objects,
+        folder=FOLDER,
+        referenced=set(referenced),
+        content_types=types,
+    )
+
+
+NINE_GAPS = [6, 12, 8, 10, 7, 11, 9, 12]
+
+
+def test_bursts_group_attempts_under_30s_apart() -> None:
+    attempts = _burst([6, 29, 30, 5, 100])
+    assert [len(run) for run in bursts(attempts)] == [3, 2, 1]
+
+
+@pytest.mark.parametrize("offset", [0.0, 4.0, -4.0])
+def test_nine_images_one_by_one_pair_in_order(offset: float) -> None:
+    burst = _burst(NINE_GAPS)
+    files = _staged(burst, offset=offset)
+    verdict = _pair(burst, list(reversed(files)))  # listing order does not matter
+    assert verdict.doubtful is None
+    assert [verdict.pairs[a.id].key for a in burst] == [f.key for f in files]
+    assert [verdict.pairs[a.id].rule for a in burst] == [f"burst {k}/9" for k in range(1, 10)]
+
+
+def test_a_failed_attempt_in_the_middle_keeps_its_own_file() -> None:
+    burst = _burst(NINE_GAPS[:4])
+    files = _staged(burst)
+    verdict = _pair(burst, files)
+    assert verdict.doubtful is None
+    assert verdict.pairs[burst[2].id].key == files[2].key  # consumed, given to no one else
+    assert len({m.key for m in verdict.pairs.values()}) == 5
+
+
+def test_one_extra_file_leaves_the_whole_burst_doubtful() -> None:
+    burst = _burst(NINE_GAPS)
+    files = _staged(burst)
+    replay = _obj(_hex(), burst[4].started_at - timedelta(seconds=4))
+    verdict = _pair(burst, [*files, replay])
+    assert verdict.pairs == {} and "9 attempts to pair but 10" in (verdict.doubtful or "")
+
+
+def test_one_missing_file_leaves_the_whole_burst_doubtful() -> None:
+    burst = _burst(NINE_GAPS)
+    verdict = _pair(burst, _staged(burst)[1:])
+    assert verdict.pairs == {} and verdict.doubtful is not None
+
+
+def test_a_carousel_in_the_burst_takes_no_unreferenced_file() -> None:
+    burst = _burst([8, 10, 9], ["IMAGE", "CAROUSEL", "IMAGE", "IMAGE"])
+    files = _staged(burst)
+    children = [_obj(_hex(), burst[1].started_at - timedelta(seconds=2)) for _ in range(3)]
+    verdict = _pair(burst, [*files, *children], referenced=[c.key for c in children])
+    assert verdict.doubtful is None
+    assert burst[1].id not in verdict.pairs
+    singles = [a for a in burst if a.product == "IMAGE"]
+    assert [verdict.pairs[a.id].key for a in singles] == [f.key for f in files]
+    assert [verdict.pairs[a.id].rule for a in singles] == ["burst 1/3", "burst 2/3", "burst 3/3"]
+    # if the carousel's files were NOT referenced, the counts would not match
+    assert _pair(burst, [*files, *children]).doubtful is not None
+
+
+def test_an_attempt_that_already_owns_its_file_is_left_out() -> None:
+    burst = _burst([8, 9])
+    owned = ConnectionAttempt(burst[1].id, burst[1].started_at, "IMAGE", FOLDER + _hex())
+    burst[1] = owned
+    files = _staged(burst)
+    verdict = _pair(burst, files)
+    assert verdict.doubtful is None and set(verdict.pairs) == {burst[0].id, burst[2].id}
+
+
+def test_an_image_and_a_reel_pair_only_when_each_file_fits() -> None:
+    burst = _burst([10], ["IMAGE", "REELS"])
+    image, video = _staged(burst)
+    good = _pair(burst, [image, video], types={image.key: JPEG, video.key: "video/mp4"})
+    assert good.doubtful is None and good.pairs[burst[1].id].content_type == "video/mp4"
+    swapped = _pair(burst, [image, video], types={image.key: "video/mp4", video.key: JPEG})
+    assert swapped.pairs == {} and "does not fit" in (swapped.doubtful or "")
+
+
+def test_an_out_of_order_burst_is_doubtful() -> None:
+    burst = _burst([10, 10])  # starts 0, 10, 20
+    late = [
+        _obj(_hex(), T0 - timedelta(seconds=2)),
+        _obj(_hex(), T0 + timedelta(seconds=16)),  # after attempt 2 started + 5 s
+        _obj(_hex(), T0 + timedelta(seconds=18)),
+    ]
+    assert "after its attempt started" in (_pair(burst, late).doubtful or "")
+    early = [
+        _obj(_hex(), T0 - timedelta(seconds=3)),
+        _obj(_hex(), T0 - timedelta(seconds=2)),
+        _obj(_hex(), T0 - timedelta(seconds=1)),  # before attempt 2 started − 5 s
+    ]
+    assert "before the previous attempt" in (_pair(burst, early).doubtful or "")
+
+
+def test_the_burst_window_starts_after_the_attempt_before_the_burst() -> None:
+    burst = _burst([10])
+    files = _staged(burst)
+    before = _obj(_hex(), T0 - timedelta(seconds=40))  # the previous attempt's file
+    verdict = pair_burst(
+        burst,
+        previous_start=T0 - timedelta(seconds=39),
+        objects=[before, *files],
+        folder=FOLDER,
+        referenced=set(),
+        content_types={o.key: JPEG for o in [before, *files]},
+    )
+    assert verdict.doubtful is None
