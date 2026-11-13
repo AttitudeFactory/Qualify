@@ -228,7 +228,6 @@ def test_review_waits_until_the_piece_is_done() -> None:
     state.gen_draft = DraftVM(draft_id="d", status="generated", status_label="", status_tone="")
     assert state.gen_is_done is True
     state.gen_draft_id = "d"
-    state.product_confirmed = True
     state.generator_view = "result"
     assert not state.create_primary_disabled
     state.gen_draft = None
@@ -1201,29 +1200,33 @@ def test_the_copy_is_told_the_chosen_resources_and_their_use() -> None:
     assert "t/x/iso" not in rendered.stable_prefix
 
 
-def test_the_catalog_product_comes_before_the_panel() -> None:
-    """§ request 2026-10-14: «Crear pieza» opens on the catalog product; continuing with
-    one brings the panel, «Cambiar» goes back, and sending a piece to review starts over
-    on the product screen. § 2026-10-19: no «Continuar sin producto» and no tabs — a
-    button switches between the catalog and the inspiration."""
-    from .content_generator import generator_page
+def test_the_catalog_product_is_optional_and_chosen_in_tus_productos() -> None:
+    """m-24985141 (Deivid): «Crear publicación» opens straight on its first step; the
+    catalog product is optional and chosen in the media drawer's «Tus productos» —
+    chosen, changed or taken out there. Sending a piece to review starts over with no
+    product."""
+    from .content_generator import _products_tab, generator_page
 
     rendered = str(generator_page())
-    assert "product_confirmed" in rendered and "Continuar sin producto" not in rendered
-    assert "Usar inspiraci" in rendered and "Usar mi cat" in rendered
+    assert "product_confirmed" not in rendered and "Continuar sin producto" not in rendered
+    assert "Elige el producto, luego" not in rendered
+    tab = str(_products_tab())
+    assert "pick_catalog_product" in tab and "remove_catalog_product" in tab
+    assert "44px" in tab
     state = CreativeState()
-    assert state.product_confirmed is False
+    state.catalog_loaded = True
     state.catalog_items = [
         {"id": "p1", "name": "Smash doble", "photo_key": "t/p1.jpg", "photo_keys": "t/p1.jpg"}
     ]
-    state.choose_product("p1")
-    state.confirm_product()
-    assert state.product_confirmed and state.brief_product_ref == "Smash doble"
-    state.change_product()
-    assert state.product_confirmed is False and state.selected_product_id == "p1"
+    state.pick_catalog_product("p1")
+    assert state.brief_product_ref == "Smash doble"
+    assert state.create_step_n == 1
+    state.remove_catalog_product()
+    assert state.selected_product_id == "" and state.brief_product_ref == ""
+    state.pick_catalog_product("p1")
     state.gen_draft_id = "d1"
     state.review_in_drafts()
-    assert state.product_confirmed is False
+    assert state.selected_product_id == "" and not state.media_drawer_open
 
 
 def test_the_catalog_photos_ride_along_for_every_kind_that_composes_photos() -> None:
@@ -1344,7 +1347,9 @@ def test_the_four_steps_render_with_mas_opciones_folded() -> None:
     # an avatar's reference video and brand resources are behind step 1's fold
     details = str(_section_details())
     assert "toggle_show_more" in details
-    assert has(details, "Un video de referencia y tus fotos de marca.")
+    # round 13: the avatar's reference video joined its references (like the Clip)
+    assert has(details, "Tus fotos de marca. Puedes crear sin tocarlas.")
+    assert "media-open-avatar_refs" in details
     rules = str(_section_rules())
     assert "tu marca no cambia" in rules
     # the avatar's script is asked in «Qué decir», with a named switch and a 44 px label
@@ -1384,7 +1389,6 @@ def _clip_state_with_product() -> CreativeState:
         }
     ]
     state.choose_product("p1")
-    state.confirm_product()
     return state
 
 
@@ -1405,10 +1409,12 @@ def test_a_clip_follows_the_ads_flow_and_starts_on_the_catalog_photo() -> None:
         "Revisa y crea",
     ]
     assert state.clip_first_frame_key == "uploads/t/p1.jpg"
-    assert state.clip_image_keys == ["uploads/t/p1.jpg"]
+    # m-24985141 (Deivid): ALL the product's photos come in, the main one first
+    assert state.clip_image_keys == ["uploads/t/p1.jpg", "uploads/t/p1b.jpg"]
     assert state.product_photo_keys == ["uploads/t/p1.jpg", "uploads/t/p1b.jpg"]
     media = state._media_inputs()
     assert media["clip_first_frame_key"] == "uploads/t/p1.jpg"
+    assert media["clip_last_frame_key"] == "uploads/t/p1b.jpg"
     assert media["clip_image_keys"] == [] and "product_keys" not in media
     assert state.brief_product_ref == "Smash doble"
 
@@ -1420,8 +1426,7 @@ def test_a_clip_takes_catalog_and_uploaded_references_and_frames() -> None:
 
     p1, p1b, ref = "uploads/t/p1.jpg", "uploads/t/p1b.jpg", "uploads/t/ref.mp4"
     state = _clip_state_with_product()
-    state.choose_category("clip")
-    state.pick_media("clip_images", "catalog", p1b)
+    state.choose_category("clip")  # m-24985141: both product photos come in
     state.pick_media("clip_images", "catalog", "uploads/other-tenant/x.jpg")  # not listed
     assert state.clip_image_keys == [p1, p1b]
     assert (state.clip_first_frame_key, state.clip_last_frame_key) == (p1, p1b)
@@ -1463,8 +1468,7 @@ def test_a_video_can_open_or_close_the_clip() -> None:
 
     p1, p1b, ref = "uploads/t/p1.jpg", "uploads/t/p1b.jpg", "uploads/t/ref.mp4"
     state = _clip_state_with_product()
-    state.choose_category("clip")
-    state.pick_media("clip_images", "catalog", p1b)
+    state.choose_category("clip")  # m-24985141: both product photos come in
     state.clip_videos = [{"key": ref, "name": "ref.mp4", "source": "upload"}]
     state._sync_clip_frames()
     assert [item["kind"] for item in state.clip_strip] == ["image", "video", "image"]
@@ -1487,9 +1491,10 @@ def test_the_clip_views_render() -> None:
     from .content_generator import _SLIDE_DRAG_JS, _clip_references_view
 
     refs = str(_clip_references_view())
-    # UI-3 round 12: one gallery of images, videos and audios, one drop zone
-    assert "clip_reference_tiles" in refs and "clip_audios" in refs
-    assert "pick_media" in refs and "drop_clip_image" in refs and "start_clip_image_drag" in refs
+    # UI-3 round 12: one gallery of images, videos and audios; m-24985141: ONE button
+    # opens their sources in the media drawer
+    assert "clip_reference_tiles" in refs and "open_media_drawer" in refs
+    assert "drop_clip_image" in refs and "start_clip_image_drag" in refs
     assert "data-slide-group" in refs and "q-cr-slide--drag" in refs
     assert "Inicio" in refs and "Final" in refs and "Seedance" not in refs
     assert "clip" in _SLIDE_DRAG_JS
@@ -1534,7 +1539,7 @@ def test_every_kind_takes_the_catalog_product_chosen_first() -> None:
     assert state.carousel_slides[2]["photo_key"] == "uploads/t/p1b.jpg"
     state.select_carousel_slide(0)
     state.set_slide_photo_from_catalog("uploads/t/p1.jpg")
-    photos_sent, _slides = state._carousel_slides_payload(False)
+    photos_sent, _roles, _slides = state._carousel_brief_slides(False)
     assert photos_sent == ["uploads/t/p1.jpg", "uploads/t/p1b.jpg"]
     state.set_slide_photo_from_catalog("uploads/t/p1.jpg")  # the same again: taken off
     assert state.carousel_slides[0]["photo_key"] == ""
@@ -1548,13 +1553,16 @@ def test_the_gallery_slide_editor_sits_under_the_slides_and_picks_catalog_photos
     no upload while the product has photos; the drag animated by `slide-drag.js`."""
     from pathlib import Path
 
-    from .content_generator import _carousel_section, _slide_editor, _slide_photo
+    from .content_generator import _carousel_section, _slide_editor, _slot_drawer_body
 
-    photo = str(_slide_photo())
-    assert "pick_media" in photo and "product_photo_keys" in photo
-    assert "creative_slide_photo" in photo  # only the fallback, with no catalog photos
+    # m-24985141 round 14: each slide chooses its photo in the drawer («Tus productos»
+    # first), its style, its motion and the one background
+    body = str(_slot_drawer_body("slide"))
+    assert "pick_media" in body and "product_photo_keys" in body
+    assert "creative_slide_photo" in body
     editor = str(_slide_editor())
-    for label in ("Tipo de diapositiva", "Foto del producto", "Título", "Duración"):
+    assert "open_slide_drawer" in editor and "slide-open-photo" in editor
+    for label in ("Tipo de diapositiva", "Título", "Duración"):
         assert label in editor or json.dumps(label)[1:-1] in editor, label
     section = str(_carousel_section())
     assert "data-slide-key" in section and "q-cr-slide--drag" in section
@@ -1585,7 +1593,7 @@ def test_a_gallery_slide_keeps_its_identity_through_moves_and_kind_changes() -> 
     state.piece_items = [{"key": "t/x/a.jpg", "media_type": "image", "label": "A", "view": ""}]
     state.pick_piece("t/x/a.jpg")
     assert state.carousel_slides[1]["uid"] == uids[2]
-    _photos, payload = state._carousel_slides_payload(False)
+    _photos, _roles, payload = state._carousel_brief_slides(False)
     assert all("uid" not in slide for slide in payload)  # never reaches the brief
 
 
@@ -1639,7 +1647,8 @@ def test_every_slot_takes_the_catalog_an_upload_or_a_piece() -> None:
     clip = state._media_inputs()
     assert clip["clip_first_frame_key"] == "uploads/t/p1.jpg"
     assert clip["clip_last_frame_key"] == piece
-    assert clip["clip_image_keys"] == []
+    # m-24985141: the product's second photo came in too — between the frames
+    assert clip["clip_image_keys"] == ["uploads/t/p1b.jpg"]
     assert clip["clip_video_keys"] == [reel]
     state.pick_media("clip_images", "pieces", piece)  # out: the video is last now
     assert state.clip_last_frame_key == reel  # a video closes the clip (§ 2026-10-19)
@@ -1647,15 +1656,17 @@ def test_every_slot_takes_the_catalog_an_upload_or_a_piece() -> None:
     state.choose_category("carousel")
     state.pick_media("slide", "pieces", piece)
     assert state.carousel_slides[0]["photo_key"] == piece
-    assert state._carousel_slides_payload(False)[0] == [piece]
+    # round 12: a photo set on the slide stays; the others follow «Tus fotos»
+    assert state._carousel_brief_slides(False)[0][0] == piece
 
 
 def test_each_slot_opens_on_the_catalog_when_it_has_something_for_it() -> None:
     state = _picker_state()
     tabs = state.picker_tab_view
     assert tabs["products"] == "catalog" and tabs["clip_images"] == "catalog"
-    assert tabs["background"] == "upload"  # no catalog tab: not a product (2026-10-19)
-    assert tabs["reference"] == "upload"  # the product has no videos
+    # no «Tus productos» there: not a product (2026-10-19) — «Tu Galería» first
+    assert tabs["background"] == "gallery"
+    assert tabs["reference"] == "catalog"  # m-24985141: «Tus productos» always first
     assert state.set_picker_tab("reference", "pieces") is None  # pieces already listed
     assert state.picker_tab_view["reference"] == "pieces"
     state.set_picker_tab("reference", "nowhere")
@@ -1663,46 +1674,39 @@ def test_each_slot_opens_on_the_catalog_when_it_has_something_for_it() -> None:
     state.piece_items = []
     assert state.set_picker_tab("products", "pieces") is not None  # loads the pieces
     state.clear_product()
-    assert state.picker_tab_view["clip_images"] == "upload"
+    assert state.picker_tab_view["clip_images"] == "catalog"  # to choose one
 
 
 def test_the_picker_is_in_every_slot_that_takes_a_file() -> None:
+    """m-24985141: every slot's sources are «Tus productos · Tu Galería · Subir ·
+    Publicaciones · Inspiración», in the media drawer (a part's sheet: in line)."""
     from .content_generator import (
-        _background_upload,
-        _clip_references_view,
+        _clip_drawer_body,
         _part_media_editor,
         _products_upload,
-        _ref_category,
         _reference_view,
-        _slide_photo,
+        _slot_drawer_body,
     )
 
-    every = ("Galería", "Subir", "Publicaciones")
-    # UI-3 round 13: the clip's gallery has its own drop zone — no «Subir» in its picker
-    clip = ("Galería", "Publicaciones")
-    for slot, target, tabs in (
-        (_products_upload("Productos"), "products", every),
-        (_reference_view(), "reference", every),
-        (_ref_category("image"), "clip_images", clip),
-        (_ref_category("video"), "clip_videos", clip),
-        (_part_media_editor("image"), "part_images", every),
-        (_part_media_editor("video"), "part_videos", every),
-        (_slide_photo(), "slide", every),
+    every = ("Tus productos", "Tu Galería", "Subir", "Publicaciones")
+    for opener, target in (
+        (_products_upload("Productos"), "products"),
+        (_reference_view(), "reference"),
     ):
-        rendered = str(slot)
+        assert "open_media_drawer" in str(opener), target
+        rendered = str(_slot_drawer_body(target))
+        assert "set_picker_tab" in rendered and target in rendered, target
+        for tab in every[1:]:
+            assert json.dumps(tab)[1:-1] in rendered or tab in rendered, (target, tab)
+    for kind, target in (("image", "part_images"), ("video", "part_videos")):
+        rendered = str(_part_media_editor(kind))
         assert "pick_media" in rendered and "set_picker_tab" in rendered, target
-        assert target in rendered, target
-        for tab in tabs:
-            assert tab in rendered or json.dumps(tab)[1:-1] in rendered, (target, tab)
-        if target in ("clip_images", "clip_videos"):
-            assert '"Subir"' not in rendered, target
-    # The enclosing clip view also contains UI-4's own per-part pickers. Their upload
-    # tabs do not change the separate upload button of the original clip references.
-    assert "part_images" in str(_clip_references_view())
-    # § 2026-10-19: the background has «Inspiración», «Subir» and «Piezas» — no catalog
-    background = str(_background_upload("Fondo", "Arrastra"))
-    assert "pick_media" in background and "creative_background" in background
-    assert "Inspiraci" in background
+        assert "open_media_drawer" not in rendered  # in line: never a second drawer
+        for tab in every:
+            assert json.dumps(tab)[1:-1] in rendered or tab in rendered, (target, tab)
+    clip = str(_clip_drawer_body())
+    for tab in (*every, "Inspiración"):
+        assert json.dumps(tab)[1:-1] in clip or tab in clip, tab
 
 
 def test_datos_clave_carry_any_fact() -> None:
@@ -1753,26 +1757,28 @@ def test_datos_clave_view_offers_rows_and_the_old_rules() -> None:
     assert "JSON" not in rendered and "Reglas" not in rendered
 
 
-def test_the_flyer_puts_its_background_first_and_shows_its_photos() -> None:
-    """§ request 2026-10-14: no «Tus fotos (opcionales)»; the background first, uploaded
-    only; the product photos — the catalog's ticked and the uploaded — as pictures."""
+def test_the_flyer_keeps_one_list_of_photos_with_a_category() -> None:
+    """m-24985141 round 11 (Deivid): the advertising image and the avatar keep ONE list
+    of photos — «Producto», «Lugar» (the background) or «Estilo» — like the Clip, one
+    button that opens the media drawer; the catalog product's photos are in it."""
     from .content_generator import _ad_image_section, _carousel_section
 
     flyer = str(_ad_image_section())
     assert "Tus fotos" not in flyer and "aparece tal cual" not in flyer
-    assert flyer.index("creative_background") < flyer.index("creative_products")
-    assert "product_previews" in flyer and "remove_product_preview" in flyer
+    assert "ref_items" in flyer and "set_ref_role" in flyer and "remove_ref" in flyer
+    assert "media-open-products" in flyer and "media-open-background" not in flyer
     gallery = str(_carousel_section())
     assert "Las escenas se generan con IA" not in gallery
+    assert "slide-open-background" in gallery  # round 14: one background, per slide
     state = _clip_state_with_product()
     state.choose_category("image")
-    keys = [item["key"] for item in state.product_previews]
+    keys = [item["key"] for item in state.ref_items]
     assert keys == ["uploads/t/p1.jpg", "uploads/t/p1b.jpg"]
-    state.remove_product_preview("uploads/t/p1b.jpg")  # a catalog one: unticked
+    state.remove_ref("uploads/t/p1b.jpg")  # a catalog one: unticked
     assert state.catalog_off == ["uploads/t/p1b.jpg"]
     state.media_product_keys, state.media_product_names = ["uploads/t/mine.jpg"], ["mine.jpg"]
-    state.remove_product_preview("uploads/t/mine.jpg")
-    assert [item["key"] for item in state.product_previews] == ["uploads/t/p1.jpg"]
+    state.remove_ref("uploads/t/mine.jpg")
+    assert [item["key"] for item in state.ref_items] == ["uploads/t/p1.jpg"]
 
 
 def test_generar_guion_asks_its_length_in_publicacion() -> None:
@@ -1809,9 +1815,8 @@ def test_each_clip_reference_image_has_a_role() -> None:
     a style; a piece already made starts as a style, a catalog photo as the product. The
     first and last images are the frames: only the ones between carry a role."""
     state = _picker_state()
-    state.choose_category("clip")
+    state.choose_category("clip")  # m-24985141: both product photos come in
     piece = "t/x/generated/d/r1/a.png"
-    state.pick_media("clip_images", "catalog", "uploads/t/p1b.jpg")
     state.pick_media("clip_images", "pieces", piece)
     assert [item["role"] for item in state.clip_images] == ["product", "product", "style"]
     state.set_clip_image_role("uploads/t/p1b.jpg", "place")
@@ -1825,8 +1830,10 @@ def test_each_clip_reference_image_has_a_role() -> None:
 
     rendered = str(_clip_references_view())
     assert "set_clip_image_role" in rendered
-    for word in ("Producto", "Lugar", "Estilo"):
+    # round 13 (Deivid): «Lugar» reads «Fondo» (the role stays `place`)
+    for word in ("Producto", "Fondo", "Estilo"):
         assert word in rendered
+    assert '"Lugar"' not in rendered
 
 
 def test_a_picture_is_removed_with_its_trash_button() -> None:

@@ -228,7 +228,7 @@ async def test_vistas_previas_short_on_arrival_create_nothing(
     monkeypatch.setattr(CreativeState, "_refresh_creations", refreshed)
     state = four_parts()
     await press(state, "create_all_reel_parts")
-    # no error: the reason and «Volver al paso 2» show beside the buttons
+    # no error: the reason and «Volver a «Qué mostrar»» show beside the buttons
     assert state.create_error == "" and state.reel_back_to_parts
     assert state.reel_create_all_reason.startswith("Crear las 4 partes usa 4 vistas previas")
     assert state.generator_view != "result" and not state.is_submitting
@@ -424,7 +424,7 @@ def test_the_parts_review_holds_the_secondary_and_the_reason() -> None:
     for text in (
         "Probar solo la parte 1",
         "Usa 1 vista previa. Las dem",
-        "Volver al paso 2",
+        "Volver a ",
         "Ideas para tus reels",
         "exit_create",
         "LucideSparkles",

@@ -73,7 +73,8 @@ from .parts import neutral_people
 logger = logging.getLogger(__name__)
 
 #: Bump on ANY change of the system prompt, the user prompt or the tool (provenance).
-PROPOSE_PARTS_PROMPT_VERSION = "proponer-partes-v3.1"
+#: v3.2 (m-24985141): general for any business and for a video without a product.
+PROPOSE_PARTS_PROMPT_VERSION = "proponer-partes-v3.2"
 PROPOSE_TOOL = "proponer_partes_video"
 
 PROPOSE_MODEL = "claude-sonnet-5"
@@ -309,23 +310,26 @@ class PartsProposal:
 
 SYSTEM_PROMPT = f"""\
 Eres director creativo de videos cortos verticales (9:16) para las redes sociales de \
-negocios pequeños. Recibes lo que el dueño quiere contar en su video, el producto que \
-quiere mostrar (si lo hay), una breve descripción de su marca y, a veces, un ángulo \
-creativo ya elegido. Propones el video PARTE POR PARTE: entre {PARTS_MIN} y {PARTS_MAX} \
-partes en orden. Cada parte se crea por separado con inteligencia artificial a partir de \
-las fotos reales del producto, y luego se unen en un solo video. Entregas la respuesta con \
-la herramienta {PROPOSE_TOOL}, una sola vez.
+negocios pequeños de cualquier rubro. Recibes lo que el dueño quiere contar en su video, \
+el producto que quiere mostrar (si eligió uno), una breve descripción de su marca y, a \
+veces, un ángulo creativo ya elegido. Propones el video PARTE POR PARTE: entre \
+{PARTS_MIN} y {PARTS_MAX} partes en orden. Cada parte se crea por separado con \
+inteligencia artificial, a partir de las fotos reales del negocio cuando las hay, y luego \
+se unen en un solo video. Entregas la respuesta con la herramienta {PROPOSE_TOOL}, una \
+sola vez.
 
 Reglas:
 - Arco del video: la primera parte engancha desde el primer segundo; las del medio \
-muestran el producto y lo que lo hace valioso; la última parte muestra cómo el cliente \
-consigue el producto: lo pide, lo recibe o se lo lleva, como el dueño lo pide. Usarlo, \
-probarlo o disfrutarlo no es el cierre, y el producto solo, girando o cada vez más de \
-cerca, tampoco.
+muestran lo que el dueño quiere contar y lo que lo hace valioso (el producto, si eligió \
+uno); la última parte muestra cómo el cliente da el siguiente paso, como el dueño lo pide: \
+lo pide, lo recibe, se lo lleva, reserva, escribe o llega al lugar. Usarlo, probarlo o \
+disfrutarlo no es el cierre, y el producto solo, girando o cada vez más de cerca, tampoco.
 - Comienzo: elige el gancho que mejor cuente lo que pide el dueño (un momento de uso, un \
 detalle que sorprende, una reacción, una forma llamativa de mirar, una situación \
-cotidiana…). No empieces por costumbre con la elaboración del producto: solo si el dueño \
-habla de cómo se hace.
+cotidiana…). No empieces por costumbre mostrando cómo se hace o se prepara algo: solo si \
+el dueño habla de eso.
+- Si no eligió un producto, no inventes uno ni muestres un producto concreto como si fuera \
+del negocio: muestra lo que cuenta el dueño (el lugar, el equipo, un servicio, un momento).
 - description: lo que se VE en la parte, en español, concreto, UNA sola frase de \
 {DESCRIPTION_WORDS_MAX} palabras como máximo (se lee en un teléfono), con palabras de \
 todos los días, como se lo contarías al dueño del negocio: dónde pasa, qué pasa y desde \

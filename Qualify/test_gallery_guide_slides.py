@@ -1,7 +1,9 @@
-"""Live gallery test (2026-11-03): an inspiration photo on a slide is a GUIDE; the owner
-says which product photo appears in it, the brief carries it and «Crear» works — for a
-generated slide and for the «Video animado» one. Plus the refusal said in the owner's
-words, the topic that follows the product and the phrase field that cannot merge."""
+"""The carousel slide by slide (m-24985141 round 14, Deivid: «Uno para todo»): each
+generated or animated slide chooses its photo (the product), its style (a guide) and, an
+animated one, its motion; ONE background for the whole carousel, used per slide. The brief
+validates against the real `MediaInputs` and `carousel_scene_plans`. Plus the refusal
+said in the owner's words, the topic that follows the product and the phrase field that
+cannot merge."""
 
 from __future__ import annotations
 
@@ -13,94 +15,133 @@ from qualify_creative.scene_plan import ScenePlanError, carousel_scene_plans
 from qualify_creative.schemas import MediaInputs
 
 from . import creative_state as creative_state_module
-from .content_generator import _section_rules, _slide_guide_product
+from .content_generator import _section_rules, _slide_assignment
 from .creative_state import CreativeState, _new_slide
 
-GUIDE = "t/tenant/stock/pixabay/1/guia.jpg"
-PHOTO_A = "uploads/tenant/hamburguesa.jpg"
-PHOTO_B = "uploads/tenant/papas.jpg"
+A, B = "uploads/tenant/a.jpg", "uploads/tenant/b.jpg"
+STYLE = "t/tenant/stock/pixabay/1/estilo.jpg"
+PLACE = "uploads/tenant/local.jpg"
+MOTION = "uploads/tenant/mov.mp4"
 
 
-def _slide(source: str, photo: str, name: str) -> dict[str, str]:
-    slide = _new_slide(source)
-    slide.update(photo_key=photo, photo_name=name)
-    return slide
-
-
-def _gallery(first: str = "generated") -> CreativeState:
+def _carousel(*sources: str) -> CreativeState:
     state = CreativeState()
     state.choose_category("carousel")
-    state.carousel_slides = [
-        _slide(first, GUIDE, "Inspiración"),
-        _slide("generated", PHOTO_A, "Hamburguesa"),
-        _slide("generated", PHOTO_B, "Papas"),
-    ]
+    state.carousel_slides = [_new_slide(src) for src in (sources or ("generated",) * 3)]
     state.carousel_selected = 0
+    # what the drawer lists: uploads and a piece's files are the slot's own picks
+    state.piece_items = [
+        {"key": k, "label": k, "media_type": "image", "view": ""} for k in (A, B, STYLE, PLACE)
+    ] + [{"key": MOTION, "label": "mov", "media_type": "video", "view": ""}]
     return state
 
 
-def _plans(state: CreativeState):
-    photos, slides = state._carousel_slides_payload(False)
-    media = MediaInputs.model_validate({"product_keys": photos, "slides": slides})
-    return photos, slides, carousel_scene_plans(media)
+def _on(state: CreativeState, n: int, target: str, key: str) -> None:
+    state.carousel_selected = n
+    state.pick_media(target, "pieces", key)
 
 
-@pytest.mark.parametrize("first", ["generated", "animated"])
-def test_a_guide_slide_offers_the_gallery_products_and_defaults_to_the_first(first: str) -> None:
-    state = _gallery(first)
-    choices = state.slide_guide_choices
-    assert [c["key"] for c in choices] == [PHOTO_A, PHOTO_B]
-    assert [c["chosen"] for c in choices] == ["1", ""]
-    assert choices[0]["name"] == "Hamburguesa · diapositiva 2"
-    photos, slides, plans = _plans(state)  # «Crear» no longer refuses
-    assert slides[0]["guide_product_index"] == photos.index(PHOTO_A)
-    assert plans[0].photo_keys == (PHOTO_A, GUIDE)
-    # the guide is slide 1's alone (live test 2026-11-03, draft 320257e3)
-    assert [plan.photo_keys for plan in plans[1:]] == [(PHOTO_A,), (PHOTO_B,)]
+def _brief(state: CreativeState):
+    media = MediaInputs.model_validate(state._media_inputs())
+    return media, carousel_scene_plans(media)
 
 
-@pytest.mark.parametrize("first", ["generated", "animated"])
-def test_the_owner_changes_the_guide_slides_product(first: str) -> None:
-    state = _gallery(first)
-    CreativeState.set_slide_guide_product.fn(state, PHOTO_B)
-    assert [c["chosen"] for c in state.slide_guide_choices] == ["", "1"]
-    photos, slides, plans = _plans(state)
-    assert slides[0]["guide_product_index"] == photos.index(PHOTO_B)
-    assert plans[0].photo_keys == (PHOTO_B, GUIDE)
-    CreativeState.set_slide_guide_product.fn(state, "uploads/tenant/otra.jpg")  # not here
-    assert state.carousel_slides[0]["guide_key"] == PHOTO_B
+@pytest.mark.parametrize(
+    ("photo", "style", "expected"),
+    [
+        (A, "", {"product_index": A, "guide": None, "alone": False}),
+        (A, STYLE, {"product_index": STYLE, "guide": A, "alone": False}),
+        ("", STYLE, {"product_index": STYLE, "guide": None, "alone": True}),
+        ("", "", {"product_index": None, "guide": None, "alone": False}),
+    ],
+    ids=["product", "product-and-style", "style-alone", "nothing"],
+)
+def test_the_translation_table(photo: str, style: str, expected: dict) -> None:
+    state = _carousel("generated")
+    if photo:
+        _on(state, 0, "slide", photo)
+    if style:
+        _on(state, 0, "slide_style", style)
+    media, plans = _brief(state)
+    slide, keys = media.slides[0], list(media.product_keys)
+    want = expected["product_index"]
+    assert slide.product_index == (keys.index(want) if want else None)
+    guide = expected["guide"]
+    assert slide.guide_product_index == (keys.index(guide) if guide else None)
+    assert slide.guide_alone is expected["alone"]
+    roles = dict(zip(keys, media.product_image_roles, strict=True)) if keys else {}
+    assert roles.get(STYLE, "composition") == "composition"
+    assert roles.get(A, "product") == "product"
+    assert len(plans) == 1
 
 
-def test_a_product_slide_has_nothing_to_choose_and_sends_nothing_new() -> None:
-    state = _gallery()
-    state.carousel_selected = 1
-    assert state.slide_guide_choices == []
-    _photos, slides, _plans_ = _plans(state)
-    assert "guide_product_index" not in slides[1] and "guide_product_index" not in slides[2]
-
-
-def test_a_removed_choice_falls_back_to_the_first_product() -> None:
-    state = _gallery()
-    CreativeState.set_slide_guide_product.fn(state, PHOTO_B)
-    state.carousel_slides = state.carousel_slides[:2]  # the slide with B was removed
-    photos, slides, plans = _plans(state)
-    assert slides[0]["guide_product_index"] == photos.index(PHOTO_A)
-
-
-def test_a_guide_alone_needs_no_choice() -> None:
-    """(b) only an inspiration photo and no product photo in the gallery."""
-    state = CreativeState()
-    state.choose_category("carousel")
-    state.carousel_slides = [_slide("animated", GUIDE, "Inspiración"), _new_slide("generated")]
+def test_one_background_for_every_slide_used_per_slide() -> None:
+    state = _carousel()
+    for n, key in enumerate((A, B, A)):
+        _on(state, n, "slide", key)
+    _on(state, 1, "background", PLACE)  # chosen from the 2nd slide
+    assert state.media_background_key == PLACE
     state.carousel_selected = 0
-    assert state.slide_guide_choices == []
-    _photos, slides, plans = _plans(state)
-    assert "guide_product_index" not in slides[0] and plans[0].photo_keys == (GUIDE,)
+    assert state.media_background_key == PLACE  # the same on every slide
+    state.toggle_slide_background(2)  # the 3rd does not use it
+    media, plans = _brief(state)
+    assert media.background_key == PLACE and PLACE not in media.product_keys
+    assert [slide.use_background for slide in media.slides] == [True, True, False]
+    assert list(media.product_keys) == [A, B]
+    assert len(plans) == 3
 
 
-def test_the_choice_renders_as_a_radio_group() -> None:
-    rendered = str(_slide_guide_product())
-    assert "set_slide_guide_product" in rendered and "radiogroup" in rendered
+def test_taking_things_out() -> None:
+    state = _carousel("animated")
+    _on(state, 0, "slide", A)
+    _on(state, 0, "slide_style", STYLE)
+    _on(state, 0, "slide_reference", MOTION)
+    _on(state, 0, "background", PLACE)
+    assert state.carousel_current_plan == {"photo": A, "guide": STYLE, "motion": MOTION}
+    state.clear_slide_photo()
+    state.clear_slide_style()
+    state.clear_slide_reference()
+    state.clear_background()
+    assert state.carousel_current_plan == {"photo": "", "guide": "", "motion": ""}
+    assert state.media_background_key == ""
+    _brief(state)
+
+
+def test_motion_only_on_the_animated_slides() -> None:
+    state = _carousel("generated", "animated")
+    _on(state, 0, "slide_reference", MOTION)  # a generated slide takes none
+    _on(state, 1, "slide_reference", MOTION)
+    plan = state._carousel_plan()
+    assert plan[0]["motion"] == "" and plan[1]["motion"] == MOTION
+    _on(state, 1, "slide", A)
+    media, _plans = _brief(state)
+    assert media.slides[1].reference_video_key == MOTION
+
+
+def test_the_drawer_closes_once_the_slot_holds_the_choice() -> None:
+    state = _carousel()
+    state.open_slide_drawer("photo")
+    assert state.media_drawer_open and state.media_drawer_target == "slide"
+    assert state.clip_source_tab == "catalog" or state.picker_tab_view["slide"] == "catalog"
+    event = state.pick_media("slide", "pieces", A)
+    assert not state.media_drawer_open and "slide-open-photo" in str(event)
+
+
+def test_a_draft_from_before_keeps_its_slides() -> None:
+    """A draft whose slide photo is an inspiration image (the guide of 2026-11-03) and
+    its chosen product: read as its style and its photo."""
+    state = _carousel("generated")
+    state.carousel_slides[0].update(photo_key=STYLE, guide_key=A)
+    assert state.carousel_current_plan == {"photo": A, "guide": STYLE, "motion": ""}
+    media, _plans = _brief(state)
+    assert media.slides[0].guide_product_index is not None
+
+
+def test_the_slide_renders_its_elements() -> None:
+    slide = str(_slide_assignment(True))
+    for text in ("open_slide_drawer", "slide-open-photo", "slide-open-style", "Usar el fondo"):
+        assert text in slide, text
+    assert "El fondo es el mismo en todas las diapositivas." in slide
 
 
 # -- the refusal in the owner's words -----------------------------------------------------
@@ -264,12 +305,119 @@ def test_a_typed_phrase_never_added_still_counts_on_leaving() -> None:
     assert state.brief_must_mention == "envío gratis" and state.brief_must_mention_draft == ""
 
 
-def test_an_inspiration_video_is_a_motion_reference_never_a_product_photo() -> None:
-    """«Video animado» with an inspiration photo and an inspiration VIDEO: the video is
-    the motion reference only — it never enters the product photos or the guide choice."""
-    state = _gallery("animated")
-    state.carousel_slides[0]["ref_key"] = "t/tenant/stock/pixabay/2/movimiento.mp4"
-    photos, slides, plans = _plans(state)
-    assert slides[0]["reference_video_key"] == "t/tenant/stock/pixabay/2/movimiento.mp4"
-    assert "t/tenant/stock/pixabay/2/movimiento.mp4" not in photos
-    assert plans[0].photo_keys == (PHOTO_A, GUIDE)
+def test_a_change_of_kind_keeps_the_slides_choices() -> None:
+    """Review: generated ↔ animated keeps the photo, the style, «Sin …» and the
+    background switch; the motion only while it stays animated."""
+    state = _carousel("generated", "generated")
+    _on(state, 0, "slide", A)
+    _on(state, 0, "slide_style", STYLE)
+    state.toggle_slide_background(0)
+    state.carousel_selected = 0
+    state.set_slide_source("animated")
+    _on(state, 0, "slide_reference", MOTION)
+    assert state.carousel_current_plan == {"photo": A, "guide": STYLE, "motion": MOTION}
+    assert state.carousel_slides[0]["background"] == ""
+    state.set_slide_source("generated")
+    assert state.carousel_current_plan == {"photo": A, "guide": STYLE, "motion": ""}
+    assert state.carousel_slides[0]["background"] == ""
+    state.clear_slide_style()  # «Sin estilo» stays «Sin estilo»
+    state.set_slide_source("animated")
+    assert state.carousel_current_plan["guide"] == ""
+
+
+def test_changing_slide_closes_its_drawer() -> None:
+    state = _carousel()
+    state.open_slide_drawer("style")
+    assert state.media_drawer_open
+    state.select_carousel_slide(1)
+    assert not state.media_drawer_open
+
+
+# -- review (round 15): one photo, a product here and a style there ----------------------
+
+
+def test_a_photo_and_the_same_photo_as_style_elsewhere() -> None:
+    """(a) A is slide 1's photo and slide 2's style alone: two entries, each with its
+    role — never «Una diapositiva de solo estilo necesita una foto de estilo»."""
+    state = _carousel("generated", "generated")
+    _on(state, 0, "slide", A)
+    _on(state, 1, "slide_style", A)
+    media, plans = _brief(state)
+    assert list(media.product_keys) == [A, A]
+    assert list(media.product_image_roles) == ["product", "composition"]
+    assert media.slides[0].product_index == 0
+    assert media.slides[1].product_index == 1 and media.slides[1].guide_alone
+    assert len(plans) == 2
+
+
+def test_a_style_first_never_moves_another_slides_product() -> None:
+    """(b) style A on 1, photo A on 2, photo B on 3: slide 2 is made with A, never B."""
+    state = _carousel()
+    _on(state, 0, "slide_style", A)
+    _on(state, 1, "slide", A)
+    _on(state, 2, "slide", B)
+    media, plans = _brief(state)
+    keys, roles = list(media.product_keys), list(media.product_image_roles)
+    second = media.slides[1].product_index
+    assert keys[second] == A and roles[second] == "product"
+    assert [photo.key for photo in plans[1].photos] == [A]
+    assert [photo.key for photo in plans[2].photos] == [B]
+
+
+def test_a_style_with_two_products_around_it() -> None:
+    """(c) two products and A as one slide's style and another's photo: no «Esta guía
+    tiene varias fotos de producto posibles»."""
+    state = _carousel()
+    _on(state, 0, "slide", A)
+    _on(state, 0, "slide_style", B)
+    _on(state, 1, "slide", B)
+    _on(state, 2, "slide", A)
+    _on(state, 2, "slide_style", STYLE)
+    media, plans = _brief(state)
+    assert len(plans) == 3
+    first = plans[0]
+    assert {photo.key for photo in first.photos} == {A, B}
+
+
+def test_a_new_slide_with_an_inspiration_photo_is_its_style_alone() -> None:
+    """Re-review: an inspiration image chosen as a new slide's photo never brings a
+    product the owner did not choose — the slide goes out with that style alone."""
+    state = _carousel()
+    state.carousel_selected = 0
+    state.pick_media("slide", "pieces", STYLE)
+    _on(state, 1, "slide", A)
+    plan = state._carousel_plan()
+    assert plan[0] == {"photo": "", "guide": STYLE, "motion": ""}
+    media, _plans = _brief(state)
+    assert media.slides[0].guide_alone
+
+
+def test_the_same_photo_as_photo_and_style_is_the_photo_alone() -> None:
+    state = _carousel("generated")
+    _on(state, 0, "slide", A)
+    _on(state, 0, "slide_style", A)
+    # the panel keeps what the owner chose; only what is sent drops the style
+    assert state.carousel_current_plan == {"photo": A, "guide": A, "motion": ""}
+    media, _plans = _brief(state)
+    assert media.slides[0].guide_product_index is None and not media.slides[0].guide_alone
+    assert list(media.product_keys) == [A] and list(media.product_image_roles) == ["product"]
+
+
+def test_more_than_ten_entries_hold_crear_with_its_reason() -> None:
+    from .creative_state import CAROUSEL_TOO_MANY
+
+    state = _carousel()
+    state.carousel_slides = [_new_slide("generated") for _ in range(6)]
+    state.piece_items = [
+        {"key": f"uploads/tenant/{n}.jpg", "label": str(n), "media_type": "image", "view": ""}
+        for n in range(12)
+    ]
+    for n in range(6):
+        _on(state, n, "slide", f"uploads/tenant/{n}.jpg")
+        _on(state, n, "slide_style", f"uploads/tenant/{n + 6}.jpg")
+    state.gen_step = len(state._gen_steps()) - 1
+    assert state.create_primary_disabled and state.create_reason == CAROUSEL_TOO_MANY
+    assert CAROUSEL_TOO_MANY == (
+        "Tu carrusel usa más de 10 fotos contando Foto y Estilo de cada diapositiva. Quita "
+        "alguna para crearlo."
+    )

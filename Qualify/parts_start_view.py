@@ -36,7 +36,11 @@ def _closed() -> rx.Component:
     """The invitation: the question, the benefit, and the one button that opens it."""
     return rx.vstack(
         rx.text(vm.CARD_TITLE, size="3", weight="medium", as_="p"),
-        rx.text(vm.CARD_HELP, size="2", color=T.TEXT_MUTED),
+        rx.text(
+            rx.cond(CreativeState.selected_product_id != "", vm.CARD_HELP, vm.CARD_HELP_NO_PRODUCT),
+            size="2",
+            color=T.TEXT_MUTED,
+        ),
         rx.button(
             rx.icon("film", size=T.ICON_SM),
             vm.CARD_ACTION,

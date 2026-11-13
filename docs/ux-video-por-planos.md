@@ -81,7 +81,7 @@ Crear publicación › Clip/Avatar ── «Armar mi video por partes» ──�
 **Entrada A: desde «Ideas para tus reels».** Hoy la tarjeta dice «Replicar con mi marca», y la ayuda
 habla de «base» y «planos» (`Qualify/discover_reels.py:787-805`, `:39-42`). Propuesta: botón **«Hacer
 uno parecido»** (≥ 44 px) y ayuda en `size="2"`: **«Lo hacemos con tu producto y tu marca, parte por
-parte. Lo revisas antes de crear nada.»** Al tocarlo se abre `/create?paso=2` con la cabeza «‹ Ideas para tus
+parte. Lo revisas antes de crear nada.»** Al tocarlo se abre `/create?paso=1` con la cabeza «‹ Ideas para tus
 reels» (N7), y la espera usa `progress_panel`, nunca un spinner:
 
 ```
@@ -371,7 +371,7 @@ cuando lo rechazado es un video.
 - **Opciones desactivadas:** `aria-disabled` + `aria-describedby` que apunta al motivo, que siempre se lee escrito.
 - **Videos:** `controls`, sin sonido automático, con portada y etiqueta («Vista previa de la parte 2»). Con
   `prefers-reduced-motion` no se repiten en bucle.
-- **Direcciones (N5):** `/create?paso=2` y, con la hoja abierta, `&parte=3`. El «atrás» del celular cierra la hoja
+- **Direcciones (N5):** `/create?paso=1` y, con la hoja abierta, `&parte=3`. El «atrás» del celular cierra la hoja
   antes de cambiar de paso.
 
 ## 6. Dónde vive y cómo convive
@@ -439,11 +439,11 @@ verifica en el navegador a 375 px y en escritorio; el backend lo define `docs/di
 
 | Id | Título | Pantalla / estado | Criterios de aceptación verificables | Tam. | Depende de |
 |---|---|---|---|---|---|
-| UI-1 | Generador: «Hacer uno parecido» en Ideas | Tarjeta de Ideas → paso 2 | El botón dice «Hacer uno parecido» y la ayuda «Lo hacemos con tu producto y tu marca, parte por parte. Lo revisas antes de crear nada.» con `size="2"`; abre `/create?paso=2` con la cabeza «‹ Ideas para tus reels»; no queda «Replicar» en texto visible | S | — |
-| UI-2 | Generador: espera del análisis del reel | Paso 2, analizando | `progress_panel` con las 5 etapas de §3a, la etapa encima de la barra y ningún spinner; «Siguiente» desactivado con «Disponible cuando terminemos de mirar el reel.»; los estados «no cambia de escena», «No pudimos mirar este reel» y «reel sin video» con los textos de §4 y sus botones | M | Análisis guardado y reanudable si el dueño sale (m-24880681) |
-| UI-3 | Generador: lista «Tu video, parte por parte» | Paso 2, plan | Lista vertical en 375 px sin desplazamiento horizontal; por parte: miniatura, «Parte n · s», descripción, `signal_pill` de la forma, «Aparece una persona» cuando corresponde, la línea del porqué, «Cambiar»/«Quitar» ≥ 44 px; «Quitaste la parte n. Deshacer»; tope de 6; «Lo que usa de tu mes» sin dinero; el aviso de presentador de §3b | L | UI-2 |
+| UI-1 | Generador: «Hacer uno parecido» en Ideas | Tarjeta de Ideas → «Qué mostrar» (paso 1) | El botón dice «Hacer uno parecido» y la ayuda «Lo hacemos con tu producto y tu marca, parte por parte. Lo revisas antes de crear nada.» con `size="2"`; abre `/create?paso=1` con la cabeza «‹ Ideas para tus reels»; no queda «Replicar» en texto visible | S | — |
+| UI-2 | Generador: espera del análisis del reel | «Qué mostrar» (paso 1), analizando | `progress_panel` con las 5 etapas de §3a, la etapa encima de la barra y ningún spinner; «Siguiente» desactivado con «Disponible cuando terminemos de mirar el reel.»; los estados «no cambia de escena», «No pudimos mirar este reel» y «reel sin video» con los textos de §4 y sus botones | M | Análisis guardado y reanudable si el dueño sale (m-24880681) |
+| UI-3 | Generador: lista «Tu video, parte por parte» | «Qué mostrar» (paso 1), plan | Lista vertical en 375 px sin desplazamiento horizontal; por parte: miniatura, «Parte n · s», descripción, `signal_pill` de la forma, «Aparece una persona» cuando corresponde, la línea del porqué, «Cambiar»/«Quitar» ≥ 44 px; «Quitaste la parte n. Deshacer»; tope de 6; «Lo que usa de tu mes» sin dinero; el aviso de presentador de §3b | L | UI-2 |
 | UI-4 | Generador: hoja de una parte | `drawer` | Tres opciones con su línea; las desactivadas, con el motivo de la tabla de §3c y `aria-describedby`; descripción editable con ejemplo; fotos del producto ya puestas; video/audio y «Mover antes/después» bajo «Más opciones»; `&parte=n` en la URL y el «atrás» cierra la hoja; foco en el grupo de opciones y Esc lo devuelve a la fila | M | UI-3 |
-| UI-5 | Generador: armar por partes sin reel | Paso 2 de Clip/Avatar | Tarjeta «¿Quieres un video más largo? Armar mi video por partes»; una pregunta ya rellenada; «Proponerme las partes» (`progress_panel` «Armando tu propuesta») y «Prefiero armarlas yo» (2 vacías con el estado vacío de §4); la frase llena el paso 3; un Clip de una parte se ve igual que hoy | M | UI-3 |
+| UI-5 | Generador: armar por partes sin reel | «Qué mostrar» (paso 1) de Clip/Avatar | Tarjeta «¿Quieres un video más largo? Armar mi video por partes»; una pregunta ya rellenada; «Proponerme las partes» (`progress_panel` «Armando tu propuesta») y «Prefiero armarlas yo» (2 vacías con el estado vacío de §4); la frase llena el paso 3; un Clip de una parte se ve igual que hoy | M | UI-3 |
 | UI-6 | Generador: revisa y crea por partes | Paso 5 | Resumen en palabras de §3d; «Crear las n partes» y «Probar solo la parte 1»; textos de cupo de §4 cuando no alcanza; no se crea ninguna parte si falta cupo (todo o nada, como hoy) | S | UI-3, P1 |
 | UI-7 | Generador: progreso y fallos por parte | Resultado | `progress_panel` con `value` = partes con vista previa ÷ total; `signal_pill` por fila con los 9 estados de §2; una región `aria-live`; «No salió», «No se pudo con el original» y «Hay que rehacerla» con sus botones, sin cambiar nunca la forma solo; no bloquea la pantalla | L | UI-6 |
 | UI-8 | Generador: revisar y rehacer una parte | Resultado → hoja | «Original» y «Tu versión» (uno al lado del otro en escritorio, uno debajo del otro en 375 px); «Me gusta así» → «Lista»; «Cambiar y crear otra versión» con «Usa 1 vista previa. Te quedan {p}.»; «Versión 2 de 2 · Ver la anterior» | M | UI-7 |

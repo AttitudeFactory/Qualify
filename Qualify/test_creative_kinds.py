@@ -497,7 +497,7 @@ def test_the_gallerys_video_is_silent_unless_turned_on(monkeypatch: pytest.Monke
     assert state.carousel_slides[0]["audio"] == ""
     state.toggle_slide_audio(1)
     assert state.carousel_slides[1]["audio"] == "1"
-    _, slides = state._carousel_slides_payload(False)
+    _, _roles, slides = state._carousel_brief_slides(False)
     assert [slide.get("audio") for slide in slides] == [None, True, None]
     brief = _submit(monkeypatch, "carousel", {"slides": slides})
     assert [slide.audio for slide in brief.media.slides] == [False, True, False]
@@ -1261,8 +1261,8 @@ def test_the_gallery_explains_its_options_and_says_titulo_and_boton() -> None:
     assert rendered("Botón de acción") not in str(_slide_stock_fields())
     assert rendered("Invitación a comprar o escribir") in str(_slide_stock_fields())
     assert "Gancho" not in section and "Llamado (CTA)" not in section
-    for help_title in ("Foto del producto", "Fondo común (opcional)"):
-        assert rendered(f"Qué es «{help_title}»") in section
+    # m-24985141 round 14: each slide chooses its photo, style and the one background
+    assert "slide-open-photo" in section and "slide-open-background" in section
     assert "Diapositiva de cierre" not in section
     for kind in ("Imagen generada", "Video animado", "De una publicación"):
         assert rendered(f"Qué es «{kind}»") in kinds

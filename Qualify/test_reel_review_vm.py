@@ -174,7 +174,7 @@ def test_short_of_vistas_previas_only_part_1_can_be_tried() -> None:
     )
     assert review.all_reason == (
         "Crear las 4 partes usa 4 vistas previas y este mes te quedan 2. Quita 2 partes en "
-        "el paso 2, prueba solo la parte 1 o espera al 1 de diciembre, cuando vuelven tus 20 "
+        "«Qué mostrar», prueba solo la parte 1 o espera al 1 de diciembre, cuando vuelven tus 20 "
         "vistas previas."
     )
     assert review.first_reason == "" and review.back_to_parts
@@ -184,7 +184,7 @@ def test_one_vista_previa_left_singular() -> None:
     text = vm.parts_previews_short_text(3, 1, 20)
     assert "y este mes te queda 1." in text and "espera al próximo mes" in text
     assert "Quita 2 partes" in text
-    assert "Quita 1 parte en el paso 2" in vm.parts_previews_short_text(3, 2, 20)
+    assert "Quita 1 parte en «Qué mostrar»" in vm.parts_previews_short_text(3, 2, 20)
     assert vm.parts_previews_short_text(3, 0, 20) == ""  # at 0: the zero state, no «prueba»
 
 
