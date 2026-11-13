@@ -33,6 +33,15 @@ from .ui import tokens as T
 
 _TOUCH_MIN = "44px"
 _BIG = {"size": "3", "min_height": _TOUCH_MIN}
+#: A button whose label may wrap at 360 px («Actualizar mi catálogo de WhatsApp»): it
+#: grows with the text instead of squeezing two lines into 44 px (UX review).
+_GROWS = {
+    "height": "auto",
+    "white_space": "normal",
+    "padding_top": "0.6rem",
+    "padding_bottom": "0.6rem",
+    "text_align": "center",
+}
 _TONES = ("ok", "warn", "error", "info", "neutral")
 
 
@@ -51,21 +60,25 @@ def card_badge(product: rx.Var[ProductVM]) -> rx.Component:
         rx.match(
             kind,
             (vm.CARD_SYNCED, tone_badge(vm.SYNCED_BADGE, "ok", icon="check")),
-            (
-                vm.CARD_UPLOADING,
-                rx.badge(
-                    loading_spinner("sm"),
-                    vm.IN_FLIGHT_BADGE,
-                    variant="soft",
-                    size="1",
-                    **T.tone_scheme("info"),
-                ),
-            ),
+            # the badge's own 12 px icon, sized to its text (the ring filled the badge)
+            (vm.CARD_UPLOADING, tone_badge(vm.IN_FLIGHT_BADGE, "info", icon="loader-circle")),
             (vm.CARD_OUT_OF_DATE, tone_badge(vm.OUT_OF_DATE_BADGE, "warn", icon="refresh-cw")),
             (vm.CARD_ERROR, tone_badge(vm.ERROR_BADGE, "error", icon="triangle-alert")),
             (vm.CARD_MISSING, tone_badge(W.card_text[product.product_id], "warn")),
             rx.fragment(),
         ),
+    )
+
+
+def card_label(product: rx.Var[ProductVM]) -> rx.Var[str]:
+    """The card's screen-reader name: «Editar {producto}», plus its WhatsApp badge (UX
+    review: the badges were not read)."""
+    text = W.card_text[product.product_id]
+    return rx.cond(
+        # every listed product has an entry while the layer shows (`screen_view`)
+        W.shows_products & (text != ""),
+        "Editar " + product.name + ". " + text,
+        "Editar " + product.name,
     )
 
 
@@ -78,8 +91,8 @@ def _editor_button() -> rx.Component:
     label = rx.match(
         action,
         (vm.ACTION_UPLOAD, rx.cond(CatalogState.edit_dirty, vm.SAVE_AND_UPLOAD, vm.UPLOAD_ONE)),
-        (vm.ACTION_UPDATE, vm.UPDATE_ONE),
-        (vm.ACTION_RETRY, vm.RETRY_ONE),
+        (vm.ACTION_UPDATE, rx.cond(CatalogState.edit_dirty, vm.SAVE_AND_UPDATE, vm.UPDATE_ONE)),
+        (vm.ACTION_RETRY, rx.cond(CatalogState.edit_dirty, vm.SAVE_AND_RETRY, vm.RETRY_ONE)),
         "",
     )
     icon = rx.match(
@@ -101,6 +114,7 @@ def _editor_button() -> rx.Component:
                 disabled=W.lost_access,
                 width="100%",
                 **_BIG,
+                **_GROWS,
             ),
             rx.cond(
                 W.lost_access,
@@ -157,6 +171,11 @@ def editor_block() -> rx.Component:
                 callout(W.ed_error, "error"),
             ),
             rx.cond(~busy, _editor_button()),
+            # UX review: «escríbenos» needs a way there — the same ticket, once per product
+            rx.cond(
+                (W.ed_team[pid] == "1") & ~busy,
+                _team_button(vm.ASK_RECONNECT, product_id=pid),
+            ),
             spacing="3",
             width="100%",
             align_items="start",
@@ -182,23 +201,28 @@ def delete_note() -> rx.Component:
 # -- «Productos»: the bulk block -----------------------------------------------------------
 
 
-def _team_button(label: str) -> rx.Component:
+def _team_button(label: str, product_id: rx.Var[str] | str = "") -> rx.Component:
+    """«Pedir mi catálogo» / «Escribir al equipo»: one ticket per place (`product_id` ""
+    is «Productos»), its answer shown in that same place."""
+    here = W.team_notice_for == product_id
+    sent = W.team_sent if isinstance(product_id, str) else W.team_asked.contains(product_id)
     return rx.vstack(
         rx.cond(
-            ~W.team_sent,
+            ~sent,
             rx.button(
                 rx.icon("message-circle", size=T.ICON_SM),
                 label,
                 type="button",
                 variant="soft",
-                on_click=W.ask_team,
-                loading=W.team_busy,
+                on_click=W.ask_team(product_id),
+                loading=W.team_busy & here,
                 width=rx.breakpoints(initial="100%", sm="auto"),
                 **_BIG,
+                **_GROWS,
             ),
         ),
-        rx.cond(W.team_notice != "", callout(W.team_notice, "ok")),
-        rx.cond(W.team_error != "", callout(W.team_error, "error")),
+        rx.cond(here & (W.team_notice != ""), callout(W.team_notice, "ok")),
+        rx.cond(here & (W.team_error != ""), callout(W.team_error, "error")),
         spacing="2",
         width="100%",
         align_items="start",
@@ -236,6 +260,7 @@ def _connected_block() -> rx.Component:
                         loading=W.planning,
                         width=rx.breakpoints(initial="100%", sm="auto"),
                         **_BIG,
+                        **_GROWS,
                     ),
                 ),
             ),
@@ -293,15 +318,7 @@ def problems_filter() -> rx.Component:
         W.shows_products & (W.problem_count > 0),
         rx.button(
             rx.cond(on, rx.icon("list", size=T.ICON_SM), rx.icon("triangle-alert", size=T.ICON_SM)),
-            rx.cond(
-                on,
-                vm.SHOW_ALL,
-                rx.cond(
-                    W.problem_count == 1,
-                    vm.problems_label(1, active=False),
-                    "Ver los " + W.problem_count.to_string() + " con problemas",
-                ),
-            ),
+            rx.cond(on, vm.SHOW_ALL, W.problems_label),
             variant="soft",
             size="2",
             type="button",
@@ -333,6 +350,7 @@ def confirm_dialog() -> rx.Component:
                     W.dialog_removal != "",
                     rx.text(W.dialog_removal, size="2", weight="bold"),
                 ),
+                rx.cond(W.dialog_blocked != "", rx.text(W.dialog_blocked, size="2")),
                 rx.text(W.dialog_footer, size="1", color=T.TEXT_MUTED),
                 spacing="2",
                 width="100%",

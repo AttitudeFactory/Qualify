@@ -38,6 +38,8 @@ UPLOAD_ONE = "Subir a WhatsApp"
 SAVE_AND_UPLOAD = "Guardar y subir a WhatsApp"
 UPDATE_ONE = "Actualizar en WhatsApp"
 RETRY_ONE = "Intentar de nuevo"
+SAVE_AND_UPDATE = "Guardar y actualizar en WhatsApp"
+SAVE_AND_RETRY = "Guardar e intentar de nuevo"
 UPLOADING_ONE = "Subiendo a WhatsApp…"
 UPDATING_ONE = "Actualizando en WhatsApp…"
 
@@ -63,7 +65,20 @@ ASK_RECONNECT_MESSAGE = (
     "Qualify perdió el permiso para cambiar mi catálogo de WhatsApp. Quiero reconectarlo."
 )
 ASK_RECONNECT_SCREEN = "catalog_whatsapp_access"
-LOST_ACCESS_REASON = "Para volver a subir productos, primero hay que reconectar tu catálogo."
+LOST_ACCESS_REASON = (
+    "Para volver a subir productos, primero hay que reconectar tu catálogo. Escríbenos desde "
+    "«Productos» y lo reconectamos."
+)
+#: The editor's own words for a lost permission: its way to the team is in «Productos».
+EDITOR_LOST_ACCESS = (
+    "Qualify ya no tiene permiso para cambiar tu catálogo de WhatsApp. Escríbenos desde "
+    "«Productos» y lo reconectamos; tus productos aquí no cambian."
+)
+#: «Escribir al equipo» from the editor, when WhatsApp did not accept one product.
+ASK_REJECTED_MESSAGE = (
+    "WhatsApp no aceptó mi producto «{name}» en el catálogo. Quiero que lo revisen."
+)
+ASK_REJECTED_SCREEN = "catalog_whatsapp_rejected"
 
 TEAM_SENT = (
     "Listo, le escribimos al equipo (solicitud #{reference}). Te contactarán a {email} en "
@@ -80,6 +95,10 @@ TEAM_FAILED = (
 )
 
 PROGRESS_DETAIL = "Puedes seguir usando la pantalla. Te avisamos al terminar."
+#: The progress stopped being followed (the tab watched for `WATCH_MAX_S`): never a frozen bar.
+STILL_RUNNING = (
+    "Tu catálogo de WhatsApp se sigue actualizando. Vuelve en unos minutos para ver cómo quedó."
+)
 UP_TO_DATE_TOAST = "Tu catálogo de WhatsApp está al día"
 ALREADY_UP_TO_DATE = "Ya estaba al día en WhatsApp."
 ALREADY_ON_ITS_WAY = "Ya lo estamos subiendo. Tarda unos segundos."
@@ -118,8 +137,9 @@ NOT_ELIGIBLE: dict[str, tuple[str, str]] = {
     ),
     "photo_too_small": (
         "Foto muy pequeña",
-        "La foto principal es muy pequeña para WhatsApp. Sube una más grande (de al menos "
-        "500 × 500) en «Fotos y videos» y déjala como principal.",
+        "La foto principal es muy pequeña para WhatsApp. Sube una más grande y nítida (por "
+        "ejemplo, tomada con la cámara del teléfono) en «Fotos y videos» y déjala como "
+        "principal.",
     ),
     "photo_format": (
         "Foto en otro formato",
@@ -131,14 +151,14 @@ NOT_ELIGIBLE_FALLBACK = (
     "Le falta algo",
     "Para subirlo a WhatsApp le falta un dato. Revisa el precio, la moneda y la foto.",
 )
-#: The dialog's «{j} no se pueden subir todavía: les falta {qué}» — what is missing, by
-#: reason (a photo that is too small or in another format still «needs» a better one).
-MISSING_NOUN: dict[str, str] = {
-    "no_price": "el precio",
-    "no_currency": "la moneda",
-    "no_photo": "la foto",
-    "photo_too_small": "una foto más grande",
-    "photo_format": "una foto en JPG o PNG",
+#: The dialog's «{j} no se pueden subir todavía: {qué les pasa}», by reason: (plural,
+#: singular). Every reason present is said, so the sentence is true of each product.
+BLOCKED_PHRASE: dict[str, tuple[str, str]] = {
+    "no_price": ("les falta el precio", "le falta el precio"),
+    "no_currency": ("les falta la moneda", "le falta la moneda"),
+    "no_photo": ("les falta la foto", "le falta la foto"),
+    "photo_too_small": ("tienen la foto muy pequeña", "tiene la foto muy pequeña"),
+    "photo_format": ("tienen la foto en otro formato", "tiene la foto en otro formato"),
 }
 
 # -- per product: why WhatsApp did not take it (§4; `CATALOG_ITEM_ERRORS`) ----------------
@@ -161,7 +181,7 @@ ITEM_ERRORS: dict[str, tuple[str, bool]] = {
         "WhatsApp no respondió esta vez. No es por tu producto: inténtalo de nuevo en un rato.",
         True,
     ),
-    "no_permission": (LOST_ACCESS_TEXT, False),
+    "no_permission": (EDITOR_LOST_ACCESS, False),
 }
 ITEM_ERROR_FALLBACK = (
     "WhatsApp no lo aceptó y no nos dijo por qué. Escríbenos y lo revisamos.",
@@ -223,6 +243,8 @@ class EditorWa:
     icon: str
     help: str
     action: str
+    #: «Escribir al equipo» in the editor: WhatsApp refused it and did not say why.
+    ask_team: bool = False
 
 
 def editor_view(state: str, reason: str | None) -> EditorWa:
@@ -253,7 +275,12 @@ def editor_view(state: str, reason: str | None) -> EditorWa:
     if state == "error":
         text, retry = ITEM_ERRORS.get(reason or "", ITEM_ERROR_FALLBACK)
         return EditorWa(
-            ERROR_BADGE, "error", "triangle-alert", text, ACTION_RETRY if retry else ACTION_NONE
+            ERROR_BADGE,
+            "error",
+            "triangle-alert",
+            text,
+            ACTION_RETRY if retry else ACTION_NONE,
+            ask_team=reason not in ITEM_ERRORS or reason == "meta_rejected",
         )
     if state == "not_eligible":
         badge, text = NOT_ELIGIBLE.get(reason or "", NOT_ELIGIBLE_FALLBACK)
@@ -262,19 +289,20 @@ def editor_view(state: str, reason: str | None) -> EditorWa:
         NOT_UPLOADED_BADGE,
         "neutral",
         "message-circle",
-        "Todavía no está en tu catálogo de WhatsApp.",
+        "Súbelo y tus clientes lo verán con su precio dentro de WhatsApp.",
         ACTION_UPLOAD,
     )
 
 
 def action_label(action: str, *, dirty: bool) -> str:
-    """The editor's button. With unsaved changes, «Subir» saves first (N6)."""
+    """The editor's button. With unsaved changes it saves first and says so (N6): one tap,
+    and a save that fails sends nothing."""
     if action == ACTION_UPLOAD:
         return SAVE_AND_UPLOAD if dirty else UPLOAD_ONE
     if action == ACTION_UPDATE:
-        return UPDATE_ONE
+        return SAVE_AND_UPDATE if dirty else UPDATE_ONE
     if action == ACTION_RETRY:
-        return RETRY_ONE
+        return SAVE_AND_RETRY if dirty else RETRY_ONE
     return ""
 
 
@@ -437,6 +465,8 @@ class Dialog:
     lines: tuple[str, ...]
     #: «Se quitan de WhatsApp…» — said apart, in bold ("" = nothing is removed).
     removal: str
+    #: «{j} no se pueden subir todavía…», after the removal ("" = none).
+    blocked: str
     footer: str
     confirm: str
 
@@ -444,7 +474,7 @@ class Dialog:
 def missing_reasons(not_eligible: Mapping[str, int]) -> list[str]:
     """The reasons that block some product (`inactive` aside: those are removals), the
     most common first; ties go to the order of §4."""
-    order = list(MISSING_NOUN)
+    order = list(BLOCKED_PHRASE)
     present = [r for r, c in not_eligible.items() if r != "inactive" and c > 0]
     return sorted(present, key=lambda r: (-not_eligible[r], order.index(r) if r in order else 99))
 
@@ -453,6 +483,22 @@ def _or(parts: Sequence[str]) -> str:
     if len(parts) <= 1:
         return "".join(parts)
     return ", ".join(parts[:-1]) + " o " + parts[-1]
+
+
+def blocked_phrase(reasons: Sequence[str], *, one: bool) -> str:
+    """«les falta la foto o la tienen muy pequeña»: every reason, the photo named once."""
+    parts: list[str] = []
+    photo_said = False
+    for reason in reasons:
+        plural, singular = BLOCKED_PHRASE.get(reason, ("les falta un dato", "le falta un dato"))
+        phrase = singular if one else plural
+        if photo_said:
+            phrase = phrase.replace("tienen la foto", "la tienen").replace(
+                "tiene la foto", "la tiene"
+            )
+        photo_said = photo_said or "la foto" in phrase
+        parts.append(phrase)
+    return _or(parts)
 
 
 def dialog_view(
@@ -464,7 +510,8 @@ def dialog_view(
     first_time: bool,
     removal_names: Sequence[str] = (),
 ) -> Dialog:
-    """Only the lines whose count is above zero (§3)."""
+    """Only the lines whose count is above zero (§3), the removal before what cannot go
+    up yet."""
     lines: list[str] = []
     if new:
         lines.append(
@@ -477,35 +524,35 @@ def dialog_view(
             else f"Se actualizan {changed} que cambiaste."
         )
     removal = ""
-    if deletes:
+    named = bool(removal_names) and len(removal_names) == deletes and deletes <= 5
+    if deletes == 1:
         removal = (
-            "Se quita de WhatsApp 1 que borraste aquí."
-            if deletes == 1
-            else f"Se quitan de WhatsApp {deletes} que borraste aquí."
+            f"Se quita de WhatsApp «{removal_names[0]}», que borraste aquí."
+            if named
+            else "Se quita de WhatsApp 1 que borraste aquí."
         )
-        if removal_names and len(removal_names) == deletes and deletes <= 5:
-            removal = removal[:-1] + ": " + _join([f"«{n}»" for n in removal_names]) + "."
-        removal += " Tus clientes ya no " + ("lo verán." if deletes == 1 else "los verán.")
+        removal += " Tus clientes ya no lo verán."
+    elif deletes:
+        removal = f"Se quitan de WhatsApp {deletes} que borraste aquí"
+        removal += (": " + _join([f"«{n}»" for n in removal_names]) + ".") if named else "."
+        removal += " Tus clientes ya no los verán."
+    blocked_line = ""
     blocked = sum(c for r, c in not_eligible.items() if r != "inactive")
     if blocked:
-        # every reason present is named (most common first): «les falta el precio» would
-        # be untrue of the ones that only miss a photo
-        what = _or([MISSING_NOUN.get(r, "un dato") for r in missing_reasons(not_eligible)[:3]])
-        if blocked == 1:
-            lines.append(
-                f"1 no se puede subir todavía: le falta {what}. Lo verás después para corregirlo."
-            )
-        else:
-            lines.append(
-                f"{blocked} no se pueden subir todavía: les falta {what}. Los verás después "
-                "para corregirlos."
-            )
+        what = blocked_phrase(missing_reasons(not_eligible), one=blocked == 1)
+        blocked_line = (
+            f"1 no se puede subir todavía: {what}. Lo verás después para corregirlo."
+            if blocked == 1
+            else f"{blocked} no se pueden subir todavía: {what}. Los verás después para "
+            "corregirlos."
+        )
     return Dialog(
         title="¿Subir tus productos a WhatsApp?"
         if first_time
         else "¿Actualizar tu catálogo de WhatsApp?",
         lines=tuple(lines),
         removal=removal,
+        blocked=blocked_line,
         footer="Los productos que creaste directamente en WhatsApp no se tocan.",
         confirm="Sí, subir" if first_time else "Sí, actualizar",
     )
@@ -536,35 +583,38 @@ class Summary:
 def run_summary(
     *,
     status: str,
-    new: int,
-    changed: int,
+    sent: int,
     deletes: int,
     failed: int,
+    problems: int,
     error_code: str | None = None,
 ) -> Summary:
-    """The callout that replaces the progress card once the update ends."""
+    """The callout that replaces the progress card once the update ends. `sent` is what
+    the update sent up (new and changed together: a run followed from another tab cannot
+    tell them apart), `failed` the products WhatsApp did not take, `problems` the same
+    number «Ver los {m} con problemas» shows."""
     if status == "failed" and (error_code in LOST_ACCESS or error_code == "no_permission"):
-        return Summary(LOST_ACCESS_TEXT, "error", failed)
-    if status == "failed" and failed == 0:
-        failed = new + changed
-    if failed:
-        # The run does not say WHICH items failed: count what went through as a whole.
-        went = max(new + changed - failed, 0)
-        head = (
-            f"Listo: {_n(went, 'producto ya está', 'productos ya están')} en WhatsApp."
-            if went
-            else "WhatsApp no recibió tus productos esta vez."
+        return Summary(LOST_ACCESS_TEXT, "error", problems)
+    went = max(sent - failed, 0)
+    removed = "quitamos 1 que borraste" if deletes == 1 else f"quitamos {deletes} que borraste"
+    if went and deletes:
+        head = f"Listo: {_n(went, 'ya está', 'ya están')} en WhatsApp y {removed}."
+    elif went:
+        head = f"Listo: {_n(went, 'ya está', 'ya están')} en WhatsApp."
+    elif deletes:
+        head = f"Listo: {removed}."
+    elif failed:
+        head = "WhatsApp no recibió tus productos esta vez."
+    else:
+        head = UP_TO_DATE_TOAST + "."
+    if problems:
+        tail = (
+            "1 necesita que lo revises."
+            if problems == 1
+            else f"{problems} necesitan que los revises."
         )
-        return Summary(f"{head} {failed} con problemas.", "warn", failed)
-    parts = []
-    if new:
-        parts.append(_n(new, "subido", "subidos"))
-    if changed:
-        parts.append(_n(changed, "actualizado", "actualizados"))
-    if deletes:
-        parts.append(_n(deletes, "quitado", "quitados"))
-    text = f"Listo: {_join(parts)}." if parts else UP_TO_DATE_TOAST + "."
-    return Summary(text, "ok", 0)
+        return Summary(f"{head} {tail}", "warn", problems)
+    return Summary(head, "ok", 0)
 
 
 # -- everything the page shows, from one read ---------------------------------------------
@@ -597,10 +647,9 @@ def screen_view(
     problems: list[str] = []
     for product_id, photos in photo_counts.items():
         state, reason = states.get(product_id, ("not_uploaded", None))
-        k, t = card_badge(state, reason, photo_count=photos)
-        if k:
-            kind[product_id] = k
-            text[product_id] = t
+        # every listed product has an entry ("" = no badge): the card reads it for its
+        # screen-reader label too
+        kind[product_id], text[product_id] = card_badge(state, reason, photo_count=photos)
         editor[product_id] = editor_view(state, reason)
         if is_problem(state, reason):
             problems.append(product_id)

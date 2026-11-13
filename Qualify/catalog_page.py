@@ -93,6 +93,7 @@ from .catalog_vm import (
 from .catalog_whatsapp_page import (
     bulk_block,
     card_badge,
+    card_label,
     confirm_dialog,
     delete_note,
     editor_block,
@@ -1266,7 +1267,7 @@ def _product_card(product: rx.Var[ProductVM]) -> rx.Component:
             align_items="start",
         ),
         type="button",
-        aria_label="Editar " + product.name,
+        aria_label=card_label(product),
         aria_current=rx.cond(selected, "true", "false"),
         on_click=CatalogState.select_product(product.product_id),
         class_name=rx.cond(selected, "q-choice-card q-choice-card--on", "q-choice-card"),

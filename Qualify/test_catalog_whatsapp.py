@@ -29,11 +29,13 @@ from typing import Any
 from uuid import UUID
 
 import pytest
+from sqlalchemy.exc import SQLAlchemyError
 
 from . import catalog_whatsapp_page as page_module
 from . import catalog_whatsapp_state as module
 from . import catalog_whatsapp_vm as vm
 from .auth_state import AuthState
+from .catalog_provider import CatalogError
 from .catalog_state import CatalogState
 from .catalog_vm import ProductVM
 from .catalog_whatsapp_provider import (
@@ -110,7 +112,8 @@ def test_every_backend_code_is_mapped() -> None:
     assert set(CATALOG_ITEM_ERRORS) <= set(vm.ITEM_ERRORS)
     assert set(INELIGIBLE_REASONS) - {"inactive"} <= set(vm.NOT_ELIGIBLE)
     assert vm.editor_view("error", "zzz").help == vm.ITEM_ERROR_FALLBACK[0]
-    assert "500 × 500" in vm.NOT_ELIGIBLE["photo_too_small"][1]
+    small = vm.NOT_ELIGIBLE["photo_too_small"][1]
+    assert "500" not in small and "cámara del teléfono" in small  # owner words, no figure
     assert "JPG o PNG" in vm.NOT_ELIGIBLE["photo_format"][1]
 
 
@@ -122,8 +125,23 @@ def test_rejected_says_what_to_check_and_that_the_team_helps() -> None:
 def test_the_button_saves_first_when_the_editor_has_changes() -> None:
     assert vm.action_label(vm.ACTION_UPLOAD, dirty=False) == "Subir a WhatsApp"
     assert vm.action_label(vm.ACTION_UPLOAD, dirty=True) == "Guardar y subir a WhatsApp"
-    assert vm.action_label(vm.ACTION_UPDATE, dirty=True) == "Actualizar en WhatsApp"
+    assert vm.action_label(vm.ACTION_UPDATE, dirty=False) == "Actualizar en WhatsApp"
+    assert vm.action_label(vm.ACTION_UPDATE, dirty=True) == "Guardar y actualizar en WhatsApp"
+    assert vm.action_label(vm.ACTION_RETRY, dirty=False) == "Intentar de nuevo"
+    assert vm.action_label(vm.ACTION_RETRY, dirty=True) == "Guardar e intentar de nuevo"
     assert vm.action_label(vm.ACTION_NONE, dirty=False) == ""
+
+
+def test_the_editor_texts_from_the_ux_review() -> None:
+    assert vm.editor_view("not_uploaded", None).help == (
+        "Súbelo y tus clientes lo verán con su precio dentro de WhatsApp."
+    )
+    assert "desde «Productos»" in vm.editor_view("error", "no_permission").help
+    assert "desde «Productos»" in vm.LOST_ACCESS_REASON
+    # «escríbenos» comes with a way there; a temporary failure needs none
+    assert vm.editor_view("error", "meta_rejected").ask_team
+    assert vm.editor_view("error", "zzz").ask_team
+    assert not vm.editor_view("error", "send_failed").ask_team
 
 
 # -- 2. the card ----------------------------------------------------------------------------
@@ -199,29 +217,50 @@ def test_the_dialog_shows_only_counts_above_zero_and_states_removals() -> None:
         removal_names=["Combo viejo"],
     )
     assert dialog.title == "¿Actualizar tu catálogo de WhatsApp?"
-    assert dialog.lines == (
-        "Se suben 3 productos nuevos.",
-        "3 no se pueden subir todavía: les falta la foto o el precio. Los verás después "
-        "para corregirlos.",
-    )
+    assert dialog.lines == ("Se suben 3 productos nuevos.",)
     assert dialog.removal == (
-        "Se quita de WhatsApp 1 que borraste aquí: «Combo viejo». Tus clientes ya no lo verán."
+        "Se quita de WhatsApp «Combo viejo», que borraste aquí. Tus clientes ya no lo verán."
     )
+    assert dialog.blocked == (
+        "3 no se pueden subir todavía: les falta la foto o les falta el precio. Los verás "
+        "después para corregirlos."
+    )
+    photo = vm.dialog_view(
+        new=0,
+        changed=1,
+        deletes=2,
+        not_eligible={"no_photo": 1, "photo_too_small": 1},
+        first_time=False,
+        removal_names=["A", "B"],
+    )
+    assert photo.blocked.startswith(
+        "2 no se pueden subir todavía: les falta la foto o la tienen muy pequeña."
+    )
+    assert photo.removal == (
+        "Se quitan de WhatsApp 2 que borraste aquí: «A» y «B». Tus clientes ya no los verán."
+    )
+    one = vm.dialog_view(
+        new=1, changed=0, deletes=0, not_eligible={"photo_format": 1}, first_time=True
+    )
+    assert one.blocked.startswith("1 no se puede subir todavía: tiene la foto en otro formato.")
     assert dialog.confirm == "Sí, actualizar"
     first = vm.dialog_view(new=1, changed=2, deletes=0, not_eligible={}, first_time=True)
     assert first.title == "¿Subir tus productos a WhatsApp?" and first.confirm == "Sí, subir"
     assert first.lines == ("Se sube 1 producto nuevo.", "Se actualizan 2 que cambiaste.")
-    assert first.removal == ""
+    assert first.removal == "" and first.blocked == ""
 
 
 def test_summary_and_progress() -> None:
-    ok = vm.run_summary(status="finished", new=3, changed=2, deletes=1, failed=0)
-    assert ok == vm.Summary("Listo: 3 subidos, 2 actualizados y 1 quitado.", "ok", 0)
-    partial = vm.run_summary(status="partial", new=3, changed=2, deletes=0, failed=2)
-    assert partial.tone == "warn" and partial.problems == 2
-    assert partial.text == "Listo: 3 productos ya están en WhatsApp. 2 con problemas."
+    ok = vm.run_summary(status="finished", sent=5, deletes=1, failed=0, problems=0)
+    assert ok == vm.Summary("Listo: 5 ya están en WhatsApp y quitamos 1 que borraste.", "ok", 0)
+    # the second number is the filter's («Ver los 3 con problemas»), not the run's
+    partial = vm.run_summary(status="partial", sent=3, deletes=0, failed=1, problems=3)
+    assert partial.tone == "warn" and partial.problems == 3
+    assert partial.text == "Listo: 2 ya están en WhatsApp. 3 necesitan que los revises."
+    single = vm.run_summary(status="finished", sent=1, deletes=0, failed=0, problems=1)
+    assert single.text == "Listo: 1 ya está en WhatsApp. 1 necesita que lo revises."
     lost = vm.run_summary(
-        status="failed", new=1, changed=0, deletes=0, failed=0, error_code="missing_permission"
+        status="failed", sent=1, deletes=0, failed=0, problems=0, error_code="missing_permission"
     )
     assert lost.tone == "error" and lost.text == vm.LOST_ACCESS_TEXT
     assert vm.progress_title(2, 5) == "Subiendo a WhatsApp: 2 de 5"
@@ -241,6 +280,7 @@ def test_no_catalog_shows_no_product_states() -> None:
 def test_lost_permission_keeps_the_states_but_offers_no_bulk_action() -> None:
     screen = vm.screen_view("missing_permission", {_A: ("synced", None)}, {_A: 1})
     assert screen.card_kind == {_A: vm.CARD_SYNCED} and screen.bulk.button == ""
+    assert screen.card_text == {_A: vm.SYNCED_BADGE}
 
 
 # -- the state ------------------------------------------------------------------------------
@@ -333,7 +373,7 @@ async def test_load_paints_badges_and_the_problems_filter(world, fake) -> None:
         states={_A: ("synced", None), _B: ("not_eligible", "no_photo")},
     )
     events = await _drain(CatalogWhatsAppState.load.fn(wa))
-    assert wa.connected and wa.card_kind == {_A: vm.CARD_SYNCED}
+    assert wa.connected and wa.card_kind == {_A: vm.CARD_SYNCED, _B: ""}
     assert wa.ed_action == {_A: vm.ACTION_NONE, _B: vm.ACTION_NONE}
     assert wa.live_ids == [_A] and wa.problem_count == 1
     assert catalog.wa_ready and catalog.wa_problem_ids == [_B]
@@ -450,8 +490,10 @@ async def test_bulk_plan_confirm_and_summary(world, fake, monkeypatch) -> None:
     monkeypatch.setattr(module.asyncio, "sleep", no_wait)
     wa._on_page = True
     events = await _drain(CatalogWhatsAppState.watch.fn(wa))
-    assert not wa.running and wa.summary_text == "Listo: 2 subidos." and wa.summary_tone == "ok"
-    assert vm.UP_TO_DATE_TOAST in _names(events)
+    assert not wa.running and wa.summary_tone == "warn"
+    # the same number as «Ver el que tiene problemas» under it
+    assert wa.summary_text == "Listo: 2 ya están en WhatsApp. 1 necesita que lo revises."
+    assert wa.problem_count == 1 and vm.UP_TO_DATE_TOAST not in _names(events)
 
 
 async def test_plan_changed_shows_the_confirmation_again(world, fake) -> None:
@@ -558,7 +600,142 @@ def test_a_refused_save_does_not_upload_afterwards() -> None:
     assert catalog._wa_after_save == ""
 
 
-def test_the_save_chains_the_upload_only_for_the_saved_product() -> None:
-    source = inspect.getsource(CatalogState.save_product.fn)
-    assert "send, self._wa_after_save = self._wa_after_save" in source
-    assert "CatalogWhatsAppState.send_one(send)" in source
+# -- review round: the chained save, the run that closes the progress, edges ----------------
+
+
+@pytest.mark.parametrize("state", ["out_of_date", "error"])
+async def test_unsaved_changes_chain_the_save_for_every_action(world, fake, state) -> None:
+    """Finding 1: «Guardar y actualizar» / «Guardar e intentar de nuevo» are never dead."""
+    wa, catalog = world
+    fake.view = SyncViewVM(connection="connected", states={_A: (state, "send_failed")})
+    await _drain(CatalogWhatsAppState.load.fn(wa))
+    catalog.selected_id = _A
+    catalog.edit_name = "Shawarma grande"  # unsaved
+    event = await wa.act(_A)
+    assert "save_product" in str(event) and catalog._wa_after_save == _A
+    assert fake.sent == []
+
+
+def _saving(monkeypatch, *, refuse: Exception | None = None) -> CatalogState:
+    """A CatalogState with `_A` open and changed, its save and re-read faked."""
+    from . import catalog_state as catalog_module
+
+    def fake_update(*_a: Any, **_k: Any) -> None:
+        if refuse is not None:
+            raise refuse
+
+    async def ids(self: Any) -> tuple[UUID, UUID, UUID]:
+        return (_TENANT, _BRAND, _USER)
+
+    async def no_refresh(self: Any, *_a: Any) -> None:
+        return None
+
+    monkeypatch.setattr(catalog_module, "update_product", fake_update)
+    monkeypatch.setattr(CatalogState, "_session_ids", ids)
+    monkeypatch.setattr(CatalogState, "_refresh", no_refresh)
+    catalog = CatalogState()
+    catalog.products = [_product(_A, "Shawarma mixto")]
+    catalog.select_product(_A)
+    catalog.edit_name = "Shawarma grande"
+    return catalog
+
+
+def _sends(events: list[Any]) -> list[str]:
+    return [str(e) for e in events if "send_one" in str(e)]
+
+
+async def test_a_plain_save_uploads_nothing(monkeypatch) -> None:
+    catalog = _saving(monkeypatch)
+    events = await _drain(CatalogState.save_product.fn(catalog))
+    assert _sends(events) == []
+
+
+async def test_save_then_upload_sends_exactly_that_product_once(monkeypatch) -> None:
+    catalog = _saving(monkeypatch)
+    catalog._wa_after_save = _A
+    events = await _drain(CatalogState.save_product.fn(catalog))
+    sends = _sends(events)
+    assert len(sends) == 1 and _A in sends[0]
+    assert catalog._wa_after_save == ""
+
+
+@pytest.mark.parametrize(
+    "refusal",
+    [
+        CatalogError("El producto necesita un nombre."),
+        SQLAlchemyError("down"),
+    ],
+)
+async def test_a_failed_save_uploads_nothing(monkeypatch, refusal) -> None:
+    catalog = _saving(monkeypatch, refuse=refusal)
+    catalog._wa_after_save = _A
+    events = await _drain(CatalogState.save_product.fn(catalog))
+    assert _sends(events) == [] and catalog._wa_after_save == ""
+
+
+async def test_a_one_product_upload_does_not_close_the_bulk_progress(world, fake) -> None:
+    """Finding 3: the progress closes on the runs `sync_all` wrote."""
+    wa, _ = world
+    await _drain(CatalogWhatsAppState.load.fn(wa))
+    wa.running, wa._run_ids, wa._run_counts = True, ["r1"], [2, 0]
+    wa.progress_total = 2
+    fake.view = SyncViewVM(
+        connection="connected",
+        states={_A: ("queued", None), _B: ("synced", None)},
+        # a later one-product upload is now the catalog's latest run, already finished
+        last_run=RunVM("r9", "upload_one", "finished", 1, 0, 0, ""),
+    )
+    await _drain(CatalogWhatsAppState.load.fn(wa))
+    assert wa.running and wa.progress_done == 1
+    fake.view = SyncViewVM(
+        connection="connected",
+        states={_A: ("synced", None), _B: ("synced", None)},
+        last_run=RunVM("r1", "sync_all", "partial", 2, 0, 1, ""),
+    )
+    await _drain(CatalogWhatsAppState.load.fn(wa))
+    assert not wa.running and wa.summary_text == "Listo: 1 ya está en WhatsApp."
+
+
+async def test_watching_too_long_says_it_goes_on_instead_of_freezing(
+    world, fake, monkeypatch
+) -> None:
+    """Finding 5: past `WATCH_MAX_S`, a calm note replaces the progress card."""
+    wa, _ = world
+    fake.view = SyncViewVM(connection="connected", states={_A: ("uploading", None)})
+    await _drain(CatalogWhatsAppState.load.fn(wa))
+    wa.running, wa._on_page = True, True
+    monkeypatch.setattr(module, "WATCH_MAX_S", 0)
+    await _drain(CatalogWhatsAppState.watch.fn(wa))
+    assert not wa.running and wa.summary_text == vm.STILL_RUNNING and wa.summary_tone == "info"
+
+
+async def test_an_id_that_names_nothing_is_gone_without_an_error_log(world, fake, caplog) -> None:
+    """Finding 6."""
+    wa, _ = world
+    await _drain(CatalogWhatsAppState.send_one.fn(wa, "no-es-un-id"))
+    assert wa.ed_error == vm.PRODUCT_GONE_ERROR and fake.sent == []
+    assert not [r for r in caplog.records if r.levelname == "ERROR"]
+
+
+async def test_the_problems_label_comes_from_the_view_model(world, fake) -> None:
+    """Finding 7."""
+    wa, _ = world
+    fake.view = SyncViewVM(
+        connection="connected",
+        states={_A: ("error", "send_failed"), _B: ("not_eligible", "no_photo")},
+    )
+    await _drain(CatalogWhatsAppState.load.fn(wa))
+    assert wa.problems_label == vm.problems_label(2, active=False) == "Ver los 2 con problemas"
+
+
+async def test_a_refused_product_reaches_the_team_from_its_editor(world, fake) -> None:
+    """UX 7: once per product, with its name, its answer shown in that editor."""
+    wa, _ = world
+    fake.view = SyncViewVM(connection="connected", states={_A: ("error", "meta_rejected")})
+    await _drain(CatalogWhatsAppState.load.fn(wa))
+    assert wa.ed_team[_A] == "1"
+    await CatalogWhatsAppState.ask_team.fn(wa, _A)
+    await CatalogWhatsAppState.ask_team.fn(wa, _A)
+    assert len(fake.team) == 1 and fake.team[0]["screen"] == vm.ASK_REJECTED_SCREEN
+    assert "«Shawarma mixto»" in fake.team[0]["message"]
+    assert wa.team_asked == [_A] and wa.team_notice_for == _A and not wa.team_sent

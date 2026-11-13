@@ -101,7 +101,11 @@ class CatalogWhatsAppState(rx.State):
     progress_total: int = 0
     summary_text: str = ""
     summary_tone: str = "ok"
-    _run_counts: list[int] = [0, 0, 0]
+    #: What the running update sends: [sent up (new + changed), removed].
+    _run_counts: list[int] = [0, 0]
+    #: The runs `sync_all` wrote: the progress closes on THESE, never on whatever run is
+    #: the catalog's latest (a one-product upload meanwhile is not the update).
+    _run_ids: list[str] = []
 
     # -- the confirmation ----------------------------------------------------------------
     planning: bool = False
@@ -110,6 +114,7 @@ class CatalogWhatsAppState(rx.State):
     dialog_title: str = ""
     dialog_lines: list[str] = []
     dialog_removal: str = ""
+    dialog_blocked: str = ""
     dialog_footer: str = ""
     dialog_confirm: str = ""
     dialog_notice: str = ""
@@ -120,6 +125,12 @@ class CatalogWhatsAppState(rx.State):
     team_sent: bool = False
     team_notice: str = ""
     team_error: str = ""
+    #: Where the last notice or error belongs: "" = «Productos», a product id = its editor.
+    team_notice_for: str = ""
+    #: The products whose refusal was already sent to the team from this tab.
+    team_asked: list[str] = []
+    #: product id → "1" when its editor offers «Escribir al equipo» (WhatsApp refused it).
+    ed_team: dict[str, str] = {}
 
     # -- reading ---------------------------------------------------------------------------
     #: product id → the verb the owner tapped in this tab, until it is no longer in flight
@@ -149,6 +160,11 @@ class CatalogWhatsAppState(rx.State):
         """Badges and the editor block exist only with a catalog (no state is shown for
         what the owner cannot use yet)."""
         return self.connected or self.lost_access
+
+    @rx.var
+    def problems_label(self) -> str:
+        """«Ver los {m} con problemas» — the view model's words, one source."""
+        return vm.problems_label(self.problem_count, active=False)
 
     @rx.var
     def progress_title(self) -> str:
@@ -194,6 +210,7 @@ class CatalogWhatsAppState(rx.State):
         if self.connection and view.connection != self.connection:
             # a new situation (connected, lost the permission): its own way to ask the team
             self.team_sent = False
+            self.team_asked = []
             self.team_notice = ""
             self.team_error = ""
         self.connection = view.connection
@@ -207,6 +224,7 @@ class CatalogWhatsAppState(rx.State):
         self.ed_icon = {k: e.icon for k, e in screen.editor.items()}
         self.ed_help = {k: e.help for k, e in screen.editor.items()}
         self.ed_action = {k: e.action for k, e in screen.editor.items()}
+        self.ed_team = {k: "1" if e.ask_team else "" for k, e in screen.editor.items()}
         self.live_ids = [
             k
             for k, kind in screen.card_kind.items()
@@ -235,20 +253,23 @@ class CatalogWhatsAppState(rx.State):
                 # an update started elsewhere (another tab, before a reload): follow it
                 self.running = True
                 self.progress_total = run.upserts + run.deletes
-                self._run_counts = [run.upserts, 0, run.deletes]
+                self._run_counts = [run.upserts, run.deletes]
+                self._run_ids = [run.id]
         if self.running:
+            ours = run if run is not None and run.id in self._run_ids else None
             self.progress_total = max(self.progress_total, in_flight)
             self.progress_done = max(self.progress_total - in_flight, 0)
-            if not in_flight and (run is None or run.status in vm.RUN_DONE):
+            if not in_flight and (ours is None or ours.status in vm.RUN_DONE):
                 self.running = False
-                new, changed, deletes = (self._run_counts + [0, 0, 0])[:3]
+                self._run_ids = []
+                sent, deletes = (self._run_counts + [0, 0])[:2]
                 summary = vm.run_summary(
-                    status=run.status if run is not None else "finished",
-                    new=new,
-                    changed=changed,
+                    status=ours.status if ours is not None else "finished",
+                    sent=sent,
                     deletes=deletes,
-                    failed=run.items_failed if run is not None else 0,
-                    error_code=run.error_code if run is not None else None,
+                    failed=ours.items_failed if ours is not None else screen.counts.failed,
+                    problems=len(screen.problem_ids),
+                    error_code=ours.error_code if ours is not None else None,
                 )
                 self.summary_text = summary.text
                 self.summary_tone = summary.tone
@@ -342,6 +363,13 @@ class CatalogWhatsAppState(rx.State):
                     yield event
                 if not flying:
                     return
+            async with self:
+                # watched long enough: never a frozen bar — say it goes on, calmly
+                if self.running:
+                    self.running = False
+                    self._run_ids = []
+                    self.summary_text = vm.STILL_RUNNING
+                    self.summary_tone = "info"
         finally:
             async with self:
                 self._watching = False
@@ -350,8 +378,10 @@ class CatalogWhatsAppState(rx.State):
 
     @rx.event
     async def act(self, product_id: str) -> rx.event.EventSpec | None:
-        """The editor's button. With unsaved changes, «Guardar y subir a WhatsApp» saves
-        first: `CatalogState.save_product` chains `send_one` once the save lands."""
+        """The editor's button. With unsaved changes it says so («Guardar y subir a
+        WhatsApp», «Guardar y actualizar en WhatsApp», «Guardar e intentar de nuevo») and
+        saves first: `CatalogState.save_product` chains `send_one` only once the save
+        lands — a refused save sends nothing."""
         product_id = str(product_id)
         action = self.ed_action.get(product_id, "")
         if self.acting or action not in (vm.ACTION_UPLOAD, vm.ACTION_UPDATE, vm.ACTION_RETRY):
@@ -360,8 +390,6 @@ class CatalogWhatsAppState(rx.State):
             return None
         catalog = await self.get_state(CatalogState)
         if catalog.selected_id == product_id and catalog.edit_dirty:
-            if action != vm.ACTION_UPLOAD:
-                return None  # the page only offers «Guardar y subir» for a new one
             catalog._wa_after_save = product_id
             return CatalogState.save_product
         return CatalogWhatsAppState.send_one(product_id)
@@ -369,6 +397,12 @@ class CatalogWhatsAppState(rx.State):
     @rx.event(background=True)
     async def send_one(self, product_id: str) -> AsyncIterator[rx.event.EventSpec]:
         product_id = str(product_id)
+        try:
+            product_uuid = UUID(product_id)
+        except ValueError:  # an id from the wire that names nothing: no error to log
+            async with self:
+                self.ed_error, self.ed_error_for = vm.PRODUCT_GONE_ERROR, product_id
+            return
         async with self:
             if self.acting:
                 return
@@ -391,7 +425,7 @@ class CatalogWhatsAppState(rx.State):
                 error = vm.NO_SESSION_ERROR
             else:
                 call = upload_one if action == vm.ACTION_UPLOAD else update_one
-                sent = await asyncio.to_thread(call, tenant_id, brand_id, user_id, UUID(product_id))
+                sent = await asyncio.to_thread(call, tenant_id, brand_id, user_id, product_uuid)
         except Exception as exc:  # noqa: BLE001 — every refusal becomes the owner's words
             error = refusal_text(exc)
         events: list[rx.event.EventSpec] = []
@@ -429,10 +463,11 @@ class CatalogWhatsAppState(rx.State):
         self.dialog_title = dialog.title
         self.dialog_lines = list(dialog.lines)
         self.dialog_removal = dialog.removal
+        self.dialog_blocked = dialog.blocked
         self.dialog_footer = dialog.footer
         self.dialog_confirm = dialog.confirm
         self._plan_key = plan.plan_key
-        self._run_counts = [plan.new, plan.changed, plan.deletes]
+        self._run_counts = [plan.new + plan.changed, plan.deletes]
 
     async def _plan(
         self, tenant_id: UUID, brand_id: UUID
@@ -552,6 +587,7 @@ class CatalogWhatsAppState(rx.State):
                 self.progress_total = sent.upserts + sent.deletes
                 self.progress_done = 0
                 self._run_counts = counts
+                self._run_ids = list(sent.run_ids)
         if error:
             yield rx.toast.error(error, duration=_TOAST_MS)
         flying, events = await self._read(tenant_id, brand_id)
@@ -575,20 +611,33 @@ class CatalogWhatsAppState(rx.State):
     # -- the team --------------------------------------------------------------------------
 
     @rx.event(background=True)
-    async def ask_team(self) -> None:
-        """«Pedir mi catálogo de WhatsApp» or, after a lost permission, «Escribir al
-        equipo»: one support ticket, like Configuración's (one tap files one)."""
+    async def ask_team(self, product_id: str = "") -> None:
+        """«Pedir mi catálogo de WhatsApp», «Escribir al equipo» after a lost permission
+        (from «Productos», `product_id` ""), or «Escribir al equipo» on one product
+        WhatsApp did not accept: one support ticket, like Configuración's. One tap files
+        one per place in this tab."""
+        product_id = str(product_id or "")
         async with self:
-            if self.team_busy or self.team_sent:
+            already = self.team_sent if not product_id else product_id in self.team_asked
+            if self.team_busy or already:
                 return
             auth = await self.get_state(AuthState)
             email = (auth.user_email or "").strip()
             self.team_error = ""
             self.team_notice = ""
+            self.team_notice_for = product_id
             if "@" not in email:
                 self.team_error = vm.TEAM_NO_EMAIL
                 return
-            lost = self.connection in vm.LOST_ACCESS
+            if product_id:
+                catalog = await self.get_state(CatalogState)
+                name = next((p.name for p in catalog.products if p.product_id == product_id), "")
+                message = vm.ASK_REJECTED_MESSAGE.format(name=name or "sin nombre")
+                screen = vm.ASK_REJECTED_SCREEN
+            elif self.connection in vm.LOST_ACCESS:
+                message, screen = vm.ASK_RECONNECT_MESSAGE, vm.ASK_RECONNECT_SCREEN
+            else:
+                message, screen = vm.ASK_CATALOG_MESSAGE, vm.ASK_CATALOG_SCREEN
             self.team_busy = True
         tenant_id = await self._current_tenant()
         if tenant_id is None:
@@ -598,12 +647,7 @@ class CatalogWhatsAppState(rx.State):
             return
         try:
             ticket = await asyncio.to_thread(
-                lambda: request_team(
-                    tenant_id,
-                    contact_email=email,
-                    message=vm.ASK_RECONNECT_MESSAGE if lost else vm.ASK_CATALOG_MESSAGE,
-                    screen=vm.ASK_RECONNECT_SCREEN if lost else vm.ASK_CATALOG_SCREEN,
-                )
+                lambda: request_team(tenant_id, contact_email=email, message=message, screen=screen)
             )
         except InvalidSupportRequest:
             async with self:
@@ -619,7 +663,10 @@ class CatalogWhatsAppState(rx.State):
         template = vm.TEAM_SENT if ticket.notified else vm.TEAM_SAVED
         async with self:
             self.team_busy = False
-            self.team_sent = True
+            if product_id:
+                self.team_asked = [*self.team_asked, product_id]
+            else:
+                self.team_sent = True
             self.team_notice = template.format(reference=ticket.reference, email=email)
 
 
