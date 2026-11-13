@@ -1113,3 +1113,88 @@ def test_off_mensajes_the_sidebar_poll_refreshes_the_chat_cards_too() -> None:
     source = inspect.getsource(PendingState._refresh)
     assert "responder.active_tab != TAB_MESSAGES" in source
     assert 'figures["messages"]' in source and 'figures["whatsapp"]' in source
+
+
+# --- the one-time explanation (founder, 2026-11-14: «Solo dos semanas») --------------------
+
+
+def _clock(monkeypatch: pytest.MonkeyPatch, instant: datetime) -> None:
+    monkeypatch.setattr(InboxListState, "_now", lambda self: instant)
+
+
+def test_the_explainer_words_and_end_date() -> None:
+    from datetime import date
+
+    from .inbox_list_vm import EXPLAINER_ACTION, EXPLAINER_TEXT, EXPLAINER_UNTIL
+
+    assert EXPLAINER_TEXT == (
+        'Ahora "Por responder" muestra solo a quien espera que una persona le conteste. '
+        "Los chats que ya resolvió tu menú no cuentan."
+    )
+    assert EXPLAINER_ACTION == "Entendido" and EXPLAINER_UNTIL == date(2026, 11, 28)
+
+
+async def test_the_explainer_shows_before_the_end_date_and_not_after(
+    fake: _Fake, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _clock(monkeypatch, datetime(2026, 11, 28, 4, 59, tzinfo=UTC))  # 27 Nov 23:59 Bogotá
+    state = InboxListState()
+    await _drain(InboxListState.load.fn(state))  # type: ignore[attr-defined]
+    assert state.explainer_open
+    _clock(monkeypatch, datetime(2026, 11, 28, 5, 0, tzinfo=UTC))  # 28 Nov 00:00 Bogotá
+    await _tick(state)
+    assert not state.explainer_open
+
+
+async def test_entendido_hides_it_through_refreshes_without_touching_the_list(
+    fake: _Fake, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _clock(monkeypatch, datetime(2026, 11, 15, 12, 0, tzinfo=UTC))
+    state = InboxListState()
+    await _drain(InboxListState.load.fn(state))  # type: ignore[attr-defined]
+    before = (list(state.rows), state.next_cursor, state.filter_key, state.channel, state.chips)
+    reads = fake.reads
+    spec = InboxListState.dismiss_explainer.fn(state)  # type: ignore[attr-defined]
+    assert not state.explainer_open
+    assert "q-inbox-chips button" in str(spec) and "preventScroll" in str(spec)
+    assert fake.reads == reads  # no reload
+    assert (state.rows, state.next_cursor, state.filter_key, state.channel, state.chips) == before
+    await _tick(state)
+    assert not state.explainer_open  # stays hidden
+
+
+async def test_a_new_session_or_business_shows_it_again_before_the_end_date(
+    fake: _Fake, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _clock(monkeypatch, datetime(2026, 11, 15, 12, 0, tzinfo=UTC))
+    state = InboxListState()
+    await _drain(InboxListState.load.fn(state))  # type: ignore[attr-defined]
+    InboxListState.dismiss_explainer.fn(state)  # type: ignore[attr-defined]
+    assert InboxListState in business_state_classes()
+    state.reset()  # logout, or a business switch (ADR 43)
+    await _drain(InboxListState.load.fn(state))  # type: ignore[attr-defined]
+    assert state.explainer_open
+    # Another business arriving in the same state (enter with another tenant) too.
+    InboxListState.dismiss_explainer.fn(state)  # type: ignore[attr-defined]
+    state._tenant_key = "tenant-a"
+
+    async def other(self: InboxListState) -> tuple[str, UUID]:
+        return "tenant-b", UUID(int=2)
+
+    monkeypatch.setattr(InboxListState, "_session", other)
+    _at(state, "tab=mensajes")
+    await _drain(InboxListState.enter.fn(state))  # type: ignore[attr-defined]
+    await _drain(InboxListState.load.fn(state))  # type: ignore[attr-defined]
+    assert state.explainer_open
+
+
+def test_the_explainer_is_the_info_callout_above_the_chips() -> None:
+    from .inbox_list_page import inbox_list_pane
+
+    rendered = str(inbox_list_pane())
+    assert "explainer_open" in rendered and "dismiss_explainer" in rendered
+    assert rendered.index("dismiss_explainer") < rendered.index("q-inbox-chips")
+    start = rendered.index("explainer_open")
+    block = rendered[start : rendered.index("q-inbox-chips")]
+    assert 'role:"status"' in block and '"polite"' in block  # announced politely
+    assert '"44px"' in block  # «Entendido» is a thumb target

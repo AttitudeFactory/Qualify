@@ -19,6 +19,8 @@ from .inbox_list_state import LIST_DOM_ID, InboxListState
 from .inbox_list_vm import (
     CHANNELS_ARIA,
     EMPTY_BACK,
+    EXPLAINER_ACTION,
+    EXPLAINER_TEXT,
     FILTERS_ARIA,
     MORE_LABEL,
     NOTHING_CONNECTED_ACTION,
@@ -34,6 +36,9 @@ from .ui import callout, card, empty_state, skeleton_rows
 from .ui import tokens as T
 
 L = InboxListState
+
+#: The chips' group, where «Entendido» hands the focus (`inbox_list_state`).
+CHIPS_CLASS = "q-inbox-chips"
 
 #: Same cadence as both channels' screens: 15 s, client-side, gone with the tab.
 _REFRESH_MS = 15_000
@@ -83,9 +88,40 @@ def _filters() -> rx.Component:
         wrap="wrap",
         gap="0.4rem",
         width="100%",
-        class_name="q-conv-filters",
+        class_name=f"q-conv-filters {CHIPS_CLASS}",
         role="group",
         aria_label=FILTERS_ARIA,
+    )
+
+
+def _explainer() -> rx.Component:
+    """The one-time explanation (founder, 2026-11-14; ends `EXPLAINER_UNTIL`): the
+    design system's info `callout` (role «status», announced politely), compact — one
+    text, one 44 px «Entendido» that wraps under it at 360 px."""
+    return rx.cond(
+        L.explainer_open,
+        callout(
+            rx.flex(
+                rx.text(EXPLAINER_TEXT, size="2", flex="1", min_width="12rem"),
+                rx.button(
+                    EXPLAINER_ACTION,
+                    on_click=L.dismiss_explainer,
+                    variant="soft",
+                    size="2",
+                    min_height=_TARGET,
+                    type="button",
+                    **T.tone_scheme("info"),
+                ),
+                align="center",
+                wrap="wrap",
+                gap="0.5rem",
+                width="100%",
+            ),
+            "info",
+            aria_live="polite",
+            size="1",
+        ),
+        rx.fragment(),
     )
 
 
@@ -255,6 +291,7 @@ def inbox_list_pane() -> rx.Component:
     a phone the first chat is not pushed under the fold (UX review of m-25017859)."""
     return rx.vstack(
         heartbeat(),
+        _explainer(),
         _channel_filter(),
         _filters(),
         _body(),

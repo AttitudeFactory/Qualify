@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime, tzinfo
+from datetime import UTC, date, datetime, tzinfo
 from typing import Any, Final, Protocol
 
 from .chat_row_vm import (
@@ -143,6 +143,24 @@ def merge_refreshed(
 # them by the coordinator, to confirm: «Sin responder a tiempo». UX proposals: the other
 # empty texts.
 # --------------------------------------------------------------------------------------
+
+#: The one-time explanation of why the numbers moved (founder, 2026-11-14: «Solo dos
+#: semanas»). Shown on «Mensajes» until `EXPLAINER_UNTIL` (excluded), the day judged in
+#: the business's time zone; «Entendido» hides it for the session of that business.
+EXPLAINER_TEXT: Final = (
+    'Ahora "Por responder" muestra solo a quien espera que una persona le conteste. '
+    "Los chats que ya resolvió tu menú no cuentan."
+)
+EXPLAINER_ACTION: Final = "Entendido"
+#: m-25017859: from this day on the explanation never renders — delete it, its state
+#: (`InboxListState.explainer_*`) and its tests after this date.
+EXPLAINER_UNTIL: Final = date(2026, 11, 28)
+
+
+def explainer_shown(today: date, *, dismissed: bool) -> bool:
+    """Before `EXPLAINER_UNTIL` and not dismissed in this session."""
+    return not dismissed and today < EXPLAINER_UNTIL
+
 
 MORE_LABEL: Final = "Ver más"
 FILTERS_ARIA: Final = "Qué chats ver"

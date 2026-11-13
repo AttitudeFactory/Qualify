@@ -53,6 +53,7 @@ from .inbox_list_vm import (
     channel_from_params,
     count_of,
     empty_for,
+    explainer_shown,
     filter_chips,
     filter_from_params,
     list_href,
@@ -76,6 +77,11 @@ _NO_SESSION = "No hay ninguna sesión de negocio activa. Vuelve a iniciar sesió
 LIST_DOM_ID = "q-inbox-list"
 #: What the browser reports on the way out to a WhatsApp chat: the page's and the
 #: list box's scroll, so the way back lands where the owner was.
+#: The chips' group (`inbox_list_page.CHIPS_CLASS`): «Entendido» hands the focus to its
+#: first chip without scrolling.
+_FOCUS_FIRST_CHIP_JS = (
+    "document.querySelector('.q-inbox-chips button')?.focus({ preventScroll: true });"
+)
 _SCROLL_JS = (
     "[Math.round(window.scrollY || 0),"
     f" Math.round((document.getElementById('{LIST_DOM_ID}') || {{}}).scrollTop || 0)]"
@@ -134,6 +140,10 @@ class InboxListState(rx.State):
     #: The UI channels with a connected account; None-equivalent until read.
     connected: list[str] = []
     context_loaded: bool = False
+    #: The one-time explanation (`inbox_list_vm.EXPLAINER_*`): on screen now, and
+    #: dismissed in this session of this business (reset on logout and on a switch).
+    explainer_open: bool = False
+    explainer_dismissed: bool = False
 
     # -- backend only -------------------------------------------------------------------
     _tenant_key: str = ""
@@ -231,12 +241,32 @@ class InboxListState(rx.State):
         self.counts_loaded = False
         self.connected = []
         self.context_loaded = False
+        self.explainer_open = self.explainer_dismissed = False
         self._zone_name = ""
         self._agents = []
         self._pages = 0
         self._scroll = []
         self.filter_key = DEFAULT_FILTER
         self.channel = ALL_CHANNELS
+
+    def _now(self) -> datetime:
+        """The instant every read and the explanation's end date are judged at (tests
+        patch it)."""
+        return datetime.now(UTC)
+
+    def _show_explainer(self, now: datetime) -> None:
+        """The explanation's day is the business's own (its time zone, like every date
+        the owner reads)."""
+        today = now.astimezone(_zone(self._zone_name)).date()
+        self.explainer_open = explainer_shown(today, dismissed=self.explainer_dismissed)
+
+    @rx.event
+    def dismiss_explainer(self) -> rx.event.EventSpec:
+        """«Entendido»: hidden for the rest of this business's session — no reload, no
+        scroll; the focus goes to the first chip."""
+        self.explainer_dismissed = True
+        self.explainer_open = False
+        return rx.call_script(_FOCUS_FIRST_CHIP_JS)
 
     def _build(self, records: Any, now: datetime) -> list[ChatRowVM]:
         agents = {a.user_id: a for a in self._agents}
@@ -342,7 +372,7 @@ class InboxListState(rx.State):
                     if generation == self._generation:
                         self.error = _NO_SESSION
                 return
-            now = datetime.now(UTC)
+            now = self._now()
             try:
                 ctx = await asyncio.to_thread(context, tenant_id) if need_context else None
                 tally = await asyncio.to_thread(counts, tenant_id, now=now)
@@ -369,6 +399,7 @@ class InboxListState(rx.State):
                     self.connected = list(ctx.connected)
                     self.context_loaded = True
                 self._apply_counts(tally)
+                self._show_explainer(now)
                 await _feed_cards(self, tally)  # the cards and «Mensajes · N», same read
                 self.rows = self._build(records, now)
                 self.next_cursor = cursor
@@ -426,7 +457,7 @@ class InboxListState(rx.State):
         try:
             if tenant_id is None:
                 return
-            now = datetime.now(UTC)
+            now = self._now()
             try:
                 result = await asyncio.to_thread(
                     page, tenant_id, filter_key=filter_key, channel=channel, cursor=cursor, now=now
@@ -478,7 +509,7 @@ class InboxListState(rx.State):
                     filter_key = self.filter_key
                 if tenant_id is None:
                     break
-                now = datetime.now(UTC)
+                now = self._now()
                 try:
                     tally = await asyncio.to_thread(counts, tenant_id, now=now)
                     async with self:
@@ -497,6 +528,7 @@ class InboxListState(rx.State):
                     )
                     if current:
                         self._apply_counts(tally)
+                        self._show_explainer(now)
                         await _feed_cards(self, tally)  # same read as the chips
                         # The re-read pages ARE the list when fewer pages were loaded or
                         # the head reached the end; else the tail merges by sort key.
