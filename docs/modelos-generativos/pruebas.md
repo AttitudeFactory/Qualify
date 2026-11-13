@@ -151,6 +151,149 @@ Lo que queda abierto y se reporta, no se esconde:
 
 ---
 
+<a id="mejorar-texto-002"></a>
+
+## MEJORAR-TEXTO-002 — La escena de una imagen pedía mostrar el precio: `context-v5-scene-no-text` (Claude Sonnet 5.5, m-25017274) — 2026-11-13
+
+- **Por qué:** en la prueba en vivo con Bianki (2026-11-13), «Mejorar mi texto» sobre «Describe
+  la escena» (pieza Imagen) devolvió en todas las versiones el precio de «Datos clave» como algo
+  que se ve en la foto. Ejemplos textuales de producción, con Precio $22.000: «…El precio
+  $22.000 se ve claro.», «…Precio $22.000 a la vista.», «Cartel con $22.000 visible junto al
+  plato.». Ese texto llega al modelo de imagen como escena. Desde #629/#631, el compilador de
+  prompts 4 prohíbe texto, letreros y precios en la imagen.
+- **Causa confirmada:** la escena usaba las mismas reglas que el texto de la publicación:
+  «Conserva cada petición, prohibición, cifra…», «qué se debe ver o decir». Los «Datos clave»
+  llegaban igual que en un texto, y ninguna regla prohibía escribir en la imagen.
+- **Cambio:**
+  - Prompt `context-v5-scene-no-text`. En una escena se describe solo lo que se ve. La imagen
+    no lleva nada escrito. Los «Datos clave» solo orientan lo que se ve (un 2x1 son dos
+    unidades en la mesa).
+  - En el pedido, esos datos llegan con la marca «solo orientan lo que se ve; nunca se escriben
+    en la imagen».
+  - La lista de «datos añadidos» ya no cuenta como hecho lo que es dirección visual de una
+    escena: objetos, luz, lugar, manos.
+  - Filtro determinista (`scene_text_request`). Descarta la versión de escena que nombra
+    precio, letrero, cartel, etiqueta, rótulo, aviso, pancarta, texto, letras o algo escrito.
+    También la que lleva «$» o una cifra de «Datos clave». Si quedan versiones, se muestran;
+    si no queda ninguna, sigue el camino de fallo de siempre.
+  - Dos excepciones medidas: las negaciones («Sin texto en la imagen», «Nada escrito») y las
+    palabras que el dueño escribió él mismo. El ejemplo del campo dice «la etiqueta de frente»:
+    es la etiqueta impresa del vaso.
+  - El texto de la publicación (no la escena) sigue llevando el precio como hasta ahora.
+- **Entradas:** 6 escenas FICTICIAS nuevas con precio en «Datos clave» (shawarma $22.000, 2x1
+  y 18.000, combo 25.000, ensalada $19.500, domicilio gratis desde $30.000, papas 12.000), más
+  los 6 casos de MEJORAR-TEXTO-001. Dos pulsaciones por caso; la segunda es «Ver otras tres».
+  `packages/api/evals/mejorar_texto/` (`--only escena-precio`; `--module-file` corre el
+  `context_ai.py` de `origin/main` para la línea de base).
+- **Medida «pide texto en la imagen»:** comprobación propia de la evaluación, independiente del
+  filtro del producto. Cuenta las mismas palabras, «$» y cifras de «Datos clave», con las mismas
+  excepciones. En una primera versión también contaba «visible», y eso marcaba «sin rostro
+  visible»: se quitó y los números de abajo están recontados así.
+
+| Medida | Antes `context-v4-three-versions` | Después `context-v5-scene-no-text` |
+|---|---|---|
+| Escenas con precio: versiones que piden precio, letrero o texto en la imagen | **24 de 36 (67 %)** | **0 de 33 (0 %)** |
+| Escenas con precio: versiones que cierran con «Pide por WhatsApp» (un llamado que también se dibujaría) | 12 de 36 | 0 de 33 |
+| Escenas con precio: similitud entre versiones de una pulsación / entre pulsaciones (máximo) | 0,207 / 0,485 | 0,128 / 0,186 |
+| Textos de publicación (5 casos): similitud entre versiones / entre pulsaciones (máximo) | 0,303 / 0,683 | 0,282 / 0,548 |
+| Textos de publicación: el combo conserva su precio 25.000 | sí | sí (6 de 6 versiones) |
+| Repetidas, números inventados, pulsaciones fallidas | 0 / 0 / 0 | 0 / 0 / 0 |
+| Costo por pulsación (escena / texto) | US$0,0063 / US$0,0066 | US$0,0058 / US$0,0068 |
+
+- **Versiones descartadas por el filtro en la corrida final:** 3 de 36, todas por «Nada
+  escrito en la imagen», una negación que el filtro aún no conocía. Se agregó «nada» a las
+  negaciones y se comprobó sin gastar, con esos tres textos exactos, que ahora pasan.
+  Por eso se muestran 33 de 36.
+- **Borradores en `results/`:**
+  - `v5-escenas-precio-antes-de-negaciones.json`: el filtro aún no aceptaba negaciones. Dos
+    pulsaciones quedaron sin ninguna versión porque todas decían «Sin texto en la imagen».
+  - `v5-borrador-todos.json`: los 12 casos con el prompt v5 antes de acotar «datos añadidos»
+    en escenas. Los números de texto de publicación de la tabla salen de aquí; ese cambio solo
+    nombra la ESCENA.
+- **«Datos añadidos»:** antes del ajuste, 3 pulsaciones de escena listaban utilería como si
+  fueran datos inventados («portátil cerrado», «taburete»). Después, 1 («banca de parque»).
+  El aviso de la pantalla sigue teniendo sentido: «Revisa estos datos, que la IA añadió y no
+  venían de ti, en alguna de estas versiones: …».
+- **Gasto de la prueba:** ≈ US$0,42 (US$0,39 registrados en `results/` más dos corridas de
+  depuración de un caso, unos US$0,03), dentro del tope de US$0,50.
+- **Conclusión:** se queda `claude-sonnet-5-5` @ `low`.
+- **Sin medir:**
+  - El compilador de prompts 4 con estas escenas y la imagen que sale de ellas (no se generó
+    ninguna imagen).
+  - Escenas de clientes reales.
+  - Que el desplazamiento al campo tras elegir una tarjeta funcione en el teléfono dentro de la
+    app. Solo se comprobó en una maqueta local con la misma
+    estructura: el campo queda a 12 px bajo el encabezado fijo. Antes quedaba debajo de él.
+
+### Adenda tras la revisión de código: filtro final y juez independiente (mismo día)
+
+La revisión encontró que el filtro se pasaba de estricto en unos casos y se quedaba corto en
+otros. También encontró que la medida «pide texto en la imagen» copiaba la lista de palabras
+del propio filtro: el «0 de 33» se confirmaba en parte a sí mismo.
+
+**Cambios en el filtro (`scene_text_request`):**
+
+- Las cifras solo cuentan si vienen de un dato con forma de precio: lleva un signo o una
+  palabra de moneda, o una cifra de 4 dígitos o más. «2 shawarmas», «las 2 de la tarde» y
+  «vaso de 500 ml» pasan.
+- El precio también se detecta escrito como «22 mil» o «veintidós mil».
+- Términos nuevos: anuncio, valla, pizarra o pizarrón, sticker o calcomanía, escritos o
+  escritas, leyenda, tipografía, valor.
+- «menú» solo cuenta en frases de menú escrito: «menú en la pared», «menú escrito», «en la
+  pizarra», «colgado», «impreso». La palabra sola no: «el plato del menú del día» describe
+  comida, y en más de 150 versiones de escena medidas nunca pidió escritura. Se sacó
+  «tablero», porque también es la tabla de madera donde se sirve.
+- Una negación solo vale justo antes del término que niega: «sin texto», «ni carteles»,
+  «nada escrito», «sin ningún letrero», «no lleva texto». En «sin sombras y precio visible»
+  la versión se descarta.
+- Las palabras del dueño se comparan como palabras enteras: «contexto» ya no deja pasar
+  «texto». La única excepción es «etiqueta», la etiqueta impresa del producto. Un precio o un
+  cartel que pide el dueño también se descarta, porque la imagen no lo lleva igual.
+- Las versiones descartadas se mandan como «ya mostradas» en la pulsación siguiente, para no
+  pagar otra vez por el mismo texto. Si no queda ninguna, el dueño lee «No pudimos mejorar tu
+  texto esta vez. Tu texto quedó igual: puedes crear así o intentarlo de nuevo.».
+
+**Segunda revisión (mismo día, sin cambio de prompt ni gasto):**
+
+- La revisión probó unas 90 frases. Todas quedaron fijadas en una tabla de pruebas
+  (`test_creative_context_ai.py`, «must pass» / «must drop»).
+- El dinero en la escena se descarta aunque el precio no esté en «Datos clave»: «$», dólares,
+  pesos, bolívares, Bs, USD, COP, lucas, y «número + mil» en cifras o en palabras, con tilde o
+  sin ella.
+- Los precios de «Datos clave» solo bloquean cifras de 1.000 o más. «22 mil» cuenta como
+  22.000. Un precio chico («USD 5», «$12», «Bs. 150») ya no bloquea «5 tacos», «las 5 de la
+  tarde», «12 empanadas» ni «150 gramos». Se escribe junto a una moneda, y eso ya se descarta.
+- Términos nuevos: «se lee», «que dice» o «que diga», frase, banner, banderín, globo de
+  diálogo. La excepción de «etiqueta» no cubre «etiqueta que dice…».
+- Pasan «valor agregado», «sin ningún tipo de letrero» y «ni una sola letra».
+
+**Juez independiente de la evaluación (`asks_for_text` en `run_experiment.py`):**
+
+- Está escrito aparte del filtro y es más estricto. Trabaja sobre palabras sueltas, no con las
+  expresiones regulares del producto.
+- Marca cualquier «menú», «etiqueta» o «carta». También palabras de oferta (precio, oferta,
+  promoción, descuento, gratis, valor), «Nx1», «se lee», «que diga», «WhatsApp» y «número».
+- Marca cualquier cifra de 3 dígitos o más, o con separador de miles, el signo «$» y
+  «<número o número en palabras> mil».
+- Las palabras del dueño no tienen excepción.
+- Un término solo se perdona si la palabra anterior, o la anterior a un artículo, es una
+  negación.
+
+| Escenas con precio (6 casos, 2 pulsaciones) | Antes `context-v4-three-versions` | Después, filtro final |
+|---|---|---|
+| Versiones que el juez independiente marca como «pide texto en la imagen» | **24 de 36** | **0 de 36** |
+| Versiones con «WhatsApp» (llamado que se dibujaría) | 12 de 36 | 0 de 36 |
+| Versiones descartadas por el filtro | — | 0 de 36 |
+| Similitud entre versiones de una pulsación / entre pulsaciones (máximo) | 0,207 / 0,485 | 0,166 / 0,287 |
+| Costo por pulsación | US$0,0063 | US$0,0063 |
+
+- Las corridas anteriores del prompt v5, juzgadas con el juez nuevo, también dan 0. Los textos
+  de publicación no cambiaron en esta adenda: el prompt es el mismo y el filtro solo actúa en
+  escenas.
+- **Gasto de la adenda:** US$0,075. Total de MEJORAR-TEXTO-002: ≈ US$0,50.
+
+---
+
 <a id="mejorar-texto-001"></a>
 
 ## MEJORAR-TEXTO-001 — «Mejorar mi texto» del generador: tres versiones en vez de una que se repetía (Claude Sonnet 5.5, m-25017274) — 2026-11-13

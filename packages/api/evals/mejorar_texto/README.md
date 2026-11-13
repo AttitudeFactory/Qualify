@@ -19,6 +19,10 @@ de consumo de las propias llamadas (a una lista en memoria, nunca a la base).
 just eval-mejorar-texto --env-file /ruta/al/.env --label v4 --cap-usd 0.40
 ```
 
+Desde `context-v5-*` (MEJORAR-TEXTO-002) hay 6 escenas con precio en «Datos clave»
+(`--only escena-precio`) y la medida «pide texto en la imagen»; `--module-file` corre un
+`context_ai.py` anterior (p. ej. `git show origin/main:…`) para la línea de base.
+
 Gasta dinero real (≈ USD 0,08 por corrida de 12 llamadas con v4). Resultados en `results/`;
 el análisis está en `docs/modelos-generativos/pruebas.md` (2026-11-13) y en la ficha
 `docs/modelos-generativos/claude-sonnet-5-5.md`.
