@@ -7,7 +7,9 @@ arrival order through the in-memory repository (the Postgres twin is in
 
 from __future__ import annotations
 
+import importlib.util
 from datetime import UTC, datetime
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -231,6 +233,53 @@ def _run(*messages: RemoteMessage):
     thread = repo.list_threads(tenant_id=TENANT, channels=[CHANNEL_DM])[0]
     [row] = repo.list_messages(tenant_id=TENANT, thread_id=thread.id)
     return created, row
+
+
+def _load_story_cases():
+    """The truth table shared with the Postgres test (`story_mention_cases.py`), loaded by
+    path: `--import-mode=importlib` makes sibling test modules unimportable by name."""
+    path = Path(__file__).with_name("story_mention_cases.py")
+    spec = importlib.util.spec_from_file_location("_story_mention_cases", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_STORY = _load_story_cases()
+
+
+@pytest.mark.parametrize(("readings", "expected"), _STORY.CASES)
+def test_story_mention_merge_table_in_memory(readings, expected) -> None:
+    """The same table `test_conversations_repository_db.py` asserts against Postgres."""
+    messages = [
+        RemoteMessage(
+            external_message_id="mid.t1",
+            text=None,
+            posted_at=datetime(2026, 11, 13, 2, 45, tzinfo=UTC),
+            shape_version="memory-1",
+            author_external_id="igsid-x",
+            **{"direction": "inbound", **_STORY.READINGS[name]},
+        )
+        for name in readings
+    ]
+    created, row = _run(*messages)
+    assert created == [True] + [False] * (len(readings) - 1)
+    basis, mention_id, mention_url, reply_id, direction = expected
+    assert row.direction == direction
+    assert row.story_mention is (basis is not None)
+    assert row.story_mention_basis == basis
+    assert row.story_mention_id == mention_id and row.story_mention_url == mention_url
+    assert row.story_reply_id == reply_id
+
+
+def test_parsed_heuristic_then_attachment_then_node_reply_stays_a_mention() -> None:
+    """End to end through both parsers: the documented attachment confirms the live bare
+    form, and a later node `story.reply_to` can no longer turn it into a reply."""
+    [node_reply] = _read(_node(story={"reply_to": {"link": CDN, "id": STORY}}))
+    _created, row = _run(_webhook(LIVE_MENTION_ITEM), _webhook(DOC_MENTION_ITEM), node_reply)
+    assert row.story_mention_basis == STORY_MENTION_ATTACHMENT_BASIS
+    assert row.story_reply_id is None
 
 
 def test_live_webhook_redelivered_then_plain_poll_keeps_the_heuristic_mention() -> None:

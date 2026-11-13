@@ -18,7 +18,9 @@ Seeding follows `test_whatsapp_outbox_repository_db.py`: tenant/user/app via
 
 from __future__ import annotations
 
+import importlib.util
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
@@ -179,90 +181,49 @@ async def test_webhook_and_poll_converge_on_one_thread_and_one_message(seeded) -
     assert count == 1
 
 
-def _story_msg(mid: str, **story: object) -> RemoteMessage:
-    return RemoteMessage(
-        external_message_id=mid,
-        direction="inbound",
-        text=None,
-        posted_at=T0,
-        shape_version=SHAPE_VERSION_MEMORY,
-        author_external_id="igsid-x",
-        **story,  # type: ignore[arg-type]
-    )
+def _load_story_cases():
+    """The truth table shared with the in-memory test (`story_mention_cases.py`), loaded by
+    path: `--import-mode=importlib` makes sibling test modules unimportable by name."""
+    path = Path(__file__).with_name("story_mention_cases.py")
+    spec = importlib.util.spec_from_file_location("_story_mention_cases", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
-_URL = "https://cdn.example/story"
-_HEURISTIC = {
-    "story_mention": True,
-    "story_mention_basis": "heuristic",
-    "story_mention_id": "story-7",
-    "story_mention_url": _URL,
-}
-_GRAPH_MENTION = {
-    "story_mention": True,
-    "story_mention_basis": "graph",
-    "story_mention_id": "story-7",
-    "story_mention_url": "https://cdn.example/later",
-}
-_GRAPH_REPLY = {
-    "story_reply_id": "story-7",
-    "story_reply_url": _URL,
-    "story_reply_confirmed": True,
-}
-_LEGACY_REPLY = {"story_reply_id": "story-7", "story_reply_url": _URL}
+_STORY = _load_story_cases()
 
 
-@pytest.mark.parametrize(
-    ("readings", "expected"),
-    [
-        # webhook (live shape) redelivered, then a poll without `story`: heuristic kept
-        (("heuristic", "heuristic", "bare"), ("heuristic", "story-7", _URL, None)),
-        # poll without `story` first, then the webhook: flagged
-        (("bare", "heuristic"), ("heuristic", "story-7", _URL, None)),
-        # the node's `story.mention` confirms, either order, URL never replaced
-        (("heuristic", "graph_mention"), ("graph", "story-7", _URL, None)),
-        (("graph_mention", "heuristic"), ("graph", "story-7", "https://cdn.example/later", None)),
-        # the node's `story.reply_to` turns the inference into a reply, either order
-        (("heuristic", "graph_reply"), (None, None, None, "story-7")),
-        (("graph_reply", "heuristic"), (None, None, None, "story-7")),
-        # a confirmed mention is never downgraded
-        (("graph_mention", "graph_reply"), ("graph", "story-7", "https://cdn.example/later", None)),
-        # a row stored as a reply before 0155 is upgraded by a confirmed mention (the node's
-        # fresher URL first; the reply's URL only when the node gives none)
-        (
-            ("legacy_reply", "graph_mention"),
-            ("graph", "story-7", "https://cdn.example/later", None),
-        ),
-        # but a heuristic never overrides a stored reply
-        (("legacy_reply", "heuristic"), (None, None, None, "story-7")),
-    ],
-)
+@pytest.mark.parametrize(("readings", "expected"), _STORY.CASES)
 def test_story_mention_merge_in_every_order(seeded, readings, expected) -> None:
-    """m-25017817 (0155): the `_INSERT_MESSAGE` conflict rules against Postgres."""
-    kinds = {
-        "bare": {},
-        "heuristic": _HEURISTIC,
-        "graph_mention": _GRAPH_MENTION,
-        "graph_reply": _GRAPH_REPLY,
-        "legacy_reply": _LEGACY_REPLY,
-    }
+    """m-25017817 (0155): the `_INSERT_MESSAGE` conflict rules against Postgres — the same
+    table `test_conversations_story_mention.py` asserts on the in-memory twin."""
     repo = PostgresConversationRepository()
     service = ConversationSyncService(repository=repo, clock=lambda: T0)
     connection = _source_connection(seeded)
     conversation = RemoteConversation(counterpart_external_id=_counterpart())
     mid = f"mid.{uuid4().hex[:8]}"
-    results = [
-        service.ingest_message(
-            connection,
-            channel=CHANNEL_DM,
-            conversation=conversation,
-            message=_story_msg(mid, **kinds[name]),
+    results = []
+    for name in readings:
+        fields = {"direction": "inbound", **_STORY.READINGS[name]}
+        message = RemoteMessage(
+            external_message_id=mid,
+            text=None,
+            posted_at=T0,
+            shape_version=SHAPE_VERSION_MEMORY,
+            author_external_id="igsid-x",
+            **fields,
         )
-        for name in readings
-    ]
+        results.append(
+            service.ingest_message(
+                connection, channel=CHANNEL_DM, conversation=conversation, message=message
+            )
+        )
     assert [r.message_created for r in results] == [True] + [False] * (len(readings) - 1)
     [row] = repo.list_messages(tenant_id=TENANT, thread_id=UUID(results[0].thread_id))
-    basis, mention_id, mention_url, reply_id = expected
+    basis, mention_id, mention_url, reply_id, direction = expected
+    assert row.direction == direction
     assert row.story_mention is (basis is not None)
     assert row.story_mention_basis == basis
     assert row.story_mention_id == mention_id and row.story_mention_url == mention_url

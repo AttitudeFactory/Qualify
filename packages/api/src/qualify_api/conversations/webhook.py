@@ -214,7 +214,7 @@ def _story_mention_of(message: Mapping[str, Any]) -> _StoryMention | None:
        @bianki.sc in his own story and Meta sent exactly that, the same key a story reply
        uses. A story reply normally carries the person's text or media, so the bare form is
        read as a mention — an inference, upgraded or turned into a reply by the Message
-       node's `story` field when the poll reads it (`instagram_source._story_kind`)."""
+       node's `story` field when the poll reads it (`instagram_source._story_mention`)."""
     attachments = message.get("attachments")
     for attachment in attachments if isinstance(attachments, list) else []:
         if not isinstance(attachment, Mapping) or attachment.get("type") != (

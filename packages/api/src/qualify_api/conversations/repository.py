@@ -296,6 +296,7 @@ _RF = (
 )
 _CM_CHANGES = f"""({_CM} AND (NOT messages.story_mention
        OR messages.story_reply_id IS NOT NULL
+       OR messages.story_mention_basis = 'heuristic'
        OR (messages.story_mention_basis <> 'graph'
            AND EXCLUDED.story_mention_basis = 'graph')
        OR (messages.story_mention_id IS NULL AND EXCLUDED.story_mention_id IS NOT NULL)
