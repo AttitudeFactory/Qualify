@@ -42,6 +42,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from qualify_creative.adapters.anthropic_copy import strict_schema
 from qualify_creative.enums import (
     AdImageMode,
+    AwarenessLevel,
     BriefIntent,
     BriefObjective,
     ContentFormat,
@@ -215,6 +216,9 @@ class AngleBrand:
     palette: tuple[str, ...] = ()
     #: The Brand Kit's one type face (`BrandKit.typeface`; "" = not declared).
     typeface: str = ""
+    #: The owner's business perks (`BrandKit.business_perks`), already normalized: the
+    #: only venue facts (parking, hours, combos…) an angle may state. Empty = none.
+    perks: tuple[str, ...] = ()
 
 
 # -- the angle ---------------------------------------------------------------------------
@@ -223,6 +227,47 @@ class AngleBrand:
 def _clean(text: object, limit: int) -> str:
     joined = " ".join(str(text or "").split())
     return joined[:limit].strip()
+
+
+def awareness_level_or_none(value: object) -> AwarenessLevel | None:
+    """A level as stored or answered: a member, its value (any case/spacing), or None —
+    a missing or unknown level never sinks an angle (or a whole set)."""
+    if isinstance(value, AwarenessLevel):
+        return value
+    try:
+        return AwarenessLevel(str(value or "").strip().lower())
+    except ValueError:
+        return None
+
+
+def level_plan(
+    count: int, existing: Iterable[AwarenessLevel | None] = ()
+) -> tuple[tuple[AwarenessLevel, int], ...]:
+    """How many of `count` NEW angles go to each level so the whole set — `existing`
+    plus the new ones — is spread across the five levels as evenly as possible: the
+    total split in equal shares, the remainder going to the first levels from
+    `UNAWARE` on (10 → 2 each; 3 → unaware, problem_aware, solution_aware), minus what
+    `existing` already covers. Levels with nothing to add are left out."""
+    if count <= 0:
+        return ()
+    levels = tuple(AwarenessLevel)
+    have = list(existing)
+    total = len(have) + count
+    base, extra = divmod(total, len(levels))
+    need = {
+        level: max(0, base + (1 if i < extra else 0) - have.count(level))
+        for i, level in enumerate(levels)
+    }
+    # existing angles without a level (or crowding one level) leave the sum off by a
+    # few: trim from the last levels, or top up from the first, until it is `count`
+    while sum(need.values()) > count:
+        level = next(lv for lv in reversed(levels) if need[lv] > 0)
+        need[level] -= 1
+    i = 0
+    while sum(need.values()) < count:
+        need[levels[i % len(levels)]] += 1
+        i += 1
+    return tuple((level, need[level]) for level in levels if need[level] > 0)
 
 
 class CreativeAngle(BaseModel):
@@ -240,11 +285,19 @@ class CreativeAngle(BaseModel):
     hook: str = Field(default="", max_length=HOOK_MAX)
     cta: str = Field(default="", max_length=CTA_MAX)
     rationale: str = Field(default="", max_length=RATIONALE_MAX)
+    #: Which reader this angle speaks to (Schwartz); None on angles proposed before the
+    #: levels existed, or when the answer named none (or an unknown one).
+    awareness_level: AwarenessLevel | None = None
 
     @field_validator("title", "scene", "composition", "hook", "cta", "rationale", mode="before")
     @classmethod
     def _single_spaced(cls, value: object) -> str:
         return " ".join(str(value or "").split())
+
+    @field_validator("awareness_level", mode="before")
+    @classmethod
+    def _known_level(cls, value: object) -> AwarenessLevel | None:
+        return awareness_level_or_none(value)
 
     @property
     def scene_prompt(self) -> str:
@@ -327,6 +380,7 @@ def parse_angles(
                 hook=_clean(row.get("hook"), HOOK_MAX),
                 cta=_clean(row.get("cta"), CTA_MAX),
                 rationale=_clean(row.get("rationale"), RATIONALE_MAX),
+                awareness_level=awareness_level_or_none(row.get("awareness_level")),
             )
         )
         if len(out) == count:
@@ -377,11 +431,36 @@ la escena.
 - cta: una llamada a la acción breve.
 - rationale: por qué este ángulo vende este producto a este público, una frase.
 - El precio es un DATO del catálogo: si te lo dan, puedes mencionarlo tal cual, sin \
-redondear, sin cambiar la moneda, sin inventar descuentos. Si no te lo dan, no inventes \
-ninguno ni insinúes una cifra.
+redondear, sin cambiar la moneda, sin inventar descuentos (nunca en el nivel unaware). Si \
+no te lo dan, no inventes ninguno ni insinúes una cifra.
 - No inventes atributos del producto que no estén en su descripción. No prometas \
 resultados ni hagas afirmaciones de salud.
-- Títulos únicos, de pocas palabras, que distingan cada ángulo de un vistazo."""
+- Títulos únicos, de pocas palabras, que distingan cada ángulo de un vistazo.
+
+Niveles de consciencia (Eugene Schwartz): cada ángulo le habla a UNO de estos cinco \
+públicos y lo declaras en awareness_level. Reparte los ángulos entre los niveles \
+exactamente como lo indica el pedido; dentro de un mismo nivel, las escenas siguen siendo \
+distintas.
+- unaware: todavía no piensa en el producto. Muestra el lugar y la experiencia (el \
+ambiente, el momento, con quién se comparte), no el precio: aquí brillan las ventajas del \
+negocio. Nunca menciones el precio ni una oferta.
+- problem_aware: ya siente la necesidad («¿qué cenamos hoy?»). Nombra ese dilema en el \
+hook y presenta la propuesta como la respuesta.
+- solution_aware: sabe qué tipo de cosa quiere, pero no dónde. Muestra por qué este \
+negocio lo resuelve mejor, con datos concretos del producto que estén en su descripción \
+(porción, ingredientes, variedad).
+- product_aware: conoce el negocio pero duda. Quita la fricción: el precio claro si existe, \
+el horario, cómo pagar, dónde queda — solo con los datos que te dieron.
+- most_aware: está listo para comprar. El camino más corto a la compra: hook y cta muy \
+breves y directos, sin explicaciones largas.
+
+Datos reales del negocio:
+- La lista «Lo que ofrece el negocio» son hechos que escribió el dueño. Úsalos tal cual, \
+cada ángulo los que encajen con su nivel; no hace falta usarlos todos.
+- Nunca inventes un dato que no esté en esa lista, en los datos del producto o en la \
+marca: ni horarios, ni precios, ni formas de pago, ni direcciones, ni domicilios, ni \
+descuentos, ni promociones. Si un nivel pediría un dato que no tienes, apóyate en lo que \
+sí está."""
 
 
 def angles_tool(count: int = DEFAULT_ANGLE_COUNT) -> dict[str, Any]:
@@ -412,6 +491,10 @@ def angles_tool(count: int = DEFAULT_ANGLE_COUNT) -> dict[str, Any]:
                                 "hook": {"type": "string"},
                                 "cta": {"type": "string"},
                                 "rationale": {"type": "string"},
+                                "awareness_level": {
+                                    "type": "string",
+                                    "enum": [level.value for level in AwarenessLevel],
+                                },
                             },
                             "required": [
                                 "title",
@@ -420,6 +503,7 @@ def angles_tool(count: int = DEFAULT_ANGLE_COUNT) -> dict[str, Any]:
                                 "hook",
                                 "cta",
                                 "rationale",
+                                "awareness_level",
                             ],
                             "additionalProperties": False,
                         },
@@ -468,6 +552,13 @@ def angles_user_prompt(
         f"Paleta: {', '.join(brand.palette[:4]) if brand.palette else '(sin paleta)'}",
         f"Tipografía: {brand.typeface or '(sin tipografía)'}",
         "",
+        "== Lo que ofrece el negocio (datos reales escritos por el dueño) ==",
+        *(
+            (f"- {perk}" for perk in brand.perks)
+            if brand.perks
+            else ("(el dueño no anotó ninguno: usa solo los datos del producto y de la marca)",)
+        ),
+        "",
         "== Preset creativo ==",
         f"{preset.name}: {preset.description}",
         f"Formato: {preset.format.aspect_ratio}. Estilo fotográfico: {preset.style}.",
@@ -475,7 +566,16 @@ def angles_user_prompt(
     ]
     if avoid:
         lines.append("== Ángulos ya propuestos (NO los repitas ni los parafrasees) ==")
-        lines.extend(f"- {a.title}: {a.scene}" for a in avoid)
+        lines.extend(
+            f"- [{a.awareness_level.value if a.awareness_level else 'sin nivel'}] "
+            f"{a.title}: {a.scene}"
+            for a in avoid
+        )
+        lines.append("")
+    plan = level_plan(count, (a.awareness_level for a in avoid))
+    if plan:
+        lines.append("== Reparto por nivel de consciencia ==")
+        lines.extend(f"- {level.value}: {n}" for level, n in plan)
         lines.append("")
     lines.append(
         f"Propón {count} ángulos visuales distintos para anunciar este producto con {ANGLES_TOOL}."
@@ -617,13 +717,20 @@ def angle_brief(
     the model made up. No catalog price → neither is set and nothing is printed.
     `take` numbers the attempt: from the second on the scene asks for a different shot
     of the same scenario (`take_scene_prompt`).
+
+    The angle's awareness level rides the brief and sets its objective
+    (`AwarenessLevel.objective`; an angle without one stays a SALE, as before the
+    levels). An `UNAWARE` angle shows the place, not the price: its brief carries no
+    price at all — nothing to mention, nothing printed (whole or not at all).
     """
+    level = angle.awareness_level
+    shows_price = product.has_price and level is not AwarenessLevel.UNAWARE
     photos = tuple(product.photo_keys[:MAX_PRODUCT_IMAGES])
     highlights: list[tuple[str, str]] = []
-    if product.has_price:
+    if shows_price:
         highlights.append((PRICE_HIGHLIGHT, product.price_label.strip()))
     highlights.extend(_extra_facts(extra_highlights, room=HIGHLIGHTS_MAX - len(highlights)))
-    label = product.price_label.strip()
+    label = product.price_label.strip() if shows_price else ""
     topic_parts = [product.name.strip(), angle.title]
     if angle.rationale:
         topic_parts.append(angle.rationale)
@@ -641,7 +748,7 @@ def angle_brief(
         media["template_id"] = preset.template_id
     return ContentBrief(
         brand_id=brand_id,
-        objective=BriefObjective.SALE,
+        objective=level.objective if level is not None else BriefObjective.SALE,
         content_type=ContentType.PRODUCT,
         topic=" — ".join(part for part in topic_parts if part),
         product_ref=product.name.strip() or None,
@@ -649,13 +756,14 @@ def angle_brief(
         image_route=ImageRoute.FROM_UPLOAD if photos else ImageRoute.TEMPLATE_ONLY,
         source_media_key=photos[0] if photos else None,
         constraints=BriefConstraints(
-            must_mention=(product.price_label.strip(),) if product.has_price else (),
+            must_mention=(product.price_label.strip(),) if shows_price else (),
             highlights=tuple(highlights),
         ),
         variants_requested=1,
         kind=preset.kind,
         format=preset.format,
         media=MediaInputs.model_validate(media),
+        awareness_level=level,
     )
 
 
@@ -693,7 +801,9 @@ __all__ = [
     "angles_system_prompt",
     "angles_tool",
     "angles_user_prompt",
+    "awareness_level_or_none",
     "distinct_problems",
+    "level_plan",
     "parse_angles",
     "preset_by_key",
     "price_conflicts",

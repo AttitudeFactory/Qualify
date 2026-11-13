@@ -58,6 +58,7 @@ from qualify_creative.angles import (
     AngleSetPlan,
     CreativeAngle,
     angle_brief,
+    awareness_level_or_none,
     distinct_problems,
     preset_by_key,
     preset_problem,
@@ -65,7 +66,7 @@ from qualify_creative.angles import (
     price_problem,
 )
 from qualify_creative.creations import weight_for_request
-from qualify_creative.enums import ContentKind, DraftStatus, FailureReason
+from qualify_creative.enums import AwarenessLevel, ContentKind, DraftStatus, FailureReason
 from qualify_creative.pricing import SEEDREAM_PRO_MODEL, seedream_image_cost
 from qualify_creative.providers import PricingTable
 from qualify_shared.db.session import tenant_session
@@ -231,6 +232,8 @@ class AngleRecord:
     reserved_at: datetime | None = None
     #: «Guardar para después»: put aside from the review (0077); None = on the review.
     saved_at: datetime | None = None
+    #: The reader the angle speaks to (0163, `AwarenessLevel`); None on older angles.
+    awareness_level: AwarenessLevel | None = None
 
     @property
     def angle(self) -> CreativeAngle:
@@ -242,6 +245,7 @@ class AngleRecord:
             hook=self.hook,
             cta=self.cta,
             rationale=self.rationale,
+            awareness_level=self.awareness_level,
         )
 
 
@@ -624,6 +628,7 @@ def _angle_record(row: orm.CreativeAngle) -> AngleRecord:
         request_key=row.request_key,
         reserved_at=row.reserved_at,
         saved_at=row.saved_at,
+        awareness_level=awareness_level_or_none(getattr(row, "awareness_level", None)),
     )
 
 
@@ -710,6 +715,7 @@ class PostgresAngleSetRepository:
                     hook=a.hook,
                     cta=a.cta,
                     rationale=a.rationale,
+                    awareness_level=a.awareness_level.value if a.awareness_level else None,
                     status=ANGLE_PROPOSED,
                 )
                 for a in angles
@@ -820,8 +826,9 @@ def campaign_name(product_name: str, count: int, set_id: UUID | None = None) -> 
 
 def brand_fingerprint(brand: AngleBrand) -> str:
     """Which brand kit facts the angles were asked with (provenance — `brand_kits` has
-    no version column): the facts the prompt carries, hashed. The type face joins only
-    when declared, so a kit without one keeps the fingerprint it always had."""
+    no version column): the facts the prompt carries, hashed. The type face and the
+    owner's perks join only when declared, so a kit without them keeps the fingerprint it
+    always had — and a change of perks gives the set a new one."""
     facts = "\n".join(
         (
             brand.name,
@@ -831,6 +838,7 @@ def brand_fingerprint(brand: AngleBrand) -> str:
             brand.location,
             ",".join(brand.palette),
             *((brand.typeface,) if brand.typeface else ()),
+            *(("perks:" + "|".join(brand.perks),) if brand.perks else ()),
         )
     )
     return hashlib.sha256(facts.encode()).hexdigest()[:16]

@@ -476,3 +476,25 @@ def test_the_content_repository_answers_a_repeated_key_with_the_existing_draft(
         assert [d.id for d in keyed] == [first]
     # another tenant never sees this key
     assert repo.draft_id_for_request(tenant_id=TENANT_B, request_key=key) is None
+
+
+def test_the_awareness_level_round_trips_and_an_unknown_one_is_refused(
+    seeded: tuple[UUID, UUID],
+) -> None:
+    """0163: the level the model tagged an angle with is stored beside it (NULL = none),
+    and the CHECK keeps anything but the five levels out."""
+    from qualify_creative.enums import AwarenessLevel
+
+    brand_id, user_id = seeded
+    repo = PostgresAngleSetRepository()
+    set_id = _new_set(repo, brand_id, user_id)
+    tagged, untagged = _angles(2)
+    tagged = tagged.model_copy(update={"awareness_level": AwarenessLevel.PROBLEM_AWARE})
+    first, second = repo.insert_angles(tenant_id=TENANT_A, set_id=set_id, angles=[tagged, untagged])
+    stored = repo.get_angle(tenant_id=TENANT_A, angle_id=first)
+    assert stored is not None and stored.awareness_level is AwarenessLevel.PROBLEM_AWARE
+    assert stored.angle.awareness_level is AwarenessLevel.PROBLEM_AWARE
+    plain = repo.get_angle(tenant_id=TENANT_A, angle_id=second)
+    assert plain is not None and plain.awareness_level is None
+    with pytest.raises(IntegrityError):
+        repo.update_angle(tenant_id=TENANT_A, angle_id=second, awareness_level="curioso")

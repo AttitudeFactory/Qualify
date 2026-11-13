@@ -508,7 +508,8 @@ def _record_progress(tenant_id: UUID, draft_id: UUID) -> None:
 
 class _DbBrandFacts:
     """The brand as the angles prompt needs it: its name (tenancy), its positioning,
-    audience, palette and type face (the kit), its rubro and location (the context)."""
+    audience, palette, type face and the owner's perks (the kit), its rubro and location
+    (the context)."""
 
     def __init__(self) -> None:
         self._names = DbBrandNames()
@@ -530,6 +531,7 @@ class _DbBrandFacts:
             location=context.location if context is not None else "",
             palette=tuple(kit.palette_rgb) if kit is not None else (),
             typeface=kit.typeface if kit is not None else "",
+            perks=tuple(kit.business_perks) if kit is not None else (),
         )
 
 
