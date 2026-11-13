@@ -114,7 +114,7 @@ canal, con dos outboxes y dos workers `[arq §1.2, §1.3]`. Cortes de origen C1�
 ### m-25017843 (BU-A1) · Bandeja: una sola consulta de chats y una sola definición de «por responder»
 
 - **Tipo / etiqueta:** Issue · `Improvement` · **P1** (bloquea m-25017859, BU-A6, BU-A13) · **M** · dueño `backend`
-- **Depende de:** — · **Bloqueada por:** decisión (ii) («por responder» cuando contestó el menú)
+- **Depende de:** — · **Bloqueada por:** — (la decisión (ii) quedó decidida por el fundador el 2026-11-13: «Solo si pasó a persona»; regla en §6 (ii))
 - **Historia:** Como dueño de un local de comida que atiende por WhatsApp e Instagram, quiero que
   Qualify cuente igual a los clientes que me esperan en los dos canales, para que el número del
   menú y la lista nunca digan cosas distintas.
@@ -131,6 +131,9 @@ canal, con dos outboxes y dos workers `[arq §1.2, §1.3]`. Cortes de origen C1�
   - [ ] Prueba: el número de `attention/counts.py` y el total de «Por responder» de la consulta son
         iguales en los casos: entrante sin respuesta, respondido por el dueño, respondido por el
         menú, entregado a una persona, envío automático fallido, chat cerrado.
+  - [ ] Prueba de la regla decidida (ii): un chat abierto contestado solo por el menú **no** cuenta;
+        uno entregado a una persona («Hablar con alguien» o turno del dueño) **sí** cuenta; uno con un
+        envío automático fallido **sí** cuenta; uno cerrado no cuenta.
   - [ ] Prueba de aislamiento: con dos negocios, la consulta en `tenant_session` del negocio A no
         devuelve hilos de B; un canal fuera de la lista blanca se rechaza.
   - [ ] Prueba que une el descriptor con la realidad: `attachments` de Instagram ==
@@ -140,7 +143,7 @@ canal, con dos outboxes y dos workers `[arq §1.2, §1.3]`. Cortes de origen C1�
 - **Texto para el cliente:** ninguno (backend).
 - **Fuera de alcance:** cambiar pantallas; unir outboxes o workers; unir la identidad de una persona
   entre canales `[arq §1.3]`.
-- **Migración:** no `[arq §4.1 C1]` · **Medición:** no · **Firma:** decisión (ii).
+- **Migración:** no `[arq §4.1 C1]` · **Medición:** no · **Firma:** ya tomada (decisión (ii), 2026-11-13).
 
 ### m-25017844 (BU-A2) · Conversaciones: una sola fila de chat para WhatsApp e Instagram
 
@@ -167,7 +170,7 @@ canal, con dos outboxes y dos workers `[arq §1.2, §1.3]`. Cortes de origen C1�
 ### m-25017859 (BU-A3) · Conversaciones: lista única de chats bajo «Por responder»
 
 - **Tipo:** Issue · `Feature`, `UI` · **P1** (primer valor visible de la épica) · **M** · dueño `reflex-ui`
-- **Depende de:** m-25017843, m-25017844 · **Bloqueada por:** decisión (ii) vía m-25017843; para que muestre chats
+- **Depende de:** m-25017843, m-25017844 · **Bloqueada por:** — (decisión (ii) tomada el 2026-11-13); para que muestre chats
   de Instagram de clientes reales, decisión/riesgo (v)
 - **Historia:** Como dueño de la tienda de shawarma, quiero ver en una sola lista a los clientes que
   me esperan por WhatsApp o Instagram, ordenados por hora, para no tener que revisar dos pantallas.
@@ -237,7 +240,7 @@ canal, con dos outboxes y dos workers `[arq §1.2, §1.3]`. Cortes de origen C1�
 
 ### BU-A6 · Bandeja: enviar desde cualquier chat por el canal correcto
 
-> **Sin ticket todavía — espera a m-25017843, que espera la decisión (ii).**
+> **Sin ticket todavía — espera a m-25017843.**
 
 - **Tipo:** Issue · `Improvement` · **P2** · **M** · dueño `backend`
 - **Depende de:** m-25017843 · **Bloqueada por:** —
@@ -386,7 +389,7 @@ canal, con dos outboxes y dos workers `[arq §1.2, §1.3]`. Cortes de origen C1�
 
 ### BU-A13 · Conversaciones: cerrar y reabrir chats de Instagram
 
-> **Sin ticket todavía — espera a m-25017843, que espera la decisión (ii).**
+> **Sin ticket todavía — espera a m-25017843.**
 
 - **Tipo:** Issue · `Feature` · **P2** · **M** · dueño `backend` (+ `reflex-ui`)
 - **Depende de:** m-25017843 · **Bloqueada por:** —
@@ -571,7 +574,7 @@ el nombre de las tablas `[arq §3.1, «Conclusión»]`. Cortes de origen M1–M7
 | Corte | Qué hice | Por qué |
 |---|---|---|
 | M1 | Partido en m-25017846 (puntos 1–2: transacción única + candado) y m-25017866 (puntos 3–4 + métricas) | Cuatro arreglos en el código que hoy cobra pedidos reales: dos PR más chicos se revisan mejor; m-25017866 puede necesitar migración (estado `cancelled`) y m-25017846 no |
-| M3 | Partido en BU-B4 (destinos del menú por canal + estado neutral) y BU-B5 (`kind='automation'` en `conversation_outbox`) | Solo BU-B5 quita la garantía deliberada de Instagram y necesita el ADR 48 escrito (transcripción de m-24789557), la decisión (i-c) y `security-review` `[arq §3.3, §4.2 M3]`; BU-B4 es un cambio de esquema para WhatsApp con relleno que no la toca |
+| M3 | Partido en BU-B4 (destinos del menú por canal + estado neutral) y BU-B5 (`kind='automation'` en `conversation_outbox`) | Solo BU-B5 quita la garantía deliberada de Instagram y necesita el ADR 48 (número provisional: el PR #618 también reclama el 48; el ADR toma el siguiente número libre al escribirse) escrito (transcripción de m-24789557), la decisión (i-c) y `security-review` `[arq §3.3, §4.2 M3]`; BU-B4 es un cambio de esquema para WhatsApp con relleno que no la toca |
 
 ### m-25017846 (BU-B1) · WhatsApp: el menú automático guarda su paso y su respuesta juntos, una conversación a la vez
 
@@ -885,17 +888,19 @@ modelo; que el dueño los apruebe al publicar «es una interpretación, no está
 **Recomendación: A**, con la condición de que «Así le llega» muestre esos textos antes de publicar.
 **Bloquea:** BU-B5 (y por ella BU-B6, BU-B9).
 
-### (ii) Qué significa «Por responder» cuando el menú automático ya contestó
+### (ii) Qué significa «Por responder» cuando el menú automático ya contestó — **DECIDIDA**
 
-| Opción | Qué es | Para el dueño | Riesgo |
-|---|---|---|---|
-| A. Cuenta cualquier respuesta | Respondió el menú → no está «por responder» | Lista corta | Un chat donde el menú falló o entregó a una persona queda escondido |
-| **B. Propuesta del arquitecto** | No está «por responder» **salvo** que se entregó a una persona (`Handoff`) o falló un envío `[arq §5 punto 3, §2.3]` | Solo ve lo que necesita su mano | Depende de m-25017866 para marcar los fallos |
-| C. Solo cuenta la respuesta del dueño | Todo chat que no respondió el dueño está «por responder» | Ve todo, incluso lo que el menú resolvió | Lista larga; el menú parece no servir |
+**Decisión del fundador (2026-11-13, hora de Colombia), en sus palabras: «Solo si pasó a persona».**
+Un chat abierto que el menú automático ya contestó cuenta como «Por responder» **solo** si se entregó a
+una persona (el cliente tocó «Hablar con alguien» o es el turno del dueño) o si falló un envío
+automático. Contestado solo por el menú, no cuenta. Es la opción B que se recomendaba `[arq §5 punto 3,
+§2.3]`. Los fallos los marca m-25017866.
 
-**Recomendación: B.** Es lo único coherente con «el menú atiende y me avisa cuando me necesita».
-**Bloquea:** m-25017843 (y por eso m-25017859 y el primer incremento). Decisión de dos vías: es un predicado
-en una función, se cambia en un PR.
+Descartadas: A, cualquier respuesta del menú saca el chat de la lista (escondía fallos y entregas a
+persona); C, solo cuenta la respuesta del dueño (lista larga, el menú parece no servir).
+
+Ya no bloquea: m-25017843 y m-25017859 pueden empezar. Decisión de dos vías: es un predicado en una
+función, se cambia en un PR.
 
 ### (iii) «Sugerir respuesta» en WhatsApp: tope de costo y lugar en el plan
 
@@ -1094,16 +1099,16 @@ Se crean sin el campo «Feature» y con «Relacionado con» hacia la épica.
    una prueba.
 6. **Riesgo de conflictos en `whatsapp_tab_chats.py` y su estado** `[arq §5]`: casi la mitad de la
    pista A y BU-B7/BU-B8 pasan por ahí. Un solo `reflex-ui-engineer` dueño de esos archivos, en serie.
-7. **«Por responder» con el menú** (decisión ii) bloquea m-25017843, que es la primera pieza del primer
-   incremento: conviene decidirla primero.
+7. **«Por responder» con el menú** (decisión ii) bloqueaba m-25017843; el fundador la tomó el
+   2026-11-13 («Solo si pasó a persona»), así que el primer incremento ya puede empezar.
 
 ## 9. Prompt para `/qualify-team-dev` (después de que el fundador apruebe y se creen los tickets)
 
 ```
 /qualify-team-dev Épica «Bandeja única de chats y respuesta automática» — doc
 docs/epica-bandeja-unica.md (reemplazar BU-* por los m-<id> creados). Menú en Instagram: decidido
-el 2026-10-23 (m-24789557); el ADR 48 lo escribe principal-architect. Pendientes del fundador: (ii)
-«Por responder» (recomendación B: bloquea m-25017843 y m-25017859), (i-a/b/c), (iii), (iv), (vi). Arrancar en paralelo:
+el 2026-10-23 (m-24789557); el ADR 48 lo escribe principal-architect. Decidido 2026-11-13: (ii)
+«Por responder» = solo si pasó a persona o falló un envío. Pendientes del fundador: (i-a/b/c), (iii), (iv), (vi). Arrancar en paralelo:
 - backend-engineer (A): m-25017846 → m-25017866 → m-25017868 (mismos archivos, una sola persona; pruebas -m db).
 - backend-engineer (B): m-25017843 (servicio de bandeja + ChannelCapabilities + predicado único), luego BU-A6.
 - reflex-ui-engineer (único dueño de whatsapp_tab_chats.py y conversations_page.py): m-25017844 → m-25017859 →
@@ -1112,5 +1117,5 @@ el 2026-10-23 (m-24789557); el ADR 48 lo escribe principal-architect. Pendientes
 - data-scientist-fde: m-25017863 (medición de Sugerir respuesta, qualify-measure).
 - backend-engineer (fuera de la épica): m-25017852 (Instagram «Persona sin nombre», P1), m-25017850, m-25017849, m-25017848.
 Cada historia es un PR con su m-<id>; nada de BU-B5/B6/B9 sin el ADR 48 escrito y (i-b)/(i-c)/(vi) decididas;
-m-25017843 y m-25017859 no empiezan sin la decisión (ii).
+m-25017843 y m-25017859 aplican la regla decidida en (ii).
 ```

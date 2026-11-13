@@ -15,7 +15,7 @@
 - **Menú automático.** Un motor neutral con un traductor por canal y un menú por negocio (§3.2).
 - **Menú en Instagram.** Ya lo decidió el fundador el 2026-10-23 (m-24789557: menú fijo,
   «Hablar con alguien» siempre, ningún texto que diga que Qualify responde solo). Lo que falta:
-  - escribir el ADR 48 en §6 (nunca se escribió);
+  - escribir el ADR 48 en §6 (nunca se escribió; número provisional: el PR #618 también reclama el 48, el ADR toma el siguiente número libre al escribirse);
   - hacer obligatoria en el esquema la entrega a persona;
   - revisar los textos de la app que chocan con la tercera condición (§3.3).
 - **Lo que bloquea a clientes reales en Instagram** es el App Review de mensajes (§5).
