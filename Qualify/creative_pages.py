@@ -3311,6 +3311,58 @@ def _parts_parent_failed() -> rx.Component:
     )
 
 
+def _inspiration_card(parent_id: rx.Var[str] | str) -> rx.Component:
+    """m-24921083 (Deivid, 2026-11-13): «Video de inspiración» — the reel the video by
+    parts is inspired by, as a card like «Texto de la publicación» and «Campaña»: its
+    account («@thegoldenbalance», when known) and «Ir al video ↗» (another tab, https
+    only). No card without the reel's address, or while «Tu video completo» holds
+    another video's read. Laid out as «Campaña»: its glyph, the title with the account
+    under it, and the button beside them — below them when the row does not fit
+    (Deivid, 2026-11-13: «al lado y si no cabe pues abajo»)."""
+    from . import part_review_vm as review_vm  # noqa: PLC0415
+    from .final_video_card_state import FinalVideoState as F  # noqa: PLC0415
+
+    return rx.cond(
+        (F.inspiration_url != "") & (F.parent_id == parent_id),
+        _card(
+            # the head of «Campaña» (`_campaign_field`): glyph and title on the left, a
+            # spacer, the control flush right — below them when the row does not fit
+            rx.hstack(
+                rx.center(
+                    rx.icon("clapperboard", size=15),
+                    class_name="q-section-glyph",
+                    aria_hidden="true",
+                ),
+                rx.vstack(
+                    rx.heading(review_vm.INSPIRATION_TITLE, size="2", weight="bold", as_="h3"),
+                    rx.cond(
+                        F.inspiration_account != "",
+                        rx.text(F.inspiration_account, size="2", weight="medium"),
+                    ),
+                    spacing="1",
+                    min_width="0",
+                ),
+                rx.spacer(),
+                rx.link(
+                    rx.button(
+                        review_vm.INSPIRATION_BUTTON,
+                        variant="soft",
+                        size="2",
+                        min_height="44px",
+                    ),
+                    href=F.inspiration_url,
+                    is_external=True,
+                    rel="noopener noreferrer",
+                ),
+                align="center",
+                width="100%",
+                wrap="wrap",
+                gap="0.75rem",
+            ),
+        ),
+    )
+
+
 def _parts_parent_made() -> rx.Component:
     """The parent once its text came out: «Tu video completo» (the ONLY place it is
     approved), its parts' status line and the parts waiting for a decision, its text,
@@ -3329,6 +3381,8 @@ def _parts_parent_made() -> rx.Component:
         final_video_card(draft.draft_id, layout=COLUMNS),
         part_progress_panel(draft.draft_id),
         _parts_post_text(),
+        # m-24921083 (Deivid, 2026-11-13): the reel it is inspired by, above «Campaña»
+        _inspiration_card(draft.draft_id),
         _campaign_field(),
         _history_line(),
         offer_mark_control(

@@ -67,6 +67,7 @@ from qualify_api.creative.parts import PartChangeRefused, PartRemoved
 from qualify_api.creative.service import UnknownDraft
 
 from . import part_progress_provider as provider
+from . import part_review_provider as review_provider
 from .auth_state import AuthState
 from .final_video_card_state import FinalVideoState
 from .final_video_vm import APPROVED as FINAL_APPROVED
@@ -82,6 +83,7 @@ from .part_progress_vm import (
     part_progress_vm,
     removed_notice,
 )
+from .part_review_vm import LIKE_FAILED_TEXT, LIKE_REFUSED_TEXT, LIKED_PILL
 from .tenant import tenant_uuid
 
 logger = logging.getLogger(__name__)
@@ -228,12 +230,17 @@ class PartRowView:
     #: the part's planned seconds
     seconds: int = 0
     purged: bool = False
+    #: m-24921083: «Me gusta así» is on (as the owner last tapped it, until a read)
+    liked: bool = False
+    #: …and the owner may tap it (a part to review, or one he liked)
+    likable: bool = False
 
 
 @dataclass(frozen=True)
 class PartTileView:
     """One part as «Tu video completo» draws it (m-25016656): «Parte N», «4 s», its own
-    vista previa when it has one, else the word of its state."""
+    vista previa when it has one, else the word of its state. m-24921083: «Me gusta
+    así» / «✓ Lista» when it can be liked."""
 
     index: str  # the plan's place, as «Cambiar esta» takes it (`part_options`)
     number: int  # what the owner reads
@@ -245,6 +252,9 @@ class PartTileView:
     key: str
     word: str
     tone: str
+    draft_id: str = ""
+    liked: bool = False
+    can_like: bool = False
 
 
 def _read(
@@ -257,6 +267,16 @@ def _read(
 
 def _signature(rows: list[dict[str, Any]]) -> str:
     return ",".join(f"{r['index']}:{r['state']}" for r in rows)
+
+
+def _likable(row: dict[str, Any]) -> bool:
+    """m-24921083: «Me gusta así» is offered on a part to review, and «✓ Lista» stays
+    tappable on one the owner liked (to take it off). An approved part is READY too,
+    but not liked: nothing to tap."""
+    state = row.get("state")
+    return state == PartState.TO_REVIEW.value or (
+        state == PartState.READY.value and bool(row.get("liked"))
+    )
 
 
 class PartProgressState(rx.State):
@@ -283,6 +303,8 @@ class PartProgressState(rx.State):
     confirming: int = 0
     #: m-25016656: the panel's one line («Creando tus partes: 2 de 3»)
     status_line: str = ""
+    #: m-24921083: a «Me gusta así» that did not go through ("" for none)
+    like_error: str = ""
 
     _parent_id: str = ""
     _mounted: bool = False
@@ -293,6 +315,11 @@ class PartProgressState(rx.State):
     _signature: str = ""
     #: the row whose removal the owner confirmed (consumed by `run_part_action`)
     _confirmed: int = 0
+    #: m-24921083: «Me gusta así» as the owner last tapped it, by part, until a read
+    #: after the write shows it (the tile answers the tap at once)
+    _like_pending: dict[int, bool] = {}
+    #: the parts whose mark is being written (a second tap meanwhile is ignored)
+    _liking: list[int] = []
 
     @rx.var
     def decision_rows(self) -> list[PartRowView]:
@@ -313,6 +340,15 @@ class PartProgressState(rx.State):
         tiles: list[PartTileView] = []
         for row in self.rows:
             playable = row.preview_url != ""
+            liked = row.likable and row.liked
+            if row.state in DECISION_ROW_STATES:
+                # a part to decide on says so even with a clip (it is not ready)
+                word, tone = row.word, row.tone
+            elif liked:
+                word, tone = LIKED_PILL, "ok"  # m-24921083: «✓ Lista»
+            else:
+                word = "" if playable else TILE_WORDS.get(row.state, row.word)
+                tone = "neutral" if row.state in TILE_WORDS else row.tone
             tiles.append(
                 PartTileView(
                     index=str(row.index),
@@ -323,11 +359,11 @@ class PartProgressState(rx.State):
                     play_label=row.play_label,
                     pause_label=row.pause_label,
                     key=row.draft_id or str(row.index),
-                    # a part to decide on says so even with a clip (it is not ready)
-                    word=row.word
-                    if row.state in DECISION_ROW_STATES
-                    else ("" if playable else TILE_WORDS.get(row.state, row.word)),
-                    tone="neutral" if row.state in TILE_WORDS else row.tone,
+                    word=word,
+                    tone=tone,
+                    draft_id=row.draft_id,
+                    liked=liked,
+                    can_like=row.likable,
                 )
             )
         return tiles
@@ -367,6 +403,8 @@ class PartProgressState(rx.State):
                     duration_text=r.get("duration_text", ""),
                     play_label=r.get("play_label", ""),
                     pause_label=r.get("pause_label", ""),
+                    liked=self._like_pending.get(index, bool(r.get("liked"))),
+                    likable=_likable(r),
                 )
             )
         self.rows = rows
@@ -387,6 +425,9 @@ class PartProgressState(rx.State):
         self.confirming = 0
         self._confirmed = 0
         self.status_line = ""
+        self.like_error = ""
+        self._like_pending = {}
+        self._liking = []
 
     def _apply(
         self,
@@ -430,6 +471,8 @@ class PartProgressState(rx.State):
             # the question no longer applies (the part moved on, or nothing to ask)
             self.confirming = 0
             self._confirmed = 0
+        # a mark whose write ended: the read is the truth now
+        self._like_pending = {i: v for i, v in self._like_pending.items() if i in self._liking}
         self._rebuild_rows()
         return changed
 
@@ -544,6 +587,62 @@ class PartProgressState(rx.State):
             async with self:
                 if not await still_mine():
                     return
+
+    # -- m-24921083: «Me gusta así» / «✓ Lista» on a part's tile ------------------------
+
+    @rx.event(background=True)
+    async def toggle_like(self, index: str):  # noqa: ANN201 - an async generator of events
+        """«Me gusta así» on a part to review, or «✓ Lista» tapped again to take it off.
+        The tile answers at once; the mark is written on the part's active version
+        (`part_review.set_part_liked`: no charge, «Aprobar» never depends on it) and the
+        screen reads again — the status line counts it, the live region says it. A tap
+        while the previous one is being written is ignored. `index`: the tile's plan
+        index (a string off the tile, or an int)."""
+        try:
+            index = int(index)
+        except (TypeError, ValueError):
+            return
+        async with self:
+            row = self._row(index)
+            if row is None or not _likable(row) or index in self._liking:
+                return
+            if not self._parent_id:
+                return
+            auth = await self.get_state(AuthState)
+            tenant_id = tenant_uuid(auth.session_tenant_id) if auth.session_tenant_id else None
+            try:
+                parent_id = UUID(self._parent_id)
+            except ValueError:
+                return
+            if tenant_id is None:
+                self.top_error = NO_SESSION_TEXT
+                return
+            liked = not self._like_pending.get(index, bool(row.get("liked")))
+            self._like_pending = {**self._like_pending, index: liked}
+            self._liking = [*self._liking, index]
+            self.like_error = ""
+            self._rebuild_rows()
+        error = ""
+        try:
+            await asyncio.to_thread(review_provider.set_liked, tenant_id, parent_id, index, liked)
+        except Exception as exc:  # noqa: BLE001 - worded for the owner, nothing changed
+            if not isinstance(exc, review_provider.NotReviewable):
+                logger.warning("part like failed: %s", type(exc).__name__)
+            if isinstance(exc, review_provider.NotReviewable):
+                error = exc.text or LIKE_REFUSED_TEXT  # the backend's words when it has them
+            else:
+                error = LIKE_FAILED_TEXT
+        async with self:
+            self._liking = [i for i in self._liking if i != index]
+            if error:
+                # the tap is undone on screen: the mark is what the backend has
+                self._like_pending = {i: v for i, v in self._like_pending.items() if i != index}
+                self.like_error = error
+                self.announce = error
+            self._rebuild_rows()
+            relaunch = self._mounted and self._parent_id == str(parent_id)
+        if relaunch:
+            yield PartProgressState.poll
 
     # -- «Quitar parte»: asked first when its row carries a question -------------------
 
