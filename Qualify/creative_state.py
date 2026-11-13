@@ -18,6 +18,8 @@ minutes with an explicit timeout state — an infinite spinner is a lie about th
 from __future__ import annotations
 
 import asyncio
+import copy
+import json
 import logging
 import os
 import re
@@ -82,7 +84,15 @@ from qualify_creative.schemas import (
 )
 from sqlalchemy.exc import SQLAlchemyError
 
-from . import clip_gallery_vm, parts_start_vm, reel_parts_vm, reel_wait_provider, reel_wait_vm
+from . import (
+    clip_gallery_vm,
+    part_editor_provider,
+    part_editor_vm,
+    parts_start_vm,
+    reel_parts_vm,
+    reel_wait_provider,
+    reel_wait_vm,
+)
 from .ask_more_vm import PREVIEWS as EXHAUSTED_PREVIEWS
 from .ask_more_vm import VIDEOS as EXHAUSTED_VIDEOS
 from .ask_more_vm import exhausted_kind, exhausted_text
@@ -310,6 +320,20 @@ def _focus_by_id(element_id: str) -> rx.event.EventSpec:
     return rx.call_script(f"setTimeout(() => document.getElementById('{element_id}')?.focus(), 60)")
 
 
+def _clear_part_query_script(raw: object) -> str:
+    """Normalize a cold/guarded part address without a mounted editor script or
+    changing its step. A newer part address must remain untouched."""
+    if isinstance(raw, list | tuple):
+        raw = raw[0] if raw else ""
+    return (
+        "(() => { const u = new URL(window.location.href);"
+        f" if (u.searchParams.get('parte') !== {json.dumps(str(raw))}) return;"
+        " u.searchParams.delete('parte');"
+        " window.history.replaceState({...window.history.state, qPartEntry:false}, '',"
+        " u.pathname + u.search + u.hash); })();"
+    )
+
+
 def _with_scroll(events: _Events) -> _Events:
     """`events` followed by `_scroll_to_view`."""
     if events is None:
@@ -445,6 +469,8 @@ _PICKER_TARGETS: dict[str, tuple[str, bool]] = {
     "reference": ("video", False),
     "clip_images": ("image", True),
     "clip_videos": ("video", True),
+    "part_images": ("image", True),
+    "part_videos": ("video", True),
     "slide": ("image", False),
     #: § request 2026-10-19: the common background (flyer, avatar, gallery) and an
     #: animated slide's motion reference take files from a picker too
@@ -1236,6 +1262,30 @@ class CreativeState(rx.State):
     reel_wait_reason: str = ""
     #: UI-2: the parts the reel's plan proposes (`plan_from_analysis`); UI-3 lists them.
     reel_parts_count: int = 0
+    #: UI-4: the editable copy is isolated from the plan until Guardar.
+    reel_edit_open: bool = False
+    reel_edit_key: str = ""
+    reel_edit_new: bool = False
+    reel_edit_mode: str = "reference"
+    reel_edit_text: str = ""
+    reel_edit_images: list[dict[str, str]] = []
+    reel_edit_videos: list[dict[str, str]] = []
+    reel_edit_audios: list[dict[str, str]] = []
+    reel_edit_inherit_images: bool = True
+    reel_edit_more: bool = False
+    reel_edit_error: str = ""
+    #: UI-4: a confirmation in the sheet (tone `info`), e.g. two parts joined on Guardar.
+    reel_edit_notice: str = ""
+    reel_parts_notice: str = ""
+    reel_merge_reason: str = ""
+    _reel_edit_draft: dict[str, Any] = {}
+    _reel_video_seconds: dict[str, float | None] = {}
+    _reel_edit_merge_key: str = ""
+    _reel_edit_epoch: int = 0
+    _reel_edit_context_epoch: int = 0
+    _reel_edit_return_id: str = ""
+    _create_loaded_identity: tuple[str, ...] = ()
+    _reel_editor_load_context: tuple[str, ...] = ()
     reel_single_part: bool = False
     #: UI-3 (m-24921077): the plan's parts as `reel_parts_vm` entries — each part's
     #: `VideoPartPlan` as JSON (what UI-6 sends) plus what its row needs. Backend-only;
@@ -1243,6 +1293,8 @@ class CreativeState(rx.State):
     _reel_plan: list[dict[str, Any]] = []
     #: UI-3: the plan before the last «Quitar», for «Deshacer» (one step back).
     _reel_plan_before: list[dict[str, Any]] = []
+    _reel_removed: list[dict[str, Any]] = []
+    _reel_removed_before: list[dict[str, Any]] = []
     #: m-24921079: the plan on screen was made WITHOUT a reel («Armar mi video por
     #: partes»: Claude's proposal or, with UI-4, two empty parts), on a Clip.
     parts_without_reel: bool = False
@@ -3536,9 +3588,16 @@ class CreativeState(rx.State):
     @rx.event(background=True)
     async def load_create(self) -> None:
         async with self:
+            session_id = self._create_session_id()
+            warm_close = False
+            if self._reel_editor_load_context:
+                auth = await self.get_state(AuthState)
+                warm_close = self._consume_editor_close_load(auth.session_tenant_id)
             # a reload or a reconnect: «Mejorando…» of a run that died gives the button back
             self._settle_stuck_enhance()
-            self.create_loading = True
+            # A part-sheet Back must keep the row mounted for Radix's return focus.
+            # All authentication and data reads below still run for this navigation.
+            self.create_loading = not warm_close
             self.create_error = ""
             self.upload_error = ""
         ids = await self._session_ids()
@@ -3597,7 +3656,12 @@ class CreativeState(rx.State):
                 self.brand_cta_phrases = cta_phrases
             if not cta_phrases:
                 self.replication_brand_text = False
+            self._create_loaded_identity = (str(tenant_id), str(brand_id), session_id)
             self.create_loading = False
+            if self.reel_edit_open:
+                # A Forward/deep link can open the sheet while this real load is
+                # still running. Only its validated, ready context arms the close.
+                self._arm_editor_close_load()
         await self._refresh_creations(tenant_id, brand_id)
         # live test 2026-11-03: «Publicaciones» read long ago shows dead thumbnails
         async with self:
@@ -3764,6 +3828,7 @@ class CreativeState(rx.State):
     def _forget_reel_analysis(self) -> None:
         """No analysis rides with the piece any more (UI-2): the wait goes away, a poll
         still running stops at its next tick."""
+        self._clear_reel_edit()
         self.reel_analysis_id = ""
         self.reel_analysis_status = ""
         # m-24921079: a plan without a reel goes with it (a new piece, another kind…),
@@ -3793,6 +3858,7 @@ class CreativeState(rx.State):
         self.reel_parts_count = wait.parts
         self.reel_single_part = wait.single_part
         if wait.phase != reel_wait_vm.PHASE_READY:
+            self._reel_removed = []
             # no plan outside «ready»: nothing of an earlier reel lingers
             self._set_reel_plan([])
 
@@ -3821,8 +3887,12 @@ class CreativeState(rx.State):
             self.reel_parts_count, self.reel_parts_seconds
         )
         self._reel_plan_before = []
+        self._reel_removed_before = []
         self.reel_undo_text = ""
         self.reel_move_text = ""
+        self.reel_parts_notice = ""
+        if self.reel_edit_open and not self.reel_edit_new and self.reel_edit_key not in keys:
+            self._clear_reel_edit()
 
     def _reel_plan_open(self) -> bool:
         """The parts list is on screen: a piece from «Hacer uno parecido» whose analysis
@@ -3831,6 +3901,575 @@ class CreativeState(rx.State):
         if self.from_reel_ideas:
             return self.reel_wait_phase == reel_wait_vm.PHASE_READY
         return self.parts_without_reel and self.brief_kind == "clip" and self.reel_parts_count > 0
+
+    # -- UI-4 (m-24921078): a transactional editor of ONE stable part -------------------
+
+    def _parts_images(self) -> list[dict[str, str]]:
+        """Parts have no first/last frame slots: ALL the clip's photos are references.
+        The product's step-1 photos also prefill a reel that cleared the clip strip."""
+        images = self.clip_images or self.product_previews
+        return [{**item, "role": item.get("role") or "product"} for item in images][:9]
+
+    def _part_files(self, keys: list[str], kind: str) -> list[dict[str, str]]:
+        known = [
+            *self.clip_images,
+            *self.clip_videos,
+            *self.clip_audios,
+            *self.product_previews,
+            *self.piece_items,
+        ]
+        names = {item["key"]: item.get("name") or item.get("label") or "" for item in known}
+        label = {"image": "Foto de tu producto", "video": "Tu video", "audio": "Tu audio"}[kind]
+        return [{"key": key, "name": names.get(key) or label, "source": "part"} for key in keys]
+
+    @rx.var(cache=False)
+    def reel_edit_index(self) -> int:
+        if self.reel_edit_new:
+            return len(self._reel_plan) + 1
+        return next(
+            (i for i, e in enumerate(self._reel_plan, 1) if e["key"] == self.reel_edit_key), 0
+        )
+
+    @rx.var(cache=False)
+    def reel_edit_title(self) -> str:
+        total = len(self._reel_plan) + int(self.reel_edit_new) - bool(self._reel_edit_merge_key)
+        return f"Parte {self.reel_edit_index} de {total}"
+
+    @rx.var(cache=False)
+    def reel_edit_options(self) -> list[dict[str, str]]:
+        if not self._reel_edit_draft:
+            return []
+        return part_editor_vm.options(
+            self._reel_edit_draft,
+            self.reel_edit_index,
+            images=self.reel_edit_images,
+            videos=self.reel_edit_videos,
+            audios=self.reel_edit_audios,
+            durations=self._reel_video_seconds,
+        )
+
+    @rx.var(cache=False)
+    def reel_edit_tab_mode(self) -> str:
+        enabled = [o["mode"] for o in self.reel_edit_options if not o["reason"]]
+        return self.reel_edit_mode if self.reel_edit_mode in enabled else next(iter(enabled), "")
+
+    @rx.var(cache=False)
+    def reel_edit_save_reason(self) -> str:
+        if not self.reel_edit_open:
+            return ""
+        return part_editor_vm.save_reason(
+            self.reel_edit_mode,
+            self.reel_edit_text,
+            self.reel_edit_options,
+            preserved_extend=self._reel_edit_draft.get("plan", {}).get("mode") == "extend",
+            has_own_media=bool(self.reel_edit_videos or self.reel_edit_audios),
+        )
+
+    @rx.var(cache=False)
+    def reel_edit_preview(self) -> dict[str, str]:
+        entry = self._reel_edit_draft
+        return {
+            "source": str(entry.get("source") or ""),
+            "start": str(entry.get("start_s") or "0"),
+            "end": str(entry.get("end_s") or "0"),
+            "seconds": str(entry.get("plan", {}).get("seconds") or 5),
+        }
+
+    @rx.var(cache=False)
+    def reel_add_reason(self) -> str:
+        return self.reel_plan_edit_reason or (
+            part_editor_vm.MAX_PARTS_TEXT if len(self._reel_plan) >= 6 else ""
+        )
+
+    @rx.var
+    def reel_plan_edit_reason(self) -> str:
+        return (
+            "Ya empezamos a crear este video. "
+            "Para cambiar las partes, empieza una publicación nueva."
+            if self.is_submitting or self.gen_draft_id
+            else ""
+        )
+
+    @rx.var(cache=False)
+    def reel_missing_description(self) -> bool:
+        return bool(reel_parts_vm.blocked_parts(self._reel_plan))
+
+    @rx.var(cache=False)
+    def reel_unsupported_parts(self) -> bool:
+        return bool(reel_parts_vm.unsupported_parts(self._reel_plan))
+
+    @rx.var(cache=False)
+    def reel_describe_label(self) -> str:
+        return part_editor_vm.describe_action(reel_parts_vm.blocked_parts(self._reel_plan))
+
+    @rx.var(cache=False)
+    def reel_change_label(self) -> str:
+        return part_editor_vm.change_action(reel_parts_vm.unsupported_parts(self._reel_plan))
+
+    @rx.var(cache=False)
+    def reel_merge_shown(self) -> bool:
+        plan = self._reel_edit_draft.get("plan", {})
+        return bool(plan.get("analysis_id")) and int(plan.get("seconds") or 0) < 4
+
+    def _begin_reel_edit(self, entry: dict[str, Any], *, new: bool = False) -> None:
+        self._reel_editor_load_context = ()
+        self._reel_edit_epoch += 1
+        self._reel_edit_context_epoch += 1
+        self._reel_edit_return_id = ""
+        self._reel_edit_draft = copy.deepcopy(entry)
+        self.reel_edit_key = str(entry["key"])
+        self.reel_edit_new = new
+        plan = entry["plan"]
+        self.reel_edit_mode = str(plan["mode"])
+        self.reel_edit_text = str(plan.get("description") or "")
+        photos = plan.get("clip_image_keys")
+        self.reel_edit_inherit_images = photos is None
+        self.reel_edit_images = (
+            self._parts_images() if photos is None else self._part_files(photos, "image")
+        )
+        roles = plan.get("clip_image_roles") or []
+        if photos is not None:
+            self.reel_edit_images = [
+                {**item, "role": roles[i] if i < len(roles) else "product"}
+                for i, item in enumerate(self.reel_edit_images)
+            ]
+        self.reel_edit_videos = self._part_files(plan.get("clip_video_keys") or [], "video")
+        self.reel_edit_audios = self._part_files(plan.get("clip_audio_keys") or [], "audio")
+        self.reel_edit_error = ""
+        self.reel_edit_notice = ""
+        self.reel_edit_more = part_editor_vm.more_opens(entry)
+        self.reel_merge_reason = "Comprobando si podemos juntarlas…"
+        self._reel_edit_merge_key = ""
+        self.reel_edit_open = True
+
+    def _open_reel_edit_events(self) -> list[rx.event.EventSpec | rx.event.EventHandler]:
+        self.gen_step = 0
+        self.generator_view = "form"
+        self._arm_editor_close_load()
+        return [
+            go_to_step(self._CREATE_ROUTE, 2),
+            rx.call_script(f"window.__qPartEditor?.open({self.reel_edit_index});"),
+            CreativeState.inspect_part_videos,
+            CreativeState.inspect_part_merge,
+        ]
+
+    async def _read_part_merge(self) -> tuple[dict[str, Any] | None, str, str, str, int]:
+        async with self:
+            auth = await self.get_state(AuthState)
+            tenant_id = tenant_uuid(auth.session_tenant_id)
+            identity = self.reel_edit_key
+            epoch = self._reel_edit_epoch
+            at = self.reel_edit_index
+            following = copy.deepcopy(self._reel_plan[at]) if at < len(self._reel_plan) else None
+            current = copy.deepcopy(self._reel_edit_draft)
+            if not tenant_id or not current:
+                return None, "Tu sesión terminó. Vuelve a entrar.", identity, "", epoch
+            current["plan"] = part_editor_vm.updated_plan(
+                current["plan"],
+                mode=self.reel_edit_mode,
+                description=self.reel_edit_text,
+                images=self.reel_edit_images,
+                inherit_images=self.reel_edit_inherit_images,
+                videos=self.reel_edit_videos,
+                audios=self.reel_edit_audios,
+            )
+        try:
+            entry, reason = await asyncio.to_thread(
+                part_editor_provider.merge_entries, tenant_id, current, following
+            )
+        except (OSError, SQLAlchemyError, ValueError) as exc:
+            logger.warning("part merge read failed (%s)", type(exc).__name__)
+            entry, reason = (
+                None,
+                "No pudimos comprobar estas partes. Haz esta parte nueva o inténtalo otra vez.",
+            )
+        return entry, reason, identity, str(following["key"]) if following else "", epoch
+
+    @rx.event(background=True)
+    async def inspect_part_merge(self) -> None:
+        async with self:
+            if not self.reel_merge_shown:
+                return
+        _entry, reason, identity, _next, epoch = await self._read_part_merge()
+        async with self:
+            if identity == self.reel_edit_key and epoch == self._reel_edit_epoch:
+                self.reel_merge_reason = reason
+
+    @rx.event(background=True)
+    async def merge_reel_part(self) -> None:
+        async with self:
+            if not self.reel_merge_shown or self.reel_plan_edit_reason:
+                return
+        entry, reason, identity, following, epoch = await self._read_part_merge()
+        async with self:
+            at = self.reel_edit_index
+            if (
+                identity != self.reel_edit_key
+                or epoch != self._reel_edit_epoch
+                or self.reel_plan_edit_reason
+                or at >= len(self._reel_plan)
+                or self._reel_plan[at]["key"] != following
+            ):
+                return
+            if entry is None:
+                self.reel_merge_reason = reason
+                return
+            self._reel_edit_draft = entry
+            self._reel_edit_epoch += 1
+            self._reel_edit_merge_key = following
+            self.reel_edit_text = str(entry["plan"]["description"])
+            self.reel_edit_mode = str(entry["plan"]["mode"])
+            self.reel_edit_error = ""
+            self.reel_edit_notice = part_editor_vm.merged_text(at)
+
+    @rx.event
+    def edit_reel_part(self, key: str) -> list | None:
+        if (
+            not self._reel_plan_open()
+            or self.generator_view == "result"
+            or self.reel_plan_edit_reason
+        ):
+            return None
+        entry = next((e for e in self._reel_plan if e["key"] == key), None)
+        if entry is None:
+            return None
+        self._begin_reel_edit(entry)
+        return self._open_reel_edit_events()
+
+    @rx.event
+    def add_reel_part(self) -> list | None:
+        if not self._reel_plan_open() or self.generator_view == "result":
+            return None
+        if self.reel_add_reason:
+            self.reel_parts_notice = self.reel_add_reason
+            return None
+        self._begin_reel_edit(part_editor_vm.new_entry(), new=True)
+        return self._open_reel_edit_events()
+
+    @rx.event
+    def describe_reel_part(self) -> list | None:
+        missing = reel_parts_vm.blocked_parts(self._reel_plan)
+        return self.edit_reel_part(str(self._reel_plan[missing[0] - 1]["key"])) if missing else None
+
+    @rx.event
+    def change_unsupported_reel_part(self) -> list | None:
+        unsupported = reel_parts_vm.unsupported_parts(self._reel_plan)
+        return (
+            self.edit_reel_part(str(self._reel_plan[unsupported[0] - 1]["key"]))
+            if unsupported
+            else None
+        )
+
+    @rx.event
+    def set_reel_edit_text(self, text: str) -> None:
+        if self.reel_edit_open:
+            self._reel_edit_epoch += 1
+            self.reel_edit_text = text
+            self.reel_edit_error = ""
+
+    @rx.event
+    def set_reel_edit_mode(self, mode: str) -> None:
+        if any(o["mode"] == mode and not o["reason"] for o in self.reel_edit_options):
+            self._reel_edit_epoch += 1
+            self.reel_edit_mode = mode
+            self.reel_edit_error = ""
+
+    @rx.event
+    def toggle_reel_edit_more(self) -> None:
+        self.reel_edit_more = not self.reel_edit_more
+
+    def _create_session_id(self) -> str:
+        """A server-injected socket SID changes on a cold load or reconnect."""
+        try:
+            return str(self.router.session.session_id or "")
+        except AttributeError:  # isolated state tests without a request
+            return ""
+
+    def _editor_load_context(self, tenant_id: str) -> tuple[str, ...]:
+        return (
+            str(tenant_id or ""),
+            self._brand_id,
+            self._create_session_id(),
+            self.selected_product_id,
+            self.product_source,
+            self.gen_category,
+            self.brief_kind,
+            self.gen_mode,
+            str(self.parts_piece),
+            self.reel_analysis_id,
+            self.gen_draft_id,
+            self.brief_content_type,
+        )
+
+    def _arm_editor_close_load(self) -> None:
+        identity = self._create_loaded_identity
+        self._reel_editor_load_context = ()
+        if (
+            len(identity) == 3
+            and all(identity)
+            and self.create_entered
+            and not self.create_loading
+            and self.create_step_n == 2
+            and identity[1:] == (self._brand_id, self._create_session_id())
+        ):
+            self._reel_editor_load_context = self._editor_load_context(identity[0])
+
+    def _consume_editor_close_load(self, tenant_id: str) -> bool:
+        """Only the armed sheet's canonical close URL may avoid a loading remount."""
+        armed = self._reel_editor_load_context
+        self._reel_editor_load_context = ()
+        # _open_reel_edit_events uses go_to_step('/create', 2), which drops other
+        # query parameters. Only removing its subsequent `parte` entry matches.
+        return bool(
+            armed
+            and self.create_entered
+            and not self.create_loading
+            and self.create_step_n == 2
+            and self._create_session_id()
+            and self.router.url.path.rstrip("/") == self._CREATE_ROUTE
+            and dict(self.router.url.query_parameters) == {STEP_PARAM: "2"}
+            and armed == self._editor_load_context(tenant_id)
+        )
+
+    def _clear_reel_edit(self, *, preserve_history_load: bool = False) -> None:
+        if not preserve_history_load:
+            self._reel_editor_load_context = ()
+        self._reel_edit_epoch += 1
+        self._reel_edit_context_epoch += 1
+        self._reel_edit_return_id = ""
+        self.reel_edit_open = False
+        self.reel_edit_key = ""
+        self._reel_edit_draft = {}
+        self.reel_edit_images = []
+        self.reel_edit_videos = []
+        self.reel_edit_audios = []
+        self.reel_edit_text = ""
+        self.reel_edit_error = ""
+        self.reel_edit_notice = ""
+        self._reel_edit_merge_key = ""
+
+    @rx.event
+    def set_reel_edit_open(self, value: bool) -> rx.event.EventSpec | None:
+        if value or not self.reel_edit_open:
+            return None
+        target = (
+            part_editor_vm.ADD_ID
+            if self.reel_edit_new
+            else part_editor_vm.CHANGE_ID + self.reel_edit_key
+        )
+        self._clear_reel_edit(preserve_history_load=True)
+        self._reel_edit_return_id = target
+        return rx.call_script(f"window.__qPartEditor?.close({json.dumps(target)});")
+
+    @rx.event
+    def restore_reel_edit_focus(self) -> rx.event.EventSpec | None:
+        """Radix's close-autofocus event consumes the pre-close stable target once."""
+        if self.reel_edit_open:
+            return None  # a newer sheet already owns the focus
+        target = self._reel_edit_return_id
+        self._reel_edit_return_id = ""
+        if not target or not self.create_entered or self.create_step_n != 2:
+            return None
+        return rx.call_script(f"window.__qPartEditor?.restoreAfterClose({json.dumps(target)});")
+
+    @rx.event
+    def save_reel_part(self, form: dict[str, Any] | None = None) -> rx.event.EventSpec | None:
+        if not self.reel_edit_open or not self._reel_plan_open():
+            return None
+        if self.reel_plan_edit_reason:
+            self.reel_edit_error = self.reel_plan_edit_reason
+            return None
+        if form is not None and isinstance(form.get("description"), str):
+            self.reel_edit_text = form["description"]
+        if self.reel_edit_save_reason:
+            # «Guardar» is aria-disabled with its reason shown under it: a click is ignored.
+            return None
+        if self.reel_edit_new and self.reel_add_reason:
+            self.reel_edit_error = self.reel_add_reason
+            return None
+        key = self.reel_edit_key
+        if self._reel_edit_merge_key:
+            at = self.reel_edit_index
+            if (
+                at >= len(self._reel_plan)
+                or self._reel_plan[at]["key"] != self._reel_edit_merge_key
+            ):
+                self.reel_edit_error = (
+                    "Cambió el orden de las partes. Cierra la hoja y vuelve a juntarlas."
+                )
+                return None
+        if not self.reel_edit_new and not any(e["key"] == key for e in self._reel_plan):
+            self.reel_edit_error = "Esta parte ya no está. Cierra la hoja y elige otra."
+            return None
+        entry = copy.deepcopy(self._reel_edit_draft)
+        entry.setdefault("edit_original_reason", entry.get("reason", ""))
+        entry["plan"] = part_editor_vm.updated_plan(
+            entry["plan"],
+            mode=self.reel_edit_mode,
+            description=self.reel_edit_text,
+            images=self.reel_edit_images,
+            inherit_images=self.reel_edit_inherit_images,
+            videos=self.reel_edit_videos,
+            audios=self.reel_edit_audios,
+        )
+        if self.reel_edit_mode != "extend":
+            entry["reason"] = "" if self.reel_edit_mode == "edit" else entry.get("reason", "")
+        before = copy.deepcopy(self._reel_plan_before)
+        removed_before = copy.deepcopy(self._reel_removed_before)
+        undo = self.reel_undo_text
+        entries = [
+            entry if e["key"] == key else e
+            for e in self._reel_plan
+            if e["key"] != self._reel_edit_merge_key
+        ]
+        if self.reel_edit_new:
+            entries.append(entry)
+        self._set_reel_plan(entries)
+        # Editing/appending must not destroy UI-3's independent removal history.
+        if before:
+            before = [
+                entry if e["key"] == key else e
+                for e in before
+                if e["key"] != self._reel_edit_merge_key
+            ]
+            if self.reel_edit_new:
+                before.append(entry)
+        self._reel_plan_before, self.reel_undo_text = before, undo
+        self._reel_removed_before = removed_before
+        self.reel_parts_notice = "Guardaste la parte."
+        self._clear_reel_edit(preserve_history_load=True)
+        self._reel_edit_return_id = part_editor_vm.CHANGE_ID + key
+        return rx.call_script(
+            f"window.__qPartEditor?.close({json.dumps(part_editor_vm.CHANGE_ID + key)});"
+        )
+
+    @rx.event(background=True)
+    async def inspect_part_videos(self) -> None:
+        async with self:
+            auth = await self.get_state(AuthState)
+            tenant_id = tenant_uuid(auth.session_tenant_id)
+            identity = self.reel_edit_key
+            context_epoch = self._reel_edit_context_epoch
+            keys = [
+                v["key"] for v in self.reel_edit_videos if v["key"] not in self._reel_video_seconds
+            ]
+        if tenant_id is None:
+            return
+        for key in keys:
+            try:
+                seconds = await asyncio.to_thread(
+                    part_editor_provider.video_seconds, tenant_id, key
+                )
+            except (OSError, SQLAlchemyError, ValueError) as exc:
+                logger.warning("part video metadata read failed (%s)", type(exc).__name__)
+                seconds = None
+            async with self:
+                current = await self.get_state(AuthState)
+                if (
+                    current.session_tenant_id != str(tenant_id)
+                    or identity != self.reel_edit_key
+                    or context_epoch != self._reel_edit_context_epoch
+                ):
+                    return
+                # Small session cache; cleared along with the piece's media inputs.
+                self._reel_video_seconds = {
+                    **dict(list(self._reel_video_seconds.items())[-31:]),
+                    key: seconds,
+                }
+
+    @rx.event
+    def remove_part_media(self, kind: str, key: str) -> list | None:
+        field = {
+            "image": "reel_edit_images",
+            "video": "reel_edit_videos",
+            "audio": "reel_edit_audios",
+        }.get(kind)
+        if not self.reel_edit_open or field is None:
+            return
+        setattr(self, field, [item for item in getattr(self, field) if item["key"] != key])
+        self._reel_edit_epoch += 1
+        if kind == "image":
+            self.reel_edit_inherit_images = False
+        self.reel_edit_error = ""
+        return [CreativeState.inspect_part_merge] if self.reel_merge_shown else None
+
+    async def _upload_part_media(self, kind: str, files: list[rx.UploadFile]) -> list | None:
+        if not self.reel_edit_open:
+            return None
+        field = {
+            "image": "reel_edit_images",
+            "video": "reel_edit_videos",
+            "audio": "reel_edit_audios",
+        }[kind]
+        held = getattr(self, field)
+        room = (9 if kind == "image" else 3) - len(held)
+        if room <= 0:
+            self.reel_edit_error = part_editor_vm.media_limit_text(kind)
+            return None
+        identity = self.reel_edit_key
+        saved = await self._save_uploads(files[:room])
+        if not self.reel_edit_open or identity != self.reel_edit_key:
+            return None
+        setattr(
+            self,
+            field,
+            [
+                *held,
+                *({"key": k, "name": n, "source": "upload", "role": "product"} for k, n in saved),
+            ],
+        )
+        self._reel_edit_epoch += 1
+        self.reel_edit_error = self.upload_error or (
+            "No caben todos los archivos. Quita uno para agregar otro." if len(files) > room else ""
+        )
+        if kind == "image":
+            self.reel_edit_inherit_images = False
+        if kind == "video":
+            await self._probe_part_videos([k for k, _ in saved])
+        if self.reel_merge_shown:
+            self.reel_merge_reason = ""  # an earlier refusal may no longer hold
+        # Nothing is chained from an upload (like every other upload handler here): Reflex
+        # keeps the upload's response stream open until its whole chain ends, and the
+        # owner's next click on the sheet («Quitar») raced that stream. The merge's reason
+        # is read again when «Juntar con la siguiente» is pressed.
+        return None
+
+    async def _probe_part_videos(self, keys: list[str]) -> None:
+        """The length of each new own video, read inside the upload (off the loop) so
+        «Tu video, con tu marca» knows at once whether it fits the part."""
+        auth = await self.get_state(AuthState)
+        tenant_id = tenant_uuid(auth.session_tenant_id)
+        if tenant_id is None:
+            return
+        found: dict[str, float | None] = {}
+        for key in keys:
+            if key in self._reel_video_seconds:
+                continue
+            try:
+                found[key] = await asyncio.to_thread(
+                    part_editor_provider.video_seconds, tenant_id, key
+                )
+            except (OSError, SQLAlchemyError, ValueError) as exc:
+                logger.warning("part video metadata read failed (%s)", type(exc).__name__)
+                found[key] = None
+        if found:
+            # Small session cache; cleared along with the piece's media inputs.
+            self._reel_video_seconds = {
+                **dict(list(self._reel_video_seconds.items())[-31:]),
+                **found,
+            }
+
+    @rx.event
+    async def handle_part_image_uploads(self, files: list[rx.UploadFile]) -> list | None:
+        return await self._upload_part_media("image", files)
+
+    @rx.event
+    async def handle_part_video_uploads(self, files: list[rx.UploadFile]) -> list | None:
+        return await self._upload_part_media("video", files)
+
+    @rx.event
+    async def handle_part_audio_uploads(self, files: list[rx.UploadFile]) -> list | None:
+        return await self._upload_part_media("audio", files)
 
     @rx.var
     def reel_plan_shown(self) -> bool:
@@ -3944,10 +4583,9 @@ class CreativeState(rx.State):
 
     @rx.var(cache=False)
     def reel_to_ideas(self) -> bool:
-        """No part of the reel can be created: «‹ Ideas para tus reels» (the head's own
-        `exit_create`) instead of «Volver al paso 2». Only a plan from «Hacer uno
-        parecido»: one made without a reel (m-24921079) never sends the owner to Ideas —
-        its parts are fixed on step 2 (`reel_parts_vm.all_parts_blocked`)."""
+        """«‹ Ideas para tus reels» instead of «Volver al paso 2». Always False since
+        UI-4: every blocked part, seen in a reel or not, can be described on step 2
+        (`reel_parts_vm.review_actions`)."""
         return self._reel_review_open() and self._reel_review().to_ideas
 
     @rx.var(cache=False)
@@ -3974,6 +4612,7 @@ class CreativeState(rx.State):
             self._flush_phrase_drafts()
             form = {**self._generator_form(), "topic": self._parts_topic()}
             plans = reel_parts_vm.plans(self._reel_plan)
+            removed_plans = reel_parts_vm.plans(self._reel_removed)
             # m-24921079: who proposed a plan without a reel (provenance on the parent)
             provenance = self._parts_provenance
             campaign = (self.gen_campaign, self.gen_campaign_new_name, self.gen_campaign_new_color)
@@ -3984,7 +4623,12 @@ class CreativeState(rx.State):
                 form,
                 keep_submitting=True,
                 submit=submit_parts_brief,
-                submit_options={"parts": plans, "scope": scope, "provenance": provenance},
+                submit_options={
+                    "parts": plans,
+                    "scope": scope,
+                    "provenance": provenance,
+                    "removed_parts": removed_plans,
+                },
             )
         except Exception as exc:  # noqa: BLE001 — never raw text on screen
             logger.error("parts parent failed: %s", type(exc).__name__)
@@ -4037,14 +4681,24 @@ class CreativeState(rx.State):
     def remove_reel_part(self, key: str) -> rx.event.EventSpec | None:
         """«Quitar»: no confirmation; «Quitaste la parte n. Deshacer» right above the
         list (N3), and the keyboard on «Deshacer» (the row it was on is gone)."""
-        if not self._reel_plan_open():
+        if not self._reel_plan_open() or self.reel_plan_edit_reason:
+            return None
+        if not any(e["key"] == key for e in self._reel_plan):
+            return None
+        if len(self._reel_removed) >= part_editor_vm.MAX_REMOVED:
+            # the parent refuses a longer removal history (`too_many`): say it here
+            self.reel_parts_notice = part_editor_vm.MAX_REMOVED_TEXT
             return None
         before = [dict(e) for e in self._reel_plan]
+        removed_before = copy.deepcopy(self._reel_removed)
         entries, at = reel_parts_vm.remove_part(before, key)
         if at == 0:
             return None
         self._set_reel_plan(entries)
         self._reel_plan_before = before
+        self._reel_removed_before = removed_before
+        removed = next(e for e in before if e["key"] == key)
+        self._reel_removed = [*removed_before, copy.deepcopy(removed)]
         self.reel_undo_text = reel_parts_vm.removed_text(at)
         return _focus_by_id(REEL_PART_UNDO_ID)
 
@@ -4063,9 +4717,14 @@ class CreativeState(rx.State):
     def undo_reel_part(self) -> None:
         """«Deshacer»: the plan as it was before the last «Quitar» — the part back in
         its place, in the order it had."""
-        if not self._reel_plan_open() or not self._reel_plan_before:
+        if not self._reel_plan_open() or not self._reel_plan_before or self.reel_plan_edit_reason:
             return
+        if len(self._reel_plan_before) > part_editor_vm.MAX_PARTS:
+            self.reel_parts_notice = part_editor_vm.MAX_PARTS_TEXT
+            return
+        removed = copy.deepcopy(self._reel_removed_before)
         self._set_reel_plan(self._reel_plan_before)
+        self._reel_removed = removed
 
     def _moved(self, entries: list[dict[str, Any]], before: int, after: int) -> bool:
         """Store a move (never a re-plan, never a model call): the live line says it; a
@@ -4081,7 +4740,7 @@ class CreativeState(rx.State):
     def move_reel_part_up(self, key: str) -> rx.event.EventSpec | None:
         """← on a focused card (round 15: no arrows on screen; the keyboard script
         presses a hidden button): the part, and what is stuck to it, one place up."""
-        if not self._reel_plan_open():
+        if not self._reel_plan_open() or self.reel_plan_edit_reason:
             return None
         if not self._moved(*reel_parts_vm.move_part(self._reel_plan, key, -1)):
             return None
@@ -4090,7 +4749,7 @@ class CreativeState(rx.State):
     @rx.event
     def move_reel_part_down(self, key: str) -> rx.event.EventSpec | None:
         """→ on a focused card: the part, and what is stuck to it, one place down."""
-        if not self._reel_plan_open():
+        if not self._reel_plan_open() or self.reel_plan_edit_reason:
             return None
         if not self._moved(*reel_parts_vm.move_part(self._reel_plan, key, 1)):
             return None
@@ -4108,14 +4767,18 @@ class CreativeState(rx.State):
     @rx.event
     def start_reel_part_drag(self, unit: str) -> None:
         """A part lifted in «Orden del clip» (`assets/slide-drag.js`): which unit moves."""
-        self.reel_drag_from = self._unit_index(unit) if self._reel_plan_open() else -1
+        self.reel_drag_from = (
+            self._unit_index(unit)
+            if self._reel_plan_open() and not self.reel_plan_edit_reason
+            else -1
+        )
 
     @rx.event
     def drop_reel_part(self, unit: str) -> None:
         """Dropped on another part: its unit takes that place, `extend` parts with it."""
         start, self.reel_drag_from = self.reel_drag_from, -1
         target = self._unit_index(unit)
-        if not self._reel_plan_open() or start < 0 or target < 0:
+        if not self._reel_plan_open() or self.reel_plan_edit_reason or start < 0 or target < 0:
             return
         self._moved(*reel_parts_vm.move_unit(self._reel_plan, start, target))
 
@@ -4311,6 +4974,7 @@ class CreativeState(rx.State):
         «Hacer uno parecido» (UI-1) the piece remembers it came from the ideas and which
         shared analysis it asked for; UI-2 also keeps what the request answered
         (`analysis_status`, even without an id) for step 2's wait."""
+        self._clear_reel_edit()
         self._back_to_form()
         self.gen_category = "clip"
         self.gen_mode = "create"
@@ -4470,6 +5134,8 @@ class CreativeState(rx.State):
             "reference": [self.reference_video_key],
             "clip_images": [item["key"] for item in self.clip_images],
             "clip_videos": [item["key"] for item in self.clip_videos],
+            "part_images": [item["key"] for item in self.reel_edit_images],
+            "part_videos": [item["key"] for item in self.reel_edit_videos],
             "slide": [slide],
             "background": [self.media_background_key],
             "slide_reference": [current.get("ref_key", "")],
@@ -4831,11 +5497,14 @@ class CreativeState(rx.State):
         return None
 
     @rx.event
-    def pick_media(self, target: str, source: str, key: str) -> None:
+    def pick_media(self, target: str, source: str, key: str) -> list | None:
         """A file of the catalog product or of one of the brand's pieces into a slot —
         a slot of one file takes it (the same one again takes it out), a slot of
         several adds it or takes it out."""
         self._pick(target, source, key)
+        if target in ("part_images", "part_videos"):
+            return [CreativeState.inspect_part_videos, CreativeState.inspect_part_merge]
+        return None
 
     @rx.event
     def pick_mixed_media(self, target: str, source: str, key: str, media: str) -> None:
@@ -4873,7 +5542,26 @@ class CreativeState(rx.State):
         name = self._pickable(source, key, spec[0])
         if name is None:
             return
-        if target == "products":
+        if target in ("part_images", "part_videos"):
+            if not self.reel_edit_open:
+                return
+            image = target == "part_images"
+            field = "reel_edit_images" if image else "reel_edit_videos"
+            held = getattr(self, field)
+            if any(item["key"] == key for item in held):
+                held = [item for item in held if item["key"] != key]
+            elif len(held) < (9 if image else 3):
+                held = [*held, {"key": key, "name": name, "source": source, "role": "product"}]
+            else:
+                self.reel_edit_error = part_editor_vm.media_limit_text(
+                    "image" if image else "video"
+                )
+                return
+            setattr(self, field, held)
+            self._reel_edit_epoch += 1
+            if image:
+                self.reel_edit_inherit_images = False
+        elif target == "products":
             if source == "catalog":
                 off = self.catalog_off
                 self.catalog_off = [k for k in off if k != key] if key in off else [*off, key]
@@ -5416,6 +6104,8 @@ class CreativeState(rx.State):
         what is missing — so with the same kind and format as last time, writing the
         topic and «Siguiente» reach «Crear» (CREAR-2). PASOS-5: writes ``?paso=N`` and
         scrolls the panel to the top + focuses the title (N6b)."""
+        if self.reel_edit_open:
+            return self.set_reel_edit_open(False)
         self._flush_phrase_drafts()
         if self._reel_wait_holds_next():
             return None  # UI-2: the reel's analysis is not in yet
@@ -5430,6 +6120,8 @@ class CreativeState(rx.State):
     def prev_view(self) -> rx.event.EventSpec:
         """«Atrás»: the previous step; what was written stays in the state. PASOS-5:
         writes ``?paso=N`` (back) and scrolls the panel to the top + focuses the title."""
+        if self.reel_edit_open:
+            return self.set_reel_edit_open(False)
         self._flush_phrase_drafts()
         self.gen_step = max(self._view_index() - 1, 0)
         self.gen_direction = DIR_BACK
@@ -5513,6 +6205,15 @@ class CreativeState(rx.State):
         ``on_pop`` handler (``step_frame(on_pop=...)``). The ``step_sync`` in the body
         writes the address once this handler has decided the step (``create_entered``).
         Returns ``settle_step`` (scroll the panel to the top + focus the title)."""
+        if self.create_entered:
+            # Browser history also carries the part sheet. Read its actual address
+            # before deciding whether a page step changed and should take the focus.
+            return [
+                rx.call_script(
+                    "window.location.search", callback=CreativeState.reconcile_reel_editor_route
+                ),
+                *self._resume_reel_wait(),
+            ]
         raw = self.router.url.query_parameters.get(STEP_PARAM, "")
         m = self.create_step_m
         requested = parse_step_param(raw, m) if raw else self.create_step_n
@@ -5531,7 +6232,83 @@ class CreativeState(rx.State):
             + step_settle_script()
         )
         # UI-2: a pending wait resumes from the page's load too (a reload, a deep link)
-        return [settle, *self._resume_reel_wait()]
+        return [
+            settle,
+            rx.call_script(
+                "window.location.search", callback=CreativeState.reconcile_reel_editor_route
+            ),
+            *self._resume_reel_wait(),
+        ]
+
+    @rx.event
+    def reconcile_reel_editor_route(self, search: str) -> list:
+        """Read the actual browser address after pushState/popstate. Resolving a URL
+        position to a stable key happens once; editing thereafter always uses that key."""
+        params = urllib.parse.parse_qs(search.lstrip("?"), keep_blank_values=True)
+        raw = params.get(STEP_PARAM, [""])[0]
+        step = parse_step_param(raw, self.create_step_m) if raw else self.create_step_n
+        old = self.create_step_n
+        if self.gen_mode not in ("discover", "variations"):
+            self._show_create_step(step)
+        events = []
+        if self.create_step_n != old or step != self.create_step_n:
+            self.gen_direction = DIR_BACK if self.create_step_n < old else DIR_NEXT
+            self.create_entry_epoch += 1
+            events.append(
+                rx.call_script(
+                    step_entry_script(
+                        self._CREATE_ROUTE, self.create_step_n, self.create_entry_epoch, raw or None
+                    )
+                    + step_settle_script()
+                )
+            )
+        self.create_resume_pending = False
+        at = part_editor_vm.position(
+            params.get("parte"),
+            len(self._reel_plan) + int(self.reel_edit_open and self.reel_edit_new),
+        )
+        if (
+            at
+            and step == 2
+            and self.product_confirmed
+            and self._reel_plan_open()
+            and self.generator_view != "result"
+            and not self.reel_plan_edit_reason
+        ):
+            if not self.reel_edit_open or at != self.reel_edit_index:
+                if at > len(self._reel_plan):
+                    return []
+                self._begin_reel_edit(self._reel_plan[at - 1])
+                self._arm_editor_close_load()
+            return [
+                *events,
+                rx.call_script("window.__qPartEditor?.focus();"),
+                CreativeState.inspect_part_videos,
+                CreativeState.inspect_part_merge,
+            ]
+        target = (
+            part_editor_vm.ADD_ID
+            if self.reel_edit_new
+            else part_editor_vm.CHANGE_ID + self.reel_edit_key
+        )
+        was_open = self.reel_edit_open
+        pending_return = self._reel_edit_return_id
+        self._clear_reel_edit(
+            preserve_history_load=old == self.create_step_n == 2 and "parte" not in params
+        )
+        if was_open:
+            if self.create_step_n == 2:
+                self._reel_edit_return_id = target
+            events.append(
+                rx.call_script(f"window.__qPartEditor?.close({json.dumps(target)}, false);")
+            )
+        elif old == self.create_step_n == 2 and "parte" not in params:
+            # close()'s history.back can arrive before Radix's delayed exit hook.
+            # This is still the same close transaction, not a new editing context.
+            self._reel_edit_return_id = pending_return
+        if "parte" in params:
+            events.append(rx.call_script(_clear_part_query_script(params["parte"])))
+        return events
 
     #: PASOS-5: ``enter_create_step`` is also the ``on_pop`` handler (idempotent).
     pop_create_step = enter_create_step
@@ -5541,6 +6318,7 @@ class CreativeState(rx.State):
         """The frame unmounted: the next visit's first render must not write this
         visit's step into the address before ``enter_create_step`` reads ``?paso=``."""
         self.create_entered = False
+        self._reel_editor_load_context = ()
 
     @rx.event
     def save_for_later(self) -> rx.event.EventSpec:
@@ -5937,6 +6715,7 @@ class CreativeState(rx.State):
         dropped, and a plan made WITHOUT a reel goes (its parts describe the earlier
         product): back to today's Clip, its card shown again and new. A reel's plan
         stays — it describes the reel, not the product."""
+        self._clear_reel_edit()
         self.parts_piece += 1
         if self.parts_without_reel and not self.from_reel_ideas:
             self._set_reel_plan([])  # an empty plan without a reel is no plan
@@ -5946,6 +6725,7 @@ class CreativeState(rx.State):
         if self.selected_product_id:
             self._product_changed()
         else:
+            self._clear_reel_edit()
             self.parts_piece += 1  # m-24921079: a proposal still running is dropped
         self.selected_product_id = ""
         self._drop_product_video()
@@ -8189,7 +8969,12 @@ class CreativeState(rx.State):
     def _media_inputs(self) -> dict[str, object]:
         kind = self.brief_kind
         if kind == "clip":
-            return self._clip_media()
+            media = self._clip_media()
+            if self._reel_plan_open():
+                images = self._parts_images()
+                media["clip_image_keys"] = [item["key"] for item in images]
+                media["clip_image_roles"] = [item.get("role") or "product" for item in images]
+            return media
         takes_images = kind != "creator_script"
         # the ad image sends whichever photos were uploaded; its mode says which
         is_ad = kind == "static_flyer"
@@ -8268,6 +9053,11 @@ class CreativeState(rx.State):
         return media
 
     def _reset_media_inputs(self) -> None:
+        self._clear_reel_edit()
+        self._reel_video_seconds = {}
+        self._reel_removed = []
+        self._reel_removed_before = []
+        self.reel_parts_notice = ""
         self._pinterest_context_epoch += 1
         self.source_pins = []
         self.clear_product()

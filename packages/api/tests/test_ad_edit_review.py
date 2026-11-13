@@ -102,6 +102,20 @@ def test_cop_increase_uses_meta_offset_one_and_rejects_reduction_fraction():
     assert payload == {"lifetime_budget": 60000}
     assert changed.request["budget_minor"] == 6000000
     assert original.request["budget_minor"] == 5000000
-    for value in (4999900, 5000000, 6000001, True):
+    for value in (5000000, 6000001, 4999901, 0, -100, True):
         with pytest.raises(ResultsUnavailable):
             _intent(original, "budget", value, None)
+    # A whole-peso decrease is a valid intent; its floor is checked against Meta later.
+    lowered, payload, _ = _intent(original, "budget", 4000000, None)
+    assert payload == {"lifetime_budget": 40000} and lowered.request["budget_minor"] == 4000000
+
+
+def test_ledger_accepts_a_recorded_decrease_but_never_a_no_op():
+    before = {"budget_minor": 20000, "end_time": "2099-01-01T00:00:00+00:00"}
+    assert consistent_intent(
+        "budget", {"lifetime_budget": 100}, before, before | {"budget_minor": 10000}
+    )
+    assert not consistent_intent("budget", {"lifetime_budget": 200}, before, before)
+    assert not consistent_intent(
+        "budget", {"lifetime_budget": 0}, before, before | {"budget_minor": 0}
+    )

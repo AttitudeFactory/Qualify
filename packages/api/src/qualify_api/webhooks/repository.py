@@ -151,7 +151,7 @@ class WebhookQueue:
                          FOR UPDATE SKIP LOCKED)
                     RETURNING id, delivery_id, object, entry_id, field, value, attempts,
                               entry_time, received_at, change_index,
-                              CASE WHEN object IN ('instagram','page','facebook')
+                              CASE WHEN object IN ('instagram','page','facebook','ad_account')
                                 THEN meta_webhook_frozen_owners(id) ELSE NULL END AS owners
                     """
                 ),

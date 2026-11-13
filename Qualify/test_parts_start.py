@@ -66,7 +66,7 @@ def test_the_card_texts_read_literally() -> None:
         "Te proponemos las partes con tu producto y tu marca. Las revisas antes de crear nada."
     )
     assert vm.QUESTION_HINT == "Ej.: «Qué tiene de especial y cómo conseguirlo»."
-    assert vm.EMPTY_TITLE.startswith("Tu video todavía no tiene partes")
+    assert vm.EMPTY_TITLE == "Completa las partes de tu video"
 
 
 def test_no_client_text_carries_english_or_film_words() -> None:
@@ -172,7 +172,7 @@ def test_error_texts_promise_a_retry_only_when_it_may_work() -> None:
 
 def test_no_error_sends_the_owner_to_a_button_the_card_hides() -> None:
     """While «Prefiero armarlas yo» is hidden, no text says «arma las partes tú»."""
-    assert vm.MANUAL_PARTS_ENABLED is False
+    assert vm.MANUAL_PARTS_ENABLED is True
     errors = (
         PartsProposalUnavailable("down", retryable=True),
         PartsProposalUnavailable("no key"),
@@ -342,9 +342,11 @@ def manual_on(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(vm, "MANUAL_PARTS_ENABLED", True)
 
 
-async def test_prefer_to_build_them_is_off_until_the_sheet_exists() -> None:
+async def test_prefer_to_build_them_can_be_explicitly_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Option A (Deivid, 2026-11-10): no button and the event does nothing."""
-    assert vm.MANUAL_PARTS_ENABLED is False
+    monkeypatch.setattr(vm, "MANUAL_PARTS_ENABLED", False)
     proxy = _proxy()
     await PartsStartState.open_card.fn(proxy)
     await PartsStartState.choose_manual.fn(proxy)
@@ -707,17 +709,16 @@ def test_taking_out_every_part_is_back_to_todays_clip() -> None:
 def test_blocked_parts_without_a_reel_go_back_to_step_2_never_to_ideas() -> None:
     entries = vm.empty_entries() + vm.entries_from_proposal(_proposal(1))
     assert reel_parts_vm.parts_blocked_text(entries) == (
-        "Falta contar qué pasa en las partes 1 y 2. Escríbelo o quítalas en el paso 2."
+        "Falta contar qué pasa en las partes 1 y 2. Escríbelo para crear tu video."
     )
     one = vm.entries_from_proposal(_proposal(1)) + vm.empty_entries()[:1]
     assert reel_parts_vm.parts_blocked_text(one) == (
-        "Falta contar qué pasa en la parte 2. Escríbelo o quítala en el paso 2."
+        "Falta contar qué pasa en la parte 2. Escríbelo para crear tu video."
     )
     every = vm.empty_entries()
     assert reel_parts_vm.parts_blocked_text(every) == (
-        "Falta contar qué pasa en tus partes. Vuelve al paso 2 para escribirlo."
+        "Falta contar qué pasa en las partes 1 y 2. Escríbelo para crear tu video."
     )
-    assert reel_parts_vm.all_parts_blocked(every) is False
     actions = reel_parts_vm.review_actions(every)
     assert actions.to_ideas is False and actions.back_to_parts is True
 

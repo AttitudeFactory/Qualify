@@ -22,6 +22,153 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
 
 ---
 
+<a id="stickers-kawaii-001"></a>
+
+## STICKERS-KAWAII-001 — Banco pagado: sticker con un personaje tierno del producto (Seedream 5.0 pro) y recorte por color plano frente a `layer_decomposition` (m-25017372) — 2026-11-12
+
+- **Por qué:** el fundador pidió el 2026-11-12 un tipo nuevo de sticker para WhatsApp › Chats ›
+  Stickers. A partir de la foto de un producto se dibuja un personaje tierno de ese producto, con
+  un mensaje que elige el dueño. El sticker puede ser animado o fijo. Eligió Seedream 5.0 pro
+  (`dola-seedream-5-0-pro-260628`) y autorizó un banco local de **US$0,50 como máximo**,
+  reintentos incluidos. Regla nueva del mismo día: Pillow no compone, compone Remotion.
+- **Entradas:** 4 fotos aprobadas del catálogo de Bianki (tenant `7607da58-…`): shawarma de
+  carne, shawarma de pollo, papas familiares y salchipapa, 1080×810. Se leyeron de producción
+  solo para lectura (consulta a `product_media`, luego `open` en R2) y se guardaron fuera del
+  repositorio. **Nada se escribió ni se borró en R2.** Identidad de marca de Bianki: paleta
+  `#c5093b #ffcd00 #00b188 #231f20 #ffffff` y letra `Unbounded`, tomada de Google Fonts.
+- **Llamadas:** `SeedreamImageAdapter`, 1K y una sola imagen de entrada (gratis). La llave es
+  `QUALIFY_BYTEPLUS_ARK_API_KEY` local, porque el `.env` no tiene llave de evaluación. Cada POST
+  pasó por `LedgerTransport` (`qualify_api/evals/spend_control.py`), que cotiza con la tabla
+  `v8` y lleva el tope restante a cada llamada siguiente. `layer_decomposition` se pidió con el
+  `_post` del mismo adaptador, porque el adaptador todavía no envía ese campo.
+
+### STICKERS-KAWAII-000 — detenido antes de gastar (US$0)
+
+El primer intento del mismo día se detuvo antes de la primera llamada pagada. El adaptador llama
+a Pro por el identificador del modelo, sin un endpoint `ep-…` propio. La ficha
+[seedream-5-0-pro.md](seedream-5-0-pro.md) decía entonces «Modelo preautorizado: cede los datos a
+BytePlus». `arkcli infer endpoint list` no pudo confirmarlo porque la sesión SSO de arkcli estaba
+vencida. Por la regla de no enviar datos de clientes a un modelo que cede datos, no se mandó
+ninguna foto. El fundador revisó ModelArk › Data Collaboration ese día y confirmó que Seedream
+5.0 pro y 5.0 lite **no** ceden datos. Las fichas de los dos modelos quedaron corregidas en esta
+misma rama.
+
+### Prompts (versión `kawaii-v1` … `kawaii-v3`)
+
+- `kawaii-v1`: personaje chibi «sticker illustration», contorno oscuro grueso, sombreado plano,
+  fondo magenta plano `#FF00FF` y prohibido todo texto.
+- `kawaii-v2`: muñeco 3D de vinilo, con luz de estudio y el mismo fondo.
+- `kawaii-v3`, **el mejor**: `kawaii-v1` cambiando «Sticker illustration style» por «Flat
+  cartoon illustration», más la orden de no dibujar borde blanco. Texto exacto:
+
+> Turn the food product in the reference image into a cute kawaii chibi mascot character of
+> that exact product: keep its real shape, ingredients and colours so it is instantly
+> recognisable, give it a happy face with big shiny eyes and rosy cheeks, and tiny arms and
+> legs. Flat cartoon illustration, thick clean dark outlines, flat cel shading, one single
+> character centred, whole body visible with a wide empty margin around it. Do not draw any
+> white border, sticker edge or outline glow around the character: its dark outline touches the
+> background directly. Background: one flat solid pure magenta colour (#FF00FF), perfectly
+> uniform, no gradient, no shadow, no floor, no other objects. Absolutely no text, letters,
+> numbers or logos anywhere in the image.
+
+### Resultados
+
+| # | Entrada | Prompt / modo | Latencia | Costo | Resultado |
+|---|---|---|---|---|---|
+| g01 | Shawarma de carne | v1 | 29,2 s | US$0,045 | Personaje claro: envoltura blanca, pan con marcas de plancha, carne, tomate, perejil y salsa. Contorno oscuro grueso |
+| g02 | Shawarma de carne | v2 | 27,5 s | US$0,045 | Más fiel a la foto, pero la cara queda metida en el relleno y se lee menos tierno. Sin contorno, el borde con el fondo queda más difícil de recortar. Descartado |
+| l01 | g01 | `layer_decomposition` con un prompt que pide una sola capa | 28,9 s | US$0,045 (2 imágenes facturadas) | Base JPEG 1024² más una capa PNG con transparencia de 690×729, con caja `[200,180,822,840]` |
+| g03 | Shawarma de pollo | v1 | 42,4 s | US$0,045 | Personaje de pie, reconocible |
+| g04 | Papas familiares | v1 | 27,1 s | US$0,045 | Montón de papas con cara, reconocible |
+| g05 | Salchipapa | v1 | 26,7 s | US$0,045 | Reconocible, pero el modelo **dibujó su propio borde blanco de sticker**: con el troquel de Remotion quedaría doble |
+| g06 | Salchipapa | v3 | 28,7 s | US$0,045 | Sin borde blanco; el contorno oscuro toca el fondo. Reconocible |
+
+- **Gasto real: US$0,315** en 7 llamadas, sin reintentos. Cada POST abrió una sola reserva
+  (`post_attempts = 1`) y `usage.generated_images` coincidió con lo cotizado. Sobraron US$0,185
+  del tope.
+- **Producto reconocible: 6 de 6. Texto o letras dentro de la imagen: 0 de 6.**
+- **Fondo:** se pidió `#FF00FF` y siempre salió un magenta rosado uniforme, de `(239,24,157)` a
+  `(248,29,195)`, que varía de una imagen a otra. El recorte toma el color de la mediana del borde
+  de la imagen; no supone el valor pedido.
+
+### Recorte: color plano frente a `layer_decomposition`
+
+| Medida | Color plano (numpy, $0) | `layer_decomposition` (US$0,045 más) |
+|---|---|---|
+| Píxeles semitransparentes en el borde | 2.092–4.791 por imagen | 8.780 |
+| Huecos transparentes dentro del personaje | 0–7 px | 0 |
+| Borde contaminado de magenta (anillo de 3 px con distancia < 100 al fondo) | 0,00–0,43 % (v2, sin contorno: 2,3 %) | 0 % |
+| Magenta opaco que queda adentro (huecos entre papas) | 0–6 px | 0 |
+| Fidelidad con la imagen aprobada | Exacta: los mismos píxeles | **Redibuja** el personaje: escala ×1,1 frente a su caja y detalles distintos |
+| Costo y tiempo por sticker | 0 y < 1 s | +US$0,045 (sin prompt, hasta US$0,3825) y +29 s |
+
+El color plano se hizo con numpy: distancia RGB al color del borde, rampa suave entre 45 y 120,
+la región de fondo conectada con el borde de la imagen y la limpieza del tinte magenta en el
+borde. La conectividad conserva los cachetes rosados, que no tocan el borde. En el sticker final
+de Remotion, las dos salidas de carne no se distinguen; se ven en la hoja de contacto, filas 1 y 2.
+
+### Sticker en Remotion (receta C, `seasonal-c-2`, con un parche de banco)
+
+La plantilla `sticker` v1 dibuja la imagen **o** el texto, nunca los dos. Para el banco se le
+agregó un **texto debajo de la imagen**, sin unirlo a la rama:
+- el mensaje en `Unbounded`, en hasta 2 líneas y 440 px de ancho;
+- su propio troquel blanco y la tinta primaria de la marca `#c5093b`, con contraste 5,8:1 sobre
+  blanco;
+- la imagen se achica según el alto del texto, para que el movimiento quede dentro del margen de
+  16 px.
+El parche quedó fuera del repositorio, junto con los resultados. La imagen se construyó con
+`NODE_OPTIONS=--max-old-space-size=6144`, porque `remotion bundle` se quedó sin memoria con el
+tope de 2 GB que trae Node en Docker Desktop.
+
+| Sticker | Mensaje | Movimiento | Render | Animado (≤ 500 KB) | Fijo (≤ 100 KB) |
+|---|---|---|---|---|---|
+| Carne, color plano | ¡Gracias por tu pedido! | rebote | 6,2 s | 293 KB, 27 cuadros, q70 | 35 KB |
+| Carne, capas | ¡Gracias por tu pedido! | rebote | 6,2 s | 294 KB, 27 cuadros, q70 | 35 KB |
+| Pollo | En camino | latido | 6,2 s | 363 KB, 20 cuadros, q70 | 34 KB |
+| Papas | Listo para recoger | rebote | 6,1 s | 363 KB, 27 cuadros, q70 | 37 KB |
+| Salchipapa (v1) | Bienvenido | latido | 8,3 s | 432 KB, 20 cuadros, q60 | 44 KB |
+| Carne | Entregado | latido | 6,2 s | 446 KB, 20 cuadros, q70 | 42 KB |
+
+- Las 6 animaciones pasan `validate_sticker`: 512×512, 2 s y ≤ 500 KB. Los 6 fijos son
+  512×512, RGBA con transparencia y ≤ 100 KB; son el cuadro 0 en WebP de calidad 90.
+- **Fallas:** `brillo` con texto y `rebote` en la primera versión del parche cruzaron el margen
+  de 16 px (`slice_sheet` → `margin`), porque la caja de la imagen no restaba el salto. Con el
+  parche corregido, `rebote` pasa. `brillo` con texto quedó sin probar y se cambió por `latido`
+  para «Entregado».
+- Con un mensaje de 2 líneas y `rebote`, el personaje queda pequeño, de unos 120 px de alto. Con
+  mensajes largos conviene `latido`.
+- `art_backing` eligió el respaldo oscuro `#231F20` para los 6 personajes, por la envoltura
+  blanca y las papas claras. Sobre los fondos claro y oscuro de WhatsApp se ve bien. El texto
+  lleva su troquel blanco aparte.
+
+Hoja de contacto (fuera del repositorio, porque tiene fotos de un cliente): entrada, fijo y
+animado a la mitad, sobre los fondos claro `#ECE5DD` y oscuro `#0B141A`.
+
+### Conclusiones
+
+1. **Seedream 5.0 pro sirve para esto.** Las 6 imágenes salieron con el producto reconocible,
+   sin texto y en unos 29 s cada una. El mejor prompt es `kawaii-v3`.
+2. **El color plano es suficiente y no cuesta nada.** `layer_decomposition` deja un borde igual
+   de limpio, pero cobra una imagen más y tarda 29 s más. Además redibuja el personaje: el dueño
+   aprobaría una imagen y recibiría otra. Queda como respaldo para un personaje sin contorno, como
+   el de v2.
+3. **Costo por sticker:** US$0,045 por personaje con una sola foto a 1K. Remotion y la
+   codificación no cuestan nada. Un personaje sirve para todos los mensajes, animados y fijos: el
+   texto lo pone Remotion, no el modelo. Si se regenera, cada intento cuesta US$0,045 más.
+
+### Lo que queda sin medir
+
+- Productos sin contorno claro (bebidas en vaso transparente, ensaladas con hojas sueltas) y
+  productos magenta o rosados, que chocan con el fondo; para ellos hay que elegir otro color
+  plano.
+- La dispersión de una misma foto con distintas semillas, y cuántos intentos aprueba un dueño.
+- `brillo` y `giro` con texto; textos libres de 25 caracteres; letras de marca anchas.
+- Si el recorte por color en numpy cuenta como «conversión» bajo la regla de no componer con
+  Pillow, o si debe hacerse en Remotion (un filtro de color en el navegador). Lo decide el
+  fundador.
+
+---
+
 <a id="videos-d-001"></a>
 
 ## VIDEOS-D-001 — Banco local gratis: videos cortos de temporada con la plantilla Remotion (receta D) frente a FFmpeg (receta B) (m-25016848) — 2026-11-12

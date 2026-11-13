@@ -18,11 +18,11 @@ import io
 from typing import Any
 
 import pytest
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 
 from qualify_shared.objects.config import R2Settings
 from qualify_shared.objects.gate import ObjectNotFound
-from qualify_shared.objects.s3 import R2ObjectStore
+from qualify_shared.objects.s3 import ObjectReadUnavailable, R2ObjectStore, storage_read_errors
 
 _SETTINGS = R2Settings(
     endpoint_url="https://example.r2.cloudflarestorage.com",
@@ -30,6 +30,38 @@ _SETTINGS = R2Settings(
     secret_access_key="secret",
     bucket="qualify-artifacts",
 )
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        BotoCoreError(),
+        ClientError({"Error": {"Code": "AccessDenied", "Message": "secret-token"}}, "GetObject"),
+    ],
+)
+def test_opt_in_read_errors_map_vendor_failures_without_payload_text(error: Exception) -> None:
+    with pytest.raises(ObjectReadUnavailable) as refused:
+        with storage_read_errors():
+            raise error
+    assert isinstance(refused.value, OSError)
+    assert type(error).__name__ in str(refused.value)
+    assert "secret-token" not in str(refused.value)
+    assert refused.value.__cause__ is error
+
+
+def test_opt_in_read_errors_preserve_programming_errors() -> None:
+    error = TypeError("programming defect")
+    with pytest.raises(TypeError) as caught:
+        with storage_read_errors():
+            raise error
+    assert caught.value is error
+
+
+def test_opt_in_read_errors_leave_successful_reads_unchanged() -> None:
+    stream = io.BytesIO(b"stored bytes")
+    with storage_read_errors():
+        assert stream.read(6) == b"stored"
+    assert stream.read() == b" bytes"
 
 
 class _UnseekableStreamingBody(io.IOBase):

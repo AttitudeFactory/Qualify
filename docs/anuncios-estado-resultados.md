@@ -81,10 +81,21 @@ habilita este camino. La revisión no equivale a consentimiento: `confirm_promot
 exige confirmación explícita y vuelve a comprobar actor, permisos, pagos y cadena.
 
 El alcance inicial es COP con subdivisión Meta comprobada de uno, presupuesto total y
-activación original aprobada y terminada. Se permite aumentar el presupuesto en pesos
-completos y cambiar la fecha de fin. La reducción del presupuesto no está implementada;
-necesitaría comprobar el gasto total acumulado. Meta valida el importe exacto; no se
-inventa un mínimo numérico.
+activación original aprobada y terminada. Se permite aumentar o reducir el presupuesto en
+pesos completos y cambiar la fecha de fin, con el mismo consentimiento exacto, la misma
+bitácora (quién, cuándo, antes y después) y la misma separación de treinta segundos.
+
+**Reducción del presupuesto (m-24828979).** Antes de la revisión y otra vez justo antes de
+reservar la operación se lee del propio conjunto de anuncios `lifetime_budget` y
+`budget_remaining` (lo gastado es la diferencia; nunca se suman resultados diarios), y de
+`act_<id>/minimum_budgets` el mayor `min_daily_budget*` en COP. El nuevo presupuesto no
+puede bajar de `max(gastado + mínimo diario × días que faltan, mínimo diario × días
+programados)`; si baja, se rechaza sin enviar nada a Meta y se muestra el importe mínimo.
+El límite calculado queda en la evidencia de la operación. Esta regla es de Qualify y más
+conservadora que la de Meta; la palabra final sigue siendo `validate_only` sobre el
+importe exacto. **Pendiente de medir en vivo:** las unidades de `minimum_budgets` y
+`budget_remaining` para COP (se asumen en pesos enteros, como `lifetime_budget` con
+subdivisión 1) y qué campo mínimo aplica a cada objetivo.
 La reanudación exige que campaña y conjunto tengan exclusivamente los objetos propios,
 activa sólo los niveles pausados y deja la campaña para el final.
 
@@ -103,6 +114,44 @@ Fuentes primarias consultadas el 8 de noviembre de 2026: `api_update`,
 [Ad](https://github.com/meta/facebook-python-business-sdk/blob/main/facebook_business/adobjects/ad.py) y
 [Campaign](https://github.com/meta/facebook-python-business-sdk/blob/main/facebook_business/adobjects/campaign.py).
 Se probaron mediante HTTP simulado y PostgreSQL real; no se enviaron cambios a Meta real.
+
+## Avisos de la cuenta publicitaria (webhooks)
+
+Desde la migración `0154`, `admit_meta_webhook` admite `object = "ad_account"`: una
+entrada cuyo id (con o sin `act_`) es una cuenta publicitaria **elegida y disponible** de
+una conexión viva. Los dueños se congelan al recibir, igual que con Páginas e Instagram;
+una cuenta desconocida o no elegida se descarta sin guardar el cuerpo.
+
+El procesador (`ads/status_webhook.py`) atiende `ad_account:with_issues_ad_objects` y
+`ad_account:in_process_ad_objects`. Del valor sólo usa `id` como señal: bajo la sesión RLS
+de cada dueño congelado busca sus promociones de esa cuenta cuyo anuncio, conjunto o
+campaña coincide y ejecuta la **misma lectura autenticada** del sondeo
+(`refresh_promotion_from_signal`). El aviso nunca sobrescribe el estado por sí mismo;
+el estado «Rechazado por Meta» y el motivo saneado salen de esa lectura. Un anuncio que
+Qualify no creó queda `unsupported` sin leer nada; una lectura fallida se reintenta con
+la espera de la bandeja y el sondeo sigue de respaldo. Repetir el aviso sólo repite la
+lectura.
+
+La suscripción es explícita y asistida: `subscribe_ad_account_webhooks` exige sesión,
+pertenencia y confirmación del dueño, comprueba la cuenta elegida y la credencial antes
+de escribir, consulta `act_<id>/subscribed_apps` y sólo hace un `POST` con `app_id` si la
+app no estaba suscrita. Nunca se llama de forma automática ni se reintenta.
+
+Varios avisos de una misma revisión (los dos campos, para anuncio, conjunto y campaña) no
+multiplican las lecturas: si ya hubo una lectura correcta iniciada después de que Meta
+enviara el aviso y dentro del último minuto, el aviso se cierra como `recently_read` sin
+volver a consultar Meta.
+
+> **Hoy la vía de avisos está inactiva.** Ninguna pantalla llama todavía a
+> `subscribe_ad_account_webhooks`, y los campos del objeto «Ad Account» deben activarse en
+> la configuración de webhooks de la app en Meta. Mientras falte cualquiera de las dos
+> cosas no llega ningún aviso y el plazo depende sólo del sondeo de treinta minutos.
+
+**Sin comprobar en vivo** (no se hicieron llamadas reales): la forma exacta del valor de
+cada campo, el id de la entrada (`act_` o número), los parámetros de
+`act_<id>/subscribed_apps` y que los campos estén activados en la configuración de
+webhooks de la app (objeto «Ad Account»). Falta también la pantalla que ofrezca la
+suscripción al dueño.
 
 ## Consulta periódica y despliegue
 
@@ -145,16 +194,15 @@ de escritura ni anuncios reales durante el desarrollo.
 
 | Criterio | Entrega | Pendiente |
 |---|---|---|
-| Rechazo con motivo en 15 min por webhook o 30 min por sondeo | Estado, motivo específico saneado y atribuido a Meta cuando existe; consulta manual y proceso de sondeo implementado | Activar y medir el sondeo en producción; validar una respuesta real y su idioma. La alternativa por webhook sigue sin contrato ni suscripción comprobados |
+| Rechazo con motivo en 15 min por webhook o 30 min por sondeo | Estado, motivo específico saneado y atribuido a Meta cuando existe; consulta manual, sondeo y avisos de la cuenta publicitaria con dueño congelado que disparan la lectura autenticada; suscripción explícita | Activar y medir el sondeo y el aviso en producción (campos activados en la app, suscripción de cada cuenta); validar una respuesta real y su idioma; pantalla para suscribirse |
 | Gasto y clics de ayer | Persistencia y pruebas con fixture de Insights, moneda y fecha de la cuenta | Validar una cuenta real con anuncios autorizados |
-| Pausa y cambio de presupuesto con actor y fecha | Pausa y adaptador real de preparación y confirmación para aumentar presupuesto, cambiar fecha y reanudar, con consentimiento exacto, bitácora y controles de concurrencia | Validación real autorizada en Meta; no incluye reducciones de presupuesto ni volver a enviar un anuncio rechazado |
+| Pausa y cambio de presupuesto con actor y fecha | Pausa y adaptador real de preparación y confirmación para aumentar o reducir presupuesto, cambiar fecha y reanudar, con consentimiento exacto, bitácora y controles de concurrencia | Validación real autorizada en Meta; medir unidades de `minimum_budgets`; volver a enviar un anuncio rechazado |
 
-La bandeja actual de webhooks admite Instagram, páginas y Facebook. No se añadió una
-entrada de cuenta publicitaria inventando el objeto del evento o atribuyéndolo al
-propietario que aparezca al procesarlo. La futura integración debe conservar la
-propiedad congelada al recibir la notificación y usarla como señal para una lectura
-autenticada, no como autoridad para sobrescribir el estado. Mientras no se pruebe ese
-contrato, la ruta de quince minutos y «Editar y volver a enviar» quedan pendientes.
+«Editar y volver a enviar» un anuncio rechazado sigue pendiente: corregirlo exige crear
+una creatividad nueva (o cambiar el enlace) y sustituirla en el anuncio, una escritura
+que la bitácora actual (presupuesto, fecha, pausa, reanudación) no modela ni la
+comprobación `remote_guard` admite, porque fija la creatividad aprobada. Necesita su
+propio diseño de consentimiento.
 
 Ante un rechazo se muestra el motivo específico de `issues_info` únicamente cuando
 supera el filtro estricto, atribuido mediante **Motivo informado por Meta** y renderizado

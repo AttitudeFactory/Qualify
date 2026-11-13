@@ -143,10 +143,10 @@ def test_one_part_counts_without_the_many_parts_help() -> None:
     assert state.reel_single_part and state.reel_parts_count == 1
 
 
-def test_the_list_can_only_take_parts_out() -> None:
-    """«Cambiar» and «Añadir parte» wait for UI-4: no event adds or rewrites a part."""
+def test_the_list_can_edit_and_append_parts() -> None:
+    """UI-4 exposes transactional changes and appends beside UI-3's list edits."""
     for name in ("add_reel_part", "edit_reel_part", "save_reel_part", "set_reel_edit_text"):
-        assert not hasattr(CreativeState, name)
+        assert hasattr(CreativeState, name)
 
 
 # -- round 6: the parts in «Orden del clip» ---------------------------------------------

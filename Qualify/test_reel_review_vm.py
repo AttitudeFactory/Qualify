@@ -115,9 +115,7 @@ def test_a_part_without_description_blocks_both_buttons() -> None:
     entries = parts("edit", "reference", "reference")
     entries[2] = entry("reference", 4, description="", notices=("describe_it",))
     review = vm.review_actions(entries, previews_left=10, previews_quota=20)
-    text = (
-        "No pudimos ver qué pasa en la parte 3 del reel. Quítala en el paso 2 para crear las demás."
-    )
+    text = "Falta contar qué pasa en la parte 3. Escríbelo para crear tu video."
     assert vm.parts_blocked_text(entries) == text
     assert review.all_reason == review.first_reason == text
     assert review.back_to_parts and review.exhausted == ""
@@ -132,23 +130,23 @@ def test_several_parts_and_every_part_blocked() -> None:
     blind = entry("reference", 4, description="", notices=("describe_it",))
     entries = [blind, entry("edit"), blind]
     assert vm.parts_blocked_text(entries) == (
-        "No pudimos ver qué pasa en las partes 1 y 3 del reel. "
-        "Quítalas en el paso 2 para crear las demás."
+        "Falta contar qué pasa en las partes 1 y 3. Escríbelo para crear tu video."
     )
     review = vm.review_actions(entries, previews_left=10, previews_quota=20)
     assert review.back_to_parts and not review.to_ideas
-    assert review.foot_reason == "Hay partes que no pudimos ver."
+    assert review.foot_reason == "Falta contar qué pasa en algunas partes."
 
 
 @pytest.mark.parametrize("count", [1, 3])
-def test_every_part_blocked_sends_to_another_reel(count: int) -> None:
+def test_every_part_blocked_can_be_described(count: int) -> None:
     blind = entry("reference", 4, description="", notices=("describe_it",))
     entries = [blind] * count
-    text = "No pudimos ver qué pasa en este reel. Elige otro en Ideas para tus reels."
+    which = "la parte 1" if count == 1 else "las partes 1, 2 y 3"
+    text = f"Falta contar qué pasa en {which}. Escríbelo para crear tu video."
     assert vm.parts_blocked_text(entries) == text
     review = vm.review_actions(entries, previews_left=10, previews_quota=20)
     assert review.all_reason == review.first_reason == text
-    assert review.to_ideas and not review.back_to_parts
+    assert not review.to_ideas and review.back_to_parts
 
 
 # -- the month (all or nothing) --------------------------------------------------------
@@ -226,3 +224,22 @@ def test_no_parts_left() -> None:
     review = vm.review_actions([])
     assert review.all_reason == vm.NO_PARTS_TEXT and review.back_to_parts
     assert review.summary == "" and not review.try_first
+
+
+@pytest.mark.parametrize(
+    ("count", "foot"),
+    [(1, "Falta contar qué pasa en una parte."), (2, "Falta contar qué pasa en algunas partes.")],
+)
+def test_parts_only_missing_a_description_are_not_said_unseen(count: int, foot: str) -> None:
+    """Unseen in the reel, added by hand or planned without a reel: the foot always
+    asks for the description, never says «no pudimos ver»."""
+    manual = entry("reference", 4, description="", notices=("describe_it",))
+    manual["plan"]["analysis_id"] = None
+    entries = [entry("edit"), *[dict(manual, key=f"m{at}") for at in range(count)]]
+    review = vm.review_actions(entries, previews_left=10, previews_quota=20)
+    assert review.foot_reason == foot
+    unseen = entry("reference", 4, description="", notices=("describe_it",))
+    mixed = vm.review_actions([unseen, manual], previews_left=10, previews_quota=20)
+    assert mixed.foot_reason == "Falta contar qué pasa en algunas partes."
+    reel = vm.review_actions([unseen, entry("edit")], previews_left=10, previews_quota=20)
+    assert reel.foot_reason == "Falta contar qué pasa en una parte."
