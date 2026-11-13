@@ -91,9 +91,9 @@ REASON_TEXT: Final[dict[str, str]] = {
     "budget_cap": (
         "Ahora no pudimos dibujarlo. No se te cobró. Escríbenos y lo revisamos contigo."
     ),
-    "no_budget_cap": (
-        "Todavía no podemos dibujar para tu negocio. No se te cobró. Escríbenos y lo dejamos listo."
-    ),
+    # legacy: no longer written (m-25018822 — no config row is no dollar cap); kept for the
+    # characters that failed with it before the fix, which can now simply be asked again
+    "no_budget_cap": ("Ahora no pudimos dibujarlo. No se te cobró. Pídelo de nuevo."),
     "no_source": (
         "No pudimos abrir la foto del producto. No se te cobró. "
         "Sube otra foto en Tus productos y pide otro."

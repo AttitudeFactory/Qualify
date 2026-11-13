@@ -8,9 +8,12 @@ vendor task to poll. So:
 
 **submit** — reads the character tenant-side (the worker role cannot, ADR 41) and refuses
 anything but a `pending` character. Price guard: the quote of the versioned table (`v9`,
-`per_sticker_character`) against the brand's remaining monthly dollar cap — over it (or no
-cap configured) the character fails (`budget_cap` / `no_budget_cap`), its creation is given
-back, `PriceGuardRefused` is raised and nothing reaches BytePlus. Then, BEFORE the POST,
+`per_sticker_character`) against the brand's remaining monthly dollar cap, by the generator's
+rule (`service._UNLIMITED_BUDGET`, `parts.py`): only a configured cap with `hard_stop_on_cap`
+refuses — over it the character fails (`budget_cap`), its creation is given back,
+`PriceGuardRefused` is raised and nothing reaches BytePlus. No `creative_engine_config` row
+(or a soft cap) is no dollar cap: the owner's limit is the creaciones quota, already charged
+by `create_character` (m-25018822). Then, BEFORE the POST,
 `start_request` stamps `vendor_request_started_at` on the row (only once): a later claim of
 the same job that finds it stamped never posts again — it fails the character as
 `uncertain` (creation given back) and books the quote as spent, because the first POST may
@@ -82,7 +85,6 @@ CHARACTER_USAGE_UNIT = "sticker_character_image"
 TASK_PREFIX = "seedream-sync:"
 #: Reasons on the row (`product_stickers.REASON_TEXT` words them for the owner).
 BUDGET_CAP = "budget_cap"
-NO_BUDGET_CAP = "no_budget_cap"
 VENDOR_FAILED = "vendor_failed"
 UNCERTAIN = "uncertain"
 LOST_RESULT = "lost_result"
@@ -99,7 +101,7 @@ _USAGE_NAMESPACE = UUID("8a3e1f52-6c0d-4b7e-9f21-25017372a1d0")
 
 
 class PriceGuardRefused(Exception):
-    """Over the brand's remaining budget (or no cap): nothing was sent to BytePlus."""
+    """Over the brand's hard monthly cap: nothing was sent to BytePlus."""
 
 
 class SubmissionAborted(Exception):
@@ -118,6 +120,8 @@ def task_id_of(character_id: UUID) -> str:
 @dataclass(frozen=True)
 class Budget:
     remaining_usd: Decimal
+    #: `creative_engine_config.hard_stop_on_cap`: a soft cap never refuses (generator's rule).
+    hard_stop: bool = True
 
 
 # --- seams --------------------------------------------------------------------------------
@@ -132,7 +136,9 @@ class CharacterReads(Protocol):
         """The product photo's object key — re-checked to be THIS brand's image."""
         ...
 
-    def budget(self, tenant_id: UUID, brand_id: UUID) -> Budget | None: ...
+    def budget(self, tenant_id: UUID, brand_id: UUID) -> Budget | None:
+        """The brand's monthly dollar cap (None: no config row → no dollar cap)."""
+        ...
 
 
 class CharacterRequests(Protocol):
@@ -261,10 +267,7 @@ class ProductCharacterExecutor:
             raise ValueError("not a pending product sticker character")
         quote = character_quote_usd(self._pricing)
         budget = self._reads.budget(character.tenant_id, character.brand_id)
-        if budget is None:
-            self._fail(character, NO_BUDGET_CAP)
-            raise PriceGuardRefused("no monthly cap configured for the brand")
-        if quote > budget.remaining_usd:
+        if budget is not None and budget.hard_stop and quote > budget.remaining_usd:
             self._fail(character, BUDGET_CAP)
             logger.info(
                 "product_sticker_ai.price_guard tenant=%s character=%s quote=%s remaining=%s",
@@ -519,13 +522,16 @@ class PostgresCharacterReads:
         from qualify_api.creative.service import PostgresContentRepository  # noqa: PLC0415
 
         state = PostgresContentRepository().budget_state(tenant_id=tenant_id, brand_id=brand_id)
-        return Budget(remaining_usd=state.remaining_usd) if state is not None else None
+        if state is None:
+            return None
+        return Budget(remaining_usd=state.remaining_usd, hard_stop=state.hard_stop)
 
 
 class PostgresCharacterUsageLedger:
     """`creative_usage_events` (draft-less, unit `CHARACTER_USAGE_UNIT`) + the brand's
     `creative_engine_config.budget_spent_usd`, in ONE `tenant_session` — so the monthly
-    dollar cap counts the characters. Once per character (the event id is derived from it)."""
+    dollar cap counts the characters. Once per character (the event id is derived from it).
+    A brand with no config row still gets the usage event; there is no spend to add to."""
 
     def record(
         self,

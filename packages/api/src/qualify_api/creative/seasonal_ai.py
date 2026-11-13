@@ -11,8 +11,11 @@ it like any generator job; `KindRoutedExecutor` sends it to `SeasonalAiVideoExec
 out of its reach), refuses anything but the row's CURRENT `pending` attempt of
 `ai-seedance`, loads the ONE approved photo piece (`source_ref`, re-checked to be this
 brand's approved photo), prices the request with the versioned table and applies the
-price guard: an estimate over the brand's remaining monthly budget marks the row
-`failed` with `budget_cap` and raises `PriceGuardRefused` — nothing reaches BytePlus. The
+price guard: an estimate over the brand's remaining monthly budget, when that cap is hard
+(`hard_stop_on_cap`), marks the row `failed` with `budget_cap` and raises
+`PriceGuardRefused` — nothing reaches BytePlus. No `creative_engine_config` row (or a soft
+cap) is no dollar cap, as in the generator (`service._UNLIMITED_BUDGET`; m-25018822): the
+owner's limits are the creaciones quota and the per-video price they accepted. The
 photo goes as a JPEG data URL (never a public link). The task id is written on the job by
 the observer the moment BytePlus accepts it (`SubmissionRecorder`), so a crash never leads
 to a second paid call: the runner polls a job that has a task id, never re-submits it.
@@ -79,9 +82,6 @@ CREDENTIAL_PROVIDER = "seedance"
 BUDGET_CAP = "budget_cap"
 VENDOR_FAILED = "vendor_failed"
 NOT_RUNNABLE = "not_runnable"
-#: The brand has no monthly cap configured: a paid call is refused (the generator treats
-#: «no config» as unlimited — `service._UNLIMITED_BUDGET`; a seasonal AI video does not).
-NO_BUDGET_CAP = "no_budget_cap"
 #: The vendor's clip URL is not on `VIDEO_HOST_SUFFIXES`: nothing is downloaded.
 VENDOR_URL_REFUSED = "vendor_url_refused"
 #: BytePlus expired the task before rendering it (its queue): not billed.
@@ -133,6 +133,8 @@ class AiMedium:
 @dataclass(frozen=True)
 class Budget:
     remaining_usd: Decimal
+    #: `creative_engine_config.hard_stop_on_cap`: a soft cap never refuses (generator's rule).
+    hard_stop: bool = True
 
 
 # --- seams --------------------------------------------------------------------------------
@@ -146,7 +148,7 @@ class AiReads(Protocol):
     ) -> list[str]: ...
 
     def budget(self, tenant_id: UUID, brand_id: UUID) -> Budget | None:
-        """The brand's remaining monthly generation budget (None: no cap configured)."""
+        """The brand's monthly dollar cap (None: no config row → no dollar cap)."""
         ...
 
 
@@ -271,10 +273,7 @@ class SeasonalAiVideoExecutor:
             self._fail(medium, PRICE_CHANGED)
             raise PriceGuardRefused(f"estimate {estimate} over the accepted {accepted}")
         budget = self._reads.budget(medium.tenant_id, medium.brand_id)
-        if budget is None:
-            self._fail(medium, NO_BUDGET_CAP)
-            raise PriceGuardRefused("no monthly cap configured for the brand")
-        if estimate > budget.remaining_usd:
+        if budget is not None and budget.hard_stop and estimate > budget.remaining_usd:
             self._fail(medium, BUDGET_CAP)
             logger.info(
                 "seasonal_ai.price_guard tenant=%s media=%s estimate=%s remaining=%s",
@@ -617,7 +616,9 @@ class PostgresAiReads:
         from qualify_api.creative.service import PostgresContentRepository  # noqa: PLC0415
 
         state = PostgresContentRepository().budget_state(tenant_id=tenant_id, brand_id=brand_id)
-        return Budget(remaining_usd=state.remaining_usd) if state is not None else None
+        if state is None:
+            return None
+        return Budget(remaining_usd=state.remaining_usd, hard_stop=state.hard_stop)
 
 
 class PostgresUsageLedger:
