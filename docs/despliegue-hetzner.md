@@ -582,7 +582,12 @@ Se activan con `COMPOSE_PROFILES` en `/opt/qualify/.env.prod` y un deploy. Para 
 Con la épica m-25017272 toda la composición de imágenes y carruseles pasa a Remotion sin respaldo en Pillow: si `render` cae, esa generación falla. Dos piezas lo vigilan, sin servicios nuevos:
 
 - **Chequeo de salud del contenedor** (`healthcheck` en `deploy/docker-compose.prod.yml`): cada 10 s pregunta `GET /health` dentro del contenedor y lo da por sano solo si responde `ok` y `bundleReady` (el mismo criterio del camino de stickers y de la imagen). Tres fallas seguidas (≈ 30 s) lo marcan `unhealthy`; el primer minuto tras arrancar no cuenta. El deploy sigue esperando `healthy` antes de darse por bueno.
-- **Aviso al equipo**: el `calendar-worker` ya revisa cada minuto el latido del `creative-worker`; en esa misma pasada consulta `http://render:3200/health` con 3 s de tiempo máximo. Si `render` sigue sin responder sano **3 minutos seguidos**, manda **un** mensaje «Servicio de render · health» con el motivo corto (`ConnectError`, `HTTP 503`, `bundleReady=false`…). No repite mientras siga caído; cuando vuelve a estar sano el incidente se cierra, y una nueva caída avisa otra vez. El estado vive en Redis (`qualify:creative-queue:render:*`), compartido si el worker se reinicia.
+- **Aviso al equipo**: el `calendar-worker` ya revisa cada minuto el latido del `creative-worker`; en esa misma pasada consulta `http://render:3200/health` con 3 s de tiempo máximo. Si `render` sigue sin responder sano **3 minutos seguidos**, manda **un** mensaje:
+
+> Servicio de render · caído
+> El servicio de render no responde bien desde hace {min} min ({motivo}). Mientras tanto fallan las imágenes y carruseles que se arman con Remotion. Revisar: `just deploy-status qualify-prod` y `just deploy-logs qualify-prod render`.
+
+El motivo es corto (`ConnectError`, `HTTP 503`, `bundleReady=false`…). No repite mientras siga caído; cuando vuelve a responder bien el incidente se cierra en silencio (no hay mensaje de recuperación), y una nueva caída avisa otra vez. El estado vive en Redis (`qualify:creative-queue:render:*`), compartido si el worker se reinicia; caduca a las 4 h si ninguna revisión fallida lo renueva, y se borra al arrancar sin el perfil `render`, para que un estado viejo nunca se salte los 3 minutos ni silencie una caída nueva.
 
 **Leer la salud** (solo lectura, sin pedir permiso):
 

@@ -37,6 +37,12 @@ GRACE_SECONDS = 180
 PROFILE = "render"
 DEFAULT_RENDER_URL = "http://render:3200"
 _UNHEALTHY_SINCE = f"{PREFIX}render:unhealthy_since"
+#: The incident latch `QueueMonitor.publish` keeps for scope "render", name "health".
+_INCIDENT = f"{PREFIX}render:incident:health"
+#: Both keys expire unless a failed check refreshes them (every minute while render is
+#: down), so a latch left behind (profile turned off, worker stopped) cannot later skip
+#: the grace or silence a new outage.
+LATCH_TTL_SECONDS = 4 * 60 * 60
 
 
 class TeamChannel(Protocol):
@@ -112,8 +118,9 @@ class RenderWatch:
             self._incidents.publish("health", None)
             return
         now = self.clock().timestamp()
-        self.store.set(_UNHEALTHY_SINCE, str(now), nx=True)
+        self.store.set(_UNHEALTHY_SINCE, str(now), nx=True, ex=LATCH_TTL_SECONDS)
         since = float(self.store.get(_UNHEALTHY_SINCE) or now)
+        self.store.set(_UNHEALTHY_SINCE, str(since), ex=LATCH_TTL_SECONDS)  # refresh TTL
         minutes = int((now - since) // 60)
         logger.warning("render.watch.unhealthy reason=%s for_minutes=%d", reason, minutes)
         if now - since < GRACE_SECONDS:
@@ -121,12 +128,21 @@ class RenderWatch:
         self._incidents.publish(
             "health",
             RenderAlert(
-                "health",
-                f"render no responde sano hace {minutes} min ({reason}). La generación que "
-                "compone con Remotion falla mientras tanto. Revisar `just deploy-status "
-                "qualify-prod` y `just deploy-logs qualify-prod render`.",
+                "caído",
+                f"El servicio de render no responde bien desde hace {minutes} min ({reason}). "
+                "Mientras tanto fallan las imágenes y carruseles que se arman con Remotion. "
+                "Revisar: `just deploy-status qualify-prod` y "
+                "`just deploy-logs qualify-prod render`.",
             ),
         )
+        if self.store.get(_INCIDENT):
+            self.store.set(_INCIDENT, "active", ex=LATCH_TTL_SECONDS)  # refresh TTL
+
+
+def clear_latches(store: RedisStore) -> None:
+    """Profile off: nothing to watch, and nothing left over for the day it comes back."""
+    store.delete(_UNHEALTHY_SINCE)
+    store.delete(_INCIDENT)
 
 
 def production_channel(environ: Mapping[str, str] = os.environ) -> TeamChannel | None:
@@ -146,6 +162,10 @@ def production_channel(environ: Mapping[str, str] = os.environ) -> TeamChannel |
 def render_watch_chore(store: RedisStore) -> Callable[[], None] | None:
     """The minute check, or None when the render profile is off on this server."""
     if not profile_enabled():
+        try:
+            clear_latches(store)
+        except Exception:
+            logger.warning("render.watch.clear_unavailable", exc_info=True)
         return None
     base_url = os.environ.get("QUALIFY_RENDER_URL", "").strip() or DEFAULT_RENDER_URL
     watch = RenderWatch(store, _ChannelNotifier(production_channel()), lambda: probe(base_url))
