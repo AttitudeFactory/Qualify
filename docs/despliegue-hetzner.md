@@ -19,7 +19,8 @@ Un solo servidor con **dos composes independientes**: el de Qualify y el **proxy
                                           ▼
                                  :80  caddy  (router interno de Qualify + frontend estático; sin puertos publicados)
                                           │
-        /api/*, /public/media/*  ─────────┼──► api      FastAPI  (uvicorn, qualify_api.http.app:create_app)
+        /api/*, /public/media/*,          │
+        /public/catalog-media/*  ─────────┼──► api      FastAPI  (uvicorn, qualify_api.http.app:create_app)
         /_event, /_upload, /ping,         │
         /_health, /avatar/*, /r2media/* ──┼──► reflex   backend de Reflex (websocket + rutas propias)
         todo lo demás  ───────────────────┘    /srv     export estático del frontend de Reflex
@@ -35,6 +36,7 @@ Un solo servidor con **dos composes independientes**: el de Qualify y el **proxy
 |---|---|---|
 | `/api/*` | `api:8000` | FastAPI. Incluye el callback OAuth de Meta `/api/connections/callback` |
 | `/public/media/*` | `api:8000` | Ruta sin autenticación desde la que **Meta descarga** las imágenes que se publican (QUA-68) |
+| `/public/catalog-media/*` | `api:8000` | Ruta sin autenticación, firmada y estable, desde la que **Meta descarga** la foto principal de cada producto del catálogo de WhatsApp (ADR 48 §8, m-25021431). Todo prefijo que FastAPI monte fuera de `/api` va en el matcher `@fastapi` de `deploy/Caddyfile`; lo exige `packages/api/tests/test_caddy_fastapi_routes.py` |
 | `/_event` | `reflex:8000` | WebSocket de Reflex (sincronización de estado) |
 | `/_upload`, `/_upload/*` | `reflex:8000` | Subidas (POST) y archivos subidos (GET) |
 | `/ping`, `/_health`, `/_all_routes` | `reflex:8000` | Salud e introspección de Reflex |
@@ -42,7 +44,7 @@ Un solo servidor con **dos composes independientes**: el de Qualify y el **proxy
 | `/r2media/*` | `reflex:8000` | Medios de R2 para borradores (`Qualify/r2_media.py`, mismo `api_transformer`) |
 | todo lo demás | `/srv` en Caddy | Frontend estático (`reflex export --frontend-only`); rutas dinámicas como `/drafts/[id]` las resuelve el cliente desde `404.html` |
 
-No hay colisiones: las rutas que monta el `api_transformer` de Reflex (`/avatar`, `/r2media`) no comparten prefijo con FastAPI (`/api`, `/public/media`), y ninguna página de Reflex usa esos prefijos.
+No hay colisiones: las rutas que monta el `api_transformer` de Reflex (`/avatar`, `/r2media`) no comparten prefijo con FastAPI (`/api`, `/public/media`, `/public/catalog-media`), y ninguna página de Reflex usa esos prefijos.
 
 **Por qué dos imágenes y no tres.** `qualify-app` (Python) sirve a la vez `api`, `reflex`, `migrate` y `calendar-worker`, cambiando sólo el comando: el proceso de Reflex ya importa `qualify_api` en proceso (servicios de conexiones y publicación, e `inbox_provider.py` llama a `create_app()` por `httpx.ASGITransport`), así que una imagen "sólo API" tendría exactamente las mismas dependencias. `qualify-web` es Caddy con el frontend ya exportado adentro: en producción el frontend no necesita ni Node ni Python.
 
@@ -631,6 +633,7 @@ QUALIFY_ENV_FILE=/ruta/.env.smoke docker compose -p qualify-smoke \
 | `/ping`, `/_health` | 200 (backend de Reflex) |
 | `/api/connections/callback?code=x&state=x` | **403** `invalid or expired state` → llegó a FastAPI (no 502). *Desde QUA-123 la respuesta esperada es **303** a `/connections?connect=invalid_state`.* |
 | `/public/media/<token inexistente>` | 404 desde FastAPI |
+| `/public/catalog-media/<uuid>/<uuid>/<firma de 43 caracteres>.jpg` (firma mala) | 404 desde FastAPI (`application/json`), no el HTML del frontend (m-25021431) |
 | `/avatar/tiktok/nobody`, `/r2media/<token malo>` | 200 / 404 desde el backend de Reflex (`api_transformer`) |
 | WebSocket `/_event` | `101 Switching Protocols` + paquete de apertura de Engine.IO; en un navegador real, `/connections` sin sesión ejecuta su `on_load` por el websocket y redirige a `/brand/start` |
 | Puertos publicados | Sólo Caddy; `postgres`/`redis`/`api`/`reflex` sin puertos en el host |
