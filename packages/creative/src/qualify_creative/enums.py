@@ -394,6 +394,12 @@ class ContentKind(StrEnum):
       makes no video of its own; each part is a child `CLIP` draft (`MediaInputs.part`)
       and the parts are joined locally. Not offered in «¿Qué creamos?»: it is reached
       from a Clip or a reel («Hacer uno parecido»), never as an option of its own.
+    - `OWN_MEDIA` — the owner's own photo(s) or video published from «Publicar»
+      (m-25019217, founder 2026-11-13): recorded AFTER Instagram accepted it, approved as
+      published, so it shows in «Tu semana» and can be planned again. Never generated
+      and never offered in «¿Qué creamos?» (`is_offered`); its files stay where
+      «Publicar» staged them (`t/{tenant}/media/…`) and are exempt from the 90-day
+      retention (ADR 39 amendment of 2026-11-13).
     """
 
     CREATOR_SCRIPT = "creator_script"
@@ -404,10 +410,23 @@ class ContentKind(StrEnum):
     CAROUSEL = "carousel"
     CLIP = "clip"
     SHOT_VIDEO = "shot_video"
+    OWN_MEDIA = "own_media"
 
     @property
     def enabled(self) -> bool:
         return True
+
+    @property
+    def is_offered(self) -> bool:
+        """Whether «¿Qué creamos?» offers this kind. A video by parts is reached from a
+        Clip or a reel; an own-media piece is recorded from «Publicar», never created."""
+        return self not in (ContentKind.SHOT_VIDEO, ContentKind.OWN_MEDIA)
+
+    @property
+    def is_own_media(self) -> bool:
+        """The owner's own media published from «Publicar» (m-25019217): never generated,
+        never regenerated, exempt from retention."""
+        return self is ContentKind.OWN_MEDIA
 
     @property
     def is_template(self) -> bool:
@@ -605,6 +624,13 @@ _KIND_FORMATS: dict[ContentKind, tuple[ContentFormat, ...]] = {
     ContentKind.CAROUSEL: (
         ContentFormat.FEED_4_5,
         ContentFormat.FEED_1_1,
+    ),
+    # m-25019217: whatever «Publicar» sent — a feed image or carousel, a Reel or a story
+    ContentKind.OWN_MEDIA: (
+        ContentFormat.FEED_4_5,
+        ContentFormat.FEED_1_1,
+        ContentFormat.REELS_9_16,
+        ContentFormat.STORY_9_16,
     ),
 }
 

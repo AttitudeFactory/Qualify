@@ -7,7 +7,10 @@ default to "everyone":
   it. It never reads across tenants, so no other tenant's rows (test data included) can
   be touched by a scoped tick.
 - `DiscoveredTenants` — every tenant that has calendar work. Only the production
-  composition (`composition.production_tick_runner`) builds it.
+  composition (`composition.production_tick_runner`) builds it. Since m-25019217 that
+  includes a tenant with a «Publicar» publication not in the calendar yet (settled
+  `published` within `immediate.SWEEP_WINDOW`, no event, key not `cal:`): `qualify_admin`
+  already holds `SELECT` on `publish_attempts` (0003); ids only, as below.
 
 ## Why `DiscoveredTenants` uses `admin_session`, and why that is not a rule change
 
@@ -76,9 +79,13 @@ class DiscoveredTenants:
         from qualify_shared.db.admin import admin_session  # noqa: PLC0415
 
         from qualify_api.connections.models import SocialConnection  # noqa: PLC0415
+        from qualify_api.planner.immediate import (  # noqa: PLC0415
+            SWEEP_WINDOW,
+            tenants_with_unrecorded_publications,
+        )
 
         with admin_session() as session:
-            return list(
+            calendar = list(
                 session.scalars(
                     select(CalendarEvent.tenant_id)
                     .outerjoin(
@@ -98,3 +105,5 @@ class DiscoveredTenants:
                     .order_by(CalendarEvent.tenant_id)
                 )
             )
+            published = tenants_with_unrecorded_publications(session, since=now - SWEEP_WINDOW)
+        return sorted(set(calendar) | set(published), key=str)

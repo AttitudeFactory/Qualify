@@ -75,6 +75,10 @@ class AttemptRecord:
     # keeps driving `_over_ceiling` unchanged; this is deliberately a separate field, not
     # a repurposing of `started_at` itself.
     polling_baseline_at: datetime | None
+    # m-25019217 (0158): the staged object of a single attempt (None for a carousel and
+    # for rows written before 0158).
+    media_object_key: str | None = None
+    media_content_type: str | None = None
 
     @property
     def is_settled(self) -> bool:
@@ -142,6 +146,8 @@ class PublishAttemptRepository(Protocol):
         adapter_version: str,
         scheduled_post_id: UUID | None = None,
         caption: str | None = None,
+        media_object_key: str | None = None,
+        media_content_type: str | None = None,
     ) -> AttemptStart: ...
 
     def record_creation_id(
@@ -229,6 +235,8 @@ def _snapshot(row: PublishAttempt) -> AttemptRecord:
         started_at=row.started_at,
         settled_at=row.settled_at,
         polling_baseline_at=row.polling_baseline_at,
+        media_object_key=row.media_object_key,
+        media_content_type=row.media_content_type,
     )
 
 
@@ -272,6 +280,8 @@ class MemoryPublishAttemptRepository:
         adapter_version: str,
         scheduled_post_id: UUID | None = None,
         caption: str | None = None,
+        media_object_key: str | None = None,
+        media_content_type: str | None = None,
     ) -> AttemptStart:
         existing = self.find_by_idempotency_key(
             tenant_id=tenant_id, connection_id=connection_id, idempotency_key=idempotency_key
@@ -294,6 +304,8 @@ class MemoryPublishAttemptRepository:
             started_at=datetime.now(UTC),
             settled_at=None,
             polling_baseline_at=None,
+            media_object_key=media_object_key,
+            media_content_type=media_content_type,
         )
         self.rows[record.id] = record
         return AttemptStart(record=record, created=True)
@@ -458,6 +470,8 @@ class PostgresPublishAttemptRepository:
         adapter_version: str,
         scheduled_post_id: UUID | None = None,
         caption: str | None = None,
+        media_object_key: str | None = None,
+        media_content_type: str | None = None,
     ) -> AttemptStart:
         try:
             with tenant_session(tenant_id) as session:
@@ -470,6 +484,8 @@ class PostgresPublishAttemptRepository:
                     media_product_type=media_product_type,
                     adapter_version=adapter_version,
                     status="pending",
+                    media_object_key=media_object_key,
+                    media_content_type=media_content_type,
                 )
                 session.add(row)
                 session.flush()

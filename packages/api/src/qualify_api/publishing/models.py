@@ -81,6 +81,15 @@ class PublishAttempt(Base):
     # attempt still assembling its children — `_poll_interval` falls back to `started_at`
     # in that case. See migration 0019 for the full rationale.
     polling_baseline_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    # m-25019217 (0158): the object «Publicar» staged for a SINGLE attempt
+    # (`t/{tenant}/media/{connection}/{uuid}`) and its content type, written with the row
+    # by `start()` — what `planner.immediate` points the owner's piece at once the attempt
+    # is published. NULL for a carousel (its items are `publish_attempt_children`) and for
+    # every attempt written before 0158.
+    media_object_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    media_content_type: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # m-25019217 (0158): the publication's Instagram URL — filled by a later delivery.
+    permalink: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class PublishAttemptChild(Base):

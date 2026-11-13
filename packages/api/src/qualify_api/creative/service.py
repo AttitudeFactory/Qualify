@@ -2241,6 +2241,9 @@ class ContentService:
         # VE-08 (criterion 6): a part is born with its parent, all its siblings charged
         # together (`parts.PartsService.create_parts`) — never as a loose piece
         check_part_link(brief, None, None)
+        if brief.kind is ContentKind.OWN_MEDIA:
+            # m-25019217: recorded from a publication (`creative.own_media`), never generated
+            raise ValueError("an own-media piece is recorded from «Publicar», not generated")
         if request_key is not None:
             existing = self._repo.draft_id_for_request(tenant_id=tenant_id, request_key=request_key)
             if existing is not None:

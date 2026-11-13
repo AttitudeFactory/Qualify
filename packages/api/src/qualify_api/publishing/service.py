@@ -356,6 +356,7 @@ class PublishService:
         caption: str | None = None,
         thumb_offset: int | None = None,
         content_type: str | None = None,
+        media_content_type: str | None = None,
     ) -> PublishState:
         """Write-ahead → container → upload. Returns with the row in `processing` on the
         happy path; the client then drives `advance()` at the recommended cadence.
@@ -366,6 +367,10 @@ class PublishService:
         media link with the right `Content-Type` — the VIDEO path ignores it entirely
         (it already knows its own bytes' shape via `upload_bytes`), so every pre-existing
         caller omitting it is unaffected.
+
+        `media_content_type` (m-25019217) is only RECORDED with the attempt, never used to
+        route: `start_many` passes a single video's type here without changing the VIDEO
+        path (`content_type` stays None there). Recorded = it, else `content_type`.
         """
         target = self.require_publishable_connection(
             tenant_id=tenant_id, connection_id=connection_id
@@ -381,6 +386,10 @@ class PublishService:
             media_product_type=media_product_type,
             adapter_version=self._adapter_version,
             caption=caption,
+            # m-25019217: the staged object travels with the attempt, so the owner's piece
+            # (`planner.immediate`) can point at it once Instagram accepted it
+            media_object_key=media_object_key,
+            media_content_type=media_content_type or content_type,
         )
         if not start.created:
             # The idempotent path: same key → the existing outcome, never a second publish.
@@ -931,6 +940,7 @@ class PublishService:
                 idempotency_key=idempotency_key,
                 caption=caption,
                 content_type=item.content_type if item.media_type == MEDIA_TYPE_IMAGE else None,
+                media_content_type=item.content_type,
             )
         if len(items) > MAX_CAROUSEL_ITEMS:
             raise TooManyItems(len(items))
