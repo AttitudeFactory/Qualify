@@ -22,6 +22,7 @@ m-25017285 / m-25017293, not this move.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
@@ -154,23 +155,27 @@ def ad_image(
     if brief.format is ContentFormat.REELS_9_16:
         # § 2026-10-13: Instagram publishes only a video as a Reel — the composed
         # image (words and logo on it) gets a slow push-in; nothing is generated twice
+        # m-25017278: the still pushed in was drawn from the first scene
         return [
-            producer._ad_reel(
-                slides[0],
-                brief=brief,
-                model_id=model_id,
-                params={
-                    "ad_mode": mode.value,
-                    "scene_prompt": media.scene_prompt,
-                    "generation_prompts": scene_prompts,
-                    "scene_reference_plans": [p.provenance() for p in plans] if plans else [],
-                    "planned_output_count": len(plans) if plans else len(groups),
-                    "generated_scenes": len(scenes),
-                    "products": len(products),
-                    "background": background is not None,
-                    "printed": _printed_words(hook=copy.hook),
-                },
-                save=save,
+            replace(
+                producer._ad_reel(
+                    slides[0],
+                    brief=brief,
+                    model_id=model_id,
+                    params={
+                        "ad_mode": mode.value,
+                        "scene_prompt": media.scene_prompt,
+                        "generation_prompts": scene_prompts,
+                        "scene_reference_plans": [p.provenance() for p in plans] if plans else [],
+                        "planned_output_count": len(plans) if plans else len(groups),
+                        "generated_scenes": len(scenes),
+                        "products": len(products),
+                        "background": background is not None,
+                        "printed": _printed_words(hook=copy.hook),
+                    },
+                    save=save,
+                ),
+                rendered_prompt=scene_prompts[0],
             )
         ]
     out: list[MediaWrite] = []
@@ -189,6 +194,8 @@ def ad_image(
                 provider=SEEDREAM,
                 content_type=JPEG,
                 ai_generated=True,
+                # slide N is drawn from scene N; a gallery's closing slide has no scene
+                rendered_prompt=scene_prompts[position] if position < len(scene_prompts) else None,
                 params={
                     "ad_mode": mode.value,
                     "scene_prompt": media.scene_prompt,
@@ -326,8 +333,8 @@ def carousel(
             resumed_scene = (
                 _resumed_scene_key(run, position) if animated and run is not None else None
             )
-            scene = (
-                producer._store.read(resumed_scene)
+            based = (
+                None
                 if resumed_scene
                 else carousel_slide_scene(
                     producer,
@@ -351,8 +358,9 @@ def carousel(
                     animated=animated,
                     budget=budget,
                     usage=usage,
-                ).image
+                )
             )
+            scene = based.image if based is not None else producer._store.read(resumed_scene)
             still = render_carousel_slide(
                 scene=scene,
                 hook=hook,
@@ -394,6 +402,8 @@ def carousel(
                         content_type=JPEG,
                         ai_generated=True,
                         params=params,
+                        # m-25017278: the Seedream prompt of this slide, as sent
+                        rendered_prompt=based.prompt if based is not None else None,
                     )
                 )
                 continue
