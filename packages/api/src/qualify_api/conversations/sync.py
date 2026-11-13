@@ -71,10 +71,22 @@ PROFILE_TTL = timedelta(hours=24)
 #: an older `counterpart_profile_at` (`now - PROFILE_TTL + NAMELESS_RETRY_AFTER`).
 NAMELESS_RETRY_AFTER = timedelta(hours=1)
 
-#: m-25017852: at most this many such retries per connection per sync round. With rounds
-#: every 5 min that is ≤ 60 Graph calls/hour in the worst case, inside Meta's ~200/hour,
-#: and each nameless thread costs at most one call per `NAMELESS_RETRY_AFTER`.
+#: The hourly retry is a decay without a column: it applies only while the person wrote
+#: within this window (`last_inbound_at`, else `created_at`); an older nameless thread
+#: falls back to the daily `PROFILE_TTL`.
+NAMELESS_RETRY_WINDOW = timedelta(days=7)
+
+#: m-25017852: at most this many RETRIES of nameless threads per connection per sync
+#: round, oldest stamp first (so no thread monopolises the slots). At the default
+#: `--sync-interval` of 300 s (`QUALIFY_CONVERSATIONS_SYNC_INTERVAL`, configurable) that
+#: is ≤ 60 retry calls/hour per connection; a shorter interval raises it. The bound covers
+#: retries only: first lookups of new threads and the 24 h refresh stay unbounded, as
+#: before, on top of one `list_messages` call per conversation per round.
 MAX_NAMELESS_RETRIES_PER_SYNC = 5
+
+#: Meta's answer when the person has not consented to share their profile (live, see
+#: `docs/conversaciones-limitaciones-meta.md`): expected, not an incident.
+CONSENT_REFUSAL_CODE = 230
 
 # Verdicts that make listing pointless: the channel has already said no.
 _BLOCKING_ACCESS = frozenset(
@@ -105,6 +117,11 @@ class SyncReport:
     # (bounded by `MAX_NAMELESS_RETRIES_PER_SYNC`).
     profile_lookups: int = 0
     profile_retries: int = 0
+    # Nameless threads due for a retry, gathered during the walk and served after it,
+    # oldest stamp first, up to `MAX_NAMELESS_RETRIES_PER_SYNC`.
+    pending_retries: list[tuple[datetime, UUID, RemoteConversation]] = field(
+        default_factory=list, repr=False
+    )
 
 
 @dataclass(frozen=True)
@@ -212,6 +229,7 @@ class ConversationSyncService:
                 if report.truncated or page.next_cursor is None:
                     break
                 cursor = page.next_cursor
+            await self._serve_retries(connection, source, report)
         except Exception as exc:
             if self._unavailable is not None and (
                 getattr(exc, "is_auth_error", False) or getattr(exc, "is_permission_error", False)
@@ -340,82 +358,108 @@ class ConversationSyncService:
           into a fetched profile that lacks one (m-25017852: a webhook-created thread, or
           one whose lookup came back with only `profile_pic`, gets its @handle).
         - The profile itself (`fetch_profile`, one Graph call) is asked for when the thread
-          never had one or it is older than `PROFILE_TTL` (the picture URL expires).
-        - A lookup that leaves the thread with neither name nor handle is logged (ids'
-          prefix and outcome only) and retried after `NAMELESS_RETRY_AFTER`, at most
-          `MAX_NAMELESS_RETRIES_PER_SYNC` per round when a `report` counts them."""
+          never had one or its stamp is older than `PROFILE_TTL` (the picture expires).
+        - A lookup that leaves the thread with neither name nor handle is logged once and
+          retried after `NAMELESS_RETRY_AFTER`. With a `report`, those retries are queued
+          and served after the walk, oldest stamp first, `MAX_NAMELESS_RETRIES_PER_SYNC`
+          per round (`_serve_retries`)."""
         thread = self._repo.get_thread(tenant_id=connection.tenant_id, thread_id=thread_id)
         if thread is None:
             return False
         now = self._clock()
         listed = conversation.counterpart_username or None
         fetched_at = thread.counterpart_profile_at
-        stored_named = bool(thread.counterpart_name or thread.counterpart_username)
-
-        def fill_handle() -> bool:
+        filled = False
+        if thread.counterpart_username is None and listed is not None:
             # Only the handle, keeping the stored instant: no lookup happened.
-            if thread.counterpart_username is not None or listed is None:
-                return False
             self._repo.save_profile(
                 tenant_id=connection.tenant_id,
                 thread_id=thread_id,
                 profile=RemoteProfile(username=listed),
                 now=fetched_at if fetched_at is not None else now,
             )
-            return True
-
+            filled = True
         if fetched_at is not None and _as_utc(now) - _as_utc(fetched_at) < PROFILE_TTL:
-            return fill_handle()
-        fetch = getattr(source, "fetch_profile", None)
-        if fetch is None:
-            return fill_handle()
+            return filled
+        if getattr(source, "fetch_profile", None) is None:
+            return filled
+        stored_named = bool(thread.counterpart_name or thread.counterpart_username or filled)
         if fetched_at is not None and not stored_named and report is not None:
-            # A retry of a thread an earlier lookup left nameless: bounded per round.
-            if report.profile_retries >= MAX_NAMELESS_RETRIES_PER_SYNC:
-                return fill_handle()
+            report.pending_retries.append((_as_utc(fetched_at), thread_id, conversation))
+            return filled
+        return await self._lookup(connection, source, thread_id, conversation, report) or filled
+
+    async def _serve_retries(
+        self, connection: SourceConnection, source: ConversationSource, report: SyncReport
+    ) -> None:
+        pending = sorted(report.pending_retries, key=lambda item: (item[0], str(item[1])))
+        report.pending_retries = []
+        for _stamp, thread_id, conversation in pending[:MAX_NAMELESS_RETRIES_PER_SYNC]:
             report.profile_retries += 1
+            await self._lookup(connection, source, thread_id, conversation, report)
+
+    async def _lookup(
+        self,
+        connection: SourceConnection,
+        source: ConversationSource,
+        thread_id: UUID,
+        conversation: RemoteConversation,
+        report: SyncReport | None,
+    ) -> bool:
+        """One `fetch_profile` call and its save. Logs one line when the answer carries
+        neither name nor handle: WARNING when the thread stays nameless or the error is
+        unexpected, INFO for Meta's expected consent refusal (code 230) on a thread that
+        already has a name or handle. Ids' prefix and codes only, never personal data."""
+        thread = self._repo.get_thread(tenant_id=connection.tenant_id, thread_id=thread_id)
+        if thread is None:
+            return False
         if report is not None:
             report.profile_lookups += 1
-
+        now = self._clock()
+        listed = conversation.counterpart_username or None
+        stored_named = bool(thread.counterpart_name or thread.counterpart_username)
         profile: RemoteProfile | None = None
         outcome = "none"
+        expected = True
         try:
-            profile = await fetch(connection, conversation.counterpart_external_id)
+            profile = await source.fetch_profile(  # type: ignore[attr-defined]
+                connection, conversation.counterpart_external_id
+            )
         except Exception as exc:  # noqa: BLE001 — a profile is decoration, never a failure
-            outcome = f"error_{type(exc).__name__}"
+            detail = getattr(exc, "access_detail", None)
+            outcome = detail() if callable(detail) else f"error_{type(exc).__name__}"
+            expected = getattr(exc, "platform_code", None) == CONSENT_REFUSAL_CODE
         if profile is not None and profile.username is None and listed is not None:
             profile = replace(profile, username=listed)
         elif profile is None and listed is not None:
             profile = RemoteProfile(username=listed)
         named = profile is not None and bool(profile.name or profile.username)
-        if not named:
-            if profile is not None:
+        nameless = not named and not stored_named
+        stamp = now
+        if nameless:
+            last_heard = thread.last_inbound_at or thread.created_at
+            if last_heard is None or _as_utc(now) - _as_utc(last_heard) <= NAMELESS_RETRY_WINDOW:
+                stamp = now - PROFILE_TTL + NAMELESS_RETRY_AFTER
+        if not named or outcome != "none":
+            if profile is not None and not named:
                 outcome = "avatar_only"
-            nameless = not stored_named
-            (logger.warning if nameless else logger.info)(
+            level = logging.WARNING if nameless or not expected else logging.INFO
+            logger.log(
+                level,
                 "conversations.profile.unnamed connection=%s thread=%s outcome=%s "
                 "stored_named=%s retry_in=%s",
                 str(connection.connection_id)[:8],
                 str(thread_id)[:8],
                 outcome,
-                "yes" if stored_named else "no",
-                f"{int(NAMELESS_RETRY_AFTER.total_seconds())}s" if nameless else "ttl",
+                "yes" if stored_named or named else "no",
+                f"{int((stamp + PROFILE_TTL - now).total_seconds())}s",
             )
-            if nameless:
-                # Stamp so the next try comes after the short backoff, not the 24 h TTL;
-                # an avatar-only answer is still kept (COALESCE never erases).
-                self._repo.save_profile(
-                    tenant_id=connection.tenant_id,
-                    thread_id=thread_id,
-                    profile=profile or RemoteProfile(),
-                    now=now - PROFILE_TTL + NAMELESS_RETRY_AFTER,
-                )
-                return profile is not None
+        # COALESCE never erases: an avatar-only or empty answer only moves the stamp.
         self._repo.save_profile(
             tenant_id=connection.tenant_id,
             thread_id=thread_id,
             profile=profile or RemoteProfile(),
-            now=now,
+            now=stamp,
         )
         return profile is not None
 

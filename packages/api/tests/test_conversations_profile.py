@@ -19,6 +19,7 @@ Postgres, no Meta):
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
@@ -33,7 +34,11 @@ from qualify_api.conversations.contracts import (
     RemoteProfile,
     SourceConnection,
 )
-from qualify_api.conversations.instagram_source import InstagramDirectSource, parse_profile
+from qualify_api.conversations.instagram_source import (
+    InstagramDirectError,
+    InstagramDirectSource,
+    parse_profile,
+)
 from qualify_api.conversations.memory_source import (
     SHAPE_VERSION_MEMORY,
     MemoryConversationSource,
@@ -42,6 +47,7 @@ from qualify_api.conversations.repository import MemoryConversationRepository
 from qualify_api.conversations.sync import (
     MAX_NAMELESS_RETRIES_PER_SYNC,
     NAMELESS_RETRY_AFTER,
+    NAMELESS_RETRY_WINDOW,
     PROFILE_TTL,
     ConversationSyncService,
 )
@@ -156,18 +162,73 @@ async def test_fetch_profile_partial_answer_keeps_what_came() -> None:
     )
 
 
-async def test_fetch_profile_403_code_230_is_none_and_logged_with_codes_only(caplog) -> None:
+async def test_fetch_profile_403_code_230_raises_with_codes_only() -> None:
     graph = FakeGraph((403, {"error": {"code": 230, "message": "consent"}}))
-    with caplog.at_level(logging.WARNING, logger="qualify_api.conversations"):
-        assert await _source(graph).fetch_profile(CONNECTION, "igsid-ana") is None
-    lines = [r.getMessage() for r in caplog.records]
-    assert any("http_403_code_230" in line for line in lines)
-    assert not any("igsid-ana" in line or "consent" in line for line in lines)
+    with pytest.raises(InstagramDirectError) as caught:
+        await _source(graph).fetch_profile(CONNECTION, "igsid-ana")
+    assert caught.value.platform_code == 230
+    assert caught.value.access_detail() == "http_403_code_230"
+    assert "consent" not in str(caught.value) and "igsid-ana" not in str(caught.value)
 
 
-async def test_fetch_profile_transport_error_is_none() -> None:
+async def test_fetch_profile_transport_error_raises() -> None:
     graph = FakeGraph(httpx.ConnectError("down"))
-    assert await _source(graph).fetch_profile(CONNECTION, "igsid-ana") is None
+    with pytest.raises(InstagramDirectError) as caught:
+        await _source(graph).fetch_profile(CONNECTION, "igsid-ana")
+    assert caught.value.is_transport
+
+
+class GraphProfileSource(MemoryConversationSource):
+    """The memory channel, with `fetch_profile` answered by the real Graph adapter."""
+
+    def __init__(self, graph: FakeGraph) -> None:
+        super().__init__()
+        self._ig = _source(graph)
+
+    async def fetch_profile(self, connection: SourceConnection, counterpart_external_id: str):
+        self.calls.append("fetch_profile")
+        return await self._ig.fetch_profile(connection, counterpart_external_id)
+
+
+def _unnamed(caplog) -> list[logging.LogRecord]:
+    return [r for r in caplog.records if "profile" in r.getMessage()]
+
+
+async def test_consent_refusal_on_a_named_thread_is_one_info_line(caplog) -> None:
+    repo = MemoryConversationRepository()
+    source = GraphProfileSource(FakeGraph((403, {"error": {"code": 230}})))
+    service = ConversationSyncService(repository=repo, clock=lambda: T0)
+    source.add_message(_listed(), _msg("mid.1"))
+    with caplog.at_level(logging.INFO, logger="qualify_api.conversations"):
+        await service.sync_connection(CONNECTION, source)
+    (line,) = _unnamed(caplog)
+    assert line.levelno == logging.INFO
+    assert "outcome=http_403_code_230" in line.getMessage()
+    assert _thread(repo).counterpart_username == "ana.cocina"
+    assert _thread(repo).counterpart_profile_at == T0
+
+
+async def test_consent_refusal_on_a_nameless_thread_is_one_warning_line(caplog) -> None:
+    repo = MemoryConversationRepository()
+    source = GraphProfileSource(FakeGraph((403, {"error": {"code": 230}})))
+    service = ConversationSyncService(repository=repo, clock=lambda: T0)
+    source.add_message(_listed(username=None), _msg("mid.1"))
+    with caplog.at_level(logging.INFO, logger="qualify_api.conversations"):
+        await service.sync_connection(CONNECTION, source)
+    (line,) = _unnamed(caplog)
+    assert line.levelno == logging.WARNING and "retry_in=3600s" in line.getMessage()
+    assert "igsid-ana" not in line.getMessage()
+
+
+async def test_an_unexpected_error_on_a_named_thread_is_a_warning(caplog) -> None:
+    repo = MemoryConversationRepository()
+    source = GraphProfileSource(FakeGraph((500, {"error": {"code": 2}})))
+    service = ConversationSyncService(repository=repo, clock=lambda: T0)
+    source.add_message(_listed(), _msg("mid.1"))
+    with caplog.at_level(logging.INFO, logger="qualify_api.conversations"):
+        await service.sync_connection(CONNECTION, source)
+    (line,) = _unnamed(caplog)
+    assert line.levelno == logging.WARNING and "http_500_code_2" in line.getMessage()
 
 
 # --- refresh_profile through the sync -------------------------------------------------------
@@ -365,3 +426,72 @@ async def test_repeated_rounds_are_idempotent(world) -> None:
     assert after.counterpart_profile_at == before.counterpart_profile_at
     assert "fetch_profile" not in source.calls
     assert len(repo.list_messages(tenant_id=TENANT, thread_id=after.id)) == 1
+
+
+async def test_nameless_avatar_only_schedules_the_short_retry(world) -> None:
+    repo, source, clock, service = world
+    source.add_message(_listed(username=None), _msg("mid.1"))
+    source.profiles["igsid-ana"] = RemoteProfile(avatar_url="https://p")
+    await service.sync_connection(CONNECTION, source)
+    thread = _thread(repo)
+    assert thread.counterpart_avatar_url == "https://p" and thread.counterpart_username is None
+    assert thread.counterpart_profile_at == T0 - PROFILE_TTL + NAMELESS_RETRY_AFTER
+
+
+async def test_retries_take_the_oldest_stamp_first(world) -> None:
+    repo, source, clock, service = world
+    count = MAX_NAMELESS_RETRIES_PER_SYNC + 2
+    for i in range(count):
+        upsert = repo.upsert_thread(
+            tenant_id=TENANT,
+            connection_id=CONNECTION.connection_id,
+            channel=CHANNEL_DM,
+            counterpart_external_id=f"igsid-{i}",
+        )
+        # Listing order 0..n, but the LAST ones have the oldest stamps.
+        repo.save_profile(
+            tenant_id=TENANT,
+            thread_id=upsert.thread_id,
+            profile=RemoteProfile(),
+            now=T0 - PROFILE_TTL - timedelta(minutes=i + 1),
+        )
+        source.add_message(_listed(f"igsid-{i}", username=None), _msg(f"mid.{i}"))
+    report = await service.sync_connection(CONNECTION, source)
+    assert report.profile_retries == MAX_NAMELESS_RETRIES_PER_SYNC
+    retried = {
+        i
+        for i in range(count)
+        if _thread(repo, f"igsid-{i}").counterpart_profile_at > T0 - PROFILE_TTL
+    }
+    assert retried == set(range(count - MAX_NAMELESS_RETRIES_PER_SYNC, count))
+
+
+async def test_an_old_nameless_thread_decays_to_the_daily_ttl(world) -> None:
+    repo, source, clock, service = world
+    source.add_message(_listed(username=None), _msg("mid.1"))
+    await service.sync_connection(CONNECTION, source)  # last_inbound_at = T0
+    clock.now = T0 + NAMELESS_RETRY_WINDOW + timedelta(hours=1)
+    await service.sync_connection(CONNECTION, source)
+    assert _thread(repo).counterpart_profile_at == clock.now
+
+
+async def test_an_outbound_echo_never_gets_an_author_backfilled(world) -> None:
+    repo, source, _clock, service = world
+    outbound = RemoteMessage(
+        external_message_id="mid.out",
+        direction="outbound",
+        text="gracias",
+        posted_at=T0,
+        shape_version=SHAPE_VERSION_MEMORY,
+        author_external_id="ig-1",
+    )
+    service.ingest_message(
+        CONNECTION,
+        channel=CHANNEL_DM,
+        conversation=RemoteConversation(counterpart_external_id="igsid-ana"),
+        message=outbound,
+    )
+    source.add_message(_listed(), replace(outbound, author_username="mi.negocio"))
+    await service.sync_connection(CONNECTION, source)
+    (message,) = repo.list_messages(tenant_id=TENANT, thread_id=_thread(repo).id)
+    assert message.author_username is None

@@ -636,6 +636,23 @@ def test_a_later_reading_backfills_a_missing_author_handle_only(seeded) -> None:
     assert message.author_username == "ana.cocina"
 
 
+def test_an_outbound_row_never_gets_an_author_backfilled(seeded) -> None:
+    """m-25017852: the fill is inbound-only, like every other conflict fill."""
+    repo = PostgresConversationRepository()
+    tid = _thread_with_inbound(repo, seeded)
+    mid = f"mid.{uuid4().hex[:8]}"
+    out = _msg(mid, at=T0, direction="outbound")
+    assert repo.insert_message(
+        tenant_id=TENANT, thread_id=tid, connection_id=seeded["connection"], message=out
+    )
+    echo = replace(out, author_username="mi.negocio")
+    assert not repo.insert_message(
+        tenant_id=TENANT, thread_id=tid, connection_id=seeded["connection"], message=echo
+    )
+    (message,) = repo.list_messages(tenant_id=TENANT, thread_id=tid)
+    assert message.author_username is None
+
+
 def _inbound_message_id(repo: PostgresConversationRepository, tid: UUID, seeded) -> UUID:
     repo.insert_message(
         tenant_id=TENANT,

@@ -82,7 +82,9 @@ class ThreadRecord:
     last_read_at: datetime | None
     created_at: datetime
     # The counterpart's profile as the channel reported it (0065); all None until a sync
-    # fetched it. `counterpart_profile_at` says how fresh the (expiring) picture is.
+    # fetched it. `counterpart_profile_at` is when the next lookup is due from: the last
+    # lookup's instant, or one back-dated so a nameless thread is retried sooner than the
+    # 24 h TTL (m-25017852, `sync.NAMELESS_RETRY_AFTER`).
     counterpart_name: str | None = None
     counterpart_username: str | None = None
     counterpart_avatar_url: str | None = None
@@ -242,6 +244,10 @@ def _utcnow() -> datetime:
 
 def _as_utc(value: datetime) -> datetime:
     return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+def _coalesce(value: str | None, stored: str | None) -> str | None:
+    return stored if value is None else value
 
 
 # --------------------------------------------------------------------------------------
@@ -1149,9 +1155,10 @@ class MemoryConversationRepository:
         rec = entry.record
         entry.record = replace(
             rec,
-            counterpart_name=profile.name or rec.counterpart_name,
-            counterpart_username=profile.username or rec.counterpart_username,
-            counterpart_avatar_url=profile.avatar_url or rec.counterpart_avatar_url,
+            # `COALESCE` twins: only None keeps the stored value (as in `_SAVE_PROFILE`).
+            counterpart_name=_coalesce(profile.name, rec.counterpart_name),
+            counterpart_username=_coalesce(profile.username, rec.counterpart_username),
+            counterpart_avatar_url=_coalesce(profile.avatar_url, rec.counterpart_avatar_url),
             counterpart_profile_at=now,
         )
 
