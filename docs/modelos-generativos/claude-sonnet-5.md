@@ -31,3 +31,11 @@ Detalle completo en la [bitácora, PARTES-001](pruebas.md#partes-001).
 - **v3 (`proponer-partes-v3`, m-24973463), mismos 20 casos:** reemplaza a v2 (aprobado por el fundador el 2026-11-06). Describe las partes con palabras de todos los días y, si aparece vocabulario de cine, el código la devuelve en el único turno de corrección (`film_words`). Propuestas con palabras de cine: de 20/20 a 1/20. Usables 20/20. Usó el turno de corrección en 4 de 20. US$0,0087 por propuesta. El cierre empeora: 4 de 20 piden o reciben (v2: 7). Gasto de la corrida: US$0,1742.
 - **v3.1 (`proponer-partes-v3.1`, 2026-11-07), mismos 20 casos:** el cierre muestra cómo el cliente consigue el producto (15 de 20 piden, reciben o se lo llevan, leído a mano; v3: 4), cada descripción es una frase de 25 palabras como máximo (el largo lo revisa el código; mediana 110 caracteres) y no describe sonidos (quedan 4 de 20 con «chisporroteo»). Sin palabras de cine. US$0,0069 por propuesta; gasto de la corrida US$0,1371.
 - Gasto total de la prueba: US$0,7260 (cinco corridas).
+
+## Uso NIVELES-001: niveles de consciencia y ventajas del negocio en «10 variaciones» y en las partes (m-25026482), 2026-11-13
+
+Detalle completo en la [bitácora, NIVELES-001](pruebas.md#niveles-001). Ajustes de producción: esfuerzo `medium`; ángulos `max_tokens` 6.000, partes `proponer-partes-v3.2`. Línea base: `a6667370`.
+
+- **Ángulos:** 14/14 juegos con 2 ángulos por nivel exactos, 0 etiquetas inválidas; 0 datos inventados por la extracción determinista (140 ideas). Calidad del juez sin cambio (test 3,52 → 3,57). En test, solution_aware cumple su nivel solo 0,50 y most_aware inventa una reserva en 1/6: quedan «no fiable». US$0,0250 → US$0,029 por juego (+15 %).
+- **Partes:** v3.2 sin ventajas ni nivel es idéntico byte a byte a v3.1. Con nivel y ventajas usa una ventaja en 0,87 de los planes, pero most_aware no acorta el plan (4 partes en ambos brazos). US$0,006–0,008 por propuesta.
+- Gasto de la medición completa: US$1,83, en la bitácora.

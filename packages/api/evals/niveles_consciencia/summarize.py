@@ -146,12 +146,34 @@ def single_report(name: str, suite: dict[str, Any]) -> str:
     return "\n".join(parts) + "\n" + "\n".join(lines) + "\n"
 
 
+def pool(reports: list[dict[str, Any]]) -> dict[str, Any]:
+    """Several runs as one: the lists of each suite concatenated, spend summed."""
+    out: dict[str, Any] = {"suites": {}, "spend_usd": {}, "spend_total_usd": 0.0}
+    out["skipped_by_cap"] = []
+    for report in reports:
+        for name, suite in report["suites"].items():
+            into = out["suites"].setdefault(name, {})
+            for key, value in suite.items():
+                if isinstance(value, list):
+                    into.setdefault(key, []).extend(value)
+                else:
+                    into.setdefault(key, value)
+        for name, usd in (report.get("spend_usd") or {}).items():
+            out["spend_usd"][name] = round(out["spend_usd"].get(name, 0.0) + usd, 6)
+        out["spend_total_usd"] = round(
+            out["spend_total_usd"] + (report.get("spend_total_usd") or 0), 6
+        )
+        out["skipped_by_cap"].extend(report.get("skipped_by_cap") or [])
+    return out
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("result")
+    parser.add_argument("result", nargs="+", help="one or more results; suites are pooled")
     parser.add_argument("--split", default="test", choices=("dev", "test", "all"))
     args = parser.parse_args(argv)
-    report = json.loads(Path(args.result).read_text(encoding="utf-8"))
+    reports = [json.loads(Path(p).read_text(encoding="utf-8")) for p in args.result]
+    report = pool(reports)
     suites = report["suites"]
     if "identity" in suites:
         print(f"identity: {suites['identity']}\n")

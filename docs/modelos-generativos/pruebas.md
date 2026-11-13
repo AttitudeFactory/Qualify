@@ -22,6 +22,133 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
 
 ---
 
+<a id="niveles-001"></a>
+
+## NIVELES-001 — Niveles de consciencia (Schwartz) y ventajas del negocio en ángulos, copy y video por partes (m-25026482) — 2026-11-13
+
+- **Qué se midió:** la rama `feat/m-25026482-niveles-consciencia` (5 commits sobre
+  `a6667370`) contra `a6667370` (main antes del cambio), con los mismos casos. Solo se
+  mide; ningún prompt se tocó.
+- **Modelos y ajustes (los de producción):** ángulos `claude-sonnet-5` @ medium,
+  `max_tokens` 6.000 (`angles_ai`); copy `claude-opus-5-5` @ medium
+  (`AnthropicCopyAdapter`, 1 variante por caso); partes `claude-sonnet-5` @ medium,
+  `proponer-partes-v3.2` frente al mismo brief sin ventajas ni nivel. Juez
+  `claude-haiku-5-5` @ low, rúbrica `juez-niveles-v2` escrita antes de juzgar
+  ([README](../../packages/api/evals/niveles_consciencia/README.md)). Revisión servida:
+  la que trae cada fila de `results/` (`revision`).
+- **Entradas:** casos anonimizados que ya estaban en el repo, nada nuevo de la base de
+  datos: 7 productos para ángulos (comida 3, inmobiliaria 2, viajes 2; 4 dev, 3 test), cada
+  uno con y sin ventajas; las ventajas de comida son el ejemplo del fundador
+  (parqueadero gratis, mascotas, mesas, abierto hasta las 11 p. m., combo con el postre de
+  la heladería de al lado). 7 ángulos a mano para copy (los 5 niveles en comida, 2 en
+  inmobiliaria) y los 5 de comida para partes; copy y partes se corrieron 3 veces.
+  La marca de viajes es la de Cusco (Perú) de `reels_ai`: no hay otra en los casos.
+- **Cómo reproducirlo:** `just eval-niveles --suite identity,angles,copy,parts --split all
+  --cap-usd 2.40` y `summarize.py <resultados…> --split test`. Sin claves `LANGFUSE_*`
+  en el `.env`: corrió **sin trazas**.
+
+### C. Video por partes: identidad v3.1 = v3.2
+
+Sin ventajas y sin nivel, el prompt de sistema, la herramienta y el prompt de usuario de
+v3.2 son **idénticos byte a byte** a v3.1 (12 combinaciones brief × ángulo, test
+`test_parts_prompt_identical_without_perks_or_level`). Los casos de `eval-partes` no se
+repitieron: solo cambia el número de versión.
+
+### A. «10 variaciones» — test (3 productos × 2 = 6 juegos nuevos por brazo)
+
+Regla del nivel según el juez (informado); entre paréntesis, sin ventajas. La base no tiene
+etiquetas: su reparto es el que infiere el juez.
+
+| Nivel | Base: ideas que el juez ubica ahí (de 29) | Cumple su regla, con ventajas | Inventa (det / juez) | Usa una ventaja (juez) | Barra |
+|---|---|---|---|---|---|
+| unaware | 13 | 1,00 (0,83) | 0 / 0 | 0,33 | fiable |
+| problem_aware | 3 | 0,83 (0,67) | 0 / 0 | 0,33 | fiable |
+| solution_aware | 9 | **0,50** (0,67) | 0 / 0 | 0,50 | **no fiable** |
+| product_aware | 2 | 0,83 (0,83) | 0 / 0 | 0,83 | fiable |
+| most_aware | 2 | 1,00 (1,00) | 0 / **0,17** | 0,33 | **no fiable** |
+
+- **Reparto:** 7/7 juegos con ventajas y 7/7 sin ventajas salen con 2 por nivel exactos;
+  **0 etiquetas faltantes o inválidas** (70 + 70 ideas). La base, sin niveles, se amontona
+  en unaware y solution_aware (22 de 29 en test).
+- **Calidad (juez 1–5):** test base 3,52 → 3,57 con ventajas / 3,50 sin; dev 3,48 → 3,70 /
+  3,58. **No empeora** (barra: −0,25).
+- **Datos inventados:** 0 por la extracción determinista en las 140 ideas nuevas. El juez
+  marca 1/6 en most_aware de test («Separa el tuyo hoy»: una reserva que nadie ofreció) y
+  dio motivo de promoción inventada a «Postre de regalo al lado» / «Almuerzo con final feliz
+  incluido» (la ventaja dice «combo con el postre», no «de regalo»). En dev, sin ventajas,
+  product_aware cumple solo 0,50: sin ventajas no hay con qué quitar la fricción.
+- **Por qué solution_aware falla:** en inmobiliaria repite el producto («2 alcobas pensadas
+  para tu familia») sin decir qué hace mejor a este negocio; la guía pide «porción,
+  ingredientes, variedad», que es de comida.
+- **Costo por juego (tabla `v9`, = página de precios leída el 2026-11-13):** base
+  US$0,0250 → US$0,0287 con ventajas / US$0,0290 sin (+15 %); entrada 1.842 → 2.722 tokens
+  (prompt de sistema más largo, en gran parte en caché), salida 2.321 → 2.622–2.727.
+
+### B. Copy (Opus 5.5) — 7 casos × 3 corridas = 21 piezas por brazo
+
+| Nivel (n) | Precio en unaware | Cumple su regla (juez), base → nuevo | Inventa (det / juez), nuevo | Usa ventaja, nuevo |
+|---|---|---|---|---|
+| unaware (6) | **6/6 → 0/6** | **0,00 → 0,00** | 0 / 0 | 1,00 |
+| problem_aware (3) | — | 1,00 → 1,00 | 0 / 0 | 1,00 |
+| solution_aware (3) | — | 1,00 → 1,00 | 0 / 0 | 1,00 |
+| product_aware (6) | — | 1,00 → 0,83 | 0 / 0,17 | 1,00 |
+| most_aware (3) | — | 0,33 → 1,00 | 0 / 0 | 1,00 |
+
+- Puertas del copy (`copy_quality.gates`) 21/21 en ambos brazos. Calidad 3,43 → 3,38.
+- **unaware no cumple:** el precio desaparece (6/6 → 0/6), pero el texto lista las
+  ventajas de fricción («Abierto hasta las 11 p. m.», «parqueadero gratis», «asesoría sin
+  costo») en 5/6, que el juez lee como oferta. La guía de unaware dice «aquí brillan las
+  ventajas del negocio» y no distingue las de experiencia de las de fricción.
+- **Costo por pieza:** US$0,0135 → US$0,0152 (+13 %). El prefijo estable (en caché) crece
+  ~500 caracteres (2.713 → 3.212 en comida, 2.773 → 3.250 en inmobiliaria); solo cuando la
+  marca tiene ventajas. n por nivel = 3–6: **todos los niveles del copy quedan «no fiable»
+  por tamaño**, aunque los números apunten bien.
+
+### C. Partes — 5 casos × 3 corridas (14 base usables de 15, 15 nuevos)
+
+| Nivel | Cumple (juez), base → nuevo | Partes, base → nuevo |
+|---|---|---|
+| unaware | 1,00 → 0,67 | 5 → 5 |
+| problem_aware | 0,50 → 0,67 | 5 → 4 |
+| solution_aware | 0,67 → 1,00 | 4 → 4–5 |
+| product_aware | 0,00 → 0,00 | 4–5 → 4–5 |
+| most_aware | 0,00 → 0,00 | 4 → 4 |
+
+- Usa una ventaja (juez) 0,87; sin precios ni texto en pantalla en todas. Un fallo en la
+  base (parte de 26 palabras, el tope del código).
+- **most_aware no cambia nada:** «pocas partes, cortas» sigue dando 4 partes en ambos
+  brazos. **product_aware** falla porque la rúbrica del juez pide cifras que el prompt de
+  partes prohíbe por diseño: es un desajuste de la rúbrica, no un resultado del prompt. El
+  «domicilio inventado» de most_aware es un falso positivo del juez (Rappi venía en el CTA
+  del ángulo, que no le pasé como dato).
+- Costo por propuesta US$0,0077 → US$0,0061 (ruido de la caché).
+
+### Costo para un cliente real y gasto de la medición
+
+- Cliente típico, 15 publicaciones al mes (`creaciones-del-mes-medicion.md`), en el peor
+  caso un juego de ángulos por publicación: ángulos US$0,38 → US$0,43 y copy US$0,20 →
+  US$0,23 al mes: **+US$0,09 al mes** por negocio.
+- **Gasto total de la tarea: US$1,83** (tope US$3): piloto US$0,150; una corrida cortada
+  por un `APITimeoutError` del juez, US$0,111 registrados + US$0,079 contados a su techo;
+  corrida completa US$0,921; dos repeticiones de copy y partes US$0,296 + US$0,275. Cero
+  llamadas a BytePlus.
+
+### Veredicto
+
+**Se puede publicar con arreglos.** Reparto perfecto, cero datos inventados por la
+extracción, calidad igual y +US$0,09 al mes. Antes de activarlo (al dueño del módulo):
+1. Copy unaware: separar las ventajas de experiencia (mesas, mascotas, parqueadero) de las
+   de fricción (horario, «gratis», «sin costo»), y dejar las de fricción para product_aware.
+2. Ángulos solution_aware: guía que no sea solo de comida («lo que distingue a este negocio:
+   datos del producto o ventajas de la lista»).
+3. Una ventaja no se vuelve regalo: no decir «gratis», «de regalo» ni «incluido» si la
+   ventaja no lo dice.
+4. Partes most_aware: la guía no cambia el plan; o se quita o se pide un número de partes.
+Pendiente para la eval: pasar el ángulo al juez de partes y una rúbrica de product_aware
+para partes sin cifras.
+
+---
+
 <a id="escena-sin-letras-001"></a>
 
 ## ESCENA-SIN-LETRAS-001 — La escena de Seedream sin letras ni botones: compilador de prompts 3 frente a 4, en pares (m-25017275) — 2026-11-13
