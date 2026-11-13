@@ -2,8 +2,9 @@
 
 Suites (`--suite`, default all four in this order):
 
-- `identity` — free: the parts prompt v3.2 vs v3.1 (the baseline ref) with no perks and
-  no level must be byte-identical (`parts_prompt_identical`).
+- `identity` — free: the parts prompt of this tree vs main's (the merge-base with
+  `origin/main`, or `--identity-ref`) with no perks and no level must be byte-identical
+  (`parts_prompt_identical`).
 - `angles` — «10 variaciones» over `cases.json` (`angle_cases`): the baseline ref's
   prompt once per product, the new prompt with the brand's perks and with none.
 - `copy` — `../copy_ai/cases_niveles.json`: one angle per level through `angle_brief` and
@@ -207,6 +208,13 @@ def run_angles(al: Any, args: Any, spend: Spend, api_key: str) -> dict[str, Any]
                         offers_text="\n".join([a["title"], a["hook"], a["cta"]]),
                     )
                 )
+                al.solution_checks(
+                    set_scores[-1],
+                    "\n".join([a["title"], a["hook"], a["cta"]]),
+                    case.product,
+                    perks,
+                    arm_sources,
+                )
             ideas = [
                 {
                     "titulo": a["title"],
@@ -360,6 +368,7 @@ def run_copy(al: Any, args: Any, spend: Spend, api_key: str) -> dict[str, Any]:
                 body="\n".join([payload.get("caption", ""), payload.get("script", "") or ""]),
                 offers_text=stated,
             )
+            al.solution_checks(score, stated, product_d, perks if with_perks else (), sources)
             ideas = [
                 {
                     "gancho": hook,
@@ -556,9 +565,13 @@ def run_identity(al: Any, args: Any) -> dict[str, Any]:
 
     import qualify_api.creative.parts_ai as new
 
-    old = al.load_module_at(
-        args.baseline_ref, PARTS_PATH, "qualify_api.creative.parts_ai_baseline", ROOT
+    ref = (
+        args.identity_ref
+        or subprocess.run(
+            ["git", "merge-base", "HEAD", "origin/main"], cwd=ROOT, capture_output=True, text=True
+        ).stdout.strip()
     )
+    old = al.load_module_at(ref, PARTS_PATH, "qualify_api.creative.parts_ai_baseline", ROOT)
     brand = AngleBrand(
         name="Marca",
         sector="comida",
@@ -582,6 +595,7 @@ def run_identity(al: Any, args: Any) -> dict[str, Any]:
     briefs.append(new.PartsBrief(story="sin producto", brand=AngleBrand()))
     checked = al.parts_prompt_identical(old, new, briefs)
     return {
+        "ref": ref,
         "identical_pairs": checked,
         "old_version": old.PROPOSE_PARTS_PROMPT_VERSION,
         "new_version": new.PROPOSE_PARTS_PROMPT_VERSION,
@@ -601,6 +615,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--arms", default="", help="only these arms (angles: base, ...)")
     parser.add_argument("--levels", default="", help="copy/parts: only these levels")
     parser.add_argument("--repeat", type=int, default=1, help="runs per case and arm")
+    parser.add_argument("--identity-ref", default="", help="identity: main's ref to compare")
     args = parser.parse_args(argv)
     args.arm_set = {a.strip() for a in args.arms.split(",") if a.strip()}
     args.level_set = {a.strip() for a in args.levels.split(",") if a.strip()}

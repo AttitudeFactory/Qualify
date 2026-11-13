@@ -23,6 +23,8 @@ COLUMNS = (
     "inventa_det",
     "inventa_juez",
     "oferta_inventada_det",
+    "dato_concreto_det",
+    "generico_det",
     "usa_ventaja_det",
     "usa_ventaja_juez",
     "calidad_juez",
@@ -54,6 +56,14 @@ def table(title: str, summary: dict[str, dict[str, Any]], verdict: dict[str, str
 HERE = Path(__file__).resolve().parent
 
 
+def _solution(score: dict[str, Any], text: str, product: Any, perks: Any, sources: str) -> None:
+    """The NIVELES-003 solution_aware checks on a saved score (a dict)."""
+    if score.get("level") != "solution_aware":
+        return
+    score["concrete_det"] = al.concrete_fact(text, product, perks)
+    score["generic_det"] = al.generic_claims(text, sources)
+
+
 def rescore_offers(suites: dict[str, Any]) -> None:
     """`invented_offers` over saved outputs (NIVELES-001 predates the check), with the
     same sources the runner gives each suite."""
@@ -73,6 +83,7 @@ def rescore_offers(suites: dict[str, Any]) -> None:
                 score = next(rows)
                 text = "\n".join([a["title"], a["hook"], a["cta"]])
                 score["offers_det"] = al.invented_offers(text, sources)
+                _solution(score, text, case.product, perks, sources)
     by_id = {c["id"]: c for c in levels["cases"]}
     if "copy" in suites:
         for item, score in zip(suites["copy"]["items"], suites["copy"]["scores"], strict=True):
@@ -94,6 +105,8 @@ def rescore_offers(suites: dict[str, Any]) -> None:
                 [payload.get(k, "") or "" for k in ("hook", "caption", "cta", "script")]
             )
             score["offers_det"] = al.invented_offers(text, sources)
+            perks = extra["perks"] if item["arm"] == "nuevo" else ()
+            _solution(score, text, extra["product"], perks, sources)
     if "parts" in suites:
         raw = cases_raw["parts_cases"]
         extra = levels["brands"][raw["copy_brand"]]

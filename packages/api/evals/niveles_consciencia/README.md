@@ -6,7 +6,7 @@ Eugene Schwartz en «10 variaciones», en el copy y en el video por partes, alim
 los mismos casos.
 
 ```bash
-just eval-niveles --suite identity                       # gratis: v3.2 == v3.1 sin ventajas ni nivel
+just eval-niveles --suite identity                       # gratis: partes == las de main sin ventajas ni nivel
 just eval-niveles --suite angles --split dev --cap-usd 0.80
 just eval-niveles --suite angles,copy,parts --split test --cap-usd 2.00
 ```
@@ -90,3 +90,18 @@ anonimizados o ficticios del repo y las salidas solo hablan de ellos (revisado: 
 rutas, correos ni teléfonos). `proponer_partes` los ignora porque sus casos son frases
 reales de clientes; si esta carpeta recibe alguna vez casos reales, `results/` pasa al
 `.gitignore`.
+
+## NIVELES-003 (2026-11-13) — cambios escritos ANTES de la tercera pasada
+
+- **Horario mal leído (corregido):** `de las? \d` contaba «de la 57» (la calle del local)
+  como un horario. En NIVELES-002 eso dio el «2/6 nombra el horario» del copy unaware: dos
+  copias de `results/20261113-154626-copy-n002-copy-all.json` (`niv-bur-unaware`) decían
+  «… de la 57». Ahora una hora es «las 2…24» o «la 1».
+- **solution_aware, dos chequeos deterministas nuevos** (además del juez, que no cambia):
+  `concrete_fact`: el título, gancho o CTA usa al menos una palabra de la descripción del
+  producto o de una ventaja que no sea el nombre ni la categoría del producto (no basta con
+  repetir qué es). `generic_claims`: «fresco, de calidad, expertos, pensado para ti, el/la
+  mejor, delicioso, único, increíble, perfecto, premium, especial, garantizado, confianza»,
+  cuando los datos no lo dicen. La barra del nivel sigue siendo la del juez (≥ 0,80).
+- La identidad del prompt de partes se compara con el `merge-base` con `origin/main` (las
+  partes ya no parten de la v3.1 de `a6667370`).

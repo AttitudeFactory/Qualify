@@ -11,8 +11,8 @@ Three suites, each a baseline against the change on the same cases:
   `angle_brief` from one hand-written angle per level: new = level + perks, baseline =
   the same angle through the baseline ref's `angle_brief`, kit without perks.
 - `parts` — «Proponerme las partes» (`parts_ai.propose_parts`): new = angle with level +
-  brand perks, baseline = the same brief and angle, level and perks stripped (the v3.2
-  prompt is byte-identical to v3.1 then — `parts_prompt_identical`).
+  brand perks, baseline = the same brief and angle, level and perks stripped (the prompt
+  is then byte-identical to main's — `parts_prompt_identical`).
 
 Deterministic checks (`fact_mentions`, `invented_facts`, `level_rule`, `perks_used`,
 `level_spread`) run on the customer-facing words: hook and CTA of an angle; hook,
@@ -99,7 +99,8 @@ def _numbers(text: str) -> set[str]:
 
 _HOURS = re.compile(
     r"\b\d{1,2}(?::\d{2})?\s*(?:a\.?\s?m\.?|p\.?\s?m\.?|m\.)(?![a-z])"
-    r"|\b(?:hasta|desde|de|entre)\s+las?\s+\d{1,2}(?::\d{2})?\b"
+    # «las 11», «la 1»: an hour; «la 57» is a street (NIVELES-003, a false positive)
+    r"|\b(?:hasta|desde|de|entre|a)\s+(?:las\s+(?:[2-9]|1[0-9]|2[0-4])|la\s+1)(?::\d{2})?\b"
     r"|\b\d{1,2}\s*(?:hrs?|horas)\b"
     r"|\b(?:lunes|martes|miercoles|jueves|viernes|sabados?|domingos?)\s+(?:a|al)\s+"
     r"(?:lunes|martes|miercoles|jueves|viernes|sabados?|domingos?)\b"
@@ -434,6 +435,41 @@ def call_angles(
     )
 
 
+# -- solution_aware: a concrete fact, not a restatement ----------------------------------
+
+#: Claims that say nothing a customer can check (NIVELES-003, from the prompt owner's
+#: reading of the failures): they count only when the inputs do not say them.
+_GENERIC = re.compile(
+    r"\bfresc[oa]s?\b|\bde (?:la mejor |alta |buena )?calidad\b|\bexpert[oa]s?\b"
+    r"|\bpensad[oa]s? (?:para|en) (?:ti|tu|usted)\w*\b|\bel mejor\b|\bla mejor\b|\blos mejores\b"
+    r"|\bdelicios[oa]s?\b|\bunic[oa]s?\b|\bincreibles?\b|\bperfect[oa]s?\b|\bpremium\b"
+    r"|\bespecial(?:es)?\b|\bgarantizad[oa]s?\b|\bconfianza\b"
+)
+
+
+def generic_claims(text: str, sources: str) -> list[str]:
+    """Generic praise in `text` (fresh, quality, experts, made for you, the best…) that
+    the inputs do not state themselves."""
+    folded_sources = fold(sources)
+    source_stems = _stems(sources)
+    out = []
+    for match in _GENERIC.finditer(fold(text)):
+        mention = match.group(0)
+        stems = _stems(mention)
+        if mention in folded_sources or (stems and stems <= source_stems):
+            continue
+        out.append(mention)
+    return out
+
+
+def concrete_fact(text: str, product: Mapping[str, Any], perks: Sequence[str]) -> bool:
+    """`text` uses at least one word of the product's description or of a perk beyond
+    what the product IS (its name and category): a fact, not a restatement."""
+    name_stems = _stems(f"{product.get('name', '')} {product.get('category', '')}")
+    fact_stems = _stems(str(product.get("description", ""))) | _stems(" ".join(perks))
+    return bool((fact_stems - name_stems) & _stems(text))
+
+
 # -- who pays ----------------------------------------------------------------------------
 
 
@@ -655,6 +691,9 @@ class IdeaScore:
     judge_fit: bool | None = None
     judge_reason: str = ""
     offers_det: list[tuple[str, str]] = field(default_factory=list)
+    #: solution_aware only (NIVELES-003): a fact used, and generic claims not in the data.
+    concrete_det: bool | None = None
+    generic_det: list[str] = field(default_factory=list)
     words_hook: int = 0
     words_cta: int = 0
 
@@ -739,6 +778,12 @@ def summarize(scores: Sequence[IdeaScore], *, group_level: str = "declared") -> 
             ),
             "inventa_det": _rate([bool(s.invented_det) for s in items]),
             "oferta_inventada_det": _rate([bool(s.offers_det) for s in items]),
+            "dato_concreto_det": _rate(
+                [s.concrete_det for s in items if s.concrete_det is not None]
+            ),
+            "generico_det": _rate(
+                [bool(s.generic_det) for s in items if s.concrete_det is not None]
+            ),
             "inventa_juez": _rate([bool(s.judge_invented) for s in items if s.judge_level]),
             "usa_ventaja_det": _rate([bool(s.perks_det) for s in perked]),
             "usa_ventaja_juez": _rate([bool(s.judge_perks) for s in perked if s.judge_level]),
@@ -770,6 +815,20 @@ def reliability(summary: Mapping[str, Mapping[str, Any]]) -> dict[str, str]:
     return out
 
 
+def solution_checks(
+    score: IdeaScore,
+    text: str,
+    product: Mapping[str, Any],
+    perks: Sequence[str],
+    sources: str,
+) -> None:
+    """Fill `concrete_det` / `generic_det` on a solution_aware idea; others stay None."""
+    if score.level != AwarenessLevel.SOLUTION_AWARE.value:
+        return
+    score.concrete_det = concrete_fact(text, product, perks)
+    score.generic_det = generic_claims(text, sources)
+
+
 __all__ = [
     "BASELINE_REF",
     "FACT_KINDS",
@@ -779,7 +838,9 @@ __all__ = [
     "IdeaScore",
     "apply_judge",
     "build_inputs",
+    "concrete_fact",
     "eval_attribution",
+    "generic_claims",
     "invented_offers",
     "call_angles",
     "call_judge",
@@ -797,6 +858,7 @@ __all__ = [
     "perks_used",
     "reliability",
     "score_idea",
+    "solution_checks",
     "sources_text",
     "summarize",
 ]

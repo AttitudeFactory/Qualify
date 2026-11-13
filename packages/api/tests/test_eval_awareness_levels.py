@@ -251,3 +251,41 @@ def test_parts_judge_gets_the_video_addendum() -> None:
     assert "VIDEO POR PARTES" in captured["system"][0]["text"]
     al.call_judge([{"gancho": "x"}], "datos", (), blind=False, api_key="k", client=_Client())
     assert "VIDEO POR PARTES" not in captured["system"][0]["text"]
+
+
+def test_a_street_number_is_not_an_hour() -> None:
+    assert "horario" not in al.fact_mentions("Ven al local de la 57")
+    assert al.fact_mentions("Abrimos hasta las 11 p. m.")["horario"]
+    assert al.fact_mentions("Te esperamos a la 1")["horario"]
+    assert al.fact_mentions("de 2 a 10, desde las 2")["horario"]
+
+
+def test_generic_claims_unless_the_inputs_say_them() -> None:
+    assert al.generic_claims("Fresco, de calidad y pensado para ti", "") == [
+        "fresco",
+        "de calidad",
+        "pensado para ti",
+    ]
+    assert al.generic_claims("Ensalada fresca", "Ensalada fresca de quinoa") == []
+
+
+def test_concrete_fact_is_more_than_the_product_name() -> None:
+    product = {
+        "name": "Apartamentos de 2 alcobas en Bello",
+        "category": "Vivienda nueva",
+        "description": "Apartamentos nuevos de 2 alcobas en Bello, proyecto de vivienda nueva",
+    }
+    perks = ("Acompañamiento legal y estudio de títulos",)
+    assert al.concrete_fact("Dos alcobas pensadas para tu familia", product, perks) is False
+    assert al.concrete_fact("Con estudio de títulos incluido en la asesoría", product, perks)
+    assert al.concrete_fact("Un proyecto nuevo en Bello", product, ()) is True
+
+
+def test_solution_checks_only_touch_solution_aware() -> None:
+    product = {"name": "Cono doble", "category": "Helados", "description": "Fruta del Norte"}
+    other = _score("unaware")
+    al.solution_checks(other, "Fruta del Norte", product, (), "")
+    assert other.concrete_det is None
+    sol = _score("solution_aware")
+    al.solution_checks(sol, "Fruta del Norte, la mejor", product, (), "Fruta del Norte")
+    assert sol.concrete_det is True and sol.generic_det == ["la mejor"]
