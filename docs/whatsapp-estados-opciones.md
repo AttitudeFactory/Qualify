@@ -15,7 +15,9 @@ Anuncios en Estados y Canales promovidos existen desde 2025 `[S]` [8], pero **no
 
 ## 3. Dato que cambia la conversación: el número de Bianki
 
-Un número que se registra en la Cloud API **borrando** la cuenta de la app pierde la app Business para siempre (salvo que se dé de baja de la API) [3] `[V]`. La app es el único sitio donde hoy se puede publicar Estados. El backlog dice que el número de Bianki está en la Cloud API desde 2026-10-16 y que la coexistencia «queda sin objeto» (`docs/backlog-modulo-whatsapp.md`). **`[H]` si no se conectó por coexistencia, ese dueño hoy no puede publicar Estados desde ningún sitio con ese número.** Hay que preguntarle al fundador cómo se conectó cada número.
+Un número que se registra en la Cloud API **borrando** la cuenta de la app pierde la app Business para siempre (salvo que se dé de baja de la API) [3] `[V]`. La app es el único sitio donde hoy se puede publicar Estados. El backlog dice que el número de Bianki está en la Cloud API desde 2026-10-16 y que la coexistencia «queda sin objeto» (`docs/backlog-modulo-whatsapp.md`). **`[H]` si no se conectó por coexistencia, ese dueño hoy no puede publicar Estados desde ningún sitio con ese número.**
+
+**Respuesta del fundador (2026-11-13):** el número de Bianki **sigue funcionando en la app de WhatsApp Business del teléfono**. Eso solo es compatible con la coexistencia (app y API a la vez), así que ese dueño ya puede publicar Estados a mano hoy: para Bianki la opción B ya es la situación actual y la opción C (asistido) es viable sin cambiar nada de la conexión. No se revisó en Meta cómo quedó registrado el número; para cada número nuevo hay que confirmar lo mismo antes de prometerle Estados.
 
 ## 4. Opciones
 
@@ -45,7 +47,7 @@ Costos en USD por número al mes; todos facturan en USD (barrera para negocios p
 
 ## 7. Recomendación
 
-**Opción C (asistido) como experimento barato, y no construir D.** Razón: lo que el dueño valora es no armar la pieza ni el texto; el último toque a mano es mínimo y no arriesga el número real, que es el activo del cliente (en Bianki, el canal de pedidos). Solo se vuelve a considerar B si el dueño necesita la app y la API a la vez; eso se decide con la pregunta de §3.
+**Opción C (asistido) como experimento barato, y no construir D.** Razón: lo que el dueño valora es no armar la pieza ni el texto; el último toque a mano es mínimo y no arriesga el número real, que es el activo del cliente (en Bianki, el canal de pedidos). La opción B no hay que construirla para Bianki: su número ya convive con la app (§3). Para otros clientes, B se revisa al conectar su número.
 
 **Criterio para matarla:** si en la prueba con 3 dueños reales, menos de 2 de 3 publican el Estado tras recibir la pieza, o si en el 50 % de los teléfonos probados la hoja de compartir no ofrece «Mi estado» y la descarga manual les resulta peor que hacerlo en la app, se archiva (queda A). **Criterio para reabrir D:** que Meta publique un endpoint oficial (releer el changelog cada trimestre) o que un cliente pague explícitamente por publicación automática asumiendo el riesgo por escrito.
 
@@ -53,7 +55,7 @@ Costos en USD por número al mes; todos facturan en USD (barrera para negocios p
 
 1. Si CO, VE y UY están en la lista de coexistencia (el texto de Meta no la da; solo `[S]` «ya global»).
 2. Que el Estado siga funcionando en la app con coexistencia (solo proveedores).
-3. Si el número de Bianki se conectó por coexistencia o borrando la app (§3).
+3. Cómo quedó registrado en Meta el número de Bianki: el fundador confirmó el 2026-11-13 que la app sigue funcionando (§3), pero no se revisó en el administrador de WhatsApp.
 4. Cláusula primaria de los términos de WhatsApp sobre acceso no autorizado.
 5. Precio de Wawp y del plan «Platform» de Wassenger; si Whapi/Wassenger/Wawp funcionan sobre un número ya en Cloud API.
 6. Si los anuncios en Estados se compran por Marketing API (ADS-17).
