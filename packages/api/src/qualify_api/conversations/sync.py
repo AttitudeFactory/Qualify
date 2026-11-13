@@ -39,7 +39,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -64,6 +64,17 @@ logger = logging.getLogger("qualify_api.conversations.sync")
 #: How long a fetched profile (and its expiring picture URL) is trusted before the next
 #: sync asks the channel again. The User Profile API is one call per thread.
 PROFILE_TTL = timedelta(hours=24)
+
+#: m-25017852: a lookup that left the thread with neither a name nor a handle (Meta's 403
+#: code 230 without consent, a profile carrying only `profile_pic`, an error) is retried
+#: after this, not after `PROFILE_TTL`. Without a column for it, the backoff is written as
+#: an older `counterpart_profile_at` (`now - PROFILE_TTL + NAMELESS_RETRY_AFTER`).
+NAMELESS_RETRY_AFTER = timedelta(hours=1)
+
+#: m-25017852: at most this many such retries per connection per sync round. With rounds
+#: every 5 min that is ≤ 60 Graph calls/hour in the worst case, inside Meta's ~200/hour,
+#: and each nameless thread costs at most one call per `NAMELESS_RETRY_AFTER`.
+MAX_NAMELESS_RETRIES_PER_SYNC = 5
 
 # Verdicts that make listing pointless: the channel has already said no.
 _BLOCKING_ACCESS = frozenset(
@@ -90,6 +101,10 @@ class SyncReport:
     # Set when `max_conversations` stopped the walk before the source ran out.
     truncated: bool = False
     errors_by_conversation: dict[str, str] = field(default_factory=dict)
+    # Profile lookups this sync made, and how many of them retried a nameless thread
+    # (bounded by `MAX_NAMELESS_RETRIES_PER_SYNC`).
+    profile_lookups: int = 0
+    profile_retries: int = 0
 
 
 @dataclass(frozen=True)
@@ -241,7 +256,9 @@ class ConversationSyncService:
         )
         if upsert.created:
             report.threads_created += 1
-        await self.refresh_profile(connection, source, upsert.thread_id, conversation)
+        await self.refresh_profile(
+            connection, source, upsert.thread_id, conversation, report=report
+        )
         newest_inbound: datetime | None = None
         newest_any: datetime | None = conversation.updated_at
         cursor: str | None = None
@@ -312,37 +329,95 @@ class ConversationSyncService:
         source: ConversationSource,
         thread_id: UUID,
         conversation: RemoteConversation,
+        *,
+        report: SyncReport | None = None,
     ) -> bool:
-        """Fetch the counterpart's profile when the thread has none or its picture is
-        older than `PROFILE_TTL` (the channel's URL expires). Best-effort: a source without
-        a profile API, or one that fails, changes nothing. Returns whether it saved."""
+        """Name the thread's counterpart. Best-effort: a profile is decoration, never a
+        failure of the sync. Returns whether it saved anything.
+
+        - The handle the conversations listing carries (`participants.username`) is used
+          whenever the thread has none — on every round, with no Graph call, and merged
+          into a fetched profile that lacks one (m-25017852: a webhook-created thread, or
+          one whose lookup came back with only `profile_pic`, gets its @handle).
+        - The profile itself (`fetch_profile`, one Graph call) is asked for when the thread
+          never had one or it is older than `PROFILE_TTL` (the picture URL expires).
+        - A lookup that leaves the thread with neither name nor handle is logged (ids'
+          prefix and outcome only) and retried after `NAMELESS_RETRY_AFTER`, at most
+          `MAX_NAMELESS_RETRIES_PER_SYNC` per round when a `report` counts them."""
         thread = self._repo.get_thread(tenant_id=connection.tenant_id, thread_id=thread_id)
         if thread is None:
             return False
+        now = self._clock()
+        listed = conversation.counterpart_username or None
         fetched_at = thread.counterpart_profile_at
-        if fetched_at is not None and _as_utc(self._clock()) - _as_utc(fetched_at) < PROFILE_TTL:
-            return False
+        stored_named = bool(thread.counterpart_name or thread.counterpart_username)
+
+        def fill_handle() -> bool:
+            # Only the handle, keeping the stored instant: no lookup happened.
+            if thread.counterpart_username is not None or listed is None:
+                return False
+            self._repo.save_profile(
+                tenant_id=connection.tenant_id,
+                thread_id=thread_id,
+                profile=RemoteProfile(username=listed),
+                now=fetched_at if fetched_at is not None else now,
+            )
+            return True
+
+        if fetched_at is not None and _as_utc(now) - _as_utc(fetched_at) < PROFILE_TTL:
+            return fill_handle()
         fetch = getattr(source, "fetch_profile", None)
+        if fetch is None:
+            return fill_handle()
+        if fetched_at is not None and not stored_named and report is not None:
+            # A retry of a thread an earlier lookup left nameless: bounded per round.
+            if report.profile_retries >= MAX_NAMELESS_RETRIES_PER_SYNC:
+                return fill_handle()
+            report.profile_retries += 1
+        if report is not None:
+            report.profile_lookups += 1
+
         profile: RemoteProfile | None = None
-        if fetch is not None:
-            try:
-                profile = await fetch(connection, conversation.counterpart_external_id)
-            except Exception as exc:  # noqa: BLE001 — a profile is decoration, never a failure
-                logger.info(
-                    "conversations.profile.skipped thread=%s reason=%s",
-                    thread_id,
-                    type(exc).__name__,
+        outcome = "none"
+        try:
+            profile = await fetch(connection, conversation.counterpart_external_id)
+        except Exception as exc:  # noqa: BLE001 — a profile is decoration, never a failure
+            outcome = f"error_{type(exc).__name__}"
+        if profile is not None and profile.username is None and listed is not None:
+            profile = replace(profile, username=listed)
+        elif profile is None and listed is not None:
+            profile = RemoteProfile(username=listed)
+        named = profile is not None and bool(profile.name or profile.username)
+        if not named:
+            if profile is not None:
+                outcome = "avatar_only"
+            nameless = not stored_named
+            (logger.warning if nameless else logger.info)(
+                "conversations.profile.unnamed connection=%s thread=%s outcome=%s "
+                "stored_named=%s retry_in=%s",
+                str(connection.connection_id)[:8],
+                str(thread_id)[:8],
+                outcome,
+                "yes" if stored_named else "no",
+                f"{int(NAMELESS_RETRY_AFTER.total_seconds())}s" if nameless else "ttl",
+            )
+            if nameless:
+                # Stamp so the next try comes after the short backoff, not the 24 h TTL;
+                # an avatar-only answer is still kept (COALESCE never erases).
+                self._repo.save_profile(
+                    tenant_id=connection.tenant_id,
+                    thread_id=thread_id,
+                    profile=profile or RemoteProfile(),
+                    now=now - PROFILE_TTL + NAMELESS_RETRY_AFTER,
                 )
-                profile = None
-        if profile is None and conversation.counterpart_username:
-            # The listing already named them: keep at least the handle.
-            profile = RemoteProfile(username=conversation.counterpart_username)
-        if profile is None:
-            return False
+                return profile is not None
         self._repo.save_profile(
-            tenant_id=connection.tenant_id, thread_id=thread_id, profile=profile, now=self._clock()
+            tenant_id=connection.tenant_id,
+            thread_id=thread_id,
+            profile=profile or RemoteProfile(),
+            now=now,
         )
-        return True
+        return profile is not None
 
     def ingest_read(self, connection: SourceConnection, *, channel: str, read: RemoteRead) -> int:
         """The counterpart read the conversation (Instagram's `messaging_seen`): every

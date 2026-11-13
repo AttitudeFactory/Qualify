@@ -632,9 +632,9 @@ class InstagramDirectSource:
                 timeout=READ_TIMEOUT_S,
             )
         except Exception as exc:  # noqa: BLE001 — decoration, never a failure of the sync
-            logger.info(
+            logger.warning(
                 "conversations.instagram.profile connection=%s error=%s",
-                connection.connection_id,
+                str(connection.connection_id)[:8],
                 type(exc).__name__,
             )
             return None
@@ -642,9 +642,11 @@ class InstagramDirectSource:
             error = _failed("GET /{igsid}", response)
             if error.is_auth_error:
                 self._clients.forget(connection.connection_id)
-            logger.info(
+            # m-25017852: kept by production (warning), ids' prefix and codes only — the
+            # evidence of why a thread stayed nameless (e.g. `http_403_code_230`).
+            logger.warning(
                 "conversations.instagram.profile connection=%s %s",
-                connection.connection_id,
+                str(connection.connection_id)[:8],
                 error.access_detail(),
             )
             return None
