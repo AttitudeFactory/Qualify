@@ -114,6 +114,8 @@ class AdEditReviewVM:
     new_end: str = "Por comprobar"
     expires_label: str = ""
     ready: bool = False
+    end_changed: bool = True
+    budget_changed: bool = True
 
 
 @dataclass(frozen=True)
@@ -169,6 +171,9 @@ def money_label(value: Decimal | None, currency: str) -> str:
         or not currency.isupper()
     ):
         return "Moneda por comprobar"
+    if currency == "COP":  # whole pesos, the same «$200.000» as everywhere else
+        amount = number_label(value, decimals=0)
+        return "$" + amount if amount != UNAVAILABLE else UNAVAILABLE
     amount = number_label(value, decimals=2)
     return f"{amount} {currency}" if amount != UNAVAILABLE else UNAVAILABLE
 

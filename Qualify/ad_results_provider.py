@@ -245,6 +245,8 @@ def prepare_edit(
             new_end=date_label(result.new_end_time, timezone_name),
             expires_label=date_label(result.expires_at, timezone_name),
             ready=True,
+            end_changed=result.new_end_time != result.current_end_time,
+            budget_changed=result.new_budget_minor != result.current_budget_minor,
         ),
         result.approval_token,
         result.expires_at,

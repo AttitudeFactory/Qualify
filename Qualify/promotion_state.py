@@ -48,6 +48,7 @@ from .promotion_provider import (
     confirm_review,
     load_sources,
     prepare_preview,
+    ready_lead_forms,
     recheck_enhancement_permissions,
     recheck_messaging_destinations,
 )
@@ -115,6 +116,7 @@ class PromotionState(rx.State):
     _audience_version: int = 0
     _reach_operation: str = ""
     destinations_working: bool = False
+    forms_working: bool = False
     destinations_notice: str = ""
     _destination_operation: str = ""
     enhancements_working: bool = False
@@ -949,6 +951,37 @@ class PromotionState(rx.State):
         self.form = replace(self.form, lead_form_id=form_id)
         self.error = ""
         self._invalidate_review()
+
+    @rx.event(background=True)
+    async def refresh_lead_forms(self) -> None:
+        """After creating a form elsewhere: re-read this account's ready forms only,
+        keeping everything else the owner already chose."""
+        async with self:
+            context = await self._session()
+            source = self.selected_source
+            if self.busy or self.loading or self.forms_working:
+                return
+            if context != self._loaded_context or not all(tenant_uuid(v) for v in context):
+                return
+            connection = tenant_uuid(source.connection_id)
+            if connection is None:
+                return
+            self.forms_working = True
+        with acting_login(UUID(context[1])):
+            forms, problem = await asyncio.to_thread(ready_lead_forms, UUID(context[0]), connection)
+        async with self:
+            self.forms_working = False
+            if context != await self._session() or self.form.source_id != source.id:
+                return
+            self.sources = [
+                replace(row, lead_forms=forms, lead_forms_error=problem)
+                if row.id == source.id
+                else row
+                for row in self.sources
+            ]
+            if not any(row.id == self.form.lead_form_id for row in forms):
+                self.form = replace(self.form, lead_form_id=forms[0].id if forms else "")
+                self._invalidate_review()
 
     @rx.event
     def choose_lead_cta(self, code: str) -> None:

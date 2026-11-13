@@ -66,14 +66,26 @@ def _ad(row: rx.Var[AdResultVM]) -> rx.Component:
 
 
 def _alert_account(row: rx.Var[AlertAccountVM]) -> rx.Component:
-    return rx.button(
-        rx.cond(S.alert_accounts.length() > 1, "Activar avisos de " + row.name, "Activar avisos"),
-        on_click=S.ask_alerts(row.id),
-        disabled=S.alerts_busy,
-        loading=S.alerts_busy & (S.alert_target.id == row.id),
-        variant="outline",
-        min_height="44px",
-        width=rx.breakpoints(initial="100%", sm="auto"),
+    return rx.cond(
+        S.alerts_on.contains(row.id),
+        signal_pill(
+            rx.cond(
+                S.alert_accounts.length() > 1, "Avisos activados: " + row.name, "Avisos activados"
+            ),
+            "ok",
+            size="2",
+        ),
+        rx.button(
+            rx.cond(
+                S.alert_accounts.length() > 1, "Activar avisos de " + row.name, "Activar avisos"
+            ),
+            on_click=S.ask_alerts(row.id),
+            disabled=S.alerts_busy,
+            loading=S.alerts_busy & (S.alert_target.id == row.id),
+            variant="outline",
+            min_height="44px",
+            width=rx.breakpoints(initial="100%", sm="auto"),
+        ),
     )
 
 
@@ -128,12 +140,26 @@ def ad_results_index() -> rx.Component:
     return app_shell(
         page_header("Anuncios", "Revisa el estado de tus promociones y en qué se fue tu dinero."),
         page_body(
-            rx.link(
-                "Formularios para clientes interesados",
-                href="/promotions/forms",
-                min_height="44px",
-                display="inline-flex",
-                align_items="center",
+            card(
+                rx.vstack(
+                    rx.link(
+                        "Formularios para clientes interesados",
+                        href="/promotions/forms",
+                        weight="medium",
+                        min_height="44px",
+                        display="inline-flex",
+                        align_items="center",
+                    ),
+                    rx.text(
+                        "Las preguntas que llenan quienes quieren cotizar o que los contactes.",
+                        size="2",
+                        color=T.TEXT_MUTED,
+                    ),
+                    spacing="1",
+                    align_items="start",
+                    width="100%",
+                ),
+                width="100%",
             ),
             rx.cond(S.error != "", callout(S.error, "error")),
             rx.cond(S.loading, rx.fragment(), _alerts()),
@@ -256,7 +282,7 @@ def _edit_primary_action(review_ready: bool | rx.Var[bool]) -> rx.Component:
 def _edit_confirmation() -> rx.Component:
     return rx.dialog.root(
         rx.dialog.content(
-            rx.dialog.title("Revisa el cambio del anuncio"),
+            rx.dialog.title(S.edit_title),
             rx.dialog.description(
                 "Primero comprobaremos los valores con Meta. Solo cambiaremos el anuncio "
                 "después de tu confirmación."
@@ -359,13 +385,26 @@ def _edit_confirmation() -> rx.Component:
                     card(
                         rx.vstack(
                             rx.text(S.edit_review.summary, weight="medium"),
-                            _fact("Presupuesto total actual", S.edit_review.current_budget),
-                            _fact("Presupuesto total después del cambio", S.edit_review.new_budget),
-                            _fact("Final actual", S.edit_review.current_end),
-                            _fact("Final después del cambio", S.edit_review.new_end),
-                            rx.text(
-                                "Comprobación válida hasta: " + S.edit_review.expires_label,
-                                size="1",
+                            rx.cond(
+                                S.edit_review.budget_changed,
+                                rx.vstack(
+                                    _fact("Presupuesto total actual", S.edit_review.current_budget),
+                                    _fact(
+                                        "Presupuesto total después del cambio",
+                                        S.edit_review.new_budget,
+                                    ),
+                                    spacing="3",
+                                    width="100%",
+                                ),
+                            ),
+                            rx.cond(
+                                S.edit_review.end_changed,
+                                rx.vstack(
+                                    _fact("Final actual", S.edit_review.current_end),
+                                    _fact("Final después del cambio", S.edit_review.new_end),
+                                    spacing="3",
+                                    width="100%",
+                                ),
                             ),
                             rx.checkbox(
                                 "Confirmo este cambio y el gasto que puede permitir en Meta.",
@@ -397,6 +436,7 @@ def _edit_confirmation() -> rx.Component:
                 spacing="4",
                 width="100%",
                 align_items="start",
+                margin_top="16px",
             ),
             max_width="600px",
         ),
@@ -484,6 +524,25 @@ def _management() -> rx.Component:
     )
 
 
+def _detail_facts() -> rx.Component:
+    return rx.vstack(
+        _fact("Cuenta para anuncios", S.detail.promotion.account),
+        _fact("Presupuesto total actual comprobado", S.detail.promotion.current_budget),
+        _fact("Final actual comprobado", S.detail.promotion.current_end_label),
+        _fact("Presupuesto aprobado al crear", S.detail.promotion.approved_budget),
+        rx.text(
+            "El presupuesto aprobado es el original; no confirma cambios hechos en Meta.",
+            size="1",
+            color=T.TEXT_MUTED,
+        ),
+        _fact("Final aprobado al crear", S.detail.promotion.end_label),
+        _fact("Última consulta del estado", S.detail.promotion.checked_label),
+        spacing="3",
+        align_items="start",
+        width="100%",
+    )
+
+
 def _detail() -> rx.Component:
     return rx.vstack(
         card(
@@ -498,17 +557,6 @@ def _detail() -> rx.Component:
                     ),
                 ),
                 rx.heading(S.detail.promotion.title, size="4", as_="h2", overflow_wrap="anywhere"),
-                _fact("Cuenta para anuncios", S.detail.promotion.account),
-                _fact("Presupuesto total actual comprobado", S.detail.promotion.current_budget),
-                _fact("Final actual comprobado", S.detail.promotion.current_end_label),
-                _fact("Presupuesto aprobado al crear", S.detail.promotion.approved_budget),
-                rx.text(
-                    "El presupuesto aprobado es el original; no confirma cambios hechos en Meta.",
-                    size="1",
-                    color=T.TEXT_MUTED,
-                ),
-                _fact("Final aprobado al crear", S.detail.promotion.end_label),
-                _fact("Última consulta del estado", S.detail.promotion.checked_label),
                 rx.cond(
                     S.detail.promotion.rejection_reason != "",
                     callout(S.detail.promotion.rejection_reason, "error"),
@@ -525,16 +573,23 @@ def _detail() -> rx.Component:
                             rx.button("Cambiar imagen o texto", min_height="44px", size="3"),
                             href=S.detail.promotion.fix_href,
                         ),
-                        spacing="2",
+                        rx.el.details(
+                            rx.el.summary("Más detalles", min_height="44px"),
+                            _detail_facts(),
+                            width="100%",
+                        ),
+                        spacing="3",
                         align_items="start",
                         width="100%",
                     ),
+                    _detail_facts(),
                 ),
                 rx.button(
                     "Actualizar con Meta",
                     on_click=S.refresh,
                     disabled=S.busy,
                     loading=S.busy,
+                    variant=rx.cond(S.detail.promotion.rejected, "outline", "solid"),
                     min_height="44px",
                     size="3",
                 ),

@@ -71,6 +71,7 @@ class AdResultsState(rx.State):
     alert_accounts: list[AlertAccountVM] = []
     alert_target: AlertAccountVM = AlertAccountVM("", "")
     alerts_busy: bool = False
+    alerts_on: list[str] = []
     alerts_notice: str = ""
     alerts_error: str = ""
     _context: tuple[str, str, str] = ("", "", "")
@@ -169,8 +170,13 @@ class AdResultsState(rx.State):
         self.alert_accounts = []
         self.alert_target = AlertAccountVM("", "")
         self.alerts_busy = False
+        self.alerts_on = []
         self.alerts_notice = ""
         self.alerts_error = ""
+
+    @rx.var
+    def edit_title(self) -> str:
+        return EDIT_ACTION_LABELS.get(self.edit_action, "Revisa el cambio del anuncio")
 
     @rx.event
     def ask_alerts(self, account_id: str) -> None:
@@ -214,6 +220,8 @@ class AdResultsState(rx.State):
             if context != await self._session():
                 return
             self.alerts_error, self.alerts_notice = (message, "") if failed else ("", message)
+            if not failed and str(account) not in self.alerts_on:
+                self.alerts_on = [*self.alerts_on, str(account)]
             self.alerts_busy = False
             self.alert_target = AlertAccountVM("", "")
 
@@ -238,9 +246,13 @@ class AdResultsState(rx.State):
             logger.warning("ad budget floor read failed: %s", type(exc).__name__)
             label, floor = FLOOR_FAILED, ""
         async with self:
-            if request == self._edit_request and self.edit_action == "budget_down":
+            self.floor_loading = False
+            if (
+                context == await self._session()
+                and request == self._edit_request
+                and self.edit_action == "budget_down"
+            ):
                 self.floor_label, self._floor_input = label, floor
-                self.floor_loading = False
 
     @rx.event(background=True)
     async def load_list(self) -> None:

@@ -342,3 +342,103 @@ def test_alerts_card_uses_the_backend_offer() -> None:
     rendered = str(ad_results_index().render())
     tail = SUBSCRIBE_OFFER.split("aquí ")[1]  # accents render escaped
     assert tail in rendered and "Activar avisos" in rendered
+
+
+def test_result_summary_carries_the_source_piece_from_the_query_row() -> None:
+    from collections import defaultdict
+
+    from qualify_api.ads.results_service import _summary
+
+    row = defaultdict(lambda: None)
+    row.update(
+        id=PROMOTION,
+        brand_id=USER,
+        content_draft_id=PIECE,
+        currency="COP",
+        budget_minor=10_000_000,
+        budget_kind="lifetime",
+        end_time=datetime(2027, 1, 20, tzinfo=UTC),
+        source_caption="",
+    )
+    assert _summary(row).content_draft_id == PIECE
+
+
+@pytest.mark.asyncio
+async def test_floor_read_from_an_old_session_is_discarded_but_stops_loading(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = editable_context()
+    AdResultsState.open_edit.fn(context, "budget_down")
+
+    def floor(*args: object) -> tuple[str, str]:
+        context.auth.session_tenant_id = str(USER)  # business switched mid-read
+        return "Mínimo: $1", "1"
+
+    monkeypatch.setattr(results_state, "read_floor", floor)
+    await AdResultsState.load_floor.fn(context)
+    assert context.floor_label == "" and not context.floor_loading
+
+
+@pytest.mark.asyncio
+async def test_activated_account_shows_done_instead_of_the_button(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = editable_context()
+    context.alert_accounts = [AlertAccountVM(ACCOUNT, "Mi cuenta")]
+    monkeypatch.setattr(results_state, "activate_alerts", lambda *args: ALERTS_ALREADY_ON)
+    AdResultsState.ask_alerts.fn(context, ACCOUNT)
+    await AdResultsState.confirm_alerts.fn(context)
+    assert context.alerts_on == [ACCOUNT]
+    assert "Avisos activados" in str(ad_results_index().render())
+
+
+class FormsContext(GoalContext):
+    _session = PromotionState._session
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.auth = SimpleNamespace(
+            session_tenant_id=str(TENANT), _auth_user_id=str(LOGIN), _session_user_id=str(USER)
+        )
+        self._loaded_context = (str(TENANT), str(LOGIN), str(USER))
+        self.selected_source = replace(self.selected_source, connection_id=str(PIECE))
+        self.sources = [self.selected_source]
+        self.loading = False
+        self.forms_working = False
+
+    async def __aenter__(self) -> FormsContext:
+        return self
+
+    async def __aexit__(self, *args: object) -> None:
+        pass
+
+    async def get_state(self, state_class: type) -> object:
+        return self.auth
+
+
+@pytest.mark.asyncio
+async def test_refreshing_forms_keeps_the_choices_and_picks_a_ready_form(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from . import promotion_state
+
+    context = FormsContext()
+    context.form = replace(context.form, goal="lead", lead_form_id="gone", lead_cta="SIGN_UP")
+    monkeypatch.setattr(
+        promotion_state,
+        "ready_lead_forms",
+        lambda tenant, connection: ([LeadFormChoiceVM(FORM_B, "Nuevo")], ""),
+    )
+    await PromotionState.refresh_lead_forms.fn(context)
+    assert context.sources[0].lead_forms[0].id == FORM_B and not context.forms_working
+    assert context.form.lead_form_id == FORM_B and context.form.lead_cta == "SIGN_UP"
+    assert context.form.budget == valid_form().budget
+
+
+def test_cop_money_is_whole_pesos_everywhere() -> None:
+    from decimal import Decimal
+
+    from .ad_results_vm import money_label
+
+    assert money_label(Decimal("200000.00"), "COP") == "$200.000"
+    assert money_label(Decimal("12.5"), "USD") == "12,50 USD"

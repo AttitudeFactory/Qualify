@@ -279,6 +279,15 @@ def _lead_destination() -> rx.Component:
                 ),
             ),
         ),
+        rx.button(
+            "Ya lo creé: buscar formularios",
+            on_click=S.refresh_lead_forms,
+            loading=S.forms_working,
+            disabled=S.busy | S.forms_working,
+            variant="outline",
+            min_height="44px",
+            margin_top="12px",
+        ),
         width="100%",
     )
 

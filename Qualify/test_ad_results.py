@@ -162,6 +162,7 @@ class Context:
         self.alert_accounts = []
         self.alert_target = AlertAccountVM("", "")
         self.alerts_busy = False
+        self.alerts_on = []
         self.alerts_notice = ""
         self.alerts_error = ""
 
