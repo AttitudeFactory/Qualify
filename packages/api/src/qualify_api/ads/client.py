@@ -403,6 +403,25 @@ class MarketingClient:
             },
         )
 
+    async def subscribed_apps(self) -> MarketingPage:
+        """Apps subscribed to this ad account's webhooks (`app_id`, `app_name`)."""
+        return _page(
+            await self._request(
+                "GET", f"{self._account}/subscribed_apps", {"fields": "app_id", "limit": 100}
+            )
+        )
+
+    async def subscribe_app(self, app_id: str, *, before_write: BeforeWrite) -> None:
+        """One explicit POST, never retried: an ambiguous answer is reported, not resent."""
+        payload = await self._request(
+            "POST",
+            f"{self._account}/subscribed_apps",
+            {"app_id": _id(app_id)},
+            before_write=before_write,
+        )
+        if payload.get("success") is not True:
+            raise MarketingError(UNKNOWN_WRITE_MESSAGE, outcome_unknown=True)
+
     async def adpreviews(self, ad_id: str, *, params: Payload) -> MarketingPage:
         return _page(await self._request("GET", f"{_id(ad_id)}/previews", params))
 

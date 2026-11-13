@@ -31,7 +31,10 @@ def consistent_intent(action: str, payload: Any, before: Any, after: Any) -> boo
         return False
     if action == "budget":
         return (
-            0 < before["budget_minor"] < after["budget_minor"] < 10**18
+            # Increase or decrease (m-24828979); a decrease is floored before review.
+            0 < before["budget_minor"] < 10**18
+            and 0 < after["budget_minor"] < 10**18
+            and after["budget_minor"] != before["budget_minor"]
             and type(payload.get("lifetime_budget")) is int
             and after["budget_minor"] % 100 == 0
             and after["end_time"] == before["end_time"]

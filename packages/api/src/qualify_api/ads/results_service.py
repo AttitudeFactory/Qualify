@@ -581,6 +581,12 @@ async def refresh_promotion_results(*, tenant_id: UUID, promotion_id: UUID) -> P
     return await _refresh(tenant_id, promotion_id)
 
 
+async def refresh_promotion_from_signal(*, tenant_id: UUID, promotion_id: UUID) -> PromotionResults:
+    """System read triggered by an ad-account webhook (`ads.status_webhook`); the
+    notification is only the trigger, this authenticated read is the evidence."""
+    return await _refresh(tenant_id, promotion_id, system=True)
+
+
 async def prepare_promotion_edit(
     *,
     tenant_id: UUID,

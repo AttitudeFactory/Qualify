@@ -37,6 +37,8 @@ class MetaHTTP:
         self.ambiguous = ""
         self.revoked = False
         self.before_request = None
+        self.spent = 0  # whole COP the ad set has already spent
+        self.min_daily = 1500  # whole COP, act_12/minimum_budgets
 
     def respond(self, request):
         assert "secret" not in str(request.url)
@@ -98,10 +100,22 @@ class MetaHTTP:
                     for row in self.objects.values()
                     if row["_resource"] == edge and row.get(relation) == parent
                 ]
+            elif path == "act_12/minimum_budgets":
+                data = [
+                    {"currency": "USD", "min_daily_budget_imp": 1},
+                    {
+                        "currency": "COP",
+                        "min_daily_budget_imp": self.min_daily,
+                        "min_daily_budget_low_freq": self.min_daily - 500,
+                    },
+                ]
             elif path in self.objects:
                 # Like Graph, return only the requested fields (unrequested ones are absent).
                 fields = request.url.params.get("fields")
                 row = self.objects[path]
+                if row["_resource"] == "adsets":
+                    remaining = int(row["lifetime_budget"]) - self.spent
+                    row = {**row, "budget_remaining": str(remaining)}
                 if fields:
                     row = {k: row[k] for k in fields.split(",") if k in row}
                 return httpx.Response(200, json=row)
@@ -315,7 +329,7 @@ async def confirm(live, preview):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("action", ["budget", "end_time", "resume"])
+@pytest.mark.parametrize("action", ["budget", "budget_down", "end_time", "resume"])
 @pytest.mark.parametrize("failure", [None, "credential_after_write", "audit_failure"])
 async def test_paid_management_real_http_receipt_and_full_chain_verification(
     live, monkeypatch, action, failure
@@ -371,21 +385,19 @@ async def test_paid_management_real_http_receipt_and_full_chain_verification(
             management, "_context", lambda scope: (promotion, revision([]), gateway, live["source"])
         )
         monkeypatch.setattr(management, "_local", lambda *args: gateway.local_guard(live["source"]))
-        options = (
-            {"budget_minor": 2_000_000}
-            if action == "budget"
-            else (
-                {"end_time": live["args"]["form"].end_time + timedelta(days=1)}
-                if action == "end_time"
-                else {}
-            )
-        )
+        options = {
+            "budget": {"budget_minor": 2_000_000},
+            # Floor: 0 spent + 1.500 COP x 2 days (not started yet) = 3.000 COP.
+            "budget_down": {"budget_minor": 600_000},
+            "end_time": {"end_time": live["args"]["form"].end_time + timedelta(days=1)},
+        }.get(action, {})
+        meta_action = "budget" if action == "budget_down" else action
         start = len(live["remote"].calls)
         review = await management.prepare_promotion_edit(
             tenant_id=tenant,
             promotion_id=promotion.id,
             request_key="edit-actual",
-            action=action,
+            action=meta_action,
             **options,
         )
         reviewed_calls = live["remote"].calls[start:]
@@ -432,6 +444,77 @@ async def test_paid_management_real_http_receipt_and_full_chain_verification(
     elif action == "budget":
         assert writes == [("POST", promotion.ids["adsets"], {"lifetime_budget": "20000"})]
         assert live["repo"].get(tenant, promotion.id).request["budget_minor"] == 1_000_000
+    elif action == "budget_down":
+        assert writes == [("POST", promotion.ids["adsets"], {"lifetime_budget": "6000"})]
+        assert audits[0]["evidence"]["floor"]["floor"] == 300_000
+        # The immutable initial approval keeps the original amount.
+        assert live["repo"].get(tenant, promotion.id).request["budget_minor"] == 1_000_000
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("spent", "budget_minor", "allowed"),
+    [(0, 300_000, True), (0, 290_000, False), (7000, 1_000_000, True), (7000, 990_000, False)],
+)
+async def test_budget_decrease_floors_on_spent_and_meta_daily_minimum(
+    live, monkeypatch, spent, budget_minor, allowed
+):
+    """Never below what the ad set already spent plus Meta's daily minimum for the days
+    left; refused before any validate or write reaches Meta."""
+    from types import SimpleNamespace
+
+    from qualify_api.ads import live_management as management
+    from qualify_api.ads.edit_ledger import revision
+    from qualify_api.ads.live_wizard import production_wizard
+    from qualify_api.ads.results import ResultsUnavailable
+
+    preview = await prepare(live)
+    await confirm(live, preview)
+    tenant, actor = live["args"]["tenant_id"], live["args"]["approved_by"]
+    promotion = live["repo"].get(tenant, preview.promotion_id)
+    if spent:
+        # Spent 7.000 of 10.000: test a decrease from a raised 20.000 COP lifetime budget.
+        live["remote"].objects[promotion.ids["adsets"]]["lifetime_budget"] = "20000"
+        promotion = replace(promotion, request=promotion.request | {"budget_minor": 2_000_000})
+    live["remote"].spent = spent
+    scope = SimpleNamespace(
+        tenant_id=tenant,
+        promotion_id=promotion.id,
+        connection=SimpleNamespace(connection_id=live["source"].connection_id, version=1),
+        account_id=live["source"].ad_account_id,
+    )
+    monkeypatch.setenv("QUALIFY_OAUTH_STATE_SECRET", "test-management-signing-secret-32-characters")
+    monkeypatch.setattr(management, "_scope", lambda *args: scope)
+    monkeypatch.setattr(management, "current_acting_login", lambda: actor)
+    monkeypatch.setattr(management, "PostgresPromotionRepository", lambda: live["repo"])
+    async with production_wizard(tenant, actor) as wizard:
+        gateway = wizard.gateway
+        monkeypatch.setattr(
+            management, "_context", lambda scope: (promotion, revision([]), gateway, live["source"])
+        )
+        monkeypatch.setattr(management, "_local", lambda *args: None)
+        monkeypatch.setattr(gateway, "remote_guard", _no_remote_guard)
+        start = len(live["remote"].calls)
+        call = management.prepare_promotion_edit(
+            tenant_id=tenant,
+            promotion_id=promotion.id,
+            request_key="edit-down",
+            action="budget",
+            budget_minor=budget_minor,
+        )
+        if allowed:
+            review = await call
+            assert review.new_budget_minor == budget_minor
+        else:
+            with pytest.raises(ResultsUnavailable, match="no puede bajar"):
+                await call
+        posts = [c for c in live["remote"].calls[start:] if c[0] == "POST"]
+        assert bool(posts) is allowed
+        assert all(c[2].get("execution_options") == ["validate_only"] for c in posts)
+
+
+async def _no_remote_guard(*args, **kwargs) -> None:
+    return None
 
 
 @pytest.mark.asyncio

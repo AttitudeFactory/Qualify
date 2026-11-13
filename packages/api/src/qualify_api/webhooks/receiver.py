@@ -38,6 +38,10 @@ from qualify_api.webhooks.envelope import (
     parse_delivery,
 )
 
+# Meta subjects admitted through `admit_meta_webhook` (0107; `ad_account` since 0154,
+# m-24828979). Must match the function's own allowlist.
+CONSENTED_META_OBJECTS = frozenset({"instagram", "page", "facebook", "ad_account"})
+
 PARSE_STATUS_PARSED = "parsed"
 PARSE_STATUS_UNPARSEABLE = "unparseable"
 
@@ -109,7 +113,7 @@ def record_delivery(
             except (ValueError, UnicodeDecodeError):
                 pass
         if not whatsapp:
-            if parsed is None or parsed.object not in {"instagram", "page", "facebook"}:
+            if parsed is None or parsed.object not in CONSENTED_META_OBJECTS:
                 return RecordedDelivery(uuid4(), False, "discarded", 0, 0)
             return _record_consented_meta(parsed=parsed)
 
