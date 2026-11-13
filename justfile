@@ -629,6 +629,11 @@ eval-precarga *args:
 eval-mejorar-texto *args:
     PYTHONUTF8=1 uv run --no-sync python packages/api/evals/mejorar_texto/run_experiment.py {{args}}
 
+# m-25026482: awareness levels + business perks — angles, copy and video by parts, baseline
+# vs change, Haiku 5.5 judge. `--suite identity` is free; a paid run stops at `--cap-usd`.
+eval-niveles *args:
+    PYTHONUTF8=1 uv run --no-sync python packages/api/evals/niveles_consciencia/run_experiment.py {{args}}
+
 eval-voz *args:
     PYTHONUTF8=1 uv run --no-sync python packages/api/evals/voice_ai/run_experiment.py {{args}}
 
