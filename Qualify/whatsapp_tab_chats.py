@@ -596,9 +596,10 @@ def _previous_orders() -> rx.Component:
         rx.el.details(
             rx.el.summary(
                 rx.text(order.previous_label, size="2", as_="span"),
+                # list-item keeps the native ▸/▾ marker (flex would hide it); the padding
+                # brings the tap target to 44 px.
                 min_height="44px",
-                display="flex",
-                align_items="center",
+                padding_y="0.75rem",
                 cursor="pointer",
             ),
             rx.vstack(
