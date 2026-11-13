@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import re
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from qualify_creative.angles import AngleBrand, AngleProduct, CreativeAngle
 from qualify_creative.enums import AwarenessLevel, BriefObjective, ImageRoute
@@ -22,6 +22,7 @@ from qualify_api.creative.brand_service import _apply_kit, kit_from_row
 from qualify_api.creative.parts_ai import (
     PROPOSE_PARTS_PROMPT_VERSION,
     PartsBrief,
+    propose_system_prompt,
     propose_user_prompt,
 )
 from qualify_api.creative.service import _brief_row, brief_from_row
@@ -29,6 +30,10 @@ from qualify_api.creative.service import _brief_row, brief_from_row
 BRAND_ID = uuid4()
 PERKS = ("Parqueadero gratis", "Pet friendly", "Abierto hasta las 11 p. m.")
 _VERSIONS = Path(__file__).resolve().parents[3] / "migrations/postgres/versions"
+#: The parts prompt with no perks and no level, as origin/main renders it (`_parts_corpus`
+#: run on f3412a8a's code, 2026-11-13). Re-baselined (from origin/main's code) whenever
+#: the parts prompt changes on purpose.
+PARTS_MAIN_DIGEST = "e5c5b62ce526d99ba3c977bfa62e5e580878d291008a3612aecd4e92ef136492"
 
 
 def _kit(**overrides: object) -> BrandKit:
@@ -177,3 +182,34 @@ def test_the_parts_prompt_gives_no_most_aware_line_and_no_food_only_wording() ->
     assert "Nivel de consciencia" not in prompt(AwarenessLevel.MOST_AWARE)
     solution = prompt(AwarenessLevel.SOLUTION_AWARE)
     assert "lo que distingue a este negocio" in solution and "porción" not in solution
+
+
+def _parts_corpus() -> str:
+    """The parts prompts of briefs and angles without perks or level — only names `main`
+    already has, so the function runs unchanged on both trees."""
+    product = AngleProduct(
+        product_id=UUID(int=1),
+        name="Shawarma",
+        description="Pollo",
+        category="Plato",
+        photo_keys=("a",),
+    )
+    out = [propose_system_prompt()]
+    brands = (
+        AngleBrand(),
+        AngleBrand(name="Bianki", sector="Comida", palette=("#fff",), typeface="Baloo"),
+    )
+    angles = (None, CreativeAngle(position=1, title="Mesa", scene="en la mesa", hook="h", cta="c"))
+    for brand in brands:
+        for prod in (None, product):
+            for angle in angles:
+                for secs in (15, 30):
+                    brief = PartsBrief(
+                        story="Ven a probar", brand=brand, product=prod, target_seconds=secs
+                    )
+                    out.append(propose_user_prompt(brief, angle))
+    return "\x01".join(out)
+
+
+def test_without_perks_and_level_the_parts_prompt_is_byte_identical_to_main() -> None:
+    assert hashlib.sha256(_parts_corpus().encode()).hexdigest() == PARTS_MAIN_DIGEST

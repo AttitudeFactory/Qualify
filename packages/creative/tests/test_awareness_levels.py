@@ -51,6 +51,7 @@ from qualify_creative.schemas import (
     normalize_business_perks,
 )
 
+#: Re-baselined (from origin/main's code) whenever the copy prompt changes on purpose.
 MAIN_DIGEST = "81f1f456152111c5f64808944173c338991037b52aa787bea5e82287fdb05380"
 
 BRAND_ID = UUID("a3b1c2d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d")

@@ -3,12 +3,9 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-
-import pytest
 
 from qualify_api.evals import awareness_levels as al
 
@@ -198,31 +195,6 @@ def test_cases_files_are_consistent() -> None:
     assert {c.split for c in cases} == {"dev", "test"}
     copy = json.loads(COPY_CASES.read_text(encoding="utf-8"))
     assert {c["level"] for c in copy["cases"]} == set(al.LEVELS)
-
-
-def _has_ref(ref: str) -> bool:
-    return (
-        subprocess.run(
-            ["git", "cat-file", "-e", f"{ref}^{{commit}}"], cwd=ROOT, capture_output=True
-        ).returncode
-        == 0
-    )
-
-
-@pytest.mark.skipif(not _has_ref(al.BASELINE_REF), reason="baseline commit not in this clone")
-def test_parts_prompt_identical_without_perks_or_level() -> None:
-    from qualify_creative.angles import AngleBrand
-
-    import qualify_api.creative.parts_ai as new
-
-    old = al.load_module_at(
-        al.BASELINE_REF,
-        "packages/api/src/qualify_api/creative/parts_ai.py",
-        "qualify_api.creative.parts_ai_baseline_test",
-        ROOT,
-    )
-    briefs = [new.PartsBrief(story="historia", brand=AngleBrand(name="M"), target_seconds=20)]
-    assert al.parts_prompt_identical(old, new, briefs) == 2
 
 
 def test_invented_offers_flags_a_perk_turned_into_a_gift() -> None:
