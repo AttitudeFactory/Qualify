@@ -42,6 +42,7 @@ from qualify_api.referentes.reel_store import (
     MemoryReelRunStore,
     PostgresReelRunStore,
     PublicReel,
+    capture_reel_hashtags,
     upsert_reels_in,
 )
 
@@ -929,6 +930,9 @@ class PostgresTrackedCreatorStore:
                 snapshot_id=snapshot.id if link else None,
                 started=False,
             )
+        # m-25026377: the read has committed; the hashtag catalog runs in its own
+        # transaction, best effort — as `PostgresReelRunStore.upsert_reels` does
+        capture_reel_hashtags(tenant_id, reels, self._reels.hashtag_repository)
 
     def put_payload(
         self,

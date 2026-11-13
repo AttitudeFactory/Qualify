@@ -10,6 +10,7 @@ from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import (
+    BigInteger,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -94,5 +95,48 @@ class HashtagTerm(Base):
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
     updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+
+
+class HashtagPostSighting(Base):
+    """A public post a catalog tag was seen on, with its views and date (m-25026377,
+    migration 0162). Shared like its parent table: no tenant, no RLS (0162's docstring)."""
+
+    __tablename__ = "hashtag_post_sightings"
+    __table_args__ = (
+        CheckConstraint("network IN ('tiktok','instagram')", name="ck_hashtag_sighting_network"),
+        CheckConstraint("post_id <> ''", name="ck_hashtag_sighting_post_id"),
+        CheckConstraint("views IS NULL OR views >= 0", name="ck_hashtag_sighting_views"),
+        CheckConstraint(
+            "source IN ('referentes','public_reels')", name="ck_hashtag_sighting_source"
+        ),
+        CheckConstraint("parser_version <> ''", name="ck_hashtag_sighting_provenance"),
+        # the kind of read only — never a query's words (0162)
+        CheckConstraint(
+            "source_ref ~ '^(tiktok|instagram):[a-z_]{1,32}$'",
+            name="ck_hashtag_sighting_source_ref",
+        ),
+        UniqueConstraint("hashtag_id", "network", "post_id", name="uq_hashtag_sighting"),
+        Index("ix_hashtag_sighting_recent", "hashtag_id", "posted_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    hashtag_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("hashtags.id", ondelete="CASCADE"), nullable=False
+    )
+    network: Mapped[str] = mapped_column(Text, nullable=False)
+    post_id: Mapped[str] = mapped_column(Text, nullable=False)
+    posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    views: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    source: Mapped[str] = mapped_column(Text, nullable=False)
+    source_ref: Mapped[str] = mapped_column(Text, nullable=False)
+    parser_version: Mapped[str] = mapped_column(Text, nullable=False)
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )

@@ -181,6 +181,34 @@ def _hashtags_in(text: str) -> list[str]:
     return [tag.lower() for tag in re.findall(r"#(\w+)", text or "")]
 
 
+@dataclass(frozen=True)
+class PostSighting:
+    """One feed post as the hashtag catalog keeps it (m-25026377): the provider's id, its
+    views and its date (unix seconds) when the feed carried them, its caption's hashtags
+    and the query that brought it. Read only by `qualify_api.hashtags.catalog.capture`
+    — never by the ranking, so it does not change which accounts a phase finds."""
+
+    post_id: str
+    posted_ts: int | None
+    views: int | None
+    hashtags: tuple[str, ...]
+    source: str
+
+
+def _post_sighting(
+    post_id: object, posted_ts: object, views: object, text: str, source: str
+) -> PostSighting | None:
+    if post_id in (None, "") or not _hashtags_in(text):
+        return None
+    return PostSighting(
+        post_id=str(post_id),
+        posted_ts=posted_ts if isinstance(posted_ts, int) and posted_ts > 0 else None,
+        views=views if isinstance(views, int) and views >= 0 else None,
+        hashtags=tuple(dict.fromkeys(_hashtags_in(text))),
+        source=source,
+    )
+
+
 def is_local(text: str, city: str) -> bool:
     folded = _fold(text)
     patterns = CITY_KEYWORDS.get(_slug(city), [re.escape(_fold(city))])
@@ -343,6 +371,9 @@ class Candidate:
     review_reason: str = ""
     #: Who reviewed it (model id) — provenance of `account_kind` and of the drop.
     reviewed_by: str = ""
+    #: The feed posts behind `hashtags_seen`, with their views and date, for the hashtag
+    #: catalog (m-25026377). Never read by the ranking.
+    post_sightings: list[PostSighting] = field(default_factory=list)
 
     @property
     def key(self) -> tuple[str, str]:
@@ -393,6 +424,7 @@ class Candidate:
         for tag in other.hashtags_seen:
             if tag not in self.hashtags_seen:
                 self.hashtags_seen.append(tag)
+        self.post_sightings.extend(other.post_sightings)
         for src in other.sources:
             if src not in self.sources:
                 self.sources.append(src)
@@ -592,6 +624,11 @@ def candidates_from_tiktok_videos(payload: dict[str, Any], source: str) -> list[
             text=text,
             ai_generated=_video_is_ai(video),
         )
+        sighting = _post_sighting(
+            video.get("aweme_id"), video.get("create_time"), stats.get("play_count"), text, source
+        )
+        if sighting is not None:
+            candidate.post_sightings.append(sighting)
         out.append(candidate)
     return out
 
@@ -659,6 +696,13 @@ def candidates_from_instagram_reels(payload: dict[str, Any], source: str) -> lis
             views=None,
             text=text,
         )
+        # The reels search carries no view count (measured, docs/scrapecreators-crecimiento-
+        # organico-y-contenido-ia.md row 5): the date alone is kept, views stay unknown.
+        sighting = _post_sighting(
+            reel.get("shortcode"), reel.get("taken_at"), reel.get("play_count"), text, source
+        )
+        if sighting is not None:
+            candidate.post_sightings.append(sighting)
         out.append(candidate)
     return out
 
