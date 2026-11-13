@@ -62,7 +62,7 @@ def test_one_job_per_medium_attempt() -> None:
     [
         {"m": None, "a": None},  # no subject
         {"a": None},  # a seasonal job without its attempt
-        {"a": SEASONAL_MAX_ATTEMPTS + 1},  # past the technical ceiling (0152)
+        {"a": SEASONAL_MAX_ATTEMPTS + 1},  # past the technical ceiling (0153)
         {"a": 0},
         {"k": "final"},  # a seasonal subject on a draft kind
         {"d": "draft"},  # both subjects

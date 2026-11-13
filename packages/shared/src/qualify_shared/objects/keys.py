@@ -137,7 +137,7 @@ def seasonal_brand_prefix(tenant_id: UUID, brand_id: UUID) -> str:
 
 
 #: A technical ceiling on one slot's attempts (m-25016851: «Pedir otro» has no owner-facing
-#: cap; each new attempt deletes the previous file). It mirrors the CHECK of 0152 and is
+#: cap; each new attempt deletes the previous file). It mirrors the CHECK of 0153 and is
 #: never shown to the owner.
 SEASONAL_MAX_ATTEMPTS = 99
 

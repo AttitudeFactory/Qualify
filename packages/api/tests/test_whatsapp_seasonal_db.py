@@ -92,7 +92,7 @@ def _key(tenant: UUID, brand: UUID, media, attempt: int) -> str:
 
 
 def test_attempts_past_three_and_delete_then_replan_hold_in_postgres() -> None:
-    """m-25016851 (0152): «Pedir otro» past three, «Eliminar» keeps the row with no file,
+    """m-25016851 (0153): «Pedir otro» past three, «Eliminar» keeps the row with no file,
     and planning the season again revives the deleted slot with a new job."""
     brand, user, _ = _provision(TENANT_A, "A")
     service = _service(TENANT_A, brand, [])
@@ -125,7 +125,7 @@ def test_the_file_key_and_the_ready_file_are_checked_by_the_database() -> None:
     for values in (
         {"object_key": f"seasonal/{TENANT_B}/{brand}/{media.season_key}/x-1.webp"},
         {"object_key": f"seasonal/{TENANT_A}/{brand}/{media.season_key}/x-2.webp"},  # attempt
-        {"attempt": SEASONAL_MAX_ATTEMPTS + 1},  # past the technical ceiling (0152)
+        {"attempt": SEASONAL_MAX_ATTEMPTS + 1},  # past the technical ceiling (0153)
         {"status": "ready"},  # no file
         # m-25016851: a deleted medium points at no file
         {"status": "deleted", "object_key": _key(TENANT_A, brand, media, 1)},

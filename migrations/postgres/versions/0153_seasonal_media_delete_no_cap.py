@@ -1,7 +1,7 @@
 """seasonal media: «Eliminar» and «Pedir otro» without the three-attempt cap (m-25016851)
 
-Revision ID: 0152
-Revises: 0151
+Revision ID: 0153
+Revises: 0152
 Create Date: 2026-11-12
 
 Ticket m-25016851 (founder, 2026-11-12): the owner hit «Ya pediste otro tres veces para
@@ -32,8 +32,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "0152"
-down_revision = "0151"
+revision = "0153"
+down_revision = "0152"
 branch_labels = None
 depends_on = None
 
@@ -78,7 +78,7 @@ def downgrade() -> None:
             PERFORM set_config('row_security', 'off', true);
             IF EXISTS (SELECT 1 FROM {_TABLE} WHERE attempt > 3 OR status = 'deleted')
                OR EXISTS (SELECT 1 FROM {_JOBS} WHERE attempt > 3) THEN
-                RAISE EXCEPTION 'downgrade 0152 refused: seasonal media past attempt 3 or '
+                RAISE EXCEPTION 'downgrade 0153 refused: seasonal media past attempt 3 or '
                                 'deleted by the owner remain (provenance would be lost)'
                     USING ERRCODE = '23514';
             END IF;

@@ -294,7 +294,7 @@ class AttemptsExhausted(SeasonalError):
     message = "Ya no podemos crear otra versión. Si no te sirve, toca «Eliminar»."
 
 
-#: Technical ceiling of «Pedir otro» per slot (the key format and 0152's CHECK) — not an
+#: Technical ceiling of «Pedir otro» per slot (the key format and 0153's CHECK) — not an
 #: owner-facing limit: m-25016851 removed the cap of three. «Con IA» is bounded by its cost
 #: confirmation and the brand's monthly spend guard, not by a count.
 MAX_ATTEMPTS: Final = SEASONAL_MAX_ATTEMPTS
