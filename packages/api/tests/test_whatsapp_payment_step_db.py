@@ -394,3 +394,85 @@ def test_an_archiving_save_that_archived_nothing_leaves_old_entries_alone(seeded
     context = _context(seeded["thread"])
     assert "_payment" not in context
     assert context["_orders_previous"] == [older]
+
+
+async def test_a_cart_whose_first_run_died_is_repaired_by_metas_retry(seeded) -> None:
+    """m-25018684: the message insert and the state save are two transactions. A lookup
+    failing between them makes Meta retry; the retry records the order and the handoff."""
+    from sqlalchemy import func, select
+
+    from qualify_api.webhooks.repository import ClaimedEvent
+    from qualify_api.whatsapp.handler import whatsapp_messages_handler
+    from qualify_api.whatsapp.orders import read_order
+    from qualify_api.whatsapp.resolve import PhoneResolution, PhoneResolutionOutcome
+
+    calls = {"n": 0}
+
+    def flaky_lookup(phone_row_id: UUID, ids: object) -> dict:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ConnectionError("transient")
+        return {}
+
+    handle = whatsapp_messages_handler(
+        resolve=lambda pn: PhoneResolution(
+            outcome=PhoneResolutionOutcome.RESOLVED,
+            tenant_id=TENANT,
+            connection_id=seeded["connection"],
+            phone_row_id=seeded["phone_row"],
+        ),
+        repo=PostgresWhatsAppInboxRepository(),
+        cart_product_loader=flaky_lookup,
+        clock=lambda: NOW,
+    )
+    wa_id = f"57{uuid4().int % 10**10:010d}"
+    wamid = f"wamid.cart-{uuid4().hex}"
+    item = {"product_retailer_id": str(uuid4()), "quantity": 1, "item_price": 9, "currency": "USD"}
+    value = {
+        "messaging_product": "whatsapp",
+        "metadata": {"display_phone_number": "1555", "phone_number_id": "pn"},
+        "messages": [
+            {
+                "from": wa_id,
+                "id": wamid,
+                "timestamp": str(int(NOW.timestamp())),
+                "type": "order",
+                "order": {"catalog_id": "c", "product_items": [item]},
+            }
+        ],
+    }
+
+    def event() -> ClaimedEvent:
+        return ClaimedEvent(
+            id=uuid4(),
+            delivery_id=uuid4(),
+            object="whatsapp_business_account",
+            entry_id="waba",
+            field="messages",
+            value=value,
+            attempts=1,
+        )
+
+    with pytest.raises(ConnectionError):
+        await handle(event())
+    with tenant_session(TENANT) as session:
+        thread_id = session.scalars(
+            select(Thread.id).where(Thread.external_thread_id == wa_id)
+        ).one()
+        assert session.get(WhatsAppThreadState, thread_id) is None
+
+    assert (await handle(event())).status == "processed"
+    context = _context(thread_id)
+    order = read_order(context)
+    assert order is not None and order.source_message_id == wamid
+    assert context["_handoff"]["reason"] == "catalog_cart"
+    with tenant_session(TENANT) as session:
+        sends = session.scalar(
+            select(func.count())
+            .select_from(WhatsAppOutboxItem)
+            .where(WhatsAppOutboxItem.thread_id == thread_id)
+        )
+    assert sends == 0
+    before = _context(thread_id)
+    assert (await handle(event())).status == "processed"  # a third delivery: nothing
+    assert _context(thread_id) == before

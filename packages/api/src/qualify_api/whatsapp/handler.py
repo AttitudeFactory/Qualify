@@ -95,10 +95,16 @@ the receiving brand's Galería products by `cart_product_loader(phone_row_id, id
 is handed to a person exactly as a confirmed menu order is: `_handoff` (reason
 `CART_HANDOFF_REASON`), automation paused, the engine's working order and payment keys
 cleared. A cart with no readable line still goes to a person (no order is recorded;
-`_handoff.summary.order_recorded` is false). A replayed cart (the message row already
-stored) does nothing, like any replayed message: it must not pause again a thread a
-person resumed. Known cost, the same as the menu's: a crash between the message insert
-and the state save loses that cart's order (the message itself is kept).
+`_handoff.summary.order_recorded` is false). The message insert and the state save are
+two transactions, so a replayed cart (the message row already stored) is a REPAIR only
+when `orders.cart_needs_repair` holds — at least one readable line, its `wamid` in
+neither `_order` nor `_orders_previous`, and its timestamp after the current order's
+`confirmed_at` (or no current order): then the first run died before its save (a
+crash, a failing product lookup) and never paused the thread, so the replay records the
+order and hands over exactly as a first delivery. Any other replay does nothing: it
+never touches `_handoff` and never pauses again a thread a person resumed; a cart with
+no readable line is never repaired, and a cart already out of the archive can never
+come back as the current order.
 
 **Replacing an order (m-25018684).** When a confirmation from another message (menu or
 cart) replaces the current order, `orders` archives the previous record under
@@ -184,6 +190,7 @@ from qualify_api.whatsapp.orders import (
     CTX_ORDER_RECORD,
     SOURCE_CART,
     CartProduct,
+    cart_needs_repair,
     cart_product_ids,
     record_cart_order,
     record_confirmed_order,
@@ -653,13 +660,28 @@ def whatsapp_messages_handler(
             result.handed_off,
         )
 
-    def _cart(ctx: _ChangeContext, *, thread_id: UUID, message: WAMessage) -> None:
+    def _cart(
+        ctx: _ChangeContext, *, thread_id: UUID, message: WAMessage, replay: bool = False
+    ) -> None:
         """m-25018684: the catalog cart becomes the current order and the thread goes
         to a person. Never a menu step, never an outbox row (see the module docs)."""
         order = message.order
         items = [item.model_dump() for item in order.product_items] if order else []
         stored = repo.get_thread_state(thread_id)
         context = dict(stored.context) if stored is not None else {}
+        if replay and not cart_needs_repair(
+            context,
+            items=items,
+            source_message_id=message.id,
+            message_at=epoch_to_datetime(message.timestamp),
+        ):
+            logger.debug(
+                "whatsapp webhook: tenant=%s thread=%s wamid=%s cart replay — nothing to repair",
+                ctx.tenant_id,
+                thread_id,
+                message.id,
+            )
+            return
         if message.id in recorded_order_message_ids(context):
             logger.info(
                 "whatsapp webhook: tenant=%s thread=%s wamid=%s cart already recorded",
@@ -810,10 +832,10 @@ def whatsapp_messages_handler(
                     channel="whatsapp",
                     referral=raw_whatsapp_referral(event, message.id, message.from_),
                 )
-            if inserted and message.type == ORDER_MESSAGE_TYPE:
-                # m-25018684: a cart is never menu input; a replay (row already stored)
-                # does nothing — it must not re-pause a thread a person resumed.
-                _cart(ctx, thread_id=upsert.thread_id, message=message)
+            if message.type == ORDER_MESSAGE_TYPE:
+                # m-25018684: a cart is never menu input. A replay only repairs a first
+                # run that died before its save (`orders.cart_needs_repair`).
+                _cart(ctx, thread_id=upsert.thread_id, message=message, replay=not inserted)
                 continue
             if not inserted:
                 logger.debug(

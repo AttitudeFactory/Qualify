@@ -31,6 +31,7 @@ from qualify_api.whatsapp.orders import (
     OrderLine,
     OrderSummary,
     cart_message_ids,
+    cart_needs_repair,
     cart_product_ids,
     cart_record,
     order_ready_text,
@@ -592,3 +593,22 @@ def test_format_money_writes_an_unroundable_amount_as_is() -> None:
 
     assert format_money(Decimal("1E+30"), "USD") == "USD 1E+30"
     assert format_money(Decimal("12500"), "COP") == "COP 12.500"
+
+
+def test_cart_needs_repair_only_for_a_new_readable_cart() -> None:
+    kw: dict[str, Any] = {"items": [_item("a")], "source_message_id": "w.new", "message_at": LATER}
+    assert cart_needs_repair({}, **kw)
+    assert cart_needs_repair(None, **kw)
+    assert not cart_needs_repair({}, **{**kw, "items": [_item("a", 0)]})
+    assert not cart_needs_repair({}, **{**kw, "message_at": None})
+    on_record: dict[str, Any] = {}
+    _cart(on_record, "w.new")
+    assert not cart_needs_repair(on_record, **kw)
+    current: dict[str, Any] = {}
+    _cart(current, "w.cur", at=AT)
+    assert cart_needs_repair(current, **kw)  # newer than the current order
+    assert not cart_needs_repair(current, **{**kw, "message_at": AT})  # not strictly after
+    # An old cart (out of the archive) never comes back as the current order.
+    assert not cart_needs_repair(current, **{**kw, "message_at": AT - timedelta(hours=1)})
+    unknown = {CTX_ORDER_RECORD: {**current[CTX_ORDER_RECORD], "confirmed_at": "junk"}}
+    assert not cart_needs_repair(unknown, **kw)

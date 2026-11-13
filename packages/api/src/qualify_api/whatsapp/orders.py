@@ -61,6 +61,15 @@ confirmation (or the same cart delivered twice) keeps the first record and its
 `confirmed_at` (for a cart: the message's timestamp). `recorded_order_message_ids` also
 covers the archive, so a late replay of an older cart never displaces a newer order.
 
+**A replayed cart is a repair, or nothing.** The handler stores the message and the
+state in two transactions; when Meta retries a cart whose message row already exists,
+`cart_needs_repair` decides: at least one readable line, the `wamid` in neither the
+current order nor the archive, and the message timestamp strictly after the current
+order's `confirmed_at` (or no current order). Only then did the first run die before
+its save, and the replay records the order as a first delivery would. Anything else is
+a no-op (a cart already on record, an old cart pushed out of the archive, a cart with
+no readable line).
+
 **No order is overwritten without a trace.** When a confirmation from a different
 message replaces the current order, the previous record first moves to the reserved
 key `CTX_PREVIOUS_ORDERS` (`"_orders_previous"`): a list, newest first, capped at
@@ -479,6 +488,37 @@ def _records(context: Mapping[str, Any] | None) -> list[Mapping[str, Any]]:
     return out
 
 
+def cart_needs_repair(
+    context: Mapping[str, Any] | None,
+    *,
+    items: Sequence[Mapping[str, Any]],
+    source_message_id: str,
+    message_at: datetime | None,
+) -> bool:
+    """A replayed cart must be recorded now: its first run died before the state save.
+    True only when it has a readable line, its `wamid` is not on record (current or
+    archived) and it is newer than the current order (or there is none)."""
+    if message_at is None or source_message_id in recorded_order_message_ids(context):
+        return False
+    if (
+        cart_record(
+            items=items, products={}, confirmed_at=message_at, source_message_id=source_message_id
+        )
+        is None
+    ):
+        return False
+    current = (context or {}).get(CTX_ORDER_RECORD)
+    if not isinstance(current, Mapping):
+        return True
+    confirmed_at = _when(current.get("confirmed_at"))
+    if confirmed_at is None:
+        return False
+    try:
+        return message_at > confirmed_at
+    except TypeError:  # a naive stored instant: cannot be compared, so never repaired
+        return False
+
+
 def payment_belongs_to(payment: Any, order: Mapping[str, Any]) -> bool:
     """`_payment` was written for this order (`order_message_id` == its source)."""
     if not isinstance(payment, Mapping):
@@ -736,6 +776,7 @@ __all__ = [
     "PreviousPayment",
     "archive_entry",
     "cart_message_ids",
+    "cart_needs_repair",
     "cart_product_ids",
     "cart_record",
     "order_ready_text",

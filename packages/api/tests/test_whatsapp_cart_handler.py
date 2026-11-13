@@ -13,7 +13,7 @@ import copy
 import json
 from collections.abc import Collection, Mapping
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -102,8 +102,13 @@ class World:
             self.menu_calls.append(phone_row_id)
             return PublishedMenu(BIANKI_DEMO_MENU, version_id=None)
 
+        self.fail_lookups = 0
+
         def cart_products(phone_row_id: UUID, ids: Collection[UUID]) -> Mapping[str, CartProduct]:
             self.lookups.append((phone_row_id, tuple(ids)))
+            if self.fail_lookups:
+                self.fail_lookups -= 1
+                raise ConnectionError("transient")
             return {k: v for k, v in self._products.items() if UUID(k) in set(ids)}
 
         self.handle = whatsapp_messages_handler(
@@ -356,3 +361,91 @@ async def test_a_wrongly_typed_field_never_drops_the_change(
     assert (CONN, WAMID) in world.repo.messages
     assert (CONN, "wamid.text-same-change") in world.repo.messages
     assert read_order(world.state().context) is not None  # the other line still counts
+
+
+# --- replays: a repair of a first run that died, or nothing ---------------------------
+
+
+def _store_cart_row(world: World) -> None:
+    world.repo.upsert_thread(tenant_id=TENANT, connection_id=CONN, wa_id=WA_ID, inbound_at=NOW)
+    world.repo.insert_inbound_message(
+        tenant_id=TENANT,
+        thread_id=world.thread_id(),
+        connection_id=CONN,
+        external_message_id=WAMID,
+        author_external_id=WA_ID,
+        author_username=None,
+        text=None,
+        posted_at=MESSAGE_AT,
+        shape_version="x",
+        media_type="order",
+    )
+
+
+async def test_a_lookup_failure_after_the_insert_is_repaired_by_the_replay() -> None:
+    product = CartProduct(str(PRODUCT), "Shawarma mixto", Decimal("30"), "USD")
+    world = World(products={str(PRODUCT): product})
+    world.fail_lookups = 1
+    value = _value(retailer_ids=(str(PRODUCT), "nqryix03ez"))
+
+    with pytest.raises(ConnectionError):
+        await world.handle(_event(value))
+    assert (CONN, WAMID) in world.repo.messages  # the row landed, the state did not
+    assert world.repo.states == {}
+
+    outcome = await world.handle(_event(value))  # Meta retries
+
+    assert outcome.status == "processed"
+    state = world.state()
+    order = read_order(state.context)
+    assert order is not None and order.source_message_id == WAMID
+    assert order.lines[0].name == "Shawarma mixto"
+    assert state.context[CTX_HANDOFF]["reason"] == CART_HANDOFF_REASON
+    assert state.paused_at == NOW
+    assert world.repo.outbox == [] and world.menu_calls == []
+
+
+async def test_a_replay_of_a_cart_on_record_changes_nothing() -> None:
+    world = World()
+    await world.handle(_event(_value()))
+    resumed = replace(world.state(), paused_at=None)  # a person resumed the chat
+    world.repo.states[world.thread_id()] = (TENANT, resumed)
+    before = copy.deepcopy(world.repo.states[world.thread_id()])
+
+    await world.handle(_event(_value()))
+
+    assert world.repo.states[world.thread_id()] == before
+    assert world.repo.outbox == []
+
+
+async def test_a_replay_of_an_old_cart_out_of_the_archive_changes_nothing() -> None:
+    world = World()
+    _store_cart_row(world)
+    newer = {  # a newer order is current; the old cart is in no archive
+        "items": [{"product_id": "p", "name": "x", "qty": 1, "unit_price": "5"}],
+        "total": "5",
+        "confirmed_at": (MESSAGE_AT + timedelta(days=1)).isoformat(),
+        "source_message_id": "wamid.newer",
+    }
+    world.repo.save_thread_state(
+        thread_id=world.thread_id(),
+        tenant_id=TENANT,
+        state=StoredThreadState(context={CTX_ORDER_RECORD: newer}),
+    )
+    before = copy.deepcopy(world.repo.states[world.thread_id()])
+
+    await world.handle(_event(_value()))
+
+    assert world.repo.states[world.thread_id()] == before
+    assert world.repo.outbox == []
+
+
+async def test_a_replay_of_a_cart_without_readable_lines_is_never_repaired() -> None:
+    world = World()
+    value = _value()
+    value["messages"][0]["order"]["product_items"] = [{"product_retailer_id": "x", "quantity": 0}]
+    _store_cart_row(world)
+
+    await world.handle(_event(value))
+
+    assert world.repo.states == {} and world.repo.outbox == []
