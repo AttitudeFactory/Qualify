@@ -46,7 +46,7 @@ fundador):
    de sesión de Facebook» y «cómo el usuario de tu app crea, actualiza y elimina un catálogo de
    productos» `[V N-15]`. Qualify hoy ni crea ni elimina catálogos (ADR 48 §1). Construirlo pasa a
    ser **condición previa del envío de WhatsApp para terceros**: el envío espera a esa
-   construcción. Plan: `docs/plan-video-app-review-catalog-management.md`.
+   construcción (consecuencia de D3 que deducimos nosotros `[H]`; él no lo dijo así). Plan: `docs/plan-video-app-review-catalog-management.md`.
 2. **¿Un permiso rechazado frena a los demás?** Lo que dice Meta hoy: cada permiso se evalúa con
    su propia evidencia — «no se aprobará para dicho permiso» si no se puede verificar, y ningún
    permiso que no aparezca en la grabación se aprueba `[V N-21]`, `[V N-22]`. Eso es aprobación

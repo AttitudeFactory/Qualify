@@ -108,12 +108,17 @@ WhatsApp account hierarchy» `[V F-9]`); un reintento nunca crea dos:
 1. La operación es una fila con `UNIQUE (tenant_id, request_key)` (como las corridas de ADR 48);
    un doble toque inserta una sola.
 2. Antes de crear, el worker lista `GET /{waba_id}/product_catalogs`: si ya hay uno conectado,
-   **lo adopta** (no crea) y lo registra.
+   **lo adopta** (no crea) y lo registra con **`created_by_qualify = false`**: puede ser uno que el
+   dueño hizo a mano, y Qualify nunca gana el derecho de eliminarlo por adoptarlo (§3.4). Solo un
+   catálogo que esta misma operación creó — reconocido por el `catalog_id` guardado (punto 4) o por
+   el sufijo (punto 3) — se registra con `true`.
 3. El nombre que Qualify pone es el de la marca más un sufijo fijo con el id corto de la operación;
    si el worker murió entre crear y conectar, en el reintento lista
    `GET /{business_id}/owned_product_catalogs` y adopta el que tenga ese sufijo. **El sufijo nunca
    se muestra en pantalla:** una vez conectado, el worker renombra el catálogo al nombre de la marca
-   sin sufijo (una llamada más, la misma de «cambiar el nombre»). Que esa lectura esté permitida con
+   sin sufijo (una llamada más, la misma de «cambiar el nombre»). Ese renombre es **el último paso
+   de la misma operación `create`** que tocó la persona y conserva su `requested_by`; no es una fila
+   `rename` aparte ni un cambio que Qualify haga por su cuenta. Que esa lectura esté permitida con
    el token del dueño: **`[NO VERIFICADO]`** (P-8).
 4. El `catalog_id` se guarda en la fila **en la misma transacción** en que el worker recibe la
    respuesta de creación, antes de conectar.
@@ -135,7 +140,10 @@ el borde de la WABA no permite desconectar `[V F-11]`.
 **3.5 Lo que nunca se toca.** El número real de Bianki y su cuenta: la grabación y todas las
 pruebas en vivo usan el portafolio de demostración y un tenant de demostración. Guardas en el
 código: «quitar» exige `created_by_qualify`; «crear» exige que la marca no tenga catálogo; el CLI
-`whatsapp-catalog-connect` sigue existiendo para el Modelo A y no cambia.
+`whatsapp-catalog-connect` sigue existiendo para el Modelo A. Un caso de borde que fija el paso
+2: si la marca tiene una fila `creating` o `failed`, esa fila ocupa el índice único de `brand_id`
+(§3.6) y el alta por CLI chocaría; el contrato dice si el CLI se niega con un mensaje claro o
+reutiliza la fila.
 
 **3.6 Datos: el delta propuesto** (lo fija el paso 2, una revisión, reversible, con RLS):
 - `whatsapp_catalogs` gana `lifecycle` (`creating` | `active` | `deleting` | `deleted` |
@@ -252,7 +260,8 @@ en la clase existente o una clase hermana ligada a un `business_id`), `service.p
 (`create_catalog`, `rename_catalog`, `delete_catalog`, cada uno inserta una operación con
 `request_key`), `worker.py` (tercera tarea del tick), `store.py`, `models`, `just` si hace falta.
 Acepta si: un doble toque crea una sola operación; un corte entre crear y conectar no deja dos
-catálogos (prueba con el falso); un reintento tras `failed` reutiliza la fila; eliminar está
+catálogos (prueba con el falso); un catálogo adoptado queda con `created_by_qualify = false` y no
+se puede eliminar; un reintento tras `failed` reutiliza la fila; eliminar está
 prohibido sin `created_by_qualify` y con corridas `pending`/`sending`/`sent`; ningún token ni
 texto de cliente en logs; credencial solo por `CredentialResolver`; RLS probado. Pruebas:
 unitarias offline con `FakeWhatsAppCatalogClient` extendido; `-m db` con aislamiento tenant A/B
@@ -367,7 +376,7 @@ su descripción propias `[V F-3]`.
 | R6 | `owned_product_catalogs` lista `page_id` como «obligatorio» `[V F-12]`, cosa rara para un catálogo de comercio | Paso 1: crear con solo `name` (y `vertical=commerce`, el valor por defecto `[V F-12]`) |
 | R7 | Que subir productos cuente como «updates» para el revisor `[NO VERIFICADO]` | El guion muestra subir **y** renombrar |
 | R8 | Revisor sin acceso a Qualify → se rechaza **todo** el envío `[V F-4]` | F6: credenciales del tenant de demostración e instrucciones claras |
-| R9 | Calendario: el envío de WhatsApp para terceros espera a este plan (D3) `[F]` | Correr los pasos 4–6 en paralelo con m-24789620 |
+| R9 | Calendario: el envío de WhatsApp para terceros espera a este plan — consecuencia de D3, deducción nuestra `[H]`; el fundador no lo dijo con esas palabras | Correr los pasos 4–6 en paralelo con m-24789620 |
 | R10 | El número de prueba del panel probablemente vive en el portafolio de la app y no sirve para el Modelo B `[H]`; de qué portafolio es y si admite catálogo, **`[NO VERIFICADO]`** [F-8] | No se usa; F2 |
 | R11 / P-11 | Si WhatsApp le muestra al cliente el nombre del catálogo (decide el texto de ayuda de la pauta 4) `[H]` | Paso 1 |
 | R12 | Ruta (b): cómo se crea la conexión de WhatsApp del tenant de demostración sin acceso avanzado (§3.1) | Paso 2, con lo que muestre el paso 1 |
