@@ -19,7 +19,7 @@ VIDEO_PIPELINE = "ad-unpublished-video-v1"
 # link sticker through the publishing API; a story ad carries the button).
 STORY_PIPELINE = "ad-story-image-v1"
 STORY_VIDEO_PIPELINE = "ad-story-video-v1"
-STORY_FORMAT = "Elige una imagen o un video MP4 vertical de 9:16 para la historia."
+STORY_FORMAT = "Elige una foto o un video vertical, de pantalla completa, para la historia."
 MAX_IMAGE_BYTES = 8 * 1024 * 1024  # Local policy, not a claimed Meta limit.
 # Local policy, not claimed Meta limits: one story card is the tightest placement we target.
 MAX_VIDEO_BYTES = 100 * 1024 * 1024
@@ -231,7 +231,7 @@ def _video_id(value: object) -> bool:
     return isinstance(value, str) and re.fullmatch(r"[0-9]{1,32}", value) is not None
 
 
-def creative_payload(source: ImageSource, form: ImageAdForm, hashes: tuple[str, str]) -> dict:
+def creative_payload(source: ImageSource, form: ImageAdForm, hashes: tuple[str, ...]) -> dict:
     """SDK26 fields; exact account compatibility must still pass Meta validate_only."""
     source.snapshot()
     if (

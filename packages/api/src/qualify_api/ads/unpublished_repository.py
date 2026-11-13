@@ -103,7 +103,10 @@ def load_image_source(
         for asset_id, cover in zip((feed_asset, vertical_asset), thumbnails, strict=True):
             if asset_id is None:
                 if cover is not None:
-                    raise UnpublishedUnavailable("Solo los videos llevan portada.")
+                    raise UnpublishedUnavailable(
+                        "Esta historia lleva un solo archivo; quita la portada del formato que "
+                        "no usas."
+                    )
                 selections.append(None)
                 continue
             kind = session.scalar(

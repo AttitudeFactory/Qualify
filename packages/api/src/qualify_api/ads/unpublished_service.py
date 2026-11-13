@@ -520,7 +520,10 @@ class UnpublishedImageService:
                 await fence()
                 body = page.data[0].get("body") if len(page.data) == 1 else None
                 if not isinstance(body, str) or not body.strip() or len(body) > 200_000:
-                    raise UnpublishedUnavailable("Meta no devolvió la vista previa del anuncio.")
+                    raise UnpublishedUnavailable(
+                        "No pudimos preparar la vista previa del anuncio. "
+                        "Intenta de nuevo en unos minutos."
+                    )
                 previews.append(body)
             review = self.reviews.create(
                 ActivationReview(

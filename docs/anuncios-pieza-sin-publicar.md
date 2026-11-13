@@ -158,7 +158,11 @@ previas, revisión y consentimiento de gasto en `confirm`) es el mismo camino de
   botones de chat se rechazan antes de llamar a Meta. v1 solo lleva a una página web (sin
   `wa.me`; WhatsApp llegará con el objetivo de clic a mensaje).
 - **Antes de cualquier llamada a Meta:** proporción 9:16 exacta, tipo (JPEG/PNG o MP4 con
-  portada 9:16), lectura de la imagen (8 MB) o del video (100 MB, 1 a 60 segundos).
+  portada 9:16), lectura de la imagen (8 MB) o del video (100 MB, 1 a 60 segundos). Son las
+  mismas reglas locales de las parejas (los 1 a 60 segundos ya se fijaron por la tarjeta de
+  historia, la ubicación más estricta). No se aplica ninguna otra regla exclusiva de
+  historias: no leímos en una fuente oficial otro límite verificable (zona segura, largo del
+  texto en historias), y Meta valida el resto en `validate_only` antes de crear nada.
 - **Procedencia:** `pipeline_version` `ad-story-image-v1` / `ad-story-video-v1` en la fuente
   aprobada; la revisión guarda `kind` `unpublished-story-images` / `unpublished-story-videos`.
   Las parejas conservan exactamente su instantánea y su huella (test).
@@ -166,9 +170,12 @@ previas, revisión y consentimiento de gasto en `confirm`) es el mismo camino de
   personalizados de m-24828983 hoy se resuelven desde una publicación ya hecha
   (`publish_attempt_id`), que esta pieza no tiene; por eso este backend no lo agrega al
   anuncio. Queda como sugerencia de la pantalla hasta que exista un alcance por cuenta.
-- **Sin verificar en vivo:** que Meta devuelva `object_story_spec.link_data`/`video_data` sin
-  campos añadidos (la lectura de vuelta compara exacto y, si no coincide, se niega a activar),
-  y si una historia ya publicada puede promocionarse por su id (m-24828971).
+- **Sin verificar en vivo:** que Meta devuelva `object_story_spec.link_data`/`video_data` y
+  el `targeting` sin campos normalizados de más (por ejemplo `image_url` junto a `image_hash`).
+  La lectura de vuelta compara exacto y, si no coincide, se niega a activar (falla cerrada).
+  **Antes de lanzar, hay que leer de vuelta un anuncio de historia real en pausa** en la prueba
+  en vivo m-24828971 y ajustar la comparación solo a lo que Meta añada de verdad. En esa misma
+  prueba se decide si una historia ya publicada puede promocionarse por su id.
 
 ## Pendiente del ticket completo
 

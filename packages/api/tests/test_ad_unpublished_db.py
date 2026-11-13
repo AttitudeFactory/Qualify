@@ -308,7 +308,45 @@ def test_story_source_loads_one_vertical_asset_and_keeps_its_pipeline(unpublishe
         recipe = UnpublishedRepository().approve(story, form, actor, uuid4())
         assert recipe["pipeline_version"] == "ad-story-image-v1"
         assert recipe["source"]["feed"] is None
-        with pytest.raises(UnpublishedUnavailable, match="9:16"):  # a 4:5 file is no story
+        # A 4:5 file is no story.
+        with pytest.raises(UnpublishedUnavailable, match="para la historia"):
             load_image_source(*args, None, source.feed.asset_id)
         with pytest.raises(UnpublishedUnavailable, match="portada"):
             load_image_source(*args, None, source.vertical.asset_id, (uuid4(), None))
+
+
+def test_story_video_source_loads_one_clip_with_its_cover(unpublished_world):
+    """m-25026350: a story video is one 9:16 MP4 plus its 9:16 cover image."""
+    source, form, login, actor = unpublished_world
+    clip, cover = uuid4(), uuid4()
+    with tenant_session(source.tenant_id) as session:
+        version = session.scalar(
+            text("SELECT active_version_id FROM content_drafts WHERE id=:id"),
+            {"id": source.draft_id},
+        )
+        for asset, media, kind in ((clip, "video", "video/mp4"), (cover, "image", "image/png")):
+            session.execute(
+                text("""INSERT INTO image_assets
+              (id,tenant_id,draft_id,version_id,media_url,object_key,content_type,width,height,
+               media_type)
+              VALUES(:id,:tenant,:draft,:version,'unused',:key,:kind,90,160,:media)"""),
+                {
+                    "id": asset,
+                    "tenant": source.tenant_id,
+                    "draft": source.draft_id,
+                    "version": version,
+                    "key": f"t/{source.tenant_id}/generated/{asset}",
+                    "kind": kind,
+                    "media": media,
+                },
+            )
+    with acting_login(login):
+        args = (source.tenant_id, source.draft_id, source.account_id, None, clip)
+        with pytest.raises(UnpublishedUnavailable, match="portada"):
+            load_image_source(*args)
+        story = load_image_source(*args, (None, cover))
+        assert story.is_story and story.is_video and story.vertical.thumbnail.asset_id == cover
+        guard_source(story)
+        recipe = UnpublishedRepository().approve(story, form, actor, uuid4())
+        assert recipe["pipeline_version"] == "ad-story-video-v1"
+        assert recipe["source"]["vertical"]["thumbnail"]["asset_id"] == str(cover)

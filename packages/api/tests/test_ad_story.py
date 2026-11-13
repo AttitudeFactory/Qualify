@@ -12,6 +12,8 @@ from uuid import UUID, uuid4
 import pytest
 from packages.api.tests.test_ad_unpublished import form, source
 from packages.api.tests.test_ad_unpublished import service as service  # noqa: F401
+from packages.api.tests.test_ad_unpublished_video import mp4
+from packages.api.tests.test_ad_unpublished_video import video as video  # noqa: F401
 from PIL import Image
 
 from qualify_api.ads import unpublished_service as module
@@ -101,7 +103,7 @@ async def test_a_story_that_is_not_9_16_is_refused_before_any_meta_call(story, m
     obj, selected, actor, client, _ = story
     wrong = replace(selected, vertical=replace(selected.vertical, width=40, height=50))
     monkeypatch.setattr(module, "load_image_source", lambda *args: wrong)
-    with pytest.raises(UnpublishedUnavailable, match="9:16 para la historia"):
+    with pytest.raises(UnpublishedUnavailable, match="pantalla completa, para la historia"):
         await prepare(story)
     assert client.upload_calls == 0 and not client.calls and not obj.recipes.rows
 
@@ -134,7 +136,7 @@ def test_story_video_carries_its_cover_and_button_in_video_data():
         "title": "Título",
         "call_to_action": {"type": "LEARN_MORE", "value": {"link": "https://example.org"}},
     }
-    with pytest.raises(UnpublishedUnavailable, match="9:16 para la historia"):
+    with pytest.raises(UnpublishedUnavailable, match="pantalla completa, para la historia"):
         replace(chosen, vertical=replace(video, thumbnail=replace(cover, width=40))).snapshot()
     with pytest.raises(UnpublishedUnavailable):
         video_creative_payload(chosen, form(), (("123", "a"), ("456", "b")))
@@ -195,3 +197,68 @@ def test_story_image_is_measured_like_a_pair_image(story):
     assert selected.snapshot()["feed"] is None
     with pytest.raises(UnpublishedUnavailable, match=STORY_FORMAT[:20]):
         replace(selected, vertical=replace(selected.vertical, content_type="image/gif")).snapshot()
+
+
+@pytest.fixture
+def story_video(video, monkeypatch):  # noqa: F811
+    obj, selected, actor, client, store = video
+    chosen = replace(selected, feed=None)
+    monkeypatch.setattr(module, "load_image_source", lambda *args: chosen)
+    return obj, chosen, actor, client, store
+
+
+@pytest.mark.asyncio
+async def test_story_video_uploads_once_waits_for_meta_reads_back_and_confirms(story_video):
+    obj, selected, actor, client, store = story_video
+    key = uuid4()
+
+    async def prepare_video():
+        return await obj.prepare(
+            tenant_id=selected.tenant_id,
+            draft_id=selected.draft_id,
+            ad_account_id=selected.account_id,
+            feed_asset_id=None,
+            vertical_asset_id=selected.vertical.asset_id,
+            vertical_thumbnail_asset_id=selected.vertical.thumbnail.asset_id,
+            form=form(),
+            actor=actor,
+            request_key=key,
+            confirm_preparation=True,
+        )
+
+    with pytest.raises(UnpublishedUnavailable, match="todavía") as waiting:
+        await prepare_video()
+    assert waiting.value.reason == "video_processing"
+    assert client.video_uploads == [mp4(90, 160)] and client.upload_calls == 1
+    client.finish_processing()
+    preview = await prepare_video()
+    assert len(client.video_uploads) == 1 and client.upload_calls == 1  # never re-sent
+    assert client.previews == ["INSTAGRAM_STORY"] and preview.feed_html == ""
+    promotion = obj.promotions.get(selected.tenant_id, preview.promotion_id)
+    data = promotion.request["creative"]["object_story_spec"]["video_data"]
+    assert (data["video_id"], data["image_hash"]) == ("900", "hash1")
+    assert promotion.request["targeting"]["instagram_positions"] == ["story"]
+    reads = [call for call in client.calls if call[0] == "GET" and "fields" in call[2]]
+    assert any("object_story_spec" in call[2]["fields"] for call in reads)  # read-back ran
+    review = obj.reviews.get(selected.tenant_id, preview.review_id)
+    assert review.checks_snapshot["kind"] == "unpublished-story-videos"
+    assert len(review.checks_snapshot["digests"]) == 2  # [video, cover]
+    confirm = dict(
+        tenant_id=selected.tenant_id,
+        recipe_id=preview.recipe_id,
+        review_id=preview.review_id,
+        actor=actor,
+        confirm_charge=True,
+    )
+    # A changed cover refuses; the clean confirm below proves each write fence ([cover] vs
+    # digests[-1:]) accepts the one-asset story.
+    original = store.objects[selected.vertical.thumbnail.object_key]
+    changed = io.BytesIO()
+    Image.new("RGB", (90, 160), color="red").save(changed, format="PNG")
+    store.objects[selected.vertical.thumbnail.object_key] = changed.getvalue()
+    with pytest.raises(UnpublishedUnavailable, match="cambiaron"):
+        await obj.confirm(**confirm)
+    assert not client.updates
+    store.objects[selected.vertical.thumbnail.object_key] = original
+    assert await asyncio.wait_for(obj.confirm(**confirm), 3) == "active"
+    assert len(client.updates) == 3
