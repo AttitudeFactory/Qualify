@@ -154,7 +154,7 @@ class TenantSource(Protocol):
 
 
 class CatalogTenants:
-    """Every tenant with a registered catalog — ids only, via `admin_session` (0156 grants
+    """Every tenant with a registered catalog — ids only, via `admin_session` (0157 grants
     `qualify_admin` SELECT on `whatsapp_catalogs` for exactly this)."""
 
     def tenants(self, *, now: datetime) -> list[UUID]:

@@ -1,4 +1,4 @@
-"""ADR 48 against the compose Postgres (migration 0156): RLS with two tenants and the
+"""ADR 48 against the compose Postgres (migration 0157): RLS with two tenants and the
 grants, the three actions and their idempotency, `CatalogSyncTick` driven end to end with
 the FAKE catalog client (never Meta), the screen's read, and the photo route's lookup.
 Nothing here touches R2: the route's store is never built."""
