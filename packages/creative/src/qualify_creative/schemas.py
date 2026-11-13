@@ -27,6 +27,7 @@ from qualify_creative.ad_destination import (
 from qualify_creative.enums import (
     AdImageMode,
     AvatarSource,
+    AwarenessLevel,
     BriefIntent,
     BriefObjective,
     ContentFormat,
@@ -180,6 +181,35 @@ class ImagePolicy(BaseModel):
 #: The longest type face name a prompt carries — a family name is short (`BrandKit.typeface`).
 TYPEFACE_MAX = 60
 
+#: The owner's business perks (`BrandKit.business_perks`): how many facts a kit keeps and
+#: how long each one may be — short lines the owner types («Parqueadero gratis»).
+BUSINESS_PERKS_MAX = 12
+BUSINESS_PERK_MAX_CHARS = 80
+
+
+def normalize_business_perks(values: object) -> tuple[str, ...]:
+    """The owner's perks as the kit stores them: each one trimmed to one line and cut at
+    `BUSINESS_PERK_MAX_CHARS`, empties dropped, repeats (ignoring case) dropped keeping
+    the first, at most `BUSINESS_PERKS_MAX` kept in the owner's order. Lenient like the
+    kit's other lists — what does not fit is trimmed, never refused — and idempotent, so
+    a stored list rehydrates to the same bytes."""
+    if values is None:
+        return ()
+    if isinstance(values, str):
+        values = values.splitlines()
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values if isinstance(values, (list, tuple)) else ():
+        text = " ".join(str(value or "").split())[:BUSINESS_PERK_MAX_CHARS].strip()
+        key = text.casefold()
+        if not text or key in seen:
+            continue
+        seen.add(key)
+        out.append(text)
+        if len(out) == BUSINESS_PERKS_MAX:
+            break
+    return tuple(out)
+
 
 class BrandKit(BaseModel):
     """What the operator declares about their brand. One per tenant (D14)."""
@@ -210,6 +240,15 @@ class BrandKit(BaseModel):
     image_policy: ImagePolicy = ImagePolicy()
     #: Declared by the owner; a default for new ad pieces, never an LLM-generated URL.
     ads_destination_url: str | None = None
+    #: What the business offers beyond its products, typed by the owner («Parqueadero
+    #: gratis», «Abierto hasta las 11 p. m.»): the only venue facts generation may state.
+    #: Manual input (no provenance); normalized by `normalize_business_perks`.
+    business_perks: tuple[str, ...] = ()
+
+    @field_validator("business_perks", mode="before")
+    @classmethod
+    def _perks(cls, value: object) -> tuple[str, ...]:
+        return normalize_business_perks(value)
 
     @field_validator("ads_destination_url")
     @classmethod
@@ -1086,6 +1125,9 @@ class ContentBrief(BaseModel):
     variants_requested: int = Field(default=3, ge=1, le=5)
     kind: ContentKind = ContentKind.STATIC_FLYER
     media: MediaInputs = MediaInputs()
+    #: The reader's awareness level the piece speaks to (from its angle); None = not set,
+    #: and the copy prompt renders exactly as before the levels existed.
+    awareness_level: AwarenessLevel | None = None
 
     @model_validator(mode="before")
     @classmethod
