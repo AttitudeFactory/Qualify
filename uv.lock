@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.12"
 resolution-markers = [
     "sys_platform == 'linux'",
@@ -2169,6 +2169,7 @@ dev = [
 name = "qualify-models"
 version = "0.1.0"
 source = { editable = "packages/models" }
+default-groups = ["dev", "eval"]
 dependencies = [
     { name = "accelerate" },
     { name = "av" },
@@ -2274,6 +2275,7 @@ requires-dist = [
 name = "qualify-workspace"
 version = "0.0.0"
 source = { virtual = "." }
+default-groups = ["backend", "crm", "dev"]
 
 [package.dev-dependencies]
 backend = [
