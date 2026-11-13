@@ -1,5 +1,6 @@
-"""«Tu video completo» — the card under a video by parts' list of parts (m-24921084,
-`docs/ux-video-por-planos.md` §3e and §4).
+"""«Tu video completo» — the card of a video by parts (m-24921084,
+`docs/ux-video-por-planos.md` §3e and §4; m-25016656 redesign: the piece page's two
+columns, the whole video on the left, «Tus partes» as tiles that play in place).
 
 Built only from the design system's primitives (Liquid Glass rule: no new primitive):
 `card` as the surface, `progress_panel` while the parts are being joined (never a
@@ -24,6 +25,7 @@ from .creative_pages import (
 from .final_video_card_state import (
     APPROVE,
     CHANGE,
+    CHOOSE_ID_PREFIX,
     CREATE,
     RECREATE,
     REJOIN,
@@ -31,13 +33,14 @@ from .final_video_card_state import (
     FinalVideoState,
 )
 from .final_video_vm import ExpiredPartVM
+from .part_progress_state import PartProgressState
 from .post_card import readiness_note
 from .r2_media import BACKEND_BASE
 from .ui import tokens as T
+from .ui.clip_player import clip_player
 from .ui.primitives import (
     callout,
     card,
-    media_thumb,
     progress_panel,
     signal_pill,
     skeleton_card,
@@ -51,9 +54,9 @@ _TAP = "2.75rem"
 CARD_ID = "q-final-video"
 APPROVE_WHY_ID = "q-final-video-approve-why"
 CHANGE_PANEL_ID = "q-final-video-change"
-CHANGE_PICK_ID = "q-final-video-change-pick"
-CHANGE_PICK_LABEL = "¿Qué parte quieres cambiar?"
-CHANGE_TEXT_LABEL = "¿Qué le cambiamos? (opcional)"
+#: «Parte 2: ¿qué le cambiamos? (opcional)» — the part's number goes before it
+CHANGE_TEXT_LABEL = ": ¿qué le cambiamos? (opcional)"
+CHANGE_TEXT_ID = "q-final-video-change-label"
 CHANGE_TEXT_PLACEHOLDER = "Ej.: que se vea el producto más de cerca"
 CHANGE_SUBMIT = "Crear otra versión"
 CHANGE_NOTE = "Usa 1 vista previa. Las demás partes no cambian."
@@ -109,23 +112,68 @@ def _header() -> rx.Component:
     )
 
 
-def _player() -> rx.Component:
+#: m-25016656: the card's two layouts — «columns» is the piece page's grid (the whole video
+#: on the left, what is decided on the right; stacked under `md`), «stacked» one column
+#: at any width. «columns» is the default: /create's result already uses that grid.
+COLUMNS = "columns"
+STACKED = "stacked"
+EMPTY_STAGE_TEXT = "Cuando estén todas las partes, aquí ves tu video completo."
+JOINING_STAGE_TEXT = "Estamos juntando tus partes. En un momento lo ves aquí."
+PARTS_TITLE = "Tus partes"
+PARTS_HINT_CHANGE = "Toca ▶ para ver cada parte. Si una no te gusta, cámbiala."
+PARTS_HINT_WATCH = "Toca ▶ para ver cada parte."
+PARTS_LIST_ID = "q-final-video-parts"
+CHOOSE_LABEL = "Cambiar esta"
+CHOSEN_LABEL = "Elegida"
+#: a tile's width: two whole tiles and the edge of a third on a 375 px phone
+_TILE_W = rx.breakpoints(initial="8.5rem", md="8rem")
+#: The tones a part tile's pill can take.
+_TONES = ("ok", "warn", "error", "info", "neutral")
+
+
+def _player(layout: str) -> rx.Component:
+    """The whole video, or — before there is one — the empty 9:16 frame saying when it
+    comes. In «columns» it fills its column from `md` (20rem / 24rem); on a phone, and in
+    «stacked», 14rem centred so «Tus partes» shows on the first screen."""
+    has_file = S.card.show_video & ((S.video_url != "") | (S.video_key != ""))
+    width = rx.breakpoints(initial="14rem", md="100%") if layout == COLUMNS else "14rem"
     return rx.box(
-        rx.video(
-            src=_src(S.video_url, S.video_key),
-            poster=_poster(),
-            controls=True,
-            width="100%",
-            height="auto",
-            class_name="q-rv-media q-rv-media--video",
+        rx.cond(
+            has_file,
+            rx.video(
+                src=_src(S.video_url, S.video_key),
+                poster=_poster(),
+                controls=True,
+                width="100%",
+                height="auto",
+                class_name="q-rv-media q-rv-media--video",
+            ),
+            rx.center(
+                # what the empty frame says by the join's state: waiting for the parts,
+                # joining them — or nothing when it failed or the files are gone (the
+                # notice on the right says it)
+                rx.cond(
+                    (S.join_state == "failed") | (S.join_state == "purged"),
+                    rx.icon("film", size=28, color=T.TEXT_MUTED),
+                    rx.text(
+                        rx.cond(S.wants_refresh, JOINING_STAGE_TEXT, EMPTY_STAGE_TEXT),
+                        size="2",
+                        color=T.TEXT_MUTED,
+                        text_align="center",
+                        padding="1rem",
+                    ),
+                ),
+                class_name="q-rv-media-empty",
+                height="auto",
+                aspect_ratio="9 / 16",
+                width="100%",
+            ),
         ),
         role="group",
         aria_label=VIDEO_LABEL,
-        # UX review: on a 375 px phone a full-width 9:16 video pushed «Aprobar» off the
-        # screen — narrow and centred there, beside the words from `sm` up
         width="100%",
-        max_width=rx.breakpoints(initial="11rem", sm="14rem"),
-        margin_x=rx.breakpoints(initial="auto", sm="0"),
+        max_width=width,
+        margin_x="auto",
         flex_shrink="0",
     )
 
@@ -169,16 +217,19 @@ def _approve_texts() -> rx.Component:
     )
 
 
+def _changing() -> rx.Var[bool]:
+    """A part is chosen in «Tus partes»: its words and «Crear otra versión» show."""
+    return S.change_open & S.card.change_part_visible & (S.change_index != "")
+
+
 def _actions() -> rx.Component:
-    """The card's last row, «Aprobar» first (founder's call): [Aprobar] [Cambiar una
-    parte] — or, with the change panel open, [Aprobar] [Crear otra versión] [Cancelar].
-    On a 375 px phone it may take two lines; «Aprobar» stays the solid one."""
-    can_change = S.card.change_part_visible & (S.part_options.length() > 0)
-    changing = S.change_open & S.card.change_part_visible
+    """The card's last row, «Aprobar» first (founder's call) — and, with a part chosen
+    in «Tus partes», [Crear otra versión] [Cancelar]. On a 375 px phone it may take two
+    lines; «Aprobar» stays the solid one."""
     return rx.flex(
         rx.cond(S.card.approve_visible, _approve_button()),
         rx.cond(
-            changing,
+            _changing(),
             rx.fragment(
                 rx.button(
                     rx.icon("refresh-cw", size=16),
@@ -186,7 +237,7 @@ def _actions() -> rx.Component:
                     variant="soft",
                     size="3",
                     min_height=_TAP,
-                    disabled=(S.change_index == "") | S.working,
+                    disabled=S.working,
                     loading=S.busy == CHANGE,
                     on_click=S.change_part,
                 ),
@@ -196,22 +247,7 @@ def _actions() -> rx.Component:
                     color_scheme="gray",
                     size="3",
                     min_height=_TAP,
-                    on_click=S.toggle_change,
-                ),
-            ),
-            rx.cond(
-                can_change,
-                rx.button(
-                    rx.icon("pencil", size=16),
-                    S.card.change_part_label,
-                    variant="soft",
-                    color_scheme="gray",
-                    size="3",
-                    min_height=_TAP,
-                    disabled=S.working,
-                    on_click=S.toggle_change,
-                    aria_expanded=rx.cond(S.change_open, "true", "false"),
-                    aria_controls=CHANGE_PANEL_ID,
+                    on_click=S.cancel_change,
                 ),
             ),
         ),
@@ -226,7 +262,7 @@ def _create_missing() -> rx.Component:
     """A part of the plan never created (visual review 2026-11-09): «La parte 6 todavía no
     se creó.», then «Crear la parte 6» / «Crear las que faltan» and what it uses."""
     return rx.vstack(
-        callout(S.card.unmade_text, "info", icon="circle-plus"),
+        _note(S.card.unmade_text, "info", icon="circle-plus"),
         rx.button(
             rx.icon("plus", size=16),
             S.card.create_label,
@@ -244,71 +280,147 @@ def _create_missing() -> rx.Component:
     )
 
 
-def _thumb_src(item: rx.Var[dict[str, str]]) -> rx.Var[str]:
-    return rx.cond(
-        item["url"] != "",
-        BACKEND_BASE + item["url"],
-        rx.cond(item["key"] != "", rx.get_upload_url(item["key"]), ""),
+def _note(text: rx.Var | str, tone: str, icon: str | None = None) -> rx.Component:
+    """A `callout` that is a plain `note`: `callout` gives every tone a live role
+    (`status` / `alert`), and the card keeps ONE live region (`announce`), as the parts'
+    panel does."""
+    note = callout(text, tone, icon=icon) if icon else callout(text, tone)
+    note.role = rx.Var.create("note")
+    return note
+
+
+def _pill(word: rx.Var, tone: rx.Var) -> rx.Component:
+    """`signal_pill` takes its tone at build time: one branch per tone."""
+    return rx.match(
+        tone,
+        *[(t, signal_pill(word, t)) for t in _TONES if t != "neutral"],
+        signal_pill(word, "neutral"),
     )
 
 
-def _part_choice(item: rx.Var[dict[str, str]]) -> rx.Component:
-    """One tile per part (Deivid, visual review 2026-11-09): its vista previa's poster
-    on top — the system's `media_thumb`, an empty neutral frame when it has none — and
-    «Parte N» under it. Chosen with one tap; the chosen one is filled, ticked and
-    pressed (never the colour alone)."""
-    option = item["index"]  # the plan's place, what the change takes
-    shown = item["number"]  # what the owner reads (no gap after a removed part)
-    chosen = S.change_index == option
-    return rx.button(
-        rx.vstack(
-            media_thumb(
-                _thumb_src(item), width="3.5rem", height="6.25rem", icon="film", icon_size=18
-            ),
-            rx.hstack(
-                rx.cond(chosen, rx.icon("check", size=14)),
-                rx.text(PART_WORD + shown, size="2", weight="medium"),
-                spacing="1",
-                align="center",
-            ),
-            spacing="1",
-            align="center",
+def _tile_frame(tile: rx.Var) -> rx.Component:
+    """The part's own vista previa, played inside its tile (the parts' rows' player:
+    `ui.clip_player`, muted with a sound button, renewed when its address expired) —
+    or, with no clip yet, an empty 9:16 frame with a film glyph."""
+    return rx.cond(
+        tile.preview_url != "",
+        clip_player(
+            rx.cond(tile.poster_url != "", BACKEND_BASE + tile.poster_url, ""),
+            src=BACKEND_BASE + tile.preview_url,
+            label=tile.play_label,
+            pause_label=tile.pause_label,
+            key=tile.key,
+            framed=True,
+            renew=True,
+            width="100%",
+            aspect_ratio="9 / 16",
         ),
-        variant=rx.cond(chosen, "soft", "outline"),
-        size="3",
-        height="auto",
-        min_height=_TAP,
+        rx.center(
+            rx.icon("film", size=20, color=T.TEXT_MUTED),
+            class_name="q-thumb",
+            width="100%",
+            aspect_ratio="9 / 16",
+        ),
+    )
+
+
+def _part_card(tile: rx.Var) -> rx.Component:
+    """One part (m-25016656): its vista previa playing in place, «Parte N», its seconds,
+    the word of its state while it has no clip, and «Cambiar esta» / «✓ Elegida» when
+    it can change — its own button (the tile holds a ▶: no nested buttons). Chosen =
+    the word, the tick and `aria-pressed`, never the colour alone; a second tap lets it
+    go. An approved video shows its parts to watch only."""
+    chosen = S.change_open & (S.change_index == tile.index)
+    can_choose = S.card.change_part_visible & S.part_options.contains(tile.index)
+    return card(
+        rx.vstack(
+            _tile_frame(tile),
+            rx.vstack(
+                rx.text(PART_WORD + tile.number.to_string(), size="2", weight="medium"),
+                rx.text(tile.seconds_text, size="1", color=T.TEXT_MUTED, class_name="q-nums"),
+                spacing="0",
+            ),
+            # an approved video's parts are only to watch: no decision word
+            rx.cond((tile.word != "") & ~S.closed, _pill(tile.word, tile.tone)),
+            rx.cond(
+                can_choose,
+                rx.button(
+                    rx.cond(chosen, rx.icon("check", size=14)),
+                    rx.cond(chosen, CHOSEN_LABEL, CHOOSE_LABEL),
+                    # «Aprobar» stays the card's one filled button
+                    variant=rx.cond(chosen, "soft", "outline"),
+                    size="2",
+                    width="100%",
+                    min_height=_TAP,
+                    disabled=S.working,
+                    aria_pressed=rx.cond(chosen, "true", "false"),
+                    # the name starts with the visible words (WCAG 2.5.3)
+                    aria_label=rx.cond(chosen, CHOSEN_LABEL, CHOOSE_LABEL)
+                    + ": parte "
+                    + tile.number.to_string(),
+                    id=CHOOSE_ID_PREFIX + tile.index,
+                    on_click=S.choose_part(tile.index),
+                ),
+            ),
+            spacing="2",
+            width="100%",
+            align_items="start",
+        ),
         padding="0.5rem",
+        role="listitem",
+        width=_TILE_W,
         flex_shrink="0",
-        aria_pressed=rx.cond(chosen, "true", "false"),
-        aria_label=PART_WORD + shown,
-        on_click=S.set_change_index(option),
+    )
+
+
+def _parts_strip(layout: str) -> rx.Component:
+    """«Tus partes»: every part as a tile, in order (`PartProgressState.part_tiles`, the
+    parts' panel's own read — it is mounted wherever this card is). A row that wraps in
+    the desktop column, one that slides sideways on a phone (never a hidden part)."""
+    tiles = PartProgressState.part_tiles
+    can_change = S.card.change_part_visible & (S.part_options.length() > 0)
+    side = rx.breakpoints(initial="nowrap", md="wrap") if layout == COLUMNS else "nowrap"
+    return rx.cond(
+        tiles.length() > 0,
+        rx.vstack(
+            rx.heading(PARTS_TITLE, as_="h4", size="3", id=PARTS_LIST_ID),
+            rx.text(
+                rx.cond(can_change, PARTS_HINT_CHANGE, PARTS_HINT_WATCH),
+                size="2",
+                color=T.TEXT_MUTED,
+            ),
+            rx.flex(
+                rx.foreach(tiles, _part_card),
+                role="list",
+                aria_labelledby=PARTS_LIST_ID,
+                gap="0.75rem",
+                wrap=side,
+                overflow_x="auto",
+                width="100%",
+                padding_bottom="0.25rem",
+            ),
+            spacing="2",
+            width="100%",
+            align_items="start",
+        ),
     )
 
 
 def _change_panel() -> rx.Component:
-    """«Cambiar una parte»: which one and, optionally, what to change — another version
-    of that part only (1 vista previa). One tap picks the part (UX review: one
-    decision per step), the optional words come under it."""
+    """The chosen part's optional words — another version of that part only (1 vista
+    previa). Chosen in its tile («Cambiar esta»), so this asks one thing."""
     return rx.vstack(
-        rx.text(CHANGE_PICK_LABEL, size="2", weight="medium", id=CHANGE_PICK_ID),
-        rx.flex(
-            rx.foreach(S.part_thumbs, _part_choice),
-            role="group",
-            aria_labelledby=CHANGE_PICK_ID,
-            gap="0.5rem",
-            # one row that scrolls sideways on a 375 px phone, never a hidden part
-            wrap="nowrap",
-            overflow_x="auto",
-            width="100%",
-            padding_bottom="0.25rem",
+        rx.text(
+            PART_WORD + S.change_number + CHANGE_TEXT_LABEL,
+            size="2",
+            weight="medium",
+            id=CHANGE_TEXT_ID,
         ),
-        rx.text(CHANGE_TEXT_LABEL, size="2", weight="medium"),
         rx.text_area(
             value=S.change_text,
             on_change=S.set_change_text,
             placeholder=CHANGE_TEXT_PLACEHOLDER,
-            aria_label=CHANGE_TEXT_LABEL,
+            aria_labelledby=CHANGE_TEXT_ID,
             max_length=500,
             rows="3",
             width="100%",
@@ -323,7 +435,7 @@ def _change_panel() -> rx.Component:
 
 
 def _expired(item: ExpiredPartVM) -> rx.Component:
-    return callout(item.text, "warn", icon="clock")
+    return _note(item.text, "warn", icon="clock")
 
 
 def _recreate() -> rx.Component:
@@ -353,7 +465,7 @@ def _recreate() -> rx.Component:
 def _failed() -> rx.Component:
     """«No pudimos juntar tus partes…» [Juntar otra vez] — ours, nothing charged."""
     return rx.vstack(
-        callout(S.card.status_text, "error"),
+        _note(S.card.status_text, "error"),
         rx.button(
             rx.icon("refresh-cw", size=16),
             S.card.rejoin_label,
@@ -407,9 +519,13 @@ def _approved() -> rx.Component:
     )
 
 
-def _body() -> rx.Component:
+def _decisions(layout: str) -> rx.Component:
+    """Everything decided about the video, in the order of the design (m-25016656):
+    title, its two lines, what blocks or is missing, «Tus partes», the chosen part's
+    words, what «Aprobar» says and the last row."""
     joining = S.wants_refresh
-    texts = rx.vstack(
+    return rx.vstack(
+        _header(),
         rx.cond(
             S.card.preview_text != "",
             rx.text(S.card.preview_text, size="2"),
@@ -418,71 +534,77 @@ def _body() -> rx.Component:
             S.card.deadline_text != "",
             rx.text(S.card.deadline_text, size="2", weight="medium"),
         ),
-        spacing="2",
-        flex="1",
-        min_width="0",
-    )
-    return rx.vstack(
-        _header(),
         rx.cond(
             S.join_state == "purged",
-            callout(S.card.status_text, "neutral"),
+            _note(S.card.status_text, "neutral"),
         ),
         rx.cond(S.card.rejoin_visible, _failed()),
-        rx.cond(
-            S.card.show_video,
-            rx.flex(
-                _player(),
-                texts,
-                direction=rx.breakpoints(initial="column", sm="row"),
-                gap="1rem",
-                align="start",
-                width="100%",
-            ),
-            texts,
-        ),
-        # the join on its way (first time, or again while the earlier one stays above)
+        # the join on its way (first time, or again while the earlier one stays)
         rx.cond(
             joining,
             progress_panel(S.card.status_text, steps=S.join_steps, creep_seconds=90),
         ),
         # a refusal sits right above the actions it is about (UX review), not at the top
-        rx.cond(S.error != "", callout(S.error, "warn")),
+        rx.cond(S.error != "", _note(S.error, "warn")),
         # a part still being made: the card says so (visual review 2026-11-09)
-        rx.cond(S.card.creating_text != "", callout(S.card.creating_text, "info", icon="clock")),
+        rx.cond(S.card.creating_text != "", _note(S.card.creating_text, "info", icon="clock")),
         rx.cond(S.card.create_visible, _create_missing()),
         rx.cond(S.card.recreate_visible, _recreate()),
         rx.cond(S.approved_here, _approved()),
-        rx.cond(S.change_open & S.card.change_part_visible, _change_panel()),
+        _parts_strip(layout),
+        rx.cond(_changing(), _change_panel()),
         rx.cond(S.card.approve_visible, _approve_texts()),
         _actions(),  # «Aprobar» is always last (Deivid, 2026-11-09)
         spacing="4",
         width="100%",
+        min_width="0",
         align_items="start",
     )
 
 
-def final_video_card(parent_id: rx.Var[str] | str) -> rx.Component:
+def _body(layout: str) -> rx.Component:
+    """«columns»: the piece page's grid (`creative_pages._review_panel`) — the whole video
+    on the left, sticky from `md` (`q-rv-stage`), the decisions on the right; one column
+    under `md`. «stacked»: the video centred on top, the decisions under it."""
+    stage = rx.box(_player(layout), class_name="q-rv-stage")
+    if layout != COLUMNS:
+        return rx.vstack(stage, _decisions(layout), spacing="4", width="100%")
+    return rx.box(
+        stage,
+        _decisions(layout),
+        display="grid",
+        grid_template_columns=rx.breakpoints(
+            initial="minmax(0, 1fr)",
+            md="20rem minmax(0, 1fr)",
+            xl="24rem minmax(0, 1fr)",
+        ),
+        column_gap=rx.breakpoints(initial="0", md="2rem", xl="2.5rem"),
+        row_gap="1.5rem",
+        align_items="start",
+        width="100%",
+    )
+
+
+def final_video_card(parent_id: rx.Var[str] | str, layout: str = COLUMNS) -> rx.Component:
     """«Tu video completo» of the video by parts `parent_id` (the parent draft's id).
 
-    Usage (UI-7 places it under the parts list; nothing here hooks it to a screen):
-
-        final_video_card(PartProgressState.parent_id)
+    `layout`: `COLUMNS` (default — /create's result and /drafts) or `STACKED`. The tiles
+    of «Tus partes» play the parts' own vistas previas from the parts' panel
+    (`part_progress_panel`), mounted on the same screen.
 
     It reads on mount (`FinalVideoState.load`). It never polls: while
     `FinalVideoState.wants_refresh` is True (the parts are being joined) the screen's
     own poll calls `FinalVideoState.refresh(parent_id)` on each tick — ONE read each.
-    Renders nothing for an id that is not a video by parts of this business. Today the
-    parent shows up in «Por aprobar» (`/drafts`, `GalleryState` →
-    `planner_provider.load_gallery` → `planner.draft_post_reader`, which lists parents
-    only, VE-08) and opens at `/drafts/[draft_id]` (`CreativeState.load_draft`)."""
+    Renders nothing for an id that is not a video by parts of this business."""
+    if layout not in (COLUMNS, STACKED):
+        raise ValueError(f"unknown layout {layout!r}")
     return rx.box(
         rx.cond(
             S.missing,
             rx.fragment(),
             rx.cond(
                 S.loaded,
-                card(_body(), padding="1.25rem 1.5rem"),
+                card(_body(layout), padding="1.25rem 1.5rem"),
                 # the first read failed (or no session): say so, never a skeleton forever
                 rx.cond(S.error != "", callout(S.error, "warn"), skeleton_card(3)),
             ),
@@ -495,4 +617,4 @@ def final_video_card(parent_id: rx.Var[str] | str) -> rx.Component:
     )
 
 
-__all__ = ["final_video_card"]
+__all__ = ["COLUMNS", "STACKED", "final_video_card"]

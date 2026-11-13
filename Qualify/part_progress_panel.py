@@ -1,12 +1,15 @@
-"""«Creando tus partes»: the result of a video by parts, part by part (m-24921082, UI-7).
+"""How the parts of a video by parts are doing (m-24921082, UI-7; m-25016656).
 
 `part_progress_panel(parent_id)` mounts the screen's ONE poll (`PartProgressState.poll`)
-and stops it on unmount. Nothing renders while the parent has no parts to show. Only the
-design system (`Qualify/ui/`): `progress_panel` (never a spinner), `callout`, `card`,
-`signal_pill` (word + tone, never colour alone) — one pill per row, no arrows (Deivid's
-UI-3 decisions). The screen has ONE `aria-live="polite"` region: the last change
-(`PartProgressState.announce`), read by screen readers only; the sentence under the
-title (`live_text`) is plain visible text.
+and stops it on unmount. Nothing renders while the parent has no parts to show.
+
+m-25016656 (Deivid, «Sí, opción A» / «En los dos» — /create and /drafts alike): ONE
+status line («Creando tus partes: 2 de 3», «Tus 3 partes están listas»…) and only the
+rows that wait for the owner's decision, open with their buttons. No bar, no big title,
+no «Ver las N partes». The panel stays mounted with no row on screen: it is the screen's
+only poll and holds its ONE `aria-live="polite"` region (`PartProgressState.announce`,
+read by screen readers only). Only the design system (`Qualify/ui/`): `callout`, `card`,
+`signal_pill` (word + tone, never colour alone) — one pill per row, no arrows.
 
 m-24992894: a row «Para revisar» or «Lista» with a vista previa shows it on its left —
 `ui.clip_player`, 9:16, 4.5rem wide, its length under it («4 s») — played in place on
@@ -18,12 +21,19 @@ from __future__ import annotations
 
 import reflex as rx
 
+from .final_video_card_state import FinalVideoState
+from .part_progress_state import STATUS_ID
 from .part_progress_state import PartProgressState as S
-from .part_progress_vm import REMOVE_CONFIRM_NO, REMOVE_CONFIRM_YES
+from .part_progress_vm import (
+    REMOVE_CONFIRM_NO,
+    REMOVE_CONFIRM_YES,
+    STATUS_CLOSED_MANY,
+    STATUS_CLOSED_ONE,
+)
 from .r2_media import BACKEND_BASE
 from .ui import tokens as T
 from .ui.clip_player import clip_player, clip_player_renew, clip_player_script
-from .ui.primitives import callout, card, progress_panel, signal_pill
+from .ui.primitives import callout, card, signal_pill
 
 #: The tones a row's pill can take (`part_progress_vm.STATE_TONES`).
 _TONES = ("ok", "warn", "error", "info", "neutral")
@@ -36,22 +46,6 @@ def _pill(word: rx.Var, tone: rx.Var) -> rx.Component:
         *[(t, signal_pill(word, t)) for t in _TONES if t != "neutral"],
         signal_pill(word, "neutral"),
     )
-
-
-def _panel() -> rx.Component:
-    """`progress_panel` with the stage comment («2 de 4 creadas») above the bar, the
-    bar's `aria-valuetext` («2 de 4 partes creadas») and its name. The panel's steps box
-    is not a live region here: the screen's only one is `_live_region`."""
-    panel = progress_panel(S.title, value=S.value, steps=S.comment_steps)
-    for child in panel.children:
-        attrs = getattr(child, "custom_attrs", None)
-        if attrs is None:
-            continue
-        attrs.pop("aria-live", None)
-        if "aria-valuenow" in attrs:  # the progressbar
-            attrs["aria-valuetext"] = S.value_text
-            attrs["aria-label"] = S.title
-    return panel
 
 
 #: Visually hidden, still read (the usual «sr-only» rules, inline: no new primitive).
@@ -68,8 +62,35 @@ _SR_ONLY = {
 }
 
 
-def _phrase() -> rx.Component:
-    return rx.text(S.live_text, size="2", color=T.TEXT_MUTED, text_align="center", width="100%")
+def _closed_here(parent_id: rx.Var[str] | str) -> rx.Var[bool]:
+    """The video of THIS panel is approved (or purged): «Tu video completo» read it.
+    `FinalVideoState` keeps the last video it read — a failed parent's page mounts the
+    panel without the card, so another video's `closed` must never count here."""
+    return FinalVideoState.closed & (FinalVideoState.parent_id == parent_id)
+
+
+def _shows_decisions(parent_id: rx.Var[str] | str) -> rx.Var[bool]:
+    """The rows that wait for a decision are drawn: there are some, and this panel's
+    video is not closed (an approved video is only to watch)."""
+    return (S.decision_rows.length() > 0) & ~_closed_here(parent_id)
+
+
+def _status(parent_id: rx.Var[str] | str) -> rx.Component:
+    """The panel's one line: what the video waits for now (m-25016656)."""
+    # `tabIndex=-1`: where the keyboard lands once a row's action went through and the
+    # row is about to go (`PartProgressState.FOCUS_STATUS_JS`)
+    count = S.rows.length()
+    before, after = STATUS_CLOSED_MANY.split("{total}")
+    closed_line = rx.cond(count == 1, STATUS_CLOSED_ONE, before + count.to_string() + after)
+    return rx.text(
+        # an approved video's parts are only to watch: never «Falta que decidas…»
+        rx.cond(_closed_here(parent_id), closed_line, S.status_line),
+        id=STATUS_ID,
+        tab_index=-1,
+        size="3",
+        weight="medium",
+        width="100%",
+    )
 
 
 def _live_region() -> rx.Component:
@@ -240,44 +261,25 @@ def _row(row: rx.Var) -> rx.Component:
     )
 
 
-#: The rows' container, named by the toggle's `aria-controls`.
-ROWS_ID = "part-rows"
+#: The rows' list: only the parts that wait for the owner.
+ROWS_LABEL = "Partes por decidir"
 
 
-def _rows_toggle() -> rx.Component:
-    """«Ver las 4 partes» / «Ocultar las partes», as the generator's «Más opciones»
-    (`content_generator._more_options`): the focus stays on it, nothing else is said."""
-    return rx.button(
-        rx.icon(rx.cond(S.rows_open, "chevron-up", "chevron-down"), size=T.ICON_SM),
-        S.rows_toggle,
-        variant="ghost",
-        color_scheme="gray",
-        size="3",
-        min_height="44px",
-        on_click=S.toggle_rows,
-        aria_expanded=rx.cond(S.rows_open, "true", "false"),
-        aria_controls=ROWS_ID,
-    )
-
-
-def _content() -> rx.Component:
+def _content(parent_id: rx.Var[str] | str) -> rx.Component:
     return rx.vstack(
         rx.cond(S.notice != "", _notice()),
         rx.cond(S.removed_text != "", _removed()),
-        # purged files: only the notice and the rows (nothing is being made)
-        rx.cond(S.notice == "", rx.fragment(_panel(), _phrase())),
-        rx.cond(~S.rows_forced, _rows_toggle()),
-        # always in the page (the toggle's `aria-controls`); folded = not displayed
-        rx.vstack(
-            rx.foreach(S.rows, _row),
-            clip_player_script(),
-            clip_player_renew(S.renew_previews),
-            id=ROWS_ID,
-            role="list",
-            aria_label="Tus partes",
-            spacing="2",
-            width="100%",
-            display=rx.cond(S.rows_open, "flex", "none"),
+        # purged files: the notice says it, no status line
+        rx.cond((S.notice == "") & (S.status_line != ""), _status(parent_id)),
+        rx.cond(
+            _shows_decisions(parent_id),
+            rx.vstack(
+                rx.foreach(S.decision_rows, _row),
+                role="list",
+                aria_label=ROWS_LABEL,
+                spacing="2",
+                width="100%",
+            ),
         ),
         spacing="3",
         width="100%",
@@ -290,7 +292,11 @@ def part_progress_panel(parent_id: rx.Var[str] | str) -> rx.Component:
     return rx.box(
         # a session that closed or reads that keep failing: said even without rows
         rx.cond(S.top_error != "", callout(S.top_error, "error")),
-        rx.cond(S.has_progress, _content()),
+        rx.cond(S.has_progress, _content(parent_id)),
+        # the vista previa players' script and their «renew» button: also for the one
+        # the tiles of «Tus partes» in «Tu video completo» play theirs (`part_tiles`)
+        clip_player_script(),
+        clip_player_renew(S.renew_previews),
         _live_region(),
         on_mount=S.watch(parent_id),
         on_unmount=S.leave,
