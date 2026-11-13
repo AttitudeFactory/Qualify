@@ -7,6 +7,15 @@ import reflex as rx
 from .ad_health_ui import health_details
 from .promotion_audience_ui import promotion_audience
 from .promotion_state import PromotionState as S
+from .promotion_unpublished_ui import (
+    unpublished_country,
+    unpublished_covers,
+    unpublished_feed_video,
+    unpublished_images,
+    unpublished_review,
+    unpublished_text,
+    unpublished_vertical_video,
+)
 from .promotion_vm import (
     EMPTY_SOURCES,
     LEAD_CTA_LABELS,
@@ -111,7 +120,19 @@ def _source_choice(source: rx.Var) -> rx.Component:
         rx.vstack(
             rx.text(source.account_label, weight="medium", overflow_wrap="anywhere"),
             rx.text(source.caption, size="2", class_name="q-clamp-3", color=T.TEXT_MUTED),
-            rx.text("Publicada: " + source.published_label, size="1", color=T.TEXT_MUTED),
+            rx.cond(
+                source.media_kind == "",
+                rx.text("Publicada: " + source.published_label, size="1", color=T.TEXT_MUTED),
+                rx.text(
+                    rx.cond(
+                        source.media_kind == "videos",
+                        "Dos videos de la pieza: 4:5 y 9:16",
+                        "Dos imágenes de la pieza: 4:5 y 9:16",
+                    ),
+                    size="1",
+                    color=T.TEXT_MUTED,
+                ),
+            ),
             rx.cond(
                 source.account_name != "",
                 rx.text(
@@ -155,11 +176,23 @@ def _piece_link() -> rx.Component:
 
 def _publication() -> rx.Component:
     return rx.vstack(
-        rx.text(
-            "Mostrarás una publicación que ya salió en Instagram a más personas.",
-            color=T.TEXT_MUTED,
+        rx.cond(
+            S.sources[0].media_kind == "",
+            rx.vstack(
+                rx.text(
+                    "Mostrarás una publicación que ya salió en Instagram a más personas.",
+                    color=T.TEXT_MUTED,
+                ),
+                rx.text("Elige la publicación y la cuenta correctas antes de continuar.", size="2"),
+                spacing="2",
+                width="100%",
+            ),
+            rx.text(
+                "Tu pieza todavía no está publicada. Puedes anunciarla sin que aparezca "
+                "en tu perfil: se verá bien en el inicio, en historias y en reels.",
+                color=T.TEXT_MUTED,
+            ),
         ),
-        rx.text("Elige la publicación y la cuenta correctas antes de continuar.", size="2"),
         rx.vstack(
             rx.foreach(S.sources, _source_choice),
             role="radiogroup",
@@ -649,12 +682,18 @@ def promotion_index() -> rx.Component:
             ),
             rx.cond(
                 S.reviewed,
-                _review(),
+                rx.cond(S.is_unpublished, unpublished_review(), _review()),
                 rx.match(
-                    S.step,
-                    (1, _publication()),
-                    (2, _destination()),
-                    (3, promotion_audience()),
+                    S.step_key,
+                    ("source", _publication()),
+                    ("destination", _destination()),
+                    ("audience", promotion_audience()),
+                    ("images", unpublished_images()),
+                    ("feed_video", unpublished_feed_video()),
+                    ("vertical_video", unpublished_vertical_video()),
+                    ("covers", unpublished_covers()),
+                    ("text", unpublished_text()),
+                    ("country", unpublished_country()),
                     _budget(),
                 ),
             ),
@@ -678,17 +717,19 @@ def promotion_index() -> rx.Component:
                 primary_loading=S.busy,
             ),
             step_foot(
-                "Crear en pausa y ver anuncio",
+                rx.cond(S.video_waiting, "Revisar ahora", "Crear en pausa y ver anuncio"),
                 step=S.step,
                 on_primary=S.create_preview,
                 on_back=S.back_step,
-                primary_disabled=S.busy | S.paid_operation_locked | (S.execution_reason != ""),
+                primary_disabled=(
+                    S.busy | S.paid_operation_locked | (S.execution_reason != "") | S.needs_help
+                ),
                 primary_loading=S.busy,
                 reason=S.execution_reason,
             ),
         ),
         step_foot(
-            rx.cond(S.step == 4, "Revisar resumen", "Siguiente"),
+            rx.cond(S.step >= S.step_total, "Revisar resumen", "Siguiente"),
             step=S.step,
             on_primary=S.next_step,
             on_back=S.back_step,
@@ -730,7 +771,11 @@ def promotion_index() -> rx.Component:
                 ),
                 body,
                 head=step_head(
-                    S.title, step=S.step, total=4, back_label=S.back_label, back_href=S.back_href
+                    S.title,
+                    step=S.step,
+                    total=S.step_total,
+                    back_label=S.back_label,
+                    back_href=S.back_href,
                 ),
                 foot=rx.cond(
                     S.paid_operation_locked,

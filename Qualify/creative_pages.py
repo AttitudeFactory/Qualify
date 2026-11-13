@@ -3540,7 +3540,12 @@ def _single_piece_detail() -> rx.Component:
         _history_line(),
         rx.cond(
             PromotionState.entry_available,
-            promotion_link(CreativeState.draft.draft_id),
+            promotion_link(
+                CreativeState.draft.draft_id,
+                label=rx.cond(
+                    PromotionState.entry_unpublished, "Anunciar sin publicar", "Promocionar"
+                ),
+            ),
         ),
         rx.foreach(
             CreativeState.draft.warnings,
