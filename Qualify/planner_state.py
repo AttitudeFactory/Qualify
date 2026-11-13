@@ -38,6 +38,7 @@ from .creative_provider import acting_user_id
 from .nav_url import (
     back_url_script,
     close_flow_script,
+    close_flow_then_go_script,
     flow_param,
     push_url_script,
     scalar_param,
@@ -1963,16 +1964,17 @@ class PlannerState(rx.State):
         self._update_item(post_id, output_port=port, destination=destination)
 
     @rx.event
-    def set_item_destination(self, post_id: str, destination: str) -> None:
+    def set_item_destination(self, post_id: str, destination: str) -> rx.event.EventSpec | None:
         """«¿Dónde quieres publicarlo?»: only an available destination is taken — a
         disabled button never changes the piece. A move keeps its destination."""
         if self.form_mode == MODE_RESCHEDULE:
-            return
+            return None
         row = next((r for r in self.plan_rows if r.post_id == post_id), None)
         if row is None or not any(d.key == destination and d.available for d in row.destinations):
-            return
+            return None
         self._update_item(post_id, destination=destination)
         self.story_ad_post = ""
+        return PlannerState.check_story_ad if destination == "story" else None
 
     @rx.var
     def story_ad_offered(self) -> bool:
@@ -1985,9 +1987,13 @@ class PlannerState(rx.State):
         return self.story_ad_offered and row is not None and row.destination == "story"
 
     @rx.event(background=True)
-    async def check_story_ad(self, post_id: str) -> None:
-        """On showing a historia's card: is the piece a story ad source at all (approved,
-        unpublished, a 9:16 file, an ad account)? Only then is the option drawn."""
+    async def check_story_ad(self) -> None:
+        """On showing «Cuándo sale» (and on choosing Historia): is the lone historia a
+        story ad source at all (approved, unpublished, a 9:16 file, an ad account)? Only
+        then is the option drawn."""
+        async with self:
+            rows = [r.post_id for r in self.plan_rows if r.destination == "story"]
+            post_id = rows[0] if self.story_ad_offered and rows else ""
         tenant_id, draft_id = await self._tenant(), tenant_uuid(post_id)
         if tenant_id is None or draft_id is None:
             return
@@ -2049,11 +2055,9 @@ class PlannerState(rx.State):
         self.form_open = False
         self.flow_ready = False
         self.plan_items = []
-        # Close the drawer's own history entry first, so «atrás» never reopens it empty.
-        return [
-            rx.call_script(close_flow_script(flow)),
-            rx.redirect(story_ad_href(post_id, self.week_return_query)),
-        ]
+        # Close the drawer's own history entries first, so «atrás» never reopens it empty.
+        href = story_ad_href(post_id, self.week_return_query)
+        return [rx.call_script(close_flow_then_go_script(flow, href))]
 
     @rx.event
     def toggle_item_connection(self, post_id: str, connection_id: str) -> None:

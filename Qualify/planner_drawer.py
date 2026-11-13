@@ -1235,14 +1235,11 @@ def _story_ad_offer(row) -> rx.Component:
     says so in one line and asks; only «Hacer anuncio pagado» leaves for the wizard, and then
     the historia is NOT scheduled (the ad replaces it)."""
     asking = PlannerState.story_ad_post == row.post_id
-    # Drawn only once the piece is checked to be a story ad source (`check_story_ad`).
-    return rx.box(
-        rx.cond(
-            PlannerState.story_ad_ready.contains(row.post_id),
-            _story_ad_choice(row, asking),
-        ),
-        on_mount=PlannerState.check_story_ad(row.post_id),
-        width="100%",
+    # Drawn only once the piece is checked to be a story ad source (`check_story_ad`,
+    # run when «Cuándo sale» mounts and when Historia is chosen).
+    return rx.cond(
+        PlannerState.story_ad_ready.contains(row.post_id),
+        _story_ad_choice(row, asking),
     )
 
 
@@ -1427,6 +1424,8 @@ def _step_schedule() -> rx.Component:
         rx.foreach(PlannerState.plan_rows, _plan_card),
         spacing="4",
         width="100%",
+        # m-25026350: is the lone historia a story ad source? (draws its option)
+        on_mount=PlannerState.check_story_ad,
     )
 
 

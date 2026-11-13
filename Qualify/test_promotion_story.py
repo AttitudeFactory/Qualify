@@ -13,7 +13,7 @@ import pytest
 from . import planner_state, promotion_state, promotion_unpublished_provider
 from .ad_enhancements_vm import BrandEnhancementsVM
 from .ad_health_vm import AccountHealthVM
-from .planner_drawer import _story_ad_choice, _story_ad_offer
+from .planner_drawer import _step_schedule, _story_ad_choice, _story_ad_offer
 from .planner_state import PlannerState
 from .planner_vm import ConnectionChoiceVM, build_post_option
 from .promotion_state import PromotionState, _unpublished_defaults
@@ -369,8 +369,9 @@ def test_the_option_asks_first_and_continuing_schedules_no_story(monkeypatch) ->
     state.ask_story_ad(piece)
     events = state._leave_for_story_ad(piece, True)
     rendered = repr(events)
-    # the drawer's history entry is closed BEFORE leaving, then the wizard opens
-    assert len(events) == 2 and "history" in repr(events[0])
+    # one script: the drawer's history entries are closed, and only once that pop has
+    # landed does the wizard open (a parallel redirect would be undone by the late pop)
+    assert len(events) == 1 and "history.go" in rendered and "popstate" in rendered
     assert f"/drafts/{piece}/promote?formato=historia" in rendered
     assert not state.form_open and state.plan_items == []  # nothing left to «Programar»
 
@@ -395,6 +396,7 @@ def test_the_option_is_not_offered_for_a_bigger_plan_or_another_destination() ->
     state._update_item(piece, destination="post")
     state.ask_story_ad(piece)
     assert state.story_ad_post == ""
+    assert state.set_item_destination(piece, "story") is not None  # re-checked on Historia
     state.plan_items = [*state.plan_items, replace(state.plan_items[0], post_id=str(uuid4()))]
     assert not state.story_ad_offered
     assert state._leave_for_story_ad(piece, True) == []
@@ -418,6 +420,7 @@ def test_the_notice_says_it_is_paid_before_the_wizard() -> None:
     assert "entre las historias de otras cuentas" in rendered
     assert "Hacer anuncio pagado" in rendered and "Dejar la historia sin bot" in rendered
     assert "Continuar" not in rendered  # never a second «Continuar» next to the drawer's
-    offer = _story_ad_offer(SimpleNamespace(post_id="p"))
-    assert "check_story_ad" in str(offer.event_triggers["on_mount"])
-    assert "story_ad_ready" in repr(offer.render())
+    assert "story_ad_ready" in repr(_story_ad_offer(SimpleNamespace(post_id="p")).render())
+    # checked from the step container, never from inside the per-row foreach (whose row
+    # variable does not exist where on_mount runs)
+    assert "check_story_ad" in str(_step_schedule().event_triggers["on_mount"])
