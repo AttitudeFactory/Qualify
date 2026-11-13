@@ -831,6 +831,10 @@ class PromotionState(rx.State):
 
     @rx.var
     def step_total(self) -> int:
+        if not self.form.source_id and self.sources:
+            # Before the choice, count the steps of the kind on offer (a piece is either
+            # published or not), so step 1 never says «de 4» for a 7-step video ad.
+            return step_count(replace(self.form, media_kind=self.sources[0].media_kind))
         return step_count(self.form)
 
     @rx.var

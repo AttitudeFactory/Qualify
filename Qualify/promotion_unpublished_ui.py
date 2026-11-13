@@ -7,6 +7,7 @@ import reflex as rx
 
 from .promotion_state import PromotionState as S
 from .promotion_vm import COUNTRY_LABELS, VIDEO_WAITING, AdMediaVM
+from .r2_media import BACKEND_BASE
 from .ui import callout, card, choice_card, choice_card_check, signal_pill
 from .ui import tokens as T
 
@@ -22,7 +23,7 @@ def _thumb(media: rx.Var[AdMediaVM], ratio: str) -> rx.Component:
         rx.cond(
             media.media_type == "video",
             rx.el.video(
-                src=media.url,
+                src=BACKEND_BASE + media.url,
                 muted=True,
                 plays_inline=True,
                 controls=True,
@@ -32,7 +33,7 @@ def _thumb(media: rx.Var[AdMediaVM], ratio: str) -> rx.Component:
                 style={"aspectRatio": ratio, "objectFit": "cover", "borderRadius": "8px"},
             ),
             rx.image(
-                src=media.url,
+                src=BACKEND_BASE + media.url,
                 alt=media.label,
                 width="100%",
                 style={"aspectRatio": ratio, "objectFit": "cover", "borderRadius": "8px"},
@@ -300,6 +301,33 @@ def _preview(title: str, url: rx.Var[str], height: str) -> rx.Component:
 
 def unpublished_review() -> rx.Component:
     return rx.vstack(
+        rx.cond(S.execution_reason != "", callout(S.execution_reason, "warn")),
+        rx.cond(
+            S.video_waiting,
+            card(
+                rx.vstack(
+                    signal_pill("Video en preparación", "info"),
+                    rx.text(VIDEO_WAITING, weight="medium"),
+                    rx.text(
+                        "No tienes que subir nada de nuevo.",
+                        size="2",
+                        color=T.TEXT_MUTED,
+                    ),
+                    spacing="2",
+                    align_items="start",
+                    width="100%",
+                ),
+                width="100%",
+            ),
+        ),
+        rx.cond(
+            S.needs_help,
+            rx.text(
+                "Escríbenos para revisarlo contigo antes de continuar.",
+                size="2",
+                color=T.TEXT_MUTED,
+            ),
+        ),
         card(
             rx.vstack(
                 _fact(
@@ -327,33 +355,6 @@ def unpublished_review() -> rx.Component:
                 width="100%",
             ),
             width="100%",
-        ),
-        rx.cond(S.execution_reason != "", callout(S.execution_reason, "warn")),
-        rx.cond(
-            S.video_waiting,
-            card(
-                rx.vstack(
-                    signal_pill("Video en preparación", "info"),
-                    rx.text(VIDEO_WAITING, weight="medium"),
-                    rx.text(
-                        "Meta ya recibió tus videos. No tienes que subirlos de nuevo.",
-                        size="2",
-                        color=T.TEXT_MUTED,
-                    ),
-                    spacing="2",
-                    align_items="start",
-                    width="100%",
-                ),
-                width="100%",
-            ),
-        ),
-        rx.cond(
-            S.needs_help,
-            rx.text(
-                "Escríbenos para revisarlo contigo antes de continuar.",
-                size="2",
-                color=T.TEXT_MUTED,
-            ),
         ),
         rx.cond(
             S.has_remote_review,
