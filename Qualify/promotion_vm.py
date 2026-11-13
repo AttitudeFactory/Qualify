@@ -76,6 +76,8 @@ class PromotionSourceVM:
     timezone_name: str = ""
     published_label: str = ""
     unavailable_reason: str = ""
+    # The block is the piece's own button: the fix is in the piece, not in Tus redes.
+    fix_in_piece: bool = False
     health: AccountHealthVM = field(default_factory=AccountHealthVM)
     ad_account_id: str = ""
     messaging_destinations: list[MessagingDestinationVM] = field(default_factory=list)

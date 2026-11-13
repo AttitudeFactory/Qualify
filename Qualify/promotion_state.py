@@ -871,6 +871,11 @@ class PromotionState(rx.State):
         return bool(self.result.status)
 
     @rx.var
+    def piece_href(self) -> str:
+        piece = tenant_uuid(self._piece_id)
+        return f"/drafts/{piece}" if piece else "/drafts"
+
+    @rx.var
     def promotion_status_href(self) -> str:
         reference = self.result.promotion_id or self.review.promotion_id
         promotion_id = tenant_uuid(reference)

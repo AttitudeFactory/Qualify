@@ -13,6 +13,7 @@ from qualify_api.ads.lead_ads import published_lead_form
 from qualify_api.ads.lead_forms_service import list_lead_forms
 from qualify_api.ads.messaging_destinations import load_messaging_destinations
 from qualify_api.ads.wizard import (
+    PIECE_BUTTON_UNSUPPORTED,
     WizardForm,
     confirm_promotion,
     list_promotion_sources,
@@ -196,6 +197,7 @@ def load_sources(
                 else "Fecha por comprobar"
             ),
             unavailable_reason=source.unavailable_reason,
+            fix_in_piece=source.unavailable_reason == PIECE_BUTTON_UNSUPPORTED,
             health=health_by_account.get(source.ad_account_id, AccountHealthVM()),
             ad_account_id=str(source.ad_account_id) if source.ad_account_id else "",
             messaging_destinations=messaging_by_connection.get(source.connection_id, []),

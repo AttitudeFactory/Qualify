@@ -564,3 +564,11 @@ async def test_button_changed_after_approval_cannot_be_activated() -> None:
             confirm_charge=True,
         )
     assert not any(params.get("status") == "ACTIVE" for _, _, params in client.calls)
+
+
+@pytest.mark.asyncio
+async def test_a_website_button_never_rides_a_lead_ad() -> None:
+    wizard, client, _, args, _ = lead_setup()
+    with pytest.raises(WizardUnavailable, match="botón"):
+        await wizard.prepare(**{**args, "form": replace(args["form"], cta_type="SHOP_NOW")})
+    assert not client.calls and not client.objects

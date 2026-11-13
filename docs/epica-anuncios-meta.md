@@ -64,10 +64,10 @@ Cuenta publicitaria (act_<id>, del cliente: moneda, zona horaria, método de pag
 | Enviar mensaje (Instagram/Messenger) | `MESSAGE_PAGE` / `INSTAGRAM_MESSAGE` | todos |
 | Pedir ahora | `ORDER_NOW` | comida |
 | Reservar viaje / Reservar | `BOOK_TRAVEL` / `BOOK_NOW` | agencia de viajes |
-| Solicitar cotización | `GET_QUOTE` | inmobiliaria, viajes |
+| Pedir cotización | `GET_QUOTE` | inmobiliaria, viajes |
 | Contáctanos | `CONTACT_US` | todos |
 | Llamar | `CALL_NOW` | todos (no funciona en historias) |
-| Registrarte | `SIGN_UP` | anuncios de clientes potenciales |
+| Registrarme | `SIGN_UP` | anuncios de clientes potenciales |
 | Comprar | `SHOP_NOW` | tiendas |
 
 Qué botón vale para qué objetivo no está en la referencia del enum: ADS-00 lo mide. Los errores 1373054 y 2446383 son los que avisan de una combinación inválida.

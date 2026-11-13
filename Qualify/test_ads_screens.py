@@ -516,4 +516,40 @@ def test_preview_sends_the_chosen_website_button(monkeypatch: pytest.MonkeyPatch
 
 def test_link_step_offers_the_button_in_spanish() -> None:
     step = str(_destination().render())
-    assert "Bot" in step and "Pedir ahora" in step and "promotion-cta" in step
+    assert "Pedir ahora" in step and "website-cta-label" in step and "radiogroup" in step
+
+
+def test_the_same_button_has_one_name_in_the_piece_and_the_wizard() -> None:
+    from qualify_creative.ad_destination import AD_CTA_LABELS, AdCTA
+
+    from .promotion_vm import LEAD_CTA_LABELS
+
+    for code, label in LEAD_CTA_LABELS.items():
+        assert AD_CTA_LABELS[AdCTA(code)] == label
+
+
+def test_a_piece_button_block_shows_in_step_one_with_a_link_to_the_piece(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from qualify_api.ads.wizard import PIECE_BUTTON_UNSUPPORTED, PromotionSource
+
+    from .promotion_page import _publication
+
+    source = PromotionSource(
+        UUID(str(SOURCE)),
+        UUID(str(PIECE)),
+        UUID(ACCOUNT),
+        UUID(str(TENANT)),
+        "1",
+        "2",
+        "c",
+        "@n",
+        unavailable_reason=PIECE_BUTTON_UNSUPPORTED,
+    )
+    monkeypatch.setattr(promotion_provider, "list_promotion_sources", lambda **_: (source,))
+    monkeypatch.setattr(promotion_provider, "read_business_locale", lambda *_: None)
+    rows = promotion_provider.load_sources(TENANT, PIECE)[0]
+    assert rows[0].fix_in_piece and rows[0].unavailable_reason == PIECE_BUTTON_UNSUPPORTED
+    step = str(_publication().render())
+    assert "Cambiar el bot" in step and "piece_href" in step and "unavailable_reason" in step
+    assert "Cambiar el bot" in str(_review().render())

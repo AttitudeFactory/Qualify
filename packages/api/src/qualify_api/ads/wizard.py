@@ -37,6 +37,11 @@ WEBSITE_CTAS = (
     "CONTACT_US",
     "SIGN_UP",
 )
+# The screen offers a link to the piece when this is the reason (m-24828976).
+PIECE_BUTTON_UNSUPPORTED = (
+    "El botón de esta pieza abre un chat o una llamada y no sirve para un anuncio "
+    "que lleva a tu página. Cambia el botón en la pieza antes de promocionarla."
+)
 
 
 class WizardUnavailable(ValueError):
@@ -99,7 +104,12 @@ class WizardForm:
 
     def validate(self, *, for_execution: bool = False) -> None:
         if self.lead_form is not None or self.lead_cta:
-            if self.lead_form is None or self.lead_cta not in LEAD_CTAS or self.link_url:
+            if (
+                self.lead_form is None
+                or self.lead_cta not in LEAD_CTAS
+                or self.link_url
+                or self.cta_type != "LEARN_MORE"  # The website button never rides a lead ad.
+            ):
                 raise WizardUnavailable("Elige el formulario y el botón del anuncio.")
         else:
             self._validate_link()
@@ -210,14 +220,7 @@ def _saved_ad_destination(payload: dict | None) -> tuple[str, str, str]:
         return destination, "LEARN_MORE", ""
     if button not in WEBSITE_CTAS:
         # Never silently swap a chat or call button for another one.
-        return (
-            destination,
-            "LEARN_MORE",
-            (
-                "El botón de esta pieza abre un chat o una llamada y no sirve para un anuncio "
-                "que lleva a tu página. Cambia el botón en la pieza antes de promocionarla."
-            ),
-        )
+        return destination, "LEARN_MORE", PIECE_BUTTON_UNSUPPORTED
     return destination, button.value, ""
 
 
