@@ -941,6 +941,20 @@ KIND_OPTIONS: tuple[tuple[str, str, str, str], ...] = (
 #: owner published from «Publicar» (m-25019217). Both still need their name (pill, download).
 #: `ContentKind.OWN_MEDIA` (m-25019217).
 OWN_MEDIA_KIND = "own_media"
+#: `ReuseType.PROMOCIONAL` — published once, never offered again.
+_ONE_SHOT_REUSE = "promocional"
+#: m-25019220: what a view-only upload says on its card and next to its picture.
+VIEW_ONLY_NOTE = "Solo para ver: no encontramos tu foto original, guardamos la de Instagram."
+
+
+def is_view_only_upload(kind: str | None, reuse_type: str | None) -> bool:
+    """THE definition of a view-only own upload (m-25019220): a past «Publicar»
+    publication whose original file was not recovered, so the backfill kept Instagram's
+    lower-quality copy and recorded it as one-shot (`promocional`) — it can be seen and
+    downloaded, never scheduled again. A recovered one is `recurrente` (reusable)."""
+    return kind == OWN_MEDIA_KIND and reuse_type == _ONE_SHOT_REUSE
+
+
 _UNLISTED_KIND_LABELS: dict[str, str] = {
     "shot_video": "Video por partes",
     "own_media": "Subida por ti",
@@ -1113,6 +1127,8 @@ class DraftVM:
     #: m-25019217: the owner's photo or video published from «Publicar» — never
     #: generated, so nothing that makes, remakes or edits a piece is offered on it.
     is_own_media: bool = False
+    #: m-25019220: a view-only upload's line next to its picture (`VIEW_ONLY_NOTE`), "".
+    view_only_note: str = ""
     #: «Descargar todo» (m-24828908): the backend path of the piece's `.zip` and its file
     #: name — "" while there is nothing to download (a draft still generating).
     download_path: str = ""
@@ -1517,6 +1533,7 @@ def build_draft_vm(
     warnings: Sequence[str] = (),
     waiting_vendor: bool = False,
     source_reel: Mapping[str, object] | None = None,
+    reuse_type: str | None = None,
 ) -> DraftVM:
     """Assemble the detail view-model. `can_approve` is the FSM fact (only a GENERATED
     draft has the approve edge); which VARIANT may be approved is per-variant `passed` —
@@ -1575,6 +1592,7 @@ def build_draft_vm(
         # it would send it back to «Por aprobar», where it never belongs.
         can_edit=status in EDITABLE_DRAFT_STATUSES and not own_media,
         is_own_media=own_media,
+        view_only_note=VIEW_ONLY_NOTE if is_view_only_upload(kind, reuse_type) else "",
         waiting_vendor=waiting_vendor and status == DraftStatus.DRAFTING.value,
         source_reel_note=source_note,
         source_reel_url=source_url,

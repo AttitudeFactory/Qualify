@@ -336,3 +336,75 @@ def test_volver_a_programar_opens_the_assistant_with_that_piece() -> None:
     assert not state.detail_open
     assert state.form_open
     assert state.form_selected_ids == ["own"]
+
+
+# -- m-25019220: view-only uploads (Instagram's copy, original not recovered) ------------
+
+
+def _view_only(post_id: str = "ig", **overrides):
+    from dataclasses import replace  # noqa: PLC0415
+
+    option = build_post_option(
+        post_id=post_id,
+        title=f"Pieza {post_id}",
+        caption_excerpt="Hoy 2x1",
+        thumbnail_url=None,
+        category="galeria",
+        approval="approved",
+        detail_href=f"/drafts/{post_id}",
+        is_publishable=True,
+        unpublishable_reason="",
+        gallery_state="used",  # one-shot (`promocional`) and already out
+        lifecycle_status="approved",
+        times_published=1,
+        content_kind=OWN_MEDIA_KIND,
+        media_types=("image",),
+        reuse_type="promocional",
+    )
+    return replace(option, **overrides)
+
+
+def test_the_one_definition_of_a_view_only_upload() -> None:
+    from .creative_vm import is_view_only_upload  # noqa: PLC0415
+
+    assert is_view_only_upload(OWN_MEDIA_KIND, "promocional")
+    assert not is_view_only_upload(OWN_MEDIA_KIND, "recurrente")  # original recovered
+    assert not is_view_only_upload("static_flyer", "promocional")  # a generated one-shot
+    assert not is_view_only_upload(OWN_MEDIA_KIND, None)
+
+
+def test_a_view_only_card_says_why_and_never_invites_repeating_it() -> None:
+    from .creative_vm import VIEW_ONLY_NOTE  # noqa: PLC0415
+
+    card = _view_only()
+    assert card.view_only
+    assert card.history_word == ""  # no «Por probar»
+    assert card.history_help == VIEW_ONLY_NOTE
+    assert "todavía no sabemos" not in card.history_help
+    reusable = _option("own", OWN_MEDIA_KIND, times=1)
+    assert not reusable.view_only and reusable.history_word != ""
+
+
+def test_volver_a_programar_is_offered_only_where_aprobados_would_schedule() -> None:
+    """Root cause (m-25019220): `schedulable` is the drawer's picker (approved and
+    publishable), which also lists a one-shot piece that already went out."""
+    from .planner_state import PlannerState  # noqa: PLC0415
+    from .planner_vm import can_schedule_again  # noqa: PLC0415
+
+    reusable = _option("own", OWN_MEDIA_KIND, times=1)
+    view_only = _view_only()
+    flagged = _view_only("odd", gallery_state="schedulable")  # even if a state slipped
+    assert can_schedule_again(reusable)
+    assert not can_schedule_again(view_only) and not can_schedule_again(flagged)
+    state = PlannerState()
+    state.schedulable = [reusable, view_only, flagged]
+    assert state.schedulable_ids == ["own"]
+
+
+def test_a_view_only_piece_page_says_the_picture_is_instagrams() -> None:
+    from .creative_vm import VIEW_ONLY_NOTE  # noqa: PLC0415
+
+    view_only = build_draft_vm(**{**_DETAIL_ARGS, "kind": OWN_MEDIA_KIND}, reuse_type="promocional")
+    assert view_only.view_only_note == VIEW_ONLY_NOTE
+    original = build_draft_vm(**{**_DETAIL_ARGS, "kind": OWN_MEDIA_KIND}, reuse_type="recurrente")
+    assert original.view_only_note == ""

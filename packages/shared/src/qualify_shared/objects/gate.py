@@ -438,6 +438,32 @@ class ObjectGate:
                 )
         return found
 
+    def list_connection_media(self, tenant_id: UUID, connection_id: UUID) -> list[StoredObject]:
+        """m-25019220: the objects staged for publication on ONE connection
+        (`t/{tenant}/media/{connection}/…`), with their `last_modified` — what the
+        «Publicar» backfill matches old attempts against. Read-only; every key returned
+        is re-checked against that exact folder."""
+        if not isinstance(connection_id, UUID):
+            raise TenantPrefixViolation("a connection folder is addressed by its UUID")
+        prefix = f"{tenant_prefix(tenant_id)}media/{connection_id}/"
+        found: list[StoredObject] = []
+        for item in self._store.list_prefix(prefix):  # type: ignore[attr-defined]
+            key = require_tenant_prefix(tenant_id, item.key)
+            if not key.startswith(prefix) or len(key) == len(prefix):
+                raise TenantPrefixViolation("listed object is outside the connection folder")
+            found.append(item)
+        return found
+
+    def has_object(self, tenant_id: UUID, object_key: str) -> bool:
+        """Whether this tenant's object exists (a HEAD). For write-once roots (`t/` is
+        locked in the production bucket): check before writing a deterministic key."""
+        key = require_tenant_object(tenant_id, object_key)
+        try:
+            self._store.size(key)  # type: ignore[attr-defined]
+        except ObjectNotFound:
+            return False
+        return True
+
     def put_connection_media(
         self,
         tenant_id: UUID,

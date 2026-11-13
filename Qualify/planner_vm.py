@@ -43,6 +43,8 @@ from .creative_vm import (
     KIND_LABELS,
     OWN_MEDIA_KIND,
     REVIEW_PORT_LABELS,
+    VIEW_ONLY_NOTE,
+    is_view_only_upload,
 )
 
 VIEW_CALENDAR = "calendar"
@@ -856,6 +858,13 @@ def is_own_media(post: PostOptionVM) -> bool:
     return post.content_kind == OWN_MEDIA_KIND
 
 
+def can_schedule_again(post: PostOptionVM) -> bool:
+    """«Volver a programar» (m-25019220): the same verdict as «Aprobados»' card — ready
+    to schedule (`gallery_state` «schedulable», which a used one-shot piece is not) and
+    never a view-only upload."""
+    return post.gallery_state == "schedulable" and not post.view_only
+
+
 def matches_kind(post: PostOptionVM, content_kind: str) -> bool:
     """«Tipo»: no filter, the generated group, or one kind exactly."""
     if content_kind in ("", GALLERY_FILTER_ALL):
@@ -1172,6 +1181,9 @@ class PostOptionVM:
     # review that lacks something else still belongs to «Por aprobar»).
     approved_at: str = ""
     is_approved: bool = False
+    #: m-25019220: a view-only own upload (`creative_vm.is_view_only_upload`) — no «Por
+    #: probar», a plain line saying why (`history_help`), never scheduled again.
+    view_only: bool = False
 
 
 def retention_badge(state: str, days_left: int | None) -> tuple[str, str]:
@@ -1551,6 +1563,7 @@ def build_post_option(
     expires_at: float = 0.0,
     content_kind: str = "",
     approved_at: str = "",
+    reuse_type: str | None = None,
 ) -> PostOptionVM:
     ready = readiness(approval, is_publishable=is_publishable, reason=unpublishable_reason)
     r_label, r_tone = retention_badge(retention_state, purge_days_left)
@@ -1564,7 +1577,9 @@ def build_post_option(
         times_published=times_published,
         final_rendering=final_rendering,
     )
-    shows_history = card is not None and card.key in HISTORY_CARD_STATES
+    view_only = is_view_only_upload(content_kind, reuse_type)
+    # m-25019220: a view-only upload is never «Por probar» — nothing to repeat
+    shows_history = card is not None and card.key in HISTORY_CARD_STATES and not view_only
     if card is not None:  # the same words on every surface that prints the state
         g_label, g_tone = card.label, card.tone
     kind, aspect = frame_shape(category or "", "", len(media_types), image_size)
@@ -1618,9 +1633,12 @@ def build_post_option(
         preview_expired=preview_expired and lifecycle_status == "generated",
         recreate_note=recreate_note if preview_expired else "",
         expires_at=expires_at if lifecycle_status == "generated" else 0.0,
-        history_help=history_help(times_published) if shows_history else "",
+        history_help=(
+            VIEW_ONLY_NOTE if view_only else history_help(times_published) if shows_history else ""
+        ),
         approved_at=approved_at or "",
         is_approved=approval == "approved",
+        view_only=view_only,
     )
 
 

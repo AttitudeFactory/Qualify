@@ -240,6 +240,10 @@ def test_gate_exposes_no_presign_method() -> None:
         # m-24945889: the chat outbound copies, by exact key under their own folder.
         "list_chat_outbound",
         "delete_chat_outbound",
+        # m-25019220: the «Publicar» backfill — READS only: one connection's staged
+        # objects with their dates, and an existence check before a write-once copy.
+        "list_connection_media",
+        "has_object",
     }
     assert not any("presign" in name or "sign" in name for name in surface)
 
@@ -807,3 +811,25 @@ def test_the_seasonal_library_is_bounded_to_its_business_and_outside_the_purge()
             _TENANT, brand, "Navidad 2026", media, "webp", io.BytesIO(b"x"), "x"
         )
     assert store.deleted == [key]
+
+
+def test_list_connection_media_lists_only_that_connections_folder() -> None:
+    from qualify_shared.objects.memory import MemoryObjectStore  # noqa: PLC0415
+
+    tenant, other_tenant = uuid4(), uuid4()
+    conn, other_conn = uuid4(), uuid4()
+    store = MemoryObjectStore()
+    mine = f"t/{tenant}/media/{conn}/{uuid4().hex}"
+    for key in (
+        mine,
+        f"t/{tenant}/media/{other_conn}/{uuid4().hex}",
+        f"t/{other_tenant}/media/{conn}/{uuid4().hex}",
+        f"t/{tenant}/inbox/thumbs/{conn}/1",
+    ):
+        store.put(key, io.BytesIO(b"x"), "image/jpeg")
+    gate = ObjectGate(store)
+    assert [obj.key for obj in gate.list_connection_media(tenant, conn)] == [mine]
+    assert gate.has_object(tenant, mine)
+    assert not gate.has_object(tenant, f"t/{tenant}/media/{conn}/missing")
+    with pytest.raises(TenantPrefixViolation):
+        gate.has_object(tenant, f"t/{other_tenant}/media/{conn}/x")
