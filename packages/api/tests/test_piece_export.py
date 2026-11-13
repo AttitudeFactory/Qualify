@@ -93,7 +93,7 @@ def test_the_text_has_every_word_of_the_piece_and_no_prompt() -> None:
         "GANCHO\nLa smash doble que no esperabas",
         "DESCRIPCIÓN\nDos carnes prensadas",
         "LLAMADO A LA ACCIÓN\nPide por WhatsApp",
-        "HASHTAGS\n#smash #burger",
+        "ETIQUETAS\n#smash #burger",
         "TEXTO LISTO PARA PEGAR\nLa smash doble que no esperabas\n\nDos carnes",
     ):
         assert expected in text, expected

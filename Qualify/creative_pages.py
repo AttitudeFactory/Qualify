@@ -21,6 +21,9 @@ from .content_generator import generator_page
 from .creative_state import GENERATION_STAGES, CreativeState
 from .creative_vm import (
     AI_LABEL_HINT,
+    BEST_IDEA_HINT,
+    BEST_IDEA_MARK,
+    BEST_IDEAS_EXPLAINED,
     FINISH_GALLERY_MANY,
     FINISH_GALLERY_ONE,
     HARD_RULES_HINT,
@@ -2002,13 +2005,40 @@ def _removable_chip(label: rx.Var[str], on_remove, *, prefix: str = "") -> rx.Co
     )
 
 
-def _add_chip(label: rx.Var[str], on_add, *, prefix: str = "", title=None) -> rx.Component:
+def _add_chip(
+    label: rx.Var[str], on_add, *, prefix: str = "", title=None, best=None
+) -> rx.Component:
+    """A suggestion to add with one tap. `best` (a bool Var) adds a star AND the word
+    «Mejor» after the label, and says so to screen readers: one of the ideas the AI
+    ranks highest (m-25026376) — never an icon alone."""
+    if best is None:
+        mark: list[rx.Component] = []
+        aria = "Agregar " + prefix + label
+    else:
+        mark = [
+            rx.cond(
+                best,
+                rx.hstack(
+                    rx.icon("star", size=11, aria_hidden="true"),
+                    rx.text(BEST_IDEA_MARK, as_="span", size="1", weight="medium"),
+                    spacing="1",
+                    align="center",
+                ),
+            )
+        ]
+        aria = rx.cond(
+            best,
+            "Agregar " + prefix + label + ", una de las mejores",
+            "Agregar " + prefix + label,
+        )
     return rx.el.button(
         rx.icon("plus", size=11),
         rx.text(prefix + label, as_="span"),
+        *mark,
         type="button",
         class_name="q-rv-chip q-rv-chip--suggest",
         title=title,
+        aria_label=aria,
         on_click=on_add,
     )
 
@@ -2043,7 +2073,10 @@ def _idea_chip(idea) -> rx.Component:
         idea.tag,
         CreativeState.add_hashtag(idea.tag),
         prefix="#",
-        title=idea.reason + rx.cond(idea.seen_label != "", " · " + idea.seen_label, ""),
+        title=rx.cond(idea.best, BEST_IDEA_HINT + " · ", "")
+        + idea.reason
+        + rx.cond(idea.seen_label != "", " · " + idea.seen_label, ""),
+        best=idea.best,
     )
 
 
@@ -2075,9 +2108,7 @@ def _ai_hashtags() -> rx.Component:
                 rx.vstack(
                     rx.text("Sugeridas para tu texto", size="2", weight="bold"),
                     rx.text(
-                        "Leemos tu texto y te proponemos etiquetas populares, de tu tipo "
-                        "de negocio y de tu zona, empezando por las que vemos "
-                        "en publicaciones reales.",
+                        BEST_IDEAS_EXPLAINED,
                         size="1",
                         color=T.TEXT_MUTED,
                     ),
@@ -2090,10 +2121,10 @@ def _ai_hashtags() -> rx.Component:
             ),
             rx.flex(
                 rx.cond(
-                    CreativeState.ai_pending_count > 1,
+                    CreativeState.ai_best_pending_count > 0,
                     rx.button(
                         rx.icon("list-plus", size=15),
-                        "Agregar todos",
+                        CreativeState.ai_best_button_label,
                         size="2",
                         variant="soft",
                         color_scheme="gray",
@@ -2172,6 +2203,11 @@ def _hashtags_field() -> rx.Component:
                 gap="0.4rem",
             ),
             rx.text("Sin etiquetas todavía.", class_name="q-rv-read q-rv-read--empty"),
+        ),
+        # m-25026376: past five, one line that informs — approving and publishing stay open.
+        rx.cond(
+            CreativeState.hashtags_over_notice != "",
+            callout(CreativeState.hashtags_over_notice, "info", size="1"),
         ),
         rx.cond(
             CreativeState.edit_mode,

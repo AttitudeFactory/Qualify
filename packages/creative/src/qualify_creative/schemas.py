@@ -124,11 +124,19 @@ class ToneAxes(BaseModel):
     brief_elaborate: int = Field(ge=0, le=100)
 
 
+#: m-25026376: what Meta's API accepts per post (IG User Media `caption`: 30 hashtags).
+#: The one hard cap — the editor (`Qualify.creative_vm.HASHTAG_LIMIT`) and the owner's
+#: edit (`ContentService.edit_variant`) both read it from here.
+HASHTAG_HARD_LIMIT = 30
+
+
 class HashtagPolicy(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     minimum: int = Field(default=0, ge=0)
-    maximum: int = Field(default=10, ge=0)
+    # m-25026376 (founder, 2026-11-13): five well-chosen tags unless the brand says
+    # otherwise. Only the default moves: a policy the brand saved keeps its own maximum.
+    maximum: int = Field(default=5, ge=0)
     always: tuple[str, ...] = ()
     never: tuple[str, ...] = ()
 

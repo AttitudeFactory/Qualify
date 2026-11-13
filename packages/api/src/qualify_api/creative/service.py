@@ -70,6 +70,7 @@ from qualify_creative.queue_errors import (
 )
 from qualify_creative.router import BudgetContext, CreativeRouter, Hop, HopAction
 from qualify_creative.schemas import (
+    HASHTAG_HARD_LIMIT,
     BrandContext,
     BrandKit,
     BrandVoiceProfile,
@@ -3778,6 +3779,16 @@ class ContentService:
         # The kit's caption length is a TARGET for generation, not a rule for the human
         # (founder, 2026-10-06: «quiero agregar lo que yo quiera en el caption»). Every
         # other layer-1 rule — banned words, forbidden claims, emoji — still holds.
+        # m-25026376: likewise the tag-count maximum guides generation; past it the editor
+        # only warns (Meta's API takes up to 30). The minimum and the `always`/`never`
+        # lists still hold for the human: only the ceiling is lifted, and only here —
+        # up to HASHTAG_HARD_LIMIT (30, what Meta's API takes), which the same rule
+        # still refuses past it.
+        policy = kit.hashtag_policy
+        if len(copy.hashtags) > policy.maximum:
+            ceiling = max(policy.maximum, min(len(copy.hashtags), HASHTAG_HARD_LIMIT))
+            lifted = policy.model_copy(update={"maximum": ceiling})
+            kit = kit.model_copy(update={"hashtag_policy": lifted})
         failures = tuple(f for f in check_hard_rules(copy, kit) if f.rule != RULE_CAPTION_LENGTH)
         if failures:
             return failures

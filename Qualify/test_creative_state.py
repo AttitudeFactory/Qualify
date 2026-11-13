@@ -273,7 +273,7 @@ def test_the_review_editor_adds_and_removes_hashtags_and_uses_a_cta(monkeypatch)
     assert state.edit_hashtag_query == ""
     state.remove_hashtag("promo")
     assert state.edit_hashtag_chips == ["hamburguesas", "viernes"]
-    assert state.hashtag_count_label == "2/30"
+    assert state.hashtag_count_label == "2 de 5 recomendadas"
     # Several calls to action, kept as one list in the `cta` field.
     state.edit_cta = ""
     state.add_cta("Escríbenos por DM")
@@ -301,8 +301,87 @@ def test_ai_hashtag_ideas_are_grouped_and_hide_once_chosen(monkeypatch) -> None:
     assert [h.tag for h in state.ai_brand] == ["caracas"]
     state.add_hashtag("postres")
     assert state.ai_popular == [] and state.ai_pending_count == 2
+    state.add_all_ai_hashtags()  # none is marked best: nothing more is added
+    assert state.edit_hashtag_chips == ["postres"]
+
+
+def test_ai_suggestions_mark_the_five_best_and_add_only_those(monkeypatch) -> None:
+    """m-25026376: the picks come best first; the first five are marked and «Agregar las
+    5 mejores» adds only those, not the twelve."""
+    from .creative_vm import HashtagIdeaVM, mark_best_ideas
+
+    state = _state(monkeypatch)
+    kinds = ("popular", "nicho", "marca")
+    state.ai_hashtags = mark_best_ideas(
+        [HashtagIdeaVM(tag=f"tag{i}", kind=kinds[i % 3], reason="r") for i in range(12)]
+    )
+    assert [h.tag for h in state.ai_hashtags if h.best] == [f"tag{i}" for i in range(5)]
+    assert state.ai_best_pending_count == 5
+    assert state.ai_best_button_label == "Agregar las 5 mejores"
+    state.add_hashtag("tag1")
+    assert state.ai_best_button_label == "Agregar las 4 mejores"
     state.add_all_ai_hashtags()
-    assert state.edit_hashtag_chips == ["postres", "heladoartesanal", "caracas"]
+    assert state.edit_hashtag_chips == ["tag1", "tag0", "tag2", "tag3", "tag4"]
+    assert state.ai_best_pending_count == 0 and state.ai_best_button_label == ""
+    assert state.hashtags_over_notice == ""
+
+
+def test_bulk_add_counts_the_tags_already_on_the_piece(monkeypatch) -> None:
+    """m-25026376 (review): 3 chosen + «Agregar» = 5, never 8; nothing to add → no button."""
+    from .creative_vm import HashtagIdeaVM, mark_best_ideas
+
+    state = _state(monkeypatch)
+    state.edit_hashtags = "#uno #dos #tres"
+    state.ai_hashtags = mark_best_ideas(
+        [HashtagIdeaVM(tag=f"tag{i}", kind="nicho", reason="r") for i in range(8)]
+    )
+    assert state.ai_best_to_add == ["tag0", "tag1"]
+    assert state.ai_best_button_label == "Agregar las 2 mejores"
+    state.add_all_ai_hashtags()
+    assert state.edit_hashtag_chips == ["uno", "dos", "tres", "tag0", "tag1"]
+    assert state.ai_best_pending_count == 0 and state.ai_best_button_label == ""
+    state.add_all_ai_hashtags()  # a stale click adds nothing
+    assert len(state.edit_hashtag_chips) == 5
+
+
+def test_more_than_five_tags_warns_without_blocking(monkeypatch) -> None:
+    """m-25026376: past five, one line; the hard cap stays at 30 (what Meta's API takes)."""
+    state = _state(monkeypatch)
+    state.edit_hashtags = " ".join(f"#t{i}" for i in range(6))
+    state.edit_mode = False
+    state.draft = _tags_draft(can_edit=True)  # in review: «Editar texto» is there
+    assert state.hashtags_over_notice == (
+        "Tienes 6 etiquetas. Con 5 bien elegidas basta: toca «Editar texto» y quita las "
+        "que sobren. Igual puedes aprobar y publicar."
+    )
+    state.edit_mode = True
+    assert "toca la × para quitar las que sobren" in state.hashtags_over_notice
+    state.add_hashtag(" ".join(f"x{i}" for i in range(40)))
+    assert len(state.edit_hashtag_chips) == 30  # the hard cap still holds
+    assert state.hashtag_count_label == "30 de 5 recomendadas"
+
+
+def _tags_draft(*, can_edit: bool) -> DraftVM:
+    return DraftVM(
+        draft_id="d1",
+        status="generated" if can_edit else "published",
+        status_label="Por revisar" if can_edit else "Publicada",
+        status_tone="gray",
+        variants=(),
+        can_edit=can_edit,
+    )
+
+
+def test_no_over_five_notice_on_a_piece_that_cannot_be_edited(monkeypatch) -> None:
+    """m-25026376 (re-review): a scheduled or published piece has no «Editar texto» and
+    is already out — the notice would point at nothing, so it is not shown."""
+    state = _state(monkeypatch)
+    state.edit_hashtags = " ".join(f"#t{i}" for i in range(8))
+    state.edit_mode = False
+    state.draft = _tags_draft(can_edit=False)
+    assert state.hashtags_over_notice == ""
+    state.draft = None
+    assert state.hashtags_over_notice == ""
 
 
 def test_caption_rules_show_under_the_caption(monkeypatch) -> None:
