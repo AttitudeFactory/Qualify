@@ -6,15 +6,25 @@ writes. One statement over `threads` lists the tenant's chats of every allow-lis
 newest activity first, one page per database round trip. Sending, outboxes, workers and
 ingestion stay per channel; this module writes nothing.
 
-**Not wired yet.** Nothing in production reads this module today; the unified-list
-story m-25017859 wires the screens, the menu counters and Inicio to it together.
+**Wired with the counters** (m-25017859): the menu counters (`attention.counts`) and
+Inicio (`home.summary`) count with the same `inbox.awaiting` fragment this list filters
+by, so a number the owner taps is the length of the list it opens.
 
-**Filters.** `por_responder` — the single rule of `inbox.awaiting` (the fragment the
-counters will use, `count_awaiting_sql`), judged at the caller's `now` (an Instagram chat
-counts only while its reply window is open); `todos` — every open chat, so an Instagram
-chat whose window closed still shows there (`awaiting_reply` and `window_open` false);
-`cerrados` — closed.
+**Filters** (`INBOX_FILTERS`). `por_responder` — the single rule of `inbox.awaiting`,
+judged at the caller's `now` (an Instagram chat counts only while its reply window is
+open); `todos` — every open chat, so an Instagram chat whose window closed still shows
+there (`awaiting_reply` and `window_open` false); `cerrados` — closed;
+`pago_por_revisar` — open WhatsApp chats whose payment waits for the owner's check
+(«Pago por revisar · N»); `ventana_vencida` — open Instagram chats whose window closed
+without a reply from a person, the window having closed within the last
+`expired_within` (default `EXPIRED_UNANSWERED_WITHIN`; the rule is
+`inbox.awaiting.expired_unanswered_sql`).
 An optional channel narrows to one allow-listed channel (`UnknownChannel` otherwise).
+
+**For the screens** (the Reflex providers call these in-process, off the event loop):
+`list_inbox` (one page), `count_inbox` (one filter), `inbox_counts` (every filter per
+channel in ONE statement — the chips, the channel filter, the expired notice),
+`count_expired_unanswered` (the notice alone). Each is one database round trip.
 
 **Order and pages.** `last_message_at DESC NULLS LAST, id DESC` with a composite keyset
 cursor `(last_message_at, id)` — two chats with the same instant are both returned, the
@@ -26,7 +36,8 @@ on `threads` alone in index order (see `_PAGE_DATED`); then, for those rows only
 newest message comes from a `LEFT JOIN LATERAL`, the WhatsApp-only state
 (`whatsapp_thread_state`: the owner's hand-over, the payment record) from a `LEFT JOIN`
 that is NULL on Instagram, the outbound media kind from the matching `whatsapp_outbox`
-row. No per-thread round trip.
+row, and the rule's two verdicts (`awaiting_reply`, `window_expired_unanswered`) as
+columns. No per-thread round trip.
 
 **Tenant isolation.** Only `tenant_session(tenant_id)`: RLS scopes every table read here;
 no tenant column is filtered by hand. Channels are bound as a parameter from the
@@ -37,37 +48,67 @@ from __future__ import annotations
 
 import base64
 import binascii
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from types import MappingProxyType
 from typing import Any, Final, Literal, Protocol, get_args
 from uuid import UUID
 
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import text
 
-from qualify_api.inbox.awaiting import awaiting_reply_sql
-from qualify_api.inbox.channels import CHANNEL_INSTAGRAM_DM, CHANNEL_WHATSAPP, resolve_channels
-from qualify_api.whatsapp.window import window_state
+from qualify_api.inbox.awaiting import awaiting_reply_sql, expired_unanswered_sql
+from qualify_api.inbox.channels import (
+    CHANNEL_INSTAGRAM_DM,
+    CHANNEL_WHATSAPP,
+    INBOX_CHANNELS,
+    resolve_channels,
+)
+from qualify_api.whatsapp.window import WINDOW, window_state
 
-InboxFilter = Literal["por_responder", "todos", "cerrados"]
+InboxFilter = Literal["por_responder", "todos", "cerrados", "pago_por_revisar", "ventana_vencida"]
 INBOX_FILTERS: Final[tuple[str, ...]] = get_args(InboxFilter)
 
 DEFAULT_PAGE_SIZE: Final = 50
 MAX_PAGE_SIZE: Final = 100
+
+#: How long after an Instagram chat's window closed without an answer it is still worth
+#: telling the owner about (`ventana_vencida`, `count_expired_unanswered`). ASSUMPTION of
+#: m-25017859, not a founder decision: 7 days, the same «this week» Inicio uses.
+EXPIRED_UNANSWERED_WITHIN: Final = timedelta(days=7)
+
+#: `whatsapp.payment_status` statuses the row's pill reads (`STATUS_REVIEW`,
+#: `STATUS_AWAITING`), stored in `whatsapp_thread_state.context->'_payment'`.
+PAYMENT_REVIEW: Final = "review"
+PAYMENT_AWAITING: Final = "awaiting"
 
 _INSTANT: Final = "COALESCE({m}.posted_at, {m}.ingested_at)"
 # The rule's «now» is bound, not the database's `now()`: the list, the count, the rows'
 # `window_*` and the Python twin all judge the same instant (`now=`).
 _NOW_PARAM: Final = "now"
 
-# What each filter keeps, over the `threads` row `t`; `_RULE` stands for the rule.
-_RULE: Final = "<awaiting_reply>"
-_FILTER_SQL: Final[dict[str, str]] = {
-    "por_responder": _RULE,
-    "todos": "t.status = 'open'",
-    "cerrados": "t.status = 'closed'",
-}
+_AWAITING_SQL: Final = awaiting_reply_sql("t", now_param=_NOW_PARAM)
+_EXPIRED_SQL: Final = expired_unanswered_sql("t", now_param=_NOW_PARAM)
+
+# What each filter keeps, over the `threads` row `t`. Each reads only `t` and correlated
+# subqueries, so the SAME text filters the page, `count_inbox` and `inbox_counts`.
+_FILTER_SQL: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "por_responder": _AWAITING_SQL,
+        "todos": "t.status = 'open'",
+        "cerrados": "t.status = 'closed'",
+        "pago_por_revisar": (
+            f"(t.channel = '{CHANNEL_WHATSAPP}' AND t.status = 'open' AND EXISTS ("
+            "SELECT 1 FROM whatsapp_thread_state ps WHERE ps.thread_id = t.id "
+            f"AND ps.context->'_payment'->>'status' = '{PAYMENT_REVIEW}'))"
+        ),
+        # Window closed within `expired_within`: `last_inbound_at + WINDOW > now - within`.
+        "ventana_vencida": (
+            f"(t.last_inbound_at > CAST(:expired_since AS timestamptz) AND {_EXPIRED_SQL})"
+        ),
+    }
+)
 
 
 class InvalidCursor(ValueError):
@@ -103,16 +144,26 @@ class InboxCursor:
 
 @dataclass(frozen=True)
 class InboxRow:
-    """One chat, as a row of the unified list needs it.
+    """One chat, as a row of the unified list needs it (`Qualify/chat_row_vm.ChatRowVM`).
 
-    `counterpart_*` are display fields only (an Instagram IGSID is never exposed: it is
-    not a portable identity); `counterpart_phone` is the WhatsApp `wa_id`. The newest
-    message is `last_message_*` (`last_message_kind`: the media type, or the outbound
-    payload type on WhatsApp; `None` for plain text). `awaiting_reply` is the
-    «Por responder» rule; `unread` is set only where the channel tracks reads (Instagram:
-    `last_read_at`), `None` elsewhere. `window_*` is the 24 h window from
-    `last_inbound_at`. WhatsApp-only, `None` on other channels: `automation_paused` (the
-    chat is in a person's hands) and `payment_status` (`whatsapp.payment_status`).
+    To open it: `thread_id` + `channel` (+ `connection_id`, the account). Title:
+    `counterpart_name`, else `@counterpart_username`, else `counterpart_phone`, else
+    «Cliente de …» (an Instagram IGSID is never exposed: it is not a portable identity;
+    `counterpart_phone` is the WhatsApp `wa_id`). Picture: `counterpart_avatar_url`
+    (Instagram only today). Preview: `last_message_*` — `last_message_kind` is the media
+    type, or the outbound payload type on WhatsApp, `None` for plain text;
+    `last_message_direction == 'outbound'` is «Tú: ». Time: `last_message_at`.
+
+    `awaiting_reply` is the «Por responder» rule (the waiting dot); `unread` is set only
+    where the channel tracks reads (Instagram: `last_read_at`), `None` elsewhere.
+    `window_*` is the 24 h window from `last_inbound_at` (`window_closes_at` only while
+    open — «Quedan N min»). `window_expired_unanswered`: an Instagram chat whose window
+    closed while the customer still had the last word (`inbox.awaiting`), closed at
+    `window_expired_at`; never set on WhatsApp. `assigned_agent_id`: the member who
+    attends it (`threads.assigned_agent_id`; the screen maps it to a name and initials).
+    WhatsApp-only, `None` on other channels: `automation_paused` (the chat is in a
+    person's hands) and `payment_status` (`whatsapp.payment_status`; the pills read
+    `payment_review` / `payment_awaiting`).
     """
 
     thread_id: UUID
@@ -134,10 +185,28 @@ class InboxRow:
     window_closes_at: datetime | None
     automation_paused: bool | None
     payment_status: str | None
+    # m-25017859 — optional so a row built by hand (fakes, the UI's tests) still works.
+    assigned_agent_id: UUID | None = None
+    window_expired_unanswered: bool = False
+    window_expired_at: datetime | None = None
 
     @property
     def cursor(self) -> InboxCursor:
         return InboxCursor(last_message_at=self.last_message_at, thread_id=self.thread_id)
+
+    @property
+    def is_closed(self) -> bool:
+        return self.status == "closed"
+
+    @property
+    def payment_review(self) -> bool:
+        """«Pago por revisar»: the customer sent a receipt the owner has not checked."""
+        return self.payment_status == PAYMENT_REVIEW
+
+    @property
+    def payment_awaiting(self) -> bool:
+        """«Esperando el pago»: the payment card went out, nothing came back yet."""
+        return self.payment_status == PAYMENT_AWAITING
 
 
 @dataclass(frozen=True)
@@ -146,8 +215,35 @@ class InboxPage:
     next_cursor: InboxCursor | None
 
 
+@dataclass(frozen=True)
+class InboxCounts:
+    """How many chats each filter lists, per channel (`by_channel[channel][filter]`);
+    every allow-listed channel and filter is present, 0 when empty. `count(filter)` is
+    the total over channels — exactly what `count_inbox(filter=…)` returns."""
+
+    by_channel: Mapping[str, Mapping[str, int]]
+
+    def count(self, filter: InboxFilter, channel: str | None = None) -> int:
+        _filter_sql(filter)
+        channels = resolve_channels(channel)
+        return sum(self.by_channel.get(c, {}).get(filter, 0) for c in channels)
+
+    @property
+    def por_responder(self) -> int:
+        return self.count("por_responder")
+
+    @property
+    def expired_unanswered(self) -> int:
+        return self.count("ventana_vencida")
+
+    @property
+    def payment_review(self) -> int:
+        return self.count("pago_por_revisar")
+
+
 class InboxReader(Protocol):
-    """The read seam (Postgres in production, a fake in offline tests)."""
+    """The read seam (Postgres in production, a fake in offline tests). `expired_since`
+    is the lower bound of `ventana_vencida` (`now - expired_within - WINDOW`)."""
 
     def list_page(
         self,
@@ -158,11 +254,22 @@ class InboxReader(Protocol):
         cursor: InboxCursor | None,
         limit: int,
         now: datetime,
+        expired_since: datetime,
     ) -> InboxPage: ...
 
     def count(
-        self, tenant_id: UUID, *, filter: InboxFilter, channels: Sequence[str], now: datetime
+        self,
+        tenant_id: UUID,
+        *,
+        filter: InboxFilter,
+        channels: Sequence[str],
+        now: datetime,
+        expired_since: datetime,
     ) -> int: ...
+
+    def counts(
+        self, tenant_id: UUID, *, channels: Sequence[str], now: datetime, expired_since: datetime
+    ) -> InboxCounts: ...
 
 
 # --------------------------------------------------------------------------------------
@@ -178,30 +285,30 @@ class InboxReader(Protocol):
 # per-chat joins (newest message, WhatsApp state, the rule as a column) run, for the
 # page's rows only. With `por_responder` the rule is the page's filter, evaluated chat by
 # chat in that order until the page is full.
-_PAGE_DATED: Final = """
-  (SELECT t.id, t.channel, t.connection_id, t.status, t.last_message_at, t.last_inbound_at,
-          t.last_read_at, t.external_thread_id, t.counterpart_name, t.counterpart_username,
-          t.counterpart_avatar_url
+_PAGE_COLUMNS: Final = """t.id, t.channel, t.connection_id, t.status, t.last_message_at,
+          t.last_inbound_at, t.last_read_at, t.external_thread_id, t.counterpart_name,
+          t.counterpart_username, t.counterpart_avatar_url, t.assigned_agent_id"""
+
+_PAGE_DATED: Final = f"""
+  (SELECT {_PAGE_COLUMNS}
      FROM threads t
     WHERE t.channel = ANY(:channels) AND t.last_message_at IS NOT NULL
-      AND {filter} {after}
+      AND {{filter}} {{after}}
     ORDER BY t.last_message_at DESC, t.id DESC
     LIMIT :limit)"""
 
-_PAGE_UNDATED: Final = """
-  (SELECT t.id, t.channel, t.connection_id, t.status, t.last_message_at, t.last_inbound_at,
-          t.last_read_at, t.external_thread_id, t.counterpart_name, t.counterpart_username,
-          t.counterpart_avatar_url
+_PAGE_UNDATED: Final = f"""
+  (SELECT {_PAGE_COLUMNS}
      FROM threads t
     WHERE t.channel = ANY(:channels) AND t.last_message_at IS NULL
-      AND {filter} {after}
+      AND {{filter}} {{after}}
     ORDER BY t.id DESC
     LIMIT :limit)"""
 
 _SELECT: Final = """
 WITH page AS MATERIALIZED ({page})
 SELECT t.id, t.channel, t.connection_id, t.status, t.last_message_at, t.last_inbound_at,
-       t.counterpart_username, t.counterpart_avatar_url,
+       t.counterpart_username, t.counterpart_avatar_url, t.assigned_agent_id,
        COALESCE(t.counterpart_name,
                 CASE WHEN t.channel = '{whatsapp}' THEN (
                   SELECT n.author_username
@@ -220,7 +327,8 @@ SELECT t.id, t.channel, t.connection_id, t.status, t.last_message_at, t.last_inb
        CASE WHEN t.channel = '{whatsapp}' THEN s.context->'_payment'->>'status'
        END AS payment_status,
        lm.text AS last_text, lm.direction AS last_direction, lm.kind AS last_kind,
-       {awaiting} AS awaiting_reply
+       {awaiting} AS awaiting_reply,
+       {expired} AS window_expired_unanswered
   FROM page t
   LEFT JOIN whatsapp_thread_state s ON s.thread_id = t.id
   LEFT JOIN LATERAL (
@@ -245,6 +353,17 @@ SELECT count(*)
  WHERE t.channel = ANY(:channels) AND {filter}
 """
 
+# Every filter's count per channel in one pass over the tenant's chat threads. Each
+# FILTER clause is the filter's own text (`_FILTER_SQL`), so `InboxCounts.count(f)` and
+# `count_inbox(filter=f)` are the same number by construction.
+_COUNTS: Final = """
+SELECT t.channel,
+       {columns}
+  FROM threads t
+ WHERE t.channel = ANY(:channels)
+ GROUP BY t.channel
+"""
+
 # Strictly after the cursor in `last_message_at DESC NULLS LAST, id DESC`: inside the
 # dated branch for a dated cursor; inside the undated branch for an undated one (every
 # undated chat is after every dated one, so a dated cursor leaves that branch whole).
@@ -254,10 +373,9 @@ _AFTER_UNDATED: Final = "AND t.id < :id"
 
 def _filter_sql(filter: str) -> str:
     try:
-        rule = _FILTER_SQL[filter]
+        return _FILTER_SQL[filter]
     except KeyError:
         raise ValueError(f"filter must be one of {INBOX_FILTERS}, not {filter!r}") from None
-    return awaiting_reply_sql("t", now_param=_NOW_PARAM) if rule == _RULE else rule
 
 
 def _page_sql(filter: str, cursor: InboxCursor | None) -> str:
@@ -271,21 +389,37 @@ def _page_sql(filter: str, cursor: InboxCursor | None) -> str:
 
 
 def _list_sql(filter: str, cursor: InboxCursor | None) -> str:
+    # A filter that already decides a verdict does not evaluate it again per row: under
+    # `por_responder` every row waits and none is expired (the window is open); under
+    # `ventana_vencida` every row is expired and none waits.
+    awaiting = {"por_responder": "TRUE", "ventana_vencida": "FALSE"}.get(filter, _AWAITING_SQL)
+    expired = {"por_responder": "FALSE", "ventana_vencida": "TRUE"}.get(filter, _EXPIRED_SQL)
     return _SELECT.format(
         page=_page_sql(filter, cursor),
         whatsapp=CHANNEL_WHATSAPP,
         dm=CHANNEL_INSTAGRAM_DM,
         n_instant=_INSTANT.format(m="n"),
         m_instant=_INSTANT.format(m="m"),
-        # Under `por_responder` the page already holds only waiting chats.
-        awaiting="TRUE"
-        if filter == "por_responder"
-        else awaiting_reply_sql("t", now_param=_NOW_PARAM),
+        awaiting=awaiting,
+        expired=expired,
     )
 
 
 def _count_sql(filter: str) -> str:
     return _COUNT.format(filter=_filter_sql(filter))
+
+
+def _counts_sql() -> str:
+    columns = ",\n       ".join(
+        f"count(*) FILTER (WHERE {_FILTER_SQL[f]}) AS {f}" for f in INBOX_FILTERS
+    )
+    return _COUNTS.format(columns=columns)
+
+
+def _window_expired_at(r: Any) -> datetime | None:
+    if not r.window_expired_unanswered or r.last_inbound_at is None:
+        return None
+    return r.last_inbound_at + WINDOW
 
 
 def _row(r: Any, now: datetime) -> InboxRow:
@@ -310,6 +444,9 @@ def _row(r: Any, now: datetime) -> InboxRow:
         window_closes_at=window.closes_at,
         automation_paused=r.automation_paused,
         payment_status=r.payment_status,
+        assigned_agent_id=r.assigned_agent_id,
+        window_expired_unanswered=bool(r.window_expired_unanswered),
+        window_expired_at=_window_expired_at(r),
     )
 
 
@@ -326,8 +463,14 @@ class PostgresInboxReader:
         cursor: InboxCursor | None,
         limit: int,
         now: datetime,
+        expired_since: datetime,
     ) -> InboxPage:
-        params: dict[str, Any] = {"channels": list(channels), "limit": limit + 1, "now": now}
+        params: dict[str, Any] = {
+            "channels": list(channels),
+            "limit": limit + 1,
+            "now": now,
+            "expired_since": expired_since,
+        }
         if cursor is not None:
             params["id"] = cursor.thread_id
             if cursor.last_message_at is not None:
@@ -340,12 +483,39 @@ class PostgresInboxReader:
         return InboxPage(rows=rows, next_cursor=next_cursor)
 
     def count(
-        self, tenant_id: UUID, *, filter: InboxFilter, channels: Sequence[str], now: datetime
+        self,
+        tenant_id: UUID,
+        *,
+        filter: InboxFilter,
+        channels: Sequence[str],
+        now: datetime,
+        expired_since: datetime,
     ) -> int:
-        params = {"channels": list(channels), "now": now}
+        params = {"channels": list(channels), "now": now, "expired_since": expired_since}
         with tenant_session(tenant_id) as session:
             value = session.execute(text(_count_sql(filter)), params)
             return int(value.scalar_one() or 0)
+
+    def counts(
+        self, tenant_id: UUID, *, channels: Sequence[str], now: datetime, expired_since: datetime
+    ) -> InboxCounts:
+        params = {"channels": list(channels), "now": now, "expired_since": expired_since}
+        with tenant_session(tenant_id) as session:
+            records = session.execute(text(_counts_sql()), params).all()
+        found = {r.channel: r for r in records}
+        return InboxCounts(
+            by_channel=MappingProxyType(
+                {
+                    c: MappingProxyType(
+                        {
+                            f: int(getattr(found[c], f) or 0) if c in found else 0
+                            for f in INBOX_FILTERS
+                        }
+                    )
+                    for c in channels
+                }
+            )
+        )
 
 
 # --------------------------------------------------------------------------------------
@@ -363,6 +533,14 @@ def _aware_now(now: datetime | None) -> datetime:
     return now
 
 
+def _expired_since(now: datetime, within: timedelta) -> datetime:
+    """`ventana_vencida`'s bound on `last_inbound_at`: the window (`last_inbound_at +
+    WINDOW`) closed less than `within` before `now`."""
+    if within <= timedelta(0):
+        raise ValueError("expired_within must be positive")
+    return now - within - WINDOW
+
+
 def list_inbox(
     tenant_id: UUID,
     *,
@@ -371,26 +549,30 @@ def list_inbox(
     cursor: InboxCursor | str | None = None,
     limit: int = DEFAULT_PAGE_SIZE,
     now: datetime | None = None,
+    expired_within: timedelta = EXPIRED_UNANSWERED_WITHIN,
     reader: InboxReader | None = None,
 ) -> InboxPage:
     """One page of the tenant's chats across channels, newest activity first.
 
     `channel` narrows to one allow-listed channel (`UnknownChannel` otherwise); `cursor`
-    is the previous page's `next_cursor` (or its `encode()`d token). Blocking (one DB
-    round trip): call it off the event loop (`asyncio.to_thread`)."""
+    is the previous page's `next_cursor` (or its `encode()`d token); `expired_within`
+    bounds `ventana_vencida` only. Blocking (one DB round trip): call it off the event
+    loop (`asyncio.to_thread`)."""
     _filter_sql(filter)
     if not 1 <= limit <= MAX_PAGE_SIZE:
         raise ValueError(f"limit must be between 1 and {MAX_PAGE_SIZE}")
     channels = resolve_channels(channel)
     if isinstance(cursor, str):
         cursor = InboxCursor.decode(cursor)
+    moment = _aware_now(now)
     return (reader or PostgresInboxReader()).list_page(
         tenant_id,
         filter=filter,
         channels=channels,
         cursor=cursor,
         limit=limit,
-        now=_aware_now(now),
+        now=moment,
+        expired_since=_expired_since(moment, expired_within),
     )
 
 
@@ -400,12 +582,58 @@ def count_inbox(
     filter: InboxFilter = "por_responder",
     channel: str | None = None,
     now: datetime | None = None,
+    expired_within: timedelta = EXPIRED_UNANSWERED_WITHIN,
     reader: InboxReader | None = None,
 ) -> int:
     """How many chats the same filter lists (all pages), judged at `now` (default: the
     wall clock) like `list_inbox`. Blocking: one DB round trip."""
     _filter_sql(filter)
     channels = resolve_channels(channel)
+    moment = _aware_now(now)
     return (reader or PostgresInboxReader()).count(
-        tenant_id, filter=filter, channels=channels, now=_aware_now(now)
+        tenant_id,
+        filter=filter,
+        channels=channels,
+        now=moment,
+        expired_since=_expired_since(moment, expired_within),
+    )
+
+
+def inbox_counts(
+    tenant_id: UUID,
+    *,
+    now: datetime | None = None,
+    expired_within: timedelta = EXPIRED_UNANSWERED_WITHIN,
+    reader: InboxReader | None = None,
+) -> InboxCounts:
+    """Every filter's count for every chat channel, in ONE statement: the filter chips
+    («Por responder · N», «Pago por revisar · N»), the channel filter and the expired
+    notice of one screen refresh. `.count(f, channel)` equals `count_inbox(filter=f,
+    channel=channel)`. Blocking: one DB round trip."""
+    moment = _aware_now(now)
+    return (reader or PostgresInboxReader()).counts(
+        tenant_id,
+        channels=INBOX_CHANNELS,
+        now=moment,
+        expired_since=_expired_since(moment, expired_within),
+    )
+
+
+def count_expired_unanswered(
+    tenant_id: UUID,
+    *,
+    within: timedelta = EXPIRED_UNANSWERED_WITHIN,
+    now: datetime | None = None,
+    reader: InboxReader | None = None,
+) -> int:
+    """How many Instagram chats left «Por responder» because their window closed — less
+    than `within` ago — while the customer still had the last word (`ventana_vencida`).
+    The «tell the owner once» memory is the screen's; this only counts. Blocking: one DB
+    round trip."""
+    return count_inbox(
+        tenant_id,
+        filter="ventana_vencida",
+        now=now,
+        expired_within=within,
+        reader=reader,
     )

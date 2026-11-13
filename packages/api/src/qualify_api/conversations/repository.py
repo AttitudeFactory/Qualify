@@ -65,6 +65,12 @@ from qualify_api.conversations.contracts import (
     RemoteMessage,
     RemoteProfile,
 )
+from qualify_api.inbox.awaiting import (
+    MessageFact,
+    ThreadSnapshot,
+    awaiting_reply_sql,
+    awaits_reply,
+)
 
 THREAD_OPEN = "open"
 THREAD_CLOSED = "closed"
@@ -105,6 +111,9 @@ class ThreadRecord:
     counterpart_username: str | None = None
     counterpart_avatar_url: str | None = None
     counterpart_profile_at: datetime | None = None
+    # m-25017859: the «Por responder» rule's verdict (`inbox.awaiting`), set by the list
+    # reads only; `None` where it was not computed (a single-thread read).
+    awaiting_reply: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -602,9 +611,16 @@ _NOT_ONLY_UNSENT = """
 # `:status` NULL lists both statuses; 'open' / 'closed' only those (m-25026457: «Cerrados»).
 _STATUS_FILTER = "AND (CAST(:status AS text) IS NULL OR t.status = CAST(:status AS text))"
 
+# m-25017859: the lists also carry the ONE «Por responder» rule's verdict
+# (`inbox.awaiting`, judged at the database's `now()`) — what «Pendientes» must list so it
+# matches the menu counter. Only the lists: a single-thread read does not pay for it.
+_LIST_THREAD_COLUMNS = f"""{_THREAD_COLUMNS},
+    {awaiting_reply_sql("t")} AS awaiting_reply
+"""
+
 _LIST_THREADS = text(
     f"""
-    SELECT {_THREAD_COLUMNS}
+    SELECT {_LIST_THREAD_COLUMNS}
       FROM threads t
      WHERE t.channel IN :channels
        {_STATUS_FILTER}
@@ -616,7 +632,7 @@ _LIST_THREADS = text(
 
 _LIST_THREADS_FOR_CONNECTION = text(
     f"""
-    SELECT {_THREAD_COLUMNS}
+    SELECT {_LIST_THREAD_COLUMNS}
       FROM threads t
      WHERE t.channel IN :channels AND t.connection_id = :connection_id
        {_STATUS_FILTER}
@@ -806,6 +822,11 @@ def _thread_record(row: object) -> ThreadRecord:
         counterpart_username=r.counterpart_username,  # type: ignore[attr-defined]
         counterpart_avatar_url=r.counterpart_avatar_url,  # type: ignore[attr-defined]
         counterpart_profile_at=r.counterpart_profile_at,  # type: ignore[attr-defined]
+        awaiting_reply=(
+            bool(r.awaiting_reply)  # type: ignore[attr-defined]
+            if "awaiting_reply" in r._fields  # type: ignore[attr-defined]
+            else None
+        ),
     )
 
 
@@ -1333,6 +1354,24 @@ class _MemoryThread:
     messages: list[MessageRecord] = field(default_factory=list)
 
 
+def _memory_awaits(entry: _MemoryThread, now: datetime) -> bool:
+    """The list's `awaiting_reply` in memory: the rule's twin over the stored messages
+    (no outbox here, so every outbound is a person's reply)."""
+    record = entry.record
+    return awaits_reply(
+        ThreadSnapshot(
+            status=record.status,
+            channel=record.channel,
+            last_inbound_at=record.last_inbound_at,
+            messages=tuple(
+                MessageFact(m.direction, _as_utc(m.posted_at or m.ingested_at))
+                for m in entry.messages
+            ),
+        ),
+        now,
+    )
+
+
 class MemoryConversationRepository:
     """Mirrors every rule above. Threads are keyed by the natural key; messages by
     `(connection_id, external_message_id)`; a tenant only ever sees its own rows."""
@@ -1573,8 +1612,9 @@ class MemoryConversationRepository:
     ) -> list[ThreadRecord]:
         _check_thread_status(status)
         wanted = set(channels)
+        now = datetime.now(UTC)
         rows = [
-            self._with_outbound(entry)
+            replace(self._with_outbound(entry), awaiting_reply=_memory_awaits(entry, now))
             for entry in self._threads.values()
             if entry.record.tenant_id == tenant_id
             and entry.record.channel in wanted

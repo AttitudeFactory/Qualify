@@ -144,6 +144,13 @@ class ThreadView:
     attention: AttentionState
     window: WindowState
 
+    @property
+    def awaiting_reply(self) -> bool:
+        """m-25017859: the ONE «Por responder» rule (`inbox.awaiting`) the menu counter
+        counts, as `list_threads` computed it in its statement; False where the read did
+        not compute it (`thread.awaiting_reply is None`, a single-thread read)."""
+        return bool(self.thread.awaiting_reply)
+
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)

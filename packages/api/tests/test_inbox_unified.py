@@ -5,23 +5,32 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
 
-from qualify_api.inbox.awaiting import awaiting_reply_sql
+from qualify_api.inbox.awaiting import awaiting_reply_sql, expired_unanswered_sql
 from qualify_api.inbox.channels import UnknownChannel
 from qualify_api.inbox.unified import (
+    EXPIRED_UNANSWERED_WITHIN,
+    INBOX_FILTERS,
+    InboxCounts,
     InboxCursor,
     InboxFilter,
     InboxPage,
+    InboxRow,
     InvalidCursor,
     _count_sql,
+    _counts_sql,
+    _filter_sql,
     _list_sql,
+    count_expired_unanswered,
     count_inbox,
+    inbox_counts,
     list_inbox,
 )
+from qualify_api.whatsapp.window import WINDOW
 
 NOW = datetime(2026, 11, 13, 12, 0, tzinfo=UTC)
 
@@ -29,6 +38,7 @@ NOW = datetime(2026, 11, 13, 12, 0, tzinfo=UTC)
 class _FakeReader:
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
+        self.expired_since: list[datetime] = []
 
     def list_page(
         self,
@@ -39,19 +49,40 @@ class _FakeReader:
         cursor: InboxCursor | None,
         limit: int,
         now: datetime,
+        expired_since: datetime,
     ) -> InboxPage:
         self.calls.append(
             {"tenant": tenant_id, "filter": filter, "channels": tuple(channels), "cursor": cursor}
         )
+        self.expired_since.append(expired_since)
         return InboxPage(rows=(), next_cursor=None)
 
     def count(
-        self, tenant_id: UUID, *, filter: InboxFilter, channels: Sequence[str], now: datetime
+        self,
+        tenant_id: UUID,
+        *,
+        filter: InboxFilter,
+        channels: Sequence[str],
+        now: datetime,
+        expired_since: datetime,
     ) -> int:
         self.calls.append(
             {"tenant": tenant_id, "filter": filter, "channels": tuple(channels), "now": now}
         )
+        self.expired_since.append(expired_since)
         return 7
+
+    def counts(
+        self, tenant_id: UUID, *, channels: Sequence[str], now: datetime, expired_since: datetime
+    ) -> InboxCounts:
+        self.calls.append({"tenant": tenant_id, "channels": tuple(channels), "now": now})
+        self.expired_since.append(expired_since)
+        return InboxCounts(
+            by_channel={
+                "dm": {f: 1 for f in INBOX_FILTERS},
+                "whatsapp": {f: 2 for f in INBOX_FILTERS},
+            }
+        )
 
 
 def test_defaults_read_por_responder_over_every_chat_channel() -> None:
@@ -144,7 +175,96 @@ def test_the_list_is_one_read_only_statement_with_the_shared_rule() -> None:
 def test_other_filters_compute_the_rule_only_for_the_page() -> None:
     sql = " ".join(_list_sql("todos", None).split())
     rule = " ".join(awaiting_reply_sql("t", now_param="now").split())
-    assert sql.count(rule) == 1 and f"{rule} AS awaiting_reply FROM page t" in sql
+    expired = " ".join(expired_unanswered_sql("t", now_param="now").split())
+    assert sql.count(rule) == 1 and f"{rule} AS awaiting_reply," in sql
+    assert sql.count(expired) == 1
+    assert f"{expired} AS window_expired_unanswered FROM page t" in sql
+
+
+def test_a_filter_that_decides_a_verdict_does_not_compute_it_again() -> None:
+    waiting = " ".join(_list_sql("por_responder", None).split())
+    assert "TRUE AS awaiting_reply, FALSE AS window_expired_unanswered" in waiting
+    expired = " ".join(_list_sql("ventana_vencida", None).split())
+    assert "FALSE AS awaiting_reply, TRUE AS window_expired_unanswered" in expired
+    assert expired.count("CAST(:expired_since AS timestamptz)") == 2  # both page branches
+
+
+def test_the_new_filters_read_only_the_thread_and_correlated_subqueries() -> None:
+    payment = " ".join(_filter_sql("pago_por_revisar").split())
+    assert "t.channel = 'whatsapp' AND t.status = 'open'" in payment
+    assert "ps.context->'_payment'->>'status' = 'review'" in payment
+    expired = " ".join(_filter_sql("ventana_vencida").split())
+    assert "t.channel IN ('dm')" in expired and "t.status = 'open'" in expired
+    for f in INBOX_FILTERS:
+        assert "tenant_id" not in _filter_sql(f)
+
+
+def test_counts_are_one_statement_with_every_filter_verbatim() -> None:
+    sql = _counts_sql()
+    assert sql.lstrip().startswith("SELECT t.channel,") and "GROUP BY t.channel" in sql
+    for f in INBOX_FILTERS:
+        assert f"count(*) FILTER (WHERE {_filter_sql(f)}) AS {f}" in sql
+        assert _filter_sql(f) in _count_sql(f)  # the same text `count_inbox` runs
+    for verb in ("INSERT", "UPDATE", "DELETE"):
+        assert not re.search(rf"\b{verb}\b", sql.upper()), verb
+
+
+def test_inbox_counts_sum_per_filter_and_channel() -> None:
+    reader = _FakeReader()
+    counts = inbox_counts(uuid4(), now=NOW, reader=reader)
+    assert reader.calls[0]["channels"] == ("dm", "whatsapp")
+    assert reader.expired_since == [NOW - EXPIRED_UNANSWERED_WITHIN - WINDOW]
+    assert counts.count("por_responder") == counts.por_responder == 3
+    assert counts.count("cerrados", "whatsapp") == 2
+    assert (counts.expired_unanswered, counts.payment_review) == (3, 3)
+    with pytest.raises(ValueError):
+        counts.count("leidas")  # type: ignore[arg-type]
+    with pytest.raises(UnknownChannel):
+        counts.count("todos", "comment")
+
+
+def test_the_expired_count_takes_its_period() -> None:
+    reader = _FakeReader()
+    assert count_expired_unanswered(uuid4(), now=NOW, reader=reader) == 7
+    count_expired_unanswered(uuid4(), within=timedelta(days=2), now=NOW, reader=reader)
+    assert [c["filter"] for c in reader.calls] == ["ventana_vencida"] * 2
+    assert reader.expired_since == [
+        NOW - EXPIRED_UNANSWERED_WITHIN - WINDOW,
+        NOW - timedelta(days=2) - WINDOW,
+    ]
+    assert EXPIRED_UNANSWERED_WITHIN == timedelta(days=7)
+    with pytest.raises(ValueError):
+        count_expired_unanswered(uuid4(), within=timedelta(0), now=NOW, reader=reader)
+
+
+def test_a_row_built_by_hand_needs_none_of_the_new_fields() -> None:
+    row = InboxRow(
+        thread_id=uuid4(),
+        channel="whatsapp",
+        connection_id=uuid4(),
+        status="open",
+        counterpart_name=None,
+        counterpart_username=None,
+        counterpart_avatar_url=None,
+        counterpart_phone="573000000000",
+        last_message_at=NOW,
+        last_inbound_at=NOW,
+        last_message_text="Hola",
+        last_message_kind=None,
+        last_message_direction="inbound",
+        awaiting_reply=True,
+        unread=None,
+        window_open=True,
+        window_closes_at=NOW + WINDOW,
+        automation_paused=False,
+        payment_status="review",
+    )
+    assert (row.assigned_agent_id, row.window_expired_unanswered, row.window_expired_at) == (
+        None,
+        False,
+        None,
+    )
+    assert (row.payment_review, row.payment_awaiting, row.is_closed) == (True, False, False)
 
 
 def test_filters_and_cursor_shape_the_page() -> None:

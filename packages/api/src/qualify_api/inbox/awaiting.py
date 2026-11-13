@@ -1,18 +1,26 @@
 """«Por responder»: the ONE rule of when a chat waits for the business (m-25017843, BU-A1).
 
-**Not wired yet.** Nothing in production reads this module today: `attention.counts`
-(the menu counters), `home.summary.people_waiting` (Inicio) and the per-channel screens
-keep their own definitions. The unified-list story **m-25017859** switches the counters,
-Inicio and the list together, so the number the owner taps and the list it opens change in
-the same release; `count_awaiting_sql(channel)` is the drop-in it calls from
-`attention.counts`.
+**Wired** (story m-25017859): every «Por responder» number the owner sees reads this
+fragment — the menu counters and the «Quién te espera» cards (`attention.counts`, through
+`count_awaiting_sql`), Inicio's `people_waiting` (`home.summary`, Instagram only), the
+unified list (`inbox.unified`) and the per-channel lists' `awaiting_reply` column
+(`whatsapp.chats`, `conversations.repository`). So the number the owner taps and the list
+it opens cannot disagree (`test_inbox_counters_db.py`).
 
 **Decided — old Instagram chats** (founder, 2026-11-13, «Ventana + cerrar chat»; story
 m-25017859): an Instagram chat counts only while its reply window is open — condition 4
-below. Instagram has no «Cerrar chat» yet (slice C9, a separate ticket) and refuses a
-normal reply once the window has closed, so without the bound a «gracias» or a story
-mention would count forever. Tested by `test_instagram_*_window*` in
-`test_inbox_unified_db.py` and the offline twin tests.
+below. Instagram refuses a normal reply once the window has closed, so without the bound
+a «gracias» or a story mention would count forever; the owner can also close an
+Instagram chat («Cerrar chat», m-25026457), which ends the wait like on WhatsApp. Tested
+by `test_instagram_*_window*` in `test_inbox_unified_db.py` and the offline twin tests.
+
+**Expired without an answer** (UX condition for m-25017859). An Instagram chat that left
+«Por responder» because its window closed while the customer still had the last word
+would be lost unseen; `expired_unanswered_sql` / `expired_unanswered` name exactly those
+chats — window-bound channel, open, the customer wrote after the last reply a person
+sent, window closed — so the screen can tell the owner once. Conditions 1, 2 and the
+complement of 4: for a window-bound channel a chat is either waiting, expired-unanswered,
+or neither, never both.
 
 **Open questions — founder's call, NOT decided here** (each pinned by a test in
 `test_inbox_unified_db.py`, `test_pinned_*`, so changing it is a deliberate act):
@@ -100,9 +108,13 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Final
 
-from qualify_api.conversations.window import WINDOW, window_state
 from qualify_api.inbox.channels import CHANNEL_CAPABILITIES, capabilities_for
 from qualify_api.whatsapp.outbox import STALE_AFTER
+
+# `conversations.window` re-exports these same objects (the ONE window policy); they are
+# imported from their home so `conversations.repository` can use this module without a
+# cycle through `qualify_api.conversations`.
+from qualify_api.whatsapp.window import WINDOW, window_state
 
 # `whatsapp_outbox.kind` of what the automatic menu sends (`whatsapp.models.OUTBOX_KINDS`).
 AUTOMATION_KIND: Final = "automation"
@@ -119,13 +131,9 @@ _INSTANT: Final = "COALESCE({m}.posted_at, {m}.ingested_at)"
 _NEVER: Final = "CAST('-infinity' AS timestamptz)"
 _DB_NOW: Final = "now()"
 
-_SQL: Final = """(
-  {t}.status = 'open'
-  AND {t}.last_inbound_at IS NOT NULL
-  AND {window_open}
-  AND EXISTS (
-    SELECT 1
-      FROM (
+# The facts of one chat both fragments read (conditions 2 and 3c): the newest visible
+# inbound, the newest outbound a person sent, the newest outbound of any kind.
+_FACTS: Final = """(
         SELECT max({m_instant}) FILTER (
                  WHERE aw_m.direction = 'inbound' AND aw_m.deleted_at IS NULL) AS last_in,
                max({m_instant}) FILTER (
@@ -138,7 +146,15 @@ _SQL: Final = """(
                 AND aw_ob.wamid = aw_m.external_message_id
                 AND aw_ob.kind = '{automation}'
          WHERE aw_m.thread_id = {t}.id
-      ) aw_f
+      ) aw_f"""
+
+_SQL: Final = """(
+  {t}.status = 'open'
+  AND {t}.last_inbound_at IS NOT NULL
+  AND {window_open}
+  AND EXISTS (
+    SELECT 1
+      FROM {facts}
      WHERE aw_f.last_in IS NOT NULL
        AND aw_f.last_in > COALESCE(aw_f.last_person_out, {never})
        AND (
@@ -165,6 +181,31 @@ _SQL: Final = """(
        )
   )
 )"""
+
+# Expired without an answer: conditions 1 and 2 with the window CLOSED (the complement of
+# condition 4), only on the window-bound channels. Column comparisons first, so a chat
+# that is not a candidate never reads its messages.
+_EXPIRED_SQL: Final = """(
+  {t}.channel IN ({bound})
+  AND {t}.status = 'open'
+  AND {t}.last_inbound_at IS NOT NULL
+  AND {t}.last_inbound_at <= {now} - CAST('{window_seconds} seconds' AS interval)
+  AND EXISTS (
+    SELECT 1
+      FROM {facts}
+     WHERE aw_f.last_in IS NOT NULL
+       AND aw_f.last_in > COALESCE(aw_f.last_person_out, {never})
+  )
+)"""
+
+
+def _facts_sql(t: str) -> str:
+    return _FACTS.format(t=t, m_instant=_INSTANT.format(m="aw_m"), automation=AUTOMATION_KIND)
+
+
+def _check_alias(alias: str) -> None:
+    if not alias.isidentifier() or alias.startswith("aw_"):
+        raise ValueError(f"alias must be a plain identifier not starting with 'aw_': {alias!r}")
 
 
 def _sql_list(values: tuple[str, ...]) -> str:
@@ -201,14 +242,13 @@ def awaiting_reply_sql(alias: str = "t", *, now_param: str | None = None) -> str
     database's `now()`, or the bound parameter `:<now_param>` when given (the caller binds
     an aware `datetime`). Its own aliases all start with `aw_`; do not reuse that prefix
     around it."""
-    if not alias.isidentifier() or alias.startswith("aw_"):
-        raise ValueError(f"alias must be a plain identifier not starting with 'aw_': {alias!r}")
+    _check_alias(alias)
     now = _now_sql(now_param)
     return _SQL.format(
         t=alias,
         now=now,
         window_open=_window_open_sql(alias, now),
-        m_instant=_INSTANT.format(m="aw_m"),
+        facts=_facts_sql(alias),
         never=_NEVER,
         automation=AUTOMATION_KIND,
         failed=_sql_list(FAILED_STATUSES),
@@ -228,6 +268,26 @@ def count_awaiting_sql(channel: str, *, now_param: str | None = None) -> str:
     return (
         f"(SELECT count(*) FROM threads t "
         f"WHERE t.channel = '{allowed}' AND {awaiting_reply_sql('t', now_param=now_param)})"
+    )
+
+
+def expired_unanswered_sql(alias: str = "t", *, now_param: str | None = None) -> str:
+    """A boolean SQL expression: the chat aliased `alias` left «Por responder» only because
+    its reply window closed — a window-bound channel (`WINDOW_BOUND_CHANNELS`), open, the
+    customer wrote after the last reply a person sent, and the window closed at or before
+    «now». FALSE on every other channel (WhatsApp is never flagged). Same aliases, «now»
+    and RLS reading as `awaiting_reply_sql`. Note: no period here — the caller bounds how
+    long ago the window closed (`inbox.unified`'s `expired_within`)."""
+    _check_alias(alias)
+    if not WINDOW_BOUND_CHANNELS:
+        return "FALSE"
+    return _EXPIRED_SQL.format(
+        t=alias,
+        bound=_sql_list(tuple(sorted(WINDOW_BOUND_CHANNELS))),
+        now=_now_sql(now_param),
+        window_seconds=int(WINDOW.total_seconds()),
+        facts=_facts_sql(alias),
+        never=_NEVER,
     )
 
 
@@ -300,3 +360,28 @@ def awaits_reply(chat: ThreadSnapshot, now: datetime) -> bool:
     if any(m.at >= last_in for m in outbound):
         return False
     return not any(s.status in QUEUED_STATUSES and s.created_at > now - STALE_AFTER for s in since)
+
+
+def _customer_has_last_word(chat: ThreadSnapshot) -> datetime | None:
+    """Condition 2: the newest visible inbound when it is newer than every outbound a
+    person sent; `None` otherwise."""
+    inbound = [m.at for m in chat.messages if m.direction == "inbound" and not m.hidden]
+    if not inbound:
+        return None
+    last_in = max(inbound)
+    if any(
+        m.direction == "outbound" and not m.automatic and m.at >= last_in for m in chat.messages
+    ):
+        return None
+    return last_in
+
+
+def expired_unanswered(chat: ThreadSnapshot, now: datetime) -> bool:
+    """`expired_unanswered_sql`, over a snapshot already read."""
+    if chat.channel not in WINDOW_BOUND_CHANNELS:
+        return False
+    if chat.status != "open" or chat.last_inbound_at is None:
+        return False
+    if window_state(chat.last_inbound_at, now).is_open:
+        return False
+    return _customer_has_last_word(chat) is not None
