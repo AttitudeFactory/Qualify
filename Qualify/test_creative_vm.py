@@ -1153,8 +1153,27 @@ def test_the_over_five_notice_appears_only_past_five() -> None:
 
     assert (HASHTAG_RECOMMENDED, HASHTAG_LIMIT) == (5, 30)
     assert hashtags_over_notice(0) == "" and hashtags_over_notice(5) == ""
-    assert hashtags_over_notice(7).startswith("Tienes 7 etiquetas.")
-    assert "igual puedes aprobar y publicar" in hashtags_over_notice(7)
+    assert hashtags_over_notice(7) == (
+        "Tienes 7 etiquetas. Con 5 bien elegidas basta: toca la × para quitar las que "
+        "sobren. Igual puedes aprobar y publicar."
+    )
+    assert "«Editar texto»" in hashtags_over_notice(7, editing=False)
+
+
+def test_the_counter_shows_the_advice_not_the_cap() -> None:
+    from .creative_vm import hashtag_count_label
+
+    assert hashtag_count_label(6) == "6 de 5 recomendadas"
+
+
+def test_best_ideas_to_add_fills_up_to_five_and_respects_the_cap() -> None:
+    from .creative_vm import HashtagIdeaVM, best_ideas_to_add, mark_best_ideas
+
+    ideas = mark_best_ideas([HashtagIdeaVM(tag=f"t{i}", kind="nicho", reason="") for i in range(9)])
+    assert best_ideas_to_add(ideas, []) == ["t0", "t1", "t2", "t3", "t4"]
+    assert best_ideas_to_add(ideas, ["t1", "a", "b"]) == ["t0", "t2"]
+    assert best_ideas_to_add(ideas, ["a", "b", "c", "d", "e", "f"]) == []
+    assert best_ideas_to_add(ideas, [f"x{i}" for i in range(30)]) == []
 
 
 def test_tag_rule_messages_say_etiquetas() -> None:

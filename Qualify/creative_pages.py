@@ -22,6 +22,8 @@ from .creative_state import GENERATION_STAGES, CreativeState
 from .creative_vm import (
     AI_LABEL_HINT,
     BEST_IDEA_HINT,
+    BEST_IDEA_MARK,
+    BEST_IDEAS_EXPLAINED,
     FINISH_GALLERY_MANY,
     FINISH_GALLERY_ONE,
     HARD_RULES_HINT,
@@ -2006,16 +2008,37 @@ def _removable_chip(label: rx.Var[str], on_remove, *, prefix: str = "") -> rx.Co
 def _add_chip(
     label: rx.Var[str], on_add, *, prefix: str = "", title=None, best=None
 ) -> rx.Component:
-    """A suggestion to add with one tap. `best` (a bool Var) adds a star after the label:
-    one of the five the AI ranks highest (m-25026376)."""
-    star = [] if best is None else [rx.cond(best, rx.icon("star", size=11))]
+    """A suggestion to add with one tap. `best` (a bool Var) adds a star AND the word
+    «Mejor» after the label, and says so to screen readers: one of the ideas the AI
+    ranks highest (m-25026376) — never an icon alone."""
+    if best is None:
+        mark: list[rx.Component] = []
+        aria = "Agregar " + prefix + label
+    else:
+        mark = [
+            rx.cond(
+                best,
+                rx.hstack(
+                    rx.icon("star", size=11, aria_hidden="true"),
+                    rx.text(BEST_IDEA_MARK, as_="span", size="1", weight="medium"),
+                    spacing="1",
+                    align="center",
+                ),
+            )
+        ]
+        aria = rx.cond(
+            best,
+            "Agregar " + prefix + label + ", una de las mejores",
+            "Agregar " + prefix + label,
+        )
     return rx.el.button(
         rx.icon("plus", size=11),
         rx.text(prefix + label, as_="span"),
-        *star,
+        *mark,
         type="button",
         class_name="q-rv-chip q-rv-chip--suggest",
         title=title,
+        aria_label=aria,
         on_click=on_add,
     )
 
@@ -2085,9 +2108,7 @@ def _ai_hashtags() -> rx.Component:
                 rx.vstack(
                     rx.text("Sugeridas para tu texto", size="2", weight="bold"),
                     rx.text(
-                        "Leemos tu texto y te proponemos etiquetas populares, de tu tipo "
-                        "de negocio y de tu zona. La estrella marca las 5 que más te "
-                        "sirven.",
+                        BEST_IDEAS_EXPLAINED,
                         size="1",
                         color=T.TEXT_MUTED,
                     ),
@@ -2186,7 +2207,7 @@ def _hashtags_field() -> rx.Component:
         # m-25026376: past five, one line that informs — approving and publishing stay open.
         rx.cond(
             CreativeState.hashtags_over_notice != "",
-            callout(CreativeState.hashtags_over_notice, "warn", icon="info", size="1"),
+            callout(CreativeState.hashtags_over_notice, "info", size="1"),
         ),
         rx.cond(
             CreativeState.edit_mode,

@@ -194,6 +194,7 @@ from .creative_vm import (
     approval_notice,
     approval_videos_notice,
     best_ideas_button_label,
+    best_ideas_to_add,
     caption_hashtag_suggestions,
     caption_keywords,
     catalog_price_edit,
@@ -206,6 +207,7 @@ from .creative_vm import (
     finish_gallery_cost_note,
     format_ctas,
     format_hashtags,
+    hashtag_count_label,
     hashtag_list,
     hashtags_over_notice,
     highlight_notes,
@@ -1799,12 +1801,13 @@ class CreativeState(rx.State):
 
     @rx.var
     def hashtag_count_label(self) -> str:
-        return f"{len(hashtag_list(self.edit_hashtags))}/{HASHTAG_LIMIT}"
+        """m-25026376 (UX): «N de 5 recomendadas»; the 30 cap stays in `add_hashtag`."""
+        return hashtag_count_label(len(hashtag_list(self.edit_hashtags)))
 
     @rx.var
     def hashtags_over_notice(self) -> str:
         """m-25026376: one line past five tags — a notice, never a block."""
-        return hashtags_over_notice(len(hashtag_list(self.edit_hashtags)))
+        return hashtags_over_notice(len(hashtag_list(self.edit_hashtags)), editing=self.edit_mode)
 
     @rx.var
     def cta_chips(self) -> list[str]:
@@ -1858,9 +1861,13 @@ class CreativeState(rx.State):
         return sum(1 for h in self.ai_hashtags if h.tag not in chosen)
 
     @rx.var
+    def ai_best_to_add(self) -> list[str]:
+        """What «Agregar las N mejores» adds: up to five counting the chosen ones."""
+        return best_ideas_to_add(self.ai_hashtags, hashtag_list(self.edit_hashtags))
+
+    @rx.var
     def ai_best_pending_count(self) -> int:
-        chosen = set(hashtag_list(self.edit_hashtags))
-        return sum(1 for h in self.ai_hashtags if h.best and h.tag not in chosen)
+        return len(self.ai_best_to_add)
 
     @rx.var
     def ai_best_button_label(self) -> str:
@@ -1868,8 +1875,8 @@ class CreativeState(rx.State):
 
     @rx.event
     def add_all_ai_hashtags(self) -> None:
-        """m-25026376: «Agregar las 5 mejores» adds only the marked ideas, not all 12."""
-        self.add_hashtag(" ".join(h.tag for h in self.ai_hashtags if h.best))
+        """m-25026376: adds only the marked ideas, and only up to five in all."""
+        self.add_hashtag(" ".join(self.ai_best_to_add))
 
     @rx.event(background=True)
     async def suggest_hashtags_ai(self):

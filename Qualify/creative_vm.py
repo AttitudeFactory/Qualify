@@ -2262,8 +2262,17 @@ def mark_best_ideas(
     return [replace(idea, best=i < limit) for i, idea in enumerate(ideas)]
 
 
+def best_ideas_to_add(ideas: list[HashtagIdeaVM], chosen: list[str]) -> list[str]:
+    """What «Agregar las N mejores» really adds: the marked ideas not chosen yet, only up
+    to the recommended five counting what the piece already carries (3 chosen → 2 more),
+    and never past the hard cap. Nothing when there is no room."""
+    taken = set(chosen)
+    room = max(0, min(HASHTAG_RECOMMENDED, HASHTAG_LIMIT) - len(chosen))
+    return [i.tag for i in ideas if i.best and i.tag not in taken][:room]
+
+
 def best_ideas_button_label(count: int) -> str:
-    """«Agregar las 5 mejores» — the button adds only the marked ideas still unchosen."""
+    """«Agregar las 3 mejores»: the number is what the button will really add."""
     if count <= 0:
         return ""
     if count == 1:
@@ -2271,18 +2280,35 @@ def best_ideas_button_label(count: int) -> str:
     return f"Agregar las {count} mejores"
 
 
-#: The tooltip of a marked idea.
-BEST_IDEA_HINT = "Una de las 5 que más te sirven"
+#: The tooltip of a marked idea, and the visible word next to its star (UX: never
+#: an icon alone).
+BEST_IDEA_HINT = "Una de las que más te sirven"
+BEST_IDEA_MARK = "Mejor"
+#: What the panel says about the mark — no number: fewer than five may come back.
+BEST_IDEAS_EXPLAINED = (
+    "Leemos tu texto y te proponemos etiquetas populares, de tu tipo de negocio y de tu "
+    "zona. Las marcadas como «Mejor» son las que más te sirven."
+)
 
 
-def hashtags_over_notice(count: int, recommended: int = HASHTAG_RECOMMENDED) -> str:
+def hashtag_count_label(count: int, recommended: int = HASHTAG_RECOMMENDED) -> str:
+    """«6 de 5 recomendadas»: the number on screen is the advice, not the hard cap of 30
+    (still enforced by `add_hashtag`)."""
+    return f"{count} de {recommended} recomendadas"
+
+
+def hashtags_over_notice(
+    count: int, *, editing: bool = True, recommended: int = HASHTAG_RECOMMENDED
+) -> str:
     """One line when a publication carries more than the recommended tags. It informs
-    only: the owner can still approve and publish (the API takes up to 30)."""
+    only: the owner can still approve and publish (the API takes up to 30). The gesture
+    named is the real one: the chips' × while editing, «Editar texto» otherwise."""
     if count <= recommended:
         return ""
+    how = "toca la × para quitar" if editing else "toca «Editar texto» y quita"
     return (
-        f"Tienes {count} etiquetas. Con las {recommended} mejores basta; "
-        "igual puedes aprobar y publicar."
+        f"Tienes {count} etiquetas. Con {recommended} bien elegidas basta: {how} las que "
+        "sobren. Igual puedes aprobar y publicar."
     )
 
 

@@ -273,7 +273,7 @@ def test_the_review_editor_adds_and_removes_hashtags_and_uses_a_cta(monkeypatch)
     assert state.edit_hashtag_query == ""
     state.remove_hashtag("promo")
     assert state.edit_hashtag_chips == ["hamburguesas", "viernes"]
-    assert state.hashtag_count_label == "2/30"
+    assert state.hashtag_count_label == "2 de 5 recomendadas"
     # Several calls to action, kept as one list in the `cta` field.
     state.edit_cta = ""
     state.add_cta("Escríbenos por DM")
@@ -326,16 +326,38 @@ def test_ai_suggestions_mark_the_five_best_and_add_only_those(monkeypatch) -> No
     assert state.hashtags_over_notice == ""
 
 
+def test_bulk_add_counts_the_tags_already_on_the_piece(monkeypatch) -> None:
+    """m-25026376 (review): 3 chosen + «Agregar» = 5, never 8; nothing to add → no button."""
+    from .creative_vm import HashtagIdeaVM, mark_best_ideas
+
+    state = _state(monkeypatch)
+    state.edit_hashtags = "#uno #dos #tres"
+    state.ai_hashtags = mark_best_ideas(
+        [HashtagIdeaVM(tag=f"tag{i}", kind="nicho", reason="r") for i in range(8)]
+    )
+    assert state.ai_best_to_add == ["tag0", "tag1"]
+    assert state.ai_best_button_label == "Agregar las 2 mejores"
+    state.add_all_ai_hashtags()
+    assert state.edit_hashtag_chips == ["uno", "dos", "tres", "tag0", "tag1"]
+    assert state.ai_best_pending_count == 0 and state.ai_best_button_label == ""
+    state.add_all_ai_hashtags()  # a stale click adds nothing
+    assert len(state.edit_hashtag_chips) == 5
+
+
 def test_more_than_five_tags_warns_without_blocking(monkeypatch) -> None:
     """m-25026376: past five, one line; the hard cap stays at 30 (what Meta's API takes)."""
     state = _state(monkeypatch)
     state.edit_hashtags = " ".join(f"#t{i}" for i in range(6))
+    state.edit_mode = False
     assert state.hashtags_over_notice == (
-        "Tienes 6 etiquetas. Con las 5 mejores basta; igual puedes aprobar y publicar."
+        "Tienes 6 etiquetas. Con 5 bien elegidas basta: toca «Editar texto» y quita las "
+        "que sobren. Igual puedes aprobar y publicar."
     )
+    state.edit_mode = True
+    assert "toca la × para quitar las que sobren" in state.hashtags_over_notice
     state.add_hashtag(" ".join(f"x{i}" for i in range(40)))
-    assert len(state.edit_hashtag_chips) == 30
-    assert state.hashtag_count_label == "30/30"
+    assert len(state.edit_hashtag_chips) == 30  # the hard cap still holds
+    assert state.hashtag_count_label == "30 de 5 recomendadas"
 
 
 def test_caption_rules_show_under_the_caption(monkeypatch) -> None:

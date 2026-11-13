@@ -99,5 +99,15 @@ def test_a_brand_that_saved_its_own_maximum_keeps_it() -> None:
     assert _tag_failures(_copy(0).model_copy(update={"hashtags": tags}), kit) == []
 
 
-def test_a_stored_policy_without_a_maximum_takes_the_new_default() -> None:
-    assert _kit({"minimum": 1, "always": [], "never": []}).hashtag_policy.maximum == 5
+def test_a_policy_stored_before_the_change_keeps_its_ten() -> None:
+    """The shape `brand_service._apply_kit` really writes: the FULL dump of the policy,
+    defaults included. A brand saved while the default was 10 has `maximum: 10` in its
+    row, indistinguishable from an owner's choice — the new default does not reach it
+    (finding 2 of the review; the founder decides what to do with those rows)."""
+    from qualify_creative.schemas import HashtagPolicy as _Policy
+
+    old_default_dump = _Policy(maximum=10).model_dump(mode="json")
+    assert old_default_dump == {"minimum": 0, "maximum": 10, "always": [], "never": []}
+    assert _kit(old_default_dump).hashtag_policy.maximum == 10
+    # And what a save writes from now on carries the new default.
+    assert _kit().hashtag_policy.model_dump(mode="json")["maximum"] == 5
