@@ -40,6 +40,7 @@ from typing import Any
 
 from qualify_creative.adapters.anthropic_copy import strict_schema
 from qualify_creative.angles import AngleBrand, AngleProduct, CreativeAngle, price_mentions
+from qualify_creative.enums import AwarenessLevel
 from qualify_creative.pricing import JsonPricingTable
 from qualify_creative.schemas import (
     PART_DESCRIPTION_MAX,
@@ -73,7 +74,7 @@ from .parts import neutral_people
 logger = logging.getLogger(__name__)
 
 #: Bump on ANY change of the system prompt, the user prompt or the tool (provenance).
-PROPOSE_PARTS_PROMPT_VERSION = "proponer-partes-v3.1"
+PROPOSE_PARTS_PROMPT_VERSION = "proponer-partes-v3.2"
 PROPOSE_TOOL = "proponer_partes_video"
 
 PROPOSE_MODEL = "claude-sonnet-5"
@@ -360,6 +361,30 @@ def _story(text: str) -> str:
     return " ".join((text or "").split())[:STORY_MAX].strip()
 
 
+#: v3.2: what the video tells, per awareness level of the chosen angle — the parts never
+#: show a price or a figure, so the levels that lean on one tell the moment instead.
+_LEVEL_GUIDANCE: dict[AwarenessLevel, str] = {
+    AwarenessLevel.UNAWARE: (
+        "todavía no piensa en el producto: muestra el lugar y la experiencia (el ambiente, "
+        "el momento, con quién se comparte)"
+    ),
+    AwarenessLevel.PROBLEM_AWARE: (
+        "ya siente la necesidad: abre con ese dilema y muestra el producto como la respuesta"
+    ),
+    AwarenessLevel.SOLUTION_AWARE: (
+        "sabe qué quiere pero no dónde: muestra lo que hace mejor a este producto (porción, "
+        "ingredientes, variedad, según su descripción)"
+    ),
+    AwarenessLevel.PRODUCT_AWARE: (
+        "conoce el negocio pero duda: muestra lo fácil que es venir o pedir (el lugar, la "
+        "atención), sin precios ni cifras"
+    ),
+    AwarenessLevel.MOST_AWARE: (
+        "está listo para comprar: pocas partes, cortas y directas al producto"
+    ),
+}
+
+
 def propose_user_prompt(brief: PartsBrief, angle: CreativeAngle | None = None) -> str:
     """The volatile half: the owner's sentence, the product, the brand, the angle and the
     length, then the ask. The price is never given: a part shows no figure."""
@@ -396,6 +421,13 @@ def propose_user_prompt(brief: PartsBrief, angle: CreativeAngle | None = None) -
             "",
         ]
     )
+    if brand.perks:
+        lines.append(
+            "== Lo que ofrece el negocio (datos reales escritos por el dueño; muestra solo "
+            "estos, nunca inventes otros) =="
+        )
+        lines.extend(f"- {perk}" for perk in brand.perks)
+        lines.append("")
     if angle is not None:
         lines.extend(
             [
@@ -403,9 +435,14 @@ def propose_user_prompt(brief: PartsBrief, angle: CreativeAngle | None = None) -
                 f"{angle.title}: {angle.scene}",
                 f"Gancho: {angle.hook or '(sin gancho)'}",
                 f"Invitación: {angle.cta or '(sin invitación)'}",
-                "",
             ]
         )
+        if angle.awareness_level is not None:
+            lines.append(
+                f"Nivel de consciencia del público: {angle.awareness_level.value} — "
+                f"{_LEVEL_GUIDANCE[angle.awareness_level]}."
+            )
+        lines.append("")
     target = _target(brief.target_seconds)
     lines.append(
         f"Duración total: como máximo {target} segundos, y no menos de "
