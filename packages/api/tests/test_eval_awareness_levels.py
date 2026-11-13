@@ -223,3 +223,59 @@ def test_parts_prompt_identical_without_perks_or_level() -> None:
     )
     briefs = [new.PartsBrief(story="historia", brand=AngleBrand(name="M"), target_seconds=20)]
     assert al.parts_prompt_identical(old, new, briefs) == 2
+
+
+def test_invented_offers_flags_a_perk_turned_into_a_gift() -> None:
+    sources = "\n".join(PERKS)
+    found = al.invented_offers(
+        "Postre de regalo al lado\nAlmuerzo con final feliz incluido", sources
+    )
+    assert {m for _, m in found} == {"de regalo", "incluido"}
+    assert {k for k, _ in found} == {"oferta"}
+
+
+def test_invented_offers_flags_services_nobody_offers() -> None:
+    found = al.invented_offers("Separa el tuyo hoy. Reserva tu cupo y pídelo a domicilio", "")
+    assert {k for k, _ in found} == {"servicio"}
+    assert {m for _, m in found} == {"separa", "reserva", "domicilio"}
+
+
+def test_invented_offers_backed_by_the_inputs() -> None:
+    assert al.invented_offers("Llega con parqueadero gratis", "Parqueadero gratis") == []
+    # the same «costs nothing» said with another word
+    assert al.invented_offers("Agenda tu asesoría gratuita", "Asesoría sin costo") == []
+    assert al.invented_offers("Pide a domicilio", "Pedidos a domicilio por WhatsApp") == []
+    # a verb, not an offer
+    assert al.invented_offers("Vistas que solo la selva regala", "") == []
+
+
+def test_eval_attribution_is_booked_to_no_business() -> None:
+    attribution = al.eval_attribution("eval-niveles-juez", prompt_version="v")
+    assert attribution.sin_negocio and attribution.prompt_version == "v"
+
+
+def test_parts_judge_gets_the_video_addendum() -> None:
+    captured: dict[str, Any] = {}
+
+    class _Client:
+        def __init__(self) -> None:
+            def create(**kwargs: Any) -> Any:
+                captured.update(kwargs)
+                usage = SimpleNamespace(
+                    input_tokens=1,
+                    output_tokens=1,
+                    cache_read_input_tokens=0,
+                    cache_creation_input_tokens=0,
+                )
+                return SimpleNamespace(
+                    content=[], usage=usage, stop_reason="end_turn", model="m", id="r"
+                )
+
+            self.messages = SimpleNamespace(create=create)
+
+    al.call_judge(
+        [{"partes": "x"}], "datos", (), blind=False, api_key="k", client=_Client(), medium="video"
+    )
+    assert "VIDEO POR PARTES" in captured["system"][0]["text"]
+    al.call_judge([{"gancho": "x"}], "datos", (), blind=False, api_key="k", client=_Client())
+    assert "VIDEO POR PARTES" not in captured["system"][0]["text"]

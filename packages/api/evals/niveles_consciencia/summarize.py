@@ -22,6 +22,7 @@ COLUMNS = (
     "nivel_juez_coincide",
     "inventa_det",
     "inventa_juez",
+    "oferta_inventada_det",
     "usa_ventaja_det",
     "usa_ventaja_juez",
     "calidad_juez",
@@ -48,6 +49,68 @@ def table(title: str, summary: dict[str, dict[str, Any]], verdict: dict[str, str
         extra = [verdict.get(level, "")] if verdict else []
         lines.append(f"| {level} | " + " | ".join(cells + extra) + " |")
     return "\n".join(lines) + "\n"
+
+
+HERE = Path(__file__).resolve().parent
+
+
+def rescore_offers(suites: dict[str, Any]) -> None:
+    """`invented_offers` over saved outputs (NIVELES-001 predates the check), with the
+    same sources the runner gives each suite."""
+    cases_raw = json.loads((HERE / "cases.json").read_text(encoding="utf-8"))
+    levels = json.loads((HERE.parent / "copy_ai" / "cases_niveles.json").read_text("utf-8"))
+    base = json.loads((HERE.parent / "copy_ai" / "cases.json").read_text(encoding="utf-8"))
+    if "angles" in suites:
+        cases = {c.id: c for c in al.load_angle_cases(HERE / "cases.json")}
+        rows = iter(suites["angles"]["scores"])
+        for s in suites["angles"]["sets"]:
+            if "angles" not in s:
+                continue
+            case = cases[s["case"]]
+            perks = case.perks if s["arm"] == "nuevo_con_ventajas" else ()
+            sources = al.sources_text(case.brand, case.product, perks)
+            for a in s["angles"]:
+                score = next(rows)
+                text = "\n".join([a["title"], a["hook"], a["cta"]])
+                score["offers_det"] = al.invented_offers(text, sources)
+    by_id = {c["id"]: c for c in levels["cases"]}
+    if "copy" in suites:
+        for item, score in zip(suites["copy"]["items"], suites["copy"]["scores"], strict=True):
+            case = by_id[item["case"]]
+            extra = levels["brands"][case["brand"]]
+            kit = base["brands"][case["brand"]]["kit"]
+            sources = "\n".join(
+                [
+                    *extra["perks"],
+                    *(v for v in extra["product"].values() if isinstance(v, str)),
+                    kit.get("positioning", ""),
+                    kit.get("audience", ""),
+                    *kit.get("cta_patterns", []),
+                    *case["angle"].values(),
+                ]
+            )
+            payload = item["output"]["variants"][0].get("payload") or {}
+            text = "\n".join(
+                [payload.get(k, "") or "" for k in ("hook", "caption", "cta", "script")]
+            )
+            score["offers_det"] = al.invented_offers(text, sources)
+    if "parts" in suites:
+        raw = cases_raw["parts_cases"]
+        extra = levels["brands"][raw["copy_brand"]]
+        p = extra["product"]
+        done = [i for i in suites["parts"]["items"] if "output" in i]
+        for item, score in zip(done, suites["parts"]["scores"], strict=True):
+            sources = "\n".join(
+                [
+                    *extra["perks"],
+                    *(v for v in p.values() if isinstance(v, str)),
+                    *raw["angle_brand"].values(),
+                    raw["story"],
+                    *by_id[item["case"]]["angle"].values(),
+                ]
+            )
+            text = " ".join(x["description"] for x in item["output"]["parts"])
+            score["offers_det"] = al.invented_offers(text, sources)
 
 
 def angles_report(suite: dict[str, Any], split: str) -> str:
@@ -175,6 +238,7 @@ def main(argv: list[str] | None = None) -> int:
     reports = [json.loads(Path(p).read_text(encoding="utf-8")) for p in args.result]
     report = pool(reports)
     suites = report["suites"]
+    rescore_offers(suites)
     if "identity" in suites:
         print(f"identity: {suites['identity']}\n")
     if "angles" in suites:

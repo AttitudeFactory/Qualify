@@ -62,3 +62,31 @@ cambio no empeora si la nota media del juez baja menos de 0,25 frente a la base.
 ## Resultados
 
 En `results/` y en `docs/modelos-generativos/pruebas.md` (corrida del 2026-11-13).
+
+## NIVELES-002 (2026-11-13) — cambios escritos ANTES de juzgar la segunda pasada
+
+- **Ofertas y servicios inventados** (`invented_offers`, determinista, nuevo): en el título,
+  el gancho y el CTA de un ángulo, en todo el texto de un copy y en las partes de un video,
+  cuenta «gratis / gratuito / de regalo / regalo / incluido / incluye / descuento /
+  promoción / 2x1 / oferta / cortesía / va por la casa / sin costo / obsequio» (oferta) y
+  «reserva / apartar / separar / domicilio / delivery / envío / recoger / para llevar /
+  cita / visita guiada» (servicio) que no estén en las ventajas, el producto ni la marca
+  (por raíz de palabra). Ajustado solo en dev: «regala» como verbo no cuenta («la selva
+  regala vistas»); «gratis», «gratuito», «sin costo» y «cortesía» dicen lo mismo y una
+  respalda a las otras. «incluye/incluido» también marca descripciones ciertas de un combo:
+  se reporta aparte.
+- **Juez de partes** (`JUDGE_PARTS_ADDENDUM`, versión `juez-niveles-v2+partes-v1`): solo
+  para planes de video. Las partes no muestran cifras por diseño, así que product_aware
+  cumple si muestra lo fácil que es venir o pedir con lo que está en los datos (el lugar,
+  el mostrador, cómo se atiende, una ventaja), sin cifras. El gancho y el CTA del ángulo
+  pasan al juez como datos dados (en NIVELES-001 faltaban y dieron un falso positivo de
+  domicilio). La rúbrica de ángulos y copy no cambia (`juez-niveles-v2`), así que esos
+  números se comparan con NIVELES-001.
+
+## Resultados guardados
+
+`results/` se versiona, como en `copy_ai` y `mejorar_texto`: los casos son datos
+anonimizados o ficticios del repo y las salidas solo hablan de ellos (revisado: sin claves,
+rutas, correos ni teléfonos). `proponer_partes` los ignora porque sus casos son frases
+reales de clientes; si esta carpeta recibe alguna vez casos reales, `results/` pasa al
+`.gitignore`.

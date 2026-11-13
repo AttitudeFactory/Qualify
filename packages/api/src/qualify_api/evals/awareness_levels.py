@@ -404,7 +404,7 @@ def call_angles(
             tools=[tool],
             tool_choice=forced_or_auto(config, module.ANGLES_TOOL),
             max_tokens=max_tokens,
-            attribution=Attribution.no_business(feature),
+            attribution=eval_attribution(feature),
         )
         calls = [u for u in tool_uses(response) if u.name == module.ANGLES_TOOL]
         if calls:
@@ -432,6 +432,55 @@ def call_angles(
     raise ClaudeToolError(
         f"{config.model_id} did not call {module.ANGLES_TOOL}", stats=meter.stats()
     )
+
+
+# -- who pays ----------------------------------------------------------------------------
+
+
+def eval_attribution(feature: str, *, prompt_version: str | None = None) -> Attribution:
+    """The booking of every call this eval makes: an offline eval the founder runs is paid
+    by no business, on purpose (`test_claude_attribution._NO_BUSINESS_ALLOWED`)."""
+    return Attribution.no_business(feature, prompt_version=prompt_version)
+
+
+# -- invented offers and services --------------------------------------------------------
+
+_OFFERS = re.compile(
+    r"\bgratis\b|\bgratuit[oa]s?\b|\bde regalo\b|\bregalos?\b|\bincluid[oa]s?\b"
+    r"|\bincluye\b|\bdescuentos?\b|\bpromo(?:cion)?(?:es)?\b|\b2\s?x\s?1\b|\bofertas?\b"
+    r"|\bcortesia\b|\bva por la casa\b|\bsin costo\b|\bobsequio\b|\bde cortesia\b"
+)
+_SERVICES = re.compile(
+    r"\breserv(?:a|as|ar|e|en|ala|alo)\b|\baparta(?:r|lo|la|do)?\b|\bsepar(?:a|ar|alo|ala)\b"
+    r"|\bseparacion\b|\bdomicilios?\b|\bdelivery\b|\benvios?\b|\bte lo llevamos\b"
+    r"|\brecoger\b|\bpara llevar\b|\bcitas?\b|\bvisitas? guiadas?\b"
+)
+
+
+#: Words that say the same «costs nothing»: one backs the others (dev, NIVELES-002).
+_FREE_FAMILY = ("gratis", "gratuit", "sin costo", "cortesia")
+
+
+def invented_offers(text: str, sources: str) -> list[tuple[str, str]]:
+    """Offers (free, gift, included, discount, promotion…) and services (reservations,
+    setting one aside, delivery, pickup, appointments) that `text` states and `sources`
+    (perks + product + brand) do not: a match is backed when its word stems all appear
+    in the sources. (kind, mention) with kind «oferta» or «servicio»."""
+    folded = fold(text)
+    source_stems = _stems(sources)
+    folded_sources = fold(sources)
+    out: list[tuple[str, str]] = []
+    for kind, pattern in (("oferta", _OFFERS), ("servicio", _SERVICES)):
+        for match in pattern.finditer(folded):
+            mention = match.group(0)
+            stems = {w[:5] for w in mention.split() if len(w) >= 4} or {mention}
+            if mention in folded_sources or stems <= source_stems:
+                continue
+            free = [f for f in _FREE_FAMILY if f in mention]
+            if free and any(f in folded_sources for f in _FREE_FAMILY):
+                continue
+            out.append((kind, mention))
+    return out
 
 
 # -- the judge ---------------------------------------------------------------------------
@@ -466,6 +515,19 @@ Calidad (1 a 5), una sola nota por idea:
 en el tono de la marca, llamada a la acción clara, distinta de las demás;
 4 = buena con un detalle flojo; 3 = correcta pero genérica; 2 = confusa, forzada o con \
 anglicismos; 1 = no sirve para publicar.
+"""
+
+
+#: NIVELES-002: added for video plans only, written before judging them (README). The
+#: parts prompt forbids every figure (no price, hour or number on screen), so a plan
+#: cannot meet the product_aware rule above as written.
+JUDGE_PARTS_VERSION = "juez-niveles-v2+partes-v1"
+JUDGE_PARTS_ADDENDUM = """
+Estas ideas son planes de VIDEO POR PARTES: por diseño ninguna parte muestra precios, \
+cifras, horarios escritos ni texto en pantalla, así que no los exijas. En un video, \
+product_aware cumple si muestra lo fácil que es venir o pedir con lo que está en los \
+datos (el lugar, el mostrador, cómo se atiende, una ventaja del negocio), sin cifras. Los \
+datos del ángulo elegido (su gancho y su llamada a la acción) son datos dados.
 """
 
 
@@ -542,20 +604,25 @@ def call_judge(
     blind: bool,
     api_key: str,
     client: Any = None,
+    medium: str = "idea",
 ) -> tuple[list[dict[str, Any]], CallStats]:
+    """`medium` "video" adds `JUDGE_PARTS_ADDENDUM` to the rubric (a plan of parts never
+    shows a figure, by design)."""
     meter = Meter(JUDGE_CONFIG)
+    system = JUDGE_RUBRIC + (JUDGE_PARTS_ADDENDUM if medium == "video" else "")
     client = client or default_client(api_key)
     response = create_turn(
         client,
         JUDGE_CONFIG,
         meter,
-        system=JUDGE_RUBRIC,
+        system=system,
         messages=[{"role": "user", "content": judge_user_prompt(ideas, facts, perks, blind=blind)}],
         tools=[judge_tool(blind)],
         tool_choice=forced_or_auto(JUDGE_CONFIG, JUDGE_TOOL),
         max_tokens=JUDGE_MAX_TOKENS,
-        attribution=Attribution.no_business(
-            "eval-niveles-juez", prompt_version=JUDGE_PROMPT_VERSION
+        attribution=eval_attribution(
+            "eval-niveles-juez",
+            prompt_version=JUDGE_PROMPT_VERSION if medium == "idea" else JUDGE_PARTS_VERSION,
         ),
     )
     calls = [u for u in tool_uses(response) if u.name == JUDGE_TOOL]
@@ -587,6 +654,7 @@ class IdeaScore:
     judge_perks: list[int] = field(default_factory=list)
     judge_fit: bool | None = None
     judge_reason: str = ""
+    offers_det: list[tuple[str, str]] = field(default_factory=list)
     words_hook: int = 0
     words_cta: int = 0
 
@@ -607,6 +675,7 @@ def score_idea(
     level_answered: str | None = None,
     facts_text: str | None = None,
     body: str = "",
+    offers_text: str | None = None,
 ) -> IdeaScore:
     """The deterministic checks of one idea. `facts_text` is what facts are read from
     (default hook + CTA), `full_text` what perks are looked for in."""
@@ -622,6 +691,7 @@ def score_idea(
         rule_det=level_rule(level, hook, cta, sources, body),
         invented_det=invented_facts(stated, sources),
         perks_det=perks_used(full_text, perks) if perks else [],
+        offers_det=invented_offers(offers_text if offers_text is not None else stated, sources),
         words_hook=words(hook),
         words_cta=words(cta),
     )
@@ -668,6 +738,7 @@ def summarize(scores: Sequence[IdeaScore], *, group_level: str = "declared") -> 
                 [s.judge_level == s.level for s in items if s.level and s.judge_level]
             ),
             "inventa_det": _rate([bool(s.invented_det) for s in items]),
+            "oferta_inventada_det": _rate([bool(s.offers_det) for s in items]),
             "inventa_juez": _rate([bool(s.judge_invented) for s in items if s.judge_level]),
             "usa_ventaja_det": _rate([bool(s.perks_det) for s in perked]),
             "usa_ventaja_juez": _rate([bool(s.judge_perks) for s in perked if s.judge_level]),
@@ -708,6 +779,8 @@ __all__ = [
     "IdeaScore",
     "apply_judge",
     "build_inputs",
+    "eval_attribution",
+    "invented_offers",
     "call_angles",
     "call_judge",
     "cost_usd",

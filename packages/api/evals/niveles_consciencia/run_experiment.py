@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 import time
 from dataclasses import asdict
@@ -94,6 +95,7 @@ def _judge(
     spend: Spend,
     suite: str,
     what: str,
+    medium: str = "idea",
 ) -> dict[str, Any]:
     """Blind (and, for tagged ideas, informed) judge readings applied onto `scores`."""
     out: dict[str, Any] = {}
@@ -103,7 +105,7 @@ def _judge(
         blind_ideas = [{k: v for k, v in i.items() if k != "nivel"} for i in ideas]
         try:
             blind_rows, stats = al.call_judge(
-                blind_ideas, facts, perks, blind=True, api_key=api_key
+                blind_ideas, facts, perks, blind=True, api_key=api_key, medium=medium
             )
             spend.add(suite, al.cost_usd(stats))
             out["juez_ciego_usd"] = float(al.cost_usd(stats))
@@ -112,7 +114,9 @@ def _judge(
             out["juez_ciego_error"] = f"{type(exc).__name__}: {exc}"[:200]
     if informed and spend.allow("judge", f"{what} juez informado"):
         try:
-            informed_rows, stats = al.call_judge(ideas, facts, perks, blind=False, api_key=api_key)
+            informed_rows, stats = al.call_judge(
+                ideas, facts, perks, blind=False, api_key=api_key, medium=medium
+            )
             spend.add(suite, al.cost_usd(stats))
             out["juez_informado_usd"] = float(al.cost_usd(stats))
         except Exception as exc:  # noqa: BLE001
@@ -143,8 +147,14 @@ def run_angles(al: Any, args: Any, spend: Spend, api_key: str) -> dict[str, Any]
             ("nuevo_con_ventajas", new, True),
             ("nuevo_sin_ventajas", new, False),
         ]
-        for arm, module, with_perks in arms:
-            what = f"angles {case.id} {arm}"
+        runs = [
+            (arm, module, with_perks, rep)
+            for rep in range(1, args.repeat + 1)
+            for arm, module, with_perks in arms
+            if not args.arm_set or arm in args.arm_set
+        ]
+        for arm, module, with_perks, rep in runs:
+            what = f"angles {case.id} {arm} #{rep}"
             if not spend.allow("angles", what):
                 continue
             product, brand = al.build_inputs(module, case, with_perks=with_perks)
@@ -194,6 +204,7 @@ def run_angles(al: Any, args: Any, spend: Spend, api_key: str) -> dict[str, Any]
                         full_text=text,
                         sources=arm_sources,
                         perks=perks,
+                        offers_text="\n".join([a["title"], a["hook"], a["cta"]]),
                     )
                 )
             ideas = [
@@ -274,7 +285,8 @@ def run_copy(al: Any, args: Any, spend: Spend, api_key: str) -> dict[str, Any]:
     scores: list[Any] = []
     prefixes: dict[str, Any] = {}
     args.partial["copy"] = {"items": items, "scores": scores, "prefix_chars": prefixes}
-    for case in levels["cases"][: args.limit or None]:
+    chosen = [c for c in levels["cases"] if not args.level_set or c["level"] in args.level_set]
+    for case in [c for c in chosen[: args.limit or None] for _ in range(args.repeat)]:
         brand_key = case["brand"]
         kit = dict(base["brands"][brand_key]["kit"])
         voice = base["brands"][brand_key]["voice"]
@@ -292,6 +304,8 @@ def run_copy(al: Any, args: Any, spend: Spend, api_key: str) -> dict[str, Any]:
             ]
         )
         for arm, module, with_perks in (("base", old, False), ("nuevo", new, True)):
+            if args.arm_set and arm not in args.arm_set:
+                continue
             what = f"copy {case['id']} {arm}"
             if not spend.allow("copy", what):
                 continue
@@ -344,6 +358,7 @@ def run_copy(al: Any, args: Any, spend: Spend, api_key: str) -> dict[str, Any]:
                 perks=perks if with_perks else (),
                 facts_text=stated,
                 body="\n".join([payload.get("caption", ""), payload.get("script", "") or ""]),
+                offers_text=stated,
             )
             ideas = [
                 {
@@ -392,7 +407,6 @@ def run_copy(al: Any, args: Any, spend: Spend, api_key: str) -> dict[str, Any]:
 def run_parts(al: Any, args: Any, spend: Spend, api_key: str) -> dict[str, Any]:
     from qualify_creative.angles import AngleBrand, AngleProduct, CreativeAngle
 
-    from qualify_api.claude_tools import Attribution
     from qualify_api.creative.parts_ai import (
         PROPOSE_PARTS_PROMPT_VERSION,
         PartsBrief,
@@ -425,8 +439,11 @@ def run_parts(al: Any, args: Any, spend: Spend, api_key: str) -> dict[str, Any]:
     scores: list[Any] = []
     args.partial["parts"] = {"items": items, "scores": scores}
     food = [c for c in levels["cases"] if c["brand"] == raw["copy_brand"]]
-    for case in food[: args.limit or None]:
+    food = [c for c in food if not args.level_set or c["level"] in args.level_set]
+    for case in [c for c in food[: args.limit or None] for _ in range(args.repeat)]:
         for arm, with_level in (("base", False), ("nuevo", True)):
+            if args.arm_set and arm not in args.arm_set:
+                continue
             what = f"parts {case['id']} {arm}"
             if not spend.allow("parts", what):
                 continue
@@ -447,7 +464,9 @@ def run_parts(al: Any, args: Any, spend: Spend, api_key: str) -> dict[str, Any]:
                     brief,
                     angle,
                     api_key=api_key,
-                    attribution=Attribution.no_business("eval-niveles-partes"),
+                    attribution=al.eval_attribution(
+                        "eval-niveles-partes", prompt_version=PROPOSE_PARTS_PROMPT_VERSION
+                    ),
                 )
             except PartsProposalUnavailable as exc:
                 usd = exc.stats.cost_usd if exc.stats is not None else 0.0
@@ -481,6 +500,8 @@ def run_parts(al: Any, args: Any, spend: Spend, api_key: str) -> dict[str, Any]:
             }
             det = {s.name: s.value for s in pp.proposal_scores(case_input, output)}
             joined = " ".join(texts)
+            # the angle the plan was asked for is given data too (its hook and CTA)
+            case_sources = "\n".join([sources, *case["angle"].values()])
             score = al.score_idea(
                 arm=arm,
                 case=case["id"],
@@ -491,9 +512,10 @@ def run_parts(al: Any, args: Any, spend: Spend, api_key: str) -> dict[str, Any]:
                 hook="",
                 cta="",
                 full_text=joined,
-                sources=sources,
+                sources=case_sources,
                 perks=perks if with_level else (),
                 facts_text=joined,
+                offers_text=joined,
             )
             score.rule_det = None  # no hook/CTA in a video plan: the judge reads it
             ideas = [{"partes": " | ".join(texts), "nivel": case["level"]}]
@@ -503,13 +525,14 @@ def run_parts(al: Any, args: Any, spend: Spend, api_key: str) -> dict[str, Any]:
                     al,
                     [score],
                     ideas,
-                    sources,
+                    case_sources,
                     perks if with_level else (),
                     informed=True,
                     api_key=api_key,
                     spend=spend,
                     suite="parts",
                     what=what,
+                    medium="video",
                 )
             scores.append(score)
             items.append(
@@ -575,7 +598,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--baseline-ref", default=None)
     parser.add_argument("--no-judge", action="store_true")
     parser.add_argument("--label", default="")
+    parser.add_argument("--arms", default="", help="only these arms (angles: base, ...)")
+    parser.add_argument("--levels", default="", help="copy/parts: only these levels")
+    parser.add_argument("--repeat", type=int, default=1, help="runs per case and arm")
     args = parser.parse_args(argv)
+    args.arm_set = {a.strip() for a in args.arms.split(",") if a.strip()}
+    args.level_set = {a.strip() for a in args.levels.split(",") if a.strip()}
 
     _load_env(args.env_file)
     os.environ["LANGFUSE_TRACING_ENVIRONMENT"] = "eval"
@@ -597,6 +625,13 @@ def main(argv: list[str] | None = None) -> int:
         "pricing_version": al.PRICING_VERSION,
         "judge": al.JUDGE_CONFIG.label,
         "judge_prompt_version": al.JUDGE_PROMPT_VERSION,
+        "judge_parts_version": al.JUDGE_PARTS_VERSION,
+        "code_commit": subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"], cwd=ROOT, capture_output=True, text=True
+        ).stdout.strip(),
+        "arms": sorted(args.arm_set),
+        "levels": sorted(args.level_set),
+        "repeat": args.repeat,
         "tracing": tracing,
         "date": datetime.now().isoformat(timespec="seconds"),
         "suites": {},
