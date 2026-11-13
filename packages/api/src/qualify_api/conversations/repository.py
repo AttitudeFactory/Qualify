@@ -417,9 +417,6 @@ _INSERT_MESSAGE = text(
                WHEN {_RD} THEN NULL
                ELSE messages.story_mention_url END
      WHERE messages.direction = 'inbound'
-       -- An unsent row (m-25018661) is refused before this statement runs, under the
-       -- message's lock; this keeps every fill (the author's handle included) off it anyway.
-       AND messages.unsent_at IS NULL
        AND ({_RF}
             OR (messages.choice_kind IS NULL AND EXCLUDED.choice_kind IS NOT NULL)
             OR (messages.author_username IS NULL AND EXCLUDED.author_username IS NOT NULL)

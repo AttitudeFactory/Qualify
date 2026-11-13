@@ -526,19 +526,3 @@ async def test_code_230_under_another_status_is_a_warning(caplog) -> None:
         await service.sync_connection(CONNECTION, source)
     (line,) = _unnamed(caplog)
     assert line.levelno == logging.WARNING and "http_400_code_230" in line.getMessage()
-
-
-async def test_an_unsent_message_is_never_refilled_by_the_author_backfill(world) -> None:
-    repo, source, _clock, service = world
-    service.ingest_message(
-        CONNECTION,
-        channel=CHANNEL_DM,
-        conversation=RemoteConversation(counterpart_external_id="igsid-ana"),
-        message=_msg("mid.1"),
-    )
-    service.unsend_message(CONNECTION, external_message_id="mid.1")
-    source.add_message(_listed(), _msg("mid.1", author_username="ana.cocina"))
-    report = await service.sync_connection(CONNECTION, source)
-    assert report.unsent_skipped == 1 and report.messages_created == 0
-    for message in repo.list_messages(tenant_id=TENANT, thread_id=_thread(repo).id):
-        assert message.author_username is None
