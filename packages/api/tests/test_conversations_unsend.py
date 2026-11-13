@@ -381,3 +381,28 @@ def test_requeue_deleted_dry_run_is_scoped_to_the_account(monkeypatch, capsys) -
     assert worker.main(["--requeue-deleted", "--account", IGID]) == 0
     assert calls[0]["entry_id"] == IGID and calls[0]["execute"] is False
     assert "would requeue (dry run) events=3" in capsys.readouterr().out
+
+
+async def test_poll_of_a_conversation_whose_only_message_was_unsent_creates_no_thread(
+    world,
+) -> None:
+    repo, sync, handler, _eraser = world
+    await handler(_event(_unsend("m.only")))
+    source = MemoryConversationSource()
+    source.add_message(
+        RemoteConversation(counterpart_external_id="igsid-alice"),
+        RemoteMessage(
+            external_message_id="m.only",
+            direction="inbound",
+            text="borrado",
+            posted_at=datetime.fromtimestamp(T0 / 1000, UTC),
+            shape_version=SHAPE_VERSION_IG_DM,
+        ),
+    )
+    connection = SourceConnection(
+        tenant_id=TENANT, connection_id=CONNECTION_ID, external_account_id=IGID
+    )
+    report = await sync.sync_connection(connection, source)
+    assert (report.unsent_skipped, report.threads_created) == (1, 0)
+    assert _threads(repo) == []
+    assert "fetch_profile" not in source.calls

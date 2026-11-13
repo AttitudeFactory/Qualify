@@ -140,6 +140,21 @@ class MessageRecord:
         return choice_label(self.choice_kind, self.choice_payload, self.text)
 
 
+STORE_CREATED = "created"
+STORE_DUPLICATE = "duplicate"
+STORE_UNSENT = "unsent"
+
+
+@dataclass(frozen=True)
+class StoreResult:
+    """`store_message`'s outcome. `thread_id` is None only for `STORE_UNSENT`, which
+    touched nothing — no thread created, no instant moved."""
+
+    outcome: str  # STORE_CREATED | STORE_DUPLICATE | STORE_UNSENT
+    thread_id: UUID | None
+    thread_created: bool = False
+
+
 @dataclass(frozen=True)
 class UnsendResult:
     """What erasing one unsent message did (m-25018661). Ids and counts only."""
@@ -179,6 +194,18 @@ class ConversationRepository(Protocol):
     def insert_message(
         self, *, tenant_id: UUID, thread_id: UUID, connection_id: UUID, message: RemoteMessage
     ) -> bool: ...
+
+    def store_message(
+        self,
+        *,
+        tenant_id: UUID,
+        connection_id: UUID,
+        channel: str,
+        counterpart_external_id: str,
+        external_conversation_id: str | None,
+        message: RemoteMessage,
+        at: datetime | None,
+    ) -> StoreResult: ...
 
     def bump_thread_activity(
         self,
@@ -476,12 +503,14 @@ _REDACT_MESSAGE = text(
 )
 
 # A suggested reply nobody decided yet answers a message that no longer exists: it is
-# discarded and its text erased (it was written from the unsent message). A draft a person
-# already accepted, edited or sent is the business's own message and is left alone.
+# discarded and its text erased (it was written from the unsent message), and so is the
+# tapped option its grounding carries (`suggest.py`, `choice`), like the row's `choice_*`.
+# A draft a person already accepted, edited or sent is the business's own message.
 _DISCARD_DRAFTS = text(
     """
     UPDATE conversation_drafts
        SET status = 'discarded', generated_text = '', final_text = NULL,
+           grounding = grounding - 'choice',
            decided_at = CAST(:now AS timestamptz)
      WHERE message_id = :message_id AND status = 'proposed'
     """
@@ -501,6 +530,9 @@ _RECOMPUTE_THREAD = text(
      WHERE id = :thread_id
     """
 )
+
+
+_LOCK_THREAD = text("SELECT 1 FROM threads WHERE id = :thread_id FOR NO KEY UPDATE")
 
 
 def _message_lock_key(connection_id: UUID, external_message_id: str) -> str:
@@ -654,6 +686,35 @@ _SYNC_FINISHED = text(
 )
 
 
+def _insert_params(
+    tenant_id: UUID, thread_id: UUID, connection_id: UUID, message: RemoteMessage
+) -> dict[str, object]:
+    return {
+        "id": uuid4(),
+        "tenant_id": tenant_id,
+        "thread_id": thread_id,
+        "connection_id": connection_id,
+        "external_message_id": message.external_message_id,
+        "direction": message.direction,
+        "author_external_id": message.author_external_id,
+        "author_username": message.author_username,
+        "text": message.text,
+        "posted_at": message.posted_at,
+        "shape_version": message.shape_version,
+        "media_type": message.media_type,
+        "media_url": message.media_url,
+        "story_reply_id": message.story_reply_id,
+        "story_reply_url": message.story_reply_url,
+        "choice_kind": message.choice_kind,
+        "choice_payload": message.choice_payload,
+        "story_mention": message.story_mention,
+        "story_mention_id": message.story_mention_id,
+        "story_mention_url": message.story_mention_url,
+        "story_mention_basis": message.story_mention_basis,
+        "story_reply_confirmed": message.story_reply_confirmed,
+    }
+
+
 def _thread_record(row: object) -> ThreadRecord:
     r = row  # a SQLAlchemy Row; attribute access by column label
     return ThreadRecord(
@@ -722,33 +783,71 @@ class PostgresConversationRepository:
             ):
                 return False
             result = session.execute(
-                _INSERT_MESSAGE,
+                _INSERT_MESSAGE, _insert_params(tenant_id, thread_id, connection_id, message)
+            ).first()
+            return bool(result is not None and result.created)
+
+    def store_message(
+        self,
+        *,
+        tenant_id: UUID,
+        connection_id: UUID,
+        channel: str,
+        counterpart_external_id: str,
+        external_conversation_id: str | None,
+        message: RemoteMessage,
+        at: datetime | None,
+    ) -> StoreResult:
+        """Thread upsert + insert + activity bump of ONE message, in one transaction under
+        the message's advisory lock (m-25018661). An `unsend_message` of the same `mid`
+        takes that lock too, so it commits either wholly before (this refuses: no thread,
+        no bump) or wholly after (its recompute is absolute and runs on a locked thread
+        row). No ordering leaves the thread pointing at an unsent message."""
+        if not counterpart_external_id:
+            raise ValueError("a thread needs the counterpart's external id")
+        with tenant_session(tenant_id) as session:
+            session.execute(
+                _LOCK_MESSAGE_KEY,
+                {"key": _message_lock_key(connection_id, message.external_message_id)},
+            )
+            if (
+                session.execute(
+                    _IS_UNSENT,
+                    {"connection_id": connection_id, "mid": message.external_message_id},
+                ).first()
+                is not None
+            ):
+                return StoreResult(outcome=STORE_UNSENT, thread_id=None)
+            thread = session.execute(
+                _UPSERT_THREAD,
                 {
                     "id": uuid4(),
                     "tenant_id": tenant_id,
-                    "thread_id": thread_id,
                     "connection_id": connection_id,
-                    "external_message_id": message.external_message_id,
-                    "direction": message.direction,
-                    "author_external_id": message.author_external_id,
-                    "author_username": message.author_username,
-                    "text": message.text,
-                    "posted_at": message.posted_at,
-                    "shape_version": message.shape_version,
-                    "media_type": message.media_type,
-                    "media_url": message.media_url,
-                    "story_reply_id": message.story_reply_id,
-                    "story_reply_url": message.story_reply_url,
-                    "choice_kind": message.choice_kind,
-                    "choice_payload": message.choice_payload,
-                    "story_mention": message.story_mention,
-                    "story_mention_id": message.story_mention_id,
-                    "story_mention_url": message.story_mention_url,
-                    "story_mention_basis": message.story_mention_basis,
-                    "story_reply_confirmed": message.story_reply_confirmed,
+                    "channel": channel,
+                    "counterpart": counterpart_external_id,
+                    "conversation_id": external_conversation_id,
+                    "open": THREAD_OPEN,
                 },
+            ).one()
+            inserted = session.execute(
+                _INSERT_MESSAGE, _insert_params(tenant_id, thread.id, connection_id, message)
             ).first()
-            return bool(result is not None and result.created)
+            session.execute(
+                _BUMP_THREAD,
+                {
+                    "thread_id": thread.id,
+                    "inbound": at if message.direction == "inbound" else None,
+                    "message_at": at,
+                    "open": THREAD_OPEN,
+                },
+            )
+        created = bool(inserted is not None and inserted.created)
+        return StoreResult(
+            outcome=STORE_CREATED if created else STORE_DUPLICATE,
+            thread_id=thread.id,
+            thread_created=bool(thread.created),
+        )
 
     def bump_thread_activity(
         self,
@@ -952,6 +1051,10 @@ class PostgresConversationRepository:
                 drafts = session.execute(
                     _DISCARD_DRAFTS, {"message_id": row.id, "now": now}
                 ).rowcount
+                # Lock the thread FIRST, in its own statement: a concurrent `store_message`
+                # of another message that holds the row commits before the recompute takes
+                # its snapshot, so its message is counted (READ COMMITTED, per statement).
+                session.execute(_LOCK_THREAD, {"thread_id": row.thread_id})
                 session.execute(_RECOMPUTE_THREAD, {"thread_id": row.thread_id})
         return UnsendResult(
             tombstone_created=created,
@@ -1250,6 +1353,45 @@ class MemoryConversationRepository:
                     choice_kind=message.choice_kind,
                     choice_payload=message.choice_payload,
                 )
+
+    def store_message(
+        self,
+        *,
+        tenant_id: UUID,
+        connection_id: UUID,
+        channel: str,
+        counterpart_external_id: str,
+        external_conversation_id: str | None,
+        message: RemoteMessage,
+        at: datetime | None,
+    ) -> StoreResult:
+        """The Postgres rules (one transaction there; one call here)."""
+        if self.unsends.get((connection_id, message.external_message_id)) == tenant_id:
+            return StoreResult(outcome=STORE_UNSENT, thread_id=None)
+        upsert = self.upsert_thread(
+            tenant_id=tenant_id,
+            connection_id=connection_id,
+            channel=channel,
+            counterpart_external_id=counterpart_external_id,
+            external_conversation_id=external_conversation_id,
+        )
+        created = self.insert_message(
+            tenant_id=tenant_id,
+            thread_id=upsert.thread_id,
+            connection_id=connection_id,
+            message=message,
+        )
+        self.bump_thread_activity(
+            tenant_id=tenant_id,
+            thread_id=upsert.thread_id,
+            last_inbound_at=at if message.direction == "inbound" else None,
+            last_message_at=at,
+        )
+        return StoreResult(
+            outcome=STORE_CREATED if created else STORE_DUPLICATE,
+            thread_id=upsert.thread_id,
+            thread_created=upsert.created,
+        )
 
     def bump_thread_activity(
         self,

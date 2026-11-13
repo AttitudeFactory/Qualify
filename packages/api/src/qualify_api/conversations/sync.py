@@ -5,8 +5,8 @@ or by a replayed delivery — is one row.
 
 ## `sync_connection` — the periodic reconciliation (poll-first, QUA-20)
 
-    sync_started → check_access → [list_conversations → upsert_thread →
-    list_messages → insert_message… → bump_thread_activity]… → sync_finished
+    sync_started → check_access → [list_conversations → list_messages… →
+    store_message (upsert_thread + insert_message + bump, one transaction)…]… → sync_finished
 
 - The access verdict is saved BEFORE anything is listed, so a connection whose
   permission is missing or whose owner never enabled message access is recorded as such
@@ -18,9 +18,10 @@ or by a replayed delivery — is one row.
 - Every page is followed (`next_cursor`), both of conversations and of messages. A
   source that caps history (Instagram returns ~20 recent messages per conversation) is
   simply a source whose pages end early; the webhook fills forward.
-- `bump_thread_activity` is computed from what THIS sync saw: the newest inbound
-  `posted_at` and the newest `posted_at` of any direction. `GREATEST` in the repository
-  makes a replay harmless.
+- Each message bumps the thread with its own `posted_at` in the same transaction that
+  stores it (m-25018661: an unsend can never land between the two). `GREATEST` in the
+  repository makes a replay harmless. A conversation listed with no messages still gets
+  its thread, ordered by the conversation's `updated_at`.
 - A failure mid-way is recorded (`failed`, the exception class name) and re-raised: the
   caller decides whether to retry, the state row says how far it got.
 
@@ -64,6 +65,8 @@ from qualify_api.conversations.contracts import (
     SourceConnection,
 )
 from qualify_api.conversations.repository import (
+    STORE_CREATED,
+    STORE_UNSENT,
     SYNC_FAILED,
     SYNC_OK,
     ConversationRepository,
@@ -124,14 +127,6 @@ def _utcnow() -> datetime:
 
 def _as_utc(value: datetime) -> datetime:
     return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
-
-
-def _newer(current: datetime | None, candidate: datetime | None) -> datetime | None:
-    if candidate is None:
-        return current
-    if current is None or _as_utc(candidate) > _as_utc(current):
-        return candidate
-    return current
 
 
 class ConversationSyncService:
@@ -251,54 +246,72 @@ class ConversationSyncService:
         report: SyncReport,
     ) -> None:
         report.conversations_seen += 1
-        upsert = self._repo.upsert_thread(
-            tenant_id=connection.tenant_id,
-            connection_id=connection.connection_id,
-            channel=source.channel,
-            counterpart_external_id=conversation.counterpart_external_id,
-            external_conversation_id=conversation.external_conversation_id,
-        )
-        if upsert.created:
-            report.threads_created += 1
-        await self.refresh_profile(connection, source, upsert.thread_id, conversation)
-        newest_inbound: datetime | None = None
-        newest_any: datetime | None = conversation.updated_at
+        listed: list[RemoteMessage] = []
         cursor: str | None = None
         while True:
             page = await source.list_messages(connection, conversation, cursor=cursor)
-            unsent = self._repo.unsent_ids(
-                tenant_id=connection.tenant_id,
-                connection_id=connection.connection_id,
-                external_message_ids=[m.external_message_id for m in page.items],
-            )
-            for message in page.items:
-                report.messages_seen += 1
-                if message.external_message_id in unsent:
-                    # m-25018661: never stored again, never bumps the thread.
-                    report.unsent_skipped += 1
-                    continue
-                created = self._repo.insert_message(
-                    tenant_id=connection.tenant_id,
-                    thread_id=upsert.thread_id,
-                    connection_id=connection.connection_id,
-                    message=message,
-                )
-                if created:
-                    report.messages_created += 1
-                else:
-                    report.duplicates += 1
-                newest_any = _newer(newest_any, message.posted_at)
-                if message.direction == "inbound":
-                    newest_inbound = _newer(newest_inbound, message.posted_at)
+            listed.extend(page.items)
             if page.next_cursor is None:
                 break
             cursor = page.next_cursor
-        self._repo.bump_thread_activity(
+        report.messages_seen += len(listed)
+        # m-25018661: an unsent `mid` is never stored again and never bumps the thread. The
+        # repository refuses it anyway (under the message's lock); asking first only spares
+        # the work and keeps a conversation whose every listed message was unsent from
+        # becoming an empty thread.
+        unsent = self._repo.unsent_ids(
             tenant_id=connection.tenant_id,
-            thread_id=upsert.thread_id,
-            last_inbound_at=newest_inbound,
-            last_message_at=newest_any,
+            connection_id=connection.connection_id,
+            external_message_ids=[m.external_message_id for m in listed],
         )
+        thread_id: UUID | None = None
+        thread_created = False
+        for message in listed:
+            if message.external_message_id in unsent:
+                report.unsent_skipped += 1
+                continue
+            # Upsert + insert + bump in ONE transaction per message, so no unsend can land
+            # between the insert and the bump (`ConversationRepository.store_message`).
+            stored = self._repo.store_message(
+                tenant_id=connection.tenant_id,
+                connection_id=connection.connection_id,
+                channel=source.channel,
+                counterpart_external_id=conversation.counterpart_external_id,
+                external_conversation_id=conversation.external_conversation_id,
+                message=message,
+                at=message.posted_at,
+            )
+            if stored.outcome == STORE_UNSENT:
+                report.unsent_skipped += 1
+                continue
+            if stored.outcome == STORE_CREATED:
+                report.messages_created += 1
+            else:
+                report.duplicates += 1
+            thread_id = stored.thread_id
+            thread_created = thread_created or stored.thread_created
+        if not listed:
+            # A conversation the channel lists with no messages: the thread exists anyway,
+            # ordered by the conversation's own `updated_at` (no inbound: no window).
+            upsert = self._repo.upsert_thread(
+                tenant_id=connection.tenant_id,
+                connection_id=connection.connection_id,
+                channel=source.channel,
+                counterpart_external_id=conversation.counterpart_external_id,
+                external_conversation_id=conversation.external_conversation_id,
+            )
+            thread_id, thread_created = upsert.thread_id, upsert.created
+            self._repo.bump_thread_activity(
+                tenant_id=connection.tenant_id,
+                thread_id=thread_id,
+                last_inbound_at=None,
+                last_message_at=conversation.updated_at,
+            )
+        if thread_id is None:
+            return  # every listed message was unsent: no thread, no profile call
+        if thread_created:
+            report.threads_created += 1
+        await self.refresh_profile(connection, source, thread_id, conversation)
 
     def ingest_message(
         self,
@@ -309,50 +322,27 @@ class ConversationSyncService:
         message: RemoteMessage,
     ) -> IngestResult:
         """One message, from whichever path has it now. Idempotent by `(connection_id,
-        external_message_id)`; the thread bump is harmless on a replay. A `mid` the person
-        unsent (m-25018661) stores nothing and creates no thread: `unsent=True`."""
-        if self._repo.unsent_ids(
-            tenant_id=connection.tenant_id,
-            connection_id=connection.connection_id,
-            external_message_ids=[message.external_message_id],
-        ):
-            return IngestResult(
-                thread_id=None, thread_created=False, message_created=False, unsent=True
-            )
-        upsert = self._repo.upsert_thread(
+        external_message_id)`; the thread bump is harmless on a replay. Thread upsert,
+        insert and bump are one transaction under the message's lock
+        (`ConversationRepository.store_message`): a `mid` the person unsent (m-25018661)
+        stores nothing, creates no thread and moves no instant — `unsent=True`."""
+        stored = self._repo.store_message(
             tenant_id=connection.tenant_id,
             connection_id=connection.connection_id,
             channel=channel,
             counterpart_external_id=conversation.counterpart_external_id,
             external_conversation_id=conversation.external_conversation_id,
-        )
-        created = self._repo.insert_message(
-            tenant_id=connection.tenant_id,
-            thread_id=upsert.thread_id,
-            connection_id=connection.connection_id,
             message=message,
+            at=message.posted_at or self._clock(),
         )
-        if not created and self._repo.unsent_ids(
-            tenant_id=connection.tenant_id,
-            connection_id=connection.connection_id,
-            external_message_ids=[message.external_message_id],
-        ):
-            # The unsend committed between the check above and the insert: nothing stored.
+        if stored.outcome == STORE_UNSENT or stored.thread_id is None:
             return IngestResult(
-                thread_id=str(upsert.thread_id),
-                thread_created=upsert.created,
-                message_created=False,
-                unsent=True,
+                thread_id=None, thread_created=False, message_created=False, unsent=True
             )
-        at = message.posted_at or self._clock()
-        self._repo.bump_thread_activity(
-            tenant_id=connection.tenant_id,
-            thread_id=upsert.thread_id,
-            last_inbound_at=at if message.direction == "inbound" else None,
-            last_message_at=at,
-        )
         return IngestResult(
-            thread_id=str(upsert.thread_id), thread_created=upsert.created, message_created=created
+            thread_id=str(stored.thread_id),
+            thread_created=stored.thread_created,
+            message_created=stored.outcome == STORE_CREATED,
         )
 
     def unsend_message(

@@ -19,6 +19,8 @@ Postgres can prove:
 from __future__ import annotations
 
 import json
+import threading
+import time
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -28,17 +30,39 @@ from sqlalchemy import text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 
-from qualify_api.conversations.contracts import CHANNEL_DM, RemoteMessage
+from qualify_api.attention.counts import pending_counts
+from qualify_api.conversations.contracts import (
+    CHANNEL_DM,
+    AccessStatus,
+    AccessVerdict,
+    RemoteConversation,
+    RemoteMessage,
+)
 from qualify_api.conversations.instagram_source import SHAPE_VERSION_IG_DM
-from qualify_api.conversations.repository import PostgresConversationRepository
-from qualify_api.conversations.sync import UNSEND_PIPELINE_VERSION, ConversationSyncService
+from qualify_api.conversations.memory_source import MemoryConversationSource
+from qualify_api.conversations.repository import (
+    _BUMP_THREAD,
+    _INSERT_MESSAGE,
+    _LOCK_MESSAGE_KEY,
+    _UPSERT_THREAD,
+    THREAD_OPEN,
+    PostgresConversationRepository,
+    _insert_params,
+    _message_lock_key,
+)
+from qualify_api.conversations.sync import (
+    UNSEND_PIPELINE_VERSION,
+    ConversationSyncService,
+    SyncReport,
+)
 from qualify_api.conversations.webhook import MESSAGE_UNSENT, instagram_messages_handler
+from qualify_api.conversations.window import WindowStatus, window_state
 from qualify_api.followups.repository import PostgresFollowupRepository
 from qualify_api.mentions.resolve import ResolutionOutcome, TenantResolution
 from qualify_api.webhooks.envelope import MESSAGING_FIELD
 from qualify_api.webhooks.repository import STATUS_PROCESSED, ClaimedEvent, WebhookQueue
 
-from .test_conversations_repository_db import OTHER, TENANT
+from .test_conversations_repository_db import OTHER, TENANT, _source_connection
 from .test_conversations_repository_db import seeded as seeded  # noqa: F401 — fixture
 from .test_webhook_queue_db import NOW, _acct, _row
 from .test_webhook_queue_db import owner as owner  # noqa: F401 — fixture
@@ -195,10 +219,17 @@ async def test_unsend_erases_every_copy_and_recomputes_the_thread(
         session.execute(
             text(
                 "INSERT INTO conversation_drafts (id, tenant_id, thread_id, message_id, "
-                "generator_version, generated_text, gate_reason, status) VALUES (:id, :t, "
-                ":th, :m, 'v1', 'Claro, te escribo a esa dirección', 'ok', 'proposed')"
+                "generator_version, generated_text, gate_reason, status, grounding) VALUES (:id, "
+                ":t, :th, :m, 'v1', 'Claro, te escribo a esa dirección', 'ok', 'proposed', "
+                "CAST(:g AS jsonb))"
             ),
-            {"id": (draft_id := uuid4()), "t": TENANT, "th": thread_id, "m": ids[gone]},
+            {
+                "id": (draft_id := uuid4()),
+                "t": TENANT,
+                "th": thread_id,
+                "m": ids[gone],
+                "g": json.dumps({"brand": "B", "choice": {"kind": "menu", "payload": "QFM_X"}}),
+            },
         )
         session.execute(
             text(
@@ -251,7 +282,8 @@ async def test_unsend_erases_every_copy_and_recomputes_the_thread(
         ).one()
         draft = session.execute(
             text(
-                "SELECT status, generated_text, final_text FROM conversation_drafts WHERE id = :id"
+                "SELECT status, generated_text, final_text, grounding FROM conversation_drafts "
+                "WHERE id = :id"
             ),
             {"id": draft_id},
         ).one()
@@ -260,6 +292,7 @@ async def test_unsend_erases_every_copy_and_recomputes_the_thread(
         UNSEND_PIPELINE_VERSION,
     )
     assert (draft.status, draft.generated_text, draft.final_text) == ("discarded", "", None)
+    assert draft.grounding == {"brand": "B"}  # the tapped option goes with the row's
     assert followup_id not in {
         f.id for f in followups.list_open(tenant_id=TENANT, connection_id=seeded["connection"])
     }
@@ -280,12 +313,8 @@ async def test_unsend_erases_every_copy_and_recomputes_the_thread(
 
 def test_an_unsent_row_cannot_carry_content(intake, seeded) -> None:  # noqa: F811
     repo, sync, _handler = intake
-    from .test_conversations_repository_db import _source_connection
-
     connection = _source_connection(seeded)
     mid = f"mid.{uuid4().hex}"
-    from qualify_api.conversations.contracts import RemoteConversation
-
     sync.ingest_message(
         connection,
         channel=CHANNEL_DM,
@@ -440,3 +469,167 @@ def test_requeue_takes_back_only_unsupported_unsends(owner) -> None:  # noqa: F8
         assert _row(owner, "meta_webhook_events", untouched).status == "unsupported"
     assert _row(owner, "meta_webhook_events", processed).status == "processed"
     assert queue.requeue_unsupported_deleted(now=NOW, execute=True, entry_id=acct) == 0
+
+
+# --- serialization: no ordering leaves the thread on an unsent message ---------------------
+
+
+def _wait_for_a_blocked_advisory_lock(owner: Engine) -> None:  # noqa: F811
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        with owner.connect() as conn:
+            waiting = conn.execute(
+                text("SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted")
+            ).scalar_one()
+        if waiting:
+            return
+        time.sleep(0.05)
+    raise AssertionError("the other transaction never waited on the message lock")
+
+
+def _inbound(mid: str, at: datetime) -> RemoteMessage:
+    return RemoteMessage(
+        external_message_id=mid,
+        direction="inbound",
+        text="hola",
+        posted_at=at,
+        shape_version=SHAPE_VERSION_IG_DM,
+        author_external_id="igsid-x",
+    )
+
+
+def _pending_dms() -> int:
+    return pending_counts(TENANT).messages
+
+
+def _no_thread(repo: PostgresConversationRepository, seeded: dict, sender: str) -> bool:  # noqa: F811
+    return (
+        repo.find_thread(
+            tenant_id=TENANT,
+            connection_id=seeded["connection"],
+            channel=CHANNEL_DM,
+            counterpart_external_id=sender,
+        )
+        is None
+    )
+
+
+def test_store_in_flight_then_unsend_leaves_no_window_and_no_pending(
+    seeded,  # noqa: F811
+    owner,  # noqa: F811
+) -> None:
+    """Ordering (b), with two real sessions: the message is stored and its thread bumped by
+    a transaction still open when the unsend arrives. The unsend waits on the message lock,
+    then recomputes on a locked thread row: nothing points at the unsent message."""
+    repo = PostgresConversationRepository()
+    sync = ConversationSyncService(repository=repo)
+    connection = _source_connection(seeded)
+    sender, mid = f"igsid-{uuid4().hex[:10]}", f"mid.{uuid4().hex}"
+    recent = datetime.now(UTC) - timedelta(minutes=10)
+    before = _pending_dms()
+    outcome: dict[str, object] = {}
+
+    with tenant_session(TENANT) as store:  # `store_message`'s statements, left open
+        store.execute(_LOCK_MESSAGE_KEY, {"key": _message_lock_key(seeded["connection"], mid)})
+        thread = store.execute(
+            _UPSERT_THREAD,
+            {
+                "id": uuid4(),
+                "tenant_id": TENANT,
+                "connection_id": seeded["connection"],
+                "channel": CHANNEL_DM,
+                "counterpart": sender,
+                "conversation_id": None,
+                "open": THREAD_OPEN,
+            },
+        ).one()
+        store.execute(
+            _INSERT_MESSAGE,
+            _insert_params(TENANT, thread.id, seeded["connection"], _inbound(mid, recent)),
+        )
+        store.execute(
+            _BUMP_THREAD,
+            {"thread_id": thread.id, "inbound": recent, "message_at": recent, "open": THREAD_OPEN},
+        )
+        worker = threading.Thread(
+            target=lambda: outcome.update(
+                result=sync.unsend_message(connection, external_message_id=mid)
+            )
+        )
+        worker.start()
+        _wait_for_a_blocked_advisory_lock(owner)
+    worker.join(timeout=10)
+
+    assert outcome["result"].message_redacted is True  # type: ignore[attr-defined]
+    state = repo.get_thread(tenant_id=TENANT, thread_id=thread.id)
+    assert state is not None and state.last_inbound_at is None and state.last_message_at is None
+    assert window_state(state.last_inbound_at, datetime.now(UTC)).status == WindowStatus.CLOSED
+    assert _pending_dms() == before
+    listed = repo.list_threads(tenant_id=TENANT, channels=[CHANNEL_DM], limit=10_000)
+    assert thread.id not in {t.id for t in listed}
+
+
+def test_unsend_in_flight_then_store_creates_nothing(
+    seeded,  # noqa: F811
+    owner,  # noqa: F811
+) -> None:
+    """Ordering (a), with two real sessions: the unsend holds the lock when the webhook's
+    store arrives; once the unsend commits, the store refuses — no thread, no bump."""
+    repo = PostgresConversationRepository()
+    sync = ConversationSyncService(repository=repo)
+    connection = _source_connection(seeded)
+    sender, mid = f"igsid-{uuid4().hex[:10]}", f"mid.{uuid4().hex}"
+    before = _pending_dms()
+    outcome: dict[str, object] = {}
+
+    with tenant_session(TENANT) as unsend:  # `unsend_message`'s tombstone, left open
+        unsend.execute(_LOCK_MESSAGE_KEY, {"key": _message_lock_key(seeded["connection"], mid)})
+        unsend.execute(
+            text(
+                "INSERT INTO message_unsends (tenant_id, connection_id, external_message_id, "
+                "pipeline_version) VALUES (:t, :c, :m, :v)"
+            ),
+            {"t": TENANT, "c": seeded["connection"], "m": mid, "v": UNSEND_PIPELINE_VERSION},
+        )
+        worker = threading.Thread(
+            target=lambda: outcome.update(
+                result=sync.ingest_message(
+                    connection,
+                    channel=CHANNEL_DM,
+                    conversation=RemoteConversation(counterpart_external_id=sender),
+                    message=_inbound(mid, datetime.now(UTC) - timedelta(minutes=10)),
+                )
+            )
+        )
+        worker.start()
+        _wait_for_a_blocked_advisory_lock(owner)
+    worker.join(timeout=10)
+
+    assert outcome["result"].unsent is True  # type: ignore[attr-defined]
+    assert _no_thread(repo, seeded, sender)
+    assert _pending_dms() == before
+
+
+async def test_poll_with_a_stale_unsent_check_stores_and_bumps_nothing(
+    seeded,  # noqa: F811
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The poll asked before the unsend committed (its early check sees nothing). The
+    repository still refuses under the lock: no empty thread, no window, nothing pending."""
+    repo = PostgresConversationRepository()
+    sync = ConversationSyncService(repository=repo)
+    connection = _source_connection(seeded)
+    sender, mid = f"igsid-{uuid4().hex[:10]}", f"mid.{uuid4().hex}"
+    sync.unsend_message(connection, external_message_id=mid)  # unknown mid: tombstone only
+    monkeypatch.setattr(repo, "unsent_ids", lambda **kwargs: set())
+    before = _pending_dms()
+    source = MemoryConversationSource()
+    conversation = RemoteConversation(counterpart_external_id=sender, external_conversation_id="t")
+    source.add_message(conversation, _inbound(mid, datetime.now(UTC) - timedelta(minutes=10)))
+    report = SyncReport(channel=CHANNEL_DM, access=AccessVerdict(AccessStatus.OK))
+
+    await sync._sync_conversation(connection, source, conversation, report)
+
+    assert (report.unsent_skipped, report.messages_created, report.threads_created) == (1, 0, 0)
+    assert _no_thread(repo, seeded, sender)
+    assert _pending_dms() == before

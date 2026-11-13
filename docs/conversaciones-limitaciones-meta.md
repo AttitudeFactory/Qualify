@@ -508,7 +508,7 @@ payload que llegue.
 | --- | --- |
 | La fila de `messages` (texto, tipo de adjunto y su URL de CDN, `media_id`/`media_mime`, historia respondida o mencionada con su id y URL, opción tocada y su payload, `author_username`) | Se **redacta en el sitio**: todas esas columnas a `NULL`, `story_mention = false`, `deleted_at` y `unsent_at` con la hora. Quedan solo ids e instantes (`id`, hilo, conexión, `external_message_id`, dirección, `author_external_id` = el IGSID que ya es la clave del hilo, `posted_at`, `ingested_at`). La CHECK `ck_message_unsent_redacted` (0157) impide que una fila anulada vuelva a tener contenido. No se borra la fila porque `qualify_app` no tiene `DELETE` sobre `messages` ni sobre las filas que la referencian, y este ticket no amplía permisos. |
 | R2 | Nada: ningún camino de Instagram Direct entrante guarda copia en R2 (`media_object_key` y `raw_payload_r2_key` solo los usan el outbox y WhatsApp). Se ponen a `NULL` igual. |
-| Borrador sugerido (`conversation_drafts`) sin decidir | Pasa a `discarded`, `generated_text = ''`, `final_text = NULL`. Uno que una persona ya aceptó, editó o envió es mensaje del negocio y no se toca. |
+| Borrador sugerido (`conversation_drafts`) sin decidir | Pasa a `discarded`, `generated_text = ''`, `final_text = NULL` y sale de su `grounding` la opción tocada (`choice`). Uno que una persona ya aceptó, editó o envió es mensaje del negocio y no se toca. |
 | Consulta abierta (`interaction_followups`) que nació de ese DM (respuesta a historia) | Deja de listarse en «Consultas desde comentarios» y en el contador de compradores; no se puede descartar sin una persona (CHECK de 0071). No guarda texto. |
 | Clasificación de intención (`comment_intent_results`) | **Se queda**: solo clases, confianzas y procedencia, sin texto; la tabla es de solo inserción y no hay permiso para borrarla. Los lectores ya ignoran mensajes con `deleted_at`. |
 | Atribución a un anuncio (`ad_message_attributions`) | Solo ids; desaparece en cascada al borrar el cambio crudo del webhook que la originó. |
@@ -519,9 +519,11 @@ payload que llegue.
 **La lápida** (`message_unsends`): `(connection_id, external_message_id)` único, hora,
 `source_event_id` (el cambio del webhook) y `pipeline_version`; sin texto ni URLs, con
 `tenant_id` + RLS. Existe porque el aviso puede llegar **antes** que el mensaje (fuera de
-orden) o la sincronización puede seguir listándolo: el alta de un mensaje la consulta bajo un
-candado por mensaje (`pg_advisory_xact_lock`), así que ni el webhook ni la sincronización lo
-vuelven a guardar. Un aviso para un `mid` desconocido guarda solo la lápida, sin crear hilo.
+orden) o la sincronización puede seguir listándolo. El alta de un mensaje (hilo + fila +
+instantes del hilo) es **una sola transacción** bajo un candado por mensaje
+(`pg_advisory_xact_lock`, `store_message`) que la anulación también toma: o la anulación
+termina antes (el alta no guarda nada, no crea hilo ni mueve la ventana) o después (recalcula
+sobre el hilo bloqueado). Ningún orden deja la ventana apuntando al mensaje anulado. Un aviso para un `mid` desconocido guarda solo la lápida, sin crear hilo.
 Cuando el original llega después, no se guarda nada y su cambio crudo se borra en vez de
 archivarse (`Outcome(erase=True)`). La purga de una conexión (0106) borra también sus
 lápidas.
