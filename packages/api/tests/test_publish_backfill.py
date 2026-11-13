@@ -7,10 +7,12 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
+import httpx
 import pytest
 from qualify_shared.objects.gate import StoredObject
 
 from qualify_api.inbox.media_client import MediaReadError, MediaSummary
+from qualify_api.inbox.thumbnails import ThumbnailUnavailable
 from qualify_api.planner import permalinks
 from qualify_api.planner.permalinks import (
     RETRY_BANDS,
@@ -21,9 +23,13 @@ from qualify_api.planner.permalinks import (
     PermalinkTarget,
     fill_permalinks,
     instagram_permalink,
+    meta_cdn_url,
 )
 from qualify_api.planner.publish_backfill import (
+    CdnPictureFetcher,
     ConnectionAttempt,
+    Deps,
+    _copy_from_instagram,
     bursts,
     fits,
     is_publicar_file,
@@ -652,3 +658,127 @@ async def test_a_burst_of_unreadable_permalinks_stops_at_the_reserve(stored) -> 
     )
     assert len(reader.reads) == 200 - TICK_RESERVE and log.used == 200 - TICK_RESERVE
     assert sum(r.outcome is Outcome.NO_BUDGET for r in results) == 90 - (200 - TICK_RESERVE)
+
+
+# -- URLs from Graph: validated by PARSED hostname (CodeQL review, m-25019220) ---------------
+
+HOSTILE = (
+    "https://evil.example/?x=scontent.cdninstagram.com",
+    "https://scontent.cdninstagram.com.evil.example/p.jpg",
+    "http://scontent.cdninstagram.com/p.jpg",
+    "https://scontent.cdninstagram.com@evil.example/p.jpg",
+    "https://user:pw@scontent.cdninstagram.com/p.jpg",
+    "https://scontent.cdninstagram.com:8443/p.jpg",
+    "https://evilcdninstagram.com/p.jpg",
+    "https://scontent.cdninstagram.com/p.jpg x",
+    "javascript:alert(1)",
+    "",
+)
+
+
+def test_only_meta_cdn_hosts_are_downloadable() -> None:
+    for good in (
+        "https://scontent.cdninstagram.com/v/t51/p.jpg?oh=1",
+        "https://cdninstagram.com/p.jpg",
+        "https://scontent-mia3-1.xx.fbcdn.net/v/p.jpg",
+        "https://SCONTENT.CDNINSTAGRAM.COM/p.jpg",
+    ):
+        assert meta_cdn_url(good), good
+    for bad in HOSTILE:
+        assert not meta_cdn_url(bad), bad
+
+
+def test_a_permalink_is_judged_by_its_parsed_host() -> None:
+    assert instagram_permalink("https://help.instagram.com/x") == "https://help.instagram.com/x"
+    for bad in (
+        "https://instagram.com@evil.example/p/",
+        "https://evil.example/?u=https://www.instagram.com/p/",
+        "https://www.instagram.com.evil.example/p/",
+        "https://notinstagram.com/p/",
+        "http://www.instagram.com/p/",
+        "https://www.instagram.com:444/p/",
+    ):
+        assert instagram_permalink(bad) is None, bad
+
+
+JPEG_BYTES = b"\xff\xd8\xff\xe0" + b"\0" * 64
+CDN = "https://scontent.cdninstagram.com/p.jpg"
+
+
+def _transport(routes: dict[str, httpx.Response], seen: list[str]) -> httpx.MockTransport:
+    def handle(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return routes.get(str(request.url), httpx.Response(404))
+
+    return httpx.MockTransport(handle)
+
+
+def _image(body: bytes = JPEG_BYTES, kind: str = "image/jpeg") -> httpx.Response:
+    return httpx.Response(200, headers={"content-type": kind}, content=body)
+
+
+async def test_the_copy_downloads_an_image_from_a_meta_cdn() -> None:
+    seen: list[str] = []
+    fetcher = CdnPictureFetcher(transport=_transport({CDN: _image()}, seen))
+    assert await fetcher.fetch(CDN) == (JPEG_BYTES, "image/jpeg")
+    assert seen == [CDN]
+
+
+@pytest.mark.parametrize("url", [u for u in HOSTILE if u])
+async def test_the_copy_never_contacts_a_hostile_url(url: str) -> None:
+    seen: list[str] = []
+    fetcher = CdnPictureFetcher(transport=_transport({}, seen))
+    with pytest.raises(ThumbnailUnavailable):
+        await fetcher.fetch(url)
+    assert seen == []
+
+
+async def test_a_redirect_to_another_host_is_refused_before_it_is_followed() -> None:
+    seen: list[str] = []
+    routes = {CDN: httpx.Response(302, headers={"location": "https://evil.example/p.jpg"})}
+    fetcher = CdnPictureFetcher(transport=_transport(routes, seen))
+    with pytest.raises(ThumbnailUnavailable, match="Meta CDN"):
+        await fetcher.fetch(CDN)
+    assert seen == [CDN]
+
+
+async def test_a_redirect_inside_the_cdn_is_followed_and_bounded() -> None:
+    other = "https://scontent-mia3-1.xx.fbcdn.net/p.jpg"
+    seen: list[str] = []
+    routes = {CDN: httpx.Response(302, headers={"location": other}), other: _image()}
+    assert await CdnPictureFetcher(transport=_transport(routes, seen)).fetch(CDN)
+    assert seen == [CDN, other]
+    loop = {CDN: httpx.Response(302, headers={"location": CDN})}
+    with pytest.raises(ThumbnailUnavailable, match="too many redirects"):
+        await CdnPictureFetcher(transport=_transport(loop, [])).fetch(CDN)
+
+
+@pytest.mark.parametrize(
+    ("answer", "why"),
+    [
+        (_image(b"\xff\xd8\xff" + b"\0" * 100, "image/jpeg"), "larger than the cap"),
+        (_image(b"<html>not a picture</html>", "image/jpeg"), "bytes are not"),
+        (_image(JPEG_BYTES, "text/html"), "not an image"),
+        (httpx.Response(403), "HTTP 403"),
+    ],
+)
+async def test_the_copy_refuses_oversized_or_non_image_answers(
+    answer: httpx.Response, why: str
+) -> None:
+    fetcher = CdnPictureFetcher(transport=_transport({CDN: answer}, []), max_bytes=80)
+    with pytest.raises(ThumbnailUnavailable, match=why):
+        await fetcher.fetch(CDN)
+
+
+async def test_the_copy_step_refuses_a_hostile_media_url_before_fetching() -> None:
+    from qualify_shared.objects.gate import ObjectGate  # noqa: PLC0415
+    from qualify_shared.objects.memory import MemoryObjectStore  # noqa: PLC0415
+
+    class _NoFetch:
+        async def fetch(self, url: str) -> tuple[bytes, str]:  # pragma: no cover
+            raise AssertionError("must not be called")
+
+    deps = Deps(gate=ObjectGate(MemoryObjectStore()), fetcher=_NoFetch())
+    media = MediaSummary(id="1789", timestamp=T0, media_type="IMAGE", media_url=HOSTILE[0])
+    why = await _copy_from_instagram(media, tenant_id=TENANT, connection_id=CONN, deps=deps)
+    assert why == "Instagram's picture address is not https on a Meta CDN host"

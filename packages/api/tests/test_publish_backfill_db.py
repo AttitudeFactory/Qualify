@@ -11,6 +11,7 @@ import io
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
 import pytest
@@ -563,8 +564,13 @@ async def test_the_probe_reads_one_media_and_prints_no_signed_address(harness: H
     media_id = _media_id(world, attempt)
     harness.reader.answers[media_id] = _ig(media_id)
     out = await probe(tenant_id=world.tenant_id, deps=harness.deps())
-    assert "result=readable" in out and f"permalink=https://www.instagram.com/p/{media_id}/" in out
-    assert "scontent.cdninstagram.com" in out and "x.jpg" not in out
+    lines = [line.strip() for line in out.splitlines()]
+    assert "result=readable" in lines[0]
+    printed = next(line for line in lines if line.startswith("permalink="))
+    assert urlsplit(printed.removeprefix("permalink=")).hostname == "www.instagram.com"
+    # only the parsed host of the signed CDN address is printed, never the address
+    assert "media_url=present (scontent.cdninstagram.com, allowed)" in lines
+    assert not any("x.jpg" in line for line in lines)
     assert harness.reader.reads == [media_id] and _counts(world) == (0, 0)
 
 
