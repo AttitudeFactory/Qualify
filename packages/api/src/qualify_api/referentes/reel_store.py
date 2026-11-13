@@ -33,6 +33,7 @@ R12 (m-24854859, migration 0141): a reel also keeps its cover's signed CDN URL
 from __future__ import annotations
 
 import json
+import logging
 import threading
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -455,12 +456,55 @@ class ReelRunStore(Protocol):
 # ======================================================================================
 
 
+_logger = logging.getLogger(__name__)
+
+
+def capture_reel_hashtags(
+    tenant_id: UUID, reels: Sequence[PublicReel], repository: Any = None
+) -> int:
+    """Feed the shared hashtag catalog (m-25026377, migration 0161) with the views and date
+    of every hashtag in the reels just stored — data already in hand, no vendor call.
+
+    Best effort, called only AFTER the reels' own write has committed: the catalog opens
+    its own `tenant_session` (its own transaction), so a failure here can neither roll
+    back nor fail the reel run. It is logged by exception type only (no caption, no
+    payload) and swallowed. Returns how many sightings were written (0 on failure)."""
+    if not reels:
+        return 0
+    try:
+        # lazy: the catalog imports `referentes.discovery_seed`; keep this module's import
+        # graph free of it
+        from qualify_api.hashtags import catalog as hashtag_catalog  # noqa: PLC0415
+        from qualify_api.hashtags.repository import ReelPost  # noqa: PLC0415
+
+        posts = [
+            ReelPost(
+                network=r.network,
+                reel_id=r.reel_id,
+                taken_at=r.taken_at,
+                caption=r.caption or "",
+                views=r.views,
+                parser_version=r.parser_version,
+            )
+            for r in reels
+        ]
+        return hashtag_catalog.capture_reels(tenant_id, posts, repository=repository).sightings
+    except Exception as exc:  # noqa: BLE001 — the catalog only ever adds; never fail a run
+        _logger.warning("hashtags: could not capture reel sightings (%s)", type(exc).__name__)
+        return 0
+
+
 class MemoryReelRunStore:
     """`ReelRunStore` in process memory, with the same idempotency, monotonic guards and
     tenant scoping as Postgres. `writes` counts every write, so a test can pin that a
-    read-only path wrote nothing."""
+    read-only path wrote nothing.
 
-    def __init__(self) -> None:
+    `hashtag_repository`: when set, `upsert_reels` also feeds that hashtag catalog
+    (`capture_reel_hashtags`); None (the default) feeds nothing, so an offline test never
+    reaches the Postgres catalog."""
+
+    def __init__(self, hashtag_repository: Any = None) -> None:
+        self.hashtag_repository = hashtag_repository
         self._lock = threading.RLock()
         self.runs: dict[UUID, RunRecord] = {}
         #: brand → (tenant, last_opened_at): `brand_reel_activity`.
@@ -805,6 +849,8 @@ class MemoryReelRunStore:
                         else reel.sound_is_original,
                     )
                 self.reels[key] = reel
+        if self.hashtag_repository is not None:
+            capture_reel_hashtags(tenant_id, reels, self.hashtag_repository)
 
     def reels_of(
         self, tenant_id: UUID, accounts: Sequence[tuple[str, str]], *, since: datetime
@@ -1168,7 +1214,12 @@ def upsert_reels_in(session: Session, reels: Sequence[PublicReel]) -> None:
 
 class PostgresReelRunStore:
     """`ReelRunStore` over migration 0117, every statement inside `tenant_session` — the
-    RLS policies scope the per-tenant tables; the global ones have none to scope."""
+    RLS policies scope the per-tenant tables; the global ones have none to scope.
+
+    `hashtag_repository`: the catalog `upsert_reels` feeds (None = the module default,
+    `qualify_api.hashtags.catalog.REPOSITORY`)."""
+
+    hashtag_repository: Any = None
 
     # runs
     def enqueue(
@@ -1500,6 +1551,8 @@ class PostgresReelRunStore:
             return
         with tenant_session(tenant_id) as session:
             upsert_reels_in(session, reels)
+        # committed above; the catalog runs in its own transaction, best effort
+        capture_reel_hashtags(tenant_id, reels, self.hashtag_repository)
 
     def reels_of(
         self, tenant_id: UUID, accounts: Sequence[tuple[str, str]], *, since: datetime
