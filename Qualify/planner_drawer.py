@@ -551,6 +551,8 @@ def _own_upload_view() -> rx.Component:
             variant="ghost",
             color_scheme="gray",
             size="2",
+            # a 44 px tap target on the phone (the ghost button alone is ~32 px)
+            min_height="2.75rem",
             disabled=PlannerState.own_upload_saving,
             on_click=PlannerState.close_own_upload,
         ),
