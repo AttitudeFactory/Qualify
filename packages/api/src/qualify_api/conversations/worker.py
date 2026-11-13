@@ -7,14 +7,24 @@ and, when asked, runs the reconciliation poll of every active Instagram connecti
 (`just conversations-tick …` runs one pass, `just conversations-worker …` keeps running,
 `just conversations-sync …` is one pass of the poll only.)
 
-Each pass is, per tenant in scope: [the poll, if `--sync`: `ConversationSyncService.
-sync_connection` on each active Instagram connection, at most every `--sync-interval`
-seconds] then `ConversationOutboxSender.run_once(tenant_id)`, then the public notices of
-Fase C (`followups.notice.PublicNoticePoster.run_once(tenant_id)`, m-24789646 PR 4: the
-«Te enviamos la información por DM 💬» reply under a comment whose private message is now
-confirmed sent). The notice step runs even when the send step raised — it is independent
-and never touches the outbox. Same mould and the SAME warning as `whatsapp/worker.py` and
-`planner/worker.py`:
+Each pass is, per tenant in scope: `ConversationOutboxSender.run_once(tenant_id)`, then
+the public notices of Fase C (`followups.notice.PublicNoticePoster.run_once(tenant_id)`,
+m-24789646 PR 4: the «Te enviamos la información por DM 💬» reply under a comment whose
+private message is now confirmed sent). The notice step runs even when the send step
+raised — it is independent and never touches the outbox. Then, with `--sync`, the
+reconciliation poll (`ConversationSyncService.sync_connection` on each active Instagram
+connection) of every tenant whose last poll is at least `--sync-interval` seconds old.
+
+**Sends never wait for the poll (m-25017174).** A full Graph re-sync of every tenant can
+take minutes (no cap, each call may wait 30 s); when it ran inline before the sender, an
+approved reply waited for it. In loop mode the poll runs on `BackgroundSync`: one thread
+of this same process with its own event loop, at most one round in flight, while the
+sender keeps its 5 s tick on the main loop. The two never share a DB session (every
+repository call opens its own through `tenant_session`) nor an HTTP client (the poll uses
+the channel's source, the sender its sender). `--once` (one pass,
+`just conversations-tick`) and `--sync-only` still poll inline, after the send.
+
+Same mould and the SAME warning as `whatsapp/worker.py` and `planner/worker.py`:
 
 Scope is MANDATORY and explicit — there is no default that means "everyone":
 - `--tenant <uuid>` (repeatable): exactly those tenants. Use it locally: a development
@@ -37,8 +47,10 @@ import asyncio
 import logging
 import os
 import socket
+import threading
 import time
 from collections.abc import Awaitable, Callable, Iterable, Sequence
+from concurrent.futures import Future
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -139,11 +151,104 @@ class _Syncer(Protocol):
     async def __call__(self, tenant_id: UUID) -> list[SyncReport]: ...
 
 
+def _log_sync(tenant_id: UUID, reports: Sequence[SyncReport], duration_s: float) -> None:
+    logger.info(
+        "conversations.worker.sync tenant_id=%s synced_connections=%d new_messages=%d "
+        "duration_s=%.1f",
+        tenant_id,
+        len(reports),
+        sum(r.messages_created for r in reports),
+        duration_s,
+    )
+
+
+class BackgroundSync:
+    """m-25017174: the reconciliation poll on its own thread and event loop, so a slow
+    re-sync never delays a send. One loop for the life of the process (the channel source
+    keeps per-connection HTTP clients bound to it); at most one round in flight — a round
+    is refused while the previous one runs. A tenant whose poll raises is logged and the
+    round goes on. `close()` cancels a round in flight and stops the thread."""
+
+    def __init__(
+        self,
+        syncer: _Syncer,
+        *,
+        name: str = "conversations-sync",
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._syncer = syncer
+        self._monotonic = monotonic
+        self._loop = asyncio.new_event_loop()
+        self._pending: Future[None] | None = None
+        self._closed = False
+        self._thread = threading.Thread(target=self._serve, name=name, daemon=True)
+        self._thread.start()
+
+    def _serve(self) -> None:
+        asyncio.set_event_loop(self._loop)
+        try:
+            self._loop.run_forever()
+        finally:
+            leftover = asyncio.all_tasks(self._loop)
+            for task in leftover:
+                task.cancel()
+            if leftover:
+                self._loop.run_until_complete(asyncio.gather(*leftover, return_exceptions=True))
+            self._loop.close()
+
+    @property
+    def busy(self) -> bool:
+        return self._pending is not None and not self._pending.done()
+
+    def submit(self, tenant_ids: Sequence[UUID]) -> bool:
+        """Start a round over `tenant_ids`; False (nothing started) while one is running."""
+        if self._closed or self.busy:
+            return False
+        self._pending = asyncio.run_coroutine_threadsafe(self._round(list(tenant_ids)), self._loop)
+        return True
+
+    async def _round(self, tenant_ids: list[UUID]) -> None:
+        round_started = self._monotonic()
+        for tenant_id in tenant_ids:
+            started = self._monotonic()
+            try:
+                reports = await self._syncer(tenant_id)
+            except Exception:  # noqa: BLE001 — the next tenant still polls
+                logger.exception("conversations.worker.sync_failed tenant_id=%s", tenant_id)
+                continue
+            _log_sync(tenant_id, reports, self._monotonic() - started)
+        logger.info(
+            "conversations.worker.sync_round tenants=%d duration_s=%.1f",
+            len(tenant_ids),
+            self._monotonic() - round_started,
+        )
+
+    def wait(self, timeout: float | None = None) -> None:
+        """Block until the round in flight (if any) ends — for tests."""
+        if self._pending is not None:
+            try:
+                self._pending.result(timeout=timeout)
+            except Exception:  # noqa: BLE001 — the round logged it; a timeout is the caller's
+                pass
+
+    def close(self, timeout: float = 5.0) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        if self._pending is not None:
+            self._pending.cancel()
+        self._loop.call_soon_threadsafe(self._loop.stop)
+        self._thread.join(timeout)
+
+
 class ConversationsTick:
     """One pass over the tenants in scope. A tenant whose pass raises is reported and
-    the next tenant still runs; only a failure to LIST tenants fails the pass. The poll
-    runs at most every `sync_interval` seconds per tenant (None = never). The public
-    notices run after the send, in their own `try`, when a poster is given."""
+    the next tenant still runs; only a failure to LIST tenants fails the pass. The public
+    notices run after the send, in their own `try`, when a poster is given. The poll runs
+    after every tenant's send, at most every `sync_interval` seconds per tenant (None =
+    never): inline, or — `sync_in_background` — submitted to a `BackgroundSync` and not
+    awaited (m-25017174), in which case a tenant's interval counts from its submission
+    and a due tenant waits for the next pass while a round is still running."""
 
     def __init__(
         self,
@@ -153,6 +258,7 @@ class ConversationsTick:
         syncer: _Syncer | None = None,
         notices: _NoticePoster | None = None,
         sync_interval: float | None = None,
+        sync_in_background: bool = False,
         limit: int = DEFAULT_BATCH,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         monotonic: Callable[[], float] = time.monotonic,
@@ -166,6 +272,17 @@ class ConversationsTick:
         self._clock = clock
         self._monotonic = monotonic
         self._last_sync: dict[UUID, float] = {}
+        self._sync_in_background = sync_in_background
+        self._background: BackgroundSync | None = None
+
+    @property
+    def background(self) -> BackgroundSync | None:
+        return self._background
+
+    def close(self) -> None:
+        """Stop the background poll, if one was started."""
+        if self._background is not None:
+            self._background.close()
 
     def _sync_due(self, tenant_id: UUID) -> bool:
         if self._syncer is None or self._sync_interval is None:
@@ -182,16 +299,11 @@ class ConversationsTick:
             logger.exception("conversations.worker.discovery_failed")
             report.error = type(exc).__name__
             return report
+        passes: list[TenantPass] = []
         for tenant_id in tenant_ids:
             tenant_pass = TenantPass(tenant_id=tenant_id)
             report.tenants.append(tenant_pass)
-            if self._sync_due(tenant_id) and self._syncer is not None:
-                self._last_sync[tenant_id] = self._monotonic()
-                try:
-                    tenant_pass.sync = await self._syncer(tenant_id)
-                except Exception as exc:  # noqa: BLE001 — the send still runs
-                    logger.exception("conversations.worker.sync_failed tenant_id=%s", tenant_id)
-                    tenant_pass.errors.append(f"sync:{type(exc).__name__}")
+            passes.append(tenant_pass)
             try:
                 tenant_pass.send = await self._sender.run_once(tenant_id, limit=self._limit)
             except Exception as exc:  # noqa: BLE001 — one tenant must not stop the others
@@ -204,7 +316,33 @@ class ConversationsTick:
             except Exception as exc:  # noqa: BLE001 — a notice never stops a send or a tenant
                 logger.exception("conversations.worker.notices_failed tenant_id=%s", tenant_id)
                 tenant_pass.errors.append(f"notice:{type(exc).__name__}")
+        await self._poll(passes)
         return report
+
+    async def _poll(self, passes: list[TenantPass]) -> None:
+        """m-25017174: the poll comes after every send of the pass, never before one."""
+        if self._syncer is None:
+            return
+        due = [p for p in passes if self._sync_due(p.tenant_id)]
+        if not due:
+            return
+        if self._sync_in_background:
+            if self._background is None:
+                self._background = BackgroundSync(self._syncer, monotonic=self._monotonic)
+            if self._background.submit([p.tenant_id for p in due]):
+                submitted = self._monotonic()
+                for tenant_pass in due:
+                    self._last_sync[tenant_pass.tenant_id] = submitted
+            return
+        for tenant_pass in due:
+            self._last_sync[tenant_pass.tenant_id] = self._monotonic()
+            try:
+                tenant_pass.sync = await self._syncer(tenant_pass.tenant_id)
+            except Exception as exc:  # noqa: BLE001 — reported, the next tenant still polls
+                logger.exception(
+                    "conversations.worker.sync_failed tenant_id=%s", tenant_pass.tenant_id
+                )
+                tenant_pass.errors.append(f"sync:{type(exc).__name__}")
 
 
 class _Runner(Protocol):
@@ -247,7 +385,13 @@ class NoSender:
 
 
 def _tick(
-    tenants: TenantSource, *, sync: bool, send: bool, sync_interval: float, limit: int
+    tenants: TenantSource,
+    *,
+    sync: bool,
+    send: bool,
+    sync_interval: float,
+    limit: int,
+    background_sync: bool = False,
 ) -> ConversationsTick:
     from qualify_api.conversations.composition import production_sender  # noqa: PLC0415
     from qualify_api.followups.composition import production_notice_poster  # noqa: PLC0415
@@ -259,6 +403,7 @@ def _tick(
         # The notices are part of sending: `--sync-only` posts nothing either.
         notices=production_notice_poster(worker_id=worker_id()) if send else None,
         sync_interval=sync_interval if sync else None,
+        sync_in_background=sync and background_sync,
         limit=limit,
     )
 
@@ -270,10 +415,16 @@ def scoped_tick(
     send: bool = True,
     sync_interval: float = DEFAULT_SYNC_INTERVAL_SECONDS,
     limit: int = DEFAULT_BATCH,
+    background_sync: bool = False,
 ) -> ConversationsTick:
     """A pass over EXACTLY these tenants — localhost validation."""
     return _tick(
-        ScopedTenants(tenant_ids), sync=sync, send=send, sync_interval=sync_interval, limit=limit
+        ScopedTenants(tenant_ids),
+        sync=sync,
+        send=send,
+        sync_interval=sync_interval,
+        limit=limit,
+        background_sync=background_sync,
     )
 
 
@@ -283,11 +434,17 @@ def production_tick(
     send: bool = True,
     sync_interval: float = DEFAULT_SYNC_INTERVAL_SECONDS,
     limit: int = DEFAULT_BATCH,
+    background_sync: bool = False,
 ) -> ConversationsTick:
     """The PRODUCTION pass: every tenant with an active Instagram connection. Do not run
     it against a database that holds test tenants."""
     return _tick(
-        DiscoveredTenants(), sync=sync, send=send, sync_interval=sync_interval, limit=limit
+        DiscoveredTenants(),
+        sync=sync,
+        send=send,
+        sync_interval=sync_interval,
+        limit=limit,
+        background_sync=background_sync,
     )
 
 
@@ -397,21 +554,30 @@ async def run_worker(
 ) -> int:
     runner = make_runner()
     ticks = 0
-    while not should_stop():
-        started = clock()
-        report: TickReport | None = None
-        try:
-            report = await runner.run_once()
-            _log_report(report)
-        except Exception:  # noqa: BLE001 — log and keep going
-            logger.exception("conversations.worker.pass_failed")
-        ticks += 1
-        if once:
-            return 0 if report is not None and not report.error else 1
-        if max_ticks is not None and ticks >= max_ticks:
-            return 0
-        await sleep(max(0.0, interval - (clock() - started)))
-    return 0
+    try:
+        while not should_stop():
+            started = clock()
+            report: TickReport | None = None
+            try:
+                report = await runner.run_once()
+                _log_report(report)
+            except Exception:  # noqa: BLE001 — log and keep going
+                logger.exception("conversations.worker.pass_failed")
+            ticks += 1
+            elapsed = clock() - started
+            if elapsed > 2 * interval:
+                # m-25017174: how long an approved reply could wait on top of the tick.
+                logger.info("conversations.worker.slow_pass duration_s=%.1f", elapsed)
+            if once:
+                return 0 if report is not None and not report.error else 1
+            if max_ticks is not None and ticks >= max_ticks:
+                return 0
+            await sleep(max(0.0, interval - elapsed))
+        return 0
+    finally:
+        close = getattr(runner, "close", None)
+        if close is not None:
+            close()
 
 
 def main(
@@ -435,6 +601,8 @@ def main(
         "send": not args.sync_only,
         "sync_interval": args.sync_interval,
         "limit": args.limit,
+        # m-25017174: in the loop the poll never holds a send; one pass polls inline.
+        "background_sync": sync and not args.once and not args.sync_only,
     }
     scoped = scoped or scoped_tick
     production = production or production_tick

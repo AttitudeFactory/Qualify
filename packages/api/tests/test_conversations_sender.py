@@ -388,3 +388,141 @@ async def test_health_store_failure_does_not_retry_an_accepted_reply(world) -> N
     assert outbox.rows[item_id].status == "sent"
     assert (await loop.run_once(TENANT)).sent == 0
     assert len(sender.sent) == 1
+
+
+# --- m-25017174: a send never waits for the poll ----------------------------------------
+
+
+async def test_a_pending_reply_is_sent_while_a_background_poll_is_stuck(world) -> None:
+    """A re-sync blocked on Graph (here: a thread blocked outright) must not hold the
+    sender: the reply approved meanwhile leaves on the very next tick."""
+    import threading
+
+    _clock, _repo, outbox, sender, service, thread, loop, _d = world
+    gate = threading.Event()
+    started = threading.Event()
+    polls: list[UUID] = []
+
+    async def stuck_syncer(tenant_id: UUID) -> list[SyncReport]:
+        polls.append(tenant_id)
+        started.set()
+        gate.wait(timeout=10)  # blocks its thread, not the sender's loop
+        return []
+
+    tick = ConversationsTick(
+        tenants=ScopedTenants([TENANT]),
+        sender=loop,
+        syncer=stuck_syncer,
+        sync_interval=0,
+        sync_in_background=True,
+    )
+    try:
+        await tick.run_once()  # nothing queued yet; the poll starts and gets stuck
+        assert started.wait(timeout=5)
+        outbox_id = _queue(service, thread.id)
+        report = await tick.run_once()
+        assert tick.background is not None and tick.background.busy
+        assert report.tenants[0].send is not None and report.tenants[0].send.sent == 1
+        assert outbox.rows[outbox_id].status == "sent"
+        assert len(sender.sent) == 1
+        assert polls == [TENANT]  # a second round is refused while the first one runs
+    finally:
+        gate.set()
+        if tick.background is not None:
+            tick.background.wait(timeout=5)
+        tick.close()
+
+
+async def test_a_background_round_runs_every_due_tenant_and_isolates_failures() -> None:
+    a, b = uuid4(), uuid4()
+    polls: list[UUID] = []
+
+    async def syncer(tenant_id: UUID) -> list[SyncReport]:
+        polls.append(tenant_id)
+        if tenant_id == a:
+            raise RuntimeError("graph down")
+        return []
+
+    tick = ConversationsTick(
+        tenants=ScopedTenants([a, b]),
+        sender=NoSender(),
+        syncer=syncer,
+        sync_interval=300,
+        sync_in_background=True,
+    )
+    try:
+        report = await tick.run_once()
+        assert tick.background is not None
+        tick.background.wait(timeout=5)
+        assert polls == [a, b]
+        assert all(t.sync == [] and t.errors == [] for t in report.tenants)
+        await tick.run_once()  # inside the interval: no second round
+        tick.background.wait(timeout=5)
+        assert polls == [a, b]
+    finally:
+        tick.close()
+
+
+async def test_an_inline_poll_runs_after_the_send() -> None:
+    order: list[str] = []
+
+    class Sender:
+        async def run_once(self, tenant_id: UUID, *, limit: int = 50) -> SendReport:
+            order.append("send")
+            return SendReport(tenant_id=tenant_id)
+
+    async def syncer(tenant_id: UUID) -> list[SyncReport]:
+        order.append("sync")
+        return []
+
+    tick = ConversationsTick(
+        tenants=ScopedTenants([uuid4()]), sender=Sender(), syncer=syncer, sync_interval=300
+    )
+    await tick.run_once()
+    assert order == ["send", "sync"]
+    assert tick.background is None
+
+
+async def test_run_worker_closes_the_background_poll() -> None:
+    closed: list[bool] = []
+
+    class Runner:
+        async def run_once(self):
+            from qualify_api.conversations.worker import TickReport
+
+            return TickReport(started_at=T0)
+
+        def close(self) -> None:
+            closed.append(True)
+
+    async def no_sleep(_s: float) -> None:
+        return None
+
+    assert await run_worker(lambda: Runner(), once=False, sleep=no_sleep, max_ticks=2) == 0
+    assert closed == [True]
+
+
+def test_only_the_loop_polls_in_the_background() -> None:
+    built: list[dict] = []
+
+    def scoped(tenant_ids, **options):
+        built.append(options)
+        return ConversationsTick(tenants=ScopedTenants(tenant_ids), sender=NoSender())
+
+    class StopAtOnce:
+        async def run_once(self):
+            raise KeyboardInterrupt
+
+        def close(self) -> None:
+            return None
+
+    def looping(tenant_ids, **options):
+        built.append(options)
+        return StopAtOnce()
+
+    tenant = str(uuid4())
+    assert main(["--tenant", tenant, "--once", "--sync"], scoped=scoped) == 0
+    assert main(["--tenant", tenant, "--once"], scoped=scoped) == 0
+    assert main(["--tenant", tenant, "--sync"], scoped=looping) == 0
+    assert main(["--tenant", tenant, "--sync-only"], scoped=looping) == 0
+    assert [b["background_sync"] for b in built] == [False, False, True, False]

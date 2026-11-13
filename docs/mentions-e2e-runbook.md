@@ -55,7 +55,7 @@ just webhook-purge-account <id>   # todo lo de una cuenta (gancho de QUA-127), e
 
 **En producción** el procesador corre como el servicio `webhook-worker` de
 `deploy/docker-compose.prod.yml`. Arranca siempre, sin perfil, porque nunca publica ni
-escribe en Meta. Su cadencia es `QUALIFY_WEBHOOK_WORKER_INTERVAL`, 30 s por defecto, y sus
+escribe en Meta. Su cadencia es `QUALIFY_WEBHOOK_WORKER_INTERVAL`, 5 s por defecto (30 s antes de m-25017174), y sus
 logs se ven con `just deploy-logs qualify-prod webhook-worker`. **En local** no arranca solo:
 se usa `just webhook-tick` o `just webhook-worker`. Sin procesador, los eventos quedan en
 `pending`. Los cambios `comments` se guardan y quedan `unsupported`; el polling de

@@ -109,3 +109,101 @@ def test_a_too_short_interval_is_refused() -> None:
 def test_retention_plus_purge_cadence_stays_within_thirty_days() -> None:
     """The QUA-127 arithmetic: 29 days retention + one purge every 24 h ≤ 30 days."""
     assert RETENTION + worker.PURGE_EVERY <= timedelta(days=30)
+
+
+# --- m-25017174: messages first, housekeeping on its own clocks ------------------------
+
+
+class _Batches:
+    def __init__(self, log: list[str]) -> None:
+        self.log = log
+
+    async def run_once(self, *, limit: int = 100):
+        self.log.append("batch")
+        from qualify_api.webhooks.processor import ProcessReport
+
+        return ProcessReport()
+
+
+def _housekeeping(log: list[str], now: list[float], *, prefill: object = object()):
+    async def sentiment() -> None:
+        log.append("sentiment")
+
+    async def comments() -> None:
+        log.append("comments")
+
+    async def prefill_pass(_runner) -> None:
+        log.append("prefill")
+
+    return worker._Housekeeping(
+        queue=RecordingQueue(),
+        prefill=prefill,  # type: ignore[arg-type]
+        purge=lambda _queue: log.append("purge"),
+        sentiment_sweep=sentiment,
+        comment_sweep=comments,
+        prefill_pass=prefill_pass,
+        monotonic=lambda: now[0],
+    )
+
+
+async def test_the_message_batch_runs_before_the_sweeps_and_the_prefill() -> None:
+    log: list[str] = []
+    now = [0.0]
+    await worker.run_loop(
+        _Batches(log),
+        _housekeeping(log, now),
+        interval=5,
+        limit=10,
+        sleep=lambda _s: _noop(),
+        monotonic=lambda: now[0],
+        max_passes=1,
+    )
+    assert log == ["batch", "purge", "sentiment", "comments", "prefill"]
+
+
+async def _noop() -> None:
+    return None
+
+
+async def test_a_five_second_tick_does_not_run_the_sweeps_or_the_prefill_more_often() -> None:
+    log: list[str] = []
+    now = [0.0]
+    batches = _Batches(log)
+    housekeeping = _housekeeping(log, now)
+
+    async def advance(seconds: float) -> None:
+        now[0] += 5  # one tick of the new default, whatever the computed sleep
+
+    await worker.run_loop(
+        batches,
+        housekeeping,
+        interval=5,
+        limit=10,
+        sleep=advance,
+        monotonic=lambda: now[0],
+        max_passes=121,  # t = 0 … 600 s
+    )
+    assert log.count("batch") == 121
+    assert log.count("purge") == 1  # every 24 h
+    assert log.count("sentiment") == log.count("comments") == 2  # t = 0 and t = 600 (10 min)
+    assert log.count("prefill") == 21  # t = 0, 30, …, 600: every 30 s, as before
+
+
+async def test_no_prefill_runner_means_no_prefill_pass() -> None:
+    log: list[str] = []
+    await _housekeeping(log, [0.0], prefill=None).run_due()
+    assert "prefill" not in log
+
+
+def test_the_default_interval_is_five_seconds_and_the_override_still_works(monkeypatch) -> None:
+    assert worker.DEFAULT_INTERVAL_SECONDS == 5
+    assert worker.build_parser().parse_args([]).interval == 5
+    seen: list[int] = []
+
+    async def fake_loop(*, interval: int, limit: int) -> None:
+        seen.append(interval)
+
+    monkeypatch.setattr(worker, "_run_loop", fake_loop)
+    assert worker.main([]) == 0
+    assert worker.main(["--interval", "30"]) == 0
+    assert seen == [5, 30]

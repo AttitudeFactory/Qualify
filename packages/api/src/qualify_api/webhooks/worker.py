@@ -1,7 +1,7 @@
 """The webhook intake worker (QUA-147): runs the processor and the retention purge.
 
     python -m qualify_api.webhooks.worker --once            # one batch, then exit
-    python -m qualify_api.webhooks.worker [--interval 30]   # a batch every N s until Ctrl+C
+    python -m qualify_api.webhooks.worker [--interval 5]    # a batch every N s until Ctrl+C
     python -m qualify_api.webhooks.worker --purge [--execute]
     python -m qualify_api.webhooks.worker --purge-account <ig_account_id> [--execute]
     python -m qualify_api.webhooks.worker --requeue-comments [--account <ig_id>] [--execute]
@@ -40,9 +40,10 @@ whenever comments were pending. Unless `QUALIFY_SENTIMENT_ENABLED` is `1`/`true`
 neither sweep nor the after-ingest pass of a mention runs sentiment or imports the model
 library; commercial intent (Claude Haiku) and the queries it opens run unchanged.
 
-Every batch (loop and `--once`) also drains the Brand Kit prefill jobs of Meegle Altas
-(PB-4, m-24852198; `qualify_api.meegle.prefill`) when the Meegle engine is configured:
-ScrapeCreators + Claude for real, then one comment on the Alta item. Nothing is queued
+Every `PREFILL_EVERY` in loop mode (and after the batch of `--once`) the worker also
+drains the Brand Kit prefill jobs of Meegle Altas (PB-4, m-24852198;
+`qualify_api.meegle.prefill`) when the Meegle engine is configured: ScrapeCreators +
+Claude for real, then one comment on the Alta item. Nothing is queued
 unless `QUALIFY_ALTA_PREFILL_ENABLED` and `QUALIFY_ALTA_PREFILL_MAX_USD` are set (off by
 default), and a job found while off is settled without running.
 
@@ -51,6 +52,15 @@ that is what keeps "29 days + at most 24 h" ≤ 30 days (QUA-127). It deletes on
 settled/failed changes older than `RETENTION`, never `pending`/`processing`.
 The explicit `--purge` / `--purge-account` commands are DRY RUNS unless `--execute`: they
 print what they would delete and delete nothing.
+
+**Messages first (m-25017174).** Each loop pass processes the message batch BEFORE anything
+else, and runs every `DEFAULT_INTERVAL_SECONDS` (5 s; was 30 s, which made an Instagram or
+WhatsApp message wait up to half a minute before it reached Conversaciones). The work that
+shares the loop runs after the batch and keeps its own clock, so the shorter tick does not
+make it run more often: the purge every `PURGE_EVERY`, the two sweeps every
+`SENTIMENT_SWEEP_EVERY`, the Alta prefill drain every `PREFILL_EVERY` (30 s, the cadence it
+had when it ran after every 30 s batch). A sweep still holds the loop while it runs, so a
+message that arrives during one waits for it; `*.sweep … duration_s=` measures that.
 
 A batch that raises is logged and the loop continues; a crash loses nothing (claimed rows
 go stale and are reclaimed). Several workers at once are safe (`FOR UPDATE SKIP LOCKED`,
@@ -65,12 +75,12 @@ import logging
 import os
 import socket
 import time
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
-from qualify_api.webhooks.processor import DEFAULT_BATCH, production_processor
+from qualify_api.webhooks.processor import DEFAULT_BATCH, ProcessReport, production_processor
 from qualify_api.webhooks.repository import RETENTION, PurgeReport, WebhookQueue
 
 if TYPE_CHECKING:
@@ -78,9 +88,15 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("qualify_api.webhooks.worker")
 
-DEFAULT_INTERVAL_SECONDS = 30
+# m-25017174: 30 s -> 5 s. A message (Instagram Direct, WhatsApp) is only visible in
+# Conversaciones once a batch processed it; the HTTP intake only records it.
+DEFAULT_INTERVAL_SECONDS = 5
 MIN_INTERVAL_SECONDS = 5
 PURGE_EVERY = timedelta(hours=24)
+# m-25017174: the Alta prefill drain (PB-4) used to run after every batch, i.e. every 30 s.
+# With a 5 s tick it keeps that cadence on its own clock (a DB poll when idle; a job is
+# run once whatever the cadence, so the paid calls do not depend on it).
+PREFILL_EVERY = timedelta(seconds=30)
 # QUA-152: how often the loop re-tries mention sentiment still pending. Each mention is
 # normally analyzed right after ingest; the sweep catches failures and model outages.
 SENTIMENT_SWEEP_EVERY = timedelta(minutes=10)
@@ -163,6 +179,7 @@ async def _sentiment_sweep() -> None:
         sweep_pending_mention_sentiment,
     )
 
+    started = time.monotonic()
     try:
         report = await asyncio.to_thread(sweep_pending_mention_sentiment)
         if report.skipped:
@@ -170,11 +187,13 @@ async def _sentiment_sweep() -> None:
             logger.debug("mentions.sentiment_sweep skipped=%s", report.skipped)
             return
         logger.info(
-            "mentions.sentiment_sweep tenants=%d new=%d failed=%d tenants_errored=%d",
+            "mentions.sentiment_sweep tenants=%d new=%d failed=%d tenants_errored=%d "
+            "duration_s=%.1f",
             report.tenants,
             report.new_results,
             report.failed,
             report.tenants_errored,
+            time.monotonic() - started,
         )
     except Exception:  # noqa: BLE001 — a failed sweep must not stop processing
         logger.exception("mentions.sentiment_sweep failed")
@@ -185,15 +204,18 @@ async def _comment_analysis_sweep() -> None:
     is belt and braces, same as `_sentiment_sweep`."""
     from qualify_api.comment_analysis import sweep_pending_comment_analysis  # noqa: PLC0415
 
+    started = time.monotonic()
     try:
         report = await asyncio.to_thread(sweep_pending_comment_analysis)
         logger.info(
-            "comments.analysis_sweep connections=%d sentiment=%d intent=%d followups=%d errored=%d",
+            "comments.analysis_sweep connections=%d sentiment=%d intent=%d followups=%d "
+            "errored=%d duration_s=%.1f",
             report.connections,
             report.sentiment_new,
             report.intent_new,
             report.followups_opened,
             report.errored,
+            time.monotonic() - started,
         )
     except Exception:  # noqa: BLE001 — a failed sweep must not stop processing
         logger.exception("comments.analysis_sweep failed")
@@ -217,40 +239,98 @@ def _prefill_runner(wid: str) -> AltaPrefillRunner | None:
     return production_prefill_runner(worker_id=wid)
 
 
+class _Batches(Protocol):
+    async def run_once(self, *, limit: int = DEFAULT_BATCH) -> ProcessReport: ...
+
+
+async def _process_batch(processor: _Batches, *, limit: int) -> None:
+    """One batch of recorded changes. Never raises: a failed batch is logged and the next
+    pass retries (claimed rows go stale and are reclaimed)."""
+    try:
+        report = await processor.run_once(limit=limit)
+        if report.claimed:
+            logger.info(
+                "webhooks.batch claimed=%d outcomes=%s lost=%d",
+                report.claimed,
+                dict(report.outcomes),
+                report.lost,
+            )
+    except Exception:  # noqa: BLE001 — log and keep going
+        logger.exception("webhooks.batch failed")
+
+
+class _Housekeeping:
+    """The time-gated work that shares the loop with the batches (purge, sweeps, Alta
+    prefill). Each job keeps its own deadline, so the loop's tick does not change how
+    often it runs; every job is due on the first pass, as before m-25017174."""
+
+    def __init__(
+        self,
+        *,
+        queue: WebhookQueue,
+        prefill: AltaPrefillRunner | None,
+        purge: Callable[[WebhookQueue], None] = _auto_purge,
+        sentiment_sweep: Callable[[], Awaitable[None]] = _sentiment_sweep,
+        comment_sweep: Callable[[], Awaitable[None]] = _comment_analysis_sweep,
+        prefill_pass: Callable[[AltaPrefillRunner | None], Awaitable[None]] = _alta_prefill_pass,
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._queue = queue
+        self._prefill = prefill
+        self._purge = purge
+        self._sentiment_sweep = sentiment_sweep
+        self._comment_sweep = comment_sweep
+        self._prefill_pass = prefill_pass
+        self._monotonic = monotonic
+        now = monotonic()
+        self._next_purge = now
+        self._next_sweep = now
+        self._next_prefill = now
+
+    async def run_due(self) -> None:
+        now = self._monotonic()
+        if now >= self._next_purge:
+            self._purge(self._queue)
+            self._next_purge = now + PURGE_EVERY.total_seconds()
+        if now >= self._next_sweep:
+            await self._sentiment_sweep()
+            await self._comment_sweep()
+            self._next_sweep = now + SENTIMENT_SWEEP_EVERY.total_seconds()
+        if self._prefill is not None and now >= self._next_prefill:
+            await self._prefill_pass(self._prefill)
+            self._next_prefill = now + PREFILL_EVERY.total_seconds()
+
+
+async def run_loop(
+    processor: _Batches,
+    housekeeping: _Housekeeping,
+    *,
+    interval: int,
+    limit: int,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    monotonic: Callable[[], float] = time.monotonic,
+    max_passes: int | None = None,
+) -> None:
+    """m-25017174: the message batch first, then whatever housekeeping is due."""
+    passes = 0
+    while max_passes is None or passes < max_passes:
+        started = monotonic()
+        await _process_batch(processor, limit=limit)
+        await housekeeping.run_due()
+        passes += 1
+        await sleep(max(0.0, interval - (monotonic() - started)))
+
+
 async def _run_loop(*, interval: int, limit: int) -> None:
     processor = production_processor(worker_id=worker_id())
-    prefill = _prefill_runner(worker_id())
-    queue = WebhookQueue()
-    next_purge = time.monotonic()
-    next_sweep = time.monotonic()
+    housekeeping = _Housekeeping(queue=WebhookQueue(), prefill=_prefill_runner(worker_id()))
     logger.info(
         "webhooks.worker started interval=%ss limit=%d sentiment=%s",
         interval,
         limit,
         "on" if _sentiment_on() else "off",
     )
-    while True:
-        started = time.monotonic()
-        if started >= next_purge:
-            _auto_purge(queue)
-            next_purge = started + PURGE_EVERY.total_seconds()
-        if started >= next_sweep:
-            await _sentiment_sweep()
-            await _comment_analysis_sweep()
-            next_sweep = started + SENTIMENT_SWEEP_EVERY.total_seconds()
-        try:
-            report = await processor.run_once(limit=limit)
-            if report.claimed:
-                logger.info(
-                    "webhooks.batch claimed=%d outcomes=%s lost=%d",
-                    report.claimed,
-                    dict(report.outcomes),
-                    report.lost,
-                )
-        except Exception:  # noqa: BLE001 — log and keep going
-            logger.exception("webhooks.batch failed")
-        await _alta_prefill_pass(prefill)
-        await asyncio.sleep(max(0.0, interval - (time.monotonic() - started)))
+    await run_loop(processor, housekeeping, interval=interval, limit=limit)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
