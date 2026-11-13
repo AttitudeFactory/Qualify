@@ -24,8 +24,9 @@ from qualify_api.conversations.sync import ConversationSyncService
 from qualify_api.conversations.webhook import (
     CONTRACT_VIOLATION,
     INSTAGRAM_MESSAGES_HANDLER_KEY,
-    MESSAGE_DELETED,
+    MESSAGE_DELETED_ECHO,
     NOT_A_MESSAGE,
+    RemoteUnsend,
     instagram_messages_handler,
     parse_messaging_item,
 )
@@ -160,8 +161,11 @@ def test_parse_echo_is_outbound_keyed_on_the_recipient() -> None:
 def test_parse_non_messages_and_deleted_are_unsupported_reasons() -> None:
     reaction = {"sender": {"id": "a"}, "reaction": {"mid": "x", "action": "react"}}
     assert parse_messaging_item(reaction, own_account_id=IGID) == NOT_A_MESSAGE
+    # m-25018661: a person's `is_deleted` is an unsend now; only an echo stays unsupported.
     deleted = {**INBOUND, "message": {"mid": "mid.1", "is_deleted": True}}
-    assert parse_messaging_item(deleted, own_account_id=IGID) == MESSAGE_DELETED
+    assert parse_messaging_item(deleted, own_account_id=IGID) == RemoteUnsend("mid.1")
+    echo = {**ECHO, "message": {"mid": "mid.2", "is_deleted": True, "is_echo": True}}
+    assert parse_messaging_item(echo, own_account_id=IGID) == MESSAGE_DELETED_ECHO
 
 
 def test_parse_attachments_become_media_types() -> None:

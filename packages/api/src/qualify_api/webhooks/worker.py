@@ -6,9 +6,12 @@
     python -m qualify_api.webhooks.worker --purge-account <ig_account_id> [--execute]
     python -m qualify_api.webhooks.worker --requeue-comments [--account <ig_id>] [--execute]
     python -m qualify_api.webhooks.worker --requeue-postbacks [--account <ig_id>] [--execute]
+    python -m qualify_api.webhooks.worker --requeue-deleted (--account <ig_id> | --all-accounts)
+                                          [--execute]
 
 (`just webhook-tick`, `just webhook-worker`, `just webhook-purge …`,
-`just webhook-requeue-comments`, `just webhook-requeue-postbacks`.)
+`just webhook-requeue-comments`, `just webhook-requeue-postbacks`,
+`just webhook-requeue-deleted`.)
 
 `--requeue-comments` puts Instagram `comments` changes recorded as `unsupported` before the
 `instagram:comments` handler existed back in the queue, so the next batches turn the ones
@@ -19,6 +22,12 @@ that @mention the account into mentions. Dry run (a count) unless `--execute`; i
 buttons, menu items) recorded as `unsupported` before the `instagram:messages` handler read
 them (m-24789472): the next batches turn them into inbound messages of Conversaciones,
 one per `mid`, and reply to none of them (`WebhookQueue.requeue_unsupported_postbacks`).
+
+`--requeue-deleted` does the same for Instagram DMs a person unsent (`is_deleted`) that were
+recorded as `unsupported` (`message_deleted`) before m-25018661: the next batches erase the
+stored copy and the original changes (`WebhookQueue.requeue_unsupported_deleted`). It
+requires an explicit scope — `--account <ig_id>` or `--all-accounts` — because what it
+replays deletes data.
 
 In production the loop runs as the `webhook-worker` service of
 `deploy/docker-compose.prod.yml`. Locally it runs only when someone starts it, against
@@ -139,10 +148,22 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="requeue Instagram postbacks recorded as unsupported (dry run unless --execute)",
     )
+    mode.add_argument(
+        "--requeue-deleted",
+        action="store_true",
+        help="requeue Instagram unsent DMs recorded as unsupported, so they are erased "
+        "(needs --account or --all-accounts; dry run unless --execute)",
+    )
     parser.add_argument(
         "--execute", action="store_true", help="really apply (purges and the --requeue-* modes)"
     )
     parser.add_argument("--account", metavar="IG_ACCOUNT_ID", help="--requeue-*: only this account")
+    parser.add_argument(
+        "--all-accounts",
+        action="store_true",
+        help="--requeue-deleted: every account (production only; the explicit opposite of "
+        "--account)",
+    )
     parser.add_argument("--interval", type=int, default=DEFAULT_INTERVAL_SECONDS)
     parser.add_argument("--limit", type=int, default=DEFAULT_BATCH)
     return parser
@@ -335,12 +356,18 @@ async def _run_loop(*, interval: int, limit: int) -> None:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    requeue = args.requeue_comments or args.requeue_postbacks
+    requeue = args.requeue_comments or args.requeue_postbacks or args.requeue_deleted
+    if args.requeue_deleted and bool(args.account) == bool(args.all_accounts):
+        print("--requeue-deleted needs exactly one of --account <ig_account_id> / --all-accounts")
+        return 2
+    if args.all_accounts and not args.requeue_deleted:
+        print("--all-accounts only applies to --requeue-deleted")
+        return 2
     if args.execute and not (args.purge or args.purge_account or requeue):
         print("--execute only applies to --purge / --purge-account / --requeue-*")
         return 2
     if args.account and not requeue:
-        print("--account only applies to --requeue-comments / --requeue-postbacks")
+        print("--account only applies to the --requeue-* modes")
         return 2
     if args.interval < MIN_INTERVAL_SECONDS:
         print(f"--interval must be at least {MIN_INTERVAL_SECONDS}")
@@ -371,6 +398,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         verb = "requeued" if args.execute else "would requeue (dry run)"
         print(f"instagram postbacks: {verb} events={count}")
+        return 0
+    if args.requeue_deleted:
+        count = WebhookQueue().requeue_unsupported_deleted(
+            now=datetime.now(UTC), execute=args.execute, entry_id=args.account
+        )
+        verb = "requeued" if args.execute else "would requeue (dry run)"
+        print(f"instagram unsent messages: {verb} events={count}")
         return 0
     if args.once:
         report = asyncio.run(production_processor(worker_id=worker_id()).run_once(limit=args.limit))

@@ -69,6 +69,10 @@ COMMENT_USERNAME_UNKNOWN = "connection_username_unknown"
 # `requeue_unsupported_postbacks` (m-24789472). Spelled here so the queue never imports a
 # handler.
 MESSAGING_NOT_A_MESSAGE = "not_a_message"
+# `last_error` of an Instagram `messages` item flagged `is_deleted` (the person unsent a
+# DM), settled `unsupported` before m-25018661 gave it a handler —
+# `conversations.webhook.MESSAGE_DELETED`; replayable by `requeue_unsupported_deleted`.
+MESSAGING_MESSAGE_DELETED = "message_deleted"
 
 MAX_ATTEMPTS = 6
 # Wait after the Nth failed attempt (N = 1..5); the 6th failure is `dead`.
@@ -246,6 +250,69 @@ class WebhookQueue:
             ).rowcount
         return status if written == 1 else None
 
+    # -- erasure (m-25018661) ------------------------------------------------------------
+
+    def erase(self, *, event_id: UUID, worker_id: str) -> bool:
+        """Settle a claimed change by deleting it — and the raw body of its delivery — for a
+        change whose payload Qualify must not keep (a message already unsent). The same
+        compare-and-set as `settle`: False = this worker no longer holds it, nothing done.
+        Other changes of that delivery keep their own `value`; only the delivery's raw
+        copy goes (their FK is `ON DELETE SET NULL`)."""
+        with self._session() as session:
+            row = session.execute(
+                text(
+                    """
+                    DELETE FROM meta_webhook_events
+                     WHERE id = :id AND status = 'processing' AND locked_by = :worker
+                    RETURNING delivery_id
+                    """
+                ),
+                {"id": event_id, "worker": worker_id},
+            ).first()
+            if row is None:
+                return False
+            if row.delivery_id is not None:
+                session.execute(
+                    text("DELETE FROM meta_webhook_deliveries WHERE id = :id"),
+                    {"id": row.delivery_id},
+                )
+        return True
+
+    def erase_message_events(self, *, entry_id: str, mid: str, keep_event_id: UUID) -> int:
+        """Delete every recorded Instagram `messages` change that carried message `mid` of
+        account `entry_id` — the payload still holds what the person wrote after they
+        unsent it — in any state, plus the raw body of each one's delivery. The unsend
+        changes themselves (`is_deleted`, content-less) and `keep_event_id` (the one being
+        processed) stay. A `pending` original goes too: the tombstone already makes it a
+        no-op. Idempotent; returns how many changes were deleted. Dedup after this rests on
+        the tombstone (`message_unsends`), not on `dedup_key`: a redelivery of the original
+        is recorded again, then refused and erased by the handler."""
+        if not entry_id or not mid:
+            raise ValueError("entry_id and mid are required")
+        with self._session() as session:
+            rows = session.execute(
+                text(
+                    """
+                    DELETE FROM meta_webhook_events
+                     WHERE object = 'instagram' AND field = 'messages'
+                       AND entry_id = :entry_id AND id <> :keep
+                       AND (value -> 'message' ->> 'mid' = :mid
+                            OR value -> 'postback' ->> 'mid' = :mid)
+                       AND NOT COALESCE(value -> 'message' -> 'is_deleted' = 'true'::jsonb,
+                                        false)
+                    RETURNING delivery_id
+                    """
+                ),
+                {"entry_id": entry_id, "mid": mid, "keep": keep_event_id},
+            ).all()
+            deliveries = sorted({str(r.delivery_id) for r in rows if r.delivery_id is not None})
+            for delivery_id in deliveries:
+                session.execute(
+                    text("DELETE FROM meta_webhook_deliveries WHERE id = CAST(:id AS uuid)"),
+                    {"id": delivery_id},
+                )
+        return len(rows)
+
     # -- replay ----------------------------------------------------------------------
 
     def requeue_unsupported_comments(
@@ -300,6 +367,30 @@ class WebhookQueue:
         """
         params: dict[str, Any] = {
             "replayable": MESSAGING_NOT_A_MESSAGE,
+            "now": now,
+            "entry_id": entry_id,
+        }
+        return self._requeue(where, params, execute=execute)
+
+    def requeue_unsupported_deleted(
+        self, *, now: datetime, execute: bool = False, entry_id: str | None = None
+    ) -> int:
+        """Put Instagram `messages` items flagged `is_deleted` (a person unsent a DM),
+        settled `unsupported` as `MESSAGING_MESSAGE_DELETED` before m-25018661, back in the
+        queue, so the handler erases the stored copy and the original change. Dry run
+        (count only) unless `execute`. Takes nothing else: a replayed one is settled
+        `processed` (or `unsupported` as an echo, under another reason), so a second run
+        replays nothing; the tombstone keeps the erasure single. Same queue-columns-only
+        update and same 29-day clock as the other replays. `entry_id` narrows it to one
+        account (the CLI requires it, or an explicit `--all-accounts`)."""
+        where = """
+            object = 'instagram' AND field = 'messages' AND status = 'unsupported'
+            AND last_error = :replayable
+            AND value -> 'message' -> 'is_deleted' = 'true'::jsonb
+            AND (CAST(:entry_id AS text) IS NULL OR entry_id = :entry_id)
+        """
+        params: dict[str, Any] = {
+            "replayable": MESSAGING_MESSAGE_DELETED,
             "now": now,
             "entry_id": entry_id,
         }

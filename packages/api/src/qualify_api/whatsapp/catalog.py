@@ -21,12 +21,19 @@ the catalog of the brand the WhatsApp number belongs to. Two halves:
   `brand_product_categories` (0128 grants the worker `tenant_id, brand_id, name_key,
   position`), filtered the same way.
 
+- `load_cart_products_for_phone(phone_number_row_id, product_ids)` — the production
+  `cart_product_loader` of the same handler (m-25018684): the Galería products a
+  catalog cart points at, by id, among the products of the receiving number's brand
+  and tenant, active or not (an order for a product hidden since is still that
+  product). One query for every line; an id of another brand or tenant is simply not
+  found, so it never links.
+
 Only the columns 0059 grants are selected — a `SELECT *` would be denied by design.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Collection, Iterable, Sequence
 from decimal import Decimal, InvalidOperation
 from typing import Protocol
 from uuid import UUID
@@ -44,6 +51,7 @@ from qualify_api.catalog.order import (
 )
 from qualify_api.whatsapp.menus.engine import CatalogItem
 from qualify_api.whatsapp.models import WhatsAppPhoneNumber
+from qualify_api.whatsapp.orders import CartProduct
 
 
 class CatalogRow(Protocol):
@@ -141,9 +149,57 @@ def load_catalog_for_phone(phone_number_row_id: UUID) -> tuple[CatalogItem, ...]
         return to_catalog_items(rows, tuple(order))
 
 
+def to_cart_products(rows: Iterable[CatalogRow]) -> dict[str, CartProduct]:
+    """Rows → `orders.CartProduct` keyed by the product id as canonical UUID text."""
+    return {
+        str(UUID(str(row.id))): CartProduct(
+            product_id=str(UUID(str(row.id))),
+            name=(row.name or "").strip(),
+            price_amount=_price(row.price_amount),
+            price_currency=(row.price_currency or "").strip().upper() or None,
+        )
+        for row in rows
+    }
+
+
+def load_cart_products_for_phone(
+    phone_number_row_id: UUID, product_ids: Collection[UUID]
+) -> dict[str, CartProduct]:
+    """The products of a cart, read as `qualify_webhook_worker` (m-25018684). Empty when
+    no id was given, the number is unknown or has no brand."""
+    if not product_ids:
+        return {}
+    with webhook_worker_session() as session:
+        phone = session.execute(
+            select(WhatsAppPhoneNumber.tenant_id, WhatsAppPhoneNumber.brand_id).where(
+                WhatsAppPhoneNumber.id == phone_number_row_id
+            )
+        ).first()
+        if phone is None or phone.brand_id is None:
+            return {}
+        rows = session.execute(
+            select(
+                BrandProduct.id,
+                BrandProduct.name,
+                BrandProduct.price_amount,
+                BrandProduct.price_currency,
+                BrandProduct.category,
+                BrandProduct.is_active,
+                BrandProduct.position,
+            ).where(
+                BrandProduct.tenant_id == phone.tenant_id,
+                BrandProduct.brand_id == phone.brand_id,
+                BrandProduct.id.in_(list(product_ids)),
+            )
+        ).all()
+        return to_cart_products(rows)
+
+
 __all__ = [
     "FALLBACK_CATEGORY",
     "CatalogRow",
+    "load_cart_products_for_phone",
     "load_catalog_for_phone",
+    "to_cart_products",
     "to_catalog_items",
 ]

@@ -670,7 +670,9 @@ def test_a_carousel_slide_prints_only_the_words_chosen_for_it() -> None:
 
 
 def test_the_text_layer_is_transparent_where_no_word_goes() -> None:
-    layer = Image.open(io.BytesIO(text_layer(size=(1080, 1350), hook="La smash", cta="Pide ya")))
+    layer = Image.open(
+        io.BytesIO(text_layer(size=(1080, 1350), hook="La smash", cta="Pide ya", pills=True))
+    )
     assert layer.mode == "RGBA" and layer.size == (1080, 1350)
     assert layer.getpixel((540, 675))[3] == 0  # the middle of the frame: untouched
     assert layer.getpixel((540, 1201))[3] == 255  # the CTA pill

@@ -203,7 +203,10 @@ def _store() -> MemoryStore:
     )
 
 
-def test_the_advertising_image_prints_the_catalog_price_as_given() -> None:
+def test_the_advertising_image_draws_no_price_pill() -> None:
+    """m-25017276 (founder, 2026-11-13): the catalog price is no longer drawn on the
+    composed image — it stays on the brief (and the copy) until the Remotion pipeline
+    decides where it goes; the scene prompt never carried it."""
     store = _store()
     seedream, remotion = FakeSeedream(), FakeRemotion()
     producer = _producer(store, seedream, remotion)
@@ -226,9 +229,10 @@ def test_the_advertising_image_prints_the_catalog_price_as_given() -> None:
     assert with_price.failure is None and without.failure is None
     assert len(seedream.requests) == 2
     assert "sobre una roca" in seedream.requests[0].params["prompt"]
-    # the scene prompt never carries the price: the figure is drawn locally, not by the model
+    # the scene prompt never carries the price, and no pill is drawn over the scene
     assert "18.000" not in seedream.requests[0].params["prompt"]
-    assert store.files[with_price.media[0].object_key] != store.files[without.media[0].object_key]
+    assert store.files[with_price.media[0].object_key] == store.files[without.media[0].object_key]
+    assert all(w.code != PRICE_NOT_PRINTED for w in with_price.warnings)
 
 
 def test_a_template_brief_with_a_scene_generates_it_first_and_leads_the_photos_with_it() -> None:
@@ -393,7 +397,9 @@ def test_a_scene_that_fails_is_recorded_on_the_run_and_no_render_is_asked() -> N
 TOO_LONG = "Desde $ 12.499.900 COP por unidad"
 
 
-def test_a_price_too_long_for_the_ad_image_is_left_out_with_a_warning() -> None:
+def test_a_price_too_long_for_the_ad_image_raises_no_warning_now_that_none_is_drawn() -> None:
+    """m-25017276: no price pill on the composed image, so no «precio no impreso» warning
+    about a pill the client never sees."""
     seedream, remotion = FakeSeedream(), FakeRemotion()
     store = _store()
     producer = _producer(store, seedream, remotion)
@@ -403,12 +409,9 @@ def test_a_price_too_long_for_the_ad_image_is_left_out_with_a_warning() -> None:
     )
     no_price = _template(producer, _brief(ContentKind.STATIC_FLYER, scene_prompt="sobre una roca"))
     assert long_price.failure is None and no_price.failure is None
-    # this kit names no typeface: both pieces also say so (m-24828920)
-    (warning,) = [w for w in long_price.warnings if w.code != BRAND_FONT_DEFAULT]
-    assert warning.code == PRICE_NOT_PRINTED
-    assert warning.fields["price"] == TOO_LONG and warning.fields["reason"] == "too_long"
-    assert warning.detail  # the operator's words, for the UI block
-    # nothing cut was printed: the piece is exactly the one without a price
+    # this kit names no typeface: both pieces say only that (m-24828920)
+    assert [w.code for w in long_price.warnings] == [BRAND_FONT_DEFAULT]
+    # nothing was printed: the piece is exactly the one without a price
     assert store.files[long_price.media[0].object_key] == store.files[no_price.media[0].object_key]
     assert [w.code for w in no_price.warnings] == [BRAND_FONT_DEFAULT]
 

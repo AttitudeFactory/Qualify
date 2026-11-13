@@ -181,7 +181,7 @@ HOME_COUNTS_SQL = text(
                  WHERE r.message_id = m.id AND r.status = 'sent')
       ) AS comments_unanswered,
       (SELECT count(*) FROM messages m JOIN threads t ON t.id = m.thread_id
-        WHERE t.channel = 'dm' AND m.direction = 'inbound'
+        WHERE t.channel = 'dm' AND m.direction = 'inbound' AND m.unsent_at IS NULL
           AND COALESCE(m.posted_at, m.ingested_at) >= :since
       ) AS messages_week_dm,
       (SELECT count(*) FROM messages m JOIN threads t ON t.id = m.thread_id

@@ -192,6 +192,13 @@ webhook-requeue-comments *args:
 webhook-requeue-postbacks *args:
     uv run --no-sync python -m qualify_api.webhooks.worker --requeue-postbacks {{args}}
 
+# m-25018661: requeue Instagram DMs a person unsent (`is_deleted`), recorded as
+# `unsupported` before the handler erased them, so the stored copy and the original
+# changes are erased. Needs an explicit scope; dry run unless --execute.
+#   just webhook-requeue-deleted (--account <ig_account_id> | --all-accounts) [--execute]
+webhook-requeue-deleted *args:
+    uv run --no-sync python -m qualify_api.webhooks.worker --requeue-deleted {{args}}
+
 # WA-06: manual smoke of the WhatsApp Cloud API client against the test number. DEV ONLY —
 # reads QUALIFY_WA_SYSTEM_USER_TOKEN and QUALIFY_WA_PHONE_NUMBER_ID from the environment,
 # sends for real, prints only the wamid(s).
@@ -594,6 +601,11 @@ sentiment-kit *args:
 # PB-6 (m-24852200): real cost of one Alta prefill — LIVE credits + tokens, local stack only.
 eval-precarga *args:
     PYTHONUTF8=1 uv run --no-sync python packages/api/evals/alta_prefill_cost/run_experiment.py {{args}}
+
+# m-25017274: «Mejorar mi texto» — six fictional food briefs, two presses each, how much
+# the answers repeat (similarity), new numbers and cost. Spends ≈ USD 0.08 per run.
+eval-mejorar-texto *args:
+    PYTHONUTF8=1 uv run --no-sync python packages/api/evals/mejorar_texto/run_experiment.py {{args}}
 
 eval-voz *args:
     PYTHONUTF8=1 uv run --no-sync python packages/api/evals/voice_ai/run_experiment.py {{args}}
