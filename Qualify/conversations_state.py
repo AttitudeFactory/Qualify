@@ -187,6 +187,10 @@ _ACCOUNTS_FAILED = (
 _LIST_FAILED = "No se pudieron cargar las conversaciones. Vuelve a intentarlo en un momento."
 _CONV_FAILED = "No se pudo cargar esta conversación. Vuelve a intentarlo en un momento."
 _THREAD_GONE = "Esa conversación ya no está disponible en esta cuenta."
+#: m-25018661: the open chat left the list on a refresh while the owner had something in
+#: the composer. Neutral on purpose: the list is the newest 50 threads of the account, so
+#: a thread can also drop out without anyone unsending — the cause cannot be told apart.
+_THREAD_GONE_DRAFT_LOST = "Esta conversación ya no está disponible. Lo que escribiste no se envió."
 _NO_USER = (
     "No encontramos tu usuario en este negocio, así que no podemos firmar la respuesta. "
     "Pide al equipo de Qualify que lo revise."
@@ -559,7 +563,8 @@ class ConversationsState(rx.State):
     @rx.var
     def window_closed_notice(self) -> str:
         if self.open_thread_id and not self.open_thread.window_open:
-            return WINDOW_CLOSED_NOTICE
+            # The row's own words: the 24 h, or «no queda ningún mensaje» (m-25018661).
+            return self.open_thread.window_label
         return ""
 
     # -- message templates --------------------------------------------------------------
@@ -920,8 +925,14 @@ class ConversationsState(rx.State):
             self.list_loading_for = ""
             self.list_error = ""
             if self.open_thread_id and self.open_thread_id not in {r.thread_id for r in self.rows}:
+                # m-25018661: only a refresh of the SAME account can lose the open chat
+                # (an account switch resets it first; filters never drop rows). Say so
+                # when something unsent would vanish with it; an empty composer stays quiet.
+                had_draft = bool(self.draft_text.strip()) or self.attachment.object_key != ""
                 self.open_thread_id = ""
                 self._reset_conversation()
+                if silent and had_draft:
+                    self._set_banner(_THREAD_GONE_DRAFT_LOST, "warn")
             return [r for r in rows if r.thread_id in fresh_ids]
 
     # ==================================================================================
