@@ -203,3 +203,82 @@ def test_a_generated_slide_prompt_reaches_image_assets(seeded_ab: tuple[UUID, UU
             select(ImageAsset.rendered_prompt).where(ImageAsset.draft_id == draft)
         ).all()
     assert stored == ["Create one professional advertising photograph"]
+
+
+def _asset(tenant_id: UUID, draft_id: UUID, version_id: UUID) -> UUID:
+    asset_id = uuid4()
+    with tenant_session(tenant_id) as session:
+        session.execute(
+            text(
+                "INSERT INTO image_assets (id, tenant_id, draft_id, version_id, media_url,"
+                " object_key, content_type, media_type)"
+                " VALUES (:id, :t, :d, :v, 'unused', :key, 'image/jpeg', 'image')"
+            ),
+            {
+                "id": asset_id,
+                "t": tenant_id,
+                "d": draft_id,
+                "v": version_id,
+                "key": f"t/{tenant_id}/generated/{draft_id}/base/{asset_id}.jpg",
+            },
+        )
+    return asset_id
+
+
+def _add(tenant_id: UUID, piece: tuple[UUID, UUID, UUID], **over: object) -> UUID:
+    layer = _layer(tenant_id, *piece, **over)
+    with tenant_session(tenant_id) as session:
+        session.add(layer)
+        session.flush()
+        return layer.id
+
+
+def test_a_layer_cannot_use_another_business_base_photo(seeded_ab: tuple[UUID, UUID]) -> None:
+    """Review of m-25017278: keys are checked without RLS, so the asset key carries
+    `tenant_id` — A can neither point at nor probe B's stored photo."""
+    tenant_a, tenant_b = seeded_ab
+    piece_a = _piece(tenant_a)
+    piece_b = _piece(tenant_b)
+    theirs = _asset(tenant_b, piece_b[1], piece_b[2])
+    with pytest.raises(IntegrityError), tenant_session(tenant_a) as session:
+        session.add(_layer(tenant_a, *piece_a, base_asset_id=theirs))
+        session.flush()
+    # its own photo is fine, and deleting that photo clears only the reference
+    mine = _asset(tenant_a, piece_a[1], piece_a[2])
+    layer = _add(tenant_a, piece_a, base_asset_id=mine)
+    engine = create_engine(os.environ["QUALIFY_MIGRATION_DSN"])
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("SELECT set_config('app.tenant_id', :t, true)"), {"t": str(tenant_a)})
+            conn.execute(text("DELETE FROM image_assets WHERE id = :a"), {"a": mine})
+    finally:
+        engine.dispose()
+    with tenant_session(tenant_a) as session:
+        row = session.get(PieceLayer, layer)
+        assert row is not None and row.base_asset_id is None and row.tenant_id == tenant_a
+
+
+def test_a_layer_cannot_derive_from_another_business_layer(seeded_ab: tuple[UUID, UUID]) -> None:
+    tenant_a, tenant_b = seeded_ab
+    piece_a = _piece(tenant_a)
+    theirs = _add(tenant_b, _piece(tenant_b))
+    with pytest.raises(IntegrityError), tenant_session(tenant_a) as session:
+        session.add(_layer(tenant_a, *piece_a, parent_layer_id=theirs))
+        session.flush()
+
+
+def test_one_correction_per_layer_at_the_same_slide(seeded_ab: tuple[UUID, UUID]) -> None:
+    """ADR 49 §2.3: the visual check writes its corrected layer as a new row at the same
+    version and position; one per parent, and a second root stays refused."""
+    tenant_a, _ = seeded_ab
+    piece = _piece(tenant_a)
+    root = _add(tenant_a, piece)
+    with pytest.raises(IntegrityError), tenant_session(tenant_a) as session:
+        session.add(_layer(tenant_a, *piece))  # a second root at position 0
+        session.flush()
+    fixed = _add(tenant_a, piece, parent_layer_id=root)  # the one correction
+    assert fixed != root
+    with pytest.raises(IntegrityError), tenant_session(tenant_a) as session:
+        session.add(_layer(tenant_a, *piece, parent_layer_id=root))  # a second one
+        session.flush()
+    assert _add(tenant_a, piece, parent_layer_id=fixed)  # a further change derives from it

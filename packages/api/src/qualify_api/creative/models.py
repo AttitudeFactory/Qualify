@@ -675,22 +675,31 @@ class PieceLayer(Base):
     """The text layer of one slide of an image or carousel piece (0163, ADR 49 §2.1,
     m-25017278): what the composition draws over the base photo, per version and position.
 
-    A layer is never edited in place — an owner's edit or the check's correction is a new
-    row with `parent_layer_id`. The composite keys to `brands`, `content_drafts`,
-    `piece_versions` and `users` (with `tenant_id`) are enforced by the migration; the
-    table ships empty and m-25017283 is its first writer."""
+    A layer is never edited in place. One ROOT layer per version and position
+    (`parent_layer_id IS NULL`); the visual check's correction or an owner's edit is a new
+    row at the same version and position with `parent_layer_id`, at most one per parent
+    (a further change derives from that row). Every key carries `tenant_id` — to `brands`,
+    `content_drafts`, `piece_versions`, `image_assets`, `users` and this table — enforced by
+    the migration (Postgres checks keys without RLS). The table ships empty and m-25017283
+    is its first writer."""
 
     __tablename__ = "piece_layers"
     __table_args__ = (
-        UniqueConstraint(
-            "tenant_id", "version_id", "position", name="uq_piece_layers_version_position"
+        Index(
+            "uq_piece_layers_root_position",
+            "tenant_id",
+            "version_id",
+            "position",
+            unique=True,
+            postgresql_where=text("parent_layer_id IS NULL"),
         ),
         UniqueConstraint("id", "tenant_id", name="uq_piece_layers_id_tenant"),
+        UniqueConstraint("tenant_id", "parent_layer_id", name="uq_piece_layers_parent"),
         CheckConstraint(
             "source IN ('model', 'owner_edit', 'owner_photo')", name="piece_layers_source_check"
         ),
         Index("ix_piece_layers_draft", "tenant_id", "draft_id"),
-        Index("ix_piece_layers_version", "version_id"),
+        Index("ix_piece_layers_version", "version_id", "tenant_id"),
     )
 
     id: Mapped[UUID] = mapped_column(
@@ -709,14 +718,10 @@ class PieceLayer(Base):
     spec_sha256: Mapped[str] = mapped_column(Text, nullable=False)
     #: The stored Seedream photo the layer was written over, or (`base_media_ref`) the
     #: Galería medium as `gallery_piece.py` names it (`n:<uuid>` / `p:<uuid>`) — never both.
-    base_asset_id: Mapped[UUID | None] = mapped_column(
-        PGUUID(as_uuid=True), ForeignKey("image_assets.id", ondelete="SET NULL"), nullable=True
-    )
+    base_asset_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
     base_media_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
     source: Mapped[str] = mapped_column(Text, nullable=False)
-    parent_layer_id: Mapped[UUID | None] = mapped_column(
-        PGUUID(as_uuid=True), ForeignKey("piece_layers.id", ondelete="SET NULL"), nullable=True
-    )
+    parent_layer_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
     created_by: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
     model_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     prompt_version: Mapped[str | None] = mapped_column(Text, nullable=True)
