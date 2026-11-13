@@ -73,6 +73,7 @@ from .promotion_vm import (
     PromotionReviewVM,
     PromotionSourceVM,
     cop_label,
+    cop_minor,
     first_problem,
     promotion_checks,
     promotion_result,
@@ -941,6 +942,15 @@ class PromotionState(rx.State):
     @rx.var
     def budget_label(self) -> str:
         return cop_label(self.form.budget)
+
+    @rx.var
+    def budget_valid(self) -> bool:
+        """The «Total: $25.000 COP» line shows only for an amount that parses."""
+        try:
+            cop_minor(self.form.budget)
+        except ValueError:
+            return False
+        return True
 
     @rx.var
     def charge_button(self) -> str:

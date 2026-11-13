@@ -429,6 +429,8 @@ class PlannerState(rx.State):
     story_ad_post: str = ""
     #: …and the pieces checked to be story ad sources (`story_ad_ready`).
     story_ad_ready: list[str] = []
+    #: «Hacer anuncio pagado» re-reads readiness before leaving: disabled meanwhile.
+    story_ad_busy: bool = False
     form_event_id: str = ""
     form_tag_query: str = ""
     form_error: str = ""
@@ -2028,23 +2030,34 @@ class PlannerState(rx.State):
         """«Hacer anuncio pagado»: the readiness is read again first; only then the ad
         REPLACES the historia (see `_leave_for_story_ad`)."""
         async with self:
+            if self.story_ad_busy or self.saving:
+                return
             post_id = self.story_ad_post
-        tenant_id, draft_id = await self._tenant(), tenant_uuid(post_id)
-        ready = False
-        if tenant_id is not None and draft_id is not None:
-            try:
-                ready = await asyncio.to_thread(story_ad_ready, tenant_id, draft_id)
-            except Exception as exc:  # noqa: BLE001 — never leave the plan on a doubt
-                logger.warning("story ad readiness read failed: %s", type(exc).__name__)
-        async with self:
-            events = self._leave_for_story_ad(post_id, ready)
+            self.story_ad_busy = True  # «Hacer anuncio pagado» is disabled meanwhile
+        try:
+            tenant_id, draft_id = await self._tenant(), tenant_uuid(post_id)
+            ready = False
+            if tenant_id is not None and draft_id is not None:
+                try:
+                    ready = await asyncio.to_thread(story_ad_ready, tenant_id, draft_id)
+                except Exception as exc:  # noqa: BLE001 — never leave the plan on a doubt
+                    logger.warning("story ad readiness read failed: %s", type(exc).__name__)
+            async with self:
+                events = self._leave_for_story_ad(post_id, ready)
+        finally:
+            async with self:
+                self.story_ad_busy = False
         for event in events:
             yield event
 
     def _leave_for_story_ad(self, post_id: str, ready: bool) -> list[rx.event.EventSpec]:
         """The plan is closed without scheduling anything (no organic story goes out)
         and the ad wizard opens on the piece's 9:16 file, which itself launches nothing
-        without preview and consent. Not ready (or not this notice): the plan stays."""
+        without preview and consent. Not ready (or not this notice): the plan stays.
+        Nor while «Programar» runs or after the drawer closed during the read: the
+        historia must never both be scheduled and replaced by the ad."""
+        if not self.form_open or self.saving:
+            return []
         if not post_id or post_id != self.story_ad_post or not self._story_row_ok(post_id):
             return []
         if not ready:

@@ -1259,6 +1259,8 @@ def _story_ad_choice(row, asking) -> rx.Component:
                     rx.button(
                         STORY_AD_CONTINUE,
                         on_click=PlannerState.continue_story_ad,
+                        disabled=PlannerState.story_ad_busy | PlannerState.saving,
+                        loading=PlannerState.story_ad_busy,
                         size="2",
                         min_height="44px",
                     ),

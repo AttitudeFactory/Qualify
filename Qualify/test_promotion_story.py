@@ -424,3 +424,33 @@ def test_the_notice_says_it_is_paid_before_the_wizard() -> None:
     # checked from the step container, never from inside the per-row foreach (whose row
     # variable does not exist where on_mount runs)
     assert "check_story_ad" in str(_step_schedule().event_triggers["on_mount"])
+
+
+def test_programar_running_or_a_closed_drawer_never_also_opens_the_ad() -> None:
+    piece = str(uuid4())
+    state = _planner(piece)
+    state._mark_story_ad(piece, True)
+    state.ask_story_ad(piece)
+    state.saving = True  # «Programar» completing during the readiness read
+    assert state._leave_for_story_ad(piece, True) == []
+    assert len(state.plan_items) == 1
+    state.saving, state.form_open = False, False
+    assert state._leave_for_story_ad(piece, True) == []
+
+
+def test_leaving_the_drawer_navigates_exactly_once_even_if_the_pop_never_comes() -> None:
+    from .nav_url import close_flow_then_go_script  # noqa: PLC0415
+
+    script = close_flow_then_go_script("programar", "/drafts/x/promote?formato=historia")
+    assert "let done = false" in script and "if (done) return" in script
+    # fallback timer, cleared by the popstate handler
+    assert "setTimeout(go, 600)" in script and "clearTimeout(late)" in script
+    # depth <= 0 (or no flow root): the address is cleaned in place and it leaves at once
+    tail = script.split("window.history.go(-st.qFlowDepth); return; }", 1)[1]
+    assert "replaceState" in tail and tail.rstrip().endswith("go(); })();")
+
+
+@pytest.mark.parametrize(("budget", "shown"), [("25000", True), ("", False), ("25.000", False)])
+def test_the_total_line_shows_only_a_valid_amount(budget, shown) -> None:
+    context = SimpleNamespace(form=replace(PromotionDraftVM(), budget=budget))
+    assert PromotionState.budget_valid.fget(context) is shown

@@ -485,7 +485,7 @@ def _budget() -> rx.Component:
             ),
             # The amount as the owner reads money: «$25.000 COP» (m-25026350 UX review).
             rx.cond(
-                S.form.budget != "",
+                S.budget_valid,
                 rx.text("Total: " + S.budget_label, size="2", weight="medium"),
             ),
             _field("Inicio", "start_local", S.form.start_local, type="datetime-local"),
