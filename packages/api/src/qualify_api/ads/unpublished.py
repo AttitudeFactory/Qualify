@@ -15,6 +15,11 @@ from qualify_api.ads.wizard import WEBSITE_CTAS  # the piece's saved button (m-2
 
 PIPELINE = "ad-unpublished-images-v1"
 VIDEO_PIPELINE = "ad-unpublished-video-v1"
+# m-25026350: one 9:16 asset shown only in Instagram stories (an organic story cannot carry a
+# link sticker through the publishing API; a story ad carries the button).
+STORY_PIPELINE = "ad-story-image-v1"
+STORY_VIDEO_PIPELINE = "ad-story-video-v1"
+STORY_FORMAT = "Elige una imagen o un video MP4 vertical de 9:16 para la historia."
 MAX_IMAGE_BYTES = 8 * 1024 * 1024  # Local policy, not a claimed Meta limit.
 # Local policy, not claimed Meta limits: one story card is the tightest placement we target.
 MAX_VIDEO_BYTES = 100 * 1024 * 1024
@@ -45,7 +50,7 @@ class ImageSelection:
     width: int
     height: int
 
-    def validate(self, ratio: tuple[int, int]) -> None:
+    def validate(self, ratio: tuple[int, int], wrong: str = "") -> None:
         if (
             self.content_type not in {"image/jpeg", "image/png"}
             or type(self.width) is not int
@@ -54,7 +59,8 @@ class ImageSelection:
             or self.width * ratio[1] != self.height * ratio[0]
         ):
             raise UnpublishedUnavailable(
-                "Elige dos imágenes: una de 4:5 para las publicaciones y otra vertical de 9:16."
+                wrong
+                or "Elige dos imágenes: una de 4:5 para las publicaciones y otra vertical de 9:16."
             )
 
 
@@ -72,7 +78,7 @@ class VideoSelection:
     height: int
     thumbnail: ImageSelection | None
 
-    def validate(self, ratio: tuple[int, int]) -> None:
+    def validate(self, ratio: tuple[int, int], wrong: str = "") -> None:
         if (
             self.content_type != "video/mp4"
             or type(self.width) is not int
@@ -81,7 +87,8 @@ class VideoSelection:
             or self.width * ratio[1] != self.height * ratio[0]
         ):
             raise UnpublishedUnavailable(
-                "Elige dos videos MP4: uno para el perfil (4:5) y otro vertical de pantalla "
+                wrong
+                or "Elige dos videos MP4: uno para el perfil (4:5) y otro vertical de pantalla "
                 "completa (9:16)."
             )
         if self.thumbnail is None:
@@ -89,7 +96,7 @@ class VideoSelection:
                 "Falta la portada de cada video. Elige una imagen de la misma pieza "
                 "con el mismo formato del video."
             )
-        self.thumbnail.validate(ratio)
+        self.thumbnail.validate(ratio, wrong)
 
 
 @dataclass(frozen=True)
@@ -107,16 +114,29 @@ class ImageSource:
     page_id: str
     currency: str
     timezone_name: str
-    feed: ImageSelection | VideoSelection
+    # None = a story ad (m-25026350): only `vertical`, placed only in Instagram stories.
+    feed: ImageSelection | VideoSelection | None
     vertical: ImageSelection | VideoSelection
 
     @property
     def is_video(self) -> bool:
-        return isinstance(self.feed, VideoSelection)
+        return isinstance(self.vertical, VideoSelection)
+
+    @property
+    def is_story(self) -> bool:
+        return self.feed is None
+
+    @property
+    def assets(self) -> tuple[ImageSelection | VideoSelection, ...]:
+        return (self.vertical,) if self.feed is None else (self.feed, self.vertical)
 
     def snapshot(self) -> dict[str, Any]:
         import json
 
+        if self.feed is None:
+            self.vertical.validate((9, 16), STORY_FORMAT)
+            pipeline = STORY_VIDEO_PIPELINE if self.is_video else STORY_PIPELINE
+            return json.loads(json.dumps(asdict(self), default=str)) | {"pipeline": pipeline}
         if type(self.feed) is not type(self.vertical):
             raise UnpublishedUnavailable("Usa dos imágenes o dos videos; no se pueden mezclar.")
         self.feed.validate((4, 5))
@@ -214,8 +234,24 @@ def _video_id(value: object) -> bool:
 def creative_payload(source: ImageSource, form: ImageAdForm, hashes: tuple[str, str]) -> dict:
     """SDK26 fields; exact account compatibility must still pass Meta validate_only."""
     source.snapshot()
-    if source.is_video or len(hashes) != 2 or not all(_image_hash(value) for value in hashes):
+    if (
+        source.is_video
+        or len(hashes) != len(source.assets)
+        or not all(_image_hash(value) for value in hashes)
+    ):
         raise UnpublishedUnavailable("Meta no confirmó las imágenes de este anuncio.")
+    if source.is_story:
+        return _story(
+            source,
+            form,
+            "link_data",
+            {
+                "image_hash": hashes[0],
+                "link": form.link_url,
+                "message": form.message,
+                "name": form.headline,
+            },
+        )
     media = [{"hash": value} for value in hashes]
     return _asset_feed(source, form, "SINGLE_IMAGE", "images", "image_label", media)
 
@@ -228,14 +264,44 @@ def video_creative_payload(
     source.snapshot()
     if (
         not source.is_video
-        or len(videos) != 2
+        or len(videos) != len(source.assets)
         or not all(
             len(pair) == 2 and _video_id(pair[0]) and _image_hash(pair[1]) for pair in videos
         )
     ):
         raise UnpublishedUnavailable("Meta no confirmó los videos de este anuncio.")
+    if source.is_story:
+        (video, cover), *_ = videos
+        return _story(
+            source,
+            form,
+            "video_data",
+            {
+                "video_id": video,
+                "image_hash": cover,
+                "message": form.message,
+                "title": form.headline,
+            },
+        )
     media = [{"video_id": video, "thumbnail_hash": cover} for video, cover in videos]
     return _asset_feed(source, form, "SINGLE_VIDEO", "videos", "video_label", media)
+
+
+def _story(source: ImageSource, form: ImageAdForm, field: str, data: dict[str, str]) -> dict:
+    """A plain single-asset creative; stories-only placement lives in the ad set targeting.
+
+    facebook-python-business-sdk 26.0.0 `adobjects/`: AdCreativeObjectStorySpec (page_id,
+    instagram_user_id, link_data, video_data), AdCreativeLinkData (image_hash, link, message,
+    name, call_to_action), AdCreativeVideoData (video_id, image_hash, message, title,
+    call_to_action), AdCreativeLinkDataCallToActionValue (link)."""
+    cta = {"type": form.cta_type, "value": {"link": form.link_url}}
+    return {
+        "object_story_spec": {
+            "page_id": source.page_id,
+            "instagram_user_id": source.instagram_id,
+            field: data | {"call_to_action": cta},
+        }
+    }
 
 
 def _asset_feed(
