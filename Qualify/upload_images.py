@@ -17,6 +17,7 @@ is Remotion's. `normalize_photo` blocks; screens call `normalize_photo_when_free
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import io
 import threading
 from dataclasses import dataclass
@@ -41,13 +42,13 @@ PHOTO_MAX_PIXELS = {"JPEG": 60_000_000, "PNG": 16_000_000, "WEBP": 12_000_000, "
 #: generation and composition work at ≤ 1920 px).
 _DRAFT_SIDE = 2048
 
-#: One conversion at a time per process. The async slot is waited on the event loop,
-#: with a timeout, BEFORE a thread is taken (`normalize_photo_when_free`); the thread
+#: One conversion at a time per process. The process's heavy-media gate
+#: (`heavy_media`, shared with the catalog's ffmpeg) is waited on the event loop, with a
+#: timeout, BEFORE a thread is taken (`normalize_photo_when_free`); this thread
 #: semaphore also covers any blocking caller.
-_ASYNC_SLOT = asyncio.Semaphore(1)
 _CONVERSIONS = threading.BoundedSemaphore(1)
-#: How long an upload waits for another photo's conversion before it says so (one
-#: conversion at the caps measured ≤ ~3 s on a laptop).
+#: How long an upload waits for another heavy job (a photo, a catalog clip) before it
+#: says so (one conversion at the caps measured ≤ ~3 s on a laptop).
 PHOTO_WAIT_SECONDS = 20.0
 
 _HEIF_SUFFIXES = (".heic", ".heif")
@@ -106,19 +107,19 @@ def normalize_photo(
 async def normalize_photo_when_free(
     fileobj: IO[bytes], name: str, *, wait_seconds: float | None = None
 ) -> StoredPhoto:
-    """`normalize_photo` off the event loop, after waiting its turn ON the loop: a queued
-    upload never holds a default-executor thread (every `asyncio.to_thread` DB read of
-    the app shares them). Raises `PhotoBusy` when another photo kept the slot for
-    `wait_seconds` (`PHOTO_WAIT_SECONDS`)."""
+    """`normalize_photo` off the event loop, after waiting its turn ON the loop for the
+    process's heavy-media gate: a queued upload never holds a default-executor thread
+    (every `asyncio.to_thread` DB read of the app shares them). Raises `PhotoBusy` when
+    another heavy job kept the gate for `wait_seconds` (`PHOTO_WAIT_SECONDS`)."""
+    from .heavy_media import heavy_media_slot  # noqa: PLC0415 — keeps this module standalone
+
     wait = PHOTO_WAIT_SECONDS if wait_seconds is None else wait_seconds
-    try:
-        await asyncio.wait_for(_ASYNC_SLOT.acquire(), timeout=wait)
-    except TimeoutError as exc:
-        raise PhotoBusy(f"waited {wait:.0f} s") from exc
-    try:
+    async with contextlib.AsyncExitStack() as stack:
+        try:
+            await stack.enter_async_context(heavy_media_slot(timeout=wait))
+        except TimeoutError as exc:  # only the wait: a timeout inside is not «busy»
+            raise PhotoBusy(f"waited {wait:.0f} s") from exc
         return await asyncio.to_thread(normalize_photo, fileobj, name)
-    finally:
-        _ASYNC_SLOT.release()
 
 
 def _pixel_cap(pillow_format: str) -> int:

@@ -272,7 +272,9 @@ async def test_a_queued_photo_waits_on_the_loop_then_says_so(
     import asyncio
 
     slot = asyncio.Semaphore(1)
-    monkeypatch.setattr(upload_images, "_ASYNC_SLOT", slot)
+    from . import heavy_media
+
+    monkeypatch.setattr(heavy_media, "_GATE", slot)
     monkeypatch.setattr(upload_images, "PHOTO_WAIT_SECONDS", 0.05)
     threads: list[str] = []
 
