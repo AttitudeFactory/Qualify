@@ -29,8 +29,9 @@ settled-row trigger accepts only for that change (0160).
   24 h 3 min it is never read again by the tick. No column is needed: the bands are a
   pure function of `settled_at` and the tick's `now`.
 
-Only an `https://instagram.com/…` or `https://www.instagram.com/…` answer is stored; an
-empty or any other answer stores nothing (`IGNORED`).
+Only an https answer whose PARSED hostname is `instagram.com` or a subdomain is stored
+(`instagram_permalink`, no userinfo, port 443); an empty or any other answer stores
+nothing (`IGNORED`).
 """
 
 from __future__ import annotations
@@ -42,6 +43,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Protocol
+from urllib.parse import urlsplit
 from uuid import UUID
 
 import httpx
@@ -72,14 +74,46 @@ RETRY_BANDS: tuple[tuple[timedelta, timedelta], ...] = (
     (timedelta(hours=24), timedelta(hours=24, minutes=3)),
 )
 
-_INSTAGRAM = re.compile(r"^https://(www\.)?instagram\.com/[^\s]+$")
+#: Where a permalink may point: Instagram itself and its subdomains.
+INSTAGRAM_HOSTS = ("instagram.com",)
+#: Where a picture may be downloaded from: Meta's CDNs — the same list the reels module
+#: allows for Instagram sources (`referentes.reel_reference._SUFFIXES["instagram"]`).
+META_CDN_HOSTS = ("cdninstagram.com", "fbcdn.net")
+_WHITESPACE = re.compile(r"\s")
+
+
+def https_host_in(value: str | None, suffixes: tuple[str, ...]) -> bool:
+    """Whether `value` is an https URL on port 443 whose PARSED hostname is one of
+    `suffixes` or a subdomain of one — no userinfo, no whitespace. Never a substring or
+    `endswith` test on the raw URL (`https://x.com@evil/`, `https://evil/?x.com` fail)."""
+    if not value or _WHITESPACE.search(value):
+        return False
+    try:
+        parts = urlsplit(value)
+        port = parts.port
+    except ValueError:
+        return False
+    host = (parts.hostname or "").lower().rstrip(".")
+    return (
+        parts.scheme == "https"
+        and port in (None, 443)
+        and parts.username is None
+        and parts.password is None
+        and bool(host)
+        and any(host == suffix or host.endswith("." + suffix) for suffix in suffixes)
+    )
 
 
 def instagram_permalink(value: str | None) -> str | None:
-    """`value` when it is an https Instagram address, else None."""
-    if value and _INSTAGRAM.fullmatch(value.strip()):
-        return value.strip()
-    return None
+    """`value` when it is an https Instagram address (parsed host `instagram.com` or a
+    subdomain), else None."""
+    clean = (value or "").strip()
+    return clean if https_host_in(clean, INSTAGRAM_HOSTS) else None
+
+
+def meta_cdn_url(value: str | None) -> bool:
+    """Whether `value` may be downloaded: https on a Meta CDN host (parsed)."""
+    return https_host_in(value, META_CDN_HOSTS)
 
 
 class Outcome(StrEnum):
@@ -348,7 +382,9 @@ __all__ = [
     "due_permalinks",
     "fill_permalinks",
     "fill_recent_permalinks",
+    "https_host_in",
     "instagram_permalink",
+    "meta_cdn_url",
     "production_reader",
     "read_media",
     "store_permalink",

@@ -127,6 +127,7 @@ from enum import StrEnum
 from urllib.parse import urlsplit
 from uuid import UUID
 
+import httpx
 from qualify_creative.enums import ReuseType
 from qualify_shared.db.session import tenant_session
 from qualify_shared.objects.gate import ObjectGate, StoredObject
@@ -154,6 +155,7 @@ from qualify_api.planner.permalinks import (
     MediaReader,
     PermalinkTarget,
     ReaderFactory,
+    meta_cdn_url,
     production_reader,
     read_media,
     store_permalink,
@@ -700,6 +702,67 @@ def _resolve(
     return Action.INSTAGRAM_COPY, match, f"doubtful: {detail}"
 
 
+#: Instagram's copy: at most the image cap, 10 s, three redirects (each re-validated).
+COPY_MAX_BYTES = IMAGE_MAX_BYTES
+COPY_TIMEOUT_SECONDS = 10.0
+COPY_MAX_REDIRECTS = 3
+_IMAGE_TYPES = frozenset({"image/jpeg", "image/png", "image/webp"})
+
+
+class CdnPictureFetcher:
+    """Downloads Instagram's copy of a picture — and nothing else. Every URL, the first
+    and each redirect target, must be https on a Meta CDN host by its PARSED hostname
+    (`permalinks.meta_cdn_url`); redirects are never followed blindly. Bounded in time
+    (`COPY_TIMEOUT_SECONDS`) and size (`COPY_MAX_BYTES`, enforced while streaming), and
+    the answer must be an image both by its header and by its bytes (`sniff`). The URL is
+    a signed Meta link: it never reaches a log or an error."""
+
+    def __init__(
+        self,
+        *,
+        timeout: float = COPY_TIMEOUT_SECONDS,
+        max_bytes: int = COPY_MAX_BYTES,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
+        self._timeout = timeout
+        self._max_bytes = max_bytes
+        self._transport = transport
+
+    async def fetch(self, url: str) -> tuple[bytes, str]:
+        try:
+            async with httpx.AsyncClient(
+                timeout=self._timeout, follow_redirects=False, transport=self._transport
+            ) as client:
+                for _ in range(COPY_MAX_REDIRECTS + 1):
+                    if not meta_cdn_url(url):
+                        raise ThumbnailUnavailable("picture URL is not https on a Meta CDN host")
+                    async with client.stream("GET", url) as response:
+                        if response.is_redirect:
+                            location = response.headers.get("location", "")
+                            url = str(response.url.join(location))
+                            continue
+                        return await self._read(response)
+        except httpx.HTTPError as exc:
+            raise ThumbnailUnavailable(f"picture download failed: {type(exc).__name__}") from exc
+        raise ThumbnailUnavailable("too many redirects")
+
+    async def _read(self, response: httpx.Response) -> tuple[bytes, str]:
+        if response.status_code != 200:
+            raise ThumbnailUnavailable(f"picture answered HTTP {response.status_code}")
+        declared = response.headers.get("content-type", "").split(";")[0].strip().lower()
+        if not declared.startswith("image/"):
+            raise ThumbnailUnavailable("picture answer is not an image")
+        body = bytearray()
+        async for chunk in response.aiter_bytes():
+            body.extend(chunk)
+            if len(body) > self._max_bytes:
+                raise ThumbnailUnavailable("picture is larger than the cap")
+        actual = sniff(bytes(body[:SNIFF_BYTES]))
+        if actual not in _IMAGE_TYPES:
+            raise ThumbnailUnavailable("picture bytes are not a JPEG, PNG or WebP image")
+        return bytes(body), actual
+
+
 async def _copy_from_instagram(
     media: MediaSummary,
     *,
@@ -720,6 +783,8 @@ async def _copy_from_instagram(
         return key, content_type
     if not media.media_url:
         return "Instagram gave no picture address"
+    if not meta_cdn_url(media.media_url):
+        return "Instagram's picture address is not https on a Meta CDN host"
     try:
         body, content_type = await deps.fetcher.fetch(media.media_url)
     except ThumbnailUnavailable as exc:
@@ -984,7 +1049,15 @@ def _probe_target(
 
 
 def _host(url: str | None) -> str:
-    return f"present ({urlsplit(url).hostname})" if url else "absent"
+    """Only the parsed hostname of a signed URL, and whether a download would accept it."""
+    if not url:
+        return "absent"
+    try:
+        host = urlsplit(url).hostname
+    except ValueError:
+        host = None
+    verdict = "allowed" if meta_cdn_url(url) else "NOT a Meta CDN https address"
+    return f"present ({host or 'no host'}, {verdict})"
 
 
 async def probe(
@@ -1031,9 +1104,7 @@ def _production_deps() -> Deps:
     from qualify_shared.objects.config import R2Settings  # noqa: PLC0415
     from qualify_shared.objects.s3 import R2ObjectStore  # noqa: PLC0415
 
-    from qualify_api.inbox.thumbnails import HttpPictureFetcher  # noqa: PLC0415
-
-    return Deps(gate=ObjectGate(R2ObjectStore(R2Settings.from_env())), fetcher=HttpPictureFetcher())
+    return Deps(gate=ObjectGate(R2ObjectStore(R2Settings.from_env())), fetcher=CdnPictureFetcher())
 
 
 def main(argv: list[str] | None = None, *, deps: Deps | None = None) -> int:
