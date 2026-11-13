@@ -2672,7 +2672,8 @@ def _upload_zone(upload_id: str, label: str, handler: object, *, multiple: bool)
             ),
         ],
         on_drop_rejected=CreativeState.photo_upload_rejected,
-        disabled=busy,
+        # never disabled while busy: an upload the network cut never reaches the
+        # handler that clears `photo_upload_id`, and the owner must be able to retry
         variant="compact",
         width="100%",
     )
