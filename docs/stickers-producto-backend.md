@@ -41,7 +41,7 @@ loop. Todo rechazo es `ProductStickerError` (o `SeasonalError` de la biblioteca)
 | Método | Devuelve | Para |
 |---|---|---|
 | `products(tenant, brand)` | `ProductStep(products, without_photo, preselected)` | Paso 1: la grilla y «N productos no salen porque no tienen foto» |
-| `cost(tenant, brand)` | `CreationsCost(creations, left, unlimited, can_pay, cost_line, button_label, message)` | «Usa 1 de tus creaciones del mes. Te quedan 12.» y el botón «Crear dibujo · 1 creación» |
+| `cost(tenant, brand)` | `CreationsCost(creations, left, unlimited, can_pay, cost_line, button_label, message)` | «Este dibujo usa 1 creación. Te quedan 12 este mes.» y el botón «Crear dibujo · 1 creación» |
 | `presets()` / `max_message_chars()` / `check_message(text)` | mensajes / 25 / texto limpio | Paso 2 |
 | `create_character(tenant, brand, product_id, user, accepted_creations)` | `CharacterCard` (`pending`) | «Crear» y «Pedir otro» (siempre uno nuevo) |
 | `characters(tenant, brand, product_id=None)` | `list[CharacterCard]` | Los dibujos para elegir, el más nuevo primero |
@@ -51,7 +51,7 @@ loop. Todo rechazo es `ProductStickerError` (o `SeasonalError` de la biblioteca)
 | `approve_stickers` / `another_sticker` / `delete_sticker` | `StickerCard`(s) | Las acciones de la biblioteca: aprobar, dibujar otra vez (gratis) y eliminar |
 
 Estados de un dibujo: `pending` («Dibujando…»), `ready` (elegible), `failed` (`failure_text`:
-«Este no salió y no se te cobró. Pide otro.»), `approved` (el elegido). Estados de un sticker:
+«Este dibujo no salió y no se te cobró. Puedes pedir otro.»), `approved` (el elegido). Estados de un sticker:
 los de la biblioteca (`pending`, `ready`, `approved`, `rejected`, `failed`, `archived`).
 
 Errores y textos:
@@ -60,14 +60,14 @@ Errores y textos:
 |---|---|
 | `NoProductPhoto` | «Para dibujar tu producto necesitamos una foto de él. Sube la foto en Tus productos y vuelve aquí.» |
 | `CostChanged` | «El costo cambió. Revísalo antes de crear.» |
-| `NotEnoughCreationsLeft` | «Te falta 1 creación este mes. Vuelves a tener el 1 de diciembre.» |
+| `NotEnoughCreationsLeft` | «Te falta 1 creación este mes. Vuelves a tener creaciones el 1 de diciembre. Mientras tanto, los stickers de temporada son gratis.» |
 | `StartFailed` | «No pudimos empezar a dibujar. No se te cobró. Vuelve a intentarlo en un momento.» |
 | `CharacterNotFound` | «No encontramos ese dibujo. Actualiza la pantalla.» |
 | `CharacterChanged` | «Este dibujo cambió mientras tanto. Actualiza la pantalla.» |
 | `CharacterNotReady` | «Este dibujo todavía no está listo. Llega en unos minutos.» |
 | `CharacterNotApproved` | «Primero elige este dibujo para hacer stickers con él.» |
 | `MessageEmpty` | «Escribe el mensaje del sticker.» |
-| `MessageTooLong` | «Máximo 25 letras. Prueba algo más corto, como "¡Gracias!".» |
+| `MessageTooLong` | «Máximo 25 letras. Prueba algo más corto, como «¡Gracias!».» |
 | `NoMessages` | «Elige al menos un mensaje.» |
 | `NoVariant` | «Elige si lo quieres con movimiento, quieto o los dos.» |
 
@@ -92,9 +92,15 @@ están en `whatsapp.seasonal.REASON_TEXT`. Hay dos nuevos: `render_unavailable` 
   productos»), `source_kind = character`, `source_ref = {dibujo}:{mensaje}` y receta
   `k-animado` o `k-quieto`.
 
+## Vocabulario para la pantalla
+
+**Dibujo** es el personaje: se paga con 1 creación y se *dibuja*. **Sticker** es el dibujo con su
+mensaje: es gratis y se *prepara*. «Pedir otro dibujo · 1 creación» y «Hacer de nuevo · gratis»
+nunca deben compartir etiqueta (sugerencia de UX de la revisión).
+
 ## Lo que falta
 
-- Las pantallas (reflex-ui-engineer), sobre esta puerta.
+- Las pantallas (reflex-ui-engineer), sobre esta puerta. Pendiente de la revisión de UX: recordar el último mensaje usado para preelegirlo en el paso 2 (hoy solo se preelige el producto).
 - Una prueba pagada de punta a punta en producción con un negocio real, después del
   despliegue: el costo por dibujo sale del banco (US$0,045). El banco ya gastó US$0,315 de
   los US$0,50 autorizados.

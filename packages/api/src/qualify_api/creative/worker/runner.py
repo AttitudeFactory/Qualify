@@ -314,6 +314,12 @@ class CreativeWorker:
                 # when it has a task) and the next claim polls and finishes it again.
                 return FINISH_ERROR
             ok, error = False, "finish_failed"
+            # m-25017372: an executor that owns a subject outside the draft (a product
+            # sticker character) settles it here, so it never stays `pending` with the
+            # owner's creation charged. Optional, best effort.
+            give_up = getattr(executor, "give_up", None)
+            if give_up is not None:
+                _guarded(lambda: give_up(ctx))
         settled = self.store.settle(
             claim,
             status=q.SUCCEEDED if ok else q.FAILED,

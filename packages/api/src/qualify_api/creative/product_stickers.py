@@ -89,8 +89,7 @@ RAW_FILE: Final = 2
 #: says whether it was charged: the creation is always given back on a failure.
 REASON_TEXT: Final[dict[str, str]] = {
     "budget_cap": (
-        "Este mes ya se usó el presupuesto para dibujos. No se te cobró. "
-        "Escríbenos y lo revisamos contigo."
+        "Ahora no pudimos dibujarlo. No se te cobró. Escríbenos y lo revisamos contigo."
     ),
     "no_budget_cap": (
         "Todavía no podemos dibujar para tu negocio. No se te cobró. Escríbenos y lo dejamos listo."
@@ -99,13 +98,13 @@ REASON_TEXT: Final[dict[str, str]] = {
         "No pudimos abrir la foto del producto. No se te cobró. "
         "Sube otra foto en Tus productos y pide otro."
     ),
-    "vendor_failed": "Este no salió y no se te cobró. Pide otro.",
-    "no_character": "Este no salió y no se te cobró. Pide otro.",
-    "unreadable_image": "Este no salió y no se te cobró. Pide otro.",
-    "uncertain": "Este no salió y no se te cobró. Pide otro.",
-    "lost_result": "Este no salió y no se te cobró. Pide otro.",
+    "vendor_failed": "Este dibujo no salió y no se te cobró. Puedes pedir otro.",
+    "no_character": "Este dibujo no salió y no se te cobró. Puedes pedir otro.",
+    "unreadable_image": "Este dibujo no salió y no se te cobró. Puedes pedir otro.",
+    "uncertain": "Este dibujo no salió y no se te cobró. Puedes pedir otro.",
+    "lost_result": "Este dibujo no salió y no se te cobró. Puedes pedir otro.",
 }
-_DEFAULT_REASON = "Este no salió y no se te cobró. Pide otro."
+_DEFAULT_REASON = "Este dibujo no salió y no se te cobró. Puedes pedir otro."
 
 
 def reason_text(reason: str | None) -> str:
@@ -147,7 +146,9 @@ class NotEnoughCreationsLeft(ProductStickerError):
     def __init__(self, missing: int, renews_on: date | None = None) -> None:
         text = not_enough_text(missing)
         if renews_on is not None:
-            text += f" Vuelves a tener el {renews_on.day} de {_MONTHS[renews_on.month - 1]}."
+            month = _MONTHS[renews_on.month - 1]
+            text += f" Vuelves a tener creaciones el {renews_on.day} de {month}."
+        text += " Mientras tanto, los stickers de temporada son gratis."
         super().__init__(text)
         self.missing = missing
 
@@ -179,7 +180,7 @@ class MessageEmpty(ProductStickerError):
 
 
 class MessageTooLong(ProductStickerError):
-    message = f'Máximo {MAX_MESSAGE_CHARS} letras. Prueba algo más corto, como "¡Gracias!".'
+    message = f"Máximo {MAX_MESSAGE_CHARS} letras. Prueba algo más corto, como «¡Gracias!»."
 
 
 class NoMessages(ProductStickerError):
@@ -494,12 +495,17 @@ class ProductStickerService:
     # --- the owner's choice -------------------------------------------------------------
 
     def characters(
-        self, tenant_id: UUID, brand_id: UUID, product_id: UUID | None = None
+        self,
+        tenant_id: UUID,
+        brand_id: UUID,
+        product_id: UUID | None = None,
+        *,
+        include_discarded: bool = False,
     ) -> list[StickerCharacter]:
         """Every character of the business (or of one product), newest first; discarded ones
-        are left out."""
+        are left out unless asked for (a sticker's card still names its product)."""
         rows = self._repo.list_brand(tenant_id=tenant_id, brand_id=brand_id, product_id=product_id)
-        return [c for c in rows if c.status != STATUS_DISCARDED]
+        return [c for c in rows if include_discarded or c.status != STATUS_DISCARDED]
 
     def character(self, tenant_id: UUID, brand_id: UUID, character_id: UUID) -> StickerCharacter:
         found = self._repo.get(tenant_id=tenant_id, character_id=character_id)
@@ -660,8 +666,17 @@ class ProductStickerService:
         found = self.character(tenant_id, brand_id, character_id)
         if found.status != STATUS_PENDING:
             return None
+        # the refund FIRST (idempotent by the charge's key): if it raises, the row is still
+        # `pending` and the next attempt refunds and fails it — never «no se te cobró» on a
+        # creation still charged (review of m-25017372)
+        self._ledger.refund(
+            tenant_id=tenant_id,
+            draft_id=character_id,
+            revision=CHARGE_REVISION,
+            reason=f"character_failed:{reason}"[:200],
+        )
         try:
-            stored = self._repo.save(
+            return self._repo.save(
                 replace(
                     found,
                     status=STATUS_FAILED,
@@ -672,13 +687,6 @@ class ProductStickerService:
             )
         except CharacterChanged:
             return None
-        self._ledger.refund(
-            tenant_id=tenant_id,
-            draft_id=character_id,
-            revision=CHARGE_REVISION,
-            reason=f"character_failed:{reason}"[:200],
-        )
-        return stored
 
 
 # ======================================================================================

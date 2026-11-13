@@ -12,7 +12,7 @@ keeps every drawing and the owner picks one; no cap but the month's creations; t
 lists the season's stickers first):
 
 1. `products()` → step 1's grid (only products with a photo) + `without_photo`.
-2. `cost()` → «Usa 1 de tus creaciones del mes. Te quedan 12.», the button label, and
+2. `cost()` → «Este dibujo usa 1 creación. Te quedan 12 este mes.», the button label, and
    whether the month can pay it (`can_pay`, `message` when not).
 3. `create_character(product_id, accepted_creations=cost().creations)` → a `pending`
    character card; it becomes `ready` (or `failed`, creation given back) in ~30 s–2 min.
@@ -66,7 +66,7 @@ class CreationsCost:
     left: int | None
     unlimited: bool
     can_pay: bool
-    #: «Usa 1 de tus creaciones del mes. Te quedan 12.»
+    #: «Este dibujo usa 1 creación. Te quedan 12 este mes.»
     cost_line: str
     #: «Crear dibujo · 1 creación»
     button_label: str
@@ -83,7 +83,8 @@ class CharacterCard:
     #: pending | ready | failed | approved
     status: str
     src: str = ""
-    #: The owner's words when `failed` («Este no salió y no se te cobró. Pide otro.»)
+    #: The owner's words when `failed` («Este dibujo no salió y no se te cobró. Puedes pedir
+    #: otro.»)
     failure_text: str = ""
     created_at: datetime | None = None
 
@@ -98,7 +99,7 @@ class StickerCard:
     status: str
     src: str = ""
     failure_text: str = ""
-    #: «Sticker de Shawarma mixto que dice ¡Gracias por tu pedido!» (`alt`)
+    #: «Sticker con movimiento de Shawarma mixto que dice ¡Gracias por tu pedido!» (`alt`)
     alt: str = ""
 
 
@@ -171,9 +172,9 @@ def creations_word(n: int) -> str:
 
 def cost_texts(creations: int, left: int | None, unlimited: bool) -> tuple[str, str]:
     """(cost line, button label) in creaciones — never money."""
-    line = f"Usa {creations} de tus creaciones del mes."
+    line = f"Este dibujo usa {creations_word(creations)}."
     if not unlimited and left is not None:
-        line += " Te queda 1." if left == 1 else f" Te quedan {left}."
+        line += " Te queda 1 este mes." if left == 1 else f" Te quedan {left} este mes."
     return line, f"Crear dibujo · {creations_word(creations)}"
 
 
@@ -364,7 +365,10 @@ class ProductionProductStickerGateway:
         )
         from qualify_api.whatsapp.seasonal import reason_text  # noqa: PLC0415
 
-        names = {str(c.id): c.product_name for c in self.service.characters(tenant_id, brand_id)}
+        names = {
+            str(c.id): c.product_name
+            for c in self.service.characters(tenant_id, brand_id, include_discarded=True)
+        }
         cards = []
         for row in rows:
             try:
@@ -381,7 +385,10 @@ class ProductionProductStickerGateway:
                     status=row.status,
                     src=_preview(tenant_id, brand_id, row.object_key),
                     failure_text=reason_text(row.fail_reason) if row.status == "failed" else "",
-                    alt=f"Sticker de {name} que dice {message}",
+                    alt=(
+                        f"Sticker {'con movimiento' if row.recipe == RECIPE_ANIMATED else 'quieto'}"
+                        f" de {name} que dice {message}"
+                    ),
                 )
             )
         return cards

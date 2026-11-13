@@ -20,12 +20,12 @@ PRODUCT = uuid4()
 
 def test_the_cost_is_said_in_creaciones() -> None:
     assert cost_texts(1, 12, False) == (
-        "Usa 1 de tus creaciones del mes. Te quedan 12.",
+        "Este dibujo usa 1 creación. Te quedan 12 este mes.",
         "Crear dibujo · 1 creación",
     )
-    assert cost_texts(1, 1, False)[0].endswith("Te queda 1.")
+    assert cost_texts(1, 1, False)[0].endswith("Te queda 1 este mes.")
     assert cost_texts(2, None, True) == (
-        "Usa 2 de tus creaciones del mes.",
+        "Este dibujo usa 2 creaciones.",
         "Crear dibujo · 2 creaciones",
     )
     for text in cost_texts(1, 3, False):
@@ -48,7 +48,9 @@ class FakeService:
     def last_product(self, tenant_id: UUID, brand_id: UUID) -> Any:
         return None
 
-    def characters(self, tenant_id: UUID, brand_id: UUID, product_id: Any = None) -> list[Any]:
+    def characters(
+        self, tenant_id: UUID, brand_id: UUID, product_id: Any = None, **_: Any
+    ) -> list[Any]:
         return [
             SimpleNamespace(
                 id=self.character_id,
@@ -56,7 +58,7 @@ class FakeService:
                 product_name="Shawarma",
                 status="failed",
                 object_key=None,
-                failure_text="Este no salió y no se te cobró. Pide otro.",
+                failure_text="Este dibujo no salió y no se te cobró. Puedes pedir otro.",
                 created_at=datetime(2026, 11, 12, tzinfo=UTC),
             )
         ]
@@ -84,4 +86,4 @@ def test_cards_carry_status_words_and_alt_text() -> None:
     assert card.status == "failed" and "no se te cobró" in card.failure_text
     (sticker,) = gateway.stickers(TENANT, BRAND)
     assert sticker.message == "En camino" and not sticker.animated
-    assert sticker.alt == "Sticker de Shawarma que dice En camino"
+    assert sticker.alt == "Sticker quieto de Shawarma que dice En camino"

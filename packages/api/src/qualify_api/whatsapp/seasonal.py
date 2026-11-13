@@ -151,9 +151,7 @@ REASON_TEXT: Final[dict[str, str]] = {
     "ffmpeg_missing": "No pudimos prepararlo. Ya lo estamos revisando.",
     "webp_unavailable": "No pudimos preparar el sticker. Ya lo estamos revisando.",
     # m-25017372, product stickers (drawn for free by our own render service)
-    "render_unavailable": (
-        "No pudimos dibujar este sticker ahora. No se te cobró. Pídelo otra vez en un rato."
-    ),
+    "render_unavailable": ("No pudimos preparar este sticker ahora. Pídelo otra vez en un rato."),
     "character_unavailable": (
         "El dibujo de este sticker ya no está disponible. Elige otro dibujo de tu producto."
     ),

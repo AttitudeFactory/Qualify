@@ -204,6 +204,17 @@ def _is_disconnect(exc: Exception) -> bool:
     return isinstance(exc, SeedreamDisconnected)
 
 
+def _maybe_billed(exc: Exception) -> bool:
+    """The image may exist and be billed: a dropped connection, or a 5xx from the gateway
+    (Ark may already be generating). An overcount beats an undercount against a cap."""
+    from qualify_creative.adapters.byteplus_ark import ArkAPIError  # noqa: PLC0415
+
+    if _is_disconnect(exc):
+        return True
+    status = getattr(exc, "status_code", None)
+    return isinstance(exc, ArkAPIError) and isinstance(status, int) and status >= 500
+
+
 def _is_busy(exc: Exception) -> bool:
     from qualify_creative.adapters.byteplus_ark import VendorBusy  # noqa: PLC0415
 
@@ -267,7 +278,11 @@ class ProductCharacterExecutor:
         if not self._requests.start_request(
             tenant_id=character.tenant_id, character_id=character.id, at=self._clock()
         ):
-            # an earlier claim started the paid POST and died: it may have been billed
+            # an earlier claim started the paid POST and died. If its image reached R2 the
+            # call was paid and booked: finish cuts it (review of m-25017372)
+            if self._has_raw(character):
+                return task_id_of(character.id)
+            # otherwise it may have been billed: book the quote, never post again
             self._book(character, 0, quote)
             self._fail(character, UNCERTAIN)
             raise SubmissionAborted(str(character.id))
@@ -280,7 +295,7 @@ class ProductCharacterExecutor:
                     tenant_id=character.tenant_id, character_id=character.id
                 )
                 raise
-            if _is_disconnect(exc):
+            if _maybe_billed(exc):
                 self._book(character, 0, quote)
             self._fail(character, VENDOR_FAILED)
             logger.warning(
@@ -299,7 +314,7 @@ class ProductCharacterExecutor:
             brand_id=character.brand_id,
             character_id=character.id,
             cost_usd=cost,
-            vendor_request_id=str(getattr(result, "model_revision", "") or task_id)[:200],
+            vendor_request_id=task_id,
         )
         if not images:
             self._fail(character, VENDOR_FAILED)
@@ -316,6 +331,13 @@ class ProductCharacterExecutor:
             KAWAII_PROMPT_VERSION,
         )
         return task_id
+
+    def give_up(self, job: JobContext) -> None:
+        """The runner ran out of finish attempts: a character still `pending` fails and its
+        creation is given back (never left charged and waiting for ever)."""
+        character = self._runnable(job)
+        if character is not None:
+            self._fail(character, VENDOR_FAILED)
 
     def poll(self, job: JobContext, vendor_task_id: str) -> TaskPoll:
         return TaskPoll(status=SUCCEEDED, next_poll_seconds=0.0)
@@ -404,6 +426,14 @@ class ProductCharacterExecutor:
         except Exception:
             self._fail(character, NO_SOURCE)
             raise
+
+    def _has_raw(self, character: StickerCharacter) -> bool:
+        try:
+            stream = self._objects.open_object(character.tenant_id, self._key(character, RAW_FILE))
+        except Exception:  # noqa: BLE001 — not there (or unreadable): treat as absent
+            return False
+        getattr(stream, "close", lambda: None)()
+        return True
 
     @staticmethod
     def _key(character: StickerCharacter, number: int) -> str:

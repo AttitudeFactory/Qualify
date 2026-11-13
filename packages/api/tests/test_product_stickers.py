@@ -193,7 +193,7 @@ def test_a_failure_gives_the_creation_back_once() -> None:
         tenant_id=TENANT, brand_id=BRAND, character_id=c.id, reason="vendor_failed"
     )
     assert failed is not None and failed.status == ps.STATUS_FAILED
-    assert failed.failure_text == "Este no salió y no se te cobró. Pide otro."
+    assert failed.failure_text == "Este dibujo no salió y no se te cobró. Puedes pedir otro."
     assert ledger.balance(tenant_id=TENANT, brand_id=BRAND).used == 0
     again = service.mark_character_failed(
         tenant_id=TENANT, brand_id=BRAND, character_id=c.id, reason="vendor_failed"
