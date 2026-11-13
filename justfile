@@ -595,6 +595,11 @@ sentiment-kit *args:
 eval-precarga *args:
     PYTHONUTF8=1 uv run --no-sync python packages/api/evals/alta_prefill_cost/run_experiment.py {{args}}
 
+# m-25017274: «Mejorar mi texto» — six fictional food briefs, two presses each, how much
+# the answers repeat (similarity), new numbers and cost. Spends ≈ USD 0.08 per run.
+eval-mejorar-texto *args:
+    PYTHONUTF8=1 uv run --no-sync python packages/api/evals/mejorar_texto/run_experiment.py {{args}}
+
 eval-voz *args:
     PYTHONUTF8=1 uv run --no-sync python packages/api/evals/voice_ai/run_experiment.py {{args}}
 
