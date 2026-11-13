@@ -72,6 +72,7 @@ from qualify_api.creative.parts import (
     PartsService,
     PartsSourceInvalid,
     PartsUnavailable,
+    removed_part_indexes,
 )
 from qualify_api.creative.service import (
     BrandNotReady,
@@ -343,6 +344,26 @@ class PartsRequests:
             raise error
         return ids
 
+    def _attempted_parts(
+        self,
+        tenant_id: UUID,
+        parent_id: UUID,
+        brief: ContentBrief,
+        indexes: Sequence[int] | None,
+    ) -> tuple[int, ...]:
+        """The parts an attempt asks for, always spelled out (m-24993031): the indexes
+        given, or — «Crear las que faltan», scope `all` — every part of the plan the
+        owner did not remove, as `create_parts` reads None (and the ids it returns).
+        Never empty for a plan with parts: «all» and «the first» are kept alike."""
+        if indexes is not None:
+            return tuple(sorted(set(indexes)))
+        removed = removed_part_indexes(
+            self._content.repository, tenant_id=tenant_id, parent_id=parent_id
+        )
+        return tuple(
+            index for index in range(1, len(brief.media.parts) + 1) if index not in removed
+        )
+
     def _attempt(
         self,
         tenant_id: UUID,
@@ -355,6 +376,7 @@ class PartsRequests:
         """One `create_parts`, its outcome written on the parent. Returns the outcome
         stored (None when the parent is gone or a later attempt was started), the
         refusal, if any, and the parts' ids."""
+        attempted = self._attempted_parts(tenant_id, parent_id, brief, indexes)
         attempt = self._store.begin(tenant_id=tenant_id, parent_id=parent_id)
         if attempt is None:
             raise UnknownDraft(str(parent_id))
@@ -383,7 +405,7 @@ class PartsRequests:
                 "refused": None if refused is None else refused[0],
                 "part": None if refused is None else refused[1],
                 "missing": 0 if refused is None else refused[2],
-                "attempted_parts": tuple(indexes or ()),
+                "attempted_parts": attempted,
                 "attempted_at": None,
                 "attempt": attempt,
             }
