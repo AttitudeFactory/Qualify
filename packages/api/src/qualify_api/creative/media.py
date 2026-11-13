@@ -303,6 +303,11 @@ class MediaWrite:
     #: from this after every generation: a flyer stored before `ad_mode` existed is still
     #: rendered by Seedream when it is wired, and the brief alone cannot know that.
     ai_generated: bool = False
+    #: The compiled prompt the vendor was sent for THIS file (`image_assets.rendered_prompt`,
+    #: m-25017278): the Seedream scene of an advertising image or of a generated gallery
+    #: slide, exactly as sent. None where no single prompt made the file (a closing slide,
+    #: a reused piece, stock, the Galería, a video).
+    rendered_prompt: str | None = None
 
 
 def ai_generated_media(media: tuple[MediaWrite, ...]) -> bool:
@@ -1859,6 +1864,8 @@ def _media_write_json(write: MediaWrite, seedance_slots: int = 0) -> dict[str, A
         "content_type": write.content_type,
         "ai_generated": write.ai_generated,
         "seedance_slots": seedance_slots,
+        # m-25017278: a resumed gallery keeps each kept slide's prompt provenance
+        **({"rendered_prompt": write.rendered_prompt} if write.rendered_prompt else {}),
     }
 
 
@@ -1876,6 +1883,7 @@ def _media_write_from_json(row: Mapping[str, Any]) -> MediaWrite:
         params=dict(row.get("params") or {}),
         content_type=row.get("content_type"),
         ai_generated=bool(row.get("ai_generated")),
+        rendered_prompt=row.get("rendered_prompt") or None,
     )
 
 

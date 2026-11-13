@@ -1443,6 +1443,7 @@ class PostgresContentRepository:
                         output_port=item.output_port,
                         template_run_id=item.template_run_id,
                         content_type=item.content_type,
+                        rendered_prompt=item.rendered_prompt,
                     )
                 )
             if succeeded:
@@ -1666,6 +1667,7 @@ class PostgresContentRepository:
                         content_type=row.content_type,
                         # only paid gallery slides are kept, and every one is AI imagery
                         ai_generated=True,
+                        rendered_prompt=row.rendered_prompt,
                     )
                     for row in assets
                     if row.object_key

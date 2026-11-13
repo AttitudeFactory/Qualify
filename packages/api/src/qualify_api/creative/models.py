@@ -671,6 +671,73 @@ class ImageAsset(Base):
     )
 
 
+class PieceLayer(Base):
+    """The text layer of one slide of an image or carousel piece (0163, ADR 49 §2.1,
+    m-25017278): what the composition draws over the base photo, per version and position.
+
+    A layer is never edited in place. One ROOT layer per version and position
+    (`parent_layer_id IS NULL`); the visual check's correction or an owner's edit is a new
+    row at the same version and position with `parent_layer_id`, at most one per parent
+    within a version (a further change in that version derives from that row); a re-compose
+    is a new version, which may derive from the same older layer again. Every key carries
+    `tenant_id` — to `brands`, `content_drafts`, `piece_versions`, `image_assets`, `users`
+    and this table — enforced by the migration (Postgres checks keys without RLS). The table
+    ships empty and m-25017283 is its first writer.
+
+    TODO(m-25017283): the writer must check that a derived layer's parent belongs to the
+    same draft and the same position — the schema does not stop a parent from another
+    position or another piece of the same business."""
+
+    __tablename__ = "piece_layers"
+    __table_args__ = (
+        Index(
+            "uq_piece_layers_root_position",
+            "tenant_id",
+            "version_id",
+            "position",
+            unique=True,
+            postgresql_where=text("parent_layer_id IS NULL"),
+        ),
+        UniqueConstraint("id", "tenant_id", name="uq_piece_layers_id_tenant"),
+        UniqueConstraint(
+            "tenant_id", "parent_layer_id", "version_id", name="uq_piece_layers_parent"
+        ),
+        CheckConstraint(
+            "source IN ('model', 'owner_edit', 'owner_photo')", name="piece_layers_source_check"
+        ),
+        Index("ix_piece_layers_draft", "tenant_id", "draft_id"),
+        Index("ix_piece_layers_version", "version_id", "tenant_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    tenant_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False
+    )
+    brand_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    draft_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    version_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    layout_id: Mapped[str] = mapped_column(Text, nullable=False)
+    layout_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    spec: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    spec_sha256: Mapped[str] = mapped_column(Text, nullable=False)
+    #: The stored Seedream photo the layer was written over, or (`base_media_ref`) the
+    #: Galería medium as `gallery_piece.py` names it (`n:<uuid>` / `p:<uuid>`) — never both.
+    base_asset_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
+    base_media_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source: Mapped[str] = mapped_column(Text, nullable=False)
+    parent_layer_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
+    created_by: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
+    model_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    prompt_version: Mapped[str | None] = mapped_column(Text, nullable=True)
+    pipeline_version: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+
+
 class TemplateRun(Base):
     """One render job (0038, `docs/plan-mvp-plantillas-remotion.md` §2.1 #6, §2.3). The
     row's `id` IS the `jobId` handed to the render service, so its `status`/`cancel` and
