@@ -378,9 +378,20 @@ class HashtagRepository(Protocol):
         window_days: int = POPULAR_WINDOW_DAYS,
         now: datetime | None = None,
     ) -> tuple[ResolvedHashtag, ...]:
-        """`resolve`, re-ordered by recent views: the same tier, a wider pool, the most
-        watched first, `resolve`'s own order breaking ties (so with no views known the
-        answer is exactly `resolve`'s). Each hit carries `recent_views`/`recent_posts`."""
+        """`resolve` over a wider pool, with recent views as a tie-breaker of relevance,
+        never a replacement for it:
+
+        - a weaker match tier never outranks a stronger one (`MATCH_TERM` before
+          `MATCH_FUZZY_TERM` before `MATCH_FUZZY_TAG`);
+        - inside the `MATCH_TERM` tier (the rubro's own linked tags) the most watched go
+          first;
+        - inside a fuzzy tier `resolve`'s similarity order is kept untouched — a typo
+          neighbour with many views (`#carnet` for «carne») never pushes out the closer
+          match;
+        - ties keep `resolve`'s order, so with no views known the answer is exactly
+          `resolve`'s.
+
+        Each hit carries `recent_views`/`recent_posts` whatever its tier."""
         ...
 
     def public_reels_since(self, tenant_id: UUID, since: datetime) -> tuple[ReelPost, ...]:
@@ -416,9 +427,22 @@ def _rank_by_recent_views(
     for hit in pool:
         known = recent.get(hit.hashtag.tag, RecentViews())
         enriched.append(replace(hit, recent_views=known.views, recent_posts=known.posts))
-    # `sort` is stable: equal views keep `resolve`'s relevance order.
-    enriched.sort(key=lambda hit: -hit.recent_views)
+    # Stable sort: a weaker match tier never outranks a stronger one; inside the term tier
+    # the most watched go first; inside a fuzzy tier `resolve`'s similarity order stays
+    # (a well-watched `#carnet` must not push the exact `#carne` out); ties keep
+    # `resolve`'s order.
+    enriched.sort(
+        key=lambda hit: (
+            _TIER_RANK.get(hit.match, len(_TIER_RANK)),
+            -hit.recent_views if hit.match in _VIEWS_REORDER else 0,
+        )
+    )
     return tuple(enriched[:limit])
+
+
+#: `resolve`'s tiers, strongest first, and the ones inside which recent views may reorder.
+_TIER_RANK = {MATCH_TERM: 0, MATCH_FUZZY_TERM: 1, MATCH_FUZZY_TAG: 2}
+_VIEWS_REORDER = frozenset({MATCH_TERM})
 
 
 def lock_key(item: NewHashtag | NewTermLink | Classification | NewPostSighting) -> str:
