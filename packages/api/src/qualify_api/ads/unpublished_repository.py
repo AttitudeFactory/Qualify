@@ -24,7 +24,7 @@ from qualify_api.tenancy.acting import require_acting_member
 
 CHANGED = "La pieza o la cuenta cambió. Vuelve a preparar el anuncio."
 # A send claim idle this long lost its process (crash between claim and settle): it becomes
-# `unknown`, never re-sent. Must match the 0160 trigger.
+# `unknown`, never re-sent. Must match the 0161 trigger.
 STALE_CLAIM_MINUTES = 30
 
 

@@ -3,7 +3,7 @@
 Entrega backend de m-24828982. Implementa el recorrido para **dos imágenes o dos videos
 finales ya existentes**, uno de 4:5 y otro de 9:16, de una pieza aprobada que todavía no se
 publicó. No se mezclan imagen y video en el mismo anuncio. Los videos llegaron en una segunda
-entrega (migración 0160); ver «Videos» más abajo.
+entrega (migración 0161); ver «Videos» más abajo.
 No modifica el generador, `CopyPayload`, las opciones de botón ni el trabajo de m-24828975.
 El texto, título y enlace se reciben explícitamente en la solicitud de anuncios. No se
 escriben de regreso en la pieza.
@@ -97,7 +97,7 @@ portada se sube como cualquier imagen (`adimages`) y va como `thumbnail_hash`.
    hasta 100 MiB y de 1 a 60 segundos. Las dimensiones reales deben coincidir con las de la
    fila. Las portadas se miden igual que las imágenes. Todo esto ocurre antes de la primera
    llamada a Meta.
-2. **Reclamo antes de enviar.** `ad_unpublished_videos` (0160, RLS forzado) guarda la
+2. **Reclamo antes de enviar.** `ad_unpublished_videos` (0161, RLS forzado) guarda la
    transferencia por negocio, cuenta, versión de credencial, archivo y contenido. Estados:
    `ready` (medido, nada enviado) → `submitting` (reclamo confirmado con `claim_token` antes
    del primer POST) → `processing` → `ready_remote`; o `unknown` / `failed`. Si el control
@@ -142,7 +142,7 @@ real autorizado antes de anunciar el video, junto con `validate_only` de la crea
 - Gestión posterior de cambios pagados para esta nueva clase de fuente.
 
 Este backend no añade un botón a la pieza ni completa por sí solo m-24828982. No requiere
-un token nuevo ni activa procesos periódicos al desplegarse. Las migraciones 0150 y 0160
+un token nuevo ni activa procesos periódicos al desplegarse. Las migraciones 0150 y 0161
 añaden los registros de fuente y carga con RLS forzado, procedencia e invariantes
 reversibles. El lector
 periódico de resultados conserva su configuración y preparación operativa existentes.

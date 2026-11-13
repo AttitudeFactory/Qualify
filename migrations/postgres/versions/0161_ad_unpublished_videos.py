@@ -1,7 +1,7 @@
 """Write-ahead video transfers for ads from an unpublished piece (m-24828982)
 
-Revision ID: 0160
-Revises: 0159
+Revision ID: 0161
+Revises: 0160
 Create Date: 2026-11-13
 
 0150 covered image pairs. A video goes to `act_<id>/advideos` in chunks and Meta keeps
@@ -26,8 +26,8 @@ revision; same grants as 0150.
 
 from alembic import op
 
-revision = "0160"
-down_revision = "0159"
+revision = "0161"
+down_revision = "0160"
 branch_labels = None
 depends_on = None
 
