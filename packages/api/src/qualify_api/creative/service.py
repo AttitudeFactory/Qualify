@@ -908,6 +908,13 @@ def _variant_record(row: orm.CopyVariant) -> VariantRecord:
     )
 
 
+#: The order of a draft's media, and so its cover (the first): by slide position, then
+#: the earliest, then the id. Every slide of a generation is written in one transaction
+#: (their `created_at` tie), so the id is what makes the single and the batch read agree
+#: (m-25017278, PR #651 CI).
+_MEDIA_ORDER = (orm.ImageAsset.position, orm.ImageAsset.created_at, orm.ImageAsset.id)
+
+
 def _image_record(row: orm.ImageAsset) -> ImageRecord:
     return ImageRecord(
         id=row.id,
@@ -1204,7 +1211,7 @@ class PostgresContentRepository:
             for row in session.scalars(
                 select(orm.ImageAsset)
                 .where(orm.ImageAsset.draft_id.in_(ids), visible_version(orm.ImageAsset))
-                .order_by(orm.ImageAsset.position, orm.ImageAsset.created_at)
+                .order_by(*_MEDIA_ORDER)
             ):
                 assets.setdefault(row.draft_id, []).append(row)
             versions: dict[UUID, list[VersionSummary]] = {}
@@ -1228,8 +1235,8 @@ class PostgresContentRepository:
             bundles: dict[UUID, DraftBundle] = {}
             for draft, kind in drafts:
                 rows = assets.get(draft.id, [])
-                # `image_for` is the earliest asset; `media_for` all of them in order
-                first = min(rows, key=lambda a: a.created_at) if rows else None
+                # the cover (`image_for`) is the first of `media_for`'s order (`_MEDIA_ORDER`)
+                first = rows[0] if rows else None
                 bundles[draft.id] = DraftBundle(
                     record=_draft_record(draft),
                     variants=tuple(variants.get(draft.id, ())),
@@ -1439,6 +1446,7 @@ class PostgresContentRepository:
                         output_port=item.output_port,
                         template_run_id=item.template_run_id,
                         content_type=item.content_type,
+                        rendered_prompt=item.rendered_prompt,
                     )
                 )
             if succeeded:
@@ -1600,7 +1608,8 @@ class PostgresContentRepository:
             row = session.scalars(
                 select(orm.ImageAsset)
                 .where(orm.ImageAsset.draft_id == draft_id, visible_version(orm.ImageAsset))
-                .order_by(orm.ImageAsset.created_at)
+                .order_by(*_MEDIA_ORDER)
+                .limit(1)
             ).first()
             if row is None:
                 return None
@@ -1611,7 +1620,7 @@ class PostgresContentRepository:
             rows = session.scalars(
                 select(orm.ImageAsset)
                 .where(orm.ImageAsset.draft_id == draft_id, visible_version(orm.ImageAsset))
-                .order_by(orm.ImageAsset.position, orm.ImageAsset.created_at)
+                .order_by(*_MEDIA_ORDER)
             )
             return tuple(_image_record(row) for row in rows)
 
@@ -1638,7 +1647,7 @@ class PostgresContentRepository:
             assets = session.scalars(
                 select(orm.ImageAsset)
                 .where(orm.ImageAsset.version_id == version.id)
-                .order_by(orm.ImageAsset.position, orm.ImageAsset.created_at)
+                .order_by(*_MEDIA_ORDER)
             ).all()
             slides = tuple(
                 write
@@ -1661,6 +1670,7 @@ class PostgresContentRepository:
                         content_type=row.content_type,
                         # only paid gallery slides are kept, and every one is AI imagery
                         ai_generated=True,
+                        rendered_prompt=row.rendered_prompt,
                     )
                     for row in assets
                     if row.object_key
@@ -1719,7 +1729,7 @@ class PostgresContentRepository:
                     orm.ImageAsset.params.has_key("draft"),
                     visible_version(orm.ImageAsset),
                 )
-                .order_by(orm.ImageAsset.position, orm.ImageAsset.created_at)
+                .order_by(*_MEDIA_ORDER)
             )
             return tuple(_image_record(row) for row in rows)
 

@@ -210,6 +210,80 @@ para partes sin cifras.
 
 ---
 
+<a id="partes-sin-letras-001"></a>
+
+## PARTES-SIN-LETRAS-001 — El prompt de una parte de Seedance sin trazos con forma de letras: v1 frente a v2, piloto a ciegas (m-24993031) — 2026-11-13
+
+**Resultado: el v2 no mejora. El prompt de partes se queda en v1** (`PART_PROMPT_VERSION = 1`, `PART_REFERENCE_MEDIA_PROMPT_VERSION = 2`). El v2 se revirtió antes del PR y no llegó a `main`.
+
+- **Por qué:** en la prueba de punta a punta del video por partes, una parte salió con trazos rojos con forma de letras, aunque su prompt prohíbe el texto. La hipótesis fue que la línea de tipografías (`_typefaces_cue_v2`, «"Baloo 2" for headlines…») y la paleta «as accents» empujan a Seedance a dibujar letras. También que la regla en negativo, que nombra «logo», «brand name» y «sign lettering», hace lo mismo.
+- **Variantes** (solo cambian las líneas finales de `_part_common_lines`; el resto del prompt es idéntico):
+  - **v1** (el de `main`): la paleta «as accents… props, light or the background», la pista de tipografías y `_TEXT_RULE_V2_NO_LOGO`.
+  - **v2**:
+    - sin tipografías;
+    - la paleta «only into the light, the props and the set, never as painted marks, strokes or shapes over the image»;
+    - la regla en positivo: «Every surface stays clean and unprinted; the only lettering is the real product's own label, unchanged.»;
+    - «No on-screen text.» al final.
+  - Los prompts de clip no cambiaban.
+- **Modelo:** `dreamina-seedance-2-5-260628`, en modo borrador a **480p** y 9:16. Lleva audio porque las partes lo traen, y va sin semilla: el adaptador no envía `seed` en 2.x. Se guardó la semilla que devuelve ModelArk.
+- **Entradas:** 2 partes `reference` reales de la base local, de la misma marca, cuya paleta trae el rojo `#da2220`:
+  - **E1**: parte 1 de `7e24863f`, 6 s;
+  - **E2**: parte 2 de `df00f0a1`, 5 s.
+  - En local no hay ninguna parte `edit` real, así que **el modo `edit` no se probó**.
+  - La foto del catálogo solo se leyó; no se escribió nada en la base, en R2 ni en la carpeta de subidas.
+- **Diseño:** 3 tiradas por variante y entrada, 12 tareas, 3 a la vez como máximo. El tope de gasto era de 9 USD.
+  - El arnés y los datos quedaron fuera de git, en la carpeta de notas de la sesión: `piloto.py`, `prompts.json`, `llamadas.jsonl` y `clave.json`.
+  - `piloto.py plan` comprobó que el v1 del arnés era el mismo prompt que el código de `fd472313`.
+- **Autorización y desvíos:**
+  - Deivid autorizó el 2026-11-13 10 videos a 480p por unos 5,70 USD.
+  - Se corrió hacia las 21:15 de Bogotá, fuera del horario de evaluaciones con video ([§ llave y horario](#byteplus-llave-y-horario)).
+  - Usó la llave de la app (`QUALIFY_BYTEPLUS_ARK_API_KEY`), no la de evaluación.
+- **Etiquetado:** una sola etiqueta binaria, «marca o letras no pedidas», con una regla escrita antes de generar.
+  - La regla cuenta trazos con forma de letra, texto sobreimpreso, logos o rótulos ajenos y la etiqueta real alterada. No cuenta texturas, salsas, humo ni colores de la marca sin forma de letra. Lo dudoso cuenta como SÍ y se marca aparte.
+  - Etiquetó otra sesión, a ciegas: no conocía ni la entrada ni la variante ni la semilla. La correspondencia se cruzó después con `clave.json`.
+
+### Resultados (10 videos)
+
+| | E1 | E2 | Total |
+|---|---|---|---|
+| v1 | 1 dudoso (pared con trazos rojos, como un rótulo borrado) · 1 limpio | 1 dudoso (parche rojo con un emblema en el delantal) · 1 limpio | **0 claros + 2 dudosos / 4** |
+| v2 | 2 claros (camiseta con un logo y dos líneas de texto rojas; lata roja con una «A») · 1 limpio | 3 limpios | **2 claros / 6** |
+
+- **Lectura:**
+  - El v2 no reduce las marcas y en E1 las empeora.
+  - El tipo de fallo cambia: el v1 da trazos ambiguos sobre superficies, y el v2 da **objetos rojos con marcas ajenas**, una camiseta y una lata.
+  - Al quitar la negación explícita de logos y rótulos, la frase «into the light, the props and the set» parece invitar a meter props del color de la marca, y Seedance los llena de logos.
+  - **La hipótesis de la línea de tipografías no se confirma.**
+- **Costo:**
+  - **5,696790 USD**, con 10 videos facturados según `usage.completion_tokens` y la tabla `v8` (los precios de Seedance 2.5 a 480p son iguales en la `v9` vigente): E1 0,621082 y E2 0,518276 por video.
+  - En el peor caso, 6,827599 USD, si también se cobraran los 2 rechazos (ModelArk dice que no; no se comprobó en la consola).
+- **Rechazos de moderación:** 2 de 12, los dos del v1 (E2 tirada 1 y E1 tirada 2). El código fue `OutputAudioSensitiveContentDetected.PolicyViolation`: el audio generado «may be related to copyright restrictions». No se reintentaron, porque habría sido una tarea 13, fuera del límite. Por eso el v1 tiene 2 tiradas por celda y el v2 tiene 3.
+- **Límites:**
+  - La muestra es pequeña (n = 10).
+  - Sin semilla fija, así que **no hay pares emparejados**.
+  - Hubo 2 o 3 tiradas por celda, una sola marca y solo el modo `reference`.
+  - El etiquetado miró **3 fotogramas por video** (inicio, mitad y final), no el video entero. Un trazo breve entre fotogramas no se habría visto.
+  - Es una señal piloto, no una medida con significancia.
+- **Hallazgo aparte:** el brief guardado de las dos partes repite la descripción del plano, 4 veces en E1 y 2 en E2. Además, E1 describe «sliders de pescado» con el producto «super smash», una hamburguesa. Puede ser la misma repetición que #645 arregló en pantalla. Queda para el ticket aparte **m-25026484**, junto con una prueba de un negativo explícito sobre «props con marcas o logos».
+
+---
+
+<a id="decision-texto-padre-opus"></a>
+
+## DECISIÓN — El texto del padre del video por partes se queda en Claude Opus 5.5 (m-24993031) — 2026-11-13
+
+**Es una decisión, no una prueba:** no hubo llamada al modelo ni gasto.
+
+| Campo | Valor |
+|---|---|
+| Quién decide | El fundador, 2026-11-13 |
+| Qué | El texto (copy) del padre de un video por partes lo sigue escribiendo **`claude-opus-5-5`, esfuerzo `medium`**, con el respaldo ante rechazos de siempre. Es el mismo modelo del copy de todo el generador (migración a Opus 5.5 del 2026-10-13, [`plan-observabilidad-langfuse.md`](../plan-observabilidad-langfuse.md)) |
+| De dónde sale en el código | `packages/creative/src/qualify_creative/adapters/anthropic_copy.py:54` (`DEFAULT_MODEL_ID`) y `:58` (`DEFAULT_EFFORT`). No hay cambio por variable de entorno ni por ruta: `packages/api/src/qualify_api/creative/composition.py:391` crea `AnthropicCopyAdapter()` sin argumentos y la cadena de copy es `COPY_CHAIN = ("anthropic",)` (`creative/service.py:167`). Solo la evaluación `evals/copy_quality.py` elige otro modelo |
+| Por qué el ticket suponía Sonnet | Sonnet está en otras piezas del mismo flujo, no en el texto del padre: «Proponerme las partes» (`creative/parts_ai.py:79`, `claude-sonnet-5`, [PARTES-001](#partes-001)) y «Mejorar mi texto» (`claude-sonnet-5-5`, [MEJORAR-TEXTO-001](#mejorar-texto-001)). La descripción de los planos del reel usa Haiku |
+| Pendiente | Medir Opus 5.5 frente a Sonnet 5.5 para este texto (calidad y costo, según `qualify-measure`) queda en un ticket aparte. Hasta entonces no se cambia el modelo |
+
+---
+
 <a id="escena-sin-letras-001"></a>
 
 ## ESCENA-SIN-LETRAS-001 — La escena de Seedream sin letras ni botones: compilador de prompts 3 frente a 4, en pares (m-25017275) — 2026-11-13

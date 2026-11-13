@@ -353,3 +353,62 @@ def test_loading_head_keeps_the_exit_but_never_invents_a_progress_number() -> No
     assert "Inicio" in head and "Tu marca" in head
     assert "progressbar" not in head
     assert "Paso 5 de 5" not in head
+
+
+# ---------------------------------------------------------------------------------------
+# m-24993023: the reason never spills over «Atrás»
+# ---------------------------------------------------------------------------------------
+
+
+def _rule(selector: str, css: str = _CSS) -> str:
+    found = re.search(re.escape(selector) + r"\s*\{(.*?)\}", css, re.S)
+    assert found, selector
+    return found.group(1)
+
+
+def test_a_reason_gets_its_own_row_on_a_desktop() -> None:
+    """The one-row foot squeezed the reason's column to nothing in a narrow panel and
+    its text spilled over «Atrás»: with a reason, the buttons go on their own row."""
+    desktop = _CSS.split("@media (min-width: 641px) {", 1)[1].split("\n}", 1)[0]
+    areas = _rule(".q-step-foot:has(> .q-step-reason)", desktop)
+    assert '"reason reason reason reason"' in areas and '"back . later primary"' in areas
+    reason = _rule(".q-step-reason")
+    assert "min-width: 0" in reason and "overflow-wrap: anywhere" in reason
+
+
+def test_a_narrow_panel_stacks_the_foot_like_a_phone() -> None:
+    assert ".q-step-slot { container: q-step-slot / inline-size; }" in _CSS
+    narrow = _CSS.split("@container q-step-slot (max-width: 480px) {", 1)[1].split("\n}", 1)[0]
+    areas = _rule(".q-step-foot,\n  .q-step-foot:has(> .q-step-reason)", narrow)
+    assert '"reason reason"' in areas and '"back primary"' in areas and '"later later"' in areas
+    assert "min-width: 0; width: 100%" in _rule(".q-step-primary", narrow)
+    assert "min-height: 40px" in _rule(".q-step-later", narrow)  # as on a phone
+
+
+def test_the_narrow_panel_rules_come_after_the_foots_base_rules() -> None:
+    """Same specificity, so the later rule wins: the container query must follow the
+    base `.q-step-primary` (its 9rem minimum) and `.q-step-later` rules."""
+    query = _CSS.index("@container q-step-slot (max-width: 480px) {")
+    base_primary = _CSS.index(".q-step-primary { grid-area: primary;")
+    base_later = _CSS.index(".q-step-later { grid-area: later; }")
+    assert base_primary < query and base_later < query
+
+
+def test_the_phone_foot_keeps_the_reason_on_its_own_row() -> None:
+    phone = _phone_css()
+    order = [phone.find(area) for area in ('"reason reason"', '"back primary"', '"later later"')]
+    assert -1 not in order and order == sorted(order)
+
+
+def test_an_aria_disabled_button_wears_the_disabled_greys() -> None:
+    """«Probar solo la parte 1» unavailable looks as off as the disabled primary."""
+    rule = _rule(
+        ".radix-themes :is(.rt-Button, .rt-IconButton).q-button-off,\n"
+        ".radix-themes :is(.rt-Button, .rt-IconButton).q-button-off:hover"
+    )
+    primary = _rule(
+        ".radix-themes .q-step-foot .rt-Button.q-step-primary:is(:disabled, [data-disabled])"
+    )
+    for token in ("background: var(--gray-a3)", "color: var(--gray-a8)", "transform: none"):
+        assert token in rule and token in primary
+    assert "cursor: not-allowed" in rule

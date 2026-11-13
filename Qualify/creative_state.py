@@ -150,6 +150,7 @@ from .creative_provider import (
     list_drafts,
     load_kit_form,
     load_voice_screen,
+    parts_queue_on,
     preview_brief_prompt,
     preview_draft_version,
     propose_voice,
@@ -1953,8 +1954,11 @@ class CreativeState(rx.State):
                 try:
                     from qualify_api.hashtags import catalog as hashtag_catalog
 
+                    # m-25026377: most watched in the last 90 days first; with no
+                    # views known the order is exactly `resolve`'s. The model still
+                    # reads `tag (seen_count)` — only the list's order changed.
                     for term in caption_keywords(caption, limit=8):
-                        for hit in hashtag_catalog.REPOSITORY.resolve(
+                        for hit in hashtag_catalog.REPOSITORY.resolve_popular(
                             ids[0], term, limit=4, min_similarity=0.5
                         ):
                             if all(s.tag != hit.hashtag.tag for s in seen):
@@ -2039,7 +2043,8 @@ class CreativeState(rx.State):
 
             found: list[str] = []
             for term in terms:
-                for hit in hashtag_catalog.REPOSITORY.resolve(
+                # m-25026377: the catalog's tags most watched lately first
+                for hit in hashtag_catalog.REPOSITORY.resolve_popular(
                     tenant_id, term, limit=2, min_similarity=0.55
                 ):
                     if hit.hashtag.tag not in found:
@@ -4151,11 +4156,19 @@ class CreativeState(rx.State):
 
     @rx.var(cache=False)
     def reel_missing_description(self) -> bool:
-        return bool(reel_parts_vm.blocked_parts(self._reel_plan))
+        """«Contar qué pasa en la parte N» on step 5: a part still needs its description
+        AND the generation queue is on. Since m-24993023 it also reads the dispatcher
+        switch (`parts_queue_on`): with the queue off, describing a part would not unlock
+        creating them, so the action hides, as «Volver al paso 2» does."""
+        return bool(reel_parts_vm.blocked_parts(self._reel_plan)) and parts_queue_on()
 
     @rx.var(cache=False)
     def reel_unsupported_parts(self) -> bool:
-        return bool(reel_parts_vm.unsupported_parts(self._reel_plan))
+        """«Cambiar la parte N» on step 5: a part continues the previous one AND the
+        generation queue is on. Since m-24993023 it also reads the dispatcher switch
+        (`parts_queue_on`): with the queue off the action hides, as «Volver al paso 2»
+        does."""
+        return bool(reel_parts_vm.unsupported_parts(self._reel_plan)) and parts_queue_on()
 
     @rx.var(cache=False)
     def reel_describe_label(self) -> str:
@@ -4704,6 +4717,8 @@ class CreativeState(rx.State):
             seconds_left=self.videos_left,
             seconds_quota=self.videos_quota if wired else 0,
             renews=self.creations_renews,
+            # m-24993023: with the generation queue off the parts would never be made
+            queue_on=parts_queue_on(),
         )
 
     def _reel_review_open(self) -> bool:

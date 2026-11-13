@@ -21,6 +21,32 @@ STEP_TITLES = (
     "¿A quién quieres llegar?",
     "¿Cuánto quieres invertir?",
 )
+# m-24828982: an approved, unpublished piece is another source of the same wizard. Its
+# steps follow the backend's recipe (two files of the piece, explicit text, one country);
+# placements are fixed: 4:5 in the feed, 9:16 in stories and reels.
+PUBLISHED_STEPS = ("source", "destination", "audience", "budget")
+IMAGE_STEPS = ("source", "images", "text", "country", "budget")
+# A format with a single file of the piece is not a decision: it is prefilled and
+# skipped (shown in the summary). Covers are prefilled too and change from the summary.
+VIDEO_STEPS = ("source", "feed_video", "vertical_video", "text", "country", "budget")
+STEP_TITLE_BY_KEY = dict(zip(PUBLISHED_STEPS, STEP_TITLES, strict=True)) | {
+    "images": "Elige las dos imágenes del anuncio",
+    "feed_video": "Video para el perfil",
+    "vertical_video": "Video vertical de pantalla completa",
+    "text": "¿Qué dirá tu anuncio?",
+    "country": "¿En qué país quieres mostrarlo?",
+}
+UNPUBLISHED_SOURCE_TITLE = "¿Con qué quieres anunciar esta pieza?"
+COUNTRY_LABELS = {"CO": "Colombia", "VE": "Venezuela", "UY": "Uruguay"}
+VIDEO_WAITING = (
+    "Meta todavía está preparando tu video. Vuelve en unos minutos y toca "
+    "«Revisar ahora»; no tienes que subirlo de nuevo."
+)
+ZONE_LABELS = {
+    "America/Bogota": "hora de Colombia",
+    "America/Caracas": "hora de Venezuela",
+    "America/Montevideo": "hora de Uruguay",
+}
 # Lead-ad buttons in the order the owner sees them (m-25026344); codes from `lead_ads.LEAD_CTAS`.
 LEAD_CTA_LABELS = {
     "GET_QUOTE": "Pedir cotización",
@@ -65,6 +91,16 @@ class LeadFormChoiceVM:
 
 
 @dataclass(frozen=True)
+class AdMediaVM:
+    """One final file of the piece's active version; `url` is a short-lived view path."""
+
+    id: str
+    url: str = ""
+    media_type: str = "image"
+    label: str = ""
+
+
+@dataclass(frozen=True)
 class PromotionSourceVM:
     id: str
     account_label: str
@@ -87,6 +123,15 @@ class PromotionSourceVM:
     # Ready (published) forms of this source's account, last used first.
     lead_forms: list[LeadFormChoiceVM] = field(default_factory=list)
     lead_forms_error: str = ""
+    # m-24828982: "" = a published post; "images"/"videos" = the piece's unpublished pair.
+    media_kind: str = ""
+    feed_media: list[AdMediaVM] = field(default_factory=list)
+    vertical_media: list[AdMediaVM] = field(default_factory=list)
+    feed_covers: list[AdMediaVM] = field(default_factory=list)
+    vertical_covers: list[AdMediaVM] = field(default_factory=list)
+    default_message: str = ""
+    default_headline: str = ""
+    default_country: str = ""
 
 
 @dataclass(frozen=True)
@@ -116,6 +161,17 @@ class PromotionDraftVM:
     start_local: str = ""
     end_local: str = ""
     enhancements: BrandEnhancementsVM = field(default_factory=BrandEnhancementsVM)
+    media_kind: str = ""
+    # The piece has one file of that format: no step to choose it (m-24828982).
+    single_feed: bool = False
+    single_vertical: bool = False
+    feed_asset_id: str = ""
+    vertical_asset_id: str = ""
+    feed_cover_id: str = ""
+    vertical_cover_id: str = ""
+    message: str = ""
+    headline: str = ""
+    country: str = ""
 
 
 @dataclass(frozen=True)
@@ -176,6 +232,9 @@ class PromotionReviewVM:
     charge_notice: str = ""
     expires_label: str = ""
     checks: list[PromotionCheckVM] = field(default_factory=list)
+    # m-24828982: the unpublished recipe and its 9:16 preview (stories and reels).
+    recipe_id: str = ""
+    vertical_preview_url: str = ""
 
 
 @dataclass(frozen=True)
@@ -246,27 +305,84 @@ def local_datetime(value: str, timezone_name: str) -> datetime:
         raise ValueError("Revisa las fechas y la zona horaria de tu negocio.") from None
 
 
+def step_keys(draft: PromotionDraftVM) -> tuple[str, ...]:
+    if draft.media_kind == "videos":
+        skip = {"feed_video"} if draft.single_feed else set()
+        skip |= {"vertical_video"} if draft.single_vertical else set()
+        return tuple(key for key in VIDEO_STEPS if key not in skip)
+    if draft.media_kind == "images":
+        both_single = draft.single_feed and draft.single_vertical
+        return tuple(key for key in IMAGE_STEPS if not (both_single and key == "images"))
+    return PUBLISHED_STEPS
+
+
+def step_count(draft: PromotionDraftVM) -> int:
+    return len(step_keys(draft))
+
+
+def step_title(draft: PromotionDraftVM, step: int) -> str:
+    keys = step_keys(draft)
+    return STEP_TITLE_BY_KEY[keys[min(max(step, 1), len(keys)) - 1]]
+
+
+def link_problem(value: str) -> str:
+    try:
+        url = urlsplit(value.strip())
+        valid = (
+            url.scheme == "https"
+            and url.hostname
+            and not (url.username or url.password)
+            and not any(char.isspace() for char in value)
+        )
+    except ValueError:
+        valid = False
+    return "" if valid else "Escribe un enlace completo que comience por https://."
+
+
+UNPUBLISHED_PROBLEMS = {
+    "images": lambda d: (
+        ""
+        if d.feed_asset_id and d.vertical_asset_id
+        else "Elige una imagen para el perfil y otra vertical de pantalla completa."
+    ),
+    "feed_video": lambda d: "" if d.feed_asset_id else "Elige el video para el perfil.",
+    "vertical_video": lambda d: (
+        "" if d.vertical_asset_id else "Elige el video vertical de pantalla completa."
+    ),
+    "covers": lambda d: (
+        "" if d.feed_cover_id and d.vertical_cover_id else "Elige la portada de cada video."
+    ),
+    "country": lambda d: (
+        "" if d.country in COUNTRY_LABELS else "Elige el país donde quieres mostrar el anuncio."
+    ),
+}
+
+
 def step_problem(draft: PromotionDraftVM, step: int, timezone_name: str = "") -> str:
     """Local form guidance only; Meta eligibility, minimum and payment are server gates."""
-    if step == 1:
+    keys = step_keys(draft)
+    key = keys[step - 1] if 1 <= step <= len(keys) else ""
+    if key in UNPUBLISHED_PROBLEMS:
+        return UNPUBLISHED_PROBLEMS[key](draft)
+    if key == "text":
+        if not draft.message.strip():
+            return "Escribe el texto del anuncio."
+        if len(draft.message) > 2200:
+            return "El texto del anuncio admite hasta 2.200 caracteres."
+        if not draft.headline.strip():
+            return "Escribe el título del anuncio."
+        if len(draft.headline) > 100:
+            return "El título del anuncio admite hasta 100 caracteres."
+        return link_problem(draft.link_url)
+    if key == "source":
         return "Elige la publicación que quieres promocionar." if not draft.source_id else ""
-    if step == 2 and draft.goal == "lead":
+    if key == "destination" and draft.goal == "lead":
         if not draft.lead_form_id:
             return "Elige el formulario que llenará la gente."
         return "" if draft.lead_cta in LEAD_CTA_LABELS else "Elige el texto del botón."
-    if step == 2:
-        try:
-            url = urlsplit(draft.link_url.strip())
-            valid = (
-                url.scheme == "https"
-                and url.hostname
-                and not (url.username or url.password)
-                and not any(char.isspace() for char in draft.link_url)
-            )
-        except ValueError:
-            valid = False
-        return "" if valid else "Escribe un enlace completo que comience por https://."
-    if step == 3:
+    if key == "destination":
+        return link_problem(draft.link_url)
+    if key == "audience":
         if draft.housing and any(row.kind == "lookalike" for row in draft.custom_audiences):
             return "Quita el público de personas parecidas antes de continuar con vivienda."
         if any(not row.available for row in draft.custom_audiences):
@@ -289,7 +405,7 @@ def step_problem(draft: PromotionDraftVM, step: int, timezone_name: str = "") ->
         ):
             return "Quita los intereses que Meta va a retirar o ya no permite usar."
         return ""
-    if step == 4:
+    if key == "budget":
         try:
             cop_minor(draft.budget)
             start = local_datetime(draft.start_local, timezone_name)
@@ -302,6 +418,47 @@ def step_problem(draft: PromotionDraftVM, step: int, timezone_name: str = "") ->
 
 
 def first_problem(draft: PromotionDraftVM, timezone_name: str) -> str:
+    # Steps a single file skips and the covers (changed from the summary) still count.
+    if draft.media_kind and not (draft.feed_asset_id and draft.vertical_asset_id):
+        return "Elige los dos archivos de la pieza para el anuncio."
+    if draft.media_kind == "videos" and not (draft.feed_cover_id and draft.vertical_cover_id):
+        return UNPUBLISHED_PROBLEMS["covers"](draft)
     return next(
-        (reason for n in range(1, 5) if (reason := step_problem(draft, n, timezone_name))), ""
+        (
+            reason
+            for n in range(1, step_count(draft) + 1)
+            if (reason := step_problem(draft, n, timezone_name))
+        ),
+        "",
     )
+
+
+def video_outcome(error: Exception) -> str:
+    """What a refused unpublished preparation means for the screen, from the backend's
+    typed reason (never its wording): "waiting" (Meta is processing a video: repeat the
+    same preparation later), "help" (an uncertain upload: never offer to send it again)
+    or "" (an ordinary, owner-fixable refusal)."""
+    from qualify_api.ads.unpublished import UPLOAD_UNCERTAIN, VIDEO_PROCESSING  # noqa: PLC0415
+
+    reason = getattr(error, "reason", "")
+    return {VIDEO_PROCESSING: "waiting", UPLOAD_UNCERTAIN: "help"}.get(reason, "")
+
+
+def zone_label(timezone_name: str) -> str:
+    """The business's clock in the owner's words, never an IANA name."""
+    return ZONE_LABELS.get(timezone_name, "la hora de tu negocio")
+
+
+def step_counter(
+    draft: PromotionDraftVM, offered: PromotionDraftVM, step: int, reviewed: bool
+) -> tuple[int, int]:
+    """«Paso N de M» for the head. Before the choice, `offered` (the draft the first
+    source would prefill) decides M — a piece is either published or not. An unpublished
+    piece counts its review as its own last step (m-24828982); the published flow keeps
+    its four steps as before."""
+    current = draft if draft.source_id else offered
+    kind = current.media_kind
+    total = step_count(current)
+    if not kind:
+        return step, total
+    return (total + 1 if reviewed else step), total + 1

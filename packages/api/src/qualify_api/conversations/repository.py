@@ -16,7 +16,12 @@ statement and another tenant's thread reads as missing — not as forbidden.
   webhook and by poll is one row, whichever came first.
 - `bump_thread_activity` — `GREATEST`, so a late or replayed batch never moves
   `last_inbound_at`/`last_message_at` backwards; an inbound newer than the stored one
-  reopens a closed thread (the WhatsApp rule, `whatsapp/repository.py`).
+  reopens a closed thread (the WhatsApp rule, `whatsapp/repository.py`). An outbound
+  (sent or echoed) never reopens, nor does a replay of an inbound already stored.
+- `close_if_unseen` / `set_status` (m-25026457, «Cerrar» / «Reabrir» on Instagram):
+  bounded by the thread's channel; setting the status a thread already has is a no-op.
+  Closing is a compare-and-set on the `last_inbound_at` the owner saw; only a message
+  `store_message` actually inserted reopens a closed chat, never a duplicate.
 
 `last_inbound_at` is the base of the 24 h window (0004's B2 condition) and is bumped
 ONLY from inbound messages; `last_message_at` is inbox ordering only.
@@ -63,6 +68,8 @@ from qualify_api.conversations.contracts import (
 
 THREAD_OPEN = "open"
 THREAD_CLOSED = "closed"
+# `ck_thread_status` (0004): the same two values on every channel.
+THREAD_STATUSES = (THREAD_OPEN, THREAD_CLOSED)
 SYNC_OK = "ok"
 SYNC_PARTIAL = "partial"
 SYNC_FAILED = "failed"
@@ -225,7 +232,21 @@ class ConversationRepository(Protocol):
         channels: Sequence[str],
         connection_id: UUID | None = None,
         limit: int = 50,
+        status: str | None = None,
     ) -> list[ThreadRecord]: ...
+
+    def set_status(
+        self, *, tenant_id: UUID, thread_id: UUID, channel: str, status: str
+    ) -> bool: ...
+
+    def close_if_unseen(
+        self,
+        *,
+        tenant_id: UUID,
+        thread_id: UUID,
+        channel: str,
+        seen_last_inbound_at: datetime | None,
+    ) -> bool: ...
 
     def get_thread(self, *, tenant_id: UUID, thread_id: UUID) -> ThreadRecord | None: ...
 
@@ -310,6 +331,11 @@ def _as_utc(value: datetime) -> datetime:
 
 def _coalesce(value: str | None, stored: str | None) -> str | None:
     return stored if value is None else value
+
+
+def _check_thread_status(status: str | None) -> None:
+    if status is not None and status not in THREAD_STATUSES:
+        raise ValueError(f"thread status {status!r} is not one of {THREAD_STATUSES}")
 
 
 # --------------------------------------------------------------------------------------
@@ -439,13 +465,17 @@ _MARK_OUTBOUND_READ = text(
 )
 
 # `GREATEST` ignores NULLs, so a batch with no inbound leaves `last_inbound_at` alone.
+# `:reopen` (m-25026457) is false when `store_message` found the `mid` already stored: a
+# duplicate never reopens a closed chat, even when it carries a LATER instant than the
+# stored copy (the poll keeps Graph's whole seconds, the webhook brings milliseconds).
 _BUMP_THREAD = text(
     """
     UPDATE threads
        SET last_inbound_at = GREATEST(last_inbound_at, CAST(:inbound AS timestamptz)),
            last_message_at = GREATEST(last_message_at, CAST(:message_at AS timestamptz)),
            status = CASE
-                        WHEN CAST(:inbound AS timestamptz) IS NOT NULL
+                        WHEN CAST(:reopen AS boolean)
+                         AND CAST(:inbound AS timestamptz) IS NOT NULL
                          AND (last_inbound_at IS NULL
                               OR CAST(:inbound AS timestamptz) > last_inbound_at)
                         THEN :open
@@ -528,7 +558,9 @@ _DISCARD_DRAFTS = text(
 
 # The thread's instants from what remains. Unlike `_BUMP_THREAD` this may move them
 # BACKWARDS (or to NULL): the unsent message no longer opens the 24 h window nor orders the
-# inbox. `status` is left alone (a person's choice).
+# inbox. `status` is left alone (a person's choice): an unsend neither closes nor reopens a
+# chat (m-25026457). A closed chat whose `last_inbound_at` moved back stays closed, and a
+# later `close_if_unseen` compares the screen's instant against the recomputed value.
 _RECOMPUTE_THREAD = text(
     """
     UPDATE threads
@@ -567,11 +599,15 @@ _NOT_ONLY_UNSENT = """
                         WHERE v.thread_id = t.id AND v.unsent_at IS NULL))
 """
 
+# `:status` NULL lists both statuses; 'open' / 'closed' only those (m-25026457: «Cerrados»).
+_STATUS_FILTER = "AND (CAST(:status AS text) IS NULL OR t.status = CAST(:status AS text))"
+
 _LIST_THREADS = text(
     f"""
     SELECT {_THREAD_COLUMNS}
       FROM threads t
      WHERE t.channel IN :channels
+       {_STATUS_FILTER}
        {_NOT_ONLY_UNSENT}
      ORDER BY t.last_message_at DESC NULLS LAST, t.created_at DESC, t.id
      LIMIT :limit
@@ -583,11 +619,36 @@ _LIST_THREADS_FOR_CONNECTION = text(
     SELECT {_THREAD_COLUMNS}
       FROM threads t
      WHERE t.channel IN :channels AND t.connection_id = :connection_id
+       {_STATUS_FILTER}
        {_NOT_ONLY_UNSENT}
      ORDER BY t.last_message_at DESC NULLS LAST, t.created_at DESC, t.id
      LIMIT :limit
     """
 ).bindparams(bindparam("channels", expanding=True))
+
+# m-25026457: «Cerrar» / «Reabrir». Bounded by channel like WhatsApp's own `_SET_STATUS`
+# (`whatsapp/chats.py`), so this door never moves a thread of another channel; RLS bounds
+# the tenant. Nothing else changes: no instant moves and, as on WhatsApp, nothing records
+# who closed it.
+_SET_STATUS = text(
+    "UPDATE threads SET status = :status WHERE id = :thread_id AND channel = :channel"
+)
+
+# «Cerrar» as a compare-and-set (m-25026457): closes only if no inbound that would REOPEN
+# the chat (`_BUMP_THREAD`: strictly newer than `last_inbound_at`) arrived after the
+# instant the owner's screen showed. One statement: under READ COMMITTED an UPDATE that
+# waits on a concurrent `store_message` re-evaluates this WHERE against the committed row,
+# so bump-then-close refuses and close-then-bump reopens — never closed over an unseen
+# inbound. A chat already closed stays closed (idempotent); one with no inbound closes.
+_CLOSE_IF_UNSEEN = text(
+    """
+    UPDATE threads SET status = :closed
+     WHERE id = :thread_id AND channel = :channel
+       AND (status = :closed
+            OR last_inbound_at IS NULL
+            OR last_inbound_at <= CAST(:seen AS timestamptz))
+    """
+)
 
 _GET_THREAD = text(f"SELECT {_THREAD_COLUMNS} FROM threads t WHERE t.id = :thread_id")
 
@@ -843,6 +904,7 @@ class PostgresConversationRepository:
             inserted = session.execute(
                 _INSERT_MESSAGE, _insert_params(tenant_id, thread.id, connection_id, message)
             ).first()
+            created = bool(inserted is not None and inserted.created)
             session.execute(
                 _BUMP_THREAD,
                 {
@@ -850,9 +912,10 @@ class PostgresConversationRepository:
                     "inbound": at if message.direction == "inbound" else None,
                     "message_at": at,
                     "open": THREAD_OPEN,
+                    # Only a row THIS call inserted may reopen a closed chat (m-25026457).
+                    "reopen": created,
                 },
             )
-        created = bool(inserted is not None and inserted.created)
         return StoreResult(
             outcome=STORE_CREATED if created else STORE_DUPLICATE,
             thread_id=thread.id,
@@ -875,6 +938,7 @@ class PostgresConversationRepository:
                     "inbound": last_inbound_at,
                     "message_at": last_message_at,
                     "open": THREAD_OPEN,
+                    "reopen": True,
                 },
             )
 
@@ -885,10 +949,12 @@ class PostgresConversationRepository:
         channels: Sequence[str],
         connection_id: UUID | None = None,
         limit: int = 50,
+        status: str | None = None,
     ) -> list[ThreadRecord]:
+        _check_thread_status(status)
         if not channels:
             return []
-        params: dict[str, object] = {"channels": list(channels), "limit": limit}
+        params: dict[str, object] = {"channels": list(channels), "limit": limit, "status": status}
         statement = _LIST_THREADS
         if connection_id is not None:
             statement = _LIST_THREADS_FOR_CONNECTION
@@ -896,6 +962,38 @@ class PostgresConversationRepository:
         with tenant_session(tenant_id) as session:
             rows = session.execute(statement, params).all()
         return [_thread_record(row) for row in rows]
+
+    def set_status(self, *, tenant_id: UUID, thread_id: UUID, channel: str, status: str) -> bool:
+        """True if a thread of this tenant and channel matched, whatever its status was."""
+        _check_thread_status(status)
+        with tenant_session(tenant_id) as session:
+            result = session.execute(
+                _SET_STATUS, {"thread_id": thread_id, "channel": channel, "status": status}
+            )
+        return bool(result.rowcount)
+
+    def close_if_unseen(
+        self,
+        *,
+        tenant_id: UUID,
+        thread_id: UUID,
+        channel: str,
+        seen_last_inbound_at: datetime | None,
+    ) -> bool:
+        """Close unless an inbound newer than `seen_last_inbound_at` is stored. False when
+        refused OR when no thread of this tenant and channel matched (the caller tells
+        the two apart by reading the thread)."""
+        with tenant_session(tenant_id) as session:
+            result = session.execute(
+                _CLOSE_IF_UNSEEN,
+                {
+                    "thread_id": thread_id,
+                    "channel": channel,
+                    "closed": THREAD_CLOSED,
+                    "seen": seen_last_inbound_at,
+                },
+            )
+        return bool(result.rowcount)
 
     def get_thread(self, *, tenant_id: UUID, thread_id: UUID) -> ThreadRecord | None:
         with tenant_session(tenant_id) as session:
@@ -1406,11 +1504,12 @@ class MemoryConversationRepository:
             connection_id=connection_id,
             message=message,
         )
-        self.bump_thread_activity(
+        self._bump(
             tenant_id=tenant_id,
             thread_id=upsert.thread_id,
             last_inbound_at=at if message.direction == "inbound" else None,
             last_message_at=at,
+            reopen=created,
         )
         return StoreResult(
             outcome=STORE_CREATED if created else STORE_DUPLICATE,
@@ -1426,6 +1525,23 @@ class MemoryConversationRepository:
         last_inbound_at: datetime | None,
         last_message_at: datetime | None,
     ) -> None:
+        self._bump(
+            tenant_id=tenant_id,
+            thread_id=thread_id,
+            last_inbound_at=last_inbound_at,
+            last_message_at=last_message_at,
+            reopen=True,
+        )
+
+    def _bump(
+        self,
+        *,
+        tenant_id: UUID,
+        thread_id: UUID,
+        last_inbound_at: datetime | None,
+        last_message_at: datetime | None,
+        reopen: bool,
+    ) -> None:
         entry = self._visible(tenant_id, thread_id)
         if entry is None:
             return
@@ -1435,7 +1551,8 @@ class MemoryConversationRepository:
         if last_inbound_at is not None:
             if inbound is None or _as_utc(last_inbound_at) > _as_utc(inbound):
                 inbound = last_inbound_at
-                status = THREAD_OPEN
+                if reopen:
+                    status = THREAD_OPEN
         message_at = rec.last_message_at
         if last_message_at is not None and (
             message_at is None or _as_utc(last_message_at) > _as_utc(message_at)
@@ -1452,7 +1569,9 @@ class MemoryConversationRepository:
         channels: Sequence[str],
         connection_id: UUID | None = None,
         limit: int = 50,
+        status: str | None = None,
     ) -> list[ThreadRecord]:
+        _check_thread_status(status)
         wanted = set(channels)
         rows = [
             self._with_outbound(entry)
@@ -1460,6 +1579,7 @@ class MemoryConversationRepository:
             if entry.record.tenant_id == tenant_id
             and entry.record.channel in wanted
             and (connection_id is None or entry.record.connection_id == connection_id)
+            and (status is None or entry.record.status == status)
             and (entry.messages or entry.record.id not in self._threads_with_unsent)
         ]
         rows.sort(
@@ -1470,6 +1590,36 @@ class MemoryConversationRepository:
             )
         )
         return rows[:limit]
+
+    def set_status(self, *, tenant_id: UUID, thread_id: UUID, channel: str, status: str) -> bool:
+        _check_thread_status(status)
+        entry = self._visible(tenant_id, thread_id)
+        if entry is None or entry.record.channel != channel:
+            return False
+        entry.record = replace(entry.record, status=status)
+        return True
+
+    def close_if_unseen(
+        self,
+        *,
+        tenant_id: UUID,
+        thread_id: UUID,
+        channel: str,
+        seen_last_inbound_at: datetime | None,
+    ) -> bool:
+        entry = self._visible(tenant_id, thread_id)
+        if entry is None or entry.record.channel != channel:
+            return False
+        rec = entry.record
+        stored, seen = rec.last_inbound_at, seen_last_inbound_at
+        if not (
+            rec.status == THREAD_CLOSED
+            or stored is None
+            or (seen is not None and _as_utc(stored) <= _as_utc(seen))
+        ):
+            return False
+        entry.record = replace(rec, status=THREAD_CLOSED)
+        return True
 
     def get_thread(self, *, tenant_id: UUID, thread_id: UUID) -> ThreadRecord | None:
         entry = self._visible(tenant_id, thread_id)

@@ -6,7 +6,7 @@ figure the owner taps is the length of the list that opens (N11):
 - **messages** — Instagram private conversations (`threads.channel = 'dm'`) in the
   `PENDING` attention state of `conversations.service.attention_state`: a last inbound
   message, no outbound at or after it, and not opened since (Conversaciones' filter
-  «Pendientes»);
+  «Pendientes»), and not closed by the owner (m-25026457; a newer inbound reopens it);
 - **buyers** — the commercial queries still `open` in `interaction_followups` whose
   origin comment is still visible (the «Quieren comprar» cards);
 - **comments** — the assisted public replies waiting for the owner's approval
@@ -40,6 +40,7 @@ SELECT
   (SELECT count(*)
      FROM threads t
     WHERE t.channel = 'dm'
+      AND t.status = 'open'
       AND t.last_inbound_at IS NOT NULL
       AND (t.last_read_at IS NULL OR t.last_read_at < t.last_inbound_at)
       AND NOT EXISTS (

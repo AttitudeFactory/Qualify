@@ -36,6 +36,8 @@ from qualify_api.ads.unpublished import (
     MAX_VIDEO_SECONDS,
     MIN_VIDEO_SECONDS,
     TOO_LARGE,
+    UPLOAD_UNCERTAIN,
+    VIDEO_PROCESSING,
     ImageAdForm,
     ImageSelection,
     ImageSource,
@@ -250,7 +252,8 @@ class UnpublishedImageService:
         if not claimed:
             raise UnpublishedUnavailable(
                 "No pudimos confirmar la carga en Meta. "
-                "Pide ayuda para revisarla antes de continuar."
+                "Pide ayuda para revisarla antes de continuar.",
+                reason=UPLOAD_UNCERTAIN,
             )
         try:
             value = await client.upload_image(data, before_write=lambda: self._guard(source, actor))
@@ -324,7 +327,8 @@ class UnpublishedImageService:
                 row["state"],
                 "No pudimos confirmar la carga del video en Meta. "
                 "Pide ayuda para revisarla antes de continuar.",
-            )
+            ),
+            reason="" if row["state"] == "failed" else UPLOAD_UNCERTAIN,
         )
 
     async def _digests(self, source: ImageSource, *, videos: bool = True) -> list[str]:
@@ -423,7 +427,7 @@ class UnpublishedImageService:
                 # Both are sent first; nothing is built while either is not ready at Meta.
                 waiting = [state for state, _ in sent if state != "ready_remote"]
                 if waiting:
-                    raise UnpublishedUnavailable(VIDEO_WAIT[waiting[0]])
+                    raise UnpublishedUnavailable(VIDEO_WAIT[waiting[0]], reason=VIDEO_PROCESSING)
                 videos = [video_id for _, video_id in sent]
                 creative = video_creative_payload(
                     source, form, tuple(zip(videos, (row[0] for row in covers), strict=True))

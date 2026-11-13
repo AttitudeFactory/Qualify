@@ -67,6 +67,7 @@ from .conversations_vm import (
     DOCUMENT_ACCEPT,
     FILTER_ALL,
     FILTER_ANSWERED,
+    FILTER_CLOSED,
     FILTER_PENDING,
     FILTER_READ,
     MAX_BUTTON_TITLE_CHARS,
@@ -114,6 +115,7 @@ from .ui import (
     platform_badge,
     removable_pill,
     skeleton_rows,
+    tag,
     tone_badge,
 )
 from .ui import tokens as T
@@ -324,6 +326,8 @@ def _filter_chip(label: rx.Var[str], key: str) -> rx.Component:
         on_click=S.set_filter(key),
         variant=rx.cond(active, "solid", "soft"),
         size="1",
+        min_height="44px",
+        aria_pressed=rx.cond(active, "true", "false"),
         type="button",
         class_name="q-conv-filter",
         **T.tone_scheme("neutral"),
@@ -337,11 +341,12 @@ def _filters() -> rx.Component:
         _filter_chip(S.filter_pending_label, FILTER_PENDING),
         _filter_chip(S.filter_read_label, FILTER_READ),
         _filter_chip(S.filter_answered_label, FILTER_ANSWERED),
+        _filter_chip(S.filter_closed_label, FILTER_CLOSED),
         wrap="wrap",
         gap="0.4rem",
         width="100%",
         class_name="q-conv-filters",
-        role="tablist",
+        role="group",
         aria_label="Filtrar conversaciones",
     )
 
@@ -386,7 +391,7 @@ def _all_clear_state() -> rx.Component:
 
 
 def _all_clear_card() -> rx.Component:
-    """The same news above a list with nothing pending (filter «Todas»): one line and the
+    """The same news above a list with nothing pending (filter «Abiertas»): one line and the
     button, wrapping under the text at 360 px (N12)."""
     return card(
         rx.flex(
@@ -443,10 +448,12 @@ def _list_body() -> rx.Component:
                         width="100%",
                     ),
                     rx.cond(
-                        S.filter_key == FILTER_PENDING,
+                        # m-25026457: «Abiertas» lists open chats only, so it can be empty
+                        # once the owner closed everything — that is «¡Al día!» too.
+                        (S.filter_key == FILTER_PENDING) | (S.filter_key == FILTER_ALL),
                         _all_clear_state(),
                         # Filter exception (listed in the PR): the way out is the chip
-                        # «Todas», given as a button so the empty list is not a dead end.
+                        # «Abiertas», given as a button so the empty list is not a dead end.
                         rx.vstack(
                             rx.text(
                                 "No hay conversaciones con este filtro.",
@@ -454,7 +461,7 @@ def _list_body() -> rx.Component:
                                 color=T.TEXT_MUTED,
                             ),
                             rx.button(
-                                "Ver todas",
+                                "Ver abiertas",
                                 on_click=S.set_filter(FILTER_ALL),
                                 variant="soft",
                                 size="2",
@@ -510,13 +517,57 @@ def _close_button() -> rx.Component:
         on_click=S.close_conversation,
         variant="ghost",
         size="2",
-        aria_label="Cerrar la conversación",
+        # m-25026457: it only hides the pane — «Cerrar» (the chat) is the other button.
+        aria_label="Volver a la lista",
+        title="Volver a la lista",
         class_name="q-conv-close",
         **T.tone_scheme("neutral"),
     )
 
 
+def _chat_status_button() -> rx.Component:
+    """m-25026457: «Cerrar» / «Reabrir», WhatsApp's words, icons and place (the right end
+    of the row under the name). ONE button whose label flips, so the keyboard focus stays
+    on it after the click instead of falling back to the page."""
+    thread = S.open_thread
+    action = rx.cond(thread.is_closed, "reopen", "close")
+    return rx.button(
+        rx.cond(
+            thread.is_closed,
+            rx.icon("rotate-ccw", size=T.ICON_SM),
+            rx.icon("archive", size=T.ICON_SM),
+        ),
+        rx.cond(thread.is_closed, "Reabrir", "Cerrar"),
+        # What the SCREEN shows goes with the tap: the backend refuses a close if the
+        # person wrote after it (m-25026457).
+        on_click=S.change_chat_status(action, thread.thread_id, thread.last_inbound_iso),
+        loading=S.chat_status_busy != "",
+        variant="soft",
+        size="2",
+        min_height="44px",
+        type="button",
+        class_name="q-conv-status",
+        **T.tone_scheme("neutral"),
+    )
+
+
 def _conversation_header() -> rx.Component:
+    return rx.vstack(
+        _conversation_identity(),
+        rx.hstack(
+            rx.spacer(),
+            _chat_status_button(),
+            width="100%",
+            align="center",
+            spacing="2",
+        ),
+        spacing="3",
+        width="100%",
+        class_name="q-conv-head",
+    )
+
+
+def _conversation_identity() -> rx.Component:
     thread = S.open_thread
     return rx.hstack(
         _avatar(thread, size="lg"),
@@ -536,6 +587,8 @@ def _conversation_header() -> rx.Component:
             rx.hstack(
                 rx.text(thread.subtitle, size="1", color=T.TEXT_MUTED),
                 _tone_pill(thread.attention_label, thread.attention_tone),
+                # m-25026457: WhatsApp's header mark for a closed chat (the row has none).
+                rx.cond(thread.is_closed, tag("Cerrado"), rx.fragment()),
                 spacing="2",
                 flex_wrap="wrap",
                 align="center",
@@ -548,7 +601,6 @@ def _conversation_header() -> rx.Component:
         width="100%",
         align="center",
         spacing="3",
-        class_name="q-conv-head",
     )
 
 

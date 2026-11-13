@@ -17,13 +17,13 @@ import re
 import pytest
 from qualify_creative.scene_plan import ad_mode_for, flyer_scene_plans
 
-from qualify_api.creative.media import (
+from qualify_api.creative.image_pipeline.base_prompt import (
     CALM_BOTTOM_V4,
     CALM_TOP_V4,
     NO_NEW_TEXT_IMAGE_V4,
-    PROMPT_COMPILER_VERSION,
     ad_scene_prompt,
 )
+from qualify_api.creative.media import PROMPT_COMPILER_VERSION
 
 from .test_gallery_scene_v3 import _gallery, _isologo, _prompts
 from .test_image_prompt_v1 import _flyer, _references

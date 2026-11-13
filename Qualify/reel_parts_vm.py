@@ -523,6 +523,12 @@ NO_PARTS_TEXT = "Tu video se quedó sin partes. Vuelve al paso 2 para recuperar 
 PARTS_UNAVAILABLE_TEXT = (
     "No pudimos crear las partes de tu video y no se usó ninguna vista previa. Inténtalo más tarde."
 )
+#: The generation queue is off (`QUALIFY_CREATIVE_DISPATCHER` is not `queue`, m-24993023):
+#: only the creative worker creates the parts, so a parent created now would wait forever.
+#: Nothing is created and nothing of the month is used.
+QUEUE_OFF_TEXT = (
+    "Por ahora no podemos crear videos por partes. No se usó nada de tu mes. Inténtalo más tarde."
+)
 
 #: «Dos conservan el original…» — how many parts, in words up to ten (parts are «ellas»).
 _PART_WORDS = ("una", "dos", "tres", "cuatro", "cinco", "seis", "siete", "ocho", "nueve", "diez")
@@ -681,6 +687,7 @@ def review_actions(
     seconds_left: int = 0,
     seconds_quota: int = 0,
     renews: str = "",
+    queue_on: bool = True,
 ) -> ReviewActions:
     """Step 5 in parts mode: the summary, «Crear las n partes» and «Probar solo la
     parte 1», and why either is disabled — all or nothing: nothing is created while a
@@ -692,8 +699,25 @@ def review_actions(
 
     An `extend` part is never first nor torn from the part it continues here: step 2's
     every edit (`remove_part`, `move_unit`) runs `_settle`, which makes such a part new,
-    with the same order rule as the backend's `check_extend_parts`."""
+    with the same order rule as the backend's `check_extend_parts`.
+
+    `queue_on` False (m-24993023: the generation queue is off, so the parts would never
+    be created) holds both buttons before any other reason: nothing on this screen or on
+    step 2 fixes it, so «Volver al paso 2» is not offered."""
     count = len(entries)
+    if not queue_on:
+        return ReviewActions(
+            summary=review_summary_text(entries, product),
+            all_label=create_all_label(count),
+            try_first=count > 1,
+            all_reason=QUEUE_OFF_TEXT,
+            first_reason=QUEUE_OFF_TEXT,
+            exhausted="",
+            back_to_parts=False,
+            # the body's callout says it all: no short reason in the foot (Deivid,
+            # 2026-11-13 — it crowded «Atrás» in the fixed bar)
+            foot_reason="",
+        )
     blocked = blocked_parts(entries)
     to_ideas = False  # UI-4 lets the owner describe every part, including an unseen reel.
     exhausted = ""
@@ -787,6 +811,7 @@ __all__ = [
     "PLAY_ORIGINAL_TEXT",
     "PARTS_PIECE_LABEL",
     "PARTS_UNAVAILABLE_TEXT",
+    "QUEUE_OFF_TEXT",
     "TRY_FIRST_LABEL",
     "TRY_FIRST_NOTE",
     "ReviewActions",

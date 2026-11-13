@@ -549,7 +549,13 @@ def test_store_in_flight_then_unsend_leaves_no_window_and_no_pending(
         )
         store.execute(
             _BUMP_THREAD,
-            {"thread_id": thread.id, "inbound": recent, "message_at": recent, "open": THREAD_OPEN},
+            {
+                "thread_id": thread.id,
+                "inbound": recent,
+                "message_at": recent,
+                "open": THREAD_OPEN,
+                "reopen": True,  # m-25026457: the row was just inserted, as in store_message
+            },
         )
         worker = threading.Thread(
             target=lambda: outcome.update(

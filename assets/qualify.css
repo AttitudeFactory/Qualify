@@ -959,7 +959,24 @@ button.q-biz-trigger:disabled { cursor: progress; opacity: 0.8; }
   row-gap: 2px;
 }
 .q-step-back { grid-area: back; }
-.q-step-reason { grid-area: reason; justify-self: end; text-align: right; }
+.q-step-reason {
+  grid-area: reason;
+  justify-self: end;
+  text-align: right;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+/* m-24993023: a reason gets its own row, above the buttons and as wide as the foot. In
+   the old one-row layout a narrow panel squeezed its column to nothing and the text
+   spilled over «Atrás». Desktop only: the phone layout below already stacks it. */
+@media (min-width: 641px) {
+  .q-step-foot:has(> .q-step-reason) {
+    grid-template-areas:
+      "reason reason reason reason"
+      "back . later primary";
+  }
+}
 .q-step-later { grid-area: later; }
 /* Radix pulls a ghost button out with negative margins; in a grid cell it would overlap
    the row above. */
@@ -1003,6 +1020,24 @@ button.q-biz-trigger:disabled { cursor: progress; opacity: 0.8; }
 @media (prefers-reduced-motion: reduce) {
   .q-step-body > * { animation: none; }
   .q-step-bar-fill { transition: none; }
+}
+
+/* A narrow panel on a wide screen (a side pane, a split window) gets the phone's
+   stacked foot too: the slot is the container the foot measures. After the foot's base
+   rules (same specificity: the later one wins — `.q-step-primary`'s 9rem minimum). */
+.q-step-slot { container: q-step-slot / inline-size; }
+@container q-step-slot (max-width: 480px) {
+  .q-step-foot,
+  .q-step-foot:has(> .q-step-reason) {
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-areas:
+      "reason reason"
+      "back primary"
+      "later later";
+  }
+  .q-step-reason { justify-self: stretch; text-align: center; }
+  .q-step-primary { min-width: 0; width: 100%; }
+  .q-step-later { justify-self: center; min-height: 40px; }
 }
 
 @media (max-width: 640px) {
@@ -2279,6 +2314,18 @@ button.q-biz-trigger:disabled { cursor: progress; opacity: 0.8; }
   background: var(--gray-a3);
   color: var(--gray-a8);
   box-shadow: none;
+  transform: none;
+  cursor: not-allowed;
+}
+/* m-24993023: a soft/outline/surface button kept focusable while unavailable
+   (`aria-disabled`, never native `disabled`, so a screen reader reaches its reason)
+   wears the same greys as a disabled primary — never a faded accent that reads as live.
+   `:hover` is listed so the soft skin's lift does not come back on a pointer. */
+.radix-themes :is(.rt-Button, .rt-IconButton).q-button-off,
+.radix-themes :is(.rt-Button, .rt-IconButton).q-button-off:hover {
+  background: var(--gray-a3);
+  color: var(--gray-a8);
+  box-shadow: inset 0 0 0 1px var(--gray-a5);
   transform: none;
   cursor: not-allowed;
 }

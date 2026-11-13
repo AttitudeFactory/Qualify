@@ -137,11 +137,16 @@ FILTER_ALL = "all"
 FILTER_PENDING = "pending"
 FILTER_READ = "read"
 FILTER_ANSWERED = "answered"
+# m-25026457: the owner's «Cerrar» takes a chat out of every other chip; «Cerradas» lists
+# it. Founder, 2026-11-13: «Abiertas y Cerradas» (the first chip lists every open chat).
+# the word the ticket fixes (WhatsApp's chip), kept as is for the shared list to come.
+FILTER_CLOSED = "closed"
 FILTERS: tuple[tuple[str, str], ...] = (
-    (FILTER_ALL, "Todas"),
+    (FILTER_ALL, "Abiertas"),
     (FILTER_PENDING, "Pendientes"),
     (FILTER_READ, "Leídas"),
     (FILTER_ANSWERED, "Respondidas"),
+    (FILTER_CLOSED, "Cerradas"),
 )
 FILTER_KEYS = frozenset(key for key, _label in FILTERS)
 DEFAULT_FILTER = FILTER_ALL
@@ -150,10 +155,13 @@ DEFAULT_FILTER = FILTER_ALL
 # filtered — `/conversations?filtro=pendientes`. The slugs are the chips' own words.
 FILTER_PARAM = "filtro"
 FILTER_SLUGS = {
-    "todas": FILTER_ALL,
+    "abiertas": FILTER_ALL,
+    "todas": FILTER_ALL,  # the chip's name until 2026-11-13: old links keep working
     "pendientes": FILTER_PENDING,
     "leidas": FILTER_READ,
     "respondidas": FILTER_ANSWERED,
+    "cerradas": FILTER_CLOSED,
+    "cerrados": FILTER_CLOSED,  # alias, never deployed as the chip's name
 }
 
 
@@ -674,6 +682,9 @@ class ThreadRowVM:
     # m-25017844: minutes until the window closes when under an hour, else 0 — the
     # shared row's «Responde en N min».
     window_minutes: int = 0
+    # m-25026457: the person's last message as this row shows it (ISO 8601, "" when
+    # none) — what «Cerrar» sends as «seen», and how a refresh tells a new message apart.
+    last_inbound_iso: str = ""
 
 
 EMPTY_THREAD = ThreadRowVM(
@@ -792,7 +803,26 @@ def build_thread_row(
         avatar_url=avatar_url,
         fresh=fresh,
         window_minutes=minutes_left(view.window.is_open, view.window.closes_at, now),
+        last_inbound_iso=inbound_iso(getattr(thread, "last_inbound_at", None)),
     )
+
+
+def inbound_iso(value: datetime | None) -> str:
+    """`last_inbound_at` → the row's exact string ("" for None); `seen_inbound_at`
+    reads it back."""
+    return value.isoformat() if value is not None else ""
+
+
+def seen_inbound_at(value: str) -> datetime | None:
+    """The row's `last_inbound_iso` → what «Cerrar» tells the backend the owner saw.
+    Raises `ValueError` for anything that is not the row's own string."""
+    return datetime.fromisoformat(value) if value else None
+
+
+def changed_since_seen_notice(title: str) -> str:
+    """«Cerrar» refused because the person wrote after the screen was drawn."""
+    who = title.strip() or UNKNOWN_PERSON
+    return f"{who} te acaba de escribir. Lee su mensaje antes de cerrar."
 
 
 def as_chat_row(row: ThreadRowVM) -> ChatRowVM:
@@ -816,11 +846,15 @@ def as_chat_row(row: ThreadRowVM) -> ChatRowVM:
 
 
 def filter_threads(rows: Iterable[ThreadRowVM], key: str) -> list[ThreadRowVM]:
-    """Todas · Pendientes · Leídas · Respondidas, by the derived attention state. An
-    unknown key falls back to Todas."""
+    """Cerradas = the chats the owner closed (m-25026457). Every other chip lists open
+    chats only: Abiertas = all of them, Pendientes · Leídas · Respondidas by the derived
+    attention state. An unknown key falls back to Abiertas."""
+    if key == FILTER_CLOSED:
+        return [r for r in rows if r.is_closed]
+    open_rows = [r for r in rows if not r.is_closed]
     if key in (FILTER_PENDING, FILTER_READ, FILTER_ANSWERED):
-        return [r for r in rows if r.attention == key]
-    return list(rows)
+        return [r for r in open_rows if r.attention == key]
+    return open_rows
 
 
 def filter_counts(rows: Sequence[ThreadRowVM]) -> dict[str, int]:
@@ -843,7 +877,11 @@ def newly_pending(previous: Sequence[ThreadRowVM], current: Sequence[ThreadRowVM
         old = before.get(row.thread_id)
         if row.attention != "pending":
             continue
-        if old is None or old.time_label != row.time_label or old.preview != row.preview:
+        if old is not None and old.last_inbound_iso != row.last_inbound_iso:
+            # m-25026457: a genuinely new message from the person (this is also what
+            # reopens a closed chat); a status flip alone («Reabrir») announces nothing.
+            fresh.append(row.thread_id)
+        elif old is None or old.time_label != row.time_label or old.preview != row.preview:
             if old is None or old.attention != "pending" or old.preview != row.preview:
                 fresh.append(row.thread_id)
     return fresh

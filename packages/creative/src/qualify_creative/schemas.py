@@ -819,7 +819,9 @@ class PartsRequest(BaseModel):
     of the last attempt: `refused` None = nothing refused (pending while no part exists,
     done once they do); a code = why nothing was made, `part` the part it is about and
     `missing` the vistas previas short. `attempted_parts` = the parts that attempt asked
-    for (empty = every part not created yet)."""
+    for, always spelled out (m-24993031): scope `all` keeps every part of the plan not
+    removed, as `create_parts` reads «all». Empty only before any attempt — or on an
+    outcome kept before m-24993031, where empty meant «every part not created yet»."""
 
     model_config = ConfigDict(frozen=True)
 

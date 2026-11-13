@@ -6112,7 +6112,9 @@ def _try_first_button() -> rx.Component:
         "width": rx.breakpoints(initial="100%", sm="auto"),
     }
     label = (rx.icon("sparkles", size=T.ICON_SM), reel_parts_vm.TRY_FIRST_LABEL)
-    off = {"aria_disabled": "true", "opacity": "0.55", "cursor": "not-allowed"}
+    # m-24993023: the design system's unavailable greys (`q-button-off`, as the disabled
+    # primary beside it), never a faded accent; `aria-disabled` keeps it focusable
+    off = {"aria_disabled": "true", "class_name": "q-button-off"}
     return rx.cond(
         CreativeState.reel_try_first_reason != "",
         rx.button(*label, aria_describedby=REEL_CREATE_REASON_ID, **off, **look),
