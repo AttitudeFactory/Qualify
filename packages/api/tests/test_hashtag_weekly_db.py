@@ -1,12 +1,12 @@
-"""m-25026378 against the live schema (0036 + 0117 + 0162 + 0163): the weekly TikTok read
+"""m-25026378 against the live schema (0036 + 0117 + 0162 + 0164): the weekly TikTok read
 per rubro hashtag with the production stores — `PostgresRubroSource`, `PostgresReadLog`,
 `PostgresHashtagRepository` and the gate's `PostgresUsageStore`. The vendor is an
 `httpx.MockTransport`: nothing leaves the process.
 
 - the rubro is the «Tu rubro» pills in `brand_kit_details.connect`, the region its
   country (else the business's);
-- every read is booked as `hashtag_weekly` (0163's CHECK) to its business, its answer
-  lands in `vendor_payloads`, its sightings as `hashtag_weekly` (0163's CHECK);
+- every read is booked as `hashtag_weekly` (0164's CHECK) to its business, its answer
+  lands in `vendor_payloads`, its sightings as `hashtag_weekly` (0164's CHECK);
 - re-running writes no row and books no credit; another business in another country does
   not read the same hashtag again, and a referentes page of it counts as read;
 - the shared tables have no column that could name the business;
@@ -232,7 +232,7 @@ def test_the_shared_tables_cannot_name_a_business() -> None:
     assert named == []
 
 
-def test_0163_checks_admit_the_weekly_read_and_nothing_new_besides() -> None:
+def test_0164_checks_admit_the_weekly_read_and_nothing_new_besides() -> None:
     with admin_session() as session:
         checks = dict(
             session.execute(
@@ -296,3 +296,63 @@ def test_all_tenants_reads_only_businesses_opened_in_the_last_14_days() -> None:
         store.mark_opened(tenant, brand, now=when, every=timedelta(0))
     active = set(weekly.PostgresRubroSource().businesses(None, now=now))
     assert opened in active and stale not in active and never not in active
+
+
+def test_two_businesses_sharing_a_hashtag_at_once_pay_for_it_once() -> None:
+    """`PostgresClaims.claim_tag` across connections: the second business finds the
+    hashtag claimed while the first is inside its request, and pays nothing."""
+    tag = _word()
+    first, second = _business([tag]), _business([tag], country="UY")
+    vendor = Vendor(_word())
+    entered, release = threading.Event(), threading.Event()
+
+    def slow(request: httpx.Request) -> httpx.Response:
+        entered.set()
+        assert release.wait(10)
+        return vendor.handler(request)
+
+    outcomes: dict[UUID, weekly.BusinessOutcome] = {}
+
+    def one(tenant: UUID) -> None:
+        report = weekly.run_tick(
+            [tenant],
+            client_factory=lambda: httpx.Client(transport=httpx.MockTransport(slow)),
+            env=ON,
+        )
+        outcomes[tenant] = report.outcomes[0]
+
+    a = threading.Thread(target=one, args=(first,))
+    a.start()
+    assert entered.wait(10)
+    b = threading.Thread(target=one, args=(second,))
+    b.start()
+    b.join(10)
+    release.set()
+    a.join(10)
+    assert len(vendor.requests) == 1
+    assert outcomes[second].busy == [tag] and _weekly_rows(second) == []
+    later = _tick(vendor, [second])
+    assert later.outcomes[0].status == weekly.UP_TO_DATE and len(vendor.requests) == 1
+
+
+def test_five_weekly_credits_in_seven_days_hold_the_business() -> None:
+    tenant = _business([_word()])
+    store = usage.PostgresUsageStore()
+    two_days_ago = datetime.now(UTC) - timedelta(days=2)
+    for _ in range(weekly.MAX_TAGS):
+        event = usage.UsageEvent(
+            tenant,
+            None,
+            usage.SCRAPECREATORS,
+            sc.FEATURE_HASHTAG_WEEKLY,
+            1,
+            usage.usd_per_credit(),
+            usage.PRICING_TABLE_VERSION,
+            f"k:{uuid4()}",
+            created_at=two_days_ago,
+        )
+        assert store.book(event, capped=False) is None
+    assert weekly.PostgresReadLog().credits_since(tenant, two_days_ago) == weekly.MAX_TAGS
+    vendor = Vendor(_word())
+    report = _tick(vendor, [tenant])
+    assert vendor.requests == [] and report.outcomes[0].status == weekly.WEEK_SPENT

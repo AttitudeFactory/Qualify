@@ -54,12 +54,21 @@ que el dueño tenga que investigarlas y sin subir el costo. Qualify sugiere; el 
 - Desde el PR #647, el editor usa `resolve_popular`: las sugerencias del catálogo y la lista que
   recibe «Sugerir con IA» van primero con las etiquetas más vistas en los últimos 90 días.
 - Entrega 3 (este PR, m-25026378): la lectura semanal en TikTok (`qualify_api/hashtags/weekly.py`,
-  migración 0163), apagada hasta encender `QUALIFY_HASHTAG_WEEKLY_READ`. Una etiqueta con una
+  migración 0164), apagada hasta encender `QUALIFY_HASHTAG_WEEKLY_READ`. Una etiqueta con una
   respuesta guardada en los últimos 7 días no se vuelve a leer; un negocio se intenta como mucho
   una vez al día; se detiene en el primer error; deja margen al dueño (no lee si el negocio ya
-  gastó más de dos tercios de su tope del día o cinco sextos del mes); en producción solo lee
-  negocios con una marca abierta en los últimos 14 días. Peor caso por negocio: 25 créditos al
-  mes si todo va bien, 31 si el proveedor falla todo el mes.
+  gastó más de dos tercios de su tope del día o cinco sextos del mes). Tope fijo: un negocio
+  nunca gasta más de 5 créditos de esta lectura en 7 días seguidos, cuente lecturas buenas o
+  fallidas y aunque cambie sus etiquetas cada día; como mucho 25 en un mes. Si dos negocios
+  leen la misma etiqueta a la vez, solo uno paga.
+- **Límite conocido, a decidir por el fundador antes de encenderla:** en producción solo se leen
+  los negocios que el trabajador de reels considera activos, y eso significa exactamente «una
+  marca del negocio abrió la pantalla «Ideas para tus reels» en los últimos 14 días». No
+  significa «cliente activo»: un negocio que publica a diario pero nunca abre esa pantalla no se
+  lee, y uno que la abrió una vez y se fue se sigue leyendo dos semanas más.
+- **Reparto desigual del costo:** cuando dos negocios comparten etiquetas, paga el que se procesa
+  primero y el otro no paga nada por esas etiquetas esa semana. Lo que gasta cada negocio en
+  esta lectura no refleja cuánto la aprovecha.
 - La respuesta cruda se guarda en `vendor_payloads`, que guarda una fila por ruta y parámetros:
   cada semana reemplaza a la anterior de la misma etiqueta y país, y comparte esa fila con la
   memoria de las búsquedas de referentes. Por eso las vistas y fechas solo se pueden reconstruir
@@ -87,7 +96,7 @@ Las cuatro lecturas costaron 8 créditos (4 se repitieron por un error al guarda
 |---|---|---|---|---|---|
 | 1 | **Cinco, bien elegidas** | m-25026376 | Una publicación con las cinco etiquetas que más le sirven, no doce | — | Hecha: PR #642 (2026-11-13) |
 | 2 | **El catálogo sabe qué se ve** | m-25026377 | «Popular» significa vistas recientes en su rubro, no «lo vimos muchas veces» | — | Hecha: PR #644 (migración 0162) y PR #647 (el editor usa `resolve_popular`), 2026-11-13 |
-| 3 | **Lectura semanal en TikTok** | m-25026378 | Etiquetas que acompañan esta semana a los videos más vistos de su rubro | 2 | En revisión: migración 0163, apagada por defecto |
+| 3 | **Lectura semanal en TikTok** | m-25026378 | Etiquetas que acompañan esta semana a los videos más vistos de su rubro | 2 | En revisión: migración 0164, apagada por defecto |
 | 4 | **Medir si sirve** | m-25026379 | Saber si el cambio trajo más alcance, con un negocio real | 1, 3 | Pendiente |
 
 ## 5. Criterios de aceptación (los que valen son los de cada ticket)

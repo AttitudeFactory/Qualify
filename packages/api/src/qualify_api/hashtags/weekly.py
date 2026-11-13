@@ -13,8 +13,12 @@ same ones the referentes search runs with), in the order they were chosen, the f
 five the catalog would accept (`readable_tag`; a pill it would refuse is skipped and does
 not take a slot). A business without pills is not read: Qualify never guesses a rubro to
 pay for. In production (`--all-tenants`) only the businesses the reels worker treats as
-active are read: a brand opened in the last 14 days (`reel_schedule.is_active` over
-`PostgresReelQueue.opened_brands`, ADR 42 §2.6).
+active are read (`reel_schedule.is_active` over `PostgresReelQueue.opened_brands`, ADR 42
+§2.6). **Known limitation, for the founder to decide before switching this on:** that
+gate means exactly «a brand of the business opened the «Ideas para tus reels» screen in
+the last 14 days» — not «the business is a paying, active client». A business that
+publishes every day but never opens that screen is not read; one that opened it once and
+churned is read for two more weeks.
 
 **Who pays, and how often** (ADR 42). Every read goes through the metered gate
 (`vendors.scrapecreators.metered_get`), charged to the business it was read for under
@@ -31,14 +35,24 @@ at once):
    `RETRY_AFTER` (24 h) is not attempted again: that booking was a pass that failed, was
    capped or was cut short. It is how a failure is remembered without a new table — the
    gate books before the request leaves, so every attempt leaves its row.
-3. **Headroom for the owner.** A business (not exempt from the cap) that already spent
+3. **Five a week, hard.** A business's `hashtag_weekly` credits in any rolling 7 days
+   never exceed `MAX_TAGS`, counting every booking — kept answers and failures alike —
+   whatever its pills do (an owner who changes them every day still pays at most 5 a
+   week).
+4. **Headroom for the owner.** A business (not exempt from the cap) that already spent
    more than `DAILY_HEADROOM` of its daily cap or `MONTHLY_HEADROOM` of its monthly one
    is skipped for now, booking nothing: what is left is for the searches it asks for.
-4. **Stop at the first failure.** A pass stops on its first error that is not a clean
+5. **One reader per hashtag.** Each read is taken under a claim on the hashtag itself
+   (`Claims.claim_tag`) and re-checked inside it, so two businesses sharing a hashtag at
+   the same moment never both pay: the second finds the claim taken (and leaves it for a
+   later pass) or the first one's kept answer.
+6. **Stop at the first failure.** A pass stops on its first error that is not a clean
    «no results» answer; the remaining tags wait for the next day's attempt.
 
-Worst case per business: healthy, each of 5 hashtags once per 7 days = at most 25 credits
-in a 31-day month (22 on average); vendor failing all month, one failed call a day = 31.
+Hard bound per business: 5 credits in any 7 days, so at most 25 in any 31-day month,
+for any mix of successes and failures (22 on average when healthy). Only a vendor that
+charges more than one credit for a single call (`credits_charged`, booked after the
+answer; measured at 1) could push one week past it, and the next week then has less.
 
 **Switches.** `QUALIFY_HASHTAG_WEEKLY_READ` is OFF unless set to 1/true/on/yes; with it
 off — or with the gate's `QUALIFY_SCRAPECREATORS_PAID` off, or no
@@ -333,6 +347,11 @@ class ReadLog(Protocol):
         failed or not: the gate books before the request leaves)."""
         ...
 
+    def credits_since(self, tenant_id: UUID, since: datetime) -> int:
+        """The `hashtag_weekly` credits this business booked at or after `since` — every
+        booking, kept answer or failure, `:extra` rows included."""
+        ...
+
     def tag_read_since(self, tenant_id: UUID, tag: str, since: datetime) -> bool:
         """Whether an answer for `tag` (any region, any caller) was kept at or after
         `since`. `tenant_id` is only the key to the DB door: the table has no tenant."""
@@ -356,6 +375,13 @@ class Claims(Protocol):
     def claim(self, tenant_id: UUID) -> AbstractContextManager[bool]:
         """Hold this business for one pass: yields True when taken, False when another
         pass holds it (never waits)."""
+        ...
+
+    def claim_tag(self, tenant_id: UUID, tag: str) -> AbstractContextManager[bool]:
+        """Hold this hashtag around «kept this week? → read», whoever reads it: yields
+        False when another pass (for any business) holds it (never waits). A pass holds
+        at most one hashtag at a time, always inside its business's claim. `tenant_id`
+        is only the key to the DB door."""
         ...
 
 
@@ -418,6 +444,15 @@ class MemoryReadLog:
             for e in self.usage_store.of(tenant_id)
         )
 
+    def credits_since(self, tenant_id: UUID, since: datetime) -> int:
+        return sum(
+            e.credits
+            for e in self.usage_store.of(tenant_id)
+            if e.feature == FEATURE_HASHTAG_WEEKLY
+            and e.created_at is not None
+            and e.created_at >= since
+        )
+
     def tag_read_since(self, tenant_id: UUID, tag: str, since: datetime) -> bool:
         return any(
             a.params.get("hashtag", "").lower() == tag and a.fetched_at >= since
@@ -440,16 +475,16 @@ class MemoryReadLog:
 
 
 class MemoryClaims:
-    """One non-blocking lock per business, in this process."""
+    """One non-blocking lock per business and one per hashtag, in this process."""
 
     def __init__(self) -> None:
         self._guard = threading.Lock()
-        self._locks: dict[UUID, threading.Lock] = {}
+        self._locks: dict[object, threading.Lock] = {}
 
     @contextmanager
-    def claim(self, tenant_id: UUID) -> Iterator[bool]:
+    def _try(self, key: object) -> Iterator[bool]:
         with self._guard:
-            lock = self._locks.setdefault(tenant_id, threading.Lock())
+            lock = self._locks.setdefault(key, threading.Lock())
         got = lock.acquire(blocking=False)
         try:
             yield got
@@ -457,23 +492,40 @@ class MemoryClaims:
             if got:
                 lock.release()
 
+    def claim(self, tenant_id: UUID) -> AbstractContextManager[bool]:
+        return self._try(("business", tenant_id))
 
-#: The claim's key is its own (`hashtag_weekly:`), never the gate's (`vendor_usage:`), and
-#: it is only TRIED: a pass holding it books through the gate, whose short transaction
-#: takes `vendor_usage:<tenant>` after it — one order, and this one never waits, so the two
-#: cannot deadlock.
-_CLAIM = text("SELECT pg_try_advisory_xact_lock(hashtextextended('hashtag_weekly:' || :t, 0))")
+    def claim_tag(self, tenant_id: UUID, tag: str) -> AbstractContextManager[bool]:
+        return self._try(("tag", tag))
+
+
+#: The claims' keys are their own — `hashtag_weekly:<tenant>` for a business,
+#: `hashtag_weekly_tag:<tag>` for a hashtag — never the gate's (`vendor_usage:`), and they
+#: are only TRIED, never waited on. A pass takes its business, then at most one hashtag at
+#: a time, then books through the gate (whose short transaction takes `vendor_usage:`): one
+#: order, and nothing in it waits, so none of them can deadlock.
+_CLAIM = text("SELECT pg_try_advisory_xact_lock(hashtextextended('hashtag_weekly:' || :k, 0))")
+_CLAIM_TAG = text(
+    "SELECT pg_try_advisory_xact_lock(hashtextextended('hashtag_weekly_tag:' || :k, 0))"
+)
 
 
 class PostgresClaims:
-    """A transaction-scoped advisory lock on its own connection (`tenant_session`,
-    `independent=True`), held for the business's whole pass and released by its commit —
-    across processes, like the gate's per-tenant lock (`usage.PostgresUsageStore`)."""
+    """Transaction-scoped advisory locks, each on its own connection (`tenant_session`,
+    `independent=True`), released by their commit — across processes, like the gate's
+    per-tenant lock (`usage.PostgresUsageStore`). The business's is held for its whole
+    pass, a hashtag's around «kept this week? → read»."""
 
     @contextmanager
-    def claim(self, tenant_id: UUID) -> Iterator[bool]:
+    def _try(self, tenant_id: UUID, statement: Any, key: str) -> Iterator[bool]:
         with tenant_session(tenant_id, independent=True) as session:
-            yield bool(session.execute(_CLAIM, {"t": str(tenant_id)}).scalar_one())
+            yield bool(session.execute(statement, {"k": key}).scalar_one())
+
+    def claim(self, tenant_id: UUID) -> AbstractContextManager[bool]:
+        return self._try(tenant_id, _CLAIM, str(tenant_id))
+
+    def claim_tag(self, tenant_id: UUID, tag: str) -> AbstractContextManager[bool]:
+        return self._try(tenant_id, _CLAIM_TAG, tag)
 
 
 _ATTEMPTED = text(
@@ -483,6 +535,13 @@ _ATTEMPTED = text(
         WHERE tenant_id = :tenant AND vendor = :vendor AND feature = :feature
           AND created_at >= :since
     )
+    """
+)
+_CREDITS = text(
+    """
+    SELECT COALESCE(SUM(credits), 0) FROM vendor_usage_events
+    WHERE tenant_id = :tenant AND vendor = :vendor AND feature = :feature
+      AND created_at >= :since
     """
 )
 
@@ -518,6 +577,20 @@ class PostgresReadLog:
             return bool(
                 session.execute(
                     _ATTEMPTED,
+                    {
+                        "tenant": tenant_id,
+                        "vendor": usage.SCRAPECREATORS,
+                        "feature": FEATURE_HASHTAG_WEEKLY,
+                        "since": since,
+                    },
+                ).scalar_one()
+            )
+
+    def credits_since(self, tenant_id: UUID, since: datetime) -> int:
+        with tenant_session(tenant_id) as session:
+            return int(
+                session.execute(
+                    _CREDITS,
                     {
                         "tenant": tenant_id,
                         "vendor": usage.SCRAPECREATORS,
@@ -594,6 +667,7 @@ NO_TAGS = "no_tags"
 UP_TO_DATE = "up_to_date"  # every tag has a kept answer from this week
 TRIED_TODAY = "tried_today"  # a weekly booking in the last 24 h
 NO_HEADROOM = "no_headroom"
+WEEK_SPENT = "week_spent"  # `MAX_TAGS` weekly credits booked in the last 7 days
 BUSY = "busy"  # another pass holds the business
 DONE = "done"
 FAILED = "failed"
@@ -605,9 +679,11 @@ BLOCKED = "blocked"
 class BusinessOutcome:
     tenant_id: UUID
     status: str
-    #: Hashtags read now (paid) and hashtags with a kept answer this week (free).
+    #: Hashtags read now (paid), hashtags with a kept answer this week (free), and
+    #: hashtags another pass was reading at that moment (left for a later pass).
     read: list[str] = field(default_factory=list)
     fresh: list[str] = field(default_factory=list)
+    busy: list[str] = field(default_factory=list)
     sightings: int = 0
     errors: int = 0
     reason: str | None = None
@@ -637,50 +713,84 @@ def _read_tags(
     rubro: BusinessRubro,
     pending: Sequence[str],
     *,
+    budget: int,
+    log: ReadLog,
+    repository: HashtagRepository,
+    claims: Claims,
+    client: httpx.Client,
+    now: datetime,
+) -> None:
+    """Read `pending` until `budget` credits were booked: each hashtag under its own
+    claim (`claim_tag`), re-checked inside it — a pass for another business may have kept
+    it in the meantime — so two businesses sharing a hashtag never both pay for it."""
+    tenant = rubro.tenant_id
+    usage.bind(client, usage.UsageCharge(tenant, rubro.brand_id))
+    week = now - REREAD_AFTER
+    booked = 0
+    for tag in pending:
+        if booked >= budget:
+            return
+        with claims.claim_tag(tenant, tag) as taken:
+            if not taken:
+                outcome.busy.append(tag)
+                continue
+            if log.tag_read_since(tenant, tag, week):
+                outcome.fresh.append(tag)
+                continue
+            booked += 1
+            ok = _read_one(
+                outcome, rubro, tag, log=log, repository=repository, client=client, now=now
+            )
+            if not ok:
+                return
+
+
+def _read_one(
+    outcome: BusinessOutcome,
+    rubro: BusinessRubro,
+    tag: str,
+    *,
     log: ReadLog,
     repository: HashtagRepository,
     client: httpx.Client,
     now: datetime,
-) -> None:
+) -> bool:
+    """One paid read of `tag`; False when the pass must stop (a refusal, a failure)."""
     tenant = rubro.tenant_id
-    usage.bind(client, usage.UsageCharge(tenant, rubro.brand_id))
-    for tag in pending:
-        params = {"hashtag": tag}
-        if rubro.country_code:
-            params["region"] = rubro.country_code
-        status = 200
-        try:
-            payload: dict[str, Any] = metered_get(
-                client, PATH, params, feature=FEATURE_HASHTAG_WEEKLY
-            )
-        except ScrapeCreatorsBlocked as exc:
-            outcome.reason = exc.reason
-            outcome.status = CAPPED if exc.reason in usage.CAP_REASONS else BLOCKED
-            return
-        except ScrapeCreatorsError as exc:
-            if exc.status_code != 404:  # 404 = nothing indexed: an answer, kept as one
-                logger.warning("hashtags.weekly read failed tenant=%s: %s", tenant, exc)
-                outcome.errors += 1
-                outcome.status = FAILED
-                return
-            payload, status = {}, 404
-        credits = _int(payload.get("credits_charged")) or (1 if status == 200 else 0)
-        try:
-            log.keep(tenant, params, payload, status=status, credits=credits, now=now)
-        except Exception as exc:  # noqa: BLE001 - the credit is spent; retried tomorrow
-            logger.warning("hashtags.weekly answer not kept tenant=%s: %s", tenant, exc)
+    params = {"hashtag": tag}
+    if rubro.country_code:
+        params["region"] = rubro.country_code
+    status = 200
+    try:
+        payload: dict[str, Any] = metered_get(client, PATH, params, feature=FEATURE_HASHTAG_WEEKLY)
+    except ScrapeCreatorsBlocked as exc:
+        outcome.reason = exc.reason
+        outcome.status = CAPPED if exc.reason in usage.CAP_REASONS else BLOCKED
+        return False
+    except ScrapeCreatorsError as exc:
+        if exc.status_code != 404:  # 404 = nothing indexed: an answer, kept as one
+            logger.warning("hashtags.weekly read failed tenant=%s: %s", tenant, exc)
             outcome.errors += 1
             outcome.status = FAILED
-            return
-        outcome.read.append(tag)
-        sightings = parse_videos(tag, payload, now=now)
-        if not sightings:
-            continue
+            return False
+        payload, status = {}, 404
+    credits = _int(payload.get("credits_charged")) or (1 if status == 200 else 0)
+    try:
+        log.keep(tenant, params, payload, status=status, credits=credits, now=now)
+    except Exception as exc:  # noqa: BLE001 - the credit is spent; retried tomorrow
+        logger.warning("hashtags.weekly answer not kept tenant=%s: %s", tenant, exc)
+        outcome.errors += 1
+        outcome.status = FAILED
+        return False
+    outcome.read.append(tag)
+    sightings = parse_videos(tag, payload, now=now)
+    if sightings:
         try:
             outcome.sightings += repository.record_post_sightings(tenant, sightings)
         except Exception as exc:  # noqa: BLE001 - the raw answer is kept for a re-parse
             logger.warning("hashtags.weekly sightings not stored tenant=%s: %s", tenant, exc)
             outcome.errors += 1
+    return True
 
 
 def read_business(
@@ -712,10 +822,24 @@ def read_business(
         if log.attempted_since(tenant, now - RETRY_AFTER):
             outcome.status = TRIED_TODAY
             return outcome
+        budget = MAX_TAGS - log.credits_since(tenant, week)
+        if budget <= 0:
+            outcome.status = WEEK_SPENT
+            return outcome
         if not has_headroom(tenant, now):
             outcome.status = NO_HEADROOM
             return outcome
-        _read_tags(outcome, rubro, pending, log=log, repository=repository, client=client, now=now)
+        _read_tags(
+            outcome,
+            rubro,
+            pending,
+            budget=budget,
+            log=log,
+            repository=repository,
+            claims=claims,
+            client=client,
+            now=now,
+        )
         return outcome
 
 

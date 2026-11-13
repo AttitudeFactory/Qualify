@@ -708,3 +708,152 @@ def test_the_cli_fails_a_pass_with_errors_or_a_global_stop(stopped: str) -> None
     assert weekly_worker.main(["--tenant", tenant, "--once"], tick=lambda ids: broken) == 1
     report = weekly.TickReport(stopped=stopped)
     assert weekly_worker.main(["--tenant", tenant, "--once"], tick=lambda ids: report) == 1
+
+
+# -- five a week per business, hard (second review, item B) -------------------------------
+
+
+class _Clock:
+    """The simulated moment the gate's in-memory ledger stamps its bookings with."""
+
+    at = datetime(2030, 3, 1, 9, tzinfo=UTC)
+
+
+class _ClockedDatetime(datetime):
+    @classmethod
+    def now(cls, tz: Any = None) -> datetime:  # type: ignore[override]
+        return _Clock.at
+
+
+def _simulate_month(
+    monkeypatch: pytest.MonkeyPatch, *, change_every: int, fails: Any = lambda day: False
+) -> list[usage.UsageEvent]:
+    """31 days, a pass every 12 hours, the owner's five pills replaced every
+    `change_every` days; the vendor answers 500 on the days `fails` says."""
+    monkeypatch.setattr(usage, "datetime", _ClockedDatetime)
+    business = _business("x")
+    log, claims = weekly.MemoryReadLog(_ledger()), weekly.MemoryClaims()
+    repo = MemoryHashtagRepository()
+    start = datetime(2030, 3, 1, 9, tzinfo=UTC)
+    for half_day in range(62):
+        day = half_day // 2
+        _Clock.at = start + timedelta(hours=12 * half_day)
+        tags = tuple(f"p{day // change_every}x{i}" for i in range(5))
+        rubro = weekly.BusinessRubro(business.tenant_id, tags, "CO", business.brand_id)
+        vendor = Vendor(status=500 if fails(day) else 200)
+        weekly.run_tick(
+            [business.tenant_id],
+            source=weekly.MemoryRubroSource({business.tenant_id: rubro}),
+            log=log,
+            repository=repo,
+            claims=claims,
+            client_factory=vendor.client,
+            now=_Clock.at,
+            env=ON,
+        )
+    return _weekly_events(business.tenant_id)
+
+
+def _max_in_any_week(events: list[usage.UsageEvent]) -> int:
+    stamps = sorted(e.created_at for e in events if e.created_at is not None)
+    return max(
+        (sum(1 for t in stamps if s <= t < s + timedelta(days=7)) for s in stamps), default=0
+    )
+
+
+@pytest.mark.parametrize("change_every", [3, 1])
+def test_changing_pills_never_buys_more_than_five_reads_a_week(
+    monkeypatch: pytest.MonkeyPatch, change_every: int
+) -> None:
+    events = _simulate_month(monkeypatch, change_every=change_every)
+    assert len(events) >= 20  # it keeps reading, within the bound
+    assert _max_in_any_week(events) <= weekly.MAX_TAGS
+    assert sum(e.credits for e in events) <= 25
+
+
+def test_an_intermittently_failing_vendor_stays_inside_the_same_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events = _simulate_month(monkeypatch, change_every=2, fails=lambda day: day % 3 == 1)
+    assert events  # it did read and fail along the way
+    assert _max_in_any_week(events) <= weekly.MAX_TAGS
+    assert sum(e.credits for e in events) <= 25
+
+
+def test_a_business_that_spent_its_week_waits_even_with_new_pills() -> None:
+    business = _business("nuevo")
+    for _ in range(weekly.MAX_TAGS):
+        booked = usage.UsageEvent(
+            business.tenant_id,
+            business.brand_id,
+            usage.SCRAPECREATORS,
+            sc.FEATURE_HASHTAG_WEEKLY,
+            1,
+            usage.usd_per_credit(),
+            usage.PRICING_TABLE_VERSION,
+            f"k:{uuid4()}",
+            created_at=datetime.now(UTC) - timedelta(days=2),
+        )
+        _ledger().book(booked, capped=False)
+    vendor = Vendor()
+    report, _, _ = _tick(vendor, [business])
+    assert vendor.requests == [] and report.outcomes[0].status == weekly.WEEK_SPENT
+
+
+# -- one reader per hashtag (second review, item C) --------------------------------------
+
+
+def test_two_businesses_sharing_a_hashtag_at_once_pay_for_it_once() -> None:
+    entered, release = threading.Event(), threading.Event()
+    vendor = Vendor()
+
+    def slow(request: httpx.Request) -> httpx.Response:
+        entered.set()
+        assert release.wait(5)
+        return vendor.handler(request)
+
+    first, second = _business("shawarma"), _business("shawarma")
+    log, claims = weekly.MemoryReadLog(_ledger()), weekly.MemoryClaims()
+    outcomes: dict[UUID, weekly.BusinessOutcome] = {}
+
+    def one(rubro: weekly.BusinessRubro) -> None:
+        report = weekly.run_tick(
+            [rubro.tenant_id],
+            source=weekly.MemoryRubroSource({rubro.tenant_id: rubro}),
+            log=log,
+            repository=MemoryHashtagRepository(),
+            claims=claims,
+            client_factory=lambda: httpx.Client(transport=httpx.MockTransport(slow)),
+            env=ON,
+        )
+        outcomes[rubro.tenant_id] = report.outcomes[0]
+
+    a = threading.Thread(target=one, args=(first,))
+    a.start()
+    assert entered.wait(5)
+    b = threading.Thread(target=one, args=(second,))
+    b.start()
+    b.join(5)
+    release.set()
+    a.join(5)
+    assert len(vendor.requests) == 1
+    assert outcomes[second.tenant_id].busy == ["shawarma"]
+    assert _weekly_events(second.tenant_id) == []
+    # the next pass of the second business finds the first one's kept answer
+    report, _, _ = _tick(vendor, [second], log=log, claims=claims)
+    assert report.outcomes[0].status == weekly.UP_TO_DATE and len(vendor.requests) == 1
+
+
+def test_a_hashtag_kept_while_waiting_for_its_claim_is_not_paid() -> None:
+    """The re-check inside the claim: kept between the pass's first look and its read."""
+    business = _business("shawarma")
+    log = weekly.MemoryReadLog(_ledger())
+
+    class _KeptMeanwhile(weekly.MemoryClaims):
+        def claim_tag(self, tenant_id: UUID, tag: str) -> Any:
+            log.keep(tenant_id, {"hashtag": tag}, {}, status=200, credits=1, now=datetime.now(UTC))
+            return super().claim_tag(tenant_id, tag)
+
+    vendor = Vendor()
+    report, _, _ = _tick(vendor, [business], log=log, claims=_KeptMeanwhile())
+    assert vendor.requests == [] and report.outcomes[0].fresh == ["shawarma"]
