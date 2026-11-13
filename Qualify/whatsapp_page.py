@@ -53,7 +53,6 @@ from .whatsapp_tab_menu import back_to_guided, menu_step_frame, menu_tab
 from .whatsapp_tab_payments import payments_tab
 from .whatsapp_tab_templates import templates_tab
 from .whatsapp_vm import (
-    CHATS_SUBS,
     DETAILS_TOGGLE,
     MAX_ABOUT_CHARS,
     MAX_ADDRESS_CHARS,
@@ -69,7 +68,6 @@ from .whatsapp_vm import (
     PROMOTION_SUBS,
     QR_CHANNELS,
     REVIEW_ACTION,
-    SECTION_CHATS,
     SECTION_NUMBER,
     SECTION_PROMOTIONS,
     SECTIONS,
@@ -82,7 +80,6 @@ from .whatsapp_vm import (
     TAB_PAYMENTS,
     TAB_PROFILE,
     TAB_QR,
-    TAB_STICKERS,
     TAB_TEMPLATES,
     VERTICALS,
     QrCodeVM,
@@ -245,41 +242,12 @@ def tab_strip() -> rx.Component:
     )
 
 
-def _chats_strip() -> rx.Component:
-    """Chats › Chats · Stickers y videos (m-24986801 §4). With a chat open on a phone the
-    chat takes the screen, so the strip is not drawn there. Two short options: the
-    segmented control at every width (UX review: on a phone the unselected one must
-    read as a button too)."""
-    strip = rx.segmented_control.root(
-        *[rx.segmented_control.item(text, value=key, **_TAP) for key, text in CHATS_SUBS],
-        value=rx.cond(WhatsAppState.active_sub == "", TAB_CHATS, WhatsAppState.active_sub),
-        on_change=WhatsAppState.select_sub,
-        size="3",
-        width=rx.breakpoints(initial="100%", md="auto"),
-        aria_label="Chats",
-    )
-    return rx.cond(
-        (WhatsAppState.active_tab == TAB_CHATS) & WhatsAppChatsState.has_open_thread,
-        rx.box(strip, display=rx.breakpoints(initial="none", md="block"), width="100%"),
-        strip,
-    )
-
-
-def stickers_tab() -> rx.Component:
-    """Chats › Stickers y videos: the library of Tu marca, mounted as is (it loads itself
-    and honours `?crear=temporada`). Imported here, not at the top: `seasonal_ui` belongs
-    to the publications side and pulls in Tu marca's editor."""
-    from .seasonal_ui import brand_section  # noqa: PLC0415
-
-    return brand_section()
-
-
 def sub_strip() -> rx.Component:
-    """Chats › Chats · Stickers y videos; Promociones › Enviadas · Mensajes aprobados ·
-    Clientes que aceptaron; Tu número › Estado · Perfil · Códigos QR · Actividad."""
+    """Promociones › Enviadas · Mensajes aprobados · Clientes que aceptaron; Tu número ›
+    Estado · Perfil · Formas de pago · Códigos QR · Actividad. «Chats» has no sub-tabs
+    (m-25017173): it opens the chat list directly."""
     return rx.match(
         WhatsAppState.active_section,
-        (SECTION_CHATS, _chats_strip()),
         (
             SECTION_PROMOTIONS,
             _choice_strip(
@@ -319,7 +287,6 @@ def tab_body() -> rx.Component:
         rx.match(
             WhatsAppState.active_tab,
             (TAB_CHATS, chats_tab()),
-            (TAB_STICKERS, stickers_tab()),
             (TAB_CONNECTION, connection_tab()),
             (TAB_PROFILE, profile_tab()),
             (TAB_PAYMENTS, payments_tab()),

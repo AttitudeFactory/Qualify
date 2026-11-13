@@ -265,7 +265,8 @@ def test_the_empty_step_links_and_its_words() -> None:
         SEASONAL_CREATE_HREF,
     ):
         assert text in rendered or json.dumps(text)[1:-1].replace("\\", "\\\\") in rendered, text
-    assert SEASONAL_CREATE_HREF == "/whatsapp?tab=chats&sub=stickers&crear=temporada"
+    # m-25017173: WhatsApp › Chats has no stickers sub-tab; creating opens Tu marca.
+    assert SEASONAL_CREATE_HREF == "/brand/kit?crear=temporada"
     assert SEASONAL_PENDING_HREF == "/drafts?ver=stickers"
 
 

@@ -63,7 +63,7 @@ def test_the_page_renders_list_conversation_composer_and_access_states() -> None
     for text in (
         "Conversaciones",
         "Elige una conversación",
-        "Responder",
+        "Enviar",
         "Volver a conectar",
         "por verificar",
         "Ir a Tus redes",
@@ -310,3 +310,18 @@ def test_picking_a_template_cannot_send() -> None:
     }
     assert "render_template" in called
     assert not called & {"reply", "reply_media", "reply_sticker", "send_reply", "send_heart"}
+
+
+def test_the_dm_send_button_says_enviar_like_whatsapp() -> None:
+    """m-25017173: the Instagram DM composer's send button reads «Enviar», the same word
+    as WhatsApp's; «Sugerir respuesta» stays."""
+    import inspect
+
+    from . import conversations_page
+    from .conversations_vm import SEND_LABEL
+    from .whatsapp_chats_vm import SEND_LABEL as WHATSAPP_SEND_LABEL
+
+    assert SEND_LABEL == "Enviar" == WHATSAPP_SEND_LABEL
+    source = inspect.getsource(conversations_page._composer)
+    assert "SEND_LABEL" in source and '"Responder"' not in source
+    assert "Sugerir respuesta" in source

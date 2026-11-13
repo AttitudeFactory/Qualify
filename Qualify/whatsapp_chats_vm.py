@@ -38,6 +38,7 @@ from typing import Any, Protocol
 
 from .ad_message_vm import ad_origin_href, ad_origin_label
 from .planner_vm import time_label_12h
+from .seasonal_vm import CREATE_HREF as SEASONAL_LIBRARY_CREATE_HREF
 
 # ======================================================================================
 # Copy and limits
@@ -1702,9 +1703,10 @@ SEASONAL_EMPTY_TEXT = (
     "respondiendo con texto."
 )
 SEASONAL_CREATE_ACTION = "Crear para esta temporada"
-#: WhatsApp › Chats › Stickers y videos, with «Crear para esta temporada» open
-#: (`SeasonalState.open_from_query`).
-SEASONAL_CREATE_HREF = "/whatsapp?tab=chats&sub=stickers&crear=temporada"
+#: Tu marca › «Stickers y videos de tu marca», with «Crear para esta temporada» open
+#: (`SeasonalState.open_from_query`). m-25017173: WhatsApp › Chats no longer has a
+#: stickers sub-tab; the library lives in Tu marca.
+SEASONAL_CREATE_HREF = SEASONAL_LIBRARY_CREATE_HREF
 
 
 def seasonal_pending_title(count: int) -> str:

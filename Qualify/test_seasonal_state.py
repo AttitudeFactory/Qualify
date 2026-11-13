@@ -891,8 +891,8 @@ async def test_approving_says_where_it_went(gw: FakeGateway) -> None:
 
 
 def test_brand_section_keeps_its_contract_for_whatsapp() -> None:
-    """Track A mounts `brand_section()` in WhatsApp › Chats without editing it: no
-    arguments, and `?crear=temporada` still opens the flow."""
+    """Tu marca mounts `brand_section()` with no arguments, and `?crear=temporada`
+    (the chat's «Crear para esta temporada») still opens the flow."""
     import inspect
 
     from .seasonal_ui import approved_section, brand_section, drafts_section
