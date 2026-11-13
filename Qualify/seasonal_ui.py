@@ -11,12 +11,14 @@ from __future__ import annotations
 
 import reflex as rx
 
+from .product_sticker_state import ProductStickerState as P
+from .product_sticker_ui import product_start_card, product_sticker_drawer, start_card
+from .product_sticker_vm import SEASON_START_LINE, SEASON_START_TITLE
 from .r2_media import BACKEND_BASE
 from .seasonal_state import FLOW_STEPS, SeasonalState
 from .seasonal_vm import (
     AI_LINE,
     ANOTHER_AI_YES,
-    ANOTHER_LABEL,
     APPROVE_LABEL,
     APPROVE_READY_LABEL,
     APPROVED_EMPTY_TEXT,
@@ -57,6 +59,7 @@ from .seasonal_vm import (
     PENDING_EMPTY_TEXT,
     PENDING_EMPTY_TITLE,
     PREPARING,
+    PRODUCT_SEASON_KEY,
     RESTORE_LABEL,
     RETRY_LABEL,
     SECTION_HELP,
@@ -142,19 +145,45 @@ def _season_row(season: SeasonVM) -> rx.Component:
         rx.cond(
             season.archived,
             _button(RESTORE_LABEL, S.restore(season.key), icon="rotate-ccw"),
-            rx.button(
-                ARCHIVE_LABEL,
-                on_click=S.archive(season.key),
-                variant="ghost",
-                size="2",
-                min_height=_TAP,
-                **T.tone_scheme("neutral"),
+            # m-25017912: product stickers do not end with a season — never archived
+            rx.cond(
+                season.key != PRODUCT_SEASON_KEY,
+                rx.button(
+                    ARCHIVE_LABEL,
+                    on_click=S.archive(season.key),
+                    variant="ghost",
+                    size="2",
+                    min_height=_TAP,
+                    **T.tone_scheme("neutral"),
+                ),
             ),
         ),
         width="100%",
         align="center",
         spacing="3",
         padding_y="0.25rem",
+    )
+
+
+def _start_cards() -> rx.Component:
+    """Two ways to start, each with its benefit and its price (UX doc §1): the free season
+    first, then the owner's product (m-25017912). One column on a phone."""
+    return rx.grid(
+        # with nothing yet, the empty state above already offers the season's button
+        rx.cond(
+            ~S.is_empty,
+            start_card(
+                SEASON_START_TITLE,
+                SEASON_START_LINE,
+                "",
+                _button(CREATE_LABEL, S.open_flow, icon="plus", solid=True),
+                icon="calendar-heart",
+            ),
+        ),
+        product_start_card(),
+        columns=rx.breakpoints(initial="1", sm="2"),
+        spacing="2",
+        width="100%",
     )
 
 
@@ -206,7 +235,7 @@ def brand_section() -> rx.Component:
                                 S.month_spend != "",
                                 rx.text(S.month_spend, size="2", color=T.TEXT_MUTED),
                             ),
-                            rx.foreach(S.library, _season_row),
+                            rx.foreach(S.shelf, _season_row),
                             rx.cond(
                                 S.archived.length() > 0,
                                 rx.el.details(
@@ -216,7 +245,6 @@ def brand_section() -> rx.Component:
                                     class_name="q-fold",
                                 ),
                             ),
-                            _button(CREATE_LABEL, S.open_flow, icon="plus", solid=True),
                             spacing="2",
                             width="100%",
                             align_items="start",
@@ -225,13 +253,15 @@ def brand_section() -> rx.Component:
                 ),
             ),
             rx.cond(S.action_error != "", callout(S.action_error, "error")),
+            _start_cards(),
             create_drawer(),
+            product_sticker_drawer(),
             spacing="3",
             width="100%",
             align_items="start",
         ),
-        on_mount=[S.load, S.open_from_query],
-        on_unmount=S.stop_poll,
+        on_mount=[S.load, S.open_from_query, P.load_start, P.open_from_query],
+        on_unmount=[S.stop_poll, P.stop_poll],
     )
 
 
@@ -603,6 +633,7 @@ def _item_card(item: SeasonalItemVM) -> rx.Component:
                 wrap="wrap",
                 gap="1",
             ),
+            rx.cond(item.caption != "", rx.text(item.caption, size="2", weight="medium")),
             rx.text(
                 rx.cond(item.size_label != "", item.size_label + " · ", "") + item.season_label,
                 size="1",
@@ -616,14 +647,16 @@ def _item_card(item: SeasonalItemVM) -> rx.Component:
                     # an IA piece offers «Pedir otro» only while «Con IA» has a price
                     rx.cond(
                         ~item.paid | (S.ai_redo_cost != ""),
-                        _button(ANOTHER_LABEL, S.another(item.id), disabled=busy, flex="1"),
+                        _button(item.another_label, S.another(item.id), disabled=busy, flex="1"),
                     ),
                     gap="2",
                     width="100%",
                 ),
                 rx.cond(
                     item.failed & (~item.paid | (S.ai_redo_cost != "")),
-                    _button(ANOTHER_LABEL, S.another(item.id), icon="refresh-cw", disabled=busy),
+                    _button(
+                        item.another_label, S.another(item.id), icon="refresh-cw", disabled=busy
+                    ),
                 ),
             ),
             rx.cond(
@@ -819,13 +852,16 @@ def _approved_group(season: SeasonVM) -> rx.Component:
                 flex="1",
                 min_width="0",
             ),
-            rx.button(
-                ARCHIVE_LABEL,
-                on_click=S.archive_from_approved(season.key),
-                variant="ghost",
-                size="2",
-                min_height=_TAP,
-                **T.tone_scheme("neutral"),
+            rx.cond(
+                season.key != PRODUCT_SEASON_KEY,
+                rx.button(
+                    ARCHIVE_LABEL,
+                    on_click=S.archive_from_approved(season.key),
+                    variant="ghost",
+                    size="2",
+                    min_height=_TAP,
+                    **T.tone_scheme("neutral"),
+                ),
             ),
             width="100%",
             align="center",
