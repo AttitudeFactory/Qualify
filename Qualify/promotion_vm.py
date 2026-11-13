@@ -29,14 +29,71 @@ IMAGE_STEPS = ("source", "images", "text", "country", "budget")
 # A format with a single file of the piece is not a decision: it is prefilled and
 # skipped (shown in the summary). Covers are prefilled too and change from the summary.
 VIDEO_STEPS = ("source", "feed_video", "vertical_video", "text", "country", "budget")
+# m-25026350: a story with a link button is ONLY an ad (no organic story): one 9:16 file,
+# shown only in Instagram stories. A single source or a single file is not a step.
+STORY_STEPS = ("source", "story_media", "story_link", "story_audience", "budget")
 STEP_TITLE_BY_KEY = dict(zip(PUBLISHED_STEPS, STEP_TITLES, strict=True)) | {
     "images": "Elige las dos imágenes del anuncio",
     "feed_video": "Video para el perfil",
     "vertical_video": "Video vertical de pantalla completa",
     "text": "¿Qué dirá tu anuncio?",
     "country": "¿En qué país quieres mostrarlo?",
+    "story_media": "¿Qué imagen o video lleva tu historia?",
+    "story_link": "¿A dónde lleva el botón?",
+    "story_audience": "¿Quién la ve?",
 }
 UNPUBLISHED_SOURCE_TITLE = "¿Con qué quieres anunciar esta pieza?"
+STORY_REVIEW_TITLE = "Revisa y aprueba"
+STORY_PLACEMENT = (
+    "Solo en las historias de Instagram, entre las historias de otras cuentas. "
+    "No se publica en tu perfil."
+)
+#: m-24828983's audience cannot be applied to an unpublished piece yet: a suggestion only.
+STORY_AUDIENCE_SUGGESTION = (
+    "Pronto podrás mostrarla a tus seguidores y a quienes ya te escribieron. Por ahora la "
+    "verán personas del país que elijas."
+)
+#: Step 1 when it came from Tu semana: the historia left the plan.
+STORY_LEFT_WEEK = (
+    "Tu historia ya no quedó en Tu semana. Si prefieres publicarla sin botón, vuelve a Tu "
+    "semana y prográmala de nuevo."
+)
+STORY_NO_CHARGE = "Todavía no se cobra nada. Primero verás cómo queda tu anuncio y luego decides."
+STORY_PREVIEW_BUTTON = "Ver cómo queda (sin cobrar)"
+STORY_AUTO_CHANGES_LABEL = "Ajustes por su cuenta"
+STORY_AUTO_CHANGES = "No: el anuncio sale tal como lo apruebas"
+STORY_BACK_TO_PIECE = "Volver a la pieza"
+STORY_EMPTY = (
+    "Esta pieza no tiene una imagen o un video vertical (9:16) listo para anunciar en "
+    "historias. Vuelve a la pieza y revisa que esté aprobada y sin publicar."
+)
+#: `/drafts/<id>/promote?formato=historia` — the wizard opened as a story with a button.
+STORY_FORMAT = "historia"
+#: Tu semana's historia (m-25026350): the option, and its one-line notice BEFORE the wizard.
+STORY_AD_OPTION = "Agregar un botón con enlace"
+STORY_AD_HINT = "Desde aquí, el botón con enlace solo se puede poner en una historia pagada."
+STORY_AD_NOTICE = (
+    "Es un anuncio pagado: tú eliges cuánto invertir y se muestra entre las historias de "
+    "otras cuentas, no en tu perfil."
+)
+STORY_AD_ONLY = (
+    "Si haces el anuncio, esta historia ya no sale en tu perfil. No se cobra nada hasta que "
+    "apruebes el presupuesto."
+)
+STORY_AD_CONTINUE = "Hacer anuncio pagado"
+STORY_AD_DECLINE = "Dejar la historia sin botón"
+#: The 9:16 safe zones Instagram covers with the account name (top) and the button (bottom).
+STORY_SAFE_TOP = "Aquí va tu nombre"
+STORY_SAFE_BOTTOM = "Aquí va el botón"
+STORY_SAFE_HINT = "No pongas texto en las zonas marcadas: Instagram las tapa."
+
+
+def story_ad_href(piece_id: str, return_query: str = "") -> str:
+    """The story-only ad wizard for a piece, keeping Tu semana's way back (`?desde=…`)."""
+    tail = "&" + return_query.lstrip("?") if return_query.lstrip("?") else ""
+    return f"/drafts/{piece_id}/promote?formato={STORY_FORMAT}{tail}"
+
+
 COUNTRY_LABELS = {"CO": "Colombia", "VE": "Venezuela", "UY": "Uruguay"}
 VIDEO_WAITING = (
     "Meta todavía está preparando tu video. Vuelve en unos minutos y toca "
@@ -132,6 +189,7 @@ class PromotionSourceVM:
     default_message: str = ""
     default_headline: str = ""
     default_country: str = ""
+    story: bool = False  # m-25026350: one 9:16 file, an ad only in Instagram stories
 
 
 @dataclass(frozen=True)
@@ -172,6 +230,9 @@ class PromotionDraftVM:
     message: str = ""
     headline: str = ""
     country: str = ""
+    story: bool = False
+    # The piece offers a single source (one ad account, one kind): not a step (story only).
+    single_source: bool = False
 
 
 @dataclass(frozen=True)
@@ -306,6 +367,10 @@ def local_datetime(value: str, timezone_name: str) -> datetime:
 
 
 def step_keys(draft: PromotionDraftVM) -> tuple[str, ...]:
+    if draft.story:
+        skip = {"source"} if draft.single_source else set()
+        skip |= {"story_media"} if draft.single_vertical else set()
+        return tuple(key for key in STORY_STEPS if key not in skip)
     if draft.media_kind == "videos":
         skip = {"feed_video"} if draft.single_feed else set()
         skip |= {"vertical_video"} if draft.single_vertical else set()
@@ -355,7 +420,25 @@ UNPUBLISHED_PROBLEMS = {
     "country": lambda d: (
         "" if d.country in COUNTRY_LABELS else "Elige el país donde quieres mostrar el anuncio."
     ),
+    "story_media": lambda d: (
+        "" if d.vertical_asset_id else "Elige la imagen o el video vertical de tu historia."
+    ),
+    "story_audience": lambda d: (
+        "" if d.country in COUNTRY_LABELS else "Elige el país donde quieres mostrar tu historia."
+    ),
 }
+
+
+def text_problem(draft: PromotionDraftVM) -> str:
+    if not draft.message.strip():
+        return "Escribe el texto del anuncio."
+    if len(draft.message) > 2200:
+        return "El texto del anuncio admite hasta 2.200 caracteres."
+    if not draft.headline.strip():
+        return "Escribe el título del anuncio."
+    if len(draft.headline) > 100:
+        return "El título del anuncio admite hasta 100 caracteres."
+    return ""
 
 
 def step_problem(draft: PromotionDraftVM, step: int, timezone_name: str = "") -> str:
@@ -365,15 +448,11 @@ def step_problem(draft: PromotionDraftVM, step: int, timezone_name: str = "") ->
     if key in UNPUBLISHED_PROBLEMS:
         return UNPUBLISHED_PROBLEMS[key](draft)
     if key == "text":
-        if not draft.message.strip():
-            return "Escribe el texto del anuncio."
-        if len(draft.message) > 2200:
-            return "El texto del anuncio admite hasta 2.200 caracteres."
-        if not draft.headline.strip():
-            return "Escribe el título del anuncio."
-        if len(draft.headline) > 100:
-            return "El título del anuncio admite hasta 100 caracteres."
-        return link_problem(draft.link_url)
+        return text_problem(draft) or link_problem(draft.link_url)
+    if key == "story_link":
+        if draft.cta_type not in WEBSITE_CTAS:
+            return "Elige el texto del botón."
+        return link_problem(draft.link_url) or text_problem(draft)
     if key == "source":
         return "Elige la publicación que quieres promocionar." if not draft.source_id else ""
     if key == "destination" and draft.goal == "lead":
@@ -419,9 +498,14 @@ def step_problem(draft: PromotionDraftVM, step: int, timezone_name: str = "") ->
 
 def first_problem(draft: PromotionDraftVM, timezone_name: str) -> str:
     # Steps a single file skips and the covers (changed from the summary) still count.
-    if draft.media_kind and not (draft.feed_asset_id and draft.vertical_asset_id):
+    if draft.story:
+        if not draft.vertical_asset_id:
+            return UNPUBLISHED_PROBLEMS["story_media"](draft)
+        if draft.media_kind == "videos" and not draft.vertical_cover_id:
+            return "Elige la portada del video."
+    elif draft.media_kind and not (draft.feed_asset_id and draft.vertical_asset_id):
         return "Elige los dos archivos de la pieza para el anuncio."
-    if draft.media_kind == "videos" and not (draft.feed_cover_id and draft.vertical_cover_id):
+    elif draft.media_kind == "videos" and not (draft.feed_cover_id and draft.vertical_cover_id):
         return UNPUBLISHED_PROBLEMS["covers"](draft)
     return next(
         (

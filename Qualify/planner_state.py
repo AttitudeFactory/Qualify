@@ -39,6 +39,7 @@ from .creative_provider import acting_user_id
 from .nav_url import (
     back_url_script,
     close_flow_script,
+    close_flow_then_go_script,
     flow_param,
     push_url_script,
     scalar_param,
@@ -141,6 +142,8 @@ from .planner_vm import (
     week_href,
     week_return_query,
 )
+from .promotion_unpublished_provider import story_ad_ready
+from .promotion_vm import story_ad_href
 from .tenant import tenant_uuid
 from .ui.route_history import history_ack_value, route_history_ready
 from .ui.steps import step_settle_script
@@ -426,6 +429,12 @@ class PlannerState(rx.State):
     form_open: bool = False
     flow_ready: bool = False
     form_mode: str = MODE_ASSIGN
+    #: m-25026350: the historia whose «Es un anuncio pagado…» notice is open ("" = none).
+    story_ad_post: str = ""
+    #: …and the pieces checked to be story ad sources (`story_ad_ready`).
+    story_ad_ready: list[str] = []
+    #: «Hacer anuncio pagado» re-reads readiness before leaving: disabled meanwhile.
+    story_ad_busy: bool = False
     form_event_id: str = ""
     form_tag_query: str = ""
     form_error: str = ""
@@ -1490,6 +1499,8 @@ class PlannerState(rx.State):
         self.own_upload_view = False
         self.own_upload_error = ""
         self.own_upload_saving = False  # never a stale lock from an earlier visit
+        self.story_ad_post = ""  # never a notice left open from an earlier visit
+        self.story_ad_busy = False  # a restart mid-check never leaves the button disabled
 
     def _first_account(self) -> list[str]:
         """The first compatible account is preselected: one account is the common case."""
@@ -1630,6 +1641,7 @@ class PlannerState(rx.State):
     def close_form(self) -> rx.event.EventSpec:
         self.form_open = False
         self.form_error = ""
+        self.story_ad_post = ""
         self.flow_ready = False
         return rx.call_script(close_flow_script(self.form_flow_name))
 
@@ -2026,15 +2038,111 @@ class PlannerState(rx.State):
         self._update_item(post_id, output_port=port, destination=destination)
 
     @rx.event
-    def set_item_destination(self, post_id: str, destination: str) -> None:
+    def set_item_destination(self, post_id: str, destination: str) -> rx.event.EventSpec | None:
         """«¿Dónde quieres publicarlo?»: only an available destination is taken — a
         disabled button never changes the piece. A move keeps its destination."""
         if self.form_mode == MODE_RESCHEDULE:
-            return
+            return None
         row = next((r for r in self.plan_rows if r.post_id == post_id), None)
         if row is None or not any(d.key == destination and d.available for d in row.destinations):
-            return
+            return None
         self._update_item(post_id, destination=destination)
+        self.story_ad_post = ""
+        return PlannerState.check_story_ad if destination == "story" else None
+
+    @rx.var
+    def story_ad_offered(self) -> bool:
+        """m-25026350: «Agregar un botón con enlace» is offered on a lone historia being
+        planned (leaving for the ad would drop the other pieces of a bigger plan)."""
+        return self.form_mode != MODE_RESCHEDULE and len(self.plan_items) == 1
+
+    def _story_row_ok(self, post_id: str) -> bool:
+        row = next((r for r in self.plan_rows if r.post_id == post_id), None)
+        return self.story_ad_offered and row is not None and row.destination == "story"
+
+    @rx.event(background=True)
+    async def check_story_ad(self) -> None:
+        """On showing «Cuándo sale» (and on choosing Historia): is the lone historia a
+        story ad source at all (approved, unpublished, a 9:16 file, an ad account)? Only
+        then is the option drawn."""
+        async with self:
+            rows = [r.post_id for r in self.plan_rows if r.destination == "story"]
+            post_id = rows[0] if self.story_ad_offered and rows else ""
+        tenant_id, draft_id = await self._tenant(), tenant_uuid(post_id)
+        if tenant_id is None or draft_id is None:
+            return
+        try:
+            ready = await asyncio.to_thread(story_ad_ready, tenant_id, draft_id)
+        except Exception as exc:  # noqa: BLE001 — no option is better than a dead end
+            logger.warning("story ad readiness read failed: %s", type(exc).__name__)
+            ready = False
+        async with self:
+            self._mark_story_ad(post_id, ready)
+
+    def _mark_story_ad(self, post_id: str, ready: bool) -> None:
+        others = [p for p in self.story_ad_ready if p != post_id]
+        self.story_ad_ready = [*others, post_id] if ready else others
+        if not ready and self.story_ad_post == post_id:
+            self.story_ad_post = ""
+
+    @rx.event
+    def ask_story_ad(self, post_id: str) -> None:
+        """«Agregar un botón con enlace»: first the one-line notice that it is a paid ad,
+        never the wizard straight away."""
+        if self._story_row_ok(post_id) and post_id in self.story_ad_ready:
+            self.story_ad_post = post_id
+
+    @rx.event
+    def dismiss_story_ad(self) -> None:
+        """«Dejar la historia sin botón»: the historia stays planned as it was."""
+        self.story_ad_post = ""
+
+    @rx.event(background=True)
+    async def continue_story_ad(self):
+        """«Hacer anuncio pagado»: the readiness is read again first; only then the ad
+        REPLACES the historia (see `_leave_for_story_ad`)."""
+        async with self:
+            if self.story_ad_busy or self.saving:
+                return
+            post_id = self.story_ad_post
+            self.story_ad_busy = True  # «Hacer anuncio pagado» is disabled meanwhile
+        try:
+            tenant_id, draft_id = await self._tenant(), tenant_uuid(post_id)
+            ready = False
+            if tenant_id is not None and draft_id is not None:
+                try:
+                    ready = await asyncio.to_thread(story_ad_ready, tenant_id, draft_id)
+                except Exception as exc:  # noqa: BLE001 — never leave the plan on a doubt
+                    logger.warning("story ad readiness read failed: %s", type(exc).__name__)
+            async with self:
+                events = self._leave_for_story_ad(post_id, ready)
+        finally:
+            async with self:
+                self.story_ad_busy = False
+        for event in events:
+            yield event
+
+    def _leave_for_story_ad(self, post_id: str, ready: bool) -> list[rx.event.EventSpec]:
+        """The plan is closed without scheduling anything (no organic story goes out)
+        and the ad wizard opens on the piece's 9:16 file, which itself launches nothing
+        without preview and consent. Not ready (or not this notice): the plan stays.
+        Nor while «Programar» runs or after the drawer closed during the read: the
+        historia must never both be scheduled and replaced by the ad."""
+        if not self.form_open or self.saving:
+            return []
+        if not post_id or post_id != self.story_ad_post or not self._story_row_ok(post_id):
+            return []
+        if not ready:
+            self._mark_story_ad(post_id, False)
+            return []
+        flow = self.form_flow_name
+        self.story_ad_post = ""
+        self.form_open = False
+        self.flow_ready = False
+        self.plan_items = []
+        # Close the drawer's own history entries first, so «atrás» never reopens it empty.
+        href = story_ad_href(post_id, self.week_return_query)
+        return [rx.call_script(close_flow_then_go_script(flow, href))]
 
     @rx.event
     def toggle_item_connection(self, post_id: str, connection_id: str) -> None:
