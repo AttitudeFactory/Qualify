@@ -56,17 +56,43 @@ def test_the_local_flyer_draws_no_button_and_no_price() -> None:
     )
 
 
-def test_a_gallery_slide_and_its_video_layer_draw_no_button() -> None:
-    assert render_carousel_slide(scene=_scene(), cta="Pide ya", palette=PALETTE) == (
-        render_carousel_slide(scene=_scene(), palette=PALETTE)
-    )
-    assert render_carousel_slide(scene=_scene(), cta="Pide ya", palette=PALETTE, pills=True) != (
-        render_carousel_slide(scene=_scene(), palette=PALETTE)
-    )
+#: The palette's accent: a CTA pill is filled with it, plain text never is.
+ACCENT = (0x1F, 0x29, 0x37)
+
+
+def _colors(png: bytes) -> set[tuple[int, ...]]:
+    image = Image.open(io.BytesIO(png))
+    return {pixel for _, pixel in image.getcolors(maxcolors=1 << 24) or []}
+
+
+def _white_in_bottom_band(png: bytes) -> int:
+    image = Image.open(io.BytesIO(png)).convert("RGBA")
+    width, height = image.size
+    band = image.crop((0, round(height * 0.74), width, round(height * 0.93)))
+    return sum(n for n, (r, g, b, a) in band.getcolors(1 << 24) or [] if min(r, g, b, a) > 240)
+
+
+def test_a_gallery_slide_set_to_the_cta_prints_it_as_text_not_a_button() -> None:
+    """Review of m-25017276: a slide the operator set to carry the CTA keeps its words —
+    the founder's rule is «no drawn buttons», not «no words»."""
+    plain = render_carousel_slide(scene=_scene(), palette=PALETTE)
+    worded = render_carousel_slide(scene=_scene(), cta="Pide ya", palette=PALETTE)
+    pill = render_carousel_slide(scene=_scene(), cta="Pide ya", palette=PALETTE, pills=True)
+    assert worded != plain and worded != pill
+    assert _white_in_bottom_band(worded) > 500  # the phrase, in the headline's white
+    assert ACCENT not in {c[:3] for c in _colors(worded)}  # no pill filled with the accent
+    assert ACCENT in {c[:3] for c in _colors(pill)}
+
+
+def test_a_video_slides_layer_prints_the_cta_as_text_not_a_button() -> None:
     size = (1080, 1350)
-    assert text_layer(size=size, cta="Pide ya", palette=PALETTE) == text_layer(
-        size=size, palette=PALETTE
-    )
+    layer = text_layer(size=size, cta="Pide ya", palette=PALETTE)
+    assert layer != text_layer(size=size, palette=PALETTE)
+    assert _white_in_bottom_band(layer) > 500
+    assert ACCENT not in {c[:3] for c in _colors(layer)}
+    assert ACCENT in {
+        c[:3] for c in _colors(text_layer(size=size, cta="Pide", pills=True, palette=PALETTE))
+    }
 
 
 def test_the_hook_still_prints() -> None:

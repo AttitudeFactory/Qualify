@@ -4163,6 +4163,12 @@ class MediaProducer:
                         "slides": len(slides),
                         "products": len(brief.media.product_keys),
                         "background": bool(brief.media.background_key),
+                        "printed": _printed_words(
+                            hook=copy.hook if position == 0 else "",
+                            cta=(copy.cta or copy.hook)
+                            if brief.media.carousel and position == len(slides) - 1
+                            else "",
+                        ),
                     },
                 )
             )
@@ -4510,6 +4516,7 @@ class MediaProducer:
                         "generated_scenes": len(scenes),
                         "products": len(products),
                         "background": background is not None,
+                        "printed": _printed_words(hook=copy.hook),
                     },
                     save=save,
                 )
@@ -4541,6 +4548,13 @@ class MediaProducer:
                         "generated_scenes": len(scenes),
                         "products": len(products),
                         "background": background is not None,
+                        "printed": _printed_words(
+                            hook=copy.hook if position == 0 else "",
+                            # a gallery's closing slide prints `cta or hook` centred
+                            cta=(copy.cta or copy.hook)
+                            if media.carousel and position == len(slides) - 1
+                            else "",
+                        ),
                     },
                 )
             )
@@ -5593,6 +5607,7 @@ class MediaProducer:
                     "slides": total,
                     "source": slide.source.value,
                     "text": slide.text.value,
+                    "printed": _printed_words(hook=hook, cta=cta),
                     "scene_prompt": slide.scene_prompt,
                     # m-24820842: provenance, and what «Crear las que faltan» compiles
                     # the missing slides with (the gallery's own compiler, not today's)
@@ -5704,7 +5719,12 @@ class MediaProducer:
                     model_id=COMPOSE_MODEL,
                     provider="qualify",
                     content_type=JPEG,
-                    params={"slide": total, "slides": total, "source": "closing"},
+                    params={
+                        "slide": total,
+                        "slides": total,
+                        "source": "closing",
+                        "printed": _printed_words(cta=copy.cta or copy.hook),
+                    },
                 )
             )
         if deferred:
@@ -6087,6 +6107,7 @@ class MediaProducer:
             "slide": number,
             "source": SlideSource.STOCK.value,
             "text": slide.text.value,
+            "printed": _printed_words(hook=hook, cta=cta),
             "from_key": slide.object_key,
             "duration_seconds": round(fitted.duration_sec, 2),
         }
@@ -9764,6 +9785,13 @@ def _price_warning(draft_id: UUID, price: str, reason: str, **fields: Any) -> Me
         detail=PRICE_NOT_PRINTED_TEXT,
         fields={"price": price, "reason": reason, **fields},
     )
+
+
+def _printed_words(*, hook: str = "", cta: str = "") -> dict[str, Any]:
+    """m-25017276: what the composer printed on an image, for provenance — the hook (top
+    headline), the CTA phrase as plain text (never a button since 2026-11-13) and never a
+    price pill."""
+    return {"hook": bool(hook.strip()), "cta": "text" if cta.strip() else "none", "price": False}
 
 
 def _prints_words(brief: ContentBrief) -> bool:

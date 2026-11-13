@@ -6904,7 +6904,8 @@ def _slide_stock_fields() -> rx.Component:
             rx.text("Texto encima", size="1", color=T.TEXT_MUTED),
             rx.segmented_control.root(
                 rx.segmented_control.item("Título", value="hook"),
-                rx.segmented_control.item("Botón de acción", value="cta"),
+                # m-25017276: printed as text, never a button
+                rx.segmented_control.item("Invitación a comprar o escribir", value="cta"),
                 value=current["text"],
                 on_change=lambda value: CreativeState.set_slide_field(index, "text", value),
                 size="2",

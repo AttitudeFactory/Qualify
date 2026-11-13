@@ -12,8 +12,11 @@ Two jobs, both deterministic PIL over the operator's own images:
 
 No button and no price is drawn by default (m-25017276, founder 2026-11-13): the CTA pill
 and the catalog's price pill stay off the image until the Remotion pipeline decides where
-the price goes; `pills=True` draws them as before (evals, comparisons). The CTA phrase of
-a carousel's closing slide is its headline — text, not a button — and stays.
+the price goes; `pills=True` draws them as before (evals, comparisons). A slide the
+operator set to carry the CTA (a gallery slide, its video layer, a stock slide) still
+prints the phrase — as plain text in the headline's style at the bottom
+(`_cta_text_box`), never as a button; so does a carousel's closing slide, centred.
+The single advertising image and the local flyer draw no CTA without `pills`.
 - `compose_scene` — the background of an avatar video. HeyGen takes ONE background
   image and has no native way to put a product in the frame (verified against its v3
   spec, 2026-09-25): so the operator's background and products are composed here into
@@ -540,6 +543,13 @@ def _headline_box(
     return (round(width * 0.08), top, round(width * 0.92), round(height * 0.3))
 
 
+def _cta_text_box(size: tuple[int, int]) -> tuple[int, int, int, int]:
+    """Where a slide's CTA phrase goes as plain text (m-25017276): the bottom band, inside
+    the bottom scrim, mirroring the headline's top band."""
+    width, height = size
+    return (round(width * 0.08), round(height * 0.74), round(width * 0.92), round(height * 0.93))
+
+
 def _scrim(canvas: Image.Image, *, top: bool = True, bottom: bool = True) -> None:
     """Darkens the top and/or bottom band of a photographic background, where the hook and
     the CTA sit, so white text stays legible on any photo. Only the band that holds words
@@ -581,12 +591,13 @@ def _slide(
     pills: bool = False,
 ) -> bytes:
     """One image. `closing` is a carousel's last slide: no product, the hook (the CTA
-    line) large and centred. With `pills` (m-25017276: off by default) the CTA is drawn as
-    a pill and `price` (the catalog's label) as its own pill above the CTA band, whole;
-    "" — or a price too long to print whole — prints none, and the slide is exactly the
-    one without a price. Without `pills` neither is drawn, nor darkens the bottom band."""
+    line) large and centred. With `pills` the CTA is drawn as a pill and `price` (the
+    catalog's label) as its own pill above the CTA band, whole; "" — or a price too long
+    to print whole — prints none, and the slide is exactly the one without a price.
+    Without `pills` (m-25017276, the default) no price is drawn and `cta` is printed as
+    plain text in the headline's style at the bottom — never a button."""
     width, height = size
-    hook, cta = _printable(hook), _printable(cta) if pills else ""
+    hook, cta = _printable(hook), _printable(cta)
     price = price if pills and price_fits(price, size, style.font) else ""
     canvas = _background(size, background, base)
     photographic = background is not None
@@ -611,7 +622,10 @@ def _slide(
     under = _logo(canvas, logo, share=_LOGO_SHARE_WITH_HEADLINE if shares_band else _LOGO_SHARE)
     box = _headline_box(size, under=under, closing=closing)
     _headline(canvas, hook, box, dark_text=dark_text, style=style)
-    _cta_pill(canvas, cta, round(height * 0.89), accent, style.font)
+    if pills:
+        _cta_pill(canvas, cta, round(height * 0.89), accent, style.font)
+    else:
+        _headline(canvas, cta, _cta_text_box(size), dark_text=dark_text, style=style)
     if not closing:
         _price_pill(canvas, price, accent, style.font)
     return _png(canvas)
@@ -646,7 +660,8 @@ def render_flyer(
         "pills": pills,
     }
     if not carousel:
-        return [_slide(products=products, hook=text.hook, cta=text.cta, price=text.price, **common)]
+        cta = text.cta if pills else ""  # m-25017276: the single image prints no CTA
+        return [_slide(products=products, hook=text.hook, cta=cta, price=text.price, **common)]
     items = list(products)[:9]
     slides = [_slide(products=items[:1], hook=text.hook, cta="", price=text.price, **common)]
     slides.extend(_slide(products=[item], hook="", cta="", **common) for item in items[1:])
@@ -683,9 +698,8 @@ def render_ad_slides(
         "pills": pills,
     }
     if not carousel:
-        return [
-            _slide(background=scenes[0], hook=text.hook, cta=text.cta, price=text.price, **common)
-        ]
+        cta = text.cta if pills else ""  # m-25017276: the single image prints no CTA
+        return [_slide(background=scenes[0], hook=text.hook, cta=cta, price=text.price, **common)]
     slides = [_slide(background=scenes[0], hook=text.hook, cta="", price=text.price, **common)]
     slides.extend(_slide(background=scene, hook="", cta="", **common) for scene in scenes[1:])
     closing_line = text.cta or text.hook
@@ -705,9 +719,9 @@ def render_carousel_slide(
     pills: bool = False,
 ) -> bytes:
     """One generated slide of a carousel (`ContentKind.CAROUSEL`) as PNG bytes: the scene
-    with the words the operator chose for it — the hook on top (the CTA as a pill only
-    with `pills`, m-25017276) — and the logo, the same drawing as the advertising image's
-    slides."""
+    with the words the operator chose for it — the hook on top, or the CTA at the bottom
+    (as plain text; a pill only with `pills`, m-25017276) — and the logo, the same drawing
+    as the advertising image's slides."""
     base, accent = _palette(palette)
     return _slide(
         size=size,
@@ -760,10 +774,10 @@ def text_layer(
 ) -> bytes:
     """The words of a slide WITHOUT its picture, as a transparent RGBA PNG — what is laid
     over an animated slide's every frame (§ request 2026-10-09). Same scrim, headline,
-    pill (only with `pills`, m-25017276) and logo as `render_carousel_slide`, so a video
-    slide reads like its neighbours."""
+    CTA (plain text; a pill only with `pills`, m-25017276) and logo as
+    `render_carousel_slide`, so a video slide reads like its neighbours."""
     width, height = size
-    hook, cta = _printable(hook), _printable(cta) if pills else ""
+    hook, cta = _printable(hook), _printable(cta)
     _, accent = _palette(palette)
     canvas = Image.new("RGBA", size, (0, 0, 0, 0))
     if hook.strip() or cta.strip():
@@ -771,7 +785,10 @@ def text_layer(
     has_headline = bool(hook.strip())
     under = _logo(canvas, logo, share=_LOGO_SHARE_WITH_HEADLINE if has_headline else _LOGO_SHARE)
     _headline(canvas, hook, _headline_box(size, under=under), dark_text=False, style=style)
-    _cta_pill(canvas, cta, round(height * 0.89), accent, style.font)
+    if pills:
+        _cta_pill(canvas, cta, round(height * 0.89), accent, style.font)
+    else:
+        _headline(canvas, cta, _cta_text_box(size), dark_text=False, style=style)
     out = io.BytesIO()
     canvas.save(out, format="PNG", optimize=True)
     return out.getvalue()
