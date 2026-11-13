@@ -1,15 +1,15 @@
 # Épica — Bandeja única de chats y respuesta automática en todos los canales
 
-`[PLANEADA · 2026-11-13 · épica m-25017839 · ticket base m-24789459 · product-owner · 16 tickets en Meegle, 19 historias sin ticket]`
+`[PLANEADA · 2026-11-12 · épica m-25017839 · ticket base m-24789459 · product-owner · 16 tickets en Meegle, 20 historias sin ticket]`
 
 > Épica en Meegle: **m-25017839** (Feature, Product Feature Request,
-> https://project.larksuite.com/5h2wsx/story/detail/25017839). El fundador aprobó el 2026-11-13
+> https://project.larksuite.com/5h2wsx/story/detail/25017839). El fundador aprobó el 2026-11-12
 > crear la épica y **solo los 16 tickets que pueden empezar ya**: 12 historias enlazadas a la épica
 > y los 4 Issues aparte de §7 (sin enlace a la épica). Las historias con ticket llevan su `m-<id>`;
-> las otras 19 conservan su id provisional `BU-*` y dicen «Sin ticket todavía» y qué esperan.
+> las otras 20 (19 del borrador más BU-B10, agregada en la revisión) conservan su id provisional `BU-*` y dicen «Sin ticket todavía» y qué esperan.
 > Todos en Backlog, Reporter y Assignee el fundador (sin desarrollador asignado todavía).
 >
-> Fuentes: la propuesta UX aceptada `docs/ux-chats-unificados.md` (D1–D5, 2026-11-13) y su maqueta
+> Fuentes: la propuesta UX aceptada `docs/ux-chats-unificados.md` (D1–D5, 2026-11-12) y su maqueta
 > `docs/mockups/chats-unificados.html`; la nota de arquitectura `docs/arquitectura-bandeja-unica.md`
 > (opción C para la bandeja, opción (b) para los menús, cortes C1–C11 y M1–M7); el pedido del
 > fundador del 2026-11-12/13; la descripción del PR #608. Cada afirmación tomada de esos
@@ -28,7 +28,7 @@
 > toma los pedidos en los dos canales sin que se me pierda ningún cliente.»
 
 Evidencia: pedido del fundador del 2026-11-12 (los dos chats deben verse y funcionar igual,
-configuración separada de los mensajes, menos pestañas y submenús) `[UX §0]` y del 2026-11-13
+configuración separada de los mensajes, menos pestañas y submenús) `[UX §0]` y del 2026-11-12
 (el menú automático de WhatsApp también en Instagram, más robusto, menús unificables) `[arq §3]`.
 
 **Cómo sabremos que funcionó** (tres señales comprobables):
@@ -109,7 +109,7 @@ canal, con dos outboxes y dos workers `[arq §1.2, §1.3]`. Cortes de origen C1�
 | C6 | Partido en m-25017861 («Ajustes de chats») y BU-A10 («Tu número» → «Tus redes») | Cada uno tiene valor propio y tocan pantallas distintas (`/whatsapp` vs `/connections`) |
 | C10 | Partido en BU-A14 (migración «Cómo llegar» a la marca, `backend`) y BU-A15 (sección y «+» de Instagram, `reflex-ui`) | La migración con relleno se despliega y verifica antes de cambiar pantallas `[arq §4.1 C10]` |
 | C11 | Partido en m-25017863 (medición, `datasci`), BU-A17 (servicio con tope y bandera, `backend`) y BU-A18 (botón, `reflex-ui`) | La medición puede empezar ya `[arq §4.1 C11]`; encender cuesta dinero y depende de la decisión (iii) |
-| — | Agregadas m-25017864…BU-A22 | Restos UX de las revisiones de esta semana que el fundador asignó a esta épica (pedido 2026-11-13, punto 4) |
+| — | Agregadas m-25017864…BU-A22 | Restos UX de las revisiones de esta semana que el fundador asignó a esta épica (pedido 2026-11-12, punto 4) |
 
 ### m-25017843 (BU-A1) · Bandeja: una sola consulta de chats y una sola definición de «por responder»
 
@@ -182,9 +182,9 @@ canal, con dos outboxes y dos workers `[arq §1.2, §1.3]`. Cortes de origen C1�
         Instagram el de Conversaciones, en el mismo hilo (prueba e2e o captura en el PR).
   - [ ] El contador «Por responder» del menú lateral y el total de la lista coinciden (señal 1 de §1).
   - [ ] «Cargar más» trae la página siguiente sin repetir ni saltar chats (prueba con el cursor de m-25017843).
+  - [ ] Después de abrir un chat desde la lista única, «‹ Por responder» vuelve a la lista única, no a la lista propia del canal (si no, el dueño queda con dos listas, peor que hoy) — prueba e2e o del VM `[revisión UX, puntos 6–7]`.
 - **Texto para el cliente:** «Por responder», «Todos», «Cerrados», «Pago por revisar · {N}»,
-  «WhatsApp», «Instagram». Lista vacía: «Nadie te está esperando por ahora.» **[supuesto PO,
-  propuesto; revisar con `ux-designer` y `qualify-copy-es`]**.
+  «WhatsApp», «Instagram». Lista vacía: «Ya respondiste a todos. Aquí verás a quien te escriba por WhatsApp o Instagram.» `[revisión UX]`.
 - **Fuera de alcance:** chat y cuadro de respuesta compartidos (BU-A5, BU-A7); recordar el filtro de
   canal (pregunta abierta `[UX §6.1]`).
 - **Migración / medición / firma:** no / no / no.
@@ -310,12 +310,12 @@ canal, con dos outboxes y dos workers `[arq §1.2, §1.3]`. Cortes de origen C1�
 ### m-25017861 (BU-A9) · Chats: «Ajustes de chats» aparte de los mensajes
 
 - **Tipo:** Issue · `Improvement`, `UI` · **P2** · **L** · dueño `reflex-ui`
-- **Depende de:** — (en paralelo a m-25017844…A5 `[arq §4.1 C6]`) · **Bloqueada por:** —
-- **Historia:** Como dueño, quiero preparar mis chats (respuestas automáticas, preguntas iniciales,
+- **Depende de:** — (en paralelo a m-25017844…BU-A5 `[arq §4.1 C6]`) · **Bloqueada por:** la revisión de sus textos contra la condición 3 de m-24789557 (decisión (vi))
+- **Historia:** Como dueño, quiero preparar mis chats (mi menú, preguntas iniciales,
   mensajes guardados) en un lugar distinto del que uso para contestar, para que la pantalla de
   mensajes tenga menos pestañas.
 - **Propuesta:** «Ajustes de chats» en Atiende con «Para todos tus chats» (Mensajes guardados ·
-  Formas de pago · Cómo llegar), «WhatsApp» (Respuesta automática · Preguntas iniciales) e
+  Formas de pago · Cómo llegar), «WhatsApp» (el menú, hoy «Respuesta automática» · Preguntas iniciales) e
   «Instagram» (Preguntas iniciales); sacar la configuración de WhatsApp de la pantalla de mensajes
   `[UX §2, §3 D1]`. Rutas propuestas `/chats/ajustes/whatsapp` y `/chats/ajustes/instagram`
   (nombres a decidir `[UX §5]`).
@@ -325,7 +325,8 @@ canal, con dos outboxes y dos workers `[arq §1.2, §1.3]`. Cortes de origen C1�
   - [ ] Las preguntas iniciales de los dos canales muestran la línea «Lo que tu cliente puede tocar
         al abrir el chat».
   - [ ] Ninguna función de configuración de hoy se pierde: lista de lo que había y dónde quedó, en el PR.
-- **Texto para el cliente:** «Ajustes de chats», «Para todos tus chats», «Respuesta automática»,
+  - [ ] **Antes de empezar:** los textos de esta historia se revisan contra la condición 3 de m-24789557 con la decisión (vi) ya tomada.
+- **Texto para el cliente:** «Respuesta automática» como nombre de la entrada: **pendiente de la decisión de nombres del fundador (condición 3 de m-24789557, decisión (vi) de §6); tabla de textos que pueden chocar en `[arq §3.3, «Contraste con las tres condiciones», punto 3]`**; propuesta de la revisión UX: «Tu menú de bienvenida». Sin choque: «Ajustes de chats», «Para todos tus chats»,
   «Preguntas iniciales», «Lo que tu cliente puede tocar al abrir el chat» `[UX §2, §3 D1, D5]`.
 - **Fuera de alcance:** «Tu número» (BU-A10); encendido por canal del menú (BU-B7).
 - **Migración / medición / firma:** no / no / no.
@@ -497,7 +498,7 @@ canal, con dos outboxes y dos workers `[arq §1.2, §1.3]`. Cortes de origen C1�
 - **Tipo:** Issue · `Improvement`, `UI` · **P2** · **S** · dueño `reflex-ui`
 - **Depende de:** — · **Bloqueada por:** —
 - **Evidencia:** resto de las revisiones UX de esta semana, asignado a esta épica por el fundador
-  (2026-11-13). Patrón ya usado: `BACK_TO_CHAT` en `whatsapp_location_vm.py:57` y
+  (2026-11-12). Patrón ya usado: `BACK_TO_CHAT` en `whatsapp_location_vm.py:57` y
   `whatsapp_payments_vm.py:87`.
 - **Historia:** Como dueño que fue a crear stickers de temporada desde un chat, quiero volver al
   mismo chat al terminar, para mandarlos sin buscar al cliente otra vez.
@@ -570,7 +571,7 @@ el nombre de las tablas `[arq §3.1, «Conclusión»]`. Cortes de origen M1–M7
 | Corte | Qué hice | Por qué |
 |---|---|---|
 | M1 | Partido en m-25017846 (puntos 1–2: transacción única + candado) y m-25017866 (puntos 3–4 + métricas) | Cuatro arreglos en el código que hoy cobra pedidos reales: dos PR más chicos se revisan mejor; m-25017866 puede necesitar migración (estado `cancelled`) y m-25017846 no |
-| M3 | Partido en BU-B4 (destinos del menú por canal + estado neutral) y BU-B5 (`kind='automation'` en `conversation_outbox`) | Solo BU-B5 quita la garantía deliberada de Instagram y necesita el ADR 48 y `security-review` `[arq §3.3]`; BU-B4 es un cambio de esquema para WhatsApp con relleno que no la toca |
+| M3 | Partido en BU-B4 (destinos del menú por canal + estado neutral) y BU-B5 (`kind='automation'` en `conversation_outbox`) | Solo BU-B5 quita la garantía deliberada de Instagram y necesita el ADR 48 escrito (transcripción de m-24789557), la decisión (i-c) y `security-review` `[arq §3.3, §4.2 M3]`; BU-B4 es un cambio de esquema para WhatsApp con relleno que no la toca |
 
 ### m-25017846 (BU-B1) · WhatsApp: el menú automático guarda su paso y su respuesta juntos, una conversación a la vez
 
@@ -623,13 +624,13 @@ el nombre de las tablas `[arq §3.1, «Conclusión»]`. Cortes de origen M1–M7
         responder» (predicado de m-25017843 o el de hoy si m-25017843 no está).
   - [ ] Métrica o log estructurado con las dos cuentas, consultable en producción (comando en el PR);
         habilita la señal 2 de §1.
-- **Texto para el cliente:** píldora en la fila: «Tu menú no pudo responder» **[supuesto PO,
-  propuesto; revisar con `ux-designer`]**.
-- **Fuera de alcance:** reanudar solo el menú tras N horas (pregunta P5 de §6).
+- **Texto para el cliente:** píldora en la fila: «Tu menú no pudo responder» — **pendiente de la decisión de nombres del fundador (condición 3 de m-24789557, decisión (vi) de §6); tabla de textos que pueden chocar en `[arq §3.3, «Contraste con las tres condiciones», punto 3]`**. Propuesta de la revisión UX: «Tu menú no le llegó: respóndele tú».
+  - [ ] **Antes de empezar:** los textos de esta historia se revisan contra la condición 3 de m-24789557 con la decisión (vi) ya tomada.
+- **Fuera de alcance:** reanudar solo el menú tras N horas (decisión (i-a) de §6).
 - **Migración:** **verificar** el CHECK de estados de `whatsapp_outbox`; si `cancelled` no existe,
   sí `[arq §4.2 M1]` · **Medición / firma:** no / no.
 
-### m-25017868 (BU-B3) · Respuesta automática: motor de menú independiente del canal (sin cambio de comportamiento)
+### m-25017868 (BU-B3) · Respuesta automática: motor de menú independiente del canal, con «Hablar con alguien» obligatorio
 
 - **Tipo:** Issue · `Deuda técnica` · **P2** · **M** · dueño `backend`
 - **Depende de:** m-25017846, m-25017866 · **Bloqueada por:** —
@@ -637,9 +638,11 @@ el nombre de las tablas `[arq §3.1, «Conclusión»]`. Cortes de origen M1–M7
   sirva a cualquier canal, para llevarlo a Instagram (y después a TikTok) sin copiarlo.
 - **Qué hay que hacer:** mover esquema y motor a `qualify_api/chat_automation/` con un `Inbound`
   neutral; el traductor de WhatsApp es el `outbox_payload` de hoy; la validación pasa a «límites de
-  cada canal encendido», comprobada por su traductor al publicar `[arq §3.2, §4.2 M2]`.
+  cada canal encendido», comprobada por su traductor al publicar `[arq §3.2, §4.2 M2]`. La nota corregida agrega a este corte la condición 2 de m-24789557 como regla del esquema: una opción visible de entrega a persona («Hablar con alguien») alcanzable desde el inicio, y el editor no la deja quitar `[arq §3.3 «Contraste…» punto 2, §4.2 M2]`.
 - **Criterios de aceptación**
   - [ ] Todas las pruebas de hoy del motor y del handler de WhatsApp pasan sin cambiar sus aserciones.
+  - [ ] Prueba: un menú sin una opción de entrega a persona alcanzable desde el inicio no se puede publicar; prueba del editor: la opción no se puede borrar.
+  - [ ] Antes de mergear: cuántos menús publicados hoy no cumplen la regla (consulta en el PR), para no apagar ninguno en producción sin avisar.
   - [ ] `grep`: el paquete `chat_automation/` no importa nada de `qualify_api.whatsapp`.
   - [ ] Ningún menú publicado hoy deja de validar (prueba con las definiciones de prueba existentes).
 - **Texto para el cliente:** ninguno.
@@ -648,11 +651,10 @@ el nombre de las tablas `[arq §3.1, «Conclusión»]`. Cortes de origen M1–M7
 
 ### BU-B4 · Respuesta automática: un menú por negocio publicado en uno o varios canales
 
-> **Sin ticket todavía — espera a m-25017868; conviene esperar la decisión (i).**
+> **Sin ticket todavía — espera a m-25017868 (sin decisión pendiente: el menú en Instagram ya está decidido en m-24789557).**
 
 - **Tipo:** Issue · `Deuda técnica` · **P2** · **M** · dueño `backend`
-- **Depende de:** m-25017868 · **Bloqueada por:** — (no toca la garantía de Instagram; ver §8 sobre cuándo
-  conviene hacerla)
+- **Depende de:** m-25017868 · **Bloqueada por:** — (no toca la garantía de Instagram; ver §8)
 - **Historia:** Como dueño, quiero tener un solo menú y decidir en qué canales responde, para no
   mantener dos.
 - **Qué hay que hacer:** tabla de destinos del menú (`menu_id`, `channel`, `connection_id` o
@@ -670,10 +672,10 @@ el nombre de las tablas `[arq §3.1, «Conclusión»]`. Cortes de origen M1–M7
 
 ### BU-B5 · Conversaciones: envíos automáticos aprobados por la versión publicada del menú
 
-> **Sin ticket todavía — espera la decisión (i) (ADR 48).**
+> **Sin ticket todavía — espera el ADR 48 escrito por `principal-architect` (transcripción de m-24789557) y la decisión (i-c).**
 
 - **Tipo:** Issue · `Feature` · **P2** · **M** · dueño `backend`
-- **Depende de:** BU-B4 · **Bloqueada por:** **decisión (i), firma del ADR 48**
+- **Depende de:** BU-B4 · **Bloqueada por:** ADR 48 escrito (transcripción, no firma nueva) y la decisión (i-c) (si los textos fijos de Qualify y los armados con datos del dueño cuentan como aprobados al publicar)
 - **Historia:** Como dueño, quiero que publicar mi menú cuente como mi aprobación de lo que el menú
   manda por Instagram, para que responda solo lo que yo escribí.
 - **Qué hay que hacer:** `kind='automation'` en `conversation_outbox` con `approved_by_user_id` nulo
@@ -687,17 +689,17 @@ el nombre de las tablas `[arq §3.1, «Conclusión»]`. Cortes de origen M1–M7
   - [ ] `test_conversations_outbox_sanctity.py` actualizada para permitir solo esa excepción, con un
         comentario que cita el ADR 48.
   - [ ] `security-review` hecha antes de mergear, con su resultado en el PR `[arq §3.3]`.
+  - [ ] Prueba estática: ni `suggest.py` ni ningún generador escriben `kind='automation'`; solo versiones publicadas, solo texto, botones, listas, QR o fotos del catálogo `[arq §3.3 «¿Algo del mecanismo…»]`.
 - **Texto para el cliente:** ninguno.
 - **Fuera de alcance:** generativo («Sugerir respuesta») sigue asistido sin excepción `[arq §3.3]`.
-- **Migración:** **sí** · **Medición:** no · **Firma:** **ADR 48**.
+- **Migración:** **sí** · **Medición:** no · **Firma:** ADR 48 escrito (transcripción de m-24789557) + decisión (i-c).
 
 ### BU-B6 · Instagram: el menú automático responde en Instagram Direct
 
-> **Sin ticket todavía — espera la decisión (i) y el riesgo (v).**
+> **Sin ticket todavía — espera a BU-B5, las decisiones (i-b) y (vi) para el aviso, y el riesgo (v) para clientes reales.**
 
 - **Tipo:** Issue · `Feature` · **P2** · **L** · dueño `backend`
-- **Depende de:** BU-B5 · **Bloqueada por:** decisión (i); para clientes reales, riesgo (v)
-  (Advanced Access); el aviso de automatización (pregunta P6 de §6)
+- **Depende de:** BU-B5 · **Bloqueada por:** decisión (i-b) (aviso al cliente con «automático») y (vi) (nombres); para clientes reales, riesgo (v) (Advanced Access)
 - **Historia:** Como dueño de la tienda de shawarma, quiero que mi menú tome pedidos también por
   Instagram, para atender a esos clientes aunque esté ocupado.
 - **Qué hay que hacer:** traductor e integración de Instagram: entrada desde el webhook de
@@ -714,30 +716,31 @@ el nombre de las tablas `[arq §3.1, «Conclusión»]`. Cortes de origen M1–M7
         el PR: pedido completo hasta el paso de pago y una entrega a persona (señal 3 de §1).
   - [ ] El camino a una persona se puede demostrar (requisito de Meta `[arq §3.4]`).
   - [ ] Con el destino de Instagram apagado, nada cambia en ese canal (prueba).
-- **Texto para el cliente:** aviso de automatización, borrador del arquitecto: «Te responde el menú
-  automático de {negocio}» `[arq §5 punto 6]` — **pendiente** de la pregunta P6 y de
-  `qualify-copy-es`; lo lee el cliente final del negocio.
+- **Texto para el cliente:** aviso al cliente final, borrador del arquitecto: «Te responde el menú
+  automático de {negocio}» `[arq §5 punto 6]` — **pendiente de la decisión de nombres del fundador (condición 3 de m-24789557, decisión (vi) de §6); tabla de textos que pueden chocar en `[arq §3.3, «Contraste con las tres condiciones», punto 3]`**, y de la decisión (i-b). Propuesta de la revisión UX: «Este es el menú de {negocio}. Toca "Hablar con alguien" cuando quieras.»
+  - [ ] **Antes de empezar:** los textos de esta historia se revisan contra la condición 3 de m-24789557 con la decisión (vi) ya tomada.
+
 - **Fuera de alcance:** carrusel (BU-B9); menú persistente; comandos tipo `/menu`.
-- **Migración / medición / firma:** no / no / ADR 48 (heredada).
+- **Migración / medición / firma:** no / no / (i-b), (vi).
 
-### BU-B7 · Chats: «Respuesta automática» en «Ajustes de chats», encendida por canal
+### BU-B7 · Chats: el menú en «Ajustes de chats», encendido por canal
 
-> **Sin ticket todavía — espera a m-25017861 y BU-B4; Instagram, la decisión (i).**
+> **Sin ticket todavía — espera a m-25017861, BU-B4 y la decisión de nombres (vi).**
 
 - **Tipo:** Issue · `Feature`, `UI` · **P2** · **M** · dueño `reflex-ui`
-- **Depende de:** m-25017861, BU-B4 · **Bloqueada por:** el encendido de Instagram, por decisión (i)
+- **Depende de:** m-25017861, BU-B4 (Instagram, también BU-B6) · **Bloqueada por:** decisión (vi), nombres
 - **Historia:** Como dueño, quiero ver mi menú automático y decidir en qué canal responde, y ver
   cómo le llega al cliente en cada uno, para confiar en lo que va a recibir.
-- **Propuesta:** la «Respuesta automática» dentro de «Ajustes de chats», encendido por canal y vista
+- **Propuesta:** el menú (hoy «Respuesta automática») dentro de «Ajustes de chats», encendido por canal y vista
   «Así le llega» por canal `[arq §4.2 M5; UX §2]`.
 - **Criterios de aceptación**
   - [ ] El interruptor de Instagram no se dibuja mientras BU-B6 no esté (regla «no se dibuja»).
   - [ ] «Así le llega» muestra, para el mismo nodo, la versión WhatsApp (botones) y la de Instagram
         (respuestas rápidas) cuando las dos existen.
   - [ ] Apagar un canal cambia solo el destino de ese canal (prueba del servicio).
-- **Texto para el cliente:** «Respuesta automática», «Así le llega», «Responde en WhatsApp»,
-  «Responde en Instagram» (estos dos **[supuesto PO, propuesto]**).
-- **Migración / medición / firma:** no / no / (i) para Instagram.
+- **Texto para el cliente:** «Así le llega». El nombre de la sección («Respuesta automática») y el del interruptor por canal: **pendiente de la decisión de nombres del fundador (condición 3 de m-24789557, decisión (vi) de §6); tabla de textos que pueden chocar en `[arq §3.3, «Contraste con las tres condiciones», punto 3]`**. Propuesta de la revisión UX: «Tu menú de bienvenida», con «Usar en WhatsApp» / «Usar en Instagram».
+  - [ ] **Antes de empezar:** los textos de esta historia se revisan contra la condición 3 de m-24789557 con la decisión (vi) ya tomada.
+- **Migración / medición / firma:** no / no / (vi).
 
 ### BU-B8 · Conversaciones: franja «quién responde» en el chat, también en Instagram
 
@@ -749,16 +752,16 @@ el nombre de las tablas `[arq §3.1, «Conclusión»]`. Cortes de origen M1–M7
 - **Historia:** Como dueño, quiero ver justo encima de donde escribo si me está contestando el menú
   o yo, y cambiarlo con un toque, para no pisarme con el menú.
 - **Criterios de aceptación**
-  - [ ] Con el menú atendiendo, la franja dice «Está respondiendo tu menú automático · Responder yo»;
+  - [ ] Con el menú atendiendo, la franja muestra el texto que salga de la decisión (vi) + «Responder yo»;
         con el dueño, «Estás respondiendo tú · Devolver al menú» (prueba del VM en los dos canales).
   - [ ] «Tomar el control» ya no está en la cabecera del chat `[UX §4 punto 8]`.
-- **Texto para el cliente:** «Está respondiendo tu menú automático», «Responder yo», «Estás
-  respondiendo tú», «Devolver al menú» `[UX §2]` — el nombre «Responder yo» se prueba antes.
+  - [ ] **Antes de empezar:** los textos de esta historia se revisan contra la condición 3 de m-24789557 con la decisión (vi) ya tomada.
+- **Texto para el cliente:** «Está respondiendo tu menú automático» — **pendiente de la decisión de nombres del fundador (condición 3 de m-24789557, decisión (vi) de §6); tabla de textos que pueden chocar en `[arq §3.3, «Contraste con las tres condiciones», punto 3]`**; propuesta de la revisión UX: «Este cliente está usando tu menú · Responder yo». «Responder yo», «Estás respondiendo tú», «Devolver al menú» `[UX §2]` — el nombre «Responder yo» se prueba antes.
 - **Migración / medición / firma:** no / no / no (sí la prueba con el dueño).
 
 ### BU-B9 · Instagram: carrusel de productos con foto en el menú automático
 
-> **Sin ticket todavía — espera a BU-B6, que espera la decisión (i).**
+> **Sin ticket todavía — espera a BU-B6.**
 
 - **Tipo:** Issue · `Feature` · **P3** · **M** · dueño `backend` (+ `reflex-ui` para «Así le llega»)
 - **Depende de:** BU-B6 · **Bloqueada por:** —
@@ -771,6 +774,34 @@ el nombre de las tablas `[arq §3.1, «Conclusión»]`. Cortes de origen M1–M7
   - [ ] Prueba en vivo con cuenta con rol (ADR 25), captura en el PR.
 - **Texto para el cliente:** ninguno nuevo (títulos y precios del catálogo).
 - **Migración / medición / firma:** no / no / no.
+
+### BU-B10 · Respuesta automática: cambiar los nombres que ya están en la app según la decisión de nombres
+
+> **Sin ticket todavía — espera la decisión de nombres del fundador (vi).**
+
+- **Tipo:** Issue · `Improvement`, `UI` · **P2** · **S** · dueño `reflex-ui`
+- **Depende de:** — · **Bloqueada por:** decisión (vi)
+- **Evidencia:** condición 3 de m-24789557 (fundador, 2026-10-23: ningún texto de la app dice ni
+  sugiere que Qualify responde solo; se llama «Tu menú de bienvenida»); tabla de textos ya construidos
+  que pueden chocar `[arq §3.3, «Contraste con las tres condiciones», punto 3]`.
+- **Historia:** Como dueño, quiero que la app llame a mi menú siempre con el mismo nombre y sin decir
+  que contesta sola, para entender que responde lo que yo escribí.
+- **Propuesta:** cambiar, según lo que decida el fundador, los textos de la tabla del arquitecto que ya
+  están en la app: «Respuesta automática» (pestaña, sección y «Ir a Respuesta automática»), «tu menú
+  automático» del subtítulo de WhatsApp, «Todavía no tienes una respuesta automática con tus productos
+  activa.», «Al enviarlo, la respuesta automática vuelve a atender este chat.», «Al responder, la
+  respuesta automática se pausa en esta conversación.», «…tomar el control de la respuesta
+  automática…» y «…puede publicar el menú automático ni la bienvenida.» (archivos y líneas en la
+  tabla del arquitecto).
+- **Criterios de aceptación**
+  - [ ] `grep` en `Qualify/`: ningún texto visible de la tabla queda con el nombre viejo.
+  - [ ] La prueba que ya cuida dos frases (`Qualify/test_whatsapp_menu_publish.py:316`) se amplía a
+        los nombres que se dejan de usar.
+  - [ ] Revisión local de `ux-designer` antes del PR.
+- **Texto para el cliente:** el que decida el fundador en (vi); propuesta de la revisión UX: «Tu menú
+  de bienvenida».
+- **Fuera de alcance:** textos nuevos de otras historias (cada una lleva su propia revisión).
+- **Migración / medición / firma:** no / no / decisión (vi).
 
 ## 5. Primer incremento y lo que corre en paralelo
 
@@ -787,56 +818,72 @@ punto 1).
 |---|---|---|
 | Robustez del menú de hoy | m-25017846 → m-25017866 → m-25017868 | `backend` (uno solo: mismos archivos) |
 | Bandeja | m-25017843 | `backend` (otra persona) |
-| Pantallas sin dependencia | m-25017844, m-25017861 → BU-A10, m-25017862, m-25017864, m-25017865 | `reflex-ui` — ojo: m-25017844 y m-25017861 tocan `whatsapp_tab_chats.py`; en serie, un dueño `[arq §5]` |
+| Pantallas sin dependencia | m-25017844, m-25017861 (empieza cuando esté la decisión (vi)) → BU-A10, m-25017862, m-25017864, m-25017865 | `reflex-ui` — ojo: m-25017844 y m-25017861 tocan `whatsapp_tab_chats.py`; en serie, un dueño `[arq §5]` |
 | Medición | m-25017860 (contraste), m-25017863 (Sugerir respuesta) | `ux`, `datasci` |
 | Fuera de la épica | m-25017848…m-25017852 (§7) | `backend` / `platform` |
 
 **Después:** m-25017859 → BU-A5 → BU-A7 → (BU-A8, BU-A11, BU-A15, BU-A18, BU-A21); BU-A6 tras m-25017843;
 BU-A13 tras m-25017843; BU-A14 tras m-25017861. Pista B: BU-B4 tras m-25017868; BU-B5 → BU-B6 → (BU-B7 Instagram,
-BU-B8 Instagram, BU-B9) solo con el ADR 48 firmado.
+BU-B8 Instagram, BU-B9) con el ADR 48 escrito (transcripción de m-24789557) y las decisiones (i-b), (i-c) y (vi). BU-B10 espera la decisión (vi).
 
 ## 6. Decisiones del fundador antes de empezar historias concretas
 
-### (i) ADR 48 — respuestas automáticas en Instagram frente a «asistido, nunca autónomo»
+### (i) Menú automático en Instagram: lo que ya está decidido y lo que va más allá
 
-Lo que encontró el arquitecto, citado sin cambiar `[arq §3.3]`:
+**Ya decidido, no se vuelve a preguntar.** El fundador decidió el 2026-10-23 en **m-24789557**
+(antes QUA-138), opción B: excepción acotada a «asistido, nunca autónomo». Se permite un menú
+automático en mensajes directos de **Instagram y WhatsApp** solo si (1) el texto es fijo, escrito o
+aprobado una vez por el dueño, sin contenido generado por un modelo en ese envío; (2) «Hablar con
+alguien» está siempre y lleva a la bandeja asistida; (3) ningún texto de la app dice ni sugiere que
+Qualify responde solo; se llama «Tu menú de bienvenida» `[arq §3.3, «La decisión existe»]`.
 
-> «**No hay firma explícita registrada:** `docs/backlog-modulo-whatsapp.md:71` dice que D2 «se toma
-> como sí porque el fundador pidió implementar el módulo entero» y queda «aplicado salvo
-> objeción». No está en la tabla de ADR de `docs/arquitectura.md` §6.»
->
-> «**No encontré registro de que QUA-138 se haya decidido.** Y el código de Instagram hace cumplir
-> lo contrario a propósito: `conversations/outbox.py:1-9` — «ADR 21c en código» […], y el rol del
-> webhook **sin ningún privilegio** sobre `conversation_outbox` (0065), «para que una entrega de
-> Meta no pueda producir un envío ni por un error».»
+**Pendiente, sin ser decisión del fundador:** escribir el **ADR 48** («Enmienda a ADR 21: menú fijo
+en mensajes directos») como transcripción de m-24789557, con estado aprobado el 2026-10-23. Lo
+escribe `principal-architect` `[arq §3.3, «Lo pendiente es escribir el ADR»]`. El mecanismo de la
+nota (aprobación = publicar la versión del menú; excepción acotada en `conversation_outbox`) cabe en
+la condición 1 si se limita a versiones publicadas y contenido sin modelo `[arq §3.3, «¿Algo del
+mecanismo…»]`.
 
-La base del menú de WhatsApp es la decisión D2 de `docs/plan-modulo-whatsapp-cloud-api.md` §9.1:
-*automático = determinista y declarado; generativo = asistido* `[arq §3.3]`.
+**Decisiones del fundador que van más allá del texto del 2026-10-23** `[arq §3.3]`:
 
-**Hallazgo del PO en Meegle (2026-11-13), que la nota no recogió:** QUA-138 migró a **m-24789557**
-(«Decisión del fundador: DM con menú automático vs ADR 21»), en Done desde 2026-10-23, con un
-comentario del fundador de ese día: elige la **opción B, excepción acotada** — se permite un menú
-automático en mensajes directos de Instagram y WhatsApp si (1) el texto es fijo, escrito o aprobado
-una vez por el dueño, sin texto generado; (2) «Hablar con alguien» está siempre y lleva a la bandeja
-asistida; (3) ningún texto de la app dice ni insinúa que Qualify responde solo. Queda pendiente
-que `principal-architect` lo registre como ADR (enmienda al ADR 21). Entonces la pregunta para el
-fundador ya no es «¿se permite?» sino **«¿cubre esa decisión el mecanismo de la nota (aprobación =
-publicar la versión del menú; excepción acotada en `conversation_outbox`)?»**. Dos choques a
-revisar: la condición (2) pide «Hablar con alguien» siempre presente (sin verificar si el editor
-de menús de hoy lo garantiza), y la (3) choca con textos como «Está respondiendo tu menú automático» y el
-aviso «Te responde el menú automático de {negocio}» propuestos en BU-B6/BU-B8.
+**(i-a) ¿El menú vuelve solo después de un tiempo sin respuesta del dueño?** Hoy un chat entregado a
+una persona queda pausado para siempre `[arq §3.5 punto 5, §5 P5]`.
 
-| Opción | Qué es | Para el dueño | Riesgo | ¿Se deshace? | Bloquea |
-|---|---|---|---|---|---|
-| A. No firmar | Instagram queda solo asistido; el menú sigue en WhatsApp bajo D2 «aplicado salvo objeción» | Su menú no atiende Instagram | La base de WhatsApp sigue sin firma escrita | Sí | Nada; la pista B termina en BU-B4 |
-| **B. Firmar el ADR 48 como lo propone la nota** | Formaliza D2 para todos los canales: la aprobación es **publicar la versión del menú**; cada envío automático lleva `menu_version_id` + `node_id`; excepción acotada en `conversation_outbox` con `security-review` `[arq §3.3]` | El menú que él escribió responde en Instagram; lo generativo sigue asistido | Se quita una garantía de seguridad deliberada (acotada a un tipo de fila) | Sí: apagar el destino de Instagram; la migración es reversible | — |
-| C. Firmar solo D2 para WhatsApp ahora; Instagram después de App Review | Escribe la base que falta y aplaza la excepción en Instagram | Igual que A hasta el aplazamiento | Se planea dos veces | Sí | BU-B5…B9 hasta la segunda firma |
+| Opción | Qué es | Para el dueño | Riesgo |
+|---|---|---|---|
+| **A. Solo con «Devolver al menú»** | Como hoy | Controla cuándo vuelve el menú | Un cliente que vuelve días después no lo atiende el menú si el dueño olvidó tocar el botón |
+| B. Vuelve solo tras N horas sin mensajes del dueño | Reanudación automática | No tiene que acordarse | El menú le contesta a alguien con quien el dueño estaba hablando; no está en el texto del 2026-10-23 |
 
-**Recomendación: B.** El fundador pidió el menú en Instagram (2026-11-13) y la propuesta mantiene el
-principio (determinista y escrito por el negocio; lo generativo, asistido). **Lo reabrimos si**
-`security-review` de BU-B5 encuentra que la concesión al rol del webhook no se puede acotar a
-`kind='automation'`. **Bloquea:** BU-B5, BU-B6, BU-B9 y el lado Instagram de BU-B7/BU-B8. El ADR lo
-escribe `principal-architect`; este documento no lo redacta.
+**Recomendación: A** por ahora, con un aviso en la fila cuando un chat lleva más de un día en manos
+del dueño sin respuesta [supuesto PO]. **Bloquea:** solo una historia futura de reanudación (no hay
+ninguna creada); m-25017866 no la necesita.
+
+**(i-b) ¿Se avisa al cliente final con la palabra «automático»?** Meta lo recomienda siempre y lo
+exige donde la ley lo pida (CO/VE/UY sin verificar) `[arq §3.4]`; la condición 3 habla de «la app»
+y no está claro si cubre lo que lee el cliente final `[arq §3.3, tabla]`.
+
+| Opción | Qué es | Riesgo |
+|---|---|---|
+| A. Aviso con «automático» («Te responde el menú automático de {negocio}») | Cumple la recomendación de Meta | Puede chocar con la condición 3 |
+| **B. Aviso sin «automático», diciendo que es un menú y cómo llegar a una persona** | Propuesta UX: «Este es el menú de {negocio}. Toca "Hablar con alguien" cuando quieras.» | Si la ley exige la palabra, no alcanza (sin verificar) |
+| C. Sin aviso | Nada que decidir | Contra la recomendación de Meta; riesgo en App Review |
+
+**Recomendación: B**, y verificar la ley local antes de BU-B6. **Bloquea:** BU-B6.
+
+**(i-c) ¿Cuentan como «aprobados una vez» al publicar los textos fijos que trae Qualify y los
+armados con datos del dueño?** Ejemplos: la línea de ayuda ante una respuesta no entendida, la
+entrega por defecto, «Elige una de las opciones para seguir.», «Te confirmamos el monto en …», la
+respuesta «Formas de pago», las listas del catálogo y el total del pedido. Todos deterministas, sin
+modelo; que el dueño los apruebe al publicar «es una interpretación, no está en el texto» `[arq
+§3.3, «Contraste…» punto 1]`.
+
+| Opción | Qué es | Para el dueño | Riesgo |
+|---|---|---|---|
+| **A. Sí: publicar el menú los aprueba, y la vista previa los muestra** | El ADR 48 lo dice en una línea | Ve antes de publicar todo lo que el menú puede mandar | Textos que no escribió salen con su aprobación implícita |
+| B. Solo lo que el dueño escribió; los textos de Qualify pasan a ser editables y se aprueban uno a uno | Más pasos para armar el menú | Control total | Más trabajo de pantalla y de dueño |
+
+**Recomendación: A**, con la condición de que «Así le llega» muestre esos textos antes de publicar.
+**Bloquea:** BU-B5 (y por ella BU-B6, BU-B9).
 
 ### (ii) Qué significa «Por responder» cuando el menú automático ya contestó
 
@@ -904,9 +951,27 @@ Y en §3.4: si la sumisión ya salió sin el menú, «preguntar si hace falta un
 Instagram para clientes reales y el uso de BU-B6 con clientes reales (no su construcción ni la
 prueba con cuentas con rol).
 
-**Otras preguntas de la nota que no bloquean el primer incremento** `[arq §5]`: P5, ¿el menú
-vuelve solo tras N horas sin mensajes del dueño o solo con «Devolver al menú»? (antes de cerrar
-m-25017866); P6, ¿línea fija de aviso de automatización y lo exige la ley de CO/VE/UY? (antes de BU-B6).
+### (vi) Nombres del menú en la app (condición 3 de m-24789557)
+
+La condición 3 pide que ningún texto de la app diga ni sugiera que Qualify responde solo, y nombra
+«Tu menú de bienvenida». La app ya tiene textos que pueden chocar y la propuesta UX trae otros
+(tabla en `[arq §3.3, «Contraste…» punto 3]`). El fundador decide los nombres; aquí van las
+propuestas de la revisión UX, no una elección.
+
+| Lugar | Hoy o propuesto antes | Propuesta de la revisión UX |
+|---|---|---|
+| Nombre del menú (pestaña, sección, «Ajustes de chats») | «Respuesta automática» | «Tu menú de bienvenida» |
+| Interruptor por canal | «Responde en WhatsApp» / «Responde en Instagram» | «Usar en WhatsApp» / «Usar en Instagram» |
+| Franja «quién responde» | «Está respondiendo tu menú automático · Responder yo» | «Este cliente está usando tu menú · Responder yo» |
+| Píldora cuando falló un envío | «Tu menú no pudo responder» | «Tu menú no le llegó: respóndele tú» |
+| Aviso al cliente final | «Te responde el menú automático de {negocio}» | «Este es el menú de {negocio}. Toca "Hablar con alguien" cuando quieras.» (ver i-b) |
+
+**Opciones:** A. adoptar las propuestas de la revisión UX; B. adoptar otras; C. mantener los de hoy
+(choca con la condición 3). **Recomendación del PO: decidirlo de una vez para toda la épica**, no
+historia por historia. **Bloquea:** el inicio de m-25017861, BU-B6, BU-B7, BU-B8, BU-B10, y el texto
+de la píldora de m-25017866.
+
+**Las preguntas P5 y P6 de la nota** `[arq §5]` quedaron dentro de (i-a) y (i-b).
 
 ## 7. Issues aparte, fuera de la épica
 
@@ -967,7 +1032,7 @@ Se crean sin el campo «Feature» y con «Relacionado con» hacia la épica.
 - **Qué pasa:** en PROD, en la lista y el chat de Conversaciones, una persona que escribe por
   Instagram aparece como «Persona sin nombre» (`Qualify/conversations_vm.py:841`). La pantalla prueba
   `threads.counterpart_name`, después `counterpart_username`, después el `messages.author_username`
-  del entrante más nuevo, y si no hay nada usa ese texto. Reportado por el fundador (2026-11-13).
+  del entrante más nuevo, y si no hay nada usa ese texto. Reportado por el fundador (2026-11-12).
 - **Causa** (diagnóstico leído en el código; **producción todavía sin revisar**)
   - **Confirmado al leer el código:** un hilo creado por el webhook de Instagram no guarda nombre ni
     usuario (`conversations/webhook.py:290-312`; `sync.py:275-307` no llama al perfil), y el webhook
@@ -1020,8 +1085,7 @@ Se crean sin el campo «Feature» y con «Relacionado con» hacia la épica.
    solo número de «Por responder», no «los dos canales juntos». Hay que decírselo así al fundador.
 2. **C4, C5, C6, C10, C11 y M1, M3 no son un PR cada uno** (juntan dueños, una medición previa, una
    migración o una firma): los partí (§3 y §4). Ver tablas al principio de cada pista.
-3. **M3 mezcla lo que necesita el ADR 48 con lo que no.** Partido en BU-B4/BU-B5. Aun así, BU-B4 solo
-   da valor si después llega Instagram: si el fundador elige A o C en (i), BU-B4 debería esperar.
+3. **M3 mezcla lo que necesita el ADR 48 con lo que no.** Partido en BU-B4/BU-B5. El menú en Instagram ya está decidido (m-24789557, 2026-10-23), así que BU-B4 no espera ninguna decisión.
 4. **«Volver a tus chats» (UX §2) vs «Volver al chat» (la app, `whatsapp_location_vm.py:57`,
    `whatsapp_payments_vm.py:87`, y el pedido del fundador).** Propongo «Volver al chat» en todos lados;
    el doc UX debería corregirse.
@@ -1037,8 +1101,9 @@ Se crean sin el campo «Feature» y con «Relacionado con» hacia la épica.
 
 ```
 /qualify-team-dev Épica «Bandeja única de chats y respuesta automática» — doc
-docs/epica-bandeja-unica.md (reemplazar BU-* por los m-<id> creados). Decisiones firmadas: (ii) «Por
-responder» = opción B; (i) ADR 48 = <pendiente / firmado>. Arrancar en paralelo:
+docs/epica-bandeja-unica.md (reemplazar BU-* por los m-<id> creados). Menú en Instagram: decidido
+el 2026-10-23 (m-24789557); el ADR 48 lo escribe principal-architect. Pendientes del fundador: (ii)
+«Por responder» (recomendación B: bloquea m-25017843 y m-25017859), (i-a/b/c), (iii), (iv), (vi). Arrancar en paralelo:
 - backend-engineer (A): m-25017846 → m-25017866 → m-25017868 (mismos archivos, una sola persona; pruebas -m db).
 - backend-engineer (B): m-25017843 (servicio de bandeja + ChannelCapabilities + predicado único), luego BU-A6.
 - reflex-ui-engineer (único dueño de whatsapp_tab_chats.py y conversations_page.py): m-25017844 → m-25017859 →
@@ -1046,5 +1111,6 @@ responder» = opción B; (i) ADR 48 = <pendiente / firmado>. Arrancar en paralel
 - ux-designer: m-25017860 (contraste del tinte, condición de D2) y la prueba «Responder yo» con Bianki (BU-B8).
 - data-scientist-fde: m-25017863 (medición de Sugerir respuesta, qualify-measure).
 - backend-engineer (fuera de la épica): m-25017852 (Instagram «Persona sin nombre», P1), m-25017850, m-25017849, m-25017848.
-Cada historia es un PR con su m-<id>; nada de BU-B5/B6/B9 sin el ADR 48 firmado.
+Cada historia es un PR con su m-<id>; nada de BU-B5/B6/B9 sin el ADR 48 escrito y (i-b)/(i-c)/(vi) decididas;
+m-25017843 y m-25017859 no empiezan sin la decisión (ii).
 ```

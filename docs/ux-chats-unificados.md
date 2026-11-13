@@ -1,9 +1,9 @@
 # Chats de WhatsApp e Instagram: una sola bandeja, ajustes aparte (m-24789459)
 
-`[PROPUESTA UX DECIDIDA por el fundador 2026-11-13 · m-24789459 · sin implementar]`
+`[PROPUESTA UX DECIDIDA por el fundador 2026-11-12 · m-24789459 · sin implementar]`
 
 > Propuesta de experiencia (ux-designer, 2026-11-12). El fundador aceptó las cinco
-> recomendaciones (D1–D5) el 2026-11-13; «Enviar» en los dos canales ya estaba decidido y en
+> recomendaciones (D1–D5) el 2026-11-12; «Enviar» en los dos canales ya estaba decidido y en
 > producción (m-25017173, PR #606). Lo que sigue abierto está en el §6.
 > **No se revisó en la app corriendo**: es una propuesta de flujo
 > hecha sobre el código de hoy (`Qualify/whatsapp_tab_chats.py`, `whatsapp_chats_vm.py`,
@@ -60,11 +60,16 @@ Atiende
 │              una fila, un chat, un cuadro de respuesta
 └ Ajustes de chats                   ← solo preparar (D1)
    ├ Para todos tus chats: Mensajes guardados · Formas de pago · Cómo llegar
-   ├ WhatsApp: Respuesta automática · Preguntas iniciales
+   ├ WhatsApp: Respuesta automática (*) · Preguntas iniciales
    └ Instagram: Preguntas iniciales
 Tus redes (Tu negocio)               ← ¿está conectado? (absorbe «Tu número»)
 Promociones por WhatsApp (Publica)   ← junto a «Anuncios» (D3)
 ```
+
+(*) Nombre **pendiente de la decisión de nombres del fundador (condición 3 de m-24789557)**:
+ningún texto puede decir ni sugerir que Qualify responde solo. Alternativa de la revisión de
+experiencia independiente, no decidida: «Tu menú de bienvenida». La maqueta todavía muestra el
+nombre anterior hasta que el fundador decida.
 
 - **Una fila** (la de Instagram): foto o inicial, glifo del canal en la esquina, punto que respira
   cuando el cliente espera, nombre, hora, vista previa con «Tú: », **una sola** píldora de atención
@@ -77,6 +82,9 @@ Promociones por WhatsApp (Publica)   ← junto a «Anuncios» (D3)
 - **Quién responde** (solo WhatsApp con respuesta automática): una franja justo encima del cuadro de
   respuesta, «Está respondiendo tu menú automático · Responder yo», o «Estás respondiendo tú ·
   Devolver al menú». Está pegada a donde el dueño escribe porque es lo que cambia al escribir.
+  El texto de la franja está **pendiente de la decisión de nombres del fundador (condición 3 de
+  m-24789557)**; alternativa de la revisión de experiencia independiente, no decidida: «Este
+  cliente está usando tu menú · Responder yo». La maqueta todavía muestra el texto anterior.
 - **Un cuadro de respuesta**, el mismo en los dos canales, en tres renglones:
   1. el texto;
   2. herramientas de todos los días, con icono **y** nombre corto: Foto o video · Botones ·
@@ -93,13 +101,13 @@ Promociones por WhatsApp (Publica)   ← junto a «Anuncios» (D3)
   «Volver a tus chats» para regresar al mismo chat.
   Lo que cambia por canal es **cómo le llega**, y eso ya lo muestra el paso «Así le llega».
 
-## 3. Decisiones (fundador, 2026-11-13)
+## 3. Decisiones (fundador, 2026-11-12)
 
 El fundador aceptó las cinco recomendaciones. Cada una deja la opción elegida, las descartadas en
 corto (para que el porqué se pueda seguir) y, si la hay, la condición antes de construir. «[H]» =
 hipótesis del perfil, que se valida en el §6.
 
-### D1 · Dónde vive la configuración — **Decidido por el fundador (2026-11-13)**
+### D1 · Dónde vive la configuración — **Decidido por el fundador (2026-11-12)**
 
 **Elegida: «Ajustes de chats» en Atiende, y «Tu número» pasa a «Tus redes».** Atiende queda con
 Por responder · Ajustes de chats; «¿está conectado?» de todas las cuentas vive solo en Tus redes
@@ -109,7 +117,7 @@ Descartadas: «Canales» en Atiende (palabra de marketing; el dueño dice «mi W
 pregunta 4]); todo dentro de «Tus redes» (aleja la respuesta automática de los chats, que es lo
 que el dueño quiere corregir cuando el menú contestó mal).
 
-### D2 · El color del canal y la burbuja enviada — **Decidido por el fundador (2026-11-13)**
+### D2 · El color del canal y la burbuja enviada — **Decidido por el fundador (2026-11-12)**
 
 **Elegida: tinte suave del canal con texto oscuro.** Burbuja enviada con relleno `{canal}-a4`
 (instagram pink, whatsapp green, tiktok purple, de `T.PLATFORM_SCALE`) y texto gray-12; glifo +
@@ -123,7 +131,7 @@ opción (otro paso de alfa) antes de pasar a otra.
 Descartadas: degradado del canal oscurecido con texto blanco (más vistoso, contraste sin medir);
 una sola burbuja de acento teal (borra el color que gustó).
 
-### D3 · Promociones — **Decidido por el fundador (2026-11-13)**
+### D3 · Promociones — **Decidido por el fundador (2026-11-12)**
 
 **Elegida: entrada propia «Promociones por WhatsApp» junto a «Anuncios» (zona Publica).** Las dos
 sirven para llegar a gente que hoy no te está escribiendo [H, sin fuente; ninguna pregunta del §5
@@ -134,7 +142,7 @@ igual.
 Descartada: dentro de «Ajustes de chats › WhatsApp» como primera tarjeta (no suma entrada, pero
 esconde algo que vende entre ajustes).
 
-### D4 · Qué se vuelve igual en los dos canales — **Decidido por el fundador (2026-11-13)**
+### D4 · Qué se vuelve igual en los dos canales — **Decidido por el fundador (2026-11-12)**
 
 **Elegido: «Sugerir respuesta» llega a WhatsApp primero**, porque Bianki recibe pedidos por
 WhatsApp ([F] perfil §1; el ahorro «entre clientes» es [H], §2). Es también una decisión de costo:
@@ -150,7 +158,7 @@ resto del trabajo de backend para un mismo cuadro de respuesta:
 
 Mientras no estén, el botón no se dibuja en el canal que no lo soporta (la maqueta marca cuáles).
 
-### D5 · Un solo nombre por cosa — **Decidido por el fundador (2026-11-13)**
+### D5 · Un solo nombre por cosa — **Decidido por el fundador (2026-11-12)**
 
 **Elegidos: «Preguntas iniciales», «Botones», «Mensajes guardados» y «Enviar»** (este último ya
 decidido el 2026-11-12, m-25017173, PR #606).
@@ -230,5 +238,10 @@ D1–D5 están decididas (§3). Lo que sigue abierto:
    para usar el `orbit_menu` fuera de WhatsApp (`docs/design-system.md` §5.9).
 4. ¿TikTok permite recibir y contestar mensajes de negocio con su API para los clientes de la
    región? Lo responde `principal-architect`; la pantalla solo deja el lugar.
-5. Condición de D2 (no es decisión abierta): medir en el navegador, en claro y oscuro, el contraste
+5. **Nombres del menú automático** (condición 3 de m-24789557: ningún texto dice ni sugiere que
+   Qualify responde solo). Decide el fundador; la tabla de textos que chocan está en
+   `docs/arquitectura-bandeja-unica.md` §3.3. Afecta «Respuesta automática» (§2, árbol) y la franja
+   «Está respondiendo tu menú automático» (§2); alternativas propuestas: «Tu menú de bienvenida» y
+   «Este cliente está usando tu menú · Responder yo».
+6. Condición de D2 (no es decisión abierta): medir en el navegador, en claro y oscuro, el contraste
    del tinte elegido (y del degradado de hoy, hallazgo 7) antes de construir.

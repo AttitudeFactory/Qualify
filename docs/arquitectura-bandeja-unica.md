@@ -1,10 +1,10 @@
 # Bandeja única de chats (WhatsApp + Instagram Direct, TikTok después): nota de arquitectura
 
-`[PROPUESTA · 2026-11-13 · m-24789459 · principal-architect · sin firmar]`
+`[PROPUESTA · 2026-11-12 · m-24789459 · principal-architect · sin firmar]`
 
 > Nota de arquitectura para planear la épica «Bandeja unificada cross-canal». Parte de la
 > propuesta UX aceptada (`docs/ux-chats-unificados.md`, `docs/mockups/chats-unificados.html`,
-> D1–D5) y del código de `main` al 2026-11-13 (leído, no recordado). No es un ADR firmado: las
+> D1–D5) y del código de `main` al 2026-11-12 (leído, no recordado). No es un ADR firmado: las
 > decisiones marcadas `[PROPUESTO]` esperan al fundador. Secciones: 1 Dónde unificar ·
 > 2 Descriptor de capacidades y lista · 3 Respuesta automática en Instagram · 4 Cortes ·
 > 5 Riesgos y preguntas · 6 Qué no debe suponer la costura (TikTok).
@@ -140,7 +140,7 @@ decidir si un mensaje entrante nuevo lo reabre (en WhatsApp: verificar en `chats
 
 ## 3. Respuesta automática (menú) también en Instagram Direct
 
-> Ampliación pedida por el fundador el 2026-11-13: llevar el menú automático de WhatsApp
+> Ampliación pedida por el fundador el 2026-11-12: llevar el menú automático de WhatsApp
 > («Respuesta automática», que considera maduro) a Instagram Direct, robustecerlo y,
 > si conviene, unificar los menús de los dos canales.
 
@@ -196,7 +196,7 @@ con rol en la app (§3.4): para clientes reales de Bianki depende de App Review.
 
 ### 3.3 «Asistido, nunca autónomo»: qué dice el texto, sin suponer
 
-> **Corregido el 2026-11-13.** Una versión anterior de esta nota decía que no había registro de
+> **Corregido el 2026-11-12.** Una versión anterior de esta nota decía que no había registro de
 > la decisión y pedía una firma nueva. Era un error: la decisión existe y cubre Instagram.
 
 **La decisión existe.** Meegle **m-24789557** «Decisión del fundador: DM con menú automático vs
@@ -397,7 +397,7 @@ data-scientist-fde; «UX» = ux-designer (medición o revisión, no código).
 | C7 | Nombres de D5 + redirecciones (`/whatsapp` → `/responder?tab=mensajes&canal=whatsapp`, enlaces profundos de notificaciones y del menú lateral) | UI | C3, C6 | No |
 | C8 | «Promociones» junto a «Anuncios» (D3) | UI | — | No |
 | C9 | «Cerrar chat» / «Reabrir» en Instagram; regla de reapertura al llegar un mensaje (igual en los dos canales) | BE + UI | C1 | No (`threads.status` ya existe) |
-| C10 | Formas de pago y «Cómo llegar» como datos del negocio en «Ajustes de chats › Para todos tus chats»; el «+» de Instagram los manda | BE + UI | C6 (y C5 para el «+» de Instagram) | **Sí** para «Cómo llegar»: hoy vive en `whatsapp_phone_numbers.location_*` (`whatsapp/models.py:141-144`) → pasa a la marca con backfill. Formas de pago no: `brand_payment_methods` (0135) ya es por marca |
+| C10 | Formas de pago y «Cómo llegar» como datos del negocio en «Ajustes de chats › Para todos tus chats»; el «+» de Instagram los manda | BE + UI | C6 (y C5 para el «+» de Instagram) | **Sí** para «Cómo llegar»: hoy vive en `whatsapp_phone_numbers.location_*` (`whatsapp/models.py:141-143`) → pasa a la marca con backfill. Formas de pago no: `brand_payment_methods` (0135) ya es por marca |
 | C11 | «Sugerir respuesta» en WhatsApp (D4) | DS (medir) ∥ BE → UI | C5 para el botón; la medición puede empezar ya | No |
 
 **C11 en detalle.** Se reutiliza `conversations/suggest.py` (Haiku 5.5, esfuerzo bajo, una
@@ -409,7 +409,7 @@ respuestas-comerciales.md:99`, `docs/respuestas-comentarios-medicion.md:146`]; u
 contexto, estimado ≤ US$0,001 por toque [H] → 30 toques al día ≈ US$1 al mes por negocio [H].
 El libro de consumo se engancha solo: toda llamada pasa por `claude_tools.messages_create` →
 `ledger_sink` (`claude_tools.py:255-351`); hace falta una **función propia** (`respuesta-whatsapp`,
-junto a `respuesta-dm` de `suggest.py:216` y `docs/libro-de-consumo-claude.md:60`) para ver el
+junto a `respuesta-dm` de `suggest.py:217` y `docs/libro-de-consumo-claude.md:60`) para ver el
 costo por canal. Guardia de precio: tope diario por negocio antes de la llamada, y bandera por
 negocio apagada por defecto. **`qualify-measure` antes de encender:** un conjunto de chats reales
 de WhatsApp de Bianki (anonimizado), tasa de borradores usables y de `needs_review`, costo medido
