@@ -136,7 +136,7 @@ def close_flow_then_go_script(flow: str, href: str) -> str:
         f" if (u.searchParams.get('flujo') !== {json.dumps(flow)}) {{ go(); return; }}"
         " const st = window.history.state || {};"
         " if (st.qFlowRoot && st.qFlowDepth > 0) {"
-        " const late = setTimeout(go, 600);"
+        " const late = setTimeout(go, 1500);"
         " window.addEventListener('popstate', () => { clearTimeout(late); setTimeout(go, 0); },"
         " { once: true });"
         " window.history.go(-st.qFlowDepth); return; }"

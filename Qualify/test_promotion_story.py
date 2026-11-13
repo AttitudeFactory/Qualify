@@ -444,7 +444,7 @@ def test_leaving_the_drawer_navigates_exactly_once_even_if_the_pop_never_comes()
     script = close_flow_then_go_script("programar", "/drafts/x/promote?formato=historia")
     assert "let done = false" in script and "if (done) return" in script
     # fallback timer, cleared by the popstate handler
-    assert "setTimeout(go, 600)" in script and "clearTimeout(late)" in script
+    assert "setTimeout(go, 1500)" in script and "clearTimeout(late)" in script
     # depth <= 0 (or no flow root): the address is cleaned in place and it leaves at once
     tail = script.split("window.history.go(-st.qFlowDepth); return; }", 1)[1]
     assert "replaceState" in tail and tail.rstrip().endswith("go(); })();")

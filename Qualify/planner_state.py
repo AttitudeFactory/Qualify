@@ -1480,6 +1480,7 @@ class PlannerState(rx.State):
         self.own_upload_error = ""
         self.own_upload_saving = False  # never a stale lock from an earlier visit
         self.story_ad_post = ""  # never a notice left open from an earlier visit
+        self.story_ad_busy = False  # a restart mid-check never leaves the button disabled
 
     def _first_account(self) -> list[str]:
         """The first compatible account is preselected: one account is the common case."""
