@@ -261,7 +261,7 @@ class Message(Base):
     # kind (`conversations.choices.CHOICE_KINDS`) and Meta's payload. NULL when typed.
     choice_kind: Mapped[str | None] = mapped_column(Text, nullable=True)
     choice_payload: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # 0154 (m-25017817): an inbound Instagram DM that is a mention of the account in the
+    # 0155 (m-25017817): an inbound Instagram DM that is a mention of the account in the
     # person's own story. The flag, how it was recognised (`graph` / `attachment` /
     # `heuristic`, `conversations.contracts.STORY_MENTION_BASES`), and the mentioner's
     # story id and CDN URL (expiring with the story). False / NULL on everything else.

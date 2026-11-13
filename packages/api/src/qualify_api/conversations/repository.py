@@ -112,7 +112,7 @@ class MessageRecord:
     # 0082 (m-24789472): the option an inbound DM was tapped from, if it was.
     choice_kind: str | None = None
     choice_payload: str | None = None
-    # 0154 (m-25017817): the inbound DM is a mention of the account in the person's OWN
+    # 0155 (m-25017817): the inbound DM is a mention of the account in the person's OWN
     # story — never also a story reply. `story_mention_basis`: `graph` / `attachment`
     # (confirmed) or `heuristic` (a bare `reply_to.story`, inferred). The id/URL are the
     # mentioner's story; the URL expires with it (24 h).
@@ -269,9 +269,9 @@ _UPSERT_THREAD = text(
 # - the option a DM was tapped from (m-24789472, 0082): the poll never carries it (the
 #   Message node has no postback/quick-reply field), so a webhook — first delivery or a
 #   replay — that reaches a `mid` the poll stored adds kind and payload, together.
-# - the story kind (m-25017817, 0154), mention vs reply, settled by strength:
+# - the story kind (m-25017817, 0155), mention vs reply, settled by strength:
 #   * CM — a confirmed mention arrives (`graph` or `attachment`): the row becomes a
-#     mention, any story reply on it moves out (a legacy row stored before 0154 gives its
+#     mention, any story reply on it moves out (a legacy row stored before 0155 gives its
 #     story id/URL to the mention), a `graph` basis is never lowered to `attachment`;
 #   * HM — a heuristic mention arrives: it flags only a row with no story kind at all;
 #   * RD — the Message node says `reply_to` (`:story_reply_confirmed`) on a row that is

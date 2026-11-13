@@ -227,7 +227,7 @@ _LEGACY_REPLY = {"story_reply_id": "story-7", "story_reply_url": _URL}
         (("graph_reply", "heuristic"), (None, None, None, "story-7")),
         # a confirmed mention is never downgraded
         (("graph_mention", "graph_reply"), ("graph", "story-7", "https://cdn.example/later", None)),
-        # a row stored as a reply before 0154 is upgraded by a confirmed mention (the node's
+        # a row stored as a reply before 0155 is upgraded by a confirmed mention (the node's
         # fresher URL first; the reply's URL only when the node gives none)
         (
             ("legacy_reply", "graph_mention"),
@@ -238,7 +238,7 @@ _LEGACY_REPLY = {"story_reply_id": "story-7", "story_reply_url": _URL}
     ],
 )
 def test_story_mention_merge_in_every_order(seeded, readings, expected) -> None:
-    """m-25017817 (0154): the `_INSERT_MESSAGE` conflict rules against Postgres."""
+    """m-25017817 (0155): the `_INSERT_MESSAGE` conflict rules against Postgres."""
     kinds = {
         "bare": {},
         "heuristic": _HEURISTIC,

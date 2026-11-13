@@ -1,7 +1,7 @@
 """messages: a DM that is a mention of the account in a story (m-25017817)
 
-Revision ID: 0154
-Revises: 0153
+Revision ID: 0155
+Revises: 0154
 Create Date: 2026-11-13
 
 When a person mentions the business in their own Instagram story, Meta delivers it on the
@@ -40,8 +40,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0154"
-down_revision = "0153"
+revision = "0155"
+down_revision = "0154"
 branch_labels = None
 depends_on = None
 
