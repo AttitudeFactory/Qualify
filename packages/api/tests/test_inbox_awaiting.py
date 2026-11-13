@@ -1,4 +1,5 @@
-"""The «Por responder» rule offline (m-25017843, decision (ii) of 2026-11-13).
+"""The «Por responder» rule offline (m-25017843, decision (ii) of 2026-11-13; Instagram's
+reply-window bound: m-25017859, «Ventana + cerrar chat», 2026-11-13).
 
 `awaits_reply` is the executable specification of `awaiting_reply_sql`;
 `test_inbox_unified_db.py` seeds these cases on Postgres and checks both agree."""
@@ -10,6 +11,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from qualify_api.inbox.awaiting import (
+    WINDOW_BOUND_CHANNELS,
     AutomationSend,
     MessageFact,
     ThreadSnapshot,
@@ -19,6 +21,7 @@ from qualify_api.inbox.awaiting import (
 )
 from qualify_api.inbox.channels import UnknownChannel
 from qualify_api.whatsapp.outbox import STALE_AFTER
+from qualify_api.whatsapp.window import WINDOW
 
 T0 = datetime(2026, 11, 13, 12, 0, tzinfo=UTC)
 LATER = T0 + timedelta(seconds=5)
@@ -30,8 +33,26 @@ OWNER = MessageFact("outbound", LATER)
 MENU = MessageFact("outbound", LATER, automatic=True)
 
 
-def _open(*messages: MessageFact, **kwargs: object) -> ThreadSnapshot:
-    return ThreadSnapshot(status="open", messages=messages, **kwargs)  # type: ignore[arg-type]
+_SEEDED: object = object()
+
+
+def _open(
+    *messages: MessageFact,
+    channel: str = "whatsapp",
+    last_inbound_at: datetime | None | object = _SEEDED,
+    **kwargs: object,
+) -> ThreadSnapshot:
+    """An open chat. Unless given, the seeded `threads.last_inbound_at` is what the
+    webhook ingestion leaves for these messages: the newest inbound's instant."""
+    if last_inbound_at is _SEEDED:
+        last_inbound_at = max((m.at for m in messages if m.direction == "inbound"), default=None)
+    return ThreadSnapshot(
+        status="open",
+        channel=channel,
+        last_inbound_at=last_inbound_at,  # type: ignore[arg-type]
+        messages=messages,
+        **kwargs,  # type: ignore[arg-type]
+    )
 
 
 def test_an_unanswered_inbound_counts() -> None:
@@ -109,10 +130,21 @@ def test_outbound_first_and_empty_chats() -> None:
 @pytest.mark.parametrize(
     "chat",
     [
-        ThreadSnapshot(status="closed", messages=(IN,)),
-        ThreadSnapshot(status="closed", messages=(IN,), handed_to_person=True),
+        ThreadSnapshot(status="closed", channel="dm", last_inbound_at=T0, messages=(IN,)),
+        ThreadSnapshot(status="closed", channel="whatsapp", last_inbound_at=T0, messages=(IN,)),
         ThreadSnapshot(
-            status="closed", messages=(IN,), automation_sends=(AutomationSend("failed", LATER),)
+            status="closed",
+            channel="whatsapp",
+            last_inbound_at=T0,
+            messages=(IN,),
+            handed_to_person=True,
+        ),
+        ThreadSnapshot(
+            status="closed",
+            channel="whatsapp",
+            last_inbound_at=T0,
+            messages=(IN,),
+            automation_sends=(AutomationSend("failed", LATER),),
         ),
     ],
 )
@@ -123,6 +155,13 @@ def test_a_closed_chat_never_counts(chat: ThreadSnapshot) -> None:
 def test_the_sql_reads_every_fact_the_rule_needs() -> None:
     sql = " ".join(awaiting_reply_sql("t").split())
     assert sql.startswith("( t.status = 'open' AND t.last_inbound_at IS NOT NULL")
+    window = int(WINDOW.total_seconds())
+    # Instagram's window, on the `threads` row, before any message is read.
+    bound = (
+        f"AND (t.channel NOT IN ('dm') OR t.last_inbound_at > now() - "
+        f"CAST('{window} seconds' AS interval)) AND EXISTS ("
+    )
+    assert bound in sql
     assert "aw_ob.kind = 'automation'" in sql  # menu messages are not a person's reply
     assert "aw_m.direction = 'inbound' AND aw_m.deleted_at IS NULL" in sql  # hidden inbound
     assert "WHERE aw_m.thread_id = t.id )" in sql  # hidden outbound still counts
@@ -137,6 +176,16 @@ def test_the_sql_reads_every_fact_the_rule_needs() -> None:
     assert "tenant_id" not in sql
 
 
+def test_now_can_be_a_bound_parameter_for_both_the_window_and_the_stuck_queue() -> None:
+    sql = awaiting_reply_sql("t", now_param="now")
+    assert "now()" not in sql
+    assert sql.count("CAST(:now AS timestamptz) - CAST(") == 2
+    assert "CAST(:now AS timestamptz)" in count_awaiting_sql("dm", now_param="now")
+    for bad in ("", "now; drop", ":now"):
+        with pytest.raises(ValueError):
+            awaiting_reply_sql("t", now_param=bad)
+
+
 def test_count_awaiting_sql_is_the_counter_drop_in() -> None:
     sql = count_awaiting_sql("whatsapp")
     assert sql.startswith("(SELECT count(*) FROM threads t WHERE t.channel = 'whatsapp' AND (")
@@ -144,6 +193,63 @@ def test_count_awaiting_sql_is_the_counter_drop_in() -> None:
     for bad in ("comment", "x' OR '1'='1"):
         with pytest.raises(UnknownChannel):
             count_awaiting_sql(bad)
+
+
+# --- Instagram's reply window (founder, 2026-11-13, «Ventana + cerrar chat») -----------
+
+
+def test_only_instagram_is_bounded_by_its_window() -> None:
+    """WhatsApp can still send an approved message after the window and has «Cerrar
+    chat», so it is not bounded; Instagram can send nothing once the window closes."""
+    assert WINDOW_BOUND_CHANNELS == frozenset({"dm"})
+
+
+def test_an_instagram_chat_counts_while_its_window_is_open() -> None:
+    chat = _open(IN, channel="dm")
+    assert awaits_reply(chat, NOW)
+    assert awaits_reply(chat, T0 + WINDOW - timedelta(microseconds=1))
+
+
+def test_an_instagram_chat_stops_counting_once_its_window_has_closed() -> None:
+    chat = _open(IN, channel="dm")
+    assert not awaits_reply(chat, T0 + WINDOW)  # closed AT the boundary (`window_state`)
+    assert not awaits_reply(chat, T0 + timedelta(days=30))
+
+
+def test_a_new_inbound_after_a_closed_window_reopens_it_and_counts_again() -> None:
+    again = MessageFact("inbound", T0 + timedelta(days=3))
+    chat = _open(IN, OWNER, again, channel="dm")
+    assert awaits_reply(chat, again.at + timedelta(hours=1))
+    assert not awaits_reply(chat, again.at + WINDOW)
+
+
+def test_the_window_rests_on_last_inbound_at_hidden_messages_included() -> None:
+    """A hidden newest inbound does not make the chat wait, but it did open Meta's window:
+    an older visible unanswered message still counts while that window is open."""
+    hidden = MessageFact("inbound", T0 + timedelta(days=2), hidden=True)
+    chat = _open(IN, hidden, channel="dm")
+    assert awaits_reply(chat, hidden.at + timedelta(hours=1))
+    explicit = _open(IN, channel="dm", last_inbound_at=hidden.at)
+    assert awaits_reply(explicit, hidden.at + timedelta(hours=1))
+    assert not awaits_reply(explicit, hidden.at + WINDOW)
+
+
+def test_the_twin_reads_the_column_not_the_messages() -> None:
+    """Ingestion does not always move `threads.last_inbound_at` with a message: an unsent
+    one is left out of it (`_RECOMPUTE_THREAD`), one the re-sync stored without
+    `posted_at` is not bumped. The twin reads the column as stored, like the SQL."""
+    two_days_ago = MessageFact("inbound", NOW - timedelta(days=2))
+    unsent = MessageFact("inbound", NOW - timedelta(minutes=5), hidden=True)
+    assert not awaits_reply(
+        _open(two_days_ago, unsent, channel="dm", last_inbound_at=two_days_ago.at), NOW
+    )
+    # The column was never set (only an un-dated re-synced inbound): no channel counts it.
+    for channel in ("dm", "whatsapp"):
+        assert not awaits_reply(_open(IN, channel=channel, last_inbound_at=None), NOW)
+
+
+def test_whatsapp_keeps_counting_after_its_window() -> None:
+    assert awaits_reply(_open(IN), T0 + timedelta(days=30))
 
 
 @pytest.mark.parametrize("alias", ["", "t.x", "aw_t", "t; drop"])

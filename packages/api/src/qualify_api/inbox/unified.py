@@ -10,7 +10,10 @@ ingestion stay per channel; this module writes nothing.
 story m-25017859 wires the screens, the menu counters and Inicio to it together.
 
 **Filters.** `por_responder` — the single rule of `inbox.awaiting` (the fragment the
-counters will use, `count_awaiting_sql`); `todos` — every open chat; `cerrados` — closed.
+counters will use, `count_awaiting_sql`), judged at the caller's `now` (an Instagram chat
+counts only while its reply window is open); `todos` — every open chat, so an Instagram
+chat whose window closed still shows there (`awaiting_reply` and `window_open` false);
+`cerrados` — closed.
 An optional channel narrows to one allow-listed channel (`UnknownChannel` otherwise).
 
 **Order and pages.** `last_message_at DESC NULLS LAST, id DESC` with a composite keyset
@@ -54,6 +57,9 @@ DEFAULT_PAGE_SIZE: Final = 50
 MAX_PAGE_SIZE: Final = 100
 
 _INSTANT: Final = "COALESCE({m}.posted_at, {m}.ingested_at)"
+# The rule's «now» is bound, not the database's `now()`: the list, the count, the rows'
+# `window_*` and the Python twin all judge the same instant (`now=`).
+_NOW_PARAM: Final = "now"
 
 # What each filter keeps, over the `threads` row `t`; `_RULE` stands for the rule.
 _RULE: Final = "<awaiting_reply>"
@@ -154,7 +160,9 @@ class InboxReader(Protocol):
         now: datetime,
     ) -> InboxPage: ...
 
-    def count(self, tenant_id: UUID, *, filter: InboxFilter, channels: Sequence[str]) -> int: ...
+    def count(
+        self, tenant_id: UUID, *, filter: InboxFilter, channels: Sequence[str], now: datetime
+    ) -> int: ...
 
 
 # --------------------------------------------------------------------------------------
@@ -249,7 +257,7 @@ def _filter_sql(filter: str) -> str:
         rule = _FILTER_SQL[filter]
     except KeyError:
         raise ValueError(f"filter must be one of {INBOX_FILTERS}, not {filter!r}") from None
-    return awaiting_reply_sql("t") if rule == _RULE else rule
+    return awaiting_reply_sql("t", now_param=_NOW_PARAM) if rule == _RULE else rule
 
 
 def _page_sql(filter: str, cursor: InboxCursor | None) -> str:
@@ -270,7 +278,9 @@ def _list_sql(filter: str, cursor: InboxCursor | None) -> str:
         n_instant=_INSTANT.format(m="n"),
         m_instant=_INSTANT.format(m="m"),
         # Under `por_responder` the page already holds only waiting chats.
-        awaiting="TRUE" if filter == "por_responder" else awaiting_reply_sql("t"),
+        awaiting="TRUE"
+        if filter == "por_responder"
+        else awaiting_reply_sql("t", now_param=_NOW_PARAM),
     )
 
 
@@ -317,7 +327,7 @@ class PostgresInboxReader:
         limit: int,
         now: datetime,
     ) -> InboxPage:
-        params: dict[str, Any] = {"channels": list(channels), "limit": limit + 1}
+        params: dict[str, Any] = {"channels": list(channels), "limit": limit + 1, "now": now}
         if cursor is not None:
             params["id"] = cursor.thread_id
             if cursor.last_message_at is not None:
@@ -329,15 +339,28 @@ class PostgresInboxReader:
         next_cursor = rows[-1].cursor if len(records) > limit and rows else None
         return InboxPage(rows=rows, next_cursor=next_cursor)
 
-    def count(self, tenant_id: UUID, *, filter: InboxFilter, channels: Sequence[str]) -> int:
+    def count(
+        self, tenant_id: UUID, *, filter: InboxFilter, channels: Sequence[str], now: datetime
+    ) -> int:
+        params = {"channels": list(channels), "now": now}
         with tenant_session(tenant_id) as session:
-            value = session.execute(text(_count_sql(filter)), {"channels": list(channels)})
+            value = session.execute(text(_count_sql(filter)), params)
             return int(value.scalar_one() or 0)
 
 
 # --------------------------------------------------------------------------------------
 # Entry points
 # --------------------------------------------------------------------------------------
+
+
+def _aware_now(now: datetime | None) -> datetime:
+    """The instant the rule and the rows' window are judged at. A naive `now` is refused:
+    SQL would read it in the session's time zone and `window_state` as UTC."""
+    if now is None:
+        return datetime.now(UTC)
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise ValueError("now must be timezone-aware")
+    return now
 
 
 def list_inbox(
@@ -367,7 +390,7 @@ def list_inbox(
         channels=channels,
         cursor=cursor,
         limit=limit,
-        now=now or datetime.now(UTC),
+        now=_aware_now(now),
     )
 
 
@@ -376,9 +399,13 @@ def count_inbox(
     *,
     filter: InboxFilter = "por_responder",
     channel: str | None = None,
+    now: datetime | None = None,
     reader: InboxReader | None = None,
 ) -> int:
-    """How many chats the same filter lists (all pages). Blocking: one DB round trip."""
+    """How many chats the same filter lists (all pages), judged at `now` (default: the
+    wall clock) like `list_inbox`. Blocking: one DB round trip."""
     _filter_sql(filter)
     channels = resolve_channels(channel)
-    return (reader or PostgresInboxReader()).count(tenant_id, filter=filter, channels=channels)
+    return (reader or PostgresInboxReader()).count(
+        tenant_id, filter=filter, channels=channels, now=_aware_now(now)
+    )

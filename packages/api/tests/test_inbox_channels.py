@@ -40,6 +40,12 @@ def test_whatsapp_does_not_suggest_replies_yet() -> None:
     assert WHATSAPP.suggest_reply is False
 
 
+def test_both_channels_close_and_reopen_chats() -> None:
+    # m-25026457: Instagram gains «Cerrar» / «Reabrir» (`ConversationService.close`).
+    assert INSTAGRAM_DM.close_reopen is True
+    assert WHATSAPP.close_reopen is True
+
+
 def test_both_windows_are_the_24_hour_window() -> None:
     for caps in CHANNEL_CAPABILITIES.values():
         assert caps.window_hours * 3600 == WINDOW.total_seconds()
