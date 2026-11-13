@@ -131,6 +131,8 @@ def ad_status_handler(*, refresh: Refresh | None = None) -> Handler:
         # started after Meta sent this one, within the last minute, already reflects it.
         now = datetime.now(UTC)
         sent = _sent_at(event.entry_time)
+        # shortcut: trusts our clock against Meta's (NTP keeps skew <1 s); a skewed miss
+        # waits for the poller, add a margin only if rejections are seen arriving late.
         since = max(sent, now - FRESH_WINDOW) if sent is not None else now - FRESH_WINDOW
         refreshed = 0
         for tenant_id, promotion_id in targets:

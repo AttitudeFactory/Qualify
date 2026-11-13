@@ -154,8 +154,7 @@ def _scope(tenant: UUID, promotion: UUID, *, system: bool = False) -> ResultScop
 def _same(scope: ResultScope, *, system: bool = False) -> None:
     if _scope(scope.tenant_id, scope.promotion_id, system=system) != scope:
         raise ResultsUnavailable(
-            "Cambiaste la cuenta de anuncios mientras guardábamos. "
-            "Ábrela de nuevo y vuelve a intentarlo."
+            "La cuenta de anuncios cambió o se desconectó. Ábrela de nuevo y vuelve a intentarlo."
         )
 
 
