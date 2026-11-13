@@ -33,7 +33,7 @@ import io
 import logging
 import time
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -48,6 +48,7 @@ from .publish_wizard_vm import (
     MODE_CAROUSEL,
     MODE_ONE_BY_ONE,
     MODE_POST,
+    PINNED_ACCOUNT_GONE,
     STATUS_PILL,
     STATUS_RUNNING,
     STATUS_UNKNOWN,
@@ -76,6 +77,7 @@ from .publish_wizard_vm import (
     piece_label,
     progress_percent,
     progress_title,
+    publication_title,
     publish_label,
     removed_text,
     resolve_step,
@@ -280,6 +282,9 @@ class PublishState(rx.State):
     phase: str = "idle"
     error: str = ""
     run_mode: str = ""
+    #: The account the run publishes to, fixed when «Publicar» is pressed: «Continuar»
+    #: only ever uses it (a run never moves to another account half-way).
+    run_connection_id: str = ""
     run_total: int = 0
     run_done: int = 0
     stopped: bool = False
@@ -432,6 +437,20 @@ class PublishState(rx.State):
         )
 
     @rx.var
+    def account_locked(self) -> bool:
+        """No account change while a run goes on or waits for «Continuar»."""
+        return self.phase == "running" or self.resumable
+
+    @rx.var
+    def pinned_account_ready(self) -> bool:
+        """The run's own account can still be published to."""
+        return any(c.id == self.run_connection_id and c.selectable for c in self.connections)
+
+    @rx.var
+    def can_continue(self) -> bool:
+        return self.resumable and not self.needs_reconnect and self.pinned_account_ready
+
+    @rx.var
     def resumable(self) -> bool:
         """«Continuar» applies: the run stopped with something left, and either some of
         it is out already, its last outcome is unknown, or the owner left mid-way."""
@@ -574,7 +593,8 @@ class PublishState(rx.State):
                     status_tone=tone,
                     handle_label=f"Mover {label}, posición {position} de {total}",
                     more_label=f"Más opciones de {label}",
-                    caption_label=caption_label(kind, number),
+                    caption_label=caption_label(position),
+                    publication_title=publication_title(position, total),
                 )
             )
         self.pending_items = items
@@ -587,6 +607,7 @@ class PublishState(rx.State):
         self._run_token = ""
         self._stop_requested = False
         self.run_mode = ""
+        self.run_connection_id = ""
         self.run_total = 0
         self.run_done = 0
         self.stopped = False
@@ -649,9 +670,14 @@ class PublishState(rx.State):
             self.connections = options
             self.is_loading_connections = False
             self.connections_loaded = True
-            if self.selected_connection_id and self._selected_connection() is None:
-                self.selected_connection_id = ""
-            preselected = self._preselect_single_connection()
+            preselected = ""
+            if self.run_connection_id and self.account_locked:
+                # a run in progress keeps its own account, whatever the list says now
+                self.selected_connection_id = self.run_connection_id
+            else:
+                if self.selected_connection_id and self._selected_connection() is None:
+                    self.selected_connection_id = ""
+                preselected = self._preselect_single_connection()
             self.step = resolve_step(self.step, self.steps)
         if preselected:
             yield TrendingState.set_audio_connection(preselected)
@@ -667,7 +693,7 @@ class PublishState(rx.State):
     @rx.event
     def select_connection(self, connection_id: str) -> rx.event.EventSpec | None:
         """Only an Instagram account can be chosen; anything else is ignored."""
-        if self.phase == "running":
+        if self.account_locked:
             return None
         if not any(c.id == connection_id and c.selectable for c in self.connections):
             return None
@@ -941,6 +967,7 @@ class PublishState(rx.State):
         self._records = [JobRecord() for _ in self._jobs]
         self._run_order = list(self._order)
         self._batch_key = uuid4().hex
+        self.run_connection_id = conn.id
         self.run_mode = mode
         self.run_total = len(self._jobs)
         return self._begin()
@@ -954,6 +981,10 @@ class PublishState(rx.State):
             return None
         if not engine.can_resume(self._records):
             return None
+        if not self.run_connection_id or not self.pinned_account_ready:
+            self.error = PINNED_ACCOUNT_GONE
+            return [_failure_toast(PINNED_ACCOUNT_GONE)]
+        self.selected_connection_id = self.run_connection_id
         return self._begin()
 
     def _begin(self) -> list[rx.event.EventSpec]:
@@ -1003,17 +1034,18 @@ class PublishState(rx.State):
             jobs = list(self._jobs)
             records = list(self._records)
             batch_key = self._batch_key
-            connection_id = self.selected_connection_id
+            pinned = self.run_connection_id
             auth = await self.get_state(AuthState)
             session_tenant_id = auth.session_tenant_id
         tenant_id = tenant_uuid(session_tenant_id)
-        if tenant_id is None:
+        connection_id = tenant_uuid(pinned)  # the same strict UUID parse, never raises
+        if tenant_id is None or connection_id is None:
+            message = engine.NO_TENANT if tenant_id is None else PINNED_ACCOUNT_GONE
             async with self:
                 if self._run_token == token:
-                    self.phase = "failure"
-                    self.error = engine.NO_TENANT
+                    self._abort(message)
             yield rx.call_script(_GUARD_OFF)
-            yield _failure_toast(engine.NO_TENANT)
+            yield _failure_toast(message)
             return
         async with self:
             self._active_tenant_id = str(tenant_id)
@@ -1025,10 +1057,19 @@ class PublishState(rx.State):
                 self._apply_record(index, record)
                 return not self._stop_requested
 
-        ports = _ProviderPorts(
-            self, tenant_id=tenant_id, connection_id=UUID(connection_id), token=token
-        )
-        end = await engine.run_jobs(jobs, records, batch_key=batch_key, ports=ports, report=report)
+        ports = _ProviderPorts(self, tenant_id=tenant_id, connection_id=connection_id, token=token)
+        try:
+            end = await engine.run_jobs(
+                jobs, records, batch_key=batch_key, ports=ports, report=report
+            )
+        except Exception as exc:  # noqa: BLE001 — never leave the screen stuck on «running»
+            logger.error("publish run failed: %s", type(exc).__name__)
+            async with self:
+                if self._run_token == token:
+                    self._abort(engine.START_FAILED)
+            yield rx.call_script(_GUARD_OFF)
+            yield _failure_toast(engine.START_FAILED)
+            return
 
         async with self:
             if self._run_token != token:
@@ -1040,6 +1081,32 @@ class PublishState(rx.State):
         if end.kind == "done":
             yield TrendingState.release_audio_connection
 
+    def _abort(self, message: str) -> None:
+        """An unexpected stop: the run leaves «running». A piece that was going out has an
+        unknown outcome — «Continuar» then keeps its key and never publishes it twice."""
+        records = [
+            replace(r, status=STATUS_UNKNOWN, polling=False, reason=message)
+            if r.status == STATUS_RUNNING
+            else r
+            for r in self._records
+        ]
+        self._records = records
+        self.phase = "failure"
+        self.error = message
+        self.run_waiting = False
+        self.carousel_children = []
+        self.run_unknown = any(r.status == STATUS_UNKNOWN for r in records)
+        self._refresh()
+
+    def _release_files(self) -> None:
+        """Forget the bytes and the list once the run is over (success or «Dejar así»)."""
+        self._files = {}
+        self._jobs = []
+        self._order = []
+        self._numbers = {}
+        self.item_captions = {}
+        self._refresh()
+
     def _finish(self, end: RunEnd) -> rx.event.EventSpec | None:
         """Settle the screen once the run stopped; returns the toast to show."""
         self.run_waiting = False
@@ -1048,8 +1115,7 @@ class PublishState(rx.State):
             self.phase = "success"
             self.run_done = self.run_total
             # bytes are in R2 now; the «listo» needs none of them
-            self._files = {}
-            self._jobs = []
+            self._release_files()
             self.selected_connection_id = ""
             return _success_toast()
         self.phase = "failure"
@@ -1072,8 +1138,7 @@ class PublishState(rx.State):
         if self.phase != "failure" or not self.resumable:
             return None
         self.phase = "partial"
-        self._files = {}
-        self._jobs = []
+        self._release_files()
         return rx.call_script(_GUARD_OFF)
 
     @rx.event

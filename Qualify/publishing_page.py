@@ -36,6 +36,7 @@ from .publish_wizard_vm import (
     COPY_CAPTION,
     COVER_BADGE,
     DISCARD,
+    GALLERY_FULL,
     KEEP_AS_IS,
     KEEP_AS_IS_TITLE,
     LEAVE_GO,
@@ -259,16 +260,15 @@ def _gallery_zone() -> rx.Component:
         _preview_capture_anchor(),
         rx.cond(
             P.file_count > 0,
-            rx.flex(
+            rx.box(
                 rx.foreach(P.pending_items, _pending_tile),
                 rx.cond(
                     P.remaining_slots > 0,
                     _upload_widget(_add_tile_content(), compact=True),
                     rx.fragment(),
                 ),
-                wrap="wrap",
-                gap="0.75rem",
-                width="100%",
+                # three columns, like the profile grid (UX review 2026-11-12)
+                class_name="q-pub-gallery",
             ),
             _upload_widget(_empty_state_content(), compact=False),
         ),
@@ -312,7 +312,7 @@ def _leftover_callout() -> rx.Component:
                 rx.text(P.leftover_text, size="3", weight="medium"),
                 rx.flex(
                     rx.cond(
-                        P.needs_reconnect,
+                        P.needs_reconnect | ~P.pinned_account_ready,
                         rx.link(
                             rx.button(RECONNECT, size="3", width="100%", min_height=_TARGET),
                             href="/connections",
@@ -356,6 +356,7 @@ def _what_step() -> rx.Component:
         _no_instagram_first(),
         _gallery_zone(),
         _rejected_callout(),
+        rx.cond(P.remaining_slots == 0, _muted(GALLERY_FULL), rx.fragment()),
         rx.cond(P.file_count > 1, _muted(PICK_NEXT_HINT), rx.fragment()),
     )
 
@@ -619,6 +620,8 @@ def _order_step() -> rx.Component:
                 _mural_grid(_mural_tile),
                 rx.cond(P.rows_hint != "", callout(P.rows_hint, "info"), rx.fragment()),
                 _muted(MURAL_SHIFT_NOTE, "1"),
+                # the fixed foot covers the page's bottom on a phone: keep the note clear
+                rx.box(class_name="q-pub-foot-room", aria_hidden="true"),
                 spacing="3",
                 width="100%",
                 align_items="stretch",
@@ -628,6 +631,7 @@ def _order_step() -> rx.Component:
                 _muted(ORDER_HELP, "1"),
                 rows,
                 rx.cond(P.mode == MODE_CAROUSEL, _crop_notice(), rx.fragment()),
+                rx.box(class_name="q-pub-foot-room", aria_hidden="true"),
                 spacing="3",
                 width="100%",
                 align_items="stretch",
@@ -660,7 +664,7 @@ def _account_card(conn: ConnectionOptionVM) -> rx.Component:
         ),
         selected=selected,
         on_select=P.select_connection(conn.id),
-        disabled=~conn.selectable | P.busy,
+        disabled=~conn.selectable | P.account_locked,
         width="100%",
         min_height=_TARGET,
         text_align="left",
@@ -764,8 +768,12 @@ def _item_caption(item: PendingItemVM) -> rx.Component:
     return card(
         rx.vstack(
             rx.hstack(
-                _thumb56(item),
-                rx.text(item.label, size="3", weight="medium"),
+                rx.box(
+                    _thumb56(item),
+                    rx.box(item.position, class_name="q-pub-tile-pos", aria_hidden="true"),
+                    position="relative",
+                ),
+                rx.text(item.publication_title, size="3", weight="medium"),
                 spacing="3",
                 align="center",
             ),
@@ -937,7 +945,7 @@ def _series_failure() -> rx.Component:
             rx.cond(P.failed_next != "", rx.text(P.failed_next, size="2"), rx.fragment()),
             rx.flex(
                 rx.cond(
-                    P.needs_reconnect,
+                    P.needs_reconnect | ~P.pinned_account_ready,
                     rx.link(
                         rx.button(RECONNECT, size="3", width="100%", min_height=_TARGET),
                         href="/connections",
@@ -1105,7 +1113,7 @@ def _leave_guard() -> rx.Component:
 
 def _assistant_frame() -> rx.Component:
     reviewing = P.step_id == STEP_REVIEW
-    review_ready = rx.cond(P.resumable, ~P.needs_reconnect, P.can_publish)
+    review_ready = rx.cond(P.resumable, P.can_continue, P.can_publish)
     return step_frame(
         rx.cond(
             H.entered,
@@ -1116,7 +1124,8 @@ def _assistant_frame() -> rx.Component:
         _order_step(),
         _account_step(),
         _review_step(),
-        _ideas(),
+        # only on the first step: on the order and the review it distracts (UX review)
+        rx.cond(P.step_id == STEP_WHAT, _ideas(), rx.fragment()),
         _leave_guard(),
         head=step_head(
             P.step_title,

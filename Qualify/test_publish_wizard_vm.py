@@ -182,7 +182,10 @@ def test_labels_and_live_messages() -> None:
     assert vm.moved_text("Foto 3", 1, 5) == "Foto 3, ahora en la posición 1 de 5."
     assert vm.removed_text("image", 2) == "Quitamos la foto 2."
     assert vm.copied_caption_text(3) == "Listo, lo pusimos en 3 descripciones vacías."
-    assert vm.caption_label("image", 4) == "Descripción de la foto 4 (opcional)"
+    assert vm.caption_label(4) == "Descripción de la publicación 4 (opcional)"
+    assert vm.publication_title(2, 4) == "Publicación 2 de 4"
+    assert vm.GALLERY_FULL == "Llegaste a 10, el máximo por vez."
+    assert vm.PINNED_ACCOUNT_GONE.startswith("La cuenta de Instagram de esta publicación")
 
 
 # -- review, button, progress, outcome ----------------------------------------------------

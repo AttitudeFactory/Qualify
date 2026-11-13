@@ -107,6 +107,28 @@
   opacity: 0.55;
 }
 
+/* ── Step 1's gallery (UX review 2026-11-12): three columns, like the profile grid —
+ * at 375 px the flex row left two tiles and a gap. Every tile, and the «+», fills its
+ * cell as a square. */
+.q-pub-gallery {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.6rem;
+  width: 100%;
+  max-width: 30rem;
+}
+.q-pub-gallery > .q-pub-tile,
+.q-pub-gallery > .q-dropzone--tile {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1 / 1;
+}
+/* Room for the fixed foot on a phone, so the last note of a step is not under it. */
+.q-pub-foot-room { height: 0; }
+@media (max-width: 767px) {
+  .q-pub-foot-room { height: 7.5rem; }
+}
+
 /* ── «Así se verá tu perfil» (one by one, 2026-11-12) ────────────────────────────
  * The mural: the gallery tile (`.q-pub-tile`) laid out as Instagram's profile grid —
  * three columns of 3:4 tiles, the newest top-left. A tile is also a `.q-rank-card`

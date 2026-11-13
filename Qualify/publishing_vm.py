@@ -63,6 +63,8 @@ class PendingItemVM:
     handle_label: str = ""
     more_label: str = ""
     caption_label: str = ""
+    #: «Publicación 2 de 4» (one by one, by position).
+    publication_title: str = ""
 
 
 @dataclass(frozen=True)

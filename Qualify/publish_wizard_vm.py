@@ -112,6 +112,13 @@ BACK = "Volver"
 DISCARD = "Descartar"
 CONTINUE = "Continuar"
 RECONNECT = "Conectar mi Instagram"
+#: «Continuar» with the run's own account gone (the run never switches accounts).
+PINNED_ACCOUNT_GONE = (
+    "La cuenta de Instagram de esta publicación ya no está conectada. Conéctala de nuevo "
+    "en Tus redes para seguir."
+)
+#: Under the gallery once it holds the most files one publication takes.
+GALLERY_FULL = f"Llegaste a {GALLERY_MAX}, el máximo por vez."
 
 STATUS_PUBLISHED = "published"
 STATUS_RUNNING = "running"
@@ -322,10 +329,15 @@ def copied_caption_text(filled: int) -> str:
     return f"Listo, lo pusimos en {filled} {noun}."
 
 
-def caption_label(kind: str, number: int) -> str:
-    """The visible label of one piece's description in «Una por una»."""
-    noun = "del video" if kind == "video" else "de la foto"
-    return f"Descripción {noun} {number} (opcional)"
+def caption_label(position: int) -> str:
+    """The visible label of one piece's description in «Una por una» — by its place in
+    the mural (the number its tile shows), never by the order it was picked in."""
+    return f"Descripción de la publicación {position} (opcional)"
+
+
+def publication_title(position: int, total: int) -> str:
+    """«Publicación 2 de 4» — a description card in «Una por una»."""
+    return f"Publicación {position} de {total}"
 
 
 def rows_hint(count: int) -> str:

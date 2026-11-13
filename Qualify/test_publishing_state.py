@@ -505,3 +505,97 @@ def test_run_batch_is_the_only_engine_driver() -> None:
     assert "asyncio.sleep" not in source
     assert "for _ in range" not in source
     assert engine.MAX_POLLS == 30
+
+
+# -- the run's account is pinned (code review 2026-11-12) --------------------------------
+
+
+def _resumable_mural(*names: str) -> PublishState:
+    s = _state(*names, connections=[_IG, _IG2])
+    s.choose_kind(MODE_ONE_BY_ONE)
+    s.publish()
+    _fail_midway(s, 2, STATUS_UNKNOWN)
+    return s
+
+
+def test_publish_pins_the_chosen_account() -> None:
+    s = _state("a", "b")
+    s.publish()
+    assert s.run_connection_id == "c-ig"
+
+
+def test_the_account_cannot_change_while_a_run_waits_to_continue() -> None:
+    s = _resumable_mural("a", "b", "c", "d")
+    assert s.resumable and s.account_locked
+    assert s.select_connection("c-ig2") is None
+    assert s.selected_connection_id == "c-ig"
+
+
+def test_continuar_uses_the_pinned_account_even_if_the_selection_moved() -> None:
+    s = _resumable_mural("a", "b", "c", "d")
+    s.selected_connection_id = "c-ig2"  # whatever moved it, the run does not follow
+    assert s.continue_run() is not None
+    assert s.phase == "running"
+    assert s.run_connection_id == "c-ig" and s.selected_connection_id == "c-ig"
+    assert "self.run_connection_id" in inspect.getsource(PublishState.run_batch.fn)
+    assert "self.selected_connection_id" not in inspect.getsource(PublishState.run_batch.fn)
+
+
+def test_continuar_is_refused_when_the_pinned_account_is_gone() -> None:
+    s = _resumable_mural("a", "b", "c")
+    s.connections = [_IG2]  # @bianki disconnected, @polette still there
+    assert not s.pinned_account_ready and not s.can_continue
+    batch, records = s._batch_key, list(s._records)
+    result = s.continue_run()
+    assert result is not None  # only the toast
+    assert s.phase == "failure" and s._records == records and s._batch_key == batch
+    assert s.error == (
+        "La cuenta de Instagram de esta publicación ya no está conectada. Conéctala de "
+        "nuevo en Tus redes para seguir."
+    )
+
+
+def test_continuar_without_a_pinned_account_never_starts() -> None:
+    s = _resumable_mural("a", "b", "c")
+    s.run_connection_id = ""
+    s.selected_connection_id = ""
+    s.continue_run()
+    assert s.phase == "failure"
+
+
+def test_an_unexpected_stop_never_leaves_the_screen_running() -> None:
+    s = _state("a", "b", "c")
+    s.choose_kind(MODE_STORIES)
+    s.publish()
+    s._apply_record(0, JobRecord(status=STATUS_PUBLISHED, key="k0"))
+    s._apply_record(1, JobRecord(status=STATUS_RUNNING, key="k1", attempt_id="x"))
+    s._abort(engine.START_FAILED)
+    assert s.phase == "failure" and not s.busy
+    assert s._records[1].status == STATUS_UNKNOWN  # «Continuar» keeps its key
+    assert s.resumable
+    source = inspect.getsource(PublishState.run_batch.fn)
+    assert "except Exception" in source and "self._abort(" in source
+    assert "UUID(" not in source  # no parse that can raise outside a guard
+
+
+def test_success_and_dejar_asi_forget_the_list_too() -> None:
+    s = _state("a", "b")
+    s.publish()
+    s._apply_record(0, JobRecord(status=STATUS_PUBLISHED))
+    s._finish(RunEnd("done"))
+    assert s._order == [] and s._numbers == {} and s._files == {}
+    p = _state("a", "b", "c")
+    p.choose_kind(MODE_STORIES)
+    p.publish()
+    _fail_midway(p, 1)
+    p.keep_as_is()
+    assert p._order == [] and p._numbers == {} and p._files == {}
+
+
+def test_one_by_one_descriptions_are_named_by_their_place() -> None:
+    s = _state("a", "b", "c")
+    s.place(_ids(s)[2], 0)
+    first = s.pending_items[0]
+    assert first.label == "Foto 3"  # the file keeps its own number…
+    assert first.publication_title == "Publicación 1 de 3"  # …the card names its place
+    assert first.caption_label == "Descripción de la publicación 1 (opcional)"

@@ -93,8 +93,10 @@ def test_several_photos_walk_to_the_review_without_publishing(
     ).to_be_visible()
     _shot(page, f"publicar-1-galeria-{tag}")
 
+    expect(page.get_by_text("Ideas para tu próxima publicación")).to_be_visible()
     _next(page)
     _title(page, "¿Cómo salen?")
+    expect(page.get_by_text("Ideas para tu próxima publicación")).to_have_count(0)
     for name in ("Juntas en un carrusel", "Una por una", "Como historias"):
         expect(page.get_by_role("radio", name=re.compile(name))).to_be_visible()
     expect(page.get_by_role("radio", name=re.compile("Juntas en un carrusel"))).to_have_attribute(
@@ -128,10 +130,11 @@ def test_several_photos_walk_to_the_review_without_publishing(
     _title(page, "Revisa y publica")
     _counter(page, "Paso 4 de 4")
     expect(page.get_by_text(re.compile(r"3 publicaciones, una tras otra"))).to_be_visible()
-    expect(page.get_by_label("Descripción de la foto 2 (opcional)")).to_be_visible()
-    page.get_by_label("Descripción de la foto 2 (opcional)").fill("Hoy 2x1")
+    # named by their place in the mural, as the grid numbers them (UX review)
+    expect(page.get_by_text("Publicación 1 de 3")).to_be_visible()
+    page.get_by_label("Descripción de la publicación 1 (opcional)").fill("Hoy 2x1")
     page.get_by_role("button", name="Usar este texto en las demás").click()
-    expect(page.get_by_label("Descripción de la foto 3 (opcional)")).to_have_value("Hoy 2x1")
+    expect(page.get_by_label("Descripción de la publicación 3 (opcional)")).to_have_value("Hoy 2x1")
     expect(page.locator(".q-step-primary")).to_have_text("Publicar las 3")
     _shot(page, f"publicar-5-revisa-{tag}")
     # never pressed: nothing is published from a test

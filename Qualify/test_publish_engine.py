@@ -344,3 +344,24 @@ def test_piece_statuses_follow_their_job() -> None:
         engine.piece_statuses(carousel, [JobRecord(status=STATUS_PUBLISHED)], 3)
         == [STATUS_PUBLISHED] * 3
     )
+
+
+def test_a_retried_carousel_key_is_never_published_twice() -> None:
+    """The many path: a carousel whose outcome is unknown is resumed with its SAME key;
+    the backend (faked: a seen key returns its attempt) never stages it again."""
+    jobs = engine.plan_jobs(MODE_CAROUSEL, [_img("a"), _vid("b")], ["texto"])
+    ports = FakePorts(fail_on={b"a": "poll"})
+    records = [JobRecord()]
+
+    async def report_into(index: int, record: JobRecord) -> bool:
+        records[index] = record
+        return True
+
+    assert _run(jobs, records, ports, report_into).kind == "failed"
+    assert records[0].status == STATUS_UNKNOWN
+    ports.fail_on = {}
+    assert _run(jobs, records, ports, report_into).kind == "done"
+    starts = [key for kind, key, _ in ports.log if kind == "start"]
+    assert starts == ["B:0", "B:0"]
+    assert len(ports.attempts_by_key) == 1
+    assert ports.published == [b"a"]
