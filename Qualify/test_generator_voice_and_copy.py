@@ -2305,7 +2305,7 @@ def test_the_version_cards_read_in_spanish_on_one_column() -> None:
         assert text in rendered or json.dumps(text) in rendered, text
     assert "radiogroup" in rendered and "No gasta creaciones" in ENHANCE_HINT
     # UX review: no promised count, the new button name, a polite live region
-    assert "tres" not in ENHANCE_HINT and ENHANCE_AGAIN_LABEL == "Ver otras tres"
+    assert "tres" not in ENHANCE_HINT and ENHANCE_AGAIN_LABEL == "Ver otras versiones"
     assert "polite" in rendered and "context_text_edited" in rendered
 
 
@@ -2334,7 +2334,7 @@ async def test_the_next_piece_never_shows_the_last_pieces_cards(
     monkeypatch: pytest.MonkeyPatch, how: str
 ) -> None:
     """Code review m-25017274: a piece sent on (Borradores or a clean start) takes its
-    cards, its original and «Ver otras tres» with it. The created case is
+    cards, its original and «Ver otras versiones» with it. The created case is
     `test_submit_success_forgets_the_cards_in_source`."""
     state = await _three_cards(monkeypatch)
     state.choose_context_version(0)
@@ -2460,3 +2460,98 @@ def test_the_way_back_outlives_the_cards_and_the_notice_does_not() -> None:
     assert "Volver a mi texto" in rendered and "context_before_enhance" in rendered
     note = rendered.index("context_enhance_note")
     assert "context_text_edited" in rendered[max(0, note - 600) : note + 600]
+
+
+def test_the_scene_field_says_the_image_carries_no_writing() -> None:
+    """m-25017274 UX review: the help says where prices go; the example no longer names
+    a label (it invited printed text into the scene)."""
+    from .content_generator import _section_topic
+
+    rendered = str(_section_topic())
+    help_text = (
+        "Qué se ve, dónde y cómo se siente. Es lo único obligatorio. La imagen sale sin "
+        "letras ni precios: esos van en el texto de la publicación."
+    )
+    assert help_text in rendered or json.dumps(help_text) in rendered
+    assert "la etiqueta de frente" not in rendered
+    assert "sosteniendo el vaso a la altura del pecho, de frente, con el local" in rendered
+
+
+def test_volver_a_mi_texto_sits_above_the_cards() -> None:
+    """UX review: right under the field, so it is in view after a card is chosen."""
+    from .content_generator import ENHANCE_RESTORE_LABEL, _context_ai_tools
+
+    rendered = str(_context_ai_tools())
+    assert rendered.index(ENHANCE_RESTORE_LABEL) < rendered.index("radiogroup")
+
+
+async def test_no_surviving_version_keeps_the_text_and_remembers_the_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """m-25017274 review: when every scene version showed text the owner reads «Tu texto
+    quedó igual…», and the next press sends the rejected ones as texts not to repeat."""
+    from uuid import uuid4
+
+    from qualify_api.creative.context_ai import ContextNoUsableVersion
+
+    from . import creative_state as module
+
+    calls: list[dict[str, object]] = []
+    rejected = ("Se ve el precio $22.000.", "Un cartel al fondo.")
+
+    def fake(tenant_id: object, brand_id: object, **form: object) -> object:
+        calls.append(dict(form))
+        if len(calls) == 1:
+            raise ContextNoUsableVersion("no usable version proposed", rejected)
+        return _proposal_scene("Plano cerrado", "La barra", "Una mano")
+
+    async def ids(self: CreativeState) -> tuple[object, object, object]:
+        return uuid4(), uuid4(), uuid4()
+
+    monkeypatch.setattr(module, "enhance_generator_context", fake)
+    monkeypatch.setattr(CreativeState, "_session_ids", ids)
+    state = CreativeState()
+    state.choose_category("image")
+    state.ad_scene_prompt = "un shawarma sobre la barra del local"
+    await CreativeState.enhance_context.fn(_Proxy(state))
+    assert state.context_enhance_error == module._ENHANCE_TIMED_OUT
+    assert state.ad_scene_prompt == "un shawarma sobre la barra del local"
+    assert state.context_versions == []
+
+    await CreativeState.enhance_context.fn(_Proxy(state))
+    assert calls[1]["previous_versions"] == list(rejected)
+    assert len(state.context_versions) == 3
+    assert state._context_rejected == [] and set(rejected) <= set(state._context_shown)
+
+
+async def test_dropped_versions_of_a_shown_press_are_never_asked_for_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from uuid import uuid4
+
+    from qualify_api.creative.context_ai import SCENE_APPROACHES, ContextProposal, ContextVersion
+
+    from . import creative_state as module
+
+    calls: list[dict[str, object]] = []
+
+    def fake(tenant_id: object, brand_id: object, **form: object) -> object:
+        calls.append(dict(form))
+        return ContextProposal(
+            versions=(
+                ContextVersion(approach=SCENE_APPROACHES[0][0], text=f"Plano cerrado {len(calls)}"),
+            ),
+            rejected=(f"Cartel {len(calls)}",),
+        )
+
+    async def ids(self: CreativeState) -> tuple[object, object, object]:
+        return uuid4(), uuid4(), uuid4()
+
+    monkeypatch.setattr(module, "enhance_generator_context", fake)
+    monkeypatch.setattr(CreativeState, "_session_ids", ids)
+    state = CreativeState()
+    state.choose_category("image")
+    state.ad_scene_prompt = "un shawarma sobre la barra del local"
+    await CreativeState.enhance_context.fn(_Proxy(state))
+    await CreativeState.enhance_context.fn(_Proxy(state), True)
+    assert calls[1]["previous_versions"] == ["Plano cerrado 1", "Cartel 1"]

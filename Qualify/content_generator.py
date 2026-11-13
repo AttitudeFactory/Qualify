@@ -4194,7 +4194,8 @@ def _section_topic() -> rx.Component:
         ),
         rx.cond(
             flyer,
-            "Qué se ve, dónde y cómo se siente. Es lo único obligatorio.",
+            "Qué se ve, dónde y cómo se siente. Es lo único obligatorio. La imagen sale sin "
+            "letras ni precios: esos van en el texto de la publicación.",
             "Un contexto general: de qué trata, qué debe transmitir, a quién le habla y "
             "cualquier detalle que importe. Es lo único obligatorio.",
         ),
@@ -4206,8 +4207,8 @@ def _section_topic() -> rx.Component:
                 on_change=CreativeState.set_ad_scene_prompt,
                 id=CONTEXT_FIELD_ID,
                 placeholder=(
-                    "Una mano sosteniendo el vaso a la altura del pecho, la etiqueta de "
-                    "frente, con el local desenfocado detrás y luz cálida…"
+                    "Una mano sosteniendo el vaso a la altura del pecho, de frente, con el "
+                    "local desenfocado detrás y luz cálida…"
                 ),
                 width="100%",
                 rows="5",
@@ -4269,7 +4270,7 @@ ENHANCE_HINT = (
 )
 ENHANCE_PICK_TITLE = "Elige una versión"
 ENHANCE_PICK_HINT = "Al tocarla, la copiamos arriba en tu texto. Puedes cambiarla antes de crear."
-ENHANCE_AGAIN_LABEL = "Ver otras tres"
+ENHANCE_AGAIN_LABEL = "Ver otras versiones"
 ENHANCE_RESTORE_LABEL = "Volver a mi texto"
 
 
@@ -4304,7 +4305,7 @@ def _context_version_card(version: rx.Var[dict[str, str]], index: rx.Var[int]) -
 
 
 def _context_versions() -> rx.Component:
-    """The three cards of the last press, «Ver otras tres» and the way back to the
+    """The cards of the last press (up to three), «Ver otras versiones» and the way back to the
     operator's own words (m-25017274). One column: they read whole on a phone. Once the
     owner edits the text they go (UX review): only «Mejorar mi texto» stays, from the
     new words. A polite live region, so a screen reader hears the cards arrive."""
@@ -4359,9 +4360,25 @@ def _context_ai_tools() -> rx.Component:
     chosen, and «Volver a mi texto» brings it back."""
     enhancing = CreativeState.context_enhancing
     return rx.vstack(
+        # right under the text field (UX review): after a card is chosen on a phone the
+        # field is in view, and the way back sits next to it; it stays after an edit
+        rx.cond(
+            (CreativeState.context_before_enhance != "")
+            & ~CreativeState.context_is_original
+            & ~enhancing,
+            rx.button(
+                rx.icon("undo-2", size=T.ICON_SM),
+                ENHANCE_RESTORE_LABEL,
+                variant="ghost",
+                color_scheme="gray",
+                size="2",
+                min_height="44px",
+                on_click=CreativeState.undo_enhance_context,
+            ),
+        ),
         rx.cond(
             # with cards on screen it comes back only once the text was edited: a press
-            # then starts from the new words (otherwise «Otra versión» is the way)
+            # then starts from the new words (otherwise «Ver otras versiones» is the way)
             (CreativeState.context_versions.length() > 0) & ~CreativeState.context_text_edited,
             rx.fragment(),
             rx.hstack(
@@ -4389,21 +4406,6 @@ def _context_ai_tools() -> rx.Component:
             ),
         ),
         _context_versions(),
-        # review: the way back stays even after an edit hides the cards
-        rx.cond(
-            (CreativeState.context_before_enhance != "")
-            & ~CreativeState.context_is_original
-            & ~enhancing,
-            rx.button(
-                rx.icon("undo-2", size=T.ICON_SM),
-                ENHANCE_RESTORE_LABEL,
-                variant="ghost",
-                color_scheme="gray",
-                size="2",
-                min_height="44px",
-                on_click=CreativeState.undo_enhance_context,
-            ),
-        ),
         rx.cond(
             CreativeState.context_enhance_error != "",
             callout(CreativeState.context_enhance_error, "warn"),

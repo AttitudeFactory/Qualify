@@ -283,6 +283,9 @@ class ContextProposal:
     versions: tuple[ContextVersion, ...]
     #: What the model says it added beyond style — empty when it added no facts.
     added_facts: tuple[str, ...] = ()
+    #: Scene versions dropped for showing text: «Ver otras versiones» sends them back as
+    #: texts not to repeat, so a retry does not pay for the same rejected text again.
+    rejected: tuple[str, ...] = ()
     model_id: str = ""
     input_tokens: int = 0
     output_tokens: int = 0
@@ -326,45 +329,153 @@ def _same(a: str, b: str) -> bool:
 
 #: m-25017274 (live on Bianki, 2026-11-13): words that ask for something WRITTEN in the
 #: picture. Since the prompt compiler 4 (#629/#631) an image carries no text, sign or
-#: price, so a scene version that names one is dropped like any invalid version.
+#: price, so a scene version that names one is dropped like any invalid version. «menú»
+#: alone is NOT here: «el plato del menú del día» describes food, and in the 150+ measured
+#: scene versions plain «menú» never asked for writing; only written-menu phrasings are.
 _SCENE_TEXT_WORDS = re.compile(
-    r"\b(precios?|letreros?|carteles|cartel|etiquetas?|r[óo]tulos?|avisos?|pancartas?|"
-    r"textos?|letras?|escrito|escrita|men[úu] escrito|pizarras?|tablero de precios)\b",
+    r"\b(?:precios?|letreros?|carteles|cartel|r[óo]tulos?|avisos?|anuncios?|pancartas?|"
+    r"vallas?|pizarras?|pizarr[óo]n(?:es)?|stickers?|calcoman[íi]as?|"
+    r"textos?|letras?|escrit[oa]s?|leyendas?|tipograf[íi]as?|valor|"
+    r"men[úu]s?\s+(?:escrito|en la pared|en (?:la|una) pizarra|colgado|impreso|de pared)|"
+    r"etiquetas?)\b",
     re.IGNORECASE,
 )
-_NUMBER = re.compile(r"\d(?:[\d.,\s]*\d)?")
-#: The words right before a term that negate it («sin texto», «ni carteles»): the term is
-#: then not a request. Figures and «$» get no such exemption.
+#: The product's own printed label is a real object, not writing to add: the only term
+#: the owner's own words may bring into the scene (a price or a sign he asks for will not
+#: be drawn anyway, so it is not exempt).
+_OWNER_MAY_NAME = re.compile(r"etiquetas?", re.IGNORECASE)
+#: A negation only counts right before the term it governs: «sin texto», «ni carteles»,
+#: «nada escrito», «sin ningún letrero», «no lleva texto» — never «sin sombras y precio».
 _NEGATED = re.compile(
-    r"\b(?:sin|ni|no|ningún|ninguna|nada(?: de)?)\s+(?:\w+\s+){0,2}$", re.IGNORECASE
+    r"\b(?:sin|ni|nada(?:\s+de)?|ning[úu]n|ninguna?s?|tampoco|no\s+(?:hay|lleva|tiene|se\s+ven?))"
+    r"\s+(?:(?:el|la|los|las|un|una|ning[úu]n|ninguna?)\s+)?$",
+    re.IGNORECASE,
+)
+_NUMBER = re.compile(r"\d{1,3}(?:[ .,\u00a0]\d{3})+(?!\d)|\d+(?:[.,]\d+)*")
+_PRICE_WORDS = re.compile(
+    r"\$|\b(?:pesos?|cop|usd|d[óo]lares?|bol[íi]vares?|bs\.?|uyu|mil|precio|cuesta|vale)\b",
+    re.IGNORECASE,
+)
+_BIG_NUMBER = re.compile(r"^\d{1,3}(?:[ .,\u00a0]\d{3})+$|^\d{4,}$")
+_UNITS = (
+    "",
+    "un",
+    "dos",
+    "tres",
+    "cuatro",
+    "cinco",
+    "seis",
+    "siete",
+    "ocho",
+    "nueve",
+    "diez",
+    "once",
+    "doce",
+    "trece",
+    "catorce",
+    "quince",
+    "dieciséis",
+    "diecisiete",
+    "dieciocho",
+    "diecinueve",
+    "veinte",
+    "veintiún",
+    "veintidós",
+    "veintitrés",
+    "veinticuatro",
+    "veinticinco",
+    "veintiséis",
+    "veintisiete",
+    "veintiocho",
+    "veintinueve",
+)
+_TENS = ("", "", "", "treinta", "cuarenta", "cincuenta", "sesenta", "setenta", "ochenta", "noventa")
+_HUNDREDS = (
+    "",
+    "ciento",
+    "doscientos",
+    "trescientos",
+    "cuatrocientos",
+    "quinientos",
+    "seiscientos",
+    "setecientos",
+    "ochocientos",
+    "novecientos",
 )
 
 
-def _numbers(text: str) -> set[str]:
-    return {re.sub(r"\D", "", match) for match in _NUMBER.findall(text)}
+def _spell(n: int) -> str:
+    """1..999 in Spanish words, the form before «mil» («veintidós», «ciento veinte»)."""
+    if n == 100:
+        return "cien"
+    hundreds, rest = divmod(n, 100)
+    words = [_HUNDREDS[hundreds]] if hundreds else []
+    if rest < 30:
+        words.append(_UNITS[rest])
+    else:
+        tens, units = divmod(rest, 10)
+        words.append(_TENS[tens] + (f" y {_UNITS[units]}" if units else ""))
+    return " ".join(w for w in words if w)
+
+
+def _price_figures(data: ContextInput) -> tuple[set[str], list[re.Pattern[str]]]:
+    """How a price from «Datos clave» could be written in a scene: its digits («22.000»,
+    «22000» → "22000") and «22 mil» / «veintidós mil». Only price-like facts count (a
+    currency sign or word in the name or value, or a figure of 4+ digits): «2x1» or
+    «500 ml» are counts the picture may show."""
+    figures: set[str] = set()
+    words: list[re.Pattern[str]] = []
+    for name, value in data.highlights:
+        raws = _NUMBER.findall(str(value))
+        big = [raw for raw in raws if _BIG_NUMBER.match(raw)]
+        priced = bool(_PRICE_WORDS.search(f"{name} {value}"))
+        for raw in big or (raws if priced else []):
+            digits = re.sub(r"\D", "", raw)
+            figures.add(digits)
+            thousands = int(digits) // 1000
+            if 0 < thousands < 1000:
+                words.append(
+                    re.compile(
+                        rf"\b(?:{thousands}|{re.escape(_spell(thousands))})\s*mil\b",
+                        re.IGNORECASE,
+                    )
+                )
+    return figures, words
 
 
 def scene_text_request(text: str, data: ContextInput) -> str:
     """What in a SCENE version asks for something written in the picture ("" = nothing):
-    a word for a sign/price/text, a currency sign, or a figure from «Datos clave» that the
-    owner's own scene did not have. Deterministic: the image model would draw it. A word
-    the owner wrote in the scene himself (the field's own example says «la etiqueta de
-    frente», the cup's printed label) is his, not an addition, and is let through; so is
-    a negated term («Sin texto en la imagen», measured 2026-11-13)."""
-    own = data.text.casefold()
+    a word for a sign/price/text, a currency sign, or a price from «Datos clave» in
+    digits or words. Deterministic: the image model would draw it. Negations that govern
+    the term pass («Sin texto en la imagen»); of the owner's own words only the product's
+    printed «etiqueta» passes (whole word)."""
+    own = {w.casefold() for w in re.findall(r"\w+", data.text)}
     for word in _SCENE_TEXT_WORDS.finditer(text):
-        # «Sin texto en la imagen», «sin letreros ni precios»: a negation asks for nothing
         if _NEGATED.search(text[: word.start()]):
             continue
-        if word.group(0).casefold() not in own:
-            return word.group(0)
-    if "$" in text and "$" not in data.text:
+        term = word.group(0)
+        if _OWNER_MAY_NAME.fullmatch(term) and term.casefold() in own:
+            continue
+        return term
+    if "$" in text:
         return "$"
-    facts = set().union(*(_numbers(str(value)) for _, value in data.highlights)) - _numbers(
-        data.text
-    )
-    found = sorted(facts & _numbers(text))
-    return found[0] if found else ""
+    figures, words = _price_figures(data)
+    for raw in _NUMBER.findall(text):
+        if re.sub(r"\D", "", raw) in figures:
+            return raw
+    for pattern in words:
+        if found := pattern.search(text):
+            return found.group(0)
+    return ""
+
+
+class ContextNoUsableVersion(ContextUnavailable):
+    """Every version was dropped. `rejected` holds those that were valid text but showed
+    something forbidden, so a retry can be told not to write them again."""
+
+    def __init__(self, message: str, rejected: tuple[str, ...] = ()) -> None:
+        super().__init__(message)
+        self.rejected = rejected
 
 
 def render_request(data: ContextInput, kit: BrandKit | None) -> str:
@@ -490,6 +601,7 @@ def enhance_context(
     seen = [data.text, *data.previous_versions]
     versions: list[ContextVersion] = []
     refusals: list[ContextUnavailable] = []
+    rejected: list[str] = []
     for key, _ in data.approaches:
         raw_text = answer.get(key)
         if not isinstance(raw_text, str):
@@ -504,6 +616,7 @@ def enhance_context(
             continue
         if data.scene and (shown := scene_text_request(text, data)):
             refusals.append(ContextUnavailable(f"scene version {key} shows text: {shown}"))
+            rejected.append(text)
             continue
         if any(_same(text, other) for other in seen):
             refusals.append(ContextUnavailable(f"version {key} repeats a text already shown"))
@@ -516,7 +629,7 @@ def enhance_context(
             for exc in refusals:
                 if isinstance(exc, kind):
                     raise exc
-        raise ContextUnavailable("no usable version proposed")
+        raise ContextNoUsableVersion("no usable version proposed", tuple(rejected))
     added = tuple(
         str(fact).strip() for fact in answer.get("added_facts") or () if str(fact).strip()
     )
@@ -535,6 +648,7 @@ def enhance_context(
     )
     return ContextProposal(
         versions=tuple(versions),
+        rejected=tuple(rejected),
         added_facts=added,
         model_id=stats.model_id,
         input_tokens=stats.input_tokens,

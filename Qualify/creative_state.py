@@ -38,6 +38,7 @@ from qualify_api.creative.campaigns import InvalidCampaignName, clean_name
 from qualify_api.creative.context_ai import (
     PREVIOUS_VERSIONS_SENT,
     PROPOSAL_MAX_CHARS,
+    ContextNoUsableVersion,
     ContextTooLong,
 )
 from qualify_api.creative.creations import NotEnoughCreations
@@ -8431,6 +8432,11 @@ class CreativeState(rx.State):
     context_choice: int = -1
     #: Every version shown since the original was set, for «Otra versión» (backend only).
     _context_shown: list[str] = []
+    #: m-25017274 review: scene versions dropped for showing text in a press where none
+    #: survived, and the text they were written from: the next press of that same text
+    #: sends them as versions not to repeat (each retry is a paid call).
+    _context_rejected: list[str] = []
+    _context_rejected_for: str = ""
     #: Which run owns `context_enhancing`, and since when (backend only).
     _context_enhance_token: str = ""
     _context_enhance_started: float = 0.0
@@ -8481,6 +8487,8 @@ class CreativeState(rx.State):
         self.context_versions = []
         self.context_choice = -1
         self._context_shown = []
+        self._context_rejected = []
+        self._context_rejected_for = ""
         self.context_enhance_note = ""
         self.context_enhance_error = ""
 
@@ -8521,7 +8529,10 @@ class CreativeState(rx.State):
                 again or self._in_context_round(field)
             )
             text = self.context_before_enhance.strip() if same_round else field
-            previous = list(self._context_shown) if same_round else []
+            previous = (list(self._context_shown) if same_round else []) + (
+                list(self._context_rejected) if self._context_rejected_for == text else []
+            )
+            previous = previous[-PREVIOUS_VERSIONS_SENT:]
             self.context_enhance_note = ""
             if len(text) < _ENHANCE_MIN_CHARS:
                 self.context_enhance_error = _ENHANCE_TOO_SHORT
@@ -8573,6 +8584,22 @@ class CreativeState(rx.State):
                     if self._own_enhance(token):
                         self.context_enhance_error = str(exc)
                 return
+            except ContextNoUsableVersion as exc:
+                # every version was dropped (a scene that showed text): the field stays,
+                # «Tu texto quedó igual», and the next press is told not to repeat them
+                logger.warning("context enhancement: no usable version (%s)", exc)
+                async with self:
+                    if self._own_enhance(token):
+                        self.context_enhance_error = _ENHANCE_TIMED_OUT
+                        if exc.rejected:
+                            kept = (
+                                self._context_rejected if self._context_rejected_for == text else []
+                            )
+                            self._context_rejected = [*kept, *exc.rejected][
+                                -PREVIOUS_VERSIONS_SENT:
+                            ]
+                            self._context_rejected_for = text
+                return
             except TimeoutError:
                 logger.warning("context enhancement timed out after %ss", ENHANCE_TIMEOUT_SECONDS)
                 async with self:
@@ -8599,9 +8626,13 @@ class CreativeState(rx.State):
                     for v in versions
                 ]
                 # only the newest are ever sent back (`PREVIOUS_VERSIONS_SENT`)
-                self._context_shown = [*previous, *(v.text for v in versions)][
-                    -PREVIOUS_VERSIONS_SENT:
-                ]
+                self._context_shown = [
+                    *previous,
+                    *(v.text for v in versions),
+                    *proposal.rejected,  # dropped ones too: never asked for again
+                ][-PREVIOUS_VERSIONS_SENT:]
+                self._context_rejected = []
+                self._context_rejected_for = ""
                 self.context_choice = -1
                 if proposal.added_facts:
                     self.context_enhance_note = _ENHANCE_ADDED_VERSIONS + "; ".join(
@@ -9401,7 +9432,7 @@ class CreativeState(rx.State):
         if draft_id is not None:
             async with self:
                 self.brief_topic = ""
-                self._forget_context_versions()  # nor its cards and «Ver otras tres»
+                self._forget_context_versions()  # nor its cards and «Ver otras versiones»
                 self.replication_context = ""
                 self.source_reel = {}
                 self._forget_ideas_origin()

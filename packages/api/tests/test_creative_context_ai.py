@@ -541,6 +541,73 @@ def test_the_owners_own_words_are_not_an_addition() -> None:
     assert scene_text_request("El vaso y un cartel detrás.", own) == "cartel"
 
 
+def test_the_owner_asking_for_a_price_sign_is_not_exempt() -> None:
+    """Review: the image will not carry it, whoever asked; only «etiqueta» is his."""
+    own = _scene_input(text="El shawarma en la barra con el precio en un cartel")
+    assert scene_text_request("El shawarma y el precio en un cartel.", own) == "precio"
+    assert scene_text_request("El shawarma y un cartel al fondo.", own) == "cartel"
+
+
+@pytest.mark.parametrize(
+    ("own", "version"),
+    [
+        ("el contexto de la barra", "un texto en la barra"),
+        ("aprecio el sabor de la barra", "el precio en la barra"),
+        ("avisos de la calle afuera", "un aviso en la barra"),
+    ],
+)
+def test_the_owners_words_compare_as_whole_words(own: str, version: str) -> None:
+    assert scene_text_request(version, _scene_input(text=own)) != ""
+
+
+@pytest.mark.parametrize(
+    "version",
+    [
+        "2 shawarmas en la mesa, luz cálida.",
+        "Luz de las 2 de la tarde sobre la barra.",
+        "Vaso de 500 ml junto al plato.",
+        "El plato del menú del día sobre la barra.",
+        "Una tabla de madera con el shawarma.",
+    ],
+)
+def test_counts_and_ordinary_food_words_pass(version: str) -> None:
+    data = _scene_input(
+        highlights=(("Precio", "$22.000"), ("Promoción", "2x1 los martes"), ("Tamaño", "500 ml"))
+    )
+    assert scene_text_request(version, data) == ""
+
+
+@pytest.mark.parametrize(
+    ("version", "found"),
+    [
+        ("El shawarma y 22 mil en una esquina.", "22 mil"),
+        ("El shawarma por veintidós mil.", "veintidós mil"),
+        ("Textos escritos en la pared.", "Textos"),
+        ("Un menú en la pared detrás de la barra.", "menú en la pared"),
+        ("Un anuncio luminoso al fondo.", "anuncio"),
+        ("Una valla en la calle.", "valla"),
+        ("Un sticker con el valor del combo.", "sticker"),
+        ("Una pizarra con la oferta.", "pizarra"),
+        ("Un rótulo sobre la barra.", "rótulo"),
+        ("La barra, sin sombras y precio visible.", "precio"),
+    ],
+)
+def test_review_misses_are_caught(version: str, found: str) -> None:
+    assert scene_text_request(version, _scene_input()) == found
+
+
+@pytest.mark.parametrize(
+    "version",
+    [
+        "Plano cerrado, sin ningún letrero.",
+        "La barra del local, no lleva texto.",
+        "Luz cálida, ni carteles ni precios.",
+    ],
+)
+def test_a_negation_that_governs_the_term_passes(version: str) -> None:
+    assert scene_text_request(version, _scene_input()) == ""
+
+
 def test_scene_versions_that_show_text_are_dropped_and_the_rest_shown() -> None:
     clean = "Plano cerrado del shawarma con la salsa cayendo, luz cálida sobre la barra."
     client = FakeClient(
@@ -555,6 +622,10 @@ def test_scene_versions_that_show_text_are_dropped_and_the_rest_shown() -> None:
         _scene_input(), None, client_factory=lambda key: client, attribution=TEST_ATTRIBUTION
     )
     assert [v.text for v in proposal.versions] == [clean]
+    assert proposal.rejected == (
+        "La barra del local. Se ve el precio $22.000.",
+        "Un letrero al fondo.",
+    )
 
 
 def test_when_every_scene_version_shows_text_the_failure_path_runs() -> None:
@@ -565,10 +636,14 @@ def test_when_every_scene_version_shows_text_the_failure_path_runs() -> None:
             )
         ]
     )
-    with pytest.raises(ContextUnavailable):
+    from qualify_api.creative.context_ai import ContextNoUsableVersion
+
+    with pytest.raises(ContextNoUsableVersion) as error:
         enhance_context(
             _scene_input(), None, client_factory=lambda key: client, attribution=TEST_ATTRIBUTION
         )
+    # the rejected texts travel with the refusal, for the next press to avoid
+    assert len(error.value.rejected) == 3
 
 
 def test_copy_versions_still_carry_the_price() -> None:
