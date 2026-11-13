@@ -1,6 +1,7 @@
 """`PostgresPendingCounts` against the real database (m-24842990): what only Postgres can
-prove — the Instagram-messages count follows `attention_state` (pending, not read, not
-answered) and RLS keeps another tenant's people out of the counts.
+prove — the Instagram-messages count follows the «Por responder» rule of `inbox.awaiting`
+(open and not answered; reading no longer clears it, m-25017843) and RLS keeps another
+tenant's people out of the counts.
 
 Seeding follows `test_followups_schema_db.py`: tenants/user/app via `admin_session`, the
 connection and the rows through `tenant_session`. Fresh tenants per test, so exact counts
@@ -118,7 +119,7 @@ def _dm(
         session.flush()
 
 
-def test_messages_count_only_pending_conversations() -> None:
+def test_messages_count_every_unanswered_conversation_read_or_not() -> None:
     tenant_id, connection_id, _user = _tenant()
     _dm(tenant_id, connection_id)
     _dm(tenant_id, connection_id)
@@ -127,7 +128,8 @@ def test_messages_count_only_pending_conversations() -> None:
 
     counts = PostgresPendingCounts().read(tenant_id)
 
-    assert counts.messages == 2
+    # m-25017843: an opened but unanswered chat still waits for a reply.
+    assert counts.messages == 3
     assert (counts.buyers, counts.comments, counts.whatsapp) == (0, 0, 0)
 
 

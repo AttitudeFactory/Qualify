@@ -40,16 +40,20 @@ def test_the_query_only_reads() -> None:
         assert not re.search(rf"\b{verb}\b", sql), verb
 
 
-def test_each_channel_matches_its_list_filter() -> None:
+def test_each_channel_uses_its_rule() -> None:
+    from qualify_api.inbox.awaiting import awaiting_reply_sql
+
     sql = " ".join(_COUNTS_SQL.split())
-    # Mensajes «Pendientes» = attention_state PENDING: inbound, unanswered, unread.
-    assert "t.channel = 'dm'" in sql
-    assert "t.last_read_at IS NULL OR t.last_read_at < t.last_inbound_at" in sql
+    # Mensajes and WhatsApp = the ONE «Por responder» rule the unified inbox lists by
+    # (m-25017843): the very same fragment, once per channel.
+    rule = " ".join(awaiting_reply_sql("t").split())
+    assert f"t.channel = 'dm' AND {rule}" in sql
+    assert f"t.channel = 'whatsapp' AND {rule}" in sql
+    # Reading a chat no longer clears it: only a reply does.
+    assert "last_read_at" not in sql
     # Quieren comprar = open followups whose comment is still visible.
     assert "f.status = 'open'" in sql and "JOIN messages m ON m.id = f.origin_message_id" in sql
     # Comentarios = the replies waiting for approval.
     assert "d.status = 'proposed'" in sql
-    # WhatsApp «Sin leer» = an inbound after the last outbound.
-    assert "w.channel = 'whatsapp'" in sql and "CAST('-infinity' AS timestamptz)" in sql
     # No hand-written tenant filter: RLS through tenant_session scopes every table.
     assert "tenant_id" not in sql
