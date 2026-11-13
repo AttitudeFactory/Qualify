@@ -21,7 +21,7 @@ from qualify_api.http.access_log import (
 )
 
 
-def _uvicorn_access_record(path: str) -> logging.LogRecord:
+def _uvicorn_access_record(path: str, method: str = "GET") -> logging.LogRecord:
     """Builds a `LogRecord` shaped exactly like uvicorn's real access-log call — same
     message template, same 5-tuple `args`, same logger name."""
     return logging.LogRecord(
@@ -30,7 +30,7 @@ def _uvicorn_access_record(path: str) -> logging.LogRecord:
         pathname=__file__,
         lineno=1,
         msg='%s - "%s %s HTTP/%s" %d',
-        args=("127.0.0.1:54321", "GET", path, "1.1", 200),
+        args=("127.0.0.1:54321", method, path, "1.1", 200),
         exc_info=None,
     )
 
@@ -158,3 +158,52 @@ def test_end_to_end_through_a_real_handler_emits_no_token() -> None:
     output = stream.getvalue()
     assert "THE_REAL_TOKEN_VALUE" not in output
     assert "/public/media/<redacted>" in output
+
+
+# m-25021431: the catalog photo route (ADR 48 §8) reaches uvicorn since the Caddy fix; its
+# signature is the whole credential for the photo, so it must never reach the access log.
+CATALOG_TENANT = "a0000000-0000-4000-8000-000025021431"
+CATALOG_MEDIA = "b0000000-0000-4000-8000-000025021431"
+CATALOG_SIG = "S1gnatureS1gnatureS1gnatureS1gnatureS1gnat"
+
+
+def test_the_catalog_media_signature_is_stripped() -> None:
+    record = _uvicorn_access_record(
+        f"/public/catalog-media/{CATALOG_TENANT}/{CATALOG_MEDIA}/{CATALOG_SIG}.jpg"
+    )
+
+    PublicMediaTokenRedactionFilter().filter(record)
+
+    assert record.args[2] == "/public/catalog-media/<redacted>"
+    assert CATALOG_SIG not in record.getMessage()
+
+
+def test_the_catalog_media_signature_is_stripped_with_a_query_string_and_on_head() -> None:
+    record = _uvicorn_access_record(
+        f"/public/catalog-media/{CATALOG_TENANT}/{CATALOG_MEDIA}/{CATALOG_SIG}.jpg?x=y",
+        method="HEAD",
+    )
+
+    PublicMediaTokenRedactionFilter().filter(record)
+
+    assert record.args[1] == "HEAD"
+    assert record.args[2] == "/public/catalog-media/<redacted>?x=y"
+    assert CATALOG_SIG not in record.getMessage()
+
+
+def test_the_public_media_output_is_unchanged() -> None:
+    record = _uvicorn_access_record("/public/media/tok?x=y")
+
+    PublicMediaTokenRedactionFilter().filter(record)
+
+    assert record.args[2] == "/public/media/<redacted>?x=y"
+
+
+def test_an_unrelated_public_path_is_left_alone() -> None:
+    for path in ("/public/other/abc", "/public/catalog-mediax/abc", "/public/mediax/abc"):
+        record = _uvicorn_access_record(path)
+        original_args = record.args
+
+        PublicMediaTokenRedactionFilter().filter(record)
+
+        assert record.args == original_args, path

@@ -151,6 +151,46 @@ def test_conversation_carries_messages_unsent_and_order(world: World) -> None:
     assert conv.has_more is False
 
 
+def test_conversation_reads_previous_orders_and_carts_from_one_context_read(
+    world: World,
+) -> None:
+    """m-25018684: the archive and the cart ids come from the same `thread_context` read
+    as the order — no extra read per message."""
+    thread_id = world.thread(inbound_ago=timedelta(minutes=5))
+    cart = {
+        **ORDER_CONTEXT["_order"],
+        "source": "cart",
+        "source_message_id": "wamid.cart",
+        "collected": {},
+    }
+    world.store.contexts[thread_id] = {
+        "_order": cart,
+        "_orders_previous": [
+            {"order": ORDER_CONTEXT["_order"], "archived_at": None, "payment": None}
+        ],
+    }
+    reads: list[UUID] = []
+    original = world.store.thread_context
+
+    def counting(tenant_id: UUID, thread: UUID) -> dict[str, Any]:
+        reads.append(thread)
+        return original(tenant_id, thread)
+
+    world.store.thread_context = counting  # type: ignore[method-assign]
+    conv = world.gateway.conversation(TENANT, NUMBER, thread_id)
+    assert reads == [thread_id]
+    assert conv.order is not None and conv.order.is_cart
+    assert [p.order.is_cart for p in conv.previous_orders] == [False]
+    assert conv.cart_ids == frozenset({"wamid.cart"})
+
+
+def test_conversation_without_archive_has_no_previous_orders(world: World) -> None:
+    thread_id = world.thread(inbound_ago=timedelta(minutes=5))
+    world.store.contexts[thread_id] = ORDER_CONTEXT
+    conv = world.gateway.conversation(TENANT, NUMBER, thread_id)
+    assert (conv.previous_orders, conv.cart_ids) == ((), frozenset())
+
+
 def test_older_pages_with_before(world: World) -> None:
     thread_id = world.thread(inbound_ago=timedelta(hours=10))
     for i in range(MESSAGES_PAGE + 5):

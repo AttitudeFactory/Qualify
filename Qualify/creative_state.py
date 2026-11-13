@@ -35,7 +35,12 @@ from qualify_api.catalog.read import price_label
 from qualify_api.catalog.service import CatalogError, UnknownProduct
 from qualify_api.creative.brand_references import BrandReferenceError
 from qualify_api.creative.campaigns import InvalidCampaignName, clean_name
-from qualify_api.creative.context_ai import PROPOSAL_MAX_CHARS, ContextTooLong
+from qualify_api.creative.context_ai import (
+    PREVIOUS_VERSIONS_SENT,
+    PROPOSAL_MAX_CHARS,
+    ContextNoUsableVersion,
+    ContextTooLong,
+)
 from qualify_api.creative.creations import NotEnoughCreations
 from qualify_api.creative.fsm import InvalidTransition
 from qualify_api.creative.parts import (
@@ -89,6 +94,7 @@ from . import (
     part_editor_provider,
     part_editor_vm,
     parts_start_vm,
+    photo_upload_vm,
     reel_parts_vm,
     reel_wait_provider,
     reel_wait_vm,
@@ -266,8 +272,16 @@ from .stock_provider import search_images as search_stock_images
 from .tenant import tenant_uuid
 from .ui.steps import go_to_step, settle_step, step_entry_script, step_settle_script
 from .ui.steps_vm import DIR_BACK, DIR_NEXT, STEP_PARAM, parse_step_param
+from .upload_images import (
+    PHOTO_MAX_BYTES,
+    PhotoBusy,
+    PhotoTooBig,
+    PhotoUnreadable,
+    is_photo_name,
+    normalize_photo_when_free,
+)
 from .upload_names import safe_upload_name
-from .upload_store import UploadNotKept, refusal_text, save_upload
+from .upload_store import UploadNotKept, refusal_text, save_upload, save_upload_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -305,6 +319,33 @@ def _scroll_to_view() -> rx.event.EventSpec:
         "if (window.matchMedia('(max-width: 899px)').matches) {"
         f" {_ALIGN_VIEW_JS}"
         " setTimeout(() => align(true), 120); setTimeout(() => align(false), 700); }"
+    )
+
+
+def _scroll_field_into_view(element_id: str) -> rx.event.EventSpec:
+    """m-25017274 (live 2026-11-13): after a «Mejorar mi texto» card is tapped the view
+    stayed on the cards. `rx.scroll_to` is `scrollIntoView(true)`: it puts the field's
+    top at the top of the box that scrolls (`main.q-panel` on a phone), i.e. UNDER the
+    sticky page header. Same alignment as `_ALIGN_VIEW_JS` for `#q-cr-view`, which works
+    in production: find the box that really scrolls, put the field just under the
+    header, smoothly, then correct once after the new text re-rendered. No focus: on a
+    phone that would open the keyboard over the field."""
+    return rx.call_script(
+        "(() => { const align = (smooth) => {"
+        f" const field = document.getElementById({json.dumps(element_id)});"
+        " if (!field) return;"
+        " let box = field.parentElement;"
+        " while (box && box !== document.body && !(/(auto|scroll)/.test("
+        "getComputedStyle(box).overflowY) && box.scrollHeight > box.clientHeight)) {"
+        " box = box.parentElement; }"
+        " const scroller = box && box !== document.body ? box : document.scrollingElement;"
+        " const head = field.closest('main')?.querySelector('.q-page-header');"
+        " const floor = head ? head.getBoundingClientRect().bottom : 0;"
+        " const delta = field.getBoundingClientRect().top - floor - 12;"
+        " if (smooth || Math.abs(delta) > 4) {"
+        " scroller.scrollBy({top: delta, behavior: smooth ? 'smooth' : 'auto'}); }"
+        " };"
+        " setTimeout(() => align(true), 60); setTimeout(() => align(false), 600); })()"
     )
 
 
@@ -387,6 +428,21 @@ _ENHANCE_TOO_SHORT = "Escribe primero unas palabras sobre lo que quieres: la IA 
 _ENHANCE_FAILED = "No pudimos mejorar tu texto ahora mismo. Inténtalo de nuevo en un momento."
 _ENHANCE_STALE = "Cambiaste el texto mientras tanto. Vuelve a pulsar «Mejorar mi texto»."
 _ENHANCE_ADDED = "Revisa estos datos, que la IA añadió y no venían de ti: "
+#: m-25017274 (UX review): the same notice, saying they are in one of the cards.
+_ENHANCE_ADDED_VERSIONS = (
+    "Revisa estos datos, que la IA añadió y no venían de ti, en alguna de estas versiones: "
+)
+#: The context field's id: a chosen card scrolls it into view.
+CONTEXT_FIELD_ID = "q-context-field"
+#: m-25017274: what each card is called, by the approach `context_ai` wrote it with.
+_CONTEXT_APPROACH_LABELS = {
+    "directa": "Más directa",
+    "descriptiva": "Más descriptiva",
+    "cercana": "Más cercana",
+    "producto": "El producto de cerca",
+    "lugar": "El lugar",
+    "momento": "Un momento",
+}
 #: UI-6: the refusals of `qualify_api.creative.parts` whose `.text` is the owner's
 #: Spanish — the only exception texts the parts' actions show.
 _PARTS_REFUSALS = (
@@ -410,6 +466,23 @@ _ENHANCE_RUNNING: set[str] = set()
 #: The flyer's scene field takes this much (its text area's `max_length`).
 _SCENE_MAX_CHARS = 600
 _UPLOAD_FAILED = "No se pudo leer la foto subida. Intenta con otro archivo."
+
+
+def _photo_size_problem(upload: Any, name: str) -> str:
+    """m-25017273: a photo over `PHOTO_MAX_BYTES` that reached the server anyway (the
+    picker refuses it first, but a browser can be bypassed) — the owner's sentence, or
+    "" when it fits. Measured on the spooled file, never read into memory."""
+    size = getattr(upload, "size", None)
+    if not isinstance(size, int):
+        fileobj = upload.file
+        here = fileobj.tell()
+        size = fileobj.seek(0, 2)
+        fileobj.seek(here)
+    if size > PHOTO_MAX_BYTES:
+        return photo_upload_vm.SERVER_TOO_HEAVY_TEXT.format(name=name)
+    return ""
+
+
 #: The clip's middle images are references, not frames. Every clip with references is
 #: made on the reference model (`QUALIFY_SEEDANCE_REFERENCE_MODEL`, which always has a
 #: default), so the old «si no está activado, se omiten» described a setting the owner
@@ -1350,6 +1423,11 @@ class CreativeState(rx.State):
     staged_media_key: str = ""
     staged_media_name: str = ""
     upload_error: str = ""
+    #: m-25017273: the drop zone whose photo is going up now ("" = none) and how far the
+    #: browser got (0-100; 100 = the bytes arrived and the server is preparing it).
+    photo_upload_id: str = ""
+    photo_upload_percent: int = 0
+    photo_upload_many: bool = False
     #: UI-3 round 15: per category («image», «video», «audio») what its drop zone could
     #: not take — its two halves (the upload's and the browser's: react-dropzone fires
     #: both for one drop, in no fixed order) and what the screen shows of both.
@@ -2321,6 +2399,7 @@ class CreativeState(rx.State):
         the slide itself). One photo per slide; a new one replaces it."""
         index = self._carousel_index()
         if index < 0 or self.carousel_slides[index]["source"] in ("existing", "stock"):
+            self._end_photo_upload()  # m-25017273: never a spinner left behind
             return
         saved = await self._save_uploads(files[:1])
         if saved:
@@ -3599,6 +3678,9 @@ class CreativeState(rx.State):
             # All authentication and data reads below still run for this navigation.
             self.create_loading = not warm_close
             self.create_error = ""
+            # m-25017273: a photo upload the network cut (or a reload) never reached
+            # its handler: the zone must not keep saying «Subiendo…»
+            self._end_photo_upload()
             self.upload_error = ""
         ids = await self._session_ids()
         if ids is None:
@@ -6515,11 +6597,9 @@ class CreativeState(rx.State):
         self.brief_kind = key
         self.brief_format = ""  # each kind starts on its own default format
         self.create_error = ""
-        # «Deshacer» of «Potenciar con IA» belongs to the kind's own field (a flyer's is
-        # its scene): another kind must not get that text back
-        self.context_before_enhance = ""
-        self.context_enhance_note = ""
-        self.context_enhance_error = ""
+        # the cards and the original of «Mejorar mi texto» belong to the kind's own field
+        # (a flyer's is its scene): another kind must not get that text back
+        self._forget_context_versions()
         if key != "static_flyer":
             self.media_carousel = False
         if key in ("avatar_video", "animated_avatar_video"):
@@ -7588,6 +7668,7 @@ class CreativeState(rx.State):
         draft_id = self.gen_draft_id
         self._back_to_form()
         self.brief_topic = ""
+        self._forget_context_versions()  # the last piece's cards never reach the next
         self.replication_context = ""
         self.carried_text_kind = ""
         self._reset_media_inputs()
@@ -7618,9 +7699,7 @@ class CreativeState(rx.State):
     def clear_carried_text(self) -> None:
         """«Borrarlo»: the last piece's text leaves the field (and its «Deshacer»)."""
         self._set_context_text("")
-        self.context_before_enhance = ""
-        self.context_enhance_note = ""
-        self.context_enhance_error = ""
+        self._forget_context_versions()
         self.carried_text_kind = ""
 
     @rx.event
@@ -7650,9 +7729,7 @@ class CreativeState(rx.State):
         self.brief_must_avoid = ""
         self.brief_must_mention_draft = ""
         self.brief_must_avoid_draft = ""
-        self.context_before_enhance = ""
-        self.context_enhance_note = ""
-        self.context_enhance_error = ""
+        self._forget_context_versions()
         self.carried_text_kind = ""
         self.create_error = ""
         self._forget_replica()
@@ -7939,28 +8016,95 @@ class CreativeState(rx.State):
     async def _save_uploads(self, files: list[rx.UploadFile]) -> list[tuple[str, str]]:
         """Store uploaded files under the tenant's namespace; `(key, name)` each. Sets
         `upload_error` and returns nothing on a missing session or unreadable file."""
-        auth = await self.get_state(AuthState)
-        tenant_id = tenant_uuid(auth.session_tenant_id)
-        if tenant_id is None:
-            self.upload_error = _NO_SESSION
-            return []
-        saved: list[tuple[str, str]] = []
-        for upload in files:
-            # the client's name, reduced to a safe basename (PR #100 review): a crafted
-            # `../x` or `..\x` must never write outside the tenant's own folder
-            name = safe_upload_name(upload.name or "imagen")
-            try:
-                # CM-9 (m-24957283): to R2, `t/<tenant>/uploads/…`, streamed, once
-                key = await save_upload(tenant_id, upload, name)
-            except UploadNotKept as exc:
-                self.upload_error = refusal_text(exc, name)
+        try:
+            # inside the `try`: a missing session too ends the zone's «Subiendo…»
+            auth = await self.get_state(AuthState)
+            tenant_id = tenant_uuid(auth.session_tenant_id)
+            if tenant_id is None:
+                self.upload_error = _NO_SESSION
                 return []
-            except Exception:
-                self.upload_error = _UPLOAD_FAILED
-                return []
-            saved.append((key, name))
+            saved: list[tuple[str, str]] = []
+            for upload in files:
+                # the client's name, reduced to a safe basename (PR #100 review): a crafted
+                # `../x` or `..\x` must never write outside the tenant's own folder
+                name = safe_upload_name(upload.name or "imagen")
+                try:
+                    if is_photo_name(name):
+                        # m-25017273: a photo is checked, converted (HEIC → JPEG) and
+                        # downscaled before it is stored — never the 50 MB original
+                        problem = _photo_size_problem(upload, name)
+                        if problem:
+                            self.upload_error = problem
+                            return []
+                        upload.file.seek(0)
+                        # waits its turn on the event loop, never in a worker thread
+                        photo = await normalize_photo_when_free(upload.file, name)
+                        name = photo.name
+                        key = await save_upload_bytes(tenant_id, photo.data, name)
+                    else:
+                        # CM-9 (m-24957283): to R2, `t/<tenant>/uploads/…`, streamed, once
+                        key = await save_upload(tenant_id, upload, name)
+                except PhotoUnreadable:
+                    self.upload_error = photo_upload_vm.UNREADABLE_TEXT.format(name=name)
+                    return []
+                except PhotoTooBig:
+                    self.upload_error = photo_upload_vm.TOO_BIG_PIXELS_TEXT
+                    return []
+                except PhotoBusy:
+                    self.upload_error = photo_upload_vm.BUSY_TEXT
+                    return []
+                except UploadNotKept as exc:
+                    self.upload_error = refusal_text(exc, name)
+                    return []
+                except Exception:
+                    self.upload_error = _UPLOAD_FAILED
+                    return []
+                saved.append((key, name))
+            self.upload_error = ""
+            return saved
+        finally:
+            self._end_photo_upload()
+
+    def _end_photo_upload(self) -> None:
+        """m-25017273: the zone stops saying «Subiendo…» (done, refused, or abandoned)."""
+        self.photo_upload_id = ""
+        self.photo_upload_percent = 0
+
+    @rx.event
+    def begin_photo_upload(self, upload_id: str, many: bool = False) -> None:
+        """m-25017273: a photo was picked in `upload_id`'s zone — the zone shows
+        «Subiendo tu foto…» («tus fotos» when `many`) until the upload handler is done
+        (it clears this)."""
         self.upload_error = ""
-        return saved
+        self.photo_upload_id = str(upload_id)[:64]
+        self.photo_upload_many = bool(many)
+        self.photo_upload_percent = 0
+
+    @rx.var
+    def photo_upload_text(self) -> str:
+        """«Subiendo tu foto… 45 %», then «Preparando tu foto…» (m-25017273)."""
+        return photo_upload_vm.progress_text(self.photo_upload_percent, self.photo_upload_many)
+
+    @rx.event
+    def photo_upload_progress(self, progress: dict[str, Any]) -> None:
+        """The browser's own count of bytes sent. Only while a zone is uploading: a late
+        progress event after the handler finished never brings the spinner back."""
+        if not self.photo_upload_id:
+            return
+        try:
+            fraction = float(progress.get("progress", 0) or 0)
+        except (TypeError, ValueError, AttributeError):
+            return
+        percent = min(100, max(0, int(fraction * 100)))
+        if percent > self.photo_upload_percent:
+            self.photo_upload_percent = percent
+
+    @rx.event
+    def photo_upload_rejected(self, rejected: list[dict[str, Any]]) -> None:
+        """What the picker refused before uploading (a type that is not a photo, over
+        50 MB, too many): the owner's sentence, nothing sent."""
+        self._end_photo_upload()
+        self.upload_error = photo_upload_vm.rejection_text(rejected)
 
     @rx.event
     async def handle_background_upload(self, files: list[rx.UploadFile]) -> None:
@@ -8279,8 +8423,20 @@ class CreativeState(rx.State):
     context_enhance_error: str = ""
     #: Facts the model says it added that the operator never gave — shown to check.
     context_enhance_note: str = ""
-    #: The text before the last rewrite: «Deshacer» puts it back ("" = nothing to undo).
+    #: The operator's own text the versions were written from: «Volver a mi texto» puts
+    #: it back ("" = no versions shown).
     context_before_enhance: str = ""
+    #: m-25017274: the cards of the last press — `{"label", "text"}`, in approach order.
+    context_versions: list[dict[str, str]] = []
+    #: The card whose text is in the field (-1 = none: the original or an edit).
+    context_choice: int = -1
+    #: Every version shown since the original was set, for «Otra versión» (backend only).
+    _context_shown: list[str] = []
+    #: m-25017274 review: scene versions dropped for showing text in a press where none
+    #: survived, and the text they were written from: the next press of that same text
+    #: sends them as versions not to repeat (each retry is a paid call).
+    _context_rejected: list[str] = []
+    _context_rejected_for: str = ""
     #: Which run owns `context_enhancing`, and since when (backend only).
     _context_enhance_token: str = ""
     _context_enhance_started: float = 0.0
@@ -8324,12 +8480,43 @@ class CreativeState(rx.State):
             return VIDEO_TYPE_LABELS["ad_video"]
         return _CATEGORY_TITLES.get(self.gen_category, KIND_LABELS.get(self.brief_kind, ""))
 
+    def _forget_context_versions(self) -> None:
+        """The cards, the original they came from and their notes go (another kind, a
+        clean start): nothing of another field's text can come back."""
+        self.context_before_enhance = ""
+        self.context_versions = []
+        self.context_choice = -1
+        self._context_shown = []
+        self._context_rejected = []
+        self._context_rejected_for = ""
+        self.context_enhance_note = ""
+        self.context_enhance_error = ""
+
+    def _in_context_round(self, field: str) -> bool:
+        """The field still holds the original or an untouched card — of this press or of
+        an earlier one of the same round: a new press asks for more versions of the same
+        original instead of rewriting a rewrite."""
+        if not self.context_versions or not self.context_before_enhance:
+            return False
+        return field == self.context_before_enhance.strip() or any(
+            field == text.strip()
+            for text in (
+                *self._context_shown,
+                *(version.get("text", "") for version in self.context_versions),
+            )
+        )
+
     @rx.event(background=True)
-    async def enhance_context(self) -> None:
-        """«Potenciar con IA»: the context rewritten by Claude with the Brand Kit and the
-        piece's «Datos clave», no new facts (`context_ai`). It replaces the text in the
-        box — Generar sends whatever is there — and «Deshacer» brings the operator's
-        own words back. Never longer than `ENHANCE_TIMEOUT_SECONDS`."""
+    async def enhance_context(self, again: bool = False) -> None:
+        """«Mejorar mi texto» (m-25017274): three versions of the operator's context with
+        the Brand Kit, the piece's «Datos clave», the publication's kind and format, no
+        new facts (`context_ai`), shown as cards. The field is NOT touched: the operator's
+        original stays in it until a card is chosen (`choose_context_version`), and
+        «Volver a mi texto» brings it back. ``again`` («Otra versión»), or a press while
+        the field still holds the original or a card, asks again from the ORIGINAL and
+        sends every version shown so far so none is repeated. Free: no creación is
+        consumed. A failure keeps the field and the cards as they were. Never longer than
+        `ENHANCE_TIMEOUT_SECONDS`."""
         async with self:
             self._settle_stuck_enhance()
             if self.context_enhancing:
@@ -8337,7 +8524,15 @@ class CreativeState(rx.State):
             # m-24820836: enhance rewrites the FOREGROUND only — the operator's own
             # context — never the «copiar» reel-reference background layer. The merge in
             # ``_effective_topic`` puts the background back underneath at submit.
-            text = self._user_topic_text()
+            field = self._user_topic_text()
+            same_round = bool(self.context_versions and self.context_before_enhance) and (
+                again or self._in_context_round(field)
+            )
+            text = self.context_before_enhance.strip() if same_round else field
+            previous = (list(self._context_shown) if same_round else []) + (
+                list(self._context_rejected) if self._context_rejected_for == text else []
+            )
+            previous = previous[-PREVIOUS_VERSIONS_SENT:]
             self.context_enhance_note = ""
             if len(text) < _ENHANCE_MIN_CHARS:
                 self.context_enhance_error = _ENHANCE_TOO_SHORT
@@ -8352,6 +8547,7 @@ class CreativeState(rx.State):
             # this step, so a half-typed phrase turned into a chip would remain
             # visible in its field (live test 2026-11-03); submit and leaving the
             # step still capture it
+            content_types = {opt.value: opt.label for opt in content_type_options()}
             form = {
                 "text": text,
                 "piece": self._piece_label(),
@@ -8360,6 +8556,9 @@ class CreativeState(rx.State):
                 "highlights": self._highlight_pairs(),
                 "must_mention": self.brief_must_mention,
                 "must_avoid": self.brief_must_avoid,
+                "content_type": content_types.get(self.brief_content_type, ""),
+                "format": _FORMAT_LABELS.get(self.effective_format, ""),
+                "previous_versions": previous,
             }
         try:
             ids = await self._session_ids()
@@ -8375,13 +8574,31 @@ class CreativeState(rx.State):
                     ),
                     timeout=ENHANCE_TIMEOUT_SECONDS,
                 )
-                # The provider normalizes its proposal; do not strip requested symbols again.
-                if len(proposal.text) > PROPOSAL_MAX_CHARS:
-                    raise ContextTooLong(len(proposal.text), PROPOSAL_MAX_CHARS)
+                # The provider normalizes its versions; do not strip requested symbols again.
+                versions = [v for v in proposal.versions if len(v.text) <= PROPOSAL_MAX_CHARS]
+                if not versions:
+                    longest = max((len(v.text) for v in proposal.versions), default=0)
+                    raise ContextTooLong(longest, PROPOSAL_MAX_CHARS)
             except ContextTooLong as exc:
                 async with self:
                     if self._own_enhance(token):
                         self.context_enhance_error = str(exc)
+                return
+            except ContextNoUsableVersion as exc:
+                # every version was dropped (a scene that showed text): the field stays,
+                # «Tu texto quedó igual», and the next press is told not to repeat them
+                logger.warning("context enhancement: no usable version (%s)", exc)
+                async with self:
+                    if self._own_enhance(token):
+                        self.context_enhance_error = _ENHANCE_TIMED_OUT
+                        if exc.rejected:
+                            kept = (
+                                self._context_rejected if self._context_rejected_for == text else []
+                            )
+                            self._context_rejected = [*kept, *exc.rejected][
+                                -PREVIOUS_VERSIONS_SENT:
+                            ]
+                            self._context_rejected_for = text
                 return
             except TimeoutError:
                 logger.warning("context enhancement timed out after %ss", ENHANCE_TIMEOUT_SECONDS)
@@ -8398,25 +8615,72 @@ class CreativeState(rx.State):
             async with self:
                 if not self._own_enhance(token):
                     return
-                if self._user_topic_text() != text:
+                if self._user_topic_text() != field:
                     # typed over meanwhile: the operator's newer words win
                     self.context_enhance_error = _ENHANCE_STALE
                     return
-                # store the foreground only; the background layer is never part of undo
+                # the foreground only; the background layer is never part of the original
                 self.context_before_enhance = text
-                self._set_context_text(proposal.text)
+                self.context_versions = [
+                    {"label": _CONTEXT_APPROACH_LABELS.get(v.approach, ""), "text": v.text}
+                    for v in versions
+                ]
+                # only the newest are ever sent back (`PREVIOUS_VERSIONS_SENT`)
+                self._context_shown = [
+                    *previous,
+                    *(v.text for v in versions),
+                    *proposal.rejected,  # dropped ones too: never asked for again
+                ][-PREVIOUS_VERSIONS_SENT:]
+                self._context_rejected = []
+                self._context_rejected_for = ""
+                self.context_choice = -1
                 if proposal.added_facts:
-                    self.context_enhance_note = _ENHANCE_ADDED + "; ".join(proposal.added_facts)
+                    self.context_enhance_note = _ENHANCE_ADDED_VERSIONS + "; ".join(
+                        proposal.added_facts
+                    )
         finally:
             _ENHANCE_RUNNING.discard(token)
 
     @rx.event
+    def choose_context_version(self, index: int) -> rx.event.EventSpec | None:
+        """A card: its text fills the field (scrolled into view, so the owner sees where
+        it went); the original stays restorable."""
+        if self.context_enhancing or not 0 <= index < len(self.context_versions):
+            return None
+        self._set_context_text(self.context_versions[index].get("text", ""))
+        self.context_choice = index
+        self.context_enhance_error = ""
+        return _scroll_field_into_view(CONTEXT_FIELD_ID)
+
+    @rx.event
     def undo_enhance_context(self) -> None:
+        """«Volver a mi texto»: the operator's original back in the field. The cards
+        stay, so another one can still be chosen."""
         if self.context_before_enhance:
             self._set_context_text(self.context_before_enhance)
-        self.context_before_enhance = ""
-        self.context_enhance_note = ""
+        self.context_choice = -1
         self.context_enhance_error = ""
+
+    @rx.var
+    def context_is_original(self) -> bool:
+        """The field holds the original the cards were written from."""
+        return self._user_topic_text() == self.context_before_enhance.strip()
+
+    @rx.var
+    def context_chosen(self) -> int:
+        """The card marked as chosen: only while the field still holds its text (an edit
+        takes the mark away)."""
+        index = self.context_choice
+        if not 0 <= index < len(self.context_versions):
+            return -1
+        text = self.context_versions[index].get("text", "").strip()
+        return index if self._user_topic_text() == text else -1
+
+    @rx.var
+    def context_text_edited(self) -> bool:
+        """Cards are shown but the field holds neither the original nor a card: a press of
+        «Mejorar mi texto» starts again from these new words."""
+        return bool(self.context_versions) and not self._in_context_round(self._user_topic_text())
 
     # -- «Creaciones del mes» (CREAR-5, m-24848531): never money ------------------------
 
@@ -9080,6 +9344,7 @@ class CreativeState(rx.State):
         self.avatar_prompt = ""
         self.human_avatar_prompt = ""
         self.ad_scene_prompt = ""
+        self._forget_context_versions()  # the scene's cards go with the scene
         self.avatar_image_key = ""
         self.avatar_image_name = ""
         self.avatar_rights_confirmed = False
@@ -9167,6 +9432,7 @@ class CreativeState(rx.State):
         if draft_id is not None:
             async with self:
                 self.brief_topic = ""
+                self._forget_context_versions()  # nor its cards and «Ver otras versiones»
                 self.replication_context = ""
                 self.source_reel = {}
                 self._forget_ideas_origin()
@@ -9744,6 +10010,8 @@ class CreativeState(rx.State):
     @rx.event
     def start_edit(self):
         if self.edit_mode or self.draft is None or self.draft.viewing_previous_version:
+            return None
+        if self.draft.is_own_media:  # m-25019217: an own-media piece is never edited
             return None
         self._edit_revision = self.draft.revision
         self._edit_draft_id = self.draft.draft_id

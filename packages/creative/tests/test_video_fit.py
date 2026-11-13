@@ -55,7 +55,7 @@ def test_a_clip_is_cover_cropped_to_the_slide(source: tuple[int, int]) -> None:
 
 def test_the_text_layer_is_laid_over_every_frame() -> None:
     size = (540, 676)  # the CTA pill's font needs a real slide's height
-    layer = text_layer(size=size, cta="Pide ya", palette=("#1F2937", "#0EA5A4"))
+    layer = text_layer(size=size, cta="Pide ya", palette=("#1F2937", "#0EA5A4"), pills=True)
     plain = _first_frame(PyAvVideoFitter().fit(_clip(432, 576), size=size).data)
     worded = _first_frame(PyAvVideoFitter().fit(_clip(432, 576), size=size, overlay=layer).data)
     # the CTA pill (teal) sits at 89% of the height; the middle of the frame is untouched

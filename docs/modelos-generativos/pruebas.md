@@ -22,6 +22,335 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
 
 ---
 
+<a id="escena-sin-letras-001"></a>
+
+## ESCENA-SIN-LETRAS-001 — La escena de Seedream sin letras ni botones: compilador de prompts 3 frente a 4, en pares (m-25017275) — 2026-11-13
+
+- **Por qué:** dos historias reales de Bianki (9:16) salieron con botones falsos y letras sin
+  sentido dibujados dentro de la escena: «Ubicación» (caballete con el logo y un shawarma en la
+  calle; una píldora verde «BERIRN NON») y «Tu shawarma de carne te espera aquí» (mano con el
+  shawarma en el local; «. DARCLIO» y una píldora roja). La rama
+  `fix/m-25017275-seedream-sin-letras-ni-botones` sube `PROMPT_COMPILER_VERSION` de 3 a 4. Con el
+  compilador 4, `ad_scene_prompt` (imagen publicitaria) y `carousel_scene_prompt` (diapositiva de
+  galería) dejan de anunciar «un titular y un botón se ponen encima después» y piden una
+  fotografía limpia: sin texto nuevo ni elementos gráficos encima, y solo las letras reales del
+  producto, su empaque y el logo entregado. El fundador autorizó el 2026-11-13 un banco pagado
+  de **US$3 como máximo**, con fotos del catálogo de Bianki y las salidas solo en el disco local.
+- **Modelo:** `dola-seedream-5-0-pro-260628`, el `DEFAULT_SEEDREAM_MODEL` de
+  `byteplus_ark.py`, por el identificador del modelo. Este modelo no cede datos (ficha
+  [seedream-5-0-pro.md](seedream-5-0-pro.md)). Tamaños de producción (`SCENE_SIZES`): 9:16 a
+  1080×1920 y 4:5 a 1280×1600, los dos en el tramo de US$0,045. `watermark: false`, JPEG, sin
+  semilla. Las imágenes se mandan como en producción (`_data_url` → `to_reference_jpeg`).
+- **Entradas:** 5 fotos del catálogo de Bianki (tenant `7607da58-…`): shawarma de carne, shawarma
+  de pollo, salchipapa, papas y combo de carne con 7UP, Colombiana y Pepsi. También el isotipo
+  de su Brand Kit. Todo se leyó de R2 de producción **solo para lectura** (`list_objects_v2` +
+  `get_object`) y se guardó fuera de git. **Nada se escribió ni se borró en R2 ni en la base.**
+  Brand Kit de prueba: paleta real de Bianki (`#c5093b #ffcd00 #00b188 #231f20 #ffffff`) y letra
+  `Unbounded`. El posicionamiento y el tono están escritos para la prueba.
+- **Diseño:** 12 encargos en pares (mismo encargo, mismas referencias y mismo tamaño; solo
+  cambia `prompt_compiler_version`), cada uno **2 veces** = **24 pares, 48 imágenes**. Se
+  generó solo la escena cruda, sin componer nada.
+  - 8 imágenes publicitarias (`static_flyer`): 5 en 9:16 y 3 en 4:5.
+  - 2 galerías de 2 diapositivas cada una (gancho y llamada a la acción).
+  - Hay casos con foto del producto, con logo en la escena (6 de 10) y solo escena (F5, F6).
+  - 7 de los 10 encargos traen llamada a la acción, ubicación u horario.
+  - F1 y F2 reproducen las dos historias del defecto.
+  - Arnés: `packages/api/evals/scene_text_v4/` (`run.py`, `cases.json`, `contact_sheet.py`).
+    Cada POST pasó por `LedgerTransport` con la tabla `v9`.
+- **Puntuación:** la hizo una persona (este agente), mirando cada una de las 48 imágenes, sin
+  juez automático.
+  - (a) texto inventado: cualquier letra que no esté en el producto, su empaque o el logo;
+  - (b) botón, píldora, cinta, franja o elemento de interfaz;
+  - (c) letras reales conservadas cuando la referencia las traía;
+  - (d) zonas de arriba y abajo tranquilas;
+  - (e) calidad y fidelidad al producto, de 1 a 5.
+  - Aparte se anotó el logo pegado como disco flotante y no sobre una superficie.
+
+### Resultados (24 pares)
+
+| Criterio | Compilador 3 | Compilador 4 |
+|---|---|---|
+| (a) Texto inventado | **15/24** | **4/24** |
+| (b) Botón, píldora, cinta o franja | **7/24** | **0/24** |
+| (a) o (b), alguno de los dos | 15/24 | 4/24 |
+| (c) Letras reales del envase conservadas (botellas del combo) | 4/4 | 4/4 |
+| (d) Arriba y abajo tranquilos | 12/24 | 21/24 |
+| (e) Calidad media (1–5) | 3,79 | 3,88 (12 pares iguales, 7 mejores, 5 peores) |
+| Logo como disco flotante | 3/24 | 3/24 |
+
+- **En pares:** en 11 pares falla solo el 3; en **0 pares falla solo el 4**; en 4 fallan los
+  dos; en 9 no falla ninguno. Prueba de signos sobre los 11 pares discordantes: p ≈ 0,001 para
+  (a)/(b). Para los botones solos, 7 a 0: p ≈ 0,016.
+- **Imagen publicitaria** (`ad_scene_prompt`, 16 pares): texto inventado 11/16 → **1/16**.
+  - El único caso del 4 son formas de neón desenfocadas al fondo que parecen letras (F3, rep. 2).
+  - El defecto del fundador se reprodujo con el 3 en 4 de 4 imágenes de F1 y F2: letreros
+    inventados («Korner Center»), titulares sin sentido y píldoras («Nigler», «SIBTRNOW»).
+  - Con el 4 las mismas 4 imágenes salieron limpias.
+- **Galería** (`carousel_scene_prompt`, 8 pares): texto inventado **4/8 → 3/8**. Aquí el
+  compilador 4 casi no mejora:
+  - **G2, diapositiva de gancho sin logo: 2 de 2 con titular en colores de la marca en los dos
+    compiladores.** Con el 3: «SALLHE PAPA» y «SIFUUYAPA». Con el 4: «UNUBND» y «Unblountd
+    biabel», que es **el nombre de la letra «Unbounded» dibujado como titular**.
+    - `_image_typefaces_cue_v4` nombra la letra y quitó el «without drawing any letters» que
+      tenía la línea del 3 en la galería.
+    - Hipótesis fuerte, no probada: el nombre de la letra en el prompt se dibuja.
+  - G2, diapositiva de llamada a la acción, rep. 1, compilador 4: letrero de tienda con letras
+    sin sentido y **un letrero de McDonald's (marca de un tercero)** al fondo. Pasó 1 vez en 2.
+- **Otros fallos del 4 que no son texto:**
+  - recortes de papel y piezas de plástico en los colores de la marca, tirados en la mesa
+    (F6 2/2 y F7 rep. 2): la línea de la paleta «as props» se toma literal;
+  - cinco manos amontonadas (F8 rep. 1);
+  - logo alterado con un aro rojo (F2 rep. 2);
+  - logo flotante encima de la botella de Colombiana (F4 rep. 2).
+  - Con el 3 el logo flotante aparece las mismas veces (3/24).
+- **Fallos del 3 que el 4 quitó:**
+  - titulares inventados con el nombre de la marca: «Bianki» en grande y un empaque inventado
+    «bianki sabe bien · ensalada fresca» en F5, donde no se mandó logo;
+  - franjas blancas de marco (F8 rep. 2);
+  - bloques de cinta con letras (F7 rep. 2).
+
+### Costo
+
+- **Gasto: US$2,322** de un tope de US$3, según la bitácora de `LedgerTransport`.
+  - 48 imágenes buenas: US$0,045 cada una, más US$0,003 por la segunda referencia en los casos
+    con logo.
+  - US$0,09 por 2 cortes de conexión en F5 rep. 1 compilador 3 (`ReadTimeout`,
+    `RemoteProtocolError`). Se anotaron al peor caso; puede que BytePlus no los haya cobrado.
+  - 15 intentos fallidos por una caída de DNS local (`ConnectError`): US$0, nunca llegaron.
+- Mediana: 40 s por imagen.
+- Costo por pieza: **sin cambio**. El compilador 4 no agrega llamadas ni referencias; el prompt
+  crece unos 130 caracteres.
+
+### Veredicto
+
+**Publicar (ship).** Para la imagen publicitaria, el compilador 4 corrige el defecto reportado:
+botones 7 → 0 y texto inventado 11/16 → 1/16. En ningún par quedó peor que el 3 en texto o
+botones, y no baja la calidad.
+
+Lo que queda abierto y se reporta, no se esconde:
+
+- **La galería no queda resuelta.** La diapositiva de gancho sin logo sigue dibujando un
+  titular (2/2), ahora con el nombre de la letra.
+- **Seguimiento propuesto (compilador 5):** quitar el nombre de la letra de todo prompt de
+  Seedream, porque a un modelo de imagen no le sirve como estilo y se dibuja. Medirlo con la
+  diapositiva G2-s1 (US$0,09 por par).
+- **Muestra pequeña:** una marca, un rubro, 12 encargos, 2 repeticiones, sin semilla fija. El
+  efecto en la imagen publicitaria es grande y consistente. Los fallos de la galería (3 de 8) y
+  el letrero de una marca de un tercero (1 de 24) no tienen poder para dar una tasa.
+
+### Lo que no se midió
+
+- Formatos feed 1:1 y reel. Tampoco la ruta del primer cuadro de video ni la escena con fondo
+  propio (`background_key`).
+- Otras marcas y rubros. Bianki es un negocio del fundador.
+- Pieza compuesta: no se probó si las zonas tranquilas sirven de verdad bajo el gancho y la
+  llamada a la acción de Remotion.
+- Ningún juez automático. La puntuación es de una sola persona y no tiene segunda anotación.
+- El cobro real de los dos cortes de conexión. Se puede verificar en la facturación de
+  ModelArk (T+1).
+
+---
+
+<a id="mejorar-texto-002"></a>
+
+## MEJORAR-TEXTO-002 — La escena de una imagen pedía mostrar el precio: `context-v5-scene-no-text` (Claude Sonnet 5.5, m-25017274) — 2026-11-13
+
+- **Por qué:** en la prueba en vivo con Bianki (2026-11-13), «Mejorar mi texto» sobre «Describe
+  la escena» (pieza Imagen) devolvió en todas las versiones el precio de «Datos clave» como algo
+  que se ve en la foto. Ejemplos textuales de producción, con Precio $22.000: «…El precio
+  $22.000 se ve claro.», «…Precio $22.000 a la vista.», «Cartel con $22.000 visible junto al
+  plato.». Ese texto llega al modelo de imagen como escena. Desde #629/#631, el compilador de
+  prompts 4 prohíbe texto, letreros y precios en la imagen.
+- **Causa confirmada:** la escena usaba las mismas reglas que el texto de la publicación:
+  «Conserva cada petición, prohibición, cifra…», «qué se debe ver o decir». Los «Datos clave»
+  llegaban igual que en un texto, y ninguna regla prohibía escribir en la imagen.
+- **Cambio:**
+  - Prompt `context-v5-scene-no-text`. En una escena se describe solo lo que se ve. La imagen
+    no lleva nada escrito. Los «Datos clave» solo orientan lo que se ve (un 2x1 son dos
+    unidades en la mesa).
+  - En el pedido, esos datos llegan con la marca «solo orientan lo que se ve; nunca se escriben
+    en la imagen».
+  - La lista de «datos añadidos» ya no cuenta como hecho lo que es dirección visual de una
+    escena: objetos, luz, lugar, manos.
+  - Filtro determinista (`scene_text_request`). Descarta la versión de escena que nombra
+    precio, letrero, cartel, etiqueta, rótulo, aviso, pancarta, texto, letras o algo escrito.
+    También la que lleva «$» o una cifra de «Datos clave». Si quedan versiones, se muestran;
+    si no queda ninguna, sigue el camino de fallo de siempre.
+  - Dos excepciones medidas: las negaciones («Sin texto en la imagen», «Nada escrito») y las
+    palabras que el dueño escribió él mismo. El ejemplo del campo dice «la etiqueta de frente»:
+    es la etiqueta impresa del vaso.
+  - El texto de la publicación (no la escena) sigue llevando el precio como hasta ahora.
+- **Entradas:** 6 escenas FICTICIAS nuevas con precio en «Datos clave» (shawarma $22.000, 2x1
+  y 18.000, combo 25.000, ensalada $19.500, domicilio gratis desde $30.000, papas 12.000), más
+  los 6 casos de MEJORAR-TEXTO-001. Dos pulsaciones por caso; la segunda es «Ver otras tres».
+  `packages/api/evals/mejorar_texto/` (`--only escena-precio`; `--module-file` corre el
+  `context_ai.py` de `origin/main` para la línea de base).
+- **Medida «pide texto en la imagen»:** comprobación propia de la evaluación, independiente del
+  filtro del producto. Cuenta las mismas palabras, «$» y cifras de «Datos clave», con las mismas
+  excepciones. En una primera versión también contaba «visible», y eso marcaba «sin rostro
+  visible»: se quitó y los números de abajo están recontados así.
+
+| Medida | Antes `context-v4-three-versions` | Después `context-v5-scene-no-text` |
+|---|---|---|
+| Escenas con precio: versiones que piden precio, letrero o texto en la imagen | **24 de 36 (67 %)** | **0 de 33 (0 %)** |
+| Escenas con precio: versiones que cierran con «Pide por WhatsApp» (un llamado que también se dibujaría) | 12 de 36 | 0 de 33 |
+| Escenas con precio: similitud entre versiones de una pulsación / entre pulsaciones (máximo) | 0,207 / 0,485 | 0,128 / 0,186 |
+| Textos de publicación (5 casos): similitud entre versiones / entre pulsaciones (máximo) | 0,303 / 0,683 | 0,282 / 0,548 |
+| Textos de publicación: el combo conserva su precio 25.000 | sí | sí (6 de 6 versiones) |
+| Repetidas, números inventados, pulsaciones fallidas | 0 / 0 / 0 | 0 / 0 / 0 |
+| Costo por pulsación (escena / texto) | US$0,0063 / US$0,0066 | US$0,0058 / US$0,0068 |
+
+- **Versiones descartadas por el filtro en la corrida final:** 3 de 36, todas por «Nada
+  escrito en la imagen», una negación que el filtro aún no conocía. Se agregó «nada» a las
+  negaciones y se comprobó sin gastar, con esos tres textos exactos, que ahora pasan.
+  Por eso se muestran 33 de 36.
+- **Borradores en `results/`:**
+  - `v5-escenas-precio-antes-de-negaciones.json`: el filtro aún no aceptaba negaciones. Dos
+    pulsaciones quedaron sin ninguna versión porque todas decían «Sin texto en la imagen».
+  - `v5-borrador-todos.json`: los 12 casos con el prompt v5 antes de acotar «datos añadidos»
+    en escenas. Los números de texto de publicación de la tabla salen de aquí; ese cambio solo
+    nombra la ESCENA.
+- **«Datos añadidos»:** antes del ajuste, 3 pulsaciones de escena listaban utilería como si
+  fueran datos inventados («portátil cerrado», «taburete»). Después, 1 («banca de parque»).
+  El aviso de la pantalla sigue teniendo sentido: «Revisa estos datos, que la IA añadió y no
+  venían de ti, en alguna de estas versiones: …».
+- **Gasto de la prueba:** ≈ US$0,42 (US$0,39 registrados en `results/` más dos corridas de
+  depuración de un caso, unos US$0,03), dentro del tope de US$0,50.
+- **Conclusión:** se queda `claude-sonnet-5-5` @ `low`.
+- **Sin medir:**
+  - El compilador de prompts 4 con estas escenas y la imagen que sale de ellas (no se generó
+    ninguna imagen).
+  - Escenas de clientes reales.
+  - Que el desplazamiento al campo tras elegir una tarjeta funcione en el teléfono dentro de la
+    app. Solo se comprobó en una maqueta local con la misma
+    estructura: el campo queda a 12 px bajo el encabezado fijo. Antes quedaba debajo de él.
+
+### Adenda tras la revisión de código: filtro final y juez independiente (mismo día)
+
+La revisión encontró que el filtro se pasaba de estricto en unos casos y se quedaba corto en
+otros. También encontró que la medida «pide texto en la imagen» copiaba la lista de palabras
+del propio filtro: el «0 de 33» se confirmaba en parte a sí mismo.
+
+**Cambios en el filtro (`scene_text_request`):**
+
+- Las cifras solo cuentan si vienen de un dato con forma de precio: lleva un signo o una
+  palabra de moneda, o una cifra de 4 dígitos o más. «2 shawarmas», «las 2 de la tarde» y
+  «vaso de 500 ml» pasan.
+- El precio también se detecta escrito como «22 mil» o «veintidós mil».
+- Términos nuevos: anuncio, valla, pizarra o pizarrón, sticker o calcomanía, escritos o
+  escritas, leyenda, tipografía, valor.
+- «menú» solo cuenta en frases de menú escrito: «menú en la pared», «menú escrito», «en la
+  pizarra», «colgado», «impreso». La palabra sola no: «el plato del menú del día» describe
+  comida, y en más de 150 versiones de escena medidas nunca pidió escritura. Se sacó
+  «tablero», porque también es la tabla de madera donde se sirve.
+- Una negación solo vale justo antes del término que niega: «sin texto», «ni carteles»,
+  «nada escrito», «sin ningún letrero», «no lleva texto». En «sin sombras y precio visible»
+  la versión se descarta.
+- Las palabras del dueño se comparan como palabras enteras: «contexto» ya no deja pasar
+  «texto». La única excepción es «etiqueta», la etiqueta impresa del producto. Un precio o un
+  cartel que pide el dueño también se descarta, porque la imagen no lo lleva igual.
+- Las versiones descartadas se mandan como «ya mostradas» en la pulsación siguiente, para no
+  pagar otra vez por el mismo texto. Si no queda ninguna, el dueño lee «No pudimos mejorar tu
+  texto esta vez. Tu texto quedó igual: puedes crear así o intentarlo de nuevo.».
+
+**Segunda revisión (mismo día, sin cambio de prompt ni gasto):**
+
+- La revisión probó unas 90 frases. Todas quedaron fijadas en una tabla de pruebas
+  (`test_creative_context_ai.py`, «must pass» / «must drop»).
+- El dinero en la escena se descarta aunque el precio no esté en «Datos clave»: «$», dólares,
+  pesos, bolívares, Bs, USD, COP, lucas, y «número + mil» en cifras o en palabras, con tilde o
+  sin ella.
+- Los precios de «Datos clave» solo bloquean cifras de 1.000 o más. «22 mil» cuenta como
+  22.000. Un precio chico («USD 5», «$12», «Bs. 150») ya no bloquea «5 tacos», «las 5 de la
+  tarde», «12 empanadas» ni «150 gramos». Se escribe junto a una moneda, y eso ya se descarta.
+- Términos nuevos: «se lee», «que dice» o «que diga», frase, banner, banderín, globo de
+  diálogo. La excepción de «etiqueta» no cubre «etiqueta que dice…».
+- Pasan «valor agregado», «sin ningún tipo de letrero» y «ni una sola letra».
+
+**Juez independiente de la evaluación (`asks_for_text` en `run_experiment.py`):**
+
+- Está escrito aparte del filtro y es más estricto. Trabaja sobre palabras sueltas, no con las
+  expresiones regulares del producto.
+- Marca cualquier «menú», «etiqueta» o «carta». También palabras de oferta (precio, oferta,
+  promoción, descuento, gratis, valor), «Nx1», «se lee», «que diga», «WhatsApp» y «número».
+- Marca cualquier cifra de 3 dígitos o más, o con separador de miles, el signo «$» y
+  «<número o número en palabras> mil».
+- Las palabras del dueño no tienen excepción.
+- Un término solo se perdona si la palabra anterior, o la anterior a un artículo, es una
+  negación.
+
+| Escenas con precio (6 casos, 2 pulsaciones) | Antes `context-v4-three-versions` | Después, filtro final |
+|---|---|---|
+| Versiones que el juez independiente marca como «pide texto en la imagen» | **24 de 36** | **0 de 36** |
+| Versiones con «WhatsApp» (llamado que se dibujaría) | 12 de 36 | 0 de 36 |
+| Versiones descartadas por el filtro | — | 0 de 36 |
+| Similitud entre versiones de una pulsación / entre pulsaciones (máximo) | 0,207 / 0,485 | 0,166 / 0,287 |
+| Costo por pulsación | US$0,0063 | US$0,0063 |
+
+- Las corridas anteriores del prompt v5, juzgadas con el juez nuevo, también dan 0. Los textos
+  de publicación no cambiaron en esta adenda: el prompt es el mismo y el filtro solo actúa en
+  escenas.
+- **Gasto de la adenda:** US$0,075. Total de MEJORAR-TEXTO-002: ≈ US$0,50.
+
+---
+
+<a id="mejorar-texto-001"></a>
+
+## MEJORAR-TEXTO-001 — «Mejorar mi texto» del generador: tres versiones en vez de una que se repetía (Claude Sonnet 5.5, m-25017274) — 2026-11-13
+
+- **Por qué:** el fundador reportó que «Mejorar mi texto» en «Crear publicación» devolvía siempre
+  lo mismo. Causa: el prompt `context-v3-compact-300` pedía conservar todo y no añadir relleno, el
+  resultado REEMPLAZABA el campo y la segunda pulsación reescribía su propia salida. Decisión del
+  fundador (2026-11-13): tres versiones distintas por pulsación, en tarjetas; el texto original se
+  conserva y se puede recuperar; «Otra versión» pide tres nuevas y manda las ya mostradas; el
+  prompt recibe tipo de publicación, formato y producto; no gasta creaciones.
+- **Modelo:** `claude-sonnet-5-5`, esfuerzo `low`, una herramienta estricta (`propose_context`),
+  sin muestreo propio (sin `temperature`). Antes: una propiedad `context`. Ahora: una propiedad
+  por enfoque (`directa`, `descriptiva`, `cercana`; en la escena de una imagen `producto`,
+  `lugar`, `momento`) más `added_facts`. `max_tokens` 4.096 → 6.144.
+- **Entradas:** 6 textos FICTICIOS de un local de shawarma y ensaladas
+  (`packages/api/evals/mejorar_texto/cases.json`): promoción 2x1, producto nuevo, horario, combo
+  con precio, domicilios y una escena de imagen. Ningún dato de un cliente real.
+- **Método:** `just eval-mejorar-texto` pulsa dos veces por texto. Con v3 la segunda pulsación
+  reescribe la salida de la primera, como hacía la pantalla. Con v4 la segunda es «Otra versión»:
+  el original otra vez y las versiones ya mostradas. Similitud = `difflib.SequenceMatcher.ratio`
+  en minúsculas (1 = idéntico). «Números nuevos» = cifras que no estaban en el texto, los datos
+  clave ni el formato. El costo sale de los registros de consumo de las propias llamadas; se
+  guardan en memoria, no en la base. Resultados en `packages/api/evals/mejorar_texto/results/`.
+
+| Medida (6 textos, 12 llamadas) | Antes `context-v3-compact-300` | Después `context-v4-three-versions` |
+|---|---|---|
+| Similitud entre la 1.ª y la 2.ª pulsación (máximo por texto, promedio) | **0,995** | **0,625** (el más alto: 0,773) |
+| Textos idénticos entre pulsaciones | **4 de 6** | **0** (ni entre pulsaciones ni dentro de una) |
+| Similitud entre las tres versiones de una pulsación (promedio) | — (una sola) | **0,276** (el par más parecido: 0,573) |
+| Jaccard de palabras entre pulsaciones (promedio) | 0,981 | 0,394 |
+| Números nuevos (precio u hora inventados) | 0 | 0 |
+| Errores o versiones descartadas | 0 | 0 |
+| Costo por llamada | US$0,0032 | **US$0,0068** (≈ 720 tokens de entrada, 390–480 de salida) |
+| Tiempo medio por llamada | 2,5 s | 3,9 s |
+
+- **Borrador intermedio (`results/v4-borrador.json`, mismo nombre de versión, nunca publicado):**
+  las versiones eran igual de distintas (0,309 dentro de una pulsación y 0,632 entre
+  pulsaciones), pero 4 de 6 textos nombraban el formato («reel 9:16», «galería 4:5») y la versión
+  cercana usaba jerga regional («parcero», «calientico», «la U»). Se agregaron dos reglas: el tipo
+  de pieza, el tipo de publicación y el formato orientan, pero no se nombran; español neutro sin
+  jerga ni diminutivos. La corrida final no tiene ninguna de las dos fallas. Queda «sin afán» en
+  una versión, aceptable.
+- **`added_facts`:** en 2 de las 12 llamadas finales el modelo listó dirección visual («hojas y
+  verduras frescas…», «el momento de compartir»), no hechos. La pantalla lo muestra como «Revisa
+  estos datos…», igual que antes.
+- **Costo:** se duplica por llamada (US$0,0068 frente a US$0,0032), sigue por debajo de un
+  centavo. Un dueño que pulsa 10 veces al mes gasta unos US$0,07. Ninguna pulsación gasta
+  creaciones. El gasto queda en el registro de consumo en dólares (`potenciar-contexto`).
+- **Gasto total de la prueba:** US$0,20 (US$0,038 antes + US$0,082 borrador + US$0,082 final),
+  dentro del tope autorizado de US$1.
+- **Conclusión:** se queda `claude-sonnet-5-5` @ `low`. No se midió razón para cambiar de modelo.
+- **Sin medir:** el juicio humano de cuál versión es mejor. La similitud solo mide que no se
+  repiten, no la calidad. Tampoco se midió con identidades de marca reales ni con textos de
+  clientes reales; los seis casos son ficticios.
+
+---
+
 <a id="stickers-kawaii-001"></a>
 
 ## STICKERS-KAWAII-001 — Banco pagado: sticker con un personaje tierno del producto (Seedream 5.0 pro) y recorte por color plano frente a `layer_decomposition` (m-25017372) — 2026-11-12

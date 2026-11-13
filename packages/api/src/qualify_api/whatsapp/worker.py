@@ -21,6 +21,12 @@ Modes:
 - default: a pass every `--interval` seconds (5 by default — a reply should leave within
   seconds of being written; at least 1), measured start-to-start, until SIGINT/Ctrl+C.
 
+ADR 48 (m-25017356): the same process also drains the WhatsApp catalog uploads
+(`catalog_sync/worker.py`, `CatalogSyncTick`) as a SEPARATE asyncio task every
+`--catalog-interval` seconds (30 by default; `0` turns it off), so a slow Meta catalog call
+never holds up the outbox. `--once` runs one outbox pass, then one catalog pass. No new
+service and no compose change.
+
 ## Why discovery reads `whatsapp_phone_numbers`, not the outbox
 
 `qualify_admin` holds SELECT on `whatsapp_phone_numbers` and NOT on `whatsapp_outbox`
@@ -44,7 +50,7 @@ from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 from uuid import UUID
 
 from sqlalchemy import select
@@ -55,6 +61,7 @@ logger = logging.getLogger("qualify_api.whatsapp.worker")
 
 DEFAULT_INTERVAL_SECONDS = 5
 MIN_INTERVAL_SECONDS = 1
+DEFAULT_CATALOG_INTERVAL_SECONDS = 30
 
 
 def worker_id() -> str:
@@ -228,6 +235,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_BATCH,
         help=f"Rows claimed per tenant per pass (default {DEFAULT_BATCH}).",
     )
+    parser.add_argument(
+        "--catalog-interval",
+        type=int,
+        default=DEFAULT_CATALOG_INTERVAL_SECONDS,
+        help="Seconds between WhatsApp catalog upload passes (ADR 48; default "
+        f"{DEFAULT_CATALOG_INTERVAL_SECONDS}, 0 = off).",
+    )
     return parser
 
 
@@ -288,41 +302,136 @@ async def run_worker(
     return 0
 
 
+class _CatalogRunner(Protocol):
+    async def run_once(self) -> Any: ...
+
+
+async def run_catalog_loop(
+    make_runner: Callable[[], _CatalogRunner],
+    *,
+    once: bool,
+    interval: int = DEFAULT_CATALOG_INTERVAL_SECONDS,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    clock: Callable[[], float] = time.monotonic,
+    max_ticks: int | None = None,
+    should_stop: Callable[[], bool] = lambda: False,
+) -> int:
+    """The catalog task: same cadence rules as `run_worker`, its own interval. A failing
+    pass is logged and the loop goes on; it never touches the outbox loop."""
+    from qualify_api.whatsapp.catalog_sync.worker import log_report  # noqa: PLC0415
+
+    try:
+        runner = make_runner()
+    except Exception:  # noqa: BLE001 — a catalog misconfiguration must not stop the outbox
+        logger.exception("whatsapp.catalog.start_failed")
+        return 1
+    ticks = 0
+    while not should_stop():
+        started = clock()
+        error = "pass_failed"
+        try:
+            report = await runner.run_once()
+            log_report(report)
+            error = getattr(report, "error", "")
+        except Exception:  # noqa: BLE001 — log and keep going
+            logger.exception("whatsapp.catalog.pass_failed")
+        ticks += 1
+        if once:
+            return 0 if not error else 1
+        if max_ticks is not None and ticks >= max_ticks:
+            return 0
+        await sleep(max(0.0, interval - (clock() - started)))
+    return 0
+
+
+async def _run_all(
+    make_runner: Callable[[], _Runner],
+    make_catalog: Callable[[], _CatalogRunner] | None,
+    *,
+    once: bool,
+    interval: int,
+    catalog_interval: int,
+) -> int:
+    if make_catalog is None or catalog_interval == 0:
+        return await run_worker(make_runner, once=once, interval=interval)
+    if once:
+        outbox = await run_worker(make_runner, once=True, interval=interval)
+        catalog = await run_catalog_loop(make_catalog, once=True, interval=catalog_interval)
+        return max(outbox, catalog)
+    results = await asyncio.gather(
+        run_worker(make_runner, once=False, interval=interval),
+        run_catalog_loop(make_catalog, once=False, interval=catalog_interval),
+    )
+    return max(results)
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
     scoped: Callable[[Iterable[UUID]], _Runner] | None = None,
     production: Callable[[], _Runner] | None = None,
+    catalog_scoped: Callable[[Iterable[UUID]], _CatalogRunner] | None = None,
+    catalog_production: Callable[[], _CatalogRunner] | None = None,
 ) -> int:
+    """`scoped`/`production` build the outbox runner, `catalog_*` the catalog runner. When
+    a test injects the outbox runners and not the catalog ones, the catalog task is off:
+    a test never builds the real catalog tick by accident."""
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.interval < MIN_INTERVAL_SECONDS:
         parser.error(f"--interval must be at least {MIN_INTERVAL_SECONDS} second(s)")
     if args.limit < 1:
         parser.error("--limit must be at least 1")
+    if args.catalog_interval < 0:
+        parser.error("--catalog-interval must be 0 (off) or more")
     _load_dotenv()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 
+    injected = scoped is not None or production is not None
     limit = args.limit
     scoped = scoped or (lambda tenant_ids: scoped_outbox_tick(tenant_ids, limit=limit))
     production = production or (lambda: production_outbox_tick(limit=limit))
+    if not injected:
+        from qualify_api.whatsapp.catalog_sync.worker import (  # noqa: PLC0415
+            production_catalog_tick,
+            scoped_catalog_tick,
+        )
 
+        catalog_scoped = catalog_scoped or (
+            lambda tenant_ids: scoped_catalog_tick(list(tenant_ids), worker_id=worker_id())
+        )
+        catalog_production = catalog_production or (
+            lambda: production_catalog_tick(worker_id=worker_id())
+        )
+
+    make_catalog: Callable[[], _CatalogRunner] | None
     if args.all_tenants:
         make_runner: Callable[[], _Runner] = production
+        make_catalog = catalog_production
         scope = "all-tenants"
     else:
         tenant_ids = list(dict.fromkeys(args.tenants))
         make_runner = lambda: scoped(tenant_ids)  # noqa: E731
+        make_catalog = (lambda: catalog_scoped(tenant_ids)) if catalog_scoped is not None else None
         scope = ",".join(str(t) for t in tenant_ids)
     logger.info(
-        "whatsapp.worker.start scope=%s mode=%s interval=%ss limit=%d",
+        "whatsapp.worker.start scope=%s mode=%s interval=%ss limit=%d catalog_interval=%s",
         scope,
         "once" if args.once else "loop",
         args.interval,
         limit,
+        f"{args.catalog_interval}s" if make_catalog and args.catalog_interval else "off",
     )
     try:
-        return asyncio.run(run_worker(make_runner, once=args.once, interval=args.interval))
+        return asyncio.run(
+            _run_all(
+                make_runner,
+                make_catalog,
+                once=args.once,
+                interval=args.interval,
+                catalog_interval=args.catalog_interval,
+            )
+        )
     except KeyboardInterrupt:
         logger.info("whatsapp.worker.stopped")
         return 0

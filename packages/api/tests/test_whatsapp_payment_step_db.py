@@ -288,3 +288,191 @@ def test_the_current_qr_is_only_an_offered_methods_of_that_business(seeded) -> N
     assert current_qr_key(tenant_id=TENANT, method_id=off_id, brand_id=brand) is None
     assert current_qr_key(tenant_id=TENANT, method_id=offered_id, brand_id=str(uuid4())) is None
     assert current_qr_key(tenant_id=OTHER, method_id=offered_id, brand_id=brand) is None
+
+
+def test_an_archiving_save_snapshots_the_payment_as_stored_and_never_carries_it(seeded) -> None:
+    """m-25018684 `archive_payment`: the stored `_payment` — even one an owner marked
+    received after the handler read the row — goes into the new archive entry when it was
+    the archived order's; the current `_payment` is only the save's own."""
+    from qualify_api.whatsapp.repository import StoredThreadState
+
+    repo = PostgresWhatsAppInboxRepository()
+    old_order = {"items": [], "total": "18", "currency": "USD", "source_message_id": "wamid.o1"}
+    awaiting = {"status": "awaiting", "order_message_id": "wamid.o1", "name": "Pago móvil"}
+    repo.save_thread_state(
+        thread_id=seeded["thread"],
+        tenant_id=TENANT,
+        state=StoredThreadState(context={"_order": old_order, "_payment": awaiting}),
+    )
+    # The owner taps «Pago recibido» between the handler's read and its save.
+    PostgresPaymentStatusStore().mark_received(
+        tenant_id=TENANT,
+        thread_id=seeded["thread"],
+        user_id=seeded["user"],
+        at=NOW,
+        notified=False,
+        outbox_id=None,
+    )
+    cart = {"items": [], "source": "cart", "source_message_id": "wamid.cart"}
+    archive = [{"order": old_order, "archived_at": NOW.isoformat(), "payment": awaiting}]
+    repo.save_thread_state(
+        thread_id=seeded["thread"],
+        tenant_id=TENANT,
+        state=StoredThreadState(context={"_order": cart, "_orders_previous": archive}),
+        archive_payment=True,
+    )
+    context = _context(seeded["thread"])
+    assert "_payment" not in context
+    assert context["_order"]["source_message_id"] == "wamid.cart"
+    (entry,) = context["_orders_previous"]
+    assert entry["payment"]["status"] == "received"  # as stored, not as read
+    assert entry["order"]["source_message_id"] == "wamid.o1"
+
+    # A payment that was NOT the archived order's is not snapshotted; a NEW payment
+    # written by the save (a menu choice) stays current.
+    repo.save_thread_state(
+        thread_id=seeded["thread"],
+        tenant_id=TENANT,
+        state=StoredThreadState(
+            context={"_order": cart, "_payment": {"status": "awaiting", "order_message_id": "x"}}
+        ),
+    )
+    menu = {"items": [], "source_message_id": "wamid.menu"}
+    fresh = {"status": "awaiting", "order_message_id": "wamid.menu"}
+    archive = [
+        {"order": cart, "archived_at": NOW.isoformat(), "payment": {"stale": True}},
+        entry,
+    ]
+    repo.save_thread_state(
+        thread_id=seeded["thread"],
+        tenant_id=TENANT,
+        state=StoredThreadState(
+            context={"_order": menu, "_payment": fresh, "_orders_previous": archive}
+        ),
+        archive_payment=True,
+    )
+    context = _context(seeded["thread"])
+    assert context["_payment"] == fresh
+    newest, older = context["_orders_previous"]
+    assert newest["payment"] is None
+    assert older["payment"]["status"] == "received"  # older entries are untouched
+
+
+def test_payment_flags_are_exclusive(seeded) -> None:
+    from qualify_api.whatsapp.repository import StoredThreadState
+
+    with pytest.raises(ValueError):
+        PostgresWhatsAppInboxRepository().save_thread_state(
+            thread_id=seeded["thread"],
+            tenant_id=TENANT,
+            state=StoredThreadState(),
+            preserve_payment=True,
+            archive_payment=True,
+        )
+
+
+def test_an_archiving_save_that_archived_nothing_leaves_old_entries_alone(seeded) -> None:
+    """A cart written with no current order (nothing archived now) drops a stray
+    `_payment` through the same statement and never rewrites an older archive entry."""
+    from qualify_api.whatsapp.repository import StoredThreadState
+
+    repo = PostgresWhatsAppInboxRepository()
+    older = {"order": {"items": [], "source_message_id": "wamid.old"}, "payment": None}
+    stray = {"status": "awaiting", "order_message_id": "wamid.old"}
+    repo.save_thread_state(
+        thread_id=seeded["thread"],
+        tenant_id=TENANT,
+        state=StoredThreadState(context={"_orders_previous": [older], "_payment": stray}),
+    )
+    cart = {"items": [], "source": "cart", "source_message_id": "wamid.cart"}
+    repo.save_thread_state(
+        thread_id=seeded["thread"],
+        tenant_id=TENANT,
+        state=StoredThreadState(context={"_order": cart, "_orders_previous": [older]}),
+        archive_payment=True,
+    )
+    context = _context(seeded["thread"])
+    assert "_payment" not in context
+    assert context["_orders_previous"] == [older]
+
+
+async def test_a_cart_whose_first_run_died_is_repaired_by_metas_retry(seeded) -> None:
+    """m-25018684: the message insert and the state save are two transactions. A lookup
+    failing between them makes Meta retry; the retry records the order and the handoff."""
+    from sqlalchemy import func, select
+
+    from qualify_api.webhooks.repository import ClaimedEvent
+    from qualify_api.whatsapp.handler import whatsapp_messages_handler
+    from qualify_api.whatsapp.orders import read_order
+    from qualify_api.whatsapp.resolve import PhoneResolution, PhoneResolutionOutcome
+
+    calls = {"n": 0}
+
+    def flaky_lookup(phone_row_id: UUID, ids: object) -> dict:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ConnectionError("transient")
+        return {}
+
+    handle = whatsapp_messages_handler(
+        resolve=lambda pn: PhoneResolution(
+            outcome=PhoneResolutionOutcome.RESOLVED,
+            tenant_id=TENANT,
+            connection_id=seeded["connection"],
+            phone_row_id=seeded["phone_row"],
+        ),
+        repo=PostgresWhatsAppInboxRepository(),
+        cart_product_loader=flaky_lookup,
+        clock=lambda: NOW,
+    )
+    wa_id = f"57{uuid4().int % 10**10:010d}"
+    wamid = f"wamid.cart-{uuid4().hex}"
+    item = {"product_retailer_id": str(uuid4()), "quantity": 1, "item_price": 9, "currency": "USD"}
+    value = {
+        "messaging_product": "whatsapp",
+        "metadata": {"display_phone_number": "1555", "phone_number_id": "pn"},
+        "messages": [
+            {
+                "from": wa_id,
+                "id": wamid,
+                "timestamp": str(int(NOW.timestamp())),
+                "type": "order",
+                "order": {"catalog_id": "c", "product_items": [item]},
+            }
+        ],
+    }
+
+    def event() -> ClaimedEvent:
+        return ClaimedEvent(
+            id=uuid4(),
+            delivery_id=uuid4(),
+            object="whatsapp_business_account",
+            entry_id="waba",
+            field="messages",
+            value=value,
+            attempts=1,
+        )
+
+    with pytest.raises(ConnectionError):
+        await handle(event())
+    with tenant_session(TENANT) as session:
+        thread_id = session.scalars(
+            select(Thread.id).where(Thread.external_thread_id == wa_id)
+        ).one()
+        assert session.get(WhatsAppThreadState, thread_id) is None
+
+    assert (await handle(event())).status == "processed"
+    context = _context(thread_id)
+    order = read_order(context)
+    assert order is not None and order.source_message_id == wamid
+    assert context["_handoff"]["reason"] == "catalog_cart"
+    with tenant_session(TENANT) as session:
+        sends = session.scalar(
+            select(func.count())
+            .select_from(WhatsAppOutboxItem)
+            .where(WhatsAppOutboxItem.thread_id == thread_id)
+        )
+    assert sends == 0
+    before = _context(thread_id)
+    assert (await handle(event())).status == "processed"  # a third delivery: nothing
+    assert _context(thread_id) == before

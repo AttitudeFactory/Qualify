@@ -34,7 +34,7 @@ from sqlalchemy import (
 from sqlalchemy import (
     text as sql_now,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -753,3 +753,200 @@ class BrandSeasonalMedia(Base):
     )
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+# --- 0158 (m-25017356, ADR 48): the WhatsApp catalog upload -------------------------------
+
+CATALOG_SOURCES: tuple[str, ...] = ("qualify", "manual")
+CATALOG_ACCESS_STATES: tuple[str, ...] = ("ok", "missing_permission", "auth_error")
+CATALOG_ITEM_STATES: tuple[str, ...] = ("queued", "uploading", "synced", "error", "deleted")
+CATALOG_ITEM_ERRORS: tuple[str, ...] = (
+    "meta_rejected",
+    "meta_unconfirmed",
+    "no_permission",
+    "send_failed",
+)
+CATALOG_RUN_TRIGGERS: tuple[str, ...] = ("upload_one", "resync_one", "sync_all")
+CATALOG_RUN_STATUSES: tuple[str, ...] = (
+    "pending",
+    "sending",
+    "sent",
+    "finished",
+    "partial",
+    "failed",
+)
+
+
+class WhatsAppCatalog(Base):
+    """The Commerce Manager catalog connected by hand to a brand's WABA and registered by
+    `qualify_api.whatsapp.catalog_sync.connect` (0158, ADR 48 §3). One per WABA and one
+    per brand. `access_state` is set by the worker when Meta refuses the token."""
+
+    __tablename__ = "whatsapp_catalogs"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["brand_id", "tenant_id"],
+            ["brands.id", "brands.tenant_id"],
+            name="fk_wa_catalog_brand_tenant",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["phone_number_row_id", "tenant_id"],
+            ["whatsapp_phone_numbers.id", "whatsapp_phone_numbers.tenant_id"],
+            name="fk_wa_catalog_phone_tenant",
+        ),
+        UniqueConstraint("id", "tenant_id", name="uq_wa_catalog_id_tenant"),
+        UniqueConstraint("waba_id", name="uq_wa_catalog_waba"),
+        UniqueConstraint("brand_id", name="uq_wa_catalog_brand"),
+        CheckConstraint(
+            "link_url IS NULL OR link_url LIKE 'https://%'", name="ck_wa_catalog_link_url"
+        ),
+        CheckConstraint("source IN ('qualify', 'manual')", name="ck_wa_catalog_source"),
+        CheckConstraint(
+            "access_state IN ('ok', 'missing_permission', 'auth_error')",
+            name="ck_wa_catalog_access_state",
+        ),
+        Index("ix_wa_catalog_tenant", "tenant_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=sql_now("gen_random_uuid()")
+    )
+    tenant_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False
+    )
+    brand_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    phone_number_row_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    waba_id: Mapped[str] = mapped_column(Text, nullable=False)
+    catalog_id: Mapped[str] = mapped_column(Text, nullable=False)
+    link_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source: Mapped[str] = mapped_column(Text, nullable=False)
+    access_state: Mapped[str] = mapped_column(Text, nullable=False, server_default="ok")
+    access_checked_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=sql_now("now()"), nullable=False
+    )
+    connected_by: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    connected_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=sql_now("now()"), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=sql_now("now()"), nullable=False
+    )
+
+
+class WhatsAppCatalogSyncRun(Base):
+    """One `items_batch` call (0158): the outbox the worker drains. `request_key` makes a
+    repeated request a no-op; the rows are never deleted by the app (provenance)."""
+
+    __tablename__ = "whatsapp_catalog_sync_runs"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["catalog_row_id", "tenant_id"],
+            ["whatsapp_catalogs.id", "whatsapp_catalogs.tenant_id"],
+            name="fk_wa_catalog_run_catalog_tenant",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint("id", "tenant_id", name="uq_wa_catalog_run_id_tenant"),
+        UniqueConstraint("tenant_id", "request_key", name="uq_wa_catalog_run_request_key"),
+        Index("ix_wa_catalog_run_tenant", "tenant_id"),
+        Index(
+            "ix_wa_catalog_run_claim",
+            "next_attempt_at",
+            postgresql_where=sql_now("status IN ('pending', 'sending', 'sent')"),
+        ),
+        Index("ix_wa_catalog_run_hourly", "catalog_row_id", "sent_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=sql_now("gen_random_uuid()")
+    )
+    tenant_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False
+    )
+    catalog_row_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    request_key: Mapped[str] = mapped_column(Text, nullable=False)
+    trigger: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default="pending")
+    item_ids: Mapped[list[UUID]] = mapped_column(ARRAY(PGUUID(as_uuid=True)), nullable=False)
+    upserts: Mapped[int] = mapped_column(Integer, nullable=False)
+    deletes: Mapped[int] = mapped_column(Integer, nullable=False)
+    items_failed: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    handle: Mapped[str | None] = mapped_column(Text, nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    next_attempt_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=sql_now("now()"), nullable=False
+    )
+    locked_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+    locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(Text, nullable=True)
+    meta_error_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    requested_by: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    requested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=sql_now("now()"), nullable=False
+    )
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    pipeline_version: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class WhatsAppCatalogItem(Base):
+    """One product ever sent to the catalog (0158). `retailer_id` is fixed at the first
+    send and never recalculated (`qualify_app` cannot UPDATE it); `product_id` goes NULL
+    when the product is deleted, so the item can still be deleted in Meta."""
+
+    __tablename__ = "whatsapp_catalog_items"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["catalog_row_id", "tenant_id"],
+            ["whatsapp_catalogs.id", "whatsapp_catalogs.tenant_id"],
+            name="fk_wa_catalog_item_catalog_tenant",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint("id", "tenant_id", name="uq_wa_catalog_item_id_tenant"),
+        UniqueConstraint("catalog_row_id", "retailer_id", name="uq_wa_catalog_item_retailer"),
+        Index(
+            "uq_wa_catalog_item_product",
+            "catalog_row_id",
+            "product_id",
+            unique=True,
+            postgresql_where=sql_now("product_id IS NOT NULL"),
+        ),
+        Index("ix_wa_catalog_item_tenant", "tenant_id"),
+        Index("ix_wa_catalog_item_last_run", "last_run_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=sql_now("gen_random_uuid()")
+    )
+    tenant_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False
+    )
+    catalog_row_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    product_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("brand_products.id", ondelete="SET NULL"), nullable=True
+    )
+    retailer_id: Mapped[str] = mapped_column(Text, nullable=False)
+    state: Mapped[str] = mapped_column(Text, nullable=False)
+    pending_op: Mapped[str | None] = mapped_column(Text, nullable=True)
+    pending_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_pushed_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_pushed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(Text, nullable=True)
+    meta_error_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    sync_version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    last_run_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("whatsapp_catalog_sync_runs.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    pipeline_version: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=sql_now("now()"), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=sql_now("now()"), nullable=False
+    )

@@ -40,9 +40,15 @@ DECIDE_TITLE_MANY = "Falta que decidas qué hacer con {k} partes"
 #: «Sin crear» with nothing moving is its own line — unless the parts were asked for
 #: and the worker has not created any yet (right after `drafting`): «Preparando…».
 STATUS_PREPARING = "Preparando tus partes…"
-STATUS_CREATING = "Creando tus partes: {done} de {total} listas"
-STATUS_READY_ONE = "Tu parte está lista"
-STATUS_READY_MANY = "Tus {total} partes están listas"
+STATUS_CREATING = "Creando tus partes: van {done} de {total}"
+#: m-24921083: «creadas», not «listas» — «Lista» now means only «Me gusta así».
+STATUS_READY_ONE = "Tu parte está creada"
+STATUS_READY_MANY = "Tus {total} partes están creadas"
+#: …and how many of them the owner likes (UI-8 §3). Never a condition of «Aprobar».
+STATUS_LIKED_SOME = "{ready}. Te gustan {liked} de {total}."
+STATUS_LIKED_ONE = "{ready}. Te gusta 1 de {total}."
+STATUS_LIKED_ALL_ONE = "Te gusta tu parte. Cuando quieras, aprueba tu video."
+STATUS_LIKED_ALL_MANY = "Te gustan tus {total} partes. Cuando quieras, aprueba tu video."
 STATUS_MISSING_ONE = "Te falta una parte por crear"
 STATUS_MISSING_MANY = "Te faltan {k} partes por crear"
 #: An approved (or closed) video's parts: only to watch, nothing to decide.
@@ -244,6 +250,8 @@ class PartRowVM:
     duration_text: str = ""
     play_label: str = ""
     pause_label: str = ""
+    #: m-24921083: «Me gusta así» is on (the tile's «✓ Lista»; a second tap takes it off)
+    liked: bool = False
 
 
 @dataclass(frozen=True)
@@ -349,9 +357,17 @@ def part_row_vm(
         shown=row.shown,
         seconds=row.seconds,
         purged=row.purged,
+        liked=is_liked(row),
         buttons=tuple(_button(a, row) for a in row.actions if a in available),
         aria_label=f"Parte {row.shown} de {row.total}, {row.seconds} segundos, {word.lower()}",
     )
+
+
+def is_liked(row: PartProgressRow) -> bool:
+    """m-24921083: the owner marked the part «Me gusta así» (`PartProgressRow.liked`; a
+    liked part reads `READY`). Read with a default so a row from before the mark existed
+    is simply not liked."""
+    return bool(getattr(row, "liked", False)) and row.state is PartState.READY
 
 
 def _preparing(progress: PartProgress) -> bool:
@@ -386,7 +402,15 @@ def status_line(progress: PartProgress) -> str:
     if unmade:
         return STATUS_MISSING_ONE if unmade == 1 else STATUS_MISSING_MANY.format(k=unmade)
     if done == total:
-        return STATUS_READY_ONE if total == 1 else STATUS_READY_MANY.format(total=total)
+        ready = STATUS_READY_ONE if total == 1 else STATUS_READY_MANY.format(total=total)
+        liked = sum(1 for row in progress.parts if is_liked(row))
+        if liked == total:
+            return STATUS_LIKED_ALL_ONE if total == 1 else STATUS_LIKED_ALL_MANY.format(total=total)
+        if liked == 1:
+            return STATUS_LIKED_ONE.format(ready=ready, total=total)
+        if liked:
+            return STATUS_LIKED_SOME.format(ready=ready, liked=liked, total=total)
+        return ready
     return STATUS_CREATING.format(done=done, total=total)
 
 
@@ -466,6 +490,7 @@ def as_state(vm: PartProgressVM) -> dict[str, Any]:
                 "duration_text": r.duration_text,
                 "play_label": r.play_label,
                 "pause_label": r.pause_label,
+                "liked": r.liked,
                 "buttons": [
                     {
                         "action": b.action,
@@ -486,6 +511,10 @@ __all__ = [
     "status_line",
     "STATUS_READY_ONE",
     "STATUS_READY_MANY",
+    "STATUS_LIKED_ALL_MANY",
+    "STATUS_LIKED_ALL_ONE",
+    "STATUS_LIKED_SOME",
+    "is_liked",
     "STATUS_MISSING_ONE",
     "STATUS_MISSING_MANY",
     "STATUS_CREATING",

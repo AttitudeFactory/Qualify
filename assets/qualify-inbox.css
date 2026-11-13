@@ -308,6 +308,34 @@
   background: linear-gradient(135deg, var(--purple-9), var(--pink-9) 55%, var(--orange-9));
   box-shadow: 0 0 0 2px var(--q-control-fill);
 }
+/* m-25017844 — the shared chat row (`Qualify/chat_row.py`), WhatsApp and Instagram alike.
+   The glyph sits on the channel's own scale (`T.PLATFORM_SCALE`: whatsapp green,
+   instagram pink) with that scale's contrast colour, and the initials on the accent's
+   soft tint: tokens only — no gradient by hand, no hsl(), no white. The chat's header
+   keeps its look until the bubbles/thread story (A5). */
+.q-conv-channel.q-chat-channel--whatsapp {
+  background: var(--green-9);
+  color: var(--green-contrast);
+}
+.q-conv-channel.q-chat-channel--instagram {
+  background: var(--pink-9);
+  color: var(--pink-contrast);
+}
+.q-chat-avatar .rt-AvatarFallback {
+  color: var(--accent-12);
+  background: var(--accent-a4);
+}
+/* A picture with no letters to fall back on: the avatar lies over the person icon and
+   its empty fallback is clear, so a picture that fails to load shows the icon. */
+.q-chat-avatar__over {
+  position: absolute;
+  inset: 0;
+  line-height: 0;
+}
+.q-chat-avatar .q-chat-avatar__over .rt-AvatarRoot,
+.q-chat-avatar .q-chat-avatar__over .rt-AvatarFallback {
+  background: transparent;
+}
 .q-conv-avatar-wrap--lg .q-conv-channel {
   width: 1.3rem;
   height: 1.3rem;

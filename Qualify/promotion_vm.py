@@ -14,10 +14,16 @@ from .promotion_audience_vm import AudienceInterestVM
 
 STEP_TITLES = (
     "¿Qué publicación quieres promocionar?",
-    "¿A qué página los llevamos?",
+    "¿Qué quieres que haga la gente?",
     "¿A quién quieres llegar?",
     "¿Cuánto quieres invertir?",
 )
+# Lead-ad buttons in the order the owner sees them (m-25026344); codes from `lead_ads.LEAD_CTAS`.
+LEAD_CTA_LABELS = {
+    "GET_QUOTE": "Pedir cotización",
+    "SIGN_UP": "Registrarme",
+    "LEARN_MORE": "Más información",
+}
 CHECK_LABELS = {
     "permissions": "Permisos de Meta",
     "account": "Cuenta publicitaria",
@@ -47,6 +53,12 @@ class MessagingDestinationVM:
 
 
 @dataclass(frozen=True)
+class LeadFormChoiceVM:
+    id: str
+    name: str
+
+
+@dataclass(frozen=True)
 class PromotionSourceVM:
     id: str
     account_label: str
@@ -63,12 +75,18 @@ class PromotionSourceVM:
     connection_id: str = ""
     enhancements: BrandEnhancementsVM = field(default_factory=BrandEnhancementsVM)
     brand_id: str = ""
+    # Ready (published) forms of this source's account, last used first.
+    lead_forms: list[LeadFormChoiceVM] = field(default_factory=list)
+    lead_forms_error: str = ""
 
 
 @dataclass(frozen=True)
 class PromotionDraftVM:
     source_id: str = ""
+    goal: str = "visit"  # "visit" (link) or "lead" (Meta form)
     link_url: str = ""
+    lead_form_id: str = ""
+    lead_cta: str = "GET_QUOTE"
     city_name: str = ""
     location_key: str = ""
     location_kind: str = "city"
@@ -222,6 +240,10 @@ def step_problem(draft: PromotionDraftVM, step: int, timezone_name: str = "") ->
     """Local form guidance only; Meta eligibility, minimum and payment are server gates."""
     if step == 1:
         return "Elige la publicación que quieres promocionar." if not draft.source_id else ""
+    if step == 2 and draft.goal == "lead":
+        if not draft.lead_form_id:
+            return "Elige el formulario que llenará la gente."
+        return "" if draft.lead_cta in LEAD_CTA_LABELS else "Elige el texto del botón."
     if step == 2:
         try:
             url = urlsplit(draft.link_url.strip())

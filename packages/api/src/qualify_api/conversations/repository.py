@@ -91,7 +91,9 @@ class ThreadRecord:
     last_read_at: datetime | None
     created_at: datetime
     # The counterpart's profile as the channel reported it (0065); all None until a sync
-    # fetched it. `counterpart_profile_at` says how fresh the (expiring) picture is.
+    # fetched it. `counterpart_profile_at` is when the next lookup is due from: the last
+    # lookup's instant, or one back-dated so a nameless thread is retried sooner than the
+    # 24 h TTL (m-25017852, `sync.NAMELESS_RETRY_AFTER`).
     counterpart_name: str | None = None
     counterpart_username: str | None = None
     counterpart_avatar_url: str | None = None
@@ -306,6 +308,10 @@ def _as_utc(value: datetime) -> datetime:
     return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
+def _coalesce(value: str | None, stored: str | None) -> str | None:
+    return stored if value is None else value
+
+
 # --------------------------------------------------------------------------------------
 # Postgres
 # --------------------------------------------------------------------------------------
@@ -341,6 +347,8 @@ _UPSERT_THREAD = text(
 #     of an inference);
 #   * RF — the 0075 fill above, never onto a mention.
 #   A confirmed kind is never replaced by a weaker reading; id / URL are fill-only.
+# - the author's handle (m-25017852): the webhook carries only the sender's id, so a row it
+#   stored first has `author_username` NULL; the poll's reading (`from.username`) fills it.
 # A pair already stored is never replaced, nothing else is ever rewritten, and `created`
 # is only true for a real insert.
 _CM = "EXCLUDED.story_mention_basis IN ('graph', 'attachment')"
@@ -382,6 +390,7 @@ _INSERT_MESSAGE = text(
            story_reply_url = CASE WHEN {_CM} THEN NULL
                                   WHEN {_RD} OR {_RF} THEN EXCLUDED.story_reply_url
                                   ELSE messages.story_reply_url END,
+           author_username = COALESCE(messages.author_username, EXCLUDED.author_username),
            choice_kind = COALESCE(messages.choice_kind, EXCLUDED.choice_kind),
            choice_payload = CASE WHEN messages.choice_kind IS NULL
                                  THEN EXCLUDED.choice_payload
@@ -410,6 +419,7 @@ _INSERT_MESSAGE = text(
      WHERE messages.direction = 'inbound'
        AND ({_RF}
             OR (messages.choice_kind IS NULL AND EXCLUDED.choice_kind IS NOT NULL)
+            OR (messages.author_username IS NULL AND EXCLUDED.author_username IS NOT NULL)
             OR {_CM_CHANGES} OR {_HM} OR {_RD})
     RETURNING (xmax = 0) AS created
     """
@@ -1298,6 +1308,7 @@ class MemoryConversationRepository:
         if key in self._message_keys:
             self._merge_story(entry, message)
             self._fill_choice(entry, message)
+            self._fill_author(entry, message)
             return False
         self._message_keys.add(key)
         entry.messages.append(
@@ -1353,6 +1364,20 @@ class MemoryConversationRepository:
                     choice_kind=message.choice_kind,
                     choice_payload=message.choice_payload,
                 )
+
+    @staticmethod
+    def _fill_author(entry: _MemoryThread, message: RemoteMessage) -> None:
+        """The Postgres `ON CONFLICT` author fill (m-25017852): a NULL handle on an inbound
+        row takes the one a later reading carries; a stored handle is never replaced."""
+        if message.author_username is None:
+            return
+        for index, stored in enumerate(entry.messages):
+            if (
+                stored.external_message_id == message.external_message_id
+                and stored.author_username is None
+                and stored.direction == "inbound"
+            ):
+                entry.messages[index] = replace(stored, author_username=message.author_username)
 
     def store_message(
         self,
@@ -1505,9 +1530,10 @@ class MemoryConversationRepository:
         rec = entry.record
         entry.record = replace(
             rec,
-            counterpart_name=profile.name or rec.counterpart_name,
-            counterpart_username=profile.username or rec.counterpart_username,
-            counterpart_avatar_url=profile.avatar_url or rec.counterpart_avatar_url,
+            # `COALESCE` twins: only None keeps the stored value (as in `_SAVE_PROFILE`).
+            counterpart_name=_coalesce(profile.name, rec.counterpart_name),
+            counterpart_username=_coalesce(profile.username, rec.counterpart_username),
+            counterpart_avatar_url=_coalesce(profile.avatar_url, rec.counterpart_avatar_url),
             counterpart_profile_at=now,
         )
 

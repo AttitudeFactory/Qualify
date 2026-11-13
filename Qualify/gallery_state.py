@@ -41,6 +41,7 @@ from .creative_vm import (  # noqa: F401
     APPROVED_OPEN_ACTION,
     APPROVED_TOAST,
     APPROVED_TOAST_ACTION,
+    OWN_MEDIA_KIND,
     approval_notice,
     previews_short_text,
     videos_short_text,
@@ -66,6 +67,7 @@ from .planner_vm import (
     VIEW_STICKERS,
     CategoryOptionVM,
     PostOptionVM,
+    approved_kind_choices,
     approved_redirect,
     count_line,
     filter_posts,
@@ -184,6 +186,8 @@ class GalleryState(rx.State):
     busy_post_id: str = ""
     reject_post_id: str = ""
     reject_post_title: str = ""
+    #: The piece being discarded is the owner's own upload (m-25019224).
+    reject_post_own: bool = False
     #: Opened from Inicio's «videos vencen pronto»: the soonest-expiring first.
     sort_by_expiry: bool = False
     # m-24986801: which list is open (`?ver=`), and whether the address chose it — when
@@ -312,7 +316,7 @@ class GalleryState(rx.State):
 
     @rx.var
     def approved_kind_options(self) -> list[CategoryOptionVM]:
-        return kind_options(self.approved)
+        return approved_kind_choices(self.approved)
 
     @rx.var
     def approved_is_filtered(self) -> bool:
@@ -385,9 +389,13 @@ class GalleryState(rx.State):
             self.view = VIEW_STICKERS
         self.view_chosen = True  # decided once per visit
 
+    def _approved_kinds(self) -> set[str]:
+        """The «Tipo» values that exist on «Aprobados» now (a kind, or a group)."""
+        return {option.value for option in approved_kind_choices(self.approved)}
+
     @rx.event
     def set_approved_kind_filter(self, value: str):
-        known = {p.content_kind for p in self.approved}
+        known = self._approved_kinds()
         self.approved_kind_filter = value if value in known else GALLERY_FILTER_ALL
         return rx.call_script(replace_url_script(self._address()))
 
@@ -513,7 +521,7 @@ class GalleryState(rx.State):
             self.posts = list(data.posts)
             self.categories = list(data.categories)
             self.loading = False
-            if self.approved_kind_filter not in {p.content_kind for p in self.approved}:
+            if self.approved_kind_filter not in self._approved_kinds():
                 self.approved_kind_filter = GALLERY_FILTER_ALL
         yield GalleryState.settle_view
 
@@ -656,12 +664,17 @@ class GalleryState(rx.State):
     def ask_reject_post(self, post_id: str, title: str) -> None:
         self.reject_post_id = post_id
         self.reject_post_title = title
+        # m-25019224: an own upload is not taken off Instagram — the dialog says so
+        self.reject_post_own = any(
+            p.post_id == post_id and p.content_kind == OWN_MEDIA_KIND for p in self.posts
+        )
 
     @rx.event
     def set_reject_post_open(self, value: bool) -> None:
         if not value:
             self.reject_post_id = ""
             self.reject_post_title = ""
+            self.reject_post_own = False
 
     @rx.event(background=True)
     async def confirm_reject_post(self):

@@ -1,11 +1,14 @@
-"""Production image-pair preparation and consent; no changes to the published wizard."""
+"""Production image- or video-pair preparation and consent; the published wizard is
+untouched."""
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import io
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import IO, Any
 from uuid import UUID, uuid4
 
 from PIL import Image, UnidentifiedImageError
@@ -29,16 +32,24 @@ from qualify_api.ads.promotions import (
 )
 from qualify_api.ads.unpublished import (
     MAX_IMAGE_BYTES,
+    MAX_VIDEO_BYTES,
+    MAX_VIDEO_SECONDS,
+    MIN_VIDEO_SECONDS,
+    TOO_LARGE,
     ImageAdForm,
     ImageSelection,
     ImageSource,
     UnpublishedUnavailable,
+    VideoSelection,
     creative_payload,
+    mp4_facts,
+    video_creative_payload,
 )
 from qualify_api.ads.unpublished_repository import (
     UnpublishedRepository,
     guard_source,
     load_image_source,
+    thumbnails,
 )
 from qualify_api.connections.ad_accounts import GraphAdAccountReader, PostgresAccountBinding
 
@@ -78,6 +89,87 @@ def image_bytes(gate: ObjectGate, source: ImageSource, asset: ImageSelection) ->
         raise UnpublishedUnavailable(
             "No pudimos leer la imagen de esta pieza. Vuelve a elegir las imágenes."
         ) from None
+
+
+RANGE_BYTES = 16 * 1024 * 1024  # largest window one read may fetch (moov ≤ 8 MiB, chunk ≤ 16)
+
+
+class RangedObject:
+    """Seekable, read-only view of one stored object. Every read is one ranged GET
+    (`ObjectGate.open_range`), so only the requested window is in memory: `open_object`
+    on R2 downloads the whole object first (`S3Store.open`). Blocking — call it off the
+    event loop."""
+
+    def __init__(self, gate: ObjectGate, tenant: UUID, key: str) -> None:
+        self.gate, self.tenant, self.key = gate, tenant, key
+        self.size = gate.object_size(tenant, key)  # HEAD, no body
+        self.position = 0
+
+    def seek(self, offset: int, whence: int = 0) -> int:
+        base = (0, self.position, self.size)[whence]
+        self.position = max(0, base + offset)
+        return self.position
+
+    def tell(self) -> int:
+        return self.position
+
+    def read(self, size: int = -1) -> bytes:
+        end = self.size if size is None or size < 0 else min(self.size, self.position + size)
+        if end <= self.position:
+            return b""
+        if end - self.position > RANGE_BYTES:
+            raise OSError("read window too large")
+        with self.gate.open_range(self.tenant, self.key, self.position, end - 1) as part:
+            data = part.read()
+        self.position += len(data)
+        return data
+
+
+def video_facts(gate: ObjectGate, source: ImageSource, asset: VideoSelection) -> tuple[str, int]:
+    """(SHA-256, bytes) of a server-resolved MP4 in one pass, local limits checked before any
+    Meta call. Size comes from a HEAD before any byte is read; then ranged reads of at most
+    8 MiB. Blocking: async callers run it with `asyncio.to_thread`."""
+    try:
+        if gate.object_size(source.tenant_id, asset.object_key) > MAX_VIDEO_BYTES:
+            raise UnpublishedUnavailable(TOO_LARGE)
+        stream = RangedObject(gate, source.tenant_id, asset.object_key)
+        size, seconds, width, height = mp4_facts(stream)
+        if not MIN_VIDEO_SECONDS <= seconds <= MAX_VIDEO_SECONDS:
+            raise UnpublishedUnavailable(
+                "Cada video del anuncio debe durar entre 1 y 60 segundos. Recórtalo o elige otro."
+            )
+        if (width, height) != (asset.width, asset.height):
+            raise UnpublishedUnavailable("El video cambió. Vuelve a elegir sus formatos.")
+        hasher = hashlib.sha256()
+        while chunk := stream.read(8 * 1024 * 1024):
+            hasher.update(chunk)
+        return hasher.hexdigest(), size
+    except (OSError, ObjectNotFound):
+        raise UnpublishedUnavailable(
+            "No pudimos leer el video de esta pieza. Vuelve a elegir los videos."
+        ) from None
+
+
+class _Hashing:
+    """Hashes exactly the bytes handed to the uploader, to prove they are the measured ones."""
+
+    def __init__(self, stream: IO[bytes], hasher: Any) -> None:
+        self.stream, self.hasher = stream, hasher
+
+    def read(self, size: int = -1) -> bytes:
+        data = self.stream.read(size)
+        self.hasher.update(data)
+        return data
+
+
+VIDEO_STATE = {"ready": "ready_remote", "processing": "processing", "error": "failed"}
+VIDEO_WAIT = {
+    "processing": "Meta todavía está preparando tu video. Ya lo recibió: no tienes que "
+    "subirlo de nuevo. Vuelve en unos minutos.",
+    "submitting": "El video se está enviando a Meta. Vuelve a intentarlo en unos minutos.",
+    "failed": "Meta no aceptó este video. Prueba con otro, de 1 a 60 segundos y en MP4, "
+    "o pide ayuda.",
+}
 
 
 class _Binding:
@@ -149,7 +241,7 @@ class UnpublishedImageService:
     async def _upload(
         self, source: ImageSource, asset: ImageSelection, client: MarketingClient, actor: UUID
     ) -> tuple[str, str]:
-        data = image_bytes(self.gate, source, asset)
+        data = await asyncio.to_thread(image_bytes, self.gate, source, asset)
         digest = hashlib.sha256(data).hexdigest()
         self._guard(source, actor)
         row, claimed = self.recipes.claim_upload(source, asset, digest)
@@ -168,6 +260,90 @@ class UnpublishedImageService:
         self.recipes.finish_upload(source.tenant_id, row["id"], value)
         self._guard(source, actor)
         return value, digest
+
+    async def _upload_video(
+        self,
+        source: ImageSource,
+        asset: VideoSelection,
+        facts: tuple[str, int],
+        client: MarketingClient,
+        actor: UUID,
+    ) -> tuple[str, str]:
+        """Send once, then read Meta's status once per call: (state, video id) for
+        submitting/processing/ready_remote, an owner error otherwise. A creative is only built
+        from a video Meta reported ready; re-running `prepare` is the explicit reconcile step."""
+        digest, size = facts
+        self._guard(source, actor)
+        row, token = self.recipes.claim_video(source, asset, digest, size)
+        if token is not None:
+            sent = named = False
+
+            def fence() -> None:
+                nonlocal sent
+                self._guard(source, actor)
+                sent = True
+
+            def started(value: str) -> None:
+                nonlocal named
+                self.recipes.video_named(source.tenant_id, row["id"], token, value)
+                named = True
+
+            hasher = hashlib.sha256()
+            try:
+                stream = await asyncio.to_thread(
+                    RangedObject, self.gate, source.tenant_id, asset.object_key
+                )
+                video_id = await client.upload_video(
+                    _Hashing(stream, hasher), size, before_write=fence, started=started
+                )
+            except BaseException as error:
+                # A definite Meta refusal of `start` (rate limit, expired token) created no
+                # video: the claim goes back to ready. Anything after `start` is unknown.
+                definite = isinstance(error, MarketingError) and not error.outcome_unknown
+                state = "ready" if not sent or (definite and not named) else "unknown"
+                self.recipes.finish_video(source.tenant_id, row["id"], token, state)
+                raise
+            if hasher.hexdigest() != digest:
+                self.recipes.finish_video(
+                    source.tenant_id, row["id"], token, "failed", "bytes changed during upload"
+                )
+                raise UnpublishedUnavailable(
+                    "El video cambió mientras se enviaba. Elígelo otra vez."
+                )
+            self.recipes.finish_video(source.tenant_id, row["id"], token, "processing")
+            row = {**row, "state": "processing", "video_id": video_id}
+        if row["state"] == "processing":
+            state = VIDEO_STATE[await client.video_status(row["video_id"])]
+            self._guard(source, actor)
+            self.recipes.video_checked(source.tenant_id, row["id"], state)
+            row = {**row, "state": state}
+        if row["state"] in {"ready_remote", "processing", "submitting"}:
+            return row["state"], row["video_id"]
+        raise UnpublishedUnavailable(
+            VIDEO_WAIT.get(
+                row["state"],
+                "No pudimos confirmar la carga del video en Meta. "
+                "Pide ayuda para revisarla antes de continuar.",
+            )
+        )
+
+    async def _digests(self, source: ImageSource, *, videos: bool = True) -> list[str]:
+        """Image digests, or video digests then cover digests, read off the event loop.
+        `videos=False` skips the video re-read inside per-write fences; confirm re-reads
+        each video once first."""
+
+        def image(asset: ImageSelection) -> str:
+            return hashlib.sha256(image_bytes(self.gate, source, asset)).hexdigest()
+
+        if not source.is_video:
+            return [await asyncio.to_thread(image, a) for a in (source.feed, source.vertical)]
+        pair = (source.feed, source.vertical)
+        found = (
+            [(await asyncio.to_thread(video_facts, self.gate, source, a))[0] for a in pair]
+            if videos
+            else []
+        )
+        return found + [await asyncio.to_thread(image, a.thumbnail) for a in pair]
 
     async def _validate(
         self,
@@ -204,23 +380,62 @@ class UnpublishedImageService:
         actor: UUID,
         request_key: UUID,
         confirm_preparation: bool,
+        feed_thumbnail_asset_id: UUID | None = None,
+        vertical_thumbnail_asset_id: UUID | None = None,
     ) -> UnpublishedPreview:
+        """Images: one call. Videos: each video also needs its cover image; while Meta is
+        still processing a video this raises and the caller repeats the SAME call later."""
         if confirm_preparation is not True:
             raise UnpublishedUnavailable("Confirma la preparación del anuncio en pausa.")
         form.validate(datetime.now(UTC))
         source = load_image_source(
-            tenant_id, draft_id, ad_account_id, feed_asset_id, vertical_asset_id
+            tenant_id,
+            draft_id,
+            ad_account_id,
+            feed_asset_id,
+            vertical_asset_id,
+            (feed_thumbnail_asset_id, vertical_thumbnail_asset_id),
         )
         self._guard(source, actor)
+        facts: list[tuple[str, int]] = []
+        if source.is_video:
+            # Every local limit (size, duration, dimensions, covers) before any network call.
+            facts = [
+                await asyncio.to_thread(video_facts, self.gate, source, asset)
+                for asset in (source.feed, source.vertical)
+            ]
+            for asset in (source.feed, source.vertical):
+                await asyncio.to_thread(image_bytes, self.gate, source, asset.thumbnail)
         recipe = self.recipes.approve(source, form, actor, request_key)
         access = await self._account(source, actor)
         client = access.client
         try:
             await self._observe(source, client, actor)
-            uploaded = [
-                await self._upload(source, asset, client, actor)
-                for asset in (source.feed, source.vertical)
-            ]
+            if source.is_video:
+                covers = [
+                    await self._upload(source, asset.thumbnail, client, actor)
+                    for asset in (source.feed, source.vertical)
+                ]
+                sent = [
+                    await self._upload_video(source, asset, fact, client, actor)
+                    for asset, fact in zip((source.feed, source.vertical), facts, strict=True)
+                ]
+                # Both are sent first; nothing is built while either is not ready at Meta.
+                waiting = [state for state, _ in sent if state != "ready_remote"]
+                if waiting:
+                    raise UnpublishedUnavailable(VIDEO_WAIT[waiting[0]])
+                videos = [video_id for _, video_id in sent]
+                creative = video_creative_payload(
+                    source, form, tuple(zip(videos, (row[0] for row in covers), strict=True))
+                )
+                digests = [fact[0] for fact in facts] + [row[1] for row in covers]
+            else:
+                uploaded = [
+                    await self._upload(source, asset, client, actor)
+                    for asset in (source.feed, source.vertical)
+                ]
+                creative = creative_payload(source, form, tuple(row[0] for row in uploaded))
+                digests = [row[1] for row in uploaded]
             policy = load_brand_enhancements(tenant_id=tenant_id, brand_id=source.brand_id)
             if policy.enabled:
                 raise UnpublishedUnavailable(
@@ -255,7 +470,7 @@ class UnpublishedImageService:
                         "optimization_goal": "LINK_CLICKS",
                         "destination_type": "WEBSITE",
                     },
-                    creative=creative_payload(source, form, tuple(row[0] for row in uploaded)),
+                    creative=creative,
                 ),
                 policy,
             )
@@ -306,10 +521,10 @@ class UnpublishedImageService:
                     previews[0],
                     fingerprint(previews),
                     {
-                        "kind": "unpublished-images",
+                        "kind": "unpublished-videos" if source.is_video else "unpublished-images",
                         "recipe_id": str(recipe["id"]),
                         "source": source.snapshot(),
-                        "digests": [row[1] for row in uploaded],
+                        "digests": digests,
                         "previews": previews,
                     },
                     expiry,
@@ -405,6 +620,7 @@ class UnpublishedImageService:
             recipe["ad_account_id"],
             UUID(snapshot["feed"]["asset_id"]),
             UUID(snapshot["vertical"]["asset_id"]),
+            thumbnails(snapshot),
         )
         review = self.reviews.get(tenant_id, review_id)
         promotion = self.promotions.get(tenant_id, recipe["promotion_id"])
@@ -421,12 +637,11 @@ class UnpublishedImageService:
         ):
             raise UnpublishedUnavailable("La aprobación cambió. Prepara otra vista previa.")
         self._guard(source, actor, review.expires_at)
-        digests = [
-            hashlib.sha256(image_bytes(self.gate, source, asset)).hexdigest()
-            for asset in (source.feed, source.vertical)
-        ]
+        digests = await self._digests(source)
         if digests != review.checks_snapshot.get("digests"):
-            raise UnpublishedUnavailable("Las imágenes cambiaron. Prepara otra vista previa.")
+            raise UnpublishedUnavailable(
+                "Las imágenes o videos cambiaron. Prepara otra vista previa."
+            )
         if review.state != "ready":
             return "active" if review.state == "active" else "unknown"
         access = await self._account(source, actor)
@@ -450,11 +665,11 @@ class UnpublishedImageService:
                     raise UnpublishedUnavailable(
                         "Las mejoras automáticas de la marca cambiaron. Prepara otra vista previa."
                     )
-                for asset, digest in zip((source.feed, source.vertical), digests, strict=True):
-                    if hashlib.sha256(image_bytes(self.gate, source, asset)).hexdigest() != digest:
-                        raise UnpublishedUnavailable(
-                            "Las imágenes cambiaron. No activamos el anuncio."
-                        )
+                current = await self._digests(source, videos=False)
+                if current != digests[-len(current) :]:
+                    raise UnpublishedUnavailable(
+                        "Las imágenes o videos cambiaron. No activamos el anuncio."
+                    )
                 # The write client's account lock is held here. Use another authenticated
                 # read client; never re-enter the same MarketingClient lock.
                 observed = await self._account(source, actor)

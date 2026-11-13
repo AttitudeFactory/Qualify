@@ -365,3 +365,74 @@ def test_a_retried_carousel_key_is_never_published_twice() -> None:
     assert starts == ["B:0", "B:0"]
     assert len(ports.attempts_by_key) == 1
     assert ports.published == [b"a"]
+
+
+# -- «Publicar» → «Tu semana» (m-25019217) ----------------------------------------------
+
+
+def _recorder(*, fail: bool = False) -> tuple[list[str], Callable]:
+    calls: list[str] = []
+
+    async def on_published(attempt_id: str) -> None:
+        calls.append(attempt_id)
+        if fail:
+            raise RuntimeError("database down")
+
+    return calls, on_published
+
+
+def _run_recording(jobs, records, ports, on_published, report=None):
+    report = report or _collect()[1]
+    return asyncio.run(
+        engine.run_jobs(
+            jobs, records, batch_key="B", ports=ports, report=report, on_published=on_published
+        )
+    )
+
+
+def test_every_mode_records_each_published_job_once() -> None:
+    for mode, files in (
+        (MODE_POST, [_img("p1")]),
+        (MODE_STORY, [_vid("v1")]),
+        (MODE_CAROUSEL, [_img("p1"), _img("p2"), _vid("v3")]),
+        (MODE_ONE_BY_ONE, [_img("p1"), _img("p2"), _img("p3")]),
+        (MODE_STORIES, [_img("p1"), _img("p2")]),
+    ):
+        jobs = engine.plan_jobs(mode, files, [""] * len(files))
+        calls, on_published = _recorder()
+        end = _run_recording(jobs, [JobRecord() for _ in jobs], FakePorts(), on_published)
+        assert end.kind == "done", mode
+        assert calls == [f"a-B:{k}" for k in range(len(jobs))], mode
+
+
+def test_a_failed_job_is_never_recorded() -> None:
+    files = [_img("p1"), _img("p2")]
+    jobs = engine.plan_jobs(MODE_ONE_BY_ONE, files, ["", ""])
+    calls, on_published = _recorder()
+    # the run goes p2 then p1; p1 settles as failed
+    end = _run_recording(
+        jobs, [JobRecord() for _ in jobs], FakePorts(fail_on={b"p1": "settled"}), on_published
+    )
+    assert end.kind == "failed"
+    assert calls == ["a-B:0"]
+
+
+def test_a_recording_failure_never_changes_a_successful_publication() -> None:
+    files = [_img("p1"), _img("p2")]
+    jobs = engine.plan_jobs(MODE_ONE_BY_ONE, files, ["", ""])
+    calls, on_published = _recorder(fail=True)
+    seen, report = _collect()
+    end = _run_recording(jobs, [JobRecord() for _ in jobs], FakePorts(), on_published, report)
+    assert end.kind == "done"
+    assert calls == ["a-B:0", "a-B:1"]  # the second still went out and was tried
+    assert seen[-1] == (1, STATUS_PUBLISHED)
+
+
+def test_continuar_does_not_record_a_job_published_before() -> None:
+    files = [_img("p1"), _img("p2")]
+    jobs = engine.plan_jobs(MODE_ONE_BY_ONE, files, ["", ""])
+    records = [JobRecord(status=STATUS_PUBLISHED, key="B:0", attempt_id="a-B:0"), JobRecord()]
+    calls, on_published = _recorder()
+    end = _run_recording(jobs, records, FakePorts(), on_published)
+    assert end.kind == "done"
+    assert calls == ["a-B:1"]

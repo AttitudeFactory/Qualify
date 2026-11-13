@@ -7,7 +7,12 @@ default to "everyone":
   it. It never reads across tenants, so no other tenant's rows (test data included) can
   be touched by a scoped tick.
 - `DiscoveredTenants` — every tenant that has calendar work. Only the production
-  composition (`composition.production_tick_runner`) builds it.
+  composition (`composition.production_tick_runner`) builds it. Since m-25019217 that
+  includes a tenant with a «Publicar» publication not in the calendar yet (settled
+  `published` within `immediate.SWEEP_WINDOW`, no event, key not `cal:`): `qualify_admin`
+  already holds `SELECT` on `publish_attempts` (0003); ids only, as below. Since
+  m-25019220 also a tenant with a published attempt whose Instagram address is due
+  (`permalinks.tenants_missing_permalinks`: inside a retry band, active connection).
 
 ## Why `DiscoveredTenants` uses `admin_session`, and why that is not a rule change
 
@@ -68,7 +73,14 @@ class DiscoveredTenants:
     A tenant with no active connection is simply not listed: no tick work, no error. A
     newly connected account is picked up on the next tick — nothing to configure. The
     event → connection join cannot cross tenants: `calendar_events` has a composite FK
-    `(connection_id, tenant_id)` onto `social_connections`."""
+    `(connection_id, tenant_id)` onto `social_connections`.
+
+    m-25019220: built with `permalinks=True` (the production tick, which fills them) it
+    also lists tenants with an Instagram address due (`permalinks.tenants_missing_
+    permalinks`). Off by default, so a runner without that step is not woken for it."""
+
+    def __init__(self, *, permalinks: bool = False) -> None:
+        self._permalinks = permalinks
 
     def tenants(self, *, now: datetime) -> list[UUID]:
         # Referenced only here, on use: `ScopedTenants` lives in this module too, and a
@@ -76,9 +88,14 @@ class DiscoveredTenants:
         from qualify_shared.db.admin import admin_session  # noqa: PLC0415
 
         from qualify_api.connections.models import SocialConnection  # noqa: PLC0415
+        from qualify_api.planner.immediate import (  # noqa: PLC0415
+            SWEEP_WINDOW,
+            tenants_with_unrecorded_publications,
+        )
+        from qualify_api.planner.permalinks import tenants_missing_permalinks  # noqa: PLC0415
 
         with admin_session() as session:
-            return list(
+            calendar = list(
                 session.scalars(
                     select(CalendarEvent.tenant_id)
                     .outerjoin(
@@ -98,3 +115,6 @@ class DiscoveredTenants:
                     .order_by(CalendarEvent.tenant_id)
                 )
             )
+            published = tenants_with_unrecorded_publications(session, since=now - SWEEP_WINDOW)
+            permalinks = tenants_missing_permalinks(session, now=now) if self._permalinks else []
+        return sorted(set(calendar) | set(published) | set(permalinks), key=str)

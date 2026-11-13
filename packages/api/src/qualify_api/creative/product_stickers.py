@@ -74,11 +74,15 @@ RECIPE_STATIC: Final = "k-quieto"
 #: The messages offered first (UX doc §2); the owner may write their own.
 MESSAGE_PRESETS: Final[tuple[str, ...]] = (
     "¡Gracias por tu pedido!",
-    "Bienvenido",
+    "¡Te damos la bienvenida!",
     "En camino",
     "Entregado",
     "Listo para recoger",
 )
+#: Presets reworded after stickers were already made with them (founder, 2026-11-13): old
+#: words → new ones. Stickers already made keep their words; this only tells the screen
+#: which preset an owner's last message stands for, so it is pre-selected again.
+RENAMED_PRESETS: Final[dict[str, str]] = {"Bienvenido": "¡Te damos la bienvenida!"}
 #: The R2 «season» of the characters' own files (never a library row).
 CHARACTER_FOLDER: Final = "personajes"
 #: The file numbers under `seasonal/{tenant}/{brand}/personajes/{id}-{n}.webp`.
@@ -96,7 +100,7 @@ REASON_TEXT: Final[dict[str, str]] = {
     "no_budget_cap": "Este dibujo no salió y no se te cobró. Puedes pedir otro.",
     "no_source": (
         "No pudimos abrir la foto del producto. No se te cobró. "
-        "Sube otra foto en Tus productos y pide otro."
+        "Sube otra foto en Galería y pide otro."
     ),
     "vendor_failed": "Este dibujo no salió y no se te cobró. Puedes pedir otro.",
     "no_character": "Este dibujo no salió y no se te cobró. Puedes pedir otro.",
@@ -126,13 +130,13 @@ class ProductStickerError(ValueError):
 
 
 class ProductNotFound(ProductStickerError):
-    message = "No encontramos ese producto. Elige otro de Tus productos."
+    message = "No encontramos ese producto. Elige otro de los que tienes en Galería."
 
 
 class NoProductPhoto(ProductStickerError):
     message = (
         "Para dibujar tu producto necesitamos una foto de él. "
-        "Sube la foto en Tus productos y vuelve aquí."
+        "Sube la foto en Galería y vuelve aquí."
     )
 
 
@@ -543,6 +547,29 @@ class ProductStickerService:
         return self._repo.save(
             replace(found, status=STATUS_DISCARDED), expected_status=found.status
         )
+
+    def restore_character(
+        self, tenant_id: UUID, brand_id: UUID, character_id: UUID, user_id: UUID | None
+    ) -> StickerCharacter:
+        """«Deshacer» after «Quitar este dibujo»: the inverse of `discard_character`, only while
+        the drawing is still discarded. The status it had is read back from the row itself
+        (approved → `approved_at`, failed → `fail_reason`, else ready with its file), so no
+        column is needed. Idempotent: a drawing that is not discarded is returned as it is.
+        Nothing is charged or given back (the discard did neither)."""
+        found = self.character(tenant_id, brand_id, character_id)
+        if found.status != STATUS_DISCARDED:
+            return found
+        if found.approved_at is not None and not found.object_key:
+            raise CharacterChanged()  # cannot happen (ck_ready_has_file); never guessed
+        if found.approved_at is not None:
+            status = STATUS_APPROVED
+        elif found.fail_reason is not None:
+            status = STATUS_FAILED
+        elif found.object_key:
+            status = STATUS_READY
+        else:
+            raise CharacterChanged()
+        return self._repo.save(replace(found, status=status), expected_status=STATUS_DISCARDED)
 
     # --- the free step: stickers from the picked character --------------------------------
 

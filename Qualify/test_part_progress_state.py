@@ -194,7 +194,7 @@ async def test_the_poll_runs_while_a_part_is_being_created_and_stops_after(backe
     # refreshed when the states changed (first read, then done) — not on the idle tick
     assert events == [("refresh", str(PARENT)), ("refresh", str(PARENT))]
     assert [r.word for r in state.rows] == ["Para revisar", "Lista"]
-    assert state.status_line == "Tus 2 partes están listas"
+    assert state.status_line == "Tus 2 partes están creadas"
 
 
 async def test_an_unmade_part_keeps_the_poll(backend) -> None:
@@ -675,9 +675,9 @@ def test_only_the_parts_waiting_for_a_decision_are_drawn() -> None:
 @pytest.mark.parametrize(
     ("shown_progress", "line"),
     [
-        (CREATING, "Creando tus partes: 1 de 2 listas"),
+        (CREATING, "Creando tus partes: van 1 de 2"),
         (UNMADE, "Te falta una parte por crear"),
-        (DONE, "Tus 2 partes están listas"),
+        (DONE, "Tus 2 partes están creadas"),
     ],
 )
 def test_no_decision_draws_no_row_and_one_line(shown_progress: PartProgress, line: str) -> None:

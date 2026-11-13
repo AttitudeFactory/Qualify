@@ -28,6 +28,7 @@ from .creative_state import (
     _INSPIRATION_TARGETS,
     _NO_CATALOG_TARGETS,
     _OWN_HITS_TARGETS,
+    CONTEXT_FIELD_ID,
     DURATIONS,
     INSPIRATION_PLACEHOLDERS,
     INSPIRATION_SLOT_LIMITS,
@@ -69,6 +70,8 @@ from .part_progress_vm import (
     PARTS_KIND_LABEL,
 )
 from .parts_start_view import parts_empty_notice, parts_start_card
+from .photo_upload_vm import CUT_CONNECTION_HINT, PHOTO_ACCEPT
+from .picker_tabs import upload_host_id
 from .post_card import color_swatches
 from .r2_media import BACKEND_BASE
 from .reels_ideas_vm import IDEAS_BACK_LABEL
@@ -93,6 +96,7 @@ from .ui import (
 from .ui import tokens as T
 from .ui.clip_player import clip_player, clip_player_notice, clip_player_script
 from .ui.steps import step_foot, step_frame, step_head, step_sync
+from .upload_images import PHOTO_MAX_BYTES
 from .variations_state import VariationsState
 from .variations_view import variations_view
 
@@ -136,7 +140,8 @@ def _field_label(text: str | rx.Var, hint: str | None = None) -> rx.Component:
     )
 
 
-_IMAGE_ACCEPT = {"image/*": [".png", ".jpg", ".jpeg", ".webp"]}
+#: m-25017273: JPG, PNG, WEBP and the iPhone's HEIC/HEIF (converted to JPEG on the server)
+_IMAGE_ACCEPT = PHOTO_ACCEPT
 
 
 def _help(title: str, text: str) -> rx.Component:
@@ -1124,13 +1129,18 @@ def _picker_tabs(target: str, tab: rx.Var[str], *, uploads: bool = True) -> rx.C
     stock picked) and a «Galería» beside it brings the brand's catalog (§ request
     2026-10-19). No «Stock» tab: stock is chosen once, as the inspiration."""
 
-    from .picker_tabs import reveal_picker_tab_script
+    from .picker_tabs import open_upload_picker_script, reveal_picker_tab_script
 
     def control(*items: tuple[str, str]) -> rx.Component:
         return rx.box(
             rx.segmented_control.root(
                 *(
-                    rx.segmented_control.item(label, value=value, min_height="44px")
+                    rx.segmented_control.item(
+                        label,
+                        value=value,
+                        min_height="44px",
+                        custom_attrs={"data-picker-tab": value},
+                    )
                     for value, label in items
                 ),
                 value=tab,
@@ -1146,7 +1156,12 @@ def _picker_tabs(target: str, tab: rx.Var[str], *, uploads: bool = True) -> rx.C
             min_width="0",
             overflow_x="auto",
             id=f"picker-tabs-{target}",
-            on_mount=rx.call_script(reveal_picker_tab_script(f"picker-tabs-{target}")),
+            on_mount=[
+                rx.call_script(reveal_picker_tab_script(f"picker-tabs-{target}")),
+                rx.call_script(
+                    open_upload_picker_script(f"picker-tabs-{target}", upload_host_id(target))
+                ),
+            ],
         )
 
     # UI-3 round 13: the clip's gallery has its own drop zone — no «Subir» in its picker
@@ -1179,6 +1194,18 @@ def _pinterest_source_links(target: str) -> rx.Component:
         ),
         spacing="1",
         align_items="start",
+        width="100%",
+    )
+
+
+def _upload_tab(target: str, tab: rx.Var[str], upload: rx.Component) -> rx.Component:
+    """«Subir»'s drop zone, mounted whatever tab is open and shown only on «Subir»
+    (m-25017273): its file input must exist at the very tap on «Subir», which opens the
+    picker at once (`open_upload_picker_script`) — no second tap on the zone."""
+    return rx.box(
+        upload,
+        id=upload_host_id(target),
+        display=rx.cond(tab == "upload", "block", "none"),
         width="100%",
     )
 
@@ -1304,11 +1331,12 @@ def _media_picker(
             tab,
             ("catalog", catalog_tab),
             ("brandcat", brandcat_tab),
-            ("inspiration", _inspiration_search(target, image) if searchable else upload),
+            ("inspiration", _inspiration_search(target, image) if searchable else rx.fragment()),
             ("pieces", pieces_tab),
             ("pinterest", pinterest_picker(target) if image else rx.fragment()),
-            upload if uploads else catalog_tab,
+            rx.fragment() if uploads else catalog_tab,
         ),
+        _upload_tab(target, tab, upload) if uploads else rx.fragment(),
         _pinterest_source_links(target) if image else rx.fragment(),
         spacing="2",
         width="100%",
@@ -1440,8 +1468,9 @@ def _mixed_media_picker(target: str, upload: rx.Component) -> rx.Component:
             ("inspiration", _inspiration_search(target, None)),
             ("pieces", pieces_tab),
             ("pinterest", pinterest_picker(target)),
-            upload,
+            rx.fragment(),
         ),
+        _upload_tab(target, tab, upload),
         _pinterest_source_links(target),
         spacing="2",
         width="100%",
@@ -2602,19 +2631,61 @@ def _discover_view() -> rx.Component:
 
 
 def _upload_zone(upload_id: str, label: str, handler: object, *, multiple: bool) -> rx.Component:
-    """A compact drop zone (`ui.dropzone`) for the pictures of a piece."""
+    """A compact drop zone (`ui.dropzone`) for the pictures of a piece. m-25017273: up
+    to 50 MB a photo, HEIC included; what it refuses is said in Spanish
+    (`photo_upload_rejected`), and while a photo goes up it shows how far it got."""
+    busy = CreativeState.photo_upload_id == upload_id
     return dropzone(
-        rx.vstack(
+        rx.cond(
+            busy,
+            # hidden from screen readers: the live region below already says it
+            rx.box(loading_spinner("sm"), aria_hidden="true"),
             rx.icon("image-up", size=T.ICON_MD, color=T.TEXT_FAINT),
-            rx.text(label, size="1", text_align="center", color=T.TEXT_MUTED),
-            align="center",
-            spacing="1",
+        ),
+        # one live region, always mounted: only its words change, so a screen reader
+        # announces «Subiendo…» / «Preparando…» (UX review m-25017273)
+        rx.box(
+            rx.cond(
+                busy,
+                rx.vstack(
+                    rx.text(
+                        CreativeState.photo_upload_text,
+                        size="1",
+                        text_align="center",
+                        color=T.TEXT_MUTED,
+                    ),
+                    rx.text(
+                        CUT_CONNECTION_HINT,
+                        size="1",
+                        text_align="center",
+                        color=T.TEXT_FAINT,
+                    ),
+                    align="center",
+                    spacing="1",
+                ),
+                rx.text(label, size="1", text_align="center", color=T.TEXT_MUTED),
+            ),
+            role="status",
+            aria_live="polite",
+            width="100%",
         ),
         upload_id=upload_id,
         accept=_IMAGE_ACCEPT,
         max_files=10 if multiple else 1,
+        max_size=PHOTO_MAX_BYTES,
         multiple=multiple,
-        on_drop=handler(rx.upload_files(upload_id=upload_id)),
+        on_drop=[
+            CreativeState.begin_photo_upload(upload_id, multiple),
+            handler(
+                rx.upload_files(
+                    upload_id=upload_id,
+                    on_upload_progress=CreativeState.photo_upload_progress,
+                )
+            ),
+        ],
+        on_drop_rejected=CreativeState.photo_upload_rejected,
+        # never disabled while busy: an upload the network cut never reaches the
+        # handler that clears `photo_upload_id`, and the owner must be able to retry
         variant="compact",
         width="100%",
     )
@@ -2946,9 +3017,13 @@ def _products_upload(label: str) -> rx.Component:
 
 
 def _upload_error() -> rx.Component:
-    return rx.cond(
-        CreativeState.upload_error != "",
-        rx.text(CreativeState.upload_error, size="1", color=T.tone_color("error", 11)),
+    # always mounted, `role="alert"`: a refusal is announced the moment it appears
+    return rx.box(
+        rx.cond(
+            CreativeState.upload_error != "",
+            rx.text(CreativeState.upload_error, size="1", color=T.tone_color("error", 11)),
+        ),
+        role="alert",
     )
 
 
@@ -3186,7 +3261,7 @@ def _slide_photo() -> rx.Component:
                 rx.box(
                     _upload_zone(
                         "creative_slide_photo",
-                        "Arrastra la foto o haz clic",
+                        "Toca para elegir otra foto o arrástrala aquí",
                         CreativeState.handle_slide_photo_upload,
                         multiple=False,
                     ),
@@ -4119,7 +4194,8 @@ def _section_topic() -> rx.Component:
         ),
         rx.cond(
             flyer,
-            "Qué se ve, dónde y cómo se siente. Es lo único obligatorio.",
+            "Qué se ve, dónde y cómo se siente. Es lo único obligatorio. La imagen sale sin "
+            "letras ni precios: escríbelos en el texto de la publicación.",
             "Un contexto general: de qué trata, qué debe transmitir, a quién le habla y "
             "cualquier detalle que importe. Es lo único obligatorio.",
         ),
@@ -4129,9 +4205,10 @@ def _section_topic() -> rx.Component:
             rx.text_area(
                 value=CreativeState.ad_scene_prompt,
                 on_change=CreativeState.set_ad_scene_prompt,
+                id=CONTEXT_FIELD_ID,
                 placeholder=(
-                    "Una mano sosteniendo el vaso a la altura del pecho, la etiqueta de "
-                    "frente, con el local desenfocado detrás y luz cálida…"
+                    "Una mano sosteniendo el vaso a la altura del pecho, de frente, con el "
+                    "local desenfocado detrás y luz cálida…"
                 ),
                 width="100%",
                 rows="5",
@@ -4140,6 +4217,7 @@ def _section_topic() -> rx.Component:
             rx.text_area(
                 value=CreativeState.brief_topic,
                 on_change=CreativeState.set_brief_topic,
+                id=CONTEXT_FIELD_ID,
                 placeholder=(
                     "Ej.: quiero mostrar nuestra hamburguesa doble con papas, en promo solo "
                     "este fin de semana. Que se sienta antojable y cercano, para gente joven "
@@ -4183,52 +4261,160 @@ def _carried_text_notice() -> rx.Component:
     )
 
 
-def _context_ai_tools() -> rx.Component:
-    """«Potenciar con IA» (§ request 2026-10-20): the text above rewritten into a fuller
-    brief with the Brand Kit and the «Datos clave» — no invented facts — before anything
-    is generated; «Deshacer» brings the operator's own words back."""
+#: m-25017274: what «Mejorar mi texto» says around its three cards.
+ENHANCE_LABEL = "Mejorar mi texto"
+ENHANCE_BUSY_LABEL = "Mejorando…"
+ENHANCE_HINT = (
+    "Te proponemos versiones con lo que sabemos de tu marca, sin inventar precios ni "
+    "promociones. No gasta creaciones."
+)
+ENHANCE_PICK_TITLE = "Elige una versión"
+ENHANCE_PICK_HINT = "Al tocarla, la copiamos arriba en tu texto. Puedes cambiarla antes de crear."
+ENHANCE_AGAIN_LABEL = "Ver otras versiones"
+ENHANCE_RESTORE_LABEL = "Volver a mi texto"
+
+
+def _context_version_card(version: rx.Var[dict[str, str]], index: rx.Var[int]) -> rx.Component:
+    """One version: its approach in small letters over the whole text, a radio card (the
+    design system's `choice_card`) that fills the field when tapped."""
+    selected = CreativeState.context_chosen == index
+    return choice_card(
+        rx.vstack(
+            rx.hstack(
+                rx.text(version["label"], size="1", weight="medium", color=T.TEXT_MUTED),
+                rx.cond(selected, choice_card_check()),
+                spacing="2",
+                align="center",
+                justify="between",
+                width="100%",
+            ),
+            rx.text(version["text"], size="2", text_align="left", white_space="normal"),
+            spacing="1",
+            align_items="start",
+            width="100%",
+        ),
+        selected=selected,
+        role="radio",
+        disabled=CreativeState.context_enhancing,
+        on_select=CreativeState.choose_context_version(index),
+        padding="0.75rem 1rem",
+        min_height="44px",
+        width="100%",
+        text_align="left",
+    )
+
+
+def _context_versions() -> rx.Component:
+    """The cards of the last press (up to three), «Ver otras versiones» and the way back to the
+    operator's own words (m-25017274). One column: they read whole on a phone. Once the
+    owner edits the text they go (UX review): only «Mejorar mi texto» stays, from the
+    new words. A polite live region, so a screen reader hears the cards arrive."""
     enhancing = CreativeState.context_enhancing
+    return rx.el.div(
+        rx.cond(
+            (CreativeState.context_versions.length() > 0) & ~CreativeState.context_text_edited,
+            _context_versions_block(enhancing),
+        ),
+        aria_live="polite",
+        width="100%",
+    )
+
+
+def _context_versions_block(enhancing: rx.Var[bool]) -> rx.Component:
     return rx.vstack(
+        rx.text(ENHANCE_PICK_TITLE, size="2", weight="medium"),
+        rx.text(ENHANCE_PICK_HINT, size="1", color=T.TEXT_MUTED),
+        rx.el.div(
+            rx.foreach(CreativeState.context_versions, _context_version_card),
+            role="radiogroup",
+            aria_label=ENHANCE_PICK_TITLE,
+            style={"display": "flex", "flexDirection": "column", "gap": "0.5rem"},
+            width="100%",
+        ),
         rx.hstack(
             rx.button(
-                rx.icon("sparkles", size=T.ICON_SM),
-                rx.cond(enhancing, "Mejorando…", "Mejorar mi texto"),
+                rx.icon("refresh-cw", size=T.ICON_SM),
+                ENHANCE_AGAIN_LABEL,
                 variant="soft",
                 size="2",
                 radius=_CONTROL_RADIUS,
+                min_height="44px",
                 loading=enhancing,
-                on_click=CreativeState.enhance_context,
-            ),
-            rx.cond(
-                (CreativeState.context_before_enhance != "") & ~enhancing,
-                rx.button(
-                    rx.icon("undo-2", size=T.ICON_SM),
-                    "Deshacer",
-                    variant="ghost",
-                    color_scheme="gray",
-                    size="2",
-                    on_click=CreativeState.undo_enhance_context,
-                ),
-            ),
-            rx.text(
-                "Ordenamos tu texto con lo que sabemos de tu marca, sin inventar precios ni "
-                "promociones. Revísalo antes de crear.",
-                size="1",
-                color=T.TEXT_MUTED,
-                flex="1",
-                min_width="12rem",
+                on_click=CreativeState.enhance_context(True),
             ),
             spacing="3",
             align="center",
             wrap="wrap",
             width="100%",
         ),
+        spacing="2",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _context_ai_tools() -> rx.Component:
+    """«Mejorar mi texto» (§ request 2026-10-20; three versions since m-25017274): the
+    text above rewritten three ways with the Brand Kit and the «Datos clave» — no invented
+    facts — before anything is generated. The operator's text stays until a card is
+    chosen, and «Volver a mi texto» brings it back."""
+    enhancing = CreativeState.context_enhancing
+    return rx.vstack(
+        # right under the text field (UX review): after a card is chosen on a phone the
+        # field is in view, and the way back sits next to it; it stays after an edit
+        rx.cond(
+            (CreativeState.context_before_enhance != "")
+            & ~CreativeState.context_is_original
+            & ~enhancing,
+            rx.button(
+                rx.icon("undo-2", size=T.ICON_SM),
+                ENHANCE_RESTORE_LABEL,
+                variant="ghost",
+                color_scheme="gray",
+                size="2",
+                min_height="44px",
+                on_click=CreativeState.undo_enhance_context,
+            ),
+        ),
+        rx.cond(
+            # with cards on screen it comes back only once the text was edited: a press
+            # then starts from the new words (otherwise «Ver otras versiones» is the way)
+            (CreativeState.context_versions.length() > 0) & ~CreativeState.context_text_edited,
+            rx.fragment(),
+            rx.hstack(
+                rx.button(
+                    rx.icon("sparkles", size=T.ICON_SM),
+                    rx.cond(enhancing, ENHANCE_BUSY_LABEL, ENHANCE_LABEL),
+                    variant="soft",
+                    size="2",
+                    radius=_CONTROL_RADIUS,
+                    min_height="44px",
+                    loading=enhancing,
+                    on_click=CreativeState.enhance_context(False),
+                ),
+                rx.text(
+                    ENHANCE_HINT,
+                    size="1",
+                    color=T.TEXT_MUTED,
+                    flex="1",
+                    min_width="12rem",
+                ),
+                spacing="3",
+                align="center",
+                wrap="wrap",
+                width="100%",
+            ),
+        ),
+        _context_versions(),
         rx.cond(
             CreativeState.context_enhance_error != "",
             callout(CreativeState.context_enhance_error, "warn"),
         ),
         rx.cond(
-            CreativeState.context_enhance_note != "",
+            # it names «estas versiones»: it goes with the cards
+            (CreativeState.context_enhance_note != "")
+            & (CreativeState.context_versions.length() > 0)
+            & ~CreativeState.context_text_edited,
             callout(CreativeState.context_enhance_note, "warn"),
         ),
         spacing="2",
@@ -6904,7 +7090,8 @@ def _slide_stock_fields() -> rx.Component:
             rx.text("Texto encima", size="1", color=T.TEXT_MUTED),
             rx.segmented_control.root(
                 rx.segmented_control.item("Título", value="hook"),
-                rx.segmented_control.item("Botón de acción", value="cta"),
+                # m-25017276: printed as text, never a button
+                rx.segmented_control.item("Invitación a comprar o escribir", value="cta"),
                 value=current["text"],
                 on_change=lambda value: CreativeState.set_slide_field(index, "text", value),
                 size="2",

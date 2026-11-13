@@ -594,10 +594,15 @@ def enhance_generator_context(
     highlights: Sequence[Sequence[str]],
     must_mention: str,
     must_avoid: str,
+    content_type: str = "",
+    format: str = "",
+    previous_versions: Sequence[str] = (),
 ) -> ContextProposal:
-    """«Potenciar con IA» (§ request 2026-10-20): the context the operator wrote,
-    rewritten with the brand's kit and the piece's «Datos clave» — no new facts
-    (`qualify_api.creative.context_ai`). Nothing is created or stored."""
+    """«Mejorar mi texto» (§ request 2026-10-20): three versions of the context the
+    operator wrote, with the brand's kit, the piece's «Datos clave», the publication's
+    kind and format — no new facts (`qualify_api.creative.context_ai`). «Otra versión»
+    passes the versions already shown (m-25017274). Nothing is created or stored and no
+    creación is consumed: the call is only booked, in dollars, to the consumption ledger."""
     kit = BrandKitService().get_kit(tenant_id=tenant_id, brand_id=brand_id)
     data = ContextInput(
         text=text,
@@ -607,6 +612,9 @@ def enhance_generator_context(
         highlights=tuple((str(name), str(fact)) for name, fact in highlights),
         must_mention=must_mention,
         must_avoid=must_avoid,
+        content_type=content_type,
+        format=format,
+        previous_versions=tuple(str(text) for text in previous_versions),
     )
     attribution = Attribution(tenant_id=tenant_id, brand_id=brand_id, feature=CONTEXT_FEATURE)
     return enhance_context(data, kit, attribution=attribution)
@@ -939,6 +947,7 @@ def _detail_to_vm(tenant_id: UUID, detail: DraftDetail) -> DraftVM:
         requires_ai_disclosure=detail.requires_ai_disclosure,
         created_label=_format_dt(detail.created_at),
         kind=detail.kind,
+        reuse_type=getattr(detail, "reuse_type", None),
         media=media,
         failure_detail=detail.failure_detail,
         warnings=tuple(warning.detail for warning in detail.warnings),

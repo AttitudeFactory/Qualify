@@ -195,12 +195,14 @@ def test_a_hook_only_slide_darkens_only_its_top_band() -> None:
 
 
 def test_a_cta_only_slide_darkens_only_its_bottom_band() -> None:
-    top, bottom = _corners(render_carousel_slide(scene=_scene(), cta="Pide ya"))
+    top, bottom = _corners(render_carousel_slide(scene=_scene(), cta="Pide ya", pills=True))
     assert top == 160 and bottom < 110
 
 
 def test_hook_and_cta_darken_both_bands_and_no_words_none() -> None:
-    top, bottom = _corners(render_carousel_slide(scene=_scene(), hook="Hola", cta="Pide"))
+    top, bottom = _corners(
+        render_carousel_slide(scene=_scene(), hook="Hola", cta="Pide", pills=True)
+    )
     assert top < 110 and bottom < 110
     assert _corners(render_carousel_slide(scene=_scene())) == (160, 160)
 

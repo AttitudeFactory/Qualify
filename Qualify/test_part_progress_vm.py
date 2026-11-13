@@ -82,7 +82,7 @@ def test_the_panel_counts_parts_with_a_preview() -> None:
         ),
     )
     vm = part_progress_vm(progress)
-    assert vm.status_line == "Creando tus partes: 2 de 4 listas" and not vm.complete
+    assert vm.status_line == "Creando tus partes: van 2 de 4" and not vm.complete
     assert vm.notice == ""
     assert vm.rows[2].detail == "Se crea cuando esté la parte 2."
     assert vm.rows[0].label == "Parte 1 · 4 s"
@@ -281,7 +281,7 @@ def test_while_a_part_moves_the_panel_is_creating() -> None:
         )
         assert vm.in_progress  # an unmade part may be created any time: keep reading
         assert vm.status_line in (
-            "Creando tus partes: 1 de 2 listas",
+            "Creando tus partes: van 1 de 2",
             "Te falta una parte por crear",
         )
 
@@ -309,9 +309,9 @@ def test_every_part_made_says_so() -> None:
     vm = part_progress_vm(
         PartProgress(parent_id=PARENT, parts=(row(1, PartState.READY), row(2, PartState.TO_REVIEW)))
     )
-    assert vm.status_line == "Tus 2 partes están listas" and vm.complete
+    assert vm.status_line == "Tus 2 partes están creadas" and vm.complete
     assert as_state(vm)["in_progress"] is False
-    assert as_state(vm)["status_line"] == "Tus 2 partes están listas"
+    assert as_state(vm)["status_line"] == "Tus 2 partes están creadas"
 
 
 def test_the_announcement_is_the_last_change_never_the_first_read() -> None:
@@ -497,15 +497,15 @@ def _line(*states: PartState, **kw: object) -> str:
 
 def test_the_status_line_says_what_the_video_waits_for() -> None:
     assert _line(PartState.READY, PartState.TO_REVIEW, PartState.READY) == (
-        "Tus 3 partes están listas"
+        "Tus 3 partes están creadas"
     )
-    assert _line(PartState.READY) == "Tu parte está lista"
+    assert _line(PartState.READY) == "Tu parte está creada"
     assert _line(PartState.READY, PartState.CREATING, PartState.QUEUED) == (
-        "Creando tus partes: 1 de 3 listas"
+        "Creando tus partes: van 1 de 3"
     )
     # something moving wins over a part never created
     assert _line(PartState.READY, PartState.CREATING, PartState.UNMADE) == (
-        "Creando tus partes: 1 de 3 listas"
+        "Creando tus partes: van 1 de 3"
     )
     # nothing moving: the parts wait for «Crear la parte N» in «Tu video completo»
     assert _line(PartState.READY, PartState.UNMADE, PartState.UNMADE) == (

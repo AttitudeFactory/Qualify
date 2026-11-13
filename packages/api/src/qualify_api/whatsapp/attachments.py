@@ -980,9 +980,11 @@ class ChatAttachmentService:
         from qualify_api.whatsapp.payments import as_option  # noqa: PLC0415
 
         order = read_order(self._payments_store().context(tenant_id, thread_id))
+        # m-25018684: an order in several currencies has no single total to print.
+        priced = order is not None and not order.mixed_currency
         caption = payment_card_caption(
             as_option(method),
-            total=order.total if order is not None else None,
+            total=order.total if priced and order is not None else None,
             order_currency=order.currency if order is not None else None,
         )
         return caption, order

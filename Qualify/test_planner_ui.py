@@ -1270,6 +1270,41 @@ def test_frame_shape_follows_the_output_then_the_category() -> None:
     assert frame_shape("", "") == ("Publicación", "4 / 5")
 
 
+def test_a_galeria_with_one_file_reads_as_a_publication_not_a_carousel() -> None:
+    """m-25019217: `galeria` is one feed image OR a carousel; the files decide the word,
+    for a generated single image and for one uploaded from «Publicar» alike."""
+    from .planner_vm import build_post_option
+
+    assert frame_shape("galeria", "", 1) == ("Publicación", "4 / 5")
+    assert frame_shape("galeria", "", 3) == ("Carrusel", "1 / 1")
+    assert category_label("galeria", 1) == "Publicación"
+    assert category_label("galeria", 2) == "Carrusel"
+    assert category_label("galeria") == "Carrusel"  # unknown count: as before
+
+    def option(media_types: tuple[str, ...], category: str):
+        return build_post_option(
+            post_id="p",
+            title="t",
+            caption_excerpt="",
+            thumbnail_url=None,
+            category=category,
+            approval="approved",
+            detail_href="",
+            is_publishable=True,
+            unpublishable_reason="",
+            media_types=media_types,
+        )
+
+    photo = option(("IMAGE",), "galeria")
+    assert (photo.category_label, photo.media_label) == ("Publicación", "Imagen · Publicación 4:5")
+    mural = option(("IMAGE",) * 9, "galeria")
+    assert (mural.category_label, mural.media_label) == ("Carrusel", "Imagen · Carrusel 1:1")
+    reel = option(("VIDEO",), "reel")
+    assert reel.category_label == "Reel"
+    story = option(("IMAGE",), "story")
+    assert story.category_label == "Historia"
+
+
 def test_a_blank_assign_on_today_defaults_to_the_next_full_hour() -> None:
     state = _drawer_state()
     state.now_hhmm = "21:05"

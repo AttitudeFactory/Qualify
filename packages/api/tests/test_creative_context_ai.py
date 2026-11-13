@@ -1,5 +1,6 @@
-"""«Potenciar con IA» on the generator's context (§ request 2026-10-20), over a fake
-Claude client: what the model is given, what comes back, and the refusals."""
+"""«Mejorar mi texto» on the generator's context (§ request 2026-10-20; three versions
+since m-25017274), over a fake Claude client: what the model is given, what comes back,
+and the refusals."""
 
 from __future__ import annotations
 
@@ -12,9 +13,12 @@ from qualify_creative.schemas import BrandKit, ToneAxes
 
 from qualify_api.claude_tools import Attribution as _Attribution
 from qualify_api.creative.context_ai import (
+    APPROACHES,
     CONTEXT_MAX_CHARS,
+    CONTEXT_PROMPT_VERSION,
     OUTPUT_MARGIN_CHARS,
     PROPOSAL_MAX_CHARS,
+    SCENE_APPROACHES,
     SCENE_MAX_CHARS,
     TOOL_NAME,
     ContextInput,
@@ -24,6 +28,7 @@ from qualify_api.creative.context_ai import (
     enhance_context,
     normalize_context_proposal,
     render_request,
+    scene_text_request,
     validate_context_proposal,
 )
 
@@ -46,7 +51,17 @@ class FakeClient:
         self.messages = FakeMessages(responses)
 
 
-def _answer(context: str, added: list[str] | None = None, stop: str = "tool_use") -> Any:
+def _answer(
+    context: str | list[str],
+    added: list[str] | None = None,
+    stop: str = "tool_use",
+    scene: bool = False,
+) -> Any:
+    """The tool call of one press: `context` is the three versions, or one text that every
+    approach repeats with a different ending (so they stay distinct) — or exactly the same
+    when it would not survive validation anyway."""
+    keys = [key for key, _ in (SCENE_APPROACHES if scene else APPROACHES)]
+    texts = context if isinstance(context, list) else [context] * len(keys)
     return SimpleNamespace(
         model="claude-sonnet-5-5-20261001",
         stop_reason=stop,
@@ -55,7 +70,7 @@ def _answer(context: str, added: list[str] | None = None, stop: str = "tool_use"
             SimpleNamespace(
                 type="tool_use",
                 name=TOOL_NAME,
-                input={"context": context, "added_facts": added or []},
+                input={**dict(zip(keys, texts, strict=True)), "added_facts": added or []},
             )
         ],
     )
@@ -117,23 +132,35 @@ def test_the_brand_typeface_is_in_the_brand_kit_lines() -> None:
     assert "Tipografía" not in render_request(_input(), _kit())
 
 
-def test_the_rewrite_comes_back_with_what_the_model_added() -> None:
-    client = FakeClient([_answer("Quiero mostrar la smash doble…", ["2x1"])])
+THREE = [
+    "Quiero la smash doble con papas, promo de fin de semana. Pide por WhatsApp.",
+    "Quiero que se vea la smash doble jugosa, papas doradas: promo de fin de semana.",
+    "Quiero contarte que este fin de semana la smash doble con papas está en promo.",
+]
+
+
+def test_the_rewrite_comes_back_as_three_versions_with_what_the_model_added() -> None:
+    client = FakeClient([_answer(THREE, ["2x1"])])
     proposal = enhance_context(
         _input(), _kit(), client_factory=lambda key: client, attribution=TEST_ATTRIBUTION
     )
-    assert proposal.text == "Quiero mostrar la smash doble…"
+    assert [v.text for v in proposal.versions] == THREE
+    assert [v.approach for v in proposal.versions] == ["directa", "descriptiva", "cercana"]
     assert proposal.added_facts == ("2x1",)
+    assert proposal.prompt_version == CONTEXT_PROMPT_VERSION == "context-v5-scene-no-text"
     assert proposal.input_tokens == 500 and proposal.output_tokens == 120
     (call,) = client.messages.calls
     assert call["model"] == "claude-sonnet-5-5"
     assert call["tools"][0]["name"] == TOOL_NAME and call["tools"][0]["strict"] is True
+    schema = call["tools"][0]["input_schema"]
+    assert schema["required"] == ["directa", "descriptiva", "cercana", "added_facts"]
     assert "NO inventes hechos" in call["system"][0]["text"]
+    assert "TRES versiones" in call["system"][0]["text"]
 
 
 def test_a_long_scene_is_refused_instead_of_losing_important_instructions() -> None:
     long = ("Una mano sostiene la hamburguesa. " * 40).strip() + " No cambies el uniforme."
-    client = FakeClient([_answer(long)])
+    client = FakeClient([_answer(long, scene=True)])
     with pytest.raises(ContextTooLong) as error:
         enhance_context(
             _input(scene=True),
@@ -245,15 +272,18 @@ def test_current_product_capacities_remain_and_include_final_spaces(scene: bool)
     message = render_request(data, None)
     assert f"OBJETIVO: hasta {PROPOSAL_MAX_CHARS - OUTPUT_MARGIN_CHARS}" in message
     raw = "  " + "a" * (PROPOSAL_MAX_CHARS - 2) + "\n b  "
-    client = FakeClient([_answer(raw)])
+    client = FakeClient([_answer(raw, scene=scene)])
     result = enhance_context(
         data, None, client_factory=lambda key: client, attribution=TEST_ATTRIBUTION
     )
-    assert len(result.text) == PROPOSAL_MAX_CHARS
-    assert result.text.endswith(" b")
-    assert result.prompt_version == "context-v3-compact-300"
-    schema_text = client.messages.calls[0]["tools"][0]["input_schema"]["properties"]
-    assert str(PROPOSAL_MAX_CHARS) in schema_text["context"]["description"]
+    assert len(result.versions) == 1  # the other two repeat it and are dropped
+    (version,) = result.versions
+    assert len(version.text) == PROPOSAL_MAX_CHARS
+    assert version.text.endswith(" b")
+    assert result.prompt_version == "context-v5-scene-no-text"
+    properties = client.messages.calls[0]["tools"][0]["input_schema"]["properties"]
+    first = (SCENE_APPROACHES if scene else APPROACHES)[0][0]
+    assert str(PROPOSAL_MAX_CHARS) in properties[first]["description"]
 
 
 @pytest.mark.parametrize("raw", ["", "   \t\n", "🍔 👩🏽‍🍳"])
@@ -311,7 +341,7 @@ def test_named_emoji_request_cannot_disappear_during_cleanup() -> None:
 
 @pytest.mark.parametrize("scene", [False, True])
 def test_automatic_proposal_301_is_rejected_even_when_manual_field_can_hold_it(scene: bool) -> None:
-    client = FakeClient([_answer("x" * 301)])
+    client = FakeClient([_answer("x" * 301, scene=scene)])
     with pytest.raises(ContextTooLong) as error:
         enhance_context(
             _input(scene=scene),
@@ -363,3 +393,379 @@ def test_explicit_literal_internal_spaces_count_towards_proposal_limit() -> None
     literal = "A" + " " * 299 + "B"
     with pytest.raises(ContextTooLong):
         validate_context_proposal(literal, max_chars=300, source_text=f"Escribe «{literal}».")
+
+
+# -- m-25017274: three distinct versions, «Otra versión», the publication's kind -------
+
+
+def test_the_request_names_the_kind_the_format_and_the_approaches() -> None:
+    message = render_request(
+        _input(content_type="Promoción", format="Reel (video corto) 9:16"), _kit()
+    )
+    for expected in (
+        "TIPO DE PUBLICACIÓN: Promoción",
+        "FORMATO: Reel (video corto) 9:16",
+        "PRODUCTO: Smash doble",
+        "- directa: MÁS DIRECTA",
+        "- descriptiva: MÁS DESCRIPTIVA",
+        "- cercana: MÁS CERCANA",
+    ):
+        assert expected in message, expected
+    assert "VERSIONES YA MOSTRADAS" not in message
+    scene = render_request(_input(scene=True), None)
+    assert "- producto: EL PRODUCTO DE CERCA" in scene and "- directa:" not in scene
+
+
+def test_otra_version_sends_the_versions_already_shown_and_drops_a_repeat() -> None:
+    shown = tuple(THREE)
+    fresh = [
+        "Quiero la smash doble con papas este fin de semana, en promo.",
+        THREE[1] + "  ",  # the model repeated a card already shown: dropped
+        "Quiero hablarte como a un vecino: el fin de semana la smash doble va en promo.",
+    ]
+    client = FakeClient([_answer(fresh)])
+    proposal = enhance_context(
+        _input(previous_versions=shown),
+        _kit(),
+        client_factory=lambda key: client,
+        attribution=TEST_ATTRIBUTION,
+    )
+    message = client.messages.calls[0]["messages"][0]["content"]
+    assert "VERSIONES YA MOSTRADAS" in message
+    for text in shown:
+        assert f"- {text}" in message
+    # the ORIGINAL text is what gets rewritten, never a card
+    assert message.rstrip().endswith(_input().text)
+    assert [v.approach for v in proposal.versions] == ["directa", "cercana"]
+    assert all(v.text not in shown for v in proposal.versions)
+
+
+def test_only_the_newest_previous_versions_are_sent() -> None:
+    shown = tuple(f"Versión vieja número {n} de la smash doble" for n in range(20))
+    message = render_request(_input(previous_versions=shown), None)
+    assert "número 19" in message and "número 11" in message
+    assert "número 10 " not in message
+
+
+def test_a_version_equal_to_the_original_or_another_is_dropped() -> None:
+    original = _input().text
+    client = FakeClient([_answer([original.upper() + ".", THREE[1], THREE[1]])])
+    proposal = enhance_context(
+        _input(), None, client_factory=lambda key: client, attribution=TEST_ATTRIBUTION
+    )
+    assert [v.text for v in proposal.versions] == [THREE[1]]
+
+
+def test_one_bad_version_is_dropped_and_the_others_kept() -> None:
+    client = FakeClient([_answer([THREE[0], "x" * 301, "🍔 " + THREE[2]])])
+    proposal = enhance_context(
+        _input(), None, client_factory=lambda key: client, attribution=TEST_ATTRIBUTION
+    )
+    assert [v.text for v in proposal.versions] == [THREE[0]]
+
+
+def test_when_every_version_fails_the_most_useful_refusal_is_raised() -> None:
+    client = FakeClient([_answer(["🍔 hola", "x" * 301, ""])])
+    with pytest.raises(ContextTooLong):
+        enhance_context(
+            _input(), None, client_factory=lambda key: client, attribution=TEST_ATTRIBUTION
+        )
+    client = FakeClient([_answer([_input().text, _input().text, _input().text])])
+    with pytest.raises(ContextUnavailable):
+        enhance_context(
+            _input(), None, client_factory=lambda key: client, attribution=TEST_ATTRIBUTION
+        )
+
+
+# -- m-25017274 (live on Bianki, 2026-11-13): a SCENE never asks for written text -------
+
+
+def _scene_input(**overrides: Any) -> ContextInput:
+    values: dict[str, Any] = {
+        "text": "Un shawarma de carne recién hecho sobre la barra del local, con la salsa cayendo",
+        "piece": "Imagen",
+        "scene": True,
+        "product": "Shawarma de carne",
+        "highlights": (("Precio", "$22.000"),),
+    }
+    values.update(overrides)
+    return ContextInput(**values)
+
+
+def test_a_scene_request_says_its_key_facts_are_never_written() -> None:
+    from qualify_api.creative.context_ai import SYSTEM_PROMPT
+
+    scene = render_request(_scene_input(), None)
+    assert "sin nada escrito en ella" in scene
+    assert "DATOS CLAVE (solo orientan lo que se ve; nunca se escriben en la imagen):" in scene
+    copy = render_request(_input(), None)
+    assert "DATOS CLAVE:\n- precio: 20 $" in copy and "nunca se escriben" not in copy
+    assert "La imagen NO lleva nada escrito" in SYSTEM_PROMPT
+    assert CONTEXT_PROMPT_VERSION == "context-v5-scene-no-text"
+
+
+@pytest.mark.parametrize(
+    "version",
+    [
+        # verbatim from production, 2026-11-13
+        "Plano cerrado del shawarma con la salsa cayendo. El precio $22.000 se ve claro.",
+        "La barra del local, luz cálida. Precio 22.000 a la vista.",
+        "Etiqueta con el precio legible en una esquina, el shawarma al centro.",
+        "Cartel junto al plato, luz de tarde, salsa cayendo.",
+        "Un letrero cercano y el shawarma sobre la barra.",
+        "Rótulo grande con el texto del combo sobre la mesa.",
+        "La barra del local, luz cálida, 22 000 en una esquina.",
+    ],
+)
+def test_a_scene_version_that_shows_text_is_detected(version: str) -> None:
+    assert scene_text_request(version, _scene_input()) != ""
+
+
+@pytest.mark.parametrize(
+    "version",
+    [
+        "Plano cerrado del shawarma, la salsa cayendo, luz cálida. Sin texto en la imagen.",
+        "Vista amplia de la barra, sin letreros ni precios, luz natural.",
+        "Una mano toma el shawarma sobre la barra. Nada escrito en la imagen.",
+        "Dos shawarmas sobre la bandeja de madera, luz cálida.",  # a 2x1 seen, not written
+    ],
+)
+def test_a_negated_or_clean_scene_version_passes(version: str) -> None:
+    assert scene_text_request(version, _scene_input()) == ""
+
+
+def test_the_owners_own_words_are_not_an_addition() -> None:
+    """The scene field's own example names «la etiqueta» (the cup's printed label)."""
+    own = _scene_input(text="Una mano sosteniendo el vaso con la etiqueta de frente")
+    assert scene_text_request("El vaso con la etiqueta de frente, luz cálida.", own) == ""
+    assert scene_text_request("El vaso y un cartel detrás.", own) == "cartel"
+
+
+def test_the_owner_asking_for_a_price_sign_is_not_exempt() -> None:
+    """Review: the image will not carry it, whoever asked; only «etiqueta» is his."""
+    own = _scene_input(text="El shawarma en la barra con el precio en un cartel")
+    assert scene_text_request("El shawarma y el precio en un cartel.", own) == "precio"
+    assert scene_text_request("El shawarma y un cartel al fondo.", own) == "cartel"
+
+
+@pytest.mark.parametrize(
+    ("own", "version"),
+    [
+        ("el contexto de la barra", "un texto en la barra"),
+        ("aprecio el sabor de la barra", "el precio en la barra"),
+        ("avisos de la calle afuera", "un aviso en la barra"),
+    ],
+)
+def test_the_owners_words_compare_as_whole_words(own: str, version: str) -> None:
+    assert scene_text_request(version, _scene_input(text=own)) != ""
+
+
+@pytest.mark.parametrize(
+    "version",
+    [
+        "2 shawarmas en la mesa, luz cálida.",
+        "Luz de las 2 de la tarde sobre la barra.",
+        "Vaso de 500 ml junto al plato.",
+        "El plato del menú del día sobre la barra.",
+        "Una tabla de madera con el shawarma.",
+    ],
+)
+def test_counts_and_ordinary_food_words_pass(version: str) -> None:
+    data = _scene_input(
+        highlights=(("Precio", "$22.000"), ("Promoción", "2x1 los martes"), ("Tamaño", "500 ml"))
+    )
+    assert scene_text_request(version, data) == ""
+
+
+@pytest.mark.parametrize(
+    ("version", "found"),
+    [
+        ("El shawarma y 22 mil en una esquina.", "22 mil"),
+        ("El shawarma por veintidós mil.", "veintidós mil"),
+        ("Textos escritos en la pared.", "Textos"),
+        ("Un menú en la pared detrás de la barra.", "menú en la pared"),
+        ("Un anuncio luminoso al fondo.", "anuncio"),
+        ("Una valla en la calle.", "valla"),
+        ("Un sticker con el valor del combo.", "sticker"),
+        ("Una pizarra con la oferta.", "pizarra"),
+        ("Un rótulo sobre la barra.", "rótulo"),
+        ("La barra, sin sombras y precio visible.", "precio"),
+    ],
+)
+def test_review_misses_are_caught(version: str, found: str) -> None:
+    # the filter reports the term lowercased and without accents («rotulo»)
+    from qualify_api.creative.context_ai import _plain
+
+    assert scene_text_request(version, _scene_input()) == _plain(found)
+
+
+@pytest.mark.parametrize(
+    "version",
+    [
+        "Plano cerrado, sin ningún letrero.",
+        "La barra del local, no lleva texto.",
+        "Luz cálida, ni carteles ni precios.",
+    ],
+)
+def test_a_negation_that_governs_the_term_passes(version: str) -> None:
+    assert scene_text_request(version, _scene_input()) == ""
+
+
+def test_scene_versions_that_show_text_are_dropped_and_the_rest_shown() -> None:
+    clean = "Plano cerrado del shawarma con la salsa cayendo, luz cálida sobre la barra."
+    client = FakeClient(
+        [
+            _answer(
+                [clean, "La barra del local. Se ve el precio $22.000.", "Un letrero al fondo."],
+                scene=True,
+            )
+        ]
+    )
+    proposal = enhance_context(
+        _scene_input(), None, client_factory=lambda key: client, attribution=TEST_ATTRIBUTION
+    )
+    assert [v.text for v in proposal.versions] == [clean]
+    assert proposal.rejected == (
+        "La barra del local. Se ve el precio $22.000.",
+        "Un letrero al fondo.",
+    )
+
+
+def test_when_every_scene_version_shows_text_the_failure_path_runs() -> None:
+    client = FakeClient(
+        [
+            _answer(
+                ["Precio $22.000 a la vista.", "Cartel con 22.000.", "Etiqueta clara."], scene=True
+            )
+        ]
+    )
+    from qualify_api.creative.context_ai import ContextNoUsableVersion
+
+    with pytest.raises(ContextNoUsableVersion) as error:
+        enhance_context(
+            _scene_input(), None, client_factory=lambda key: client, attribution=TEST_ATTRIBUTION
+        )
+    # the rejected texts travel with the refusal, for the next press to avoid
+    assert len(error.value.rejected) == 3
+
+
+def test_copy_versions_still_carry_the_price() -> None:
+    with_price = [
+        "Quiero la smash doble a 20 $ con papas, promo de fin de semana.",
+        "Quiero que se vea la smash doble jugosa: 20 $ este fin de semana.",
+        "Quiero contarte que la smash doble está a 20 $ con el precio de promo.",
+    ]
+    client = FakeClient([_answer(with_price)])
+    proposal = enhance_context(
+        _input(), None, client_factory=lambda key: client, attribution=TEST_ATTRIBUTION
+    )
+    assert [v.text for v in proposal.versions] == with_price
+
+
+# -- The scene filter's pinned table (two code reviews, 2026-11-13): every sentence the
+#    reviewers probed, so no later change can regress one. Default «Datos clave»: a big
+#    price, a 2x1 and a size; rows that need others say so.
+
+_DEFAULT_FACTS = (("Precio", "$22.000"), ("Promoción", "2x1 los martes"), ("Tamaño", "500 ml"))
+_SMALL_PRICES = (("Precio", "USD 5"), ("Combo", "$12"), ("Precio en bolívares", "Bs. 150"))
+_THOUSANDS_FACT = (("Oferta", "22 mil"),)
+_OWN_LABEL = "Una mano sosteniendo el vaso con la etiqueta de frente"
+
+#: (sentence, «Datos clave», the owner's own scene or None for the default)
+_MUST_PASS: list[tuple[str, tuple[tuple[str, str], ...], str | None]] = [
+    ("2 shawarmas en la mesa, luz cálida.", _DEFAULT_FACTS, None),
+    ("Luz de las 2 de la tarde sobre la barra.", _DEFAULT_FACTS, None),
+    ("Vaso de 500 ml junto al plato.", _DEFAULT_FACTS, None),
+    ("Dos shawarmas para el 2x1, sobre la bandeja.", _DEFAULT_FACTS, None),
+    ("La barra a las 12 pm, luz dura de mediodía.", _DEFAULT_FACTS, None),
+    ("3 unidades de falafel en el plato.", _DEFAULT_FACTS, None),
+    ("El plato del menú del día sobre la barra.", _DEFAULT_FACTS, None),
+    ("Una tabla de madera con el shawarma.", _DEFAULT_FACTS, None),
+    ("La marca del local se siente en los colores.", _DEFAULT_FACTS, None),
+    ("El logo en el empaque, de frente.", _DEFAULT_FACTS, None),
+    ("El vaso con la etiqueta de frente, luz cálida.", _DEFAULT_FACTS, _OWN_LABEL),
+    ("Plano cerrado del shawarma. Sin texto en la imagen.", _DEFAULT_FACTS, None),
+    ("Vista amplia de la barra, sin letreros ni precios.", _DEFAULT_FACTS, None),
+    ("Una mano toma el shawarma. Nada escrito en la imagen.", _DEFAULT_FACTS, None),
+    ("Plano cerrado, sin ningún letrero.", _DEFAULT_FACTS, None),
+    ("La barra del local, no lleva texto.", _DEFAULT_FACTS, None),
+    ("Luz cálida, ni carteles ni precios.", _DEFAULT_FACTS, None),
+    ("La barra, sin ningún tipo de letrero.", _DEFAULT_FACTS, None),
+    ("Ni una sola letra en la imagen, solo el plato.", _DEFAULT_FACTS, None),
+    ("Un valor agregado: ingredientes frescos a la vista.", _DEFAULT_FACTS, None),
+    ("Un contexto cálido de almuerzo.", _DEFAULT_FACTS, None),
+    ("Mil sabores en la mesa, luz cálida.", _DEFAULT_FACTS, None),
+    # small prices never block ordinary counts and times (Venezuela sells in USD)
+    ("5 tacos en la mesa.", _SMALL_PRICES, None),
+    ("Son las 5 de la tarde en el local.", _SMALL_PRICES, None),
+    ("12 empanadas en la bandeja.", _SMALL_PRICES, None),
+    ("150 gramos de pollo en el plato.", _SMALL_PRICES, None),
+    # «22 mil» is 22000, not 22
+    ("Una mesa para 22 personas, luz de tarde.", _THOUSANDS_FACT, None),
+]
+
+_MUST_DROP: list[tuple[str, tuple[tuple[str, str], ...], str | None]] = [
+    # verbatim from production, 2026-11-13
+    ("Plano cerrado del shawarma. El precio $22.000 se ve claro.", _DEFAULT_FACTS, None),
+    ("La barra del local, luz cálida. Precio 22.000 a la vista.", _DEFAULT_FACTS, None),
+    ("Etiqueta con el precio legible en una esquina.", _DEFAULT_FACTS, None),
+    ("Cartel con 22.000 visible junto al plato.", _DEFAULT_FACTS, None),
+    ("Un letrero cercano y el shawarma sobre la barra.", _DEFAULT_FACTS, None),
+    ("Rótulo grande con el texto del combo sobre la mesa.", _DEFAULT_FACTS, None),
+    # first review
+    ("La barra del local, 22 000 en una esquina.", _DEFAULT_FACTS, None),
+    ("La barra del local y 22000 al fondo.", _DEFAULT_FACTS, None),
+    ("El shawarma y 22 mil en una esquina.", _DEFAULT_FACTS, None),
+    ("El shawarma por veintidós mil.", _DEFAULT_FACTS, None),
+    ("Textos escritos en la pared.", _DEFAULT_FACTS, None),
+    ("Un menú en la pared detrás de la barra.", _DEFAULT_FACTS, None),
+    ("Un anuncio luminoso al fondo.", _DEFAULT_FACTS, None),
+    ("Una valla en la calle.", _DEFAULT_FACTS, None),
+    ("Un sticker con el valor del combo.", _DEFAULT_FACTS, None),
+    ("Una pizarra con la oferta.", _DEFAULT_FACTS, None),
+    ("Un rótulo sobre la barra.", _DEFAULT_FACTS, None),
+    ("La barra, sin sombras y precio visible.", _DEFAULT_FACTS, None),
+    ("Sin sombras y con el precio visible.", _DEFAULT_FACTS, None),
+    ("El shawarma y el precio en un cartel.", _DEFAULT_FACTS, "con el precio en un cartel"),
+    ("Un texto en la barra.", _DEFAULT_FACTS, "el contexto de la barra"),
+    ("El precio en la barra.", _DEFAULT_FACTS, "aprecio el sabor de la barra"),
+    ("Un aviso en la barra.", _DEFAULT_FACTS, "avisos de la calle afuera"),
+    ("Una etiqueta en el vaso.", _DEFAULT_FACTS, None),
+    # second review: money in the scene, whatever «Datos clave» say
+    ("Shawarma por 5 dólares sobre la barra.", (), None),
+    ("Un plato de 22 mil pesos.", (), None),
+    ("El combo por cinco dólares.", (), None),
+    ("El shawarma por veintidos mil.", (), None),
+    ("El combo a 22 lucas.", (), None),
+    ("La barra con un precio de 5 USD.", _SMALL_PRICES, None),
+    ("Bs. 150 junto al plato.", _SMALL_PRICES, None),
+    ("$12 en la esquina de la foto.", _SMALL_PRICES, None),
+    # second review: «22 mil» as a fact matches every spelling of 22000
+    ("La barra con 22.000 al fondo.", _THOUSANDS_FACT, None),
+    ("La barra con 22000 al fondo.", _THOUSANDS_FACT, None),
+    # second review: written words in the picture
+    ("En la pared se lee «Shawarma».", _DEFAULT_FACTS, None),
+    ("Un banner con la promo.", _DEFAULT_FACTS, None),
+    ("Banderín con la promo colgado.", _DEFAULT_FACTS, None),
+    ("Un globo de diálogo con la frase Ven hoy.", _DEFAULT_FACTS, None),
+    ("Una etiqueta que dice 2x1 en el vaso.", _DEFAULT_FACTS, _OWN_LABEL),
+    ("Un vaso con una leyenda que diga Gracias.", _DEFAULT_FACTS, None),
+]
+
+
+def _probe(facts: tuple[tuple[str, str], ...], own: str | None) -> ContextInput:
+    return _scene_input(highlights=facts, **({"text": own} if own else {}))
+
+
+@pytest.mark.parametrize(("sentence", "facts", "own"), _MUST_PASS)
+def test_pinned_scene_sentences_that_must_pass(
+    sentence: str, facts: tuple[tuple[str, str], ...], own: str | None
+) -> None:
+    assert scene_text_request(sentence, _probe(facts, own)) == ""
+
+
+@pytest.mark.parametrize(("sentence", "facts", "own"), _MUST_DROP)
+def test_pinned_scene_sentences_that_must_drop(
+    sentence: str, facts: tuple[tuple[str, str], ...], own: str | None
+) -> None:
+    assert scene_text_request(sentence, _probe(facts, own)) != ""

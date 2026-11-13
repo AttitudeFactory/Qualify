@@ -16,7 +16,11 @@ Every state is DERIVED from what is already stored — no column of its own:
   no live vista previa yet and whose own job was not taken (`waiting_for`).
 - `creating` «Creando»: `drafting` otherwise (a job taken, or no queue at all).
 - `to_review` «Para revisar»: `generated` (or `rejected`) with a live vista previa.
-- `ready` «Lista»: `approved` — the whole video was approved with it.
+- `ready` «Lista»: `approved` — the whole video was approved with it; or (UI-8,
+  m-24921083) `generated`/`rejected` with a live vista previa the owner marked «Me gusta
+  así» (`liked_at` in its active video's `params.draft`, `part_review.set_part_liked`).
+  The mark charges nothing and approves nothing: approving the whole video stays the
+  only charge. A vista previa expired or to redo reads as such, mark or not.
 - `failed` «No salió»: `failed` for any reason but the ones below.
 - `original_refused` «No se pudo con el original»: `failed` on an «Igual al original»
   (`edit`) part for a reason that lets it be made new (`can_make_part_new`:
@@ -149,6 +153,12 @@ class PartFacts:
     video_key: str | None = None
     poster_key: str | None = None
     video_seconds: float | None = None
+    #: UI-8 (m-24921083): the active video's vista previa carries «Me gusta así»
+    liked: bool = False
+    #: UI-8: where the part comes from in the original reel (its `analysis_id` /
+    #: `shot_indexes`, from the child's `media->'part'`) — what «Original» plays
+    analysis_id: UUID | None = None
+    shot_indexes: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -180,6 +190,12 @@ class PartProgressRow:
     preview_video_key: str = ""
     preview_poster_key: str = ""
     preview_seconds: float | None = None
+    #: UI-8 (m-24921083): «Me gusta así» on the vista previa shown (the row reads READY)
+    liked: bool = False
+    #: UI-8: the reel analysis and the cuts the part comes from («Original»); None / ()
+    #: for a part not taken from a reel
+    analysis_id: UUID | None = None
+    shot_indexes: tuple[int, ...] = ()
 
     @property
     def shown(self) -> int:
@@ -225,6 +241,13 @@ def _live_preview(facts: PartFacts, now: float) -> bool:
         return False
     block = draft_state({"draft": facts.preview} if facts.preview is not None else None)
     return block is None or not draft_expired(block, now)
+
+
+def liked_mark(block: Mapping[str, Any] | None) -> bool:
+    """Whether a video's draft block carries «Me gusta así» (UI-8): `liked_at`, the Unix
+    seconds it was marked. Pure."""
+    value = (block or {}).get("liked_at")
+    return isinstance(value, int | float) and not isinstance(value, bool) and value > 0
 
 
 def _made_at(facts: PartFacts) -> float | None:
@@ -274,6 +297,8 @@ def derive_state(
         "draft_id": facts.draft_id,
         "mode": facts.mode,
         "seconds": facts.seconds,
+        "analysis_id": facts.analysis_id,
+        "shot_indexes": facts.shot_indexes,
     }
     if facts.status == PLANNED:
         alone = facts.mode == EXTEND and (previous is None or previous.status == PLANNED)
@@ -326,7 +351,10 @@ def derive_state(
                     changed_part=previous.index,
                 )
         if facts.status == APPROVED:
-            return PartProgressRow(**row, state=PartState.READY)
+            return PartProgressRow(**row, state=PartState.READY, liked=facts.liked)
+        if facts.liked and _live_preview(facts, moment):
+            # UI-8: «Me gusta así» — reviewed, nothing charged (after EXPIRED and REDO)
+            return PartProgressRow(**row, state=PartState.READY, liked=True)
         return PartProgressRow(**row, state=PartState.TO_REVIEW)
     # staged/published: a part never is one (only its video); read as made
     return PartProgressRow(**row, state=PartState.READY)
@@ -412,6 +440,23 @@ def poster_key(thumbnail_key: Any, preview_key: Any) -> str | None:
     return None
 
 
+def part_source(part: Mapping[str, Any]) -> dict[str, Any]:
+    """`analysis_id` / `shot_indexes` of a stored part entry (`media->'part'` or a plan
+    entry): where it comes from in the original reel, or None / () when it does not
+    (or the stored shape is not one this code reads). Pure."""
+    raw_id = part.get("analysis_id")
+    try:
+        analysis_id = UUID(str(raw_id)) if raw_id else None
+    except ValueError:
+        analysis_id = None
+    raw_cuts = part.get("shot_indexes")
+    cuts: tuple[int, ...] = ()
+    if analysis_id is not None and isinstance(raw_cuts, list | tuple):
+        if all(isinstance(c, int) and not isinstance(c, bool) and c >= 0 for c in raw_cuts):
+            cuts = tuple(raw_cuts)
+    return {"analysis_id": analysis_id, "shot_indexes": cuts}
+
+
 def _seconds(value: Any) -> float | None:
     """A clip length as stored (a JSON number, or a numeric string as the asset's
     `duration_seconds`), or None when absent or not a positive number."""
@@ -493,6 +538,7 @@ def read_part_progress(
                     index=index,
                     mode=str(planned.get("mode") or "reference"),
                     seconds=_int(planned.get("seconds"), 0),
+                    **part_source(planned),
                 )
             )
             continue
@@ -515,6 +561,8 @@ def read_part_progress(
                 video_key=child["object_key"] or None,
                 poster_key=poster_key(child["thumbnail_key"], child["preview_key"]),
                 video_seconds=_seconds(child["video_seconds"]),
+                liked=liked_mark(block),
+                **part_source(own),
             )
         )
     return derive_progress(
@@ -538,6 +586,8 @@ __all__ = [
     "PartState",
     "derive_progress",
     "failed_part",
+    "liked_mark",
+    "part_source",
     "poster_key",
     "derive_state",
     "read_part_progress",

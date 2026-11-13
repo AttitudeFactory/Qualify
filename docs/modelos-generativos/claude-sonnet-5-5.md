@@ -5,7 +5,7 @@
 | Proveedor | Anthropic (Messages API), clave `QUALIFY_ANTHROPIC_API_KEY` |
 | Modelo | `claude-sonnet-5-5`, esfuerzo `low`, una herramienta estricta (`propose_text`), `max_tokens` 3.072 |
 | Precio | US$2 de entrada / US$10 de salida por millón; escritura de caché (5 min) US$2,50, lectura US$0,10 (`claude_tools.PRICES` y `CACHE_READ_PRICES`) |
-| Uso en Qualify | `qualify_api.whatsapp.menus.suggest_ai` (m-24936838): propone el saludo o una «respuesta de siempre» con la voz de la marca y solo con los datos que escribió el dueño. Versión de prompt `wa-suggest-1` (`PROMPT_VERSION`, va en el log de cada llamada). También lo usa «Potenciar con IA» del generador (`creative/context_ai.py`), con el mismo patrón |
+| Uso en Qualify | `qualify_api.whatsapp.menus.suggest_ai` (m-24936838): propone el saludo o una «respuesta de siempre» con la voz de la marca y solo con los datos que escribió el dueño. Versión de prompt `wa-suggest-1` (`PROMPT_VERSION`, va en el log de cada llamada). También lo usa «Mejorar mi texto» del generador (`creative/context_ai.py`, tres versiones desde `context-v4-three-versions`, escena sin texto desde `context-v5-scene-no-text`; ver «Uso MEJORAR-TEXTO-001» y «-002» abajo) |
 | Datos | Lo que el dueño escribió en la pantalla (datos del negocio, otras respuestas, el texto del campo) y la identidad de marca. Nada se guarda: la propuesta reemplaza el campo y el dueño la revisa |
 
 ## Uso WA-SUG-001: costo por sugerencia (m-24936838), 2026-11-04
@@ -96,3 +96,28 @@ consultado), datos descartados (`dropped`), aciertos de las citas y precios fren
 **`wa-import-2` no tiene ninguna llamada real registrada.** Pendiente: la carta impresa (foto y PDF)
 y la página de Bianki con `wa-import-2` y el registro de consumo activo, para confirmar tokens, que
 `count_tokens` acepta el pedido y la clasificación `value`/`sentence`.
+
+## Uso MEJORAR-TEXTO-001: «Mejorar mi texto» del generador con tres versiones (m-25017274), 2026-11-13
+
+| Campo | Valor |
+|---|---|
+| Código | `qualify_api.creative.context_ai.enhance_context`, función de consumo `potenciar-contexto` |
+| Versión de prompt | `context-v4-three-versions` (antes `context-v3-compact-300`) |
+| Configuración | `claude-sonnet-5-5`, esfuerzo `low`, herramienta estricta `propose_context` con una propiedad por enfoque (`directa`, `descriptiva`, `cercana`; escena: `producto`, `lugar`, `momento`) + `added_facts`; `max_tokens` 6.144; tope de 300 caracteres por versión |
+| Entrada nueva | tipo de publicación, formato y, en «Otra versión», hasta 9 versiones ya mostradas |
+| Costo medido | **US$0,0068 por pulsación** (12 llamadas reales, 6 textos ficticios de comida); antes US$0,0032 |
+| Calidad medida | ninguna versión repetida; similitud entre pulsaciones 0,625 (antes 0,995); sin números inventados |
+| Creaciones | no gasta ninguna; el costo solo queda en el registro de consumo en dólares |
+
+Detalle, tabla completa y lo que queda sin medir: [`pruebas.md` § MEJORAR-TEXTO-001](pruebas.md#mejorar-texto-001).
+
+## Uso MEJORAR-TEXTO-002: la escena de una imagen sin precio ni letreros (m-25017274), 2026-11-13
+
+| Campo | Valor |
+|---|---|
+| Versión de prompt | `context-v5-scene-no-text` (antes `context-v4-three-versions`) |
+| Cambio | en una ESCENA solo se describe lo que se ve; «Datos clave» orientan, nunca se escriben; filtro determinista `scene_text_request` descarta la versión que pide precio, letrero, etiqueta, texto, «$» o una cifra de «Datos clave» (las negaciones y las palabras del propio dueño pasan) |
+| Resultado medido | escenas con precio que piden texto en la imagen, según un juez de la evaluación independiente del filtro y más estricto: 24 de 36 → 0 de 36; textos de publicación sin regresión (similitud entre pulsaciones 0,683 → 0,548, el precio se conserva) |
+| Costo medido | US$0,0058 por pulsación en escena, US$0,0068 en texto |
+
+Detalle: [`pruebas.md` § MEJORAR-TEXTO-002](pruebas.md#mejorar-texto-002).

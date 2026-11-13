@@ -211,9 +211,13 @@ def test_the_card_says_how_they_pay_and_who_confirmed() -> None:
 
 
 def test_the_list_gets_its_pills_from_one_read(gw) -> None:
-    rows = with_payment_pills([_row(), _row(OTHER)], {THREAD: _status("review")}, NOW, UTC_ZONE)
-    assert (rows[0].payment_label, rows[0].payment_tone) == ("Pago por revisar", "warn")
-    assert rows[1].payment_label == ""
+    rows = with_payment_pills(
+        [_row(), _row(OTHER)],
+        {THREAD: _status("review"), OTHER: _status("awaiting")},
+    )
+    # m-25017844: the row reads marks, not a label — the shared row words the one pill.
+    assert (rows[0].payment_review, rows[0].payment_awaiting) == (True, False)
+    assert (rows[1].payment_review, rows[1].payment_awaiting) == (False, True)
     statuses = state_module._payment_statuses(gw, TENANT, [UUID(THREAD), UUID(OTHER)])
     assert [c for c in gw.calls if c[0] == "statuses"] == [
         ("statuses", [UUID(THREAD), UUID(OTHER)])
@@ -411,8 +415,6 @@ def test_the_payment_filter_uses_the_lists_one_read() -> None:
     rows = with_payment_pills(
         [_row(), _row(OTHER)],
         {THREAD: _status("review"), OTHER: _status("awaiting")},
-        NOW,
-        UTC_ZONE,
     )
     assert [r.thread_id for r in filter_threads(rows, FILTER_PAYMENT)] == [THREAD]
     assert filter_counts(rows)[FILTER_PAYMENT] == 1
@@ -427,13 +429,13 @@ def test_the_state_filters_and_keeps_the_filter_like_the_others(gw) -> None:
     from .whatsapp_chats_vm import FILTER_PAYMENT, FILTER_PAYMENT_EMPTY
 
     state = _state()
-    state.rows = with_payment_pills(state.rows, {THREAD: _status("review")}, NOW, UTC_ZONE)
+    state.rows = with_payment_pills(state.rows, {THREAD: _status("review")})
     state.set_filter(FILTER_PAYMENT)
-    assert [r.thread_id for r in state.visible_rows] == [THREAD]
+    assert [r.thread_id for r in state.visible_chat_rows] == [THREAD]
     assert state.filter_payment_label == "Pago por revisar · 1"
-    state.rows = with_payment_pills(state.rows, {}, NOW, UTC_ZONE)  # a refresh: none left
+    state.rows = with_payment_pills(state.rows, {})  # a refresh: none left
     state.rows = [dataclasses.replace(r, payment_review=False) for r in state.rows]
-    assert state.filter_key == FILTER_PAYMENT and state.visible_rows == []
+    assert state.filter_key == FILTER_PAYMENT and state.visible_chat_rows == []
     assert state.filter_empty == FILTER_PAYMENT_EMPTY
 
 
@@ -502,7 +504,7 @@ async def test_a_failed_statuses_read_says_so_and_keeps_the_marks(gw, monkeypatc
     monkeypatch.setattr(gw, "payment_statuses", broken)
     assert await WhatsAppChatsState._read_list(state, silent=True)
     assert state.statuses_failed
-    assert [r.thread_id for r in state.visible_rows] == [THREAD]  # the mark is kept
+    assert [r.thread_id for r in state.visible_chat_rows] == [THREAD]  # the mark is kept
     assert state.filter_payment_label == "Pago por revisar"  # never a count it cannot know
     state.rows = []
     assert (

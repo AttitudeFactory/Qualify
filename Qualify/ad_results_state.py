@@ -12,12 +12,24 @@ import reflex as rx
 from qualify_api.ads.results import ResultsUnavailable
 from qualify_api.tenancy.acting import acting_login
 
-from .ad_results_provider import confirm_edit, load_ad, load_ads, pause_ad, prepare_edit, refresh_ad
+from .ad_results_provider import (
+    activate_alerts,
+    alert_accounts,
+    confirm_edit,
+    load_ad,
+    load_ads,
+    pause_ad,
+    prepare_edit,
+    read_floor,
+    refresh_ad,
+)
 from .ad_results_vm import (
+    ALERTS_FAILED,
     EDIT_ACTION_LABELS,
     EDIT_EXPIRED,
     EDIT_PREPARE_FAILED,
     EDIT_UNKNOWN,
+    FLOOR_FAILED,
     LOAD_FAILED,
     NO_SESSION,
     PAUSE_FAILED,
@@ -25,8 +37,10 @@ from .ad_results_vm import (
     AdDetailVM,
     AdEditReviewVM,
     AdResultVM,
+    AlertAccountVM,
     EditInputError,
     edit_budget,
+    edit_budget_down,
     edit_end,
 )
 from .auth_state import AuthState
@@ -51,6 +65,15 @@ class AdResultsState(rx.State):
     edit_consent: bool = False
     edit_warning: str = ""
     change_pending: bool = False
+    floor_label: str = ""
+    floor_loading: bool = False
+    _floor_input: str = ""
+    alert_accounts: list[AlertAccountVM] = []
+    alert_target: AlertAccountVM = AlertAccountVM("", "")
+    alerts_busy: bool = False
+    alerts_on: list[str] = []
+    alerts_notice: str = ""
+    alerts_error: str = ""
     _context: tuple[str, str, str] = ("", "", "")
     _selected_id: str = ""
     _operation: str = ""
@@ -141,6 +164,95 @@ class AdResultsState(rx.State):
         self._edit_request = ""
         self.edit_warning = ""
         self.change_pending = False
+        self.floor_label = ""
+        self.floor_loading = False
+        self._floor_input = ""
+        self.alert_accounts = []
+        self.alert_target = AlertAccountVM("", "")
+        self.alerts_busy = False
+        self.alerts_on = []
+        self.alerts_notice = ""
+        self.alerts_error = ""
+
+    @rx.var
+    def edit_title(self) -> str:
+        return EDIT_ACTION_LABELS.get(self.edit_action, "Revisa el cambio del anuncio")
+
+    @rx.event
+    def ask_alerts(self, account_id: str) -> None:
+        if self.alerts_busy:
+            return
+        target = next((row for row in self.alert_accounts if row.id == account_id), None)
+        if target is not None:
+            self.alert_target = target
+            self.alerts_notice = ""
+            self.alerts_error = ""
+
+    @rx.event
+    def dismiss_alerts(self, opened: bool = False) -> None:
+        if not opened and not self.alerts_busy:
+            self.alert_target = AlertAccountVM("", "")
+
+    @rx.event(background=True)
+    async def confirm_alerts(self) -> None:
+        async with self:
+            context = await self._session()
+            account = tenant_uuid(self.alert_target.id)
+            if self.alerts_busy or account is None:
+                return
+            if context != self._context or not all(tenant_uuid(value) for value in context):
+                self.alert_target = AlertAccountVM("", "")
+                self.alerts_error = NO_SESSION
+                return
+            self.alerts_busy = True
+        try:
+            with acting_login(UUID(context[1])):
+                message = await asyncio.to_thread(activate_alerts, UUID(context[0]), account)
+        except Exception as exc:
+            logger.warning("ad alerts subscription failed: %s", type(exc).__name__)
+            message, failed = (
+                (str(exc) if isinstance(exc, ResultsUnavailable) else ALERTS_FAILED),
+                True,
+            )
+        else:
+            failed = False
+        async with self:
+            if context != await self._session():
+                return
+            self.alerts_error, self.alerts_notice = (message, "") if failed else ("", message)
+            if not failed and str(account) not in self.alerts_on:
+                self.alerts_on = [*self.alerts_on, str(account)]
+            self.alerts_busy = False
+            self.alert_target = AlertAccountVM("", "")
+
+    @rx.event(background=True)
+    async def load_floor(self) -> None:
+        async with self:
+            context = await self._session()
+            if (
+                self.edit_action != "budget_down"
+                or not self.edit_open
+                or context != self._context
+                or not all(tenant_uuid(value) for value in context)
+                or not self._selected_id
+            ):
+                return
+            promotion, request = UUID(self._selected_id), self._edit_request
+            self.floor_loading = True
+        try:
+            with acting_login(UUID(context[1])):
+                label, floor = await asyncio.to_thread(read_floor, UUID(context[0]), promotion)
+        except Exception as exc:
+            logger.warning("ad budget floor read failed: %s", type(exc).__name__)
+            label, floor = FLOOR_FAILED, ""
+        async with self:
+            self.floor_loading = False
+            if (
+                context == await self._session()
+                and request == self._edit_request
+                and self.edit_action == "budget_down"
+            ):
+                self.floor_label, self._floor_input = label, floor
 
     @rx.event(background=True)
     async def load_list(self) -> None:
@@ -164,9 +276,15 @@ class AdResultsState(rx.State):
                     self.error = str(exc) if isinstance(exc, ResultsUnavailable) else LOAD_FAILED
                     self.loading = False
             return
+        try:
+            accounts = await asyncio.to_thread(alert_accounts, UUID(context[0]))
+        except Exception as exc:  # the offer is optional; the list still shows
+            logger.warning("ad alert accounts read failed: %s", type(exc).__name__)
+            accounts = []
         async with self:
             if context == await self._session() and operation == self._operation:
                 self.ads = rows
+                self.alert_accounts = accounts
                 self.loading = False
 
     @rx.event(background=True)
@@ -344,9 +462,9 @@ class AdResultsState(rx.State):
                     )
 
     @rx.event
-    def open_edit(self, action: str) -> None:
+    def open_edit(self, action: str) -> rx.event.EventSpec | None:
         if not self._edit_allowed(action):
-            return
+            return None
         self.pause_open = False
         self._pause_request = ""
         self.edit_action = action
@@ -358,6 +476,8 @@ class AdResultsState(rx.State):
         self.error = ""
         self.notice = ""
         self.edit_warning = ""
+        self.floor_label, self._floor_input = "", ""
+        return AdResultsState.load_floor if action == "budget_down" else None
 
     @rx.event
     def dismiss_edit(self, opened: bool = False) -> None:
@@ -409,6 +529,10 @@ class AdResultsState(rx.State):
                 budget = (
                     edit_budget(self.edit_budget_total, row.current_budget_input)
                     if self.edit_action == "budget"
+                    else edit_budget_down(
+                        self.edit_budget_total, row.current_budget_input, self._floor_input
+                    )
+                    if self.edit_action == "budget_down"
                     else None
                 )
                 end = (

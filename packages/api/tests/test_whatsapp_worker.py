@@ -264,3 +264,87 @@ def test_a_stray_uuid_is_not_accepted_as_a_scope() -> None:
     with pytest.raises(SystemExit):
         worker.build_parser().parse_args(["--tenant", "not-a-uuid"])
     assert worker.build_parser().parse_args(["--tenant", str(uuid4())]).tenants
+
+
+# --- ADR 48: the catalog task in the same process -----------------------------------------
+
+
+class FakeCatalogRunner:
+    def __init__(self, *, error: str = "", fails: bool = False) -> None:
+        self.ticks = 0
+        self._error = error
+        self._fails = fails
+
+    async def run_once(self) -> object:
+        from qualify_api.whatsapp.catalog_sync.worker import CatalogTickReport
+
+        self.ticks += 1
+        if self._fails:
+            raise RuntimeError("catalog pass blew up")
+        return CatalogTickReport(started_at=datetime.now(UTC), error=self._error)
+
+
+def test_catalog_interval_defaults_to_thirty_and_zero_is_allowed() -> None:
+    assert worker.build_parser().parse_args(["--all-tenants"]).catalog_interval == 30
+    args = worker.build_parser().parse_args(["--all-tenants", "--catalog-interval", "0"])
+    assert args.catalog_interval == 0
+
+
+def test_a_negative_catalog_interval_is_refused() -> None:
+    with pytest.raises(SystemExit):
+        worker.main(["--tenant", str(TENANT), "--catalog-interval", "-1"])
+
+
+def test_once_runs_one_outbox_pass_then_one_catalog_pass() -> None:
+    outbox = FakeRunner()
+    catalog = FakeCatalogRunner()
+    seen: list[list[UUID]] = []
+
+    def catalog_scoped(tenant_ids):
+        seen.append(list(tenant_ids))
+        return catalog
+
+    code = worker.main(
+        ["--tenant", str(TENANT), "--once"],
+        scoped=lambda _: outbox,
+        production=lambda: FakeRunner(),
+        catalog_scoped=catalog_scoped,
+        catalog_production=lambda: FakeCatalogRunner(),
+    )
+    assert code == 0
+    assert (outbox.ticks, catalog.ticks) == (1, 1)
+    assert seen == [[TENANT]]
+
+
+def test_catalog_interval_zero_turns_the_catalog_task_off() -> None:
+    catalog = FakeCatalogRunner()
+    code = worker.main(
+        ["--all-tenants", "--once", "--catalog-interval", "0"],
+        scoped=lambda _: FakeRunner(),
+        production=lambda: FakeRunner(),
+        catalog_scoped=lambda _: catalog,
+        catalog_production=lambda: catalog,
+    )
+    assert code == 0 and catalog.ticks == 0
+
+
+def test_injected_outbox_runners_never_build_the_real_catalog_tick() -> None:
+    # No catalog factory injected: the catalog task is off (a test never reaches Meta/DB).
+    assert worker.main(["--tenant", str(TENANT), "--once"], scoped=lambda _: FakeRunner()) == 0
+
+
+async def test_a_failing_catalog_pass_is_logged_and_the_loop_goes_on() -> None:
+    runner = FakeCatalogRunner(fails=True)
+    clock = FakeClock()
+    code = await worker.run_catalog_loop(
+        lambda: runner, once=False, interval=30, sleep=clock.sleep, clock=clock, max_ticks=3
+    )
+    assert code == 0 and runner.ticks == 3
+    assert await worker.run_catalog_loop(lambda: FakeCatalogRunner(error="X"), once=True) == 1
+
+
+async def test_a_catalog_runner_that_cannot_start_does_not_raise() -> None:
+    def broken() -> FakeCatalogRunner:
+        raise KeyError("QUALIFY_META_APP_ID")
+
+    assert await worker.run_catalog_loop(broken, once=False) == 1
