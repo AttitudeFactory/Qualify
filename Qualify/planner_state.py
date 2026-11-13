@@ -69,6 +69,7 @@ from .planner_vm import (
     CAMPAIGN_NEW,
     EMPTY_SEASON_NOTICE,
     KIND_ICONS,
+    OPEN_GROUPS_MAX,
     OPENING_HOUR,
     PLAN_GOAL_KEYS,
     PLAN_GOALS,
@@ -100,9 +101,11 @@ from .planner_vm import (
     campaign_value,
     can_schedule_again,
     join_es,
+    menu_focus_script,
     now_slot,
     parse_view_param,
     parse_week_param,
+    prune_open_groups,
     scheduled_message,
     split_time,
     timezone_options,
@@ -809,6 +812,12 @@ class PlannerState(rx.State):
             self.tz_name = data.tz_name
             self.days = data.days
             self.rows = data.rows
+            # m-25026241: forget the open groups of this week that no longer exist
+            self.open_groups = prune_open_groups(
+                self.open_groups,
+                (g.key for day in data.days for g in day.groups if g.is_group),
+                date.fromisoformat(data.monday_iso),
+            )
             self.total_events = data.total_events
             self.unscheduled = data.unscheduled
             self.schedulable = data.schedulable
@@ -1435,11 +1444,12 @@ class PlannerState(rx.State):
 
     @rx.event
     def toggle_group(self, key: str) -> None:
-        """Unfold or fold one same-minute group (m-25026241)."""
+        """Unfold or fold one same-minute group (m-25026241). Reset with the rest of this
+        state on logout and on a business switch (`auth_state.business_state_classes`)."""
         if key in self.open_groups:
             self.open_groups = [k for k in self.open_groups if k != key]
         else:
-            self.open_groups = [*self.open_groups, key]
+            self.open_groups = [*self.open_groups, key][-OPEN_GROUPS_MAX:]
 
     @rx.event
     def schedule_again(self, post_id: str) -> rx.event.EventSpec | None:
@@ -1902,11 +1912,16 @@ class PlannerState(rx.State):
             await review._read(UUID(detail.post_id))
 
     @rx.event
-    def set_detail_open(self, value: bool) -> rx.event.EventSpec | None:
+    def set_detail_open(self, value: bool) -> list[rx.event.EventSpec] | None:
         self.detail_open = value
         if not value:
             self.detail_confirm = ""
-            return rx.call_script(back_url_script(self._planner_address(ficha="")))
+            return [
+                rx.call_script(back_url_script(self._planner_address(ficha=""))),
+                # review m-25026241 (4): focus goes back to the card's «⋯» it was opened
+                # from (Radix sometimes left it on <body>, in a group or not)
+                rx.call_script(menu_focus_script(self.detail.event_id)),
+            ]
         return None
 
     @rx.var

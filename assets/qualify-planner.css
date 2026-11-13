@@ -945,6 +945,8 @@
   font-size: 0.7rem; font-weight: 700;
   box-shadow: inset 0 0 0 1px var(--accent-a6);
 }
+/* m-25026241: a same-minute group's chip — one line, the label yields (ellipsis). */
+.q-cell-group.rt-Button { justify-content: flex-start; min-width: 0; overflow: hidden; white-space: nowrap; }
 
 /* The list «+N más» opens beside it: the events that did not fit, one compact row each. */
 .q-hour-list {

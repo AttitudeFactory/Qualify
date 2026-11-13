@@ -1686,18 +1686,18 @@ def test_a_cell_shows_five_chips_and_keeps_the_rest_behind_more() -> None:
     grid = _week(*[_item(f"e{i}", at + timedelta(minutes=i)) for i in range(7)])
     cell = _row(grid, 9).cells[2]  # Wednesday 23
     assert [c.event_id for c in cell.cards] == [f"e{i}" for i in range(7)]
-    assert [c.event_id for c in cell.visible] == ["e0", "e1", "e2", "e3", "e4"]
+    assert [e.cards[0].event_id for e in cell.visible_entries] == ["e0", "e1", "e2", "e3", "e4"]
     assert [c.event_id for c in cell.more] == ["e5", "e6"] and cell.more_count == 2
     assert cell.heading.endswith(_row(grid, 9).label)
     quiet = _row(grid, 10).cells[2]
-    assert quiet.visible == [] and quiet.more_count == 0
+    assert quiet.visible_entries == [] and quiet.more_count == 0
 
 
 def test_five_events_in_an_hour_need_no_more_pill() -> None:
     at = datetime(2026, 9, 23, 9, tzinfo=CARACAS)
     grid = _week(*[_item(f"e{i}", at + timedelta(minutes=i)) for i in range(5)])
     cell = _row(grid, 9).cells[2]
-    assert len(cell.visible) == 5 and cell.more_count == 0
+    assert len(cell.visible_entries) == 5 and cell.more_count == 0
 
 
 def test_a_weekly_series_picks_its_days_time_and_weeks() -> None:

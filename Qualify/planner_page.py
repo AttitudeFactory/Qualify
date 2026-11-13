@@ -39,6 +39,7 @@ from .planner_state import REFRESH_SECONDS, SCROLL_ID, PlannerState
 from .planner_vm import (
     CREATE_ACTION,
     EMPTY_WEEK_TITLE,
+    MENU_ID_PREFIX,
     MORE_DETAILS,
     NO_APPROVED_BODY,
     RESCHEDULE_AGAIN,
@@ -57,6 +58,7 @@ from .post_card import (
     post_card,
     readiness_note,
     temperature_badge,
+    thumbnail,
 )
 from .ui import (
     app_shell,
@@ -104,6 +106,7 @@ def _card_menu(event) -> rx.Component:
                 aria_label="Acciones de la publicación",
                 min_width=_TOUCH_MIN,
                 min_height=_TOUCH_MIN,
+                id=MENU_ID_PREFIX + event.event_id,
             ),
         ),
         rx.dropdown_menu.content(
@@ -446,13 +449,24 @@ def _group_chip(entry) -> rx.Component:
         rx.popover.root(
             rx.popover.trigger(
                 rx.button(
-                    rx.icon("layers", size=12),
-                    entry.label,
+                    # One line (review m-25026241): the count first — the hour row already
+                    # says the hour, so the time is what the ellipsis takes — then the
+                    # same ✓ and network glyphs a single chip carries (never colour alone).
+                    rx.box(
+                        rx.icon("layers", size=12, flex_shrink="0"),
+                        rx.text(entry.chip_label, as_="span", class_name="q-chip-time"),
+                        rx.icon(
+                            "circle-check", size=12, color=T.tone_color("ok", 10), flex_shrink="0"
+                        ),
+                        channel_mark(entry.cards[0].platform),
+                        class_name="q-chip-line",
+                    ),
                     type="button",
                     variant="soft",
                     size="1",
                     class_name="q-cell-more q-cell-group",
                     aria_label=entry.aria_label,
+                    title=entry.label,
                 ),
             ),
             rx.popover.content(
@@ -685,6 +699,22 @@ def _list_item(event) -> rx.Component:
     )
 
 
+def _strip_thumb(card) -> rx.Component:
+    """One picture of a folded row's strip: the image, or — a reel with no poster — the
+    film glyph on the neutral tile (never an empty frame; no video is loaded here)."""
+    return rx.cond(
+        (card.thumbnail_url == "") & (card.video_url != ""),
+        rx.center(
+            rx.icon("film", size=T.ICON_SM),
+            width="2.5rem",
+            height="2.5rem",
+            min_width="2.5rem",
+            class_name="q-post-media q-post-media--empty",
+        ),
+        thumbnail(card.thumbnail_url, "2.5rem"),
+    )
+
+
 def _list_group(entry) -> rx.Component:
     """m-25026241 (list): what went out together from one account in one minute, folded
     into one row — its time, a strip of their pictures (then «+N»), how many and where;
@@ -694,10 +724,7 @@ def _list_group(entry) -> rx.Component:
     row = rx.el.button(
         rx.vstack(
             rx.hstack(
-                rx.foreach(
-                    entry.preview,
-                    lambda card: card_media(card.thumbnail_url, card.video_url, "2.5rem"),
-                ),
+                rx.foreach(entry.preview, _strip_thumb),
                 rx.cond(
                     entry.preview_more > 0,
                     rx.text(

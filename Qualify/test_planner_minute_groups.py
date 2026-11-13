@@ -77,15 +77,13 @@ def test_one_minute_on_two_accounts_is_two_groups() -> None:
 
 
 def test_the_minute_is_the_calendars() -> None:
-    same = minute_group_key(_at(2, 12, 5), ZONE, "ig1")
-    assert same == minute_group_key(_at(2, 12, 55), ZONE, "ig1")
-    assert minute_group_key(_at(2, 12, 59), ZONE, "ig1") != minute_group_key(
-        _at(2, 13, 1), ZONE, "ig1"
-    )
+    same = minute_group_key(_at(2, 12, 5), "ig1")
+    assert same == minute_group_key(_at(2, 12, 55), "ig1")
+    assert minute_group_key(_at(2, 12, 59), "ig1") != minute_group_key(_at(2, 13, 1), "ig1")
     day, _ = _friday([_item(1, _at(2, 12, 59)), _item(2, _at(2, 13, 1))])
     assert [e.is_group for e in day.groups] == [False, False]
-    # a UTC minute boundary is not the calendar's: keyed in the drawn zone
-    assert minute_group_key(_at(2, 12, 5), ZONE, "ig1").startswith("2026-11-13T02:12")
+    # the key is the UTC minute: the same minute the calendar draws (whole-minute offsets)
+    assert minute_group_key(_at(2, 12, 5), "ig1") == f"{_at(2, 12):%Y-%m-%dT%H:%MZ}|ig1"
 
 
 def test_a_lone_publication_renders_as_before() -> None:
@@ -110,7 +108,7 @@ def test_a_group_takes_one_place_in_the_calendar_cell() -> None:
 
 def test_the_state_only_remembers_which_groups_are_open() -> None:
     state = PlannerState()
-    key = minute_group_key(_at(2, 12), ZONE, "ig1")
+    key = minute_group_key(_at(2, 12), "ig1")
     state.toggle_group(key)
     assert state.open_groups == [key]
     state.toggle_group(key)
@@ -143,3 +141,62 @@ def test_nothing_else_moves_by_a_day_far_from_the_minute() -> None:
     assert day.count == 1
     saturday = next(d for d in week.days if d.iso == "2026-11-14")
     assert saturday.count == 1 and not saturday.groups[0].is_group
+
+
+def test_a_night_the_clocks_go_back_keeps_both_half_past_ones_apart() -> None:
+    """Review m-25026241: two «1:30 a. m.» an hour apart (DST ends) are two minutes."""
+    ny = ZoneInfo("America/New_York")
+    first = datetime(2026, 11, 1, 1, 30, 10, tzinfo=ny, fold=0)
+    second = datetime(2026, 11, 1, 1, 30, 10, tzinfo=ny, fold=1)
+    assert f"{first:%H:%M}" == f"{second:%H:%M}"  # same wall-clock minute…
+    assert minute_group_key(first, "ig1") != minute_group_key(second, "ig1")  # …two keys
+    week = build_week(
+        monday=date(2026, 10, 26),
+        today=date(2026, 11, 1),
+        zone=ny,
+        items=[_item(1, first.astimezone(UTC)), _item(2, second.astimezone(UTC))],
+        connections=CONNECTIONS,
+    )
+    sunday = next(d for d in week.days if d.iso == "2026-11-01")
+    assert [g.is_group for g in sunday.groups] == [False, False]
+
+
+def test_open_groups_are_pruned_and_capped() -> None:
+    from .planner_vm import OPEN_GROUPS_MAX, prune_open_groups  # noqa: PLC0415
+
+    here = minute_group_key(_at(2, 12), "ig1")
+    gone = minute_group_key(_at(3, 0), "ig1")
+    other_week = minute_group_key(_at(2, 12) - timedelta(days=14), "ig1")
+    kept = prune_open_groups([other_week, here, gone, "junk"], [here], MONDAY)
+    assert kept == [other_week, here]
+    many = [minute_group_key(_at(2, 0) - timedelta(days=30 + n), "ig1") for n in range(80)]
+    assert len(prune_open_groups(many, [], MONDAY)) == OPEN_GROUPS_MAX
+
+
+def test_logout_and_a_business_switch_forget_the_open_groups() -> None:
+    from .auth_state import business_state_classes  # noqa: PLC0415
+
+    assert PlannerState in business_state_classes()  # reset() there on logout/switch
+    state = PlannerState()
+    state.toggle_group(minute_group_key(_at(2, 12), "ig1"))
+    state.reset()
+    assert state.open_groups == []
+
+
+def test_a_group_chip_is_one_short_line() -> None:
+    day, _ = _friday([_item(n, _at(7, 24, n)) for n in range(9)])
+    assert day.groups[0].chip_label == "9 publicaciones · 7:24 a. m."
+    assert day.groups[0].label == "7:24 a. m. · 9 publicaciones"
+
+
+def test_closing_the_panel_gives_the_focus_back_to_the_cards_menu() -> None:
+    from .planner_vm import MENU_ID_PREFIX, EventDetailVM, menu_focus_script  # noqa: PLC0415
+
+    script = menu_focus_script("e1'); alert(1); ('")
+    assert f"'{MENU_ID_PREFIX}e1alert1'" in script  # only id characters reach the page
+    state = PlannerState()
+    state.detail = EventDetailVM(event_id="abc-123")
+    state.detail_open = True
+    events = state.set_detail_open(False)
+    assert events is not None and len(events) == 2
+    assert MENU_ID_PREFIX + "abc-123" in str(events[1])
