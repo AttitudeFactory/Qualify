@@ -30,6 +30,49 @@ y [página japonesa actualizada](https://docs.byteplus.com/ja/docs/modelark/mode
 | Uso en Qualify | Experimento `packages/api/evals/plantillas_ai/` pendiente. Producción aún no verificada; el código preparado para m-24993446 usa `v8` y Pro por defecto cuando `QUALIFY_SEEDREAM_MODEL` está vacío. |
 | Datos | **No cede los datos a BytePlus** (corregido el 2026-11-12, m-25017372): el fundador revisó la consola de ModelArk › Data Collaboration el 2026-11-12 y confirmó que ni Seedream 5.0 pro ni 5.0 lite están autorizados para compartir datos. Esta ficha decía antes «Modelo preautorizado: cede los datos a BytePlus»; esa fila venía copiada de la de 5.0 lite y no la respaldaba ninguna revisión de la consola. Con esa confirmación, las fotos del catálogo de un cliente pueden ir a Pro por el identificador del modelo (`dola-seedream-5-0-pro-260628`). Si alguien autoriza Pro en la campaña de datos, esta fila y el envío de fotos de clientes cambian ese mismo día. Cláusula de BytePlus (docs.byteplus.com/en/docs/ModelArk/BytePlus_ModelArk_Data_Processing, actualizada el 2026-09-10): sin autorización previa del cliente no usa sus datos para entrenar sus modelos; procesa en Malasia, Indonesia y/o UE/EEE, y guarda 180 días en Malasia lo que dispara el filtro de contenido |
 
+## Prueba FOTO-BASE-002 — 2026-11-13 (m-25017279)
+
+Esta es la que mide lo que se publica: el compilador 5 de `main` (redacción general del PR #662)
+frente al **6** (el 5 sin «Datos clave» ni el nombre de la letra). **FOTO-BASE-001, más abajo,
+midió la redacción vieja.** Son 10 pares (F1, F3, F4, F7, G2 ×2 y G3) con fotos de Bianki.
+Detalle completo en [pruebas.md](pruebas.md#foto-base-002).
+
+| Medida | Compilador 5 | Compilador 6 |
+|---|---|---|
+| Texto inventado | 2/10 (titular «SALKHPAAD», letrero de McDonald's) | 1/10 (letras desenfocadas en un toldo) |
+| Botón, insignia o elemento gráfico | 1/10 (logo inventado) | 0/10 |
+| Arriba y abajo tranquilos | 9/10 | 10/10 |
+| Calidad media | 3,80 | 3,90 |
+| Logo alterado | 1/10 | 2/10 |
+
+- **Gasto:** US$0,912 de un tope de US$1.
+- **Veredicto:** publicar el 6.
+- **Abierto:** el isotipo sale a veces recoloreado o deformado, con los dos compiladores.
+
+## Prueba FOTO-BASE-001 — 2026-11-13 (m-25017279) · redacción vieja
+
+Foto base (compilador de prompts 5: sin «Datos clave» ni nombres de letras) frente al
+compilador 4. Son 28 pares con fotos del catálogo de Bianki, a 1080×1920 y 1280×1600, por el
+identificador del modelo. Detalle completo en [pruebas.md](pruebas.md#foto-base-001).
+
+| Medida | Compilador 4 | Compilador 5 |
+|---|---|---|
+| Texto inventado | 5/28 (imagen 1/16, galería 4/12) | 1/28 (imagen 0/16, galería 1/12) |
+| Nombre de la letra dibujado | 1 claro («UNBOUND») + 1 fragmento | 0 |
+| Botón, píldora o cinta | 0/28 | 0/28 |
+| Letras reales de las botellas | 4/4 | 4/4 |
+| Arriba y abajo tranquilos | 25/28 | 23/28 |
+| Calidad media (1–5) | 3,89 | 3,86 |
+
+- **En pares:** 5 a favor del 5 y 1 en contra (p ≈ 0,22, no significativo).
+- **La regresión:** un letrero de McDonald's en la escena «entrada del local». Ya había salido
+  con el compilador 4 en ESCENA-SIN-LETRAS-001.
+- **El 2x1:** no se ve con ninguno de los dos compiladores (un solo shawarma en F7, 4 de 4).
+- **Gasto:** US$2,637 de un tope de US$3. Son 56 imágenes y 1 corte de conexión anotado al peor
+  caso. Mediana de 35 s por imagen.
+- **Veredicto:** publicar el compilador 5. Abierto: prohibir en la regla de texto los logos y
+  letreros de otras marcas.
+
 ## Prueba ESCENA-SIN-LETRAS-001 — 2026-11-13 (m-25017275)
 
 Escena cruda de la imagen publicitaria y de la diapositiva de galería con el compilador de

@@ -22,6 +22,220 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
 
 ---
 
+<a id="foto-base-002"></a>
+
+## FOTO-BASE-002 — La foto base sobre la redacción nueva: compilador 5 de `main` frente a 6 (m-25017279) — 2026-11-13
+
+- **Por qué:** **FOTO-BASE-001 midió la redacción vieja.** Allí, «5» era el compilador 4 sin
+  dos frases. Después, `main` integró el PR #662, que trae su propio **compilador 5**: reescribe
+  las frases fijas para negocios que no son de comida («appetizing» → «appealing», «the food» →
+  «real subjects, such as people, materials and the real product», «ingredients» → «parts and
+  details», «Never add logos to people, bare skin or the product itself»). La foto base se
+  renumeró a **compilador 6**: el 5 de `main` menos exactamente la frase de «Datos clave» y la
+  de la letra. Comprobado en los prompts: 5 frente a 6 difieren solo en esas dos frases. Esta
+  prueba mide lo que se publica. El fundador autorizó un tope de **US$1** el 2026-11-13.
+- **Modelo y entradas:** los de FOTO-BASE-001: `dola-seedream-5-0-pro-260628`, fotos de Bianki
+  y su isotipo, Brand Kit de prueba. Solo lectura en R2. **Nada se escribió ni se borró en R2
+  ni en la base.**
+- **Diseño mínimo:** F1, F3, F4, F7, G2 y G3, con 1 repetición = 8 pares. Se agregó **una
+  segunda repetición de G2** (2 pares más) con lo que quedaba del tope. G3 no cabía. En total
+  son **10 pares y 20 imágenes**, con `--versions 5 6` en la rama
+  `feat/m-25017279-foto-base` (cabeza `76cb1b5d`).
+- **Puntuación:** los criterios (a)–(e) y la regla de (a) de FOTO-BASE-001. Las 20 imágenes las
+  miró una persona (este agente). Aparte se anotó si el logo salió alterado (otro color o
+  deformado).
+
+### Resultados
+
+| Criterio | 5 imagen (4) | 6 imagen (4) | 5 galería (6) | 6 galería (6) | 5 total (10) | 6 total (10) |
+|---|---|---|---|---|---|---|
+| (a) Texto inventado | 0 | 0 | 2 | 1 (menor) | 2 | 1 |
+| (b) Botón, insignia o elemento gráfico | 0 | 0 | 1 | 0 | 1 | 0 |
+| (c) Letras reales de las botellas (F4) | 1/1 | 1/1 | — | — | 1/1 | 1/1 |
+| (d) Arriba y abajo tranquilos | 4 | 4 | 5 | 6 | 9 | 10 |
+| (e) Calidad media (1–5) | 4,00 | 3,75 | 3,67 | 4,00 | 3,80 | 3,90 |
+| Logo alterado | 1 | 2 | 0 | 0 | 1 | 2 |
+
+- **En pares:** en 2 pares falla solo el 5; en 1 falla solo el 6 (menor); en 7 no falla
+  ninguno. No hay muestra para una prueba.
+
+**1 — ¿Quitar las dos frases tiene el mismo efecto con la redacción nueva?** Sí, en la misma
+dirección.
+
+- **G2 gancho, rep. 2, compilador 5:** titular «SALKHPAAD» en los colores de la marca, con un
+  subtítulo «Salontgand» (otra vez algo parecido al nombre de la letra) y un logo inventado
+  abajo.
+- **G2 llamada, rep. 2, compilador 5:** letrero de McDonald's con «Mbolen».
+- Con el 6: G2 limpio en 3 de 4. El cuarto tiene letras cursivas desenfocadas e ilegibles en
+  un toldo (menor).
+- El nombre de la letra no apareció con el 6.
+- Zonas tranquilas y calidad: iguales o un poco mejores con el 6.
+
+**2 — Redacción de `main` (compilador 5) frente a las imágenes del compilador 4 de
+FOTO-BASE-001, mismos casos.** Es una **observación entre corridas distintas, no una medición en
+pares**.
+
+- En la comida no se nota cambio de apetito, encuadre ni luz. El shawarma, la salchipapa, las
+  papas y el combo salen con el mismo estilo, y las botellas conservan sus letras.
+- Lo que sí se vio: en F1, con el 5 y con el 6, el isotipo salió **con otros colores** (disco
+  rojo, aro verde azulado). El 4 lo dejó negro en esta corrida.
+- Pero el recoloreado del isotipo en F1 ya había salido 1 vez con el «5» viejo en
+  FOTO-BASE-001. Con esta muestra no se puede atribuir a la redacción nueva.
+
+**3 — Fallos del compilador 6:**
+
+- letras cursivas desenfocadas en un toldo (G2 llamada, rep. 1, menor);
+- isotipo con otros colores en F1;
+- isotipo estirado en óvalo en F4;
+- juguetes y objetos de plástico en los colores de la marca de fondo en F3 (calidad 3).
+- Sin titulares, sin botones y sin marcas de terceros.
+
+**Gasto:** **US$0,912** de un tope de US$1, en 20 llamadas sin fallos. Mediana de unos 40 s por
+imagen. El costo por pieza no cambia.
+
+**Veredicto: publicar el compilador 6.** Con la redacción nueva, quitar las dos frases vuelve a
+eliminar los titulares y el letrero de un tercero que sí aparecieron con el 5. No se vio ninguna
+regresión de texto.
+
+**Límites:**
+
+- 10 pares, una marca y una sola repetición, salvo G2.
+- G3 solo 1 vez.
+- La comparación con el compilador 4 es entre corridas.
+- La alteración del logo (con 5 y 6) queda como observación abierta. Pide una medición propia
+  si se repite en piezas reales.
+
+---
+
+<a id="foto-base-001"></a>
+
+## FOTO-BASE-001 — La foto base de Seedream: compilador de prompts 4 frente a 5, en pares (m-25017279) — 2026-11-13
+
+- **Por qué:** con el compilador 5, la escena de Seedream es solo la foto base (ADR 49 §2).
+  Comparado con el 4, el prompt pierde exactamente dos frases:
+  - el bloque «Key facts … (as JSON) … Context only» («Datos clave»);
+  - «The brand's typeface is "Unbounded"…».
+  - En ESCENA-SIN-LETRAS-001, la diapositiva de gancho sin logo dibujó el nombre de la letra
+    como titular («UNUBND», 2 de 2).
+  - El fundador autorizó el 2026-11-13 el diseño completo, con un tope de **US$3**. Las salidas
+    quedan solo en el disco local.
+- **Modelo y tamaños:** `dola-seedream-5-0-pro-260628` (`DEFAULT_SEEDREAM_MODEL`), 1080×1920 y
+  1280×1600, `watermark: false`, sin semilla.
+- **Entradas:** las mismas fotos del catálogo de Bianki, el mismo isotipo y el mismo Brand Kit
+  de prueba que ESCENA-SIN-LETRAS-001. Se leyeron de R2 solo para lectura. **Nada se escribió ni
+  se borró en R2 ni en la base.**
+- **Diseño:** 11 encargos, cada uno 2 veces = **28 pares, 56 imágenes**.
+  - Las 8 imágenes publicitarias son las de ESCENA-SIN-LETRAS-001.
+  - Las galerías son G1 (con logo), G2 (sin logo) y **G3**, que es G2 más «Datos clave»:
+    precio, 2x1 y horario.
+  - Arnés: `packages/api/evals/scene_text_v4/run.py --versions 4 5 --reps 2`, rama
+    `feat/m-25017279-foto-base`.
+  - Los 56 prompts se recompilaron después del rebase de la rama (cabeza `959e7cd7`) y salieron
+    idénticos byte a byte a los que se pagaron.
+  - Los dos prompts de cada par solo difieren en esas dos frases. Ningún tema se recortaba con
+    el 4, así que el presupuesto liberado no deja pasar más texto en estos encargos.
+- **Puntuación:** criterios (a)–(e) de ESCENA-SIN-LETRAS-001. Las 56 imágenes las miró una
+  persona (este agente), sin juez automático.
+  - Regla de (a): cuenta solo si se ven formas de letra. Una mancha de neón sin formas no cuenta.
+  - Aparte se anotó si un 2x1 muestra dos unidades.
+
+### Resultados
+
+| Criterio | 4 imagen (16) | 5 imagen (16) | 4 galería (12) | 5 galería (12) | 4 total (28) | 5 total (28) |
+|---|---|---|---|---|---|---|
+| (a) Texto inventado | 1 | **0** | 4 | 1 | 5 | **1** |
+| (b) Botón, píldora o cinta | 0 | 0 | 0 | 0 | 0 | 0 |
+| (c) Letras reales de las botellas | 2/2 | 2/2 | 2/2 | 2/2 | 4/4 | 4/4 |
+| (d) Arriba y abajo tranquilos | 15 | 12 | 10 | 11 | 25 | 23 |
+| (e) Calidad media (1–5) | 3,88 | 3,81 | 3,92 | 3,92 | 3,89 | 3,86 |
+| Logo como disco flotante | 2 | 2 | 0 | 0 | 2 | 2 |
+
+- **En pares (a/b):** en 5 pares falla solo el 4; en **1 par falla solo el 5**; en 0 fallan los
+  dos; en 22 no falla ninguno. Prueba de signos: p ≈ 0,22. **No es significativo.**
+- (e): 21 pares iguales, 3 mejores con el 5 y 4 peores.
+- (d): en 4 pares el 5 queda peor y en 2 mejor. En F1, las 2 veces, el shawarma del 5 sube al
+  cuarto de arriba.
+
+**Pregunta 1 — el nombre de la letra:** con el 5 no apareció ninguna vez, en 0 de 28.
+
+- Con el 4 se dibujó una vez claro, en **G2 llamada a la acción rep. 1: un letrero «UNBOUND»
+  sobre la puerta**. Además hubo fragmentos nítidos con forma de letra, en los colores de la
+  marca, sobre la franja de arriba en G2 gancho rep. 2.
+- **G2:** el 4 falla en 2 de 4 imágenes (gancho 1/2, llamada 1/2); el 5 en **0 de 4**.
+- **G3:** el 4 falla en 1 de 4 (gancho rep. 2: neón rojo desenfocado con forma de letras
+  cursivas, menor); el 5 en 1 de 4 (llamada rep. 1: letrero de McDonald's, ver abajo).
+- En el gancho de G2, el 4 no repitió el «UNUBND» 2 de 2 de ESCENA-SIN-LETRAS-001 (aquí 1/2,
+  menor). La muestra es pequeña.
+
+**Pregunta 2 — quitar «Datos clave»:**
+
+- Imagen publicitaria: texto inventado 1/16 → 0/16.
+  - El único caso del 4 es F1 rep. 1: un letrero «Konk Exi» detrás del caballete.
+  - Es probable que venga de la dirección «Centro comercial Korner» que solo el 4 le pasaba a
+    Seedream.
+- **El 2x1 no se pierde, porque el 4 tampoco lo mostraba.** F7 enseña un solo shawarma en 2 de 2
+  con el 4 y en 2 de 2 con el 5. G3 enseña una sola bandeja en 2 de 2 con cada compilador.
+- La escena sigue el encargo igual con los dos.
+- Calidad, sin cambio que se pueda medir.
+- Fidelidad: el 5 puso **una hamburguesa** junto a la bolsa en F6 rep. 1. Bianki no vende
+  hamburguesas; con el 4 no pasó.
+- Con los dos compiladores siguen los recortes de colores de la marca como utilería (F4, F5,
+  F6, F8). Con el 5 aparecen un poco más.
+
+**Pregunta 3 — regresiones:** 1 par.
+
+- **G3, llamada a la acción, rep. 1: un letrero de McDonald's iluminado y nítido sobre la
+  puerta.** Es una marca de un tercero en un anuncio del cliente.
+- El mismo fallo salió con el compilador 4 en ESCENA-SIN-LETRAS-001, con la misma escena del
+  operador («Papas fritas en la barra, con la entrada del local al fondo»). Viene de la escena,
+  no del compilador, pero sigue abierto.
+- Otras regresiones de calidad del 5, sin texto:
+  - la hamburguesa de F6;
+  - cinco manos y recortes de colores en F8 rep. 1;
+  - el aro del isotipo pintado de verde azulado en F1 rep. 1.
+
+**Pregunta 4 — gancho con logo (G1):** ninguna llamada a la acción dibujada con el 4 ni con el 5
+(0/2 cada uno). Aquí el tema no se recortaba con el 4, así que esta muestra **no prueba** el riesgo
+que señaló la revisión: un tema largo que con el 5 entra entero. Hace falta un caso con un tema
+largo.
+
+### Costo
+
+- **Gasto: US$2,637** de un tope de US$3, según la bitácora de `LedgerTransport`.
+  - 56 imágenes buenas a US$0,045 cada una, más US$0,003 por la segunda referencia en los casos
+    con logo.
+  - US$0,045 por un corte de conexión en F5 rep. 2 compilador 4, anotado al peor caso; se
+    repitió y salió.
+- Mediana: 35 s por imagen.
+- Costo por pieza: **sin cambio**. El 5 manda el mismo número de imágenes y un prompt más corto.
+
+### Veredicto
+
+**Publicar (ship).**
+
+- El 5 elimina lo que se buscaba: el nombre de la letra no aparece (0/28, frente a 1 claro más
+  1 fragmento con el 4).
+- El texto inventado baja de 5/28 a 1/28. La diferencia no es significativa (p ≈ 0,22).
+- No hay botones con ninguno de los dos.
+- Las letras reales se conservan igual.
+- La calidad y la fidelidad quedan iguales salvo un caso: la hamburguesa.
+- El 2x1 no se pierde porque el 4 tampoco lo mostraba.
+
+### Lo que queda abierto
+
+- Un letrero de una marca de un tercero cuando la escena pide «la entrada del local». Pasó 1
+  vez en 4 imágenes de esa escena entre los dos bancos, con el 4 y con el 5.
+- Propuesta: nombrar en la regla de texto «no logos or signs of other brands», y medirlo con
+  G2/G3-s2.
+- La muestra es pequeña: una marca, 2 repeticiones, sin semilla. Una regresión del 5 que
+  aparezca menos de 1 vez en 10 no se vería.
+- No se midió:
+  - un tema largo con logo (pregunta 4);
+  - los formatos 1:1 y reel, y el primer cuadro de video de una diapositiva animada;
+  - la pieza compuesta con la capa de texto.
+
+---
+
 <a id="partes-sin-letras-001"></a>
 
 ## PARTES-SIN-LETRAS-001 — El prompt de una parte de Seedance sin trazos con forma de letras: v1 frente a v2, piloto a ciegas (m-24993031) — 2026-11-13

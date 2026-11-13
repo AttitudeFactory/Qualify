@@ -671,6 +671,52 @@ class ImageAsset(Base):
     )
 
 
+class PieceBasePhoto(Base):
+    """The raw Seedream photograph a still was composed over (0165, ADR 49 §2 item 1,
+    m-25017279), one per version and position — or the record that it could NOT be kept
+    (`state='missing'`), so a later re-compose knows to offer only «Crear otra».
+
+    Its own table, not an `image_assets` row: no reader of a piece's outputs (cover,
+    media, carousel, Planificador, export) can see a base by construction.
+    `piece_layers.base_asset_id` points here. Composite keys with `tenant_id` are enforced
+    by the migration."""
+
+    __tablename__ = "piece_base_photos"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "version_id", "position", name="uq_piece_base_photos_position"
+        ),
+        UniqueConstraint("id", "tenant_id", name="uq_piece_base_photos_id_tenant"),
+        Index("ix_piece_base_photos_draft", "tenant_id", "draft_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    tenant_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False
+    )
+    brand_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    draft_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    version_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    state: Mapped[str] = mapped_column(Text, nullable=False)  # 'stored' | 'missing'
+    object_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sha256: Mapped[str | None] = mapped_column(Text, nullable=True)
+    content_type: Mapped[str | None] = mapped_column(Text, nullable=True)
+    width: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    height: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rendered_prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    model_id: Mapped[str] = mapped_column(Text, nullable=False)
+    provider: Mapped[str] = mapped_column(Text, nullable=False)
+    prompt_compiler_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    pipeline_version: Mapped[str] = mapped_column(Text, nullable=False)
+    missing_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+
+
 class PieceLayer(Base):
     """The text layer of one slide of an image or carousel piece (0163, ADR 49 §2.1,
     m-25017278): what the composition draws over the base photo, per version and position.

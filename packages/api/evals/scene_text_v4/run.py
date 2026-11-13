@@ -1,7 +1,9 @@
-"""m-25017275 — Seedream scene text rule: prompt compiler 3 vs 4, paired.
+"""m-25017275 / m-25017279 — Seedream scene: prompt compilers paired (3-4 or 4-5).
 
 For every case in `cases.json` the same brief, the same reference images and the same
-size are compiled under `prompt_compiler_version` 3 and 4 with the production functions
+size are compiled under each `--versions` compiler (3 and 4 by default; `--versions 4 5`
+for the base photo of m-25017279: no «Datos clave», no typeface names) with the production
+functions
 (`ad_scene_prompt` for an advertising image, `carousel_scene_prompt` for each gallery
 slide) and sent to the production Seedream model through `SeedreamImageAdapter`. Only the
 RAW scene is generated: nothing is composited, nothing is stored in R2 or the database.
@@ -51,7 +53,7 @@ from qualify_api.evals.spend_control import LedgerTransport, SpendLedger, quote
 HERE = Path(__file__).parent
 TENANT = UUID("00000000-0000-0000-0000-000000000001")
 BRAND_ID = "00000000-0000-0000-0000-000000000002"
-VERSIONS = (3, 4)
+VERSIONS = (3, 4)  # the default pair (m-25017275); `--versions` picks another
 LOGO_ROLE = "isotipo"
 
 
@@ -129,6 +131,12 @@ def _brief(case: dict[str, Any], version: int) -> ContentBrief:
         ]
         payload["image_route"] = "from_upload"
         payload["source_media_key"] = _key(products[0])
+        if case.get("highlights"):  # m-25017279: a gallery's «Datos clave» (G3 on)
+            payload["constraints"] = {
+                "highlights": [list(h) for h in case["highlights"]],
+                "must_mention": case.get("must_mention") or [],
+                "must_avoid": [],
+            }
     else:
         media["scene_prompt"] = case["topic"]
         payload["image_route"] = "template_only"
@@ -141,12 +149,18 @@ def _brief(case: dict[str, Any], version: int) -> ContentBrief:
     return ContentBrief.model_validate(payload)
 
 
-def jobs_for(case: dict[str, Any], kit: BrandKit, brand: str, rep: int) -> Iterator[Job]:
+def jobs_for(
+    case: dict[str, Any],
+    kit: BrandKit,
+    brand: str,
+    rep: int,
+    versions: tuple[int, ...] = VERSIONS,
+) -> Iterator[Job]:
     """The jobs of one case at both compiler versions, references in production order:
     the scene's product photos, then the brand references (`_ad_image`, `_carousel_slides`)."""
     refs = (_logo_ref(),) if case["logo"] else ()
     logo_roles = (LOGO_ROLE,) if case["logo"] else ()
-    for version in VERSIONS:
+    for version in versions:
         brief = _brief(case, version)
         ratio = brief.format.aspect_ratio
         if case["kind"] == "carousel":
@@ -229,7 +243,7 @@ def run(args: argparse.Namespace) -> int:
         j
         for rep in range(args.rep_start, args.rep_start + args.reps)
         for c in cases
-        for j in jobs_for(c, kit, spec["brand"], rep)
+        for j in jobs_for(c, kit, spec["brand"], rep, tuple(args.versions))
     ]
     pricing = JsonPricingTable("v9")
     model = args.model
@@ -317,6 +331,7 @@ def main() -> int:
     parser.add_argument("--model", default=DEFAULT_SEEDREAM_MODEL)
     parser.add_argument("--max-usd", default="3")
     parser.add_argument("--env-file", default=str(Path.cwd() / ".env"))
+    parser.add_argument("--versions", type=int, nargs="+", default=list(VERSIONS))
     parser.add_argument("--dry-run", action="store_true")
     return run(parser.parse_args())
 
