@@ -1,5 +1,5 @@
 // Animated WhatsApp sticker (option C of docs/opciones-stickers-videos-cortos.md, founder
-// 2026-11-09). One `sticker-v1--sheet` still holds every frame of the 2 s loop as a
+// 2026-11-09). One `sticker-v<N>--sheet` still holds every frame of the 2 s loop as a
 // grid of 512×512 cells on a TRANSPARENT background (renderStill writes PNG with alpha);
 // Python slices the grid and encodes the animated WebP with its own quality ladder and
 // WhatsApp checks (`qualify_creative.seasonal.sticker_c`). The look:
@@ -12,12 +12,29 @@
 //
 // `StickerPreview` is the same art as a playing composition for Remotion Studio only
 // (an MP4 cannot keep transparency, so it is not an output port).
+//
+// v2 (m-25017372, product stickers): an image motion WITH a text draws the art above the
+// message («caption» mode, geometry in caption.ts) — the message on its own white die-cut in
+// the brand's heading face and an ink Python picks by contrast (`texts.captionInk`,
+// `texts.captionBacking`). v1 renders exactly as before: it ignores the text of an image
+// motion (`meta.version` 1 is what `manifest.v1.json` pins).
 import React, {useEffect, useMemo, useState} from 'react';
 import {AbsoluteFill, Img, continueRender, delayRender, useCurrentFrame} from 'remotion';
 import manifest from '../../../templates/sticker/manifest.json';
 import {normalizeProps, textOf, type PropsInput} from '../../props';
 import {useStickerFont, stickerColors, type StickerColors} from './look';
 import {IMAGE_MOTIONS, isMotion, poseAt, type Motion, type Pose} from './motion';
+import {
+  CAPTION_PAD,
+  CAPTION_BOTTOM,
+  captionArtBox,
+  captionArtPlace,
+  captionRingMax,
+  captionTopOf,
+  clampSparkle,
+  fitCaption,
+  type CaptionLayout,
+} from './caption';
 
 export const CELL = 512;
 /** WhatsApp's guideline: 16 px clear around the art. */
@@ -41,7 +58,14 @@ type Resolved = {
   fontFile: string | undefined;
   fontFamily: string | undefined;
   colors: StickerColors;
+  /** v2: an image motion with a message under the art */
+  caption: boolean;
+  captionInk: string | undefined;
+  captionBacking: string | undefined;
 };
+
+const HEX_COLOR = /^#[0-9a-f]{6}$/i;
+const colorOrUndefined = (v: string): string | undefined => (HEX_COLOR.test(v.trim()) ? v.trim() : undefined);
 
 const resolve = (raw: StickerInput): Resolved => {
   const props = normalizeProps(raw);
@@ -52,6 +76,7 @@ const resolve = (raw: StickerInput): Resolved => {
   if (IMAGE_MOTIONS.includes(motionText) && !art) throw new Error(`sticker: '${motionText}' needs art`);
   if (motionText === 'texto' && !text) throw new Error("sticker: 'texto' needs text");
   const brand = props.brand as typeof props.brand & {fontFiles?: {heading?: string}};
+  const version = props.meta?.version ?? 1;
   return {
     motion: motionText,
     text,
@@ -59,6 +84,9 @@ const resolve = (raw: StickerInput): Resolved => {
     fontFile: typeof brand.fontFiles?.heading === 'string' ? brand.fontFiles.heading : undefined,
     fontFamily: props.brand.fonts.heading,
     colors: stickerColors(props.brand, textOf(props, 'backing'), textOf(props, 'ink')),
+    caption: version >= 2 && motionText !== 'texto' && text.length > 0,
+    captionInk: colorOrUndefined(textOf(props, 'captionInk')),
+    captionBacking: colorOrUndefined(textOf(props, 'captionBacking')),
   };
 };
 
@@ -188,7 +216,7 @@ const DieCut: React.FC<{name: string; radius: number; fill?: string; backing?: s
   </filter>
 );
 
-const Filters: React.FC<{colors: StickerColors}> = ({colors}) => {
+const Filters: React.FC<{colors: StickerColors; captionBacking?: string}> = ({colors, captionBacking}) => {
   const backing = colors.darkBacking ? colors.backing : undefined;
   return (
     <svg width={0} height={0} style={{position: 'absolute'}} aria-hidden>
@@ -197,6 +225,7 @@ const Filters: React.FC<{colors: StickerColors}> = ({colors}) => {
         <DieCut name="back" radius={OUTLINE_ART} fill={colors.back} backing={backing} />
         <DieCut name="text" radius={OUTLINE_TEXT} backing={backing} />
         <DieCut name="spark" radius={4} />
+        <DieCut name="caption" radius={OUTLINE_TEXT} backing={captionBacking} />
       </defs>
     </svg>
   );
@@ -264,10 +293,21 @@ const Shine: React.FC<{art: string; box: Size; at: number; id: string}> = ({art,
   );
 };
 
-const ArtSticker: React.FC<{r: Resolved; box: Size; pose: Pose; cellId: string}> = ({r, box, pose, cellId}) => {
+const ArtSticker: React.FC<{r: Resolved; box: Size; pose: Pose; cellId: string; captionTop: number | null}> = ({
+  r,
+  box,
+  pose,
+  cellId,
+  captionTop,
+}) => {
   const art = r.art!;
-  const left = CENTER - box.w / 2;
-  const top = pose.origin === 'bottom' ? GROUND_Y - box.h : CENTER - box.h / 2;
+  const placed =
+    captionTop !== null && r.motion !== 'texto' ? captionArtPlace(box, r.motion, captionTop) : null;
+  const left = placed ? placed.left : CENTER - box.w / 2;
+  const top = placed ? placed.top : pose.origin === 'bottom' ? GROUND_Y - box.h : CENTER - box.h / 2;
+  // the rings beat around the art: the cell's centre, or the art's own with a caption
+  const ringX = placed ? placed.cx : CENTER;
+  const ringY = placed ? placed.cy : CENTER;
   const origin = pose.origin === 'bottom' ? '50% 100%' : '50% 50%';
   const face = (filter: string, back = false): React.CSSProperties => ({
     position: 'absolute',
@@ -279,8 +319,8 @@ const ArtSticker: React.FC<{r: Resolved; box: Size; pose: Pose; cellId: string}>
     backfaceVisibility: 'hidden',
     transform: back ? 'rotateY(180deg)' : undefined,
   });
-  const ringMax = CENTER - MARGIN - 4;
   const ringMin = Math.min(box.w, box.h) * 0.42;
+  const ringMax = placed ? captionRingMax(placed.cy, box) : CENTER - MARGIN - 4;
   return (
     <>
       {pose.rings.map((p, i) =>
@@ -289,8 +329,8 @@ const ArtSticker: React.FC<{r: Resolved; box: Size; pose: Pose; cellId: string}>
             key={i}
             style={{
               position: 'absolute',
-              left: CENTER,
-              top: CENTER,
+              left: ringX,
+              top: ringY,
               width: 0,
               height: 0,
             }}
@@ -335,8 +375,7 @@ const ArtSticker: React.FC<{r: Resolved; box: Size; pose: Pose; cellId: string}>
           [left + box.w * 0.9, top + box.h * 0.95, 64],
         ] as const;
         const [x, y, size] = spots[i % spots.length]!;
-        const clampX = Math.min(CELL - MARGIN - size / 2, Math.max(MARGIN + size / 2, x));
-        const clampY = Math.min(CELL - MARGIN - size / 2, Math.max(MARGIN + size / 2, y));
+        const [clampX, clampY] = clampSparkle(x, y, size, placed ? captionTop : null);
         return <Sparkle key={i} x={clampX} y={clampY} size={size} scale={s} color={i === 1 ? r.colors.accent : r.colors.pop} />;
       })}
     </>
@@ -382,6 +421,42 @@ const TextSticker: React.FC<{r: Resolved; layout: TextLayout; family: string; po
   );
 };
 
+/** v2: the message under the art, on its own die-cut (it does not move: it must read). */
+const Caption: React.FC<{r: Resolved; layout: CaptionLayout; family: string}> = ({r, layout, family}) => {
+  const step = Math.max(2, Math.round(layout.px / 18));
+  return (
+    <div
+      style={{
+        position: 'absolute',
+        left: 0,
+        right: 0,
+        bottom: CELL - CAPTION_BOTTOM,
+        display: 'flex',
+        justifyContent: 'center',
+      }}
+    >
+      <div
+        style={{
+          filter: `url(#${filterId('caption')})`,
+          padding: CAPTION_PAD,
+          fontFamily: family,
+          fontWeight: 700,
+          fontSize: layout.px,
+          lineHeight: LINE_HEIGHT,
+          color: r.captionInk ?? r.colors.ink,
+          textAlign: 'center',
+          textShadow: `0 ${step}px 0 rgba(0,0,0,0.25)`,
+          whiteSpace: 'nowrap',
+        }}
+      >
+        {layout.lines.map((line, li) => (
+          <div key={li}>{line.join(' ')}</div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
 /** One frame of the sticker at time `t` (seconds), on a transparent 512×512 cell. */
 const StickerFrame: React.FC<{
   r: Resolved;
@@ -391,15 +466,31 @@ const StickerFrame: React.FC<{
   family: string;
   cellId: string;
 }> = ({r, t, box, text, family, cellId}) => {
-  const words = text ? text.lines.reduce((n, l) => n + l.length, 0) : 0;
+  const words = text && r.motion === 'texto' ? text.lines.reduce((n, l) => n + l.length, 0) : 0;
   const pose = poseAt(r.motion, t, words);
+  const captionTop = r.caption && text ? captionTopOf(text) : null;
   return (
     <AbsoluteFill style={{width: CELL, height: CELL, overflow: 'hidden'}}>
       {r.motion === 'texto'
         ? text && <TextSticker r={r} layout={text} family={family} pose={pose} />
-        : box && <ArtSticker r={r} box={box} pose={pose} cellId={cellId} />}
+        : box && (
+            <>
+              <ArtSticker r={r} box={box} pose={pose} cellId={cellId} captionTop={captionTop} />
+              {r.caption && text ? <Caption r={r} layout={text} family={family} /> : null}
+            </>
+          )}
     </AbsoluteFill>
   );
+};
+
+/** The caption's word widths, measured with the loaded face on a canvas. */
+const canvasMeasure = (family: string) => {
+  const ctx = document.createElement('canvas').getContext('2d');
+  return (s: string, px: number): number => {
+    if (!ctx) return s.length * px * 0.6;
+    ctx.font = `700 ${px}px ${family}`;
+    return ctx.measureText(s).width;
+  };
 };
 
 /** Hooks shared by the sheet and the preview: font, art size, text layout. */
@@ -407,11 +498,16 @@ const useSticker = (raw: StickerInput) => {
   const r = useMemo(() => resolve(raw), [raw]);
   const font = useStickerFont(r.fontFile, r.fontFamily);
   const natural = useArtSize(r.motion === 'texto' ? null : r.art);
-  const box = useMemo(() => (natural ? artBox(natural, r.motion) : null), [natural, r.motion]);
-  const text = useMemo(
-    () => (r.motion === 'texto' && font.ready ? fitText(r.text, font.family) : null),
-    [r.motion, r.text, font.ready, font.family],
-  );
+  const text = useMemo(() => {
+    if (!font.ready) return null;
+    if (r.motion === 'texto') return fitText(r.text, font.family);
+    return r.caption ? fitCaption(r.text, canvasMeasure(font.family)) : null;
+  }, [r.motion, r.text, r.caption, font.ready, font.family]);
+  const box = useMemo(() => {
+    if (!natural || r.motion === 'texto') return null;
+    if (!r.caption) return artBox(natural, r.motion);
+    return text ? captionArtBox(natural, r.motion, captionTopOf(text)) : null;
+  }, [natural, r.motion, r.caption, text]);
   return {r, font, box, text};
 };
 
@@ -425,7 +521,7 @@ export const StickerSheet: React.FC<StickerProps> = (raw) => {
   const {cell, columns, frames, fps} = SHEET;
   return (
     <AbsoluteFill style={{background: 'transparent'}}>
-      <Filters colors={r.colors} />
+      <Filters colors={r.colors} captionBacking={r.captionBacking} />
       {Array.from({length: frames}, (_, i) => (
         <div
           key={i}
@@ -451,7 +547,7 @@ export const StickerPreview: React.FC<StickerProps> = (raw) => {
   const frame = useCurrentFrame();
   return (
     <AbsoluteFill style={{background: 'transparent'}}>
-      <Filters colors={r.colors} />
+      <Filters colors={r.colors} captionBacking={r.captionBacking} />
       <StickerFrame r={r} t={frame / SHEET.fps} box={box} text={text} family={font.family} cellId="p" />
     </AbsoluteFill>
   );

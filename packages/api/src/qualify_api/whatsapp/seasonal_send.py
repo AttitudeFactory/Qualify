@@ -100,6 +100,8 @@ MAX_VIDEO_BYTES: Final = 16 * 1024 * 1024
 #: Recipe E (the free stickers, `seasonal.STANDARD_BATCH`) always renders an ANIMATED
 #: WebP; a sticker of any other recipe is held to the static limit.
 ANIMATED_STICKER_RECIPE_PREFIX: Final = "e-"
+#: m-25017372: the animated product sticker (its still twin is `k-quieto`, ≤ 100 KB).
+ANIMATED_PRODUCT_STICKER_RECIPE: Final = "k-animado"
 MAX_CAPTION_CHARS: Final = MAX_MEDIA_CAPTION_CHARS
 #: The transcript's text of a sent sticker, and of a video without caption: never an
 #: empty bubble.
@@ -173,7 +175,10 @@ def _sendable(media: SeasonalMedia | None, brand_id: UUID) -> SeasonalMedia:
     if media.kind == KIND_STICKER:
         if media.width != STICKER_SIDE or media.height != STICKER_SIDE:
             raise SeasonalSendRefused("not_sticker_size")
-        animated = media.recipe.startswith(ANIMATED_STICKER_RECIPE_PREFIX)
+        animated = (
+            media.recipe.startswith(ANIMATED_STICKER_RECIPE_PREFIX)
+            or media.recipe == ANIMATED_PRODUCT_STICKER_RECIPE
+        )
         limit = MAX_STICKER_BYTES if animated else MAX_STATIC_STICKER_BYTES
     else:
         limit = MAX_VIDEO_BYTES

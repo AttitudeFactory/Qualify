@@ -59,6 +59,8 @@ class JobContext:
     pricing_version: str | None = None
     #: when BytePlus accepted the task (`creative_jobs.submitted_at`)
     submitted_at: datetime | None = None
+    #: m-25017372: a `sticker_character` job's subject (read tenant-side with the job).
+    sticker_character_id: UUID | None = None
 
 
 @dataclass(frozen=True)
