@@ -123,6 +123,7 @@ from .conversations_vm import (
     MAX_TEMPLATE_TITLE_CHARS,
     MAX_TEMPLATES_PER_ACCOUNT,
     MEDIA_AUDIO,
+    NO_INBOUND_NOTICE,
     QUIET_ACCESS_KINDS,
     VOICE_CONTENT_TYPE,
     WINDOW_CLOSED_NOTICE,
@@ -187,9 +188,12 @@ _ACCOUNTS_FAILED = (
 _LIST_FAILED = "No se pudieron cargar las conversaciones. Vuelve a intentarlo en un momento."
 _CONV_FAILED = "No se pudo cargar esta conversación. Vuelve a intentarlo en un momento."
 _THREAD_GONE = "Esa conversación ya no está disponible en esta cuenta."
-#: m-25018661: the open chat left the list on a refresh while the owner had something in
-#: the composer. Neutral on purpose: the list is the newest 50 threads of the account, so
-#: a thread can also drop out without anyone unsending — the cause cannot be told apart.
+#: m-25018661: a send refused for a closed window when the cause cannot be re-read.
+WINDOW_CLOSED_NEUTRAL = "Ya no se puede responder a esta conversación."
+#: m-25018661: the open chat left the list (a refresh or a re-load of the same account)
+#: while the owner had something in the composer. Neutral on purpose: the list is the
+#: newest 50 threads of the account, so a thread can also drop out without anyone
+#: unsending — the cause cannot be told apart.
 _THREAD_GONE_DRAFT_LOST = "Esta conversación ya no está disponible. Lo que escribiste no se envió."
 _NO_USER = (
     "No encontramos tu usuario en este negocio, así que no podemos firmar la respuesta. "
@@ -925,13 +929,14 @@ class ConversationsState(rx.State):
             self.list_loading_for = ""
             self.list_error = ""
             if self.open_thread_id and self.open_thread_id not in {r.thread_id for r in self.rows}:
-                # m-25018661: only a refresh of the SAME account can lose the open chat
-                # (an account switch resets it first; filters never drop rows). Say so
-                # when something unsent would vanish with it; an empty composer stays quiet.
+                # m-25018661: only a read of the SAME account can lose the open chat — a
+                # refresh, or a page re-load (the Reflex state, draft included, survives
+                # it); an account switch resets it first and filters never drop rows. Say
+                # so when something unsent would vanish with it; an empty box stays quiet.
                 had_draft = bool(self.draft_text.strip()) or self.attachment.object_key != ""
                 self.open_thread_id = ""
                 self._reset_conversation()
-                if silent and had_draft:
+                if had_draft:
                     self._set_banner(_THREAD_GONE_DRAFT_LOST, "warn")
             return [r for r in rows if r.thread_id in fresh_ids]
 
@@ -1401,6 +1406,24 @@ class ConversationsState(rx.State):
     # Composer: send
     # ==================================================================================
 
+    async def _window_closed_cause(
+        self, tenant_id: UUID | None, connection: UUID | None, thread: UUID | None
+    ) -> str:
+        """Why a send was refused for a closed window, from a FRESH read of the thread —
+        the open row may be stale (m-25018661: the person just unsent their only message,
+        so no inbound is left and «pasaron 24 h» would be false). Cause-neutral when the
+        re-read fails."""
+        if tenant_id is None or connection is None or thread is None:
+            return WINDOW_CLOSED_NEUTRAL
+        try:
+            conv = await asyncio.to_thread(gateway().conversation, tenant_id, connection, thread)
+        except (ThreadNotFound, *_DB_ERRORS) as exc:
+            logger.info("conversations window re-read failed: %s", type(exc).__name__)
+            return WINDOW_CLOSED_NEUTRAL
+        if conv.view.thread.last_inbound_at is None:
+            return NO_INBOUND_NOTICE
+        return WINDOW_CLOSED_NOTICE
+
     async def _acting_user(self, tenant_id: UUID) -> UUID | None:
         """The logged-in person's `users.id`, resolved once per session."""
         async with self:
@@ -1446,9 +1469,10 @@ class ConversationsState(rx.State):
                 self._set_banner(_NO_SESSION, "error")
             return
         except WindowClosed:
+            notice = await self._window_closed_cause(tenant_id, connection, thread)
             async with self:
                 self.sending = False
-                self._set_banner(WINDOW_CLOSED_NOTICE, "warn")
+                self._set_banner(notice, "warn")
             yield ConversationsState.refresh
             return
         except (ThreadNotFound, UnknownChannel, ApprovalRequired, ValueError, *_DB_ERRORS) as exc:
@@ -1517,9 +1541,10 @@ class ConversationsState(rx.State):
                 self._set_banner(_NO_SESSION, "error")
             return
         except WindowClosed:
+            notice = await self._window_closed_cause(tenant_id, connection, thread)
             async with self:
                 self.sending = False
-                self._set_banner(WINDOW_CLOSED_NOTICE, "warn")
+                self._set_banner(notice, "warn")
             yield ConversationsState.refresh
             return
         except ThreadNotFound:
