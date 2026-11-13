@@ -53,6 +53,7 @@ from .promotion_provider import (
 )
 from .promotion_vm import (
     CONFIRM_FAILED,
+    LEAD_CTA_LABELS,
     LOAD_FAILED,
     NO_SESSION,
     PREVIEW_FAILED,
@@ -934,6 +935,47 @@ class PromotionState(rx.State):
         return PromotionState.refresh_reach()
 
     @rx.event
+    def choose_goal(self, goal: str) -> None:
+        if self.busy or goal not in {"visit", "lead"} or goal == self.form.goal:
+            return
+        self.form = replace(self.form, goal=goal)
+        self.error = ""
+        self._invalidate_review()
+
+    @rx.event
+    def choose_lead_form(self, form_id: str) -> None:
+        if self.busy or not any(row.id == form_id for row in self.selected_source.lead_forms):
+            return
+        self.form = replace(self.form, lead_form_id=form_id)
+        self.error = ""
+        self._invalidate_review()
+
+    @rx.event
+    def choose_lead_cta(self, code: str) -> None:
+        if self.busy or code not in LEAD_CTA_LABELS:
+            return
+        self.form = replace(self.form, lead_cta=code)
+        self.error = ""
+        self._invalidate_review()
+
+    @rx.var
+    def lead_form_label(self) -> str:
+        return next(
+            (
+                row.name
+                for row in self.selected_source.lead_forms
+                if row.id == self.form.lead_form_id
+            ),
+            "Por elegir",
+        )
+
+    @rx.var
+    def button_label(self) -> str:
+        if self.form.goal == "lead":
+            return LEAD_CTA_LABELS.get(self.form.lead_cta, "Por elegir")
+        return "Más información"
+
+    @rx.event
     def accept_charge(self, value: bool) -> None:
         self.confirm_charge = (
             bool(value)
@@ -965,6 +1007,7 @@ class PromotionState(rx.State):
             ),
             source_id=source.id,
             link_url=source.default_link_url,
+            lead_form_id=source.lead_forms[0].id if source.lead_forms else "",
             enhancements=source.enhancements,
             **({"start_local": "", "end_local": ""} if changed_zone else {}),
         )

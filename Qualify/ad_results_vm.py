@@ -28,9 +28,50 @@ URGENT_PAUSE = (
 EDIT_EXPIRED = "La comprobación venció. Vuelve a comprobar el cambio antes de confirmarlo."
 EDIT_ACTION_LABELS = {
     "budget": "Aumentar presupuesto",
+    "budget_down": "Bajar presupuesto",
     "end_time": "Cambiar fecha de fin",
     "resume": "Reanudar anuncio",
 }
+# Both budget directions are the backend's one "budget" edit; only the screen tells them apart.
+BACKEND_ACTIONS = {"budget_down": "budget"}
+NO_REJECTION_REASON = "Meta no dio el motivo. Revisa el texto y la imagen."
+META_REASON_PREFIX = "Motivo informado por Meta: "
+FLOOR_FAILED = "No pudimos consultar el mínimo ahora. Lo comprobaremos antes de guardar."
+ALERTS_ON = "Listo. Te avisaremos aquí si Meta rechaza o detiene tu anuncio."
+ALERTS_ALREADY_ON = "Los avisos ya estaban activos en esta cuenta."
+ALERTS_FAILED = "No pudimos activar los avisos. Vuelve a intentarlo."
+
+
+def backend_action(action: str) -> str:
+    return BACKEND_ACTIONS.get(action, action)
+
+
+def pesos(minor: int) -> str:
+    return "$" + f"{minor // 100:,}".replace(",", ".")
+
+
+def floor_label(floor_minor: int, spent_minor: int) -> str:
+    return f"Mínimo: {pesos(floor_minor)} (ya gastaste {pesos(spent_minor)})"
+
+
+def budget_down_summary(current_minor: int, new_minor: int) -> str:
+    return (
+        f"Tu anuncio podrá gastar hasta {pesos(new_minor)} en total, "
+        f"en vez de {pesos(current_minor)}."
+    )
+
+
+def rejection_text(status: str, reason: str) -> str:
+    """A rejection always says why, or says plainly that Meta did not."""
+    if status != "DISAPPROVED" or reason.startswith(META_REASON_PREFIX):
+        return reason
+    return NO_REJECTION_REASON
+
+
+@dataclass(frozen=True)
+class AlertAccountVM:
+    id: str
+    name: str
 
 
 @dataclass(frozen=True)
@@ -58,6 +99,8 @@ class AdResultVM:
     current_end_input: str = ""
     can_resume: bool = False
     operation_pending: bool = False
+    rejected: bool = False
+    fix_href: str = "/drafts"
 
 
 @dataclass(frozen=True)
@@ -183,6 +226,21 @@ def edit_budget(value: str, current: str) -> int:
         raise EditInputError("Actualiza con Meta para comprobar el presupuesto actual.")
     if int(value) <= int(current):
         raise EditInputError("El nuevo presupuesto total debe ser mayor que el actual.")
+    return int(value) * 100
+
+
+def edit_budget_down(value: str, current: str, floor: str) -> int:
+    """A lower total, never under the floor read from Meta when it is known."""
+    if not value or not value.isascii() or not value.isdigit() or len(value) > 12:
+        raise EditInputError("Escribe el presupuesto total en pesos enteros, sin puntos ni comas.")
+    if not current or not current.isascii() or not current.isdigit():
+        raise EditInputError("Actualiza con Meta para comprobar el presupuesto actual.")
+    if not 0 < int(value) < int(current):
+        raise EditInputError("El nuevo presupuesto total debe ser menor que el actual.")
+    if floor.isascii() and floor.isdigit() and int(value) < int(floor):
+        raise EditInputError(
+            f"Puedes bajarlo hasta {pesos(int(floor) * 100)}. Escribe ese monto o uno mayor."
+        )
     return int(value) * 100
 
 

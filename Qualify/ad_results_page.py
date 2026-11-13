@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import reflex as rx
+from qualify_api.ads.status_webhook import SUBSCRIBE_OFFER
 
 from .ad_results_state import AdResultsState as S
-from .ad_results_vm import URGENT_PAUSE, AdDayVM, AdResultVM
+from .ad_results_vm import URGENT_PAUSE, AdDayVM, AdResultVM, AlertAccountVM
 from .ui import (
     app_shell,
     callout,
@@ -64,6 +65,65 @@ def _ad(row: rx.Var[AdResultVM]) -> rx.Component:
     )
 
 
+def _alert_account(row: rx.Var[AlertAccountVM]) -> rx.Component:
+    return rx.button(
+        rx.cond(S.alert_accounts.length() > 1, "Activar avisos de " + row.name, "Activar avisos"),
+        on_click=S.ask_alerts(row.id),
+        disabled=S.alerts_busy,
+        loading=S.alerts_busy & (S.alert_target.id == row.id),
+        variant="outline",
+        min_height="44px",
+        width=rx.breakpoints(initial="100%", sm="auto"),
+    )
+
+
+def _alerts() -> rx.Component:
+    return rx.cond(
+        S.alert_accounts.length() > 0,
+        card(
+            rx.vstack(
+                rx.heading("Avisos de Meta", size="3", as_="h2"),
+                rx.text(SUBSCRIBE_OFFER, size="2"),
+                rx.cond(S.alerts_notice != "", callout(S.alerts_notice, "ok")),
+                rx.cond(S.alerts_error != "", callout(S.alerts_error, "error")),
+                rx.foreach(S.alert_accounts, _alert_account),
+                rx.alert_dialog.root(
+                    rx.alert_dialog.content(
+                        rx.alert_dialog.title("¿Activar los avisos de Meta?"),
+                        rx.alert_dialog.description(
+                            "Meta nos avisará cuando revise o detenga un anuncio de la cuenta "
+                            + S.alert_target.name
+                            + ". No cambia tus anuncios ni tu presupuesto."
+                        ),
+                        rx.flex(
+                            rx.alert_dialog.cancel(
+                                rx.button("Ahora no", variant="outline", min_height="44px"),
+                            ),
+                            rx.button(
+                                "Activar avisos",
+                                on_click=S.confirm_alerts,
+                                disabled=S.alerts_busy,
+                                loading=S.alerts_busy,
+                                min_height="44px",
+                            ),
+                            direction=rx.breakpoints(initial="column", sm="row"),
+                            gap="3",
+                            margin_top="16px",
+                        ),
+                        max_width="480px",
+                    ),
+                    open=S.alert_target.id != "",
+                    on_open_change=S.dismiss_alerts,
+                ),
+                spacing="3",
+                align_items="start",
+                width="100%",
+            ),
+            width="100%",
+        ),
+    )
+
+
 def ad_results_index() -> rx.Component:
     return app_shell(
         page_header("Anuncios", "Revisa el estado de tus promociones y en qué se fue tu dinero."),
@@ -76,6 +136,7 @@ def ad_results_index() -> rx.Component:
                 align_items="center",
             ),
             rx.cond(S.error != "", callout(S.error, "error")),
+            rx.cond(S.loading, rx.fragment(), _alerts()),
             rx.cond(
                 S.loading,
                 skeleton_card(4),
@@ -178,7 +239,7 @@ def _edit_primary_action(review_ready: bool | rx.Var[bool]) -> rx.Component:
     return rx.cond(
         review_ready,
         rx.button(
-            "Confirmar cambio",
+            rx.cond(S.edit_action == "budget_down", "Guardar presupuesto", "Confirmar cambio"),
             on_click=S.confirm_change,
             disabled=~S.can_confirm_edit,
             min_height="44px",
@@ -224,6 +285,43 @@ def _edit_confirmation() -> rx.Component:
                         rx.text(
                             "Escribe pesos completos, sin puntos ni comas. "
                             "El nuevo total debe ser mayor al actual.",
+                            size="2",
+                        ),
+                        width="100%",
+                        align_items="start",
+                    ),
+                ),
+                rx.cond(
+                    S.edit_action == "budget_down",
+                    rx.vstack(
+                        rx.text(
+                            "Nuevo presupuesto total en pesos colombianos",
+                            as_="label",
+                            html_for="ad-edit-budget-down",
+                        ),
+                        rx.input(
+                            id="ad-edit-budget-down",
+                            value=S.edit_budget_total,
+                            on_change=S.set_edit_budget_total,
+                            input_mode="numeric",
+                            disabled=S.change_pending,
+                            aria_describedby="ad-edit-floor",
+                            min_height="44px",
+                            width="100%",
+                        ),
+                        rx.text(
+                            rx.cond(
+                                S.floor_loading,
+                                "Consultando con Meta cuánto puedes bajarlo…",
+                                S.floor_label,
+                            ),
+                            id="ad-edit-floor",
+                            size="2",
+                            weight="medium",
+                        ),
+                        rx.text(
+                            "Escribe pesos completos, sin puntos ni comas. "
+                            "Es el total para todo el anuncio, no por día.",
                             size="2",
                         ),
                         width="100%",
@@ -351,6 +449,13 @@ def _management() -> rx.Component:
                     min_height="44px",
                 ),
                 rx.button(
+                    "Bajar presupuesto",
+                    on_click=S.open_edit("budget_down"),
+                    disabled=S.busy | ~S.detail.promotion.can_manage | S.change_pending,
+                    variant="outline",
+                    min_height="44px",
+                ),
+                rx.button(
                     "Cambiar fecha de fin",
                     on_click=S.open_edit("end_time"),
                     disabled=S.busy | ~S.detail.promotion.can_manage | S.change_pending,
@@ -407,6 +512,23 @@ def _detail() -> rx.Component:
                 rx.cond(
                     S.detail.promotion.rejection_reason != "",
                     callout(S.detail.promotion.rejection_reason, "error"),
+                ),
+                rx.cond(
+                    S.detail.promotion.rejected,
+                    rx.vstack(
+                        rx.text(
+                            "Este anuncio no se puede volver a enviar. Cambia la imagen o el "
+                            "texto de la publicación y prepara una promoción nueva.",
+                            size="2",
+                        ),
+                        rx.link(
+                            rx.button("Cambiar imagen o texto", min_height="44px", size="3"),
+                            href=S.detail.promotion.fix_href,
+                        ),
+                        spacing="2",
+                        align_items="start",
+                        width="100%",
+                    ),
                 ),
                 rx.button(
                     "Actualizar con Meta",
