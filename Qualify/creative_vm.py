@@ -25,7 +25,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from typing import NamedTuple
 
 from qualify_creative.ad_destination import AD_CTA_LABELS, AdCTA
-from qualify_creative.enums import ContentType, DraftStatus, ImageRoute
+from qualify_creative.enums import AwarenessLevel, ContentType, DraftStatus, ImageRoute
 from qualify_creative.queue_errors import (
     CANCELLED_TEXT,
     FINAL_EXPIRED_TEXT,
@@ -414,6 +414,56 @@ class KitFormVM:
     ads_destination_url: str = ""
     #: «Lo que ofrece tu negocio» (`BrandKit.business_perks`), one per line.
     business_perks: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Who a piece talks to (0166 / m-25026509): the idea cards' tag and the clip's
+# «¿A quién le habla este video?», in the owner's words — never the marketing term.
+
+#: The angle's (or the clip's) `AwarenessLevel` as the owner reads it.
+AUDIENCE_LABELS: dict[AwarenessLevel, str] = {
+    AwarenessLevel.UNAWARE: "Para quien aún no piensa en ti",
+    AwarenessLevel.PROBLEM_AWARE: "Para quien ya busca algo así",
+    AwarenessLevel.SOLUTION_AWARE: "Para quien está comparando opciones",
+    AwarenessLevel.PRODUCT_AWARE: "Para quien te conoce pero no se decide",
+    AwarenessLevel.MOST_AWARE: "Para quien está listo para comprar",
+}
+AUDIENCE_QUESTION = "¿A quién le habla este video?"
+AUDIENCE_HINT = "Opcional. Si no sabes, déjalo en «Sin preferencia»."
+AUDIENCE_NONE_LABEL = "Sin preferencia"
+#: The select's value for «Sin preferencia» (a Radix select item cannot be ""); the
+#: state keeps "" for it.
+AUDIENCE_NONE = "none"
+#: Step 5's row label (shown only when the owner chose someone).
+AUDIENCE_SUMMARY_LABEL = "A quién le habla"
+#: Said instead of the catalog's «Precio» row when the video is for someone who does not
+#: know the business yet: the brief carries no price then (`ContentBrief`).
+AUDIENCE_NO_PRICE = "Este video no mencionará el precio."
+
+
+def audience_label(level: AwarenessLevel | None) -> str:
+    """The tag for a level; "" (no tag) when there is none."""
+    return AUDIENCE_LABELS.get(level, "") if level is not None else ""
+
+
+def audience_options() -> tuple[tuple[str, str], ...]:
+    """«¿A quién le habla este video?»'s choices as (select value, label): «Sin
+    preferencia» first, then the five readers in funnel order."""
+    return ((AUDIENCE_NONE, AUDIENCE_NONE_LABEL),) + tuple(
+        (level.value, label) for level, label in AUDIENCE_LABELS.items()
+    )
+
+
+def audience_value(raw: object) -> str:
+    """What the state keeps: a level's value, or "" for «Sin preferencia» (and for
+    anything that is not a level)."""
+    text = str(raw or "").strip()
+    return text if text in {level.value for level in AwarenessLevel} else ""
+
+
+def audience_hides_price(value: str) -> bool:
+    """«Para quien aún no piensa en ti»: the video does not mention the price."""
+    return value == AwarenessLevel.UNAWARE.value
 
 
 def perks_count_label(count: int) -> str:
@@ -1804,6 +1854,11 @@ __all__ = [
     "build_draft_summary_vm",
     "build_draft_vm",
     "build_readiness_vm",
+    "AUDIENCE_LABELS",
+    "audience_hides_price",
+    "audience_label",
+    "audience_options",
+    "audience_value",
     "perks_count_label",
     "perks_for_save",
     "build_recipe_options",

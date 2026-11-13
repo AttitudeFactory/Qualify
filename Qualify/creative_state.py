@@ -78,6 +78,7 @@ from qualify_creative.enums import (
     ContentKind,
     ContentType,
     DraftStatus,
+    objective_for_level,
 )
 from qualify_creative.scene_plan import ScenePlanError
 from qualify_creative.schemas import (
@@ -169,6 +170,8 @@ from .creative_provider import (
 )
 from .creative_vm import (
     APPROVE_VERSION_LABEL,
+    AUDIENCE_NONE,
+    AUDIENCE_SUMMARY_LABEL,
     CAPTION_LIMIT,
     CATEGORY_OPTIONS,
     CREATING_LABEL,
@@ -198,6 +201,9 @@ from .creative_vm import (
     add_phrase,
     approval_notice,
     approval_videos_notice,
+    audience_hides_price,
+    audience_options,
+    audience_value,
     best_ideas_button_label,
     best_ideas_to_add,
     caption_hashtag_suggestions,
@@ -1353,6 +1359,10 @@ class CreativeState(rx.State):
     #: 2026-10-06). Read on load; a failed read never flags.
     kit_voice_missing: bool = False
     brief_objective: str = "consideration"
+    #: m-25026509: «¿A quién le habla este video?» — an `AwarenessLevel` value, or ""
+    #: for «Sin preferencia». Asked only for a clip (and its video by parts, whose card
+    #: shows the same value); any other kind neither shows nor sends it.
+    brief_audience: str = ""
     brief_content_type: str = "product"
     brief_topic: str = ""
     #: Backend only (live test 2026-11-03): the product name ``choose_product`` put in
@@ -5929,10 +5939,52 @@ class CreativeState(rx.State):
         }
         return highlight_notes(self.brief_highlights, catalog, price_label)
 
+    # -- «¿A quién le habla este video?» (m-25026509) ---------------------------------
+
+    def clip_audience_level(self) -> str:
+        """The level a clip (or its video by parts) is asked for: "" for «Sin
+        preferencia» and for every other kind, which never sends one."""
+        return self.brief_audience if self.brief_kind == "clip" else ""
+
+    def _audience_hides_price(self) -> bool:
+        return audience_hides_price(self.clip_audience_level())
+
+    def _sync_audience_price(self) -> None:
+        """The catalog's «Precio» row follows the audience: gone while the clip is for
+        «Para quien aún no piensa en ti» (the brief drops every price then), back with
+        any other choice or kind."""
+        item = next(
+            (i for i in self.catalog_items if i.get("id") == self.selected_product_id), None
+        )
+        if item is None:
+            return
+        self._sync_price_fact(self.selected_product_id, item.get("price_label", ""))
+
+    @rx.event
+    def set_brief_audience(self, value: str) -> None:
+        """The answer, the same in step 3 and in «Armar mi video por partes»."""
+        self.brief_audience = audience_value(value)
+        self._sync_audience_price()
+
+    @rx.var
+    def audience_select_value(self) -> str:
+        """The select's value: «Sin preferencia» is `AUDIENCE_NONE` there."""
+        return self.brief_audience or AUDIENCE_NONE
+
+    @rx.var
+    def audience_no_price(self) -> bool:
+        """Say «Este video no mencionará el precio.» (a clip for someone who does not
+        know the business yet)."""
+        return self._audience_hides_price()
+
     def _sync_price_fact(self, product_id: str = "", price_label: str = "") -> None:
         """The chosen catalog product's price as a «Dato clave» (founder request
         2026-11-04): the row belongs to the product, so a product change replaces it —
-        edited or not — see `prefill_price_fact`. No product (or a stock one) drops it."""
+        edited or not — see `prefill_price_fact`. No product (or a stock one) drops it.
+        m-25026509: a clip for «Para quien aún no piensa en ti» carries no price, so the
+        row is not shown then (`_sync_audience_price` brings it back)."""
+        if self._audience_hides_price():
+            product_id = ""
         self.brief_highlights = prefill_price_fact(
             self.brief_highlights,
             product_id=product_id,
@@ -6743,6 +6795,8 @@ class CreativeState(rx.State):
             # (guidance, origin, brand-text choice, its video) rides on into its brief
             self._forget_replica()
         self.brief_kind = key
+        # m-25026509: the audience is a clip's; another kind gets its price row back
+        self._sync_audience_price()
         self.brief_format = ""  # each kind starts on its own default format
         self.create_error = ""
         # the cards and the original of «Mejorar mi texto» belong to the kind's own field
@@ -7982,6 +8036,7 @@ class CreativeState(rx.State):
         last piece. The kind stays; an animated avatar reloads its character."""
         self._back_to_form()
         self.brief_topic = ""
+        self.brief_audience = ""  # m-25026509: back to «Sin preferencia»
         self.brief_highlights = []
         self.brief_must_mention = ""
         self.brief_must_avoid = ""
@@ -9439,6 +9494,13 @@ class CreativeState(rx.State):
             row("Debe mencionar", self.brief_must_mention.strip(), "rules")
         if self.brief_must_avoid.strip():
             row("Debe evitar", self.brief_must_avoid.strip(), "rules")
+        if self.clip_audience_level():
+            # m-25026509: an optional answer, listed only when given (like «Debe evitar»)
+            row(
+                AUDIENCE_SUMMARY_LABEL,
+                dict(audience_options()).get(self.clip_audience_level(), ""),
+                "topic",
+            )
         replica = kind == "clip" and has_reel_video(self.clip_videos)
         if kind == "static_flyer":
             row("Escena", self._effective_topic() or "Falta: es lo único obligatorio", "topic")
@@ -9780,8 +9842,11 @@ class CreativeState(rx.State):
     def _generator_form(self) -> dict[str, object]:
         """The generator's brief as `creative_provider.build_brief` takes it — what
         Generar submits and what «¿Todo listo?» previews (caller holds the lock)."""
+        level = self.clip_audience_level()
         return {
-            "objective": self.brief_objective,
+            # m-25026509: the reader the owner picked sets the objective; none keeps it
+            "objective": objective_for_level(level, self.brief_objective),
+            "awareness_level": level or None,
             "content_type": self.brief_content_type,
             "topic": self._effective_topic(),
             "product_ref": self.brief_product_ref,

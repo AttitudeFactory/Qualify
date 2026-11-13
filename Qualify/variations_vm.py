@@ -41,27 +41,13 @@ from qualify_api.creative.angle_sets import (
 from qualify_api.creative.service import BrandNotReady, DraftExpired
 from qualify_creative.angles import AnglePreset, AngleProduct, AngleSetPlan, UnknownPreset
 from qualify_creative.creations import weight_for_request
-from qualify_creative.enums import AwarenessLevel, DraftStatus
+from qualify_creative.enums import DraftStatus
 
-from .creative_vm import failure_vm, status_label
+# the audience labels live with the generator's, so the ideas and «¿A quién le habla este
+# video?» say the same words (m-25026509)
+from .creative_vm import AUDIENCE_LABELS, audience_label, failure_vm, status_label
 
 # -- vocabularies ------------------------------------------------------------------------
-
-#: Who each idea talks to (0166, the angle's `AwarenessLevel`), in the owner's words —
-#: never the marketing term. An idea proposed before the levels has none and no tag.
-AUDIENCE_LABELS: dict[AwarenessLevel, str] = {
-    AwarenessLevel.UNAWARE: "Para quien aún no piensa en ti",
-    AwarenessLevel.PROBLEM_AWARE: "Para quien ya busca algo así",
-    AwarenessLevel.SOLUTION_AWARE: "Para quien está comparando opciones",
-    AwarenessLevel.PRODUCT_AWARE: "Para quien te conoce pero no se decide",
-    AwarenessLevel.MOST_AWARE: "Para quien está listo para comprar",
-}
-
-
-def audience_label(level: AwarenessLevel | None) -> str:
-    """The idea card's tag for its level; "" (no tag) when the idea has none."""
-    return AUDIENCE_LABELS.get(level, "") if level is not None else ""
-
 
 SET_LABELS: dict[str, tuple[str, str]] = {
     SET_DRAFTING: ("Proponiendo ángulos", "info"),
