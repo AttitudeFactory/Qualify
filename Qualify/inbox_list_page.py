@@ -292,8 +292,11 @@ def inbox_list_pane() -> rx.Component:
     return rx.vstack(
         heartbeat(),
         _explainer(),
-        _channel_filter(),
-        _filters(),
+        # The chips paint with the first loaded list, together with the explanation
+        # above them, so neither pushes the other once it appears.
+        rx.cond(
+            L.counts_loaded, rx.vstack(_channel_filter(), _filters(), spacing="3", width="100%")
+        ),
         _body(),
         _notice(),
         spacing="3",

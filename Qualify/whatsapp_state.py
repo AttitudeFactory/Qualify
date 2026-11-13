@@ -146,6 +146,9 @@ class WhatsAppState(rx.State):
     # -- shell ---------------------------------------------------------------------------
     numbers: list[WhatsAppNumberVM] = []
     selected_connection_id: str = ""
+    #: m-25017859 (backend only): the Chats chip's `?filtro=` ("" = the default), kept
+    #: on the address of the Chats tab when the owner comes back to it.
+    _chats_chip: str = ""
     active_tab: str = resolve_tab("")
     is_loading: bool = False
     load_error: str = ""
@@ -365,7 +368,12 @@ class WhatsAppState(rx.State):
     def _panel_address(self, panel: str) -> str:
         address = tab_url(panel)
         connection = uuid_param({"cuenta": self.selected_connection_id}, "cuenta")
-        return address + ("&cuenta=" + connection if connection else "")
+        address += "&cuenta=" + connection if connection else ""
+        # m-25017859: back on Chats, the address keeps the chip the owner picked, so a
+        # reload shows it (the default chip needs no parameter).
+        if panel == "chats" and self._chats_chip:
+            address += "&filtro=" + self._chats_chip
+        return address
 
     @rx.event
     def select_tab(self, tab: str | list[str]) -> rx.event.EventSpec | None:

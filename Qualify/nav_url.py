@@ -119,18 +119,19 @@ def conversation_href(
     *,
     from_inbox: bool = False,
     view: Mapping[str, str] | None = None,
+    chip: str = "",
 ) -> str:
     """Canonical owner-facing routes carrying only internal account/thread IDs (plus,
-    on WhatsApp, the `?desde=` of the single list and the chip it opens on; on the
+    on WhatsApp, the `?desde=` of the single list and the chip it opens on, or the
+    owner's own chip `chip` — "" for the default, which needs no parameter; on the
     single list, its `view` slugs)."""
     ids = {"cuenta": connection_id, "chat": thread_id}
     safe = {key: uuid_param(ids, key) for key in ids}
     if channel == "whatsapp":
-        origin = (
-            {"filtro": WHATSAPP_AWAITING_SLUG, FROM_PARAM: FROM_INBOX}
-            if from_inbox and safe["chat"]
-            else {}
-        )
+        if from_inbox and safe["chat"]:
+            origin = {"filtro": WHATSAPP_AWAITING_SLUG, FROM_PARAM: FROM_INBOX}
+        else:
+            origin = {"filtro": _slug(chip)} if _slug(chip) else {}
         return with_query("/whatsapp", tab="chats", **safe, **origin)
     kept = {k: _slug(v) for k, v in (view or {}).items() if k in LIST_VIEW_PARAMS}
     return with_query("/responder", tab="mensajes", **kept, **safe)

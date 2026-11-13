@@ -51,6 +51,7 @@ from .inbox_list_vm import (
     as_chat_rows,
     channel_chips,
     channel_from_params,
+    channels_with_chats,
     count_of,
     empty_for,
     explainer_shown,
@@ -258,7 +259,13 @@ class InboxListState(rx.State):
         """The explanation's day is the business's own (its time zone, like every date
         the owner reads)."""
         today = now.astimezone(_zone(self._zone_name)).date()
-        self.explainer_open = explainer_shown(today, dismissed=self.explainer_dismissed)
+        # It is about numbers the owner can see: a connected chat channel holding chats.
+        about_something = bool(self.connected) and bool(
+            channels_with_chats(_Counts(self.counts_by))
+        )
+        self.explainer_open = about_something and explainer_shown(
+            today, dismissed=self.explainer_dismissed
+        )
 
     @rx.event
     def dismiss_explainer(self) -> rx.event.EventSpec:

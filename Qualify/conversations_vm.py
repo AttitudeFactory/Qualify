@@ -685,7 +685,7 @@ def header_pill(view: Any) -> tuple[str, str]:
     «Por responder» rule (`ThreadView.awaiting_reply`) instead of read / unread. A read
     that did not compute the rule (`thread.awaiting_reply is None`) keeps the old
     read-based pill. Waiting → «Por responder»; the window gone with the customer's
-    word last → «Respóndele desde la app de Instagram»; answered → «Respondida»."""
+    word last → «Respóndele desde Instagram»; answered → «Respondida»."""
     awaiting = getattr(view.thread, "awaiting_reply", None)
     if awaiting is None:
         return attention_pill(view.attention)

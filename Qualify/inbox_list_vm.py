@@ -82,7 +82,7 @@ FILTER_SLUGS: Final[Mapping[str, str]] = {
     "todos": FILTER_ALL,
     "cerrados": FILTER_CLOSED,
     "pago-por-revisar": FILTER_PAYMENT,
-    "se-te-pasaron": FILTER_EXPIRED,
+    "sin-responder-a-tiempo": FILTER_EXPIRED,
     # The Instagram-only chips this list replaces (old links, Inicio's old card): the
     # chats that waited («Pendientes», «Leídas» — read but not answered) wait under the
     # rule; «Abiertas» / «Todas» / «Respondidas» are open chats; «Cerradas» closed ones.
@@ -99,7 +99,7 @@ _KEY_TO_SLUG: Final[Mapping[str, str]] = {
     FILTER_ALL: "todos",
     FILTER_CLOSED: "cerrados",
     FILTER_PAYMENT: "pago-por-revisar",
-    FILTER_EXPIRED: "se-te-pasaron",
+    FILTER_EXPIRED: "sin-responder-a-tiempo",
 }
 
 PAGE_SIZE: Final = 50
@@ -175,7 +175,9 @@ EMPTY_AWAITING_TITLE: Final = "Ya respondiste a todos."
 EMPTY_AWAITING_BODY: Final = "Aquí verás a quien te escriba por {channels}."
 EMPTY_ALL: Final = "Todavía no tienes chats. Aquí verás a quien te escriba por {channels}."
 EMPTY_CLOSED: Final = "No tienes chats cerrados."
-EMPTY_EXPIRED: Final = "No se te pasó ningún chat de Instagram en la última semana."
+EMPTY_EXPIRED: Final = (
+    "Ningún chat de Instagram se quedó sin responder a tiempo en la última semana."
+)
 EMPTY_BACK: Final = "Ver por responder"
 
 NOTHING_CONNECTED_TITLE: Final = "Aún no tienes WhatsApp ni Instagram conectados"

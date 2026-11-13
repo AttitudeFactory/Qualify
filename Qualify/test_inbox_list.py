@@ -239,7 +239,7 @@ def test_an_expired_instagram_chat_says_it_in_words() -> None:
         )
     )
     assert (row.pill_label, row.pill_tone) == (EXPIRED_PILL, "neutral")
-    assert EXPIRED_PILL == "Respóndele desde la app de Instagram"  # founder, 2026-11-13
+    assert EXPIRED_PILL == "Respóndele desde Instagram"  # founder, 2026-11-14
     assert EXPIRED_PILL in row.aria_label and not row.waiting
 
 
@@ -309,7 +309,7 @@ def test_a_closed_chat_with_a_payment_to_check_reads_right() -> None:
         ("todos", FILTER_ALL),
         ("cerrados", FILTER_CLOSED),
         ("pago-por-revisar", FILTER_PAYMENT),
-        ("se-te-pasaron", FILTER_EXPIRED),
+        ("sin-responder-a-tiempo", FILTER_EXPIRED),
         # The Instagram-only chips' old links (Inicio's old card, saved addresses).
         ("pendientes", FILTER_AWAITING),
         ("Leidas", FILTER_AWAITING),
@@ -1044,15 +1044,47 @@ def _wa_at(state: Any, query: str) -> None:
 
 @pytest.fixture
 def wa(monkeypatch: pytest.MonkeyPatch) -> Any:
-    from types import SimpleNamespace
-
     from .whatsapp_chats_state import WhatsAppChatsState
+    from .whatsapp_state import WhatsAppState
 
-    async def no_shell(self: Any, cls: Any) -> Any:
-        return SimpleNamespace(selected_connection_id="")
+    shell = WhatsAppState()  # no number selected: `enter` stops before any read
+    _SHELL[:] = [shell]
 
-    monkeypatch.setattr(WhatsAppChatsState, "get_state", no_shell)
+    async def the_shell(self: Any, cls: Any) -> Any:
+        assert cls is WhatsAppState
+        return shell
+
+    monkeypatch.setattr(WhatsAppChatsState, "get_state", the_shell)
     return WhatsAppChatsState()
+
+
+_SHELL: list[Any] = []
+
+
+async def test_the_whatsapp_chip_survives_a_reload_after_a_chat_or_a_tab_round_trip(
+    wa: Any,
+) -> None:
+    """Every address the page writes later keeps the picked chip's slug (the default
+    chip needs none), so a reload lands on what the owner saw."""
+    from .whatsapp_chats_state import WhatsAppChatsState
+    from .whatsapp_chats_vm import FILTER_CLOSED, FILTER_OPEN
+
+    _wa_at(wa, "tab=chats")
+    await WhatsAppChatsState.apply_address_filter.fn(wa)  # type: ignore[attr-defined]
+    await WhatsAppChatsState.set_filter.fn(wa, FILTER_CLOSED)  # type: ignore[attr-defined]
+    shell = _SHELL[0]
+    assert "filtro=cerrados" in shell._panel_address("chats")  # a tab and back
+    assert "filtro" not in shell._panel_address("menu")
+    wa._connection_id = str(CONNECTION)
+    back = WhatsAppChatsState.back_to_list.fn(wa)  # type: ignore[attr-defined]
+    assert "filtro=cerrados" in str(back)
+    await WhatsAppChatsState.set_filter.fn(wa, FILTER_OPEN)  # type: ignore[attr-defined]
+    assert "filtro" not in shell._panel_address("chats")  # the default needs none
+    from .nav_url import conversation_href
+
+    chat = conversation_href("whatsapp", str(CONNECTION), str(uuid4()), chip="cerrados")
+    assert chat.endswith("&filtro=cerrados")
+    assert "filtro" not in conversation_href("whatsapp", str(CONNECTION), str(uuid4()))
 
 
 async def test_whatsapp_navigation_with_filtro_applies_it_and_without_it_is_abiertos(
@@ -1062,10 +1094,10 @@ async def test_whatsapp_navigation_with_filtro_applies_it_and_without_it_is_abie
     from .whatsapp_chats_vm import DEFAULT_FILTER, FILTER_UNREAD
 
     _wa_at(wa, "tab=chats&filtro=por-responder")  # the badge / the single list's link
-    WhatsAppChatsState.apply_address_filter.fn(wa)  # type: ignore[attr-defined]
+    await WhatsAppChatsState.apply_address_filter.fn(wa)  # type: ignore[attr-defined]
     assert wa.filter_key == FILTER_UNREAD
     _wa_at(wa, "tab=chats")  # a bare /whatsapp, arrived at by navigation
-    WhatsAppChatsState.apply_address_filter.fn(wa)  # type: ignore[attr-defined]
+    await WhatsAppChatsState.apply_address_filter.fn(wa)  # type: ignore[attr-defined]
     assert wa.filter_key == DEFAULT_FILTER
 
 
@@ -1074,8 +1106,8 @@ async def test_a_remount_keeps_the_picked_chip_even_with_a_stale_filtro(wa: Any)
     from .whatsapp_chats_vm import FILTER_CLOSED
 
     _wa_at(wa, "tab=chats&filtro=por-responder")
-    WhatsAppChatsState.apply_address_filter.fn(wa)  # type: ignore[attr-defined]
-    spec = WhatsAppChatsState.set_filter.fn(wa, FILTER_CLOSED)  # type: ignore[attr-defined]
+    await WhatsAppChatsState.apply_address_filter.fn(wa)  # type: ignore[attr-defined]
+    spec = await WhatsAppChatsState.set_filter.fn(wa, FILTER_CLOSED)  # type: ignore[attr-defined]
     assert "replaceState" in str(spec) and "cerrados" in str(spec)  # the address says it
     await WhatsAppChatsState.enter.fn(wa)  # type: ignore[attr-defined]  # a remount
     assert wa.filter_key == FILTER_CLOSED
@@ -1087,8 +1119,8 @@ async def test_a_picked_chip_survives_a_tab_switch_and_back(wa: Any) -> None:
     from .whatsapp_chats_vm import FILTER_PAYMENT
 
     _wa_at(wa, "tab=chats")
-    WhatsAppChatsState.apply_address_filter.fn(wa)  # type: ignore[attr-defined]
-    WhatsAppChatsState.set_filter.fn(wa, FILTER_PAYMENT)  # type: ignore[attr-defined]
+    await WhatsAppChatsState.apply_address_filter.fn(wa)  # type: ignore[attr-defined]
+    await WhatsAppChatsState.set_filter.fn(wa, FILTER_PAYMENT)  # type: ignore[attr-defined]
     _wa_at(wa, "tab=menu")
     _wa_at(wa, "tab=chats")
     await WhatsAppChatsState.enter.fn(wa)  # type: ignore[attr-defined]
@@ -1198,3 +1230,48 @@ def test_the_explainer_is_the_info_callout_above_the_chips() -> None:
     block = rendered[start : rendered.index("q-inbox-chips")]
     assert 'role:"status"' in block and '"polite"' in block  # announced politely
     assert '"44px"' in block  # «Entendido» is a thumb target
+
+
+def test_the_expired_filter_s_words_and_address() -> None:
+    from .inbox_list_vm import EMPTY_EXPIRED
+
+    assert empty_for(FILTER_EXPIRED, []).body == EMPTY_EXPIRED
+    assert EMPTY_EXPIRED == (
+        "Ningún chat de Instagram se quedó sin responder a tiempo en la última semana."
+    )
+    assert list_href(FILTER_EXPIRED) == "/responder?tab=mensajes&filtro=sin-responder-a-tiempo"
+    assert filter_from_params({"filtro": "se-te-pasaron"}) is None  # never deployed
+    assert filter_from_params({"filtro": "x<y"}) is None  # unknown: the default stays
+
+
+async def test_the_explainer_waits_for_chats_the_owner_can_see(
+    fake: _Fake, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _clock(monkeypatch, datetime(2026, 11, 15, 12, 0, tzinfo=UTC))
+    original = fake.context
+    nothing = InboxContext(zone_name="America/Bogota", agents=(), connected=())
+    monkeypatch.setattr(state_module, "context", lambda tenant_id: nothing)
+    fake.rows = []
+    fake.channels_with_chats = ()
+    state = InboxListState()
+    assert not state.explainer_open  # first paint, before any load: no space for it
+    await _drain(InboxListState.load.fn(state))  # type: ignore[attr-defined]
+    assert state.nothing_connected and not state.explainer_open
+    # Connected, but no chat in any filter yet: still nothing to explain.
+    monkeypatch.setattr(state_module, "context", original)
+    state.reset()
+    await _drain(InboxListState.load.fn(state))  # type: ignore[attr-defined]
+    assert not state.explainer_open
+    # With chats: it paints in the same update as the loaded list and its chips.
+    fake.rows = [_chat("C0", 0)]
+    fake.channels_with_chats = ("whatsapp",)
+    state.reset()
+    await _drain(InboxListState.load.fn(state))  # type: ignore[attr-defined]
+    assert state.explainer_open and state.counts_loaded and state.loaded
+
+
+def test_the_chips_paint_with_the_first_loaded_counts() -> None:
+    from .inbox_list_page import inbox_list_pane
+
+    rendered = str(inbox_list_pane())
+    assert rendered.index("counts_loaded") < rendered.index("q-inbox-chips")

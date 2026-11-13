@@ -889,21 +889,28 @@ class WhatsAppChatsState(rx.State):
         return WhatsAppChatsState.load_list
 
     @rx.event
-    def apply_address_filter(self) -> None:
+    async def apply_address_filter(self) -> None:
         """m-24842990 / m-25017859: on a NAVIGATION to `/whatsapp` (its route
         `on_load`, via `WhatsAppState.enter_page`) the address decides the chip: the
         sidebar's badge link and the single list's deep link carry `?filtro=por-responder`
         (`sin-leer`: the chip's old name), a bare `/whatsapp` is the default «Abiertos»."""
         self.filter_key = filter_from_slug(self.router.url.query_parameters.get("filtro"))
+        (await self.get_state(WhatsAppState))._chats_chip = self._chip()
 
     @rx.event
-    def set_filter(self, key: str | list[str]) -> rx.event.EventSpec | None:
+    async def set_filter(self, key: str | list[str]) -> rx.event.EventSpec | None:
         """A chip tap: the choice stands until the next navigation, and the address says
-        it (replaced, not pushed), so a reload shows the same chip."""
+        it (replaced, not pushed), so a reload shows the same chip. The page keeps it for
+        the addresses it writes later (a tab and back: `WhatsAppState._panel_address`)."""
         if not isinstance(key, str) or key not in FILTER_KEYS:
             return None
         self.filter_key = key
+        (await self.get_state(WhatsAppState))._chats_chip = self._chip()
         return rx.call_script(filter_address_script(FILTER_SLUG[key]))
+
+    def _chip(self) -> str:
+        """The `?filtro=` of the chip on screen; "" for the default (no parameter)."""
+        return "" if self.filter_key == DEFAULT_FILTER else FILTER_SLUG[self.filter_key]
 
     @rx.event(background=True)
     async def load_list(self) -> None:
@@ -1010,7 +1017,11 @@ class WhatsAppChatsState(rx.State):
         self._reset_conversation()
         self.compose_mode = COMPOSE_TEXT
         return [
-            rx.call_script(writer(conversation_href("whatsapp", self._connection_id, thread_id))),
+            rx.call_script(
+                writer(
+                    conversation_href("whatsapp", self._connection_id, thread_id, chip=self._chip())
+                )
+            ),
             WhatsAppChatsState.load_conversation,
         ]
 
@@ -1021,7 +1032,9 @@ class WhatsAppChatsState(rx.State):
             return WhatsAppChatsState.back_to_inbox
         self.open_thread_id = ""
         self._reset_conversation()
-        return rx.call_script(back_url_script(conversation_href("whatsapp", self._connection_id)))
+        return rx.call_script(
+            back_url_script(conversation_href("whatsapp", self._connection_id, chip=self._chip()))
+        )
 
     @rx.event
     async def back_to_inbox(self) -> rx.event.EventSpec:

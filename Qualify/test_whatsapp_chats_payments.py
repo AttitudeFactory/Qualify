@@ -430,7 +430,7 @@ def test_the_state_filters_and_keeps_the_filter_like_the_others(gw) -> None:
 
     state = _state()
     state.rows = with_payment_pills(state.rows, {THREAD: _status("review")})
-    state.set_filter(FILTER_PAYMENT)
+    state.filter_key = FILTER_PAYMENT  # the chip (its tap is tested in test_inbox_list)
     assert [r.thread_id for r in state.visible_chat_rows] == [THREAD]
     assert state.filter_payment_label == "Pago por revisar · 1"
     state.rows = with_payment_pills(state.rows, {})  # a refresh: none left
@@ -494,7 +494,7 @@ async def test_a_failed_statuses_read_says_so_and_keeps_the_marks(gw, monkeypatc
     monkeypatch.setattr(gw, "agents", lambda t: [], raising=False)
     monkeypatch.setattr(gw, "threads", lambda t, c: threads, raising=False)
     state = _state()
-    state.set_filter(FILTER_PAYMENT)
+    state.filter_key = FILTER_PAYMENT  # the chip (its tap is tested in test_inbox_list)
     assert await WhatsAppChatsState._read_list(state, silent=False)
     assert not state.statuses_failed and state.filter_payment_label == "Pago por revisar · 1"
 
