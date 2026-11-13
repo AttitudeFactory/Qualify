@@ -4,7 +4,8 @@ What only the database can prove: one statement per page across WhatsApp and Ins
 newest first; the composite cursor never skips two chats with the same instant; the SQL
 rule (`awaiting_reply_sql`) agrees with its Python twin (`awaits_reply`) on every case —
 each case is seeded once and read both ways — and `count_inbox` with the list; RLS keeps
-another business's chats out. The open questions of `inbox.awaiting` are pinned
+another business's chats out. Instagram's reply-window bound (founder, 2026-11-13) is
+`test_instagram_*_window*`; the open questions of `inbox.awaiting` are pinned
 (`test_pinned_*`). The p95 benchmark is opt-in only (`QUALIFY_RUN_INBOX_BENCHMARK=1`,
 plus `slow`): never in `just test`, `just test-db` or CI.
 
@@ -27,7 +28,7 @@ from uuid import UUID, uuid4
 import pytest
 from qualify_shared.db.admin import admin_session
 from qualify_shared.db.session import tenant_session
-from sqlalchemy import event, insert
+from sqlalchemy import event, insert, text
 from sqlalchemy.engine import Engine
 
 from qualify_api.connections.models import PlatformApp, SocialConnection
@@ -36,12 +37,14 @@ from qualify_api.inbox.awaiting import (
     MessageFact,
     ThreadSnapshot,
     awaits_reply,
+    count_awaiting_sql,
 )
 from qualify_api.inbox.models import Message, Thread
 from qualify_api.inbox.unified import InboxCursor, count_inbox, list_inbox
 from qualify_api.tenancy.models import Brand, Tenant, User
 from qualify_api.whatsapp.models import WhatsAppOutboxItem, WhatsAppThreadState
 from qualify_api.whatsapp.outbox import STALE_AFTER
+from qualify_api.whatsapp.window import WINDOW
 
 pytestmark = pytest.mark.db
 
@@ -125,20 +128,45 @@ class _Chat:
         return self.biz.whatsapp if self.channel == "whatsapp" else self.biz.instagram
 
     def inbound(
-        self, at: datetime, *, hidden: bool = False, text: str | None = "¿tienen domicilio?"
+        self,
+        at: datetime,
+        *,
+        hidden: bool = False,
+        text: str | None = "¿tienen domicilio?",
+        unsent: bool = False,
+        dated: bool = True,
     ) -> _Chat:
+        """A customer's message. `unsent`: the person unsent it (redacted, hidden, left
+        out of `last_inbound_at` — `_RECOMPUTE_THREAD`); `dated=False`: stored by the
+        re-sync without `posted_at` (its instant is `ingested_at`; the bump skips it)."""
         self.messages.append(
             {
                 "direction": "inbound",
-                "posted_at": at,
-                "deleted_at": at if hidden else None,
-                "text": text,
-                "author_username": "Cliente",
-                "media_type": None if text else "other",
+                "at": at,
+                "posted_at": at if dated else None,
+                "ingested_at": None if dated else at,
+                "deleted_at": at if hidden or unsent else None,
+                "unsent_at": at if unsent else None,
+                "text": None if unsent else text,
+                "author_username": None if unsent else "Cliente",
+                "media_type": None if unsent or text else "other",
             }
         )
-        self.snapshot_messages.append(MessageFact("inbound", at, hidden=hidden))
+        self.snapshot_messages.append(MessageFact("inbound", at, hidden=hidden or unsent))
         return self
+
+    @property
+    def last_inbound_at(self) -> datetime | None:
+        """`threads.last_inbound_at` as ingestion leaves it: the newest inbound that was
+        bumped (dated) and not unsent."""
+        return max(
+            (
+                m["posted_at"]
+                for m in self.messages
+                if m["direction"] == "inbound" and m["posted_at"] and not m["unsent_at"]
+            ),
+            default=None,
+        )
 
     def reply(
         self,
@@ -153,6 +181,7 @@ class _Chat:
         self.messages.append(
             {
                 "direction": "outbound",
+                "at": at,
                 "posted_at": at,
                 "deleted_at": at if hidden else None,
                 "text": "Hola",
@@ -185,6 +214,8 @@ class _Chat:
     def snapshot(self) -> ThreadSnapshot:
         return ThreadSnapshot(
             status=self.status,
+            channel=self.channel,
+            last_inbound_at=self.last_inbound_at,
             messages=tuple(self.snapshot_messages),
             automation_sends=tuple(self.snapshot_sends),
             handed_to_person=bool(self.paused),
@@ -192,8 +223,7 @@ class _Chat:
 
     def save(self) -> UUID:
         tenant_id = self.biz.tenant_id
-        inbound = [m["posted_at"] for m in self.messages if m["direction"] == "inbound"]
-        every = [m["posted_at"] for m in self.messages]
+        every = [m["at"] for m in self.messages]
         with tenant_session(tenant_id) as session:
             thread = Thread(
                 tenant_id=tenant_id,
@@ -202,14 +232,16 @@ class _Chat:
                 external_thread_id=f"ext-{uuid4().hex[:12]}",
                 status=self.status,
                 last_message_at=max(every, default=None),
-                last_inbound_at=max(inbound, default=None),
+                last_inbound_at=self.last_inbound_at,
                 counterpart_name=self.name,
             )
             session.add(thread)
             session.flush()
             for m in self.messages:
+                undated = {"ingested_at": m["ingested_at"]} if m.get("ingested_at") else {}
                 session.add(
                     Message(
+                        **undated,
                         tenant_id=tenant_id,
                         thread_id=thread.id,
                         connection_id=self.connection,
@@ -220,6 +252,7 @@ class _Chat:
                         text=m["text"],
                         posted_at=m["posted_at"],
                         deleted_at=m["deleted_at"],
+                        unsent_at=m.get("unsent_at"),
                         media_type=m.get("media_type"),
                         delivery_status=m.get("delivery_status"),
                         shape_version="test",
@@ -271,23 +304,31 @@ def _statements() -> Iterator[list[str]]:
         event.remove(Engine, "before_cursor_execute", record)
 
 
-def _all_pages(tenant_id: UUID, **kwargs: Any) -> list[UUID]:
+def _all_pages(tenant_id: UUID, *, now: datetime = NOW, **kwargs: Any) -> list[UUID]:
     ids: list[UUID] = []
     cursor: InboxCursor | None = None
     while True:
-        page = list_inbox(tenant_id, cursor=cursor, now=NOW, **kwargs)
+        page = list_inbox(tenant_id, cursor=cursor, now=now, **kwargs)
         ids.extend(r.thread_id for r in page.rows)
         if page.next_cursor is None:
             return ids
         cursor = page.next_cursor
 
 
-def _awaiting(biz: _Biz) -> dict[UUID, bool]:
+def _awaiting(biz: _Biz, now: datetime = NOW) -> dict[UUID, bool]:
     rows: dict[UUID, bool] = {}
     for filter in ("todos", "cerrados"):
-        for r in list_inbox(biz.tenant_id, filter=filter, limit=100).rows:  # type: ignore[arg-type]
+        page = list_inbox(biz.tenant_id, filter=filter, limit=100, now=now)  # type: ignore[arg-type]
+        for r in page.rows:
             rows[r.thread_id] = r.awaiting_reply
     return rows
+
+
+def _counter(biz: _Biz, channel: str, now: datetime) -> int:
+    """`count_awaiting_sql` as `attention.counts` will run it, with `now` bound."""
+    with tenant_session(biz.tenant_id) as session:
+        sql = text(f"SELECT {count_awaiting_sql(channel, now_param='now')}")
+        return int(session.execute(sql, {"now": now}).scalar_one())
 
 
 # --------------------------------------------------------------------------------------
@@ -336,7 +377,7 @@ def test_two_chats_with_the_same_instant_both_appear_when_paging() -> None:
 def test_the_sql_rule_its_twin_and_count_inbox_agree_on_every_case() -> None:
     biz = _business()
     real_now = datetime.now(UTC)
-    base = real_now - timedelta(minutes=30)  # outbox ages are judged by the DB's now()
+    base = real_now - timedelta(minutes=30)
     after = base + timedelta(minutes=1)
     before = base - timedelta(minutes=1)
     fresh_in = real_now - timedelta(minutes=1)
@@ -362,7 +403,26 @@ def test_the_sql_rule_its_twin_and_count_inbox_agree_on_every_case() -> None:
         chat(channel)  # no messages at all
         chat(channel).inbound(before).reply(base).inbound(after)  # wrote again after reply
 
-    wa = "whatsapp"
+    ig, wa = "dm", "whatsapp"
+    # Instagram's reply window (founder, 2026-11-13).
+    chat(ig).inbound(real_now - WINDOW + timedelta(minutes=1))  # window still open
+    chat(ig).inbound(real_now - WINDOW)  # closed exactly at the boundary
+    chat(ig).inbound(real_now - timedelta(days=30), text="¡gracias!")  # long closed
+    chat(ig).inbound(real_now - timedelta(days=30)).reply(real_now - timedelta(days=29)).inbound(
+        base
+    )  # wrote again: the window reopened
+    chat(ig).inbound(real_now - timedelta(days=2)).inbound(
+        base, hidden=True
+    )  # a hidden inbound still opened Meta's window; the visible one is unanswered
+    chat(wa).inbound(real_now - timedelta(days=30))  # WhatsApp: not bounded
+    # The twin reads `last_inbound_at` as ingestion stores it, not the messages.
+    chat(ig).inbound(real_now - timedelta(days=2)).inbound(
+        base, unsent=True
+    )  # a newer message the customer unsent does not keep the window open
+    chat(ig).inbound(base, dated=False)  # only an un-dated re-synced inbound: column NULL
+    chat(wa).inbound(base, dated=False)
+    chat(ig).inbound(before).reply(base).inbound(after, dated=False)  # window from `before`
+
     chat(wa).inbound(base).reply(after, menu=True)  # answered only by the menu
     chat(wa).inbound(fresh_in).menu_send("pending", real_now)  # menu still answering
     chat(wa).inbound(base).menu_send("sending", after)  # stuck past STALE_AFTER
@@ -377,28 +437,57 @@ def test_the_sql_rule_its_twin_and_count_inbox_agree_on_every_case() -> None:
     chat(wa).inbound(base).menu_send("pending", before)  # queued before the inbound
 
     ids = {c.save(): c for c in chats}
-    now = datetime.now(UTC)
+    now = real_now
     expected = {thread_id: awaits_reply(c.snapshot(), now) for thread_id, c in ids.items()}
-    assert _awaiting(biz) == expected
+    assert _awaiting(biz, now) == expected
 
     waiting = {t for t, w in expected.items() if w}
-    assert set(_all_pages(biz.tenant_id, filter="por_responder", limit=3)) == waiting
-    assert count_inbox(biz.tenant_id) == len(waiting)
-    assert count_inbox(biz.tenant_id, channel="dm") + count_inbox(
-        biz.tenant_id, channel="whatsapp"
-    ) == len(waiting)
+    pages = _all_pages(biz.tenant_id, filter="por_responder", limit=3, now=now)
+    assert set(pages) == waiting
+    assert count_inbox(biz.tenant_id, now=now) == len(waiting)
+    per_channel = {c: count_inbox(biz.tenant_id, channel=c, now=now) for c in (ig, wa)}
+    assert sum(per_channel.values()) == len(waiting)
     # Per channel, by hand from the cases above: dm 3 (unanswered, outbound-first then
-    # customer, wrote again); whatsapp those 3 + stuck queue + handed + failed + dead +
-    # Meta-failed + queued-before-inbound = 9.
-    assert count_inbox(biz.tenant_id, channel="dm") == 3
-    assert count_inbox(biz.tenant_id, channel="whatsapp") == 9
+    # customer, wrote again) + window open + window reopened + hidden-opened window +
+    # un-dated newest inbound in an open window = 7; whatsapp those 3 + 30-day-old + stuck
+    # queue + handed + failed + dead + Meta-failed + queued-before-inbound = 10.
+    assert per_channel == {ig: 7, wa: 10}
+    assert {c: _counter(biz, c, now) for c in (ig, wa)} == per_channel
 
 
-def test_pinned_old_instagram_chats_count_forever() -> None:
-    """Open question (founder): Instagram has no «Cerrar chat» and no reply after 24 h."""
+def test_instagram_chat_counts_only_while_its_window_is_open() -> None:
+    """Founder, 2026-11-13 («Ventana + cerrar chat»): Instagram has no «Cerrar chat» and
+    refuses a normal reply after the window, so the chat stops counting when it closes —
+    and stays in «todos», an open chat with its window shown closed."""
     biz = _business()
-    old = _Chat(biz, "dm").inbound(T0 - timedelta(days=30), text="¡gracias!").save()
-    assert _awaiting(biz) == {old: True}
+    thanks = _Chat(biz, "dm").inbound(T0, text="¡gracias!").save()
+
+    def seen(now: datetime) -> tuple[list[UUID], int, int, bool]:
+        return (
+            _all_pages(biz.tenant_id, filter="por_responder", now=now),
+            count_inbox(biz.tenant_id, now=now),
+            _counter(biz, "dm", now),
+            _awaiting(biz, now)[thanks],
+        )
+
+    assert seen(T0 + timedelta(hours=1)) == ([thanks], 1, 1, True)
+    assert seen(T0 + WINDOW - timedelta(microseconds=1)) == ([thanks], 1, 1, True)
+    assert seen(T0 + WINDOW) == ([], 0, 0, False)  # closed AT the boundary
+    assert seen(T0 + timedelta(days=30)) == ([], 0, 0, False)
+
+    (row,) = list_inbox(biz.tenant_id, filter="todos", now=T0 + WINDOW).rows
+    assert (row.thread_id, row.awaiting_reply, row.window_open) == (thanks, False, False)
+
+
+def test_instagram_a_new_message_after_a_closed_window_reopens_it_and_counts_again() -> None:
+    biz = _business()
+    again = T0 + timedelta(days=3)
+    chat = _Chat(biz, "dm").inbound(T0).reply(T0 + timedelta(minutes=1)).inbound(again)
+    thread_id = chat.save()
+    for now, waits in ((again + timedelta(hours=1), True), (again + WINDOW, False)):
+        assert _awaiting(biz, now) == {thread_id: waits}
+        assert awaits_reply(chat.snapshot(), now) is waits
+        assert count_inbox(biz.tenant_id, channel="dm", now=now) == int(waits)
 
 
 def test_pinned_a_persons_reply_meta_reports_failed_still_answers() -> None:
@@ -457,8 +546,8 @@ def test_another_business_never_appears() -> None:
 
     for filter in ("por_responder", "todos"):
         assert _all_pages(mine.tenant_id, filter=filter) == [my_thread]
-    assert count_inbox(mine.tenant_id) == 1
-    assert count_inbox(other.tenant_id) == 3
+    assert count_inbox(mine.tenant_id, now=NOW) == 1
+    assert count_inbox(other.tenant_id, now=NOW) == 3
 
 
 def test_comment_threads_are_not_chats() -> None:
