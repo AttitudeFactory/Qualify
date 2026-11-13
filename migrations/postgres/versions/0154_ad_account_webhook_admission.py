@@ -21,7 +21,8 @@ frozen owners, and `purge_connection_meta_webhooks` already deletes events by ow
 connection, so purging the connection erases its ad-account events too. Ad-account
 events are never `privacy_legacy` (that flag only marks pre-0107 rows).
 
-Downgrade restores 0107's function body exactly. Already admitted `ad_account` events
+Downgrade restores a function semantically identical to 0107's (its ownership predicate
+only gains one redundant pair of parentheses). Already admitted `ad_account` events
 stay in the queue and settle `unsupported` (or are purged by age), never misattributed.
 """
 

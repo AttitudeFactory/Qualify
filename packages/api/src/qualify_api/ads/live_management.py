@@ -165,9 +165,7 @@ def _intent(
             or budget_minor % 100
             or budget_minor >= 10**18
         ):
-            raise ResultsUnavailable(
-                "El nuevo presupuesto debe ser distinto del actual y estar en pesos completos."
-            )
+            raise ResultsUnavailable("Escribe un monto sin centavos y distinto del actual.")
         request["budget_minor"] = budget_minor
         payload = {"lifetime_budget": budget_minor // 100}
         amount = f"{budget_minor // 100:,}".replace(",", ".")
@@ -256,6 +254,8 @@ async def _decrease_floor(
     start = datetime.fromisoformat(request["start_time"])
     end = datetime.fromisoformat(request["end_time"])
     day = timedelta(days=1)
+    # shortcut: 24-h blocks, not the account's calendar days (can be off by one day);
+    # Meta's validate_only on the exact amount still guards. Upgrade if owners hit it.
     schedule_days = max(1, -(-(end - start) // day))
     remaining_days = max(0, -(-(end - max(datetime.now(UTC), start)) // day))
     spent = lifetime - remaining
@@ -263,8 +263,8 @@ async def _decrease_floor(
     if new_minor < floor:
         amount = f"{floor // 100:,}".replace(",", ".")
         raise ResultsUnavailable(
-            f"El presupuesto no puede bajar de {amount} COP: cubre lo ya gastado y el "
-            "mínimo diario de Meta para los días que faltan."
+            f"Puedes bajarlo hasta ${amount}. Por debajo, Meta no deja que tu anuncio siga "
+            "saliendo los días que faltan."
         )
     return {"spent_minor": spent * 100, "daily_minimum_minor": minimum * 100, "floor": floor}
 

@@ -4,6 +4,8 @@ lookup, authenticated read to «Rechazado por Meta», assisted subscription (m-2
 from __future__ import annotations
 
 import json
+import time
+from dataclasses import replace
 from uuid import UUID
 
 import pytest
@@ -87,9 +89,11 @@ async def test_rejection_webhook_reads_meta_and_shows_rejected_with_reason(resul
 
     handler = ad_status_handler(refresh=refresh)
     outcome = await handler(event)
-    assert outcome.status == "processed"
-    # Replaying the same event only re-reads and rewrites the same observation.
-    assert (await handler(event)).status == "processed"
+    assert (outcome.status, outcome.error) == ("processed", None)
+    # A replay (or the sibling notifications of the same review) right after a fresh read
+    # does not read Meta again.
+    replay = await handler(event)
+    assert (replay.status, replay.error) == ("processed", "recently_read")
     with acting_login(login):
         result = service.load_promotion_results(
             tenant_id=ids["tenant_id"], promotion_id=promotion.id
@@ -98,7 +102,11 @@ async def test_rejection_webhook_reads_meta_and_shows_rejected_with_reason(resul
     assert REASON in result.promotion.rejection_reason
     assert "SECRET_TOKEN" not in repr(result)
     reads = [call for call in api.calls if call[1] == "3"]
-    assert len(reads) == 2 and "issues_info" in reads[0][2]["fields"]
+    assert len(reads) == 1 and "issues_info" in reads[0][2]["fields"]
+    # A notification sent after that read (Meta's entry time) is read again.
+    later = replace(event, entry_time=int(time.time()) + 5)
+    assert (await handler(later)).error is None
+    assert len([call for call in api.calls if call[1] == "3"]) == 2
 
 
 @pytest.mark.asyncio

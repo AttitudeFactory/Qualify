@@ -137,6 +137,16 @@ pertenencia y confirmación del dueño, comprueba la cuenta elegida y la credenc
 de escribir, consulta `act_<id>/subscribed_apps` y sólo hace un `POST` con `app_id` si la
 app no estaba suscrita. Nunca se llama de forma automática ni se reintenta.
 
+Varios avisos de una misma revisión (los dos campos, para anuncio, conjunto y campaña) no
+multiplican las lecturas: si ya hubo una lectura correcta iniciada después de que Meta
+enviara el aviso y dentro del último minuto, el aviso se cierra como `recently_read` sin
+volver a consultar Meta.
+
+> **Hoy la vía de avisos está inactiva.** Ninguna pantalla llama todavía a
+> `subscribe_ad_account_webhooks`, y los campos del objeto «Ad Account» deben activarse en
+> la configuración de webhooks de la app en Meta. Mientras falte cualquiera de las dos
+> cosas no llega ningún aviso y el plazo depende sólo del sondeo de treinta minutos.
+
 **Sin comprobar en vivo** (no se hicieron llamadas reales): la forma exacta del valor de
 cada campo, el id de la entrada (`act_` o número), los parámetros de
 `act_<id>/subscribed_apps` y que los campos estén activados en la configuración de

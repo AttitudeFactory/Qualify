@@ -330,7 +330,7 @@ async def confirm(live, preview):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("action", ["budget", "budget_down", "end_time", "resume"])
-@pytest.mark.parametrize("failure", [None, "credential_after_write", "audit_failure"])
+@pytest.mark.parametrize("failure", [None, "credential_after_write", "audit_failure", "spend_grew"])
 async def test_paid_management_real_http_receipt_and_full_chain_verification(
     live, monkeypatch, action, failure
 ):
@@ -340,6 +340,10 @@ async def test_paid_management_real_http_receipt_and_full_chain_verification(
     from qualify_api.ads import live_management as management
     from qualify_api.ads.edit_ledger import revision
     from qualify_api.ads.live_wizard import production_wizard
+    from qualify_api.ads.results import ResultsUnavailable
+
+    if failure == "spend_grew" and action != "budget_down":
+        pytest.skip("the confirm-time floor applies only to a budget decrease")
 
     preview = await prepare(live)
     await confirm(live, preview)
@@ -418,6 +422,24 @@ async def test_paid_management_real_http_receipt_and_full_chain_verification(
                 raise RuntimeError("database unavailable")
 
             monkeypatch.setattr(management, "_finish_pause", fail_audit)
+        if failure == "spend_grew":
+            # 9.000 of 10.000 spent while the owner read the review: floor is now 12.000.
+            live["remote"].spent = 9000
+            with pytest.raises(ResultsUnavailable, match=r"Puedes bajarlo hasta \$12\.000\."):
+                await management.confirm_promotion_edit(
+                    tenant_id=tenant,
+                    promotion_id=promotion.id,
+                    request_key="edit-actual",
+                    approval_token=review.approval_token,
+                    confirm_change=True,
+                )
+            assert audits == []  # never claimed, never logged as sent
+            assert not [
+                call
+                for call in live["remote"].calls[start:]
+                if call[0] == "POST" and "execution_options" not in call[2]
+            ]
+            return
         result = await management.confirm_promotion_edit(
             tenant_id=tenant,
             promotion_id=promotion.id,
@@ -506,7 +528,7 @@ async def test_budget_decrease_floors_on_spent_and_meta_daily_minimum(
             review = await call
             assert review.new_budget_minor == budget_minor
         else:
-            with pytest.raises(ResultsUnavailable, match="no puede bajar"):
+            with pytest.raises(ResultsUnavailable, match="Puedes bajarlo hasta"):
                 await call
         posts = [c for c in live["remote"].calls[start:] if c[0] == "POST"]
         assert bool(posts) is allowed

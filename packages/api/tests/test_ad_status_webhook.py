@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -11,6 +13,11 @@ from qualify_api.webhooks.processor import Processor, handler_key
 from qualify_api.webhooks.repository import ClaimedEvent
 
 TENANT, CONNECTION = uuid4(), uuid4()
+
+
+@pytest.fixture(autouse=True)
+def never_read_before(monkeypatch):
+    monkeypatch.setattr(status_webhook, "read_since", lambda tenant, promotion, since: False)
 
 
 def event(value, *, field="with_issues_ad_objects", owners=((TENANT, CONNECTION),), entry="act_12"):
@@ -73,6 +80,39 @@ async def test_each_owned_promotion_is_refreshed_and_a_failed_read_is_retried(mo
 
     with pytest.raises(RuntimeError):
         await status_webhook.ad_status_handler(refresh=failing)(event({"id": "3"}))
+
+
+@pytest.mark.asyncio
+async def test_sibling_notifications_of_one_review_read_meta_once(monkeypatch):
+    """with_issues + in_process for ad, ad set and campaign: one read, not six."""
+    promotion = uuid4()
+    monkeypatch.setattr(status_webhook, "owned_promotions", lambda e, o: [(TENANT, promotion)])
+    reads = []
+    windows = []
+
+    def read_since(tenant, promotion_id, since):
+        windows.append(since)
+        return bool(reads)
+
+    monkeypatch.setattr(status_webhook, "read_since", read_since)
+
+    async def refresh(tenant, promotion_id):
+        reads.append(promotion_id)
+
+    handler = status_webhook.ad_status_handler(refresh=refresh)
+    sent = int(datetime.now(UTC).timestamp())
+    outcomes = [
+        await handler(replace(event({"id": object_id}, field=field), entry_time=sent))
+        for field in status_webhook.STATUS_FIELDS
+        for object_id in ("3", "2", "1")
+    ]
+    assert reads == [promotion]
+    assert [o.error for o in outcomes] == [None] + ["recently_read"] * 5
+    # The window starts at Meta's send time, never more than a minute back.
+    assert all(w == datetime.fromtimestamp(sent, UTC) for w in windows)
+    old = await handler(replace(event({"id": "3"}), entry_time=1))
+    assert old.error == "recently_read"
+    assert datetime.now(UTC) - windows[-1] <= timedelta(seconds=61)
 
 
 @pytest.mark.asyncio

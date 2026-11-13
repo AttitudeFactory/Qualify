@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -43,7 +44,7 @@ from qualify_api.connections.ad_accounts import (
     _permission_reason,
 )
 from qualify_api.tenancy.acting import current_acting_login, require_acting_member
-from qualify_api.webhooks.processor import Handler, Outcome, handler_key
+from qualify_api.webhooks.processor import Handler, Outcome, _sent_at, handler_key
 from qualify_api.webhooks.repository import (
     STATUS_DEAD,
     STATUS_ORPHAN,
@@ -56,6 +57,10 @@ AD_ACCOUNT_OBJECT = "ad_account"
 STATUS_FIELDS = ("with_issues_ad_objects", "in_process_ad_objects")
 NOT_A_PROMOTION = "ad_object_not_a_promotion"
 SUBSCRIBE_FAILED = "No pudimos activar los avisos de Meta para esta cuenta. Inténtalo de nuevo."
+# What the future screen offers the owner before calling `subscribe_ad_account_webhooks`.
+SUBSCRIBE_OFFER = "Activa los avisos para enterarte aquí si Meta rechaza o detiene tu anuncio."
+FRESH_WINDOW = timedelta(seconds=60)
+RECENTLY_READ = "recently_read"
 
 Refresh = Callable[[UUID, UUID], Awaitable[Any]]
 _DIGITS = re.compile(r"[0-9]{1,64}")
@@ -85,6 +90,18 @@ def owned_promotions(event: ClaimedEvent, object_id: str) -> list[tuple[UUID, UU
     return sorted(found)
 
 
+def read_since(tenant_id: UUID, promotion_id: UUID, since: datetime) -> bool:
+    """True when a successful status read of this promotion started at or after `since`."""
+    with tenant_session(tenant_id) as session:
+        return bool(
+            session.scalar(
+                text("""SELECT EXISTS(SELECT 1 FROM ad_promotion_observations
+                  WHERE promotion_id=:id AND checked_at >= :since)"""),
+                {"id": promotion_id, "since": since},
+            )
+        )
+
+
 def ad_status_handler(*, refresh: Refresh | None = None) -> Handler:
     async def handle(event: ClaimedEvent) -> Outcome:
         if (
@@ -110,10 +127,19 @@ def ad_status_handler(*, refresh: Refresh | None = None) -> Handler:
             async def do_refresh(tenant: UUID, promotion: UUID) -> Any:
                 return await refresh_promotion_from_signal(tenant_id=tenant, promotion_id=promotion)
 
+        # One review fires several notifications (both fields x ad/adset/campaign): a read
+        # started after Meta sent this one, within the last minute, already reflects it.
+        now = datetime.now(UTC)
+        sent = _sent_at(event.entry_time)
+        since = max(sent, now - FRESH_WINDOW) if sent is not None else now - FRESH_WINDOW
+        refreshed = 0
         for tenant_id, promotion_id in targets:
+            if read_since(tenant_id, promotion_id, since):
+                continue
             # Raises on a failed read: the queue retries with backoff.
             await do_refresh(tenant_id, promotion_id)
-        return Outcome(STATUS_PROCESSED)
+            refreshed += 1
+        return Outcome(STATUS_PROCESSED, None if refreshed else RECENTLY_READ)
 
     return handle
 
@@ -183,7 +209,10 @@ async def subscribe_ad_account_webhooks(
         def before_write() -> None:
             # Membership, selection and credential may change while reading.
             if guard() != (account, connection_id, version):
-                raise ResultsUnavailable("La cuenta cambió. Vuelve a intentarlo.")
+                raise ResultsUnavailable(
+                    "Cambiaste la cuenta de anuncios mientras guardábamos. "
+                    "Ábrela de nuevo y vuelve a intentarlo."
+                )
 
         await api.subscribe_app(app_id, before_write=before_write)
         return True
