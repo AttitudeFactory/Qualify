@@ -1,8 +1,8 @@
 # Épica — Etiquetas (hashtags) que se están viendo
 
-`[PROPUESTO 2026-11-13]` · Épica en Meegle: **pendiente de crear** (el fundador confirma el
-borrador de §5). En la app el dueño lee «etiquetas» (m-24849133); aquí «etiqueta» y «hashtag» son
-lo mismo.
+`[FIRMADO 2026-11-13]` · Épica en Meegle: **m-25026375** «Épica — Etiquetas que se están
+viendo», con cuatro tickets (§4). En la app el dueño lee «etiquetas» (m-24849133); aquí «etiqueta»
+y «hashtag» son lo mismo.
 
 ## Decisión del fundador (2026-11-13)
 
@@ -57,14 +57,14 @@ Las cuatro lecturas costaron 8 créditos (4 se repitieron por un error al guarda
 
 ## 4. Las cuatro entregas
 
-| # | Entrega | Qué gana el dueño | Depende de |
-|---|---|---|---|
-| 1 | **Cinco, bien elegidas** | Una publicación con las cinco etiquetas que más le sirven, no doce | — |
-| 2 | **El catálogo sabe qué se ve** | «Popular» significa vistas recientes en su rubro, no «lo vimos muchas veces» | — |
-| 3 | **Lectura semanal en TikTok** | Etiquetas que acompañan esta semana a los videos más vistos de su rubro | 2 |
-| 4 | **Medir si sirve** | Saber si el cambio trajo más alcance, con un negocio real | 1, 3 |
+| # | Entrega | Ticket | Qué gana el dueño | Depende de |
+|---|---|---|---|---|
+| 1 | **Cinco, bien elegidas** | m-25026376 | Una publicación con las cinco etiquetas que más le sirven, no doce | — |
+| 2 | **El catálogo sabe qué se ve** | m-25026377 | «Popular» significa vistas recientes en su rubro, no «lo vimos muchas veces» | — |
+| 3 | **Lectura semanal en TikTok** | m-25026378 | Etiquetas que acompañan esta semana a los videos más vistos de su rubro | 2 |
+| 4 | **Medir si sirve** | m-25026379 | Saber si el cambio trajo más alcance, con un negocio real | 1, 3 |
 
-## 5. Borrador de los tickets
+## 5. Criterios de aceptación (los que valen son los de cada ticket)
 
 **1 · Generador: cinco etiquetas bien elegidas para Instagram** (Improvement, UI, P2)
 
