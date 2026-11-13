@@ -125,13 +125,13 @@ Un cambio de nombre del negocio, del número o del mapeo deja el artículo desac
 |---|---|
 | `queued` / `uploading` | artículo en `queued` / `uploading` (incluye un borrado pendiente) |
 | `error` | artículo en `error` (con `error_code`) |
-| `not_eligible` | sin artículo vivo y el producto no es elegible; razón ∈ `inactive`, `no_price`, `no_currency`, `no_photo`, `photo_too_small` |
+| `not_eligible` | sin artículo vivo y el producto no es elegible; razón ∈ `inactive`, `no_price`, `no_currency`, `no_photo`, `photo_format`, `photo_too_small` (también un artículo `synced` cuyo producto sigue activo pero dejó de ser elegible, §12) |
 | `not_uploaded` | sin artículo, o artículo `deleted` |
 | `out_of_date` | `synced` y `content_hash(actual) ≠ last_pushed_hash`, o producto inactivo (se borrará) |
 | `synced` | `synced` y hash igual |
 
 Elegible = `is_active` y `price_amount > 0` y `price_currency` cumple `^[A-Z]{3}$` y tiene foto
-principal con `width ≥ 500` y `height ≥ 500`.
+principal JPEG o PNG (`photo_format` si no) con `width ≥ 500` y `height ≥ 500`.
 
 ### 4.3 Errores de artículo (`error_code`)
 `meta_rejected` (en `ids_of_invalid_requests` o con `errors` en `validation_status`) ·
@@ -185,7 +185,8 @@ def sync_all(*, tenant_id: UUID, brand_id: UUID, requested_by: UUID,
   `DELETE` de artículos vivos cuyo producto está inactivo o desapareció (`product_id IS NULL`);
   omite los iguales y los que ya están en vuelo. Trozos de ≤ 1.000 artículos por corrida.
 - **Idempotencia:** `request_key = sha256(catalog_row_id ‖ trigger ‖ sorted((item_id, op,
-  hash)))`, `INSERT … ON CONFLICT (tenant_id, request_key) DO NOTHING`; los artículos se toman con
+  hash, sync_version)))` (con `sync_version`: reintentar un artículo en `error` sin cambios es una
+  petición nueva; un doble clic sigue siendo la misma), `INSERT … ON CONFLICT (tenant_id, request_key) DO NOTHING`; los artículos se toman con
   `SELECT … FOR UPDATE` y uno en `queued`/`uploading` nunca entra en otra corrida. Pedir dos veces
   sin cambios no encola nada. Errores al usuario como excepciones tipadas (`CatalogNotConnected`,
   `CatalogPermissionMissing`, `ProductNotEligible(reason)`, `PlanChanged`), sin texto de usuario.
@@ -319,3 +320,37 @@ entra en la lista (como `ads_management` en ADR 38); la revisión es por permiso
 
 **Reabre:** > 5 % de artículos rechazados por `link` o imagen en un mes; > 10 lotes/hora necesarios
 por catálogo; un negocio con > 3.000 productos; el fundador pide sincronización automática.
+
+## 12. Implementación (m-25017356, 2026-11-12) — lo que el código hace distinto o precisa
+
+Código: `packages/api/src/qualify_api/whatsapp/catalog_sync/`, ruta
+`http/public_catalog_media_routes.py`, revisión `0154_whatsapp_catalog_sync`.
+
+- **Elegibilidad:** razón nueva `photo_format` (foto principal que no es JPEG ni PNG; Meta solo
+  acepta esos dos [CR]).
+- **`request_key`** incluye el `sync_version` de cada artículo (§6).
+- **Acciones:** `upload_product` sobre un producto que ya tiene artículo vivo se comporta como
+  «Resincronizar» (no falla; sin cambios no encola nada). `resync_product` sin artículo vivo →
+  `ItemNotUploaded`. Excepciones extra: `ProductNotFound`, `ItemNotUploaded`, base
+  `CatalogSyncError`; `CatalogMediaUnavailable` vive en `media_url` y se reexporta en `service`.
+- **Lectura (§9):** un artículo `synced` cuyo producto sigue activo pero ya no es elegible se
+  muestra `not_eligible` con la razón (resincronizarlo no podría enviarlo). Si en el proceso no se
+  puede construir la URL de la foto (secreto o URL base ausentes), los `synced` se muestran
+  `synced` (no hay contra qué comparar) y las acciones rechazan con `CatalogMediaUnavailable`.
+  Un catálogo `source='manual'` se lee como `connection='none'`.
+- **Worker:** el descubrimiento con `--all-tenants` lee `whatsapp_catalogs` (el `SELECT` de
+  `qualify_admin` es para eso), no los números. Al enviar, un `upsert` cuyo producto se borró o
+  quedó inactivo se manda como `DELETE`; uno que dejó de ser elegible se deja fuera y el artículo
+  vuelve a `synced` (si alguna vez se subió) o `deleted`. 80014/80009 no cuentan como intento.
+  Un 4xx que no es de autorización ni de límite → `failed` + `send_failed` de inmediato
+  (`error_code='meta_error'`): reenviar lo mismo no lo arregla. Sin URL de foto →
+  `failed`/`media_unavailable`. Un error de autorización actualiza `access_state` pero no degrada la
+  conexión del número (los mensajes siguen su propio camino, QUA-90). `just whatsapp-tick` (`--once`)
+  hace una pasada del outbox y luego una del catálogo.
+- **CLI de alta:** marca sin número conectado → exit 4 (precondición, nada escrito). Sin
+  `--link-url` al repetir, se conserva el sitio guardado. Si la WABA y la marca apuntan a filas
+  distintas, o la WABA ya está registrada en otro negocio → exit 6.
+- **Esquema:** FK compuesta `(brand_id, tenant_id) → brands (id, tenant_id)`; el `UPDATE` por
+  columna de `qualify_app` sobre los artículos excluye también `id`. El secreto se lee de
+  `QUALIFY_OAUTH_STATE_SECRET` directamente (mismas reglas que `ads/edit_review.py`) para no exigir
+  el resto de la configuración de Meta en la API.

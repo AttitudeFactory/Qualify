@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from uuid import UUID
 
 from sqlalchemy import and_, select, true
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from qualify_api.catalog.models import BrandProduct, ProductMedia
 from qualify_api.tenancy.models import Brand
@@ -94,10 +94,11 @@ def load_catalog_with_last_run(
     session: Session, brand_id: UUID
 ) -> tuple[CatalogRow, WhatsAppCatalogSyncRun | None] | None:
     """Query 1 of the view: the catalog, its brand and number, and its latest run."""
+    inner = aliased(WhatsAppCatalogSyncRun)
     last = (
-        select(WhatsAppCatalogSyncRun.id)
-        .where(WhatsAppCatalogSyncRun.catalog_row_id == WhatsAppCatalog.id)
-        .order_by(WhatsAppCatalogSyncRun.requested_at.desc(), WhatsAppCatalogSyncRun.id.desc())
+        select(inner.id)
+        .where(inner.catalog_row_id == WhatsAppCatalog.id)
+        .order_by(inner.requested_at.desc(), inner.id.desc())
         .limit(1)
         .scalar_subquery()
         .correlate(WhatsAppCatalog)
