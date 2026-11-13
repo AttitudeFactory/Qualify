@@ -672,7 +672,7 @@ class ImageAsset(Base):
 
 
 class PieceBasePhoto(Base):
-    """The raw Seedream photograph a still was composed over (0164, ADR 49 §2 item 1,
+    """The raw Seedream photograph a still was composed over (0165, ADR 49 §2 item 1,
     m-25017279), one per version and position — or the record that it could NOT be kept
     (`state='missing'`), so a later re-compose knows to offer only «Crear otra».
 

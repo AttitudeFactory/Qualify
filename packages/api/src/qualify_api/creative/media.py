@@ -309,7 +309,7 @@ class MediaWrite:
     #: a reused piece, stock, the Galería, a video).
     rendered_prompt: str | None = None
     #: m-25017279 (ADR 49 §2 item 1): the raw Seedream photograph this file was composed
-    #: over. `finish_generation` writes it to `piece_base_photos` (0164) at this file's
+    #: over. `finish_generation` writes it to `piece_base_photos` (0165) at this file's
     #: version and position — `stored`, or `missing` when R2 did not keep it. None when the
     #: file had no base of its own (a closing slide, a reused piece, a video).
     base: BasePhoto | None = None

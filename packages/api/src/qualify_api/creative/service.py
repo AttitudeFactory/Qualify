@@ -1448,7 +1448,7 @@ class PostgresContentRepository:
                     )
                 )
             # m-25017279: the base photos the stills were composed over, in their own table
-            # (0164) — no reader of the piece's outputs sees them. Never fails the piece
+            # (0165) — no reader of the piece's outputs sees them. Never fails the piece
             # (a savepoint); bases that end up missing get ONE alert, sent in the background
             missing_bases = record_base_photos(
                 session,

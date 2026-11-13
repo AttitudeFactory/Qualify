@@ -17,7 +17,7 @@ GENERATED gallery slide is kept the moment it is paid for, before any compositio
 vendor made it (after the band fill of compilers ≥ 3: the bytes the composition used), at
 `t/{tenant}/generated/{draft_id}/r{revision}/base/…` — inside the piece's folder, so the
 retention purge of ADR 39 takes it with the piece — and described in `piece_base_photos`
-(0164) by `finish_generation`. A base R2 will not keep does not fail the paid piece: it is
+(0165) by `finish_generation`. A base R2 will not keep does not fail the paid piece: it is
 recorded as `missing` and the team is alerted (`keep_base`). An animated slide's first
 frame is not a base: it is kept, as before, for its own resume.
 

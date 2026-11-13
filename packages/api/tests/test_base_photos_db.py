@@ -1,4 +1,4 @@
-"""m-25017279 (ADR 49 §2 item 1, migration 0164): a base photo lives in its own table,
+"""m-25017279 (ADR 49 §2 item 1, migration 0165): a base photo lives in its own table,
 `piece_base_photos` — never in `image_assets` — so it can never become the draft's cover,
 a carousel child, the preview or what the Planificador publishes. A base R2 did not keep is
 a `missing` row. `piece_layers.base_asset_id` points at it."""

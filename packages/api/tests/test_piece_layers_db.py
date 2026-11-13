@@ -206,7 +206,7 @@ def test_a_generated_slide_prompt_reaches_image_assets(seeded_ab: tuple[UUID, UU
 
 
 def _asset(tenant_id: UUID, draft_id: UUID, version_id: UUID) -> UUID:
-    """A stored base photo (0164: `base_asset_id` points at `piece_base_photos`)."""
+    """A stored base photo (0165: `base_asset_id` points at `piece_base_photos`)."""
     asset_id = uuid4()
     with tenant_session(tenant_id) as session:
         session.execute(

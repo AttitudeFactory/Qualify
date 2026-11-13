@@ -1,8 +1,8 @@
 """piece_base_photos: the raw Seedream photograph each still was composed over
 (m-25017279, ADR 49 §2 item 1 and §2.1)
 
-Revision ID: 0164
-Revises: 0163
+Revision ID: 0165
+Revises: 0164
 Create Date: 2026-11-14
 
 ## Why this exists
@@ -42,8 +42,8 @@ its row stays, as the other rows of a purged piece do. No backfill (ADR 49 §8.5
 
 from alembic import op
 
-revision = "0164"
-down_revision = "0163"
+revision = "0165"
+down_revision = "0164"
 branch_labels = None
 depends_on = None
 

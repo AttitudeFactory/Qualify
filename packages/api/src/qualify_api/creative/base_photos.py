@@ -1,4 +1,4 @@
-"""The stored base photographs of a piece (m-25017279, ADR 49 §2 item 1, migration 0164).
+"""The stored base photographs of a piece (m-25017279, ADR 49 §2 item 1, migration 0165).
 
 A base is the raw Seedream photograph a still was composed over. It is described in its
 own table, `piece_base_photos` — one row per version and position, `stored` (its R2 key,
