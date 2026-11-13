@@ -7,6 +7,9 @@ from datetime import UTC, datetime
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from qualify_api.ads.wizard import WEBSITE_CTAS
+from qualify_creative.ad_destination import AD_CTA_LABELS, AdCTA
+
 from .ad_custom_audiences_vm import CustomAudienceVM
 from .ad_enhancements_vm import BrandEnhancementsVM
 from .ad_health_vm import AccountHealthVM
@@ -24,6 +27,9 @@ LEAD_CTA_LABELS = {
     "SIGN_UP": "Registrarme",
     "LEARN_MORE": "Más información",
 }
+# Buttons for an ad that opens a web page (m-24828976): the server allowlist, with the
+# same names the owner saw when saving the piece.
+WEBSITE_CTA_LABELS = {code: AD_CTA_LABELS[AdCTA(code)] for code in WEBSITE_CTAS}
 CHECK_LABELS = {
     "permissions": "Permisos de Meta",
     "account": "Cuenta publicitaria",
@@ -66,9 +72,12 @@ class PromotionSourceVM:
     account_name: str = ""
     currency: str = ""
     default_link_url: str = ""
+    default_cta_type: str = "LEARN_MORE"
     timezone_name: str = ""
     published_label: str = ""
     unavailable_reason: str = ""
+    # The block is the piece's own button: the fix is in the piece, not in Tus redes.
+    fix_in_piece: bool = False
     health: AccountHealthVM = field(default_factory=AccountHealthVM)
     ad_account_id: str = ""
     messaging_destinations: list[MessagingDestinationVM] = field(default_factory=list)
@@ -87,6 +96,7 @@ class PromotionDraftVM:
     link_url: str = ""
     lead_form_id: str = ""
     lead_cta: str = "GET_QUOTE"
+    cta_type: str = "LEARN_MORE"
     city_name: str = ""
     location_key: str = ""
     location_kind: str = "city"

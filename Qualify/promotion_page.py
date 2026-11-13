@@ -10,6 +10,7 @@ from .promotion_state import PromotionState as S
 from .promotion_vm import (
     EMPTY_SOURCES,
     LEAD_CTA_LABELS,
+    WEBSITE_CTA_LABELS,
     LeadFormChoiceVM,
     MessagingDestinationVM,
     PromotionCheckVM,
@@ -125,6 +126,10 @@ def _source_choice(source: rx.Var) -> rx.Component:
                 source.health.blocks_preparation,
                 rx.text(source.health.reason, size="2", color=T.TEXT_MUTED),
             ),
+            rx.cond(
+                source.unavailable_reason != "",
+                rx.text(source.unavailable_reason, size="2", color=T.TEXT_MUTED),
+            ),
             spacing="2",
             align="start",
             width="100%",
@@ -135,6 +140,16 @@ def _source_choice(source: rx.Var) -> rx.Component:
         min_height="44px",
         width="100%",
         text_align="left",
+    )
+
+
+def _piece_link() -> rx.Component:
+    return rx.link(
+        "Cambiar el botón en la pieza",
+        href=S.piece_href,
+        min_height="44px",
+        display="inline-flex",
+        align_items="center",
     )
 
 
@@ -152,6 +167,7 @@ def _publication() -> rx.Component:
             spacing="3",
             width="100%",
         ),
+        rx.cond(S.selected_source.fix_in_piece, _piece_link()),
         rx.cond(
             S.selected_source.account_name != "",
             rx.vstack(
@@ -328,7 +344,17 @@ def _link_destination() -> rx.Component:
                 placeholder="https://tu-negocio.com",
                 type="url",
             ),
-            rx.text("Botón del anuncio: Más información", weight="medium"),
+            rx.heading("Botón del anuncio", size="3", as_="h2", id="website-cta-label"),
+            rx.vstack(
+                *[
+                    _option(label, "", S.form.cta_type == code, S.choose_cta(code))
+                    for code, label in WEBSITE_CTA_LABELS.items()
+                ],
+                role="radiogroup",
+                aria_labelledby="website-cta-label",
+                spacing="2",
+                width="100%",
+            ),
             rx.text(
                 "Revisa que el enlace lleve a lo que ofreces en esta publicación.",
                 size="2",
@@ -494,10 +520,14 @@ def _review() -> rx.Component:
             S.execution_reason != "",
             rx.vstack(
                 callout(S.execution_reason, "warn"),
-                rx.link(
-                    "Revisar cuenta para anuncios en Tus redes",
-                    href="/connections",
-                    min_height="44px",
+                rx.cond(
+                    S.selected_source.fix_in_piece,
+                    _piece_link(),
+                    rx.link(
+                        "Revisar cuenta para anuncios en Tus redes",
+                        href="/connections",
+                        min_height="44px",
+                    ),
                 ),
                 spacing="2",
                 width="100%",

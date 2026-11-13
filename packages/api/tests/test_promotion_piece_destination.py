@@ -1,4 +1,4 @@
-"""Saved piece destinations preload unchanged; unsupported buttons never become LEARN_MORE."""
+"""Saved piece links and website buttons preload; chat buttons never become LEARN_MORE."""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ live = shared_live
 def test_legacy_missing_ad_fields_does_not_invent_link_or_brand_default(
     payload: dict | None,
 ) -> None:
-    assert _saved_ad_destination(payload) == ("", "")
+    assert _saved_ad_destination(payload) == ("", "LEARN_MORE", "")
 
 
 def test_saved_https_destination_preloads_exact_value_without_organic_mutation() -> None:
@@ -43,13 +43,20 @@ def test_saved_https_destination_preloads_exact_value_without_organic_mutation()
         "ads_destination_url": "https://example.org/a?x=1",
     }
     before = dict(payload)
-    assert _saved_ad_destination(payload) == ("https://example.org/a?x=1", "")
+    assert _saved_ad_destination(payload) == ("https://example.org/a?x=1", "LEARN_MORE", "")
     assert payload == before
 
 
-@pytest.mark.parametrize("cta", ["WHATSAPP_MESSAGE", "SHOP_NOW", "GET_QUOTE", "not-a-button"])
+@pytest.mark.parametrize("cta", ["SHOP_NOW", "GET_QUOTE", "ORDER_NOW", "BOOK_TRAVEL"])
+def test_saved_website_button_is_carried_to_the_promotion(cta: str) -> None:
+    assert _saved_ad_destination(
+        {"ads_cta_type": cta, "ads_destination_url": "https://example.org"}
+    ) == ("https://example.org", cta, "")
+
+
+@pytest.mark.parametrize("cta", ["WHATSAPP_MESSAGE", "MESSAGE_PAGE", "CALL_NOW", "not-a-button"])
 def test_unsupported_saved_ad_button_blocks_instead_of_silently_substituting(cta: str) -> None:
-    url, reason = _saved_ad_destination(
+    url, _, reason = _saved_ad_destination(
         {
             "hook": "Hola",
             "caption": "Texto",
@@ -57,13 +64,13 @@ def test_unsupported_saved_ad_button_blocks_instead_of_silently_substituting(cta
             "ads_destination_url": "https://example.org",
         }
     )
-    assert reason and ("botón" in reason or "Más información" in reason)
+    assert reason and "botón" in reason
     if cta != "not-a-button":
         assert url == "https://example.org"
 
 
 def test_invalid_saved_url_requires_explicit_piece_correction() -> None:
-    url, reason = _saved_ad_destination(
+    url, _, reason = _saved_ad_destination(
         {
             "hook": "Hola",
             "caption": "Texto",
@@ -74,10 +81,14 @@ def test_invalid_saved_url_requires_explicit_piece_correction() -> None:
     assert not url and "guarda" in reason
 
 
-@pytest.mark.parametrize("button", ["WhatsApp", "Enviar mensaje", "Comprar ahora"])
-def test_recognized_legacy_other_button_is_still_explicitly_unsupported(button: str) -> None:
-    url, reason = _saved_ad_destination({"ads_cta_type": button})
-    assert not url and "Más información" in reason
+@pytest.mark.parametrize("button", ["WhatsApp", "Enviar mensaje"])
+def test_recognized_legacy_chat_button_is_still_explicitly_unsupported(button: str) -> None:
+    url, _, reason = _saved_ad_destination({"ads_cta_type": button})
+    assert not url and "chat" in reason
+
+
+def test_recognized_legacy_website_button_is_carried() -> None:
+    assert _saved_ad_destination({"ads_cta_type": "Comprar ahora"}) == ("", "SHOP_NOW", "")
 
 
 def test_new_destination_validation_does_not_parse_unrelated_historical_copy_fields() -> None:
@@ -88,7 +99,7 @@ def test_new_destination_validation_does_not_parse_unrelated_historical_copy_fie
             "hook": None,
             "ads_headline": "old" * 1000,
         }
-    ) == ("https://example.org/declared", "")
+    ) == ("https://example.org/declared", "LEARN_MORE", "")
 
 
 @pytest.mark.asyncio

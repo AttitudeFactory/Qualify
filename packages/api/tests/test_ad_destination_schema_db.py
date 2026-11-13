@@ -224,5 +224,14 @@ def test_selected_edited_copy_preloads_url_and_blocks_other_button_without_publi
         source = list_promotion_sources(
             tenant_id=ids["tenant_id"], content_draft_id=ids["content_draft_id"]
         )[0]
-        assert "Más información" in source.unavailable_reason
+        assert "chat" in source.unavailable_reason
         assert (source.source_media_id, source.caption, source.publish_attempt_id) == published
+        with tenant_session(ids["tenant_id"]) as session:
+            session.execute(
+                text("UPDATE copy_variants SET edited_copy=CAST(:edited AS jsonb) WHERE id=:id"),
+                {"edited": json.dumps({**edited, "ads_cta_type": "SHOP_NOW"}), "id": variant},
+            )
+        source = list_promotion_sources(
+            tenant_id=ids["tenant_id"], content_draft_id=ids["content_draft_id"]
+        )[0]
+        assert source.default_cta_type == "SHOP_NOW" and not source.unavailable_reason

@@ -470,3 +470,86 @@ def test_cop_money_is_whole_pesos_everywhere() -> None:
 
     assert money_label(Decimal("200000.00"), "COP") == "$200.000"
     assert money_label(Decimal("12.5"), "USD") == "12,50 USD"
+
+
+# --- The website ad's button (m-24828976) -------------------------------------------
+
+
+def test_website_button_choices_are_the_server_allowlist_and_invalidate_the_review() -> None:
+    from qualify_api.ads.wizard import WEBSITE_CTAS
+
+    from .promotion_vm import WEBSITE_CTA_LABELS
+
+    assert tuple(WEBSITE_CTA_LABELS) == WEBSITE_CTAS and "CALL_NOW" not in WEBSITE_CTA_LABELS
+    context = GoalContext()
+    PromotionState.choose_cta.fn(context, "CALL_NOW")
+    assert context.form.cta_type == "LEARN_MORE" and context.reviewed
+    PromotionState.choose_cta.fn(context, "SHOP_NOW")
+    assert context.form.cta_type == "SHOP_NOW" and not context.reviewed
+    assert not context.confirm_charge
+
+
+def test_preview_sends_the_chosen_website_button(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, object] = {}
+
+    async def prepare(**kwargs: object) -> SimpleNamespace:
+        seen["form"] = kwargs["form"]
+        return SimpleNamespace(
+            promotion_id=PIECE,
+            review_id=SOURCE,
+            preview_html='<iframe src="https://www.facebook.com/ads/api/preview_iframe.php?d=1">'
+            "</iframe>",
+            charge_notice="Meta cobrará hasta el importe que autorices.",
+            expires_at=datetime(2027, 1, 1, tzinfo=UTC),
+            checks=(),
+        )
+
+    monkeypatch.setattr(promotion_provider, "prepare_promotion_preview", prepare)
+    draft = replace(
+        valid_form(),
+        cta_type="ORDER_NOW",
+        enhancements=BrandEnhancementsVM(str(TENANT), loaded=True),
+    )
+    promotion_provider.prepare_preview(TENANT, PIECE, USER, draft, ZONE, "cta-choice")
+    assert seen["form"].cta_type == "ORDER_NOW" and seen["form"].link_url
+
+
+def test_link_step_offers_the_button_in_spanish() -> None:
+    step = str(_destination().render())
+    assert "Pedir ahora" in step and "website-cta-label" in step and "radiogroup" in step
+
+
+def test_the_same_button_has_one_name_in_the_piece_and_the_wizard() -> None:
+    from qualify_creative.ad_destination import AD_CTA_LABELS, AdCTA
+
+    from .promotion_vm import LEAD_CTA_LABELS
+
+    for code, label in LEAD_CTA_LABELS.items():
+        assert AD_CTA_LABELS[AdCTA(code)] == label
+
+
+def test_a_piece_button_block_shows_in_step_one_with_a_link_to_the_piece(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from qualify_api.ads.wizard import PIECE_BUTTON_UNSUPPORTED, PromotionSource
+
+    from .promotion_page import _publication
+
+    source = PromotionSource(
+        UUID(str(SOURCE)),
+        UUID(str(PIECE)),
+        UUID(ACCOUNT),
+        UUID(str(TENANT)),
+        "1",
+        "2",
+        "c",
+        "@n",
+        unavailable_reason=PIECE_BUTTON_UNSUPPORTED,
+    )
+    monkeypatch.setattr(promotion_provider, "list_promotion_sources", lambda **_: (source,))
+    monkeypatch.setattr(promotion_provider, "read_business_locale", lambda *_: None)
+    rows = promotion_provider.load_sources(TENANT, PIECE)[0]
+    assert rows[0].fix_in_piece and rows[0].unavailable_reason == PIECE_BUTTON_UNSUPPORTED
+    step = str(_publication().render())
+    assert "Cambiar el bot" in step and "piece_href" in step and "unavailable_reason" in step
+    assert "Cambiar el bot" in str(_review().render())
