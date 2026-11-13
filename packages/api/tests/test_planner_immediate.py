@@ -125,7 +125,7 @@ def test_each_single_publication_maps_to_its_shape(
 
 
 def test_a_single_attempt_without_its_staged_object_writes_nothing() -> None:
-    # attempts written before 0158 never recorded the object (the backfill reads Meta)
+    # attempts written before 0159 never recorded the object (the backfill reads Meta)
     assert plan_publication(_attempt(object_key="")) is Skip.NO_MEDIA
     assert plan_publication(_attempt(product="REELS", content_type=None)) is Skip.NO_MEDIA
     assert plan_publication(_attempt(product="REELS", content_type="image/jpeg")) is (

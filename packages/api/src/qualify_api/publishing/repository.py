@@ -75,8 +75,8 @@ class AttemptRecord:
     # keeps driving `_over_ceiling` unchanged; this is deliberately a separate field, not
     # a repurposing of `started_at` itself.
     polling_baseline_at: datetime | None
-    # m-25019217 (0158): the staged object of a single attempt (None for a carousel and
-    # for rows written before 0158).
+    # m-25019217 (0159): the staged object of a single attempt (None for a carousel and
+    # for rows written before 0159).
     media_object_key: str | None = None
     media_content_type: str | None = None
 

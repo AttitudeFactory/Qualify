@@ -28,7 +28,7 @@ the same attempt as the browser (`record_publish_sent` is an unconditional write
 
 1. The piece: `content_drafts.request_key = request_key_for(attempt_id)` (UUIDv5), unique
    per tenant (0070).
-2. The event: partial UNIQUE `uq_cal_event_attempt (tenant_id, publish_attempt_id)` (0158)
+2. The event: partial UNIQUE `uq_cal_event_attempt (tenant_id, publish_attempt_id)` (0159)
    with `INSERT … ON CONFLICT DO NOTHING`.
 
 Both are written in ONE transaction, behind a transaction-scoped advisory lock on the
@@ -424,7 +424,7 @@ def _recordable_since(since: datetime) -> Select[tuple[UUID]]:
 
     - its connection still exists, belongs to a brand and is not being deleted;
     - its media product type is one `plan_publication` maps;
-    - a single attempt recorded its staged object (`media_object_key`, 0158 — NULL on
+    - a single attempt recorded its staged object (`media_object_key`, 0159 — NULL on
       every attempt written before it: those wait for the backfill, m-25019220) and, for
       a video or story, its content type; a carousel has at least one child.
 

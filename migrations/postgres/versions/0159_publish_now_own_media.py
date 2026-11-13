@@ -1,8 +1,8 @@
 """«Publicar» → «Tu semana»: an immediate publication becomes a piece and a calendar event
 (m-25019217, epic m-25019215; founder 2026-11-13)
 
-Revision ID: 0158
-Revises: 0157
+Revision ID: 0159
+Revises: 0158
 Create Date: 2026-11-13
 
 A publication made from «Publicar» wrote only `publish_attempts`; the calendar reads only
@@ -47,8 +47,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0158"
-down_revision = "0157"
+revision = "0159"
+down_revision = "0158"
 branch_labels = None
 depends_on = None
 
@@ -92,7 +92,7 @@ def upgrade() -> None:
             ) AS duplicated;
             IF n > 0 THEN
                 RAISE EXCEPTION
-                    '0158: % publish attempt(s) are linked to more than one calendar event; '
+                    '0159: % publish attempt(s) are linked to more than one calendar event; '
                     'resolve them by hand before creating uq_cal_event_attempt', n;
             END IF;
         END

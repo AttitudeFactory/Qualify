@@ -1,4 +1,4 @@
-"""`db` tests for «Publicar» → «Tu semana» (m-25019217, migration 0158): the piece and
+"""`db` tests for «Publicar» → «Tu semana» (m-25019217, migration 0159): the piece and
 the `published` event `planner.immediate.record_publication` writes, their idempotency
 (twice, concurrently), the week view, the piece's publishability, RLS between tenants,
 what is never recorded, and the tick's bounded sweep.
@@ -451,7 +451,7 @@ def test_a_recorded_piece_is_not_pending_and_can_be_scheduled_again() -> None:
 def test_an_attempt_without_its_media_key_is_neither_swept_nor_discovered() -> None:
     world = _world()
     now = datetime.now(UTC)
-    # as an attempt written before 0158: no staged object recorded (settled rows are
+    # as an attempt written before 0159: no staged object recorded (settled rows are
     # immutable, so it is born that way)
     _attempt(world, settled_at=now - timedelta(minutes=2), media_key=False)
     assert sweep_recent_publications(tenant_id=world.tenant_id, now=now) == []
