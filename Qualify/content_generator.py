@@ -4195,7 +4195,7 @@ def _section_topic() -> rx.Component:
         rx.cond(
             flyer,
             "Qué se ve, dónde y cómo se siente. Es lo único obligatorio. La imagen sale sin "
-            "letras ni precios: esos van en el texto de la publicación.",
+            "letras ni precios: escríbelos en el texto de la publicación.",
             "Un contexto general: de qué trata, qué debe transmitir, a quién le habla y "
             "cualquier detalle que importe. Es lo único obligatorio.",
         ),

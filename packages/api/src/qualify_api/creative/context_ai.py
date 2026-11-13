@@ -327,145 +327,101 @@ def _same(a: str, b: str) -> bool:
     return key(a) == key(b)
 
 
-#: m-25017274 (live on Bianki, 2026-11-13): words that ask for something WRITTEN in the
+#: m-25017274 (live on Bianki, 2026-11-13): what asks for something WRITTEN in the
 #: picture. Since the prompt compiler 4 (#629/#631) an image carries no text, sign or
-#: price, so a scene version that names one is dropped like any invalid version. «menú»
-#: alone is NOT here: «el plato del menú del día» describes food, and in the 150+ measured
-#: scene versions plain «menú» never asked for writing; only written-menu phrasings are.
+#: price, so a scene version that names one is dropped like any invalid version. Matched
+#: on the text without accents («veintidos», «menu», «rotulo» count). «menú» alone is NOT
+#: here: «el plato del menú del día» describes food, and in 150+ measured scene versions
+#: plain «menú» never asked for writing; only written-menu phrasings are. Two reviews
+#: (2026-11-13) pinned ~90 sentences in `test_creative_context_ai.py`.
 _SCENE_TEXT_WORDS = re.compile(
-    r"\b(?:precios?|letreros?|carteles|cartel|r[óo]tulos?|avisos?|anuncios?|pancartas?|"
-    r"vallas?|pizarras?|pizarr[óo]n(?:es)?|stickers?|calcoman[íi]as?|"
-    r"textos?|letras?|escrit[oa]s?|leyendas?|tipograf[íi]as?|valor|"
-    r"men[úu]s?\s+(?:escrito|en la pared|en (?:la|una) pizarra|colgado|impreso|de pared)|"
-    r"etiquetas?)\b",
-    re.IGNORECASE,
+    r"\b(?:precios?|letreros?|carteles|cartel|rotulos?|avisos?|anuncios?|pancartas?|"
+    r"vallas?|pizarras?|pizarron(?:es)?|stickers?|calcomanias?|banners?|banderin(?:es)?|"
+    r"globos? de dialogo|textos?|letras?|escrit[oa]s?|leyendas?|tipografias?|frases?|"
+    r"se lee|se lea|que dice|que diga|valor(?!\s+agregado)|"
+    r"menus?\s+(?:escrito|en la pared|en (?:la|una) pizarra|colgado|impreso|de pared)|"
+    r"etiquetas?)\b"
 )
 #: The product's own printed label is a real object, not writing to add: the only term
 #: the owner's own words may bring into the scene (a price or a sign he asks for will not
-#: be drawn anyway, so it is not exempt).
-_OWNER_MAY_NAME = re.compile(r"etiquetas?", re.IGNORECASE)
-#: A negation only counts right before the term it governs: «sin texto», «ni carteles»,
-#: «nada escrito», «sin ningún letrero», «no lleva texto» — never «sin sombras y precio».
+#: be drawn anyway). «Una etiqueta que dice 2x1» is still dropped by «que dice».
+_OWNER_MAY_NAME = re.compile(r"etiquetas?")
+#: A negation counts only when it governs the term, through filler words at most: «sin
+#: texto», «ni carteles», «nada escrito», «sin ningún tipo de letrero», «ni una sola
+#: letra», «no lleva texto» — never «sin sombras y con el precio visible».
 _NEGATED = re.compile(
-    r"\b(?:sin|ni|nada(?:\s+de)?|ning[úu]n|ninguna?s?|tampoco|no\s+(?:hay|lleva|tiene|se\s+ven?))"
-    r"\s+(?:(?:el|la|los|las|un|una|ning[úu]n|ninguna?)\s+)?$",
-    re.IGNORECASE,
+    r"\b(?:sin|ni|nada(?:\s+de)?|ningun|ninguna?s?|tampoco|no\s+(?:hay|lleva|tiene|se\s+ven?))"
+    r"\s+(?:(?:el|la|los|las|un|una|ningun|ninguna|tipo|clase|de|sola|solo)\s+){0,3}$"
 )
-_NUMBER = re.compile(r"\d{1,3}(?:[ .,\u00a0]\d{3})+(?!\d)|\d+(?:[.,]\d+)*")
-_PRICE_WORDS = re.compile(
-    r"\$|\b(?:pesos?|cop|usd|d[óo]lares?|bol[íi]vares?|bs\.?|uyu|mil|precio|cuesta|vale)\b",
-    re.IGNORECASE,
+#: Money in the scene, whatever «Datos clave» say: a currency sign or word, or an amount
+#: of thousands («22 mil», «veintidós mil»). Plain «mil» or «vale» are not money.
+_CURRENCY = re.compile(
+    r"[$€]|\b(?:dolar(?:es)?|pesos?|bolivar(?:es)?|bs\.?|usd|cop|uyu|ves|lucas?|euros?)(?!\w)"
 )
-_BIG_NUMBER = re.compile(r"^\d{1,3}(?:[ .,\u00a0]\d{3})+$|^\d{4,}$")
-_UNITS = (
-    "",
-    "un",
-    "dos",
-    "tres",
-    "cuatro",
-    "cinco",
-    "seis",
-    "siete",
-    "ocho",
-    "nueve",
-    "diez",
-    "once",
-    "doce",
-    "trece",
-    "catorce",
-    "quince",
-    "dieciséis",
-    "diecisiete",
-    "dieciocho",
-    "diecinueve",
-    "veinte",
-    "veintiún",
-    "veintidós",
-    "veintitrés",
-    "veinticuatro",
-    "veinticinco",
-    "veintiséis",
-    "veintisiete",
-    "veintiocho",
-    "veintinueve",
+_NUMBER_WORDS = (
+    "un|uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce|trece|catorce|"
+    "quince|dieciseis|diecisiete|dieciocho|diecinueve|veinte|veinti\\w+|treinta|cuarenta|"
+    "cincuenta|sesenta|setenta|ochenta|noventa|cien|ciento|\\w+cientos"
 )
-_TENS = ("", "", "", "treinta", "cuarenta", "cincuenta", "sesenta", "setenta", "ochenta", "noventa")
-_HUNDREDS = (
-    "",
-    "ciento",
-    "doscientos",
-    "trescientos",
-    "cuatrocientos",
-    "quinientos",
-    "seiscientos",
-    "setecientos",
-    "ochocientos",
-    "novecientos",
+_THOUSANDS = re.compile(rf"\b(?:\d+|{_NUMBER_WORDS})(?:\s+y\s+\w+)?\s+mil\b")
+#: An amount: «22.000», «22 000», «22000», or «22 mil» (× 1000).
+_AMOUNT = re.compile(r"(\d{1,3}(?:[ .,\u00a0]\d{3})+(?!\d)|\d+)(?:[.,]\d+)?(\s+mil\b)?")
+_PRICE_FACT = re.compile(
+    r"[$€]|\b(?:dolar(?:es)?|pesos?|bolivar(?:es)?|bs\.?|usd|cop|uyu|ves|lucas?|euros?|"
+    r"precios?|cuesta|vale|valor|oferta|promo\w*|combo|desde|mil)(?!\w)"
 )
 
 
-def _spell(n: int) -> str:
-    """1..999 in Spanish words, the form before «mil» («veintidós», «ciento veinte»)."""
-    if n == 100:
-        return "cien"
-    hundreds, rest = divmod(n, 100)
-    words = [_HUNDREDS[hundreds]] if hundreds else []
-    if rest < 30:
-        words.append(_UNITS[rest])
-    else:
-        tens, units = divmod(rest, 10)
-        words.append(_TENS[tens] + (f" y {_UNITS[units]}" if units else ""))
-    return " ".join(w for w in words if w)
+def _plain(text: str) -> str:
+    """Lowercase without accents: «Veintidós» and «veintidos» read the same."""
+    decomposed = unicodedata.normalize("NFD", text.casefold())
+    return "".join(ch for ch in decomposed if unicodedata.category(ch) != "Mn")
 
 
-def _price_figures(data: ContextInput) -> tuple[set[str], list[re.Pattern[str]]]:
-    """How a price from «Datos clave» could be written in a scene: its digits («22.000»,
-    «22000» → "22000") and «22 mil» / «veintidós mil». Only price-like facts count (a
-    currency sign or word in the name or value, or a figure of 4+ digits): «2x1» or
-    «500 ml» are counts the picture may show."""
-    figures: set[str] = set()
-    words: list[re.Pattern[str]] = []
+def _amounts(text: str) -> set[int]:
+    """Every amount written in `text`, «22 mil» counted as 22000."""
+    found: set[int] = set()
+    for digits, thousand in _AMOUNT.findall(text):
+        value = int(re.sub(r"\D", "", digits))
+        found.add(value * 1000 if thousand else value)
+    return found
+
+
+def _price_amounts(data: ContextInput) -> set[int]:
+    """The prices of «Datos clave» that a scene must not write: amounts of 1000 or more
+    of a price-like fact (a currency or a price word, or a thousands separator). A small
+    one («USD 5», «$12») is not here: it would block «5 tacos» or «las 5 de la tarde»;
+    a scene writes it only next to a currency, which `_CURRENCY` drops anyway."""
+    found: set[int] = set()
     for name, value in data.highlights:
-        raws = _NUMBER.findall(str(value))
-        big = [raw for raw in raws if _BIG_NUMBER.match(raw)]
-        priced = bool(_PRICE_WORDS.search(f"{name} {value}"))
-        for raw in big or (raws if priced else []):
-            digits = re.sub(r"\D", "", raw)
-            figures.add(digits)
-            thousands = int(digits) // 1000
-            if 0 < thousands < 1000:
-                words.append(
-                    re.compile(
-                        rf"\b(?:{thousands}|{re.escape(_spell(thousands))})\s*mil\b",
-                        re.IGNORECASE,
-                    )
-                )
-    return figures, words
+        fact = _plain(f"{name} {value}")
+        separated = bool(re.search(r"\d[ .,\u00a0]\d{3}(?!\d)", fact))
+        if _PRICE_FACT.search(fact) or separated:
+            found |= {amount for amount in _amounts(_plain(str(value))) if amount >= 1000}
+    return found
 
 
 def scene_text_request(text: str, data: ContextInput) -> str:
     """What in a SCENE version asks for something written in the picture ("" = nothing):
-    a word for a sign/price/text, a currency sign, or a price from «Datos clave» in
-    digits or words. Deterministic: the image model would draw it. Negations that govern
-    the term pass («Sin texto en la imagen»); of the owner's own words only the product's
-    printed «etiqueta» passes (whole word)."""
-    own = {w.casefold() for w in re.findall(r"\w+", data.text)}
-    for word in _SCENE_TEXT_WORDS.finditer(text):
-        if _NEGATED.search(text[: word.start()]):
+    a word for a sign/price/text, money (a currency, «N mil»), or a price of «Datos
+    clave» in any spelling. Deterministic: the image model would draw it. Negations that
+    govern the term pass («Sin texto en la imagen»); of the owner's own words only the
+    product's printed «etiqueta» passes (whole word)."""
+    plain = _plain(text)
+    own = set(re.findall(r"\w+", _plain(data.text)))
+    for word in _SCENE_TEXT_WORDS.finditer(plain):
+        if _NEGATED.search(plain[: word.start()]):
             continue
         term = word.group(0)
-        if _OWNER_MAY_NAME.fullmatch(term) and term.casefold() in own:
+        if _OWNER_MAY_NAME.fullmatch(term) and term in own:
             continue
         return term
-    if "$" in text:
-        return "$"
-    figures, words = _price_figures(data)
-    for raw in _NUMBER.findall(text):
-        if re.sub(r"\D", "", raw) in figures:
-            return raw
-    for pattern in words:
-        if found := pattern.search(text):
-            return found.group(0)
+    if money := _CURRENCY.search(plain) or _THOUSANDS.search(plain):
+        return money.group(0)
+    prices = _price_amounts(data)
+    for amount in _amounts(plain):
+        if amount in prices:
+            return str(amount)
     return ""
 
 

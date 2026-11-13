@@ -253,6 +253,20 @@ del propio filtro: el «0 de 33» se confirmaba en parte a sí mismo.
   pagar otra vez por el mismo texto. Si no queda ninguna, el dueño lee «No pudimos mejorar tu
   texto esta vez. Tu texto quedó igual: puedes crear así o intentarlo de nuevo.».
 
+**Segunda revisión (mismo día, sin cambio de prompt ni gasto):**
+
+- La revisión probó unas 90 frases. Todas quedaron fijadas en una tabla de pruebas
+  (`test_creative_context_ai.py`, «must pass» / «must drop»).
+- El dinero en la escena se descarta aunque el precio no esté en «Datos clave»: «$», dólares,
+  pesos, bolívares, Bs, USD, COP, lucas, y «número + mil» en cifras o en palabras, con tilde o
+  sin ella.
+- Los precios de «Datos clave» solo bloquean cifras de 1.000 o más. «22 mil» cuenta como
+  22.000. Un precio chico («USD 5», «$12», «Bs. 150») ya no bloquea «5 tacos», «las 5 de la
+  tarde», «12 empanadas» ni «150 gramos». Se escribe junto a una moneda, y eso ya se descarta.
+- Términos nuevos: «se lee», «que dice» o «que diga», frase, banner, banderín, globo de
+  diálogo. La excepción de «etiqueta» no cubre «etiqueta que dice…».
+- Pasan «valor agregado», «sin ningún tipo de letrero» y «ni una sola letra».
+
 **Juez independiente de la evaluación (`asks_for_text` en `run_experiment.py`):**
 
 - Está escrito aparte del filtro y es más estricto. Trabaja sobre palabras sueltas, no con las

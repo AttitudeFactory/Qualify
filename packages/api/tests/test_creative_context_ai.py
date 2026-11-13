@@ -593,7 +593,10 @@ def test_counts_and_ordinary_food_words_pass(version: str) -> None:
     ],
 )
 def test_review_misses_are_caught(version: str, found: str) -> None:
-    assert scene_text_request(version, _scene_input()) == found
+    # the filter reports the term lowercased and without accents («rotulo»)
+    from qualify_api.creative.context_ai import _plain
+
+    assert scene_text_request(version, _scene_input()) == _plain(found)
 
 
 @pytest.mark.parametrize(
@@ -657,3 +660,112 @@ def test_copy_versions_still_carry_the_price() -> None:
         _input(), None, client_factory=lambda key: client, attribution=TEST_ATTRIBUTION
     )
     assert [v.text for v in proposal.versions] == with_price
+
+
+# -- The scene filter's pinned table (two code reviews, 2026-11-13): every sentence the
+#    reviewers probed, so no later change can regress one. Default «Datos clave»: a big
+#    price, a 2x1 and a size; rows that need others say so.
+
+_DEFAULT_FACTS = (("Precio", "$22.000"), ("Promoción", "2x1 los martes"), ("Tamaño", "500 ml"))
+_SMALL_PRICES = (("Precio", "USD 5"), ("Combo", "$12"), ("Precio en bolívares", "Bs. 150"))
+_THOUSANDS_FACT = (("Oferta", "22 mil"),)
+_OWN_LABEL = "Una mano sosteniendo el vaso con la etiqueta de frente"
+
+#: (sentence, «Datos clave», the owner's own scene or None for the default)
+_MUST_PASS: list[tuple[str, tuple[tuple[str, str], ...], str | None]] = [
+    ("2 shawarmas en la mesa, luz cálida.", _DEFAULT_FACTS, None),
+    ("Luz de las 2 de la tarde sobre la barra.", _DEFAULT_FACTS, None),
+    ("Vaso de 500 ml junto al plato.", _DEFAULT_FACTS, None),
+    ("Dos shawarmas para el 2x1, sobre la bandeja.", _DEFAULT_FACTS, None),
+    ("La barra a las 12 pm, luz dura de mediodía.", _DEFAULT_FACTS, None),
+    ("3 unidades de falafel en el plato.", _DEFAULT_FACTS, None),
+    ("El plato del menú del día sobre la barra.", _DEFAULT_FACTS, None),
+    ("Una tabla de madera con el shawarma.", _DEFAULT_FACTS, None),
+    ("La marca del local se siente en los colores.", _DEFAULT_FACTS, None),
+    ("El logo en el empaque, de frente.", _DEFAULT_FACTS, None),
+    ("El vaso con la etiqueta de frente, luz cálida.", _DEFAULT_FACTS, _OWN_LABEL),
+    ("Plano cerrado del shawarma. Sin texto en la imagen.", _DEFAULT_FACTS, None),
+    ("Vista amplia de la barra, sin letreros ni precios.", _DEFAULT_FACTS, None),
+    ("Una mano toma el shawarma. Nada escrito en la imagen.", _DEFAULT_FACTS, None),
+    ("Plano cerrado, sin ningún letrero.", _DEFAULT_FACTS, None),
+    ("La barra del local, no lleva texto.", _DEFAULT_FACTS, None),
+    ("Luz cálida, ni carteles ni precios.", _DEFAULT_FACTS, None),
+    ("La barra, sin ningún tipo de letrero.", _DEFAULT_FACTS, None),
+    ("Ni una sola letra en la imagen, solo el plato.", _DEFAULT_FACTS, None),
+    ("Un valor agregado: ingredientes frescos a la vista.", _DEFAULT_FACTS, None),
+    ("Un contexto cálido de almuerzo.", _DEFAULT_FACTS, None),
+    ("Mil sabores en la mesa, luz cálida.", _DEFAULT_FACTS, None),
+    # small prices never block ordinary counts and times (Venezuela sells in USD)
+    ("5 tacos en la mesa.", _SMALL_PRICES, None),
+    ("Son las 5 de la tarde en el local.", _SMALL_PRICES, None),
+    ("12 empanadas en la bandeja.", _SMALL_PRICES, None),
+    ("150 gramos de pollo en el plato.", _SMALL_PRICES, None),
+    # «22 mil» is 22000, not 22
+    ("Una mesa para 22 personas, luz de tarde.", _THOUSANDS_FACT, None),
+]
+
+_MUST_DROP: list[tuple[str, tuple[tuple[str, str], ...], str | None]] = [
+    # verbatim from production, 2026-11-13
+    ("Plano cerrado del shawarma. El precio $22.000 se ve claro.", _DEFAULT_FACTS, None),
+    ("La barra del local, luz cálida. Precio 22.000 a la vista.", _DEFAULT_FACTS, None),
+    ("Etiqueta con el precio legible en una esquina.", _DEFAULT_FACTS, None),
+    ("Cartel con 22.000 visible junto al plato.", _DEFAULT_FACTS, None),
+    ("Un letrero cercano y el shawarma sobre la barra.", _DEFAULT_FACTS, None),
+    ("Rótulo grande con el texto del combo sobre la mesa.", _DEFAULT_FACTS, None),
+    # first review
+    ("La barra del local, 22 000 en una esquina.", _DEFAULT_FACTS, None),
+    ("La barra del local y 22000 al fondo.", _DEFAULT_FACTS, None),
+    ("El shawarma y 22 mil en una esquina.", _DEFAULT_FACTS, None),
+    ("El shawarma por veintidós mil.", _DEFAULT_FACTS, None),
+    ("Textos escritos en la pared.", _DEFAULT_FACTS, None),
+    ("Un menú en la pared detrás de la barra.", _DEFAULT_FACTS, None),
+    ("Un anuncio luminoso al fondo.", _DEFAULT_FACTS, None),
+    ("Una valla en la calle.", _DEFAULT_FACTS, None),
+    ("Un sticker con el valor del combo.", _DEFAULT_FACTS, None),
+    ("Una pizarra con la oferta.", _DEFAULT_FACTS, None),
+    ("Un rótulo sobre la barra.", _DEFAULT_FACTS, None),
+    ("La barra, sin sombras y precio visible.", _DEFAULT_FACTS, None),
+    ("Sin sombras y con el precio visible.", _DEFAULT_FACTS, None),
+    ("El shawarma y el precio en un cartel.", _DEFAULT_FACTS, "con el precio en un cartel"),
+    ("Un texto en la barra.", _DEFAULT_FACTS, "el contexto de la barra"),
+    ("El precio en la barra.", _DEFAULT_FACTS, "aprecio el sabor de la barra"),
+    ("Un aviso en la barra.", _DEFAULT_FACTS, "avisos de la calle afuera"),
+    ("Una etiqueta en el vaso.", _DEFAULT_FACTS, None),
+    # second review: money in the scene, whatever «Datos clave» say
+    ("Shawarma por 5 dólares sobre la barra.", (), None),
+    ("Un plato de 22 mil pesos.", (), None),
+    ("El combo por cinco dólares.", (), None),
+    ("El shawarma por veintidos mil.", (), None),
+    ("El combo a 22 lucas.", (), None),
+    ("La barra con un precio de 5 USD.", _SMALL_PRICES, None),
+    ("Bs. 150 junto al plato.", _SMALL_PRICES, None),
+    ("$12 en la esquina de la foto.", _SMALL_PRICES, None),
+    # second review: «22 mil» as a fact matches every spelling of 22000
+    ("La barra con 22.000 al fondo.", _THOUSANDS_FACT, None),
+    ("La barra con 22000 al fondo.", _THOUSANDS_FACT, None),
+    # second review: written words in the picture
+    ("En la pared se lee «Shawarma».", _DEFAULT_FACTS, None),
+    ("Un banner con la promo.", _DEFAULT_FACTS, None),
+    ("Banderín con la promo colgado.", _DEFAULT_FACTS, None),
+    ("Un globo de diálogo con la frase Ven hoy.", _DEFAULT_FACTS, None),
+    ("Una etiqueta que dice 2x1 en el vaso.", _DEFAULT_FACTS, _OWN_LABEL),
+    ("Un vaso con una leyenda que diga Gracias.", _DEFAULT_FACTS, None),
+]
+
+
+def _probe(facts: tuple[tuple[str, str], ...], own: str | None) -> ContextInput:
+    return _scene_input(highlights=facts, **({"text": own} if own else {}))
+
+
+@pytest.mark.parametrize(("sentence", "facts", "own"), _MUST_PASS)
+def test_pinned_scene_sentences_that_must_pass(
+    sentence: str, facts: tuple[tuple[str, str], ...], own: str | None
+) -> None:
+    assert scene_text_request(sentence, _probe(facts, own)) == ""
+
+
+@pytest.mark.parametrize(("sentence", "facts", "own"), _MUST_DROP)
+def test_pinned_scene_sentences_that_must_drop(
+    sentence: str, facts: tuple[tuple[str, str], ...], own: str | None
+) -> None:
+    assert scene_text_request(sentence, _probe(facts, own)) != ""

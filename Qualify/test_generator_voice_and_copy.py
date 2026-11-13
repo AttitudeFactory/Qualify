@@ -2470,7 +2470,7 @@ def test_the_scene_field_says_the_image_carries_no_writing() -> None:
     rendered = str(_section_topic())
     help_text = (
         "Qué se ve, dónde y cómo se siente. Es lo único obligatorio. La imagen sale sin "
-        "letras ni precios: esos van en el texto de la publicación."
+        "letras ni precios: escríbelos en el texto de la publicación."
     )
     assert help_text in rendered or json.dumps(help_text) in rendered
     assert "la etiqueta de frente" not in rendered
