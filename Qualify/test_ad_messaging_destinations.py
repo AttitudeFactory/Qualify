@@ -87,7 +87,7 @@ def test_messaging_diagnosis_has_no_selector_or_change_to_the_existing_website_f
         _messaging_destination(MessagingDestinationVM("whatsapp", "WhatsApp", LINK_GUIDE)).render()
     )
     assert "WhatsApp" in rendered
-    assert "Meta Business Suite" in rendered
+    assert "Tus redes" in rendered and "Meta Business Suite" not in rendered
     assert "on_click" not in rendered
     assert "dangerouslySetInnerHTML" not in rendered
     full = str(_destination().render())

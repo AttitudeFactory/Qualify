@@ -106,7 +106,7 @@ SECTION_KEYS = frozenset(key for key, *_ in SECTIONS)
 SECTION_PARAM = "seccion"
 RETURN_PARAM = "volver"
 VOICE_SECTION = "voz"
-#: «Lo que ofrece tu negocio» (0164): the only section whose «Guardar» writes the perks.
+#: «Lo que ofrece tu negocio» (0165): the only section whose «Guardar» writes the perks.
 PERKS_SECTION = "ofrece"
 #: Its closed summary while the owner has written none.
 PERKS_EMPTY = "Todavía no has escrito nada"

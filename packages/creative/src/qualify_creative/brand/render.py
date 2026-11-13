@@ -29,12 +29,14 @@ from qualify_creative.enums import (
     AvatarSource,
     AwarenessLevel,
     ContentKind,
+    ContentType,
     EmojiPolicy,
     GenerationTask,
     SlideSource,
     SlideText,
 )
 from qualify_creative.providers import RenderedPrompt
+from qualify_creative.scene_plan import without_product
 from qualify_creative.schemas import (
     ADS_DESCRIPTION_MAX,
     ADS_HEADLINE_MAX,
@@ -70,6 +72,9 @@ VARIANT_ANGLES: tuple[str, ...] = (
     "urgency or the offer: why today, why now",
     "a first reaction, as if someone had just tried it",
 )
+#: m-24985141: the first angle on a piece without a product — nothing to be sensory about
+#: but what the owner describes; the other angles need no product.
+_NO_PRODUCT_FIRST_ANGLE = "lead with one concrete, vivid detail of what the post is about"
 
 #: The caption length the model is ASKED for, as a share of the brand maximum. The
 #: model counts characters loosely (emoji, accents) and, told the exact cap, lands on
@@ -476,6 +481,50 @@ def _gallery_slide_line(slide: CarouselSlide) -> str:
     )
 
 
+#: m-24985141: the assignment of a kind whose words assume a product, for a piece without
+#: one (`ContentBrief.product_ref` None): the same beats, about what the owner describes.
+_KIND_ASSIGNMENT_NO_PRODUCT: dict[ContentKind, str] = {
+    ContentKind.CLIP: (
+        "This is a short generated advertising video that tells a story, with no"
+        " presenter and no words on screen: the visuals carry it. Write its story in"
+        " `shots`, exactly three beats: (1) the hook — the first seconds SHOW what your"
+        " hook promises, so people stop scrolling; (2) the development — what the post is"
+        " about, in action, and what it gives, the key facts at work; (3) the payoff — the"
+        " moment that leads to your CTA. Each `visual` says what the camera shows (one or"
+        " two sentences, concrete, no words on screen); `line` stays empty. The hook also"
+        " opens the caption; the caption and the CTA carry the message. Leave `script`"
+        " empty."
+    ),
+    ContentKind.SHOT_VIDEO: (
+        "This is a generated advertising video made of several short parts joined one"
+        " after another, with no presenter and no words on screen: the visuals of each"
+        " part are already planned, so the copy carries the message. The hook opens the"
+        " caption; the caption and the CTA say what the video is about and what to do"
+        " next. Leave `script` empty and `shots` empty."
+    ),
+}
+
+
+def _has_product(brief: ContentBrief) -> bool:
+    """The copy's product wording, decided as the media prompts decide it
+    (`scene_plan.without_product`): a piece frozen before compiler 5, or one showing a
+    product (chosen, a product photo or a Galería product slide), keeps it."""
+    return not without_product(brief)
+
+
+def _kind_assignment(brief: ContentBrief) -> str:
+    if not _has_product(brief):
+        return _KIND_ASSIGNMENT_NO_PRODUCT.get(brief.kind, _KIND_ASSIGNMENT[brief.kind])
+    return _KIND_ASSIGNMENT[brief.kind]
+
+
+#: m-24985141: said once on a piece without a product, so the copy never invents one.
+NO_PRODUCT_LINE = (
+    "No catalog product was chosen for this piece: do not name, describe or invent a"
+    " product. Write about what the operator describes and about the brand."
+)
+
+
 #: The kinds whose hook and CTA are printed on an image (§ request 2026-10-08).
 _PRINTED_KINDS = frozenset({ContentKind.STATIC_FLYER, ContentKind.TEMPLATE, ContentKind.CAROUSEL})
 
@@ -551,9 +600,13 @@ def _chosen_resources(brief: ContentBrief, context: BrandContext | None) -> tupl
     )
 
 
-def variant_angle(variant: int, offset: int = 0) -> str:
-    """The angle of `variant` (0-based) for a draft whose rotation starts at `offset`."""
-    return VARIANT_ANGLES[(offset + variant) % len(VARIANT_ANGLES)]
+def variant_angle(variant: int, offset: int = 0, *, product: bool = True) -> str:
+    """The angle of `variant` (0-based) for a draft whose rotation starts at `offset`;
+    `product=False` (m-24985141): the first angle without a product to be sensory about."""
+    index = (offset + variant) % len(VARIANT_ANGLES)
+    if index == 0 and not product:
+        return _NO_PRODUCT_FIRST_ANGLE
+    return VARIANT_ANGLES[index]
 
 
 def _variant_lines(brief: ContentBrief, variant: int | None, angle_offset: int) -> tuple[str, ...]:
@@ -565,9 +618,10 @@ def _variant_lines(brief: ContentBrief, variant: int | None, angle_offset: int) 
         return ()
     if variant is None:
         return (f"This is one of {count} variants: take a distinct angle on the assignment.",)
+    angle = variant_angle(variant, angle_offset, product=_has_product(brief))
     return (
         f"This is variant {variant + 1} of {count}. Its angle:"
-        f" {variant_angle(variant, angle_offset)}. The other variants take other angles, so"
+        f" {angle}. The other variants take other angles, so"
         " commit to this one: its own opening, its own wording, its own CTA.",
     )
 
@@ -582,6 +636,14 @@ def _recent_lines(recent: tuple[str, ...]) -> tuple[str, ...]:
         " same way, and do not reuse their wording:",
         *(f"- {line}" for line in recent),
     )
+
+
+def _content_type_line(brief: ContentBrief) -> str:
+    """The piece's content type. «product» is the screen's default, so on a piece without
+    a product (m-24985141) it says the piece is general instead of about a product."""
+    if brief.content_type is ContentType.PRODUCT and not _has_product(brief):
+        return "Content type: general (no catalog product was chosen)"
+    return f"Content type: {brief.content_type.value}"
 
 
 def _volatile_suffix(
@@ -649,7 +711,7 @@ def _volatile_suffix(
         f"Task: {task.value}",
         f"Objective: {brief.objective.value}",
         *_awareness_lines(brief),
-        f"Content type: {brief.content_type.value}",
+        _content_type_line(brief),
         # § 2026-10-06: the operator describes the whole piece in their own words, not
         # just a topic or a product name
         f"What the operator wants (their own words, the piece's general context): {brief.topic}",
@@ -676,11 +738,12 @@ def _volatile_suffix(
             else ()
         ),
         f"Product reference: {brief.product_ref or _NONE}",
+        *(() if _has_product(brief) else (NO_PRODUCT_LINE,)),
         f"Platform: {brief.platform.value}",
         f"Format: {brief.format.value} ({width}x{height})",
         f"Intent: {brief.intent.value}",
         f"Image route: {brief.image_route.value}",
-        f"Piece kind: {brief.kind.value}. {_KIND_ASSIGNMENT[brief.kind]}",
+        f"Piece kind: {brief.kind.value}. {_kind_assignment(brief)}",
         *_on_screen(brief),
         *_chosen_resources(brief, context),
         *(

@@ -95,7 +95,7 @@ class BrandKit(Base):
     reference_image_keys: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
     image_policy: Mapped[dict | None] = mapped_column(JSONB, nullable=True)  # ImagePolicy shape
     ads_destination_url: Mapped[str | None] = mapped_column(Text, nullable=True)
-    #: The owner's business perks (0164): short lines, manual input; `[]` = none.
+    #: The owner's business perks (0165): short lines, manual input; `[]` = none.
     business_perks: Mapped[list] = mapped_column(
         JSONB, nullable=False, server_default=text("'[]'::jsonb")
     )
@@ -373,7 +373,7 @@ class ContentBrief(Base):
     # ContentKind value and its MediaInputs (0026)
     kind: Mapped[str] = mapped_column(Text, nullable=False, server_default="static_flyer")
     media: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
-    #: The angle's awareness level (0164, `AwarenessLevel` values); NULL = none.
+    #: The angle's awareness level (0165, `AwarenessLevel` values); NULL = none.
     awareness_level: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
@@ -1194,7 +1194,7 @@ class CreativeAngle(Base):
     hook: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
     cta: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
     rationale: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
-    #: Which awareness level the model tagged it with (0164, `AwarenessLevel` values);
+    #: Which awareness level the model tagged it with (0165, `AwarenessLevel` values);
     #: NULL on angles proposed before the levels, or when the answer named none.
     awareness_level: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default="proposed")

@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from qualify_creative.enums import AdImageMode, SlideSource
-from qualify_creative.schemas import MediaInputs
+from qualify_creative.enums import AdImageMode, ContentKind, SlideSource
+from qualify_creative.schemas import GALLERY_ORIGIN_PRODUCT, ContentBrief, MediaInputs
 
 
 class ScenePlanError(ValueError):
@@ -71,6 +71,61 @@ class SceneReferencePlan:
         return tuple(start + i for i, photo in enumerate(self.photos) if photo.role == role)
 
 
+def shows_product(brief: ContentBrief) -> bool:
+    """Compiler 5: whether `brief`'s piece shows a product — one chosen from the catalog
+    (`product_ref`), or a photo with the product's role. A clip's photos (and those of a
+    video by parts' parent) carry their roles
+    (`clip_image_roles`; one without a role is no product when none was chosen,
+    `unroled_image_role`); any other kind's `product_keys` are product photos by their
+    field, except a composition guide (`product_image_roles`). False means no line of its
+    prompts may name, show or replace a product. Read only through `without_product`, so a
+    brief frozen on compiler 0-4 never depends on it."""
+    if (brief.product_ref or "").strip():
+        return True
+    media = brief.media
+    # a clip and the parent of a video by parts (m-24984421) carry their photos with roles;
+    # a parent from before that carries `product_keys`, product photos by their field
+    if brief.kind is ContentKind.CLIP or (
+        brief.kind is ContentKind.SHOT_VIDEO and media.clip_image_keys
+    ):
+        roles = media.clip_image_roles
+        return len(roles) == len(media.clip_image_keys) and "product" in roles
+    # a Galería carousel of several products keeps no `product_ref` (CM-6/7): its product
+    # slides are the product (review of m-24985141)
+    if any(slide.gallery_origin == GALLERY_ORIGIN_PRODUCT for slide in media.slides):
+        return True
+    # a `product_keys` photo is the product unless it is a composition guide — the owner's
+    # «Estilo» in the single reference list (Avatar, Imagen, Carrusel; Deivid 2026-11-13).
+    # Without roles, a stock photo is a guide, as `product_photos` reads it.
+    roles = media.product_image_roles
+    if len(roles) != len(media.product_keys):
+        roles = tuple(
+            "composition" if "/stock/" in key else "product" for key in media.product_keys
+        )
+    return any(role != "composition" for role in roles)
+
+
+def without_product(brief: ContentBrief) -> bool:
+    """m-24985141: whether `brief`'s prompts — media AND copy — take their wording without a
+    product: from prompt compiler 5 on, and only when the piece shows none
+    (`shows_product`). A brief frozen on compiler 0-4 always keeps its earlier wording."""
+    return brief.media.prompt_compiler_version >= 5 and not shows_product(brief)
+
+
+def unroled_image_role(brief: ContentBrief | None) -> str:
+    """The role of a clip photo stored without one. Until compiler 4 (and whenever the piece
+    has a chosen product) it is the product, as it always was; from compiler 5 on, with no
+    product chosen, it is a style reference — borrowed for its look, never presented as a
+    product nor as the client's own place (m-24985141)."""
+    if (
+        brief is None
+        or brief.media.prompt_compiler_version < 5
+        or (brief.product_ref or "").strip()
+    ):
+        return "product"
+    return "style"
+
+
 def product_photos(media: MediaInputs) -> tuple[ScenePhoto, ...]:
     roles = media.product_image_roles
     if roles and (
@@ -92,10 +147,14 @@ def _target_photos(
     product: int | None = None,
     *,
     shared_guides: bool = True,
+    alone: bool = False,
 ) -> tuple[ScenePhoto, ...]:
     """The photos one output is generated from. `product`: the identity the owner chose
     for a GUIDE target (`CarouselSlide.guide_product_index`); None keeps the rule every
     earlier brief was planned with.
+
+    `alone` (`CarouselSlide.guide_alone`, m-24985141): the target is a guide and travels
+    with no product; a target that is not a guide is refused.
 
     `shared_guides`: every composition guide travels with every output — a flyer
     gallery, where a guide has no output of its own and so guides them all. A
@@ -105,6 +164,13 @@ def _target_photos(
     if not 0 <= target < len(photos):
         raise ScenePlanError("Una diapositiva apunta a una foto que ya no está. Vuelve a elegirla.")
     selected = photos[target]
+    if alone:
+        # m-24985141 (`CarouselSlide.guide_alone`): the guide with no product at all
+        if selected.role != "composition":
+            raise ScenePlanError(
+                "Una diapositiva de solo estilo necesita una foto de estilo. Vuelve a elegirla."
+            )
+        return (selected,)
     guides = (
         tuple(photo for photo in photos if photo.role == "composition")
         if shared_guides
@@ -182,7 +248,11 @@ def carousel_scene_plans(media: MediaInputs) -> tuple[SceneReferencePlan, ...]:
                 i,
                 slide.product_index,
                 _target_photos(
-                    photos, slide.product_index, slide.guide_product_index, shared_guides=False
+                    photos,
+                    slide.product_index,
+                    slide.guide_product_index,
+                    shared_guides=False,
+                    alone=slide.guide_alone,
                 )
                 if slide.product_index is not None
                 else (),

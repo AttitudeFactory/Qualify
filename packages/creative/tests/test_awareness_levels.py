@@ -5,8 +5,9 @@ objective and, at `unaware`, no price), and the copy prompt — byte-identical t
 when a kit has no perks and a brief no level, carrying both when present.
 
 `MAIN_DIGEST` was taken on 2026-11-13 by running `_corpus()` from this very file against
-origin/main's `packages/creative/src` (`a6667370`, `git archive`): only names and kwargs
-`main` already has are used, so the function runs unchanged on both trees."""
+origin/main's `packages/creative/src` (`9129e688`, `git archive`; first taken on
+`a6667370`): only names and kwargs `main` already has are used, so the function runs
+unchanged on both trees."""
 
 from __future__ import annotations
 
@@ -47,12 +48,13 @@ from qualify_creative.schemas import (
     ContentBrief,
     HashtagPolicy,
     LengthTargets,
+    MediaInputs,
     ToneAxes,
     normalize_business_perks,
 )
 
 #: Re-baselined (from origin/main's code) whenever the copy prompt changes on purpose.
-MAIN_DIGEST = "81f1f456152111c5f64808944173c338991037b52aa787bea5e82287fdb05380"
+MAIN_DIGEST = "1d1e2854cc5b3932139eadd500c84a41560ce6df4c27874f3b6792aefb4213c2"
 
 BRAND_ID = UUID("a3b1c2d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d")
 PERKS = (
@@ -114,22 +116,30 @@ def _brief(**overrides: object) -> ContentBrief:
 
 
 def _corpus() -> str:
-    """Every prompt of a kit without perks and briefs without a level, across kinds and
-    with/without the business context — the bytes `main` renders."""
+    """Every prompt of a kit without perks and briefs without a level, across kinds, with
+    and without the business context, on compiler 0 and on compiler 5 with and without a
+    product (m-24985141) — the bytes `main` renders."""
     context = BrandContext(sector="Comida", location="Bogotá, CO", hashtags=("shawarma",))
     out: list[str] = []
     for kind in (ContentKind.STATIC_FLYER, ContentKind.CLIP, ContentKind.CREATOR_SCRIPT):
         for ctx in (None, context):
             for objective in BriefObjective:
-                rendered = render_prompt(
-                    kit=_kit(),
-                    voice=_voice(),
-                    brief=_brief(kind=kind, objective=objective),
-                    task=GenerationTask.COPY,
-                    context=ctx,
-                    variant=0,
-                )
-                out.append(rendered.stable_prefix + "\x00" + rendered.volatile_suffix)
+                for compiler, product_ref in ((0, None), (5, None), (5, "Shawarma mixto")):
+                    brief = _brief(
+                        kind=kind,
+                        objective=objective,
+                        product_ref=product_ref,
+                        media=MediaInputs(prompt_compiler_version=compiler),
+                    )
+                    rendered = render_prompt(
+                        kit=_kit(),
+                        voice=_voice(),
+                        brief=brief,
+                        task=GenerationTask.COPY,
+                        context=ctx,
+                        variant=0,
+                    )
+                    out.append(rendered.stable_prefix + "\x00" + rendered.volatile_suffix)
     return "\x01".join(out)
 
 

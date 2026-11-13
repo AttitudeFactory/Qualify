@@ -28,7 +28,12 @@ from qualify_api.ads.edit_review import (
     seal,
     unseal,
 )
-from qualify_api.ads.live_wizard import LiveWizardGateway, PersistedWizardSources, authorize_actor
+from qualify_api.ads.live_wizard import (
+    LiveWizardGateway,
+    PersistedWizardSources,
+    authorize_actor,
+    request_goal,
+)
 from qualify_api.ads.promotion_repository import PostgresPromotionRepository
 from qualify_api.ads.promotions import Promotion, fingerprint
 from qualify_api.ads.results import ResultsUnavailable
@@ -91,6 +96,9 @@ def _context(scope: ResultScope) -> tuple[Promotion, str, LiveWizardGateway, Any
         actor=actor,
         sources=PersistedWizardSources(),
         authorize=authorize_actor,
+        # Local guards run before any read-back: they must know a chat ad ignores the
+        # piece's button (m-24828980).
+        goal=request_goal(promotion.request),
     )
     source = gateway.sources.get(scope.tenant_id, UUID(promotion.request["publish_attempt_id"]))
     return promotion, ledger, gateway, source
@@ -570,6 +578,7 @@ async def reconcile_promotion_edit(scope: ResultScope, *, system: bool = False) 
         actor=UUID(body["actor"]),
         sources=PersistedWizardSources(),
         authorize=authorize,
+        goal=request_goal(after.request),
     )
     active = tuple(RESOURCES) if own["action"] == "resume" else tuple(body["baseline"])
     try:

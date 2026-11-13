@@ -277,7 +277,7 @@ class DiscoverReelsState(rx.State):
     @rx.event(background=True)
     async def replicate(self, key: str) -> AsyncIterator[rx.event.EventSpec]:
         """«Hacer uno parecido» (ADR 44 UI-1, m-24921075): only a server-held card of
-        this session opens the create flow on «Qué mostrar» (`/create?paso=2`), with
+        this session opens the create flow on «Qué mostrar» (`/create?paso=1`), with
         «‹ Ideas para tus reels» in its head. The business is sealed once, from the
         session (ADR 43 §2.4), and checked again before anything is applied.
 
@@ -324,7 +324,7 @@ class DiscoverReelsState(rx.State):
         asked = await asyncio.to_thread(reels_discovery.request_similar, tenant_id, card)
         analysis_id = str(asked.id) if asked is not None and asked.id is not None else ""
         # UI-2: what the request answered, kept even without an id (`no_video`,
-        # `daily_limit`), so step 2 can say why it will not wait
+        # `daily_limit`), so «Qué mostrar» (step 1) can say why it will not wait
         analysis_status = asked.status if asked is not None else reel_wait_vm.OUTCOME_UNASKED
         async with self:
             self.replicating = ""
@@ -339,10 +339,10 @@ class DiscoverReelsState(rx.State):
                 return
             creative._apply_reel_reference(card, imported, analysis_id, analysis_status)
             self.playing_key = ""
-        # no `?analisis=`: the id rides in the server-side state only, and step 2's wait
+        # no `?analisis=`: the id rides in the server-side state only, and «Qué mostrar»'s wait
         # (UI-2) polls it from there (`CreativeState.poll_reel_analysis`); coming back
         # via the card asks again and gets the same id (`request_analysis`)
-        yield go_to_step("/create", 2)
+        yield go_to_step("/create", 1)
 
 
 async def _still_mine(state: Any, load_id: int, tenant_id: UUID) -> bool:

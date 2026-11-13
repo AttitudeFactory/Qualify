@@ -1,6 +1,7 @@
-"""«Tu video, parte por parte» on step 2 of the create flow (ADR 44 UI-3, m-24921077) — pure.
+"""«Tu video, parte por parte» on «Qué mostrar» (step 1) of the create flow (ADR 44 UI-3,
+m-24921077) — pure.
 
-Once the reel's analysis is `ok` (UI-2), step 2 lists the parts its plan proposes
+Once the reel's analysis is `ok` (UI-2), «Qué mostrar» lists the parts its plan proposes
 (`qualify_api.creative.parts.plan_from_analysis`). This module holds everything about that
 list that is not I/O nor Reflex:
 
@@ -63,6 +64,8 @@ USAGE_TITLE = "Lo que usa de tu mes"
 FORM_EDIT = "Igual al original, con tu producto"
 FORM_INSPIRED = "Nueva, inspirada en el original"
 FORM_NEW = "Nueva, con tu producto"
+#: m-24985141: without a product a new part is made from the brand.
+FORM_NEW_BRAND = "Nueva, con tu marca"
 FORM_EXTEND = "Sigue a la anterior"
 #: An `extend` row names the part it is stuck to instead (it moves with it).
 #: An `extend` row's pill: §2's name, marked as stuck to the part above it.
@@ -286,13 +289,15 @@ def plans(entries: Sequence[dict[str, Any]]) -> tuple[VideoPartPlan, ...]:
 # -- rows (what the view draws) ---------------------------------------------------------
 
 
-def form_label(plan: Mapping[str, Any]) -> str:
+def form_label(plan: Mapping[str, Any], *, has_product: bool = True) -> str:
     mode = plan.get("mode")
     if mode == "edit":
         return FORM_EDIT
     if mode == "extend":
         return FORM_EXTEND
-    return FORM_INSPIRED if plan.get("analysis_id") else FORM_NEW
+    if plan.get("analysis_id"):
+        return FORM_INSPIRED
+    return FORM_NEW if has_product else FORM_NEW_BRAND
 
 
 def _seconds_words(seconds: int) -> str:
@@ -315,7 +320,9 @@ def _describe_text(entry: Mapping[str, Any]) -> str:
     return DESCRIBE_REEL_TEXT if plan.get("analysis_id") else DESCRIBE_NEW_TEXT
 
 
-def part_rows(entries: Sequence[dict[str, Any]]) -> list[dict[str, str]]:
+def part_rows(
+    entries: Sequence[dict[str, Any]], *, has_product: bool = True
+) -> list[dict[str, str]]:
     """One row per part, strings only: «Parte n · s s», what it shows, its form (pill
     and tone), «Aparece una persona» when someone is seen, the why line, the line that
     asks for a description, and the sentence a screen reader announces."""
@@ -330,7 +337,7 @@ def part_rows(entries: Sequence[dict[str, Any]]) -> list[dict[str, str]]:
         if not stuck:
             unit += 1
             head = at
-        form = FORM_EXTEND_OF if stuck else form_label(plan)
+        form = FORM_EXTEND_OF if stuck else form_label(plan, has_product=has_product)
         why = REASON_TEXTS.get(str(entry.get("reason") or ""), "")
         if stuck:
             why = REASON_TEXTS[REASON_EXTEND].format(n=head)
@@ -513,10 +520,11 @@ TRY_FIRST_LABEL = "Probar solo la parte 1"
 TRY_FIRST_NOTE = "Usa 1 vista previa. Las demás las creas después."
 #: What the piece is, wherever the screen names its kind (summary, panel, result).
 PARTS_PIECE_LABEL = "Video por partes"
-#: Back to the parts list (step 2) when a part blocks creating them, or they fall short.
-BACK_TO_PARTS_LABEL = "Volver al paso 2"
-#: Every part was taken out on step 2.
-NO_PARTS_TEXT = "Tu video se quedó sin partes. Vuelve al paso 2 para recuperar alguna."
+#: Back to the parts list («Qué mostrar», step 1 since m-24985141) when a part blocks
+#: creating them, or they fall short — named, never numbered.
+BACK_TO_PARTS_LABEL = "Volver a «Qué mostrar»"
+#: Every part was taken out on «Qué mostrar».
+NO_PARTS_TEXT = "Tu video se quedó sin partes. Vuelve a «Qué mostrar» para recuperar alguna."
 #: Creating the parent failed for a reason the owner cannot fix here (never raw text).
 #: True on that path: the parent is priced at 0 (`REQUEST_SHOT_VIDEO`) and the parts —
 #: what uses vistas previas — are only created by the worker after it exists.
@@ -542,6 +550,9 @@ _FATE_EXTEND = ("sigue a la anterior", "siguen cada una a la anterior")
 #: m-24921079: without a reel every part is made new, from the product and the brand.
 NO_REEL_FATE_ONE = "La parte se hace con tu producto y tu marca."
 NO_REEL_FATE_MANY = "Las {n} partes se hacen con tu producto y tu marca."
+#: m-24985141: the product is optional — without one, the parts come from the brand alone.
+NO_REEL_FATE_ONE_BRAND = "La parte se hace con tu marca."
+NO_REEL_FATE_MANY_BRAND = "Las {n} partes se hacen con tu marca."
 
 
 def _from_reel(entries: Sequence[dict[str, Any]]) -> bool:
@@ -580,7 +591,12 @@ def review_summary_text(entries: Sequence[dict[str, Any]], product: str = "") ->
     head = f"{'Un reel' if from_reel else 'Tu video'} de {total_seconds(entries)} s en {noun}"
     head += f", con tu {product}." if product else "."
     if not from_reel:
-        tail = NO_REEL_FATE_ONE if count == 1 else NO_REEL_FATE_MANY.format(n=count)
+        one, many = (
+            (NO_REEL_FATE_ONE, NO_REEL_FATE_MANY)
+            if product
+            else (NO_REEL_FATE_ONE_BRAND, NO_REEL_FATE_MANY_BRAND)
+        )
+        tail = one if count == 1 else many.format(n=count)
         return f"{head} {tail}"
     tally = {_FATE_EDIT: 0, _FATE_NEW: 0, _FATE_EXTEND: 0}
     for entry in entries:
@@ -646,7 +662,7 @@ def parts_previews_short_text(
     remove = "Quita 1 parte" if drop == 1 else f"Quita {drop} partes"
     return (
         f"Crear las {parts} partes usa {parts} vistas previas y este mes {left}. "
-        f"{remove} en el paso 2, prueba solo la parte 1 o espera al {day}, cuando vuelven "
+        f"{remove} en «Qué mostrar», prueba solo la parte 1 o espera al {day}, cuando vuelven "
         f"tus {previews_quota} vistas previas."
     )
 
@@ -664,14 +680,14 @@ class ReviewActions:
     first_reason: str
     #: The counter at 0 (`ask_more_vm` kind, "" = none): the screen offers to ask more.
     exhausted: str
-    #: «Volver al paso 2» is offered: the fix is in the parts list.
+    #: «Volver a «Qué mostrar»» is offered: the fix is in the parts list.
     back_to_parts: bool
     #: The short reason beside the frame's primary («Crear las n partes»), "" = active.
     foot_reason: str = ""
     #: The reason is about the vistas previas (short or at 0): «Lo que usa de tu mes»
     #: leaves its vistas previas line out, so it is not said twice.
     previews_said: bool = False
-    #: No part can be created: «‹ Ideas para tus reels» instead of «Volver al paso 2».
+    #: No part can be created: «‹ Ideas para tus reels» instead of «Volver a «Qué mostrar»».
     to_ideas: bool = False
     #: The reason says no second of video is left: the seconds line is left out.
     seconds_said: bool = False
@@ -697,7 +713,7 @@ def review_actions(
     second left holds creation (as Crear does today). A quota of 0 = none wired: never
     a block.
 
-    An `extend` part is never first nor torn from the part it continues here: step 2's
+    An `extend` part is never first nor torn from the part it continues here: «Qué mostrar»'s
     every edit (`remove_part`, `move_unit`) runs `_settle`, which makes such a part new,
     with the same order rule as the backend's `check_extend_parts`.
 
@@ -804,6 +820,7 @@ __all__ = [
     "FORM_EXTEND",
     "FORM_INSPIRED",
     "FORM_NEW",
+    "FORM_NEW_BRAND",
     "LIST_HELP",
     "NO_PARTS_TEXT",
     "ORIGINAL_GONE_TEXT",

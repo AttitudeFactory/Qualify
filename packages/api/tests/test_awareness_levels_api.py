@@ -2,7 +2,7 @@
 `brand_service` (written only when the caller set them, read back normalized), the
 level through the `content_briefs` row and the `creative_angles` record, the brand
 fingerprint (a perks change gives a cached set a new one, an empty list keeps the old
-one), the video-by-parts prompt and its version, and migration 0164's place in the
+one), the video-by-parts prompt and its version, and migration 0165's place in the
 chain."""
 
 from __future__ import annotations
@@ -31,9 +31,9 @@ BRAND_ID = uuid4()
 PERKS = ("Parqueadero gratis", "Pet friendly", "Abierto hasta las 11 p. m.")
 _VERSIONS = Path(__file__).resolve().parents[3] / "migrations/postgres/versions"
 #: The parts prompt with no perks and no level, as origin/main renders it (`_parts_corpus`
-#: run on f3412a8a's code, 2026-11-13). Re-baselined (from origin/main's code) whenever
+#: run on 9129e688's code, 2026-11-13). Re-baselined (from origin/main's code) whenever
 #: the parts prompt changes on purpose.
-PARTS_MAIN_DIGEST = "e5c5b62ce526d99ba3c977bfa62e5e580878d291008a3612aecd4e92ef136492"
+PARTS_MAIN_DIGEST = "c349724d404309694ebf7b36aebde58c0dec95a8f13f4e57ddfe1ee3fc8255b2"
 
 
 def _kit(**overrides: object) -> BrandKit:
@@ -153,20 +153,20 @@ def test_the_parts_prompt_carries_perks_and_level_only_when_present() -> None:
         CreativeAngle(position=1, title="Mesa", scene="en la mesa"),
     )
     assert "Lo que ofrece el negocio" not in plain and "Nivel de consciencia" not in plain
-    assert PROPOSE_PARTS_PROMPT_VERSION == "proponer-partes-v3.3"
+    assert PROPOSE_PARTS_PROMPT_VERSION == "proponer-partes-v3.4"
 
 
-# -- migration 0164 ------------------------------------------------------------------------
+# -- migration 0165 ------------------------------------------------------------------------
 
 
-def test_migration_0164_follows_0163_and_is_the_only_head() -> None:
-    text = (_VERSIONS / "0164_awareness_levels_business_perks.py").read_text()
-    assert 'revision = "0164"' in text and 'down_revision = "0163"' in text
+def test_migration_0165_follows_0164_and_is_the_only_head() -> None:
+    text = (_VERSIONS / "0165_awareness_levels_business_perks.py").read_text()
+    assert 'revision = "0165"' in text and 'down_revision = "0164"' in text
     parents = [
         re.search(r'^down_revision = "(\d+)"', path.read_text(), re.M)
         for path in _VERSIONS.glob("*.py")
     ]
-    assert [m.group(1) for m in parents if m].count("0163") == 1
+    assert [m.group(1) for m in parents if m].count("0164") == 1
     assert "def downgrade()" in text and text.count("drop_column") >= 2
 
 
