@@ -76,8 +76,15 @@ POPULAR_WINDOW_DAYS = 90
 POPULAR_POOL_FACTOR = 4
 POPULAR_MIN_POOL = 20
 
-#: Where a post sighting came from (0162 `ck_hashtag_sighting_source`).
-SIGHTING_SOURCES = ("referentes", "public_reels")
+#: Where a post sighting came from (0162 `ck_hashtag_sighting_source`; 0163 adds
+#: `hashtag_weekly`, the weekly TikTok read per rubro hashtag, m-25026378).
+SIGHTING_SOURCES = ("referentes", "public_reels", "hashtag_weekly")
+#: Sources whose tags alone never enter the paid classification queue
+#: (`needs_classification`): a reel caption (m-25026377) or the weekly read's co-occurring
+#: tags (m-25026378) — reads that bring dozens of tags nobody searched for. A tag only
+#: these ever brought stays out; a search that counts it (`seen_count`) or links it to a
+#: term brings it in.
+UNQUEUED_SIGHTING_SOURCES = ("public_reels", "hashtag_weekly")
 NETWORKS = ("tiktok", "instagram")
 #: `<network>:<kind>` and nothing else (0162 `ck_hashtag_sighting_source_ref`): no room
 #: for a search's words.
@@ -339,7 +346,9 @@ class HashtagRepository(Protocol):
         is anything an AI or a person already decided — a pass never repeats itself.
         Also excluded (m-25026377): a tag only ever met in a reel caption — never counted
         by a search (`seen_count` 0), never linked to a term, with a `public_reels`
-        sighting — so reels reads never grow the paid batch. Most seen first."""
+        sighting — so reels reads never grow the paid batch; since m-25026378 the same
+        for a tag only the weekly TikTok read brought (`hashtag_weekly`). Most seen
+        first."""
         ...
 
     def apply_classifications(self, tenant_id: UUID, items: Iterable[Classification]) -> int:
@@ -669,13 +678,14 @@ class MemoryHashtagRepository:
 
     def _reel_only(self, stored: StoredHashtag) -> bool:
         """As `_NOT_REEL_ONLY`: created as `observed`, never counted by a search, never
-        linked to a term, and met in at least one reel caption."""
+        linked to a term, and met in at least one reel caption or weekly read
+        (`UNQUEUED_SIGHTING_SOURCES`)."""
         if stored.source != "observed" or stored.seen_count > 0:
             return False
         if any(link.tag == stored.tag for link in self._links.values()):
             return False
         return any(
-            tag == stored.tag and s.source == "public_reels"
+            tag == stored.tag and s.source in UNQUEUED_SIGHTING_SOURCES
             for (tag, _n, _p), s in self._sightings.items()
         )
 
@@ -859,11 +869,16 @@ _APPLY_CLASSIFICATION = text(
 #: queue — reels reads must not grow the Haiku batch billed to the next search.
 #: Only an `observed` tag can be reel-only: one created by `ai` (`remember_created`),
 #: `manual` or `taxonomy` keeps its behaviour even when a reel caption carries it.
+#: m-25026378 extends it on purpose to the weekly TikTok read (`hashtag_weekly`): its
+#: videos' co-occurring tags must not grow the Haiku batch either
+#: (`UNQUEUED_SIGHTING_SOURCES`).
 _NOT_REEL_ONLY = (
     "(h.source <> 'observed' OR h.seen_count > 0 "
     "OR EXISTS (SELECT 1 FROM hashtag_terms t WHERE t.hashtag_id = h.id) "
     "OR NOT EXISTS (SELECT 1 FROM hashtag_post_sightings s "
-    "WHERE s.hashtag_id = h.id AND s.source = 'public_reels'))"
+    "WHERE s.hashtag_id = h.id AND s.source IN ("
+    + ",".join(f"'{source}'" for source in UNQUEUED_SIGHTING_SOURCES)
+    + ")))"
 )
 
 _NEEDS_CLASSIFICATION = text(
