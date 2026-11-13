@@ -353,16 +353,17 @@ SELECT count(*)
  WHERE t.channel = ANY(:channels) AND {filter}
 """
 
-# Every filter's count per channel in one pass over the tenant's chat threads. Each
-# FILTER clause is the filter's own text (`_FILTER_SQL`), so `InboxCounts.count(f)` and
-# `count_inbox(filter=f)` are the same number by construction.
-_COUNTS: Final = """
-SELECT t.channel,
-       {columns}
+# Every filter's count per channel in ONE statement: one `_COUNT` branch per filter,
+# grouped by channel, glued with UNION ALL. Each branch is the filter's own text in a
+# WHERE (`_FILTER_SQL`), so `InboxCounts.count(f)` and `count_inbox(filter=f)` are the
+# same number by construction — and planned the same way: in a WHERE the rule's EXISTS
+# becomes a join, whereas a single scan with `count(*) FILTER (WHERE …)` per filter keeps
+# it a per-row subplan (measured 5x slower on 3,000 chats).
+_COUNTS_BRANCH: Final = """
+SELECT '{name}' AS filter, t.channel, count(*) AS n
   FROM threads t
- WHERE t.channel = ANY(:channels)
- GROUP BY t.channel
-"""
+ WHERE t.channel = ANY(:channels) AND {filter}
+ GROUP BY t.channel"""
 
 # Strictly after the cursor in `last_message_at DESC NULLS LAST, id DESC`: inside the
 # dated branch for a dated cursor; inside the undated branch for an undated one (every
@@ -410,10 +411,9 @@ def _count_sql(filter: str) -> str:
 
 
 def _counts_sql() -> str:
-    columns = ",\n       ".join(
-        f"count(*) FILTER (WHERE {_FILTER_SQL[f]}) AS {f}" for f in INBOX_FILTERS
+    return "\nUNION ALL".join(
+        _COUNTS_BRANCH.format(name=f, filter=_FILTER_SQL[f]) for f in INBOX_FILTERS
     )
-    return _COUNTS.format(columns=columns)
 
 
 def _window_expired_at(r: Any) -> datetime | None:
@@ -502,16 +502,11 @@ class PostgresInboxReader:
         params = {"channels": list(channels), "now": now, "expired_since": expired_since}
         with tenant_session(tenant_id) as session:
             records = session.execute(text(_counts_sql()), params).all()
-        found = {r.channel: r for r in records}
+        found = {(r.filter, r.channel): int(r.n or 0) for r in records}
         return InboxCounts(
             by_channel=MappingProxyType(
                 {
-                    c: MappingProxyType(
-                        {
-                            f: int(getattr(found[c], f) or 0) if c in found else 0
-                            for f in INBOX_FILTERS
-                        }
-                    )
+                    c: MappingProxyType({f: found.get((f, c), 0) for f in INBOX_FILTERS})
                     for c in channels
                 }
             )

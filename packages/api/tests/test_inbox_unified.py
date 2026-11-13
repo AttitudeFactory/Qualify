@@ -201,10 +201,14 @@ def test_the_new_filters_read_only_the_thread_and_correlated_subqueries() -> Non
 
 def test_counts_are_one_statement_with_every_filter_verbatim() -> None:
     sql = _counts_sql()
-    assert sql.lstrip().startswith("SELECT t.channel,") and "GROUP BY t.channel" in sql
+    assert sql.count("UNION ALL") == len(INBOX_FILTERS) - 1
+    assert sql.count("GROUP BY t.channel") == len(INBOX_FILTERS)
     for f in INBOX_FILTERS:
-        assert f"count(*) FILTER (WHERE {_filter_sql(f)}) AS {f}" in sql
-        assert _filter_sql(f) in _count_sql(f)  # the same text `count_inbox` runs
+        # Each branch is `count_inbox`'s own WHERE, so both are planned alike.
+        branch = f"SELECT '{f}' AS filter, t.channel, count(*) AS n FROM threads t"
+        assert branch in " ".join(sql.split())
+        assert f"t.channel = ANY(:channels) AND {_filter_sql(f)}" in sql
+        assert _filter_sql(f) in _count_sql(f)
     for verb in ("INSERT", "UPDATE", "DELETE"):
         assert not re.search(rf"\b{verb}\b", sql.upper()), verb
 
