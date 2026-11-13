@@ -26,7 +26,6 @@ def _thumb(media: rx.Var[AdMediaVM], ratio: str) -> rx.Component:
                 src=BACKEND_BASE + media.url,
                 muted=True,
                 plays_inline=True,
-                controls=True,
                 preload="metadata",
                 aria_label=media.label,
                 width="100%",

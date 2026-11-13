@@ -118,7 +118,21 @@ def _checks() -> rx.Component:
 def _source_choice(source: rx.Var) -> rx.Component:
     return choice_card(
         rx.vstack(
-            rx.text(source.account_label, weight="medium", overflow_wrap="anywhere"),
+            rx.cond(
+                source.media_kind == "",
+                rx.text(source.account_label, weight="medium", overflow_wrap="anywhere"),
+                rx.text(
+                    rx.cond(
+                        source.media_kind == "videos",
+                        "Con los dos videos",
+                        "Con las dos imágenes",
+                    )
+                    + " · "
+                    + source.account_label,
+                    weight="medium",
+                    overflow_wrap="anywhere",
+                ),
+            ),
             rx.text(source.caption, size="2", class_name="q-clamp-3", color=T.TEXT_MUTED),
             rx.cond(
                 source.media_kind == "",
