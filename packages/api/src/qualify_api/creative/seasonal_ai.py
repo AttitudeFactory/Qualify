@@ -575,6 +575,13 @@ class KindRoutedExecutor:
     def finish(self, job: JobContext, vendor_task_id: str | None, status: str) -> None:
         self._for(job).finish(job, vendor_task_id, status)
 
+    def give_up(self, job: JobContext) -> None:
+        """The runner ran out of finish attempts (m-25017372): the routed executor settles
+        its subject, when it knows how."""
+        give_up = getattr(self._for(job), "give_up", None)
+        if give_up is not None:
+            give_up(job)
+
 
 # --- production wiring --------------------------------------------------------------------
 

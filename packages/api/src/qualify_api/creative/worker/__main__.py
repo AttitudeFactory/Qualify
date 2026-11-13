@@ -93,6 +93,11 @@ def production_executors() -> dict[str, JobExecutor]:
         production_content_service,
     )
     from qualify_api.creative.pipeline import PipelineStore
+    from qualify_api.creative.product_sticker_ai import (
+        KIND_STICKER_CHARACTER,
+        UnknownKindExecutor,
+        production_character_executor,
+    )
     from qualify_api.creative.seasonal_ai import (
         KindRoutedExecutor,
         production_seasonal_ai_executor,
@@ -110,6 +115,12 @@ def production_executors() -> dict[str, JobExecutor]:
         q.SEEDANCE_POOL: KindRoutedExecutor(
             PipelineExecutor(service, store, seedance, "seedance"),
             {q.KIND_SEASONAL_VIDEO: lambda: production_seasonal_ai_executor(seedance)},
+        ),
+        # m-25017372: product sticker characters, one synchronous Seedream call each, on
+        # their own pool (never a Seedance slot); the executor opens R2 on first use
+        q.SEEDREAM_PRO_POOL: KindRoutedExecutor(
+            UnknownKindExecutor(),
+            {KIND_STICKER_CHARACTER: production_character_executor},
         ),
         q.OMNIHUMAN_POOL: PipelineExecutor(
             service,

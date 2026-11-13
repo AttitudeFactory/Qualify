@@ -15,6 +15,10 @@ dependencies = [
     "pydantic>=2.14.1",
     "pillow>=13.0.0",
     "pillow-heif>=0.18",
+    # m-25017372: the product-sticker chroma key (`seasonal/kawaii.py`) is numpy array math;
+    # already in the production image through `transformers` (group `sentiment`), declared
+    # here so the generator does not depend on that by accident
+    "numpy>=2.5.4",
 ]
 # rembg stays OUT of dependencies on purpose: onnxruntime + model weights are the heavy
 # tree, and segmentation sits behind the `Segmenter` Protocol with a lazy import — the

@@ -17,6 +17,17 @@ each item to a change with `field = "messages"`, see `webhooks/envelope.py`):
 `reply_to` with a `mid` instead (an inline reply to another message) is not a story and
 is ignored. Corpus-only until R3 observes it live.
 
+A **story mention** (m-25017817) — the person mentioned the account in their own story —
+arrives here too, not on the `mentions` field. Live (2026-11-13, one event) it came as
+`{"mid", "reply_to": {"story": {"id", "url"}}}` and nothing else — the story-reply key,
+with no text and no attachment; the docs show instead an attachment typed
+`story_mention` with `payload.url` (`features/story-mention.md`). Both are read
+(`_story_mention_of`), the bare form as a `heuristic` mention. A mention is stored with
+`story_mention = true`, its basis, the story id/URL in `story_mention_*`, and NOT in
+`story_reply_*` (that story is the mentioner's; followups and intent count replies to the
+account's own stories). `media_type` keeps its generic reading. Meta forbids storing the
+story's media: only the URL is kept, never the file. An echo is never a mention.
+
 ## Taps (m-24789472, PR 2)
 
 A person may answer by tapping instead of typing (`conversations.choices`):
@@ -78,6 +89,7 @@ import asyncio
 import hashlib
 import logging
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Final
 
@@ -88,6 +100,9 @@ from qualify_api.conversations.choices import (
 )
 from qualify_api.conversations.contracts import (
     CHANNEL_DM,
+    STORY_MENTION_ATTACHMENT,
+    STORY_MENTION_ATTACHMENT_BASIS,
+    STORY_MENTION_HEURISTIC,
     RemoteConversation,
     RemoteMessage,
     RemoteRead,
@@ -178,6 +193,53 @@ def _media_url_of(message: Mapping[str, Any]) -> str | None:
     payload = first.get("payload") if isinstance(first, Mapping) else None
     url = payload.get("url") if isinstance(payload, Mapping) else None
     return url if isinstance(url, str) and url else None
+
+
+@dataclass(frozen=True)
+class _StoryMention:
+    basis: str
+    story_id: str | None
+    url: str | None
+
+
+def _story_mention_of(message: Mapping[str, Any]) -> _StoryMention | None:
+    """The story mention an inbound item carries, by one of two rules:
+
+    1. `attachment` — an attachment `{"type": "story_mention", "payload": {"url"}}`, any
+       position (`features/story-mention.md`, «Example webhook»; no story id). `[CORPUS]`:
+       documented, never observed here.
+    2. `heuristic` — `reply_to.story = {"id", "url"}` with NO text, NO attachment, not
+       `is_unsupported` and no quick reply. `[VERIFIED 2026-11-13]`, one event (Instagram
+       API with Facebook Login, Live app, Standard Access): the founder mentioned
+       @bianki.sc in his own story and Meta sent exactly that, the same key a story reply
+       uses. A story reply normally carries the person's text or media, so the bare form is
+       read as a mention — an inference, upgraded or turned into a reply by the Message
+       node's `story` field when the poll reads it (`instagram_source._story_mention`)."""
+    attachments = message.get("attachments")
+    for attachment in attachments if isinstance(attachments, list) else []:
+        if not isinstance(attachment, Mapping) or attachment.get("type") != (
+            STORY_MENTION_ATTACHMENT
+        ):
+            continue
+        payload = attachment.get("payload")
+        url = payload.get("url") if isinstance(payload, Mapping) else None
+        reply = _story_reply_of(message)
+        return _StoryMention(
+            STORY_MENTION_ATTACHMENT_BASIS,
+            reply[0] if reply else None,
+            url if isinstance(url, str) and url else (reply[1] if reply else None),
+        )
+    reply = _story_reply_of(message)
+    if reply is None:
+        return None
+    text = message.get("text")
+    bare = (
+        not (isinstance(text, str) and text.strip())
+        and not attachments
+        and message.get("is_unsupported") is not True
+        and not isinstance(message.get("quick_reply"), Mapping)
+    )
+    return _StoryMention(STORY_MENTION_HEURISTIC, reply[0], reply[1]) if bare else None
 
 
 def _story_reply_of(message: Mapping[str, Any]) -> tuple[str, str | None] | None:
@@ -291,7 +353,10 @@ def parse_messaging_item(
     text = message.get("text")
     if not isinstance(text, str) or not text:
         text = _template_text(message)
-    story = None if is_echo else _story_reply_of(message)
+    # Only a person can mention the account in their story: an echo never is one. A
+    # mention never fills `story_reply_*` (that story is the mentioner's, not the account's).
+    mention = None if is_echo else _story_mention_of(message)
+    story = None if is_echo or mention is not None else _story_reply_of(message)
     # A quick reply is the person's tap: an echo (the business's own message) never is one.
     quick_reply = None if is_echo else _quick_reply_payload(message)
     tapped = not is_echo and isinstance(message.get("quick_reply"), Mapping)
@@ -308,6 +373,10 @@ def parse_messaging_item(
         story_reply_url=story[1] if story else None,
         choice_kind=CHOICE_QUICK_REPLY if tapped else None,
         choice_payload=quick_reply if tapped else None,
+        story_mention=mention is not None,
+        story_mention_id=mention.story_id if mention else None,
+        story_mention_url=mention.url if mention else None,
+        story_mention_basis=mention.basis if mention else None,
     )
     return RemoteConversation(counterpart_external_id=counterpart), remote
 

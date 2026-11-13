@@ -43,7 +43,14 @@ from qualify_shared.db.session import tenant_session
 from sqlalchemy import bindparam, text
 
 from qualify_api.conversations.choices import choice_label
-from qualify_api.conversations.contracts import AccessVerdict, RemoteMessage, RemoteProfile
+from qualify_api.conversations.contracts import (
+    STORY_MENTION_ATTACHMENT_BASIS,
+    STORY_MENTION_GRAPH,
+    STORY_MENTION_HEURISTIC,
+    AccessVerdict,
+    RemoteMessage,
+    RemoteProfile,
+)
 
 THREAD_OPEN = "open"
 THREAD_CLOSED = "closed"
@@ -105,6 +112,14 @@ class MessageRecord:
     # 0082 (m-24789472): the option an inbound DM was tapped from, if it was.
     choice_kind: str | None = None
     choice_payload: str | None = None
+    # 0156 (m-25017817): the inbound DM is a mention of the account in the person's OWN
+    # story — never also a story reply. `story_mention_basis`: `graph` / `attachment`
+    # (confirmed) or `heuristic` (a bare `reply_to.story`, inferred). The id/URL are the
+    # mentioner's story; the URL expires with it (24 h).
+    story_mention: bool = False
+    story_mention_id: str | None = None
+    story_mention_url: str | None = None
+    story_mention_basis: str | None = None
     ad_promotion_id: UUID | None = None
     ad_origin_label: str | None = None
     ad_origin_at: datetime | None = None
@@ -254,32 +269,86 @@ _UPSERT_THREAD = text(
 # - the option a DM was tapped from (m-24789472, 0082): the poll never carries it (the
 #   Message node has no postback/quick-reply field), so a webhook — first delivery or a
 #   replay — that reaches a `mid` the poll stored adds kind and payload, together.
+# - the story kind (m-25017817, 0156), mention vs reply, settled by strength:
+#   * CM — a confirmed mention arrives (`graph` or `attachment`): the row becomes a
+#     mention, any story reply on it moves out (a legacy row stored before 0156 gives its
+#     story id/URL to the mention), a `graph` basis is never lowered to `attachment`;
+#   * HM — a heuristic mention arrives: it flags only a row with no story kind at all;
+#   * RD — the Message node says `reply_to` (`:story_reply_confirmed`) on a row that is
+#     only a heuristic mention: it becomes that story reply (the only downgrade, and only
+#     of an inference);
+#   * RF — the 0075 fill above, never onto a mention.
+#   A confirmed kind is never replaced by a weaker reading; id / URL are fill-only.
 # A pair already stored is never replaced, nothing else is ever rewritten, and `created`
 # is only true for a real insert.
+_CM = "EXCLUDED.story_mention_basis IN ('graph', 'attachment')"
+_HM = (
+    "(EXCLUDED.story_mention_basis = 'heuristic' AND NOT messages.story_mention"
+    " AND messages.story_reply_id IS NULL)"
+)
+_RD = (
+    "(CAST(:story_reply_confirmed AS boolean) AND EXCLUDED.story_reply_id IS NOT NULL"
+    " AND messages.story_mention_basis = 'heuristic')"
+)
+_RF = (
+    "(messages.story_reply_id IS NULL AND EXCLUDED.story_reply_id IS NOT NULL"
+    " AND NOT messages.story_mention)"
+)
+_CM_CHANGES = f"""({_CM} AND (NOT messages.story_mention
+       OR messages.story_reply_id IS NOT NULL
+       OR messages.story_mention_basis = 'heuristic'
+       OR (messages.story_mention_basis <> 'graph'
+           AND EXCLUDED.story_mention_basis = 'graph')
+       OR (messages.story_mention_id IS NULL AND EXCLUDED.story_mention_id IS NOT NULL)
+       OR (messages.story_mention_url IS NULL AND EXCLUDED.story_mention_url IS NOT NULL)))"""
 _INSERT_MESSAGE = text(
-    """
+    f"""
     INSERT INTO messages (id, tenant_id, thread_id, connection_id, external_message_id,
                           direction, author_external_id, author_username, text, posted_at,
                           shape_version, media_type, media_url, story_reply_id,
-                          story_reply_url, choice_kind, choice_payload)
+                          story_reply_url, choice_kind, choice_payload, story_mention,
+                          story_mention_id, story_mention_url, story_mention_basis)
     VALUES (:id, :tenant_id, :thread_id, :connection_id, :external_message_id, :direction,
             :author_external_id, :author_username, :text, :posted_at, :shape_version,
             :media_type, :media_url, :story_reply_id, :story_reply_url, :choice_kind,
-            :choice_payload)
+            :choice_payload, :story_mention, :story_mention_id, :story_mention_url,
+            :story_mention_basis)
     ON CONFLICT (connection_id, external_message_id) DO UPDATE
-       SET story_reply_id = CASE WHEN messages.story_reply_id IS NULL
-                                 THEN EXCLUDED.story_reply_id
+       SET story_reply_id = CASE WHEN {_CM} THEN NULL
+                                 WHEN {_RD} OR {_RF} THEN EXCLUDED.story_reply_id
                                  ELSE messages.story_reply_id END,
-           story_reply_url = CASE WHEN messages.story_reply_id IS NULL
-                                  THEN EXCLUDED.story_reply_url
+           story_reply_url = CASE WHEN {_CM} THEN NULL
+                                  WHEN {_RD} OR {_RF} THEN EXCLUDED.story_reply_url
                                   ELSE messages.story_reply_url END,
            choice_kind = COALESCE(messages.choice_kind, EXCLUDED.choice_kind),
            choice_payload = CASE WHEN messages.choice_kind IS NULL
                                  THEN EXCLUDED.choice_payload
-                                 ELSE messages.choice_payload END
+                                 ELSE messages.choice_payload END,
+           story_mention = CASE WHEN {_CM} OR {_HM} THEN true
+                                WHEN {_RD} THEN false
+                                ELSE messages.story_mention END,
+           story_mention_basis = CASE
+               WHEN {_CM} THEN CASE WHEN messages.story_mention_basis = 'graph'
+                                    THEN 'graph' ELSE EXCLUDED.story_mention_basis END
+               WHEN {_HM} THEN 'heuristic'
+               WHEN {_RD} THEN NULL
+               ELSE messages.story_mention_basis END,
+           story_mention_id = CASE
+               WHEN {_CM} THEN COALESCE(messages.story_mention_id,
+                                        EXCLUDED.story_mention_id, messages.story_reply_id)
+               WHEN {_HM} THEN EXCLUDED.story_mention_id
+               WHEN {_RD} THEN NULL
+               ELSE messages.story_mention_id END,
+           story_mention_url = CASE
+               WHEN {_CM} THEN COALESCE(messages.story_mention_url,
+                                        EXCLUDED.story_mention_url, messages.story_reply_url)
+               WHEN {_HM} THEN EXCLUDED.story_mention_url
+               WHEN {_RD} THEN NULL
+               ELSE messages.story_mention_url END
      WHERE messages.direction = 'inbound'
-       AND ((messages.story_reply_id IS NULL AND EXCLUDED.story_reply_id IS NOT NULL)
-            OR (messages.choice_kind IS NULL AND EXCLUDED.choice_kind IS NOT NULL))
+       AND ({_RF}
+            OR (messages.choice_kind IS NULL AND EXCLUDED.choice_kind IS NOT NULL)
+            OR {_CM_CHANGES} OR {_HM} OR {_RD})
     RETURNING (xmax = 0) AS created
     """
 )
@@ -361,7 +430,8 @@ _LIST_MESSAGES = text(
     SELECT id, thread_id, connection_id, external_message_id, direction, author_external_id,
            author_username, text, posted_at, ingested_at, delivery_status, media_type,
            media_url, media_object_key, story_reply_id, story_reply_url, choice_kind,
-           choice_payload
+           choice_payload, story_mention, story_mention_id, story_mention_url,
+           story_mention_basis
       FROM messages
      WHERE thread_id = :thread_id AND deleted_at IS NULL
      ORDER BY COALESCE(posted_at, ingested_at) DESC, id DESC
@@ -523,6 +593,11 @@ class PostgresConversationRepository:
                     "story_reply_url": message.story_reply_url,
                     "choice_kind": message.choice_kind,
                     "choice_payload": message.choice_payload,
+                    "story_mention": message.story_mention,
+                    "story_mention_id": message.story_mention_id,
+                    "story_mention_url": message.story_mention_url,
+                    "story_mention_basis": message.story_mention_basis,
+                    "story_reply_confirmed": message.story_reply_confirmed,
                 },
             ).first()
             return bool(result is not None and result.created)
@@ -614,6 +689,10 @@ class PostgresConversationRepository:
                 story_reply_url=r.story_reply_url,
                 choice_kind=r.choice_kind,
                 choice_payload=r.choice_payload,
+                story_mention=bool(r.story_mention),
+                story_mention_id=r.story_mention_id,
+                story_mention_url=r.story_mention_url,
+                story_mention_basis=r.story_mention_basis,
             )
             for r in rows
         ]
@@ -747,6 +826,70 @@ class PostgresConversationRepository:
 # --------------------------------------------------------------------------------------
 
 
+def merge_story_kind(stored: MessageRecord, incoming: RemoteMessage) -> MessageRecord:
+    """A later reading of an inbound message against its stored row — mention vs story
+    reply (m-25017817), the Python twin of `_INSERT_MESSAGE`'s conflict branch."""
+    confirmed = incoming.story_mention_basis in (
+        STORY_MENTION_GRAPH,
+        STORY_MENTION_ATTACHMENT_BASIS,
+    )
+    if confirmed:
+        return replace(
+            stored,
+            story_mention=True,
+            story_mention_basis=(
+                STORY_MENTION_GRAPH
+                if stored.story_mention_basis == STORY_MENTION_GRAPH
+                else incoming.story_mention_basis
+            ),
+            story_mention_id=stored.story_mention_id
+            or incoming.story_mention_id
+            or stored.story_reply_id,
+            story_mention_url=stored.story_mention_url
+            or incoming.story_mention_url
+            or stored.story_reply_url,
+            story_reply_id=None,
+            story_reply_url=None,
+        )
+    if (
+        incoming.story_mention_basis == STORY_MENTION_HEURISTIC
+        and not stored.story_mention
+        and stored.story_reply_id is None
+    ):
+        return replace(
+            stored,
+            story_mention=True,
+            story_mention_basis=STORY_MENTION_HEURISTIC,
+            story_mention_id=incoming.story_mention_id,
+            story_mention_url=incoming.story_mention_url,
+        )
+    if (
+        incoming.story_reply_confirmed
+        and incoming.story_reply_id is not None
+        and stored.story_mention_basis == STORY_MENTION_HEURISTIC
+    ):
+        return replace(
+            stored,
+            story_mention=False,
+            story_mention_basis=None,
+            story_mention_id=None,
+            story_mention_url=None,
+            story_reply_id=incoming.story_reply_id,
+            story_reply_url=incoming.story_reply_url,
+        )
+    if (
+        stored.story_reply_id is None
+        and incoming.story_reply_id is not None
+        and not stored.story_mention
+    ):
+        return replace(
+            stored,
+            story_reply_id=incoming.story_reply_id,
+            story_reply_url=incoming.story_reply_url,
+        )
+    return stored
+
+
 @dataclass
 class _MemoryThread:
     record: ThreadRecord
@@ -818,7 +961,7 @@ class MemoryConversationRepository:
             raise LookupError(f"no thread {thread_id} in tenant {tenant_id}")
         key = (connection_id, message.external_message_id)
         if key in self._message_keys:
-            self._fill_story_reply(entry, message)
+            self._merge_story(entry, message)
             self._fill_choice(entry, message)
             return False
         self._message_keys.add(key)
@@ -841,26 +984,23 @@ class MemoryConversationRepository:
                 story_reply_url=message.story_reply_url,
                 choice_kind=message.choice_kind,
                 choice_payload=message.choice_payload,
+                story_mention=message.story_mention,
+                story_mention_id=message.story_mention_id,
+                story_mention_url=message.story_mention_url,
+                story_mention_basis=message.story_mention_basis,
             )
         )
         return True
 
     @staticmethod
-    def _fill_story_reply(entry: _MemoryThread, message: RemoteMessage) -> None:
-        """The Postgres `ON CONFLICT` exception: a later reading may add the story."""
-        if message.story_reply_id is None:
-            return
+    def _merge_story(entry: _MemoryThread, message: RemoteMessage) -> None:
+        """The Postgres `ON CONFLICT` story rules (`_INSERT_MESSAGE`: CM / HM / RD / RF)."""
         for index, stored in enumerate(entry.messages):
             if (
                 stored.external_message_id == message.external_message_id
-                and stored.story_reply_id is None
                 and stored.direction == "inbound"
             ):
-                entry.messages[index] = replace(
-                    stored,
-                    story_reply_id=message.story_reply_id,
-                    story_reply_url=message.story_reply_url,
-                )
+                entry.messages[index] = merge_story_kind(stored, message)
 
     @staticmethod
     def _fill_choice(entry: _MemoryThread, message: RemoteMessage) -> None:

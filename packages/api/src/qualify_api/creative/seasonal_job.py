@@ -42,6 +42,13 @@ service at `QUALIFY_RENDER_URL` — and falls back to recipe E (Pillow) whenever
 service is off (its compose profile is not on yet), unreachable or fails.
 `QUALIFY_SEASONAL_STICKERS=pillow` forces recipe E.
 
+**Product stickers (m-25017372):** `source_kind = character` rows (season `productos`) are
+an approved «tierno» character (`product_sticker_characters`) with a message
+(`source_ref` = `{character_id}:{message}`), recipe `k-animado` or `k-quieto`. They are
+drawn ONLY by the Remotion `sticker` template v2 (caption mode) — no Pillow fallback
+(founder 2026-11-12): while the service is off or failing the job retries
+(`render_unavailable`, transient) and, when its attempts run out, the row fails with it.
+
 **Videos (m-25016848):** the same service draws them with recipe D and falls back to
 recipe B (FFmpeg); `QUALIFY_SEASONAL_VIDEOS=ffmpeg` forces B. A photo video also reads the
 Brand Kit logo for its closing sign-off — a missing or unreadable logo only drops the
@@ -84,6 +91,14 @@ JOB_SEASONAL = "seasonal_media"
 SOURCE_PIECE = "piece"
 SOURCE_LOGO = "logo"
 SOURCE_TEXT = "text"
+SOURCE_CHARACTER = "character"
+#: m-25017372: the product stickers' recipes (animated, still).
+PRODUCT_RECIPE_ANIMATED = "k-animado"
+PRODUCT_RECIPES = (PRODUCT_RECIPE_ANIMATED, "k-quieto")
+RENDER_UNAVAILABLE = "render_unavailable"
+CHARACTER_UNAVAILABLE = "character_unavailable"
+#: The render service's failures worth a retry (it was off, starting, busy or crashed).
+TRANSIENT_RENDER_CODES = frozenset({"unreachable", "not_ready", "no_template", "render_failed"})
 #: The statuses a job may (re)render from; anything else is already settled.
 RENDERABLE = ("pending", "failed")
 PUT_ATTEMPTS = 3
@@ -240,6 +255,10 @@ class SeasonalSources(Protocol):
 
     def palette(self, tenant_id: UUID, brand_id: UUID) -> list[str]: ...
 
+    def character_art_key(self, tenant_id: UUID, brand_id: UUID, character_id: UUID) -> str | None:
+        """The cut-out of an APPROVED character of this brand (m-25017372), or None."""
+        ...
+
     def logo_key(self, tenant_id: UUID, brand_id: UUID) -> str | None:
         """The brand kit's logo object key (`BrandKit.logo_asset_key`), or None."""
         ...
@@ -269,6 +288,7 @@ class SeasonalMediaJobHandler:
         marks: SeasonalMarks,
         sources: SeasonalSources,
         render: Renderer = run_recipe,
+        product_render: ProductRenderer | None = None,
         google_fonts: Callable[[str], bytes | None] | None = None,
         tmp_root: Path | None = None,
         put_attempts: int = PUT_ATTEMPTS,
@@ -278,6 +298,7 @@ class SeasonalMediaJobHandler:
         self._marks = marks
         self._sources = sources
         self._render = render
+        self._product_render = product_render
         self._google_fonts = google_fonts
         self._tmp_root = tmp_root
         self._put_attempts = max(1, put_attempts)
@@ -485,7 +506,29 @@ class SeasonalMediaJobHandler:
             # an unreadable logo only drops a photo video's sign-off
             return BrandLook.from_kit(palette=palette, logo=None, font=font, family=family)
 
+    def _render_character(self, job: SeasonalJob, work: Path) -> RecipeOutput:
+        """A product sticker (m-25017372): the approved character's cut-out and the
+        message, drawn by the Remotion template v2 only."""
+        from qualify_api.creative.product_stickers import parse_source_ref  # noqa: PLC0415
+
+        if job.recipe not in PRODUCT_RECIPES:
+            raise _Permanent("unknown_recipe")
+        try:
+            character_id, message = parse_source_ref(job.source_ref)
+        except ValueError as exc:
+            raise _Permanent(NO_SOURCE) from exc
+        key = self._sources.character_art_key(job.tenant_id, job.brand_id, character_id)
+        if not key:
+            raise _Permanent(CHARACTER_UNAVAILABLE)
+        art = load_image(self._read(job.tenant_id, key), rgba=True)
+        look = self._look(job, None, logo_optional=True)
+        if self._product_render is None:
+            raise RecipeError(RENDER_UNAVAILABLE, "no render service", transient=True)
+        return self._product_render(job.recipe, look, work, art=art, message=message)
+
     def _render_job(self, job: SeasonalJob, work: Path) -> RecipeOutput:
+        if job.source_kind == SOURCE_CHARACTER:
+            return self._render_character(job, work)
         images: list[Image.Image] = []
         text: str | None = None
         logo_key: str | None = None
@@ -576,6 +619,17 @@ class PostgresSeasonalSources:
             source_ref=media.source_ref,
         )
 
+    def character_art_key(self, tenant_id: UUID, brand_id: UUID, character_id: UUID) -> str | None:
+        from qualify_api.creative.product_stickers import (  # noqa: PLC0415
+            STATUS_APPROVED,
+            PostgresCharacterRepository,
+        )
+
+        found = PostgresCharacterRepository().get(tenant_id=tenant_id, character_id=character_id)
+        if found is None or found.brand_id != brand_id or found.status != STATUS_APPROVED:
+            return None
+        return found.object_key
+
     def logo_key(self, tenant_id: UUID, brand_id: UUID) -> str | None:
         from qualify_api.whatsapp.seasonal import PostgresSourceReads  # noqa: PLC0415
 
@@ -656,6 +710,58 @@ def video_renderer_from_env(
     return RemotionVideoRenderer.from_url(url)
 
 
+class ProductRenderer(Protocol):
+    def __call__(
+        self, recipe: str, look: BrandLook, work: Path, *, art: Image.Image, message: str
+    ) -> RecipeOutput: ...
+
+
+def product_sticker_output(
+    renderer: RemotionStickerRenderer,
+    recipe: str,
+    look: BrandLook,
+    work: Path,
+    *,
+    art: Image.Image,
+    message: str,
+) -> RecipeOutput:
+    """One product sticker as a `RecipeOutput` (m-25017372): Remotion v2 only. A service
+    failure is `render_unavailable` (transient when retrying may help)."""
+    from qualify_creative.seasonal.sticker_c import StickerRenderError  # noqa: PLC0415
+    from qualify_creative.seasonal.sticker_caption import make_product_sticker  # noqa: PLC0415
+
+    try:
+        sticker = make_product_sticker(
+            renderer,
+            look,
+            work,
+            art=art,
+            message=message,
+            animated=recipe == PRODUCT_RECIPE_ANIMATED,
+        )
+    except StickerRenderError as exc:
+        raise RecipeError(
+            RENDER_UNAVAILABLE, exc.code, transient=exc.code in TRANSIENT_RENDER_CODES
+        ) from exc
+    except ValueError as exc:  # a message the service refused at planning time
+        raise RecipeError(NO_SOURCE, str(exc)) from exc
+    return RecipeOutput(
+        data=sticker.data,
+        kind="sticker",
+        recipe=recipe,
+        content_type="image/webp",
+        ext="webp",
+        width=sticker.width,
+        height=sticker.height,
+        duration_ms=sticker.duration_ms,
+        frames=sticker.frames,
+        bytes=sticker.bytes,
+        pipeline_version=sticker.pipeline_version,
+        encoding=f"remotion+pillow q={sticker.quality} motion={sticker.motion}",
+        engine=sticker.engine,
+    )
+
+
 def production_seasonal_handler(objects: SeasonalObjects) -> SeasonalMediaJobHandler:
     from qualify_creative.brand.fonts import google_font_file  # noqa: PLC0415
 
@@ -666,10 +772,18 @@ def production_seasonal_handler(objects: SeasonalObjects) -> SeasonalMediaJobHan
         sticker_renderer=sticker_renderer_from_env(),
         video_renderer=video_renderer_from_env(),
     )
+    # product stickers have no Pillow fallback: without a render URL they wait (retry)
+    url = (os.environ.get(RENDER_URL_ENV) or "").strip()
+    product_render: ProductRenderer | None = (
+        functools.partial(product_sticker_output, RemotionStickerRenderer.from_url(url))
+        if url
+        else None
+    )
     return SeasonalMediaJobHandler(
         objects=objects,
         marks=production_seasonal_service(),
         sources=PostgresSeasonalSources(),
         render=render,
+        product_render=product_render,
         google_fonts=google_font_file,
     )

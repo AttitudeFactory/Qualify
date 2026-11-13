@@ -221,7 +221,9 @@ _TICK_LABELS: dict[str, str] = {
 #: `suggest.GATE_*` → what the toast says when no suggestion is possible.
 SUGGESTION_REFUSALS: dict[str, str] = {
     "last_message_outbound": "Ya respondiste el último mensaje: no hay nada nuevo que sugerir.",
-    "inbound_without_text": "El último mensaje es un adjunto sin texto: no hay qué sugerir.",
+    "inbound_without_text": (
+        "Este mensaje no tiene texto, así que no hay nada que sugerir. Escribe tu respuesta abajo."
+    ),
     "window_closed": "Ya no se puede responder a esta conversación (pasaron 24 h).",
     "no_messages": "Esta conversación todavía no tiene mensajes.",
 }
@@ -298,6 +300,11 @@ class ThreadExtra:
     # m-24789472: the last message was tapped, not typed (`messages.choice_kind`/payload).
     preview_choice_kind: str | None = None
     preview_choice_payload: str | None = None
+    # m-25017817: the last message is a story mention (`messages.story_mention`) / a
+    # reply to one of the account's stories (`messages.story_reply_id` set) — what the
+    # list says when it carries no text.
+    preview_story_mention: bool = False
+    preview_story_reply: bool = False
 
 
 @dataclass(frozen=True)
@@ -713,11 +720,19 @@ def build_thread_row(
         if extra.preview_direction == "outbound"
         else tap_origin(extra.preview_choice_kind, extra.preview_choice_payload, extra.preview)
     )
+    inbound = extra.preview_direction != "outbound"
     if tapped:
         preview, icon = tapped, TAP_ICON
+    elif not preview and inbound and extra.preview_story_mention:
+        # m-25017817: a mention's only attachment (if any) is the story itself, stored
+        # as `other` — never «Nota de voz u otro contenido».
+        preview, icon = STORY_MENTION_LABEL, STORY_MENTION_ICON
     elif not preview and extra.preview_media_type:
         label, icon, _control = media_label(extra.preview_media_type)
         preview = UNSUPPORTED_PREVIEW if extra.preview_media_type == "other" else label
+    if not preview and inbound and extra.preview_story_reply:
+        # m-25017817: a story reply with neither text nor media still is a message.
+        preview, icon = STORY_REPLY_LABEL, STORY_REPLY_ICON
     if not preview:
         preview = NO_MESSAGES_YET
     elif extra.preview_direction == "outbound":
@@ -821,9 +836,17 @@ class MessageVM:
     # own convention: one footer, not one per bubble).
     seen_footer: str = ""
     # m-24789646 (B5): an inbound DM that replies to a story says so above the bubble,
-    # with the story's link while Meta's (expiring) URL lasts.
-    story_reply_label: str = ""
-    story_reply_href: str = ""
+    # with the story's link while Meta's (expiring) URL lasts. m-25017817: a story
+    # MENTION (the person mentioned the account in their own story) uses the same line,
+    # «Te mencionó en su historia», linked to THEIR story; `story_mention` picks its icon.
+    # `story_inline`: the mention carries nothing else (the live shape), so the line is
+    # the bubble's own content instead of a bare «Mensaje» under it.
+    story_label: str = ""
+    story_href: str = ""
+    # The link's accessible name: it opens in another tab ("" when there is no link).
+    story_link_label: str = ""
+    story_mention: bool = False
+    story_inline: bool = False
     # m-24789472: where an inbound message came from when the person tapped it instead of
     # typing it («Pregunta inicial: Precio», «Respuesta rápida: Sí»); "" when typed.
     choice_label: str = ""
@@ -833,6 +856,30 @@ class MessageVM:
 
 
 STORY_REPLY_LABEL: Final = "Respondió a tu historia"
+#: m-25017817 (founder-approved wording).
+STORY_MENTION_LABEL: Final = "Te mencionó en su historia"
+#: The Lucide icons of the two story lines (bubble and list preview).
+STORY_REPLY_ICON: Final = "circle-dashed"
+STORY_MENTION_ICON: Final = "at-sign"
+#: Meta's story lifetime: a story (and the CDN URL Meta gave for it) disappears 24 h
+#: after it was posted, so past this age the story line is no longer a link.
+STORY_LIFETIME: Final = timedelta(hours=24)
+#: Appended to the bubble's story line once the story is gone (not to the list preview).
+STORY_GONE_SUFFIX: Final = " (ya no está disponible)"
+#: Appended to a link's accessible name when it opens in another tab.
+NEW_TAB_SUFFIX: Final = " (se abre en otra pestaña)"
+
+
+def _story_gone(sent: datetime | None, now: datetime) -> bool:
+    """True once a message about a story is older than Meta's story lifetime. The
+    message's own instant stands in for the story's (a mention or reply comes after it)."""
+    if sent is None:
+        return False
+    if (sent.tzinfo is None) != (now.tzinfo is None):
+        sent = sent.replace(tzinfo=now.tzinfo) if now.tzinfo else sent.replace(tzinfo=None)
+    return now - sent >= STORY_LIFETIME
+
+
 #: m-25017173: the composer's send button says the same as WhatsApp's («Enviar»).
 SEND_LABEL: Final = "Enviar"
 #: The Lucide icon next to a tapped message's origin (bubble and list preview).
@@ -881,14 +928,33 @@ def build_message_vm(
 ) -> MessageVM:
     outbound = message.direction == "outbound"
     text = (message.text or "").strip()
-    label, _icon, control = media_label(message.media_type)
-    if not text and not control:
+    # m-25017817: only inbound messages are flagged; an echo never is a mention.
+    mention = not outbound and bool(getattr(message, "story_mention", False))
+    media_type = message.media_type
+    if mention and (media_type or "").lower() == "other":
+        # The documented `story_mention` attachment is stored as `other`: it IS the
+        # mention, not an unsupported piece of content of its own.
+        media_type = None
+    label, _icon, control = media_label(media_type)
+    inline = mention and not text and not control
+    if not text and not control and not inline:
         text = label or "Mensaje"
     tick = ""
     if outbound:
         status = (message.delivery_status or "").lower()
         tick = "read" if status == "read" else "sent"
-    story = None if outbound else getattr(message, "story_reply_id", None)
+    story = None if outbound or mention else getattr(message, "story_reply_id", None)
+    if mention:
+        story_label = STORY_MENTION_LABEL
+        story_href = getattr(message, "story_mention_url", None) or ""
+    elif story:
+        story_label = STORY_REPLY_LABEL
+        story_href = getattr(message, "story_reply_url", None) or ""
+    else:
+        story_label = story_href = ""
+    if story_label and _story_gone(message.posted_at or message.ingested_at, now):
+        # Meta's URL died with the story: plain words, no dead link.
+        story_label, story_href = story_label + STORY_GONE_SUFFIX, ""
     tapped = (
         None
         if outbound
@@ -911,8 +977,11 @@ def build_message_vm(
         media_control=control,
         media_label=label,
         media_src=media_src if control else "",
-        story_reply_label=STORY_REPLY_LABEL if story else "",
-        story_reply_href=(getattr(message, "story_reply_url", None) or "") if story else "",
+        story_label=story_label,
+        story_href=story_href,
+        story_link_label=story_label + NEW_TAB_SUFFIX if story_href else "",
+        story_mention=mention,
+        story_inline=inline,
         choice_label=tapped or "",
         kind_note=_kind_note(message.media_type, (message.text or "").strip()),
     )

@@ -18,7 +18,9 @@ Seeding follows `test_whatsapp_outbox_repository_db.py`: tenant/user/app via
 
 from __future__ import annotations
 
+import importlib.util
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
@@ -177,6 +179,55 @@ async def test_webhook_and_poll_converge_on_one_thread_and_one_message(seeded) -
             {"c": seeded["connection"], "m": mid},
         ).scalar_one()
     assert count == 1
+
+
+def _load_story_cases():
+    """The truth table shared with the in-memory test (`story_mention_cases.py`), loaded by
+    path: `--import-mode=importlib` makes sibling test modules unimportable by name."""
+    path = Path(__file__).with_name("story_mention_cases.py")
+    spec = importlib.util.spec_from_file_location("_story_mention_cases", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_STORY = _load_story_cases()
+
+
+@pytest.mark.parametrize(("readings", "expected"), _STORY.CASES)
+def test_story_mention_merge_in_every_order(seeded, readings, expected) -> None:
+    """m-25017817 (0156): the `_INSERT_MESSAGE` conflict rules against Postgres — the same
+    table `test_conversations_story_mention.py` asserts on the in-memory twin."""
+    repo = PostgresConversationRepository()
+    service = ConversationSyncService(repository=repo, clock=lambda: T0)
+    connection = _source_connection(seeded)
+    conversation = RemoteConversation(counterpart_external_id=_counterpart())
+    mid = f"mid.{uuid4().hex[:8]}"
+    results = []
+    for name in readings:
+        fields = {"direction": "inbound", **_STORY.READINGS[name]}
+        message = RemoteMessage(
+            external_message_id=mid,
+            text=None,
+            posted_at=T0,
+            shape_version=SHAPE_VERSION_MEMORY,
+            author_external_id="igsid-x",
+            **fields,
+        )
+        results.append(
+            service.ingest_message(
+                connection, channel=CHANNEL_DM, conversation=conversation, message=message
+            )
+        )
+    assert [r.message_created for r in results] == [True] + [False] * (len(readings) - 1)
+    [row] = repo.list_messages(tenant_id=TENANT, thread_id=UUID(results[0].thread_id))
+    basis, mention_id, mention_url, reply_id, direction = expected
+    assert row.direction == direction
+    assert row.story_mention is (basis is not None)
+    assert row.story_mention_basis == basis
+    assert row.story_mention_id == mention_id and row.story_mention_url == mention_url
+    assert row.story_reply_id == reply_id
 
 
 def test_bump_is_monotonic_and_reopens_only_on_newer_inbound(seeded) -> None:
