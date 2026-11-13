@@ -47,12 +47,12 @@ the source, traceable through `request_key` and `publish_attempt_id`.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from enum import StrEnum
 from uuid import UUID
 
-from qualify_creative.enums import ContentFormat, PostCategory
+from qualify_creative.enums import ContentFormat, PostCategory, ReuseType
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import Select, or_, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -60,6 +60,7 @@ from sqlalchemy.orm import Session
 
 from qualify_api.connections.models import SocialConnection
 from qualify_api.creative.own_media import (
+    PIPELINE_VERSION,
     OwnMediaItem,
     OwnMediaPiece,
     create_own_media_piece,
@@ -250,6 +251,21 @@ def plan_publication(
     return PublicationPlan(attempt.settled_at, caption, category, fmt, destination, item)
 
 
+@dataclass(frozen=True)
+class RecordingOverride:
+    """m-25019220: how the backfill of publications made BEFORE 0159 records one.
+
+    `media` stands in for the staged object a single attempt never recorded (the row is
+    settled, so it is never written back: the attempt stays as it settled). The rest is
+    the piece's provenance — its pipeline version, whether it may be planned again, and
+    how the file was found (`image_assets.params`)."""
+
+    media: OwnMediaItem | None = None
+    pipeline_version: str = PIPELINE_VERSION
+    reuse_type: ReuseType = ReuseType.RECURRENTE
+    asset_params: tuple[tuple[str, str], ...] = ()
+
+
 # -- the database part ----------------------------------------------------------------------
 
 
@@ -305,7 +321,14 @@ def _skipped(attempt_id: UUID, skip: Skip, *, tenant_id: UUID) -> RecordResult:
     return RecordResult(attempt_id, Outcome.SKIPPED, skip=skip)
 
 
-def _record(session: Session, *, tenant_id: UUID, attempt_id: UUID, user_id: UUID) -> RecordResult:
+def _record(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    attempt_id: UUID,
+    user_id: UUID,
+    override: RecordingOverride | None = None,
+) -> RecordResult:
     # Serializes every caller recording THIS attempt until the transaction ends.
     session.execute(
         text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
@@ -333,6 +356,14 @@ def _record(session: Session, *, tenant_id: UUID, attempt_id: UUID, user_id: UUI
     children = (
         _children(session, attempt_id) if facts.media_product_type == MEDIA_TYPE_CAROUSEL else ()
     )
+    if override is not None and override.media is not None:
+        if facts.media_product_type == MEDIA_TYPE_CAROUSEL:
+            return _skipped(attempt_id, Skip.UNSUPPORTED_TYPE, tenant_id=tenant_id)
+        facts = replace(
+            facts,
+            media_object_key=override.media.object_key,
+            media_content_type=override.media.content_type,
+        )
     plan = plan_publication(facts, children)
     if isinstance(plan, Skip):
         return _skipped(attempt_id, plan, tenant_id=tenant_id)
@@ -349,6 +380,15 @@ def _record(session: Session, *, tenant_id: UUID, attempt_id: UUID, user_id: UUI
             approved_at=plan.published_at,
             items=plan.items,
             request_key=request_key_for(attempt_id),
+            **(
+                {
+                    "pipeline_version": override.pipeline_version,
+                    "reuse_type": override.reuse_type,
+                    "asset_params": override.asset_params,
+                }
+                if override is not None
+                else {}
+            ),
         ),
     )
     event_id = session.scalar(
@@ -399,6 +439,28 @@ def record_publication(*, tenant_id: UUID, attempt_id: UUID, user_id: UUID) -> R
     accepted from «Publicar». Never touches the attempt itself."""
     with tenant_session(tenant_id) as session:
         return _record(session, tenant_id=tenant_id, attempt_id=attempt_id, user_id=user_id)
+
+
+def record_backfilled_publication(
+    *, tenant_id: UUID, attempt_id: UUID, user_id: UUID, override: RecordingOverride
+) -> RecordResult:
+    """m-25019220: `record_publication` for a publication made before 0159, with the
+    media the backfill resolved (`publish_backfill`). Same transaction, lock, checks and
+    idempotency; the attempt row is never written."""
+    with tenant_session(tenant_id) as session:
+        return _record(
+            session,
+            tenant_id=tenant_id,
+            attempt_id=attempt_id,
+            user_id=user_id,
+            override=override,
+        )
+
+
+def owner_of(tenant_id: UUID) -> UUID | None:
+    """The user a system-made record is attributed to (`_owner_of`), in its own session."""
+    with tenant_session(tenant_id) as session:
+        return _owner_of(session, tenant_id)
 
 
 def _owner_of(session: Session, tenant_id: UUID) -> UUID | None:
@@ -552,9 +614,12 @@ __all__ = [
     "Outcome",
     "PublicationPlan",
     "RecordResult",
+    "RecordingOverride",
     "Skip",
     "eligibility",
+    "owner_of",
     "plan_publication",
+    "record_backfilled_publication",
     "record_publication",
     "sweep_recent_publications",
     "tenants_with_unrecorded_publications",

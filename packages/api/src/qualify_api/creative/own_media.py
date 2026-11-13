@@ -94,6 +94,12 @@ class OwnMediaPiece:
     approved_at: datetime
     items: tuple[OwnMediaItem, ...]
     request_key: UUID
+    #: m-25019220: the backfill of old publications records its own pipeline version,
+    #: whether the piece may be planned again, and how each file was found. The defaults
+    #: are what `record_publication` has always written.
+    pipeline_version: str = PIPELINE_VERSION
+    reuse_type: ReuseType = ReuseType.RECURRENTE
+    asset_params: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
         if not self.items:
@@ -175,14 +181,14 @@ def create_own_media_piece(
         brief_id=brief.id,
         status=draft_fsm.APPROVED,
         voice_profile_version=None,
-        pipeline_version=PIPELINE_VERSION,
+        pipeline_version=piece.pipeline_version,
         requires_ai_disclosure=False,
         approved_by=piece.user_id,
         approved_at=piece.approved_at,
         request_key=piece.request_key,
         title=title_of(piece.caption),
         category=piece.category.value,
-        reuse_type=ReuseType.RECURRENTE.value,
+        reuse_type=piece.reuse_type.value,
         # a still the calendar card can show; a video's card keeps its placeholder
         preview_key=first_image.object_key if first_image is not None else None,
         revision=1,
@@ -199,7 +205,7 @@ def create_own_media_piece(
         revision=1,
         status="active",
         model_id=OWNER_MODEL_ID,
-        pipeline_version=PIPELINE_VERSION,
+        pipeline_version=piece.pipeline_version,
         requires_ai_disclosure=False,
         brief_id=brief.id,
         created_at=piece.approved_at,
@@ -228,7 +234,11 @@ def create_own_media_piece(
             position=item.position,
             model_id=OWNER_MODEL_ID,
             provider=OWNER_MODEL_ID,
-            params={"source": "publish_now", "pipeline_version": PIPELINE_VERSION},
+            params={
+                "source": "publish_now",
+                "pipeline_version": piece.pipeline_version,
+                **dict(piece.asset_params),
+            },
         )
         for item in ordered
     )

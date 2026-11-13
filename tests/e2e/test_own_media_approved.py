@@ -179,3 +179,129 @@ def test_an_upload_lives_in_aprobados_and_its_week_links_to_instagram(
     week_card = page.get_by_text("Arepas de queso recién hechas", exact=False).first
     expect(week_card).to_be_visible(timeout=60_000)
     _shot(page, "own-media-descartada-semana-375")
+
+
+# -- m-25019220: a past publication whose original file was not found ------------------
+
+_IG_CAPTION = "Combo familiar del domingo #combo"
+_VIEW_ONLY = "Solo para ver: no encontramos tu foto original, guardamos la de Instagram."
+
+
+def _seed_view_only_upload(tenant_id: uuid.UUID, user_id: uuid.UUID) -> uuid.UUID:
+    """A publication made before 0159 (the attempt never named its file), recorded the
+    way the backfill does when only Instagram's copy is left: view-only, one-shot."""
+    from qualify_api.connections.models import SocialConnection
+    from qualify_api.creative.own_media import OwnMediaItem
+    from qualify_api.planner.immediate import (
+        Outcome,
+        RecordingOverride,
+        record_backfilled_publication,
+    )
+    from qualify_api.publishing.models import PublishAttempt
+    from qualify_creative.enums import ReuseType
+    from qualify_shared.db.session import tenant_session
+    from sqlalchemy import select
+
+    with tenant_session(tenant_id) as session:
+        connection_id = session.scalar(
+            select(SocialConnection.id).where(SocialConnection.platform == "instagram")
+        )
+    key = f"t/{tenant_id}/media/{connection_id}/ig-e2e{uuid.uuid4().hex[:8]}"
+    image = pytest.importorskip("PIL.Image")
+    buf = io.BytesIO()
+    image.new("RGB", (640, 800), (40, 120, 214)).save(buf, "JPEG")
+    path = OBJECTS_DIR / key
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(buf.getvalue())
+
+    attempt_id = uuid.uuid4()
+    settled = datetime.now(UTC) - timedelta(hours=2)
+    with tenant_session(tenant_id) as session:
+        session.add(
+            PublishAttempt(
+                id=attempt_id,
+                tenant_id=tenant_id,
+                connection_id=connection_id,
+                idempotency_key=f"e2e-old:{attempt_id}:0",
+                caption=_IG_CAPTION,
+                media_product_type="IMAGE",
+                adapter_version="e2e",
+                status="published",
+                published_media_id="e2e-old-media",
+                started_at=settled - timedelta(seconds=30),
+                settled_at=settled,
+            )
+        )
+    result = record_backfilled_publication(
+        tenant_id=tenant_id,
+        attempt_id=attempt_id,
+        user_id=user_id,
+        override=RecordingOverride(
+            media=OwnMediaItem(
+                object_key=key, content_type="image/jpeg", media_type="image", position=0
+            ),
+            pipeline_version="publish-backfill-v1",
+            reuse_type=ReuseType.PROMOCIONAL,
+            asset_params=(
+                ("match", "instagram_copy"),
+                ("match_rule", "instagram_copy"),
+                ("match_reason", "e2e: no file in the window"),
+            ),
+        ),
+    )
+    assert result.outcome is Outcome.RECORDED, result
+    assert result.draft_id is not None
+    return result.draft_id
+
+
+def test_a_view_only_upload_is_only_to_look_at(
+    pre_fase_c_page,  # noqa: ANN001 — a Playwright Page with an Instagram account
+    app_server: str,
+) -> None:
+    if os.environ.get("QUALIFY_E2E_BASE_URL") and not os.environ.get("QUALIFY_E2E_OBJECTS_DIR"):
+        pytest.skip("an external app must run with QUALIFY_OBJECT_STORE_DIR (see conftest)")
+    page = pre_fase_c_page
+    page.set_viewport_size({"width": 375, "height": 900})
+    tenant, user = page._qualify_e2e_tenant_id, page._qualify_e2e_user_id
+    _seed_published_upload(tenant, user)  # a reusable neighbour, for contrast
+    draft_id = _seed_view_only_upload(tenant, user)
+
+    page.goto(f"{app_server}/aprobados")
+    card = page.locator(".q-gcard").filter(has_text="Combo familiar")
+    expect(card).to_have_count(1, timeout=60_000)
+    expect(card).to_contain_text(_VIEW_ONLY)
+    expect(card).not_to_contain_text("Por probar")
+    expect(card).not_to_contain_text("todavía no sabemos")
+    if _SHOTS:
+        card.screenshot(path=str(Path(_SHOTS) / "view-only-card-375.png"))
+    _shot(page, "view-only-aprobados-375")
+
+    page.goto(f"{app_server}/drafts/{draft_id}")
+    note = page.get_by_text(_VIEW_ONLY).first
+    expect(note).to_be_visible(timeout=60_000)
+    expect(page.get_by_text("Por probar")).to_have_count(0)
+    note.scroll_into_view_if_needed()
+    if _SHOTS:
+        page.screenshot(path=str(Path(_SHOTS) / "view-only-ficha-imagen-375.png"))
+    _shot(page, "view-only-ficha-375")
+
+    # «Tu semana»: the view-only card offers no «Volver a programar»; its neighbour does
+    page.goto(f"{app_server}/planner?vista=lista")
+    expect(page.get_by_text("Combo familiar").first).to_be_visible(timeout=60_000)
+    view_only_row = (
+        page.locator("div")
+        .filter(has_text="Combo familiar")
+        .filter(has=page.get_by_role("button", name="Acciones de la publicación"))
+    )
+    view_only_row.last.get_by_role("button", name="Acciones de la publicación").click()
+    expect(page.get_by_role("menuitem", name="Más detalles")).to_be_visible()
+    expect(page.get_by_role("menuitem", name="Volver a programar")).to_have_count(0)
+    page.keyboard.press("Escape")
+    reusable_row = (
+        page.locator("div")
+        .filter(has_text="Arepas de queso")
+        .filter(has=page.get_by_role("button", name="Acciones de la publicación"))
+    )
+    reusable_row.last.get_by_role("button", name="Acciones de la publicación").click()
+    expect(page.get_by_role("menuitem", name="Volver a programar")).to_be_visible()
+    page.keyboard.press("Escape")
