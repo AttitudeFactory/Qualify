@@ -678,10 +678,15 @@ class PieceLayer(Base):
     A layer is never edited in place. One ROOT layer per version and position
     (`parent_layer_id IS NULL`); the visual check's correction or an owner's edit is a new
     row at the same version and position with `parent_layer_id`, at most one per parent
-    (a further change derives from that row). Every key carries `tenant_id` — to `brands`,
-    `content_drafts`, `piece_versions`, `image_assets`, `users` and this table — enforced by
-    the migration (Postgres checks keys without RLS). The table ships empty and m-25017283
-    is its first writer."""
+    within a version (a further change in that version derives from that row); a re-compose
+    is a new version, which may derive from the same older layer again. Every key carries
+    `tenant_id` — to `brands`, `content_drafts`, `piece_versions`, `image_assets`, `users`
+    and this table — enforced by the migration (Postgres checks keys without RLS). The table
+    ships empty and m-25017283 is its first writer.
+
+    TODO(m-25017283): the writer must check that a derived layer's parent belongs to the
+    same draft and the same position — the schema does not stop a parent from another
+    position or another piece of the same business."""
 
     __tablename__ = "piece_layers"
     __table_args__ = (
@@ -694,7 +699,9 @@ class PieceLayer(Base):
             postgresql_where=text("parent_layer_id IS NULL"),
         ),
         UniqueConstraint("id", "tenant_id", name="uq_piece_layers_id_tenant"),
-        UniqueConstraint("tenant_id", "parent_layer_id", name="uq_piece_layers_parent"),
+        UniqueConstraint(
+            "tenant_id", "parent_layer_id", "version_id", name="uq_piece_layers_parent"
+        ),
         CheckConstraint(
             "source IN ('model', 'owner_edit', 'owner_photo')", name="piece_layers_source_check"
         ),

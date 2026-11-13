@@ -269,7 +269,8 @@ def test_a_layer_cannot_derive_from_another_business_layer(seeded_ab: tuple[UUID
 
 def test_one_correction_per_layer_at_the_same_slide(seeded_ab: tuple[UUID, UUID]) -> None:
     """ADR 49 §2.3: the visual check writes its corrected layer as a new row at the same
-    version and position; one per parent, and a second root stays refused."""
+    version and position; one per parent within that version, and a second root stays
+    refused."""
     tenant_a, _ = seeded_ab
     piece = _piece(tenant_a)
     root = _add(tenant_a, piece)
@@ -282,3 +283,26 @@ def test_one_correction_per_layer_at_the_same_slide(seeded_ab: tuple[UUID, UUID]
         session.add(_layer(tenant_a, *piece, parent_layer_id=root))  # a second one
         session.flush()
     assert _add(tenant_a, piece, parent_layer_id=fixed)  # a further change derives from it
+
+
+def test_each_new_version_may_derive_from_the_same_older_layer(
+    seeded_ab: tuple[UUID, UUID],
+) -> None:
+    """ADR 49 §2.1: a re-compose is a new revision whose layer points at the layer it came
+    from — the owner edits, goes back and edits again from the same older layer."""
+    tenant_a, _ = seeded_ab
+    brand, draft, first = _piece(tenant_a)
+    root = _add(tenant_a, (brand, draft, first))
+    later = []
+    for revision in (2, 3):
+        version = uuid4()
+        with tenant_session(tenant_a) as session:
+            session.execute(
+                text(
+                    "INSERT INTO piece_versions (id, tenant_id, brand_id, draft_id, revision,"
+                    " status) VALUES (:v, :t, :b, :d, :r, 'active')"
+                ),
+                {"v": version, "t": tenant_a, "b": brand, "d": draft, "r": revision},
+            )
+        later.append(_add(tenant_a, (brand, draft, version), parent_layer_id=root))
+    assert len(set(later)) == 2

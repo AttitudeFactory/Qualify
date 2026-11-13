@@ -56,9 +56,13 @@ pipeline yet — m-25017283 is the first writer.
   (deploy/docker-compose.prod.yml), dev and CI `postgres:16`.
 - Idempotency: one ROOT layer per version and position (`uq_piece_layers_root_position`,
   partial on `parent_layer_id IS NULL`: a retry never creates a second one), and at most
-  one layer derived from each layer (`uq_piece_layers_parent`): the visual check's single
-  correction (ADR 49 §2 item 4, §2.3) or an owner's edit is a new row at the same version
-  and position with `parent_layer_id`; a further change derives from that row.
+  one layer derived from a given layer WITHIN one version (`uq_piece_layers_parent`): the
+  visual check's single correction (ADR 49 §2 item 4, §2.3) is a new row at the same
+  version and position with `parent_layer_id`, and a further change in that version derives
+  from that row. A re-compose is a new `piece_versions` revision, so each new version may
+  derive from the same older layer (the owner edits, goes back, edits again).
+- Not enforced here, the writer's job (m-25017283): a derived layer's parent belongs to the
+  same draft and the same position.
 
 Grants: `qualify_app` SELECT + INSERT (a layer is never edited in place: a change is a new
 row with `parent_layer_id`, §2.1), `qualify_admin` SELECT. Nothing for the worker roles:
@@ -103,7 +107,7 @@ def upgrade() -> None:
         pipeline_version text NOT NULL CHECK (char_length(pipeline_version) BETWEEN 1 AND 64),
         created_at timestamptz NOT NULL DEFAULT now(),
         CONSTRAINT uq_piece_layers_id_tenant UNIQUE (id, tenant_id),
-        CONSTRAINT uq_piece_layers_parent UNIQUE (tenant_id, parent_layer_id),
+        CONSTRAINT uq_piece_layers_parent UNIQUE (tenant_id, parent_layer_id, version_id),
         CONSTRAINT fk_piece_layers_brand FOREIGN KEY (brand_id, tenant_id)
             REFERENCES brands(id, tenant_id),
         CONSTRAINT fk_piece_layers_draft FOREIGN KEY (draft_id, tenant_id)
