@@ -183,10 +183,19 @@ class PendingState(rx.State):
                         # m-25017859: «Por responder»'s cards follow this same poll (the
                         # comments and «Quieren comprar» figures); no read of their own.
                         from .responder_state import ResponderState
+                        from .responder_vm import TAB_MESSAGES
 
-                        (await self.get_state(ResponderState)).merge_counts(
-                            buyers=clamp(attention.buyers), comments=clamp(attention.comments)
-                        )
+                        responder = await self.get_state(ResponderState)
+                        figures = {
+                            "buyers": clamp(attention.buyers),
+                            "comments": clamp(attention.comments),
+                        }
+                        if responder.active_tab != TAB_MESSAGES:
+                            # Off «Mensajes» no list feeds the chat cards: this read does
+                            # (on «Mensajes» the list's `inbox_counts` stays the source).
+                            figures["messages"] = clamp(attention.messages)
+                            figures["whatsapp"] = clamp(attention.whatsapp)
+                        responder.merge_counts(**figures)
                     if publications is not None:
                         self.approve = clamp(publications.approve)
                         self.schedule = clamp(publications.schedule)

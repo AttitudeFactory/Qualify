@@ -165,6 +165,8 @@ class ChatRowVM:
     closed: bool = False
     #: m-25017859: the unified list opens a chat by its channel and account.
     connection_id: str = ""
+    #: m-25017859: the row's place in the single list's order (`inbox_list_vm.sort_key`).
+    sort_key: str = ""
 
 
 def build_chat_row(
@@ -189,6 +191,7 @@ def build_chat_row(
     expired: bool = False,
     closed: bool = False,
     connection_id: str = "",
+    sort_key: str = "",
 ) -> ChatRowVM:
     """The one place the pill is chosen, the initials are taken and the accessible name
     is worded. `initials_from` is the person's name or handle ("" when only a number or
@@ -219,4 +222,5 @@ def build_chat_row(
         aria_label=accessible_name(title, channel, waiting=waiting, pill=pill_label, closed=closed),
         closed=closed,
         connection_id=connection_id,
+        sort_key=sort_key,
     )

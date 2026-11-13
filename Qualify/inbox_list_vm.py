@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime, tzinfo
+from datetime import UTC, datetime, tzinfo
 from typing import Any, Final, Protocol
 
 from .chat_row_vm import (
@@ -109,18 +109,31 @@ PAGE_SIZE: Final = 50
 REFRESH_PAGES: Final = 2
 
 
+def sort_key(last_message_at: datetime | None, thread_id: str) -> str:
+    """The row's place in `list_inbox`'s order (`last_message_at DESC NULLS LAST, id
+    DESC`) as a string: «1|<UTC instant, fixed width>|<uuid>» for a dated chat, «0||<uuid>»
+    for an undated one. A plain string comparison is the list order reversed: a GREATER
+    key comes FIRST (canonical lowercase UUID hex compares as Postgres orders uuid)."""
+    if last_message_at is None:
+        return f"0||{thread_id}"
+    instant = last_message_at.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")
+    return f"1|{instant}|{thread_id}"
+
+
 def merge_refreshed(
-    head: Sequence[ChatRowVM], current: Sequence[ChatRowVM], *, window: int | None
+    head: Sequence[ChatRowVM], current: Sequence[ChatRowVM], *, complete: bool
 ) -> list[ChatRowVM]:
-    """A tick's rows: the re-read `head` (the first pages), then — when the owner had
-    loaded more than the tick re-reads (`window` = how many rows those pages held) —
-    the rows beyond it as they were, minus any that moved into the head. Rows only move
-    UP (newer activity) or leave a filter, so the seam has no duplicate and no gap; a
-    row beyond the window may be stale until the view changes, and still opens."""
-    if window is None:
+    """A capped tick's rows: the re-read `head` (the first pages, in list order), then
+    every row already listed that sorts AFTER the head's last row and is not in the head,
+    in order. A row pushed across the seam by newer chats stays (nothing between head
+    and tail vanishes), one that moved into the head appears once, and «Ver más» goes on
+    from the tail's own cursor. `complete`: the head reached the end of the list, so it
+    IS the list. A retained row may be stale until the view changes; it still opens."""
+    if complete or not head:
         return list(head)
     seen = {r.thread_id for r in head}
-    return [*head, *[r for r in current[window:] if r.thread_id not in seen]]
+    last = head[-1].sort_key
+    return [*head, *[r for r in current if r.thread_id not in seen and r.sort_key < last]]
 
 
 # --------------------------------------------------------------------------------------
@@ -443,6 +456,7 @@ def as_chat_row(
         agent_name=agent_name,
         closed=row.is_closed,
         connection_id=str(row.connection_id),
+        sort_key=sort_key(row.last_message_at, str(row.thread_id)),
     )
 
 

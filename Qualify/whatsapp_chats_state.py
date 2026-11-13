@@ -866,9 +866,14 @@ class WhatsAppChatsState(rx.State):
     async def enter(self) -> rx.event.EventSpec | None:
         """Tab root `on_mount`: entry or number switch."""
         # m-24842990 / m-25017859: a link may open the chats on «Por responder» (N11);
-        # `sin-leer` is the chip's old name, kept for saved links.
-        if self.router.url.query_parameters.get("filtro") in AWAITING_FILTER_SLUGS:
-            self.filter_key = FILTER_UNREAD
+        # `sin-leer` is the chip's old name, kept for saved links. The address is the
+        # truth: without `?filtro=` the chats open on their default («Abiertos»), never
+        # on a chip an earlier link left.
+        self.filter_key = (
+            FILTER_UNREAD
+            if self.router.url.query_parameters.get("filtro") in AWAITING_FILTER_SLUGS
+            else DEFAULT_FILTER
+        )
         if self.pick_open:
             self._reset_picker()  # back from Galería: the drawer does not reopen
         shell = await self.get_state(WhatsAppState)

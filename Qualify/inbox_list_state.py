@@ -140,8 +140,6 @@ class InboxListState(rx.State):
     _zone_name: str = ""
     _agents: list[AgentVM] = []
     _pages: int = 0
-    #: How many rows each loaded page holds (the seam of a capped refresh).
-    _page_lens: list[int] = []
     _refreshing: bool = False
     #: A refresh asked while one ran: it runs again right after (the post-reply read).
     _refresh_again: bool = False
@@ -236,7 +234,6 @@ class InboxListState(rx.State):
         self._zone_name = ""
         self._agents = []
         self._pages = 0
-        self._page_lens = []
         self._scroll = []
         self.filter_key = DEFAULT_FILTER
         self.channel = ALL_CHANNELS
@@ -289,7 +286,6 @@ class InboxListState(rx.State):
         self._generation += 1
         self.rows, self.next_cursor, self.loaded, self._scroll = [], "", False, []
         self._pages = 0
-        self._page_lens = []
         self.error = self.more_error = ""
 
     def _relist(self) -> list[rx.event.EventSpec]:
@@ -377,7 +373,6 @@ class InboxListState(rx.State):
                 self.rows = self._build(records, now)
                 self.next_cursor = cursor
                 self._pages = pages
-                self._page_lens = lens
                 self.loaded = True
                 self._scroll = []
             if scroll:
@@ -452,7 +447,6 @@ class InboxListState(rx.State):
                 self.rows = [*self.rows, *fresh]
                 self.next_cursor = result.next_cursor.encode() if result.next_cursor else ""
                 self._pages += 1
-                self._page_lens = [*self._page_lens, len(fresh)]
         finally:
             async with self:
                 self.loading_more = False
@@ -504,16 +498,15 @@ class InboxListState(rx.State):
                     if current:
                         self._apply_counts(tally)
                         await _feed_cards(self, tally)  # same read as the chips
-                        beyond = max(1, self._pages) > pages
-                        window = sum(self._page_lens[:pages]) if beyond else None
+                        # The re-read pages ARE the list when fewer pages were loaded or
+                        # the head reached the end; else the tail merges by sort key.
+                        complete = max(1, self._pages) <= pages or cursor == ""
                         self.rows = merge_refreshed(
-                            self._build(records, now), self.rows, window=window
+                            self._build(records, now), self.rows, complete=complete
                         )
-                        if beyond:
-                            self._page_lens = [*lens, *self._page_lens[pages:]]
-                        else:
-                            self.next_cursor = cursor  # the whole list was re-read
-                            self._page_lens = lens
+                        if complete:
+                            self.next_cursor = cursor
+                            self._pages = min(max(1, self._pages), len(lens))
                     # Run again if asked meanwhile, or if «Ver más» added a page inside
                     # the refreshed window.
                     again = self._refresh_again or (

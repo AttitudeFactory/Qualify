@@ -57,7 +57,6 @@ from .inbox_list_vm import (
     filter_chips,
     filter_from_params,
     list_href,
-    merge_refreshed,
     notice_text,
     remembered_dismissal,
     show_channel_filter,
@@ -753,22 +752,108 @@ async def test_a_tick_reads_at_most_two_pages_after_five_ver_mas(fake: _Fake) ->
     await _drain(InboxListState.refresh.fn(state))  # type: ignore[attr-defined]
     assert fake.reads - reads == REFRESH_PAGES == 2
     titles = [r.title.split(":")[1] for r in state.rows]
-    # No duplicate and no gap at the seam: C1…C4 re-read, C5…C11 kept, C4 not twice.
+    # No duplicate and no gap at the seam: C1…C4 re-read, C5…C11 kept.
     assert titles == [f"C{i}" for i in range(1, 12)]
     assert len(set(titles)) == len(titles) and state.next_cursor == cursor
     # A row beyond the window that went stale still opens (its chat exists).
     assert InboxListState.open_row.fn(state, state.rows[-1].thread_id) is not None  # type: ignore[attr-defined]
 
 
-def test_merge_refreshed_keeps_the_tail_without_duplicates() -> None:
-    def row(i: int) -> ChatRowVM:
-        return build(inbox_row(thread_id=UUID(int=i)))
+def test_the_sort_key_is_the_lists_order() -> None:
+    from .inbox_list_vm import sort_key
 
-    head = [row(2), row(3)]  # 1 left the filter, 3 moved up from the tail
-    current = [row(1), row(2), row(3), row(4)]
-    merged = merge_refreshed(head, current, window=2)
-    assert [r.thread_id for r in merged] == [str(UUID(int=i)) for i in (2, 3, 4)]
-    assert merge_refreshed(head, current, window=None) == head
+    a = UUID(int=2)
+    b = UUID(int=1)
+    newer = sort_key(NOW, str(b))
+    older = sort_key(NOW - timedelta(seconds=1), str(a))
+    tie_high, tie_low = sort_key(NOW, str(a)), sort_key(NOW, str(b))
+    undated = sort_key(None, str(a))
+    assert newer > older > undated  # DESC, NULLS LAST
+    assert tie_high > tie_low  # same instant: id DESC
+    assert build(inbox_row(thread_id=a, last_message_at=NOW)).sort_key == tie_high
+
+
+# --- the capped refresh's seam: nothing vanishes, nothing repeats ----------------------------
+
+
+def _chat(name: str, minutes_ago: float) -> InboxRow:
+    return inbox_row(last_message_at=NOW - timedelta(minutes=minutes_ago), counterpart_name=name)
+
+
+async def _loaded_to(fake: _Fake, rows: int, pages: int) -> InboxListState:
+    fake.rows = [_chat(f"C{i}", i) for i in range(rows)]
+    state = InboxListState()
+    await _drain(InboxListState.load.fn(state))  # type: ignore[attr-defined]
+    for _ in range(pages - 1):
+        await _drain(InboxListState.load_more.fn(state))  # type: ignore[attr-defined]
+    assert state._pages == pages
+    return state
+
+
+def _names(state: InboxListState) -> list[str]:
+    return [r.title.split(":")[1] for r in state.rows]
+
+
+async def _to_the_end(state: InboxListState) -> None:
+    while state.has_more:
+        await _drain(InboxListState.load_more.fn(state))  # type: ignore[attr-defined]
+
+
+async def _tick(state: InboxListState) -> None:
+    await _drain(InboxListState.refresh.fn(state))  # type: ignore[attr-defined]
+
+
+def _chip_count(state: InboxListState) -> int:
+    return count_of(state_module._Counts(state.counts_by), FILTER_AWAITING)
+
+
+async def test_a_new_chat_at_the_top_keeps_the_row_pushed_across_the_seam(fake: _Fake) -> None:
+    """The reviewer's case: C0…C5 on three pages, a new chat arrives — C3 (pushed out of
+    the re-read head) stays; the list equals the chip."""
+    state = await _loaded_to(fake, rows=6, pages=3)
+    fake.rows.insert(0, _chat("NEW", -1))
+    await _tick(state)
+    assert _names(state) == ["NEW", "C0", "C1", "C2", "C3", "C4", "C5"]
+    await _to_the_end(state)
+    assert len(state.rows) == _chip_count(state) == 7
+
+
+async def test_a_tail_chat_that_jumps_to_the_top_appears_once(fake: _Fake) -> None:
+    state = await _loaded_to(fake, rows=6, pages=3)
+    c4 = fake.rows.pop(4)
+    fake.rows.insert(0, dataclasses.replace(c4, last_message_at=NOW + timedelta(minutes=1)))
+    await _tick(state)
+    assert _names(state) == ["C4", "C0", "C1", "C2", "C3", "C5"]
+    assert len(state.rows) == _chip_count(state) == 6
+
+
+async def test_several_new_chats_push_several_rows_across_the_seam(fake: _Fake) -> None:
+    state = await _loaded_to(fake, rows=6, pages=3)
+    for i in range(3):
+        fake.rows.insert(0, _chat(f"N{i}", -1 - i))
+    await _tick(state)
+    assert _names(state) == ["N2", "N1", "N0", "C0", "C1", "C2", "C3", "C4", "C5"]
+    assert len(state.rows) == _chip_count(state) == 9
+
+
+async def test_a_chat_leaving_the_filter_from_the_head_leaves_the_list(fake: _Fake) -> None:
+    state = await _loaded_to(fake, rows=6, pages=3)
+    fake.rows.pop(1)  # C1 answered: out of «Por responder»
+    await _tick(state)
+    assert _names(state) == ["C0", "C2", "C3", "C4", "C5"]
+    assert len(state.rows) == _chip_count(state) == 5
+
+
+async def test_ver_mas_after_a_capped_tick_neither_skips_nor_repeats(fake: _Fake) -> None:
+    state = await _loaded_to(fake, rows=10, pages=3)
+    assert _names(state) == [f"C{i}" for i in range(6)] and state.has_more
+    fake.rows.insert(0, _chat("NEW", -1))
+    await _tick(state)
+    assert _names(state) == ["NEW", *[f"C{i}" for i in range(6)]]
+    await _to_the_end(state)
+    names = _names(state)
+    assert names == ["NEW", *[f"C{i}" for i in range(10)]]
+    assert len(set(names)) == len(names) == _chip_count(state) == 11
 
 
 async def test_a_failed_load_never_leaves_the_list_spinning(
@@ -946,3 +1031,39 @@ async def test_a_gone_chat_over_another_open_one_is_only_a_toast(
     out = await _drain(ConversationsState.open_by_id.fn(conv))  # type: ignore[attr-defined]
     assert conv.banner == ""
     assert any("toast" in str(e).lower() for e in out)
+
+
+async def test_whatsapp_chats_without_filtro_open_on_the_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After one visit through the badge link, a bare `/whatsapp` opens «Abiertos»."""
+    from reflex.istate.data import ReflexURL, RouterData
+
+    from .whatsapp_chats_state import WhatsAppChatsState
+    from .whatsapp_chats_vm import DEFAULT_FILTER, FILTER_UNREAD
+
+    async def no_shell(self: Any, cls: Any) -> Any:
+        from types import SimpleNamespace
+
+        return SimpleNamespace(selected_connection_id="")
+
+    monkeypatch.setattr(WhatsAppChatsState, "get_state", no_shell)
+    wa = WhatsAppChatsState()
+    wa.router = RouterData(
+        url=ReflexURL("http://localhost/whatsapp?tab=chats&filtro=por-responder")
+    )
+    await WhatsAppChatsState.enter.fn(wa)  # type: ignore[attr-defined]
+    assert wa.filter_key == FILTER_UNREAD
+    wa.router = RouterData(url=ReflexURL("http://localhost/whatsapp?tab=chats"))
+    await WhatsAppChatsState.enter.fn(wa)  # type: ignore[attr-defined]
+    assert wa.filter_key == DEFAULT_FILTER
+
+
+def test_off_mensajes_the_sidebar_poll_refreshes_the_chat_cards_too() -> None:
+    import inspect
+
+    from .pending_state import PendingState
+
+    source = inspect.getsource(PendingState._refresh)
+    assert "responder.active_tab != TAB_MESSAGES" in source
+    assert 'figures["messages"]' in source and 'figures["whatsapp"]' in source
