@@ -308,6 +308,49 @@ class MediaWrite:
     #: slide, exactly as sent. None where no single prompt made the file (a closing slide,
     #: a reused piece, stock, the Galería, a video).
     rendered_prompt: str | None = None
+    #: m-25017279 (ADR 49 §2 item 1): the raw Seedream photograph this file was composed
+    #: over, already kept in R2. `finish_generation` stores it as its own `image_assets`
+    #: row with `role='base'` (same version and position), hidden from every ordinary read
+    #: by the database (0164). None when no base was generated or it could not be kept.
+    base: BasePhoto | None = None
+
+
+@dataclass(frozen=True)
+class BasePhoto:
+    """A base photograph as stage `base` kept it (ADR 49 §2 item 1): its R2 key, the
+    SHA-256 of its bytes, how it was made — model and the exact compiled prompt — and the
+    prompt compiler. Seedream images are synchronous: there is no vendor task id."""
+
+    key: str
+    sha256: str
+    content_type: str
+    model_id: str
+    provider: str
+    rendered_prompt: str
+    prompt_compiler_version: int
+
+    def as_json(self) -> dict[str, Any]:
+        return {
+            "key": self.key,
+            "sha256": self.sha256,
+            "content_type": self.content_type,
+            "model_id": self.model_id,
+            "provider": self.provider,
+            "rendered_prompt": self.rendered_prompt,
+            "prompt_compiler_version": self.prompt_compiler_version,
+        }
+
+    @classmethod
+    def from_json(cls, row: Mapping[str, Any]) -> BasePhoto:
+        return cls(
+            key=str(row["key"]),
+            sha256=str(row["sha256"]),
+            content_type=str(row["content_type"]),
+            model_id=str(row["model_id"]),
+            provider=str(row["provider"]),
+            rendered_prompt=str(row["rendered_prompt"]),
+            prompt_compiler_version=int(row["prompt_compiler_version"]),
+        )
 
 
 def ai_generated_media(media: tuple[MediaWrite, ...]) -> bool:
@@ -1866,6 +1909,8 @@ def _media_write_json(write: MediaWrite, seedance_slots: int = 0) -> dict[str, A
         "seedance_slots": seedance_slots,
         # m-25017278: a resumed gallery keeps each kept slide's prompt provenance
         **({"rendered_prompt": write.rendered_prompt} if write.rendered_prompt else {}),
+        # m-25017279: and its stored base photo, so a resumed run never makes it again
+        **({"base": write.base.as_json()} if write.base is not None else {}),
     }
 
 
@@ -1884,6 +1929,7 @@ def _media_write_from_json(row: Mapping[str, Any]) -> MediaWrite:
         content_type=row.get("content_type"),
         ai_generated=bool(row.get("ai_generated")),
         rendered_prompt=row.get("rendered_prompt") or None,
+        base=BasePhoto.from_json(row["base"]) if row.get("base") else None,
     )
 
 

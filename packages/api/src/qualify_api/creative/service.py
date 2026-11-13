@@ -86,6 +86,7 @@ from sqlalchemy.exc import IntegrityError
 from qualify_api.claude_tools import cost_breakdown
 from qualify_api.creative import models as orm
 from qualify_api.creative import review, trace
+from qualify_api.creative.base_photos import add_base_photos
 from qualify_api.creative.creations import (
     CreationsBalance,
     CreationsLedger,
@@ -1446,6 +1447,15 @@ class PostgresContentRepository:
                         rendered_prompt=item.rendered_prompt,
                     )
                 )
+            # m-25017279: the base photos the stills were composed over, as rows of their
+            # own that no ordinary read sees (0164)
+            add_base_photos(
+                session,
+                tenant_id=tenant_id,
+                draft_id=draft_id,
+                version_id=version.id,
+                media=media,
+            )
             if succeeded:
                 draft.active_version_id = version.id
                 draft.selected_variant_id = None

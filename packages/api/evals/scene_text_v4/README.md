@@ -30,6 +30,31 @@ uv run --no-sync python packages/api/evals/scene_text_v4/contact_sheet.py <carpe
 `isotipo`…) a un archivo local. Las fotos de clientes **no entran en git**: se leen de
 R2 solo para lectura y quedan fuera del repositorio.
 
-`--dry-run` compila los 24 prompts y cotiza la corrida sin llamar a nadie.
+`--dry-run` compila los prompts y cotiza la corrida sin llamar a nadie (28 imágenes con la
+pareja 3-4 desde que existe `G3-galeria-datos`; eran 24).
 
 Resultado y puntuación: `docs/modelos-generativos/pruebas.md#escena-sin-letras-001`.
+
+## Foto base: compilador 4 contra 5 (m-25017279, sin correr)
+
+El compilador 5 pide solo la foto base: quita de lo que lee Seedream los «Datos clave» y
+los nombres de las tipografías de la marca (la diapositiva de gancho sin logo dibujó
+«UNUBND», 2 de 2, con el compilador 4; m-25019811). `--versions 4 5` corre la pareja sobre
+los mismos encargos. `G3-galeria-datos` es `G2` (gancho sin logo) con «Datos clave»
+(precio, 2x1, horario); entre las imágenes, F1, F3, F4 y F7 traen dirección, horario,
+precio y 2x1.
+
+Diseño mínimo — 16 imágenes, US$0,732 con la tabla v9 (US$0,045 por imagen + US$0,003 por
+referencia extra):
+
+```bash
+uv run --no-sync python packages/api/evals/scene_text_v4/run.py \
+  --inputs <carpeta local>/manifest.json --out <carpeta local>/base_v5 \
+  --env-file .env --max-usd 1 --versions 4 5 --reps 1 \
+  --only F1-ubicacion F3-horario F4-combo F7-pollo-2x1 G2-salchipapa-galeria G3-galeria-datos
+```
+
+Diseño completo — los 11 encargos, 2 repeticiones: 56 imágenes, US$2,592
+(`--versions 4 5 --reps 2 --max-usd 3`).
+
+**No se ha corrido**: el fundador no ha autorizado presupuesto para esta medición.

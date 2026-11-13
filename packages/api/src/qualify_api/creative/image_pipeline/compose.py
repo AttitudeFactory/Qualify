@@ -56,6 +56,7 @@ from qualify_api.creative.media import (
     SEEDANCE,
     SEEDANCE_RATIOS,
     SEEDREAM,
+    BasePhoto,
     MediaUsage,
     MediaWrite,
     _keep_made,
@@ -138,9 +139,12 @@ def ad_image(
         ratio=ratio,
         budget=budget,
         usage=usage,
+        save=save,
     )
     scenes = [scene.image for scene in based]
     scene_prompts = [scene.prompt for scene in based]
+    # m-25017279: slide N is drawn from scene N, so it carries scene N's stored base
+    bases = [scene.stored for scene in based]
     slides = render_ad_slides(
         scenes=scenes,
         text=FlyerText(hook=copy.hook, cta=copy.cta, price=media.price_line),
@@ -176,6 +180,7 @@ def ad_image(
                     save=save,
                 ),
                 rendered_prompt=scene_prompts[0],
+                base=bases[0],
             )
         ]
     out: list[MediaWrite] = []
@@ -196,6 +201,7 @@ def ad_image(
                 ai_generated=True,
                 # slide N is drawn from scene N; a gallery's closing slide has no scene
                 rendered_prompt=scene_prompts[position] if position < len(scene_prompts) else None,
+                base=bases[position] if position < len(bases) else None,
                 params={
                     "ad_mode": mode.value,
                     "scene_prompt": media.scene_prompt,
@@ -214,6 +220,7 @@ def ad_image(
                         if media.carousel and position == len(slides) - 1
                         else "",
                     ),
+                    **_base_params(bases[position] if position < len(bases) else None),
                 },
             )
         )
@@ -358,6 +365,7 @@ def carousel(
                     animated=animated,
                     budget=budget,
                     usage=usage,
+                    save=save,
                 )
             )
             scene = based.image if based is not None else producer._store.read(resumed_scene)
@@ -376,6 +384,7 @@ def carousel(
                 "source": slide.source.value,
                 "text": slide.text.value,
                 "printed": _printed_words(hook=hook, cta=cta),
+                **_base_params(based.stored if based is not None else None),
                 "scene_prompt": slide.scene_prompt,
                 # m-24820842: provenance, and what «Crear las que faltan» compiles
                 # the missing slides with (the gallery's own compiler, not today's)
@@ -404,6 +413,7 @@ def carousel(
                         params=params,
                         # m-25017278: the Seedream prompt of this slide, as sent
                         rendered_prompt=based.prompt if based is not None else None,
+                        base=based.stored if based is not None else None,
                     )
                 )
                 continue
@@ -502,3 +512,10 @@ def carousel(
         _keep_made(scene_failure, None, out)
         raise scene_failure
     return out
+
+
+def _base_params(base: BasePhoto | None) -> dict[str, str]:
+    """m-25017279: where a composed still's base photo is (its `role='base'` row holds the
+    rest). It also travels with a slide kept for «Crear las que faltan», whose base row
+    stays with the version that paid for it."""
+    return {"base_key": base.key, "base_sha256": base.sha256} if base is not None else {}

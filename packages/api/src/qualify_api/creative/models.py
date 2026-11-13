@@ -643,6 +643,10 @@ class ImageAsset(Base):
     # The MIME type the object was stored with (0029). Written by whoever persists the
     # asset in R2 (QUA-109/110); NULL means "not publishable" to QUA-111.
     content_type: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 0164 (m-25017279): 'output' (a file of the piece) or 'base' (the raw Seedream photo a
+    # still was composed over, hidden from every read that did not opt in —
+    # `creative.base_photos`).
+    role: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'output'"))
     mask_object_key: Mapped[str | None] = mapped_column(Text, nullable=True)
     width: Mapped[int | None] = mapped_column(Integer, nullable=True)
     height: Mapped[int | None] = mapped_column(Integer, nullable=True)
