@@ -21,6 +21,7 @@ from .product_sticker_vm import (
     ACTION_FAILED,
     CREATE_PARAM_VALUE,
     DRAFTS_STICKERS_HREF,
+    DRAWINGS_FAILED,
     FLOW_STEPS,
     LOAD_FAILED,
     NO_MESSAGES,
@@ -296,7 +297,7 @@ class ProductStickerState(rx.State):
             self.flow_error = ""
             self.load_error = ""
             self.loading = True
-            self.creating = self.asking = self.picking = False
+            self.picking = False
             self.product_query = ""
             self.drawings = []
             self.drawing_id = ""
@@ -415,6 +416,7 @@ class ProductStickerState(rx.State):
             if gen != self._gen:
                 return False
             product, brand = _uuid(self.product_id), _uuid(self._brand)
+            wanted = self.product_id
             tenant_id = await self._tenant()
         cards, error = None, ""
         try:
@@ -424,9 +426,10 @@ class ProductStickerState(rx.State):
         except PermissionError:
             error = NO_SESSION
         except Exception as exc:  # noqa: BLE001
-            error = _worded(exc, "drawings", LOAD_FAILED)
+            error = _worded(exc, "drawings", DRAWINGS_FAILED)
         async with self:
-            if gen != self._gen:
+            # a newer open, or the owner went back and chose another product meanwhile
+            if gen != self._gen or self.product_id != wanted:
                 return False
             self.drawings_loading = False
             if cards is None:
@@ -464,7 +467,11 @@ class ProductStickerState(rx.State):
 
     @rx.event
     def stop_poll(self) -> None:
+        """Tu marca unmounted: no more reads, and the panel does not come back open (with a
+        stale «Dibujando…») unless a paid request is still on its way."""
         self._poll_gen += 1
+        if not (self.asking or self.creating):
+            self.flow_open = False
 
     @rx.event
     def pick_drawing(self, drawing_id: str) -> None:
@@ -525,8 +532,9 @@ class ProductStickerState(rx.State):
             if error or card is None:
                 self.flow_error = error or ACTION_FAILED
                 return
-            fresh = drawing_vms([card])
-            self.drawings = fresh + [d for d in self.drawings if d.id != card.id]
+            if str(card.product_id) == self.product_id:
+                fresh = drawing_vms([card])
+                self.drawings = fresh + [d for d in self.drawings if d.id != card.id]
         if tenant_id is not None and brand is not None:
             await self._requote(tenant_id, brand)  # «Te quedan 11 este mes»
         yield ProductStickerState.poll

@@ -13,9 +13,9 @@ from .product_sticker_vm import (
     ADD_PHOTOS_LABEL,
     ANIMATED_LINE,
     ANIMATED_TITLE,
+    ASKING_LABEL,
     BACK_LABEL,
     CATALOG_HREF,
-    CHECKING_COST,
     DISCARD_LABEL,
     DRAWING_FAILED_PILL,
     DRAWING_HELP,
@@ -346,7 +346,7 @@ def _ask_block() -> rx.Component:
         rx.cond(
             P.cost_known & P.cost_can_pay,
             _button(
-                rx.cond(P.asking, CHECKING_COST, P.drawing_button),
+                rx.cond(P.asking, ASKING_LABEL, P.drawing_button),
                 P.ask_drawing,
                 disabled=~P.can_ask_drawing,
                 aria_busy=rx.cond(P.asking, "true", "false"),

@@ -449,3 +449,103 @@ def test_chat_picker_lists_product_stickers_after_the_seasons() -> None:
     assert picks[1].alt == "Sticker que dice «Entregado»"
     only = build_seasonal_picks([_media("approved", "productos")])
     assert not only[0].current and only[0].product
+
+
+# --- review: races, stale reads, failures ------------------------------------------------
+
+
+async def test_a_double_tap_asks_for_one_drawing_only(
+    gw: FakeGateway, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import asyncio
+    import threading
+
+    state = ProductStickerState()
+    await _open(state)
+    await _to_drawings(state)
+    release = threading.Event()
+    original = gw.create_character
+
+    def slow(*args: Any) -> CharacterCard:
+        release.wait(5)
+        return original(*args)
+
+    monkeypatch.setattr(gw, "create_character", slow)
+    first = asyncio.create_task(_drain(ProductStickerState.ask_drawing.fn(state)))
+    await asyncio.sleep(0.05)
+    assert state.asking and not state.can_ask_drawing
+    await _drain(ProductStickerState.ask_drawing.fn(state))  # the second tap: nothing
+    release.set()
+    await first
+    assert [c for c in gw.calls if c[0] == "create"] == [("create", (SHAWARMA, 1))]
+
+
+async def test_a_read_of_another_product_never_lands(
+    gw: FakeGateway, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gw.drawings[SHAWARMA] = [_ready(SHAWARMA)]
+    gw.drawings[ENSALADA] = [_ready(ENSALADA, "Ensalada griega")]
+    state = ProductStickerState()
+    await _open(state)
+    original = gw.characters
+
+    def owner_changes_product_meanwhile(*args: Any) -> list[CharacterCard]:
+        state.product_id = ENSALADA  # «Atrás», another product, while this read runs
+        return original(*args)
+
+    monkeypatch.setattr(gw, "characters", owner_changes_product_meanwhile)
+    state.flow_step = STEP_DRAWING
+    assert await state._read_drawings(state._gen) is False
+    assert state.drawings == [] and state.drawing_id == ""
+
+
+async def test_leaving_the_page_closes_the_panel_and_stops_polling(gw: FakeGateway) -> None:
+    state = ProductStickerState()
+    await _open(state)
+    poll = state._poll_gen
+    state.stop_poll()
+    assert not state.flow_open and state._poll_gen == poll + 1
+    await _open(state)
+    state.asking = True  # a paid request on its way keeps it open
+    state.stop_poll()
+    assert state.flow_open
+
+
+async def test_using_a_drawing_that_changed_says_so(gw: FakeGateway) -> None:
+    from qualify_api.creative.product_stickers import CharacterChanged
+
+    drawing = _ready(SHAWARMA)
+    gw.drawings[SHAWARMA] = [drawing]
+
+    def refuse(*args: Any) -> CharacterCard:
+        raise CharacterChanged()
+
+    gw.use_character = refuse  # type: ignore[method-assign]
+    state = ProductStickerState()
+    await _open(state)
+    await _to_drawings(state)
+    state.flow_next()
+    await ProductStickerState.use_drawing.fn(state)
+    assert state.flow_step == STEP_DRAWING and not state.picking
+    assert state.flow_error == "Este dibujo cambió mientras tanto. Actualiza la pantalla."
+
+
+async def test_discarding_the_chosen_drawing_picks_the_next_one(gw: FakeGateway) -> None:
+    newer, older = _ready(SHAWARMA), _ready(SHAWARMA)
+    gw.drawings[SHAWARMA] = [newer, older]
+    state = ProductStickerState()
+    await _open(state)
+    await _to_drawings(state)
+    assert state.drawing_id == newer.id
+    await ProductStickerState.discard_drawing.fn(state, newer.id)
+    assert [d.id for d in state.drawings] == [older.id] and state.drawing_id == older.id
+
+
+async def test_an_answer_for_an_older_open_is_dropped(gw: FakeGateway) -> None:
+    gw.drawings[SHAWARMA] = [_ready(SHAWARMA)]
+    state = ProductStickerState()
+    await _open(state)
+    state.flow_step = STEP_DRAWING
+    old_gen = state._gen
+    state._gen += 1  # the panel was opened again meanwhile
+    assert await state._read_drawings(old_gen) is False and state.drawings == []

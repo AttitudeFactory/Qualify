@@ -62,13 +62,17 @@ GO_CATALOG_LABEL: Final = "Ir a Galería"
 
 # step 2
 DRAWING_HELP: Final = "Elige el dibujo que más te guste. Con él hacemos tus stickers."
-NO_DRAWING_YET: Final = "Todavía no hay un dibujo de este producto. Lo hacemos en unos segundos."
+NO_DRAWING_YET: Final = (
+    "Todavía no hay un dibujo de este producto. Toca «Crear dibujo» y llega en unos 30 segundos."
+)
 DRAWING_WAIT: Final = "Tu dibujo llega en unos 30 segundos. Puedes esperar aquí."
 DRAWING_PENDING: Final = "Dibujando…"
 DRAWING_FAILED_PILL: Final = "No salió"
 DRAWING_USED_PILL: Final = "Ya lo usaste"
 DISCARD_LABEL: Final = "No me gusta"
 PICK_A_DRAWING: Final = "Elige un dibujo listo para seguir."
+ASKING_LABEL: Final = "Pidiendo el dibujo…"
+DRAWINGS_FAILED: Final = "No pudimos traer tus dibujos. Vuelve a intentarlo en un momento."
 
 # step 3
 MESSAGE_HELP: Final = "Puedes elegir varios: cada mensaje es un sticker."
