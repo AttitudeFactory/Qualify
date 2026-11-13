@@ -110,6 +110,7 @@ from qualify_creative.compose import (
 from qualify_creative.enums import (
     AdImageMode,
     AvatarSource,
+    AwarenessLevel,
     ContentFormat,
     ContentKind,
     FailureReason,
@@ -5694,6 +5695,12 @@ class MediaProducer:
             if self._catalog is not None
             else ()
         )
+        # m-25026482: an `unaware` piece shows the place, not the price — the template
+        # gets the name-matched products WITHOUT their price, so neither its own fallback
+        # (`build_props` → `_price_line`) nor a product card can print one
+        unaware = brief.awareness_level is AwarenessLevel.UNAWARE
+        if unaware:
+            products = tuple(replace(p, price_label="") for p in products)
         # ticket 24803289: the angle's scene, photographed by Seedream with the real product
         # as reference, becomes the template's FIRST photo. Everything that can refuse the
         # piece for free — the template, its output, its props, the render's budget — is
@@ -5716,7 +5723,7 @@ class MediaProducer:
         # the catalog's price the brief carries wins over the name-matched product's
         # (ticket 24803289) — whole or not at all: "" keeps the template from printing
         # any price (None would let it fall back to the name-matched product's)
-        price_line = _template_price(draft_id, manifest, brief, warnings)
+        price_line = "" if unaware else _template_price(draft_id, manifest, brief, warnings)
         brand_name = (
             self._brand_names(tenant_id=tenant_id, brand_id=brief.brand_id)
             if self._brand_names is not None
