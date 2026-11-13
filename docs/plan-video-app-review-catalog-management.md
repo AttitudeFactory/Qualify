@@ -63,12 +63,12 @@ equipo lo crea a mano. Esto lo convierte en autoservicio, que es lo que pide el 
 fundador controla por completo y que **no es Qualify.co** (la app debe estar en un portafolio
 distinto del cliente `[V F-5]`), con su propia cuenta de WhatsApp y un número de prueba propio
 (no el de Bianki, no el número de prueba del panel de la app, que vive en el portafolio de la app
-`[V F-9]`). Dos rutas de inicio de sesión, en este orden de preferencia:
+`[V F-8]`). Dos rutas de inicio de sesión, en este orden de preferencia:
 - **(a) El registro integrado de m-24789620**, con su configuración pidiendo además
-  `catalog_management` y el activo «catálogos» (`catalog_ids` en la sesión `[V F-8]`). Un solo
+  `catalog_management` y el activo «catálogos» (`catalog_ids` en la sesión `[V F-7]`). Un solo
   inicio de sesión para los tres videos del envío. Requiere que m-24789620 esté construido y que
   el registro funcione en acceso estándar para alguien con rol en la app — **`[NO VERIFICADO]`**
-  (Meta: «no podrás incorporar clientes hasta tener acceso avanzado» `[V F-7]`).
+  (Meta: «no podrás incorporar clientes hasta tener acceso avanzado» `[V F-6]`).
 - **(b) Respaldo: una configuración de Facebook Login for Business solo para catálogo**, igual
   que la de anuncios (`QUALIFY_META_ADS_CONFIG_ID`, precedente en disco), con token de usuario del
   dueño. Funciona hoy en acceso estándar para quien tiene rol `[V F-5]`. Cuesta **una variable de
@@ -85,7 +85,7 @@ ambas, todas pueden recibir 80014/80009 y reintentarse, y así ninguna llamada a
 camino de la pantalla (ADR 48 §1.4). No son llamadas pagas (Meta no cobra catálogos `[H]`), así
 que no necesitan guardia de precio. La pantalla muestra «Creando…» y consulta el estado.
 
-**3.3 Idempotencia de «crear».** Un catálogo por cuenta de WhatsApp `[V F-10]`; un reintento
+**3.3 Idempotencia de «crear».** Un catálogo por cuenta de WhatsApp `[V F-9]`; un reintento
 nunca crea dos:
 1. La operación es una fila con `UNIQUE (tenant_id, request_key)` (como las corridas de ADR 48);
    un doble toque inserta una sola.
@@ -104,11 +104,11 @@ nunca se borra desde aquí — se desconecta de Qualify, no se destruye `[H]`, d
 Bloqueado mientras haya corridas `pending`/`sent`. Confirmación con el número de productos que
 dejarán de verse en WhatsApp. Meta: `DELETE /{catalog_id}`, bloqueado por defecto si hay
 conjuntos de productos vivos (`allow_delete_catalog_with_live_product_set`, por defecto `false`;
-no se manda `true`) `[V F-11]`. Al terminar: la fila del catálogo pasa a `deleted` (no se borra:
+no se manda `true`) `[V F-10]`. Al terminar: la fila del catálogo pasa a `deleted` (no se borra:
 las corridas son procedencia y `qualify_app` no tiene DELETE sobre ellas), los artículos pasan a
 un estado terminal, y la marca vuelve al estado «sin catálogo». Qué le pasa a la cuenta de
 WhatsApp cuando se borra un catálogo conectado: **`[NO VERIFICADO]`** (P-9); el borde de la WABA
-no permite desconectar `[V F-12]`.
+no permite desconectar `[V F-11]`.
 
 **3.5 Lo que nunca se toca.** El número real de Bianki y su cuenta: la grabación y todas las
 pruebas en vivo usan el portafolio de demostración y un tenant de demostración. Guardas en el
@@ -271,12 +271,12 @@ su descripción propias `[V F-3]`.
 
 | # | Riesgo o duda | Prueba que lo cierra |
 |---|---|---|
-| R1 / P-7 | El registro integrado no funciona en acceso estándar para alguien con rol en la app `[V F-7]` → la ruta (a) no se puede grabar antes de la aprobación | Paso 1: intentarlo sobre el portafolio de demostración; si falla, ruta (b) |
+| R1 / P-7 | El registro integrado no funciona en acceso estándar para alguien con rol en la app `[V F-6]` → la ruta (a) no se puede grabar antes de la aprobación | Paso 1: intentarlo sobre el portafolio de demostración; si falla, ruta (b) |
 | R2 | `business_management` tiene que pedirse aparte y su video pide datos de anuncios `[V F-1]` | Ver en el panel de App Review si se añade solo como dependencia; si no, decidir con el fundador si se omite el permiso o se graba su caso |
 | R3 / P-8 | Listar `owned_product_catalogs` con el token del dueño (idempotencia de §3.3) | Paso 1 |
 | R4 / P-9 | Qué pasa al borrar un catálogo conectado a la cuenta de WhatsApp (¿error, desconexión, mensajes de producto rotos?) | Paso 1, en el portafolio de demostración |
-| R5 / P-10 | «Debes aceptar los términos creando tu primer catálogo en Business Manager» `[V F-11]` → el **primer** catálogo de un dueño real podría no poder crearse por API | Paso 1: crear por API en un portafolio sin catálogos previos **antes** de F3; si falla, la pantalla le explica al dueño ese único paso |
-| R6 | `owned_product_catalogs` lista `page_id` como «obligatorio» `[V F-13]`, cosa rara para un catálogo de comercio | Paso 1: crear con solo `name` (y `vertical=commerce`, el valor por defecto `[V F-13]`) |
+| R5 / P-10 | «Debes aceptar los términos creando tu primer catálogo en Business Manager» `[V F-10]` → el **primer** catálogo de un dueño real podría no poder crearse por API | Paso 1: crear por API en un portafolio sin catálogos previos **antes** de F3; si falla, la pantalla le explica al dueño ese único paso |
+| R6 | `owned_product_catalogs` lista `page_id` como «obligatorio» `[V F-12]`, cosa rara para un catálogo de comercio | Paso 1: crear con solo `name` (y `vertical=commerce`, el valor por defecto `[V F-12]`) |
 | R7 | Que subir productos cuente como «updates» para el revisor `[NO VERIFICADO]` | El guion muestra renombrar **y** subir |
 | R8 | Revisor sin acceso a Qualify → se rechaza **todo** el envío `[V F-4]` | F6: credenciales del tenant de demostración e instrucciones claras |
 | R9 | Calendario: el envío de WhatsApp para terceros espera a este plan (D3) `[F]` | Correr los pasos 4–6 en paralelo con m-24789620 |
@@ -286,7 +286,7 @@ su descripción propias `[V F-3]`.
 
 Sincronización automática al editar (ADR 48 D2) · importar CSV / `sku` (CAT-03) · catálogos de
 varios negocios en una pantalla · desconectar sin borrar (Meta no lo ofrece por el borde de la
-WABA `[V F-12]`) · borrar catálogos que no creó Qualify · conjuntos de productos, anuncios de
+WABA `[V F-11]`) · borrar catálogos que no creó Qualify · conjuntos de productos, anuncios de
 catálogo, verticales que no sean `commerce` · el registro integrado en sí (es m-24789620) ·
 mostrar datos de anuncios para `business_management` (R2 decide).
 
@@ -297,11 +297,11 @@ mostrar datos de anuncios para `business_management` (R2 decide).
 - [F-3] App Review: guía de envío — https://developers.facebook.com/docs/app-review/submission-guide
 - [F-4] App Review: introducción — https://developers.facebook.com/docs/app-review/introduction
 - [F-5] Facebook Login for Business (portafolio separado; prueba con rol y control total) y Access levels — https://developers.facebook.com/docs/facebook-login/facebook-login-for-business/ · https://developers.facebook.com/docs/graph-api/overview/access-levels/
-- [F-7] Embedded Signup — https://developers.facebook.com/docs/whatsapp/embedded-signup/
-- [F-8] Embedded Signup implementation — https://developers.facebook.com/documentation/business-messaging/whatsapp/embedded-signup/implementation.md
-- [F-9] WhatsApp Cloud API Get Started — https://developers.facebook.com/documentation/business-messaging/whatsapp/get-started.md
-- [F-10] Upload inventory (un catálogo por cuenta de WhatsApp) — https://developers.facebook.com/documentation/business-messaging/whatsapp/catalogs/upload-inventory.md
-- [F-11] ProductCatalog reference (actualizar `name`, `DELETE`, términos de comercio) — https://developers.facebook.com/docs/marketing-api/reference/product-catalog/
-- [F-12] WhatsApp Business Account `product_catalogs` — https://developers.facebook.com/docs/graph-api/reference/whats-app-business-account/product_catalogs/
-- [F-13] Business `owned_product_catalogs` — https://developers.facebook.com/docs/marketing-api/reference/business/owned_product_catalogs/
+- [F-6] Embedded Signup — https://developers.facebook.com/docs/whatsapp/embedded-signup/
+- [F-7] Embedded Signup implementation — https://developers.facebook.com/documentation/business-messaging/whatsapp/embedded-signup/implementation.md
+- [F-8] WhatsApp Cloud API Get Started — https://developers.facebook.com/documentation/business-messaging/whatsapp/get-started.md
+- [F-9] Upload inventory (un catálogo por cuenta de WhatsApp) — https://developers.facebook.com/documentation/business-messaging/whatsapp/catalogs/upload-inventory.md
+- [F-10] ProductCatalog reference (actualizar `name`, `DELETE`, términos de comercio) — https://developers.facebook.com/docs/marketing-api/reference/product-catalog/
+- [F-11] WhatsApp Business Account `product_catalogs` — https://developers.facebook.com/docs/graph-api/reference/whats-app-business-account/product_catalogs/
+- [F-12] Business `owned_product_catalogs` — https://developers.facebook.com/docs/marketing-api/reference/business/owned_product_catalogs/
 - `[S]` Aprobación parcial (12 de 15 permisos; anécdota de consultor) — https://singhamandeep.com/?p=3065
