@@ -35,6 +35,7 @@ from sqlalchemy import text
 
 from qualify_api.inbox.awaiting import count_awaiting_sql
 from qualify_api.inbox.channels import CHANNEL_INSTAGRAM_DM, CHANNEL_WHATSAPP
+from qualify_api.inbox.unified import NO_JIT_SQL
 
 # Both chat counts judge the rule at ONE bound instant (`:now`), the one `inbox.unified`
 # binds too — never two clocks.
@@ -55,6 +56,7 @@ SELECT
 """
 
 _COUNTS = text(_COUNTS_SQL)
+_NO_JIT = text(NO_JIT_SQL)
 
 
 @dataclass(frozen=True)
@@ -88,6 +90,9 @@ class PostgresPendingCounts:
 
     def read(self, tenant_id: UUID) -> PendingCounts:
         with tenant_session(tenant_id) as session:
+            # Polled every 30 s per open tab: JIT compilation cost more than the query
+            # (measured ~110 ms → ~40 ms on 3,000 chats). Transaction-local.
+            session.execute(_NO_JIT)
             row = session.execute(_COUNTS, {_NOW_PARAM: self._clock()}).one()
         return PendingCounts(
             messages=max(0, int(row.messages or 0)),

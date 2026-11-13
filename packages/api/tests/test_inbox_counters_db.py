@@ -30,12 +30,20 @@ from qualify_shared.db.session import tenant_session
 from sqlalchemy import text
 
 from qualify_api.attention import PostgresPendingCounts
+from qualify_api.conversations.contracts import ChannelRegistry
+from qualify_api.conversations.memory_source import (
+    MemoryConversationSender,
+    MemoryConversationSource,
+)
+from qualify_api.conversations.outbox import PostgresConversationOutboxRepository
 from qualify_api.conversations.repository import PostgresConversationRepository
+from qualify_api.conversations.service import ConversationService, ThreadNotFound
 from qualify_api.home.summary import read_home_counts
 from qualify_api.inbox.awaiting import awaits_reply, expired_unanswered
 from qualify_api.inbox.unified import (
     EXPIRED_UNANSWERED_WITHIN,
     INBOX_FILTERS,
+    NO_JIT_SQL,
     count_expired_unanswered,
     count_inbox,
     inbox_counts,
@@ -135,7 +143,8 @@ def test_the_chips_are_one_statement() -> None:
     _Chat(biz, "dm").inbound(T0).save()
     with _statements() as seen:
         inbox_counts(biz.tenant_id, now=T0 + timedelta(hours=1))
-    assert len(seen) == 1
+    # One read, plus the transaction-local `SET LOCAL jit = off` (no round trip of data).
+    assert [s for s in seen if s != NO_JIT_SQL] == [seen[-1]] and len(seen) == 2
 
 
 def test_the_row_carries_what_the_shared_row_draws() -> None:
@@ -163,10 +172,13 @@ def test_the_row_carries_what_the_shared_row_draws() -> None:
     assert ig.assigned_agent_id == user_id and ig.last_message_direction == "outbound"
     assert ig.window_closes_at == T0 + WINDOW and ig.payment_status is None
 
+    # «Pago por revisar» = the WhatsApp screen's own chip: open OR closed — closing a chat
+    # does not settle its payment.
     review = list_inbox(biz.tenant_id, filter="pago_por_revisar", now=now).rows
-    assert [r.thread_id for r in review] == [wa_id]  # the closed one is not listed
-    assert closed_review not in {r.thread_id for r in review}
-    assert inbox_counts(biz.tenant_id, now=now).payment_review == 1
+    assert {r.thread_id for r in review} == {wa_id, closed_review}
+    assert {r.thread_id: r.is_closed for r in review}[closed_review] is True
+    assert inbox_counts(biz.tenant_id, now=now).payment_review == 2
+    assert count_inbox(biz.tenant_id, filter="pago_por_revisar", now=now) == 2
 
 
 def test_expired_unanswered_flag_and_count() -> None:
@@ -251,3 +263,76 @@ def test_another_business_never_appears_in_any_count() -> None:
 
     assert seen(mine) == (0, 1, 0, 1, 2, 0, 1)
     assert seen(other) == (2, 2, 2, 4, 6, 2, 2)
+
+
+def test_a_chat_whose_every_message_was_unsent_is_never_listed_nor_counted() -> None:
+    """m-25018661 hides it from the Instagram list; the unified list and every count hide
+    it with the SAME predicate, so no number counts a chat nobody can open."""
+    biz = _business()
+    now = datetime.now(UTC)
+    gone = _Chat(biz, "dm").inbound(now - timedelta(minutes=5), unsent=True).save()
+    gone_closed = (
+        _Chat(biz, "dm", status="closed").inbound(now - timedelta(minutes=5), unsent=True).save()
+    )
+    kept = (  # one unsent, one still there: listed, like on the Instagram screen
+        _Chat(biz, "dm")
+        .inbound(now - timedelta(minutes=6))
+        .inbound(now - timedelta(minutes=5), unsent=True)
+        .save()
+    )
+    ig_list = PostgresConversationRepository().list_threads(
+        tenant_id=biz.tenant_id, channels=["dm"], limit=200
+    )
+    assert {r.id for r in ig_list} == {kept}
+
+    listed = {
+        r.thread_id
+        for f in INBOX_FILTERS
+        for r in list_inbox(biz.tenant_id, filter=f, now=now, limit=100).rows  # type: ignore[arg-type]
+    }
+    assert listed == {kept} and not listed & {gone, gone_closed}
+    chips = inbox_counts(biz.tenant_id, now=now)
+    for f in INBOX_FILTERS:
+        assert chips.count(f) == count_inbox(biz.tenant_id, filter=f, now=now), f  # type: ignore[arg-type]
+    assert (chips.count("todos"), chips.count("cerrados"), chips.por_responder) == (1, 0, 1)
+    menu = PostgresPendingCounts(clock=lambda: now).read(biz.tenant_id)
+    assert menu.messages == 1 == read_home_counts(biz.tenant_id, now=now).people_waiting
+    with pytest.raises(ThreadNotFound):
+        _service().get_dm_thread(tenant_id=biz.tenant_id, thread_id=gone)
+
+
+def _service() -> ConversationService:
+    registry = ChannelRegistry()
+    registry.register(source=MemoryConversationSource(), sender=MemoryConversationSender())
+    return ConversationService(
+        repository=PostgresConversationRepository(),
+        outbox=PostgresConversationOutboxRepository(),
+        registry=registry,
+    )
+
+
+def test_a_chat_beyond_the_screens_newest_200_opens_by_id() -> None:
+    biz, other = _business(), _business()
+    now = datetime.now(UTC)
+    oldest = _Chat(biz, "dm").inbound(now - timedelta(hours=5)).save()
+    for i in range(200):
+        _Chat(biz, "dm").inbound(now - timedelta(minutes=200 - i)).reply(
+            now - timedelta(minutes=199 - i, seconds=30)
+        ).save()
+    loaded = PostgresConversationRepository().list_threads(
+        tenant_id=biz.tenant_id, channels=["dm"], limit=200
+    )
+    assert oldest not in {r.id for r in loaded}  # what the Instagram pane has in memory
+
+    view = _service().get_dm_thread(tenant_id=biz.tenant_id, thread_id=oldest)
+    (row,) = [
+        r
+        for r in list_inbox(biz.tenant_id, filter="por_responder", now=now, limit=100).rows
+        if r.thread_id == oldest
+    ]
+    assert view.thread.id == oldest and view.thread.connection_id == biz.instagram
+    assert view.awaiting_reply is True is row.awaiting_reply
+    wa = _Chat(biz, "whatsapp").inbound(now).save()
+    for tenant, thread in ((other.tenant_id, oldest), (biz.tenant_id, wa)):
+        with pytest.raises(ThreadNotFound):
+            _service().get_dm_thread(tenant_id=tenant, thread_id=thread)

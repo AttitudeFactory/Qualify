@@ -10,6 +10,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from qualify_api.conversations.repository import NOT_ONLY_UNSENT_SQL
 from qualify_api.inbox.awaiting import awaiting_reply_sql, expired_unanswered_sql
 from qualify_api.inbox.channels import UnknownChannel
 from qualify_api.inbox.unified import (
@@ -191,7 +192,11 @@ def test_a_filter_that_decides_a_verdict_does_not_compute_it_again() -> None:
 
 def test_the_new_filters_read_only_the_thread_and_correlated_subqueries() -> None:
     payment = " ".join(_filter_sql("pago_por_revisar").split())
-    assert "t.channel = 'whatsapp' AND t.status = 'open'" in payment
+    # Open OR closed, like the WhatsApp screen's own chip.
+    assert "t.channel = 'whatsapp' AND EXISTS" in payment and "t.status" not in payment
+    # The Instagram list's own «all unsent» predicate, verbatim, hides those chats.
+    for f in ("todos", "cerrados"):
+        assert NOT_ONLY_UNSENT_SQL in _filter_sql(f), f
     assert "ps.context->'_payment'->>'status' = 'review'" in payment
     expired = " ".join(_filter_sql("ventana_vencida").split())
     assert "t.channel IN ('dm')" in expired and "t.status = 'open'" in expired
@@ -283,7 +288,8 @@ def test_filters_and_cursor_shape_the_page() -> None:
     assert "UNION ALL" in dated  # every undated chat still follows a dated cursor
     undated = " ".join(_list_sql("todos", InboxCursor(None, uuid4())).split())
     assert "UNION ALL" not in undated and ":at" not in undated
-    assert "t.last_message_at IS NULL AND t.status = 'open' AND t.id < :id" in undated
+    assert "t.last_message_at IS NULL AND t.status = 'open' AND (t.channel <> 'dm'" in undated
+    assert undated.rstrip().count("AND t.id < :id") == 1
     count = " ".join(_count_sql("por_responder").split())
     assert count.startswith("SELECT count(*) FROM threads t WHERE t.channel = ANY(:channels)")
     assert " ".join(awaiting_reply_sql("t", now_param="now").split()) in count

@@ -280,6 +280,23 @@ class ConversationService:
     def get_thread(self, *, tenant_id: UUID, thread_id: UUID) -> ThreadView:
         return self._view(self._thread(tenant_id, thread_id), self._clock())
 
+    def get_dm_thread(
+        self, *, tenant_id: UUID, thread_id: UUID, connection_id: UUID | None = None
+    ) -> ThreadView:
+        """ONE Instagram Direct chat exactly as `list_threads` shows it (m-25017859) — for
+        a chat opened from the unified list that is not among the newest the screen
+        loaded. Same checks as `close` (another tenant's thread — RLS — or a thread of
+        another channel), plus: one the lists hide (every message unsent by the person)
+        and, when `connection_id` is given, one of another connected account (the check
+        `Qualify/conversations_provider._owned` makes) are `ThreadNotFound`.
+        `view.awaiting_reply` is computed; `view.thread.connection_id` is its account."""
+        record = self._repo.get_listed_thread(
+            tenant_id=tenant_id, thread_id=thread_id, channel=CHANNEL_DM
+        )
+        if record is None or (connection_id is not None and record.connection_id != connection_id):
+            raise ThreadNotFound(str(thread_id))
+        return self._view(record, self._clock())
+
     def list_messages(
         self, *, tenant_id: UUID, thread_id: UUID, limit: int = 50
     ) -> list[MessageRecord]:

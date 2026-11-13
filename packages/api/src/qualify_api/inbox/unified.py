@@ -13,10 +13,12 @@ by, so a number the owner taps is the length of the list it opens.
 **Filters** (`INBOX_FILTERS`). `por_responder` — the single rule of `inbox.awaiting`,
 judged at the caller's `now` (an Instagram chat counts only while its reply window is
 open); `todos` — every open chat, so an Instagram chat whose window closed still shows
-there (`awaiting_reply` and `window_open` false); `cerrados` — closed;
-`pago_por_revisar` — open WhatsApp chats whose payment waits for the owner's check
-(«Pago por revisar · N»); `ventana_vencida` — open Instagram chats whose window closed
-without a reply from a person, the window having closed within the last
+there (`awaiting_reply` and `window_open` false); `cerrados` — closed (neither lists an
+Instagram chat whose every message was unsent: the Instagram screen hides it too);
+`pago_por_revisar` — WhatsApp chats, open or closed, whose payment waits for the owner's
+check («Pago por revisar · N», the WhatsApp screen's own definition);
+`ventana_vencida` — open Instagram chats whose window closed without a reply from a
+person, the window having closed within the last
 `expired_within` (default `EXPIRED_UNANSWERED_WITHIN`; the rule is
 `inbox.awaiting.expired_unanswered_sql`).
 An optional channel narrows to one allow-listed channel (`UnknownChannel` otherwise).
@@ -58,6 +60,7 @@ from uuid import UUID
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import text
 
+from qualify_api.conversations.repository import NOT_ONLY_UNSENT_SQL
 from qualify_api.inbox.awaiting import awaiting_reply_sql, expired_unanswered_sql
 from qualify_api.inbox.channels import (
     CHANNEL_INSTAGRAM_DM,
@@ -91,15 +94,25 @@ _NOW_PARAM: Final = "now"
 _AWAITING_SQL: Final = awaiting_reply_sql("t", now_param=_NOW_PARAM)
 _EXPIRED_SQL: Final = expired_unanswered_sql("t", now_param=_NOW_PARAM)
 
+# A chat a screen can open (m-25017859): the Instagram list hides a chat whose every
+# message the person unsent (m-25018661), so the unified list and its counts hide it
+# too, with that list's OWN predicate. The rule (`por_responder`, `ventana_vencida`)
+# cannot count such a chat anyway: an unsent message is also `deleted_at`, so it has no
+# visible inbound; only `todos` and `cerrados` need the clause. WhatsApp has no unsends.
+_VISIBLE_SQL: Final = f"(t.channel <> '{CHANNEL_INSTAGRAM_DM}' OR {NOT_ONLY_UNSENT_SQL})"
+
 # What each filter keeps, over the `threads` row `t`. Each reads only `t` and correlated
 # subqueries, so the SAME text filters the page, `count_inbox` and `inbox_counts`.
 _FILTER_SQL: Final[Mapping[str, str]] = MappingProxyType(
     {
         "por_responder": _AWAITING_SQL,
-        "todos": "t.status = 'open'",
-        "cerrados": "t.status = 'closed'",
+        "todos": f"t.status = 'open' AND {_VISIBLE_SQL}",
+        "cerrados": f"t.status = 'closed' AND {_VISIBLE_SQL}",
+        # The WhatsApp screen's own «Pago por revisar» (`whatsapp_chats_vm.filter_threads`):
+        # every WhatsApp chat, OPEN OR CLOSED, whose payment waits for the owner's check
+        # (`_payment.status = 'review'`) — closing a chat does not settle its payment.
         "pago_por_revisar": (
-            f"(t.channel = '{CHANNEL_WHATSAPP}' AND t.status = 'open' AND EXISTS ("
+            f"(t.channel = '{CHANNEL_WHATSAPP}' AND EXISTS ("
             "SELECT 1 FROM whatsapp_thread_state ps WHERE ps.thread_id = t.id "
             f"AND ps.context->'_payment'->>'status' = '{PAYMENT_REVIEW}'))"
         ),
@@ -359,6 +372,11 @@ SELECT count(*)
 # same number by construction — and planned the same way: in a WHERE the rule's EXISTS
 # becomes a join, whereas a single scan with `count(*) FILTER (WHERE …)` per filter keeps
 # it a per-row subplan (measured 5x slower on 3,000 chats).
+#: `inbox_counts` and the menu counters (`attention.counts`) are polled per open tab; JIT
+#: compilation of these short, wide statements dominated their time. Transaction-local.
+NO_JIT_SQL: Final = "SET LOCAL jit = off"
+_NO_JIT: Final = text(NO_JIT_SQL)
+
 _COUNTS_BRANCH: Final = """
 SELECT '{name}' AS filter, t.channel, count(*) AS n
   FROM threads t
@@ -501,6 +519,10 @@ class PostgresInboxReader:
     ) -> InboxCounts:
         params = {"channels": list(channels), "now": now, "expired_since": expired_since}
         with tenant_session(tenant_id) as session:
+            # The UNION's summed cost crosses `jit_above_cost`, and compiling it costs far
+            # more than running it (measured ~900 ms → ~50 ms on 3,000 chats); scoped to
+            # this transaction only.
+            session.execute(_NO_JIT)
             records = session.execute(text(_counts_sql()), params).all()
         found = {(r.filter, r.channel): int(r.n or 0) for r in records}
         return InboxCounts(
