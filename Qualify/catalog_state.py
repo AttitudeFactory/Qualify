@@ -76,7 +76,7 @@ from .catalog_vm import (
     too_much_text,
 )
 from .creative_provider import acting_user_id, default_brand_id
-from .heavy_media import heavy_media_slot
+from .heavy_media import heavy_media_slot, run_heavy_in_thread
 from .nav_url import close_flow_script, flow_param
 from .tenant import tenant_uuid
 from .ui.route_history import history_ack_value, route_history_ready
@@ -1250,7 +1250,7 @@ class CatalogState(rx.State):
                 # m-25017273: Pillow or the ffmpeg transcode, one heavy job at a time in
                 # this process (shared with «Subir»'s photos); it waits, never fails
                 async with heavy_media_slot():
-                    await asyncio.to_thread(
+                    await run_heavy_in_thread(
                         lambda: add_media(tenant_id, product_id, data=data, filename=name)
                     )
             except CatalogError as exc:

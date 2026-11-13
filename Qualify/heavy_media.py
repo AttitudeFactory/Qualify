@@ -18,9 +18,10 @@ itself — while a task it spawns, which inherits the context, still waits its t
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
+from typing import Any
 
 _GATE = asyncio.Semaphore(1)
 _HOLDER: ContextVar[asyncio.Task[object] | None] = ContextVar(
@@ -48,3 +49,23 @@ async def heavy_media_slot(*, timeout: float | None = None) -> AsyncIterator[Non
     finally:
         _HOLDER.reset(token)
         _GATE.release()
+
+
+async def run_heavy_in_thread[T](func: Callable[..., T], /, *args: Any) -> T:
+    """`func(*args)` in a worker thread, for use INSIDE `heavy_media_slot`: a thread
+    cannot be stopped, so when this task is cancelled (Reflex cancels an upload handler
+    when the client disconnects) it still waits for the thread to end before letting
+    the cancellation through — the slot is never released while the work is running,
+    and no second heavy job can start beside it."""
+    future = asyncio.ensure_future(asyncio.to_thread(func, *args))
+    try:
+        return await asyncio.shield(future)
+    except asyncio.CancelledError:
+        while not future.done():
+            try:
+                await asyncio.shield(future)
+            except asyncio.CancelledError:
+                continue  # cancelled again: still wait for the thread
+            except Exception:  # noqa: BLE001 — the job's own error no longer matters
+                break
+        raise

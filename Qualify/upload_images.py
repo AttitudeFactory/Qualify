@@ -16,7 +16,6 @@ is Remotion's. `normalize_photo` blocks; screens call `normalize_photo_when_free
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import io
 import threading
@@ -111,7 +110,10 @@ async def normalize_photo_when_free(
     process's heavy-media gate: a queued upload never holds a default-executor thread
     (every `asyncio.to_thread` DB read of the app shares them). Raises `PhotoBusy` when
     another heavy job kept the gate for `wait_seconds` (`PHOTO_WAIT_SECONDS`)."""
-    from .heavy_media import heavy_media_slot  # noqa: PLC0415 — keeps this module standalone
+    from .heavy_media import (  # noqa: PLC0415 — keeps this module standalone
+        heavy_media_slot,
+        run_heavy_in_thread,
+    )
 
     wait = PHOTO_WAIT_SECONDS if wait_seconds is None else wait_seconds
     async with contextlib.AsyncExitStack() as stack:
@@ -119,7 +121,9 @@ async def normalize_photo_when_free(
             await stack.enter_async_context(heavy_media_slot(timeout=wait))
         except TimeoutError as exc:  # only the wait: a timeout inside is not «busy»
             raise PhotoBusy(f"waited {wait:.0f} s") from exc
-        return await asyncio.to_thread(normalize_photo, fileobj, name)
+        # a cancelled upload still waits for its thread: the slot is never free while
+        # a conversion runs
+        return await run_heavy_in_thread(normalize_photo, fileobj, name)
 
 
 def _pixel_cap(pillow_format: str) -> int:

@@ -283,7 +283,7 @@ async def test_a_queued_photo_waits_on_the_loop_then_says_so(
         raise AssertionError("a queued photo must not take a thread")
 
     await slot.acquire()  # another photo is converting
-    monkeypatch.setattr(upload_images.asyncio, "to_thread", to_thread)
+    monkeypatch.setattr(heavy_media.asyncio, "to_thread", to_thread)
     state = signed_in
     CreativeState.begin_photo_upload.fn(state, "creative_background")
     photo = _Upload(_encode(Image.new("RGB", (4, 4)), "JPEG"), "a.jpg")

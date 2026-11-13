@@ -129,3 +129,43 @@ async def test_the_catalog_adds_media_inside_the_gate_and_waits(
     await run
     assert held == [True] and not fresh_gate.locked()
     assert "clip.mp4" not in state.upload_error
+
+
+async def test_a_cancelled_job_keeps_the_slot_until_its_thread_ends(fresh_gate) -> None:
+    """Reflex cancels an upload handler when the client leaves; the conversion thread
+    keeps running, so the slot must stay taken until it ends — never two at once."""
+    import threading
+
+    from .heavy_media import run_heavy_in_thread
+
+    release = threading.Event()
+    started = threading.Event()
+    log: list[str] = []
+
+    def conversion() -> str:
+        started.set()
+        release.wait(5)
+        log.append("conversion done")
+        return "ok"
+
+    async def upload() -> None:
+        async with heavy_media_slot():
+            await run_heavy_in_thread(conversion)
+
+    async def catalog_clip() -> None:
+        async with heavy_media_slot():
+            log.append("clip started")
+
+    job = asyncio.create_task(upload())
+    await asyncio.to_thread(started.wait, 5)
+    waiter = asyncio.create_task(catalog_clip())
+    job.cancel()  # the client disconnected
+    await asyncio.sleep(0.05)
+    job.cancel()  # cancelled again: still waits
+    await asyncio.sleep(0.05)
+    assert log == [] and fresh_gate.locked() and not job.done()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await job
+    await waiter
+    assert log == ["conversion done", "clip started"] and not fresh_gate.locked()
