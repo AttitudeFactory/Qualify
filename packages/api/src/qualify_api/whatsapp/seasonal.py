@@ -129,7 +129,7 @@ REASON_TEXT: Final[dict[str, str]] = {
     ),
     # legacy: no longer written (m-25018822 — no config row is no dollar cap); kept for rows
     # that failed with it before the fix
-    "no_budget_cap": ("No pudimos crear este video: no se cobró. Pídelo de nuevo."),
+    "no_budget_cap": "No pudimos crear el video con IA y no se cobró. Puedes pedir otro.",
     "price_changed": (
         "El precio de los videos con IA cambió: no lo creamos ni se cobró. "
         "Revisa el nuevo costo y pide otro."
@@ -308,7 +308,8 @@ class AttemptsExhausted(SeasonalError):
 
 #: Technical ceiling of «Pedir otro» per slot (the key format and 0153's CHECK) — not an
 #: owner-facing limit: m-25016851 removed the cap of three. «Con IA» is bounded by its cost
-#: confirmation and the brand's monthly spend guard, not by a count.
+#: confirmation and, when the brand has a hard monthly cap configured, its spend guard —
+#: not by a count (no config row = no dollar cap, m-25018822).
 MAX_ATTEMPTS: Final = SEASONAL_MAX_ATTEMPTS
 #: The statuses «Pedir otro» starts from.
 REQUESTABLE: Final = frozenset({STATUS_READY, STATUS_REJECTED, STATUS_FAILED})

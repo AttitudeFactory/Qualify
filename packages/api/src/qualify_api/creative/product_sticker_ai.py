@@ -13,7 +13,7 @@ rule (`service._UNLIMITED_BUDGET`, `parts.py`): only a configured cap with `hard
 refuses — over it the character fails (`budget_cap`), its creation is given back,
 `PriceGuardRefused` is raised and nothing reaches BytePlus. No `creative_engine_config` row
 (or a soft cap) is no dollar cap: the owner's limit is the creaciones quota, already charged
-by `create_character` (m-25018822). Then, BEFORE the POST,
+by `ProductStickerService.request_character` (m-25018822). Then, BEFORE the POST,
 `start_request` stamps `vendor_request_started_at` on the row (only once): a later claim of
 the same job that finds it stamped never posts again — it fails the character as
 `uncertain` (creation given back) and books the quote as spent, because the first POST may

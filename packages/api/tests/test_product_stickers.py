@@ -428,7 +428,7 @@ def test_a_hard_cap_with_room_proceeds() -> None:
 
 
 def test_the_legacy_no_budget_cap_reason_still_reads_for_old_rows() -> None:
-    assert "No se te cobró" in ps.REASON_TEXT["no_budget_cap"]
+    assert "no se te cobró" in ps.REASON_TEXT["no_budget_cap"].lower()
 
 
 def test_a_claim_after_a_started_post_never_posts_again() -> None:

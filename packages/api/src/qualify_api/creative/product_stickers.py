@@ -93,7 +93,7 @@ REASON_TEXT: Final[dict[str, str]] = {
     ),
     # legacy: no longer written (m-25018822 — no config row is no dollar cap); kept for the
     # characters that failed with it before the fix, which can now simply be asked again
-    "no_budget_cap": ("Ahora no pudimos dibujarlo. No se te cobró. Pídelo de nuevo."),
+    "no_budget_cap": "Este dibujo no salió y no se te cobró. Puedes pedir otro.",
     "no_source": (
         "No pudimos abrir la foto del producto. No se te cobró. "
         "Sube otra foto en Tus productos y pide otro."

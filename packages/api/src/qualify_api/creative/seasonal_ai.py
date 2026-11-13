@@ -15,7 +15,9 @@ price guard: an estimate over the brand's remaining monthly budget, when that ca
 (`hard_stop_on_cap`), marks the row `failed` with `budget_cap` and raises
 `PriceGuardRefused` — nothing reaches BytePlus. No `creative_engine_config` row (or a soft
 cap) is no dollar cap, as in the generator (`service._UNLIMITED_BUDGET`; m-25018822): the
-owner's limits are the creaciones quota and the per-video price they accepted. The
+only limit left is the per-request price the owner confirmed (`price_changed` below) —
+«Con IA» charges no creaciones. «Con IA» is OFF in prod (`ai_mode=False`); before it is
+turned on, decide whether brands without a config row need a default cap. The
 photo goes as a JPEG data URL (never a public link). The task id is written on the job by
 the observer the moment BytePlus accepts it (`SubmissionRecorder`), so a crash never leads
 to a second paid call: the runner polls a job that has a task id, never re-submits it.
