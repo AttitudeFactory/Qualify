@@ -18,6 +18,11 @@ transaction (so the planner can create the piece and its calendar event atomical
 - one `image_assets` row per item, in order, pointing at the object «Publicar» already
   staged (`t/{tenant}/media/{connection}/{uuid}`): no copy, no Galería row.
 
+A second source (m-25026384): a photo or video uploaded from the planner's «Nueva
+publicación» (`creative.own_upload`, files under `t/{tenant}/uploads/…`), approved by the
+owner at upload time, with its own `pipeline_version`, `source` and untitled title
+(`OwnMediaPiece`'s defaults are «Publicar»'s, so that path writes what it always wrote).
+
 **Provenance.** An owner upload is manual input (exception of 2026-11-04,
 `docs/arquitectura.md` §1.6): no model wrote anything, so `model_id` is `OWNER_MODEL_ID`.
 The source publication stays traceable through `content_drafts.request_key` (a UUIDv5 of
@@ -80,6 +85,14 @@ class OwnMediaItem:
     content_type: str
     media_type: str  # "image" / "video" — `image_assets.media_type`
     position: int
+    #: What the caller knows of the file (m-25026384: an upload from the planner). The
+    #: size lets «¿Dónde quieres publicarlo?» refuse «Publicación» for an image outside
+    #: Meta's feed range (`planner.publishable.destination_options`).
+    width: int | None = None
+    height: int | None = None
+    duration_seconds: float | None = None
+    #: A video's still (`image_assets.params.thumbnail_key`, read by the calendar card).
+    thumbnail_key: str | None = None
 
 
 @dataclass(frozen=True)
@@ -94,6 +107,14 @@ class OwnMediaPiece:
     approved_at: datetime
     items: tuple[OwnMediaItem, ...]
     request_key: UUID
+    #: Where the piece came from (m-25026384): «Publicar» after publishing (the default)
+    #: or an upload from the planner's «Nueva publicación» (`creative.own_upload`).
+    pipeline_version: str = PIPELINE_VERSION
+    source: str = "publish_now"
+    #: The card's title when there is no caption.
+    untitled: str = UNTITLED
+    #: The provenance of the source (e.g. the upload id), kept in each asset's params.
+    source_ref: str | None = None
 
     def __post_init__(self) -> None:
         if not self.items:
@@ -119,11 +140,11 @@ def own_copy(caption: str) -> CopyPayload:
     return CopyPayload(hook="", caption=caption)
 
 
-def title_of(caption: str) -> str:
+def title_of(caption: str, untitled: str = UNTITLED) -> str:
     """The card's title: the caption's first non-empty line, cut to `TITLE_MAX`."""
     first = next((line.strip() for line in caption.splitlines() if line.strip()), "")
     if not first:
-        return UNTITLED
+        return untitled
     return first if len(first) <= TITLE_MAX else first[: TITLE_MAX - 1].rstrip() + "…"
 
 
@@ -132,6 +153,20 @@ def find_own_media_piece(session: Session, request_key: UUID) -> UUID | None:
     return session.scalar(
         select(orm.ContentDraft.id).where(orm.ContentDraft.request_key == request_key)
     )
+
+
+def _asset_params(piece: OwnMediaPiece, item: OwnMediaItem) -> dict[str, object]:
+    params: dict[str, object] = {
+        "source": piece.source,
+        "pipeline_version": piece.pipeline_version,
+    }
+    if piece.source_ref is not None:
+        params["source_ref"] = piece.source_ref
+    if item.duration_seconds is not None:
+        params["duration_seconds"] = item.duration_seconds
+    if item.thumbnail_key is not None:
+        params["thumbnail_key"] = item.thumbnail_key
+    return params
 
 
 def create_own_media_piece(
@@ -150,7 +185,7 @@ def create_own_media_piece(
         tenant_id=tenant_id,
         brand_id=piece.brand_id,
         objective=BriefObjective.AWARENESS.value,
-        topic=title_of(piece.caption),
+        topic=title_of(piece.caption, piece.untitled),
         product_ref=None,
         platform=Platform.INSTAGRAM.value,
         format=piece.format.value,
@@ -175,16 +210,20 @@ def create_own_media_piece(
         brief_id=brief.id,
         status=draft_fsm.APPROVED,
         voice_profile_version=None,
-        pipeline_version=PIPELINE_VERSION,
+        pipeline_version=piece.pipeline_version,
         requires_ai_disclosure=False,
         approved_by=piece.user_id,
         approved_at=piece.approved_at,
         request_key=piece.request_key,
-        title=title_of(piece.caption),
+        title=title_of(piece.caption, piece.untitled),
         category=piece.category.value,
         reuse_type=ReuseType.RECURRENTE.value,
         # a still the calendar card can show; a video's card keeps its placeholder
-        preview_key=first_image.object_key if first_image is not None else None,
+        preview_key=(
+            first_image.object_key
+            if first_image is not None
+            else next((item.thumbnail_key for item in ordered if item.thumbnail_key), None)
+        ),
         revision=1,
         approved_revision=1,
     )
@@ -199,7 +238,7 @@ def create_own_media_piece(
         revision=1,
         status="active",
         model_id=OWNER_MODEL_ID,
-        pipeline_version=PIPELINE_VERSION,
+        pipeline_version=piece.pipeline_version,
         requires_ai_disclosure=False,
         brief_id=brief.id,
         created_at=piece.approved_at,
@@ -226,9 +265,11 @@ def create_own_media_piece(
             content_type=item.content_type,
             media_type=item.media_type,
             position=item.position,
+            width=item.width,
+            height=item.height,
             model_id=OWNER_MODEL_ID,
             provider=OWNER_MODEL_ID,
-            params={"source": "publish_now", "pipeline_version": PIPELINE_VERSION},
+            params=_asset_params(piece, item),
         )
         for item in ordered
     )
@@ -243,6 +284,7 @@ __all__ = [
     "OWNER_MODEL_ID",
     "PIPELINE_VERSION",
     "REQUEST_KEY_NAMESPACE",
+    "UNTITLED",
     "OwnMediaItem",
     "OwnMediaPiece",
     "create_own_media_piece",
