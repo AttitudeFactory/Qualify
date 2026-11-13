@@ -62,7 +62,6 @@ from .product_sticker_vm import (
     ProductVM,
 )
 from .r2_media import BACKEND_BASE
-from .seasonal_state import SeasonalState
 from .ui import (
     callout,
     card,
@@ -382,7 +381,7 @@ def _ask_block() -> rx.Component:
                     # a way out, not just a stop: the season's stickers are free
                     _button(
                         SEASON_INSTEAD_LABEL,
-                        [P.close_for_season, SeasonalState.open_flow],
+                        P.close_for_season,
                         icon="calendar-heart",
                     ),
                     spacing="2",

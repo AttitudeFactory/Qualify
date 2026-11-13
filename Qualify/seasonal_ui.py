@@ -59,6 +59,7 @@ from .seasonal_vm import (
     PENDING_EMPTY_TEXT,
     PENDING_EMPTY_TITLE,
     PREPARING,
+    PRODUCT_SEASON_KEY,
     RESTORE_LABEL,
     RETRY_LABEL,
     SECTION_HELP,
@@ -144,13 +145,17 @@ def _season_row(season: SeasonVM) -> rx.Component:
         rx.cond(
             season.archived,
             _button(RESTORE_LABEL, S.restore(season.key), icon="rotate-ccw"),
-            rx.button(
-                ARCHIVE_LABEL,
-                on_click=S.archive(season.key),
-                variant="ghost",
-                size="2",
-                min_height=_TAP,
-                **T.tone_scheme("neutral"),
+            # m-25017912: product stickers do not end with a season — never archived
+            rx.cond(
+                season.key != PRODUCT_SEASON_KEY,
+                rx.button(
+                    ARCHIVE_LABEL,
+                    on_click=S.archive(season.key),
+                    variant="ghost",
+                    size="2",
+                    min_height=_TAP,
+                    **T.tone_scheme("neutral"),
+                ),
             ),
         ),
         width="100%",
@@ -847,13 +852,16 @@ def _approved_group(season: SeasonVM) -> rx.Component:
                 flex="1",
                 min_width="0",
             ),
-            rx.button(
-                ARCHIVE_LABEL,
-                on_click=S.archive_from_approved(season.key),
-                variant="ghost",
-                size="2",
-                min_height=_TAP,
-                **T.tone_scheme("neutral"),
+            rx.cond(
+                season.key != PRODUCT_SEASON_KEY,
+                rx.button(
+                    ARCHIVE_LABEL,
+                    on_click=S.archive_from_approved(season.key),
+                    variant="ghost",
+                    size="2",
+                    min_height=_TAP,
+                    **T.tone_scheme("neutral"),
+                ),
             ),
             width="100%",
             align="center",

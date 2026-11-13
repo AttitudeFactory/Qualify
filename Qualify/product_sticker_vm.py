@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime, timedelta
 from typing import Any, Final
 
 # --- where it lives ----------------------------------------------------------------------
@@ -121,6 +122,8 @@ NO_COST: Final = "Ahora no podemos calcular el costo. Vuelve a intentarlo en un 
 # --- statuses (the backend's) ------------------------------------------------------------
 
 PENDING: Final = "pending"
+#: A drawing still «Dibujando…» after this long was lost (the usual is ~30 s – 2 min).
+STALE_DRAWING_MINUTES: Final = 10
 READY: Final = "ready"
 FAILED: Final = "failed"
 APPROVED: Final = "approved"
@@ -191,6 +194,9 @@ class DrawingVM:
     #: ready or approved: it can be picked
     usable: bool = False
     approved: bool = False
+    #: «Dibujando…» for longer than `STALE_DRAWING_MINUTES`: it no longer blocks asking
+    #: for another one (a lost job; the backend fails it and gives the creación back)
+    stale: bool = False
     alt: str = ""
 
 
@@ -198,8 +204,17 @@ def product_vms(options: Iterable[Any]) -> list[ProductVM]:
     return [ProductVM(id=str(o.id), name=str(o.name), src=str(o.src or "")) for o in options]
 
 
-def drawing_vm(card: Any) -> DrawingVM:
+def drawing_vm(card: Any, now: datetime | None = None) -> DrawingVM:
     status = str(card.status)
+    born = getattr(card, "created_at", None)
+    now = now or datetime.now(UTC)
+    if born is not None and born.tzinfo is None:
+        born = born.replace(tzinfo=UTC)
+    stale = (
+        status == PENDING
+        and born is not None
+        and now - born > timedelta(minutes=STALE_DRAWING_MINUTES)
+    )
     name = str(card.product_name or "tu producto")
     return DrawingVM(
         id=str(card.id),
@@ -212,6 +227,7 @@ def drawing_vm(card: Any) -> DrawingVM:
         failed=status == FAILED,
         usable=status in (READY, APPROVED),
         approved=status == APPROVED,
+        stale=stale,
         alt=f"Dibujo tierno de {name}",
     )
 

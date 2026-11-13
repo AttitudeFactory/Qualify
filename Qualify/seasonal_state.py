@@ -851,6 +851,8 @@ class SeasonalState(rx.State):
             brand = _uuid(self._brand)
             if season is None or brand is None or season.archived == archived:
                 return
+            if archived and season_key == PRODUCT_SEASON_KEY:
+                return  # m-25017912: the product stickers are for every day, never archived
             label, gen = season.label, self._gen
             self.action_error = ""
             tenant_id = await self._tenant()

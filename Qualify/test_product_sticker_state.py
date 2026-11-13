@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 from uuid import UUID, uuid4
@@ -110,7 +110,7 @@ class FakeGateway:
             product_id=str(product_id),
             product_name="Shawarma mixto",
             status="pending",
-            created_at=datetime(2026, 11, 12),
+            created_at=datetime.now(UTC),
         )
         self.drawings.setdefault(str(product_id), []).insert(0, card)
         return card
@@ -597,7 +597,7 @@ async def test_an_empty_month_offers_the_free_season(gw: FakeGateway) -> None:
     assert start_cost_line(1, read=False) == "Revisando el costo…"
     state = ProductStickerState()
     await _open(state)
-    state.close_for_season()
+    assert state.close_for_season() is not None  # the free season opens next
     assert not state.flow_open
 
 
@@ -606,3 +606,34 @@ def test_several_drawings_are_told_apart() -> None:
 
     alts = [d.alt for d in drawing_vms([_ready(SHAWARMA), _ready(SHAWARMA)])]
     assert alts == ["Dibujo 1 de 2 de Shawarma mixto", "Dibujo 2 de 2 de Shawarma mixto"]
+
+
+async def test_a_lost_drawing_no_longer_blocks_another(gw: FakeGateway) -> None:
+    from datetime import timedelta
+
+    lost = CharacterCard(
+        id=str(uuid4()),
+        product_id=SHAWARMA,
+        product_name="Shawarma mixto",
+        status="pending",
+        created_at=datetime.now(UTC) - timedelta(minutes=11),
+    )
+    gw.drawings[SHAWARMA] = [lost]
+    state = ProductStickerState()
+    await _open(state)
+    await _to_drawings(state)
+    assert state.drawings[0].stale and not state.any_drawing_pending and state.can_ask_drawing
+
+
+async def test_the_product_stickers_are_never_archived() -> None:
+    from .seasonal_state import SeasonalState
+    from .seasonal_vm import build_season
+
+    state = SeasonalState()
+    state.seasons = [build_season("productos", "De tus productos", False, [_media("approved")])]
+    state._brand = str(BRAND)
+    events = [e async for e in SeasonalState.archive.fn(state, "productos")]
+    assert events == [] and not state.seasons[0].archived
+    assert [s.key for s in state.library] == ["productos"]  # shown: one is approved
+    state.seasons = [build_season("productos", "De tus productos", False, [_media("ready")])]
+    assert state.library == []  # nothing approved yet: no row in Tu marca

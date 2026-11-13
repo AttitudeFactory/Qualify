@@ -183,7 +183,7 @@ class ProductStickerState(rx.State):
 
     @rx.var
     def any_drawing_pending(self) -> bool:
-        return any(d.pending for d in self.drawings)
+        return any(d.pending and not d.stale for d in self.drawings)
 
     @rx.var
     def drawing_button(self) -> str:
@@ -200,7 +200,7 @@ class ProductStickerState(rx.State):
             self.cost_known
             and self.cost_can_pay
             and not self.asking
-            and not any(d.pending for d in self.drawings)
+            and not any(d.pending and not d.stale for d in self.drawings)
         )
 
     @rx.var
@@ -266,7 +266,11 @@ class ProductStickerState(rx.State):
         return True
 
     def _can_ask(self) -> bool:
-        return self.cost_known and self.cost_can_pay and not any(d.pending for d in self.drawings)
+        return (
+            self.cost_known
+            and self.cost_can_pay
+            and not any(d.pending and not d.stale for d in self.drawings)
+        )
 
     def _set_cost(self, cost: Any) -> None:
         self.cost_creations = int(cost.creations)
@@ -394,12 +398,16 @@ class ProductStickerState(rx.State):
             self._poll_gen += 1
 
     @rx.event
-    def close_for_season(self) -> None:
+    def close_for_season(self) -> Any:
         """«Crear para esta temporada» from an empty month: this panel closes and the free
         seasonal one opens next (`SeasonalState.open_flow`)."""
-        if not self._in_flight():
-            self.flow_open = False
-            self._poll_gen += 1
+        if self._in_flight():
+            return None
+        self.flow_open = False
+        self._poll_gen += 1
+        from .seasonal_state import SeasonalState  # noqa: PLC0415 — no import cycle
+
+        return SeasonalState.open_flow
 
     @rx.event
     def flow_back(self) -> None:
