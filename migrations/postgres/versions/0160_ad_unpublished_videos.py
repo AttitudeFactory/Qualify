@@ -15,7 +15,9 @@ processing it after the upload, so its claim needs more states than an image has
 - `unknown` — a timeout or crash after sending: never uploaded again automatically;
 - `failed` — Meta reported an error, or the bytes sent differ from the measured digest.
 
-Only `submitting` → `ready` exists as a way back, and only while no `video_id` exists (the
+A `submitting` claim idle for 30 minutes (its process died between claim and settle)
+becomes `unknown` with detail `stale claim` — the trigger refuses that detail on a fresher
+claim. Only `submitting` → `ready` exists as a way back, and only while no `video_id` exists (the
 fence refused before anything was sent). `video_id` (numeric) and the image hashes of 0150
 live in different tables and are never compared to each other. Same identity as 0150:
 tenant + ad account + credential version + asset + content digest. RLS forced in this
@@ -70,7 +72,9 @@ def upgrade() -> None:
           OR (OLD.state='submitting' AND NEW.state='ready' AND OLD.video_id IS NULL)
           OR (OLD.state='submitting' AND NEW.state='submitting'
               AND NEW.claim_token=OLD.claim_token)
-          OR (OLD.state='submitting' AND NEW.state IN ('processing','unknown','failed'))
+          OR (OLD.state='submitting' AND NEW.state IN ('processing','unknown','failed')
+              AND (NEW.detail IS DISTINCT FROM 'stale claim'
+                   OR (NEW.state='unknown' AND OLD.updated_at < now()-interval '30 minutes')))
           OR (OLD.state='processing' AND NEW.state IN ('processing','ready_remote','failed'))
         )
       THEN RAISE EXCEPTION 'invalid video transfer change' USING ERRCODE='23514'; END IF;

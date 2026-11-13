@@ -89,9 +89,11 @@ imagen de la misma versión con el mismo formato. Sin portada se bloquea con el 
 («Falta la portada de cada video…»); nunca se inventa una URL o un hash de miniatura. La
 portada se sube como cualquier imagen (`adimages`) y va como `thumbnail_hash`.
 
-1. **Límites antes de la red.** Se abre el MP4 por `ObjectGate` y se leen solo las cabeceras
-   y `moov` (como máximo 8 MiB de metadatos): un solo video, duración, ancho y alto; luego se
-   calcula el SHA-256 en lecturas de 1 MiB. Políticas locales, no límites de Meta: MP4,
+1. **Límites antes de la red.** Primero se pide el tamaño a R2 (HEAD, sin leer el archivo);
+   luego se leen por rangos (`ObjectGate.open_range`, nunca `open_object`, que en R2 descarga
+   el objeto entero) solo las cabeceras y `moov` (como máximo 8 MiB de metadatos): un solo
+   video, duración, ancho y alto; y en la misma pasada el SHA-256 en lecturas de 8 MiB. Las
+   lecturas bloqueantes corren fuera del bucle de eventos (`asyncio.to_thread`). Políticas locales, no límites de Meta: MP4,
    hasta 100 MiB y de 1 a 60 segundos. Las dimensiones reales deben coincidir con las de la
    fila. Las portadas se miden igual que las imágenes. Todo esto ocurre antes de la primera
    llamada a Meta.
@@ -99,22 +101,25 @@ portada se sube como cualquier imagen (`adimages`) y va como `thumbnail_hash`.
    transferencia por negocio, cuenta, versión de credencial, archivo y contenido. Estados:
    `ready` (medido, nada enviado) → `submitting` (reclamo confirmado con `claim_token` antes
    del primer POST) → `processing` → `ready_remote`; o `unknown` / `failed`. Si el control
-   previo falla antes de enviar, vuelve a `ready`; si ya se envió algo y no hay respuesta,
-   queda `unknown` y **nunca se vuelve a subir solo**. Un disparador impide cualquier otro
+   previo falla antes de enviar, o Meta rechaza con certeza el `start` (límite de uso,
+   token vencido) sin nombrar un video, vuelve a `ready`; si ya se envió algo y no hay
+   respuesta, queda `unknown` y **nunca se vuelve a subir solo**. Un `submitting` sin cambios
+   durante 30 minutos (el proceso murió entre el reclamo y el cierre) pasa a `unknown` y se
+   pide ayuda. Un disparador impide cualquier otro
    cambio y que cambie el `video_id`.
 3. **Carga por partes.** `MarketingClient.upload_video` usa `act_<id>/advideos` en
    `graph-video.facebook.com` con `upload_phase` `start` → `transfer` → `finish`. Meta nombra
-   el video en `start` y ese `video_id` se guarda antes de enviar bytes. Cada parte se lee del
-   flujo de R2 (como máximo 16 MiB por parte, límite local); el archivo nunca está entero en
-   memoria y no se guarda ninguna URL firmada. Al terminar se comprueba que los bytes enviados
+   el video en `start` y ese `video_id` se guarda antes de enviar bytes. Cada parte se lee de
+   R2 con una lectura por rango (como máximo 16 MiB por parte, límite local); el archivo nunca
+   está entero en memoria y no se guarda ninguna URL firmada. Al terminar se comprueba que los bytes enviados
    tienen el mismo SHA-256 medido; si no, queda `failed`.
 4. **Procesamiento.** Un video aceptado queda `processing`. Cada `prepare` hace **una** lectura
    `GET /{video_id}?fields=id,status` por video en proceso (`ready` → `ready_remote`, `error`
    o `expired` → `failed`). Mientras alguno no esté listo, `prepare` responde «Meta todavía
    está preparando el video…» y no crea creatividad, campaña ni anuncio. **El contrato de
    reconciliación es repetir el mismo `prepare` con la misma `request_key`**: no reenvía nada
-   y no hay hilos ni procesos en segundo plano. Una transferencia `submitting` cuyo proceso
-   murió, o una `unknown`, necesita revisión manual.
+   y no hay hilos ni procesos en segundo plano. Una transferencia `unknown` necesita
+   revisión manual.
 5. **Creatividad.** `asset_feed_spec` con `ad_formats=["SINGLE_VIDEO"]`, `videos` con
    `video_id`, `thumbnail_hash` y etiqueta, y las mismas dos reglas por ubicación con
    `video_label`. Un hash de imagen nunca se acepta como `video_id` ni al revés.

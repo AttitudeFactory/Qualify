@@ -273,5 +273,25 @@ def test_video_source_covers_claims_and_transitions(unpublished_world):
         fresh, token = repo.claim_video(video, video.vertical, "d" * 64, 10)
         repo.finish_video(video.tenant_id, fresh["id"], token, "unknown")
         assert repo.claim_video(video, video.vertical, "d" * 64, 10)[1] is None
+        # A claim whose process died stays submitting; once idle 30 minutes it is unknown.
+        crashed, token = repo.claim_video(video, video.vertical, "e" * 64, 10)
+        assert token is not None
+        with pytest.raises(IntegrityError), tenant_session(video.tenant_id) as session:
+            session.execute(  # a fresh claim cannot be declared stale
+                text("""UPDATE ad_unpublished_videos SET state='unknown',claim_token=NULL,
+                  detail='stale claim' WHERE id=:id"""),
+                {"id": crashed["id"]},
+            )
+        assert repo.claim_video(video, video.vertical, "e" * 64, 10)[0]["state"] == "submitting"
+        with tenant_session(video.tenant_id) as session:
+            session.execute(
+                text("""UPDATE ad_unpublished_videos SET updated_at=now()-interval '1 hour'
+                  WHERE id=:id"""),
+                {"id": crashed["id"]},
+            )
+        stale, again = repo.claim_video(video, video.vertical, "e" * 64, 10)
+        assert again is None and stale["state"] == "unknown" and stale["detail"] == "stale claim"
+        with pytest.raises(UnpublishedUnavailable):  # the dead holder can no longer settle
+            repo.finish_video(video.tenant_id, crashed["id"], token, "processing")
         with tenant_session(uuid4()) as session:
             assert session.scalar(text("SELECT count(*) FROM ad_unpublished_videos")) == 0

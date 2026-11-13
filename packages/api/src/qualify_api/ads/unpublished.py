@@ -18,7 +18,8 @@ MAX_IMAGE_BYTES = 8 * 1024 * 1024  # Local policy, not a claimed Meta limit.
 # Local policy, not claimed Meta limits: one story card is the tightest placement we target.
 MAX_VIDEO_BYTES = 100 * 1024 * 1024
 MIN_VIDEO_SECONDS, MAX_VIDEO_SECONDS = 1.0, 60.0
-MAX_MOOV_BYTES = 8 * 1024 * 1024  # bounded metadata read; media bytes are never buffered
+MAX_MOOV_BYTES = 8 * 1024 * 1024  # bounded metadata read
+TOO_LARGE = "Cada video del anuncio debe ocupar como máximo 100 MB. Recórtalo o elige otro."
 
 
 class UnpublishedUnavailable(ValueError):
@@ -69,7 +70,8 @@ class VideoSelection:
             or self.width * ratio[1] != self.height * ratio[0]
         ):
             raise UnpublishedUnavailable(
-                "Elige dos videos MP4: uno de 4:5 para las publicaciones y otro vertical de 9:16."
+                "Elige dos videos MP4: uno para el perfil (4:5) y otro vertical de pantalla "
+                "completa (9:16)."
             )
         if self.thumbnail is None:
             raise UnpublishedUnavailable(
@@ -281,12 +283,20 @@ def _boxes(data: bytes) -> dict[bytes, list[bytes]]:
 def mp4_facts(stream: IO[bytes]) -> tuple[int, float, int, int]:
     """(bytes, seconds, width, height) of a seekable MP4, reading box headers and `moov` only.
 
-    Media bytes are skipped with seeks, never buffered. Fails closed: anything that is not a
-    plain MP4 with exactly one sized video track raises an owner-readable error.
+    The size is checked first; media bytes are then skipped with seeks (the stream decides
+    what a read costs). Fails closed: anything that is not a plain MP4 with exactly one sized
+    video track raises an owner-readable error.
     """
     try:
         size = stream.seek(0, 2)
         stream.seek(0)
+    except OSError:
+        size = -1
+    if size > MAX_VIDEO_BYTES:
+        raise UnpublishedUnavailable(TOO_LARGE)
+    try:
+        if size <= 0:
+            raise ValueError("unsized")
         moov, offset = None, 0
         while offset < size and moov is None:
             length, kind = struct.unpack(">I4s", stream.read(8))

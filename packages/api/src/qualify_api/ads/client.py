@@ -371,7 +371,7 @@ class MarketingClient:
                     break
                 if low != sent or not low < high <= size or high - low > VIDEO_CHUNK_BYTES:
                     raise ValueError("unexpected upload window")
-                chunk = stream.read(high - low)
+                chunk = await asyncio.to_thread(stream.read, high - low)  # blocking I/O
                 if len(chunk) != high - low:
                     raise ValueError("short read")
                 answer = await self._request(

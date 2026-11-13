@@ -3,6 +3,7 @@ untouched."""
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import io
 from dataclasses import dataclass
@@ -34,6 +35,7 @@ from qualify_api.ads.unpublished import (
     MAX_VIDEO_BYTES,
     MAX_VIDEO_SECONDS,
     MIN_VIDEO_SECONDS,
+    TOO_LARGE,
     ImageAdForm,
     ImageSelection,
     ImageSource,
@@ -89,25 +91,58 @@ def image_bytes(gate: ObjectGate, source: ImageSource, asset: ImageSelection) ->
         ) from None
 
 
+RANGE_BYTES = 16 * 1024 * 1024  # largest window one read may fetch (moov ≤ 8 MiB, chunk ≤ 16)
+
+
+class RangedObject:
+    """Seekable, read-only view of one stored object. Every read is one ranged GET
+    (`ObjectGate.open_range`), so only the requested window is in memory: `open_object`
+    on R2 downloads the whole object first (`S3Store.open`). Blocking — call it off the
+    event loop."""
+
+    def __init__(self, gate: ObjectGate, tenant: UUID, key: str) -> None:
+        self.gate, self.tenant, self.key = gate, tenant, key
+        self.size = gate.object_size(tenant, key)  # HEAD, no body
+        self.position = 0
+
+    def seek(self, offset: int, whence: int = 0) -> int:
+        base = (0, self.position, self.size)[whence]
+        self.position = max(0, base + offset)
+        return self.position
+
+    def tell(self) -> int:
+        return self.position
+
+    def read(self, size: int = -1) -> bytes:
+        end = self.size if size is None or size < 0 else min(self.size, self.position + size)
+        if end <= self.position:
+            return b""
+        if end - self.position > RANGE_BYTES:
+            raise OSError("read window too large")
+        with self.gate.open_range(self.tenant, self.key, self.position, end - 1) as part:
+            data = part.read()
+        self.position += len(data)
+        return data
+
+
 def video_facts(gate: ObjectGate, source: ImageSource, asset: VideoSelection) -> tuple[str, int]:
-    """(SHA-256, bytes) of a server-resolved MP4, with local limits checked before any
-    network call. Streams in 1 MiB reads; the file is never held in memory."""
+    """(SHA-256, bytes) of a server-resolved MP4 in one pass, local limits checked before any
+    Meta call. Size comes from a HEAD before any byte is read; then ranged reads of at most
+    8 MiB. Blocking: async callers run it with `asyncio.to_thread`."""
     try:
-        with gate.open_object(source.tenant_id, asset.object_key) as stream:
-            size, seconds, width, height = mp4_facts(stream)
-            if size > MAX_VIDEO_BYTES:
-                raise UnpublishedUnavailable(
-                    "Cada video del anuncio debe ocupar como máximo 100 MB."
-                )
-            if not MIN_VIDEO_SECONDS <= seconds <= MAX_VIDEO_SECONDS:
-                raise UnpublishedUnavailable(
-                    "Cada video del anuncio debe durar entre 1 y 60 segundos."
-                )
-            if (width, height) != (asset.width, asset.height):
-                raise UnpublishedUnavailable("El video cambió. Vuelve a elegir sus formatos.")
-            hasher = hashlib.sha256()
-            while chunk := stream.read(1024 * 1024):
-                hasher.update(chunk)
+        if gate.object_size(source.tenant_id, asset.object_key) > MAX_VIDEO_BYTES:
+            raise UnpublishedUnavailable(TOO_LARGE)
+        stream = RangedObject(gate, source.tenant_id, asset.object_key)
+        size, seconds, width, height = mp4_facts(stream)
+        if not MIN_VIDEO_SECONDS <= seconds <= MAX_VIDEO_SECONDS:
+            raise UnpublishedUnavailable(
+                "Cada video del anuncio debe durar entre 1 y 60 segundos. Recórtalo o elige otro."
+            )
+        if (width, height) != (asset.width, asset.height):
+            raise UnpublishedUnavailable("El video cambió. Vuelve a elegir sus formatos.")
+        hasher = hashlib.sha256()
+        while chunk := stream.read(8 * 1024 * 1024):
+            hasher.update(chunk)
         return hasher.hexdigest(), size
     except (OSError, ObjectNotFound):
         raise UnpublishedUnavailable(
@@ -129,10 +164,11 @@ class _Hashing:
 
 VIDEO_STATE = {"ready": "ready_remote", "processing": "processing", "error": "failed"}
 VIDEO_WAIT = {
-    "processing": "Meta todavía está preparando el video. Vuelve a preparar el anuncio en "
-    "unos minutos; no lo enviaremos otra vez.",
+    "processing": "Meta todavía está preparando tu video. Ya lo recibió: no tienes que "
+    "subirlo de nuevo. Vuelve en unos minutos.",
     "submitting": "El video se está enviando a Meta. Vuelve a intentarlo en unos minutos.",
-    "failed": "Meta no aceptó el video. Elige otro video o pide ayuda.",
+    "failed": "Meta no aceptó este video. Prueba con otro, de 1 a 60 segundos y en MP4, "
+    "o pide ayuda.",
 }
 
 
@@ -205,7 +241,7 @@ class UnpublishedImageService:
     async def _upload(
         self, source: ImageSource, asset: ImageSelection, client: MarketingClient, actor: UUID
     ) -> tuple[str, str]:
-        data = image_bytes(self.gate, source, asset)
+        data = await asyncio.to_thread(image_bytes, self.gate, source, asset)
         digest = hashlib.sha256(data).hexdigest()
         self._guard(source, actor)
         row, claimed = self.recipes.claim_upload(source, asset, digest)
@@ -240,27 +276,31 @@ class UnpublishedImageService:
         self._guard(source, actor)
         row, token = self.recipes.claim_video(source, asset, digest, size)
         if token is not None:
-            sent = False
+            sent = named = False
 
             def fence() -> None:
                 nonlocal sent
                 self._guard(source, actor)
                 sent = True
 
+            def started(value: str) -> None:
+                nonlocal named
+                self.recipes.video_named(source.tenant_id, row["id"], token, value)
+                named = True
+
             hasher = hashlib.sha256()
             try:
-                with self.gate.open_object(source.tenant_id, asset.object_key) as stream:
-                    video_id = await client.upload_video(
-                        _Hashing(stream, hasher),
-                        size,
-                        before_write=fence,
-                        started=lambda value: self.recipes.video_named(
-                            source.tenant_id, row["id"], token, value
-                        ),
-                    )
+                stream = await asyncio.to_thread(
+                    RangedObject, self.gate, source.tenant_id, asset.object_key
+                )
+                video_id = await client.upload_video(
+                    _Hashing(stream, hasher), size, before_write=fence, started=started
+                )
             except BaseException as error:
+                # A definite Meta refusal of `start` (rate limit, expired token) created no
+                # video: the claim goes back to ready. Anything after `start` is unknown.
                 definite = isinstance(error, MarketingError) and not error.outcome_unknown
-                state = "failed" if sent and definite else "unknown" if sent else "ready"
+                state = "ready" if not sent or (definite and not named) else "unknown"
                 self.recipes.finish_video(source.tenant_id, row["id"], token, state)
                 raise
             if hasher.hexdigest() != digest:
@@ -287,20 +327,23 @@ class UnpublishedImageService:
             )
         )
 
-    def _digests(self, source: ImageSource, *, videos: bool = True) -> list[str]:
-        """Image digests, or video digests then cover digests. `videos=False` skips the
-        (large) video re-read inside per-write fences; confirm re-reads them once first."""
+    async def _digests(self, source: ImageSource, *, videos: bool = True) -> list[str]:
+        """Image digests, or video digests then cover digests, read off the event loop.
+        `videos=False` skips the video re-read inside per-write fences; confirm re-reads
+        each video once first."""
+
+        def image(asset: ImageSelection) -> str:
+            return hashlib.sha256(image_bytes(self.gate, source, asset)).hexdigest()
+
         if not source.is_video:
-            return [
-                hashlib.sha256(image_bytes(self.gate, source, asset)).hexdigest()
-                for asset in (source.feed, source.vertical)
-            ]
+            return [await asyncio.to_thread(image, a) for a in (source.feed, source.vertical)]
         pair = (source.feed, source.vertical)
-        found = [video_facts(self.gate, source, asset)[0] for asset in pair] if videos else []
-        return found + [
-            hashlib.sha256(image_bytes(self.gate, source, asset.thumbnail)).hexdigest()
-            for asset in pair
-        ]
+        found = (
+            [(await asyncio.to_thread(video_facts, self.gate, source, a))[0] for a in pair]
+            if videos
+            else []
+        )
+        return found + [await asyncio.to_thread(image, a.thumbnail) for a in pair]
 
     async def _validate(
         self,
@@ -358,10 +401,11 @@ class UnpublishedImageService:
         if source.is_video:
             # Every local limit (size, duration, dimensions, covers) before any network call.
             facts = [
-                video_facts(self.gate, source, asset) for asset in (source.feed, source.vertical)
+                await asyncio.to_thread(video_facts, self.gate, source, asset)
+                for asset in (source.feed, source.vertical)
             ]
             for asset in (source.feed, source.vertical):
-                image_bytes(self.gate, source, asset.thumbnail)
+                await asyncio.to_thread(image_bytes, self.gate, source, asset.thumbnail)
         recipe = self.recipes.approve(source, form, actor, request_key)
         access = await self._account(source, actor)
         client = access.client
@@ -593,7 +637,7 @@ class UnpublishedImageService:
         ):
             raise UnpublishedUnavailable("La aprobación cambió. Prepara otra vista previa.")
         self._guard(source, actor, review.expires_at)
-        digests = self._digests(source)
+        digests = await self._digests(source)
         if digests != review.checks_snapshot.get("digests"):
             raise UnpublishedUnavailable(
                 "Las imágenes o videos cambiaron. Prepara otra vista previa."
@@ -621,7 +665,7 @@ class UnpublishedImageService:
                     raise UnpublishedUnavailable(
                         "Las mejoras automáticas de la marca cambiaron. Prepara otra vista previa."
                     )
-                current = self._digests(source, videos=False)
+                current = await self._digests(source, videos=False)
                 if current != digests[-len(current) :]:
                     raise UnpublishedUnavailable(
                         "Las imágenes o videos cambiaron. No activamos el anuncio."

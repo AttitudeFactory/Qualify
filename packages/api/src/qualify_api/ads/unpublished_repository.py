@@ -23,6 +23,9 @@ from qualify_api.connections.ad_accounts import _connection, _permission_reason
 from qualify_api.tenancy.acting import require_acting_member
 
 CHANGED = "La pieza o la cuenta cambió. Vuelve a preparar el anuncio."
+# A send claim idle this long lost its process (crash between claim and settle): it becomes
+# `unknown`, never re-sent. Must match the 0160 trigger.
+STALE_CLAIM_MINUTES = 30
 
 
 def load_image_source(
@@ -311,6 +314,13 @@ class UnpublishedRepository:
               VALUES(:tenant,:account,:connection,:version,:asset,:digest,:size,:api)
               ON CONFLICT DO NOTHING"""),
                 params,
+            )
+            session.execute(
+                text(f"""UPDATE ad_unpublished_videos
+              SET state='unknown',claim_token=NULL,detail='stale claim',updated_at=now()
+              WHERE {identity} AND state='submitting'
+                AND updated_at < now() - make_interval(mins => :stale)"""),
+                params | {"stale": STALE_CLAIM_MINUTES},
             )
             claimed = (
                 session.execute(

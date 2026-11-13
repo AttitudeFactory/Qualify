@@ -19,6 +19,7 @@ from packages.api.tests.test_ad_unpublished import (
 )
 from PIL import Image
 
+from qualify_api.ads import unpublished as domain
 from qualify_api.ads import unpublished_service as module
 from qualify_api.ads.client import MarketingClient
 from qualify_api.ads.errors import MarketingError
@@ -82,9 +83,12 @@ class VideoClient(Client):
     def __init__(self):
         super().__init__()
         self.video_uploads, self.video_failure = [], False
+        self.start_refusals = []
 
     async def upload_video(self, stream, size, *, before_write, started):
         before_write()
+        if self.start_refusals:  # a definite refusal of `start`: no video named
+            raise self.start_refusals.pop(0)
         identifier = str(900 + len(self.video_uploads))
         started(identifier)
         self.video_uploads.append(b"".join(iter(lambda: stream.read(1000), b"")))
@@ -193,11 +197,26 @@ def test_no_mixing_and_a_missing_cover_is_blocked_with_the_reason(video, service
     assert image_source.snapshot()["pipeline"] == "ad-unpublished-images-v1"
 
 
-def test_mp4_facts_reads_metadata_and_refuses_non_mp4():
+def test_mp4_facts_reads_metadata_and_refuses_non_mp4(monkeypatch):
     assert mp4_facts(io.BytesIO(mp4(90, 160, seconds=7.5))) == (len(mp4(90, 160)), 7.5, 90, 160)
-    for data in (b"not a video", mp4(90, 160)[:-10], box(b"moov", b"")):
-        with pytest.raises(UnpublishedUnavailable):
+    head, moov = mp4(90, 160).split(b"moov")[0][:-4], mp4(90, 160).split(b"moov", 1)[1]
+    # 64-bit length (size field 1 + largesize) and a last box running to EOF (size 0).
+    large = head + struct.pack(">I4sQ", 1, b"moov", 16 + len(moov)) + moov
+    assert mp4_facts(io.BytesIO(large))[1:] == (5.0, 90, 160)
+    open_ended = head + struct.pack(">I4s", 0, b"moov") + moov
+    assert mp4_facts(io.BytesIO(open_ended))[1:] == (5.0, 90, 160)
+    oversized_moov = head + box(b"moov", bytes(domain.MAX_MOOV_BYTES + 1))
+    for data in (b"not a video", mp4(90, 160)[:-10], box(b"moov", b""), b"", oversized_moov):
+        with pytest.raises(UnpublishedUnavailable, match="No pudimos leer"):
             mp4_facts(io.BytesIO(data))
+
+    class Unscanned(io.BytesIO):
+        def read(self, *args):
+            raise AssertionError("size must be refused before scanning")
+
+    monkeypatch.setattr("qualify_api.ads.unpublished.MAX_VIDEO_BYTES", 100)
+    with pytest.raises(UnpublishedUnavailable, match="100 MB. Recórtalo"):
+        mp4_facts(Unscanned(mp4(90, 160)))
 
 
 @pytest.mark.asyncio
@@ -215,7 +234,7 @@ async def test_duration_and_dimensions_are_refused_before_any_network_call(video
 @pytest.mark.asyncio
 async def test_processing_video_builds_nothing_until_meta_reports_ready(video):
     obj, selected, actor, client, _ = video
-    with pytest.raises(UnpublishedUnavailable, match="todavía está preparando"):
+    with pytest.raises(UnpublishedUnavailable, match="todavía está preparando tu video"):
         await prepare(video)
     assert len(client.video_uploads) == 2 and client.upload_calls == 2
     assert client.video_uploads[0] == mp4(40, 50)
@@ -346,3 +365,40 @@ async def test_real_http_chunked_video_transport_never_retries(fail_at, monkeypa
             with pytest.raises(MarketingError) as error:
                 await upload
             assert error.value.outcome_unknown and len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_definite_start_refusal_returns_the_claim_to_ready(video):
+    obj, _, _, client, _ = video
+    client.start_refusals.append(MarketingError("rate", code=17))
+    with pytest.raises(UnpublishedUnavailable):
+        await prepare(video)
+    (row,) = obj.recipes.videos.values()
+    assert row["state"] == "ready" and row["video_id"] is None and not client.video_uploads
+    with pytest.raises(UnpublishedUnavailable, match="todavía"):
+        await prepare(video)
+    assert len(client.video_uploads) == 2
+
+
+@pytest.mark.asyncio
+async def test_video_reads_use_head_and_ranges_never_a_whole_object_open(video, monkeypatch):
+    obj, selected, *_ = video
+    monkeypatch.setattr(
+        obj.gate, "open_object", lambda *a: (_ for _ in ()).throw(AssertionError("whole read"))
+    )
+    sizes = []
+    original = obj.gate.object_size
+    monkeypatch.setattr(obj.gate, "object_size", lambda *a: sizes.append(1) or original(*a))
+    digest, size = module.video_facts(obj.gate, selected, selected.feed)
+    assert size == len(mp4(40, 50)) and sizes
+    monkeypatch.setattr(module, "MAX_VIDEO_BYTES", 10)
+    monkeypatch.setattr(
+        obj.gate, "open_range", lambda *a: (_ for _ in ()).throw(AssertionError("read"))
+    )
+    with pytest.raises(UnpublishedUnavailable, match="Recórtalo"):
+        module.video_facts(obj.gate, selected, selected.feed)
+
+
+def test_owner_copy_for_video_states():
+    assert "no tienes que subirlo de nuevo" in module.VIDEO_WAIT["processing"]
+    assert "de 1 a 60 segundos y en MP4" in module.VIDEO_WAIT["failed"]
