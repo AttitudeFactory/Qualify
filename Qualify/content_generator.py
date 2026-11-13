@@ -28,6 +28,7 @@ from .creative_state import (
     _INSPIRATION_TARGETS,
     _NO_CATALOG_TARGETS,
     _OWN_HITS_TARGETS,
+    CONTEXT_FIELD_ID,
     DURATIONS,
     INSPIRATION_PLACEHOLDERS,
     INSPIRATION_SLOT_LIMITS,
@@ -4129,6 +4130,7 @@ def _section_topic() -> rx.Component:
             rx.text_area(
                 value=CreativeState.ad_scene_prompt,
                 on_change=CreativeState.set_ad_scene_prompt,
+                id=CONTEXT_FIELD_ID,
                 placeholder=(
                     "Una mano sosteniendo el vaso a la altura del pecho, la etiqueta de "
                     "frente, con el local desenfocado detrás y luz cálida…"
@@ -4140,6 +4142,7 @@ def _section_topic() -> rx.Component:
             rx.text_area(
                 value=CreativeState.brief_topic,
                 on_change=CreativeState.set_brief_topic,
+                id=CONTEXT_FIELD_ID,
                 placeholder=(
                     "Ej.: quiero mostrar nuestra hamburguesa doble con papas, en promo solo "
                     "este fin de semana. Que se sienta antojable y cercano, para gente joven "
@@ -4187,19 +4190,19 @@ def _carried_text_notice() -> rx.Component:
 ENHANCE_LABEL = "Mejorar mi texto"
 ENHANCE_BUSY_LABEL = "Mejorando…"
 ENHANCE_HINT = (
-    "Te proponemos tres versiones con lo que sabemos de tu marca, sin inventar precios ni "
+    "Te proponemos versiones con lo que sabemos de tu marca, sin inventar precios ni "
     "promociones. No gasta creaciones."
 )
 ENHANCE_PICK_TITLE = "Elige una versión"
-ENHANCE_PICK_HINT = "Al tocarla, pasa a tu texto. Revísala antes de crear."
-ENHANCE_AGAIN_LABEL = "Otra versión"
+ENHANCE_PICK_HINT = "Al tocarla, la copiamos arriba en tu texto. Puedes cambiarla antes de crear."
+ENHANCE_AGAIN_LABEL = "Ver otras tres"
 ENHANCE_RESTORE_LABEL = "Volver a mi texto"
 
 
 def _context_version_card(version: rx.Var[dict[str, str]], index: rx.Var[int]) -> rx.Component:
     """One version: its approach in small letters over the whole text, a radio card (the
     design system's `choice_card`) that fills the field when tapped."""
-    selected = CreativeState.context_choice == index
+    selected = CreativeState.context_chosen == index
     return choice_card(
         rx.vstack(
             rx.hstack(
@@ -4227,53 +4230,63 @@ def _context_version_card(version: rx.Var[dict[str, str]], index: rx.Var[int]) -
 
 
 def _context_versions() -> rx.Component:
-    """The three cards of the last press, «Otra versión» and the way back to the
-    operator's own words (m-25017274). One column: they read whole on a phone."""
+    """The three cards of the last press, «Ver otras tres» and the way back to the
+    operator's own words (m-25017274). One column: they read whole on a phone. Once the
+    owner edits the text they go (UX review): only «Mejorar mi texto» stays, from the
+    new words. A polite live region, so a screen reader hears the cards arrive."""
     enhancing = CreativeState.context_enhancing
-    return rx.cond(
-        CreativeState.context_versions.length() > 0,
-        rx.vstack(
-            rx.text(ENHANCE_PICK_TITLE, size="2", weight="medium"),
-            rx.text(ENHANCE_PICK_HINT, size="1", color=T.TEXT_MUTED),
-            rx.el.div(
-                rx.foreach(CreativeState.context_versions, _context_version_card),
-                role="radiogroup",
-                aria_label=ENHANCE_PICK_TITLE,
-                style={"display": "flex", "flexDirection": "column", "gap": "0.5rem"},
-                width="100%",
-            ),
-            rx.hstack(
-                rx.button(
-                    rx.icon("refresh-cw", size=T.ICON_SM),
-                    ENHANCE_AGAIN_LABEL,
-                    variant="soft",
-                    size="2",
-                    radius=_CONTROL_RADIUS,
-                    min_height="44px",
-                    loading=enhancing,
-                    on_click=CreativeState.enhance_context(True),
-                ),
-                rx.cond(
-                    ~CreativeState.context_is_original & ~enhancing,
-                    rx.button(
-                        rx.icon("undo-2", size=T.ICON_SM),
-                        ENHANCE_RESTORE_LABEL,
-                        variant="ghost",
-                        color_scheme="gray",
-                        size="2",
-                        min_height="44px",
-                        on_click=CreativeState.undo_enhance_context,
-                    ),
-                ),
-                spacing="3",
-                align="center",
-                wrap="wrap",
-                width="100%",
-            ),
-            spacing="2",
-            width="100%",
-            align_items="start",
+    return rx.el.div(
+        rx.cond(
+            (CreativeState.context_versions.length() > 0) & ~CreativeState.context_text_edited,
+            _context_versions_block(enhancing),
         ),
+        aria_live="polite",
+        width="100%",
+    )
+
+
+def _context_versions_block(enhancing: rx.Var[bool]) -> rx.Component:
+    return rx.vstack(
+        rx.text(ENHANCE_PICK_TITLE, size="2", weight="medium"),
+        rx.text(ENHANCE_PICK_HINT, size="1", color=T.TEXT_MUTED),
+        rx.el.div(
+            rx.foreach(CreativeState.context_versions, _context_version_card),
+            role="radiogroup",
+            aria_label=ENHANCE_PICK_TITLE,
+            style={"display": "flex", "flexDirection": "column", "gap": "0.5rem"},
+            width="100%",
+        ),
+        rx.hstack(
+            rx.button(
+                rx.icon("refresh-cw", size=T.ICON_SM),
+                ENHANCE_AGAIN_LABEL,
+                variant="soft",
+                size="2",
+                radius=_CONTROL_RADIUS,
+                min_height="44px",
+                loading=enhancing,
+                on_click=CreativeState.enhance_context(True),
+            ),
+            rx.cond(
+                ~CreativeState.context_is_original & ~enhancing,
+                rx.button(
+                    rx.icon("undo-2", size=T.ICON_SM),
+                    ENHANCE_RESTORE_LABEL,
+                    variant="ghost",
+                    color_scheme="gray",
+                    size="2",
+                    min_height="44px",
+                    on_click=CreativeState.undo_enhance_context,
+                ),
+            ),
+            spacing="3",
+            align="center",
+            wrap="wrap",
+            width="100%",
+        ),
+        spacing="2",
+        width="100%",
+        align_items="start",
     )
 
 

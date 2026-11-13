@@ -35,7 +35,11 @@ from qualify_api.catalog.read import price_label
 from qualify_api.catalog.service import CatalogError, UnknownProduct
 from qualify_api.creative.brand_references import BrandReferenceError
 from qualify_api.creative.campaigns import InvalidCampaignName, clean_name
-from qualify_api.creative.context_ai import PROPOSAL_MAX_CHARS, ContextTooLong
+from qualify_api.creative.context_ai import (
+    PREVIOUS_VERSIONS_SENT,
+    PROPOSAL_MAX_CHARS,
+    ContextTooLong,
+)
 from qualify_api.creative.creations import NotEnoughCreations
 from qualify_api.creative.fsm import InvalidTransition
 from qualify_api.creative.parts import (
@@ -387,6 +391,12 @@ _ENHANCE_TOO_SHORT = "Escribe primero unas palabras sobre lo que quieres: la IA 
 _ENHANCE_FAILED = "No pudimos mejorar tu texto ahora mismo. Inténtalo de nuevo en un momento."
 _ENHANCE_STALE = "Cambiaste el texto mientras tanto. Vuelve a pulsar «Mejorar mi texto»."
 _ENHANCE_ADDED = "Revisa estos datos, que la IA añadió y no venían de ti: "
+#: m-25017274 (UX review): the same notice, saying they are in one of the cards.
+_ENHANCE_ADDED_VERSIONS = (
+    "Revisa estos datos, que la IA añadió y no venían de ti, en alguna de estas versiones: "
+)
+#: The context field's id: a chosen card scrolls it into view.
+CONTEXT_FIELD_ID = "q-context-field"
 #: m-25017274: what each card is called, by the approach `context_ai` wrote it with.
 _CONTEXT_APPROACH_LABELS = {
     "directa": "Más directa",
@@ -7595,6 +7605,7 @@ class CreativeState(rx.State):
         draft_id = self.gen_draft_id
         self._back_to_form()
         self.brief_topic = ""
+        self._forget_context_versions()  # the last piece's cards never reach the next
         self.replication_context = ""
         self.carried_text_kind = ""
         self._reset_media_inputs()
@@ -8458,21 +8469,28 @@ class CreativeState(rx.State):
                     {"label": _CONTEXT_APPROACH_LABELS.get(v.approach, ""), "text": v.text}
                     for v in versions
                 ]
-                self._context_shown = [*previous, *(v.text for v in versions)]
+                # only the newest are ever sent back (`PREVIOUS_VERSIONS_SENT`)
+                self._context_shown = [*previous, *(v.text for v in versions)][
+                    -PREVIOUS_VERSIONS_SENT:
+                ]
                 self.context_choice = -1
                 if proposal.added_facts:
-                    self.context_enhance_note = _ENHANCE_ADDED + "; ".join(proposal.added_facts)
+                    self.context_enhance_note = _ENHANCE_ADDED_VERSIONS + "; ".join(
+                        proposal.added_facts
+                    )
         finally:
             _ENHANCE_RUNNING.discard(token)
 
     @rx.event
-    def choose_context_version(self, index: int) -> None:
-        """A card: its text fills the field; the original stays restorable."""
+    def choose_context_version(self, index: int) -> rx.event.EventSpec | None:
+        """A card: its text fills the field (scrolled into view, so the owner sees where
+        it went); the original stays restorable."""
         if self.context_enhancing or not 0 <= index < len(self.context_versions):
-            return
+            return None
         self._set_context_text(self.context_versions[index].get("text", ""))
         self.context_choice = index
         self.context_enhance_error = ""
+        return rx.scroll_to(CONTEXT_FIELD_ID)
 
     @rx.event
     def undo_enhance_context(self) -> None:
@@ -8487,6 +8505,16 @@ class CreativeState(rx.State):
     def context_is_original(self) -> bool:
         """The field holds the original the cards were written from."""
         return self._user_topic_text() == self.context_before_enhance.strip()
+
+    @rx.var
+    def context_chosen(self) -> int:
+        """The card marked as chosen: only while the field still holds its text (an edit
+        takes the mark away)."""
+        index = self.context_choice
+        if not 0 <= index < len(self.context_versions):
+            return -1
+        text = self.context_versions[index].get("text", "").strip()
+        return index if self._user_topic_text() == text else -1
 
     @rx.var
     def context_text_edited(self) -> bool:
@@ -9156,6 +9184,7 @@ class CreativeState(rx.State):
         self.avatar_prompt = ""
         self.human_avatar_prompt = ""
         self.ad_scene_prompt = ""
+        self._forget_context_versions()  # the scene's cards go with the scene
         self.avatar_image_key = ""
         self.avatar_image_name = ""
         self.avatar_rights_confirmed = False
@@ -9243,6 +9272,7 @@ class CreativeState(rx.State):
         if draft_id is not None:
             async with self:
                 self.brief_topic = ""
+                self._forget_context_versions()  # nor its cards and «Ver otras tres»
                 self.replication_context = ""
                 self.source_reel = {}
                 self._forget_ideas_origin()

@@ -2304,6 +2304,87 @@ def test_the_version_cards_read_in_spanish_on_one_column() -> None:
     ):
         assert text in rendered or json.dumps(text) in rendered, text
     assert "radiogroup" in rendered and "No gasta creaciones" in ENHANCE_HINT
+    # UX review: no promised count, the new button name, a polite live region
+    assert "tres" not in ENHANCE_HINT and ENHANCE_AGAIN_LABEL == "Ver otras tres"
+    assert "polite" in rendered and "context_text_edited" in rendered
+
+
+async def _three_cards(monkeypatch: pytest.MonkeyPatch, *answers: object) -> CreativeState:
+    from uuid import uuid4
+
+    from . import creative_state as module
+
+    queue = list(answers) or [_proposal(*_THREE, added=("2x1",))]
+
+    async def ids(self: CreativeState) -> tuple[object, object, object]:
+        return uuid4(), uuid4(), uuid4()
+
+    monkeypatch.setattr(module, "enhance_generator_context", lambda *a, **k: queue.pop(0))
+    monkeypatch.setattr(CreativeState, "_session_ids", ids)
+    state = CreativeState()
+    state.choose_category("clip")
+    state.brief_topic = "smash doble con papas"
+    await CreativeState.enhance_context.fn(_Proxy(state))
+    assert len(state.context_versions) == 3
+    return state
+
+
+@pytest.mark.parametrize("how", ["review_in_drafts", "submit", "start_clean"])
+async def test_the_next_piece_never_shows_the_last_pieces_cards(
+    monkeypatch: pytest.MonkeyPatch, how: str
+) -> None:
+    """Code review m-25017274: a piece sent on (Borradores, created, or a clean start)
+    takes its cards, its original and «Ver otras tres» with it."""
+    state = await _three_cards(monkeypatch)
+    state.choose_context_version(0)
+    if how == "review_in_drafts":
+        state.review_in_drafts()
+    elif how == "start_clean":
+        state._start_clean()
+    else:
+        state.brief_topic = ""  # what submit's success does, then the same reset
+        state._forget_context_versions()
+    assert state.context_versions == [] and state.context_before_enhance == ""
+    assert state._context_shown == [] and state.context_enhance_note == ""
+    assert state.context_chosen == -1
+
+
+def test_submit_success_forgets_the_cards_in_source() -> None:
+    """The success branch of `submit_brief_form` resets the cards with the topic."""
+    import inspect
+
+    source = inspect.getsource(CreativeState.submit_brief_form.fn)
+    reset = source.index('self.brief_topic = ""')
+    assert "self._forget_context_versions()" in source[reset : reset + 200]
+
+
+async def test_an_edit_hides_the_cards_and_drops_the_mark(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from . import creative_state as module
+
+    state = await _three_cards(monkeypatch)
+    assert "en alguna de estas versiones" in state.context_enhance_note
+    assert state.context_enhance_note.startswith(module._ENHANCE_ADDED_VERSIONS)
+    spec = state.choose_context_version(1)
+    assert spec is not None and state.context_chosen == 1
+    state.brief_topic = _THREE[1] + " y gaseosa"
+    assert state.context_chosen == -1 and state.context_text_edited
+
+
+async def test_the_rounds_memory_keeps_only_what_is_sent_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from qualify_api.creative.context_ai import PREVIOUS_VERSIONS_SENT
+
+    answers = [
+        _proposal(*(f"Versión {n}-{k} de la smash doble" for k in range(3))) for n in range(5)
+    ]
+    state = await _three_cards(monkeypatch, *answers)
+    for _ in range(4):
+        await CreativeState.enhance_context.fn(_Proxy(state), True)
+    assert len(state._context_shown) == PREVIOUS_VERSIONS_SENT
+    assert state._context_shown[-1] == "Versión 4-2 de la smash doble"
 
 
 def test_the_clips_middle_images_are_named_on_the_summary() -> None:
