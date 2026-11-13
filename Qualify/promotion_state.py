@@ -61,6 +61,7 @@ from .promotion_vm import (
     LOAD_FAILED,
     NO_SESSION,
     PREVIEW_FAILED,
+    STORY_AD_OPTION,
     STORY_FORMAT,
     STORY_REVIEW_TITLE,
     UNPUBLISHED_SOURCE_TITLE,
@@ -831,6 +832,8 @@ class PromotionState(rx.State):
     def title(self) -> str:
         if self.preparation_blocked:
             return "Revisa tu cuenta antes de promocionar"
+        if self.story_entry and not self.sources:
+            return STORY_AD_OPTION  # its empty state names the problem underneath
         if self.reviewed:
             if self.form.story:
                 return STORY_REVIEW_TITLE
@@ -1366,7 +1369,9 @@ class PromotionState(rx.State):
             week = back_to_week_href(params)
             self.story_entry = story
             self.back_href = week or f"/drafts/{piece}"
-            self.back_label = "Tu semana" if week else "Revisar publicación"
+            self.back_label = (
+                "Tu semana" if week else "Revisar pieza" if story else "Revisar publicación"
+            )
             event_id = tenant_uuid(str(params.get("evento", "")))
         try:
             with acting_login(UUID(context[1])):
