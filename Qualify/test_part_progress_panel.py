@@ -35,9 +35,14 @@ def test_the_purged_notice_is_not_a_live_region(js: str) -> None:
     assert 'role:"status"' not in js  # no callout with an implicit polite role
 
 
-def test_the_bar_says_its_value_in_words(js: str) -> None:
-    assert js.count("aria-valuetext") == 1
-    assert "value_text" in js
+def test_one_status_line_no_bar_no_big_title(js: str) -> None:
+    """m-25016656 (Deivid, «En los dos»): /create and /drafts alike — the panel is one
+    line of state, never the bar nor the big title."""
+    assert "status_line" in js
+    assert "aria-valuetext" not in js and "progressbar" not in js
+    assert "q-progress" not in js
+    assert "comment_steps" not in js and "part_progress_state.title" not in js
+    assert "RadixThemesHeading" not in js
 
 
 def test_no_spinner_and_busy_keeps_the_focus(js: str) -> None:
@@ -58,6 +63,25 @@ def test_mount_and_unmount_drive_the_poll(js: str) -> None:
 def test_rows_are_a_list_with_their_names(js: str) -> None:
     assert '"list"' in js and '"listitem"' in js
     assert "aria_label" in js
+    assert '"Partes por decidir"' in js
+
+
+def test_only_the_parts_waiting_for_a_decision_are_drawn(js: str) -> None:
+    assert "decision_rows" in js
+    # every part's row is never looped over on screen (it stays in the state for the
+    # tiles of «Tus partes»); only counted, for an approved video's «Tus N partes»
+    every = js.count("part_progress_state.rows_rx_state_")
+    assert every == js.count("part_progress_state.rows_rx_state_.length")
+
+
+def test_the_panel_stays_mounted_without_rows() -> None:
+    """The one poll and the one live region live outside the rows: a panel with no row
+    on screen keeps both (and the players' script and renew button)."""
+    panel = part_progress_panel("parent")
+    top = [str(child.render()) for child in panel.children]
+    assert any("aria-live" in c and "has_progress" not in c for c in top)
+    assert any("renew_previews" in c and "has_progress" not in c for c in top)
+    assert "watch" in str(panel.event_triggers["on_mount"])
 
 
 # -- the provider -----------------------------------------------------------------------
@@ -182,8 +206,8 @@ def test_remove_asks_in_the_row_and_says_it_without_a_second_live_region(js: str
     assert js.count("aria-live") == 1
 
 
-def test_the_fold_controls_rows_that_stay_in_the_page(js: str) -> None:
-    assert "aria-expanded" in js or "ariaExpanded" in js
-    assert '"part-rows"' in js  # the toggle's aria-controls and the rows' id
-    assert "aria-controls" in js or "ariaControls" in js
-    assert "rows_open" in js and '"none"' in js  # folded = not displayed, not unmounted
+def test_there_is_no_fold(js: str) -> None:
+    """m-25016656: no «Ver las N partes»."""
+    assert "Ver las" not in js and "Ocultar" not in js
+    assert "aria-expanded" not in js and "ariaExpanded" not in js
+    assert "rows_open" not in js and '"part-rows"' not in js

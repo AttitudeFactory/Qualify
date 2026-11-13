@@ -56,7 +56,9 @@ from reflex.event import Event
 from . import final_video_card_provider as provider
 from .auth_state import AuthState
 from .creative_vm import not_enough_creations_text, previews_short_text, videos_short_text
+from .final_video_vm import APPROVED as JOIN_APPROVED
 from .final_video_vm import JOINING, READY, REJOINING, FinalVideoCardVM
+from .final_video_vm import PURGED as JOIN_PURGED
 from .pending_state import PendingState
 from .tenant import tenant_uuid
 
@@ -75,6 +77,21 @@ PART_PROGRESS_POLL = (
 def _restart_progress() -> Event:
     """The parts poll, asked again after an action that put work in motion."""
     return Event(name=PART_PROGRESS_POLL)
+
+
+#: m-25016656: the piece page's silent re-read of its draft (`CreativeState.view_version`
+#: with no version: the current one, no skeleton — `load_draft` would swap the whole page
+#: for its skeleton and remount this card). By NAME for the same reason as the poll; a
+#: test pins it to `CreativeState.get_full_name() + ".view_version"`.
+PIECE_PAGE_REREAD = (
+    "reflex___state____state.qualify___creative_state____creative_state.view_version"
+)
+
+
+def _reread_piece_page() -> Event:
+    """`/drafts/<id>` reads its draft again, so the status at the top of the page says
+    «Aprobado» as the card does. Only sent from that page (see `_on_piece_page`)."""
+    return Event(name=PIECE_PAGE_REREAD, payload={"requested_version_id": ""})
 
 
 APPROVE = "approve"
@@ -103,6 +120,18 @@ CHOOSE_PART_TEXT = "Elige qué parte quieres cambiar."
 READY_ANNOUNCE = "Tu video completo está listo para aprobar."
 SCHEDULE_BUTTON_ID = "q-final-video-schedule"
 FOCUS_SCHEDULE_JS = f"setTimeout(()=>document.getElementById('{SCHEDULE_BUTTON_ID}')?.focus(),0)"
+#: m-25016656: the parts' status line (`part_progress_state.STATUS_ID`, by value — that
+#: module imports this one; a test pins them equal) and each part's «Cambiar esta»
+#: (`final_video_card.CHOOSE_ID_PREFIX` + its plan index).
+PARTS_STATUS_ID = "q-parts-status"
+CHOOSE_ID_PREFIX = "q-part-choose-"
+
+
+def _focus_script(element_id: str) -> rx.event.EventSpec:
+    """The keyboard to `element_id` once it is drawn (the button tapped just went)."""
+    return rx.call_script(f"setTimeout(()=>document.getElementById('{element_id}')?.focus(),0)")
+
+
 #: what each action says when the backend failed for a reason the owner cannot fix
 FAILED_TEXT = {
     APPROVE: "No pudimos aprobar tu video. Inténtalo de nuevo en un momento.",
@@ -214,7 +243,6 @@ class FinalVideoState(rx.State):
         approve_hint="",
         quota_text="",
         change_part_visible=False,
-        change_part_label="",
         rejoin_visible=False,
         rejoin_label="",
         recreate_visible=False,
@@ -242,6 +270,13 @@ class FinalVideoState(rx.State):
     _token: int = 0
 
     @rx.var
+    def closed(self) -> bool:
+        """The whole video is approved (or its files are gone): its parts are only to
+        watch. A part kept 7 days still reads «Venció» in the backend (`derive_state`)
+        — never a decision to ask for here (m-25016656)."""
+        return self.join_state in (JOIN_APPROVED, JOIN_PURGED)
+
+    @rx.var
     def wants_refresh(self) -> bool:
         """True while the parts are being joined: UI-7's poll calls `refresh` then."""
         return self.join_state in (JOINING, REJOINING)
@@ -257,6 +292,15 @@ class FinalVideoState(rx.State):
     @rx.var
     def working(self) -> bool:
         return self.busy != ""
+
+    @rx.var
+    def change_number(self) -> str:
+        """The number the owner reads for the chosen part («Parte 2: ¿qué le
+        cambiamos?»), off `part_thumbs` (no gap after a removed part)."""
+        for thumb in self.part_thumbs:
+            if thumb.get("index") == self.change_index:
+                return str(thumb.get("number") or self.change_index)
+        return self.change_index
 
     # -- session -----------------------------------------------------------------------
 
@@ -310,7 +354,8 @@ class FinalVideoState(rx.State):
             self.part_options = [str(i) for i in read.parts]
             self.part_thumbs = [dict(t) for t in read.thumbs]
             if self.change_index not in self.part_options:
-                self.change_index = ""
+                # the chosen part can no longer change: its words go with it
+                self._clear_change()
             self._renews, self._preview_quota = read.renews, read.preview_quota
 
     @rx.event(background=True)
@@ -341,6 +386,14 @@ class FinalVideoState(rx.State):
         ids = await self._identity()
         if ids is not None and parent is not None:
             await self._read(parent, ids[0])
+
+    def _on_piece_page(self) -> bool:
+        """Whether the card sits on this video's own page (`/drafts/[draft_id]`), not on
+        the generator's result (no route id there): the dynamic route arg, read as
+        `CreativeState._route_draft_id` reads it."""
+        raw = getattr(self, "draft_id", "")
+        route = tenant_uuid(raw) if isinstance(raw, str) and raw else None
+        return route is not None and str(route) == self.parent_id
 
     def _reset(self, parent_id: str) -> None:
         self.parent_id = parent_id
@@ -419,6 +472,12 @@ class FinalVideoState(rx.State):
         yield PendingState.refresh_now  # the menu's «Por aprobar» count drops now
         # the keyboard lands on the next step, «Elegir día y hora», once it is drawn
         yield rx.call_script(FOCUS_SCHEDULE_JS)
+        async with self:
+            on_piece_page = self._on_piece_page()
+        if on_piece_page:
+            # m-25016656: the page's own status (top right) stops saying «Listo para
+            # revisar»; the generator has no route draft, so nothing to re-read there
+            yield _reread_piece_page()
 
     @rx.event
     def go_schedule(self) -> rx.event.EventSpec | None:
@@ -489,11 +548,33 @@ class FinalVideoState(rx.State):
         yield _restart_progress()
 
     @rx.event
-    def toggle_change(self) -> None:
-        """«Cambiar una parte» opens (or closes) the chooser under the buttons."""
-        self.change_open = not self.change_open
-        if self.change_open and not self.change_index and len(self.part_options) == 1:
-            self.change_index = self.part_options[0]
+    def choose_part(self, value: str) -> None:
+        """«Cambiar esta» on a part's tile (m-25016656): that part is chosen and its words
+        open under «Tus partes»; tapping the chosen one («✓ Elegida») lets it go, as
+        «Cancelar» does. A part that cannot change is never chosen."""
+        if self.change_open and value == self.change_index:
+            self._clear_change()
+            return
+        if value not in self.part_options:
+            return
+        if value != self.change_index:
+            self.change_text = ""  # the words were for the other part
+        self.change_index = value
+        self.change_open = True
+        self.error = "" if self.error == CHOOSE_PART_TEXT else self.error
+
+    @rx.event
+    def cancel_change(self) -> rx.event.EventSpec | None:
+        """«Cancelar»: nothing chosen, the words cleared — and the keyboard back on that
+        part's «Cambiar esta» («Cancelar» itself just went)."""
+        index = self.change_index
+        self._clear_change()
+        return _focus_script(CHOOSE_ID_PREFIX + index) if index else None
+
+    def _clear_change(self) -> None:
+        self.change_open = False
+        self.change_index = ""
+        self.change_text = ""
 
     @rx.event
     def set_change_index(self, value: str) -> None:
@@ -526,8 +607,11 @@ class FinalVideoState(rx.State):
         async with self:
             self.busy = ""
             self.change_open = False
+            self.change_index = ""
             self.change_text = ""
             self.announce = DONE_TEXT[CHANGE]
+        # «Crear otra versión» just went: the keyboard waits on the parts' status line
+        yield _focus_script(PARTS_STATUS_ID)
         yield _restart_progress()
 
 

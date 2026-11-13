@@ -21,7 +21,8 @@ def test_a_video_by_parts_shows_its_parts_and_whole_video_not_an_empty_stage() -
     js = str(cg._parts_video_result().render())
     assert "part_progress_state" in js  # the panel (its poll mounts with it)
     assert "final_video_state" in js  # «Tu video completo», always mounted
-    assert "q-rv-stage" not in js  # no empty player of a single video
+    # one stage only: «Tu video completo»'s own (m-25016656), never a single video's
+    assert js.count("q-rv-stage") == 1
     single = str(cg._video_result().render())
     assert "shot_video" in single  # the branch is chosen by the kind
 

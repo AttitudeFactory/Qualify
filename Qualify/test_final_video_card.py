@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import json
 from collections.abc import Iterator
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -48,6 +49,7 @@ from .creative_vm import videos_short_text
 from .final_video_card import final_video_card
 from .final_video_card_state import FinalVideoState, refusal_text
 from .final_video_vm import JOIN_FAILED_TEXT, JOINING_TEXT
+from .part_progress_state import PartProgressState
 from .pending_state import PendingState
 
 _HERE = Path(__file__).parent
@@ -393,16 +395,16 @@ async def test_change_a_part(backend: Backend) -> None:
     state = await _loaded()
     await _drain(FinalVideoState.change_part.fn(state))  # no part chosen yet
     assert state.error == module.CHOOSE_PART_TEXT and backend.calls == []
-    FinalVideoState.toggle_change.fn(state)
-    FinalVideoState.set_change_index.fn(state, "7")  # not a part of this video
-    assert state.change_index == ""
-    FinalVideoState.set_change_index.fn(state, "2")
+    FinalVideoState.choose_part.fn(state, "7")  # not a part of this video
+    assert state.change_index == "" and not state.change_open
+    FinalVideoState.choose_part.fn(state, "2")  # «Cambiar esta» on part 2
+    assert state.change_open and state.change_index == "2" and state.change_number == "2"
     FinalVideoState.set_change_text.fn(state, "Más cerca del producto")
     await _drain(FinalVideoState.change_part.fn(state))
     assert backend.calls == [("change", (TENANT, PARENT, 2, "Más cerca del producto", USER))]
     assert not state.change_open and state.change_text == "" and state.error == ""
-    FinalVideoState.toggle_change.fn(state)
-    FinalVideoState.set_change_index.fn(state, "1")
+    assert state.change_index == ""  # done: nothing stays chosen
+    FinalVideoState.choose_part.fn(state, "1")
     backend.fail["change"] = PartChangeRefused(PART_SCHEDULED_TEXT)
     await _drain(FinalVideoState.change_part.fn(state))
     assert state.error == PART_SCHEDULED_TEXT and state.change_open
@@ -430,12 +432,13 @@ def test_the_card_compiles_with_the_design_system() -> None:
     assert "aria-disabled" in flat or "ariaDisabled" in rendered
     assert "aria-pressed" in flat or "ariaPressed" in rendered
     assert "RadixThemesSelect" not in rendered
-    for word in ("Elegir d", "parte quieres cambiar", "Crear otra versi"):  # ASCII: escaped
-        assert word in rendered
+    for word in ("Elegir d", "le cambiamos?", "Crear otra versi", "Cambiar esta"):
+        assert word in rendered  # ASCII: the accents are escaped
     source = (_HERE / "final_video_card.py").read_text(encoding="utf-8")
     assert "loading_spinner" not in source and "rx.spinner" not in source
     assert final_video_card(str(PARENT)) is not None  # a plain id works too
-    assert "q-thumb" in rendered  # each part's tile is the system's `media_thumb`
+    assert "q-thumb" in rendered  # each part's tile is framed as the system's thumbs
+    assert "q-rv-stage" in rendered  # the whole video on its stage (m-25016656)
 
 
 # -- 6. visual review 2026-11-09 ----------------------------------------------------------
@@ -654,16 +657,18 @@ async def test_nothing_to_create_does_nothing(backend: Backend) -> None:
 
 
 def test_aprobar_is_first_in_the_last_row() -> None:
-    """Deivid, 2026-11-09: [Aprobar] [Cambiar una parte] — or [Aprobar] [Crear otra
+    """Deivid, 2026-11-09: [Aprobar] — or, with a part chosen, [Aprobar] [Crear otra
     versión] [Cancelar] — as the card's last row, the approve texts right above it."""
     from . import final_video_card as view
 
-    source = inspect.getsource(view._body)
-    assert source.index("_approve_texts()") < source.index("_actions()")
-    assert source.count("_actions()") == 1 and "_approve_button()" not in source
-    actions = inspect.getsource(view._actions)
-    assert actions.index("_approve_button()") < actions.index("CHANGE_SUBMIT")
-    assert actions.index("_approve_button()") < actions.index("change_part_label")
+    rendered = str(view._decisions(view.COLUMNS).render())
+    why = rendered.index(view.APPROVE_WHY_ID)  # the texts' block
+    approve = rendered.index(view.APPROVE_WHY_ID, why + 1)  # «Aprobar», described by it
+    submit = rendered.index("final_video_state.change_part")
+    assert why < approve < submit
+    assert rendered.index("final_video_state.cancel_change") > submit
+    # no «Cambiar una parte» any more: a part is chosen on its own tile
+    assert "Cambiar una parte" not in rendered and "toggle_change" not in rendered
 
 
 # -- 8. live test 2026-11-10: only the parts that can change now --------------------------
@@ -719,12 +724,14 @@ async def test_a_first_read_already_ready_announces_nothing(backend: Backend) ->
     assert state.join_state == "ready" and state.announce == ""
 
 
-def test_cambiar_una_parte_says_whether_its_panel_is_open() -> None:
+def test_a_chosen_tile_says_so_with_more_than_colour() -> None:
     from . import final_video_card as view
 
-    source = inspect.getsource(view._actions)
-    assert 'aria_expanded=rx.cond(S.change_open, "true", "false")' in source
-    assert 'aria_expanded="false"' not in source
+    tile = str(view._part_card(PartProgressState.part_tiles[0]).render())
+    assert "aria-pressed" in tile.replace("_", "-") or "ariaPressed" in tile
+    assert view.CHOOSE_LABEL == "Cambiar esta" and view.CHOSEN_LABEL == "Elegida"
+    assert "LucideCheck" in tile  # the tick beside «Elegida»
+    assert '"listitem"' in tile
 
 
 # -- 9. an action that sets work going restarts UI-7's parts poll -------------------------
@@ -784,3 +791,199 @@ async def test_a_rejoin_that_could_not_start_does_not(backend: Backend) -> None:
     state = await _loaded()
     backend.rejoin_ok = False
     assert _polls(await _run(state, "rejoin")) == []
+
+
+# -- 10. m-25016656: «Tus partes» — every part a tile that plays in place ----------------
+
+
+def test_choosing_the_chosen_part_again_lets_it_go() -> None:
+    state = FinalVideoState()
+    state.part_options = ["1", "2"]
+    FinalVideoState.choose_part.fn(state, "2")
+    FinalVideoState.set_change_text.fn(state, "más luz")
+    FinalVideoState.choose_part.fn(state, "1")  # another part: the choice moves
+    assert state.change_index == "1" and state.change_open
+    assert state.change_text == ""  # the words were for part 2, never carried to part 1
+    FinalVideoState.set_change_text.fn(state, "más cerca")
+    FinalVideoState.choose_part.fn(state, "1")  # «✓ Elegida» again: let go
+    assert state.change_index == "" and not state.change_open and state.change_text == ""
+    FinalVideoState.choose_part.fn(state, "2")
+    FinalVideoState.cancel_change.fn(state)
+    assert state.change_index == "" and not state.change_open
+
+
+def test_the_change_words_name_the_chosen_part() -> None:
+    state = FinalVideoState()
+    state.part_options = ["1", "3"]
+    state.part_thumbs = [{"index": "1", "number": "1"}, {"index": "3", "number": "2"}]
+    FinalVideoState.choose_part.fn(state, "3")  # plan part 3 reads «Parte 2»
+    assert state.change_number == "2"
+    from . import final_video_card as view
+
+    assert view.CHANGE_TEXT_LABEL == ": ¿qué le cambiamos? (opcional)"
+    panel = str(view._change_panel().render())
+    assert "final_video_state.change_number" in panel
+
+
+def test_each_tile_plays_its_own_part() -> None:
+    from . import final_video_card as view
+
+    tile = str(view._part_card(PartProgressState.part_tiles[0]).render())
+    assert "q-clip q-thumb" in tile and '"aspectRatio"] : "9 / 16"' in tile
+    assert '"data-clip-renew":""' in tile  # an expired address is renewed first
+    for field in ("preview_url", "poster_url", "play_label", "pause_label", "key"):
+        assert f'?.["{field}"]' in tile, field
+    # no clip yet: the word of its state, never a dead ▶
+    assert '?.["word"]' in tile and "LucideFilm" in tile
+    # «Cambiar esta» only for a part that can change now, and never on an approved video
+    assert "final_video_state.part_options" in tile
+    assert "change_part_visible" in tile
+    # the ▶ is the big one (≥ 44 px), not the small one of the panel's rows
+    assert "q-clip__play--sm" not in tile
+
+
+def test_the_strip_and_its_hint() -> None:
+    from . import final_video_card as view
+
+    strip = str(view._parts_strip(view.COLUMNS).render())
+    assert "part_progress_state.part_tiles" in strip and '"list"' in strip
+    for text in (view.PARTS_TITLE, view.PARTS_HINT_CHANGE, view.PARTS_HINT_WATCH):
+        forms = (text, json.dumps(text)[1:-1], json.dumps(json.dumps(text)[1:-1])[1:-1])
+        assert any(form in strip for form in forms), text
+    assert view.PARTS_HINT_WATCH == "Toca ▶ para ver cada parte."
+    # a phone: one row that slides sideways; the desktop column: it wraps
+    assert "nowrap" in strip and "wrap" in strip and "overflowX" in strip
+
+
+def test_the_layouts() -> None:
+    from . import final_video_card as view
+
+    columns = str(view._body(view.COLUMNS).render())
+    stacked = str(view._body(view.STACKED).render())
+    assert "20rem minmax(0, 1fr)" in columns and "24rem minmax(0, 1fr)" in columns
+    assert "minmax" not in stacked
+    for rendered in (columns, stacked):
+        assert "q-rv-stage" in rendered and "q-rv-media-empty" in rendered
+    with pytest.raises(ValueError):
+        view.final_video_card("x", layout="wide")
+
+
+def test_no_chooser_left_behind() -> None:
+    from . import final_video_card as view
+
+    for gone in ("_part_choice", "_chosen_preview", "CHANGE_PREVIEW_ID", "CHANGE_PICK_LABEL"):
+        assert not hasattr(view, gone), gone
+    assert not hasattr(FinalVideoState, "toggle_change")
+
+
+# -- 11. m-25016656, final UX review ----------------------------------------------------------
+
+
+def test_the_empty_frame_says_what_it_waits_for() -> None:
+    from . import final_video_card as view
+
+    assert view.JOINING_STAGE_TEXT == "Estamos juntando tus partes. En un momento lo ves aquí."
+    stage = str(view._player(view.COLUMNS).render())
+    for text in (view.EMPTY_STAGE_TEXT, view.JOINING_STAGE_TEXT):
+        forms = (text, json.dumps(text)[1:-1], json.dumps(json.dumps(text)[1:-1])[1:-1])
+        assert any(form in stage for form in forms), text
+    assert "wants_refresh" in stage  # joining: its own words
+    # failed or purged: the film glyph alone (the notice on the right says why)
+    assert '=== "failed"' in stage and '=== "purged"' in stage and "LucideFilm" in stage
+
+
+def test_the_card_keeps_one_live_region() -> None:
+    from . import final_video_card as view
+
+    rendered = str(view._decisions(view.COLUMNS).render())
+    assert 'role:"status"' not in rendered and 'role:"alert"' not in rendered
+    assert 'role:"note"' in rendered
+
+
+def test_a_tile_names_itself_with_its_visible_words() -> None:
+    from . import final_video_card as view
+
+    tile = str(view._part_card(PartProgressState.part_tiles[0]).render())
+    assert '": parte "' in tile and "Cambiar esta" in tile and "Elegida" in tile
+    assert view.CHOOSE_ID_PREFIX == module.CHOOSE_ID_PREFIX == "q-part-choose-"
+    assert '"q-part-choose-"' in tile  # a stable id per part, for «Cancelar»
+    # «Aprobar» is the card's one filled button: a chosen tile is `soft`
+    assert '"solid"' not in tile and '"soft"' in tile
+
+
+def test_cancelar_takes_the_keyboard_back_to_its_part() -> None:
+    state = FinalVideoState()
+    state.part_options = ["1", "2"]
+    FinalVideoState.choose_part.fn(state, "2")
+    event = FinalVideoState.cancel_change.fn(state)
+    assert "q-part-choose-2" in str(event) and state.change_index == ""
+    assert FinalVideoState.cancel_change.fn(state) is None  # nothing chosen: no focus move
+
+
+async def test_crear_otra_version_takes_the_keyboard_to_the_status_line(
+    backend: Backend,
+) -> None:
+    from .part_progress_state import STATUS_ID
+
+    assert module.PARTS_STATUS_ID == STATUS_ID
+    state = await _loaded()
+    FinalVideoState.choose_part.fn(state, "2")
+    events = await _drain(FinalVideoState.change_part.fn(state))
+    assert STATUS_ID in str(events[0]) and events[-1].name == module.PART_PROGRESS_POLL
+
+
+async def test_a_part_that_can_no_longer_change_closes_its_words(backend: Backend) -> None:
+    """Review: a read that drops the chosen part (it is being made again) closes the form
+    and its words — never a form about a part that cannot change."""
+    state = await _loaded()
+    FinalVideoState.choose_part.fn(state, "2")
+    FinalVideoState.set_change_text.fn(state, "más luz")
+    backend.final = _final(parts=(_part(1), _part(2, has_preview=False, creating=True)))
+    await _drain(FinalVideoState.refresh.fn(state, str(PARENT)))
+    assert state.part_options == ["1"]
+    assert state.change_index == "" and not state.change_open and state.change_text == ""
+
+
+# -- 12. m-25016656 final review: an approved video is only to watch -----------------------
+
+
+@pytest.mark.parametrize(
+    ("join", "closed"),
+    [("approved", True), ("purged", True), ("ready", False), ("waiting", False), ("", False)],
+)
+def test_closed_is_approved_or_purged(join: str, closed: bool) -> None:
+    """A part of an approved video turns «Venció» after 7 days in the backend
+    (`part_progress.derive_state`: APPROVED + `draft_expired`, no action) — on a screen
+    that is only to watch, that must not ask for a decision."""
+    state = FinalVideoState()
+    state.join_state = join
+    assert state.closed is closed
+
+
+def test_an_approved_video_asks_for_no_decision() -> None:
+    from . import final_video_card as view
+    from .part_progress_panel import _content, _status
+    from .part_progress_vm import STATUS_CLOSED_MANY, STATUS_CLOSED_ONE
+
+    assert (STATUS_CLOSED_ONE, STATUS_CLOSED_MANY) == ("Tu parte", "Tus {total} partes")
+    line = _status("p").render()["children"][0]
+    # the line: «Tus 3 partes» while closed, the usual line otherwise
+    assert "final_video_state.closed" in str(line)
+    rows = str(_content("p").render())
+    # the rows waiting for a decision are not drawn on a closed video
+    cond = rows[rows.index("decision_rows_rx_state_.length") :][:400]
+    assert "final_video_state.closed" in cond
+    # nor does a part's tile show its decision word there
+    tile = str(view._part_card(PartProgressState.part_tiles[0]).render())
+    word = tile[tile.index('?.["word"]?.valueOf?.() === ""') :][:300]
+    assert "final_video_state.closed" in word
+
+
+def test_another_video_is_never_closed_by_the_previous_one() -> None:
+    """Review: an approved video A, then another video B — `closed` starts over."""
+    state = FinalVideoState()
+    state.parent_id = str(PARENT)
+    state.join_state = "approved"
+    assert state.closed
+    FinalVideoState._reset(state, str(OTHER))
+    assert state.parent_id == str(OTHER) and not state.closed

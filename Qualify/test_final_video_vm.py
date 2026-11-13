@@ -84,7 +84,7 @@ def test_ready_card_with_approve_on_and_the_months_seconds() -> None:
     assert card.deadline_text == (
         "Apruébalo antes del jueves 5 de noviembre para tener el video final."
     )
-    assert card.change_part_visible and card.change_part_label == "Cambiar una parte"
+    assert card.change_part_visible
     assert not card.rejoin_visible and not card.recreate_visible
 
 
@@ -216,6 +216,9 @@ def test_approved_hides_approve_deadline_and_quota() -> None:
     )
     assert not card.approve_visible and card.approve_hint == ""
     assert card.deadline_text == "" and card.quota_text == "" and card.pill_word == ""
+    # m-25016656: an approved video (opened from Aprobados) is still shown, to watch;
+    # «calidad baja… Al aprobarla…» no longer applies, nor can a part change
+    assert card.show_video and card.preview_text == "" and not card.change_part_visible
 
 
 def test_purged_says_to_make_a_new_video_and_offers_no_part_action() -> None:

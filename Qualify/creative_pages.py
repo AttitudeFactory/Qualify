@@ -73,6 +73,7 @@ from .ui import (
     loading_spinner,
     page_body,
     page_header,
+    progress_panel,
     signal_pill,
     skeleton_rows,
     tone_badge,
@@ -3148,11 +3149,184 @@ def _version_selector() -> rx.Component:
     )
 
 
-def draft_detail_index() -> rx.Component:
-    from .offer_mark_ui import offer_mark_control  # noqa: PLC0415
-    from .queue_notice import queue_notice  # noqa: PLC0415
-    from .tiktok_ui import tiktok_draft_card  # noqa: PLC0415
+#: m-25016656: the kind of a video by parts' parent draft (ADR 44). Its parts never reach
+#: the lists (VE-08), so a `/drafts/<id>` of this kind is always the parent.
+PARTS_PARENT_KIND = "shot_video"
+PARTS_DRAFTING_TITLE = "Preparando tu video por partes…"
+PARTS_DRAFTING_TEXT = (
+    "Primero escribimos lo que dice cada parte. Después se crean una por una y las ves "
+    "aparecer aquí. Puedes salir: el video te espera en Por aprobar."
+)
+POST_TEXT_TITLE = "Texto de la publicación"
+COPY_TEXT_LABEL = "Copiar texto"
+COPIED_TEXT = "Texto copiado"
 
+
+def _is_parts_parent() -> rx.Var[bool]:
+    return CreativeState.draft.kind == PARTS_PARENT_KIND
+
+
+def _parts_parent_stale() -> rx.Var[bool]:
+    """The open draft is a video by parts but the page's last read failed — another
+    business's id, a junk id, no session or a database error: `load_draft` keeps the
+    previous `draft` and says why in `detail_error`. Nothing of that video is shown
+    then — not its parts (they would poll for a video this URL is not), not its wait
+    and queue (whose «Cancelar» would act on it), not its badges. `detail_error` is
+    only ever set by those reads and by the drafting poll's timeout; the timeout is the
+    one that raises `poll_timed_out` (and `load_draft` lowers it before reading), so a
+    parent whose wait just ran long keeps its wait."""
+    return _is_parts_parent() & (CreativeState.detail_error != "") & ~CreativeState.poll_timed_out
+
+
+def _parts_drafting_panel() -> rx.Component:
+    """The parent of a video by parts while its own text is written: its parts do not
+    exist yet, so neither the parts' panel nor «Tu video completo» are mounted — the
+    one poll running is `CreativeState`'s; the parts' poll starts when this gives way."""
+    # the house's loader is the bar, never a spinner (§ request 2026-10-02); the time
+    # waited sits on its own line under it, so nothing is squeezed at 375 px
+    return _card(
+        progress_panel(
+            rx.cond(
+                CreativeState.draft.queue.label != "",
+                CreativeState.draft.queue.label,
+                PARTS_DRAFTING_TITLE,
+            ),
+            PARTS_DRAFTING_TEXT,
+            creep_seconds=60,
+        ),
+        rx.cond(
+            CreativeState.poll_elapsed_label != "",
+            rx.text(
+                CreativeState.poll_elapsed_label,
+                size="1",
+                color=T.TEXT_MUTED,
+                width="100%",
+                text_align="center",
+            ),
+        ),
+    )
+
+
+def _has_post_text() -> rx.Var[bool]:
+    """A variant on screen with words to copy: an empty text draws no card at all."""
+    variant = CreativeState.selected_variant
+    return variant & (variant.rendered_caption != "")
+
+
+def _parts_post_text() -> rx.Component:
+    """The parent's post text, read only, with «Copiar texto» — what the generator
+    shows under «Tu video completo» (`content_generator._post_text`)."""
+    variant = CreativeState.selected_variant
+    return rx.cond(
+        _has_post_text(),
+        _card(
+            rx.heading(POST_TEXT_TITLE, size="3", as_="h3"),
+            rx.text(variant.rendered_caption, size="2", white_space="pre-wrap"),
+            rx.button(
+                rx.icon("copy", size=14),
+                COPY_TEXT_LABEL,
+                variant="soft",
+                size="2",
+                min_height="44px",
+                # the owner hears it went through, as «Guion copiado» in the generator
+                on_click=[
+                    rx.set_clipboard(variant.rendered_caption),
+                    rx.toast.success(COPIED_TEXT),
+                ],
+            ),
+        ),
+    )
+
+
+def _parts_parent_waiting() -> rx.Component:
+    """The parent while its own text is written (`drafting`): the wait only — no parts'
+    panel and no «Tu video completo», so their poll never runs beside this one."""
+    from .queue_notice import queue_notice  # noqa: PLC0415
+
+    draft = CreativeState.draft
+    return rx.vstack(
+        queue_notice(draft.queue, draft.draft_id),
+        _parts_drafting_panel(),
+        spacing="4",
+        width="100%",
+    )
+
+
+def _parts_parent_failed() -> rx.Component:
+    """A failed (or cancelled) parent says what to do; parts it already had (rare) show
+    under it — the panel draws nothing when there are none. Never the review panel."""
+    from .part_progress_panel import part_progress_panel  # noqa: PLC0415
+
+    return rx.vstack(
+        _failed_panel(),
+        part_progress_panel(CreativeState.draft.draft_id),
+        spacing="4",
+        width="100%",
+    )
+
+
+def _parts_parent_made() -> rx.Component:
+    """The parent once its text came out: «Tu video completo» (the ONLY place it is
+    approved), its parts' status line and the parts waiting for a decision, its text,
+    the campaign and, once approved, the history line and «Tu oferta»."""
+    # lazy: `final_video_card` imports this module (as `content_generator` does)
+    from .final_video_card import COLUMNS, final_video_card  # noqa: PLC0415
+    from .offer_mark_ui import offer_mark_control  # noqa: PLC0415
+    from .part_progress_panel import part_progress_panel  # noqa: PLC0415
+
+    draft = CreativeState.draft
+    return rx.vstack(
+        rx.cond(draft.failure_detail != "", callout(draft.failure_detail, "warn")),
+        # m-25016656 (Deivid, «Sí, opción A»): the whole video on top, then the parts'
+        # one status line and the parts that wait for a decision (the generator keeps
+        # the panel above the card: `content_generator._parts_video_result`)
+        final_video_card(draft.draft_id, layout=COLUMNS),
+        part_progress_panel(draft.draft_id),
+        _parts_post_text(),
+        _campaign_field(),
+        _history_line(),
+        offer_mark_control(
+            draft.draft_id,
+            (draft.status == "approved")
+            | (draft.status == "staged")
+            | (draft.status == "published"),
+        ),
+        spacing="4",
+        width="100%",
+    )
+
+
+def _parts_parent_detail() -> rx.Component:
+    """m-25016656: a video by parts opened again from «Por aprobar» or «Aprobados» shows
+    what the generator shows right after creating it. Never the single piece's review
+    panel, decision bar, retention or 480p notices, «otra versión», promotion link or
+    TikTok card: the parent has no file of its own. A read that failed (another
+    business's id, a junk id) shows nothing of the previous video."""
+    from .queue_notice import queue_notice  # noqa: PLC0415
+
+    draft = CreativeState.draft
+    # a failed read first: it hides even the wait of a parent that was drafting
+    return rx.cond(
+        _parts_parent_stale(),
+        rx.fragment(),
+        rx.cond(
+            draft.is_drafting,
+            _parts_parent_waiting(),
+            rx.vstack(
+                queue_notice(draft.queue, draft.draft_id),
+                rx.foreach(draft.warnings, lambda warning: callout(warning, "warn")),
+                rx.cond(draft.is_failed, _parts_parent_failed(), _parts_parent_made()),
+                spacing="4",
+                width="100%",
+            ),
+        ),
+    )
+
+
+def draft_detail_index() -> rx.Component:
+    """«Revisar publicación» (`/drafts/<id>`): a single piece's review, or — for a video
+    by parts' parent (m-25016656) — its parts and «Tu video completo», as right after
+    creating it."""
     return app_shell(
         page_header(
             "Revisar publicación",
@@ -3164,7 +3338,7 @@ def draft_detail_index() -> rx.Component:
                 rx.cond(
                     ~CreativeState.detail_loading,
                     rx.cond(
-                        CreativeState.draft,
+                        CreativeState.draft & ~_parts_parent_stale(),
                         rx.badge(
                             CreativeState.draft.kind_label,
                             color_scheme="gray",
@@ -3178,7 +3352,7 @@ def draft_detail_index() -> rx.Component:
                     CreativeState.detail_loading,
                     rx.fragment(),
                     rx.cond(
-                        CreativeState.draft,
+                        CreativeState.draft & ~_parts_parent_stale(),
                         status_badge(
                             CreativeState.draft.status,
                             rx.cond(
@@ -3200,67 +3374,78 @@ def draft_detail_index() -> rx.Component:
                 skeleton_rows(1, height="18rem", radius=T.RADIUS_CARD),
                 rx.cond(
                     CreativeState.draft,
-                    rx.vstack(
-                        _campaign_field(),
-                        _retention_notice(),
-                        queue_notice(CreativeState.draft.queue, CreativeState.draft.draft_id),
-                        _video_draft_notice(),
-                        rx.cond(
-                            CreativeState.draft.other_version_pending != "",
-                            callout(CreativeState.draft.other_version_pending, "info"),
-                        ),
-                        _history_line(),
-                        rx.cond(
-                            PromotionState.entry_available,
-                            promotion_link(CreativeState.draft.draft_id),
-                        ),
-                        rx.foreach(
-                            CreativeState.draft.warnings,
-                            lambda warning: callout(warning, "warn"),
-                        ),
-                        rx.cond(
-                            CreativeState.draft.is_drafting,
-                            _drafting_panel(),
-                            rx.cond(
-                                CreativeState.draft.is_failed,
-                                rx.vstack(
-                                    _failed_panel(),
-                                    rx.cond(
-                                        CreativeState.draft.versions.length() > 0, _review_panel()
-                                    ),
-                                    spacing="4",
-                                    width="100%",
-                                ),
-                                rx.vstack(
-                                    # a regeneration that did not come out keeps the
-                                    # previous version and says so (m-24828909)
-                                    rx.cond(
-                                        CreativeState.draft.failure_detail != "",
-                                        callout(CreativeState.draft.failure_detail, "warn"),
-                                    ),
-                                    _review_panel(),
-                                    _decision_bar(),
-                                    # m-24945889: the business's offer for its
-                                    # WhatsApp chats («Tu oferta»)
-                                    offer_mark_control(
-                                        CreativeState.draft.draft_id,
-                                        (CreativeState.draft.status == "approved")
-                                        | (CreativeState.draft.status == "staged")
-                                        | (CreativeState.draft.status == "published"),
-                                    ),
-                                    # m-24921091: an approved video can also go to the
-                                    # owner's TikTok (never published from here).
-                                    tiktok_draft_card(),
-                                    spacing="4",
-                                    width="100%",
-                                ),
-                            ),
-                        ),
-                        spacing="4",
-                        width="100%",
+                    rx.cond(
+                        _is_parts_parent(),
+                        _parts_parent_detail(),
+                        _single_piece_detail(),
                     ),
                     rx.fragment(),
                 ),
             ),
         ),
+    )
+
+
+def _single_piece_detail() -> rx.Component:
+    """Every kind but a video by parts' parent: the piece's own review, as before."""
+    from .offer_mark_ui import offer_mark_control  # noqa: PLC0415
+    from .queue_notice import queue_notice  # noqa: PLC0415
+    from .tiktok_ui import tiktok_draft_card  # noqa: PLC0415
+
+    return rx.vstack(
+        _campaign_field(),
+        _retention_notice(),
+        queue_notice(CreativeState.draft.queue, CreativeState.draft.draft_id),
+        _video_draft_notice(),
+        rx.cond(
+            CreativeState.draft.other_version_pending != "",
+            callout(CreativeState.draft.other_version_pending, "info"),
+        ),
+        _history_line(),
+        rx.cond(
+            PromotionState.entry_available,
+            promotion_link(CreativeState.draft.draft_id),
+        ),
+        rx.foreach(
+            CreativeState.draft.warnings,
+            lambda warning: callout(warning, "warn"),
+        ),
+        rx.cond(
+            CreativeState.draft.is_drafting,
+            _drafting_panel(),
+            rx.cond(
+                CreativeState.draft.is_failed,
+                rx.vstack(
+                    _failed_panel(),
+                    rx.cond(CreativeState.draft.versions.length() > 0, _review_panel()),
+                    spacing="4",
+                    width="100%",
+                ),
+                rx.vstack(
+                    # a regeneration that did not come out keeps the
+                    # previous version and says so (m-24828909)
+                    rx.cond(
+                        CreativeState.draft.failure_detail != "",
+                        callout(CreativeState.draft.failure_detail, "warn"),
+                    ),
+                    _review_panel(),
+                    _decision_bar(),
+                    # m-24945889: the business's offer for its
+                    # WhatsApp chats («Tu oferta»)
+                    offer_mark_control(
+                        CreativeState.draft.draft_id,
+                        (CreativeState.draft.status == "approved")
+                        | (CreativeState.draft.status == "staged")
+                        | (CreativeState.draft.status == "published"),
+                    ),
+                    # m-24921091: an approved video can also go to the
+                    # owner's TikTok (never published from here).
+                    tiktok_draft_card(),
+                    spacing="4",
+                    width="100%",
+                ),
+            ),
+        ),
+        spacing="4",
+        width="100%",
     )
