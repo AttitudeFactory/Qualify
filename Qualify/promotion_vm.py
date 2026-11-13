@@ -49,11 +49,20 @@ STORY_PLACEMENT = (
     "No se publica en tu perfil."
 )
 #: m-24828983's audience cannot be applied to an unpublished piece yet: a suggestion only.
-STORY_AUDIENCE_SUGGESTION_TITLE = "Sugerencia: tus seguidores y quienes interactuaron contigo"
 STORY_AUDIENCE_SUGGESTION = (
-    "Ese público todavía no se puede usar en una pieza sin publicar. Por ahora, Meta "
-    "mostrará tu historia a personas del país que elijas."
+    "Pronto podrás mostrarla a tus seguidores y a quienes ya te escribieron. Por ahora la "
+    "verán personas del país que elijas."
 )
+#: Step 1 when it came from Tu semana: the historia left the plan.
+STORY_LEFT_WEEK = (
+    "Tu historia ya no quedó en Tu semana. Si prefieres publicarla sin botón, vuelve a Tu "
+    "semana y prográmala de nuevo."
+)
+STORY_NO_CHARGE = "Todavía no se cobra nada. Primero verás cómo queda tu anuncio y luego decides."
+STORY_PREVIEW_BUTTON = "Ver cómo queda (sin cobrar)"
+STORY_AUTO_CHANGES_LABEL = "Ajustes por su cuenta"
+STORY_AUTO_CHANGES = "No: el anuncio sale tal como lo apruebas"
+STORY_BACK_TO_PIECE = "Volver a la pieza"
 STORY_EMPTY = (
     "Esta pieza no tiene una imagen o un video vertical (9:16) listo para anunciar en "
     "historias. Vuelve a la pieza y revisa que esté aprobada y sin publicar."
@@ -62,17 +71,21 @@ STORY_EMPTY = (
 STORY_FORMAT = "historia"
 #: Tu semana's historia (m-25026350): the option, and its one-line notice BEFORE the wizard.
 STORY_AD_OPTION = "Agregar un botón con enlace"
-STORY_AD_HINT = "Instagram solo permite enlaces en historias pagadas."
+STORY_AD_HINT = "Desde aquí, el botón con enlace solo se puede poner en una historia pagada."
 STORY_AD_NOTICE = (
-    "Es un anuncio pagado: se muestra entre las historias de otras cuentas, no en tu perfil."
+    "Es un anuncio pagado: tú eliges cuánto invertir y se muestra entre las historias de "
+    "otras cuentas, no en tu perfil."
 )
-STORY_AD_ONLY = "Si continúas, no publicamos la historia en tu perfil: solo preparas el anuncio."
-STORY_AD_CONTINUE = "Continuar"
-STORY_AD_DECLINE = "Mejor no"
+STORY_AD_ONLY = (
+    "Si haces el anuncio, esta historia ya no sale en tu perfil. No se cobra nada hasta que "
+    "apruebes el presupuesto."
+)
+STORY_AD_CONTINUE = "Hacer anuncio pagado"
+STORY_AD_DECLINE = "Dejar la historia sin botón"
 #: The 9:16 safe zones Instagram covers with the account name (top) and the button (bottom).
 STORY_SAFE_TOP = "Aquí va tu nombre"
 STORY_SAFE_BOTTOM = "Aquí va el botón"
-STORY_SAFE_HINT = "Deja esta zona sin texto."
+STORY_SAFE_HINT = "No pongas texto en las zonas marcadas: Instagram las tapa."
 
 
 def story_ad_href(piece_id: str, return_query: str = "") -> str:

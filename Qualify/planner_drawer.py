@@ -1232,9 +1232,21 @@ def _more_options(row) -> rx.Component:
 
 def _story_ad_offer(row) -> rx.Component:
     """m-25026350: a historia cannot carry a link unless it is paid. The option first
-    says so in one line and asks; only «Continuar» leaves for the ad wizard, and then
+    says so in one line and asks; only «Hacer anuncio pagado» leaves for the wizard, and then
     the historia is NOT scheduled (the ad replaces it)."""
     asking = PlannerState.story_ad_post == row.post_id
+    # Drawn only once the piece is checked to be a story ad source (`check_story_ad`).
+    return rx.box(
+        rx.cond(
+            PlannerState.story_ad_ready.contains(row.post_id),
+            _story_ad_choice(row, asking),
+        ),
+        on_mount=PlannerState.check_story_ad(row.post_id),
+        width="100%",
+    )
+
+
+def _story_ad_choice(row, asking) -> rx.Component:
     return rx.box(
         rx.cond(
             asking,

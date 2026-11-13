@@ -94,16 +94,12 @@ def _pick(rows: list[dict], kind: str, ratio: tuple[int, int]) -> list[dict]:
     ]
 
 
-def unpublished_sources(
-    tenant_id: UUID, draft_id: UUID, *, check_health: bool = False, story: bool = False
-) -> list[PromotionSourceVM]:
-    """One source per selected ad account and kind (two images, or two videos with
-    their covers) of the active approved version; [] when the piece does not qualify.
-    `story` (m-25026350): only the 9:16 file (and its cover) — a story-only ad."""
+def _read(tenant_id: UUID, draft_id: UUID) -> tuple[dict | None, list[dict], list[dict]]:
+    """The approved, unpublished piece, its brand's selected ad accounts and its files."""
     with tenant_session(tenant_id) as session:
         piece = session.execute(_PIECE, {"draft": draft_id}).mappings().first()
         if piece is None:
-            return []
+            return None, [], []
         accounts = [
             dict(row) for row in session.execute(_ACCOUNTS, {"brand": piece["brand_id"]}).mappings()
         ]
@@ -113,12 +109,38 @@ def unpublished_sources(
                 _ASSETS, {"draft": draft_id, "version": piece["active_version_id"]}
             ).mappings()
         ]
+    return dict(piece), accounts, assets
+
+
+def story_kinds(assets: list[dict]) -> list[str]:
+    """A story ad's kinds: its 9:16 images; a 9:16 video only with a 9:16 image as cover."""
+    vertical_images = _pick(assets, "image", VERTICAL)
+    if not vertical_images:
+        return []
+    return ["videos", "images"] if _pick(assets, "video", VERTICAL) else ["images"]
+
+
+def story_ad_ready(tenant_id: UUID, draft_id: UUID) -> bool:
+    """«Agregar un botón con enlace» is offered only when the wizard will have a source:
+    approved, unpublished, a 9:16 file (with its cover for a video), an ad account."""
+    piece, accounts, assets = _read(tenant_id, draft_id)
+    return piece is not None and bool(accounts) and bool(story_kinds(assets))
+
+
+def unpublished_sources(
+    tenant_id: UUID, draft_id: UUID, *, check_health: bool = False, story: bool = False
+) -> list[PromotionSourceVM]:
+    """One source per selected ad account and kind (two images, or two videos with
+    their covers) of the active approved version; [] when the piece does not qualify.
+    `story` (m-25026350): only the 9:16 file (and its cover) — a story-only ad."""
+    piece, accounts, assets = _read(tenant_id, draft_id)
+    if piece is None:
+        return []
     feed_images, vertical_images = _pick(assets, "image", FEED), _pick(assets, "image", VERTICAL)
     feed_videos, vertical_videos = _pick(assets, "video", FEED), _pick(assets, "video", VERTICAL)
-    if story:  # one 9:16 file, never a 4:5 one; a story video needs a 9:16 cover
+    if story:  # one 9:16 file, never a 4:5 one
         feed_images, feed_videos = [], []
-        kinds = ["videos", "images"] if vertical_videos else ["images"]
-        kinds = kinds if vertical_images else []
+        kinds = story_kinds(assets)
     else:
         kinds = []
         if feed_videos and vertical_videos and feed_images and vertical_images:

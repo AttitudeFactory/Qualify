@@ -116,6 +116,7 @@ class PromotionState(rx.State):
     entry_unpublished: bool = False
     # m-25026350: opened as «Agregar un botón con enlace» (`?formato=historia`).
     story_entry: bool = False
+    story_cta_open: bool = False
     back_href: str = "/drafts"
     back_label: str = "Por aprobar"
     _loaded_context: tuple[str, str, str] = ("", "", "")
@@ -1108,6 +1109,18 @@ class PromotionState(rx.State):
         self.error = ""
         self._invalidate_review()
 
+    @rx.event
+    def toggle_story_cta(self) -> None:
+        """Story step 1: the saved button is one line; «Cambiar» opens the list."""
+        if not self.busy:
+            self.story_cta_open = not self.story_cta_open
+
+    @rx.event
+    def choose_story_cta(self, code: str) -> None:
+        PromotionState.choose_cta.fn(self, code)
+        if self.form.cta_type == code:
+            self.story_cta_open = False
+
     @rx.var
     def lead_form_label(self) -> str:
         return next(
@@ -1368,6 +1381,7 @@ class PromotionState(rx.State):
             }
             week = back_to_week_href(params)
             self.story_entry = story
+            self.story_cta_open = False
             self.back_href = week or f"/drafts/{piece}"
             self.back_label = (
                 "Tu semana" if week else "Revisar pieza" if story else "Revisar publicación"

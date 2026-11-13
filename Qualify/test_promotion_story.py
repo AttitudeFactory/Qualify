@@ -10,15 +10,18 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from . import planner_state, promotion_unpublished_provider
-from .planner_drawer import _story_ad_offer
+from . import planner_state, promotion_state, promotion_unpublished_provider
+from .ad_enhancements_vm import BrandEnhancementsVM
+from .ad_health_vm import AccountHealthVM
+from .planner_drawer import _story_ad_choice, _story_ad_offer
 from .planner_state import PlannerState
 from .planner_vm import ConnectionChoiceVM, build_post_option
 from .promotion_state import PromotionState, _unpublished_defaults
 from .promotion_story_ui import story_link, story_review
 from .promotion_vm import (
-    STORY_AD_NOTICE,
+    STORY_AD_OPTION,
     STORY_STEPS,
+    UNPUBLISHED_SOURCE_TITLE,
     WEBSITE_CTA_LABELS,
     AdMediaVM,
     PromotionDraftVM,
@@ -30,7 +33,7 @@ from .promotion_vm import (
     step_title,
     story_ad_href,
 )
-from .test_promotion_wizard import valid_form
+from .test_promotion_wizard import PIECE, ActionContext, valid_form
 
 ZONE = "America/Bogota"
 VERTICAL, COVER = str(uuid4()), str(uuid4())
@@ -110,7 +113,7 @@ def test_review_has_one_sandboxed_preview_and_the_safe_zones() -> None:
     rendered = repr(story_review().render())
     assert rendered.count("sandbox") == 1
     # repr escapes accents: match the plain-ASCII part of each zone label
-    for words in ("va tu nombre", "va el bot", "Deja esta zona sin texto."):
+    for words in ("va tu nombre", "va el bot", "Instagram las tapa."):
         assert words in rendered
     assert "No se publica en tu perfil." in rendered
     assert "Llamar" not in repr(story_link().render())
@@ -156,6 +159,92 @@ def test_preparing_a_story_sends_no_feed_file_and_keeps_the_single_preview(monke
     assert review.preview_url == review.vertical_preview_url == "https://ok"
 
 
+def test_preparing_a_story_image_sends_no_cover_at_all(monkeypatch) -> None:
+    calls: dict = {}
+
+    class Service:
+        async def prepare(self, **kwargs: object) -> SimpleNamespace:
+            calls.update(kwargs)
+            return SimpleNamespace(
+                promotion_id=uuid4(),
+                review_id=uuid4(),
+                recipe_id=uuid4(),
+                feed_html="",
+                vertical_html="<iframe>",
+                expires_at=datetime.now(UTC) + timedelta(minutes=5),
+            )
+
+    monkeypatch.setattr(promotion_unpublished_provider, "_service", Service)
+    monkeypatch.setattr(
+        "Qualify.promotion_provider.safe_preview_url", lambda html: "https://ok" if html else ""
+    )
+    start = datetime.now() + timedelta(days=1)
+    form = replace(
+        story_form(),
+        budget="25000",
+        start_local=start.strftime("%Y-%m-%dT%H:%M"),
+        end_local=(start + timedelta(days=7)).strftime("%Y-%m-%dT%H:%M"),
+    )
+    source = replace(story_source(), ad_account_id=str(uuid4()))
+    review = promotion_unpublished_provider.prepare_unpublished(
+        uuid4(), uuid4(), uuid4(), form, source, ZONE, str(uuid4())
+    )
+    assert calls["feed_asset_id"] is None and calls["vertical_asset_id"] == UUID(VERTICAL)
+    assert calls["feed_thumbnail_asset_id"] is None
+    assert calls["vertical_thumbnail_asset_id"] is None
+    assert review.preview_url == "https://ok"
+
+
+def _asset(kind: str, width: int, height: int) -> dict:
+    return {
+        "id": uuid4(),
+        "object_key": "k",
+        "content_type": "video/mp4" if kind == "video" else "image/jpeg",
+        "media_type": kind,
+        "width": width,
+        "height": height,
+    }
+
+
+def _fake_piece(monkeypatch, assets: list[dict], accounts: int = 1) -> None:
+    piece = {"brand_id": uuid4(), "active_version_id": uuid4(), "ad_copy": None}
+    rows = [
+        {
+            "id": uuid4(),
+            "name": "Cuenta",
+            "currency": "COP",
+            "timezone_name": ZONE,
+            "account_label": "@negocio",
+        }
+        for _ in range(accounts)
+    ]
+    mod = promotion_unpublished_provider
+    monkeypatch.setattr(mod, "_read", lambda *a: (piece, rows, assets))
+    monkeypatch.setattr(mod, "load_policy", lambda *a: BrandEnhancementsVM())
+    monkeypatch.setattr(mod, "account_health_for", lambda *a: AccountHealthVM())
+    monkeypatch.setattr(mod, "issue_view_path", lambda *a: "")
+
+
+def test_a_story_video_needs_a_vertical_cover_and_never_uses_the_4_5_files(monkeypatch) -> None:
+    mod = promotion_unpublished_provider
+    video, cover = _asset("video", 1080, 1920), _asset("image", 1080, 1920)
+    feed = _asset("image", 1080, 1350)
+    _fake_piece(monkeypatch, [video, cover, feed])
+    rows = mod.unpublished_sources(uuid4(), uuid4(), story=True)
+    assert [row.media_kind for row in rows] == ["videos", "images"]
+    assert all(row.story and not row.feed_media and not row.feed_covers for row in rows)
+    assert [m.id for m in rows[0].vertical_media] == [str(video["id"])]
+    assert [m.id for m in rows[0].vertical_covers] == [str(cover["id"])]
+    assert mod.story_ad_ready(uuid4(), uuid4())
+    # a 9:16 video with no 9:16 image to cover it: no story ad at all
+    _fake_piece(monkeypatch, [video, feed])
+    assert mod.unpublished_sources(uuid4(), uuid4(), story=True) == []
+    assert not mod.story_ad_ready(uuid4(), uuid4())
+    # no ad account: not offered either
+    _fake_piece(monkeypatch, [cover], accounts=0)
+    assert not mod.story_ad_ready(uuid4(), uuid4())
+
+
 def test_the_story_link_keeps_the_way_back_to_the_week() -> None:
     piece = str(uuid4())
     assert story_ad_href(piece) == f"/drafts/{piece}/promote?formato=historia"
@@ -180,6 +269,59 @@ def test_the_wizard_keeps_the_story_format_across_its_steps() -> None:
     )
     event = PromotionState.next_step.fn(context)
     assert context.step == 2 and "formato=historia" in repr(event)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("cached_story", "params", "wanted"),
+    [
+        (False, {"paso": "2", "formato": "historia"}, True),  # feed → historia
+        (True, {"paso": "2"}, False),  # historia → feed
+    ],
+)
+async def test_a_cached_wizard_is_never_reused_across_formats(
+    monkeypatch, cached_story, params, wanted
+) -> None:
+    context = ActionContext()
+    context.sources = [replace(story_source(), story=cached_story)]
+    context.draft_id = str(PIECE)
+    context.router = SimpleNamespace(url=SimpleNamespace(query_parameters=params))
+    context.read_step = lambda: pytest.fail("reused the other format's sources")
+    context.choose_source = lambda value: PromotionState.choose_source.fn(context, value)
+    seen = []
+
+    def load(*args: object, **kwargs: object) -> tuple[list, str]:
+        seen.append(kwargs.get("story"))
+        return [], ZONE
+
+    monkeypatch.setattr(promotion_state, "load_sources", load)
+    context.read_step = lambda: None
+    _ = [event async for event in PromotionState.load.fn(context)]
+    assert seen == [wanted] and context.story_entry is wanted
+
+
+def test_titles_follow_the_story_flow() -> None:
+    title = PromotionState.title.fget
+    base = dict(preparation_blocked=False, reviewed=False, step=1, loading=False)
+    empty = SimpleNamespace(**base, story_entry=True, sources=[], form=PromotionDraftVM())
+    assert title(empty) == STORY_AD_OPTION
+    one = SimpleNamespace(**base, story_entry=True, sources=[story_source()], form=story_form())
+    assert title(one) == "¿A dónde lleva el botón?"  # no source step to name
+    several = SimpleNamespace(
+        **base, story_entry=True, sources=[story_source(), story_source()], form=PromotionDraftVM()
+    )
+    assert title(several) == UNPUBLISHED_SOURCE_TITLE
+    reviewed = SimpleNamespace(
+        **{**base, "reviewed": True}, story_entry=True, sources=[story_source()], form=story_form()
+    )
+    assert title(reviewed) == "Revisa y aprueba"
+    blocked = SimpleNamespace(
+        **{**base, "preparation_blocked": True},
+        story_entry=True,
+        sources=[story_source()],
+        form=story_form(),
+    )
+    assert title(blocked) == "Revisa tu cuenta antes de promocionar"
 
 
 # -- Tu semana: the option, its notice, and no organic story ------------------------------
@@ -219,27 +361,63 @@ def test_the_option_asks_first_and_continuing_schedules_no_story(monkeypatch) ->
     state = _planner(piece)
     assert state.plan_rows[0].destination == "story" and state.story_ad_offered
     monkeypatch.setattr(planner_state, "schedule_post", lambda *a, **k: pytest.fail("story"))
+    state._mark_story_ad(piece, True)  # what `check_story_ad` found
     state.ask_story_ad(piece)
     assert state.story_ad_post == piece and state.form_open  # only the notice, still here
     state.dismiss_story_ad()
-    assert state.story_ad_post == "" and len(state.plan_items) == 1  # «Mejor no» keeps it
+    assert state.story_ad_post == "" and len(state.plan_items) == 1  # declining keeps it
     state.ask_story_ad(piece)
-    event = state.continue_story_ad()
-    assert f"/drafts/{piece}/promote?formato=historia" in repr(event)
+    events = state._leave_for_story_ad(piece, True)
+    rendered = repr(events)
+    # the drawer's history entry is closed BEFORE leaving, then the wizard opens
+    assert len(events) == 2 and "history" in repr(events[0])
+    assert f"/drafts/{piece}/promote?formato=historia" in rendered
     assert not state.form_open and state.plan_items == []  # nothing left to «Programar»
+
+
+def test_an_ineligible_piece_is_never_offered_and_keeps_its_plan() -> None:
+    piece = str(uuid4())
+    state = _planner(piece)
+    state.ask_story_ad(piece)  # not checked yet: no option, no notice
+    assert state.story_ad_post == ""
+    state._mark_story_ad(piece, True)
+    state.ask_story_ad(piece)
+    # it stopped qualifying before «Hacer anuncio pagado» (e.g. published meanwhile)
+    assert state._leave_for_story_ad(piece, False) == []
+    assert state.story_ad_post == "" and piece not in state.story_ad_ready
+    assert state.form_open and len(state.plan_items) == 1  # the historia is still planned
 
 
 def test_the_option_is_not_offered_for_a_bigger_plan_or_another_destination() -> None:
     piece = str(uuid4())
     state = _planner(piece)
+    state._mark_story_ad(piece, True)
     state._update_item(piece, destination="post")
     state.ask_story_ad(piece)
     assert state.story_ad_post == ""
     state.plan_items = [*state.plan_items, replace(state.plan_items[0], post_id=str(uuid4()))]
     assert not state.story_ad_offered
-    assert state.continue_story_ad() is None
+    assert state._leave_for_story_ad(piece, True) == []
+
+
+def test_a_closed_or_reopened_drawer_never_shows_a_stale_notice() -> None:
+    piece = str(uuid4())
+    state = _planner(piece)
+    state._mark_story_ad(piece, True)
+    state.ask_story_ad(piece)
+    state.close_form()
+    assert state.story_ad_post == ""
+    state.ask_story_ad(piece)
+    state.open_assign_for_post(piece)  # reopened on the same piece
+    assert state.story_ad_post == ""
 
 
 def test_the_notice_says_it_is_paid_before_the_wizard() -> None:
-    rendered = repr(_story_ad_offer(SimpleNamespace(post_id="p")).render())
-    assert STORY_AD_NOTICE in rendered and "Mejor no" in rendered and "Continuar" in rendered
+    rendered = repr(_story_ad_choice(SimpleNamespace(post_id="p"), True).render())
+    # repr escapes accents: match the plain-ASCII part of each string
+    assert "entre las historias de otras cuentas" in rendered
+    assert "Hacer anuncio pagado" in rendered and "Dejar la historia sin bot" in rendered
+    assert "Continuar" not in rendered  # never a second «Continuar» next to the drawer's
+    offer = _story_ad_offer(SimpleNamespace(post_id="p"))
+    assert "check_story_ad" in str(offer.event_triggers["on_mount"])
+    assert "story_ad_ready" in repr(offer.render())

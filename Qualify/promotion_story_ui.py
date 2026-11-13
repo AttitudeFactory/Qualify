@@ -22,8 +22,14 @@ from .promotion_unpublished_ui import (
 )
 from .promotion_vm import (
     COUNTRY_LABELS,
+    STORY_AD_OPTION,
     STORY_AUDIENCE_SUGGESTION,
-    STORY_AUDIENCE_SUGGESTION_TITLE,
+    STORY_AUTO_CHANGES,
+    STORY_AUTO_CHANGES_LABEL,
+    STORY_BACK_TO_PIECE,
+    STORY_EMPTY,
+    STORY_LEFT_WEEK,
+    STORY_NO_CHARGE,
     STORY_PLACEMENT,
     STORY_SAFE_BOTTOM,
     STORY_SAFE_HINT,
@@ -31,7 +37,7 @@ from .promotion_vm import (
     WEBSITE_CTA_LABELS,
     AdMediaVM,
 )
-from .ui import callout, card, choice_card
+from .ui import callout, card, choice_card, page_body, page_header
 from .ui import tokens as T
 
 # Instagram covers the top ~14 % (account name) and the bottom ~20 % (the button) of a
@@ -39,13 +45,9 @@ from .ui import tokens as T
 _SAFE_TOP, _SAFE_BOTTOM = "14%", "20%"
 
 
-def _zone(title: str, hint: str, edge: str, height: str) -> rx.Component:
-    return rx.vstack(
+def _zone(title: str, edge: str, height: str) -> rx.Component:
+    return rx.center(
         rx.text(title, size="1", weight="bold"),
-        rx.text(hint, size="1"),
-        spacing="0",
-        align="center",
-        justify="center",
         position="absolute",
         left="0",
         right="0",
@@ -61,17 +63,23 @@ def _zone(title: str, hint: str, edge: str, height: str) -> rx.Component:
 
 
 def story_safe_zones(media: rx.Var[AdMediaVM]) -> rx.Component:
-    """The chosen 9:16 file with the zones Instagram covers marked on top of it."""
-    return rx.box(
-        _thumb(media, "9 / 16"),
-        _zone(STORY_SAFE_TOP, STORY_SAFE_HINT, "top", _SAFE_TOP),
-        _zone(STORY_SAFE_BOTTOM, STORY_SAFE_HINT, "bottom", _SAFE_BOTTOM),
-        position="relative",
-        overflow="hidden",
-        border_radius="8px",
+    """The chosen 9:16 file with the zones Instagram covers marked on top of it; small
+    enough on a phone to see whole without scrolling."""
+    return rx.vstack(
+        rx.box(
+            _thumb(media, "9 / 16"),
+            _zone(STORY_SAFE_TOP, "top", _SAFE_TOP),
+            _zone(STORY_SAFE_BOTTOM, "bottom", _SAFE_BOTTOM),
+            position="relative",
+            overflow="hidden",
+            border_radius="8px",
+            width="100%",
+            aria_label="Zonas de tu historia que Instagram tapa con tu nombre y el botón",
+        ),
+        rx.text(STORY_SAFE_HINT, size="2", color=T.TEXT_MUTED),
+        spacing="2",
         width="100%",
-        max_width="16rem",
-        aria_label="Zonas de tu historia que Instagram tapa con tu nombre y el botón",
+        max_width=rx.breakpoints(initial="13rem", sm="16rem"),
     )
 
 
@@ -91,83 +99,100 @@ def story_media() -> rx.Component:
     )
 
 
-def story_link() -> rx.Component:
-    return card(
-        rx.vstack(
-            _text_field(
-                "Página que abre el botón",
-                "link_url",
-                S.form.link_url,
-                "Revisa que lleve a lo que ofreces en esta historia.",
-                placeholder="https://tu-negocio.com",
-                type="url",
+def _cta_list() -> rx.Component:
+    return rx.vstack(
+        *[
+            choice_card(
+                rx.text(label, weight="medium"),
+                selected=S.form.cta_type == code,
+                on_select=S.choose_story_cta(code),
+                disabled=S.busy,
                 min_height="44px",
-            ),
+                width="100%",
+                text_align="left",
+            )
+            for code, label in WEBSITE_CTA_LABELS.items()
+        ],
+        role="radiogroup",
+        aria_labelledby="story-cta-label",
+        spacing="2",
+        width="100%",
+    )
+
+
+def story_link() -> rx.Component:
+    return rx.vstack(
+        # Came from Tu semana: the historia left the plan when the owner chose the ad.
+        rx.cond(S.back_label == "Tu semana", callout(STORY_LEFT_WEEK, "info")),
+        card(
             rx.vstack(
-                rx.heading("Texto del botón", size="3", as_="h2", id="story-cta-label"),
-                rx.text("Ya viene el que guardaste en la pieza.", size="2", color=T.TEXT_MUTED),
+                _text_field(
+                    "Página que abre el botón",
+                    "link_url",
+                    S.form.link_url,
+                    "Revisa que lleve a lo que ofreces en esta historia.",
+                    placeholder="https://tu-negocio.com",
+                    type="url",
+                    min_height="44px",
+                ),
                 rx.vstack(
-                    *[
-                        choice_card(
-                            rx.text(label, weight="medium"),
-                            selected=S.form.cta_type == code,
-                            on_select=S.choose_cta(code),
+                    rx.heading("Texto del botón", size="3", as_="h2", id="story-cta-label"),
+                    # The saved button, shown as one line; the whole list only on «Cambiar».
+                    rx.hstack(
+                        rx.text(S.button_label, weight="medium"),
+                        rx.button(
+                            rx.cond(S.story_cta_open, "Listo", "Cambiar"),
+                            on_click=S.toggle_story_cta,
                             disabled=S.busy,
+                            variant="outline",
+                            size="2",
                             min_height="44px",
-                            width="100%",
-                            text_align="left",
-                        )
-                        for code, label in WEBSITE_CTA_LABELS.items()
-                    ],
-                    role="radiogroup",
-                    aria_labelledby="story-cta-label",
+                        ),
+                        justify="between",
+                        align="center",
+                        width="100%",
+                    ),
+                    rx.cond(S.story_cta_open, _cta_list()),
                     spacing="2",
                     width="100%",
                 ),
-                spacing="2",
-                width="100%",
-            ),
-            # Meta asks for a text and a title; the piece's own are already there. Open on
-            # its own when one is missing, so the step's error can be fixed right here.
-            rx.el.details(
-                rx.el.summary(
-                    "Texto del anuncio (lo tomamos de la pieza)",
-                    style={"cursor": "pointer", "minHeight": "44px", "paddingTop": "0.6rem"},
-                ),
-                rx.vstack(
-                    _text_field(
-                        "Texto", "message", S.form.message, "Hasta 2.200 caracteres.", rows="4"
+                # Meta asks for a text and a title; the piece's own are already there.
+                # Open on its own only when one is missing, so the step's error is fixable.
+                rx.el.details(
+                    rx.el.summary(
+                        "Texto del anuncio (lo tomamos de la pieza)",
+                        style={"cursor": "pointer", "minHeight": "44px", "paddingTop": "0.6rem"},
                     ),
-                    _text_field(
-                        "Título",
-                        "headline",
-                        S.form.headline,
-                        "Una frase corta. Hasta 100 caracteres.",
-                        min_height="44px",
+                    rx.vstack(
+                        _text_field(
+                            "Texto", "message", S.form.message, "Hasta 2.200 caracteres.", rows="4"
+                        ),
+                        _text_field(
+                            "Título",
+                            "headline",
+                            S.form.headline,
+                            "Una frase corta. Hasta 100 caracteres.",
+                            min_height="44px",
+                        ),
+                        spacing="3",
+                        width="100%",
+                        padding_top="0.5rem",
                     ),
-                    spacing="3",
+                    open=(S.form.message.strip() == "") | (S.form.headline.strip() == ""),
                     width="100%",
-                    padding_top="0.5rem",
                 ),
-                open=(S.form.message.strip() == "") | (S.form.headline.strip() == ""),
+                spacing="4",
                 width="100%",
             ),
-            spacing="4",
             width="100%",
         ),
+        spacing="3",
         width="100%",
     )
 
 
 def story_audience() -> rx.Component:
     return rx.vstack(
-        # Only a suggestion: it cannot be applied to an unpublished piece yet, so it is
-        # never drawn as a chosen option.
-        callout(
-            STORY_AUDIENCE_SUGGESTION_TITLE + ". " + STORY_AUDIENCE_SUGGESTION,
-            "info",
-            icon="lightbulb",
-        ),
         rx.heading("¿En qué país?", size="3", as_="h2", id="story-country-label"),
         rx.vstack(
             *[
@@ -187,6 +212,9 @@ def story_audience() -> rx.Component:
             spacing="2",
             width="100%",
         ),
+        # Only a suggestion: it cannot be applied to an unpublished piece yet, so it is
+        # never drawn as a chosen option.
+        callout(STORY_AUDIENCE_SUGGESTION, "info", icon="lightbulb"),
         rx.text(STORY_PLACEMENT, size="2", color=T.TEXT_MUTED),
         spacing="3",
         width="100%",
@@ -198,9 +226,6 @@ def _story_file() -> rx.Component:
     return card(
         rx.vstack(
             rx.heading("Así queda tu historia", size="3", as_="h2"),
-            rx.text(
-                "Instagram tapa arriba tu nombre y abajo el botón.", size="2", color=T.TEXT_MUTED
-            ),
             story_safe_zones(S.chosen_vertical),
             rx.cond(
                 video,
@@ -251,14 +276,7 @@ def story_review() -> rx.Component:
                 width="100%",
                 max_width="24rem",
             ),
-            rx.cond(
-                ~S.video_waiting & ~S.needs_help,
-                callout(
-                    "Este es el resumen. No activa el anuncio: primero lo creamos en pausa "
-                    "para que veas cómo queda en historias.",
-                    "info",
-                ),
-            ),
+            rx.cond(~S.video_waiting & ~S.needs_help, callout(STORY_NO_CHARGE, "info")),
         ),
         _story_file(),
         card(
@@ -275,7 +293,7 @@ def story_review() -> rx.Component:
                 _fact("Inicio", S.start_label),
                 _fact("Final", S.end_label),
                 _fact("Horario", S.zone_label),
-                _fact("Cambios automáticos de Meta", "Apagados"),
+                _fact(STORY_AUTO_CHANGES_LABEL, STORY_AUTO_CHANGES),
                 spacing="3",
                 width="100%",
             ),
@@ -302,5 +320,44 @@ def story_review() -> rx.Component:
             ),
         ),
         spacing="4",
+        width="100%",
+    )
+
+
+def story_empty() -> rx.Component:
+    """No story ad can be made from this piece: no step counter, no dead «Siguiente»,
+    just why and the way back to the piece."""
+    return rx.vstack(
+        page_header(STORY_AD_OPTION),
+        page_body(
+            card(
+                rx.vstack(
+                    rx.cond(
+                        S.error != "",
+                        rx.vstack(
+                            callout(S.error, "error"),
+                            rx.button(
+                                "Volver a consultar",
+                                on_click=S.load,
+                                variant="outline",
+                                min_height="44px",
+                            ),
+                            spacing="3",
+                            align_items="start",
+                        ),
+                        callout(STORY_EMPTY, "info"),
+                    ),
+                    rx.link(
+                        rx.button(STORY_BACK_TO_PIECE, size="3", min_height="44px"),
+                        href=S.piece_href,
+                    ),
+                    spacing="4",
+                    align_items="start",
+                    width="100%",
+                ),
+                width="100%",
+            ),
+        ),
+        spacing="0",
         width="100%",
     )
