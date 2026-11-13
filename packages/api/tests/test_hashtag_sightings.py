@@ -21,6 +21,8 @@ from qualify_shared.db.session import tenant_session
 from sqlalchemy import text
 
 from qualify_api.hashtags import (
+    MATCH_FUZZY_TAG,
+    MATCH_TERM,
     HashtagRepository,
     MemoryHashtagRepository,
     NewHashtag,
@@ -347,6 +349,67 @@ def test_resolve_popular_without_views_is_resolve(repo: HashtagRepository) -> No
     assert [h.hashtag.tag for h in popular] == [h.hashtag.tag for h in plain]
     assert all(h.recent_views == 0 for h in plain)  # `resolve` itself is unchanged
     assert repo.resolve_popular(TENANT, "ab", now=NOW) == ()
+
+
+def _carne_case(repo: HashtagRepository) -> str:
+    """The reviewer's case on a word of this test's own: the exact tag (seen 120×, no
+    views) and two typo neighbours met only in reels, well watched. No term link, so the
+    word resolves in the fuzzy-tag tier."""
+    base = _word()
+    repo.upsert_hashtags(
+        TENANT, [NewHashtag(tag=base, source="observed", network="tiktok", seen=120)]
+    )
+    hashtag_catalog.capture_reels(
+        TENANT,
+        [
+            ReelPost("instagram", _word(), NOW - timedelta(days=3), f"#{base}t", 50_000, 2),
+            ReelPost("instagram", _word(), NOW - timedelta(days=2), f"#{base}s", 80_000, 2),
+        ],
+        repository=repo,
+    )
+    return base
+
+
+def test_views_never_push_the_closer_fuzzy_match_out(repo: HashtagRepository) -> None:
+    base = _carne_case(repo)
+    plain = repo.resolve(TENANT, base, limit=20)
+    assert plain[0].hashtag.tag == base and {h.match for h in plain} == {MATCH_FUZZY_TAG}
+    popular = repo.resolve_popular(TENANT, base, limit=2, now=NOW)
+    assert popular[0].hashtag.tag == base  # the editor's 2 slots keep the exact tag
+    # inside a fuzzy tier the similarity order is `resolve`'s, views only ride along
+    full = repo.resolve_popular(TENANT, base, limit=20, now=NOW)
+    assert [h.hashtag.tag for h in full] == [h.hashtag.tag for h in plain]
+    assert {h.hashtag.tag: h.recent_views for h in full}[f"{base}s"] == 80_000
+
+
+def test_in_the_term_tier_views_reorder_and_the_tier_stays_first(
+    repo: HashtagRepository,
+) -> None:
+    term = _word()
+    strong, watched = _word(), _word()
+    _rubro(repo, term, [(strong, 9), (watched, 1)])
+    repo.record_post_sightings(TENANT, [_sighting(watched, "w", views=70_000, days_ago=2)])
+    popular = repo.resolve_popular(TENANT, term, limit=2, now=NOW)
+    assert [h.match for h in popular] == [MATCH_TERM, MATCH_TERM]
+    assert [h.hashtag.tag for h in popular] == [watched, strong]
+
+
+def test_with_an_empty_window_a_fuzzy_answer_is_exactly_resolve(
+    repo: HashtagRepository,
+) -> None:
+    base = _word()
+    repo.upsert_hashtags(
+        TENANT,
+        [
+            NewHashtag(tag=t, source="observed", network="tiktok", seen=s)
+            for t, s in ((base, 3), (f"{base}t", 50), (f"{base}s", 9))
+        ],
+    )
+    plain = repo.resolve(TENANT, base, limit=3)
+    popular = repo.resolve_popular(TENANT, base, limit=3, now=NOW)
+    assert [(h.hashtag.tag, h.match, h.score) for h in popular] == [
+        (h.hashtag.tag, h.match, h.score) for h in plain
+    ]
 
 
 # -- catalog.capture: a referentes phase (acceptance 1) --------------------------------

@@ -860,10 +860,13 @@ def test_the_final_polls_light_read_is_the_screens_own_state(monkeypatch) -> Non
 # -- m-25026377: the caption's catalog tags, most watched lately first ------------------
 
 
-def _catalog(monkeypatch, *, views: dict[str, int] | None = None):
+def _catalog(monkeypatch, *, views: dict[str, int] | None = None, fuzzy: bool = False):
     """A memory catalog where «shawarma» means two tags: `shawarmalovers` (seen often,
     strong link) and `shawarmacasero` (seen little, weak link) — `resolve` puts the first
-    one first. `views` adds recent dated posts for a tag. No database, no paid call."""
+    one first. `views` adds recent dated posts for a tag. With `fuzzy`, «carne» has no
+    term link (it resolves in the fuzzy-tag tier): the exact `carne` (seen 120×, no
+    views) next to the typo neighbours `carnet` / `carnes`, met only in reels and
+    well watched. No database, no paid call."""
     from datetime import UTC, datetime, timedelta
 
     from qualify_api.hashtags import catalog as hashtag_catalog
@@ -906,6 +909,27 @@ def _catalog(monkeypatch, *, views: dict[str, int] | None = None):
             for tag, n in (views or {}).items()
         ],
     )
+    if fuzzy:
+        repo.upsert_hashtags(
+            _TENANT_ID,
+            [NewHashtag(tag="carne", source="observed", network="tiktok", seen=120)],
+        )
+        repo.record_post_sightings(
+            _TENANT_ID,
+            [
+                NewPostSighting(
+                    tag=tag,
+                    network="instagram",
+                    post_id=f"r-{tag}",
+                    source="public_reels",
+                    source_ref="instagram:public_reels",
+                    parser_version="test/1",
+                    posted_at=now - timedelta(days=3),
+                    views=n,
+                )
+                for tag, n in (("carnet", 50_000), ("carnes", 80_000))
+            ],
+        )
     monkeypatch.setattr(hashtag_catalog, "REPOSITORY", repo)
     return repo
 
@@ -953,6 +977,21 @@ async def test_the_model_gets_the_most_watched_catalog_tags_first(monkeypatch) -
     assert received == [[("shawarmacasero", 2), ("shawarmalovers", 40)]]
     await _load_catalog(state)
     assert state.edit_catalog_tags[:2] == ["shawarmacasero", "shawarmalovers"]
+
+    # A fuzzy tier keeps `resolve`'s similarity order: «carne» has no term link, so the
+    # exact `carne` keeps its slot over the well-watched `carnet`/`carnes`, while the term
+    # tier («shawarma») is still re-ordered by views.
+    _catalog(monkeypatch, views={"shawarmacasero": 9000, "shawarmalovers": 120}, fuzzy=True)
+    received = _capture_model_input(monkeypatch)
+    state = _state(monkeypatch)
+    state.edit_caption = "Shawarma de carne"
+    await _suggest(state)
+    tags = [tag for tag, _ in received[0]]
+    assert tags[:2] == ["shawarmacasero", "shawarmalovers"]
+    assert tags.index("carne") < min(tags.index("carnes"), tags.index("carnet"))
+    await _load_catalog(state)  # the instant lookup: 2 slots per word
+    assert "carne" in state.edit_catalog_tags
+    assert state.edit_catalog_tags.index("carne") < state.edit_catalog_tags.index("carnes")
 
 
 async def test_with_no_views_known_the_order_is_exactly_resolves(monkeypatch) -> None:
