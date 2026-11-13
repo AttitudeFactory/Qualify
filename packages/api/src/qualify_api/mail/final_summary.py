@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from collections.abc import Callable, Sequence
 from dataclasses import asdict
 from datetime import UTC, date, datetime, time, timedelta
@@ -15,7 +14,8 @@ from zoneinfo import ZoneInfo
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import text
 
-from qualify_api.mail import Mailer, OutgoingMail, default_mailer
+from qualify_api.mail import Mailer, MailNotConfigured, OutgoingMail, default_mailer
+from qualify_api.mail.config import public_app_url
 from qualify_api.mail.final_template import VERSION, FinalVideo, build_summary
 
 logger = logging.getLogger(__name__)
@@ -433,10 +433,20 @@ def morning_chore(tenant_ids: Sequence[UUID] | None) -> Callable[[], int]:
                 )
         else:
             ids = tuple(tenant_ids)
+        # m-24993031: the links' origin from the shared mail config (a local fallback;
+        # a clear refusal in production). Without it no NEW batch is staged, once per
+        # pass, but the frozen ones (their links already inside) are still sent.
+        base_url: str | None
+        try:
+            base_url = public_app_url()
+        except MailNotConfigured as exc:
+            logger.warning("final summary: new batches not staged — %s", exc)
+            base_url = None
         count = 0
         for tenant_id in ids:
             try:
-                stage_batch(tenant_id, now=now, base_url=os.environ["QUALIFY_PUBLIC_URL"])
+                if base_url is not None:
+                    stage_batch(tenant_id, now=now, base_url=base_url)
                 count += send_pending(tenant_id, now=now, mailer=default_mailer())
             except Exception:
                 logger.exception("final summary pass failed tenant_id=%s", tenant_id)
