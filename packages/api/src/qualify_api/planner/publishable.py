@@ -72,6 +72,7 @@ from qualify_api.publishing.client import (
     MEDIA_TYPE_STORIES,
     MEDIA_TYPE_VIDEO,
 )
+from qualify_api.publishing.platforms import PLATFORM_INSTAGRAM, PUBLISHABLE_PLATFORMS
 from qualify_api.publishing.service import MAX_CAROUSEL_ITEMS, MEDIA_TYPE_CAROUSEL
 from qualify_api.stock.keys import is_stock_key
 
@@ -113,9 +114,10 @@ _PORT_PRODUCT_TYPE: dict[str, tuple[str, frozenset[str]]] = {
 OUTPUT_PORTS: tuple[str, ...] = tuple(_PORT_PRODUCT_TYPE)
 
 # Channels the Planificador can publish to. TikTok scheduled publishing is blocked by the
-# platform (ADR 23c) and Facebook has no publisher: only Instagram today (QUA-118).
-PLATFORM_INSTAGRAM = "instagram"
-SCHEDULABLE_PLATFORMS: frozenset[str] = frozenset({PLATFORM_INSTAGRAM})
+# platform (ADR 23c) and Facebook has no publisher: only Instagram today (QUA-118). The set
+# itself lives in `publishing.platforms` (one source of truth with «Publicar», 2026-11-12);
+# this name is an alias kept for the existing importers.
+SCHEDULABLE_PLATFORMS: frozenset[str] = PUBLISHABLE_PLATFORMS
 
 REASON_TEXT: Mapping[UnpublishableReason, str] = {
     R.POST_NOT_FOUND: "La publicación ya no existe.",

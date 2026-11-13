@@ -105,7 +105,9 @@ def _wire(
         def read(self, *, tenant_id: UUID, connection_id: UUID) -> ConnectionTarget | None:
             if (tenant_id, connection_id) != (TENANT, CONNECTION):
                 return None
-            return ConnectionTarget(ig_user_id=IG_USER, status=connection_status)
+            return ConnectionTarget(
+                ig_user_id=IG_USER, status=connection_status, platform="instagram"
+            )
 
     class Factory:
         async def client_for(self, *, tenant_id: UUID, connection_id: UUID) -> FakePublishClient:
@@ -179,8 +181,8 @@ async def test_stage_and_start_publish_is_idempotent_by_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """`PublishService.start()`'s idempotency survives the extra staging step in front of
-    it: a retry with the same key still touches the platform exactly once, even though
-    this seam stages (wastefully, but harmlessly) before `start()` ever sees the key."""
+    it: a retry with the same key still touches the platform exactly once, and (since
+    2026-11-12) the seam answers it from the existing attempt without staging again."""
     store, client = _wire(monkeypatch)
 
     first = await composition.stage_and_start_publish(
@@ -202,6 +204,7 @@ async def test_stage_and_start_publish_is_idempotent_by_key(
 
     assert second.attempt_id == first.attempt_id
     assert client.calls["create"] == 1
+    assert len(store.objects) == 1
 
 
 @pytest.mark.asyncio
@@ -512,7 +515,7 @@ async def test_stage_and_start_many_publish_forwards_the_caption(
 async def test_stage_and_start_many_publish_is_idempotent_by_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _wire(monkeypatch)
+    store, _ = _wire(monkeypatch)
 
     def _items() -> list[composition.PendingUpload]:
         # Fresh BytesIO per call — the first call's staging already consumed the first
@@ -535,14 +538,15 @@ async def test_stage_and_start_many_publish_is_idempotent_by_key(
     )
 
     assert second.attempt_id == first.attempt_id
-    # The second call stages (wastefully but harmlessly, same note the single-item
-    # idempotency test already makes) but PublishService.start_many's own idempotency
+    # Since 2026-11-12 the second call returns the existing attempt without staging; the
+    # concurrent-retry race still relies on PublishService.start_many's own idempotency
     # (QUA-99 4/6, add_child per (attempt_id, position)) must still converge to 2 rows,
     # never 4 — and never reach the carousel step, which this seam alone never triggers.
     children = composition.production_publish_service()._repo.list_children(  # noqa: SLF001
         tenant_id=TENANT, attempt_id=first.attempt_id
     )
     assert len(children) == 2
+    assert len(store.objects) == 2
 
 
 @pytest.mark.asyncio

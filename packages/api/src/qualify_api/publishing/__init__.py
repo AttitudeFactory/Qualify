@@ -33,6 +33,11 @@ from qualify_api.publishing.composition import (
     stage_and_start_many_publish,
     stage_and_start_publish,
 )
+from qualify_api.publishing.platforms import (
+    PLATFORM_INSTAGRAM,
+    PUBLISHABLE_PLATFORMS,
+    UnsupportedPlatform,
+)
 from qualify_api.publishing.service import ChildStatus
 
 __all__ = [
@@ -43,6 +48,8 @@ __all__ = [
     "MEDIA_TYPE_REELS",
     "MEDIA_TYPE_STORIES",
     "MEDIA_TYPE_VIDEO",
+    "PLATFORM_INSTAGRAM",
+    "PUBLISHABLE_PLATFORMS",
     "RESUMABLE_MEDIA_TYPES",
     "ChildStatus",
     "ContainerStatus",
@@ -51,6 +58,7 @@ __all__ = [
     "PublishClient",
     "PublishError",
     "ResumableContainer",
+    "UnsupportedPlatform",
     "UploadOutcome",
     "advance_publish",
     "get_child_statuses",
