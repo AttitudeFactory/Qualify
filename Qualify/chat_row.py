@@ -36,7 +36,7 @@ _AVATAR_SIZE = "2.5rem"
 #: has focus, so a key pressed inside a future control in the row is left alone).
 ROW_KEY_HANDLER: Var = Var(
     _js_expr=(
-        "((e) => { if (e.target === e.currentTarget && "
+        "((e) => { if (e.target === e.currentTarget && !e.repeat && "
         "(e.key === 'Enter' || e.key === ' ')) "
         "{ e.preventDefault(); e.currentTarget.click(); } })"
     )
@@ -93,25 +93,39 @@ def _channel_mark(channel: rx.Var[str]) -> rx.Component:
     )
 
 
+def _person_icon() -> rx.Component:
+    """The person icon in the avatar's frame (`media_thumb` with no picture)."""
+    return media_thumb("", size=_AVATAR_SIZE, round=True, icon="user-round", icon_size=18)
+
+
+def _picture(row: ChatRowVM, fallback: rx.Var[str] | str) -> rx.Component:
+    """The Radix avatar: the picture, and `fallback` when it fails (an expired URL)."""
+    return rx.avatar(
+        src=row.avatar_url,
+        fallback=fallback,
+        radius="full",
+        size="4",
+        custom_attrs={"referrerpolicy": "no-referrer"},
+    )
+
+
 def _avatar(row: ChatRowVM) -> rx.Component:
-    """The picture, else the initials, else (no letter to show) the person icon."""
+    """The picture, else the initials, else (no letter to show) the person icon. With a
+    picture but no letters, the Radix avatar sits over the icon with an empty, clear
+    fallback (`.q-chat-avatar__over`): a picture that fails to load reveals the icon,
+    never a broken image."""
     return rx.box(
         rx.cond(
             row.initials != "",
-            rx.avatar(
-                src=row.avatar_url,
-                fallback=row.initials,
-                radius="full",
-                size="4",
-                custom_attrs={"referrerpolicy": "no-referrer"},
-            ),
-            media_thumb(
-                row.avatar_url,
-                size=_AVATAR_SIZE,
-                round=True,
-                icon="user-round",
-                icon_size=18,
-                custom_attrs={"referrerpolicy": "no-referrer"},
+            _picture(row, row.initials),
+            rx.cond(
+                row.avatar_url != "",
+                rx.box(
+                    _person_icon(),
+                    rx.box(_picture(row, ""), class_name="q-chat-avatar__over"),
+                    position="relative",
+                ),
+                _person_icon(),
             ),
         ),
         _channel_mark(row.channel),
@@ -193,7 +207,6 @@ def chat_row(row: ChatRowVM, *, is_open: rx.Var[bool], on_open: rx.event.EventSp
                         width="100%",
                         align="center",
                         spacing="1",
-                        class_name="q-chat-row-labels",
                     ),
                     rx.fragment(),
                 ),

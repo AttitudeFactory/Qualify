@@ -924,7 +924,7 @@ class WhatsAppChatsState(rx.State):
                 self.rows = carry_payment_marks(rows, self.rows if same else [])
                 self.statuses_failed = True
             else:
-                self.rows = with_payment_pills(rows, statuses, now, zone)
+                self.rows = with_payment_pills(rows, statuses)
                 self.statuses_failed = False
             self.list_loaded_for = connection_id
             self.list_loading_for = ""

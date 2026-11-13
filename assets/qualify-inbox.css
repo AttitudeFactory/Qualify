@@ -325,6 +325,17 @@
   color: var(--accent-12);
   background: var(--accent-a4);
 }
+/* A picture with no letters to fall back on: the avatar lies over the person icon and
+   its empty fallback is clear, so a picture that fails to load shows the icon. */
+.q-chat-avatar__over {
+  position: absolute;
+  inset: 0;
+  line-height: 0;
+}
+.q-chat-avatar .q-chat-avatar__over .rt-AvatarRoot,
+.q-chat-avatar .q-chat-avatar__over .rt-AvatarFallback {
+  background: transparent;
+}
 .q-conv-avatar-wrap--lg .q-conv-channel {
   width: 1.3rem;
   height: 1.3rem;

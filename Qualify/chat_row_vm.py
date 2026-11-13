@@ -72,15 +72,16 @@ def attention_pill(
     payment_awaiting: bool = False,
 ) -> tuple[str, str]:
     """(label, tone) of the row's ONE pill; ("", "neutral") when nothing asks for it.
-    «Pago por revisar» › «Quiere comprar» › «Esperando el pago» › «Responde en N min»."""
+    «Pago por revisar» › «Quiere comprar» › «Responde en N min» › «Esperando el pago»:
+    a window about to close outranks a payment that is only being waited for."""
     if payment_review:
         return PAYMENT_REVIEW_PILL, "warn"
     if wants_to_buy:
         return WANTS_TO_BUY_PILL, "info"
-    if payment_awaiting:
-        return AWAITING_PAYMENT_PILL, "neutral"
     if reply_within_minutes > 0:
         return reply_soon_pill(reply_within_minutes), "warn"
+    if payment_awaiting:
+        return AWAITING_PAYMENT_PILL, "neutral"
     return "", "neutral"
 
 

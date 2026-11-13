@@ -2106,12 +2106,11 @@ def build_payment(
 
 
 def with_payment_pills(
-    rows: Sequence[ThreadRowVM], statuses: Mapping[str, Any], now: datetime, zone: tzinfo
+    rows: Sequence[ThreadRowVM], statuses: Mapping[str, Any]
 ) -> list[ThreadRowVM]:
     """The list's rows with their payment marks (one `payment_statuses` read for all):
     «Pago por revisar» and «Esperando el pago» are what the row can show; «Pago
-    recibido» / «Paga al recibir» stay in the chat's header. `now`/`zone` are kept for
-    the callers."""
+    recibido» / «Paga al recibir» stay in the chat's header."""
     out: list[ThreadRowVM] = []
     for row in rows:
         payment = statuses.get(row.thread_id)

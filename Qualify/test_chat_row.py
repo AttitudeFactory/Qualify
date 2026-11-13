@@ -107,7 +107,7 @@ def test_payment_beats_the_window_and_the_intent() -> None:
 
 
 def test_the_priority_order_of_the_one_pill() -> None:
-    """«Pago por revisar» › «Quiere comprar» › «Esperando el pago» › «Responde en N min»."""
+    """«Pago por revisar» › «Quiere comprar» › «Responde en N min» › «Esperando el pago»."""
 
     def pill(**kw: object) -> tuple[str, str]:
         base = {"payment_review": False, "reply_within_minutes": 0}
@@ -117,7 +117,9 @@ def test_the_priority_order_of_the_one_pill() -> None:
         "Quiere comprar",
         "info",
     )
-    assert pill(payment_awaiting=True, reply_within_minutes=5) == ("Esperando el pago", "neutral")
+    # Awaiting payment AND the window about to close → the window pill wins.
+    assert pill(payment_awaiting=True, reply_within_minutes=5) == ("Responde en 5 min", "warn")
+    assert pill(payment_awaiting=True) == ("Esperando el pago", "neutral")
     assert pill(reply_within_minutes=5) == ("Responde en 5 min", "warn")
     assert pill() == ("", "neutral")
     # The words are the product's own: the payment states and the reply drafts' badge.
@@ -263,7 +265,9 @@ def test_whatsapp_row_drops_mode_and_closed_and_keeps_one_pill() -> None:
     assert row.preview == OUTBOUND_PREFIX + "Ya va en camino" and not row.waiting
     assert (row.pill_label, row.pill_tone) == ("Responde en 30 min", "warn")
     awaiting = wa_chat_row(dataclasses.replace(vm, payment_awaiting=True))
-    assert (awaiting.pill_label, awaiting.pill_tone) == ("Esperando el pago", "neutral")
+    assert awaiting.pill_label == "Responde en 30 min"  # the closing window wins
+    calm = wa_chat_row(dataclasses.replace(vm, payment_awaiting=True, window_minutes=0))
+    assert (calm.pill_label, calm.pill_tone) == ("Esperando el pago", "neutral")
     review = wa_chat_row(dataclasses.replace(vm, payment_review=True, payment_awaiting=True))
     assert review.pill_label == PAYMENT_REVIEW_PILL
     for gone in ("Cerrado", "Responde el menú", "Respondes tú"):
@@ -414,6 +418,7 @@ def test_enter_and_space_click_the_row_itself() -> None:
     js = ROW_KEY_HANDLER._js_expr
     assert "e.key === 'Enter'" in js and "e.key === ' '" in js
     assert "e.target === e.currentTarget" in js  # only the row itself, never a child
+    assert "!e.repeat" in js  # a held key opens the chat once
     assert "e.preventDefault()" in js and "e.currentTarget.click()" in js
     assert "window." not in js and "document." not in js  # no global handler
     rendered = _rendered(_row())
@@ -435,3 +440,18 @@ def test_the_dot_and_the_pulse_stop_under_reduced_motion() -> None:
     assert block.startswith("@media (prefers-reduced-motion: reduce)")
     rule = block[block.index(".q-conv-msg, .q-conv-row--fresh, .q-conv-unread") :]
     assert "animation: none" in rule[: rule.index("}")]
+
+
+def test_a_picture_without_letters_keeps_the_avatar_fallback() -> None:
+    """Picture + no letters → the Radix avatar over the person icon (an expired picture
+    reveals the icon, never a broken image); no picture → the bare icon."""
+    from . import chat_row as view
+
+    with_picture = str(view._avatar(rx.Var.create(_row(initials_from="", avatar_url="https://x"))))  # type: ignore[arg-type]
+    assert "q-chat-avatar__over" in with_picture
+    assert "RadixThemesAvatar" in with_picture and "LucideUserRound" in with_picture
+    assert 'fallback:""' in with_picture  # the over-avatar's fallback is empty
+    css = _CSS.read_text()
+    rule = css[css.index(".q-chat-avatar .q-chat-avatar__over .rt-AvatarRoot") :]
+    assert "background: transparent" in rule[: rule.index("}")]
+    assert ".q-chat-avatar__over {" in css and "position: absolute" in css
