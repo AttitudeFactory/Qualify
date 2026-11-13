@@ -204,6 +204,7 @@ from .whatsapp_chats_vm import (
     caption_count,
     caption_error,
     carry_payment_marks,
+    cart_details,
     composer_enabled,
     filter_counts,
     filter_empty_text,
@@ -572,6 +573,9 @@ class WhatsAppChatsState(rx.State):
     _records: list[MessageRecord] = []
     _unsent: list[UnsentItem] = []
     _order_raw: Any = None
+    # m-25018684: the archived orders and the wamids of the carts still on record.
+    _previous_orders_raw: Any = ()
+    _cart_ids: Any = frozenset()
     _refreshing: bool = False
     # message id → what the media locator answered (URL + expiry, or the failure code).
     _media: dict[str, MediaResolution] = {}
@@ -733,6 +737,8 @@ class WhatsAppChatsState(rx.State):
         self._records = []
         self._unsent = []
         self._order_raw = None
+        self._previous_orders_raw = ()
+        self._cart_ids = frozenset()
         self._payment_raw = None
         self.payment = EMPTY_PAYMENT
         self._reset_payment_confirm()
@@ -805,6 +811,7 @@ class WhatsAppChatsState(rx.State):
     def _render_conversation(self) -> None:
         zone = _zone(self._zone_name)
         now = self._now()
+        previous = tuple(self._previous_orders_raw or ())
         self.messages = build_conversation(
             self._records,
             self._unsent,
@@ -812,8 +819,15 @@ class WhatsAppChatsState(rx.State):
             zone=zone,
             media=self._media,
             loading=self._media_loading,
+            carts=cart_details(self._order_raw, previous, self._cart_ids or ()),
         )
-        self.order = build_order_card(self._order_raw, now=now, zone=zone)
+        self.order = build_order_card(
+            self._order_raw,
+            now=now,
+            zone=zone,
+            previous=previous,
+            has_payment=self._payment_raw is not None,
+        )
         self.payment = build_payment(
             self._payment_raw, now=now, zone=zone, agents={a.user_id: a for a in self.agents}
         )
@@ -1038,6 +1052,8 @@ class WhatsAppChatsState(rx.State):
                 self.has_more = conv.has_more
             self._unsent = conv.unsent
             self._order_raw = conv.order
+            self._previous_orders_raw = conv.previous_orders
+            self._cart_ids = conv.cart_ids
             self._payment_raw = payment
             self._render_conversation()
             self.conv_loaded_for = thread_id

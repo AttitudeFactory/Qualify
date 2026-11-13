@@ -104,10 +104,14 @@ _KIND_LABELS: dict[str, str] = {
     "contacts": "[contacto]",
     "button": "[botón]",
     "interactive": "[respuesta]",
-    "order": "[pedido]",
     "template": "[mensaje de WhatsApp]",
     "reaction": "[reacción]",
 }
+#: m-25018684 (spec §3): an inbound catalog cart (`media_type = 'order'`). With its
+#: order still on record the bubble says what came; without it (a cart older than the
+#: archive) it says the detail is gone — never «[pedido]».
+CART_BUBBLE = "Mandó un pedido desde tu catálogo: {detail}"
+CART_BUBBLE_NO_DETAIL = "Mandó un pedido desde tu catálogo. El detalle ya no está guardado."
 #: How long a resolved URL is reused. The public-media token lives 15 min
 #: (`publishing.media_token.TOKEN_TTL_SECONDS`); the margin keeps a player started near
 #: the end from hitting a dead link mid-stream.
@@ -571,6 +575,8 @@ class MessageVM:
     #: «Ver en el mapa» for that pin — built ONLY from the stored numbers
     #: (`MessageRecord.latitude/longitude`), never from the text; "" without them.
     location_href: str = ""
+    #: m-25018684: an inbound catalog cart — drawn with the shopping-bag icon.
+    is_order: bool = False
 
 
 VIEW_ON_MAP = "Ver en el mapa"
@@ -705,7 +711,10 @@ def build_message_vm(
     zone: tzinfo,
     media: Mapping[str, MediaResolution] | None = None,
     loading: Collection[str] = (),
+    carts: Mapping[str, str] | None = None,
 ) -> MessageVM:
+    """`carts` maps a cart message's `external_message_id` to its detail («3 productos ·
+    COP 45.000», `cart_details`); a cart message not in it is worded without detail."""
     outbound = message.direction == "outbound"
     text = (message.text or "").strip()
     placeholder = False
@@ -713,7 +722,12 @@ def build_message_vm(
     if not outbound and getattr(message, "has_media", False):
         media_fields = _media_fields(message, now=now, media=media or {}, loading=loading)
     location = (message.media_kind or "").lower() == "location"
-    if not text:
+    is_order = not outbound and (message.media_kind or "").lower() == "order"
+    if not text and is_order:
+        detail = (carts or {}).get(str(getattr(message, "external_message_id", "") or ""), "")
+        text = CART_BUBBLE.format(detail=detail) if detail else CART_BUBBLE_NO_DETAIL
+        placeholder = True
+    elif not text:
         if outbound:
             from_kind = {
                 "image": "[imagen]",
@@ -743,6 +757,7 @@ def build_message_vm(
         ad_origin_href=ad_origin_href(message),
         is_location=location,
         location_href=_pin_href(message) if location else "",
+        is_order=is_order,
         **media_fields,
     )
 
@@ -823,13 +838,14 @@ def build_conversation(
     zone: tzinfo,
     media: Mapping[str, MediaResolution] | None = None,
     loading: Collection[str] = (),
+    carts: Mapping[str, str] | None = None,
 ) -> list[MessageVM]:
     """Messages and not-yet-sent outbox rows, chronological (oldest first). `media` /
     `loading` decorate the inbound media messages (see `MediaResolution`)."""
     keyed: list[tuple[datetime, int, MessageVM]] = []
     for m in messages:
         instant = m.posted_at or now
-        vm = build_message_vm(m, now=now, zone=zone, media=media, loading=loading)
+        vm = build_message_vm(m, now=now, zone=zone, media=media, loading=loading, carts=carts)
         keyed.append((instant, 0, vm))
     for item in unsent:
         keyed.append((item.created_at, 1, build_unsent_vm(item, now=now, zone=zone)))
@@ -858,16 +874,71 @@ def merge_pages(older: Sequence[Any], newest: Sequence[Any]) -> list[Any]:
 # ======================================================================================
 
 
+#: m-25018684 (spec `ux-carrito-pedido` §1–§2): the order card words where the order came
+#: from. A menu order reads exactly as before; a catalog cart is not «confirmed» — the
+#: customer sent it and the owner still has to look at it.
+ORDER_TITLE_MENU = "Pedido confirmado"
+ORDER_TITLE_CART = "Pedido desde tu catálogo"
+UNLINKED_PRODUCT_NAME = "Producto sin nombre"
+UNLINKED_CODE_LABEL = "Código en tu catálogo de WhatsApp:"
+#: A mismatched cart line names Galería's price when the record kept it
+#: (`OrderLine.gallery_unit_price` / `gallery_currency`); an older record without it
+#: says only that there is a difference.
+PRICE_MISMATCH_LINE = "En tu Galería tiene otro precio"
+PRICE_MISMATCH_AMOUNT = "En tu Galería: {price}"
+#: A cart the backend cut to its first 100 lines (`OrderSummary.lines_truncated`).
+ORDER_TRUNCATED_LINE = "Este pedido es muy largo: mostramos los primeros 100 productos."
+PRICE_MISMATCH_LINK = "Revisar en tu Galería"
+PRICE_MISMATCH_HREF = "/catalog"
+CUSTOMER_NOTE_LABEL = "Nota del cliente"
+#: A cart with no payment yet: what the owner can do (nothing goes out by itself).
+CART_CHARGE_HINT = "Para cobrarle, toca + y elige Formas de pago."
+PREVIOUS_FROM_CART = "Desde tu catálogo"
+PREVIOUS_FROM_MENU = "Por el menú"
+
+
+def price_mismatch_notice(count: int) -> str:
+    """The card's one warning for the lines whose catalog price is not Galería's."""
+    if count <= 0:
+        return ""
+    what = "1 producto" if count == 1 else f"{count} productos"
+    return (
+        f"El precio de {what} en tu catálogo de WhatsApp no es el de tu Galería. "
+        "El total usa el precio que vio tu cliente."
+    )
+
+
+def previous_orders_label(count: int) -> str:
+    if count <= 0:
+        return ""
+    return "1 pedido anterior" if count == 1 else f"{count} pedidos anteriores"
+
+
 @dataclass(frozen=True)
 class OrderLineVM:
     label: str
     amount: str
+    #: An unlinked cart line: the raw catalog code (shown in the mono face).
+    code: str = ""
+    #: A cart line whose catalog price is not Galería's (muted second line).
+    price_note: str = ""
 
 
 @dataclass(frozen=True)
 class OrderFieldVM:
     label: str
     value: str
+
+
+@dataclass(frozen=True)
+class PreviousOrderVM:
+    """One archived order, read only: no actions (founder decision 3)."""
+
+    origin_label: str  # «Desde tu catálogo · ayer 15:42»
+    items_line: str  # «2 × Shawarma mixto, 1 × Producto sin nombre»
+    summary_label: str  # «3 productos · COP 45.000»
+    payment_label: str = ""
+    payment_tone: str = "neutral"
 
 
 @dataclass(frozen=True)
@@ -878,6 +949,16 @@ class OrderCardVM:
     items_label: str = ""
     collected: list[OrderFieldVM] = field(default_factory=list)
     confirmed_label: str = ""
+    title: str = ORDER_TITLE_MENU
+    is_cart: bool = False
+    #: The single warn notice for price differences ("" = none).
+    price_notice: str = ""
+    #: «Para cobrarle, …» — a cart with no payment yet ("" otherwise).
+    charge_hint: str = ""
+    #: «Este pedido es muy largo: …» — a cart the backend truncated ("" otherwise).
+    truncated_line: str = ""
+    previous: list[PreviousOrderVM] = field(default_factory=list)
+    previous_label: str = ""
 
 
 EMPTY_ORDER = OrderCardVM(present=False)
@@ -895,20 +976,73 @@ def format_money(amount: Decimal, currency: str | None) -> str:
     return f"{currency} {num}" if currency else num
 
 
-def build_order_card(order: Any | None, *, now: datetime, zone: tzinfo) -> OrderCardVM:
-    """`order` is `qualify_api.whatsapp.orders.OrderSummary` (or `None`)."""
+def order_total_label(order: Any) -> str:
+    """The order's total; an order in several currencies gets one amount per currency
+    («COP 15.000 + USD 10», as «Pedido listo» words it) — never a single made-up sum."""
+    totals = getattr(order, "totals_by_currency", None) or {}
+    if len(totals) > 1:
+        return " + ".join(format_money(amount, code or None) for code, amount in totals.items())
+    return format_money(order.total, order.currency)
+
+
+def _items_label(count: int) -> str:
+    return f"{count} producto" if count == 1 else f"{count} productos"
+
+
+def _line_name(line: Any) -> str:
+    if not getattr(line, "linked", True) and not line.name:
+        return UNLINKED_PRODUCT_NAME
+    return line.name or line.product_id
+
+
+def _price_note(line: Any) -> str:
+    """The muted mark of a mismatched cart line: Galería's price when known."""
+    price = getattr(line, "gallery_unit_price", None)
+    if price is None:
+        return PRICE_MISMATCH_LINE
+    return PRICE_MISMATCH_AMOUNT.format(
+        price=format_money(price, getattr(line, "gallery_currency", None) or None)
+    )
+
+
+def _is_cart(order: Any) -> bool:
+    return bool(getattr(order, "is_cart", False))
+
+
+def order_summary_label(order: Any) -> str:
+    """«3 productos · COP 45.000» — the cart bubble and a previous order's line."""
+    return f"{_items_label(order.item_count)} · {order_total_label(order)}"
+
+
+def build_order_card(
+    order: Any | None,
+    *,
+    now: datetime,
+    zone: tzinfo,
+    previous: Sequence[Any] = (),
+    has_payment: bool = True,
+) -> OrderCardVM:
+    """`order` is `qualify_api.whatsapp.orders.OrderSummary` (or `None`); `previous` the
+    thread's `PreviousOrder`s (newest first); `has_payment` whether the chat already has
+    a payment record (a cart without one gets the «Para cobrarle…» hint)."""
     if order is None:
         return EMPTY_ORDER
+    cart = _is_cart(order)
     lines = []
+    mismatches = 0
     for line in order.lines:
         total = line.line_total
+        unlinked = not getattr(line, "linked", True) and not line.name
+        mismatch = cart and bool(getattr(line, "price_mismatch", False))
+        mismatches += 1 if mismatch else 0
         lines.append(
             OrderLineVM(
-                label=f"{line.qty} × {line.name or line.product_id}",
+                label=f"{line.qty} × {_line_name(line)}",
                 amount=format_money(total, line.currency or order.currency) if total else "",
+                code=(getattr(line, "retailer_id", None) or line.product_id) if unlinked else "",
+                price_note=_price_note(line) if mismatch else "",
             )
         )
-    count = order.item_count
     fields = [
         OrderFieldVM(label=collected_label(str(k)), value=str(v))
         for k, v in order.collected.items()
@@ -920,17 +1054,76 @@ def build_order_card(order: Any | None, *, now: datetime, zone: tzinfo) -> Order
         fields,
         key=lambda f: _FIELD_ORDER.index(f.label) if f.label in _FIELD_ORDER else len(_FIELD_ORDER),
     )
+    note = (getattr(order, "note", None) or "").strip() if cart else ""
+    if note and getattr(order, "note_truncated", False) is True:
+        note += "…"  # the backend kept only the first part of a very long note
+    if note:
+        # The customer's own words, as text (the page never interprets them).
+        collected.append(OrderFieldVM(label=CUSTOMER_NOTE_LABEL, value=note))
     confirmed = ""
     if order.confirmed_at is not None:
-        confirmed = f"Confirmado {message_time(order.confirmed_at, now, zone)}"
+        verb = "Llegó" if cart else "Confirmado"
+        confirmed = f"{verb} {message_time(order.confirmed_at, now, zone)}"
+    previous_vms = [build_previous_order(p, now=now, zone=zone) for p in previous]
     return OrderCardVM(
         present=True,
         lines=lines,
-        total_label=format_money(order.total, order.currency),
-        items_label=f"{count} producto" if count == 1 else f"{count} productos",
+        total_label=order_total_label(order),
+        items_label=_items_label(order.item_count),
         collected=collected,
         confirmed_label=confirmed,
+        title=ORDER_TITLE_CART if cart else ORDER_TITLE_MENU,
+        is_cart=cart,
+        price_notice=price_mismatch_notice(mismatches),
+        charge_hint=CART_CHARGE_HINT if cart and not has_payment else "",
+        truncated_line=(
+            ORDER_TRUNCATED_LINE
+            if cart and getattr(order, "lines_truncated", False) is True
+            else ""
+        ),
+        previous=previous_vms,
+        previous_label=previous_orders_label(len(previous_vms)),
     )
+
+
+def _status_labels() -> dict[str, str]:
+    from qualify_api.whatsapp.payment_status import STATUS_LABELS  # noqa: PLC0415
+
+    return dict(STATUS_LABELS)
+
+
+def build_previous_order(previous: Any, *, now: datetime, zone: tzinfo) -> PreviousOrderVM:
+    """`previous` is `qualify_api.whatsapp.orders.PreviousOrder`. The payment pill keeps
+    the word it had when the order was replaced (no «only that day» rule here); an
+    order without a payment status shows no pill."""
+    order = previous.order
+    origin = PREVIOUS_FROM_CART if _is_cart(order) else PREVIOUS_FROM_MENU
+    when = message_time(order.confirmed_at, now, zone)
+    payment = getattr(previous, "payment", None)
+    status = (getattr(payment, "status", None) or "") if payment is not None else ""
+    label = _status_labels().get(status, "")
+    return PreviousOrderVM(
+        origin_label=f"{origin} · {when}" if when else origin,
+        items_line=", ".join(f"{line.qty} × {_line_name(line)}" for line in order.lines),
+        summary_label=order_summary_label(order),
+        payment_label=label,
+        payment_tone=_PAYMENT_TONES.get(status, "neutral") if label else "neutral",
+    )
+
+
+def cart_details(
+    order: Any | None, previous: Sequence[Any] = (), cart_ids: Collection[str] = ()
+) -> dict[str, str]:
+    """`external_message_id` of each cart still on record → «3 productos · COP 45.000»,
+    for its bubble. Only the ids `orders.cart_message_ids` names are kept."""
+    out: dict[str, str] = {}
+    for summary in [order, *(getattr(p, "order", None) for p in previous)]:
+        if summary is None or not _is_cart(summary):
+            continue
+        source = getattr(summary, "source_message_id", None)
+        if source and source in cart_ids and source not in out:
+            out[source] = order_summary_label(summary)
+    return out
 
 
 # ======================================================================================

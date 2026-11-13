@@ -134,6 +134,8 @@ from .whatsapp_chats_vm import (
     PICK_SOURCE_CARDS,
     PIECE_TABS,
     PIECES_APPROVED,
+    PRICE_MISMATCH_HREF,
+    PRICE_MISMATCH_LINK,
     PRODUCTS_NO_MATCH,
     PRODUCTS_ROUTE,
     PRODUCTS_SEARCH,
@@ -162,6 +164,7 @@ from .whatsapp_chats_vm import (
     TEMPLATE_PREVIEW_LABEL,
     TEXT_ONLY_LABEL,
     UNAPPROVED_WARNING,
+    UNLINKED_CODE_LABEL,
     VIDEO_BADGE,
     VIDEO_HEAVY_PILL,
     VIDEO_TOO_LARGE,
@@ -173,6 +176,7 @@ from .whatsapp_chats_vm import (
     OrderLineVM,
     PaymentCardVM,
     PieceCardVM,
+    PreviousOrderVM,
     ProductCardVM,
     SeasonalPickVM,
     TemplateChoiceVM,
@@ -528,11 +532,85 @@ def _conversation_header() -> rx.Component:
 
 
 def _order_line(line: OrderLineVM) -> rx.Component:
-    return rx.hstack(
-        rx.text(line.label, size="2", flex="1", min_width="0"),
-        rx.text(line.amount, size="2", class_name="q-nums", white_space="nowrap"),
+    """One product. A cart line may add a muted second line: its catalog code (a product
+    not in Galería) or «En tu Galería tiene otro precio» (m-25018684, spec §1)."""
+    return rx.vstack(
+        rx.hstack(
+            rx.text(line.label, size="2", flex="1", min_width="0"),
+            rx.text(line.amount, size="2", class_name="q-nums", white_space="nowrap"),
+            width="100%",
+            spacing="3",
+        ),
+        rx.cond(
+            line.code != "",
+            rx.flex(
+                rx.text(UNLINKED_CODE_LABEL, size="1", color=T.TEXT_MUTED),
+                mono(line.code, size="1", overflow_wrap="anywhere", color=T.TEXT_MUTED),
+                gap="0.25rem",
+                wrap="wrap",
+                align="baseline",
+            ),
+        ),
+        rx.cond(
+            line.price_note != "",
+            rx.text(line.price_note, size="1", color=T.TEXT_MUTED),
+        ),
+        spacing="0",
         width="100%",
-        spacing="3",
+    )
+
+
+def _previous_order(entry: PreviousOrderVM) -> rx.Component:
+    """An archived order: read only — no title, no badge, no buttons (decision 3)."""
+    return rx.vstack(
+        rx.text(entry.origin_label, size="1", color=T.TEXT_MUTED),
+        rx.text(
+            entry.items_line,
+            size="2",
+            width="100%",
+            overflow="hidden",
+            text_overflow="ellipsis",
+            white_space="nowrap",
+        ),
+        rx.hstack(
+            rx.text(entry.summary_label, size="1", class_name="q-nums"),
+            rx.cond(
+                entry.payment_label != "",
+                _tone_pill(entry.payment_label, entry.payment_tone),
+            ),
+            spacing="2",
+            align="center",
+            flex_wrap="wrap",
+        ),
+        spacing="1",
+        width="100%",
+        min_width="0",
+    )
+
+
+def _previous_orders() -> rx.Component:
+    """«N pedidos anteriores»: always closed at first; the current order leads."""
+    order = S.order
+    return rx.cond(
+        order.previous.length() > 0,
+        rx.el.details(
+            rx.el.summary(
+                rx.text(order.previous_label, size="2", as_="span"),
+                min_height="44px",
+                display="flex",
+                align_items="center",
+                cursor="pointer",
+            ),
+            rx.vstack(
+                rx.foreach(order.previous, _previous_order),
+                spacing="3",
+                width="100%",
+                padding_top="0.25rem",
+            ),
+            width="100%",
+            padding_top="0.25rem",
+            border_top=T.BORDER,
+        ),
     )
 
 
@@ -683,7 +761,7 @@ def _order_card() -> rx.Component:
             rx.vstack(
                 rx.hstack(
                     rx.icon("shopping-bag", size=T.ICON_MD, color=T.tone_color("ok", 11)),
-                    rx.text("Pedido confirmado", size="2", weight="bold"),
+                    rx.text(order.title, size="2", weight="bold"),
                     tone_badge(order.items_label, "ok"),
                     rx.spacer(),
                     rx.text(order.confirmed_label, size="1", color=T.TEXT_MUTED),
@@ -693,6 +771,10 @@ def _order_card() -> rx.Component:
                     flex_wrap="wrap",
                 ),
                 rx.vstack(rx.foreach(order.lines, _order_line), spacing="1", width="100%"),
+                rx.cond(
+                    order.truncated_line != "",
+                    rx.text(order.truncated_line, size="1", color=T.TEXT_MUTED),
+                ),
                 rx.hstack(
                     rx.text("Total", size="2", weight="bold", flex="1"),
                     rx.text(order.total_label, size="3", weight="bold", class_name="q-nums"),
@@ -700,9 +782,29 @@ def _order_card() -> rx.Component:
                     align="baseline",
                 ),
                 rx.cond(
+                    order.price_notice != "",
+                    rx.vstack(
+                        callout(order.price_notice, "warn"),
+                        rx.link(
+                            PRICE_MISMATCH_LINK,
+                            href=PRICE_MISMATCH_HREF,
+                            size="2",
+                            min_height=_TAP_MIN,
+                            display="inline-flex",
+                            align_items="center",
+                        ),
+                        spacing="1",
+                        width="100%",
+                    ),
+                ),
+                rx.cond(
                     order.collected.length() > 0,
                     rx.vstack(rx.foreach(order.collected, _order_field), spacing="1", width="100%"),
                     rx.fragment(),
+                ),
+                rx.cond(
+                    (order.charge_hint != "") & ~S.payment.present,
+                    rx.text(order.charge_hint, size="2", color=T.TEXT_MUTED),
                 ),
                 _payment_block(),
                 rx.hstack(
@@ -724,6 +826,7 @@ def _order_card() -> rx.Component:
                     spacing="3",
                     flex_wrap="wrap",
                 ),
+                _previous_orders(),
                 spacing="3",
                 width="100%",
             ),
@@ -909,7 +1012,11 @@ def _bubble_body(m: MessageVM) -> rx.Component:
         rx.cond(
             m.is_media_placeholder,
             rx.hstack(
-                rx.icon("paperclip", size=T.ICON_SM, color=T.TEXT_MUTED),
+                rx.cond(
+                    m.is_order,
+                    rx.icon("shopping-bag", size=T.ICON_SM, color=T.TEXT_MUTED, flex_shrink="0"),
+                    rx.icon("paperclip", size=T.ICON_SM, color=T.TEXT_MUTED),
+                ),
                 rx.text(m.text, size="1", color=T.TEXT_MUTED),
                 spacing="2",
                 align="center",
