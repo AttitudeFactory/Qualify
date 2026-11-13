@@ -855,3 +855,174 @@ def test_the_final_polls_light_read_is_the_screens_own_state(monkeypatch) -> Non
     never_ordered = creative_provider.final_video_state(_TENANT_ID, UUID(int=21))
     assert never_ordered.can_retry and never_ordered.state == "failed"
     assert creative_provider.final_video_state(_TENANT_ID, UUID(int=22)) is None
+
+
+# -- m-25026377: the caption's catalog tags, most watched lately first ------------------
+
+
+def _catalog(monkeypatch, *, views: dict[str, int] | None = None, fuzzy: bool = False):
+    """A memory catalog where «shawarma» means two tags: `shawarmalovers` (seen often,
+    strong link) and `shawarmacasero` (seen little, weak link) — `resolve` puts the first
+    one first. `views` adds recent dated posts for a tag. With `fuzzy`, «carne» has no
+    term link (it resolves in the fuzzy-tag tier): the exact `carne` (seen 120×, no
+    views) next to the typo neighbours `carnet` / `carnes`, met only in reels and
+    well watched. No database, no paid call."""
+    from datetime import UTC, datetime, timedelta
+
+    from qualify_api.hashtags import catalog as hashtag_catalog
+    from qualify_api.hashtags.repository import (
+        MemoryHashtagRepository,
+        NewHashtag,
+        NewPostSighting,
+        NewTermLink,
+    )
+
+    repo = MemoryHashtagRepository()
+    repo.upsert_hashtags(
+        _TENANT_ID,
+        [
+            NewHashtag(tag="shawarmalovers", source="observed", network="tiktok", seen=40),
+            NewHashtag(tag="shawarmacasero", source="observed", network="tiktok", seen=2),
+        ],
+    )
+    repo.link_terms(
+        _TENANT_ID,
+        [
+            NewTermLink(term="shawarma", tag="shawarmalovers", source="observed", weight=9),
+            NewTermLink(term="shawarma", tag="shawarmacasero", source="observed", weight=1),
+        ],
+    )
+    now = datetime.now(UTC)
+    repo.record_post_sightings(
+        _TENANT_ID,
+        [
+            NewPostSighting(
+                tag=tag,
+                network="tiktok",
+                post_id=f"p-{tag}",
+                source="referentes",
+                source_ref="tiktok:hashtag",
+                parser_version="test/1",
+                posted_at=now - timedelta(days=5),
+                views=n,
+            )
+            for tag, n in (views or {}).items()
+        ],
+    )
+    if fuzzy:
+        repo.upsert_hashtags(
+            _TENANT_ID,
+            [NewHashtag(tag="carne", source="observed", network="tiktok", seen=120)],
+        )
+        repo.record_post_sightings(
+            _TENANT_ID,
+            [
+                NewPostSighting(
+                    tag=tag,
+                    network="instagram",
+                    post_id=f"r-{tag}",
+                    source="public_reels",
+                    source_ref="instagram:public_reels",
+                    parser_version="test/1",
+                    posted_at=now - timedelta(days=3),
+                    views=n,
+                )
+                for tag, n in (("carnet", 50_000), ("carnes", 80_000))
+            ],
+        )
+    monkeypatch.setattr(hashtag_catalog, "REPOSITORY", repo)
+    return repo
+
+
+def _capture_model_input(monkeypatch) -> list[list[tuple[str, int]]]:
+    """Stand in for Claude: record the catalog list the model would receive."""
+    from qualify_api.hashtags import caption as caption_module
+
+    received: list[list[tuple[str, int]]] = []
+
+    def fake_suggest(caption, *, attribution, seen=(), current=(), api_key, **_):
+        received.append([(s.tag, s.seen_count) for s in seen])
+        return []
+
+    monkeypatch.setattr(caption_module, "suggest_for_caption", fake_suggest)
+    monkeypatch.setenv("QUALIFY_ANTHROPIC_API_KEY", "test-key-not-used")
+    return received
+
+
+async def _suggest(state: CreativeState) -> None:
+    result = CreativeState.suggest_hashtags_ai.fn(state)
+    if hasattr(result, "__aiter__"):
+        async for _ in result:
+            pass
+    else:
+        await result
+
+
+async def _load_catalog(state: CreativeState) -> None:
+    result = CreativeState.load_catalog_hashtags.fn(state)
+    if hasattr(result, "__aiter__"):
+        async for _ in result:
+            pass
+    else:
+        await result
+
+
+async def test_the_model_gets_the_most_watched_catalog_tags_first(monkeypatch) -> None:
+    _catalog(monkeypatch, views={"shawarmacasero": 9000, "shawarmalovers": 120})
+    received = _capture_model_input(monkeypatch)
+    state = _state(monkeypatch)
+    state.edit_caption = "Shawarma de pollo al carbón"
+    await _suggest(state)
+    # fewer sightings, more recent views → first; the format stays `tag (seen_count)`
+    assert received == [[("shawarmacasero", 2), ("shawarmalovers", 40)]]
+    await _load_catalog(state)
+    assert state.edit_catalog_tags[:2] == ["shawarmacasero", "shawarmalovers"]
+
+    # A fuzzy tier keeps `resolve`'s similarity order: «carne» has no term link, so the
+    # exact `carne` keeps its slot over the well-watched `carnet`/`carnes`, while the term
+    # tier («shawarma») is still re-ordered by views.
+    _catalog(monkeypatch, views={"shawarmacasero": 9000, "shawarmalovers": 120}, fuzzy=True)
+    received = _capture_model_input(monkeypatch)
+    state = _state(monkeypatch)
+    state.edit_caption = "Shawarma de carne"
+    await _suggest(state)
+    tags = [tag for tag, _ in received[0]]
+    assert tags[:2] == ["shawarmacasero", "shawarmalovers"]
+    assert tags.index("carne") < min(tags.index("carnes"), tags.index("carnet"))
+    await _load_catalog(state)  # the instant lookup: 2 slots per word
+    assert "carne" in state.edit_catalog_tags
+    assert state.edit_catalog_tags.index("carne") < state.edit_catalog_tags.index("carnes")
+
+
+async def test_with_no_views_known_the_order_is_exactly_resolves(monkeypatch) -> None:
+    """Production today: the sightings table starts empty."""
+    repo = _catalog(monkeypatch)
+    plain = [h.hashtag.tag for h in repo.resolve(_TENANT_ID, "shawarma", limit=4)]
+    assert plain == ["shawarmalovers", "shawarmacasero"]
+    received = _capture_model_input(monkeypatch)
+    state = _state(monkeypatch)
+    state.edit_caption = "Shawarma de pollo al carbón"
+    await _suggest(state)
+    assert [tag for tag, _ in received[0]] == plain
+    await _load_catalog(state)
+    assert state.edit_catalog_tags[:2] == plain
+
+
+async def test_a_catalog_failure_leaves_the_editor_working(monkeypatch) -> None:
+    repo = _catalog(monkeypatch)
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("catalog down")
+
+    monkeypatch.setattr(repo, "resolve_popular", broken)
+    received = _capture_model_input(monkeypatch)
+    state = _state(monkeypatch)
+    state.edit_caption = "Shawarma de pollo al carbón"
+    state.edit_catalog_tags = ["antes"]
+    await _suggest(state)
+    assert received == [[]]  # the model is still asked, without grounding
+    assert state.ai_hashtags_loading is False
+    assert state.ai_hashtags_note == "No hubo sugerencias nuevas para este texto."
+    await _load_catalog(state)
+    assert state.edit_catalog_tags == ["antes"]  # untouched, no error raised
+    assert "shawarma" in state.hashtag_suggestions  # the caption's own words still help
