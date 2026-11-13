@@ -477,7 +477,7 @@ class PlannerState(rx.State):
 
     # -- the event panel --------------------------------------------------------
     detail_open: bool = False
-    #: m-25026241: the same-minute groups the owner unfolded (`EventGroupVM.key`) — the
+    #: m-25026241: the batches (m-25026486) the owner unfolded (`EventGroupVM.key`) — the
     #: grouping itself is the view model's; this only remembers which are open.
     open_groups: list[str] = []
     detail_loading: bool = False
@@ -1546,7 +1546,7 @@ class PlannerState(rx.State):
 
     @rx.event
     def toggle_group(self, key: str) -> None:
-        """Unfold or fold one same-minute group (m-25026241). Reset with the rest of this
+        """Unfold or fold one batch group (m-25026241, m-25026486). Reset with the rest of this
         state on logout and on a business switch (`auth_state.business_state_classes`)."""
         if key in self.open_groups:
             self.open_groups = [k for k in self.open_groups if k != key]
