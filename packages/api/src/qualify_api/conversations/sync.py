@@ -29,6 +29,16 @@ or by a replayed delivery — is one row.
 The webhook path (E3) calls this per change: same upsert, same insert, same bump. It
 returns whether the message was new, so the handler can skip work it already did.
 
+## `unsend_message` — the person unsent a DM (m-25018661)
+
+The webhook's `is_deleted` item lands here: the tombstone, the redacted row, its undecided
+drafts and the thread's recomputed instants, in one transaction
+(`ConversationRepository.unsend_message`). Both doors above then refuse that `mid` for
+good: `ingest_message` stores nothing and creates no thread, the poll skips it before the
+insert and leaves it out of the thread's bump (otherwise the unsent message would reopen
+the 24 h window it no longer opens). The insert itself checks the tombstone again under a
+per-message lock, so a race between the poll and the unsend cannot store it either.
+
 `sync_connection` processes at most `max_conversations` per call when given — the hook
 for the per-connection Meta call budget the comments sync already tracks
 (`inbox.repository.calls_in_last_hour`); wiring that ledger in is E3's, with the real
@@ -57,6 +67,7 @@ from qualify_api.conversations.repository import (
     SYNC_FAILED,
     SYNC_OK,
     ConversationRepository,
+    UnsendResult,
 )
 
 logger = logging.getLogger("qualify_api.conversations.sync")
@@ -64,6 +75,9 @@ logger = logging.getLogger("qualify_api.conversations.sync")
 #: How long a fetched profile (and its expiring picture URL) is trusted before the next
 #: sync asks the channel again. The User Profile API is one call per thread.
 PROFILE_TTL = timedelta(hours=24)
+
+#: Provenance of a `message_unsends` tombstone (m-25018661).
+UNSEND_PIPELINE_VERSION = "ig-dm-unsend-1.0.0"
 
 # Verdicts that make listing pointless: the channel has already said no.
 _BLOCKING_ACCESS = frozenset(
@@ -85,6 +99,8 @@ class SyncReport:
     messages_seen: int = 0
     messages_created: int = 0
     duplicates: int = 0
+    # Messages the Graph API still listed although the person unsent them (m-25018661).
+    unsent_skipped: int = 0
     status: str = SYNC_OK
     error: str | None = None
     # Set when `max_conversations` stopped the walk before the source ran out.
@@ -94,9 +110,12 @@ class SyncReport:
 
 @dataclass(frozen=True)
 class IngestResult:
-    thread_id: str
+    # None only when `unsent`: an unsent message touches no thread.
+    thread_id: str | None
     thread_created: bool
     message_created: bool
+    # m-25018661: the person unsent this `mid` — nothing was stored, nothing bumped.
+    unsent: bool = False
 
 
 def _utcnow() -> datetime:
@@ -247,8 +266,17 @@ class ConversationSyncService:
         cursor: str | None = None
         while True:
             page = await source.list_messages(connection, conversation, cursor=cursor)
+            unsent = self._repo.unsent_ids(
+                tenant_id=connection.tenant_id,
+                connection_id=connection.connection_id,
+                external_message_ids=[m.external_message_id for m in page.items],
+            )
             for message in page.items:
                 report.messages_seen += 1
+                if message.external_message_id in unsent:
+                    # m-25018661: never stored again, never bumps the thread.
+                    report.unsent_skipped += 1
+                    continue
                 created = self._repo.insert_message(
                     tenant_id=connection.tenant_id,
                     thread_id=upsert.thread_id,
@@ -281,7 +309,16 @@ class ConversationSyncService:
         message: RemoteMessage,
     ) -> IngestResult:
         """One message, from whichever path has it now. Idempotent by `(connection_id,
-        external_message_id)`; the thread bump is harmless on a replay."""
+        external_message_id)`; the thread bump is harmless on a replay. A `mid` the person
+        unsent (m-25018661) stores nothing and creates no thread: `unsent=True`."""
+        if self._repo.unsent_ids(
+            tenant_id=connection.tenant_id,
+            connection_id=connection.connection_id,
+            external_message_ids=[message.external_message_id],
+        ):
+            return IngestResult(
+                thread_id=None, thread_created=False, message_created=False, unsent=True
+            )
         upsert = self._repo.upsert_thread(
             tenant_id=connection.tenant_id,
             connection_id=connection.connection_id,
@@ -295,6 +332,18 @@ class ConversationSyncService:
             connection_id=connection.connection_id,
             message=message,
         )
+        if not created and self._repo.unsent_ids(
+            tenant_id=connection.tenant_id,
+            connection_id=connection.connection_id,
+            external_message_ids=[message.external_message_id],
+        ):
+            # The unsend committed between the check above and the insert: nothing stored.
+            return IngestResult(
+                thread_id=str(upsert.thread_id),
+                thread_created=upsert.created,
+                message_created=False,
+                unsent=True,
+            )
         at = message.posted_at or self._clock()
         self._repo.bump_thread_activity(
             tenant_id=connection.tenant_id,
@@ -304,6 +353,23 @@ class ConversationSyncService:
         )
         return IngestResult(
             thread_id=str(upsert.thread_id), thread_created=upsert.created, message_created=created
+        )
+
+    def unsend_message(
+        self,
+        connection: SourceConnection,
+        *,
+        external_message_id: str,
+        source_event_id: UUID | None = None,
+    ) -> UnsendResult:
+        """The person unsent `external_message_id`: erase it and keep it erased."""
+        return self._repo.unsend_message(
+            tenant_id=connection.tenant_id,
+            connection_id=connection.connection_id,
+            external_message_id=external_message_id,
+            now=self._clock(),
+            source_event_id=source_event_id,
+            pipeline_version=UNSEND_PIPELINE_VERSION,
         )
 
     async def refresh_profile(

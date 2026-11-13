@@ -61,10 +61,9 @@ What one change does, in order:
 
 1. `event.value` must be an object carrying a `message` with a string `mid`, a
    `postback`, or a `read`; a `reaction` or any other item is settled `unsupported`
-   (kept, replayable the day it has a handler); a `message` flagged `is_deleted` is
-   `unsupported` too (`message_deleted` — nothing to show, nothing to re-read). Postbacks
-   settled `unsupported` before this handler read them are replayed with
-   `python -m qualify_api.webhooks.worker --requeue-postbacks`.
+   (kept, replayable the day it has a handler); a `message` flagged `is_deleted` is an
+   **unsend** (see below). Postbacks settled `unsupported` before this handler read them
+   are replayed with `python -m qualify_api.webhooks.worker --requeue-postbacks`.
 2. Resolve `entry[].id` (the Instagram professional account id) → `(tenant, connection)`
    through `mentions.resolve.resolve_external_account`. `ORPHAN` / `AMBIGUOUS` → settled
    as such, **nothing written** (QUA-97's invariant).
@@ -78,6 +77,29 @@ What one change does, in order:
    stored as `media_type = 'interactive'`. A webhook that reaches a `mid`
    the poll stored first adds the tap's kind and payload (only while the row has none).
 4. `processed`.
+
+## Unsend (m-25018661)
+
+`{"sender", "recipient", "timestamp", "message": {"mid", "is_deleted": true}}` — the person
+deleted («unsent») a message they had sent (`webhooks.md:79`). `[CORPUS]`: documented,
+never observed live here. Meta requires the app to delete it (`overview.md:70`):
+
+- resolved like any message (step 2); then `ConversationSyncService.unsend_message` writes
+  the tombstone (`message_unsends`), redacts the stored row (ids and instants only, hidden),
+  discards its undecided drafts and recomputes the thread's instants — one transaction;
+- then every recorded change that carried that `mid` (the original delivery still holds
+  the text for up to 29 days) is deleted with its delivery's raw body
+  (`WebhookQueue.erase_message_events`); the unsend change itself, content-less, stays
+  `processed`;
+- the original arriving AFTER its unsend (out of order, or redelivered), by webhook or by
+  the poll, is refused by the tombstone: nothing stored, no thread created, and this
+  change is settled by deletion (`Outcome(erase=True)`);
+- an `is_deleted` echo (the business deleted its own message) is out of scope: settled
+  `unsupported` (`message_deleted_echo`), nothing touched. So is an `is_deleted` whose `mid`
+  is stored as outbound (`message_deleted_outbound`).
+
+Unsends settled `unsupported` (`message_deleted`) before this handler existed are replayed
+with `python -m qualify_api.webhooks.worker --requeue-deleted --account <ig_id>`.
 
 No user text in logs: ids, kinds and outcomes only. `[V]`-pending like the adapter: the
 shape is read from the corpus, not observed live.
@@ -131,6 +153,9 @@ logger = logging.getLogger("qualify_api.conversations.webhook")
 INSTAGRAM_MESSAGES_HANDLER_KEY: Final = "instagram:messages"
 NOT_A_MESSAGE: Final = "not_a_message"
 MESSAGE_DELETED: Final = "message_deleted"
+MESSAGE_DELETED_ECHO: Final = "message_deleted_echo"
+MESSAGE_DELETED_OUTBOUND: Final = "message_deleted_outbound"
+MESSAGE_UNSENT: Final = "message_unsent"
 POSTBACK_ECHO: Final = "postback_echo"
 CONTRACT_VIOLATION: Final = "contract_violation"
 
@@ -141,6 +166,15 @@ SHAPE_VERSION_IG_POSTBACK: Final = "ig-dm-postback-1.0.0"
 SYNTHETIC_POSTBACK_PREFIX: Final = "qf-postback:"
 
 TenantResolver = Callable[..., TenantResolution]
+EventEraser = Callable[..., int]
+
+
+@dataclass(frozen=True)
+class RemoteUnsend:
+    """The person unsent message `external_message_id` (`message.is_deleted`)."""
+
+    external_message_id: str
+
 
 _ATTACHMENT_MEDIA_TYPES: Final = {
     "image": "image",
@@ -317,11 +351,11 @@ def parse_postback(
 
 def parse_messaging_item(
     value: Any, *, own_account_id: str
-) -> tuple[RemoteConversation, RemoteMessage] | RemoteRead | str:
+) -> tuple[RemoteConversation, RemoteMessage] | RemoteRead | RemoteUnsend | str:
     """The `(conversation, message)` an item carries — a `message` or a `postback` —, a
-    `RemoteRead` for a `read` (`messaging_seen`) item, or the `unsupported` reason when it
-    is none of them. Raises `ValueError` for an item that claims to be one of those but
-    breaks the shape."""
+    `RemoteRead` for a `read` (`messaging_seen`) item, a `RemoteUnsend` for a person's
+    `is_deleted`, or the `unsupported` reason when it is none of them. Raises `ValueError`
+    for an item that claims to be one of those but breaks the shape."""
     if not isinstance(value, Mapping):
         raise ValueError("messaging item is not an object")
     postback = value.get("postback")
@@ -342,10 +376,14 @@ def parse_messaging_item(
     message = value.get("message")
     if not isinstance(message, Mapping):
         return NOT_A_MESSAGE
-    if message.get("is_deleted") is True:
-        return MESSAGE_DELETED
     mid = message.get("mid")
     sender_id, recipient_id = _id_of(value.get("sender")), _id_of(value.get("recipient"))
+    if message.get("is_deleted") is True:
+        if not isinstance(mid, str) or not mid:
+            raise ValueError("deleted-message item lacks mid")
+        if message.get("is_echo") is True or sender_id == own_account_id:
+            return MESSAGE_DELETED_ECHO
+        return RemoteUnsend(external_message_id=mid)
     if not isinstance(mid, str) or not mid or sender_id is None or recipient_id is None:
         raise ValueError("messaging item lacks mid, sender or recipient")
     is_echo = message.get("is_echo") is True or sender_id == own_account_id
@@ -386,7 +424,12 @@ def instagram_messages_handler(
     resolve: TenantResolver,
     sync: ConversationSyncService,
     attribute_ad: Callable[..., bool] | None = None,
+    erase_events: EventEraser | None = None,
 ) -> Handler:
+    """`erase_events` (m-25018661) deletes the recorded changes that still carry an unsent
+    message — `WebhookQueue.erase_message_events` in production; without it the unsend
+    still erases the stored copy and the changes age out with the 29-day purge."""
+
     async def handle(event: ClaimedEvent) -> Outcome:
         try:
             parsed = parse_messaging_item(event.value, own_account_id=event.entry_id)
@@ -433,6 +476,8 @@ def instagram_messages_handler(
                 changed,
             )
             return Outcome(STATUS_PROCESSED)
+        if isinstance(parsed, RemoteUnsend):
+            return await _unsend(event, connection, parsed)
         conversation, message = parsed
         result = await asyncio.to_thread(
             sync.ingest_message,
@@ -441,6 +486,17 @@ def instagram_messages_handler(
             conversation=conversation,
             message=message,
         )
+        if result.unsent:
+            # The person unsent it before (or while) it reached us: nothing was stored, and
+            # this change — which still holds what they wrote — is deleted, not kept.
+            logger.info(
+                "instagram messages webhook: tenant=%s connection=%s event=%s "
+                "outcome=refused_unsent",
+                resolution.tenant_id,
+                resolution.connection_id,
+                event.id,
+            )
+            return Outcome(STATUS_PROCESSED, MESSAGE_UNSENT, erase=True)
         if attribute_ad is not None and message.direction == "inbound":
             raw_message = event.value.get("message", {}) if isinstance(event.value, dict) else {}
             referral = raw_message.get("referral") if isinstance(raw_message, dict) else None
@@ -468,6 +524,47 @@ def instagram_messages_handler(
         )
         return Outcome(STATUS_PROCESSED)
 
+    async def _unsend(
+        event: ClaimedEvent, connection: SourceConnection, unsend: RemoteUnsend
+    ) -> Outcome:
+        result = await asyncio.to_thread(
+            sync.unsend_message,
+            connection,
+            external_message_id=unsend.external_message_id,
+            source_event_id=event.id,
+        )
+        if result.outbound:
+            logger.info(
+                "instagram messages webhook: tenant=%s connection=%s event=%s "
+                "outcome=unsend_of_outbound_ignored",
+                connection.tenant_id,
+                connection.connection_id,
+                event.id,
+            )
+            return Outcome(STATUS_UNSUPPORTED, MESSAGE_DELETED_OUTBOUND)
+        erased = 0
+        if erase_events is not None:
+            erased = await asyncio.to_thread(
+                erase_events,
+                entry_id=event.entry_id,
+                mid=unsend.external_message_id,
+                keep_event_id=event.id,
+            )
+        # Ids, counts and outcomes only: never the text, never the payload.
+        logger.info(
+            "instagram messages webhook: unsend tenant=%s connection=%s event=%s thread=%s "
+            "tombstone_created=%s message_redacted=%s drafts_discarded=%d events_erased=%d",
+            connection.tenant_id,
+            connection.connection_id,
+            event.id,
+            result.thread_id,
+            result.tombstone_created,
+            result.message_redacted,
+            result.drafts_discarded,
+            erased,
+        )
+        return Outcome(STATUS_PROCESSED)
+
     return handle
 
 
@@ -475,10 +572,14 @@ __all__ = [
     "CONTRACT_VIOLATION",
     "INSTAGRAM_MESSAGES_HANDLER_KEY",
     "MESSAGE_DELETED",
+    "MESSAGE_DELETED_ECHO",
+    "MESSAGE_DELETED_OUTBOUND",
+    "MESSAGE_UNSENT",
     "NOT_A_MESSAGE",
     "POSTBACK_ECHO",
     "SHAPE_VERSION_IG_POSTBACK",
     "SYNTHETIC_POSTBACK_PREFIX",
+    "RemoteUnsend",
     "instagram_messages_handler",
     "parse_messaging_item",
     "parse_postback",
