@@ -50,9 +50,13 @@ at once):
    «no results» answer; the remaining tags wait for the next day's attempt.
 
 Hard bound per business: 5 credits in any 7 days, so at most 25 in any 31-day month,
-for any mix of successes and failures (22 on average when healthy). Only a vendor that
-charges more than one credit for a single call (`credits_charged`, booked after the
-answer; measured at 1) could push one week past it, and the next week then has less.
+for any mix of successes and failures (22 on average when healthy). The budget counts the
+credits the gate booked, not calls. A call is booked one credit before it leaves and
+the rest (`credits_charged`, measured at 1) after its answer, so a vendor charging N per
+call can overshoot a 7-day window by at most N−1 — its last call. That overshoot is NOT
+paid back the following week: the window and the kept answers both expire after 7 days,
+so a healthy business can overshoot in every window — at most 5 windows, i.e. 5×(N−1)
+extra in a 31-day month.
 
 **Switches.** `QUALIFY_HASHTAG_WEEKLY_READ` is OFF unless set to 1/true/on/yes; with it
 off — or with the gate's `QUALIFY_SCRAPECREATORS_PAID` off, or no
@@ -713,22 +717,26 @@ def _read_tags(
     rubro: BusinessRubro,
     pending: Sequence[str],
     *,
-    budget: int,
     log: ReadLog,
     repository: HashtagRepository,
     claims: Claims,
     client: httpx.Client,
     now: datetime,
 ) -> None:
-    """Read `pending` until `budget` credits were booked: each hashtag under its own
-    claim (`claim_tag`), re-checked inside it — a pass for another business may have kept
-    it in the meantime — so two businesses sharing a hashtag never both pay for it."""
+    """Read `pending` until `MAX_TAGS` credits are booked in the last 7 days: each
+    hashtag under its own claim (`claim_tag`), re-checked inside it — a pass for another
+    business may have kept it in the meantime — so two businesses sharing a hashtag never
+    both pay for it.
+
+    What counts is what the gate BOOKED — its first credit and the `:extra` row of what
+    the vendor reports beyond it (`credits_charged`) — re-read from the ledger before
+    each read, never a count of calls: with an N-credit call the week overshoots
+    `MAX_TAGS` by at most N−1."""
     tenant = rubro.tenant_id
     usage.bind(client, usage.UsageCharge(tenant, rubro.brand_id))
     week = now - REREAD_AFTER
-    booked = 0
     for tag in pending:
-        if booked >= budget:
+        if log.credits_since(tenant, week) >= MAX_TAGS:
             return
         with claims.claim_tag(tenant, tag) as taken:
             if not taken:
@@ -737,7 +745,6 @@ def _read_tags(
             if log.tag_read_since(tenant, tag, week):
                 outcome.fresh.append(tag)
                 continue
-            booked += 1
             ok = _read_one(
                 outcome, rubro, tag, log=log, repository=repository, client=client, now=now
             )
@@ -822,8 +829,7 @@ def read_business(
         if log.attempted_since(tenant, now - RETRY_AFTER):
             outcome.status = TRIED_TODAY
             return outcome
-        budget = MAX_TAGS - log.credits_since(tenant, week)
-        if budget <= 0:
+        if log.credits_since(tenant, week) >= MAX_TAGS:
             outcome.status = WEEK_SPENT
             return outcome
         if not has_headroom(tenant, now):
@@ -833,7 +839,6 @@ def read_business(
             outcome,
             rubro,
             pending,
-            budget=budget,
             log=log,
             repository=repository,
             claims=claims,

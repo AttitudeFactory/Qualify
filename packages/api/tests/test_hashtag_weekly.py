@@ -97,9 +97,12 @@ class Vendor:
     """The fake ScrapeCreators: answers `search/hashtag` from `answers`, records every
     request it was sent; `status` != 200 answers every request with that status."""
 
-    def __init__(self, answers: dict[str, Any] | None = None, status: int = 200) -> None:
+    def __init__(
+        self, answers: dict[str, Any] | None = None, status: int = 200, charge: int = 1
+    ) -> None:
         self.answers = answers or {}
         self.status = status
+        self.charge = charge
         self.requests: list[httpx.Request] = []
         self._lock = threading.Lock()
 
@@ -110,7 +113,8 @@ class Vendor:
         tag = request.url.params["hashtag"]
         if self.status != 200:
             return httpx.Response(self.status, json={"success": False, "error": "nope"})
-        return httpx.Response(200, json=self.answers.get(tag) or _answer(tag))
+        body = self.answers.get(tag) or _answer(tag)
+        return httpx.Response(200, json={**body, "credits_charged": self.charge})
 
     def client(self) -> httpx.Client:
         return httpx.Client(transport=httpx.MockTransport(self.handler))
@@ -726,10 +730,15 @@ class _ClockedDatetime(datetime):
 
 
 def _simulate_month(
-    monkeypatch: pytest.MonkeyPatch, *, change_every: int, fails: Any = lambda day: False
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    change_every: int,
+    fails: Any = lambda day: False,
+    charge: int = 1,
 ) -> list[usage.UsageEvent]:
     """31 days, a pass every 12 hours, the owner's five pills replaced every
-    `change_every` days; the vendor answers 500 on the days `fails` says."""
+    `change_every` days; the vendor answers 500 on the days `fails` says and charges
+    `charge` credits per answer."""
     monkeypatch.setattr(usage, "datetime", _ClockedDatetime)
     business = _business("x")
     log, claims = weekly.MemoryReadLog(_ledger()), weekly.MemoryClaims()
@@ -740,7 +749,7 @@ def _simulate_month(
         _Clock.at = start + timedelta(hours=12 * half_day)
         tags = tuple(f"p{day // change_every}x{i}" for i in range(5))
         rubro = weekly.BusinessRubro(business.tenant_id, tags, "CO", business.brand_id)
-        vendor = Vendor(status=500 if fails(day) else 200)
+        vendor = Vendor(status=500 if fails(day) else 200, charge=charge)
         weekly.run_tick(
             [business.tenant_id],
             source=weekly.MemoryRubroSource({business.tenant_id: rubro}),
@@ -755,10 +764,22 @@ def _simulate_month(
 
 
 def _max_in_any_week(events: list[usage.UsageEvent]) -> int:
-    stamps = sorted(e.created_at for e in events if e.created_at is not None)
+    """The most CREDITS (`:extra` rows included) booked in any rolling 7 days."""
+    dated = [(e.created_at, e.credits) for e in events if e.created_at is not None]
     return max(
-        (sum(1 for t in stamps if s <= t < s + timedelta(days=7)) for s in stamps), default=0
+        (sum(c for t, c in dated if s <= t < s + timedelta(days=7)) for s, _ in dated),
+        default=0,
     )
+
+
+def test_a_vendor_charging_three_per_call_overshoots_a_week_by_at_most_two(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events = _simulate_month(monkeypatch, change_every=1, charge=3)
+    assert {e.credits for e in events} == {1, 2}  # the booked credit and its `:extra` row
+    # two calls a week: 3, then 6 ≥ 5 stops the pass — never 5 calls × 3 = 15
+    assert _max_in_any_week(events) == weekly.MAX_TAGS + 1
+    assert sum(e.credits for e in events) <= 5 * (weekly.MAX_TAGS + 3 - 1)  # 5 windows
 
 
 @pytest.mark.parametrize("change_every", [3, 1])
