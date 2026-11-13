@@ -20,7 +20,9 @@ from qualify_api.ads.unpublished import (
     STORY_FORMAT,
     STORY_PIPELINE,
     STORY_VIDEO_PIPELINE,
+    ImageAdForm,
     ImageSelection,
+    ImageSource,
     UnpublishedUnavailable,
     VideoSelection,
     creative_payload,
@@ -145,10 +147,40 @@ def test_pair_snapshot_and_hash_are_unchanged_and_differ_from_the_story():
     # The pair snapshot is exactly the dataclass plus its pipeline: no story key leaks in.
     assert set(snapshot) == set(asdict(pair)) | {"pipeline"} and snapshot["pipeline"] == PIPELINE
     assert snapshot["feed"]["asset_id"] == str(pair.feed.asset_id)
-    actor = UUID(int=1)
-    stored = recipe_hash(pair, form(), actor)
-    assert recipe_hash(pair, form(), actor) == stored
-    assert recipe_hash(replace(pair, feed=None), form(), actor) != stored
+    # Golden hash computed with main's unpublished.py before this change (4e74c550).
+    u = UUID
+
+    def img(n, width, height):
+        return ImageSelection(
+            u(int=n), f"t/{u(int=1)}/generated/{n}.png", "image/png", width, height
+        )
+
+    fixed = ImageSource(
+        *(u(int=n) for n in (1, 2, 3, 4)),
+        3,
+        u(int=5),
+        u(int=6),
+        2,
+        "12",
+        "42",
+        "7",
+        "COP",
+        "America/Bogota",
+        img(7, 40, 50),
+        img(8, 90, 160),
+    )
+    fixed_form = ImageAdForm(
+        "Prueba",
+        "Título",
+        "https://example.org",
+        100_00,
+        datetime(2030, 1, 1, tzinfo=UTC),
+        datetime(2030, 1, 2, tzinfo=UTC),
+        "CO",
+    )
+    stored = recipe_hash(fixed, fixed_form, u(int=9))
+    assert stored == "44823b49a46c61faac2a964490e2e0f64ec167597058ee94c52287c158804066"
+    assert recipe_hash(replace(fixed, feed=None), fixed_form, u(int=9)) != stored
     spec = creative_payload(pair, form(), ("a", "b"))
     assert "asset_customization_rules" in spec["asset_feed_spec"]
     with pytest.raises(UnpublishedUnavailable):
