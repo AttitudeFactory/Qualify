@@ -4183,46 +4183,137 @@ def _carried_text_notice() -> rx.Component:
     )
 
 
-def _context_ai_tools() -> rx.Component:
-    """«Potenciar con IA» (§ request 2026-10-20): the text above rewritten into a fuller
-    brief with the Brand Kit and the «Datos clave» — no invented facts — before anything
-    is generated; «Deshacer» brings the operator's own words back."""
-    enhancing = CreativeState.context_enhancing
-    return rx.vstack(
-        rx.hstack(
-            rx.button(
-                rx.icon("sparkles", size=T.ICON_SM),
-                rx.cond(enhancing, "Mejorando…", "Mejorar mi texto"),
-                variant="soft",
-                size="2",
-                radius=_CONTROL_RADIUS,
-                loading=enhancing,
-                on_click=CreativeState.enhance_context,
+#: m-25017274: what «Mejorar mi texto» says around its three cards.
+ENHANCE_LABEL = "Mejorar mi texto"
+ENHANCE_BUSY_LABEL = "Mejorando…"
+ENHANCE_HINT = (
+    "Te proponemos tres versiones con lo que sabemos de tu marca, sin inventar precios ni "
+    "promociones. No gasta creaciones."
+)
+ENHANCE_PICK_TITLE = "Elige una versión"
+ENHANCE_PICK_HINT = "Al tocarla, pasa a tu texto. Revísala antes de crear."
+ENHANCE_AGAIN_LABEL = "Otra versión"
+ENHANCE_RESTORE_LABEL = "Volver a mi texto"
+
+
+def _context_version_card(version: rx.Var[dict[str, str]], index: rx.Var[int]) -> rx.Component:
+    """One version: its approach in small letters over the whole text, a radio card (the
+    design system's `choice_card`) that fills the field when tapped."""
+    selected = CreativeState.context_choice == index
+    return choice_card(
+        rx.vstack(
+            rx.hstack(
+                rx.text(version["label"], size="1", weight="medium", color=T.TEXT_MUTED),
+                rx.cond(selected, choice_card_check()),
+                spacing="2",
+                align="center",
+                justify="between",
+                width="100%",
             ),
-            rx.cond(
-                (CreativeState.context_before_enhance != "") & ~enhancing,
-                rx.button(
-                    rx.icon("undo-2", size=T.ICON_SM),
-                    "Deshacer",
-                    variant="ghost",
-                    color_scheme="gray",
-                    size="2",
-                    on_click=CreativeState.undo_enhance_context,
-                ),
-            ),
-            rx.text(
-                "Ordenamos tu texto con lo que sabemos de tu marca, sin inventar precios ni "
-                "promociones. Revísalo antes de crear.",
-                size="1",
-                color=T.TEXT_MUTED,
-                flex="1",
-                min_width="12rem",
-            ),
-            spacing="3",
-            align="center",
-            wrap="wrap",
+            rx.text(version["text"], size="2", text_align="left", white_space="normal"),
+            spacing="1",
+            align_items="start",
             width="100%",
         ),
+        selected=selected,
+        role="radio",
+        disabled=CreativeState.context_enhancing,
+        on_select=CreativeState.choose_context_version(index),
+        padding="0.75rem 1rem",
+        min_height="44px",
+        width="100%",
+        text_align="left",
+    )
+
+
+def _context_versions() -> rx.Component:
+    """The three cards of the last press, «Otra versión» and the way back to the
+    operator's own words (m-25017274). One column: they read whole on a phone."""
+    enhancing = CreativeState.context_enhancing
+    return rx.cond(
+        CreativeState.context_versions.length() > 0,
+        rx.vstack(
+            rx.text(ENHANCE_PICK_TITLE, size="2", weight="medium"),
+            rx.text(ENHANCE_PICK_HINT, size="1", color=T.TEXT_MUTED),
+            rx.el.div(
+                rx.foreach(CreativeState.context_versions, _context_version_card),
+                role="radiogroup",
+                aria_label=ENHANCE_PICK_TITLE,
+                style={"display": "flex", "flexDirection": "column", "gap": "0.5rem"},
+                width="100%",
+            ),
+            rx.hstack(
+                rx.button(
+                    rx.icon("refresh-cw", size=T.ICON_SM),
+                    ENHANCE_AGAIN_LABEL,
+                    variant="soft",
+                    size="2",
+                    radius=_CONTROL_RADIUS,
+                    min_height="44px",
+                    loading=enhancing,
+                    on_click=CreativeState.enhance_context(True),
+                ),
+                rx.cond(
+                    ~CreativeState.context_is_original & ~enhancing,
+                    rx.button(
+                        rx.icon("undo-2", size=T.ICON_SM),
+                        ENHANCE_RESTORE_LABEL,
+                        variant="ghost",
+                        color_scheme="gray",
+                        size="2",
+                        min_height="44px",
+                        on_click=CreativeState.undo_enhance_context,
+                    ),
+                ),
+                spacing="3",
+                align="center",
+                wrap="wrap",
+                width="100%",
+            ),
+            spacing="2",
+            width="100%",
+            align_items="start",
+        ),
+    )
+
+
+def _context_ai_tools() -> rx.Component:
+    """«Mejorar mi texto» (§ request 2026-10-20; three versions since m-25017274): the
+    text above rewritten three ways with the Brand Kit and the «Datos clave» — no invented
+    facts — before anything is generated. The operator's text stays until a card is
+    chosen, and «Volver a mi texto» brings it back."""
+    enhancing = CreativeState.context_enhancing
+    return rx.vstack(
+        rx.cond(
+            # with cards on screen it comes back only once the text was edited: a press
+            # then starts from the new words (otherwise «Otra versión» is the way)
+            (CreativeState.context_versions.length() > 0) & ~CreativeState.context_text_edited,
+            rx.fragment(),
+            rx.hstack(
+                rx.button(
+                    rx.icon("sparkles", size=T.ICON_SM),
+                    rx.cond(enhancing, ENHANCE_BUSY_LABEL, ENHANCE_LABEL),
+                    variant="soft",
+                    size="2",
+                    radius=_CONTROL_RADIUS,
+                    min_height="44px",
+                    loading=enhancing,
+                    on_click=CreativeState.enhance_context(False),
+                ),
+                rx.text(
+                    ENHANCE_HINT,
+                    size="1",
+                    color=T.TEXT_MUTED,
+                    flex="1",
+                    min_width="12rem",
+                ),
+                spacing="3",
+                align="center",
+                wrap="wrap",
+                width="100%",
+            ),
+        ),
+        _context_versions(),
         rx.cond(
             CreativeState.context_enhance_error != "",
             callout(CreativeState.context_enhance_error, "warn"),
