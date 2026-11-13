@@ -64,8 +64,8 @@ that `_payment` belonged to the archived order (`order_message_id` ==
 `source_message_id`); the handler's save re-takes it from the row as stored, in the
 same statement (`repository.save_thread_state(archive_payment=True)`), and the current
 `_payment` is never carried over to the new order. `read_previous_orders` reads the
-archive; `cart_message_ids` names the inbound messages that are carts (the chats list
-labels them).
+archive; `cart_message_ids` names the inbound messages whose cart is still on record
+(current or archived), so the chat can tie a cart bubble to its order.
 
 After a confirmed handoff the handler also clears the engine's working order (`order`,
 `order_confirmed`), so a conversation resumed later starts a new order instead of
@@ -385,8 +385,8 @@ def recorded_order_message_ids(context: Mapping[str, Any] | None) -> frozenset[s
 
 
 def cart_message_ids(context: Mapping[str, Any] | None) -> frozenset[str]:
-    """The inbound `wamid`s that were catalog carts (current order + archive): the chat
-    shows those `media_type = 'other'` messages as «Pedido desde tu catálogo»."""
+    """The inbound `wamid`s of the carts on record (current order + archive), so the chat
+    can tie a cart message (`media_type = 'order'`) to its order card."""
     out: set[str] = set()
     for record in _records(context):
         source = record.get("source_message_id")

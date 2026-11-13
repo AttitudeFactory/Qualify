@@ -87,16 +87,16 @@ written meanwhile is never undone.
 
 **The catalog cart (m-25018684).** A `type = "order"` message (the customer sent the
 cart of the business's WhatsApp catalog) is never menu input: no reply, no menu, ZERO
-outbox rows. Its message row is stored as every other (`media_type = 'other'`); then the
-cart becomes the thread's current order (`orders.record_cart_order`, keyed on its
-`wamid`), its retailer ids looked up among the receiving brand's Galería products by
-`cart_product_loader(phone_row_id, ids)` (`whatsapp.catalog.load_cart_products_for_phone`
-in production, one query). The thread is handed to a person exactly as a confirmed menu
-order is: `_handoff` (reason `CART_HANDOFF_REASON`), automation paused, the engine's
-working order and payment keys cleared. A replayed cart (the message row already
-stored) re-runs only this idempotent step, so a crash between the insert and the save
-never loses the order, and a cart already recorded — current or archived — changes
-nothing.
+outbox rows. Its message row is stored as every other (`media_type = 'order'`, in
+0061's list); then the cart becomes the thread's current order
+(`orders.record_cart_order`, keyed on its `wamid`), its retailer ids looked up among
+the receiving brand's Galería products by `cart_product_loader(phone_row_id, ids)`
+(`whatsapp.catalog.load_cart_products_for_phone` in production, one query). The thread
+is handed to a person exactly as a confirmed menu order is: `_handoff` (reason
+`CART_HANDOFF_REASON`), automation paused, the engine's working order and payment keys
+cleared. A replayed cart (the message row already stored) re-runs only this idempotent
+step, so a crash between the insert and the save never loses the order, and a cart
+already recorded — current or archived — changes nothing.
 
 **Replacing an order (m-25018684).** When a confirmation from another message (menu or
 cart) replaces the current order, `orders` archives the previous record under
