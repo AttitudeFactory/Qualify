@@ -131,7 +131,7 @@ def messaging_world():
     )
 
 
-def _promotion(world, channel, *, legacy=False):
+def _promotion(world, channel, *, legacy=False, greeting=None):
     w = world
     target = MessagingTarget(
         "WHATSAPP" if channel == "whatsapp" else "INSTAGRAM_DIRECT",
@@ -162,7 +162,12 @@ def _promotion(world, channel, *, legacy=False):
         source_media_id="777",
         creative={}
         if legacy
-        else target.creative(source_media_id="777", instagram_user_id=w["ig_id"]),
+        else target.creative(
+            source_media_id="777",
+            instagram_user_id=w["ig_id"],
+            page_welcome_message=greeting.page_welcome_message() if greeting else "",
+        ),
+        greeting_snapshot=greeting.snapshot() if greeting else {},
         messaging_snapshot={} if legacy else target.snapshot(),
         adset_options={} if legacy else target.adset_options(),
     )
@@ -491,3 +496,109 @@ async def test_destination_read_is_unknown_on_missing_fields_and_rejects_late_co
             connection_id=w["source"],
             reader=LateReader(),
         )
+
+
+# --- Creating ads that open a chat (m-24828980) ---
+
+
+@pytest.mark.asyncio
+async def test_only_an_exact_page_number_link_offers_whatsapp_with_its_target(messaging_world):
+    w = messaging_world
+
+    class Reader:
+        def __init__(self, payload):
+            self.payload = payload
+
+        async def read_page(self, page_id):
+            return {"id": page_id, **self.payload}
+
+    linked = {"has_whatsapp_number": True, "whatsapp_number": "+58 424 0000000"}
+    with acting_login(w["login"]):
+        instagram, whatsapp = await check_messaging_destinations(
+            tenant_id=w["tenant"], connection_id=w["source"], reader=Reader(linked)
+        )
+        unlinked = await check_messaging_destinations(
+            tenant_id=w["tenant"],
+            connection_id=w["source"],
+            reader=Reader({"has_whatsapp_number": False}),
+        )
+    assert whatsapp.available and whatsapp.target == MessagingTarget(
+        "WHATSAPP", w["source"], w["target"], "7", 1, 1, w["phone_id"], "584240000000"
+    )
+    assert instagram.available and instagram.target.destination_type == "INSTAGRAM_DIRECT"
+    assert not unlinked[1].available and unlinked[1].target is None
+    assert "Vincula el número" in unlinked[1].reason
+
+
+def test_greeting_versions_are_append_only_tenant_scoped_and_idempotent(messaging_world):
+    from qualify_api.ads.messaging_greeting import (
+        GreetingUnavailable,
+        current_greeting,
+        save_greeting,
+    )
+
+    w = messaging_world
+    with acting_login(w["login"]):
+        assert current_greeting(tenant_id=w["tenant"], brand_id=w["brand"]) is None
+        first = save_greeting(
+            tenant_id=w["tenant"],
+            brand_id=w["brand"],
+            welcome_text="¡Hola!",
+            questions=["¿Hacen domicilios?"],
+            expected_version=0,
+        )
+        again = save_greeting(
+            tenant_id=w["tenant"],
+            brand_id=w["brand"],
+            welcome_text=" ¡Hola! ",
+            questions=["¿Hacen domicilios?", ""],
+            expected_version=0,
+        )
+        assert again == first and first.version == 1
+        with pytest.raises(GreetingUnavailable, match="cambió"):
+            save_greeting(
+                tenant_id=w["tenant"],
+                brand_id=w["brand"],
+                welcome_text="Buenas",
+                questions=["¿Precios?"],
+                expected_version=0,
+            )
+        second = save_greeting(
+            tenant_id=w["tenant"],
+            brand_id=w["brand"],
+            welcome_text="Buenas",
+            questions=["¿Precios?"],
+            expected_version=1,
+        )
+        assert second.version == 2
+        assert current_greeting(tenant_id=w["tenant"], brand_id=w["brand"]) == second
+    with tenant_session(w["tenant"]) as s:
+        row = s.execute(
+            text("SELECT created_by,pipeline_version FROM ad_message_greetings WHERE version=1")
+        ).one()
+        assert row.created_by == w["login"] and row.pipeline_version == "ad-message-greeting-v1"
+    with pytest.raises(DBAPIError), tenant_session(w["tenant"]) as s:
+        s.execute(text("UPDATE ad_message_greetings SET welcome_text='x'"))
+    with tenant_session(uuid4()) as s:
+        assert s.execute(text("SELECT count(*) FROM ad_message_greetings")).scalar() == 0
+
+
+def test_promotion_freezes_only_a_saved_greeting_version(messaging_world):
+    from qualify_api.ads.messaging_greeting import save_greeting
+
+    w = messaging_world
+    with acting_login(w["login"]):
+        greeting = save_greeting(
+            tenant_id=w["tenant"],
+            brand_id=w["brand"],
+            welcome_text="¡Hola!",
+            questions=["¿Hacen domicilios?"],
+            expected_version=0,
+        )
+    promotion = _promotion(w, "whatsapp", greeting=greeting)
+    assert promotion.request["greeting_snapshot"] == greeting.snapshot()
+    assert promotion.request["creative"]["page_welcome_message"] == (
+        greeting.page_welcome_message()
+    )
+    with pytest.raises(ValueError, match="greeting"):
+        _promotion(w, "whatsapp", greeting=replace(greeting, welcome_text="No guardado"))

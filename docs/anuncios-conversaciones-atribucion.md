@@ -75,12 +75,65 @@ del negocio a la página en Meta Business Suite. Un campo ausente, error de perm
 o fallo de lectura muestra que **no se pudo comprobar**, nunca que está desvinculado.
 Si hay varios números, queda pendiente elegir y comprobar uno.
 
-Las tarjetas son informativas. **No habilitan crear ni activar anuncios para chats**.
-El contrato normalizado del servidor y la aprobación persistente se prueban con datos
-simulados. Todavía deben comprobarse con Meta los parámetros completos de creación,
-compatibilidad de piezas, permisos, pagos y elegibilidad. Tampoco se añade un editor
-del saludo o de preguntas iniciales del anuncio. Las preguntas y menús existentes
-de los chats conservan su comportamiento.
+Solo una coincidencia explícita y exacta entre página y número ofrece WhatsApp, y la
+tarjeta lleva entonces el destino exacto (`MessagingTarget`) que la promoción congela.
+Instagram Direct usa la misma cuenta de la publicación. Las preguntas y menús
+existentes de los chats conservan su comportamiento.
+
+## Crear y activar anuncios que abren un chat
+
+Tercer objetivo del asistente de promoción, junto al enlace y al formulario
+(`WizardForm.messaging` + `WizardForm.greeting`). Reutiliza el mismo camino: público,
+presupuesto, fechas y permisos de la marca; `validate_only` exacto de los cuatro
+objetos; creación **en pausa** con la recuperación de reclamos existente; vista previa;
+activación solo con la aprobación y el consentimiento explícitos; lectura remota de
+cada campo comparado antes de activar. La comprobación de página y número se repite
+en vivo en la preparación y otra vez al activar: si el número cambió o dejó de estar
+vinculado, no se activa.
+
+| Objeto | Campo y valor | Fuente |
+|---|---|---|
+| Campaña | `objective=OUTCOME_ENGAGEMENT` | SDK 26.0.0 `campaign.py` (`Objective.outcome_engagement`); guías de Meta para WhatsApp e Instagram |
+| Conjunto | `optimization_goal=CONVERSATIONS`, `billing_event=IMPRESSIONS` | SDK 26.0.0 `adset.py`; ambas guías exigen `IMPRESSIONS` |
+| Conjunto | `destination_type=WHATSAPP` / `INSTAGRAM_DIRECT` | SDK 26.0.0 `adset.py` (`DestinationType`) |
+| Conjunto | `promoted_object{page_id, whatsapp_phone_number}` (Instagram: solo `page_id`) | SDK 26.0.0 `adpromotedobject.py`; guías |
+| Creatividad | `object_id` (página), `instagram_user_id`, `source_instagram_media_id`, `call_to_action` | SDK 26.0.0 `adcreative.py`; ejemplo «publicación existente» de ambas guías |
+| Creatividad | WhatsApp: `{"type":"WHATSAPP_MESSAGE","value":{"link":"https://api.whatsapp.com/send","app_destination":"WHATSAPP"}}` | Guía click-to-WhatsApp; `WHATSAPP_MESSAGE` en el enum del SDK |
+| Creatividad | Instagram: `{"type":"INSTAGRAM_MESSAGE","value":{"link":"https://www.instagram.com"}}` | Guía click-to-Instagram (todos sus ejemplos de creatividad) |
+| Creatividad | `page_welcome_message`: texto JSON `VISUAL_EDITOR`, `version=2`, `landing_screen_type=welcome_message`, `media_type=text`, `customer_action_type=ice_breakers`, `message{text, ice_breakers[{title}]}` | Campo y tipo `string`: SDK 26.0.0 `adcreative.py`; estructura: guías de Meta, variante «ice breakers» |
+
+Guías consultadas el 2026-11-13:
+[click-to-WhatsApp](https://developers.facebook.com/docs/marketing-api/ad-creative/messaging-ads/click-to-whatsapp)
+y [click-to-Instagram](https://developers.facebook.com/documentation/ads-commerce/marketing-api/ad-creative/messaging-ads/click-to-instagram).
+SDK: [facebook-python-business-sdk 26.0.0](https://github.com/facebook/facebook-python-business-sdk/tree/26.0.0/facebook_business/adobjects).
+
+**Saludo.** El dueño escribe, por marca, un saludo (hasta 300 caracteres) y de 1 a 4
+preguntas sugeridas (hasta 80 caracteres cada una). Cada guardado es una versión nueva
+e inmutable en `ad_message_greetings` (migración `0164`, RLS forzado, sin `UPDATE`),
+con quién lo escribió, cuándo y la versión del proceso. Guardar el mismo texto no crea
+otra versión; editar sobre una versión vieja se rechaza. La promoción congela la
+versión elegida en `greeting_snapshot`, que entra en el hash de la aprobación; la
+base de datos comprueba que esa versión exista con ese texto exacto. Las promociones
+sin objetivo de chat conservan su instantánea y su hash (prueba fijada). No se envía
+la respuesta automática opcional de cada pregunta: las respuestas siguen siendo
+asistidas.
+
+**Brechas medidas, no supuestas.**
+
+- `INSTAGRAM_MESSAGE` no está en el enum del SDK 26.0.0 (sí `MESSAGE_PAGE`); la guía
+  actual lo usa en todas las creatividades. Lo decide el `validate_only` exacto.
+- Los ejemplos de Meta para **publicaciones existentes** no muestran
+  `page_welcome_message`; el SDK lo admite como campo de nivel superior de la
+  creatividad. Si Meta no lo acepta, el `validate_only` falla y no se crea nada; si lo
+  devuelve distinto al leerlo, no se activa. En el formulario HTTP, un texto JSON y un
+  objeto viajan igual, así que la discrepancia de la guía (objeto o texto) no cambia
+  lo enviado.
+- Los límites de longitud del saludo y las preguntas son de Qualify: Meta no los
+  publica para anuncios (el máximo de 4 preguntas viene de la API de Ice Breakers de
+  Instagram).
+- Una pieza cuyo botón guardado es de chat sigue bloqueada para cualquier objetivo
+  (`PIECE_BUTTON_UNSUPPORTED`); falta decidir si el objetivo de chat la admite.
+- Nada de esto se ha probado contra una cuenta real: no hubo escrituras en Meta.
 
 ## Evidencia y límites
 
@@ -109,4 +162,4 @@ escrituras en Meta durante el desarrollo.
 | Un mensaje con referencia se relaciona con su promoción | Procesadores reales, prueba de propiedad, destino aprobado, persistencia y pruebas de base de datos | Verificación con mensajes publicitarios reales y cuenta autorizada |
 | Avisar si el número no está vinculado a la página | Lectura de la página, comparación exacta y guía; desconocido separado de desvinculado | Validación de permisos y respuesta real de la cuenta del negocio |
 | Mostrar el anuncio de origen en los chats | Procedencia junto al mensaje, texto original y vínculo interno a la promoción; recuento de hilos en resultados | Revisión visual móvil con navegador y prueba de extremo a extremo |
-| Crear anuncios que abren chats | Contrato de destino y aprobación inmutable preparados y comprobados con datos simulados | Creación/activación real, compatibilidad, saludo y preguntas iniciales |
+| Crear anuncios que abren chats | Objetivo de chat en el asistente: validación exacta, creación en pausa, activación con consentimiento, saludo versionado en la aprobación; probado con HTTP simulado | Prueba con cuenta real, pantalla del objetivo y del editor del saludo |

@@ -28,6 +28,8 @@ from qualify_api.connections.ad_accounts import (
 from qualify_api.tenancy.acting import current_acting_login, require_acting_member
 
 READY = "Puedes preparar un anuncio que abra este chat."
+# shortcut: old name kept for Qualify/test_ad_messaging_destinations.py; drop with the screen.
+PENDING = READY
 LINK_GUIDE = (
     "Vincula el número de WhatsApp de este negocio a su página de Facebook en Meta Business Suite. "
     "Después vuelve a comprobarlo aquí."
