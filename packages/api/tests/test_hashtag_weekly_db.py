@@ -9,13 +9,16 @@ per rubro hashtag with the production stores — `PostgresRubroSource`, `Postgre
   lands in `vendor_payloads`, its sightings as `hashtag_weekly` (0163's CHECK);
 - re-running writes no row and books no credit; another business in another country does
   not read the same hashtag again, and a referentes page of it counts as read;
-- the shared tables have no column that could name the business.
+- the shared tables have no column that could name the business;
+- two passes for one business never both read (advisory claim), and `--all-tenants`
+  reads only businesses opened in the last 14 days (the reels worker's rule).
 """
 
 from __future__ import annotations
 
 import json
 import string
+import threading
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
@@ -28,6 +31,7 @@ from sqlalchemy import text
 
 from qualify_api.creators.repository import PostgresCreatorPoolRepository
 from qualify_api.hashtags import PostgresHashtagRepository, weekly
+from qualify_api.referentes.reel_store import PostgresReelRunStore
 from qualify_api.tenancy.models import Brand, Tenant
 from qualify_api.vendors import scrapecreators as sc
 from qualify_api.vendors import usage
@@ -179,7 +183,7 @@ def test_a_tick_books_keeps_and_records_and_a_re_run_does_nothing() -> None:
     }
 
     again = _tick(vendor, [tenant])
-    assert again.outcomes[0].status == weekly.READ_THIS_WEEK
+    assert again.outcomes[0].status == weekly.UP_TO_DATE
     assert len(vendor.requests) == 2
     assert len(_weekly_rows(tenant)) == 2 and _sightings(tenant, [tag, other, co_tag]) == rows
     assert len(_payloads(tenant, tag)) == 1
@@ -191,7 +195,7 @@ def test_another_business_elsewhere_does_not_read_the_same_hashtag_again() -> No
     vendor = Vendor(co_tag)
     report = _tick(vendor, [first, second])
     assert len(vendor.requests) == 1
-    assert report.outcomes[1].shared == [tag] and _weekly_rows(second) == []
+    assert report.outcomes[1].fresh == [tag] and _weekly_rows(second) == []
 
 
 def test_a_referentes_page_of_the_hashtag_this_week_counts_as_read() -> None:
@@ -202,7 +206,7 @@ def test_a_referentes_page_of_the_hashtag_this_week_counts_as_read() -> None:
     )
     vendor = Vendor(_word())
     report = _tick(vendor, [tenant])
-    assert vendor.requests == [] and report.outcomes[0].shared == [tag]
+    assert vendor.requests == [] and report.outcomes[0].fresh == [tag]
 
 
 def test_co_occurring_tags_stay_out_of_the_classification_queue() -> None:
@@ -242,3 +246,53 @@ def test_0163_checks_admit_the_weekly_read_and_nothing_new_besides() -> None:
     assert "'hashtag_weekly'" in checks["ck_hashtag_sighting_source"]
     for feature in sc.FEATURES:
         assert f"'{feature}'" in checks["ck_vendor_usage_feature"], feature
+
+
+def test_two_concurrent_passes_read_a_business_once_across_connections() -> None:
+    """`PostgresClaims`: the second pass finds the advisory lock taken and skips, while
+    the first is inside its request — so 2 tags cost 2 credits, never 4."""
+    tag, other = _word(), _word()
+    tenant = _business([tag, other])
+    vendor = Vendor(_word())
+    entered, release = threading.Event(), threading.Event()
+
+    def slow(request: httpx.Request) -> httpx.Response:
+        entered.set()
+        assert release.wait(10)
+        return vendor.handler(request)
+
+    reports: list[weekly.TickReport] = []
+
+    def one() -> None:
+        reports.append(
+            weekly.run_tick(
+                [tenant],
+                client_factory=lambda: httpx.Client(transport=httpx.MockTransport(slow)),
+                env=ON,
+            )
+        )
+
+    first = threading.Thread(target=one)
+    first.start()
+    assert entered.wait(10)
+    second = threading.Thread(target=one)
+    second.start()
+    second.join(10)
+    release.set()
+    first.join(10)
+    assert sorted(r.outcomes[0].status for r in reports) == [weekly.BUSY, weekly.DONE]
+    assert len(vendor.requests) == 2 and len(_weekly_rows(tenant)) == 2
+
+
+def test_all_tenants_reads_only_businesses_opened_in_the_last_14_days() -> None:
+    now = datetime.now(UTC)
+    opened, stale, never = _business([_word()]), _business([_word()]), _business([_word()])
+    store = PostgresReelRunStore()
+    for tenant, when in ((opened, now - timedelta(days=2)), (stale, now - timedelta(days=20))):
+        with tenant_session(tenant) as session:
+            brand = session.execute(
+                text("SELECT brand_id FROM brand_kit_details LIMIT 1")
+            ).scalar_one()
+        store.mark_opened(tenant, brand, now=when, every=timedelta(0))
+    active = set(weekly.PostgresRubroSource().businesses(None, now=now))
+    assert opened in active and stale not in active and never not in active

@@ -3,11 +3,17 @@
 What it pins, offline (every vendor answer comes from an `httpx.MockTransport`; nothing
 leaves the process):
 
-- the switch is OFF by default and, off, a tick reads nothing — no database, no vendor;
+- the switch is OFF by default; off — or the gate's switch off, or no vendor key — a tick
+  reads nothing and books nothing, before it looks at any business;
 - each read goes through the metered gate, charged to the business under the feature
-  `hashtag_weekly`, and the business's cap stops it;
-- a hashtag read in the last 7 days by ANY business is not read again, and what is
-  shared records no business;
+  `hashtag_weekly`; the business's cap stops it, and above 2/3 of the daily cap or 5/6 of
+  the monthly one the read waits (headroom for the owner);
+- the week is a KEPT answer, never a booking: a hashtag kept in the last 7 days by ANY
+  business is not read again, and what is shared records no business;
+- a pass stops at its first failure, and a business is attempted at most once a day;
+- two passes for the same business never read at once (the claim);
+- only pills the catalog accepts are read, without spending a slot on the others;
+- `--all-tenants` reads only the businesses the reels worker treats as active;
 - only Spanish videos of the last 90 days count (a real answer, trimmed and anonymized);
 - the raw answer is kept and re-parses to the same sightings;
 - re-running the same tick writes no duplicate row and charges nothing twice;
@@ -19,6 +25,7 @@ from __future__ import annotations
 
 import json
 import string
+import threading
 from dataclasses import fields
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -32,8 +39,9 @@ from qualify_api.hashtags import MemoryHashtagRepository, weekly
 from qualify_api.hashtags import catalog as hashtag_catalog
 from qualify_api.hashtags import worker as weekly_worker
 from qualify_api.hashtags.repository import NewPostSighting
+from qualify_api.referentes.reel_schedule import ScheduledBrand
 from qualify_api.vendors import scrapecreators as sc
-from qualify_api.vendors import usage
+from qualify_api.vendors import uncapped, usage
 
 from .test_hashtag_sightings import _Account, _Post, _seed
 
@@ -87,19 +95,21 @@ def _answer(tag: str, *, co_tag: str = "") -> dict[str, Any]:
 
 class Vendor:
     """The fake ScrapeCreators: answers `search/hashtag` from `answers`, records every
-    request it was sent."""
+    request it was sent; `status` != 200 answers every request with that status."""
 
     def __init__(self, answers: dict[str, Any] | None = None, status: int = 200) -> None:
         self.answers = answers or {}
         self.status = status
         self.requests: list[httpx.Request] = []
+        self._lock = threading.Lock()
 
     def handler(self, request: httpx.Request) -> httpx.Response:
-        self.requests.append(request)
+        with self._lock:
+            self.requests.append(request)
         assert request.url.path == weekly.PATH
         tag = request.url.params["hashtag"]
         if self.status != 200:
-            return httpx.Response(self.status, json={"success": False, "error": "not_found"})
+            return httpx.Response(self.status, json={"success": False, "error": "nope"})
         return httpx.Response(200, json=self.answers.get(tag) or _answer(tag))
 
     def client(self) -> httpx.Client:
@@ -111,7 +121,7 @@ class Vendor:
 
 @pytest.fixture(autouse=True)
 def _api_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("SCRAPECREATORS_API_KEY", "test-key-not-real")
+    monkeypatch.setenv(weekly.API_KEY_ENV, "test-key-not-real")
 
 
 def _ledger() -> usage.InMemoryUsageStore:
@@ -133,6 +143,7 @@ def _tick(
     now: datetime | None = None,
     env: dict[str, str] | None = None,
     source: weekly.MemoryRubroSource | None = None,
+    claims: weekly.MemoryClaims | None = None,
 ) -> tuple[weekly.TickReport, weekly.MemoryReadLog, MemoryHashtagRepository]:
     log = log or weekly.MemoryReadLog(_ledger())
     repo = repo or MemoryHashtagRepository()
@@ -142,6 +153,7 @@ def _tick(
         source=source,
         log=log,
         repository=repo,
+        claims=claims or weekly.MemoryClaims(),
         client_factory=vendor.client,
         now=now,
         env=ON if env is None else env,
@@ -153,7 +165,22 @@ def _weekly_events(tenant: UUID) -> list[usage.UsageEvent]:
     return [e for e in _ledger().of(tenant) if e.feature == sc.FEATURE_HASHTAG_WEEKLY]
 
 
-# -- the switch (acceptance 6) -----------------------------------------------------------
+def _spend(tenant: UUID, credits: int, at: datetime | None = None) -> None:
+    event = usage.UsageEvent(
+        tenant,
+        None,
+        usage.SCRAPECREATORS,
+        sc.FEATURE_SEARCH,
+        credits,
+        usage.usd_per_credit() * credits,
+        usage.PRICING_TABLE_VERSION,
+        f"k:{uuid4()}",
+        created_at=at,
+    )
+    assert _ledger().book(event, capped=False) is None
+
+
+# -- the switches and the key (acceptance 6, review item 1) ------------------------------
 
 
 @pytest.mark.parametrize("env", [{}, {weekly.SWITCH_ENV: ""}, {weekly.SWITCH_ENV: "0"}])
@@ -161,7 +188,7 @@ def test_with_the_switch_off_nothing_is_read_or_paid(env: dict[str, str]) -> Non
     vendor = Vendor()
     business = _business("shawarma")
     source = weekly.MemoryRubroSource({business.tenant_id: business})
-    report, log, repo = _tick(vendor, [business], env=env, source=source)
+    report, log, _ = _tick(vendor, [business], env=env, source=source)
     assert report.stopped == "switch_off" and report.outcomes == []
     assert vendor.requests == [] and source.reads == 0
     assert _ledger().of(business.tenant_id) == [] and log.answers == {}
@@ -173,16 +200,28 @@ def test_the_switch_is_off_unless_said_on() -> None:
     assert weekly.switch_on({weekly.SWITCH_ENV: " TRUE "})
 
 
-def test_the_gate_kill_switch_still_stops_the_weekly_read(
+def test_with_the_gate_switch_off_nothing_is_looked_at_or_booked(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv(sc.PAID_SWITCH_ENV, "0")
     vendor = Vendor()
-    first, second = _business("shawarma"), _business("falafel")
-    report, _, _ = _tick(vendor, [first, second])
-    assert vendor.requests == []
-    assert report.stopped == "switch_off"  # a global refusal stops the whole pass
-    assert [o.status for o in report.outcomes] == [weekly.BLOCKED]
+    business = _business("shawarma", "falafel")
+    source = weekly.MemoryRubroSource({business.tenant_id: business})
+    report, _, _ = _tick(vendor, [business], source=source)
+    assert report.stopped == "paid_off" and report.outcomes == []
+    assert vendor.requests == [] and source.reads == 0 and _ledger().events == []
+
+
+def test_without_the_vendor_key_nothing_is_looked_at_or_booked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(weekly.API_KEY_ENV)
+    vendor = Vendor()
+    businesses = [_business("a1", "b1", "c1", "d1", "e1") for _ in range(3)]
+    source = weekly.MemoryRubroSource({b.tenant_id: b for b in businesses})
+    report, _, _ = _tick(vendor, businesses, source=source)
+    assert report.stopped == "no_key" and report.outcomes == []
+    assert vendor.requests == [] and source.reads == 0 and _ledger().events == []
 
 
 # -- charged to the business, under its own feature (acceptance 1) -----------------------
@@ -191,7 +230,7 @@ def test_the_gate_kill_switch_still_stops_the_weekly_read(
 def test_each_read_is_charged_to_its_business_under_hashtag_weekly() -> None:
     vendor = Vendor()
     business = _business("shawarma", "falafel", country="VE")
-    report, log, repo = _tick(vendor, [business])
+    report, _, _ = _tick(vendor, [business])
     (outcome,) = report.outcomes
     assert outcome.status == weekly.DONE and outcome.read == ["shawarma", "falafel"]
     assert vendor.tags() == ["shawarma", "falafel"]
@@ -222,18 +261,12 @@ def test_at_most_five_tags_are_read_per_business() -> None:
 def test_the_business_cap_stops_its_read_before_any_call() -> None:
     vendor = Vendor()
     business = _business("shawarma", "falafel")
-    spent = usage.UsageEvent(
-        business.tenant_id,
-        None,
-        usage.SCRAPECREATORS,
-        sc.FEATURE_SEARCH,
-        usage.DAILY_CAP - 1,
-        usage.usd_per_credit(),
-        usage.PRICING_TABLE_VERSION,
-        f"k:{uuid4()}",
-    )
-    assert _ledger().book(spent, capped=True) is None
-    report, _, _ = _tick(vendor, [business])
+    uncapped.set_uncapped_reads(business.tenant_id, False, set_by="test")
+    _spend(business.tenant_id, usage.DAILY_CAP - 1)
+    # 149 spent is over the headroom; exempt only the headroom here to reach the cap
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(weekly, "has_headroom", lambda tenant, now: True)
+        report, _, _ = _tick(vendor, [business])
     (outcome,) = report.outcomes
     # one credit left today: the first read fits, the second is refused before leaving
     assert vendor.tags() == ["shawarma"]
@@ -241,22 +274,56 @@ def test_the_business_cap_stops_its_read_before_any_call() -> None:
     assert len(_weekly_events(business.tenant_id)) == 1
 
 
-def test_a_capped_business_does_not_stop_the_next_one() -> None:
+# -- headroom for the owner (UX review) --------------------------------------------------
+
+
+def test_the_thresholds_are_shares_of_the_caps() -> None:
+    assert weekly.DAILY_HEADROOM == 100 and weekly.MONTHLY_HEADROOM == 500
+    assert weekly.DAILY_HEADROOM == usage.DAILY_CAP * 2 // 3
+    assert weekly.MONTHLY_HEADROOM == usage.MONTHLY_CAP * 5 // 6
+
+
+@pytest.mark.parametrize(("spent", "reads"), [(100, True), (101, False)])
+def test_more_than_two_thirds_of_the_daily_cap_spent_waits(spent: int, reads: bool) -> None:
     vendor = Vendor()
-    capped, fine = _business("shawarma"), _business("falafel")
-    full = usage.UsageEvent(
-        capped.tenant_id,
-        None,
-        usage.SCRAPECREATORS,
-        sc.FEATURE_SEARCH,
-        usage.DAILY_CAP,
-        usage.usd_per_credit(),
-        usage.PRICING_TABLE_VERSION,
-        f"k:{uuid4()}",
-    )
-    _ledger().book(full, capped=True)
-    report, _, _ = _tick(vendor, [capped, fine])
-    assert [o.status for o in report.outcomes] == [weekly.CAPPED, weekly.DONE]
+    business = _business("shawarma")
+    _spend(business.tenant_id, spent)
+    report, _, _ = _tick(vendor, [business])
+    assert bool(vendor.requests) is reads
+    if not reads:
+        assert report.outcomes[0].status == weekly.NO_HEADROOM
+        assert _weekly_events(business.tenant_id) == []  # a skip books nothing
+
+
+@pytest.mark.parametrize(("spent", "reads"), [(500, True), (501, False)])
+def test_more_than_five_sixths_of_the_monthly_cap_spent_waits(spent: int, reads: bool) -> None:
+    business = _business("shawarma")
+    mid_month = datetime(2030, 1, 20, 15, tzinfo=UTC)
+    # spent ten days earlier in the same month: nothing of it today
+    _spend(business.tenant_id, spent, at=datetime(2030, 1, 10, 15, tzinfo=UTC))
+    assert weekly.has_headroom(business.tenant_id, mid_month) is reads
+    if not reads:
+        vendor = Vendor()
+        report, _, _ = _tick(vendor, [business], now=mid_month)
+        assert vendor.requests == [] and report.outcomes[0].status == weekly.NO_HEADROOM
+        assert _weekly_events(business.tenant_id) == []
+
+
+def test_a_business_exempt_from_the_cap_is_not_held_back_by_the_headroom() -> None:
+    vendor = Vendor()
+    business = _business("shawarma")
+    uncapped.set_uncapped_reads(business.tenant_id, True, set_by="test")
+    _spend(business.tenant_id, usage.DAILY_CAP + 50)
+    report, _, _ = _tick(vendor, [business])
+    assert vendor.tags() == ["shawarma"] and report.outcomes[0].status == weekly.DONE
+
+
+def test_a_headroom_skip_does_not_stop_the_next_business() -> None:
+    vendor = Vendor()
+    busy, fine = _business("shawarma"), _business("falafel")
+    _spend(busy.tenant_id, usage.DAILY_CAP)
+    report, _, _ = _tick(vendor, [busy, fine])
+    assert [o.status for o in report.outcomes] == [weekly.NO_HEADROOM, weekly.DONE]
     assert vendor.tags() == ["falafel"]
 
 
@@ -266,9 +333,9 @@ def test_a_capped_business_does_not_stop_the_next_one() -> None:
 def test_a_hashtag_read_this_week_by_another_business_is_not_read_again() -> None:
     vendor = Vendor()
     first, second = _business("shawarma"), _business("shawarma", "falafel", country="UY")
-    report, log, _ = _tick(vendor, [first, second])
+    report, _, _ = _tick(vendor, [first, second])
     assert vendor.tags() == ["shawarma", "falafel"]  # «shawarma» once, whatever the region
-    assert report.outcomes[1].shared == ["shawarma"] and report.outcomes[1].read == ["falafel"]
+    assert report.outcomes[1].fresh == ["shawarma"] and report.outcomes[1].read == ["falafel"]
     assert len(_weekly_events(second.tenant_id)) == 1
 
 
@@ -296,10 +363,184 @@ def test_what_is_shared_names_no_business() -> None:
 def test_a_hashtag_read_more_than_a_week_ago_is_read_again() -> None:
     vendor = Vendor()
     log = weekly.MemoryReadLog(_ledger())
-    _tick(vendor, [_business("shawarma")], log=log)
+    business = _business("shawarma")
+    _tick(vendor, [business], log=log)
     later = datetime.now(UTC) + timedelta(days=8)
-    _tick(vendor, [_business("shawarma")], log=log, now=later)
+    report, _, _ = _tick(vendor, [business], log=log, now=later)
     assert vendor.tags() == ["shawarma", "shawarma"]
+    assert report.outcomes[0].status == weekly.DONE
+
+
+# -- failures: stop at the first, one attempt a day (review item 1) -----------------------
+
+
+def test_a_failing_vendor_costs_one_credit_and_is_not_retried_the_same_day() -> None:
+    vendor = Vendor(status=500)
+    business = _business("a1", "b1", "c1", "d1", "e1")
+    log = weekly.MemoryReadLog(_ledger())
+    report, _, _ = _tick(vendor, [business], log=log)
+    (outcome,) = report.outcomes
+    assert vendor.tags() == ["a1"]  # stopped at the first failure
+    assert outcome.status == weekly.FAILED and outcome.errors == 1 and log.answers == {}
+    assert len(_weekly_events(business.tenant_id)) == 1
+
+    for hours in (1, 12, 23):  # the hourly passes of the same day
+        again, _, _ = _tick(
+            vendor, [business], log=log, now=datetime.now(UTC) + timedelta(hours=hours)
+        )
+        assert again.outcomes[0].status == weekly.TRIED_TODAY
+    assert len(vendor.requests) == 1
+
+    _tick(vendor, [business], log=log, now=datetime.now(UTC) + timedelta(hours=25))
+    assert vendor.tags() == ["a1", "a1"]  # the next day, one more attempt
+
+
+def test_a_failure_mid_way_leaves_the_rest_for_the_next_day() -> None:
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        tag = request.url.params["hashtag"]
+        calls.append(tag)
+        if tag == "roto":
+            return httpx.Response(500, json={"error": "boom"})
+        return httpx.Response(200, json=_answer(tag))
+
+    business = _business("sano", "roto", "otro")
+    log = weekly.MemoryReadLog(_ledger())
+
+    def tick(now: datetime) -> weekly.TickReport:
+        return weekly.run_tick(
+            [business.tenant_id],
+            source=weekly.MemoryRubroSource({business.tenant_id: business}),
+            log=log,
+            repository=MemoryHashtagRepository(),
+            claims=weekly.MemoryClaims(),
+            client_factory=lambda: httpx.Client(transport=httpx.MockTransport(handler)),
+            now=now,
+            env=ON,
+        )
+
+    first = tick(datetime.now(UTC))
+    assert calls == ["sano", "roto"]
+    assert first.outcomes[0].read == ["sano"] and first.outcomes[0].status == weekly.FAILED
+    second = tick(datetime.now(UTC) + timedelta(hours=25))
+    assert calls == ["sano", "roto", "roto"]  # «sano» is kept for the week
+    assert second.outcomes[0].fresh == ["sano"]
+
+
+def test_a_booking_without_a_kept_answer_is_not_the_week() -> None:
+    """A pass that died after paying: the booking holds the business for the day only;
+    the hashtag is read the next day because no answer was kept."""
+    business = _business("shawarma", "falafel")
+    booked = usage.UsageEvent(
+        business.tenant_id,
+        business.brand_id,
+        usage.SCRAPECREATORS,
+        sc.FEATURE_HASHTAG_WEEKLY,
+        1,
+        usage.usd_per_credit(),
+        usage.PRICING_TABLE_VERSION,
+        f"k:{uuid4()}",
+    )
+    _ledger().book(booked, capped=True)
+    vendor = Vendor()
+    report, log, _ = _tick(vendor, [business])
+    assert vendor.requests == [] and report.outcomes[0].status == weekly.TRIED_TODAY
+    _tick(vendor, [business], log=log, now=datetime.now(UTC) + timedelta(hours=25))
+    assert vendor.tags() == ["shawarma", "falafel"]
+
+
+# -- one pass at a time per business (review item 2) -------------------------------------
+
+
+def test_two_concurrent_passes_read_a_business_once() -> None:
+    entered, release = threading.Event(), threading.Event()
+    vendor = Vendor()
+
+    def slow(request: httpx.Request) -> httpx.Response:
+        entered.set()
+        assert release.wait(5)
+        return vendor.handler(request)
+
+    business = _business("shawarma", "falafel")
+    log, claims = weekly.MemoryReadLog(_ledger()), weekly.MemoryClaims()
+    reports: list[weekly.TickReport] = []
+
+    def one() -> None:
+        reports.append(
+            weekly.run_tick(
+                [business.tenant_id],
+                source=weekly.MemoryRubroSource({business.tenant_id: business}),
+                log=log,
+                repository=MemoryHashtagRepository(),
+                claims=claims,
+                client_factory=lambda: httpx.Client(transport=httpx.MockTransport(slow)),
+                env=ON,
+            )
+        )
+
+    first = threading.Thread(target=one)
+    first.start()
+    assert entered.wait(5)  # the first pass is inside its first request
+    second = threading.Thread(target=one)
+    second.start()
+    second.join(5)
+    release.set()
+    first.join(5)
+    assert sorted(r.outcomes[0].status for r in reports) == [weekly.BUSY, weekly.DONE]
+    assert vendor.tags() == ["shawarma", "falafel"]
+    assert len(_weekly_events(business.tenant_id)) == 2
+
+
+# -- pills the catalog would refuse (review item 3) --------------------------------------
+
+
+@pytest.mark.parametrize(
+    "bad", ["🍔", "c++", "...", "x" * 300, "#", "dos palabras", "_", "a.b", "", None, 7]
+)
+def test_a_pill_the_catalog_would_refuse_is_never_read(bad: object) -> None:
+    assert weekly.readable_tag(bad) is None
+    connect = {"hashtags": [{"tag": bad}, *({"tag": f"t{i}"} for i in range(5))]}
+    assert weekly.rubro_tags(connect) == ("t0", "t1", "t2", "t3", "t4")  # no slot taken
+    vendor = Vendor()
+    _tick(vendor, [weekly.business_rubro(uuid4(), [(uuid4(), connect)])])
+    assert vendor.tags() == ["t0", "t1", "t2", "t3", "t4"]
+
+
+def test_readable_tags_keep_accents_digits_and_the_length_cap() -> None:
+    assert weekly.readable_tag("#Arepería") == "arepería"
+    assert weekly.readable_tag("pizza_24h") == "pizza_24h"
+    assert weekly.readable_tag("x" * weekly.MAX_TAG_LENGTH) == "x" * weekly.MAX_TAG_LENGTH
+    assert weekly.readable_tag("x" * (weekly.MAX_TAG_LENGTH + 1)) is None
+
+
+# -- only active businesses in production (review item 4) --------------------------------
+
+
+class _Opened:
+    def __init__(self, brands: list[ScheduledBrand]) -> None:
+        self.brands = brands
+        self.since: list[datetime] = []
+
+    def opened_brands(self, *, since: datetime) -> list[ScheduledBrand]:
+        self.since.append(since)
+        return [b for b in self.brands if b.last_opened_at >= since]
+
+
+def test_all_tenants_reads_only_businesses_the_reels_worker_treats_as_active() -> None:
+    now = datetime(2026, 11, 13, 12, tzinfo=UTC)
+    active, stale = uuid4(), uuid4()
+    queue = _Opened(
+        [
+            ScheduledBrand(active, uuid4(), "America/Bogota", now - timedelta(days=3)),
+            ScheduledBrand(active, uuid4(), "America/Bogota", now - timedelta(days=1)),
+            ScheduledBrand(stale, uuid4(), "America/Bogota", now - timedelta(days=15)),
+        ]
+    )
+    source = weekly.PostgresRubroSource(queue=queue)
+    assert source.businesses(None, now=now) == [active]
+    explicit = [stale, stale]
+    assert source.businesses(explicit, now=now) == [stale]  # --tenant is the operator's
 
 
 # -- the filter: Spanish, last 90 days (acceptance 3) ------------------------------------
@@ -363,35 +604,14 @@ def test_the_raw_answer_is_kept_and_re_parses_to_the_same_sightings() -> None:
 def test_an_empty_search_is_kept_as_read_and_writes_nothing() -> None:
     vendor = Vendor(status=404)
     log = weekly.MemoryReadLog(_ledger())
-    report, _, repo = _tick(vendor, [_business("nadie")], log=log)
+    business = _business("nadie")
+    report, _, repo = _tick(vendor, [business], log=log)
     (kept,) = log.answers.values()
     assert kept.status == 404 and report.outcomes[0].read == ["nadie"]
-    assert repo._sightings == {}  # noqa: SLF001
-    _tick(vendor, [_business("nadie")], log=log)
+    assert report.outcomes[0].status == weekly.DONE and repo._sightings == {}  # noqa: SLF001
+    again, _, _ = _tick(vendor, [business], log=log, now=datetime.now(UTC) + timedelta(days=2))
     assert len(vendor.requests) == 1  # a 404 is an answer: not asked again this week
-
-
-def test_a_vendor_failure_is_counted_and_the_next_tag_still_runs() -> None:
-    calls: list[str] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        tag = request.url.params["hashtag"]
-        calls.append(tag)
-        if tag == "roto":
-            return httpx.Response(500, json={"error": "boom"})
-        return httpx.Response(200, json=_answer(tag))
-
-    business = _business("roto", "sano")
-    report = weekly.run_tick(
-        [business.tenant_id],
-        source=weekly.MemoryRubroSource({business.tenant_id: business}),
-        log=weekly.MemoryReadLog(_ledger()),
-        repository=MemoryHashtagRepository(),
-        client_factory=lambda: httpx.Client(transport=httpx.MockTransport(handler)),
-        env=ON,
-    )
-    assert calls == ["roto", "sano"]
-    assert report.outcomes[0].errors == 1 and report.outcomes[0].read == ["sano"]
+    assert again.outcomes[0].status == weekly.UP_TO_DATE
 
 
 # -- idempotency (acceptance 5) ----------------------------------------------------------
@@ -406,29 +626,9 @@ def test_re_running_the_same_tick_writes_nothing_twice_and_charges_nothing_twice
     rows, events = dict(repo._sightings), list(_ledger().events)  # noqa: SLF001
     second, _, _ = _tick(vendor, [business], log=log, repo=repo, now=now)
     assert len(vendor.requests) == 2  # the first tick's two reads, nothing more
-    assert second.outcomes[0].status == weekly.READ_THIS_WEEK
+    assert second.outcomes[0].status == weekly.UP_TO_DATE
     assert repo._sightings == rows and _ledger().events == events  # noqa: SLF001
     assert first.outcomes[0].sightings == len(rows)
-
-
-def test_a_business_that_paid_this_week_is_skipped_even_after_a_crash() -> None:
-    """The booking is written before the request leaves: a run that died after paying
-    for the first tag charges nothing more that week."""
-    business = _business("shawarma", "falafel")
-    booked = usage.UsageEvent(
-        business.tenant_id,
-        business.brand_id,
-        usage.SCRAPECREATORS,
-        sc.FEATURE_HASHTAG_WEEKLY,
-        1,
-        usage.usd_per_credit(),
-        usage.PRICING_TABLE_VERSION,
-        f"k:{uuid4()}",
-    )
-    _ledger().book(booked, capped=True)
-    vendor = Vendor()
-    report, _, _ = _tick(vendor, [business])
-    assert vendor.requests == [] and report.outcomes[0].status == weekly.READ_THIS_WEEK
 
 
 def test_a_business_without_rubro_hashtags_is_never_read() -> None:
@@ -501,9 +701,10 @@ def test_the_cli_runs_one_pass_for_the_given_tenant() -> None:
     assert seen[-1] is None
 
 
-def test_the_cli_fails_a_pass_with_errors_or_a_global_stop() -> None:
+@pytest.mark.parametrize("stopped", ["below_floor", "no_key"])
+def test_the_cli_fails_a_pass_with_errors_or_a_global_stop(stopped: str) -> None:
     tenant = str(uuid4())
     broken = weekly.TickReport([weekly.BusinessOutcome(uuid4(), weekly.DONE, errors=1)])
     assert weekly_worker.main(["--tenant", tenant, "--once"], tick=lambda ids: broken) == 1
-    stopped = weekly.TickReport(stopped="below_floor")
-    assert weekly_worker.main(["--tenant", tenant, "--once"], tick=lambda ids: stopped) == 1
+    report = weekly.TickReport(stopped=stopped)
+    assert weekly_worker.main(["--tenant", tenant, "--once"], tick=lambda ids: report) == 1

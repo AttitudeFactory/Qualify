@@ -8,14 +8,16 @@ Scope is MANDATORY and explicit, like every worker here:
 - `--tenant <uuid>` (repeatable): exactly those businesses. Use it locally — with
   `QUALIFY_HASHTAG_WEEKLY_READ=1` a pass PAYS ScrapeCreators FOR REAL (one credit per
   hashtag read; `QUALIFY_SCRAPECREATORS_PAID=0` makes the gate refuse every read).
-- `--all-tenants`: the production scope — every business, ids discovered through
-  `admin_session`.
+- `--all-tenants`: the production scope — every ACTIVE business (a brand opened in the
+  last 14 days), read through the reels worker's own door (`PostgresReelQueue`), so the
+  process needs `QUALIFY_REELS_WORKER_DSN` like the reels worker.
 
-Modes: `--once` runs one pass and exits (0, or 1 when a business failed or a global gate
-refusal stopped the pass); by default a pass every `--interval` seconds (3600) until
-SIGTERM / Ctrl+C. Passing often is safe and free: a business already read this week and
-a hashtag anyone read this week are skipped before any call, so each business pays at
-most once per seven days. With the switch off every pass returns at once.
+Modes: `--once` runs one pass and exits (0, or 1 when a business failed, the vendor key
+is missing or a global gate refusal stopped the pass); by default a pass every
+`--interval` seconds (3600) until SIGTERM / Ctrl+C. Passing often is safe and free: a
+hashtag with a kept answer from this week is never read again, and a business is
+attempted at most once a day (`weekly` module docstring). With a switch off or no key
+every pass returns at once, booking nothing.
 """
 
 from __future__ import annotations
@@ -54,15 +56,10 @@ def run_loop(
         except Exception:  # noqa: BLE001 - logged; the loop goes on
             logger.exception("hashtags.worker.pass_failed")
         if once:
-            failed = (
-                report is None
-                or report.errors > 0
-                or report.stopped
-                not in (
-                    None,
-                    "switch_off",
-                )
-            )
+            # a switch turned off on purpose is not a failure; a missing key or a gate
+            # refusal (floor, 402) is
+            deliberate = (None, "switch_off", "paid_off")
+            failed = report is None or report.errors > 0 or report.stopped not in deliberate
             return 1 if failed else 0
         if stop.wait(interval):
             return 0

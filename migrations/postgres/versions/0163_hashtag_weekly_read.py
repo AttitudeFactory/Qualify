@@ -22,15 +22,24 @@ to that business's cap. Two CHECKs widen; no table, column, grant or policy is a
   tenant, no brand, no user, nothing that says which business triggered a read.
 
 The raw answers go to `vendor_payloads` (0036), which already admits any path: no change.
+That table is upserted on path + parameters, so each week's read REPLACES the previous one
+for the same hashtag and region (and shares the row with the referentes search's cache of
+the same first page): only the latest read of each can be re-parsed.
 
 ## Downgrade
 
 Puts back both CHECKs exactly as 0125 and 0162 created them (validated). To do so it first
-**deletes** the rows that only the wider CHECKs admit: the `hashtag_weekly` bookings of
-`vendor_usage_events` (kept, they would break 0125's own downgrade, which validates its
-seven-feature CHECK — the same reason 0125 gives) and the `hashtag_weekly` sightings. What
-the weekly reads cost each business is lost; the sightings are derived and can be rebuilt
-from the raw answers, which stay in `vendor_payloads`.
+**deletes** the rows that only the wider CHECKs admit — the same precedent as 0125:
+
+- the `hashtag_weekly` bookings of `vendor_usage_events` (kept, they would break 0125's
+  own downgrade, which validates its nine-feature CHECK). What the weekly reads cost each
+  business is lost, so its caps undercount that day and month; and the once-a-day hold
+  of a failed attempt goes with them. After a downgrade and re-upgrade within the same
+  week, a hashtag whose answer is still in `vendor_payloads` is not paid again, but one
+  whose read had failed may be attempted — and paid — again at once;
+- the `hashtag_weekly` sightings. They are derived: those of the latest read of each
+  hashtag can be rebuilt from `vendor_payloads`, which the downgrade does not touch;
+  those of earlier weeks cannot (their answers were replaced).
 """
 
 from __future__ import annotations

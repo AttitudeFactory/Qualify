@@ -54,7 +54,17 @@ que el dueño tenga que investigarlas y sin subir el costo. Qualify sugiere; el 
 - Desde el PR #647, el editor usa `resolve_popular`: las sugerencias del catálogo y la lista que
   recibe «Sugerir con IA» van primero con las etiquetas más vistas en los últimos 90 días.
 - Entrega 3 (este PR, m-25026378): la lectura semanal en TikTok (`qualify_api/hashtags/weekly.py`,
-  migración 0163), apagada hasta encender `QUALIFY_HASHTAG_WEEKLY_READ`.
+  migración 0163), apagada hasta encender `QUALIFY_HASHTAG_WEEKLY_READ`. Una etiqueta con una
+  respuesta guardada en los últimos 7 días no se vuelve a leer; un negocio se intenta como mucho
+  una vez al día; se detiene en el primer error; deja margen al dueño (no lee si el negocio ya
+  gastó más de dos tercios de su tope del día o cinco sextos del mes); en producción solo lee
+  negocios con una marca abierta en los últimos 14 días. Peor caso por negocio: 25 créditos al
+  mes si todo va bien, 31 si el proveedor falla todo el mes.
+- La respuesta cruda se guarda en `vendor_payloads`, que guarda una fila por ruta y parámetros:
+  cada semana reemplaza a la anterior de la misma etiqueta y país, y comparte esa fila con la
+  memoria de las búsquedas de referentes. Por eso las vistas y fechas solo se pueden reconstruir
+  desde la lectura más reciente; las de semanas anteriores quedan en `hashtag_post_sightings`
+  pero no se pueden volver a leer.
 
 ## 3. Evidencia
 

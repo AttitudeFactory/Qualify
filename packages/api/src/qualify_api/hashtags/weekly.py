@@ -10,32 +10,49 @@ rubro's videos carry this week. The worker CLI is `qualify_api.hashtags.worker`.
 **Where the hashtags come from.** The ones the owner keeps on «Tu rubro y ubicación»
 (`brand_kit_details.connect.hashtags`, the pills of the Brand Kit's connect flow — the
 same ones the referentes search runs with), in the order they were chosen, the first
-five. A business without pills is not read: Qualify never guesses a rubro to pay for.
+five the catalog would accept (`readable_tag`; a pill it would refuse is skipped and does
+not take a slot). A business without pills is not read: Qualify never guesses a rubro to
+pay for. In production (`--all-tenants`) only the businesses the reels worker treats as
+active are read: a brand opened in the last 14 days (`reel_schedule.is_active` over
+`PostgresReelQueue.opened_brands`, ADR 42 §2.6).
 
 **Who pays, and how often** (ADR 42). Every read goes through the metered gate
 (`vendors.scrapecreators.metered_get`), charged to the business it was read for under
 the feature `hashtag_weekly` — its 150/600 caps, the 500-credit floor, the kill switch
-and the 402 stop all apply. Two rules keep it to «once a week, never twice»:
+and the 402 stop all apply. The rules, checked in this order under a per-business claim
+(`Claims`: a non-blocking advisory lock, so two passes never read for the same business
+at once):
 
-- **per business:** a business with a `hashtag_weekly` booking in the last
-  `REREAD_AFTER` is skipped whole. The booking is written before the request leaves, so
-  a re-run — or a run after a crash mid-way — charges nothing again that week (the price
-  of a crash is the rest of that week's tags, never a second charge);
-- **per hashtag, across businesses:** a hashtag whose answer is already in
-  `vendor_payloads` (0036) from the last `REREAD_AFTER`, for any region and whoever
-  asked — another business's weekly read or a referentes search page — is not read
-  again. That table holds no tenant, so the shared answer never says who triggered it.
+1. **The week is a kept answer.** A hashtag whose answer is in `vendor_payloads` (0036)
+   from the last `REREAD_AFTER` — for any region and whoever asked: this read for
+   another business, a referentes search page — is not read again. A clean «nothing
+   indexed» (HTTP 404) is kept as an answer too. A booking alone never counts as read.
+2. **One attempt a day.** A business with a `hashtag_weekly` booking in the last
+   `RETRY_AFTER` (24 h) is not attempted again: that booking was a pass that failed, was
+   capped or was cut short. It is how a failure is remembered without a new table — the
+   gate books before the request leaves, so every attempt leaves its row.
+3. **Headroom for the owner.** A business (not exempt from the cap) that already spent
+   more than `DAILY_HEADROOM` of its daily cap or `MONTHLY_HEADROOM` of its monthly one
+   is skipped for now, booking nothing: what is left is for the searches it asks for.
+4. **Stop at the first failure.** A pass stops on its first error that is not a clean
+   «no results» answer; the remaining tags wait for the next day's attempt.
 
-**Switch.** `QUALIFY_HASHTAG_WEEKLY_READ` is OFF unless set to 1/true/on/yes: with it
-off a tick reads nothing at all — no database, no vendor. The gate's own
-`QUALIFY_SCRAPECREATORS_PAID` still stops every paid read when it is off.
+Worst case per business: healthy, each of 5 hashtags once per 7 days = at most 25 credits
+in a 31-day month (22 on average); vendor failing all month, one failed call a day = 31.
 
-**What is kept.** The vendor's raw answer, whole, in `vendor_payloads` (keyed by path and
-the call's parameters, upserted: the newest read of the same parameters replaces the
-older one) — `parse_videos` re-reads it at any time without paying. The sightings carry
-`source='hashtag_weekly'`, `source_ref='tiktok:hashtag_weekly'` (the kind of read, never
-the hashtag nor the business) and `parser_version=PARSER_VERSION`; the post id is the
-source id.
+**Switches.** `QUALIFY_HASHTAG_WEEKLY_READ` is OFF unless set to 1/true/on/yes; with it
+off — or with the gate's `QUALIFY_SCRAPECREATORS_PAID` off, or no
+`SCRAPECREATORS_API_KEY` — a tick reads nothing and books nothing, before it looks at any
+business.
+
+**What is kept.** The vendor's raw answer, whole, in `vendor_payloads`, upserted on path +
+parameters (the rule of 0036): each week's read replaces the previous one for the same
+hashtag and region, and it shares that row with the referentes search's cache of the
+same first page. So only the LATEST read can be re-parsed (`parse_videos`); the sightings
+of earlier weeks stay in `hashtag_post_sightings` but cannot be rebuilt from a stored
+answer. The sightings carry `source='hashtag_weekly'`, `source_ref='tiktok:hashtag_weekly'`
+(the kind of read, never the hashtag nor the business) and `parser_version`; the post id
+is the source id.
 
 **Filter.** A video counts only when TikTok says it is in Spanish (`desc_language`),
 it was posted in the last `WINDOW_DAYS` (`create_time`), and it is not an ad (its views
@@ -49,7 +66,9 @@ from __future__ import annotations
 import logging
 import os
 import re
-from collections.abc import Callable, Mapping, Sequence
+import threading
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
@@ -71,15 +90,18 @@ from qualify_api.hashtags.repository import (
     HashtagRepository,
     NewPostSighting,
     PostgresHashtagRepository,
+    fold,
     normalize_tag,
 )
-from qualify_api.vendors import usage
+from qualify_api.referentes.reel_schedule import ScheduledBrand, is_active
+from qualify_api.vendors import uncapped, usage
 from qualify_api.vendors.scrapecreators import (
     _TIMEOUT_SECONDS,
     FEATURE_HASHTAG_WEEKLY,
     ScrapeCreatorsBlocked,
     ScrapeCreatorsError,
     metered_get,
+    paid_switch_on,
 )
 
 logger = logging.getLogger(__name__)
@@ -87,16 +109,26 @@ logger = logging.getLogger(__name__)
 #: The switch: OFF unless one of `_SWITCH_ON` (D1: «todo se apaga con un interruptor»).
 SWITCH_ENV = "QUALIFY_HASHTAG_WEEKLY_READ"
 _SWITCH_ON = frozenset({"1", "true", "on", "yes"})
+#: Without the vendor's key the gate would book a credit and then fail: checked first.
+API_KEY_ENV = "SCRAPECREATORS_API_KEY"
 
 PATH = "/v1/tiktok/search/hashtag"
 #: At most this many of a business's rubro hashtags per week (D1: 5 × 1 × 4.3 ≈ 22 credits
 #: a month per business).
 MAX_TAGS = 5
-#: A business, or a hashtag, read inside this window is not read again.
+#: A hashtag with a kept answer inside this window is not read again.
 REREAD_AFTER = timedelta(days=7)
+#: A business with a weekly booking inside this window is not attempted again.
+RETRY_AFTER = timedelta(hours=24)
+#: Headroom left for what the owner asks for himself (UX review): above these shares of
+#: the business's caps the weekly read waits. 2/3 of 150 = 100; 5/6 of 600 = 500.
+DAILY_HEADROOM = usage.DAILY_CAP * 2 // 3
+MONTHLY_HEADROOM = usage.MONTHLY_CAP * 5 // 6
 #: Only videos posted inside this window count — the same 90 days «popular» sums.
 WINDOW_DAYS = POPULAR_WINDOW_DAYS
 LANGUAGE = "es"
+#: A hashtag longer than this is not a rubro pill anyone types; it is not read.
+MAX_TAG_LENGTH = 50
 
 SOURCE = "hashtag_weekly"
 SOURCE_REF = "tiktok:hashtag_weekly"
@@ -104,6 +136,7 @@ SOURCE_REF = "tiktok:hashtag_weekly"
 PARSER_VERSION = "tiktok-hashtag-weekly/1"
 
 _HASHTAG_IN_TEXT = re.compile(r"#(\w+)")
+_WORD = re.compile(r"\w+")
 _COUNTRY = re.compile(r"[A-Z]{2}")
 #: A gate refusal that holds for every business (the switch, the floor, a 402): the tick
 #: stops. A cap refusal (`usage.CAP_REASONS`) only stops that business.
@@ -123,7 +156,7 @@ def switch_on(env: Mapping[str, str] | None = None) -> bool:
 
 @dataclass(frozen=True)
 class BusinessRubro:
-    """What the weekly read needs of one business: its rubro hashtags (normalized, in the
+    """What the weekly read needs of one business: its rubro hashtags (readable, in the
     owner's order, at most `MAX_TAGS`), the country sent as the proxy `region`, and the
     brand the credits are booked under."""
 
@@ -133,21 +166,34 @@ class BusinessRubro:
     brand_id: UUID | None = None
 
 
+def readable_tag(raw: object) -> str | None:
+    """The tag as the catalog stores it, or None when the catalog would refuse its
+    sightings or it is not a hashtag at all: one token (`normalize_tag`), letters or digits
+    in it (`fold`), only word characters — what the catalog reads as a `#tag` in a caption
+    (`#(\\w+)`) — and at most `MAX_TAG_LENGTH` long. `🍔`, `c++`, `...` and a 300-character
+    pill are None."""
+    if not isinstance(raw, str):
+        return None
+    try:
+        tag = normalize_tag(raw)
+    except ValueError:
+        return None
+    if len(tag) > MAX_TAG_LENGTH or not _WORD.fullmatch(tag) or not fold(tag):
+        return None
+    return tag
+
+
 def rubro_tags(connect: Mapping[str, Any] | None, *, limit: int = MAX_TAGS) -> tuple[str, ...]:
-    """The pills of «Tu rubro y ubicación» (`connect.hashtags`: `[{"tag": ..., ...}]`),
-    normalized and deduplicated in order; a malformed pill is skipped."""
+    """The pills of «Tu rubro y ubicación» (`connect.hashtags`: `[{"tag": ..., ...}]`) the
+    catalog would accept (`readable_tag`), deduplicated in order; any other pill is
+    skipped without taking one of the `limit` slots."""
     out: list[str] = []
     pills = (connect or {}).get("hashtags")
     for pill in pills if isinstance(pills, list) else ():
-        raw = pill.get("tag") if isinstance(pill, Mapping) else None
-        if not isinstance(raw, str):
+        tag = readable_tag(pill.get("tag") if isinstance(pill, Mapping) else None)
+        if tag is None or tag in out:
             continue
-        try:
-            tag = normalize_tag(raw)
-        except ValueError:
-            continue
-        if tag not in out:
-            out.append(tag)
+        out.append(tag)
         if len(out) >= limit:
             break
     return tuple(out)
@@ -274,16 +320,17 @@ def parse_videos(
 
 
 class RubroSource(Protocol):
-    def businesses(self, tenant_ids: Sequence[UUID] | None) -> list[UUID]:
-        """`tenant_ids` as given (deduplicated), or every business when None."""
+    def businesses(self, tenant_ids: Sequence[UUID] | None, *, now: datetime) -> list[UUID]:
+        """`tenant_ids` as given (deduplicated), or every ACTIVE business when None."""
         ...
 
     def rubro(self, tenant_id: UUID) -> BusinessRubro: ...
 
 
 class ReadLog(Protocol):
-    def business_read_since(self, tenant_id: UUID, since: datetime) -> bool:
-        """Whether this business booked a weekly read at or after `since`."""
+    def attempted_since(self, tenant_id: UUID, since: datetime) -> bool:
+        """Whether this business booked a weekly read at or after `since` (any attempt,
+        failed or not: the gate books before the request leaves)."""
         ...
 
     def tag_read_since(self, tenant_id: UUID, tag: str, since: datetime) -> bool:
@@ -305,13 +352,35 @@ class ReadLog(Protocol):
         ...
 
 
+class Claims(Protocol):
+    def claim(self, tenant_id: UUID) -> AbstractContextManager[bool]:
+        """Hold this business for one pass: yields True when taken, False when another
+        pass holds it (never waits)."""
+        ...
+
+
+class OpenedBrands(Protocol):
+    """`referentes.reel_queue.ReelQueue.opened_brands` — the reels worker's activity read."""
+
+    def opened_brands(self, *, since: datetime) -> list[ScheduledBrand]: ...
+
+
+def active_tenants(queue: OpenedBrands, now: datetime) -> list[UUID]:
+    """The businesses with a brand the reels worker would treat as active at `now`
+    (`reel_schedule.is_active`: opened in the last 14 days), in id order."""
+    from qualify_api.referentes.reel_schedule import INACTIVE_AFTER  # noqa: PLC0415
+
+    brands = queue.opened_brands(since=now - INACTIVE_AFTER)
+    return sorted({b.tenant_id for b in brands if is_active(b, now)}, key=str)
+
+
 @dataclass
 class MemoryRubroSource:
     rubros: dict[UUID, BusinessRubro] = field(default_factory=dict)
     #: How many times a business's rubro was read (the switch-off test counts on 0).
     reads: int = 0
 
-    def businesses(self, tenant_ids: Sequence[UUID] | None) -> list[UUID]:
+    def businesses(self, tenant_ids: Sequence[UUID] | None, *, now: datetime) -> list[UUID]:
         self.reads += 1
         if tenant_ids is not None:
             return list(dict.fromkeys(tenant_ids))
@@ -334,14 +403,14 @@ class KeptAnswer:
 @dataclass
 class MemoryReadLog:
     """Offline fake. The business side reads the bookings of an `InMemoryUsageStore` (the
-    gate's ledger in tests), so «already read this week» is asked of the same rows the
-    gate wrote; the hashtag side is the pool of kept answers, keyed like
-    `vendor_payloads` (one row per path + parameters, newest wins)."""
+    gate's ledger in tests), so «already attempted» is asked of the same rows the gate
+    wrote; the hashtag side is the pool of kept answers, keyed like `vendor_payloads` (one
+    row per path + parameters, newest wins)."""
 
     usage_store: usage.InMemoryUsageStore
     answers: dict[str, KeptAnswer] = field(default_factory=dict)
 
-    def business_read_since(self, tenant_id: UUID, since: datetime) -> bool:
+    def attempted_since(self, tenant_id: UUID, since: datetime) -> bool:
         return any(
             e.feature == FEATURE_HASHTAG_WEEKLY
             and e.created_at is not None
@@ -370,7 +439,44 @@ class MemoryReadLog:
         )
 
 
-_BUSINESS_READ = text(
+class MemoryClaims:
+    """One non-blocking lock per business, in this process."""
+
+    def __init__(self) -> None:
+        self._guard = threading.Lock()
+        self._locks: dict[UUID, threading.Lock] = {}
+
+    @contextmanager
+    def claim(self, tenant_id: UUID) -> Iterator[bool]:
+        with self._guard:
+            lock = self._locks.setdefault(tenant_id, threading.Lock())
+        got = lock.acquire(blocking=False)
+        try:
+            yield got
+        finally:
+            if got:
+                lock.release()
+
+
+#: The claim's key is its own (`hashtag_weekly:`), never the gate's (`vendor_usage:`), and
+#: it is only TRIED: a pass holding it books through the gate, whose short transaction
+#: takes `vendor_usage:<tenant>` after it — one order, and this one never waits, so the two
+#: cannot deadlock.
+_CLAIM = text("SELECT pg_try_advisory_xact_lock(hashtextextended('hashtag_weekly:' || :t, 0))")
+
+
+class PostgresClaims:
+    """A transaction-scoped advisory lock on its own connection (`tenant_session`,
+    `independent=True`), held for the business's whole pass and released by its commit —
+    across processes, like the gate's per-tenant lock (`usage.PostgresUsageStore`)."""
+
+    @contextmanager
+    def claim(self, tenant_id: UUID) -> Iterator[bool]:
+        with tenant_session(tenant_id, independent=True) as session:
+            yield bool(session.execute(_CLAIM, {"t": str(tenant_id)}).scalar_one())
+
+
+_ATTEMPTED = text(
     """
     SELECT EXISTS (
         SELECT 1 FROM vendor_usage_events
@@ -407,11 +513,11 @@ class PostgresReadLog:
     """`vendor_usage_events` (tenant RLS) for the business side, `vendor_payloads` (global,
     0036) for the hashtag side and the raw answers — all through `tenant_session`."""
 
-    def business_read_since(self, tenant_id: UUID, since: datetime) -> bool:
+    def attempted_since(self, tenant_id: UUID, since: datetime) -> bool:
         with tenant_session(tenant_id) as session:
             return bool(
                 session.execute(
-                    _BUSINESS_READ,
+                    _ATTEMPTED,
                     {
                         "tenant": tenant_id,
                         "vendor": usage.SCRAPECREATORS,
@@ -445,16 +551,22 @@ class PostgresReadLog:
 
 
 class PostgresRubroSource:
-    """Production: the business ids through `admin_session` (ids only, the media
-    worker's discovery), everything about a business through `tenant_session`."""
+    """Production: the active businesses through the reels worker's own read
+    (`PostgresReelQueue.opened_brands`, its door and its 14-day rule), everything about
+    a business through `tenant_session`."""
 
-    def businesses(self, tenant_ids: Sequence[UUID] | None) -> list[UUID]:
+    def __init__(self, queue: OpenedBrands | None = None) -> None:
+        self._queue = queue
+
+    def businesses(self, tenant_ids: Sequence[UUID] | None, *, now: datetime) -> list[UUID]:
         if tenant_ids is not None:
             return list(dict.fromkeys(tenant_ids))
-        from qualify_shared.db.admin import admin_session  # noqa: PLC0415 - production only
+        queue = self._queue
+        if queue is None:
+            from qualify_api.referentes.reel_queue import PostgresReelQueue  # noqa: PLC0415
 
-        with admin_session() as session:
-            return list(session.scalars(text("SELECT id FROM tenants ORDER BY id")))
+            queue = PostgresReelQueue()
+        return active_tenants(queue, now)
 
     def rubro(self, tenant_id: UUID) -> BusinessRubro:
         with tenant_session(tenant_id) as session:
@@ -463,14 +575,28 @@ class PostgresRubroSource:
         return business_rubro(tenant_id, [(r.brand_id, r.connect) for r in rows], country)
 
 
+def has_headroom(tenant_id: UUID, now: datetime) -> bool:
+    """False when the business already spent more than `DAILY_HEADROOM` credits today or
+    `MONTHLY_HEADROOM` this month (its local day and month); always True for a business
+    exempt from the cap (`vendors.uncapped`)."""
+    if uncapped.is_uncapped(tenant_id):
+        return True
+    spent = usage.store().spent(tenant_id, usage.SCRAPECREATORS, now)
+    return spent.day <= DAILY_HEADROOM and spent.month <= MONTHLY_HEADROOM
+
+
 # --------------------------------------------------------------------------------------
 # the tick
 # --------------------------------------------------------------------------------------
 
 #: `BusinessOutcome.status`
 NO_TAGS = "no_tags"
-READ_THIS_WEEK = "read_this_week"
+UP_TO_DATE = "up_to_date"  # every tag has a kept answer from this week
+TRIED_TODAY = "tried_today"  # a weekly booking in the last 24 h
+NO_HEADROOM = "no_headroom"
+BUSY = "busy"  # another pass holds the business
 DONE = "done"
+FAILED = "failed"
 CAPPED = "capped"
 BLOCKED = "blocked"
 
@@ -479,9 +605,9 @@ BLOCKED = "blocked"
 class BusinessOutcome:
     tenant_id: UUID
     status: str
-    #: Hashtags read (paid) and skipped because someone read them this week (free).
+    #: Hashtags read now (paid) and hashtags with a kept answer this week (free).
     read: list[str] = field(default_factory=list)
-    shared: list[str] = field(default_factory=list)
+    fresh: list[str] = field(default_factory=list)
     sightings: int = 0
     errors: int = 0
     reason: str | None = None
@@ -490,7 +616,8 @@ class BusinessOutcome:
 @dataclass
 class TickReport:
     outcomes: list[BusinessOutcome] = field(default_factory=list)
-    #: Why the tick read nothing or stopped early (`switch_off`, a global gate refusal).
+    #: Why the tick read nothing or stopped early (`switch_off`, `paid_off`, `no_key`, a
+    #: global gate refusal).
     stopped: str | None = None
 
     @property
@@ -505,28 +632,19 @@ def _default_client() -> httpx.Client:
     return httpx.Client(timeout=_TIMEOUT_SECONDS)
 
 
-def read_business(
+def _read_tags(
+    outcome: BusinessOutcome,
     rubro: BusinessRubro,
+    pending: Sequence[str],
     *,
     log: ReadLog,
     repository: HashtagRepository,
     client: httpx.Client,
     now: datetime,
-) -> BusinessOutcome:
-    """One business's weekly read (the switch is the caller's). Raises nothing: every
-    failure is counted on the outcome."""
+) -> None:
     tenant = rubro.tenant_id
-    if not rubro.tags:
-        return BusinessOutcome(tenant, NO_TAGS)
-    since = now - REREAD_AFTER
-    if log.business_read_since(tenant, since):
-        return BusinessOutcome(tenant, READ_THIS_WEEK)
-    outcome = BusinessOutcome(tenant, DONE)
     usage.bind(client, usage.UsageCharge(tenant, rubro.brand_id))
-    for tag in rubro.tags:
-        if log.tag_read_since(tenant, tag, since):
-            outcome.shared.append(tag)
-            continue
+    for tag in pending:
         params = {"hashtag": tag}
         if rubro.country_code:
             params["region"] = rubro.country_code
@@ -538,20 +656,23 @@ def read_business(
         except ScrapeCreatorsBlocked as exc:
             outcome.reason = exc.reason
             outcome.status = CAPPED if exc.reason in usage.CAP_REASONS else BLOCKED
-            break
+            return
         except ScrapeCreatorsError as exc:
             if exc.status_code != 404:  # 404 = nothing indexed: an answer, kept as one
                 logger.warning("hashtags.weekly read failed tenant=%s: %s", tenant, exc)
                 outcome.errors += 1
-                continue
+                outcome.status = FAILED
+                return
             payload, status = {}, 404
-        outcome.read.append(tag)
         credits = _int(payload.get("credits_charged")) or (1 if status == 200 else 0)
         try:
             log.keep(tenant, params, payload, status=status, credits=credits, now=now)
-        except Exception as exc:  # noqa: BLE001 - the credit is spent; the rest still runs
+        except Exception as exc:  # noqa: BLE001 - the credit is spent; retried tomorrow
             logger.warning("hashtags.weekly answer not kept tenant=%s: %s", tenant, exc)
             outcome.errors += 1
+            outcome.status = FAILED
+            return
+        outcome.read.append(tag)
         sightings = parse_videos(tag, payload, now=now)
         if not sightings:
             continue
@@ -560,7 +681,55 @@ def read_business(
         except Exception as exc:  # noqa: BLE001 - the raw answer is kept for a re-parse
             logger.warning("hashtags.weekly sightings not stored tenant=%s: %s", tenant, exc)
             outcome.errors += 1
-    return outcome
+
+
+def read_business(
+    rubro: BusinessRubro,
+    *,
+    log: ReadLog,
+    repository: HashtagRepository,
+    client: httpx.Client,
+    now: datetime,
+    claims: Claims,
+) -> BusinessOutcome:
+    """One business's weekly read, under its claim (the switches are the caller's). The
+    rules of the module docstring, in order; raises nothing a vendor or the catalog
+    does — every failure is counted on the outcome."""
+    tenant = rubro.tenant_id
+    if not rubro.tags:
+        return BusinessOutcome(tenant, NO_TAGS)
+    with claims.claim(tenant) as taken:
+        if not taken:
+            return BusinessOutcome(tenant, BUSY)
+        outcome = BusinessOutcome(tenant, DONE)
+        week = now - REREAD_AFTER
+        pending = []
+        for tag in rubro.tags:
+            (outcome.fresh if log.tag_read_since(tenant, tag, week) else pending).append(tag)
+        if not pending:
+            outcome.status = UP_TO_DATE
+            return outcome
+        if log.attempted_since(tenant, now - RETRY_AFTER):
+            outcome.status = TRIED_TODAY
+            return outcome
+        if not has_headroom(tenant, now):
+            outcome.status = NO_HEADROOM
+            return outcome
+        _read_tags(outcome, rubro, pending, log=log, repository=repository, client=client, now=now)
+        return outcome
+
+
+def _not_ready(env: Mapping[str, str] | None) -> str | None:
+    """Why no business may be looked at: the weekly switch, the gate's kill switch, the
+    vendor's key. Checked before any database read, so nothing is ever booked for a
+    call that could not leave."""
+    if not switch_on(env):
+        return "switch_off"
+    if not paid_switch_on():
+        return "paid_off"
+    if not os.environ.get(API_KEY_ENV, "").strip():
+        return "no_key"
+    return None
 
 
 def run_tick(
@@ -569,47 +738,51 @@ def run_tick(
     source: RubroSource | None = None,
     log: ReadLog | None = None,
     repository: HashtagRepository | None = None,
+    claims: Claims | None = None,
     client_factory: ClientFactory = _default_client,
     now: datetime | None = None,
     env: Mapping[str, str] | None = None,
 ) -> TickReport:
-    """One pass over `tenant_ids` (None = every business: production only). With the
-    switch off it returns at once — no database read, no vendor call."""
-    if not switch_on(env):
-        logger.info("hashtags.weekly off (%s is not set)", SWITCH_ENV)
-        return TickReport(stopped="switch_off")
+    """One pass over `tenant_ids` (None = every active business: production only). With a
+    switch off or no vendor key it returns at once — no database read, no booking, no
+    vendor call. `env` is where the weekly switch is read (default: the environment);
+    the gate's switch and the key are always read from the environment."""
+    reason = _not_ready(env)
+    if reason is not None:
+        logger.info("hashtags.weekly not run: %s", reason)
+        return TickReport(stopped=reason)
     if tenant_ids is not None and not tenant_ids:
         raise ValueError("an explicit scope needs at least one tenant")
     source = source or PostgresRubroSource()
     log = log or PostgresReadLog()
     repository = repository or PostgresHashtagRepository()
+    claims = claims or PostgresClaims()
     moment = now or datetime.now(UTC)
     report = TickReport()
-    for tenant in source.businesses(tenant_ids):
+    for tenant in source.businesses(tenant_ids, now=moment):
         try:
             rubro = source.rubro(tenant)
         except Exception as exc:  # noqa: BLE001 - one business never stops the others
             logger.warning("hashtags.weekly rubro unreadable tenant=%s: %s", tenant, exc)
-            report.outcomes.append(BusinessOutcome(tenant, DONE, errors=1))
+            report.outcomes.append(BusinessOutcome(tenant, FAILED, errors=1))
             continue
         client = client_factory()
         try:
             outcome = read_business(
-                rubro, log=log, repository=repository, client=client, now=moment
+                rubro, log=log, repository=repository, client=client, now=moment, claims=claims
             )
         except Exception as exc:  # noqa: BLE001 - e.g. the ledger is unreadable
             logger.warning("hashtags.weekly business failed tenant=%s: %s", tenant, exc)
-            outcome = BusinessOutcome(tenant, DONE, errors=1)
+            outcome = BusinessOutcome(tenant, FAILED, errors=1)
         finally:
             client.close()
         report.outcomes.append(outcome)
         logger.info(
-            "hashtags.weekly tenant=%s status=%s read=%d shared=%d sightings=%d errors=%d "
-            "reason=%s",
+            "hashtags.weekly tenant=%s status=%s read=%d fresh=%d sightings=%d errors=%d reason=%s",
             tenant,
             outcome.status,
             len(outcome.read),
-            len(outcome.shared),
+            len(outcome.fresh),
             outcome.sightings,
             outcome.errors,
             outcome.reason,
@@ -621,27 +794,37 @@ def run_tick(
 
 
 __all__ = [
+    "DAILY_HEADROOM",
     "LANGUAGE",
     "MAX_TAGS",
+    "MAX_TAG_LENGTH",
+    "MONTHLY_HEADROOM",
     "PARSER_VERSION",
     "PATH",
     "REREAD_AFTER",
+    "RETRY_AFTER",
     "SOURCE",
     "SOURCE_REF",
     "SWITCH_ENV",
     "WINDOW_DAYS",
     "BusinessOutcome",
     "BusinessRubro",
+    "Claims",
+    "MemoryClaims",
     "MemoryReadLog",
     "MemoryRubroSource",
+    "PostgresClaims",
     "PostgresReadLog",
     "PostgresRubroSource",
     "ReadLog",
     "RubroSource",
     "TickReport",
+    "active_tenants",
     "business_rubro",
+    "has_headroom",
     "parse_videos",
     "read_business",
+    "readable_tag",
     "rubro_tags",
     "run_tick",
     "switch_on",
