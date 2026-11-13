@@ -1,6 +1,6 @@
 # Meta: cómo administra Qualify los activos de otros negocios (portafolios, permisos y catálogo de WhatsApp)
 
-`[v1 2026-11-13 · m-25026262 · épica m-24786384 · PROPUESTO — principal-architect, pendiente de lectura del fundador]`
+`[v2 2026-11-13 · m-25026262 → m-25026326 · épica m-24786384 · D1–D3 FIRMADAS por el fundador 2026-11-13 · plan del video: docs/plan-video-app-review-catalog-management.md]`
 · Dónde vive hoy el WhatsApp (y el catálogo) de un cliente, por qué aparece «Qualify.co», y qué
 permisos y trámites hacen falta para administrar negocios que no son nuestros.
 · Fecha de acceso de las fuentes de Meta: **2026-11-13**.
@@ -14,6 +14,40 @@ Este documento **no reabre ADR 29** (firmado 2026-10-23, `docs/backlog-roadmap.m
 «una sola app y tokens por empresa cliente; agregador descartado»). Lo extiende de Instagram y
 Facebook a WhatsApp y a su catálogo, y dice dónde la documentación actual de Meta cambia cosas que
 dábamos por hechas (§9.2).
+
+---
+
+## Decisión del fundador (2026-11-13)
+
+**Esta sección manda sobre el resto.** El fundador respondió las tres preguntas de §9.4 el
+2026-11-13 (ticket m-25026326). §9.4 se conserva como el análisis previo a la decisión.
+
+| | Decisión `[F]` | Por qué | Qué descarta | Qué cuesta o arriesga | Qué la reabre |
+|---|---|---|---|---|---|
+| **D1** | **El Modelo A queda solo para los negocios que opera el fundador** (Bianki, Polette, pilotos propios). Todo cliente ajeno entra con su propio portafolio (Modelo B) cuando pase el App Review | El de la recomendación de §9.4, que aceptó: el número y el catálogo de un tercero no deben quedar a nombre de Qualify sin una salida documentada (§2.4); Qualify no responde ante Meta por activos ajenos | Usar el Modelo A por defecto para clientes pequeños sin portafolio | Hasta que pase el App Review de WhatsApp, **ningún cliente ajeno tiene WhatsApp en Qualify** | Que P-2 (§9.3) muestre una salida limpia y documentada |
+| **D2** | **En el Modelo A, Qualify traslada al cliente el costo de los mensajes que Meta le cobra, al costo**, salvo Bianki y Polette mientras se mide | El de la recomendación de §9.4, que aceptó tal como estaba escrita: el cobro de Meta a Qualify.co debe tener una línea de recuperación | Absorber el costo dentro del plan | Con D1 vigente no hay terceros en A: el traslado solo aplica a excepciones. **La acción viva es medir Bianki y Polette con el libro de consumo** (m-24955649) | Un mes de datos reales en el libro |
+| **D3** | **`catalog_management` va en el MISMO envío de App Review que los permisos de WhatsApp para terceros** («sí, junto con los de WhatsApp para terceros») y se construye lo necesario para grabar su video | El fundador no dio el motivo. Lectura nuestra `[H]`: que el cliente del Modelo B pueda sincronizar su catálogo desde el día uno, sin un cuarto envío | El envío posterior que recomendaba §9.4 | Ver abajo | Un rechazo de `catalog_management` que el fundador prefiera no reintentar |
+
+**D3 va contra la recomendación de §9.4**, y su riesgo se lleva adelante tal cual:
+
+1. **El video pide funciones que no existen.** Meta exige demostrar «el proceso completo de inicio
+   de sesión de Facebook» y «cómo el usuario de tu app crea, actualiza y elimina un catálogo de
+   productos» `[V N-15]`. Qualify hoy ni crea ni elimina catálogos (ADR 48 §1). Construirlo pasa a
+   ser **condición previa del envío de WhatsApp para terceros**: el envío espera a esa
+   construcción. Plan: `docs/plan-video-app-review-catalog-management.md`.
+2. **¿Un permiso rechazado frena a los demás?** Lo que dice Meta hoy: cada permiso se evalúa con
+   su propia evidencia — «no se aprobará para dicho permiso» si no se puede verificar, y ningún
+   permiso que no aparezca en la grabación se aprueba `[V N-21]`, `[V N-22]`. Eso es aprobación
+   **por permiso**. Pero hay un fallo que tumba **todo el envío**: «si no podemos acceder a tu app
+   para evaluarla, se rechazará la solicitud completa» `[V N-21]`. Que Meta apruebe unos permisos y
+   rechace otros del mismo envío solo consta en terceros (un caso de 12 de 15) `[S]`; cómo se
+   reenvía solo lo rechazado: **`[NO VERIFICADO]`**. Lectura: un mal video de catálogo no debería
+   arrastrar los permisos de WhatsApp `[H]`; un revisor que no pueda entrar a Qualify sí arrastra
+   todo.
+3. **`business_management` es dependencia de `catalog_management`** `[V N-15]`, y su propia
+   página de revisión pide demostrar datos de **rendimiento de anuncios** `[V N-15]`, que Qualify no
+   muestra. Si Meta exige pedirlo como permiso aparte en el mismo envío, ese punto puede salir
+   rechazado `[NO VERIFICADO]`; el plan lo trata como riesgo R2.
 
 ---
 
@@ -180,8 +214,8 @@ Business Partner), un trámite largo que Meta desaconseja si no hace falta factu
   `[V N-9]`. Verificación del negocio **antes** del App Review `[V N-9]` (hecha).
 - `catalog_management` (+ `business_management`, del que depende) con acceso avanzado para
   catálogos de negocios que **nos dan acceso**; el video debe mostrar al usuario **creando,
-  actualizando y borrando un catálogo** en nuestra app `[V N-15]` (ver §8: hoy Qualify no crea ni
-  borra catálogos).
+  actualizando y borrando un catálogo** en nuestra app `[V N-15]`. Hoy Qualify no crea ni borra
+  catálogos; por D3 se construye: `docs/plan-video-app-review-catalog-management.md`.
 - Límite: **10 clientes nuevos por 7 días**; sube a **200** tras verificación del negocio, App
   Review y verificación de acceso (la página aún la nombra) `[V N-6]`.
 - **Verificación de acceso:** retirada — «Access Verification is no longer required» `[V N-12]`
@@ -296,6 +330,9 @@ esto es un servicio nuevo, una base nueva ni una cola nueva (ADR 31).
      con el dominio del cliente.
    - **Coexistencia:** sin catálogo ni pedidos por la API `[V N-11]` → la pantalla debe decirlo
      antes de que el cliente elija coexistencia.
+   - **Crear, renombrar y eliminar desde Qualify:** ADR 48 decía que Qualify no crea catálogos;
+     por D3 eso cambia — el plan `docs/plan-video-app-review-catalog-management.md` lo construye y
+     enmienda ADR 48.
    - **No cambia:** Galería como fuente, `retailer_id = brand_products.id`, ruta pública firmada
      de la foto, las tres acciones disparadas por una persona, el worker existente.
 5. **Webhooks por cuenta.** Una sola URL de la app; cada cliente se suscribe con
@@ -314,17 +351,18 @@ Ambos en la épica **m-24786384** «Meta App Review (permisos, videos y Tech Pro
 
 | | m-24789620 · «Conectar WhatsApp» por autoservicio | m-25026261 · `catalog_management` para catálogos de otros negocios |
 |---|---|---|
-| Entrega | Registro integrado v4, token BISU por cliente, registrar número, suscribir webhooks, coexistencia, límites de alta; App Review «envío 3» de los dos permisos de WhatsApp | App Review del permiso (y `business_management`) en acceso avanzado; lectura y escritura del catálogo del cliente con su token |
-| Gates | Verificación del negocio (hecha); App Review con 2 videos `[V N-9]`; `client_business_id` (m-24849197); **ya no** verificación de acceso (m-24789561, ver §9.2) | m-24789620 hecho (sin token del cliente no hay a quién aplicarle el permiso); el video exige **crear, editar y borrar un catálogo en nuestra app** `[V N-15]` |
-| Depende de | Envíos 1 y 2 no lo bloquean: la revisión es por permiso (ADR 29) | m-24789620 |
-| Video para Meta | (1) mensaje enviado desde Qualify y recibido en un teléfono; (2) plantilla creada desde Qualify; y el registro integrado completo de punta a punta | Inicio de sesión + crear catálogo, cargar/editar productos, borrar catálogo **desde Qualify** |
+| Entrega | Registro integrado v4, token BISU por cliente, registrar número, suscribir webhooks, coexistencia, límites de alta | Crear, renombrar y eliminar el catálogo de WhatsApp desde Galería (plan del video, m-25026326); lectura y escritura del catálogo del cliente con su token |
+| Envío de App Review | **Uno solo (D3):** `whatsapp_business_messaging` + `whatsapp_business_management` + `catalog_management` (y `business_management` si Meta lo exige aparte, R2 del plan) | ídem |
+| Gates | Verificación del negocio (hecha); 2 videos de WhatsApp `[V N-9]`; `client_business_id` (m-24849197); **ya no** verificación de acceso (m-24789561, ver §9.2) | Video que muestra inicio de sesión + crear, actualizar y eliminar `[V N-15]`; las funciones deben existir en producción antes del envío |
+| Depende de | Envíos 1 y 2 no lo bloquean (la revisión es por permiso, ADR 29) | La construcción del plan; su ruta de inicio de sesión preferida es el registro integrado de m-24789620 (plan §3) |
+| Video para Meta | (1) mensaje enviado desde Qualify y recibido en un teléfono; (2) plantilla creada desde Qualify; y el registro integrado completo | Inicio de sesión + crear catálogo, renombrarlo, subir un producto, eliminarlo **desde Qualify** (guion: plan §6) |
 
-**Orden recomendado:** m-24789620 primero (vale solo: el cliente conecta, chatea y conecta su
-catálogo a mano en su WhatsApp Manager, y Qualify le manda mensajes de producto con
-`whatsapp_business_messaging`); m-25026261 después, porque **pide construir lo que ADR 48 dejó
-fuera** (crear y borrar catálogos por API) solo para poder grabar el video. Mientras tanto un
-cliente del Modelo B usa el catálogo sin sincronización desde Galería — la opción B de
-`opciones-catalogo-whatsapp.md`.
+**Orden decidido (D3, 2026-11-13):** (1) se construye lo del video de catálogo
+(`docs/plan-video-app-review-catalog-management.md`) en paralelo con m-24789620; (2) se graban los
+tres videos; (3) **un solo envío** con los permisos de WhatsApp para terceros y
+`catalog_management`. El envío espera a que ambas construcciones estén en producción. El orden
+que recomendaba esta sección antes de la decisión (m-24789620 primero, catálogo en un envío
+posterior) queda como registro en §9.4.
 
 ---
 
@@ -339,7 +377,10 @@ cliente del Modelo B usa el catálogo sin sincronización desde Galería — la 
 2. **Qualify paga mensajes ajenos (Modelo A)** sin libro de consumo poblado (m-24955649). Señal: la
    factura de Meta de Qualify.co crece sin línea de cobro. Mitigación: D2.
 3. **El video de `catalog_management` pide funciones que no construimos** (§8). Si se pide en el
-   mismo envío que WhatsApp, puede rechazarse y retrasar el envío entero `[H]`. Mitigación: D3.
+   mismo envío que WhatsApp, puede rechazarse y retrasar el envío entero `[H]`. Mitigación
+   propuesta: D3 en envío posterior. **Decidido 2026-11-13: mismo envío** — el riesgo pasa a ser de
+   calendario (el envío espera la construcción) y se sigue en la sección «Decisión del fundador» y
+   en el plan del video.
 4. **Un portafolio compartido de 20 números** y un límite de mensajería común: un cliente con mala
    calidad castiga a los demás en A `[H]`.
 5. **Modelo nuevo de cuentas** en despliegue (fase 1 hasta mediados de octubre; ids nuevos en 2027;
@@ -376,6 +417,9 @@ cliente posee sus activos): lo confirma para WhatsApp `[V N-2][V N-6][V N-8]`.
   página no lista permisos (ADR 48 §2).
 
 ### 9.4 Lo que debe decidir el fundador
+
+`[DECIDIDO 2026-11-13 — D1: A · D2: la recomendación tal cual · D3: B (mismo envío), contra la
+recomendación. Ver «Decisión del fundador» arriba; opciones y recomendaciones quedan como registro.]`
 
 **D1. ¿El Modelo A queda solo para los negocios que tú operas, y todo cliente ajeno entra por el
 Modelo B cuando pase el App Review?**
@@ -424,6 +468,9 @@ cientos de productos antes de que exista el envío 4.
 - [N-18] Migrating phone numbers among Solution Partners via Embedded Signup — https://developers.facebook.com/documentation/business-messaging/whatsapp/solution-providers/support/migrating-phone-numbers-among-solution-partners-via-embedded-signup
 - [N-19] Phone numbers — https://developers.facebook.com/documentation/business-messaging/whatsapp/business-phone-numbers/phone-numbers.md
 - [N-20] Migrating customers off solutions via Meta Business Suite — https://developers.facebook.com/documentation/business-messaging/whatsapp/solution-providers/support/migrating-customers-off-solutions-via-meta-business-suite.md
+- [N-21] App Review — introducción (evaluación por permiso; rechazo completo si no se puede acceder a la app) — https://developers.facebook.com/docs/app-review/introduction
+- [N-22] App Review — guía de envío (cada permiso con su descripción y su grabación) — https://developers.facebook.com/docs/app-review/submission-guide
+- `[S]` Aprobación parcial (caso de 12 de 15 permisos) — consultor, https://singhamandeep.com/?p=3065 (sin respaldo oficial)
 - `[S]` Centro de ayuda de Meta, «Give a partner access to business assets» — https://www.facebook.com/business/help/1717412048538897 (resumen del buscador; la página no se pudo leer directamente)
 - `[S]` Centro de ayuda de Meta, «Conectar un catálogo a tu cuenta de WhatsApp Business» — https://www.facebook.com/business/help/158662536425974 (solo el título fue legible)
 - `[S]` Retiro de Access Verification (anuncio del 2026-10-09) — https://socialmediatoday.com/news/meta-removes-access-verification-for-developers/832678
