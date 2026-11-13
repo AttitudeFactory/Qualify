@@ -139,6 +139,10 @@ class ProductStickerGateway(Protocol):
         self, tenant_id: UUID, brand_id: UUID, character_id: UUID, user_id: UUID | None
     ) -> CharacterCard: ...
 
+    def restore_character(
+        self, tenant_id: UUID, brand_id: UUID, character_id: UUID, user_id: UUID | None
+    ) -> CharacterCard: ...
+
     def make_stickers(
         self,
         tenant_id: UUID,
@@ -298,6 +302,12 @@ class ProductionProductStickerGateway:
         self, tenant_id: UUID, brand_id: UUID, character_id: UUID, user_id: UUID | None
     ) -> CharacterCard:
         found = self.service.discard_character(tenant_id, brand_id, character_id, user_id)
+        return self._card(tenant_id, brand_id, found)
+
+    def restore_character(
+        self, tenant_id: UUID, brand_id: UUID, character_id: UUID, user_id: UUID | None
+    ) -> CharacterCard:
+        found = self.service.restore_character(tenant_id, brand_id, character_id, user_id)
         return self._card(tenant_id, brand_id, found)
 
     # --- stickers -----------------------------------------------------------------------
