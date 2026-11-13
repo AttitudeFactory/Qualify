@@ -981,3 +981,30 @@
   .q-plan-more .rt-Button { min-height: 44px; }
   .q-plan-link { display: inline-flex; align-items: center; min-height: 44px; }
 }
+
+/* m-25026384: «Subir foto o video», the tile grid's first card — the tile's own
+   material and size, a dashed accent frame (it adds, it is not a piece) and its words. */
+.q-tile-add { cursor: pointer; border: 1.5px dashed var(--accent-8); background: var(--accent-a2); }
+.q-tile-add:hover {
+  transform: translateY(-3px);
+  border-color: var(--accent-9);
+  box-shadow: inset 0 1px 0 var(--q-card-hi), var(--q-elev-lift);
+}
+.q-tile-add-media { background: transparent; color: var(--accent-11); padding: 0.75rem; }
+.q-tile-add-plus {
+  width: 2.75rem; height: 2.75rem;
+  border-radius: 999px;
+  background: var(--accent-9);
+  color: var(--accent-contrast);
+}
+/* The stored file, whole (contain), on the tiles' frame. */
+.q-own-upload-preview {
+  width: 100%;
+  height: min(22rem, 55vh);
+  border-radius: var(--q-radius-card);
+  border: 1.5px solid var(--q-card-edge);
+  background: var(--gray-a3);
+  overflow: hidden;
+}
+.q-own-upload-preview video { display: block; object-fit: contain; }
+@media (prefers-reduced-motion: reduce) { .q-tile-add { transition: none; } }

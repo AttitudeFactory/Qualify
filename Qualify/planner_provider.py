@@ -19,6 +19,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from qualify_api.creative.fsm import InvalidTransition as CreativeInvalidTransition
+from qualify_api.creative.own_upload import OwnUpload, UploadedPiece, record_planner_upload
 from qualify_api.creative.service import ApprovalBlocked
 from qualify_api.planner.composition import (
     production_planner_service,
@@ -903,6 +904,21 @@ def reject_post(tenant_id: UUID, event_id: str) -> None:
         user_id,
         reason="Rechazado desde Tu semana",
         regenerate=False,
+    )
+
+
+def record_upload_piece(tenant_id: UUID, upload: OwnUpload) -> UploadedPiece:
+    """m-25026384: the owner's photo or video, already in R2 under
+    `t/{tenant}/uploads/`, as an approved own piece the planner can schedule — the
+    backend's `record_planner_upload`, for this tenant's brand and acting user.
+    Idempotent on `upload.upload_id`; `OwnUploadRefused` (nothing written) propagates
+    with the owner's sentence. Blocking (one `tenant_session`)."""
+    brand_id = _require_brand(tenant_id)
+    user_id = acting_user_id(tenant_id)
+    if user_id is None:
+        raise NoBrand(str(tenant_id))
+    return record_planner_upload(
+        tenant_id=tenant_id, brand_id=brand_id, user_id=user_id, upload=upload
     )
 
 

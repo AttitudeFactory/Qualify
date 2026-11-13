@@ -17,11 +17,12 @@ is Remotion's. `normalize_photo` blocks; screens call `normalize_photo_when_free
 from __future__ import annotations
 
 import contextlib
+import functools
 import io
 import threading
 from dataclasses import dataclass
 from pathlib import PurePath
-from typing import IO
+from typing import IO, Any
 
 #: The heaviest photo the screens take (the picker refuses heavier ones before
 #: uploading, `PHOTO_MAX_BYTES` is checked again here: a browser can be bypassed).
@@ -74,6 +75,9 @@ class StoredPhoto:
     data: bytes
     name: str
     content_type: str
+    #: The stored photo's size in pixels (upright).
+    width: int = 0
+    height: int = 0
 
 
 def is_photo_name(name: str) -> bool:
@@ -96,18 +100,32 @@ def _renamed(name: str, suffix: str) -> str:
 
 
 def normalize_photo(
-    fileobj: IO[bytes], name: str, *, max_side: int = PHOTO_MAX_SIDE
+    fileobj: IO[bytes],
+    name: str,
+    *,
+    max_side: int = PHOTO_MAX_SIDE,
+    jpeg_max_bytes: int | None = None,
 ) -> StoredPhoto:
     """Blocking. `fileobj` (a photo the owner uploaded, read from its current position)
     as it is stored: HEIC/HEIF/WebP → JPEG (PNG with transparency), upright, at most
     `max_side` px on its long side, without EXIF, XMP or comments. One at a time
-    (`_CONVERSIONS`). Raises `PhotoUnreadable` or `PhotoTooBig`."""
+    (`_CONVERSIONS`). Raises `PhotoUnreadable` or `PhotoTooBig`.
+
+    With `jpeg_max_bytes` (the planner's own photo, m-25026384: Meta publishes only a
+    JPEG of at most 8 MB) EVERY photo is stored as a JPEG — a transparent one laid on
+    white — of at most that many bytes: a lower quality first, then a smaller side."""
     with _CONVERSIONS:
-        return _normalize(fileobj, name, max_side)
+        if jpeg_max_bytes is None:
+            return _normalize(fileobj, name, max_side)
+        return _normalize(fileobj, name, max_side, jpeg_max_bytes)
 
 
 async def normalize_photo_when_free(
-    fileobj: IO[bytes], name: str, *, wait_seconds: float | None = None
+    fileobj: IO[bytes],
+    name: str,
+    *,
+    wait_seconds: float | None = None,
+    jpeg_max_bytes: int | None = None,
 ) -> StoredPhoto:
     """`normalize_photo` off the event loop, after waiting its turn ON the loop for the
     process's heavy-media gate: a queued upload never holds a default-executor thread
@@ -126,7 +144,11 @@ async def normalize_photo_when_free(
             raise PhotoBusy(f"waited {wait:.0f} s") from exc
         # a cancelled upload still waits for its thread: the slot is never free while
         # a conversion runs
-        return await run_heavy_in_thread(normalize_photo, fileobj, name)
+        if jpeg_max_bytes is None:
+            return await run_heavy_in_thread(normalize_photo, fileobj, name)
+        return await run_heavy_in_thread(
+            functools.partial(normalize_photo, jpeg_max_bytes=jpeg_max_bytes), fileobj, name
+        )
 
 
 #: The only formats Pillow may open a photo as (`Image.open(formats=...)`): anything else
@@ -138,7 +160,9 @@ _OPEN_FORMATS = ("JPEG", "PNG", "WEBP", "HEIF")
 _SAME_AS = {"MPO": "JPEG"}
 
 
-def _normalize(fileobj: IO[bytes], name: str, max_side: int) -> StoredPhoto:
+def _normalize(
+    fileobj: IO[bytes], name: str, max_side: int, jpeg_max_bytes: int | None = None
+) -> StoredPhoto:
     from PIL import Image, ImageOps, UnidentifiedImageError  # noqa: PLC0415
 
     _ensure_heif()
@@ -170,6 +194,8 @@ def _normalize(fileobj: IO[bytes], name: str, max_side: int) -> StoredPhoto:
     # turned upright AFTER the downscale: the rotation never copies the full-size pixels
     ImageOps.exif_transpose(image, in_place=True)
     has_alpha = image.mode in _ALPHA_MODES or (image.mode == "P" and "transparency" in image.info)
+    if jpeg_max_bytes is not None:
+        return _as_jpeg_under(image, name, icc, has_alpha, jpeg_max_bytes)
     if pillow_format == "PNG" or (pillow_format != "JPEG" and has_alpha):
         out_format, suffix = "PNG", ".png"
         options: dict[str, object] = {}
@@ -185,4 +211,44 @@ def _normalize(fileobj: IO[bytes], name: str, max_side: int) -> StoredPhoto:
     buffer = io.BytesIO()
     image.save(buffer, format=out_format, **options)
     content_type = "image/png" if out_format == "PNG" else "image/jpeg"
-    return StoredPhoto(buffer.getvalue(), _renamed(name, suffix), content_type)
+    return StoredPhoto(
+        buffer.getvalue(), _renamed(name, suffix), content_type, image.width, image.height
+    )
+
+
+#: The qualities tried, in order, for a JPEG that must fit a byte limit; then the side is
+#: halved once and the ladder runs again (a 4096 px photo at quality 70 is ~2-4 MB).
+_FIT_QUALITIES = (_JPEG_QUALITY, 82, 74, 66)
+
+
+def _as_jpeg_under(image: Any, name: str, icc: Any, has_alpha: bool, max_bytes: int) -> StoredPhoto:
+    """`image` (already upright and within its side) as a JPEG of at most `max_bytes`:
+    a plain format conversion — a transparent photo is laid on white, the way any JPEG
+    export flattens it. Raises `PhotoTooBig` when even the smaller side does not fit."""
+    from PIL import Image  # noqa: PLC0415
+
+    if has_alpha:
+        rgba = image.convert("RGBA")
+        flat = Image.new("RGB", rgba.size, (255, 255, 255))
+        flat.paste(rgba, mask=rgba.getchannel("A"))
+        image = flat
+    elif image.mode not in ("RGB", "L"):
+        if image.mode == "CMYK":
+            icc = None  # a CMYK profile does not describe the RGB pixels
+        image = image.convert("RGB")
+    image.info.pop("comment", None)
+    for attempt in range(2):
+        for quality in _FIT_QUALITIES:
+            options: dict[str, object] = {"quality": quality, "optimize": True}
+            if icc:
+                options["icc_profile"] = icc
+            buffer = io.BytesIO()
+            image.save(buffer, format="JPEG", **options)
+            if buffer.tell() <= max_bytes:
+                return StoredPhoto(
+                    buffer.getvalue(), _renamed(name, ".jpg"), "image/jpeg", *image.size
+                )
+        if attempt == 0:
+            half = max(1, max(image.size) // 2)
+            image.thumbnail((half, half), Image.Resampling.LANCZOS)
+    raise PhotoTooBig(f"JPEG over {max_bytes} bytes")

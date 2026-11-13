@@ -15,11 +15,14 @@ import logging
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from functools import lru_cache
-from uuid import UUID
+from typing import Any
+from uuid import UUID, uuid4
 
 import reflex as rx
 from qualify_api.creative.fsm import InvalidTransition as CreativeInvalidTransition
+from qualify_api.creative.own_upload import OwnUpload, OwnUploadRefused
 from qualify_api.planner.service import PlannerError
+from qualify_api.publishing.client import IMAGE_MAX_BYTES
 
 from .auth_state import AuthState
 from .campaign_provider import (
@@ -54,6 +57,7 @@ from .planner_provider import (
     event_detail,
     load_week,
     planner_error_message,
+    record_upload_piece,
     reject_post,
     remove_rejected_post,
     reschedule_event,
@@ -61,6 +65,23 @@ from .planner_provider import (
     set_event_goals,
     set_event_tags,
 )
+from .planner_upload_vm import (
+    IMAGE,
+    NO_FILE_TEXT,
+    NOT_LISTED_TEXT,
+    PHOTO_BUSY_TEXT,
+    PHOTO_TOO_BIG_TEXT,
+    PHOTO_UNREADABLE_TEXT,
+    SAVE_FAILED_TEXT,
+    TOO_MANY_TEXT,
+    UPLOAD_FAILED_TEXT,
+    VIDEO_CONTENT_TYPES,
+    WRONG_TYPE_TEXT,
+    media_kind,
+    size_problem,
+)
+from .planner_upload_vm import progress_text as own_upload_progress_text
+from .planner_upload_vm import rejection_text as own_upload_rejection_text
 from .planner_vm import (
     APPROVED_CHECK_TOAST,
     ASSIGN_STEPS,
@@ -112,12 +133,38 @@ from .planner_vm import (
 )
 from .tenant import tenant_uuid
 from .ui.route_history import history_ack_value, route_history_ready
+from .upload_images import PhotoBusy, PhotoTooBig, PhotoUnreadable, normalize_photo_when_free
+from .upload_names import safe_upload_name
+from .upload_store import UploadNotKept, refusal_text, save_upload, save_upload_bytes
 
 logger = logging.getLogger(__name__)
 
 _NO_TENANT = "No hay una sesión activa. Vuelve a iniciar sesión."
 _LOAD_FAILED = "No se pudo cargar Tu semana. Inténtalo de nuevo."
 _FORM_INCOMPLETE = "Elige al menos una publicación y completa su fecha, hora y cuenta."
+
+#: m-25026384: where the planner's own uploads go, under `t/{tenant}/uploads/`.
+_OWN_UPLOAD_FOLDER = "planner"
+#: Instagram's caption limit: nothing longer is kept.
+_CAPTION_MAX = 2200
+
+
+def _suffix(name: str) -> str:
+    return ("." + name.rsplit(".", 1)[-1].lower()) if "." in name else ""
+
+
+def _spooled_size(upload: Any) -> int:
+    """The upload's size, measured on its spooled file — never read into memory."""
+    size = getattr(upload, "size", None)
+    if isinstance(size, int):
+        return size
+    fileobj = upload.file
+    here = fileobj.tell()
+    size = fileobj.seek(0, 2)
+    fileobj.seek(here)
+    return int(size)
+
+
 _POST_REQUIRED = "Elige al menos una publicación lista para salir."
 
 MODE_ASSIGN = "assign"
@@ -371,6 +418,28 @@ class PlannerState(rx.State):
     # drawer so a reload or a week change does not reopen it.
     drag_post_id: str = ""
     _url_post_opened: str = ""
+
+    # -- «Subir foto o video» in step 1 (m-25026384) -----------------------------
+    # The view that replaces the grid while the owner uploads ONE photo or video. The
+    # file is stored as soon as it is picked (so the view can show it); «Guardar y
+    # continuar» turns it into a piece. A stored file survives closing the panel until
+    # it becomes a piece or another file replaces it: a retry never asks for it again.
+    own_upload_view: bool = False
+    own_upload_key: str = ""  # `t/{tenant}/uploads/planner/…` — the preview's source
+    own_upload_media: str = ""  # "image" / "video"
+    own_upload_name: str = ""
+    own_upload_caption: str = ""
+    own_upload_busy: bool = False  # the file is going up / being stored
+    own_upload_percent: int = 0
+    own_upload_saving: bool = False  # «Guardar y continuar» in flight
+    own_upload_error: str = ""
+    # Minted ONCE per stored file: the backend's idempotency key, so a double tap or a
+    # retry of «Guardar y continuar» always lands on the same piece.
+    _own_upload_id: str = ""
+    _own_upload_content_type: str = ""
+    _own_upload_width: int = 0
+    _own_upload_height: int = 0
+    _own_upload_size: int = 0
 
     # -- the event panel --------------------------------------------------------
     detail_open: bool = False
@@ -1353,6 +1422,8 @@ class PlannerState(rx.State):
         self.form_reached = STEP_POST
         self.more_open = []
         self.more_auto = []
+        self.own_upload_view = False
+        self.own_upload_error = ""
 
     def _first_account(self) -> list[str]:
         """The first compatible account is preselected: one account is the common case."""
@@ -1494,6 +1565,212 @@ class PlannerState(rx.State):
         self.form_open = True
         self.flow_ready = True
         return None
+
+    # «Subir foto o video» (m-25026384)
+
+    @rx.var
+    def own_upload_text(self) -> str:
+        """«Subiendo tu archivo… 45 %», then «Preparando tu archivo…»."""
+        return own_upload_progress_text(self.own_upload_percent)
+
+    @rx.event
+    def open_own_upload(self) -> None:
+        """The «+» card: step 1's body becomes «Sube tu foto o video» (same panel)."""
+        self.own_upload_view = True
+        self.own_upload_error = ""
+
+    @rx.event
+    def close_own_upload(self) -> None:
+        """«Volver a tus publicaciones»: the grid again. A stored file is kept."""
+        self.own_upload_view = False
+        self.own_upload_error = ""
+
+    @rx.event
+    def set_own_upload_caption(self, value: str) -> None:
+        self.own_upload_caption = str(value or "")[:_CAPTION_MAX]
+
+    @rx.event
+    def begin_own_upload(self) -> None:
+        """A file was picked: the zone says «Subiendo…» until `handle_own_upload` ends."""
+        self.own_upload_error = ""
+        self.own_upload_busy = True
+        self.own_upload_percent = 0
+
+    @rx.event
+    def own_upload_progress(self, progress: dict[str, Any]) -> None:
+        """The browser's own count of bytes sent; only while a file is going up."""
+        if not self.own_upload_busy:
+            return
+        try:
+            fraction = float(progress.get("progress", 0) or 0)
+        except (TypeError, ValueError, AttributeError):
+            return
+        percent = min(100, max(0, int(fraction * 100)))
+        if percent > self.own_upload_percent:
+            self.own_upload_percent = percent
+
+    @rx.event
+    def own_upload_rejected(self, rejected: list[dict[str, Any]]) -> None:
+        """What the picker refused before sending: the owner's sentence, nothing sent."""
+        self.own_upload_busy = False
+        self.own_upload_percent = 0
+        self.own_upload_error = own_upload_rejection_text(rejected)
+
+    @rx.event
+    async def handle_own_upload(self, files: list[rx.UploadFile]) -> None:
+        """The picked file to R2 (`t/{tenant}/uploads/planner/…`). A photo is checked and
+        converted to a JPEG of at most 8 MB (Meta's rule) through the serialized
+        normaliser; a video is streamed from the upload's spooled file, never read into
+        memory. Every refusal is decided BEFORE any storage call. Foreground: Reflex
+        refuses uploads in background handlers."""
+        try:
+            await self._store_own_upload(files)
+        finally:
+            self.own_upload_busy = False
+            self.own_upload_percent = 0
+
+    async def _store_own_upload(self, files: list[rx.UploadFile]) -> None:
+        if len(files) != 1:
+            self.own_upload_error = TOO_MANY_TEXT if files else NO_FILE_TEXT
+            return
+        upload = files[0]
+        # the client's name reduced to a safe basename: it names the key's last segment
+        name = safe_upload_name(upload.name or "archivo")
+        kind = media_kind(name)
+        if not kind:
+            self.own_upload_error = WRONG_TYPE_TEXT
+            return
+        size = _spooled_size(upload)
+        problem = size_problem(kind, size)
+        if problem:
+            self.own_upload_error = problem
+            return
+        tenant_id = await self._tenant()
+        if tenant_id is None:
+            self.own_upload_error = _NO_TENANT
+            return
+        width = height = 0
+        try:
+            if kind == IMAGE:
+                upload.file.seek(0)
+                photo = await normalize_photo_when_free(
+                    upload.file, name, jpeg_max_bytes=IMAGE_MAX_BYTES
+                )
+                name, content_type = photo.name, photo.content_type
+                width, height, size = photo.width, photo.height, len(photo.data)
+                key = await save_upload_bytes(
+                    tenant_id, photo.data, name, folder=_OWN_UPLOAD_FOLDER
+                )
+            else:
+                content_type = VIDEO_CONTENT_TYPES[_suffix(name)]
+                key = await save_upload(tenant_id, upload, name, folder=_OWN_UPLOAD_FOLDER)
+        except PhotoUnreadable:
+            self.own_upload_error = PHOTO_UNREADABLE_TEXT
+            return
+        except PhotoTooBig:
+            self.own_upload_error = PHOTO_TOO_BIG_TEXT
+            return
+        except PhotoBusy:
+            self.own_upload_error = PHOTO_BUSY_TEXT
+            return
+        except UploadNotKept as exc:
+            self.own_upload_error = refusal_text(exc, name)
+            return
+        except Exception as exc:  # noqa: BLE001 — the owner retries; never a trace
+            logger.error("planner own upload failed: %s", type(exc).__name__)
+            self.own_upload_error = UPLOAD_FAILED_TEXT
+            return
+        self.own_upload_key = key
+        self.own_upload_media = kind
+        self.own_upload_name = name
+        self.own_upload_error = ""
+        self._own_upload_id = str(uuid4())  # a new file is a new piece
+        self._own_upload_content_type = content_type
+        self._own_upload_width = width
+        self._own_upload_height = height
+        self._own_upload_size = size
+
+    def _clear_own_upload(self) -> None:
+        self.own_upload_view = False
+        self.own_upload_key = ""
+        self.own_upload_media = ""
+        self.own_upload_name = ""
+        self.own_upload_caption = ""
+        self.own_upload_error = ""
+        self._own_upload_id = ""
+        self._own_upload_content_type = ""
+        self._own_upload_width = 0
+        self._own_upload_height = 0
+        self._own_upload_size = 0
+
+    def _own_upload_request(self) -> OwnUpload:
+        return OwnUpload(
+            upload_id=UUID(self._own_upload_id),
+            object_key=self.own_upload_key,
+            media_type=self.own_upload_media,
+            content_type=self._own_upload_content_type,
+            caption=self.own_upload_caption.strip(),
+            width=self._own_upload_width or None,
+            height=self._own_upload_height or None,
+            size_bytes=self._own_upload_size or None,
+        )
+
+    @rx.event(background=True)
+    async def save_own_upload(self) -> None:
+        """«Guardar y continuar»: the stored file becomes an approved piece (idempotent
+        on the file's own id), the candidates are read again — the 30 s refresh skips
+        while the panel is open — and the piece is selected on «Cuándo sale», exactly
+        like «Elegir día y hora». A refusal keeps the file and says what to do."""
+        async with self:
+            if self.own_upload_saving or self.own_upload_busy:
+                return  # a double tap, or the file is still going up
+            if not self.own_upload_key or not self._own_upload_id:
+                self.own_upload_error = NO_FILE_TEXT
+                return
+            self.own_upload_saving = True
+            self.own_upload_error = ""
+            request = self._own_upload_request()
+            week = (self.monday_iso, self.connection_filter, self.view_tz, tuple(self.tag_filter))
+        tenant_id = await self._tenant()
+        if tenant_id is None:
+            async with self:
+                self.own_upload_saving = False
+                self.own_upload_error = _NO_TENANT
+            return
+        try:
+            piece = await asyncio.to_thread(record_upload_piece, tenant_id, request)
+        except OwnUploadRefused as exc:
+            async with self:
+                self.own_upload_saving = False
+                self.own_upload_error = exc.text
+            return
+        except PlannerError as exc:
+            async with self:
+                self.own_upload_saving = False
+                self.own_upload_error = planner_error_message(exc)
+            return
+        except Exception as exc:  # noqa: BLE001 — the same id retries onto the same piece
+            logger.error("planner own upload piece failed: %s", type(exc).__name__)
+            async with self:
+                self.own_upload_saving = False
+                self.own_upload_error = SAVE_FAILED_TEXT
+            return
+        post_id = str(piece.draft_id)
+        try:
+            data = await asyncio.to_thread(load_week, tenant_id, *week)
+        except Exception as exc:  # noqa: BLE001 — said below: the piece exists anyway
+            logger.warning("planner reload after upload failed: %s", type(exc).__name__)
+            data = None
+        async with self:
+            self.own_upload_saving = False
+            if data is not None:
+                self.schedulable = data.schedulable
+                self.unscheduled = data.unscheduled
+            if post_id in self.form_selected_ids or self._add_post(post_id):
+                self._clear_own_upload()
+                self._go_to(STEP_WHEN)
+            else:
+                self.own_upload_error = NOT_LISTED_TEXT
 
     # «Contenido»
 
