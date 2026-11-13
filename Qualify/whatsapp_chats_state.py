@@ -1021,7 +1021,8 @@ class WhatsAppChatsState(rx.State):
         self.open_thread_id = ""
         self._reset_conversation()
         inbox = await self.get_state(InboxListState)
-        return rx.redirect(inbox.inbox_return_href)
+        # Replace, not push: the phone's «atrás» after this never reopens the chat.
+        return rx.redirect(inbox.inbox_return_href, replace=True)
 
     @rx.event(background=True)
     async def load_conversation(self) -> AsyncIterator[rx.event.EventSpec]:

@@ -250,13 +250,15 @@ def _body() -> rx.Component:
 
 
 def inbox_list_pane() -> rx.Component:
-    """The list column of `.q-wa-chats` (hidden on a phone while a chat is open)."""
+    """The list column of `.q-wa-chats` (hidden on a phone while a chat is open). The
+    chips sit right above the first row; the expired notice goes BELOW the rows, so on
+    a phone the first chat is not pushed under the fold (UX review of m-25017859)."""
     return rx.vstack(
         heartbeat(),
         _channel_filter(),
         _filters(),
-        _notice(),
         _body(),
+        _notice(),
         spacing="3",
         width="100%",
         class_name="q-wa-chats__list",

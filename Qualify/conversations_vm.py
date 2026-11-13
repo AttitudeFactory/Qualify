@@ -55,7 +55,9 @@ from qualify_api.conversations.choices import choice_label as tap_origin
 
 from .ad_message_vm import ad_origin_href, ad_origin_label
 from .chat_row_vm import (
+    AWAITING_PILL,
     CHANNEL_INSTAGRAM,
+    EXPIRED_PILL,
     minutes_left,
     unknown_contact,
 )
@@ -678,6 +680,25 @@ def attention_pill(attention: Any) -> tuple[str, str]:
     return ATTENTION_PILLS.get(str(key), ATTENTION_PILLS["none"])
 
 
+def header_pill(view: Any) -> tuple[str, str]:
+    """m-25017859: the open chat's pill says what its row in the single list says — the
+    «Por responder» rule (`ThreadView.awaiting_reply`) instead of read / unread. A read
+    that did not compute the rule (`thread.awaiting_reply is None`) keeps the old
+    read-based pill. Waiting → «Por responder»; the window gone with the customer's
+    word last → «Ya no puedes responder por aquí»; answered → «Respondida»."""
+    awaiting = getattr(view.thread, "awaiting_reply", None)
+    if awaiting is None:
+        return attention_pill(view.attention)
+    if awaiting:
+        return AWAITING_PILL, "warn"
+    key = str(getattr(view.attention, "value", view.attention))
+    if key in ("answered", "none"):
+        return attention_pill(key)
+    if not view.window.is_open and getattr(view.thread, "status", "open") != "closed":
+        return EXPIRED_PILL, "neutral"
+    return "", "neutral"
+
+
 def counterpart_title(username: str | None, counterpart_external_id: str) -> str:
     handle = (username or "").strip()
     if handle:
@@ -731,7 +752,7 @@ def build_thread_row(
         preview = NO_MESSAGES_YET
     elif extra.preview_direction == "outbound":
         preview = OUTBOUND_PREFIX + preview
-    label, tone = attention_pill(view.attention)
+    label, tone = header_pill(view)
     window_label, window_tone = window_words(
         view.window.is_open,
         view.window.closes_at,

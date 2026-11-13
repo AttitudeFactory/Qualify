@@ -92,7 +92,7 @@ def test_progress_label() -> None:
 def test_today_shows_only_what_waits_and_links_filtered() -> None:
     vm = build_home_vm(HomeCounts(people_waiting=2, comments_unanswered=5, **_SET_UP))
     assert [(c.label, c.href) for c in vm.today] == [
-        ("2 personas esperan tu respuesta", CONVERSATIONS_PENDING_URL),
+        ("2 personas esperan tu respuesta por Instagram", CONVERSATIONS_PENDING_URL),
         ("5 comentarios de esta semana sin responder", COMMENTS_URL),
     ]
     assert not vm.all_clear
@@ -112,7 +112,11 @@ def test_today_has_at_most_three_cards_in_order() -> None:
 @pytest.mark.parametrize(
     ("fn", "one", "many"),
     [
-        (people_waiting_label, "1 persona espera tu respuesta", "3 personas esperan tu respuesta"),
+        (
+            people_waiting_label,
+            "1 persona espera tu respuesta por Instagram",
+            "3 personas esperan tu respuesta por Instagram",
+        ),
         (
             drafts_to_approve_label,
             "1 publicación espera tu revisión",

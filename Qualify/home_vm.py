@@ -104,7 +104,13 @@ def _plural(n: int, one: str, many: str) -> str:
 
 
 def people_waiting_label(n: int) -> str:
-    return _plural(n, "{n} persona espera tu respuesta", "{n} personas esperan tu respuesta")
+    # m-25017859: the figure counts Instagram chats only (`HomeCounts.people_waiting`);
+    # the words say so until Inicio counts every channel.
+    return _plural(
+        n,
+        "{n} persona espera tu respuesta por Instagram",
+        "{n} personas esperan tu respuesta por Instagram",
+    )
 
 
 def drafts_to_approve_label(n: int) -> str:

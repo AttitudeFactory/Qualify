@@ -157,7 +157,7 @@ def count_rows(counts: PendingCounts) -> list[CountRowVM]:
         (
             TAB_MESSAGES,
             "messages-square",
-            "Mensajes de Instagram sin responder",
+            "Mensajes de Instagram por responder",
             counts.messages,
             INSTAGRAM_AWAITING_HREF,
         ),
@@ -178,7 +178,7 @@ def count_rows(counts: PendingCounts) -> list[CountRowVM]:
         (
             LEGACY_TAB_WHATSAPP,
             "message-circle",
-            "Chats de WhatsApp sin responder",
+            "Chats de WhatsApp por responder",
             counts.whatsapp,
             WHATSAPP_AWAITING_HREF,
         ),

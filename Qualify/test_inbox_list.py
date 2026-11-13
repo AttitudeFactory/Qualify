@@ -9,8 +9,10 @@ addresses.
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import json
+import threading
 from datetime import UTC, datetime, timedelta
 from types import MappingProxyType
 from typing import Any
@@ -27,6 +29,7 @@ from qualify_api.inbox.unified import (
 )
 
 from . import inbox_list_state as state_module
+from .auth_state import business_state_classes
 from .chat_row_vm import (
     CHANNEL_INSTAGRAM,
     CHANNEL_WHATSAPP,
@@ -283,14 +286,16 @@ def test_the_channel_filter_needs_chats_on_two_channels_and_has_no_tiktok() -> N
     assert [c.pressed for c in channel_chips(CHANNEL_WHATSAPP)] == [False, False, True]
 
 
-def test_the_menu_figure_is_the_por_responder_chip() -> None:
-    """The «Por responder» badge counts `attention.counts` messages + whatsapp, both the
-    same `inbox.awaiting` rule as `inbox_counts().count("por_responder", c)`."""
-    tally = counts(dm={"por_responder": 2}, whatsapp={"por_responder": 5})
-    assert count_of(tally, FILTER_AWAITING) == tally.count("por_responder") == 7
-    assert count_of(tally, FILTER_AWAITING, CHANNEL_WHATSAPP) == tally.count(
-        "por_responder", "whatsapp"
-    )
+def test_a_closed_chat_with_a_payment_to_check_reads_right() -> None:
+    """The backend's «Pago por revisar» includes closed chats (as WhatsApp › Chats): the
+    chip shows with N ≥ 1 and the closed row is muted, says «cerrado» and keeps the
+    payment pill, without the waiting dot."""
+    tally = counts(whatsapp={"pago_por_revisar": 1, "cerrados": 1})
+    assert filter_chips(tally, FILTER_AWAITING, "")[-1].label == "Pago por revisar · 1"
+    row = build(inbox_row(status="closed", awaiting_reply=False, payment_status="review"))
+    assert row.closed and not row.waiting
+    assert (row.pill_label, row.pill_tone) == (PAYMENT_REVIEW_PILL, "warn")
+    assert row.aria_label == "Laura Gómez, por WhatsApp, cerrado, Pago por revisar"
 
 
 # --- addresses ------------------------------------------------------------------------------
@@ -334,7 +339,11 @@ def test_list_href_round_trips() -> None:
 def test_a_whatsapp_row_opens_todays_chat_marked_from_the_list() -> None:
     thread = str(uuid4())
     href = whatsapp_chat_href(str(CONNECTION), thread)
-    assert href == (f"/whatsapp?tab=chats&cuenta={CONNECTION}&chat={thread}&desde=por-responder")
+    # The chat opens beside WhatsApp's own «Por responder» chip, marked from the list.
+    assert href == (
+        f"/whatsapp?tab=chats&cuenta={CONNECTION}&chat={thread}"
+        "&filtro=por-responder&desde=por-responder"
+    )
     # The WhatsApp screen's own deep-link reader still finds the chat.
     params = dict(p.split("=", 1) for p in href.split("?", 1)[1].split("&"))
     assert thread_param(params, str(CONNECTION)) == thread
@@ -366,19 +375,29 @@ def test_the_notice_shows_inside_por_responder_until_dismissed_and_again_when_it
     assert remembered_dismissal(3, 1) == 1 and shown(expired=2, dismissed=1)
 
 
-def test_the_dismissal_is_kept_per_business() -> None:
+async def test_the_dismissal_lasts_until_it_grows_and_a_business_switch_forgets_it(
+    fake: _Fake,
+) -> None:
+    """What really happens: the memory is session state of this business. It survives
+    the 15 s refreshes; it is forgotten when the number grows; a logout or a business
+    switch resets the whole state (`auth_state.business_state_classes`, ADR 43: the
+    switch also lands in a new Reflex state), so back in the business it shows once."""
+    fake.expired = 2
     state = InboxListState()
-    state._tenant_key = "tenant-a"
-    state.counts_by = {"dm": {"ventana_vencida": 2}}
-    state.counts_loaded = True
-    assert state.notice_visible
+    await _drain(InboxListState.load.fn(state))  # type: ignore[attr-defined]
+    assert state.notice_visible and state.notice_label == "Se te pasaron 2 chats de Instagram"
     InboxListState.dismiss_notice.fn(state)  # type: ignore[attr-defined]
-    assert not state.notice_visible and state._dismissed == {"tenant-a": 2}
-    state._tenant_key = "tenant-b"  # another business in the same session
+    assert not state.notice_visible
+    await _drain(InboxListState.refresh.fn(state))  # type: ignore[attr-defined]
+    assert not state.notice_visible  # same number: not told twice
+    fake.expired = 3
+    await _drain(InboxListState.refresh.fn(state))  # type: ignore[attr-defined]
+    assert state.notice_visible  # it grew
+    InboxListState.dismiss_notice.fn(state)  # type: ignore[attr-defined]
+    assert InboxListState in business_state_classes()
+    state.reset()  # what logout and a business switch do
+    await _drain(InboxListState.load.fn(state))  # type: ignore[attr-defined]
     assert state.notice_visible
-    state._tenant_key = "tenant-a"
-    state._apply_counts(counts(dm={"ventana_vencida": 3}))
-    assert state.notice_visible  # grew from 2 to 3
 
 
 # --- empty states ---------------------------------------------------------------------------
@@ -404,19 +423,37 @@ class _Fake:
 
     def __init__(self, rows: list[InboxRow], size: int = 2) -> None:
         self.rows, self.size, self.reads = rows, size, 0
+        self.expired, self.channels_with_chats = 0, ("whatsapp",)
+        self.asked: list[tuple[str, str]] = []
+        #: Set to hold the NEXT page read until `release` is set (a read in flight).
+        self.hold_next = False
+        self.entered = threading.Event()
+        self.release = threading.Event()
 
     def page(self, tenant_id: UUID, *, filter_key: str, channel: str, cursor: Any, now: Any):
+        if self.hold_next:
+            self.hold_next = False
+            self.entered.set()
+            self.release.wait(5)
         self.reads += 1
+        self.asked.append((filter_key, channel))
         start = 0
         if cursor:
             after = InboxCursor.decode(cursor)
             start = next(i for i, r in enumerate(self.rows) if r.thread_id == after.thread_id) + 1
-        chunk = tuple(self.rows[start : start + self.size])
-        more = start + self.size < len(self.rows)
+        rows = [
+            dataclasses.replace(r, counterpart_name=f"{filter_key}:{r.counterpart_name}")
+            for r in self.rows
+        ]
+        chunk = tuple(rows[start : start + self.size])
+        more = start + self.size < len(rows)
         return InboxPage(rows=chunk, next_cursor=chunk[-1].cursor if more and chunk else None)
 
     def counts(self, tenant_id: UUID, *, now: Any) -> InboxCounts:
-        return counts(whatsapp={"por_responder": len(self.rows), "todos": len(self.rows)})
+        n = len(self.rows)
+        by = {c: {"por_responder": n, "todos": n} for c in self.channels_with_chats}
+        by.setdefault("dm", {})["ventana_vencida"] = self.expired
+        return counts(**by)
 
     def context(self, tenant_id: UUID) -> InboxContext:
         return InboxContext(zone_name="America/Bogota", agents=(), connected=(CHANNEL_WHATSAPP,))
@@ -456,13 +493,12 @@ async def test_ver_mas_pages_without_repeating_or_skipping(fake: _Fake) -> None:
     state = InboxListState()
     state._tenant_key = "tenant-a"
     await _drain(InboxListState.load.fn(state))  # type: ignore[attr-defined]
-    assert [r.title for r in state.rows] == ["C0", "C1"] and state.has_more
+    assert [r.title for r in state.rows] == ["por_responder:C0", "por_responder:C1"]
+    assert state.has_more
     await _drain(InboxListState.load_more.fn(state))  # type: ignore[attr-defined]
     await _drain(InboxListState.load_more.fn(state))  # type: ignore[attr-defined]
-    assert [r.title for r in state.rows] == ["C0", "C1", "C2", "C3", "C4"]
+    assert [r.title.split(":")[1] for r in state.rows] == ["C0", "C1", "C2", "C3", "C4"]
     assert not state.has_more
-    # The chip's figure is the length of the list it opens, once every page is in.
-    assert count_of(state_module._Counts(state.counts_by), FILTER_AWAITING) == len(state.rows)
 
 
 async def test_the_heartbeat_rereads_the_pages_on_screen_in_place(fake: _Fake) -> None:
@@ -558,12 +594,224 @@ async def test_back_to_inbox_lands_on_the_list_as_it_was(
     assert not wa.from_inbox and wa.open_thread_id == ""
 
 
-def test_the_back_label_names_the_single_list() -> None:
-    from pathlib import Path
+def test_both_back_buttons_say_por_responder_and_go_to_the_single_list() -> None:
+    from .conversations_page import _back_button as instagram_back
+    from .whatsapp_tab_chats import _back_button as whatsapp_back
 
-    here = Path(__file__).parent
-    assert "INBOX_BACK_LABEL" in (here / "whatsapp_tab_chats.py").read_text(encoding="utf-8")
-    assert "INBOX_BACK_LABEL" in (here / "conversations_page.py").read_text(encoding="utf-8")
+    instagram = str(instagram_back())
+    assert '"Por responder"' in instagram and "close_conversation" in instagram
+    whatsapp = str(whatsapp_back())
+    # From the single list: «‹ Por responder» → back_to_inbox; else «‹ Chats».
+    assert '"Por responder"' in whatsapp and "back_to_inbox" in whatsapp
+    assert '"Chats"' in whatsapp and "back_to_list" in whatsapp
+
+
+async def test_back_to_inbox_replaces_the_history_step(monkeypatch: pytest.MonkeyPatch) -> None:
+    from .whatsapp_chats_state import WhatsAppChatsState
+
+    inbox = InboxListState()
+
+    async def get_state(self: Any, cls: Any) -> Any:
+        return inbox
+
+    monkeypatch.setattr(WhatsAppChatsState, "get_state", get_state)
+    wa = WhatsAppChatsState()
+    wa.from_inbox, wa.open_thread_id = True, str(uuid4())
+    spec = await WhatsAppChatsState.back_to_inbox.fn(wa)  # type: ignore[attr-defined]
+    assert "replace" in str(spec) and "true" in str(spec).lower()
+
+
+# --- the address is the truth (sticky filter / channel) -------------------------------------
+
+
+def _at(state: InboxListState, query: str) -> None:
+    from reflex.istate.data import ReflexURL, RouterData
+
+    state.router = RouterData(url=ReflexURL(f"http://localhost/responder?{query}"))
+
+
+async def test_enter_without_canal_or_filtro_means_every_channel_and_por_responder(
+    fake: _Fake,
+) -> None:
+    state = InboxListState()
+    _at(state, "tab=mensajes&filtro=cerrados&canal=instagram")
+    await _drain(InboxListState.enter.fn(state))  # type: ignore[attr-defined]
+    assert (state.filter_key, state.channel) == (FILTER_CLOSED, CHANNEL_INSTAGRAM)
+    _at(state, "tab=mensajes")  # the sidebar, the tab «Mensajes · N»
+    await _drain(InboxListState.enter.fn(state))  # type: ignore[attr-defined]
+    assert (state.filter_key, state.channel) == (FILTER_AWAITING, ALL_CHANNELS)
+
+
+async def test_a_hidden_channel_filter_is_never_the_active_one(fake: _Fake) -> None:
+    """A WhatsApp-only business taps the Instagram card («Al día»): the list is every
+    channel, not «Ya respondiste a todos» with the channel chips hidden."""
+    state = InboxListState()
+    _at(state, "tab=mensajes&filtro=por-responder&canal=instagram")
+    await _drain(InboxListState.enter.fn(state))  # type: ignore[attr-defined]
+    await _drain(InboxListState.load.fn(state))  # type: ignore[attr-defined]
+    assert not state.show_channels and state.channel == ALL_CHANNELS
+    assert len(state.rows) == 2 and fake.asked[-1] == (FILTER_AWAITING, ALL_CHANNELS)
+    # With chats on two channels the requested channel stands.
+    fake.channels_with_chats = ("whatsapp", "dm")
+    _at(state, "tab=mensajes&filtro=por-responder&canal=instagram")
+    await _drain(InboxListState.enter.fn(state))  # type: ignore[attr-defined]
+    await _drain(InboxListState.load.fn(state))  # type: ignore[attr-defined]
+    assert state.show_channels and state.channel == CHANNEL_INSTAGRAM
+
+
+# --- races ----------------------------------------------------------------------------------
+
+
+async def test_a_chip_tapped_while_the_first_load_reads_wins(fake: _Fake) -> None:
+    state = InboxListState()
+    fake.hold_next = True
+    first = asyncio.create_task(_drain(InboxListState.load.fn(state)))  # type: ignore[attr-defined]
+    await asyncio.to_thread(fake.entered.wait, 5)
+    InboxListState.set_filter.fn(state, FILTER_CLOSED)  # type: ignore[attr-defined]
+    await _drain(InboxListState.load.fn(state))  # type: ignore[attr-defined]
+    fake.release.set()
+    await first
+    assert state.filter_key == FILTER_CLOSED and state.loaded
+    assert {r.title.split(":")[0] for r in state.rows} == {FILTER_CLOSED}
+    assert not state.loading
+    assert [c.key for c in state.chips if c.pressed] == [FILTER_CLOSED]
+
+
+async def test_ver_mas_during_a_refresh_is_never_shrunk(fake: _Fake) -> None:
+    state = InboxListState()
+    await _drain(InboxListState.load.fn(state))  # type: ignore[attr-defined]
+    fake.hold_next = True
+    tick = asyncio.create_task(_drain(InboxListState.refresh.fn(state)))  # type: ignore[attr-defined]
+    await asyncio.to_thread(fake.entered.wait, 5)
+    await _drain(InboxListState.load_more.fn(state))  # type: ignore[attr-defined]
+    assert len(state.rows) == 4
+    fake.release.set()
+    await tick
+    assert len(state.rows) == 4 and state._pages == 2 and state.has_more
+
+
+async def test_a_refresh_asked_while_one_runs_runs_again(fake: _Fake) -> None:
+    """The post-reply re-read is never dropped because a heartbeat tick was running."""
+    state = InboxListState()
+    await _drain(InboxListState.load.fn(state))  # type: ignore[attr-defined]
+    fake.hold_next = True
+    tick = asyncio.create_task(_drain(InboxListState.refresh.fn(state)))  # type: ignore[attr-defined]
+    await asyncio.to_thread(fake.entered.wait, 5)
+    assert await _drain(InboxListState.refresh.fn(state)) == []  # type: ignore[attr-defined]
+    assert state._refresh_again
+    fake.rows[0] = dataclasses.replace(fake.rows[0], last_message_text="Ya respondí")
+    fake.release.set()
+    events = await tick
+    assert state.rows[0].preview == "Ya respondí"  # the second pass read it
+    assert not state._refreshing and not state._refresh_again
+    from .responder_state import ResponderState
+
+    assert ResponderState.load_counts in events  # the cards follow, same tick
+
+
+async def test_a_failed_load_never_leaves_the_list_spinning(
+    fake: _Fake, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def boom(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("bug")
+
+    monkeypatch.setattr(state_module, "page", boom)
+    state = InboxListState()
+    with pytest.raises(RuntimeError):
+        await _drain(InboxListState.load.fn(state))  # type: ignore[attr-defined]
+    assert not state.loading and state._loading_for == -1
+    monkeypatch.setattr(state_module, "page", fake.page)
+    await _drain(InboxListState.load.fn(state))  # type: ignore[attr-defined]
+    assert state.loaded and len(state.rows) == 2
+
+
+# --- Instagram: a chat beyond the account's newest, and its header -------------------------
+
+
+async def test_an_instagram_chat_not_in_the_loaded_list_opens_by_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from .test_conversations_provider import CONNECTION, World, _account
+    from .test_conversations_templates_state import _install
+
+    world = _install(monkeypatch, World())
+    old = world.inbound()
+    conv = ConversationsState()
+    conv.accounts = [_account(CONNECTION)]
+    conv.selected_connection_id = str(CONNECTION)
+    conv.rows = []  # the account's newest did not include it
+    events = ConversationsState.open_from_inbox.fn(conv, str(CONNECTION), str(old))  # type: ignore[attr-defined]
+    assert events == [ConversationsState.open_by_id]
+    out = await _drain(ConversationsState.open_by_id.fn(conv))  # type: ignore[attr-defined]
+    assert conv.open_thread_id == str(old) and conv._pending_open == ""
+    assert [r.thread_id for r in conv.rows] == [str(old)]
+    assert ConversationsState.load_conversation in out
+
+
+async def test_a_chat_opened_by_id_survives_the_accounts_next_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import dataclasses as dc
+
+    from .conversations_vm import EMPTY_THREAD
+    from .test_conversations_provider import CONNECTION, World, _account
+    from .test_conversations_templates_state import _install
+
+    world = _install(monkeypatch, World())
+    world.inbound()  # the account's newest read holds another chat only
+    conv = ConversationsState()
+    conv.accounts = [_account(CONNECTION)]
+    conv.selected_connection_id = str(CONNECTION)
+    pinned = str(uuid4())
+    conv.rows = [dc.replace(EMPTY_THREAD, thread_id=pinned)]
+    conv.open_thread_id = conv._pinned_thread = pinned
+    await conv._read_list(silent=True)
+    assert conv.open_thread_id == pinned and pinned in {r.thread_id for r in conv.rows}
+
+
+async def test_a_gone_instagram_chat_says_so_and_refreshes_the_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from qualify_api.conversations.service import ThreadNotFound
+
+    from . import conversations_state as conv_module
+    from .test_conversations_provider import CONNECTION, World, _account
+    from .test_conversations_templates_state import _install
+
+    world = _install(monkeypatch, World())
+
+    def gone(*args: Any) -> Any:
+        raise ThreadNotFound("x")
+
+    monkeypatch.setattr(world.gateway, "thread_listing", gone, raising=False)
+    conv = ConversationsState()
+    conv.accounts = [_account(CONNECTION)]
+    conv.selected_connection_id = str(CONNECTION)
+    conv._pending_open = str(uuid4())
+    out = await _drain(ConversationsState.open_by_id.fn(conv))  # type: ignore[attr-defined]
+    assert conv.banner == conv_module._THREAD_GONE and conv.open_thread_id == ""
+    assert InboxListState.refresh in out
+
+
+def test_the_open_instagram_chat_says_what_its_row_says() -> None:
+    """The header pill reads `ThreadView.awaiting_reply` (the rule), like the row."""
+    from types import SimpleNamespace
+
+    from .conversations_vm import header_pill
+
+    def view(awaiting: Any, attention: str, window_open: bool = True, status: str = "open"):
+        return SimpleNamespace(
+            thread=SimpleNamespace(awaiting_reply=awaiting, status=status),
+            attention=attention,
+            window=SimpleNamespace(is_open=window_open),
+        )
+
+    assert header_pill(view(True, "read")) == ("Por responder", "warn")  # read, unanswered
+    assert header_pill(view(False, "answered")) == ("Respondida", "ok")
+    assert header_pill(view(False, "pending", window_open=False)) == (EXPIRED_PILL, "neutral")
+    assert header_pill(view(False, "pending", status="closed")) == ("", "neutral")
+    # A read that did not compute the rule keeps the old read-based pill.
+    assert header_pill(view(None, "pending")) == ("Pendiente", "warn")
 
 
 def test_the_chips_are_44_px_pressed_and_wrap() -> None:
@@ -576,3 +824,15 @@ def test_the_chips_are_44_px_pressed_and_wrap() -> None:
     for text in ("Qué chats ver", "De qué red", "Ocultar este aviso", "Ver más"):
         escaped = json.dumps(text)[1:-1].replace("\\", "\\\\")
         assert text in rendered or escaped in rendered, text
+
+
+def test_the_whatsapp_badge_opens_the_chip_it_counts() -> None:
+    """The menu's WhatsApp badge counts the «Por responder» rule: its entry opens
+    WhatsApp › Chats on that chip, whose `?filtro=` the chats screen reads."""
+    from .ui.layout import NAV_HREFS, sidebar
+    from .whatsapp_chats_vm import AWAITING_FILTER_SLUGS
+
+    href = NAV_HREFS["/whatsapp"]
+    assert href == "/whatsapp?tab=chats&filtro=por-responder"
+    assert href.rsplit("=", 1)[1] in AWAITING_FILTER_SLUGS
+    assert href in str(sidebar())

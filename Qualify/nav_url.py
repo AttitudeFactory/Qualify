@@ -86,18 +86,54 @@ def back_url_script(url: str) -> str:
 #: «Por responder», so its back button returns to that list (not the number's own).
 FROM_PARAM = "desde"
 FROM_INBOX = "por-responder"
+#: The canonical `?filtro=` of WhatsApp › Chats' «Por responder» chip (the menu's
+#: WhatsApp badge and a chat opened from the single list land on it).
+WHATSAPP_AWAITING_SLUG = "por-responder"
+WHATSAPP_AWAITING_HREF = f"/whatsapp?tab=chats&filtro={WHATSAPP_AWAITING_SLUG}"
+
+
+#: m-25017859: the single list's own view (`?filtro=` / `?canal=`) rides along the
+#: Instagram chat addresses it opens, so «atrás» and a reload keep the list as it was.
+LIST_VIEW_PARAMS = ("filtro", "canal")
+
+
+def _slug(value: object) -> str:
+    """A view slug as it may travel in an address: lowercase letters and dashes only."""
+    text = value if isinstance(value, str) else ""
+    return (
+        text
+        if len(text) <= 32 and all(c.isascii() and (c.isalpha() or c == "-") for c in text)
+        else ""
+    )
+
+
+def list_view(params: Mapping[str, object]) -> dict[str, str]:
+    """The `?filtro=` / `?canal=` of the current address, if they are plain slugs."""
+    return {k: s for k in LIST_VIEW_PARAMS if (s := _slug(params.get(k, "")).lower())}
 
 
 def conversation_href(
-    channel: str, connection_id: str = "", thread_id: str = "", *, from_inbox: bool = False
+    channel: str,
+    connection_id: str = "",
+    thread_id: str = "",
+    *,
+    from_inbox: bool = False,
+    view: Mapping[str, str] | None = None,
 ) -> str:
-    """Canonical owner-facing routes carrying only internal account/thread IDs."""
+    """Canonical owner-facing routes carrying only internal account/thread IDs (plus,
+    on WhatsApp, the `?desde=` of the single list and the chip it opens on; on the
+    single list, its `view` slugs)."""
     ids = {"cuenta": connection_id, "chat": thread_id}
     safe = {key: uuid_param(ids, key) for key in ids}
     if channel == "whatsapp":
-        origin = {FROM_PARAM: FROM_INBOX} if from_inbox and safe["chat"] else {}
+        origin = (
+            {"filtro": WHATSAPP_AWAITING_SLUG, FROM_PARAM: FROM_INBOX}
+            if from_inbox and safe["chat"]
+            else {}
+        )
         return with_query("/whatsapp", tab="chats", **safe, **origin)
-    return with_query("/responder", tab="mensajes", **safe)
+    kept = {k: _slug(v) for k, v in (view or {}).items() if k in LIST_VIEW_PARAMS}
+    return with_query("/responder", tab="mensajes", **kept, **safe)
 
 
 def thread_param(params: Mapping[str, object], connection_id: str) -> str:

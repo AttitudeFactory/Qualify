@@ -97,6 +97,14 @@ def _zone(name: str) -> ZoneInfo:
         return ZoneInfo("UTC")
 
 
+def _responder_counts() -> rx.event.EventHandler:
+    """The «Quién te espera» cards and the tab labels re-read with the list (one tick,
+    no second poll). Imported here: `responder_state` imports this module."""
+    from .responder_state import ResponderState
+
+    return ResponderState.load_counts
+
+
 @dataclass(frozen=True)
 class _Counts:
     by_channel: dict[str, dict[str, int]]
@@ -125,7 +133,13 @@ class InboxListState(rx.State):
     _agents: list[AgentVM] = []
     _pages: int = 0
     _refreshing: bool = False
+    #: A refresh asked while one ran: it runs again right after (the post-reply read).
+    _refresh_again: bool = False
+    #: Bumped on every change of view (filter, channel, entry): a read of an older one
+    #: lands on nothing.
     _generation: int = 0
+    #: The generation a `load` is reading, -1 when none.
+    _loading_for: int = -1
     #: tenant id → the expired count the owner dismissed («tell them once»).
     _dismissed: dict[str, int] = {}
     _pending_href: str = ""
@@ -226,22 +240,21 @@ class InboxListState(rx.State):
 
     @rx.event
     async def enter(self) -> rx.event.EventSpec | None:
-        """`ResponderState.enter_page` on the «Mensajes» tab: the address's filter and
-        channel, then the list. A different business starts from scratch."""
+        """`ResponderState.enter_page` on the «Mensajes» tab. The address is the truth
+        (N5): no `?filtro=` is «Por responder», no `?canal=` is every channel — nothing
+        sticks from an earlier visit. A different business starts from scratch."""
         key, _tenant = await self._session()
         if key != self._tenant_key:
             self._tenant_key = key
             self._forget_business()
         params = self.router.url.query_parameters
-        requested = filter_from_params(params)
-        channel = channel_from_params(params)
-        changed = False
-        if requested is not None and requested != self.filter_key:
-            self.filter_key, changed = requested, True
-        if channel is not None and channel != self.channel:
-            self.channel, changed = channel, True
-        if changed:
-            self.rows, self.next_cursor, self.loaded, self._scroll = [], "", False, []
+        requested = filter_from_params(params) or DEFAULT_FILTER
+        channel = channel_from_params(params) or ALL_CHANNELS
+        if requested != self.filter_key or channel != self.channel:
+            self.filter_key, self.channel = requested, channel
+            self._clear_list()
+        else:
+            self._generation += 1  # a read already in flight lands on nothing
         return InboxListState.load
 
     @rx.event
@@ -260,9 +273,15 @@ class InboxListState(rx.State):
         self.channel = channel
         return self._relist()
 
-    def _relist(self) -> list[rx.event.EventSpec]:
+    def _clear_list(self) -> None:
+        """A new view: drop the rows and make every read in flight stale."""
+        self._generation += 1
         self.rows, self.next_cursor, self.loaded, self._scroll = [], "", False, []
+        self._pages = 0
         self.error = self.more_error = ""
+
+    def _relist(self) -> list[rx.event.EventSpec]:
+        self._clear_list()
         return [
             rx.call_script(push_url_script(list_href(self.filter_key, self.channel))),
             InboxListState.load,
@@ -285,56 +304,74 @@ class InboxListState(rx.State):
     # Reads
     # ==================================================================================
 
+    def _effective_channel(self, tally: Any) -> str:
+        """A channel filter whose chips are hidden (fewer than two channels hold chats)
+        is never the active one: the list is every channel then."""
+        if self.channel != ALL_CHANNELS and not show_channel_filter(tally):
+            self.channel = ALL_CHANNELS
+        return self.channel
+
     @rx.event(background=True)
     async def load(self) -> Any:
-        """First page + counts (+ the context once). Rows already on screen stay until
-        the new ones arrive (back from a chat: no flash, the scroll is restored)."""
+        """Counts, then the pages on screen (one after a new view), of the view on screen
+        when it STARTED; a view changed meanwhile (`_generation`) discards it — its own
+        load is already queued. Rows already on screen stay until the new ones arrive
+        (back from a chat: no flash, the scroll is restored)."""
         async with self:
-            if self.loading:
-                return
+            generation = self._generation
+            if self._loading_for == generation:
+                return  # this very view is already being read
+            self._loading_for = generation
             self.loading = True
             self.error = ""
-            self._generation += 1
-            generation = self._generation
             key, tenant_id = await self._session()
-            filter_key, channel = self.filter_key, self.channel
             need_context = not self.context_loaded
             pages = max(1, self._pages) if self.loaded else 1
             scroll = list(self._scroll)
-        if tenant_id is None:
-            async with self:
-                self.loading = False
-                self.error = _NO_SESSION
-            return
-        now = datetime.now(UTC)
         try:
-            ctx = await asyncio.to_thread(context, tenant_id) if need_context else None
-            tally = await asyncio.to_thread(counts, tenant_id, now=now)
-            records, cursor = await self._read_pages(tenant_id, filter_key, channel, pages, now)
-        except (*_DB_ERRORS, InvalidCursor) as exc:
-            logger.error("inbox list failed: %s", type(exc).__name__)
+            if tenant_id is None:
+                async with self:
+                    if generation == self._generation:
+                        self.error = _NO_SESSION
+                return
+            now = datetime.now(UTC)
+            try:
+                ctx = await asyncio.to_thread(context, tenant_id) if need_context else None
+                tally = await asyncio.to_thread(counts, tenant_id, now=now)
+                async with self:
+                    if generation != self._generation:
+                        return
+                    filter_key = self.filter_key
+                    channel = self._effective_channel(tally)
+                records, cursor = await self._read_pages(tenant_id, filter_key, channel, pages, now)
+            except (*_DB_ERRORS, InvalidCursor) as exc:
+                logger.error("inbox list failed: %s", type(exc).__name__)
+                async with self:
+                    if generation == self._generation:
+                        self.error = LIST_FAILED
+                return
             async with self:
-                self.loading = False
-                if generation == self._generation:
-                    self.error = LIST_FAILED
-            return
-        async with self:
-            self.loading = False
-            if generation != self._generation or (await self._session())[0] != key:
-                return  # a newer filter or another session meanwhile
-            if ctx is not None:
-                self._zone_name = ctx.zone_name
-                self._agents = list(ctx.agents)
-                self.connected = list(ctx.connected)
-                self.context_loaded = True
-            self._apply_counts(tally)
-            self.rows = self._build(records, now)
-            self.next_cursor = cursor
-            self._pages = pages
-            self.loaded = True
-            self._scroll = []
-        if scroll:
-            yield rx.call_script(_restore_scroll_js(*scroll[:2]))
+                if generation != self._generation or (await self._session())[0] != key:
+                    return  # a newer view or another session meanwhile
+                if ctx is not None:
+                    self._zone_name = ctx.zone_name
+                    self._agents = list(ctx.agents)
+                    self.connected = list(ctx.connected)
+                    self.context_loaded = True
+                self._apply_counts(tally)
+                self.rows = self._build(records, now)
+                self.next_cursor = cursor
+                self._pages = pages
+                self.loaded = True
+                self._scroll = []
+            if scroll:
+                yield rx.call_script(_restore_scroll_js(*scroll[:2]))
+            yield _responder_counts()  # the cards and «Mensajes · N», same tick
+        finally:
+            async with self:
+                if self._loading_for == generation:
+                    self._loading_for = -1
+                    self.loading = False
 
     async def _read_pages(
         self, tenant_id: UUID, filter_key: str, channel: str, pages: int, now: datetime
@@ -373,61 +410,95 @@ class InboxListState(rx.State):
             generation = self._generation
             key, tenant_id = await self._session()
             filter_key, channel, cursor = self.filter_key, self.channel, self.next_cursor
-        if tenant_id is None:
-            async with self:
-                self.loading_more = False
-            return
-        now = datetime.now(UTC)
-        try:
-            result = await asyncio.to_thread(
-                page, tenant_id, filter_key=filter_key, channel=channel, cursor=cursor, now=now
-            )
-        except (*_DB_ERRORS, InvalidCursor) as exc:
-            logger.error("inbox list page failed: %s", type(exc).__name__)
-            async with self:
-                self.loading_more = False
-                self.more_error = MORE_FAILED
-            return
-        async with self:
-            self.loading_more = False
-            if generation != self._generation or (await self._session())[0] != key:
-                return
-            known = {r.thread_id for r in self.rows}
-            fresh = [r for r in self._build(result.rows, now) if r.thread_id not in known]
-            self.rows = [*self.rows, *fresh]
-            self.next_cursor = result.next_cursor.encode() if result.next_cursor else ""
-            self._pages += 1
-
-    @rx.event(background=True)
-    async def refresh(self) -> None:
-        """The 15 s heartbeat (and after an action on a chat): counts + the pages on
-        screen, replaced in place. Silent: a failed read keeps what is shown."""
-        async with self:
-            if not self.loaded or self.loading or self.loading_more or self._refreshing:
-                return
-            self._refreshing = True
-            generation = self._generation
-            key, tenant_id = await self._session()
-            filter_key, channel, pages = self.filter_key, self.channel, max(1, self._pages)
         try:
             if tenant_id is None:
                 return
             now = datetime.now(UTC)
             try:
-                tally = await asyncio.to_thread(counts, tenant_id, now=now)
-                records, cursor = await self._read_pages(tenant_id, filter_key, channel, pages, now)
+                result = await asyncio.to_thread(
+                    page, tenant_id, filter_key=filter_key, channel=channel, cursor=cursor, now=now
+                )
             except (*_DB_ERRORS, InvalidCursor) as exc:
-                logger.error("inbox list refresh failed: %s", type(exc).__name__)
+                logger.error("inbox list page failed: %s", type(exc).__name__)
+                async with self:
+                    if generation == self._generation:
+                        self.more_error = MORE_FAILED
                 return
             async with self:
                 if generation != self._generation or (await self._session())[0] != key:
                     return
-                self._apply_counts(tally)
-                self.rows = self._build(records, now)
-                self.next_cursor = cursor
+                if cursor != self.next_cursor:
+                    return  # a refresh moved the cursor meanwhile: the next tap reads on
+                known = {r.thread_id for r in self.rows}
+                fresh = [r for r in self._build(result.rows, now) if r.thread_id not in known]
+                self.rows = [*self.rows, *fresh]
+                self.next_cursor = result.next_cursor.encode() if result.next_cursor else ""
+                self._pages += 1
+        finally:
+            async with self:
+                self.loading_more = False
+
+    @rx.event(background=True)
+    async def refresh(self) -> Any:
+        """The 15 s heartbeat and the re-read after an action on a chat: counts + every
+        page on screen, replaced in place (never fewer pages than «Ver más» brought).
+        Asked while one runs, it runs again right after (`_refresh_again`), so a read
+        made after a reply always lands. Silent: a failed read keeps what is shown."""
+        async with self:
+            if not self.loaded:
+                return
+            if self._refreshing:
+                self._refresh_again = True
+                return
+            self._refreshing = True
+            self._refresh_again = False
+        landed = False
+        try:
+            while True:
+                async with self:
+                    if not self.loaded or self._loading_for != -1:
+                        break  # a load of this view is in flight: it brings fresh data
+                    generation, pages = self._generation, max(1, self._pages)
+                    key, tenant_id = await self._session()
+                    filter_key = self.filter_key
+                if tenant_id is None:
+                    break
+                now = datetime.now(UTC)
+                try:
+                    tally = await asyncio.to_thread(counts, tenant_id, now=now)
+                    async with self:
+                        channel = self._effective_channel(tally)
+                    records, cursor = await self._read_pages(
+                        tenant_id, filter_key, channel, pages, now
+                    )
+                except (*_DB_ERRORS, InvalidCursor) as exc:
+                    logger.error("inbox list refresh failed: %s", type(exc).__name__)
+                    break
+                async with self:
+                    current = (
+                        generation == self._generation
+                        and pages == max(1, self._pages)
+                        and self._loading_for == -1
+                        and (await self._session())[0] == key
+                    )
+                    if current:
+                        self._apply_counts(tally)
+                        self.rows = self._build(records, now)
+                        self.next_cursor = cursor
+                        landed = True
+                    # Run again if asked meanwhile, or if «Ver más» added a page.
+                    again = self._refresh_again or (
+                        generation == self._generation and pages != max(1, self._pages)
+                    )
+                    self._refresh_again = False
+                    if not again:
+                        self._refreshing = False
+                        break
         finally:
             async with self:
                 self._refreshing = False
+        if landed:
+            yield _responder_counts()  # the cards and «Mensajes · N», same tick
 
     # ==================================================================================
     # Opening a chat

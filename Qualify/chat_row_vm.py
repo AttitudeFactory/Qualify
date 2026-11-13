@@ -41,6 +41,9 @@ REPLY_SOON_TEMPLATE: Final = "Quedan {minutes} min para responder"
 #: m-25017859: an Instagram chat whose 24 h window closed while the customer had the last
 #: word — said in words, never by colour alone. UX proposal awaiting the founder.
 EXPIRED_PILL: Final = "Ya no puedes responder por aquí"
+#: m-25017859: the open Instagram chat's header pill when the rule says it waits (the
+#: chip's own word; the row says it with the dot).
+AWAITING_PILL: Final = "Por responder"
 
 #: What the waiting dot means — the same «Por responder» rule on every channel
 #: (m-25017859, `qualify_api.inbox.awaiting`), so one word for both.

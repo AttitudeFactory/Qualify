@@ -42,6 +42,7 @@ from ..business_vm import (
 )
 from ..creators_access import CreatorsAccessState
 from ..generation_state import BUSY_TEXT, GenerationState
+from ..nav_url import WHATSAPP_AWAITING_HREF
 from ..pending_state import HEARTBEAT_MS, PendingState
 from ..r2_media import BACKEND_BASE
 from . import tokens as T
@@ -151,6 +152,12 @@ NAV_COUNTERS: dict[str, tuple[rx.Var, str, rx.Var]] = {
 # ring takes the icon's slot, so the row keeps its geometry — also collapsed (zen) and
 # on the phone's bottom bar, which reads this same map.
 NAV_BUSY: dict[str, rx.Var] = {"Crear publicación": GenerationState.busy}
+
+#: m-25017859: where an entry's link lands when it is not the bare route. The WhatsApp
+#: badge counts the «Por responder» rule, so its entry opens the chats on that chip —
+#: the number on the badge is the length of the list it opens (N11). The route stays
+#: the key «you are here» matches on.
+NAV_HREFS: dict[str, str] = {"/whatsapp": WHATSAPP_AWAITING_HREF}
 
 
 def busy_icon(icon: rx.Component, busy: rx.Var | bool | None) -> rx.Component:
@@ -490,7 +497,7 @@ def _nav_item(
             tooltip=busy_label(label, busy) if enabled else f"{label} · Pronto",
             busy=busy,
         ),
-        href=route,
+        href=NAV_HREFS.get(route, route),
         width="100%",
         underline="none",
         aria_current=rx.cond(active, "page", ""),

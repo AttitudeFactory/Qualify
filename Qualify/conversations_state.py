@@ -164,6 +164,7 @@ from .conversations_vm import (
 from .nav_url import (
     back_url_script,
     conversation_href,
+    list_view,
     push_url_script,
     replace_url_script,
     thread_param,
@@ -381,6 +382,8 @@ class ConversationsState(rx.State):
     #: m-25017859: the thread a row of the single list asked for, opened once this
     #: account's list holds it.
     _pending_open: str = ""
+    #: The chat opened by id (not in this account's newest), kept while it is open.
+    _pinned_thread: str = ""
 
     # ==================================================================================
     # Computed vars
@@ -719,6 +722,14 @@ class ConversationsState(rx.State):
     def _set_banner(self, message: str, tone: str) -> None:
         self.banner, self.banner_tone = message, tone
 
+    def _view(self) -> dict[str, str]:
+        """m-25017859: the single list's `?filtro=` / `?canal=` on screen, kept on the
+        chat addresses this pane writes (so «atrás» and a reload keep the list)."""
+        try:
+            return list_view(self.router.url.query_parameters)
+        except AttributeError:
+            return {}
+
     def _mark_row_read(self, thread_id: str) -> None:
         """The optimistic flip of the row: pending → read, before the refresh confirms."""
         label, tone = attention_pill("read")
@@ -810,7 +821,9 @@ class ConversationsState(rx.State):
         self._reset_list()
         self._sync_failure_key = ""
         return [
-            rx.call_script(push_url_script(conversation_href("instagram", connection_id))),
+            rx.call_script(
+                push_url_script(conversation_href("instagram", connection_id, view=self._view()))
+            ),
             ConversationsState.load_list,
         ]
 
@@ -890,6 +903,7 @@ class ConversationsState(rx.State):
             if self.selected_connection_id != connection_id:
                 return []  # the person switched accounts meanwhile
             zone, now = _zone(self._zone_name), self._now()
+            kept = self.rows
             previous = self.rows if silent else []
             rows = [
                 build_thread_row(
@@ -897,6 +911,15 @@ class ConversationsState(rx.State):
                 )
                 for item in listing
             ]
+            pinned = self._pinned_thread
+            if (
+                pinned
+                and pinned == self.open_thread_id
+                and pinned not in {r.thread_id for r in rows}
+            ):
+                # m-25017859: a chat opened by id (older than this account's newest
+                # `THREADS_LIMIT`) stays on screen while it is open.
+                rows += [r for r in kept if r.thread_id == pinned]
             fresh_ids = set(newly_pending(previous, rows))
             if fresh_ids:
                 rows = [
@@ -960,13 +983,71 @@ class ConversationsState(rx.State):
             return [ConversationsState.load_list]
         if thread_id in {r.thread_id for r in self.rows}:
             return self._open(thread_id)
+        # Not among this account's newest chats: read that one chat by id.
         self._pending_open = thread_id
-        return [ConversationsState.load_list]
+        return [ConversationsState.open_by_id]
 
     @rx.event
-    def open_pending(self) -> list[rx.event.EventSpec | rx.event.EventHandler] | None:
-        thread_id, self._pending_open = self._pending_open, ""
-        return self._open(thread_id) if thread_id else None
+    def open_pending(
+        self,
+    ) -> list[rx.event.EventSpec | rx.event.EventHandler] | rx.event.EventHandler | None:
+        """After this account's list loaded: open the asked chat, or read it by id."""
+        thread_id = self._pending_open
+        if not thread_id:
+            return None
+        if thread_id in {r.thread_id for r in self.rows}:
+            self._pending_open = ""
+            return self._open(thread_id)
+        return ConversationsState.open_by_id
+
+    @rx.event(background=True)
+    async def open_by_id(self) -> AsyncIterator[rx.event.EventSpec | rx.event.EventHandler]:
+        """m-25017859: one chat of the selected account by id (`get_dm_thread`), put on
+        the account's rows and opened. Gone (another account, all unsent, deleted):
+        «ya no está disponible» and the single list re-reads."""
+        async with self:
+            thread_id = self._pending_open
+            connection_id = self.selected_connection_id
+            account_label = self.selected_account.label
+            tenant_id = await self._tenant()
+        thread, connection = _uuid(thread_id), _uuid(connection_id)
+        if not thread_id or tenant_id is None or thread is None or connection is None:
+            async with self:
+                self._pending_open = ""
+            return
+        try:
+            item = await asyncio.to_thread(gateway().thread_listing, tenant_id, connection, thread)
+        except ThreadNotFound:
+            async with self:
+                if self._pending_open == thread_id:
+                    self._pending_open = ""
+                    self._set_banner(_THREAD_GONE, "warn")
+            yield rx.toast.warning(_THREAD_GONE, duration=_TOAST_MS)
+            yield _inbox_list_refresh()
+            return
+        except _DB_ERRORS as exc:
+            logger.error("conversations open by id failed: %s", type(exc).__name__)
+            async with self:
+                if self._pending_open == thread_id:
+                    self._pending_open = ""
+            yield rx.toast.error(_CONV_FAILED, duration=_TOAST_MS)
+            return
+        async with self:
+            if self._pending_open != thread_id or self.selected_connection_id != connection_id:
+                return  # another row or account was asked for meanwhile
+            self._pending_open = ""
+            row = build_thread_row(
+                item.view,
+                item.extra,
+                now=self._now(),
+                zone=_zone(self._zone_name),
+                account_label=account_label,
+            )
+            self.rows = [*[r for r in self.rows if r.thread_id != thread_id], row]
+            self._pinned_thread = thread_id
+            events = self._open(thread_id) or []
+        for event in events:
+            yield event
 
     def _open(self, thread_id: str) -> list[rx.event.EventSpec | rx.event.EventHandler] | None:
         if not isinstance(thread_id, str) or thread_id == self.open_thread_id:
@@ -978,7 +1059,11 @@ class ConversationsState(rx.State):
         self._reset_conversation()
         return [
             rx.call_script(
-                writer(conversation_href("instagram", self.selected_connection_id, thread_id))
+                writer(
+                    conversation_href(
+                        "instagram", self.selected_connection_id, thread_id, view=self._view()
+                    )
+                )
             ),
             ConversationsState.load_conversation,
         ]
@@ -992,7 +1077,9 @@ class ConversationsState(rx.State):
         self._reset_conversation()
         events = [
             rx.call_script(
-                back_url_script(conversation_href("instagram", self.selected_connection_id))
+                back_url_script(
+                    conversation_href("instagram", self.selected_connection_id, view=self._view())
+                )
             )
         ]
         if was_recording:
