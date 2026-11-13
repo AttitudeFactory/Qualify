@@ -22,6 +22,91 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
 
 ---
 
+<a id="foto-base-002"></a>
+
+## FOTO-BASE-002 — La foto base sobre la redacción nueva: compilador 5 de `main` frente a 6 (m-25017279) — 2026-11-13
+
+- **Por qué:** **FOTO-BASE-001 midió la redacción vieja.** Allí, «5» era el compilador 4 sin
+  dos frases. Después, `main` integró el PR #662, que trae su propio **compilador 5**: reescribe
+  las frases fijas para negocios que no son de comida («appetizing» → «appealing», «the food» →
+  «real subjects, such as people, materials and the real product», «ingredients» → «parts and
+  details», «Never add logos to people, bare skin or the product itself»). La foto base se
+  renumeró a **compilador 6**: el 5 de `main` menos exactamente la frase de «Datos clave» y la
+  de la letra. Comprobado en los prompts: 5 frente a 6 difieren solo en esas dos frases. Esta
+  prueba mide lo que se publica. El fundador autorizó un tope de **US$1** el 2026-11-13.
+- **Modelo y entradas:** los de FOTO-BASE-001: `dola-seedream-5-0-pro-260628`, fotos de Bianki
+  y su isotipo, Brand Kit de prueba. Solo lectura en R2. **Nada se escribió ni se borró en R2
+  ni en la base.**
+- **Diseño mínimo:** F1, F3, F4, F7, G2 y G3, con 1 repetición = 8 pares. Se agregó **una
+  segunda repetición de G2** (2 pares más) con lo que quedaba del tope. G3 no cabía. En total
+  son **10 pares y 20 imágenes**, con `--versions 5 6` en la rama
+  `feat/m-25017279-foto-base` (cabeza `76cb1b5d`).
+- **Puntuación:** los criterios (a)–(e) y la regla de (a) de FOTO-BASE-001. Las 20 imágenes las
+  miró una persona (este agente). Aparte se anotó si el logo salió alterado (otro color o
+  deformado).
+
+### Resultados
+
+| Criterio | 5 imagen (4) | 6 imagen (4) | 5 galería (6) | 6 galería (6) | 5 total (10) | 6 total (10) |
+|---|---|---|---|---|---|---|
+| (a) Texto inventado | 0 | 0 | 2 | 1 (menor) | 2 | 1 |
+| (b) Botón, insignia o elemento gráfico | 0 | 0 | 1 | 0 | 1 | 0 |
+| (c) Letras reales de las botellas (F4) | 1/1 | 1/1 | — | — | 1/1 | 1/1 |
+| (d) Arriba y abajo tranquilos | 4 | 4 | 5 | 6 | 9 | 10 |
+| (e) Calidad media (1–5) | 4,00 | 3,75 | 3,67 | 4,00 | 3,80 | 3,90 |
+| Logo alterado | 1 | 2 | 0 | 0 | 1 | 2 |
+
+- **En pares:** en 2 pares falla solo el 5; en 1 falla solo el 6 (menor); en 7 no falla
+  ninguno. No hay muestra para una prueba.
+
+**1 — ¿Quitar las dos frases tiene el mismo efecto con la redacción nueva?** Sí, en la misma
+dirección.
+
+- **G2 gancho, rep. 2, compilador 5:** titular «SALKHPAAD» en los colores de la marca, con un
+  subtítulo «Salontgand» (otra vez algo parecido al nombre de la letra) y un logo inventado
+  abajo.
+- **G2 llamada, rep. 2, compilador 5:** letrero de McDonald's con «Mbolen».
+- Con el 6: G2 limpio en 3 de 4. El cuarto tiene letras cursivas desenfocadas e ilegibles en
+  un toldo (menor).
+- El nombre de la letra no apareció con el 6.
+- Zonas tranquilas y calidad: iguales o un poco mejores con el 6.
+
+**2 — Redacción de `main` (compilador 5) frente a las imágenes del compilador 4 de
+FOTO-BASE-001, mismos casos.** Es una **observación entre corridas distintas, no una medición en
+pares**.
+
+- En la comida no se nota cambio de apetito, encuadre ni luz. El shawarma, la salchipapa, las
+  papas y el combo salen con el mismo estilo, y las botellas conservan sus letras.
+- Lo que sí se vio: en F1, con el 5 y con el 6, el isotipo salió **con otros colores** (disco
+  rojo, aro verde azulado). El 4 lo dejó negro en esta corrida.
+- Pero el recoloreado del isotipo en F1 ya había salido 1 vez con el «5» viejo en
+  FOTO-BASE-001. Con esta muestra no se puede atribuir a la redacción nueva.
+
+**3 — Fallos del compilador 6:**
+
+- letras cursivas desenfocadas en un toldo (G2 llamada, rep. 1, menor);
+- isotipo con otros colores en F1;
+- isotipo estirado en óvalo en F4;
+- juguetes y objetos de plástico en los colores de la marca de fondo en F3 (calidad 3).
+- Sin titulares, sin botones y sin marcas de terceros.
+
+**Gasto:** **US$0,912** de un tope de US$1, en 20 llamadas sin fallos. Mediana de unos 40 s por
+imagen. El costo por pieza no cambia.
+
+**Veredicto: publicar el compilador 6.** Con la redacción nueva, quitar las dos frases vuelve a
+eliminar los titulares y el letrero de un tercero que sí aparecieron con el 5. No se vio ninguna
+regresión de texto.
+
+**Límites:**
+
+- 10 pares, una marca y una sola repetición, salvo G2.
+- G3 solo 1 vez.
+- La comparación con el compilador 4 es entre corridas.
+- La alteración del logo (con 5 y 6) queda como observación abierta. Pide una medición propia
+  si se repite en piezas reales.
+
+---
+
 <a id="foto-base-001"></a>
 
 ## FOTO-BASE-001 — La foto base de Seedream: compilador de prompts 4 frente a 5, en pares (m-25017279) — 2026-11-13

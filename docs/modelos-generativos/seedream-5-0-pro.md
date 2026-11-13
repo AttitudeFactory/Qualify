@@ -30,7 +30,26 @@ y [página japonesa actualizada](https://docs.byteplus.com/ja/docs/modelark/mode
 | Uso en Qualify | Experimento `packages/api/evals/plantillas_ai/` pendiente. Producción aún no verificada; el código preparado para m-24993446 usa `v8` y Pro por defecto cuando `QUALIFY_SEEDREAM_MODEL` está vacío. |
 | Datos | **No cede los datos a BytePlus** (corregido el 2026-11-12, m-25017372): el fundador revisó la consola de ModelArk › Data Collaboration el 2026-11-12 y confirmó que ni Seedream 5.0 pro ni 5.0 lite están autorizados para compartir datos. Esta ficha decía antes «Modelo preautorizado: cede los datos a BytePlus»; esa fila venía copiada de la de 5.0 lite y no la respaldaba ninguna revisión de la consola. Con esa confirmación, las fotos del catálogo de un cliente pueden ir a Pro por el identificador del modelo (`dola-seedream-5-0-pro-260628`). Si alguien autoriza Pro en la campaña de datos, esta fila y el envío de fotos de clientes cambian ese mismo día. Cláusula de BytePlus (docs.byteplus.com/en/docs/ModelArk/BytePlus_ModelArk_Data_Processing, actualizada el 2026-09-10): sin autorización previa del cliente no usa sus datos para entrenar sus modelos; procesa en Malasia, Indonesia y/o UE/EEE, y guarda 180 días en Malasia lo que dispara el filtro de contenido |
 
-## Prueba FOTO-BASE-001 — 2026-11-13 (m-25017279)
+## Prueba FOTO-BASE-002 — 2026-11-13 (m-25017279)
+
+Esta es la que mide lo que se publica: el compilador 5 de `main` (redacción general del PR #662)
+frente al **6** (el 5 sin «Datos clave» ni el nombre de la letra). **FOTO-BASE-001, más abajo,
+midió la redacción vieja.** Son 10 pares (F1, F3, F4, F7, G2 ×2 y G3) con fotos de Bianki.
+Detalle completo en [pruebas.md](pruebas.md#foto-base-002).
+
+| Medida | Compilador 5 | Compilador 6 |
+|---|---|---|
+| Texto inventado | 2/10 (titular «SALKHPAAD», letrero de McDonald's) | 1/10 (letras desenfocadas en un toldo) |
+| Botón, insignia o elemento gráfico | 1/10 (logo inventado) | 0/10 |
+| Arriba y abajo tranquilos | 9/10 | 10/10 |
+| Calidad media | 3,80 | 3,90 |
+| Logo alterado | 1/10 | 2/10 |
+
+- **Gasto:** US$0,912 de un tope de US$1.
+- **Veredicto:** publicar el 6.
+- **Abierto:** el isotipo sale a veces recoloreado o deformado, con los dos compiladores.
+
+## Prueba FOTO-BASE-001 — 2026-11-13 (m-25017279) · redacción vieja
 
 Foto base (compilador de prompts 5: sin «Datos clave» ni nombres de letras) frente al
 compilador 4. Son 28 pares con fotos del catálogo de Bianki, a 1080×1920 y 1280×1600, por el
