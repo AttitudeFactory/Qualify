@@ -8,6 +8,9 @@
   background, its frames drawn with Pillow from the Brand Kit logo, a cut-out product
   photo or a short seasonal text, in one of five fixed motions — encoded by Pillow's WebP
   writer.
+- **D** (`video_d.py`, m-25016848, founder 2026-11-12): the same video slots drawn by
+  the Remotion render service (eased camera moves, brand-colour wipes, a logo card),
+  re-encoded and checked like B. B is its fallback whenever the service is off or fails.
 - **C** (`sticker_c.py`, m-24987158, founder 2026-11-09): the same sticker slots drawn by
   the Remotion render service (die-cut outline, drop shadow, spring motions), encoded by
   E's writer and checks. E is its fallback whenever the service is off or fails.
@@ -25,6 +28,7 @@ from qualify_creative.seasonal.look import BrandLook
 from qualify_creative.seasonal.recipes import (
     PIPELINE_VERSION_B,
     PIPELINE_VERSION_C,
+    PIPELINE_VERSION_D,
     PIPELINE_VERSION_E,
     RECIPES,
     RecipeOutput,
@@ -32,16 +36,19 @@ from qualify_creative.seasonal.recipes import (
     run_recipe,
 )
 from qualify_creative.seasonal.sticker_c import RemotionStickerRenderer
+from qualify_creative.seasonal.video_d import RemotionVideoRenderer
 
 __all__ = [
     "PIPELINE_VERSION_B",
     "PIPELINE_VERSION_C",
+    "PIPELINE_VERSION_D",
     "PIPELINE_VERSION_E",
     "RECIPES",
     "BrandLook",
     "RecipeError",
     "RecipeOutput",
     "RemotionStickerRenderer",
+    "RemotionVideoRenderer",
     "pipeline_version",
     "run_recipe",
 ]

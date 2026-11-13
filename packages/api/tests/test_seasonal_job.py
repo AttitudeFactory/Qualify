@@ -17,6 +17,7 @@ from qualify_creative.seasonal import (
     RecipeError,
     RecipeOutput,
     RemotionStickerRenderer,
+    RemotionVideoRenderer,
     run_recipe,
 )
 from qualify_creative.seasonal.errors import FFMPEG_FAILED, TOO_LARGE
@@ -29,6 +30,7 @@ from qualify_api.creative.seasonal_job import (
     SeasonalJob,
     SeasonalMediaJobHandler,
     sticker_renderer_from_env,
+    video_renderer_from_env,
 )
 from qualify_api.whatsapp.seasonal import (
     STATUS_FAILED,
@@ -460,3 +462,98 @@ def test_a_sticker_falls_back_to_recipe_e_when_the_render_service_is_off(
     assert outcome.result["engine"] == "pillow"
     assert outcome.result["fallback"] == "unreachable"
     assert outcome.result["recipe_version"] == "seasonal-e-1"
+
+
+# --- m-25016848: videos through the render service (recipe D), recipe B as fallback --------
+
+
+def test_the_video_engine_comes_from_the_environment() -> None:
+    url = "http://render:3200"
+    assert isinstance(video_renderer_from_env({"QUALIFY_RENDER_URL": url}), RemotionVideoRenderer)
+    ffmpeg = {"QUALIFY_RENDER_URL": url, "QUALIFY_SEASONAL_VIDEOS": "ffmpeg"}
+    assert video_renderer_from_env(ffmpeg) is None
+    assert video_renderer_from_env({}) is None
+    # the sticker switch does not touch the videos, and the reverse
+    pillow = {"QUALIFY_RENDER_URL": url, "QUALIFY_SEASONAL_STICKERS": "pillow"}
+    assert isinstance(video_renderer_from_env(pillow), RemotionVideoRenderer)
+    assert isinstance(sticker_renderer_from_env(ffmpeg), RemotionStickerRenderer)
+
+
+class _Recorder:
+    """A renderer double that keeps the look each job handed it."""
+
+    def __init__(self) -> None:
+        self.looks: list[Any] = []
+
+    def __call__(self, recipe: str, look: Any, work: Path, **kw: Any) -> RecipeOutput:
+        self.looks.append(look)
+        return _fake_render(recipe, look, work, **kw)
+
+
+def test_a_photo_video_carries_the_brand_logo_for_its_sign_off(tmp_path: Path) -> None:
+    rec = _Recorder()
+    w = World(tmp_path, render=rec)
+    assert w.handler.handle(w.job("b-zoom")).status == "done"
+    assert rec.looks[-1].logo is not None
+
+
+def test_a_missing_logo_never_fails_a_photo_video(tmp_path: Path) -> None:
+    rec = _Recorder()
+    w = World(tmp_path, render=rec)
+    del w.store.objects[LOGO_KEY]  # the kit names a logo the bucket no longer has
+    assert w.handler.handle(w.job("b-pan")).status == "done"
+    assert rec.looks[-1].logo is None
+    w.store.objects[LOGO_KEY] = b"not an image"
+    assert w.handler.handle(w.job("b-xfade")).status == "done"
+    assert rec.looks[-1].logo is None
+
+
+def test_an_r2_hiccup_on_the_optional_logo_never_retries_a_photo_video(tmp_path: Path) -> None:
+    rec = _Recorder()
+    w = World(tmp_path, render=rec)
+    real_open = w.handler._objects.open_object
+
+    def flaky(tenant_id: UUID, key: str) -> Any:
+        if key == LOGO_KEY:
+            raise ConnectionError("R2 timed out")
+        return real_open(tenant_id, key)
+
+    w.handler._objects.open_object = flaky  # type: ignore[method-assign]
+    assert w.handler.handle(w.job("b-zoom")).status == "done"
+    assert rec.looks[-1].logo is None
+    # a logo sticker still needs it: the same hiccup is a retry there
+    assert w.handler.handle(w.job("e-latido")).status == "retry"
+
+
+def test_the_logo_video_still_fails_without_its_logo(tmp_path: Path) -> None:
+    w = World(tmp_path, render=_Recorder())
+    del w.store.objects[LOGO_KEY]
+    job = w.job("b-logo")
+    assert w.handler.handle(job).status == "failed"
+    assert w.row(job).fail_reason == "no_source"
+
+
+class _DownVideo:
+    def health(self) -> Any:
+        raise ConnectionError("Name or service not known")
+
+
+def test_a_video_falls_back_to_recipe_b_when_the_render_service_is_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from qualify_creative.seasonal import recipes as recipes_mod  # noqa: PLC0415
+    from qualify_creative.seasonal.video import VideoResult  # noqa: PLC0415
+
+    def fake_b(recipe: str, images: Any, look: Any, work: Path) -> VideoResult:
+        path = work / "b.mp4"
+        path.write_bytes(b"\x00" * 4096)
+        return VideoResult(path, 720, 720, 4000, 96, 4096, 28, False)
+
+    monkeypatch.setattr(recipes_mod, "make_video", fake_b)
+    renderer = RemotionVideoRenderer(_DownVideo())  # type: ignore[arg-type]
+    w = World(tmp_path, render=partial(run_recipe, video_renderer=renderer))
+    outcome = w.handler.handle(w.job("b-zoom"))
+    assert outcome.status == "done", outcome
+    assert outcome.result["engine"] == "ffmpeg"
+    assert outcome.result["fallback"] == "unreachable"
+    assert outcome.result["recipe_version"] == "seasonal-b-1"

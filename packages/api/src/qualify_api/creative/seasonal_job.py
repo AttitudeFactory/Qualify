@@ -33,14 +33,19 @@ attempt}`.
    worker calls `give_up`, which marks the row failed and deletes the deterministic key.
 
 The row's `pipeline_version` is the library's (`seasonal-v1`, set at planning); the
-recipe's own version (`seasonal-b-1` / `seasonal-c-2` / `seasonal-e-1`), its encoding, the
-engine that drew it and, for a sticker, why recipe C fell back to E go in the log line and
-the job's `result` — see `SeasonalOutcome.result`.
+recipe's own version (`seasonal-b-1` / `seasonal-d-1` / `seasonal-c-2` / `seasonal-e-1`),
+its encoding, the engine that drew it and why the Remotion recipe (C or D) fell back go in
+the log line and the job's `result` — see `SeasonalOutcome.result`.
 
 **Stickers (m-24987158):** production draws them with recipe C — the Remotion render
 service at `QUALIFY_RENDER_URL` — and falls back to recipe E (Pillow) whenever that
 service is off (its compose profile is not on yet), unreachable or fails.
 `QUALIFY_SEASONAL_STICKERS=pillow` forces recipe E.
+
+**Videos (m-25016848):** the same service draws them with recipe D and falls back to
+recipe B (FFmpeg); `QUALIFY_SEASONAL_VIDEOS=ffmpeg` forces B. A photo video also reads the
+Brand Kit logo for its closing sign-off — a missing or unreadable logo only drops the
+sign-off, it never fails the video.
 """
 
 from __future__ import annotations
@@ -63,6 +68,7 @@ from qualify_creative.seasonal import (
     RecipeError,
     RecipeOutput,
     RemotionStickerRenderer,
+    RemotionVideoRenderer,
     run_recipe,
 )
 from qualify_creative.seasonal.errors import NO_SOURCE, UNREADABLE_SOURCE
@@ -90,6 +96,10 @@ MAX_PIECES = 3
 #: Which engine draws the stickers: `remotion` (recipe C, falling back to E) or `pillow`
 #: (recipe E only). Read once when the worker builds its handler.
 STICKERS_ENGINE_ENV = "QUALIFY_SEASONAL_STICKERS"
+#: Which engine draws the videos: `remotion` (recipe D, falling back to B) or `ffmpeg`
+#: (recipe B only). Read once when the worker builds its handler.
+VIDEOS_ENGINE_ENV = "QUALIFY_SEASONAL_VIDEOS"
+KIND_VIDEO = "video"
 RENDER_URL_ENV = "QUALIFY_RENDER_URL"
 
 
@@ -435,7 +445,9 @@ class SeasonalMediaJobHandler:
             raise _Permanent(UNREADABLE_SOURCE)
         return data
 
-    def _look(self, job: SeasonalJob, logo_key: str | None) -> BrandLook:
+    def _look(
+        self, job: SeasonalJob, logo_key: str | None, *, logo_optional: bool = False
+    ) -> BrandLook:
         palette = self._sources.palette(job.tenant_id, job.brand_id)
         font_key, family = self._sources.heading_font(job.tenant_id, job.brand_id)
         font: bytes | None = None
@@ -449,8 +461,29 @@ class SeasonalMediaJobHandler:
                 font = self._google_fonts(family)
             except Exception:  # noqa: BLE001 — a nicety: the bundled face otherwise
                 font = None
-        logo = self._read(job.tenant_id, logo_key) if logo_key else None
-        return BrandLook.from_kit(palette=palette, logo=logo, font=font, family=family)
+        logo: bytes | None = None
+        if logo_key:
+            try:
+                logo = self._read(job.tenant_id, logo_key)
+            except _Permanent:
+                if not logo_optional:
+                    raise
+            except Exception as exc:  # noqa: BLE001 — an R2 hiccup
+                if not logo_optional:
+                    raise
+                # only a photo video's sign-off needs it: never retry the job for it
+                logger.warning(
+                    "seasonal_job.optional_logo_unread media=%s %s",
+                    job.media_id,
+                    type(exc).__name__,
+                )
+        try:
+            return BrandLook.from_kit(palette=palette, logo=logo, font=font, family=family)
+        except RecipeError:
+            if not logo_optional or logo is None:
+                raise
+            # an unreadable logo only drops a photo video's sign-off
+            return BrandLook.from_kit(palette=palette, logo=None, font=font, family=family)
 
     def _render_job(self, job: SeasonalJob, work: Path) -> RecipeOutput:
         images: list[Image.Image] = []
@@ -464,6 +497,9 @@ class SeasonalMediaJobHandler:
             if not logo_key or job.source_ref != logo_key:
                 raise _Permanent(NO_SOURCE)
         elif job.source_kind == SOURCE_PIECE:
+            if job.kind == KIND_VIDEO:
+                # the closing sign-off of a photo video (recipe D): optional
+                logo_key = self._sources.logo_key(job.tenant_id, job.brand_id)
             ids = _draft_ids(job.source_ref)
             keys = self._sources.piece_image_keys(job.tenant_id, job.brand_id, ids)
             if not keys:
@@ -476,8 +512,9 @@ class SeasonalMediaJobHandler:
         else:
             raise _Permanent(NO_SOURCE)
         # The logo is part of the look for every recipe that draws it (logo stickers,
-        # the video end card); a text sticker or a piece video needs only the colours.
-        look = self._look(job, logo_key)
+        # the video end card, a photo video's sign-off); a text sticker needs only the
+        # colours. Only a logo recipe fails without it.
+        look = self._look(job, logo_key, logo_optional=job.source_kind != SOURCE_LOGO)
         return self._render(job.recipe, look, work, images=images, text=text)
 
     def _put(self, job: SeasonalJob, output: RecipeOutput) -> str:
@@ -603,14 +640,31 @@ def sticker_renderer_from_env(
     return RemotionStickerRenderer.from_url(url)
 
 
+def video_renderer_from_env(
+    env: Mapping[str, str] | None = None,
+) -> RemotionVideoRenderer | None:
+    """Recipe D's renderer, or None when videos must stay on recipe B
+    (`QUALIFY_SEASONAL_VIDEOS=ffmpeg`, or no `QUALIFY_RENDER_URL`). Like the stickers', a
+    renderer is returned even when the service is down: each video checks `/health`."""
+    env = os.environ if env is None else env
+    engine = (env.get(VIDEOS_ENGINE_ENV) or "remotion").strip().lower()
+    url = (env.get(RENDER_URL_ENV) or "").strip()
+    if engine == "ffmpeg" or not url:
+        logger.info("seasonal_job.videos engine=ffmpeg url=%s", url or "-")
+        return None
+    logger.info("seasonal_job.videos engine=remotion fallback=ffmpeg url=%s", url)
+    return RemotionVideoRenderer.from_url(url)
+
+
 def production_seasonal_handler(objects: SeasonalObjects) -> SeasonalMediaJobHandler:
     from qualify_creative.brand.fonts import google_font_file  # noqa: PLC0415
 
     from qualify_api.whatsapp.seasonal import production_seasonal_service  # noqa: PLC0415
 
-    renderer = sticker_renderer_from_env()
-    render: Renderer = (
-        functools.partial(run_recipe, sticker_renderer=renderer) if renderer else run_recipe
+    render: Renderer = functools.partial(
+        run_recipe,
+        sticker_renderer=sticker_renderer_from_env(),
+        video_renderer=video_renderer_from_env(),
     )
     return SeasonalMediaJobHandler(
         objects=objects,

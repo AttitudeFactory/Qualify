@@ -17,6 +17,13 @@ import {PromoStill} from './templates/promo_producto/PromoStill';
 import {FPS, buildScript} from './templates/promo_producto/script';
 import stickerManifest from '../templates/sticker/manifest.json';
 import {CELL, SHEET, StickerPreview, StickerSheet, type StickerProps} from './templates/sticker/Sticker';
+import seasonalVideoManifest from '../templates/seasonal_video/manifest.json';
+import {
+  FPS as SEASONAL_VIDEO_FPS,
+  SeasonalVideo,
+  seasonalVideoMetadata,
+  type SeasonalVideoProps,
+} from './templates/seasonal_video/SeasonalVideo';
 
 // m-24987158: seasonal WhatsApp stickers. The sheet is the only output port (a PNG grid
 // of every frame, transparent); the preview plays it in Studio and is not a port.
@@ -24,6 +31,15 @@ const stickerDefaults: StickerProps = {
   meta: {templateId: 'sticker', version: 1, port: 'sheet'},
   brand: {name: 'Polette', palette: ['#5A2A27', '#F4C2C2'], fonts: {heading: 'Poppins'}},
   texts: {motion: 'texto', text: '¡Feliz Navidad!'},
+};
+
+// m-25016848: seasonal short videos (recipe D). Size and length come from the props
+// (calculateMetadata): 720 px wide, as tall as the first photo allows, 4–5 s.
+const seasonalVideoDefaults: SeasonalVideoProps = {
+  meta: {templateId: 'seasonal_video', version: 1, port: 'clip'},
+  brand: {name: 'Polette', palette: ['#5A2A27', '#F4C2C2'], fonts: {heading: 'Poppins'}},
+  texts: {motion: 'fundido', height: 900},
+  photos: [staticFile('sample/photo-1.jpg'), staticFile('sample/photo-2.jpg')],
 };
 
 const promoBounds = {
@@ -120,6 +136,16 @@ export const RemotionRoot: React.FC = () => {
         width={stickerManifest.outputs.sheet.width}
         height={stickerManifest.outputs.sheet.height}
         defaultProps={stickerDefaults}
+      />
+      <Composition
+        id={seasonalVideoManifest.outputs.clip.composition}
+        component={SeasonalVideo}
+        width={seasonalVideoManifest.outputs.clip.width}
+        height={seasonalVideoManifest.outputs.clip.height}
+        fps={SEASONAL_VIDEO_FPS}
+        durationInFrames={Math.round(seasonalVideoManifest.duration.min_sec * SEASONAL_VIDEO_FPS)}
+        defaultProps={seasonalVideoDefaults}
+        calculateMetadata={seasonalVideoMetadata}
       />
       <Composition
         id="sticker-v1-preview"

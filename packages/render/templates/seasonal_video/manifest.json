@@ -1,0 +1,20 @@
+{
+  "id": "seasonal_video",
+  "version": 1,
+  "name": "Video corto de temporada",
+  "niche": [],
+  "serves_angles": ["seasonal_video"],
+  "inputs": {
+    "motion": {"type": "string", "enum": ["acercar", "recorrer", "fundido", "logo"]},
+    "height": {"type": "number", "min": 720, "max": 1280},
+    "card":   {"type": "string", "max": 7, "optional": true},
+    "photos": {"type": "image[]", "min": 0, "max": 3, "optional": true},
+    "brand":  {"type": "brand_kit"}
+  },
+  "outputs": {
+    "clip": {"kind": "video", "width": 720, "height": 1280, "composition": "seasonal-video-v1--clip"}
+  },
+  "duration": {"from": "script", "min_sec": 4, "max_sec": 5},
+  "render": {"concurrency": 1},
+  "cost_model": {"seconds_per_video_sec": 6.0, "seconds_per_still": 0}
+}

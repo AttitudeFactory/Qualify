@@ -23,6 +23,14 @@ export const classifyError = (err) => {
   return 'internal_error';
 };
 
+/** Chromium tabs for one render: the manifest's `render.concurrency` when it sets one
+ * (never above the service's own REMOTION_CONCURRENCY), else the service's value. */
+export const renderConcurrencyOf = (manifest, serviceValue) => {
+  const own = manifest?.render?.concurrency;
+  if (!Number.isInteger(own) || own < 1) return serviceValue;
+  return Number.isInteger(serviceValue) && serviceValue >= 1 ? Math.min(own, serviceValue) : own;
+};
+
 /** ElevenCreative rollup rule (CONTRACT §4.1). */
 export const rollup = (job) => {
   const states = Object.values(job.outputs).map((o) => o.status);
@@ -212,7 +220,9 @@ export class JobManager {
           outputLocation: out.file,
           inputProps,
           chromiumOptions,
-          concurrency: this.config.remotionConcurrency,
+          // a manifest's `render.concurrency` caps the Chromium tabs of its own renders
+          // (seasonal_video: 1, so a 720p clip stays inside the container's memory cap)
+          concurrency: renderConcurrencyOf(job.manifest, this.config.remotionConcurrency),
           timeoutInMilliseconds: this.config.delayRenderTimeoutMs,
           cancelSignal: out.cancel.cancelSignal,
           logLevel: 'error',
