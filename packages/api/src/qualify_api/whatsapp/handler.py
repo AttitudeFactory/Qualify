@@ -94,13 +94,16 @@ the receiving brand's Galería products by `cart_product_loader(phone_row_id, id
 (`whatsapp.catalog.load_cart_products_for_phone` in production, one query). The thread
 is handed to a person exactly as a confirmed menu order is: `_handoff` (reason
 `CART_HANDOFF_REASON`), automation paused, the engine's working order and payment keys
-cleared. A replayed cart (the message row already stored) re-runs only this idempotent
-step, so a crash between the insert and the save never loses the order, and a cart
-already recorded — current or archived — changes nothing.
+cleared. A cart with no readable line still goes to a person (no order is recorded;
+`_handoff.summary.order_recorded` is false). A replayed cart (the message row already
+stored) does nothing, like any replayed message: it must not pause again a thread a
+person resumed. Known cost, the same as the menu's: a crash between the message insert
+and the state save loses that cart's order (the message itself is kept).
 
 **Replacing an order (m-25018684).** When a confirmation from another message (menu or
 cart) replaces the current order, `orders` archives the previous record under
-`_orders_previous`, and the save runs with `archive_payment=True`: the current `_payment`
+`_orders_previous`, and the save runs with `archive_payment=True` (a cart always uses it
+when it writes an order): the current `_payment`
 is only what this step wrote (a menu payment choice, or nothing — a cart never inherits
 the previous order's payment), and the stored one is snapshotted into the archive entry
 in the same statement when it was that order's. A proof the customer sends afterwards
@@ -705,8 +708,10 @@ def whatsapp_messages_handler(
                 paused_at=now,
                 attempts=0,
             ),
+            # Whenever the cart wrote an order, `_payment` goes through the guarded
+            # archiving save (snapshotted if it was the replaced order's, never current).
             preserve_payment=not written,
-            archive_payment=archived,
+            archive_payment=written,
         )
         record = context.get(CTX_ORDER_RECORD)
         lines = record.get("items", []) if written and isinstance(record, Mapping) else []
@@ -805,8 +810,9 @@ def whatsapp_messages_handler(
                     channel="whatsapp",
                     referral=raw_whatsapp_referral(event, message.id, message.from_),
                 )
-            if message.type == ORDER_MESSAGE_TYPE:
-                # m-25018684: idempotent per wamid, so a replay re-runs it safely.
+            if inserted and message.type == ORDER_MESSAGE_TYPE:
+                # m-25018684: a cart is never menu input; a replay (row already stored)
+                # does nothing — it must not re-pause a thread a person resumed.
                 _cart(ctx, thread_id=upsert.thread_id, message=message)
                 continue
             if not inserted:

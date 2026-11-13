@@ -125,7 +125,7 @@ def test_meta_doc_cart_without_galeria_products_records_raw_ids() -> None:
                 "linked": False,
                 "price_mismatch": False,
                 "qty": 2,
-                "unit_price": "30",
+                "unit_price": "30.00",
                 "currency": "USD",
                 "retailer_id": "di9ozbzfi4",
             },
@@ -135,7 +135,7 @@ def test_meta_doc_cart_without_galeria_products_records_raw_ids() -> None:
                 "linked": False,
                 "price_mismatch": False,
                 "qty": 1,
-                "unit_price": "25",
+                "unit_price": "25.00",
                 "currency": "USD",
                 "retailer_id": "nqryix03ez",
             },
@@ -147,7 +147,7 @@ def test_meta_doc_cart_without_galeria_products_records_raw_ids() -> None:
         "source": SOURCE_CART,
         "catalog_id": "194836987003835",
         "note": "Love these!",
-        "total": "85",
+        "total": "85.00",
         "currency": "USD",
     }
 
@@ -173,10 +173,10 @@ def test_a_galeria_product_links_with_its_name_and_flags_a_price_change() -> Non
     assert lines[0]["retailer_id"] == upper
 
 
-def test_a_galeria_product_without_currency_or_price_compares_what_it_has() -> None:
+def test_a_galeria_price_or_currency_that_is_not_set_is_never_a_mismatch() -> None:
     no_currency = {str(PRODUCT): CartProduct(str(PRODUCT), "Shawarma", Decimal("30"), None)}
     no_price = {str(PRODUCT): CartProduct(str(PRODUCT), "Shawarma", None, None)}
-    for products, mismatch in ((no_currency, False), (no_price, True)):
+    for products, mismatch in ((no_currency, False), (no_price, False)):
         record = cart_record(
             items=[_item(str(PRODUCT))], products=products, confirmed_at=AT, source_message_id="w"
         )
@@ -217,6 +217,13 @@ def test_only_uuid_retailer_ids_are_looked_up() -> None:
         _item("a", 1, "gratis"),
         _item("a", 1, None),
         _item("a", 1, "NaN"),
+        _item("a", 1, "Infinity"),
+        _item("a", 1, "1e400"),
+        _item("a", 1, "1000000000000.01"),
+        _item("a", 2.9),
+        _item("a", "2.5"),
+        _item("a", 10**30),
+        _item("a", 10_001),
         _item("", 1),
         _item(None, 1),
         _item(True, 1),
@@ -228,7 +235,7 @@ def test_garbage_lines_are_skipped(bad: dict) -> None:
     )
     assert record is not None
     assert [i["product_id"] for i in record["items"]] == ["ok"]
-    assert record["total"] == "10"
+    assert record["total"] == "10.00"
 
 
 def test_an_empty_cart_records_nothing() -> None:
@@ -253,7 +260,7 @@ def test_mixed_currencies_are_never_added_together() -> None:
     )
     record = context[CTX_ORDER_RECORD]
     assert (record["total"], record["currency"]) == ("0", None)
-    assert record["totals"] == {"COP": "15000", "USD": "65"}
+    assert record["totals"] == {"COP": "15000.00", "USD": "65.00"}
     order = read_order(context)
     assert order is not None and order.mixed_currency
     assert order.totals_by_currency == {"COP": Decimal("15000"), "USD": Decimal("65")}
@@ -475,3 +482,113 @@ def test_the_chats_list_previews_a_cart_as_an_order_from_the_catalog() -> None:
     service = ChatService(repo, MemoryOutboxRepository(clock=lambda: AT), clock=lambda: AT)
     [summary] = service.list_threads(tenant)
     assert summary.last_message_preview == "Pedido desde tu catálogo"
+
+
+# --- review fixes: bounds, truncation, the Galería price ------------------------------
+
+
+def test_integer_valued_quantities_and_prices_to_the_cent_are_kept() -> None:
+    record = cart_record(
+        items=[_item("a", "2.0", "9.999"), _item("b", 10_000, "1000000000000")],
+        products={},
+        confirmed_at=AT,
+        source_message_id="w",
+    )
+    assert record is not None
+    assert [(i["qty"], i["unit_price"]) for i in record["items"]] == [
+        (2, "10.00"),
+        (10_000, "1000000000000.00"),
+    ]
+
+
+def test_lines_beyond_the_cap_are_cut_and_the_record_says_so() -> None:
+    from qualify_api.whatsapp.orders import MAX_CART_LINES
+
+    items = [_item("junk", 0)] + [_item(f"sku{n}", 1, 1) for n in range(MAX_CART_LINES + 5)]
+    record = cart_record(items=items, products={}, confirmed_at=AT, source_message_id="w")
+    assert record is not None
+    assert len(record["items"]) == MAX_CART_LINES and record["lines_truncated"] is True
+    assert record["total"] == f"{MAX_CART_LINES}.00"
+    order = read_order({CTX_ORDER_RECORD: record})
+    assert order is not None and order.lines_truncated and not order.note_truncated
+
+
+def test_a_long_note_is_cut_and_the_record_says_so() -> None:
+    from qualify_api.whatsapp.orders import MAX_NOTE_CHARS
+
+    record = cart_record(
+        items=[_item("a")], products={}, confirmed_at=AT, source_message_id="w", note="x" * 5000
+    )
+    assert record is not None
+    assert len(record["note"]) == MAX_NOTE_CHARS and record["note_truncated"] is True
+    assert "lines_truncated" not in record
+    order = read_order({CTX_ORDER_RECORD: record})
+    assert order is not None and order.note_truncated
+    exact = cart_record(
+        items=[_item("a")], products={}, confirmed_at=AT, source_message_id="w", note="y" * 1000
+    )
+    assert exact is not None and "note_truncated" not in exact
+
+
+def test_a_mismatch_keeps_the_galeria_price_it_was_compared_to() -> None:
+    galeria = {str(PRODUCT): CartProduct(str(PRODUCT), "Shawarma", Decimal("12000"), "cop")}
+    context: dict[str, Any] = {}
+    _cart(
+        context,
+        "w",
+        _item(str(PRODUCT), 1, 15000, "COP"),
+        _item(str(PRODUCT), 1, 12000, "COP"),
+        products=galeria,
+    )
+    changed, same = context[CTX_ORDER_RECORD]["items"]
+    assert (changed["gallery_unit_price"], changed["gallery_currency"]) == ("12000", "COP")
+    assert "gallery_unit_price" not in same and "gallery_currency" not in same
+    first, second = read_order(context).lines  # type: ignore[union-attr]
+    assert (first.price_mismatch, first.gallery_unit_price, first.gallery_currency) == (
+        True,
+        Decimal("12000"),
+        "COP",
+    )
+    assert (second.gallery_unit_price, second.gallery_currency) == (None, None)
+
+
+def test_old_records_read_without_the_galeria_price() -> None:
+    record = {
+        "items": [
+            {"product_id": "p", "name": "x", "qty": 1, "unit_price": "5", "price_mismatch": True},
+            {"product_id": "q", "name": "y", "qty": 1, "gallery_unit_price": "9"},
+        ],
+        "total": "5",
+    }
+    first, second = read_order({CTX_ORDER_RECORD: record}).lines  # type: ignore[union-attr]
+    assert (first.gallery_unit_price, first.gallery_currency) == (None, None)
+    assert second.gallery_unit_price is None  # only read on a flagged line
+
+
+def test_readers_never_raise_on_absurd_stored_values() -> None:
+    record = {
+        "items": [
+            {"product_id": "p", "name": "Gigante", "qty": 1, "unit_price": "1e400"},
+            {"product_id": "q", "name": "Muchos", "qty": 10**30, "unit_price": "5"},
+            {"product_id": "r", "name": "Normal", "qty": 2, "unit_price": "5", "currency": "USD"},
+        ],
+        "total": "1e400",
+        "currency": "USD",
+        "totals": {"USD": "1e400", "COP": "5"},
+    }
+    order = read_order({CTX_ORDER_RECORD: record})
+    assert order is not None
+    assert [(line.name, line.unit_price) for line in order.lines] == [
+        ("Gigante", None),
+        ("Normal", Decimal("5")),
+    ]
+    assert order.total == Decimal("0") and order.totals_by_currency == {}
+    text = order_ready_text(order)
+    assert "1 x Gigante" in text and "2 x Normal — USD 10" in text
+
+
+def test_format_money_writes_an_unroundable_amount_as_is() -> None:
+    from qualify_api.whatsapp.menus.engine import format_money
+
+    assert format_money(Decimal("1E+30"), "USD") == "USD 1E+30"
+    assert format_money(Decimal("12500"), "COP") == "COP 12.500"

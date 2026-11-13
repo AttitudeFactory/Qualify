@@ -369,3 +369,28 @@ def test_payment_flags_are_exclusive(seeded) -> None:
             preserve_payment=True,
             archive_payment=True,
         )
+
+
+def test_an_archiving_save_that_archived_nothing_leaves_old_entries_alone(seeded) -> None:
+    """A cart written with no current order (nothing archived now) drops a stray
+    `_payment` through the same statement and never rewrites an older archive entry."""
+    from qualify_api.whatsapp.repository import StoredThreadState
+
+    repo = PostgresWhatsAppInboxRepository()
+    older = {"order": {"items": [], "source_message_id": "wamid.old"}, "payment": None}
+    stray = {"status": "awaiting", "order_message_id": "wamid.old"}
+    repo.save_thread_state(
+        thread_id=seeded["thread"],
+        tenant_id=TENANT,
+        state=StoredThreadState(context={"_orders_previous": [older], "_payment": stray}),
+    )
+    cart = {"items": [], "source": "cart", "source_message_id": "wamid.cart"}
+    repo.save_thread_state(
+        thread_id=seeded["thread"],
+        tenant_id=TENANT,
+        state=StoredThreadState(context={"_order": cart, "_orders_previous": [older]}),
+        archive_payment=True,
+    )
+    context = _context(seeded["thread"])
+    assert "_payment" not in context
+    assert context["_orders_previous"] == [older]

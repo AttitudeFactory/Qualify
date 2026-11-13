@@ -148,17 +148,34 @@ class WAMedia(_Shape):
     filename: str | None = None
 
 
+def _scalar_text(value: Any) -> str | None:
+    """A string field of the cart, whatever type Meta sent: a string as is, a number as
+    its text, anything else (an object, a list, a boolean) as absent — never a
+    `ValidationError` that would drop every message of the change."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, int | float) and not isinstance(value, bool):
+        return str(value)
+    return None
+
+
 class WAOrderItem(_Shape):
     """One `order.product_items[]` line (webhooks reference, `messages` › `order`, read
     2026-11-13). Every field is loose on purpose: the reference types `item_price` as an
     Integer but its own example is `7.99`, and one malformed line must never turn the
-    whole change into a `contract_violation` — the consumer validates each value
-    (`whatsapp.orders.cart_record` skips a line it cannot read)."""
+    whole change into a `contract_violation`: the text fields take any type (`_scalar_text`)
+    and the consumer validates each value (`whatsapp.orders.cart_record` skips a line it
+    cannot read)."""
 
-    product_retailer_id: str | int | None = None
+    product_retailer_id: str | None = None
     quantity: Any = None
     item_price: Any = None
     currency: str | None = None
+
+    @field_validator("product_retailer_id", "currency", mode="before")
+    @classmethod
+    def _text(cls, value: Any) -> str | None:
+        return _scalar_text(value)
 
 
 class WAOrder(_Shape):
@@ -169,6 +186,11 @@ class WAOrder(_Shape):
     catalog_id: str | None = None
     text: str | None = None
     product_items: list[WAOrderItem] = Field(default_factory=list)
+
+    @field_validator("catalog_id", "text", mode="before")
+    @classmethod
+    def _text(cls, value: Any) -> str | None:
+        return _scalar_text(value)
 
     @field_validator("product_items", mode="before")
     @classmethod

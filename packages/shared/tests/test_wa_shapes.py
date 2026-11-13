@@ -272,3 +272,30 @@ def test_a_malformed_order_never_rejects_the_message(order: object) -> None:
     assert message.type == "order"
     if message.order is not None:
         assert all(isinstance(i.quantity, object) for i in message.order.product_items)
+
+
+@pytest.mark.parametrize(
+    ("item", "expected_id", "expected_currency"),
+    [
+        ({"product_retailer_id": 1.5, "currency": 840}, "1.5", "840"),
+        ({"product_retailer_id": {"x": 1}, "currency": ["USD"]}, None, None),
+        ({"product_retailer_id": True, "currency": False}, None, None),
+        ({"product_retailer_id": 42, "currency": "USD"}, "42", "USD"),
+    ],
+)
+def test_order_text_fields_take_any_type(
+    item: dict, expected_id: str | None, expected_currency: str | None
+) -> None:
+    message = WAMessage.model_validate(
+        {
+            "id": "wamid.X",
+            "from": "1",
+            "timestamp": "1",
+            "type": "order",
+            "order": {"catalog_id": 123, "text": ["x"], "product_items": [item]},
+        }
+    )
+    assert message.order is not None
+    assert (message.order.catalog_id, message.order.text) == ("123", None)
+    (line,) = message.order.product_items
+    assert (line.product_retailer_id, line.currency) == (expected_id, expected_currency)

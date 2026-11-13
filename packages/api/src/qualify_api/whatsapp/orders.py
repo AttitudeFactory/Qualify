@@ -18,14 +18,16 @@ The record (a menu record has no `source` key and none of the cart-only keys):
 
     {"items": [{"product_id", "name", "qty", "unit_price", "currency",
                 # cart only:
-                "retailer_id", "linked", "price_mismatch"}],
+                "retailer_id", "linked", "price_mismatch",
+                "gallery_unit_price", "gallery_currency"}],      # the last two on a mismatch
      "total": "35000.00", "currency": "COP",
      "confirmed_at": "2026-10-14T12:00:00+00:00",
      "collected": {"direccion": "Calle 10 # 5-20"},
      "source_message_id": "wamid....", "engine_version": "wa-menu-engine-0.1.0",
      # cart only:
      "source": "cart", "catalog_id": "1948…", "note": "the customer's text" | None,
-     "totals": {"COP": "…", "USD": "…"}}          # only when the cart mixes currencies
+     "totals": {"COP": "…", "USD": "…"},          # only when the cart mixes currencies
+     "lines_truncated": true, "note_truncated": true}   # only when something was cut
 
 Money is stored as decimal strings (the context is jsonb) and read back as `Decimal`.
 `source_message_id` (the inbound `wamid` that confirmed, or the cart message itself) and
@@ -40,15 +42,19 @@ listo» quick reply (free-form text, so only inside the 24 h window).
 products of the brand the receiving number belongs to (`whatsapp.catalog.
 load_cart_products_for_phone`) and passes what it found here. A found product is
 `linked`: `product_id` is its id, `name` its Galería name, and `price_mismatch` says the
-cart's price or currency differs from Galería's at the moment of recording (an empty
-Galería currency is «not set», never a difference). Anything
-else is not linked: `product_id` is the raw retailer id, `name` is empty (the UI words
-it), `retailer_id` keeps the raw value either way. The cart's own prices are the truth
-(`item_price × quantity`, never Galería's). A line with a quantity or price that is not
-a positive number is skipped. **Mixed currencies** are never added together: `total`
-is `"0"`, `currency` is `None` and `totals` carries one decimal string per currency
-(`""` for a line without one); `OrderSummary.totals_by_currency` / `mixed_currency`
-expose it.
+cart's price or currency differs from Galería's at the moment of recording (a Galería
+price or currency that is not set is never a difference); a flagged line also stores
+the Galería price it was compared to (`gallery_unit_price`, `gallery_currency`).
+Anything else is not linked: `product_id` is the raw retailer id, `name` is empty (the
+UI words it), `retailer_id` keeps the raw value either way. The cart's own prices are
+the truth (`item_price × quantity`, never Galería's). A line is skipped unless its
+quantity is an integer in 1–`MAX_CART_QTY` and its price is finite, above zero and at
+most `MAX_CART_PRICE` (rounded to the cent). At most `MAX_CART_LINES` lines and
+`MAX_NOTE_CHARS` of note are kept; the record then says `lines_truncated` /
+`note_truncated`. Readers skip a stored value beyond sane bounds instead of raising.
+**Mixed currencies** are never added together: `total` is `"0"`, `currency` is `None`
+and `totals` carries one decimal string per currency (`""` for a line without one);
+`OrderSummary.totals_by_currency` / `mixed_currency` expose it.
 
 **Idempotent per message.** Both writers key on `source_message_id`: the same
 confirmation (or the same cart delivered twice) keeps the first record and its
@@ -79,7 +85,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any, Final
 from uuid import UUID
 
@@ -97,6 +103,17 @@ CART_ENGINE_VERSION: Final = "wa-native-cart-0.1.0"
 
 ORDER_READY_HEADLINE: Final = "¡Tu pedido está listo!"
 ORDER_READY_CLOSING: Final = "Gracias por tu pedido."
+#: Bounds of a cart (m-25018684 review): anything outside is not a line we can trust.
+MAX_CART_LINES: Final = 100
+MAX_NOTE_CHARS: Final = 1000
+MAX_CART_QTY: Final = 10_000
+MAX_CART_PRICE: Final = Decimal("1E12")
+#: Readers skip a stored amount or quantity beyond these (an old or hand-made record),
+#: so a card, a caption or «Pedido listo» never raises on it.
+_MAX_READ_AMOUNT: Final = Decimal("1E15")
+_MAX_READ_QTY: Final = 1_000_000
+_CENT: Final = Decimal("0.01")
+
 #: «Pedido listo» line for a cart product that is not in Galería: its catalog code.
 UNLINKED_PRODUCT_LABEL: Final = "Producto (código {code})"
 
@@ -114,6 +131,9 @@ class OrderLine:
     linked: bool = True
     #: Cart only: the cart's price/currency differed from Galería's when recorded.
     price_mismatch: bool = False
+    #: Cart only, set only with `price_mismatch`: the Galería price it was compared to.
+    gallery_unit_price: Decimal | None = None
+    gallery_currency: str | None = None
 
     @property
     def line_total(self) -> Decimal | None:
@@ -136,6 +156,9 @@ class OrderSummary:
     note: str | None = None
     #: Only for an order that mixes currencies: one total per currency (`""` = none).
     totals_by_currency: dict[str, Decimal] = field(default_factory=dict)
+    #: Cart only: more than `MAX_CART_LINES` lines / a note over `MAX_NOTE_CHARS` were cut.
+    lines_truncated: bool = False
+    note_truncated: bool = False
 
     @property
     def item_count(self) -> int:
@@ -198,6 +221,37 @@ def _qty(value: Any) -> int | None:
     except (TypeError, ValueError, OverflowError):
         return None
     return qty if qty > 0 else None
+
+
+def _amount(value: Any) -> Decimal | None:
+    """A stored money value as the readers take it: `None` beyond `_MAX_READ_AMOUNT`."""
+    out = _decimal(value)
+    return out if out is not None and abs(out) <= _MAX_READ_AMOUNT else None
+
+
+def _read_qty(value: Any) -> int | None:
+    qty = _qty(value)
+    return qty if qty is not None and qty <= _MAX_READ_QTY else None
+
+
+def _cart_qty(value: Any) -> int | None:
+    """A cart quantity: an integer value (`2`, `"2"`, `2.0`) in 1–`MAX_CART_QTY`; `2.9`,
+    `"dos"`, `True` are not one."""
+    if isinstance(value, bool):
+        return None
+    number = _decimal(value)
+    if number is None or number != number.to_integral_value():
+        return None
+    qty = int(number)
+    return qty if 1 <= qty <= MAX_CART_QTY else None
+
+
+def _cart_price(value: Any) -> Decimal | None:
+    """A cart unit price: finite, above zero, at most `MAX_CART_PRICE`, to the cent."""
+    price = _decimal(value)
+    if price is None or price <= 0 or price > MAX_CART_PRICE:
+        return None
+    return price.quantize(_CENT, rounding=ROUND_HALF_UP)
 
 
 def _when(value: Any) -> datetime | None:
@@ -301,6 +355,7 @@ def cart_record(
     receiving brand's products: an id of another brand or tenant is simply absent)."""
     lines: list[dict[str, Any]] = []
     totals: dict[str, Decimal] = {}
+    lines_truncated = False
     for item in items:
         if not isinstance(item, Mapping):
             continue
@@ -310,18 +365,21 @@ def cart_record(
             if isinstance(raw_id, str | int) and not isinstance(raw_id, bool)
             else ""
         )
-        qty = _qty(item.get("quantity"))
-        price = _decimal(item.get("item_price"))
-        if not retailer_id or qty is None or price is None or price <= 0:
+        qty = _cart_qty(item.get("quantity"))
+        price = _cart_price(item.get("item_price"))
+        if not retailer_id or qty is None or price is None:
             continue
+        if len(lines) >= MAX_CART_LINES:
+            lines_truncated = True
+            break
         currency = _currency(item.get("currency"))
         key = _uuid_text(retailer_id)
         product = products.get(key) if key is not None else None
         if product is not None:
-            galeria_price = _decimal(product.price_amount)
+            galeria_price = _amount(product.price_amount)
             galeria_currency = _currency(product.price_currency)
-            # An empty Galería currency (0038's default) is «not set», not a difference.
-            mismatch = galeria_price != price or (
+            # A Galería price or currency that is not set is never a difference.
+            mismatch = (galeria_price is not None and galeria_price != price) or (
                 galeria_currency is not None and galeria_currency != currency
             )
             line = {
@@ -330,6 +388,11 @@ def cart_record(
                 "linked": True,
                 "price_mismatch": mismatch,
             }
+            if mismatch:
+                line["gallery_unit_price"] = (
+                    str(galeria_price) if galeria_price is not None else None
+                )
+                line["gallery_currency"] = galeria_currency
         else:
             line = {
                 "product_id": retailer_id,
@@ -349,6 +412,8 @@ def cart_record(
         totals[currency or ""] = totals.get(currency or "", Decimal("0")) + price * qty
     if not lines:
         return None
+    note_text = (note or "").strip()
+    note_truncated = len(note_text) > MAX_NOTE_CHARS
     record: dict[str, Any] = {
         "items": lines,
         "confirmed_at": confirmed_at.isoformat(),
@@ -357,8 +422,12 @@ def cart_record(
         "engine_version": CART_ENGINE_VERSION,
         "source": SOURCE_CART,
         "catalog_id": catalog_id or None,
-        "note": (note or "").strip() or None,
+        "note": note_text[:MAX_NOTE_CHARS] or None,
     }
+    if lines_truncated:
+        record["lines_truncated"] = True
+    if note_truncated:
+        record["note_truncated"] = True
     if len(totals) == 1:
         ((currency_key, total),) = totals.items()
         record.update(total=str(total), currency=currency_key or None)
@@ -521,22 +590,30 @@ def _summary_from_record(record: Any) -> OrderSummary | None:
     for item in record.get("items") or []:
         if not isinstance(item, Mapping):
             continue
-        qty = _qty(item.get("qty"))
+        qty = _read_qty(item.get("qty"))
         product_id = item.get("product_id")
         if qty is None or not product_id:
             continue
         retailer_id = item.get("retailer_id")
         linked = item.get("linked")
+        mismatch = item.get("price_mismatch") is True
+        gallery_currency = item.get("gallery_currency") if mismatch else None
         lines.append(
             OrderLine(
                 product_id=str(product_id),
                 name=str(item.get("name") or ""),
                 qty=qty,
-                unit_price=_decimal(item.get("unit_price")),
+                unit_price=_amount(item.get("unit_price")),
                 currency=item.get("currency") or None,
                 retailer_id=str(retailer_id) if retailer_id else None,
                 linked=linked if isinstance(linked, bool) else True,
-                price_mismatch=item.get("price_mismatch") is True,
+                price_mismatch=mismatch,
+                gallery_unit_price=_amount(item.get("gallery_unit_price")) if mismatch else None,
+                gallery_currency=(
+                    gallery_currency
+                    if isinstance(gallery_currency, str) and gallery_currency
+                    else None
+                ),
             )
         )
     if not lines:
@@ -548,14 +625,14 @@ def _summary_from_record(record: Any) -> OrderSummary | None:
     raw_totals = record.get("totals")
     if isinstance(raw_totals, Mapping):
         for code, amount in raw_totals.items():
-            value = _decimal(amount)
+            value = _amount(amount)
             if isinstance(code, str) and value is not None:
                 totals[code] = value
     catalog_id = record.get("catalog_id")
     note = record.get("note")
     return OrderSummary(
         lines=tuple(lines),
-        total=_decimal(record.get("total")) or Decimal("0"),
+        total=_amount(record.get("total")) or Decimal("0"),
         currency=record.get("currency") or None,
         confirmed_at=_when(record.get("confirmed_at")),
         collected=dict(collected) if isinstance(collected, Mapping) else {},
@@ -564,6 +641,8 @@ def _summary_from_record(record: Any) -> OrderSummary | None:
         catalog_id=catalog_id if isinstance(catalog_id, str) and catalog_id else None,
         note=note if isinstance(note, str) and note else None,
         totals_by_currency=totals if len(totals) > 1 else {},
+        lines_truncated=record.get("lines_truncated") is True,
+        note_truncated=record.get("note_truncated") is True,
     )
 
 

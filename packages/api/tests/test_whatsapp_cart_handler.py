@@ -12,11 +12,14 @@ from __future__ import annotations
 import copy
 import json
 from collections.abc import Collection, Mapping
+from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
+
+import pytest
 
 from qualify_api.webhooks.repository import ClaimedEvent
 from qualify_api.whatsapp.handler import (
@@ -181,27 +184,21 @@ async def test_a_duplicate_delivery_keeps_the_first_record_and_sends_nothing() -
     assert len(world.repo.messages) == 1
 
 
-async def test_a_crash_after_the_insert_is_repaired_by_the_replay() -> None:
+async def test_a_replay_after_a_person_resumed_the_chat_changes_nothing() -> None:
     world = World()
-    # The message row landed, the state save did not (the worker died in between).
-    world.repo.upsert_thread(tenant_id=TENANT, connection_id=CONN, wa_id=WA_ID, inbound_at=NOW)
-    world.repo.insert_inbound_message(
-        tenant_id=TENANT,
-        thread_id=world.thread_id(),
-        connection_id=CONN,
-        external_message_id=WAMID,
-        author_external_id=WA_ID,
-        author_username=None,
-        text=None,
-        posted_at=MESSAGE_AT,
-        shape_version="x",
-        media_type="other",
-    )
+    value = _value()
+    value["messages"][0]["order"]["product_items"] = [{"product_retailer_id": "x", "quantity": 0}]
+    await world.handle(_event(value))  # no readable line: handed over, no order
+    state = world.state()
+    # A person resumes the automation.
+    world.repo.states[world.thread_id()] = (TENANT, replace(state, paused_at=None))
 
-    await world.handle(_event(_value()))
+    await world.handle(_event(value))  # Meta delivers the same cart again
 
-    assert read_order(world.state().context) is not None
-    assert world.repo.outbox == []
+    again = world.state()
+    assert again.paused_at is None
+    assert again.context == state.context
+    assert world.repo.outbox == [] and world.menu_calls == []
 
 
 async def test_an_orphan_number_writes_nothing() -> None:
@@ -302,3 +299,60 @@ async def test_a_cart_replacing_an_order_archives_it_and_its_payment() -> None:
     assert read_previous_orders(context)[0].payment.status == "awaiting"  # type: ignore[union-attr]
     assert (CONN, "wamid.proof") in world.repo.messages
     assert world.repo.outbox == []
+
+
+async def test_a_first_cart_drops_a_stray_payment_through_the_guarded_save() -> None:
+    world = World()
+    world.repo.upsert_thread(tenant_id=TENANT, connection_id=CONN, wa_id=WA_ID, inbound_at=NOW)
+    world.repo.save_thread_state(
+        thread_id=world.thread_id(),
+        tenant_id=TENANT,
+        state=StoredThreadState(context={CTX_PAYMENT_RECORD: {"status": "awaiting"}}),
+    )
+    await world.handle(_event(_value()))
+    context = world.state().context
+    assert CTX_PAYMENT_RECORD not in context and read_order(context) is not None
+    assert read_previous_orders(context) == ()
+
+
+async def _bad_change(field: str, value: Any, *, in_item: bool) -> World:
+    world = World()
+    change = _value()
+    cart = change["messages"][0]
+    if in_item:
+        cart["order"]["product_items"][0][field] = value
+    else:
+        cart["order"][field] = value
+    text_message = {
+        "from": WA_ID,
+        "id": "wamid.text-same-change",
+        "timestamp": "1750096330",
+        "type": "text",
+        "text": {"body": "hola"},
+    }
+    change["messages"].append(text_message)
+    outcome = await world.handle(_event(change))
+    assert outcome.status == "processed"
+    return world
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "in_item"),
+    [
+        ("product_retailer_id", 1.5, True),
+        ("product_retailer_id", {"x": 1}, True),
+        ("currency", 840, True),
+        ("currency", ["USD"], True),
+        ("catalog_id", 123, False),
+        ("catalog_id", {"id": 1}, False),
+        ("text", ["x"], False),
+        ("text", 7, False),
+    ],
+)
+async def test_a_wrongly_typed_field_never_drops_the_change(
+    field: str, value: Any, in_item: bool
+) -> None:
+    world = await _bad_change(field, value, in_item=in_item)
+    assert (CONN, WAMID) in world.repo.messages
+    assert (CONN, "wamid.text-same-change") in world.repo.messages
+    assert read_order(world.state().context) is not None  # the other line still counts

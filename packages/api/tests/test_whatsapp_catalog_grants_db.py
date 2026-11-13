@@ -285,3 +285,19 @@ def test_cart_lookup_never_crosses_brands_or_tenants(seeded) -> None:
     assert load_cart_products_for_phone(seeded["phone_no_brand"], list(mine.values())) == {}
     assert load_cart_products_for_phone(uuid4(), list(mine.values())) == {}
     assert load_cart_products_for_phone(seeded["phone"], []) == {}
+
+
+def test_cart_lookup_never_links_a_second_brand_of_the_same_tenant(seeded) -> None:
+    with admin_session() as session:
+        sister = Brand(tenant_id=TENANT, name=f"wa15-sister-{uuid4().hex[:8]}")
+        session.add(sister)
+        session.flush()
+        sister_id = sister.id
+    with tenant_session(TENANT) as session:
+        _product(session, TENANT, sister_id, "Helado de la otra marca")
+    sister_products = _product_ids(TENANT, sister_id)
+    assert sister_products  # the row exists, same tenant
+
+    found = load_cart_products_for_phone(seeded["phone"], list(sister_products.values()))
+
+    assert found == {}

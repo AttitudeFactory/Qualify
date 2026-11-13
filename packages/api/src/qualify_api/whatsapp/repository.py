@@ -136,12 +136,13 @@ class WhatsAppInboxRepository(Protocol):
         from the row AS STORED, in the same statement — never from `state.context` — so a
         review or a «received» written meanwhile is never undone (m-24955648).
 
-        With `archive_payment` (m-25018684: this save replaced the current order, whose
-        record is now `state.context["_orders_previous"][0]`) the current `_payment` is
-        exactly `state.context`'s (a new record, or none), and the payment as STORED, in
-        the same statement, becomes that archive entry's `payment` when it belonged to
-        the archived order (`order_message_id` == its `source_message_id`), else `null`.
-        The two flags are exclusive."""
+        With `archive_payment` (m-25018684: this save wrote a new current order) the
+        current `_payment` is exactly `state.context`'s (a new record, or none). When the
+        save also archived the stored current order — `state.context["_orders_previous"]
+        [0]` is the row's `_order` AS STORED, same `source_message_id` — the payment as
+        STORED, in the same statement, becomes that entry's `payment` if it belonged to
+        that order (`order_message_id` == its `source_message_id`), else `null`. The
+        two flags are exclusive."""
         ...
 
     def enqueue_outbox(
@@ -243,12 +244,19 @@ _SAVE_STATE = text(
            context = CASE
                WHEN CAST(:archive_payment AS boolean) THEN
                    CASE
+                       -- this save did not archive the stored order: nothing to snapshot
                        WHEN jsonb_typeof(EXCLUDED.context->'_orders_previous'->0)
-                            IS DISTINCT FROM 'object' THEN EXCLUDED.context
+                            IS DISTINCT FROM 'object'
+                         OR (EXCLUDED.context->'_orders_previous'->0->'order'
+                                ->>'source_message_id')
+                            IS DISTINCT FROM
+                            (whatsapp_thread_state.context->'_order'->>'source_message_id')
+                         OR whatsapp_thread_state.context->'_order'->>'source_message_id'
+                            IS NULL
+                       THEN EXCLUDED.context
                        WHEN jsonb_typeof(whatsapp_thread_state.context->'_payment') = 'object'
                         AND whatsapp_thread_state.context->'_payment'->>'order_message_id'
-                            = EXCLUDED.context->'_orders_previous'->0->'order'
-                                ->>'source_message_id'
+                            = whatsapp_thread_state.context->'_order'->>'source_message_id'
                        THEN jsonb_set(EXCLUDED.context, '{_orders_previous,0,payment}',
                                       whatsapp_thread_state.context->'_payment')
                        ELSE jsonb_set(EXCLUDED.context, '{_orders_previous,0,payment}',
@@ -620,21 +628,22 @@ class MemoryWhatsAppInboxRepository:
             paused_at = previous[1].paused_at
         context = copy.deepcopy(state.context)
         archive = context.get("_orders_previous")
+        stored_order = previous[1].context.get("_order") if previous is not None else None
+        stored_source = (
+            stored_order.get("source_message_id") if isinstance(stored_order, dict) else None
+        )
         if (
             archive_payment
             and previous is not None
+            and stored_source is not None
             and isinstance(archive, list)
             and archive
             and isinstance(archive[0], dict)
+            and isinstance(archive[0].get("order"), dict)
+            and archive[0]["order"].get("source_message_id") == stored_source
         ):
             stored = previous[1].context.get("_payment")
-            order = archive[0].get("order")
-            belongs = (
-                isinstance(stored, dict)
-                and isinstance(order, dict)
-                and stored.get("order_message_id") is not None
-                and stored.get("order_message_id") == order.get("source_message_id")
-            )
+            belongs = isinstance(stored, dict) and stored.get("order_message_id") == stored_source
             archive[0]["payment"] = copy.deepcopy(stored) if belongs else None
         if preserve_payment:
             context.pop("_payment", None)
