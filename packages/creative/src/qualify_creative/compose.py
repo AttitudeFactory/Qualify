@@ -3,12 +3,17 @@
 Two jobs, both deterministic PIL over the operator's own images:
 
 - `render_flyer` — `ContentKind.STATIC_FLYER`: the background (the operator's image, or a
-  gradient from the brand palette), the product image(s) placed untouched, the hook
-  printed on top and the CTA as a pill at the bottom. With `carousel=True`, one slide
-  per product plus a closing CTA slide.
+  gradient from the brand palette), the product image(s) placed untouched and the hook
+  printed on top. With `carousel=True`, one slide per product plus a closing slide with
+  the CTA phrase.
 - `render_ad_slides` — the same frame over scenes a model GENERATED (Seedream, since
-  2026-10-07): the product is already inside each photograph, so only the hook, the CTA
-  and the brand's real logo are set here — a model is never trusted to spell the brand.
+  2026-10-07): the product is already inside each photograph, so only the hook and the
+  brand's real logo are set here — a model is never trusted to spell the brand.
+
+No button and no price is drawn by default (m-25017276, founder 2026-11-13): the CTA pill
+and the catalog's price pill stay off the image until the Remotion pipeline decides where
+the price goes; `pills=True` draws them as before (evals, comparisons). The CTA phrase of
+a carousel's closing slide is its headline — text, not a button — and stays.
 - `compose_scene` — the background of an avatar video. HeyGen takes ONE background
   image and has no native way to put a product in the frame (verified against its v3
   spec, 2026-09-25): so the operator's background and products are composed here into
@@ -78,7 +83,8 @@ class FlyerText:
     hook: str = ""
     cta: str = ""
     #: The price as the catalog formats it (ticket 24803289) — printed as a pill above
-    #: the CTA; "" prints none. Never a model's words: the caller passes the catalog's.
+    #: the CTA only with `pills=True` (m-25017276); "" prints none. Never a model's
+    #: words: the caller passes the catalog's.
     price: str = ""
 
 
@@ -572,14 +578,16 @@ def _slide(
     closing: bool = False,
     price: str = "",
     style: TextStyle = DEFAULT_STYLE,
+    pills: bool = False,
 ) -> bytes:
     """One image. `closing` is a carousel's last slide: no product, the hook (the CTA
-    line) large and centred, the CTA pill under it. `price` (the catalog's label) is
-    printed as its own pill above the CTA band, whole; "" — or a price too long to print
-    whole — prints none, and the slide is exactly the one without a price."""
+    line) large and centred. With `pills` (m-25017276: off by default) the CTA is drawn as
+    a pill and `price` (the catalog's label) as its own pill above the CTA band, whole;
+    "" — or a price too long to print whole — prints none, and the slide is exactly the
+    one without a price. Without `pills` neither is drawn, nor darkens the bottom band."""
     width, height = size
-    hook, cta = _printable(hook), _printable(cta)
-    price = price if price_fits(price, size, style.font) else ""
+    hook, cta = _printable(hook), _printable(cta) if pills else ""
+    price = price if pills and price_fits(price, size, style.font) else ""
     canvas = _background(size, background, base)
     photographic = background is not None
     if photographic and (hook.strip() or cta.strip() or price.strip()):
@@ -619,12 +627,14 @@ def render_flyer(
     carousel: bool = False,
     size: tuple[int, int] = FEED_SIZE,
     style: TextStyle = DEFAULT_STYLE,
+    pills: bool = False,
 ) -> list[bytes]:
     """The flyer as PNG bytes — one image, or the carousel's slides in order.
 
-    Single: every product (up to three) under the hook, the CTA below. Carousel: the
-    first slide carries the hook and the first product, one slide per further product,
-    and a closing slide with the CTA (and the logo) — at least two slides, at most ten."""
+    Single: every product (up to three) under the hook (the CTA pill below only with
+    `pills`). Carousel: the first slide carries the hook and the first product, one slide
+    per further product, and a closing slide with the CTA phrase (and the logo) — at least
+    two slides, at most ten."""
     base, accent = _palette(palette)
     common = {
         "size": size,
@@ -633,6 +643,7 @@ def render_flyer(
         "accent": accent,
         "logo": logo,
         "style": style,
+        "pills": pills,
     }
     if not carousel:
         return [_slide(products=products, hook=text.hook, cta=text.cta, price=text.price, **common)]
@@ -653,11 +664,12 @@ def render_ad_slides(
     carousel: bool = False,
     size: tuple[int, int] = FEED_SIZE,
     style: TextStyle = DEFAULT_STYLE,
+    pills: bool = False,
 ) -> list[bytes]:
     """The advertising image over generated scenes, as PNG bytes. Single: the first
-    scene with the hook and the CTA. Carousel: the first scene with the hook, one slide
-    per further scene, and a closing slide with the CTA on the brand gradient — the same
-    rhythm as `render_flyer`."""
+    scene with the hook (and the CTA pill only with `pills`). Carousel: the first scene
+    with the hook, one slide per further scene, and a closing slide with the CTA phrase on
+    the brand gradient — the same rhythm as `render_flyer`."""
     if not scenes:
         raise ValueError("an advertising image needs at least one generated scene")
     base, accent = _palette(palette)
@@ -668,6 +680,7 @@ def render_ad_slides(
         "logo": logo,
         "products": (),
         "style": style,
+        "pills": pills,
     }
     if not carousel:
         return [
@@ -689,10 +702,12 @@ def render_carousel_slide(
     logo: bytes | None = None,
     size: tuple[int, int] = FEED_SIZE,
     style: TextStyle = DEFAULT_STYLE,
+    pills: bool = False,
 ) -> bytes:
     """One generated slide of a carousel (`ContentKind.CAROUSEL`) as PNG bytes: the scene
-    with the words the operator chose for it — the hook on top, the CTA as a pill, or
-    neither — and the logo, the same drawing as the advertising image's slides."""
+    with the words the operator chose for it — the hook on top (the CTA as a pill only
+    with `pills`, m-25017276) — and the logo, the same drawing as the advertising image's
+    slides."""
     base, accent = _palette(palette)
     return _slide(
         size=size,
@@ -704,6 +719,7 @@ def render_carousel_slide(
         cta=cta,
         logo=logo,
         style=style,
+        pills=pills,
     )
 
 
@@ -715,7 +731,8 @@ def render_closing_slide(
     size: tuple[int, int] = FEED_SIZE,
     style: TextStyle = DEFAULT_STYLE,
 ) -> bytes:
-    """A carousel's closing slide: `line` (the CTA) large on the brand gradient."""
+    """A carousel's closing slide: `line` (the CTA phrase) large on the brand gradient —
+    a headline, not a button (m-25017276 keeps it)."""
     base, accent = _palette(palette)
     return _slide(
         size=size,
@@ -739,12 +756,14 @@ def text_layer(
     palette: Sequence[str] = (),
     logo: bytes | None = None,
     style: TextStyle = DEFAULT_STYLE,
+    pills: bool = False,
 ) -> bytes:
     """The words of a slide WITHOUT its picture, as a transparent RGBA PNG — what is laid
     over an animated slide's every frame (§ request 2026-10-09). Same scrim, headline,
-    pill and logo as `render_carousel_slide`, so a video slide reads like its neighbours."""
+    pill (only with `pills`, m-25017276) and logo as `render_carousel_slide`, so a video
+    slide reads like its neighbours."""
     width, height = size
-    hook, cta = _printable(hook), _printable(cta)
+    hook, cta = _printable(hook), _printable(cta) if pills else ""
     _, accent = _palette(palette)
     canvas = Image.new("RGBA", size, (0, 0, 0, 0))
     if hook.strip() or cta.strip():

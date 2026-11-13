@@ -2,13 +2,13 @@
 brief's `ContentKind` asks for (§ request 2026-09-25).
 
 - `CREATOR_SCRIPT` — nothing: the script IS the artifact, and it lives in the copy.
-- `STATIC_FLYER` — since 2026-10-07 Seedream (BytePlus ModelArk) generates the scene
-  with the operator's product / background photos as references (one scene, or one per
-  carousel slide), and `qualify_creative.compose.render_ad_slides` sets the hook, the
-  CTA and the real logo on top. Without Seedream wired (`generated_ad_images=False`) it
-  is the old local composition, `render_flyer`. Rendered as PNG and STORED AS JPEG
-  (§ 2026-10-05): Meta accepts only JPEG images, and so does the publisher — every image
-  this module writes goes through `to_meta_jpeg`.
+- `STATIC_FLYER` — since 2026-10-07 Seedream (BytePlus ModelArk) generates the scene with
+  the operator's product / background photos as references (one scene, or one per carousel
+  slide), and `qualify_creative.compose.render_ad_slides` sets the hook and the real logo
+  on top (no CTA button and no price pill since m-25017276). Without Seedream wired
+  (`generated_ad_images=False`) it is the old local composition, `render_flyer`. Rendered
+  as PNG and STORED AS JPEG (§ 2026-10-05): Meta accepts only JPEG images, and so does the
+  publisher — every image this module writes goes through `to_meta_jpeg`.
 - `AVATAR_VIDEO` / `ANIMATED_AVATAR_VIDEO` with `VideoEngine.SEEDANCE` (§ 2026-10-07):
   Seedream composes the presenter (described, or the operator's image), the products
   and the background into the video's first frame, and Seedance animates it. Seedance
@@ -32,15 +32,15 @@ brief's `ContentKind` asks for (§ request 2026-09-25).
   `pieces.PieceFiles` before it is read) fitted the same way; then, optionally, a
   closing slide with the CTA. Instagram publishes any mix of the two (QUA-103).
 
-The words this module draws — an advertising image's and a gallery's hook, CTA and price,
-an avatar video's subtitles — are in the BRAND's type and colours (m-24828920,
-`_text_style`): the font file of its Brand Kit, else that family from Google Fonts, else
-the system font; a fill/outline pair from its palette. A missing one is a warning on the
-piece, never a failure — only for a piece that prints words. The subtitles are optional
-(`MediaInputs.subtitles`) and OmniHuman's only: what its presenter says is exactly the
-Seed Speech track, which times them; the video fitter burns them in. A Seedance clip
-lasts a fraction of the script and mixes ambient sound into its voice, so it gets none
-(review 2026-10-22).
+The words this module draws — an advertising image's and a gallery's hook (the CTA phrase
+of a gallery's closing slide), an avatar video's subtitles — are in the BRAND's type and
+colours (m-24828920, `_text_style`): the font file of its Brand Kit, else that family from
+Google Fonts, else the system font; a fill/outline pair from its palette. A missing one is
+a warning on the piece, never a failure — only for a piece that prints words. The
+subtitles are optional (`MediaInputs.subtitles`) and OmniHuman's only: what its presenter
+says is exactly the Seed Speech track, which times them; the video fitter burns them in. A
+Seedance clip lasts a fraction of the script and mixes ambient sound into its voice, so it
+gets none (review 2026-10-22).
 
 Every vendor call that costs money is written as a usage row with its provenance, also
 when a later step fails. The store is a seam (`MediaStore`). Every generated file lives
@@ -98,7 +98,6 @@ from qualify_creative.compose import (
     FlyerText,
     TextStyle,
     font_usable,
-    price_fits,
     render_ad_slides,
     render_carousel_slide,
     render_closing_slide,
@@ -2544,8 +2543,10 @@ class MediaProducer:
             if _prints_words(brief)
             else TextStyle()
         )
-        if brief.kind is ContentKind.STATIC_FLYER:
-            brief = _printable_price(draft_id, brief, warnings, style.font)
+        # m-25017276 (founder, 2026-11-13): a locally composed image draws no price pill
+        # (`compose` `pills=False`), so its price is no longer checked for fit here — a
+        # «precio no impreso» warning would talk about a pill that is never drawn. The
+        # templates keep their own check (`_template_price`).
         try:
             if brief.kind is ContentKind.STATIC_FLYER and self._generated_ad_images:
                 media = self._ad_image(
@@ -9813,24 +9814,6 @@ def _clip_subtitle_layers(
         return out
 
     return layers
-
-
-def _printable_price(
-    draft_id: UUID,
-    brief: ContentBrief,
-    warnings: list[MediaWarning],
-    face: bytes | None = None,
-) -> ContentBrief:
-    """`brief` as a locally composed piece may print it (ticket 24803289): its catalog
-    price kept whole, or dropped with a warning when even the smallest legible type
-    cannot hold it — never cut."""
-    price = brief.media.price_line
-    if price_fits(price, brief.format.dimensions, face):
-        return brief
-    warnings.append(
-        _price_warning(draft_id, price, "too_long", where="flyer", format=brief.format.value)
-    )
-    return brief.model_copy(update={"media": brief.media.model_copy(update={"price_line": ""})})
 
 
 def _template_price(
