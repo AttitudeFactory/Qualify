@@ -331,51 +331,51 @@ pie de Tu marca. Por eso el fundador no los encontró. **No se agrega una 7.ª f
   temporada.» Tocarla abre el paso del panel con un `empty_state` (nada se manda):
   - con lotes esperando: «Tienes {n} esperando tu aprobación», «Apruébalos y quedan listos para
     mandar desde aquí.», acción «Revisarlos» (`/drafts?ver=stickers`);
-  - sin nada: «Aún no tienes stickers ni videos», «Los creamos con tu logo y tus colores. Tardan
-    unos minutos: mientras, sigue respondiendo con texto.», acción «Crear para esta temporada»
-    (`/whatsapp?tab=chats&sub=stickers&crear=temporada`).
+  - sin nada: «Aún no tienes stickers ni videos», «Los creamos con tu logo y tus colores en Tu
+    marca. Tardan unos minutos: cuando los apruebes, aparecen aquí para mandarlos.», acción
+    «Crear para esta temporada» (`/brand/kit?crear=temporada&volver=/whatsapp?tab=chats`, con
+    `volver` codificado; Tu marca muestra «Volver a tus chats»). *Cambiado en m-25017173,
+    2026-11-12.*
   - «Atrás» vuelve a «¿De dónde?», como hoy.
 
-**b) Una entrada en WhatsApp.** La sección «Chats» gana una sub-pestaña:
-«Chats · Stickers y videos» (`?tab=chats&sub=stickers`, N5), que monta `brand_section()` tal
-cual: biblioteca por temporada, «Archivar», «Crear para esta temporada». Tu marca la conserva.
-La sub-pestaña se ve en la lista de chats; con un chat abierto a 375 px no se dibuja (el chat
-ocupa la pantalla, como hoy). `/whatsapp?tab=chats` sin `sub` sigue abriendo los chats.
+**b) Una entrada en WhatsApp — retirada (m-25017173, 2026-11-12).** La sub-pestaña
+«Chats · Stickers y videos» (`?tab=chats&sub=stickers`) duplicaba la biblioteca de Tu marca y se
+quitó a pedido del fundador (menos pestañas en WhatsApp). «Chats» abre directo la lista de chats,
+sin segunda barra; un enlace viejo con `sub=stickers` (o cualquier `sub`) abre los chats. Los
+stickers y videos se crean y archivan en **Tu marca** («Stickers y videos de tu marca»), se
+aprueban en **Por aprobar** y se ven en **Aprobados**; se mandan desde el «+» del chat (punto a).
 
 ```
-375 px · «+» › Fotos y videos (sin aprobados)    375 px · WhatsApp › Chats
-┌───────────────────────────────┐                ┌───────────────────────────────┐
-│ ‹ ¿De dónde?                  │                │ WhatsApp                      │
-│ ( ) Tus piezas                │                │ Chats · Respuesta automática… │
-│     Lo que preparaste para…   │                │ ( Chats | Stickers y videos ) │
-│ ( ) De tu celular             │                │ ┌ Stickers y videos de tu ──┐ │
-│     Una foto que ya tengas…   │                │ │ marca                     │ │
-│ ( ) Stickers y videos de tu   │                │ │ Para saludar y celebrar…  │ │
-│     marca                     │                │ │ Navidad 2026 · 6 stickers │ │
-│     Aún no tienes: créalos    │                │ │ [Crear para esta temp.]   │ │
-│     para esta temporada.      │                │ └───────────────────────────┘ │
-└───────────────────────────────┘                └───────────────────────────────┘
+375 px · «+» › Fotos y videos (sin aprobados)
+┌───────────────────────────────┐
+│ ‹ ¿De dónde?                  │
+│ ( ) Tus piezas                │
+│     Lo que preparaste para…   │
+│ ( ) De tu celular             │
+│     Una foto que ya tengas…   │
+│ ( ) Stickers y videos de tu   │
+│     marca                     │
+│     Aún no tienes: créalos    │
+│     para esta temporada.      │
+└───────────────────────────────┘
 ```
 
 **Accesibilidad.** La tarjeta sigue en el `radiogroup` de hoy, ≥ 44 px; su nombre accesible
 incluye la línea («Stickers y videos de tu marca. Aún no tienes…»). El paso vacío lleva el foco
-a su título al abrir (como los demás pasos del panel). La sub-pestaña usa el mismo
-`sub_strip()` que Promociones y Tu número.
+a su título al abrir (como los demás pasos del panel).
 
 **Qué cambia en el código (pista A)**
 
-1. `whatsapp_vm.py`: `TAB_STICKERS = "stickers"`; `SUBTABS[SECTION_CHATS] = ((TAB_CHATS, "chats",
-   "Chats"), (TAB_STICKERS, "stickers", "Stickers y videos"))` cuidando que `?tab=chats` sin `sub`
-   resuelva a `TAB_CHATS` (`resolve_panel`).
-2. `whatsapp_page.py`: `(TAB_STICKERS, brand_section())` en `tab_body`; ocultar `sub_strip()` con
-   un chat abierto en el celular.
+1. ~~`whatsapp_vm.py`: `TAB_STICKERS` y la sub-pestaña de «Chats».~~ Retirado en m-25017173:
+   `SUBTABS[SECTION_CHATS]` tiene un solo panel y `resolve_panel` manda cualquier `sub` a `TAB_CHATS`.
+2. ~~`whatsapp_page.py`: `brand_section()` en `tab_body`.~~ Retirado en m-25017173.
 3. `whatsapp_tab_chats.py` `_pick_media`: la tarjeta sin `rx.cond`; `_pick_seasonal` con el vacío
    de dos casos. `whatsapp_chats_vm.py`: `SEASONAL_EMPTY_LINE`, `SEASONAL_EMPTY_*`,
    `SEASONAL_PENDING_*`, `SEASONAL_CREATE_HREF`. `whatsapp_chats_state.py`: `pick_seasonal_pending`
    (cuántos esperan; lo da `whatsapp_chats_provider`, lectura RLS de `whatsapp.seasonal`).
 4. Pruebas: `test_whatsapp_chats_seasonal.py` (la tarjeta con 0 aprobados, los dos vacíos, que
-   ningún camino llama a enviar), `test_whatsapp_page.py` (`?tab=chats&sub=stickers`, `?tab=chats`
-   intacto), `test_whatsapp_chats_picker.py` (siguen 6 filas).
+   ningún camino llama a enviar), `test_whatsapp_page.py` (desde m-25017173:
+   `?tab=chats&sub=stickers` abre los chats, sin segunda barra), `test_whatsapp_chats_picker.py` (siguen 6 filas).
 
 ---
 

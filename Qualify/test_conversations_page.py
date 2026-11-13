@@ -63,7 +63,7 @@ def test_the_page_renders_list_conversation_composer_and_access_states() -> None
     for text in (
         "Conversaciones",
         "Elige una conversación",
-        "Enviar",
+        # «Enviar» (the send button) is pinned by test_the_dm_send_button_says_enviar…
         "Volver a conectar",
         "por verificar",
         "Ir a Tus redes",
