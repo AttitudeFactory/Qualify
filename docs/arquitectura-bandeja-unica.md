@@ -9,6 +9,17 @@
 > 2 Descriptor de capacidades y lista · 3 Respuesta automática en Instagram · 4 Cortes ·
 > 5 Riesgos y preguntas · 6 Qué no debe suponer la costura (TikTok).
 
+**Resumen.**
+- **Dónde unificar.** Se une la lectura de la bandeja y un descriptor de capacidades por canal.
+  El envío no se une: las dos outboxes siguen (§1).
+- **Menú automático.** Un motor neutral con un traductor por canal y un menú por negocio (§3.2).
+- **Menú en Instagram.** Ya lo decidió el fundador el 2026-10-23 (m-24789557: menú fijo,
+  «Hablar con alguien» siempre, ningún texto que diga que Qualify responde solo). Lo que falta:
+  - escribir el ADR 48 en §6 (nunca se escribió);
+  - hacer obligatoria en el esquema la entrega a persona;
+  - revisar los textos de la app que chocan con la tercera condición (§3.3).
+- **Lo que bloquea a clientes reales en Instagram** es el App Review de mensajes (§5).
+
 ## 1. Dónde unificar
 
 ### 1.1 Lo que hay en el disco
@@ -185,30 +196,118 @@ con rol en la app (§3.4): para clientes reales de Bianki depende de App Review.
 
 ### 3.3 «Asistido, nunca autónomo»: qué dice el texto, sin suponer
 
-- **WhatsApp.** La base es la decisión **D2** de `docs/plan-modulo-whatsapp-cloud-api.md` §9.1
-  (líneas 197 y 372): *automático = determinista y declarado; generativo = asistido*; un menú es
-  una tabla escrita por el negocio que enruta, no un modelo que decide. **No hay firma explícita
-  registrada:** `docs/backlog-modulo-whatsapp.md:71` dice que D2 «se toma como sí porque el
-  fundador pidió implementar el módulo entero» y queda «aplicado salvo objeción». No está en la
-  tabla de ADR de `docs/arquitectura.md` §6.
-- **La excepción del 2026-11-04 (§1.6) no aplica:** trata de *procedencia* de filas que el dueño
-  aprueba una a una (productos leídos de la foto del menú), no de *envíos* sin aprobación.
-- **Instagram.** La recomendación de D2 dice «aplicar la misma regla a QUA-138» (la pregunta
-  equivalente para Instagram, en Linear, ya retirado). **No encontré registro de que QUA-138 se
-  haya decidido.** Y el código de Instagram hace cumplir lo contrario a propósito:
-  `conversations/outbox.py:1-9` — «ADR 21c en código»: `approved_by_user_id` NOT NULL, prueba
-  estática `test_conversations_outbox_sanctity.py`, y el rol del webhook **sin ningún privilegio**
-  sobre `conversation_outbox` (0065), «para que una entrega de Meta no pueda producir un envío ni
-  por un error».
-- **Conclusión: no se extiende sola. Hace falta la firma del fundador** en un ADR corto
-  (propuesto **ADR 48**) que (1) formalice D2 para todos los canales y (2) diga cómo se aprueba
-  un envío automático: **la aprobación es la publicación de la versión del menú**
-  (`published_by_user_id`), y cada fila automática lleva `menu_version_id` + `node_id` como
-  procedencia. En el esquema: `kind='automation'` en `conversation_outbox` con
-  `approved_by_user_id` nulo **sólo** para ese tipo y `menu_version_id` obligatorio (CHECK), y
-  una concesión de INSERT al rol del webhook limitada a ese tipo. Es quitar una garantía de
-  seguridad deliberada: pasa por `security-review` antes de mergear. Lo generativo (Sugerir
-  respuesta) sigue asistido sin excepción.
+> **Corregido el 2026-11-13.** Una versión anterior de esta nota decía que no había registro de
+> la decisión y pedía una firma nueva. Era un error: la decisión existe y cubre Instagram.
+
+**La decisión existe.** Meegle **m-24789557** «Decisión del fundador: DM con menú automático vs
+ADR 21» (migrado de Linear QUA-138), en Done desde el 2026-10-23. Comentario del fundador de ese
+día: **opción B — excepción acotada a «asistido, nunca autónomo»**. Se permite un menú
+automático en mensajes directos — el comentario nombra **Instagram y WhatsApp** — sólo si:
+
+1. el texto del menú es **fijo**: el dueño lo escribe o lo aprueba una vez; ningún modelo genera
+   contenido en ese envío;
+2. la opción **«Hablar con alguien» está siempre** y lleva la conversación a la bandeja asistida
+   (borrador + aprobación humana);
+3. **ningún texto de la app dice ni sugiere que Qualify responde solo**; se llama «Tu menú de
+   bienvenida» (coherente con m-24842959).
+
+Toda respuesta libre sigue asistida; las respuestas autónomas con IA siguen fuera (m-24789464).
+Desbloquea m-24789558 y m-24789559 y alinea m-24789472 y m-24842995. (Antecedente: la regla D2
+de `docs/plan-modulo-whatsapp-cloud-api.md` §9.1, líneas 197 y 372, *automático = determinista y
+declarado; generativo = asistido*. La excepción del 2026-11-04, `docs/arquitectura.md` §1.6, no
+viene al caso: trata de procedencia de filas, no de envíos.)
+
+**Lo pendiente es escribir el ADR, nunca se hizo.** El comentario encarga al principal-architect
+registrarla como enmienda a ADR 21 en `docs/arquitectura.md` §6. Verificado hoy: ni
+`docs/arquitectura.md` ni ningún `docs/adr-*.md` mencionan m-24789557, QUA-138, «menú de
+bienvenida» ni «Hablar con alguien»; el último número del registro es el **47**
+(`docs/arquitectura.md:304`). Le toca el **ADR 48** («Enmienda a ADR 21: menú fijo en mensajes
+directos»), como fila de la tabla de §6 con estado **APROBADO por el fundador 2026-10-23
+(m-24789557)**, no `[PROPUESTO]`: es la transcripción de una decisión firmada.
+
+**El código de Instagram todavía no la refleja**, a propósito: `conversations/outbox.py:1-9`
+(«ADR 21c en código»): `approved_by_user_id` NOT NULL, la prueba estática
+`test_conversations_outbox_sanctity.py`, y el rol del webhook sin ningún privilegio sobre
+`conversation_outbox` (0065).
+
+**Mecanismo propuesto**: la aprobación del envío automático es **la publicación de la versión
+del menú** (`published_by_user_id`), y cada fila automática lleva `menu_version_id` + `node_id`
+como procedencia. En el esquema: `kind='automation'` en `conversation_outbox` con
+`approved_by_user_id` nulo **sólo** para ese tipo y `menu_version_id` obligatorio (CHECK), y un
+permiso de INSERT al rol del webhook limitado a ese tipo. Se quita una protección de seguridad
+deliberada, así que pasa por `security-review` antes de mergear.
+
+#### Contraste con las tres condiciones
+
+**1 · Texto fijo, sin modelo en el envío.** Se cumple en el envío:
+- El motor es puro, sin red ni modelo (`whatsapp/menus/engine.py:1-8`), y el handler no llama a
+  ninguno (`whatsapp/handler.py:486-592`).
+- La IA sólo actúa en el editor, antes de publicar, y como propuesta:
+  - «Sugerir con IA» (`menus/suggest_ai.py:1-7`) reemplaza el campo en pantalla, el dueño puede
+    deshacerlo y nada se guarda ni se publica ahí.
+  - «Cargar mi menú desde una foto o mi página» (`menus/import_ai.py:1-9`) propone datos que el
+    dueño acepta campo por campo.
+  - En los dos casos lo enviado es lo publicado.
+
+Hay textos fijos que el dueño **no escribió**, y la decisión dice «lo escribe o lo aprueba una
+vez»:
+- textos que trae Qualify: la línea de ayuda ante una respuesta que el menú no entiende, la
+  entrega por defecto (`engine.py:56-57`), «Elige una de las opciones para seguir.» y «Te
+  confirmamos el monto en …» del paso de pago (`engine.py:56-77`);
+- textos armados con datos del dueño en el momento del envío: la respuesta «Formas de pago»
+  (`starter.composed_payment_text`, `engine.py:78-81`), las listas del catálogo y el total del
+  pedido.
+
+Todos son deterministas, sin modelo. **Que el dueño los «aprueba» al publicar el menú es una
+interpretación**, no está en el texto: lo marco para que el ADR 48 lo diga en una línea.
+
+**2 · «Hablar con alguien» siempre.** Hoy sólo **por costumbre**, el esquema no lo obliga:
+- El iniciador lo trae (`menus/starter.py:368`, `fallback_node: "persona"` en `:523`).
+- El esquema sólo exige que «Confirmar» termine en una entrega a persona y que `fallback_node`
+  sea una entrega (`menus/schema.py:420, 443-458`).
+- Tras 2 respuestas no reconocidas el motor entrega solo (`engine.py:133, 1276`).
+- No verifiqué si el editor deja borrar la opción «persona» (`Qualify/whatsapp_menu_vm.py`).
+
+Para cumplir la decisión, M2 debe pasar la regla a la validación del esquema: una opción visible
+de entrega a persona alcanzable desde el nodo de inicio, y el editor no la deja quitar.
+
+**3 · Ningún texto dice que Qualify responde solo.** Hay una prueba que ya cuida dos frases
+(`Qualify/test_whatsapp_menu_publish.py:316`: ni «responde solo» ni «Qualify responde»). Textos
+que **pueden chocar** con «Tu menú de bienvenida» o con la idea de que responde algo automático.
+No decido el texto, sólo lo marco para el fundador y UX:
+
+| Texto | Dónde vive |
+|---|---|
+| «Respuesta automática» (nombre de la pestaña y de la sección) | `Qualify/whatsapp_vm.py:79,90`; `Qualify/whatsapp_page.py:10,232`; `Qualify/whatsapp_chats_vm.py:1295,1297` («Ir a Respuesta automática») |
+| «Atiende y vende por WhatsApp: tus chats, tu menú automático y tus promociones.» | `Qualify/whatsapp_page.py:163` (y su prueba `Qualify/test_whatsapp_copy.py:112`) |
+| «Todavía no tienes una respuesta automática con tus productos activa.» | `Qualify/whatsapp_chats_vm.py:1294` |
+| «Al enviarlo, la respuesta automática vuelve a atender este chat.» | `Qualify/whatsapp_chats_vm.py:1301` |
+| «Al responder, la respuesta automática se pausa en esta conversación.» | `Qualify/whatsapp_tab_chats.py:2481` |
+| «…tomar el control de la respuesta automática…» | `Qualify/whatsapp_tab_chats.py:2558` |
+| «…puede publicar el menú automático ni la bienvenida.» | `Qualify/capabilities.py:111` |
+| «Está respondiendo tu menú automático · Responder yo» (franja propuesta) | `docs/ux-chats-unificados.md:78` y la maqueta `docs/mockups/chats-unificados.html` |
+| «WhatsApp: Respuesta automática» en el árbol de «Ajustes de chats» | `docs/ux-chats-unificados.md:63` |
+| Aviso al cliente propuesto en esta nota, «Te responde el menú automático de {negocio}» | §5 P6 de esta nota. Lo lee el **cliente final**, no el dueño; la condición 3 habla de «la app». Si cae dentro, choca con ella; si no, es la vía para el aviso que Meta recomienda (§3.4) |
+| Nombre del corte M5, «Respuesta automática» dentro de «Ajustes de chats» | §4.2 de esta nota |
+
+Lo generativo («Sugerir respuesta») sigue asistido sin excepción.
+
+#### ¿Algo del mecanismo va más allá de la decisión?
+
+- **El mecanismo de la outbox (aprobación = versión publicada) cabe** en la condición 1, siempre
+  que M3 lo limite así:
+  - sólo filas con `menu_version_id` de una versión publicada;
+  - sólo texto, botones, listas, la imagen del QR o fotos del catálogo;
+  - nada producido por un modelo.
+
+  Una prueba estática debe impedir que `suggest.py` o cualquier generador escriba `kind='automation'`.
+- **Necesitan al fundador** (fuera del texto del 2026-10-23):
+  - (a) la reanudación automática del menú tras un tiempo sin respuesta del dueño (§3.5 punto 5,
+    §5 P5), si se elige: el texto sólo prevé que la conversación pase a la persona;
+  - (b) el aviso al cliente con la palabra «automático» (tabla anterior);
+  - (c) que los textos fijos de Qualify y los armados con datos del dueño cuenten como
+    «aprobados una vez» al publicar.
+- **Nada más.** El carrusel de productos (M7) usa fotos y nombres del catálogo: es texto fijo.
 
 ### 3.4 Restricciones de Meta para respuestas automáticas en Instagram
 
@@ -321,14 +420,14 @@ por toque, documentado el mismo turno en `docs/modelos-generativos/` y en la fic
 | # | Corte | Dueño | Depende de | Migración |
 |---|---|---|---|---|
 | M1 | Robustecer WhatsApp (§3.5 puntos 1–4): estado + outbox en una transacción, candado por conversación, descartar automáticas de hilos pausados, fallo terminal → entrega a persona, métricas de entregas y fallos | BE | — **puede empezar ya** | Probablemente no (estado `cancelled` en la outbox: verificar el CHECK; si falta, sí) |
-| M2 | Extraer el motor neutral (`chat_automation/`: esquema, motor, `Inbound` neutral, traductor de WhatsApp = el `outbox_payload` de hoy). Sin cambio de comportamiento: mismas pruebas verdes | BE | M1 (mismos archivos) | No |
-| M3 | Destinos del menú por canal + estado neutral + `kind='automation'` en `conversation_outbox` (§3.3, §3.6) | BE | M2 **y firma del ADR 48** | **Sí** |
+| M2 | Extraer el motor neutral (`chat_automation/`: esquema, motor, `Inbound` neutral, traductor de WhatsApp = el `outbox_payload` de hoy). Sin cambio de comportamiento: mismas pruebas verdes; **más** la condición 2 de m-24789557 como regla de validación (entrega a persona visible desde el inicio, §3.3) | BE | M1 (mismos archivos) | No |
+| M3 | Destinos del menú por canal + estado neutral + `kind='automation'` en `conversation_outbox` (§3.3, §3.6) | BE | M2, **ADR 48 escrito en `docs/arquitectura.md` §6** (transcripción de m-24789557, ya firmada) y una revisión de que el cambio de la outbox de Instagram queda dentro de las tres condiciones (sólo versiones publicadas, sin modelo, prueba estática; `security-review`) | **Sí** |
 | M4 | Traductor e integración de Instagram: entrada desde el webhook de `conversations` (`choice_kind`/`choice_payload` ya existen en `contracts.py:113-116`), respuestas rápidas, plantilla de botones, imagen del pago, preguntas iniciales, aviso de automatización. **Prueba en vivo con una cuenta con rol antes de mergear (ADR 25)** | BE | M3; para clientes reales, App Review (QUA-142) | No |
 | M5 | «Respuesta automática» dentro de «Ajustes de chats» con encendido por canal y vista «Así le llega» por canal | UI | C6, M3 | No |
 | M6 | Franja «quién responde» (Responder yo / Devolver al menú) en el hilo compartido, también para Instagram | UI | C4, M4 | No |
 | M7 | Carrusel de productos en Instagram (plantilla genérica con foto) | BE + UI | M4 | No |
 
-**Pueden empezar antes de la bandeja:** M1, M2 (y M3 en cuanto se firme el ADR 48), C1, C2, C6,
+**Pueden empezar antes de la bandeja:** M1, M2 (y M3 en cuanto esté escrito el ADR 48), C1, C2, C6,
 C8, la medición de C11. **Dependen de la bandeja:** C3→C4→C5→C7, C9 (de C1), C10 (de C6/C5),
 M5 (de C6), M6 (de C4).
 
@@ -340,8 +439,15 @@ M5 (de C6), M6 (de C4).
    (QUA-142, plazo de Meta 2026-12-11 según `docs/conversaciones-limitaciones-meta.md` fila 2;
    estado de hoy sin verificar). Sin él, «una bandeja» muestra sólo WhatsApp a los clientes. Y si
    habrá menú en Instagram, la sumisión debería mostrarlo (§3.4).
-2. **ADR 48: menú automático en Instagram (antes de M3).** Necesita la firma del fundador; hoy el
-   código de Instagram impide por diseño que el webhook envíe (§3.3).
+2. **Menú en Instagram: decidido, falta escribirlo y cumplirlo (antes de M3).** El fundador lo
+   aprobó el 2026-10-23 (m-24789557) con tres condiciones (§3.3). Falta escribir el ADR 48 en
+   §6. Además, tres puntos fuera del texto de esa decisión necesitan su respuesta:
+   - (a) reanudación automática del menú (P5);
+   - (b) un aviso al cliente con la palabra «automático» (P6);
+   - (c) si los textos fijos de Qualify cuentan como «aprobados al publicar».
+
+   Y los textos de la app que chocan con la condición 3 (tabla de §3.3) van a UX y al fundador
+   antes de M5/M6.
 3. **«Por responder» cuando contestó el menú (antes de C1).** ¿Un chat al que respondió el menú
    automático está «por responder»? Propuesta: no, salvo que se haya entregado a una persona
    (`Handoff`) o falló un envío. Lo decide el PO con el fundador.
@@ -377,5 +483,5 @@ Sin investigar la API de TikTok: la costura no debe suponer que…
   más su descriptor, su traductor, su ingesta y su propia outbox.
 
 Lo que sí puede suponer: `threads`/`messages` con RLS como almacén único de conversaciones, una
-outbox por canal con aprobación humana (o versión de menú publicada, si se firma el ADR 48),
+outbox por canal con aprobación humana (o versión de menú publicada, según m-24789557 / ADR 48),
 y el motor de menú puro como cerebro de la respuesta automática.
