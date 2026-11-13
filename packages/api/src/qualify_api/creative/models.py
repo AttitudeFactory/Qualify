@@ -59,6 +59,9 @@ class BrandKit(Base):
     __table_args__ = (
         UniqueConstraint("brand_id", name="uq_brand_kits_brand"),
         Index("ix_brand_kits_tenant", "tenant_id"),
+        CheckConstraint(
+            "jsonb_typeof(business_perks) = 'array'", name="ck_brand_kits_business_perks_array"
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(
@@ -337,7 +340,14 @@ class ContentBrief(Base):
     Immutable input to a draft — regeneration re-reads the brief, never edits it."""
 
     __tablename__ = "content_briefs"
-    __table_args__ = (Index("ix_content_briefs_tenant", "tenant_id"),)
+    __table_args__ = (
+        Index("ix_content_briefs_tenant", "tenant_id"),
+        CheckConstraint(
+            "awareness_level IS NULL OR awareness_level IN ('unaware','problem_aware',"
+            "'solution_aware','product_aware','most_aware')",
+            name="ck_content_briefs_awareness_level",
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
