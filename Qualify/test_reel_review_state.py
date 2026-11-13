@@ -446,3 +446,97 @@ def test_the_summary_view_carries_the_parts_review() -> None:
         rendered.index("reel_usage_lines"),
     )
     assert text < rows < usage  # summary → rows with «Editar» → «Lo que usa de tu mes»
+
+
+# -- the generation queue is off (m-24993023) ---------------------------------------------
+
+
+def _invalid_switch() -> bool:
+    raise ValueError("QUALIFY_CREATIVE_DISPATCHER must be inline or queue")
+
+
+@pytest.mark.parametrize("switch", [lambda: False, _invalid_switch], ids=["inline", "invalid"])
+@pytest.mark.parametrize("previews", [10, 2, 0], ids=["enough", "short", "none"])
+async def test_queue_off_holds_both_before_the_month_and_sends_nothing(
+    switch: Any, previews: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from . import creative_provider
+
+    calls = session(monkeypatch)
+    monkeypatch.setattr(creative_provider, "queue_enabled", switch)
+    state = four_parts(previews=previews)
+    assert (
+        state.reel_create_all_reason
+        == state.reel_try_first_reason
+        == (
+            "Por ahora no podemos crear videos por partes. No se usó nada de tu mes. "
+            "Inténtalo más tarde."
+        )
+    )
+    assert not state.reel_back_to_parts and not state.reel_to_ideas
+    assert state.reel_exhausted == ""
+    # the buttons keep their words; the frame's primary is disabled, with no short reason
+    assert state.reel_create_all_label == "Crear las 4 partes" and state.reel_try_first_shown
+    assert state.create_primary_disabled
+    assert state.create_reason == ""  # the callout says it; the foot says nothing more
+    await press(state, "create_all_reel_parts")
+    await press(state, "try_first_reel_part")
+    assert calls == [] and state.generator_view != "result" and not state.is_submitting
+
+
+async def test_queue_turned_off_after_the_screen_read_says_the_same(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The screen saw the queue on, the provider (the server's own check) did not: no
+    parent, and the same words as the callout."""
+    from qualify_api.creative.parts import PartsUnavailable
+
+    def refuse(*_: Any, **__: Any) -> UUID:
+        raise PartsUnavailable(parts_vm.QUEUE_OFF_TEXT)
+
+    session(monkeypatch, submit=refuse)
+    state = four_parts()
+    await press(state, "create_all_reel_parts")
+    assert state.create_error == parts_vm.QUEUE_OFF_TEXT
+    assert state.generator_view != "result" and not state.is_submitting
+
+
+def test_queue_on_is_today() -> None:
+    state = four_parts()
+    assert state.reel_create_all_reason == state.reel_try_first_reason == ""
+    assert not state.create_primary_disabled and state.create_reason == ""
+    short = four_parts(previews=2)
+    assert short.create_reason == parts_vm.FOOT_SHORT and short.reel_back_to_parts
+
+
+@pytest.mark.parametrize("on", [False, True], ids=["queue-off", "queue-on"])
+def test_the_parts_fixes_show_only_with_the_queue_on(
+    on: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """«Contar qué pasa en la parte N» and «Cambiar la parte N» would not unlock
+    anything with the queue off: hidden, as «Volver al paso 2» is."""
+    from . import creative_provider
+
+    monkeypatch.setattr(creative_provider, "queue_enabled", lambda: on)
+    blind_state = planned()
+    entries = [dict(e) for e in blind_state._reel_plan]
+    blind = entry("reference", 4, description="", notices=("describe_it",))
+    entries[1] = {**entries[1], "plan": blind["plan"]}
+    blind_state._set_reel_plan(entries)
+    on_summary(with_month(blind_state, previews=10))
+    assert blind_state.reel_missing_description is on
+    assert blind_state.reel_back_to_parts is on
+    unsupported = on_summary(with_month(planned(), previews=10))  # an old extend
+    assert unsupported.reel_unsupported_parts is on
+
+
+def test_try_first_unavailable_is_greyed_and_still_focusable() -> None:
+    """m-24993023: the design system's unavailable greys, not a faded accent; never the
+    native `disabled`, so a screen reader reaches the reason it points to."""
+    from .content_generator import REEL_CREATE_REASON_ID, _try_first_button
+
+    rendered = str(_try_first_button().render())
+    assert "q-button-off" in rendered and "0.55" not in rendered
+    assert "aria-disabled" in rendered or "ariaDisabled" in rendered
+    assert REEL_CREATE_REASON_ID in rendered
+    assert '"disabled":true' not in rendered.replace(" ", "")

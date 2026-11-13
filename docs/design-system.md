@@ -435,7 +435,9 @@ reservada (`--q-bottom-bar-h`) y la misma zona segura.
 2. A la derecha va el **botón principal** (sólido, ancho, ≥ 44 px): «Siguiente», y en el último
    paso un verbo que dice quién actúa y qué pasa (N13): «Crear», «Programar para el jueves»,
    «Publicar en Instagram». Si el paso todavía no es válido, el motivo se lee **junto** al botón
-   (regla de §5.8).
+   (regla de §5.8). En escritorio el motivo va **en su propia fila**, encima de los botones y a
+   todo el ancho del pie (m-24993023): en una sola fila, un panel estrecho dejaba su columna en
+   nada y el texto tapaba «Atrás». Sin motivo, el pie sigue siendo una sola fila.
 3. Debajo, **«Seguir después»** (ghost): guarda lo que lleva el dueño y lleva a **Inicio** en todos
    los asistentes (N2, decisión del fundador 2026-10-25). Inicio muestra lo que quedó a medias con
    «Seguir».
@@ -445,6 +447,10 @@ reservada (`--q-bottom-bar-h`) y la misma zona segura.
    Con el teclado abierto, el pie también se aparta.
 5. **En escritorio** el pie se pega al borde inferior del panel (`position: sticky; bottom`), como
    `.q-rv-savebar--editing`. No suma superficies de vidrio (§4.3-6).
+6. **Con un contenedor de 480 px o menos** (un panel lateral o una ventana partida en una pantalla
+   ancha) el pie **se apila como en el celular**: motivo, luego «Atrás» y el botón principal a lo
+   ancho, y «Seguir después» debajo. Lo mide el propio pie (`.q-step-slot` es el contenedor de una
+   *container query*), no el ancho de la ventana.
 
 **Comportamiento al cambiar de paso.**
 
@@ -541,6 +547,7 @@ El skin es el `lq-button` del kit sobre `.rt-Button`/`.rt-IconButton`: radio 14 
 - `soft` / `outline` / `surface` = el botón de **vidrio** (material control: `--q-control-edge` + `--q-control-hi` + `--q-control-shadow`; al hover, borde más marcado y 2 px arriba). `soft`: secundarias (Desconectar, Cancelar). `outline`: terciarias.
 - `ghost` = `lq-button--ghost`: sin relieve; dentro de tablas/filas y para el toggle de modo.
 - Pulsado: `scale(0.975)`. Deshabilitado: sin sombra ni movimiento.
+- No disponible pero enfocable: `q-button-off`. Es un `soft`/`outline`/`surface` con `aria-disabled` (nunca el `disabled` nativo, para que el lector de pantalla llegue a su motivo). Lleva los mismos grises que el principal deshabilitado: fondo `gray-a3`, texto `gray-a8`, borde `gray-a5`, sin elevarse al pasar el ratón y con `cursor: not-allowed`. Nunca un acento atenuado con opacidad, que parece activo (m-24993023, «Probar solo la parte 1»).
 - Destructiva: `soft` + `color_scheme=T.tone_scale("error")`; en el diálogo de confirmación, `solid` tomato (el degradado toma la escala del `color_scheme`).
 - Tamaños: `2` por defecto; `1` dentro de badges de sesión/filas; `3` solo en empty states.
 - Icono + texto: icono a la izquierda, `size=16` (o `ICON_SM` en size 1). Nunca icono solo sin `aria-label`.

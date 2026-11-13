@@ -10,12 +10,13 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
-from qualify_api.creative.parts import PartsExtendUnavailable, PartsSourceInvalid
+from qualify_api.creative.parts import PartsExtendUnavailable, PartsSourceInvalid, PartsUnavailable
 from qualify_api.creative.parts_plan import PLAN_MEDIA_KEY, PartsPlanRefused
 from qualify_api.referentes import reel_analysis
 from qualify_creative.enums import ContentKind
 from qualify_creative.schemas import ContentBrief, PartsRequest
 
+from . import creative_provider as provider
 from . import reel_parts_vm as parts_vm
 from .creative_provider import PartsPreviewsShort, parent_media, submit_parts_brief
 from .test_reel_parts_vm import MOCKUP
@@ -223,8 +224,6 @@ def test_fresh_parent_checks_converted_slot_before_balance(
 def test_fresh_parent_checks_active_and_removed_marker_budget_before_balance(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from . import creative_provider as provider
-
     state = four_parts()
     active = parts_vm.plans(state._reel_plan)
     forged_removed = active[-1:]  # claims the same continuation slot a second time
@@ -279,3 +278,112 @@ def test_fresh_parent_refuses_another_business_file_before_balance(field: str, w
             content=NeverUsed(),
         )
     assert refused.value.reason == PLAN_MEDIA_KEY
+
+
+# -- the generation queue is off (m-24993023) ---------------------------------------------
+
+
+class _NeverUsed:
+    def __getattr__(self, name: str) -> Any:
+        raise AssertionError(f"must not touch the service: {name}")
+
+
+def _invalid_switch() -> bool:
+    raise ValueError("QUALIFY_CREATIVE_DISPATCHER must be inline or queue")
+
+
+@pytest.mark.parametrize("scope", ["all", "first"])
+@pytest.mark.parametrize("switch", [lambda: False, _invalid_switch], ids=["inline", "invalid"])
+def test_queue_off_creates_nothing_and_says_so(
+    scope: str,
+    switch: Any,
+    split_analysis: list[tuple[UUID, UUID]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Even when a disabled button's event arrives: no parent, no balance read, no
+    analysis read — nothing of the month is used."""
+    form, plans = form_and_plans()
+    split_analysis.clear()
+    monkeypatch.setattr(provider, "queue_enabled", switch)
+    with pytest.raises(PartsUnavailable) as caught:
+        submit_parts_brief(
+            TENANT, BRAND, USER, parts=plans, scope=scope, content=_NeverUsed(), **form
+        )  # type: ignore[arg-type]
+    assert caught.value.text == parts_vm.QUEUE_OFF_TEXT
+    assert split_analysis == []
+
+
+def test_an_injected_switch_wins_over_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(provider, "queue_enabled", lambda: True)
+    form, plans = form_and_plans()
+    with pytest.raises(PartsUnavailable):
+        submit_parts_brief(
+            TENANT,
+            BRAND,
+            USER,
+            parts=plans,
+            scope="all",
+            content=_NeverUsed(),
+            queue_on=lambda: False,
+            **form,
+        )  # type: ignore[arg-type]
+    content = Content(left=10)
+    monkeypatch.setattr(provider, "queue_enabled", lambda: False)
+    submit_parts_brief(
+        TENANT,
+        BRAND,
+        USER,
+        parts=plans,
+        scope="all",
+        content=content,
+        queue_on=lambda: True,
+        **form,
+    )  # type: ignore[arg-type]
+    assert len(content.briefs) == 1
+
+
+@pytest.mark.parametrize(
+    ("value", "on"), [("queue", True), ("inline", False), ("QUEUE ", True), ("cola", False)]
+)
+def test_parts_queue_on_reads_the_real_switch(
+    value: str, on: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from qualify_api.creative.queue_dispatch import SWITCH, queue_enabled
+
+    monkeypatch.setenv(SWITCH, value)
+    assert provider.parts_queue_on(queue_enabled) is on
+
+
+@pytest.mark.parametrize(
+    ("value", "on"), [("queue", True), ("inline", False), (None, False), ("cola", False)]
+)
+def test_parts_queue_on_without_arguments_reads_the_environment(
+    value: str | None, on: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Undoes conftest's switch: the real `queue_enabled` over the real environment
+    (unset = the default, `inline`)."""
+    from qualify_api.creative.queue_dispatch import SWITCH, queue_enabled
+
+    monkeypatch.setattr(provider, "queue_enabled", queue_enabled)
+    if value is None:
+        monkeypatch.delenv(SWITCH, raising=False)
+    else:
+        monkeypatch.setenv(SWITCH, value)
+    assert provider.parts_queue_on() is on
+
+
+def test_an_injected_invalid_switch_counts_as_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An injected `queue_on` keeps `parts_queue_on`'s meaning: a ValueError is «off»."""
+    form, plans = form_and_plans()
+    with pytest.raises(PartsUnavailable) as caught:
+        submit_parts_brief(
+            TENANT,
+            BRAND,
+            USER,
+            parts=plans,
+            scope="all",
+            content=_NeverUsed(),
+            queue_on=_invalid_switch,
+            **form,
+        )  # type: ignore[arg-type]
+    assert caught.value.text == parts_vm.QUEUE_OFF_TEXT
