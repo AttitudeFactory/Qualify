@@ -25,6 +25,15 @@ ONLY from inbound messages; `last_message_at` is inbox ordering only.
 «pendiente / leído / respondido» state (`service.attention_state`) is derived, never
 stored, so it cannot drift.
 
+## Unsent messages (m-25018661, 0157)
+
+`unsend_message` erases one unsent inbound DM in one transaction: tombstone in
+`message_unsends`, the row redacted in place (`unsent_at`, hidden by `deleted_at`), its
+`proposed` drafts discarded, the thread's instants recomputed from what remains.
+`insert_message` refuses a tombstoned `mid` under the same per-message advisory lock, so
+neither the poll nor a late webhook brings it back. `list_threads` leaves out a thread whose
+every message was unsent.
+
 The sync-state methods are three narrow upserts (`save_access`, `sync_started`,
 `sync_finished`) rather than one "save everything": a crash between them leaves a row
 that says exactly how far the sync got.
