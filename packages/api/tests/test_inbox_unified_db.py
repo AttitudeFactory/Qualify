@@ -5,7 +5,8 @@ newest first; the composite cursor never skips two chats with the same instant; 
 rule (`awaiting_reply_sql`) agrees with its Python twin (`awaits_reply`) on every case —
 each case is seeded once and read both ways — and `count_inbox` with the list; RLS keeps
 another business's chats out. The open questions of `inbox.awaiting` are pinned
-(`test_pinned_*`). The p95 benchmark is `slow` (opt-in, never in CI).
+(`test_pinned_*`). The p95 benchmark is opt-in only (`QUALIFY_RUN_INBOX_BENCHMARK=1`,
+plus `slow`): never in `just test`, `just test-db` or CI.
 
 Seeding follows `test_attention_counts_db.py`: tenant/app/user via `admin_session`, the
 rest through `tenant_session`. Fresh tenants per test, so exact numbers hold on re-runs.
@@ -411,7 +412,11 @@ def test_pinned_a_persons_reply_meta_reports_failed_still_answers() -> None:
     assert _awaiting(biz) == {thread_id: False}
 
 
-def test_pinned_reactions_and_stop_count_as_the_customer_writing() -> None:
+def test_pinned_any_visible_inbound_row_counts_even_without_text_or_as_stop() -> None:
+    """Pins the RULE's side only: any visible inbound `messages` row re-opens the wait —
+    one with no text (how a WhatsApp reaction or other non-text type lands: inbound,
+    `media_type='other'`) and one whose text is «STOP». Whether ingestion stores a given
+    WhatsApp event as an inbound row is `whatsapp.handler`'s concern, not pinned here."""
     biz = _business()
     answered = T0 + timedelta(minutes=1)
     reaction = (
@@ -429,6 +434,19 @@ def test_pinned_reactions_and_stop_count_as_the_customer_writing() -> None:
         .save()
     )
     assert _awaiting(biz) == {reaction: True, stop: True}
+
+
+def test_hiding_one_of_several_customer_messages_keeps_the_chat_waiting() -> None:
+    biz = _business()
+    one_hidden = _Chat(biz, "whatsapp").inbound(T0).inbound(T0 + timedelta(seconds=1), hidden=True)
+    all_hidden = (
+        _Chat(biz, "dm").inbound(T0, hidden=True).inbound(T0 + timedelta(seconds=1), hidden=True)
+    )
+    ids = {one_hidden.save(): one_hidden, all_hidden.save(): all_hidden}
+    awaiting = _awaiting(biz)
+    assert awaiting == {t: awaits_reply(c.snapshot(), NOW) for t, c in ids.items()}
+    assert sorted(awaiting.values()) == [False, True]
+    assert awaiting[next(t for t, c in ids.items() if c is one_hidden)] is True
 
 
 def test_another_business_never_appears() -> None:
@@ -451,13 +469,26 @@ def test_comment_threads_are_not_chats() -> None:
 
 
 # --------------------------------------------------------------------------------------
-# Opt-in benchmark (`pytest -m slow`): never in CI's `db` job.
+# Opt-in benchmark: gated by an environment variable, like
+# `test_sentiment_scale_benchmark.py` — `@pytest.mark.slow` alone does not keep it out of
+# `just test` / `just test-db`, whose explicit `-m` replaces addopts' `not slow`.
 # --------------------------------------------------------------------------------------
 
+_RUN_INBOX_BENCHMARK = os.environ.get("QUALIFY_RUN_INBOX_BENCHMARK") == "1"
+_skip_unless_opted_in = pytest.mark.skipif(
+    not _RUN_INBOX_BENCHMARK,
+    reason=(
+        "opt-in only — set QUALIFY_RUN_INBOX_BENCHMARK=1 to run "
+        "(never in just test/test-db/CI; see test_sentiment_scale_benchmark.py's "
+        "docstring for why -m alone cannot be trusted to keep this out of `just test`)"
+    ),
+)
 
-def seed_volume(biz: _Biz, chats: int, messages_per_chat: int) -> None:
-    """`chats` chats with a message history, bulk-inserted (alternating channels; every
-    third answered by a person, every sixth WhatsApp one by the menu)."""
+
+def seed_volume(biz: _Biz, chats: int, messages_per_chat: int, waiting_percent: int) -> None:
+    """`chats` chats with a message history, bulk-inserted: alternating channels, every
+    tenth closed, every sixth WhatsApp one answered by the menu, and the newest message
+    from the customer in `waiting_percent` % of the chats (the rest end on a reply)."""
     thread_rows: list[dict[str, Any]] = []
     message_rows: list[dict[str, Any]] = []
     outbox_rows: list[dict[str, Any]] = []
@@ -470,8 +501,9 @@ def seed_volume(biz: _Biz, chats: int, messages_per_chat: int) -> None:
         last_in: datetime | None = None
         for j in range(messages_per_chat):
             at = start + timedelta(seconds=j)
-            # Alternating history; the newest message is a reply in every third chat only.
-            outbound = j % 2 == 1 if j < messages_per_chat - 1 else i % 3 == 0
+            # Alternating history; the newest message decides whether the chat waits.
+            ends_inbound = i % 100 < waiting_percent
+            outbound = j % 2 == 1 if j < messages_per_chat - 1 else not ends_inbound
             external = f"m-{uuid4().hex}"
             message_rows.append(
                 {
@@ -521,9 +553,20 @@ def seed_volume(biz: _Biz, chats: int, messages_per_chat: int) -> None:
 
 
 @pytest.mark.slow
-def test_a_page_of_50_chats_has_p95_under_300_ms() -> None:
+@_skip_unless_opted_in
+@pytest.mark.parametrize("waiting_percent", [67, 2])
+def test_a_page_of_50_chats_has_p95_under_300_ms(waiting_percent: int) -> None:
+    """Opt-in only — `QUALIFY_RUN_INBOX_BENCHMARK=1 pytest -m slow -k inbox`.
+
+    3,000 chats x 12 messages. Two shares of waiting chats, because `por_responder` cost
+    depends on it: the page is scanned in `ix_thread_inbox_order` order and the rule is
+    evaluated chat by chat until 50 waiting chats are found. With most chats waiting
+    (67 %, the best case) that stops after ~80 chats; with few waiting — the normal case,
+    2 % here — it evaluates the rule over nearly every open chat, and `count_inbox` always
+    does so over all of them. The remedy, if it is ever too slow, is the denormalised
+    `threads.last_person_reply_at` proposed in `inbox.awaiting`, not another store."""
     biz = _business()
-    seed_volume(biz, chats=3000, messages_per_chat=12)
+    seed_volume(biz, chats=3000, messages_per_chat=12, waiting_percent=waiting_percent)
     # Fresh bulk rows have no planner statistics yet (autovacuum would add them in
     # production); refresh them as the owner when its DSN is set, as `just test-db` has.
     owner_dsn = os.environ.get("QUALIFY_MIGRATION_DSN")
@@ -532,14 +575,21 @@ def test_a_page_of_50_chats_has_p95_under_300_ms() -> None:
 
         with psycopg.connect(owner_dsn.replace("+psycopg", ""), autocommit=True) as conn:
             conn.execute("ANALYZE threads, messages, whatsapp_outbox")
-    for filter in ("todos", "por_responder"):
-        list_inbox(biz.tenant_id, filter=filter, limit=50, now=NOW)  # type: ignore[arg-type]
-    timings: list[float] = []
-    for filter in ("todos", "por_responder") * 10:
+    waiting = count_inbox(biz.tenant_id)
+    timings: dict[str, list[float]] = {"todos": [], "por_responder": [], "count": []}
+    for _ in range(11):
+        for filter in ("todos", "por_responder"):
+            started = time.perf_counter()
+            page = list_inbox(biz.tenant_id, filter=filter, limit=50, now=NOW)  # type: ignore[arg-type]
+            timings[filter].append(time.perf_counter() - started)
+            assert len(page.rows) == (50 if filter == "todos" else min(50, waiting))
         started = time.perf_counter()
-        page = list_inbox(biz.tenant_id, filter=filter, limit=50, now=NOW)  # type: ignore[arg-type]
-        timings.append(time.perf_counter() - started)
-        assert len(page.rows) == 50
-    p95 = statistics.quantiles(timings, n=20)[-1]
-    print(f"inbox page of 50 over 3000 chats: p95 {p95 * 1000:.1f} ms")
-    assert p95 < 0.300, f"p95 {p95 * 1000:.1f} ms"
+        count_inbox(biz.tenant_id)
+        timings["count"].append(time.perf_counter() - started)
+    # The first round is the warm-up.
+    p95 = {k: statistics.quantiles(v[1:], n=20)[-1] for k, v in timings.items()}
+    print(
+        f"inbox, 3000 chats, {waiting_percent} % waiting ({waiting}): "
+        + ", ".join(f"{k} p95 {v * 1000:.1f} ms" for k, v in p95.items())
+    )
+    assert max(p95["todos"], p95["por_responder"]) < 0.300, p95
