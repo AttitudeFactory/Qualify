@@ -234,6 +234,17 @@ def test_progress_and_outcome_copy() -> None:
     assert vm.done_message(MODE_STORIES, 3) == (
         "Listo, tus 3 historias ya están en Instagram (se ven 24 horas)."
     )
+    # m-25019217: where the owner finds it now
+    one = "La verás en Tu semana, marcada como publicada, y en Aprobados para volver a usarla."
+    many = "Las verás en Tu semana, marcadas como publicadas, y en Aprobados para volver a usarlas."
+    assert vm.week_hint(MODE_POST, 1) == one
+    assert vm.week_hint(MODE_CAROUSEL, 3) == one
+    assert vm.week_hint(MODE_ONE_BY_ONE, 6) == many
+    assert vm.week_hint(MODE_STORIES, 3) == many
+    assert vm.week_hint(MODE_ONE_BY_ONE, 6, partial=True) == (
+        "Las que salieron ya están en Tu semana, marcadas como publicadas, y en Aprobados "
+        "para volver a usarlas."
+    )
     assert vm.partial_message(4, 6) == "Salieron 4 de 6. Las otras 2 no se publicaron."
     assert vm.failed_headline(2, 6, "image", 4) == "Salieron 2 de 6. La foto 4 no salió."
     assert vm.failed_headline(2, 6, "video", 4) == "Salieron 2 de 6. El video 4 no salió."
@@ -275,6 +286,7 @@ def test_no_english_in_the_copy() -> None:
     for fn_name in (
         "review_sentence",
         "done_message",
+        "week_hint",
         "publish_label",
         "failed_followup",
         "leftover_text",

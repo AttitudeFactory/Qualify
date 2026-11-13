@@ -463,6 +463,22 @@ def done_message(mode: str, count: int) -> str:
     return "Listo, ya está en tu Instagram."
 
 
+def week_hint(mode: str, count: int, *, partial: bool = False) -> str:
+    """Where the owner finds what went out (m-25019217): every publication from here is
+    recorded in «Tu semana» as published, and can be scheduled again from there."""
+    if partial:
+        return (
+            "Las que salieron ya están en Tu semana, marcadas como publicadas, y en "
+            "Aprobados para volver a usarlas."
+        )
+    if mode in (MODE_ONE_BY_ONE, MODE_STORIES) and count > 1:
+        return (
+            "Las verás en Tu semana, marcadas como publicadas, y en Aprobados para volver "
+            "a usarlas."
+        )
+    return "La verás en Tu semana, marcada como publicada, y en Aprobados para volver a usarla."
+
+
 def partial_message(published: int, total: int) -> str:
     """The partial end, in the `warn` tone (spec §4.4)."""
     return f"Salieron {published} de {total}. Las otras {total - published} no se publicaron."

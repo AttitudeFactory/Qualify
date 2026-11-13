@@ -20,6 +20,10 @@ in-flight attempt by one step, so the interval IS the poll cadence.
    upload. There is no transaction around the tick: every operation keeps its own lock
    or compare-and-set (claim CAS, event lock, attempt lock, settlement CAS), which is
    what decides whether a snapshot entry still needs acting on.
+   d. m-25019217: when built with an `immediate` sweep, publications made from
+      «Publicar» that settled `published` and are not in the calendar yet are recorded
+      there (`immediate.sweep_recent_publications`: bounded, idempotent, read-only on
+      the attempts — it never starts or advances a publication).
 3. One event's exception is recorded and the next event runs; one tenant's failure is
    recorded and the next tenant runs. Nothing is retried within a tick.
 
@@ -43,6 +47,7 @@ from qualify_api.planner.executor import (
     ExecutionResult,
     SettleResult,
 )
+from qualify_api.planner.immediate import RecordResult
 from qualify_api.planner.repository import EventRecord, PlannerRepository
 
 logger = logging.getLogger(__name__)
@@ -51,6 +56,10 @@ DEFAULT_LIMIT_PER_TENANT = 100
 
 T = TypeVar("T")
 
+#: m-25019217: records the tenant's unrecorded «Publicar» publications
+#: (`immediate.sweep_recent_publications(tenant_id=, now=)`).
+ImmediateSweep = Callable[..., list[RecordResult]]
+
 
 @dataclass
 class TenantReport:
@@ -58,11 +67,18 @@ class TenantReport:
     advanced: list[tuple[AdvanceResult, SettleResult | None]] = field(default_factory=list)
     resumed: list[ExecutionResult] = field(default_factory=list)
     executed: list[ExecutionResult] = field(default_factory=list)
-    errors: list[str] = field(default_factory=list)  # "<event_id|snapshot>:<ExceptionType>"
+    # m-25019217: «Publicar» publications looked at by the sweep (recorded or not)
+    recorded: list[RecordResult] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)  # "<event_id|snapshot|sweep>:<Type>"
 
     @property
     def operations(self) -> int:
-        return len(self.advanced) + len(self.resumed) + len(self.executed)
+        return (
+            len(self.advanced)
+            + len(self.resumed)
+            + len(self.executed)
+            + sum(1 for result in self.recorded if result.recorded)
+        )
 
 
 @dataclass
@@ -82,12 +98,14 @@ class TickRunner:
         executor: EventExecutor,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         limit_per_tenant: int = DEFAULT_LIMIT_PER_TENANT,
+        immediate: ImmediateSweep | None = None,
     ) -> None:
         self._tenants = tenants
         self._repo = repository
         self._executor = executor
         self._clock = clock
         self._limit = limit_per_tenant
+        self._immediate = immediate
 
     async def run_once(self) -> TickReport:
         now = self._clock()
@@ -132,6 +150,16 @@ class TickRunner:
             await self._each(report, event, report.resumed, self._executor.start_claimed)
         for event in due:
             await self._each(report, event, report.executed, self._executor.try_execute)
+        if self._immediate is not None:
+            try:
+                report.recorded.extend(self._immediate(tenant_id=tenant_id, now=now))
+            except Exception as exc:
+                logger.error(
+                    "calendar.tick_sweep_failed tenant_id=%s error=%s",
+                    tenant_id,
+                    type(exc).__name__,
+                )
+                report.errors.append(f"sweep:{type(exc).__name__}")
         return report
 
     async def _each(

@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from qualify_creative.enums import ReuseType
+from qualify_creative.enums import ContentKind, ReuseType
 
 from qualify_api.creative import fsm as draft_fsm
 from qualify_api.planner.post_reader import ApprovalStatus, PostSummary
@@ -45,6 +45,19 @@ def is_reusable(post: PostSummary) -> bool:
     return post.reuse_type == ReuseType.RECURRENTE.value
 
 
+def is_own_media(post: PostSummary) -> bool:
+    """m-25019217: the owner's own media recorded from «Publicar» — it already went out."""
+    return post.content_kind == ContentKind.OWN_MEDIA.value
+
+
+def awaits_scheduling(post: PostSummary) -> bool:
+    """Whether a reusable POST stays in «Sin programar» (and its count) even with a live
+    or published event. A `recurrente` POST does (QUA-118 A2) — EXCEPT an own-media
+    piece (m-25019217, founder 2026-11-13): it was published from «Publicar», so it is
+    reusable (still SCHEDULABLE in the gallery and in «Aprobados») but not pending."""
+    return is_reusable(post) and not is_own_media(post)
+
+
 def is_used(post: PostSummary) -> bool:
     return post.times_published >= 1 or post.has_live_event
 
@@ -61,4 +74,11 @@ def gallery_state(post: PostSummary) -> GalleryState:
     return GalleryState.SCHEDULABLE
 
 
-__all__ = ["GalleryState", "gallery_state", "is_reusable", "is_used"]
+__all__ = [
+    "GalleryState",
+    "awaits_scheduling",
+    "gallery_state",
+    "is_own_media",
+    "is_reusable",
+    "is_used",
+]

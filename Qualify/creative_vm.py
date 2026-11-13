@@ -936,9 +936,15 @@ KIND_OPTIONS: tuple[tuple[str, str, str, str], ...] = (
         "film",
     ),
 )
-#: Kinds a piece can be that «¿Qué creamos?» does not offer: a video by parts (ADR 44) is
-#: reached from a Clip or a reel, but the piece still needs its name (pill, download).
-_UNLISTED_KIND_LABELS: dict[str, str] = {"shot_video": "Video por partes"}
+#: Kinds a piece can be that «¿Qué creamos?» does not offer (`ContentKind.is_offered`): a
+#: video by parts (ADR 44) is reached from a Clip or a reel; an own-media piece is what the
+#: owner published from «Publicar» (m-25019217). Both still need their name (pill, download).
+#: `ContentKind.OWN_MEDIA` (m-25019217).
+OWN_MEDIA_KIND = "own_media"
+_UNLISTED_KIND_LABELS: dict[str, str] = {
+    "shot_video": "Video por partes",
+    "own_media": "Subida por ti",
+}
 KIND_LABELS: dict[str, str] = {
     **{key: title for key, title, _, _ in KIND_OPTIONS},
     **_UNLISTED_KIND_LABELS,
@@ -1101,8 +1107,12 @@ class DraftVM:
     #: What the composition had to leave out (ticket 24803289: a catalog price that
     #: could not be printed whole), in the operator's words.
     warnings: tuple[str, ...] = ()
-    #: The copy may be edited (the FSM's `edit` edge exists from this status).
+    #: The copy may be edited (the FSM's `edit` edge exists from this status) — never on
+    #: an own-media piece (m-25019217).
     can_edit: bool = False
+    #: m-25019217: the owner's photo or video published from «Publicar» — never
+    #: generated, so nothing that makes, remakes or edits a piece is offered on it.
+    is_own_media: bool = False
     #: «Descargar todo» (m-24828908): the backend path of the piece's `.zip` and its file
     #: name — "" while there is nothing to download (a draft still generating).
     download_path: str = ""
@@ -1522,7 +1532,10 @@ def build_draft_vm(
         fidelity_summary = "Cumple las reglas de tu marca"
     else:
         fidelity_summary = f"{passing} de {len(variants)} textos cumplen las reglas de tu marca"
-    can_approve = status == DraftStatus.GENERATED.value
+    own_media = kind == OWN_MEDIA_KIND
+    if own_media:  # m-25019224: Qualify never checked the owner's own text
+        fidelity_summary = ""
+    can_approve = status == DraftStatus.GENERATED.value and not own_media
     blocking_reason: str | None = None
     if can_approve and variants and passing == 0:
         can_approve = False
@@ -1539,8 +1552,10 @@ def build_draft_vm(
         cost_short=format_cost_label(total_cost_usd, None, ()),
         can_approve=can_approve,
         # an approved piece is rejected from Piezas, where the calendar is known
-        can_reject=status == DraftStatus.GENERATED.value,
-        can_regenerate=status in (DraftStatus.GENERATED.value, DraftStatus.REJECTED.value),
+        can_reject=status == DraftStatus.GENERATED.value and not own_media,
+        # m-25019224 (code review): never offered on an own upload, whatever its status
+        can_regenerate=status in (DraftStatus.GENERATED.value, DraftStatus.REJECTED.value)
+        and not own_media,
         blocking_reason=blocking_reason,
         failure=failure_vm(failure_reason, failure_detail or ""),
         requires_ai_disclosure=requires_ai_disclosure,
@@ -1556,7 +1571,10 @@ def build_draft_vm(
         has_script=kind in ("creator_script", "avatar_video", "animated_avatar_video"),
         failure_detail=failure_detail or "",
         warnings=tuple(warnings),
-        can_edit=status in EDITABLE_DRAFT_STATUSES,
+        # m-25019217: the owner's own upload is what went out, word for word — editing
+        # it would send it back to «Por aprobar», where it never belongs.
+        can_edit=status in EDITABLE_DRAFT_STATUSES and not own_media,
+        is_own_media=own_media,
         waiting_vendor=waiting_vendor and status == DraftStatus.DRAFTING.value,
         source_reel_note=source_note,
         source_reel_url=source_url,
