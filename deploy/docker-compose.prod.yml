@@ -715,12 +715,27 @@ services:
   # mem_limit: Chromium takes ~1 GB per render (RENDER_CONCURRENCY 1) plus Node; the cap makes
   # a runaway render get OOM-killed inside this container (restart: unless-stopped brings it
   # back) instead of pushing the kernel to kill Postgres or the app.
+  # healthcheck (m-25017289): the same /health criterion as the image's HEALTHCHECK and the
+  # sticker path (`ok` and `bundleReady`), at a calmer cadence than the image's 5 s once up.
+  # Docker does NOT restart an `unhealthy` container (restart only acts on exit): the alert
+  # is calendar-worker's minute watch (qualify_api.creative.worker.render_watch), which
+  # posts to Lark after 3 min unhealthy. server-deploy.sh still waits for `healthy`.
   render:
     profiles: ["render"]
     build: ../packages/render
     mem_limit: 1536m
     image: ${QUALIFY_IMAGE_PREFIX:-}qualify-render:${QUALIFY_IMAGE_TAG:-latest}
     restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3200/health').then(r=>r.json()).then(j=>process.exit(j.ok&&j.bundleReady?0:1)).catch(()=>process.exit(1))"
+      interval: 10s
+      timeout: 4s
+      retries: 3
+      start_period: 60s
     environment:
       PORT: "3200"
       RENDER_CONCURRENCY: "1"
