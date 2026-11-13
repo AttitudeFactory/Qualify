@@ -121,16 +121,15 @@ def is_ai(recipe: str) -> bool:
 #: (`qualify-copy-es`). `creative.seasonal_ai.REASON_TEXT` is this same dict.
 REASON_TEXT: Final[dict[str, str]] = {
     # «Con IA» reasons say whether it was charged (verified in `creative.seasonal_ai`):
-    # budget_cap / no_budget_cap / price_changed never call BytePlus; vendor_failed and
+    # budget_cap / price_changed (and legacy no_budget_cap) never call BytePlus; vendor_failed and
     # vendor_expired book nothing; vendor_timeout and vendor_url_refused book a cost.
     "budget_cap": (
         "Este video pasaría tu límite de gasto del mes: no lo creamos ni se cobró. "
         "Usa «Con lo que ya tienes», que es gratis."
     ),
-    "no_budget_cap": (
-        "Falta definir cuánto puede gastar tu negocio al mes en videos con IA. "
-        "Escríbenos y lo dejamos listo."
-    ),
+    # legacy: no longer written (m-25018822 — no config row is no dollar cap); kept for rows
+    # that failed with it before the fix
+    "no_budget_cap": "No pudimos crear el video con IA y no se cobró. Puedes pedir otro.",
     "price_changed": (
         "El precio de los videos con IA cambió: no lo creamos ni se cobró. "
         "Revisa el nuevo costo y pide otro."
@@ -309,7 +308,8 @@ class AttemptsExhausted(SeasonalError):
 
 #: Technical ceiling of «Pedir otro» per slot (the key format and 0153's CHECK) — not an
 #: owner-facing limit: m-25016851 removed the cap of three. «Con IA» is bounded by its cost
-#: confirmation and the brand's monthly spend guard, not by a count.
+#: confirmation and, when the brand has a hard monthly cap configured, its spend guard —
+#: not by a count (no config row = no dollar cap, m-25018822).
 MAX_ATTEMPTS: Final = SEASONAL_MAX_ATTEMPTS
 #: The statuses «Pedir otro» starts from.
 REQUESTABLE: Final = frozenset({STATUS_READY, STATUS_REJECTED, STATUS_FAILED})

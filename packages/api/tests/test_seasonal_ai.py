@@ -258,6 +258,7 @@ class Reads:
         self.repo = repo
         self.photo_key = photo_key
         self.remaining: Decimal | None = Decimal("5")
+        self.hard_stop = True
 
     def medium(self, tenant_id: UUID, media_id: UUID) -> AiMedium | None:
         m = self.repo.get(tenant_id=tenant_id, media_id=media_id)
@@ -270,7 +271,7 @@ class Reads:
         return [self.photo_key] if draft_ids else []
 
     def budget(self, tenant_id: UUID, brand_id: UUID) -> Budget | None:
-        return None if self.remaining is None else Budget(self.remaining)
+        return None if self.remaining is None else Budget(self.remaining, self.hard_stop)
 
 
 class Ledger:
@@ -541,16 +542,24 @@ def test_the_usage_row_id_is_the_task() -> None:
     assert sai.usage_event_id("task-1") != sai.usage_event_id("task-2")
 
 
-def test_no_cap_configured_is_refused(tmp_path: Path) -> None:
+def test_no_config_row_is_no_dollar_cap(tmp_path: Path) -> None:
+    # m-25018822: like the generator — no `creative_engine_config` row is no dollar cap
     w = World(tmp_path)
     w.reads.remaining = None
-    with pytest.raises(PriceGuardRefused):
-        w.executor.submit(_ctx(w.row.id))
-    assert w.adapter.submitted == [] and w.medium().fail_reason == sai.NO_BUDGET_CAP
-    assert REASON_TEXT[sai.NO_BUDGET_CAP] == (
-        "Falta definir cuánto puede gastar tu negocio al mes en videos con IA. "
-        "Escríbenos y lo dejamos listo."
-    )
+    assert w.executor.submit(_ctx(w.row.id)) == "task-1"
+    assert len(w.adapter.submitted) == 1 and w.medium().status == "pending"
+
+
+def test_a_soft_cap_never_refuses(tmp_path: Path) -> None:
+    w = World(tmp_path)
+    w.reads.remaining = Decimal("0.01")
+    w.reads.hard_stop = False
+    assert w.executor.submit(_ctx(w.row.id)) == "task-1"
+    assert len(w.adapter.submitted) == 1
+
+
+def test_the_legacy_no_budget_cap_reason_still_reads_for_old_rows() -> None:
+    assert "no se cobró" in REASON_TEXT["no_budget_cap"]
 
 
 class DearerTable:

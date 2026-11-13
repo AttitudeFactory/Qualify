@@ -204,6 +204,7 @@ from .whatsapp_chats_vm import (
     caption_count,
     caption_error,
     carry_payment_marks,
+    cart_details,
     composer_enabled,
     filter_counts,
     filter_empty_text,
@@ -307,15 +308,16 @@ def _marked_offer(gw: Any, tenant_id: UUID, brand_id: UUID) -> Any:
         return None
 
 
-def _payment_status(gw: Any, tenant_id: UUID, connection: UUID, thread: UUID) -> Any:
-    """The open chat's payment (blocking); None when it cannot be read."""
+def _payment_status(gw: Any, tenant_id: UUID, connection: UUID, thread: UUID) -> tuple[Any, bool]:
+    """The open chat's payment (blocking) and whether it was read: `(None, True)` is «no
+    payment», `(None, False)` is «could not read» (the card then offers no charge hint)."""
     try:
-        return gw.payment_status(tenant_id, connection, thread)
+        return gw.payment_status(tenant_id, connection, thread), True
     except ThreadNotFound:
         raise
     except Exception as exc:  # noqa: BLE001
         logger.warning("whatsapp chats payment status failed: %s", type(exc).__name__)
-        return None
+        return None, False
 
 
 @dataclass(frozen=True)
@@ -547,6 +549,8 @@ class WhatsAppChatsState(rx.State):
     #: The open chat's payment (pill, «Paga con: …», «Pago recibido»).
     payment: PaymentVM = EMPTY_PAYMENT
     _payment_raw: Any = None
+    #: m-25018684: the last payment read failed — «no payment» is not known.
+    _payment_unread: bool = False
     pay_confirm_open: bool = False
     pay_message: str = ""
     pay_error: str = ""
@@ -572,6 +576,9 @@ class WhatsAppChatsState(rx.State):
     _records: list[MessageRecord] = []
     _unsent: list[UnsentItem] = []
     _order_raw: Any = None
+    # m-25018684: the archived orders and the wamids of the carts still on record.
+    _previous_orders_raw: Any = ()
+    _cart_ids: Any = frozenset()
     _refreshing: bool = False
     # message id → what the media locator answered (URL + expiry, or the failure code).
     _media: dict[str, MediaResolution] = {}
@@ -733,7 +740,10 @@ class WhatsAppChatsState(rx.State):
         self._records = []
         self._unsent = []
         self._order_raw = None
+        self._previous_orders_raw = ()
+        self._cart_ids = frozenset()
         self._payment_raw = None
+        self._payment_unread = False
         self.payment = EMPTY_PAYMENT
         self._reset_payment_confirm()
         self._media = {}
@@ -805,6 +815,7 @@ class WhatsAppChatsState(rx.State):
     def _render_conversation(self) -> None:
         zone = _zone(self._zone_name)
         now = self._now()
+        previous = tuple(self._previous_orders_raw or ())
         self.messages = build_conversation(
             self._records,
             self._unsent,
@@ -812,8 +823,15 @@ class WhatsAppChatsState(rx.State):
             zone=zone,
             media=self._media,
             loading=self._media_loading,
+            carts=cart_details(self._order_raw, previous, self._cart_ids or ()),
         )
-        self.order = build_order_card(self._order_raw, now=now, zone=zone)
+        self.order = build_order_card(
+            self._order_raw,
+            now=now,
+            zone=zone,
+            previous=previous,
+            has_payment=self._payment_raw is not None or self._payment_unread,
+        )
         self.payment = build_payment(
             self._payment_raw, now=now, zone=zone, agents={a.user_id: a for a in self.agents}
         )
@@ -1000,7 +1018,7 @@ class WhatsAppChatsState(rx.State):
             return
         try:
             conv = await asyncio.to_thread(gateway().conversation, tenant_id, connection, thread)
-            payment = await asyncio.to_thread(
+            payment, payment_read = await asyncio.to_thread(
                 _payment_status, gateway(), tenant_id, connection, thread
             )
         except ThreadNotFound:
@@ -1038,7 +1056,10 @@ class WhatsAppChatsState(rx.State):
                 self.has_more = conv.has_more
             self._unsent = conv.unsent
             self._order_raw = conv.order
+            self._previous_orders_raw = conv.previous_orders
+            self._cart_ids = conv.cart_ids
             self._payment_raw = payment
+            self._payment_unread = not payment_read
             self._render_conversation()
             self.conv_loaded_for = thread_id
             self.conv_loading_for = ""
@@ -1742,7 +1763,12 @@ class WhatsAppChatsState(rx.State):
 
     @rx.var
     def pick_seasonal_earlier(self) -> list[SeasonalPickVM]:
-        return [p for p in self.pick_seasonal_shown if not p.current]
+        return [p for p in self.pick_seasonal_shown if not p.current and not p.product]
+
+    @rx.var
+    def pick_seasonal_products(self) -> list[SeasonalPickVM]:
+        """m-25017912: «De tus productos», after the seasons (founder 2026-11-12)."""
+        return [p for p in self.pick_seasonal_shown if p.product]
 
     @rx.var
     def pick_selected_seasonal(self) -> SeasonalPickVM:

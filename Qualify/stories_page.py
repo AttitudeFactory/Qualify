@@ -1,23 +1,20 @@
-"""The historia pieces of «Publicar ahora» (`/publish`).
+"""The historia-only piece of «Publicar ahora» (`/publish`): «Abrir en Instagram».
 
-Since PUBLICAR-4 (m-24842986) `/publish` is ONE three-step assistant
-(`publishing_page.py`): the photo or video is picked in step 1, «Historia (24 h)» and
-the account in step 2, and step 3 reviews and publishes — through `StoriesState`
-when the owner chose a historia (`PublishHubState.publish_now` hands the one file
-over). What stays here is only what is specific to a historia: its progress/result
-block and the «Abrir en Instagram» phone handoff for official music. `/stories`
-redirects to `/publish?flow=stories`, which arrives with «Historia» already chosen.
+Since 2026-11-12 a historia (one or several) is published by the same engine as any
+other publication (`publish_engine.py`, driven by `PublishState`); before that it had
+its own state (`StoriesState`, removed) and its own status block. What stays here is the
+phone handoff for official music: with exactly one file, the review offers to open it in
+Instagram's own composer instead. `/stories` redirects to `/publish?flow=stories`.
 
-History: QUA-106 V1 built this as its own screen; QUA-113 moved it inside `/publish`
-as a second form; PUBLICAR-4 folded that form into the assistant's steps.
+History: QUA-106 V1 built this as its own screen; QUA-113 moved it inside `/publish`;
+PUBLICAR-4 folded it into the assistant's steps.
 """
 
 from __future__ import annotations
 
 import reflex as rx
 
-from .stories_state import StoriesState
-from .ui import callout, loading_spinner
+from .publishing_state import PublishState
 from .ui import tokens as T
 from .ui.video_preview import gallery_file_js
 
@@ -79,7 +76,7 @@ def share_to_instagram_button(*, root_id: str, enabled: rx.Var[bool]) -> rx.Comp
             rx.icon("share-2", size=16),
             "Abrir en Instagram ↗",
             on_click=rx.call_script(
-                share_to_instagram_script(root_id), callback=StoriesState.handle_share_result
+                share_to_instagram_script(root_id), callback=PublishState.handle_share_result
             ),
             disabled=~enabled,
             variant="soft",
@@ -96,65 +93,4 @@ def share_to_instagram_button(*, root_id: str, enabled: rx.Var[bool]) -> rx.Comp
         spacing="1",
         width="100%",
         align_items="stretch",
-    )
-
-
-def stories_status_block() -> rx.Component:
-    """Progress and failure of a historia being published. Success has no arm: the
-    page replaces the whole assistant with its «listo» (N3)."""
-    return rx.match(
-        StoriesState.phase,
-        (
-            "staging_and_starting",
-            callout(
-                rx.hstack(
-                    loading_spinner("sm"),
-                    rx.text("Subiendo tu historia...", size="2"),
-                    spacing="2",
-                    align="center",
-                ),
-                "neutral",
-                icon="upload",
-            ),
-        ),
-        (
-            "polling",
-            callout(
-                rx.vstack(
-                    rx.hstack(
-                        loading_spinner("sm"),
-                        rx.text(
-                            "Publicando, esperando que Instagram lo confirme...",
-                            size="2",
-                            weight="medium",
-                        ),
-                        rx.cond(
-                            StoriesState.elapsed_label != "",
-                            rx.text(
-                                StoriesState.elapsed_label,
-                                size="1",
-                                color=T.TEXT_FAINT,
-                                class_name="q-mono q-nums",
-                            ),
-                            rx.fragment(),
-                        ),
-                        spacing="2",
-                        align="center",
-                        width="100%",
-                    ),
-                    rx.text(
-                        "Instagram está preparando tu historia. Puede tardar unos minutos.",
-                        size="1",
-                        color=T.TEXT_MUTED,
-                    ),
-                    spacing="1",
-                    align_items="start",
-                    width="100%",
-                ),
-                "warn",
-                icon="clock",
-            ),
-        ),
-        ("failure", callout(StoriesState.error, "error")),
-        rx.fragment(),
     )

@@ -372,6 +372,10 @@ _LIST_OPEN = text(
     SELECT {_COLUMNS} FROM interaction_followups
      WHERE status = 'open'
        AND (CAST(:connection_id AS uuid) IS NULL OR connection_id = :connection_id)
+       -- m-25018661: a followup whose origin DM the person unsent has nothing left to
+       -- continue (it cannot be discarded without a person; it just stops being listed).
+       AND NOT EXISTS (SELECT 1 FROM messages um
+                        WHERE um.id = origin_message_id AND um.unsent_at IS NOT NULL)
      ORDER BY created_at DESC
      LIMIT :limit
     """

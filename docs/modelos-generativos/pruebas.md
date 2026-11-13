@@ -22,6 +22,63 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
 
 ---
 
+<a id="mejorar-texto-001"></a>
+
+## MEJORAR-TEXTO-001 — «Mejorar mi texto» del generador: tres versiones en vez de una que se repetía (Claude Sonnet 5.5, m-25017274) — 2026-11-13
+
+- **Por qué:** el fundador reportó que «Mejorar mi texto» en «Crear publicación» devolvía siempre
+  lo mismo. Causa: el prompt `context-v3-compact-300` pedía conservar todo y no añadir relleno, el
+  resultado REEMPLAZABA el campo y la segunda pulsación reescribía su propia salida. Decisión del
+  fundador (2026-11-13): tres versiones distintas por pulsación, en tarjetas; el texto original se
+  conserva y se puede recuperar; «Otra versión» pide tres nuevas y manda las ya mostradas; el
+  prompt recibe tipo de publicación, formato y producto; no gasta creaciones.
+- **Modelo:** `claude-sonnet-5-5`, esfuerzo `low`, una herramienta estricta (`propose_context`),
+  sin muestreo propio (sin `temperature`). Antes: una propiedad `context`. Ahora: una propiedad
+  por enfoque (`directa`, `descriptiva`, `cercana`; en la escena de una imagen `producto`,
+  `lugar`, `momento`) más `added_facts`. `max_tokens` 4.096 → 6.144.
+- **Entradas:** 6 textos FICTICIOS de un local de shawarma y ensaladas
+  (`packages/api/evals/mejorar_texto/cases.json`): promoción 2x1, producto nuevo, horario, combo
+  con precio, domicilios y una escena de imagen. Ningún dato de un cliente real.
+- **Método:** `just eval-mejorar-texto` pulsa dos veces por texto. Con v3 la segunda pulsación
+  reescribe la salida de la primera, como hacía la pantalla. Con v4 la segunda es «Otra versión»:
+  el original otra vez y las versiones ya mostradas. Similitud = `difflib.SequenceMatcher.ratio`
+  en minúsculas (1 = idéntico). «Números nuevos» = cifras que no estaban en el texto, los datos
+  clave ni el formato. El costo sale de los registros de consumo de las propias llamadas; se
+  guardan en memoria, no en la base. Resultados en `packages/api/evals/mejorar_texto/results/`.
+
+| Medida (6 textos, 12 llamadas) | Antes `context-v3-compact-300` | Después `context-v4-three-versions` |
+|---|---|---|
+| Similitud entre la 1.ª y la 2.ª pulsación (máximo por texto, promedio) | **0,995** | **0,625** (el más alto: 0,773) |
+| Textos idénticos entre pulsaciones | **4 de 6** | **0** (ni entre pulsaciones ni dentro de una) |
+| Similitud entre las tres versiones de una pulsación (promedio) | — (una sola) | **0,276** (el par más parecido: 0,573) |
+| Jaccard de palabras entre pulsaciones (promedio) | 0,981 | 0,394 |
+| Números nuevos (precio u hora inventados) | 0 | 0 |
+| Errores o versiones descartadas | 0 | 0 |
+| Costo por llamada | US$0,0032 | **US$0,0068** (≈ 720 tokens de entrada, 390–480 de salida) |
+| Tiempo medio por llamada | 2,5 s | 3,9 s |
+
+- **Borrador intermedio (`results/v4-borrador.json`, mismo nombre de versión, nunca publicado):**
+  las versiones eran igual de distintas (0,309 dentro de una pulsación y 0,632 entre
+  pulsaciones), pero 4 de 6 textos nombraban el formato («reel 9:16», «galería 4:5») y la versión
+  cercana usaba jerga regional («parcero», «calientico», «la U»). Se agregaron dos reglas: el tipo
+  de pieza, el tipo de publicación y el formato orientan, pero no se nombran; español neutro sin
+  jerga ni diminutivos. La corrida final no tiene ninguna de las dos fallas. Queda «sin afán» en
+  una versión, aceptable.
+- **`added_facts`:** en 2 de las 12 llamadas finales el modelo listó dirección visual («hojas y
+  verduras frescas…», «el momento de compartir»), no hechos. La pantalla lo muestra como «Revisa
+  estos datos…», igual que antes.
+- **Costo:** se duplica por llamada (US$0,0068 frente a US$0,0032), sigue por debajo de un
+  centavo. Un dueño que pulsa 10 veces al mes gasta unos US$0,07. Ninguna pulsación gasta
+  creaciones. El gasto queda en el registro de consumo en dólares (`potenciar-contexto`).
+- **Gasto total de la prueba:** US$0,20 (US$0,038 antes + US$0,082 borrador + US$0,082 final),
+  dentro del tope autorizado de US$1.
+- **Conclusión:** se queda `claude-sonnet-5-5` @ `low`. No se midió razón para cambiar de modelo.
+- **Sin medir:** el juicio humano de cuál versión es mejor. La similitud solo mide que no se
+  repiten, no la calidad. Tampoco se midió con identidades de marca reales ni con textos de
+  clientes reales; los seis casos son ficticios.
+
+---
+
 <a id="stickers-kawaii-001"></a>
 
 ## STICKERS-KAWAII-001 — Banco pagado: sticker con un personaje tierno del producto (Seedream 5.0 pro) y recorte por color plano frente a `layer_decomposition` (m-25017372) — 2026-11-12

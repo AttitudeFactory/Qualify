@@ -35,7 +35,11 @@ from qualify_api.catalog.read import price_label
 from qualify_api.catalog.service import CatalogError, UnknownProduct
 from qualify_api.creative.brand_references import BrandReferenceError
 from qualify_api.creative.campaigns import InvalidCampaignName, clean_name
-from qualify_api.creative.context_ai import PROPOSAL_MAX_CHARS, ContextTooLong
+from qualify_api.creative.context_ai import (
+    PREVIOUS_VERSIONS_SENT,
+    PROPOSAL_MAX_CHARS,
+    ContextTooLong,
+)
 from qualify_api.creative.creations import NotEnoughCreations
 from qualify_api.creative.fsm import InvalidTransition
 from qualify_api.creative.parts import (
@@ -387,6 +391,21 @@ _ENHANCE_TOO_SHORT = "Escribe primero unas palabras sobre lo que quieres: la IA 
 _ENHANCE_FAILED = "No pudimos mejorar tu texto ahora mismo. Inténtalo de nuevo en un momento."
 _ENHANCE_STALE = "Cambiaste el texto mientras tanto. Vuelve a pulsar «Mejorar mi texto»."
 _ENHANCE_ADDED = "Revisa estos datos, que la IA añadió y no venían de ti: "
+#: m-25017274 (UX review): the same notice, saying they are in one of the cards.
+_ENHANCE_ADDED_VERSIONS = (
+    "Revisa estos datos, que la IA añadió y no venían de ti, en alguna de estas versiones: "
+)
+#: The context field's id: a chosen card scrolls it into view.
+CONTEXT_FIELD_ID = "q-context-field"
+#: m-25017274: what each card is called, by the approach `context_ai` wrote it with.
+_CONTEXT_APPROACH_LABELS = {
+    "directa": "Más directa",
+    "descriptiva": "Más descriptiva",
+    "cercana": "Más cercana",
+    "producto": "El producto de cerca",
+    "lugar": "El lugar",
+    "momento": "Un momento",
+}
 #: UI-6: the refusals of `qualify_api.creative.parts` whose `.text` is the owner's
 #: Spanish — the only exception texts the parts' actions show.
 _PARTS_REFUSALS = (
@@ -6515,11 +6534,9 @@ class CreativeState(rx.State):
         self.brief_kind = key
         self.brief_format = ""  # each kind starts on its own default format
         self.create_error = ""
-        # «Deshacer» of «Potenciar con IA» belongs to the kind's own field (a flyer's is
-        # its scene): another kind must not get that text back
-        self.context_before_enhance = ""
-        self.context_enhance_note = ""
-        self.context_enhance_error = ""
+        # the cards and the original of «Mejorar mi texto» belong to the kind's own field
+        # (a flyer's is its scene): another kind must not get that text back
+        self._forget_context_versions()
         if key != "static_flyer":
             self.media_carousel = False
         if key in ("avatar_video", "animated_avatar_video"):
@@ -7588,6 +7605,7 @@ class CreativeState(rx.State):
         draft_id = self.gen_draft_id
         self._back_to_form()
         self.brief_topic = ""
+        self._forget_context_versions()  # the last piece's cards never reach the next
         self.replication_context = ""
         self.carried_text_kind = ""
         self._reset_media_inputs()
@@ -7618,9 +7636,7 @@ class CreativeState(rx.State):
     def clear_carried_text(self) -> None:
         """«Borrarlo»: the last piece's text leaves the field (and its «Deshacer»)."""
         self._set_context_text("")
-        self.context_before_enhance = ""
-        self.context_enhance_note = ""
-        self.context_enhance_error = ""
+        self._forget_context_versions()
         self.carried_text_kind = ""
 
     @rx.event
@@ -7650,9 +7666,7 @@ class CreativeState(rx.State):
         self.brief_must_avoid = ""
         self.brief_must_mention_draft = ""
         self.brief_must_avoid_draft = ""
-        self.context_before_enhance = ""
-        self.context_enhance_note = ""
-        self.context_enhance_error = ""
+        self._forget_context_versions()
         self.carried_text_kind = ""
         self.create_error = ""
         self._forget_replica()
@@ -8279,8 +8293,15 @@ class CreativeState(rx.State):
     context_enhance_error: str = ""
     #: Facts the model says it added that the operator never gave — shown to check.
     context_enhance_note: str = ""
-    #: The text before the last rewrite: «Deshacer» puts it back ("" = nothing to undo).
+    #: The operator's own text the versions were written from: «Volver a mi texto» puts
+    #: it back ("" = no versions shown).
     context_before_enhance: str = ""
+    #: m-25017274: the cards of the last press — `{"label", "text"}`, in approach order.
+    context_versions: list[dict[str, str]] = []
+    #: The card whose text is in the field (-1 = none: the original or an edit).
+    context_choice: int = -1
+    #: Every version shown since the original was set, for «Otra versión» (backend only).
+    _context_shown: list[str] = []
     #: Which run owns `context_enhancing`, and since when (backend only).
     _context_enhance_token: str = ""
     _context_enhance_started: float = 0.0
@@ -8324,12 +8345,41 @@ class CreativeState(rx.State):
             return VIDEO_TYPE_LABELS["ad_video"]
         return _CATEGORY_TITLES.get(self.gen_category, KIND_LABELS.get(self.brief_kind, ""))
 
+    def _forget_context_versions(self) -> None:
+        """The cards, the original they came from and their notes go (another kind, a
+        clean start): nothing of another field's text can come back."""
+        self.context_before_enhance = ""
+        self.context_versions = []
+        self.context_choice = -1
+        self._context_shown = []
+        self.context_enhance_note = ""
+        self.context_enhance_error = ""
+
+    def _in_context_round(self, field: str) -> bool:
+        """The field still holds the original or an untouched card — of this press or of
+        an earlier one of the same round: a new press asks for more versions of the same
+        original instead of rewriting a rewrite."""
+        if not self.context_versions or not self.context_before_enhance:
+            return False
+        return field == self.context_before_enhance.strip() or any(
+            field == text.strip()
+            for text in (
+                *self._context_shown,
+                *(version.get("text", "") for version in self.context_versions),
+            )
+        )
+
     @rx.event(background=True)
-    async def enhance_context(self) -> None:
-        """«Potenciar con IA»: the context rewritten by Claude with the Brand Kit and the
-        piece's «Datos clave», no new facts (`context_ai`). It replaces the text in the
-        box — Generar sends whatever is there — and «Deshacer» brings the operator's
-        own words back. Never longer than `ENHANCE_TIMEOUT_SECONDS`."""
+    async def enhance_context(self, again: bool = False) -> None:
+        """«Mejorar mi texto» (m-25017274): three versions of the operator's context with
+        the Brand Kit, the piece's «Datos clave», the publication's kind and format, no
+        new facts (`context_ai`), shown as cards. The field is NOT touched: the operator's
+        original stays in it until a card is chosen (`choose_context_version`), and
+        «Volver a mi texto» brings it back. ``again`` («Otra versión»), or a press while
+        the field still holds the original or a card, asks again from the ORIGINAL and
+        sends every version shown so far so none is repeated. Free: no creación is
+        consumed. A failure keeps the field and the cards as they were. Never longer than
+        `ENHANCE_TIMEOUT_SECONDS`."""
         async with self:
             self._settle_stuck_enhance()
             if self.context_enhancing:
@@ -8337,7 +8387,12 @@ class CreativeState(rx.State):
             # m-24820836: enhance rewrites the FOREGROUND only — the operator's own
             # context — never the «copiar» reel-reference background layer. The merge in
             # ``_effective_topic`` puts the background back underneath at submit.
-            text = self._user_topic_text()
+            field = self._user_topic_text()
+            same_round = bool(self.context_versions and self.context_before_enhance) and (
+                again or self._in_context_round(field)
+            )
+            text = self.context_before_enhance.strip() if same_round else field
+            previous = list(self._context_shown) if same_round else []
             self.context_enhance_note = ""
             if len(text) < _ENHANCE_MIN_CHARS:
                 self.context_enhance_error = _ENHANCE_TOO_SHORT
@@ -8352,6 +8407,7 @@ class CreativeState(rx.State):
             # this step, so a half-typed phrase turned into a chip would remain
             # visible in its field (live test 2026-11-03); submit and leaving the
             # step still capture it
+            content_types = {opt.value: opt.label for opt in content_type_options()}
             form = {
                 "text": text,
                 "piece": self._piece_label(),
@@ -8360,6 +8416,9 @@ class CreativeState(rx.State):
                 "highlights": self._highlight_pairs(),
                 "must_mention": self.brief_must_mention,
                 "must_avoid": self.brief_must_avoid,
+                "content_type": content_types.get(self.brief_content_type, ""),
+                "format": _FORMAT_LABELS.get(self.effective_format, ""),
+                "previous_versions": previous,
             }
         try:
             ids = await self._session_ids()
@@ -8375,9 +8434,11 @@ class CreativeState(rx.State):
                     ),
                     timeout=ENHANCE_TIMEOUT_SECONDS,
                 )
-                # The provider normalizes its proposal; do not strip requested symbols again.
-                if len(proposal.text) > PROPOSAL_MAX_CHARS:
-                    raise ContextTooLong(len(proposal.text), PROPOSAL_MAX_CHARS)
+                # The provider normalizes its versions; do not strip requested symbols again.
+                versions = [v for v in proposal.versions if len(v.text) <= PROPOSAL_MAX_CHARS]
+                if not versions:
+                    longest = max((len(v.text) for v in proposal.versions), default=0)
+                    raise ContextTooLong(longest, PROPOSAL_MAX_CHARS)
             except ContextTooLong as exc:
                 async with self:
                     if self._own_enhance(token):
@@ -8398,25 +8459,68 @@ class CreativeState(rx.State):
             async with self:
                 if not self._own_enhance(token):
                     return
-                if self._user_topic_text() != text:
+                if self._user_topic_text() != field:
                     # typed over meanwhile: the operator's newer words win
                     self.context_enhance_error = _ENHANCE_STALE
                     return
-                # store the foreground only; the background layer is never part of undo
+                # the foreground only; the background layer is never part of the original
                 self.context_before_enhance = text
-                self._set_context_text(proposal.text)
+                self.context_versions = [
+                    {"label": _CONTEXT_APPROACH_LABELS.get(v.approach, ""), "text": v.text}
+                    for v in versions
+                ]
+                # only the newest are ever sent back (`PREVIOUS_VERSIONS_SENT`)
+                self._context_shown = [*previous, *(v.text for v in versions)][
+                    -PREVIOUS_VERSIONS_SENT:
+                ]
+                self.context_choice = -1
                 if proposal.added_facts:
-                    self.context_enhance_note = _ENHANCE_ADDED + "; ".join(proposal.added_facts)
+                    self.context_enhance_note = _ENHANCE_ADDED_VERSIONS + "; ".join(
+                        proposal.added_facts
+                    )
         finally:
             _ENHANCE_RUNNING.discard(token)
 
     @rx.event
+    def choose_context_version(self, index: int) -> rx.event.EventSpec | None:
+        """A card: its text fills the field (scrolled into view, so the owner sees where
+        it went); the original stays restorable."""
+        if self.context_enhancing or not 0 <= index < len(self.context_versions):
+            return None
+        self._set_context_text(self.context_versions[index].get("text", ""))
+        self.context_choice = index
+        self.context_enhance_error = ""
+        return rx.scroll_to(CONTEXT_FIELD_ID)
+
+    @rx.event
     def undo_enhance_context(self) -> None:
+        """«Volver a mi texto»: the operator's original back in the field. The cards
+        stay, so another one can still be chosen."""
         if self.context_before_enhance:
             self._set_context_text(self.context_before_enhance)
-        self.context_before_enhance = ""
-        self.context_enhance_note = ""
+        self.context_choice = -1
         self.context_enhance_error = ""
+
+    @rx.var
+    def context_is_original(self) -> bool:
+        """The field holds the original the cards were written from."""
+        return self._user_topic_text() == self.context_before_enhance.strip()
+
+    @rx.var
+    def context_chosen(self) -> int:
+        """The card marked as chosen: only while the field still holds its text (an edit
+        takes the mark away)."""
+        index = self.context_choice
+        if not 0 <= index < len(self.context_versions):
+            return -1
+        text = self.context_versions[index].get("text", "").strip()
+        return index if self._user_topic_text() == text else -1
+
+    @rx.var
+    def context_text_edited(self) -> bool:
+        """Cards are shown but the field holds neither the original nor a card: a press of
+        «Mejorar mi texto» starts again from these new words."""
+        return bool(self.context_versions) and not self._in_context_round(self._user_topic_text())
 
     # -- «Creaciones del mes» (CREAR-5, m-24848531): never money ------------------------
 
@@ -9080,6 +9184,7 @@ class CreativeState(rx.State):
         self.avatar_prompt = ""
         self.human_avatar_prompt = ""
         self.ad_scene_prompt = ""
+        self._forget_context_versions()  # the scene's cards go with the scene
         self.avatar_image_key = ""
         self.avatar_image_name = ""
         self.avatar_rights_confirmed = False
@@ -9167,6 +9272,7 @@ class CreativeState(rx.State):
         if draft_id is not None:
             async with self:
                 self.brief_topic = ""
+                self._forget_context_versions()  # nor its cards and «Ver otras tres»
                 self.replication_context = ""
                 self.source_reel = {}
                 self._forget_ideas_origin()

@@ -71,8 +71,12 @@ Errores y textos:
 | `NoMessages` | «Elige al menos un mensaje.» |
 | `NoVariant` | «Elige si lo quieres con movimiento, quieto o los dos.» |
 
-Los motivos de falla de un dibujo (`budget_cap`, `no_budget_cap`, `no_source`, `vendor_failed`,
-etc.) están en `product_stickers.REASON_TEXT`. Todos dicen «No se te cobró». Los de un sticker
+Los motivos de falla de un dibujo (`budget_cap`, `no_source`, `vendor_failed`, etc.) están en
+`product_stickers.REASON_TEXT`. Desde m-25018822 (2026-11-13) la guarda de precio sigue la regla
+del generador: sin fila en `creative_engine_config` (o con `hard_stop_on_cap` en falso) no hay tope
+en dólares, y el límite del dueño es la cuota de creaciones que cobra `request_character`; solo un
+tope con `hard_stop_on_cap` rechaza (`budget_cap`). `no_budget_cap` ya no se escribe; su texto queda
+para los dibujos que fallaron antes. Todos dicen «No se te cobró». Los de un sticker
 están en `whatsapp.seasonal.REASON_TEXT`. Hay dos nuevos: `render_unavailable` y
 `character_unavailable`.
 

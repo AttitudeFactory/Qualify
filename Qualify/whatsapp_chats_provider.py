@@ -16,7 +16,8 @@ expose, all through `tenant_session` (`PostgresChatsStore`):
   resolved here against `users (tenant_id, email)` (`uq_users_tenant_email`) — the id the
   service records as `paused_by_user_id` / `created_by_user_id`;
 - the thread's **`whatsapp_thread_state.context`**, from which `orders.read_order` builds
-  the order card and `orders.order_ready_text` the «Pedido listo» reply (WA-15);
+  the order card and `orders.order_ready_text` the «Pedido listo» reply (WA-15) — and,
+  from that same read, `read_previous_orders` / `cart_message_ids` (m-25018684);
 - the thread's **unsent `whatsapp_outbox` rows** (pending / sending / failed / dead): a
   person's reply is not a `messages` row until the sender delivers it, and a refused one
   (`window_closed`, Meta `131047`) never becomes one — the backend docs say «WA-11 shows
@@ -91,7 +92,14 @@ from qualify_api.whatsapp.chats import (
     ThreadSummary,
 )
 from qualify_api.whatsapp.models import WhatsAppOutboxItem, WhatsAppThreadState
-from qualify_api.whatsapp.orders import OrderSummary, order_ready_text, read_order
+from qualify_api.whatsapp.orders import (
+    OrderSummary,
+    PreviousOrder,
+    cart_message_ids,
+    order_ready_text,
+    read_order,
+    read_previous_orders,
+)
 from qualify_api.whatsapp.payment_status import PaymentStatus, PaymentStatusService
 from qualify_api.whatsapp.template_reply import TemplateReplyOptions, TemplateReplyService
 from qualify_shared.db.session import tenant_session
@@ -223,6 +231,10 @@ class Conversation:
     unsent: list[UnsentItem]
     order: OrderSummary | None
     has_more: bool
+    #: m-25018684: the archived orders (newest first) and the wamids of the carts still
+    #: on record — from the same `thread_context` read as `order`.
+    previous_orders: tuple[PreviousOrder, ...] = ()
+    cart_ids: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -410,12 +422,15 @@ class ChatsGateway:
         messages = list(
             self.service.list_messages(tenant_id, thread_id, before=None, limit=MESSAGES_PAGE)
         )
+        context = self._store.thread_context(tenant_id, thread_id)
         return Conversation(
             summary=summary,
             messages=messages,
             unsent=self._store.unsent(tenant_id, thread_id, self._clock()),
-            order=read_order(self._store.thread_context(tenant_id, thread_id)),
+            order=read_order(context),
             has_more=len(messages) >= MESSAGES_PAGE,
+            previous_orders=read_previous_orders(context),
+            cart_ids=cart_message_ids(context),
         )
 
     def older(

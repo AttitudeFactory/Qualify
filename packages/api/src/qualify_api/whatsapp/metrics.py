@@ -40,9 +40,11 @@ chats API pages on — and every range is half-open, `[since, until)`.
   that entered through a keyword since removed counts as `directo`.
 - **`orders_confirmed`** / **`orders_total`** — threads whose `context["_order"]`
   (WA-15, read with `orders.read_order`) has `confirmed_at` in range; totals summed per
-  currency (`"XXX"`, ISO 4217's "no currency", when the order carries none). Known
-  limit: `_order` holds the thread's CURRENT order only, so a thread that confirmed two
-  orders counts the latest one.
+  currency (`"XXX"`, ISO 4217's "no currency", when the order carries none). A catalog
+  cart (m-25018684) counts like a menu order; one in several currencies adds each
+  currency's total to its own bucket. Known limit: only the CURRENT `_order` is
+  counted — the orders it replaced (`_orders_previous`) are not, so a thread that
+  confirmed two orders counts the latest one.
 - **`handoffs`** / **`handoffs_by_reason`** — threads whose `context["_handoff"]["at"]`
   is in range, split by `reason`. Same limit: `_handoff` is the latest handoff only.
 - **`messages_in`** — inbound messages in range.
@@ -375,7 +377,12 @@ def aggregate(
         order = read_order(thread.context)
         if order is not None and _in_range(order.confirmed_at, since, until):
             orders_confirmed += 1
-            orders_total[order.currency or NO_CURRENCY] += order.total
+            if order.mixed_currency:
+                # m-25018684: a cart in several currencies is summed per currency.
+                for code, amount in order.totals_by_currency.items():
+                    orders_total[code or NO_CURRENCY] += amount
+            else:
+                orders_total[order.currency or NO_CURRENCY] += order.total
 
         handoff = _handoff(thread.context)
         if handoff is not None and _in_range(handoff[1], since, until):

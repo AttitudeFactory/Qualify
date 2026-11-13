@@ -321,6 +321,7 @@ _NO_BUSINESS_ALLOWED = {
     "packages/api/src/qualify_api/evals/legibility_claude.py": "eval",
     "packages/api/src/qualify_api/intent/eval.py": "eval",
     "packages/api/evals/hashtag_ai/run_eval.py": "eval",
+    "packages/api/evals/mejorar_texto/run_experiment.py": "eval",
     "packages/api/evals/reels_ai/run_eval.py": "eval",
     "packages/api/evals/referentes_ai/run_eval.py": "eval",
     "packages/api/evals/replies_ai/run_experiment.py": "eval",

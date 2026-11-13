@@ -315,6 +315,7 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
     from .pinterest_state import PinterestState
     from .planner_back import WeekBackState
     from .planner_state import PlannerState
+    from .product_sticker_state import ProductStickerState
     from .promotion_state import PromotionState
     from .publish_hub_state import PublishHubState
     from .publishing_state import PublishState
@@ -325,7 +326,6 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
     from .seasonal_state import SeasonalState
     from .settings_state import SettingsState
     from .state import DashboardState
-    from .stories_state import StoriesState
     from .tiktok_state import TikTokConnectionsState, TikTokDraftState
     from .trending_state import TrendingState
     from .variations_state import VariationsState
@@ -362,7 +362,7 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
         ClarityState,
         InboxState,
         PublishState,
-        # QUA-113: which publish flow is showing (Publicaciones / Stories)
+        # «Publicar ahora»: the assistant's motion and its leave guard
         PublishHubState,
         DashboardState,
         CreativeState,
@@ -387,7 +387,6 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
         # 2026-09-25) — tenant files and tenant kit values.
         BrandDocumentState,
         RepliesState,
-        StoriesState,
         # the trending panel: its Meta audio list belongs to a tenant account
         TrendingState,
         PlannerState,
@@ -462,6 +461,8 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
         SettingsState,
         # m-24976895: the brand's seasonal stickers and videos and their flow
         SeasonalState,
+        # m-25017912: «Tu producto en sticker»'s products, drawings and chosen messages
+        ProductStickerState,
         # m-24852129: the ask-more button — whether this business's request waits
         AskMoreState,
         # m-24921079: «Armar mi video por partes» — the sentence about this business's product

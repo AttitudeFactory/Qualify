@@ -48,11 +48,17 @@ def _bind(states: dict[type, Any], monkeypatch) -> BrandEditState:
 
 def test_the_page_is_one_view_of_sections_not_steps() -> None:
     rendered = str(brand_edit_index())
-    # the page itself has no steps; the only «Paso N de 3» is the drawer of «Crear para
+    # the page itself has no steps; the only «Paso N de M» are the drawers of «Crear para
     # esta temporada» (m-24976895), a flow of its own opened from its section
     page = rendered.replace(
         '("Paso "+reflex___state____state__qualify___seasonal_state____seasonal_state'
         '.flow_step_rx_state_+" de 3")',
+        "",
+    )
+    # m-25017912: and the drawer of «Tu producto en sticker», five steps of its own
+    page = page.replace(
+        '("Paso "+reflex___state____state__qualify___product_sticker_state'
+        '____product_sticker_state.flow_step_rx_state_+" de 5")',
         "",
     )
     assert "Paso" not in page and "Continuar" not in rendered
