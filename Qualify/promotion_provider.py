@@ -154,18 +154,26 @@ def load_sources(
     draft_id: UUID,
     event_id: UUID | None = None,
     check_health: bool = False,
+    story: bool = False,
 ) -> tuple[list[PromotionSourceVM], str]:
-    sources = list_promotion_sources(
-        tenant_id=tenant_id, content_draft_id=draft_id, calendar_event_id=event_id
+    # m-25026350: a story with a link button is only ever the piece's own 9:16 file.
+    sources = (
+        []
+        if story
+        else list_promotion_sources(
+            tenant_id=tenant_id, content_draft_id=draft_id, calendar_event_id=event_id
+        )
     )
     locale = read_business_locale(tenant_id)
     zone = locale.timezone if locale is not None else ""
-    if not sources and event_id is None:
+    if not sources and (event_id is None or story):
         # m-24828982: a piece not yet published can be advertised from its own files.
         country = locale.country if locale is not None else ""
         return [
             replace(row, default_country=country if country in COUNTRY_LABELS else "")
-            for row in unpublished_sources(tenant_id, draft_id, check_health=check_health)
+            for row in unpublished_sources(
+                tenant_id, draft_id, check_health=check_health, story=story
+            )
         ], zone
     health_by_account: dict[UUID, AccountHealthVM] = {}
     messaging_by_connection: dict[UUID, list[MessagingDestinationVM]] = {}

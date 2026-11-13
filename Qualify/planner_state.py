@@ -138,6 +138,7 @@ from .planner_vm import (
     week_href,
     week_return_query,
 )
+from .promotion_vm import story_ad_href
 from .tenant import tenant_uuid
 from .ui.route_history import history_ack_value, route_history_ready
 from .ui.steps import step_settle_script
@@ -422,6 +423,8 @@ class PlannerState(rx.State):
     form_open: bool = False
     flow_ready: bool = False
     form_mode: str = MODE_ASSIGN
+    #: m-25026350: the historia whose «Es un anuncio pagado…» notice is open ("" = none).
+    story_ad_post: str = ""
     form_event_id: str = ""
     form_tag_query: str = ""
     form_error: str = ""
@@ -1964,6 +1967,40 @@ class PlannerState(rx.State):
         if row is None or not any(d.key == destination and d.available for d in row.destinations):
             return
         self._update_item(post_id, destination=destination)
+        self.story_ad_post = ""
+
+    @rx.var
+    def story_ad_offered(self) -> bool:
+        """m-25026350: «Agregar un botón con enlace» is offered on a lone historia being
+        planned (leaving for the ad would drop the other pieces of a bigger plan)."""
+        return self.form_mode != MODE_RESCHEDULE and len(self.plan_items) == 1
+
+    @rx.event
+    def ask_story_ad(self, post_id: str) -> None:
+        """«Agregar un botón con enlace»: first the one-line notice that it is a paid ad,
+        never the wizard straight away."""
+        row = next((r for r in self.plan_rows if r.post_id == post_id), None)
+        if self.story_ad_offered and row is not None and row.destination == "story":
+            self.story_ad_post = post_id
+
+    @rx.event
+    def dismiss_story_ad(self) -> None:
+        """«Mejor no»: the historia stays planned as it was."""
+        self.story_ad_post = ""
+
+    @rx.event
+    def continue_story_ad(self) -> rx.event.EventSpec | None:
+        """«Continuar»: the ad REPLACES the historia — the plan is closed without
+        scheduling anything (no organic story goes out) and the ad wizard opens on the
+        piece's 9:16 file, which itself launches nothing without preview and consent."""
+        post_id = self.story_ad_post
+        self.story_ad_post = ""
+        if not post_id or not self.story_ad_offered or not tenant_uuid(post_id):
+            return None
+        self.form_open = False
+        self.flow_ready = False
+        self.plan_items = []
+        return rx.redirect(story_ad_href(post_id, self.week_return_query))
 
     @rx.event
     def toggle_item_connection(self, post_id: str, connection_id: str) -> None:

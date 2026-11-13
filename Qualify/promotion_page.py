@@ -7,6 +7,7 @@ import reflex as rx
 from .ad_health_ui import health_details
 from .promotion_audience_ui import promotion_audience
 from .promotion_state import PromotionState as S
+from .promotion_story_ui import story_audience, story_link, story_media, story_review
 from .promotion_unpublished_ui import (
     unpublished_country,
     unpublished_feed_video,
@@ -18,6 +19,8 @@ from .promotion_unpublished_ui import (
 from .promotion_vm import (
     EMPTY_SOURCES,
     LEAD_CTA_LABELS,
+    STORY_EMPTY,
+    STORY_PLACEMENT,
     WEBSITE_CTA_LABELS,
     LeadFormChoiceVM,
     MessagingDestinationVM,
@@ -122,9 +125,17 @@ def _source_choice(source: rx.Var) -> rx.Component:
                 rx.text(source.account_label, weight="medium", overflow_wrap="anywhere"),
                 rx.text(
                     rx.cond(
-                        source.media_kind == "videos",
-                        "Con los dos videos",
-                        "Con las dos imágenes",
+                        source.story,
+                        rx.cond(
+                            source.media_kind == "videos",
+                            "Con el video vertical",
+                            "Con la imagen vertical",
+                        ),
+                        rx.cond(
+                            source.media_kind == "videos",
+                            "Con los dos videos",
+                            "Con las dos imágenes",
+                        ),
                     )
                     + " · "
                     + source.account_label,
@@ -138,9 +149,13 @@ def _source_choice(source: rx.Var) -> rx.Component:
                 rx.text("Publicada: " + source.published_label, size="1", color=T.TEXT_MUTED),
                 rx.text(
                     rx.cond(
-                        source.media_kind == "videos",
-                        "Dos videos de la pieza: para el perfil y vertical",
-                        "Dos imágenes de la pieza: para el perfil y vertical",
+                        source.story,
+                        "Solo en historias de Instagram",
+                        rx.cond(
+                            source.media_kind == "videos",
+                            "Dos videos de la pieza: para el perfil y vertical",
+                            "Dos imágenes de la pieza: para el perfil y vertical",
+                        ),
                     ),
                     size="1",
                     color=T.TEXT_MUTED,
@@ -200,10 +215,14 @@ def _publication() -> rx.Component:
                 spacing="2",
                 width="100%",
             ),
-            rx.text(
-                "Tu pieza todavía no está publicada. Puedes anunciarla sin que aparezca "
-                "en tu perfil: se verá bien en el inicio, en historias y en reels.",
-                color=T.TEXT_MUTED,
+            rx.cond(
+                S.sources[0].story,
+                rx.text(STORY_PLACEMENT, color=T.TEXT_MUTED),
+                rx.text(
+                    "Tu pieza todavía no está publicada. Puedes anunciarla sin que aparezca "
+                    "en tu perfil: se verá bien en el inicio, en historias y en reels.",
+                    color=T.TEXT_MUTED,
+                ),
             ),
         ),
         rx.vstack(
@@ -693,13 +712,20 @@ def promotion_index() -> rx.Component:
                 rx.button(
                     "Volver a consultar", on_click=S.load, variant="outline", min_height="44px"
                 ),
-                callout(EMPTY_SOURCES, "info"),
+                callout(rx.cond(S.story_entry, STORY_EMPTY, EMPTY_SOURCES), "info"),
             ),
             rx.cond(
                 S.reviewed,
-                rx.cond(S.is_unpublished, unpublished_review(), _review()),
+                rx.cond(
+                    S.form.story,
+                    story_review(),
+                    rx.cond(S.is_unpublished, unpublished_review(), _review()),
+                ),
                 rx.match(
                     S.step_key,
+                    ("story_media", story_media()),
+                    ("story_link", story_link()),
+                    ("story_audience", story_audience()),
                     ("source", _publication()),
                     ("destination", _destination()),
                     ("audience", promotion_audience()),
