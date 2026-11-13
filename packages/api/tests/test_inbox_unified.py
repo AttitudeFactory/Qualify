@@ -45,8 +45,12 @@ class _FakeReader:
         )
         return InboxPage(rows=(), next_cursor=None)
 
-    def count(self, tenant_id: UUID, *, filter: InboxFilter, channels: Sequence[str]) -> int:
-        self.calls.append({"tenant": tenant_id, "filter": filter, "channels": tuple(channels)})
+    def count(
+        self, tenant_id: UUID, *, filter: InboxFilter, channels: Sequence[str], now: datetime
+    ) -> int:
+        self.calls.append(
+            {"tenant": tenant_id, "filter": filter, "channels": tuple(channels), "now": now}
+        )
         return 7
 
 
@@ -87,7 +91,10 @@ def test_unknown_filter_and_bad_limits_are_refused() -> None:
 
 def test_count_goes_through_the_reader() -> None:
     reader = _FakeReader()
-    assert count_inbox(uuid4(), reader=reader) == 7
+    assert count_inbox(uuid4(), reader=reader, now=NOW) == 7
+    assert reader.calls[0]["now"] == NOW
+    count_inbox(uuid4(), reader=reader)
+    assert reader.calls[1]["now"].tzinfo is not None  # the wall clock, aware
 
 
 @pytest.mark.parametrize("at", [NOW, None])
@@ -112,7 +119,7 @@ def test_the_list_is_one_read_only_statement_with_the_shared_rule() -> None:
     assert sql.startswith("WITH page AS MATERIALIZED (")
     for verb in ("INSERT", "UPDATE", "DELETE", "MERGE", "TRUNCATE"):
         assert not re.search(rf"\b{verb}\b", sql.upper()), verb
-    rule = " ".join(awaiting_reply_sql("t").split())
+    rule = " ".join(awaiting_reply_sql("t", now_param="now").split())
     # The rule filters both branches of the page, and is not evaluated again per row.
     assert sql.count(rule) == 2 and "TRUE AS awaiting_reply" in sql
     assert "t.channel = ANY(:channels)" in sql
@@ -121,11 +128,12 @@ def test_the_list_is_one_read_only_statement_with_the_shared_rule() -> None:
     assert "LEFT JOIN LATERAL" in sql and "LEFT JOIN whatsapp_thread_state s" in sql
     assert sql.endswith("ORDER BY t.last_message_at DESC NULLS LAST, t.id DESC LIMIT :limit")
     assert "tenant_id" not in sql
+    assert "now()" not in sql  # the rule judges the bound `:now`, like the rows' window
 
 
 def test_other_filters_compute_the_rule_only_for_the_page() -> None:
     sql = " ".join(_list_sql("todos", None).split())
-    rule = " ".join(awaiting_reply_sql("t").split())
+    rule = " ".join(awaiting_reply_sql("t", now_param="now").split())
     assert sql.count(rule) == 1 and f"{rule} AS awaiting_reply FROM page t" in sql
 
 
@@ -144,4 +152,4 @@ def test_filters_and_cursor_shape_the_page() -> None:
     assert "t.last_message_at IS NULL AND t.status = 'open' AND t.id < :id" in undated
     count = " ".join(_count_sql("por_responder").split())
     assert count.startswith("SELECT count(*) FROM threads t WHERE t.channel = ANY(:channels)")
-    assert " ".join(awaiting_reply_sql("t").split()) in count
+    assert " ".join(awaiting_reply_sql("t", now_param="now").split()) in count
