@@ -43,10 +43,15 @@ from .planner_vm import (
     AUTO_PUBLISH_ACTIVE,
     AUTO_PUBLISH_NO_CONNECTION,
     BACK_TO_WEEK,
+    DEST_PREFIX_OUT,
+    DEST_PREFIX_PLANNED,
     EXPIRED_NOTE,
     KIND_ICONS,
     NOW_LABEL,
+    PANEL_HINT_PLANNED,
+    PANEL_TITLE_PLANNED,
     PLAN_GOALS,
+    RESCHEDULE_AGAIN,
     REVIEW_EDIT_LINK,
     REVIEW_NOTHING_WITHOUT_YOU,
     STEP_POST,
@@ -1663,7 +1668,13 @@ def _detail_body() -> rx.Component:
         ),
         rx.box(media, class_name="q-detail-media q-detail-media--" + d.destination),
         rx.box(
-            destination_badge(d.destination, d.destination_label, prefix="Sale como "),
+            rx.cond(
+                d.went_out,
+                destination_badge(
+                    d.destination, d.destination_label.lower(), prefix=DEST_PREFIX_OUT
+                ),
+                destination_badge(d.destination, d.destination_label, prefix=DEST_PREFIX_PLANNED),
+            ),
             class_name="q-stage-bottom",
         ),
         class_name="q-stage q-dest-" + d.destination,
@@ -1969,6 +1980,17 @@ def _detail_footer() -> rx.Component:
         ),
     )
     actions = rx.box(
+        # m-25019224: one that went out can be planned again, with this piece chosen
+        rx.cond(
+            d.went_out & PlannerState.schedulable_ids.contains(d.post_id),
+            rx.button(
+                rx.icon("calendar-plus", size=16),
+                RESCHEDULE_AGAIN,
+                variant="soft",
+                size="3",
+                on_click=PlannerState.schedule_again(d.post_id),
+            ),
+        ),
         # m-25019217: the publication on Instagram, in a new tab — only with its address
         rx.cond(
             d.permalink != "",
@@ -2081,13 +2103,21 @@ def event_panel() -> rx.Component:
                 on_click=PlannerState.set_detail_open(False),
                 class_name="q-narrow-only",
             ),
-            rx.el.span("Publicación planificada"),
+            rx.el.span(
+                rx.cond(
+                    PlannerState.detail.panel_title != "",
+                    PlannerState.detail.panel_title,
+                    PANEL_TITLE_PLANNED,
+                )
+            ),
             display="flex",
             align_items="center",
             gap="0.5rem",
         ),
         icon="calendar-check",
-        description="Qué sale, cuándo y dónde. Desde aquí la apruebas, la mueves o la cancelas.",
+        description=rx.cond(
+            PlannerState.detail.panel_hint != "", PlannerState.detail.panel_hint, PANEL_HINT_PLANNED
+        ),
         footer=_detail_footer(),
         width="36rem",
     )

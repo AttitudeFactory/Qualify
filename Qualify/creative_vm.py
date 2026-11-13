@@ -1532,7 +1532,10 @@ def build_draft_vm(
         fidelity_summary = "Cumple las reglas de tu marca"
     else:
         fidelity_summary = f"{passing} de {len(variants)} textos cumplen las reglas de tu marca"
-    can_approve = status == DraftStatus.GENERATED.value
+    own_media = kind == OWN_MEDIA_KIND
+    if own_media:  # m-25019224: Qualify never checked the owner's own text
+        fidelity_summary = ""
+    can_approve = status == DraftStatus.GENERATED.value and not own_media
     blocking_reason: str | None = None
     if can_approve and variants and passing == 0:
         can_approve = False
@@ -1549,8 +1552,10 @@ def build_draft_vm(
         cost_short=format_cost_label(total_cost_usd, None, ()),
         can_approve=can_approve,
         # an approved piece is rejected from Piezas, where the calendar is known
-        can_reject=status == DraftStatus.GENERATED.value,
-        can_regenerate=status in (DraftStatus.GENERATED.value, DraftStatus.REJECTED.value),
+        can_reject=status == DraftStatus.GENERATED.value and not own_media,
+        # m-25019224 (code review): never offered on an own upload, whatever its status
+        can_regenerate=status in (DraftStatus.GENERATED.value, DraftStatus.REJECTED.value)
+        and not own_media,
         blocking_reason=blocking_reason,
         failure=failure_vm(failure_reason, failure_detail or ""),
         requires_ai_disclosure=requires_ai_disclosure,
@@ -1568,8 +1573,8 @@ def build_draft_vm(
         warnings=tuple(warnings),
         # m-25019217: the owner's own upload is what went out, word for word — editing
         # it would send it back to «Por aprobar», where it never belongs.
-        can_edit=status in EDITABLE_DRAFT_STATUSES and kind != OWN_MEDIA_KIND,
-        is_own_media=kind == OWN_MEDIA_KIND,
+        can_edit=status in EDITABLE_DRAFT_STATUSES and not own_media,
+        is_own_media=own_media,
         waiting_vendor=waiting_vendor and status == DraftStatus.DRAFTING.value,
         source_reel_note=source_note,
         source_reel_url=source_url,

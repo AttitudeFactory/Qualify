@@ -296,7 +296,10 @@ async def _record(on_published: OnPublished | None, attempt_id: str) -> None:
     try:
         await on_published(attempt_id)
     except Exception as exc:  # noqa: BLE001 — the publication already succeeded
-        logger.error("publish record failed: %s", type(exc).__name__)
+        # the type and the message (a database or lock error — never the caption)
+        logger.error(
+            "publish record failed attempt_id=%s: %s: %s", attempt_id, type(exc).__name__, exc
+        )
 
 
 async def run_jobs(

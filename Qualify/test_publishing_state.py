@@ -645,6 +645,6 @@ def test_the_listo_says_where_to_find_it() -> None:
     s = _state("a")
     s.publish()
     s.phase = "success"
-    assert s.week_text == "La verás en Tu semana, marcada como publicada."
+    assert s.week_text.startswith("La verás en Tu semana, marcada como publicada, y en Aprobados")
     s.phase = "partial"
     assert s.week_text.startswith("Las que salieron ya están en Tu semana")

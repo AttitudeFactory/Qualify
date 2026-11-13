@@ -130,6 +130,11 @@ def test_an_upload_lives_in_aprobados_and_its_week_links_to_instagram(
     for label in ("Editar texto", "Regenerar", "Pedir otra versión", "Crearla otra vez"):
         expect(page.get_by_role("button", name=label)).to_have_count(0)
     expect(page.get_by_text("Imagen hecha con IA")).to_have_count(0)
+    # only the text that went out — no brand-rule claim, no empty sections
+    expect(page.get_by_text("Texto que salió")).to_be_visible()
+    expect(page.get_by_text(_CAPTION).first).to_be_visible()
+    for absent in ("Cumple las reglas de tu marca", "Sin gancho.", "Sin llamado a la acción."):
+        expect(page.get_by_text(absent)).to_have_count(0)
     _shot(page, f"own-media-ficha-{width}")
 
     # «Tu semana»: the published event (list view) with «Ver en Instagram»
@@ -137,16 +142,40 @@ def test_an_upload_lives_in_aprobados_and_its_week_links_to_instagram(
     menu = page.get_by_role("button", name="Acciones de la publicación").first
     expect(menu).to_be_visible(timeout=60_000)
     menu.click()
-    link = page.get_by_role("menuitem", name="Ver en Instagram")
-    expect(link).to_be_visible()
+    items = page.get_by_role("menuitem")
+    expect(items.first).to_have_text("Ver en Instagram")
+    expect(page.get_by_role("menuitem", name="Volver a programar")).to_be_visible()
+    expect(page.get_by_role("menuitem", name="Más detalles")).to_be_visible()
+    expect(page.get_by_role("menuitem", name="Ver publicación")).to_have_count(0)
     page.keyboard.press("Escape")
     _shot(page, f"own-media-semana-{width}")
 
     # the event's panel: the same link, opening a new tab
     menu.click()
-    page.get_by_role("menuitem", name="Ver detalle").click()
+    page.get_by_role("menuitem", name="Más detalles").click()
     panel_link = page.get_by_role("link", name=re.compile("Ver en Instagram"))
     expect(panel_link).to_be_visible(timeout=30_000)
     expect(panel_link).to_have_attribute("href", _PERMALINK)
     expect(panel_link).to_have_attribute("target", "_blank")
+    panel = page.get_by_role("dialog")
+    expect(panel).to_contain_text("Publicación que ya salió")
+    expect(panel).to_contain_text("Mírala en Instagram o vuelve a programarla.")
+    expect(panel).to_contain_text("Salió como publicación")
+    expect(panel).not_to_contain_text("Product")
+    expect(panel.get_by_role("button", name="Volver a programar")).to_be_visible()
     _shot(page, f"own-media-panel-{width}")
+
+    # «Descartar» from «Aprobados» (observed, not changed — UX review m-25019224): it
+    # says Instagram keeps it, the card leaves «Aprobados», the published event stays.
+    if width != 375:
+        return
+    page.goto(f"{app_server}/aprobados")
+    card = page.locator(".q-gcard").filter(has_text="Arepas de queso")
+    card.get_by_role("button", name="Descartar").click()
+    expect(page.get_by_role("alertdialog")).to_contain_text("sigue en tu Instagram")
+    page.get_by_role("button", name="Sí, descartar").click()
+    expect(card).to_have_count(0, timeout=30_000)
+    page.goto(f"{app_server}/planner?vista=lista")
+    week_card = page.get_by_text("Arepas de queso recién hechas", exact=False).first
+    expect(week_card).to_be_visible(timeout=60_000)
+    _shot(page, "own-media-descartada-semana-375")

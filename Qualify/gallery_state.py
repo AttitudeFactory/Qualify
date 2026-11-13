@@ -41,6 +41,7 @@ from .creative_vm import (  # noqa: F401
     APPROVED_OPEN_ACTION,
     APPROVED_TOAST,
     APPROVED_TOAST_ACTION,
+    OWN_MEDIA_KIND,
     approval_notice,
     previews_short_text,
     videos_short_text,
@@ -185,6 +186,8 @@ class GalleryState(rx.State):
     busy_post_id: str = ""
     reject_post_id: str = ""
     reject_post_title: str = ""
+    #: The piece being discarded is the owner's own upload (m-25019224).
+    reject_post_own: bool = False
     #: Opened from Inicio's «videos vencen pronto»: the soonest-expiring first.
     sort_by_expiry: bool = False
     # m-24986801: which list is open (`?ver=`), and whether the address chose it — when
@@ -661,12 +664,17 @@ class GalleryState(rx.State):
     def ask_reject_post(self, post_id: str, title: str) -> None:
         self.reject_post_id = post_id
         self.reject_post_title = title
+        # m-25019224: an own upload is not taken off Instagram — the dialog says so
+        self.reject_post_own = any(
+            p.post_id == post_id and p.content_kind == OWN_MEDIA_KIND for p in self.posts
+        )
 
     @rx.event
     def set_reject_post_open(self, value: bool) -> None:
         if not value:
             self.reject_post_id = ""
             self.reject_post_title = ""
+            self.reject_post_own = False
 
     @rx.event(background=True)
     async def confirm_reject_post(self):

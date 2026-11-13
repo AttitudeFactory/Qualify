@@ -1155,13 +1155,26 @@ def _pending_card(post) -> rx.Component:
     return _gallery_card(post)
 
 
+#: m-25019224 (UX review): discarding an own upload only takes it off «Aprobados».
+DISCARD_OWN_TEXT = "deja de aparecer en Aprobados. Lo que ya salió sigue en tu Instagram."
+
+
+#: m-25019224: the heading of an own upload's text on its page.
+OWN_MEDIA_TEXT_TITLE = "Texto que salió"
+
+
 def _gallery_reject_dialog() -> rx.Component:
     return rx.alert_dialog.root(
         rx.alert_dialog.content(
             rx.alert_dialog.title("¿Descartar esta publicación?"),
             rx.alert_dialog.description(
-                "«" + GalleryState.reject_post_title + "» se descarta y no se genera nada "
-                "nuevo. No se podrá aprobar ni publicar.",
+                rx.cond(
+                    GalleryState.reject_post_own,
+                    # m-25019224: an own upload — nothing is deleted from Instagram
+                    "«" + GalleryState.reject_post_title + "» " + DISCARD_OWN_TEXT,
+                    "«" + GalleryState.reject_post_title + "» se descarta y no se genera nada "
+                    "nuevo. No se podrá aprobar ni publicar.",
+                ),
                 size="2",
             ),
             rx.flex(
@@ -2341,7 +2354,30 @@ def _ad_destination_fields() -> rx.Component:
     )
 
 
+def _own_media_text() -> rx.Component:
+    """m-25019224 (UX review): an own upload shows only the text that went out with it —
+    no hook, labels or call to action sections (it was never split into them), no
+    variants, no brand-rule check (Qualify never checked it)."""
+    return rx.vstack(
+        _rv_section(
+            _field_head(
+                "align-left",
+                OWN_MEDIA_TEXT_TITLE,
+                "Lo que acompañó tu foto o video en Instagram.",
+            ),
+            _read_text(CreativeState.edit_caption, "Salió sin texto.", multiline=True),
+        ),
+        spacing="3",
+        width="100%",
+        align_items="start",
+    )
+
+
 def _variant_editor() -> rx.Component:
+    return rx.cond(CreativeState.draft.is_own_media, _own_media_text(), _generated_editor())
+
+
+def _generated_editor() -> rx.Component:
     variant = CreativeState.selected_variant
     editing = CreativeState.edit_mode
     return rx.vstack(

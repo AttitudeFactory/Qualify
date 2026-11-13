@@ -66,7 +66,7 @@ from sqlalchemy import select
 from .campaign_provider import CampaignOptionVM, brand_campaign_options
 from .connections_provider import acting_user_id, connections_for
 from .creative_provider import default_brand_id, final_video_state, recreate_note
-from .creative_vm import VideoDraftVM
+from .creative_vm import OWN_MEDIA_KIND, VideoDraftVM
 from .planner_vm import (
     AUTO_PUBLISH_UNAVAILABLE,
     CALENDAR_DEFAULT_TZ,
@@ -1022,7 +1022,12 @@ def event_detail(tenant_id: UUID, event_id: str, tz_override: str = "") -> Event
             post.category if post is not None else None,
             post.asset_count if post is not None else 0,
         ),
-        content_type_label=content_type_label(post.content_type if post is not None else None),
+        # m-25019224: an own upload has no content type that means anything to the owner
+        content_type_label=(
+            content_type_label(post.content_type)
+            if post is not None and post.content_kind != OWN_MEDIA_KIND
+            else ""
+        ),
         approval_label=ready.label,
         approval_tone=ready.tone,
         approved=post is not None and post.approval.value == "approved",
@@ -1050,6 +1055,7 @@ def event_detail(tenant_id: UUID, event_id: str, tz_override: str = "") -> Event
         destination_label=DESTINATION_LABELS.get(dest, ""),
         goals=goal_labels(event.goals),
         goal_keys=list(event.goals),
+        went_out=event.status == "published",
         permalink=instagram_link(
             event.status,
             _permalinks(tenant_id, (event.publish_attempt_id,)).get(event.publish_attempt_id)

@@ -37,7 +37,13 @@ from qualify_api.planner.recurrence import (
     weekly_days_on,
 )
 
-from .creative_vm import FINAL_PREPARING_LABEL, KIND_LABELS, OWN_MEDIA_KIND, REVIEW_PORT_LABELS
+from .creative_vm import (
+    CONTENT_TYPE_LABELS,
+    FINAL_PREPARING_LABEL,
+    KIND_LABELS,
+    OWN_MEDIA_KIND,
+    REVIEW_PORT_LABELS,
+)
 
 VIEW_CALENDAR = "calendar"
 VIEW_LIST = "list"
@@ -367,7 +373,9 @@ def category_label(category: str | None, item_count: int = 0) -> str:
 
 
 def content_type_label(content_type: str | None) -> str:
-    return content_type.replace("_", " ").capitalize() if content_type else ""
+    """The content type in the owner's words (`creative_vm.CONTENT_TYPE_LABELS`); "" for
+    none or one without a Spanish word — never the raw value («product»)."""
+    return CONTENT_TYPE_LABELS.get(content_type or "", "")
 
 
 def week_label(monday: date) -> str:
@@ -859,7 +867,7 @@ def matches_kind(post: PostOptionVM, content_kind: str) -> bool:
 
 def approved_kind_choices(posts: Iterable[PostOptionVM]) -> list[CategoryOptionVM]:
     """«Aprobados»' «Tipo» options (the «Todos los tipos» entry is the page's): with
-    uploads AND generated pieces, «Subidas por ti» and «Creadas con IA» first, then
+    uploads AND generated pieces, «Subidas por ti» and «Creadas en Qualify» first, then
     each generated kind; otherwise only the kinds that exist — never an empty choice."""
     posts = list(posts)
     own = any(is_own_media(p) for p in posts)
@@ -1246,6 +1254,11 @@ class EventDetailVM:
     campaign_color: str = ""
     # m-25019217: «Ver en Instagram» — `instagram_link`, "" when there is none.
     permalink: str = ""
+    #: m-25019224: the event already went out (`published`) — the panel speaks in the
+    #: past and offers looking at it or scheduling it again (`panel_title`, `panel_hint`).
+    went_out: bool = False
+    panel_title: str = field(init=False, default="")
+    panel_hint: str = field(init=False, default="")
     # N13 (m-24842959): «Aprobada por ti: sale el lunes 28 de septiembre a las 3:00 p. m.»
     # — derived from local_date/local_time, so every builder gets it without passing it.
     approved_line: str = field(init=False, default="")
@@ -1254,6 +1267,9 @@ class EventDetailVM:
     review_line: str = field(init=False, default=REVIEW_NOTHING_WITHOUT_YOU)
 
     def __post_init__(self) -> None:
+        title, hint = event_panel_texts(went_out=self.went_out, has_link=self.permalink != "")
+        object.__setattr__(self, "panel_title", title)
+        object.__setattr__(self, "panel_hint", hint)
         object.__setattr__(self, "approved_line", approved_line(self.local_date, self.local_time))
         object.__setattr__(
             self,
@@ -1306,6 +1322,29 @@ class CardInput:
     campaign_color: str = ""
     permalink: str = ""  # m-25019217: `publish_attempts.permalink` of the event's attempt
 
+
+#: The event panel's heading (m-25019224, UX review): planned, or already out.
+PANEL_TITLE_PLANNED = "Publicación planificada"
+PANEL_HINT_PLANNED = "Qué sale, cuándo y dónde. Desde aquí la apruebas, la mueves o la cancelas."
+PANEL_TITLE_OUT = "Publicación que ya salió"
+PANEL_HINT_OUT_LINK = "Mírala en Instagram o vuelve a programarla."
+PANEL_HINT_OUT = "Puedes volver a programarla desde Aprobados."
+#: The stage badge's prefix: «Sale como Publicación» / «Salió como publicación».
+DEST_PREFIX_PLANNED = "Sale como "
+DEST_PREFIX_OUT = "Salió como "
+
+
+def event_panel_texts(*, went_out: bool, has_link: bool) -> tuple[str, str]:
+    """`(title, hint)` of the event panel: in the past once it went out, naming Instagram
+    only when there is a link to open."""
+    if not went_out:
+        return PANEL_TITLE_PLANNED, PANEL_HINT_PLANNED
+    return PANEL_TITLE_OUT, PANEL_HINT_OUT_LINK if has_link else PANEL_HINT_OUT
+
+
+#: The published card's «⋯» menu (m-25019224): what to do with one that went out.
+RESCHEDULE_AGAIN = "Volver a programar"
+MORE_DETAILS = "Más detalles"
 
 #: «Ver en Instagram» (m-25019217): the link of a publication that went out.
 VIEW_ON_INSTAGRAM = "Ver en Instagram"
@@ -1528,7 +1567,7 @@ def build_post_option(
     shows_history = card is not None and card.key in HISTORY_CARD_STATES
     if card is not None:  # the same words on every surface that prints the state
         g_label, g_tone = card.label, card.tone
-    kind, aspect = frame_shape(category or "", "", len(media_types))
+    kind, aspect = frame_shape(category or "", "", len(media_types), image_size)
     ratio = aspect.replace(" / ", ":")
     medium = "Video" if video_url else "Imagen"
     return PostOptionVM(
@@ -1682,10 +1721,17 @@ def assign_steps_done(*, post_ok: bool, when_ok: bool, reached: int) -> list[boo
     return [post_ok, post_ok and when_ok and reached >= STEP_WHEN, False]
 
 
-def frame_shape(category: str, output_port: str, item_count: int = 0) -> tuple[str, str]:
+def frame_shape(
+    category: str,
+    output_port: str,
+    item_count: int = 0,
+    image_size: tuple[int, int] | None = None,
+) -> tuple[str, str]:
     """(kind label, CSS aspect ratio) for a preview frame: the template output when the
     event publishes one, else the POST's category. m-25019217: a `galeria` POST with ONE
-    file (`item_count`) is a feed image («Publicación» 4:5), not a «Carrusel»."""
+    file (`item_count`) is a feed image («Publicación» 4:5), not a «Carrusel»; with its
+    first image's real size known (`image_size`, code review m-25019224) a square one
+    keeps 1:1 — 4:5 only when the size is unknown or not square."""
     if output_port == "reel":
         return "Reel", "9 / 16"
     if output_port == "story":
@@ -1698,7 +1744,16 @@ def frame_shape(category: str, output_port: str, item_count: int = 0) -> tuple[s
         return "Historia", "9 / 16"
     if category == "galeria" and item_count != 1:
         return "Carrusel", "1 / 1"
+    if _is_square(image_size):
+        return "Publicación", "1 / 1"
     return "Publicación", "4 / 5"
+
+
+def _is_square(size: tuple[int, int] | None) -> bool:
+    """Width and height within 2 % of each other (a 1080×1080 or 1024×1024 image)."""
+    if not size or size[0] <= 0 or size[1] <= 0:
+        return False
+    return abs(size[0] - size[1]) <= 0.02 * max(size)
 
 
 def media_label(post: PostOptionVM | None, output_port: str) -> str:

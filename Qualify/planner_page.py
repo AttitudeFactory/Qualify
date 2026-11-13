@@ -39,7 +39,9 @@ from .planner_state import REFRESH_SECONDS, SCROLL_ID, PlannerState
 from .planner_vm import (
     CREATE_ACTION,
     EMPTY_WEEK_TITLE,
+    MORE_DETAILS,
     NO_APPROVED_BODY,
+    RESCHEDULE_AGAIN,
     VIEW_CALENDAR,
     VIEW_LIST,
     VIEW_ON_INSTAGRAM,
@@ -105,21 +107,42 @@ def _card_menu(event) -> rx.Component:
             ),
         ),
         rx.dropdown_menu.content(
-            rx.dropdown_menu.item("Ver detalle", on_click=PlannerState.open_detail(event.event_id)),
             rx.cond(
-                event.detail_href != "",
-                # m-24842987: the ficha says «‹ Tu semana» and comes back to this week.
-                rx.dropdown_menu.item(
-                    "Ver publicación",
-                    on_click=rx.redirect(event.detail_href + PlannerState.week_return_query),
+                event.status_label == "Publicado",
+                # m-25019224: one that went out — look at it, plan it again, or the rest
+                rx.fragment(
+                    rx.cond(
+                        event.permalink != "",
+                        rx.dropdown_menu.item(
+                            VIEW_ON_INSTAGRAM,
+                            on_click=rx.redirect(event.permalink, is_external=True),
+                        ),
+                    ),
+                    rx.cond(
+                        PlannerState.schedulable_ids.contains(event.post_id),
+                        rx.dropdown_menu.item(
+                            RESCHEDULE_AGAIN,
+                            on_click=PlannerState.schedule_again(event.post_id),
+                        ),
+                    ),
+                    rx.dropdown_menu.item(
+                        MORE_DETAILS, on_click=PlannerState.open_detail(event.event_id)
+                    ),
                 ),
-            ),
-            # m-25019217: a publication that went out opens on Instagram, in a new tab
-            rx.cond(
-                event.permalink != "",
-                rx.dropdown_menu.item(
-                    VIEW_ON_INSTAGRAM,
-                    on_click=rx.redirect(event.permalink, is_external=True),
+                rx.fragment(
+                    rx.dropdown_menu.item(
+                        MORE_DETAILS, on_click=PlannerState.open_detail(event.event_id)
+                    ),
+                    rx.cond(
+                        event.detail_href != "",
+                        # m-24842987: the ficha says «‹ Tu semana» and comes back here.
+                        rx.dropdown_menu.item(
+                            "Ver publicación",
+                            on_click=rx.redirect(
+                                event.detail_href + PlannerState.week_return_query
+                            ),
+                        ),
+                    ),
                 ),
             ),
             rx.cond(
@@ -568,7 +591,11 @@ def _list_item(event) -> rx.Component:
                         temperature_badge(
                             event.temperature, event.temperature_label, event.temperature_hint
                         ),
-                        tag(event.category_label),
+                        # m-25019224: never the same word twice («Publicación» · «Publicación»)
+                        rx.cond(
+                            event.category_label != event.destination_label,
+                            tag(event.category_label),
+                        ),
                         rx.cond(event.output_label != "", tag(event.output_label)),
                         campaign_badge(event.campaign_name, event.campaign_color),
                         rx.foreach(event.tags, tag_badge_plain),

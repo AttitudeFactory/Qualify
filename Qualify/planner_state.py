@@ -553,6 +553,11 @@ class PlannerState(rx.State):
         return None
 
     @rx.var
+    def schedulable_ids(self) -> list[str]:
+        """The pieces «Volver a programar» can open the assistant with (m-25019224)."""
+        return [post.post_id for post in self.schedulable]
+
+    @rx.var
     def form_selected_ids(self) -> list[str]:
         return [item.post_id for item in self.plan_items]
 
@@ -1421,6 +1426,19 @@ class PlannerState(rx.State):
     @rx.event
     def open_assign_for_post(self, post_id: str) -> None:
         self._open_assign(post_id=post_id)
+
+    @rx.event
+    def schedule_again(self, post_id: str) -> rx.event.EventSpec | None:
+        """«Volver a programar» (m-25019224): a publication that already went out, back
+        into the assistant with that piece chosen — the same flow as «Asignar». Closes
+        the event's panel first when it is open."""
+        was_open = self.detail_open
+        self.detail_open = False
+        self.detail_confirm = ""
+        self._open_assign(post_id=post_id)
+        if was_open:
+            return rx.call_script(back_url_script(self._planner_address(ficha="")))
+        return None
 
     @rx.event
     def open_assign_for_day(self, day_iso: str) -> None:

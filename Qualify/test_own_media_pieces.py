@@ -213,3 +213,126 @@ def test_a_failed_permalink_read_costs_only_the_links(monkeypatch) -> None:  # n
     monkeypatch.setattr(provider, "tenant_session", boom)
     assert provider._permalinks(uuid4(), [uuid4()]) == {}
     assert provider._permalinks(uuid4(), [None]) == {}
+
+
+# -- UX and code review of m-25019224 ----------------------------------------------------
+
+
+def _variant():
+    from .creative_vm import CopyVariantVM  # noqa: PLC0415
+
+    return CopyVariantVM(
+        variant_id="v1",
+        ordinal=0,
+        label="Variante 1",
+        hook="",
+        caption=_CAPTION_TEXT,
+        hashtags_text="",
+        cta="",
+        ads_primary_text="",
+        ads_headline="",
+        ads_description="",
+        has_ads=False,
+        passed=True,
+        failure_labels=(),
+        was_edited=False,
+        rendered_caption=_CAPTION_TEXT,
+    )
+
+
+_CAPTION_TEXT = "Arepas de queso #arepas"
+
+
+def test_regenerate_is_never_offered_on_an_upload_whatever_its_status() -> None:
+    for status in ("generated", "rejected", "approved"):
+        own = _detail(OWN_MEDIA_KIND, status)
+        assert not own.can_regenerate, status
+        assert not own.can_approve and not own.can_reject, status
+    assert _detail("static_flyer", "rejected").can_regenerate
+
+
+def test_an_upload_never_claims_qualify_checked_its_text() -> None:
+    from dataclasses import replace  # noqa: PLC0415
+
+    own = build_draft_vm(
+        **{**_DETAIL_ARGS, "kind": OWN_MEDIA_KIND, "variants": (_variant(),)},
+    )
+    assert own.fidelity_summary == ""
+    made = build_draft_vm(**{**_DETAIL_ARGS, "variants": (_variant(),)})
+    assert made.fidelity_summary == "Cumple las reglas de tu marca"
+    assert replace(own, status="approved").is_own_media
+
+
+_DETAIL_ARGS = dict(
+    draft_id="d1",
+    status="approved",
+    failure_reason=None,
+    variants=(),
+    image_url=None,
+    total_cost_usd=None,
+    voice_profile_version=None,
+    model_ids=(),
+    requires_ai_disclosure=False,
+    created_label="",
+    kind="static_flyer",
+)
+
+
+def test_the_content_type_is_said_in_spanish_or_not_at_all() -> None:
+    from .planner_vm import content_type_label  # noqa: PLC0415
+
+    assert content_type_label("product") == "Producto"
+    assert content_type_label("hours_location") == "Horarios y ubicación"
+    assert content_type_label("something_new") == ""
+    assert content_type_label(None) == ""
+
+
+def test_the_event_panel_speaks_in_the_past_once_it_went_out() -> None:
+    from .planner_vm import EventDetailVM  # noqa: PLC0415
+
+    planned = EventDetailVM(status_label="Programado")
+    assert planned.panel_title == "Publicación planificada"
+    assert "la apruebas, la mueves o la cancelas" in planned.panel_hint
+    out = EventDetailVM(went_out=True, permalink=_PERMALINK)
+    assert out.panel_title == "Publicación que ya salió"
+    assert out.panel_hint == "Mírala en Instagram o vuelve a programarla."
+    no_link = EventDetailVM(went_out=True)
+    assert "Instagram" not in no_link.panel_hint
+
+
+def test_a_square_single_image_keeps_its_square_frame() -> None:
+    from .planner_vm import frame_shape  # noqa: PLC0415
+
+    assert frame_shape("galeria", "", 1, (1080, 1080)) == ("Publicación", "1 / 1")
+    assert frame_shape("galeria", "", 1, (1080, 1350)) == ("Publicación", "4 / 5")
+    assert frame_shape("galeria", "", 1, None) == ("Publicación", "4 / 5")
+    assert frame_shape("galeria", "", 3, (1080, 1080)) == ("Carrusel", "1 / 1")
+    assert frame_shape("reel", "", 1, (1080, 1080)) == ("Reel", "9 / 16")
+
+
+def test_discarding_an_upload_says_instagram_keeps_it() -> None:
+    from .creative_pages import DISCARD_OWN_TEXT  # noqa: PLC0415
+
+    state = GalleryState()
+    state.posts = _posts()
+    state.ask_reject_post("own", "Pieza own")
+    assert state.reject_post_own
+    assert "sigue en tu Instagram" in DISCARD_OWN_TEXT
+    state.set_reject_post_open(False)
+    assert not state.reject_post_own
+    state.ask_reject_post("flyer", "Pieza flyer")
+    assert not state.reject_post_own
+
+
+def test_volver_a_programar_opens_the_assistant_with_that_piece() -> None:
+    from .planner_state import PlannerState  # noqa: PLC0415
+
+    state = PlannerState()
+    own = _option("own", OWN_MEDIA_KIND, times=1)
+    state.schedulable = [own]
+    state.detail_open = True
+    assert state.schedulable_ids == ["own"]
+    state.schedule_again("own")
+    assert not state.detail_open
+    assert state.form_open
+    assert state.form_selected_ids == ["own"]
