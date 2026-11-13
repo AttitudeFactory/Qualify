@@ -784,7 +784,6 @@ def as_chat_row(row: ThreadRowVM) -> ChatRowVM:
         thread_id=row.thread_id,
         channel=CHANNEL_INSTAGRAM,
         title=row.title,
-        second_line=row.handle,
         preview=row.preview,
         preview_icon=row.preview_icon,
         time_label=row.time_label,

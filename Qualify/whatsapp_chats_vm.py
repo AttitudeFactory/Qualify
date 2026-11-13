@@ -489,15 +489,15 @@ def as_chat_row(row: ThreadRowVM) -> ChatRowVM:
     """m-25017844: this channel's row in the shared shape (`chat_row_vm`). The unread
     count becomes the waiting dot; «Responde el menú» / «Respondes tú» and «Cerrado»
     leave the row (the chat and the filter say them); the payment to check and the
-    window about to close fold into the one pill («Esperando el pago» too). The phone is
-    the second line when the person has a name; initials come only from the name's
-    letters (a number-only contact gets the person icon)."""
+    window about to close fold into the one pill («Esperando el pago» too). No second
+    line (UX doc §2): the title is the profile name, else the number, as before;
+    initials come only from the name's letters (a number-only contact gets the person
+    icon)."""
     named = row.subtitle != ""
     return build_chat_row(
         thread_id=row.thread_id,
         channel=CHANNEL_WHATSAPP,
         title=row.title,
-        second_line=row.subtitle,
         preview=row.preview,
         time_label=row.time_label,
         waiting=row.has_unread,

@@ -7,8 +7,8 @@ adapter (`whatsapp_chats_vm.as_chat_row`, `conversations_vm.as_chat_row`) and re
 same row.
 
 The anatomy (docs/ux-chats-unificados.md §2): picture or initial with the channel's glyph
-on its corner, a breathing dot while the customer waits, name, time, a second line
-(@handle or phone), the preview («Tú: » when the business wrote last) and **one** attention
+on its corner, a breathing dot while the customer waits, name, time, the preview («Tú: »
+when the business wrote last) and **one** attention
 pill — the most urgent one, chosen here, never in the view. «Cerrado» is not on the row:
 the filter already says it.
 
@@ -130,7 +130,6 @@ class ChatRowVM:
     thread_id: str
     channel: str  # CHANNEL_WHATSAPP | CHANNEL_INSTAGRAM
     title: str  # the person's name, else @handle / phone, else «Cliente de …»
-    second_line: str  # «@handle» or «+57…» ("" when it would repeat the title)
     preview: str  # «Tú: …» when the business wrote last
     preview_icon: str  # "" or a Lucide name for a media / tapped preview
     time_label: str
@@ -150,7 +149,6 @@ def build_chat_row(
     thread_id: str,
     channel: str,
     title: str,
-    second_line: str,
     preview: str,
     time_label: str,
     waiting: bool,
@@ -180,7 +178,6 @@ def build_chat_row(
         thread_id=thread_id,
         channel=channel,
         title=title,
-        second_line="" if second_line == title else second_line,
         preview=preview,
         preview_icon=preview_icon,
         time_label=time_label,

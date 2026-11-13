@@ -62,7 +62,6 @@ def _row(**overrides: object) -> ChatRowVM:
         "thread_id": "t",
         "channel": CHANNEL_WHATSAPP,
         "title": "Laura",
-        "second_line": "+573001234567",
         "preview": "Ya te pagué",
         "time_label": "ahora",
         "waiting": True,
@@ -205,12 +204,12 @@ def test_the_fallback_names_the_channel() -> None:
     assert unknown_contact(CHANNEL_INSTAGRAM) == UNKNOWN_PERSON == "Cliente de Instagram"
     assert counterpart_title("", "17841400000123456") == "Cliente de Instagram"
     nobody = ig_chat_row(ig_build(ig_view(ig_thread()), None, now=IG_NOW, zone=IG_ZONE))
-    assert nobody.title == "Cliente de Instagram" and nobody.second_line == ""
+    assert nobody.title == "Cliente de Instagram"
     assert nobody.initials == ""  # person icon, not «CI» nor a digit of the id
     handle_only = dataclasses.replace(ig_thread(), counterpart_username="yesii_roa")
     row = ig_build(ig_view(handle_only), None, now=IG_NOW, zone=IG_ZONE)
     shared = ig_chat_row(row)
-    assert row.title == shared.title == "@yesii_roa" and shared.second_line == ""
+    assert row.title == shared.title == "@yesii_roa"
     assert shared.initials == "YR"
 
 
@@ -237,7 +236,9 @@ def test_the_accessible_name_says_the_channel_and_its_own_dot() -> None:
 def test_whatsapp_row_in_the_shared_shape() -> None:
     row = wa_chat_row(wa_build(wa_thread(), now=WA_NOW, zone=WA_ZONE))
     assert row.channel == CHANNEL_WHATSAPP
-    assert (row.title, row.second_line, row.initials) == ("Laura Gómez", "+573001234567", "LG")
+    assert (row.title, row.initials) == ("Laura Gómez", "LG")
+    # No second line (UX doc §2): the phone is not on the row nor in its accessible name.
+    assert not hasattr(row, "second_line") and "+57" not in row.aria_label
     assert row.preview == "¿Tienen domicilio?" and row.time_label == "hace 5 min"
     assert row.waiting  # two unread → the dot
     assert row.pill_label == ""  # window comfortably open, no payment: no pill
@@ -295,7 +296,8 @@ def test_instagram_row_in_the_shared_shape() -> None:
     )
     row = ig_chat_row(vm)
     assert row.channel == CHANNEL_INSTAGRAM
-    assert (row.title, row.second_line, row.initials) == ("Yesika Roa", "@yesii_roa", "YR")
+    assert (row.title, row.initials) == ("Yesika Roa", "YR")  # the handle stays in the header
+    assert "@yesii_roa" not in row.aria_label
     assert row.avatar_url == "https://cdn/pic.jpg" and row.fresh
     assert row.preview == "Tú: claro"
     assert row.pill_label == ""  # «Pendiente» / «Leída» / «Respondida» left the row

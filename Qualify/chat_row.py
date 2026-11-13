@@ -6,8 +6,8 @@ model (`chat_row_vm.ChatRowVM`) has already chosen the one pill, taken the initi
 worded the accessible name; this only draws.
 
 Anatomy: picture or initial with the channel's glyph on its corner · the breathing dot
-while the customer waits · name (bold while waiting) and time · second line (@handle or
-phone) · preview with its media icon · the one pill and, with a team, who attends it.
+while the customer waits · name (bold while waiting) and time · preview with its media
+icon · the one pill and, with a team, who attends it.
 Channel identity = glyph + the platform scale (`T.PLATFORM_SCALE`, painted by
 `.q-chat-channel--{channel}` in `assets/qualify-inbox.css`). The dot and the pulse of a
 fresh row stop under `prefers-reduced-motion` (the same sheet).
@@ -164,16 +164,6 @@ def chat_row(row: ChatRowVM, *, is_open: rx.Var[bool], on_open: rx.event.EventSp
                     width="100%",
                     align="center",
                     spacing="2",
-                ),
-                rx.cond(
-                    row.second_line != "",
-                    rx.text(
-                        row.second_line,
-                        size="1",
-                        color=T.TEXT_MUTED,
-                        class_name="q-wa-ellipsis q-nums",
-                    ),
-                    rx.fragment(),
                 ),
                 rx.hstack(
                     rx.cond(
