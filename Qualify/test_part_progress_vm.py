@@ -14,9 +14,6 @@ from qualify_api.creative.part_progress import (
 
 from .part_progress_vm import (
     ANNOUNCE,
-    DECIDE_MOVING_TEXT,
-    DECIDE_TEXT,
-    LIVE_TEXT,
     PARTS_HEADING_TEXT,
     REFUSED_ORIGINAL_TEXT,
     REFUSED_PHOTO_NO_CHANGE_TEXT,
@@ -25,9 +22,6 @@ from .part_progress_vm import (
     REMOVE_CONFIRM_YES,
     STATE_TONES,
     STATE_WORDS,
-    STEP_DONE,
-    STEP_PENDING,
-    STEP_RUNNING,
     announcement,
     as_state,
     part_progress_vm,
@@ -88,12 +82,7 @@ def test_the_panel_counts_parts_with_a_preview() -> None:
         ),
     )
     vm = part_progress_vm(progress)
-    assert (vm.title, vm.comment, vm.value) == ("Creando tus partes", "2 de 4 creadas", 50)
-    assert vm.value_text == "2 de 4 partes creadas" and not vm.complete
-    assert vm.live_text == LIVE_TEXT
-    assert LIVE_TEXT == (
-        "No tienes que esperar aquí: cuando tu video esté, aparecerá en Por aprobar."
-    )
+    assert vm.status_line == "Creando tus partes: 2 de 4 listas" and not vm.complete
     assert vm.notice == ""
     assert vm.rows[2].detail == "Se crea cuando esté la parte 2."
     assert vm.rows[0].label == "Parte 1 · 4 s"
@@ -102,7 +91,7 @@ def test_the_panel_counts_parts_with_a_preview() -> None:
 
 def test_an_empty_plan_is_zero_not_a_division() -> None:
     vm = part_progress_vm(PartProgress(parent_id=PARENT, parts=()))
-    assert vm.value == 0 and vm.comment == "0 de 0 creadas" and not vm.complete
+    assert vm.status_line == "" and not vm.complete and vm.rows == ()
 
 
 def _labels(r: PartProgressRow, available: frozenset[PartAction] = ALL) -> list[str]:
@@ -182,7 +171,7 @@ def test_a_purged_video_says_it_once_on_top() -> None:
     assert vm.notice == (
         "Los archivos de este video ya se borraron. Crea un video nuevo para empezar otra vez."
     )
-    assert vm.title == "Tu video por partes"
+    assert vm.status_line == vm.notice  # never empty; the panel shows the notice only
     assert all(r.detail == "" and r.buttons == () for r in vm.rows)
 
 
@@ -239,7 +228,8 @@ def test_as_state_is_plain_values() -> None:
             "primary": True,
         }
     ]
-    assert data["rows"][0]["tone"] == "error" and data["value"] == 0
+    assert data["rows"][0]["tone"] == "error" and data["rows"][0]["seconds"] == 4
+    assert data["status_line"] == "Falta que decidas qué hacer con una parte"
 
 
 def test_the_notice_after_removing_uses_the_number_it_had() -> None:
@@ -289,17 +279,19 @@ def test_while_a_part_moves_the_panel_is_creating() -> None:
         vm = part_progress_vm(
             PartProgress(parent_id=PARENT, parts=(row(1, PartState.READY), row(2, moving)))
         )
-        assert vm.title == "Creando tus partes" and vm.in_progress
-        assert vm.step_status == STEP_RUNNING and vm.live_text == LIVE_TEXT
+        assert vm.in_progress  # an unmade part may be created any time: keep reading
+        assert vm.status_line in (
+            "Creando tus partes: 1 de 2 listas",
+            "Te falta una parte por crear",
+        )
 
 
 def test_parts_waiting_for_the_owner_ask_for_a_decision() -> None:
     one = part_progress_vm(
         PartProgress(parent_id=PARENT, parts=(row(1, PartState.READY), row(2, PartState.FAILED)))
     )
-    assert one.title == "Falta que decidas qué hacer con una parte"
-    assert one.live_text == "Cuando decidas, seguimos con tu video."
-    assert one.step_status == STEP_PENDING and not one.in_progress
+    assert one.status_line == "Falta que decidas qué hacer con una parte"
+    assert not one.in_progress
     many = part_progress_vm(
         PartProgress(
             parent_id=PARENT,
@@ -310,16 +302,16 @@ def test_parts_waiting_for_the_owner_ask_for_a_decision() -> None:
             ),
         )
     )
-    assert many.title == "Falta que decidas qué hacer con 3 partes"
+    assert many.status_line == "Falta que decidas qué hacer con 3 partes"
 
 
 def test_every_part_made_says_so() -> None:
     vm = part_progress_vm(
         PartProgress(parent_id=PARENT, parts=(row(1, PartState.READY), row(2, PartState.TO_REVIEW)))
     )
-    assert vm.title == "Tus partes ya están creadas" and vm.complete
-    assert vm.step_status == STEP_DONE
-    assert as_state(vm)["step_status"] == STEP_DONE and as_state(vm)["in_progress"] is False
+    assert vm.status_line == "Tus 2 partes están listas" and vm.complete
+    assert as_state(vm)["in_progress"] is False
+    assert as_state(vm)["status_line"] == "Tus 2 partes están listas"
 
 
 def test_the_announcement_is_the_last_change_never_the_first_read() -> None:
@@ -359,10 +351,7 @@ def test_a_part_to_redo_is_a_decision_not_a_finished_video() -> None:
         )
     )
     assert vm.complete  # the backend's meaning, followed by UI-9's refresh
-    assert vm.title == "Falta que decidas qué hacer con una parte"
-    assert (
-        vm.step_status == STEP_PENDING and vm.live_text == "Cuando decidas, seguimos con tu video."
-    )
+    assert vm.status_line == "Falta que decidas qué hacer con una parte"
     states = {1: "creating", 2: "creating"}
     assert announcement(states, vm, was_complete=False) == "Hay que rehacer la parte 2."
 
@@ -372,8 +361,7 @@ def test_an_expired_part_next_to_a_ready_one_waits_for_the_owner() -> None:
         PartProgress(parent_id=PARENT, parts=(row(1, PartState.READY), row(2, PartState.EXPIRED)))
     )
     assert not vm.complete
-    assert vm.title == "Falta que decidas qué hacer con una parte"
-    assert vm.step_status == STEP_PENDING
+    assert vm.status_line == "Falta que decidas qué hacer con una parte"
     assert announcement({1: "ready", 2: "to_review"}, vm, was_complete=False) == (
         "La vista previa de la parte 2 venció."
     )
@@ -387,10 +375,9 @@ def test_decisions_come_first_even_while_parts_move() -> None:
         vm = part_progress_vm(
             PartProgress(parent_id=PARENT, parts=(row(1, PartState.FAILED), row(2, moving)))
         )
-        assert vm.title == "Falta que decidas qué hacer con una parte"
-        assert vm.live_text == "Mientras decides, seguimos con las demás partes."
-        # something still moves: the step keeps counting, the screen keeps reading
-        assert vm.step_status == STEP_RUNNING and vm.in_progress
+        assert vm.status_line == "Falta que decidas qué hacer con una parte"
+        # something still moves: the screen keeps reading
+        assert vm.in_progress
         assert not vm.ready_for_video
 
 
@@ -408,8 +395,8 @@ def test_parent_a_three_decisions_and_one_in_line() -> None:
             ),
         )
     )
-    assert vm.title == "Falta que decidas qué hacer con 3 partes"
-    assert vm.comment == "1 de 6 creadas" and vm.step_status == STEP_RUNNING
+    assert vm.status_line == "Falta que decidas qué hacer con 3 partes"
+    assert vm.in_progress
 
 
 def test_a_person_in_the_photos_never_asks_for_a_hidden_button() -> None:
@@ -452,17 +439,6 @@ def test_the_result_words_for_a_video_by_parts() -> None:
 # -- round 4 (review-agent + ux-designer) -----------------------------------------------
 
 
-def test_the_decision_sentence_depends_on_whether_parts_still_move() -> None:
-    moving = part_progress_vm(
-        PartProgress(parent_id=PARENT, parts=(row(1, PartState.FAILED), row(2, PartState.QUEUED)))
-    )
-    still = part_progress_vm(
-        PartProgress(parent_id=PARENT, parts=(row(1, PartState.FAILED), row(2, PartState.READY)))
-    )
-    assert moving.live_text == DECIDE_MOVING_TEXT
-    assert still.live_text == DECIDE_TEXT
-
-
 def test_no_text_says_aparece_una_persona() -> None:
     for text in (REFUSED_PHOTO_TEXT, REFUSED_PHOTO_NO_CHANGE_TEXT, REFUSED_ORIGINAL_TEXT):
         assert "parece haber una persona" in text and "aparece una persona" not in text
@@ -500,19 +476,107 @@ def test_the_announcement_says_the_number_on_screen() -> None:
     )
 
 
-def test_an_unmade_part_points_to_the_card_below_only_when_it_is_there() -> None:
-    from .part_progress_vm import UNMADE_TEXT
+def test_an_unmade_part_never_points_to_a_card() -> None:
+    """Review round 2: the failed parent has no «Tu video completo»; an unmade row (never
+    drawn now) and the status line never send the owner there."""
+    assert part_row_vm(row(2, PartState.UNMADE)).detail == ""
+    vm = part_progress_vm(
+        PartProgress(parent_id=PARENT, parts=(row(1, PartState.READY), row(2, PartState.UNMADE)))
+    )
+    assert "Tu video completo" not in vm.status_line
 
-    unmade = row(2, PartState.UNMADE)
-    assert part_row_vm(unmade, card_below=True).detail == UNMADE_TEXT
-    assert UNMADE_TEXT == "Créala desde Tu video completo, más abajo."
-    assert part_row_vm(unmade).detail == ""
+
+# -- m-25016656: the panel's one status line ------------------------------------------
 
 
-def test_the_fold_says_how_many_parts_it_hides() -> None:
-    from .part_progress_vm import rows_toggle_label
+def _line(*states: PartState, **kw: object) -> str:
+    parts = tuple(row(i, state, **kw) for i, state in enumerate(states, start=1))
+    vm = part_progress_vm(PartProgress(parent_id=PARENT, parts=parts))
+    return vm.status_line
 
-    assert rows_toggle_label(4, False) == "Ver las 4 partes"
-    assert rows_toggle_label(1, False) == "Ver la parte"
-    assert rows_toggle_label(4, True) == "Ocultar las partes"
-    assert rows_toggle_label(1, True) == "Ocultar la parte"
+
+def test_the_status_line_says_what_the_video_waits_for() -> None:
+    assert _line(PartState.READY, PartState.TO_REVIEW, PartState.READY) == (
+        "Tus 3 partes están listas"
+    )
+    assert _line(PartState.READY) == "Tu parte está lista"
+    assert _line(PartState.READY, PartState.CREATING, PartState.QUEUED) == (
+        "Creando tus partes: 1 de 3 listas"
+    )
+    # something moving wins over a part never created
+    assert _line(PartState.READY, PartState.CREATING, PartState.UNMADE) == (
+        "Creando tus partes: 1 de 3 listas"
+    )
+    # nothing moving: the parts wait for «Crear la parte N» in «Tu video completo»
+    assert _line(PartState.READY, PartState.UNMADE, PartState.UNMADE) == (
+        "Te faltan 2 partes por crear"
+    )
+    assert _line(PartState.READY, PartState.UNMADE) == "Te falta una parte por crear"
+    # a decision first, with the words the panel already had
+    assert _line(PartState.READY, PartState.FAILED, PartState.CREATING) == (
+        "Falta que decidas qué hacer con una parte"
+    )
+    assert _line(PartState.FAILED, PartState.EXPIRED) == (
+        "Falta que decidas qué hacer con 2 partes"
+    )
+    for line in (_line(PartState.READY, PartState.UNMADE), _line(PartState.CREATING)):
+        assert "esperar aquí" not in line  # «No tienes que esperar aquí» is gone
+
+
+def test_purged_files_say_it_in_the_notice() -> None:
+    vm = part_progress_vm(
+        PartProgress(parent_id=PARENT, parts=(row(1, PartState.READY),), purged=True)
+    )
+    assert vm.notice != "" and vm.status_line == vm.notice  # never empty with parts
+    assert part_progress_vm(PartProgress(parent_id=PARENT, parts=())).status_line == ""
+
+
+def test_right_after_drafting_the_parts_are_being_prepared() -> None:
+    """Review round 2: the parent's text just passed and the worker has not created the
+    parts it was asked for yet — not «Te faltan N por crear»."""
+    from qualify_creative.schemas import PartsRequest
+
+    unmade = (row(1, PartState.UNMADE), row(2, PartState.UNMADE))
+    asked = PartProgress(parent_id=PARENT, parts=unmade, request=PartsRequest())
+    assert part_progress_vm(asked).status_line == "Preparando tus partes…"
+    # the worker could not create them (a refusal): they are missing, the card says why
+    refused = PartProgress(
+        parent_id=PARENT, parts=unmade, request=PartsRequest(refused="unavailable")
+    )
+    assert part_progress_vm(refused).status_line == "Te faltan 2 partes por crear"
+    # nothing was asked with the video: missing too
+    nothing = PartProgress(parent_id=PARENT, parts=unmade)
+    assert part_progress_vm(nothing).status_line == "Te faltan 2 partes por crear"
+    # some made, the rest never created (7e24863f): missing
+    some = PartProgress(
+        parent_id=PARENT,
+        parts=(row(1, PartState.READY), row(2, PartState.UNMADE)),
+        request=PartsRequest(),
+    )
+    assert part_progress_vm(some).status_line == "Te falta una parte por crear"
+
+
+@pytest.mark.parametrize(
+    "states",
+    [
+        (PartState.READY,),
+        (PartState.UNMADE,),
+        (PartState.CREATING, PartState.UNMADE),
+        (PartState.TO_REVIEW, PartState.REDO),
+        (PartState.EXPIRED,),
+        (PartState.QUEUED, PartState.READY, PartState.FAILED),
+    ],
+)
+def test_the_line_is_never_empty_with_parts(states: tuple[PartState, ...]) -> None:
+    parts = tuple(row(i, st, changed_part=1) for i, st in enumerate(states, start=1))
+    assert part_progress_vm(PartProgress(parent_id=PARENT, parts=parts)).status_line != ""
+
+
+def test_an_unmade_part_still_keeps_the_screen_reading() -> None:
+    """«Sin crear» has its own line, yet it still counts as in progress: the poll keeps
+    reading (the owner may create it any time from the card)."""
+    vm = part_progress_vm(
+        PartProgress(parent_id=PARENT, parts=(row(1, PartState.READY), row(2, PartState.UNMADE)))
+    )
+    assert vm.in_progress and vm.status_line == "Te falta una parte por crear"
+    assert as_state(vm)["status_line"] == vm.status_line

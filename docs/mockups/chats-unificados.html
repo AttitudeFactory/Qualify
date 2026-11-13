@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chats unificados</title>
+<!--
+  Maqueta estática para docs/ux-chats-unificados.md (ux-designer, 2026-11-12). NO es código de
+  la app: colores aproximados a los pasos de Radix que ya usa el sistema (oscuro, acento teal, gris
+  slate; canales: instagram = pink, whatsapp = green, tiktok = purple, de T.PLATFORM_SCALE).
+  Ningún color nuevo: cada variable de abajo nombra el token que representa.
+  Nombres, mensajes y montos son de ejemplo.
+-->
+<style>
+  :root {
+    --bg: #111113;          /* --color-background */
+    --panel: #18191b;       /* --color-panel-solid */
+    --card: #1f2124;        /* --q-card-fill aprox. */
+    --field: #141517;       /* --q-field-fill */
+    --edge: #2e3135;        /* gray-5 (BORDER) */
+    --text: #edeef0;        /* gray-12 */
+    --muted: #b0b4ba;       /* gray-11 */
+    --faint: #777b84;       /* gray-9 */
+    --accent: #12a594;      /* teal-9 */
+    --accent-11: #0bd8b6;   /* teal-11 */
+    --accent-a4: rgba(18,165,148,.22); /* accent-a4 */
+    --warn-11: #ffca16; --warn-a3: rgba(255,202,22,.12); --warn-a6: rgba(255,202,22,.35);
+    --ok-11: #3dd68c;   --ok-a3: rgba(61,214,140,.12);   --ok-a6: rgba(61,214,140,.35);
+    --err-11: #ff977d;
+    /* canales (escala Radix del canal, paso 9 y alfa 3/4) */
+    --wa: #30a46c;  --wa-a3: rgba(48,164,108,.14); --wa-a4: rgba(48,164,108,.24);
+    --ig: #d6409f;  --ig-a3: rgba(214,64,159,.14); --ig-a4: rgba(214,64,159,.24);
+    --tt: #8e4ec6;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.45 "IBM Plex Sans", system-ui, sans-serif; padding: 24px 16px; }
+  h1.doc { font-size: 22px; margin: 0 0 4px; }
+  h2.doc { font-size: 17px; margin: 40px 0 6px; border-top: 1px solid var(--edge); padding-top: 22px; }
+  p.doc { color: var(--muted); margin: 0 0 16px; max-width: 78ch; }
+  .row { display: flex; flex-wrap: wrap; gap: 28px; align-items: flex-start; }
+  .row > div { min-width: 0; max-width: 100%; }
+  .label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; margin: 0 0 8px; }
+  .note { font-size: 12.5px; color: var(--muted); max-width: 360px; margin-top: 8px; }
+  .note b { color: var(--text); }
+  .phone { width: 100%; max-width: 360px; background: var(--panel); border: 1px solid var(--edge);
+    border-radius: 28px; padding: 14px 14px 12px; position: relative; }
+  .desk { width: 1060px; max-width: 100%; background: var(--panel); border: 1px solid var(--edge);
+    border-radius: 20px; display: grid; grid-template-columns: 360px 1fr; overflow: hidden; }
+  .muted { color: var(--muted); } .small { font-size: 12.5px; } .tiny { font-size: 11.5px; }
+  .h1 { font-size: 21px; font-weight: 700; margin: 2px 0 2px; }
+  .sub { color: var(--muted); font-size: 13.5px; margin: 0 0 12px; }
+  .card { background: var(--card); border: 1px solid var(--edge); border-radius: 20px; padding: 12px; margin-bottom: 8px; }
+  .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 44px;
+    padding: 0 14px; border-radius: 14px; font-weight: 650; border: 1px solid var(--edge);
+    background: var(--card); color: var(--text); font-size: 14px; white-space: nowrap; }
+  .btn.solid { background: linear-gradient(135deg, var(--accent), #0d9b8a 60%, #1fb5a2); border-color: transparent; color: #fff; }
+  .btn.soft-accent { background: var(--accent-a4); border-color: rgba(18,165,148,.45); color: var(--accent-11); }
+  .btn.sm { min-height: 44px; padding: 0 10px; font-size: 13px; border-radius: 12px; }
+  .btn.icon { width: 44px; padding: 0; border-radius: 50%; }
+  .seg { display: flex; background: var(--field); border: 1px solid var(--edge); border-radius: 15px; padding: 3px; gap: 2px; }
+  .seg span { flex: 1; text-align: center; padding: 9px 4px; border-radius: 11px; font-size: 13px; color: var(--muted); min-height: 44px; display: flex; align-items: center; justify-content: center; }
+  .seg span.on { background: var(--card); color: var(--text); font-weight: 650; border: 1px solid var(--edge); }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; padding: 0 12px; border-radius: 999px;
+    border: 1px solid var(--edge); background: var(--card); font-size: 13px; color: var(--muted); }
+  .chip.on { border-color: rgba(18,165,148,.6); color: var(--accent-11); background: var(--accent-a4); font-weight: 650; }
+  .pill { display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 650; letter-spacing: .03em; white-space: nowrap; }
+  .p-warn { background: var(--warn-a3); color: var(--warn-11); border: 1px solid var(--warn-a6); }
+  .p-ok { background: var(--ok-a3); color: var(--ok-11); border: 1px solid var(--ok-a6); }
+  .p-neutral { background: #24272b; color: var(--muted); border: 1px solid var(--edge); }
+  .p-wa { color: #6fe0a5; border: 1px solid rgba(48,164,108,.6); background: transparent; }
+  .p-ig { color: #ff8dcc; border: 1px solid rgba(214,64,159,.6); background: transparent; }
+  /* fila */
+  .rowc { display: flex; gap: 10px; padding: 10px 6px; border-bottom: 1px solid var(--edge); align-items: flex-start; min-height: 64px; }
+  .rowc.sel { background: var(--accent-a4); border-radius: 14px; border-bottom-color: transparent; }
+  .av { width: 44px; height: 44px; border-radius: 50%; background: #2b3036; flex: none; position: relative;
+    display: grid; place-items: center; font-weight: 700; color: var(--muted); }
+  .av .ch { position: absolute; right: -3px; bottom: -3px; width: 20px; height: 20px; border-radius: 50%;
+    display: grid; place-items: center; border: 2px solid var(--panel); }
+  .ch.wa { background: var(--wa); } .ch.ig { background: var(--ig); } .ch.tt { background: var(--tt); }
+  .ch svg { width: 11px; height: 11px; stroke: #fff; fill: none; stroke-width: 2.4; }
+  .dot { position: absolute; left: -2px; top: -2px; width: 12px; height: 12px; border-radius: 50%; background: var(--warn-11);
+    border: 2px solid var(--panel); animation: breathe 2.4s ease-in-out infinite; }
+  @keyframes breathe { 50% { opacity: .45; transform: scale(.85); } }
+  @media (prefers-reduced-motion: reduce) { .dot { animation: none; } }
+  .rmain { flex: 1; min-width: 0; }
+  .rtop { display: flex; justify-content: space-between; gap: 8px; }
+  .rname { font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .rtime { font-size: 12px; color: var(--muted); white-space: nowrap; }
+  .rprev { font-size: 13.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin: 1px 0 4px; }
+  .rpills { display: flex; gap: 6px; align-items: center; }
+  .ini { font-size: 11px; font-family: "IBM Plex Mono", monospace; color: var(--muted); border: 1px solid var(--edge); border-radius: 6px; padding: 0 5px; }
+  /* chat */
+  .thead { display: flex; align-items: center; gap: 10px; padding: 8px 6px 10px; border-radius: 18px; margin: 0 -4px 6px; }
+  .thead.wa { background: linear-gradient(180deg, var(--wa-a3), transparent); }
+  .thead.ig { background: linear-gradient(180deg, var(--ig-a3), transparent); }
+  .back { color: var(--accent-11); font-size: 14px; display: block; padding: 4px 2px 6px; }
+  .tname { font-weight: 700; font-size: 16px; }
+  .tline { font-size: 12px; color: var(--muted); }
+  .order { display: flex; align-items: center; gap: 8px; border: 1px solid var(--ok-a6); background: var(--ok-a3);
+    border-radius: 14px; padding: 8px 10px; font-size: 13px; margin-bottom: 8px; min-height: 44px; }
+  .order b { color: var(--text); }
+  .msgs { background: rgba(255,255,255,.03); border-radius: 16px; padding: 10px 8px; display: flex; flex-direction: column; gap: 6px; min-height: 150px; }
+  .b { max-width: 78%; padding: 7px 11px; border-radius: 16px; font-size: 14px; }
+  .b.in { background: #26292d; align-self: flex-start; border-bottom-left-radius: 6px; }
+  .b.out { align-self: flex-end; border-bottom-right-radius: 6px; color: var(--text); }
+  .b.out.wa { background: var(--wa-a4); border: 1px solid rgba(48,164,108,.45); }
+  .b.out.ig { background: var(--ig-a4); border: 1px solid rgba(214,64,159,.45); }
+  .b .meta { font-size: 11px; color: var(--muted); text-align: right; margin-top: 2px; }
+  .who { display: flex; align-items: center; gap: 8px; justify-content: space-between; background: var(--card);
+    border: 1px solid var(--edge); border-radius: 14px; padding: 6px 6px 6px 10px; font-size: 13px; margin: 8px 0 6px; }
+  /* cuadro de respuesta */
+  .comp { border: 1px solid var(--edge); background: var(--card); border-radius: 18px; padding: 8px; margin-top: 6px; }
+  .comp .ta { background: var(--field); border: 1px solid var(--edge); border-radius: 12px; padding: 10px; min-height: 58px; color: var(--faint); font-size: 14px; }
+  .tools { display: flex; gap: 6px; overflow-x: auto; padding: 8px 0 6px; scrollbar-width: none; }
+  .tool { display: inline-flex; align-items: center; gap: 5px; min-height: 44px; padding: 0 10px; border-radius: 12px;
+    border: 1px solid var(--edge); background: var(--panel); font-size: 12.5px; color: var(--text); white-space: nowrap; flex: none; }
+  .tool .ico { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-width: 2; }
+  .tool.hidden { border-style: dashed; color: var(--faint); background: transparent; text-decoration: line-through; opacity: .7; }
+  .act { display: flex; gap: 6px; align-items: center; }
+  .act .grow { flex: 1; }
+  .plus { width: 44px; height: 44px; border-radius: 50%; display: grid; place-items: center; background: var(--panel);
+    border: 1px solid var(--edge); font-size: 24px; color: var(--accent-11); flex: none; }
+  .hint { font-size: 12px; color: var(--muted); padding: 4px 2px 0; }
+  /* orbit */
+  .orbit { display: flex; flex-direction: column; gap: 8px; padding: 8px 0 4px; }
+  .orb { display: flex; align-items: center; gap: 10px; }
+  .orb .c { width: 44px; height: 44px; border-radius: 50%; background: var(--card); border: 1px solid var(--edge); display: grid; place-items: center; }
+  .orb .c svg { width: 18px; height: 18px; stroke: var(--accent-11); fill: none; stroke-width: 2; }
+  .orb .t { background: var(--card); border: 1px solid var(--edge); border-radius: 999px; padding: 8px 14px; font-size: 14px; }
+  .orb .how { font-size: 11.5px; color: var(--muted); margin-left: 6px; }
+  /* menú ⋯ */
+  .menu { background: #23262a; border: 1px solid var(--edge); border-radius: 18px; padding: 6px; width: 250px; box-shadow: 0 12px 30px rgba(0,0,0,.45); }
+  .menu div { padding: 11px 12px; border-radius: 12px; font-size: 14px; min-height: 44px; }
+  .menu div + div { border-top: 1px solid var(--edge); border-radius: 0; }
+  .menu .k { color: var(--muted); font-size: 12px; }
+  /* tabla */
+  table { border-collapse: separate; border-spacing: 0; background: var(--card); border: 1px solid var(--edge); border-radius: 16px; overflow: hidden; font-size: 13.5px; }
+  th, td { padding: 9px 12px; border-bottom: 1px solid var(--edge); text-align: left; vertical-align: top; }
+  thead th { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+  td.y { color: var(--ok-11); } td.n { color: var(--faint); } td.miss { color: var(--warn-11); font-weight: 600; }
+  .tablewrap { overflow-x: auto; max-width: 100%; }
+  /* ajustes */
+  .set { display: flex; align-items: center; gap: 10px; padding: 12px 4px; border-top: 1px solid var(--edge); min-height: 56px; }
+  .set:first-of-type { border-top: 0; }
+  .set .tt { font-weight: 600; } .set .dd { font-size: 12.5px; color: var(--muted); }
+  .set .chev { margin-left: auto; color: var(--muted); }
+  .sechead { display: flex; align-items: center; gap: 8px; margin: 2px 0 4px; font-weight: 700; }
+  .bottom { display: flex; justify-content: space-around; border-top: 1px solid var(--edge); margin: 10px -14px -12px; padding: 8px 0 10px; font-size: 11px; color: var(--muted); text-align: center; }
+  .bottom .on { color: var(--accent-11); font-weight: 600; }
+  .ann { border-left: 3px solid var(--accent); padding: 2px 0 2px 10px; }
+  @media (max-width: 720px) { .desk { grid-template-columns: 1fr; } .desk .left { display: none; } }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-wa" viewBox="0 0 24 24"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/></symbol>
+  <symbol id="i-ig" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="5"/><circle cx="12" cy="12" r="4"/></symbol>
+  <symbol id="i-img" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-5-5L5 21"/></symbol>
+  <symbol id="i-btn" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="6" rx="2"/><rect x="3" y="13" width="18" height="6" rx="2"/></symbol>
+  <symbol id="i-saved" viewBox="0 0 24 24"><path d="M19 21l-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></symbol>
+  <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 19v3"/></symbol>
+  <symbol id="i-heart" viewBox="0 0 24 24"><path d="M19 14c1.5-1.5 3-3.2 3-5.5A5.5 5.5 0 0 0 12 5 5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4 3 5.5l7 7Z"/></symbol>
+  <symbol id="i-pkg" viewBox="0 0 24 24"><path d="M21 8 12 3 3 8v8l9 5 9-5z"/><path d="M3 8l9 5 9-5M12 13v8"/></symbol>
+  <symbol id="i-tag" viewBox="0 0 24 24"><path d="M12 2H2v10l9.3 9.3a2.4 2.4 0 0 0 3.4 0l6.6-6.6a2.4 2.4 0 0 0 0-3.4z"/><circle cx="7" cy="7" r="1"/></symbol>
+  <symbol id="i-list" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></symbol>
+  <symbol id="i-wallet" viewBox="0 0 24 24"><rect x="2" y="6" width="20" height="14" rx="2"/><path d="M16 13h.01M2 10h20"/></symbol>
+  <symbol id="i-pin" viewBox="0 0 24 24"><path d="M20 10c0 6-8 12-8 12S4 16 4 10a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></symbol>
+</svg>
+
+<h1 class="doc">Tus chats de WhatsApp e Instagram, en un solo lugar</h1>
+<p class="doc">Maqueta de <code>docs/ux-chats-unificados.md</code>. Primero el celular (360 px), al final el escritorio.
+Lo tachado con borde punteado <b>no se dibuja</b> en ese canal: está para que se vea qué esconde cada uno.
+Las decisiones abiertas (D1–D5) están en el documento.</p>
+
+<!-- ============================================================ A -->
+<h2 class="doc">A · La lista: todos tus chats, con el canal a la vista</h2>
+<div class="row">
+  <div>
+    <p class="label">Celular · Por responder › Mensajes</p>
+    <div class="phone">
+      <div class="h1">Por responder</div>
+      <p class="sub">Las personas que te escribieron o comentaron y todavía esperan tu respuesta.</p>
+      <div class="card" style="padding:10px 12px">
+        <div class="small muted">Quién te espera</div>
+        <div style="display:flex;justify-content:space-between;align-items:center;min-height:44px">
+          <div><b>Mensajes</b> <span class="pill p-warn">5 esperan</span><div class="tiny muted">3 por WhatsApp · 2 por Instagram</div></div>
+          <span style="color:var(--accent-11)">Ver ›</span>
+        </div>
+        <div class="tiny muted">+ Quieren comprar · Comentarios (como hoy; sin la tarjeta aparte de WhatsApp)</div>
+      </div>
+      <div class="small muted" style="margin:8px 0 4px">Qué ver</div>
+      <div class="seg" style="margin-bottom:6px"><span class="on">Mensajes · 5 ▾</span></div>
+      <div class="chips" aria-label="Canal">
+        <span class="chip on">Todos</span>
+        <span class="chip"><svg width="14" height="14" style="stroke:var(--wa);fill:none;stroke-width:2.2"><use href="#i-wa"/></svg>WhatsApp · 3</span>
+        <span class="chip"><svg width="14" height="14" style="stroke:var(--ig);fill:none;stroke-width:2.2"><use href="#i-ig"/></svg>Instagram · 2</span>
+      </div>
+      <div class="seg" aria-label="Estado"><span class="on">Por responder</span><span>Todos</span><span>Cerrados</span></div>
+      <div class="chips"><span class="chip">Pago por revisar · 1</span></div>
+
+      <div class="rowc">
+        <div class="av">MG<span class="dot"></span><span class="ch wa"><svg><use href="#i-wa"/></svg></span></div>
+        <div class="rmain"><div class="rtop"><span class="rname">María González</span><span class="rtime">8:42 p. m.</span></div>
+          <div class="rprev">Listo, ya te hice el pago móvil</div>
+          <div class="rpills"><span class="pill p-warn">Pago por revisar</span></div></div>
+      </div>
+      <div class="rowc">
+        <div class="av">@<span class="dot"></span><span class="ch ig"><svg><use href="#i-ig"/></svg></span></div>
+        <div class="rmain"><div class="rtop"><span class="rname">carlos.rz</span><span class="rtime">8:35 p. m.</span></div>
+          <div class="rprev">¿Cuánto cuesta el combo con papas?</div>
+          <div class="rpills"><span class="pill p-ok">Quiere comprar</span></div></div>
+      </div>
+      <div class="rowc">
+        <div class="av">JP<span class="dot"></span><span class="ch wa"><svg><use href="#i-wa"/></svg></span></div>
+        <div class="rmain"><div class="rtop"><span class="rname">José Pérez</span><span class="rtime">8:10 p. m.</span></div>
+          <div class="rprev">¿Hacen envíos a Barrio Obrero?</div>
+          <div class="rpills"><span class="pill p-warn">Responde en 40 min</span><span class="ini" title="Atiende Ana">AN</span></div></div>
+      </div>
+      <div class="rowc">
+        <div class="av">L<span class="ch wa"><svg><use href="#i-wa"/></svg></span></div>
+        <div class="rmain"><div class="rtop"><span class="rname">Luisa</span><span class="rtime">7:58 p. m.</span></div>
+          <div class="rprev">Tú: Te paso nuestro menú 👇</div>
+          <div class="rpills"><span class="pill p-neutral">Responde tu menú</span></div></div>
+      </div>
+      <div class="bottom"><span>Tu<br>semana</span><span class="on">Por<br>responder</span><span>Crear</span><span>Más</span></div>
+    </div>
+  </div>
+  <div class="note" style="max-width:420px">
+    <p class="ann"><b>Una fila para los dos canales</b> (la de Instagram de hoy): foto o inicial, el glifo del canal en la esquina, el punto que respira cuando el cliente espera.</p>
+    <p class="ann"><b>Una sola píldora</b>, la más urgente: Pago por revisar › Responde en N min › Quiere comprar › Responde tu menú. Hoy WhatsApp puede poner cinco.</p>
+    <p class="ann"><b>Filtro de canal</b> solo si el negocio tiene 2 canales o más conectados. TikTok no aparece hasta que exista (nada de «pronto» que no lleva a ninguna parte).</p>
+    <p class="ann"><b>Los mismos estados</b> en todos los canales: Por responder · Todos · Cerrados. «Pago por revisar» aparece solo si hay alguno y el canal cobra (hoy, WhatsApp).</p>
+    <p class="ann">La pestaña «WhatsApp» de Por responder desaparece: ya está adentro. El contador del menú «Por responder» suma lo que hoy cuenta «WhatsApp».</p>
+  </div>
+</div>
+
+<!-- ============================================================ B / C -->
+<h2 class="doc">B y C · Un chat de WhatsApp y uno de Instagram, con el mismo cuadro de respuesta</h2>
+<div class="row">
+  <div>
+    <p class="label">Celular · chat de WhatsApp</p>
+    <div class="phone">
+      <a class="back">‹ Por responder</a>
+      <div class="thead wa">
+        <div class="av">MG<span class="ch wa"><svg><use href="#i-wa"/></svg></span></div>
+        <div style="flex:1;min-width:0"><div class="tname">María González</div>
+          <div class="tline">WhatsApp · Puedes escribirle hasta las 8:42 p. m. de mañana</div></div>
+        <span class="btn icon" aria-label="Más opciones">⋯</span>
+      </div>
+      <div class="order" role="button" aria-expanded="false">
+        <span>🛍</span><span style="flex:1"><b>Pedido · 3 productos · $ 45.000</b></span>
+        <span class="pill p-warn">Pago por revisar</span><span class="muted">▾</span>
+      </div>
+      <div class="msgs">
+        <div class="b in">Quiero 2 shawarmas mixtos y una limonada<div class="meta">8:30 p. m.</div></div>
+        <div class="b out wa">¡Listo! Son $ 45.000. ¿Cómo quieres pagar?<div class="meta">8:31 p. m. ✓✓</div></div>
+        <div class="b in">Listo, ya te hice el pago móvil<div class="meta">8:42 p. m.</div></div>
+      </div>
+      <div class="who"><span>🤖 Está respondiendo <b>tu menú automático</b></span><span class="btn sm">Responder yo</span></div>
+      <div class="comp">
+        <div class="ta">Escribe una respuesta…</div>
+        <div class="tools" style="flex-wrap:wrap" title="Aquí se envuelve solo para mostrar lo oculto">
+          <span class="tool"><svg class="ico"><use href="#i-img"/></svg>Foto o video</span>
+          <span class="tool"><svg class="ico"><use href="#i-btn"/></svg>Botones</span>
+          <span class="tool"><svg class="ico"><use href="#i-saved"/></svg>Mensajes guardados</span>
+          <span class="tool hidden"><svg class="ico"><use href="#i-file"/></svg>Archivo</span>
+          <span class="tool hidden"><svg class="ico"><use href="#i-mic"/></svg>Nota de voz</span>
+          <span class="tool hidden"><svg class="ico"><use href="#i-heart"/></svg>❤</span>
+        </div>
+        <div class="act">
+          <span class="plus" aria-label="Enviar algo de tu negocio">+</span>
+          <span class="btn soft-accent sm">✨ Sugerir respuesta</span>
+          <span class="grow"></span>
+          <span class="btn solid">Enviar</span>
+        </div>
+        <div class="hint">Al responder, tu menú automático se pausa en este chat.</div>
+      </div>
+    </div>
+    <p class="note"><b>Pedido plegado</b>: total y estado del pago en un renglón; al tocarlo se abre la tarjeta de hoy (productos, datos, «Pago recibido», «Pedido listo»).<br>
+    <b>Quién responde</b> pasó de la cabecera a encima del cuadro: es lo que cambia cuando escribes. «Tomar el control» → «Responder yo» (hipótesis, probar).<br>
+    <b>Mensajes guardados</b> y <b>Sugerir respuesta</b> en WhatsApp dependen de backend (D4); mientras no estén, no se dibujan.</p>
+  </div>
+
+  <div>
+    <p class="label">Celular · chat de Instagram</p>
+    <div class="phone">
+      <a class="back">‹ Por responder</a>
+      <div class="thead ig">
+        <div class="av">@<span class="ch ig"><svg><use href="#i-ig"/></svg></span></div>
+        <div style="flex:1;min-width:0"><div class="tname">carlos.rz</div>
+          <div class="tline">Instagram · Puedes escribirle hasta las 8:35 p. m. de mañana</div></div>
+        <span class="btn icon" aria-label="Más opciones">⋯</span>
+      </div>
+      <div class="msgs">
+        <div class="b in">Vi el reel del combo 🔥<div class="meta">8:33 p. m.</div></div>
+        <div class="b in">¿Cuánto cuesta el combo con papas?<div class="meta">8:35 p. m.</div></div>
+      </div>
+      <div class="comp" style="margin-top:14px">
+        <div class="hint" style="padding:0 2px 6px">✨ Respuesta sugerida, todavía sin enviar: cámbiala si quieres y toca «Enviar».</div>
+        <div class="ta" style="color:var(--text)">El combo con papas está en $ 18.000. ¿Te lo preparo?</div>
+        <div class="tools">
+          <span class="tool"><svg class="ico"><use href="#i-img"/></svg>Foto o video</span>
+          <span class="tool"><svg class="ico"><use href="#i-btn"/></svg>Botones</span>
+          <span class="tool"><svg class="ico"><use href="#i-saved"/></svg>Mensajes guardados</span>
+          <span class="tool"><svg class="ico"><use href="#i-file"/></svg>Archivo</span>
+          <span class="tool"><svg class="ico"><use href="#i-mic"/></svg>Nota de voz</span>
+          <span class="tool"><svg class="ico"><use href="#i-heart"/></svg>❤</span>
+        </div>
+        <div class="act">
+          <span class="plus" aria-label="Enviar algo de tu negocio">+</span>
+          <span class="btn soft-accent sm">✨ Sugerir respuesta</span>
+          <span class="grow"></span>
+          <span class="btn solid">Enviar</span>
+        </div>
+      </div>
+    </div>
+    <p class="note"><b>Mismo orden, mismos nombres, mismo lugar</b> que en WhatsApp. Instagram suma Archivo, Nota de voz y ❤ (la herramienta se desliza de lado si no cabe; las tres primeras siempre se ven).<br>
+    No hay franja «quién responde»: Instagram no tiene menú automático. No hay franja de pedido: Instagram no cobra.<br>
+    «Respuestas rápidas» → <b>Botones</b>; «Plantillas» → <b>Mensajes guardados</b>; «Enviar» en los dos (decidido, m-25017173).</p>
+  </div>
+</div>
+
+<!-- ============================================================ capacidades -->
+<h2 class="doc">Qué se dibuja en cada canal</h2>
+<p class="doc">La vista solo pregunta «¿se dibuja?»; la respuesta sale de una tabla por canal en el modelo de vista. «Falta» = existe en el otro canal y hace falta backend (D4).</p>
+<div class="tablewrap">
+<table>
+  <thead><tr><th>En el chat</th><th>WhatsApp</th><th>Instagram</th><th>TikTok (cuando exista)</th></tr></thead>
+  <tbody>
+    <tr><td>Foto o video</td><td class="y">Sí</td><td class="y">Sí</td><td class="n">a confirmar</td></tr>
+    <tr><td>Botones para que el cliente toque</td><td class="y">Sí, hasta 3</td><td class="y">Sí, hasta 13</td><td class="n">a confirmar</td></tr>
+    <tr><td>Mensajes guardados</td><td class="miss">Falta</td><td class="y">Sí</td><td class="n">—</td></tr>
+    <tr><td>Sugerir respuesta</td><td class="miss">Falta (prioridad)</td><td class="y">Sí</td><td class="n">—</td></tr>
+    <tr><td>Archivo (PDF) · Nota de voz · ❤</td><td class="n">No se dibuja</td><td class="y">Sí</td><td class="n">—</td></tr>
+    <tr><td>Stickers de tu marca</td><td class="y">Como sticker</td><td class="y">Como foto</td><td class="n">—</td></tr>
+    <tr><td>«+» Tus productos · Tu oferta · Tu menú · Formas de pago · Cómo llegar</td><td class="y">Sí</td><td class="y">Sí (como foto y texto)</td><td class="n">—</td></tr>
+    <tr><td>Franja «quién responde» (menú automático)</td><td class="y">Sí</td><td class="n">No se dibuja</td><td class="n">—</td></tr>
+    <tr><td>Franja del pedido y «Pago recibido»</td><td class="y">Sí</td><td class="n">No se dibuja</td><td class="n">—</td></tr>
+    <tr><td>Cerrar / Reabrir chat</td><td class="y">Sí</td><td class="miss">Falta</td><td class="n">—</td></tr>
+    <tr><td>Asignar a alguien del equipo</td><td class="y">Sí (en «⋯»)</td><td class="n">No se dibuja</td><td class="n">—</td></tr>
+    <tr><td>Pasadas 24 horas</td><td class="y">Elegir un mensaje aprobado</td><td class="n">Esperar a que vuelva a escribir</td><td class="n">a confirmar</td></tr>
+  </tbody>
+</table>
+</div>
+
+<!-- ============================================================ D -->
+<h2 class="doc">D · El «+»: las cosas de tu negocio, iguales en los dos canales</h2>
+<div class="row">
+  <div>
+    <p class="label">Celular · «+» abierto (WhatsApp e Instagram)</p>
+    <div class="phone">
+      <div class="small muted">Enviar algo de tu negocio</div>
+      <div class="orbit">
+        <div class="orb"><span class="c"><svg><use href="#i-pkg"/></svg></span><span class="t">Tus productos</span></div>
+        <div class="orb"><span class="c"><svg><use href="#i-tag"/></svg></span><span class="t">Tu oferta</span></div>
+        <div class="orb"><span class="c"><svg><use href="#i-list"/></svg></span><span class="t">Tu menú</span></div>
+        <div class="orb"><span class="c"><svg><use href="#i-wallet"/></svg></span><span class="t">Formas de pago</span></div>
+        <div class="orb"><span class="c"><svg><use href="#i-pin"/></svg></span><span class="t">Cómo llegar</span></div>
+      </div>
+      <div class="act" style="margin-top:6px"><span class="plus" style="transform:rotate(45deg)">+</span><span class="muted small">Toca afuera para cerrar</span></div>
+    </div>
+  </div>
+  <div class="note" style="max-width:440px">
+    <p class="ann"><b>Cinco filas, las mismas en los dos canales.</b> «Fotos y videos» salió del «+» al renglón de todos los días (abre el mismo «¿De dónde?»: Tus piezas · De tu celular · stickers y videos de tu marca).</p>
+    <p class="ann"><b>Lo que cambia es cómo le llega</b>, y eso ya lo enseña el paso «Así le llega» de cada flujo:</p>
+    <div class="tablewrap"><table>
+      <thead><tr><th></th><th>WhatsApp</th><th>Instagram</th></tr></thead>
+      <tbody>
+        <tr><td>Tus productos</td><td>Foto, precio y botón «Lo quiero»</td><td>Foto y precio</td></tr>
+        <tr><td>Tu oferta</td><td>La pieza con su texto</td><td>La pieza con su texto</td></tr>
+        <tr><td>Tu menú</td><td>Foto del menú</td><td>Foto del menú</td></tr>
+        <tr><td>Formas de pago</td><td>Datos y QR, y el chat pasa a «Pago por revisar»</td><td>Datos y QR como foto</td></tr>
+        <tr><td>Cómo llegar</td><td>Ubicación</td><td>Dirección y enlace al mapa</td></tr>
+      </tbody>
+    </table></div>
+    <p class="ann" style="margin-top:10px">Formas de pago y Cómo llegar dejan de vivir en «WhatsApp › Tu número»: son del negocio («Ajustes de chats › Para todos tus chats»).<br><i>Las líneas de Instagram son la propuesta; confirmar con <code>backend-engineer</code> qué manda hoy la API para cada una.</i></p>
+  </div>
+</div>
+
+<!-- ============================================================ E -->
+<h2 class="doc">E · Lo que solo tiene WhatsApp: dónde vive</h2>
+<div class="row">
+  <div>
+    <p class="label">«⋯» del chat de WhatsApp</p>
+    <div class="menu">
+      <div>Asignar a… <span class="k">· Ana</span><div class="k">Solo si tu negocio tiene más de una persona con acceso</div></div>
+      <div>Cerrar chat<div class="k">Lo encuentras en «Cerrados»</div></div>
+      <div>Ajustes de WhatsApp<div class="k">Tu menú automático, preguntas iniciales</div></div>
+    </div>
+    <p class="label" style="margin-top:18px">«⋯» del chat de Instagram</p>
+    <div class="menu">
+      <div>Cerrar chat <span class="k">(falta backend, D4)</span></div>
+      <div>Ajustes de Instagram<div class="k">Preguntas iniciales</div></div>
+    </div>
+  </div>
+  <div>
+    <p class="label">Pedido abierto (la tarjeta de hoy, sin cambios)</p>
+    <div class="phone" style="padding-bottom:14px">
+      <div class="order" style="border-radius:14px 14px 0 0;margin:0"><span>🛍</span><span style="flex:1"><b>Pedido · 3 productos · $ 45.000</b></span><span class="muted">▴</span></div>
+      <div class="card" style="border-radius:0 0 16px 16px;border-top:0">
+        <div style="display:flex;justify-content:space-between"><span>2 × Shawarma mixto</span><span>$ 36.000</span></div>
+        <div style="display:flex;justify-content:space-between"><span>1 × Limonada</span><span>$ 9.000</span></div>
+        <div style="display:flex;justify-content:space-between;font-weight:700;margin:4px 0 8px"><span>Total</span><span>$ 45.000</span></div>
+        <div class="small"><span class="muted">Dirección</span> &nbsp;Calle de ejemplo, Barrio Obrero</div>
+        <div style="border-top:1px solid var(--edge);margin-top:8px;padding-top:8px">
+          <div class="small">Paga con: Pago móvil <span class="pill p-warn">Pago por revisar</span></div>
+          <div class="act" style="margin-top:8px"><span class="btn solid sm" style="min-height:44px">Pago recibido</span><span class="btn sm" style="min-height:44px">No lo encuentro</span></div>
+        </div>
+        <div class="act" style="margin-top:8px"><span class="btn sm">Pedido listo</span><span class="tiny muted">Le manda el resumen y el total.</span></div>
+      </div>
+    </div>
+  </div>
+  <div>
+    <p class="label">Pasadas 24 horas, mismo lugar del cuadro</p>
+    <div class="phone">
+      <div class="comp" style="margin:0">
+        <div class="small"><b>Ya pasaron 24 horas desde su último mensaje.</b></div>
+        <div class="small muted" style="margin:4px 0 8px">Por WhatsApp solo puedes escribirle con un mensaje aprobado.</div>
+        <span class="btn solid" style="width:100%">Elegir un mensaje aprobado</span>
+      </div>
+      <div class="tiny muted" style="margin:10px 0 4px">En Instagram:</div>
+      <div class="comp" style="margin:0">
+        <div class="small"><b>Ya pasaron 24 horas desde su último mensaje.</b></div>
+        <div class="small muted" style="margin-top:4px">Instagram no deja escribirle hasta que te vuelva a escribir. Te avisamos aquí cuando pase.</div>
+      </div>
+    </div>
+    <p class="note">Copia propuesta; reemplaza el aviso de cada canal en el mismo lugar del cuadro de respuesta.</p>
+  </div>
+</div>
+
+<!-- ============================================================ F -->
+<h2 class="doc">F · Ajustes de chats: lo que preparas una vez, aparte de los mensajes</h2>
+<div class="row">
+  <div>
+    <p class="label">Celular · Atiende › Ajustes de chats (nombre: D1)</p>
+    <div class="phone">
+      <div class="h1">Ajustes de chats</div>
+      <p class="sub">Prepara una vez lo que tus clientes ven al escribirte. Tus chats siguen en Por responder.</p>
+      <div class="card">
+        <div class="sechead">Para todos tus chats</div>
+        <div class="set"><div><div class="tt">Mensajes guardados</div><div class="dd">Escríbelos una vez y úsalos en cualquier chat · 6</div></div><span class="chev">›</span></div>
+        <div class="set"><div><div class="tt">Formas de pago</div><div class="dd">Tus datos y tu QR, listos para mandar · 2</div></div><span class="chev">›</span></div>
+        <div class="set"><div><div class="tt">Cómo llegar</div><div class="dd">Tu dirección y el enlace al mapa</div></div><span class="chev">›</span></div>
+      </div>
+      <div class="card">
+        <div class="sechead"><span class="ch wa" style="position:static;width:22px;height:22px;border-radius:50%;display:grid;place-items:center"><svg width="12" height="12" style="stroke:#fff;fill:none;stroke-width:2.4"><use href="#i-wa"/></svg></span>WhatsApp <span class="pill p-ok" style="margin-left:auto">Conectada</span></div>
+        <div class="set"><div><div class="tt">Respuesta automática</div><div class="dd">Tu menú contesta lo de siempre mientras atiendes · Encendida</div></div><span class="chev">›</span></div>
+        <div class="set"><div><div class="tt">Preguntas iniciales</div><div class="dd">Lo que tu cliente puede tocar al abrir el chat · 3</div></div><span class="chev">›</span></div>
+      </div>
+      <div class="card">
+        <div class="sechead"><span class="ch ig" style="position:static;width:22px;height:22px;border-radius:50%;display:grid;place-items:center"><svg width="12" height="12" style="stroke:#fff;fill:none;stroke-width:2.4"><use href="#i-ig"/></svg></span>Instagram <span class="pill p-ok" style="margin-left:auto">Conectada</span></div>
+        <div class="set"><div><div class="tt">Preguntas iniciales</div><div class="dd">Lo que tu cliente puede tocar al abrir el chat · 4</div></div><span class="chev">›</span></div>
+      </div>
+      <div class="small muted" style="padding:4px 4px 0">¿Tu WhatsApp o tu Instagram dejó de funcionar? Revísalo en <span style="color:var(--accent-11)">Tus redes ›</span></div>
+      <div class="bottom"><span>Tu<br>semana</span><span>Por<br>responder</span><span>Crear</span><span class="on">Más</span></div>
+    </div>
+  </div>
+  <div class="note" style="max-width:440px">
+    <p class="ann"><b>Una pantalla, tres tarjetas, sin pestañas.</b> Cada fila abre la pantalla que ya existe (el editor del menú automático en 4 pasos, el panel de preguntas iniciales, el editor de mensajes guardados) con «‹ Ajustes de chats».</p>
+    <p class="ann"><b>Sale de aquí:</b> «Tu número» (estado, perfil, códigos QR, actividad) → <b>Tus redes</b>, donde ya vive «¿está conectado?» de todas las cuentas. «Promociones» → entrada propia junto a «Anuncios» (D3).</p>
+    <p class="ann"><b>«Atajos» y «Preguntas iniciales» son lo mismo</b>: un solo nombre, «Preguntas iniciales», con la misma línea en los dos canales.</p>
+    <p class="ann"><b>TikTok</b>, cuando exista, es una tarjeta más con lo que su canal permita.</p>
+    <p class="ann"><b>Menú lateral de Atiende:</b> Por responder · Ajustes de chats. «WhatsApp» deja de ser entrada; <code>/whatsapp</code> redirige a la lista filtrada por WhatsApp.</p>
+  </div>
+</div>
+
+<!-- ============================================================ G -->
+<h2 class="doc">G · Escritorio: lista y chat lado a lado</h2>
+<div class="desk">
+  <div class="left" style="border-right:1px solid var(--edge);padding:16px">
+    <div class="h1" style="font-size:19px">Por responder</div>
+    <div class="seg" style="margin:10px 0 6px"><span class="on">Mensajes · 5</span><span>Quieren comprar · 1</span><span>Comentarios · 3</span><span>Interesados</span></div>
+    <div class="chips"><span class="chip on">Todos</span><span class="chip">WhatsApp · 3</span><span class="chip">Instagram · 2</span></div>
+    <div class="seg"><span class="on">Por responder</span><span>Todos</span><span>Cerrados</span></div>
+    <div class="chips"><span class="chip">Pago por revisar · 1</span></div>
+    <div class="rowc sel">
+      <div class="av">MG<span class="dot"></span><span class="ch wa"><svg><use href="#i-wa"/></svg></span></div>
+      <div class="rmain"><div class="rtop"><span class="rname">María González</span><span class="rtime">8:42 p. m.</span></div>
+        <div class="rprev">Listo, ya te hice el pago móvil</div><div class="rpills"><span class="pill p-warn">Pago por revisar</span></div></div>
+    </div>
+    <div class="rowc">
+      <div class="av">@<span class="dot"></span><span class="ch ig"><svg><use href="#i-ig"/></svg></span></div>
+      <div class="rmain"><div class="rtop"><span class="rname">carlos.rz</span><span class="rtime">8:35 p. m.</span></div>
+        <div class="rprev">¿Cuánto cuesta el combo con papas?</div><div class="rpills"><span class="pill p-ok">Quiere comprar</span></div></div>
+    </div>
+    <div class="rowc">
+      <div class="av">JP<span class="dot"></span><span class="ch wa"><svg><use href="#i-wa"/></svg></span></div>
+      <div class="rmain"><div class="rtop"><span class="rname">José Pérez</span><span class="rtime">8:10 p. m.</span></div>
+        <div class="rprev">¿Hacen envíos a Barrio Obrero?</div><div class="rpills"><span class="pill p-warn">Responde en 40 min</span><span class="ini">AN</span></div></div>
+    </div>
+  </div>
+  <div style="padding:16px;display:flex;flex-direction:column">
+    <div class="thead wa" style="margin:0 0 8px">
+      <div class="av">MG<span class="ch wa"><svg><use href="#i-wa"/></svg></span></div>
+      <div style="flex:1"><div class="tname">María González</div><div class="tline">WhatsApp · +58 ··· · Puedes escribirle hasta las 8:42 p. m. de mañana</div></div>
+      <span class="btn icon" aria-label="Más opciones">⋯</span>
+    </div>
+    <div class="order"><span>🛍</span><span style="flex:1"><b>Pedido · 3 productos · $ 45.000</b> · Pago móvil</span><span class="pill p-warn">Pago por revisar</span><span class="btn solid sm" >Pago recibido</span><span class="muted">▾</span></div>
+    <div class="msgs" style="flex:1;min-height:220px">
+      <div class="b in">Quiero 2 shawarmas mixtos y una limonada<div class="meta">8:30 p. m.</div></div>
+      <div class="b out wa">¡Listo! Son $ 45.000. ¿Cómo quieres pagar?<div class="meta">8:31 p. m. ✓✓</div></div>
+      <div class="b in">Listo, ya te hice el pago móvil<div class="meta">8:42 p. m.</div></div>
+    </div>
+    <div class="who"><span>🤖 Está respondiendo <b>tu menú automático</b></span><span class="btn sm">Responder yo</span></div>
+    <div class="comp">
+      <div class="ta">Escribe una respuesta…</div>
+      <div class="act" style="padding-top:8px">
+        <span class="plus">+</span>
+        <span class="tool"><svg class="ico"><use href="#i-img"/></svg>Foto o video</span>
+        <span class="tool"><svg class="ico"><use href="#i-btn"/></svg>Botones</span>
+        <span class="tool"><svg class="ico"><use href="#i-saved"/></svg>Mensajes guardados</span>
+        <span class="grow"></span>
+        <span class="btn soft-accent sm">✨ Sugerir respuesta</span>
+        <span class="btn solid">Enviar</span>
+      </div>
+    </div>
+  </div>
+</div>
+<p class="note" style="max-width:780px">En escritorio el pedido plegado ya muestra «Pago recibido» (cabe); las herramientas y las acciones van en un solo renglón. En pestañas, sin la de WhatsApp quedan cuatro: siguen siendo el control segmentado de hoy en escritorio y el selector «Qué ver» en el celular.</p>
+
+</body>
+</html>

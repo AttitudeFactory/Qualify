@@ -513,6 +513,10 @@ IDEAS_MODE = "ideas"
 IDEAS_RETURN_PATH = f"{CREATE_RETURN_PATH}?{CREATE_MODE_PARAM}={IDEAS_MODE}"
 #: The way back to the ideas says where it leads (N7), after a «‹».
 IDEAS_RETURN_LABEL = "Ideas de videos"
+#: m-25017173: WhatsApp › Chats' «Crear para esta temporada» sends the owner to Tu marca
+#: with this way back; it says where it leads (N7).
+CHATS_RETURN_PATH = "/whatsapp?tab=chats"
+CHATS_RETURN_LABEL = "Volver a tus chats"
 #: The brand page's `?seccion=` value that opens «Negocios parecidos al tuyo»: where the
 #: owner chooses the accounts that inspire them and runs the search that tells Qualify
 #: what the business sells (the reels check's brief).
@@ -613,9 +617,12 @@ def brand_referentes_href(return_to: str) -> str:
 
 
 def return_label_for(return_to: str) -> str:
-    """What the way back says: «Ideas de videos» when it leads to the ideas, else the
-    publication's «Volver a tu publicación»."""
+    """What the way back says: «Ideas de videos» when it leads to the ideas, «Volver a
+    tus chats» when it leads to WhatsApp (m-25017173), else the publication's «Volver a
+    tu publicación»."""
     parts = urlsplit(return_to)
+    if parts.path == urlsplit(CHATS_RETURN_PATH).path:
+        return CHATS_RETURN_LABEL
     modes = [v for k, v in parse_qsl(parts.query) if k == CREATE_MODE_PARAM]
     if parts.path == CREATE_RETURN_PATH and modes == [IDEAS_MODE]:
         return IDEAS_RETURN_LABEL

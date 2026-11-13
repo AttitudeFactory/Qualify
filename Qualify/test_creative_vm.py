@@ -750,15 +750,18 @@ def test_the_draft_page_shows_each_composition_warning_as_a_warn_callout() -> No
         for child in getattr(component, "children", None) or ():
             yield from walk(child)
 
-    (loop,) = [
+    # one loop per branch: the single piece's review and, m-25016656, a video by parts
+    loops = [
         c
         for c in walk(draft_detail_index())
         if type(c).__name__ == "Foreach" and '["warnings"]' in str(c.iterable)
     ]
-    tile = loop.render_fn(rx.Var("w", _var_type=str))
-    rendered = str(tile.render())
-    assert "Callout" in rendered
-    assert all(str(value) in rendered for value in T.tone_scheme("warn").values())
+    assert len(loops) == 2
+    for loop in loops:
+        tile = loop.render_fn(rx.Var("w", _var_type=str))
+        rendered = str(tile.render())
+        assert "Callout" in rendered
+        assert all(str(value) in rendered for value in T.tone_scheme("warn").values())
 
 
 # -- Seedance 2.5 draft mode (m-24820142) ----------------------------------------------

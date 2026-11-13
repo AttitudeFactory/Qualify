@@ -36,3 +36,16 @@ def test_webhook_worker_publishes_nothing_and_exposes_nothing() -> None:
     assert "volumes" not in worker
     assert not any("planner" in str(part) for part in worker["command"])
     assert worker["depends_on"]["postgres"]["condition"] == "service_healthy"
+
+
+def test_webhook_worker_interval_defaults_to_five_seconds_with_the_env_override() -> None:
+    """m-25017174: 30 s made every inbound message wait up to half a minute."""
+    command = SERVICES["webhook-worker"]["command"]
+    assert command[command.index("--interval") + 1] == "${QUALIFY_WEBHOOK_WORKER_INTERVAL:-5}"
+
+
+def test_no_new_service_for_the_conversations_poll() -> None:
+    """m-25017174: the poll runs on a thread of conversations-worker, not a new container."""
+    command = SERVICES["conversations-worker"]["command"]
+    assert "--sync" in command and "--sync-only" not in command
+    assert not any("sync" in name and name != "conversations-worker" for name in SERVICES)

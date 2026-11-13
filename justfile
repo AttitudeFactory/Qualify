@@ -163,7 +163,7 @@ creative-queue-report *args:
 # QUA-147: the Meta webhook intake processor. Settles recorded changes (mentions ->
 # resolution + ingestion; every other field, comments included -> `unsupported`).
 #   just webhook-tick                 # one batch, then exit
-#   just webhook-worker [--interval 30]   # a batch every N s until Ctrl+C; also runs the
+#   just webhook-worker [--interval 5]    # a batch every N s until Ctrl+C; also runs the
 #                                         # 29-day retention purge at start and every 24 h
 webhook-tick *args:
     uv run --no-sync python -m qualify_api.webhooks.worker --once {{args}}

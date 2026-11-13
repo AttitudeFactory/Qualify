@@ -265,7 +265,9 @@ def test_the_empty_step_links_and_its_words() -> None:
         SEASONAL_CREATE_HREF,
     ):
         assert text in rendered or json.dumps(text)[1:-1].replace("\\", "\\\\") in rendered, text
-    assert SEASONAL_CREATE_HREF == "/whatsapp?tab=chats&sub=stickers&crear=temporada"
+    # m-25017173: WhatsApp › Chats has no stickers sub-tab; creating opens Tu marca,
+    # with the way back to the chats.
+    assert SEASONAL_CREATE_HREF == "/brand/kit?crear=temporada&volver=%2Fwhatsapp%3Ftab%3Dchats"
     assert SEASONAL_PENDING_HREF == "/drafts?ver=stickers"
 
 
@@ -383,3 +385,22 @@ def test_every_mapped_code_is_a_backend_code() -> None:
     assert set(SEASONAL_FILE_FAILURES) == raised  # exactly the file codes, none invented
     errors = {v for k, v in vars(outbox).items() if k.startswith("ERROR_")}
     assert set(_unsent_lines()) <= errors | raised
+
+
+def test_the_create_link_s_way_back_is_safe_and_says_chats() -> None:
+    """m-25017173: Tu marca reads `?volver=` through the same guard as every other way
+    back (no open redirect) and names where it leads."""
+    from urllib.parse import parse_qs, urlsplit
+
+    from .catalog_vm import RETURN_LABEL, return_label_for, return_path_from_query
+    from .whatsapp_chats_vm import SEASONAL_CREATE_HREF, SEASONAL_EMPTY_TEXT
+
+    params = {k: v[0] for k, v in parse_qs(urlsplit(SEASONAL_CREATE_HREF).query).items()}
+    assert params["crear"] == "temporada"
+    back = return_path_from_query(params)
+    assert back == "/whatsapp?tab=chats"
+    assert return_label_for(back) == "Volver a tus chats"
+    assert return_label_for("/create") == RETURN_LABEL
+    assert return_path_from_query({"volver": "https://example.com/whatsapp"}) == ""
+    assert "en Tu marca" in SEASONAL_EMPTY_TEXT
+    assert "sigue respondiendo" not in SEASONAL_EMPTY_TEXT

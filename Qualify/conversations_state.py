@@ -27,7 +27,7 @@ worded, never a 500. Nothing is sent inline: the row waits in the outbox for the
 and the bubble says «Enviando» until then.
 
 **Attachments.** A dropped file (photo, audio, video, PDF) is staged in R2 right away
-(`stage_attachment`) and shown as a chip; it is queued only when «Responder» is pressed.
+(`stage_attachment`) and shown as a chip; it is queued only when «Enviar» is pressed.
 One attachment per reply; text and attachment together become two replies (Instagram
 takes one body per message). A **voice note** is recorded by `assets/qualify-voice.js`
 (WAV, in the browser) and handed over in base64 parts under the websocket's 1 MB limit:
@@ -37,7 +37,7 @@ other audio.
 **Assisted replies (E4).** «Sugerir respuesta» asks the gateway for ONE draft of the
 last inbound; its text lands in the box with a chip that says it is a suggestion (and
 «requiere revisión» when the generator could not ground something). The person edits or
-not; on «Responder» the draft is decided (`accepted` / `edited`) and its id travels in
+not; on «Enviar» the draft is decided (`accepted` / `edited`) and its id travels in
 the approval. «Descartar» decides `discarded`. A gate refusal is a toast, never an error.
 
 **Message templates (m-24789472, PR 1).** «Plantillas», beside the tools, opens the
@@ -486,7 +486,7 @@ class ConversationsState(rx.State):
     def compose_hint(self) -> str:
         """What sits under the box: in how many messages a long text goes out, else the
         validation message once the person typed something (an empty box needs no
-        scolding: «Responder» is off). A message with buttons is never split."""
+        scolding: «Enviar» is off). A message with buttons is never split."""
         if self.compose_error and (self.draft_text.strip() or self.quick_replies):
             return self.compose_error
         if self.buttons_will_send:
@@ -1623,7 +1623,7 @@ class ConversationsState(rx.State):
     async def apply_template(self, template_id: str) -> AsyncIterator[rx.event.EventSpec]:
         """Render the template for the open thread and put its text in the box, replacing
         what was there. Never sends, never queues: the person reviews and presses
-        «Responder» — the same `send_reply` as any text."""
+        «Enviar» — the same `send_reply` as any text."""
         async with self:
             if not isinstance(template_id, str) or not self.can_use_template:
                 return

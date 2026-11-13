@@ -48,6 +48,7 @@ class PromotionRequest:
     messaging_snapshot: dict[str, Any] = field(default_factory=dict)
     enhancements_snapshot: dict[str, Any] = field(default_factory=dict)
     meta_currency_offset: int | None = None
+    lead_form_snapshot: dict[str, Any] = field(default_factory=dict)
 
     def snapshot(self) -> dict[str, Any]:
         from qualify_api.ads.enhancements import validate_request_policy
@@ -57,6 +58,12 @@ class PromotionRequest:
             from qualify_api.ads.messaging import MessagingTarget
 
             MessagingTarget.from_snapshot(self.messaging_snapshot).validate_request(self)
+        if self.lead_form_snapshot:
+            from qualify_api.ads.lead_ads import LeadFormTarget
+
+            LeadFormTarget.from_snapshot(self.lead_form_snapshot).validate_request(self)
+        elif self.objective == "OUTCOME_LEADS":
+            raise ValueError("a lead promotion requires an approved published form")
         if self.audience_snapshot:
             from qualify_api.ads.audience import AudienceDraft
 
@@ -93,7 +100,11 @@ class PromotionRequest:
         if (
             not self.objective
             or not self.cta_type
-            or (not self.messaging_snapshot and not self.link_url.startswith("https://"))
+            or (
+                not self.messaging_snapshot
+                and not self.lead_form_snapshot
+                and not self.link_url.startswith("https://")
+            )
         ):
             raise ValueError("objective, CTA and HTTPS destination are required")
         if not (self.content_draft_id or self.publish_attempt_id or self.source_media_id):
@@ -144,6 +155,8 @@ class PromotionRequest:
             snapshot.pop("messaging_snapshot", None)
         if not self.enhancements_snapshot:
             snapshot.pop("enhancements_snapshot", None)
+        if not self.lead_form_snapshot:
+            snapshot.pop("lead_form_snapshot", None)
         if self.meta_currency_offset is None:
             snapshot.pop("meta_currency_offset", None)
         return snapshot

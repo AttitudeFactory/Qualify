@@ -39,7 +39,6 @@ PREVIEW_TEXT = (
     "preparamos cada parte en alta calidad y las juntamos."
 )
 APPROVE_LABEL = "Aprobar"
-CHANGE_PART_LABEL = "Cambiar una parte"
 JOIN_FAILED_TEXT = (
     "No pudimos juntar tus partes. Siguen guardadas y no se descontó nada. Toca «Juntar otra vez»."
 )
@@ -141,7 +140,6 @@ class FinalVideoCardVM:
     approve_hint: str  # why it is off, beside the button ("" when on)
     quota_text: str  # «Al aprobar usas 15 de tus 40 segundos de video del mes. …»
     change_part_visible: bool
-    change_part_label: str
     rejoin_visible: bool
     rejoin_label: str
     recreate_visible: bool
@@ -401,7 +399,8 @@ def final_video_card(facts: FinalVideoFacts, *, zone: str = "UTC") -> FinalVideo
         pill_word=word,
         pill_tone=tone,
         status_text=status,
-        show_video=state in (READY, REJOINING),
+        # m-25016656: an approved video is still shown (to watch: no buttons)
+        show_video=state in (READY, REJOINING, APPROVED),
         preview_text=PREVIEW_TEXT if state in (READY, REJOINING) else "",
         deadline_text="" if closed else deadline_text(facts.expires_at, zone),
         approve_visible=not closed,
@@ -410,7 +409,6 @@ def final_video_card(facts: FinalVideoFacts, *, zone: str = "UTC") -> FinalVideo
         approve_hint=approve_hint(facts),
         quota_text="" if closed else quota_text(facts.video_use, facts.seconds),
         change_part_visible=not closed and _can_change_any(facts),
-        change_part_label=CHANGE_PART_LABEL,
         rejoin_visible=state == FAILED,
         rejoin_label=REJOIN_LABEL,
         recreate_visible=bool(expired),
@@ -435,7 +433,6 @@ def final_video_card(facts: FinalVideoFacts, *, zone: str = "UTC") -> FinalVideo
 __all__ = [
     "APPROVE_LABEL",
     "APPROVE_WAIT_JOIN_HINT",
-    "CHANGE_PART_LABEL",
     "JOIN_FAILED_TEXT",
     "JOINING_TEXT",
     "JOINING_WORD",

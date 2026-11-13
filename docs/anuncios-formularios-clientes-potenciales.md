@@ -55,13 +55,48 @@ ese consentimiento: hace falta implementar y verificar por separado el texto ver
 la casilla y su respuesta positiva. El borrado de una conexión incluye estas respuestas,
 respetando el aislamiento de los demás negocios.
 
+## Campaña de clientes potenciales (segunda entrega, backend)
+
+El asistente de promoción admite ahora un anuncio de clientes potenciales que usa un
+formulario **ya enviado** a Meta. No es un recorrido paralelo: reutiliza `WizardForm`,
+`PromotionWizard`, `LiveWizardGateway`, la aprobación inmutable, la creación en pausa con
+reclamo/`unknown`, la vista previa y la activación solo con confirmación explícita.
+
+- `WizardForm.lead_form` (`ads/lead_ads.py`, `LeadFormTarget`) + `lead_cta`
+  (`SIGN_UP`, `LEARN_MORE` o `GET_QUOTE`); el enlace queda vacío. La pantalla obtiene el
+  destino con `published_lead_form(tenant_id, form_id)`, que solo devuelve formularios en
+  estado `published` cuya conexión sigue activa, con la misma Página y versión de acceso.
+- Petición aprobada: campaña `OUTCOME_LEADS`; conjunto `optimization_goal=LEAD_GENERATION`,
+  `billing_event=IMPRESSIONS`, `destination_type=ON_AD`, `promoted_object={page_id}`;
+  creativo de la publicación de Instagram existente con `object_id` = Página y
+  `call_to_action={type, value:{lead_gen_form_id}}`. El formulario queda congelado en
+  `request_snapshot.lead_form_snapshot` y forma parte del hash de la aprobación; las
+  promociones sin formulario conservan exactamente su forma y su hash.
+- Solo se acepta un formulario de la misma conexión, marca, Página y versión de acceso que
+  la publicación promocionada (comprobado al validar, antes de crear y en la inserción,
+  con `FOR SHARE` sobre formulario, conexión y publicación).
+- La recepción atribuye el lead a la promoción por
+  `request_snapshot->'lead_form_snapshot'->>'meta_form_id'` y ahora también acepta el
+  creativo de publicación existente (CTA y Página en el propio creativo, sin
+  `object_story_spec`).
+- Sin migración nueva: `ad_promotions` ya admite el objetivo y un enlace vacío.
+
+**No medido en vivo.** Que Meta acepte `OUTCOME_LEADS` + `ON_AD` con
+`source_instagram_media_id` y `lead_gen_form_id`, y la forma exacta en que devuelve ese
+creativo al leerlo, no se ha comprobado contra la API real. La validación `validate_only`
+previa a crear y la verificación remota antes de activar fallan cerradas si Meta responde
+distinto. `QUALITY_LEAD` no se ofrece todavía.
+
+Limitación conocida: una pieza cuyo botón guardado no es «Más información» sigue sin poder
+promocionarse por este asistente, también como anuncio de clientes potenciales.
+
 ## Qué falta del ticket completo
 
-- Implementar y probar un recorrido específico de campaña `OUTCOME_LEADS`, destino
-  `ON_AD` y creativo con `lead_gen_form_id`, sin debilitar las garantías de gasto del
-  recorrido actual de visitas al sitio web. Esto es trabajo de implementación pendiente,
-  no una consecuencia de carecer de una cuenta de pruebas.
-- Si se necesita WhatsApp, completar el consentimiento explícito descrito arriba.
+- Pantalla Reflex para elegir el formulario y el botón en el asistente.
+- Medir en vivo el recorrido de campaña descrito arriba con una Página autorizada.
+- Si se necesita WhatsApp, completar el consentimiento explícito descrito arriba. Hoy no
+  existe ninguna marca de «autoriza WhatsApp» en el formulario, así que el tercer criterio
+  del ticket sigue abierto.
 - Comprobar permisos efectivos, suscripción de aplicación y Página, y un lead de prueba
   real que llegue en menos de cinco minutos. El App Review de `leads_retrieval` queda fuera
   de este ticket, según su descripción.

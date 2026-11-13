@@ -374,7 +374,7 @@ services:
       - -m
       - qualify_api.webhooks.worker
       - --interval
-      - ${QUALIFY_WEBHOOK_WORKER_INTERVAL:-30}
+      - ${QUALIFY_WEBHOOK_WORKER_INTERVAL:-5}
     depends_on:
       postgres:
         condition: service_healthy

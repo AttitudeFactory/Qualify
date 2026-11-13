@@ -833,6 +833,8 @@ class MessageVM:
 
 
 STORY_REPLY_LABEL: Final = "Respondió a tu historia"
+#: m-25017173: the composer's send button says the same as WhatsApp's («Enviar»).
+SEND_LABEL: Final = "Enviar"
 #: The Lucide icon next to a tapped message's origin (bubble and list preview).
 TAP_ICON: Final = "pointer"
 # m-24842988: who the title shows when Instagram gave neither a name nor a handle.
@@ -1458,7 +1460,7 @@ def buttons_body_error(body: str, has_buttons: bool) -> str:
 
 
 def composer_interactive_error(text: str, *, quick_replies: int, buttons_will_send: bool) -> str:
-    """What stops «Responder» because of quick replies or buttons ("" when nothing does):
+    """What stops «Enviar» because of quick replies or buttons ("" when nothing does):
     quick replies need a text to hang under, and a message with buttons is one message of
     at most 640 characters (never split)."""
     if buttons_will_send:

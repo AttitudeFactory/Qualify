@@ -32,11 +32,12 @@
   it is asked first, in the row (`ask_remove` -> `confirm_remove` / `cancel_remove`); the
   removal never runs on that row without its confirmation. Afterwards the screen says
   `removed_notice(n, quedan)` once and polls again.
-- The rows fold under the bar (`rows_open`, per video, in the session only): closed
-  by default; any part waiting for the owner (`DECISION_STATES`) opens them on the read
-  that shows it and hides the toggle meanwhile; once open (by the owner or by such a
-  read) they stay open until the owner taps «Ocultar». Another video, or a reload,
-  starts again from the rule.
+- m-25016656 (Deivid, «Sí, opción A» / «En los dos»): the panel is ONE status line
+  (`status_line`) and only the rows that wait for the owner (`decision_rows`,
+  `DECISION_STATES`), open with their buttons — no bar, no fold. Every row is still
+  read and kept (`rows`): «Tu video completo» draws every part as a tile that plays its
+  own vista previa (`part_tiles`). After a row's action went through, the keyboard
+  lands on the status line (`STATUS_ID`, `tabIndex=-1`): the row is about to go.
 - The ONE `aria-live="polite"` region says the last change (`announcement`), never the
   first read.
 - m-24992894: a row «Para revisar» or «Lista» carries its vista previa
@@ -74,12 +75,12 @@ from .final_video_vm import PURGED as FINAL_PURGED
 from .final_video_vm import READY as FINAL_READY
 from .part_progress_vm import (
     DECISION_STATES,
-    STEP_RUNNING,
+    STATE_WORDS,
+    PartState,
     announcement,
     as_state,
     part_progress_vm,
     removed_notice,
-    rows_toggle_label,
 )
 from .tenant import tenant_uuid
 
@@ -99,15 +100,25 @@ POLL_MAX_FAILURES = 3
 # UI-4: show «Cambiar» once its sheet exists.
 AVAILABLE: frozenset[PartAction] = SERVED_ACTIONS - {PartAction.CHANGE}
 
-#: The panel is mounted only with «Tu video completo» right under it
-#: (`content_generator._parts_video_result`): an unmade row points to its button.
-CARD_BELOW = True
-
 #: Row states that wait for the owner (`part_progress_vm.DECISION_STATES`, as values).
 DECISION_ROW_STATES = frozenset(state.value for state in DECISION_STATES)
 
 #: Row states that are still moving (`part_progress_vm.IN_PROGRESS_STATES`, as values).
 IN_PROGRESS_STATES = frozenset({"unmade", "queued", "creating"})
+
+#: m-25016656: what a part's tile in «Tu video completo» says while it has no clip.
+TILE_WORDS: dict[str, str] = {
+    PartState.QUEUED.value: "Creándose",
+    PartState.CREATING.value: "Creándose",
+    PartState.UNMADE.value: STATE_WORDS[PartState.UNMADE],
+}
+#: The panel's status line: where the keyboard lands once a row's action went through.
+STATUS_ID = "q-parts-status"
+FOCUS_STATUS_JS = (
+    "setTimeout(()=>{const a=document.activeElement;"
+    "if(!a||a===document.body||a.closest('[role=listitem]'))"
+    f"document.getElementById('{STATUS_ID}')?.focus()}},0)"
+)
 
 # Copy (UX review of UI-7) — Spanish, plain, with the next step.
 BUSY_LABEL = "Un momento…"
@@ -206,12 +217,34 @@ class PartRowView:
     remove_confirm: str = ""
     #: the question is open on this row
     confirming: bool = False
+    #: the number the owner reads («Parte 2»; `index` is the plan's place)
+    shown: int = 0
     #: m-24992894: its vista previa ("" = no picture), poster, «4 s», ▶ / pause names
     preview_url: str = ""
     poster_url: str = ""
     duration_text: str = ""
     play_label: str = ""
     pause_label: str = ""
+    #: the part's planned seconds
+    seconds: int = 0
+    purged: bool = False
+
+
+@dataclass(frozen=True)
+class PartTileView:
+    """One part as «Tu video completo» draws it (m-25016656): «Parte N», «4 s», its own
+    vista previa when it has one, else the word of its state."""
+
+    index: str  # the plan's place, as «Cambiar esta» takes it (`part_options`)
+    number: int  # what the owner reads
+    seconds_text: str
+    preview_url: str
+    poster_url: str
+    play_label: str
+    pause_label: str
+    key: str
+    word: str
+    tone: str
 
 
 def _read(
@@ -230,13 +263,6 @@ class PartProgressState(rx.State):
     """The rows of «Creando tus partes» for the parent the panel is mounted with."""
 
     has_progress: bool = False
-    title: str = ""
-    comment: str = ""
-    step_status: str = STEP_RUNNING
-    value: int = 0
-    value_text: str = ""
-    #: the visible sentence under the title
-    live_text: str = ""
     #: the ONE `aria-live="polite"` region: the last change ("" on the first read)
     announce: str = ""
     notice: str = ""
@@ -255,10 +281,8 @@ class PartProgressState(rx.State):
     removed_text: str = ""
     #: the row whose «Quitar parte» question is open (0 = none)
     confirming: int = 0
-    #: the part rows are unfolded (see the module docstring)
-    rows_open: bool = False
-    #: a part waits for the owner: the rows stay open and the toggle hides
-    rows_forced: bool = False
+    #: m-25016656: the panel's one line («Creando tus partes: 2 de 3»)
+    status_line: str = ""
 
     _parent_id: str = ""
     _mounted: bool = False
@@ -271,21 +295,42 @@ class PartProgressState(rx.State):
     _confirmed: int = 0
 
     @rx.var
-    def rows_toggle(self) -> str:
-        """«Ver las 4 partes» / «Ocultar las partes» (`rows_toggle_label`)."""
-        return rows_toggle_label(len(self.rows), self.rows_open)
-
-    @rx.event
-    def toggle_rows(self) -> None:
-        """The owner folds or unfolds the rows (never while a part waits for him)."""
-        if not self.rows_forced:
-            self.rows_open = not self.rows_open
+    def decision_rows(self) -> list[PartRowView]:
+        """The only rows the panel draws: the parts that wait for the owner, open with
+        their buttons (m-25016656)."""
+        return [
+            row
+            for row in self.rows
+            # a purged part has nothing to decide (no action brings it back)
+            if row.state in DECISION_ROW_STATES and not row.purged
+        ]
 
     @rx.var
-    def comment_steps(self) -> list[dict[str, str]]:
-        """The stage comment as `progress_panel`'s one step (shown above the bar only
-        while `running`)."""
-        return [{"title": self.comment, "status": self.step_status}] if self.comment else []
+    def part_tiles(self) -> list[PartTileView]:
+        """Every part, in order, as a tile of «Tu video completo»: its vista previa
+        (played in the tile) or the word of its state. Read straight off `rows` — no
+        dynamic `getattr`, so the var recomputes with them."""
+        tiles: list[PartTileView] = []
+        for row in self.rows:
+            playable = row.preview_url != ""
+            tiles.append(
+                PartTileView(
+                    index=str(row.index),
+                    number=row.shown or row.index,
+                    seconds_text=row.duration_text or f"{row.seconds} s",
+                    preview_url=row.preview_url,
+                    poster_url=row.poster_url,
+                    play_label=row.play_label,
+                    pause_label=row.pause_label,
+                    key=row.draft_id or str(row.index),
+                    # a part to decide on says so even with a clip (it is not ready)
+                    word=row.word
+                    if row.state in DECISION_ROW_STATES
+                    else ("" if playable else TILE_WORDS.get(row.state, row.word)),
+                    tone="neutral" if row.state in TILE_WORDS else row.tone,
+                )
+            )
+        return tiles
 
     # -- view --------------------------------------------------------------------------
 
@@ -314,6 +359,9 @@ class PartProgressState(rx.State):
                     error=self._row_errors.get(index, ""),
                     remove_confirm=r.get("remove_confirm", ""),
                     confirming=self.confirming == index,
+                    shown=int(r.get("shown") or index),
+                    seconds=int(r.get("seconds") or 0),
+                    purged=bool(r.get("purged")),
                     preview_url=r.get("preview_url", ""),
                     poster_url=r.get("poster_url", ""),
                     duration_text=r.get("duration_text", ""),
@@ -325,10 +373,8 @@ class PartProgressState(rx.State):
 
     def _clear(self) -> None:
         self.has_progress = False
-        self.title = self.comment = self.value_text = self.live_text = self.notice = ""
+        self.notice = ""
         self.announce = ""
-        self.step_status = STEP_RUNNING
-        self.value = 0
         self.complete = False
         self.parts_pending = True
         self.rows = []
@@ -340,8 +386,7 @@ class PartProgressState(rx.State):
         self.removed_text = ""
         self.confirming = 0
         self._confirmed = 0
-        self.rows_open = False
-        self.rows_forced = False
+        self.status_line = ""
 
     def _apply(
         self,
@@ -355,9 +400,7 @@ class PartProgressState(rx.State):
             changed = self.has_progress
             self._clear()
             return changed
-        vm = part_progress_vm(
-            progress, available=AVAILABLE, card_below=CARD_BELOW, previews=previews
-        )
+        vm = part_progress_vm(progress, available=AVAILABLE, previews=previews)
         data = as_state(vm)
         old_states = {int(r["index"]): r["state"] for r in self._raw_rows}
         signature = _signature(data["rows"])
@@ -373,21 +416,13 @@ class PartProgressState(rx.State):
             if any(int(r["index"]) == i and r["state"] == old_states.get(i) for r in data["rows"])
         }
         self.has_progress = True
-        self.title = data["title"]
-        self.comment = data["comment"]
-        self.step_status = data["step_status"]
-        self.value = int(data["value"])
-        self.value_text = data["value_text"]
-        self.live_text = data["live_text"]
         self.notice = data["notice"]
         self.complete = bool(data["complete"])
         self.parts_pending = not data["ready_for_video"]
         self.top_error = ""
         self._raw_rows = data["rows"]
         self._signature = signature
-        self.rows_forced = any(r["state"] in DECISION_ROW_STATES for r in data["rows"])
-        if self.rows_forced:
-            self.rows_open = True  # and they stay open once the decision is made
+        self.status_line = data["status_line"]
         if self.confirming and not (
             self._offers(self.confirming, PartAction.REMOVE.value)
             and (self._row(self.confirming) or {}).get("remove_confirm")
@@ -611,6 +646,10 @@ class PartProgressState(rx.State):
                 self.announce = self.removed_text
             self._rebuild_rows()
             relaunch = self._mounted and self._parent_id == str(parent_id)
+        if not error:
+            # the row is about to go (the part moves on, or was removed): the keyboard
+            # waits on the status line, never on a button that disappears
+            yield rx.call_script(FOCUS_STATUS_JS)
         if relaunch:
             yield PartProgressState.poll
 
@@ -618,9 +657,11 @@ class PartProgressState(rx.State):
 __all__ = [
     "AVAILABLE",
     "BUSY_LABEL",
-    "CARD_BELOW",
     "FINAL_JOIN_STATES",
     "PART_REMOVED_TEXT",
+    "PartTileView",
+    "STATUS_ID",
+    "TILE_WORDS",
     "IN_PROGRESS_STATES",
     "POLL_BUDGET_SECONDS",
     "POLL_MAX_FAILURES",

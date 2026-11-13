@@ -309,8 +309,8 @@ def test_panel_rows_with_a_preview_play_it_keyed_by_their_draft(panel: str) -> N
     assert '"data-clip-renew":""' in panel and '"data-clip-renew-trigger":""' in panel
 
 
-def test_panel_keeps_one_live_region_and_its_fold(panel: str) -> None:
+def test_panel_keeps_one_live_region(panel: str) -> None:
     assert panel.count("aria-live") == 1
-    assert '"part-rows"' in panel  # the fold's target, still in the page
+    assert '"part-rows"' not in panel  # m-25016656: no fold any more
     # watching only: no decision buttons of UI-8
     assert "Me gusta así" not in panel and "Crear otra versión" not in panel

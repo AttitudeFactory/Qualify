@@ -23,7 +23,7 @@ from qualify_api.creative.service import UnknownDraft
 
 from . import part_progress_provider as provider
 from . import part_progress_state as module
-from .part_progress_state import PartProgressState
+from .part_progress_state import PartProgressState, PartRowView
 
 TENANT = "00000000-0000-0000-0000-000000000001"
 USER = uuid4()
@@ -190,11 +190,11 @@ async def test_the_poll_runs_while_a_part_is_being_created_and_stops_after(backe
     state = mounted()
     events = await poll(state)
     assert backend.read_calls == 3
-    assert state.complete is True and state.value == 100
+    assert state.complete is True
     # refreshed when the states changed (first read, then done) — not on the idle tick
     assert events == [("refresh", str(PARENT)), ("refresh", str(PARENT))]
     assert [r.word for r in state.rows] == ["Para revisar", "Lista"]
-    assert state.title == "Tus partes ya están creadas" and state.step_status == "done"
+    assert state.status_line == "Tus 2 partes están listas"
 
 
 async def test_an_unmade_part_keeps_the_poll(backend) -> None:
@@ -209,8 +209,7 @@ async def test_nothing_in_progress_reads_once_and_stops(backend) -> None:
     state = mounted()
     await poll(state)
     assert backend.read_calls == 1 and backend.ticks == 0
-    assert state.title == "Falta que decidas qué hacer con una parte"
-    assert state.live_text == "Cuando decidas, seguimos con tu video."
+    assert state.status_line == "Falta que decidas qué hacer con una parte"
 
 
 async def test_a_join_in_progress_keeps_the_poll_and_refreshes_every_tick(backend) -> None:
@@ -313,7 +312,8 @@ async def test_a_tap_runs_its_service_as_the_session_user(backend, action: str) 
     assert backend.actions == [
         (action, {"tenant_id": UUID(TENANT), "parent_id": PARENT, "part_index": 2, "user_id": USER})
     ]
-    assert events == [PartProgressState.poll]
+    # the keyboard waits on the status line (the row is about to go), then a read
+    assert len(events) == 2 and events[-1] == PartProgressState.poll
     assert state._busy == [] and state.rows[1].error == ""
 
 
@@ -422,8 +422,8 @@ async def test_a_decision_title_does_not_stop_the_poll_while_parts_move(backend)
     backend.reads = [decision_and_moving, decision_and_moving, FAILED]
     state = mounted()
     await poll(state)
-    assert backend.read_calls == 3  # ruled by the rows in progress, not by the title
-    assert state.title == "Falta que decidas qué hacer con una parte"
+    assert backend.read_calls == 3  # ruled by the rows in progress, not by the line
+    assert state.status_line == "Falta que decidas qué hacer con una parte"
 
 
 # -- round 4 -----------------------------------------------------------------------------
@@ -533,7 +533,7 @@ async def test_confirmed_removal_runs_says_so_and_polls(backend) -> None:
     assert state._confirmed == 2
     events = await tap(state, 2, "remove")
     assert [a for a, _ in backend.actions] == ["remove"]
-    assert events == [PartProgressState.poll]
+    assert len(events) == 2 and events[-1] == PartProgressState.poll
     assert state.removed_text == "Quitaste la parte 2. Tu video sigue con 2 partes."
     assert state.announce == state.removed_text and state._confirmed == 0
 
@@ -655,53 +655,139 @@ async def test_a_part_removed_elsewhere_is_said_on_top_not_on_its_row(backend) -
     assert state.rows[1].error == ""
 
 
-def test_an_unmade_row_points_to_the_card() -> None:
+def test_an_unmade_row_never_points_to_a_card() -> None:
+    """Review round 2: a failed parent has no «Tu video completo» to point to."""
     state = shown(UNMADE)
-    assert state.rows[1].detail == "Créala desde Tu video completo, más abajo."
+    assert state.rows[1].detail == "" and state.decision_rows == []
 
 
-# -- the fold (Deivid, «Sí, plegarlas») -------------------------------------------------
+# -- m-25016656: one status line, only the parts waiting for a decision -----------------
 
 
-def test_rows_fold_by_default_without_decisions() -> None:
-    state = shown(CREATING)
-    assert state.rows_open is False and state.rows_forced is False
-    assert state.rows_toggle == "Ver las 2 partes"
-    state.toggle_rows()
-    assert state.rows_open is True and state.rows_toggle == "Ocultar las partes"
-
-
-def test_a_decision_opens_the_rows_and_hides_the_toggle() -> None:
+def test_only_the_parts_waiting_for_a_decision_are_drawn() -> None:
     state = shown(FAILED)
-    assert state.rows_open is True and state.rows_forced is True
-    state.toggle_rows()  # no toggle while a part waits for the owner
-    assert state.rows_open is True
+    assert [r.index for r in state.rows] == [1, 2]  # every part is still read and kept
+    assert [r.index for r in state.decision_rows] == [2]
+    assert [b.action for b in state.decision_rows[0].buttons] == ["retry", "remove"]
+    assert state.status_line == "Falta que decidas qué hacer con una parte"
 
 
-def test_a_new_decision_opens_folded_rows_on_the_next_read() -> None:
+@pytest.mark.parametrize(
+    ("shown_progress", "line"),
+    [
+        (CREATING, "Creando tus partes: 1 de 2 listas"),
+        (UNMADE, "Te falta una parte por crear"),
+        (DONE, "Tus 2 partes están listas"),
+    ],
+)
+def test_no_decision_draws_no_row_and_one_line(shown_progress: PartProgress, line: str) -> None:
+    state = shown(shown_progress)
+    assert state.decision_rows == [] and state.has_progress  # the panel stays mounted
+    assert state.status_line == line
+
+
+def test_the_question_of_quitar_parte_still_opens_on_its_row() -> None:
+    state = shown(ASKS)
+    state.ask_remove(2)
+    assert [r.confirming for r in state.decision_rows] == [True]
+
+
+def test_another_video_starts_without_a_line() -> None:
     state = shown(CREATING)
-    assert state.rows_open is False
-    state._apply(FAILED)
-    assert state.rows_open is True
-
-
-def test_open_rows_never_fold_by_themselves() -> None:
-    state = shown(FAILED)
-    state._apply(CREATING)  # the decision was made: the part is being made again
-    assert state.rows_open is True and state.rows_forced is False
-    state._apply(DONE)
-    assert state.rows_open is True
-    state.toggle_rows()  # only the owner folds them
-    assert state.rows_open is False
-
-
-def test_another_video_starts_from_the_rule() -> None:
-    state = shown(CREATING)
-    state.toggle_rows()
     state.watch(str(uuid4()))
-    assert state.rows_open is False and state.rows_forced is False
+    assert state.status_line == "" and state.decision_rows == []
 
 
-def test_one_part_left_says_it_in_the_singular() -> None:
-    state = shown(progress(row(1, PartState.CREATING, total=1)))
-    assert state.rows_toggle == "Ver la parte"
+def test_every_part_is_a_tile_of_tu_video_completo() -> None:
+    """m-25016656: «Tus partes» draws every part in order — its own clip when it has one
+    (named «Ver cómo quedó la parte N»), else the word of its state."""
+    previews = {1: provider_preview(1, "/r2media/a", "/r2media/a.jpg", 4.2)}
+    state = mounted()
+    state._apply(UNMADE, previews)
+    first, second = state.part_tiles
+    assert (first.index, first.number, first.seconds_text) == ("1", 1, "4 s")
+    assert first.preview_url == "/r2media/a" and first.poster_url == "/r2media/a.jpg"
+    assert first.play_label == "Ver cómo quedó la parte 1" and first.word == ""
+    assert first.key == str(UNMADE.parts[0].draft_id)
+    assert (second.index, second.preview_url, second.seconds_text) == ("2", "", "4 s")
+    assert (second.word, second.tone) == ("Sin crear", "neutral")
+    state._apply(CREATING, previews)
+    assert state.part_tiles[1].word == "Creándose"
+    state._apply(FAILED, previews)
+    assert (state.part_tiles[1].word, state.part_tiles[1].tone) == ("No salió", "error")
+    assert mounted().part_tiles == []  # nothing read yet
+
+
+def test_the_tiles_follow_the_rows() -> None:
+    """No dynamic `getattr` in the var: it recomputes whenever `rows` changes."""
+    state = mounted()
+    state._apply(CREATING)
+    assert [t.word for t in state.part_tiles] == ["Para revisar", "Creándose"]
+    state._apply(DONE, {2: provider_preview(2, "/r2media/b", "", 5.0)})
+    assert state.part_tiles[1].preview_url == "/r2media/b"
+    assert state.part_tiles[1].seconds_text == "5 s"
+
+
+async def test_after_a_rows_action_the_keyboard_lands_on_the_status_line(backend) -> None:
+    from .part_progress_state import FOCUS_STATUS_JS, STATUS_ID
+
+    state = shown(FAILED)
+    events = await tap(state, 2, "retry")
+    scripts = [e for e in events if "call_script" in str(e) or STATUS_ID in str(e)]
+    assert scripts and STATUS_ID in FOCUS_STATUS_JS
+    assert events[-1] == PartProgressState.poll
+
+
+async def test_a_refused_action_keeps_the_focus_on_its_row(backend) -> None:
+    from .part_progress_state import STATUS_ID
+
+    backend.action_error = RuntimeError("boom")
+    state = shown(FAILED)
+    events = await tap(state, 2, "retry")
+    assert not [e for e in events if STATUS_ID in str(e)]
+
+
+def provider_preview(index: int, url: str, poster: str, seconds: float) -> Any:
+    from .part_progress_provider import PartPreview
+
+    return PartPreview(index=index, video_url=url, poster_url=poster, seconds=seconds)
+
+
+def test_a_part_to_decide_says_so_even_with_a_clip() -> None:
+    """Final UX review: «Hay que rehacerla» must never look ready, even if a clip was
+    signed for it (the rows offer clips only to «Para revisar» / «Lista»)."""
+    redo = progress(row(1, PartState.TO_REVIEW), row(2, PartState.REDO, PartAction.RECREATE))
+    state = mounted()
+    state._apply(redo, {2: provider_preview(2, "/r2media/b", "", 4.0)})
+    tile = state.part_tiles[1]
+    assert tile.word == "Hay que rehacerla" and tile.tone == "warn"
+    # …and the word wins over a clip, should one ever reach a part to decide on
+    state.rows = [
+        PartRowView(**{**r.__dict__, "preview_url": "/r2media/b"}) if r.index == 2 else r
+        for r in state.rows
+    ]
+    assert state.part_tiles[1].preview_url == "/r2media/b"
+    assert state.part_tiles[1].word == "Hay que rehacerla"
+
+
+def test_a_purged_part_is_never_a_decision() -> None:
+    """Review nit: with the files purged, «Venció» rows have nothing to decide."""
+    purged = PartProgress(
+        parent_id=PARENT,
+        parts=(
+            PartProgressRow(
+                index=1,
+                total=2,
+                draft_id=uuid4(),
+                mode="reference",
+                seconds=4,
+                state=PartState.EXPIRED,
+                purged=True,
+            ),
+            row(2, PartState.EXPIRED, PartAction.RECREATE),
+        ),
+    )
+    state = shown(purged)
+    assert [r.index for r in state.rows] == [1, 2]
+    assert [r.purged for r in state.rows] == [True, False]
+    assert [r.index for r in state.decision_rows] == [2]

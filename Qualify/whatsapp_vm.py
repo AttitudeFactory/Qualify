@@ -64,9 +64,9 @@ TAB_MENU = "menu"
 TAB_TEMPLATES = "plantillas"
 TAB_CONTACTS = "contactos"
 TAB_CAMPAIGNS = "campanas"
-#: m-24986801 §4 (decision D3): the brand's stickers and videos library, a sub-tab of
-#: «Chats» — they are sent inside a chat. It mounts `seasonal_ui.brand_section()` as is.
-TAB_STICKERS = "stickers"
+# m-25017173: «Chats» has no sub-tabs any more. The «Stickers y videos» sub-tab of
+# m-24986801 §4 duplicated Tu marca's library (managed there, in «Por aprobar» and in
+# «Aprobados»); an old `?tab=chats&sub=stickers` now simply opens the chats.
 
 SECTION_CHATS = "chats"
 SECTION_AUTO_REPLY = "respuesta"
@@ -86,10 +86,7 @@ SECTION_KEYS: frozenset[str] = frozenset(key for key, _label in SECTIONS)
 # section with a single panel has no sub-tab strip and no `?sub=`.
 SUBTABS: dict[str, tuple[tuple[str, str, str], ...]] = {
     # «Chats» keeps an empty slug: `/whatsapp?tab=chats` (every chat link) stays as is.
-    SECTION_CHATS: (
-        (TAB_CHATS, "", "Tus chats"),
-        (TAB_STICKERS, "stickers", "Stickers y videos"),
-    ),
+    SECTION_CHATS: ((TAB_CHATS, "", "Chats"),),
     SECTION_AUTO_REPLY: ((TAB_MENU, "", "Respuesta automática"),),
     SECTION_PROMOTIONS: (
         (TAB_CAMPAIGNS, "enviadas", "Enviadas"),
@@ -105,17 +102,13 @@ SUBTABS: dict[str, tuple[tuple[str, str, str], ...]] = {
     ),
 }
 
-# The two sub-tab strips, as (sub slug, label): what the page builds its controls from.
+# The two sub-tab strips (the only sections with more than one panel), as (sub slug,
+# label): what the page builds its controls from.
 PROMOTION_SUBS: tuple[tuple[str, str], ...] = tuple(
     (slug, label) for _panel, slug, label in SUBTABS[SECTION_PROMOTIONS]
 )
 NUMBER_SUBS: tuple[tuple[str, str], ...] = tuple(
     (slug, label) for _panel, slug, label in SUBTABS[SECTION_NUMBER]
-)
-#: Chats › Chats · Stickers y videos. The default panel has no slug (its address carries
-#: no `sub`), so its control answers to the panel key: `sub_panel` takes it back.
-CHATS_SUBS: tuple[tuple[str, str], ...] = tuple(
-    (slug or panel, label) for panel, slug, label in SUBTABS[SECTION_CHATS]
 )
 
 _PANEL_PLACE: dict[str, tuple[str, str]] = {

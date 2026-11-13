@@ -324,3 +324,71 @@ async def test_backup_work_limit_keeps_cursor_for_next_call(
     with acting_login(values[4]), pytest.raises(LeadFormUnavailable, match="repitió"):
         await service.sync_lead_form(tenant_id=values[0], form_id=form["id"])
     assert repo.get_form(values[0], form["id"])["last_synced_at"] is None
+
+
+def test_lead_from_our_lead_ad_is_attributed_to_its_promotion() -> None:
+    """m-24828981: _persist finds the promotion through request_snapshot.lead_form_snapshot."""
+    from qualify_api.ads.enhancements import BrandEnhancementSettings, compose_brand_policy
+    from qualify_api.ads.lead_ads import published_lead_form
+    from qualify_api.ads.promotion_repository import PostgresPromotionRepository
+    from qualify_api.ads.promotions import PromotionRequest
+
+    values = world()
+    tenant, brand, user, connection, _ = values
+    form = published(values)
+    attempt, now = uuid4(), datetime.now(UTC)
+    with tenant_session(tenant) as session:
+        session.execute(
+            text("""INSERT INTO publish_attempts
+                (id,tenant_id,connection_id,idempotency_key,media_product_type,
+                 adapter_version,status,published_media_id,settled_at,caption)
+            VALUES (:id,:tenant,:connection,:key,'REELS','test','published','777',:now,'x')"""),
+            {
+                "id": attempt,
+                "tenant": tenant,
+                "connection": connection,
+                "key": str(uuid4()),
+                "now": now,
+            },
+        )
+    target = published_lead_form(tenant, form["id"])
+    request = PromotionRequest(
+        tenant,
+        brand,
+        str(uuid4()),
+        "12",
+        "OUTCOME_LEADS",
+        "SIGN_UP",
+        "",
+        "lifetime",
+        10000,
+        "COP",
+        now + timedelta(days=1),
+        now + timedelta(days=2),
+        user,
+        now,
+        publish_attempt_id=attempt,
+        source_media_id="777",
+        creative={
+            "object_id": "200",
+            "source_instagram_media_id": "777",
+            "instagram_user_id": "400",
+            "call_to_action": target.call_to_action("SIGN_UP"),
+        },
+        adset_options=target.adset_options(),
+        lead_form_snapshot=target.snapshot(),
+    )
+    request = compose_brand_policy(request, BrandEnhancementSettings(tenant, brand))
+    promotion = PostgresPromotionRepository().create_or_get(request)
+    with tenant_session(tenant) as session:
+        session.execute(
+            text("UPDATE ad_promotions SET meta_ad_id='4242' WHERE id=:id"), {"id": promotion.id}
+        )
+    data = {**lead(form), "meta_ad_id": "4242"}
+    assert service._persist(tenant, form, data, received_via="webhook")
+    with tenant_session(tenant) as session:
+        attributed = session.scalar(
+            text("SELECT promotion_id FROM meta_lead_submissions WHERE leadgen_id=:id"),
+            {"id": data["leadgen_id"]},
+        )
+    assert attributed == promotion.id

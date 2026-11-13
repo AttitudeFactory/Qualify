@@ -890,9 +890,9 @@ async def test_approving_says_where_it_went(gw: FakeGateway) -> None:
     assert "Ver aprobados" in text and "/aprobados?ver=stickers" in text
 
 
-def test_brand_section_keeps_its_contract_for_whatsapp() -> None:
-    """Track A mounts `brand_section()` in WhatsApp › Chats without editing it: no
-    arguments, and `?crear=temporada` still opens the flow."""
+def test_brand_section_takes_no_arguments_and_opens_the_flow_from_the_address() -> None:
+    """Tu marca mounts `brand_section()` with no arguments, and `?crear=temporada`
+    (the chat's «Crear para esta temporada») still opens the flow."""
     import inspect
 
     from .seasonal_ui import approved_section, brand_section, drafts_section
@@ -901,6 +901,21 @@ def test_brand_section_keeps_its_contract_for_whatsapp() -> None:
     assert "S.open_from_query" in inspect.getsource(brand_section)
     for section in (drafts_section(), approved_section()):
         assert "autoplay" not in str(section).lower()
+
+
+def test_tu_marca_mounts_the_season_library() -> None:
+    """m-25017173: the chat's «Crear para esta temporada» lands on `/brand/kit`, and the
+    flow only opens there because Tu marca's summary mounts `brand_section()` (whose
+    mount runs `open_from_query`)."""
+    import inspect
+
+    from . import brand_kit_editor
+    from .seasonal_vm import CREATE_HREF
+
+    assert CREATE_HREF == "/brand/kit?crear=temporada"
+    source = inspect.getsource(brand_kit_editor._summary_view)
+    assert "from .seasonal_ui import brand_section" in source
+    assert "brand_section()" in source
 
 
 async def test_the_pending_line_counts_what_waits(gw: FakeGateway) -> None:

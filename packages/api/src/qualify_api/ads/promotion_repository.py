@@ -224,6 +224,38 @@ class PostgresPromotionRepository:
                     )
                 ):
                     raise ValueError("messaging destination does not match the published source")
+            if request.lead_form_snapshot:
+                from qualify_api.ads.lead_ads import LeadFormTarget
+
+                target = LeadFormTarget.from_snapshot(request.lead_form_snapshot)
+                # A published form is terminal and immutable (0143 trigger); lock it and its
+                # connection so a purge or reconnect cannot race the approval insert.
+                bound = session.execute(
+                    text("""SELECT 1 FROM ad_lead_forms f
+                      JOIN social_connections c ON c.id=f.connection_id
+                        AND c.tenant_id=f.tenant_id AND c.brand_id=f.brand_id
+                      JOIN publish_attempts p ON p.connection_id=c.id AND p.tenant_id=c.tenant_id
+                     WHERE f.id=:form AND f.status='published' AND f.meta_form_id=:remote
+                       AND f.page_id=:page AND f.brand_id=:brand AND f.connection_id=:connection
+                       AND f.credential_version=:version AND c.status='active'
+                       AND c.linked_page_id=f.page_id
+                       AND c.current_credential_version=f.credential_version
+                       AND c.purge_started_at IS NULL AND c.purged_at IS NULL
+                       AND p.id=:published AND p.published_media_id=:media
+                       FOR SHARE OF f,c,p"""),
+                    {
+                        "form": target.form_id,
+                        "remote": target.meta_form_id,
+                        "page": target.page_id,
+                        "brand": request.brand_id,
+                        "connection": target.connection_id,
+                        "version": target.credential_version,
+                        "published": request.publish_attempt_id,
+                        "media": request.source_media_id,
+                    },
+                ).first()
+                if bound is None:
+                    raise ValueError("lead form is not a published form of the promoted account")
             columns = [
                 "tenant_id",
                 "brand_id",

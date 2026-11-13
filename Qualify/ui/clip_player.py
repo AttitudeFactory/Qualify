@@ -22,7 +22,7 @@ is being watched, because
 
 The script also: plays one video at a time on the page (a clip pauses any other video,
 «Tu video completo» included, and any other video pauses the clips); stops a clip when
-its picture is hidden (a folded list) or a drag starts (`slide-drag.js`); keeps ←/→ on
+its picture is hidden or a drag starts (`slide-drag.js`); keeps ←/→ on
 its buttons from reaching a list's keyboard; and when the video cannot be played (gone,
 purged) puts the picture back WITHOUT ▶ for every clip of that same file, saying
 `broken_text` once to screen readers when given.
@@ -40,8 +40,8 @@ same place the scene was.
 
 Only design-system material: the `.q-thumb` frame (`framed`), the round black-alpha
 buttons of the generator's stock previews (same size, colour and focus ring), tokens.
-Screens: the parts of «Orden del clip» (step 2) and the rows «Para revisar» / «Lista» of
-«Creando tus partes».
+Screens: the parts of «Orden del clip» (step 2), the parts' tiles of «Tu video completo»
+(«Tus partes», m-25016656) and the rows of the parts' panel that wait for a decision.
 """
 
 from __future__ import annotations

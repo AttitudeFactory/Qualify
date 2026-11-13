@@ -421,3 +421,64 @@ def test_local_preparation_rejects_invalid_input_without_network(changes) -> Non
     *_, args, authors = setup()
     with pytest.raises(WizardUnavailable):
         replace(args["form"], **changes).validate()
+
+
+def lead_setup(**target_changes):
+    from qualify_api.ads.lead_ads import LeadFormTarget
+
+    wizard, client, gateway, source, args, authors = setup()
+    source = replace(source, linked_page_id="77", credential_version=1)
+    wizard.sources.source = source
+    target = LeadFormTarget(uuid4(), "555", "77", source.connection_id, source.brand_id, 1)
+    target = replace(target, **target_changes)
+    form = replace(args["form"], link_url="", lead_form=target, lead_cta="SIGN_UP")
+    return wizard, client, source, {**args, "form": form}, target
+
+
+@pytest.mark.asyncio
+async def test_lead_campaign_uses_published_form_paused_then_explicit_activation() -> None:
+    wizard, client, source, args, target = lead_setup()
+    preview = await wizard.prepare(**args)
+    campaign, adset, creative, ad = (client.objects[k] for k in ("1", "2", "3", "4"))
+    assert campaign["objective"] == "OUTCOME_LEADS"
+    assert adset["optimization_goal"] == "LEAD_GENERATION"
+    assert adset["destination_type"] == "ON_AD"
+    assert adset["promoted_object"] == {"page_id": "77"}
+    assert creative["object_id"] == "77"
+    assert creative["source_instagram_media_id"] == source.source_media_id
+    assert creative["call_to_action"] == {"type": "SIGN_UP", "value": {"lead_gen_form_id": "555"}}
+    assert all(row["status"] == "PAUSED" for row in (campaign, adset, ad))
+    stored = wizard.creation.repository.get(args["tenant_id"], preview.promotion_id)
+    assert stored.request["lead_form_snapshot"] == target.snapshot()
+    assert stored.request["link_url"] == ""
+    result = await wizard.confirm(
+        tenant_id=args["tenant_id"],
+        promotion_id=preview.promotion_id,
+        review_id=preview.review_id,
+        approved_by=args["approved_by"],
+        confirm_charge=True,
+    )
+    assert result.status == "active"
+    assert await wizard.prepare(**args) == preview and len(client.objects) == 4
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "changes,cta",
+    [
+        ({"connection_id": uuid4()}, "SIGN_UP"),
+        ({"page_id": "78"}, "SIGN_UP"),
+        ({"brand_id": uuid4()}, "SIGN_UP"),
+        ({"credential_version": 2}, "SIGN_UP"),
+        ({}, "SHOP_NOW"),
+        ({}, ""),
+    ],
+)
+async def test_lead_form_of_another_account_or_unsupported_button_never_creates(
+    changes, cta
+) -> None:
+    wizard, client, _, args, _ = lead_setup(**changes)
+    args = {**args, "form": replace(args["form"], lead_cta=cta)}
+    with pytest.raises(WizardUnavailable):
+        await wizard.prepare(**args)
+    assert not client.calls and not client.objects

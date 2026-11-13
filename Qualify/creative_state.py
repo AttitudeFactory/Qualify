@@ -8652,6 +8652,13 @@ class CreativeState(rx.State):
 
     # -- /drafts/[draft_id] (HITL #2) ----------------------------------------
 
+    def _poll_on_screen(self, polling_id: str) -> bool:
+        """m-25016656: the polled draft is on screen — its own page, or a page with no
+        draft route (the generator). Never another draft's URL whose read failed."""
+        if self._polling_draft_id != polling_id:
+            return False
+        return getattr(self, "draft_id", "") == "" or str(self._route_draft_id()) == polling_id
+
     def _route_draft_id(self) -> UUID | None:
         """The dynamic route arg, parsed. Refuses junk rather than querying with it."""
         raw = getattr(self, "draft_id", "")
@@ -8901,7 +8908,7 @@ class CreativeState(rx.State):
                     started = time.monotonic()
                 if elapsed >= _POLL_BUDGET_SECONDS and not queued:
                     async with self:
-                        if self._polling_draft_id == polling_id:
+                        if self._poll_on_screen(polling_id):
                             self.poll_timed_out = True
                             self.detail_error = _POLL_TIMEOUT
                     return
@@ -8917,7 +8924,7 @@ class CreativeState(rx.State):
                 async with self:
                     # still the draft on screen? then its detail is refreshed; otherwise
                     # the poll only waits for the end to say so
-                    on_screen = self._polling_draft_id == polling_id
+                    on_screen = self._poll_on_screen(polling_id)
                     if on_screen:
                         self.poll_elapsed_label = f"{int(time.monotonic() - started)} s"
                     if vm is not None:

@@ -45,7 +45,7 @@ does not apply to it.
 **Assisted replies (E4).** `suggest` asks `ConversationDraftService` for ONE draft of the
 thread's last inbound (gate → Claude → grounding verdict), `decide_draft` records the
 person's verdict, and `reply(..., draft_id=…)` carries it into the outbox's approval.
-Nothing here sends a draft: the approval is still the person pressing «Responder».
+Nothing here sends a draft: the approval is still the person pressing «Enviar».
 
 **Message templates (m-24789472, PR 1).** The account's library of text templates
 (`ReplyTemplateService`): `templates` lists it (seeding the four defaults on first use),
@@ -525,7 +525,7 @@ class ConversationsGateway:
     ) -> AttachmentVM:
         """Put the file in R2 under this tenant's prefix (`media_key`, keyed by the
         account it will be sent from). Nothing is queued yet: the person still has to
-        press «Responder»."""
+        press «Enviar»."""
         key = media_key(tenant_id, connection_id, f"dm-{uuid4().hex}")
         self.sink.put_connection_media(
             tenant_id, connection_id, key, io.BytesIO(data), content_type
