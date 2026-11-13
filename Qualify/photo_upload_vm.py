@@ -24,6 +24,13 @@ WRONG_TYPE_MANY_TEXT = "no son fotos que podamos usar. Elige fotos de tu galerí
 TOO_MANY_TEXT = "Elegiste más fotos de las que caben aquí. Elige menos y vuelve a intentarlo."
 #: A photo that arrived but cannot be opened (damaged, or another kind of file renamed).
 UNREADABLE_TEXT = "No pudimos abrir «{name}». Prueba con otra foto."
+#: A photo with more pixels than its format allows (`upload_images.PHOTO_MAX_PIXELS`):
+#: the 48 MP camera mode, a huge export — the normal camera mode always fits.
+TOO_BIG_PIXELS_TEXT = (
+    "Esta foto es demasiado grande para subirla. Elige otra o tómala con la cámara en modo normal."
+)
+#: Another photo kept the conversion slot too long (`upload_images.PhotoBusy`).
+BUSY_TEXT = "Estamos preparando otra foto. Vuelve a intentarlo en un momento."
 #: A photo over the limit that reached the server anyway.
 SERVER_TOO_HEAVY_TEXT = "«{name}» " + TOO_HEAVY_TEXT
 

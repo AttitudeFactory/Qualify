@@ -267,7 +267,14 @@ from .stock_provider import search_images as search_stock_images
 from .tenant import tenant_uuid
 from .ui.steps import go_to_step, settle_step, step_entry_script, step_settle_script
 from .ui.steps_vm import DIR_BACK, DIR_NEXT, STEP_PARAM, parse_step_param
-from .upload_images import PHOTO_MAX_BYTES, PhotoUnreadable, is_photo_name, normalize_photo
+from .upload_images import (
+    PHOTO_MAX_BYTES,
+    PhotoBusy,
+    PhotoTooBig,
+    PhotoUnreadable,
+    is_photo_name,
+    normalize_photo_when_free,
+)
 from .upload_names import safe_upload_name
 from .upload_store import UploadNotKept, refusal_text, save_upload, save_upload_bytes
 
@@ -7967,12 +7974,13 @@ class CreativeState(rx.State):
     async def _save_uploads(self, files: list[rx.UploadFile]) -> list[tuple[str, str]]:
         """Store uploaded files under the tenant's namespace; `(key, name)` each. Sets
         `upload_error` and returns nothing on a missing session or unreadable file."""
-        auth = await self.get_state(AuthState)
-        tenant_id = tenant_uuid(auth.session_tenant_id)
-        if tenant_id is None:
-            self.upload_error = _NO_SESSION
-            return []
         try:
+            # inside the `try`: a missing session too ends the zone's «Subiendo…»
+            auth = await self.get_state(AuthState)
+            tenant_id = tenant_uuid(auth.session_tenant_id)
+            if tenant_id is None:
+                self.upload_error = _NO_SESSION
+                return []
             saved: list[tuple[str, str]] = []
             for upload in files:
                 # the client's name, reduced to a safe basename (PR #100 review): a crafted
@@ -7987,7 +7995,8 @@ class CreativeState(rx.State):
                             self.upload_error = problem
                             return []
                         upload.file.seek(0)
-                        photo = await asyncio.to_thread(normalize_photo, upload.file, name)
+                        # waits its turn on the event loop, never in a worker thread
+                        photo = await normalize_photo_when_free(upload.file, name)
                         name = photo.name
                         key = await save_upload_bytes(tenant_id, photo.data, name)
                     else:
@@ -7995,6 +8004,12 @@ class CreativeState(rx.State):
                         key = await save_upload(tenant_id, upload, name)
                 except PhotoUnreadable:
                     self.upload_error = photo_upload_vm.UNREADABLE_TEXT.format(name=name)
+                    return []
+                except PhotoTooBig:
+                    self.upload_error = photo_upload_vm.TOO_BIG_PIXELS_TEXT
+                    return []
+                except PhotoBusy:
+                    self.upload_error = photo_upload_vm.BUSY_TEXT
                     return []
                 except UploadNotKept as exc:
                     self.upload_error = refusal_text(exc, name)

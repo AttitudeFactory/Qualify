@@ -4,16 +4,19 @@ Founder decisions of 2026-11-13: an iPhone photo (HEIC/HEIF) is accepted and con
 to JPEG HERE, on the server (`pillow-heif`); a photo is at most `PHOTO_MAX_BYTES`
 (50 MB); what is stored is at most `PHOTO_MAX_SIDE` (4096 px) on its long side, with
 the EXIF orientation baked into the pixels and every other metadata dropped (GPS, the
-camera, the date). JPEG, PNG and WebP keep their format — a PNG keeps its
-transparency, which the product photos ask for. The colour profile (ICC) is kept: it
+camera, the date). JPEG and PNG keep their format — a PNG keeps its transparency,
+which the product photos ask for; any other photo (HEIC, WebP) is stored as JPEG, or as
+PNG when it has transparency (WebP's own encoder alone added ~250 MB at 8 MP in the
+measurement, so it is never used). The colour profile (ICC) is kept: it
 is how the photo looks, not data about the owner.
 
 Pillow is used strictly as a converter/resizer here (founder, 2026-11-13); composition
-is Remotion's. Every function blocks: callers run it in `asyncio.to_thread`.
+is Remotion's. `normalize_photo` blocks; screens call `normalize_photo_when_free`.
 """
 
 from __future__ import annotations
 
+import asyncio
 import io
 import threading
 from dataclasses import dataclass
@@ -27,25 +30,43 @@ PHOTO_MAX_BYTES = PHOTO_MAX_MB * 1024 * 1024
 #: The long side of the stored photo, in pixels.
 PHOTO_MAX_SIDE = 4096
 
-#: The most pixels a photo may have (a 48 MP iPhone photo is ~48 M): a small file can
-#: declare a huge canvas (a 4 MB PNG of 12000×12000 decodes to ~840 MB), so the
-#: header is checked BEFORE any pixel is decoded. Refused as unreadable.
-PHOTO_MAX_PIXELS = 60_000_000
+#: The most pixels a photo may have, per format, read from its header BEFORE any pixel is
+#: decoded: a small file can declare a huge canvas, and the app container has 768 MB
+#: with no swap (deploy/docker-compose.prod.yml). Each cap keeps ONE conversion under
+#: ~300 MB of added memory (measured, m-25017273). A JPEG decodes at 1/2, 1/4 or 1/8
+#: (`draft`), so it can be bigger; PNG, WebP and HEIC decode at full size. A 24 MP iPhone
+#: photo (5712×4284 ≈ 24.5 M) must pass as HEIC.
+PHOTO_MAX_PIXELS = {"JPEG": 60_000_000, "PNG": 16_000_000, "WEBP": 12_000_000, "HEIF": 25_000_000}
+#: The long side a big JPEG is decoded at, at least (4096 is a maximum, not a target:
+#: generation and composition work at ≤ 1920 px).
+_DRAFT_SIDE = 2048
 
-#: One conversion at a time per process: the app shares a 4 GB server, and
-#: `asyncio.to_thread` would otherwise decode several big photos at once.
+#: One conversion at a time per process. The async slot is waited on the event loop,
+#: with a timeout, BEFORE a thread is taken (`normalize_photo_when_free`); the thread
+#: semaphore also covers any blocking caller.
+_ASYNC_SLOT = asyncio.Semaphore(1)
 _CONVERSIONS = threading.BoundedSemaphore(1)
+#: How long an upload waits for another photo's conversion before it says so (one
+#: conversion at the caps measured ≤ ~3 s on a laptop).
+PHOTO_WAIT_SECONDS = 20.0
 
 _HEIF_SUFFIXES = (".heic", ".heif")
 #: The suffixes treated as a photo (and normalized); anything else is stored as it came.
 PHOTO_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", *_HEIF_SUFFIXES)
-#: Pillow's format → the format the photo is stored in, and its file suffix.
-_KEEP_FORMAT = {"JPEG": ("JPEG", ".jpg"), "PNG": ("PNG", ".png"), "WEBP": ("WEBP", ".webp")}
+_ALPHA_MODES = ("RGBA", "LA", "PA", "RGBa", "La")
 _JPEG_QUALITY = 90
 
 
 class PhotoUnreadable(ValueError):
     """The file is not a photo Pillow can open (corrupt, or another format renamed)."""
+
+
+class PhotoTooBig(ValueError):
+    """The photo has more pixels than its format's cap (`PHOTO_MAX_PIXELS`)."""
+
+
+class PhotoBusy(RuntimeError):
+    """Another photo kept the conversion slot longer than `PHOTO_WAIT_SECONDS`."""
 
 
 @dataclass(frozen=True)
@@ -74,11 +95,34 @@ def _renamed(name: str, suffix: str) -> str:
 def normalize_photo(
     fileobj: IO[bytes], name: str, *, max_side: int = PHOTO_MAX_SIDE
 ) -> StoredPhoto:
-    """`fileobj` (a photo the owner uploaded, read from its current position) as it is
-    stored: HEIC/HEIF → JPEG, upright, at most `max_side` px on its long side, without
-    EXIF, XMP or comments. One at a time (`_CONVERSIONS`). Raises `PhotoUnreadable`."""
+    """Blocking. `fileobj` (a photo the owner uploaded, read from its current position)
+    as it is stored: HEIC/HEIF/WebP → JPEG (PNG with transparency), upright, at most
+    `max_side` px on its long side, without EXIF, XMP or comments. One at a time
+    (`_CONVERSIONS`). Raises `PhotoUnreadable` or `PhotoTooBig`."""
     with _CONVERSIONS:
         return _normalize(fileobj, name, max_side)
+
+
+async def normalize_photo_when_free(
+    fileobj: IO[bytes], name: str, *, wait_seconds: float | None = None
+) -> StoredPhoto:
+    """`normalize_photo` off the event loop, after waiting its turn ON the loop: a queued
+    upload never holds a default-executor thread (every `asyncio.to_thread` DB read of
+    the app shares them). Raises `PhotoBusy` when another photo kept the slot for
+    `wait_seconds` (`PHOTO_WAIT_SECONDS`)."""
+    wait = PHOTO_WAIT_SECONDS if wait_seconds is None else wait_seconds
+    try:
+        await asyncio.wait_for(_ASYNC_SLOT.acquire(), timeout=wait)
+    except TimeoutError as exc:
+        raise PhotoBusy(f"waited {wait:.0f} s") from exc
+    try:
+        return await asyncio.to_thread(normalize_photo, fileobj, name)
+    finally:
+        _ASYNC_SLOT.release()
+
+
+def _pixel_cap(pillow_format: str) -> int:
+    return PHOTO_MAX_PIXELS.get(pillow_format, min(PHOTO_MAX_PIXELS.values()))
 
 
 def _normalize(fileobj: IO[bytes], name: str, max_side: int) -> StoredPhoto:
@@ -88,48 +132,43 @@ def _normalize(fileobj: IO[bytes], name: str, max_side: int) -> StoredPhoto:
     try:
         with Image.open(fileobj) as source:
             width, height = source.size
-            if width * height > PHOTO_MAX_PIXELS:
-                raise PhotoUnreadable(f"{width}x{height} over {PHOTO_MAX_PIXELS} pixels")
             pillow_format = (source.format or "").upper()
+            if width * height > _pixel_cap(pillow_format):
+                raise PhotoTooBig(f"{pillow_format} {width}x{height}")
             icc = source.info.get("icc_profile")
-            if pillow_format == "JPEG":
-                # the decoder drops detail before allocating its buffer (1/2, 1/4, 1/8)
-                source.draft("RGB", (max_side, max_side))
+            long_side = max(width, height)
+            if pillow_format == "JPEG" and long_side > max_side // 2:
+                # the decoder reduces BEFORE allocating its buffer (1/2, 1/4, 1/8): asking
+                # for ~2048 px on the long side lets any photo of 4096 px or more come
+                # out at 1/2 or less — between 2048 and 4096 px
+                scale = _DRAFT_SIDE / long_side
+                source.draft("RGB", (max(1, int(width * scale)), max(1, int(height * scale))))
             source.load()
             if max(source.size) > max_side:
                 # in place, still inside `with`: never a second full-size copy
                 source.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
             image = source
-    except PhotoUnreadable:
+    except (PhotoUnreadable, PhotoTooBig):
         raise
     except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError) as exc:
         raise PhotoUnreadable(f"{type(exc).__name__}") from exc
 
-    out_format, suffix = _KEEP_FORMAT.get(pillow_format, ("JPEG", ".jpg"))
     # turned upright AFTER the downscale: the rotation never copies the full-size pixels
     ImageOps.exif_transpose(image, in_place=True)
-
-    if out_format == "JPEG":
-        if image.mode in ("RGBA", "LA", "PA") or (
-            image.mode == "P" and "transparency" in image.info
-        ):
-            # JPEG has no alpha: flatten onto white instead of turning it black
-            rgba = image.convert("RGBA")
-            flat = Image.new("RGB", rgba.size, (255, 255, 255))
-            flat.paste(rgba, mask=rgba.getchannel("A"))
-            image = flat
-        elif image.mode not in ("RGB", "L", "CMYK"):
-            image = image.convert("RGB")
-        image.info.pop("comment", None)
-        options: dict[str, object] = {"quality": _JPEG_QUALITY, "optimize": True}
-    elif out_format == "WEBP":
-        options = {"quality": _JPEG_QUALITY}
+    has_alpha = image.mode in _ALPHA_MODES or (image.mode == "P" and "transparency" in image.info)
+    if pillow_format == "PNG" or (pillow_format != "JPEG" and has_alpha):
+        out_format, suffix = "PNG", ".png"
+        options: dict[str, object] = {}
     else:
-        options = {"optimize": True}
+        out_format, suffix = "JPEG", ".jpg"
+        if image.mode not in ("RGB", "L", "CMYK"):
+            image = image.convert("RGB")  # already downscaled: a small copy
+        image.info.pop("comment", None)
+        options = {"quality": _JPEG_QUALITY, "optimize": True}
     if icc:
         options["icc_profile"] = icc
     # nothing from `info` is passed: no EXIF, XMP or comments travel to the stored file
     buffer = io.BytesIO()
     image.save(buffer, format=out_format, **options)
-    content_type = {"JPEG": "image/jpeg", "PNG": "image/png", "WEBP": "image/webp"}[out_format]
+    content_type = "image/png" if out_format == "PNG" else "image/jpeg"
     return StoredPhoto(buffer.getvalue(), _renamed(name, suffix), content_type)

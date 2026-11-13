@@ -19,8 +19,8 @@ from .creative_state import CreativeState
 from .picker_tabs import open_upload_picker_script, upload_host_id
 from .upload_images import (
     PHOTO_MAX_BYTES,
-    PHOTO_MAX_PIXELS,
     PHOTO_MAX_SIDE,
+    PhotoTooBig,
     PhotoUnreadable,
     normalize_photo,
 )
@@ -74,10 +74,11 @@ def test_heic_is_converted_to_jpeg() -> None:
 
 
 def test_a_big_photo_is_downscaled_to_4096_on_its_long_side() -> None:
-    big = _encode(Image.new("RGB", (6000, 3000), (0, 128, 128)), "JPEG", quality=50)
+    # a JPEG decodes reduced (`draft`): between 2048 and 4096 px on its long side
+    big = _encode(Image.new("RGB", (9000, 3000), (0, 128, 128)), "JPEG", quality=50)
     photo = normalize_photo(io.BytesIO(big), "local.jpg")
     with Image.open(io.BytesIO(photo.data)) as image:
-        assert image.size == (PHOTO_MAX_SIDE, 2048)
+        assert 2048 <= max(image.size) <= PHOTO_MAX_SIDE
     tall = _encode(Image.new("RGB", (1000, 5000)), "PNG")
     with Image.open(io.BytesIO(normalize_photo(io.BytesIO(tall), "a.png").data)) as image:
         assert max(image.size) == PHOTO_MAX_SIDE and image.format == "PNG"
@@ -209,8 +210,9 @@ def test_the_upload_zone_is_mounted_whatever_tab_is_open() -> None:
     assert "data-picker-tab" in rendered
 
 
-def test_a_huge_canvas_is_refused_before_it_is_decoded(monkeypatch) -> None:
-    """A small file can declare a huge canvas: refused from its header, as unreadable."""
+@pytest.mark.parametrize("fmt", ["PNG", "WEBP", "JPEG"])
+def test_a_huge_canvas_is_refused_before_it_is_decoded(monkeypatch, fmt: str) -> None:
+    """A small file can declare a huge canvas: refused from its header, never decoded."""
     from PIL import ImageFile
 
     decoded: list[bool] = []
@@ -220,19 +222,87 @@ def test_a_huge_canvas_is_refused_before_it_is_decoded(monkeypatch) -> None:
         decoded.append(True)
         return real_load(self)
 
-    side = int(PHOTO_MAX_PIXELS**0.5) + 10
-    huge = _encode(Image.new("L", (side, side)), "PNG")  # a few KB, over 60 M pixels
+    monkeypatch.setitem(upload_images.PHOTO_MAX_PIXELS, fmt, 99)
+    huge = _encode(Image.new("RGB", (10, 10)), fmt)  # 100 pixels, one over the cap
     monkeypatch.setattr(ImageFile.ImageFile, "load", spy)
-    with pytest.raises(PhotoUnreadable):
-        normalize_photo(io.BytesIO(huge), "enorme.png")
+    with pytest.raises(PhotoTooBig):
+        normalize_photo(io.BytesIO(huge), "enorme." + fmt.lower())
     assert decoded == []
 
 
+def test_the_caps_let_a_24_mp_iphone_photo_through() -> None:
+    caps = upload_images.PHOTO_MAX_PIXELS
+    assert caps["HEIF"] >= 5712 * 4284 and caps["JPEG"] >= 8064 * 6048  # 48 MP JPEG too
+    assert caps["HEIF"] < 8064 * 6048  # the 48 MP HEIC measured 361 MB: refused
+
+
 async def test_a_huge_canvas_says_what_to_do(signed_in, memory_r2, monkeypatch) -> None:
-    monkeypatch.setattr(upload_images, "PHOTO_MAX_PIXELS", 100)
+    monkeypatch.setitem(upload_images.PHOTO_MAX_PIXELS, "JPEG", 100)
     small = _encode(Image.new("RGB", (20, 20)), "JPEG")
     assert await CreativeState._save_uploads(signed_in, [_Upload(small, "grande.jpg")]) == []
-    assert signed_in.upload_error == "No pudimos abrir «grande.jpg». Prueba con otra foto."
+    assert signed_in.upload_error == (
+        "Esta foto es demasiado grande para subirla. Elige otra o tómala con la cámara en "
+        "modo normal."
+    )
+    assert memory_r2.objects == {}
+
+
+def test_a_big_jpeg_is_decoded_reduced() -> None:
+    """`draft`: a JPEG of 4096 px or more decodes at 1/2 or less — stored 2048-4096 px."""
+    big = _encode(Image.new("RGB", (6000, 4500), (0, 128, 128)), "JPEG", quality=50)
+    with Image.open(io.BytesIO(normalize_photo(io.BytesIO(big), "a.jpg").data)) as image:
+        assert image.size == (3000, 2250)
+    small = _encode(Image.new("RGB", (3000, 2000)), "JPEG")
+    with Image.open(io.BytesIO(normalize_photo(io.BytesIO(small), "b.jpg").data)) as image:
+        assert image.size == (3000, 2000)  # under 4096: kept whole
+
+
+def test_a_webp_is_stored_as_jpeg_or_png() -> None:
+    """WebP's encoder is never run (its memory): JPEG, or PNG when it has transparency."""
+    flat = normalize_photo(io.BytesIO(_encode(Image.new("RGB", (8, 8)), "WEBP")), "a.webp")
+    assert (flat.name, flat.content_type, flat.data[:2]) == ("a.jpg", "image/jpeg", b"\xff\xd8")
+    alpha = _encode(Image.new("RGBA", (8, 8), (0, 0, 0, 0)), "WEBP")
+    clear = normalize_photo(io.BytesIO(alpha), "b.webp")
+    assert (clear.name, clear.content_type) == ("b.png", "image/png")
+
+
+async def test_a_queued_photo_waits_on_the_loop_then_says_so(
+    signed_in, memory_r2, monkeypatch
+) -> None:
+    import asyncio
+
+    slot = asyncio.Semaphore(1)
+    monkeypatch.setattr(upload_images, "_ASYNC_SLOT", slot)
+    monkeypatch.setattr(upload_images, "PHOTO_WAIT_SECONDS", 0.05)
+    threads: list[str] = []
+
+    async def to_thread(*_a: Any, **_k: Any) -> Any:
+        threads.append("taken")
+        raise AssertionError("a queued photo must not take a thread")
+
+    await slot.acquire()  # another photo is converting
+    monkeypatch.setattr(upload_images.asyncio, "to_thread", to_thread)
+    state = signed_in
+    CreativeState.begin_photo_upload.fn(state, "creative_background")
+    photo = _Upload(_encode(Image.new("RGB", (4, 4)), "JPEG"), "a.jpg")
+    assert await CreativeState._save_uploads(state, [photo]) == []
+    assert state.upload_error == "Estamos preparando otra foto. Vuelve a intentarlo en un momento."
+    assert threads == [] and state.photo_upload_id == ""  # spinner cleared
+    slot.release()
+
+
+async def test_a_missing_session_clears_the_spinner(monkeypatch) -> None:
+    class _NoSession:
+        session_tenant_id = ""
+
+    async def get_state(_self: Any, _wanted: type) -> _NoSession:
+        return _NoSession()
+
+    monkeypatch.setattr(CreativeState, "get_state", get_state)
+    state = CreativeState()
+    CreativeState.begin_photo_upload.fn(state, "creative_background")
+    assert await CreativeState._save_uploads(state, [_Upload(b"x", "a.jpg")]) == []
+    assert state.photo_upload_id == "" and state.upload_error != ""
 
 
 def test_conversions_run_one_at_a_time(monkeypatch) -> None:
