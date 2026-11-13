@@ -45,11 +45,13 @@ is skipped and counted, never allowed to fail a search that already succeeded.
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from collections import defaultdict
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime, timedelta
 from typing import Protocol
 from uuid import UUID
 
@@ -63,6 +65,11 @@ from qualify_api.hashtags import (
     StoredHashtag,
 )
 from qualify_api.hashtags import ai as hashtag_ai
+from qualify_api.hashtags.repository import (
+    POPULAR_WINDOW_DAYS,
+    NewPostSighting,
+    ReelPost,
+)
 from qualify_api.privacy import mask_phones
 from qualify_api.referentes import discovery_seed
 from qualify_api.referentes.discovery_seed import DiscoverySeed
@@ -86,9 +93,32 @@ MIN_ACCOUNTS_FOR_LINK = 2
 LINKING_PHASE = "sector"
 
 
+#: Provenance of the post sightings `capture` stores (m-25026377): the feed parsers of
+#: `Qualify/creator_discovery` read the post id, views and date, this bridge turns them
+#: into rows. Bump when either side changes what a sighting means.
+REFERENTES_SIGHTING_PARSER = "referentes-feed/1"
+#: The same for `capture_reels`: `public_reels.parser_version` is appended per row.
+PUBLIC_REELS_SIGHTING_PARSER = "public-reels-caption/1"
+
+_HASHTAG_IN_TEXT = re.compile(r"#(\w+)")
+
+
+class SeenPost(Protocol):
+    """One post a search feed showed (`Qualify/creator_discovery.PostSighting`): its
+    provider id, its views and its date as a unix timestamp (None when the feed did not
+    carry them), the hashtags of its caption, and the query that brought it."""
+
+    post_id: str
+    posted_ts: int | None
+    views: int | None
+    hashtags: Sequence[str]
+    source: str
+
+
 class SeenAccount(Protocol):
     """What `capture` reads of an account a phase found (`Qualify/creator_discovery.
-    Candidate`)."""
+    Candidate`). `post_sightings` is read with `getattr` (default: none), so an account
+    without it still feeds the tag counts."""
 
     network: str
     username: str
@@ -103,6 +133,8 @@ class CaptureSummary:
     hashtags: int = 0
     links: int = 0
     skipped: int = 0
+    #: Distinct (tag, network, post) whose views and date were stored (0161).
+    sightings: int = 0
 
 
 def classify_tag(tag: str, seed: DiscoverySeed) -> tuple[str, str | None, str | None]:
@@ -638,6 +670,8 @@ def capture(
     """Store what a finished phase saw: every hashtag its accounts used (with the network,
     a sighting per account), and — for the sector phase only — a link from each of the
     rubro's words to the hashtags at least `MIN_ACCOUNTS_FOR_LINK` distinct accounts used.
+    Since m-25026377 it also stores, per hashtag, the views and date of each feed post it
+    was on (`post_sightings`, migration 0161) — what «popular» is ranked by.
 
     The link is the whole point: it is how "peluquería canina" comes to mean
     `#peluqueriacanina` and `#groomingperros` the next time anyone types it. A typo'd
@@ -692,4 +726,105 @@ def capture(
                 except ValueError:
                     skipped += 1
     written = repo.link_terms(tenant_id, links) if links else 0
-    return CaptureSummary(hashtags=stored, links=written, skipped=skipped)
+
+    sightings, bad = _post_sightings(accounts)
+    recorded = repo.record_post_sightings(tenant_id, sightings) if sightings else 0
+    return CaptureSummary(hashtags=stored, links=written, skipped=skipped + bad, sightings=recorded)
+
+
+def _from_ts(value: int | None) -> datetime | None:
+    if value is None or value <= 0:
+        return None
+    try:
+        return datetime.fromtimestamp(value, UTC)
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def _keep_best(found: dict[tuple[str, str, str], NewPostSighting], item: NewPostSighting) -> None:
+    """One sighting per (tag, network, post) per call — the same post can reach a phase
+    through two queries; the read with more views (then a known date) wins."""
+    key = (item.tag, item.network, item.post_id)
+    current = found.get(key)
+    rank = (item.views if item.views is not None else -1, item.posted_at is not None)
+    if current is None or rank > (
+        current.views if current.views is not None else -1,
+        current.posted_at is not None,
+    ):
+        found[key] = item
+
+
+def _post_sightings(accounts: Sequence[SeenAccount]) -> tuple[list[NewPostSighting], int]:
+    """`(sightings, rejected)`: every (tag, post) the phase's feeds showed, with the views
+    and date the feed already carried — nothing is fetched here."""
+    found: dict[tuple[str, str, str], NewPostSighting] = {}
+    rejected = 0
+    for candidate in accounts:
+        posts: Iterable[SeenPost] = getattr(candidate, "post_sightings", None) or ()
+        for post in posts:
+            for raw in post.hashtags:
+                try:
+                    item = NewPostSighting(
+                        tag=raw,
+                        network=candidate.network,
+                        post_id=post.post_id,
+                        source="referentes",
+                        source_ref=post.source or "referentes",
+                        parser_version=REFERENTES_SIGHTING_PARSER,
+                        posted_at=_from_ts(post.posted_ts),
+                        views=post.views if isinstance(post.views, int) else None,
+                    )
+                except ValueError:
+                    rejected += 1
+                    continue
+                _keep_best(found, item)
+    return list(found.values()), rejected
+
+
+def capture_reels(
+    tenant_id: UUID,
+    reels: Iterable[ReelPost],
+    *,
+    repository: HashtagRepository | None = None,
+) -> CaptureSummary:
+    """Store, for every hashtag in a stored public reel's caption (`public_reels`, 0117 —
+    a reels read already paid for), that reel's views and date. Idempotent: a reel seen
+    again updates its rows. Tags are created `unknown` with no sighting counted, so
+    re-running never inflates `seen_count`."""
+    repo = repository or REPOSITORY
+    found: dict[tuple[str, str, str], NewPostSighting] = {}
+    rejected = 0
+    for reel in reels:
+        for raw in _HASHTAG_IN_TEXT.findall(reel.caption or ""):
+            try:
+                item = NewPostSighting(
+                    tag=raw.lower(),
+                    network=reel.network,
+                    post_id=reel.reel_id,
+                    source="public_reels",
+                    source_ref=f"{reel.network}:{reel.reel_id}",
+                    parser_version=f"{PUBLIC_REELS_SIGHTING_PARSER}+p{reel.parser_version}",
+                    posted_at=reel.taken_at,
+                    views=reel.views if isinstance(reel.views, int) and reel.views >= 0 else None,
+                )
+            except ValueError:
+                rejected += 1
+                continue
+            _keep_best(found, item)
+    sightings = list(found.values())
+    recorded = repo.record_post_sightings(tenant_id, sightings) if sightings else 0
+    return CaptureSummary(skipped=rejected, sightings=recorded)
+
+
+def backfill_public_reels(
+    tenant_id: UUID,
+    *,
+    days: int = POPULAR_WINDOW_DAYS,
+    now: datetime | None = None,
+    repository: HashtagRepository | None = None,
+) -> CaptureSummary:
+    """`capture_reels` over every public reel already stored that was posted in the last
+    `days` — a read of our own database, no vendor call. Safe to repeat."""
+    repo = repository or REPOSITORY
+    since = (now or datetime.now(UTC)) - timedelta(days=days)
+    return capture_reels(tenant_id, repo.public_reels_since(tenant_id, since), repository=repo)

@@ -30,6 +30,11 @@ Two rules the callers can rely on:
 - **Seeding is idempotent, observing accumulates.** A `NewTermLink` with `accumulate=False`
   (the taxonomy seed) leaves an existing link alone; with `accumulate=True` (a real search
   saw it again) its weight grows.
+- **A post counts once per tag** (m-25026377, migration 0161). `record_post_sightings`
+  keeps one row per (tag, network, post): seeing the same post again keeps the higher
+  view count and the first known date, never a second row. «Popular» is
+  `recent_views` — the views of the posts carrying the tag that were posted in the last
+  `POPULAR_WINDOW_DAYS` — and `resolve_popular` is `resolve` re-ordered by it.
 """
 
 from __future__ import annotations
@@ -61,6 +66,19 @@ MIN_TERM_LENGTH = 3
 #: Trigram / difflib similarity a fuzzy hit needs. 0.5 keeps "peluqeria canina" →
 #: "peluqueriacanina" (a typo) and drops unrelated words.
 DEFAULT_MIN_SIMILARITY = 0.5
+
+#: «Popular» = views of the posts posted in this many days (m-25026377, founder 2026-11-13).
+POPULAR_WINDOW_DAYS = 90
+
+#: `resolve_popular` re-orders a pool this many times `limit` (at least
+#: `POPULAR_MIN_POOL`) from `resolve`, so a well-watched tag a few places down the
+#: relevance order can still reach the top.
+POPULAR_POOL_FACTOR = 4
+POPULAR_MIN_POOL = 20
+
+#: Where a post sighting came from (0161 `ck_hashtag_sighting_source`).
+SIGHTING_SOURCES = ("referentes", "public_reels")
+NETWORKS = ("tiktok", "instagram")
 
 MATCH_TERM = "term"
 MATCH_FUZZY_TERM = "fuzzy_term"
@@ -181,6 +199,62 @@ class Classification:
 
 
 @dataclass(frozen=True)
+class NewPostSighting:
+    """`tag` was on public post `post_id` of `network`, which had `views` and was posted at
+    `posted_at` (both None when the provider did not say). Provenance: `source` (which
+    read), `source_ref` (the query label or the source row's natural key) and
+    `parser_version` (the reader that produced the numbers)."""
+
+    tag: str
+    network: str
+    post_id: str
+    source: str
+    source_ref: str
+    parser_version: str
+    posted_at: datetime | None = None
+    views: int | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "tag", normalize_tag(self.tag))
+        if not fold(self.tag):
+            raise ValueError(f"hashtag {self.tag!r} has no letters or digits")
+        object.__setattr__(self, "network", self.network.strip().lower())
+        _check(self.network, NETWORKS, "network")
+        object.__setattr__(self, "post_id", str(self.post_id).strip())
+        if not self.post_id:
+            raise ValueError("post_id is empty")
+        _check(self.source, SIGHTING_SOURCES, "source")
+        if not self.source_ref.strip() or not self.parser_version.strip():
+            raise ValueError("a sighting needs its source_ref and parser_version")
+        if self.views is not None and self.views < 0:
+            raise ValueError("views cannot be negative")
+        if self.posted_at is not None and self.posted_at.tzinfo is None:
+            raise ValueError("posted_at must be timezone-aware")
+
+
+@dataclass(frozen=True)
+class RecentViews:
+    """What the catalog knows of a tag's last `POPULAR_WINDOW_DAYS`: the summed views of
+    the distinct posts carrying it, and how many such posts there were."""
+
+    views: int = 0
+    posts: int = 0
+
+
+@dataclass(frozen=True)
+class ReelPost:
+    """One `public_reels` row (0117) as the catalog reads it — a reels read already paid
+    for, re-read for its caption, views and date."""
+
+    network: str
+    reel_id: str
+    taken_at: datetime
+    caption: str
+    views: int | None
+    parser_version: int
+
+
+@dataclass(frozen=True)
 class StoredHashtag:
     tag: str
     slug: str
@@ -203,6 +277,11 @@ class ResolvedHashtag:
     match: str
     #: 1.0 for an exact match, the similarity otherwise.
     score: float
+    #: Views of the distinct posts carrying the tag posted in the last
+    #: `POPULAR_WINDOW_DAYS` (0161), and how many posts — 0 when nothing recent is known.
+    #: Filled by `resolve_popular`; `resolve` leaves them at 0.
+    recent_views: int = 0
+    recent_posts: int = 0
 
 
 class HashtagRepository(Protocol):
@@ -259,6 +338,85 @@ class HashtagRepository(Protocol):
         docstring). Unknown tags are ignored. Returns how many rows changed."""
         ...
 
+    def record_post_sightings(self, tenant_id: UUID, items: Iterable[NewPostSighting]) -> int:
+        """Store which public posts each tag was on, with their views and date — one row per
+        (tag, network, post), creating a tag the catalog has not seen yet (kind
+        `unknown`, no sighting counted). A post seen again keeps the higher view count and
+        its first known date. Returns how many distinct (tag, network, post) were written."""
+        ...
+
+    def recent_views(
+        self,
+        tenant_id: UUID,
+        tags: Iterable[str],
+        *,
+        window_days: int = POPULAR_WINDOW_DAYS,
+        now: datetime | None = None,
+    ) -> dict[str, RecentViews]:
+        """Per tag, the views of its posts posted in the last `window_days` before `now`.
+        A post with no known date never counts (it cannot be shown to be recent); a tag
+        with nothing recent is absent from the answer."""
+        ...
+
+    def resolve_popular(
+        self,
+        tenant_id: UUID,
+        term: str,
+        *,
+        limit: int = 10,
+        min_similarity: float = DEFAULT_MIN_SIMILARITY,
+        kinds: Sequence[str] = DEFAULT_KINDS,
+        window_days: int = POPULAR_WINDOW_DAYS,
+        now: datetime | None = None,
+    ) -> tuple[ResolvedHashtag, ...]:
+        """`resolve`, re-ordered by recent views: the same tier, a wider pool, the most
+        watched first, `resolve`'s own order breaking ties (so with no views known the
+        answer is exactly `resolve`'s). Each hit carries `recent_views`/`recent_posts`."""
+        ...
+
+    def public_reels_since(self, tenant_id: UUID, since: datetime) -> tuple[ReelPost, ...]:
+        """The stored public reels (0117) posted at or after `since` — what a reels read
+        already brought, for `catalog.backfill_public_reels`."""
+        ...
+
+
+def _rank_by_recent_views(
+    repo: HashtagRepository,
+    tenant_id: UUID,
+    term: str,
+    *,
+    limit: int,
+    min_similarity: float,
+    kinds: Sequence[str],
+    window_days: int,
+    now: datetime | None,
+) -> tuple[ResolvedHashtag, ...]:
+    pool = repo.resolve(
+        tenant_id,
+        term,
+        limit=max(limit * POPULAR_POOL_FACTOR, POPULAR_MIN_POOL),
+        min_similarity=min_similarity,
+        kinds=kinds,
+    )
+    if not pool:
+        return ()
+    recent = repo.recent_views(
+        tenant_id, [hit.hashtag.tag for hit in pool], window_days=window_days, now=now
+    )
+    enriched = []
+    for hit in pool:
+        known = recent.get(hit.hashtag.tag, RecentViews())
+        enriched.append(replace(hit, recent_views=known.views, recent_posts=known.posts))
+    # `sort` is stable: equal views keep `resolve`'s relevance order.
+    enriched.sort(key=lambda hit: -hit.recent_views)
+    return tuple(enriched[:limit])
+
+
+def _cutoff(window_days: int, now: datetime | None) -> datetime:
+    if window_days <= 0:
+        raise ValueError("window_days must be positive")
+    return (now or datetime.now(UTC)) - timedelta(days=window_days)
+
 
 # --------------------------------------------------------------------------------------
 # in-memory
@@ -293,6 +451,10 @@ class MemoryHashtagRepository:
     _tags: dict[str, StoredHashtag] = field(default_factory=dict)
     _links: dict[tuple[str, str], _Link] = field(default_factory=dict)
     _last: datetime | None = None
+    #: (tag, network, post_id) → the stored sighting (0161's natural key).
+    _sightings: dict[tuple[str, str, str], NewPostSighting] = field(default_factory=dict)
+    #: What `public_reels` (0117) holds, for `public_reels_since`; tests fill it.
+    public_reels: list[ReelPost] = field(default_factory=list)
 
     def _now(self) -> datetime:
         # Strictly increasing, like `now()` across transactions (two writes in one clock
@@ -448,6 +610,71 @@ class MemoryHashtagRepository:
             changed += 1
         return changed
 
+    def record_post_sightings(self, tenant_id: UUID, items: Iterable[NewPostSighting]) -> int:
+        written: set[tuple[str, str, str]] = set()
+        for item in items:
+            if item.tag not in self._tags:
+                self._upsert_one(NewHashtag(tag=item.tag, source="observed", network=item.network))
+            key = (item.tag, item.network, item.post_id)
+            current = self._sightings.get(key)
+            if current is None:
+                self._sightings[key] = item
+            else:
+                newer = item.views is not None and (
+                    current.views is None or item.views >= current.views
+                )
+                views = [v for v in (current.views, item.views) if v is not None]
+                self._sightings[key] = replace(
+                    item if newer else current,
+                    views=max(views) if views else None,
+                    posted_at=current.posted_at or item.posted_at,
+                )
+            written.add(key)
+        return len(written)
+
+    def recent_views(
+        self,
+        tenant_id: UUID,
+        tags: Iterable[str],
+        *,
+        window_days: int = POPULAR_WINDOW_DAYS,
+        now: datetime | None = None,
+    ) -> dict[str, RecentViews]:
+        cutoff = _cutoff(window_days, now)
+        wanted = {normalize_tag(t) for t in tags}
+        out: dict[str, RecentViews] = {}
+        for (tag, _network, _post), sighting in self._sightings.items():
+            if tag not in wanted or sighting.posted_at is None or sighting.posted_at < cutoff:
+                continue
+            seen = out.get(tag, RecentViews())
+            out[tag] = RecentViews(seen.views + (sighting.views or 0), seen.posts + 1)
+        return out
+
+    def resolve_popular(
+        self,
+        tenant_id: UUID,
+        term: str,
+        *,
+        limit: int = 10,
+        min_similarity: float = DEFAULT_MIN_SIMILARITY,
+        kinds: Sequence[str] = DEFAULT_KINDS,
+        window_days: int = POPULAR_WINDOW_DAYS,
+        now: datetime | None = None,
+    ) -> tuple[ResolvedHashtag, ...]:
+        return _rank_by_recent_views(
+            self,
+            tenant_id,
+            term,
+            limit=limit,
+            min_similarity=min_similarity,
+            kinds=kinds,
+            window_days=window_days,
+            now=now,
+        )
+
+    def public_reels_since(self, tenant_id: UUID, since: datetime) -> tuple[ReelPost, ...]:
+        return tuple(r for r in self.public_reels if r.taken_at >= since)
+
 
 # --------------------------------------------------------------------------------------
 # Postgres
@@ -558,6 +785,53 @@ _NEEDS_CLASSIFICATION = text(
       AND (kind = 'unknown' OR (kind = 'topic' AND niche IS NULL))
     ORDER BY seen_count DESC, tag
     LIMIT :limit
+    """
+)
+
+
+#: The read that brought a higher (or first) view count is the one the row's provenance
+#: names; a read with no views never takes it over.
+_SIGHTING_NEWER = (
+    "(EXCLUDED.views IS NOT NULL AND (hashtag_post_sightings.views IS NULL "
+    "OR EXCLUDED.views >= hashtag_post_sightings.views))"
+)
+
+# One row per (tag, network, post). Views only grow (`GREATEST` skips NULLs) and a known
+# date stays.
+_UPSERT_SIGHTING = text(
+    f"""
+    INSERT INTO hashtag_post_sightings
+        (hashtag_id, network, post_id, posted_at, views, source, source_ref, parser_version)
+    SELECT id, :network, :post_id, CAST(:posted_at AS timestamptz), CAST(:views AS bigint),
+           :source, :source_ref, :parser_version
+    FROM hashtags WHERE tag = :tag
+    ON CONFLICT (hashtag_id, network, post_id) DO UPDATE SET
+        views = GREATEST(hashtag_post_sightings.views, EXCLUDED.views),
+        posted_at = COALESCE(hashtag_post_sightings.posted_at, EXCLUDED.posted_at),
+        source = CASE WHEN {_SIGHTING_NEWER}
+            THEN EXCLUDED.source ELSE hashtag_post_sightings.source END,
+        source_ref = CASE WHEN {_SIGHTING_NEWER}
+            THEN EXCLUDED.source_ref ELSE hashtag_post_sightings.source_ref END,
+        parser_version = CASE WHEN {_SIGHTING_NEWER}
+            THEN EXCLUDED.parser_version ELSE hashtag_post_sightings.parser_version END,
+        last_seen_at = now()
+    """
+)
+
+_RECENT_VIEWS = text(
+    """
+    SELECT h.tag, COALESCE(sum(s.views), 0) AS views, count(*) AS posts
+    FROM hashtag_post_sightings s JOIN hashtags h ON h.id = s.hashtag_id
+    WHERE h.tag = ANY(:tags) AND s.posted_at >= :cutoff
+    GROUP BY h.tag
+    """
+)
+
+_PUBLIC_REELS_SINCE = text(
+    """
+    SELECT network, reel_id, taken_at, caption, views, parser_version
+    FROM public_reels WHERE taken_at >= :since
+    ORDER BY taken_at, network, reel_id
     """
 )
 
@@ -715,3 +989,90 @@ class PostgresHashtagRepository:
                 )
                 changed += result.rowcount or 0
         return changed
+
+    def record_post_sightings(self, tenant_id: UUID, items: Iterable[NewPostSighting]) -> int:
+        written: set[tuple[str, str, str]] = set()
+        with tenant_session(tenant_id) as session:
+            for item in items:
+                session.execute(
+                    _UPSERT_HASHTAG,
+                    {
+                        "tag": item.tag,
+                        "slug": fold(item.tag),
+                        "kind": "unknown",
+                        "niche": None,
+                        "country_code": None,
+                        "source": "observed",
+                        "classified_by": "rule",
+                        "networks": [item.network],
+                        "seen": 0,
+                    },
+                )
+                session.execute(
+                    _UPSERT_SIGHTING,
+                    {
+                        "tag": item.tag,
+                        "network": item.network,
+                        "post_id": item.post_id,
+                        "posted_at": item.posted_at,
+                        "views": item.views,
+                        "source": item.source,
+                        "source_ref": item.source_ref,
+                        "parser_version": item.parser_version,
+                    },
+                )
+                written.add((item.tag, item.network, item.post_id))
+        return len(written)
+
+    def recent_views(
+        self,
+        tenant_id: UUID,
+        tags: Iterable[str],
+        *,
+        window_days: int = POPULAR_WINDOW_DAYS,
+        now: datetime | None = None,
+    ) -> dict[str, RecentViews]:
+        cutoff = _cutoff(window_days, now)
+        wanted = sorted({normalize_tag(t) for t in tags})
+        if not wanted:
+            return {}
+        with tenant_session(tenant_id) as session:
+            rows = session.execute(_RECENT_VIEWS, {"tags": wanted, "cutoff": cutoff}).all()
+        return {r.tag: RecentViews(int(r.views), int(r.posts)) for r in rows}
+
+    def resolve_popular(
+        self,
+        tenant_id: UUID,
+        term: str,
+        *,
+        limit: int = 10,
+        min_similarity: float = DEFAULT_MIN_SIMILARITY,
+        kinds: Sequence[str] = DEFAULT_KINDS,
+        window_days: int = POPULAR_WINDOW_DAYS,
+        now: datetime | None = None,
+    ) -> tuple[ResolvedHashtag, ...]:
+        return _rank_by_recent_views(
+            self,
+            tenant_id,
+            term,
+            limit=limit,
+            min_similarity=min_similarity,
+            kinds=kinds,
+            window_days=window_days,
+            now=now,
+        )
+
+    def public_reels_since(self, tenant_id: UUID, since: datetime) -> tuple[ReelPost, ...]:
+        with tenant_session(tenant_id) as session:
+            rows = session.execute(_PUBLIC_REELS_SINCE, {"since": since}).all()
+        return tuple(
+            ReelPost(
+                network=r.network,
+                reel_id=r.reel_id,
+                taken_at=r.taken_at,
+                caption=r.caption or "",
+                views=r.views,
+                parser_version=int(r.parser_version),
+            )
+            for r in rows
+        )

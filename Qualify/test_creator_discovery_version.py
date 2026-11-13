@@ -94,6 +94,10 @@ _NOT_ALGORITHM = frozenset(
         "REACH_SIGNAL",
         "reach_signals",
         "_median",
+        # what the hashtag catalog keeps of each feed post (m-25026377): read only by
+        # `qualify_api.hashtags.catalog.capture`, never by the ranking
+        "PostSighting",
+        "_post_sighting",
         # the filter-JSON CLI bench
         "result_path",
         "save_result",
@@ -130,7 +134,12 @@ FINGERPRINTS: dict[int, str] = {
     # `CHOSEN_HASHTAGS` moved verbatim to `discovery_seed` with the hashtag catalog (now
     # `qualify_api.hashtags.catalog`); the same nodes, only in another order. Was
     # "48c38afca303731b21563875114286b3ae48512849d4f1b1c51d3705813c0d44".
-    12: "c217b646cd5fdf98b09ab1f2e7e3fa2013838f20f74c633751551b5ec358e885",
+    # Re-pinned again, not bumped (m-25026377): `Candidate` gained `post_sightings` and the
+    # two feed parsers append to it — the post id, views and date the hashtag catalog
+    # stores. Nothing the ranking, the filters or the review read changed: same accounts,
+    # and a bump would re-run (and re-pay) every brand's saved search. Was
+    # "c217b646cd5fdf98b09ab1f2e7e3fa2013838f20f74c633751551b5ec358e885".
+    12: "d99ae924dd13b85b1832f3e2a56cfad7cd07d61dd654bce54b21068fc9f88805",
 }
 
 
