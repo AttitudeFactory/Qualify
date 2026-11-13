@@ -713,3 +713,84 @@ def test_close_with_a_round_in_flight_returns_within_its_bound() -> None:
     gate.set()
     stuck._thread.join(timeout=5)
     assert not stuck._thread.is_alive()
+
+
+async def test_a_tenant_that_keeps_timing_out_backs_off_and_does_not_starve_the_others(
+    caplog,
+) -> None:
+    """The reviewer's scenario: one tenant always hits its deadline, one is healthy.
+    Without a backoff the bad one is due again the moment it times out (it was stamped
+    at its start) and is retried back-to-back."""
+    bad, good = uuid4(), uuid4()
+    now = [0.0]
+    polls: list[tuple[UUID, float]] = []
+
+    async def syncer(tenant_id: UUID) -> list[SyncReport]:
+        polls.append((tenant_id, now[0]))
+        if tenant_id == bad:
+            now[0] += 20  # the deadline passes on the (fake) clock…
+            await asyncio.sleep(30)  # …and for real: wait_for cancels it
+        return []
+
+    tick = ConversationsTick(
+        tenants=ScopedTenants([bad, good]),
+        sender=NoSender(),
+        syncer=syncer,
+        sync_interval=10,
+        sync_in_background=True,
+        sync_tenant_timeout=0.02,
+        monotonic=lambda: now[0],
+    )
+    caplog.set_level(logging.INFO, logger="qualify_api.conversations.worker")
+
+    async def pass_at(t: float) -> None:
+        now[0] = max(now[0], t)
+        await tick.run_once()
+        assert tick.background is not None
+        tick.background.wait(timeout=5)
+
+    try:
+        await pass_at(0)  # bad: 0 → times out at 20; good: polled at 20
+        assert polls == [(bad, 0), (good, 20)]
+        await pass_at(20)  # right after the timeout: nobody is due
+        assert polls == [(bad, 0), (good, 20)]
+        await pass_at(30)  # one interval after the failure ENDED: both due again
+        assert polls[2:] == [(bad, 30), (good, 50)]
+        await pass_at(60)  # good is due (50 + 10); bad backs off 2 × 10 from 50
+        assert polls[4:] == [(good, 60)]
+        await pass_at(70)
+        assert polls[5:] == [(bad, 70), (good, 90)]
+        timeouts = [r.getMessage() for r in caplog.records if "sync_timeout" in r.getMessage()]
+        assert [m.rsplit("next_due_s=", 1)[1] for m in timeouts] == ["10", "20", "40"]
+    finally:
+        tick.close()
+
+
+async def test_a_success_resets_the_backoff() -> None:
+    tenant = uuid4()
+    now = [0.0]
+    fail = [True]
+
+    async def syncer(tenant_id: UUID) -> list[SyncReport]:
+        if fail[0]:
+            raise RuntimeError("graph down")
+        return []
+
+    tick = ConversationsTick(
+        tenants=ScopedTenants([tenant]),
+        sender=NoSender(),
+        syncer=syncer,
+        sync_interval=10,
+        monotonic=lambda: now[0],
+    )
+    await tick.run_once()  # inline: fails at 0 → due at 10
+    assert not tick._sync_due(tenant)
+    now[0] = 10
+    await tick.run_once()  # fails again → due at 10 + 20
+    now[0] = 29
+    assert not tick._sync_due(tenant)
+    now[0] = 30
+    fail[0] = False
+    await tick.run_once()  # succeeds → due one plain interval later
+    now[0] = 40
+    assert tick._sync_due(tenant)

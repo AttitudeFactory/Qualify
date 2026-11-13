@@ -74,6 +74,10 @@ SYNC_TENANT_TIMEOUT_SECONDS = 600.0
 # m-25017174: a round older than this many sync intervals is reported as stuck, at most
 # once per sync interval, each time a due round is refused because of it.
 SYNC_STUCK_AFTER_INTERVALS = 3
+# m-25017174: a tenant whose poll timed out or raised is not due again until
+# `sync_interval × factor` after the failure ENDED; the factor doubles per consecutive
+# failure (1, 2, 4, 8) and stays at this cap. A success resets it.
+SYNC_BACKOFF_MAX_FACTOR = 8
 
 
 def worker_id() -> str:
@@ -175,8 +179,10 @@ class BackgroundSync:
     keeps per-connection HTTP clients bound to it); at most one round in flight — a round
     is refused while the previous one runs. A tenant whose poll raises, or runs longer than
     `tenant_timeout`, is logged and the round goes on. `on_start(tenant_id, at)` is called
-    as each tenant's poll begins (the sync interval counts from there). `close()` cancels a
-    round in flight and stops the thread.
+    as each tenant's poll begins (the sync interval counts from there) and
+    `on_end(tenant_id, at, ok)` as it ends; for a failure it returns the delay before the
+    tenant is due again (logged as `next_due_s`). `close()` cancels a round in flight and
+    stops the thread.
 
     Cancelling a poll (timeout or `close()`) lands only on an `await`: every repository
     and credential call of the sync is a synchronous `with tenant_session(...)` /
@@ -193,17 +199,20 @@ class BackgroundSync:
         monotonic: Callable[[], float] = time.monotonic,
         tenant_timeout: float = SYNC_TENANT_TIMEOUT_SECONDS,
         on_start: Callable[[UUID, float], None] | None = None,
+        on_end: Callable[[UUID, float, bool], float | None] | None = None,
     ) -> None:
         self._syncer = syncer
         self._monotonic = monotonic
         self._tenant_timeout = tenant_timeout
         self._on_start = on_start
+        self._on_end = on_end
         self._loop = asyncio.new_event_loop()
         self._pending: Future[None] | None = None
         self._closed = False
         # Written by the sync thread, read by the main one: single assignments (GIL-atomic).
         self.round_started: float | None = None
         self.tenant_in_flight: UUID | None = None
+        self.tenant_started: float | None = None
         self._thread = threading.Thread(target=self._serve, name=name, daemon=True)
         self._thread.start()
 
@@ -230,7 +239,7 @@ class BackgroundSync:
         self._pending = asyncio.run_coroutine_threadsafe(self._round(list(tenant_ids)), self._loop)
         return True
 
-    def submit_age(self) -> float | None:
+    def round_age(self) -> float | None:
         """Seconds the round in flight has been running; None when idle."""
         started = self.round_started
         return None if started is None or not self.busy else self._monotonic() - started
@@ -241,7 +250,7 @@ class BackgroundSync:
         try:
             for tenant_id in tenant_ids:
                 started = self._monotonic()
-                self.tenant_in_flight = tenant_id
+                self.tenant_in_flight, self.tenant_started = tenant_id, started
                 if self._on_start is not None:
                     self._on_start(tenant_id, started)
                 try:
@@ -251,24 +260,35 @@ class BackgroundSync:
                 except TimeoutError:
                     failed += 1
                     logger.warning(
-                        "conversations.worker.sync_timeout tenant_id=%s timeout_s=%.0f",
+                        "conversations.worker.sync_timeout tenant_id=%s timeout_s=%.0f "
+                        "next_due_s=%s",
                         tenant_id,
                         self._tenant_timeout,
+                        self._ended(tenant_id, ok=False),
                     )
                     continue
                 except Exception:  # noqa: BLE001 — the next tenant still polls
                     failed += 1
-                    logger.exception("conversations.worker.sync_failed tenant_id=%s", tenant_id)
+                    logger.exception(
+                        "conversations.worker.sync_failed tenant_id=%s next_due_s=%s",
+                        tenant_id,
+                        self._ended(tenant_id, ok=False),
+                    )
                     continue
+                self._ended(tenant_id, ok=True)
                 _log_sync(tenant_id, reports, self._monotonic() - started)
         finally:
-            self.tenant_in_flight = None
+            self.tenant_in_flight = self.tenant_started = None
         logger.info(
             "conversations.worker.sync_round tenants=%d failed=%d duration_s=%.1f",
             len(tenant_ids),
             failed,
             self._monotonic() - round_started,
         )
+
+    def _ended(self, tenant_id: UUID, *, ok: bool) -> str:
+        delay = None if self._on_end is None else self._on_end(tenant_id, self._monotonic(), ok)
+        return "-" if delay is None else f"{delay:.0f}"
 
     def wait(self, timeout: float | None = None) -> None:
         """Block until the round in flight (if any) ends — for tests."""
@@ -321,7 +341,10 @@ class ConversationsTick:
         self._limit = limit
         self._clock = clock
         self._monotonic = monotonic
-        self._last_sync: dict[UUID, float] = {}
+        # When each tenant is due for its next poll (monotonic seconds). Written by the
+        # sync thread in background mode: single dict assignments (GIL-atomic).
+        self._next_due: dict[UUID, float] = {}
+        self._failures: dict[UUID, int] = {}
         self._sync_in_background = sync_in_background
         self._sync_tenant_timeout = sync_tenant_timeout
         self._background: BackgroundSync | None = None
@@ -337,32 +360,53 @@ class ConversationsTick:
             self._background.close()
 
     def _stamp(self, tenant_id: UUID, at: float) -> None:
-        """Called by the sync thread as a tenant's poll starts (a single dict assignment)."""
-        self._last_sync[tenant_id] = at
+        """A tenant's poll starts: it is due again one interval from now."""
+        if self._sync_interval is not None:
+            self._next_due[tenant_id] = at + self._sync_interval
+
+    def _ended(self, tenant_id: UUID, at: float, ok: bool) -> float | None:
+        """A tenant's poll ended. A failure (timeout or exception) pushes its next poll to
+        `interval × factor` after `at`, the factor doubling per consecutive failure up to
+        `SYNC_BACKOFF_MAX_FACTOR`; returns that delay. A success resets the count."""
+        if ok:
+            self._failures.pop(tenant_id, None)
+            return None
+        if self._sync_interval is None:
+            return None
+        failures = self._failures.get(tenant_id, 0) + 1
+        self._failures[tenant_id] = failures
+        delay = self._sync_interval * min(2 ** (failures - 1), SYNC_BACKOFF_MAX_FACTOR)
+        self._next_due[tenant_id] = at + delay
+        return delay
 
     def _warn_if_stuck(self, due: int) -> None:
         background, interval = self._background, self._sync_interval
         if background is None or interval is None:
             return
-        age = background.submit_age()
+        age = background.round_age()
         if age is None or age < SYNC_STUCK_AFTER_INTERVALS * interval:
             return
         now = self._monotonic()
         if self._stuck_warned_at is not None and now - self._stuck_warned_at < interval:
             return
         self._stuck_warned_at = now
+        # A long round that progresses shows a different tenant, or a short
+        # tenant_running_s, from one warning to the next; a stuck one does not.
+        tenant_started = background.tenant_started
         logger.warning(
-            "conversations.worker.sync_stuck round_age_s=%.0f tenant_in_flight=%s due=%d",
+            "conversations.worker.sync_stuck round_age_s=%.0f tenant_in_flight=%s "
+            "tenant_running_s=%s due=%d",
             age,
             background.tenant_in_flight,
+            "-" if tenant_started is None else f"{now - tenant_started:.0f}",
             due,
         )
 
     def _sync_due(self, tenant_id: UUID) -> bool:
         if self._syncer is None or self._sync_interval is None:
             return False
-        last = self._last_sync.get(tenant_id)
-        return last is None or self._monotonic() - last >= self._sync_interval
+        next_due = self._next_due.get(tenant_id)
+        return next_due is None or self._monotonic() >= next_due
 
     async def run_once(self) -> TickReport:
         now = self._clock()
@@ -407,19 +451,25 @@ class ConversationsTick:
                     monotonic=self._monotonic,
                     tenant_timeout=self._sync_tenant_timeout,
                     on_start=self._stamp,
+                    on_end=self._ended,
                 )
             if not self._background.submit([p.tenant_id for p in due]):
                 self._warn_if_stuck(len(due))
             return
         for tenant_pass in due:
-            self._last_sync[tenant_pass.tenant_id] = self._monotonic()
+            self._stamp(tenant_pass.tenant_id, self._monotonic())
             try:
                 tenant_pass.sync = await self._syncer(tenant_pass.tenant_id)
             except Exception as exc:  # noqa: BLE001 — reported, the next tenant still polls
+                delay = self._ended(tenant_pass.tenant_id, self._monotonic(), False)
                 logger.exception(
-                    "conversations.worker.sync_failed tenant_id=%s", tenant_pass.tenant_id
+                    "conversations.worker.sync_failed tenant_id=%s next_due_s=%s",
+                    tenant_pass.tenant_id,
+                    "-" if delay is None else f"{delay:.0f}",
                 )
                 tenant_pass.errors.append(f"sync:{type(exc).__name__}")
+                continue
+            self._ended(tenant_pass.tenant_id, self._monotonic(), True)
 
 
 class _Runner(Protocol):
