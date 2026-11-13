@@ -51,16 +51,14 @@ ACCEPT: dict[str, list[str]] = {
 # -- copy (qualify-copy-es) -------------------------------------------------------------
 
 ADD_TILE_TITLE = "Subir foto o video"
-ADD_TILE_HINT = "Una que hiciste tú"
+ADD_TILE_HINT = "Desde tu teléfono"
 ADD_TILE_LABEL = "Subir una foto o un video tuyo para programarlo"
 VIEW_TITLE = "Sube tu foto o video"
 VIEW_HINT = "Una foto o un video que hiciste tú. Después eliges cuándo sale."
-BACK_TO_GRID = "Volver a tus publicaciones"
+BACK_TO_GRID = "Volver a elegir"
 PICK_TITLE = "Toca para elegir una foto o un video"
-PICK_HINT = (
-    f"Fotos JPG, PNG, HEIC o WebP de hasta {PHOTO_MAX_MB} MB. "
-    f"Videos MP4 o MOV de hasta {VIDEO_MAX_MB} MB."
-)
+#: Formats and sizes are said only when a file is refused (UX review m-25026384).
+PICK_HINT = "Una foto o un video de tu teléfono."
 PICK_DESKTOP_HINT = "Desde la computadora también puedes arrastrarlo aquí."
 DROP_HINT = "Suelta aquí tu foto o video"
 CHANGE_FILE = "Cambiar archivo"
@@ -90,10 +88,26 @@ PHOTO_BUSY_TEXT = "Estamos preparando otra foto. Vuelve a intentarlo en un momen
 UPLOAD_FAILED_TEXT = "No pudimos subir tu archivo. Vuelve a elegirlo."
 NO_FILE_TEXT = "Primero elige una foto o un video."
 SAVE_FAILED_TEXT = "No pudimos guardar tu publicación. Toca «Guardar y continuar» otra vez."
-NOT_LISTED_TEXT = (
-    "Guardamos tu publicación, pero no pudimos mostrarla aquí. Cierra este panel y "
-    "vuelve a abrir «Nueva publicación»: la encontrarás lista para programar."
-)
+NOT_LISTED_TEXT = "Guardamos tu publicación, pero todavía no aparece en la lista."
+#: Reads the candidates again (same file, same piece — never a second one).
+SHOW_AGAIN = "Mostrarla otra vez"
+#: A file picked while «Guardar y continuar» runs (the zone is disabled then; a browser
+#: can still send one).
+SAVING_WAIT_TEXT = "Espera a que terminemos de guardar tu publicación."
+#: Ids the focus moves to when the view opens and closes (UX review m-25026384).
+VIEW_TITLE_ID = "q-own-upload-title"
+ADD_TILE_ID = "q-own-upload-card"
+
+
+#: ISO base media (MP4, MOV): every file starts with a box whose type, at bytes 4-8, is
+#: `ftyp` (QuickTime files from old cameras may open with `moov`/`mdat`/`wide`/`free`).
+_ISO_BMFF_FIRST_BOXES = (b"ftyp", b"moov", b"mdat", b"wide", b"free", b"skip")
+
+
+def looks_like_video(head: bytes) -> bool:
+    """Whether a file's first bytes are an MP4/MOV container (its first box type at
+    offset 4) — the name alone is not trusted."""
+    return len(head) >= 8 and head[4:8] in _ISO_BMFF_FIRST_BOXES
 
 
 def media_kind(name: str) -> str:

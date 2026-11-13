@@ -114,8 +114,8 @@ REFUSAL_TEXT: dict[UploadRefusal, str] = {
     UploadRefusal.NOT_THIS_TENANT: "No encontramos el archivo que subiste. Vuelve a subirlo.",
     UploadRefusal.NOT_AN_UPLOAD: "No encontramos el archivo que subiste. Vuelve a subirlo.",
     UploadRefusal.UNSUPPORTED_MEDIA_TYPE: "Solo puedes subir una foto o un video.",
-    UploadRefusal.UNSUPPORTED_CONTENT_TYPE: "Instagram no acepta ese formato. Sube una foto "
-    "JPG o un video MP4 o MOV.",
+    UploadRefusal.UNSUPPORTED_CONTENT_TYPE: "Instagram no acepta ese archivo. Elige otra foto "
+    "o un video MP4 o MOV.",
     UploadRefusal.IMAGE_TOO_LARGE: "La foto pesa más de 8 MB y Instagram no la acepta. "
     "Prueba con una más liviana.",
     UploadRefusal.INVALID_SIZE: "No pudimos leer el archivo. Vuelve a subirlo.",

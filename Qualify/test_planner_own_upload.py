@@ -13,6 +13,7 @@ Storage, the normaliser and the backend are faked: nothing touches R2 or the dat
 from __future__ import annotations
 
 import io
+import json
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
@@ -42,10 +43,20 @@ _KEY = f"t/{_TENANT}/uploads/planner/abc_foto.jpg"
 class _Upload:
     """What Reflex hands the handler: a name and a spooled file."""
 
-    def __init__(self, name: str, size: int = 1024) -> None:
+    def __init__(self, name: str, size: int = 1024, head: bytes | None = None) -> None:
         self.name = name
         self.size = size
-        self.file = io.BytesIO(b"x" * min(size, 16))
+        self.file = io.BytesIO(head if head is not None else b"x" * min(size, 16))
+
+
+#: The first bytes of a real MP4 (an ISO-BMFF `ftyp` box) and of a QuickTime MOV.
+_MP4_HEAD = b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00"
+_MOV_HEAD = b"\x00\x00\x00\x14ftypqt  \x00\x00\x00\x00"
+
+
+async def _save(state: PlannerState) -> list:
+    """Run the background «Guardar y continuar» to the end; what it yields."""
+    return [event async for event in PlannerState.save_own_upload.fn(state)]
 
 
 def _post(post_id: str, *, schedulable: bool = True) -> PostOptionVM:
@@ -145,12 +156,14 @@ async def test_a_photo_is_converted_to_a_jpeg_under_8_mb_and_stored(storage) -> 
 
 async def test_a_video_is_streamed_from_its_spooled_file(storage) -> None:
     state = PlannerState()
-    upload = _Upload("clip.MOV", size=120 * 1024 * 1024)
+    upload = _Upload("clip.MOV", size=120 * 1024 * 1024, head=_MOV_HEAD)
     await PlannerState.handle_own_upload.fn(state, [upload])
 
     assert storage["normalize"] == [] and storage["bytes"] == []
-    # the upload object itself goes to `save_upload` (it streams `upload.file`)
+    # the upload object itself goes to `save_upload` (it streams `upload.file`), with its
+    # position put back after the 12-byte check
     assert storage["stream"][0][1] is upload
+    assert upload.file.tell() == 0
     assert state.own_upload_media == "video"
     assert state._own_upload_content_type == "video/quicktime"
     assert state._own_upload_size == 120 * 1024 * 1024
@@ -163,6 +176,8 @@ async def test_a_video_is_streamed_from_its_spooled_file(storage) -> None:
         ([_Upload("animacion.gif")], WRONG_TYPE_TEXT),
         ([_Upload("foto.png", size=51 * 1024 * 1024)], PHOTO_TOO_HEAVY_TEXT),
         ([_Upload("video.mp4", size=301 * 1024 * 1024)], VIDEO_TOO_HEAVY_TEXT),
+        # a text file renamed .mp4: its first bytes are not a video container
+        ([_Upload("video.mp4", head=b"hola, esto es texto")], WRONG_TYPE_TEXT),
         ([_Upload("a.jpg"), _Upload("b.jpg")], TOO_MANY_TEXT),
     ],
 )
@@ -242,7 +257,7 @@ async def test_save_creates_the_piece_selects_it_and_goes_to_when(backend) -> No
     seen, _ = backend
     state = _stored_state()
 
-    await PlannerState.save_own_upload.fn(state)
+    events = await _save(state)
 
     request = seen["requests"][0]
     assert str(request.upload_id) == "5b0f1d4e-1111-4222-8333-444455556666"
@@ -259,6 +274,8 @@ async def test_save_creates_the_piece_selects_it_and_goes_to_when(backend) -> No
     assert state.own_upload_view is False
     assert state.own_upload_key == "" and state._own_upload_id == ""
     assert state.own_upload_saving is False
+    # the focus goes to step 2's title in the drawer («Paso 2 de 3»)
+    assert len(events) == 1 and ".q-drawer .q-step-title" in str(events[0])
 
 
 async def test_a_refusal_says_why_keeps_the_file_and_selects_nothing(backend) -> None:
@@ -266,7 +283,7 @@ async def test_a_refusal_says_why_keeps_the_file_and_selects_nothing(backend) ->
     behaviour["refuse"] = OwnUploadRefused(UploadRefusal.IMAGE_TOO_LARGE)
     state = _stored_state()
 
-    await PlannerState.save_own_upload.fn(state)
+    await _save(state)
 
     assert state.own_upload_error == OwnUploadRefused(UploadRefusal.IMAGE_TOO_LARGE).text
     assert state.form_selected_ids == []
@@ -281,11 +298,11 @@ async def test_a_retry_after_a_failure_reuses_the_same_upload_id(backend) -> Non
     behaviour["refuse"] = RuntimeError("db down")
     state = _stored_state()
 
-    await PlannerState.save_own_upload.fn(state)
+    await _save(state)
     assert state.own_upload_error == SAVE_FAILED_TEXT
 
     behaviour["refuse"] = None
-    await PlannerState.save_own_upload.fn(state)
+    await _save(state)
 
     first, second = seen["requests"]
     assert first.upload_id == second.upload_id
@@ -297,7 +314,7 @@ async def test_a_double_tap_while_saving_does_nothing(backend) -> None:
     state = _stored_state()
     state.own_upload_saving = True
 
-    await PlannerState.save_own_upload.fn(state)
+    await _save(state)
 
     assert seen["requests"] == []
 
@@ -306,22 +323,113 @@ async def test_save_without_a_stored_file_asks_for_one(backend) -> None:
     seen, _ = backend
     state = PlannerState()
 
-    await PlannerState.save_own_upload.fn(state)
+    await _save(state)
 
     assert seen["requests"] == []
     assert state.own_upload_error == planner_upload_vm.NO_FILE_TEXT
 
 
-async def test_a_piece_that_does_not_list_says_where_to_find_it(backend) -> None:
-    _, behaviour = backend
+async def test_a_piece_that_does_not_list_offers_show_again_on_the_same_piece(backend) -> None:
+    seen, behaviour = backend
     behaviour["listed"] = False
     state = _stored_state()
 
-    await PlannerState.save_own_upload.fn(state)
+    await _save(state)
 
-    assert state.own_upload_error == NOT_LISTED_TEXT
+    assert state.own_upload_not_listed is True
     assert state.form_step == STEP_POST
     assert state.own_upload_key == _KEY
+
+    # «Mostrarla otra vez»: the same file id (the backend answers with the same piece),
+    # the candidates read again, and this time it is there
+    behaviour["listed"] = True
+    await _save(state)
+
+    first, second = seen["requests"]
+    assert first.upload_id == second.upload_id
+    assert len(seen["reloads"]) == 2
+    assert state.form_selected_ids == [str(_DRAFT)]
+    assert state.form_step == STEP_WHEN
+    assert state.own_upload_not_listed is False
+
+
+def test_show_again_is_a_button_on_the_upload_view() -> None:
+    view = str(planner_drawer._own_upload_view())
+    assert planner_upload_vm.SHOW_AGAIN in view
+    assert json.dumps(NOT_LISTED_TEXT)[1:-1] in view  # JSX escapes the accents
+
+
+# --- C1: no file swap while saving ---------------------------------------------------
+
+
+async def test_a_file_picked_while_saving_is_refused_before_storage(storage) -> None:
+    state = _stored_state()
+    state.own_upload_saving = True
+
+    PlannerState.begin_own_upload.fn(state)
+    await PlannerState.handle_own_upload.fn(state, [_Upload("otra.jpg")])
+
+    assert state.own_upload_error == planner_upload_vm.SAVING_WAIT_TEXT
+    assert storage == {"bytes": [], "stream": [], "normalize": []}
+    assert state.own_upload_key == _KEY  # the file being saved is still the one shown
+    assert state.own_upload_busy is False
+
+
+async def test_file_b_arriving_during_a_save_is_kept_and_a_is_not_selected(
+    backend, monkeypatch
+) -> None:
+    seen, _ = backend
+    state = _stored_state()
+    key_b = f"t/{_TENANT}/uploads/planner/b_video.mp4"
+    record = planner_state.record_upload_piece
+
+    def record_then_swap(tenant_id, upload):
+        # while A's piece is being written, file B replaces A in the view
+        state.own_upload_key = key_b
+        state.own_upload_media = "video"
+        state._own_upload_id = "0e4c33a1-2222-4333-8444-555566667777"
+        return record(tenant_id, upload)
+
+    monkeypatch.setattr(planner_state, "record_upload_piece", record_then_swap)
+
+    events = await _save(state)
+
+    assert str(seen["requests"][0].upload_id) == "5b0f1d4e-1111-4222-8333-444455556666"
+    assert events == []
+    assert state.own_upload_view is True
+    assert state.own_upload_key == key_b
+    assert state._own_upload_id == "0e4c33a1-2222-4333-8444-555566667777"
+    assert state.form_selected_ids == []  # A is listed in the grid, not selected
+    assert state.form_step == STEP_POST
+    assert state.own_upload_saving is False
+
+
+def test_caption_edits_are_ignored_while_saving() -> None:
+    state = _stored_state()
+    state.own_upload_saving = True
+    PlannerState.set_own_upload_caption.fn(state, "otro texto")
+    assert state.own_upload_caption == "  Nuevo en el menú  "
+
+
+def test_zone_text_back_and_save_are_disabled_while_saving() -> None:
+    view = str(planner_drawer._own_upload_view())
+    # every control of the view is tied to `own_upload_saving`: the two zones (pick and
+    # «Cambiar archivo»), the text field, «Volver a elegir» and «Guardar y continuar»
+    assert view.count("own_upload_saving") >= 5
+    assert "disabled" in view
+
+
+# --- U1: focus ---------------------------------------------------------------------------
+
+
+def test_opening_and_closing_the_view_moves_the_focus() -> None:
+    state = PlannerState()
+    opened = PlannerState.open_own_upload.fn(state)
+    assert planner_upload_vm.VIEW_TITLE_ID in str(opened)
+    closed = PlannerState.close_own_upload.fn(state)
+    assert planner_upload_vm.ADD_TILE_ID in str(closed)
+    assert planner_upload_vm.VIEW_TITLE_ID in str(planner_drawer._own_upload_view())
+    assert planner_upload_vm.ADD_TILE_ID in str(planner_drawer._add_tile())
 
 
 def test_reopening_the_panel_shows_the_grid_but_keeps_the_stored_file() -> None:

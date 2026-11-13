@@ -42,6 +42,7 @@ from .planner_upload_vm import (
 )
 from .planner_upload_vm import (
     ADD_TILE_HINT,
+    ADD_TILE_ID,
     ADD_TILE_LABEL,
     ADD_TILE_TITLE,
     BACK_TO_GRID,
@@ -51,13 +52,16 @@ from .planner_upload_vm import (
     CUT_CONNECTION_HINT,
     DROP_HINT,
     EMPTY_HINT,
+    NOT_LISTED_TEXT,
     PICK_DESKTOP_HINT,
     PICK_HINT,
     PICK_TITLE,
     PICKER_MAX_BYTES,
+    SHOW_AGAIN,
     UPLOAD_ID,
     VIEW_HINT,
     VIEW_TITLE,
+    VIEW_TITLE_ID,
 )
 from .planner_upload_vm import SAVE as OWN_UPLOAD_SAVE
 from .planner_upload_vm import VIDEO as OWN_UPLOAD_VIDEO
@@ -202,11 +206,15 @@ def tag_dot(tag) -> rx.Component:
     )
 
 
-def _section_title(icon: str, title: str, hint: str | rx.Var | None = None) -> rx.Component:
+def _section_title(
+    icon: str, title: str, hint: str | rx.Var | None = None, *, title_id: str = ""
+) -> rx.Component:
+    """`title_id` makes the title a focus target for a script (never a Tab stop)."""
+    focus = {"id": title_id, "tab_index": -1, "as_": "p"} if title_id else {}
     return rx.hstack(
         rx.center(rx.icon(icon, size=15), class_name="q-section-glyph"),
         rx.vstack(
-            rx.text(title, size="3", weight="bold"),
+            rx.text(title, size="3", weight="bold", **focus),
             *([rx.text(hint, size="1", color=T.TEXT_MUTED)] if hint is not None else []),
             spacing="0",
         ),
@@ -391,6 +399,7 @@ def _add_tile() -> rx.Component:
             class_name="q-tile-body",
         ),
         type="button",
+        id=ADD_TILE_ID,
         aria_label=ADD_TILE_LABEL,
         title=ADD_TILE_LABEL,
         class_name="q-tile q-tile-add",
@@ -444,6 +453,9 @@ def _own_upload_zone(*children: rx.Component, variant: str) -> rx.Component:
             ),
         ],
         on_drop_rejected=PlannerState.own_upload_rejected,
+        # m-25026384 review: no new file while «Guardar y continuar» runs (the saved
+        # file and the one on screen must stay the same)
+        disabled=PlannerState.own_upload_saving,
         variant=variant,
         drop_hint=DROP_HINT if variant == "zone" else None,
         width="100%",
@@ -539,10 +551,11 @@ def _own_upload_view() -> rx.Component:
             variant="ghost",
             color_scheme="gray",
             size="2",
+            disabled=PlannerState.own_upload_saving,
             on_click=PlannerState.close_own_upload,
         ),
         rx.box(
-            _section_title("image-plus", VIEW_TITLE, VIEW_HINT),
+            _section_title("image-plus", VIEW_TITLE, VIEW_HINT, title_id=VIEW_TITLE_ID),
             class_name="q-step-panel",
         ),
         rx.cond(has_file, _own_upload_preview(), _own_upload_pick()),
@@ -558,6 +571,7 @@ def _own_upload_view() -> rx.Component:
                     on_change=PlannerState.set_own_upload_caption,
                     placeholder=CAPTION_PLACEHOLDER,
                     max_length=2200,
+                    disabled=PlannerState.own_upload_saving,
                     rows="3",
                     size="3",
                     width="100%",
@@ -570,14 +584,32 @@ def _own_upload_view() -> rx.Component:
             PlannerState.own_upload_error != "",
             callout(PlannerState.own_upload_error, "error"),
         ),
+        # saved, but the reload did not list it yet: read again (same file, same piece)
         rx.cond(
-            has_file,
+            PlannerState.own_upload_not_listed,
+            rx.vstack(
+                callout(NOT_LISTED_TEXT, "info"),
+                rx.button(
+                    rx.icon("refresh-cw", size=16),
+                    SHOW_AGAIN,
+                    variant="soft",
+                    size="3",
+                    loading=PlannerState.own_upload_saving,
+                    on_click=PlannerState.save_own_upload,
+                    width="100%",
+                ),
+                spacing="2",
+                width="100%",
+            ),
+        ),
+        rx.cond(
+            has_file & ~PlannerState.own_upload_not_listed,
             rx.button(
                 OWN_UPLOAD_SAVE,
                 rx.icon("chevron-right", size=16),
                 size="3",
                 loading=PlannerState.own_upload_saving,
-                disabled=PlannerState.own_upload_busy,
+                disabled=PlannerState.own_upload_busy | PlannerState.own_upload_saving,
                 on_click=PlannerState.save_own_upload,
                 class_name="q-cta",
                 width="100%",

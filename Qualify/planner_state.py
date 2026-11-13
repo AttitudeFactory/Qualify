@@ -66,17 +66,20 @@ from .planner_provider import (
     set_event_tags,
 )
 from .planner_upload_vm import (
+    ADD_TILE_ID,
     IMAGE,
     NO_FILE_TEXT,
-    NOT_LISTED_TEXT,
     PHOTO_BUSY_TEXT,
     PHOTO_TOO_BIG_TEXT,
     PHOTO_UNREADABLE_TEXT,
     SAVE_FAILED_TEXT,
+    SAVING_WAIT_TEXT,
     TOO_MANY_TEXT,
     UPLOAD_FAILED_TEXT,
     VIDEO_CONTENT_TYPES,
+    VIEW_TITLE_ID,
     WRONG_TYPE_TEXT,
+    looks_like_video,
     media_kind,
     size_problem,
 )
@@ -133,6 +136,7 @@ from .planner_vm import (
 )
 from .tenant import tenant_uuid
 from .ui.route_history import history_ack_value, route_history_ready
+from .ui.steps import step_settle_script
 from .upload_images import PhotoBusy, PhotoTooBig, PhotoUnreadable, normalize_photo_when_free
 from .upload_names import safe_upload_name
 from .upload_store import UploadNotKept, refusal_text, save_upload, save_upload_bytes
@@ -151,6 +155,30 @@ _CAPTION_MAX = 2200
 
 def _suffix(name: str) -> str:
     return ("." + name.rsplit(".", 1)[-1].lower()) if "." in name else ""
+
+
+#: How many bytes of a video are read to check what it is (never the whole file).
+_VIDEO_HEAD_BYTES = 12
+
+
+def _spooled_head(upload: Any) -> bytes:
+    """The first bytes of the upload's spooled file; the position is put back."""
+    fileobj = upload.file
+    here = fileobj.tell()
+    try:
+        fileobj.seek(0)
+        return bytes(fileobj.read(_VIDEO_HEAD_BYTES) or b"")
+    finally:
+        fileobj.seek(here)
+
+
+def _focus_by_id(element_id: str) -> rx.event.EventSpec:
+    """The focus on one element once React has painted the view that holds it (two
+    animation frames, as `ui.steps.step_settle_script`)."""
+    return rx.call_script(
+        "window.requestAnimationFrame(() => window.requestAnimationFrame(() =>"
+        f" document.getElementById('{element_id}')?.focus({{preventScroll: false}})));"
+    )
 
 
 def _spooled_size(upload: Any) -> int:
@@ -433,6 +461,8 @@ class PlannerState(rx.State):
     own_upload_percent: int = 0
     own_upload_saving: bool = False  # «Guardar y continuar» in flight
     own_upload_error: str = ""
+    # The piece was saved but the reload did not list it: «Mostrarla otra vez».
+    own_upload_not_listed: bool = False
     # Minted ONCE per stored file: the backend's idempotency key, so a double tap or a
     # retry of «Guardar y continuar» always lands on the same piece.
     _own_upload_id: str = ""
@@ -1574,24 +1604,34 @@ class PlannerState(rx.State):
         return own_upload_progress_text(self.own_upload_percent)
 
     @rx.event
-    def open_own_upload(self) -> None:
-        """The «+» card: step 1's body becomes «Sube tu foto o video» (same panel)."""
+    def open_own_upload(self) -> rx.event.EventSpec:
+        """The «+» card: step 1's body becomes «Sube tu foto o video» (same panel); the
+        focus goes to that title."""
         self.own_upload_view = True
         self.own_upload_error = ""
+        return _focus_by_id(VIEW_TITLE_ID)
 
     @rx.event
-    def close_own_upload(self) -> None:
-        """«Volver a tus publicaciones»: the grid again. A stored file is kept."""
+    def close_own_upload(self) -> rx.event.EventSpec | None:
+        """«Volver a elegir»: the grid again, the focus back on the «+» card. A stored
+        file is kept. Not while «Guardar y continuar» runs (the button is disabled)."""
+        if self.own_upload_saving:
+            return None
         self.own_upload_view = False
         self.own_upload_error = ""
+        return _focus_by_id(ADD_TILE_ID)
 
     @rx.event
     def set_own_upload_caption(self, value: str) -> None:
+        if self.own_upload_saving:
+            return  # the field is disabled while saving: the saved text is what was sent
         self.own_upload_caption = str(value or "")[:_CAPTION_MAX]
 
     @rx.event
     def begin_own_upload(self) -> None:
         """A file was picked: the zone says «Subiendo…» until `handle_own_upload` ends."""
+        if self.own_upload_saving:
+            return  # the zone is disabled while saving; `handle_own_upload` refuses it
         self.own_upload_error = ""
         self.own_upload_busy = True
         self.own_upload_percent = 0
@@ -1630,6 +1670,11 @@ class PlannerState(rx.State):
             self.own_upload_percent = 0
 
     async def _store_own_upload(self, files: list[rx.UploadFile]) -> None:
+        if self.own_upload_saving:
+            # the zone is disabled while «Guardar y continuar» runs; a file sent anyway
+            # never replaces the one being saved
+            self.own_upload_error = SAVING_WAIT_TEXT
+            return
         if len(files) != 1:
             self.own_upload_error = TOO_MANY_TEXT if files else NO_FILE_TEXT
             return
@@ -1644,6 +1689,10 @@ class PlannerState(rx.State):
         problem = size_problem(kind, size)
         if problem:
             self.own_upload_error = problem
+            return
+        if kind != IMAGE and not looks_like_video(_spooled_head(upload)):
+            # the name says MP4/MOV; its first bytes must too (a photo is opened anyway)
+            self.own_upload_error = WRONG_TYPE_TEXT
             return
         tenant_id = await self._tenant()
         if tenant_id is None:
@@ -1684,6 +1733,7 @@ class PlannerState(rx.State):
         self.own_upload_media = kind
         self.own_upload_name = name
         self.own_upload_error = ""
+        self.own_upload_not_listed = False
         self._own_upload_id = str(uuid4())  # a new file is a new piece
         self._own_upload_content_type = content_type
         self._own_upload_width = width
@@ -1697,6 +1747,7 @@ class PlannerState(rx.State):
         self.own_upload_name = ""
         self.own_upload_caption = ""
         self.own_upload_error = ""
+        self.own_upload_not_listed = False
         self._own_upload_id = ""
         self._own_upload_content_type = ""
         self._own_upload_width = 0
@@ -1716,11 +1767,13 @@ class PlannerState(rx.State):
         )
 
     @rx.event(background=True)
-    async def save_own_upload(self) -> None:
-        """«Guardar y continuar»: the stored file becomes an approved piece (idempotent
-        on the file's own id), the candidates are read again — the 30 s refresh skips
-        while the panel is open — and the piece is selected on «Cuándo sale», exactly
-        like «Elegir día y hora». A refusal keeps the file and says what to do."""
+    async def save_own_upload(self):
+        """«Guardar y continuar» (and «Mostrarla otra vez»): the stored file becomes an
+        approved piece (idempotent on the file's own id: a second call finds the same
+        piece), the candidates are read again — the 30 s refresh skips while the panel
+        is open — and the piece is selected on «Cuándo sale», exactly like «Elegir día y
+        hora», with the focus on that step's title. A refusal keeps the file and says
+        what to do. The zone, the text and the buttons are disabled meanwhile."""
         async with self:
             if self.own_upload_saving or self.own_upload_busy:
                 return  # a double tap, or the file is still going up
@@ -1729,6 +1782,7 @@ class PlannerState(rx.State):
                 return
             self.own_upload_saving = True
             self.own_upload_error = ""
+            self.own_upload_not_listed = False
             request = self._own_upload_request()
             week = (self.monday_iso, self.connection_filter, self.view_tz, tuple(self.tag_filter))
         tenant_id = await self._tenant()
@@ -1766,11 +1820,19 @@ class PlannerState(rx.State):
             if data is not None:
                 self.schedulable = data.schedulable
                 self.unscheduled = data.unscheduled
-            if post_id in self.form_selected_ids or self._add_post(post_id):
+            if self._own_upload_id != str(request.upload_id):
+                # another file replaced this one meanwhile (a browser that sent it
+                # despite the disabled zone): that file stays on screen; the saved piece
+                # is simply listed in the grid
+                return
+            advanced = post_id in self.form_selected_ids or self._add_post(post_id)
+            if advanced:
                 self._clear_own_upload()
                 self._go_to(STEP_WHEN)
             else:
-                self.own_upload_error = NOT_LISTED_TEXT
+                self.own_upload_not_listed = True
+        if advanced:
+            yield rx.call_script(step_settle_script("drawer"))
 
     # «Contenido»
 
