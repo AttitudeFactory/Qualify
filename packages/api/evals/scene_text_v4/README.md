@@ -57,4 +57,6 @@ uv run --no-sync python packages/api/evals/scene_text_v4/run.py \
 Diseño completo — los 11 encargos, 2 repeticiones: 56 imágenes, US$2,592
 (`--versions 4 5 --reps 2 --max-usd 3`).
 
-**No se ha corrido**: el fundador no ha autorizado presupuesto para esta medición.
+**Corrido el 2026-11-13**: diseño completo, 56 imágenes, US$2,637. Resultado en
+`docs/modelos-generativos/pruebas.md#foto-base-001`. Hoja de contacto de la pareja:
+`contact_sheet.py <out> --versions 4 5`.
