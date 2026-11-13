@@ -317,7 +317,8 @@ def window_pill(
     if remaining <= timedelta(0):
         return WINDOW_CLOSED_PILL, "neutral"
     if remaining < WINDOW_WARN_WITHIN:
-        minutes = max(1, math.ceil(remaining.total_seconds() / 60))
+        # m-25017844: the same count as the row's pill (`chat_row_vm.minutes_left`).
+        minutes = minutes_left(is_open, closes_at, now)
         if minutes == 1:
             return "Responde en el próximo minuto", "warn"
         return f"Responde en los próximos {minutes} min", "warn"
@@ -359,12 +360,6 @@ def phone_label(wa_id: str) -> str:
     return digits if digits.startswith("+") or not digits.isdigit() else f"+{digits}"
 
 
-def unread_label(count: int) -> str:
-    if count <= 0:
-        return ""
-    return "99+" if count > 99 else str(count)
-
-
 def collected_label(key: str) -> str:
     lowered = key.strip().lower()
     if lowered in _COLLECTED_LABELS:
@@ -404,7 +399,6 @@ class ThreadRowVM:
     subtitle: str
     preview: str
     time_label: str
-    unread_label: str
     has_unread: bool
     window_label: str
     window_tone: str
@@ -417,11 +411,10 @@ class ThreadRowVM:
     agent_initials: str
     status: str
     is_closed: bool
-    #: m-24955648 — «Esperando el pago», «Pago por revisar» (warn), … ("" = none).
-    payment_label: str = ""
-    payment_tone: str = "neutral"
-    #: «Pago por revisar»: the filter's own test (the pill's text is for people).
+    #: «Pago por revisar»: the filter's own test and the row's most urgent pill.
     payment_review: bool = False
+    #: m-25017844 (UX review): «Esperando el pago» — the row's pill when nothing beats it.
+    payment_awaiting: bool = False
     #: m-25017844: minutes until the window closes when under an hour, else 0 — the
     #: shared row's «Responde en N min».
     window_minutes: int = 0
@@ -433,7 +426,6 @@ EMPTY_THREAD = ThreadRowVM(
     subtitle="",
     preview="",
     time_label="",
-    unread_label="",
     has_unread=False,
     window_label=WINDOW_CLOSED_PILL,
     window_tone="neutral",
@@ -477,7 +469,6 @@ def build_thread_row(
         subtitle=number if name else "",
         preview=preview,
         time_label=relative_time(thread.last_message_at, now, zone),
-        unread_label=unread_label(thread.unread_count),
         has_unread=thread.unread_count > 0,
         window_label=window_label,
         window_tone=window_tone,
@@ -498,10 +489,10 @@ def as_chat_row(row: ThreadRowVM) -> ChatRowVM:
     """m-25017844: this channel's row in the shared shape (`chat_row_vm`). The unread
     count becomes the waiting dot; «Responde el menú» / «Respondes tú» and «Cerrado»
     leave the row (the chat and the filter say them); the payment to check and the
-    window about to close fold into the one pill. The phone is the second line when
-    the person has a name; without one, the avatar shows the number's last digit."""
+    window about to close fold into the one pill («Esperando el pago» too). The phone is
+    the second line when the person has a name; initials come only from the name's
+    letters (a number-only contact gets the person icon)."""
     named = row.subtitle != ""
-    tail = row.title.strip()[-1:]
     return build_chat_row(
         thread_id=row.thread_id,
         channel=CHANNEL_WHATSAPP,
@@ -510,8 +501,9 @@ def as_chat_row(row: ThreadRowVM) -> ChatRowVM:
         preview=row.preview,
         time_label=row.time_label,
         waiting=row.has_unread,
-        initials=initials(row.title) if named else tail,
+        initials_from=row.title if named else "",
         payment_review=row.payment_review,
+        payment_awaiting=row.payment_awaiting,
         reply_within_minutes=row.window_minutes,
         agent_initials=row.agent_initials,
         agent_name=row.agent_name,
@@ -2116,20 +2108,21 @@ def build_payment(
 def with_payment_pills(
     rows: Sequence[ThreadRowVM], statuses: Mapping[str, Any], now: datetime, zone: tzinfo
 ) -> list[ThreadRowVM]:
-    """The list's rows with their payment pill (one `payment_statuses` read for all)."""
+    """The list's rows with their payment marks (one `payment_statuses` read for all):
+    «Pago por revisar» and «Esperando el pago» are what the row can show; «Pago
+    recibido» / «Paga al recibir» stay in the chat's header. `now`/`zone` are kept for
+    the callers."""
     out: list[ThreadRowVM] = []
     for row in rows:
         payment = statuses.get(row.thread_id)
         if payment is None:
             out.append(row)
             continue
-        label, tone = payment_pill(payment.status, payment.label, payment.confirmed_at, now, zone)
         out.append(
             replace(
                 row,
-                payment_label=label,
-                payment_tone=tone,
                 payment_review=payment.status == "review",
+                payment_awaiting=payment.status == "awaiting",
             )
         )
     return out
@@ -2150,9 +2143,8 @@ def carry_payment_marks(
         out.append(
             replace(
                 row,
-                payment_label=old.payment_label,
-                payment_tone=old.payment_tone,
                 payment_review=old.payment_review,
+                payment_awaiting=old.payment_awaiting,
             )
         )
     return out

@@ -1,8 +1,9 @@
 """The chat row both lists draw (m-25017844, BU-A2) — WhatsApp → Chats and Conversaciones.
 
-A composition of design-system pieces (Radix avatar, `signal_pill`, `tag`, the card
-material with its lift), not a new component: the view model (`chat_row_vm.ChatRowVM`)
-has already chosen the one pill and worded the accessible name; this only draws.
+A composition of design-system pieces (Radix avatar, `media_thumb`'s person icon,
+`signal_pill`, `tag`, the card material with its lift), not a new component: the view
+model (`chat_row_vm.ChatRowVM`) has already chosen the one pill, taken the initials and
+worded the accessible name; this only draws.
 
 Anatomy: picture or initial with the channel's glyph on its corner · the breathing dot
 while the customer waits · name (bold while waiting) and time · second line (@handle or
@@ -10,19 +11,45 @@ phone) · preview with its media icon · the one pill and, with a team, who atte
 Channel identity = glyph + the platform scale (`T.PLATFORM_SCALE`, painted by
 `.q-chat-channel--{channel}` in `assets/qualify-inbox.css`). The dot and the pulse of a
 fresh row stop under `prefers-reduced-motion` (the same sheet).
+
+Keyboard: the row is `role="button"` with `tabindex=0`; Enter and Space on the row itself
+call the element's own `click()` — the same `on_click` event, no global listener, no
+extra state handler — and Space does not scroll the page.
 """
 
 from __future__ import annotations
 
 import reflex as rx
+from reflex.vars.base import Var
 
 from .chat_row_vm import CHANNEL_INSTAGRAM, CHANNEL_WHATSAPP, ChatRowVM
-from .ui import signal_pill, tag
+from .ui import media_thumb, signal_pill, tag
 from .ui import tokens as T
 
 _TONES = ("ok", "warn", "error", "info", "neutral")
 #: N12: the row is one tap target of at least 44 px.
 _TAP_MIN = "2.75rem"
+#: The Radix avatar size "4" (40 px), for the person icon in the same frame.
+_AVATAR_SIZE = "2.5rem"
+
+#: Enter / Space activate the focused row like a native button (only when the row itself
+#: has focus, so a key pressed inside a future control in the row is left alone).
+ROW_KEY_HANDLER: Var = Var(
+    _js_expr=(
+        "((e) => { if (e.target === e.currentTarget && "
+        "(e.key === 'Enter' || e.key === ' ')) "
+        "{ e.preventDefault(); e.currentTarget.click(); } })"
+    )
+)
+
+
+def tone_pill(label: rx.Var[str], tone: rx.Var[str]) -> rx.Component:
+    """`signal_pill` for a tone that is data (the VM ships it): matched at build time."""
+    return rx.match(
+        tone,
+        *[(t, signal_pill(label, t)) for t in _TONES[:-1]],
+        signal_pill(label, "neutral"),
+    )
 
 
 def instagram_glyph(color: str | None = None) -> rx.Component:
@@ -67,13 +94,25 @@ def _channel_mark(channel: rx.Var[str]) -> rx.Component:
 
 
 def _avatar(row: ChatRowVM) -> rx.Component:
+    """The picture, else the initials, else (no letter to show) the person icon."""
     return rx.box(
-        rx.avatar(
-            src=row.avatar_url,
-            fallback=row.initials,
-            radius="full",
-            size="4",
-            custom_attrs={"referrerpolicy": "no-referrer"},
+        rx.cond(
+            row.initials != "",
+            rx.avatar(
+                src=row.avatar_url,
+                fallback=row.initials,
+                radius="full",
+                size="4",
+                custom_attrs={"referrerpolicy": "no-referrer"},
+            ),
+            media_thumb(
+                row.avatar_url,
+                size=_AVATAR_SIZE,
+                round=True,
+                icon="user-round",
+                icon_size=18,
+                custom_attrs={"referrerpolicy": "no-referrer"},
+            ),
         ),
         _channel_mark(row.channel),
         rx.cond(row.waiting, rx.box(class_name="q-conv-unread"), rx.fragment()),
@@ -85,15 +124,7 @@ def _avatar(row: ChatRowVM) -> rx.Component:
 
 
 def _pill(row: ChatRowVM) -> rx.Component:
-    return rx.cond(
-        row.pill_label != "",
-        rx.match(
-            row.pill_tone,
-            *[(t, signal_pill(row.pill_label, t)) for t in _TONES[:-1]],
-            signal_pill(row.pill_label, "neutral"),
-        ),
-        rx.fragment(),
-    )
+    return rx.cond(row.pill_label != "", tone_pill(row.pill_label, row.pill_tone), rx.fragment())
 
 
 def _agent_chip(row: ChatRowVM) -> rx.Component:
@@ -108,7 +139,8 @@ def _agent_chip(row: ChatRowVM) -> rx.Component:
 
 
 def chat_row(row: ChatRowVM, *, is_open: rx.Var[bool], on_open: rx.event.EventSpec) -> rx.Component:
-    """One chat in a list. `is_open` marks the chat on screen; `on_open` opens it."""
+    """One chat in a list. `is_open` marks the chat on screen; `on_open` opens it (by
+    click, tap, Enter or Space)."""
     return rx.box(
         rx.hstack(
             _avatar(row),
@@ -171,6 +203,7 @@ def chat_row(row: ChatRowVM, *, is_open: rx.Var[bool], on_open: rx.event.EventSp
                         width="100%",
                         align="center",
                         spacing="1",
+                        class_name="q-chat-row-labels",
                     ),
                     rx.fragment(),
                 ),
@@ -199,7 +232,10 @@ def chat_row(row: ChatRowVM, *, is_open: rx.Var[bool], on_open: rx.event.EventSp
         role="button",
         tab_index=0,
         aria_label=row.aria_label,
-        custom_attrs={"aria-current": rx.cond(is_open, "true", "false")},
+        custom_attrs={
+            "aria-current": rx.cond(is_open, "true", "false"),
+            "onKeyDown": ROW_KEY_HANDLER,
+        },
         cursor="pointer",
         min_height=_TAP_MIN,
         width="100%",

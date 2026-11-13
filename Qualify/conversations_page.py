@@ -54,6 +54,7 @@ from __future__ import annotations
 import reflex as rx
 
 from .chat_row import chat_row, instagram_glyph
+from .chat_row import tone_pill as _tone_pill
 from .chat_row_vm import ChatRowVM
 from .conversations_state import ConversationsState
 from .conversations_vm import (
@@ -112,7 +113,6 @@ from .ui import (
     page_header,
     platform_badge,
     removable_pill,
-    signal_pill,
     skeleton_rows,
     tone_badge,
 )
@@ -130,14 +130,6 @@ _FILE_UPLOAD_ID = "conversations_file"
 # ======================================================================================
 # Tone helpers (the VM ships the tone as data; the system needs it at build time)
 # ======================================================================================
-
-
-def _tone_pill(label: rx.Var[str], tone: rx.Var[str]) -> rx.Component:
-    return rx.match(
-        tone,
-        *[(t, signal_pill(label, t)) for t in _TONES[:-1]],
-        signal_pill(label, "neutral"),
-    )
 
 
 def _banner(message: rx.Var[str], tone: rx.Var[str]) -> rx.Component:
@@ -435,7 +427,7 @@ def _list_body() -> rx.Component:
                 S.list_empty,
                 _empty_list(),
                 rx.cond(
-                    S.visible_rows.length() > 0,
+                    S.visible_chat_rows.length() > 0,
                     rx.vstack(
                         rx.cond(
                             S.all_clear & (S.filter_key == FILTER_ALL),

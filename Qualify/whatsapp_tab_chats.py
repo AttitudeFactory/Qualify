@@ -32,6 +32,7 @@ from __future__ import annotations
 import reflex as rx
 
 from .chat_row import chat_row
+from .chat_row import tone_pill as _tone_pill
 from .chat_row_vm import ChatRowVM
 from .r2_media import BACKEND_BASE
 from .ui import (
@@ -197,14 +198,6 @@ _TAP_MIN = "2.75rem"
 # ======================================================================================
 
 
-def _tone_pill(label: rx.Var[str], tone: rx.Var[str]) -> rx.Component:
-    return rx.match(
-        tone,
-        *[(t, signal_pill(label, t)) for t in _TONES[:-1]],
-        signal_pill(label, "neutral"),
-    )
-
-
 def _banner(message: rx.Var[str], tone: rx.Var[str]) -> rx.Component:
     return rx.cond(
         message != "",
@@ -313,7 +306,7 @@ def _list_body() -> rx.Component:
                     ),
                 ),
                 rx.cond(
-                    S.visible_rows.length() > 0,
+                    S.visible_chat_rows.length() > 0,
                     rx.vstack(
                         rx.foreach(S.visible_chat_rows, _thread_row),
                         spacing="2",

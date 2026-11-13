@@ -600,10 +600,6 @@ class WhatsAppChatsState(rx.State):
     # ==================================================================================
 
     @rx.var
-    def visible_rows(self) -> list[ThreadRowVM]:
-        return filter_threads(self.rows, self.filter_key)
-
-    @rx.var
     def visible_chat_rows(self) -> list[ChatRowVM]:
         """m-25017844: the visible rows in the shape every channel's list draws."""
         return [as_chat_row(r) for r in filter_threads(self.rows, self.filter_key)]

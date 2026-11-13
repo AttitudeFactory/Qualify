@@ -122,7 +122,6 @@ WINDOW_CLOSED_NOTICE = (
     "Instagram solo permite contestar dentro de ese plazo; cuando vuelva a escribir, "
     "podrás responder de nuevo."
 )
-WINDOW_CLOSED_SHORT = "No se puede responder"
 #: The rule itself, said once, so «hasta mañana a las 19:27» is never a bare deadline.
 WINDOW_RULE = (
     "Instagram solo permite responder durante las 24 h siguientes al último mensaje de la persona."
@@ -612,20 +611,16 @@ def _local(value: datetime, zone: tzinfo) -> datetime:
 
 def window_words(
     is_open: bool, closes_at: datetime | None, now: datetime, zone: tzinfo
-) -> tuple[str, str, str]:
-    """(sentence for the header, short pill for the row — "" while comfortably open —,
-    tone). «Puedes responder hasta las 17:47» / «Te quedan 12 min para responder» /
-    «Ya no puedes responder…»."""
+) -> tuple[str, str]:
+    """(sentence for the header, tone). «Puedes responder hasta las 17:47» / «Te quedan
+    12 min para responder» / «Ya no puedes responder…». The row says the window through
+    the shared pill (`chat_row_vm`), with the same minute count."""
     if not is_open or closes_at is None:
-        return WINDOW_CLOSED_NOTICE, WINDOW_CLOSED_SHORT, "neutral"
+        return WINDOW_CLOSED_NOTICE, "neutral"
     remaining = closes_at - now
     if remaining < timedelta(hours=1):
-        minutes = max(1, int(remaining.total_seconds() // 60))
-        return (
-            f"Te quedan {minutes} min para responder: {WINDOW_RULE}",
-            f"Quedan {minutes} min",
-            "warn",
-        )
+        minutes = max(1, minutes_left(is_open, closes_at, now))
+        return f"Te quedan {minutes} min para responder: {WINDOW_RULE}", "warn"
     local_close, local_now = _local(closes_at, zone), _local(now, zone)
     clock = local_close.strftime("%H:%M")
     when = (
@@ -633,7 +628,7 @@ def window_words(
         if local_close.date() == local_now.date()
         else (f"hasta mañana a las {clock}")
     )
-    return f"{WINDOW_RULE} En esta conversación, {when}.", "", "ok"
+    return f"{WINDOW_RULE} En esta conversación, {when}.", "ok"
 
 
 # ======================================================================================
@@ -654,7 +649,6 @@ class ThreadRowVM:
     attention_label: str
     attention_tone: str
     window_label: str  # the sentence (header)
-    window_short: str  # the pill (row), "" while comfortably open
     window_tone: str
     window_open: bool
     is_closed: bool
@@ -680,7 +674,6 @@ EMPTY_THREAD = ThreadRowVM(
     attention_label="Sin mensajes",
     attention_tone="neutral",
     window_label=WINDOW_CLOSED_NOTICE,
-    window_short=WINDOW_CLOSED_SHORT,
     window_tone="neutral",
     window_open=False,
     is_closed=False,
@@ -748,9 +741,7 @@ def build_thread_row(
     elif extra.preview_direction == "outbound":
         preview = OUTBOUND_PREFIX + preview
     label, tone = attention_pill(view.attention)
-    window_label, window_short, window_tone = window_words(
-        view.window.is_open, view.window.closes_at, now, zone
-    )
+    window_label, window_tone = window_words(view.window.is_open, view.window.closes_at, now, zone)
     channel = CHANNEL_LABELS.get(thread.channel, thread.channel)
     subtitle = f"{account_label} · {channel}" if account_label else channel
     # Identity: the profile the sync fetched beats the handle of the latest message.
@@ -773,7 +764,6 @@ def build_thread_row(
         attention_label=label,
         attention_tone=tone,
         window_label=window_label,
-        window_short=window_short,
         window_tone=window_tone,
         window_open=view.window.is_open,
         is_closed=thread.status == "closed",
@@ -799,7 +789,7 @@ def as_chat_row(row: ThreadRowVM) -> ChatRowVM:
         preview_icon=row.preview_icon,
         time_label=row.time_label,
         waiting=row.attention == "pending",
-        initials=row.initials,
+        initials_from="" if row.title == UNKNOWN_PERSON else row.title,
         reply_within_minutes=row.window_minutes,
         avatar_url=row.avatar_url,
         fresh=row.fresh,
