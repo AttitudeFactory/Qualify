@@ -2004,20 +2004,40 @@ class _Proxy:
         setattr(self._state, name, value)
 
 
-async def test_potenciar_replaces_the_context_and_deshacer_brings_it_back(
+def _proposal(*texts: str, added: tuple[str, ...] = ()) -> object:
+    """A provider answer of «Mejorar mi texto»: one version per text, in approach order."""
+    from qualify_api.creative.context_ai import APPROACHES, ContextProposal, ContextVersion
+
+    return ContextProposal(
+        versions=tuple(
+            ContextVersion(approach=key, text=text)
+            for (key, _), text in zip(APPROACHES, texts, strict=False)
+        ),
+        added_facts=added,
+    )
+
+
+_THREE = (
+    "Quiero mostrar la smash doble. Pide por WhatsApp.",
+    "Quiero que se vea la smash doble jugosa y dorada.",
+    "Quiero contarte que llegó la smash doble.",
+)
+
+
+async def test_mejorar_shows_three_cards_keeps_the_original_and_restores_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """m-25017274: one press = three cards; the field keeps the owner's words until a
+    card is chosen, and «Volver a mi texto» brings them back. No creación is spent."""
     from uuid import uuid4
-
-    from qualify_api.creative.context_ai import ContextProposal
 
     from . import creative_state as module
 
     seen: dict[str, object] = {}
 
-    def fake(tenant_id: object, brand_id: object, **form: object) -> ContextProposal:
+    def fake(tenant_id: object, brand_id: object, **form: object) -> object:
         seen.update(form)
-        return ContextProposal(text="Quiero mostrar la smash doble…", added_facts=("2x1",))
+        return _proposal(*_THREE, added=("2x1",))
 
     async def ids(self: CreativeState) -> tuple[object, object, object]:
         return uuid4(), uuid4(), uuid4()
@@ -2027,23 +2047,123 @@ async def test_potenciar_replaces_the_context_and_deshacer_brings_it_back(
     state = CreativeState()
     state.choose_category("clip")
     state.brief_topic = "smash doble"
+    state.brief_content_type = "promotion"
     state.brief_highlights = [{"key": "precio", "value": "20 $"}]
+    left = state.creations_left
     await CreativeState.enhance_context.fn(_Proxy(state))
 
-    assert state.brief_topic == "Quiero mostrar la smash doble…"
+    assert state.brief_topic == "smash doble"  # nothing replaced yet
+    assert [v["text"] for v in state.context_versions] == list(_THREE)
+    assert [v["label"] for v in state.context_versions] == [
+        "Más directa",
+        "Más descriptiva",
+        "Más cercana",
+    ]
     assert seen["text"] == "smash doble" and seen["piece"] == "Clip"
+    assert seen["content_type"] == "Promoción" and seen["format"] != ""
+    assert seen["previous_versions"] == []
     assert seen["highlights"] == [["precio", "20 $"]]
     assert "2x1" in state.context_enhance_note and not state.context_enhancing
+    assert state.creations_left == left  # free
+    assert state.context_is_original and not state.context_text_edited
+
+    state.choose_context_version(1)
+    assert state.brief_topic == _THREE[1] and state.context_choice == 1
+    assert not state.context_is_original and not state.context_text_edited
     state.undo_enhance_context()
-    assert state.brief_topic == "smash doble" and state.context_before_enhance == ""
+    assert state.brief_topic == "smash doble" and state.context_choice == -1
+    assert state.context_before_enhance == "smash doble"
+    assert len(state.context_versions) == 3  # the cards stay to choose again
+    state.choose_context_version(7)  # out of range: nothing happens
+    assert state.brief_topic == "smash doble"
 
 
-async def test_potenciar_writes_a_flyers_scene_and_needs_some_words_first(
+async def test_otra_version_asks_from_the_original_with_the_versions_already_shown(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from uuid import uuid4
 
-    from qualify_api.creative.context_ai import ContextProposal
+    from . import creative_state as module
+
+    calls: list[dict[str, object]] = []
+    answers = [
+        _proposal(*_THREE),
+        _proposal("Otra directa de la smash", "Otra descriptiva", "Otra cercana"),
+        _proposal("Tercera vez directa", "Tercera descriptiva", "Tercera cercana"),
+        _proposal("Desde lo editado", "Editado dos", "Editado tres"),
+    ]
+
+    def fake(tenant_id: object, brand_id: object, **form: object) -> object:
+        calls.append(dict(form))
+        return answers[len(calls) - 1]
+
+    async def ids(self: CreativeState) -> tuple[object, object, object]:
+        return uuid4(), uuid4(), uuid4()
+
+    monkeypatch.setattr(module, "enhance_generator_context", fake)
+    monkeypatch.setattr(CreativeState, "_session_ids", ids)
+    state = CreativeState()
+    state.choose_category("clip")
+    state.brief_topic = "smash doble con papas"
+    await CreativeState.enhance_context.fn(_Proxy(state))
+    state.choose_context_version(0)
+
+    await CreativeState.enhance_context.fn(_Proxy(state), True)  # «Otra versión»
+    assert calls[1]["text"] == "smash doble con papas"  # the original, never the card
+    assert calls[1]["previous_versions"] == list(_THREE)
+    assert state.context_versions[0]["text"] == "Otra directa de la smash"
+    assert state.brief_topic == _THREE[0]  # the chosen card stays until another is picked
+    assert state.context_choice == -1
+
+    # «Mejorar mi texto» again on an untouched card is the same round
+    await CreativeState.enhance_context.fn(_Proxy(state))
+    assert calls[2]["text"] == "smash doble con papas"
+    assert len(calls[2]["previous_versions"]) == 6  # type: ignore[arg-type]
+
+    # an edited text starts a new round from the new words
+    state.brief_topic = "smash doble con papas y gaseosa"
+    assert state.context_text_edited
+    await CreativeState.enhance_context.fn(_Proxy(state))
+    assert calls[3]["text"] == "smash doble con papas y gaseosa"
+    assert calls[3]["previous_versions"] == []
+    assert state.context_before_enhance == "smash doble con papas y gaseosa"
+
+
+async def test_a_failed_otra_version_keeps_the_field_and_the_cards(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from uuid import uuid4
+
+    from . import creative_state as module
+
+    answers: list[object] = [_proposal(*_THREE)]
+
+    def fake(tenant_id: object, brand_id: object, **form: object) -> object:
+        if not answers:
+            raise RuntimeError("network down")
+        return answers.pop(0)
+
+    async def ids(self: CreativeState) -> tuple[object, object, object]:
+        return uuid4(), uuid4(), uuid4()
+
+    monkeypatch.setattr(module, "enhance_generator_context", fake)
+    monkeypatch.setattr(CreativeState, "_session_ids", ids)
+    state = CreativeState()
+    state.choose_category("clip")
+    state.brief_topic = "smash doble con papas"
+    await CreativeState.enhance_context.fn(_Proxy(state))
+    state.choose_context_version(2)
+    await CreativeState.enhance_context.fn(_Proxy(state), True)
+    assert state.brief_topic == _THREE[2]
+    assert [v["text"] for v in state.context_versions] == list(_THREE)
+    assert state.context_enhance_error == module._ENHANCE_FAILED
+    assert state.context_before_enhance == "smash doble con papas"
+
+
+async def test_mejorar_writes_a_flyers_scene_and_needs_some_words_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from uuid import uuid4
 
     from . import creative_state as module
 
@@ -2051,7 +2171,9 @@ async def test_potenciar_writes_a_flyers_scene_and_needs_some_words_first(
         return uuid4(), uuid4(), uuid4()
 
     monkeypatch.setattr(
-        module, "enhance_generator_context", lambda *a, **k: ContextProposal(text="Escena rica")
+        module,
+        "enhance_generator_context",
+        lambda *a, **k: _proposal_scene("Escena rica de cerca", "El local", "Una mano"),
     )
     monkeypatch.setattr(CreativeState, "_session_ids", ids)
     state = CreativeState()
@@ -2059,29 +2181,43 @@ async def test_potenciar_writes_a_flyers_scene_and_needs_some_words_first(
     state.ad_scene_prompt = "vaso"
     await CreativeState.enhance_context.fn(_Proxy(state))
     assert state.context_enhance_error != "" and state.ad_scene_prompt == "vaso"
+    assert state.context_versions == []
     state.ad_scene_prompt = "un vaso en la barra"
     await CreativeState.enhance_context.fn(_Proxy(state))
-    assert state.ad_scene_prompt == "Escena rica" and state.brief_topic == ""
-    state.choose_category("clip")  # another kind: nothing of the flyer's to undo
-    assert state.context_before_enhance == ""
+    assert state.context_versions[0]["label"] == "El producto de cerca"
+    state.choose_context_version(0)
+    assert state.ad_scene_prompt == "Escena rica de cerca" and state.brief_topic == ""
+    state.choose_category("clip")  # another kind: nothing of the flyer's comes back
+    assert state.context_before_enhance == "" and state.context_versions == []
+
+
+def _proposal_scene(*texts: str) -> object:
+    from qualify_api.creative.context_ai import SCENE_APPROACHES, ContextProposal, ContextVersion
+
+    return ContextProposal(
+        versions=tuple(
+            ContextVersion(approach=key, text=text)
+            for (key, _), text in zip(SCENE_APPROACHES, texts, strict=True)
+        )
+    )
 
 
 @pytest.mark.parametrize("category,manual_max", [("image", 600), ("clip", 1200)])
 @pytest.mark.parametrize("provider_raises", [False, True])
-async def test_potenciar_keeps_original_and_explains_the_real_limit(
+async def test_mejorar_keeps_original_and_explains_the_real_limit(
     monkeypatch: pytest.MonkeyPatch, category: str, manual_max: int, provider_raises: bool
 ) -> None:
-    from qualify_api.creative.context_ai import ContextProposal, ContextTooLong
+    from qualify_api.creative.context_ai import ContextTooLong
 
     from . import creative_state as module
 
     async def ids(self: CreativeState) -> tuple[UUID, UUID, UUID]:
         return _TENANT_ID, _BRAND_ID, _TENANT_ID
 
-    def fake(*args: object, **kwargs: object) -> ContextProposal:
+    def fake(*args: object, **kwargs: object) -> object:
         if provider_raises:
             raise ContextTooLong(301, 300)
-        return ContextProposal(text="á" * 301, added_facts=("No mostrar",))
+        return _proposal("á" * 301, "é" * 302, added=("No mostrar",))
 
     monkeypatch.setattr(module, "enhance_generator_context", fake)
     monkeypatch.setattr(CreativeState, "_session_ids", ids)
@@ -2090,7 +2226,6 @@ async def test_potenciar_keeps_original_and_explains_the_real_limit(
     prefix = "Quiero café a las 8:30, #Oferta y el símbolo ⭐."
     original = prefix + "á" * (manual_max - len(prefix))
     state._set_context_text(original)
-    state.context_before_enhance = "Texto anterior para deshacer"
     setter_calls: list[str] = []
     monkeypatch.setattr(
         CreativeState, "_set_context_text", lambda self, value: setter_calls.append(value)
@@ -2101,7 +2236,7 @@ async def test_potenciar_keeps_original_and_explains_the_real_limit(
     assert state._user_topic_text() == original
     assert len(state._user_topic_text()) == manual_max
     assert setter_calls == []
-    assert state.context_before_enhance == "Texto anterior para deshacer"
+    assert state.context_versions == [] and state.context_before_enhance == ""
     # UX review 2026-11-04 B3: what happened and what to do, no character counts
     assert "demasiado larga" in state.context_enhance_error
     assert "dejamos tu texto como estaba" in state.context_enhance_error
@@ -2112,11 +2247,9 @@ async def test_potenciar_keeps_original_and_explains_the_real_limit(
 
 @pytest.mark.parametrize("category,manual_max", [("image", 600), ("clip", 1200)])
 @pytest.mark.parametrize("proposed_chars", [299, 300])
-async def test_potenciar_accepts_299_or_300_without_changing_requested_unicode(
+async def test_mejorar_accepts_299_or_300_without_changing_requested_unicode(
     monkeypatch: pytest.MonkeyPatch, category: str, manual_max: int, proposed_chars: int
 ) -> None:
-    from qualify_api.creative.context_ai import ContextProposal
-
     from . import creative_state as module
 
     async def ids(self: CreativeState) -> tuple[UUID, UUID, UUID]:
@@ -2126,9 +2259,9 @@ async def test_potenciar_accepts_299_or_300_without_changing_requested_unicode(
     proposed = prefix + "á" * (proposed_chars - len(prefix))
     seen: dict[str, object] = {}
 
-    def fake(*args: object, **kwargs: object) -> ContextProposal:
+    def fake(*args: object, **kwargs: object) -> object:
         seen.update(kwargs)
-        return ContextProposal(text=proposed)
+        return _proposal(proposed, "x" * 301)  # the overlong one is not shown
 
     monkeypatch.setattr(module, "enhance_generator_context", fake)
     monkeypatch.setattr(CreativeState, "_session_ids", ids)
@@ -2139,6 +2272,8 @@ async def test_potenciar_accepts_299_or_300_without_changing_requested_unicode(
     state._set_context_text(original)
 
     await CreativeState.enhance_context.fn(_Proxy(state))
+    assert [v["text"] for v in state.context_versions] == [proposed]
+    state.choose_context_version(0)
 
     assert state._user_topic_text() == proposed
     assert len(state._user_topic_text()) == proposed_chars
@@ -2147,6 +2282,107 @@ async def test_potenciar_accepts_299_or_300_without_changing_requested_unicode(
     state.undo_enhance_context()
     assert state._user_topic_text() == original
     assert len(state._user_topic_text()) == manual_max
+
+
+def test_the_version_cards_read_in_spanish_on_one_column() -> None:
+    from .content_generator import (
+        ENHANCE_AGAIN_LABEL,
+        ENHANCE_HINT,
+        ENHANCE_LABEL,
+        ENHANCE_PICK_TITLE,
+        ENHANCE_RESTORE_LABEL,
+        _context_ai_tools,
+    )
+
+    rendered = str(_context_ai_tools())
+    for text in (
+        ENHANCE_LABEL,
+        ENHANCE_HINT,
+        ENHANCE_PICK_TITLE,
+        ENHANCE_AGAIN_LABEL,
+        ENHANCE_RESTORE_LABEL,
+    ):
+        assert text in rendered or json.dumps(text) in rendered, text
+    assert "radiogroup" in rendered and "No gasta creaciones" in ENHANCE_HINT
+    # UX review: no promised count, the new button name, a polite live region
+    assert "tres" not in ENHANCE_HINT and ENHANCE_AGAIN_LABEL == "Ver otras tres"
+    assert "polite" in rendered and "context_text_edited" in rendered
+
+
+async def _three_cards(monkeypatch: pytest.MonkeyPatch, *answers: object) -> CreativeState:
+    from uuid import uuid4
+
+    from . import creative_state as module
+
+    queue = list(answers) or [_proposal(*_THREE, added=("2x1",))]
+
+    async def ids(self: CreativeState) -> tuple[object, object, object]:
+        return uuid4(), uuid4(), uuid4()
+
+    monkeypatch.setattr(module, "enhance_generator_context", lambda *a, **k: queue.pop(0))
+    monkeypatch.setattr(CreativeState, "_session_ids", ids)
+    state = CreativeState()
+    state.choose_category("clip")
+    state.brief_topic = "smash doble con papas"
+    await CreativeState.enhance_context.fn(_Proxy(state))
+    assert len(state.context_versions) == 3
+    return state
+
+
+@pytest.mark.parametrize("how", ["review_in_drafts", "start_clean"])
+async def test_the_next_piece_never_shows_the_last_pieces_cards(
+    monkeypatch: pytest.MonkeyPatch, how: str
+) -> None:
+    """Code review m-25017274: a piece sent on (Borradores or a clean start) takes its
+    cards, its original and «Ver otras tres» with it. The created case is
+    `test_submit_success_forgets_the_cards_in_source`."""
+    state = await _three_cards(monkeypatch)
+    state.choose_context_version(0)
+    if how == "review_in_drafts":
+        state.review_in_drafts()
+    else:
+        state._start_clean()
+    assert state.context_versions == [] and state.context_before_enhance == ""
+    assert state._context_shown == [] and state.context_enhance_note == ""
+    assert state.context_chosen == -1
+
+
+def test_submit_success_forgets_the_cards_in_source() -> None:
+    """The success branch of `submit_brief_form` resets the cards with the topic."""
+    import inspect
+
+    source = inspect.getsource(CreativeState.submit_brief_form.fn)
+    reset = source.index('self.brief_topic = ""')
+    assert "self._forget_context_versions()" in source[reset : reset + 200]
+
+
+async def test_an_edit_hides_the_cards_and_drops_the_mark(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from . import creative_state as module
+
+    state = await _three_cards(monkeypatch)
+    assert "en alguna de estas versiones" in state.context_enhance_note
+    assert state.context_enhance_note.startswith(module._ENHANCE_ADDED_VERSIONS)
+    spec = state.choose_context_version(1)
+    assert spec is not None and state.context_chosen == 1
+    state.brief_topic = _THREE[1] + " y gaseosa"
+    assert state.context_chosen == -1 and state.context_text_edited
+
+
+async def test_the_rounds_memory_keeps_only_what_is_sent_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from qualify_api.creative.context_ai import PREVIOUS_VERSIONS_SENT
+
+    answers = [
+        _proposal(*(f"Versión {n}-{k} de la smash doble" for k in range(3))) for n in range(5)
+    ]
+    state = await _three_cards(monkeypatch, *answers)
+    for _ in range(4):
+        await CreativeState.enhance_context.fn(_Proxy(state), True)
+    assert len(state._context_shown) == PREVIOUS_VERSIONS_SENT
+    assert state._context_shown[-1] == "Versión 4-2 de la smash doble"
 
 
 def test_the_clips_middle_images_are_named_on_the_summary() -> None:
@@ -2193,3 +2429,29 @@ def test_the_tag_suggestions_agree_with_etiquetas() -> None:
     assert "Sugeridas para tu texto" in rendered
     assert "Sugeridos" not in rendered
     assert "de nicho" not in rendered and "La IA" not in rendered
+
+
+async def test_the_parts_card_writing_the_story_forgets_the_cards(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Re-review m-25017274: «Proponerme las partes» overwrites «Qué decir»; cards written
+    for the old text go with it."""
+    from .parts_start_state import apply_to_creative
+
+    state = await _three_cards(monkeypatch)
+    assert apply_to_creative(state, story="Combo para pedir hoy", entries=[], provenance=None)
+    assert state.brief_topic == "Combo para pedir hoy"
+    assert state.context_versions == [] and state.context_before_enhance == ""
+
+
+def test_the_way_back_outlives_the_cards_and_the_notice_does_not() -> None:
+    """Re-review: «Volver a mi texto» hangs on the original alone (it stays after an
+    edit hides the cards); the added-data notice names «estas versiones», so it hides
+    with them."""
+    from .content_generator import _context_ai_tools, _context_versions
+
+    assert "Volver a mi texto" not in str(_context_versions())
+    rendered = str(_context_ai_tools())
+    assert "Volver a mi texto" in rendered and "context_before_enhance" in rendered
+    note = rendered.index("context_enhance_note")
+    assert "context_text_edited" in rendered[max(0, note - 600) : note + 600]
