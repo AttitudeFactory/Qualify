@@ -1940,8 +1940,11 @@ class CreativeState(rx.State):
                 try:
                     from qualify_api.hashtags import catalog as hashtag_catalog
 
+                    # m-25026377: most watched in the last 90 days first; with no
+                    # views known the order is exactly `resolve`'s. The model still
+                    # reads `tag (seen_count)` — only the list's order changed.
                     for term in caption_keywords(caption, limit=8):
-                        for hit in hashtag_catalog.REPOSITORY.resolve(
+                        for hit in hashtag_catalog.REPOSITORY.resolve_popular(
                             ids[0], term, limit=4, min_similarity=0.5
                         ):
                             if all(s.tag != hit.hashtag.tag for s in seen):
@@ -2026,7 +2029,8 @@ class CreativeState(rx.State):
 
             found: list[str] = []
             for term in terms:
-                for hit in hashtag_catalog.REPOSITORY.resolve(
+                # m-25026377: the catalog's tags most watched lately first
+                for hit in hashtag_catalog.REPOSITORY.resolve_popular(
                     tenant_id, term, limit=2, min_similarity=0.55
                 ):
                     if hit.hashtag.tag not in found:
