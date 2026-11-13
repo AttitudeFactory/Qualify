@@ -83,8 +83,8 @@ INSTAGRAM_DM: Final = ChannelCapabilities(
     menu_handoff=False,
     payments=False,
     suggest_reply=True,
-    # «Cerrar chat» on Instagram is slice C9.
-    close_reopen=False,
+    # «Cerrar» / «Reabrir» (m-25026457): `ConversationService.close` / `reopen`.
+    close_reopen=True,
 )
 
 WHATSAPP: Final = ChannelCapabilities(
