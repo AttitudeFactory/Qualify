@@ -484,3 +484,37 @@ def test_without_the_cap_a_png_still_stays_a_png() -> None:
 
     stored = normalize_photo(_png((40, 40)), "logo.png")
     assert stored.content_type == "image/png"
+
+
+# --- the saving flag never stays stuck (re-review) --------------------------------------
+
+
+async def test_an_unexpected_error_in_the_save_clears_the_flag_and_keeps_the_file(
+    backend, monkeypatch
+) -> None:
+    state = _stored_state()
+
+    async def broken_tenant(self):
+        raise RuntimeError("session store down")
+
+    monkeypatch.setattr(PlannerState, "_tenant", broken_tenant)
+
+    events = await _save(state)
+
+    assert events == []
+    assert state.own_upload_saving is False
+    assert state.own_upload_error == SAVE_FAILED_TEXT
+    assert state.own_upload_key == _KEY
+    assert state._own_upload_id == "5b0f1d4e-1111-4222-8333-444455556666"
+
+
+def test_a_stale_saving_flag_is_cleared_when_the_owner_comes_back() -> None:
+    state = _stored_state()
+    state.own_upload_saving = True  # left by a save killed with the process
+    PlannerState.open_own_upload.fn(state)
+    assert state.own_upload_saving is False
+
+    state.own_upload_saving = True
+    state._reset_form()  # the assign panel opening again
+    assert state.own_upload_saving is False
+    assert state.own_upload_key == _KEY

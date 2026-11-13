@@ -1454,6 +1454,7 @@ class PlannerState(rx.State):
         self.more_auto = []
         self.own_upload_view = False
         self.own_upload_error = ""
+        self.own_upload_saving = False  # never a stale lock from an earlier visit
 
     def _first_account(self) -> list[str]:
         """The first compatible account is preselected: one account is the common case."""
@@ -1609,6 +1610,9 @@ class PlannerState(rx.State):
         focus goes to that title."""
         self.own_upload_view = True
         self.own_upload_error = ""
+        # a flag a killed save left behind (a restart while the state lives on) must not
+        # outlive the visit; a save still running finishes under its id guard
+        self.own_upload_saving = False
         return _focus_by_id(VIEW_TITLE_ID)
 
     @rx.event
@@ -1785,54 +1789,69 @@ class PlannerState(rx.State):
             self.own_upload_not_listed = False
             request = self._own_upload_request()
             week = (self.monday_iso, self.connection_filter, self.view_tz, tuple(self.tag_filter))
-        tenant_id = await self._tenant()
-        if tenant_id is None:
-            async with self:
-                self.own_upload_saving = False
-                self.own_upload_error = _NO_TENANT
-            return
+        # m-25026384 re-review: every exit clears the flag, even one nobody planned —
+        # a stuck flag would lock the whole view (zone, text, both buttons).
         try:
-            piece = await asyncio.to_thread(record_upload_piece, tenant_id, request)
-        except OwnUploadRefused as exc:
+            tenant_id = await self._tenant()
+            if tenant_id is None:
+                async with self:
+                    self.own_upload_saving = False
+                    self.own_upload_error = _NO_TENANT
+                return
+            try:
+                piece = await asyncio.to_thread(record_upload_piece, tenant_id, request)
+            except OwnUploadRefused as exc:
+                async with self:
+                    self.own_upload_saving = False
+                    self.own_upload_error = exc.text
+                return
+            except PlannerError as exc:
+                async with self:
+                    self.own_upload_saving = False
+                    self.own_upload_error = planner_error_message(exc)
+                return
+            except Exception as exc:  # noqa: BLE001 — the same id retries onto the same piece
+                logger.error("planner own upload piece failed: %s", type(exc).__name__)
+                async with self:
+                    self.own_upload_saving = False
+                    self.own_upload_error = SAVE_FAILED_TEXT
+                return
+            post_id = str(piece.draft_id)
+            try:
+                data = await asyncio.to_thread(load_week, tenant_id, *week)
+            except Exception as exc:  # noqa: BLE001 — said below: the piece exists anyway
+                logger.warning("planner reload after upload failed: %s", type(exc).__name__)
+                data = None
             async with self:
                 self.own_upload_saving = False
-                self.own_upload_error = exc.text
-            return
-        except PlannerError as exc:
-            async with self:
-                self.own_upload_saving = False
-                self.own_upload_error = planner_error_message(exc)
-            return
-        except Exception as exc:  # noqa: BLE001 — the same id retries onto the same piece
-            logger.error("planner own upload piece failed: %s", type(exc).__name__)
+                if data is not None:
+                    self.schedulable = data.schedulable
+                    self.unscheduled = data.unscheduled
+                if self._own_upload_id != str(request.upload_id):
+                    # another file replaced this one meanwhile (a browser that sent it
+                    # despite the disabled zone): that file stays on screen; the saved piece
+                    # is simply listed in the grid
+                    return
+                advanced = post_id in self.form_selected_ids or self._add_post(post_id)
+                if advanced:
+                    self._clear_own_upload()
+                    self._go_to(STEP_WHEN)
+                else:
+                    self.own_upload_not_listed = True
+            if advanced:
+                yield rx.call_script(step_settle_script("drawer"))
+        except Exception as exc:  # noqa: BLE001 — the file and its id stay for a retry
+            logger.error("planner own upload save broke: %s", type(exc).__name__)
             async with self:
                 self.own_upload_saving = False
                 self.own_upload_error = SAVE_FAILED_TEXT
-            return
-        post_id = str(piece.draft_id)
-        try:
-            data = await asyncio.to_thread(load_week, tenant_id, *week)
-        except Exception as exc:  # noqa: BLE001 — said below: the piece exists anyway
-            logger.warning("planner reload after upload failed: %s", type(exc).__name__)
-            data = None
-        async with self:
-            self.own_upload_saving = False
-            if data is not None:
-                self.schedulable = data.schedulable
-                self.unscheduled = data.unscheduled
-            if self._own_upload_id != str(request.upload_id):
-                # another file replaced this one meanwhile (a browser that sent it
-                # despite the disabled zone): that file stays on screen; the saved piece
-                # is simply listed in the grid
-                return
-            advanced = post_id in self.form_selected_ids or self._add_post(post_id)
-            if advanced:
-                self._clear_own_upload()
-                self._go_to(STEP_WHEN)
-            else:
-                self.own_upload_not_listed = True
-        if advanced:
-            yield rx.call_script(step_settle_script("drawer"))
+        except BaseException:  # cancelled: still never leave the view locked
+            try:
+                async with self:
+                    self.own_upload_saving = False
+            except BaseException:  # noqa: BLE001 — the visit's own reset covers the rest
+                pass
+            raise
 
     # «Contenido»
 
