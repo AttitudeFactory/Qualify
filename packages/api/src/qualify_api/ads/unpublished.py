@@ -24,8 +24,17 @@ MAX_TOP_LEVEL_BOXES = 1000  # real MP4s have a handful
 TOO_LARGE = "Cada video del anuncio debe ocupar como máximo 100 MB. Recórtalo o elige otro."
 
 
+# Typed reasons a screen can switch on; the owner-readable message stays the text.
+VIDEO_PROCESSING = "video_processing"  # repeat the same preparation later, never re-upload
+UPLOAD_UNCERTAIN = "upload_uncertain"  # a send whose outcome is unknown: ask for help
+
+
 class UnpublishedUnavailable(ValueError):
     """Owner-readable boundary error; never a provider payload."""
+
+    def __init__(self, message: str, *, reason: str = "") -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
 @dataclass(frozen=True)

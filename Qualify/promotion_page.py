@@ -9,7 +9,6 @@ from .promotion_audience_ui import promotion_audience
 from .promotion_state import PromotionState as S
 from .promotion_unpublished_ui import (
     unpublished_country,
-    unpublished_covers,
     unpublished_feed_video,
     unpublished_images,
     unpublished_review,
@@ -140,8 +139,8 @@ def _source_choice(source: rx.Var) -> rx.Component:
                 rx.text(
                     rx.cond(
                         source.media_kind == "videos",
-                        "Dos videos de la pieza: 4:5 y 9:16",
-                        "Dos imágenes de la pieza: 4:5 y 9:16",
+                        "Dos videos de la pieza: para el perfil y vertical",
+                        "Dos imágenes de la pieza: para el perfil y vertical",
                     ),
                     size="1",
                     color=T.TEXT_MUTED,
@@ -662,7 +661,9 @@ def _blocked_preparation() -> rx.Component:
                     ),
                     rx.link(
                         rx.cond(
-                            S.back_label == "Tu semana", "Volver a Tu semana", "Ver publicación"
+                            S.back_label == "Tu semana",
+                            "Volver a Tu semana",
+                            rx.cond(S.is_unpublished, "Ver pieza", "Ver publicación"),
                         ),
                         href=S.back_href,
                         min_height="44px",
@@ -705,7 +706,6 @@ def promotion_index() -> rx.Component:
                     ("images", unpublished_images()),
                     ("feed_video", unpublished_feed_video()),
                     ("vertical_video", unpublished_vertical_video()),
-                    ("covers", unpublished_covers()),
                     ("text", unpublished_text()),
                     ("country", unpublished_country()),
                     _budget(),
@@ -796,7 +796,9 @@ def promotion_index() -> rx.Component:
                     rx.link(
                         rx.button(
                             rx.cond(
-                                S.back_label == "Tu semana", "Volver a Tu semana", "Ver publicación"
+                                S.back_label == "Tu semana",
+                                "Volver a Tu semana",
+                                rx.cond(S.is_unpublished, "Ver pieza", "Ver publicación"),
                             ),
                             min_height="44px",
                             size="3",

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import reflex as rx
 
+from .connections_state import SUPPORT_QUERY_PARAM
 from .promotion_state import PromotionState as S
 from .promotion_vm import COUNTRY_LABELS, VIDEO_WAITING, WEBSITE_CTA_LABELS, AdMediaVM
 from .r2_media import BACKEND_BASE
@@ -12,8 +13,8 @@ from .ui import callout, card, choice_card, choice_card_check, signal_pill
 from .ui import tokens as T
 
 PLACEMENTS_NOTE = (
-    "Se mostrará solo en Instagram: la versión 4:5 en el perfil y el inicio, "
-    "y la vertical 9:16 en historias y reels."
+    "Se mostrará solo en Instagram: la versión del perfil en el inicio y en el perfil, "
+    "y la vertical de pantalla completa en historias y reels."
 )
 
 
@@ -100,7 +101,7 @@ def unpublished_images() -> rx.Component:
             color=T.TEXT_MUTED,
         ),
         _media_group(
-            "Para el perfil (4:5)",
+            "Para el perfil",
             "Aparece en el inicio y en el perfil.",
             source.feed_media,
             "feed_asset_id",
@@ -108,7 +109,7 @@ def unpublished_images() -> rx.Component:
             "feed-image-label",
         ),
         _media_group(
-            "Vertical de pantalla completa (9:16)",
+            "Vertical de pantalla completa",
             "Aparece en historias y reels.",
             source.vertical_media,
             "vertical_asset_id",
@@ -124,7 +125,7 @@ def unpublished_feed_video() -> rx.Component:
     return rx.vstack(
         rx.text("Es el que verá la gente en el inicio y en el perfil.", color=T.TEXT_MUTED),
         _media_group(
-            "Videos 4:5 de la pieza",
+            "Videos de la pieza para el perfil",
             "Elige uno.",
             S.selected_source.feed_media,
             "feed_asset_id",
@@ -140,7 +141,7 @@ def unpublished_vertical_video() -> rx.Component:
     return rx.vstack(
         rx.text("Es el que verá la gente en historias y reels.", color=T.TEXT_MUTED),
         _media_group(
-            "Videos 9:16 de la pieza",
+            "Videos verticales de la pieza",
             "Elige uno.",
             S.selected_source.vertical_media,
             "vertical_asset_id",
@@ -157,11 +158,11 @@ def unpublished_covers() -> rx.Component:
     return rx.vstack(
         rx.text(
             "La portada es la imagen que se ve antes de que empiece el video. "
-            "Ya elegimos una de la pieza para cada formato.",
+            "Ya elegimos una de la pieza para cada video.",
             color=T.TEXT_MUTED,
         ),
         _media_group(
-            "Portada del video para el perfil (4:5)",
+            "Portada del video para el perfil",
             "",
             source.feed_covers,
             "feed_cover_id",
@@ -169,7 +170,7 @@ def unpublished_covers() -> rx.Component:
             "feed-cover-label",
         ),
         _media_group(
-            "Portada del video vertical (9:16)",
+            "Portada del video vertical",
             "",
             source.vertical_covers,
             "vertical_cover_id",
@@ -311,6 +312,70 @@ def _preview(title: str, url: rx.Var[str], height: str) -> rx.Component:
     )
 
 
+def _chosen(title: str, media: rx.Var[AdMediaVM], ratio: str) -> rx.Component:
+    return rx.vstack(
+        rx.text(title, size="1", color=T.TEXT_MUTED),
+        _thumb(media, ratio),
+        spacing="1",
+        width="100%",
+    )
+
+
+def _files() -> rx.Component:
+    """The piece's files the ad will use, also when a single file skipped its step;
+    covers (prefilled) change here instead of on a step of their own."""
+    video = S.form.media_kind == "videos"
+    return card(
+        rx.vstack(
+            rx.heading("Archivos de la pieza", size="3", as_="h2"),
+            rx.grid(
+                _chosen("Para el perfil", S.chosen_feed, "4 / 5"),
+                _chosen("Vertical", S.chosen_vertical, "9 / 16"),
+                rx.cond(video, _chosen("Portada del perfil", S.chosen_feed_cover, "4 / 5")),
+                rx.cond(video, _chosen("Portada vertical", S.chosen_vertical_cover, "9 / 16")),
+                columns=rx.breakpoints(initial="2", md="4"),
+                gap="3",
+                width="100%",
+                align_items="end",
+            ),
+            rx.cond(
+                video & ~S.paid_operation_locked,
+                rx.button(
+                    rx.cond(S.covers_open, "Listo", "Cambiar portada"),
+                    on_click=S.toggle_covers,
+                    disabled=S.busy,
+                    variant="outline",
+                    min_height="44px",
+                ),
+            ),
+            rx.cond(video & S.covers_open, unpublished_covers()),
+            spacing="3",
+            width="100%",
+        ),
+        width="100%",
+    )
+
+
+def _help() -> rx.Component:
+    return rx.vstack(
+        rx.text("El anuncio no se activó y no se hizo ningún cobro.", size="2"),
+        rx.link(
+            rx.button(
+                rx.icon("life-buoy", size=15),
+                "Pedir ayuda 1:1",
+                variant="soft",
+                min_height="44px",
+                **T.tone_scheme("neutral"),
+            ),
+            # The same «Pedir ayuda 1:1» drawer as Tus redes (QUA-202), opened on arrival.
+            href=f"/connections?{SUPPORT_QUERY_PARAM}=1",
+        ),
+        spacing="2",
+        align_items="start",
+        width="100%",
+    )
+
+
 def unpublished_review() -> rx.Component:
     return rx.vstack(
         rx.cond(S.execution_reason != "", callout(S.execution_reason, "warn")),
@@ -320,11 +385,6 @@ def unpublished_review() -> rx.Component:
                 rx.vstack(
                     signal_pill("Video en preparación", "info"),
                     rx.text(VIDEO_WAITING, weight="medium"),
-                    rx.text(
-                        "No tienes que subir nada de nuevo.",
-                        size="2",
-                        color=T.TEXT_MUTED,
-                    ),
                     spacing="2",
                     align_items="start",
                     width="100%",
@@ -332,24 +392,42 @@ def unpublished_review() -> rx.Component:
                 width="100%",
             ),
         ),
+        rx.cond(S.needs_help, _help()),
+        # The ad itself first: nobody authorizes without having seen it.
         rx.cond(
-            S.needs_help,
-            rx.text(
-                "El anuncio no se activó y no se hizo ningún cobro.",
-                size="2",
-                color=T.TEXT_MUTED,
-            ),
-        ),
-        card(
+            S.has_remote_review,
             rx.vstack(
-                _fact(
-                    "Qué se anuncia",
+                rx.cond(
+                    ~S.paid_operation_locked,
+                    signal_pill("Anuncio en pausa", "info"),
                     rx.cond(
-                        S.form.media_kind == "videos",
-                        "Dos videos de la pieza, sin publicarla en tu perfil",
-                        "Dos imágenes de la pieza, sin publicarla en tu perfil",
+                        S.result.status == "active",
+                        signal_pill("Activación solicitada a Meta", "info"),
+                        signal_pill("Activación por comprobar", "warn"),
                     ),
                 ),
+                rx.grid(
+                    _preview("En el inicio y el perfil", S.review.preview_url, "520px"),
+                    _preview("En historias y reels", S.review.vertical_preview_url, "640px"),
+                    columns=rx.breakpoints(initial="1", md="2"),
+                    gap="4",
+                    width="100%",
+                ),
+                spacing="3",
+                width="100%",
+            ),
+            rx.cond(
+                ~S.video_waiting & ~S.needs_help,
+                callout(
+                    "Este es el resumen. No activa el anuncio: primero lo creamos en pausa "
+                    "para que veas cómo queda en el perfil y en historias.",
+                    "info",
+                ),
+            ),
+        ),
+        _files(),
+        card(
+            rx.vstack(
                 _fact("Dónde aparece", PLACEMENTS_NOTE),
                 _fact("Instagram", S.selected_source.account_label),
                 _fact("Cuenta para anuncios", S.selected_source.account_name),
@@ -371,22 +449,6 @@ def unpublished_review() -> rx.Component:
         rx.cond(
             S.has_remote_review,
             rx.vstack(
-                rx.cond(
-                    ~S.paid_operation_locked,
-                    signal_pill("Anuncio en pausa", "info"),
-                    rx.cond(
-                        S.result.status == "active",
-                        signal_pill("Activación solicitada a Meta", "info"),
-                        signal_pill("Activación por comprobar", "warn"),
-                    ),
-                ),
-                rx.grid(
-                    _preview("Perfil e inicio (4:5)", S.review.preview_url, "520px"),
-                    _preview("Historias y reels (9:16)", S.review.vertical_preview_url, "640px"),
-                    columns=rx.breakpoints(initial="1", md="2"),
-                    gap="4",
-                    width="100%",
-                ),
                 rx.text(S.review.charge_notice, weight="medium"),
                 rx.text(
                     "Revisión válida hasta: " + S.review.expires_label,
@@ -402,14 +464,6 @@ def unpublished_review() -> rx.Component:
                 ),
                 spacing="3",
                 width="100%",
-            ),
-            rx.cond(
-                ~S.video_waiting & ~S.needs_help,
-                callout(
-                    "Este es el resumen. No activa el anuncio: primero lo creamos en pausa "
-                    "para que veas cómo queda en el perfil y en historias.",
-                    "info",
-                ),
             ),
         ),
         spacing="4",

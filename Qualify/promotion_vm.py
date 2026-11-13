@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -26,18 +26,22 @@ STEP_TITLES = (
 # placements are fixed: 4:5 in the feed, 9:16 in stories and reels.
 PUBLISHED_STEPS = ("source", "destination", "audience", "budget")
 IMAGE_STEPS = ("source", "images", "text", "country", "budget")
-VIDEO_STEPS = ("source", "feed_video", "vertical_video", "covers", "text", "country", "budget")
+# A format with a single file of the piece is not a decision: it is prefilled and
+# skipped (shown in the summary). Covers are prefilled too and change from the summary.
+VIDEO_STEPS = ("source", "feed_video", "vertical_video", "text", "country", "budget")
 STEP_TITLE_BY_KEY = dict(zip(PUBLISHED_STEPS, STEP_TITLES, strict=True)) | {
     "images": "Elige las dos imágenes del anuncio",
-    "feed_video": "Video para el perfil (4:5)",
-    "vertical_video": "Video vertical de pantalla completa (9:16)",
-    "covers": "Portadas",
+    "feed_video": "Video para el perfil",
+    "vertical_video": "Video vertical de pantalla completa",
     "text": "¿Qué dirá tu anuncio?",
     "country": "¿En qué país quieres mostrarlo?",
 }
-UNPUBLISHED_SOURCE_TITLE = "¿Con qué cuenta quieres anunciar esta pieza?"
+UNPUBLISHED_SOURCE_TITLE = "¿Con qué quieres anunciar esta pieza?"
 COUNTRY_LABELS = {"CO": "Colombia", "VE": "Venezuela", "UY": "Uruguay"}
-VIDEO_WAITING = "Meta está preparando tu video. Te avisamos aquí; puedes salir."
+VIDEO_WAITING = (
+    "Meta todavía está preparando tu video. Vuelve en unos minutos y toca "
+    "«Revisar ahora»; no tienes que subirlo de nuevo."
+)
 ZONE_LABELS = {
     "America/Bogota": "hora de Colombia",
     "America/Caracas": "hora de Venezuela",
@@ -158,6 +162,9 @@ class PromotionDraftVM:
     end_local: str = ""
     enhancements: BrandEnhancementsVM = field(default_factory=BrandEnhancementsVM)
     media_kind: str = ""
+    # The piece has one file of that format: no step to choose it (m-24828982).
+    single_feed: bool = False
+    single_vertical: bool = False
     feed_asset_id: str = ""
     vertical_asset_id: str = ""
     feed_cover_id: str = ""
@@ -300,8 +307,13 @@ def local_datetime(value: str, timezone_name: str) -> datetime:
 
 def step_keys(draft: PromotionDraftVM) -> tuple[str, ...]:
     if draft.media_kind == "videos":
-        return VIDEO_STEPS
-    return IMAGE_STEPS if draft.media_kind == "images" else PUBLISHED_STEPS
+        skip = {"feed_video"} if draft.single_feed else set()
+        skip |= {"vertical_video"} if draft.single_vertical else set()
+        return tuple(key for key in VIDEO_STEPS if key not in skip)
+    if draft.media_kind == "images":
+        both_single = draft.single_feed and draft.single_vertical
+        return tuple(key for key in IMAGE_STEPS if not (both_single and key == "images"))
+    return PUBLISHED_STEPS
 
 
 def step_count(draft: PromotionDraftVM) -> int:
@@ -331,11 +343,11 @@ UNPUBLISHED_PROBLEMS = {
     "images": lambda d: (
         ""
         if d.feed_asset_id and d.vertical_asset_id
-        else "Elige una imagen para el perfil (4:5) y otra vertical (9:16)."
+        else "Elige una imagen para el perfil y otra vertical de pantalla completa."
     ),
-    "feed_video": lambda d: "" if d.feed_asset_id else "Elige el video para el perfil (4:5).",
+    "feed_video": lambda d: "" if d.feed_asset_id else "Elige el video para el perfil.",
     "vertical_video": lambda d: (
-        "" if d.vertical_asset_id else "Elige el video vertical de pantalla completa (9:16)."
+        "" if d.vertical_asset_id else "Elige el video vertical de pantalla completa."
     ),
     "covers": lambda d: (
         "" if d.feed_cover_id and d.vertical_cover_id else "Elige la portada de cada video."
@@ -406,6 +418,11 @@ def step_problem(draft: PromotionDraftVM, step: int, timezone_name: str = "") ->
 
 
 def first_problem(draft: PromotionDraftVM, timezone_name: str) -> str:
+    # Steps a single file skips and the covers (changed from the summary) still count.
+    if draft.media_kind and not (draft.feed_asset_id and draft.vertical_asset_id):
+        return "Elige los dos archivos de la pieza para el anuncio."
+    if draft.media_kind == "videos" and not (draft.feed_cover_id and draft.vertical_cover_id):
+        return UNPUBLISHED_PROBLEMS["covers"](draft)
     return next(
         (
             reason
@@ -416,30 +433,32 @@ def first_problem(draft: PromotionDraftVM, timezone_name: str) -> str:
     )
 
 
-def video_outcome(message: str) -> str:
-    """What a refused unpublished preparation means for the screen: "waiting" (Meta is
-    processing a video: repeat the same preparation later), "help" (an uncertain upload:
-    never offer to send it again) or "" (an ordinary, owner-fixable refusal)."""
-    from qualify_api.ads.unpublished_service import VIDEO_WAIT  # noqa: PLC0415
+def video_outcome(error: Exception) -> str:
+    """What a refused unpublished preparation means for the screen, from the backend's
+    typed reason (never its wording): "waiting" (Meta is processing a video: repeat the
+    same preparation later), "help" (an uncertain upload: never offer to send it again)
+    or "" (an ordinary, owner-fixable refusal)."""
+    from qualify_api.ads.unpublished import UPLOAD_UNCERTAIN, VIDEO_PROCESSING  # noqa: PLC0415
 
-    if message in (VIDEO_WAIT["processing"], VIDEO_WAIT["submitting"]):
-        return "waiting"
-    return "help" if "Pide ayuda" in message else ""
+    reason = getattr(error, "reason", "")
+    return {VIDEO_PROCESSING: "waiting", UPLOAD_UNCERTAIN: "help"}.get(reason, "")
 
 
 def zone_label(timezone_name: str) -> str:
-    """The business's clock in the owner's words; an unknown zone keeps its name."""
-    return ZONE_LABELS.get(timezone_name, "la zona horaria " + timezone_name)
+    """The business's clock in the owner's words, never an IANA name."""
+    return ZONE_LABELS.get(timezone_name, "la hora de tu negocio")
 
 
 def step_counter(
-    draft: PromotionDraftVM, offered_kind: str, step: int, reviewed: bool
+    draft: PromotionDraftVM, offered: PromotionDraftVM, step: int, reviewed: bool
 ) -> tuple[int, int]:
-    """«Paso N de M» for the head. Before the choice, the kind on offer decides M (a piece
-    is either published or not). An unpublished piece counts its review as its own last
-    step (m-24828982); the published flow keeps its four steps as before."""
-    kind = draft.media_kind or ("" if draft.source_id else offered_kind)
-    total = step_count(replace(draft, media_kind=kind))
+    """«Paso N de M» for the head. Before the choice, `offered` (the draft the first
+    source would prefill) decides M — a piece is either published or not. An unpublished
+    piece counts its review as its own last step (m-24828982); the published flow keeps
+    its four steps as before."""
+    current = draft if draft.source_id else offered
+    kind = current.media_kind
+    total = step_count(current)
     if not kind:
         return step, total
     return (total + 1 if reviewed else step), total + 1

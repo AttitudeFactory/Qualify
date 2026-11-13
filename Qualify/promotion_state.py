@@ -63,6 +63,7 @@ from .promotion_vm import (
     PREVIEW_FAILED,
     UNPUBLISHED_SOURCE_TITLE,
     WEBSITE_CTA_LABELS,
+    AdMediaVM,
     PromotionCheckVM,
     PromotionDraftVM,
     PromotionResultVM,
@@ -107,6 +108,7 @@ class PromotionState(rx.State):
     # upload is uncertain (ask for help; never offer to send it again).
     video_waiting: bool = False
     needs_help: bool = False
+    covers_open: bool = False
     entry_available: bool = False
     entry_unpublished: bool = False
     back_href: str = "/drafts"
@@ -837,14 +839,40 @@ class PromotionState(rx.State):
 
     @rx.var
     def display_total(self) -> int:
-        return step_counter(self.form, self._offered_kind(), self.step, self.reviewed)[1]
+        return step_counter(self.form, self._offered(), self.step, self.reviewed)[1]
 
     @rx.var
     def display_step(self) -> int:
-        return step_counter(self.form, self._offered_kind(), self.step, self.reviewed)[0]
+        return step_counter(self.form, self._offered(), self.step, self.reviewed)[0]
 
-    def _offered_kind(self) -> str:
-        return self.sources[0].media_kind if self.sources else ""
+    def _offered(self) -> PromotionDraftVM:
+        if not self.sources:
+            return self.form
+        return replace(PromotionDraftVM(), **_unpublished_defaults(self.sources[0]))
+
+    def _media(self, rows: list[AdMediaVM], asset_id: str) -> AdMediaVM:
+        return next((row for row in rows if row.id == asset_id), AdMediaVM(id=""))
+
+    @rx.var
+    def chosen_feed(self) -> AdMediaVM:
+        return self._media(self.selected_source.feed_media, self.form.feed_asset_id)
+
+    @rx.var
+    def chosen_vertical(self) -> AdMediaVM:
+        return self._media(self.selected_source.vertical_media, self.form.vertical_asset_id)
+
+    @rx.var
+    def chosen_feed_cover(self) -> AdMediaVM:
+        return self._media(self.selected_source.feed_covers, self.form.feed_cover_id)
+
+    @rx.var
+    def chosen_vertical_cover(self) -> AdMediaVM:
+        return self._media(self.selected_source.vertical_covers, self.form.vertical_cover_id)
+
+    @rx.event
+    def toggle_covers(self) -> None:
+        if not self.busy:
+            self.covers_open = not self.covers_open
 
     @rx.var
     def zone_label(self) -> str:
@@ -1336,6 +1364,9 @@ class PromotionState(rx.State):
                 if context != await self._session() or operation != self._operation:
                     return
                 self.sources = rows
+                if rows and rows[0].media_kind and self.back_label != "Tu semana":
+                    self.back_label = "Revisar pieza"  # never published: one name, «pieza»
+                self.covers_open = False
                 self._tenant_timezone = zone
                 self.timezone_name = zone
                 if len(rows) == 1:
@@ -1356,7 +1387,12 @@ class PromotionState(rx.State):
                     self.loading = False
         yield settle_step()
         source = next((row for row in self.sources if row.id == self.form.source_id), None)
-        if source and source.ad_account_id and not source.health.blocks_preparation:
+        if (
+            source
+            and source.ad_account_id
+            and not source.health.blocks_preparation
+            and not source.media_kind
+        ):
             yield PromotionState.restore_audience()
 
     @rx.event(background=True)
@@ -1458,7 +1494,7 @@ class PromotionState(rx.State):
                         str(exc) if readable else CONFIRM_FAILED if confirm else PREVIEW_FAILED
                     )
                     outcome_kind = (
-                        video_outcome(str(exc))
+                        video_outcome(exc)
                         if isinstance(exc, UnpublishedUnavailable) and not confirm
                         else ""
                     )
@@ -1491,7 +1527,7 @@ class PromotionState(rx.State):
                     self.busy = False
 
 
-def _unpublished_defaults(source: PromotionSourceVM) -> dict[str, str]:
+def _unpublished_defaults(source: PromotionSourceVM) -> dict[str, str | bool]:
     """Prefill a piece's own pair: its first 4:5 and 9:16 files and, for videos, the
     first image of each format as the cover. Everything stays visible and changeable."""
     if not source.media_kind:
@@ -1502,6 +1538,8 @@ def _unpublished_defaults(source: PromotionSourceVM) -> dict[str, str]:
 
     return {
         "media_kind": source.media_kind,
+        "single_feed": len(source.feed_media) == 1,
+        "single_vertical": len(source.vertical_media) == 1,
         "feed_asset_id": first(source.feed_media),
         "vertical_asset_id": first(source.vertical_media),
         "feed_cover_id": first(source.feed_covers),
