@@ -132,6 +132,21 @@
   box-shadow: inset 0 1px 0 var(--q-card-hi), var(--q-elev-island);
 }
 .q-plist-card--overdue { border-left-color: var(--amber-9); }
+/* m-25026241: same-minute publications folded into one row — a real <button> wearing the
+   card material (no new component): reset the native button, keep the card look. */
+.q-plist-group {
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.q-plist-group:focus-visible {
+  outline: 2px solid var(--accent-8);
+  outline-offset: 2px;
+}
 
 /* Planificador: the "+" an empty calendar slot shows on hover — a small control that
    rises out of the cell. Plain classes (no Radix component) so nothing in the Radix base

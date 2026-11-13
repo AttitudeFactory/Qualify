@@ -375,6 +375,9 @@ class PlannerState(rx.State):
 
     # -- the event panel --------------------------------------------------------
     detail_open: bool = False
+    #: m-25026241: the same-minute groups the owner unfolded (`EventGroupVM.key`) — the
+    #: grouping itself is the view model's; this only remembers which are open.
+    open_groups: list[str] = []
     detail_loading: bool = False
     detail: EventDetailVM = EventDetailVM()
     detail_error: str = ""
@@ -1429,6 +1432,14 @@ class PlannerState(rx.State):
     @rx.event
     def open_assign_for_post(self, post_id: str) -> None:
         self._open_assign(post_id=post_id)
+
+    @rx.event
+    def toggle_group(self, key: str) -> None:
+        """Unfold or fold one same-minute group (m-25026241)."""
+        if key in self.open_groups:
+            self.open_groups = [k for k in self.open_groups if k != key]
+        else:
+            self.open_groups = [*self.open_groups, key]
 
     @rx.event
     def schedule_again(self, post_id: str) -> rx.event.EventSpec | None:
