@@ -147,6 +147,16 @@ def _newer(current: datetime | None, candidate: datetime | None) -> datetime | N
     return current
 
 
+def _lookup_outcome(exc: Exception) -> str:
+    """What a failed profile lookup logs: Meta's status and codes, or for a transport
+    failure the class of its cause (`ReadTimeout` vs `ConnectError`). Never message text."""
+    if getattr(exc, "is_transport", False):
+        cause = exc.__cause__ if exc.__cause__ is not None else exc
+        return f"error_transport_{type(cause).__name__}"
+    detail = getattr(exc, "access_detail", None)
+    return detail() if callable(detail) else f"error_{type(exc).__name__}"
+
+
 class ConversationSyncService:
     def __init__(
         self,
@@ -229,6 +239,9 @@ class ConversationSyncService:
                 if report.truncated or page.next_cursor is None:
                     break
                 cursor = page.next_cursor
+            # Retries are served only when the walk finishes: a connection whose walk
+            # always raises (or always hits the tenant's deadline) never retries nameless
+            # threads. Nothing is left inconsistent — queuing writes no state.
             await self._serve_retries(connection, source, report)
         except Exception as exc:
             if self._unavailable is not None and (
@@ -426,9 +439,11 @@ class ConversationSyncService:
                 connection, conversation.counterpart_external_id
             )
         except Exception as exc:  # noqa: BLE001 — a profile is decoration, never a failure
-            detail = getattr(exc, "access_detail", None)
-            outcome = detail() if callable(detail) else f"error_{type(exc).__name__}"
-            expected = getattr(exc, "platform_code", None) == CONSENT_REFUSAL_CODE
+            outcome = _lookup_outcome(exc)
+            expected = (
+                getattr(exc, "http_status", None) == 403
+                and getattr(exc, "platform_code", None) == CONSENT_REFUSAL_CODE
+            )
         if profile is not None and profile.username is None and listed is not None:
             profile = replace(profile, username=listed)
         elif profile is None and listed is not None:

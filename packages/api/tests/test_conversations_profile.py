@@ -495,3 +495,34 @@ async def test_an_outbound_echo_never_gets_an_author_backfilled(world) -> None:
     await service.sync_connection(CONNECTION, source)
     (message,) = repo.list_messages(tenant_id=TENANT, thread_id=_thread(repo).id)
     assert message.author_username is None
+
+
+@pytest.mark.parametrize(
+    ("cause", "outcome"),
+    [
+        (httpx.ReadTimeout("slow"), "error_transport_ReadTimeout"),
+        (httpx.ConnectError("down"), "error_transport_ConnectError"),
+    ],
+)
+async def test_a_transport_failure_logs_its_cause_class(caplog, cause, outcome) -> None:
+    repo = MemoryConversationRepository()
+    source = GraphProfileSource(FakeGraph(cause))
+    service = ConversationSyncService(repository=repo, clock=lambda: T0)
+    source.add_message(_listed(), _msg("mid.1"))
+    with caplog.at_level(logging.INFO, logger="qualify_api.conversations"):
+        await service.sync_connection(CONNECTION, source)
+    (line,) = _unnamed(caplog)
+    assert line.levelno == logging.WARNING
+    assert f"outcome={outcome} " in line.getMessage()
+    assert "slow" not in line.getMessage() and "down" not in line.getMessage()
+
+
+async def test_code_230_under_another_status_is_a_warning(caplog) -> None:
+    repo = MemoryConversationRepository()
+    source = GraphProfileSource(FakeGraph((400, {"error": {"code": 230}})))
+    service = ConversationSyncService(repository=repo, clock=lambda: T0)
+    source.add_message(_listed(), _msg("mid.1"))
+    with caplog.at_level(logging.INFO, logger="qualify_api.conversations"):
+        await service.sync_connection(CONNECTION, source)
+    (line,) = _unnamed(caplog)
+    assert line.levelno == logging.WARNING and "http_400_code_230" in line.getMessage()
