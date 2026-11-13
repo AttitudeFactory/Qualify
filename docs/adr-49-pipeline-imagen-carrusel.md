@@ -1,9 +1,9 @@
 # ADR 49 — Pipeline de imagen y carrusel: foto base de Seedream, capa de texto de Claude, composición en Remotion
 
-**Estado:** `[PROPUESTO — pendiente de firma del fundador]` · propuesto por principal-architect el 2026-11-13.
+**Estado:** `[FIRMADO — por Herwin Rey (fundador) el 2026-11-13]` · propuesto por principal-architect el mismo día. El fundador respondió una por una las siete elecciones; quedan registradas en §8 y rigen sobre el resto del documento.
 **Épica:** m-25017272 (`docs/epica-refactor-imagen-carrusel.md`) · **Historias de la Fase 1:** m-25017278, m-25017279, m-25017283, m-25017285, m-25017286, m-25017287, m-25017288, m-25017292, m-25017293.
-**Evidencia:** revisión de arquitectura de la Fase 1 del 2026-11-13 (un comentario por ticket en Meegle) y el código en `main` a esa fecha (migración head `0151`).
-**Numeración:** el 48 lo ocupa `docs/adr-48-catalogo-whatsapp-carga-por-api.md` en el PR #618 (abierto). Esta decisión es la **49**. Si el #618 se fusiona primero, su fila 48 va antes que esta en `docs/arquitectura.md` §6; si se fusiona después, hay que resolver el conflicto de orden en la tabla.
+**Evidencia:** revisión de arquitectura de la Fase 1 del 2026-11-13 (un comentario por ticket en Meegle) y el código en `main` a esa fecha.
+**Numeración:** el 48 es `docs/adr-48-catalogo-whatsapp-carga-por-api.md` (PR #618, ya en `main`). Esta decisión es la **49**.
 
 Las cifras marcadas **[H]** son estimaciones y las mide m-25017292. Ninguna sale de una factura ni de una medición.
 
@@ -29,30 +29,35 @@ Las cifras marcadas **[H]** son estimaciones y las mide m-25017292. Ninguna sale
 | Despachador | `QUALIFY_CREATIVE_DISPATCHER` vale `inline` por defecto (`queue_dispatch.py:37`): hilos que mueren con el proceso. La cola de ADR 41 (`creative-worker`) existe; m-25017277 dice si producción la usa para imagen y carrusel |
 | Servicio de render | Un trabajo = una plantilla + un juego de props + puertos fijos del manifiesto; perfil `render`, 1536m, concurrencia 1; un limpiador borra los trabajos terminados |
 | Contrato de publicación | `slide-N.jpg`, JPEG, dimensiones exactas del formato, posiciones 0..N-1, 2–10 elementos (`planner/publishable.py`, `publishing/service.py:90`) |
-| Precios (tabla v8) | Seedream 5.0 pro US$0,045 (+0,003 por referencia extra), lite 0,035, flash 0,018; Remotion propio US$0 |
+| «Quitar» en la Galería | `BusinessMediaStore.remove_business_media` (`catalog/business_media.py:645`): lápida (`deleted_at`) en una transacción con la fila bloqueada → borrar la carpeta `gallery/{tenant}/{media_id}/` en R2 → borrar la fila; ya rechaza el borrado mientras hay un corte activo (`CUTTING_TEXT`). Un conciliador diario termina lo que quedó con lápida. Las fotos de producto se quitan por `CatalogService.remove_media` (`catalog/service.py:568`) |
+| Piezas de la Galería que ya existen | `creative/gallery_piece.py` ya arma piezas con medios de la Galería (`n:<uuid>` de `business_media`, `p:<uuid>` de `product_media`), sin ningún candado que impida borrarlos después |
+| Bloqueo de R2 | El bucket de producción rechaza borrar y sobrescribir bajo `t/` (la Galería vive en `gallery/`, fuera de `t/`, desde m-24971181); la duración de ese bloqueo sigue abierta (#491), así que la purga de piezas de ADR 39 bajo `t/{tenant}/generated/` puede no poder borrar los bytes |
+| Precios (tabla v8) | Seedream 5.0 pro US$0,045 (+0,003 por referencia extra); Remotion propio US$0 |
 
 ### 1.3 Decisiones del fundador que dan forma a este ADR
 
 | Fecha | Decisión |
 |---|---|
 | 2026-11-12 | Composición: nada de Pillow, todo en Remotion con la IA orquestando; sin respaldo en Pillow |
-| 2026-11-13 (#8) | Pillow se queda **solo** como conversor y reductor de archivos (HEIC con `pillow-heif`, JPEG para Meta, reducción a 4096 px) |
+| 2026-11-13 (#8 de la épica) | Pillow se queda **solo** como conversor y reductor de archivos (HEIC con `pillow-heif`, JPEG para Meta, reducción a 4096 px) |
 | 2026-11-13 (#10) | Por ahora no se dibujan ni el botón ni la pastilla de precio en imagen y carrusel; el botón propio de los anuncios de Meta se conserva |
 | 2026-11-13 (#12) | «Usar mi foto» no consume creación |
 | 2026-11-13 (#14) | Tope de 10 diapositivas, sujeto a la medición del render |
+| 2026-11-13 (firma de este ADR) | Las siete elecciones de §8 |
 
 ## 2. Decisión
 
-**La imagen y el carrusel se producen en cuatro etapas con contratos tipados entre ellas, en un módulo propio. Seedream solo hace la foto base, que se guarda. Claude escribe la capa de texto y elige un diseño de un conjunto cerrado. Remotion compone. Ningún píxel de la pieza lo dibuja Pillow.**
+**La imagen y el carrusel se producen en cuatro etapas con contratos tipados entre ellas, en un módulo propio. Seedream 5.0 pro solo hace la foto base, que se guarda. Una llamada de Claude con la foto escribe la capa de texto, elige un diseño de un conjunto cerrado y avisa si la base trae letras inventadas. Remotion compone. Otra llamada de Claude revisa la imagen compuesta y la corrige una vez. Ningún píxel de la pieza lo dibuja Pillow.**
 
-1. **Foto base solo de Seedream, guardada.** El prompt de la escena no menciona texto, títulos, botones ni franjas. La base se guarda en `t/{tenant}/generated/{draft_id}/base/…` con su fila en `image_assets`: sha256, `vendor_task_id`, modelo, `rendered_prompt`, versión de prompt. Una fila con `vendor_task_id` nunca se vuelve a enviar (ADR 41 §8). Si la base trae letras o botones inventados, se regenera **una sola vez**, y ese tope lo impone una clave única sobre el intento, no un `if`.
-2. **La capa de texto es de Claude, sobre un esquema cerrado.** `LayerSpec` (pydantic) con título, subtítulo, frase de llamado opcional y bloques de información; `layout_id` sale de un enum versionado que comparten Python y `packages/render/src/props.ts`, con largo máximo por campo según el diseño. Claude ve la foto base. El precio entra **por referencia** (`product_id` → precio del catálogo al componer), nunca como texto escrito por el modelo; hoy no se dibuja (decisión #10), pero el esquema ya no permite inventarlo.
+1. **Foto base solo de Seedream 5.0 pro, guardada** (§8.7: no se comparan modelos). El prompt de la escena no menciona texto, títulos, botones ni franjas. La base se guarda en `t/{tenant}/generated/{draft_id}/base/…` con su fila en `image_assets`: sha256, `vendor_task_id`, modelo, `rendered_prompt`, versión de prompt. Una fila con `vendor_task_id` nunca se vuelve a enviar (ADR 41 §8). Si la llamada de la capa informa letras o botones inventados, la base se regenera **una sola vez**, y ese tope lo impone una clave única sobre el intento, no un `if`.
+2. **La capa de texto es de Claude, sobre un esquema cerrado.** `LayerSpec` (pydantic) con título, subtítulo, frase de llamado opcional, bloques de información y un campo `base_has_invented_text` (§8.2). `layout_id` sale de un enum versionado que comparten Python y `packages/render/src/props.ts`, con largo máximo por campo según el diseño. El precio entra **por referencia** (`product_id` → precio del catálogo al componer), nunca como texto escrito por el modelo; hoy no se dibuja (decisión #10), pero el esquema ya no permite inventarlo.
 3. **Remotion compone.** Las props de Remotion se derivan de la capa, no al revés: cambiar de diseño no vuelve a llamar a Claude. Una pieza de imagen es una foto fija; un carrusel son N fotos fijas con contador de diapositiva. Cada foto se convierte a JPEG con las dimensiones exactas y se guarda en R2 como `slide-N.jpg` en cuanto termina, antes de que el limpiador del render la borre.
-4. **Sin composición en Pillow y sin respaldo en Pillow.** `render_ad_slides`, `render_carousel_slide` y `text_layer` se borran (m-25017293). Pillow sigue solo para convertir y reducir archivos.
+4. **Revisión de la imagen compuesta, activa desde el inicio** (§8.3). Una llamada de Claude mira lo compuesto; si encuentra un defecto, escribe una capa corregida (fila hija, `source='model'`) y se recompone **una vez**, sin volver a llamar a Seedream.
+5. **Sin composición en Pillow y sin respaldo en Pillow.** `render_ad_slides`, `render_carousel_slide` y `text_layer` se borran en m-25017293, que también pasa a Remotion el camino viejo de carrusel dentro de `STATIC_FLYER` (§8.1). Pillow sigue solo para convertir y reducir archivos.
 
 ### 2.1 Dónde vive la capa: tabla nueva `piece_layers`
 
-La crea la migración de m-25017278 (número tomado contra `origin/main` al abrir el PR; hoy el head es 0151), según `qualify-migration`:
+La crea la migración de m-25017278 (número tomado contra `origin/main` al abrir el PR), según `qualify-migration`:
 
 | Columna | Para qué |
 |---|---|
@@ -60,7 +65,7 @@ La crea la migración de m-25017278 (número tomado contra `origin/main` al abri
 | `brand_id` con FK compuesta a `brands (id, tenant_id)` | Que la capa no cruce negocios ni por error de código |
 | `draft_id`, `version_id` → `piece_versions`, `position` | Una capa por diapositiva y por revisión |
 | `layout_id`, `layout_version`, `spec` JSONB, `spec_sha256` | El contenido y su huella para la clave del render |
-| `base_asset_id` → `image_assets` | La foto que vio Claude y sobre la que se compone |
+| `base_asset_id` → `image_assets` (foto de Seedream) o la referencia al medio de la Galería (§2.6) | La foto que vio Claude y sobre la que se compone |
 | `source` (`model` · `owner_edit` · `owner_photo`), `parent_layer_id`, `created_by` | Quién la escribió y de qué capa sale |
 | `model_id`, `prompt_version`, `pipeline_version` | Procedencia |
 | `UNIQUE (tenant_id, version_id, position)` | Idempotencia: un reintento no crea otra capa |
@@ -69,7 +74,7 @@ La crea la migración de m-25017278 (número tomado contra `origin/main` al abri
 
 **La edición de texto del dueño** cuenta como entrada manual (excepción del 2026-11-04, `docs/arquitectura.md` §1.6) **solo en los campos que él tecleó**: la fila lleva `source='owner_edit'` y `created_by`, y por `parent_layer_id` conserva la procedencia del modelo para los campos que no tocó. No se apoya solo en Langfuse, porque la capa alimenta una publicación y «Repetir este diseño» (m-25017310) la va a reusar.
 
-**Volumen [H]:** ~30 piezas de imagen o carrusel por negocio al mes × ~3 capas (diapositivas y ediciones) ≈ 1 100 filas por negocio al año → ~110 000 al año con 100 negocios. Lejos de los umbrales de ADR 31.
+**Volumen [H]:** ~30 piezas de imagen o carrusel por negocio al mes × ~3 capas (diapositivas, ediciones y la corrección de §2.4) ≈ 1 100–1 400 filas por negocio al año → ~110 000–140 000 al año con 100 negocios. Lejos de los umbrales de ADR 31.
 
 ### 2.2 Un trabajo de render por diapositiva
 
@@ -85,8 +90,8 @@ Un carrusel de N diapositivas son **N trabajos de render**, cada uno con `jobId 
 | Etapa | Entra | Sale | Qué se mueve de `media.py` |
 |---|---|---|---|
 | `base` | Brief, producto, formato | `BaseImage` (clave R2, sha256, `vendor_task_id`, modelo, versión de prompt) | `_scene_image`, `ad_scene_prompt`, `_carousel_scene_v3` |
-| `layer` | `BaseImage`(s), brief, catálogo | `LayerSpec` por diapositiva + revisión de la base | — (nuevo) |
-| `compose` | `LayerSpec` + `BaseImage` | Fotos fijas en R2, filas en `image_assets` y `template_runs` | Partes de `_ad_image` y `_carousel` |
+| `layer` | `BaseImage`(s) o medios de la Galería, brief, catálogo | `LayerSpec` por diapositiva + `base_has_invented_text` | — (nuevo) |
+| `compose` | `LayerSpec` + base | Fotos fijas en R2, filas en `image_assets` y `template_runs` | Partes de `_ad_image` y `_carousel`, y el camino viejo de carrusel de `STATIC_FLYER` |
 | `check` | Fotos compuestas | Aprobada o una capa corregida | — (nuevo) |
 
 En `media.py` queda solo el despacho por `ContentKind`. La etapa `compose` habla con `RemotionRenderClient`; no reusa `_template` tal cual. Cada etapa se puede probar sin red con dobles de los clientes.
@@ -95,24 +100,72 @@ En `media.py` queda solo el despacho por `ContentKind`. La etapa `compose` habla
 
 - **Estados de la pieza:** `base_ready` → `composing` → `compose_waiting` (con `next_attempt_at` y espera creciente) → `ready` · `failed`.
 - **Trabajo en `creative_jobs`** (ADR 41) con `kind='compose'` y la clave natural `(tenant_id, draft_id, kind, revision, position)`. El `jobId` del render sale de §2.2. Seedream no se vuelve a llamar: la base está guardada con su `vendor_task_id`.
-- **Lo que ve el dueño:** «La estamos terminando». Si se pasa de un tope (se propone 30 min), la pieza queda fallida, **sin descontar otra vez del cupo**, con un botón para reintentar. El chequeo de salud del render con alerta lo hace m-25017289.
+- **Tope de 10 minutos** (§8.4). Se cuenta desde el primer intento fallido porque el render no respondía, es decir, desde que la pieza entra en `compose_waiting`, no desde que entró a la cola: una pieza que solo espera turno detrás de otras no falla por eso. Pasados los 10 minutos, la pieza queda `failed`, **sin descontar otra creación**, con un botón para reintentar que reusa la base y la capa.
+- **Lo que ve el dueño:** «La estamos terminando» mientras espera; si falla, «No pudimos terminar tu publicación. Inténtalo de nuevo; no se te descuenta otra creación.» El chequeo de salud del render con alerta lo hace m-25017289.
 - **Precondición:** la cola de ADR 41 activa para imagen y carrusel en producción, y el despachador `inline` retirado para esos tipos, **antes** de borrar Pillow. Los hilos de `InlineDispatcher` mueren al reiniciar y no dejan reintento durable.
 
 ### 2.5 Claude con las fotos del cliente
 
 - **Transporte:** imágenes en base64 o con URL firmada de vida corta; nunca una URL pública.
 - **Trazas:** Langfuse corre en la máquina de Deivid (riesgo ya registrado). Los bloques de imagen se **enmascaran** en la traza; queda solo el sha256 y la clave de R2. Sin esto, fotos de clientes terminan en un equipo personal.
-- **Menos llamadas:** la revisión «¿tiene letras o botones inventados?» de la base (m-25017279) es un campo de la misma llamada que escribe la capa (m-25017283). Quedan **dos** llamadas con imagen por pieza: capa y revisión de la imagen compuesta (m-25017287). En el carrusel, una sola llamada con las N fotos devuelve las N capas, y una sola llamada revisa las N compuestas.
-- **Costo y latencia [H]:** una imagen de ~1080×1350 son ~1 500–1 700 tokens de entrada; ~US$0,01–0,02 y 3–8 s por llamada con Sonnet; menos con Haiku. Dos llamadas ≈ US$0,02–0,04 por pieza, contra US$0,035–0,045 de la foto base. Todo va detrás del medidor por turno y fuera de la petición web.
-- **«Usar mi foto»:** no consume creación (decisión #12), pero las llamadas a Claude se registran en el libro de consumo con su costo en dólares y 0 creaciones. La pieza guarda su propia copia normalizada de la foto del dueño en `generated/{draft_id}/base/`, para que recomponer no dependa de que la foto siga en la Galería (ADR 47).
-- **BytePlus:** las fotos de clientes solo van a presets que no ceden datos (pro y lite confirmados el 2026-11-12). Flash no está verificado: no se usa con fotos ni referencias de clientes hasta confirmarlo.
+- **Dos llamadas con imagen por pieza, como base** (§8.2 y §8.3): la de la capa (que además informa si la base trae letras inventadas) y la revisión de lo compuesto. En el carrusel, una sola llamada con las N fotos devuelve las N capas, y una sola llamada revisa las N compuestas. Si la revisión corrige, hay una recomposición, sin otra llamada de revisión.
+- **Costo y latencia [H]:** una imagen de ~1080×1350 son ~1 500–1 700 tokens de entrada; ~US$0,01–0,02 y 3–8 s por llamada con Sonnet. Dos llamadas ≈ US$0,02–0,04 y 6–16 s por pieza, contra US$0,045 de la foto base con pro. Todo va detrás del medidor por turno y fuera de la petición web.
+- **«Usar mi foto»:** no consume creación (decisión #12), pero sus dos llamadas a Claude se registran en el libro de consumo con su costo en dólares y 0 creaciones. La pieza **referencia** la foto de la Galería, sin copiarla (§8.6, §2.6).
+- **BytePlus:** solo Seedream 5.0 pro, cuyo preset no cede datos (confirmado el 2026-11-12). Usar lite o flash con fotos o referencias de clientes queda fuera de esta decisión.
+
+### 2.6 «Usar mi foto» referencia la Galería, y la Galería no deja borrar lo que una pieza usa
+
+Decisión del fundador (§8.6): *«referencia a la galería, pero no debería dejar eliminar algo de galería si se está usando de referencia para una pieza»*.
+
+**Tabla de referencias `piece_media_refs`** (misma migración que `piece_layers`, o la de m-25017286):
+
+| Columna | Para qué |
+|---|---|
+| `tenant_id` + RLS con `NULLIF`, `brand_id` | Aislamiento |
+| `draft_id` → `content_drafts` `ON DELETE CASCADE` | Borrar la pieza libera la foto sin código extra |
+| `business_media_id` → `business_media` `ON DELETE RESTRICT`, o `product_media_id` → `product_media` `ON DELETE RESTRICT` (`CHECK`: exactamente uno) | La base de datos no deja borrar la fila del medio mientras alguien la usa |
+| `UNIQUE (tenant_id, draft_id, business_media_id, product_media_id)` | Idempotencia al crear y al recomponer |
+
+Las FK van con `tenant_id` (FK compuesta `(id, tenant_id)`); si `business_media` o `product_media` no tienen esa `UNIQUE`, la migración la agrega. La procedencia de la capa (`piece_layers`) guarda el id del medio aparte, sin FK, para que liberar la referencia no borre la historia.
+
+**Por qué la FK sola no alcanza:** «Quitar» pone la lápida, después borra la carpeta de R2 y **al final** borra la fila. Una FK `RESTRICT` solo saltaría en el último paso, con el archivo ya borrado. Por eso el candado tiene dos capas en la base de datos:
+1. Un disparador `BEFORE UPDATE OF deleted_at` en `business_media` (y el equivalente en `product_media`) que rechaza poner la lápida si existe una fila en `piece_media_refs`. La regla vive en la base de datos, no solo en la pantalla.
+2. La FK `RESTRICT` como última línea, para cualquier borrado directo de la fila.
+
+Concurrencia: crear la referencia toma el bloqueo `FOR KEY SHARE` de la FK sobre la fila del medio, y «Quitar» ya la toma `FOR UPDATE` (`business_media.py:652`), así que una pieza que se crea al mismo tiempo que se quita la foto no puede ganar las dos cosas. La creación de la pieza, además, rechaza un medio con lápida (ya lo hace `gallery_piece.py` por «vivo»).
+
+**Todos los caminos de borrado que tienen que respetarlo:**
+- «Quitar» de la Galería (`remove_business_media`), uno por uno.
+- Quitar varios a la vez, si existe o cuando exista: quita los libres y dice cuáles se quedaron.
+- El conciliador diario: solo termina medios que ya tienen lápida, así que no salta el candado; no hace falta cambiarlo, pero un test lo fija.
+- El corte de un video (deja la lápida en el original): queda rechazado si el original está en uso.
+- Quitar o reemplazar una foto de producto en Catálogo (`remove_media`), cuando la referencia es a esa fila de `product_media`.
+- La purga de piezas de ADR 39 y el borrado de un negocio: no borran medios de la Galería; el borrado de un negocio borra primero sus piezas y con ellas las referencias.
+
+**Lo que ve el dueño cuando se rechaza** (español llano, `qualify-copy-es`):
+> No puedes quitar esta foto todavía: la usa tu publicación «{título}». Cuando borres esa publicación o le cambies la foto, podrás quitarla.
+
+Con varias publicaciones: «…la usan 3 de tus publicaciones: «{título 1}», «{título 2}» y otra más.» Cada título lleva a su publicación. El mensaje no dice «referencia», «pieza» ni «borrador».
+
+**Cómo se libera:**
+1. **La pieza se borra:** `ON DELETE CASCADE`.
+2. **La pieza deja de usar la foto:** al recomponer o cambiar la foto, las referencias se reescriben para la revisión vigente. Las revisiones viejas no retienen nada, porque no se recomponen.
+3. **La purga de ADR 39:** cuando la pieza queda marcada `media_purged_at`, se borran sus referencias en la misma transacción. Se libera por la marca en la base de datos, no por el éxito del borrado en R2: con el bloqueo del bucket sobre `t/` (#491) los bytes de la pieza pueden quedar, y eso no debe dejar la foto de la Galería bloqueada para siempre.
+
+**Cruce con ADR 39 y ADR 47:**
+- Los medios de la Galería no caducan (ADR 47); la pieza sí. Una pieza publicada retiene su foto hasta **90 días después de su último uso**. Una pieza con evento `scheduled` o recurrente la retiene mientras siga programada.
+- El candado protege **poder recomponer**, no la publicación: el publicador lee la imagen compuesta de `generated/`, no la foto de la Galería.
+- La foto de la Galería vive en `gallery/` (fuera de `t/`); el bloqueo de R2 no le afecta.
+
+**Alcance:** el mismo candado aplica a las piezas que ya arma `gallery_piece.py` con medios de la Galería; hoy esas piezas no tienen candado. Ver la subpregunta 6b de §8.
 
 ## 3. Condiciones que tienen que cumplirse (bloqueantes)
 
-1. **Orden m-25017293 / m-25017299.** `render_carousel_slide` (Pillow) lo usa el camino viejo de carrusel dentro de `STATIC_FLYER` (`media.py:5564`), que se retira en m-25017299 (Fase 2), y m-25017299 depende de m-25017293. Hay que elegir: m-25017293 pasa ese camino a Remotion, o m-25017299 va antes. Tal como está, las dependencias se contradicen.
+1. **m-25017293 pasa el camino viejo de carrusel de `STATIC_FLYER` a Remotion** antes de borrar `render_carousel_slide` (§8.1). m-25017299 queda para quitar código ya sin uso y deja de ser una dependencia para borrar Pillow.
 2. **Clave del render con contenido.** Ningún trabajo nuevo usa `_template_job_id`; la clave es la de §2.2.
 3. **Cola en producción.** m-25017293 no empieza hasta que m-25017277 confirme `QUALIFY_CREATIVE_DISPATCHER=queue` (o equivalente) para imagen y carrusel en producción.
-4. **Recomponer anula la aprobación y tiene fecha de vencimiento.** Recomponer invalida `confirmed_sha256` (ADR 32 doble aprobación, ADR 41 §3.3) y la pieza vuelve a «por aprobar». Después de la purga de ADR 39 (90 días desde el último uso), o para piezas anteriores a este pipeline (no tienen base guardada), no hay recomposición: la pantalla ofrece «Crear otra».
+4. **Recomponer anula la aprobación y tiene fecha de vencimiento.** Recomponer invalida `confirmed_sha256` (ADR 32 doble aprobación, ADR 41 §3.3) y la pieza vuelve a «por aprobar». Después de la purga de ADR 39, o para piezas anteriores a este pipeline (no tienen base guardada), no hay recomposición: la pantalla ofrece solo «Crear otra» (§8.5).
+5. **El candado de la Galería existe en la base de datos antes de que «Usar mi foto» salga** (m-25017286): disparador, FK `RESTRICT`, el mensaje para el dueño y tests `-m db` que prueben que la lápida se rechaza y que otro negocio no ve ni bloquea nada.
 
 ## 4. Opciones consideradas
 
@@ -128,48 +181,73 @@ En `media.py` queda solo el despacho por `ContentKind`. La etapa `compose` habla
 | | B. Pillow con diseños nuevos | Descartada por el fundador (2026-11-12) | Es lo que produjo «textos horribles»; dos motores de diseño que mantener |
 | | C. Remotion con respaldo en Pillow | Descartada por el fundador (2026-11-12) | Dos caminos que divergen; la cola con reintento cubre la caída del render |
 | | D. Canva | Descartada | Proveedor por pieza, sin diseño cerrado bajo nuestro control, más latencia |
-| Revisión de la base | **A. Campo dentro de la llamada de la capa** | **Recomendada** | Claude ya está viendo la foto: ahorra una llamada con imagen |
-| | B. Llamada aparte (Haiku) | Alternativa | Más precisa quizá, una llamada más; la decide m-25017292 |
-| Piezas viejas | **A. No se recomponen; «Crear otra» con el pipeline nuevo** | **Elegida** | No hay base guardada; la imagen publicada y su procedencia siguen en R2 y en la fila |
+| Revisión de la base | **A. Campo dentro de la llamada de la capa** | **Elegida** (§8.2) | Claude ya está viendo la foto: ahorra una llamada con imagen |
+| | B. Llamada aparte (Haiku) | Descartada | Una llamada más por pieza |
+| Revisión de lo compuesto | A. Apagada hasta medir | Recomendada, no elegida | Cuidaba el costo hasta tener la medición |
+| | **B. Activa desde el inicio** | **Elegida por el fundador** (§8.3) | Prefiere la calidad desde el primer día; la medición decide si se queda |
+| Foto del dueño | A. Copia propia en la pieza | Recomendada, no elegida | Recomponer no dependía de la Galería y no hacía falta candado |
+| | **B. Referencia a la Galería con candado de borrado** | **Elegida por el fundador** (§8.6) | Un solo archivo por foto; el dueño ve qué publicación la usa |
+| | C. Referencia sin candado | Descartada | El dueño borra la foto y la pieza ya no se puede recomponer, sin aviso |
+| Modelo de la base | **A. Seedream 5.0 pro** | **Elegida por el fundador** (§8.7) | Calidad conocida y preset que no cede datos |
+| | B. Comparar pro, lite y flash | Descartada por el fundador | No se mide; flash no tenía confirmado el manejo de datos |
+| Piezas viejas | **A. No se recomponen; «Crear otra» con el pipeline nuevo** | **Elegida** (§8.5) | No hay base guardada; la imagen publicada y su procedencia siguen en R2 y en la fila |
 | | B. Conservar Pillow para reproducirlas | Descartada | Contradice la decisión del fundador y deja un motor vivo solo para el pasado |
 
 ## 5. Encaje con las reglas y los ADR firmados
 
-- **ADR 31:** ningún almacén nuevo; una tabla más en el Postgres que ya corre.
+- **ADR 31:** ningún almacén nuevo; dos tablas más en el Postgres que ya corre.
 - **Sin runtime nuevo:** Remotion es el único runtime de Node del repo y ya está en producción.
 - **ADR 32:** la doble aprobación se mantiene; recomponer vuelve a pedir aprobación.
-- **ADR 39:** la base vive bajo `generated/{draft_id}/` y se purga con la pieza; «recomponer gratis» vale mientras exista.
+- **ADR 39:** la base de Seedream vive bajo `generated/{draft_id}/` y se purga con la pieza; «recomponer gratis» vale mientras exista. La purga libera las referencias a la Galería (§2.6).
 - **ADR 41:** la composición es un trabajo más de `creative_jobs`; el reintento no cobra dos veces.
+- **ADR 47:** la Galería no caduca; su «Quitar» gana un motivo de rechazo más, junto al del corte activo.
 - **Asistido, nunca autónomo:** nada se publica sin que el dueño apruebe la imagen final.
-- **Procedencia e idempotencia:** §2.1 y §2.2.
+- **Procedencia e idempotencia:** §2.1, §2.2 y §2.6.
 
 ## 6. Consecuencias
 
-- **Positivas.** Ningún texto inventado dentro de la foto; la capa se puede editar y recomponer gratis sin otra llamada a Seedream; un solo motor de diseño; procedencia completa por diapositiva; `media.py` adelgaza.
-- **Negativas.** Una tabla y un estado más; dos llamadas a Claude con imagen por pieza (~US$0,02–0,04 [H]); la pieza depende del servicio de render: si cae, espera en la cola en lugar de salir con Pillow; las piezas viejas dejan de poder editarse.
+- **Positivas.** Ningún texto inventado dentro de la foto; la capa se puede editar y recomponer gratis sin otra llamada a Seedream; un solo motor de diseño; procedencia completa por diapositiva; `media.py` adelgaza; «Usar mi foto» no duplica archivos y el dueño sabe qué publicación usa cada foto.
+- **Negativas.**
+  - Dos tablas y un estado más.
+  - Dos llamadas a Claude con imagen en **toda** pieza, también en «Usar mi foto», que no cobra creación: ~US$0,02–0,04 [H] por pieza que no se recuperan con el cupo.
+  - Si el render cae más de 10 minutos, las piezas fallan (sin cobro) y el dueño tiene que reintentar; antes Pillow las terminaba.
+  - Las piezas viejas dejan de poder editarse.
+  - El dueño puede encontrarse con que no puede quitar una foto de su Galería durante hasta 90 días después del último uso de una publicación, o mientras esté programada.
+  - El candado toca código que ya está en producción (`remove_business_media`, `remove_media`, el corte) y un tipo de pieza que ya existe (`gallery_piece.py`).
 - **Operación.** El perfil `render` (1536m, concurrencia 1) pasa a estar en el camino de toda imagen. Si un carrusel de 10 tarda demasiado, el tope de diapositivas se ajusta (decisión #14).
 
 ## 7. Qué queda abierto para la medición (m-25017292)
 
+Sin comparación de modelos de Seedream (§8.7). Se mide:
 - Tiempo por foto fija, sobrecosto por trabajo y memoria máxima en el perfil `render`; tiempo de un carrusel de 10 a concurrencia 1 → tope de diapositivas.
-- Tokens, costo y latencia reales de cada llamada de Claude con imagen; si juntar la revisión de la base con la capa pierde precisión.
-- Seedream pro, lite o flash por calidad y costo, con la verificación previa de que flash no cede datos.
-- Si la revisión de la imagen compuesta (m-25017287) sube el costo por pieza: el fundador decide si se activa.
+- Tokens, costo y latencia reales de las dos llamadas de Claude con imagen; si el campo `base_has_invented_text` detecta las letras inventadas tan bien como una llamada aparte.
+- La revisión de lo compuesto (m-25017287): costo y latencia por pieza, y **qué parte de las imágenes corrige de verdad**.
 
-## 8. Lo que el fundador tiene que elegir para firmar
+## 8. Decisiones del fundador al firmar (2026-11-13)
 
-1. **Orden de m-25017293 y m-25017299:** (a) m-25017293 pasa el camino viejo de carrusel a Remotion — *recomendado*; o (b) m-25017299 va antes.
-2. **Revisión de la foto base:** (a) campo dentro de la llamada de la capa — *recomendado*; o (b) llamada aparte con Haiku.
-3. **Revisión de la imagen compuesta (m-25017287):** (a) apagada por defecto hasta ver la medición — *recomendado*; o (b) activa desde el inicio.
-4. **Tope de espera de la composición en cola** antes de dar la pieza por fallida: 30 min propuesto, o otro valor.
-5. **Piezas viejas:** (a) no se recomponen, solo «Crear otra» — *recomendado*; o (b) se le pide al equipo un camino especial.
-6. **Foto del dueño en «Usar mi foto»:** (a) la pieza guarda su propia copia — *recomendado*; o (b) referencia la foto de la Galería, aceptando que si el dueño la borra ya no se puede recomponer.
-7. **Modelo de la foto base** (pregunta 2 de la épica): se elige con la medición; flash solo si se confirma que no cede datos.
+| # | Elección | Decisión | ¿Coincide con la recomendación? |
+|---|---|---|---|
+| 1 | Orden de m-25017293 y m-25017299 | (a) Un solo ticket: m-25017293 pasa el camino viejo de carrusel de `STATIC_FLYER` a Remotion | Sí |
+| 2 | Revisión de la foto base | (a) Un campo dentro de la llamada de la capa: una sola llamada con imagen escribe las capas e informa letras inventadas | Sí |
+| 3 | Revisión de lo compuesto (m-25017287) | **(b) Activa desde el inicio** | **No** (se recomendaba apagada hasta medir). Se reabre con la medición: ver §9 |
+| 4 | Tope de espera de la composición | **10 minutos**, sin descontar otra creación | **No** (se proponían 30). Ver la forma de contarlo en §2.4 |
+| 5 | Piezas viejas | (a) No se recomponen; solo «Crear otra» | Sí |
+| 6 | Foto del dueño en «Usar mi foto» | **Variante propia:** *«referencia a la galería, pero no debería dejar eliminar algo de galería si se está usando de referencia para una pieza»*. La pieza referencia la foto, sin copia, y la Galería rechaza borrarla mientras una pieza la use (§2.6) | **No** (se recomendaba una copia por pieza) |
+| 7 | Modelo de la foto base | **Seedream 5.0 pro**, sin comparar modelos; m-25017292 deja fuera la comparación pro/lite/flash | **No** (se proponía elegir con la medición) |
+
+**Subpreguntas que deja abiertas la decisión 6** (las responde el fundador; mientras tanto, se construye con la opción marcada):
+- **6a. ¿Una pieza sin aprobar también bloquea el borrado?** Propuesta: sí, cualquier pieza que exista (por aprobar, aprobada, programada o publicada), con un enlace para borrarla desde el mismo aviso. Alternativa: solo las aprobadas o programadas, y que una pieza por aprobar pierda la foto (y la posibilidad de recomponer) si el dueño la borra.
+- **6b. ¿El candado aplica también a las piezas que ya arma la Galería (`gallery_piece.py`) y a las fotos de producto del Catálogo?** Propuesta: sí, la misma tabla para las dos. Las piezas ya existentes ganan el candado cuando se carguen sus referencias; hace falta decidir si se cargan hacia atrás (relleno en la migración) o solo para las piezas nuevas.
+- **6c. ¿Una publicación ya publicada debe retener la foto hasta 90 días?** La foto solo sirve para recomponer, y una pieza publicada rara vez se recompone. Alternativa: liberar la foto al publicar, y que esa pieza ya no se pueda recomponer.
+- **6d. Videos de la Galería:** el corte de un video usado por una pieza queda rechazado. ¿Se acepta, o el corte debe crear partes nuevas sin poner la lápida en el original mientras esté en uso?
 
 ## 9. Qué lo reabriría
 
-- La medición muestra que un trabajo con varios puertos ahorra más de ~2 s por diapositiva sin perder la reanudación.
+- **Revisión de lo compuesto (§8.3):** si en la medición corrige menos del ~5 % de las imágenes en ≥ 200 piezas, o sube el costo por pieza por encima de US$0,05, o suma más de ~10 s al tiempo hasta «por aprobar», se lleva al fundador apagarla o pasarla a Haiku.
+- **Tope de 10 minutos (§8.4):** si en un mes más del 1 % de las piezas falla por el tope mientras el render se recupera solo en menos de 30 minutos, se vuelve a proponer un tope más largo.
+- **Seedream 5.0 pro (§8.7):** si su precio sube, si el fundador o un cliente reportan caídas de calidad, o si BytePlus cambia el manejo de datos del preset.
+- **Candado de la Galería (§8.6):** si los dueños reportan más de una vez al mes que no pueden quitar fotos, o si el soporte tiene que liberar referencias a mano: se revisa la variante de copia por pieza.
+- Un trabajo con varios puertos ahorra más de ~2 s por diapositiva sin perder la reanudación.
 - El render, con concurrencia 1, deja piezas en «La estamos terminando» más de 5 min en el p95 durante una semana: subir la memoria o la concurrencia con su tabla de opciones.
-- El costo de Claude con imagen pasa de US$0,05 por pieza en la medición.
 - Un cliente pide editar piezas anteriores a este pipeline más de una vez.
 - `piece_layers` pasa de 5 M filas.

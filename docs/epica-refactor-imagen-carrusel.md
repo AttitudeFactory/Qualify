@@ -174,3 +174,17 @@ sin planificador. — *pendiente*
 | 12 | «Usar mi foto» | No consume creación |
 | 13 | Composición | Nada de Pillow: todo en Remotion con la IA orquestando; sin respaldo en Pillow (2026-11-12) |
 | 14 | Valores por defecto confirmados | Tope de 10 diapositivas sujeto a la medición del render; íconos de destacados en Remotion; stickers de temporada fuera de alcance |
+
+## Decisiones del fundador al firmar ADR 49 (2026-11-13)
+
+Detalle y consecuencias en `docs/adr-49-pipeline-imagen-carrusel.md` §8. Rigen sobre las «Preguntas abiertas» 1 y 2 de arriba.
+
+| # | Tema | Decisión |
+|---|---|---|
+| A1 | Pillow y el carrusel viejo | m-25017293 pasa a Remotion el camino viejo de carrusel dentro de `STATIC_FLYER` antes de borrar Pillow; m-25017299 deja de ser condición para eso |
+| A2 | Revisión de la foto base | Un campo dentro de la llamada de la capa: una sola llamada con la foto escribe los textos e informa letras inventadas |
+| A3 | Revisión de la imagen compuesta (m-25017287) | **Activa desde el inicio** (contra la recomendación de dejarla apagada hasta medir); la medición de costo, tiempo y cuántas imágenes corrige es lo que la reabriría |
+| A4 | Espera de la composición si el render cae | **10 minutos**; después la pieza queda fallida, con «Reintentar» y sin descontar otra creación |
+| A5 | Piezas anteriores al pipeline | No se recomponen; solo «Crear otra» |
+| A6 | Foto del dueño en «Usar mi foto» | Se usa la foto de la Galería sin copiarla, y la Galería no deja quitar una foto mientras una publicación la use (aviso con el nombre de la publicación). Quedan subpreguntas abiertas en ADR 49 §8 (6a–6d) |
+| A7 | Modelo de la foto base | Seedream 5.0 pro; no se comparan modelos. m-25017292 mide solo el tiempo del carrusel y el costo de la revisión visual |
