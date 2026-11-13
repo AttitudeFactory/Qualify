@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import reflex as rx
 
-from . import clip_gallery_vm, reel_parts_vm, reel_wait_vm
+from . import clip_gallery_vm, part_editor_vm, reel_parts_vm, reel_wait_vm
 from .ask_more_ui import ask_more_block
 from .campaign_provider import COLOR_LABELS, NEW_CAMPAIGN, NO_CAMPAIGN
 from .catalog_vm import ADD_PRODUCT_LABEL, CREATE_RETURN_PATH, new_product_href
@@ -61,6 +61,7 @@ from .download_buttons import piece_download_button
 from .final_video_card_state import FinalVideoState
 from .generator_summary_vm import CLIP_MIDDLE_NOTE, LOGO_SIGNATURE_TEXT
 from .media_carousel import media_carousel
+from .part_editor_view import part_editor
 from .part_progress_panel import part_progress_panel
 from .part_progress_state import PartProgressState
 from .part_progress_vm import (
@@ -5182,6 +5183,20 @@ def _part_item(row: rx.Var) -> rx.Component:
                 _part_move("down", CreativeState.move_reel_part_down(key)),
             ),
         ),
+        rx.button(
+            "Cambiar",
+            variant="soft",
+            size="2",
+            min_height="44px",
+            on_click=CreativeState.edit_reel_part(key),
+            id=part_editor_vm.CHANGE_ID + key,
+            aria_label="Cambiar la parte " + row["index"],
+            aria_disabled=CreativeState.reel_plan_edit_reason != "",
+            aria_describedby="q-part-plan-locked",
+            # UI-4: pinned to the card's foot, level across the row (`.q-part-card`)
+            class_name="q-part-change",
+            margin_top="auto",
+        ),
         id=REEL_PART_CARD_ID + "-" + key,
         role="listitem",
         aria_label=row["aria"],
@@ -5258,6 +5273,10 @@ def _parts_live() -> rx.Component:
                 CreativeState.reel_move_text != "",
                 rx.text(CreativeState.reel_move_text, size="2"),
             ),
+        ),
+        rx.cond(
+            CreativeState.reel_parts_notice != "",
+            rx.text(CreativeState.reel_parts_notice, size="2"),
         ),
         aria_live="polite",
         width="100%",
@@ -5349,6 +5368,12 @@ def _clip_parts_block() -> rx.Component:
     sideways), dragged or moved with «Antes» / «Después». «Siguiente» never waits."""
     return rx.vstack(
         _parts_head(),
+        rx.text(
+            CreativeState.reel_plan_edit_reason,
+            id="q-part-plan-locked",
+            size="1",
+            color=T.TEXT_MUTED,
+        ),
         # m-24921079: empty parts (with UI-4's «Prefiero armarlas yo»): none says what it shows
         rx.cond(CreativeState.reel_plan_empty, parts_empty_notice()),
         _parts_live(),
@@ -5362,6 +5387,8 @@ def _clip_parts_block() -> rx.Component:
                 role="list",
                 aria_label=reel_parts_vm.LIST_TITLE,
                 wrap="wrap",
+                # every unit as tall as its row: «Cambiar» lines up at the cards' foot
+                align_items="stretch",
                 # round 12: one part per row, centred, with air on a phone
                 gap=["1.25rem", "1rem"],
                 justify=rx.breakpoints(initial="center", sm="start"),
@@ -5380,10 +5407,102 @@ def _clip_parts_block() -> rx.Component:
         # m-24992893: «Ya no podemos mostrar el reel original…», written by the clips'
         # script once the stored reel cannot be played (empty and hidden until then)
         clip_player_notice(),
+        rx.vstack(
+            rx.button(
+                rx.icon("plus", size=T.ICON_SM),
+                "Añadir parte",
+                variant="soft",
+                min_height="44px",
+                on_click=CreativeState.add_reel_part,
+                aria_disabled=CreativeState.reel_add_reason != "",
+                aria_describedby="q-part-add-reason",
+                id=part_editor_vm.ADD_ID,
+            ),
+            rx.text(
+                CreativeState.reel_add_reason, size="1", color=T.TEXT_MUTED, id="q-part-add-reason"
+            ),
+            spacing="1",
+            width="100%",
+            align_items="start",
+        ),
+        _script_on_mount(_asset_script("part-editor.js")),
+        part_editor(
+            _part_media_editor("image"), _part_media_editor("video"), _part_media_editor("audio")
+        ),
         _parts_usage(),
         spacing="2",
         width="100%",
         align_items="start",
+    )
+
+
+def _part_media_editor(kind: str) -> rx.Component:
+    image, video = kind == "image", kind == "video"
+    held = (
+        CreativeState.reel_edit_images
+        if image
+        else CreativeState.reel_edit_videos
+        if video
+        else CreativeState.reel_edit_audios
+    )
+    handler = (
+        CreativeState.handle_part_image_uploads
+        if image
+        else CreativeState.handle_part_video_uploads
+        if video
+        else CreativeState.handle_part_audio_uploads
+    )
+    accept = _CLIP_IMAGE_ACCEPT if image else _CLIP_VIDEO_ACCEPT if video else _CLIP_AUDIO_ACCEPT
+    target = "part_images" if image else "part_videos" if video else "part_audios"
+    upload = _clip_drop(
+        target,
+        "Agregar fotos" if image else "Agregar video" if video else "Agregar audio",
+        "Hasta 9 fotos." if image else "Hasta 3 videos." if video else "Hasta 3 audios.",
+        accept,
+        handler,
+        max_files=9 if image else 3,
+    )
+
+    def item(file: rx.Var) -> rx.Component:
+        return rx.vstack(
+            _clip_thumb(file["key"])
+            if image
+            else rx.video(
+                src=_key_src(file["key"]),
+                controls=True,
+                auto_play=False,
+                loop=False,
+                width="100%",
+                max_height="8rem",
+            )
+            if video
+            else rx.audio(src=_key_src(file["key"]), controls=True, width="100%"),
+            rx.text(file["name"], size="1", style={"overflow_wrap": "anywhere"}),
+            rx.button(
+                "Quitar foto" if image else "Quitar video" if video else "Quitar audio",
+                type="button",
+                variant="ghost",
+                min_height="44px",
+                # the accessible name starts with the visible label (WCAG 2.5.3)
+                aria_label=(
+                    "Quitar foto " if image else "Quitar video " if video else "Quitar audio "
+                )
+                + file["name"].to(str),
+                on_click=CreativeState.remove_part_media(kind, file["key"]),
+            ),
+            width="6rem" if image else "100%",
+            max_width="100%",
+            min_width="0",
+            spacing="1",
+        )
+
+    return rx.vstack(
+        rx.flex(rx.foreach(held, item), gap="0.5rem", wrap="wrap", width="100%"),
+        _media_picker(target, upload, media_type=kind) if kind != "audio" else upload,
+        spacing="2",
+        width="100%",
+        align_items="start",
+        min_width="0",
     )
 
 
@@ -5867,7 +5986,25 @@ def _parts_reason() -> rx.Component:
                 ("previews", ask_more_block("previews")),
                 rx.fragment(),
             ),
-            _parts_way_out(),
+            rx.cond(
+                CreativeState.reel_missing_description,
+                rx.button(
+                    CreativeState.reel_describe_label,
+                    variant="soft",
+                    min_height="44px",
+                    on_click=CreativeState.describe_reel_part,
+                ),
+                rx.cond(
+                    CreativeState.reel_unsupported_parts,
+                    rx.button(
+                        CreativeState.reel_change_label,
+                        variant="soft",
+                        min_height="44px",
+                        on_click=CreativeState.change_unsupported_reel_part,
+                    ),
+                    _parts_way_out(),
+                ),
+            ),
             spacing="2",
             width="100%",
             align_items="start",

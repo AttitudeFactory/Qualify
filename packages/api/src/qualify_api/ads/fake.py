@@ -24,6 +24,7 @@ class FakeMarketingClient(MarketingClient):
         self.responses: dict[tuple[str, str], dict[str, Any]] = {}
         self.calls: list[tuple[str, str, dict[str, Any]]] = []
         self.failures: list[MarketingError] = []
+        self._client = None  # no transport to close
 
     async def _request(
         self,
@@ -70,5 +71,12 @@ class FakeMarketingClient(MarketingClient):
             if method == "POST":
                 self.objects[path].update(deepcopy(dict(params)))
                 return {"success": True}
-            return {k: deepcopy(v) for k, v in self.objects[path].items() if k != "_resource"}
+            # Like Graph: only the requested fields come back (an unrequested one is absent).
+            fields = params.get("fields")
+            wanted = set(fields.split(",")) if isinstance(fields, str) and fields else None
+            return {
+                k: deepcopy(v)
+                for k, v in self.objects[path].items()
+                if k != "_resource" and (wanted is None or k in wanted)
+            }
         raise AssertionError("seed the fake response for this operation")

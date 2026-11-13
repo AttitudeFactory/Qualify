@@ -1189,12 +1189,12 @@ button.q-biz-trigger:disabled { cursor: progress; opacity: 0.8; }
     transform var(--q-dur) var(--q-spring);
 }
 @media (hover: hover) {
-  .q-choice-card:hover:not(.q-choice-card--off) {
+  .q-choice-card:hover:not(.q-choice-card--off, [aria-disabled="true"]) {
     box-shadow: inset 0 0 0 1px var(--q-card-edge-hover), inset 0 1px 0 var(--q-card-hi), var(--q-elev-lift);
     transform: translateY(-2px);
   }
 }
-.q-choice-card:active:not(.q-choice-card--off) { transform: translateY(0) scale(0.99); }
+.q-choice-card:active:not(.q-choice-card--off, [aria-disabled="true"]) { transform: translateY(0) scale(0.99); }
 .q-choice-card.q-choice-card--on,
 .q-choice-card.q-choice-card--on:hover {
   background: linear-gradient(var(--accent-a3), var(--accent-a3)), var(--q-card-fill);
@@ -1208,6 +1208,33 @@ button.q-biz-trigger:disabled { cursor: progress; opacity: 0.8; }
   border: 1px dashed var(--q-control-edge);
 }
 .q-choice-card:focus-visible { outline: 2px solid var(--accent-8); outline-offset: 2px; }
+/* UI-4 (m-24921078): a form the part cannot take stays focusable (`aria-disabled`, so
+   its reason is read) but looks quiet, like `.q-choice-card--off`; only its icon,
+   name and help dim — the reason (`.q-choice-reason`) keeps full contrast: it says
+   what to do. The dimming is the sheet's own (`.q-part-choice`): `ui.choice_card`'s
+   `--off` already fades a whole card, and dimming its text again would leave ~0.3. */
+.q-choice-card[aria-disabled="true"] {
+  cursor: not-allowed;
+  box-shadow: none;
+  border-style: dashed;
+}
+.q-part-choice[aria-disabled="true"] :is(svg, .rt-Text:not(.q-choice-reason)) {
+  opacity: 0.5;
+}
+.q-part-choice[aria-disabled="true"] .q-choice-reason {
+  opacity: 1;
+  color: var(--gray-12);
+}
+/* UI-4: «Cambiar» sits at the foot of every part card, level across a row however
+   long the text or «Ver más» is. The list's flex row stretches each unit and the
+   unit's row stretches each card (no `height: 100%`, which would overflow a phone's
+   stacked unit); on a phone (one column) the card simply ends with the button. */
+.q-part-card {
+  align-self: stretch;
+}
+.q-part-card > .q-part-change {
+  margin-top: auto;
+}
 /* The check in a selected card's corner: solid accent, its contrast on top. */
 .q-choice-card-check {
   display: flex;
@@ -1525,6 +1552,11 @@ button.q-biz-trigger:disabled { cursor: progress; opacity: 0.8; }
   transform: none !important;
   display: flex;
   flex-direction: column;
+  /* only `.q-drawer-body` scrolls (UI-4 review): Radix Themes gives the content
+     `overflow: auto`, and an absolutely placed descendant of the body (a visually
+     hidden input, a live region) used to stretch it far past the last field — a
+     second scrollbar with nothing to scroll. */
+  overflow: hidden !important;
   box-shadow: var(--q-elev-overlay);
   animation: q-drawer-in var(--q-dur) var(--q-ease);
 }
@@ -1537,6 +1569,13 @@ button.q-biz-trigger:disabled { cursor: progress; opacity: 0.8; }
 .q-drawer-body {
   padding: 1rem 1.5rem 1.25rem;
   container-type: inline-size;
+  /* the containing block of its absolutely placed descendants, so they never grow the
+     scroll past the last field; scrolls only when the fields overflow, and a field
+     reached by Tab stops clear of the foot (Cancelar / Guardar) */
+  position: relative;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scroll-padding-bottom: 1.25rem;
 }
 .q-drawer-foot {
   padding: 0.75rem 1.5rem;

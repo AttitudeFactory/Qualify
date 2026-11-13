@@ -77,14 +77,14 @@ def test_migration_vocabularies_match_the_module() -> None:
     assert set(m.KINDS) == q.KINDS
     assert set(m.LANES) == q.LANES
     assert set(m.STATUSES) == q.STATUSES
-    # 0096 seeds Seedance and OmniHuman; 0154 (m-25017372) seeds the Seedream pool
-    seedream = _MIGRATION.parent / "0154_product_sticker_characters.py"
-    spec = importlib.util.spec_from_file_location("m0154", seedream)
+    # 0096 seeds Seedance and OmniHuman; 0155 (m-25017372) seeds the Seedream pool
+    seedream = _MIGRATION.parent / "0155_product_sticker_characters.py"
+    spec = importlib.util.spec_from_file_location("m0155", seedream)
     assert spec is not None and spec.loader is not None
-    m0154 = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(m0154)
-    assert {**m.SEEDED_SLOTS, m0154._POOL: m0154._SEEDED} == dict(q.SEEDED_SLOTS)
-    assert m0154._POOL == q.SEEDREAM_PRO_POOL
+    m0155 = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m0155)
+    assert {**m.SEEDED_SLOTS, m0155._POOL: m0155._SEEDED} == dict(q.SEEDED_SLOTS)
+    assert m0155._POOL == q.SEEDREAM_PRO_POOL
     assert m.down_revision == "0095"
 
 

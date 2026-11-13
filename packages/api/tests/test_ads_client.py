@@ -230,6 +230,7 @@ READS = [
     ("targetingsearch", {"params": {"q": "Comida"}}, "act_1/targetingsearch"),
     ("adpreviews", {"ad_id": "9", "params": {"ad_format": "INSTAGRAM_STANDARD"}}, "9/previews"),
     ("minimum_budgets", {}, "act_1/minimum_budgets"),
+    ("subscribed_apps", {}, "act_1/subscribed_apps"),
     (
         "reachestimate",
         {"targeting_spec": {"geo_locations": {"countries": ["CO"]}}},
@@ -633,3 +634,24 @@ async def test_object_ids_cannot_inject_urls(value: str) -> None:
     with pytest.raises(ValueError):
         await fake.status(value)
     assert not fake.calls
+
+
+async def test_fake_returns_only_requested_fields_like_graph() -> None:
+    fake = FakeMarketingClient()
+    identifier = await fake.create("ads", params={"name": "A", "status": "PAUSED"})
+    assert await fake.read_object(identifier, fields="id,status") == {
+        "id": identifier,
+        "status": "PAUSED",
+    }
+
+
+async def test_subscribe_app_posts_app_id_once_after_the_guard() -> None:
+    fake = FakeMarketingClient()
+    fake.responses["POST", "act_1/subscribed_apps"] = {"success": True}
+    guarded = []
+    await fake.subscribe_app("555", before_write=lambda: guarded.append(True))
+    assert guarded == [True]
+    assert fake.calls == [("POST", "act_1/subscribed_apps", {"app_id": "555"})]
+    fake.responses["POST", "act_1/subscribed_apps"] = {"success": False}
+    with pytest.raises(MarketingError):
+        await fake.subscribe_app("555", before_write=lambda: None)

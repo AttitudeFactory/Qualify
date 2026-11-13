@@ -154,7 +154,7 @@ def _scope(tenant: UUID, promotion: UUID, *, system: bool = False) -> ResultScop
 def _same(scope: ResultScope, *, system: bool = False) -> None:
     if _scope(scope.tenant_id, scope.promotion_id, system=system) != scope:
         raise ResultsUnavailable(
-            "La cuenta cambió durante la consulta. Vuelve a abrir la promoción."
+            "La cuenta de anuncios cambió o se desconectó. Ábrela de nuevo y vuelve a intentarlo."
         )
 
 
@@ -579,6 +579,12 @@ async def _refresh(
 
 async def refresh_promotion_results(*, tenant_id: UUID, promotion_id: UUID) -> PromotionResults:
     return await _refresh(tenant_id, promotion_id)
+
+
+async def refresh_promotion_from_signal(*, tenant_id: UUID, promotion_id: UUID) -> PromotionResults:
+    """System read triggered by an ad-account webhook (`ads.status_webhook`); the
+    notification is only the trigger, this authenticated read is the evidence."""
+    return await _refresh(tenant_id, promotion_id, system=True)
 
 
 async def prepare_promotion_edit(

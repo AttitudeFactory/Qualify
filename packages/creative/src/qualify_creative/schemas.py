@@ -101,6 +101,9 @@ PART_GENERATION_SECONDS = range(PART_GENERATION_MIN_SECONDS, PART_SECONDS.stop)
 PART_TRIM_TOLERANCE_S = 0.5
 #: Parts per video by parts; `content_drafts.part_index` is 1..PARTS_MAX (migration 0119).
 PARTS_MAX = 6
+#: UI-4: the parts a parent may keep aside (`MediaInputs.parts_removed`) — the plan's own
+#: plus as many parts added by hand and removed again; removed parts take no active place.
+PARTS_REMOVED_MAX = PARTS_MAX * 2
 #: How a part is made: `reference` (new, from the product photos and the shot's sheet, no
 #: bytes of the original reel), `edit` (the original's window with the product in it),
 #: `extend` (continues the previous part — never the first one).
@@ -609,6 +612,9 @@ class _PartSource(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     mode: PartMode = "reference"
+    #: The mode originally assigned by the plan; retained on children as provenance.
+    #: A converted split tail remains identifiable after an explicit mode change.
+    original_mode: PartMode | None = None
     #: The part's length IN THE JOINED VIDEO, whole seconds (`PART_SECONDS`, 1-10): what
     #: the owner plans and sees. What Seedance is asked for is `generation_seconds`.
     seconds: int = 5
@@ -631,6 +637,12 @@ class _PartSource(BaseModel):
     talks_to_camera: bool = False
     #: VE-08: what the owner should read about this part (`PartNotice`), in order.
     notices: tuple[PartNotice, ...] = Field(default=(), max_length=len(PART_NOTICES))
+    #: UI-4: None inherits the parent's photos; an empty tuple deliberately uses none.
+    #: Videos and audio are always this part's own selection, never inherited.
+    clip_image_keys: tuple[str, ...] | None = Field(default=None, max_length=CLIP_MAX_IMAGES)
+    clip_image_roles: tuple[str, ...] = Field(default=(), max_length=CLIP_MAX_IMAGES)
+    clip_video_keys: tuple[str, ...] = Field(default=(), max_length=CLIP_MAX_VIDEOS)
+    clip_audio_keys: tuple[str, ...] = Field(default=(), max_length=CLIP_MAX_AUDIOS)
 
     @property
     def generation_seconds(self) -> int:
@@ -652,12 +664,29 @@ class _PartSource(BaseModel):
             raise ValueError("a part covers consecutive cuts, in order")
         if len(set(self.notices)) != len(self.notices):
             raise ValueError("a part's notice is said once")
-        if "people_unclear" in self.notices and self.mode == "edit":
+        if self.clip_image_roles and (
+            self.clip_image_keys is None or len(self.clip_image_roles) != len(self.clip_image_keys)
+        ):
+            raise ValueError("a part's image roles must match its explicit images")
+        if any(role not in CLIP_IMAGE_ROLES for role in self.clip_image_roles):
+            raise ValueError("a part's image role must be product, place or style")
+        if "people_unclear" in self.notices and self.mode == "edit" and not self.clip_video_keys:
             # unknown people = maybe someone of the original: never «Igual al original»
             raise ValueError("a part that may show someone of the original is made new")
-        if self.mode == "edit" and self.analysis_id is None:
+        if self.mode == "edit" and self.analysis_id is None and not self.clip_video_keys:
             # `edit` changes a window of the original reel: without one there is nothing
             raise ValueError("an edit part needs the reel it edits")
+        if self.mode == "edit" and (len(self.clip_video_keys) > 1 or self.clip_audio_keys):
+            raise ValueError("an edit part takes one original video and no reference audio")
+        if self.mode == "extend" and (self.clip_video_keys or self.clip_audio_keys):
+            raise ValueError("an extend part cannot use its own reference video or audio")
+        if self.original_mode == "extend" and self.mode != "extend":
+            if self.analysis_id is None or len(self.shot_indexes) != 1:
+                raise ValueError("a converted split part identifies its original reel cut")
+            if self.mode == "edit" and not self.clip_video_keys:
+                raise ValueError(
+                    "a converted split part cannot edit the public source without offsets"
+                )
         if (self.trim_start_s is None) != (self.trim_end_s is None):
             raise ValueError("a part's trim has its start and its end")
         if (
@@ -687,7 +716,6 @@ class VideoPartPlan(_PartSource):
     #: it). The screen may make an orphan «Sigue a la anterior» new and later put it
     #: back; only an entry born `extend` may become `extend` again. None on entries
     #: stored before it existed or built without a reel: none of them may.
-    original_mode: PartMode | None = None
 
 
 class PartsProvenance(BaseModel):
@@ -720,6 +748,7 @@ PartsScope = Literal["all", "first"]
 #: client text: the screen chooses the words (`qualify-copy-es`).
 PartsRefusal = Literal[
     "unavailable",  # the generation queue is off
+    "extend_unavailable",  # VE-13 continuity is not implemented
     "text_missing",  # the video's text did not come out (or is not there yet)
     "needs_description",  # `part` still has to be described
     "needs_previous",  # `part` continues a part that is not created
@@ -936,8 +965,11 @@ class MediaInputs(BaseModel):
     parts: tuple[VideoPartPlan, ...] = ()
     #: Video by parts, the PARENT (m-24984421): the parts the owner took out of the plan
     #: in «Orden del clip», kept so the screen can offer them back. Never made: `parts`
-    #: alone is what `create_parts` turns into children, in its order.
-    parts_removed: tuple[VideoPartPlan, ...] = Field(default=(), max_length=PARTS_MAX)
+    #: alone is what `create_parts` turns into children, in its order. Bounded (UI-4):
+    #: at most the `PARTS_MAX` parts a plan can start with plus `PARTS_MAX` parts the
+    #: owner added («Añadir parte») and took out again, so the kept history cannot grow
+    #: without limit through repeated add-and-remove.
+    parts_removed: tuple[VideoPartPlan, ...] = Field(default=(), max_length=PARTS_REMOVED_MAX)
     #: Video by parts, a CHILD (a `CLIP` draft with `parent_draft_id`): its place in the
     #: parent's plan. Its `duration_seconds` is then the part's `generation_seconds`.
     part: PartRef | None = None
@@ -1282,7 +1314,7 @@ class ContentBrief(BaseModel):
                 raise ValueError("a video by parts is not itself a part")
             if media.parts[0].mode == "extend":
                 raise ValueError("the first part cannot continue a previous one")
-            covered: dict[UUID, set[int]] = {}
+            covered: dict[tuple[UUID, int], list[VideoPartPlan]] = {}
             previous: VideoPartPlan | None = None
             for plan in media.parts:
                 shots = set(plan.shot_indexes)
@@ -1302,17 +1334,27 @@ class ContentBrief(BaseModel):
                             "an extend part starts on the last cut of the part before it"
                         )
                 if plan.analysis_id is not None:
-                    seen = covered.setdefault(plan.analysis_id, set())
-                    shared = seen & shots
-                    if plan.mode == "extend" and plan.shot_indexes:
-                        shared -= {plan.shot_indexes[0]}  # the cut it continues
-                    if shared:
-                        # any other repeat would play a cut twice
-                        raise ValueError("two parts cannot cover the same cut of a reel")
-                    seen.update(shots)
+                    for cut in shots:
+                        covered.setdefault((plan.analysis_id, cut), []).append(plan)
                 previous = plan
-            if len(media.parts) + len(media.parts_removed) > PARTS_MAX:
-                raise ValueError(f"a plan holds at most {PARTS_MAX} parts, taken out included")
+            for (_, cut), origins in covered.items():
+                ordinary = [
+                    plan
+                    for plan in origins
+                    if not (
+                        (plan.mode == "extend" and plan.shot_indexes[0] == cut)
+                        or (
+                            plan.original_mode == "extend"
+                            and len(plan.shot_indexes) == 1
+                            and (
+                                plan.mode == "reference"
+                                or (plan.mode == "edit" and bool(plan.clip_video_keys))
+                            )
+                        )
+                    )
+                ]
+                if len(ordinary) > 1:
+                    raise ValueError("two parts cannot cover the same cut of a reel")
         elif (
             media.parts
             or media.parts_removed
