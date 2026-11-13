@@ -1490,10 +1490,10 @@ CELL_VISIBLE = 5
 GROUP_PREVIEW = 4
 
 
-#: m-25026486: a publication joins the batch of the previous one (same account, same
-#: displayed day) when it went out at most this long after it — a chain, so a mural
-#: staged over several minutes stays one batch (founder 2026-11-14).
-BATCH_GAP = timedelta(minutes=15)
+#: m-25026486: a batch lasts at most this long, counted from its FIRST publication (same
+#: account, same displayed day) — a mural staged over a few minutes is one batch, and a
+#: group never swallows a whole afternoon (UX review: a chain rule hid two hour rows).
+BATCH_SPAN = timedelta(minutes=15)
 
 
 @dataclass(frozen=True)
@@ -1508,9 +1508,11 @@ class BatchInput:
 
 def batch_group_keys(events: Iterable[BatchInput], zone: ZoneInfo) -> dict[str, str]:
     """THE grouping rule (m-25026486): `published` events of one account on one
-    DISPLAYED day (`zone`, the calendar's) form a batch while each went out at most
-    `BATCH_GAP` after the previous one. Returns event id → batch key, only for batches of
-    two or more; scheduled / publishing / failed events and lone publications get none.
+    DISPLAYED day (`zone`, the calendar's) form a batch: the first opens it, every later
+    one that went out at most `BATCH_SPAN` after THAT first joins, the next opens a new
+    batch — so a batch never lasts more than 15 minutes. Returns event id → batch key,
+    only for batches of two or more; scheduled / publishing / failed events and lone
+    publications get none.
 
     The key is the account plus the UTC second of the batch's FIRST event: stable across
     reloads (`open_groups` keeps working); a publication that joins at the end keeps it,
@@ -1532,7 +1534,7 @@ def batch_group_keys(events: Iterable[BatchInput], zone: ZoneInfo) -> dict[str, 
             if (
                 event is not None
                 and batch
-                and event.scheduled_at - batch[-1].scheduled_at <= BATCH_GAP
+                and event.scheduled_at - batch[0].scheduled_at <= BATCH_SPAN
             ):
                 batch.append(event)
                 continue
@@ -1556,7 +1558,7 @@ def menu_focus_script(event_id: str) -> str:
     is not on screen."""
     safe = "".join(ch for ch in event_id if ch.isalnum() or ch == "-")
     return (
-        "[60, 250, 500].forEach(function (ms) { setTimeout(function () { "
+        "[60, 250, 500, 900, 1500].forEach(function (ms) { setTimeout(function () { "
         f"var e = document.getElementById('{MENU_ID_PREFIX}{safe}'); "
         "var a = document.activeElement; "
         "if (e && (!a || a === document.body)) { e.focus(); } }, ms); });"

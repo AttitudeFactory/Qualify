@@ -90,11 +90,11 @@ def _seed(tenant_id: uuid.UUID, user_id: uuid.UUID, shots: list[tuple[datetime, 
         assert result.outcome is Outcome.RECORDED, result
 
 
-def _seed_mural(tenant_id: uuid.UUID, user_id: uuid.UUID) -> None:
+def _seed_mural(tenant_id: uuid.UUID, user_id: uuid.UUID, *, chain: bool = False) -> None:
     """Nine photos staged over four clock minutes, the founder's real pattern (m-25026486:
     05:17:34 … 05:20:01), three hours ago; 40 min later a photo and a reel without poster;
     80 min later one lone photo — three batches the 15-minute rule keeps apart."""
-    start = (datetime.now(UTC) - timedelta(hours=3)).replace(second=34, microsecond=0)
+    start = (datetime.now(UTC) - timedelta(hours=5)).replace(second=34, microsecond=0)
     gaps = [0, 21, 17, 19, 16, 18, 15, 20, 21]
     mural, t = [], start
     for gap in gaps:
@@ -105,7 +105,9 @@ def _seed_mural(tenant_id: uuid.UUID, user_id: uuid.UUID) -> None:
         (start + timedelta(minutes=40, seconds=30), "REELS"),
     ]
     lone = [(start + timedelta(minutes=80), "IMAGE")]
-    _seed(tenant_id, user_id, mural + pair + lone)
+    # with `chain`: thirteen, one every 10 minutes (UX review) — pairs per 15-min span
+    tail = [(start + timedelta(minutes=120 + 10 * n), "IMAGE") for n in range(13)] if chain else []
+    _seed(tenant_id, user_id, mural + pair + lone + tail)
 
 
 def _skip_without_fake_bucket() -> None:
@@ -141,7 +143,7 @@ def test_a_mural_is_one_folded_row_on_the_phone(
     expect(page.get_by_role("dialog")).to_be_visible()
     page.keyboard.press("Escape")
     expect(page.get_by_role("dialog")).to_have_count(0)
-    page.wait_for_timeout(700)  # past the drawer's closing animation and the refocus
+    page.wait_for_timeout(1_800)  # past the closing animation and the last refocus try
     focus_after_panel.append(page.evaluate(_FOCUSED))
 
     # the keyboard opens it (Enter) and closes it (Space)
@@ -161,7 +163,7 @@ def test_a_mural_is_one_folded_row_on_the_phone(
     expect(page.get_by_role("dialog")).to_contain_text("Publicación que ya salió")
     page.keyboard.press("Escape")
     expect(page.get_by_role("dialog")).to_have_count(0)
-    page.wait_for_timeout(700)  # past the drawer's closing animation and the refocus
+    page.wait_for_timeout(1_800)  # past the closing animation and the last refocus try
     focus_after_panel.append(page.evaluate(_FOCUSED))
     # review m-25026241 (4): closing the panel gives focus back to the card's «⋯» —
     # inside a group as outside one
@@ -203,13 +205,20 @@ def test_a_mural_is_one_chip_in_the_desktop_calendar(
     _skip_without_fake_bucket()
     page = pre_fase_c_page
     page.set_viewport_size({"width": width, "height": 900})
-    _seed_mural(page._qualify_e2e_tenant_id, page._qualify_e2e_user_id)
+    _seed_mural(page._qualify_e2e_tenant_id, page._qualify_e2e_user_id, chain=True)
 
     page.goto(f"{app_server}/planner?vista=calendario")
     chip = page.get_by_role("button", name=re.compile(r" – .* · 9 publicaciones en @"))
     expect(chip).to_be_visible(timeout=60_000)
     expect(chip).to_have_count(1)  # one batch, once — not one chip per clock minute
-    expect(page.get_by_role("button", name=re.compile(r"· 2 publicaciones en @"))).to_have_count(1)
+    # the pair, and the 13-chain cut in six pairs (+ one lone): seven «2 publicaciones»
+    expect(page.get_by_role("button", name=re.compile(r"· 2 publicaciones en @"))).to_have_count(7)
+    # the group chip starts with its time: «h:mm · 9»
+    expect(chip).to_contain_text(re.compile(r"\d{1,2}:\d{2} · 9"))
+    # a single chip keeps its time (no «a. m.» here) even in the narrow column
+    times = page.locator(".q-cal-chip .q-chip-hm")
+    expect(times.first).to_be_visible()
+    expect(times.first).to_have_text(re.compile(r"^\d{1,2}:\d{2}$"))
     chip.scroll_into_view_if_needed()
     assert page.evaluate(_CLIPPED) == []  # no chip shows a clipped word or time
     _shot(page, f"batch-calendar-{width}")

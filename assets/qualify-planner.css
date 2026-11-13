@@ -947,19 +947,23 @@
 }
 /* m-25026241: a same-minute group's chip — one line, the label yields (ellipsis). */
 .q-cell-group.rt-Button { justify-content: flex-start; min-width: 0; overflow: hidden; white-space: nowrap; container-type: inline-size; }
-/* m-25026486: never a clipped word. The group chip always shows the stack glyph and the
-   NUMBER; «publicaciones» joins only where it fits whole. */
+/* m-25026486: never a clipped token. When room runs out, what goes first is what the
+   hover card / popover also says; the time (and a group's count) survive the longest.
+   Group chip: «7:00 · 9», then « publicaciones» only where it fits whole. */
 .q-chip-count { flex: 0 0 auto; white-space: nowrap; }
 .q-chip-word { display: none; }
-@container (min-width: 10.5rem) { .q-chip-word { display: inline; } }
-/* The single chip's time, whole or not at all: «9:33», « a. m.» where it fits, and
-   nothing at all in the narrowest column (the hour row and the hover card say it). */
+@container (min-width: 12rem) { .q-chip-word { display: inline; } }
+@container (max-width: 5.5rem) { .q-cell-group .q-chip-stack, .q-cell-group .q-chip-ok { display: none; } }
+/* Single chip: «10:30», « a. m.» where it fits; in a narrow column the temperature and
+   campaign glyphs go first, then the format, before the time; the time goes only when even
+   «10:30» + ✓ + network cannot fit (the hour row and the hover card still say it). */
 .q-cal-chip { container-type: inline-size; }
 .q-chip-suffix { display: none; }
 @container (min-width: 9.5rem) { .q-chip-suffix { display: inline; } }
-@container (max-width: 6.5rem) {
-  .q-chip-line .q-chip-time, .q-chip-line .q-temp { display: none; }
-}
+@container (max-width: 7.5rem) { .q-chip-line .q-temp, .q-chip-line .q-campaign-mark { display: none; } }
+/* (container sizes are the chip's CONTENT box: ~104 px at 1280, ~68 px at 1024) */
+@container (max-width: 6rem) { .q-chip-line .q-dest-dot, .q-chip-line .q-chip-gap { display: none; } }
+@container (max-width: 4rem) { .q-chip-line .q-chip-time { display: none; } }
 
 /* The list «+N más» opens beside it: the events that did not fit, one compact row each. */
 .q-hour-list {

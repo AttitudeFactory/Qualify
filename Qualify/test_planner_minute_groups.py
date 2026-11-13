@@ -76,21 +76,51 @@ def test_the_real_mural_over_four_minutes_is_one_group_of_nine() -> None:
     assert len(entry.preview) == 4 and entry.preview_more == 5
 
 
-def test_fifteen_minutes_apart_join_sixteen_do_not() -> None:
-    day, _ = _friday([_item(1, _at(9, 0)), _item(2, _at(9, 15))])
-    assert [(g.is_group, g.count) for g in day.groups] == [(True, 2)]
-    day, _ = _friday([_item(1, _at(9, 0)), _item(2, _at(9, 16))])
-    assert [g.is_group for g in day.groups] == [False, False]
+def test_fifteen_minutes_after_the_first_join_a_millisecond_more_does_not() -> None:
+    first = _at(9, 0)
+    keys = batch_group_keys(
+        [
+            BatchInput("a", first, "ig1", "published"),
+            BatchInput("b", first + timedelta(minutes=15), "ig1", "published"),
+            BatchInput("c", first + timedelta(minutes=15, milliseconds=1), "ig1", "published"),
+        ],
+        ZONE,
+    )
+    assert keys == {"a": _key(first), "b": _key(first)}  # «c» opens a batch of its own
+    day, _ = _friday([_item(1, _at(9, 0)), _item(2, _at(9, 10))])
+    assert [(g.is_group, g.count) for g in day.groups] == [(True, 2)]  # 10 min apart
 
 
-def test_a_long_chain_is_one_group_with_its_range() -> None:
-    times = [_at(10, 0) + timedelta(minutes=14 * n) for n in range(8)]  # 10:00 … 11:38
+def test_a_long_chain_is_cut_every_fifteen_minutes_from_each_first() -> None:
+    """UX review m-25026486: thirteen, one every 10 minutes from 11:50 a. m. to 1:50 p. m.
+    The span counts from each batch's FIRST: pairs, then the last one alone."""
+    times = [_at(11, 50) + timedelta(minutes=10 * n) for n in range(13)]
     day, week = _friday([_item(n, when) for n, when in enumerate(times)])
-    (entry,) = day.groups
-    assert entry.count == 8 and entry.label == "10:00 – 11:38 a. m. · 8 publicaciones"
-    # the group sits once, in the hour cell of its FIRST publication
+    assert [[c.event_id for c in g.cards] for g in day.groups] == [
+        ["e0", "e1"],
+        ["e2", "e3"],
+        ["e4", "e5"],
+        ["e6", "e7"],
+        ["e8", "e9"],
+        ["e10", "e11"],
+        ["e12"],
+    ]
+    assert [g.label for g in day.groups[:2]] == [
+        "11:50 a. m. – 12:00 p. m. · 2 publicaciones",
+        "12:10 – 12:20 p. m. · 2 publicaciones",
+    ]
+    # every hour that had publications shows them: 11 a. m., 12 and 1 p. m.
+    hours = sorted(
+        c.hour for row in week.rows for c in row.cells if c.day_iso == "2026-11-13" and c.cards
+    )
+    assert hours == [11, 12, 13]
+
+
+def test_a_batch_from_55_to_05_sits_once_in_its_first_hour() -> None:
+    day, week = _friday([_item(1, _at(9, 55)), _item(2, _at(10, 5))])
+    assert [(g.is_group, g.count) for g in day.groups] == [(True, 2)]
     cells = [c for row in week.rows for c in row.cells if c.day_iso == "2026-11-13" and c.cards]
-    assert len(cells) == 1 and cells[0].hour == 10 and len(cells[0].cards) == 8
+    assert len(cells) == 1 and cells[0].hour == 9 and len(cells[0].cards) == 2
 
 
 def test_the_range_reads_like_the_app_times() -> None:

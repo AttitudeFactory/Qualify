@@ -462,14 +462,22 @@ def _group_chip(entry) -> rx.Component:
                     # enough for it whole (`.q-cell-group` container query). Then the
                     # same ✓ and network glyphs a single chip carries (never colour alone).
                     rx.box(
-                        rx.icon("layers", size=12, flex_shrink="0"),
+                        rx.icon("layers", size=12, flex_shrink="0", class_name="q-chip-stack"),
+                        # «7:00 · 9» — the start time first, like the single chips, so the
+                        # number never reads as an hour; «publicaciones» only when whole.
                         rx.el.span(
+                            rx.el.span(entry.cards[0].time_hm, class_name="q-nums"),
+                            " · ",
                             rx.el.span(entry.count.to_string(), class_name="q-nums"),
                             rx.el.span(" publicaciones", class_name="q-chip-word"),
                             class_name="q-chip-count",
                         ),
                         rx.icon(
-                            "circle-check", size=12, color=T.tone_color("ok", 10), flex_shrink="0"
+                            "circle-check",
+                            size=12,
+                            color=T.tone_color("ok", 10),
+                            flex_shrink="0",
+                            class_name="q-chip-ok",
                         ),
                         channel_mark(entry.cards[0].platform),
                         class_name="q-chip-line",
