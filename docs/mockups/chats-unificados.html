@@ -39,10 +39,11 @@
   h2.doc { font-size: 17px; margin: 40px 0 6px; border-top: 1px solid var(--edge); padding-top: 22px; }
   p.doc { color: var(--muted); margin: 0 0 16px; max-width: 78ch; }
   .row { display: flex; flex-wrap: wrap; gap: 28px; align-items: flex-start; }
+  .row > div { min-width: 0; max-width: 100%; }
   .label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; margin: 0 0 8px; }
   .note { font-size: 12.5px; color: var(--muted); max-width: 360px; margin-top: 8px; }
   .note b { color: var(--text); }
-  .phone { width: 360px; max-width: 100%; background: var(--panel); border: 1px solid var(--edge);
+  .phone { width: 100%; max-width: 360px; background: var(--panel); border: 1px solid var(--edge);
     border-radius: 28px; padding: 14px 14px 12px; position: relative; }
   .desk { width: 1060px; max-width: 100%; background: var(--panel); border: 1px solid var(--edge);
     border-radius: 20px; display: grid; grid-template-columns: 360px 1fr; overflow: hidden; }
@@ -55,13 +56,13 @@
     background: var(--card); color: var(--text); font-size: 14px; white-space: nowrap; }
   .btn.solid { background: linear-gradient(135deg, var(--accent), #0d9b8a 60%, #1fb5a2); border-color: transparent; color: #fff; }
   .btn.soft-accent { background: var(--accent-a4); border-color: rgba(18,165,148,.45); color: var(--accent-11); }
-  .btn.sm { min-height: 36px; padding: 0 10px; font-size: 13px; border-radius: 12px; }
+  .btn.sm { min-height: 44px; padding: 0 10px; font-size: 13px; border-radius: 12px; }
   .btn.icon { width: 44px; padding: 0; border-radius: 50%; }
   .seg { display: flex; background: var(--field); border: 1px solid var(--edge); border-radius: 15px; padding: 3px; gap: 2px; }
-  .seg span { flex: 1; text-align: center; padding: 9px 4px; border-radius: 11px; font-size: 13px; color: var(--muted); min-height: 38px; }
+  .seg span { flex: 1; text-align: center; padding: 9px 4px; border-radius: 11px; font-size: 13px; color: var(--muted); min-height: 44px; display: flex; align-items: center; justify-content: center; }
   .seg span.on { background: var(--card); color: var(--text); font-weight: 650; border: 1px solid var(--edge); }
   .chips { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0; }
-  .chip { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 0 12px; border-radius: 999px;
+  .chip { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; padding: 0 12px; border-radius: 999px;
     border: 1px solid var(--edge); background: var(--card); font-size: 13px; color: var(--muted); }
   .chip.on { border-color: rgba(18,165,148,.6); color: var(--accent-11); background: var(--accent-a4); font-weight: 650; }
   .pill { display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 650; letter-spacing: .03em; white-space: nowrap; }
@@ -138,7 +139,7 @@
   table { border-collapse: separate; border-spacing: 0; background: var(--card); border: 1px solid var(--edge); border-radius: 16px; overflow: hidden; font-size: 13.5px; }
   th, td { padding: 9px 12px; border-bottom: 1px solid var(--edge); text-align: left; vertical-align: top; }
   thead th { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
-  td.y { color: var(--ok-11); } td.n { color: var(--faint); } td.b { color: var(--warn-11); }
+  td.y { color: var(--ok-11); } td.n { color: var(--faint); } td.miss { color: var(--warn-11); font-weight: 600; }
   .tablewrap { overflow-x: auto; max-width: 100%; }
   /* ajustes */
   .set { display: flex; align-items: center; gap: 10px; padding: 12px 4px; border-top: 1px solid var(--edge); min-height: 56px; }
@@ -296,9 +297,9 @@ Las decisiones abiertas (D1–D5) están en el documento.</p>
       <div class="msgs">
         <div class="b in">Vi el reel del combo 🔥<div class="meta">8:33 p. m.</div></div>
         <div class="b in">¿Cuánto cuesta el combo con papas?<div class="meta">8:35 p. m.</div></div>
-        <div class="b out ig" style="opacity:.75;border-style:dashed">El combo con papas está en $ 18.000. ¿Te lo preparo? <div class="meta">Sugerencia: edítala antes de responder</div></div>
       </div>
       <div class="comp" style="margin-top:14px">
+        <div class="hint" style="padding:0 2px 6px">✨ Respuesta sugerida, todavía sin enviar: cámbiala si quieres y toca «Enviar».</div>
         <div class="ta" style="color:var(--text)">El combo con papas está en $ 18.000. ¿Te lo preparo?</div>
         <div class="tools">
           <span class="tool"><svg class="ico"><use href="#i-img"/></svg>Foto o video</span>
@@ -331,14 +332,14 @@ Las decisiones abiertas (D1–D5) están en el documento.</p>
   <tbody>
     <tr><td>Foto o video</td><td class="y">Sí</td><td class="y">Sí</td><td class="n">a confirmar</td></tr>
     <tr><td>Botones para que el cliente toque</td><td class="y">Sí, hasta 3</td><td class="y">Sí, hasta 13</td><td class="n">a confirmar</td></tr>
-    <tr><td>Mensajes guardados</td><td class="b">Falta</td><td class="y">Sí</td><td class="n">—</td></tr>
-    <tr><td>Sugerir respuesta</td><td class="b">Falta (prioridad)</td><td class="y">Sí</td><td class="n">—</td></tr>
+    <tr><td>Mensajes guardados</td><td class="miss">Falta</td><td class="y">Sí</td><td class="n">—</td></tr>
+    <tr><td>Sugerir respuesta</td><td class="miss">Falta (prioridad)</td><td class="y">Sí</td><td class="n">—</td></tr>
     <tr><td>Archivo (PDF) · Nota de voz · ❤</td><td class="n">No se dibuja</td><td class="y">Sí</td><td class="n">—</td></tr>
     <tr><td>Stickers de tu marca</td><td class="y">Como sticker</td><td class="y">Como foto</td><td class="n">—</td></tr>
     <tr><td>«+» Tus productos · Tu oferta · Tu menú · Formas de pago · Cómo llegar</td><td class="y">Sí</td><td class="y">Sí (como foto y texto)</td><td class="n">—</td></tr>
     <tr><td>Franja «quién responde» (menú automático)</td><td class="y">Sí</td><td class="n">No se dibuja</td><td class="n">—</td></tr>
     <tr><td>Franja del pedido y «Pago recibido»</td><td class="y">Sí</td><td class="n">No se dibuja</td><td class="n">—</td></tr>
-    <tr><td>Cerrar / Reabrir chat</td><td class="y">Sí</td><td class="b">Falta</td><td class="n">—</td></tr>
+    <tr><td>Cerrar / Reabrir chat</td><td class="y">Sí</td><td class="miss">Falta</td><td class="n">—</td></tr>
     <tr><td>Asignar a alguien del equipo</td><td class="y">Sí (en «⋯»)</td><td class="n">No se dibuja</td><td class="n">—</td></tr>
     <tr><td>Pasadas 24 horas</td><td class="y">Elegir un mensaje aprobado</td><td class="n">Esperar a que vuelva a escribir</td><td class="n">a confirmar</td></tr>
   </tbody>
@@ -497,7 +498,7 @@ Las decisiones abiertas (D1–D5) están en el documento.</p>
       <div style="flex:1"><div class="tname">María González</div><div class="tline">WhatsApp · +58 ··· · Puedes escribirle hasta las 8:42 p. m. de mañana</div></div>
       <span class="btn icon" aria-label="Más opciones">⋯</span>
     </div>
-    <div class="order"><span>🛍</span><span style="flex:1"><b>Pedido · 3 productos · $ 45.000</b> · Pago móvil</span><span class="pill p-warn">Pago por revisar</span><span class="btn solid sm" style="min-height:36px">Pago recibido</span><span class="muted">▾</span></div>
+    <div class="order"><span>🛍</span><span style="flex:1"><b>Pedido · 3 productos · $ 45.000</b> · Pago móvil</span><span class="pill p-warn">Pago por revisar</span><span class="btn solid sm" >Pago recibido</span><span class="muted">▾</span></div>
     <div class="msgs" style="flex:1;min-height:220px">
       <div class="b in">Quiero 2 shawarmas mixtos y una limonada<div class="meta">8:30 p. m.</div></div>
       <div class="b out wa">¡Listo! Son $ 45.000. ¿Cómo quieres pagar?<div class="meta">8:31 p. m. ✓✓</div></div>

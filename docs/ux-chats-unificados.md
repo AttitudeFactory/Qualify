@@ -40,7 +40,8 @@ mensajes de TikTok.
 6. **«Tu número» es estado de conexión.** Ya existe «Tus redes» (`/connections`) para eso, con los
    estados de `docs/design-system.md` §7.3 (Conectada · Desconectada · Sin acceso).
 7. **Contraste:** la burbuja enviada de Instagram es un degradado `purple-9 → pink-9 → orange-9`
-   con texto blanco (`assets/qualify-inbox.css` ~337). El tramo naranja con texto blanco queda por
+   con texto blanco (`assets/qualify-inbox.css`, regla `.q-conv-msg.q-wa-msg--out .q-bubble--out`;
+   el mismo degradado pinta el glifo del canal, `.q-conv-channel`). El tramo naranja con texto blanco queda por
    debajo de 4,5:1 (texto de 15 px). Es lo que el fundador vio como «mejor color», pero no pasa AA
    tal como está. *(Estimación con los valores de Radix; medir en el navegador antes de decidir.)*
 8. **Hoy una fila de WhatsApp puede llevar hasta 5 píldoras** (pago, ventana, quién responde,
@@ -118,18 +119,24 @@ quiere corregir cuando ve que el menú contestó mal; por eso, además, el «⋯
 | B. Degradado del canal, oscurecido | `{canal}-10 → {canal}-11`, texto blanco | igual que A |
 | C. Una sola burbuja de acento (teal) para todos | `accent-a4`, texto gray-12 | solo glifo |
 
-**Recomiendo A.** Conserva lo que al fundador le gustó (se nota el color de Instagram, y WhatsApp
+**Recomiendo A, de forma provisional hasta medir el contraste** (pregunta abierta 6): primero se
+mide en el navegador, en claro y en oscuro, el degradado de hoy y las tres opciones; si A no pasa
+4,5:1 o B sí pasa, la recomendación se revisa. Por qué A: conserva lo que al fundador le gustó (se nota el color de Instagram, y WhatsApp
 gana el suyo) sin colores a mano, con escalas Radix que ya existen (`T.PLATFORM_SCALE`: instagram
-pink, whatsapp green, tiktok purple) y con texto legible al sol en el celular (pasos 11-12 sobre
-alfa, `docs/design-system.md` §8). B es más vistosa pero hay que medir contraste en claro y en
-oscuro. C es la más sobria pero borra justo lo que gustó.
+pink, whatsapp green, tiktok purple), con texto oscuro sobre alfa (pasos 11-12,
+`docs/design-system.md` §8), y es lo que WhatsApp ya hace hoy (`.q-wa-msg--glass.q-wa-msg--out
+.q-bubble--out`: tinte verde claro con texto gray-12). B es más vistosa pero hay que medir
+contraste en claro y en oscuro. C es la más sobria pero borra justo lo que gustó.
 
 ### D3 · Promociones
 
 **Recomiendo sacarla de la configuración** y dejarla como entrada propia «Promociones por
 WhatsApp» junto a «Anuncios» (zona Publica): las dos sirven para llegar a gente que hoy no te está
 escribiendo, y el dueño las piensa como «mandar algo para vender», no como «ajustar el WhatsApp»
-[H, §5 pregunta 5]. Si el fundador prefiere no sumar una entrada al menú: dentro de «Ajustes de
+[H, sin fuente; ninguna pregunta del §5 del perfil la cubre todavía].
+**Costo de esta opción:** suma una entrada al menú lateral cuando el fundador pidió menos pestañas y
+submenús. Atiende pierde «WhatsApp» y Publica gana «Promociones por WhatsApp»: el total queda
+igual, no baja. Si el fundador prefiere no sumar una entrada al menú: dentro de «Ajustes de
 chats › WhatsApp», pero como primera tarjeta con su beneficio («Manda tu promoción a los clientes
 que aceptaron recibirla»), nunca abajo de la lista.
 
@@ -140,7 +147,7 @@ en un canal:
 
 | Pieza | Hoy | Recomiendo | Por qué (perfil) |
 |---|---|---|---|
-| Sugerir respuesta | Instagram | Llevarla a WhatsApp **primero** | Bianki recibe pedidos por WhatsApp: ahí es donde ahorra más tiempo «entre clientes» [E, §1 y §2] |
+| Sugerir respuesta | Instagram | Llevarla a WhatsApp **primero** | Bianki recibe pedidos por WhatsApp: ahí es donde ahorra más tiempo «entre clientes» ([F] perfil §1; «entre clientes» es [H], §2). **También es una decisión de costo:** cada toque de «Sugerir respuesta» es una llamada a la IA (Claude) que se paga |
 | Mensajes guardados (hoy «Plantillas» de Instagram) | Instagram | Una sola biblioteca para todos los canales | El dueño escribe una vez «Abrimos de 11 a 9» y le sirve en todos lados |
 | Cerrar / Reabrir chat | WhatsApp | También en Instagram | Sin esto el filtro «Cerrados» no puede ser igual en los dos |
 | Formas de pago y Cómo llegar | WhatsApp › Tu número | Datos del negocio, en «Para todos tus chats» | El «+» de Instagram los necesita |
@@ -193,8 +200,10 @@ Las cuatro primeras filas siguen abiertas; la última (el botón de mandar) **ya
 - «⋯» = `rx.menu` (Radix DropdownMenu), sin componente nuevo.
 - Franja del pedido = `card` plegable (`rx.accordion` o `rx.collapsible`, ya en uso), la tarjeta de
   `_order_card()` adentro sin cambios.
-- Colores: borrar el degradado a mano de `assets/qualify-inbox.css` (~323-377) y el lavado verde
-  (~475-563); un solo juego de reglas que lea la escala del canal (`T.platform_scale`).
+- Colores: en `assets/qualify-inbox.css`, quitar el degradado a mano de Instagram
+  (`.q-conv-channel` y `.q-conv-msg.q-wa-msg--out .q-bubble--out`, con sus variantes de sticker) y
+  el juego verde aparte de WhatsApp (`.q-wa-card`, `.q-wa-msg--glass…`); dejar un solo juego de
+  reglas que lea la escala del canal (`T.platform_scale`).
 - Rutas (N3): `/responder?tab=mensajes&canal=whatsapp&chat=<id>`; `/whatsapp` redirige a
   `/responder?tab=mensajes&canal=whatsapp`; los ajustes, `/chats/ajustes/whatsapp` y
   `/chats/ajustes/instagram` (nombres a decidir). Menú: «Por responder» encendido en la lista y en
