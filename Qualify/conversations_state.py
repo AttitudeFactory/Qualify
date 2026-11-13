@@ -139,6 +139,7 @@ from .conversations_vm import (
     FeatureVM,
     MessageVM,
     TemplateVM,
+    ThreadExtra,
     ThreadRowVM,
     UnsentItem,
     add_quick_reply,
@@ -1103,7 +1104,10 @@ class ConversationsState(rx.State):
         try:
             seen = seen_inbound_at(seen_inbound if isinstance(seen_inbound, str) else "")
         except ValueError:
-            return  # arrived over the wire; not a value the row ever held
+            # Not a value the row ever held: close nothing, but never a dead button.
+            async with self:
+                self._set_banner(_ACTION_FAILED, "error")
+            return
         async with self:
             if self.chat_status_busy or not thread_id or thread_id != self.open_thread_id:
                 return  # a second tap while busy, or a header of a chat no longer open
@@ -1142,8 +1146,15 @@ class ConversationsState(rx.State):
             else:
                 await asyncio.to_thread(gw.reopen, tenant_id, connection, thread)
         except ThreadChangedSinceSeen as changed:
+            extra = None
+            try:
+                # The new message's preview too, so the refresh that follows finds
+                # nothing new and the owner gets ONE notice for it, not two.
+                extra = (await asyncio.to_thread(gw.listing, tenant_id, changed.view)).extra
+            except _DB_ERRORS as exc:
+                logger.error("conversations close preview failed: %s", type(exc).__name__)
             async with self:
-                self._show_changed_thread(thread_id, changed.view, account_label)
+                self._show_changed_thread(thread_id, changed.view, extra, account_label)
             yield PendingState.refresh_now
             yield ConversationsState.refresh
             return
@@ -1168,13 +1179,17 @@ class ConversationsState(rx.State):
         yield PendingState.refresh_now  # the menu's «por responder» count follows
         yield ConversationsState.refresh
 
-    def _show_changed_thread(self, thread_id: str, view: ThreadView, account_label: str) -> None:
+    def _show_changed_thread(
+        self, thread_id: str, view: ThreadView, extra: ThreadExtra | None, account_label: str
+    ) -> None:
         """«Cerrar» refused: the person wrote after the screen was drawn. The row takes
-        the backend's fresh view (open, pending, new `last_inbound_iso` — so a second
-        «Cerrar» now passes); the preview and messages follow with the refresh."""
+        the backend's fresh view and preview (open, pending, new `last_inbound_iso` — so
+        a second «Cerrar» now passes); the messages follow with the refresh. Without
+        `extra` (its read failed) the old preview stays until the refresh."""
         current = build_thread_row(
-            view, None, now=self._now(), zone=_zone(self._zone_name), account_label=account_label
+            view, extra, now=self._now(), zone=_zone(self._zone_name), account_label=account_label
         )
+        keep_preview = extra is None
         title = ""
         rows = []
         for r in self.rows:
@@ -1184,8 +1199,8 @@ class ConversationsState(rx.State):
                     current,
                     title=r.title,
                     handle=r.handle,
-                    preview=r.preview,
-                    preview_icon=r.preview_icon,
+                    preview=r.preview if keep_preview else current.preview,
+                    preview_icon=r.preview_icon if keep_preview else current.preview_icon,
                     avatar_url=r.avatar_url or current.avatar_url,
                 )
             rows.append(r)
@@ -1218,7 +1233,10 @@ class ConversationsState(rx.State):
                 ]
                 await self._read_conversation(silent=True)
                 async with self:
+                    # Check and release under ONE lock: a request arriving after this
+                    # sees `_refreshing` False and starts its own run — none is lost.
                     if not self._refresh_again:
+                        self._refreshing = False
                         break
                     self._refresh_again = False
         finally:

@@ -33,6 +33,7 @@ from .conversations_vm import (
     FILTER_ALL,
     FILTER_CLOSED,
     FILTER_PENDING,
+    ThreadExtra,
     changed_since_seen_notice,
     filter_counts,
     filter_threads,
@@ -199,6 +200,9 @@ def test_the_header_draws_one_status_button_for_both_states() -> None:
     assert rendered.count("q-conv-status") == 1
     assert present("rotate-ccw") or present("RotateCcw")
     assert present("archive") or present("Archive")
+    # The tap carries what the row on screen shows, not a later read.
+    binding = rendered[rendered.index("change_chat_status") :][:600]
+    assert "last_inbound_iso" in binding and "thread_id" in binding
     chips = str(_filters().render())
     assert "filter_closed_label" in chips
 
@@ -209,16 +213,20 @@ NOTICE = "@alice te acaba de escribir. Lee su mensaje antes de cerrar."
 async def test_a_close_over_a_stale_screen_is_refused_and_shows_the_new_message(
     world: World,
 ) -> None:
+    world.store.extras = {}
     state, thread = await _listed_state(world)
     state.rows = [dataclasses.replace(r, title="@alice") for r in state.rows]
     seen = state.open_thread.last_inbound_iso
     world.inbound(at=NOW - timedelta(minutes=2))  # the person writes; no refresh yet
+    # The store's preview follows the new message, as the real one does.
+    world.store.extras[str(thread)] = ThreadExtra(preview="¿Tienen domicilio?")
     events = await _act(state, "close")
     assert _status(world, thread) == "open"  # nothing written
     assert (state.banner, state.banner_tone) == (NOTICE, "warn")
     row = state.open_thread
     assert not row.is_closed and row.attention == "pending" and row.last_inbound_iso != seen
     assert row.title == "@alice" and state.open_thread_id == str(thread)
+    assert row.preview == "¿Tienen domicilio?"  # the new message is on the row already
     assert filter_counts(state.rows)[FILTER_PENDING] == 1
     assert ConversationsState.refresh in events and state.chat_status_busy == ""
     # The refresh that follows does not announce it again: the notice already did.
@@ -267,8 +275,11 @@ async def test_a_tap_on_a_header_no_longer_open_or_a_forged_instant_is_ignored(
     state, thread = await _listed_state(world)
     fn = ConversationsState.change_chat_status.fn
     assert await _drain(fn(state, "close", str(uuid4()), "")) == []
+    assert state.banner == ""
+    # A malformed instant closes nothing, but says so: never a dead button.
     assert await _drain(fn(state, "close", str(thread), "not-a-date")) == []
     assert _status(world, thread) == "open" and state.chat_status_busy == ""
+    assert (state.banner, state.banner_tone) == (_ACTION_FAILED, "error")
 
 
 async def test_an_unexpected_error_never_leaves_the_button_spinning(
@@ -301,14 +312,57 @@ async def test_reabrir_on_a_pending_chat_announces_nothing(world: World) -> None
     assert not state.open_thread.is_closed
 
 
-async def test_a_refresh_asked_during_another_runs_again_after_it(world: World) -> None:
+async def test_a_refresh_asked_during_another_runs_again_after_it(
+    monkeypatch: pytest.MonkeyPatch, world: World
+) -> None:
     state, _thread = await _listed_state(world)
     state._refreshing = True
     assert await _drain(ConversationsState.refresh.fn(state)) == []
-    assert state._refresh_again is True
+    assert state._refresh_again is True  # queued, not dropped
     state._refreshing = False
+    reads: list[bool] = []
+    real = ConversationsState._read_list
+
+    async def read_list(self: ConversationsState, *, silent: bool) -> list[Any]:
+        reads.append(silent)
+        if len(reads) == 1:
+            # Another refresh (the one an action yields) arrives while this one reads.
+            assert await _drain(ConversationsState.refresh.fn(self)) == []
+        return await real(self, silent=silent)
+
+    monkeypatch.setattr(ConversationsState, "_read_list", read_list)
     await _drain(ConversationsState.refresh.fn(state))
+    assert reads == [True, True]  # the late request ran, after the in-flight read
     assert state._refresh_again is False and state._refreshing is False
+    # Released under the same lock as the last check: the next request runs at once.
+    await _drain(ConversationsState.refresh.fn(state))
+    assert len(reads) == 3
+
+
+async def test_a_microsecond_instant_reaches_the_backend_unchanged(
+    monkeypatch: pytest.MonkeyPatch, world: World
+) -> None:
+    """row → `last_inbound_iso` → the tap → state → provider: the compare-and-set
+    refuses if 1 µs is lost, so the round trip must be exact."""
+    instant = (NOW - timedelta(hours=1)).replace(microsecond=431987)
+    thread = world.inbound(at=instant)
+    state = ConversationsState()
+    state.accounts = [_account(CONNECTION)]
+    state.selected_connection_id = str(CONNECTION)
+    await state._read_list(silent=False)
+    state.open_thread_id = str(thread)
+    assert seen_inbound_at(state.open_thread.last_inbound_iso) == instant
+    sent: list[Any] = []
+    real_close = world.gateway.close
+
+    def close(tenant: UUID, connection: UUID, thread_id: UUID, seen: Any) -> Any:
+        sent.append(seen)
+        return real_close(tenant, connection, thread_id, seen)
+
+    monkeypatch.setattr(world.gateway, "close", close)
+    await _act(state, "close")
+    assert sent == [instant] and sent[0].microsecond == 431987
+    assert _status(world, thread) == "closed"  # the backend accepted the same instant
 
 
 def test_the_filter_chips_are_44_px_and_say_which_is_pressed() -> None:

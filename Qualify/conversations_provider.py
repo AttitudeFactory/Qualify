@@ -411,6 +411,12 @@ class ConversationsGateway:
             ThreadListing(view=v, extra=extras.get(str(v.thread.id), ThreadExtra())) for v in views
         ]
 
+    def listing(self, tenant_id: UUID, view: ThreadView) -> ThreadListing:
+        """One row of `threads` for a view the service just returned (m-25026457: a
+        refused «Cerrar» puts the new message's preview on screen at once)."""
+        extras = self._store.thread_extras(tenant_id, [view.thread.id])
+        return ThreadListing(view=view, extra=extras.get(str(view.thread.id), ThreadExtra()))
+
     def _owned(self, tenant_id: UUID, connection_id: UUID, thread_id: UUID) -> ThreadView:
         view = self.service.get_thread(tenant_id=tenant_id, thread_id=thread_id)
         if view.thread.connection_id != connection_id or view.thread.channel != CHANNEL_DM:
