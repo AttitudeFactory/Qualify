@@ -344,7 +344,7 @@ class LiveWizardGateway:
                 "daily_budget,lifetime_budget",
                 "adsets": "id,account_id,status,campaign_id,lifetime_budget,daily_budget,"
                 "start_time,end_time,targeting,billing_event,optimization_goal,"
-                "destination_type",
+                "destination_type,promoted_object",
                 "adcreatives": "id,account_id,object_id,source_instagram_media_id,"
                 "instagram_user_id,call_to_action,link_url,degrees_of_freedom_spec",
                 "ads": "id,account_id,status,campaign_id,adset_id,creative",

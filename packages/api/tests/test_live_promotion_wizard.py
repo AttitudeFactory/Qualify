@@ -99,7 +99,12 @@ class MetaHTTP:
                     if row["_resource"] == edge and row.get(relation) == parent
                 ]
             elif path in self.objects:
-                return httpx.Response(200, json=self.objects[path])
+                # Like Graph, return only the requested fields (unrequested ones are absent).
+                fields = request.url.params.get("fields")
+                row = self.objects[path]
+                if fields:
+                    row = {k: row[k] for k in fields.split(",") if k in row}
+                return httpx.Response(200, json=row)
             elif path.startswith("act_12/"):
                 data = [
                     row for row in self.objects.values() if row["_resource"] == path.split("/")[-1]

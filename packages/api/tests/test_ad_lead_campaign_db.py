@@ -143,23 +143,13 @@ def _request(w, target: LeadFormTarget) -> PromotionRequest:
     )
 
 
-def test_published_form_binds_and_leads_attribute_to_the_promotion(lead_world):
+def test_published_form_binds_to_the_promotion(lead_world):
+    # Lead attribution through _persist: test_ad_lead_forms_db (needs a real Meta grant row).
     w = lead_world
     target = published_lead_form(w["tenant"], w["form"])
     assert (target.meta_form_id, target.page_id, target.connection_id) == ("555", "7", w["source"])
     promotion = PostgresPromotionRepository().create_or_get(_request(w, target))
-    with tenant_session(w["tenant"]) as s:
-        s.execute(
-            text("UPDATE ad_promotions SET meta_ad_id='4242' WHERE id=:id"), {"id": promotion.id}
-        )
-        # The exact attribution lookup used by lead intake (lead_forms_service._persist).
-        found = s.scalar(
-            text("""SELECT id FROM ad_promotions
-            WHERE meta_ad_id=:ad AND brand_id=:brand AND objective='OUTCOME_LEADS'
-            AND request_snapshot->'lead_form_snapshot'->>'meta_form_id'=:remote"""),
-            {"ad": "4242", "brand": w["brand"], "remote": "555"},
-        )
-    assert found == promotion.id
+    assert promotion.request["lead_form_snapshot"] == target.snapshot()
 
 
 def test_unpublished_form_cannot_be_loaded_or_approved(lead_world):

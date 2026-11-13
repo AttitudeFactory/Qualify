@@ -289,13 +289,13 @@ async def _verify_ad(client: LeadFormsClient, form: dict, data: dict) -> None:
     creative = ad.get("creative")
     creative = creative if isinstance(creative, dict) else {}
     spec = creative.get("object_story_spec")
-    if isinstance(spec, dict):
-        page = spec.get("page_id")
-        content = spec.get("link_data") or spec.get("video_data")
-        cta = content.get("call_to_action") if isinstance(content, dict) else None
-    else:
+    spec = spec if isinstance(spec, dict) else {}
+    content = spec.get("link_data") or spec.get("video_data")
+    cta = content.get("call_to_action") if isinstance(content, dict) else None
+    page = spec.get("page_id")
+    if cta is None:
         # Qualify's lead ads promote an existing Instagram post (m-24828981): the CTA
-        # and Page sit on the creative itself, not inside an object_story_spec.
+        # and Page sit on the creative itself, even if Meta synthesizes a bare spec.
         page, cta = creative.get("object_id"), creative.get("call_to_action")
     value = cta.get("value") if isinstance(cta, dict) else None
     if (

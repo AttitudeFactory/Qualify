@@ -116,6 +116,8 @@ LINK_DATA = {
     [
         (EXISTING_POST, True),
         (LINK_DATA, True),
+        ({**EXISTING_POST, "object_story_spec": {"instagram_user_id": "9"}}, True),
+        ({**EXISTING_POST, "object_id": "78", "object_story_spec": {"page_id": "77"}}, False),
         ({**EXISTING_POST, "object_id": "78"}, False),
         ({"object_id": "77", "call_to_action": {"value": {"link": "x"}}}, False),
     ],
