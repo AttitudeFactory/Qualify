@@ -684,6 +684,7 @@ async def test_closing_a_flow_begun_on_a_step_address_never_reopens_it(
     state = ProductStickerState()
     query = _route(monkeypatch)
     query.update({"flujo": "sticker-producto", "paso": "1"})
+    state.enter_history({"visit": "doc1:1", "href": "x"})  # the link was opened here
     await _open(state)
     assert "sticker-producto" in str(state.set_flow_open(False))
     assert not state.flow_open
@@ -692,6 +693,12 @@ async def test_closing_a_flow_begun_on_a_step_address_never_reopens_it(
     assert "replaceState" in str(events) and "flujo=" not in str(events)
     # later «adelante»/«atrás» onto a step address opens it as usual
     events = state.enter_history({"visit": "doc1:3", "href": "x"})
+    assert "open_at" in str(events)
+    # a close with no pop (nothing to go back to), then the same link opened again in a
+    # new page: it opens — the close's mark never outlives its page or a few seconds
+    await _open(state)
+    state.set_flow_open(False)
+    events = state.enter_history({"visit": "doc2:1", "href": "x"})
     assert "open_at" in str(events)
 
 

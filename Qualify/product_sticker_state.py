@@ -78,6 +78,9 @@ POLL_ROUNDS = 120
 BUSY_STALE_SECONDS = 180.0
 #: After the address became the flow's own (`?crear=producto` → `?flujo=…&paso=1`), the
 #: route's history handler runs again for it, with a fresh lease (`ui/route_history.py`).
+#: The pop caused by closing (`history.go(-n)`) lands within this long; a later pop onto a
+#: step's address (or one in a new page document) is the owner's own and opens the flow.
+CLOSE_POP_SECONDS = 3.0
 _REENTER_JS = (
     " window.setTimeout(() => document.querySelector('main.q-panel .q-route-pop')?.click(), 0);"
 )
@@ -131,7 +134,7 @@ class ProductStickerState(rx.State):
     #: `?crear=producto` was taken off the address: open on the handler's next pass
     _open_on_enter: bool = False
     #: the owner closed the panel and its address is being taken back (`_close_address`)
-    _just_closed: bool = False
+    _just_closed: float = 0.0
     loading: bool = False
     load_error: str = ""
     flow_error: str = ""
@@ -361,7 +364,7 @@ class ProductStickerState(rx.State):
         the flow began on a step's own address (a link, a reload) that place is itself a
         flow address: the pop that lands there is told apart (`_just_closed`) and only
         tidies the address, never reopens the panel the owner just closed."""
-        self._just_closed = True
+        self._just_closed = time.time()
         return rx.call_script(close_flow_script(FLOW_NAME))
 
     @rx.event
@@ -382,7 +385,8 @@ class ProductStickerState(rx.State):
             # then this handler runs again for the clean address, with a fresh lease
             self._open_on_enter = not self._in_flight()
             return [rx.call_script(replace_url_script(base_address(params)) + _REENTER_JS)]
-        just_closed, self._just_closed = self._just_closed, False
+        closed_at, self._just_closed = self._just_closed, 0.0
+        just_closed = not fresh and time.time() - closed_at < CLOSE_POP_SECONDS
         if requested and just_closed and not self.flow_open:
             return [rx.call_script(replace_url_script(base_address(params)) + _REENTER_JS)]
         events: list[Any] = []
@@ -443,7 +447,7 @@ class ProductStickerState(rx.State):
             gen = self._gen
             self.flow_open = True
             self.flow_ready = False
-            self._just_closed = False
+            self._just_closed = 0.0
             self.flow_step = STEP_PRODUCT
             self.undo_drawing = ""
             self.flow_error = ""
