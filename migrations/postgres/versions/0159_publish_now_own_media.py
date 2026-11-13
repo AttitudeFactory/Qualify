@@ -123,12 +123,13 @@ def downgrade() -> None:
         f"(SELECT id FROM calendar_events WHERE post_id IN ({owned_drafts}))"
     )
     op.execute(f"DELETE FROM calendar_events WHERE post_id IN ({owned_drafts})")
-    op.execute(f"DELETE FROM copy_variants WHERE draft_id IN ({owned_drafts})")
-    op.execute(f"DELETE FROM image_assets WHERE draft_id IN ({owned_drafts})")
+    # the draft points at its variant and version: unhook it BEFORE deleting them
     op.execute(
         "UPDATE content_drafts SET active_version_id = NULL, selected_variant_id = NULL "
         f"WHERE id IN ({owned_drafts})"
     )
+    op.execute(f"DELETE FROM copy_variants WHERE draft_id IN ({owned_drafts})")
+    op.execute(f"DELETE FROM image_assets WHERE draft_id IN ({owned_drafts})")
     op.execute(f"DELETE FROM piece_versions WHERE draft_id IN ({owned_drafts})")
     op.execute(f"DELETE FROM content_drafts WHERE id IN ({owned_drafts})")
     op.execute(
