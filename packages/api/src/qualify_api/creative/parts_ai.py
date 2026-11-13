@@ -74,7 +74,7 @@ from .parts import neutral_people
 logger = logging.getLogger(__name__)
 
 #: Bump on ANY change of the system prompt, the user prompt or the tool (provenance).
-PROPOSE_PARTS_PROMPT_VERSION = "proponer-partes-v3.2"
+PROPOSE_PARTS_PROMPT_VERSION = "proponer-partes-v3.3"
 PROPOSE_TOOL = "proponer_partes_video"
 
 PROPOSE_MODEL = "claude-sonnet-5"
@@ -363,6 +363,10 @@ def _story(text: str) -> str:
 
 #: v3.2: what the video tells, per awareness level of the chosen angle — the parts never
 #: show a price or a figure, so the levels that lean on one tell the moment instead.
+#: v3.3: no line for `most_aware` (NIVELES-001: «pocas partes» changed nothing — the length
+#: is the owner's target and the minimum is PARTS_MIN; a ready buyer is served by the
+#: copy's short call to buy, not by the plan of the parts); `solution_aware` no longer
+#: speaks of food only.
 _LEVEL_GUIDANCE: dict[AwarenessLevel, str] = {
     AwarenessLevel.UNAWARE: (
         "todavía no piensa en el producto: muestra el lugar y la experiencia (el ambiente, "
@@ -372,15 +376,12 @@ _LEVEL_GUIDANCE: dict[AwarenessLevel, str] = {
         "ya siente la necesidad: abre con ese dilema y muestra el producto como la respuesta"
     ),
     AwarenessLevel.SOLUTION_AWARE: (
-        "sabe qué quiere pero no dónde: muestra lo que hace mejor a este producto (porción, "
-        "ingredientes, variedad, según su descripción)"
+        "sabe qué quiere pero no dónde: muestra lo que distingue a este negocio (datos "
+        "concretos del producto o ventajas de la lista)"
     ),
     AwarenessLevel.PRODUCT_AWARE: (
         "conoce el negocio pero duda: muestra lo fácil que es venir o pedir (el lugar, la "
         "atención), sin precios ni cifras"
-    ),
-    AwarenessLevel.MOST_AWARE: (
-        "está listo para comprar: pocas partes, cortas y directas al producto"
     ),
 }
 
@@ -437,7 +438,7 @@ def propose_user_prompt(brief: PartsBrief, angle: CreativeAngle | None = None) -
                 f"Invitación: {angle.cta or '(sin invitación)'}",
             ]
         )
-        if angle.awareness_level is not None:
+        if angle.awareness_level in _LEVEL_GUIDANCE:
             lines.append(
                 f"Nivel de consciencia del público: {angle.awareness_level.value} — "
                 f"{_LEVEL_GUIDANCE[angle.awareness_level]}."

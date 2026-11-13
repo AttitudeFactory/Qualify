@@ -148,7 +148,7 @@ def test_the_parts_prompt_carries_perks_and_level_only_when_present() -> None:
         CreativeAngle(position=1, title="Mesa", scene="en la mesa"),
     )
     assert "Lo que ofrece el negocio" not in plain and "Nivel de consciencia" not in plain
-    assert PROPOSE_PARTS_PROMPT_VERSION == "proponer-partes-v3.2"
+    assert PROPOSE_PARTS_PROMPT_VERSION == "proponer-partes-v3.3"
 
 
 # -- migration 0163 ------------------------------------------------------------------------
@@ -163,3 +163,17 @@ def test_migration_0163_follows_0162_and_is_the_only_head() -> None:
     ]
     assert [m.group(1) for m in parents if m].count("0162") == 1
     assert "def downgrade()" in text and text.count("drop_column") >= 2
+
+
+def test_the_parts_prompt_gives_no_most_aware_line_and_no_food_only_wording() -> None:
+    """NIVELES-001: «pocas partes» changed nothing (the length is the owner's target), so
+    a ready buyer gets no line in the parts plan; solution_aware fits any business."""
+    product = AngleProduct(product_id=uuid4(), name="Apartamento en Cúcuta")
+
+    def prompt(level: AwarenessLevel) -> str:
+        angle = CreativeAngle(position=1, title="Sala", scene="en la sala", awareness_level=level)
+        return propose_user_prompt(PartsBrief(story="Ven", product=product), angle)
+
+    assert "Nivel de consciencia" not in prompt(AwarenessLevel.MOST_AWARE)
+    solution = prompt(AwarenessLevel.SOLUTION_AWARE)
+    assert "lo que distingue a este negocio" in solution and "porción" not in solution
