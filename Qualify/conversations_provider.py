@@ -164,6 +164,8 @@ class PostgresConversationsStore:
                     Message.media_type,
                     Message.choice_kind,
                     Message.choice_payload,
+                    Message.story_mention,
+                    Message.story_reply_id.is_not(None).label("is_story_reply"),
                 )
                 .distinct(Message.thread_id)
                 .where(Message.thread_id.in_(ids), Message.deleted_at.is_(None))
@@ -190,6 +192,8 @@ class PostgresConversationsStore:
                 preview_media_type=r.media_type,
                 preview_choice_kind=r.choice_kind,
                 preview_choice_payload=r.choice_payload,
+                preview_story_mention=bool(r.story_mention),
+                preview_story_reply=bool(r.is_story_reply),
             )
         for key, username in by_thread.items():
             extras.setdefault(key, ThreadExtra(username=username))
