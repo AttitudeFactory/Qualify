@@ -1907,7 +1907,13 @@ def format_ctas(items: list[str]) -> str:
 #: The label of the fact the chosen catalog product's price fills in.
 PRICE_FACT_LABEL = "Precio"
 #: The grey hint under that row.
-PRICE_FACT_HINT = "Viene de la Galería. Si lo cambias, allí también cambia al crear la publicación."
+PRICE_FACT_HINT = (
+    "Viene de la Galería. Si lo cambias, allí también cambia al crear la publicación. "
+    # m-25017276: no price pill on the image; the copy prompt asks to feature it, but
+    # nothing guarantees the caption carries it
+    "El precio no se dibuja sobre la imagen. Si quieres que se vea, escríbelo en el texto "
+    "de la publicación."
+)
 #: Another tab (or the Catálogo screen) changed the price while the piece was made.
 PRICE_CHANGED_ELSEWHERE = (
     "El precio en la Galería cambió mientras se creaba la publicación; no lo tocamos."

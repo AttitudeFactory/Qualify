@@ -1058,3 +1058,126 @@ def test_the_chat_pipeline_stamp_is_the_attachments_one() -> None:
     from qualify_api.whatsapp.outbox import CHAT_CARD_PIPELINE
 
     assert CHAT_CARD_PIPELINE == ATTACHMENT_PIPELINE
+
+
+# --- m-25018684: catalog carts and replaced orders ---------------------------------------
+
+
+def _cart_message(wamid: str, *items: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "from": WA_ID,
+        "id": wamid,
+        "timestamp": "1791953700",
+        "type": "order",
+        "order": {
+            "catalog_id": "cat-1",
+            "product_items": list(items)
+            or [{"product_retailer_id": "SKU1", "quantity": 2, "item_price": 9, "currency": "USD"}],
+        },
+    }
+
+
+async def test_a_cart_after_a_paid_menu_order_archives_its_payment_and_answers_nothing() -> None:
+    from qualify_api.whatsapp.orders import read_order, read_previous_orders
+
+    h = Handler((PAGO_MOVIL,))
+    h.at_address()
+    await h.handle(_event(_text("Calle 5 #12", "wamid.addr")))
+    await h.handle(_event(_reply("pay:m1", "wamid.pick")))
+    rows = len(h.repo.outbox)
+
+    await h.handle(_event(_cart_message("wamid.cart")))
+
+    assert len(h.repo.outbox) == rows
+    assert read_order(h.context()).is_cart  # type: ignore[union-attr]
+    assert read_payment(h.context()) is None  # the cart never shows the old payment
+    (previous,) = read_previous_orders(h.context())
+    assert previous.order.source_message_id == "wamid.pick"
+    assert previous.payment is not None
+    assert (previous.payment.status, previous.payment.method_name) == ("awaiting", "Pago móvil")
+    # A receipt for the old order moves nothing and gets no answer.
+    await h.handle(_event(_image("wamid.receipt")))
+    assert read_payment(h.context()) is None
+    assert read_previous_orders(h.context())[0].payment.status == "awaiting"  # type: ignore[union-attr]
+    assert len(h.repo.outbox) == rows
+
+
+async def test_a_menu_order_after_a_cart_archives_the_cart_and_gets_its_own_payment() -> None:
+    from qualify_api.whatsapp.orders import read_order, read_previous_orders
+    from qualify_api.whatsapp.repository import StoredThreadState
+
+    h = Handler((PAGO_MOVIL,))
+    await h.handle(_event(_cart_message("wamid.cart")))
+    # The person resumes the automation and the customer orders again through the menu.
+    context = h.context()
+    context.update(_at_address().context)
+    h.repo.states[h.thread_id()] = (
+        TENANT,
+        StoredThreadState(node_id="direccion", context=context),
+    )
+    await h.handle(_event(_text("Calle 5 #12", "wamid.addr")))
+    await h.handle(_event(_reply("pay:m1", "wamid.pick")))
+
+    order = read_order(h.context())
+    assert order is not None and not order.is_cart and order.source_message_id == "wamid.pick"
+    payment = read_payment(h.context())
+    assert payment is not None and payment.status == "awaiting"
+    assert h.context()[CTX_PAYMENT_RECORD]["order_message_id"] == "wamid.pick"
+    (previous,) = read_previous_orders(h.context())
+    assert previous.order.is_cart and previous.payment is None
+
+
+def test_the_picker_card_of_a_cart_order_carries_its_total_and_ties_the_payment() -> None:
+    from qualify_api.whatsapp.orders import record_cart_order
+
+    pago = _method()
+    picker = Picker([pago])
+    state = picker.chat.repo.states[picker.chat.thread_id]
+    item = {"product_retailer_id": "SKU1", "quantity": 2, "item_price": 9, "currency": "USD"}
+    assert record_cart_order(
+        state.context,
+        items=[item],
+        products={},
+        confirmed_at=NOW,
+        source_message_id="wamid.cart",
+        archived_at=NOW,
+    )
+
+    picker.service.send_payment_method(TENANT, picker.chat.thread_id, USER, pago.id)
+
+    (row,) = picker.chat.outbox.rows.values()
+    assert "USD 18" in row.payload["image"]["caption"]
+    assert state.context[CTX_PAYMENT_RECORD]["order_message_id"] == "wamid.cart"
+
+
+def test_the_picker_card_of_a_mixed_currency_cart_prints_no_single_total() -> None:
+    from qualify_api.whatsapp.orders import record_cart_order
+
+    pago = _method()
+    picker = Picker([pago])
+    state = picker.chat.repo.states[picker.chat.thread_id]
+    record_cart_order(
+        state.context,
+        items=[
+            {"product_retailer_id": "A", "quantity": 1, "item_price": 9, "currency": "USD"},
+            {"product_retailer_id": "B", "quantity": 1, "item_price": 15000, "currency": "COP"},
+        ],
+        products={},
+        confirmed_at=NOW,
+        source_message_id="wamid.cart",
+        archived_at=NOW,
+    )
+
+    picker.service.send_payment_method(TENANT, picker.chat.thread_id, USER, pago.id)
+
+    (row,) = picker.chat.outbox.rows.values()
+    assert row.payload["image"]["caption"] == payment_card_caption(
+        PaymentOption(
+            id=str(pago.id),
+            name=pago.name,
+            currency="VES",
+            instructions=pago.instructions,
+            qr_media_key=QR_KEY,
+        ),
+        total=None,
+    )

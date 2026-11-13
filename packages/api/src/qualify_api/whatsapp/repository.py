@@ -130,10 +130,19 @@ class WhatsAppInboxRepository(Protocol):
         tenant_id: UUID,
         state: StoredThreadState,
         preserve_payment: bool = False,
+        archive_payment: bool = False,
     ) -> None:
         """Upsert the row. With `preserve_payment` the payment record `_payment` is taken
         from the row AS STORED, in the same statement — never from `state.context` — so a
-        review or a «received» written meanwhile is never undone (m-24955648)."""
+        review or a «received» written meanwhile is never undone (m-24955648).
+
+        With `archive_payment` (m-25018684: this save wrote a new current order) the
+        current `_payment` is exactly `state.context`'s (a new record, or none). When the
+        save also archived the stored current order — `state.context["_orders_previous"]
+        [0]` is the row's `_order` AS STORED, same `source_message_id` — the payment as
+        STORED, in the same statement, becomes that entry's `payment` if it belonged to
+        that order (`order_message_id` == its `source_message_id`), else `null`. The
+        two flags are exclusive."""
         ...
 
     def enqueue_outbox(
@@ -159,6 +168,11 @@ class WhatsAppInboxRepository(Protocol):
 def _check_status(status: str) -> None:
     if status not in DELIVERY_STATUSES:
         raise ValueError(f"delivery status {status!r} is not one of {DELIVERY_STATUSES}")
+
+
+def _check_payment_flags(preserve_payment: bool, archive_payment: bool) -> None:
+    if preserve_payment and archive_payment:
+        raise ValueError("preserve_payment and archive_payment are exclusive")
 
 
 def _check_kind(kind: str) -> None:
@@ -228,6 +242,26 @@ _SAVE_STATE = text(
        SET menu_version_id = EXCLUDED.menu_version_id,
            node_id = EXCLUDED.node_id,
            context = CASE
+               WHEN CAST(:archive_payment AS boolean) THEN
+                   CASE
+                       -- this save did not archive the stored order: nothing to snapshot
+                       WHEN jsonb_typeof(EXCLUDED.context->'_orders_previous'->0)
+                            IS DISTINCT FROM 'object'
+                         OR (EXCLUDED.context->'_orders_previous'->0->'order'
+                                ->>'source_message_id')
+                            IS DISTINCT FROM
+                            (whatsapp_thread_state.context->'_order'->>'source_message_id')
+                         OR whatsapp_thread_state.context->'_order'->>'source_message_id'
+                            IS NULL
+                       THEN EXCLUDED.context
+                       WHEN jsonb_typeof(whatsapp_thread_state.context->'_payment') = 'object'
+                        AND whatsapp_thread_state.context->'_payment'->>'order_message_id'
+                            = whatsapp_thread_state.context->'_order'->>'source_message_id'
+                       THEN jsonb_set(EXCLUDED.context, '{_orders_previous,0,payment}',
+                                      whatsapp_thread_state.context->'_payment')
+                       ELSE jsonb_set(EXCLUDED.context, '{_orders_previous,0,payment}',
+                                      'null'::jsonb)
+                   END
                WHEN NOT CAST(:preserve_payment AS boolean) THEN EXCLUDED.context
                WHEN whatsapp_thread_state.context ? '_payment' THEN
                    (EXCLUDED.context - '_payment')
@@ -373,7 +407,9 @@ class PostgresWhatsAppInboxRepository:
         tenant_id: UUID,
         state: StoredThreadState,
         preserve_payment: bool = False,
+        archive_payment: bool = False,
     ) -> None:
+        _check_payment_flags(preserve_payment, archive_payment)
         with self._session() as session:
             session.execute(
                 _SAVE_STATE,
@@ -386,6 +422,7 @@ class PostgresWhatsAppInboxRepository:
                     "attempts": state.attempts,
                     "paused_at": state.paused_at,
                     "preserve_payment": preserve_payment,
+                    "archive_payment": archive_payment,
                 },
             )
 
@@ -582,12 +619,32 @@ class MemoryWhatsAppInboxRepository:
         tenant_id: UUID,
         state: StoredThreadState,
         preserve_payment: bool = False,
+        archive_payment: bool = False,
     ) -> None:
+        _check_payment_flags(preserve_payment, archive_payment)
         previous = self.states.get(thread_id)
         paused_at = state.paused_at
         if previous is not None and previous[1].paused_at is not None:
             paused_at = previous[1].paused_at
         context = copy.deepcopy(state.context)
+        archive = context.get("_orders_previous")
+        stored_order = previous[1].context.get("_order") if previous is not None else None
+        stored_source = (
+            stored_order.get("source_message_id") if isinstance(stored_order, dict) else None
+        )
+        if (
+            archive_payment
+            and previous is not None
+            and stored_source is not None
+            and isinstance(archive, list)
+            and archive
+            and isinstance(archive[0], dict)
+            and isinstance(archive[0].get("order"), dict)
+            and archive[0]["order"].get("source_message_id") == stored_source
+        ):
+            stored = previous[1].context.get("_payment")
+            belongs = isinstance(stored, dict) and stored.get("order_message_id") == stored_source
+            archive[0]["payment"] = copy.deepcopy(stored) if belongs else None
         if preserve_payment:
             context.pop("_payment", None)
             if previous is not None and "_payment" in previous[1].context:
