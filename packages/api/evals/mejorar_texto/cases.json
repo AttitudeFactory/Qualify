@@ -4,9 +4,19 @@
     "positioning": "Shawarma y ensaladas frescas hechas al momento, en el centro de la ciudad",
     "audience": "Gente que trabaja o estudia cerca y pide almuerzo o cena a domicilio",
     "regional_variant": "es-CO",
-    "tone_axes": {"formal_casual": 70, "sober_enthusiastic": 60, "technical_plain": 85, "brief_elaborate": 35},
-    "banned_words": ["barato"],
-    "cta_patterns": ["Pide por WhatsApp", "Te esperamos en el local"]
+    "tone_axes": {
+      "formal_casual": 70,
+      "sober_enthusiastic": 60,
+      "technical_plain": 85,
+      "brief_elaborate": 35
+    },
+    "banned_words": [
+      "barato"
+    ],
+    "cta_patterns": [
+      "Pide por WhatsApp",
+      "Te esperamos en el local"
+    ]
   },
   "cases": [
     {
@@ -16,7 +26,12 @@
       "content_type": "Promoción",
       "format": "Reel (video corto) 9:16",
       "product": "Shawarma de pollo",
-      "highlights": [["Promoción", "2x1 los martes"]],
+      "highlights": [
+        [
+          "Promoción",
+          "2x1 los martes"
+        ]
+      ],
       "must_mention": "",
       "must_avoid": ""
     },
@@ -38,7 +53,12 @@
       "content_type": "Horarios y ubicación",
       "format": "Historia 9:16",
       "product": "",
-      "highlights": [["Horario", "lunes a sábado 11 am a 10 pm; domingo 11 am a 8 pm"]],
+      "highlights": [
+        [
+          "Horario",
+          "lunes a sábado 11 am a 10 pm; domingo 11 am a 8 pm"
+        ]
+      ],
       "must_mention": "",
       "must_avoid": ""
     },
@@ -49,7 +69,16 @@
       "content_type": "Combo",
       "format": "Publicación cuadrada 1:1",
       "product": "Shawarma mixto",
-      "highlights": [["Precio", "25.000"], ["Horario", "12 m a 3 pm"]],
+      "highlights": [
+        [
+          "Precio",
+          "25.000"
+        ],
+        [
+          "Horario",
+          "12 m a 3 pm"
+        ]
+      ],
       "must_mention": "papas y bebida incluidas",
       "must_avoid": ""
     },
@@ -73,6 +102,124 @@
       "format": "Publicación 4:5",
       "product": "Shawarma de carne",
       "highlights": [],
+      "must_mention": "",
+      "must_avoid": ""
+    },
+    {
+      "id": "escena-precio-shawarma",
+      "text": "Un shawarma de carne recién hecho sobre la barra del local, con la salsa cayendo",
+      "piece": "Imagen",
+      "scene": true,
+      "content_type": "Producto",
+      "format": "Publicación 4:5",
+      "product": "Shawarma de carne",
+      "highlights": [
+        [
+          "Precio",
+          "$22.000"
+        ]
+      ],
+      "must_mention": "",
+      "must_avoid": ""
+    },
+    {
+      "id": "escena-precio-2x1",
+      "text": "dos shawarmas de pollo en una bandeja de madera, recién servidos",
+      "piece": "Imagen",
+      "scene": true,
+      "content_type": "Promoción",
+      "format": "Publicación 4:5",
+      "product": "Shawarma de pollo",
+      "highlights": [
+        [
+          "Promoción",
+          "2x1 los martes"
+        ],
+        [
+          "Precio",
+          "18.000"
+        ]
+      ],
+      "must_mention": "",
+      "must_avoid": ""
+    },
+    {
+      "id": "escena-precio-combo",
+      "text": "el combo con shawarma mixto, papas y bebida en la mesa al mediodía",
+      "piece": "Imagen",
+      "scene": true,
+      "content_type": "Combo",
+      "format": "Publicación cuadrada 1:1",
+      "product": "Shawarma mixto",
+      "highlights": [
+        [
+          "Precio",
+          "25.000"
+        ],
+        [
+          "Horario",
+          "12 m a 3 pm"
+        ]
+      ],
+      "must_mention": "",
+      "must_avoid": ""
+    },
+    {
+      "id": "escena-precio-ensalada",
+      "text": "ensalada de quinoa con falafel en un bowl blanco, luz de ventana",
+      "piece": "Imagen",
+      "scene": true,
+      "content_type": "Producto nuevo",
+      "format": "Publicación 4:5",
+      "product": "Ensalada de quinoa con falafel",
+      "highlights": [
+        [
+          "Precio",
+          "$19.500"
+        ]
+      ],
+      "must_mention": "",
+      "must_avoid": ""
+    },
+    {
+      "id": "escena-precio-domicilio",
+      "text": "una bolsa de domicilio abierta con el shawarma y las papas saliendo",
+      "piece": "Imagen",
+      "scene": true,
+      "content_type": "Producto",
+      "format": "Historia 9:16",
+      "product": "Shawarma de carne",
+      "highlights": [
+        [
+          "Domicilio",
+          "gratis desde $30.000"
+        ],
+        [
+          "Precio",
+          "22.000"
+        ]
+      ],
+      "must_mention": "",
+      "must_avoid": ""
+    },
+    {
+      "id": "escena-precio-papas",
+      "text": "papas fritas familiares en una canasta, con salsa de ajo al lado",
+      "piece": "Imagen",
+      "scene": true,
+      "content_type": "Producto",
+      "format": "Publicación 4:5",
+      "product": "Papas familiares",
+      "highlights": [
+        [
+          "Precio",
+          "12.000"
+        ],
+        [
+          "Tamaño",
+          "para 3 personas"
+        ]
+      ],
       "must_mention": "",
       "must_avoid": ""
     }

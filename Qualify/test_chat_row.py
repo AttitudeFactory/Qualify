@@ -1,0 +1,480 @@
+"""m-25017844 (BU-A2): one chat row for WhatsApp → Chats and Conversaciones (Instagram).
+
+The VM decides everything the row says — the one pill, the waiting dot, the initials,
+the fallback name, the accessible name — and both pages draw the same `chat_row`.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import re
+from datetime import timedelta
+from pathlib import Path
+
+import reflex as rx
+from qualify_api.whatsapp.chats import WindowView
+from qualify_api.whatsapp.payment_status import STATUS_LABELS
+
+from . import conversations_page, whatsapp_tab_chats
+from .chat_row import ROW_KEY_HANDLER, chat_row
+from .chat_row_vm import (
+    AWAITING_PAYMENT_PILL,
+    CHANNEL_INSTAGRAM,
+    CHANNEL_WHATSAPP,
+    PAYMENT_REVIEW_PILL,
+    REPLY_SOON_TEMPLATE,
+    WANTS_TO_BUY_PILL,
+    ChatRowVM,
+    accessible_name,
+    attention_pill,
+    build_chat_row,
+    letter_initials,
+    minutes_left,
+    reply_soon_pill,
+    unknown_contact,
+)
+from .conversations_state import ConversationsState
+from .conversations_vm import FILTERS as IG_FILTERS
+from .conversations_vm import UNKNOWN_PERSON, ThreadExtra, counterpart_title, window_words
+from .conversations_vm import as_chat_row as ig_chat_row
+from .conversations_vm import build_thread_row as ig_build
+from .conversations_vm import filter_threads as ig_filter
+from .replies_vm import COMMERCIAL_BADGE
+from .test_conversations_vm import NOW as IG_NOW
+from .test_conversations_vm import ZONE as IG_ZONE
+from .test_conversations_vm import _thread as ig_thread
+from .test_conversations_vm import _view as ig_view
+from .test_whatsapp_chats import NOW as WA_NOW
+from .test_whatsapp_chats import ZONE as WA_ZONE
+from .test_whatsapp_chats import _thread as wa_thread
+from .whatsapp_chats_state import WhatsAppChatsState
+from .whatsapp_chats_vm import FILTERS as WA_FILTERS
+from .whatsapp_chats_vm import OUTBOUND_PREFIX, window_pill
+from .whatsapp_chats_vm import as_chat_row as wa_chat_row
+from .whatsapp_chats_vm import build_thread_row as wa_build
+from .whatsapp_chats_vm import filter_threads as wa_filter
+
+_CSS = Path(__file__).resolve().parent.parent / "assets" / "qualify-inbox.css"
+
+
+def _row(**overrides: object) -> ChatRowVM:
+    values: dict[str, object] = {
+        "thread_id": "t",
+        "channel": CHANNEL_WHATSAPP,
+        "title": "Laura",
+        "preview": "Ya te pagué",
+        "time_label": "ahora",
+        "waiting": True,
+        "initials_from": "Laura",
+    }
+    values.update(overrides)
+    return build_chat_row(**values)  # type: ignore[arg-type]
+
+
+def _rendered(row: ChatRowVM, *, is_open: bool = False) -> str:
+    return str(
+        chat_row(
+            rx.Var.create(row),  # type: ignore[arg-type]
+            is_open=rx.Var.create(is_open),
+            on_open=rx.console_log("open"),
+        )
+    )
+
+
+def _css_block(selector_text: str) -> str:
+    """The `@media`/rule block that contains `selector_text`, braces matched."""
+    css = _CSS.read_text()
+    at = css.index(selector_text)
+    start = css.rfind("@media", 0, at)
+    depth, i = 0, css.index("{", start)
+    for i in range(css.index("{", start), len(css)):
+        depth += {"{": 1, "}": -1}.get(css[i], 0)
+        if depth == 0:
+            break
+    return css[start : i + 1]
+
+
+# --- the one pill --------------------------------------------------------------------------
+
+
+def test_payment_beats_the_window_and_the_intent() -> None:
+    """Ticket criterion: payment to check + window closing + intent → only «Pago por
+    revisar»."""
+    row = _row(
+        payment_review=True, payment_awaiting=True, reply_within_minutes=12, wants_to_buy=True
+    )
+    assert (row.pill_label, row.pill_tone) == (PAYMENT_REVIEW_PILL, "warn")
+
+
+def test_the_priority_order_of_the_one_pill() -> None:
+    """«Pago por revisar» › «Quiere comprar» › «Responde en N min» › «Esperando el pago»."""
+
+    def pill(**kw: object) -> tuple[str, str]:
+        base = {"payment_review": False, "reply_within_minutes": 0}
+        return attention_pill(**{**base, **kw})  # type: ignore[arg-type]
+
+    assert pill(wants_to_buy=True, payment_awaiting=True, reply_within_minutes=5) == (
+        "Quiere comprar",
+        "info",
+    )
+    # Awaiting payment AND the window about to close → the window pill wins.
+    assert pill(payment_awaiting=True, reply_within_minutes=5) == ("Responde en 5 min", "warn")
+    assert pill(payment_awaiting=True) == ("Esperando el pago", "neutral")
+    assert pill(reply_within_minutes=5) == ("Responde en 5 min", "warn")
+    assert pill() == ("", "neutral")
+    # The words are the product's own: the payment states and the reply drafts' badge.
+    assert AWAITING_PAYMENT_PILL == STATUS_LABELS["awaiting"]
+    assert PAYMENT_REVIEW_PILL == STATUS_LABELS["review"]
+    assert WANTS_TO_BUY_PILL == COMMERCIAL_BADGE
+    assert REPLY_SOON_TEMPLATE.format(minutes=7) == reply_soon_pill(7) == "Responde en 7 min"
+
+
+def test_minutes_round_down_with_a_floor_of_one() -> None:
+    now = WA_NOW
+    assert minutes_left(True, now + timedelta(minutes=59, seconds=59), now) == 59
+    assert minutes_left(True, now + timedelta(seconds=30), now) == 1
+    assert minutes_left(True, now + timedelta(minutes=40), now) == 40
+    assert minutes_left(True, now + timedelta(minutes=39, seconds=30), now) == 39
+    assert minutes_left(True, now + timedelta(hours=1), now) == 0
+    assert minutes_left(True, now - timedelta(minutes=1), now) == 0
+    assert minutes_left(False, now + timedelta(minutes=5), now) == 0
+    assert minutes_left(True, None, now) == 0
+
+
+def test_row_and_chat_header_say_the_same_minutes() -> None:
+    for left, said in (
+        (timedelta(minutes=59, seconds=59), 59),
+        (timedelta(seconds=30), 1),
+        (timedelta(minutes=40), 40),
+        (timedelta(minutes=39, seconds=30), 39),
+    ):
+        ig_row = ig_chat_row(
+            ig_build(
+                ig_view(ig_thread(inbound=IG_NOW - timedelta(hours=24) + left)),
+                None,
+                now=IG_NOW,
+                zone=IG_ZONE,
+            )
+        )
+        header, _tone = window_words(True, IG_NOW + left, IG_NOW, IG_ZONE)
+        assert ig_row.pill_label == f"Responde en {said} min"
+        assert header.startswith(f"Te quedan {said} min para responder")
+        wa_row = wa_chat_row(
+            wa_build(
+                wa_thread(window=WindowView(open=True, closes_at=WA_NOW + left)),
+                now=WA_NOW,
+                zone=WA_ZONE,
+            )
+        )
+        wa_header, _ = window_pill(True, WA_NOW + left, WA_NOW, WA_ZONE)
+        assert wa_row.pill_label == f"Responde en {said} min"
+        expected = (
+            "Responde en el próximo minuto" if said == 1 else f"Responde en los próximos {said} min"
+        )
+        assert wa_header == expected
+
+
+# --- names and initials ---------------------------------------------------------------------
+
+
+def test_initials_come_from_letters_only() -> None:
+    assert letter_initials("Laura Gómez") == "LG"
+    assert letter_initials("🇨🇴 Laura") == "L"
+    assert letter_initials("~Juan") == "J"
+    assert letter_initials("@yesii_roa") == "YR"
+    assert letter_initials("Ángela 😀 Ruiz") == "ÁR"
+    assert letter_initials("+573001234567") == ""
+    assert letter_initials("😀 🎉") == ""
+    assert letter_initials("") == ""
+
+
+def test_whatsapp_profile_names_never_give_a_symbol_as_initial() -> None:
+    def initials(name: str | None) -> str:
+        return wa_chat_row(
+            wa_build(wa_thread(contact_name=name), now=WA_NOW, zone=WA_ZONE)
+        ).initials
+
+    assert initials("🇨🇴 Laura") == "L"
+    assert initials("~Juan") == "J"
+    assert initials("+573001234567") == ""  # the name IS the number → person icon
+    assert initials(None) == ""  # number only → person icon, never its last digit
+
+
+def test_the_fallback_names_the_channel() -> None:
+    """m-25017852: nothing known → «Cliente de Instagram» (was «Persona sin nombre»);
+    only the handle known → «@usuario», in the row and in the header (same title)."""
+    assert unknown_contact(CHANNEL_INSTAGRAM) == UNKNOWN_PERSON == "Cliente de Instagram"
+    assert counterpart_title("", "17841400000123456") == "Cliente de Instagram"
+    nobody = ig_chat_row(ig_build(ig_view(ig_thread()), None, now=IG_NOW, zone=IG_ZONE))
+    assert nobody.title == "Cliente de Instagram"
+    assert nobody.initials == ""  # person icon, not «CI» nor a digit of the id
+    handle_only = dataclasses.replace(ig_thread(), counterpart_username="yesii_roa")
+    row = ig_build(ig_view(handle_only), None, now=IG_NOW, zone=IG_ZONE)
+    shared = ig_chat_row(row)
+    assert row.title == shared.title == "@yesii_roa"
+    assert shared.initials == "YR"
+
+
+def test_a_whatsapp_chat_with_neither_name_nor_number() -> None:
+    row = wa_chat_row(wa_build(wa_thread(contact_name=None, wa_id=""), now=WA_NOW, zone=WA_ZONE))
+    assert row.title == "Cliente de WhatsApp" and row.initials == ""
+
+
+def test_the_accessible_name_says_the_channel_and_its_own_dot() -> None:
+    assert accessible_name("Ana", CHANNEL_WHATSAPP, waiting=True, pill="Pago por revisar") == (
+        "Ana, por WhatsApp, sin leer, Pago por revisar"
+    )
+    assert accessible_name("@ana", CHANNEL_INSTAGRAM, waiting=True, pill="") == (
+        "@ana, por Instagram, sin responder"
+    )
+    assert accessible_name("@ana", CHANNEL_INSTAGRAM, waiting=False, pill="") == (
+        "@ana, por Instagram"
+    )
+
+
+# --- WhatsApp → shared row ------------------------------------------------------------------
+
+
+def test_whatsapp_row_in_the_shared_shape() -> None:
+    row = wa_chat_row(wa_build(wa_thread(), now=WA_NOW, zone=WA_ZONE))
+    assert row.channel == CHANNEL_WHATSAPP
+    assert (row.title, row.initials) == ("Laura Gómez", "LG")
+    # No second line (UX doc §2): the phone is not on the row nor in its accessible name.
+    assert not hasattr(row, "second_line") and "+57" not in row.aria_label
+    assert row.preview == "¿Tienen domicilio?" and row.time_label == "hace 5 min"
+    assert row.waiting  # two unread → the dot
+    assert row.pill_label == ""  # window comfortably open, no payment: no pill
+    assert row.aria_label == "Laura Gómez, por WhatsApp, sin leer"
+
+
+def test_whatsapp_row_drops_mode_and_closed_and_keeps_one_pill() -> None:
+    closing = WindowView(open=True, closes_at=WA_NOW + timedelta(minutes=30))
+    vm = wa_build(
+        wa_thread(
+            unread_count=0,
+            status="closed",
+            automation_paused=True,
+            last_message_direction="outbound",
+            last_message_preview="Ya va en camino",
+            window=closing,
+        ),
+        now=WA_NOW,
+        zone=WA_ZONE,
+    )
+    row = wa_chat_row(vm)
+    assert row.preview == OUTBOUND_PREFIX + "Ya va en camino" and not row.waiting
+    assert (row.pill_label, row.pill_tone) == ("Responde en 30 min", "warn")
+    awaiting = wa_chat_row(dataclasses.replace(vm, payment_awaiting=True))
+    assert awaiting.pill_label == "Responde en 30 min"  # the closing window wins
+    calm = wa_chat_row(dataclasses.replace(vm, payment_awaiting=True, window_minutes=0))
+    assert (calm.pill_label, calm.pill_tone) == ("Esperando el pago", "neutral")
+    review = wa_chat_row(dataclasses.replace(vm, payment_review=True, payment_awaiting=True))
+    assert review.pill_label == PAYMENT_REVIEW_PILL
+    for gone in ("Cerrado", "Responde el menú", "Respondes tú"):
+        assert gone not in (row.pill_label, row.aria_label)
+
+
+def test_whatsapp_assigned_agent_stays_on_the_row() -> None:
+    vm = dataclasses.replace(
+        wa_build(wa_thread(), now=WA_NOW, zone=WA_ZONE), agent_initials="YR", agent_name="Yesika"
+    )
+    assert (wa_chat_row(vm).agent_initials, wa_chat_row(vm).agent_name) == ("YR", "Yesika")
+
+
+# --- Instagram → shared row -----------------------------------------------------------------
+
+
+def test_instagram_row_in_the_shared_shape() -> None:
+    thread = dataclasses.replace(
+        ig_thread(),
+        counterpart_name="Yesika Roa",
+        counterpart_username="yesii_roa",
+        counterpart_avatar_url="https://cdn/pic.jpg",
+    )
+    vm = ig_build(
+        ig_view(thread),
+        ThreadExtra(preview="claro", preview_direction="outbound"),
+        now=IG_NOW,
+        zone=IG_ZONE,
+        fresh=True,
+    )
+    row = ig_chat_row(vm)
+    assert row.channel == CHANNEL_INSTAGRAM
+    assert (row.title, row.initials) == ("Yesika Roa", "YR")  # the handle stays in the header
+    assert "@yesii_roa" not in row.aria_label
+    assert row.avatar_url == "https://cdn/pic.jpg" and row.fresh
+    assert row.preview == "Tú: claro"
+    assert row.pill_label == ""  # «Pendiente» / «Leída» / «Respondida» left the row
+
+
+def test_instagram_waiting_dot_and_media_icon() -> None:
+    vm = ig_build(
+        ig_view(ig_thread()), ThreadExtra(preview_media_type="image"), now=IG_NOW, zone=IG_ZONE
+    )
+    row = ig_chat_row(vm)
+    assert vm.attention == "pending" and row.waiting
+    assert (row.preview, row.preview_icon) == ("Foto", "image")
+    read = ig_thread(inbound=IG_NOW - timedelta(hours=2), read=IG_NOW - timedelta(hours=1))
+    assert not ig_chat_row(ig_build(ig_view(read), None, now=IG_NOW, zone=IG_ZONE)).waiting
+
+
+# --- the states: the chat rows follow the lists ---------------------------------------------
+
+
+def test_whatsapp_state_chat_rows_follow_filter_and_refresh() -> None:
+    state = WhatsAppChatsState()
+    rows = [
+        wa_build(
+            wa_thread(id=f"00000000-0000-0000-0000-00000000000{i}", **kw), now=WA_NOW, zone=WA_ZONE
+        )
+        for i, kw in enumerate(
+            ({}, {"unread_count": 0}, {"status": "closed", "unread_count": 3}), start=1
+        )
+    ]
+    rows[1] = dataclasses.replace(rows[1], payment_review=True)
+    state.rows = rows
+    for key, _label in WA_FILTERS:
+        state.filter_key = key
+        assert [r.thread_id for r in state.visible_chat_rows] == [
+            r.thread_id for r in wa_filter(state.rows, key)
+        ]
+    state.filter_key = WA_FILTERS[0][0]
+    state.rows = rows[:1]  # a refresh
+    assert [r.thread_id for r in state.visible_chat_rows] == [rows[0].thread_id]
+    assert state.visible_chat_rows[0] == wa_chat_row(rows[0])
+
+
+def test_whatsapp_window_closed_while_choosing_clears_the_minutes() -> None:
+    state = WhatsAppChatsState()
+    closing = wa_build(
+        wa_thread(window=WindowView(open=True, closes_at=WA_NOW + timedelta(minutes=5))),
+        now=WA_NOW,
+        zone=WA_ZONE,
+    )
+    state.rows = [closing]
+    assert state.visible_chat_rows[0].pill_label == "Responde en 5 min"
+    state._mark_window_closed(closing.thread_id)
+    marked = state.rows[0]
+    assert (marked.window_open, marked.window_tone, marked.window_minutes) == (
+        False,
+        "neutral",
+        0,
+    )
+    assert state.visible_chat_rows[0].pill_label == ""
+
+
+def test_instagram_state_chat_rows_follow_filter_and_refresh() -> None:
+    state = ConversationsState()
+    rows = [
+        ig_build(ig_view(ig_thread()), None, now=IG_NOW, zone=IG_ZONE),
+        ig_build(
+            ig_view(ig_thread(read=IG_NOW - timedelta(minutes=1))), None, now=IG_NOW, zone=IG_ZONE
+        ),
+        ig_build(
+            ig_view(ig_thread(outbound=IG_NOW - timedelta(minutes=1))),
+            None,
+            now=IG_NOW,
+            zone=IG_ZONE,
+        ),
+    ]
+    state.rows = rows
+    for key, _label in IG_FILTERS:
+        state.filter_key = key
+        assert [r.thread_id for r in state.visible_chat_rows] == [
+            r.thread_id for r in ig_filter(state.rows, key)
+        ]
+    state.filter_key = IG_FILTERS[0][0]
+    state.rows = [dataclasses.replace(rows[0], fresh=True)]  # a refresh with a new message
+    assert [r.fresh for r in state.visible_chat_rows] == [True]
+
+
+# --- the rendered row -----------------------------------------------------------------------
+
+
+def test_both_lists_render_the_shared_row() -> None:
+    for page, index in (
+        (whatsapp_tab_chats, whatsapp_tab_chats.chats_tab),
+        (conversations_page, conversations_page.conversations_index),
+    ):
+        rendered = str(index())
+        assert "visible_chat_rows" in rendered and "visible_rows" not in rendered
+        assert ROW_KEY_HANDLER._js_expr in rendered  # the shared row, keyboard and all
+        assert page._tone_pill is whatsapp_tab_chats._tone_pill  # one tone helper
+
+
+def test_the_rendered_row_anatomy() -> None:
+    rendered = _rendered(_row(payment_review=True, agent_initials="YR", agent_name="Yesika"))
+    assert "q-chat-channel--whatsapp" in rendered and "q-chat-channel--instagram" in rendered
+    assert "q-conv-unread" in rendered  # the waiting dot
+    assert '["minHeight"] : "2.75rem"' in rendered  # one 44 px target
+    assert 'role:"button"' in rendered and "tabIndex:0" in rendered
+    assert '"aria-label"' in rendered and '"aria-current"' in rendered
+    assert "LucideUserRound" in rendered  # the person icon when there is no letter
+    assert "Cerrado" not in rendered and "flexWrap" not in rendered
+    assert 'color:"white"' not in rendered
+
+
+def test_enter_and_space_click_the_row_itself() -> None:
+    js = ROW_KEY_HANDLER._js_expr
+    assert "e.key === 'Enter'" in js and "e.key === ' '" in js
+    assert "e.target === e.currentTarget" in js  # only the row itself, never a child
+    assert "!e.repeat" in js  # a held key opens the chat once
+    assert "e.preventDefault()" in js and "e.currentTarget.click()" in js
+    assert "window." not in js and "document." not in js  # no global handler
+    rendered = _rendered(_row())
+    assert re.search(r"onKeyDown:\(\(e\) =>", rendered)
+    assert "onClick:" in rendered
+
+
+def test_the_row_paints_with_tokens() -> None:
+    css = _CSS.read_text()
+    start = css.index(".q-conv-channel.q-chat-channel--whatsapp")
+    rules = css[start : css.index(".q-conv-avatar-wrap--lg .q-conv-channel", start)]
+    assert "var(--green-9)" in rules and "var(--pink-9)" in rules
+    assert "var(--accent-a4)" in rules
+    assert "hsl(" not in rules and "white" not in rules and "#" not in rules
+
+
+def test_the_dot_and_the_pulse_stop_under_reduced_motion() -> None:
+    block = _css_block(".q-conv-row--fresh, .q-conv-unread")
+    assert block.startswith("@media (prefers-reduced-motion: reduce)")
+    rule = block[block.index(".q-conv-msg, .q-conv-row--fresh, .q-conv-unread") :]
+    assert "animation: none" in rule[: rule.index("}")]
+
+
+def test_a_picture_without_letters_keeps_the_avatar_fallback() -> None:
+    """Picture + no letters → the Radix avatar over the person icon (an expired picture
+    reveals the icon, never a broken image); no picture → the bare icon."""
+    from . import chat_row as view
+
+    with_picture = str(view._avatar(rx.Var.create(_row(initials_from="", avatar_url="https://x"))))  # type: ignore[arg-type]
+    assert "q-chat-avatar__over" in with_picture
+    assert "RadixThemesAvatar" in with_picture and "LucideUserRound" in with_picture
+    assert 'fallback:""' in with_picture  # the over-avatar's fallback is empty
+    css = _CSS.read_text()
+    rule = css[css.index(".q-chat-avatar .q-chat-avatar__over .rt-AvatarRoot") :]
+    assert "background: transparent" in rule[: rule.index("}")]
+    assert ".q-chat-avatar__over {" in css and "position: absolute" in css
+
+
+def test_a_chat_whose_person_unsent_everything() -> None:
+    """m-25018661 merged with m-25017844: the erased message is gone from the thread, so
+    the row previews what is left (the business's own «Tú: …», or «Sin mensajes
+    todavía»), with no waiting dot, no bold name and no closed-window pill; the open
+    chat's header keeps «no queda ningún mensaje de esta persona»."""
+    only_ours = ig_thread(inbound=None, outbound=IG_NOW - timedelta(hours=1))
+    vm = ig_build(
+        ig_view(only_ours),
+        ThreadExtra(preview="claro, te esperamos", preview_direction="outbound"),
+        now=IG_NOW,
+        zone=IG_ZONE,
+    )
+    row = ig_chat_row(vm)
+    assert row.preview == "Tú: claro, te esperamos" and row.preview_icon == ""
+    assert not row.waiting and row.pill_label == ""
+    assert row.aria_label == "Cliente de Instagram, por Instagram"
+    assert vm.window_label.startswith("Ya no puedes responder: no queda ningún mensaje")
+    nothing_left = ig_chat_row(
+        ig_build(ig_view(ig_thread(inbound=None)), None, now=IG_NOW, zone=IG_ZONE)
+    )
+    assert nothing_left.preview == "Sin mensajes todavía" and not nothing_left.waiting

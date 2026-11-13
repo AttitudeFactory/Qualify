@@ -840,3 +840,35 @@ async def test_lead_form_of_another_page_is_rejected_before_any_meta_call(live):
     with pytest.raises(WizardUnavailable, match="formulario"):
         await prepare(live)
     assert not live["remote"].calls
+
+
+@pytest.mark.asyncio
+async def test_budget_floor_read_shows_minimum_and_spent_without_writing(live, monkeypatch):
+    """m-25026344: the screen shows the same floor a decrease enforces, before any edit."""
+    from types import SimpleNamespace
+
+    from qualify_api.ads import live_management as management
+    from qualify_api.ads.edit_ledger import revision
+    from qualify_api.ads.live_wizard import production_wizard
+
+    preview = await prepare(live)
+    await confirm(live, preview)
+    tenant, actor = live["args"]["tenant_id"], live["args"]["approved_by"]
+    promotion = live["repo"].get(tenant, preview.promotion_id)
+    live["remote"].objects[promotion.ids["adsets"]]["lifetime_budget"] = "20000"
+    promotion = replace(promotion, request=promotion.request | {"budget_minor": 2_000_000})
+    live["remote"].spent = 7000
+    scope = SimpleNamespace(tenant_id=tenant, promotion_id=promotion.id)
+    monkeypatch.setattr(management, "_scope", lambda *args: scope)
+    async with production_wizard(tenant, actor) as wizard:
+        gateway = wizard.gateway
+        monkeypatch.setattr(
+            management, "_context", lambda scope: (promotion, revision([]), gateway, live["source"])
+        )
+        start = len(live["remote"].calls)
+        floor = await management.promotion_budget_floor(tenant_id=tenant, promotion_id=promotion.id)
+    assert floor.current_minor == 2_000_000
+    assert floor.spent_minor == 700_000
+    # The decrease test above refuses 990_000 and accepts 1_000_000 for this same setup.
+    assert floor.floor_minor == 1_000_000
+    assert not [c for c in live["remote"].calls[start:] if c[0] == "POST"]
