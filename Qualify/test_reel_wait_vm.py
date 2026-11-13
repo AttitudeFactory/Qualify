@@ -189,6 +189,7 @@ def test_a_video_we_could_not_download_offers_another_reel_or_going_without(
         vm.from_status(status("failed", error_code="source_too_large")),
         vm.from_status(status("failed", error_code="source_unreadable")),
         vm.from_status(status("failed", error_code="model_failed")),
+        vm.from_status(status("failed", error_code="model_output_cut")),  # m-24993025
         vm.from_status(status("failed", error_code="something_new")),  # unknown: fail closed
         vm.from_status(status("failed")),
         vm.from_status(status("weird")),

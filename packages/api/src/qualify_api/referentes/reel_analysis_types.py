@@ -53,18 +53,22 @@ STAGE_DETECTING = "detecting"
 STAGE_DESCRIBING = "describing"
 STAGE_DONE = "done"
 
-# The closed list of 0119 `ck_pra_error_code`.
+# The closed list of `ck_pra_error_code` (0119; 0152 adds `model_output_cut`).
 ERROR_SOURCE_UNAVAILABLE = "source_unavailable"
 ERROR_SOURCE_EXPIRED = "source_expired"
 ERROR_SOURCE_TOO_LARGE = "source_too_large"
 ERROR_SOURCE_UNREADABLE = "source_unreadable"
 ERROR_MODEL_FAILED = "model_failed"
+#: The model's answer was cut by `max_tokens` (m-24993025): the same request would be cut
+#: again, so it fails at once — never retried, never paid twice.
+ERROR_MODEL_OUTPUT_CUT = "model_output_cut"
 ERROR_CODES = (
     ERROR_SOURCE_UNAVAILABLE,
     ERROR_SOURCE_EXPIRED,
     ERROR_SOURCE_TOO_LARGE,
     ERROR_SOURCE_UNREADABLE,
     ERROR_MODEL_FAILED,
+    ERROR_MODEL_OUTPUT_CUT,
 )
 
 # 0119 `ck_pra_transcript_source` (same values as `public_reels.transcript_source`).
@@ -332,6 +336,7 @@ __all__ = [
     "ANALYSIS_VERSION",
     "ERROR_CODES",
     "ERROR_MODEL_FAILED",
+    "ERROR_MODEL_OUTPUT_CUT",
     "ERROR_SOURCE_EXPIRED",
     "ERROR_SOURCE_TOO_LARGE",
     "ERROR_SOURCE_UNAVAILABLE",

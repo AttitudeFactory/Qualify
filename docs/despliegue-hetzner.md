@@ -434,15 +434,15 @@ dc exec postgres psql -U qualify_owner qualify -c \
      FROM public_reel_analyses GROUP BY 1, 2, 3, 4;"
 ```
 
-Con el interruptor de VE-04c apagado lo normal es `queued | downloading | | t` (video guardado, sin describir); prendido, `ok | done | | t` (descrito). Un `failed` dice por qué en `error_code` (`source_expired`, `source_unavailable`, `source_too_large`, `source_unreadable`, `model_failed`). Una fila cuyo video ya se borró no la toma ningún paso (ni la descarga ni la descripción): se queda como está.
+Con el interruptor de VE-04c apagado lo normal es `queued | downloading | | t` (video guardado, sin describir); prendido, `ok | done | | t` (descrito). Un `failed` dice por qué en `error_code` (`source_expired`, `source_unavailable`, `source_too_large`, `source_unreadable`, `model_failed`, `model_output_cut`). Una fila cuyo video ya se borró no la toma ningún paso (ni la descarga ni la descripción): se queda como está.
 
 **Gasto automático nuevo: la ficha de cada idea con Claude Haiku (VE-04c, m-24921058).** Solo si `.env.prod` tiene `QUALIFY_REEL_ANALYSIS_DESCRIBE=1` (apagado por defecto, aunque esté la clave de Anthropic; cambiarlo pide reiniciar el `reels-worker`). Prendido, cada idea nueva de una corrida `ok` se describe con Haiku; las que ya tienen ficha se reusan y no cuentan. Lo que acota ese gasto, sin cambiar nada de lo que decidió ADR 44:
 
-- 1 llamada por reel (a lo sumo 2: un reintento), ≈ USD 0,0055 por reel normal y como mucho USD 0,0099 por llamada (32 fotogramas);
+- 1 llamada por reel (a lo sumo 2: un reintento; una respuesta cortada por el tope, `model_output_cut`, no se reintenta), ≈ USD 0,0055 por reel normal y como mucho USD 0,0151 por llamada (32 fotogramas y 16.000 tokens de salida; el tope crece con los fotogramas desde 9.000, m-24993025);
 - como mucho 10 análisis nuevos por corrida (`QUALIFY_REEL_ANALYSIS_PER_RUN`), y una corrida deja 6 a 8 ideas;
-- 1.500 llamadas al día para toda la flota (`QUALIFY_REEL_ANALYSIS_FLEET_DAILY`), contadas antes de cada llamada: es el techo de todo, también de lo que pidan los negocios desde la pantalla (50 pedidos al día por negocio); como mucho ≈ USD 15 al día. Llegado el tope, la fila espera 15 min sin llamar.
+- 1.500 llamadas al día para toda la flota (`QUALIFY_REEL_ANALYSIS_FLEET_DAILY`), contadas antes de cada llamada: es el techo de todo, también de lo que pidan los negocios desde la pantalla (50 pedidos al día por negocio); como mucho ≈ USD 22,6 al día (1.500 × 0,015045). Llegado el tope, la fila espera 15 min sin llamar.
 
-Estimación con 4 marcas activas: 4 corridas semanales × ≤ 8 ideas nuevas = ≤ 32 reels por semana: ≈ USD 0,18 por semana (≈ USD 0,75 al mes) normal, ≤ USD 0,63 por semana (≈ USD 2,75 al mes) en el peor caso (2 llamadas de USD 0,0099 por reel). Menos si varias marcas comparten reels: la ficha es una sola para todos. El costo queda en la fila global (`public_reel_analyses.cost_usd`) y en Langfuse, nunca en el libro de consumo de un negocio (decisión 10 de la épica) ni en los créditos de R5; además se suma, como dato, al `cost_usd` de la corrida que lo disparó. Para ver lo gastado:
+Estimación con 4 marcas activas: 4 corridas semanales × ≤ 8 ideas nuevas = ≤ 32 reels por semana: ≈ USD 0,18 por semana (≈ USD 0,75 al mes) normal, ≤ USD 0,97 por semana (≈ USD 4,20 al mes) en el peor caso (2 llamadas de USD 0,0151 por reel: una respuesta sin herramienta sí se reintenta). Menos si varias marcas comparten reels: la ficha es una sola para todos. El costo queda en la fila global (`public_reel_analyses.cost_usd`) y en Langfuse, nunca en el libro de consumo de un negocio (decisión 10 de la épica) ni en los créditos de R5; además se suma, como dato, al `cost_usd` de la corrida que lo disparó. Para ver lo gastado:
 
 ```bash
 dc exec postgres psql -U qualify_owner qualify -c \

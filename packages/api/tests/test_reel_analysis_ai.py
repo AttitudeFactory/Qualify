@@ -30,6 +30,7 @@ from qualify_shared import observability
 from qualify_shared.objects.gate import ObjectNotFound, StoredObject
 from qualify_shared.objects.public import PublicObjectGate
 
+from qualify_api.claude_tools import MAX_NON_STREAMING_TOKENS
 from qualify_api.consumption import consumption_scope
 from qualify_api.referentes import reel_analysis_ai as ai
 from qualify_api.referentes import reel_analysis_groups as groups_mod
@@ -39,6 +40,7 @@ from qualify_api.referentes.reel_analysis_store import InMemoryAnalysisStore
 from qualify_api.referentes.reel_analysis_types import (
     ANALYSIS_VERSION,
     ERROR_MODEL_FAILED,
+    ERROR_MODEL_OUTPUT_CUT,
     NOT_OBSERVED,
     OBSERVATIONS,
     OBSERVED,
@@ -292,7 +294,9 @@ def test_the_call_is_haiku_at_low_effort_with_the_sheet_tool(world) -> None:
     assert sent["model"] == "claude-haiku-5-5" and sent["output_config"] == {"effort": "low"}
     (tool,) = sent["tools"]
     assert tool["name"] == "describir_reel" and "strict" not in tool
-    assert sent["max_tokens"] == ai.MAX_OUTPUT_TOKENS
+    images = [b for b in sent["messages"][0]["content"] if b["type"] == "image"]
+    assert sent["max_tokens"] == ai.output_token_cap(len(images))
+    assert "thinking" not in sent  # Haiku 5.5's default adaptive thinking, inside the cap
     assert fake.keys == ["test-key"]
 
 
@@ -437,15 +441,37 @@ def test_a_reel_with_forty_shots_is_described_in_twelve_groups_and_stores_forty(
         assert all(f"/frames/{shot.shot_index:02d}-" in k for k in shot.frame_keys)
     params = store.get(analysis_id).sampling_params
     assert params["grouping"]["groups"] == ai.MAX_GROUPS
-    assert params["max_output_tokens"] == ai.MAX_OUTPUT_TOKENS
+    # the cap followed the request's size, and the row records the one it used
+    assert sent["max_tokens"] == ai.output_token_cap(len(images)) > ai.OUTPUT_TOKENS_FLOOR
+    assert params["max_output_tokens"] == sent["max_tokens"]
+
+
+def test_the_output_cap_scales_with_the_frames_between_floor_and_ceiling() -> None:
+    """m-24993025: 2,000 + 450 per frame sent, never under 9,000 nor over 16,000 (the most
+    the SDK takes without streaming). VE-05 v8 measured ≤ 7,829 output tokens for 27
+    frames; two 27-frame reels were cut at the old flat 9,000."""
+    assert (ai.OUTPUT_TOKENS_FLOOR, ai.MAX_OUTPUT_TOKENS) == (9000, 16000)
+    assert ai.MAX_OUTPUT_TOKENS == MAX_NON_STREAMING_TOKENS
+    assert ai.output_token_cap(0) == ai.output_token_cap(5) == ai.output_token_cap(15) == 9000
+    assert ai.output_token_cap(16) == 9200
+    assert ai.output_token_cap(23) == 12350
+    assert ai.output_token_cap(27) == 14150  # 12 groups: the most the sampling sends
+    assert ai.output_token_cap(31) == 15950
+    assert ai.output_token_cap(32) == ai.output_token_cap(100) == 16000
+    caps = [ai.output_token_cap(n) for n in range(0, 40)]
+    assert caps == sorted(caps)
+    assert all(ai.OUTPUT_TOKENS_FLOOR <= c <= ai.MAX_OUTPUT_TOKENS for c in caps)
+    # ≥ 1.5× every sheet VE-05 v8 finished: (frames sent, output tokens)
+    measured = [(15, 4644), (5, 1539), (11, 3494), (27, 7829), (17, 6232), (27, 7475), (23, 6762)]
+    assert all(ai.output_token_cap(f) >= 1.5 * out for f, out in measured)
 
 
 def test_the_worst_request_is_pinned_with_prices() -> None:
     """12 groups, 32 frames (each priced at the image ceiling — the plan's cap; 12 groups
-    get at most 27), a transcript past its clip and `MAX_OUTPUT_TOKENS` = 9,000 of output,
-    with `claude_tools.PRICES`: USD 0.011545 ≤ `MAX_REQUEST_USD` (m-24955652, prompt 9)."""
-    assert ai.MAX_OUTPUT_TOKENS == 9000
-    assert Decimal("0.0116") == ai.MAX_REQUEST_USD
+    get at most 27), a transcript past its clip and the output cap of that many frames,
+    with `claude_tools.PRICES`: USD 0.015045 at 16,000 output tokens ≤ `MAX_REQUEST_USD`
+    (m-24993025; 0.011545 at the old flat 9,000, m-24955652)."""
+    assert Decimal("0.0151") == ai.MAX_REQUEST_USD
     spans = [ShotSpan(i, 5.0 * i, 5.0 * (i + 1)) for i in range(ai.MAX_GROUPS)]
     segments = [TranscriptSegment(i, i + 1, "palabra " * 40) for i in range(60)]
 
@@ -456,10 +482,13 @@ def test_the_worst_request_is_pinned_with_prices() -> None:
         ]
         return ai.build_messages(spans, ai.number_frames(frames), "texto " * 2000, segments)
 
-    assert ai.worst_request_usd(request(32)) == Decimal("0.011545")
-    assert ai.worst_request_usd(request(27)) == Decimal("0.010711")
+    assert ai.worst_request_usd(request(32)) == Decimal("0.015045")  # 16,000 out
+    assert ai.worst_request_usd(request(27)) == Decimal("0.013286")  # 14,150 out
+    assert ai.worst_request_usd(request(15)) == Decimal("0.008708")  # the 9,000 floor
+    assert ai.worst_request_usd(request(32), max_tokens=9000) == Decimal("0.011545")
+    assert ai.worst_request_usd(request(27), max_tokens=9000) == Decimal("0.010711")
     assert ai.worst_request_usd(request(32), max_tokens=5800) == Decimal("0.009945")
-    assert ai.worst_request_usd(request(32)) <= ai.MAX_REQUEST_USD
+    assert all(ai.worst_request_usd(request(n)) <= ai.MAX_REQUEST_USD for n in (1, 15, 27, 32))
     # the image ceiling holds the real tokens of a 720×1280 frame
     assert ai.image_tokens(720, 1280) <= ai.IMAGE_TOKEN_CEILING
 
@@ -1007,16 +1036,11 @@ def test_the_langfuse_trace_carries_no_base64(world) -> None:
 # -- failures leave nothing half-written ----------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "fake",
-    [
-        FakeClaude(stop_reason="max_tokens"),
-        FakeClaude(tool_name=""),
-    ],
-    ids=["cut", "no-tool"],
-)
-def test_an_unusable_answer_ends_failed_model_failed_without_shots(world, fake) -> None:
+def test_a_tool_less_answer_is_retried_then_ends_failed_model_failed_without_shots(
+    world,
+) -> None:
     worker, store, *_ = world
+    fake = FakeClaude(tool_name="")
     plug(worker, fake)
     analysis_id, first = run_one(worker, store, source())
     assert first.outcome == w.OUTCOME_RETRY
@@ -1031,6 +1055,73 @@ def test_an_unusable_answer_ends_failed_model_failed_without_shots(world, fake) 
     # both paid calls are on the row, though neither produced a sheet
     assert (row.input_tokens, row.output_tokens) == (2 * 40_300, 2 * 3_000)
     assert row.cost_usd == 2 * Decimal("0.005588")
+
+
+def test_a_cut_answer_fails_at_once_as_output_cut_with_its_spend_on_the_row(world) -> None:
+    """m-24993025: an answer cut by `max_tokens` is not retried — the same request, cap and
+    model would be cut again and paid again. It fails with its own reason after ONE paid
+    call, whose tokens and cost stay on the row; no shot, no sheet."""
+    worker, store, *_ = world
+    fake = FakeClaude(stop_reason="max_tokens")
+    plug(worker, fake)
+    analysis_id, outcome = run_one(worker, store, source())
+    assert (outcome.outcome, outcome.error_code) == (w.OUTCOME_FAILED, ERROR_MODEL_OUTPUT_CUT)
+    assert outcome.cost_usd == Decimal("0.005588")
+    row = store.get(analysis_id)
+    assert row.status == STATUS_FAILED and row.error_code == ERROR_MODEL_OUTPUT_CUT
+    assert row.model_calls == 1 and len(fake.requests) == 1
+    assert (row.input_tokens, row.output_tokens, row.cost_usd) == (
+        40_300,
+        3_000,
+        Decimal("0.005588"),
+    )
+    assert store.shots(uuid4(), analysis_id) == [] and not row.reel_sheet
+    # nothing left to drain: the row is settled, no second paid call later
+    worker.clock.at = NOW + timedelta(hours=1)
+    w.drain_once(worker)
+    assert len(fake.requests) == 1 and store.get(analysis_id).status == STATUS_FAILED
+
+
+def test_the_describe_step_marks_a_cut_answer_not_retryable(tmp_path: Path) -> None:
+    """The step itself (no worker): `DescribeFailed` with `model_output_cut`,
+    `retryable=False` and what the call billed."""
+    record, _ = InMemoryAnalysisStore().ensure(source(), ANALYSIS_VERSION, NOW)
+    path = tmp_path / "source.mp4"
+    path.write_bytes(mp4([(1.5, 30), (1.5, 200)]))
+    fake = FakeClaude(stop_reason="max_tokens")
+    job = w.DescribeInput(
+        record=record,
+        source_path=path,
+        source=w._facts(record),
+        set_stage=lambda _stage: None,
+        charge_model_call=lambda: None,
+        put_frame=lambda shot, n, jpeg: f"k/{shot:02d}-{n}.jpg",
+    )
+    with pytest.raises(w.DescribeFailed) as failed:
+        ai.ReelDescriber(api_key="k", client_factory=fake)(job)
+    assert failed.value.retryable is False
+    assert failed.value.error_code == ERROR_MODEL_OUTPUT_CUT
+    assert failed.value.spent is not None and failed.value.spent.cost_usd == Decimal("0.005588")
+    assert len(fake.requests) == 1
+
+
+def test_the_error_codes_are_the_list_of_the_latest_check() -> None:
+    """The worker writes only codes `ck_pra_error_code` accepts: 0152's list, which adds
+    `model_output_cut` to 0119's."""
+    import importlib.util
+
+    from qualify_api.referentes.reel_analysis_types import ERROR_CODES
+
+    path = (
+        Path(__file__).resolve().parents[3]
+        / "migrations/postgres/versions/0152_reel_analysis_output_cut.py"
+    )
+    spec = importlib.util.spec_from_file_location("migration_0152", path)
+    assert spec is not None and spec.loader is not None
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    assert set(migration.ERROR_CODES) == set(ERROR_CODES)
+    assert set(migration.ERROR_CODES_0119) == set(ERROR_CODES) - {ERROR_MODEL_OUTPUT_CUT}
 
 
 def test_a_refusal_fails_at_once_after_one_paid_call_kept_on_the_row(world) -> None:
@@ -1177,7 +1268,7 @@ def test_a_retry_after_frames_were_stored_succeeds_on_a_locked_bucket(world) -> 
     locked = LockedBucket()
     worker.gate = PublicObjectGate(locked)
     record, _ = store.ensure(source(), ANALYSIS_VERSION, NOW)
-    plug(worker, FakeClaude(stop_reason="max_tokens"))  # attempt 1: frames stored, cut answer
+    plug(worker, FakeClaude(tool_name=""))  # attempt 1: frames stored, tool-less answer
     assert w.drain_once(worker).outcome == w.OUTCOME_RETRY
     frames = sorted(k for k in locked.objects if "/frames/" in k)
     assert frames
