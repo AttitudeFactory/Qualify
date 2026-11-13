@@ -47,6 +47,7 @@ from .inbox_list_vm import (
     FILTER_CLOSED,
     FILTER_EXPIRED,
     FILTER_PAYMENT,
+    REFRESH_PAGES,
     as_chat_row,
     channel_chips,
     channel_from_params,
@@ -56,6 +57,7 @@ from .inbox_list_vm import (
     filter_chips,
     filter_from_params,
     list_href,
+    merge_refreshed,
     notice_text,
     remembered_dismissal,
     show_channel_filter,
@@ -474,6 +476,15 @@ def fake(monkeypatch: pytest.MonkeyPatch) -> _Fake:
         return "tenant-a", UUID(int=1)
 
     monkeypatch.setattr(InboxListState, "_session", session)
+    from .responder_state import ResponderState
+
+    fake.responder = ResponderState()
+
+    async def get_state(self: Any, cls: Any) -> Any:
+        assert cls is ResponderState
+        return fake.responder
+
+    monkeypatch.setattr(InboxListState, "get_state", get_state)
     return fake
 
 
@@ -701,12 +712,63 @@ async def test_a_refresh_asked_while_one_runs_runs_again(fake: _Fake) -> None:
     assert state._refresh_again
     fake.rows[0] = dataclasses.replace(fake.rows[0], last_message_text="Ya respondí")
     fake.release.set()
-    events = await tick
+    await tick
     assert state.rows[0].preview == "Ya respondí"  # the second pass read it
     assert not state._refreshing and not state._refresh_again
-    from .responder_state import ResponderState
 
-    assert ResponderState.load_counts in events  # the cards follow, same tick
+
+async def test_the_cards_take_the_chips_figures_with_no_read_of_their_own(fake: _Fake) -> None:
+    """The Instagram and WhatsApp cards and «Mensajes · N» come from the same
+    `inbox_counts` as the chips; comments and «Quieren comprar» stay as the sidebar's
+    poll left them. No attention statement runs on a tick."""
+    from qualify_api.attention import PendingCounts
+
+    fake.responder.apply_counts(PendingCounts(messages=9, buyers=2, comments=1, whatsapp=9))
+    fake.channels_with_chats = ("whatsapp", "dm")
+    state = InboxListState()
+    await _drain(InboxListState.load.fn(state))  # type: ignore[attr-defined]
+    cards = {r.key: r.count for r in fake.responder.rows}
+    assert cards == {"mensajes": 5, "comprar": 2, "comentarios": 1, "whatsapp": 5}
+    assert fake.responder.tabs[0].label == "Mensajes · 10"
+    fake.rows = fake.rows[:3]
+    events = await _drain(InboxListState.refresh.fn(state))  # type: ignore[attr-defined]
+    assert events == []  # no `load_counts` yielded: no second statement
+    assert {r.key: r.count for r in fake.responder.rows}["whatsapp"] == 3
+
+
+async def test_a_tick_reads_at_most_two_pages_after_five_ver_mas(fake: _Fake) -> None:
+    fake.rows = [
+        inbox_row(last_message_at=NOW - timedelta(minutes=i), counterpart_name=f"C{i}")
+        for i in range(14)
+    ]
+    state = InboxListState()
+    await _drain(InboxListState.load.fn(state))  # type: ignore[attr-defined]
+    for _ in range(5):
+        await _drain(InboxListState.load_more.fn(state))  # type: ignore[attr-defined]
+    assert state._pages == 6 and len(state.rows) == 12
+    cursor = state.next_cursor
+    reads = fake.reads
+    # The first chat is answered (leaves «Por responder»); a chat of page 3 is untouched.
+    fake.rows = fake.rows[1:]
+    await _drain(InboxListState.refresh.fn(state))  # type: ignore[attr-defined]
+    assert fake.reads - reads == REFRESH_PAGES == 2
+    titles = [r.title.split(":")[1] for r in state.rows]
+    # No duplicate and no gap at the seam: C1…C4 re-read, C5…C11 kept, C4 not twice.
+    assert titles == [f"C{i}" for i in range(1, 12)]
+    assert len(set(titles)) == len(titles) and state.next_cursor == cursor
+    # A row beyond the window that went stale still opens (its chat exists).
+    assert InboxListState.open_row.fn(state, state.rows[-1].thread_id) is not None  # type: ignore[attr-defined]
+
+
+def test_merge_refreshed_keeps_the_tail_without_duplicates() -> None:
+    def row(i: int) -> ChatRowVM:
+        return build(inbox_row(thread_id=UUID(int=i)))
+
+    head = [row(2), row(3)]  # 1 left the filter, 3 moved up from the tail
+    current = [row(1), row(2), row(3), row(4)]
+    merged = merge_refreshed(head, current, window=2)
+    assert [r.thread_id for r in merged] == [str(UUID(int=i)) for i in (2, 3, 4)]
+    assert merge_refreshed(head, current, window=None) == head
 
 
 async def test_a_failed_load_never_leaves_the_list_spinning(
@@ -832,7 +894,55 @@ def test_the_whatsapp_badge_opens_the_chip_it_counts() -> None:
     from .ui.layout import NAV_HREFS, sidebar
     from .whatsapp_chats_vm import AWAITING_FILTER_SLUGS
 
-    href = NAV_HREFS["/whatsapp"]
-    assert href == "/whatsapp?tab=chats&filtro=por-responder"
-    assert href.rsplit("=", 1)[1] in AWAITING_FILTER_SLUGS
-    assert href in str(sidebar())
+    # Coordinator's decision (2026-11-13): the chip only with a badge; else «Abiertos».
+    href = str(NAV_HREFS["/whatsapp"])
+    assert "pending_state.whatsapp" in href and "> 0" in href
+    assert '"/whatsapp?tab=chats&filtro=por-responder"' in href and ': "/whatsapp")' in href
+    assert "por-responder" in AWAITING_FILTER_SLUGS
+    assert "filtro=por-responder" in str(sidebar())
+
+
+def test_opening_a_waiting_chat_keeps_its_rule_pill() -> None:
+    """Reading a chat does not answer it: the header still says «Por responder»."""
+    from .conversations_vm import EMPTY_THREAD
+
+    conv = ConversationsState()
+    waiting = dataclasses.replace(
+        EMPTY_THREAD,
+        thread_id="t",
+        attention="pending",
+        attention_label="Por responder",
+        attention_tone="warn",
+    )
+    legacy = dataclasses.replace(
+        waiting, thread_id="u", attention_label="Pendiente", attention_tone="warn"
+    )
+    conv.rows = [waiting, legacy]
+    conv._mark_row_read("t")
+    conv._mark_row_read("u")
+    assert (conv.rows[0].attention_label, conv.rows[0].attention) == ("Por responder", "read")
+    assert conv.rows[1].attention_label == "Leída"  # a read that did not compute the rule
+
+
+async def test_a_gone_chat_over_another_open_one_is_only_a_toast(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from qualify_api.conversations.service import ThreadNotFound
+
+    from .test_conversations_provider import CONNECTION, World, _account
+    from .test_conversations_templates_state import _install
+
+    world = _install(monkeypatch, World())
+
+    def gone(*args: Any) -> Any:
+        raise ThreadNotFound("x")
+
+    monkeypatch.setattr(world.gateway, "thread_listing", gone, raising=False)
+    conv = ConversationsState()
+    conv.accounts = [_account(CONNECTION)]
+    conv.selected_connection_id = str(CONNECTION)
+    conv.open_thread_id = str(uuid4())  # another chat is on screen
+    conv._pending_open = str(uuid4())
+    out = await _drain(ConversationsState.open_by_id.fn(conv))  # type: ignore[attr-defined]
+    assert conv.banner == ""
+    assert any("toast" in str(e).lower() for e in out)

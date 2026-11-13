@@ -731,14 +731,26 @@ class ConversationsState(rx.State):
             return {}
 
     def _mark_row_read(self, thread_id: str) -> None:
-        """The optimistic flip of the row: pending → read, before the refresh confirms."""
-        label, tone = attention_pill("read")
-        self.rows = [
-            dataclasses.replace(
-                r, attention="read", attention_label=label, attention_tone=tone, fresh=False
+        """The optimistic flip of the row: pending → read, before the refresh confirms.
+        m-25017859: reading a chat does not answer it, so a pill the «Por responder» rule
+        chose (`header_pill`) stays; only the old read-based «Pendiente» (a read that did
+        not compute the rule) becomes «Leída»."""
+        pending_label, _tone = attention_pill("pending")
+        read_label, read_tone = attention_pill("read")
+
+        def flipped(r: ThreadRowVM) -> ThreadRowVM:
+            if r.attention_label != pending_label:
+                return dataclasses.replace(r, attention="read", fresh=False)
+            return dataclasses.replace(
+                r,
+                attention="read",
+                attention_label=read_label,
+                attention_tone=read_tone,
+                fresh=False,
             )
-            if r.thread_id == thread_id and r.attention == "pending"
-            else r
+
+        self.rows = [
+            flipped(r) if r.thread_id == thread_id and r.attention == "pending" else r
             for r in self.rows
         ]
 
@@ -1021,7 +1033,10 @@ class ConversationsState(rx.State):
             async with self:
                 if self._pending_open == thread_id:
                     self._pending_open = ""
-                    self._set_banner(_THREAD_GONE, "warn")
+                    # Over another open chat the banner would read as about that one:
+                    # then the toast alone says it.
+                    if not self.open_thread_id:
+                        self._set_banner(_THREAD_GONE, "warn")
             yield rx.toast.warning(_THREAD_GONE, duration=_TOAST_MS)
             yield _inbox_list_refresh()
             return

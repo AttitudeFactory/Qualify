@@ -103,6 +103,25 @@ _KEY_TO_SLUG: Final[Mapping[str, str]] = {
 }
 
 PAGE_SIZE: Final = 50
+#: m-25017859 (review): a heartbeat tick re-reads at most this many pages — the first
+#: page plus one more — however far «Ver más» went: one `inbox_counts` + at most two
+#: page statements per 15 s, on a 4 GB server with one Reflex worker.
+REFRESH_PAGES: Final = 2
+
+
+def merge_refreshed(
+    head: Sequence[ChatRowVM], current: Sequence[ChatRowVM], *, window: int | None
+) -> list[ChatRowVM]:
+    """A tick's rows: the re-read `head` (the first pages), then — when the owner had
+    loaded more than the tick re-reads (`window` = how many rows those pages held) —
+    the rows beyond it as they were, minus any that moved into the head. Rows only move
+    UP (newer activity) or leave a filter, so the seam has no duplicate and no gap; a
+    row beyond the window may be stale until the view changes, and still opens."""
+    if window is None:
+        return list(head)
+    seen = {r.thread_id for r in head}
+    return [*head, *[r for r in current[window:] if r.thread_id not in seen]]
+
 
 # --------------------------------------------------------------------------------------
 # Words (qualify-copy-es). Founder-decided: «Por responder», «Todos», «Cerrados»,

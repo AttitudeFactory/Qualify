@@ -45,6 +45,7 @@ from .inbox_list_vm import (
     FILTER_KEYS,
     LIST_FAILED,
     MORE_FAILED,
+    REFRESH_PAGES,
     ChipVM,
     EmptyVM,
     as_chat_rows,
@@ -55,6 +56,7 @@ from .inbox_list_vm import (
     filter_chips,
     filter_from_params,
     list_href,
+    merge_refreshed,
     notice_text,
     remembered_dismissal,
     show_channel_filter,
@@ -97,12 +99,18 @@ def _zone(name: str) -> ZoneInfo:
         return ZoneInfo("UTC")
 
 
-def _responder_counts() -> rx.event.EventHandler:
-    """The «Quién te espera» cards and the tab labels re-read with the list (one tick,
-    no second poll). Imported here: `responder_state` imports this module."""
+async def _feed_cards(state: rx.State, tally: Any) -> None:
+    """The Instagram and WhatsApp cards and «Mensajes · N» take their figures from the
+    list's own `inbox_counts` — the statement the chips read, so they never disagree —
+    with no read of their own (m-25017859). Imported here: `responder_state` imports
+    this module."""
     from .responder_state import ResponderState
 
-    return ResponderState.load_counts
+    by = _Counts({c: dict(v) for c, v in tally.by_channel.items()})
+    (await state.get_state(ResponderState)).merge_counts(
+        messages=count_of(by, FILTER_AWAITING, CHANNEL_INSTAGRAM),
+        whatsapp=count_of(by, FILTER_AWAITING, CHANNEL_WHATSAPP),
+    )
 
 
 @dataclass(frozen=True)
@@ -132,6 +140,8 @@ class InboxListState(rx.State):
     _zone_name: str = ""
     _agents: list[AgentVM] = []
     _pages: int = 0
+    #: How many rows each loaded page holds (the seam of a capped refresh).
+    _page_lens: list[int] = []
     _refreshing: bool = False
     #: A refresh asked while one ran: it runs again right after (the post-reply read).
     _refresh_again: bool = False
@@ -226,6 +236,7 @@ class InboxListState(rx.State):
         self._zone_name = ""
         self._agents = []
         self._pages = 0
+        self._page_lens = []
         self._scroll = []
         self.filter_key = DEFAULT_FILTER
         self.channel = ALL_CHANNELS
@@ -278,6 +289,7 @@ class InboxListState(rx.State):
         self._generation += 1
         self.rows, self.next_cursor, self.loaded, self._scroll = [], "", False, []
         self._pages = 0
+        self._page_lens = []
         self.error = self.more_error = ""
 
     def _relist(self) -> list[rx.event.EventSpec]:
@@ -343,7 +355,9 @@ class InboxListState(rx.State):
                         return
                     filter_key = self.filter_key
                     channel = self._effective_channel(tally)
-                records, cursor = await self._read_pages(tenant_id, filter_key, channel, pages, now)
+                records, cursor, lens = await self._read_pages(
+                    tenant_id, filter_key, channel, pages, now
+                )
             except (*_DB_ERRORS, InvalidCursor) as exc:
                 logger.error("inbox list failed: %s", type(exc).__name__)
                 async with self:
@@ -359,14 +373,15 @@ class InboxListState(rx.State):
                     self.connected = list(ctx.connected)
                     self.context_loaded = True
                 self._apply_counts(tally)
+                await _feed_cards(self, tally)  # the cards and «Mensajes · N», same read
                 self.rows = self._build(records, now)
                 self.next_cursor = cursor
                 self._pages = pages
+                self._page_lens = lens
                 self.loaded = True
                 self._scroll = []
             if scroll:
                 yield rx.call_script(_restore_scroll_js(*scroll[:2]))
-            yield _responder_counts()  # the cards and «Mensajes · N», same tick
         finally:
             async with self:
                 if self._loading_for == generation:
@@ -375,19 +390,22 @@ class InboxListState(rx.State):
 
     async def _read_pages(
         self, tenant_id: UUID, filter_key: str, channel: str, pages: int, now: datetime
-    ) -> tuple[list[Any], str]:
-        """`pages` pages in order, each one round trip; (rows, next cursor token)."""
+    ) -> tuple[list[Any], str, list[int]]:
+        """`pages` pages in order, each one round trip; (rows, next cursor token, how
+        many rows each page held)."""
         records: list[Any] = []
+        lens: list[int] = []
         cursor: str | None = None
         for _ in range(max(1, pages)):
             result = await asyncio.to_thread(
                 page, tenant_id, filter_key=filter_key, channel=channel, cursor=cursor, now=now
             )
             records.extend(result.rows)
+            lens.append(len(result.rows))
             cursor = result.next_cursor.encode() if result.next_cursor else None
             if cursor is None:
                 break
-        return records, cursor or ""
+        return records, cursor or "", lens
 
     def _apply_counts(self, tally: Any) -> None:
         self.counts_by = {c: dict(v) for c, v in tally.by_channel.items()}
@@ -434,16 +452,19 @@ class InboxListState(rx.State):
                 self.rows = [*self.rows, *fresh]
                 self.next_cursor = result.next_cursor.encode() if result.next_cursor else ""
                 self._pages += 1
+                self._page_lens = [*self._page_lens, len(fresh)]
         finally:
             async with self:
                 self.loading_more = False
 
     @rx.event(background=True)
     async def refresh(self) -> Any:
-        """The 15 s heartbeat and the re-read after an action on a chat: counts + every
-        page on screen, replaced in place (never fewer pages than «Ver más» brought).
-        Asked while one runs, it runs again right after (`_refresh_again`), so a read
-        made after a reply always lands. Silent: a failed read keeps what is shown."""
+        """The 15 s heartbeat and the re-read after an action on a chat: the counts and
+        the first `REFRESH_PAGES` pages, merged in place. Rows beyond them keep what they
+        had (a stale one still opens: its chat exists) until the owner changes the view
+        or comes back; the list is never shorter than «Ver más» made it. Asked while one
+        runs, it runs again right after (`_refresh_again`), so a read made after a reply
+        always lands. Silent: a failed read keeps what is shown."""
         async with self:
             if not self.loaded:
                 return
@@ -452,13 +473,13 @@ class InboxListState(rx.State):
                 return
             self._refreshing = True
             self._refresh_again = False
-        landed = False
         try:
             while True:
                 async with self:
                     if not self.loaded or self._loading_for != -1:
                         break  # a load of this view is in flight: it brings fresh data
-                    generation, pages = self._generation, max(1, self._pages)
+                    generation = self._generation
+                    pages = min(REFRESH_PAGES, max(1, self._pages))
                     key, tenant_id = await self._session()
                     filter_key = self.filter_key
                 if tenant_id is None:
@@ -468,7 +489,7 @@ class InboxListState(rx.State):
                     tally = await asyncio.to_thread(counts, tenant_id, now=now)
                     async with self:
                         channel = self._effective_channel(tally)
-                    records, cursor = await self._read_pages(
+                    records, cursor, lens = await self._read_pages(
                         tenant_id, filter_key, channel, pages, now
                     )
                 except (*_DB_ERRORS, InvalidCursor) as exc:
@@ -477,18 +498,27 @@ class InboxListState(rx.State):
                 async with self:
                     current = (
                         generation == self._generation
-                        and pages == max(1, self._pages)
                         and self._loading_for == -1
                         and (await self._session())[0] == key
                     )
                     if current:
                         self._apply_counts(tally)
-                        self.rows = self._build(records, now)
-                        self.next_cursor = cursor
-                        landed = True
-                    # Run again if asked meanwhile, or if «Ver más» added a page.
+                        await _feed_cards(self, tally)  # same read as the chips
+                        beyond = max(1, self._pages) > pages
+                        window = sum(self._page_lens[:pages]) if beyond else None
+                        self.rows = merge_refreshed(
+                            self._build(records, now), self.rows, window=window
+                        )
+                        if beyond:
+                            self._page_lens = [*lens, *self._page_lens[pages:]]
+                        else:
+                            self.next_cursor = cursor  # the whole list was re-read
+                            self._page_lens = lens
+                    # Run again if asked meanwhile, or if «Ver más» added a page inside
+                    # the refreshed window.
                     again = self._refresh_again or (
-                        generation == self._generation and pages != max(1, self._pages)
+                        generation == self._generation
+                        and min(REFRESH_PAGES, max(1, self._pages)) != pages
                     )
                     self._refresh_again = False
                     if not again:
@@ -497,8 +527,7 @@ class InboxListState(rx.State):
         finally:
             async with self:
                 self._refreshing = False
-        if landed:
-            yield _responder_counts()  # the cards and «Mensajes · N», same tick
+        return
 
     # ==================================================================================
     # Opening a chat

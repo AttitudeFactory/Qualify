@@ -180,6 +180,13 @@ class PendingState(rx.State):
                         self.respond = clamp(attention.total)
                         self.whatsapp = clamp(attention.whatsapp)
                         self._attention_at = done_at
+                        # m-25017859: «Por responder»'s cards follow this same poll (the
+                        # comments and «Quieren comprar» figures); no read of their own.
+                        from .responder_state import ResponderState
+
+                        (await self.get_state(ResponderState)).merge_counts(
+                            buyers=clamp(attention.buyers), comments=clamp(attention.comments)
+                        )
                     if publications is not None:
                         self.approve = clamp(publications.approve)
                         self.schedule = clamp(publications.schedule)

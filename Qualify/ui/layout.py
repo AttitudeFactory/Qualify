@@ -154,10 +154,13 @@ NAV_COUNTERS: dict[str, tuple[rx.Var, str, rx.Var]] = {
 NAV_BUSY: dict[str, rx.Var] = {"Crear publicación": GenerationState.busy}
 
 #: m-25017859: where an entry's link lands when it is not the bare route. The WhatsApp
-#: badge counts the «Por responder» rule, so its entry opens the chats on that chip —
-#: the number on the badge is the length of the list it opens (N11). The route stays
-#: the key «you are here» matches on.
-NAV_HREFS: dict[str, str] = {"/whatsapp": WHATSAPP_AWAITING_HREF}
+#: badge counts the «Por responder» rule, so WITH a badge its entry opens the chats on
+#: that chip — the number is the length of the list it opens (N11); without one it opens
+#: the chats on their usual «Abiertos» (coordinator's decision, 2026-11-13, pending the
+#: founder). The route stays the key «you are here» matches on.
+NAV_HREFS: dict[str, rx.Var | str] = {
+    "/whatsapp": rx.cond(PendingState.whatsapp > 0, WHATSAPP_AWAITING_HREF, "/whatsapp"),
+}
 
 
 def busy_icon(icon: rx.Component, busy: rx.Var | bool | None) -> rx.Component:
