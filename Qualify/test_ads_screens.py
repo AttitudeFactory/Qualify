@@ -435,6 +435,34 @@ async def test_refreshing_forms_keeps_the_choices_and_picks_a_ready_form(
     assert context.form.budget == valid_form().budget
 
 
+@pytest.mark.asyncio
+async def test_a_failed_forms_read_keeps_the_chosen_form(monkeypatch: pytest.MonkeyPatch) -> None:
+    from . import promotion_state
+
+    context = FormsContext()
+    context.form = replace(context.form, goal="lead", lead_form_id="chosen")
+    monkeypatch.setattr(
+        promotion_state, "ready_lead_forms", lambda tenant, connection: ([], "No pudimos leer")
+    )
+    await PromotionState.refresh_lead_forms.fn(context)
+    assert context.form.lead_form_id == "chosen" and not context.forms_working
+    assert context.sources[0].lead_forms_error == "No pudimos leer"
+
+
+@pytest.mark.asyncio
+async def test_a_crashed_forms_read_unlocks_the_button(monkeypatch: pytest.MonkeyPatch) -> None:
+    from . import promotion_state
+
+    def boom(tenant: object, connection: object) -> None:
+        raise RuntimeError("down")
+
+    context = FormsContext()
+    monkeypatch.setattr(promotion_state, "ready_lead_forms", boom)
+    with pytest.raises(RuntimeError):
+        await PromotionState.refresh_lead_forms.fn(context)
+    assert not context.forms_working
+
+
 def test_cop_money_is_whole_pesos_everywhere() -> None:
     from decimal import Decimal
 

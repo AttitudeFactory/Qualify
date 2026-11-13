@@ -967,19 +967,27 @@ class PromotionState(rx.State):
             if connection is None:
                 return
             self.forms_working = True
-        with acting_login(UUID(context[1])):
-            forms, problem = await asyncio.to_thread(ready_lead_forms, UUID(context[0]), connection)
+        try:
+            with acting_login(UUID(context[1])):
+                forms, problem = await asyncio.to_thread(
+                    ready_lead_forms, UUID(context[0]), connection
+                )
+        finally:
+            async with self:
+                self.forms_working = False
         async with self:
-            self.forms_working = False
             if context != await self._session() or self.form.source_id != source.id:
                 return
             self.sources = [
-                replace(row, lead_forms=forms, lead_forms_error=problem)
+                # A failed read keeps the forms already shown, so the choice survives.
+                replace(
+                    row, lead_forms=row.lead_forms if problem else forms, lead_forms_error=problem
+                )
                 if row.id == source.id
                 else row
                 for row in self.sources
             ]
-            if not any(row.id == self.form.lead_form_id for row in forms):
+            if not problem and not any(row.id == self.form.lead_form_id for row in forms):
                 self.form = replace(self.form, lead_form_id=forms[0].id if forms else "")
                 self._invalidate_review()
 
