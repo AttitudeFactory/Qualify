@@ -57,6 +57,14 @@ one still output must be exactly `columns × cell` by `ceil(frames / columns) ×
 template meant only for such a caller lists an angle no post has (`"serves_angles":
 ["seasonal_sticker"]`) so the post recipes never pick it.
 
+`sticker` **v2** (m-25017372, product stickers) adds the «caption» mode: an image motion
+(`latido`, `rebote`, `giro`, `brillo`) WITH a `text` draws the art above a 1–2 line message on
+its own die-cut, in the brand's heading face, inked `texts.captionInk` over `texts.captionBacking`
+(both `#RRGGBB`, chosen by contrast in Python — `qualify_creative.seasonal.backing`). The
+geometry (`src/templates/sticker/caption.ts`) keeps every motion inside the 16 px margin and
+above the caption; `server/sticker-caption.test.mjs` checks it frame by frame. v1 is kept
+(`manifest.v1.json`, `sticker-v1--sheet`) and still ignores the text of an image motion.
+
 Optional `render` block (m-25016848, the `seasonal_video` template): `{"concurrency": 1}`
 caps the Chromium tabs of that template's renders (Remotion's `concurrency`), never above
 the service's own `REMOTION_CONCURRENCY` — a 720p video on the 1536 MB container renders on

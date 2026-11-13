@@ -16,6 +16,7 @@ import {PromoReel} from './templates/promo_producto/PromoReel';
 import {PromoStill} from './templates/promo_producto/PromoStill';
 import {FPS, buildScript} from './templates/promo_producto/script';
 import stickerManifest from '../templates/sticker/manifest.json';
+import stickerManifestV1 from '../templates/sticker/manifest.v1.json';
 import {CELL, SHEET, StickerPreview, StickerSheet, type StickerProps} from './templates/sticker/Sticker';
 import seasonalVideoManifest from '../templates/seasonal_video/manifest.json';
 import {
@@ -32,6 +33,9 @@ const stickerDefaults: StickerProps = {
   brand: {name: 'Polette', palette: ['#5A2A27', '#F4C2C2'], fonts: {heading: 'Poppins'}},
   texts: {motion: 'texto', text: '¡Feliz Navidad!'},
 };
+// m-25017372: v2 adds the «caption» mode (product character + message). v1 stays
+// registered from its kept manifest so a render pinned to it keeps working.
+const stickerV2Defaults: StickerProps = {...stickerDefaults, meta: {templateId: 'sticker', version: 2, port: 'sheet'}};
 
 // m-25016848: seasonal short videos (recipe D). Size and length come from the props
 // (calculateMetadata): 720 px wide, as tall as the first photo allows, 4–5 s.
@@ -131,11 +135,18 @@ export const RemotionRoot: React.FC = () => {
       {promoCompositions(promoManifestV1)}
       {promoCompositions(promoManifest)}
       <Still
+        id={stickerManifestV1.outputs.sheet.composition}
+        component={StickerSheet}
+        width={stickerManifestV1.outputs.sheet.width}
+        height={stickerManifestV1.outputs.sheet.height}
+        defaultProps={stickerDefaults}
+      />
+      <Still
         id={stickerManifest.outputs.sheet.composition}
         component={StickerSheet}
         width={stickerManifest.outputs.sheet.width}
         height={stickerManifest.outputs.sheet.height}
-        defaultProps={stickerDefaults}
+        defaultProps={stickerV2Defaults}
       />
       <Composition
         id={seasonalVideoManifest.outputs.clip.composition}
@@ -155,6 +166,15 @@ export const RemotionRoot: React.FC = () => {
         fps={SHEET.fps}
         durationInFrames={SHEET.frames}
         defaultProps={stickerDefaults}
+      />
+      <Composition
+        id="sticker-v2-preview"
+        component={StickerPreview}
+        width={CELL}
+        height={CELL}
+        fps={SHEET.fps}
+        durationInFrames={SHEET.frames}
+        defaultProps={stickerV2Defaults}
       />
     </>
   );
