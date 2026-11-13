@@ -1373,6 +1373,7 @@ class CreativeState(rx.State):
     #: browser got (0-100; 100 = the bytes arrived and the server is preparing it).
     photo_upload_id: str = ""
     photo_upload_percent: int = 0
+    photo_upload_many: bool = False
     #: UI-3 round 15: per category («image», «video», «audio») what its drop zone could
     #: not take — its two halves (the upload's and the browser's: react-dropzone fires
     #: both for one drop, in no fixed order) and what the screen shows of both.
@@ -2344,6 +2345,7 @@ class CreativeState(rx.State):
         the slide itself). One photo per slide; a new one replaces it."""
         index = self._carousel_index()
         if index < 0 or self.carousel_slides[index]["source"] in ("existing", "stock"):
+            self._end_photo_upload()  # m-25017273: never a spinner left behind
             return
         saved = await self._save_uploads(files[:1])
         if saved:
@@ -3622,6 +3624,9 @@ class CreativeState(rx.State):
             # All authentication and data reads below still run for this navigation.
             self.create_loading = not warm_close
             self.create_error = ""
+            # m-25017273: a photo upload the network cut (or a reload) never reached
+            # its handler: the zone must not keep saying «Subiendo…»
+            self._end_photo_upload()
             self.upload_error = ""
         ids = await self._session_ids()
         if ids is None:
@@ -8001,21 +8006,27 @@ class CreativeState(rx.State):
             self.upload_error = ""
             return saved
         finally:
-            self.photo_upload_id = ""
-            self.photo_upload_percent = 0
+            self._end_photo_upload()
+
+    def _end_photo_upload(self) -> None:
+        """m-25017273: the zone stops saying «Subiendo…» (done, refused, or abandoned)."""
+        self.photo_upload_id = ""
+        self.photo_upload_percent = 0
 
     @rx.event
-    def begin_photo_upload(self, upload_id: str) -> None:
+    def begin_photo_upload(self, upload_id: str, many: bool = False) -> None:
         """m-25017273: a photo was picked in `upload_id`'s zone — the zone shows
-        «Subiendo tu foto…» until the upload handler is done (it clears this)."""
+        «Subiendo tu foto…» («tus fotos» when `many`) until the upload handler is done
+        (it clears this)."""
         self.upload_error = ""
         self.photo_upload_id = str(upload_id)[:64]
+        self.photo_upload_many = bool(many)
         self.photo_upload_percent = 0
 
     @rx.var
     def photo_upload_text(self) -> str:
         """«Subiendo tu foto… 45 %», then «Preparando tu foto…» (m-25017273)."""
-        return photo_upload_vm.progress_text(self.photo_upload_percent)
+        return photo_upload_vm.progress_text(self.photo_upload_percent, self.photo_upload_many)
 
     @rx.event
     def photo_upload_progress(self, progress: dict[str, Any]) -> None:
@@ -8035,8 +8046,7 @@ class CreativeState(rx.State):
     def photo_upload_rejected(self, rejected: list[dict[str, Any]]) -> None:
         """What the picker refused before uploading (a type that is not a photo, over
         50 MB, too many): the owner's sentence, nothing sent."""
-        self.photo_upload_id = ""
-        self.photo_upload_percent = 0
+        self._end_photo_upload()
         self.upload_error = photo_upload_vm.rejection_text(rejected)
 
     @rx.event

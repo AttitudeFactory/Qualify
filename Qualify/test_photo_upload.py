@@ -17,7 +17,13 @@ from . import photo_upload_vm as vm
 from . import upload_images
 from .creative_state import CreativeState
 from .picker_tabs import open_upload_picker_script, upload_host_id
-from .upload_images import PHOTO_MAX_BYTES, PHOTO_MAX_SIDE, PhotoUnreadable, normalize_photo
+from .upload_images import (
+    PHOTO_MAX_BYTES,
+    PHOTO_MAX_PIXELS,
+    PHOTO_MAX_SIDE,
+    PhotoUnreadable,
+    normalize_photo,
+)
 
 TENANT = UUID("a0000000-0000-4000-8000-0000000c2573")
 
@@ -148,7 +154,10 @@ def test_browser_rejections_are_said_in_spanish() -> None:
         "«grande.heic» pesa más de 50 MB. Elige una foto más liviana."
     )
     assert vm.rejection_text([gif]) == (
-        "«animada.gif» no es una foto que podamos usar. Sube una foto JPG, PNG, WEBP o del iPhone."
+        "«animada.gif» no es una foto que podamos usar. Elige una foto de tu galería del teléfono."
+    )
+    assert vm.rejection_text([gif, gif]).endswith(
+        "no son fotos que podamos usar. Elige fotos de tu galería del teléfono."
     )
     assert vm.rejection_text([big, big]).startswith("«grande.heic» y «grande.heic» pesan")
     many = {"file": {"path": "a.jpg"}, "errors": [{"code": "too-many-files"}]}
@@ -174,6 +183,12 @@ def test_progress_and_rejection_events(signed_in) -> None:
     assert state.photo_upload_percent == 45
     CreativeState.photo_upload_progress.fn(state, {"progress": 1})
     assert state.photo_upload_text == vm.PREPARING_TEXT
+    CreativeState.begin_photo_upload.fn(state, "creative_products", True)
+    assert state.photo_upload_text == "Subiendo tus fotos…"
+    CreativeState.photo_upload_progress.fn(state, {"progress": 0.2})
+    assert state.photo_upload_text == "Subiendo tus fotos… 20 %"
+    CreativeState.photo_upload_progress.fn(state, {"progress": 1})
+    assert state.photo_upload_text == "Preparando tus fotos…"
     CreativeState.photo_upload_rejected.fn(
         state, [{"file": {"path": "x.gif"}, "errors": [{"code": "file-invalid-type"}]}]
     )
@@ -192,3 +207,73 @@ def test_the_upload_zone_is_mounted_whatever_tab_is_open() -> None:
     rendered = str(_background_upload("Fondo", "Toca para subir"))
     assert "picker-upload-background" in rendered
     assert "data-picker-tab" in rendered
+
+
+def test_a_huge_canvas_is_refused_before_it_is_decoded(monkeypatch) -> None:
+    """A small file can declare a huge canvas: refused from its header, as unreadable."""
+    from PIL import ImageFile
+
+    decoded: list[bool] = []
+    real_load = ImageFile.ImageFile.load
+
+    def spy(self: Any) -> Any:
+        decoded.append(True)
+        return real_load(self)
+
+    side = int(PHOTO_MAX_PIXELS**0.5) + 10
+    huge = _encode(Image.new("L", (side, side)), "PNG")  # a few KB, over 60 M pixels
+    monkeypatch.setattr(ImageFile.ImageFile, "load", spy)
+    with pytest.raises(PhotoUnreadable):
+        normalize_photo(io.BytesIO(huge), "enorme.png")
+    assert decoded == []
+
+
+async def test_a_huge_canvas_says_what_to_do(signed_in, memory_r2, monkeypatch) -> None:
+    monkeypatch.setattr(upload_images, "PHOTO_MAX_PIXELS", 100)
+    small = _encode(Image.new("RGB", (20, 20)), "JPEG")
+    assert await CreativeState._save_uploads(signed_in, [_Upload(small, "grande.jpg")]) == []
+    assert signed_in.upload_error == "No pudimos abrir «grande.jpg». Prueba con otra foto."
+
+
+def test_conversions_run_one_at_a_time(monkeypatch) -> None:
+    import threading
+    import time
+
+    running, peak = 0, 0
+    lock = threading.Lock()
+
+    def slow(fileobj: Any, name: str, max_side: int) -> Any:
+        nonlocal running, peak
+        with lock:
+            running += 1
+            peak = max(peak, running)
+        time.sleep(0.05)
+        with lock:
+            running -= 1
+
+    monkeypatch.setattr(upload_images, "_normalize", slow)
+    threads = [
+        threading.Thread(target=normalize_photo, args=(io.BytesIO(b""), "a.jpg")) for _ in range(4)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert peak == 1
+
+
+async def test_a_slide_that_takes_no_photo_leaves_no_spinner(signed_in) -> None:
+    state = signed_in
+    CreativeState.begin_photo_upload.fn(state, "creative_slide_photo")
+    await CreativeState.handle_slide_photo_upload.fn(state, [_Upload(b"x", "a.jpg")])
+    assert state.photo_upload_id == "" and state.photo_upload_percent == 0
+
+
+def test_the_zone_has_one_live_region_and_errors_are_alerts() -> None:
+    from .content_generator import _upload_error, _upload_zone
+
+    zone = str(_upload_zone("z", "Toca", CreativeState.handle_background_upload, multiple=False))
+    # the spinner's own status sits under aria-hidden: one region speaks, always mounted
+    assert '{"aria-hidden":"true"}' in zone and '"aria-live":"polite"' in zone
+    assert "Si se corta tu conexi" in zone
+    assert 'role:"alert"' in str(_upload_error())

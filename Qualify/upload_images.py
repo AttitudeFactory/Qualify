@@ -15,6 +15,7 @@ is Remotion's. Every function blocks: callers run it in `asyncio.to_thread`.
 from __future__ import annotations
 
 import io
+import threading
 from dataclasses import dataclass
 from pathlib import PurePath
 from typing import IO
@@ -25,6 +26,15 @@ PHOTO_MAX_MB = 50
 PHOTO_MAX_BYTES = PHOTO_MAX_MB * 1024 * 1024
 #: The long side of the stored photo, in pixels.
 PHOTO_MAX_SIDE = 4096
+
+#: The most pixels a photo may have (a 48 MP iPhone photo is ~48 M): a small file can
+#: declare a huge canvas (a 4 MB PNG of 12000×12000 decodes to ~840 MB), so the
+#: header is checked BEFORE any pixel is decoded. Refused as unreadable.
+PHOTO_MAX_PIXELS = 60_000_000
+
+#: One conversion at a time per process: the app shares a 4 GB server, and
+#: `asyncio.to_thread` would otherwise decode several big photos at once.
+_CONVERSIONS = threading.BoundedSemaphore(1)
 
 _HEIF_SUFFIXES = (".heic", ".heif")
 #: The suffixes treated as a photo (and normalized); anything else is stored as it came.
@@ -66,22 +76,38 @@ def normalize_photo(
 ) -> StoredPhoto:
     """`fileobj` (a photo the owner uploaded, read from its current position) as it is
     stored: HEIC/HEIF → JPEG, upright, at most `max_side` px on its long side, without
-    EXIF or XMP. Raises `PhotoUnreadable`."""
+    EXIF, XMP or comments. One at a time (`_CONVERSIONS`). Raises `PhotoUnreadable`."""
+    with _CONVERSIONS:
+        return _normalize(fileobj, name, max_side)
+
+
+def _normalize(fileobj: IO[bytes], name: str, max_side: int) -> StoredPhoto:
     from PIL import Image, ImageOps, UnidentifiedImageError  # noqa: PLC0415
 
     _ensure_heif()
     try:
         with Image.open(fileobj) as source:
-            source.load()
+            width, height = source.size
+            if width * height > PHOTO_MAX_PIXELS:
+                raise PhotoUnreadable(f"{width}x{height} over {PHOTO_MAX_PIXELS} pixels")
             pillow_format = (source.format or "").upper()
             icc = source.info.get("icc_profile")
-            image = ImageOps.exif_transpose(source)
+            if pillow_format == "JPEG":
+                # the decoder drops detail before allocating its buffer (1/2, 1/4, 1/8)
+                source.draft("RGB", (max_side, max_side))
+            source.load()
+            if max(source.size) > max_side:
+                # in place, still inside `with`: never a second full-size copy
+                source.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
+            image = source
+    except PhotoUnreadable:
+        raise
     except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError) as exc:
         raise PhotoUnreadable(f"{type(exc).__name__}") from exc
 
     out_format, suffix = _KEEP_FORMAT.get(pillow_format, ("JPEG", ".jpg"))
-    if max(image.size) > max_side:
-        image.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
+    # turned upright AFTER the downscale: the rotation never copies the full-size pixels
+    ImageOps.exif_transpose(image, in_place=True)
 
     if out_format == "JPEG":
         if image.mode in ("RGBA", "LA", "PA") or (
@@ -94,6 +120,7 @@ def normalize_photo(
             image = flat
         elif image.mode not in ("RGB", "L", "CMYK"):
             image = image.convert("RGB")
+        image.info.pop("comment", None)
         options: dict[str, object] = {"quality": _JPEG_QUALITY, "optimize": True}
     elif out_format == "WEBP":
         options = {"quality": _JPEG_QUALITY}
@@ -101,7 +128,7 @@ def normalize_photo(
         options = {"optimize": True}
     if icc:
         options["icc_profile"] = icc
-    # a fresh `info`-less save: no EXIF, XMP or comments travel to the stored file
+    # nothing from `info` is passed: no EXIF, XMP or comments travel to the stored file
     buffer = io.BytesIO()
     image.save(buffer, format=out_format, **options)
     content_type = {"JPEG": "image/jpeg", "PNG": "image/png", "WEBP": "image/webp"}[out_format]

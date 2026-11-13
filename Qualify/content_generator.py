@@ -69,7 +69,7 @@ from .part_progress_vm import (
     PARTS_KIND_LABEL,
 )
 from .parts_start_view import parts_empty_notice, parts_start_card
-from .photo_upload_vm import PHOTO_ACCEPT
+from .photo_upload_vm import CUT_CONNECTION_HINT, PHOTO_ACCEPT
 from .picker_tabs import upload_host_id
 from .post_card import color_swatches
 from .r2_media import BACKEND_BASE
@@ -2637,25 +2637,36 @@ def _upload_zone(upload_id: str, label: str, handler: object, *, multiple: bool)
     return dropzone(
         rx.cond(
             busy,
-            rx.vstack(
-                loading_spinner("sm"),
-                rx.text(
-                    CreativeState.photo_upload_text,
-                    size="1",
-                    text_align="center",
-                    color=T.TEXT_MUTED,
+            # hidden from screen readers: the live region below already says it
+            rx.box(loading_spinner("sm"), aria_hidden="true"),
+            rx.icon("image-up", size=T.ICON_MD, color=T.TEXT_FAINT),
+        ),
+        # one live region, always mounted: only its words change, so a screen reader
+        # announces «Subiendo…» / «Preparando…» (UX review m-25017273)
+        rx.box(
+            rx.cond(
+                busy,
+                rx.vstack(
+                    rx.text(
+                        CreativeState.photo_upload_text,
+                        size="1",
+                        text_align="center",
+                        color=T.TEXT_MUTED,
+                    ),
+                    rx.text(
+                        CUT_CONNECTION_HINT,
+                        size="1",
+                        text_align="center",
+                        color=T.TEXT_FAINT,
+                    ),
+                    align="center",
+                    spacing="1",
                 ),
-                align="center",
-                spacing="1",
-                role="status",
-                aria_live="polite",
-            ),
-            rx.vstack(
-                rx.icon("image-up", size=T.ICON_MD, color=T.TEXT_FAINT),
                 rx.text(label, size="1", text_align="center", color=T.TEXT_MUTED),
-                align="center",
-                spacing="1",
             ),
+            role="status",
+            aria_live="polite",
+            width="100%",
         ),
         upload_id=upload_id,
         accept=_IMAGE_ACCEPT,
@@ -2663,7 +2674,7 @@ def _upload_zone(upload_id: str, label: str, handler: object, *, multiple: bool)
         max_size=PHOTO_MAX_BYTES,
         multiple=multiple,
         on_drop=[
-            CreativeState.begin_photo_upload(upload_id),
+            CreativeState.begin_photo_upload(upload_id, multiple),
             handler(
                 rx.upload_files(
                     upload_id=upload_id,
@@ -3005,9 +3016,13 @@ def _products_upload(label: str) -> rx.Component:
 
 
 def _upload_error() -> rx.Component:
-    return rx.cond(
-        CreativeState.upload_error != "",
-        rx.text(CreativeState.upload_error, size="1", color=T.tone_color("error", 11)),
+    # always mounted, `role="alert"`: a refusal is announced the moment it appears
+    return rx.box(
+        rx.cond(
+            CreativeState.upload_error != "",
+            rx.text(CreativeState.upload_error, size="1", color=T.tone_color("error", 11)),
+        ),
+        role="alert",
     )
 
 
@@ -3245,7 +3260,7 @@ def _slide_photo() -> rx.Component:
                 rx.box(
                     _upload_zone(
                         "creative_slide_photo",
-                        "Arrastra la foto o haz clic",
+                        "Toca para elegir otra foto o arrástrala aquí",
                         CreativeState.handle_slide_photo_upload,
                         multiple=False,
                     ),

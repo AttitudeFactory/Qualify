@@ -19,8 +19,8 @@ PHOTO_ACCEPT: dict[str, list[str]] = {
 
 TOO_HEAVY_TEXT = f"pesa más de {PHOTO_MAX_MB} MB. Elige una foto más liviana."
 TOO_HEAVY_MANY_TEXT = f"pesan más de {PHOTO_MAX_MB} MB. Elige fotos más livianas."
-WRONG_TYPE_TEXT = "no es una foto que podamos usar. Sube una foto JPG, PNG, WEBP o del iPhone."
-WRONG_TYPE_MANY_TEXT = "no son fotos que podamos usar. Sube fotos JPG, PNG, WEBP o del iPhone."
+WRONG_TYPE_TEXT = "no es una foto que podamos usar. Elige una foto de tu galería del teléfono."
+WRONG_TYPE_MANY_TEXT = "no son fotos que podamos usar. Elige fotos de tu galería del teléfono."
 TOO_MANY_TEXT = "Elegiste más fotos de las que caben aquí. Elige menos y vuelve a intentarlo."
 #: A photo that arrived but cannot be opened (damaged, or another kind of file renamed).
 UNREADABLE_TEXT = "No pudimos abrir «{name}». Prueba con otra foto."
@@ -29,6 +29,10 @@ SERVER_TOO_HEAVY_TEXT = "«{name}» " + TOO_HEAVY_TEXT
 
 UPLOADING_TEXT = "Subiendo tu foto…"
 PREPARING_TEXT = "Preparando tu foto…"
+UPLOADING_MANY_TEXT = "Subiendo tus fotos…"
+PREPARING_MANY_TEXT = "Preparando tus fotos…"
+#: Under the progress line: what to do if the upload never ends (UX review m-25017273).
+CUT_CONNECTION_HINT = "Si se corta tu conexión, vuelve a elegir la foto."
 
 
 def _file_name(row: object) -> str:
@@ -77,10 +81,12 @@ def _names(names: list[str]) -> str:
     return ", ".join(quoted[:-1]) + " y " + quoted[-1]
 
 
-def progress_text(percent: int) -> str:
-    """The line under the spinner: the bytes going up, then the server's own work."""
+def progress_text(percent: int, many: bool = False) -> str:
+    """The line under the spinner: the bytes going up, then the server's own work —
+    «tus fotos» when the zone takes several."""
     if percent >= 100:
-        return PREPARING_TEXT
+        return PREPARING_MANY_TEXT if many else PREPARING_TEXT
+    uploading = UPLOADING_MANY_TEXT if many else UPLOADING_TEXT
     if percent <= 0:
-        return UPLOADING_TEXT
-    return f"Subiendo tu foto… {percent} %"
+        return uploading
+    return f"{uploading} {percent} %"
