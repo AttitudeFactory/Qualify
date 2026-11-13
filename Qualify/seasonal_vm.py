@@ -439,7 +439,14 @@ def _row(
         season_key=str(getattr(row, "season_key", "") or ""),
         season_label=label,
         kind=kind,
-        kind_label=VIDEO_BADGE if video else STICKER_BADGE,
+        # a product sticker says which of the twins it is (both share the message)
+        kind_label=(
+            f"{STICKER_BADGE} {PRODUCT_RECIPES[recipe]}"
+            if message and recipe in PRODUCT_RECIPES
+            else VIDEO_BADGE
+            if video
+            else STICKER_BADGE
+        ),
         is_video=video,
         status=status,
         preparing=status == PENDING,

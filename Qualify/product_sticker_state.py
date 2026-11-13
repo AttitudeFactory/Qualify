@@ -280,8 +280,11 @@ class ProductStickerState(rx.State):
             wanted = self.router.url.query_parameters.get("crear")
         except Exception:  # noqa: BLE001 — no router outside a page
             wanted = None
-        if wanted == CREATE_PARAM_VALUE and not self.flow_open:
+        if wanted == CREATE_PARAM_VALUE and not (self.asking or self.creating):
+            # a reload re-reads everything (never a panel restored with stale drawings)
             return ProductStickerState.open_flow
+        if self.flow_open and not (self.asking or self.creating):
+            self.flow_open = False  # left open by an earlier visit of this tab
         return None
 
     @rx.event(background=True)

@@ -74,6 +74,7 @@ P = ProductStickerState
 _TAP = "44px"
 _OWN_ID = "product-sticker-own"
 _OWN_COUNT_ID = "product-sticker-own-count"
+_OWN_ERROR_ID = "product-sticker-own-error"
 _SEARCH_ID = "product-sticker-search"
 
 
@@ -375,7 +376,8 @@ def _step_drawing() -> rx.Component:
                     role="radiogroup",
                     aria_label="Tus dibujos de " + P.product_name,
                 ),
-                rx.text(NO_DRAWING_YET, size="2"),
+                # «Toca Crear dibujo» only when there is a button to touch
+                rx.cond(P.cost_can_pay, rx.text(NO_DRAWING_YET, size="2")),
             ),
         ),
         rx.cond(P.any_drawing_pending, rx.text(DRAWING_WAIT, size="1", color=T.TEXT_MUTED)),
@@ -454,7 +456,15 @@ def _step_message() -> rx.Component:
                     placeholder=OWN_MESSAGE_HINT,
                     size="3",
                     width="100%",
-                    custom_attrs={"aria-describedby": _OWN_COUNT_ID},
+                    custom_attrs={"aria-describedby": _OWN_COUNT_ID + " " + _OWN_ERROR_ID},
+                ),
+                # why «Siguiente» is off, said where the owner looks (text, not only colour)
+                rx.text(
+                    P.own_error,
+                    id=_OWN_ERROR_ID,
+                    size="1",
+                    color=T.tone_color("warn", 11),
+                    aria_live="polite",
                 ),
                 spacing="1",
                 width="100%",

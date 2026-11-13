@@ -435,6 +435,7 @@ def test_library_shows_the_message_and_a_free_redo() -> None:
     season = build_season("productos", "De tus productos", False, [_media("ready")])
     item = season.pending_pieces[0]
     assert item.caption == "En camino" and item.another_label == "Hacer de nuevo"
+    assert item.kind_label == "Sticker con movimiento"
     assert item.alt == "Sticker con movimiento que dice «En camino»" and not item.paid
     other = build_season("navidad-2026", "Navidad 2026", False, [_media("ready", "navidad")])
     assert other.pieces[0].caption == "" and other.pieces[0].another_label == "Pedir otro"
@@ -549,3 +550,19 @@ async def test_an_answer_for_an_older_open_is_dropped(gw: FakeGateway) -> None:
     old_gen = state._gen
     state._gen += 1  # the panel was opened again meanwhile
     assert await state._read_drawings(old_gen) is False and state.drawings == []
+
+
+async def test_a_reload_never_restores_a_stale_panel(
+    gw: FakeGateway, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = ProductStickerState()
+    await _open(state)
+    query: dict[str, str] = {}
+    monkeypatch.setattr(
+        ProductStickerState,
+        "router",
+        property(lambda self: SimpleNamespace(url=SimpleNamespace(query_parameters=query))),
+    )
+    assert state.open_from_query() is None and not state.flow_open
+    query["crear"] = "producto"
+    assert state.open_from_query() is not None
