@@ -35,9 +35,12 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, tzinfo
 from decimal import Decimal
 from typing import Any, Protocol
+from urllib.parse import urlencode
 
 from .ad_message_vm import ad_origin_href, ad_origin_label
+from .catalog_vm import CHATS_RETURN_PATH, RETURN_PARAM
 from .planner_vm import time_label_12h
+from .seasonal_vm import CREATE_HREF as SEASONAL_LIBRARY_CREATE_HREF
 
 # ======================================================================================
 # Copy and limits
@@ -1698,13 +1701,17 @@ SEASONAL_PENDING_ACTION = "Revisarlos en Por aprobar"
 SEASONAL_PENDING_HREF = "/drafts?ver=stickers"
 SEASONAL_EMPTY_TITLE = "Aún no tienes stickers ni videos"
 SEASONAL_EMPTY_TEXT = (
-    "Los creamos con tu logo y tus colores. Tardan unos minutos: mientras, sigue "
-    "respondiendo con texto."
+    "Los creamos con tu logo y tus colores en Tu marca. Tardan unos minutos: cuando los "
+    "apruebes, aparecen aquí para mandarlos."
 )
 SEASONAL_CREATE_ACTION = "Crear para esta temporada"
-#: WhatsApp › Chats › Stickers y videos, with «Crear para esta temporada» open
-#: (`SeasonalState.open_from_query`).
-SEASONAL_CREATE_HREF = "/whatsapp?tab=chats&sub=stickers&crear=temporada"
+#: Tu marca › «Stickers y videos de tu marca», with «Crear para esta temporada» open
+#: (`SeasonalState.open_from_query`). m-25017173: WhatsApp › Chats no longer has a
+#: stickers sub-tab; the library lives in Tu marca. `?volver=` gives the owner Tu marca's
+#: way back («Volver a tus chats»), read there through `catalog_vm.safe_return_path`.
+SEASONAL_CREATE_HREF = (
+    f"{SEASONAL_LIBRARY_CREATE_HREF}&{urlencode({RETURN_PARAM: CHATS_RETURN_PATH})}"
+)
 
 
 def seasonal_pending_title(count: int) -> str:

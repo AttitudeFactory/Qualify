@@ -28,10 +28,10 @@ What the page says that the service decides elsewhere:
   channel** the reply goes out (`reply_as`); four icon tools — a photo or video, a PDF,
   a voice note, a ❤️ — can go with (or instead of) the text; a long text says in how many
   messages it goes out; «Sugerir respuesta» (E4) fills the box with a model's draft the
-  person edits or discards — nothing is sent without pressing «Responder»;
+  person edits or discards — nothing is sent without pressing «Enviar»;
 - **«Plantillas»** (m-24789472) opens the account's saved messages: picking one fills the
   box with its text for this person (`{nombre}`, `{marca}`), a line says what is still to
-  complete («[precio]»), and it leaves only through «Responder». «Administrar plantillas»
+  complete («[precio]»), and it leaves only through «Enviar». «Administrar plantillas»
   opens a drawer to create, edit, delete (confirmed in place) and reorder them;
 - **«Respuestas rápidas»** (m-24789472) adds up to 13 short options under the message
   being written, sent with it once approved; a template **with buttons** shows them
@@ -81,6 +81,7 @@ from .conversations_vm import (
     MESSAGES_PAGE,
     QUICK_REPLIES_HINT,
     QUICK_REPLIES_WITH_BUTTONS,
+    SEND_LABEL,
     TAP_ICON,
     TEMPLATE_HELP,
     AccountVM,
@@ -1298,7 +1299,7 @@ def _templates_picker() -> rx.Component:
 
 def _template_fill_notice() -> rx.Component:
     """What a picked template still asks the person to complete. Gentle: it never
-    blocks «Responder», and it goes away as the person fills each spot."""
+    blocks «Enviar», and it goes away as the person fills each spot."""
     return rx.cond(
         S.template_fill_notice != "",
         callout(S.template_fill_notice, "info", icon="pencil-line"),
@@ -1704,7 +1705,7 @@ def _button_chip(b: ButtonVM) -> rx.Component:
 def _applied_buttons() -> rx.Component:
     """The picked template's buttons, read-only under the box. While messages with
     buttons cannot be sent yet, a warning says the text goes out alone — before the
-    person presses «Responder», never after."""
+    person presses «Enviar», never after."""
     drop = rx.button(
         "Enviar sin botones",
         on_click=S.drop_applied_buttons,
@@ -1952,7 +1953,7 @@ def _composer() -> rx.Component:
             ),
             rx.button(
                 rx.icon("send", size=T.ICON_SM),
-                "Responder",
+                SEND_LABEL,
                 on_click=S.send_reply,
                 loading=S.sending,
                 disabled=~S.can_send,

@@ -32,6 +32,7 @@ from .brand_avatar_panel import brand_avatar_card
 from .catalog_vm import (
     IDEAS_RETURN_LABEL,
     REFERENTES_SECTION,
+    RETURN_LABEL,
     return_label_for,
     return_path_from_query,
 )
@@ -826,12 +827,13 @@ def _return_banner() -> rx.Component:
     """m-24820842: sent here from another screen — the section to fill and the way back.
     Back to the reels ideas (R7) it is only «‹ Ideas de videos»: nothing there waits for
     a save, so the publication's reminder would be wrong."""
-    to_ideas = _to_ideas()
+    # Only a publication waits for the save; the ideas and the chats (m-25017173) do not.
+    to_publication = BrandEditState.return_label == RETURN_LABEL
     return rx.cond(
         BrandEditState.return_to != "",
         rx.vstack(
             rx.cond(
-                ~to_ideas,
+                to_publication,
                 callout(
                     "Cuando guardes tus cambios, vuelve para seguir con tu publicación.", "info"
                 ),

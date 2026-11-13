@@ -26,7 +26,6 @@ from . import whatsapp_page, whatsapp_tab_chats, whatsapp_tab_menu
 from .connections_vm import WHATSAPP_RECONNECT_HINT
 from .ui.layout import NAV_ITEMS, NAV_ZONES
 from .whatsapp_vm import (
-    CHATS_SUBS,
     DEFAULT_TAB,
     EMPTY_NUMBER,
     EMPTY_PROFILE,
@@ -40,6 +39,7 @@ from .whatsapp_vm import (
     QR_CHANNELS,
     REVIEW_ACTION,
     SECTIONS,
+    SUBTABS,
     TAB_ACTIVITY,
     TAB_CAMPAIGNS,
     TAB_CHATS,
@@ -50,7 +50,6 @@ from .whatsapp_vm import (
     TAB_PAYMENTS,
     TAB_PROFILE,
     TAB_QR,
-    TAB_STICKERS,
     TAB_TEMPLATES,
     VERTICAL_KEYS,
     BusinessProfileVM,
@@ -325,12 +324,11 @@ def test_four_tabs_named_as_tasks() -> None:
         "Códigos QR",
         "Actividad",
     ]
-    # m-24986801 §4 (D3): the brand's stickers and videos, inside «Chats».
-    assert CHATS_SUBS == (("chats", "Tus chats"), ("stickers", "Stickers y videos"))
+    # m-25017173: «Chats» is one panel, no sub-tabs (the stickers sub-tab is gone).
+    assert [panel for panel, _slug, _label in SUBTABS["chats"]] == [TAB_CHATS]
     # Every panel the body renders sits under exactly one top tab.
     assert TAB_KEYS == {
         TAB_CHATS,
-        TAB_STICKERS,
         TAB_MENU,
         TAB_CAMPAIGNS,
         TAB_TEMPLATES,
@@ -624,26 +622,28 @@ def test_the_connect_request_is_a_ticket_the_support_service_accepts() -> None:
     assert topic == "connect_accounts" and context == {"screen": "whatsapp"}
 
 
-# --- m-24986801 §4: Chats › Stickers y videos ------------------------------------------
+# --- m-25017173: «Chats» without sub-tabs ---------------------------------------------
 
 
-def test_stickers_sub_tab_address_and_chats_untouched() -> None:
-    assert resolve_panel("chats", "stickers") == TAB_STICKERS
-    assert tab_url(TAB_STICKERS) == "/whatsapp?tab=chats&sub=stickers"
-    assert panel_section(TAB_STICKERS) == "chats"
-    # `?tab=chats` with no `sub` (every chat link) still opens the chats, and its address
-    # carries no `sub`.
+def test_chats_has_no_sub_tabs_and_old_sticker_links_open_the_chats() -> None:
+    # A bookmarked `?tab=chats&sub=stickers` (m-24986801 §4) or any junk `sub` opens
+    # the chats, never an error; the chats' address carries no `sub`.
+    assert resolve_panel("chats", "stickers") == TAB_CHATS
     assert resolve_panel("chats", "") == TAB_CHATS
     assert resolve_panel("chats", "junk") == TAB_CHATS
     assert tab_url(TAB_CHATS) == "/whatsapp?tab=chats"
-    # The strip's «Chats» control answers to the panel key.
-    assert sub_panel("chats", "chats") == TAB_CHATS
+    assert panel_section(TAB_CHATS) == "chats" and panel_sub(TAB_CHATS) == ""
+    assert sub_panel("chats", "stickers") == ""
+    assert "stickers" not in TAB_KEYS
+    assert resolve_tab("stickers") == TAB_CHATS
 
 
-def test_the_stickers_sub_tab_mounts_tu_marca_s_library() -> None:
-    from .whatsapp_page import stickers_tab, sub_strip, tab_body
+def test_the_chats_section_draws_no_second_strip() -> None:
+    from .whatsapp_page import sub_strip, tab_body
 
-    rendered = str(stickers_tab().render())
-    assert "Stickers y videos de tu marca" in rendered or "Stickers y videos" in rendered
-    assert "Stickers y videos" in str(sub_strip().render())
-    assert "stickers" in str(tab_body().render())
+    strip = str(sub_strip().render())
+    assert "Stickers y videos" not in strip and "Tus chats" not in strip
+    # Promociones and Tu número keep their strips.
+    assert "Mensajes aprobados" in strip and "Formas de pago" in strip
+    body = str(tab_body().render())
+    assert "Stickers y videos de tu marca" not in body
