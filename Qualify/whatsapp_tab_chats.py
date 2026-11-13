@@ -31,6 +31,8 @@ from __future__ import annotations
 
 import reflex as rx
 
+from .chat_row import chat_row
+from .chat_row_vm import ChatRowVM
 from .r2_media import BACKEND_BASE
 from .ui import (
     OrbitItem,
@@ -177,7 +179,6 @@ from .whatsapp_chats_vm import (
     SeasonalPickVM,
     TemplateChoiceVM,
     TemplateFieldVM,
-    ThreadRowVM,
 )
 from .whatsapp_state import WhatsAppState
 from .whatsapp_vm import TAB_QR
@@ -221,89 +222,18 @@ def _heartbeat() -> rx.Component:
     return rx.moment(interval=_REFRESH_MS, on_change=lambda _tick: S.refresh, display="none")
 
 
-def _agent_chip(initials: rx.Var[str], name: rx.Var[str]) -> rx.Component:
-    return rx.cond(
-        initials != "",
-        rx.tooltip(tag(initials), content=rx.cond(name != "", name, "Asignado")),
-        rx.fragment(),
-    )
-
-
 # ======================================================================================
 # Thread list
 # ======================================================================================
 
 
-def _thread_row(row: ThreadRowVM) -> rx.Component:
-    return rx.box(
-        rx.vstack(
-            rx.hstack(
-                rx.text(
-                    row.title,
-                    size="2",
-                    weight=rx.cond(row.has_unread, "bold", "medium"),
-                    trim="both",
-                    class_name="q-wa-ellipsis",
-                    flex="1",
-                    min_width="0",
-                ),
-                rx.text(row.time_label, size="1", color=T.TEXT_MUTED, white_space="nowrap"),
-                rx.cond(
-                    row.has_unread,
-                    rx.badge(
-                        row.unread_label,
-                        variant="soft",
-                        radius="full",
-                        size="1",
-                        class_name="q-nums",
-                        aria_label="Mensajes sin leer",
-                    ),
-                    rx.fragment(),
-                ),
-                width="100%",
-                align="center",
-                spacing="2",
-            ),
-            rx.text(
-                row.preview,
-                size="2",
-                color=rx.cond(row.has_unread, T.TEXT_STRONG, T.TEXT_MUTED),
-                class_name="q-wa-ellipsis",
-                width="100%",
-            ),
-            rx.hstack(
-                # m-24955648: the payment pill FIRST — «Pago por revisar» (warn) asks for
-                # attention, and at 375 px a third pill drops to a second line
-                rx.cond(
-                    row.payment_label != "",
-                    _tone_pill(row.payment_label, row.payment_tone),
-                    rx.fragment(),
-                ),
-                _tone_pill(row.window_label, row.window_tone),
-                _tone_pill(row.mode_label, row.mode_tone),
-                rx.cond(row.is_closed, tag("Cerrado"), rx.fragment()),
-                rx.spacer(),
-                _agent_chip(row.agent_initials, row.agent_name),
-                width="100%",
-                align="center",
-                spacing="1",
-                flex_wrap="wrap",
-            ),
-            spacing="1",
-            width="100%",
-        ),
-        on_click=S.open_conversation(row.thread_id),
-        class_name=rx.cond(
-            row.thread_id == S.open_thread_id,
-            "q-card q-lift q-wa-row q-wa-row--active",
-            "q-card q-lift q-wa-row",
-        ),
-        role="button",
-        tab_index=0,
-        aria_label=row.title,
-        cursor="pointer",
-        padding="0.75rem 0.9rem",
-        width="100%",
+def _thread_row(row: ChatRowVM) -> rx.Component:
+    """m-25017844: the row Conversaciones draws too (`chat_row`), fed by this channel's
+    adapter (`whatsapp_chats_vm.as_chat_row`, via `S.visible_chat_rows`)."""
+    return chat_row(
+        row,
+        is_open=row.thread_id == S.open_thread_id,
+        on_open=S.open_conversation(row.thread_id),
     )
 
 
@@ -385,7 +315,7 @@ def _list_body() -> rx.Component:
                 rx.cond(
                     S.visible_rows.length() > 0,
                     rx.vstack(
-                        rx.foreach(S.visible_rows, _thread_row),
+                        rx.foreach(S.visible_chat_rows, _thread_row),
                         spacing="2",
                         width="100%",
                         class_name="q-wa-scroll q-wa-scroll--list",

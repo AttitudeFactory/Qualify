@@ -53,6 +53,8 @@ from __future__ import annotations
 
 import reflex as rx
 
+from .chat_row import chat_row, instagram_glyph
+from .chat_row_vm import ChatRowVM
 from .conversations_state import ConversationsState
 from .conversations_vm import (
     BUTTON_KINDS,
@@ -165,26 +167,6 @@ def _retry_button(label: str, on_click: rx.event.EventHandler) -> rx.Component:
     )
 
 
-def _instagram_glyph() -> rx.Component:
-    """Instagram's mark, inline (Lucide carries no brand icons): a rounded square, the
-    lens and the flash dot, in the current colour."""
-    return rx.el.svg(
-        rx.el.svg.rect(x="2", y="2", width="20", height="20", rx="5", ry="5"),
-        rx.el.svg.circle(cx="12", cy="12", r="4"),
-        rx.el.svg.circle(cx="17.5", cy="6.5", r="1.2", fill="currentColor"),
-        view_box="0 0 24 24",
-        width="10",
-        height="10",
-        fill="none",
-        stroke="currentColor",
-        stroke_width="2.2",
-        stroke_linecap="round",
-        stroke_linejoin="round",
-        color="white",
-        aria_hidden="true",
-    )
-
-
 def _avatar(row: ThreadRowVM, size: str = "md") -> rx.Component:
     """The counterpart's mark: their Instagram picture when the sync fetched one, else
     initials over a hue the stylesheet turns into the kit's gradient (`--q-conv-hue` is a
@@ -200,7 +182,7 @@ def _avatar(row: ThreadRowVM, size: str = "md") -> rx.Component:
             custom_attrs={"referrerpolicy": "no-referrer"},
         ),
         rx.box(
-            _instagram_glyph(),
+            instagram_glyph(color="white"),
             class_name="q-conv-channel",
             aria_label="Instagram",
         ),
@@ -333,103 +315,13 @@ def access_banner() -> rx.Component:
 # ======================================================================================
 
 
-def _thread_row(row: ThreadRowVM) -> rx.Component:
-    is_open = row.thread_id == S.open_thread_id
-    return rx.box(
-        rx.hstack(
-            rx.box(
-                _avatar(row),
-                rx.cond(
-                    row.attention == "pending",
-                    rx.box(class_name="q-conv-unread", aria_label="Sin responder"),
-                    rx.fragment(),
-                ),
-                position="relative",
-                flex_shrink="0",
-            ),
-            rx.vstack(
-                rx.hstack(
-                    rx.text(
-                        row.title,
-                        size="3",
-                        weight=rx.cond(row.attention == "pending", "bold", "medium"),
-                        class_name="q-wa-ellipsis",
-                        flex="1",
-                        min_width="0",
-                    ),
-                    rx.text(
-                        row.time_label,
-                        size="1",
-                        color=T.TEXT_MUTED,
-                        white_space="nowrap",
-                        class_name="q-nums",
-                    ),
-                    width="100%",
-                    align="center",
-                    spacing="2",
-                ),
-                rx.cond(
-                    row.handle != "",
-                    rx.text(row.handle, size="1", color=T.TEXT_MUTED, class_name="q-wa-ellipsis"),
-                    rx.fragment(),
-                ),
-                rx.hstack(
-                    rx.cond(
-                        row.preview_icon != "",
-                        rx.icon(row.preview_icon, size=T.ICON_SM, color=T.TEXT_MUTED),
-                        rx.fragment(),
-                    ),
-                    rx.text(
-                        row.preview,
-                        size="2",
-                        color=rx.cond(row.attention == "pending", T.TEXT_STRONG, T.TEXT_MUTED),
-                        class_name="q-wa-ellipsis",
-                        flex="1",
-                        min_width="0",
-                    ),
-                    width="100%",
-                    align="center",
-                    spacing="1",
-                ),
-                rx.hstack(
-                    _tone_pill(row.attention_label, row.attention_tone),
-                    rx.cond(
-                        row.window_short != "",
-                        _tone_pill(row.window_short, row.window_tone),
-                        rx.fragment(),
-                    ),
-                    width="100%",
-                    align="center",
-                    spacing="1",
-                    flex_wrap="wrap",
-                ),
-                spacing="1",
-                width="100%",
-                min_width="0",
-            ),
-            spacing="3",
-            align="start",
-            width="100%",
-        ),
-        on_click=S.open_conversation(row.thread_id),
-        class_name=rx.cond(
-            is_open,
-            rx.cond(
-                row.fresh,
-                "q-card q-lift q-wa-row q-conv-row q-wa-row--active q-conv-row--fresh",
-                "q-card q-lift q-wa-row q-conv-row q-wa-row--active",
-            ),
-            rx.cond(
-                row.fresh,
-                "q-card q-lift q-wa-row q-conv-row q-conv-row--fresh",
-                "q-card q-lift q-wa-row q-conv-row",
-            ),
-        ),
-        role="button",
-        tab_index=0,
-        aria_label=row.title,
-        cursor="pointer",
-        width="100%",
+def _thread_row(row: ChatRowVM) -> rx.Component:
+    """m-25017844: the row WhatsApp → Chats draws too (`chat_row`), fed by this channel's
+    adapter (`conversations_vm.as_chat_row`, via `S.visible_chat_rows`)."""
+    return chat_row(
+        row,
+        is_open=row.thread_id == S.open_thread_id,
+        on_open=S.open_conversation(row.thread_id),
     )
 
 
@@ -550,7 +442,7 @@ def _list_body() -> rx.Component:
                             _all_clear_card(),
                         ),
                         rx.vstack(
-                            rx.foreach(S.visible_rows, _thread_row),
+                            rx.foreach(S.visible_chat_rows, _thread_row),
                             spacing="2",
                             width="100%",
                             class_name="q-wa-scroll q-wa-scroll--list q-conv-list",

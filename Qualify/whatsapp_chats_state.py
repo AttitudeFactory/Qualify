@@ -78,6 +78,7 @@ from qualify_api.whatsapp.template_reply import (
 from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState
+from .chat_row_vm import ChatRowVM
 from .nav_url import (
     back_url_script,
     close_flow_script,
@@ -190,6 +191,7 @@ from .whatsapp_chats_vm import (
     TemplateFieldVM,
     ThreadRowVM,
     UnsentItem,
+    as_chat_row,
     build_conversation,
     build_menu_preview,
     build_offer,
@@ -600,6 +602,11 @@ class WhatsAppChatsState(rx.State):
     @rx.var
     def visible_rows(self) -> list[ThreadRowVM]:
         return filter_threads(self.rows, self.filter_key)
+
+    @rx.var
+    def visible_chat_rows(self) -> list[ChatRowVM]:
+        """m-25017844: the visible rows in the shape every channel's list draws."""
+        return [as_chat_row(r) for r in filter_threads(self.rows, self.filter_key)]
 
     @rx.var
     def filter_open_label(self) -> str:
@@ -2134,7 +2141,11 @@ class WhatsAppChatsState(rx.State):
     def _mark_window_closed(self, thread_id: str) -> None:
         self.rows = [
             dataclasses.replace(
-                r, window_open=False, window_label=WINDOW_CLOSED_PILL, window_tone="neutral"
+                r,
+                window_open=False,
+                window_label=WINDOW_CLOSED_PILL,
+                window_tone="neutral",
+                window_minutes=0,
             )
             if r.thread_id == thread_id
             else r

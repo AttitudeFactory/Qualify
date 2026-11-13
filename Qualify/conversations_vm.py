@@ -54,6 +54,13 @@ from typing import Any, Final, Protocol
 from qualify_api.conversations.choices import choice_label as tap_origin
 
 from .ad_message_vm import ad_origin_href, ad_origin_label
+from .chat_row_vm import (
+    CHANNEL_INSTAGRAM,
+    ChatRowVM,
+    build_chat_row,
+    minutes_left,
+    unknown_contact,
+)
 from .connection_copy import DISCONNECTED, DISCONNECTED_NOTICE, NO_ACCESS, PERMISSION_MISSING_NOTICE
 from .whatsapp_chats_vm import format_day, message_time, relative_time
 
@@ -637,7 +644,7 @@ def window_words(
 @dataclass(frozen=True)
 class ThreadRowVM:
     thread_id: str
-    title: str  # the person's name, else their handle, else «Persona ·id»
+    title: str  # the person's name, else their @handle, else «Cliente de Instagram»
     handle: str  # «@username» or "" (never equal to the title)
     subtitle: str  # «@account · Instagram Direct»
     preview: str
@@ -656,6 +663,9 @@ class ThreadRowVM:
     avatar_url: str = ""
     # Set for ONE render after a refresh found a newer inbound: the row pulses.
     fresh: bool = False
+    # m-25017844: minutes until the window closes when under an hour, else 0 — the
+    # shared row's «Responde en N min».
+    window_minutes: int = 0
 
 
 EMPTY_THREAD = ThreadRowVM(
@@ -771,6 +781,28 @@ def build_thread_row(
         hue=avatar_hue(thread.counterpart_external_id),
         avatar_url=avatar_url,
         fresh=fresh,
+        window_minutes=minutes_left(view.window.is_open, view.window.closes_at, now),
+    )
+
+
+def as_chat_row(row: ThreadRowVM) -> ChatRowVM:
+    """m-25017844: this channel's row in the shared shape (`chat_row_vm`). «Pendiente»
+    becomes the waiting dot (and the bold name); «Leída» / «Respondida» leave the row
+    (the filters say them); the window joins the one pill only when it is about to
+    close. Instagram has no payment step, so «Pago por revisar» never shows here."""
+    return build_chat_row(
+        thread_id=row.thread_id,
+        channel=CHANNEL_INSTAGRAM,
+        title=row.title,
+        second_line=row.handle,
+        preview=row.preview,
+        preview_icon=row.preview_icon,
+        time_label=row.time_label,
+        waiting=row.attention == "pending",
+        initials=row.initials,
+        reply_within_minutes=row.window_minutes,
+        avatar_url=row.avatar_url,
+        fresh=row.fresh,
     )
 
 
@@ -885,7 +917,8 @@ SEND_LABEL: Final = "Enviar"
 #: The Lucide icon next to a tapped message's origin (bubble and list preview).
 TAP_ICON: Final = "pointer"
 # m-24842988: who the title shows when Instagram gave neither a name nor a handle.
-UNKNOWN_PERSON: Final = "Persona sin nombre"
+# m-25017852: «Cliente de Instagram» (was «Persona sin nombre») — says where they wrote.
+UNKNOWN_PERSON: Final = unknown_contact(CHANNEL_INSTAGRAM)
 
 
 def reply_sent_message(who: str) -> str:

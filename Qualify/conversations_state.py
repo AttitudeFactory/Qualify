@@ -97,6 +97,7 @@ from qualify_api.conversations.templates import (
 from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState
+from .chat_row_vm import ChatRowVM
 from .conversations_provider import gateway
 from .conversations_vm import (
     BUTTON_LINK,
@@ -137,6 +138,7 @@ from .conversations_vm import (
     ThreadRowVM,
     UnsentItem,
     add_quick_reply,
+    as_chat_row,
     attention_pill,
     build_access_vm,
     build_button_vms,
@@ -396,6 +398,11 @@ class ConversationsState(rx.State):
     @rx.var
     def visible_rows(self) -> list[ThreadRowVM]:
         return filter_threads(self.rows, self.filter_key)
+
+    @rx.var
+    def visible_chat_rows(self) -> list[ChatRowVM]:
+        """m-25017844: the visible rows in the shape every channel's list draws."""
+        return [as_chat_row(r) for r in filter_threads(self.rows, self.filter_key)]
 
     @rx.var
     def filter_all_label(self) -> str:

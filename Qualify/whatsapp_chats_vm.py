@@ -39,6 +39,7 @@ from urllib.parse import urlencode
 
 from .ad_message_vm import ad_origin_href, ad_origin_label
 from .catalog_vm import CHATS_RETURN_PATH, RETURN_PARAM
+from .chat_row_vm import CHANNEL_WHATSAPP, ChatRowVM, build_chat_row, minutes_left
 from .planner_vm import time_label_12h
 from .seasonal_vm import CREATE_HREF as SEASONAL_LIBRARY_CREATE_HREF
 from .seasonal_vm import PRODUCT_RECIPES, PRODUCT_SEASON_KEY, product_message
@@ -421,6 +422,9 @@ class ThreadRowVM:
     payment_tone: str = "neutral"
     #: «Pago por revisar»: the filter's own test (the pill's text is for people).
     payment_review: bool = False
+    #: m-25017844: minutes until the window closes when under an hour, else 0 — the
+    #: shared row's «Responde en N min».
+    window_minutes: int = 0
 
 
 EMPTY_THREAD = ThreadRowVM(
@@ -486,6 +490,31 @@ def build_thread_row(
         agent_initials=agent.initials if agent else "",
         status=thread.status,
         is_closed=thread.status == "closed",
+        window_minutes=minutes_left(thread.window.open, thread.window.closes_at, now),
+    )
+
+
+def as_chat_row(row: ThreadRowVM) -> ChatRowVM:
+    """m-25017844: this channel's row in the shared shape (`chat_row_vm`). The unread
+    count becomes the waiting dot; «Responde el menú» / «Respondes tú» and «Cerrado»
+    leave the row (the chat and the filter say them); the payment to check and the
+    window about to close fold into the one pill. The phone is the second line when
+    the person has a name; without one, the avatar shows the number's last digit."""
+    named = row.subtitle != ""
+    tail = row.title.strip()[-1:]
+    return build_chat_row(
+        thread_id=row.thread_id,
+        channel=CHANNEL_WHATSAPP,
+        title=row.title,
+        second_line=row.subtitle,
+        preview=row.preview,
+        time_label=row.time_label,
+        waiting=row.has_unread,
+        initials=initials(row.title) if named else tail,
+        payment_review=row.payment_review,
+        reply_within_minutes=row.window_minutes,
+        agent_initials=row.agent_initials,
+        agent_name=row.agent_name,
     )
 
 

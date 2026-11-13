@@ -423,7 +423,8 @@ def test_row_prefixes_our_own_last_message_and_falls_back_without_a_handle() -> 
         zone=ZONE,
     )
     assert row.preview == OUTBOUND_PREFIX + "claro que sí"
-    assert row.title == "Persona sin nombre" and "123456" not in row.title
+    # m-25017852: the fallback names the channel («Cliente de Instagram»).
+    assert row.title == "Cliente de Instagram" and "123456" not in row.title
     assert row.initials == "6"
     assert row.subtitle == "Instagram Direct"
     assert (row.attention, row.attention_label) == ("answered", "Respondida")
@@ -455,8 +456,8 @@ def test_row_states_read_closed_window_media_and_empty() -> None:
 def test_counterpart_title_rules() -> None:
     assert counterpart_title("@a", "x") == "@a"
     assert counterpart_title("a", "x") == "@a"
-    assert counterpart_title("", "") == "Persona sin nombre"
-    assert counterpart_title("", "17841400000123456") == "Persona sin nombre"
+    assert counterpart_title("", "") == "Cliente de Instagram"
+    assert counterpart_title("", "17841400000123456") == "Cliente de Instagram"
 
 
 def test_filters_are_by_attention_and_counted() -> None:
