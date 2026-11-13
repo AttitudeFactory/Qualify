@@ -97,7 +97,7 @@ def issue_view_path(
     now = time.monotonic()
     with _issued_lock:
         hit = _issued.get(cache_key)
-        if hit is not None and hit[1] - now > _REUSE_MARGIN_SECONDS:
+        if hit is not None and hit[2] is tokens and hit[1] - now > _REUSE_MARGIN_SECONDS:
             return hit[0]
     token = tokens.issue(
         tenant_id=tenant_id,
@@ -107,7 +107,13 @@ def issue_view_path(
     )
     path = f"{R2_MEDIA_ROUTE}/{token}"
     with _issued_lock:
-        _issued[cache_key] = (path, now + VIEW_TTL_SECONDS)
+        # prune on insert: an entry past its reuse margin is never served again, and
+        # dropping it also releases the store it holds (see `_issued`)
+        for stale in [
+            k for k, (_p, ends, _s) in _issued.items() if ends - now <= _REUSE_MARGIN_SECONDS
+        ]:
+            del _issued[stale]
+        _issued[cache_key] = (path, now + VIEW_TTL_SECONDS, tokens)
     return path
 
 
@@ -115,7 +121,12 @@ def issue_view_path(
 # reused only while its token has more than this left, so a page never gets one that
 # dies while it is open.
 _REUSE_MARGIN_SECONDS = 15 * 60
-_issued: dict[tuple[UUID, str, int], tuple[str, float]] = {}
+#: value = (path, token end, the store that minted it). The store itself is kept and
+#: compared by identity: an `id()` alone can be reused by a new store once the old one is
+#: garbage-collected, which served a token the new store never issued (same flake as
+#: `seasonal_media` on #604). Holding the store keeps it alive only until its entries are
+#: pruned (production uses one cached store, so this changes nothing there).
+_issued: dict[tuple[UUID, str, int], tuple[str, float, object]] = {}
 _issued_lock = threading.Lock()
 
 

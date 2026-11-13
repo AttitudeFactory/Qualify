@@ -365,6 +365,33 @@ def test_a_path_close_to_expiry_is_not_reused(backend, monkeypatch) -> None:
     assert r2_media.issue_view_path(TENANT_A, KEY_A, "video") != first
 
 
+def test_a_cached_path_is_reused_only_for_the_store_that_minted_it(backend) -> None:
+    """A garbage-collected store's `id()` can be reused by a new one: its cached path must
+    not be served for a token the new store never issued (CI flake on PR #604)."""
+    _, tokens = backend
+    r2_media._issued[(TENANT_A, KEY_A, id(tokens))] = (
+        "/r2media/stale",
+        r2_media.time.monotonic() + 3600,
+        object(),  # another store that happened to have the same id
+    )
+    path = r2_media.issue_view_path(TENANT_A, KEY_A, "video")
+    assert path != "/r2media/stale"
+    assert tokens.resolve(path.rsplit("/", 1)[-1]) is not None
+    assert r2_media.issue_view_path(TENANT_A, KEY_A, "video") == path
+
+
+def test_the_path_cache_is_pruned_on_insert(backend, monkeypatch) -> None:
+    """Entries past their reuse margin go on the next insert, so the cache does not keep
+    old stores (or paths) alive for the life of the process."""
+    clock = [1000.0]
+    monkeypatch.setattr(r2_media.time, "monotonic", lambda: clock[0])
+    r2_media.issue_view_path(TENANT_A, KEY_A, "video")
+    assert len(r2_media._issued) == 1
+    clock[0] += r2_media.VIEW_TTL_SECONDS  # the first path is past its margin
+    r2_media.issue_view_path(TENANT_A, KEY_BIG, "video")
+    assert len(r2_media._issued) == 1  # the stale entry went on that insert
+
+
 def test_ranged_responses_are_privately_cacheable(backend) -> None:
     client, _ = backend
     path = r2_media.issue_view_path(TENANT_A, KEY_A, "video")

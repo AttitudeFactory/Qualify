@@ -119,7 +119,10 @@ class AdversarialClaude:
         #: The conversation as each request saw it (the caller mutates its list).
         self.seen: list[str] = []
         self.billed = Decimal(0)
-        self._outputs: dict[int, int] = {}  # id(assistant content) -> its output tokens
+        #: id(assistant content) -> (that content, its output tokens). The content itself is
+        #: kept and compared by identity: a bare `id()` can be reused by a new list once a
+        #: discarded answer is garbage-collected, which would bill tokens it never carried.
+        self._outputs: dict[int, tuple[Any, int]] = {}
         self.messages = self
 
     def __call__(self, api_key: str) -> AdversarialClaude:  # the client factory
@@ -129,9 +132,11 @@ class AdversarialClaude:
         system = kwargs["system"][0]["text"]
         sent = request_bytes(system, kwargs["messages"], kwargs["tools"])
         carried = sum(
-            self._outputs.get(id(m["content"]), 0)
+            entry[1]
             for m in kwargs["messages"]
             if m.get("role") == "assistant"
+            and (entry := self._outputs.get(id(m["content"]))) is not None
+            and entry[0] is m["content"]
         )
         density = self.rng.uniform(0.25, 1.0)  # tokens per byte: never above 1
         framing = self.rng.randint(0, FIRST_TURN_MARGIN_TOKENS - 1)
@@ -191,7 +196,7 @@ class AdversarialClaude:
         if self.mode == "random" and 0.27 <= roll < 0.3:
             stop = "refusal"
         content = [] if stop != "end_turn" else self._answer(kwargs)
-        self._outputs[id(content)] = output
+        self._outputs[id(content)] = (content, output)
         reported = billed
         if self.rng.random() < 0.3:  # under-reports the prompt it billed
             reported = replace(billed, input_tokens=0, cache_read_input_tokens=0)
