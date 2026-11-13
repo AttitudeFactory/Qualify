@@ -96,6 +96,14 @@ EXTENSIONS: Final = {KIND_STICKER: "webp", KIND_VIDEO: "mp4"}
 SOURCE_PIECE: Final = "piece"
 SOURCE_LOGO: Final = "logo"
 SOURCE_TEXT: Final = "text"
+#: m-25017372: a product sticker — an approved «tierno» character (`product_sticker_characters`)
+#: with a message; `source_ref` = `{character_id}:{message}`.
+SOURCE_CHARACTER: Final = "character"
+#: The product stickers' «season» (m-25017372): one fixed group per business, «De tus
+#: productos». Founder 2026-11-12 (decision 4): the chat picker and the library list the
+#: seasons first and this group after them.
+PRODUCT_SEASON_KEY: Final = "productos"
+PRODUCT_SEASON_LABEL: Final = "De tus productos"
 
 Mode = Literal["free", "ai"]
 
@@ -142,6 +150,13 @@ REASON_TEXT: Final[dict[str, str]] = {
     "ffmpeg_failed": "No pudimos prepararlo. Puedes pedir otro.",
     "ffmpeg_missing": "No pudimos prepararlo. Ya lo estamos revisando.",
     "webp_unavailable": "No pudimos preparar el sticker. Ya lo estamos revisando.",
+    # m-25017372, product stickers (drawn for free by our own render service)
+    "render_unavailable": (
+        "No pudimos dibujar este sticker ahora. No se te cobró. Pídelo otra vez en un rato."
+    ),
+    "character_unavailable": (
+        "El dibujo de este sticker ya no está disponible. Elige otro dibujo de tu producto."
+    ),
 }
 _DEFAULT_REASON_TEXT = "No pudimos preparar esta pieza. Puedes pedir otra."
 
@@ -634,8 +649,15 @@ class SeasonalMediaService:
                 _ai_selection(list(unique.values()))
             ):
                 raise SelectionChanged()
+        return self.plan_rows(list(unique.values()))
+
+    def plan_rows(self, rows: Sequence[SeasonalMedia]) -> list[SeasonalMedia]:
+        """Insert `pending` rows built by a caller (with their jobs, one transaction), the
+        same way the batch does: a slot already planned is returned as it is, a deleted one
+        is made anew. Used by the product stickers (m-25017372), whose rows are built by
+        `creative.product_stickers` from an approved character."""
         out = []
-        for stored, _new in self._repo.insert_planned(list(unique.values())):
+        for stored, _new in self._repo.insert_planned(list(rows)):
             if stored.status == STATUS_DELETED and stored.attempt < MAX_ATTEMPTS:
                 stored = self._revive(stored)
             out.append(stored)
@@ -926,7 +948,9 @@ class SeasonalMediaService:
                     last_activity=max(m.approved_at or m.created_at for m in rows),
                 )
             )
-        return sorted(seasons, key=lambda s: s.last_activity, reverse=True)
+        # the seasons first (most recently active first), the product stickers after them
+        seasons.sort(key=lambda s: s.last_activity, reverse=True)
+        return sorted(seasons, key=lambda s: s.season_key == PRODUCT_SEASON_KEY)
 
     def list_approved_for_chat(
         self, tenant_id: UUID, brand_id: UUID, *, as_worker: bool = False
@@ -956,6 +980,8 @@ class SeasonalMediaService:
         return sorted(
             rows,
             key=lambda m: (
+                # founder 2026-11-12 (m-25017372): seasonal stickers first, product ones after
+                m.season_key == PRODUCT_SEASON_KEY,
                 -latest[m.season_key].timestamp(),
                 m.season_key,
                 m.kind != KIND_STICKER,

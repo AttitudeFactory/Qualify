@@ -626,3 +626,9 @@ def test_production_registers_real_executors_for_both_vendor_pools() -> None:
     assert isinstance(seedance, KindRoutedExecutor)
     assert isinstance(seedance.default, PipelineExecutor)
     assert isinstance(executors[q.OMNIHUMAN_POOL], PipelineExecutor)
+    # m-25017372: the Seedream pool runs only product sticker characters
+    from qualify_api.creative.product_sticker_ai import UnknownKindExecutor
+
+    seedream = executors[q.SEEDREAM_PRO_POOL]
+    assert isinstance(seedream, KindRoutedExecutor)
+    assert isinstance(seedream.default, UnknownKindExecutor)

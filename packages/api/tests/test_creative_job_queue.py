@@ -32,8 +32,9 @@ def _migration() -> ModuleType:
 
 
 def test_default_pools_are_byteplus_caps() -> None:
-    assert q.parse_vendor_pools(None) == {q.SEEDANCE_POOL: 10, q.OMNIHUMAN_POOL: 1}
-    assert q.parse_vendor_pools("  ") == {q.SEEDANCE_POOL: 10, q.OMNIHUMAN_POOL: 1}
+    defaults = {q.SEEDANCE_POOL: 10, q.OMNIHUMAN_POOL: 1, q.SEEDREAM_PRO_POOL: 10}
+    assert q.parse_vendor_pools(None) == defaults
+    assert q.parse_vendor_pools("  ") == defaults
 
 
 def test_configured_sizes_override_defaults_and_add_pools() -> None:
@@ -76,7 +77,14 @@ def test_migration_vocabularies_match_the_module() -> None:
     assert set(m.KINDS) == q.KINDS
     assert set(m.LANES) == q.LANES
     assert set(m.STATUSES) == q.STATUSES
-    assert m.SEEDED_SLOTS == dict(q.SEEDED_SLOTS)
+    # 0096 seeds Seedance and OmniHuman; 0154 (m-25017372) seeds the Seedream pool
+    seedream = _MIGRATION.parent / "0154_product_sticker_characters.py"
+    spec = importlib.util.spec_from_file_location("m0154", seedream)
+    assert spec is not None and spec.loader is not None
+    m0154 = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m0154)
+    assert {**m.SEEDED_SLOTS, m0154._POOL: m0154._SEEDED} == dict(q.SEEDED_SLOTS)
+    assert m0154._POOL == q.SEEDREAM_PRO_POOL
     assert m.down_revision == "0095"
 
 

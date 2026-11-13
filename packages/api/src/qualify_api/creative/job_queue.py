@@ -59,6 +59,10 @@ KIND_SEASONAL_VIDEO = "seasonal_video"
 #: A seasonal job has no draft revision; 0096's `ck_creative_jobs_revision` wants >= 1,
 #: the generator's first revision. The seasonal identity is (medium, attempt).
 SEASONAL_JOB_REVISION = 1
+#: m-25017372 (0154): a product sticker character — ONE synchronous Seedream 5.0 pro call
+#: whose subject is `sticker_character_id` (`draft_id` and `seasonal_media_id` NULL).
+#: Enqueued only by `enqueue_character_job`; it rides its own pool (`SEEDREAM_PRO_POOL`).
+KIND_STICKER_CHARACTER = "sticker_character"
 
 LANE_IMMEDIATE = "immediate"
 LANE_NIGHTLY = "nightly"
@@ -78,12 +82,20 @@ IN_FLIGHT: frozenset[str] = frozenset({CLAIMED, SUBMITTED})
 
 SEEDANCE_POOL = "byteplus:seedance-2-5"
 OMNIHUMAN_POOL = "byteplus:omnihuman-1-5"
-#: BytePlus's per-account caps (ADR 41 §1.1): 10 Seedance 2.5 tasks, 1 OmniHuman task.
-DEFAULT_POOL_SIZES: Mapping[str, int] = {SEEDANCE_POOL: 10, OMNIHUMAN_POOL: 1}
+#: m-25017372: Seedream 5.0 pro images (product sticker characters) — never a Seedance slot.
+SEEDREAM_PRO_POOL = "byteplus:seedream-5-0-pro"
+#: BytePlus's per-account caps (ADR 41 §1.1): 10 Seedance 2.5 tasks, 1 OmniHuman task; the
+#: Seedream pool (m-25017372) holds 10 synchronous image calls at a time.
+DEFAULT_POOL_SIZES: Mapping[str, int] = {
+    SEEDANCE_POOL: 10,
+    OMNIHUMAN_POOL: 1,
+    SEEDREAM_PRO_POOL: 10,
+}
 #: Any other pool, until configured (ticket m-24852160: «por defecto 10»).
 DEFAULT_POOL_SIZE = 10
-#: Rows 0096 seeds per pool: the size can be raised up to this by configuration alone.
-SEEDED_SLOTS: Mapping[str, int] = {SEEDANCE_POOL: 50, OMNIHUMAN_POOL: 10}
+#: Rows seeded per pool (0096; 0154 for Seedream): the size can be raised up to this by
+#: configuration alone.
+SEEDED_SLOTS: Mapping[str, int] = {SEEDANCE_POOL: 50, OMNIHUMAN_POOL: 10, SEEDREAM_PRO_POOL: 20}
 POOLS_ENV = "QUALIFY_VENDOR_POOLS"
 
 
@@ -283,6 +295,58 @@ def enqueue_seasonal_job(
         text(
             "SELECT id FROM creative_jobs WHERE tenant_id = :tenant_id"
             " AND seasonal_media_id = :media AND attempt = :attempt"
+        ),
+        params,
+    ).scalar_one()
+    return Enqueued(job_id=existing, created=False)
+
+
+def enqueue_character_job(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    character_id: UUID,
+    pricing_version: str,
+    pipeline_version: str,
+    lane: str = LANE_IMMEDIATE,
+) -> Enqueued:
+    """Queue the ONE paid Seedream call of a product sticker character (m-25017372), inside
+    the transaction that inserts the character — once: `uq_creative_jobs_character` makes a
+    second call return the existing job."""
+    if lane not in LANES:
+        raise ValueError(f"unknown lane {lane!r}")
+    params = {"tenant_id": tenant_id, "character": character_id}
+    created = session.execute(
+        text(
+            """
+            INSERT INTO creative_jobs (
+                tenant_id, draft_id, sticker_character_id, kind, revision, position,
+                vendor_model, lane, priority, not_before, pricing_version, pipeline_version
+            ) VALUES (
+                :tenant_id, NULL, :character, :kind, :revision, 0, :vendor_model, :lane, 0,
+                now(), :pricing_version, :pipeline_version
+            )
+            ON CONFLICT (tenant_id, sticker_character_id)
+                WHERE sticker_character_id IS NOT NULL DO NOTHING
+            RETURNING id
+            """
+        ),
+        {
+            **params,
+            "kind": KIND_STICKER_CHARACTER,
+            "revision": SEASONAL_JOB_REVISION,
+            "vendor_model": SEEDREAM_PRO_POOL,
+            "lane": lane,
+            "pricing_version": pricing_version,
+            "pipeline_version": pipeline_version,
+        },
+    ).scalar_one_or_none()
+    if created is not None:
+        return Enqueued(job_id=created, created=True)
+    existing = session.execute(
+        text(
+            "SELECT id FROM creative_jobs WHERE tenant_id = :tenant_id"
+            " AND sticker_character_id = :character"
         ),
         params,
     ).scalar_one()
@@ -822,6 +886,8 @@ class JobRow:
     pricing_version: str | None = None
     #: When BytePlus accepted the task (the seasonal deadline counts from it).
     submitted_at: datetime | None = None
+    #: m-25017372 (0154): a `sticker_character` job's subject.
+    sticker_character_id: UUID | None = None
 
 
 def load_job(session: Session, job_id: UUID) -> JobRow | None:
@@ -831,7 +897,8 @@ def load_job(session: Session, job_id: UUID) -> JobRow | None:
             """
             SELECT id, tenant_id, draft_id, kind, revision, position, vendor_model, lane,
                    priority, status, claim_token, vendor_task_id, queued_at, deadline,
-                   attempts, seasonal_media_id, attempt, pricing_version, submitted_at
+                   attempts, seasonal_media_id, attempt, pricing_version, submitted_at,
+                   sticker_character_id
             FROM creative_jobs WHERE id = :id
             """
         ),
@@ -859,6 +926,7 @@ def load_job(session: Session, job_id: UUID) -> JobRow | None:
         attempt=int(row.attempt) if row.attempt is not None else None,
         pricing_version=row.pricing_version,
         submitted_at=row.submitted_at,
+        sticker_character_id=row.sticker_character_id,
     )
 
 

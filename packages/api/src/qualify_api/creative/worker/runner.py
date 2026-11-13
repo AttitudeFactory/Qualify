@@ -196,6 +196,7 @@ class CreativeWorker:
             attempt=row.attempt or 0,
             pricing_version=row.pricing_version,
             submitted_at=row.submitted_at,
+            sticker_character_id=row.sticker_character_id,
         )
 
         task_id = row.vendor_task_id
