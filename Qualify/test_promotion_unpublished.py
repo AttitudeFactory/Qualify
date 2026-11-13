@@ -154,6 +154,20 @@ def test_media_choice_only_accepts_the_pieces_own_files() -> None:
     assert not context.review.review_id  # a new file discards the prepared preview
 
 
+def test_changing_a_cover_from_the_summary_stays_on_the_summary() -> None:
+    context = unpublished_context()
+    context.sources[0] = replace(
+        context.sources[0], feed_covers=[AdMediaVM(FEED_COVER), AdMediaVM("fc2")]
+    )
+    context.selected_source = context.sources[0]
+    context.reviewed = True
+    PromotionState.choose_media.fn(context, "feed_cover_id", "fc2")
+    assert context.form.feed_cover_id == "fc2"
+    assert context.reviewed and not context.review.review_id
+    PromotionState.choose_media.fn(context, "feed_asset_id", "f2")
+    assert not context.reviewed  # a new video still sends the owner back to the steps
+
+
 @pytest.mark.asyncio
 async def test_processing_video_waits_and_repeats_with_the_same_key(monkeypatch) -> None:
     context = unpublished_context()

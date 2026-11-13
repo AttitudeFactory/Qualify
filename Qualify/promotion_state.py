@@ -1180,7 +1180,10 @@ class PromotionState(rx.State):
         if getattr(self.form, slot) != asset_id:
             self.form = replace(self.form, **{slot: asset_id})
             self.error = ""
+            # «Cambiar portada» lives in the summary: drop Meta's review but stay there.
+            stay = slot.endswith("_cover_id") and self.reviewed
             self._invalidate_review()
+            self.reviewed = stay
 
     @rx.event
     def choose_country(self, code: str) -> None:
