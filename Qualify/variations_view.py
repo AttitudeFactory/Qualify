@@ -671,7 +671,7 @@ def _scene_editor() -> rx.Component:
                     ),
                     _editor_field(
                         "Invitación a comprar o escribir",
-                        "Va en el texto de la publicación.",
+                        "No se dibuja sobre la imagen.",
                         rx.input(
                             value=VariationsState.editor_cta,
                             on_change=VariationsState.set_editor_cta,
