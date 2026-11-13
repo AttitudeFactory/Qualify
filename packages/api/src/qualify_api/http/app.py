@@ -28,6 +28,7 @@ from qualify_api.http import (
     leads_routes,
     meegle_routes,
     mentions_routes,
+    public_catalog_media_routes,
     public_media_routes,
     publishing_routes,
     replies_routes,
@@ -292,6 +293,7 @@ def create_app(*, configure_production: bool = True) -> FastAPI:
     app.include_router(pinterest_router)
     app.include_router(publishing_routes.router)
     app.include_router(public_media_routes.router)
+    app.include_router(public_catalog_media_routes.router)
     app.include_router(inbox_routes.router)
     app.include_router(leads_routes.router)
     app.include_router(creative_routes.router)
@@ -316,6 +318,10 @@ def create_app(*, configure_production: bool = True) -> FastAPI:
             build_production_media_token_store
         )
         app.dependency_overrides[public_media_routes.get_public_media_gate] = (
+            build_production_public_media_gate
+        )
+        # ADR 48 §8: the WhatsApp catalog's stable photo URL, same lazy R2 gate.
+        app.dependency_overrides[public_catalog_media_routes.get_catalog_media_gate] = (
             build_production_public_media_gate
         )
         app.dependency_overrides[inbox_routes.get_sync_comments] = build_production_inbox_sync
