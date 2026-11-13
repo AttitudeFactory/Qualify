@@ -779,10 +779,17 @@ def test_the_seasonal_library_is_bounded_to_its_business_and_outside_the_purge()
     assert gate.seasonal_key_for(_TENANT, brand, key) == key
     gate.delete_seasonal_media(_TENANT, brand, [key])
     assert store.opened == [key] and store.deleted == [key]
+    # m-25016851: «Pedir otro» has no owner-facing cap — attempts up to 99 are this
+    # business's keys
+    for attempt in (4, 12, 99):
+        late = f"seasonal/{_TENANT}/{brand}/navidad-2026/{media}-{attempt}.mp4"
+        assert gate.seasonal_key_for(_TENANT, brand, late) == late
     for bad in (
         f"seasonal/{_TENANT}/{uuid4()}/navidad-2026/{media}-1.webp",  # another business
         f"seasonal/{uuid4()}/{brand}/navidad-2026/{media}-1.webp",  # another tenant
-        f"seasonal/{_TENANT}/{brand}/navidad-2026/{media}-4.webp",  # past the attempt cap
+        f"seasonal/{_TENANT}/{brand}/navidad-2026/{media}-100.webp",  # past the ceiling
+        f"seasonal/{_TENANT}/{brand}/navidad-2026/{media}-0.webp",  # no attempt 0
+        f"seasonal/{_TENANT}/{brand}/navidad-2026/{media}-07.webp",  # no leading zero
         f"seasonal/{_TENANT}/{brand}/navidad-2026/{media}.webp",  # no attempt
         f"seasonal/{_TENANT}/{brand}/navidad-2026/",  # a prefix
         f"seasonal/{_TENANT}/{brand}/navidad-2026/{media}.gif",

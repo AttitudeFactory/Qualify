@@ -12,6 +12,7 @@ from packages.api.tests.test_creative_jobs_db import _attempt
 from packages.api.tests.test_creative_retention_db import TENANT_A, TENANT_B, _provision
 from qualify_shared.db.config import creative_worker_dsn
 from qualify_shared.db.session import tenant_session
+from qualify_shared.objects.keys import SEASONAL_MAX_ATTEMPTS
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
@@ -51,6 +52,9 @@ def test_one_job_per_medium_attempt() -> None:
     with pytest.raises(IntegrityError):
         _insert(TENANT_A, m=media, a=1)
     _insert(TENANT_A, m=media, a=2)  # «Pedir otro»: the next attempt is a new job
+    # m-25016851: no cap of three any more — up to the technical ceiling
+    _insert(TENANT_A, m=media, a=4)
+    _insert(TENANT_A, m=media, a=SEASONAL_MAX_ATTEMPTS)
 
 
 @pytest.mark.parametrize(
@@ -58,7 +62,8 @@ def test_one_job_per_medium_attempt() -> None:
     [
         {"m": None, "a": None},  # no subject
         {"a": None},  # a seasonal job without its attempt
-        {"a": 4},  # past the library's cap
+        {"a": SEASONAL_MAX_ATTEMPTS + 1},  # past the technical ceiling (0153)
+        {"a": 0},
         {"k": "final"},  # a seasonal subject on a draft kind
         {"d": "draft"},  # both subjects
     ],

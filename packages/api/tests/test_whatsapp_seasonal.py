@@ -14,8 +14,11 @@ import pytest
 
 from qualify_api.whatsapp.seasonal import (
     JOB_KIND,
+    MAX_ATTEMPTS,
     SEASONAL_PIPELINE_VERSION,
     STANDARD_BATCH,
+    STATUS_DELETED,
+    AiVideoInProgress,
     AttemptsExhausted,
     MediaNotFound,
     MemorySeasonalRepository,
@@ -317,18 +320,150 @@ def test_a_late_result_of_an_earlier_attempt_is_refused(world: World) -> None:
     assert world.ready(video).attempt == 2
 
 
-def test_another_is_capped_at_three_files_per_slot(world: World) -> None:
+def test_another_has_no_owner_facing_cap_and_deletes_each_old_file(world: World) -> None:
+    """m-25016851: the founder hit «Ya pediste otro tres veces»; «Pedir otro» goes on, and
+    every new attempt deletes the previous file (no pile of files in R2)."""
     sticker = next(r for r in world.plan() if r.kind == "sticker")
     world.ready(sticker)
-    for _ in range(2):
-        world.service.request_another(TENANT, BRAND, sticker.id, USER)
-        world.ready(sticker)
-    assert world.repo.rows[sticker.id].attempt == 3
+    for n in range(2, 8):
+        before = world.repo.rows[sticker.id].object_key
+        assert world.service.request_another(TENANT, BRAND, sticker.id, USER).attempt == n
+        assert world.deleted[-1] == (TENANT, BRAND, [before])
+        assert world.ready(sticker).object_key == world.key(sticker, n)
+    assert len(world.deleted) == 6
+    assert len({job["idempotency_key"] for job in world.repo.jobs}) == len(world.repo.jobs)
+
+
+def test_another_stops_only_at_the_technical_ceiling_without_a_count(world: World) -> None:
+    sticker = next(r for r in world.plan() if r.kind == "sticker")
+    world.repo.rows[sticker.id] = replace(world.repo.rows[sticker.id], attempt=MAX_ATTEMPTS)
+    world.ready(sticker)
     with pytest.raises(AttemptsExhausted) as refused:
         world.service.request_another(TENANT, BRAND, sticker.id, USER)
-    assert refused.value.message == "Ya pediste otro tres veces para esta pieza."
+    assert MAX_ATTEMPTS == 99
+    assert not any(ch.isdigit() for ch in refused.value.message)  # never a count
+    assert "«Eliminar»" in refused.value.message
     assert world.repo.rows[sticker.id].status == "ready"
-    assert len(world.repo.jobs) == 12
+
+
+# --- «Eliminar» (m-25016851) -------------------------------------------------------------
+
+
+def test_delete_keeps_the_row_for_provenance_clears_the_file_and_sweeps_every_attempt(
+    world: World,
+) -> None:
+    sticker = next(r for r in world.plan() if r.kind == "sticker")
+    world.ready(sticker)
+    world.service.request_another(TENANT, BRAND, sticker.id, USER)
+    world.ready(sticker)
+    world.service.approve(TENANT, BRAND, [sticker.id], USER)
+    world.deleted.clear()
+    gone = world.service.delete(TENANT, BRAND, sticker.id, USER)
+    assert gone.status == STATUS_DELETED and gone.attempt == 2
+    assert (gone.object_key, gone.bytes, gone.width, gone.duration_ms) == (None,) * 4
+    stored = world.repo.rows[sticker.id]  # provenance stays
+    assert stored.recipe and stored.source_kind and stored.source_ref
+    assert stored.pipeline_version == SEASONAL_PIPELINE_VERSION
+    assert world.deleted == [(TENANT, BRAND, [world.key(sticker, 1), world.key(sticker, 2)])]
+    # it leaves the library and the chat
+    season = world.service.list_season(TENANT, BRAND, "navidad-2026")
+    assert sticker.id not in {m.id for m in season}
+    assert sticker.id not in {m.id for m in world.service.list_approved_for_chat(TENANT, BRAND)}
+    counts = world.service.list_seasons(TENANT, BRAND)[0].counts
+    assert STATUS_DELETED not in counts and sum(counts.values()) == 9
+    # nothing else can be done with it
+    for act in (
+        lambda: world.service.approve(TENANT, BRAND, [sticker.id], USER),
+        lambda: world.service.reject(TENANT, BRAND, sticker.id, USER),
+        lambda: world.service.request_another(TENANT, BRAND, sticker.id, USER),
+    ):
+        with pytest.raises(WrongState):
+            act()
+    # planning the season again makes it anew (the same row, the next attempt, a new job)
+    jobs = len(world.repo.jobs)
+    again = {m.id: m for m in world.plan()}[sticker.id]
+    assert (again.status, again.attempt, again.object_key) == ("pending", 3, None)
+    assert len(world.repo.jobs) == jobs + 1
+    assert world.repo.jobs[-1]["idempotency_key"] == f"seasonal:{sticker.id}:3"
+    assert sticker.id in {m.id for m in world.service.list_season(TENANT, BRAND, "navidad-2026")}
+
+
+def test_delete_is_idempotent_and_works_from_any_status(world: World) -> None:
+    rows = world.plan()
+    pending, failed = rows[0], rows[1]
+    world.service.mark_failed(
+        tenant_id=TENANT, brand_id=BRAND, media_id=failed.id, attempt=1, reason="x"
+    )
+    for media in (pending, failed):
+        assert world.service.delete(TENANT, BRAND, media.id, USER).status == STATUS_DELETED
+        again = world.service.delete(TENANT, BRAND, media.id, USER)
+        assert again.status == STATUS_DELETED
+    with pytest.raises(MediaNotFound):
+        world.service.delete(TENANT, OTHER_BRAND, pending.id, USER)
+    with pytest.raises(MediaNotFound):
+        world.service.delete(OTHER_TENANT, BRAND, pending.id, USER)
+
+
+def test_a_job_finishing_after_delete_is_refused_and_archive_skips_deleted(world: World) -> None:
+    rows = world.plan()
+    video = next(r for r in rows if r.kind == "video")
+    world.service.delete(TENANT, BRAND, video.id, USER)
+    with pytest.raises(WrongState):  # the job drops its result and deletes its file
+        world.ready(video)
+    with pytest.raises(WrongState):
+        world.service.mark_failed(
+            tenant_id=TENANT, brand_id=BRAND, media_id=video.id, attempt=1, reason="late"
+        )
+    world.service.archive(TENANT, BRAND, "navidad-2026")
+    world.service.restore(TENANT, BRAND, "navidad-2026")
+    assert world.repo.rows[video.id].status == STATUS_DELETED
+    assert world.repo.rows[video.id].archived_at is None
+
+
+def test_a_failed_file_delete_does_not_undo_the_delete(world: World) -> None:
+    def boom(*_args) -> None:
+        raise RuntimeError("r2 down")
+
+    service = SeasonalMediaService(world.repo, world.sources, delete_objects=boom)
+    sticker = next(r for r in world.plan() if r.kind == "sticker")
+    world.ready(sticker)
+    assert service.delete(TENANT, BRAND, sticker.id, USER).status == STATUS_DELETED
+
+
+def test_a_season_with_everything_deleted_is_gone_and_can_be_made_again(world: World) -> None:
+    for media in world.plan():
+        world.service.delete(TENANT, BRAND, media.id, USER)
+    assert world.service.list_seasons(TENANT, BRAND) == []
+    # «Crear» again never ends in a «preparing» that never arrives
+    rows = world.plan()
+    assert len(rows) == 10 and all(r.status == "pending" and r.attempt == 2 for r in rows)
+    assert len(world.service.list_seasons(TENANT, BRAND)) == 1
+
+
+def test_a_paid_video_still_being_made_cannot_be_deleted(world: World) -> None:
+    """The Seedance task is running and billed: its cost must reach the ledger, which
+    `creative.seasonal_ai.finish` books only for a `pending` row."""
+    sticker = next(r for r in world.plan() if r.kind == "sticker")
+    paid = replace(world.repo.rows[sticker.id], recipe="ai-seedance", kind="video")
+    world.repo.rows[sticker.id] = paid
+    with pytest.raises(AiVideoInProgress) as refused:
+        world.service.delete(TENANT, BRAND, paid.id, USER)
+    assert "cuando esté listo" in refused.value.message
+    assert world.repo.rows[paid.id].status == "pending" and world.deleted == []
+    world.repo.rows[paid.id] = replace(paid, status="failed")  # once it ended, it can go
+    assert world.service.delete(TENANT, BRAND, paid.id, USER).status == STATUS_DELETED
+
+
+def test_delete_gives_up_after_repeated_races(world: World) -> None:
+    sticker = next(r for r in world.plan() if r.kind == "sticker")
+
+    def always_moved(media, *, expected):  # noqa: ANN001, ANN202
+        raise WrongState()
+
+    world.repo.save = always_moved  # type: ignore[method-assign]
+    with pytest.raises(WrongState):
+        world.service.delete(TENANT, BRAND, sticker.id, USER)
+    assert world.deleted == []
 
 
 def test_a_failed_delete_of_the_old_file_does_not_undo_the_request(world: World) -> None:

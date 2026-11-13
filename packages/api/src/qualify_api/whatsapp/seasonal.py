@@ -23,7 +23,11 @@ past seasons are kept; the owner archives a season, and only deleting it deletes
 
 `pending` (planned, job queued) → `ready` (the worker stored the file: `mark_ready`) or
 `failed` (`mark_failed`); `ready` → `approved` (the owner, `approve`) or `rejected`
-(`reject`). Archiving a season (`archive`) moves its `approved` rows to `archived` and
+(`reject`). Any status → `deleted` («Eliminar», `delete`, m-25016851): the row stays for
+provenance (recipe, source, `cost_usd`, and the paid `creative_jobs` rows a hard delete
+would cascade away), its file fields are cleared, every attempt's R2 file is deleted
+through the gate, and it never shows again — not in the library, not in the chat.
+Archiving a season (`archive`) moves its `approved` rows to `archived` and
 stamps `archived_at` on all of them; `restore` brings them back. **Only `approved` rows of
 an unarchived season reach the chat** (`list_approved_for_chat`) — stricter than pieces,
 as the founder asked. Nothing here sends anything: the chat sends on the owner's tap.
@@ -47,7 +51,8 @@ attempt=…, object_key=…, bytes=…, width=…, height=…, duration_ms=…, 
 older attempt is refused (`StaleAttempt`): drop it.
 
 «Pedir otro» (`request_another`) reuses the SAME row (the slot stays unique): `attempt`
-+1 (at most `MAX_ATTEMPTS`), back to `pending`, file fields cleared, a NEW job
++1 (no owner-facing cap since m-25016851; `MAX_ATTEMPTS` = 99 is only the key format's
+technical ceiling), back to `pending`, file fields cleared, a NEW job
 `seasonal:{media_id}:{attempt}` in the same transaction; the previous file is deleted
 through the gate by its exact key after that commit.
 
@@ -81,6 +86,8 @@ STATUS_APPROVED: Final = "approved"
 STATUS_REJECTED: Final = "rejected"
 STATUS_ARCHIVED: Final = "archived"
 STATUS_FAILED: Final = "failed"
+#: «Eliminar» (m-25016851): kept for provenance, never shown, no file.
+STATUS_DELETED: Final = "deleted"
 
 KIND_STICKER: Final = "sticker"
 KIND_VIDEO: Final = "video"
@@ -281,13 +288,29 @@ class StaleAttempt(SeasonalError):
 
 
 class AttemptsExhausted(SeasonalError):
-    message = "Ya pediste otro tres veces para esta pieza."
+    """The slot reached the technical ceiling (`MAX_ATTEMPTS`, 99) — practically never; the
+    owner reads no count (m-25016851), only what to do instead."""
+
+    message = "Ya no podemos crear otra versión. Si no te sirve, toca «Eliminar»."
 
 
-#: «Pedir otro» cap per slot (the first file counts: attempts 1, 2, 3).
+#: Technical ceiling of «Pedir otro» per slot (the key format and 0153's CHECK) — not an
+#: owner-facing limit: m-25016851 removed the cap of three. «Con IA» is bounded by its cost
+#: confirmation and the brand's monthly spend guard, not by a count.
 MAX_ATTEMPTS: Final = SEASONAL_MAX_ATTEMPTS
 #: The statuses «Pedir otro» starts from.
 REQUESTABLE: Final = frozenset({STATUS_READY, STATUS_REJECTED, STATUS_FAILED})
+#: What `requeue` may restart: «Pedir otro»'s statuses, plus a deleted slot that planning
+#: the season again brings back (m-25016851).
+REQUEUEABLE: Final = REQUESTABLE | {STATUS_DELETED}
+
+
+class AiVideoInProgress(SeasonalError):
+    """«Eliminar» on a «Con IA» video still being made: the paid task is already running
+    and its cost must reach the ledger when it ends (`creative.seasonal_ai.finish` only
+    books a `pending` row), so the owner deletes it once it is ready or failed."""
+
+    message = "Este video con IA se está creando. Podrás eliminarlo cuando esté listo."
 
 
 # ======================================================================================
@@ -611,7 +634,37 @@ class SeasonalMediaService:
                 _ai_selection(list(unique.values()))
             ):
                 raise SelectionChanged()
-        return [stored for stored, _new in self._repo.insert_planned(list(unique.values()))]
+        out = []
+        for stored, _new in self._repo.insert_planned(list(unique.values())):
+            if stored.status == STATUS_DELETED and stored.attempt < MAX_ATTEMPTS:
+                stored = self._revive(stored)
+            out.append(stored)
+        return out
+
+    def _revive(self, media: SeasonalMedia) -> SeasonalMedia:
+        """A slot the owner deleted, planned again (m-25016851): the same row is made anew
+        — the next attempt, `pending`, a new job — like «Pedir otro». Without it the season
+        would show «Listo: estamos preparando…» and nothing would ever arrive."""
+        try:
+            return self._repo.requeue(
+                replace(
+                    media,
+                    status=STATUS_PENDING,
+                    attempt=media.attempt + 1,
+                    object_key=None,
+                    bytes=None,
+                    width=None,
+                    height=None,
+                    duration_ms=None,
+                    fail_reason=None,
+                    approved_at=None,
+                    # planned again = in use again, even if its season was archived
+                    archived_at=None,
+                ),
+                from_attempt=media.attempt,
+            )
+        except (WrongState, StaleAttempt):  # another tap revived it first
+            return self._media(media.tenant_id, media.brand_id, media.id)
 
     # --- the worker ----------------------------------------------------------------------
 
@@ -703,9 +756,10 @@ class SeasonalMediaService:
         accepted_cost_usd: Decimal | None = None,
     ) -> SeasonalMedia:
         """«Pedir otro»: the SAME row (its slot stays unique) is made again — from `ready`,
-        `rejected` or `failed` of an unarchived season, at most `MAX_ATTEMPTS` files per
-        slot. Row + new job commit together; the previous file is deleted afterwards
-        (exact key, best effort: a leftover file is unreachable — no row points at it)."""
+        `rejected` or `failed` of an unarchived season, as many times as the owner wants
+        (`MAX_ATTEMPTS` is only a technical ceiling). Row + new job commit together; the
+        previous file is deleted afterwards (exact key, best effort: a leftover file is
+        unreachable — no row points at it — and «Eliminar» sweeps every attempt's key)."""
         media = self._media(tenant_id, brand_id, media_id)
         if is_ai(media.recipe):
             # another paid call: the owner confirms its cost again (m-24976893)
@@ -745,6 +799,71 @@ class SeasonalMediaService:
                 )
         return stored
 
+    def delete(
+        self, tenant_id: UUID, brand_id: UUID, media_id: UUID, user_id: UUID | None
+    ) -> SeasonalMedia:
+        """«Eliminar» (m-25016851): the medium leaves the library and the chat for good, from
+        any status. The row is KEPT as `deleted` (provenance and the paid jobs' trail stay;
+        the slot stays the same row) with its
+        file fields cleared; then every attempt's file (1…`attempt`: the current one and
+        any an earlier «Pedir otro» failed to delete) is deleted through the gate, bounded
+        to this business. A «Con IA» video still `pending` is refused (`AiVideoInProgress`):
+        its paid task is running and must be booked. Planning the season again revives a
+        deleted slot (`_revive`). Idempotent: an already deleted medium is returned as it is (its
+        files are swept again). A job still running for it finds `WrongState` at
+        `mark_ready` and deletes the file it wrote (`creative.seasonal_job`,
+        `creative.seasonal_ai`). A sticker already sent stays in the chat's history: the
+        transcript never reads the library file."""
+        stored: SeasonalMedia | None = None
+        for _ in range(3):  # a worker or another tap may move the row between read and lock
+            media = self._media(tenant_id, brand_id, media_id)
+            if media.status == STATUS_DELETED:
+                stored = media
+                break
+            if media.status == STATUS_PENDING and is_ai(media.recipe):
+                raise AiVideoInProgress()
+            try:
+                stored = self._repo.save(
+                    replace(
+                        media,
+                        status=STATUS_DELETED,
+                        object_key=None,
+                        bytes=None,
+                        width=None,
+                        height=None,
+                        duration_ms=None,
+                        approved_at=None,
+                    ),
+                    expected=media,
+                )
+                break
+            except (StaleAttempt, WrongState):
+                continue
+        if stored is None:
+            raise WrongState()
+        self._delete_files(stored)
+        return stored
+
+    def _delete_files(self, media: SeasonalMedia) -> None:
+        """Every attempt's key of `media` (best effort: the row is already right)."""
+        if self._delete_objects is None:
+            return
+        keys = [
+            seasonal_media_key(
+                media.tenant_id,
+                media.brand_id,
+                media.season_key,
+                media.id,
+                EXTENSIONS[media.kind],
+                attempt,
+            )
+            for attempt in range(1, min(media.attempt, MAX_ATTEMPTS) + 1)
+        ]
+        try:
+            self._delete_objects(media.tenant_id, media.brand_id, keys)
+        except Exception:  # noqa: BLE001 — logged; a retry of «Eliminar» sweeps again
+            logger.warning("seasonal: files not deleted media=%s", media.id, exc_info=True)
+
     def archive(self, tenant_id: UUID, brand_id: UUID, season_key: str) -> list[SeasonalMedia]:
         """The season leaves the chat: approved → archived; every row stamped."""
         now = self._clock()
@@ -752,7 +871,7 @@ class SeasonalMediaService:
         for media in self._repo.list_brand(
             tenant_id=tenant_id, brand_id=brand_id, season_key=_check_season(season_key)
         ):
-            if media.archived_at is not None:
+            if media.archived_at is not None or media.status == STATUS_DELETED:
                 continue
             status = STATUS_ARCHIVED if media.status == STATUS_APPROVED else media.status
             out.append(
@@ -765,7 +884,7 @@ class SeasonalMediaService:
         for media in self._repo.list_brand(
             tenant_id=tenant_id, brand_id=brand_id, season_key=_check_season(season_key)
         ):
-            if media.archived_at is None:
+            if media.archived_at is None or media.status == STATUS_DELETED:
                 continue
             status = STATUS_APPROVED if media.status == STATUS_ARCHIVED else media.status
             out.append(
@@ -776,15 +895,22 @@ class SeasonalMediaService:
     # --- reads -----------------------------------------------------------------------------
 
     def list_season(self, tenant_id: UUID, brand_id: UUID, season_key: str) -> list[SeasonalMedia]:
-        rows = self._repo.list_brand(
-            tenant_id=tenant_id, brand_id=brand_id, season_key=_check_season(season_key)
-        )
+        rows = [
+            m
+            for m in self._repo.list_brand(
+                tenant_id=tenant_id, brand_id=brand_id, season_key=_check_season(season_key)
+            )
+            if m.status != STATUS_DELETED
+        ]
         return sorted(rows, key=lambda m: (m.kind != KIND_STICKER, m.created_at, str(m.id)))
 
     def list_seasons(self, tenant_id: UUID, brand_id: UUID) -> list[Season]:
-        """Every season of the business, the most recently active first."""
+        """Every season of the business, the most recently active first (deleted media do
+        not count; a season whose media were all deleted is gone)."""
         groups: dict[str, list[SeasonalMedia]] = {}
         for media in self._repo.list_brand(tenant_id=tenant_id, brand_id=brand_id):
+            if media.status == STATUS_DELETED:
+                continue
             groups.setdefault(media.season_key, []).append(media)
         seasons = []
         for key, rows in groups.items():
@@ -892,7 +1018,7 @@ class MemorySeasonalRepository:
         current = self.get(tenant_id=media.tenant_id, media_id=media.id)
         if current is None:
             raise MediaNotFound(str(media.id))
-        if current.attempt != from_attempt or current.status not in REQUESTABLE:
+        if current.attempt != from_attempt or current.status not in REQUEUEABLE:
             raise WrongState()
         key = job_key(media)
         if any(j["idempotency_key"] == key for j in self.jobs):
@@ -1131,7 +1257,7 @@ class PostgresSeasonalRepository:
             row = session.get(T, media.id, with_for_update=True)
             if row is None or row.brand_id != media.brand_id:
                 raise MediaNotFound(str(media.id))
-            if row.attempt != from_attempt or row.status not in REQUESTABLE:
+            if row.attempt != from_attempt or row.status not in REQUEUEABLE:
                 raise WrongState()
             for column in (
                 "status",
@@ -1143,6 +1269,7 @@ class PostgresSeasonalRepository:
                 "duration_ms",
                 "fail_reason",
                 "approved_at",
+                "archived_at",  # None for «Pedir otro» (checked) and for a revived slot
             ):
                 setattr(row, column, getattr(media, column))
             _enqueue(session, media)
@@ -1287,6 +1414,8 @@ __all__ = [
     "MAX_ATTEMPTS",
     "SEASONAL_PIPELINE_VERSION",
     "STANDARD_BATCH",
+    "STATUS_DELETED",
+    "AiVideoInProgress",
     "AttemptsExhausted",
     "MediaNotFound",
     "MemorySeasonalRepository",

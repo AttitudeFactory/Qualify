@@ -78,6 +78,10 @@ class SeasonalGateway(Protocol):
         accepted_cost_usd: Decimal | None = None,
     ) -> Any: ...
 
+    def delete(
+        self, tenant_id: UUID, brand_id: UUID, media_id: UUID, user_id: UUID | None
+    ) -> Any: ...
+
     def batch_counts(self, mode: str) -> tuple[int, int]: ...
 
     def archive(self, tenant_id: UUID, brand_id: UUID, season_key: str) -> Any: ...
@@ -182,14 +186,22 @@ class ProductionSeasonalGateway:
         accepted_cost_usd: Decimal | None = None,
     ) -> Any:
         """«Pedir otro»: the same slot is made again (`request_another`, from ready, rejected
-        or failed; at most three times — `AttemptsExhausted` says so in Spanish). A video
-        made with IA needs the per-video cost the owner confirmed."""
+        or failed; no owner-facing cap since m-25016851 — only the technical ceiling's
+        `AttemptsExhausted`, worded without a count). A video made with IA needs the
+        per-video cost the owner confirmed."""
         return self.service.request_another(
             tenant_id=tenant_id,
             brand_id=brand_id,
             media_id=media_id,
             user_id=user_id,
             accepted_cost_usd=accepted_cost_usd,
+        )
+
+    def delete(self, tenant_id: UUID, brand_id: UUID, media_id: UUID, user_id: UUID | None) -> Any:
+        """«Eliminar» (m-25016851): the medium leaves the library and the chat; its files
+        are deleted through the gate (`SeasonalMediaService.delete`, idempotent)."""
+        return self.service.delete(
+            tenant_id=tenant_id, brand_id=brand_id, media_id=media_id, user_id=user_id
         )
 
     def batch_counts(self, mode: str) -> tuple[int, int]:

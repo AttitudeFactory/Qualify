@@ -54,6 +54,8 @@ def test_only_this_business_exact_keys_get_a_token() -> None:
     assert require_seasonal_key(TENANT, BRAND, _key(ext="mp4"), gate=GATE) == "video/mp4"
     assert require_seasonal_key(TENANT, BRAND, _key(), gate=GATE) == "image/webp"
     assert require_seasonal_key(TENANT, BRAND, _key(attempt="3"), gate=GATE) == "image/webp"
+    # m-25016851: «Pedir otro» has no cap of three — a later attempt still gets a preview
+    assert require_seasonal_key(TENANT, BRAND, _key(attempt="12"), gate=GATE) == "image/webp"
     refused = (
         _key(tenant=OTHER),  # another tenant
         _key(brand=uuid4()),  # another business of the same tenant
@@ -65,7 +67,8 @@ def test_only_this_business_exact_keys_get_a_token() -> None:
         f"seasonal/{TENANT}/{BRAND}/navidad-2026/sub/{MEDIA}-1.webp",
         f"seasonal/{TENANT}/{BRAND}/navidad-2026/not-a-uuid.webp",
         f"seasonal/{TENANT}/{BRAND}/{MEDIA}-1.webp",  # no season folder
-        _key(attempt="4"),  # past the three attempts
+        _key(attempt="100"),  # past the technical ceiling (99)
+        _key(attempt="0"),
         f"seasonal/{TENANT}/{BRAND}/navidad-2026/{MEDIA}.webp",  # no attempt
         "",
     )
@@ -142,3 +145,22 @@ def test_the_token_cache_is_pruned_on_insert(monkeypatch: pytest.MonkeyPatch) ->
     clock[0] += seasonal_media.VIEW_TTL_SECONDS  # the first token is past its margin
     issue_seasonal_view_path(TENANT, BRAND, _key(attempt="2"), store=store, gate=GATE)
     assert len(seasonal_media._issued) == 1  # the stale entry went on that insert
+
+
+def test_a_cached_path_is_reused_only_for_the_store_that_minted_it() -> None:
+    """A garbage-collected store's `id()` can be reused by a new one: its cached path must
+    not be served for a token the new store never issued (CI flake on PR #604)."""
+    import time
+
+    from . import seasonal_media
+
+    store = seasonal_token_store(FakeRedis())
+    seasonal_media._issued[(TENANT, BRAND, _key(), id(store))] = (
+        "/r2seasonal/stale",
+        time.monotonic() + 3600,
+        object(),  # another store that happened to have the same id
+    )
+    path = issue_seasonal_view_path(TENANT, BRAND, _key(), store=store, gate=GATE)
+    assert path != "/r2seasonal/stale"
+    assert store.resolve(path.rsplit("/", 1)[-1]) is not None
+    assert issue_seasonal_view_path(TENANT, BRAND, _key(), store=store, gate=GATE) == path

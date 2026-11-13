@@ -292,6 +292,14 @@ async def test_rejected_after_queueing_is_withdrawn_unsent(world: World) -> None
     assert await _fails_with(world, item_id) == "seasonal_withdrawn"
 
 
+async def test_deleted_after_queueing_is_withdrawn_unsent(world: World) -> None:
+    """m-25016851: «Eliminar» while a send waits — nothing is uploaded or sent, and the
+    chat shows it unsent (the transcript never reads the library file)."""
+    item_id = world.send(world.sticker)
+    world.library.delete(TENANT, BRAND, world.sticker.id, USER)
+    assert await _fails_with(world, item_id) == "seasonal_withdrawn"
+
+
 async def test_another_attempt_after_queueing_is_refused(world: World) -> None:
     item_id = world.send(world.sticker)
     world.library.reject(TENANT, BRAND, world.sticker.id, USER)
