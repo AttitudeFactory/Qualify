@@ -4267,18 +4267,6 @@ def _context_versions_block(enhancing: rx.Var[bool]) -> rx.Component:
                 loading=enhancing,
                 on_click=CreativeState.enhance_context(True),
             ),
-            rx.cond(
-                ~CreativeState.context_is_original & ~enhancing,
-                rx.button(
-                    rx.icon("undo-2", size=T.ICON_SM),
-                    ENHANCE_RESTORE_LABEL,
-                    variant="ghost",
-                    color_scheme="gray",
-                    size="2",
-                    min_height="44px",
-                    on_click=CreativeState.undo_enhance_context,
-                ),
-            ),
             spacing="3",
             align="center",
             wrap="wrap",
@@ -4327,12 +4315,30 @@ def _context_ai_tools() -> rx.Component:
             ),
         ),
         _context_versions(),
+        # review: the way back stays even after an edit hides the cards
+        rx.cond(
+            (CreativeState.context_before_enhance != "")
+            & ~CreativeState.context_is_original
+            & ~enhancing,
+            rx.button(
+                rx.icon("undo-2", size=T.ICON_SM),
+                ENHANCE_RESTORE_LABEL,
+                variant="ghost",
+                color_scheme="gray",
+                size="2",
+                min_height="44px",
+                on_click=CreativeState.undo_enhance_context,
+            ),
+        ),
         rx.cond(
             CreativeState.context_enhance_error != "",
             callout(CreativeState.context_enhance_error, "warn"),
         ),
         rx.cond(
-            CreativeState.context_enhance_note != "",
+            # it names «estas versiones»: it goes with the cards
+            (CreativeState.context_enhance_note != "")
+            & (CreativeState.context_versions.length() > 0)
+            & ~CreativeState.context_text_edited,
             callout(CreativeState.context_enhance_note, "warn"),
         ),
         spacing="2",

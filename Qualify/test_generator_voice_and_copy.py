@@ -2329,21 +2329,19 @@ async def _three_cards(monkeypatch: pytest.MonkeyPatch, *answers: object) -> Cre
     return state
 
 
-@pytest.mark.parametrize("how", ["review_in_drafts", "submit", "start_clean"])
+@pytest.mark.parametrize("how", ["review_in_drafts", "start_clean"])
 async def test_the_next_piece_never_shows_the_last_pieces_cards(
     monkeypatch: pytest.MonkeyPatch, how: str
 ) -> None:
-    """Code review m-25017274: a piece sent on (Borradores, created, or a clean start)
-    takes its cards, its original and «Ver otras tres» with it."""
+    """Code review m-25017274: a piece sent on (Borradores or a clean start) takes its
+    cards, its original and «Ver otras tres» with it. The created case is
+    `test_submit_success_forgets_the_cards_in_source`."""
     state = await _three_cards(monkeypatch)
     state.choose_context_version(0)
     if how == "review_in_drafts":
         state.review_in_drafts()
-    elif how == "start_clean":
-        state._start_clean()
     else:
-        state.brief_topic = ""  # what submit's success does, then the same reset
-        state._forget_context_versions()
+        state._start_clean()
     assert state.context_versions == [] and state.context_before_enhance == ""
     assert state._context_shown == [] and state.context_enhance_note == ""
     assert state.context_chosen == -1
@@ -2431,3 +2429,29 @@ def test_the_tag_suggestions_agree_with_etiquetas() -> None:
     assert "Sugeridas para tu texto" in rendered
     assert "Sugeridos" not in rendered
     assert "de nicho" not in rendered and "La IA" not in rendered
+
+
+async def test_the_parts_card_writing_the_story_forgets_the_cards(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Re-review m-25017274: «Proponerme las partes» overwrites «Qué decir»; cards written
+    for the old text go with it."""
+    from .parts_start_state import apply_to_creative
+
+    state = await _three_cards(monkeypatch)
+    assert apply_to_creative(state, story="Combo para pedir hoy", entries=[], provenance=None)
+    assert state.brief_topic == "Combo para pedir hoy"
+    assert state.context_versions == [] and state.context_before_enhance == ""
+
+
+def test_the_way_back_outlives_the_cards_and_the_notice_does_not() -> None:
+    """Re-review: «Volver a mi texto» hangs on the original alone (it stays after an
+    edit hides the cards); the added-data notice names «estas versiones», so it hides
+    with them."""
+    from .content_generator import _context_ai_tools, _context_versions
+
+    assert "Volver a mi texto" not in str(_context_versions())
+    rendered = str(_context_ai_tools())
+    assert "Volver a mi texto" in rendered and "context_before_enhance" in rendered
+    note = rendered.index("context_enhance_note")
+    assert "context_text_edited" in rendered[max(0, note - 600) : note + 600]
