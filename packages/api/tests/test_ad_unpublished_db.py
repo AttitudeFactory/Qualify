@@ -295,3 +295,20 @@ def test_video_source_covers_claims_and_transitions(unpublished_world):
             repo.finish_video(video.tenant_id, crashed["id"], token, "processing")
         with tenant_session(uuid4()) as session:
             assert session.scalar(text("SELECT count(*) FROM ad_unpublished_videos")) == 0
+
+
+def test_story_source_loads_one_vertical_asset_and_keeps_its_pipeline(unpublished_world):
+    """m-25026350: no feed asset; the stored approval names the story pipeline."""
+    source, form, login, actor = unpublished_world
+    with acting_login(login):
+        args = (source.tenant_id, source.draft_id, source.account_id)
+        story = load_image_source(*args, None, source.vertical.asset_id)
+        assert story.is_story and story.feed is None and story.vertical == source.vertical
+        guard_source(story)
+        recipe = UnpublishedRepository().approve(story, form, actor, uuid4())
+        assert recipe["pipeline_version"] == "ad-story-image-v1"
+        assert recipe["source"]["feed"] is None
+        with pytest.raises(UnpublishedUnavailable, match="9:16"):  # a 4:5 file is no story
+            load_image_source(*args, None, source.feed.asset_id)
+        with pytest.raises(UnpublishedUnavailable, match="portada"):
+            load_image_source(*args, None, source.vertical.asset_id, (uuid4(), None))
