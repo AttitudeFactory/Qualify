@@ -192,6 +192,13 @@ webhook-requeue-comments *args:
 webhook-requeue-postbacks *args:
     uv run --no-sync python -m qualify_api.webhooks.worker --requeue-postbacks {{args}}
 
+# m-25018661: requeue Instagram DMs a person unsent (`is_deleted`), recorded as
+# `unsupported` before the handler erased them, so the stored copy and the original
+# changes are erased. Needs an explicit scope; dry run unless --execute.
+#   just webhook-requeue-deleted (--account <ig_account_id> | --all-accounts) [--execute]
+webhook-requeue-deleted *args:
+    uv run --no-sync python -m qualify_api.webhooks.worker --requeue-deleted {{args}}
+
 # WA-06: manual smoke of the WhatsApp Cloud API client against the test number. DEV ONLY —
 # reads QUALIFY_WA_SYSTEM_USER_TOKEN and QUALIFY_WA_PHONE_NUMBER_ID from the environment,
 # sends for real, prints only the wamid(s).
