@@ -90,7 +90,10 @@ def require_seasonal_key(tenant_id: UUID, brand_id: UUID, key: str, *, gate: Any
 # Minted paths reused while their token has more than this left (process memory, like
 # `r2_media`): a refresh every 5 s must not make the browser download every preview again.
 _REUSE_MARGIN_SECONDS = 15 * 60
-_issued: dict[tuple[UUID, UUID, str, int], tuple[str, float]] = {}
+#: value = (path, token end, the store that minted it). The store itself is kept and
+#: compared by identity: an `id()` alone can be reused by a new store once the old one is
+#: garbage-collected, which served a token the new store never issued (CI flake on #604).
+_issued: dict[tuple[UUID, UUID, str, int], tuple[str, float, Any]] = {}
 _issued_lock = threading.Lock()
 
 
@@ -111,17 +114,17 @@ def issue_seasonal_view_path(
     now = time.monotonic()
     with _issued_lock:
         hit = _issued.get(cache_key)
-        if hit is not None and hit[1] - now > _REUSE_MARGIN_SECONDS:
+        if hit is not None and hit[2] is tokens and hit[1] - now > _REUSE_MARGIN_SECONDS:
             return hit[0]
     token = tokens.issue(tenant_id=tenant_id, object_key=key, content_type=content_type)
     path = f"{SEASONAL_MEDIA_ROUTE}/{token}"
     with _issued_lock:
         # prune on insert: an entry past its reuse margin is never served again
         for stale in [
-            k for k, (_p, ends) in _issued.items() if ends - now <= _REUSE_MARGIN_SECONDS
+            k for k, (_p, ends, _s) in _issued.items() if ends - now <= _REUSE_MARGIN_SECONDS
         ]:
             del _issued[stale]
-        _issued[cache_key] = (path, now + VIEW_TTL_SECONDS)
+        _issued[cache_key] = (path, now + VIEW_TTL_SECONDS, tokens)
     return path
 
 
