@@ -181,6 +181,8 @@ class LiveWizardGateway:
             self.fail("currency", "Esta comprobación admite cuentas en pesos colombianos.")
         if not source.linked_page_id.isdigit() or source.credential_version <= 0:
             self.fail("account", "Falta comprobar la página y la versión del acceso de Meta.")
+        if form.lead_form is not None and not form.lead_form.matches(source):
+            self.fail("validation", "El formulario no corresponde a la cuenta de esta publicación.")
         if form.housing or form.advantage_audience:
             self.fail(
                 "validation",

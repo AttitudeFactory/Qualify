@@ -670,3 +670,63 @@ async def test_audit_failure_after_campaign_active_is_unknown_and_recovery_never
     before = list(live["remote"].activations)
     again = await confirm(live, preview)
     assert again.status == "unknown" and live["remote"].activations == before
+
+
+def use_lead_form(live, **changes):
+    from qualify_api.ads.lead_ads import LeadFormTarget
+
+    source = live["source"]
+    target = LeadFormTarget(uuid4(), "555", "77", source.connection_id, source.brand_id, 1)
+    form = replace(
+        live["args"]["form"],
+        link_url="",
+        lead_form=replace(target, **changes),
+        lead_cta="GET_QUOTE",
+    )
+    live["args"]["form"] = form
+
+
+@pytest.mark.asyncio
+async def test_lead_campaign_validates_exact_payloads_creates_paused_and_activates_on_consent(
+    live,
+):
+    use_lead_form(live)
+    remote = live["remote"]
+    preview = await prepare(live)
+    validated = {
+        call[1].split("/")[-1]: call[2]
+        for call in remote.calls
+        if call[2].get("execution_options") == ["validate_only"]
+    }
+    assert validated["campaigns"]["objective"] == "OUTCOME_LEADS"
+    assert validated["adcreatives"]["call_to_action"] == {
+        "type": "GET_QUOTE",
+        "value": {"lead_gen_form_id": "555"},
+    }
+    assert len(remote.actual_creates) == 4 and not remote.activations
+    adset = next(row for row in remote.objects.values() if row["_resource"] == "adsets")
+    assert adset["destination_type"] == "ON_AD"
+    assert adset["promoted_object"] == {"page_id": "77"}
+    assert adset["optimization_goal"] == "LEAD_GENERATION"
+    result = await confirm(live, preview)
+    assert result.status == "active"
+    assert [call[1] for call in remote.activations] == ["103", "101", "100"]
+
+
+@pytest.mark.asyncio
+async def test_lead_campaign_remote_form_swap_blocks_activation(live):
+    use_lead_form(live)
+    preview = await prepare(live)
+    creative = live["remote"].objects["102"]
+    creative["call_to_action"] = {"type": "GET_QUOTE", "value": {"lead_gen_form_id": "556"}}
+    with pytest.raises(WizardUnavailable, match="no coincide"):
+        await confirm(live, preview)
+    assert not live["remote"].activations
+
+
+@pytest.mark.asyncio
+async def test_lead_form_of_another_page_is_rejected_before_any_meta_call(live):
+    use_lead_form(live, page_id="78")
+    with pytest.raises(WizardUnavailable, match="formulario"):
+        await prepare(live)
+    assert not live["remote"].calls

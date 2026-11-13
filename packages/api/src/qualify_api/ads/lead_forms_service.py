@@ -283,18 +283,24 @@ async def _remote_form(client: LeadFormsClient, form: dict) -> None:
 async def _verify_ad(client: LeadFormsClient, form: dict, data: dict) -> None:
     if data["meta_ad_id"] is None:
         return
-    ad = await client.read_ad(data["meta_ad_id"], fields="id,creative{object_story_spec}")
+    ad = await client.read_ad(
+        data["meta_ad_id"], fields="id,creative{object_story_spec,object_id,call_to_action}"
+    )
     creative = ad.get("creative")
-    spec = creative.get("object_story_spec") if isinstance(creative, dict) else None
-    link = spec.get("link_data") if isinstance(spec, dict) else None
-    video = spec.get("video_data") if isinstance(spec, dict) else None
-    content = link or video
-    cta = content.get("call_to_action") if isinstance(content, dict) else None
+    creative = creative if isinstance(creative, dict) else {}
+    spec = creative.get("object_story_spec")
+    if isinstance(spec, dict):
+        page = spec.get("page_id")
+        content = spec.get("link_data") or spec.get("video_data")
+        cta = content.get("call_to_action") if isinstance(content, dict) else None
+    else:
+        # Qualify's lead ads promote an existing Instagram post (m-24828981): the CTA
+        # and Page sit on the creative itself, not inside an object_story_spec.
+        page, cta = creative.get("object_id"), creative.get("call_to_action")
     value = cta.get("value") if isinstance(cta, dict) else None
     if (
         ad.get("id") != data["meta_ad_id"]
-        or not isinstance(spec, dict)
-        or spec.get("page_id") != form["page_id"]
+        or page != form["page_id"]
         or not isinstance(value, dict)
         or value.get("lead_gen_form_id") != form["meta_form_id"]
     ):
@@ -322,7 +328,7 @@ def _persist(tenant_id: UUID, form: dict, data: dict, *, received_via: str) -> b
         promotion = session.scalar(
             text("""SELECT id FROM ad_promotions
             WHERE meta_ad_id=:ad AND brand_id=:brand AND objective='OUTCOME_LEADS'
-            AND request_snapshot->>'lead_gen_form_id'=:remote"""),
+            AND request_snapshot->'lead_form_snapshot'->>'meta_form_id'=:remote"""),
             {"ad": data["meta_ad_id"], "brand": form["brand_id"], "remote": form["meta_form_id"]},
         )
         inserted = session.execute(
