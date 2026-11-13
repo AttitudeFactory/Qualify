@@ -39,3 +39,10 @@ Detalle completo en la [bitácora, NIVELES-001](pruebas.md#niveles-001). Ajustes
 - **Ángulos:** 14/14 juegos con 2 ángulos por nivel exactos, 0 etiquetas inválidas; 0 datos inventados por la extracción determinista (140 ideas). Calidad del juez sin cambio (test 3,52 → 3,57). En test, solution_aware cumple su nivel solo 0,50 y most_aware inventa una reserva en 1/6: quedan «no fiable». US$0,0250 → US$0,029 por juego (+15 %).
 - **Partes:** v3.2 sin ventajas ni nivel es idéntico byte a byte a v3.1. Con nivel y ventajas usa una ventaja en 0,87 de los planes, pero most_aware no acorta el plan (4 partes en ambos brazos). US$0,006–0,008 por propuesta.
 - Gasto de la medición completa: US$1,83, en la bitácora.
+
+## Uso NIVELES-002: arreglos de los niveles, segunda pasada (m-25026482), 2026-11-13
+
+Detalle en la [bitácora, NIVELES-002](pruebas.md#niveles-002). Mismos ajustes; prompt de partes `proponer-partes-v3.3`.
+
+- **Ángulos con ventajas (test):** solution_aware 0,50 → 0,70, todavía «no fiable». Ofertas o servicios inventados (determinista) 0,20 → 0,08; en most_aware 0,67 → 0,30, por «reserva» y «para llevar». Sin regresiones en test; reparto exacto 15/15. US$0,031 por juego.
+- **Partes:** v3.3 sin ventajas ni nivel es idéntica byte a byte a v3.1. product_aware pasa 6/6 con la rúbrica corregida.

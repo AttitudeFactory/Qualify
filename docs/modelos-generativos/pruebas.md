@@ -22,6 +22,67 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
 
 ---
 
+<a id="niveles-002"></a>
+
+## NIVELES-002 — Segunda pasada: los arreglos del dueño del prompt contra NIVELES-001 (m-25026482) — 2026-11-13
+
+- **Qué se midió:** solo lo que tocan los commits `5b9eb00f` (unaware solo con ventajas de
+  experiencia; solution_aware sin sesgo de comida; una ventaja no se vuelve gratis, regalo,
+  incluido, descuento ni promoción; ningún servicio que no esté en los datos) y `1a5352ba`
+  (partes sin guía de most_aware, `proponer-partes-v3.3`), contra los números de
+  [NIVELES-001](#niveles-001) en los mismos casos. Código medido: `440eefa6` (rama
+  `feat/m-25026482-niveles-consciencia`).
+- **Modelos y ajustes:** los mismos de NIVELES-001 (`claude-sonnet-5` @ medium para
+  ángulos y partes, `claude-opus-5-5` @ medium para copy, juez `claude-haiku-5-5` @ low con
+  `juez-niveles-v2`; para partes `juez-niveles-v2+partes-v1`). Sin trazas de Langfuse.
+- **Cambios en la medición, escritos antes de juzgar** ([README](../../packages/api/evals/niveles_consciencia/README.md)):
+  nuevo chequeo determinista de ofertas y servicios inventados (`invented_offers`, aplicado
+  también hacia atrás a las salidas guardadas de NIVELES-001) y un agregado a la rúbrica
+  del juez solo para partes (sin cifras por diseño; el ángulo pasa como dato dado).
+- **Corridas:** ángulos con ventajas ×2 en los 7 productos (13 de 14 juegos: el tope cortó
+  uno), sin ventajas ×1 en test (2 de 3); copy ×3 en los casos de comida y unaware de
+  comida ×3 más; partes product_aware ×3 en los dos brazos.
+
+### Antes → después
+
+| Qué | NIVELES-001 | NIVELES-002 |
+|---|---|---|
+| Ángulos solution_aware con ventajas, cumple (juez), test | 0,50 (n 6) | **0,70** (n 10), no fiable |
+| ídem en dev | 0,875 (n 8) | 0,75 (n 16) |
+| Ángulos most_aware con ventajas: oferta o servicio inventado (det), test | 0,67 | **0,30** |
+| most_aware: dato inventado (juez), test | 0,17 | 0,10, sigue no fiable |
+| Ángulos con ventajas, cualquier oferta o servicio inventado (det), test / dev | 0,20 / 0,075 | **0,08** / 0,087 |
+| «De regalo», «incluido» en ideas con ventajas | 1 de 70 ideas | 1 de 130 («incluido», en solution_aware) |
+| Copy unaware de comida: cumple (juez) | 0/3 | **4/5** (uno sin juez por el tope) |
+| Copy unaware de comida: regla determinista / menciona horario | 0/3 · 3/3 | 3/6 · 2/6 |
+| Copy (comida), oferta o servicio inventado | 5 de 21 piezas | **0 de 17** |
+| Partes product_aware con la rúbrica corregida | 0/3 · 0/3 | **3/3 base · 3/3 nuevo** |
+| Partes v3.3 sin ventajas ni nivel = v3.1 | (v3.2: sí) | **sí, 12 pares byte a byte** |
+
+- **Lo que queda:** solution_aware sigue bajo la barra (0,70). En inmobiliaria repite el
+  producto («Dos alcobas pensadas para tu familia») sin decir qué distingue al negocio. Los
+  servicios inventados en most_aware siguen: «Reserva tu cupo» en viajes y «para llevar» en
+  comida (9 de 130 ideas). El copy unaware todavía nombra el horario en 2 de 6.
+- **Sin regresiones en test:** unaware 1,00 → 1,00, problem_aware 0,83 → 0,90,
+  product_aware 0,83 → 0,90, calidad 3,57 → 3,62, reparto exacto 15/15 y 0 etiquetas
+  inválidas, puertas del copy 17/17. En dev, problem_aware y product_aware bajan de 0,875 a
+  0,81 (una idea de 16: ruido). Sin ventajas en test hay solo n = 4 por nivel: no alcanza
+  para hablar de regresión.
+- **Sin medir:** copy unaware de inmobiliaria. Su única llamada dio `APITimeoutError` y se
+  contó a su techo (US$0,12). Lo que quedaba (US$0,137) daba para n = 1, que no dice nada.
+  El copy product_aware y most_aware de inmobiliaria tampoco se repitieron.
+- **Costo:** juego de ángulos US$0,0311 (NIVELES-001: US$0,0287), el mismo orden.
+- **Gasto:** esta pasada US$1,033 (incluye US$0,12 de la llamada perdida); **total de la
+  tarea US$2,86** de US$3. Cero llamadas a BytePlus.
+- **Veredicto: se puede publicar con un arreglo.** Las ofertas inventadas bajan a menos de
+  la mitad, el copy unaware de comida pasa de 0/3 a 4/5 y nada que pasaba se rompió.
+  solution_aware y most_aware siguen «no fiable». Hay que mostrarlos como tales o hacer una
+  vuelta más de redacción: para solution_aware, «nombra una ventaja de la lista o un dato
+  que la competencia no tenga»; para most_aware, prohibir con nombre «reserva», «aparta» y
+  «para llevar» si no están en los datos.
+
+---
+
 <a id="niveles-001"></a>
 
 ## NIVELES-001 — Niveles de consciencia (Schwartz) y ventajas del negocio en ángulos, copy y video por partes (m-25026482) — 2026-11-13

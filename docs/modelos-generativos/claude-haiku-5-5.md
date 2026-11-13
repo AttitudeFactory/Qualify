@@ -113,3 +113,12 @@ Detalle en la [bitácora, NIVELES-001](pruebas.md#niveles-001). `claude-haiku-5-
 - **Costo:** US$0,001–0,0015 por lectura de un juego de 10 ideas.
 - **Lo que se ajustó en dev:** la v1 contaba atributos del producto («dos sabores») como datos inventados; la v2 limita el conteo a las siete clases de dato.
 - **Límites conocidos:** no está validado contra etiquetas humanas. En partes pide cifras para product_aware, que el prompt de partes prohíbe (desajuste de la rúbrica). Además dio un falso positivo de domicilio porque no recibió el CTA del ángulo. Un `APITimeoutError` cortó una corrida: el ejecutor ahora registra el error y cuenta la llamada a su techo.
+
+## Uso NIVELES-002 — juez, segunda pasada (m-25026482) — 2026-11-13
+
+Detalle en la [bitácora, NIVELES-002](pruebas.md#niveles-002).
+
+- Rúbrica de ángulos y copy sin cambios (`juez-niveles-v2`), para comparar con NIVELES-001.
+- Para planes de video, el agregado `juez-niveles-v2+partes-v1` (sin cifras por diseño; el ángulo pasa como dato dado). Con él, product_aware en partes pasa de 0/6 a 6/6.
+- Las ofertas inventadas ya no dependen solo del juez: `invented_offers` (determinista) cuenta gratis, regalo, incluido, descuento, promoción y servicios como reservas, apartar, domicilio o «para llevar».
+- Otro `APITimeoutError`, esta vez del copy, quedó registrado y contado a su techo.
