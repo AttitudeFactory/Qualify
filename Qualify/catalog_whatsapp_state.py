@@ -124,7 +124,7 @@ class CatalogWhatsAppState(rx.State):
     # -- reading ---------------------------------------------------------------------------
     #: product id → the verb the owner tapped in this tab, until it is no longer in flight
     #: (then «"{nombre}" ya está en WhatsApp»).
-    _watch_products: dict[str, str] = {}
+    sent_verbs: dict[str, str] = {}
     _brand_id: str = ""
     _on_page: bool = False
     _watching: bool = False
@@ -191,7 +191,15 @@ class CatalogWhatsAppState(rx.State):
         tab that just arrived (only when `announce`: the watch loop's own reads)."""
         photo_counts = {p.product_id: p.photo_count for p in products}
         screen = vm.screen_view(view.connection, view.states, photo_counts)
+        if self.connection and view.connection != self.connection:
+            # a new situation (connected, lost the permission): its own way to ask the team
+            self.team_sent = False
+            self.team_notice = ""
+            self.team_error = ""
         self.connection = view.connection
+        if self.summary_text and not self.running and screen.bulk.tone == "warn":
+            # the last update's summary is old news once there is something new to send
+            self.summary_text = ""
         self.card_kind = screen.card_kind
         self.card_text = screen.card_text
         self.ed_badge = {k: e.badge for k, e in screen.editor.items()}
@@ -246,14 +254,14 @@ class CatalogWhatsAppState(rx.State):
                 self.summary_tone = summary.tone
                 if summary.problems == 0 and announce:
                     events.append(rx.toast.success(vm.UP_TO_DATE_TOAST, duration=_TOAST_MS))
-        if announce and self._watch_products:
+        if announce and self.sent_verbs:
             names = {p.product_id: p.name for p in products}
-            for tone, text in vm.finished_toasts(self._watch_products, view.states, names):
+            for tone, text in vm.finished_toasts(self.sent_verbs, view.states, names):
                 toast = rx.toast.success if tone == "ok" else rx.toast.error
                 events.append(toast(text, duration=_TOAST_MS))
-            self._watch_products = {
+            self.sent_verbs = {
                 pid: verb
-                for pid, verb in self._watch_products.items()
+                for pid, verb in self.sent_verbs.items()
                 if view.states.get(pid, ("", None))[0] in vm.IN_FLIGHT
             }
         return events
@@ -394,7 +402,7 @@ class CatalogWhatsAppState(rx.State):
                 events.append(rx.toast.error(error, duration=_TOAST_MS))
             elif sent is not None and sent.run_ids:
                 verb = vm.ACTION_UPLOAD if action == vm.ACTION_UPLOAD else vm.ACTION_UPDATE
-                self._watch_products = {**self._watch_products, product_id: verb}
+                self.sent_verbs = {**self.sent_verbs, product_id: verb}
             elif sent is not None and sent.in_flight:
                 events.append(rx.toast.info(vm.ALREADY_ON_ITS_WAY, duration=_TOAST_MS))
             elif sent is not None:

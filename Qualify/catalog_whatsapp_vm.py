@@ -131,13 +131,14 @@ NOT_ELIGIBLE_FALLBACK = (
     "Le falta algo",
     "Para subirlo a WhatsApp le falta un dato. Revisa el precio, la moneda y la foto.",
 )
-#: The dialog's «{j} no se pueden subir todavía: {motivo más común}» (plural subject).
-NOT_ELIGIBLE_SHORT: dict[str, str] = {
-    "no_price": "les falta el precio",
-    "no_currency": "les falta la moneda",
-    "no_photo": "les falta la foto",
-    "photo_too_small": "su foto es muy pequeña",
-    "photo_format": "su foto no está en JPG ni PNG",
+#: The dialog's «{j} no se pueden subir todavía: les falta {qué}» — what is missing, by
+#: reason (a photo that is too small or in another format still «needs» a better one).
+MISSING_NOUN: dict[str, str] = {
+    "no_price": "el precio",
+    "no_currency": "la moneda",
+    "no_photo": "la foto",
+    "photo_too_small": "una foto más grande",
+    "photo_format": "una foto en JPG o PNG",
 }
 
 # -- per product: why WhatsApp did not take it (§4; `CATALOG_ITEM_ERRORS`) ----------------
@@ -440,19 +441,18 @@ class Dialog:
     confirm: str
 
 
-def most_common_reason(not_eligible: Mapping[str, int]) -> str:
-    """The reason most products share (`inactive` aside: those are removals, not blocks);
-    ties go to the order of §4."""
-    order = list(NOT_ELIGIBLE_SHORT)
-    ranked = sorted(
-        (
-            (count, -order.index(r) if r in order else -len(order), r)
-            for r, count in not_eligible.items()
-            if r != "inactive" and count > 0
-        ),
-        reverse=True,
-    )
-    return ranked[0][2] if ranked else ""
+def missing_reasons(not_eligible: Mapping[str, int]) -> list[str]:
+    """The reasons that block some product (`inactive` aside: those are removals), the
+    most common first; ties go to the order of §4."""
+    order = list(MISSING_NOUN)
+    present = [r for r, c in not_eligible.items() if r != "inactive" and c > 0]
+    return sorted(present, key=lambda r: (-not_eligible[r], order.index(r) if r in order else 99))
+
+
+def _or(parts: Sequence[str]) -> str:
+    if len(parts) <= 1:
+        return "".join(parts)
+    return ", ".join(parts[:-1]) + " o " + parts[-1]
 
 
 def dialog_view(
@@ -488,14 +488,17 @@ def dialog_view(
         removal += " Tus clientes ya no " + ("lo verán." if deletes == 1 else "los verán.")
     blocked = sum(c for r, c in not_eligible.items() if r != "inactive")
     if blocked:
-        reason = most_common_reason(not_eligible)
-        why = NOT_ELIGIBLE_SHORT.get(reason, "les falta un dato")
+        # every reason present is named (most common first): «les falta el precio» would
+        # be untrue of the ones that only miss a photo
+        what = _or([MISSING_NOUN.get(r, "un dato") for r in missing_reasons(not_eligible)[:3]])
         if blocked == 1:
-            why = why.replace("les ", "le ", 1)
-            lines.append(f"1 no se puede subir todavía: {why}. Lo verás después para corregirlo.")
+            lines.append(
+                f"1 no se puede subir todavía: le falta {what}. Lo verás después para corregirlo."
+            )
         else:
             lines.append(
-                f"{blocked} no se pueden subir todavía: {why}. Los verás después para corregirlos."
+                f"{blocked} no se pueden subir todavía: les falta {what}. Los verás después "
+                "para corregirlos."
             )
     return Dialog(
         title="¿Subir tus productos a WhatsApp?"

@@ -129,13 +129,11 @@ def editor_block() -> rx.Component:
                         loading_spinner("sm"),
                         rx.text(
                             rx.cond(
-                                W.ed_badge[pid] == vm.NOT_UPLOADED_BADGE,
+                                (W.sent_verbs[pid] == vm.ACTION_UPDATE)
+                                | (W.ed_action[pid] == vm.ACTION_UPDATE)
+                                | (W.ed_action[pid] == vm.ACTION_RETRY),
+                                vm.UPDATING_ONE,
                                 vm.UPLOADING_ONE,
-                                rx.cond(
-                                    W.ed_action[pid] == vm.ACTION_BUSY,
-                                    vm.UPLOADING_ONE,
-                                    vm.UPDATING_ONE,
-                                ),
                             ),
                             size="1",
                             color=T.TEXT_MUTED,

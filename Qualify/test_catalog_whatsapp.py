@@ -201,7 +201,8 @@ def test_the_dialog_shows_only_counts_above_zero_and_states_removals() -> None:
     assert dialog.title == "¿Actualizar tu catálogo de WhatsApp?"
     assert dialog.lines == (
         "Se suben 3 productos nuevos.",
-        "3 no se pueden subir todavía: les falta la foto. Los verás después para corregirlos.",
+        "3 no se pueden subir todavía: les falta la foto o el precio. Los verás después "
+        "para corregirlos.",
     )
     assert dialog.removal == (
         "Se quita de WhatsApp 1 que borraste aquí: «Combo viejo». Tus clientes ya no lo verán."
@@ -354,10 +355,10 @@ async def test_polling_starts_while_in_flight_and_stops_after(world, fake, monke
 
     monkeypatch.setattr(module.asyncio, "sleep", no_wait)
     wa._on_page = True
-    wa._watch_products = {_A: vm.ACTION_UPLOAD}
+    wa.sent_verbs = {_A: vm.ACTION_UPLOAD}
     events = await _drain(CatalogWhatsAppState.watch.fn(wa))
     assert "«Shawarma mixto» ya está en WhatsApp" in _names(events)
-    assert wa._watching is False and wa._watch_products == {}
+    assert wa._watching is False and wa.sent_verbs == {}
 
 
 async def test_polling_stops_when_the_owner_leaves(world, fake, monkeypatch) -> None:
@@ -379,7 +380,7 @@ async def test_upload_one_queues_it_and_watches(world, fake) -> None:
     fake.view = SyncViewVM(connection="connected", states={_A: ("queued", None)})
     events = await _drain(CatalogWhatsAppState.send_one.fn(wa, _A))
     assert fake.sent == [("upload", _A)]
-    assert wa._watch_products == {_A: vm.ACTION_UPLOAD} and wa.acting == ""
+    assert wa.sent_verbs == {_A: vm.ACTION_UPLOAD} and wa.acting == ""
     assert wa.card_kind[_A] == vm.CARD_UPLOADING and "watch" in _names(events)
 
 
@@ -526,3 +527,38 @@ def _visible_strings(path: Path) -> list[str]:
 def test_no_technical_words_reach_the_owner(mod) -> None:
     for text in _visible_strings(Path(inspect.getfile(mod))):
         assert not _FORBIDDEN.search(text), text
+
+
+async def test_the_last_summary_goes_once_there_is_something_new(world, fake) -> None:
+    wa, _ = world
+    fake.view = SyncViewVM(connection="connected", states={_A: ("synced", None)})
+    await _drain(CatalogWhatsAppState.load.fn(wa))
+    wa.summary_text, wa.summary_tone = "Listo: 1 subido.", "ok"
+    fake.view = SyncViewVM(connection="connected", states={_A: ("out_of_date", None)})
+    await _drain(CatalogWhatsAppState.load.fn(wa))
+    assert wa.summary_text == "" and wa.bulk_button == vm.UPDATE_ALL
+
+
+async def test_a_new_situation_offers_its_own_team_request(world, fake) -> None:
+    wa, _ = world
+    fake.view = SyncViewVM(connection="none")
+    await _drain(CatalogWhatsAppState.load.fn(wa))
+    await CatalogWhatsAppState.ask_team.fn(wa)
+    assert wa.team_sent
+    fake.view = SyncViewVM(connection="missing_permission", states={_A: ("synced", None)})
+    await _drain(CatalogWhatsAppState.load.fn(wa))
+    assert not wa.team_sent and wa.team_notice == ""
+
+
+def test_a_refused_save_does_not_upload_afterwards() -> None:
+    catalog = CatalogState()
+    catalog._wa_after_save = _A
+    catalog.edit_error = "El producto necesita un nombre."
+    catalog._stay_after_refusal()
+    assert catalog._wa_after_save == ""
+
+
+def test_the_save_chains_the_upload_only_for_the_saved_product() -> None:
+    source = inspect.getsource(CatalogState.save_product.fn)
+    assert "send, self._wa_after_save = self._wa_after_save" in source
+    assert "CatalogWhatsAppState.send_one(send)" in source
