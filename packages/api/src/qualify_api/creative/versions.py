@@ -11,6 +11,11 @@ from sqlalchemy.sql.elements import ColumnElement
 from qualify_api.creative import models as orm
 from qualify_api.creative.fsm import DraftTrigger, apply_transition
 
+#: Restoring a version of a piece whose files the retention purge removed
+#: (`media_purged_at`, ADR 39). A part of a purged video by parts gets
+#: `parts.PURGED_PARENT_TEXT` instead (m-24921069).
+PURGED_FILES_TEXT = "Los archivos de esta publicación ya no están disponibles."
+
 
 def snapshot_current(
     session: Session, draft: orm.ContentDraft, *, revision: int | None = None
@@ -65,6 +70,8 @@ def snapshot_current(
             ),
             pipeline_version=draft.pipeline_version,
             requires_ai_disclosure=draft.requires_ai_disclosure,
+            # 0119 (VE-08): the brief this content was made from (the draft's current one)
+            brief_id=draft.brief_id,
             spent_usd=session.scalar(
                 select(func.coalesce(func.sum(orm.CreativeUsageEvent.cost_usd), 0)).where(
                     orm.CreativeUsageEvent.draft_id == draft.id,
@@ -118,7 +125,7 @@ def restore(session: Session, draft_id: UUID, version_id: UUID) -> None:
     if draft is None:
         raise ValueError("La publicaci\u00f3n ya no est\u00e1 disponible.")
     if draft.media_purged_at is not None:
-        raise ValueError("Los archivos de esta publicaci\u00f3n ya no est\u00e1n disponibles.")
+        raise ValueError(PURGED_FILES_TEXT)
     if any(event.status in {"scheduled", "publishing"} for event in events):
         raise ValueError("Cancela la programaci\u00f3n antes de cambiar la versi\u00f3n.")
     if draft.status not in {"generated", "rejected", "failed", "approved"}:
@@ -143,3 +150,18 @@ def restore(session: Session, draft_id: UUID, version_id: UUID) -> None:
         .order_by(orm.ImageAsset.position)
     ).all()
     draft.preview_key = next((item.object_key for item in media if item.object_key), None)
+    if version.brief_id is not None:
+        # VE-08 (0119): the version comes back with the brief it was made from — a part's
+        # description and photos, so «Crear otra versión» starts from what is shown
+        draft.brief_id = version.brief_id
+    if draft.parent_draft_id is not None:
+        from qualify_api.creative.parts import mark_parent_dirty
+
+        session.flush()
+        mark_parent_dirty(session, draft.id)  # its video by parts joins again
+    else:
+        from qualify_api.creative.parts import open_parent_join, parent_picture
+
+        session.flush()
+        open_parent_join(session, draft.id)  # VE-10a: a parent joins on its new version
+        parent_picture(session, draft.id)  # ... and shows its join's poster, not the video

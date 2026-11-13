@@ -35,6 +35,7 @@ import reflex as rx
 from qualify_api.planner.publishable import STORY_CAPTION_NOTE
 
 from .campaign_provider import COLOR_LABELS
+from .offer_mark_ui import offer_mark_control
 from .planner_state import CONFIRM_CANCEL, CONFIRM_REMOVE, PlannerState
 from .planner_vm import (
     ASSIGN_STEP_ICONS,
@@ -66,6 +67,7 @@ from .post_card import (
     temperature_badge,
     viewable_src,
 )
+from .promotion_entry import promotion_event_query, promotion_link
 from .r2_media import BACKEND_BASE
 from .ui import callout, drawer, skeleton_card, stepper
 from .ui import tokens as T
@@ -90,7 +92,7 @@ _KIND_FILTERS: tuple[tuple[str, str], ...] = (
     ("all", "Todo"),
     ("image", "Imágenes"),
     ("video", "Videos"),
-    ("carousel", "Galerías"),
+    ("carousel", "Carruseles"),
     ("pack", "Multiformato"),
 )
 
@@ -1839,6 +1841,11 @@ def _detail_body() -> rx.Component:
                 wrap="wrap",
                 gap="0.35rem",
             ),
+            # m-24945889: the business's offer for its WhatsApp chats («Tu oferta»).
+            # ASSUMES the planner's POST id IS the piece's draft id (`content_drafts.id`,
+            # confirmed in review 2026-11-08): the mark control reads it as a draft id.
+            # If a future reader gives the panel another id, pass the draft id here.
+            rx.cond(d.post_id != "", offer_mark_control(d.post_id, d.approved)),
             spacing="2",
             width="100%",
         ),
@@ -1961,6 +1968,15 @@ def _detail_footer() -> rx.Component:
         ),
     )
     actions = rx.box(
+        rx.cond(
+            (d.status_label == "Publicado")
+            & (d.platform == "instagram")
+            & (d.destination != "story"),
+            promotion_link(
+                d.post_id,
+                query=promotion_event_query(PlannerState.week_return_query, d.event_id),
+            ),
+        ),
         rx.cond(
             d.can_remove_rejected,
             rx.button(

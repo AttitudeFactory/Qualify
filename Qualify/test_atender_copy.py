@@ -287,7 +287,13 @@ def test_leads_screen_copy() -> None:
     # m-24842992 moved the screen's words to `leads_vm` and rewrote the empty state.
     source = inspect.getsource(leads_page) + inspect.getsource(leads_vm)
     assert '"Clientes interesados"' in source
-    assert '"Personas que te dejaron sus datos y aceptaron que las contactes."' in source
+    # Meta forms also supply contact details; their presence alone proves no channel consent.
+    assert leads_vm.INTRO == "Personas que te dejaron sus datos en un formulario."
+    assert "aceptaron que las contactes" not in leads_vm.INTRO
+    # The existing web-form action remains available conditionally, rather than promising
+    # WhatsApp contact for every entry in a mixed list.
+    assert "Cuando aparezca «Escribirle por WhatsApp»" in leads_vm.HOW_IT_WORKS
+    assert "Para las respuestas de Meta" in leads_vm.HOW_IT_WORKS
     assert '"Todavía no hay interesados"' in source
     assert '"Lo que te contaron:' in source
     assert "Datos extra" not in source

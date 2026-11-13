@@ -176,3 +176,40 @@ def timed_cues(lines: Sequence[str], spans: Sequence[Span]) -> list[Cue]:
         limit = cues[index + 1].start if index + 1 < len(cues) else cue.end + LINGER_SECONDS
         cues[index] = Cue(cue.start, max(cue.end, min(cue.end + LINGER_SECONDS, limit)), cue.text)
     return cues
+
+
+# -- a clip's subtitles (founder, 2026-11-03: «como subtítulos») ----------------------------
+#
+# A generated clip has no voice to time a line on: its subtitles are the approved copy's
+# hook, shown from the start, and its call to action, shown at the end — each over a fixed
+# share of the clip, its lines sharing that window in proportion to their length.
+
+#: The share of the clip each of the two texts is shown over, and its shortest window.
+CLIP_TEXT_SHARE = 0.4
+CLIP_TEXT_MIN_SECONDS = 2.5
+#: The first frame stays clean for a moment, and the last line leaves just before the end.
+CLIP_LEAD_SECONDS = 0.3
+CLIP_TAIL_SECONDS = 0.1
+
+
+def clip_cues(hook: str, cta: str, seconds: float, max_chars: int = MAX_CHARS) -> list[Cue]:
+    """The subtitles of a `seconds`-long clip: `hook` over the opening window, `cta` over
+    the closing one — `CLIP_TEXT_SHARE` of the clip each (at least
+    `CLIP_TEXT_MIN_SECONDS`), never overlapping: on a short clip they meet halfway. Each
+    text is cut into lines (`chunk_script`) that share its window by length. An empty
+    text has no cues; a clip with no length has none at all."""
+    if seconds <= 0:
+        return []
+    middle = seconds / 2
+    window = max(CLIP_TEXT_MIN_SECONDS, seconds * CLIP_TEXT_SHARE)
+    hook_lines = chunk_script(hook, max_chars) if hook.strip() else []
+    cta_lines = chunk_script(cta, max_chars) if cta.strip() else []
+    hook_end = min(window, middle) if cta_lines else min(window, seconds - CLIP_TAIL_SECONDS)
+    cta_start = max(seconds - window, middle) if hook_lines else max(seconds - window, 0.0)
+    cues: list[Cue] = []
+    if hook_lines:
+        start = min(CLIP_LEAD_SECONDS, hook_end / 4)
+        cues.extend(_spread(hook_lines, [(start, hook_end)]))
+    if cta_lines:
+        cues.extend(_spread(cta_lines, [(cta_start, max(cta_start, seconds - CLIP_TAIL_SECONDS))]))
+    return [cue for cue in cues if cue.end > cue.start]

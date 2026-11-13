@@ -60,7 +60,9 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy.exc import SQLAlchemyError
 
+from qualify_api.connections.ad_accounts import AdAccountUnavailable
 from qualify_api.connections.meta_oauth import MetaOAuthError
+from qualify_api.connections.public_hosts import page_url_on_host, request_origin
 from qualify_api.connections.purge import ConnectionPurgeInProgress
 from qualify_api.connections.revoke import ConnectionNotFound
 from qualify_api.connections.service import ConnectOutcome, ConnectService
@@ -81,6 +83,7 @@ INVALID_STATE = "invalid_state"
 # The operator pressed "Cancel" in Meta's dialog: Meta comes back with `error=...` and no
 # `code`. Not an attack and not a bug, so it gets its own, calm message in the UI.
 DENIED = "denied"
+ADS_DENIED = "ads_denied"
 
 # Where the browser lands after the callback. In production the UI and the API share one
 # origin behind Caddy and `REFLEX_DEPLOY_URL` is that origin; in local dev the API runs on
@@ -102,22 +105,37 @@ class StartConnectRequest(BaseModel):
     connection_id: UUID | None = None
     return_to: str = ""
     cause: str = ""
+    request_ads: bool = False
 
 
 class StartConnectResponse(BaseModel):
     authorization_url: str
 
 
-def get_connections_page_url() -> str:
-    """Absolute URL of the Reflex `/connections` page. `QUALIFY_APP_URL` wins, then
-    `REFLEX_DEPLOY_URL` (set to the public origin by `deploy/docker-compose.prod.yml`),
-    then the local dev frontend. A dependency so tests can pin it."""
+def configured_connections_page_url() -> str:
+    """Absolute URL of the Reflex `/connections` page on the configured origin.
+    `QUALIFY_APP_URL` wins, then `REFLEX_DEPLOY_URL` (set to the public origin by
+    `deploy/docker-compose.prod.yml`), then the local dev frontend."""
     base = (
         os.environ.get("QUALIFY_APP_URL", "").strip()
         or os.environ.get("REFLEX_DEPLOY_URL", "").strip()
         or _DEV_APP_URL
     )
     return f"{base.rstrip('/')}/connections"
+
+
+def get_connections_page_url(request: Request) -> str:
+    """Where a callback sends the browser back: `/connections` on the host the callback
+    arrived on when it is a public host (`QUALIFY_PUBLIC_HOSTS`, m-24947215) — the flow
+    started there, so the session lives there — else the configured origin. A dependency
+    so tests can pin it."""
+    return page_url_on_host(configured_connections_page_url(), request.headers.get("host"))
+
+
+def start_origin(request: Request) -> str:
+    """The browser origin of an HTTP `start`: its own host when public, so the binding
+    cookie set on this response and the provider callback share one host."""
+    return request_origin(request.headers.get("host"))
 
 
 def _back_to_connections(
@@ -181,17 +199,18 @@ _GUIDED_OUTCOMES = frozenset({ConnectOutcome.LINK_REQUIRED, ConnectOutcome.PAGE_
 @router.post("/start", response_model=StartConnectResponse)
 def start_connect(
     body: StartConnectRequest,
+    request: Request,
     response: Response,
     principal: Principal = Depends(current_principal),
     service: ConnectService = Depends(get_connect_service),
 ) -> StartConnectResponse:
-    kwargs = {}
+    kwargs: dict[str, object] = {"browser_origin": start_origin(request)}
     if body.connection_id is not None:
-        kwargs = {
-            "connection_id": body.connection_id,
-            "return_to": body.return_to,
-            "cause": body.cause,
-        }
+        kwargs.update(connection_id=body.connection_id, return_to=body.return_to, cause=body.cause)
+    if body.request_ads:
+        if body.connection_id is None:
+            raise HTTPException(status_code=422, detail="advertising_requires_connection")
+        kwargs["request_ads"] = True
     try:
         started = service.start_connect(
             tenant_id=principal.tenant_id,
@@ -201,6 +220,8 @@ def start_connect(
         )
     except ConnectionNotFound:
         raise HTTPException(status_code=404, detail="connection_not_found") from None
+    except AdAccountUnavailable:
+        raise HTTPException(status_code=403, detail="advertising_access_unavailable") from None
     set_binding_cookie(response, started)
     return StartConnectResponse(authorization_url=started.authorization_url)
 
@@ -251,7 +272,7 @@ async def _callback_outcome(
                 return _back_to_connections(page_url, INVALID_STATE)
             return _back_to_connections(
                 page_url,
-                DENIED if error else INVALID_STATE,
+                (ADS_DENIED if payload.request_ads else DENIED) if error else INVALID_STATE,
                 return_to=payload.return_to,
                 connection_id=payload.connection_id,
             )
@@ -268,7 +289,13 @@ async def _callback_outcome(
         result = await service.complete_connect(code=code, state=state, binding_nonce=binding_nonce)
     except InvalidState:
         return _back_to_connections(page_url, INVALID_STATE)
-    except (MetaOAuthError, httpx.HTTPError, SQLAlchemyError, ConnectionPurgeInProgress):
+    except (
+        MetaOAuthError,
+        httpx.HTTPError,
+        SQLAlchemyError,
+        ConnectionPurgeInProgress,
+        AdAccountUnavailable,
+    ):
         # complete_connect has already spent its jti. Retry means a new consent flow;
         # keep only the authenticated original route, never a provider error or token.
         return _back_to_connections(

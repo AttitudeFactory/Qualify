@@ -66,14 +66,16 @@ from qualify_creative.angles import (
 )
 from qualify_creative.creations import weight_for_request
 from qualify_creative.enums import ContentKind, DraftStatus, FailureReason
+from qualify_creative.pricing import SEEDREAM_PRO_MODEL, seedream_image_cost
 from qualify_creative.providers import PricingTable
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import case, func, select, update
 
 from ..catalog.models import MEDIA_TYPE_IMAGE
 from ..catalog.service import ProductRecord, UnknownProduct
-from ..claude_tools import CallStats, ClaudeToolError, MissingAPIKey
+from ..claude_tools import Attribution, CallStats, ClaudeToolError, MissingAPIKey
 from . import models as orm
+from .angles_ai import FEATURE as ANGLES_FEATURE
 from .angles_ai import AnglesProviderError
 from .creations import CreationsLedger, NotEnoughCreations, not_enough_text
 from .service import (
@@ -473,6 +475,7 @@ class AngleGenerator(Protocol):
         preset: AnglePreset,
         *,
         count: int,
+        attribution: Attribution,
         avoid: Sequence[CreativeAngle] = (),
     ) -> tuple[tuple[CreativeAngle, ...], CallStats, str]: ...
 
@@ -903,7 +906,12 @@ class AngleSetService:
         unit = Decimal(0)
         if self._pricing is not None and self._image_model_id:
             try:
-                unit = self._pricing.unit_price(model_id=self._image_model_id, unit="per_piece")
+                unit = seedream_image_cost(
+                    self._pricing,
+                    model_id=self._image_model_id,
+                    size="2K",
+                    references=10 if self._image_model_id == SEEDREAM_PRO_MODEL else 1,
+                )
             except Exception as exc:  # noqa: BLE001 — a missing rate is not a reason to block
                 logger.info("no per-piece rate for %s: %s", self._image_model_id, exc)
         return AngleSetPlan(count=count, image_unit_usd=unit)
@@ -962,8 +970,12 @@ class AngleSetService:
                 brand_kit_fingerprint=brand_fingerprint(brand),
             )
         )
+        # m-24955649: every angle call is booked to this business and brand
+        attribution = Attribution(tenant_id=tenant_id, brand_id=brand_id, feature=ANGLES_FEATURE)
         try:
-            angles, stats, fingerprint = self._generate(facts, brand, preset, count=count)
+            angles, stats, fingerprint = self._generate(
+                facts, brand, preset, count=count, attribution=attribution
+            )
         except Exception as exc:
             reason, detail = _spanish_failure(exc)
             self._fail_set(tenant_id, set_id, exc, reason=reason, detail=detail)
@@ -974,7 +986,12 @@ class AngleSetService:
             # first batch (already paid) stays and the set says it is short.
             try:
                 more, more_stats, _ = self._generate(
-                    facts, brand, preset, count=count - len(angles), avoid=angles
+                    facts,
+                    brand,
+                    preset,
+                    count=count - len(angles),
+                    avoid=angles,
+                    attribution=attribution,
                 )
                 # numbered after the kept ones whatever the generator did
                 start = len(angles) + 1

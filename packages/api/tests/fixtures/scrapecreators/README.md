@@ -1,8 +1,8 @@
 # Respuestas grabadas de Scrape Creators (pruebas sin red)
 
 Cuerpos en la forma cruda que devuelve el proveedor —la misma que normaliza
-`qualify_api.referentes.scrapecreators_client` y que fijan sus pruebas
-(`test_referentes_scrapecreators_client.py`)— para una cuenta de demostración, sin datos
+`qualify_api.vendors.scrapecreators` y que fijan sus pruebas
+(`test_vendors_scrapecreators.py`)— para una cuenta de demostración, sin datos
 de personas reales:
 
 | Archivo | Endpoint | Qué representa |

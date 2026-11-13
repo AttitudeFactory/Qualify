@@ -68,6 +68,13 @@ def _png(*fills: str) -> bytes:
     return buffer.getvalue()
 
 
+def _on_host(recorded: str, domain: str) -> bool:
+    """A recorded `host/path` is on `domain` or one of its subdomains — the parsed host,
+    never a substring (CodeQL py/incomplete-url-substring-sanitization)."""
+    host = recorded.split("/", 1)[0].lower()
+    return host == domain or host.endswith("." + domain)
+
+
 class Vendor:
     """Scrape Creators + the CDN, replayed from the fixtures; every request recorded."""
 
@@ -96,7 +103,7 @@ class Vendor:
 
     @property
     def vendor_requests(self) -> list[str]:
-        return [r for r in self.requests if r.startswith("api.scrapecreators.com")]
+        return [r for r in self.requests if _on_host(r, "api.scrapecreators.com")]
 
 
 class Claims:
@@ -225,10 +232,11 @@ class Claude:
         self.tags = tags
 
     def __call__(
-        self, account: from_profile.AccountText, *, api_key: str, max_tags: int
+        self, account: from_profile.AccountText, *, api_key: str, max_tags: int, attribution: Any
     ) -> from_profile.Proposal:
         assert api_key == "sk-ant-test"
         self.calls.append(account)
+        self.paid = attribution
         tags = tuple(from_profile.ProposedTag(t, "Lo dice la cuenta.") for t in self.tags)
         return from_profile.Proposal(tags, STATS, "ai", STATS.model_revision or "", self.rubro)
 
@@ -472,7 +480,7 @@ def test_the_provenance_and_the_usage_ride_with_the_proposal(world: World) -> No
     assert provenance["source"] == {"kind": "alta", "meegle_work_item_id": 24852197}
     read = provenance["read"]
     assert read["provider"] == "scrapecreators"
-    assert read["client"] == "qualify_api.referentes.scrapecreators_client"
+    assert read["client"] == "qualify_api.vendors.scrapecreators"
     assert read["snapshot_schema"] == 6 and read["from_cache"] is False
     assert read["endpoints"] == ["/v1/instagram/profile", "/v2/instagram/user/posts"]
     assert isinstance(read["fetched_at"], float)
@@ -537,7 +545,7 @@ def test_a_default_picture_proposes_no_palette(world: World) -> None:
 
 def test_the_picture_downloaded_for_the_palette_is_the_one_kept(world: World) -> None:
     world.run()
-    cdn = [r for r in world.vendor.requests if r.startswith("scontent.cdninstagram.com")]
+    cdn = [r for r in world.vendor.requests if _on_host(r, "scontent.cdninstagram.com")]
     assert len(cdn) == 1  # one download, shared by the palette and the copy
     [(tenant, brand, kind, data)] = world.pictures.kept
     assert (tenant, brand, kind) == (TENANT, BRAND, kept_pictures.KIND_PROFILE)
@@ -958,7 +966,7 @@ def test_an_unsupported_network_or_an_empty_handle_reads_nothing(world: World) -
 
 
 def test_the_default_cap_is_the_most_a_run_can_need() -> None:
-    from qualify_api.referentes import scrapecreators_client
+    from qualify_api.vendors import scrapecreators as scrapecreators_client
 
     assert brand_prefill.DEFAULT_CAPS.scrapecreators_requests == (
         1 + scrapecreators_client._MAX_POST_PAGES

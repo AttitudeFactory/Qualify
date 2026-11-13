@@ -54,11 +54,14 @@ from uuid import UUID, uuid4
 
 import reflex as rx
 from qualify_api.auth import SIGNUP_ROUTE
-from qualify_api.claude_tools import api_key_from_env
+from qualify_api.claude_tools import Attribution, api_key_from_env
 from qualify_api.creative import brand_prefill, kept_pictures, logo_palette
+from qualify_api.creative.owner_uploads import served_upload_tenant
 from qualify_api.hashtags import catalog as hashtag_catalog
 from qualify_api.hashtags import fold, from_profile, normalize_tag
-from qualify_api.referentes import discovery_seed, scrapecreators_client
+from qualify_api.referentes import discovery_seed
+from qualify_api.vendors import scrapecreators as scrapecreators_client
+from qualify_api.vendors import usage
 from qualify_creative.brand import fonts as brand_fonts
 from reflex.constants import Dirs
 from reflex.utils.imports import ImportVar
@@ -68,6 +71,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from . import (
     avatar_proxy,
     brand_documents,
+    brand_upload_vm,
     creator_cache_provider,
     creator_discovery,
     creator_pool_provider,
@@ -119,6 +123,13 @@ from .ui.steps_vm import (
     step_position,
 )
 from .upload_names import safe_upload_name as _safe_upload_name
+from .upload_store import (
+    UploadNotKept,
+    read_upload,
+    read_upload_sync,
+    refusal_text,
+    save_upload_bytes,
+)
 from .voice_lab import voice_analysis_result, voice_lab_panel
 
 logger = logging.getLogger(__name__)
@@ -196,7 +207,7 @@ _CONFIRM_STEP = LAST_STEP - 1
 #: Tu brandboard's "+" (§ request 2026-09-29): stickers, patterns, a mascot... Several
 #: files may be dropped at once; each becomes its own element.
 _EXTRA_UPLOAD_ID = "brand_extra"
-_MAX_EXTRAS_PER_DROP = 10
+_MAX_EXTRAS_PER_DROP = brand_upload_vm.MAX_IMAGES_PER_DROP
 #: What a logo version's card and the "+" take — an image.
 #: `detect_fonts`'s notes (Spanish, product voice).
 _FONTS_NEED_LOGO = "Sube primero una versión de tu logo: de ahí leemos la tipografía."
@@ -243,6 +254,9 @@ def _read_logo_files(tenant_id: UUID | None, keys: list[str]) -> list[tuple[str,
                     continue
                 gate = gate or _r2_gate()
                 data = gate.open_object(tenant_id, key).read()
+            elif tenant_id is not None:
+                # CM-9: on the volume, or in R2 through the key map once it was moved
+                data = read_upload_sync(tenant_id, key)
             else:
                 data = (rx.get_upload_dir() / key).read_bytes()
         except Exception as exc:  # noqa: BLE001 — one unreadable version must not void the rest
@@ -785,6 +799,12 @@ class BrandWizardState(rx.State):
             await self.apply_logo_colours(staged[2], LOGO_SOURCE_UPLOAD)
 
     @rx.event
+    def brand_image_rejected(self, rejected: list[dict[str, Any]]) -> None:
+        """A logo or brand element the dropzone refused in the browser (too big, not an
+        image): say why, in the callout every brand step shows (m-24946266)."""
+        self.logo_error = brand_upload_vm.rejection_message(rejected)
+
+    @rx.event
     async def clear_logo_version(self, version: str) -> None:
         was_palette = self._palette_version() == version
         self.logo_versions = {k: v for k, v in self.logo_versions.items() if k != version}
@@ -809,11 +829,19 @@ class BrandWizardState(rx.State):
                 await self.retire_logo_colours()
             return
         key = self.logo_versions[version]
-        if key.startswith("t/"):
+        if key.startswith("t/") and served_upload_tenant(key) is None:
+            return  # a Brand Kit file a previous save moved: its colours are already in
+        auth = await self.get_state(AuthState)
+        tenant_id = tenant_uuid(brand_tenant_id(auth))
+        if tenant_id is None:
             return
         try:
-            data = (rx.get_upload_dir() / key).read_bytes()
-        except OSError:
+            # CM-9: an upload in R2, or an old one on the volume / moved by the copy
+            data = await read_upload(tenant_id, key)
+        except (OSError, PermissionError, UploadNotKept):
+            return
+        except Exception as exc:  # noqa: BLE001 — R2 down: no colours, never a crash
+            logger.warning("logo colours: %s unreadable: %s", key, type(exc).__name__)
             return
         await self.apply_logo_colours(data, LOGO_SOURCE_UPLOAD)
 
@@ -877,7 +905,12 @@ class BrandWizardState(rx.State):
         under the tile) saying \"parece\" with the alternatives — a resemblance, never
         an identification.
         Background: a vision call takes seconds. No key, no call (`MissingAPIKey`)."""
-        from qualify_api.claude_tools import ClaudeToolError, MissingAPIKey, api_key_from_env
+        from qualify_api.claude_tools import (
+            Attribution,
+            ClaudeToolError,
+            MissingAPIKey,
+            api_key_from_env,
+        )
         from qualify_api.creative import font_ai
 
         async with self:
@@ -898,7 +931,14 @@ class BrandWizardState(rx.State):
         try:
             api_key = api_key_from_env()  # before any read: no key, no work
             files = await asyncio.to_thread(_read_logo_files, tenant_id, keys)
-            guess, stats = await asyncio.to_thread(font_ai.identify_fonts, files, api_key=api_key)
+            attribution = (
+                Attribution(tenant_id=tenant_id, feature=font_ai.FEATURE)
+                if tenant_id is not None
+                else Attribution.no_business(font_ai.FEATURE)
+            )
+            guess, stats = await asyncio.to_thread(
+                font_ai.identify_fonts, files, api_key=api_key, attribution=attribution
+            )
             logger.info(
                 "brand fonts: %s read by %s → %r ($%.4f)",
                 len(files),
@@ -933,7 +973,9 @@ class BrandWizardState(rx.State):
         element of the brand, each with its own label and context to fill in."""
         added = []
         for upload in files[:_MAX_EXTRAS_PER_DROP]:
-            staged = await self._stage_logo_file([upload], "logo/extra")
+            # a mixed drop: the files the dropzone refused already set `logo_error`
+            # (`brand_image_rejected`), and staging the others must not wipe it
+            staged = await self._stage_logo_file([upload], "logo/extra", clear_error=False)
             if staged is None:
                 break
             added.append(
@@ -965,10 +1007,11 @@ class BrandWizardState(rx.State):
         files: list[rx.UploadFile],
         folder: str,
         *,
-        max_bytes: int | None = None,
-        too_large: str = _UPLOAD_FAILED,
+        max_bytes: int = brand_upload_vm.MAX_BRAND_IMAGE_BYTES,
+        too_large: str = brand_upload_vm.BRAND_IMAGE_TOO_LARGE,
+        clear_error: bool = True,
     ) -> tuple[str, str, bytes] | None:
-        """Write the first dropped file under the tenant's upload dir → (key, name, bytes),
+        """Put the first dropped file in R2 under the tenant's uploads → (key, name, bytes),
         or None (with `logo_error` set) when there is no session, it cannot be read, or it
         is above `max_bytes` (`too_large` says so; nothing is written)."""
         if not files:
@@ -981,23 +1024,26 @@ class BrandWizardState(rx.State):
         upload = files[0]
         # refused before it is read when the upload says its size; otherwise read at
         # most one byte past the cap — never the whole of an oversized file
-        if max_bytes is not None and (getattr(upload, "size", None) or 0) > max_bytes:
+        if (getattr(upload, "size", None) or 0) > max_bytes:
             self.logo_error = too_large
             return None
         try:
-            data = await (upload.read() if max_bytes is None else upload.read(max_bytes + 1))
+            data = await upload.read(max_bytes + 1)
         except Exception:
             self.logo_error = _UPLOAD_FAILED
             return None
-        if max_bytes is not None and len(data) > max_bytes:
+        if len(data) > max_bytes:
             self.logo_error = too_large
             return None
         name = _safe_upload_name(upload.name)
-        key = f"uploads/{tenant_id}/{folder}/{uuid4().hex}_{name}"
-        target = rx.get_upload_dir() / key
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(data)
-        self.logo_error = ""
+        try:
+            # CM-9 (m-24957283): to R2, `t/<tenant>/uploads/<folder>/…`, once
+            key = await save_upload_bytes(tenant_id, data, name, folder=folder)
+        except UploadNotKept as exc:
+            self.logo_error = refusal_text(exc, name)
+            return None
+        if clear_error:
+            self.logo_error = ""
         return key, name, data
 
     async def apply_logo_colours(self, data: bytes, source: str) -> None:
@@ -1835,9 +1881,11 @@ def _logo_version_card(key: str, name: str, blurb: str) -> rx.Component:
             upload_id=upload_id,
             accept=_LOGO_VERSION_ACCEPT,
             max_files=1,
+            max_size=brand_upload_vm.MAX_BRAND_IMAGE_BYTES,
             on_drop=BrandWizardState.handle_logo_version_upload(
                 rx.upload_files(upload_id=upload_id), key
             ),
+            on_drop_rejected=BrandWizardState.brand_image_rejected,
             variant="compact",
             padding="0.5rem",
             width="100%",
@@ -1954,7 +2002,9 @@ def _add_extra_button() -> rx.Component:
         accept=_LOGO_VERSION_ACCEPT,
         max_files=_MAX_EXTRAS_PER_DROP,
         multiple=True,
+        max_size=brand_upload_vm.MAX_BRAND_IMAGE_BYTES,
         on_drop=BrandWizardState.handle_extra_upload(rx.upload_files(upload_id=_EXTRA_UPLOAD_ID)),
+        on_drop_rejected=BrandWizardState.brand_image_rejected,
         variant="bare",
         width="100%",
     )
@@ -3432,6 +3482,17 @@ def brand_connect_setup_index() -> rx.Component:
 _USERNAME_REQUIRED = "Escribe tu usuario para continuar."
 _NETWORK_REQUIRED = "Elige Instagram o TikTok para leer tu perfil."
 _PROFILE_UNAVAILABLE = "No pudimos leer el perfil. Revisa el usuario e inténtalo de nuevo."
+#: ADR 42 R5: when the business's search cap stops the profile read, «Tu cuenta» offers
+#: the manual flow (the same nine steps, filled in by hand) instead of a dead end.
+MANUAL_ROUTE = "/brand/manual"
+MANUAL_FLOW_LABEL = "Completar mis datos"
+#: «¿Cómo ves estas cuentas?» with nothing to classify: the search found nothing, or
+#: (ADR 42 R5) the business's search cap stopped it — then only the way on is said.
+NOTHING_TO_SORT_NOTE = (
+    "No hay nada para clasificar: la búsqueda no encontró cuentas en ninguna "
+    "categoría. Puedes añadir alguna a mano abajo o continuar."
+)
+CAPPED_SORT_NOTE = "Puedes añadir negocios a mano abajo o continuar."
 #: § request 2026-10-06: the account is another email's own account — said without naming
 #: who, and without reading anything of it.
 _ACCOUNT_TAKEN = (
@@ -3660,19 +3721,23 @@ def _prefill_ports() -> brand_prefill.PrefillPorts:
     return brand_prefill.PrefillPorts(catalog=_HASHTAG_CATALOG)
 
 
-def _generate_from_account(account: from_profile.AccountText) -> from_profile.Proposal | None:
+def _generate_from_account(
+    account: from_profile.AccountText, attribution: Attribution
+) -> from_profile.Proposal | None:
     """Claude reads the account (`brand_prefill.generate_from_account`): a rubro phrase
     and the tags its content lives under. None without a key, with nothing to read, or
     when the call fails — every caller has a fallback."""
-    return brand_prefill.generate_from_account(account, api_key=api_key_from_env)
+    return brand_prefill.generate_from_account(
+        account, api_key=api_key_from_env, attribution=attribution
+    )
 
 
 def _propose_rubro(
-    account: from_profile.AccountText,
+    account: from_profile.AccountText, attribution: Attribution
 ) -> tuple[str, from_profile.Proposal | None]:
     """Tu rubro, autocompleted (§ third round of 2026-10-05, "que autocompletes el input de
     tu rubro"): `brand_prefill.propose_rubro`, the same step the Alta's prefill runs."""
-    return brand_prefill.propose_rubro(account, api_key=api_key_from_env)
+    return brand_prefill.propose_rubro(account, api_key=api_key_from_env, attribution=attribution)
 
 
 def _hashtags_db_first(
@@ -3682,6 +3747,7 @@ def _hashtags_db_first(
     *,
     network: str = "",
     created: from_profile.Proposal | None = None,
+    attribution: Attribution,
 ) -> tuple[brand_prefill.HashtagChoice | None, str]:
     """Tu rubro's hashtags — the database, else the latest posts, else created
     (`brand_prefill.hashtags_db_first`, with this app's catalog). Returns the choice for
@@ -3694,6 +3760,7 @@ def _hashtags_db_first(
         created=created,
         catalog=_HASHTAG_CATALOG,
         api_key=api_key_from_env,
+        attribution=attribution,
     )
 
 
@@ -3863,6 +3930,9 @@ class BrandConnectState(rx.State):
     username: str = ""
     analyzing: bool = False
     error: str = ""
+    #: The business's search cap stopped the profile read (ADR 42 R5): «Tu cuenta»
+    #: offers the manual flow, so the owner fills the data in by hand.
+    profile_capped: bool = False
 
     profile_username: str = ""
     profile_fullname: str = ""
@@ -3945,6 +4015,8 @@ class BrandConnectState(rx.State):
     discovering: bool = False
     discovery_ran: bool = False
     discovery_error: str = ""
+    #: `discovery_error` is the business's search cap (ADR 42 R5): shown as a limit.
+    discovery_capped: bool = False
     discovery_signals: list[str] = []
     sector_title: str = ""
     sector_note: str = ""
@@ -4020,6 +4092,16 @@ class BrandConnectState(rx.State):
     #: The bucket the last decision landed in — the zone that flashes (`.q-deck-zone
     #: [data-hit]`, re-keyed by `fly_token` so a second hit on the same zone replays).
     hit_bucket: str = ""
+    #: The Brand Kit editor's own deck (§ request 2026-11-03): open after «Clasificar
+    #: ahora», and which of the unsorted accounts is in the middle (Omitir moves it on).
+    sorting_open: bool = False
+    pending_cursor: int = 0
+    #: Said (aria-live) when the editor's deck closes because the last account was
+    #: sorted — the deck vanishes from under the owner, so the screen says why.
+    sorting_done_note: str = ""
+    #: The editor's board below `md`: the one list shown («Te inspira» / «Compite» /
+    #: «No va»).
+    sort_tab: str = "referente"
 
     #: The real metrics `analyze()` derived from the profile read
     #: (`scrapecreators_client.profile_metrics`), as parallel lists — one entry per
@@ -4453,8 +4535,14 @@ class BrandConnectState(rx.State):
                     used_hashtags=tuple(str(t) for t in snapshot.get("topHashtags") or ()),
                 )
         created: from_profile.Proposal | None = None
+        # m-24955649: the rubro step's Claude runs are booked to this business
+        attribution = (
+            Attribution(tenant_id=ids[0], brand_id=ids[1], feature=brand_prefill.RUBRO_FEATURE)
+            if ids is not None
+            else Attribution.no_business(brand_prefill.RUBRO_FEATURE)
+        )
         if fill_rubro:
-            rubro, created = await asyncio.to_thread(_propose_rubro, account)
+            rubro, created = await asyncio.to_thread(_propose_rubro, account, attribution)
             async with self:
                 if rubro and not self.rubro_text.strip():
                     self.rubro_text = rubro
@@ -4476,6 +4564,7 @@ class BrandConnectState(rx.State):
             account,
             network=network,
             created=created,
+            attribution=attribution,
         )
         async with self:
             self.suggesting_hashtags = False
@@ -4634,6 +4723,7 @@ class BrandConnectState(rx.State):
         self.discovering = False
         self.discovery_ran = False
         self.discovery_error = ""
+        self.discovery_capped = False
         self.discovery_signals = []
         self.discovery_running = ""
         self.discovery_answers = []
@@ -4651,15 +4741,20 @@ class BrandConnectState(rx.State):
         self.fly_card = {}
         self.fly_direction = ""
         self.hit_bucket = ""
+        self.sorting_open = False
+        self.pending_cursor = 0
+        self.sorting_done_note = ""
         for key in creator_discovery.PHASES:
             setattr(self, f"{key}_title", "")
             setattr(self, f"{key}_note", "")
             setattr(self, f"{key}_accounts", [])
 
-    def _apply_phase(self, phase: dict) -> None:
+    def _apply_phase(self, phase: dict, ids: tuple[UUID, UUID, UUID | None] | None = None) -> None:
         """One phase's result (`creator_discovery.phase_to_dict` shape, fresh or from
         the cache) into its three vars. A phase that failed on vendor errors and found
-        nothing says so instead of pretending the sector is empty."""
+        nothing says so instead of pretending the sector is empty. `ids` (the session's
+        business) pays the pictures' paid last resort (ADR 42 R5); without it the
+        prefetch reads no paid picture."""
         key = str(phase.get("key", ""))
         if key not in creator_discovery.PHASES:
             return
@@ -4698,7 +4793,11 @@ class BrandConnectState(rx.State):
         # `_apply_phase` directly and synchronously (existing tests do) is unaffected.
         # With the paid last resort (§ 2026-09-29): a picture whose URL arrived dead
         # (a vendor-cached profile read) is replaced now, not when a card is on screen.
-        avatar_proxy.warm_avatars_in_background(accounts, refresh=avatar_proxy.fresh_vendor_url)
+        # ADR 42 R5: the task copies this context, so its paid reads are this business's
+        with usage.charge_to(ids[0], ids[1]) if ids is not None else usage.uncharged():
+            avatar_proxy.warm_avatars_in_background(
+                accounts, refresh=avatar_proxy.fresh_vendor_url if ids is not None else None
+            )
 
     # -- Referente, competencia o detractor -------------------------------------------
 
@@ -4833,6 +4932,12 @@ class BrandConnectState(rx.State):
     @rx.var
     def ranked_competencia(self) -> list[dict[str, str]]:
         return _rank(self.competencia_accounts, self.influence_order)
+
+    @rx.var
+    def ranked_detractors(self) -> list[dict[str, str]]:
+        """No va contigo on the Brand Kit editor's board: not ranked (no influence
+        order), just the rows `_rank_card` reads — pinned first, then as found."""
+        return _rank(self.detractor_accounts, [])
 
     @rx.var
     def has_ranking(self) -> bool:
@@ -5136,13 +5241,16 @@ class BrandConnectState(rx.State):
                 positioning=positioning,
                 audience=audience,
             )
-            result = await asyncio.to_thread(
-                referentes_review.add_manual_account,
-                target,
-                brief,
-                note=note,
-                payload_cache=creator_pool_provider.payload_cache(ids[0] if ids else None),
-            )
+            # ADR 42 R5: the account read (1 credit) is this business's
+            with usage.charge_to(ids[0], ids[1]) if ids is not None else usage.uncharged():
+                result = await asyncio.to_thread(
+                    referentes_review.add_manual_account,
+                    target,
+                    brief,
+                    attribution=referentes_review.review_attribution(ids),
+                    note=note,
+                    payload_cache=creator_pool_provider.payload_cache(ids[0] if ids else None),
+                )
             if ids is not None:
                 # § 2026-10-01: the shared pool learns this account too
                 await asyncio.to_thread(
@@ -5488,8 +5596,8 @@ class BrandConnectState(rx.State):
         Checks the JSON snapshot FIRST (`load_cached_profile`): re-analyzing the same
         handle costs zero API credits, and only a genuinely new (network, handle) hits
         Scrape Creators. Not saved to a table on purpose
-        (`scrapecreators_client`'s module docstring) — a fetched read is written to the
-        one generic, overwritable JSON snapshot and then read BACK from that same
+        (`qualify_api.vendors.scrapecreators`'s module docstring) — a fetched read is
+        written to the one generic, overwritable JSON snapshot and then read BACK from that same
         file, same shape the earlier hardcoded fixture had, now backed by a real
         profile instead of a demo one.
         """
@@ -5505,6 +5613,7 @@ class BrandConnectState(rx.State):
                 self.error = _NETWORK_REQUIRED
                 return
             self.error = ""
+            self.profile_capped = False
             self.analyzing = True
             network, handle = self.network, self.username.strip()
             auth = await self.get_state(AuthState)
@@ -5536,10 +5645,16 @@ class BrandConnectState(rx.State):
         if not result.read or result.profile is None:
             # The vendor detail stays in the server log (`brand_prefill`); what reaches
             # the screen is the one generic, translated message every other
-            # provider-call failure in this flow uses — or that the account is taken.
+            # provider-call failure in this flow uses — or that the account is taken, or
+            # (ADR 42 R5) that the business's search cap stopped the read, with the way
+            # on: «Completar mis datos» (the manual flow) instead of a dead end.
+            capped = await asyncio.to_thread(
+                usage.cap_notice, result.refused, tenant_id=tenant_id, profile=True
+            )
             async with self:
                 self.analyzing = False
-                self.error = (
+                self.profile_capped = capped is not None
+                self.error = capped or (
                     _ACCOUNT_TAKEN
                     if result.outcome is brand_prefill.PrefillOutcome.ACCOUNT_TAKEN
                     else _PROFILE_UNAVAILABLE
@@ -5564,6 +5679,11 @@ class BrandConnectState(rx.State):
             self.logo_from_profile = False  # a new read: its picture was not taken yet
             self.profile_pic_is_real = False  # checked below, once the read is on screen
             read_pic, read_handle = self.profile_pic, self.profile_username
+            # the own picture on disk now, while its URL lives: the screen shows it
+            # through the proxy, whose `<img>` request never pays (ADR 42 R5)
+            avatar_proxy.prefetch_business_picture(
+                network, read_handle, read_pic, tenant_id=tenant_id, brand_id=brand_id
+            )
             # Real figures over the window (`recentPosts` of this same read).
             self._set_metrics(result.metrics)
             # Prefill Tu rubro y ubicación with what the read lets us detect (bio,
@@ -5649,17 +5769,72 @@ class BrandConnectState(rx.State):
     @rx.event(background=True)
     async def retry_phase(self, key: str) -> AsyncIterator[None]:
         """Reintentar on a category whose search failed (vendor 5xx): that one
-        category again, the vendor's cache skipped, the other two untouched
-        (§ request 2026-09-11: "si falla algún paso se puedan seleccionar el resto")."""
+        category again, the other two untouched (§ request 2026-09-11: "si falla algún
+        paso se puedan seleccionar el resto"). The stored phase is skipped; the shared
+        vendor pool is still read — a call that failed was never written there, so the
+        retry asks the vendor for exactly what failed and reuses what had answered."""
         if key not in creator_discovery.PHASES:
             return
         async for _ in self._discovery([key]):
             yield
 
-    async def _discovery(self, only: list[str] | None) -> AsyncIterator[None]:
-        """The shared body of `run_discovery` (every phase, cache first) and
-        `retry_phase` (the given phases, cache skipped). Takes the run token either
-        way: a superseded run finishes its vendor calls but applies nothing."""
+    @rx.event(background=True)
+    async def refresh_discovery(self) -> AsyncIterator[None]:
+        """«Buscar de nuevo» on the Brand Kit editor (/brand/kit, «Negocios parecidos al
+        tuyo»): every phase searched again with today's Instagram/TikTok — no stored
+        phase reused and nothing read from the shared vendor pool, while the fresh
+        answers are still written to both, so the next visit shows them. The phases on
+        screen are cleared and refilled as each lands, like the wizard; the operator's
+        sort, influence order and kept accounts come back in `_discovery`'s `finally`.
+
+        A no-op while a search runs (a double tap must not spend twice): the flag is
+        taken under the same lock as the check — and, across tabs and sessions of this
+        process, one paid refresh per brand at a time (`_REFRESHING`): a second one says
+        a search is already running. No time cooldown (founder, 2026-11-03). Without the
+        brand's handle (the seed `load_saved_details` restores) nothing runs and the
+        screen says why.
+
+        Before the screen is cleared, the sort not stored yet (a failed write, or a
+        `sync_sort` waiting on the brand's lock) is written, so `_discovery`'s `finally`
+        restores it. When the run ends well with accounts still to sort, the editor's
+        deck opens by itself (`_discovery`, `fresh`)."""
+        async with self:
+            if self.discovering:
+                return
+            if not (self.profile_username or self.username.strip()) or not self.network:
+                self.discovery_error = MISSING_HANDLE_ERROR
+                self.discovery_capped = False
+                return
+            self.discovering = True
+        ids = await self._referentes_ids()
+        brand_id = ids[1] if ids is not None else None
+        if brand_id is not None and brand_id in _REFRESHING:
+            async with self:
+                self.discovering = False
+                self.discovery_error = REFRESH_RUNNING_NOTE
+                self.discovery_capped = False
+            return
+        if brand_id is not None:
+            _REFRESHING.add(brand_id)  # no await since the check: atomic on the loop
+        try:
+            if ids is not None:
+                async with _labels_lock(ids[1]):
+                    await self._flush_labels(ids)
+                    await self._flush_order(ids)
+            async for _ in self._discovery(None, fresh=True):
+                yield
+        finally:
+            if brand_id is not None:
+                _REFRESHING.discard(brand_id)
+
+    async def _discovery(
+        self, only: list[str] | None, *, fresh: bool = False
+    ) -> AsyncIterator[None]:
+        """The shared body of `run_discovery` (every phase, stored phases first),
+        `retry_phase` (the given phases, stored ones skipped) and `refresh_discovery`
+        (`fresh`: every phase, stored phases AND the pool's answers skipped — both still
+        written). Takes the run token either way: a superseded run finishes its vendor
+        calls but applies nothing."""
         async with self:
             self.discovery_run_id += 1
             my_id = self.discovery_run_id
@@ -5667,6 +5842,7 @@ class BrandConnectState(rx.State):
                 self._clear_discovery()
             else:
                 self.discovery_error = ""
+                self.discovery_capped = False
                 for key in only:
                     setattr(self, f"{key}_title", "")
                     setattr(self, f"{key}_note", "")
@@ -5720,7 +5896,7 @@ class BrandConnectState(rx.State):
             yield
 
             keys = list(creator_discovery.PHASES) if only is None else list(only)
-            if only is None:
+            if only is None and not fresh:
                 # Stored results first, one phase at a time: a phase already computed
                 # for this seed by THIS algorithm version is applied at once, and only
                 # the missing ones (a new city → the local phase alone) go to the vendor.
@@ -5731,7 +5907,7 @@ class BrandConnectState(rx.State):
                     async with self:
                         if self.discovery_run_id != my_id:
                             return
-                        self._apply_phase(cached)
+                        self._apply_phase(cached, ids)
                     yield
                 async with self:
                     keys = [
@@ -5750,12 +5926,22 @@ class BrandConnectState(rx.State):
                     seed,
                     bio=str((profile or fallback).get("bio") or ""),
                     category=str((profile or fallback).get("category") or ""),
-                )
+                ),
+                # m-24955649: the review is booked to this business («sin negocio» when
+                # the session has none — logged, never lost)
+                attribution=referentes_review.review_attribution(ids),
             )
             # § 2026-10-01: every vendor call asks the shared pool first
             # (`creator_pool_provider.PayloadCache`); without a session, live as before.
-            cache = creator_pool_provider.payload_cache(ids[0] if ids else None)
-            runner = creator_discovery.PhasedDiscovery(seed, payload_cache=cache, reviewer=reviewer)
+            # `fresh` (Buscar de nuevo): write-only — everything from the vendor, kept.
+            cache = creator_pool_provider.payload_cache(ids[0] if ids else None, read=not fresh)
+            runner = creator_discovery.PhasedDiscovery(
+                seed,
+                payload_cache=cache,
+                reviewer=reviewer,
+                # ADR 42 R5: every paid read of the search is this business's (its caps)
+                charge=usage.UsageCharge(ids[0], ids[1]) if ids is not None else None,
+            )
             for key in keys:
                 async with self:
                     if self.discovery_run_id != my_id:
@@ -5785,13 +5971,20 @@ class BrandConnectState(rx.State):
                 async with self:
                     if self.discovery_run_id != my_id:
                         return
-                    self._apply_phase(phase)
+                    self._apply_phase(phase, ids)
                 yield
         except (scrapecreators_client.ScrapeCreatorsError, ValueError, OSError) as exc:
             logger.warning("brand discovery failed: %s", exc)
+            # ADR 42 R5: the business's search cap says when it can search again
+            notice = await asyncio.to_thread(
+                usage.cap_notice,
+                getattr(exc, "reason", None),
+                tenant_id=ids[0] if ids is not None else None,
+            )
             async with self:
                 if self.discovery_run_id == my_id:
-                    self.discovery_error = (
+                    self.discovery_capped = notice is not None
+                    self.discovery_error = notice or (
                         "No pudimos buscar negocios parecidos ahora. Inténtalo más tarde."
                     )
         finally:
@@ -5816,6 +6009,12 @@ class BrandConnectState(rx.State):
                         self.kept_accounts = [card_view(card) for card in kept]
                     self.discovering = False
                     self.discovery_running = ""
+                    if fresh and not self.discovery_error and self._has_unsorted():
+                        # «Buscar de nuevo» ended well with new accounts: the editor's
+                        # deck opens as if «Clasificar ahora» had been pressed
+                        self.sorting_open = True
+                        self.pending_cursor = 0
+                        self.sorting_done_note = ""
 
     @rx.event(background=True)
     async def enter_brand_home(self) -> AsyncIterator[rx.event.EventSpec]:
@@ -5864,7 +6063,7 @@ class BrandConnectState(rx.State):
                 return
             self._clear_discovery()
             for phase in saved.phases:
-                self._apply_phase(phase)
+                self._apply_phase(phase, ids)
             self.account_buckets = dict(saved.buckets)
             self._persisted_buckets = dict(saved.buckets)
             self.kept_accounts = [card_view(card) for card in saved.kept]
@@ -5973,6 +6172,12 @@ class BrandConnectState(rx.State):
                 seed,
                 bio=str(profile.get("bio") or ""),
                 category=str(profile.get("category") or ""),
+                attribution=Attribution(
+                    tenant_id=ids[0],
+                    brand_id=ids[1],
+                    feature=hashtag_catalog.SELECT_FEATURE,
+                    prompt_version=brand_prefill.catalog_prompt_version(),
+                ),
             )
         except SQLAlchemyError as exc:
             logger.warning("hashtags: catalog unreadable, searching without it: %s", exc)
@@ -6030,24 +6235,176 @@ class BrandConnectState(rx.State):
         ids = await self._referentes_ids()
         if ids is None:
             return
+        async with _labels_lock(ids[1]):
+            await self._flush_labels(ids)
+
+    async def _flush_labels(self, ids: tuple[UUID, UUID, UUID | None]) -> None:
+        """`sync_labels`' write: the diff since the last one. The caller holds the
+        brand's `_labels_lock`; NOT the state lock."""
         tenant_id, brand_id, user_id = ids
-        async with _labels_lock(brand_id):
-            async with self:
-                current = dict(self.account_buckets)
-                persisted = dict(self._persisted_buckets)
-            changes = referentes_provider.label_changes(persisted, current)
-            if not changes:
-                return
-            try:
-                await asyncio.to_thread(
-                    referentes_provider.write_labels, tenant_id, brand_id, user_id, changes
-                )
-            except (SQLAlchemyError, ValueError) as exc:
-                # Left un-persisted: the next decision's sync retries the same diff.
-                logger.warning("referentes: could not store the sort: %s", exc)
-                return
-            async with self:
-                self._persisted_buckets = current
+        async with self:
+            current = dict(self.account_buckets)
+            persisted = dict(self._persisted_buckets)
+        changes = referentes_provider.label_changes(persisted, current)
+        if not changes:
+            return
+        try:
+            await asyncio.to_thread(
+                referentes_provider.write_labels, tenant_id, brand_id, user_id, changes
+            )
+        except (SQLAlchemyError, ValueError) as exc:
+            # Left un-persisted: the next decision's sync retries the same diff.
+            logger.warning("referentes: could not store the sort: %s", exc)
+            return
+        async with self:
+            self._persisted_buckets = current
+
+    @rx.event
+    def move_account(self, key: str, bucket: str) -> rx.event.EventSpec | None:
+        """«Mover a» on a sorted card (the Brand Kit editor, § request 2026-11-03): the
+        account goes to `bucket` and it saves on its own (`sync_sort`). Not `assign`:
+        that one drives the wizard's deck by category (the next category, Deshacer), and
+        the editor's sorting never changes the wizard's step or category."""
+        return BrandConnectState.sync_sort if self._move(key, bucket) else None
+
+    def _move(self, key: str, bucket: str) -> bool:
+        """Every editor move — «Mover a», a card dropped on another column, the editor's
+        deck — and whether anything changed. Not an event handler.
+
+        The influence order: a card moved into Te inspira / Compite contigo goes LAST in
+        its new list — it has no place there yet, and it must not jump over the ones the
+        owner already ranked; the old list closes the gap. Moved to No va contigo it
+        leaves the ranking (a detractor is not ranked). The whole order is written, like
+        a drag on the ranking (`_reorder`)."""
+        if bucket not in {b for b, _, _, _ in BUCKETS}:
+            return False
+        accounts = self.discovered_accounts  # read before the move: its bucket is stale after
+        if not any(a["key"] == key for a in accounts) or self.account_buckets.get(key) == bucket:
+            return False
+        orders: list[str] = []
+        for ranked_bucket in ("referente", "competencia"):
+            others = [a for a in accounts if a["bucket"] == ranked_bucket and a["key"] != key]
+            orders.extend(a["key"] for a in _rank(others, self.influence_order))
+            if ranked_bucket == bucket:
+                orders.append(key)
+        self.account_buckets = {**self.account_buckets, key: bucket}
+        self.influence_order = orders
+        return True
+
+    @rx.event
+    def drop_on_column(self, bucket: str) -> rx.event.EventSpec | None:
+        """A sorted card released over ANOTHER column of the editor's board
+        (`assets/rank-drag.js` lifted it — `rank_pick` — and dispatched `drop` on the
+        column): it is re-classified there, LAST in that list (`_move`). A drop that
+        bubbles up from a reorder inside its own column finds `rank_dragging` already
+        cleared by `rank_drop`, or the same bucket, and does nothing."""
+        source, self.rank_dragging = self.rank_dragging, ""
+        if not source:
+            return None
+        return self.move_account(source, bucket)
+
+    # -- The editor's deck for the accounts not sorted yet (§ request 2026-11-03) --------
+
+    @rx.var
+    def pending_card(self) -> dict[str, str]:
+        """The account in the middle of the editor's deck: every category's unsorted
+        accounts in one pile (`unsorted_accounts`), at `pending_cursor` (wrapping, so
+        Omitir cycles) — unlike the wizard's deck, which goes category by category."""
+        pool = self.unsorted_accounts
+        if not pool:
+            return {}
+        return pool[self.pending_cursor % len(pool)]
+
+    @rx.var
+    def pending_count(self) -> int:
+        return len(self.unsorted_accounts)
+
+    def _has_unsorted(self) -> bool:
+        """Any account on screen not sorted yet — read from the phases directly, not
+        through a computed var, so it is right inside the handler that just changed
+        them. Not an event handler."""
+        return any(
+            _account_key(item) not in self.account_buckets
+            for key in creator_discovery.PHASES
+            for item in self._phase_accounts(key)
+        )
+
+    @rx.var
+    def board_visible(self) -> bool:
+        """The editor's board of sorted accounts shows unless the deck is open (§ request
+        2026-11-03: while classifying, only the deck and its zones are on screen)."""
+        return self.has_sorted and not self.sorting_open
+
+    @rx.event
+    def open_sorting(self) -> None:
+        """«Clasificar ahora»: the deck opens under the task line."""
+        self.sorting_open = True
+        self.pending_cursor = 0
+        self.sorting_done_note = ""
+
+    @rx.event
+    def close_sorting(self) -> None:
+        self.sorting_open = False
+
+    @rx.event
+    def set_sort_tab(self, value: str | list[str]) -> None:
+        """The board's list on a phone (a segmented control: one at a time)."""
+        tab = value if isinstance(value, str) else (value[0] if value else "")
+        if tab in {b for b, _, _, _ in BUCKETS}:
+            self.sort_tab = tab
+
+    @rx.event
+    def skip_pending(self) -> None:
+        if self.unsorted_accounts:
+            self.pending_cursor = (self.pending_cursor + 1) % len(self.unsorted_accounts)
+
+    @rx.event
+    def classify_pending(self, bucket: str) -> rx.event.EventSpec | list[rx.event.EventSpec] | None:
+        """A zone of the editor's deck tapped: the card flies out the way it went, like
+        the wizard's."""
+        return self._classify(bucket, fly=True)
+
+    @rx.event
+    def drop_pending(self, bucket: str) -> rx.event.EventSpec | list[rx.event.EventSpec] | None:
+        """The editor's card dropped on a zone (`assets/deck-drag.js` already showed it
+        landing, so no ghost)."""
+        return self._classify(bucket, fly=False)
+
+    def _classify(
+        self, bucket: str, *, fly: bool
+    ) -> rx.event.EventSpec | list[rx.event.EventSpec] | None:
+        """The editor deck's decision: `_move` + `sync_sort` — no category jump, no
+        Deshacer bookkeeping. The deck closes on its own when nothing is left. Not an
+        event handler."""
+        card_ = self.pending_card
+        if not card_ or not self._move(card_["key"], bucket):
+            return None
+        if fly:
+            self.fly_card = card_
+            self.fly_direction = _FLY_DIRECTION[bucket]
+        else:
+            self.fly_direction = ""
+        self.fly_token += 1
+        self.hit_bucket = bucket
+        remaining = len(self.unsorted_accounts)
+        self.pending_cursor = min(self.pending_cursor, max(remaining - 1, 0))
+        if remaining == 0:
+            # the deck goes away: say so, and put the focus on the board that comes back
+            self.sorting_open = False
+            self.sorting_done_note = SORTING_DONE_NOTE
+            return [BrandConnectState.sync_sort, rx.call_script(_FOCUS_BOARD_JS)]
+        return BrandConnectState.sync_sort
+
+    @rx.event(background=True)
+    async def sync_sort(self) -> None:
+        """`sync_labels` then `sync_order` under ONE hold of the brand's lock, in that
+        order — a move changes both, and a position must never land before its label."""
+        ids = await self._referentes_ids()
+        if ids is None:
+            return
+        async with _labels_lock(ids[1]):
+            await self._flush_labels(ids)
+            await self._flush_order(ids)
 
     # -- The influence ranking on Resultados e insights (§ request 2026-09-29) --------
 
@@ -6090,15 +6447,19 @@ class BrandConnectState(rx.State):
         ids = await self._referentes_ids()
         if ids is None:
             return
+        async with _labels_lock(ids[1]):
+            await self._flush_order(ids)
+
+    async def _flush_order(self, ids: tuple[UUID, UUID, UUID | None]) -> None:
+        """`sync_order`'s write. The caller holds the brand's `_labels_lock`."""
         tenant_id, brand_id, _user_id = ids
-        async with _labels_lock(brand_id):
-            async with self:
-                order = list(self.influence_order)
-            try:
-                await asyncio.to_thread(referentes_provider.write_order, tenant_id, brand_id, order)
-            except (SQLAlchemyError, ValueError) as exc:
-                # Left un-persisted: the next move writes the whole order again.
-                logger.warning("referentes: could not store the influence order: %s", exc)
+        async with self:
+            order = list(self.influence_order)
+        try:
+            await asyncio.to_thread(referentes_provider.write_order, tenant_id, brand_id, order)
+        except (SQLAlchemyError, ValueError) as exc:
+            # Left un-persisted: the next move writes the whole order again.
+            logger.warning("referentes: could not store the influence order: %s", exc)
 
     async def _stored_order(
         self, ids: tuple[UUID, UUID, UUID | None] | None, cards: list[dict[str, str]]
@@ -6155,7 +6516,29 @@ def _connect_step_account() -> rx.Component:
             ),
             rx.cond(
                 BrandConnectState.error != "",
-                callout(BrandConnectState.error, "error"),
+                # a cap is a limit, not an error (ADR 42 R5, UX review): `warn`
+                rx.cond(
+                    BrandConnectState.profile_capped,
+                    callout(BrandConnectState.error, "warn"),
+                    callout(BrandConnectState.error, "error"),
+                ),
+            ),
+            # ADR 42 R5: the read is not possible today — the owner goes on by hand
+            rx.cond(
+                BrandConnectState.profile_capped,
+                rx.link(
+                    rx.button(
+                        rx.icon("pencil", size=T.ICON_SM),
+                        MANUAL_FLOW_LABEL,
+                        type="button",
+                        variant="soft",
+                        size="3",
+                        radius=_CONTROL_RADIUS,
+                        width="100%",
+                    ),
+                    href=MANUAL_ROUTE,
+                    width="100%",
+                ),
             ),
             icon="at-sign",
         ),
@@ -6806,23 +7189,74 @@ def _discovery_list() -> rx.Component:
     )
 
 
-def _rank_card(item: rx.Var[dict[str, str]], bucket: str) -> rx.Component:
+#: «Mover a»'s choices: the buckets in the owner's words (`BUCKETS`' titles).
+MOVE_LABEL = "Mover a"
+
+
+def _move_menu(item: rx.Var[dict[str, str]], bucket: str, board: str) -> rx.Component:
+    """«Mover a» on a sorted card (§ request 2026-11-03, the Brand Kit editor): the three
+    buckets, the current one checked and not choosable; a choice saves on its own
+    (`BrandConnectState.move_account`). On every size — the accessible alternative to
+    dragging a card to another column. A real button, so `rank-drag.js` neither drags nor
+    opens the profile from it, and a menu, so it works with a finger, a mouse or the
+    keyboard. Each choice names the account, the target and the `board` it was opened
+    from, for `assets/rank-flip.js` to show the card travelling there."""
+    return rx.menu.root(
+        rx.menu.trigger(
+            rx.button(
+                MOVE_LABEL,
+                rx.icon("chevron-down", size=T.ICON_SM),
+                variant="soft",
+                color_scheme="gray",
+                size="2",
+                width="100%",
+                min_height="2.5rem",
+                aria_label=MOVE_LABEL + " " + item["handle"].to(str),
+            ),
+        ),
+        rx.menu.content(
+            *(
+                rx.menu.item(
+                    rx.icon(icon, size=T.ICON_SM),
+                    title,
+                    *([rx.icon("check", size=T.ICON_SM)] if key == bucket else []),
+                    disabled=key == bucket,
+                    on_click=BrandConnectState.move_account(item["key"], key),
+                    custom_attrs={
+                        "data-move-key": item["key"],
+                        "data-move-to": key,
+                        "data-move-board": board,
+                    },
+                )
+                for key, title, _blurb, icon in BUCKETS
+            ),
+        ),
+    )
+
+
+def _rank_card(item: rx.Var[dict[str, str]], bucket: str, *, board: str = "") -> rx.Component:
     """One cell of the influence ranking grid: its position, picture and handle. The
     card IS the control (§ request 2026-09-29, same gestures as the deck): a click opens
     the profile (`data-profile-url`), a long press lifts it for `assets/rank-drag.js` to
     drag onto another card. `data-rank-group` (bucket + pinned/rest) is what keeps a drop
-    inside its own grid and group."""
+    inside its own grid and group.
+
+    `board` (the Brand Kit editor, § request 2026-11-03) names the board the card is on —
+    "cols" (three columns, `md` up) or "tabs" (one list, below `md`) — so the same account
+    rendered on both never shares a group with itself; it also adds «Mover a». A No va
+    contigo card has no position (a detractor is not ranked): no «#», and a group of its
+    own, so it never trades places — on the columns it can still go to another column."""
     pinned = item["group"] == RANK_PINNED
+    ranked = bucket != "detractor"
+    prefix = f"{board}:{bucket}:" if board else f"{bucket}:"
+    group = prefix + (item["group"] if ranked else item["key"]).to(str)
+    badge = [rx.badge("#", item["rank"], variant="soft", radius="full", size="1")]
+    # on the board the lists are not all rankings (No va contigo is a plain list)
+    remove = "Quitar de la lista" if board else "Quitar del ranking"
     return _RankCard.create(
         rx.vstack(
             rx.hstack(
-                rx.badge(
-                    "#",
-                    item["rank"],
-                    variant="soft",
-                    radius="full",
-                    size="1",
-                ),
+                *(badge if ranked else []),
                 rx.cond(
                     pinned,
                     rx.hstack(
@@ -6844,16 +7278,28 @@ def _rank_card(item: rx.Var[dict[str, str]], bucket: str) -> rx.Component:
                         color_scheme="gray",
                         size="1",
                         radius="full",
-                        aria_label="Quitar " + item["handle"].to(str) + " del ranking",
+                        aria_label="Quitar " + item["handle"].to(str) + remove[len("Quitar") :],
                     ),
-                    content="Quitar del ranking",
+                    content=remove,
                 ),
                 align="center",
                 width="100%",
             ),
             _avatar(item, "3.5rem", 22),
             rx.vstack(
-                mono(item["handle"], size="2"),
+                (
+                    rx.link(
+                        mono(item["handle"], size="2"),
+                        href=item["url"],
+                        is_external=True,
+                        aria_label="Ver perfil de " + item["handle"].to(str),
+                        color="inherit",
+                        max_width="100%",
+                        overflow_wrap="anywhere",
+                    )
+                    if board
+                    else mono(item["handle"], size="2")
+                ),
                 rx.text(item["followers"], " seguidores", size="1", color=T.TEXT_MUTED),
                 rx.hstack(_signal_flags(item), spacing="1", wrap="wrap", justify="center"),
                 spacing="0",
@@ -6863,6 +7309,7 @@ def _rank_card(item: rx.Var[dict[str, str]], bucket: str) -> rx.Component:
                 text_align="center",
                 overflow="hidden",
             ),
+            *([_move_menu(item, bucket, board)] if board else []),
             spacing="2",
             align="center",
             width="100%",
@@ -6870,16 +7317,30 @@ def _rank_card(item: rx.Var[dict[str, str]], bucket: str) -> rx.Component:
         # `.q-rank-card` (`assets/qualify-brand.css`) is the card material under the
         # motion `rank-drag.js` drives; `--pinned` the accent wash of the hand-added ones
         class_name=rx.cond(pinned, "q-rank-card q-rank-card--pinned", "q-rank-card"),
-        custom_attrs={
-            "data-rank-group": f"{bucket}:" + item["group"].to(str),
-            "data-rank-key": item["key"],
-            "data-profile-url": item["url"],
-            "role": "link",
-            "tabindex": "0",
-            "aria-label": "Abrir el perfil de " + item["handle"].to(str),
-        },
+        # On the editor's board the card holds buttons («Mover a», ✕), so it is no link
+        # itself (a link may not contain controls): a drag surface whose tap still opens
+        # the profile, with the @handle as the keyboard and screen-reader link.
+        custom_attrs=(
+            {
+                "data-rank-group": group,
+                "data-rank-key": item["key"],
+                "data-profile-url": item["url"],
+            }
+            if board
+            else {
+                "data-rank-group": group,
+                "data-rank-key": item["key"],
+                "data-profile-url": item["url"],
+                "role": "link",
+                "tabindex": "0",
+                "aria-label": "Abrir el perfil de " + item["handle"].to(str),
+            }
+        ),
         on_drag_start=BrandConnectState.rank_pick(item["key"]),
         on_drop=BrandConnectState.rank_drop(item["key"]),
+        # on the editor's board, keyed by account so a move re-renders the moved card,
+        # not the one that happened to sit at its index (`rank-flip.js` animates it)
+        **({"key": item["key"]} if board else {}),
         width="100%",
         min_width="0",
     )
@@ -6896,10 +7357,20 @@ _asset_script = asset_script
 #: listeners.
 _DECK_DRAG_JS = _asset_script("deck-drag.js")
 _RANK_DRAG_JS = _asset_script("rank-drag.js")
+_RANK_FLIP_JS = _asset_script("rank-flip.js")
 
 
 def _script_on_mount(code: str) -> rx.Component:
     return rx.box(display="none", on_mount=rx.call_script(code))
+
+
+#: A grid of ranking cards: as many ~8.5rem cards per row as the width fits.
+_RANK_GRID = {
+    "display": "grid",
+    "grid_template_columns": "repeat(auto-fill, minmax(min(100%, 8.5rem), 1fr))",
+    "gap": "0.75rem",
+    "width": "100%",
+}
 
 
 def _ranking_grid(title: str, bucket: str, accounts: rx.Var[list[dict[str, str]]]) -> rx.Component:
@@ -6917,10 +7388,7 @@ def _ranking_grid(title: str, bucket: str, accounts: rx.Var[list[dict[str, str]]
                 # the width decides how many fit in a row — Referentes and Competencia
                 # sit side by side on a wide screen (§ 2026-10-05), so each grid only
                 # has half the card
-                display="grid",
-                grid_template_columns="repeat(auto-fill, minmax(min(100%, 8.5rem), 1fr))",
-                gap="0.75rem",
-                width="100%",
+                **_RANK_GRID,
             ),
             spacing="2",
             width="100%",
@@ -6939,10 +7407,10 @@ def _ranking_panel() -> rx.Component:
         rx.vstack(
             rx.text("Ranking de influencia", size="3", weight="bold"),
             rx.text(
-                "Mantén pulsada una card y suéltala sobre otra para cambiar su posición: de"
-                " izquierda a derecha y de arriba abajo, de la que más influye en tu marca a"
-                " la que menos. Un clic abre el perfil. Las que agregaste a mano van fijadas"
-                " primero.",
+                "Mantén pulsada una cuenta y suéltala sobre otra para cambiar su posición:"
+                " de izquierda a derecha y de arriba abajo, de la que más influye en tu marca"
+                " a la que menos. Un clic abre el perfil. Las que agregaste a mano van"
+                " fijadas primero.",
                 size="1",
                 color=T.TEXT_MUTED,
             ),
@@ -6961,6 +7429,294 @@ def _ranking_panel() -> rx.Component:
         spacing="4",
         width="100%",
         align_items="start",
+    )
+
+
+# -- The Brand Kit editor's board (§ request 2026-11-03) ----------------------------------
+
+#: The board's three lists — (bucket, column title, label of its tab on a phone).
+BOARD_LISTS: tuple[tuple[str, str, str], ...] = (
+    ("referente", "Te inspira", "Te inspira"),
+    ("competencia", "Compite contigo", "Compite"),
+    ("detractor", "No va contigo", "No va"),
+)
+#: The board's hint from `md` up: a card moves between columns and inside one.
+BOARD_HINT = "Mantén pulsada una cuenta para moverla de lista o de puesto."
+#: Below `md` one list shows at a time: by hand only the place inside it changes.
+BOARD_HINT_PHONE = (
+    "Tócala para ver su perfil. Mantén pulsada una cuenta para cambiar su puesto; con "
+    "«Mover a» la pasas a otra lista."
+)
+#: An empty list: on a phone, how to fill it; a column also takes a drop.
+EMPTY_TAB = "Todavía no hay cuentas aquí. Pásalas desde otra lista con «Mover a»."
+EMPTY_COLUMN = "Suelta aquí una cuenta, o pásala con «Mover a»."
+
+
+def _board_accounts(bucket: str) -> rx.Var[list[dict[str, str]]]:
+    return {
+        "referente": BrandConnectState.ranked_referentes,
+        "competencia": BrandConnectState.ranked_competencia,
+        "detractor": BrandConnectState.ranked_detractors,
+    }[bucket]
+
+
+def _board_column(bucket: str, title: str) -> rx.Component:
+    """One column of the board from `md` up: its title and count, and its cards in one
+    column. The column itself takes a card dropped from another column: `rank-drag.js`
+    finds it by `data-rank-column` and dispatches `drop` on it (`drop_on_column`). Empty,
+    it still has room to drop on."""
+    accounts = _board_accounts(bucket)
+    return _RankCard.create(
+        rx.hstack(
+            _section_label(title),
+            rx.text(
+                accounts.length(),
+                size="1",
+                color=T.TEXT_FAINT,
+                custom_attrs={"data-rank-count": bucket},
+            ),
+            spacing="2",
+            align="center",
+        ),
+        rx.cond(
+            accounts.length() > 0,
+            rx.box(
+                rx.foreach(accounts, lambda item: _rank_card(item, bucket, board="cols")),
+                display="grid",
+                grid_template_columns="minmax(0, 1fr)",
+                gap="0.75rem",
+                width="100%",
+            ),
+            rx.text(EMPTY_COLUMN, size="1", color=T.TEXT_FAINT, padding="1rem 0"),
+        ),
+        class_name="q-rank-column",
+        custom_attrs={"data-rank-column": bucket},
+        on_drop=BrandConnectState.drop_on_column(bucket),
+        display="flex",
+        flex_direction="column",
+        gap="0.75rem",
+        min_width="0",
+        min_height="8rem",
+        padding="0.5rem",
+    )
+
+
+def _board_tab_list(bucket: str) -> rx.Component:
+    accounts = _board_accounts(bucket)
+    return rx.cond(
+        accounts.length() > 0,
+        rx.box(
+            rx.foreach(accounts, lambda item: _rank_card(item, bucket, board="tabs")),
+            **_RANK_GRID,
+        ),
+        rx.text(EMPTY_TAB, size="2", color=T.TEXT_FAINT),
+    )
+
+
+def _board_tabs() -> rx.Component:
+    """Below `md` (§ request 2026-11-03): one list at a time behind a segmented control
+    with each list's count. A card only changes place inside its list by hand; «Mover a»
+    changes its list."""
+    return rx.vstack(
+        rx.segmented_control.root(
+            *(
+                rx.segmented_control.item(
+                    label + " (" + _board_accounts(bucket).length().to_string() + ")",
+                    value=bucket,
+                    custom_attrs={"data-sort-tab": bucket},
+                )
+                for bucket, _title, label in BOARD_LISTS
+            ),
+            value=BrandConnectState.sort_tab,
+            on_change=BrandConnectState.set_sort_tab,
+            size="2",
+            width="100%",
+        ),
+        rx.text(BOARD_HINT_PHONE, size="1", color=T.TEXT_MUTED),
+        rx.box(
+            rx.match(
+                BrandConnectState.sort_tab,
+                *((bucket, _board_tab_list(bucket)) for bucket, _title, _label in BOARD_LISTS),
+                rx.fragment(),
+            ),
+            custom_attrs={"data-rank-board": "tabs"},
+            width="100%",
+        ),
+        spacing="3",
+        width="100%",
+        align_items="stretch",
+    )
+
+
+def _sorted_board() -> rx.Component:
+    """The accounts already sorted (§ request 2026-11-03: "ver todas las cuentas que ya
+    clasifiqué y moverlas de categoría"). From `md` up, three columns — Te inspira,
+    Compite contigo, No va contigo — where a card is dragged to another column (it lands
+    LAST there: the simplest rule, and it never reorders what the owner already ranked)
+    or to another place in its own (Te inspira and Compite contigo; No va contigo is a
+    plain list). Below `md`, tabs (`_board_tabs`). «Mover a» on every card, every size.
+    The kept accounts (sorted before, not found by the latest search) are in their list
+    (`discovered_accounts`), so they move like the rest."""
+    return rx.vstack(
+        rx.heading(
+            "Tus cuentas clasificadas",
+            size="3",
+            as_="h3",
+            id=BOARD_HEADING_ID,
+            tab_index=-1,
+            outline="none",
+        ),
+        _script_on_mount(_RANK_DRAG_JS),
+        _script_on_mount(_RANK_FLIP_JS),
+        rx.box(
+            rx.text(BOARD_HINT, size="1", color=T.TEXT_MUTED, margin_bottom="0.75rem"),
+            rx.grid(
+                *(_board_column(bucket, title) for bucket, title, _label in BOARD_LISTS),
+                columns="3",
+                spacing="4",
+                width="100%",
+                align_items="start",
+                custom_attrs={"data-rank-board": "cols"},
+            ),
+            display=rx.breakpoints(initial="none", md="block"),
+            width="100%",
+        ),
+        rx.box(_board_tabs(), display=rx.breakpoints(initial="block", md="none"), width="100%"),
+        spacing="3",
+        width="100%",
+        align_items="stretch",
+    )
+
+
+#: The editor's sorting task: its button.
+SORT_NOW = "Clasificar ahora"
+
+
+def _editor_deck() -> rx.Component:
+    """The wizard's deck in the editor, over every account not sorted yet at once: the
+    same card (`_deck_card`, `assets/deck-drag.js`), the same three panels — real
+    buttons, the tap and keyboard alternative to dragging — and the same flying card.
+    Only the decision is the editor's (`classify_pending`: the bucket and `sync_sort`,
+    never a category or a step)."""
+    zones = {
+        area: _deck_zone(
+            bucket,
+            title,
+            blurb,
+            arrow,
+            area,
+            on_click=BrandConnectState.classify_pending(bucket),
+            on_drop=BrandConnectState.drop_pending(bucket),
+        )
+        for bucket, title, blurb, arrow, area in _DECK_ZONES
+    }
+    return rx.vstack(
+        _script_on_mount(_DECK_DRAG_JS),
+        _deck_grid(
+            zones,
+            rx.cond(
+                BrandConnectState.pending_count > 0,
+                _deck_card(BrandConnectState.pending_card),
+            ),
+        ),
+        rx.hstack(
+            rx.button(
+                "Omitir",
+                rx.icon("skip-forward", size=T.ICON_SM),
+                variant="ghost",
+                size="2",
+                radius=_CONTROL_RADIUS,
+                on_click=BrandConnectState.skip_pending,
+                disabled=BrandConnectState.pending_count < 2,
+            ),
+            rx.button(
+                "Seguir después",
+                variant="ghost",
+                color_scheme="gray",
+                size="2",
+                radius=_CONTROL_RADIUS,
+                on_click=BrandConnectState.close_sorting,
+            ),
+            spacing="3",
+            justify="center",
+            width="100%",
+        ),
+        spacing="3",
+        width="100%",
+    )
+
+
+def _sorting_task() -> rx.Component:
+    """The accounts not sorted yet, framed as a task (§ request 2026-11-03): «Tienes N
+    cuentas por clasificar» and «Clasificar ahora», which opens the deck under it. Only
+    while some are pending: when the last one is sorted the whole card goes away."""
+    count = BrandConnectState.pending_count
+    return rx.cond(
+        count > 0,
+        card(
+            rx.vstack(
+                rx.flex(
+                    rx.text(
+                        "Tienes ",
+                        count,
+                        rx.cond(count == 1, " cuenta por clasificar", " cuentas por clasificar"),
+                        size="3",
+                        weight="medium",
+                        flex="1",
+                        min_width="0",
+                    ),
+                    rx.cond(
+                        ~BrandConnectState.sorting_open,
+                        rx.button(
+                            rx.icon("layers", size=T.ICON_SM),
+                            SORT_NOW,
+                            size="3",
+                            on_click=BrandConnectState.open_sorting,
+                            flex_shrink="0",
+                        ),
+                    ),
+                    direction={"initial": "column", "sm": "row"},
+                    gap="3",
+                    align={"initial": "stretch", "sm": "center"},
+                    width="100%",
+                ),
+                rx.cond(
+                    BrandConnectState.sorting_open,
+                    rx.box(_editor_deck(), class_name="q-settle", width="100%"),
+                ),
+                spacing="3",
+                width="100%",
+            ),
+            width="100%",
+        ),
+    )
+
+
+def _sorted_panel() -> rx.Component:
+    """The Brand Kit editor's «Negocios parecidos al tuyo» (§ request 2026-11-03): the
+    accounts still to sort as a task with the wizard's deck, then the board of the
+    sorted ones. While the deck is open the board is not there (`board_visible`): only
+    the card and its zones are on screen; it settles back in (`q-settle`, still under
+    `prefers-reduced-motion`) when the deck closes."""
+    return rx.vstack(
+        # always mounted, so a screen reader hears it change (`sorting_done_note`)
+        rx.box(
+            rx.cond(
+                BrandConnectState.sorting_done_note != "",
+                callout(BrandConnectState.sorting_done_note, "ok"),
+            ),
+            role="status",
+            aria_live="polite",
+            width="100%",
+        ),
+        _sorting_task(),
+        rx.cond(
+            BrandConnectState.board_visible,
+            rx.box(_sorted_board(), class_name="q-settle", width="100%"),
+        ),
+        spacing="5",
+        width="100%",
+        align_items="stretch",
     )
 
 
@@ -6986,7 +7742,11 @@ def _discovery_section() -> rx.Component:
         ),
         rx.cond(
             BrandConnectState.discovery_error != "",
-            callout(BrandConnectState.discovery_error, "error"),
+            rx.cond(  # a cap is a limit, not an error (ADR 42 R5): `warn`
+                BrandConnectState.discovery_capped,
+                callout(BrandConnectState.discovery_error, "warn"),
+                callout(BrandConnectState.discovery_error, "error"),
+            ),
         ),
         rx.cond(
             ~BrandConnectState.discovery_ran,
@@ -7016,6 +7776,27 @@ def _discovery_section() -> rx.Component:
 #: the order they were made. Process-local, which is enough: a brand's sort is written
 #: by the session walking its wizard.
 _LABEL_LOCKS: dict[UUID, asyncio.Lock] = {}
+#: The editor's deck emptied (`BrandConnectState._classify`): the live note, and the
+#: board's heading (`id`, focusable) the focus moves to once the board is back.
+SORTING_DONE_NOTE = "Listo, clasificaste todas tus cuentas."
+BOARD_HEADING_ID = "cuentas-clasificadas"
+_FOCUS_BOARD_JS = (
+    "setTimeout(function () { var h = document.getElementById('"
+    + BOARD_HEADING_ID
+    + "'); if (h) h.focus(); }, 120);"
+)
+#: Brands with a «Buscar de nuevo» running in this process (`refresh_discovery`): one
+#: paid refresh per brand at a time, whichever tab or session asks.
+_REFRESHING: set[UUID] = set()
+#: «Buscar de nuevo» refused: another one for the same brand is running.
+REFRESH_RUNNING_NOTE = "Ya estamos buscando negocios parecidos para tu marca. Espera a que termine."
+#: «Buscar de nuevo» without the brand's account: where the owner writes it is the
+#: «Tu cuenta» step of creating the brand (/brand/connect) — the editor has no field
+#: for it.
+MISSING_HANDLE_ERROR = (
+    "No encontramos tu Instagram o TikTok para buscar. Escríbelo en el paso «Tu cuenta» "
+    "al crear tu marca y vuelve a intentarlo."
+)
 
 
 def _labels_lock(brand_id: UUID) -> asyncio.Lock:
@@ -7254,7 +8035,16 @@ _SORT_CARD_PADDING = "1rem"
 _RESULTS_COLUMN_MAX = "62rem"
 
 
-def _deck_zone(bucket: str, title: str, blurb: str, arrow: str, area: str) -> rx.Component:
+def _deck_zone(
+    bucket: str,
+    title: str,
+    blurb: str,
+    arrow: str,
+    area: str,
+    *,
+    on_click: Any = None,
+    on_drop: Any = None,
+) -> rx.Component:
     """One of the three targets around the card — a whole PANEL, not a small box
     (§ request 2026-09-14: "que las flechas ocupen todo el espacio"): the arrow fills
     it, the panel is the drop target AND the tap target — a tap sends the card in the
@@ -7274,7 +8064,10 @@ def _deck_zone(bucket: str, title: str, blurb: str, arrow: str, area: str) -> rx
     2026-09-14: "no quiero la animacion de las flechas parpadeando… solo quiero el
     scale cuando esté cerca la card a la opción") — `data-over`/`data-hit`'s pop is
     the only motion left on it, so `area` no longer needs to reach the CSS as a
-    `data-dir` (it still names the grid cell)."""
+    `data-dir` (it still names the grid cell).
+
+    `on_click` / `on_drop` replace the wizard's decision (`send_current` / `drop_into`
+    + `sync_labels`) — the Brand Kit editor's deck passes its own (`classify_pending`)."""
     hit = BrandConnectState.hit_bucket == bucket
     side = area != "down"
     return _DropZone.create(
@@ -7300,8 +8093,16 @@ def _deck_zone(bucket: str, title: str, blurb: str, arrow: str, area: str) -> rx
         ),
         # `sync_labels` right after the decision: it stores the sort (§ referentes
         # persistence, migration 0020).
-        on_click=[BrandConnectState.send_current(bucket), BrandConnectState.sync_labels],
-        on_drop=[BrandConnectState.drop_into(bucket), BrandConnectState.sync_labels],
+        on_click=(
+            [BrandConnectState.send_current(bucket), BrandConnectState.sync_labels]
+            if on_click is None
+            else on_click
+        ),
+        on_drop=(
+            [BrandConnectState.drop_into(bucket), BrandConnectState.sync_labels]
+            if on_drop is None
+            else on_drop
+        ),
         type="button",
         aria_label=title,
         # `--side` / `--down` only matter on a phone (`assets/qualify.css`): the side
@@ -7322,6 +8123,48 @@ def _deck_zone(bucket: str, title: str, blurb: str, arrow: str, area: str) -> rx
         display="flex",
         align_items="center",
         justify_content="center",
+    )
+
+
+def _deck_grid(zones: dict[str, rx.Component], middle: rx.Component) -> rx.Component:
+    """The deck's named-area grid — the card in the middle with its flying ghost, the
+    zones around it — shared by the wizard's sort step and the Brand Kit editor's deck.
+
+    The two side panels stretch to the card's full height and the bottom one spans all
+    three columns — every zone is as big as the space around the card allows. SAME
+    spatial layout at every width (§ request 2026-09-14, "adáptalo a móviles"): a phone
+    keeps Referentes LEFT, Competencia RIGHT and Detractores BELOW — the directions the
+    card is dragged in — with the side panels narrowed to thin strips (vertical label,
+    `assets/qualify.css`) so the card keeps most of the width."""
+    return rx.box(
+        zones["left"],
+        rx.box(
+            middle,
+            _deck_ghost(),
+            grid_area="card",
+            position="relative",
+            display="flex",
+            align_items="center",
+            justify_content="center",
+            width="100%",
+            min_width="0",
+            min_height=rx.breakpoints(initial="12rem", sm="16rem"),
+        ),
+        zones["right"],
+        zones["down"],
+        display="grid",
+        grid_template_columns=rx.breakpoints(
+            initial="2.75rem minmax(0, 1fr) 2.75rem", sm="1fr 1.6fr 1fr"
+        ),
+        grid_template_areas='"left card right" "down down down"',
+        # the first row takes whatever height the card leaves free, so the two side
+        # panels run from the header down to the bottom panel
+        grid_template_rows=rx.breakpoints(
+            initial="minmax(12rem, 1fr) auto", sm="minmax(16rem, 1fr) auto"
+        ),
+        gap=rx.breakpoints(initial="0.5rem", sm="0.75rem"),
+        width="100%",
+        flex="1",
     )
 
 
@@ -7467,16 +8310,22 @@ def _connect_step_sort() -> rx.Component:
         _script_on_mount(_DECK_DRAG_JS),
         rx.cond(
             BrandConnectState.discovery_error != "",
-            callout(BrandConnectState.discovery_error, "error"),
+            rx.cond(  # a cap is a limit, not an error (ADR 42 R5): `warn`
+                BrandConnectState.discovery_capped,
+                callout(BrandConnectState.discovery_error, "warn"),
+                callout(BrandConnectState.discovery_error, "error"),
+            ),
         ),
         # § request 2026-09-30: the empty categories are skipped on their own; when
         # every one came back empty there is no deck to deal, and the step says so.
         rx.cond(
             BrandConnectState.nothing_to_sort,
-            callout(
-                "No hay nada para clasificar: la búsqueda no encontró cuentas en ninguna "
-                "categoría. Puedes añadir alguna a mano abajo o continuar.",
-                "warn",
+            rx.cond(
+                # ADR 42 R5: the cap stopped the search — it did not «find nothing»; the
+                # cap's own notice sits above, this only says the way on
+                BrandConnectState.discovery_capped,
+                callout(CAPPED_SORT_NOTE, "info"),
+                callout(NOTHING_TO_SORT_NOTE, "warn"),
             ),
         ),
         stage_header,
@@ -7489,36 +8338,7 @@ def _connect_step_sort() -> rx.Component:
         # so the card keeps most of the width. It used to stack everything in one
         # column below 62em, which put Detractores off-screen and made "drag it down"
         # impossible on a phone.
-        rx.box(
-            zones["left"],
-            rx.box(
-                middle,
-                _deck_ghost(),
-                grid_area="card",
-                position="relative",
-                display="flex",
-                align_items="center",
-                justify_content="center",
-                width="100%",
-                min_width="0",
-                min_height=rx.breakpoints(initial="12rem", sm="16rem"),
-            ),
-            zones["right"],
-            zones["down"],
-            display="grid",
-            grid_template_columns=rx.breakpoints(
-                initial="2.75rem minmax(0, 1fr) 2.75rem", sm="1fr 1.6fr 1fr"
-            ),
-            grid_template_areas='"left card right" "down down down"',
-            # the first row takes whatever height the card leaves free, so the two
-            # side panels run from the header down to the bottom panel
-            grid_template_rows=rx.breakpoints(
-                initial="minmax(12rem, 1fr) auto", sm="minmax(16rem, 1fr) auto"
-            ),
-            gap=rx.breakpoints(initial="0.5rem", sm="0.75rem"),
-            width="100%",
-            flex="1",
-        ),
+        _deck_grid(zones, middle),
         rx.hstack(
             rx.button(
                 rx.icon("undo-2", size=T.ICON_SM),

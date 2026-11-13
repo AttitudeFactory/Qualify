@@ -18,14 +18,18 @@ dropped back to the operator as a warning.
 from __future__ import annotations
 
 import logging
+import re
+import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Final
 
+from qualify_creative.prompt_text import visual_text
 from qualify_creative.schemas import BrandKit
 from qualify_shared import observability
 
 from qualify_api.claude_tools import (
+    Attribution,
     ClaudeToolError,
     ClientFactory,
     Meter,
@@ -42,10 +46,14 @@ logger = logging.getLogger("qualify_api.creative.context_ai")
 
 CONTEXT_MODEL: Final = ModelConfig("claude-sonnet-5-5", effort="low")
 TOOL_NAME: Final = "propose_context"
+CONTEXT_PROMPT_VERSION: Final = "context-v3-compact-300"
+#: The function the consumption ledger books these calls to (m-24955649).
+FEATURE: Final = "potenciar-contexto"
+PROPOSAL_MAX_CHARS: Final = 300
+OUTPUT_MARGIN_CHARS: Final = 50
 #: Room for low-effort thinking plus the tool call (thinking counts against it).
 MAX_TOKENS: Final = 4096
-#: The longest context proposed: a flyer's scene is a scene (its field takes 600), every
-#: other kind's context is a brief of a few short paragraphs.
+#: Manual field capacities stay separate from the automatic proposal's 300-character cap.
 SCENE_MAX_CHARS: Final = 600
 CONTEXT_MAX_CHARS: Final = 1200
 #: Shortest input worth enhancing — fewer words than this give the model nothing to keep.
@@ -55,7 +63,7 @@ SYSTEM_PROMPT: Final = (
     "Eres el estratega creativo de una marca. Te llega el CONTEXTO que una persona de la "
     "marca escribió para una pieza de redes sociales (a veces breve o desordenado), qué "
     "tipo de pieza es, el producto, sus DATOS CLAVE y el BRAND KIT.\n\n"
-    "Reescríbelo como un brief claro y accionable, en español y en la voz de esa persona "
+    "Reescríbelo de forma breve, clara y accionable, en español y en la voz de esa persona "
     "(primera persona del negocio: «quiero…»), para que el equipo que genera la pieza "
     "entienda: de qué trata, a quién le habla, qué debe sentir esa persona, qué se debe "
     "ver o decir y cómo cierra (la acción que se pide). Conserva TODO lo que la persona "
@@ -66,7 +74,14 @@ SYSTEM_PROMPT: Final = (
     "datos clave o en el brand kit. Puedes añadir dirección creativa (encuadre, ambiente, "
     "ritmo, emoción), no hechos.\n"
     "- Respeta las palabras prohibidas y las afirmaciones prohibidas del brand kit.\n"
-    "- Sin hashtags, sin emojis, sin títulos ni viñetas: texto corrido, párrafos cortos.\n"
+    "- No añadas hashtags, emojis, títulos, viñetas, markdown ni frases de introducción. "
+    "Describe los símbolos solicitados CON PALABRAS, sin usar pictogramas emoji. "
+    "Conserva hashtags y citas literales; si una cita exige un glifo, no la omitas. "
+    "Una sola línea, un espacio entre palabras; sin saltos, espacios repetidos o adornos.\n"
+    "- Conserva cada petición, prohibición, cifra, horario y referencia literal, incluidos "
+    "los espacios dentro del texto que se pide reproducir exactamente. No añadas "
+    "relleno ni repitas contexto del brand kit que no haga falta. No cortes ni omitas "
+    "instrucciones importantes para cumplir el largo.\n"
     "- Si te piden una ESCENA (una imagen), describe solo lo que se ve: sujeto, lugar, luz, "
     "encuadre y sensación, en pocas frases.\n"
     "- Respeta el largo máximo que se indica.\n\n"
@@ -76,6 +91,97 @@ SYSTEM_PROMPT: Final = (
 
 class ContextUnavailable(RuntimeError):
     """The enhancement could not run (no key, a refusal, no usable answer)."""
+
+
+class ContextTooLong(ContextUnavailable):
+    """A complete normalized proposal does not fit; the caller must keep the original."""
+
+    def __init__(self, actual_chars: int, max_chars: int) -> None:
+        self.actual_chars = actual_chars
+        self.max_chars = max_chars
+        super().__init__(
+            # the counts stay on the exception for logs; the owner reads no numbers (UX B3)
+            "La versión mejorada salió demasiado larga, así que dejamos tu texto como estaba. "
+            "Puedes crear así o intentarlo de nuevo."
+        )
+
+
+class ContextMeaningUncertain(ContextUnavailable):
+    """Cleanup cannot safely preserve an explicit literal/symbol request."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "No pudimos conservar todas tus indicaciones en la propuesta. "
+            "Conservamos tu texto para que puedas ajustarlo manualmente."
+        )
+
+
+_SOURCE_LITERALS = re.compile(r'"[^"\n]*"|«[^»]*»|“[^”]*”|(?<!\w)\'[^\'\n]*\'')
+
+
+def normalize_context_proposal(text: str, *, source_text: str = "") -> str:
+    """Remove only layout/decorations; never summarize or cut the proposed instructions.
+
+    Requested literal CONTENT remains exact independently of output quote delimiters.
+    Emoji-bearing proposals are refused rather than cleaned into a different instruction.
+    This is scoped to this tool's output; the stored/manual original is never modified.
+    """
+    text = text.strip()
+    # General format guard: a removed glyph may carry meaning that we cannot prove
+    # decorative. The model must express symbols in words; never guess their meaning.
+    if visual_text(text) != text:
+        raise ContextMeaningUncertain()
+    contents = [literal[1:-1] for literal in _SOURCE_LITERALS.findall(source_text)]
+    if any(content and content not in text for content in contents):
+        raise ContextMeaningUncertain()
+    # Strip only wrappers absent from the source before locating literal intervals.
+    # No placeholder is inserted into user text: a literal may itself contain another
+    # literal or text resembling an internal marker.
+    if "```" not in source_text:
+        fenced = re.fullmatch(r"```(?:text|plaintext)?[ \t]*\r?\n(.*?)\r?\n```", text, re.S)
+        if fenced:
+            text = fenced.group(1)
+    for marker in ("**", "__"):
+        if marker not in source_text and text.startswith(marker) and text.endswith(marker):
+            text = text[len(marker) : -len(marker)]
+    intervals: list[tuple[int, int]] = []
+    for content in contents:
+        if not content:
+            continue
+        start = text.find(content)
+        if start < 0:
+            raise ContextMeaningUncertain()
+        while start >= 0:
+            intervals.append((start, start + len(content)))
+            start = text.find(content, start + 1)
+    spans: list[tuple[int, int]] = []
+    for start, end in sorted(intervals):
+        if spans and start <= spans[-1][1]:
+            spans[-1] = (spans[-1][0], max(end, spans[-1][1]))
+        else:
+            spans.append((start, end))
+    pieces: list[str] = []
+    cursor = 0
+    for start, end in spans:
+        pieces.append(re.sub(r"\s+", " ", unicodedata.normalize("NFC", text[cursor:start])))
+        pieces.append(text[start:end])
+        cursor = end
+    pieces.append(re.sub(r"\s+", " ", unicodedata.normalize("NFC", text[cursor:])))
+    cleaned = "".join(pieces).strip()
+    if any(content and content not in cleaned for content in contents):
+        raise ContextMeaningUncertain()
+
+    return cleaned
+
+
+def validate_context_proposal(text: str, *, max_chars: int, source_text: str = "") -> str:
+    """Validate the final normalized text; never silently discard an overlength tail."""
+    text = normalize_context_proposal(text, source_text=source_text)
+    if not text:
+        raise ContextUnavailable("empty context proposed")
+    if len(text) > max_chars:
+        raise ContextTooLong(len(text), max_chars)
+    return text
 
 
 @dataclass(frozen=True)
@@ -94,6 +200,10 @@ class ContextInput:
 
     @property
     def max_chars(self) -> int:
+        return PROPOSAL_MAX_CHARS
+
+    @property
+    def field_max_chars(self) -> int:
         return SCENE_MAX_CHARS if self.scene else CONTEXT_MAX_CHARS
 
 
@@ -105,6 +215,7 @@ class ContextProposal:
     model_id: str = ""
     input_tokens: int = 0
     output_tokens: int = 0
+    prompt_version: str = CONTEXT_PROMPT_VERSION
 
 
 def _brand_lines(kit: BrandKit | None) -> list[str]:
@@ -143,7 +254,9 @@ def render_request(data: ContextInput, kit: BrandKit | None) -> str:
     lines = [
         f"TIPO DE PIEZA: {data.piece}",
         f"QUÉ ESCRIBIR: {what}",
-        f"LARGO MÁXIMO: {data.max_chars} caracteres",
+        f"LARGO MÁXIMO: {data.max_chars} caracteres, incluidos espacios y signos.",
+        f"OBJETIVO: hasta {data.max_chars - OUTPUT_MARGIN_CHARS} caracteres; "
+        "usa solo las palabras necesarias y conserva todas las indicaciones.",
         f"PRODUCTO: {data.product.strip() or '(sin producto)'}",
         "DATOS CLAVE:" if facts else "DATOS CLAVE: (ninguno)",
         *facts,
@@ -156,14 +269,17 @@ def render_request(data: ContextInput, kit: BrandKit | None) -> str:
     return "\n".join(lines)
 
 
-def _tool() -> dict[str, Any]:
+def _tool(max_chars: int = PROPOSAL_MAX_CHARS) -> dict[str, Any]:
     return strict_tool(
         TOOL_NAME,
         "Propone el contexto reescrito.",
         {
             "context": {
                 "type": "string",
-                "description": "El contexto (o la escena) reescrito, listo para usar.",
+                "description": (
+                    f"Texto final de hasta {max_chars} caracteres, contando espacios y signos. "
+                    "Una línea, sin formato ni relleno; conserva todas las indicaciones."
+                ),
             },
             "added_facts": {
                 "type": "array",
@@ -183,10 +299,12 @@ def enhance_context(
     data: ContextInput,
     kit: BrandKit | None,
     *,
+    attribution: Attribution,
     client_factory: ClientFactory = default_client,
 ) -> ContextProposal:
-    """Claude's rewrite of `data.text`. Raises `ContextUnavailable` with no key, on a
-    refusal or when the answer is unusable; `ValueError` for a text too short to keep."""
+    """Claude's rewrite of `data.text`, booked to `attribution` (m-24955649). Raises
+    `ContextUnavailable` with no key, on a refusal or when the answer is unusable; `ValueError`
+    for a text too short to keep."""
     if len(data.text.strip()) < MIN_INPUT_CHARS:
         raise ValueError("the context is too short to enhance")
     try:
@@ -198,9 +316,10 @@ def enhance_context(
             meter,
             system=SYSTEM_PROMPT,
             messages=[{"role": "user", "content": render_request(data, kit)}],
-            tools=[_tool()],
+            tools=[_tool(data.max_chars)],
             tool_choice=forced_or_auto(CONTEXT_MODEL, TOOL_NAME),
             max_tokens=MAX_TOKENS,
+            attribution=attribution.versioned(CONTEXT_PROMPT_VERSION),
         )
     except ClaudeToolError as exc:
         raise ContextUnavailable(str(exc)) from exc
@@ -208,24 +327,31 @@ def enhance_context(
     if not calls:
         raise ContextUnavailable(f"{CONTEXT_MODEL.model_id} did not call {TOOL_NAME}")
     answer = calls[0].input or {}
-    text = str(answer.get("context") or "").strip()
-    if not text:
-        raise ContextUnavailable("empty context proposed")
-    if len(text) > data.max_chars:
-        # cut at the last sentence that fits — never mid-word
-        cut = text[: data.max_chars]
-        end = max(cut.rfind(". "), cut.rfind(".\n"))
-        text = (cut[: end + 1] if end > data.max_chars // 2 else cut.rsplit(" ", 1)[0]).strip()
+    raw_text = answer.get("context")
+    if not isinstance(raw_text, str):
+        raise ContextUnavailable("context proposal is not text")
+    literal_source = "\n".join(
+        (
+            data.text,
+            data.product,
+            data.must_mention,
+            data.must_avoid,
+            *(str(value) for _, value in data.highlights),
+        )
+    )
+    text = validate_context_proposal(raw_text, max_chars=data.max_chars, source_text=literal_source)
     added = tuple(
         str(fact).strip() for fact in answer.get("added_facts") or () if str(fact).strip()
     )
     stats = meter.stats()
     logger.info(
-        "context enhanced: model=%s in=%s out=%s added_facts=%s",
+        "context enhanced: model=%s in=%s out=%s added_facts=%s chars=%s version=%s",
         stats.model_id,
         stats.input_tokens,
         stats.output_tokens,
         len(added),
+        len(text),
+        CONTEXT_PROMPT_VERSION,
     )
     return ContextProposal(
         text=text,

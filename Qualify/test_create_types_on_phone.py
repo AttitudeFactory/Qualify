@@ -25,10 +25,11 @@ def test_every_option_shows_its_blurb_in_the_panel() -> None:
     for title, blurb, _icon in (_VARIATIONS_HEADING, _DISCOVER_HEADING):
         assert _has(picker, title) and _has(picker, blurb)
     assert _DISCOVER_HEADING[0] == "Descubrir ideas de videos"
-    # the ticket's sentence, keeping #307's precision about what the filter keeps
+    # R7 (UX review 8): the weekly rhythm, the screen's one name for the accounts, and
+    # #307's precision about what the filter keeps
     assert _DISCOVER_HEADING[1] == (
-        "Los videos con más vistas de las cuentas que tomas de referencia, solo de tu "
-        "producto o su categoría, para inspirarte o hacer uno parecido."
+        "Cada lunes, los reels que mejor les funcionan a las cuentas que te inspiran, solo "
+        "de tu producto o su categoría, para que hagas uno parecido."
     )
     assert "q-cr-option-blurb" in picker
 
@@ -143,7 +144,11 @@ def test_replicate_explains_the_reference_with_help_always_visible() -> None:
     from .discover_reels import REPLICATE_HELP, discover_view
 
     rendered = str(discover_view().render())
-    assert _has(rendered, "Replicar con mi marca") and "Muy pronto" not in rendered
-    assert "primeros 5 s" in REPLICATE_HELP and "sin su audio" in REPLICATE_HELP
+    assert _has(rendered, "Hacer uno parecido") and "Muy pronto" not in rendered
+    # UI-1 (m-24921075): the help of `docs/ux-video-por-planos.md` §3a, in size 2
+    assert REPLICATE_HELP == (
+        "Lo hacemos con tu producto y tu marca. Lo revisas antes de crear nada."
+    )
+    assert _has(rendered, REPLICATE_HELP)
     assert "q-dr-replicate-help" in rendered and "replicate" in rendered
     assert "44px" in rendered and "q-dr-soon" not in rendered

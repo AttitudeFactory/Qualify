@@ -29,6 +29,13 @@ are generated on creation and never edited; a step is renamed through its `title
 time from opening a menu to publishing it from the four steps is logged
 (`whatsapp_menu_guided_publish`) — the ≤ 5 min goal is measured, not enforced.
 
+**Step 2 is one ordered list of answers** (m-24936836): `answers` (an `AnswersVM`) is
+re-read on every `_apply`, every edit goes through a pure `answers_*` function, and the
+panel of one answer is `answer_open` (an index, range-checked). A new menu is born from
+`starter_facts` (the brand's name, «Tu marca»'s city, and the WhatsApp profile's address
+only when the Perfil tab already read it — no Graph call). A gap («[hora de abrir]»)
+blocks publishing (`gap_count`), and the provider refuses it again (`MenuHasGaps`).
+
 **The preview runs the real engine** (`engine.step`) over the brand's real catalog, on a
 snapshot of the definition taken at «Reiniciar»: editing while a conversation is open
 cannot pull a node out from under it; the panel says when the snapshot is stale.
@@ -37,72 +44,187 @@ cannot pull a node out from under it; the panel says when the snapshot is stale.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import json
 import logging
+import os
+import tempfile
 import time
 from collections.abc import AsyncIterator
 from dataclasses import replace
+from datetime import datetime
 from decimal import Decimal
+from functools import partial
 from typing import Any
 from uuid import UUID
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import reflex as rx
 from pydantic import ValidationError
-from qualify_api.whatsapp.menus import MenuNotFound, MenuVersionNotFound
+from qualify_api.catalog.order import category_key
+from qualify_api.whatsapp.menus import MenuIsAnswering, MenuNotFound, MenuVersionNotFound
 from qualify_api.whatsapp.menus.engine import CatalogItem, Inbound, ThreadMenuState
 from qualify_api.whatsapp.menus.schema import MAX_COMMANDS, MAX_ICE_BREAKERS, MenuDefinition
+from qualify_api.whatsapp.menus.starter import (
+    MenuHasGaps,
+    StarterFacts,
+    definition_gaps,
+    payment_answer,
+)
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
+from . import inbox_provider
 from .auth_state import AuthState
+from .catalog_group_vm import (
+    NAME_MAX,
+    NAME_TOO_LONG,
+    existing_spelling,
+    group_href,
+    is_uncategorized,
+    name_counter,
+    notice_count,
+    notice_text,
+)
+from .catalog_order_vm import order_href
+from .catalog_provider import business_currency, uncategorized_notice
+from .catalog_state import CatalogState
 from .nav_url import flow_param, uuid_param, with_query
 from .tenant import tenant_uuid
 from .ui.steps import step_settle_script
 from .ui.steps_vm import DIR_NEXT, guard_step, step_direction
+from .upload_names import safe_upload_name
 from .whatsapp_menu_provider import (
+    AddedProducts,
+    FoundProduct,
+    ImportProposal,
+    ImportSource,
     MenuDetail,
+    NothingFound,
     NumberScope,
+    SourceUnsupported,
+    SuggestInput,
+    SuggestProposal,
+    add_catalog_products,
+    archive_menu,
     create_menu,
+    import_menu_facts,
     menu_detail,
-    menus_for,
+    menu_overview,
     number_scope,
+    payment_options,
     preview_catalog,
     publish_version,
     save_version,
     set_paused,
+    starter_facts,
+    suggest_text,
     user_id_for,
 )
 from .whatsapp_menu_vm import (
+    ANSWER_NAME_NEEDS_FIX,
     CATALOG_FIX_FIRST,
+    DELETE_BLOCKED,
+    DELETE_FAILED,
+    DELETED_TOAST,
+    EMPTY_ANSWERS,
     EMPTY_GUIDED,
+    EMPTY_IMPORT,
     EMPTY_MENU,
+    FACT_PENDING,
+    FACT_SENTENCE,
+    FACT_SKIPPED,
+    FACT_USED,
     GUIDED_HELP,
     GUIDED_STEPS,
     GUIDED_TITLES,
+    IMPORT_ADD_FAILED,
+    IMPORT_ADD_NEEDS_BRAND,
+    IMPORT_CHOOSE,
+    IMPORT_EMPTY_PHASE,
+    IMPORT_FAILED,
+    IMPORT_FAILED_PHASE,
+    IMPORT_MAX_BYTES,
+    IMPORT_PAGE,
+    IMPORT_PAGE_NEEDS_LINK,
+    IMPORT_PHOTO,
+    IMPORT_READING,
+    IMPORT_REJECTED,
+    IMPORT_REVIEW,
+    IMPORT_TOO_BIG,
+    IMPORT_UPLOAD_FAILED,
     KIND_BUTTONS,
     KIND_KEYS,
     KIND_LABELS,
     KIND_LIST,
+    NO_PUBLISH_GAPS,
+    NO_SUGGESTION,
     NONE_VALUE,
+    PAUSE_BUTTON,
+    PUBLISH_NEEDS_ANSWERS,
     REPLY_LIST,
+    RESUMED_TOAST,
+    SAVE_NEEDS_FIX,
+    SUGGEST_ANSWER,
+    SUGGEST_FAILED,
+    SUGGEST_GREETING,
+    SUGGEST_NO_DATA,
+    SUGGEST_STALE,
+    SWITCH_TEXT,
     TEMPLATE_EMPTY,
     TEMPLATE_FAST_FOOD,
+    AnswersVM,
+    AnswerVM,
     CatalogRowVM,
+    CatalogSectionVM,
     CommandForm,
     GuidedVM,
     IceBreakerForm,
+    ImportVM,
     KeywordForm,
+    MenuCardVM,
     MenuForm,
     MenuSummaryVM,
     MenuVersionVM,
     NodeChoiceVM,
     NodeForm,
     PreviewMessageVM,
+    PublishGapsVM,
+    SuggestVM,
+    added_lines,
+    answer_place_text,
+    answer_set_label,
+    answer_set_text,
+    answers_add,
+    answers_in_order,
+    answers_lifted_text,
+    answers_move_to,
+    answers_remove,
+    answers_view,
+    answers_without_gaps,
+    apply_fact,
+    apply_sentences,
+    build_menu_cards,
+    button_swap,
+    button_swap_text,
     can_publish,
+    catalog_mode_line,
+    catalog_more_line,
     catalog_note,
+    catalog_order_line,
     catalog_rows,
+    catalog_sections,
     change_kind,
+    chosen_menu_id,
     definition_to_form,
+    drag_help,
+    edited_kind,
     empty_form,
+    fact_plan,
+    fact_rows,
+    first_gap_literal,
+    first_menu_id,
     fresh_node_id,
+    group_plan,
     guided_add_button,
     guided_remove_button,
     guided_review,
@@ -117,13 +239,29 @@ from .whatsapp_menu_vm import (
     guided_step_label,
     guided_use_buttons,
     guided_view,
+    import_empty_text,
+    import_view,
     issues_summary,
+    menu_status,
+    merge_card_input,
     new_node,
     new_option,
     node_choices,
     order_lines,
+    order_menu_cards,
     preview_turn,
+    product_rows,
     publish_confirm_lines,
+    publish_gaps,
+    read_answers,
+    remove_confirm_text,
+    row_kind,
+    sentence_group,
+    suggest_context,
+    suggest_has_input,
+    suggest_label,
+    suggest_proposal_vm,
+    suggest_writing_line,
     validate_form,
     validate_menu_name,
 )
@@ -132,10 +270,84 @@ from .whatsapp_state import WhatsAppState
 
 logger = logging.getLogger(__name__)
 
+#: How long «Listo: «X» ahora es botón…» and its «Deshacer» stay.
+_ANSWERS_UNDO_MS = 6000
+
+#: WhatsApp → Tu número → Formas de pago (m-24955648).
+PAYMENTS_HREF = "/whatsapp?tab=numero&sub=pagos"
+
+#: The open menu's bar: «Editar» on a card scrolls there (m-24955645).
+TOOLBAR_ELEMENT_ID = "whatsapp-menu-toolbar"
+
+#: What a card is doing, in `card_busy_action` (m-24955645).
+CARD_PUBLISH = "publish"
+CARD_PAUSE = "pause"
+CARD_DELETE = "delete"  # m-24986800 «Eliminar»
+
+#: The picker of «Menús de este número» (m-24986800): focus comes back to it after
+#: «Eliminar» (the deleted card, which opened the dialog, is gone).
+MENU_PICK_ID = "whatsapp-menu-pick"
+#: The section's heading, focused instead when no picker is left (one menu or none).
+MENUS_HEADING_ID = "whatsapp-menus-heading"
+
+
+def _focus_after_delete() -> rx.event.EventSpec:
+    return rx.call_script(
+        "window.requestAnimationFrame(() => window.requestAnimationFrame(() => {"
+        f"const el=document.getElementById('{MENU_PICK_ID}')"
+        f"||document.getElementById('{MENUS_HEADING_ID}');"
+        "if(el)el.focus();}));"
+    )
+
+
+#: The review's heading: focus lands there when «Leyendo» turns into the review (the
+#: focused «Cancelar» is gone), so a screen reader hears where it is.
+IMPORT_REVIEW_HEADING_ID = "whatsapp-menu-import-review"
+
+
+def _focus_review() -> rx.event.EventSpec:
+    return rx.call_script(
+        "window.requestAnimationFrame(() => window.requestAnimationFrame(() => {"
+        f"const h=document.getElementById('{IMPORT_REVIEW_HEADING_ID}');"
+        "if(h)h.focus();}));"
+    )
+
+
+#: Step 2's answer text: «Completarlas» focuses it on its first gap (m-24945866).
+ANSWER_TEXT_ID = "whatsapp-menu-answer-text"
+
+
+def _focus_first_gap(literal: str) -> rx.event.EventSpec:
+    """Focus the open answer's text with its first gap (`literal`, «[minutos]») selected and
+    in view: a gap at the end of a long text is what the owner could not find (m-24945866).
+    The dialog mounts a moment after the panel opens and Radix focuses its first button, so
+    this retries for a short while and runs after that."""
+    return rx.call_script(
+        "(function(){let n=0;const t=()=>{"
+        f"const el=document.getElementById('{ANSWER_TEXT_ID}');"
+        "if(!el){if(n++<20)setTimeout(t,50);return;}"
+        "el.focus({preventScroll:true});"
+        f"const g={json.dumps(literal)};const a=g?el.value.indexOf(g):-1;"
+        "if(a>=0){el.setSelectionRange(a,a+g.length);"
+        "el.scrollTop=el.scrollHeight*(a/Math.max(1,el.value.length))-el.clientHeight/2;}"
+        "el.scrollIntoView({block:'center'});};setTimeout(t,80);})();"
+    )
+
+
+#: The one-at-a-time slot (`suggest_busy`) while a menu import reads: no suggestion and no
+#: second import while one paid call is in flight (m-24936840).
+SUGGEST_IMPORT = "import"
+#: Seconds before the waiting screen says «Está tardando más de lo normal…» (spec §4 b).
+IMPORT_SLOW_AFTER = 60.0
+
 _NO_SESSION = "No hay ninguna sesión de negocio activa. Vuelve a iniciar sesión."
 _LOAD_FAILED = "No se pudieron cargar los menús de este número. Vuelve a intentarlo en un momento."
 _SAVE_FAILED = "No se pudo guardar la versión. Vuelve a intentarlo en un momento."
 _PUBLISH_FAILED = "No se pudo publicar la versión. Vuelve a intentarlo en un momento."
+_PUBLISH_GAPS = (
+    "Esta versión tiene datos por completar. Complétalos o quita esas respuestas y vuelve a "
+    "publicar. Si los corchetes son a propósito, cámbialos por paréntesis ( )."
+)
 _PAUSE_FAILED = "No se pudo cambiar la pausa del menú. Vuelve a intentarlo en un momento."
 _MENU_GONE = "Ese menú ya no está en este número. Actualizamos la lista."
 _NAME_TAKEN = "Ya hay un menú con ese nombre en este número."
@@ -145,7 +357,15 @@ _SAVED = (
 )
 _PAUSED = "Menú en pausa: tu WhatsApp no responde con el menú hasta que lo reactives."
 _RESUMED = "Menú reactivado: tu WhatsApp vuelve a responder con el menú que escribiste."
+_CARD_TOAST_MS = 8000
+_CARD_LIST_CHANGED = "La lista cambió. Elige la versión otra vez."
+_CARD_PUBLISHED = "Listo: tus clientes ya ven la versión {n} de «{name}»."
+_CARD_PUBLISHED_PAUSED = (
+    "Publicamos la versión {n} de «{name}». Sigue en pausa: tus clientes la verán cuando "
+    "lo reanudes."
+)
 _DRAFT_EMPTY = "Menú nuevo: escribe el primer paso y publícalo en tu WhatsApp."
+_SUGGEST_NEEDS_NAME = "Ponle primero un nombre a esta respuesta y lo escribimos con tu estilo."
 
 _ENTRY_TABLES: dict[str, frozenset[str]] = {
     "keywords": frozenset({"word", "node"}),
@@ -182,6 +402,34 @@ _NODE_FIELDS = frozenset(
     }
 )
 _OPTION_FIELDS = frozenset({"option_id", "label", "description", "next", "section"})
+
+
+def _payment_options(tenant_id: UUID, brand_id: UUID | None) -> tuple[Any, ...] | None:
+    """Blocking: the methods the business offers (m-24955648), ONE read per load —
+    the live «Formas de pago», the gap rule, the preview and step 3's invitation.
+    None = could not read them (the old rule stays: the stored gap blocks)."""
+    return payment_options(tenant_id, brand_id)
+
+
+def _focus_handle_script(option_id: str) -> str:
+    """The row re-renders in its new place (by key) and the browser drops the focus: give
+    it back to that answer's handle (`ui.sort_handle`, `data-sort-key`)."""
+    return (
+        "window.setTimeout(function () { var k = " + json.dumps(option_id) + ";"
+        " var b = Array.prototype.find.call(document.querySelectorAll('[data-sort-key]'),"
+        " function (el) { return el.getAttribute('data-sort-key') === k; });"
+        " if (b) b.focus(); }, 80)"
+    )
+
+
+def _notice_show_for(tenant_id: UUID, brand_id: UUID | None) -> bool:
+    """Blocking: whether step 3 shows «N productos sin categoría» (m-24955838). A read
+    that fails hides the notice: it is a suggestion, never worth breaking the menu."""
+    try:
+        return uncategorized_notice(tenant_id, brand_id)[1]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("uncategorized notice read failed: %s", type(exc).__name__)
+        return False
 
 
 def _catalog_rows(items: tuple[CatalogItem, ...]) -> list[dict[str, Any]]:
@@ -221,6 +469,18 @@ class WhatsAppMenuState(rx.State):
     banner: str = ""
     banner_tone: str = "info"
 
+    # -- «Menús de este número»: one card per menu (m-24955645) ------------------------
+    menu_cards: list[MenuCardVM] = []
+    card_busy: str = ""  # the menu whose card is publishing or pausing ("" = none)
+    card_busy_action: str = ""  # CARD_PUBLISH / CARD_PAUSE / CARD_DELETE
+    #: m-24986800: the menu picked in «Menú» while it opens ("" = none pending).
+    menu_pick: str = ""
+    #: The menu the owner wants to switch to while the editor has unsaved changes: the
+    #: «¿Cambiar de menú?» dialog is open while this is set.
+    switch_to: str = ""
+    #: «No pudimos eliminar el menú…», above the card.
+    delete_error: str = ""
+
     # -- «Nuevo menú» dialog --------------------------------------------------------------
     new_open: bool = False
     new_name: str = ""
@@ -237,7 +497,6 @@ class WhatsAppMenuState(rx.State):
     publishing: bool = False
     editing_version_id: str = ""  # the saved version on screen while `dirty` is False
     just_published: bool = False  # «listo» + the next step (the QR), until the next edit
-    versions_open: bool = False  # «Ver versiones anteriores»
     pausing: bool = False
     dirty: bool = False
 
@@ -263,6 +522,59 @@ class WhatsAppMenuState(rx.State):
     flow_ready: bool = False
     advanced_open: bool = False  # «Más opciones (avanzado)»: the full editor
     catalog: list[CatalogRowVM] = []  # the brand's products, for step 3 (names + prices)
+    #: m-24955838 — step 3's «N productos sin categoría» (0 = no line).
+    group_notice_count: int = 0
+    #: The backend's verdict (`CatalogService.uncategorized_notice`), read with the catalog.
+    _notice_show: bool = False
+    #: m-24955648 — payment methods the business offers (-1 = could not read them), and
+    #: the methods themselves as the engine reads them (`as_option`).
+    payments_offered: int = -1
+    _payment_options: list[Any] = []
+    #: m-24955838 — the import review's category being edited (index in the proposal).
+    import_category_editing: int = -1
+    import_category_text: str = ""
+    import_category_error: str = ""
+
+    # -- step 2: the answers (m-24936836) -----------------------------------------------
+    answers: AnswersVM = EMPTY_ANSWERS
+    answer_open: int = -1  # the answer whose panel is open; -1 = the list
+    answer_from_gaps: bool = False  # opened by step 4 «Completarlas»: say how to fill it
+    answer_confirm_remove: bool = False  # «¿Quitar «Reservas»?» inside the panel
+    #: m-24955644: «Deshacer» of the last move that changed the buttons (one level).
+    _answers_undo: dict[str, Any] = {}
+    _lift_order: list[tuple[str, str]] = []
+    _moving_answer: bool = False
+    #: Said by the `aria-live` line after every move (the words of «Ordenar tu menú»).
+    answers_announce: str = ""
+    #: The answer lifted from the keyboard (`sort_handle`), and the draft before it.
+    answer_lifted: str = ""
+    _lift_form: Any = None
+    _lift_dirty: bool = False
+    _answer_dragging: str = ""
+    add_open: bool = False  # «Agregar otra respuesta» shows its suggestions
+    gap_count: int = 0  # places a customer could read a «[…]» gap in
+    publish_gaps: PublishGapsVM = NO_PUBLISH_GAPS
+    strip_confirm_open: bool = False  # «Se quitan Horario y Reservas. ¿Publicar sin ellas?»
+
+    # -- «Mejorar mi texto» / «Escribirlo por mí» (m-24936838) ---------------------------
+    suggest_busy: str = ""  # SUGGEST_GREETING / SUGGEST_ANSWER while Claude writes; one at a time
+    greeting_suggest: SuggestVM = NO_SUGGESTION
+    answer_suggest: SuggestVM = NO_SUGGESTION  # for the answer whose panel is open
+    suggest_writing: str = ""  # «Escribiendo tu texto…»
+    suggest_notice: str = ""  # «Ir a Tu marca» refused: shown next to that button
+
+    # -- «Cargar desde una foto o mi página» (m-24936840) --------------------------------
+    import_phase: str = ""  # "" = closed; IMPORT_CHOOSE / _PHOTO / _PAGE / _READING / …
+    import_offer: bool = False  # opened right after creating the menu: «Ahora no»
+    import_kind: str = ""  # what was read: "image" | "pdf" | "url"
+    import_url: str = ""
+    import_url_error: str = ""
+    import_error: str = ""  # the failed state's message (a SourceUnsupported reason)
+    import_slow: bool = False  # «Está tardando más de lo normal…»
+    import_review: ImportVM = EMPTY_IMPORT
+    import_editing: int = -1  # the fact whose value is being edited
+    import_adding: bool = False  # «Agregar los marcados a la Galería» in flight
+    import_add_error: str = ""
 
     # -- preview ------------------------------------------------------------------------
     preview_messages: list[PreviewMessageVM] = []
@@ -275,6 +587,9 @@ class WhatsAppMenuState(rx.State):
 
     # Backend-only (underscore): never serialized to the browser.
     _scope: dict[str, str] = {}
+    _cards: list[Any] = []  # `MenuCardInput` per menu, in the list's order
+    _card_choice: dict[str, str] = {}  # menu id → the version picked in «Versión»
+    _zone: str = "UTC"  # the business's own zone (`inbox_provider.tenant_zone`)
     _catalog: list[dict[str, Any]] = []
     _payloads: dict[str, dict[str, Any]] = {}
     _valid_payload: dict[str, Any] = {}
@@ -282,6 +597,24 @@ class WhatsAppMenuState(rx.State):
     _preview_thread: dict[str, Any] = {}
     _guided_started_at: float = 0.0  # wall clock when the menu was opened (measurement)
     _guided_used_advanced: bool = False
+    # Per field ("greeting" / "answer:<option id>"): the owner's text before the first
+    # proposal (what «Deshacer» brings back, exactly) and the last proposal (what «Otra
+    # versión» asks to differ from). Dropped as soon as the owner types in that field.
+    _suggest_undo: dict[str, str] = {}
+    _suggest_last: dict[str, str] = {}
+    # Bumped whenever the editor loads another menu/version or number: a call in flight
+    # that started under an older epoch settles without touching the new editor.
+    _suggest_epoch: int = 0
+    # The proposal under review, as plain JSON (see `fact_rows` / `product_rows`).
+    _import_facts: list[dict[str, str]] = []
+    _import_products: list[dict[str, str]] = []
+    _import_warnings: list[str] = []
+    _import_label: str = ""
+    _import_added: list[str] = []
+    _import_currency: str = ""  # the business's own, for a price without one
+    _import_staged: str = ""  # the uploaded file, in a private temp file until read
+    # Bumped by «Cancelar» / closing: a read in flight settles without reaching the screen.
+    _import_epoch: int = 0
 
     # ==================================================================================
     # Computed vars
@@ -338,11 +671,123 @@ class WhatsAppMenuState(rx.State):
 
     @rx.var
     def guided_review(self) -> list[str]:
-        return guided_review(self.guided, len(self.catalog))
+        return guided_review(
+            self.guided,
+            len(self.catalog),
+            self.answers,
+            has_fallback=self.fallback_node not in ("", NONE_VALUE),
+        )
+
+    @rx.var
+    def greeting_suggest_label(self) -> str:
+        return suggest_label(self.welcome)
+
+    @rx.var
+    def answer_suggest_label(self) -> str:
+        return suggest_label(self.open_answer.text)
+
+    @rx.var
+    def open_answer(self) -> AnswerVM:
+        """The answer whose panel is open (an empty one while the list shows)."""
+        for answer in [*self.answers.buttons, *self.answers.rows]:
+            if answer.index == self.answer_open:
+                return answer
+        return AnswerVM(
+            index=-1,
+            label="",
+            does="",
+            preview="",
+            text="",
+            text_editable=False,
+            is_products=False,
+            status_label="",
+            status_tone="neutral",
+            gaps_line="",
+            has_gaps=False,
+            label_count="",
+            label_error="",
+            text_error="",
+            is_button=False,
+            can_up=False,
+            can_down=False,
+        )
+
+    @rx.var
+    def publish_block_reason(self) -> str:
+        """Why «Publicar en mi WhatsApp» is off, in the owner's words ("" when it is on):
+        what to fix, data to complete, or an answer's name — never mixed up."""
+        if self.error_count > 0:
+            return SAVE_NEEDS_FIX
+        if self.gap_count > 0:
+            return self.publish_gaps.block_reason or PUBLISH_NEEDS_ANSWERS
+        # An empty answer text is already a schema error (SAVE_NEEDS_FIX above).
+        if self.answers.name_issue:
+            return ANSWER_NAME_NEEDS_FIX
+        return ""
+
+    @rx.var
+    def publish_block_detail(self) -> str:
+        """Under `publish_block_reason`: which data, where («Domicilio: minutos · Reservas:
+        cuánto tardas en responder»), "" when no gap is what blocks (m-24945866)."""
+        if self.error_count > 0 or self.gap_count == 0:
+            return ""
+        return self.publish_gaps.detail
+
+    @rx.var
+    def has_open_answer(self) -> bool:
+        return self.answer_open >= 0
+
+    @rx.var
+    def remove_confirm_text(self) -> str:
+        label = self.open_answer.label.strip() or "esta respuesta"
+        return remove_confirm_text(label)
+
+    @rx.var
+    def drag_help(self) -> str:
+        """Step 2's help (m-24955644): with 2 or 3 answers there is no «Más preguntas»."""
+        return drag_help(self.answers.count)
 
     @rx.var
     def catalog_count(self) -> int:
         return len(self.catalog)
+
+    @rx.var
+    def catalog_first_screen(self) -> list[CatalogSectionVM]:
+        """Step 3, read-only (m-24955643): what the customer sees before «Ver más»,
+        by category, in the order chosen in Catálogo."""
+        return catalog_sections(self.catalog)
+
+    @rx.var
+    def catalog_order_text(self) -> str:
+        return catalog_order_line(self.catalog)
+
+    @rx.var
+    def catalog_more_text(self) -> str:
+        return catalog_more_line(self.catalog)
+
+    @rx.var
+    def catalog_mode_text(self) -> str:
+        """Categories first (m-24955838): the customer picks a category, then products."""
+        return catalog_mode_line(self.catalog)
+
+    @rx.var
+    def group_notice_text(self) -> str:
+        """Step 3 (m-24955838): «Tienes N productos sin categoría…» — "" hides it."""
+        return notice_text(self.group_notice_count) if self.group_notice_count else ""
+
+    async def _count_uncategorized(self) -> None:
+        """Inside `async with self`: the products of the preview catalog without a
+        category, minus the ones the owner chose to leave in «Otros» (Catálogo's
+        «Dejar el resto en «Otros»», kept for the session in `CatalogState`)."""
+        try:
+            dismissed = list((await self.get_state(CatalogState)).dismissed_uncategorized)
+        except Exception:  # noqa: BLE001 — no event context (tests): nothing dismissed
+            dismissed = []
+        self.group_notice_count = notice_count(
+            [str(r["product_id"]) for r in self._catalog if is_uncategorized(r.get("category"))],
+            dismissed,
+            show=self._notice_show,
+        )
 
     @rx.var
     def selected(self) -> NodeForm:
@@ -371,16 +816,28 @@ class WhatsAppMenuState(rx.State):
 
     @rx.var
     def can_save(self) -> bool:
-        return self.error_count == 0 and self.dirty and not self.saving and self.has_menu
+        # Not while a card publishes or pauses: one write to the number at a time.
+        return (
+            self.error_count == 0
+            and self.dirty
+            and not self.saving
+            and self.has_menu
+            and not self.card_busy
+        )
 
     @rx.var
     def can_publish(self) -> bool:
-        return can_publish(
-            has_menu=self.has_menu,
-            error_count=self.error_count,
-            dirty=self.dirty,
-            editing_version_id=self.editing_version_id,
-            busy=self.saving or self.publishing,
+        # A gap («[hora de abrir]») or an answer named twice never reaches a customer.
+        return (
+            can_publish(
+                has_menu=self.has_menu,
+                error_count=self.error_count,
+                dirty=self.dirty,
+                editing_version_id=self.editing_version_id,
+                busy=self.saving or self.publishing or bool(self.card_busy),
+            )
+            and self.gap_count == 0
+            and not self.answers.blocking
         )
 
     @rx.var
@@ -436,6 +893,14 @@ class WhatsAppMenuState(rx.State):
         shell = await self.get_state(WhatsAppState)
         return shell.selected_connection_id
 
+    async def _profile_address(self) -> str:
+        """The WhatsApp profile's address, only if the Perfil tab already read it for this
+        number (m-24936836: no Graph call to create a menu or to suggest a text)."""
+        shell = await self.get_state(WhatsAppState)
+        if shell.profile_loaded_for and shell.profile_loaded_for == shell.selected_connection_id:
+            return shell.form_address
+        return ""
+
     def _scope_value(self) -> NumberScope | None:
         if not self._scope:
             return None
@@ -444,6 +909,7 @@ class WhatsAppMenuState(rx.State):
             phone_row_id=UUID(self._scope["phone_row_id"]),
             brand_id=UUID(brand) if brand else None,
             brand_name=self._scope.get("brand_name", ""),
+            business_name=self._scope.get("business_name", ""),
         )
 
     def _form(self) -> MenuForm:
@@ -459,7 +925,13 @@ class WhatsAppMenuState(rx.State):
         )
 
     def _apply(self, form: MenuForm, *, edited: bool = True) -> None:
-        """Validate `form` and put it, annotated, on screen."""
+        """Validate `form` and put it, annotated, on screen. Any change that is not the
+        lifted answer's own move ends a keyboard lift (m-24955644: Escape must never
+        undo an edit made meanwhile)."""
+        if not self._moving_answer:
+            self.answer_lifted = ""
+            self._lift_form = None
+            self._lift_order = []
         result = validate_form(form)
         annotated = result.form
         self.welcome = annotated.welcome
@@ -476,6 +948,7 @@ class WhatsAppMenuState(rx.State):
         self._valid_payload = (
             result.definition.model_dump(mode="json") if result.definition is not None else {}
         )
+        self._refresh_answers(annotated, result.definition)
         self.preview_available = bool(self._valid_payload)
         # Stale = a snapshot exists and differs from the editor. While the form is invalid
         # and no conversation is open, «Corrige lo marcado» already says it all.
@@ -490,6 +963,35 @@ class WhatsAppMenuState(rx.State):
             self.dirty = True
             self.just_published = False
 
+    def _live_payment_nodes(self) -> set[str]:
+        """The answer composed live from the payment methods ({} when none is)."""
+        definition = validate_form(self._form()).definition
+        live = payment_answer(definition, self._payment_options) if definition else None
+        return {live.node_id} if live is not None and live.auto_composed else set()
+
+    def _refresh_answers(self, annotated: MenuForm, definition: MenuDefinition | None) -> None:
+        """Step 2's list and step 4's gaps, from the annotated form (m-24936836)."""
+        # m-24955648 §6: the starter's «Formas de pago» is composed live while the
+        # business offers methods — its text is theirs, and its stored gap is never read
+        # (the same rule as the server's `publish_menu`).
+        offered = bool(self._payment_options)
+        live = payment_answer(definition, self._payment_options) if definition else None
+        composed = {live.node_id: live.text} if live is not None and live.auto_composed else {}
+        self.answers = answers_view(annotated, len(self.catalog), composed=composed)
+        if self.answer_open >= self.answers.count:
+            self.answer_open = -1
+            self.answer_confirm_remove = False
+        gaps = (
+            definition_gaps(definition, payments_offered=offered) if definition is not None else []
+        )
+        self.gap_count = len(gaps)
+        leaves = True
+        if gaps:
+            stripped = validate_form(answers_without_gaps(annotated, keep=composed)).definition
+            leaves = stripped is None or bool(definition_gaps(stripped, payments_offered=offered))
+        self.publish_gaps = publish_gaps(annotated, gaps, strip_leaves_gaps=leaves)
+        self._refresh_import()
+
     def _load_definition(
         self, definition: MenuDefinition | None, label: str, version_id: str = ""
     ) -> None:
@@ -502,19 +1004,73 @@ class WhatsAppMenuState(rx.State):
         self.just_published = False
         self._restart_preview()
         self.guided_step = 1
+        self.answer_open = -1
+        self.answer_lifted = ""
+        self._answers_undo = {}
+        self.answer_confirm_remove = self.add_open = False
         self._guided_started_at = time.time()
         self._guided_used_advanced = self.advanced_open
+        self._drop_all_suggestions()
+        self._drop_import()
         self._restore_flow_step()
 
+    def _zone_info(self) -> ZoneInfo:
+        try:
+            return ZoneInfo(self._zone or "UTC")
+        except (ZoneInfoNotFoundError, ValueError):
+            return ZoneInfo("UTC")
+
+    def _rebuild_cards(self) -> None:
+        """«Menús de este número» from the cards' input, the owner's picks and the
+        business's own clock (m-24955645)."""
+        zone = self._zone_info()
+        self.menu_cards = build_menu_cards(
+            order_menu_cards(self._cards),
+            zone=zone,
+            today=datetime.now(zone).date(),
+            chosen=self._card_choice,
+        )
+
+    def _absorb_detail(self, detail: MenuDetail) -> None:
+        """A fresh read of one menu, into the list, its card and — only when it is the
+        menu open in the editor — the editor's summary and history (never its form).
+        Publishing a menu demotes the number's other menus in the same transaction, so
+        their summaries say «Sin publicar» from here on."""
+        summary = detail.summary
+        if summary.is_published:
+            label, tone = menu_status(published=False, paused=False)
+
+            def demoted(m: MenuSummaryVM) -> MenuSummaryVM:
+                if m.menu_id == summary.menu_id or not m.is_published:
+                    return m
+                return replace(
+                    m,
+                    is_published=False,
+                    published_label=label,
+                    status_label=label,
+                    status_tone=tone,
+                )
+
+            self.menus = [demoted(m) for m in self.menus]
+            self.menu = demoted(self.menu)
+        self.menus = [summary if m.menu_id == summary.menu_id else m for m in self.menus]
+        if summary.menu_id not in {m.menu_id for m in self.menus}:
+            self.menus = [*self.menus, summary]
+        if summary.menu_id == self.menu.menu_id:
+            self.menu = summary
+            self.versions = detail.versions
+            self._payloads = detail.payloads
+        if detail.card is not None:
+            self._cards = merge_card_input(self._cards, detail.card)
+            self._rebuild_cards()
+
     def _show_detail(self, detail: MenuDetail, *, load_form: bool) -> None:
+        if load_form:
+            self.menu_pick = ""  # the editor now holds the menu the card shows
         self.menu = detail.summary
         self.versions = detail.versions
         self._payloads = detail.payloads
-        self.menus = [
-            detail.summary if m.menu_id == detail.summary.menu_id else m for m in self.menus
-        ]
-        if detail.summary.menu_id not in {m.menu_id for m in self.menus}:
-            self.menus = [*self.menus, detail.summary]
+        self._absorb_detail(detail)
         if load_form:
             label = (
                 f"Editando a partir de la {detail.versions[0].label.lower()}"
@@ -535,9 +1091,17 @@ class WhatsAppMenuState(rx.State):
         self.editing_from = ""
         self.editing_version_id = ""
         self.just_published = False
-        self.versions_open = False
         self.dirty = False
         self._scope = {}
+        self.menu_cards = []
+        self.card_busy = ""
+        self.card_busy_action = ""
+        self.menu_pick = ""
+        self.switch_to = ""
+        self.delete_error = ""
+        self._cards = []
+        self._card_choice = {}
+        self._zone = "UTC"
         self._catalog = []
         self.catalog = []
         self._payloads = {}
@@ -550,6 +1114,16 @@ class WhatsAppMenuState(rx.State):
         self.menu_errors = []
         self.error_count = 0
         self._valid_payload = {}
+        self.answers = EMPTY_ANSWERS
+        self.gap_count = 0
+        self.publish_gaps = NO_PUBLISH_GAPS
+        self.answer_open = -1
+        self.answer_lifted = ""
+        self._answers_undo = {}
+        self.answer_confirm_remove = self.add_open = False
+        self.strip_confirm_open = False
+        self._drop_all_suggestions()
+        self._drop_import()
         self._restart_preview()
 
     # ==================================================================================
@@ -587,8 +1161,11 @@ class WhatsAppMenuState(rx.State):
             return
         try:
             scope = await asyncio.to_thread(number_scope, tenant_id, UUID(connection_id))
-            menus = await asyncio.to_thread(menus_for, tenant_id, scope)
+            menus, cards = await asyncio.to_thread(menu_overview, tenant_id, scope)
+            zone = await asyncio.to_thread(inbox_provider.tenant_zone, tenant_id)
             catalog = await asyncio.to_thread(preview_catalog, tenant_id, scope.brand_id)
+            notice_show = await asyncio.to_thread(_notice_show_for, tenant_id, scope.brand_id)
+            options = await asyncio.to_thread(_payment_options, tenant_id, scope.brand_id)
         except (SQLAlchemyError, UnknownWhatsAppNumber) as exc:
             logger.error("whatsapp menus load failed: %s", type(exc).__name__)
             async with self:
@@ -604,21 +1181,30 @@ class WhatsAppMenuState(rx.State):
                 "phone_row_id": str(scope.phone_row_id),
                 "brand_id": str(scope.brand_id) if scope.brand_id else "",
                 "brand_name": scope.brand_name,
+                "business_name": scope.business_name,
             }
             self._catalog = _catalog_rows(catalog)
             self.catalog = catalog_rows(catalog)
             self.catalog_text = catalog_note(len(catalog), scope.brand_name)
+            self._notice_show = notice_show
+            self._payment_options = list(options) if options is not None else []
+            self.payments_offered = len(options) if options is not None else -1
+            await self._count_uncategorized()
+            if self.nodes:  # «Ver menú y pedir» says whether the catalog is empty
+                self._apply(self._form(), edited=False)
             self.menus = menus
+            self._cards = list(cards)
+            self._zone = getattr(zone, "key", "UTC") or "UTC"
+            self._card_choice = {
+                k: v for k, v in self._card_choice.items() if k in {c.menu_id for c in cards}
+            }
+            self._rebuild_cards()
             self.loaded_for = connection_id
             self.loading_for = ""
             keep = self.menu.menu_id in {m.menu_id for m in menus}
-            target = (
-                ""
-                if keep
-                else next(
-                    (m.menu_id for m in menus if m.is_published), menus[0].menu_id if menus else ""
-                )
-            )
+            # m-24986800: the picker's first menu — the one that answers, else the paused
+            # one, else the most recently changed.
+            target = "" if keep else first_menu_id(cards)
             params = self._flow_params()
             requested_menu = uuid_param(params, "objeto")
             if flow_param(params, "menu", GUIDED_STEPS) and requested_menu in {
@@ -643,6 +1229,7 @@ class WhatsAppMenuState(rx.State):
         if tenant_id is None:
             async with self:
                 self.opening = False
+                self.menu_pick = ""
             return
         try:
             detail = await asyncio.to_thread(menu_detail, tenant_id, scope, UUID(menu_id))
@@ -650,6 +1237,7 @@ class WhatsAppMenuState(rx.State):
             logger.error("whatsapp menu open failed: %s", type(exc).__name__)
             async with self:
                 self.opening = False
+                self.menu_pick = ""
                 self.banner, self.banner_tone = _MENU_GONE, "warn"
             return
         async with self:
@@ -694,6 +1282,7 @@ class WhatsAppMenuState(rx.State):
             self.creating = True
             name, template = self.new_name, self.new_template
             _tenant, tenant_id, email = await self._session()
+            address = await self._profile_address()
         if tenant_id is None:
             async with self:
                 self.creating = False
@@ -701,8 +1290,16 @@ class WhatsAppMenuState(rx.State):
             return
         try:
             user_id = await asyncio.to_thread(user_id_for, tenant_id, email)
+            facts = StarterFacts(business_name=scope.business_name, address=address)
+            if template == TEMPLATE_FAST_FOOD:
+                try:
+                    facts = await asyncio.to_thread(
+                        starter_facts, tenant_id, scope, address=address
+                    )
+                except SQLAlchemyError as exc:  # «Tu marca» unreadable: start with less
+                    logger.warning("whatsapp menu starter facts failed: %s", type(exc).__name__)
             detail = await asyncio.to_thread(
-                create_menu, tenant_id, scope, name, template, user_id=user_id
+                create_menu, tenant_id, scope, name, template, facts=facts, user_id=user_id
             )
         except (IntegrityError, ValueError):
             async with self:
@@ -719,6 +1316,11 @@ class WhatsAppMenuState(rx.State):
             self.creating = False
             self.new_open = False
             self._show_detail(detail, load_form=True)
+            if template == TEMPLATE_FAST_FOOD:
+                # The optional step at creation: «¿Tienes tu menú en una foto o en tu
+                # página?», with «Ahora no» as the way past it — never a blocker.
+                self.import_phase = IMPORT_CHOOSE
+                self.import_offer = True
 
     # ==================================================================================
     # Entry section
@@ -728,6 +1330,7 @@ class WhatsAppMenuState(rx.State):
     def set_welcome(self, value: str) -> None:
         self.welcome = value
         self._apply(self._form())
+        self._drop_suggestion(SUGGEST_GREETING)
 
     @rx.event
     def set_on_first_message(self, value: bool) -> None:
@@ -1021,6 +1624,7 @@ class WhatsAppMenuState(rx.State):
     def set_guided_greeting(self, value: str) -> None:
         if isinstance(value, str):
             self._apply(guided_set_greeting(self._form(), value))
+            self._drop_suggestion(SUGGEST_GREETING)  # §5: «Deshacer» lasts until they type
 
     @rx.event
     def set_guided_question(self, value: str) -> None:
@@ -1070,27 +1674,973 @@ class WhatsAppMenuState(rx.State):
         if isinstance(value, str):
             self._apply(guided_set_address_prompt(self._form(), value))
 
-    # ==================================================================================
-    # Versions
-    # ==================================================================================
+    # -- step 2: the answers (m-24936836) -------------------------------------------------
+
+    def _answer_index(self, index: int) -> bool:
+        return isinstance(index, int) and 0 <= index < self.answers.count
 
     @rx.event
-    def open_version(self, version_id: str) -> None:
-        """Load a saved version into the editor (no database read: payloads came with the
-        history). Unsaved edits are dropped — the button says so."""
-        payload = self._payloads.get(version_id)
-        version = next((v for v in self.versions if v.version_id == version_id), None)
-        if payload is None or version is None:
+    def open_answer_panel(self, index: int) -> None:
+        if self._answer_index(index):
+            self.answer_open = index
+            self.answer_from_gaps = False
+            self.answer_confirm_remove = False
+            self.answer_suggest = NO_SUGGESTION
+
+    @rx.event
+    def close_answer_panel(self) -> None:
+        """«Listo» / «Volver a tus respuestas»: what was typed is already in the menu."""
+        self._drop_answer_suggestions()
+        self.answer_open = -1
+        self.answer_from_gaps = False
+        self.answer_confirm_remove = False
+
+    @rx.event
+    def set_answer_panel_open(self, value: bool) -> None:
+        if not value:
+            self.close_answer_panel()
+
+    @rx.event
+    def set_answer_label(self, value: str) -> None:
+        if isinstance(value, str) and self._answer_index(self.answer_open):
+            self._apply(answer_set_label(self._form(), self.answer_open, value))
+
+    @rx.event
+    def set_answer_text(self, value: str) -> None:
+        if isinstance(value, str) and self._answer_index(self.answer_open):
+            key = self._answer_key(self.answer_open)
+            self._apply(answer_set_text(self._form(), self.answer_open, value))
+            self._drop_suggestion(key)
+
+    # -- «Mejorar mi texto» / «Escribirlo por mí» (m-24936838) -----------------------------
+    # Assisted, never autonomous: the proposal only replaces the field on screen; it is
+    # saved or published by the owner's own «Guardar» / «Publicar», like anything typed.
+
+    def _answer_key(self, index: int) -> str:
+        answers = read_answers(self._form())
+        return f"{SUGGEST_ANSWER}:{answers[index].option_id}" if 0 <= index < len(answers) else ""
+
+    def _drop_suggestion(self, key: str) -> None:
+        if not key:
             return
-        self._load_definition(
-            MenuDefinition.model_validate(payload),
-            f"Editando a partir de la {version.label.lower()}",
-            version_id,
+        self._suggest_undo = {k: v for k, v in self._suggest_undo.items() if k != key}
+        self._suggest_last = {k: v for k, v in self._suggest_last.items() if k != key}
+        if key == SUGGEST_GREETING:
+            self.greeting_suggest = NO_SUGGESTION
+        else:
+            self.answer_suggest = NO_SUGGESTION
+
+    def _drop_answer_suggestions(self) -> None:
+        prefix = SUGGEST_ANSWER + ":"
+        self._suggest_undo = {
+            k: v for k, v in self._suggest_undo.items() if not k.startswith(prefix)
+        }
+        self._suggest_last = {
+            k: v for k, v in self._suggest_last.items() if not k.startswith(prefix)
+        }
+        self.answer_suggest = NO_SUGGESTION
+
+    def _drop_all_suggestions(self) -> None:
+        self._suggest_undo = {}
+        self._suggest_last = {}
+        self.greeting_suggest = self.answer_suggest = NO_SUGGESTION
+        self.suggest_notice = ""
+        # `suggest_busy` stays: a call in flight still holds it until it settles (one
+        # paid call at a time); its result is discarded by the epoch.
+        self._suggest_epoch += 1
+
+    def _settle(self, epoch: int) -> bool:
+        """Free the one-at-a-time slot; True when the result still belongs on screen."""
+        self.suggest_busy = ""
+        self.suggest_writing = ""
+        return epoch == self._suggest_epoch
+
+    def _set_suggest_view(self, kind: str, view: SuggestVM) -> None:
+        if kind == SUGGEST_GREETING:
+            self.greeting_suggest = view
+        else:
+            self.answer_suggest = view
+
+    def _field_now(self, kind: str, key: str) -> str | None:
+        """The field's text now, or None when it is no longer on screen (another answer's
+        panel, or the answer is gone)."""
+        if kind == SUGGEST_GREETING:
+            return self.welcome
+        if not self._answer_index(self.answer_open) or self._answer_key(self.answer_open) != key:
+            return None
+        return self.open_answer.text
+
+    def _put_field(self, kind: str, text: str) -> None:
+        if kind == SUGGEST_GREETING:
+            self._apply(guided_set_greeting(self._form(), text))
+        else:
+            self._apply(answer_set_text(self._form(), self.answer_open, text))
+
+    async def _suggest(self, kind: str, *, again: bool) -> None:
+        """Ask Claude for the field's text (`suggest_text`, seconds: off-thread) with only
+        the facts on screen, and put the proposal in the field. The field is read-only
+        while it writes; if it changed anyway (the advanced editor), the newer words win."""
+        async with self:
+            if self.suggest_busy:
+                return
+            scope = self._scope_value()
+            if scope is None:
+                return
+            if kind == SUGGEST_GREETING:
+                key, index, name, current = SUGGEST_GREETING, -1, "", self.welcome
+            else:
+                index = self.answer_open
+                if not self._answer_index(index) or not self.open_answer.text_editable:
+                    return
+                key, name, current = (
+                    self._answer_key(index),
+                    self.open_answer.label.strip(),
+                    self.open_answer.text,
+                )
+                if not name:
+                    self.answer_suggest = replace(NO_SUGGESTION, error=_SUGGEST_NEEDS_NAME)
+                    return
+            previous = self._suggest_last.get(key, "") if again else ""
+            if previous and previous != current:
+                previous = ""
+            answers = [*self.answers.buttons, *self.answers.rows]
+            label = suggest_label(current)
+            self._set_suggest_view(kind, NO_SUGGESTION)
+            self.suggest_notice = ""
+            self.suggest_busy = kind
+            self.suggest_writing = suggest_writing_line()
+            epoch = self._suggest_epoch
+            _tenant, tenant_id, _email = await self._session()
+            address = await self._profile_address()
+        if tenant_id is None:
+            async with self:
+                if self._settle(epoch):
+                    self._set_suggest_view(kind, replace(NO_SUGGESTION, error=_NO_SESSION))
+            return
+        try:
+            known = await asyncio.to_thread(starter_facts, tenant_id, scope, address=address)
+        except Exception as exc:  # noqa: BLE001 — «Tu marca» unreadable: write with less
+            logger.warning("whatsapp suggestion facts failed: %s", type(exc).__name__)
+            known = StarterFacts(business_name=scope.business_name, address=address)
+        facts, others = suggest_context(known, answers, exclude_index=index)
+        if not suggest_has_input(current, facts):
+            async with self:
+                if self._settle(epoch):
+                    self._set_suggest_view(kind, replace(NO_SUGGESTION, error=SUGGEST_NO_DATA))
+            return
+        data = SuggestInput(
+            kind=kind,
+            answer_name=name,
+            current_text=current,
+            facts=facts,
+            other_answers=others,
+            previous_text=previous,
+        )
+        try:
+            proposal: SuggestProposal = await asyncio.to_thread(
+                suggest_text, tenant_id, scope.brand_id, data
+            )
+        except Exception as exc:  # noqa: BLE001 — no key, a refusal, the network: say so
+            # Only the type: never the model's output nor the owner's text.
+            logger.warning("whatsapp suggestion failed: %s", type(exc).__name__)
+            async with self:
+                if self._settle(epoch) and self._field_now(kind, key) is not None:
+                    self._set_suggest_view(kind, replace(NO_SUGGESTION, error=SUGGEST_FAILED))
+            return
+        async with self:
+            if not self._settle(epoch):
+                return  # another menu, version or number is on screen now
+            now = self._field_now(kind, key)
+            if now is None:
+                return  # the owner moved to another answer: nothing to put anywhere
+            if now != current:
+                stale = SUGGEST_STALE.format(label=label)
+                self._set_suggest_view(kind, replace(NO_SUGGESTION, error=stale))
+                return
+            undo = dict(self._suggest_undo)
+            undo.setdefault(key, current)  # «Otra versión» keeps the owner's own text
+            self._suggest_undo = undo
+            self._suggest_last = {**self._suggest_last, key: proposal.text}
+            self._put_field(kind, proposal.text)
+            self._set_suggest_view(
+                kind,
+                suggest_proposal_vm(proposal.missing, proposal.warnings, proposal.neutral_voice),
+            )
+
+    def _undo(self, kind: str) -> None:
+        key = SUGGEST_GREETING if kind == SUGGEST_GREETING else self._answer_key(self.answer_open)
+        if self.suggest_busy or not key or key not in self._suggest_undo:
+            return
+        before = self._suggest_undo[key]
+        self._put_field(kind, before)
+        self._drop_suggestion(key)
+
+    @rx.event(background=True)
+    async def suggest_greeting(self) -> None:
+        """«Mejorar mi texto» / «Escribirlo por mí» on step 1's greeting."""
+        await self._suggest(SUGGEST_GREETING, again=False)
+
+    @rx.event(background=True)
+    async def suggest_greeting_again(self) -> None:
+        """«Otra versión»: a different proposal, with the same facts."""
+        await self._suggest(SUGGEST_GREETING, again=True)
+
+    @rx.event
+    def undo_greeting_suggestion(self) -> None:
+        self._undo(SUGGEST_GREETING)
+
+    @rx.event(background=True)
+    async def suggest_answer(self) -> None:
+        """The same on the text of the answer whose panel is open (step 2)."""
+        await self._suggest(SUGGEST_ANSWER, again=False)
+
+    @rx.event(background=True)
+    async def suggest_answer_again(self) -> None:
+        await self._suggest(SUGGEST_ANSWER, again=True)
+
+    @rx.event
+    def undo_answer_suggestion(self) -> None:
+        self._undo(SUGGEST_ANSWER)
+
+    @rx.event
+    def ask_remove_answer(self) -> None:
+        self.answer_confirm_remove = self._answer_index(self.answer_open)
+
+    @rx.event
+    def keep_answer(self) -> None:
+        self.answer_confirm_remove = False
+
+    @rx.event
+    def remove_answer(self) -> None:
+        if self.answer_confirm_remove and self._answer_index(self.answer_open):
+            index = self.answer_open
+            self.answer_open = -1
+            self.answer_confirm_remove = False
+            self._apply(answers_remove(self._form(), index))
+
+    # -- ordering the answers (m-24955644): ONE way of moving, three ways in --------------
+
+    def _answer_ids(self) -> list[tuple[str, str]]:
+        """(option id, label) in the one ordered list, as on screen."""
+        rows = sorted([*self.answers.buttons, *self.answers.rows], key=lambda a: a.index)
+        return [(a.option_id, a.label) for a in rows]
+
+    def _move_answer(self, option_id: str, to: int) -> bool:
+        """Drag, keyboard and «⋯» all end here: `option_id` to 0-based `to` in the
+        DRAFT's own order (never what the browser shows mid-drag). A stale id or an index
+        out of range (the list changed meanwhile) is refused, never a crash. The draft is
+        marked dirty as «Subir/Bajar» did, and the open answer follows its answer."""
+        ids = [oid for oid, _label in self._answer_ids()]
+        if not isinstance(option_id, str) or option_id not in ids:
+            return False
+        if not isinstance(to, int) or not 0 <= to < len(ids):
+            return False
+        index = ids.index(option_id)
+        if index == to or self.saving or self.publishing:
+            return False
+        open_id = ids[self.answer_open] if 0 <= self.answer_open < len(ids) else ""
+        self._moving_answer = True
+        try:
+            self._apply(answers_move_to(self._form(), index, to))
+        finally:
+            self._moving_answer = False
+        after_ids = [oid for oid, _label in self._answer_ids()]
+        if open_id in after_ids:
+            self.answer_open = after_ids.index(open_id)
+        return True
+
+    def _settle_move(
+        self, option_id: str, before: list[tuple[str, str]], before_form: Any, dirty: bool
+    ) -> rx.event.EventSpec | None:
+        """After a finished move (a drop, «⋯», the keyboard's drop): the screen reader
+        hears the place; ONLY when the two buttons changed, a toast says who is a button
+        now and who went to «Más preguntas», with «Deshacer» (one level) back to
+        `before_form` — the draft's order before the row was lifted."""
+        after = self._answer_ids()
+        index = next((i for i, (oid, _l) in enumerate(after) if oid == option_id), -1)
+        label = dict(after).get(option_id, "")
+        place = answer_place_text(label, index, len(after)) if index >= 0 else ""
+        swap = button_swap(before, after)
+        if swap is None:
+            self.answers_announce = place
+            self._answers_undo = {}
+            return None
+        note = button_swap_text(*swap)
+        self.answers_announce = f"{place}. {note}"
+        self._answers_undo = {
+            "order": [oid for oid, _l in before],
+            "dirty": dirty,
+            "after": self._form(),
+        }
+        return rx.toast.info(
+            note,
+            duration=_ANSWERS_UNDO_MS,
+            action={"label": "Deshacer", "on_click": WhatsAppMenuState.undo_answers_move},
+        )
+
+    def _snapshot(self) -> tuple[list[tuple[str, str]], Any, bool]:
+        return self._answer_ids(), self._form(), self.dirty
+
+    @rx.event
+    def move_answer_to(self, option_id: str, to: int) -> rx.event.EventSpec | None:
+        """«⋯» → «Subir» / «Bajar» / «Mover al principio»."""
+        self.answer_lifted = ""
+        before, form, dirty = self._snapshot()
+        target = int(to) if isinstance(to, int | float) else -1
+        if not self._move_answer(option_id, target):
+            return None
+        return self._settle_move(option_id, before, form, dirty)
+
+    @rx.event
+    def pick_answer(self, option_id: str) -> None:
+        """`assets/rank-drag.js` lifted this row (`dragstart`)."""
+        self._answer_dragging = option_id
+
+    @rx.event
+    def drop_answer(self, target_id: str) -> rx.event.EventSpec | None:
+        """…and released it over `target_id`'s place (`drop`). The drag script only
+        animates: the move is computed here on the draft's order."""
+        source, self._answer_dragging = self._answer_dragging, ""
+        ids = [oid for oid, _label in self._answer_ids()]
+        if not source or target_id not in ids or source == target_id:
+            return None
+        self.answer_lifted = ""
+        before, form, dirty = self._snapshot()
+        if not self._move_answer(source, ids.index(target_id)):
+            return None
+        return self._settle_move(source, before, form, dirty)
+
+    @rx.event
+    def answer_key(self, option_id: str, key: str) -> list[rx.event.EventSpec] | None:
+        """The handle's keyboard, as in «Ordenar tu menú»: Espacio or Enter lifts and
+        drops, ↑/↓ move while lifted, Escape puts the draft back as it was."""
+        ids = [oid for oid, _label in self._answer_ids()]
+        if option_id not in ids:
+            return None
+        index = ids.index(option_id)
+        label = dict(self._answer_ids()).get(option_id, "")
+        focus = rx.call_script(_focus_handle_script(option_id))
+        if key in (" ", "Spacebar", "Enter"):
+            if self.answer_lifted != option_id:
+                self.answer_lifted = option_id
+                self._lift_form = self._form()
+                self._lift_dirty = self.dirty
+                self._lift_order = self._answer_ids()
+                self.answers_announce = answers_lifted_text(label, index, len(ids))
+                return None
+            # dropped: one toast at most, against the order before the lift
+            self.answer_lifted = ""
+            toast = self._settle_move(
+                option_id, list(self._lift_order), self._lift_form, self._lift_dirty
+            )
+            self._lift_form = None
+            self._lift_order = []
+            return [focus, toast] if toast is not None else [focus]
+        if self.answer_lifted != option_id:
+            return None
+        if key == "Escape":
+            if self.saving or self.publishing:
+                return None
+            # only the ORDER goes back (the same move handler), never a whole-draft
+            # snapshot: any other edit since the lift already ended the lift
+            start = [oid for oid, _l in self._lift_order]
+            if option_id in start:
+                self._move_answer(option_id, start.index(option_id))
+            if self._lift_form is not None and self._form() == self._lift_form:
+                self.dirty = self._lift_dirty
+            self.answer_lifted = ""
+            self._lift_form = None
+            self._lift_order = []
+            self.answers_announce = f"Listo, no cambiamos nada: «{label}» volvió a su lugar."
+            return [focus]
+        step = {"ArrowUp": -1, "ArrowDown": 1}.get(key)
+        if step is None or not self._move_answer(option_id, index + step):
+            return None
+        after = self._answer_ids()
+        self.answers_announce = answer_place_text(label, index + step, len(after))
+        return [focus]
+
+    def _forget_answer_moves(self) -> None:
+        """A save or a publish stored the order on screen: a toast still showing must
+        not undo anything after it (its «Deshacer» becomes a silent no-op), and a
+        keyboard lift ends — its Escape would otherwise bring back an order the database
+        no longer has while the screen says «guardado»."""
+        self._answers_undo = {}
+        self.answer_lifted = ""
+        self._lift_form = None
+        self._lift_order = []
+
+    @rx.event
+    def undo_answers_move(self) -> None:
+        """«Deshacer» of the toast: the order from before that move (one level). The
+        draft goes back to «guardado» only when it is again exactly what was saved —
+        nothing else changed and no save happened since (a save forgets the undo);
+        when in doubt it stays «sin guardar»."""
+        if self.saving or self.publishing:
+            return  # the save in flight would then mark a reordered draft as saved
+        undo, self._answers_undo = self._answers_undo, {}
+        if not undo:
+            return
+        unchanged = self._form() == undo["after"]
+        self._apply(answers_in_order(self._form(), undo["order"]))
+        if unchanged:
+            self.dirty = undo["dirty"]
+        self.answers_announce = "Listo: volvió el orden que tenías."
+
+    @rx.event
+    def toggle_add_answer(self) -> None:
+        self.add_open = not self.add_open and not self.answers.full
+
+    @rx.event
+    def add_answer(self, key: str) -> None:
+        """A suggestion, «Ver menú y pedir» back, or «Escribir la mía»: then its panel."""
+        if not isinstance(key, str) or self.answers.full:
+            return
+        form, index = answers_add(self._form(), key)
+        if index < 0:
+            return
+        self.add_open = False
+        self._apply(form)
+        self.answer_open = index
+        self.answer_confirm_remove = False
+
+    # -- «Cargar desde una foto o mi página» (m-24936840) --------------------------------
+    # Assisted, never autonomous: the read only PROPOSES; «Usar» puts one fact into the
+    # form on screen (saved by the owner's own «Guardar» / «Publicar»). The only write is
+    # «Agregar los marcados a la Galería», and only on that button.
+
+    def _discard_staged(self) -> None:
+        path, self._import_staged = self._import_staged, ""
+        if path:
+            with contextlib.suppress(OSError):
+                os.unlink(path)
+
+    def _drop_import(self) -> None:
+        """Close the import and forget its proposal. A read in flight keeps the slot
+        (`suggest_busy`) until it settles; its result is discarded by the epoch."""
+        self.import_phase = ""
+        self.import_offer = False
+        self.import_kind = ""
+        self.import_url_error = self.import_error = self.import_add_error = ""
+        self.import_slow = False
+        self.import_review = EMPTY_IMPORT
+        self.import_editing = -1
+        self.import_category_editing = -1
+        self._import_facts = []
+        self._import_products = []
+        self._import_warnings = []
+        self._import_label = ""
+        self._import_added = []
+        self._import_currency = ""
+        self._import_epoch += 1
+        if not self.import_adding:
+            self._discard_staged()
+
+    def _refresh_import(self) -> None:
+        """The review re-read off the form: each preview is the answer's text after «Usar»."""
+        if self.import_phase != IMPORT_REVIEW:
+            return
+        self.import_review = import_view(
+            self._form(),
+            kind=self.import_kind,
+            label=self._import_label,
+            warnings=self._import_warnings,
+            facts=self._import_facts,
+            products=self._import_products,
+            catalog=self._catalog,
+            editing=self.import_editing,
+            added=self._import_added,
+            own_currency=self._import_currency,
+            category_editing=self.import_category_editing,
         )
 
     @rx.event
-    def toggle_versions(self) -> None:
-        self.versions_open = not self.versions_open
+    def open_import(self) -> None:
+        """«Cargar desde una foto o mi página» (step 2): the same chooser, any time."""
+        if not self.has_menu:
+            return
+        self._drop_import()
+        self.import_phase = IMPORT_CHOOSE
+
+    @rx.event
+    def close_import(self) -> None:
+        """«Ahora no», «Cancelar», «Seguir sin la foto», «Volver a tus respuestas»: the menu
+        keeps only what was already used."""
+        self._drop_import()
+
+    @rx.event
+    def finish_import(self) -> rx.event.EventSpec | None:
+        """«Volver a tus respuestas» from the review: step 2, where the used facts now
+        read in their answers."""
+        self._drop_import()
+        if not self.advanced_open and self.guided_step != 2:
+            return self.guided_go(2)
+        return None
+
+    @rx.event
+    def import_file_rejected(self, rejected: list[dict[str, Any]]) -> None:
+        """The picker refused the file (its type or its size) before it was sent."""
+        if self.import_phase == IMPORT_PHOTO:
+            self.import_kind, self.import_error = "image", IMPORT_REJECTED
+            self.import_phase = IMPORT_FAILED_PHASE
+
+    @rx.event
+    def set_import_open(self, value: bool) -> None:
+        """A tap outside or Escape. While reading or reviewing it is ignored — that work
+        is lost only through the explicit «Cancelar» / «Volver a tus respuestas»."""
+        if not value and self.import_phase not in (IMPORT_READING, IMPORT_REVIEW):
+            self._drop_import()
+
+    @rx.event
+    def choose_import_source(self, source: str) -> None:
+        if self.import_phase == IMPORT_CHOOSE and source in (IMPORT_PHOTO, IMPORT_PAGE):
+            self.import_phase = source
+            self.import_url_error = ""
+
+    @rx.event
+    def import_back(self) -> None:
+        """«Atrás» from a source → the chooser; «Probar otra foto» from a failure → the
+        same source again."""
+        if self.import_phase in (IMPORT_PHOTO, IMPORT_PAGE):
+            self.import_phase = IMPORT_CHOOSE
+        elif self.import_phase in (IMPORT_FAILED_PHASE, IMPORT_EMPTY_PHASE):
+            self.import_phase = IMPORT_PAGE if self.import_kind == "url" else IMPORT_PHOTO
+            self.import_error = ""
+
+    @rx.event
+    def set_import_url(self, value: str) -> None:
+        if isinstance(value, str):
+            self.import_url = value[:2048]
+            self.import_url_error = ""
+
+    @rx.event
+    async def handle_import_upload(self, files: list[rx.UploadFile]) -> rx.event.EventSpec | None:
+        """FOREGROUND (uploads cannot be background handlers): park the bytes in a private
+        temp file — never in the state, never in the served upload folder — then hand the
+        reading to the background `read_import_file`."""
+        if not files or self.suggest_busy or self.import_phase != IMPORT_PHOTO:
+            return None
+        upload = files[0]
+        size = getattr(upload, "size", None)
+        too_big = isinstance(size, int) and size > IMPORT_MAX_BYTES
+        data = b""
+        if not too_big:
+            try:
+                # The picker's 10 MB cap is the browser's; a crafted POST is cut here,
+                # never read whole into memory.
+                data = await upload.read(IMPORT_MAX_BYTES + 1)
+            except Exception:  # noqa: BLE001 — any read failure is the same message
+                self.import_kind, self.import_error = "image", IMPORT_UPLOAD_FAILED
+                self.import_phase = IMPORT_FAILED_PHASE
+                return None
+        if too_big or len(data) > IMPORT_MAX_BYTES:
+            self.import_kind, self.import_error = "image", IMPORT_TOO_BIG
+            self.import_phase = IMPORT_FAILED_PHASE
+            return None
+        name = safe_upload_name(upload.name or "menu")
+        self._discard_staged()
+        handle, path = tempfile.mkstemp(prefix="qualify-menu-import-")
+        with os.fdopen(handle, "wb") as out:
+            out.write(data)
+        self._import_staged = path
+        self._import_label = name
+        self.import_kind = "pdf" if name.lower().endswith(".pdf") else "image"
+        return WhatsAppMenuState.read_import_file()
+
+    @rx.event(background=True)
+    async def read_import_file(self) -> AsyncIterator[rx.event.EventSpec]:
+        async with self:
+            path, name = self._import_staged, self._import_label
+            self._import_staged = ""
+        if not path:
+            return
+
+        def load() -> ImportSource:
+            try:
+                with open(path, "rb") as staged:
+                    return ImportSource(filename=name, data=staged.read())
+            finally:
+                with contextlib.suppress(OSError):
+                    os.unlink(path)
+
+        try:
+            shown = await self._run_import(load, IMPORT_PHOTO)
+        finally:
+            # `load` unlinks the file; when the read never started (cancelled, or the
+            # slot was taken) nobody did.
+            with contextlib.suppress(OSError):
+                os.unlink(path)
+        if shown:
+            yield _focus_review()
+
+    @rx.event(background=True)
+    async def submit_import_url(self) -> AsyncIterator[rx.event.EventSpec]:
+        """«Leer mi página»."""
+        async with self:
+            url = self.import_url.strip()
+            if self.import_phase == IMPORT_PAGE and not url:
+                self.import_url_error = IMPORT_PAGE_NEEDS_LINK
+                return
+        if await self._run_import(lambda: ImportSource(url=url), IMPORT_PAGE):
+            yield _focus_review()
+
+    async def _run_import(self, load: Any, phase: str) -> bool:
+        """Read the source off-thread (`import_menu_facts`, seconds and paid) under the
+        one-at-a-time slot, then show the review — or the reason it could not. True when
+        the review is on screen."""
+        async with self:
+            if self.suggest_busy or self.import_phase != phase:
+                return False
+            self.suggest_busy = SUGGEST_IMPORT
+            self.import_phase = IMPORT_READING
+            self.import_slow = False
+            self.import_error = ""
+            if phase == IMPORT_PAGE:
+                self.import_kind = "url"
+            elif self.import_kind not in ("image", "pdf"):
+                self.import_kind = "image"
+            epoch, ticket = self._suggest_epoch, self._import_epoch
+            _tenant, tenant_id, _email = await self._session()
+            scope = self._scope_value()
+        brand_id = scope.brand_id if scope is not None else None
+
+        def read() -> tuple[ImportProposal, str]:
+            # m-24955649: the read is booked to this business in the consumption ledger.
+            proposal = import_menu_facts(load(), tenant_id=tenant_id, brand_id=brand_id)
+            # A price without its currency (a bare «$») is saved in the business's own:
+            # the review says so before anything is added (tenant door, under RLS).
+            own = ""
+            bare = any(
+                p.price_amount is not None and not p.price_currency for p in proposal.products
+            )
+            if bare and tenant_id is not None:
+                try:
+                    own = business_currency(tenant_id)
+                except Exception as exc:  # noqa: BLE001 — show the amount alone
+                    logger.warning("whatsapp menu import currency: %s", type(exc).__name__)
+            return proposal, own
+
+        def current() -> bool:
+            return epoch == self._suggest_epoch and ticket == self._import_epoch
+
+        task = asyncio.ensure_future(asyncio.to_thread(read))
+        done, _pending = await asyncio.wait({task}, timeout=IMPORT_SLOW_AFTER)
+        if not done:
+            async with self:
+                if current():
+                    self.import_slow = True
+        error, empty = "", False
+        proposal: ImportProposal | None = None
+        own_currency = ""
+        try:
+            proposal, own_currency = await task
+        except SourceUnsupported as exc:
+            error = str(exc) or IMPORT_FAILED  # a Spanish reason for the owner
+        except NothingFound:
+            empty = True
+        except Exception as exc:  # noqa: BLE001 — no key, a refusal, the network, the budget
+            # Only the type: never the model's output nor the owner's file.
+            logger.warning("whatsapp menu import failed: %s", type(exc).__name__)
+            error = IMPORT_FAILED
+        async with self:
+            still = self._settle(epoch) and ticket == self._import_epoch
+            if not still:
+                return False  # cancelled, or another menu / version / number is on screen
+            self.import_slow = False
+            if proposal is None:
+                self.import_phase = IMPORT_EMPTY_PHASE if empty else IMPORT_FAILED_PHASE
+                self.import_error = import_empty_text(self.import_kind) if empty else error
+                return False
+            self._import_currency = own_currency
+            self.import_kind = proposal.source_kind
+            self._import_label = proposal.source_label
+            self._import_warnings = list(proposal.warnings)
+            self._import_facts = fact_rows(proposal.facts)
+            self._import_products = product_rows(proposal.products)
+            self._import_added = []
+            self.import_editing = -1
+            self.import_category_editing = -1
+            self.import_phase = IMPORT_REVIEW
+            self._refresh_import()
+        return True
+
+    def _import_fact(self, index: int) -> dict[str, str] | None:
+        if self.import_phase != IMPORT_REVIEW or not isinstance(index, int):
+            return None
+        return self._import_facts[index] if 0 <= index < len(self._import_facts) else None
+
+    def _set_fact(self, index: int, **changes: str) -> None:
+        facts = [dict(f) for f in self._import_facts]
+        facts[index].update(changes)
+        self._import_facts = facts
+
+    @rx.event
+    def use_import_fact(self, index: int) -> None:
+        """«Usar»: the fact fills its answer's gap(s) on screen (a removed answer comes
+        back with it). Nothing is saved until «Guardar» / «Publicar»."""
+        fact = self._import_fact(index)
+        if fact is None or fact["status"] != FACT_PENDING:
+            return
+        form = self._form()
+        if row_kind(fact) == FACT_SENTENCE:
+            # «Usar como texto de la respuesta»: the sentences (zone and cost together)
+            # become the answer's whole text; never pasted into a gap (m-24945867).
+            rows = self._import_facts
+            group = sentence_group(rows, index, self.import_editing)
+            if group_plan(form, rows, group).mode == "none":
+                return
+            updated = apply_sentences(form, rows, group)
+        else:
+            if fact_plan(form, fact["key"], fact["value"]).mode == "none":
+                return
+            group = [index]
+            updated = apply_fact(form, fact["key"], fact["value"])
+        for i in group:
+            self._set_fact(i, status=FACT_USED)
+        self.import_editing = -1
+        self._drop_answer_suggestions()
+        self._apply(updated)
+
+    @rx.event
+    def skip_import_fact(self, index: int) -> None:
+        """«No usar»: the answer stays as it was."""
+        fact = self._import_fact(index)
+        if fact is not None and fact["status"] == FACT_PENDING:
+            group = sentence_group(self._import_facts, index, self.import_editing) or [index]
+            for i in group:
+                self._set_fact(i, status=FACT_SKIPPED)
+            self.import_editing = -1
+            self._refresh_import()
+
+    @rx.event
+    def edit_import_fact(self, index: int) -> None:
+        fact = self._import_fact(index)
+        if fact is not None and fact["status"] == FACT_PENDING:
+            self.import_editing = -1 if self.import_editing == index else index
+            self._refresh_import()
+
+    @rx.event
+    def set_import_fact_value(self, value: str) -> None:
+        fact = self._import_fact(self.import_editing)
+        if fact is not None and isinstance(value, str) and fact["status"] == FACT_PENDING:
+            value = value[:200]
+            # The owner's own text: a sentence shortened into a value fills its gap.
+            kind = edited_kind(fact["key"], value)
+            self._set_fact(self.import_editing, value=value, kind=kind)
+            self._refresh_import()
+
+    @rx.event
+    def toggle_import_product(self, index: int, checked: bool) -> None:
+        if self.import_phase != IMPORT_REVIEW or not isinstance(index, int):
+            return
+        if 0 <= index < len(self._import_products):
+            rows = [dict(p) for p in self._import_products]
+            rows[index]["checked"] = "1" if checked else ""
+            self._import_products = rows
+            self._refresh_import()
+
+    # m-24955838: the category each new product will get, editable before adding
+
+    @rx.event
+    def edit_import_category(self, index: int) -> None:
+        if self.import_phase != IMPORT_REVIEW or not isinstance(index, int):
+            return
+        if 0 <= index < len(self._import_products):
+            self.import_category_editing = index
+            self.import_category_text = self._import_products[index].get("category", "")
+            self.import_category_error = ""
+            self._refresh_import()
+
+    @rx.event
+    def set_import_category_text(self, value: str) -> None:
+        self.import_category_text = value
+        self.import_category_error = ""
+
+    @rx.var
+    def import_category_choices(self) -> list[str]:
+        """The brand's categories and the ones already proposed in this review, one
+        spelling each: tapping one avoids a typo twin («Bebida» next to «Bebidas»)."""
+        seen: dict[str, str] = {}
+        for raw in [
+            *(str(r.get("category") or "") for r in self._catalog),
+            *(str(p.get("category") or "") for p in self._import_products),
+        ]:
+            name = " ".join(raw.split())
+            if name and not is_uncategorized(name):
+                seen.setdefault(category_key(name), name)
+        return list(seen.values())
+
+    @rx.var
+    def import_category_count(self) -> str:
+        return name_counter(self.import_category_text)
+
+    @rx.event
+    def pick_import_category(self, name: str) -> None:
+        self.import_category_text = name
+        self.import_category_error = ""
+
+    @rx.event
+    def import_category_key(self, key: str) -> None:
+        """Enter saves the field."""
+        if key == "Enter":
+            self.save_import_category()
+
+    @rx.event
+    def cancel_import_category(self) -> None:
+        self.import_category_editing = -1
+        self.import_category_error = ""
+        self._refresh_import()
+
+    @rx.event
+    def save_import_category(self) -> None:
+        """Nothing is written here: the category travels with the product and is
+        created only by «Agregar los marcados a Tus productos». Empty = «Otros»."""
+        index = self.import_category_editing
+        if self.import_phase != IMPORT_REVIEW or not 0 <= index < len(self._import_products):
+            return
+        text = " ".join(self.import_category_text.split())
+        if len(text) > NAME_MAX:
+            self.import_category_error = NAME_TOO_LONG
+            return
+        known = [str(r.get("category") or "") for r in self._catalog if r.get("category")]
+        known += [str(p.get("category") or "") for p in self._import_products]
+        rows = [dict(p) for p in self._import_products]
+        rows[index]["category"] = existing_spelling(text, known) if text else ""
+        self._import_products = rows
+        self.import_category_editing = -1
+        self._refresh_import()
+
+    @rx.event
+    def set_all_import_products(self, checked: bool) -> None:
+        """«Marcar todos» / «Desmarcar todos» over the new products."""
+        if self.import_phase != IMPORT_REVIEW:
+            return
+        new = {p.index for p in self.import_review.new_products}
+        self._import_products = [
+            {**p, "checked": ("1" if checked else "")} if i in new else dict(p)
+            for i, p in enumerate(self._import_products)
+        ]
+        self._refresh_import()
+
+    @rx.event(background=True)
+    async def add_import_products(self) -> None:
+        """«Agregar los marcados a la Galería» — the flow's only write, and only here.
+        Through the catalog service (`tenant_session`); a name already in the catalog is
+        not created and no price there is changed."""
+        async with self:
+            if self.import_adding or self.import_phase != IMPORT_REVIEW:
+                return
+            scope = self._scope_value()
+            if scope is None:
+                return
+            if scope.brand_id is None:
+                self.import_add_error = IMPORT_ADD_NEEDS_BRAND
+                return
+            new = {p.index for p in self.import_review.new_products if p.checked}
+            picked = [
+                FoundProduct(
+                    name=p["name"],
+                    price_amount=Decimal(p["amount"]) if p["amount"] else None,
+                    price_currency=p["currency"],
+                    description=p["description"],
+                    evidence=p["evidence"],
+                    category=p.get("category", ""),
+                )
+                for i, p in enumerate(self._import_products)
+                if i in new
+            ]
+            if not picked:
+                return
+            self.import_adding = True
+            self.import_add_error = ""
+            currency = self._import_currency
+            ticket = self._import_epoch
+            connection_id = await self._connection_id()
+            _tenant, tenant_id, email = await self._session()
+        if tenant_id is None:
+            async with self:
+                self.import_adding = False
+                self.import_add_error = _NO_SESSION
+            return
+        try:
+            user_id = await asyncio.to_thread(user_id_for, tenant_id, email)
+            result: AddedProducts = await asyncio.to_thread(
+                partial(
+                    add_catalog_products,
+                    tenant_id,
+                    scope.brand_id,
+                    picked,
+                    user_id,
+                    currency=currency,  # "" = no fallback: saved as shown
+                )
+            )
+            catalog = await asyncio.to_thread(preview_catalog, tenant_id, scope.brand_id)
+            notice_show = await asyncio.to_thread(_notice_show_for, tenant_id, scope.brand_id)
+            options = await asyncio.to_thread(_payment_options, tenant_id, scope.brand_id)
+        except Exception as exc:  # noqa: BLE001 — the database: say so, keep the ticks
+            logger.error("whatsapp menu import products failed: %s", type(exc).__name__)
+            async with self:
+                self.import_adding = False
+                if ticket == self._import_epoch:
+                    self.import_add_error = IMPORT_ADD_FAILED
+            return
+        async with self:
+            self.import_adding = False
+            if await self._connection_id() != connection_id:
+                return
+            self._catalog = _catalog_rows(catalog)
+            self.catalog = catalog_rows(catalog)
+            self.catalog_text = catalog_note(len(catalog), scope.brand_name)
+            self._notice_show = notice_show
+            self._payment_options = list(options) if options is not None else []
+            self.payments_offered = len(options) if options is not None else -1
+            await self._count_uncategorized()
+            if ticket == self._import_epoch:
+                self._import_added = added_lines(result.added, result.existing, result.failed)
+            self._apply(self._form(), edited=False)  # «Ver menú y pedir» sees the products
+
+    @rx.event
+    def complete_gaps(self) -> list[rx.event.EventSpec] | None:
+        """Step 4 «Completarlas»: back to step 2 with the first answer that has a gap open,
+        its text focused on that gap (m-24945866) — not just the list."""
+        settle = self.guided_go(2)
+        if settle is None:
+            return None
+        index = self.publish_gaps.first_index
+        if not self._answer_index(index):
+            return [settle]
+        self.open_answer_panel(index)
+        if not self.open_answer.text_editable:
+            return [settle]
+        self.answer_from_gaps = True
+        return [settle, _focus_first_gap(first_gap_literal(self.open_answer.text))]
+
+    @rx.event
+    def strip_gaps_and_publish(self) -> None:
+        """«Quitar las que faltan y publicar»: first a confirmation that names what goes;
+        nothing is removed until the owner says yes."""
+        if self.saving or self.publishing or not self.publish_gaps.can_strip:
+            return
+        self.strip_confirm_open = True
+
+    @rx.event
+    def set_strip_confirm_open(self, value: bool) -> None:
+        self.strip_confirm_open = bool(value) and self.publish_gaps.can_strip
+
+    @rx.event
+    def confirm_strip_and_publish(self) -> rx.event.EventSpec | None:
+        """«Sí, publicar sin ellas»: the answers with a gap go, then the publish."""
+        if not self.strip_confirm_open or self.saving or self.publishing:
+            return None
+        self.strip_confirm_open = False
+        if not self.publish_gaps.can_strip:
+            return None
+        self._apply(answers_without_gaps(self._form(), keep=self._live_payment_nodes()))
+        return WhatsAppMenuState.publish_current if self.can_publish else None
+
+    # ==================================================================================
+    # Versions
+    # ==================================================================================
 
     @rx.event
     def dismiss_next_step(self) -> None:
@@ -1120,6 +2670,7 @@ class WhatsAppMenuState(rx.State):
         async with self:
             self.saving = False
             self.dirty = False
+            self._forget_answer_moves()  # the database has this order now
             self._show_detail(detail, load_form=False)
             newest = detail.versions[0] if detail.versions else None
             self.editing_version_id = newest.version_id if newest else ""
@@ -1143,6 +2694,64 @@ class WhatsAppMenuState(rx.State):
         if needs_save and not await self._save_now():
             return
         yield rx.redirect("/catalog")
+
+    @rx.event(background=True)
+    async def save_and_open_payments(self) -> AsyncIterator[rx.event.EventSpec]:
+        """«Agregar formas de pago» (m-24955648, spec §6a): save first, then go to
+        WhatsApp → Tu número → Formas de pago."""
+        async with self:
+            if self.dirty and self.error_count > 0:
+                self.banner, self.banner_tone = CATALOG_FIX_FIRST, "warn"
+                return
+            needs_save = self.dirty
+        if needs_save and not await self._save_now():
+            return
+        yield rx.redirect(PAYMENTS_HREF)
+
+    @rx.event(background=True)
+    async def save_and_open_group(self) -> AsyncIterator[rx.event.EventSpec]:
+        """Step 3's «Agruparlos» (m-24955838): save first, then Catálogo opens
+        «Agrupa tus productos» with the way back here."""
+        async with self:
+            if self.dirty and self.error_count > 0:
+                self.banner, self.banner_tone = CATALOG_FIX_FIRST, "warn"
+                return
+            needs_save = self.dirty
+            back = self.resume_href
+        if needs_save and not await self._save_now():
+            return
+        yield rx.redirect(group_href(back))
+
+    @rx.event(background=True)
+    async def save_and_open_order(self) -> AsyncIterator[rx.event.EventSpec]:
+        """Step 3's «Cambiar el orden» (m-24955643): like `save_and_open_catalog`, but
+        Catálogo opens in «Ordenar tu menú» with «‹ Tu menú de WhatsApp» (N7)."""
+        async with self:
+            if self.dirty and self.error_count > 0:
+                self.banner, self.banner_tone = CATALOG_FIX_FIRST, "warn"
+                return
+            needs_save = self.dirty
+            back = self.resume_href
+        if needs_save and not await self._save_now():
+            return
+        yield rx.redirect(order_href(back))
+
+    @rx.event(background=True)
+    async def save_and_open_brand(self) -> AsyncIterator[rx.event.EventSpec]:
+        """«Ir a Tu marca» (m-24936838, a proposal in the neutral voice): like the way to
+        Catálogo, what is on screen — the proposal included — is saved first so nothing is
+        lost on the way; the neutral-voice hint says so (UX review U1: save and say so)."""
+        async with self:
+            if self.dirty and self.error_count > 0:
+                # Shown next to the button (it may sit inside the answer's panel, which
+                # covers the page banner).
+                self.suggest_notice = CATALOG_FIX_FIRST
+                return
+            self.suggest_notice = ""
+            needs_save = self.dirty
+        if needs_save and not await self._save_now():
+            return
+        yield rx.redirect("/brand")
 
     async def _save_now(self) -> bool:
         """Save the editor as the menu's next version; True when it is on disk."""
@@ -1215,6 +2824,11 @@ class WhatsAppMenuState(rx.State):
                 UUID(version_id),
                 user_id=user_id,
             )
+        except MenuHasGaps:
+            async with self:
+                self.publishing = False
+                self.banner, self.banner_tone = _PUBLISH_GAPS, "warn"
+            return
         except (SQLAlchemyError, MenuNotFound, MenuVersionNotFound) as exc:
             logger.error("whatsapp menu publish failed: %s", type(exc).__name__)
             async with self:
@@ -1223,19 +2837,15 @@ class WhatsAppMenuState(rx.State):
             return
         async with self:
             self.publishing = False
-            published = outcome.detail.summary.menu_id
-            # Publishing demotes the number's other menus: their summaries are stale.
-            self.menus = [
-                replace(m, is_published=False, published_label="Sin publicar")
-                if m.menu_id != published and m.is_published
-                else m
-                for m in self.menus
-            ]
+            # The card starts on what customers get now (m-24955645).
+            self._card_choice.pop(outcome.detail.summary.menu_id, None)
+            # Also demotes the number's other menus (`_absorb_detail`).
             self._show_detail(outcome.detail, load_form=False)
             # A clean publish says «listo» right where the owner tapped (the toolbar)
             # with the next step (the QR); a partial failure shows only its banner — what
             # to fix comes before what to do next.
             self.just_published = outcome.graph_ok
+            self._forget_answer_moves()
             if not outcome.graph_ok:
                 self.banner, self.banner_tone = outcome.notice, outcome.tone
             if self._guided_started_at:
@@ -1253,7 +2863,7 @@ class WhatsAppMenuState(rx.State):
     @rx.event(background=True)
     async def toggle_pause(self, paused: bool) -> None:
         async with self:
-            if self.pausing or not self.has_menu:
+            if self.pausing or self.card_busy or not self.has_menu:
                 return
             scope = self._scope_value()
             if scope is None:
@@ -1281,6 +2891,343 @@ class WhatsAppMenuState(rx.State):
             self.pausing = False
             self._show_detail(detail, load_form=False)
             self.banner, self.banner_tone = (_PAUSED, "warn") if paused else (_RESUMED, "ok")
+
+    # ==================================================================================
+    # «Menús de este número»: the cards (m-24955645)
+    # ==================================================================================
+
+    def _card(self, menu_id: str) -> MenuCardVM | None:
+        return next((c for c in self.menu_cards if c.menu_id == menu_id), None)
+
+    @rx.event
+    def choose_card_version(self, menu_id: str, version_id: str) -> None:
+        """«Versión» on a card: only one of that card's published versions (the values
+        arrive over the wire)."""
+        card = self._card(menu_id)
+        if card is None or version_id not in {o.version_id for o in card.options}:
+            return
+        self._card_choice = {**self._card_choice, menu_id: version_id}
+        self._rebuild_cards()
+
+    @rx.event
+    def edit_menu(self, menu_id: str) -> list[rx.event.EventSpec] | rx.event.EventSpec | None:
+        """«Editar»: open the menu in the editor — its newest saved version, which is the
+        draft when there is one (`menu_detail.latest`). The menu already open keeps what
+        is typed in it: the page only goes to its bar."""
+        if menu_id not in {m.menu_id for m in self.menus}:
+            return None
+        if menu_id == self.menu.menu_id:
+            return rx.scroll_to(TOOLBAR_ELEMENT_ID)
+        return [WhatsAppMenuState.open_menu(menu_id), rx.scroll_to(TOOLBAR_ELEMENT_ID)]
+
+    def _card_blocked(self) -> bool:
+        return bool(self.card_busy) or self.publishing or self.pausing or self.saving
+
+    async def _card_settles(self, connection_id: str) -> bool:
+        """Inside the lock, after an awaited write: True when the screen still shows the
+        number the action started on. Otherwise the result is dropped (the new number's
+        screen was already reset) and only the busy flags are cleared."""
+        if await self._connection_id() == connection_id and self.loaded_for == connection_id:
+            return True
+        self.card_busy = self.card_busy_action = ""
+        return False
+
+    @rx.event(background=True)
+    async def publish_card_version(
+        self, menu_id: str, version_id: str
+    ) -> AsyncIterator[rx.event.EventSpec]:
+        """«Publicar esta versión» / «Volver a la versión n», after its confirmation: the
+        version the dialog named goes live through the provider's `publish_version` (the
+        same path as the editor: the database first, then WhatsApp's shortcuts). The
+        confirmation carries that version; if the card's pick is no longer it (the list
+        was re-read meanwhile), nothing is published and the owner picks again. The
+        version customers already get is never re-published from a card."""
+        async with self:
+            card = self._card(menu_id)
+            if card is None or not card.selected_version_id or self._card_blocked():
+                return
+            if version_id != card.selected_version_id:
+                self.banner, self.banner_tone = _CARD_LIST_CHANGED, "warn"
+                return
+            if card.selected_is_active:
+                return
+            scope = self._scope_value()
+            if scope is None:
+                return
+            version_id = card.selected_version_id
+            number = card.selected_number
+            name = card.name
+            self.card_busy, self.card_busy_action = menu_id, CARD_PUBLISH
+            self.banner = ""
+            connection_id = await self._connection_id()
+            _tenant, tenant_id, email = await self._session()
+        if tenant_id is None:
+            async with self:
+                self.card_busy = self.card_busy_action = ""
+                self.banner, self.banner_tone = _NO_SESSION, "error"
+            return
+        try:
+            user_id = await asyncio.to_thread(user_id_for, tenant_id, email)
+            outcome = await publish_version(
+                tenant_id,
+                UUID(connection_id),
+                scope,
+                UUID(menu_id),
+                UUID(version_id),
+                user_id=user_id,
+            )
+        except MenuHasGaps:
+            async with self:
+                if await self._card_settles(connection_id):
+                    self.card_busy = self.card_busy_action = ""
+                    self.banner, self.banner_tone = _PUBLISH_GAPS, "warn"
+            return
+        except (SQLAlchemyError, MenuNotFound, MenuVersionNotFound) as exc:
+            logger.error("whatsapp menu card publish failed: %s", type(exc).__name__)
+            async with self:
+                if await self._card_settles(connection_id):
+                    self.card_busy = self.card_busy_action = ""
+                    self.banner, self.banner_tone = _PUBLISH_FAILED, "error"
+            return
+        async with self:
+            settled = await self._card_settles(connection_id)
+            if settled:
+                self.card_busy = self.card_busy_action = ""
+                self._card_choice.pop(menu_id, None)
+                self._absorb_detail(outcome.detail)
+                if not outcome.graph_ok:
+                    self.banner, self.banner_tone = outcome.notice, outcome.tone
+                elif outcome.detail.summary.is_paused:
+                    self.banner = _CARD_PUBLISHED_PAUSED.format(n=number, name=name)
+                    self.banner_tone = "warn"
+                else:
+                    self.banner = _CARD_PUBLISHED.format(n=number, name=name)
+                    self.banner_tone = "ok"
+        if outcome.auth_error:
+            yield WhatsAppState.load_numbers
+
+    @rx.event(background=True)
+    async def pause_card(self, menu_id: str, paused: bool) -> AsyncIterator[rx.event.EventSpec]:
+        """«Pausar» (after its confirmation) / «Reanudar» (one tap; the toast offers
+        «Pausar» back) on a card, through the provider's `set_paused`. Only the menu that
+        is published on its number can be paused."""
+        async with self:
+            card = self._card(menu_id)
+            if card is None or not card.is_live or self._card_blocked():
+                return
+            if bool(paused) == card.is_paused:
+                return  # already so (a second tap, or a stale screen)
+            scope = self._scope_value()
+            if scope is None:
+                return
+            self.card_busy, self.card_busy_action = menu_id, CARD_PAUSE
+            self.banner = ""
+            connection_id = await self._connection_id()
+            _tenant, tenant_id, _email = await self._session()
+        if tenant_id is None:
+            async with self:
+                self.card_busy = self.card_busy_action = ""
+                self.banner, self.banner_tone = _NO_SESSION, "error"
+            return
+        try:
+            detail = await asyncio.to_thread(
+                set_paused, tenant_id, scope, UUID(menu_id), bool(paused)
+            )
+        except (SQLAlchemyError, MenuNotFound) as exc:
+            logger.error("whatsapp menu card pause failed: %s", type(exc).__name__)
+            async with self:
+                if await self._card_settles(connection_id):
+                    self.card_busy = self.card_busy_action = ""
+                    self.banner, self.banner_tone = _PAUSE_FAILED, "error"
+            return
+        async with self:
+            if not await self._card_settles(connection_id):
+                return
+            self.card_busy = self.card_busy_action = ""
+            self._absorb_detail(detail)
+            if paused:
+                self.banner, self.banner_tone = _PAUSED, "warn"
+        if not paused:
+            yield rx.toast.success(
+                RESUMED_TOAST,
+                duration=_CARD_TOAST_MS,
+                action={
+                    "label": PAUSE_BUTTON,
+                    "on_click": WhatsAppMenuState.pause_card(menu_id, True),
+                },
+            )
+
+    # ==================================================================================
+    # «Menú»: one card at a time, and «Eliminar» (m-24986800)
+    # ==================================================================================
+
+    @rx.var
+    def chosen_menu(self) -> str:
+        """The menu whose card is on screen (`whatsapp_menu_vm.chosen_menu_id`)."""
+        return chosen_menu_id(self.menu_cards, picked=self.menu_pick, open_id=self.menu.menu_id)
+
+    @rx.var
+    def chosen_cards(self) -> list[MenuCardVM]:
+        """The chosen menu's card alone (a list, for `rx.foreach`)."""
+        chosen = chosen_menu_id(self.menu_cards, picked=self.menu_pick, open_id=self.menu.menu_id)
+        return [c for c in self.menu_cards if c.menu_id == chosen]
+
+    @rx.var
+    def switch_open(self) -> bool:
+        return self.switch_to != ""
+
+    @rx.var
+    def switch_text(self) -> str:
+        return SWITCH_TEXT.format(name=self.menu.name)
+
+    @rx.event
+    def choose_menu(self, menu_id: str | list[str]) -> list[rx.event.EventSpec] | None:
+        """«Menú»: choosing is opening (`edit_menu`), so the card and the editor never show
+        different menus. With unsaved changes in the editor it asks first
+        (`open_menu` loads the other menu's newest version: what is typed would be lost)."""
+        if not isinstance(menu_id, str) or menu_id not in {c.menu_id for c in self.menu_cards}:
+            return None
+        if menu_id == self.menu.menu_id:
+            self.menu_pick = ""
+            return None
+        if self.opening or self._card_blocked():
+            return None
+        if self.dirty:
+            self.switch_to = menu_id
+            return None
+        return self._switch(menu_id)
+
+    def _switch(self, menu_id: str) -> list[rx.event.EventSpec]:
+        self.menu_pick = menu_id
+        self.delete_error = ""
+        return [WhatsAppMenuState.open_menu(menu_id)]
+
+    @rx.event
+    def set_switch_open(self, value: bool) -> None:
+        """«Cancelar» (or Esc) on «¿Cambiar de menú?»: the picker stays where it was."""
+        if not value:
+            self.switch_to = ""
+
+    @rx.event
+    def discard_and_switch(self) -> list[rx.event.EventSpec] | None:
+        """«Cambiar sin guardar»: what is typed in the open menu is dropped (its saved
+        versions stay) and the chosen menu opens."""
+        target = self.switch_to
+        self.switch_to = ""
+        if not target or target not in {c.menu_id for c in self.menu_cards}:
+            return None
+        if self.opening or self._card_blocked():
+            return None
+        self.dirty = False
+        return self._switch(target)
+
+    @rx.event(background=True)
+    async def save_and_switch(self) -> AsyncIterator[rx.event.EventSpec]:
+        """«Guardar y cambiar»: the editor's changes become the open menu's next version,
+        then the chosen menu opens. With something to fix nothing is saved and the owner
+        stays on the open menu — the banner says what to do."""
+        async with self:
+            target = self.switch_to
+            self.switch_to = ""
+            if not target or target not in {c.menu_id for c in self.menu_cards}:
+                return
+            if self.dirty and self.error_count > 0:
+                self.banner, self.banner_tone = SAVE_NEEDS_FIX, "warn"
+                return
+            needs_save = self.dirty
+        if needs_save and not await self._save_now():
+            return
+        async with self:
+            if target not in {c.menu_id for c in self.menu_cards}:
+                return
+            events = self._switch(target)
+        for event in events:
+            yield event
+
+    @rx.event(background=True)
+    async def delete_card(self, menu_id: str) -> AsyncIterator[rx.event.EventSpec]:
+        """«Eliminar», after its confirmation: the menu is archived (decision D1) through
+        the provider's `archive_menu`. Never the menu that answers — the card does not
+        offer it, and the repository refuses it under a row lock anyway."""
+        async with self:
+            card = self._card(menu_id)
+            if card is None or not card.can_delete or self._card_blocked() or self.opening:
+                return
+            scope = self._scope_value()
+            if scope is None:
+                return
+            self.card_busy, self.card_busy_action = menu_id, CARD_DELETE
+            self.banner = ""
+            self.delete_error = ""
+            connection_id = await self._connection_id()
+            _tenant, tenant_id, _email = await self._session()
+        if tenant_id is None:
+            async with self:
+                self.card_busy = self.card_busy_action = ""
+                self.banner, self.banner_tone = _NO_SESSION, "error"
+            return
+        try:
+            outcome = await asyncio.to_thread(archive_menu, tenant_id, scope, UUID(menu_id))
+        except MenuIsAnswering:
+            async with self:
+                if await self._card_settles(connection_id):
+                    self.card_busy = self.card_busy_action = ""
+                    self.delete_error = DELETE_BLOCKED
+            yield WhatsAppMenuState.reload
+            return
+        except MenuNotFound:
+            async with self:
+                if await self._card_settles(connection_id):
+                    self.card_busy = self.card_busy_action = ""
+                    self.banner, self.banner_tone = _MENU_GONE, "warn"
+            yield WhatsAppMenuState.reload
+            return
+        except SQLAlchemyError as exc:
+            logger.error("whatsapp menu archive failed: %s", type(exc).__name__)
+            async with self:
+                if await self._card_settles(connection_id):
+                    self.card_busy = self.card_busy_action = ""
+                    self.delete_error = DELETE_FAILED
+            return
+        async with self:
+            if not await self._card_settles(connection_id):
+                return
+            self.card_busy = self.card_busy_action = ""
+            self.menus = list(outcome.summaries)
+            self._cards = list(outcome.cards)
+            self._card_choice = {
+                k: v for k, v in self._card_choice.items() if k in {c.menu_id for c in self._cards}
+            }
+            if self.menu_pick == menu_id:
+                self.menu_pick = ""
+            self._rebuild_cards()
+            target = ""
+            if self.menu.menu_id == outcome.menu_id or not self.menu.menu_id:
+                # The editor held the deleted menu: what is typed there goes with it.
+                self._clear_open_menu()
+                target = first_menu_id(self._cards)
+        yield rx.toast.success(DELETED_TOAST, duration=_CARD_TOAST_MS)
+        if target:
+            yield WhatsAppMenuState.open_menu(target)
+        yield _focus_after_delete()
+
+    def _clear_open_menu(self) -> None:
+        """The editor without a menu (`has_menu` False): what the tab shows after the open
+        menu is deleted, until the next one opens (or for good, with none left)."""
+        self.menu = EMPTY_MENU
+        self.versions = []
+        self._payloads = {}
+        self.dirty = False
+        self.editing_from = ""
+        self.editing_version_id = ""
+        self.just_published = False
+        self.publish_confirm_open = False
+        self.strip_confirm_open = False
+        self.answer_open = -1
+        self.answer_confirm_remove = self.add_open = False
+        self._answers_undo = {}
+        self._drop_all_suggestions()
+        self._restart_preview()
 
     # ==================================================================================
     # Preview
@@ -1321,6 +3268,7 @@ class WhatsAppMenuState(rx.State):
             _catalog_items(self._catalog),
             shown_text=shown,
             start_index=len(self.preview_messages),
+            payment_methods=tuple(self._payment_options),
         )
         self._preview_thread = {
             "node_id": result.state.node_id,

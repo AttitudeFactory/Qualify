@@ -122,6 +122,11 @@ class StatePayload:
     # sha256 hex of the browser-binding nonce (defense 4); "" only for a legacy state,
     # which therefore never binds.
     binding: str = ""
+    request_ads: bool = False
+    # m-24947215: the provider redirect URI this flow was started with (the host the
+    # browser is on). The code exchange must repeat it exactly; "" = the configured one
+    # (a state minted before this field existed).
+    redirect_uri: str = ""
 
     def to_dict(self) -> dict[str, str | int | None]:
         return {
@@ -135,6 +140,8 @@ class StatePayload:
             "external_account_id": self.external_account_id,
             "cause": self.cause,
             "binding": self.binding,
+            "request_ads": self.request_ads,
+            "redirect_uri": self.redirect_uri,
         }
 
     @classmethod
@@ -151,6 +158,8 @@ class StatePayload:
             external_account_id=str(raw.get("external_account_id") or ""),
             cause=str(raw.get("cause") or ""),
             binding=str(raw.get("binding") or ""),
+            request_ads=raw.get("request_ads") is True,
+            redirect_uri=str(raw.get("redirect_uri") or ""),
         )
 
 
@@ -195,6 +204,8 @@ def new_payload(
     external_account_id: str = "",
     cause: str = "",
     binding: str = "",
+    request_ads: bool = False,
+    redirect_uri: str = "",
 ) -> StatePayload:
     """Mint a payload with a fresh jti and the current timestamp."""
     return StatePayload(
@@ -208,6 +219,8 @@ def new_payload(
         external_account_id=external_account_id,
         cause=cause,
         binding=binding,
+        request_ads=request_ads,
+        redirect_uri=redirect_uri,
     )
 
 

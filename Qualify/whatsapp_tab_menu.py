@@ -16,14 +16,22 @@ Publishing (m-24842995): the menu's bar carries the one solid action, «Publicar
 WhatsApp» (saves the changes and publishes, behind a confirmation), «Guardar sin
 publicar» as the secondary, «Probar el menú» on the phone (jumps to the preview, which
 sits under the long editor there), and, after publishing, «listo» plus the next step —
-the QR for the counter (guide N3). Older versions live behind «Ver versiones
-anteriores»; opening one puts it in the editor, and the same main button publishes it.
+the QR for the counter (guide N3).
+
+«Menús de este número» (m-24955645) is one card per menu: its name, whether it is
+answering customers, paused or unpublished, a «Versión» selector over the published
+versions (the active one first, with its date in the business's own zone), the
+draft mark, and its actions — edit, publish the chosen version, pause / resume — each
+change behind a dialog that says what will happen (copy in `whatsapp_menu_vm.py`).
 
 The menu in four steps (m-24848536) is what an owner sees first: ① ¿Cómo saludas?
-② ¿Qué botones ve al escribirte? ③ Tus productos ④ Pruébalo y publícalo — «Paso N de 4»,
-«Atrás» and «Siguiente», «Guardar y seguir después», and the full editor behind «Más
-opciones (avanzado)». No step id, button id or field key is shown anywhere: steps are
-listed and chosen by name.
+② ¿Qué te preguntan siempre? (m-24936836: one ordered list of answers — the first ones are
+WhatsApp's buttons, the rest go to «Más preguntas»; drag, keyboard or «⋯», the limits always on
+screen, each answer's panel with its «Falta: …» gaps) ③ Tus productos ④ Pruébalo y
+publícalo (a gap never goes out: «Completarlas» / «Quitar las que faltan y publicar»)
+— «Paso N de 4», «Atrás» and «Siguiente», «Guardar y seguir después», and the full
+editor behind «Más opciones (avanzado)». No step id, button id or field key is shown
+anywhere: steps are listed and chosen by name.
 
 Talks to `WhatsAppMenuState` only — never to the provider, Graph or Postgres.
 """
@@ -32,36 +40,104 @@ from __future__ import annotations
 
 import reflex as rx
 
+from .catalog_group_vm import GROUP_BUTTON
+from .catalog_group_vm import NAME_HELP as CATEGORY_NAME_HELP
+from .catalog_group_vm import NAME_LABEL as CATEGORY_NAME_LABEL
+from .catalog_group_vm import NAME_PLACEHOLDER as CATEGORY_NAME_PLACEHOLDER
 from .ui import (
+    DragCard,
+    asset_script,
     callout,
     card,
     chat_bubble,
     choice_card,
     choice_card_check,
+    dropzone,
     empty_state,
     mono,
     signal_pill,
     skeleton_card,
     skeleton_rows,
+    sort_handle,
     tag,
+    tone_badge,
 )
 from .ui import tokens as T
 from .ui.flow_history import flow_sync
 from .ui.steps import step_foot, step_frame, step_head
+from .whatsapp_menu_state import (
+    ANSWER_TEXT_ID,
+    CARD_DELETE,
+    CARD_PAUSE,
+    CARD_PUBLISH,
+    IMPORT_REVIEW_HEADING_ID,
+    MENU_PICK_ID,
+    MENUS_HEADING_ID,
+    TOOLBAR_ELEMENT_ID,
+)
 from .whatsapp_menu_state import WhatsAppMenuState as S
 from .whatsapp_menu_vm import (
-    ACTION_MORE,
-    ACTION_MORE_LABEL,
-    ACTION_TEXT,
     ADDRESS_ASK,
     ADDRESS_SKIP,
-    BUTTON_LABEL_MAX,
+    ANSWER_ISSUE,
+    ANSWERS_EMPTY,
+    ANSWERS_FULL,
+    BUTTONS_HEADING,
+    CANCEL_BUTTON,
     CATALOG_FIX_FIRST,
     CATALOG_SAVED_HINT,
+    CHANGE_ORDER,
     COLLECT_FIELDS,
     COLLECT_VALIDATIONS,
-    GUIDED_ACTIONS,
+    DELETE_BLOCKED,
+    DELETE_BUTTON,
+    DELETE_TITLE,
+    DELETE_UNDO,
+    DELETE_UNSAVED,
+    DELETE_YES,
+    DRAFT_LINE,
+    DRAFT_LINE_OPEN,
+    EDIT_BUTTON,
+    GAP_FILL_HINT,
     HANDOFF_REASONS,
+    IMPORT_ADD_BUTTON,
+    IMPORT_CANCEL,
+    IMPORT_CHECK_ALL,
+    IMPORT_CHOOSE,
+    IMPORT_DONE,
+    IMPORT_EDIT,
+    IMPORT_EDIT_DONE,
+    IMPORT_EMPTY_PHASE,
+    IMPORT_LINK,
+    IMPORT_MAX_BYTES,
+    IMPORT_NOT_NOW,
+    IMPORT_OFFER_HELP,
+    IMPORT_OFFER_TITLE,
+    IMPORT_PAGE,
+    IMPORT_PAGE_BUTTON,
+    IMPORT_PAGE_CARD,
+    IMPORT_PAGE_CARD_HELP,
+    IMPORT_PAGE_HELP,
+    IMPORT_PAGE_LABEL,
+    IMPORT_PAGE_PLACEHOLDER,
+    IMPORT_PAGE_TITLE,
+    IMPORT_PHOTO,
+    IMPORT_PHOTO_BUTTON,
+    IMPORT_PHOTO_CARD,
+    IMPORT_PHOTO_CARD_HELP,
+    IMPORT_PHOTO_HELP,
+    IMPORT_PHOTO_TITLE,
+    IMPORT_PRIVACY,
+    IMPORT_PRODUCTS_NEW_HELP,
+    IMPORT_READING,
+    IMPORT_READING_TEXT,
+    IMPORT_REVIEW,
+    IMPORT_REVIEW_HELP,
+    IMPORT_SKIP,
+    IMPORT_SLOW,
+    IMPORT_UNCHECK_ALL,
+    IMPORT_USE,
+    IMPORT_USE_SENTENCE,
     KIND_BUTTONS,
     KIND_COLLECT,
     KIND_HANDOFF,
@@ -69,37 +145,75 @@ from .whatsapp_menu_vm import (
     KIND_ORDER_SUMMARY,
     KIND_PRODUCTS,
     KIND_TEXT,
+    MENU_PICK_ARIA,
+    MENU_PICK_LABEL,
+    MORE_HEADING,
+    MORE_ROW_TEXT,
+    MORE_ROW_TITLE,
+    MOVE_DOWN,
+    MOVE_TO_TOP,
+    MOVE_UP,
+    NEVER_PUBLISHED,
     NEXT_STEP_QR,
+    NO_PRODUCTS,
+    NO_PRODUCTS_WARNING,
     NODE_KINDS,
     NONE_VALUE,
+    ORDER_HINT,
+    PAUSE_BUTTON,
+    PAUSE_CONFIRM,
+    PAUSE_YES,
+    PAYMENT_ANSWER_AUTO,
+    PAYMENT_ANSWER_CHANGE,
+    PAYMENTS_INVITE,
+    PAYMENTS_INVITE_BUTTON,
+    PRICES_FROM_CATALOG,
     PUBLISH_BUTTON,
     PUBLISH_CONFIRM,
     PUBLISH_CONFIRM_BUTTON,
+    PUBLISH_VERSION_YES,
     PUBLISHED_BUT_PAUSED,
     RESUME_BUTTON,
-    SAVE_NEEDS_FIX,
+    RESUME_CARD_BUTTON,
     SAVE_ONLY_BUTTON,
+    SUGGEST_AGAIN,
+    SUGGEST_ANSWER,
+    SUGGEST_DONE,
+    SUGGEST_DONE_GAPS,
+    SUGGEST_GO_BRAND,
+    SUGGEST_GREETING,
+    SUGGEST_NEUTRAL,
+    SUGGEST_UNDO,
+    SUGGESTION_CUSTOM,
+    SWITCH_DISCARD,
+    SWITCH_TITLE,
+    SWITCH_YES,
     TEMPLATE_EMPTY,
     TEMPLATE_FAST_FOOD,
+    VERSION_FIELD,
+    AnswerVM,
+    CardVersionOptionVM,
     CatalogRowVM,
+    CatalogSectionVM,
     CommandForm,
-    GuidedButtonVM,
     IceBreakerForm,
+    ImportFactVM,
+    ImportProductVM,
     KeywordForm,
-    MenuSummaryVM,
-    MenuVersionVM,
+    MenuCardVM,
     NodeChoiceVM,
     NodeForm,
     OptionForm,
     PreviewChoiceVM,
     PreviewMessageVM,
+    SuggestionVM,
+    SuggestVM,
 )
 from .whatsapp_state import WhatsAppState
 from .whatsapp_vm import TAB_QR
 
 _TONES = ("ok", "warn", "error", "info", "neutral")
 PREVIEW_ELEMENT_ID = "whatsapp-menu-preview"
-TOOLBAR_ELEMENT_ID = "whatsapp-menu-toolbar"
 # Guide N12: touch targets of at least 44 px on the phone.
 TARGET_MIN = "44px"
 
@@ -108,6 +222,10 @@ TARGET_MIN = "44px"
 # Small helpers (the shell's equivalents live in whatsapp_page.py, which imports this
 # module — so they cannot be imported from there without a cycle)
 # ======================================================================================
+
+
+#: The rows' pointer script (`ui.asset_script`, guarded against running twice).
+_RANK_DRAG_JS = asset_script("rank-drag.js")
 
 
 def _tone_pill(label: rx.Var[str], tone: rx.Var[str]) -> rx.Component:
@@ -155,9 +273,10 @@ def _hint(text: str) -> rx.Component:
     return rx.text(text, size="1", color=T.TEXT_FAINT)
 
 
-def _section_title(title: str, *extra: rx.Component) -> rx.Component:
+def _section_title(title: str, *extra: rx.Component, heading_id: str = "") -> rx.Component:
+    ids = {"id": heading_id, "tab_index": -1} if heading_id else {}
     return rx.hstack(
-        rx.heading(title, size="3", as_="h2"),
+        rx.heading(title, size="3", as_="h2", **ids),
         rx.spacer(),
         *extra,
         width="100%",
@@ -236,7 +355,8 @@ def _new_menu_dialog() -> rx.Component:
                 rx.icon("plus", size=T.ICON_SM),
                 "Nuevo menú",
                 variant="soft",
-                size="2",
+                size="3",
+                min_height=TARGET_MIN,
             ),
         ),
         rx.dialog.content(
@@ -264,9 +384,8 @@ def _new_menu_dialog() -> rx.Component:
                 ),
                 _template_choice(
                     TEMPLATE_FAST_FOOD,
-                    "Empezar desde el ejemplo de comida rápida",
-                    "Bienvenida, atajos, menú del catálogo, resumen del pedido con "
-                    "dirección y «hablar con una persona». Se guarda como versión 1.",
+                    "Con lo que ya sabemos de tu negocio",
+                    "Tu nombre, tu dirección y tus productos. Tú completas lo que falte.",
                 ),
                 _template_choice(
                     TEMPLATE_EMPTY,
@@ -297,39 +416,349 @@ def _new_menu_dialog() -> rx.Component:
     )
 
 
-def _menu_row(menu: MenuSummaryVM) -> rx.Component:
+def _card_button(
+    icon: str,
+    label: str,
+    aria_label: rx.Var[str],
+    *,
+    busy: rx.Var[bool] | bool = False,
+    **props: object,
+) -> rx.Component:
+    """A card action: ≥ 44 px, named with the menu so a screen reader can tell the
+    cards' buttons apart (the visible words lead the name)."""
+    return rx.button(
+        rx.icon(icon, size=T.ICON_SM),
+        label,
+        aria_label=aria_label,
+        loading=busy,
+        size="3",
+        min_height=TARGET_MIN,
+        **props,
+    )
+
+
+def _confirm(
+    trigger: rx.Component,
+    title: rx.Var[str],
+    text: rx.Var[str] | str,
+    yes: str,
+    on_yes: rx.EventHandler,
+    *extra: rx.Component,
+    tone: str = "",
+) -> rx.Component:
+    """A card's confirmation: Radix moves focus into it (to «Cancelar», the safe
+    choice), keeps it there, and gives it back to the button that opened it. `tone`
+    "error" is the destructive verb (design system §6.2)."""
+    return rx.alert_dialog.root(
+        rx.alert_dialog.trigger(trigger),
+        rx.alert_dialog.content(
+            rx.alert_dialog.title(title),
+            rx.alert_dialog.description(text, size="2"),
+            *extra,
+            rx.flex(
+                rx.alert_dialog.cancel(
+                    rx.button(
+                        CANCEL_BUTTON,
+                        variant="soft",
+                        size="3",
+                        min_height=TARGET_MIN,
+                        **T.tone_scheme("neutral"),
+                    ),
+                ),
+                rx.alert_dialog.action(
+                    rx.button(
+                        yes,
+                        on_click=on_yes,
+                        size="3",
+                        min_height=TARGET_MIN,
+                        **(T.tone_scheme(tone) if tone else {}),
+                    ),
+                ),
+                spacing="3",
+                margin_top="1rem",
+                justify="end",
+                wrap="wrap",
+            ),
+            max_width="28rem",
+        ),
+    )
+
+
+def _version_option(option: CardVersionOptionVM) -> rx.Component:
+    return rx.select.item(option.label, value=option.version_id)
+
+
+def _card_versions(menu: MenuCardVM, blocked: rx.Var[bool]) -> rx.Component:
+    """«Versión»: the published versions, the active one picked first."""
+    return rx.vstack(
+        rx.text(VERSION_FIELD, size="2", weight="medium", aria_hidden="true"),
+        rx.select.root(
+            rx.select.trigger(
+                width="100%",
+                min_height=TARGET_MIN,
+                height="auto",
+                aria_label=menu.select_label,
+                # The date must stay readable at 375 px: wrap instead of «…».
+                style={
+                    "& .rt-SelectTriggerInner": {"white_space": "normal", "text_align": "start"}
+                },
+            ),
+            rx.select.content(rx.foreach(menu.options, _version_option)),
+            value=menu.selected_version_id,
+            on_change=lambda value: S.choose_card_version(menu.menu_id, value),
+            disabled=blocked,
+            size="3",
+        ),
+        rx.cond(
+            menu.selected_is_active,
+            rx.text(menu.active_help, size="1", color=T.TEXT_MUTED),
+            rx.fragment(),
+        ),
+        spacing="1",
+        width="100%",
+        align_items="start",
+        min_width="0",
+    )
+
+
+def _menu_card(menu: MenuCardVM) -> rx.Component:
+    """One menu of the number (m-24955645): ONE pill for what it does now, the draft in
+    words, which version, and what can be done with it. Publishing and pausing ask
+    first; «Reanudar» is one tap (its toast offers «Pausar» back)."""
+    busy = S.card_busy == menu.menu_id
+    blocked = (S.card_busy != "") | S.publishing | S.pausing | S.saving
     is_open = menu.menu_id == S.menu.menu_id
-    return choice_card(
-        rx.hstack(
-            rx.icon("list-tree", size=T.ICON_MD, color=T.TEXT_MUTED),
+    # Grows to the row: at 375 px «Editar» and «Pausar» share one full-width row.
+    grow = {"flex": "1 1 auto"}
+    publish = _confirm(
+        _card_button(
+            "send",
+            menu.publish_button,
+            menu.publish_label,
+            busy=busy & (S.card_busy_action == CARD_PUBLISH),
+            disabled=blocked,
+            variant="soft",
+            **grow,
+        ),
+        menu.publish_title,
+        menu.publish_confirm,
+        PUBLISH_VERSION_YES,
+        S.publish_card_version(menu.menu_id, menu.selected_version_id),
+        rx.foreach(
+            menu.publish_lines,
+            lambda line: rx.text(line, size="2", color=T.TEXT_MUTED, margin_top="0.5rem"),
+        ),
+    )
+    pause_busy = busy & (S.card_busy_action == CARD_PAUSE)
+    pause = rx.cond(
+        menu.is_paused,
+        _card_button(
+            "play",
+            RESUME_CARD_BUTTON,
+            menu.resume_label,
+            busy=pause_busy,
+            disabled=blocked,
+            on_click=S.pause_card(menu.menu_id, False),
+            variant="soft",
+            **grow,
+        ),
+        _confirm(
+            _card_button(
+                "pause",
+                PAUSE_BUTTON,
+                menu.pause_label,
+                busy=pause_busy,
+                disabled=blocked,
+                variant="soft",
+                **grow,
+                **T.tone_scheme("neutral"),
+            ),
+            menu.pause_title,
+            PAUSE_CONFIRM,
+            PAUSE_YES,
+            S.pause_card(menu.menu_id, True),
+        ),
+    )
+    delete = _confirm(
+        _card_button(
+            "trash-2",
+            DELETE_BUTTON,
+            menu.delete_label,
+            busy=busy & (S.card_busy_action == CARD_DELETE),
+            disabled=blocked | S.opening,
+            variant="soft",
+            **grow,
+            **T.tone_scheme("neutral"),
+        ),
+        DELETE_TITLE,
+        rx.text(
+            "Se borra ",
+            rx.text.strong(menu.name),
+            menu.delete_tail,
+            size="2",
+        ),
+        DELETE_YES,
+        S.delete_card(menu.menu_id),
+        rx.text(menu.delete_case, size="2", color=T.TEXT_MUTED, margin_top="0.5rem"),
+        rx.cond(
+            is_open & S.dirty,
+            rx.text(DELETE_UNSAVED, size="2", color=T.TEXT_MUTED, margin_top="0.5rem"),
+            rx.fragment(),
+        ),
+        rx.text(DELETE_UNDO, size="2", weight="medium", margin_top="0.5rem"),
+        tone="error",
+    )
+    return card(
+        rx.vstack(
             rx.vstack(
-                rx.text(menu.name, size="2", weight="medium"),
-                # Unpublished: the status pill already says «Sin publicar».
+                rx.heading(menu.name, size="3", as_="h3", min_width="0", word_break="break-word"),
+                _tone_pill(menu.status_label, menu.status_tone),
                 rx.cond(
-                    menu.is_published,
-                    rx.text(menu.published_label, size="1", color=T.TEXT_MUTED),
+                    menu.has_draft & menu.has_options,
+                    rx.text(
+                        rx.cond(is_open, DRAFT_LINE_OPEN, DRAFT_LINE),
+                        size="2",
+                        color=T.TEXT_MUTED,
+                    ),
                     rx.fragment(),
                 ),
-                spacing="0",
+                spacing="2",
                 align_items="start",
-                min_width="0",
+                width="100%",
             ),
-            rx.spacer(),
-            _tone_pill(menu.status_label, menu.status_tone),
+            rx.cond(
+                menu.has_options,
+                _card_versions(menu, blocked),
+                rx.text(NEVER_PUBLISHED, size="2", color=T.TEXT_MUTED),
+            ),
+            # Hidden while the active version is picked: the hint under the selector
+            # already says customers have it (UX review).
+            rx.cond(
+                menu.has_options & ~menu.selected_is_active,
+                rx.flex(publish, width="100%"),
+                rx.fragment(),
+            ),
+            rx.flex(
+                _card_button(
+                    "pencil",
+                    EDIT_BUTTON,
+                    menu.edit_label,
+                    on_click=S.edit_menu(menu.menu_id),
+                    disabled=S.opening,
+                    variant="soft",
+                    **grow,
+                    **T.tone_scheme("neutral"),
+                ),
+                rx.cond(menu.is_live, pause, rx.fragment()),
+                # m-24986800: never on the menu that answers — a line says why instead
+                # of a disabled button (which is not focusable and says nothing).
+                rx.cond(menu.can_delete, delete, rx.fragment()),
+                spacing="2",
+                wrap="wrap",
+                width="100%",
+            ),
+            rx.cond(
+                menu.can_delete,
+                rx.fragment(),
+                rx.text(DELETE_BLOCKED, size="2", color=T.TEXT_MUTED),
+            ),
             spacing="3",
-            align="center",
             width="100%",
+            align_items="start",
         ),
-        selected=is_open,
-        on_select=S.open_menu(menu.menu_id),
-        padding="0.75rem 1rem",
+        padding="1rem 1.25rem",
+        min_width="0",
+    )
+
+
+def _menu_pick_option(menu: MenuCardVM) -> rx.Component:
+    # The status in words inside the option (never only a colour).
+    return rx.select.item(menu.option_label, value=menu.menu_id)
+
+
+def _menu_picker() -> rx.Component:
+    """«Menú» (m-24986800): which menu's card is on screen; choosing opens it."""
+    return rx.vstack(
+        rx.text(MENU_PICK_LABEL, size="2", weight="medium", aria_hidden="true"),
+        rx.select.root(
+            rx.select.trigger(
+                id=MENU_PICK_ID,
+                width="100%",
+                min_height=TARGET_MIN,
+                height="auto",
+                aria_label=MENU_PICK_ARIA,
+                # «prueba 2 · Respondiendo a tus clientes» wraps at 375 px instead of «…».
+                style={
+                    "& .rt-SelectTriggerInner": {"white_space": "normal", "text_align": "start"}
+                },
+            ),
+            rx.select.content(rx.foreach(S.menu_cards, _menu_pick_option)),
+            value=S.chosen_menu,
+            on_change=S.choose_menu,
+            disabled=(S.card_busy != "") | S.publishing | S.pausing | S.saving | S.opening,
+            size="3",
+        ),
+        spacing="1",
+        width="100%",
+        max_width="36rem",
+        align_items="start",
+    )
+
+
+def _switch_dialog() -> rx.Component:
+    """«¿Cambiar de menú?» — only with unsaved changes in the editor."""
+    return rx.alert_dialog.root(
+        rx.alert_dialog.content(
+            rx.alert_dialog.title(SWITCH_TITLE),
+            rx.alert_dialog.description(S.switch_text, size="2"),
+            rx.flex(
+                rx.alert_dialog.cancel(
+                    rx.button(
+                        CANCEL_BUTTON,
+                        variant="soft",
+                        size="3",
+                        min_height=TARGET_MIN,
+                        **T.tone_scheme("neutral"),
+                    ),
+                ),
+                rx.alert_dialog.action(
+                    rx.button(
+                        SWITCH_DISCARD,
+                        on_click=S.discard_and_switch,
+                        variant="soft",
+                        size="3",
+                        min_height=TARGET_MIN,
+                        **T.tone_scheme("neutral"),
+                    ),
+                ),
+                rx.alert_dialog.action(
+                    rx.button(
+                        SWITCH_YES,
+                        on_click=S.save_and_switch,
+                        size="3",
+                        min_height=TARGET_MIN,
+                    ),
+                ),
+                spacing="3",
+                margin_top="1rem",
+                justify="end",
+                wrap="wrap",
+            ),
+            max_width="28rem",
+        ),
+        open=S.switch_open,
+        on_open_change=S.set_switch_open,
     )
 
 
 def _menus_card() -> rx.Component:
     return card(
         rx.vstack(
-            _section_title("Menús de este número", _new_menu_dialog()),
+            _section_title(
+                "Menús de este número",
+                _new_menu_dialog(),
+                heading_id=MENUS_HEADING_ID,
+            ),
             rx.text(
                 "Tu WhatsApp responde con el menú que tú escribiste: saluda, muestra "
                 "atajos, toma el pedido desde tu catálogo y te pasa el chat para cerrarlo.",
@@ -337,17 +766,25 @@ def _menus_card() -> rx.Component:
                 color=T.TEXT_MUTED,
             ),
             rx.cond(
-                S.menus.length() > 0,
-                rx.grid(
-                    rx.foreach(S.menus, _menu_row),
-                    columns=rx.breakpoints(initial="1", md="2"),
-                    spacing="2",
+                S.menu_cards.length() > 0,
+                rx.vstack(
+                    rx.cond(S.menu_cards.length() > 1, _menu_picker(), rx.fragment()),
+                    rx.cond(
+                        S.delete_error != "",
+                        callout(S.delete_error, "error"),
+                        rx.fragment(),
+                    ),
+                    # Only the chosen menu's card (m-24986800): with three menus, the
+                    # phone no longer scrolls past three cards to reach the editor.
+                    rx.foreach(S.chosen_cards, _menu_card),
+                    _switch_dialog(),
+                    spacing="3",
                     width="100%",
                 ),
                 empty_state(
                     "list-tree",
                     "Este número aún no tiene menú",
-                    "Crea uno desde el ejemplo de comida rápida y ajústalo a tu negocio, o "
+                    "Créalo con lo que ya sabemos de tu negocio y completa lo que falte, o "
                     "empieza desde cero.",
                     # N8 (m-24842961): opens the same «Crear menú» dialog.
                     action=rx.button(
@@ -372,6 +809,11 @@ def _menus_card() -> rx.Component:
 # ======================================================================================
 
 
+# «Más opciones»: the disabled «Publicar» is described by why it is off and what is missing.
+PUBLISH_REASON_ID = "whatsapp-menu-publish-reason"
+PUBLISH_DETAIL_ID = "whatsapp-menu-publish-detail"
+
+
 def _publish_dialog() -> rx.Component:
     """The one solid action of the tab: saves the changes (if any) and publishes."""
     return rx.alert_dialog.root(
@@ -383,6 +825,11 @@ def _publish_dialog() -> rx.Component:
                 disabled=~S.can_publish,
                 loading=S.publishing,
                 size="3",
+                aria_describedby=rx.cond(
+                    S.publish_block_reason != "",
+                    f"{PUBLISH_REASON_ID} {PUBLISH_DETAIL_ID}",
+                    "",
+                ),
             ),
         ),
         rx.alert_dialog.content(
@@ -431,11 +878,33 @@ def _actions() -> rx.Component:
             rx.icon("save", size=T.ICON_SM),
             SAVE_ONLY_BUTTON,
             on_click=S.save_current_version,
-            disabled=~S.can_save | S.publishing,
+            disabled=~S.can_save | S.publishing | (S.card_busy != ""),
             loading=S.saving & ~S.publishing,
             variant="soft",
             size="3",
             **T.tone_scheme("neutral"),
+        ),
+        # In «Más opciones» the main button says why it is off, never a silent block.
+        rx.cond(
+            S.advanced_open & (S.publish_block_reason != "") & ~S.publishing,
+            rx.vstack(
+                rx.text(
+                    S.publish_block_reason,
+                    id=PUBLISH_REASON_ID,
+                    size="1",
+                    color=T.tone_color("warn", 11),
+                ),
+                rx.text(
+                    S.publish_block_detail,
+                    id=PUBLISH_DETAIL_ID,
+                    size="1",
+                    color=T.tone_color("warn", 11),
+                    display=rx.cond(S.publish_block_detail != "", "block", "none"),
+                ),
+                spacing="1",
+                align_items="start",
+            ),
+            rx.fragment(),
         ),
         spacing="2",
         wrap="wrap",
@@ -566,7 +1035,7 @@ def _pause_row() -> rx.Component:
         rx.switch(
             checked=S.menu.is_paused,
             on_change=S.toggle_pause,
-            disabled=S.pausing | ~S.menu.is_published,
+            disabled=S.pausing | ~S.menu.is_published | (S.card_busy != ""),
             size="2",
         ),
         rx.vstack(
@@ -1244,109 +1713,6 @@ def _steps_card() -> rx.Component:
 
 
 # ======================================================================================
-# Versiones
-# ======================================================================================
-
-
-def _version_row(version: MenuVersionVM) -> rx.Component:
-    return rx.hstack(
-        rx.vstack(
-            rx.hstack(
-                rx.text(version.label, size="2", weight="medium"),
-                rx.cond(
-                    version.is_live,
-                    signal_pill("La que responde ahora", "ok"),
-                    rx.cond(version.published_at != "", tag("Publicada antes"), rx.fragment()),
-                ),
-                spacing="2",
-                align="center",
-                wrap="wrap",
-            ),
-            rx.text(
-                "Guardada el ",
-                version.created_at,
-                size="1",
-                color=T.TEXT_MUTED,
-            ),
-            spacing="0",
-            align_items="start",
-        ),
-        rx.spacer(),
-        rx.button(
-            rx.icon("pencil", size=T.ICON_SM),
-            "Abrir en el editor",
-            on_click=S.open_version(version.version_id),
-            variant="ghost",
-            size="1",
-            **T.tone_scheme("neutral"),
-        ),
-        spacing="2",
-        align="center",
-        width="100%",
-        wrap="wrap",
-        padding_y="0.5rem",
-        border_top=T.BORDER,
-    )
-
-
-def _versions_section() -> rx.Component:
-    """«Ver versiones anteriores»: folded by default — the main button is the way to
-    publish; this is only for going back to an older version."""
-    return rx.vstack(
-        rx.button(
-            rx.cond(
-                S.versions_open,
-                rx.icon("chevron-up", size=T.ICON_SM),
-                rx.icon("chevron-down", size=T.ICON_SM),
-            ),
-            rx.cond(S.versions_open, "Ocultar versiones anteriores", "Ver versiones anteriores"),
-            on_click=S.toggle_versions,
-            variant="ghost",
-            size="3",
-            **T.tone_scheme("neutral"),
-        ),
-        rx.cond(
-            S.versions_open,
-            card(
-                rx.vstack(
-                    rx.text(
-                        "Cada vez que guardas queda una versión. Abre una en el editor y "
-                        "toca «Publicar en mi WhatsApp» para volver a ella.",
-                        size="2",
-                        color=T.TEXT_MUTED,
-                    ),
-                    rx.cond(
-                        S.dirty & (S.versions.length() > 0),
-                        callout(
-                            "Tienes cambios sin publicar: «Abrir en el editor» los descarta.",
-                            "info",
-                        ),
-                        rx.fragment(),
-                    ),
-                    rx.cond(
-                        S.versions.length() > 0,
-                        rx.vstack(rx.foreach(S.versions, _version_row), spacing="0", width="100%"),
-                        rx.text(
-                            "Aún no guardaste ninguna versión de este menú.",
-                            size="2",
-                            color=T.TEXT_FAINT,
-                        ),
-                    ),
-                    spacing="3",
-                    width="100%",
-                    align_items="start",
-                ),
-                padding="1rem 1.25rem",
-            ),
-            rx.fragment(),
-        ),
-        spacing="2",
-        width="100%",
-        align_items="start",
-    )
-
-
-# ======================================================================================
 # Phone preview
 # ======================================================================================
 
@@ -1613,6 +1979,141 @@ def _guided_err(message: rx.Var[str]) -> rx.Component:
     )
 
 
+def _suggest_tools(
+    kind: str,
+    label: rx.Var[str],
+    view: SuggestVM,
+    on_suggest: rx.EventHandler,
+    on_again: rx.EventHandler,
+    on_undo: rx.EventHandler,
+    *,
+    show_missing: bool,
+    has_gaps: rx.Var[bool] | bool = False,
+) -> rx.Component:
+    """«Mejorar mi texto» / «Escribirlo por mí» under a field (m-24936838, spec §5): the
+    generator's «Potenciar con IA» pattern — a soft button with its name always written,
+    never the step's solid action. While Claude writes, the field is read-only and a line
+    says so; then «Deshacer» (the owner's exact text) and «Otra versión». `show_missing`:
+    the «Dejamos [x]…» line, only where no «Falta: …» line already says it (the greeting);
+    `has_gaps`: the result line then asks to complete what is missing."""
+    busy = S.suggest_busy == kind
+    any_busy = S.suggest_busy != ""
+    small = {"size": "2", "min_height": TARGET_MIN}
+    return rx.vstack(
+        rx.hstack(
+            rx.button(
+                rx.icon("sparkles", size=T.ICON_SM),
+                label,
+                on_click=on_suggest,
+                loading=busy,
+                disabled=any_busy,
+                variant="soft",
+                aria_label=label,
+                **small,
+            ),
+            rx.cond(
+                view.has_proposal & ~any_busy,
+                rx.hstack(
+                    rx.button(
+                        rx.icon("undo-2", size=T.ICON_SM),
+                        SUGGEST_UNDO,
+                        on_click=on_undo,
+                        variant="ghost",
+                        aria_label="Deshacer: volver a tu texto",
+                        **T.tone_scheme("neutral"),
+                        **small,
+                    ),
+                    rx.button(
+                        rx.icon("refresh-cw", size=T.ICON_SM),
+                        SUGGEST_AGAIN,
+                        on_click=on_again,
+                        variant="ghost",
+                        aria_label="Otra versión de la sugerencia",
+                        **T.tone_scheme("neutral"),
+                        **small,
+                    ),
+                    spacing="2",
+                    wrap="wrap",
+                ),
+                rx.fragment(),
+            ),
+            spacing="2",
+            align="center",
+            wrap="wrap",
+            width="100%",
+        ),
+        # One fixed live region (UX U5): it says «Escribiendo…» and then that the
+        # proposal landed, so a screen reader hears both.
+        rx.box(
+            rx.cond(
+                busy,
+                rx.text(S.suggest_writing, size="2", color=T.TEXT_MUTED),
+                rx.cond(
+                    view.has_proposal,
+                    rx.cond(
+                        view.neutral,
+                        callout(SUGGEST_NEUTRAL, "info"),
+                        rx.text(
+                            rx.cond(has_gaps, SUGGEST_DONE_GAPS, SUGGEST_DONE),
+                            size="2",
+                            color=T.TEXT_MUTED,
+                        ),
+                    ),
+                    rx.fragment(),
+                ),
+            ),
+            custom_attrs={"aria-live": "polite"},
+            width="100%",
+        ),
+        rx.cond(
+            view.has_proposal & ~busy,
+            rx.vstack(
+                rx.cond(
+                    view.neutral,
+                    rx.vstack(
+                        rx.button(
+                            SUGGEST_GO_BRAND,
+                            on_click=S.save_and_open_brand,
+                            disabled=S.saving | S.publishing,
+                            variant="ghost",
+                            **small,
+                        ),
+                        rx.cond(
+                            S.suggest_notice != "",
+                            callout(S.suggest_notice, "warn"),
+                            rx.fragment(),
+                        ),
+                        spacing="1",
+                        width="100%",
+                        align_items="start",
+                    ),
+                    rx.fragment(),
+                ),
+                *(
+                    [
+                        rx.cond(
+                            view.missing_line != "",
+                            rx.text(view.missing_line, size="2", color=T.tone_color("warn", 11)),
+                            rx.fragment(),
+                        )
+                    ]
+                    if show_missing
+                    else []
+                ),
+                rx.foreach(view.warnings, lambda w: callout(w, "warn")),
+                spacing="2",
+                width="100%",
+                align_items="start",
+            ),
+            rx.fragment(),
+        ),
+        rx.cond(view.error != "", callout(view.error, "warn"), rx.fragment()),
+        spacing="2",
+        width="100%",
+        align_items="start",
+    )
+
+
 def _guided_greeting() -> rx.Component:
     g = S.guided
     return _field(
@@ -1620,6 +2121,8 @@ def _guided_greeting() -> rx.Component:
         rx.text_area(
             value=g.greeting,
             on_change=S.set_guided_greeting,
+            read_only=S.suggest_busy == SUGGEST_GREETING,
+            aria_label="Tu saludo",
             placeholder="Ej.: ¡Hola! Gracias por escribirnos. Te ayudo con tu pedido.",
             width="100%",
             rows="4",
@@ -1627,152 +2130,650 @@ def _guided_greeting() -> rx.Component:
         ),
         _guided_err(g.greeting_error),
         _hint("Llega una sola vez, la primera vez que cada cliente te escribe."),
+        _suggest_tools(
+            SUGGEST_GREETING,
+            S.greeting_suggest_label,
+            S.greeting_suggest,
+            S.suggest_greeting,
+            S.suggest_greeting_again,
+            S.undo_greeting_suggestion,
+            show_missing=True,
+        ),
     )
 
 
-def _guided_action_select(button: GuidedButtonVM, index: rx.Var[int]) -> rx.Component:
-    return rx.select.root(
-        rx.select.trigger(placeholder="Elige qué pasa", width="100%"),
-        rx.select.content(
-            *[rx.select.item(label, value=key) for key, label in GUIDED_ACTIONS],
-            rx.cond(
-                button.action == ACTION_MORE,
-                rx.select.item(ACTION_MORE_LABEL, value=ACTION_MORE),
-                rx.fragment(),
+def _text_action(label: str | rx.Var, on_click: rx.EventHandler, **props: object) -> rx.Component:
+    """«Editar»: a text button of 44 px (guide N12)."""
+    return rx.button(
+        label,
+        on_click=on_click,
+        variant="ghost",
+        size="2",
+        min_height=TARGET_MIN,
+        **T.tone_scheme("neutral"),
+        **props,
+    )
+
+
+def _answer_menu(answer: AnswerVM) -> rx.Component:
+    """«⋯» (m-24955644): the moves in words, for a finger, a mouse, the keyboard or a
+    screen reader — never only dragging (N12). All go through `move_answer_to`."""
+    return rx.menu.root(
+        rx.menu.trigger(
+            rx.icon_button(
+                rx.icon("ellipsis", size=T.ICON_MD),
+                variant="ghost",
+                size="3",
+                type="button",
+                aria_label=answer.more_label,
+                min_width=TARGET_MIN,
+                min_height=TARGET_MIN,
+                **T.tone_scheme("neutral"),
             ),
         ),
-        value=button.action,
-        on_change=lambda v: S.set_guided_button_action(index, v),
-        size="3",
+        rx.menu.content(
+            rx.menu.item(
+                MOVE_UP,
+                on_click=S.move_answer_to(answer.option_id, answer.index - 1),
+                disabled=~answer.can_up,
+            ),
+            rx.menu.item(
+                MOVE_DOWN,
+                on_click=S.move_answer_to(answer.option_id, answer.index + 1),
+                disabled=~answer.can_down,
+            ),
+            rx.menu.item(
+                MOVE_TO_TOP,
+                on_click=S.move_answer_to(answer.option_id, 0),
+                disabled=~answer.can_up,
+            ),
+            align="end",
+        ),
     )
 
 
-def _guided_button(button: GuidedButtonVM, index: rx.Var[int]) -> rx.Component:
-    return card(
-        rx.vstack(
-            rx.hstack(
-                rx.text("Botón ", index + 1, size="2", weight="medium"),
-                rx.spacer(),
-                rx.cond(
-                    S.guided.can_remove_button,
-                    rx.button(
-                        rx.icon("trash-2", size=T.ICON_SM),
-                        "Quitar",
-                        on_click=S.remove_guided_button(index),
-                        variant="ghost",
-                        size="3",
-                        min_height=TARGET_MIN,
-                        **T.tone_scheme("neutral"),
+def _answer_row(answer: AnswerVM) -> rx.Component:
+    """One answer of step 2: a `DragCard` row (`assets/rank-drag.js`) with the design
+    system's `sort_handle` and «⋯» (m-24955644). Every answer is in ONE rank group: the
+    list is one order, the first two are buttons, the line before «Más preguntas» stays
+    where it is while a row is dragged across it."""
+    return DragCard.create(
+        rx.hstack(
+            # a single answer has nothing to drag: no handle
+            rx.cond(
+                S.answers.count > 1,
+                sort_handle(
+                    answer.handle_label,
+                    lambda key: S.answer_key(answer.option_id, key),
+                    key=answer.option_id,
+                    lifted=S.answer_lifted == answer.option_id,
+                ),
+                rx.box(width="0.5rem", flex_shrink="0"),
+            ),
+            rx.vstack(
+                rx.hstack(
+                    rx.text(
+                        rx.cond(answer.label != "", answer.label, "Sin nombre"),
+                        size="2",
+                        weight="medium",
+                        min_width="0",
                     ),
+                    rx.spacer(),
+                    _tone_pill(answer.status_label, answer.status_tone),
+                    width="100%",
+                    align="center",
+                    spacing="2",
+                ),
+                rx.cond(
+                    answer.preview != "",
+                    rx.text(answer.preview, size="1", color=T.TEXT_MUTED),
                     rx.fragment(),
                 ),
-                width="100%",
-                align="center",
-            ),
-            _field(
-                "Lo que dice el botón",
-                rx.input(
-                    value=button.label,
-                    on_change=lambda v: S.set_guided_button_label(index, v),
-                    placeholder="Ej.: Ver menú",
-                    width="100%",
-                    size="3",
+                # Closed, the card already says what is missing (m-24945866): a gap at
+                # the end of a long text never shows in the one-line preview.
+                rx.cond(
+                    answer.gaps_line != "",
+                    rx.text(answer.gaps_line, size="1", color=T.tone_color("warn", 11)),
+                    rx.fragment(),
                 ),
-                rx.text(
-                    button.label.length(),
-                    f" de {BUTTON_LABEL_MAX}",
-                    size="1",
-                    color=T.TEXT_MUTED,
-                    class_name="q-nums",
-                ),
-                _guided_err(button.label_error),
-            ),
-            _field("Al tocarlo", _guided_action_select(button, index)),
-            rx.cond(
-                button.action == ACTION_TEXT,
-                _field(
-                    "Lo que respondes",
-                    rx.text_area(
-                        value=button.text,
-                        on_change=lambda v: S.set_guided_button_text(index, v),
-                        placeholder="Ej.: Abrimos de lunes a domingo de 12:00 a 22:00.",
-                        width="100%",
-                        rows="3",
-                        size="3",
+                rx.hstack(
+                    rx.spacer(),
+                    _text_action(
+                        "Editar",
+                        S.open_answer_panel(answer.index),
+                        aria_label=f"Editar «{answer.label}»",
                     ),
-                    _guided_err(button.text_error),
+                    _answer_menu(answer),
+                    spacing="1",
+                    width="100%",
+                    align="center",
                 ),
-                rx.fragment(),
+                spacing="1",
+                flex="1",
+                min_width="0",
+                align_items="start",
             ),
-            rx.cond(
-                button.action == ACTION_MORE,
-                rx.text(
-                    "Muestra otros botones: ",
-                    button.more_summary,
-                    ". Los cambias en «Más opciones (avanzado)».",
-                    size="2",
-                    color=T.TEXT_MUTED,
-                ),
-                rx.fragment(),
-            ),
-            spacing="3",
+            spacing="1",
             width="100%",
-            align_items="start",
+            align="start",
         ),
-        padding="0.75rem 1rem",
+        class_name="q-rank-card q-answer-row",
+        custom_attrs={
+            "data-rank-group": "menu-answers",
+            "data-rank-key": answer.option_id,
+            "role": "listitem",
+        },
+        on_drag_start=S.pick_answer(answer.option_id),
+        on_drop=S.drop_answer(answer.option_id),
+        key=answer.option_id,
+        width="100%",
     )
 
 
-def _guided_buttons() -> rx.Component:
-    g = S.guided
-    return rx.cond(
-        g.uses_buttons,
+def _answers_heading(*children: rx.Component | str) -> rx.Component:
+    return rx.text(*children, size="1", weight="medium", color=T.TEXT_MUTED)
+
+
+def _add_answer() -> rx.Component:
+    a = S.answers
+
+    def suggestion(item: SuggestionVM) -> rx.Component:
+        return rx.button(
+            item.label,
+            on_click=S.add_answer(item.key),
+            variant="soft",
+            size="3",
+            min_height=TARGET_MIN,
+        )
+
+    return rx.vstack(
+        rx.button(
+            rx.icon("plus", size=T.ICON_SM),
+            "Agregar otra respuesta",
+            on_click=S.toggle_add_answer,
+            disabled=a.full,
+            variant="ghost",
+            size="3",
+            min_height=TARGET_MIN,
+        ),
+        rx.cond(a.full, _hint(ANSWERS_FULL), rx.fragment()),
+        rx.cond(
+            S.add_open & ~a.full,
+            rx.flex(
+                rx.foreach(a.suggestions, suggestion),
+                rx.button(
+                    "Escribir la mía",
+                    on_click=S.add_answer(SUGGESTION_CUSTOM),
+                    variant="ghost",
+                    size="3",
+                    min_height=TARGET_MIN,
+                    **T.tone_scheme("neutral"),
+                ),
+                spacing="2",
+                wrap="wrap",
+                width="100%",
+            ),
+            rx.fragment(),
+        ),
+        spacing="2",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _auto_payment_answer(
+    text: rx.Var[str], fallback_label: rx.Var[str], fallback_text: rx.Var[str]
+) -> rx.Component:
+    """m-24955648 §6: the starter's «Formas de pago» while the business offers methods —
+    read-only, exactly what the customer reads; changed in Formas de pago, not here (and
+    no «Mejorar mi texto»)."""
+    return rx.vstack(
+        rx.text("Lo que le respondes", size="2", weight="medium"),
+        rx.box(
+            rx.text(text, size="2", white_space="pre-wrap"),
+            padding="0.75rem",
+            border=T.BORDER,
+            border_radius=T.RADIUS_CONTROL,
+            width="100%",
+        ),
+        rx.text(PAYMENT_ANSWER_AUTO, size="2", color=T.TEXT_MUTED),
+        # the owner's own text is not lost: it is what goes out the day none is offered
         rx.vstack(
+            rx.text(fallback_label, size="1", color=T.TEXT_MUTED),
+            rx.text(fallback_text, size="1", color=T.TEXT_MUTED, white_space="pre-wrap"),
+            spacing="1",
+            width="100%",
+            padding_left="0.75rem",
+            border_left=T.BORDER,
+        ),
+        rx.button(
+            rx.icon("wallet", size=T.ICON_SM),
+            PAYMENT_ANSWER_CHANGE,
+            on_click=S.save_and_open_payments,
+            disabled=S.saving | S.publishing,
+            variant="soft",
+            size="3",
+            min_height=TARGET_MIN,
+        ),
+        spacing="2",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _answer_panel() -> rx.Component:
+    """One answer, opened from «Editar» (spec §2 «Panel de una respuesta»)."""
+    a = S.open_answer
+    remove_area = rx.cond(
+        S.answer_confirm_remove,
+        rx.vstack(
+            callout(S.remove_confirm_text, "warn"),
+            rx.hstack(
+                rx.button(
+                    "Dejarla",
+                    on_click=S.keep_answer,
+                    variant="soft",
+                    size="3",
+                    min_height=TARGET_MIN,
+                    **T.tone_scheme("neutral"),
+                ),
+                rx.button(
+                    "Quitar",
+                    on_click=S.remove_answer,
+                    size="3",
+                    min_height=TARGET_MIN,
+                    **T.tone_scheme("error"),
+                ),
+                spacing="2",
+                justify="end",
+                width="100%",
+            ),
+            spacing="2",
+            width="100%",
+        ),
+        rx.hstack(
+            rx.button(
+                "Quitar esta respuesta",
+                on_click=S.ask_remove_answer,
+                variant="soft",
+                size="3",
+                min_height=TARGET_MIN,
+                **T.tone_scheme("neutral"),
+            ),
+            rx.spacer(),
+            rx.button("Listo", on_click=S.close_answer_panel, size="3", min_height=TARGET_MIN),
+            width="100%",
+            align="center",
+            wrap="wrap",
+            spacing="2",
+        ),
+    )
+    catalog_link = rx.button(
+        "Ir a la Galería",
+        on_click=S.save_and_open_catalog,
+        disabled=S.saving | S.publishing,
+        variant="soft",
+        size="3",
+        min_height=TARGET_MIN,
+    )
+    return rx.dialog.root(
+        rx.dialog.content(
+            rx.vstack(
+                rx.button(
+                    rx.icon("chevron-left", size=T.ICON_SM),
+                    "Volver a tus respuestas",
+                    on_click=S.close_answer_panel,
+                    variant="ghost",
+                    size="2",
+                    min_height=TARGET_MIN,
+                    **T.tone_scheme("neutral"),
+                ),
+                rx.dialog.title(rx.cond(a.label != "", a.label, "Tu respuesta"), margin="0"),
+                _field(
+                    "Nombre (lo que ve tu cliente)",
+                    rx.input(
+                        value=a.label,
+                        on_change=S.set_answer_label,
+                        placeholder="Por ejemplo: Promociones",
+                        width="100%",
+                        size="3",
+                    ),
+                    rx.text(a.label_count, size="1", color=T.TEXT_MUTED, class_name="q-nums"),
+                    _guided_err(a.label_error),
+                ),
+                rx.text("Al tocarla: ", a.does, size="2", color=T.TEXT_MUTED),
+                rx.cond(
+                    a.auto_composed,
+                    _auto_payment_answer(a.text, a.fallback_label, a.fallback_text),
+                    rx.cond(
+                        a.text_editable,
+                        _field(
+                            "Lo que le respondes",
+                            rx.cond(
+                                S.answer_from_gaps & a.has_gaps,
+                                rx.text(GAP_FILL_HINT, size="2"),
+                                rx.fragment(),
+                            ),
+                            rx.text_area(
+                                value=a.text,
+                                id=ANSWER_TEXT_ID,
+                                aria_label="Lo que le respondes",
+                                on_change=S.set_answer_text,
+                                read_only=S.suggest_busy == SUGGEST_ANSWER,
+                                width="100%",
+                                rows="5",
+                                size="3",
+                            ),
+                            rx.cond(
+                                a.gaps_line != "",
+                                rx.text(a.gaps_line, size="2", color=T.tone_color("warn", 11)),
+                                rx.fragment(),
+                            ),
+                            _guided_err(a.text_error),
+                            _suggest_tools(
+                                SUGGEST_ANSWER,
+                                S.answer_suggest_label,
+                                S.answer_suggest,
+                                S.suggest_answer,
+                                S.suggest_answer_again,
+                                S.undo_answer_suggestion,
+                                show_missing=False,
+                                has_gaps=a.has_gaps,
+                            ),
+                        ),
+                        rx.cond(
+                            a.is_products,
+                            rx.vstack(
+                                rx.cond(
+                                    S.catalog_count > 0,
+                                    rx.text(PRICES_FROM_CATALOG, size="2"),
+                                    rx.text(NO_PRODUCTS, size="2"),
+                                ),
+                                catalog_link,
+                                spacing="2",
+                                align_items="start",
+                                width="100%",
+                            ),
+                            rx.text(
+                                "Muestra otros botones: ",
+                                a.preview,
+                                ". Los cambias en «Más opciones (avanzado)».",
+                                size="2",
+                                color=T.TEXT_MUTED,
+                            ),
+                        ),
+                    ),
+                ),
+                rx.divider(),
+                remove_area,
+                spacing="3",
+                width="100%",
+                align_items="start",
+            ),
+            max_width="32rem",
+        ),
+        open=S.has_open_answer,
+        on_open_change=S.set_answer_panel_open,
+    )
+
+
+def _guided_answers() -> rx.Component:
+    """Step 2, «¿Qué te preguntan siempre?» (m-24936836): one ordered list; the first
+    ones are WhatsApp's buttons, a line marks where they end, the rest go to «Más
+    preguntas». The limits are always on screen, never a silent block."""
+    g = S.guided
+    a = S.answers
+    more_button = rx.vstack(
+        rx.text(MORE_ROW_TITLE, size="2", weight="medium"),
+        rx.text(MORE_ROW_TEXT, size="1", color=T.TEXT_MUTED),
+        spacing="1",
+        width="100%",
+        align_items="start",
+        padding_y="0.5rem",
+        border_top=T.BORDER,
+    )
+    listing = rx.vstack(
+        rx.box(display="none", on_mount=rx.call_script(_RANK_DRAG_JS)),
+        rx.cond(S.drag_help != "", rx.text(S.drag_help, size="2", color=T.TEXT_MUTED)),
+        rx.text(S.answers_announce, class_name="q-order-live", role="status", aria_live="polite"),
+        card(
+            rx.vstack(
+                _answers_heading(BUTTONS_HEADING),
+                rx.vstack(
+                    rx.foreach(a.buttons, _answer_row),
+                    spacing="0",
+                    width="100%",
+                    role="list",
+                    aria_label="Botones",
+                ),
+                rx.cond(a.has_more, more_button, rx.fragment()),
+                spacing="0",
+                width="100%",
+                align_items="start",
+            ),
+            padding="0.75rem 1rem",
+        ),
+        rx.cond(
+            a.has_more,
+            rx.vstack(
+                rx.divider(size="4", border_style="dashed"),
+                _answers_heading(MORE_HEADING, " (", a.rows_count, ")"),
+                rx.vstack(
+                    rx.foreach(a.rows, _answer_row),
+                    spacing="1",
+                    width="100%",
+                    role="list",
+                    aria_label="Más preguntas",
+                ),
+                spacing="1",
+                width="100%",
+                align_items="start",
+            ),
+            rx.fragment(),
+        ),
+        spacing="3",
+        width="100%",
+        align_items="start",
+    )
+    return rx.vstack(
+        _import_link(),
+        rx.cond(
+            g.uses_buttons,
             _field(
                 "Lo que preguntas sobre los botones",
                 rx.input(
                     value=g.question,
                     on_change=S.set_guided_question,
-                    placeholder="Ej.: ¿Qué quieres hacer?",
+                    placeholder="Ej.: ¿En qué te ayudamos?",
                     width="100%",
                     size="3",
                 ),
                 _guided_err(g.question_error),
             ),
-            rx.foreach(g.buttons, _guided_button),
+            rx.fragment(),
+        ),
+        rx.cond(
+            a.count > 0,
+            listing,
+            rx.vstack(
+                callout(ANSWERS_EMPTY, "info"),
+                rx.button(
+                    rx.icon("plus", size=T.ICON_SM),
+                    "Agregar una respuesta",
+                    on_click=S.toggle_add_answer,
+                    variant="soft",
+                    size="3",
+                    min_height=TARGET_MIN,
+                ),
+                spacing="2",
+                width="100%",
+                align_items="start",
+            ),
+        ),
+        rx.cond(a.count > 0, _add_answer(), _add_answer_suggestions_only()),
+        _answer_panel(),
+        spacing="3",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _add_answer_suggestions_only() -> rx.Component:
+    """With no answer left, «Agregar una respuesta» (the empty state) opens these."""
+
+    def suggestion(item: SuggestionVM) -> rx.Component:
+        return rx.button(
+            item.label,
+            on_click=S.add_answer(item.key),
+            variant="soft",
+            size="3",
+            min_height=TARGET_MIN,
+        )
+
+    return rx.cond(
+        S.add_open,
+        rx.flex(
+            rx.foreach(S.answers.suggestions, suggestion),
             rx.button(
-                rx.icon("plus", size=T.ICON_SM),
-                "Agregar un botón",
-                on_click=S.add_guided_button,
-                disabled=g.buttons_full,
+                "Escribir la mía",
+                on_click=S.add_answer(SUGGESTION_CUSTOM),
+                variant="ghost",
+                size="3",
+                min_height=TARGET_MIN,
+                **T.tone_scheme("neutral"),
+            ),
+            spacing="2",
+            wrap="wrap",
+            width="100%",
+        ),
+        rx.fragment(),
+    )
+
+
+def _strip_dialog() -> rx.Component:
+    """«Quitar las que faltan y publicar» names what goes; nothing is removed before «Sí»."""
+    return rx.alert_dialog.root(
+        rx.alert_dialog.content(
+            rx.alert_dialog.title("Quitar las que faltan y publicar"),
+            rx.alert_dialog.description(S.publish_gaps.strip_text, size="2"),
+            rx.flex(
+                rx.alert_dialog.cancel(
+                    rx.button("Cancelar", variant="soft", size="3", **T.tone_scheme("neutral")),
+                ),
+                rx.alert_dialog.action(
+                    rx.button(
+                        "Sí, publicar sin ellas",
+                        on_click=S.confirm_strip_and_publish,
+                        size="3",
+                    ),
+                ),
+                spacing="3",
+                margin_top="1rem",
+                justify="end",
+                wrap="wrap",
+            ),
+            max_width="28rem",
+        ),
+        open=S.strip_confirm_open,
+        on_open_change=S.set_strip_confirm_open,
+    )
+
+
+def _no_products_warning() -> rx.Component:
+    """Step 4 with an empty catalog: a warning, not a green check. Publishing stays on."""
+    return rx.cond(
+        S.answers.shows_products & (S.catalog_count == 0),
+        rx.vstack(
+            callout(NO_PRODUCTS_WARNING, "warn"),
+            rx.button(
+                "Ir a la Galería",
+                on_click=S.save_and_open_catalog,
+                disabled=S.saving | S.publishing,
                 variant="soft",
                 size="3",
                 min_height=TARGET_MIN,
             ),
-            _hint(
-                "Hasta 3 botones. Cada uno, máximo 20 letras y espacios (ej.: Ver menú y pedir)."
-            ),
-            spacing="3",
+            spacing="2",
             width="100%",
             align_items="start",
         ),
-        rx.vstack(
-            rx.text(
-                "Tu saludo todavía no tiene botones. Con botones, tu cliente elige sin "
-                "tener que escribir.",
-                size="2",
+        rx.fragment(),
+    )
+
+
+def _publish_gaps() -> rx.Component:
+    """Step 4: a gap never reaches a customer — say which answers, and the two ways out."""
+    gaps = S.publish_gaps
+    return rx.fragment(
+        _strip_dialog(),
+        rx.cond(
+            gaps.greeting != "",
+            rx.vstack(
+                callout(gaps.greeting, "warn"),
+                rx.button(
+                    "Corregir en el paso 1",
+                    on_click=S.guided_go(1),
+                    variant="soft",
+                    size="3",
+                    min_height=TARGET_MIN,
+                ),
+                spacing="2",
+                width="100%",
+                align_items="start",
             ),
-            rx.button(
-                rx.icon("plus", size=T.ICON_SM),
-                "Agregar botones al saludo",
-                on_click=S.use_guided_buttons,
-                variant="soft",
-                size="3",
-                min_height=TARGET_MIN,
+            rx.fragment(),
+        ),
+        rx.cond(
+            gaps.answers_text != "",
+            rx.vstack(
+                callout(gaps.answers_text, "warn"),
+                rx.flex(
+                    rx.button(
+                        "Completarlas",
+                        on_click=S.complete_gaps,
+                        variant="soft",
+                        size="3",
+                        min_height=TARGET_MIN,
+                    ),
+                    rx.cond(
+                        gaps.can_strip,
+                        rx.button(
+                            "Quitar las que faltan y publicar",
+                            on_click=S.strip_gaps_and_publish,
+                            disabled=S.saving | S.publishing,
+                            variant="ghost",
+                            size="3",
+                            min_height=TARGET_MIN,
+                            **T.tone_scheme("neutral"),
+                        ),
+                        rx.fragment(),
+                    ),
+                    spacing="2",
+                    wrap="wrap",
+                ),
+                spacing="2",
+                width="100%",
+                align_items="start",
             ),
-            spacing="3",
-            width="100%",
-            align_items="start",
+            rx.fragment(),
+        ),
+        rx.cond(
+            gaps.elsewhere,
+            rx.vstack(
+                callout(gaps.elsewhere_text, "warn"),
+                rx.button(
+                    "Revisar en «Más opciones»",
+                    on_click=S.set_advanced(True),
+                    variant="soft",
+                    size="3",
+                    min_height=TARGET_MIN,
+                    **T.tone_scheme("neutral"),
+                ),
+                spacing="2",
+                width="100%",
+                align_items="start",
+            ),
+            rx.fragment(),
         ),
     )
 
@@ -1786,6 +2787,26 @@ def _catalog_row(row: CatalogRowVM) -> rx.Component:
         align="center",
         padding_y="0.35rem",
         border_top=T.BORDER,
+    )
+
+
+def _catalog_section(section: CatalogSectionVM) -> rx.Component:
+    """One category of step 3's read-only order, as WhatsApp titles its section."""
+    return rx.vstack(
+        rx.hstack(
+            rx.text(section.label, size="1", weight="bold", color=T.TEXT_MUTED),
+            rx.cond(
+                section.count_label != "",
+                rx.text(section.count_label, size="1", color=T.TEXT_MUTED, class_name="q-nums"),
+                rx.fragment(),
+            ),
+            spacing="2",
+            align="baseline",
+        ),
+        rx.foreach(section.rows, _catalog_row),
+        spacing="0",
+        width="100%",
+        align_items="start",
     )
 
 
@@ -1826,13 +2847,50 @@ def _guided_products() -> rx.Component:
     catalog = rx.cond(
         S.catalog_count > 0,
         rx.vstack(
-            rx.text("Así aparecen, con su precio:", size="2", weight="medium"),
+            # m-24955643: the order, read-only — it is chosen in one place, Catálogo
+            rx.text(ORDER_HINT, size="2", weight="medium"),
+            rx.text(S.catalog_order_text, size="2", color=T.TEXT_MUTED),
+            rx.cond(
+                S.catalog_mode_text != "",
+                rx.text(S.catalog_mode_text, size="2", color=T.TEXT_MUTED),
+                rx.fragment(),
+            ),
             rx.vstack(
-                rx.foreach(S.catalog, _catalog_row),
-                spacing="0",
+                rx.foreach(S.catalog_first_screen, _catalog_section),
+                spacing="2",
                 width="100%",
-                max_height="16rem",
-                overflow_y="auto",
+            ),
+            rx.cond(
+                S.catalog_more_text != "",
+                rx.text(S.catalog_more_text, size="1", color=T.TEXT_MUTED),
+            ),
+            # m-24955838: products without a category show as one long list
+            rx.cond(
+                S.group_notice_text != "",
+                rx.vstack(
+                    callout(S.group_notice_text, "info", icon="layers"),
+                    rx.button(
+                        rx.icon("layers", size=T.ICON_SM),
+                        GROUP_BUTTON,
+                        on_click=S.save_and_open_group,
+                        disabled=leave_blocked | S.saving | S.publishing,
+                        size="3",
+                        min_height=TARGET_MIN,
+                    ),
+                    spacing="2",
+                    width="100%",
+                    align_items="start",
+                ),
+                rx.fragment(),
+            ),
+            rx.button(
+                rx.icon("arrow-up-down", size=T.ICON_SM),
+                CHANGE_ORDER,
+                on_click=S.save_and_open_order,
+                disabled=leave_blocked | S.saving | S.publishing,
+                variant="soft",
+                size="3",
+                min_height=TARGET_MIN,
             ),
             rx.button(
                 "Guardar y cambiar mis productos",
@@ -1869,8 +2927,28 @@ def _guided_products() -> rx.Component:
             ),
         ),
     )
+    payments_invite = rx.cond(
+        (S.catalog_count > 0) & (S.payments_offered == 0),
+        rx.vstack(
+            callout(PAYMENTS_INVITE, "info", icon="wallet"),
+            rx.button(
+                rx.icon("wallet", size=T.ICON_SM),
+                PAYMENTS_INVITE_BUTTON,
+                on_click=S.save_and_open_payments,
+                disabled=leave_blocked | S.saving | S.publishing,
+                variant="soft",
+                size="3",
+                min_height=TARGET_MIN,
+            ),
+            spacing="2",
+            width="100%",
+            align_items="start",
+        ),
+        rx.fragment(),
+    )
     return rx.vstack(
         catalog,
+        payments_invite,
         rx.cond(
             g.has_products,
             _field(
@@ -1886,13 +2964,13 @@ def _guided_products() -> rx.Component:
             ),
             rx.vstack(
                 rx.text(
-                    "Para que tu cliente vea tus productos, elige «Mostrar mis productos» "
-                    "en uno de los botones.",
+                    "Para que tu cliente vea tus productos, agrega «Ver menú y pedir» a "
+                    "tus respuestas.",
                     size="2",
                 ),
                 rx.button(
                     rx.icon("arrow-left", size=T.ICON_SM),
-                    "Ir a los botones",
+                    "Ir a tus respuestas",
                     on_click=S.guided_go(2),
                     variant="soft",
                     size="3",
@@ -1971,6 +3049,8 @@ def _step_issue(show: rx.Var[bool], text: str, step: int) -> rx.Component:
 def _guided_publish() -> rx.Component:
     g = S.guided
     return rx.vstack(
+        # What blocks publishing comes first: on a phone the review list below is long.
+        _publish_gaps(),
         rx.text("Así va a responder tu WhatsApp:", size="2", weight="medium"),
         rx.vstack(
             rx.foreach(
@@ -1988,7 +3068,8 @@ def _guided_publish() -> rx.Component:
         ),
         # Each step with something to fix, and the way back to it (N6/N10).
         _step_issue(g.greeting_issue, "Falta tu saludo.", 1),
-        _step_issue(g.buttons_issue, "Un botón no tiene texto o no hace nada.", 2),
+        _step_issue(g.buttons_issue, ANSWER_ISSUE, 2),
+        _no_products_warning(),
         _step_issue(
             g.products_issue,
             "Falta lo que dices antes de tus productos o cómo pides la dirección.",
@@ -2030,7 +3111,7 @@ def _guided_card() -> rx.Component:
             rx.match(
                 S.guided_step,
                 (1, _guided_greeting()),
-                (2, _guided_buttons()),
+                (2, _guided_answers()),
                 (3, _guided_products()),
                 _guided_publish(),
             ),
@@ -2051,6 +3132,618 @@ def _guided_card() -> rx.Component:
         padding="1.25rem 1.5rem",
         class_name="q-card q-menu-guided-panel",
         custom_attrs={"data-dir": S.guided_direction},
+    )
+
+
+# ======================================================================================
+# «Cargar desde una foto o mi página» (m-24936840, spec §4 and §6)
+# ======================================================================================
+
+# `rx.upload`'s id must be a module-level constant: it links the dropzone to
+# `rx.upload_files(upload_id=...)`.
+IMPORT_UPLOAD_ID = "whatsapp_menu_import"
+#: What the picker takes. HEIC is left out on purpose: phones convert it to JPEG on the
+#: way when the page asks for these types (the reader refuses HEIC).
+IMPORT_ACCEPT = {
+    "image/jpeg": [".jpg", ".jpeg"],
+    "image/png": [".png"],
+    "image/webp": [".webp"],
+    "application/pdf": [".pdf"],
+}
+
+
+def _import_heading(text: str | rx.Var, *below: rx.Component, heading_id: str = "") -> rx.Component:
+    focus = {"id": heading_id, "tab_index": -1} if heading_id else {}
+    return rx.vstack(
+        rx.dialog.title(text, size="4", margin="0", **focus),
+        *below,
+        spacing="1",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _import_back() -> rx.Component:
+    return rx.button(
+        rx.icon("chevron-left", size=T.ICON_SM),
+        "Atrás",
+        on_click=S.import_back,
+        variant="ghost",
+        size="2",
+        min_height=TARGET_MIN,
+        **T.tone_scheme("neutral"),
+    )
+
+
+def _import_source_card(source: str, icon: str, title: str, help_text: str) -> rx.Component:
+    return choice_card(
+        rx.hstack(
+            rx.icon(icon, size=20, color=T.TEXT_MUTED, aria_hidden="true"),
+            rx.vstack(
+                rx.text(title, size="3", weight="medium"),
+                rx.text(help_text, size="2", color=T.TEXT_MUTED),
+                spacing="1",
+                align_items="start",
+            ),
+            spacing="3",
+            align="center",
+            width="100%",
+        ),
+        selected=False,
+        on_select=S.choose_import_source(source),
+        disabled=S.suggest_busy != "",
+        min_height=TARGET_MIN,
+        width="100%",
+    )
+
+
+def _import_choose() -> rx.Component:
+    """One decision: where the facts come from. «Ahora no» is always the way past it."""
+    return rx.vstack(
+        _import_heading(
+            IMPORT_OFFER_TITLE, rx.text(IMPORT_OFFER_HELP, size="2", color=T.TEXT_MUTED)
+        ),
+        _import_source_card(IMPORT_PHOTO, "camera", IMPORT_PHOTO_CARD, IMPORT_PHOTO_CARD_HELP),
+        _import_source_card(IMPORT_PAGE, "globe", IMPORT_PAGE_CARD, IMPORT_PAGE_CARD_HELP),
+        rx.text(IMPORT_PRIVACY, size="1", color=T.TEXT_FAINT),
+        rx.button(
+            rx.cond(S.import_offer, IMPORT_NOT_NOW, IMPORT_DONE),
+            on_click=S.close_import,
+            variant="ghost",
+            size="3",
+            min_height=TARGET_MIN,
+            **T.tone_scheme("neutral"),
+        ),
+        spacing="3",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _import_photo() -> rx.Component:
+    return rx.vstack(
+        _import_back(),
+        _import_heading(
+            IMPORT_PHOTO_TITLE, rx.text(IMPORT_PHOTO_HELP, size="2", color=T.TEXT_MUTED)
+        ),
+        dropzone(
+            rx.button(
+                rx.icon("upload", size=T.ICON_SM),
+                IMPORT_PHOTO_BUTTON,
+                size="3",
+                min_height=TARGET_MIN,
+                width="100%",
+                disabled=S.suggest_busy != "",
+            ),
+            upload_id=IMPORT_UPLOAD_ID,
+            accept=IMPORT_ACCEPT,
+            max_files=1,
+            max_size=IMPORT_MAX_BYTES,
+            on_drop=S.handle_import_upload(rx.upload_files(upload_id=IMPORT_UPLOAD_ID)),
+            on_drop_rejected=S.import_file_rejected,
+            variant="bare",
+            width="100%",
+        ),
+        rx.text(IMPORT_PRIVACY, size="1", color=T.TEXT_FAINT),
+        spacing="3",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _import_page() -> rx.Component:
+    return rx.vstack(
+        _import_back(),
+        _import_heading(IMPORT_PAGE_TITLE, rx.text(IMPORT_PAGE_HELP, size="2", color=T.TEXT_MUTED)),
+        _field(
+            IMPORT_PAGE_LABEL,
+            rx.input(
+                value=S.import_url,
+                on_change=S.set_import_url,
+                placeholder=IMPORT_PAGE_PLACEHOLDER,
+                aria_label=IMPORT_PAGE_LABEL,
+                type="url",
+                input_mode="url",
+                width="100%",
+                size="3",
+            ),
+            _guided_err(S.import_url_error),
+        ),
+        rx.button(
+            IMPORT_PAGE_BUTTON,
+            on_click=S.submit_import_url,
+            disabled=S.suggest_busy != "",
+            size="3",
+            min_height=TARGET_MIN,
+        ),
+        rx.text(IMPORT_PRIVACY, size="1", color=T.TEXT_FAINT),
+        spacing="3",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _import_without() -> rx.Component:
+    return rx.button(
+        rx.cond(S.import_kind == "url", "Seguir sin la página", "Seguir sin la foto"),
+        on_click=S.close_import,
+        variant="ghost",
+        size="3",
+        min_height=TARGET_MIN,
+        **T.tone_scheme("neutral"),
+    )
+
+
+def _import_reading() -> rx.Component:
+    """(b) Waiting: a placeholder shaped like the review, and one live line."""
+    return rx.vstack(
+        _import_heading("Leyendo tu menú"),
+        rx.box(
+            rx.text(
+                rx.cond(S.import_slow, IMPORT_SLOW, IMPORT_READING_TEXT),
+                size="2",
+                color=T.TEXT_MUTED,
+            ),
+            custom_attrs={"aria-live": "polite", "role": "status"},
+            width="100%",
+        ),
+        skeleton_card(3),
+        rx.cond(
+            S.import_slow,
+            _import_without(),
+            rx.button(
+                IMPORT_CANCEL,
+                on_click=S.close_import,
+                variant="soft",
+                size="3",
+                min_height=TARGET_MIN,
+                **T.tone_scheme("neutral"),
+            ),
+        ),
+        spacing="3",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _import_problem(tone: str) -> rx.Component:
+    """§6: the photo that cannot be read, the link that does not open, the read that
+    fails, the source with nothing useful. The menu stays as it was."""
+    return rx.vstack(
+        _import_heading("No pudimos usar ese menú" if tone == "warn" else "Sin datos para usar"),
+        rx.box(callout(S.import_error, tone), custom_attrs={"role": "alert"}, width="100%"),
+        rx.hstack(
+            rx.button(
+                rx.match(
+                    S.import_kind,
+                    ("url", "Probar otro enlace"),
+                    ("pdf", "Probar otro archivo"),
+                    "Probar otra foto",
+                ),
+                on_click=S.import_back,
+                size="3",
+                min_height=TARGET_MIN,
+            ),
+            _import_without(),
+            spacing="2",
+            wrap="wrap",
+        ),
+        spacing="3",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _fact_row(fact: ImportFactVM) -> rx.Component:
+    """One datum: where it came from (the quote), the answer as it would read, and
+    «Usar» · «Editar» · «No usar»."""
+    # A sentence (m-24945867) is offered as the answer's whole text: «Usar este texto» ·
+    # «Editar» (to shorten it into a value) · «No usar».
+    use_label = rx.cond(fact.is_sentence, IMPORT_USE_SENTENCE, IMPORT_USE)
+    skip_label = IMPORT_SKIP
+    actions = rx.hstack(
+        rx.button(
+            use_label,
+            on_click=S.use_import_fact(fact.index),
+            disabled=~fact.can_use,
+            variant="soft",
+            size="3",
+            min_height=TARGET_MIN,
+            aria_label=use_label + ": " + fact.title,
+        ),
+        _text_action(
+            rx.cond(fact.editing, IMPORT_EDIT_DONE, IMPORT_EDIT),
+            S.edit_import_fact(fact.index),
+            aria_label=IMPORT_EDIT + ": " + fact.title,
+        ),
+        _text_action(
+            skip_label,
+            S.skip_import_fact(fact.index),
+            aria_label=skip_label + ": " + fact.title,
+        ),
+        spacing="2",
+        wrap="wrap",
+    )
+    return rx.vstack(
+        rx.hstack(
+            rx.heading(fact.title, size="3", as_="h3", min_width="0"),
+            rx.spacer(),
+            rx.cond(
+                fact.status_label != "",
+                _tone_pill(fact.status_label, fact.status_tone),
+                rx.fragment(),
+            ),
+            width="100%",
+            align="center",
+        ),
+        rx.cond(
+            fact.evidence_line != "",
+            rx.text(fact.evidence_line, size="2", color=T.TEXT_MUTED),
+            rx.fragment(),
+        ),
+        rx.cond(
+            fact.editing,
+            rx.vstack(
+                rx.input(
+                    value=fact.value,
+                    on_change=S.set_import_fact_value,
+                    aria_label="Dato: " + fact.title,
+                    width="100%",
+                    size="3",
+                ),
+                rx.cond(
+                    fact.edit_hint != "",
+                    rx.text(fact.edit_hint, size="2", color=T.TEXT_MUTED),
+                    rx.fragment(),
+                ),
+                spacing="1",
+                width="100%",
+                align_items="start",
+            ),
+            rx.fragment(),
+        ),
+        rx.cond(
+            fact.used_note != "",
+            rx.text(fact.used_note, size="2", color=T.TEXT_MUTED),
+            rx.fragment(),
+        ),
+        rx.cond(
+            fact.pending,
+            rx.vstack(
+                rx.cond(fact.note != "", rx.text(fact.note, size="2"), rx.fragment()),
+                rx.cond(
+                    fact.preview != "",
+                    rx.text(
+                        fact.preview,
+                        size="2",
+                        padding="0.5rem 0.75rem",
+                        border_radius=T.RADIUS_CONTROL,
+                        background=T.CARD_BG,
+                        width="100%",
+                    ),
+                    rx.fragment(),
+                ),
+                actions,
+                spacing="2",
+                width="100%",
+                align_items="start",
+            ),
+            rx.fragment(),
+        ),
+        spacing="2",
+        width="100%",
+        align_items="start",
+        padding_y="0.75rem",
+        border_top=T.BORDER,
+    )
+
+
+def _import_product_row(product: ImportProductVM) -> rx.Component:
+    return rx.vstack(
+        rx.checkbox(
+            rx.text(product.name, " · ", product.price, size="2"),
+            checked=product.checked,
+            on_change=lambda value: S.toggle_import_product(product.index, value),
+            size="3",
+            min_height=TARGET_MIN,
+            align_items="center",
+        ),
+        rx.cond(
+            product.evidence_line != "",
+            rx.text(product.evidence_line, size="1", color=T.TEXT_MUTED, padding_left="2rem"),
+            rx.fragment(),
+        ),
+        # m-24955838: the category it will get, tappable to change before adding
+        rx.cond(
+            product.editing_category,
+            _import_category_field(),
+            rx.hstack(
+                rx.button(
+                    product.category_label,
+                    rx.icon("pencil", size=T.ICON_SM),
+                    on_click=S.edit_import_category(product.index),
+                    variant="soft",
+                    size="2",
+                    min_height=TARGET_MIN,
+                    type="button",
+                    aria_label=product.category_aria,
+                    **T.tone_scheme("neutral"),
+                ),
+                rx.cond(product.category_new, tone_badge("Nueva", "info"), rx.fragment()),
+                align="center",
+                spacing="2",
+                padding_left="2rem",
+            ),
+        ),
+        spacing="1",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _import_category_choice(name: rx.Var[str]) -> rx.Component:
+    return rx.button(
+        name,
+        on_click=S.pick_import_category(name),
+        variant=rx.cond(S.import_category_text == name, "solid", "soft"),
+        size="2",
+        min_height=TARGET_MIN,
+        type="button",
+        aria_pressed=rx.cond(S.import_category_text == name, "true", "false"),
+        **T.tone_scheme("neutral"),
+    )
+
+
+def _import_category_field() -> rx.Component:
+    """The category of one found product: tap one the brand (or this review) already
+    has, or type it — the same 24-letter rule as in Catálogo; empty = «Sin categoría»
+    (it goes to «Otros»). Enter saves. Nothing is written before «Agregar…»."""
+    return rx.vstack(
+        rx.cond(
+            S.import_category_choices.length() > 0,
+            rx.flex(
+                rx.foreach(S.import_category_choices, _import_category_choice),
+                wrap="wrap",
+                gap="2",
+                role="group",
+                aria_label="Tus categorías",
+            ),
+            rx.fragment(),
+        ),
+        rx.el.label(
+            rx.text(CATEGORY_NAME_LABEL, size="2", weight="medium"),
+            html_for="q-import-category",
+        ),
+        rx.input(
+            id="q-import-category",
+            value=S.import_category_text,
+            on_change=S.set_import_category_text,
+            on_key_down=S.import_category_key,
+            placeholder=CATEGORY_NAME_PLACEHOLDER,
+            size="3",
+            width="100%",
+            aria_describedby="q-import-category-help q-import-category-count",
+        ),
+        rx.hstack(
+            rx.text(CATEGORY_NAME_HELP, size="1", color=T.TEXT_MUTED, id="q-import-category-help"),
+            rx.spacer(),
+            rx.text(
+                S.import_category_count,
+                size="1",
+                color=T.TEXT_MUTED,
+                class_name="q-nums",
+                flex_shrink="0",
+                id="q-import-category-count",
+            ),
+            width="100%",
+            align="start",
+        ),
+        rx.cond(
+            S.import_category_error != "",
+            rx.text(
+                S.import_category_error, size="2", color=T.tone_color("error", 11), role="alert"
+            ),
+            rx.fragment(),
+        ),
+        rx.hstack(
+            rx.button(
+                "Cancelar",
+                on_click=S.cancel_import_category,
+                variant="ghost",
+                size="2",
+                min_height=TARGET_MIN,
+                type="button",
+                **T.tone_scheme("neutral"),
+            ),
+            rx.button(
+                "Listo",
+                on_click=S.save_import_category,
+                size="2",
+                min_height=TARGET_MIN,
+                type="button",
+            ),
+            justify="end",
+            width="100%",
+            spacing="2",
+        ),
+        spacing="2",
+        width="100%",
+        padding_left="2rem",
+        align_items="start",
+    )
+
+
+def _import_add_button() -> rx.Component:
+    r = S.import_review
+    return rx.button(
+        rx.icon("plus", size=T.ICON_SM),
+        IMPORT_ADD_BUTTON,
+        on_click=S.add_import_products,
+        disabled=(r.checked_count == 0) | S.import_adding,
+        loading=S.import_adding,
+        variant="soft",
+        size="3",
+        min_height=TARGET_MIN,
+        white_space="normal",
+        height="auto",
+    )
+
+
+def _import_mark_all() -> rx.Component:
+    """With a long menu on the phone: what is ticked by default, and all / none."""
+    r = S.import_review
+    return rx.cond(
+        r.checked_line != "",
+        rx.hstack(
+            rx.text(r.checked_line, size="2", color=T.TEXT_MUTED),
+            _text_action(IMPORT_CHECK_ALL, S.set_all_import_products(True)),
+            _text_action(IMPORT_UNCHECK_ALL, S.set_all_import_products(False)),
+            spacing="2",
+            align="center",
+            wrap="wrap",
+            width="100%",
+        ),
+        rx.fragment(),
+    )
+
+
+def _import_products() -> rx.Component:
+    r = S.import_review
+    return rx.cond(
+        r.has_products,
+        card(
+            rx.vstack(
+                rx.heading(r.products_title, size="3", as_="h3"),
+                rx.cond(r.existing_line != "", rx.text(r.existing_line, size="2"), rx.fragment()),
+                rx.foreach(r.conflicts, lambda line: rx.text(line, size="2")),
+                rx.cond(
+                    r.new_products.length() > 0,
+                    rx.vstack(
+                        rx.text(IMPORT_PRODUCTS_NEW_HELP, size="2", color=T.TEXT_MUTED),
+                        rx.cond(
+                            r.categories_line != "",
+                            rx.text(r.categories_line, size="2"),
+                            rx.fragment(),
+                        ),
+                        _import_mark_all(),
+                        rx.foreach(r.new_products, _import_product_row),
+                        _import_add_button(),
+                        spacing="2",
+                        width="100%",
+                        align_items="start",
+                    ),
+                    rx.fragment(),
+                ),
+                rx.box(
+                    rx.foreach(r.added_lines, lambda line: callout(line, "ok")),
+                    rx.cond(
+                        S.import_add_error != "",
+                        callout(S.import_add_error, "warn"),
+                        rx.fragment(),
+                    ),
+                    custom_attrs={"aria-live": "polite"},
+                    width="100%",
+                ),
+                spacing="2",
+                width="100%",
+                align_items="start",
+            ),
+            padding="0.75rem 1rem",
+        ),
+        rx.fragment(),
+    )
+
+
+def _import_review() -> rx.Component:
+    """(c) Review datum by datum (spec §4 mockup): only what the owner uses goes in."""
+    r = S.import_review
+    return rx.vstack(
+        _import_heading(
+            r.title,
+            rx.text(IMPORT_REVIEW_HELP, size="2", color=T.TEXT_MUTED),
+            heading_id=IMPORT_REVIEW_HEADING_ID,
+        ),
+        rx.cond(
+            r.source_line != "",
+            rx.text(r.source_line, size="1", color=T.TEXT_FAINT),
+            rx.fragment(),
+        ),
+        rx.foreach(r.warnings, lambda w: callout(w, "warn")),
+        rx.vstack(
+            rx.foreach(r.facts, _fact_row),
+            rx.foreach(r.not_found, lambda line: rx.text(line, size="2", color=T.TEXT_MUTED)),
+            spacing="0",
+            width="100%",
+            align_items="start",
+        ),
+        _import_products(),
+        rx.divider(),
+        # The foot of the dialog: on a long list the add button is here too, next to the
+        # way out, so nobody scrolls back up to find it.
+        rx.flex(
+            rx.cond(r.new_products.length() > 1, _import_add_button(), rx.fragment()),
+            rx.button(IMPORT_DONE, on_click=S.finish_import, size="3", min_height=TARGET_MIN),
+            spacing="2",
+            wrap="wrap",
+            width="100%",
+        ),
+        spacing="3",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _import_dialog() -> rx.Component:
+    """The import, one decision at a time: choose → upload or link → wait → review."""
+    return rx.dialog.root(
+        rx.dialog.content(
+            rx.match(
+                S.import_phase,
+                (IMPORT_CHOOSE, _import_choose()),
+                (IMPORT_PHOTO, _import_photo()),
+                (IMPORT_PAGE, _import_page()),
+                (IMPORT_READING, _import_reading()),
+                (IMPORT_REVIEW, _import_review()),
+                (IMPORT_EMPTY_PHASE, _import_problem("info")),
+                _import_problem("warn"),
+            ),
+            max_width="34rem",
+        ),
+        open=S.import_phase != "",
+        on_open_change=S.set_import_open,
+    )
+
+
+def _import_link() -> rx.Component:
+    """Step 2's way back to the import, any time (a soft link, not the step's action)."""
+    return rx.button(
+        rx.icon("image-up", size=T.ICON_SM),
+        IMPORT_LINK,
+        on_click=S.open_import,
+        disabled=S.suggest_busy != "",
+        variant="ghost",
+        size="2",
+        min_height=TARGET_MIN,
     )
 
 
@@ -2076,7 +3769,6 @@ def _advanced() -> rx.Component:
     return rx.vstack(
         _entry_card(),
         _steps_card(),
-        _versions_section(),
         spacing="4",
         width="100%",
         min_width="0",
@@ -2088,6 +3780,7 @@ def _editor() -> rx.Component:
         rx.vstack(
             _toolbar(),
             rx.cond(S.advanced_open, _advanced(), _guided_card()),
+            _import_dialog(),
             spacing="4",
             width="100%",
             min_width="0",
@@ -2173,7 +3866,7 @@ def menu_step_frame() -> rx.Component:
             on_later=S.save_for_later,
             primary_disabled=S.saving | S.publishing | ((S.guided_step == 4) & ~S.can_publish),
             primary_loading=S.saving | S.publishing,
-            reason=rx.cond((S.guided_step == 4) & (S.error_count > 0), SAVE_NEEDS_FIX, ""),
+            reason=rx.cond(S.guided_step == 4, S.publish_block_reason, ""),
         ),
         # The editor and the preview own native inputs; history uses flow_sync and
         # the route's existing POP listener, so changing steps need not remount them.

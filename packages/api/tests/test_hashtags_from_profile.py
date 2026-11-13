@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from qualify_api.claude_tools import Attribution as _Attribution
 from qualify_api.claude_tools import ClaudeToolError
 from qualify_api.hashtags.from_profile import (
     MODEL,
@@ -16,6 +17,9 @@ from qualify_api.hashtags.from_profile import (
     from_posts,
     generate,
 )
+
+#: m-24955649: who pays for the faked Claude calls of this module.
+TEST_ATTRIBUTION = _Attribution.no_business("test")
 
 ACCOUNT = AccountText(
     handle="@nibbles.burger",
@@ -63,7 +67,13 @@ def test_the_model_reads_the_bio_the_category_and_the_posts() -> None:
         },
     )
     client, requests = _client(_response([answer]))
-    proposal = generate(ACCOUNT, api_key="k", max_tags=5, client_factory=lambda _k: client)
+    proposal = generate(
+        ACCOUNT,
+        api_key="k",
+        max_tags=5,
+        client_factory=lambda _k: client,
+        attribution=TEST_ATTRIBUTION,
+    )
 
     assert [t.tag for t in proposal.tags] == ["smashburger", "hamburguesas", "sancristobalfood"]
     assert proposal.by == "ai" and proposal.stats is not None and proposal.stats.tool_calls == 1
@@ -82,14 +92,26 @@ def test_the_model_reads_the_bio_the_category_and_the_posts() -> None:
 
 def test_nothing_to_read_is_refused_before_any_call() -> None:
     with pytest.raises(ValueError):
-        generate(AccountText(handle="x"), api_key="k", max_tags=5, client_factory=lambda _k: None)
+        generate(
+            AccountText(handle="x"),
+            api_key="k",
+            max_tags=5,
+            client_factory=lambda _k: None,
+            attribution=TEST_ATTRIBUTION,
+        )
 
 
 def test_a_run_without_the_tool_is_nudged_once_then_fails() -> None:
     chatter = SimpleNamespace(type="text", text="#smashburger")
     client, requests = _client(_response([chatter], "end_turn"), _response([chatter], "end_turn"))
     with pytest.raises(ClaudeToolError):
-        generate(ACCOUNT, api_key="k", max_tags=5, client_factory=lambda _k: client)
+        generate(
+            ACCOUNT,
+            api_key="k",
+            max_tags=5,
+            client_factory=lambda _k: client,
+            attribution=TEST_ATTRIBUTION,
+        )
     assert len(requests) == 2
 
 
@@ -112,7 +134,13 @@ def test_the_answer_also_names_the_rubro() -> None:
         },
     )
     client, requests = _client(_response([answer]))
-    proposal = generate(ACCOUNT, api_key="k", max_tags=5, client_factory=lambda _k: client)
+    proposal = generate(
+        ACCOUNT,
+        api_key="k",
+        max_tags=5,
+        client_factory=lambda _k: client,
+        attribution=TEST_ATTRIBUTION,
+    )
     assert proposal.rubro == "hamburguesería smash para llevar"
     schema = requests[0]["tools"][0]["input_schema"]
     assert "rubro" in schema["properties"] and "rubro" in schema["required"]
@@ -183,11 +211,18 @@ def test_drafts_use_one_existing_turn_and_web_tool_is_unchanged() -> None:
         api_key="k",
         max_tags=5,
         client_factory=lambda _k: client,
+        attribution=TEST_ATTRIBUTION,
     )
     assert len(requests) == 1 and result.borradores["distinto"]["texto"] == "Hecho cada mañana"
     assert "borradores" in requests[0]["tools"][0]["input_schema"]["properties"]
     client, requests = _client(_response([block]))
-    result = generate(ACCOUNT, api_key="k", max_tags=5, client_factory=lambda _k: client)
+    result = generate(
+        ACCOUNT,
+        api_key="k",
+        max_tags=5,
+        client_factory=lambda _k: client,
+        attribution=TEST_ATTRIBUTION,
+    )
     assert requests[0]["tools"] == [_tool(5)] and result.borradores == {}
 
 
@@ -201,7 +236,11 @@ def test_drafts_with_too_few_posts_send_original_tool() -> None:
     )
     client, requests = _client(_response([block]))
     result = generate(
-        replace(ACCOUNT, drafts=True), api_key="k", max_tags=5, client_factory=lambda _k: client
+        replace(ACCOUNT, drafts=True),
+        api_key="k",
+        max_tags=5,
+        client_factory=lambda _k: client,
+        attribution=TEST_ATTRIBUTION,
     )
     assert requests[0]["tools"] == [_tool(5)] and result.borradores == {}
 
@@ -220,6 +259,7 @@ def test_truncated_drafts_retry_original_tool_and_keep_both_turn_costs() -> None
         api_key="k",
         max_tags=5,
         client_factory=lambda _k: client,
+        attribution=TEST_ATTRIBUTION,
     )
     assert len(requests) == 2 and result.stats.turns == 2
     assert requests[1]["tools"] == [_tool(5)] and result.borradores == {}

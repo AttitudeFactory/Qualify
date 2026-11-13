@@ -26,6 +26,11 @@ from pathlib import Path
 from typing import Protocol
 
 MAX_SECONDS = 15.0
+#: Threads for decode, encode and filters. Without a cap FFmpeg starts one decoder and
+#: one x264 thread per core, each holding full-size frames: a 4K60 HEVC clip peaked at
+#: 516 MB (measured 2026-11-06, M1 Pro) and the Reflex container is OOM-killed at 320 MB.
+#: Two threads bound it to 244 MB (m-24957792).
+FFMPEG_THREADS = "2"
 MAX_WIDTH = 1080
 MAX_HEIGHT = 1920
 VIDEO_EXTENSIONS = frozenset({"mp4", "mov", "m4v", "webm", "mkv", "avi", "3gp"})
@@ -87,6 +92,10 @@ class FfmpegVideoNormalizer:
                 "-hide_banner",
                 "-loglevel",
                 "error",
+                "-threads",
+                FFMPEG_THREADS,
+                "-filter_threads",
+                "1",
                 "-i",
                 str(src),
                 "-t",
@@ -102,6 +111,8 @@ class FfmpegVideoNormalizer:
                 "23",
                 "-pix_fmt",
                 "yuv420p",
+                "-threads",
+                FFMPEG_THREADS,
                 "-movflags",
                 "+faststart",
                 str(out),

@@ -27,12 +27,26 @@ from collections.abc import Sequence
 
 import reflex as rx
 from qualify_api.auth import SIGNUP_ROUTE
+from reflex.vars.base import VarData
 
 from ..auth_state import AuthState
+from ..business_vm import (
+    CLOSE_DRAWER_LABEL,
+    COLLAPSE_LABEL,
+    CREDIT_LABEL,
+    EXPAND_LABEL,
+    HERE_LABEL,
+    SWITCH_MENU_LABEL,
+    credit_aria,
+    rail_toggle_title,
+)
+from ..creators_access import CreatorsAccessState
+from ..generation_state import BUSY_TEXT, GenerationState
 from ..pending_state import HEARTBEAT_MS, PendingState
+from ..r2_media import BACKEND_BASE
 from . import tokens as T
-from .nav_vm import FROM_WEEK, HOME_ROUTE, URL_FROM, is_current
-from .primitives import tone_badge
+from .nav_vm import FROM_APPROVED, FROM_WEEK, HOME_ROUTE, URL_FROM, is_current
+from .primitives import loading_spinner, media_thumb, tone_badge
 from .state import NavState
 
 LANDING_URL = "https://qualify.la"
@@ -79,11 +93,20 @@ NAV_ZONES: list[tuple[str, str, list[Item]]] = [
         [
             # No "Marca" inside a session (§ request 2026-10-02): the Brand Kit is made
             # before the login and edited from Tu negocio → Tu marca.
+            # m-24955912 (founder, 2026-11-05): the catalog opens the zone as «Galería» —
+            # the place where the business's products, photos and videos live — because
+            # the owner thinks Galería → Crear publicación → Por aprobar; in «Tu negocio»
+            # as «Tus productos» it could not be found.
+            ("Galería", "images", "/catalog", True),
             ("Crear publicación", "wand-sparkles", "/create", True),
             ("Por aprobar", "layout-list", "/drafts", True),
+            # m-24986801: what the owner already approved, right below what waits for
+            # them. No count: approved without a day is already Tu semana's number (N11).
+            ("Aprobados", "list-checks", "/aprobados", True),
             ("Tu semana", "calendar-days", "/planner", True),
             # QUA-113: Stories is a flow inside Publicar, not an entry of its own.
             ("Publicar ahora", "upload", "/publish", True),
+            ("Anuncios", "megaphone", "/promotions", True),
         ],
     ),
 ]
@@ -98,11 +121,14 @@ NAV_RESULTS: list[Item] = [
     ("Oportunidades", "bell", "/signals", False),
 ]
 
+# Entries whose «Pronto» depends on the business (docs/diseno-modulo-creadores.md §11):
+# the item above stays `False` — what a business off the switch sees — and the menu
+# swaps in the enabled entry when the Var is true. The routes, and so which entry is
+# lit, do not change.
+NAV_GATES: dict[str, rx.Var] = {"Creadores": CreatorsAccessState.enabled}
+
 NAV_BUSINESS: list[Item] = [
     ("Tu marca", "swatch-book", "/brand/kit", True),
-    # The product catalog (plan-mvp-plantillas-remotion.md §2.1 #1): the real photos
-    # the templates compose. Next to the Brand Kit — both are what the brand IS.
-    ("Tus productos", "package", "/catalog", True),
     # Connections enable everything above, so they belong to the business setup.
     ("Tus redes", "link", "/connections", True),
     # The account itself (2026-10-06): who is in, and changing the password.
@@ -119,6 +145,59 @@ NAV_COUNTERS: dict[str, tuple[rx.Var, str, rx.Var]] = {
     "Por aprobar": (PendingState.approve_badge, "neutral", PendingState.approve_aria),
     "Tu semana": (PendingState.schedule_badge, "neutral", PendingState.schedule_aria),
 }
+
+# m-24973458: the entries whose icon becomes the design system's ring while something
+# of the business is being made (`GenerationState.busy`, read from the server). The
+# ring takes the icon's slot, so the row keeps its geometry — also collapsed (zen) and
+# on the phone's bottom bar, which reads this same map.
+NAV_BUSY: dict[str, rx.Var] = {"Crear publicación": GenerationState.busy}
+
+
+def busy_icon(icon: rx.Component, busy: rx.Var | bool | None) -> rx.Component:
+    """The entry's icon, or the ring in its place while ``busy`` (never both). The slot
+    keeps the icon's width, so the name does not move when it turns."""
+    if busy is None or busy is False:
+        return icon
+    shown = loading_spinner("sm") if busy is True else rx.cond(busy, loading_spinner("sm"), icon)
+    return rx.box(
+        shown,
+        display="flex",
+        align_items="center",
+        justify_content="center",
+        # the icon's own width, so the name lines up with every other row; the 20 px
+        # ring overflows it by a pixel on each side, centred
+        width=f"{T.ICON_MD}px",
+        flex_shrink="0",
+    )
+
+
+def busy_attrs(label: str, busy: rx.Var | bool | None) -> dict:
+    """`aria-busy` and the spoken name of a busy-aware entry. The name keeps the visible
+    word first (WCAG 2.5.3) and then says what is going on. No `title`: collapsed, the
+    menu's own glass label says it (`busy_label`); on a phone a title never shows."""
+    if busy is None:
+        return {}
+    if isinstance(busy, bool):
+        return (
+            {"aria_busy": "true", "aria_label": f"{label}. {BUSY_TEXT}"}
+            if busy
+            else {"aria_busy": "false"}
+        )
+    return {
+        "aria_busy": rx.cond(busy, "true", "false"),
+        "aria_label": rx.cond(busy, f"{label}. {BUSY_TEXT}", label),
+    }
+
+
+def busy_label(label: str, busy: rx.Var | bool | None) -> rx.Var | str | None:
+    """The collapsed menu's hover label (`data-label`) of a busy-aware entry, or None
+    for any other entry (it keeps its own)."""
+    if busy is None:
+        return None
+    if isinstance(busy, bool):
+        return f"{label} · {BUSY_TEXT}" if busy else label
+    return rx.cond(busy, f"{label} · {BUSY_TEXT}", label)
+
 
 # The foot block's head (guide §3): the business setup, touched rarely.
 BUSINESS_ZONE_LABEL = "Tu negocio"
@@ -163,15 +242,19 @@ NAV_BOTTOM: list[tuple[str, str, str, str]] = [
 ]
 
 # `⌘ .` / `Ctrl .` toggles zen. Registered once per document: the sidebar mounts on every
-# page, so the guard is what keeps it from stacking listeners.
+# page, so the guard is what keeps it from stacking listeners. Two controls do it
+# (m-24976899): «Contraer el menú» while expanded, the logo while collapsed — the key
+# presses whichever one is on screen.
 _ZEN_SHORTCUT = """
 if (!window.__qZenKey) {
   window.__qZenKey = true;
   document.addEventListener('keydown', function (e) {
     if ((e.metaKey || e.ctrlKey) && e.key === '.') {
-      e.preventDefault();
-      var b = document.getElementById('q-zen-toggle');
-      if (b) b.click();
+      var ids = ['q-zen-toggle', 'q-zen-expand'];
+      for (var i = 0; i < ids.length; i++) {
+        var b = document.getElementById(ids[i]);
+        if (b && b.offsetParent !== null) { e.preventDefault(); b.click(); return; }
+      }
     }
   });
 }
@@ -284,7 +367,8 @@ def _nav_row(
     active: rx.Var | bool = False,
     trailing: rx.Component | None = None,
     below: rx.Component | None = None,
-    tooltip: str | None = None,
+    tooltip: rx.Var | str | None = None,
+    busy: rx.Var | bool | None = None,
 ) -> rx.Component:
     """The geometry of every sidebar row, whatever wraps it.
 
@@ -307,7 +391,7 @@ def _nav_row(
         "fontSize": "var(--font-size-3)",
     }
     if below is None:
-        icon_part = nav_icon(icon, T.ICON_MD)
+        icon_part = busy_icon(nav_icon(icon, T.ICON_MD), busy)
         text_part = rx.el.span(label, class_name="q-label", style=name_style)
     else:
         # The icon sits in a box one text line tall, so it centres on the name's line
@@ -344,7 +428,7 @@ def _nav_row(
         color=rx.cond(active, rx.color("accent", 11), rx.color("gray", 11)),
         font_weight=rx.cond(active, "600", "400"),
         class_name="q-nav-item",
-        custom_attrs={"data-label": tooltip or label},
+        custom_attrs={"data-label": label if tooltip is None else tooltip},
     )
 
 
@@ -363,12 +447,21 @@ def _count_badge(label: str) -> rx.Component | None:
 
 def route_is_current(route: str, routes: Sequence[str] = NAV_ROUTES) -> rx.Var:
     """Whether ``route``'s entry is «you are here» — the one helper both navigations use
-    (m-24852260). It reads the path the browser shows (``router.url.path``), never the
-    matched pattern (``router.page.path`` is ``/index`` on «/» and ``/drafts/[draft_id]``
-    on a ficha); the rule itself lives in ``nav_vm.is_current``."""
-    url = NavState.router.url
-    from_week = url.query_parameters[URL_FROM].to(str) == FROM_WEEK
-    return is_current(route, routes, url.path, from_week)
+    (m-24852260). React Router owns the current location: a server event queued before
+    navigation may still return the previous URL. Reading that server snapshot makes
+    the selection lag a click behind. The hook also follows browser back/forward;
+    the matching rule itself lives in ``nav_vm.is_current``."""
+    location = VarData(
+        imports={"react-router": ["useLocation"]},
+        hooks={"const qNavLocation = useLocation();": None},
+    )
+    path = rx.Var(_js_expr="qNavLocation.pathname", _var_type=str, _var_data=location).guess_type()
+    origin = rx.Var(
+        _js_expr=f'(new URLSearchParams(qNavLocation.search).get("{URL_FROM}") || "")',
+        _var_type=str,
+        _var_data=location,
+    ).guess_type()
+    return is_current(route, routes, path, origin == FROM_WEEK, origin == FROM_APPROVED)
 
 
 def _nav_item(
@@ -381,6 +474,7 @@ def _nav_item(
     with something waiting carries its count on the right (N11, m-24842963)."""
     active = route_is_current(route, routes)
     count = _count_badge(label) if enabled else None
+    busy = NAV_BUSY.get(label) if enabled else None
     soon = (
         None
         if enabled
@@ -393,7 +487,8 @@ def _nav_item(
             active=active,
             trailing=count,
             below=soon,
-            tooltip=None if enabled else f"{label} · Pronto",
+            tooltip=busy_label(label, busy) if enabled else f"{label} · Pronto",
+            busy=busy,
         ),
         href=route,
         width="100%",
@@ -402,11 +497,36 @@ def _nav_item(
         # N10: the count is announced with what it counts («Por aprobar: 3
         # publicaciones esperan tu aprobación»); only on counted entries.
         **({"aria_label": NAV_COUNTERS[label][2]} if enabled and label in NAV_COUNTERS else {}),
+        # m-24973458: «Crear publicación» while a publication is being made.
+        **busy_attrs(label, busy),
         # No-op on desktop (the drawer is never open there); on a phone viewport
         # this is what makes picking a page also close the overlay instead of
         # leaving it covering the page that just loaded underneath it.
         on_click=NavState.close_mobile_nav,
     )
+
+
+def nav_entry_sample(label: str, icon: str, *, busy: bool) -> rx.Component:
+    """One sidebar entry in its own island, with ``busy`` fixed — the `/design` sample of
+    «Crear publicación» while a publication is being made (m-24973458)."""
+    return _island(
+        rx.box(
+            _nav_row(icon, label, busy=busy, tooltip=busy_label(label, busy)),
+            **busy_attrs(label, busy),
+        ),
+        width="100%",
+        max_width="16rem",
+    )
+
+
+def _gated_nav_item(item: Item) -> rx.Component:
+    """An entry of `NAV_GATES`: «Pronto» for a business off the switch, the working
+    entry for one on it (m-24946129). Any other entry is drawn as it is."""
+    label, icon, route, enabled = item
+    gate = NAV_GATES.get(label)
+    if gate is None or enabled:
+        return _nav_item(*item)
+    return rx.cond(gate, _nav_item(label, icon, route, True), _nav_item(*item))
 
 
 def _island(*children: rx.Component, tint: str | None = None, **props) -> rx.Component:
@@ -447,62 +567,197 @@ def _zone_head(label: str, zone: str) -> rx.Component:
     )
 
 
-def tenant_block() -> rx.Component:
-    """Top island: the business owns the screen. Its name first, then "Supported by
-    Qualify" linking to the landing, and the control that collapses the rail. Without a
-    session (e.g. `/design`) the name falls back to "Qualify" so it never reads empty."""
-    name = rx.cond(AuthState.business_name != "", AuthState.business_name, "Qualify")
-    return _island(
-        rx.hstack(
-            rx.icon("store", size=T.ICON_MD, color=rx.color("accent", 9)),
-            rx.text(
-                name,
-                size="4",
-                weight="bold",
-                letter_spacing="-0.02em",
-                class_name="q-label",
-                overflow="hidden",
-                text_overflow="ellipsis",
-                white_space="nowrap",
+def business_logo(size: str = "36px", icon_size: int = T.ICON_MD) -> rx.Component:
+    """The open business's main Brand Kit logo on a neutral tile (`.q-biz-logo`:
+    `contain`, so a white or transparent logo still reads in dark mode), or the store
+    icon when it has none. ``alt=""``: the business name always sits next to it (or the
+    control around it carries the name). The path lives an hour; the shell mints a fresh
+    one on mount when it is getting old (`AuthState.refresh_business_logo`)."""
+    return rx.box(
+        media_thumb(
+            # `/r2media` is served by the backend, not the frontend's origin.
+            rx.cond(
+                AuthState.business_logo_src != "",
+                BACKEND_BASE + AuthState.business_logo_src,
+                "",
             ),
-            rx.spacer(),
-            _zen_toggle(),
-            align="center",
-            spacing="2",
-            width="100%",
-            min_width="0",
-            class_name="q-biz-row",
+            size=size,
+            icon="store",
+            icon_size=icon_size,
+            fit="contain",
         ),
-        rx.link(
+        class_name="q-biz-logo",
+        flex_shrink="0",
+    )
+
+
+#: The logo on the expanded row: a little under the collapsed 36 px so a 232 px rail
+#: still leaves the name room next to the 44 px «Contraer el menú».
+_ROW_LOGO = "32px"
+
+
+def _business_menu_item(option: rx.Var) -> rx.Component:
+    """One business of the login. The open one is marked «Aquí estás» and does nothing;
+    the others switch (the browser sends back their position only)."""
+    here = option["current"].to(str) != ""
+    return rx.cond(
+        here,
+        rx.menu.item(
+            rx.icon("store", size=T.ICON_SM, flex_shrink="0"),
+            rx.el.span(option["name"].to(str), style=_CHIP_TEXT_STYLE),
             rx.hstack(
-                rx.text("Supported by", size="1", color=T.TEXT_MUTED),
-                qualify_mark(T.ICON_SM),
-                rx.text("Qualify", size="1", weight="medium", color=rx.color("accent", 11)),
-                align="center",
+                rx.icon("check", size=T.ICON_SM),
+                rx.text(HERE_LABEL, size="1", weight="medium"),
                 spacing="1",
-                white_space="nowrap",
+                align="center",
+                color=rx.color("accent", 11),
+                margin_left="auto",
+                flex_shrink="0",
             ),
-            href=LANDING_URL,
-            is_external=True,
-            underline="none",
-            class_name="q-label",
-            aria_label="Qualify — ir al sitio",
+            min_height="2.75rem",
+            gap="0.5rem",
+            aria_current="true",
         ),
-        padding="0.7rem 0.75rem",
+        rx.menu.item(
+            rx.icon("store", size=T.ICON_SM, flex_shrink="0"),
+            rx.el.span(option["name"].to(str), style=_CHIP_TEXT_STYLE),
+            on_click=AuthState.switch_business(option["index"].to(str)),
+            min_height="2.75rem",
+            gap="0.5rem",
+        ),
     )
 
 
-def _zen_toggle() -> rx.Component:
-    return rx.button(
-        rx.icon(rx.cond(NavState.zen, "panel-left-open", "panel-left-close"), size=T.ICON_SM),
-        id="q-zen-toggle",
-        variant="ghost",
-        color_scheme="gray",
-        size="1",
+def _business_name(name: rx.Var | str) -> rx.Component:
+    return rx.text(
+        name,
+        size="3",
+        title=name,
+        weight="bold",
+        letter_spacing="-0.02em",
+        min_width="0",
+        class_name="q-biz-name",
+        as_="span",
+    )
+
+
+def _business_switcher() -> rx.Component:
+    """Logo + name: with 2+ businesses a button that opens «Cambiar de negocio» (ADR 43
+    S4, moved here from the header chip by m-24976899); with one, plain text — nothing
+    to choose, so nothing to tap. Without a session (`/design`, a guest) the name falls
+    back to «Qualify» so it never reads empty."""
+    name = rx.cond(AuthState.business_name != "", AuthState.business_trigger_label, "Qualify")
+    plain = rx.hstack(
+        business_logo(_ROW_LOGO),
+        _business_name(name),
+        align="center",
+        spacing="2",
+        min_width="0",
+        flex="1",
+        class_name="q-biz-trigger q-biz-trigger--plain",
+    )
+    switchable = rx.menu.root(
+        rx.menu.trigger(
+            rx.el.button(
+                business_logo(_ROW_LOGO),
+                _business_name(name),
+                rx.icon("chevron-down", size=14, flex_shrink="0", color=T.TEXT_MUTED),
+                type="button",
+                class_name="q-biz-trigger",
+                disabled=AuthState.opening_business != "",
+                aria_label=AuthState.business_trigger_aria,
+            ),
+        ),
+        rx.menu.content(
+            rx.text(
+                SWITCH_MENU_LABEL,
+                size="1",
+                weight="medium",
+                color=T.TEXT_MUTED,
+                padding="0.35rem 0.75rem",
+            ),
+            rx.foreach(AuthState.business_menu, _business_menu_item),
+            align="start",
+            min_width="15rem",
+        ),
+    )
+    return rx.cond(AuthState.can_switch_business, switchable, plain)
+
+
+def _rail_icon_button(icon: str, label: str, *, shortcut: bool = True, **props) -> rx.Component:
+    """A 44×44 icon control of the top row (WCAG 2.5.5 / N12 thumb target)."""
+    return rx.el.button(
+        rx.icon(icon, size=T.ICON_SM),
+        type="button",
+        aria_label=label,
+        title=rail_toggle_title(label) if shortcut else label,
+        **props,
+    )
+
+
+def tenant_block() -> rx.Component:
+    """Top island (alternative B, «El logo abre y cierra», m-24976899).
+
+    Expanded: one row — the business's logo and name (which opens «Cambiar de negocio»
+    with 2+ businesses) and «Contraer el menú». Collapsed: the logo alone, and the logo
+    IS «Expandir el menú» — same place, at the top; on hover/focus it shows the
+    open-panel icon (CSS on the button, `.q-rail-expand`). On a phone the rail is the
+    «Más» drawer: no collapsed mode, and «Cerrar el menú» (×) takes the toggle's place.
+    Which control shows is CSS (`assets/qualify.css`, "Sidebar top row"), so the
+    collapse never moves anything to the bottom. Under the row, «Con el respaldo de
+    ◎ Qualify» (`CREDIT_LABEL`) links to the landing."""
+    row = rx.hstack(
+        _business_switcher(),
+        _rail_icon_button(
+            "panel-left-close",
+            COLLAPSE_LABEL,
+            id="q-zen-toggle",
+            class_name="q-rail-btn q-rail-collapse",
+            on_click=NavState.toggle_zen,
+        ),
+        _rail_icon_button(
+            "x",
+            CLOSE_DRAWER_LABEL,
+            shortcut=False,
+            class_name="q-rail-btn q-rail-close",
+            on_click=NavState.close_mobile_nav,
+        ),
+        align="center",
+        spacing="0",
+        width="100%",
+        min_width="0",
+        class_name="q-biz-row",
+    )
+    expand = rx.el.button(
+        business_logo(),
+        rx.box(
+            rx.icon("panel-left-open", size=T.ICON_SM),
+            class_name="q-rail-expand__icon",
+            aria_hidden="true",
+        ),
+        id="q-zen-expand",
+        type="button",
+        class_name="q-rail-expand",
+        aria_label=EXPAND_LABEL,
+        title=rail_toggle_title(EXPAND_LABEL),
         on_click=NavState.toggle_zen,
-        aria_label=rx.cond(NavState.zen, "Expandir el menú", "Contraer el menú"),
-        title="⌘ .",
     )
+    made_with = rx.link(
+        rx.hstack(
+            rx.text(CREDIT_LABEL, size="1", color=T.TEXT_MUTED),
+            qualify_mark(T.ICON_SM),
+            rx.text("Qualify", size="1", weight="medium", color=rx.color("accent", 11)),
+            align="center",
+            spacing="1",
+            white_space="nowrap",
+        ),
+        href=LANDING_URL,
+        is_external=True,
+        underline="none",
+        class_name="q-label q-credit",
+        aria_label=credit_aria(),
+    )
+    return _island(row, expand, made_with, padding="0.4rem 0.3rem 0.5rem")
 
 
 def logout_action() -> rx.Component:
@@ -593,7 +848,7 @@ def sidebar() -> rx.Component:
                     _island(_zone_head(label, zone), *[_nav_item(*i) for i in items], tint=zone)
                     for zone, label, items in NAV_ZONES
                 ],
-                _island(*[_nav_item(*item) for item in NAV_RESULTS]),
+                _island(*[_gated_nav_item(item) for item in NAV_RESULTS]),
                 rx.spacer(),
                 _island(
                     _zone_head(BUSINESS_ZONE_LABEL, "business"),
@@ -606,7 +861,15 @@ def sidebar() -> rx.Component:
         aria_label="Secciones",
         # The bottom bar's «Más» names the drawer it opens (`aria-controls`).
         id=SIDEBAR_ID,
-        on_mount=PendingState.on_shell_mount,
+        # The Creadores switch is read with the counts (cheap, once per business).
+        # m-24973458: and whether a publication is being made (polls only while one is).
+        on_mount=[
+            PendingState.on_shell_mount,
+            # m-24976899: the business logo of the top row (fresh path, right tenant).
+            AuthState.refresh_business_logo,
+            CreatorsAccessState.check,
+            GenerationState.on_shell_mount,
+        ],
         class_name=rx.cond(
             NavState.zen,
             rx.cond(NavState.mobile_open, "q-sidebar q-zen q-mobile-open", "q-sidebar q-zen"),
@@ -632,74 +895,25 @@ _CHIP_TEXT_STYLE = {
 }
 
 
-def _chip_body(icon_after: str | None = None) -> list[rx.Component]:
-    parts: list[rx.Component] = [
-        rx.icon("store", size=T.ICON_SM, flex_shrink="0"),
-        rx.el.span(AuthState.business_chip_label, style=_CHIP_TEXT_STYLE),
-    ]
-    if icon_after:
-        parts.append(rx.icon(icon_after, size=T.ICON_SM, flex_shrink="0"))
-    return parts
-
-
-def _switch_item(option: rx.Var) -> rx.Component:
-    """One other business of the login. The browser sends back its position only."""
-    return rx.menu.item(
-        rx.icon("store", size=T.ICON_SM),
-        option["name"].to(str),
-        on_click=AuthState.switch_business(option["index"].to(str)),
-        min_height="2.75rem",
-        gap="0.5rem",
-    )
-
-
 def business_chip() -> rx.Component:
-    """ADR 43 (S3, A9): «Estás en {negocio}» at the top of every page with a session,
-    phone included — the sidebar's name is behind «Más» there. For a login with 2+
-    businesses the chip opens «Cambiar de negocio» (S4) with the other ones; with one
-    business it is a plain label. While a switch is on its way it reads «Abriendo
-    {negocio}…». Neutral and monochrome on purpose: no second hue (§2.3)."""
-    common = {
-        "max_width": "100%",
-        "min_width": "0",
-        "class_name": "q-business-chip",
-    }
-    switchable = rx.menu.root(
-        rx.menu.trigger(
-            rx.button(
-                *_chip_body("chevron-down"),
-                variant="soft",
-                color_scheme="gray",
-                radius="full",
-                size="2",
-                min_height="2.75rem",
-                disabled=AuthState.opening_business != "",
-                aria_label=AuthState.business_chip_label + ". Cambiar de negocio",
-                **common,
-            ),
-        ),
-        rx.menu.content(
-            rx.text(
-                "Cambiar de negocio",
-                size="1",
-                weight="medium",
-                color=T.TEXT_MUTED,
-                padding="0.35rem 0.75rem",
-            ),
-            rx.foreach(AuthState.switch_options, _switch_item),
-            align="start",
-        ),
-    )
-    # One business: the design system's neutral badge, clipped to the header's width.
-    plain = rx.box(
-        tone_badge(AuthState.business_chip_label, "neutral", icon="store", size="2"),
-        overflow="hidden",
-        style={"textOverflow": "ellipsis", "whiteSpace": "nowrap"},
-        **common,
-    )
+    """ADR 43 A9 on a phone only: «Estás en {negocio}» above the page title.
+
+    m-24976899 moved the business (and «Cambiar de negocio») to the sidebar's top row.
+    On desktop and tablet that row is always on screen, so the header no longer repeats
+    it; on a phone the sidebar is the «Más» drawer, closed by default, and nothing else
+    on the screen says which business is open — so this compact, plain label stays
+    there (`.q-business-chip`, shown only at ≤ 640 px). No menu: switching lives in
+    the drawer's top row. Neutral and monochrome on purpose: no second hue (§2.3)."""
     return rx.cond(
         AuthState.is_authenticated,
-        rx.cond(AuthState.can_switch_business, switchable, plain),
+        rx.box(
+            tone_badge(AuthState.business_chip_label, "neutral", icon="store", size="1"),
+            overflow="hidden",
+            style={"textOverflow": "ellipsis", "whiteSpace": "nowrap"},
+            max_width="100%",
+            min_width="0",
+            class_name="q-business-chip",
+        ),
     )
 
 
@@ -743,7 +957,8 @@ def page_header(
         spacing="2",
     )
     title_block = rx.vstack(
-        # ADR 43 A9: the active business, on top of every page with a session.
+        # ADR 43 A9: the active business — on a phone only (m-24976899); above it,
+        # the sidebar's top row is always on screen.
         business_chip(),
         *([kicker] if kicker is not None else []),
         title_row,
@@ -811,11 +1026,15 @@ def _bottom_badge(text: rx.Var | str, tone: str) -> rx.Component:
 
 
 def _bottom_cell_body(
-    icon: str, label: str, active: rx.Var | bool, badge: rx.Component | None
+    icon: str,
+    label: str,
+    active: rx.Var | bool,
+    badge: rx.Component | None,
+    busy: rx.Var | bool | None = None,
 ) -> rx.Component:
     return rx.box(
         rx.box(
-            nav_icon(icon, T.ICON_MD),
+            busy_icon(nav_icon(icon, T.ICON_MD), busy),
             *([badge] if badge is not None else []),
             class_name="q-bottom-icon",
         ),
@@ -833,15 +1052,21 @@ def bottom_bar_link(
     active: rx.Var | bool,
     badge: rx.Component | None = None,
     aria_label: rx.Var | str | None = None,
+    busy: rx.Var | bool | None = None,
+    busy_name: str | None = None,
 ) -> rx.Component:
-    """One of the bar's four accesses: a real link, `aria-current` on the active one."""
+    """One of the bar's four accesses: a real link, `aria-current` on the active one.
+    ``busy`` swaps its icon for the ring (m-24973458); ``busy_name`` is the menu's full
+    name the busy label starts with (defaults to ``label``)."""
+    attrs: dict = {"aria_label": aria_label} if aria_label is not None else {}
+    attrs.update(busy_attrs(busy_name or label, busy))
     return rx.link(
-        _bottom_cell_body(icon, label, active, badge),
+        _bottom_cell_body(icon, label, active, badge, busy),
         href=route,
         underline="none",
         class_name="q-bottom-link",
         aria_current=rx.cond(active, "page", ""),
-        **({"aria_label": aria_label} if aria_label is not None else {}),
+        **attrs,
         on_click=NavState.close_mobile_nav,
     )
 
@@ -896,6 +1121,8 @@ def _bottom_bar() -> rx.Component:
                 # A short form speaks the menu's full name («Crear publicación»), which
                 # contains the visible word (N1, WCAG 2.5.3).
                 aria_label=counter[2] if counter else (source if source != label else None),
+                busy=NAV_BUSY.get(source),
+                busy_name=source,
             )
         )
     on_none = ~actives[0]

@@ -13,13 +13,16 @@ from uuid import UUID, uuid4
 
 import httpx
 import pytest
+from botocore.exceptions import ClientError
 from qualify_shared.db.admin import admin_session
 from qualify_shared.db.session import tenant_session
+from qualify_shared.objects.gate import DeleteRefused, ObjectGate, StoredObject
 from sqlalchemy import event, select, text, update
 from sqlalchemy.exc import DBAPIError
 
 from qualify_api.connections.models import PlatformApp, SocialConnection
 from qualify_api.creative import models as creative
+from qualify_api.creative import purged_media
 from qualify_api.creative.models import (
     ContentDraft,
     ContentDraftPurgeWarning,
@@ -32,9 +35,11 @@ from qualify_api.creative.retention import (
     RetentionState,
     piece_prefix,
     purge_expired_pieces,
+    purge_pending_objects,
     read_facts,
     retention_of,
     tenants_with_expired_pieces,
+    tenants_with_pending_objects,
 )
 from qualify_api.creative.retention_job import run_piece_purge
 from qualify_api.creative.retention_mail import (
@@ -47,6 +52,8 @@ from qualify_api.planner.draft_post_reader import DraftPostReader
 from qualify_api.planner.models import CalendarEvent
 from qualify_api.planner.post_reader import NotPublishable, UnpublishableReason
 from qualify_api.tenancy.models import Brand, Tenant, TenantMember, User
+from qualify_api.whatsapp.attachments import PostgresAttachmentReads
+from qualify_api.whatsapp.models import WhatsAppOutboxItem
 
 pytestmark = pytest.mark.db
 
@@ -100,10 +107,17 @@ def _provision(tenant_id: UUID, name: str) -> tuple[UUID, UUID, UUID]:
 
 
 def _piece(
-    tenant_id: UUID, brand_id: UUID, *, generated_days_ago: float | None, r2: bool = True
+    tenant_id: UUID,
+    brand_id: UUID,
+    *,
+    generated_days_ago: float | None,
+    r2: bool = True,
+    parent: UUID | None = None,
+    part_index: int | None = None,
 ) -> UUID:
     """A draft with one image generated `generated_days_ago` days before NOW (no image
-    at all with None), in R2 or in the legacy local store."""
+    at all with None), in R2 or in the legacy local store. With `parent`, a part of
+    that video by parts (ADR 44 child draft, m-24921069)."""
     with tenant_session(tenant_id) as session:
         brief = creative.ContentBrief(
             tenant_id=tenant_id,
@@ -127,6 +141,8 @@ def _piece(
             category="galeria",
             revision=2,
             approved_revision=2,
+            parent_draft_id=parent,
+            part_index=part_index,
         )
         session.add(draft)
         session.flush()
@@ -229,6 +245,51 @@ def test_facts_read_the_newest_r2_file_and_the_extending_events() -> None:
     assert facts.generated_at == NOW - timedelta(days=100)
     assert facts.last_event_at == NOW - timedelta(days=40)  # failed/cancelled do not count
     assert facts.held is False and facts.purged_at is None
+
+
+def _whatsapp_send(
+    tenant_id: UUID, connection_id: UUID, draft_id: UUID, *, status: str, days_ago: float
+) -> None:
+    """An outbox row that sent (or tried to send) the piece from a chat (0123)."""
+    with tenant_session(tenant_id) as session:
+        session.add(
+            WhatsAppOutboxItem(
+                tenant_id=tenant_id,
+                connection_id=connection_id,
+                thread_id=None,
+                kind="reply",
+                payload={
+                    "messaging_product": "whatsapp",
+                    "to": "573001",
+                    "type": "image",
+                    "image": {"id": "media-1"},
+                },
+                status=status,
+                sent_at=NOW - timedelta(days=days_ago) if status == "sent" else None,
+                attachment={"kind": "piece", "draft_id": str(draft_id)},
+            )
+        )
+
+
+def test_a_piece_sent_over_whatsapp_10_days_ago_is_not_purged() -> None:
+    """ADR 39 (c), founder decision 2026-11-04 (m-24945888)."""
+    brand, _, conn = _provision(TENANT_A, "A")
+    sent = _piece(TENANT_A, brand, generated_days_ago=100)
+    _whatsapp_send(TENANT_A, conn, sent, status="sent", days_ago=10)
+    refused = _piece(TENANT_A, brand, generated_days_ago=100)
+    _whatsapp_send(TENANT_A, conn, refused, status="failed", days_ago=10)
+    with tenant_session(TENANT_A) as session:
+        facts = read_facts(session, TENANT_A, [sent, refused])
+    assert facts[sent].last_whatsapp_at == NOW - timedelta(days=10)
+    assert facts[refused].last_whatsapp_at is None
+    # Another tenant never sees the send.
+    with tenant_session(TENANT_B) as session:
+        assert read_facts(session, TENANT_B, [sent]) == {}
+    gate = RecordingGate()
+    purge_expired_pieces(tenant_id=TENANT_A, gate=gate, now=NOW, execute=True)
+    touched = {prefix for _, prefix, _ in gate.calls}
+    assert piece_prefix(TENANT_A, sent) not in touched and _purged_at(TENANT_A, sent) is None
+    assert piece_prefix(TENANT_A, refused) in touched
 
 
 def test_a_scheduled_event_holds_the_piece() -> None:
@@ -337,7 +398,10 @@ def test_discovery_lists_only_tenants_with_expired_pieces() -> None:
     _piece(TENANT_A, brand_a, generated_days_ago=120)
     found = tenants_with_expired_pieces(NOW)
     assert TENANT_A in found
-    assert tenants_with_expired_pieces(NOW - timedelta(days=10_000)) == []
+    # m-24973446: a tenant with objects R2 kept (pending) is found whatever the date
+    assert set(tenants_with_expired_pieces(NOW - timedelta(days=10_000))) == set(
+        tenants_with_pending_objects()
+    )
 
 
 def test_the_job_purges_exactly_its_scope() -> None:
@@ -942,3 +1006,491 @@ def test_warning_safe_cancel_does_not_miss_a_new_piece_entering_its_final_day() 
         original = session.get(ContentDraftWarningBatch, batch_id)
         assert original.cancelled_at is not None and original.needs_review_at is None
         assert session.scalars(select(ContentDraftPurgeWarning.draft_id)).all() == [second]
+
+
+# -- m-24973446: logical purge while the bucket refuses deletes under `t/` (0139) ----------
+
+
+class LockedStore:
+    """The raw store under a REAL `ObjectGate`: lists like R2, and — while `locked` —
+    refuses every delete the way the production bucket does (lock rule on `t/`)."""
+
+    def __init__(self, sizes: dict[str, int], *, refusal: Exception | None = None) -> None:
+        self.objects = dict(sizes)
+        self.locked = True
+        self.refusal = refusal or ClientError(
+            {"Error": {"Code": "ObjectLockedByBucketPolicy", "Message": "locked"}},
+            "DeleteObjects",
+        )
+        self.delete_calls = 0
+
+    def list_prefix(self, prefix: str):  # noqa: ANN201
+        for key, size in sorted(self.objects.items()):
+            if key.startswith(prefix):
+                yield StoredObject(key=key, size=size)
+
+    def delete_keys(self, keys) -> None:  # noqa: ANN001
+        self.delete_calls += 1
+        if self.locked:
+            raise self.refusal
+        for key in keys:
+            self.objects.pop(key, None)
+
+
+def _locked_piece(tenant_id: UUID, brand_id: UUID, store: LockedStore) -> UUID:
+    draft = _piece(tenant_id, brand_id, generated_days_ago=100)
+    prefix = piece_prefix(tenant_id, draft)
+    store.objects.update({f"{prefix}r2/a.jpg": 10, f"{prefix}r1/old.jpg": 5})
+    return draft
+
+
+def _marks(tenant_id: UUID, draft_id: UUID) -> tuple[datetime | None, datetime | None]:
+    with tenant_session(tenant_id) as session:
+        row = session.get(creative.ContentDraft, draft_id)
+        return row.media_purged_at, row.media_objects_pending_at
+
+
+def test_a_refused_delete_purges_the_piece_for_the_app_and_keeps_track_of_its_objects() -> None:
+    tenant = uuid4()
+    brand, _, _ = _provision(tenant, "locked")
+    store = LockedStore({})
+    draft = _locked_piece(tenant, brand, store)
+    _approve(tenant, draft)
+
+    report = purge_expired_pieces(tenant_id=tenant, gate=ObjectGate(store), now=NOW, execute=True)
+
+    assert report.errors == [] and report.logical_only == 1
+    assert [(p.draft_id, p.objects, p.bytes, p.logical_only) for p in report.purged] == [
+        (draft, 2, 15, True)
+    ]
+    assert _marks(tenant, draft) == (NOW, NOW)
+    log = _log(tenant, draft)
+    assert [(r.object_count, r.byte_count, r.dry_run, r.logical_only) for r in log] == [
+        (2, 15, False, True)
+    ]
+    assert len(store.objects) == 2  # R2 kept them
+
+    # Every reader hides it: «Contenido eliminado», not publishable, not offered as input,
+    # not in WhatsApp «Tus piezas», and every byte door refuses its keys.
+    reader = DraftPostReader(clock=lambda: NOW)
+    summary = reader.get(tenant_id=tenant, post_id=draft)
+    assert summary is not None and summary.retention_state == "purged"
+    assert summary.thumbnail_url is None and not summary.is_publishable
+    verdict = reader.get_publishable(tenant_id=tenant, post_id=draft)
+    assert isinstance(verdict, NotPublishable)
+    assert verdict.reason is UnpublishableReason.MEDIA_PURGED
+    key = f"{piece_prefix(tenant, draft)}r2/a.jpg"
+    assert DbPieceFiles().file(tenant_id=tenant, brand_id=brand, object_key=key) is None
+    assert draft not in {row.id for row in PostgresAttachmentReads().pieces(tenant, brand)}
+    assert PostgresAttachmentReads().piece(tenant, draft) is None
+    purged_media.clear_cache()
+    assert purged_media.is_purged_object(tenant, key)
+    assert purged_media.is_purged_object(tenant, f"{piece_prefix(tenant, draft)}r1/old.jpg")
+    purged_media.clear_cache()
+
+
+def test_a_purge_whose_delete_succeeds_behaves_exactly_as_before() -> None:
+    tenant = uuid4()
+    brand, _, _ = _provision(tenant, "unlocked")
+    store = LockedStore({})
+    store.locked = False
+    draft = _locked_piece(tenant, brand, store)
+    report = purge_expired_pieces(tenant_id=tenant, gate=ObjectGate(store), now=NOW, execute=True)
+    assert report.logical_only == 0 and store.objects == {}
+    assert _marks(tenant, draft) == (NOW, None)
+    assert [(r.dry_run, r.logical_only) for r in _log(tenant, draft)] == [(False, False)]
+
+
+@pytest.mark.parametrize(
+    "outage",
+    [
+        RuntimeError("R2 down"),
+        ClientError({"Error": {"Code": "SlowDown", "Message": "x"}}, "DeleteObjects"),
+        DeleteRefused(1, ("InternalError",)),
+    ],
+)
+def test_an_outage_is_not_a_refusal_and_marks_nothing(outage: Exception) -> None:
+    tenant = uuid4()
+    brand, _, _ = _provision(tenant, "outage")
+    store = LockedStore({}, refusal=outage)
+    draft = _locked_piece(tenant, brand, store)
+    report = purge_expired_pieces(tenant_id=tenant, gate=ObjectGate(store), now=NOW, execute=True)
+    assert [d for d, _ in report.errors] == [draft] and report.purged == []
+    assert _marks(tenant, draft) == (None, None) and _log(tenant, draft) == []
+
+
+def test_the_per_key_refusal_of_the_store_is_a_logical_purge_too() -> None:
+    tenant = uuid4()
+    brand, _, _ = _provision(tenant, "perkey")
+    store = LockedStore({}, refusal=DeleteRefused(2, ("AccessDenied",)))
+    draft = _locked_piece(tenant, brand, store)
+    purge_expired_pieces(tenant_id=tenant, gate=ObjectGate(store), now=NOW, execute=True)
+    assert _marks(tenant, draft) == (NOW, NOW)
+
+
+def test_a_dry_run_never_tries_to_delete_and_marks_nothing() -> None:
+    tenant = uuid4()
+    brand, _, _ = _provision(tenant, "dry")
+    store = LockedStore({})
+    draft = _locked_piece(tenant, brand, store)
+    report = purge_expired_pieces(tenant_id=tenant, gate=ObjectGate(store), now=NOW, execute=False)
+    assert store.delete_calls == 0 and report.pending is None
+    assert _marks(tenant, draft) == (None, None)
+
+
+def test_the_pending_pass_deletes_once_deletes_work_and_never_unpurges() -> None:
+    tenant = uuid4()
+    brand, _, _ = _provision(tenant, "pending")
+    store = LockedStore({})
+    draft = _locked_piece(tenant, brand, store)
+    gate = ObjectGate(store)
+    purge_expired_pieces(tenant_id=tenant, gate=gate, now=NOW, execute=True)
+    later = NOW + timedelta(days=3)
+
+    dry = purge_pending_objects(tenant_id=tenant, gate=gate, now=later, execute=False)
+    assert [(p.draft_id, p.objects) for p in dry.deleted] == [(draft, 2)]
+    assert _marks(tenant, draft) == (NOW, NOW) and len(_log(tenant, draft)) == 1
+
+    still = purge_pending_objects(tenant_id=tenant, gate=gate, now=later, execute=True)
+    assert (still.refused, still.deleted) == (1, [])
+    assert _marks(tenant, draft) == (NOW, NOW)
+
+    store.locked = False
+    done = purge_pending_objects(tenant_id=tenant, gate=gate, now=later, execute=True)
+    assert [(p.draft_id, p.objects, p.bytes) for p in done.deleted] == [(draft, 2, 15)]
+    assert store.objects == {}
+    assert _marks(tenant, draft) == (NOW, None)  # still purged; nothing left to delete
+    log = _log(tenant, draft)
+    assert [(r.logical_only, r.dry_run, r.object_count) for r in log] == [
+        (True, False, 2),
+        (False, False, 2),
+    ]
+    again = purge_pending_objects(tenant_id=tenant, gate=gate, now=later, execute=True)
+    assert again.candidates == 0
+
+
+def test_the_daily_run_probes_the_pending_pieces_and_stops_at_the_first_refusal() -> None:
+    tenant = uuid4()
+    brand, _, _ = _provision(tenant, "probe")
+    store = LockedStore({})
+    first, second = (_locked_piece(tenant, brand, store) for _ in range(2))
+    gate = ObjectGate(store)
+    purge_expired_pieces(tenant_id=tenant, gate=gate, now=NOW, execute=True)
+    calls = store.delete_calls
+
+    daily = run_piece_purge([tenant], execute=True, now=NOW + timedelta(days=1), gate=gate)
+    assert daily[0].pending is not None
+    assert (daily[0].pending.candidates, daily[0].pending.refused) == (2, 1)
+    assert store.delete_calls == calls + 1  # one refused call, not one per piece
+
+    store.locked = False
+    run_piece_purge([tenant], execute=True, now=NOW + timedelta(days=2), gate=gate)
+    assert _marks(tenant, first)[1] is None and _marks(tenant, second)[1] is None
+    assert store.objects == {}
+
+
+def test_pending_discovery_and_the_pass_are_tenant_isolated() -> None:
+    mine, theirs = uuid4(), uuid4()
+    brand_a, _, _ = _provision(mine, "pa")
+    brand_b, _, _ = _provision(theirs, "pb")
+    store = LockedStore({})
+    draft_a = _locked_piece(mine, brand_a, store)
+    draft_b = _locked_piece(theirs, brand_b, store)
+    gate = ObjectGate(store)
+    for tenant in (mine, theirs):
+        purge_expired_pieces(tenant_id=tenant, gate=gate, now=NOW, execute=True)
+    found = tenants_with_pending_objects()
+    assert {mine, theirs} <= set(found)
+    assert mine in tenants_with_expired_pieces(NOW - timedelta(days=10_000))  # pending counts
+
+    store.locked = False
+    purge_pending_objects(tenant_id=mine, gate=gate, now=NOW, execute=True)
+    assert _marks(mine, draft_a)[1] is None
+    assert _marks(theirs, draft_b) == (NOW, NOW)  # never reached from the other tenant
+    assert any(key.startswith(piece_prefix(theirs, draft_b)) for key in store.objects)
+    with tenant_session(theirs) as session:
+        assert session.get(creative.ContentDraft, draft_a) is None  # RLS
+    purged_media.clear_cache()
+    key_a = f"{piece_prefix(mine, draft_a)}r2/a.jpg"
+    assert not purged_media.is_purged_object(theirs, key_a)  # not a key of that tenant
+    purged_media.clear_cache()
+
+
+def test_pending_without_purged_is_refused_by_the_schema() -> None:
+    tenant = uuid4()
+    brand, _, _ = _provision(tenant, "check")
+    draft = _piece(tenant, brand, generated_days_ago=1)
+    with pytest.raises(DBAPIError), tenant_session(tenant) as session:
+        session.execute(
+            update(creative.ContentDraft)
+            .where(creative.ContentDraft.id == draft)
+            .values(media_objects_pending_at=NOW)
+        )
+
+
+class SilentlyKeepingStore(LockedStore):
+    """Answers every delete without error — and keeps the objects (R2's answer to its
+    lock rule was never measured; it might be this)."""
+
+    def delete_keys(self, keys) -> None:  # noqa: ANN001
+        self.delete_calls += 1
+        if not self.locked:
+            for key in keys:
+                self.objects.pop(key, None)
+
+
+def test_a_delete_that_returns_but_keeps_the_objects_is_a_logical_purge() -> None:
+    tenant = uuid4()
+    brand, _, _ = _provision(tenant, "silent")
+    store = SilentlyKeepingStore({})
+    draft = _locked_piece(tenant, brand, store)
+    gate = ObjectGate(store)
+    report = purge_expired_pieces(tenant_id=tenant, gate=gate, now=NOW, execute=True)
+    assert report.errors == [] and report.logical_only == 1
+    assert _marks(tenant, draft) == (NOW, NOW)
+    assert [(r.object_count, r.logical_only) for r in _log(tenant, draft)] == [(2, True)]
+
+    # the pending pass does not believe it either, until the objects are really gone
+    kept = purge_pending_objects(tenant_id=tenant, gate=gate, now=NOW, execute=True)
+    assert (kept.refused, kept.deleted) == (1, []) and _marks(tenant, draft) == (NOW, NOW)
+    store.locked = False
+    done = purge_pending_objects(tenant_id=tenant, gate=gate, now=NOW, execute=True)
+    assert [p.draft_id for p in done.deleted] == [draft] and _marks(tenant, draft) == (NOW, None)
+
+
+def test_a_failing_pending_probe_never_costs_the_days_expiry_purge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from qualify_api.creative import retention
+
+    def broken(**_kwargs: object) -> object:
+        raise RuntimeError("db hiccup")
+
+    monkeypatch.setattr(retention, "purge_pending_objects", broken)
+    tenant = uuid4()
+    brand, _, _ = _provision(tenant, "probe-down")
+    store = LockedStore({})
+    store.locked = False
+    draft = _locked_piece(tenant, brand, store)
+    report = purge_expired_pieces(tenant_id=tenant, gate=ObjectGate(store), now=NOW, execute=True)
+    assert report.pending is None and report.errors == []
+    assert _marks(tenant, draft) == (NOW, None) and store.objects == {}
+
+
+# -- parts of a video by parts (m-24921069, ADR 44) -----------------------------------------
+
+
+def _video_with_parts(
+    tenant_id: UUID, brand_id: UUID, *, video_days_ago: float | None, parts_days_ago: float
+) -> tuple[UUID, list[UUID]]:
+    video = _piece(tenant_id, brand_id, generated_days_ago=video_days_ago)
+    parts = [
+        _piece(
+            tenant_id, brand_id, generated_days_ago=parts_days_ago, parent=video, part_index=index
+        )
+        for index in (1, 2)
+    ]
+    return video, parts
+
+
+def test_a_100_day_old_part_of_a_scheduled_video_is_held_and_never_purged() -> None:
+    tenant = uuid4()
+    brand, user, conn = _provision(tenant, "parts-held")
+    video, parts = _video_with_parts(tenant, brand, video_days_ago=100, parts_days_ago=100)
+    # Scheduled long ago and still not out: past every deadline, but the publisher will
+    # still read the files — the whole family is held.
+    _event(tenant, brand, user, conn, video, status="scheduled", days_from_now=-95)
+    with tenant_session(tenant) as session:
+        verdicts = retention_of(session, tenant, [video, *parts], NOW)
+    assert {verdicts[d].state for d in (video, *parts)} == {RetentionState.HELD}
+    assert {verdicts[d].deadline for d in parts} == {verdicts[video].deadline}
+    gate = RecordingGate()
+    report = purge_expired_pieces(tenant_id=tenant, gate=gate, now=NOW, execute=True)
+    assert report.candidates == 0 and report.purged == []
+    assert {prefix for _, prefix, _ in gate.calls}.isdisjoint(
+        {piece_prefix(tenant, d) for d in (video, *parts)}
+    )
+    assert all(_purged_at(tenant, d) is None for d in (video, *parts))
+
+
+def test_a_100_day_old_part_of_a_recently_used_video_keeps_the_videos_deadline() -> None:
+    tenant = uuid4()
+    brand, user, conn = _provision(tenant, "parts-used")
+    video, parts = _video_with_parts(tenant, brand, video_days_ago=100, parts_days_ago=100)
+    _event(tenant, brand, user, conn, video, status="published", days_from_now=-10)
+    _whatsapp_send(tenant, conn, video, status="sent", days_ago=5)
+    with tenant_session(tenant) as session:
+        verdicts = retention_of(session, tenant, [video, *parts], NOW)
+    for draft in (video, *parts):
+        assert verdicts[draft].state is RetentionState.ACTIVE
+        assert verdicts[draft].deadline == NOW - timedelta(days=5) + RETENTION
+    gate = RecordingGate()
+    purge_expired_pieces(tenant_id=tenant, gate=gate, now=NOW, execute=True)
+    assert {prefix for _, prefix, _ in gate.calls}.isdisjoint(
+        {piece_prefix(tenant, d) for d in (video, *parts)}
+    )
+
+
+def test_a_recently_regenerated_part_keeps_its_old_video_alive() -> None:
+    """A video whose joined file is 100 days old but whose part was regenerated 10 days
+    ago is one piece used 10 days ago — and a video with no file of its own yet is
+    judged by its parts' files."""
+    tenant = uuid4()
+    brand, _, _ = _provision(tenant, "parts-regen")
+    video, parts = _video_with_parts(tenant, brand, video_days_ago=100, parts_days_ago=10)
+    bare, bare_parts = _video_with_parts(tenant, brand, video_days_ago=None, parts_days_ago=80)
+    with tenant_session(tenant) as session:
+        verdicts = retention_of(session, tenant, [video, *parts, bare, *bare_parts], NOW)
+    assert verdicts[video].deadline == NOW - timedelta(days=10) + RETENTION
+    assert verdicts[bare].state is RetentionState.WARNING
+    assert {verdicts[d].state for d in bare_parts} == {RetentionState.WARNING}
+
+
+def test_no_warning_is_ever_listed_for_a_part_only_for_its_video() -> None:
+    from qualify_api.creative import retention_mail
+
+    tenant = uuid4()
+    brand, _, _ = _provision(tenant, "parts-warn")
+    video, parts = _video_with_parts(tenant, brand, video_days_ago=80, parts_days_ago=80)
+    with tenant_session(tenant) as session:
+        groups, live = retention_mail._live_pieces(session, tenant, NOW, None)
+        scoped, _ = retention_mail._live_pieces(session, tenant, NOW, {video, *parts})
+    assert set(live) == {video}
+    listed = [piece.draft_id for pieces in groups.values() for piece in pieces]
+    assert listed == [video]
+    assert [p.draft_id for pieces in scoped.values() for p in pieces] == [video]
+
+
+def test_purging_the_video_purges_its_parts_once() -> None:
+    tenant = uuid4()
+    brand, _, _ = _provision(tenant, "parts-purge")
+    video, parts = _video_with_parts(tenant, brand, video_days_ago=120, parts_days_ago=95)
+    folders = {piece_prefix(tenant, d): [10] for d in (video, *parts)}
+    gate = RecordingGate(dict(folders))
+    report = purge_expired_pieces(tenant_id=tenant, gate=gate, now=NOW, execute=True)
+    assert report.candidates == 1 and report.errors == []
+    assert [p.draft_id for p in report.purged] == [*parts, video]  # parts first, video last
+    assert {prefix for _, prefix, execute in gate.calls if execute} == set(folders)
+    due = NOW - timedelta(days=95) + RETENTION
+    for draft in (video, *parts):
+        assert _marks(tenant, draft) == (NOW, None)
+        log = _log(tenant, draft)
+        assert [(r.prefix, r.dry_run, r.logical_only, r.expired_at) for r in log] == [
+            (piece_prefix(tenant, draft), False, False, due)
+        ]
+    purged_media.clear_cache()
+    assert purged_media.is_purged_object(tenant, f"{piece_prefix(tenant, parts[0])}r2/a.jpg")
+    purged_media.clear_cache()
+
+    gate.calls.clear()
+    again = purge_expired_pieces(tenant_id=tenant, gate=gate, now=NOW, execute=True)
+    assert again.purged == [] and gate.calls == []
+    assert all(len(_log(tenant, d)) == 1 for d in (video, *parts))
+
+
+def test_a_failing_part_folder_leaves_the_whole_family_unmarked_for_the_next_run() -> None:
+    tenant = uuid4()
+    brand, _, _ = _provision(tenant, "parts-fail")
+    video, parts = _video_with_parts(tenant, brand, video_days_ago=120, parts_days_ago=120)
+    gate = RecordingGate(fail=piece_prefix(tenant, parts[1]))
+    report = purge_expired_pieces(tenant_id=tenant, gate=gate, now=NOW, execute=True)
+    assert report.errors == [(video, "RuntimeError")] and report.purged == []
+    assert all(_marks(tenant, d) == (None, None) for d in (video, *parts))
+    gate.fail = ""
+    retry = purge_expired_pieces(tenant_id=tenant, gate=gate, now=NOW, execute=True)
+    assert {p.draft_id for p in retry.purged} == {video, *parts}
+    assert all(_marks(tenant, d) == (NOW, None) for d in (video, *parts))
+
+
+def test_a_refused_delete_purges_the_video_and_its_parts_for_the_app_only() -> None:
+    tenant = uuid4()
+    brand, _, _ = _provision(tenant, "parts-locked")
+    store = LockedStore({})
+    video, parts = _video_with_parts(tenant, brand, video_days_ago=100, parts_days_ago=100)
+    for draft in (video, *parts):
+        store.objects[f"{piece_prefix(tenant, draft)}r2/a.jpg"] = 7
+    report = purge_expired_pieces(tenant_id=tenant, gate=ObjectGate(store), now=NOW, execute=True)
+    assert report.errors == [] and report.logical_only == 3
+    assert all(_marks(tenant, d) == (NOW, NOW) for d in (video, *parts))
+    assert len(store.objects) == 3  # the bucket kept them
+
+    again = purge_expired_pieces(tenant_id=tenant, gate=ObjectGate(store), now=NOW, execute=True)
+    assert again.purged == [] and all(len(_log(tenant, d)) == 1 for d in (video, *parts))
+
+    store.locked = False
+    done = purge_pending_objects(
+        tenant_id=tenant, gate=ObjectGate(store), now=NOW, execute=True, probe=True
+    )
+    assert {p.draft_id for p in done.deleted} == {video, *parts} and store.objects == {}
+    assert all(_marks(tenant, d) == (NOW, None) for d in (video, *parts))
+
+
+def test_a_part_left_behind_under_a_purged_video_goes_at_the_next_run() -> None:
+    tenant = uuid4()
+    brand, _, _ = _provision(tenant, "parts-late")
+    video, parts = _video_with_parts(tenant, brand, video_days_ago=120, parts_days_ago=120)
+    gate = RecordingGate()
+    first = purge_expired_pieces(tenant_id=tenant, gate=gate, now=NOW, execute=True)
+    assert first.candidates == 1 and first.folders == 3
+    # Made after its video went (fresh files): unmarked, its own key still served.
+    late = _piece(tenant, brand, generated_days_ago=1, parent=video, part_index=3)
+    late_key = f"{piece_prefix(tenant, late)}r2/a.jpg"
+    purged_media.clear_cache()
+    assert not purged_media.is_purged_object(tenant, late_key)
+    assert tenant in tenants_with_expired_pieces(NOW)
+
+    gate = RecordingGate({piece_prefix(tenant, late): [4, 4]})
+    second = purge_expired_pieces(tenant_id=tenant, gate=gate, now=NOW, execute=True)
+    assert second.candidates == 1 and second.errors == []
+    assert [(p.draft_id, p.objects) for p in second.purged] == [(late, 2)]
+    assert {prefix for _, prefix, _ in gate.calls} == {piece_prefix(tenant, late)}
+    assert _marks(tenant, late) == (NOW, None)
+    assert all(len(_log(tenant, d)) == 1 for d in (video, *parts, late))
+    purged_media.clear_cache()
+    assert purged_media.is_purged_object(tenant, late_key)
+    purged_media.clear_cache()
+
+    gate.calls.clear()
+    third = purge_expired_pieces(tenant_id=tenant, gate=gate, now=NOW, execute=True)
+    assert third.candidates == 0 and gate.calls == []
+    assert tenant not in tenants_with_expired_pieces(NOW)
+
+
+def test_a_generation_landing_while_its_folder_is_deleted_is_left_pending() -> None:
+    """A part's generation written between the delete of its folder and the mark: the
+    part is purged with its objects pending, so `purge_pending_objects` deletes them."""
+    tenant = uuid4()
+    brand, _, _ = _provision(tenant, "parts-landing")
+    video, parts = _video_with_parts(tenant, brand, video_days_ago=120, parts_days_ago=120)
+    landing = piece_prefix(tenant, parts[0])
+
+    class LandingGate(RecordingGate):
+        def delete_prefix(self, tenant_id: UUID, prefix: str, *, execute: bool = False) -> object:
+            found = super().delete_prefix(tenant_id, prefix, execute=execute)
+            if execute and prefix == landing:
+                key = f"{landing}r3/late.jpg"
+                with tenant_session(tenant) as session:
+                    session.add(
+                        creative.ImageAsset(
+                            tenant_id=tenant,
+                            draft_id=parts[0],
+                            media_url=key,
+                            object_key=key,
+                            content_type="image/jpeg",
+                        )
+                    )
+            return found
+
+    purge_expired_pieces(tenant_id=tenant, gate=LandingGate(), now=NOW, execute=True)
+    assert _marks(tenant, parts[0]) == (NOW, NOW)
+    assert _marks(tenant, parts[1]) == (NOW, None) and _marks(tenant, video) == (NOW, None)
+    assert _pending_drafts(tenant) == {parts[0]}
+
+
+def _pending_drafts(tenant: UUID) -> set[UUID]:
+    with tenant_session(tenant) as session:
+        return set(
+            session.scalars(
+                select(ContentDraft.id).where(ContentDraft.media_objects_pending_at.is_not(None))
+            )
+        )

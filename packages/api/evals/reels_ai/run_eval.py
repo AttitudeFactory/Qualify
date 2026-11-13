@@ -40,7 +40,7 @@ from typing import Any
 
 import anthropic
 
-from qualify_api.claude_tools import ClaudeToolError, ModelConfig
+from qualify_api.claude_tools import Attribution, ClaudeToolError, ModelConfig
 from qualify_api.referentes.ai import BrandBrief
 from qualify_api.referentes.reels_ai import FITS, REVIEW_BATCH, ReelToReview, review_reels
 
@@ -111,7 +111,13 @@ def run_case(config: ModelConfig, case: dict[str, Any], api_key: str) -> dict[st
         # a free tier through a gateway answers 429/502 under load: wait and retry
         for attempt in range(RETRIES):
             try:
-                reviews, stats = review_reels(brief, batch, api_key=api_key, config=config)
+                reviews, stats = review_reels(
+                    brief,
+                    batch,
+                    api_key=api_key,
+                    config=config,
+                    attribution=Attribution.no_business("eval-reels"),
+                )
                 break
             except ClaudeToolError as exc:
                 last = str(exc)

@@ -50,6 +50,13 @@ STILL_ZOOM = 1.06
 #: / veryfast visibly softened it).
 SLIDE_X264 = {"crf": "23", "preset": "veryfast"}
 DETAIL_X264 = {"crf": "18", "preset": "fast"}
+#: m-24820842 (2026-11-03): a clip's reference video as ModelArk fetches it — it downloads
+#: the file INSIDE the task POST, and 1080p stock references (5 MB / 15 s) made three POSTs
+#: time out. The model only follows motion and framing: 720p on the short side, at most
+#: 30 fps, crf 23, no audio is plenty and a fraction of the bytes.
+REFERENCE_SHORT_SIDE = 720
+REFERENCE_MAX_FPS = 30
+REFERENCE_X264 = {"crf": "23", "preset": "veryfast"}
 
 
 @dataclass(frozen=True)
@@ -94,6 +101,25 @@ class VideoFitter(Protocol):
         self, data: bytes, *, layers: Callable[[tuple[int, int]], Sequence[SubtitleLayer]]
     ) -> FittedVideo: ...
 
+    def fit_reference(
+        self,
+        data: bytes,
+        *,
+        max_seconds: float | None = None,
+        short_side: int = REFERENCE_SHORT_SIDE,
+        max_fps: int = REFERENCE_MAX_FPS,
+    ) -> FittedVideo: ...
+
+
+def reference_size(
+    width: int, height: int, short_side: int = REFERENCE_SHORT_SIDE
+) -> tuple[int, int]:
+    """The source's own aspect with its short side at most `short_side`, both sides even
+    (H.264); a source already that small keeps its size (made even)."""
+    scale = min(1.0, short_side / max(1, min(width, height)))
+    w, h = round(width * scale), round(height * scale)
+    return max(2, w - w % 2), max(2, h - h % 2)
+
 
 class PyAvVideoFitter:
     """H.264 `yuv420p` MP4 at `size`, `+faststart`; no audio unless `keep_audio`."""
@@ -114,9 +140,13 @@ class PyAvVideoFitter:
         max_seconds: float = MAX_SLIDE_SECONDS,
         keep_audio: bool = False,
         x264: Mapping[str, str] | None = None,
+        fps_range: tuple[int, int] | None = None,
     ) -> FittedVideo:
         """`x264`: the encoder settings, a carousel slide's by default (a Seedance 2.5
-        final, m-24820142, asks for more detail)."""
+        final, m-24820142, asks for more detail). `fps_range` `(low, high)`: a source
+        slower than `low` is re-timed up to `low` (frames repeated), one faster than
+        `high` down to `high`; None keeps the source's own rate (m-24972160: ModelArk
+        takes a reference video only at 24-60 fps, and TikTok records at 23.976)."""
         width, height = size
         if width % 2 or height % 2:
             raise ValueError(f"an H.264 slide needs even dimensions, not {width}×{height}")
@@ -132,6 +162,9 @@ class PyAvVideoFitter:
                 max_seconds,
                 keep_audio=keep_audio,
                 x264=dict(x264) if x264 is not None else SLIDE_X264,
+                min_fps=fps_range[0] if fps_range is not None else None,
+                max_fps=fps_range[1] if fps_range is not None else None,
+                raw_rate_cap=fps_range is not None,
             )
             encoded = out.read_bytes()
         if not frames:
@@ -180,6 +213,42 @@ class PyAvVideoFitter:
                 keep_audio=True,
                 layers=layers,
                 x264=DETAIL_X264,
+            )
+            encoded = out.read_bytes()
+        if not frames:
+            raise ValueError("the video has no frames")
+        return FittedVideo(
+            data=encoded, width=size[0], height=size[1], duration_sec=frames / rate, poster=poster
+        )
+
+    def fit_reference(
+        self,
+        data: bytes,
+        *,
+        max_seconds: float | None = None,
+        short_side: int = REFERENCE_SHORT_SIDE,
+        max_fps: int = REFERENCE_MAX_FPS,
+    ) -> FittedVideo:
+        """A clip's reference video made light for ModelArk to fetch: its own aspect at
+        `short_side` (never upscaled), at most `max_fps`, H.264 crf 23, no audio, cut at
+        `max_seconds` (None: its whole length — a reel replica keeps its duration)."""
+        import av  # noqa: PLC0415 — lazy, like every other encode here
+
+        with av.open(io.BytesIO(data)) as source:
+            if not source.streams.video:
+                raise ValueError("the file has no video stream")
+            context = source.streams.video[0].codec_context
+            size = reference_size(context.width, context.height, short_side)
+        with tempfile.TemporaryDirectory(prefix="qualify-reference-") as tmp:
+            out = Path(tmp) / "reference.mp4"
+            frames, rate, poster, size = _encode(
+                data,
+                out,
+                size,
+                None,
+                math.inf if max_seconds is None else max_seconds,
+                x264=REFERENCE_X264,
+                max_fps=max_fps,
             )
             encoded = out.read_bytes()
         if not frames:
@@ -243,6 +312,12 @@ def _frame_rate(stream: Any) -> Fraction:
     return Fraction(FALLBACK_FPS)
 
 
+def _cover_crop(width: int, height: int) -> str:
+    """The `crop` filter's arguments for the centred window with the aspect of
+    `width`×`height` — `ImageOps.fit` in C, followed by a `scale` to that size."""
+    return f"w='min(iw,ih*{width}/{height})':h='min(ih,iw*{height}/{width})'"
+
+
 def _layer_frame(av: Any, overlay: bytes, size: tuple[int, int] | None) -> Any:
     """The text layer as an RGBA frame — `VideoFrame.from_image` would drop the alpha."""
     import numpy as np  # noqa: PLC0415
@@ -270,9 +345,17 @@ def _encode(
     keep_audio: bool = False,
     layers: Callable[[tuple[int, int]], Sequence[SubtitleLayer]] | None = None,
     x264: dict[str, str] = SLIDE_X264,
+    max_fps: int | None = None,
+    min_fps: int | None = None,
+    raw_rate_cap: bool = False,
 ) -> tuple[int, float, bytes | None, tuple[int, int]]:
     """Encode `data` at `size` (`None`: its own, made even) — the frame count, the rate,
-    the first frame as JPEG and the size it was encoded at."""
+    the first frame as JPEG and the size it was encoded at. `max_fps`: a faster source
+    is resampled to it (an `fps` filter); `min_fps`: a slower one is resampled up to it
+    (the same filter repeats frames); otherwise the source keeps its own rate.
+    `raw_rate_cap`: `max_fps` also applies to the stream's declared rate when
+    `_frame_rate` discards it as implausible (> 120 fps) — the `fps` filter retimes by
+    the frames' own timestamps, so a real 240 fps clip keeps its length."""
     import av  # noqa: PLC0415 — lazy: only a carousel's video slides need it
 
     frames = 0
@@ -286,6 +369,16 @@ def _encode(
             size = (own_w - own_w % 2, own_h - own_h % 2)
         width, height = size
         rate = _frame_rate(stream)
+        declared = stream.average_rate or stream.guessed_rate
+        too_fast = raw_rate_cap and declared is not None and declared > (max_fps or math.inf)
+        target: int | None = None
+        if max_fps is not None and (rate > max_fps or too_fast):
+            target = max_fps
+        elif min_fps is not None and rate < min_fps:
+            target = min_fps
+        resample = target is not None
+        if target is not None:
+            rate = Fraction(target)
         base = stream.time_base
         audio_in = source.streams.audio[0] if keep_audio and source.streams.audio else None
         with av.open(str(out), mode="w", format="mp4", options={"movflags": "+faststart"}) as sink:
@@ -303,13 +396,16 @@ def _encode(
 
             graph = av.filter.Graph()
             video_in = graph.add_buffer(template=stream)
-            # the centred window with the slide's aspect (`ImageOps.fit` in C)
-            cover = f"w='min(iw,ih*{width}/{height})':h='min(ih,iw*{height}/{width})'"
-            crop = graph.add("crop", cover)
+            crop = graph.add("crop", _cover_crop(width, height))
             scale = graph.add("scale", f"{width}:{height}")
             to_yuv = graph.add("format", "yuv420p")
             frames_out = graph.add("buffersink")
-            video_in.link_to(crop)
+            if resample:
+                fps = graph.add("fps", str(target))
+                video_in.link_to(fps)
+                fps.link_to(crop)
+            else:
+                video_in.link_to(crop)
             crop.link_to(scale)
             layer_in = None
             last = scale

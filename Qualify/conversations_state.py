@@ -1005,7 +1005,11 @@ class ConversationsState(rx.State):
                 await asyncio.to_thread(gw.mark_read, tenant_id, connection, thread)
         except ThreadNotFound:
             async with self:
-                if self.open_thread_id == thread_id:
+                if (
+                    self.open_thread_id == thread_id
+                    and self.selected_connection_id == connection_id
+                    and await self._tenant() == tenant_id
+                ):
                     self.open_thread_id = ""
                     self._reset_conversation()
                     self._set_banner(_THREAD_GONE, "warn")
@@ -1013,14 +1017,22 @@ class ConversationsState(rx.State):
         except _DB_ERRORS as exc:
             logger.error("conversations conversation failed: %s", type(exc).__name__)
             async with self:
-                if self.open_thread_id == thread_id:
+                if (
+                    self.open_thread_id == thread_id
+                    and self.selected_connection_id == connection_id
+                    and await self._tenant() == tenant_id
+                ):
                     self.conv_loading_for = ""
                     if not silent or not self.conv_loaded_for:
                         self.conv_error = _CONV_FAILED
             return
         async with self:
-            if self.open_thread_id != thread_id:
-                return  # another conversation was opened meanwhile
+            if (
+                self.open_thread_id != thread_id
+                or self.selected_connection_id != connection_id
+                or await self._tenant() != tenant_id
+            ):
+                return  # a different session, account or conversation is now open
             self._records = list(conv.messages)
             self._unsent = conv.unsent
             self._media_sources = dict(conv.media_sources)

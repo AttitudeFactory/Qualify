@@ -4,7 +4,7 @@ Every `app.add_page` route of Qualify.py, opened at a real address (`/drafts/123
 the `/drafts/[draft_id]` pattern), lights exactly one entry of the sidebar and exactly
 one cell of the phone's bottom bar — or, in the sidebar, none for the routes outside the
 menu listed below. «/» lights «Inicio» in both. Both navigations are lit by the same
-rule (`nav_vm.is_current`), which reads the browser's path (`router.url.path`), never the
+rule (`nav_vm.is_current`), which reads React Router's current location, never the
 matched pattern (`router.page.path` is `/index` on «/»).
 """
 
@@ -35,7 +35,10 @@ _ROUTE_NAMES = {
 }
 
 # A real address for each dynamic route.
-_REAL_PATH = {"/drafts/[draft_id]": "/drafts/123"}
+_REAL_PATH = {
+    "/drafts/[draft_id]": "/drafts/123",
+    "/drafts/[draft_id]/promote": "/drafts/123/promote",
+}
 
 
 def _registered_routes() -> list[str]:
@@ -74,16 +77,24 @@ _SIDEBAR_EXPECTED: dict[str, str | None] = {
     "/create": "Crear publicación",
     "/drafts": "Por aprobar",
     "/drafts/[draft_id]": "Por aprobar",
+    "/drafts/[draft_id]/promote": "Por aprobar",
+    "/aprobados": "Aprobados",  # m-24986801
     "/planner": "Tu semana",
+    "/promotions": "Anuncios",
+    "/promotions/forms": "Anuncios",
+    "/promotions/[promotion_id]": "Anuncios",
     "/publish": "Publicar ahora",
     "/stories": "Publicar ahora",  # only redirects into Publicar ahora
     "/resultados": "Resultados",
     "/menciones": "Resultados",
     "/clarity": "Resultados",
     "/creadores": "Creadores",
+    # m-24946129 / m-24946132: a creator's sheet and Comparar light «Creadores».
+    "/creadores/comparar": "Creadores",
+    "/creadores/[creator_id]": "Creadores",
     "/signals": "Oportunidades",
     "/brand/kit": "Tu marca",
-    "/catalog": "Tus productos",
+    "/catalog": "Galería",
     "/connections": "Tus redes",
     "/settings": "Configuración",
     # Outside the menu.
@@ -168,6 +179,24 @@ def test_a_ficha_lights_por_aprobar_and_from_tu_semana_lights_tu_semana() -> Non
     assert _lit_sidebar("/drafts", query) == ["Por aprobar"]
 
 
+def test_a_ficha_opened_from_aprobados_lights_aprobados_only() -> None:
+    """m-24986801 (N7): `/drafts/<id>?desde=aprobados` is «Aprobados», never also «Por
+    aprobar»; the list `/drafts` stays «Por aprobar» whatever its query says."""
+    query = {"desde": "aprobados"}
+    assert _lit_sidebar("/drafts/123", query) == ["Aprobados"]
+    assert _lit_sidebar("/aprobados") == ["Aprobados"]
+    assert _lit_sidebar("/aprobados", {"ver": "stickers"}) == ["Aprobados"]
+    assert _lit_sidebar("/drafts", query) == ["Por aprobar"]
+    assert _lit_sidebar("/drafts/123") == ["Por aprobar"]
+    from_approved = nav_vm.comes_from_approved(query)
+    lit = [
+        route
+        for route in _BOTTOM_ROUTES
+        if nav_vm.is_current(route, layout.NAV_ROUTES, "/drafts/123", False, from_approved)
+    ]
+    assert lit == []  # «Aprobados» lives behind «Más» on the phone
+
+
 def test_a_query_or_a_trailing_view_keeps_the_entry() -> None:
     assert _lit_sidebar("/planner/") == ["Tu semana"]
     assert _lit_sidebar("/publish", {"flow": "stories"}) == ["Publicar ahora"]
@@ -188,11 +217,20 @@ def test_the_guest_rail_lets_the_more_specific_entry_win() -> None:
 
 
 def test_the_page_reads_the_browser_path_never_the_route_pattern() -> None:
-    rendered = str(layout.route_is_current("/"))
-    assert "rx_router_url" in rendered
-    assert "rx_router_page" not in rendered
-    source = (_HERE / "ui" / "layout.py").read_text(encoding="utf-8")
-    assert "router.page.path" not in source.replace("``router.page.path``", "")
+    active = layout.route_is_current("/")
+    assert "qNavLocation.pathname" in str(active)
+    assert "rx_router_" not in str(active)
+    data = active._get_all_var_data()
+    assert data is not None
+    assert "const qNavLocation = useLocation();" in data.hooks
+    assert "react-router" in dict(data.imports)
+
+
+def test_ficha_origin_comes_from_the_same_client_location() -> None:
+    for route in ("/drafts", "/aprobados", "/planner"):
+        rendered = str(layout.route_is_current(route))
+        assert 'new URLSearchParams(qNavLocation.search).get("desde")' in rendered
+        assert "rx_router_" not in rendered
 
 
 def test_active_is_never_the_capsule_alone() -> None:

@@ -11,6 +11,7 @@ no de cada negocio.
 | Pieza | Dónde | Qué hace |
 |---|---|---|
 | Catálogo de planes | `packages/api/src/qualify_api/plans/data/planes-v2.json` (vigente; `planes-v1.json` queda para la procedencia) | Básico 30/4/20 (aviso USD 120, 2 negocios), Plus 60/8/40 (USD 240, 3), Pro 120/16/80 (USD 480, 5); techo 8 negocios. v2 = v1 + el plan interno **Ilimitado** (ver abajo) |
+| Video en segundos | `…/plans/data/cupo-segundos-v1.json` (`[PROPUESTO]`, D29 de `docs/modelo-cobro-generacion.md`, m-24921139) | El cupo de video del mes se cuenta en **segundos**: Básico 40 s, Plus 80 s, Pro 160 s; el paquete «+2 videos» suma 20 s («+20 segundos de video»). Es el único lugar de esas cifras: cambiarlas es editar ese archivo. Lo contado antes en videos vale 10 s. Los conteos de videos de `planes-v2` quedan para la procedencia y los pesos v2 |
 | Precios | `…/plans/data/precios-planes-v1.json` | 79 / 149 / 279 al mes; primer mes 39 / 75 / 139; paquetes +2 videos 29, +20 creaciones 12, +10 vistas previas 19. Un cambio de precio es un archivo nuevo (`precios-planes-v2`) |
 | `subscriptions` | 0093 | Quien paga. Sin `tenant_id`, aislada por GRANT (RLS forzada sin política, solo `qualify_admin`). Relleno 1:1 con los negocios que ya existen |
 | `tenants.subscription_id` | 0093 | Nullable por ahora; el negocio no puede cambiarlo (`qualify_app` solo actualiza nombre, país, zona y moneda) |
@@ -18,7 +19,7 @@ no de cada negocio.
 | `business_plans` | 0093 | Lo único que lee la app: el plan vigente del negocio y, si hay, la bajada pendiente. RLS por negocio, `qualify_app` solo lectura. Sin fila = Básico |
 | `subscription_cost_alerts` | 0093 | Un aviso por suscripción y mes al cruzar el tope en USD. Solo `qualify_admin` |
 | Cupo | `qualify_api/creative/creations.py` (`quota_for`) | El saldo del mes sale del plan del negocio, leído en la misma transacción bloqueada del cobro |
-| Configuración | `Qualify/settings_page.py` («Tu plan») | «Tu plan: Básico · 30 creaciones, 4 videos y 20 vistas previas al mes» + «Pedir más a Qualify» (pedido de soporte con tema `more_creations`). Sin precios |
+| Configuración | `Qualify/settings_page.py` («Tu plan») | «Tu plan: Básico · 30 creaciones, 40 segundos de video y 20 vistas previas al mes» + «Pedir más a Qualify» (pedido de soporte con tema `more_creations`). Sin precios |
 
 ## Reglas
 
@@ -80,7 +81,7 @@ Diseño: segunda revisión de arquitectura en los comentarios de m-24852129, con
 
 | Pieza | Dónde | Qué hace |
 |---|---|---|
-| Paquetes fijos | `precios-planes-v1` + `PACK_NAMES` en `plans/catalog.py` | «+2 videos» (USD 29), «+20 creaciones» (USD 12), «+10 vistas previas» (USD 19). Se eligen **por nombre**; una cantidad suelta o un nombre que no existe se rechaza sin escribir nada |
+| Paquetes fijos | `precios-planes-v1` + `PACK_NAMES` en `plans/catalog.py` | «+2 videos» (USD 29; desde D29 se muestra como «+20 segundos de video» y se acepta por los dos nombres), «+20 creaciones» (USD 12), «+10 vistas previas» (USD 19). Se eligen **por nombre**; una cantidad suelta o un nombre que no existe se rechaza sin escribir nada |
 | `creation_packs` | 0095 | Un paquete dado: negocio, marca, suscripción, código, versión de precios, unidades (leídas de la tabla), `granted_at`, `expires_at = granted_at + 90 días` (CHECK), origen, motivo, quién, clave de idempotencia, revocación (nunca se borra). RLS por negocio; `qualify_app` solo lectura |
 | `creation_allocations` | 0095 | Qué fuente pagó cada unidad de cada cargo (plan o paquete), escrito en la misma transacción bloqueada del cargo y devuelto con él. Los cargos de antes de 0095 se rellenaron como «plan» sin código de plan |
 | `creation_payments` | 0095 | Lo que el equipo cobró por un paquete (USD, versión de precios, referencia, quién). RLS por negocio y **ningún permiso para `qualify_app`** |

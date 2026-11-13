@@ -6,8 +6,9 @@ Replaces the dev tenant selector (`qualify_shared.dev` via `tenant.py`). Since A
 businesses:
 
 - **S3 (m-24849190):** a login with 2+ businesses lands on «¿Con qué negocio quieres
-  trabajar?» (`/elegir-negocio`) before any `session_tenant_id` exists; every page then
-  shows «Estás en {negocio}» in its header.
+  trabajar?» (`/elegir-negocio`) before any `session_tenant_id` exists; the sidebar's
+  top row then names the business (m-24976899; on a phone, «Estás en {negocio}» in the
+  header).
 - **S4 (m-24849191):** «Cambiar de negocio» does NOT reset this state in place: it
   abandons it for a NEW Reflex state, through a single-use pass (`business_switch.py`).
 
@@ -37,6 +38,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import time
 from collections.abc import AsyncIterator, Mapping
 from urllib.parse import parse_qs, urlencode
 from uuid import UUID
@@ -97,10 +99,14 @@ from .business_vm import (
     SWITCH_DOWN,
     SWITCH_NO_ACCESS,
     SWITCH_PASS_DEAD,
+    business_menu,
     chip_label,
+    logo_needs_refresh,
     opening_label,
     parse_choice_index,
     switch_choices,
+    switch_trigger_aria,
+    trigger_label,
 )
 from .pending_vm import FORGET_TITLE_BUSINESS_JS
 from .review_links import review_destination
@@ -264,6 +270,10 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
 
     Imported here, not at module top: these modules read AuthState, and a top-level
     import would be circular."""
+    from .ad_accounts_state import AdAccountsState
+    from .ad_enhancements_state import AdEnhancementsState
+    from .ad_forms_state import AdFormsState
+    from .ad_results_state import AdResultsState
     from .ask_more_state import AskMoreState
     from .brand_answers import BrandAnswersState
     from .brand_avatar_panel import BrandAvatarState
@@ -273,29 +283,45 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
     from .brand_proposal import BrandProposalState
     from .campaign_state import CampaignState
     from .canva_state import CanvaState
+    from .catalog_choose_state import CatalogChooseState
+    from .catalog_cut_state import CatalogCutState
+    from .catalog_gallery_state import CatalogGalleryState
+    from .catalog_group_state import CatalogGroupState
+    from .catalog_order_state import CatalogOrderState
     from .catalog_state import CatalogState
     from .clarity_state import ClarityState
     from .connections_state import ConnectionsState
     from .conversations_state import ConversationsState
+    from .create_gallery_state import CreateGalleryState
     from .creative_state import CreativeState
     from .creative_wizard_pages import BrandConnectState, BrandWizardState
+    from .creators_access import CreatorsAccessState
+    from .creators_state import CreatorsCompareState, CreatorSheetState, CreatorsState
     from .discover_reels import DiscoverReelsState
     from .final_review_state import FinalReviewState
+    from .final_video_card_state import FinalVideoState
     from .followups_state import FollowupsState
     from .gallery_state import GalleryState
+    from .generation_state import GenerationState
     from .home_state import HomeState
     from .ice_breakers_state import IceBreakersState
     from .inbox_state import InboxState
     from .leads_state import LeadsState
+    from .offer_mark_state import OfferMarkState
+    from .part_progress_state import PartProgressState
+    from .parts_start_state import PartsStartState
     from .pending_state import PendingState
+    from .pinterest_state import PinterestState
     from .planner_back import WeekBackState
     from .planner_state import PlannerState
+    from .promotion_state import PromotionState
     from .publish_hub_state import PublishHubState
     from .publishing_state import PublishState
     from .reconnect_state import ReconnectState
     from .replies_state import RepliesState
     from .responder_state import ResponderState
     from .results_state import ResultsState
+    from .seasonal_state import SeasonalState
     from .settings_state import SettingsState
     from .state import DashboardState
     from .stories_state import StoriesState
@@ -306,13 +332,25 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
     from .whatsapp_campaigns_state import WhatsAppCampaignsState
     from .whatsapp_chats_state import WhatsAppChatsState
     from .whatsapp_contacts_state import WhatsAppContactsState
+    from .whatsapp_location_state import WhatsAppLocationState
     from .whatsapp_menu_state import WhatsAppMenuState
     from .whatsapp_metrics_state import WhatsAppMetricsState
+    from .whatsapp_payments_state import WhatsAppPaymentsState
     from .whatsapp_state import WhatsAppState
     from .whatsapp_templates_state import WhatsAppTemplatesState
 
     return (
+        AdAccountsState,
+        AdEnhancementsState,
+        AdFormsState,
+        PromotionState,
+        AdResultsState,
         ConnectionsState,
+        # m-24946129 / m-24946132: Creadores — the switch, the list, a sheet, Comparar
+        CreatorsAccessState,
+        CreatorsState,
+        CreatorSheetState,
+        CreatorsCompareState,
         # m-24921091: the tenant's TikTok accounts and a piece's last draft
         TikTokConnectionsState,
         TikTokDraftState,
@@ -327,6 +365,10 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
         PublishHubState,
         DashboardState,
         CreativeState,
+        # m-24921082 UI-7: the rows of a video by parts
+        PartProgressState,
+        PinterestState,
+        FinalVideoState,  # m-24921084: «Tu video completo» of a video by parts
         # «Descubrir reels» (2026-10-15): the brand's referentes' reels
         DiscoverReelsState,
         # The Brand Kit wizard's OWN draft fields (request 2026-09-08) — step, chosen
@@ -364,6 +406,24 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
         # the product catalog (2026-10-05): the tenant's products, the open editor and
         # any files still parked for ingest
         CatalogState,
+        # m-24955643 «Ordenar tu menú»: the brand's categories and products in order,
+        # the queued writes and the cached brand id
+        CatalogOrderState,
+        # m-24955838 «Agrupa tus productos»: the products without a category, the
+        # proposed groups and the last move («Deshacer»)
+        CatalogGroupState,
+        # m-24955648 «Formas de pago»: the business's methods, the open form and the QR
+        # parked for it
+        WhatsAppPaymentsState,
+        # m-24955919 «Fotos y videos de tu negocio»: the business's own media (their
+        # view paths), its jobs and the cached brand id
+        CatalogGalleryState,
+        # m-24955924 «Corta tu video en partes»: the open video and its timeline
+        CatalogCutState,
+        # m-24955926 «Elegir para una publicación»: the media on screen and the choice
+        CatalogChooseState,
+        # m-24955928 «Crear» with Galería media: the chosen media and the request key
+        CreateGalleryState,
         # m-24803289 «Variaciones»: the chosen catalog product, its presets and the
         # angles under review (with the brand id cached behind them)
         VariationsState,
@@ -389,10 +449,19 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
         WhatsAppMetricsState,
         # m-24842963: the menu's pending counts of this tenant
         PendingState,
+        # m-24945889: which piece is this business's «Tu oferta», and the map point
+        OfferMarkState,
+        WhatsAppLocationState,
+        # m-24973458: whether a publication of this tenant is being made
+        GenerationState,
         # m-24842967: Configuración's country and currency of the business
         SettingsState,
+        # m-24976895: the brand's seasonal stickers and videos and their flow
+        SeasonalState,
         # m-24852129: the ask-more button — whether this business's request waits
         AskMoreState,
+        # m-24921079: «Armar mi video por partes» — the sentence about this business's product
+        PartsStartState,
         # Found by the runtime enumeration of ADR 43 A13 (2026-11-02): four states with
         # business data that no logout reset before. The answers path's drafts of the
         # tenant's own proposal; the avatar card's signed image link; the kit editor's
@@ -486,6 +555,45 @@ def brand_tenant_id(auth: AuthState) -> str:
     return auth.session_tenant_id or auth.guest_tenant_id
 
 
+async def reload_business_logo(state: rx.State, *, stale: bool = False) -> None:
+    """Read the open business's logo into `AuthState.business_logo_src` from a
+    background handler's `state` (any state of the tab). `stale` skips the freshness
+    test — Tu marca was just saved, so the logo may have changed. Never raises: a
+    database or token-store failure leaves the store icon."""
+    from .business_logo_provider import business_logo_path  # noqa: PLC0415
+
+    async with state:
+        auth = state if isinstance(state, AuthState) else await state.get_state(AuthState)
+        tenant = auth.session_tenant_id
+        if not tenant:
+            auth.business_logo_src = ""
+            auth._logo_tenant = ""
+            return
+        fetched_at = 0.0 if stale else auth._logo_fetched_at
+        if not logo_needs_refresh(
+            tenant=tenant,
+            logo_tenant=auth._logo_tenant,
+            fetched_at=fetched_at,
+            now=time.time(),
+        ):
+            return
+        # Claimed before the read: a second mount meanwhile does not read it twice.
+        auth._logo_fetched_at = time.time()
+        auth._logo_tenant = tenant
+    failed = False
+    try:
+        path = await asyncio.to_thread(business_logo_path, UUID(tenant))
+    except Exception as exc:  # never sinks the caller (a Tu marca save, a page mount)
+        logger.warning("business logo unreadable: %s", type(exc).__name__)
+        path, failed = "", True
+    async with state:
+        auth = state if isinstance(state, AuthState) else await state.get_state(AuthState)
+        if auth.session_tenant_id == tenant:  # still the same business
+            auth.business_logo_src = path
+            if failed:
+                auth._logo_fetched_at = 0.0  # the next mount tries again
+
+
 class AuthState(rx.State):
     """Login/signup/logout and custody of the authenticated tenant."""
 
@@ -504,6 +612,10 @@ class AuthState(rx.State):
     awaiting_business_choice: bool = False
     #: The business being opened (selector or switch): «Abriendo {negocio}…».
     opening_business: str = ""
+    #: m-24976899: the open business's main Brand Kit logo, as a short-lived
+    #: `/r2media/<token>` path ("" = none: the sidebar shows the store icon). Read by
+    #: `refresh_business_logo` on the shell's mount and after Tu marca is saved.
+    business_logo_src: str = ""
 
     auth_error: str = ""
     is_authenticating: bool = False
@@ -566,6 +678,10 @@ class AuthState(rx.State):
     _choice_next: str = ""
     # A notice the next /login shows once (its on_load clears every other error).
     _login_notice: str = ""
+    # m-24976899: which tenant `business_logo_src` belongs to and when it was minted
+    # (time.time()); 0 = read it again on the next shell mount.
+    _logo_tenant: str = ""
+    _logo_fetched_at: float = 0.0
     #: That notice, on screen: not an error (a reload, a pass that ran out), so /login
     #: shows it in the informative tone, apart from `auth_error`.
     login_notice: str = ""
@@ -594,6 +710,21 @@ class AuthState(rx.State):
         return chip_label(self.business_name)
 
     @rx.var
+    def business_trigger_label(self) -> str:
+        """The sidebar's top row: the business name, or «Abriendo {negocio}…»."""
+        return trigger_label(self.business_name, self.opening_business)
+
+    @rx.var
+    def business_trigger_aria(self) -> str:
+        """«Estás en {negocio}. Cambiar de negocio» on the name that opens the menu."""
+        return switch_trigger_aria(self.business_name, self.opening_business)
+
+    @rx.var
+    def business_menu(self) -> list[dict[str, str]]:
+        """Every business of the login for the sidebar's menu, the open one flagged."""
+        return business_menu(self.business_names, self.active_business_index)
+
+    @rx.var
     def business_choices(self) -> list[dict[str, str]]:
         """Every business of a login waiting on the selector, each with its position."""
         return switch_choices(self.business_names, -1)
@@ -604,7 +735,9 @@ class AuthState(rx.State):
 
     @rx.var
     def switch_options(self) -> list[dict[str, str]]:
-        """The other businesses of the login, each with its position (never its id)."""
+        """The other businesses of the login, each with its position (never its id).
+        No screen reads it since m-24976899 (the sidebar uses `business_menu`); kept
+        as the S4 contract its tests pin."""
         return switch_choices(self.business_names, self.active_business_index)
 
     @rx.var
@@ -1019,6 +1152,9 @@ class AuthState(rx.State):
     ) -> None:
         """THE one place `session_tenant_id` is written. Call inside `async with self`,
         with values that come from a verified `LoginResult` or from `open_business`."""
+        if tenant_id != self.session_tenant_id:
+            self.business_logo_src = ""
+        self._logo_fetched_at = 0.0
         self.session_tenant_id = tenant_id
         self.business_name = business_name
         self.user_email = email
@@ -1041,6 +1177,18 @@ class AuthState(rx.State):
         self.guest_email = ""
         self.login_email_hint = ""
         self.show_password = False
+
+    # ----------------------------------------------------------------------------------
+    # m-24976899: the business logo on the sidebar's top row
+    # ----------------------------------------------------------------------------------
+
+    @rx.event(background=True)
+    async def refresh_business_logo(self):
+        """The shell's mount (every page): mint the logo's path again when it belongs
+        to another business, was marked stale, or is older than `LOGO_FRESH_SECONDS`
+        (the `/r2media` token lives an hour). Cheap when fresh: nothing leaves the
+        process."""
+        await reload_business_logo(self)
 
     # ----------------------------------------------------------------------------------
     # ADR 43 S3: «¿Con qué negocio quieres trabajar?» (/elegir-negocio)
@@ -1139,6 +1287,7 @@ class AuthState(rx.State):
             tenant_id = self._choice_ids[index]
             access_token = self._access_token
             current = self.business_name
+            outgoing_tenant_id = self.session_tenant_id
             self.opening_business = self.business_names[index]
         if not auth_user_id:
             async with self:
@@ -1147,6 +1296,11 @@ class AuthState(rx.State):
             return
         try:
             await asyncio.to_thread(_open_business_blocking, auth_user_id, tenant_id)
+            # The outgoing Reflex state is kept intact during a tab switch.
+            # Invalidate its pending Pinterest consent before a new state is opened.
+            from .pinterest_provider import cancel_pending
+
+            await asyncio.to_thread(cancel_pending, UUID(outgoing_tenant_id), auth_user_id)
             pass_value = await asyncio.to_thread(
                 issue_switch_pass, UUID(auth_user_id), UUID(tenant_id), access_token
             )
@@ -1198,7 +1352,10 @@ class AuthState(rx.State):
     async def redeem_switch(self, fragment: str):
         """Step 3 of ADR 43 §2.2, in the NEW state the browser opened without a token:
         redeem the pass once, check the membership fresh again, open that business."""
+        from .business_switch import switch_destination
+
         pass_value = pass_from_fragment(fragment)
+        destination = switch_destination(fragment)
         # The pass must not linger in the address bar, the history or a shared URL.
         yield rx.call_script("history.replaceState(null, '', window.location.pathname)")
         target = None
@@ -1250,13 +1407,75 @@ class AuthState(rx.State):
                 user_id=str(active.user_id),
                 kit_complete=kit_complete,
             )
-        yield rx.redirect("/")
+        yield rx.redirect(destination)
+
+    @rx.event(background=True)
+    async def open_pinterest_connections(self, request_id: str):
+        """Open the SAME business in a new tab using the existing one-use switch pass."""
+        from .business_switch import connections_tab_script
+
+        if not request_id:
+            yield rx.toast.error("Permite abrir otra pestaña para conectar Pinterest en Tus redes.")
+            return
+        try:
+            UUID(request_id)
+        except (ValueError, TypeError, AttributeError):
+            return
+        async with self:
+            tenant_id, user_id, token = (
+                self.session_tenant_id,
+                self._auth_user_id,
+                self._access_token,
+            )
+        try:
+            if not tenant_id or not user_id or not token:
+                raise ValueError("missing actor")
+            await asyncio.to_thread(_open_business_blocking, user_id, tenant_id)
+            pass_value = await asyncio.to_thread(
+                issue_switch_pass, UUID(user_id), UUID(tenant_id), token
+            )
+            async with self:
+                if (tenant_id, user_id, token) != (
+                    self.session_tenant_id,
+                    self._auth_user_id,
+                    self._access_token,
+                ):
+                    raise ValueError("changed actor")
+        except (NotAMember, SQLAlchemyError, ValueError, *_SWITCH_STORE_ERRORS):
+            yield rx.call_script(connections_tab_script(request_id))
+            yield rx.toast.error("No pudimos abrir Tus redes. Vuelve a intentarlo.")
+            return
+        yield rx.call_script(connections_tab_script(request_id, pass_value))
 
     async def _reset_business_states(self) -> None:
         """Reset every business substate (`business_state_classes`). Inside `async with
         self`."""
+        # Consent opened before logout/switch must not complete for the old business.
+        try:
+            from .pinterest_provider import cancel_pending
+            from .tenant import tenant_uuid
+
+            old_tenant = tenant_uuid(getattr(self, "session_tenant_id", ""))
+            if old_tenant is not None:
+                await asyncio.to_thread(
+                    cancel_pending, old_tenant, getattr(self, "_auth_user_id", "")
+                )
+        except Exception as exc:  # noqa: BLE001 — logout still clears every state
+            logger.warning("pinterest consent cancellation failed: %s", type(exc).__name__)
         for state_cls in business_state_classes():
             substate = await self.get_state(state_cls)
+            # A state that parks files outside itself (the «Formas de pago» QR) deletes
+            # them first: `reset` only clears the fields that point at them.
+            discard = getattr(substate, "_discard_files", None)
+            if callable(discard):
+                try:
+                    discard()
+                except Exception as exc:  # noqa: BLE001 — never skip the other resets
+                    logger.warning(
+                        "discard files failed state=%s error=%s",
+                        state_cls.__name__,
+                        type(exc).__name__,
+                    )
             substate.reset()
 
     @rx.event(background=True)

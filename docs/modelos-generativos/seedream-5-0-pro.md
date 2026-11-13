@@ -1,15 +1,33 @@
 # Seedream 5.0 pro — transferir colores y aplicar textura (m-24849234) · BORRADOR
 
-> **Borrador de preparación (PR 4).** Solo hay datos verificables de la documentación del
-> proveedor y del plan de la prueba. Ningún resultado de 5.0 pro existe todavía: cada campo de
-> resultado dice **PENDIENTE: requiere activación de Pro y autorización de gasto**.
+## Verificación acotada — 2026-11-10
+
+Una generación directa de imagen sintética a 1K con la llave local
+`QUALIFY_BYTEPLUS_ARK_API_KEY` terminó correctamente. La API devolvió el identificador
+`dola-seedream-5-0-pro-260628`. Esto demuestra acceso local a la generación con Pro;
+no verifica el acceso en producción ni la calidad para casos de clientes. No se hizo una
+comparación de calidad con Lite ni se desplegó el cambio.
+El prompt exacto fue `A plain blue ceramic mug on a white background, no text, no logo`.
+No se capturaron la duración ni el cargo real de esa llamada; la tarifa publicada para
+una salida 1K sin referencias adicionales es US$0,045.
+
+Para m-24993446 se preparó la tabla inmutable `v8` y Pro pasa a ser el modelo
+predeterminado cuando `QUALIFY_SEEDREAM_MODEL` está vacío. La variable permite
+sobrescribirlo. La evaluación PLANTILLAS-002 y sus métricas siguen pendientes.
+
+El precio oficial consultado el 2026-11-10 mantiene US$0,045 y US$0,09 por imagen y
+US$0,003 desde la segunda referencia. Las páginas oficiales consultadas discrepan
+en el corte entre tramos: una indica 2,36 MP y otra 2,61 MP. La cotización de `v8`
+usa 2,36 MP para evitar una reserva insuficiente.
+Fuentes: [página inglesa indexada](https://docs.byteplus.com/docs/ModelArk/1099320)
+y [página japonesa actualizada](https://docs.byteplus.com/ja/docs/modelark/model-pricing).
 
 | Campo | Valor |
 |---|---|
 | Proveedor | BytePlus ModelArk (`SeedreamImageAdapter`), llave `QUALIFY_BYTEPLUS_ARK_API_KEY`, endpoint `https://ark.ap-southeast.bytepluses.com/api/v3/images/generations` |
-| Modelo | `dola-seedream-5-0-pro-260628` · revisión que devuelve la API: PENDIENTE: requiere activación de Pro y autorización de gasto |
+| Modelo | `dola-seedream-5-0-pro-260628` · devuelto por la API en generación sintética local del 2026-11-10 |
 | Precio (tabla `v6`, docs.byteplus.com/en/docs/modelark/model-pricing, «Last updated: October 23, 2026», verificado el 2026-10-23) | Imagen hasta 2.61 MP (1K y 1.5K): US$0,045 (`per_image_1k`) · más de 2.61 MP (2K): US$0,09 (`per_image_2k`) · imágenes de entrada: la primera gratis, desde la segunda US$0,003 cada una (`per_extra_reference_image`) · descomposición en capas: US$0,0225 / US$0,045 por capa según su tramo (`per_layer_1k` / `per_layer_2k`). Solo se cobran las imágenes generadas con éxito |
-| Uso en Qualify | Experimento `packages/api/evals/plantillas_ai/`. No está en producción: `v6` no le pone `per_piece`, así que el enrutador de producción no puede elegirlo por accidente |
+| Uso en Qualify | Experimento `packages/api/evals/plantillas_ai/` pendiente. Producción aún no verificada; el código preparado para m-24993446 usa `v8` y Pro por defecto cuando `QUALIFY_SEEDREAM_MODEL` está vacío. |
 | Datos | Modelo preautorizado: cede los datos a BytePlus (por eso solo material ficticio o propio de Attitude Factory; ningún dato de un cliente). Cláusula de BytePlus (docs.byteplus.com/en/docs/ModelArk/BytePlus_ModelArk_Data_Processing, actualizada el 2026-09-10): sin autorización previa del cliente no usa sus datos para entrenar sus modelos; procesa en Malasia, Indonesia y/o UE/EEE, y guarda 180 días en Malasia lo que dispara el filtro de contenido |
 
 ## Capacidades verificadas (API, docs.byteplus.com/en/docs/modelark/image-generation-api, «Last updated: October 17, 2026»)
@@ -68,7 +86,7 @@
 
 ### Requisitos antes de correrla
 
-- Activar `dola-seedream-5-0-pro-260628` en la consola de Ark (cuenta del fundador).
+- Confirmar acceso y configuración del modelo en el entorno donde se ejecute la prueba. La generación local sintética del 2026-11-10 funcionó.
 - Autorización de gasto del fundador para cada paso.
 - Las 8 fotos de productos propios (3 bastan para la muestra).
 - `--check-readiness` sin pendientes para la matriz elegida.

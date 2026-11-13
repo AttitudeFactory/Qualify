@@ -36,6 +36,7 @@ and it is what lets the UI ask for a reconnect instead of silently showing stale
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -52,6 +53,7 @@ from qualify_api.connections.events import (
 from qualify_api.connections.fsm import ConnectionStatus, Trigger, apply_transition
 from qualify_api.connections.meta_oauth import LinkedPage, MetaOAuthClient
 from qualify_api.connections.page_subscription import PageSubscriptions
+from qualify_api.connections.public_hosts import redirect_uri_for
 from qualify_api.connections.read import list_connections
 from qualify_api.connections.repository import (
     ConnectionRepository,
@@ -84,6 +86,8 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class ConnectOutcome(StrEnum):
+    ADS_ACTIVE = "ads_active"
+    ADS_PERMISSION_MISSING = "ads_permission_missing"
     ACTIVE = "active"
     DEGRADED = "degraded"
     # `/me/accounts` returned Pages, but none has a linked Instagram account. The genuine R4
@@ -153,6 +157,20 @@ def _no_connection_outcome(pages: tuple[LinkedPage, ...]) -> ConnectOutcome:
     return ConnectOutcome.PAGE_ACCESS_REQUIRED if not pages else ConnectOutcome.LINK_REQUIRED
 
 
+class AdsGrantRecorder(Protocol):
+    def record(
+        self,
+        *,
+        tenant_id: UUID,
+        connection_id: UUID,
+        version: int,
+        ciphertext: bytes,
+        key_id: str,
+        granted_scopes: tuple[str, ...],
+        expires_at: datetime | None,
+    ) -> None: ...
+
+
 class ConnectService:
     def __init__(
         self,
@@ -165,7 +183,11 @@ class ConnectService:
         verifier: ConnectionVerifier,
         publisher: EventPublisher,
         page_subscriptions: PageSubscriptions | None = None,
+        ads_grants: AdsGrantRecorder | None = None,
+        ads_membership_check: Callable[[UUID, UUID], None] | None = None,
     ) -> None:
+        self._ads_grants = ads_grants
+        self._ads_membership_check = ads_membership_check
         self._settings = settings
         self._oauth = oauth_client
         self._repo = repository
@@ -187,14 +209,27 @@ class ConnectService:
         connection_id: UUID | None = None,
         return_to: str = "",
         cause: str = "",
+        request_ads: bool = False,
+        browser_origin: str = "",
     ) -> StartedConnect:
         """Register a one-shot `state` and return the authorization URL to redirect to,
         with the browser-binding cookie the starting browser must carry back (m-24921205).
+
+        `browser_origin` is the origin of the page the click came from (m-24947215): when its
+        host has a registered Meta callback (`MetaOAuthSettings.redirect_hosts`), the flow
+        runs entirely on that host; otherwise on the configured `redirect_uri`.
 
         `rerequest` is the retry after `page_access_required` (QUA-202): it only changes
         the dialog URL (`auth_type=rerequest`, see `HttpMetaOAuthClient.authorization_url`);
         the `state`, its jti and the callback are exactly the same flow.
         """
+        if request_ads:
+            from qualify_api.tenancy.acting import require_acting_member
+
+            require_acting_member(tenant_id)
+            self._require_ads_member(tenant_id, user_id)
+            if connection_id is None:
+                raise ValueError("advertising requires an existing Instagram connection")
         external_account_id = ""
         if connection_id is not None:
             target = next(
@@ -209,6 +244,9 @@ class ConnectService:
             external_account_id = target.external_account_id
             cause = target.reconnect_reason or cause
         nonce = new_binding_nonce()
+        redirect_uri = redirect_uri_for(
+            self._settings.redirect_uri, browser_origin, self._settings.redirect_hosts
+        )
         payload = new_payload(
             tenant_id,
             brand_id,
@@ -218,19 +256,33 @@ class ConnectService:
             external_account_id=external_account_id,
             cause=cause,
             binding=binding_hash(nonce),
+            request_ads=request_ads,
+            redirect_uri=redirect_uri,
         )
         self._jti.issue(payload.jti)
         state = sign_state(payload, self._settings.state_secret)
-        url = self._oauth.authorization_url(
-            state=state, rerequest=rerequest or cause == "permission_missing"
-        )
+        url_options: dict[str, bool | str] = {
+            "rerequest": rerequest or cause == "permission_missing",
+            "redirect_uri": redirect_uri,
+        }
+        if request_ads:
+            url_options["request_ads"] = True
+        url = self._oauth.authorization_url(state=state, **url_options)
         return StartedConnect(
             authorization_url=url,
             binding_cookie_name=binding_cookie_name(BINDING_PROVIDER, payload.jti),
             binding_nonce=nonce,
             max_age=self._settings.state_ttl_seconds,
-            callback_url=self._settings.redirect_uri,
+            callback_url=redirect_uri,
         )
+
+    def _require_ads_member(self, tenant_id: UUID, user_id: UUID) -> None:
+        if self._ads_membership_check is not None:
+            self._ads_membership_check(tenant_id, user_id)
+        else:
+            from qualify_api.connections.ad_accounts import require_ads_member
+
+            require_ads_member(tenant_id, user_id)
 
     def binding_cookie(self, state: str) -> str:
         """The binding cookie name of a verified `state` (raises `InvalidState`)."""
@@ -264,7 +316,12 @@ class ConnectService:
         unbound `state` — always before the code is exchanged."""
         payload = self.consume_callback_state(state, binding_nonce=binding_nonce)
 
-        grant = await self._oauth.exchange_code(code)
+        if payload.request_ads:
+            self._require_ads_member(payload.tenant_id, payload.user_id)
+
+        grant = await self._oauth.exchange_code(
+            code, redirect_uri=payload.redirect_uri or self._settings.redirect_uri
+        )
 
         # --- R4: the binding gate. Post-consent enumeration, pre-persistence. ---
         pages = await self._oauth.list_linked_pages(grant.access_token)
@@ -314,6 +371,12 @@ class ConnectService:
             )
 
         granted_scopes = await self._oauth.list_granted_scopes(grant.access_token)
+        # A normal Instagram reconnect may already grant advertising permissions through
+        # the principal Meta configuration. Keep that same USER grant for Marketing API
+        # calls before the organic path replaces it with a Page token.
+        keep_ads_grant = self._ads_grants is not None and (
+            payload.request_ads or "ads_management" in granted_scopes
+        )
 
         # --- A0: custody the PAGE token, not the user one. ---
         # The Instagram-API-with-Facebook-Login fork publishes with a Facebook Page access
@@ -328,6 +391,8 @@ class ConnectService:
             )
 
         now = datetime.now(UTC)
+        if payload.request_ads or keep_ads_grant:
+            self._require_ads_member(payload.tenant_id, payload.user_id)
         record = self._repo.persist_grant(
             GrantInput(
                 tenant_id=payload.tenant_id,
@@ -346,13 +411,27 @@ class ConnectService:
                 # Encrypted HERE. Past this line the plaintext is unreferenced.
                 ciphertext=self._encryptor.encrypt(page_token or grant.access_token),
                 key_id=self._encryptor.key_id,
-                token_type="page" if page_token is not None else grant.token_type,
+                # OAuth's 'bearer' denotes the authorization scheme, not whether a
+                # credential belongs to a USER or Page. Record the known origin.
+                token_type="page" if page_token is not None else "user",
                 issued_at=now,
                 # `[V]` conservative: the page token's real lifetime is unobserved, so the
                 # user grant's expiry stands in — it can only under-promise, never over.
                 expires_at=now + timedelta(seconds=grant.expires_in) if grant.expires_in else None,
             )
         )
+        if keep_ads_grant:
+            assert self._ads_grants is not None
+            self._require_ads_member(payload.tenant_id, payload.user_id)
+            self._ads_grants.record(
+                tenant_id=record.tenant_id,
+                connection_id=record.connection_id,
+                version=record.credential_version,
+                ciphertext=self._encryptor.encrypt(grant.access_token),
+                key_id=self._encryptor.key_id,
+                granted_scopes=granted_scopes,
+                expires_at=now + timedelta(seconds=grant.expires_in) if grant.expires_in else None,
+            )
         self._publisher.publish(
             DomainEvent(
                 name=DomainEventName.GRANTED,
@@ -399,7 +478,14 @@ class ConnectService:
             )
         return ConnectResult(
             outcome=(
-                ConnectOutcome.PERMISSION_MISSING
+                ConnectOutcome.ADS_ACTIVE
+                if payload.request_ads
+                and status == ConnectionStatus.ACTIVE
+                and "ads_management" in granted_scopes
+                and self._ads_grants is not None
+                else ConnectOutcome.ADS_PERMISSION_MISSING
+                if payload.request_ads
+                else ConnectOutcome.PERMISSION_MISSING
                 if permission_missing
                 else ConnectOutcome.ACTIVE
                 if status == ConnectionStatus.ACTIVE

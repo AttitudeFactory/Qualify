@@ -50,6 +50,7 @@ from .planner_provider import (
     cancel_event,
     create_tag,
     delete_tag,
+    dismiss_season_notice,
     event_detail,
     load_week,
     planner_error_message,
@@ -66,6 +67,7 @@ from .planner_vm import (
     AUTO_PUBLISH_UNAVAILABLE,
     CALENDAR_DEFAULT_TZ,
     CAMPAIGN_NEW,
+    EMPTY_SEASON_NOTICE,
     KIND_ICONS,
     OPENING_HOUR,
     PLAN_GOAL_KEYS,
@@ -88,6 +90,7 @@ from .planner_vm import (
     PlanItem,
     PlanRowVM,
     PostOptionVM,
+    SeasonNoticeVM,
     TagSuggestionVM,
     TagVM,
     TzOptionVM,
@@ -324,6 +327,8 @@ class PlannerState(rx.State):
     tenant_tz: str = ""
     now_hhmm: str = ""  # the view zone's wall-clock time when the week was loaded
     auto_publish: str = AUTO_PUBLISH_UNAVAILABLE
+    #: m-24976896: «{Temporada} está cerca: crea tus stickers y videos.» (or empty)
+    season_notice: SeasonNoticeVM = EMPTY_SEASON_NOTICE
     tz_query: str = ""
     # Planning tags (0025): the tenant's labels and the calendar's tag filter.
     tags: list[TagVM] = []
@@ -743,6 +748,20 @@ class PlannerState(rx.State):
         async for update in self._load_week(quiet=True):
             yield update
 
+    @rx.event(background=True)
+    async def dismiss_season_notice(self) -> None:
+        """«Ahora no»: hidden at once; the backend keeps it from coming back."""
+        async with self:
+            key = self.season_notice.season_key
+            self.season_notice = EMPTY_SEASON_NOTICE
+        tenant_id = await self._tenant()
+        if not key or tenant_id is None:
+            return
+        try:
+            await asyncio.to_thread(dismiss_season_notice, tenant_id, key)
+        except Exception as exc:  # noqa: BLE001 — at worst it shows again next week
+            logger.warning("planner season dismiss failed: %s", type(exc).__name__)
+
     async def _load_week(self, *, quiet: bool):
         async with self:
             if not quiet:
@@ -786,6 +805,7 @@ class PlannerState(rx.State):
             self.tenant_tz = data.tenant_tz
             self.now_hhmm = data.now_hhmm
             self.auto_publish = data.auto_publish
+            self.season_notice = data.season_notice
             self.tags = data.tags
             self.campaigns = data.campaigns
             known = {t.id for t in data.tags}

@@ -333,6 +333,7 @@ async def test_back_on_create_the_route_the_owner_had_open_stays_open(
     )
     monkeypatch.setattr(creative_state_module, "brand_media", lambda t, b: [])
     monkeypatch.setattr(creative_state_module, "brand_campaign_options", lambda t, b: [])
+    monkeypatch.setattr(creative_state_module, "brand_cta_patterns", lambda t, b: ())
     state = CreativeState()
 
     await CreativeState.load_create.fn(state)
@@ -415,7 +416,7 @@ def test_crear_and_variaciones_link_agregar_producto_with_the_way_back() -> None
     assert "Ir al catálogo" not in generator
     assert generator.count("new_product_href(CREATE_RETURN_PATH)") == 2
     variations = Path(variations_view.__file__).read_text(encoding="utf-8")
-    assert "Ir a Tus productos" not in variations
+    assert "Ir a la Galería" not in variations
     assert variations.count("new_product_href(VARIATIONS_RETURN_PATH)") == 2
     catalog = Path(catalog_page.__file__).read_text(encoding="utf-8")
     assert "RETURN_LABEL" in catalog and "RETURN_HINT" in catalog

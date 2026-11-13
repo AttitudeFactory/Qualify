@@ -24,15 +24,16 @@ _ENTRIES = [
     ("Inicio", "/"),
     ("Por responder", "/responder"),
     ("WhatsApp", "/whatsapp"),
+    ("Galería", "/catalog"),
     ("Crear publicación", "/create"),
     ("Por aprobar", "/drafts"),
+    ("Aprobados", "/aprobados"),
     ("Tu semana", "/planner"),
     ("Publicar ahora", "/publish"),
     ("Resultados", "/resultados"),
     ("Creadores", "/creadores"),
     ("Oportunidades", "/signals"),
     ("Tu marca", "/brand/kit"),
-    ("Tus productos", "/catalog"),
     ("Tus redes", "/connections"),
     ("Configuración", "/settings"),
 ]
@@ -125,7 +126,10 @@ def test_every_sidebar_entry_lights_itself_and_history_follows(
         expect(page).to_have_url(_url(app_server, route), timeout=60_000)
         _expect_sidebar_lit(page, route)
     _shot(page, "menu-zen-tu-marca")
-    page.locator("#q-zen-toggle").click()
+    # m-24976899: collapsed, the business logo is the expand control (same place, top).
+    expect(page.locator("#q-zen-toggle")).to_be_hidden()
+    page.locator("#q-zen-expand").click()
+    expect(page.locator("#q-zen-toggle")).to_be_visible()
 
 
 def test_a_ficha_lights_its_module(
@@ -140,6 +144,8 @@ def test_a_ficha_lights_its_module(
     _expect_sidebar_lit(page, "/drafts")
     page.goto(f"{app_server}{ficha}?desde=semana&semana=2026-10-19&vista=lista")
     _expect_sidebar_lit(page, "/planner")
+    page.goto(f"{app_server}{ficha}?desde=aprobados")
+    _expect_sidebar_lit(page, "/aprobados")
     _shot(page, "menu-ficha-desde-semana")
 
 
@@ -172,6 +178,17 @@ def test_the_phone_bar_marks_its_cell_or_more(
     page.locator(".q-bottom-more").click()
     _expect_sidebar_lit(page, "/drafts")
     _shot(page, "barra-mas-por-aprobar")
+
+    # One tap changes the page and closes the drawer; reopening it must keep the
+    # selection, including the two adjacent entries in the publication flow.
+    menu = page.locator('nav[aria-label="Secciones"]')
+    for route in ("/aprobados", "/drafts"):
+        menu.locator(f'a[href="{route}"]').click()
+        expect(page).to_have_url(_url(app_server, route), timeout=60_000)
+        expect(page.locator("#q-sidebar")).not_to_have_class(re.compile(r"q-mobile-open"))
+        _expect_bottom_lit(page, "Más")
+        page.locator(".q-bottom-more").click()
+        _expect_sidebar_lit(page, route)
 
 
 @pytest.mark.parametrize("viewport", [(360, 640), (390, 844), (640, 360)])

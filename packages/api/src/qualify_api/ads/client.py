@@ -7,6 +7,7 @@ may have succeeded remotely; reconciliation belongs to m-24828974.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import math
 import os
@@ -27,6 +28,7 @@ from qualify_api.ads.errors import (
 from qualify_api.connections.resolver import AuthenticatedClient
 
 Payload = Mapping[str, Any]
+BeforeWrite = Callable[[], Awaitable[None] | None]
 Resource = Literal["campaigns", "adsets", "adcreatives", "ads"]
 RESOURCES = frozenset({"campaigns", "adsets", "adcreatives", "ads"})
 
@@ -57,9 +59,20 @@ class MarketingPage:
 
 
 class MarketingAPI(Protocol):
-    async def create(self, resource: Resource, *, params: Payload) -> str: ...
+    async def delivery(self, ad_id: str) -> dict[str, Any]: ...
+    async def create(
+        self, resource: Resource, *, params: Payload, before_write: BeforeWrite | None = None
+    ) -> str: ...
+    async def validate(self, resource: Resource, *, params: Payload) -> None: ...
+    async def read_object(self, object_id: str, *, fields: str) -> dict[str, Any]: ...
     async def list(self, resource: Resource, *, params: Payload | None = None) -> MarketingPage: ...
-    async def update(self, object_id: str, *, params: Payload) -> None: ...
+    async def update(
+        self,
+        object_id: str,
+        *,
+        params: Payload,
+        before_write: BeforeWrite | None = None,
+    ) -> None: ...
     async def status(self, object_id: str) -> dict[str, Any]: ...
     async def adpreviews(self, ad_id: str, *, params: Payload) -> MarketingPage: ...
     async def minimum_budgets(self, *, params: Payload | None = None) -> MarketingPage: ...
@@ -67,6 +80,8 @@ class MarketingAPI(Protocol):
     async def search_locations(self, *, query: str) -> MarketingPage: ...
     async def search_interests(self, *, query: str) -> MarketingPage: ...
     async def targetingsearch(self, *, params: Payload) -> MarketingPage: ...
+    async def audience_search(self, *, params: Payload) -> MarketingPage: ...
+    async def audience_validation(self, *, interest_ids: tuple[str, ...]) -> MarketingPage: ...
     async def insights(
         self, object_id: str | None = None, *, params: Payload | None = None
     ) -> MarketingPage: ...
@@ -195,11 +210,24 @@ class MarketingClient:
         self._not_before = 0.0
         self._lock = asyncio.Lock()
 
-    async def _request(self, method: str, path: str, params: Payload) -> dict[str, Any]:
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        params: Payload,
+        *,
+        before_write: BeforeWrite | None = None,
+    ) -> dict[str, Any]:
         encoded = _encode(params)
         async with self._lock:
             while (wait := self._not_before - self._clock()) > 0:
                 await self._sleep(wait)
+            # Consent/membership may expire while waiting for this account's
+            # cooldown or lock. The callback is local, synchronous and never encoded.
+            if before_write is not None:
+                checked = before_write()
+                if inspect.isawaitable(checked):
+                    await checked
             # Catch without retaining or chaining transport exceptions, which can
             # carry full request URLs/headers. Never log request/response bodies.
             failed = False
@@ -248,10 +276,17 @@ class MarketingClient:
                 raise error
             return payload
 
-    async def create(self, resource: Resource, *, params: Payload) -> str:
+    async def create(
+        self, resource: Resource, *, params: Payload, before_write: BeforeWrite | None = None
+    ) -> str:
         if resource not in RESOURCES:
             raise ValueError("unsupported advertising resource")
-        payload = await self._request("POST", f"{self._account}/{resource}", params)
+        if before_write is None:
+            payload = await self._request("POST", f"{self._account}/{resource}", params)
+        else:
+            payload = await self._request(
+                "POST", f"{self._account}/{resource}", params, before_write=before_write
+            )
         identifier = payload.get("id")
         if not isinstance(identifier, str) or not identifier.isdigit():
             raise MarketingError(
@@ -260,13 +295,88 @@ class MarketingClient:
             )
         return identifier
 
+    async def upload_image(self, data: bytes, *, before_write: BeforeWrite) -> str:
+        """Bounded ad-account image upload, no URL, automatic retry or numeric-ID assumption."""
+        import base64
+
+        from qualify_api.ads.unpublished import MAX_IMAGE_BYTES
+
+        if not isinstance(data, bytes) or not 0 < len(data) <= MAX_IMAGE_BYTES:
+            raise ValueError("invalid advertising image size")
+        payload = await self._request(
+            "POST",
+            f"{self._account}/adimages",
+            {"bytes": base64.b64encode(data).decode("ascii")},
+            before_write=before_write,
+        )
+        images = payload.get("images")
+        rows = list(images.values()) if isinstance(images, dict) else []
+        value = rows[0].get("hash") if len(rows) == 1 and isinstance(rows[0], dict) else None
+        if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", value):
+            raise MarketingError(UNKNOWN_WRITE_MESSAGE, outcome_unknown=True)
+        return value
+
+    async def validate(self, resource: Resource, *, params: Payload) -> None:
+        """Meta validate_only never substitutes for a create expecting a remote ID."""
+        if resource not in RESOURCES or "execution_options" in params:
+            raise ValueError("unsupported advertising validation")
+        result = await self._request(
+            "POST",
+            f"{self._account}/{resource}",
+            {**params, "execution_options": ["validate_only"]},
+        )
+        if result.get("success") is not True or "id" in result:
+            raise MarketingError("Meta no confirmó la validación de esta configuración.")
+
+    async def read_object(self, object_id: str, *, fields: str) -> dict[str, Any]:
+        return await self._request("GET", _id(object_id), {"fields": fields})
+
+    async def validate_update(self, object_id: str, *, params: Payload) -> None:
+        """Ad/AdSet/Campaign api_update support validate_only in the primary Meta SDK."""
+        if "execution_options" in params:
+            raise ValueError("caller cannot override advertising validation mode")
+        result = await self._request(
+            "POST", _id(object_id), {**params, "execution_options": ["validate_only"]}
+        )
+        if result.get("success") is not True or "id" in result:
+            raise MarketingError("Meta no confirmó la validación de este cambio.")
+
+    async def read_account(self, *, fields: str) -> dict[str, Any]:
+        return await self._request("GET", self._account, {"fields": fields})
+
+    async def children(self, object_id: str, *, resource: str) -> tuple[dict[str, Any], ...]:
+        """A parent may activate only its sole approved child; pagination is uncertainty."""
+        if resource not in {"ads", "adsets"}:
+            raise ValueError("unsupported advertising child edge")
+        payload = await self._request(
+            "GET", f"{_id(object_id)}/{resource}", {"fields": "id", "limit": 2}
+        )
+        paging = payload.get("paging", {})
+        if not isinstance(paging, dict) or "next" in paging:
+            raise MarketingError("No pudimos comprobar todos los anuncios de esta campaña.")
+        return _page(payload).data
+
+    async def aclose(self) -> None:
+        if hasattr(self._client, "aclose"):
+            await self._client.aclose()
+
     async def list(self, resource: Resource, *, params: Payload | None = None) -> MarketingPage:
         if resource not in RESOURCES:
             raise ValueError("unsupported advertising resource")
         return _page(await self._request("GET", f"{self._account}/{resource}", params or {}))
 
-    async def update(self, object_id: str, *, params: Payload) -> None:
-        payload = await self._request("POST", _id(object_id), params)
+    async def update(
+        self,
+        object_id: str,
+        *,
+        params: Payload,
+        before_write: BeforeWrite | None = None,
+    ) -> None:
+        # Preserve the existing unguarded contract for callers/subclass doubles.
+        if before_write is None:
+            payload = await self._request("POST", _id(object_id), params)
+        else:
+            payload = await self._request("POST", _id(object_id), params, before_write=before_write)
         if payload.get("success") is not True:
             raise MarketingError(
                 UNKNOWN_WRITE_MESSAGE,
@@ -278,6 +388,19 @@ class MarketingClient:
             "GET",
             _id(object_id),
             {"fields": "id,status,effective_status,issues_info"},
+        )
+
+    async def delivery(self, ad_id: str) -> dict[str, Any]:
+        """Ad-specific fields; the caller verifies account and parent ownership."""
+        return await self._request(
+            "GET",
+            _id(ad_id),
+            {
+                "fields": (
+                    "id,account_id,campaign_id,adset_id,status,effective_status,"
+                    "ad_review_feedback,issues_info"
+                )
+            },
         )
 
     async def adpreviews(self, ad_id: str, *, params: Payload) -> MarketingPage:
@@ -301,6 +424,20 @@ class MarketingClient:
 
     async def targetingsearch(self, *, params: Payload) -> MarketingPage:
         return _page(await self._request("GET", f"{self._account}/targetingsearch", params))
+
+    async def audience_search(self, *, params: Payload) -> MarketingPage:
+        if params.get("type") not in {"adgeolocation", "adinterest", "adinterestsuggestion"}:
+            raise ValueError("unsupported audience search")
+        return _page(await self._request("GET", "search", params))
+
+    async def audience_validation(self, *, interest_ids: tuple[str, ...]) -> MarketingPage:
+        return _page(
+            await self._request(
+                "GET",
+                f"{self._account}/targetingvalidation",
+                {"id_list": [_id(i) for i in interest_ids]},
+            )
+        )
 
     async def insights(
         self, object_id: str | None = None, *, params: Payload | None = None

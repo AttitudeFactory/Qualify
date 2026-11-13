@@ -96,7 +96,11 @@ def _classify(golden: list[Any], api_key: str) -> dict[str, Any]:
     from qualify_api.replies.triage import ClaudeCommentTriager  # noqa: PLC0415
 
     triager = ClaudeCommentTriager(api_key=api_key)
-    predictions = triager.triage([g.text for g in golden])
+    from qualify_api.claude_tools import Attribution  # noqa: PLC0415
+
+    predictions = triager.triage(
+        [g.text for g in golden], attribution=Attribution.no_business("eval-triaje")
+    )
     report = evaluate_classifier(
         golden,
         predictions,
@@ -126,7 +130,11 @@ def _baseline(golden: list[Any], api_key: str) -> dict[str, Any]:
     from qualify_api.intent.contract import COMMERCIAL_CLASSES  # noqa: PLC0415
 
     classifier = ClaudeIntentClassifier(api_key=api_key)
-    predictions = classifier.classify([g.text for g in golden])
+    from qualify_api.claude_tools import Attribution  # noqa: PLC0415
+
+    predictions = classifier.classify(
+        [g.text for g in golden], attribution=Attribution.no_business("eval-intencion")
+    )
     flags = [bool(frozenset(p) & COMMERCIAL_CLASSES) for p in predictions]
     report = evaluate_needs_reply_baseline(
         golden,
@@ -143,7 +151,10 @@ def _baseline(golden: list[Any], api_key: str) -> dict[str, Any]:
 
 
 def _drafts(golden: list[Any], groundings: dict[str, Any], api_key: str, workers: int) -> list[Any]:
-    from qualify_api.claude_tools import ClaudeToolError  # noqa: PLC0415
+    from qualify_api.claude_tools import (
+        Attribution,  # noqa: PLC0415
+        ClaudeToolError,  # noqa: PLC0415
+    )
     from qualify_api.conversations.suggest import ClaudeDraftGenerator  # noqa: PLC0415
     from qualify_api.evals.comment_replies import DraftResult, check_draft  # noqa: PLC0415
     from qualify_api.intent.contract import IntentClass  # noqa: PLC0415
@@ -180,6 +191,7 @@ def _drafts(golden: list[Any], groundings: dict[str, Any], api_key: str, workers
                     )
                 ],
                 counterpart=COMMENT_SPEAKER,
+                attribution=Attribution.no_business("eval-respuestas"),
                 context=any_comment_context(
                     kind=item.label.kind, sentiment=item.label.sentiment, classes=classes
                 ),
@@ -307,7 +319,9 @@ def _haiku_sentiment(
     triager = ClaudeCommentTriager(
         api_key=api_key, prompt_version=prompt_version, batch_size=batch_size
     )
-    predictions = triager.triage(texts)
+    from qualify_api.claude_tools import Attribution  # noqa: PLC0415
+
+    predictions = triager.triage(texts, attribution=Attribution.no_business("eval-triaje"))
     stats = triager.last_stats
     cost = sum(s.cost_usd for s in stats)
     per_comment = cost / len(texts) if texts else 0.0

@@ -5,13 +5,24 @@ Tu semana opens a publication's ficha (`/drafts/<id>`) with `?desde=semana&seman
 way back says «‹ Tu semana» and returns to the same week, in the same view. Without it the
 ficha keeps its own way back. A tiny state of its own, so the ficha's state (another
 module's) is not touched for one link.
+
+m-24986801: a ficha opened from «Aprobados» (`?desde=aprobados`) says «‹ Aprobados», and
+Tu semana opened from there (`/planner?post=<id>&desde=aprobados`) offers the same way back.
 """
 
 from __future__ import annotations
 
 import reflex as rx
 
-from .planner_vm import BACK_TO_DRAFTS, BACK_TO_WEEK, back_to_week_href
+from .planner_vm import (
+    APPROVED_ROUTE,
+    BACK_TO_APPROVED,
+    BACK_TO_DRAFTS,
+    BACK_TO_WEEK,
+    FROM_APPROVED,
+    URL_FROM,
+    back_to_week_href,
+)
 from .ui import tokens as T
 from .ui.nav_vm import DRAFTS_ROUTE
 
@@ -23,15 +34,18 @@ class WeekBackState(rx.State):
     """Where «‹ Tu semana» goes on the current ficha; "" when it was not opened from there."""
 
     href: str = ""
+    #: Opened from «Aprobados» (`?desde=aprobados`): the way back says «‹ Aprobados».
+    from_approved: bool = False
 
     @rx.event
     def read(self) -> None:
-        """on_load of a ficha: read `?desde=semana…` from the address."""
+        """on_load of a ficha (and of Tu semana): read `?desde=…` from the address."""
         try:
             params = self.router.url.query_parameters
         except Exception:  # noqa: BLE001 — no router outside a page (tests)
             params = {}
         self.href = back_to_week_href(params)
+        self.from_approved = str(params.get(URL_FROM, "") or "") == FROM_APPROVED
 
 
 def _back_link(label: str, href: rx.Var | str) -> rx.Component:
@@ -61,5 +75,20 @@ def ficha_back_link() -> rx.Component:
     return rx.cond(
         WeekBackState.href != "",
         back_to_week_link(),
-        _back_link(BACK_TO_DRAFTS, DRAFTS_ROUTE),
+        rx.cond(
+            WeekBackState.from_approved,
+            back_to_approved_link(),
+            _back_link(BACK_TO_DRAFTS, DRAFTS_ROUTE),
+        ),
     )
+
+
+def back_to_approved_link() -> rx.Component:
+    """«‹ Aprobados» (N7): back to the list the owner came from."""
+    return _back_link(BACK_TO_APPROVED, APPROVED_ROUTE)
+
+
+def planner_back_link() -> rx.Component:
+    """Tu semana opened from «Aprobados» («Elegir día y hora»): «‹ Aprobados» over the
+    week; nothing otherwise — Tu semana is a menu entry of its own."""
+    return rx.cond(WeekBackState.from_approved, back_to_approved_link())

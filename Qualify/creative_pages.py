@@ -13,6 +13,7 @@ colour, shadow or blur is written in this module.
 from __future__ import annotations
 
 import reflex as rx
+from qualify_creative.ad_destination import AD_CTA_LABELS
 
 from .campaign_provider import COLOR_LABELS, NO_CAMPAIGN
 from .campaign_state import CampaignState
@@ -20,6 +21,8 @@ from .content_generator import generator_page
 from .creative_state import GENERATION_STAGES, CreativeState
 from .creative_vm import (
     AI_LABEL_HINT,
+    FINISH_GALLERY_MANY,
+    FINISH_GALLERY_ONE,
     HARD_RULES_HINT,
     PURGED_TEXT,
     RECREATE_LABEL,
@@ -44,7 +47,9 @@ from .planner_vm import (
     CARD_ACTION_VIEW,
     CARD_ACTION_WAIT,
     GALLERY_FILTER_ALL,
-    GALLERY_STATE_FILTERS,
+    PENDING_STATE_FILTERS,
+    VIEW_POSTS,
+    VIEW_STICKERS,
 )
 from .post_card import (
     campaign_badge,
@@ -54,7 +59,10 @@ from .post_card import (
     readiness_note,
     viewable_src,
 )
+from .promotion_entry import promotion_link
+from .promotion_state import PromotionState
 from .r2_media import BACKEND_BASE
+from .seasonal_ui import fold_summary
 from .ui import (
     app_shell,
     callout,
@@ -899,11 +907,14 @@ def _gallery_state_badge(post) -> rx.Component:
     )
 
 
-def _card_main_button(post) -> rx.Component:
+def _card_main_button(post, *, approved: bool = False) -> rx.Component:
     """The card's ONE main button (m-24842981): «Revisar» while it waits for you,
     «Programar» once it is ready, «Ver» when there is nothing left to do. Solid when it
     asks something of the owner, soft when it only shows; disabled, saying «Preparando
     el video final», while its final is being made (review 2026-10-24, finding 8)."""
+
+    # m-24986801: from «Aprobados», Tu semana's way back says «‹ Aprobados»
+    assign = GalleryState.assign_from_approved if approved else GalleryState.assign
 
     def icon() -> rx.Component:
         return rx.match(
@@ -919,7 +930,7 @@ def _card_main_button(post) -> rx.Component:
             post.card_action_label,
             size="2",
             width="100%",
-            on_click=GalleryState.assign(post.post_id),
+            on_click=assign(post.post_id),
         ),
         rx.cond(
             # «Programada»: already on the calendar — «Ver en Tu semana» opens it there.
@@ -931,7 +942,7 @@ def _card_main_button(post) -> rx.Component:
                 color_scheme="gray",
                 size="2",
                 width="100%",
-                on_click=GalleryState.assign(post.post_id),
+                on_click=assign(post.post_id),
             ),
             rx.cond(
                 post.card_action == CARD_ACTION_WAIT,
@@ -977,7 +988,7 @@ def _card_main_button(post) -> rx.Component:
     )
 
 
-def _gallery_card(post) -> rx.Component:
+def _gallery_card(post, *, approved: bool = False) -> rx.Component:
     """One publication of «Por aprobar», picture first: its state in words on the media
     (a ready one is solid, one that is not ready has a dashed frame), whether it is
     already proven («Ya probada» / «Por probar», with the visible help in the body), and
@@ -1006,7 +1017,7 @@ def _gallery_card(post) -> rx.Component:
                 spacing="1",
                 width="100%",
             ),
-            _card_main_button(post),
+            _card_main_button(post, approved=approved),
         ),
         # On a ready card the main button opens Tu semana, and on a «preparing» card it
         # is disabled, so opening the publication gets its own quiet link — it never
@@ -1039,6 +1050,10 @@ def _gallery_card(post) -> rx.Component:
                 on_click=GalleryState.ask_reject_post(post.post_id, post.title),
                 **T.tone_scheme("error"),
             ),
+        ),
+        rx.cond(
+            (post.used_count > 0) & (post.kind != "story"),
+            promotion_link(post.post_id),
         ),
         class_name="q-gcard-actions",
     )
@@ -1134,6 +1149,11 @@ def _gallery_card(post) -> rx.Component:
     )
 
 
+def _pending_card(post) -> rx.Component:
+    """`rx.foreach`'s one-argument render function for «Por aprobar»'s cards."""
+    return _gallery_card(post)
+
+
 def _gallery_reject_dialog() -> rx.Component:
     return rx.alert_dialog.root(
         rx.alert_dialog.content(
@@ -1216,10 +1236,20 @@ def _state_chip(value: str, label: str) -> rx.Component:
     )
 
 
+_KIND_SELECT_ID = "drafts-kind-filter"
+
+
 def _gallery_toolbar() -> rx.Component:
     return rx.flex(
+        # m-24986801 (UX review): the same visible «Tipo» label as «Aprobados»
+        rx.el.label(
+            rx.text("Tipo", size="2", weight="medium", as_="span"),
+            html_for=_KIND_SELECT_ID,
+        ),
         rx.select.root(
-            rx.select.trigger(placeholder="Tipo de creación", aria_label="Tipo de creación"),
+            rx.select.trigger(
+                id=_KIND_SELECT_ID, placeholder="Tipo de creación", min_height="44px"
+            ),
             rx.select.content(
                 rx.select.item("Todos los tipos", value=GALLERY_FILTER_ALL),
                 rx.foreach(
@@ -1240,7 +1270,7 @@ def _gallery_toolbar() -> rx.Component:
                     (GalleryState.state_counts[value] > 0) | (GalleryState.state_filter == value),
                     _state_chip(value, label),
                 )
-                for value, label in GALLERY_STATE_FILTERS
+                for value, label in PENDING_STATE_FILTERS
             ],
             wrap="wrap",
             gap="0.35rem",
@@ -1269,62 +1299,123 @@ def _gallery_empty() -> rx.Component:
                 "Quitar filtros", variant="soft", size="2", on_click=GalleryState.clear_filters
             ),
         ),
+        # m-24986801 (N8): nothing waits — say so, and where the approved ones are
         empty_state(
-            "inbox",
-            "Todavía no tienes publicaciones",
-            "Cada publicación que crees aparece aquí con su estado, lista para revisar "
-            "y programar.",
-            action=rx.link(
-                rx.button(rx.icon("plus", size=16), "Crear la primera", size="3"),
-                href="/create",
+            "circle-check",
+            "¡Al día! Nada espera tu aprobación",
+            "Cuando crees una publicación, llega aquí para que la revises.",
+            action=rx.flex(
+                rx.link(
+                    rx.button(rx.icon("sparkles", size=16), "Crear publicación", size="3"),
+                    href="/create",
+                ),
+                rx.link(
+                    rx.button("Ver aprobadas", variant="soft", color_scheme="gray", size="3"),
+                    href="/aprobados",
+                ),
+                gap="0.5rem",
+                wrap="wrap",
+                justify="center",
             ),
         ),
     )
 
 
-def drafts_index() -> rx.Component:
-    """The gallery: every POST of the brand as a card with its state in words (Por
-    revisar · Le falta algo · Lista para programar · Ya salió · Descartada · Creándose,
-    m-24842981), filters, and «Programar» into the Planificador's drawer (QUA-118)."""
-    return _screen(
-        "Por aprobar",
-        "Tus publicaciones y en qué punto está cada una: nada sale sin que tú la apruebes.",
-        _padded(
-            rx.cond(GalleryState.error != "", _error_callout(GalleryState.error)),
-            _gallery_toolbar(),
-            rx.cond(
-                GalleryState.loading,
-                rx.box(
-                    *[skeleton_rows(1, height="7rem", radius=T.RADIUS_CARD) for _ in range(6)],
-                    class_name="q-gallery",
-                ),
+def list_tabs(posts_label: rx.Var[str], stickers_label: rx.Var[str]) -> rx.Component:
+    """«Publicaciones (3)» | «Stickers y videos (5)» (m-24986801): the same two lists on
+    «Por aprobar» and «Aprobados», the number in the words, `?ver=` in the address."""
+    return rx.segmented_control.root(
+        rx.segmented_control.item(posts_label, value=VIEW_POSTS),
+        rx.segmented_control.item(stickers_label, value=VIEW_STICKERS),
+        value=GalleryState.view,
+        on_change=GalleryState.set_view,
+        size="2",
+        aria_label="Qué ver",
+        max_width="100%",
+    )
+
+
+def list_panel(view: str, *children: rx.Component) -> rx.Component:
+    """One list's body. Both stay mounted (each reads its own data and keeps the other
+    tab's number); the one not chosen is hidden — `display: none`, so out of the
+    accessibility tree too."""
+    return rx.vstack(
+        *children,
+        display=rx.cond(GalleryState.view == view, "flex", "none"),
+        spacing="3",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _discarded_fold() -> rx.Component:
+    """Discarded publications, folded at the foot of «Por aprobar» (founder decision D2):
+    out of the way, and still there to create again."""
+    return rx.cond(
+        GalleryState.discarded_count > 0,
+        rx.el.details(
+            fold_summary("Descartadas (" + GalleryState.discarded_count.to_string() + ")"),
+            rx.box(
+                rx.foreach(GalleryState.discarded, _pending_card),
+                class_name="q-gallery q-gallery--cards",
+            ),
+            width="100%",
+            class_name="q-fold",
+        ),
+    )
+
+
+def _pending_posts() -> rx.Component:
+    return list_panel(
+        VIEW_POSTS,
+        rx.cond(GalleryState.error != "", _error_callout(GalleryState.error)),
+        _gallery_toolbar(),
+        rx.cond(
+            GalleryState.loading,
+            rx.box(
+                *[skeleton_rows(1, height="7rem", radius=T.RADIUS_CARD) for _ in range(6)],
+                class_name="q-gallery",
+            ),
+            rx.vstack(
                 rx.cond(
                     GalleryState.visible_count > 0,
                     rx.vstack(
-                        rx.text(
-                            rx.cond(
-                                GalleryState.is_filtered,
-                                GalleryState.visible_count.to_string()
-                                + " de "
-                                + GalleryState.total_count.to_string()
-                                + " publicaciones",
-                                GalleryState.total_count.to_string() + " publicaciones",
-                            ),
-                            size="1",
-                            color=T.TEXT_MUTED,
-                        ),
+                        rx.text(GalleryState.pending_count_line, size="1", color=T.TEXT_MUTED),
                         rx.box(
-                            rx.foreach(GalleryState.visible, _gallery_card),
+                            rx.foreach(GalleryState.visible, _pending_card),
                             class_name="q-gallery q-gallery--cards",
                         ),
-                        _gallery_reject_dialog(),
                         spacing="2",
                         width="100%",
                         align_items="start",
                     ),
                     _gallery_empty(),
                 ),
+                _discarded_fold(),
+                spacing="3",
+                width="100%",
+                align_items="start",
             ),
+        ),
+    )
+
+
+def drafts_index() -> rx.Component:
+    """«Por aprobar» (m-24986801, docs/ux-aprobados-y-menus.md §2): only what waits for
+    the owner's decision, in two lists — publications (Por revisar · Creándose, the
+    discarded folded at the foot) and the season's stickers and videos. What they
+    approve leaves the list for «Aprobados»."""
+    from .seasonal_state import SeasonalState  # noqa: PLC0415
+    from .seasonal_ui import drafts_section  # noqa: PLC0415
+
+    return _screen(
+        "Por aprobar",
+        "Lo que espera tu visto bueno: nada sale sin que tú lo apruebes.",
+        _padded(
+            list_tabs(GalleryState.posts_tab_label, SeasonalState.pending_tab_label),
+            _pending_posts(),
+            list_panel(VIEW_STICKERS, drafts_section()),
+            _gallery_reject_dialog(),
         ),
     )
 
@@ -1396,9 +1487,12 @@ def _failed_panel() -> rx.Component:
         CreativeState.draft.queue.cancelled,
         _card(
             rx.heading("Video cancelado", size="4", as_="h2"),
-            rx.link(
-                rx.button("Crear otra publicación", variant="soft", min_height="44px"),
-                href="/create",
+            # a new publication starts clean, as the approved card's (UX review 2026-11-03)
+            rx.button(
+                "Crear otra publicación",
+                variant="soft",
+                min_height="44px",
+                on_click=CreativeState.go_create_another,
             ),
         ),
         _generation_failed_panel(),
@@ -1413,7 +1507,9 @@ def _generation_failed_panel() -> rx.Component:
             rx.icon("triangle-alert", size=18, color=T.tone_color("error", 9)),
             rx.heading(
                 rx.cond(
-                    CreativeState.draft.queue.cancelled, "Video cancelado", "La generación falló"
+                    CreativeState.draft.queue.cancelled,
+                    "Video cancelado",
+                    "No pudimos crear tu publicación",
                 ),
                 size="4",
                 as_="h2",
@@ -1430,18 +1526,57 @@ def _generation_failed_panel() -> rx.Component:
                     rx.text(CreativeState.draft.failure_detail, size="2", color=T.TEXT_MUTED),
                 ),
                 rx.cond(
-                    failure.action_route != "",
-                    rx.link(
-                        rx.button(failure.action_label, variant="soft", size="2"),
-                        href=failure.action_route,
+                    CreativeState.draft.can_finish_gallery,
+                    # m-24820842: the slides already made stay; only the rest is made
+                    finish_gallery_button(
+                        CreativeState.finish_gallery_current,
+                        CreativeState.draft.missing_slides,
                     ),
-                    rx.text(failure.action_label, size="2", weight="medium"),
+                    rx.cond(
+                        failure.action_route != "",
+                        rx.link(
+                            rx.button(
+                                failure.action_label,
+                                variant="soft",
+                                size="2",
+                                min_height="44px",
+                            ),
+                            href=failure.action_route,
+                        ),
+                        rx.text(failure.action_label, size="2", weight="medium"),
+                    ),
                 ),
                 spacing="3",
                 align_items="start",
             ),
         ),
     )
+
+
+def finish_gallery_button(on_click: object, missing: rx.Var[int]) -> rx.Component:
+    """«Crear las que faltan» (m-24820842): a failed gallery makes only the slides it
+    is missing — the ones already made are kept. UX review 2026-11-03: the label agrees
+    with the number, and what it costs is said under it — only when creations apply
+    (review 2026-11-04: an unlimited plan or the quota off read nothing about them)."""
+    note = CreativeState.finish_gallery_note
+    return rx.vstack(
+        rx.button(
+            rx.icon("images", size=16),
+            rx.cond(missing == 1, FINISH_GALLERY_ONE, FINISH_GALLERY_MANY),
+            on_click=on_click,
+            loading=CreativeState.finishing_gallery,
+            size="3",
+            min_height="44px",
+        ),
+        rx.cond(note != "", rx.text(note, size="1", color=T.TEXT_MUTED)),
+        spacing="2",
+        width="100%",
+        align_items="start",
+    )
+
+
+#: The button of a failed gallery that kept some slides (m-24820842).
+FINISH_GALLERY_LABEL = FINISH_GALLERY_MANY
 
 
 def _media_item(item: rx.Var[MediaVM]) -> rx.Component:
@@ -1726,6 +1861,7 @@ def _edit_actions() -> rx.Component:
                         "Guardar cambios",
                         on_click=CreativeState.save_edit,
                         loading=CreativeState.edit_saving,
+                        disabled=CreativeState.edit_conflict,
                         size="2",
                     ),
                     gap="0.75rem",
@@ -1735,6 +1871,26 @@ def _edit_actions() -> rx.Component:
                 gap="0.75rem",
                 wrap="wrap",
                 width="100%",
+            ),
+            rx.cond(
+                CreativeState.edit_conflict,
+                rx.vstack(
+                    rx.text(
+                        "Tus cambios siguen aquí. Al volver a cargar se descartarán los cambios "
+                        "sin guardar.",
+                        size="1",
+                        color=T.TEXT_MUTED,
+                    ),
+                    rx.button(
+                        "Volver a cargar",
+                        on_click=CreativeState.reload_conflicted_edit,
+                        variant="outline",
+                        min_height="44px",
+                    ),
+                    spacing="2",
+                    width="100%",
+                    align_items="start",
+                ),
             ),
             class_name="q-rv-savebar q-rv-savebar--editing",
         ),
@@ -2081,6 +2237,109 @@ def _blocking_list(messages) -> rx.Component:
     )
 
 
+def _ad_destination_fields() -> rx.Component:
+    return _rv_section(
+        _field_head(
+            "mouse-pointer-click",
+            "Botón y enlace del anuncio",
+            "Guárdalos para no escribirlos al promocionar.",
+        ),
+        rx.cond(
+            CreativeState.edit_mode,
+            rx.vstack(
+                rx.el.label("Botón del anuncio", html_for="piece-ad-button"),
+                rx.select.root(
+                    rx.select.trigger(id="piece-ad-button", min_height="44px", width="100%"),
+                    rx.select.content(
+                        *[
+                            rx.select.item(label, value=str(value))
+                            for value, label in AD_CTA_LABELS.items()
+                        ]
+                    ),
+                    value=CreativeState.edit_ads_cta_type,
+                    on_change=CreativeState.set_edit_ads_cta_type,
+                    disabled=CreativeState.edit_saving,
+                    width="100%",
+                    size="3",
+                ),
+                rx.el.label("Enlace del anuncio", html_for="piece-ad-destination-url"),
+                rx.debounce_input(
+                    rx.input(
+                        id="piece-ad-destination-url",
+                        type="url",
+                        on_change=CreativeState.set_edit_ads_destination_url,
+                        placeholder="https://tunegocio.com",
+                        max_length=2048,
+                        disabled=CreativeState.edit_saving,
+                        min_height="44px",
+                        width="100%",
+                    ),
+                    value=CreativeState.edit_ads_destination_url,
+                    debounce_timeout=0,
+                    force_notify_on_blur=True,
+                ),
+                rx.text(
+                    "El enlace debe empezar por https://. Puede ser tu web, catálogo o WhatsApp.",
+                    size="1",
+                    color=T.TEXT_MUTED,
+                ),
+                rx.cond(
+                    CreativeState.draft.brand_ads_destination_url != "",
+                    rx.vstack(
+                        rx.text(
+                            "Enlace de tu marca: ",
+                            CreativeState.draft.brand_ads_destination_url,
+                            size="1",
+                            overflow_wrap="anywhere",
+                        ),
+                        rx.button(
+                            "Usar enlace de mi marca",
+                            on_click=CreativeState.use_brand_ad_url,
+                            disabled=CreativeState.edit_saving,
+                            variant="outline",
+                            min_height="44px",
+                        ),
+                        width="100%",
+                        spacing="2",
+                        align_items="start",
+                    ),
+                ),
+                width="100%",
+                spacing="2",
+            ),
+            rx.vstack(
+                _read_text(CreativeState.edit_ads_cta_label, "Sin botón."),
+                rx.text(
+                    rx.cond(
+                        CreativeState.edit_ads_destination_url != "",
+                        CreativeState.edit_ads_destination_url,
+                        "Todavía no hay un enlace guardado.",
+                    ),
+                    id="piece-ad-destination-saved",
+                    class_name=rx.cond(
+                        CreativeState.edit_ads_destination_url != "",
+                        "q-rv-read",
+                        "q-rv-read q-rv-read--empty",
+                    ),
+                    min_width="0",
+                    max_width="100%",
+                    overflow_wrap="anywhere",
+                    white_space="normal",
+                ),
+                width="100%",
+                spacing="2",
+            ),
+        ),
+        rx.cond(
+            CreativeState.edit_ads_cta_type != "LEARN_MORE",
+            callout(
+                "Por ahora, Promocionar solo admite «Más información».",
+                "info",
+            ),
+        ),
+    )
+
+
 def _variant_editor() -> rx.Component:
     variant = CreativeState.selected_variant
     editing = CreativeState.edit_mode
@@ -2173,6 +2432,7 @@ def _variant_editor() -> rx.Component:
                 ),
                 _hashtags_field(),
                 _cta_field(),
+                rx.cond(CreativeState.draft.has_ad_destination, _ad_destination_fields()),
                 rx.cond(
                     CreativeState.draft.has_script,
                     _rv_section(
@@ -2239,6 +2499,11 @@ def _variant_editor() -> rx.Component:
         spacing="4",
         width="100%",
         align_items="start",
+        class_name=rx.cond(
+            CreativeState.draft.has_ad_destination & CreativeState.edit_mode,
+            "q-ad-destination-editor",
+            "",
+        ),
     )
 
 
@@ -2439,6 +2704,8 @@ APPROVED_CREATE_ANOTHER = "Crear otra publicación"
 #: something is missing.
 APPROVED_TIKTOK_TITLE = "Aprobada. Envíala a TikTok para terminarla allá."
 APPROVED_TIKTOK_GO = "Ir a enviar a TikTok"
+#: m-24945954: …while its video final is not ready yet — nothing to go and press below.
+APPROVED_TIKTOK_WAIT_TITLE = "Aprobada. Podrás enviarla a TikTok cuando tu video final esté listo."
 
 # N12: every tap target at least 44 px tall on a phone.
 _TAP_MIN_HEIGHT = "2.75rem"
@@ -2458,24 +2725,36 @@ def _approved_next() -> rx.Component:
 
 def _approved_tiktok_next() -> rx.Component:
     """«Aprobada. Envíala a TikTok para terminarla allá.» and a soft way down to the TikTok
-    card (`#tiktok-borrador`), whose send is the one solid button."""
+    card (`#tiktok-borrador`), whose send is the one solid button. While the video final
+    is not ready (m-24945954) it says so, and offers no way down to a card with no send:
+    that card, right below, says when it can go."""
+    from .tiktok_state import TikTokDraftState  # noqa: PLC0415
+
+    waiting = TikTokDraftState.final_wait.waiting
     return _card(
         rx.hstack(
             rx.center(rx.icon("circle-check", size=16), class_name="q-rv-glyph"),
-            rx.text(APPROVED_TIKTOK_TITLE, class_name="q-rv-title"),
+            rx.text(
+                rx.cond(waiting, APPROVED_TIKTOK_WAIT_TITLE, APPROVED_TIKTOK_TITLE),
+                class_name="q-rv-title",
+            ),
             align="center",
             spacing="2",
         ),
         rx.flex(
-            rx.link(
-                rx.button(
-                    rx.icon("arrow-down", size=16),
-                    APPROVED_TIKTOK_GO,
-                    variant="soft",
-                    size="3",
-                    min_height=_TAP_MIN_HEIGHT,
+            rx.cond(
+                waiting,
+                rx.fragment(),
+                rx.link(
+                    rx.button(
+                        rx.icon("arrow-down", size=16),
+                        APPROVED_TIKTOK_GO,
+                        variant="soft",
+                        size="3",
+                        min_height=_TAP_MIN_HEIGHT,
+                    ),
+                    href="#tiktok-borrador",
                 ),
-                href="#tiktok-borrador",
             ),
             rx.button(
                 rx.icon("sparkles", size=16),
@@ -2870,6 +3149,7 @@ def _version_selector() -> rx.Component:
 
 
 def draft_detail_index() -> rx.Component:
+    from .offer_mark_ui import offer_mark_control  # noqa: PLC0415
     from .queue_notice import queue_notice  # noqa: PLC0415
     from .tiktok_ui import tiktok_draft_card  # noqa: PLC0415
 
@@ -2930,6 +3210,10 @@ def draft_detail_index() -> rx.Component:
                             callout(CreativeState.draft.other_version_pending, "info"),
                         ),
                         _history_line(),
+                        rx.cond(
+                            PromotionState.entry_available,
+                            promotion_link(CreativeState.draft.draft_id),
+                        ),
                         rx.foreach(
                             CreativeState.draft.warnings,
                             lambda warning: callout(warning, "warn"),
@@ -2956,6 +3240,14 @@ def draft_detail_index() -> rx.Component:
                                     ),
                                     _review_panel(),
                                     _decision_bar(),
+                                    # m-24945889: the business's offer for its
+                                    # WhatsApp chats («Tu oferta»)
+                                    offer_mark_control(
+                                        CreativeState.draft.draft_id,
+                                        (CreativeState.draft.status == "approved")
+                                        | (CreativeState.draft.status == "staged")
+                                        | (CreativeState.draft.status == "published"),
+                                    ),
                                     # m-24921091: an approved video can also go to the
                                     # owner's TikTok (never published from here).
                                     tiktok_draft_card(),

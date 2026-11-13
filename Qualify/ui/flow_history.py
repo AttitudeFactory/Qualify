@@ -35,6 +35,9 @@ _FLOW_INSTALL_SCRIPT = r"""
     const sub = u.searchParams.get('sub') || '';
     const parents = {
       producto: path === '/catalog',
+      agregar: path === '/creadores',
+      tarifa: /^\/creadores\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+        .test(path),
       programar: path === '/planner', reprogramar: path === '/planner',
       consulta: path === '/responder' || path === '/conversations',
       menu: path === '/whatsapp' && ['menu', 'respuesta'].includes(tab),
@@ -42,7 +45,8 @@ _FLOW_INSTALL_SCRIPT = r"""
         (tab === 'campanas' || (tab === 'promociones' && (!sub || sub === 'enviadas'))),
       'mensaje-aprobado': path === '/whatsapp' &&
         (tab === 'plantillas' || (tab === 'promociones' && sub === 'aprobados')),
-      'mensaje-chat': path === '/whatsapp' && tab === 'chats'
+      'mensaje-chat': path === '/whatsapp' && tab === 'chats',
+      enviar: path === '/whatsapp' && tab === 'chats'
     };
     if (!parents[flow]) return;
     const oldFlow = u.searchParams.get('flujo');

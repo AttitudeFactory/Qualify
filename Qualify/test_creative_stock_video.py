@@ -30,7 +30,7 @@ def _stock_on(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_the_slots_have_no_stock_tab_and_inspiration_brings_the_catalog() -> None:
     """§ request 2026-10-19: «quita todas las opciones de stock en la importación» — and
-    with a stock inspiration, «Catálogo» (the brand's whole catalog) sits beside it."""
+    with a stock inspiration, «Galería» (the brand's whole catalog) sits beside it."""
     state = CreativeState()
     assert state.set_picker_tab("clip_videos", "stock") is None
     assert state.picker_tab_view["clip_videos"] != "stock"
@@ -226,7 +226,7 @@ def test_an_option_that_cannot_take_the_video_opens_the_popup(category: str, wor
     _video_product(state)
     before = (state.gen_category, state.brief_kind)
     assert state.choose_category(category) is None
-    assert words in state.kind_conflict and "Clip o en una Galería" in state.kind_conflict
+    assert words in state.kind_conflict and "Clip o en un Carrusel" in state.kind_conflict
     assert (state.gen_category, state.brief_kind) == before  # the option did not switch
     state.set_kind_conflict_open(False)
     assert state.kind_conflict == ""
@@ -404,13 +404,19 @@ def test_a_stock_product_keeps_to_its_picks_except_the_background(
 
 def test_a_slot_holding_inspiration_folds_its_search_away() -> None:
     """§ request 2026-10-19: once a slot takes something from inspiration, the discovery
-    does not show again until «Buscar otra» — except the background."""
+    does not show again until «Buscar otra» — except the background. Live test
+    2026-11-03: a slot of several («Hasta 9») folds only once it is full."""
     state = CreativeState()
     state.choose_category("clip")
     assert "clip_images" not in state.inspiration_held
     imported = {"key": "t/x/stock/pixabay/4/d.jpg", "view": "/r2media/d", "author": "Ana"}
     state._add_inspiration_file(imported, "image")
     state._pick("clip_images", "inspiration", imported["key"])
+    assert "clip_images" not in state.inspiration_held  # room for 8 more
+    for n in range(8):
+        more = {"key": f"t/x/stock/pixabay/4/e{n}.jpg", "view": "/r2media/e", "author": "Ana"}
+        state._add_inspiration_file(more, "image")
+        state._pick("clip_images", "inspiration", more["key"])
     assert "clip_images" in state.inspiration_held
     state.reopen_inspiration("clip_images")
     assert "clip_images" in state.inspiration_reopened

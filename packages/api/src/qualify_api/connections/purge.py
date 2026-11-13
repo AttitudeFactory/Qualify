@@ -201,14 +201,20 @@ _PROTECTED_KEYS = {
     "content_briefs": ("source_media_key",),
     "brand_kit_assets": ("object_key",),
     "product_media": ("object_key",),
+    "business_media": ("object_key", "poster_key"),  # 0133, Galería (m-24955918)
     "stock_assets": ("object_key", "poster_object_key"),
     "canva_design_links": ("source_object_key", "exported_object_key"),
     "brand_voice_clones": ("sample_object_key", "preview_object_key"),
     "content_drafts": ("preview_key",),
     "image_assets": ("object_key", "mask_object_key"),
+    # 0138, CM-9 (m-24957283): where the one-time copy put each old local upload; a key
+    # in a JSON field still names the old path and resolves through this map
+    "local_media_moves": ("r2_key",),
 }
 _PROTECTED_JSON = {"content_briefs": ("media", "video_plan"), "template_runs": ("outputs", "props")}
 _DELETE_DIRECT = (
+    "ad_custom_audiences",  # requests and original Instagram audience consent
+    "ad_lead_forms",  # cascades Meta inquiries, never the consented public web leads
     "interaction_followups",
     "conversation_outbox",
     "comment_reply_drafts",
@@ -223,6 +229,8 @@ _DELETE_DIRECT = (
     "conversation_reply_templates",
     "conversation_reply_template_seeds",
     "conversation_ice_breakers",
+    "ad_accounts",
+    "ad_oauth_credentials",
     "oauth_credentials",
     "connection_events",
 )

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from qualify_creative.pricing import JsonPricingTable
+from qualify_creative.pricing import JsonPricingTable, seedream_image_cost
 
 
 def test_version_is_v1() -> None:
@@ -108,3 +108,33 @@ def test_v6_keeps_every_v5_row_unchanged() -> None:
 def test_v5_is_not_edited_for_seedream_5_pro() -> None:
     with pytest.raises(KeyError):
         JsonPricingTable("v5").unit_price(model_id=PRO, unit="per_image_1k")
+
+
+def test_v8_prices_pro_by_size_and_billable_references() -> None:
+    table = JsonPricingTable("v8")
+    assert seedream_image_cost(table, model_id=PRO, size="1280x1600", references=1) == Decimal(
+        "0.045"
+    )
+    assert seedream_image_cost(table, model_id=PRO, size="2K", references=10) == Decimal("0.117")
+    assert seedream_image_cost(table, model_id=PRO, size="1536x1536", references=1) == Decimal(
+        "0.045"
+    )
+    assert seedream_image_cost(table, model_id=PRO, size="1600x1500", references=1) == Decimal(
+        "0.09"
+    )
+    assert seedream_image_cost(
+        table, model_id=PRO, size="1728x2160", references=3, pieces=2
+    ) == Decimal("0.186")
+    assert seedream_image_cost(table, model_id=PRO, size="2K", references=3, pieces=0) == Decimal(0)
+    with pytest.raises(ValueError, match="at most 10"):
+        seedream_image_cost(table, model_id=PRO, size="2K", references=11)
+    with pytest.raises(KeyError):
+        table.unit_price(model_id=PRO, unit="per_piece")
+
+
+def test_v8_preserves_v7_entries() -> None:
+    data = Path(__file__).resolve().parents[1] / "src" / "qualify_creative" / "pricing_data"
+    v7 = json.loads((data / "v7.json").read_text(encoding="utf-8"))
+    v8 = json.loads((data / "v8.json").read_text(encoding="utf-8"))
+    assert v8["version"] == "v8"
+    assert v8["entries"] == v7["entries"]

@@ -2,8 +2,8 @@
 
 Goal (2026-09-11): a Mercado-Libre-style search for accounts compatible with a Brand
 Kit profile — country, city, niche, follower band, engagement — fed by the vendor the
-Brand Kit "Ya tengo redes" flow already uses (`scrapecreators_client`). This is a
-test bench, not the product: it writes its result to a JSON file under
+Brand Kit "Ya tengo redes" flow already uses (`qualify_api.vendors.scrapecreators`).
+This is a test bench, not the product: it writes its result to a JSON file under
 `Qualify/fixtures/` so the output can be inspected before anything is persisted to a
 table. No Postgres, no tenant scoping — on purpose. Since 2026-09-11 the Brand Kit wizard
 calls the phased search at the bottom of this module (`PhasedDiscovery`, section
@@ -53,6 +53,7 @@ budget is spent and reports how many queries it did and did not execute.
 from __future__ import annotations
 
 import argparse
+import hmac
 import json
 import logging
 import os
@@ -63,9 +64,11 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
+from uuid import UUID
 
 import httpx
 
@@ -116,10 +119,16 @@ from qualify_api.referentes.discovery_seed import (
 from qualify_api.referentes.discovery_seed import (
     split_terms as split_terms,
 )
-from qualify_api.referentes.scrapecreators_client import (
+from qualify_api.referentes.formatting import (
+    compact_count as compact_count,  # «1.2M»; the reel cards share it
+)
+from qualify_api.vendors import usage
+from qualify_api.vendors.scrapecreators import (
     _TIMEOUT_SECONDS,
+    FEATURE_SEARCH,
+    ScrapeCreatorsBlocked,
     ScrapeCreatorsError,
-    _get,
+    metered_get,
 )
 
 logger = logging.getLogger(__name__)
@@ -687,6 +696,24 @@ _RETRY_DELAY_SECONDS = 1.5
 NOT_FOUND_STATUS = 404
 
 
+def _get(client: httpx.Client, path: str, params: dict[str, str]) -> dict[str, Any]:
+    """One read through the metered gate (ADR 42 R2), billed to the referentes search.
+
+    A refusal of the gate is remembered on the client (`GATE_REFUSED`) before it is
+    raised: the phases turn one failed read into a logged error and go on, so without
+    this mark a refused search would end as «no encontramos cuentas» instead of «inténtalo
+    más tarde». `PhasedDiscovery.run` raises it after the phase."""
+    try:
+        return metered_get(client, path, params, feature=FEATURE_SEARCH)
+    except ScrapeCreatorsBlocked as exc:
+        setattr(client, GATE_REFUSED, exc)
+        raise
+
+
+#: The attribute `_get` leaves on a run's client when the metered gate refused a read.
+GATE_REFUSED = "qualify_gate_refused"
+
+
 def _get_retry(client: httpx.Client, path: str, params: dict[str, str]) -> dict[str, Any]:
     cache = getattr(client, "payload_cache", None)
     if cache is not None:
@@ -705,6 +732,8 @@ def _get_retry(client: httpx.Client, path: str, params: dict[str, str]) -> dict[
             if cache is not None:
                 cache.put(path, params, {}, status=NOT_FOUND_STATUS)
             raise
+        if isinstance(exc, ScrapeCreatorsBlocked):
+            raise  # the gate refused: no request went out, a retry would be refused too
         if exc.status_code is not None and exc.status_code < 500:
             raise
         time.sleep(_RETRY_DELAY_SECONDS)
@@ -1564,6 +1593,7 @@ def lookup_account(
         if payload_cache is not None
         else httpx.Client(timeout=_DISCOVERY_TIMEOUT_SECONDS)
     )
+    usage.bind(client, usage.current())  # the caller's business pays (ADR 42 R5)
     with client:
         _charged, facts, error = _read_profile(client, candidate, None, active)
     active.save()
@@ -2096,7 +2126,11 @@ class PhasedDiscovery:
         payload_cache: Any | None = None,
         parallel: int = PARALLEL_CALLS,
         reviewer: AccountReviewer | None = None,
+        charge: usage.UsageCharge | None = None,
     ) -> None:
+        """`charge` — the business every paid read of this run is charged to and capped
+        for (ADR 42 R5); by default the caller's `usage.charge_to`. It rides on the
+        client because the phases fan out to worker threads."""
         self.seed = seed
         self.reviewer = reviewer
         self._owns_client = client is None
@@ -2107,6 +2141,7 @@ class PhasedDiscovery:
             if payload_cache is not None
             else httpx.Client(timeout=_DISCOVERY_TIMEOUT_SECONDS)
         )
+        usage.bind(self.client, charge if charge is not None else usage.current())
         self.raw_dir = raw_dir
         self.pool: dict[tuple[str, str], Candidate] = {}
         self.picked: set[tuple[str, str]] = set()
@@ -2116,7 +2151,9 @@ class PhasedDiscovery:
         self.executor = ThreadPoolExecutor(max_workers=max(parallel, 1)) if parallel > 1 else None
 
     def run(self, key: str) -> PhaseResult:
-        return run_phase(
+        """One phase. Raises `ScrapeCreatorsBlocked` when the metered gate refused any
+        read of it (ADR 42 R2): a phase that could not search is not «nothing found»."""
+        result = run_phase(
             key,
             self.seed,
             client=self.client,
@@ -2127,6 +2164,10 @@ class PhasedDiscovery:
             executor=self.executor,
             reviewer=self.reviewer,
         )
+        refused = getattr(self.client, GATE_REFUSED, None)
+        if refused is not None:
+            raise refused
+        return result
 
     def run_all(self) -> list[PhaseResult]:
         return [self.run(key) for key in PHASES]
@@ -2138,18 +2179,6 @@ class PhasedDiscovery:
             self.executor.shutdown(wait=True)
         if self._owns_client:
             self.client.close()
-
-
-def compact_count(value: int | None) -> str:
-    """«1.2M», «92K», «640», «—» for unknown. The unit is chosen from the ROUNDED figure:
-    999 950 is «1M», never «1000K». Shared with `reels_discovery`."""
-    if value is None:
-        return "—"
-    if value >= 999_950:
-        return f"{value / 1_000_000:.1f}M".replace(".0M", "M")
-    if value >= 1_000:
-        return f"{value / 1_000:.1f}K".replace(".0K", "K")
-    return str(value)
 
 
 def _compact(value: int | None) -> str:
@@ -2232,13 +2261,36 @@ AVATAR_DIR = Path(
 )
 
 
+#: Development fallback only; every real environment sets QUALIFY_OAUTH_STATE_SECRET
+#: (`deploy/docker-compose.prod.yml` refuses to start without it).
+_DEV_PROXY_SECRET = "qualify-dev-reel-cover"
+
+
+def proxy_key(label: bytes) -> bytes:
+    """A key derived from the server's state secret, one per kind of picture path
+    (`label`): every backend worker agrees on it, and it is never the secret itself. The
+    picture proxy (`avatar_proxy.py`) checks the paths signed with it."""
+    secret = os.environ.get("QUALIFY_OAUTH_STATE_SECRET") or _DEV_PROXY_SECRET
+    return hmac.new(secret.encode("utf-8"), label, sha256).digest()
+
+
+def avatar_signature(network: str, handle: str, vendor_url: str) -> str:
+    """The signature of one profile picture path: of the network, the handle and the
+    vendor URL (`""` when the card has none), under the avatars' own key. Deterministic,
+    so the same card always asks for the same path and the browser keeps it a day."""
+    message = f"{network.lower()}\n{handle.lower()}\n{vendor_url}".encode()
+    return hmac.new(proxy_key(b"qualify/avatar/v1"), message, sha256).hexdigest()[:32]
+
+
 def avatar_path(card: dict[str, str]) -> str:
     """The backend path a card's picture is served from: `/avatar/<network>/<handle>`,
     plus the vendor's own URL as `u` when the card carries one, so the proxy can
     fetch it the first time (while the signature is still valid) and serve its own
-    copy from then on. Empty when there is no handle to name the picture by — a card
-    from a cache written before pictures existed still gets a path: the proxy has
-    other ways to find it."""
+    copy from then on — and `s`, the server's signature of all three
+    (`avatar_signature`): the proxy fetches only URLs this server handed out
+    (m-24957331). Empty when there is no handle to name the picture by — a card from a
+    cache written before pictures existed still gets a path: the proxy has other ways to
+    find it."""
     handle = str(card.get("handle") or "").lstrip("@").strip()
     if not handle:
         return ""
@@ -2247,9 +2299,8 @@ def avatar_path(card: dict[str, str]) -> str:
         return ""
     path = f"{AVATAR_ROUTE}/{network}/{quote(handle, safe='')}"
     vendor_url = str(card.get("avatar") or "")
-    if vendor_url:
-        path += "?u=" + quote(vendor_url, safe="")
-    return path
+    query = f"u={quote(vendor_url, safe='')}&" if vendor_url else ""
+    return f"{path}?{query}s={avatar_signature(network, handle, vendor_url)}"
 
 
 def _ai_share(candidate: Candidate) -> str:
@@ -2423,6 +2474,11 @@ def main(argv: list[str] | None = None) -> int:
         "--no-raw", action="store_true", help="do not keep the raw vendor payloads on disk"
     )
     parser.add_argument("--dry-run", action="store_true", help="print the query plan, spend 0")
+    parser.add_argument(
+        "--tenant",
+        type=UUID,
+        help="the business the credits are charged to (ADR 42 R5); required to spend",
+    )
     args = parser.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")  # bios carry emoji; cp1252 consoles choke
@@ -2451,16 +2507,20 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  {'*' if i <= args.max_credits else '-'} {q.label}")
     if args.dry_run:
         return 0
+    if args.tenant is None:
+        # ADR 42 R5: a paid read is always some business's; the gate refuses without one
+        parser.error("--tenant <uuid> is required to spend credits (or use --dry-run)")
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     _load_dotenv()
-    result = discover(
-        filters,
-        max_credits=args.max_credits,
-        per_niche=args.per_niche,
-        enrich_budget=args.enrich,
-        raw_dir=None if args.no_raw else DISCOVERY_DIR / "discovery_raw",
-    )
+    with usage.charge_to(args.tenant):  # the reads run in this thread: the context holds
+        result = discover(
+            filters,
+            max_credits=args.max_credits,
+            per_niche=args.per_niche,
+            enrich_budget=args.enrich,
+            raw_dir=None if args.no_raw else DISCOVERY_DIR / "discovery_raw",
+        )
     path = save_result(result)
     _print_summary(result, path)
     return 0

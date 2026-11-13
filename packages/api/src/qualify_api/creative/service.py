@@ -31,6 +31,7 @@ from functools import wraps
 from typing import Any, Protocol
 from uuid import UUID, uuid4
 
+from qualify_creative.ad_destination import AdCTA
 from qualify_creative.adapters.anthropic_copy import CopyRefused
 from qualify_creative.brand import (
     check_hard_rules,
@@ -49,6 +50,7 @@ from qualify_creative.enums import (
     PaidBy,
     PostCategory,
     ReuseType,
+    SlideSource,
     default_category,
 )
 from qualify_creative.providers import (
@@ -77,7 +79,7 @@ from qualify_creative.schemas import (
 )
 from qualify_shared import observability
 from qualify_shared.db.session import tenant_session, tenant_unit_of_work
-from sqlalchemy import select
+from sqlalchemy import select, text, update
 from sqlalchemy.exc import IntegrityError
 
 from qualify_api.claude_tools import cost_breakdown
@@ -115,6 +117,7 @@ from qualify_api.creative.fsm import (
     apply_transition,
 )
 from qualify_api.creative.media import (
+    KEPT_FROM_REVISION,
     RESUMED_VIDEO_FAILED_TEXT,
     FinalOutcome,
     MediaProducer,
@@ -123,8 +126,9 @@ from qualify_api.creative.media import (
     MediaWrite,
     TemplateRunWrite,
     ai_generated_media,
+    gallery_slide_is_paid,
 )
-from qualify_api.creative.pipeline import frozen_inputs, pipeline_assembly
+from qualify_api.creative.pipeline import current_preparation, frozen_inputs, pipeline_assembly
 from qualify_api.creative.queue_dispatch import (
     CheckpointError,
     QueueDispatcher,
@@ -143,6 +147,7 @@ from qualify_api.creative.vendor_tasks import (
     snapshot,
 )
 from qualify_api.creative.versions import visible_version
+from qualify_api.plans.packs import legacy_seconds_per_video
 
 logger = logging.getLogger(__name__)
 #: Every vendor call of a generation and its cost, one line each plus a total per
@@ -154,6 +159,7 @@ cost_logger = logging.getLogger("qualify_api.creative.costs")
 #: Stamped on every draft this service creates; provenance, per the hard architectural
 #: rule that every model-written artifact carries the pipeline that wrote it.
 PIPELINE_VERSION = "creative-v1"
+BRAND_APPLIED_PIPELINE_VERSION = "creative-v2-brand9"
 
 #: The copy chain (design §4.1): Anthropic only — there is no aggregator mirror for
 #: text, which is why a refusal is a policy outcome, not a fallback hop.
@@ -217,6 +223,41 @@ class DraftExpired(Exception):
         self.detail = detail
 
 
+#: m-24820842: what a failed gallery that kept some slides adds to its failure — the
+#: owner's retry («Crear las que faltan») makes only the missing ones.
+#: The UI reads the numbers from `DraftDetail.kept_slides` / `gallery_slides`, never
+#: from this text (UX review 2026-11-03).
+GALLERY_KEPT_TEXT = (
+    "Ya están listas {done} de tus {total} diapositivas. Toca «Crear la que falta» y "
+    "haremos solo esa."
+)
+GALLERY_KEPT_PLURAL_TEXT = (
+    "Ya están listas {done} de tus {total} diapositivas. Toca «Crear las que faltan» y "
+    "haremos solo esas."
+)
+
+
+def gallery_kept_text(done: int, total: int) -> str:
+    """The note of a gallery that failed with `done` of its `total` slides finished."""
+    template = GALLERY_KEPT_TEXT if total - done == 1 else GALLERY_KEPT_PLURAL_TEXT
+    return template.format(done=done, total=total)
+
+
+NOTHING_TO_FINISH_TEXT = (
+    "Este carrusel no tiene diapositivas guardadas para terminar. Créalo de nuevo desde Crear "
+    "publicación."
+)
+
+
+class NothingToFinish(Exception):
+    """«Crear las que faltan» (m-24820842) on a draft that is not a failed gallery with
+    finished slides: nothing is charged, written or dispatched. `detail` is Spanish."""
+
+    def __init__(self, detail: str = NOTHING_TO_FINISH_TEXT) -> None:
+        super().__init__(detail)
+        self.detail = detail
+
+
 class DuplicateDraftRequest(Exception):
     """A draft with this `request_key` already exists (a concurrent create won the
     unique index): `draft_id` is that draft. Raised by the repository, absorbed by
@@ -258,6 +299,10 @@ class DraftRecord:
     #: m-24828906: the version the screen shows. None = a draft that failed its first
     #: generation has no version to show.
     active_version_id: UUID | None = None
+    #: ADR 44 / VE-08 (0119): a part of a video by parts — its parent and 1-based place
+    #: in the parent's plan. Both None on every other piece.
+    parent_draft_id: UUID | None = None
+    part_index: int | None = None
 
 
 @dataclass(frozen=True)
@@ -272,6 +317,9 @@ class VersionSummary:
     model_revision: str | None
     spent_usd: Decimal
     id: UUID | None = None
+    #: 0119 (VE-08): the brief the version was made from — a part's «Crear otra versión»
+    #: writes a new one, so an earlier version shows its own description. None before 0119.
+    brief_id: UUID | None = None
 
 
 @dataclass(frozen=True)
@@ -346,6 +394,13 @@ class DraftDetail:
     viewed_version_id: UUID | None = None
     is_version_preview: bool = False
     can_restore_version: bool = False
+    #: m-24820842: a FAILED gallery's slides already made and kept — «Crear las que
+    #: faltan» makes only the rest. 0 for every other draft.
+    kept_slides: int = 0
+    #: m-24820842: with `kept_slides`, the gallery's generated slides in all — the UI
+    #: shows «Crear la que falta» / «Crear las que faltan» from `gallery_slides -
+    #: kept_slides` instead of parsing the failure text. 0 for every other draft.
+    gallery_slides: int = 0
 
     @property
     def warnings(self) -> tuple[DraftWarning, ...]:
@@ -507,6 +562,57 @@ class DraftBundle:
     active_version_id: UUID | None = None
 
 
+@dataclass(frozen=True)
+class FailedAttempt:
+    """m-24820842: what a failed generation of a gallery left on its `failed` version —
+    the copy it was made from and the paid slides it finished (provider, model, prompt
+    and cost provenance in their `params`), ready to be reused by the next attempt."""
+
+    revision: int
+    variants: tuple[VariantWrite, ...]
+    slides: tuple[MediaWrite, ...]
+
+    @property
+    def copy_passed(self) -> bool:
+        return any(v.fidelity.get("passed") for v in self.variants)
+
+    @property
+    def prompt_compiler_version(self) -> int | None:
+        """The prompt compiler the kept slides were made with (their provenance), None
+        for slides kept before it was recorded."""
+        versions = {
+            int(value)
+            for slide in self.slides
+            if isinstance(value := slide.params.get("prompt_compiler_version"), int)
+        }
+        return max(versions) if versions else None
+
+
+def _with_compiler(
+    prepare: Callable[[ContentBrief, BrandKit], ContentBrief], version: int
+) -> Callable[[ContentBrief, BrandKit], ContentBrief]:
+    """`prepare_new_brief`, but stamping `version` instead of today's prompt compiler."""
+
+    def prepare_at(brief: ContentBrief, kit: BrandKit) -> ContentBrief:
+        prepared = prepare(brief, kit)
+        return prepared.model_copy(
+            update={"media": prepared.media.model_copy(update={"prompt_compiler_version": version})}
+        )
+
+    return prepare_at
+
+
+@dataclass(frozen=True)
+class GalleryResume:
+    """m-24820842 (review #2, #6): the stamp «Crear las que faltan» puts on the revision it
+    creates — which failed version's copy and slides that revision reuses, and the prompt
+    compiler the gallery was made with (founder, 2026-11-03: the missing slides are
+    compiled exactly like the kept ones). No other revision reuses a failed attempt."""
+
+    kept_revision: int
+    prompt_compiler_version: int | None = None
+
+
 class ContentRepository(Protocol):
     """Persistence seam, same pattern as ``PublishAttemptRepository``: the service holds
     the FSM and the money math; the repository holds the transactions. Pure tests
@@ -562,7 +668,9 @@ class ContentRepository(Protocol):
         failure_reason: str | None,
     ) -> None: ...
 
-    def bump_revision(self, *, tenant_id: UUID, draft_id: UUID) -> int: ...
+    def bump_revision(
+        self, *, tenant_id: UUID, draft_id: UUID, pipeline_version: str | None = None
+    ) -> int: ...
 
     def update_post(
         self,
@@ -605,6 +713,27 @@ class ContentRepository(Protocol):
         """Only the videos of the draft made as a Seedance draft (`params ? 'draft'`,
         m-24820142), in order — what approving and finishing read, without every
         other media row."""
+        ...
+
+    def failed_attempt(
+        self, *, tenant_id: UUID, draft_id: UUID, revision: int
+    ) -> FailedAttempt | None:
+        """m-24820842: the latest version of the draft at or below `revision`, when it
+        is a `failed` one — its copy and its paid gallery slides; None otherwise.
+        Optional: the service reads it through `getattr` (test doubles may lack it)."""
+        ...
+
+    def stamp_gallery_resume(
+        self, *, tenant_id: UUID, draft_id: UUID, revision: int, resume: GalleryResume
+    ) -> None:
+        """m-24820842: mark `revision` as the «Crear las que faltan» of `resume`. Once per
+        revision (a second stamp is ignored). Optional, like `failed_attempt`."""
+        ...
+
+    def gallery_resume(
+        self, *, tenant_id: UUID, draft_id: UUID, revision: int
+    ) -> GalleryResume | None:
+        """The stamp of exactly `revision`, None for any other revision."""
         ...
 
     def brief_kind(self, *, tenant_id: UUID, brief_id: UUID) -> str | None: ...
@@ -685,6 +814,70 @@ def _draft_record(row: orm.ContentDraft) -> DraftRecord:
         approved_revision=row.approved_revision,
         failure_detail=row.failure_detail,
         active_version_id=row.active_version_id,
+        parent_draft_id=row.parent_draft_id,
+        part_index=row.part_index,
+    )
+
+
+def check_part_link(
+    brief: ContentBrief, parent_draft_id: UUID | None, part_index: int | None
+) -> None:
+    """VE-08 (criterion 6): a child's brief names its part (`media.part`) exactly when the
+    draft has a parent, and the part's index is the draft's `part_index` — a part never
+    exists loose, and a loose piece never carries a part."""
+    part = brief.media.part
+    if (part is None) != (parent_draft_id is None) or (parent_draft_id is None) != (
+        part_index is None
+    ):
+        raise ValueError("a part of a video by parts has its parent, and only a part has one")
+    if part is not None and part.index != part_index:
+        raise ValueError("a part's place in the plan is its draft's part_index")
+
+
+def brief_from_row(row: orm.ContentBrief) -> ContentBrief:
+    """A stored `content_briefs` row as the brief it was written from."""
+    return ContentBrief.model_validate(
+        {
+            "brand_id": row.brand_id,
+            "objective": row.objective,
+            "content_type": row.content_type,
+            "topic": row.topic,
+            "product_ref": row.product_ref,
+            "platform": row.platform,
+            "format": row.format,
+            "intent": row.intent,
+            "image_route": row.image_route,
+            "source_media_key": row.source_media_key,
+            "video_plan": row.video_plan,
+            "constraints": row.constraints or {},
+            "variants_requested": row.variants_requested,
+            "kind": row.kind,
+            "media": row.media or {},
+        },
+        context={"preserve_stored_logo_mode": True},
+    )
+
+
+def _brief_row(tenant_id: UUID, user_id: UUID, brief: ContentBrief) -> orm.ContentBrief:
+    """A `content_briefs` row for `brief` (a new draft's, or a part's new version's)."""
+    return orm.ContentBrief(
+        tenant_id=tenant_id,
+        brand_id=brief.brand_id,
+        objective=brief.objective.value,
+        topic=brief.topic,
+        product_ref=brief.product_ref,
+        platform=brief.platform.value,
+        format=brief.format.value,
+        intent=brief.intent.value,
+        content_type=brief.content_type.value,
+        image_route=brief.image_route.value,
+        source_media_key=brief.source_media_key,
+        video_plan=(brief.video_plan.model_dump(mode="json") if brief.video_plan else None),
+        variants_requested=brief.variants_requested,
+        constraints=brief.constraints.model_dump(mode="json"),
+        kind=brief.kind.value,
+        media=brief.media.model_dump(mode="json"),
+        created_by=user_id,
     )
 
 
@@ -763,7 +956,12 @@ class PostgresContentRepository:
         voice_profile_version: int,
         pipeline_version: str,
         request_key: UUID | None = None,
+        draft_id: UUID | None = None,
+        parent_draft_id: UUID | None = None,
+        part_index: int | None = None,
     ) -> UUID:
+        """`draft_id`, `parent_draft_id` and `part_index` (VE-08): a part of a video by
+        parts is born with an id chosen by `parts.create_parts`, under its parent."""
         try:
             return self._insert_brief_and_draft(
                 tenant_id=tenant_id,
@@ -772,6 +970,9 @@ class PostgresContentRepository:
                 voice_profile_version=voice_profile_version,
                 pipeline_version=pipeline_version,
                 request_key=request_key,
+                draft_id=draft_id,
+                parent_draft_id=parent_draft_id,
+                part_index=part_index,
             )
         except IntegrityError:
             # the whole transaction (brief + draft) rolled back; if the key is why, the
@@ -798,33 +999,22 @@ class PostgresContentRepository:
         voice_profile_version: int,
         pipeline_version: str,
         request_key: UUID | None,
+        draft_id: UUID | None = None,
+        parent_draft_id: UUID | None = None,
+        part_index: int | None = None,
     ) -> UUID:
+        check_part_link(brief, parent_draft_id, part_index)
         with tenant_session(tenant_id) as session:
-            brief_row = orm.ContentBrief(
-                tenant_id=tenant_id,
-                brand_id=brief.brand_id,
-                objective=brief.objective.value,
-                topic=brief.topic,
-                product_ref=brief.product_ref,
-                platform=brief.platform.value,
-                format=brief.format.value,
-                intent=brief.intent.value,
-                content_type=brief.content_type.value,
-                image_route=brief.image_route.value,
-                source_media_key=brief.source_media_key,
-                video_plan=(brief.video_plan.model_dump(mode="json") if brief.video_plan else None),
-                variants_requested=brief.variants_requested,
-                constraints=brief.constraints.model_dump(mode="json"),
-                kind=brief.kind.value,
-                media=brief.media.model_dump(mode="json"),
-                created_by=user_id,
-            )
+            brief_row = _brief_row(tenant_id, user_id, brief)
             session.add(brief_row)
             session.flush()
             draft_row = orm.ContentDraft(
+                **({"id": draft_id} if draft_id is not None else {}),
                 tenant_id=tenant_id,
                 brand_id=brief.brand_id,
                 brief_id=brief_row.id,
+                parent_draft_id=parent_draft_id,
+                part_index=part_index,
                 status=DRAFTING,
                 voice_profile_version=voice_profile_version,
                 pipeline_version=pipeline_version,
@@ -837,6 +1027,88 @@ class PostgresContentRepository:
             session.add(draft_row)
             session.flush()
             return draft_row.id
+
+    def parts_of(self, *, tenant_id: UUID, parent_id: UUID) -> tuple[DraftRecord, ...]:
+        """VE-08: the parts (child drafts) of a video by parts, in plan order. Another
+        business's parent has none here (RLS). m-24985192: a part its owner removed
+        («Quitar parte», `part_removed_at`) is not a part of the video any more — never
+        approved, charged, joined or ordered a final — and is left out."""
+        with tenant_session(tenant_id) as session:
+            rows = session.scalars(
+                select(orm.ContentDraft)
+                .where(
+                    orm.ContentDraft.parent_draft_id == parent_id,
+                    orm.ContentDraft.part_removed_at.is_(None),
+                )
+                .order_by(orm.ContentDraft.part_index)
+            ).all()
+            return tuple(_draft_record(row) for row in rows)
+
+    def mark_part_removed(self, *, tenant_id: UUID, draft_id: UUID, user_id: UUID) -> bool:
+        """m-24985192 «Quitar parte»: mark the part removed (once — True when this call
+        marked it). Nothing else changes: its charges, jobs, versions and files stay."""
+        with tenant_session(tenant_id) as session:
+            marked = session.execute(
+                text("""
+                UPDATE content_drafts SET part_removed_at = now(), part_removed_by = :u,
+                    updated_at = now()
+                WHERE id = :d AND parent_draft_id IS NOT NULL AND part_removed_at IS NULL
+                RETURNING id
+            """),
+                {"d": draft_id, "u": user_id},
+            ).first()
+            return marked is not None
+
+    def removed_part_indexes(self, *, tenant_id: UUID, parent_id: UUID) -> frozenset[int]:
+        """m-24985192: the places in the plan of the parts the owner removed."""
+        with tenant_session(tenant_id) as session:
+            found = session.scalars(
+                select(orm.ContentDraft.part_index).where(
+                    orm.ContentDraft.parent_draft_id == parent_id,
+                    orm.ContentDraft.part_removed_at.is_not(None),
+                )
+            ).all()
+            return frozenset(int(i) for i in found if i is not None)
+
+    def replace_brief(
+        self, *, tenant_id: UUID, draft_id: UUID, user_id: UUID, brief: ContentBrief
+    ) -> UUID:
+        """VE-08 «Crear otra versión» of a part: a NEW brief row becomes the draft's — the
+        old one stays, so the versions made from it keep showing it
+        (`piece_versions.brief_id`). The part's link is checked as at creation."""
+        with tenant_session(tenant_id) as session:
+            draft = session.get(orm.ContentDraft, draft_id, with_for_update=True)
+            if draft is None:
+                raise UnknownDraft(str(draft_id))
+            check_part_link(brief, draft.parent_draft_id, draft.part_index)
+            row = _brief_row(tenant_id, user_id, brief)
+            session.add(row)
+            session.flush()
+            draft.brief_id = row.id
+            return row.id
+
+    def parent_texts_regenerated_today(self, *, tenant_id: UUID) -> int:
+        """VE-08 (criterion 7): how many times today (the business's own day) a video by
+        parts asked Claude for a text — its FIRST text (the parent's creation, revision
+        1; Deivid 2026-11-09, m-24921081) and each «Pedir otra versión» (`revision + 1`).
+        Each writes ONE `creation_charges` row (0 creations) per (draft, revision),
+        refunded or not: the call is made either way, and nothing is counted twice.
+        RLS: only this business's rows. (The name predates counting the first text.)"""
+        with tenant_session(tenant_id) as session:
+            counted = session.scalar(
+                text("""
+                WITH z AS (
+                  SELECT COALESCE(NULLIF(
+                    (SELECT timezone FROM tenants WHERE id = :tenant), ''), 'UTC') AS zone
+                )
+                SELECT count(*) FROM creation_charges c, z
+                WHERE c.request_kind = :kind
+                  AND c.charged_at
+                      >= (date_trunc('day', now() AT TIME ZONE z.zone) AT TIME ZONE z.zone)
+                """),
+                {"tenant": tenant_id, "kind": ContentKind.SHOT_VIDEO.value},
+            )
+            return int(counted or 0)
 
     def get_draft(self, *, tenant_id: UUID, draft_id: UUID) -> DraftRecord | None:
         with tenant_session(tenant_id) as session:
@@ -858,6 +1130,7 @@ class PostgresContentRepository:
                     model_id=row.model_id,
                     model_revision=row.model_revision,
                     spent_usd=row.spent_usd,
+                    brief_id=row.brief_id,
                 )
                 for row in session.scalars(
                     select(orm.PieceVersion)
@@ -869,27 +1142,7 @@ class PostgresContentRepository:
     def get_brief(self, *, tenant_id: UUID, brief_id: UUID) -> ContentBrief | None:
         with tenant_session(tenant_id) as session:
             row = session.get(orm.ContentBrief, brief_id)
-            if row is None:
-                return None
-            return ContentBrief.model_validate(
-                {
-                    "brand_id": row.brand_id,
-                    "objective": row.objective,
-                    "content_type": row.content_type,
-                    "topic": row.topic,
-                    "product_ref": row.product_ref,
-                    "platform": row.platform,
-                    "format": row.format,
-                    "intent": row.intent,
-                    "image_route": row.image_route,
-                    "source_media_key": row.source_media_key,
-                    "video_plan": row.video_plan,
-                    "constraints": row.constraints or {},
-                    "variants_requested": row.variants_requested,
-                    "kind": row.kind,
-                    "media": row.media or {},
-                }
-            )
+            return None if row is None else brief_from_row(row)
 
     def brief_kind(self, *, tenant_id: UUID, brief_id: UUID) -> str | None:
         with tenant_session(tenant_id) as session:
@@ -955,6 +1208,7 @@ class PostgresContentRepository:
                         model_id=row.model_id,
                         model_revision=row.model_revision,
                         spent_usd=row.spent_usd,
+                        brief_id=row.brief_id,
                     )
                 )
             bundles: dict[UUID, DraftBundle] = {}
@@ -995,7 +1249,11 @@ class PostgresContentRepository:
             rows = session.execute(
                 select(orm.CopyVariant.copy, orm.CopyVariant.edited_copy)
                 .join(orm.ContentDraft, orm.ContentDraft.id == orm.CopyVariant.draft_id)
-                .where(orm.ContentDraft.brand_id == brand_id)
+                .where(
+                    orm.ContentDraft.brand_id == brand_id,
+                    # VE-08: a part carries a copy of its parent's text — not another one
+                    orm.ContentDraft.parent_draft_id.is_(None),
+                )
                 .order_by(orm.CopyVariant.created_at.desc())
                 .limit(limit)
             ).all()
@@ -1031,6 +1289,16 @@ class PostgresContentRepository:
             draft = session.get(orm.ContentDraft, draft_id, with_for_update=True)
             if draft is None:
                 raise UnknownDraft(str(draft_id))
+            if _purged_meanwhile(session, draft):
+                _drop_purged_generation(
+                    session,
+                    draft,
+                    brand_id=brand_id,
+                    terminal=new_status != DRAFTING,
+                    usage=usage,
+                    spent_usd=spent_usd,
+                )
+                return
             if (
                 expected_revision is not None
                 and (draft.revision != expected_revision or draft.status != DRAFTING)
@@ -1077,6 +1345,9 @@ class PostgresContentRepository:
                     spent_usd=spent_usd,
                     failure_reason=failure_reason,
                     failure_detail=failure_detail,
+                    # 0119 (VE-08): the brief this version was made from, so an earlier
+                    # version of a part keeps showing its own description
+                    brief_id=draft.brief_id,
                 )
                 session.add(version)
                 session.flush()
@@ -1183,6 +1454,20 @@ class PostgresContentRepository:
                 draft.status = new_status
                 draft.failure_reason = failure_reason
                 draft.failure_detail = failure_detail
+            if draft.parent_draft_id is not None:
+                from qualify_api.creative.parts import mark_parent_dirty
+
+                # a part settled (made or failed): its video by parts joins again
+                mark_parent_dirty(session, draft_id)
+            elif succeeded:
+                from qualify_api.creative.parts import open_parent_join, parent_picture
+
+                # VE-10a: a parent with parts got a new version (another text): its
+                # joined preview lives on the active version, so its parts join again;
+                # meanwhile it keeps the poster of its last join (never no picture)
+                session.flush()
+                open_parent_join(session, draft_id)
+                parent_picture(session, draft_id)
 
     def update_status(
         self,
@@ -1198,6 +1483,10 @@ class PostgresContentRepository:
                 raise UnknownDraft(str(draft_id))
             draft.status = new_status
             draft.failure_reason = failure_reason
+            if new_status == FAILED and draft.parent_draft_id is not None:
+                from qualify_api.creative.parts import mark_parent_dirty
+
+                mark_parent_dirty(session, draft_id)
             if new_status == DRAFTING:
                 # a run starts (m-24852156): the reaper measures from here, not from the
                 # draft's birth — «Pedir otra versión» on an old piece is not stale
@@ -1223,7 +1512,9 @@ class PostgresContentRepository:
             draft.approved_at = approved_at
             draft.approved_revision = draft.revision
 
-    def bump_revision(self, *, tenant_id: UUID, draft_id: UUID) -> int:
+    def bump_revision(
+        self, *, tenant_id: UUID, draft_id: UUID, pipeline_version: str | None = None
+    ) -> int:
         with tenant_session(tenant_id) as session:
             draft = session.get(orm.ContentDraft, draft_id)
             if draft is None:
@@ -1232,6 +1523,8 @@ class PostgresContentRepository:
 
             snapshot_current(session, draft, revision=draft.revision)
             draft.revision += 1
+            if pipeline_version is not None:
+                draft.pipeline_version = pipeline_version
             return draft.revision
 
     def update_post(
@@ -1266,7 +1559,11 @@ class PostgresContentRepository:
         with tenant_session(tenant_id) as session:
             stmt = (
                 select(orm.ContentDraft)
-                .where(orm.ContentDraft.brand_id == brand_id)
+                .where(
+                    orm.ContentDraft.brand_id == brand_id,
+                    # VE-08: a part shows inside its video by parts, never loose
+                    orm.ContentDraft.parent_draft_id.is_(None),
+                )
                 .order_by(orm.ContentDraft.created_at.desc())
                 .limit(limit)
                 .offset(offset)
@@ -1303,6 +1600,101 @@ class PostgresContentRepository:
                 .order_by(orm.ImageAsset.position, orm.ImageAsset.created_at)
             )
             return tuple(_image_record(row) for row in rows)
+
+    def failed_attempt(
+        self, *, tenant_id: UUID, draft_id: UUID, revision: int
+    ) -> FailedAttempt | None:
+        with tenant_session(tenant_id) as session:
+            version = session.scalar(
+                select(orm.PieceVersion)
+                .where(
+                    orm.PieceVersion.draft_id == draft_id,
+                    orm.PieceVersion.revision <= revision,
+                )
+                .order_by(orm.PieceVersion.revision.desc())
+                .limit(1)
+            )
+            if version is None or version.status != "failed":
+                return None
+            variants = session.scalars(
+                select(orm.CopyVariant)
+                .where(orm.CopyVariant.version_id == version.id)
+                .order_by(orm.CopyVariant.ordinal)
+            ).all()
+            assets = session.scalars(
+                select(orm.ImageAsset)
+                .where(orm.ImageAsset.version_id == version.id)
+                .order_by(orm.ImageAsset.position, orm.ImageAsset.created_at)
+            ).all()
+            slides = tuple(
+                write
+                for write in (
+                    MediaWrite(
+                        position=row.position,
+                        media_type=row.media_type,
+                        media_url=row.media_url or row.object_key or "",
+                        object_key=row.object_key or "",
+                        width=row.width,
+                        height=row.height,
+                        aspect_ratio=row.aspect_ratio,
+                        model_id=row.model_id,
+                        provider=row.provider,
+                        params={
+                            **dict(row.params or {}),
+                            KEPT_FROM_REVISION: (row.params or {}).get(KEPT_FROM_REVISION)
+                            or version.revision,
+                        },
+                        content_type=row.content_type,
+                        # only paid gallery slides are kept, and every one is AI imagery
+                        ai_generated=True,
+                    )
+                    for row in assets
+                    if row.object_key
+                )
+                if gallery_slide_is_paid(write)
+            )
+            return FailedAttempt(
+                revision=version.revision,
+                variants=tuple(
+                    VariantWrite(
+                        ordinal=row.ordinal,
+                        copy=dict(row.copy),
+                        fidelity=dict(row.fidelity or {}),
+                        model_id=row.model_id,
+                        model_revision=row.model_revision,
+                    )
+                    for row in variants
+                ),
+                slides=slides,
+            )
+
+    def stamp_gallery_resume(
+        self, *, tenant_id: UUID, draft_id: UUID, revision: int, resume: GalleryResume
+    ) -> None:
+        # 0116: three columns of the (locked) draft row — an idempotent UPDATE
+        with tenant_session(tenant_id) as session:
+            draft = session.get(orm.ContentDraft, draft_id)
+            if draft is None:
+                raise UnknownDraft(str(draft_id))
+            draft.resume_for_revision = revision
+            draft.resume_of_revision = resume.kept_revision
+            draft.resume_compiler_version = resume.prompt_compiler_version
+
+    def gallery_resume(
+        self, *, tenant_id: UUID, draft_id: UUID, revision: int
+    ) -> GalleryResume | None:
+        with tenant_session(tenant_id) as session:
+            draft = session.get(orm.ContentDraft, draft_id)
+            if (
+                draft is None
+                or draft.resume_for_revision != revision
+                or draft.resume_of_revision is None
+            ):
+                return None
+            return GalleryResume(
+                kept_revision=draft.resume_of_revision,
+                prompt_compiler_version=draft.resume_compiler_version,
+            )
 
     def draft_videos_for(self, *, tenant_id: UUID, draft_id: UUID) -> tuple[ImageRecord, ...]:
         with tenant_session(tenant_id) as session:
@@ -1449,6 +1841,20 @@ class PostgresContentRepository:
             row.updated_at = datetime.now(UTC)
             session.flush()
             draft = session.get(orm.ContentDraft, draft_id)
+            if (
+                draft is not None
+                and draft.parent_draft_id is not None
+                and (media.params.get("draft") or {}).get("status") == "part_final"
+            ):
+                from qualify_api.creative.parts import mark_parent_dirty, open_parent_join_final
+
+                # VE-10b: a part's 1080p is kept — its video by parts joins its final
+                # once every part's is (same transaction as the part's own write); and
+                # its preview join is dirtied too: if the parent went back to the gate
+                # («Pedir otra versión» of another part), the new joined preview waited
+                # for this part (a no-op when nothing changed: same fingerprint)
+                open_parent_join_final(session, draft_id)
+                mark_parent_dirty(session, draft_id)
             if draft is not None:
                 rows = tuple(
                     session.scalars(
@@ -1458,6 +1864,92 @@ class PostgresContentRepository:
                     )
                 )
                 draft.preview_key = preview_of(rows)  # type: ignore[arg-type]
+
+
+def _purged_meanwhile(session: Any, draft: orm.ContentDraft) -> bool:
+    """m-24921069: whether the retention purge removed the piece — or, for a part of a
+    video by parts, its video — so a generation finishing now must not attach files."""
+    if draft.media_purged_at is not None:
+        return True
+    if draft.parent_draft_id is None:
+        return False
+    return (
+        session.scalar(
+            select(orm.ContentDraft.media_purged_at).where(
+                orm.ContentDraft.id == draft.parent_draft_id
+            )
+        )
+        is not None
+    )
+
+
+def _drop_purged_generation(
+    session: Any,
+    draft: orm.ContentDraft,
+    *,
+    brand_id: UUID,
+    terminal: bool,
+    usage: Sequence[UsageWrite],
+    spent_usd: Decimal,
+) -> None:
+    """m-24921069: the retention purge removed this piece (or its video by parts) while
+    the worker made it, so nothing is attached:
+
+    - the draft is (or stays) purged with its objects pending — the files the worker
+      already put in its folder are left to `retention.purge_pending_objects`;
+    - its vendor tasks still pending for this revision are settled (`failed`), as a
+      finished generation settles them, so the reaper is not held back by them;
+    - the paid work is recorded ONCE per revision: a terminal outcome leaves a `failed`
+      version (`cancelled`, nothing shown) and a repeated terminal call for the same
+      revision records nothing again. A checkpoint (`DRAFTING`) records its own
+      increment, as on the normal path."""
+    from qualify_api.creative.vendor_tasks import FAILED as TASK_FAILED  # noqa: PLC0415
+    from qualify_api.creative.vendor_tasks import PENDING as TASK_PENDING  # noqa: PLC0415
+
+    now = datetime.now(UTC)
+    if draft.media_purged_at is None:  # a part whose video was purged
+        draft.media_purged_at = now
+    if draft.media_objects_pending_at is None:
+        draft.media_objects_pending_at = now
+    session.execute(
+        update(orm.CreativeVendorTask)
+        .where(
+            orm.CreativeVendorTask.draft_id == draft.id,
+            orm.CreativeVendorTask.revision == draft.revision,
+            orm.CreativeVendorTask.status == TASK_PENDING,
+        )
+        .values(status=TASK_FAILED, settled_at=now, updated_at=now)
+    )
+    if terminal:
+        dropped = session.scalar(
+            select(orm.PieceVersion.id).where(
+                orm.PieceVersion.draft_id == draft.id,
+                orm.PieceVersion.revision == draft.revision,
+            )
+        )
+        if dropped is not None:
+            logger.info("generation of purged piece %s dropped again", draft.id)
+            return
+        session.add(
+            orm.PieceVersion(
+                id=uuid4(),
+                tenant_id=draft.tenant_id,
+                brand_id=brand_id,
+                draft_id=draft.id,
+                revision=draft.revision,
+                status="failed",
+                model_id=usage[-1].model_id if usage else "",
+                pipeline_version=draft.pipeline_version,
+                requires_ai_disclosure=draft.requires_ai_disclosure,
+                spent_usd=spent_usd,
+                failure_reason=FailureReason.CANCELLED.value,
+                failure_detail=None,
+                brief_id=draft.brief_id,
+            )
+        )
+    _add_usage(session, draft.tenant_id, brand_id, draft.id, usage)
+    _add_spend(session, brand_id, spent_usd)
+    logger.info("generation of purged piece %s dropped", draft.id)
 
 
 def _add_usage(
@@ -1563,6 +2055,49 @@ def call_cost(pricing: PricingTable, usage: Usage, model_id: str) -> Decimal:
     return (Decimal(billable_in) * per_in + Decimal(usage.output_tokens) * per_out) / _MTOK
 
 
+class DraftEditConflict(ValueError):
+    """The editor's revision no longer matches the locked current piece."""
+
+    def __init__(self) -> None:
+        super().__init__("La publicación cambió. Vuelve a abrirla antes de guardar.")
+
+
+def fenced_copy_edit(method: Callable[..., Any]) -> Callable[..., Any]:
+    """Keep the copy, revision and approval transition in one transaction."""
+
+    @wraps(method)
+    def call(self: Any, *args: Any, **kwargs: Any) -> Any:
+        if not isinstance(self._repo, PostgresContentRepository):
+            return method(self, *args, **kwargs)
+        from qualify_api.planner.models import CalendarEvent
+
+        with (
+            tenant_unit_of_work(kwargs["tenant_id"]),
+            tenant_session(kwargs["tenant_id"]) as session,
+        ):
+            draft_id = session.scalar(
+                select(orm.CopyVariant.draft_id).where(
+                    orm.CopyVariant.id == kwargs["variant_id"], visible_version(orm.CopyVariant)
+                )
+            )
+            if draft_id is None:
+                raise UnknownVariant(str(kwargs["variant_id"]))
+            events = session.scalars(
+                select(CalendarEvent)
+                .where(CalendarEvent.post_id == draft_id)
+                .order_by(CalendarEvent.id)
+                .with_for_update()
+            ).all()
+            session.get(orm.ContentDraft, draft_id, with_for_update=True, populate_existing=True)
+            if any(event.status == "publishing" for event in events):
+                raise ValueError(
+                    "La publicación ya está en curso. Espera antes de editar la pieza."
+                )
+            return method(self, *args, **kwargs)
+
+    return call
+
+
 def fenced_regeneration(method: Callable[..., Any]) -> Callable[..., Any]:
     """Serialize another version with the calendar claim before invalidating its media."""
 
@@ -1622,6 +2157,8 @@ class ContentService:
         #: The vendor tasks a generation created, kept by id (m-24852154): None = a
         #: task that outlives the wait cannot be resumed (tests, scripts).
         self._vendor_tasks = vendor_tasks
+        #: (tenant, draft, failed revision) -> slides «Crear las que faltan» keeps
+        self._kept_counts: dict[tuple[UUID, UUID, int], tuple[int, int]] = {}
         #: The run's heartbeat (m-24852156, `dispatch.record_progress`): called with
         #: (tenant_id, draft_id) each time the media run keeps a file. None = no stamp.
         self._progress = progress
@@ -1637,6 +2174,44 @@ class ContentService:
         self._repo: ContentRepository = repository or PostgresContentRepository()
         self._chain = copy_chain
         self.dispatcher = dispatcher
+
+    # -- collaborators the parts of a video by parts share (VE-08, `parts.py`) ----------
+
+    @property
+    def repository(self) -> ContentRepository:
+        return self._repo
+
+    @property
+    def creations(self) -> CreationsLedger | None:
+        return self._creations
+
+    def prepare_new_generation(
+        self, *, tenant_id: UUID, brand_id: UUID, brief: ContentBrief
+    ) -> tuple[ContentBrief, int, str]:
+        """What `create_draft` does to a brief before its row exists, for a brief that
+        does not go through it (a part, VE-08): the brand must be ready, its route allowed,
+        and the brief is stamped by the producer. Returns the stamped brief, the voice
+        profile version and the pipeline version the draft is born with."""
+        kit = self._brand.kit(tenant_id=tenant_id, brand_id=brand_id)
+        voice = self._voice.active(tenant_id=tenant_id, brand_id=brand_id)
+        missing = tuple(
+            name
+            for name, present in (
+                ("brand_kit", kit is not None),
+                ("voice_profile", voice is not None),
+            )
+            if not present
+        )
+        if missing or kit is None or voice is None:
+            raise BrandNotReady(missing=missing)
+        blocked = check_route_allowed(route=brief.image_route, policy=kit.image_policy)
+        if blocked is not None:
+            raise RouteBlockedByPolicy(blocked.detail)
+        prepare_new = getattr(self._media, "prepare_new_brief", None)
+        if callable(prepare_new):
+            brief = prepare_new(brief, kit)
+        version = getattr(self._media, "new_generation_pipeline_version", PIPELINE_VERSION)
+        return brief, voice.version, version
 
     # -- create -------------------------------------------------------------
 
@@ -1663,6 +2238,9 @@ class ContentService:
         """
         if brief.brand_id != brand_id:
             raise ValueError("brief.brand_id does not match brand_id")
+        # VE-08 (criterion 6): a part is born with its parent, all its siblings charged
+        # together (`parts.PartsService.create_parts`) — never as a loose piece
+        check_part_link(brief, None, None)
         if request_key is not None:
             existing = self._repo.draft_id_for_request(tenant_id=tenant_id, request_key=request_key)
             if existing is not None:
@@ -1682,6 +2260,40 @@ class ContentService:
         blocked = check_route_allowed(route=brief.image_route, policy=kit.image_policy)
         if blocked is not None:
             raise RouteBlockedByPolicy(blocked.detail)
+        if brief.kind.is_parts_parent:
+            from qualify_api.creative.parts import check_parent_text_cap
+
+            # Deivid, 2026-11-09 (m-24921081): a video by parts' FIRST text is a Claude
+            # call the platform pays too — the same daily cap per business as «Pedir otra
+            # versión», before any row exists (a retry with the same key returned above)
+            check_parent_text_cap(self._repo, tenant_id=tenant_id)
+        received_middle = len(brief.media.clip_image_keys)
+        # Caller cannot select an internal compiler version through MediaInputs.
+        brief = brief.model_copy(
+            update={
+                "media": brief.media.model_copy(
+                    update={
+                        "brand_application_version": 0,
+                        "prompt_compiler_version": 0,
+                        "script_word_budget": None,
+                        "script_rewrites": 0,
+                        # m-24820842: the Brand Kit wording option belongs to reel replicas only
+                        "replication_brand_text": brief.media.replication_brand_text
+                        and brief.kind is ContentKind.CLIP
+                        and brief.media.clip_reference_mode == "edit",
+                        # founder, 2026-11-03: the copy as subtitles belongs to clips only
+                        "clip_subtitles": brief.media.clip_subtitles
+                        and brief.kind is ContentKind.CLIP,
+                    }
+                )
+            }
+        )
+        execution_version = getattr(
+            self._media, "new_generation_pipeline_version", PIPELINE_VERSION
+        )
+        prepare_new = getattr(self._media, "prepare_new_brief", None)
+        if callable(prepare_new):
+            brief = prepare_new(brief, kit)
         # CREAR-5: priced and checked against the month BEFORE any row exists — without
         # enough creations, or (v2) videos, nothing is created (`CreationNotOffered` /
         # `NotEnoughCreations`)
@@ -1700,13 +2312,26 @@ class ContentService:
                 user_id=user_id,
                 brief=brief,
                 voice_profile_version=voice.version,
-                pipeline_version=PIPELINE_VERSION,
+                pipeline_version=execution_version,
                 **keyed,
             )
         except DuplicateDraftRequest as duplicate:
             # a concurrent call with the same key won the unique index: its draft is
             # ours, and its generation is already dispatched — never a second one
             return duplicate.draft_id
+        if brief.kind is ContentKind.CLIP:
+            # m-24820842 (draft 9808559f): a clip whose middle photo went missing — what
+            # the form handed over and what the stored brief keeps, side by side
+            logger.info(
+                "draft %s: clip created with %d middle image(s) received, %d stored, "
+                "frames: first %s, last %s, %d reference video(s)",
+                draft_id,
+                received_middle,
+                len(brief.media.clip_image_keys),
+                "yes" if brief.media.clip_first_frame_key else "no",
+                "yes" if brief.media.clip_last_frame_key else "no",
+                len(brief.media.clip_video_keys),
+            )
         if price is not None and self._creations is not None:
             try:
                 self._creations.charge(
@@ -1751,6 +2376,11 @@ class ContentService:
         if brief is None:
             return None
         try:
+            prepare_new = getattr(self._media, "prepare_new_brief", None)
+            if callable(prepare_new):
+                kit = self._brand.kit(tenant_id=tenant_id, brand_id=brief.brand_id)
+                if kit is not None:
+                    brief = prepare_new(brief, kit)
             return weight_for(brief)
         except CreationNotOffered:
             return None
@@ -1768,6 +2398,11 @@ class ContentService:
         if brief is None:
             return None
         try:
+            prepare_new = getattr(self._media, "prepare_new_brief", None)
+            if callable(prepare_new):
+                kit = self._brand.kit(tenant_id=tenant_id, brand_id=brief.brand_id)
+                if kit is not None:
+                    brief = prepare_new(brief, kit)
             return weight_for(brief, redo=True)
         except CreationNotOffered:
             return None
@@ -1798,6 +2433,21 @@ class ContentService:
                 ),
             )
             return False
+        # m-24820842: sized like the real call (a talking video's script word budget)
+        prepare_new = getattr(self._media, "prepare_new_brief", None)
+        sizer = getattr(self._media, "preview_script_word_budget", None)
+        if callable(prepare_new) and callable(sizer):
+            from qualify_api.creative.brand_references import BrandReferenceError
+
+            try:
+                prepared = prepare_new(brief, kit)
+            except BrandReferenceError:
+                prepared = None
+            words = sizer(tenant_id, prepared, kit) if prepared is not None else None
+            if words is not None:
+                brief = brief.model_copy(
+                    update={"media": brief.media.model_copy(update={"script_word_budget": words})}
+                )
         prompts = self._variant_prompts(
             tenant_id=tenant_id, brand_id=brand_id, kit=kit, voice=voice, brief=brief
         )
@@ -1870,6 +2520,10 @@ class ContentService:
         draft = self._repo.get_draft(tenant_id=tenant_id, draft_id=draft_id)
         if draft is None or draft.status != DRAFTING:
             return
+        execution = current_preparation()
+        if execution is not None and execution.revision != draft.revision:
+            return  # A superseded job never reads the current revision as its own request.
+
         try:
             self._generate(tenant_id=tenant_id, draft=draft)
         except CheckpointError:
@@ -2095,15 +2749,90 @@ class ContentService:
                     if not present
                 )
             )
-        brief, kit, voice = frozen_inputs(brief=brief, kit=kit, voice=voice)
+        prepare_new = getattr(self._media, "prepare_new_brief", None)
+        # m-24820842: «Crear las que faltan» - ONLY the revision `finish_gallery` stamped
+        # reuses the failed attempt's copy and finished slides (the slides print that
+        # copy's words), and only the missing slides are paid for. «Pedir otra versión»
+        # (no stamp) never reuses a failed attempt (review #2).
+        resume = (
+            self._gallery_resume(tenant_id, draft) if brief.kind is ContentKind.CAROUSEL else None
+        )
+        kept = (
+            self._failed_gallery(tenant_id, draft.id, resume.kept_revision)
+            if resume is not None
+            else None
+        )
+        if kept is not None and resume is not None and kept.revision != resume.kept_revision:
+            kept = None  # the stamped version is not the one found: never mix attempts
+        if callable(prepare_new) and resume is not None and kept is not None:
+            if resume.prompt_compiler_version is not None:
+                # founder, 2026-11-03: the missing slides are compiled with the SAME
+                # compiler version the gallery was made with, never today's
+                prepare_new = _with_compiler(prepare_new, resume.prompt_compiler_version)
+        brief, kit, voice = frozen_inputs(
+            brief=brief,
+            kit=kit,
+            voice=voice,
+            prepare_brief=prepare_new if callable(prepare_new) else None,
+            new_execution=(
+                current_preparation().pipeline_version
+                if current_preparation() is not None
+                else draft.pipeline_version
+            )
+            == BRAND_APPLIED_PIPELINE_VERSION,
+        )
         budget = (
             self._repo.budget_state(tenant_id=tenant_id, brand_id=draft.brand_id)
             or _UNLIMITED_BUDGET
         )
+        # Validate the LIVE selection and snapshot its bytes before even paying copy.
+        # Preparation step -2 reuses the same snapshot on worker replay; a new revision
+        # captures today's resources instead. Older media doubles need no new method.
+        references = None
+        prepare_references = getattr(self._media, "prepare_brand_references", None)
+        if prepare_references is not None:
+            from qualify_api.creative.brand_references import BrandReferenceError
+
+            prepare_videos = getattr(self._media, "prepare_reference_videos", None)
+            try:
+                references = prepare_references(
+                    tenant_id=tenant_id,
+                    draft_id=draft.id,
+                    brief=brief,
+                    kit=kit,
+                    revision=draft.revision,
+                )
+                # m-24820842: a clip's reference videos made light for ModelArk (720p,
+                # 30 fps, cut to the clip) before the copy is paid
+                if callable(prepare_videos):
+                    prepare_videos(
+                        tenant_id=tenant_id,
+                        draft_id=draft.id,
+                        brief=brief,
+                        revision=draft.revision,
+                    )
+            except BrandReferenceError as exc:
+                self._finish_brief(
+                    tenant_id=tenant_id,
+                    draft=draft,
+                    brief=brief,
+                    kit=kit,
+                    budget=budget,
+                    variant_writes=[],
+                    usage_writes=[],
+                    spent=Decimal(0),
+                    any_passed=False,
+                    media_failure=FailureReason.INVALID_PARAMETERS.value,
+                    media_detail=exc.detail,
+                    vendor_tasks=None,
+                    kept=kept,
+                )
+                return
         media_failure: str | None = None
         media_detail = ""
         tasks = self._tasks_of(tenant_id, draft)
         waiting = self._binding(tenant_id, draft, tasks, {})
+        stage: tuple[list[VariantWrite], list[UsageWrite], Decimal, bool] | None
         if resumable(tasks) and self._media is not None and waiting is not None:
             # m-24852154: an earlier run of this revision left a vendor task pending —
             # its copy is reused (the video was made from it) and the task is waited for
@@ -2133,10 +2862,39 @@ class ContentService:
                 media_failure = FailureReason.PROVIDER_ERROR.value
                 media_detail = RESUMED_VIDEO_FAILED_TEXT
             tasks = self._tasks_of(tenant_id, draft)
+        elif kept is not None:
+            # the copy the kept slides were made with — never written (nor paid) again
+            stage = (list(kept.variants), [], Decimal(0), kept.copy_passed)
+        elif draft.parent_draft_id is not None:
+            # VE-08: a part of a video by parts asks Claude nothing — it carries one of
+            # its parent's texts (cost 0), which its approval with the parent selects
+            stage = self._inherited_copy(tenant_id, draft)
         else:
+            # m-24820842: a Seedance 2.x talking video sizes its generated script before it
+            # is written (the words its prompt leaves under the 1,000-word ceiling)
+            sizer = getattr(self._media, "talking_script_word_budget", None)
+            words = sizer(brief, kit, references) if callable(sizer) else None
+            if words is not None:
+                brief = brief.model_copy(
+                    update={"media": brief.media.model_copy(update={"script_word_budget": words})}
+                )
+            rewrites: list[int] = []
             stage = self._copy_stage(
-                tenant_id=tenant_id, draft=draft, brief=brief, kit=kit, voice=voice, budget=budget
+                tenant_id=tenant_id,
+                draft=draft,
+                brief=brief,
+                kit=kit,
+                voice=voice,
+                budget=budget,
+                rewrites=rewrites,
+                references=references,
             )
+            if rewrites:
+                brief = brief.model_copy(
+                    update={
+                        "media": brief.media.model_copy(update={"script_rewrites": len(rewrites)})
+                    }
+                )
         if stage is None:
             return
         variant_writes, usage_writes, spent, any_passed = stage
@@ -2154,7 +2912,106 @@ class ContentService:
             media_failure=media_failure,
             media_detail=media_detail,
             vendor_tasks=self._binding(tenant_id, draft, tasks, copy_snapshot),
+            brand_references=references,
+            kept=kept,
         )
+
+    def _resume_offered(self) -> bool:
+        """«Crear las que faltan» needs the failed version reader and the revision stamp,
+        and is not wired under the ADR 41 queue (its checkpoints replay a revision)."""
+        return (
+            callable(getattr(self._repo, "failed_attempt", None))
+            and callable(getattr(self._repo, "stamp_gallery_resume", None))
+            and callable(getattr(self._repo, "gallery_resume", None))
+            and not isinstance(self.dispatcher, QueueDispatcher)
+        )
+
+    def _gallery_resume(self, tenant_id: UUID, draft: DraftRecord) -> GalleryResume | None:
+        """The stamp of this very revision (`finish_gallery`), None for any other."""
+        if not self._resume_offered():
+            return None
+        try:
+            return self._repo.gallery_resume(  # type: ignore[attr-defined]
+                tenant_id=tenant_id, draft_id=draft.id, revision=draft.revision
+            )
+        except Exception:
+            logger.exception("draft %s: gallery resume stamp unreadable", draft.id)
+            return None
+
+    def _kept_slides(self, tenant_id: UUID, draft_id: UUID, record: DraftRecord) -> tuple[int, int]:
+        """(slides «Crear las que faltan» would keep, generated slides in all) for the
+        detail screen. A failed revision never changes, so it is read once per (draft,
+        revision) instead of on every poll of the screen (review nit #10). A read that
+        failed is answered (0, 0) but NOT cached: the next poll reads again (review N1)."""
+        key = (tenant_id, draft_id, record.revision)
+        if key not in self._kept_counts:
+            try:
+                kept = self._failed_gallery(tenant_id, draft_id, record.revision, strict=True)
+            except Exception:
+                logger.exception("draft %s: failed attempt unreadable", draft_id)
+                return (0, 0)
+            total = 0
+            if kept is not None:
+                brief = self._repo.get_brief(tenant_id=tenant_id, brief_id=record.brief_id)
+                total = sum(
+                    1
+                    for slide in (brief.media.slides if brief is not None else ())
+                    if slide.source in (SlideSource.GENERATED, SlideSource.ANIMATED)
+                )
+            if len(self._kept_counts) >= 512:
+                self._kept_counts.clear()
+            self._kept_counts[key] = (len(kept.slides) if kept is not None else 0, total)
+        return self._kept_counts[key]
+
+    def _failed_gallery(
+        self, tenant_id: UUID, draft_id: UUID, revision: int, *, strict: bool = False
+    ) -> FailedAttempt | None:
+        """m-24820842: the failed attempt (at or below `revision`) whose finished slides
+        a new attempt of this gallery reuses — None when there is none, when its copy
+        did not pass, or under the ADR 41 queue (its own checkpoints replay a revision;
+        reusing slides across revisions there is not wired yet). Never a reason to fail,
+        except with `strict`: then a read error goes up, so a caller that caches the
+        answer can tell «none» from «unreadable right now»."""
+        reader = getattr(self._repo, "failed_attempt", None)
+        if not self._resume_offered() or reader is None or revision < 1:
+            return None
+        try:
+            attempt = reader(tenant_id=tenant_id, draft_id=draft_id, revision=revision)
+        except Exception:
+            if strict:
+                raise
+            logger.exception("draft %s: failed attempt unreadable", draft_id)
+            return None
+        if attempt is None or not attempt.slides or not attempt.copy_passed:
+            return None
+        return attempt
+
+    def _inherited_copy(
+        self, tenant_id: UUID, draft: DraftRecord
+    ) -> tuple[list[VariantWrite], list[UsageWrite], Decimal, bool]:
+        """A part's text: ONE variant of its parent, copied as it reads now (the edit
+        merged over it), with the provenance of the call that wrote it. No vendor call,
+        no usage row, cost 0. The parent's selected text when it has one, else its first
+        that passed the hard rules."""
+        assert draft.parent_draft_id is not None
+        parent = self._repo.get_draft(tenant_id=tenant_id, draft_id=draft.parent_draft_id)
+        variants = self._repo.variants_for(tenant_id=tenant_id, draft_id=draft.parent_draft_id)
+        chosen = next(
+            (v for v in variants if parent is not None and v.id == parent.selected_variant_id),
+            None,
+        ) or next((v for v in variants if (v.fidelity or {}).get("passed")), None)
+        if chosen is None:
+            # `create_parts` refuses a parent without its text: a broken invariant
+            raise ValueError(f"part {draft.id}: its video by parts has no text to carry")
+        copy = {**dict(chosen.copy), **dict(chosen.edited_copy or {})}
+        write = VariantWrite(
+            ordinal=0,
+            copy=copy,
+            fidelity={"passed": True, "hard_failures": [], "inherited_from": str(chosen.id)},
+            model_id=chosen.model_id,
+            model_revision=chosen.model_revision,
+        )
+        return [write], [], Decimal(0), True
 
     def _copy_stage(
         self,
@@ -2165,6 +3022,8 @@ class ContentService:
         kit: BrandKit,
         voice: Any,
         budget: BudgetState,
+        rewrites: list[int] | None = None,
+        references: Any = None,
     ) -> tuple[list[VariantWrite], list[UsageWrite], Decimal, bool] | None:
         """The copy variants and their spend; None when the copy itself failed (the
         draft is already settled then)."""
@@ -2178,6 +3037,9 @@ class ContentService:
             angle_offset=draft.id.int % len(VARIANT_ANGLES),
         )
         schema = CopyPayload.model_json_schema()
+        # A destination is an owner's declaration, never a generation task. Even
+        # non-conforming adapter responses are overridden below before persistence.
+        schema["properties"].pop("ads_destination_url", None)
         limits = printed_limits(brief.kind)
         requests = tuple(
             GenerationRequest(
@@ -2206,7 +3068,15 @@ class ContentService:
         usage_writes: list[UsageWrite] = []
         results: list[GenerationResult] = []
         failure: str | None = None
-        for request in requests:
+        # m-24820842 («make it impossible»): an answer that would push its video past the
+        # 1,000-word ceiling is measured here, before the selector and the video are paid
+        overage = getattr(getattr(self, "_media", None), "copy_overage", None)
+
+        def over_of(result: GenerationResult) -> tuple[int, str]:
+            return overage(brief, kit, references, result.payload) if callable(overage) else (0, "")
+
+        def run(request: GenerationRequest) -> GenerationResult | None:
+            nonlocal spent, failure
             outcome = self._router.run(
                 tenant_id=tenant_id,
                 brand_id=draft.brand_id,
@@ -2218,7 +3088,7 @@ class ContentService:
             )
             if outcome.result is None:
                 failure = _failure_from_hops(outcome.hops)
-                break
+                return None
             result = outcome.result
             cost = self._call_cost(result.usage, result.model_id)
             spent += cost
@@ -2236,6 +3106,38 @@ class ContentService:
                     pricing_table_version=self._pricing.version,
                 )
             )
+            return result
+
+        for request in requests:
+            result = run(request)
+            if result is None:
+                break
+            over, note = over_of(result)
+            if over:
+                # m-24820842: an answer that does not fit its video is REWRITTEN — never cut,
+                # and the piece never refused for it after paying — one bounded retry, its
+                # cost recorded like any copy call
+                if rewrites is not None:
+                    rewrites.append(over)
+                prompt = request.rendered_prompt
+                result = run(
+                    replace(
+                        request,
+                        rendered_prompt=RenderedPrompt(
+                            prompt.stable_prefix,
+                            prompt.volatile_suffix + "\n\nIMPORTANT: " + note,
+                            prompt.prefix_fingerprint,
+                        ),
+                    )
+                )
+                if result is None:
+                    break
+                if over_of(result)[0]:
+                    # practically impossible after an explicit limit and a retry: the
+                    # vendor answered against its instructions — a provider error, on the
+                    # same failure path as any other failed copy call
+                    failure = FailureReason.PROVIDER_ERROR.value
+                    break
             results.append(result)
 
         if failure is not None:
@@ -2266,11 +3168,37 @@ class ContentService:
 
         variant_writes: list[VariantWrite] = []
         any_passed = False
+        # Organic copy has no advertising destination to inherit. Keep this
+        # dependency explicit: ADS/BOTH must read the real prior saved copy.
+        previous = (
+            self._repo.variants_for(tenant_id=tenant_id, draft_id=draft.id)
+            if brief.intent.includes_ads
+            else ()
+        )
         for ordinal, result in enumerate(results):
             # A caption a few characters over the brand maximum is fitted, not thrown
             # away with the whole run (2026-10-22: 601 against 600 cost a clip). The
             # fit is recorded next to the verdict, so the adjustment is traceable.
-            payload, fitted = fit_caption(CopyPayload.model_validate(result.payload), kit)
+            trusted_payload = dict(result.payload)
+            previous_variant = next((v for v in previous if v.ordinal == ordinal), None)
+            previous_copy = (
+                previous_variant.edited_copy or previous_variant.copy
+                if previous_variant is not None
+                else None
+            )
+            destination = (
+                previous_copy.get("ads_destination_url")
+                if previous_copy is not None
+                else kit.ads_destination_url
+            )
+            trusted_payload["ads_destination_url"] = (
+                destination if brief.intent.includes_ads else None
+            )
+            if brief.intent.includes_ads and not trusted_payload.get("ads_cta_type"):
+                trusted_payload["ads_cta_type"] = AdCTA.LEARN_MORE.value
+            payload, fitted = fit_caption(
+                CopyPayload.model_validate(trusted_payload, context={"strict_ad_cta": True}), kit
+            )
             hard = check_hard_rules(payload, kit)
             if not hard:
                 any_passed = True
@@ -2278,6 +3206,11 @@ class ContentService:
                 "passed": not hard,
                 "hard_failures": [failure_item.model_dump() for failure_item in hard],
             }
+            if brief.intent.includes_ads:
+                fidelity["ad_fields_contract"] = "piece-ad-destination-v1"
+                fidelity["ads_destination_source"] = (
+                    "piece" if previous_copy is not None else "brand_default"
+                )
             if fitted is not None:
                 fidelity["adjustments"] = [fitted]
             variant_writes.append(
@@ -2306,8 +3239,14 @@ class ContentService:
         media_failure: str | None,
         media_detail: str,
         vendor_tasks: DraftVendorTasks | None,
+        brand_references: Any = None,
+        kept: FailedAttempt | None = None,
     ) -> None:
-        """The media from the winning copy, then the draft settled in one write."""
+        """The media from the winning copy, then the draft settled in one write.
+
+        m-24820842: `kept` is a failed attempt of this gallery whose finished slides are
+        reused (by position). A gallery that fails again keeps every slide made so far
+        on its own `failed` version — the next «Crear las que faltan» starts from there."""
         media_writes: tuple[MediaWrite, ...] = ()
         template_run: TemplateRunWrite | None = None
         if (
@@ -2338,6 +3277,12 @@ class ContentService:
                 heartbeat=self._heartbeat(tenant_id, draft.id),
                 # every Seedance task kept by id, resumed when it already exists
                 vendor_tasks=vendor_tasks,
+                **({"brand_references": brand_references} if brand_references is not None else {}),
+                **(
+                    {"kept_slides": {slide.position: slide for slide in kept.slides}}
+                    if kept is not None
+                    else {}
+                ),
             )
             if outcome.pending:
                 # m-24852154: the video is still in BytePlus's hands. The draft stays
@@ -2364,6 +3309,12 @@ class ContentService:
             # A failed run says why; a run with a sibling output missing says which
             # (the draft is `generated` with what rendered — plan §2.2).
             media_detail = outcome.detail[:500] if (outcome.failure or outcome.detail) else ""
+
+        if media_failure is not None and kept is not None:
+            # failed again before making anything new (a brand resource gone, the budget):
+            # the copy and the slides already made stay for the next attempt
+            variant_writes = variant_writes or list(kept.variants)
+            media_writes = media_writes or kept.slides
 
         if any_passed and media_failure is None:
             new_status = apply_transition(DRAFTING, DraftTrigger.GENERATE_OK)
@@ -2396,6 +3347,9 @@ class ContentService:
                 template_run=template_run,
             )
             return
+        if failure_reason is not None and brief.kind is ContentKind.CAROUSEL:
+            # the draft fails WITH the slides it made: say so, and what the retry does
+            media_detail = self._gallery_failure_detail(brief, media_writes, media_detail)
         self._finish_generation(
             draft,
             tenant_id=tenant_id,
@@ -2421,6 +3375,22 @@ class ContentService:
             providers={write.provider for write in media_writes},
         )
 
+    def _gallery_failure_detail(
+        self, brief: ContentBrief, made: Sequence[MediaWrite], detail: str
+    ) -> str:
+        """A failed gallery that kept slides says so, and that the retry makes only the
+        missing ones — said only where that retry is offered (`_failed_gallery`)."""
+        done = sum(1 for item in made if gallery_slide_is_paid(item))
+        if not done or not self._resume_offered():
+            return detail
+        total = sum(
+            1
+            for slide in brief.media.slides
+            if slide.source in (SlideSource.GENERATED, SlideSource.ANIMATED)
+        )
+        kept_text = gallery_kept_text(done, total)
+        return f"{detail} {kept_text}".strip()[:500]
+
     def _media_usage(self, items: Sequence[MediaUsage]) -> list[UsageWrite]:
         """The `creative_usage_events` rows of what the media producer paid for."""
         return [
@@ -2428,16 +3398,16 @@ class ContentService:
                 provider=item.provider,
                 model_id=item.model_id,
                 unit=item.unit,
-                input_tokens=0,
+                input_tokens=item.input_tokens,
                 # a token-billed media call (Seedance) keeps its billed count beside the
                 # seconds; the cost is already priced from it — nothing re-prices tokens
                 output_tokens=item.output_tokens,
-                cache_read_tokens=0,
-                cache_creation_tokens=0,
+                cache_read_tokens=item.cache_read_tokens,
+                cache_creation_tokens=item.cache_creation_tokens,
                 cost_usd=item.cost_usd,
                 paid_by=PaidBy.PLATFORM.value,
                 pricing_table_version=self._pricing.version,
-                pieces=item.quantity,
+                pieces=0 if item.unit == "token" else item.quantity,
             )
             for item in items
         ]
@@ -2453,8 +3423,11 @@ class ContentService:
             return False
         if not self._repo.variants_for(tenant_id=tenant_id, draft_id=draft.id):
             return False
-        return kind is ContentKind.CREATOR_SCRIPT or bool(
-            self._repo.media_for(tenant_id=tenant_id, draft_id=draft.id)
+        # a script and the parent of a video by parts (ADR 44) are whole without media
+        return (
+            kind is ContentKind.CREATOR_SCRIPT
+            or kind.is_parts_parent
+            or bool(self._repo.media_for(tenant_id=tenant_id, draft_id=draft.id))
         )
 
     def _keep_previous_version(
@@ -2619,6 +3592,9 @@ class ContentService:
                 ),
             )
         )
+        if detail.status == FAILED and detail.kind == ContentKind.CAROUSEL.value:
+            kept, total = self._kept_slides(tenant_id, draft_id, record)
+            return replace(detail, kept_slides=kept, gallery_slides=total if kept else 0)
         if detail.status != DRAFTING or self._vendor_tasks is None:
             return detail
         # m-24852154: the screen waiting on this piece is what resumes its vendor task
@@ -2673,7 +3649,19 @@ class ContentService:
         from qualify_api.creative.versions import restore
 
         with tenant_session(tenant_id) as session:
-            restore(session, draft_id, version_id)
+            parent_id = session.scalar(
+                select(orm.ContentDraft.parent_draft_id).where(orm.ContentDraft.id == draft_id)
+            )
+            if parent_id is not None:
+                # VE-10b: a part of a video by parts gets what «Pedir otra versión» of a
+                # part gets — the parent's fence, its unmade final retired and refunded,
+                # and an approved parent back to the gate (never a dead end)
+                from qualify_api.creative.parts import part_changing
+
+                with part_changing(session, tenant_id, parent_id, draft_id, "part_restored"):
+                    restore(session, draft_id, version_id)
+            else:
+                restore(session, draft_id, version_id)
         return self._require_detail(tenant_id=tenant_id, draft_id=draft_id)
 
     def approve_version(
@@ -2741,8 +3729,15 @@ class ContentService:
 
     # -- HITL #2 ------------------------------------------------------------
 
+    @fenced_copy_edit
     def edit_variant(
-        self, *, tenant_id: UUID, variant_id: UUID, copy: CopyPayload, user_id: UUID
+        self,
+        *,
+        tenant_id: UUID,
+        variant_id: UUID,
+        copy: CopyPayload,
+        user_id: UUID,
+        expected_revision: int | None = None,
     ) -> tuple[HardFailure, ...]:
         """Re-run layer 1 over the human's edit; store ``edited_copy`` ONLY when it
         passes. A forbidden claim is not overridable by anyone (§4.4) — the failures
@@ -2754,6 +3749,12 @@ class ContentService:
         draft = self._repo.get_draft(tenant_id=tenant_id, draft_id=variant.draft_id)
         if draft is None:
             raise UnknownDraft(str(variant.draft_id))
+        if expected_revision is not None and (
+            type(expected_revision) is not int
+            or expected_revision < 1
+            or draft.revision != expected_revision
+        ):
+            raise DraftEditConflict()
         # The FSM decides whether this draft may be edited at all, and what an edit does
         # to it — before the rules run, so a published draft is refused, not "validated".
         new_status = apply_transition(draft.status, DraftTrigger.EDIT)
@@ -2805,6 +3806,16 @@ class ContentService:
         copy approved (the operator's edit when there is one) must pass the approval
         guard first — `ApprovalBlocked`, nothing written."""
         record = self._require_draft(tenant_id=tenant_id, draft_id=draft_id)
+        kind_of = getattr(self._repo, "brief_kind", None)
+        if record.parent_draft_id is not None or (
+            callable(kind_of)
+            and kind_of(tenant_id=tenant_id, brief_id=record.brief_id)
+            == ContentKind.SHOT_VIDEO.value
+        ):
+            # VE-10b: a video by parts is approved whole (`approve_parts`), never here
+            from qualify_api.creative.part_final import ApproveWholeVideo
+
+            raise ApproveWholeVideo()
         variant = self._repo.get_variant(tenant_id=tenant_id, variant_id=variant_id)
         if variant is None or variant.draft_id != draft_id:
             raise UnknownVariant(str(variant_id))
@@ -2862,6 +3873,234 @@ class ContentService:
             logger.exception("draft %s approved, but its finals could not be ordered", draft_id)
         return self._require_detail(tenant_id=tenant_id, draft_id=draft_id)
 
+    # -- a video by parts, approved whole (VE-10b m-24921068) ---------------------------
+
+    def _parts_store(self) -> Any:
+        """What the parts' joins are read from (`part_join.DbPartJoins` in production;
+        the media producer's own when it has one, so tests share theirs)."""
+        store = getattr(self, "_part_joins_store", None)
+        if store is None:
+            store = getattr(self._media, "_part_joins", None)
+            if store is None:
+                from qualify_api.creative.part_join import DbPartJoins
+
+                store = DbPartJoins()
+            self._part_joins_store = store
+        return store
+
+    def approve_parts(
+        self, *, tenant_id: UUID, parent_id: UUID, variant_id: UUID, user_id: UUID
+    ) -> DraftDetail:
+        """HITL #2 for a video by parts (ADR 44, F8): the owner approves the WHOLE video
+        once, from the joined preview they saw.
+
+        Refused with nothing written: the joined preview is not the join of the parts'
+        active versions (`StaleJoinedPreview`), a part is not ready (`PartsNotReady`)
+        or expired (`DraftExpired`), the copy fails the approval guard, or the month
+        cannot pay EVERY part's seconds (`NotEnoughCreations`, D6/D29: all or nothing).
+        Otherwise, in ONE transaction (the parent's row lock serializes double clicks):
+        the parts' seconds charged together (`charge_videos_many`; a part whose
+        generation is already charged — approved before, «Pedir otra versión» of
+        another part — is not charged again), parent and parts approved through the
+        state machine (each part with its one inherited text), the parent's join row
+        `join_final_pending`, and one final per part still at its vista previa ordered
+        in the night lane (ADR 41, following the parent's calendar). Idempotent: a
+        second approval of the same preview charges and orders nothing."""
+        if isinstance(self._repo, PostgresContentRepository):
+            with tenant_unit_of_work(tenant_id) as session:
+                session.execute(
+                    text("SELECT id FROM content_drafts WHERE id = :p FOR UPDATE"),
+                    {"p": parent_id},
+                )
+                self._approve_parts(tenant_id, parent_id, variant_id, user_id)
+        else:
+            self._approve_parts(tenant_id, parent_id, variant_id, user_id)
+        return self._require_detail(tenant_id=tenant_id, draft_id=parent_id)
+
+    def _approve_parts(
+        self, tenant_id: UUID, parent_id: UUID, variant_id: UUID, user_id: UUID
+    ) -> None:
+        from qualify_api.creative import part_final as pf
+        from qualify_api.creative.creations import VideoCharge
+
+        parent = self._require_draft(tenant_id=tenant_id, draft_id=parent_id)
+        kind_of = getattr(self._repo, "brief_kind", None)
+        if parent.parent_draft_id is not None or not callable(kind_of):
+            raise UnknownDraft(str(parent_id))
+        if kind_of(tenant_id=tenant_id, brief_id=parent.brief_id) != ContentKind.SHOT_VIDEO.value:
+            raise UnknownDraft(str(parent_id))
+        variant = self._repo.get_variant(tenant_id=tenant_id, variant_id=variant_id)
+        if variant is None or variant.draft_id != parent_id:
+            raise UnknownVariant(str(variant_id))
+        snapshot = self._parts_store().read(tenant_id=tenant_id, parent_id=parent_id)
+        block = (snapshot.joined_block if snapshot is not None else None) or {}
+        if (
+            parent.status == APPROVED
+            and parent.selected_variant_id == variant_id
+            and block.get("approved_fingerprint")
+            and block.get("approved_fingerprint") == block.get("fingerprint")
+        ):
+            logger.info("video by parts %s is approved already: nothing charged", parent_id)
+            return
+        if self._approval_guard is not None:
+            self._approval_guard.check(
+                tenant_id=tenant_id, draft_id=parent_id, copy=variant.edited_copy or variant.copy
+            )
+        new_status = apply_transition(
+            parent.status, DraftTrigger.APPROVE, selected_variant_id=variant_id
+        )
+        problem = pf.approval_problem(snapshot, tenant_id)
+        if problem == pf.PART_FAILED:
+            raise pf.PartFailed()
+        if problem == pf.EXPIRED:
+            raise DraftExpired(pf.PART_EXPIRED_TEXT)
+        if problem == pf.STALE:
+            raise pf.StaleJoinedPreview()
+        if problem is not None or snapshot is None:
+            raise pf.PartsNotReady()
+        children = sorted(
+            self._repo.parts_of(tenant_id=tenant_id, parent_id=parent_id),
+            key=lambda c: c.part_index or 0,
+        )
+        # D6/D29: every part's REQUESTED seconds, together, all or nothing — before any
+        # write; a part already charged at its generation (approved earlier) is skipped
+        charges: list[VideoCharge] = []
+        for child in children:
+            videos, seconds = self._videos_of(tenant_id, child)
+            if videos:
+                charges.append(VideoCharge(child.id, child.revision, videos, seconds))
+        charged: list[VideoCharge] = []
+        if charges and self._creations is not None:
+            self._creations.charge_videos_many(
+                tenant_id=tenant_id, brand_id=parent.brand_id, charges=charges
+            )
+            charged = charges
+        try:
+            moment = datetime.now(UTC)
+            self._repo.set_approved(
+                tenant_id=tenant_id,
+                draft_id=parent_id,
+                new_status=new_status,
+                variant_id=variant_id,
+                user_id=user_id,
+                approved_at=moment,
+            )
+            approved_before = {c.id for c in children if c.status != GENERATED}
+            for child in children:
+                if child.id in approved_before:
+                    continue  # approved before (its final kept or on its way)
+                inherited = self._repo.variants_for(tenant_id=tenant_id, draft_id=child.id)
+                if not inherited:
+                    raise pf.PartsNotReady()
+                chosen = min(inherited, key=lambda v: v.ordinal)
+                self._repo.set_approved(
+                    tenant_id=tenant_id,
+                    draft_id=child.id,
+                    new_status=apply_transition(
+                        child.status, DraftTrigger.APPROVE, selected_variant_id=chosen.id
+                    ),
+                    variant_id=chosen.id,
+                    user_id=user_id,
+                    approved_at=moment,
+                )
+            assert snapshot.joined_asset_id is not None
+            self._repo.set_video_draft(
+                tenant_id=tenant_id,
+                asset_id=snapshot.joined_asset_id,
+                changes={
+                    "status": pf.JOIN_FINAL_PENDING,
+                    "approved_fingerprint": snapshot.joined_fingerprint,
+                    "approved_at": moment.isoformat(),
+                    "approved_by": str(user_id),
+                    "error": None,
+                },
+            )
+            ordered = False
+            now = time.time()
+            try:
+                for child in children:
+                    waiting = self._waiting_drafts(tenant_id, child.id)
+                    if not waiting:
+                        continue
+                    ordered = True
+                    if child.id not in approved_before:
+                        self._order_finals(
+                            tenant_id, child.id, waiting, manual=False, schedule_for=parent_id
+                        )
+                    elif any(
+                        final_retryable(draft_state(a.params), now, approved=True) for a in waiting
+                    ):
+                        # approved earlier and its final failed (its seconds given back,
+                        # D9): ordered again the way «Reintentar» does, never re-charged
+                        self.retry_final(tenant_id=tenant_id, draft_id=child.id)
+            except Exception:
+                if isinstance(self.dispatcher, QueueDispatcher):
+                    raise
+                logger.exception("video by parts %s approved; finals not ordered", parent_id)
+            if not ordered and isinstance(self._repo, PostgresContentRepository):
+                # every part's 1080p is kept already: the final join can start now
+                from qualify_api.creative.parts import open_parent_join_final
+
+                with tenant_session(tenant_id) as session:
+                    open_parent_join_final(session, parent_id)
+        except Exception:
+            if not isinstance(self._repo, PostgresContentRepository) and self._creations:
+                # Postgres rolls the charge back with the unit of work
+                for item in charged:
+                    self._creations.uncharge_videos(
+                        tenant_id=tenant_id, draft_id=item.draft_id, revision=item.revision
+                    )
+            raise
+        review.score_approval(
+            draft_id=parent_id,
+            revision=parent.revision,
+            ordinal=variant.ordinal,
+            copy=variant.copy,
+            edited_copy=variant.edited_copy,
+        )
+        logger.info(
+            "video by parts %s approved by user %s: %d parts charged",
+            parent_id,
+            user_id,
+            len(charged),
+        )
+
+    def _retry_parts_final(self, *, tenant_id: UUID, record: DraftRecord) -> DraftDetail:
+        """«Reintentar» on an approved video by parts: every part whose final failed (or
+        went stale) is ordered again the way `retry_final` orders a Clip's (its seconds
+        were given back, D9, and are not charged again), and a final join that failed
+        goes back to pending with its run opened — it starts from the kept raw finals,
+        so nothing is paid to the vendor again."""
+        from qualify_api.creative.part_final import JOIN_FINAL_PENDING
+        from qualify_api.creative.parts import open_parent_join_final
+
+        if record.status != APPROVED:
+            raise InvalidTransition(f"draft {record.id} is {record.status}, not approved")
+        now = time.time()
+        for child in self._repo.parts_of(tenant_id=tenant_id, parent_id=record.id):
+            if child.status != APPROVED:
+                continue
+            blocks = [
+                draft_state(asset.params)
+                for asset in self._repo.draft_videos_for(tenant_id=tenant_id, draft_id=child.id)
+            ]
+            if any(final_retryable(block, now, approved=True) for block in blocks):
+                self.retry_final(tenant_id=tenant_id, draft_id=child.id)
+        snapshot = self._parts_store().read(tenant_id=tenant_id, parent_id=record.id)
+        block = (snapshot.joined_block if snapshot is not None else None) or {}
+        if snapshot is not None and block.get("status") == DRAFT_FAILED:
+            assert snapshot.joined_asset_id is not None
+            self._repo.set_video_draft(
+                tenant_id=tenant_id,
+                asset_id=snapshot.joined_asset_id,
+                # «Reintentar» starts the count of lost join children again
+                changes={"status": JOIN_FINAL_PENDING, "error": None, "child_losses": 0},
+            )
+        if isinstance(self._repo, PostgresContentRepository):
+            with tenant_session(tenant_id) as session:
+                open_parent_join_final(session, record.id)
+        return self._require_detail(tenant_id=tenant_id, draft_id=record.id)
+
     def _generation_revision(self, tenant_id: UUID, record: DraftRecord) -> int:
         if isinstance(self._repo, PostgresContentRepository) and record.active_version_id:
             with tenant_session(tenant_id) as session:
@@ -2875,12 +4114,12 @@ class ContentService:
                     return revision
         return record.revision
 
-    def _videos_of(self, tenant_id: UUID, record: DraftRecord) -> int:
-        """How many of the month's videos approving this generation uses: its Seedance
-        videos (a clip 1, a carousel one per animated slide) — 0 for anything else, or
-        without a quota."""
+    def _videos_of(self, tenant_id: UUID, record: DraftRecord) -> tuple[int, int]:
+        """(videos, requested seconds) approving this generation charges: its Seedance
+        videos (a clip 1, a carousel one per animated slide) and their seconds — (0, 0)
+        for anything else, without a quota, or when already charged."""
         if self._creations is None:
-            return 0
+            return 0, 0
         if isinstance(self._repo, PostgresContentRepository) and record.active_version_id:
             with tenant_session(tenant_id) as session:
                 charged = session.scalar(
@@ -2890,7 +4129,7 @@ class ContentService:
                     )
                 )
                 if charged:
-                    return 0
+                    return 0, 0
             with tenant_session(tenant_id) as session:
                 videos = tuple(
                     _image_record(row)
@@ -2907,19 +4146,20 @@ class ContentService:
                 for asset in videos
             ):
                 # Rendering/finalized saved media does not order another paid final.
-                return 0
+                return 0, 0
         brief = self._repo.get_brief(tenant_id=tenant_id, brief_id=record.brief_id)
         if brief is None:
-            return 0
+            return 0, 0
         try:
-            return weight_for(brief).videos
+            price = weight_for(brief)
         except CreationNotOffered:
-            return 0
+            return 0, 0
+        return price.videos, price.video_seconds
 
     def _charge_videos(self, tenant_id: UUID, record: DraftRecord) -> UUID | None:
         """The charge row this approval wrote its videos on, or None (no video, no
         quota, or already charged by an earlier approval of the same generation)."""
-        videos = self._videos_of(tenant_id, record)
+        videos, seconds = self._videos_of(tenant_id, record)
         if not videos or self._creations is None:
             return None
         return self._creations.charge_videos(
@@ -2928,6 +4168,7 @@ class ContentService:
             draft_id=record.id,
             revision=record.revision,
             videos=videos,
+            seconds=seconds,
         )
 
     def approval_videos(
@@ -2949,13 +4190,58 @@ class ContentService:
             record = replace(record, active_version_id=version_id)
         elif record.status != GENERATED:
             return None
-        videos = self._videos_of(tenant_id, record)
+        videos, seconds = self._videos_of(tenant_id, record)
         if not videos:
             return None
         balance = self._creations.balance(tenant_id=tenant_id, brand_id=record.brand_id)
         if balance.unlimited:
             return None  # an unlimited plan: approving uses nothing worth announcing
+        if balance.video_in_seconds:
+            # ADR 44 F1 = (b): what approving uses, in seconds (as `charge_amount`)
+            return (seconds or videos * legacy_seconds_per_video()), balance
         return videos, balance
+
+    def parts_approval_videos(
+        self, *, tenant_id: UUID, parent_id: UUID
+    ) -> tuple[int, CreationsBalance] | None:
+        """What approving a video by parts WHOLE uses of the month's video, with the
+        balance (m-24921084, «Al aprobar usas 15 de tus 40 segundos de video del mes»):
+        the sum `approve_parts` would charge — every part's requested seconds (ADR 44
+        F1 = (b)), a part already charged skipped, exactly as `_videos_of` decides for
+        `charge_videos_many`. In the balance's unit (videos under a table without
+        seconds). None when no quota is wired or it is not a parent. Reads only."""
+        if self._creations is None:
+            return None
+        parent = self._repo.get_draft(tenant_id=tenant_id, draft_id=parent_id)
+        parts_of = getattr(self._repo, "parts_of", None)
+        if parent is None or parent.parent_draft_id is not None or not callable(parts_of):
+            return None
+        balance = self._creations.balance(tenant_id=tenant_id, brand_id=parent.brand_id)
+        total = 0
+        for child in parts_of(tenant_id=tenant_id, parent_id=parent_id):
+            videos, seconds = self._videos_of(tenant_id, child)
+            if not videos:
+                continue
+            if balance.video_in_seconds:
+                total += seconds or videos * legacy_seconds_per_video()
+            else:
+                total += videos
+        return total, balance
+
+    def video_seconds_of(self, *, tenant_id: UUID, draft_id: UUID) -> int:
+        """The requested seconds of video one more version of this piece uses when it is
+        approved (ADR 44 F1 = (b): «Pedir otra versión» of a part uses only its own) — 0
+        when it makes no Seedance video or its brief cannot be read."""
+        record = self._repo.get_draft(tenant_id=tenant_id, draft_id=draft_id)
+        if record is None:
+            return 0
+        brief = self._repo.get_brief(tenant_id=tenant_id, brief_id=record.brief_id)
+        if brief is None:
+            return 0
+        try:
+            return weight_for(brief, redo=True).video_seconds
+        except CreationNotOffered:
+            return 0
 
     def recreate(self, *, tenant_id: UUID, draft_id: UUID, user_id: UUID) -> UUID:
         """«Crearla otra vez» (founder, 2026-10-24): a piece whose vista previa expired is
@@ -2987,14 +4273,21 @@ class ContentService:
         assets: tuple[ImageRecord, ...],
         *,
         manual: bool = True,
+        schedule_for: UUID | None = None,
     ) -> None:
+        """`schedule_for` (VE-10b): the piece whose publications set the night lane — a
+        part's finals follow its video by parts' calendar, not their own (a part is
+        never on the calendar)."""
         if not assets:
             return
         from qualify_api.creative.final_review import configured_night_hours, schedule_final
 
         moment = datetime.now(UTC)
+        # VE-10b: the revision whose charge row pays these finals — a refund later goes
+        # there, even if the piece has moved to another revision since
+        ordered_by = self._repo.get_draft(tenant_id=tenant_id, draft_id=draft_id)
         context = getattr(self._repo, "final_schedule_context", lambda **_: ("UTC", ()))
-        timezone, publications = context(tenant_id=tenant_id, draft_id=draft_id)
+        timezone, publications = context(tenant_id=tenant_id, draft_id=schedule_for or draft_id)
         deferred = bool(getattr(self.dispatcher, "supports_deferred_final", False))
         night_start, night_end = configured_night_hours()
         for asset in assets:
@@ -3029,6 +4322,7 @@ class ContentService:
                     "final_batch_not_before": policy.not_before.isoformat(),
                     "attempt": uuid4().hex,
                     "claim": None,
+                    "charge_revision": None if ordered_by is None else ordered_by.revision,
                 },
             )
         if self.dispatcher is None:
@@ -3085,6 +4379,15 @@ class ContentService:
         ordered; `DraftExpired` only when none of them can be. A final still
         legitimately rendering is never ordered twice."""
         record = self._require_draft(tenant_id=tenant_id, draft_id=draft_id)
+        kind_of = getattr(self._repo, "brief_kind", None)
+        if (
+            record.parent_draft_id is None
+            and callable(kind_of)
+            and kind_of(tenant_id=tenant_id, brief_id=record.brief_id)
+            == ContentKind.SHOT_VIDEO.value
+        ):
+            # VE-10b: its parts' finals and its local final join, never a vendor final
+            return self._retry_parts_final(tenant_id=tenant_id, record=record)
         if record.status != APPROVED:
             raise InvalidTransition(f"draft {draft_id} is {record.status}, not approved")
         now = time.time()
@@ -3372,15 +4675,111 @@ class ContentService:
             record = self._repo.get_draft(tenant_id=tenant_id, draft_id=draft_id)
             if record is None:
                 return
-            self._creations.refund_final(
-                tenant_id=tenant_id,
-                draft_id=draft_id,
-                revision=record.revision,
-                reason=reason,
-                asset_ids=asset_ids,
-            )
+            # VE-10b: each final is refunded on the charge that paid it (its own
+            # `charge_revision`), never on the piece's current revision
+            groups: dict[int, list[UUID]] = {}
+            paid_by = self._charge_revisions(tenant_id, asset_ids)
+            for asset_id in asset_ids:
+                groups.setdefault(paid_by.get(asset_id, record.revision), []).append(asset_id)
+            for revision, ids in groups.items():
+                self._creations.refund_final(
+                    tenant_id=tenant_id,
+                    draft_id=draft_id,
+                    revision=revision,
+                    reason=reason,
+                    asset_ids=tuple(ids),
+                )
         except Exception:
             logger.exception("draft %s: final video refund failed", draft_id)
+
+    def _charge_revisions(self, tenant_id: UUID, asset_ids: Sequence[UUID]) -> dict[UUID, int]:
+        """The revision each final was ordered (and charged) at (`charge_revision`)."""
+        if not asset_ids or not isinstance(self._repo, PostgresContentRepository):
+            return {}
+        with tenant_session(tenant_id) as session:
+            rows = session.execute(
+                text("""
+                SELECT id, (params->'draft'->>'charge_revision')::int AS revision
+                FROM image_assets WHERE id = ANY(:ids)
+                  AND jsonb_typeof(params->'draft'->'charge_revision') = 'number'
+            """),
+                {"ids": list(asset_ids)},
+            ).all()
+        return {row.id: int(row.revision) for row in rows}
+
+    def finish_gallery(self, *, tenant_id: UUID, draft_id: UUID, user_id: UUID) -> DraftDetail:
+        """«Crear las que faltan» (m-24820842, live test 2026-11-03): a gallery that failed
+        after finishing some slides is generated again as a new revision that reuses its
+        copy and those slides — only the missing slides reach Seedream/Seedance.
+
+        Refused (`NothingToFinish`, nothing charged or written) unless the draft is a
+        failed gallery with finished slides; an illegal edge raises `InvalidTransition`.
+        Price (founder decision, 2026-11-03, confirmed 2026-11-04): the new attempt charges
+        the SAME as the original gallery, which is what its failure gave back (CREAR-5),
+        even though only the missing slides reach the vendor. That is the gallery's weight
+        (`weight_for`): 1 creation up to 3 generated slides, 2 up to 7, 3 up to 10, plus
+        one preview per animated slide (on the v1 table, those videos' creations); the
+        animated slides' monthly videos are charged at approval, as for any gallery. It is
+        not a flat 1 creation. Refunded too if this attempt fails. Recorded in
+        docs/modelos-generativos/seedream-corte-conexion-20261103.md.
+
+        Idempotent: the draft row is locked for the whole step (charge, revision, status,
+        dispatch after commit) — a double click or a second tab waits, then finds the
+        gallery `drafting` and is refused; it is never charged nor dispatched twice."""
+        if not isinstance(self._repo, PostgresContentRepository):
+            return self._finish_gallery(tenant_id=tenant_id, draft_id=draft_id, user_id=user_id)
+        with tenant_unit_of_work(tenant_id), tenant_session(tenant_id) as session:
+            session.get(orm.ContentDraft, draft_id, with_for_update=True)
+            return self._finish_gallery(tenant_id=tenant_id, draft_id=draft_id, user_id=user_id)
+
+    def _finish_gallery(self, *, tenant_id: UUID, draft_id: UUID, user_id: UUID) -> DraftDetail:
+        record = self._require_draft(tenant_id=tenant_id, draft_id=draft_id)
+        new_status = apply_transition(record.status, DraftTrigger.RESUME)
+        brief = self._repo.get_brief(tenant_id=tenant_id, brief_id=record.brief_id)
+        if brief is None or brief.kind is not ContentKind.CAROUSEL:
+            raise NothingToFinish()
+        attempt = self._failed_gallery(tenant_id, draft_id, record.revision)
+        if attempt is None:
+            raise NothingToFinish()
+        if self._creations is not None:
+            prepare_new = getattr(self._media, "prepare_new_brief", None)
+            priced = brief
+            if callable(prepare_new):
+                kit = self._brand.kit(tenant_id=tenant_id, brand_id=brief.brand_id)
+                if kit is not None:
+                    try:
+                        priced = prepare_new(brief, kit)
+                    except ValueError:  # a plan refusal only changes the stamp, not the price
+                        priced = brief
+            # founder decision 2026-11-03/04: the same price the original gallery cost and
+            # was refunded (its weight: creations by generated slides + a preview per
+            # animated slide), not the missing slides' nor a flat 1 creation; refunded if
+            # this attempt fails too (CREAR-5)
+            self._creations.charge(
+                tenant_id=tenant_id,
+                brand_id=record.brand_id,
+                draft_id=draft_id,
+                revision=record.revision + 1,
+                price=weight_for(priced),
+            )
+        revision = self._repo.bump_revision(tenant_id=tenant_id, draft_id=draft_id)
+        # review #2: the stamp is what lets THIS revision (and no other) reuse the attempt
+        self._repo.stamp_gallery_resume(  # type: ignore[attr-defined]
+            tenant_id=tenant_id,
+            draft_id=draft_id,
+            revision=revision,
+            resume=GalleryResume(
+                kept_revision=attempt.revision,
+                prompt_compiler_version=attempt.prompt_compiler_version,
+            ),
+        )
+        self._repo.update_status(
+            tenant_id=tenant_id, draft_id=draft_id, new_status=new_status, failure_reason=None
+        )
+        logger.info("draft %s: gallery finished by user %s", draft_id, user_id)
+        if self.dispatcher is not None:
+            self.dispatcher.dispatch_generation(tenant_id=tenant_id, draft_id=draft_id)
+        return self._require_detail(tenant_id=tenant_id, draft_id=draft_id)
 
     @fenced_regeneration
     @transactional_dispatch
@@ -3407,12 +4806,34 @@ class ContentService:
             new_status = apply_transition(record.status, DraftTrigger.REJECT)
             if regenerate:
                 new_status = apply_transition(new_status, DraftTrigger.REGENERATE)
+        if regenerate and (
+            self._repo.brief_kind(tenant_id=tenant_id, brief_id=record.brief_id)
+            == ContentKind.SHOT_VIDEO.value
+        ):
+            from qualify_api.creative.parts import check_parent_text_cap
+
+            # VE-08 (criterion 7): a video by parts' new text is Claude paid by the
+            # platform at 0 creations — capped per business per day, before any write
+            check_parent_text_cap(self._repo, tenant_id=tenant_id)
+        version = getattr(self._media, "new_generation_pipeline_version", PIPELINE_VERSION)
+        stamped_revision = bool(regenerate and version == BRAND_APPLIED_PIPELINE_VERSION)
+        if stamped_revision:
+            # fenced_regeneration keeps this snapshot, policy stamp and charge in one
+            # tenant unit of work: a refusal rolls all of them back before dispatch.
+            self._repo.bump_revision(
+                tenant_id=tenant_id, draft_id=draft_id, pipeline_version=version
+            )
         # CREAR-5: «Pedir otra versión» is a new generation — charged once the edge is
         # known to be legal and before anything is written, so without enough creations
         # (`NotEnoughCreations`) the draft stays exactly as it was
         if regenerate and self._creations is not None:
             brief = self._repo.get_brief(tenant_id=tenant_id, brief_id=record.brief_id)
             if brief is not None:
+                prepare_new = getattr(self._media, "prepare_new_brief", None)
+                if callable(prepare_new):
+                    kit = self._brand.kit(tenant_id=tenant_id, brand_id=brief.brand_id)
+                    if kit is not None:
+                        brief = prepare_new(brief, kit)
                 self._creations.charge(
                     tenant_id=tenant_id,
                     brand_id=record.brand_id,
@@ -3427,6 +4848,10 @@ class ContentService:
         # scored on the rejected generation's trace, before a regeneration bumps it
         review.score_rejection(draft_id=draft_id, revision=record.revision, reason=reason)
         if regenerate:
+            # On the stamped path the bump above already ran: its snapshot attaches the
+            # unversioned rows to the version it makes active (or to the active one), so
+            # `draft_videos_for` (`visible_version`) still sees them here and no old
+            # confirmation survives the new version (review Q2, test_final_review_db).
             for asset in self._repo.draft_videos_for(tenant_id=tenant_id, draft_id=draft_id):
                 self._repo.set_video_draft(
                     tenant_id=tenant_id,
@@ -3439,7 +4864,8 @@ class ContentService:
                         "confirmed_revision": None,
                     },
                 )
-            self._repo.bump_revision(tenant_id=tenant_id, draft_id=draft_id)
+            if not stamped_revision:
+                self._repo.bump_revision(tenant_id=tenant_id, draft_id=draft_id)
         if regenerate and self.dispatcher is not None:
             self.dispatcher.dispatch_generation(tenant_id=tenant_id, draft_id=draft_id)
         return self._require_detail(tenant_id=tenant_id, draft_id=draft_id)

@@ -1,0 +1,887 @@
+"""Creadores' states (m-24946129, m-24946132) — `creators_state.py`.
+
+No DB and no vendor: the backend facade (`qualify_api.creators.service`, design §10) is
+replaced by an in-memory twin through `creators_provider._service`, and the session
+lookup by `_session_ids`. Background handlers are driven through `.fn(state)` (the way
+`test_catalog_state.py` does).
+
+Pins:
+1. Opening a screen never pays: the list, the sheet and Comparar read; only a button
+   («Ver cómo le va», «Actualizar», «Intentar de nuevo») calls `refresh_creator`.
+2. «Ver cómo le va»: save (free) then read (paid) once; success closes the drawer into
+   the sheet (N3); a typo or a private account is taken back off the list and the
+   drawer says what to do, keeping what was typed.
+3. A creator already in the list is not read again: «Ya revisaste a @x hace N días».
+4. «Elige de 2 a 4»: a fifth is refused in words; only creators with a read can be
+   picked; «Comparar» goes to `/creadores/comparar?ids=…`.
+5. Comparar refuses fewer than 2 (or more than 4) and sends the owner back to the list.
+6. The switch off → nothing is listed (the page shows «Pronto»).
+7. «Lo que cobra» (m-24955847): saved free (never a read), with or without a read,
+   preselects the business's currency, both fields empty clears it, and each refusal is
+   said next to its field with the typed text kept.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import sys
+import threading
+from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from types import SimpleNamespace
+from typing import Any
+from uuid import UUID, uuid4
+from zoneinfo import ZoneInfo
+
+import pytest
+from qualify_api.creators import rates as rate_rules
+from qualify_api.creators.metrics import (
+    CompareEntry,
+    MetricValue,
+    ReelRead,
+    SnapshotFacts,
+    build_sheet,
+    compare,
+)
+
+from . import creators_provider, creators_state
+from .creators_state import CreatorsCompareState, CreatorSheetState, CreatorsState
+from .creators_vm import (
+    COMPARE_INVALID,
+    EMPTY_RATE,
+    INVALID_HANDLE,
+    PICK_LIMIT,
+    RATE_NEGATIVE,
+    RATE_NOT_A_NUMBER,
+    RATE_NOTES_TOO_LONG,
+    compare_url,
+)
+
+TENANT = UUID("a0000000-0000-4000-8000-000000000001")
+BRAND = UUID("b0000000-0000-4000-8000-000000000001")
+USER = UUID("c0000000-0000-4000-8000-000000000001")
+#: A pinned clock (m-24956210): the fakes stamp their reads from `NOW` and the provider's
+#: `_now()` is patched to it, so «ayer» / «hace N días» never depend on when CI runs.
+NOW = datetime(2026, 11, 10, 12, 0, tzinfo=UTC)
+
+
+class CreatorsDisabled(Exception):
+    pass
+
+
+class InvalidHandle(ValueError):
+    pass
+
+
+class UnsupportedNetwork(ValueError):
+    pass
+
+
+class TooManyToCompare(ValueError):
+    pass
+
+
+class CreatorNotFound(LookupError):
+    pass
+
+
+@dataclass
+class Tracked:
+    id: UUID
+    handle: str
+    refresh_state: str = "never"
+    refresh_error: str | None = None
+    last_snapshot_id: UUID | None = None
+    status: str = "active"
+    created_at: datetime = NOW
+    rate_notes: str = ""
+    rate_from: Decimal | None = None
+    rate_currency: str | None = None
+    rate_updated_at: datetime | None = None
+
+
+def _reels(base: int) -> list[ReelRead]:
+    return [
+        ReelRead(
+            reel_id=f"r{i}",
+            url=f"https://www.instagram.com/reel/r{i}/",
+            taken_at=NOW - timedelta(days=4 + 3 * i),
+            duration_s=20.0,
+            views=base + i * 10,
+            likes=40,
+            comments=2,
+            counts_hidden=False,
+            is_paid_partnership=False,
+            coauthors=(),
+            sound_id="s",
+            sound_title="Audio original",
+            sound_is_original=True,
+        )
+        for i in range(10)
+    ]
+
+
+@dataclass
+class FakeService:
+    """The §10.2 facade, in memory. `outcome` is what the next refresh answers."""
+
+    enabled: bool = True
+    outcome: str = "read"
+    tracked: dict[UUID, Tracked] = field(default_factory=dict)
+    calls: list[str] = field(default_factory=list)
+    refreshed: list[UUID] = field(default_factory=list)
+    archived: list[UUID] = field(default_factory=list)
+    stale: set[str] = field(default_factory=set)
+    currency: str = "UYU"
+    rates: list[tuple[UUID, str, Decimal | None, str | None]] = field(default_factory=list)
+
+    CreatorsDisabled = CreatorsDisabled
+    InvalidRate = rate_rules.InvalidRate
+    InvalidHandle = InvalidHandle
+    UnsupportedNetwork = UnsupportedNetwork
+    TooManyToCompare = TooManyToCompare
+    CreatorNotFound = CreatorNotFound
+
+    def _require(self) -> None:
+        if not self.enabled:
+            raise CreatorsDisabled()
+
+    def creators_enabled(self, tenant_id: UUID) -> bool:
+        return self.enabled
+
+    def refresh_stuck(self, tracked: Tracked, now: datetime) -> bool:
+        return tracked.refresh_state == "reading" and tracked.handle.startswith("stuck")
+
+    def seed(self, handle: str, *, read: bool = True) -> Tracked:
+        tracked = Tracked(
+            id=uuid4(),
+            handle=handle,
+            refresh_state="ok" if read else "never",
+            last_snapshot_id=uuid4() if read else None,
+        )
+        self.tracked[tracked.id] = tracked
+        return tracked
+
+    def _snapshot(self, t: Tracked) -> SnapshotFacts:
+        return SnapshotFacts(
+            snapshot_id=t.last_snapshot_id or uuid4(),
+            network="instagram",
+            handle=t.handle,
+            read_at=NOW - timedelta(days=20 if t.handle in self.stale else 1),
+            status="ok",
+            followers=5000,
+            full_name=t.handle.title(),
+            reels_read=10,
+        )
+
+    def add_creator(self, tenant_id, brand_id, handle, *, user_id, **_kw) -> Tracked:
+        self._require()
+        self.calls.append("add")
+        clean = handle.strip().lstrip("@").lower()
+        if not clean or " " in clean:
+            raise InvalidHandle()
+        for t in self.tracked.values():
+            if t.handle == clean:
+                t.status = "active"
+                return t
+        return self.seed(clean, read=False)
+
+    def list_creators(self, tenant_id, brand_id, *, now=None, **_kw):
+        self._require()
+        self.calls.append("list")
+        out = []
+        for t in self.tracked.values():
+            if t.status != "active":
+                continue
+            read = t.last_snapshot_id is not None
+            out.append(
+                SimpleNamespace(
+                    tracked=t,
+                    full_name=t.handle.title() if read else "",
+                    avatar_url="",
+                    followers=5000 if read else None,
+                    median_views=MetricValue(
+                        "median_views", 1000 if read else None, "ok" if read else "unknown", 10
+                    ),
+                    engagement_rate=MetricValue("engagement_rate", 0.04, "ok", 10),
+                    read_at=NOW - timedelta(days=1) if read else None,
+                    stale=False,
+                )
+            )
+        return out
+
+    def archive_creator(self, tenant_id, brand_id, tracked_id) -> None:
+        self._require()
+        self.archived.append(tracked_id)
+        self.tracked[tracked_id].status = "archived"
+
+    def refresh_creator(self, tenant_id, brand_id, tracked_id, **_kw):
+        self._require()
+        self.refreshed.append(tracked_id)
+        t = self.tracked[tracked_id]
+        if self.outcome in ("read", "fresh"):
+            t.last_snapshot_id = uuid4()
+            t.refresh_state = "ok"
+        else:
+            t.refresh_state, t.refresh_error = "failed", self.outcome
+        return SimpleNamespace(
+            status=self.outcome, snapshot_id=t.last_snapshot_id, credits=5, partial=False
+        )
+
+    def creator_sheet(self, tenant_id, brand_id, tracked_id, *, now=None):
+        self._require()
+        self.calls.append("sheet")
+        t = self.tracked.get(tracked_id)
+        if t is None:
+            raise CreatorNotFound()
+        if t.last_snapshot_id is None:
+            return None
+        return build_sheet(t.id, self._snapshot(t), _reels(1000), now=NOW)
+
+    def compare_creators(self, tenant_id, brand_id, tracked_ids, *, now=None):
+        self._require()
+        self.calls.append("compare")
+        ids = list(dict.fromkeys(tracked_ids))
+        if not 2 <= len(ids) <= 4:
+            raise TooManyToCompare()
+        entries = [
+            CompareEntry(
+                i,
+                self._snapshot(self.tracked[i]),
+                _reels(1000 * (n + 1)),
+                rate_from=self.tracked[i].rate_from,
+                rate_currency=self.tracked[i].rate_currency,
+                rate_notes=self.tracked[i].rate_notes,
+            )
+            for n, i in enumerate(ids)
+        ]
+        return compare(entries, now=NOW)
+
+    def business_currency(self, tenant_id: UUID) -> str:
+        return self.currency
+
+    # the backend's own pure rules (rates.py): parsing, marks and validation
+    parse_rate_amount = staticmethod(rate_rules.parse_rate_amount)
+    currency_mark_in = staticmethod(rate_rules.currency_mark_in)
+
+    def set_creator_rate(
+        self, tenant_id, brand_id, tracked_id, *, notes, amount, currency, currency_mark=None
+    ):
+        self._require()
+        rate = rate_rules.validate_rate(notes, amount, currency, currency_mark=currency_mark)
+        t = self.tracked.get(tracked_id)
+        if t is None or t.status != "active":
+            raise CreatorNotFound()
+        self.rates.append((tracked_id, rate.notes, rate.amount, rate.currency))
+        t.rate_notes, t.rate_from, t.rate_currency = rate.notes, rate.amount, rate.currency
+        t.rate_updated_at = NOW if (rate.notes or rate.amount is not None) else None
+        return t
+
+
+@pytest.fixture
+def service(monkeypatch: pytest.MonkeyPatch) -> FakeService:
+    fake = FakeService()
+    monkeypatch.setattr(creators_provider, "_service", lambda: fake)
+    monkeypatch.setattr(creators_provider, "business_zone", lambda _t: UTC)
+    monkeypatch.setattr(creators_provider, "_now", lambda: NOW)
+    monkeypatch.setattr(creators_provider, "acting_user", lambda _t, _e: USER)
+
+    async def _ids(_state: Any) -> tuple[UUID, UUID, str]:
+        return TENANT, BRAND, "duena@example.com"
+
+    async def _access(_state: Any, _tenant: UUID) -> bool:
+        return fake.enabled
+
+    told: list[str] = []
+
+    async def _tell(_state: Any, message: str) -> None:
+        told.append(message)
+
+    async def _off(_state: Any) -> None:
+        told.append("off")
+
+    monkeypatch.setattr(creators_state, "_session_ids", _ids)
+    monkeypatch.setattr(creators_state, "_ensure_access", _access)
+    monkeypatch.setattr(creators_state, "_tell_list", _tell)
+    monkeypatch.setattr(creators_state, "_access_off", _off)
+    monkeypatch.setattr(creators_state, "STAGE_SECONDS", 0.01)
+    fake.told = told  # type: ignore[attr-defined]
+    return fake
+
+
+async def _drain(events: Any) -> list[Any]:
+    if events is None:
+        return []
+    if hasattr(events, "__aiter__"):
+        return [event async for event in events]
+    await events
+    return []
+
+
+async def _loaded_list(service: FakeService) -> CreatorsState:
+    state = CreatorsState()
+    await _drain(CreatorsState.reload.fn(state))
+    return state
+
+
+# --- 1. opening never pays ----------------------------------------------------------
+
+
+async def test_opening_the_three_screens_never_pays(service: FakeService, monkeypatch) -> None:
+    a, b = service.seed("maria"), service.seed("ruta")
+    await _loaded_list(service)
+
+    sheet = CreatorSheetState()
+    monkeypatch.setattr(CreatorSheetState, "_route_id", lambda self: a.id)
+    await _drain(CreatorSheetState.load.fn(sheet))
+    assert sheet.has_read and sheet.sheet.handle == "@maria"
+
+    comp = CreatorsCompareState()
+    monkeypatch.setattr(CreatorsCompareState, "_requested", lambda self: [str(a.id), str(b.id)])
+    await _drain(CreatorsCompareState.load.fn(comp))
+    assert comp.has_comparison and len(comp.comparison.columns) == 2
+
+    assert service.refreshed == []
+
+
+async def test_the_list_shows_the_last_read_first(service: FakeService) -> None:
+    """Last read first; a creator just added (no read yet) is the newest of all."""
+    service.seed("maria")
+    service.seed("nuevo", read=False)
+    state = await _loaded_list(service)
+    assert [c.handle for c in state.cards] == ["@nuevo", "@maria"]
+    assert state.cards[0].state == "pending"
+    assert not state.loading and state.load_error == ""
+
+
+# --- 2. «Ver cómo le va» --------------------------------------------------------------
+
+
+async def test_review_saves_reads_once_and_opens_the_sheet(service: FakeService) -> None:
+    state = await _loaded_list(service)
+    state.drawer_open = True
+    state.handle_input = "https://www.instagram.com/comeconmaria/?igsh=x"
+    events = await _drain(CreatorsState.submit.fn(state))
+    assert len(service.refreshed) == 1
+    tracked_id = service.refreshed[0]
+    assert not state.drawer_open and not state.adding
+    assert state.working == []
+    assert any(f"/creadores/{tracked_id}" in str(e) for e in events)
+
+
+async def test_a_typo_is_taken_off_the_list_and_the_text_stays(service: FakeService) -> None:
+    service.outcome = "missing"
+    state = await _loaded_list(service)
+    state.drawer_open = True
+    state.handle_input = "comeconmria"
+    await _drain(CreatorsState.submit.fn(state))
+    assert service.archived == service.refreshed
+    assert state.add_message.startswith("No encontramos a @comeconmria en Instagram.")
+    assert state.handle_input == "comeconmria"
+    assert state.drawer_open
+    assert all(c.handle != "@comeconmria" for c in state.cards)
+
+
+async def test_a_private_account_offers_another_one(service: FakeService) -> None:
+    service.outcome = "private"
+    state = await _loaded_list(service)
+    state.drawer_open = True
+    state.handle_input = "secreta"
+    await _drain(CreatorsState.submit.fn(state))
+    assert "privada" in state.add_message
+    assert state.add_tone == "warn"
+    assert state.action_label == "Revisar otra cuenta"
+    CreatorsState.on_action.fn(state)
+    assert state.handle_input == "" and state.add_message == ""
+
+
+async def test_an_invalid_handle_is_said_before_any_read(service: FakeService) -> None:
+    state = await _loaded_list(service)
+    state.drawer_open = True
+    state.handle_input = "dos palabras"
+    await _drain(CreatorsState.submit.fn(state))
+    assert state.add_message == INVALID_HANDLE
+    assert service.refreshed == []
+
+
+async def test_an_empty_field_does_nothing(service: FakeService) -> None:
+    state = await _loaded_list(service)
+    state.handle_input = "   "
+    assert state.submit_disabled
+    await _drain(CreatorsState.submit.fn(state))
+    assert "add" not in service.calls
+
+
+async def test_closing_the_drawer_leaves_a_notice_when_the_read_ends(
+    service: FakeService,
+) -> None:
+    state = await _loaded_list(service)
+    state.drawer_open = False  # the owner closed it while waiting
+    state.handle_input = "maria"
+    events = await _drain(CreatorsState.submit.fn(state))
+    assert state.notice == "Listo: ya puedes ver cómo le va a @maria."
+    assert state.notice_href.startswith("/creadores/")
+    assert events == []
+
+
+# --- 3. already in the list -------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "instant",
+    [datetime(2026, 11, 10, 0, 30, tzinfo=UTC), datetime(2026, 11, 10, 12, 0, tzinfo=UTC)],
+    ids=["just-after-utc-midnight", "midday"],
+)
+async def test_a_creator_already_in_the_list_is_not_read_again(
+    service: FakeService, monkeypatch: pytest.MonkeyPatch, instant: datetime
+) -> None:
+    # m-24956210: just after UTC midnight the business's date (Bogotá) is still the
+    # previous day; «ayer» must hold at both instants.
+    monkeypatch.setattr(sys.modules[__name__], "NOW", instant)
+    monkeypatch.setattr(creators_provider, "_now", lambda: instant)
+    monkeypatch.setattr(creators_provider, "business_zone", lambda _t: ZoneInfo("America/Bogota"))
+    maria = service.seed("maria")
+    state = await _loaded_list(service)
+    state.drawer_open = True
+    state.handle_input = "@maria"
+    await _drain(CreatorsState.submit.fn(state))
+    assert service.refreshed == []
+    assert state.add_message == "Ya revisaste a @maria ayer."
+    assert state.existing_href == f"/creadores/{maria.id}"
+    assert state.action_label == "Actualizar"
+    await _drain(CreatorsState.refresh_existing.fn(state))
+    assert service.refreshed == [maria.id]
+
+
+# --- 4. «Elige de 2 a 4» -------------------------------------------------------------------
+
+
+async def test_picking_two_to_four(service: FakeService) -> None:
+    ids = [str(service.seed(f"c{i}").id) for i in range(5)]
+    pending = str(service.seed("sinleer", read=False).id)
+    state = await _loaded_list(service)
+    CreatorsState.start_pick.fn(state)
+    CreatorsState.toggle_pick.fn(state, pending)
+    assert state.picked == []
+    CreatorsState.toggle_pick.fn(state, ids[0])
+    assert state.pick_hint == "Elige al menos uno más"
+    assert not state.pick_ready
+    for i in ids[1:4]:
+        CreatorsState.toggle_pick.fn(state, i)
+    CreatorsState.toggle_pick.fn(state, ids[4])
+    assert state.pick_error == PICK_LIMIT
+    assert len(state.picked) == 4
+    assert state.pick_label == "Comparar 4 creadores"
+    event = CreatorsState.go_compare.fn(state)
+    assert compare_url(ids[:4]).replace(",", "%2C") in str(event)
+
+
+# --- 5. Comparar refuses 1 or 5 ------------------------------------------------------------
+
+
+@pytest.mark.parametrize("count", [0, 1, 5])
+async def test_comparar_refuses_outside_two_to_four(
+    service: FakeService, monkeypatch, count: int
+) -> None:
+    ids = [str(service.seed(f"c{i}").id) for i in range(count)]
+    comp = CreatorsCompareState()
+    monkeypatch.setattr(CreatorsCompareState, "_requested", lambda self: ids)
+    events = await _drain(CreatorsCompareState.load.fn(comp))
+    assert service.told == [COMPARE_INVALID]  # type: ignore[attr-defined]
+    assert any("/creadores" in str(e) for e in events)
+    assert "compare" not in service.calls
+
+
+async def test_updating_a_stale_creator_reads_only_that_one(
+    service: FakeService, monkeypatch
+) -> None:
+    a, b = service.seed("maria"), service.seed("ruta")
+    service.stale.add("ruta")
+    comp = CreatorsCompareState()
+    monkeypatch.setattr(CreatorsCompareState, "_requested", lambda self: [str(a.id), str(b.id)])
+    await _drain(CreatorsCompareState.load.fn(comp))
+    assert comp.comparison.stale_ids == [str(b.id)]
+    assert comp.comparison.stale_button == "Actualizar @ruta"
+    await _drain(CreatorsCompareState.update_stale.fn(comp))
+    assert service.refreshed == [b.id]
+    assert comp.updating == []
+
+
+# --- the sheet ---------------------------------------------------------------------------
+
+
+async def test_actualizar_keeps_the_sheet_and_words_the_cap(
+    service: FakeService, monkeypatch
+) -> None:
+    maria = service.seed("maria")
+    sheet = CreatorSheetState()
+    monkeypatch.setattr(CreatorSheetState, "_route_id", lambda self: maria.id)
+    await _drain(CreatorSheetState.load.fn(sheet))
+    service.outcome = "cap_reached"
+    await _drain(CreatorSheetState.refresh.fn(sheet))
+    assert sheet.has_read
+    assert service.refreshed == [maria.id]
+    assert sheet.refresh_message == (
+        "Llegaste al límite de revisiones por ahora. Vuelve a intentarlo más tarde."
+    )
+    for word in ("crédito", "credito", "dinero"):
+        assert word not in sheet.refresh_message.lower()
+
+
+async def test_quitar_archives_and_tells_the_list(service: FakeService, monkeypatch) -> None:
+    maria = service.seed("maria")
+    sheet = CreatorSheetState()
+    monkeypatch.setattr(CreatorSheetState, "_route_id", lambda self: maria.id)
+    await _drain(CreatorSheetState.load.fn(sheet))
+    events = await _drain(CreatorSheetState.confirm_archive.fn(sheet))
+    assert service.archived == [maria.id]
+    assert service.told == ["Quitaste a @maria de tu lista."]  # type: ignore[attr-defined]
+    assert any("/creadores" in str(e) for e in events)
+
+
+async def test_a_sheet_of_another_business_is_gone(service: FakeService, monkeypatch) -> None:
+    sheet = CreatorSheetState()
+    monkeypatch.setattr(CreatorSheetState, "_route_id", lambda self: uuid4())
+    await _drain(CreatorSheetState.load.fn(sheet))
+    assert sheet.load_error == "Este creador ya no está en tu lista."
+    assert not sheet.has_read
+
+
+# --- 6. the switch -------------------------------------------------------------------------
+
+
+async def test_switch_off_lists_nothing(service: FakeService) -> None:
+    service.seed("maria")
+    service.enabled = False
+    state = CreatorsState()
+    await _drain(CreatorsState.load.fn(state))
+    assert state.cards == []
+    assert "list" not in service.calls
+
+
+def test_the_menu_entry_follows_the_switch() -> None:
+    """§11: «Creadores» stays «Pronto» in the static menu map (a business off the switch)
+    and is swapped for the working entry by the switch's Var."""
+    from .ui.layout import NAV_GATES, NAV_RESULTS, _gated_nav_item
+
+    entry = next(item for item in NAV_RESULTS if item[0] == "Creadores")
+    assert entry[3] is False
+    assert "Creadores" in NAV_GATES
+    rendered = str(_gated_nav_item(entry).render())
+    assert "Pronto" in rendered
+
+
+async def test_with_exactly_two_compare_opens_directly(service: FakeService) -> None:
+    a, b = service.seed("maria"), service.seed("ruta")
+    state = await _loaded_list(service)
+    event = CreatorsState.start_pick.fn(state)
+    assert not state.picking
+    assert str(a.id) in str(event) and str(b.id) in str(event)
+
+
+async def test_leaving_the_list_drops_pick_mode_and_the_notice(service: FakeService) -> None:
+    for name in ("a", "b", "c"):
+        service.seed(name)
+    state = await _loaded_list(service)
+    CreatorsState.start_pick.fn(state)
+    state.notice = "Listo: ya puedes ver cómo le va a @a."
+    CreatorsState.leave_flow.fn(state)
+    assert not state.picking and state.picked == []
+    assert state.notice == "" and state.notice_href == ""
+
+
+async def test_a_plain_visit_is_not_in_pick_mode(service: FakeService) -> None:
+    for name in ("a", "b", "c"):
+        service.seed(name)
+    state = await _loaded_list(service)
+    state.picking = True
+    await _drain(CreatorsState.load.fn(state))
+    assert not state.picking
+
+
+async def test_a_stuck_read_in_the_list_offers_a_retry(service: FakeService) -> None:
+    service.seed("stuck.one", read=False).refresh_state = "reading"
+    service.seed("alive", read=False).refresh_state = "reading"
+    state = await _loaded_list(service)
+    by_handle = {c.handle: c.state for c in state.cards}
+    assert by_handle == {"@stuck.one": "failed", "@alive": "working"}
+
+
+# --- 7. «Lo que cobra» ---------------------------------------------------------------------
+
+
+async def _sheet(service: FakeService, monkeypatch, tracked: Tracked, *, flow: bool = False):
+    sheet = CreatorSheetState()
+    monkeypatch.setattr(CreatorSheetState, "_route_id", lambda self: tracked.id)
+    monkeypatch.setattr(CreatorSheetState, "_wants_rate", lambda self: flow)
+    await _drain(CreatorSheetState.load.fn(sheet))
+    return sheet
+
+
+async def test_a_creator_never_read_can_get_a_price(service: FakeService, monkeypatch) -> None:
+    nuevo = service.seed("nuevo", read=False)
+    sheet = await _sheet(service, monkeypatch, nuevo)
+    assert not sheet.has_read and sheet.rate == EMPTY_RATE
+    await _drain(CreatorSheetState.open_rate.fn(sheet))
+    assert sheet.rate_open and sheet.rate_ready
+    assert sheet.rate_currency_input == "uyu"  # the business's own currency
+    CreatorSheetState.set_rate_notes.fn(sheet, "1 reel, 150.000\nPaquete, 380.000")
+    CreatorSheetState.set_rate_amount.fn(sheet, "150.000")
+    events = await _drain(CreatorSheetState.save_rate.fn(sheet))
+    assert service.rates == [
+        (nuevo.id, "1 reel, 150.000\nPaquete, 380.000", Decimal("150000"), "UYU")
+    ]
+    assert sheet.rate.from_text == "Desde 150.000 pesos"  # the business's own pesos
+    assert sheet.rate.notes.endswith("Paquete, 380.000")
+    assert not sheet.rate_open
+    assert any("tarifa" in str(e) for e in events)  # the address loses `?flujo=tarifa`
+    assert service.refreshed == []  # writing a price never pays a read
+
+
+async def test_change_refills_the_drawer_with_what_is_written(
+    service: FakeService, monkeypatch
+) -> None:
+    maria = service.seed("maria")
+    maria.rate_from, maria.rate_currency, maria.rate_notes = Decimal("150000"), "COP", "1 reel"
+    sheet = await _sheet(service, monkeypatch, maria)
+    assert sheet.rate.from_text == "Desde 150.000 pesos colombianos"  # not the business's
+    await _drain(CreatorSheetState.open_rate.fn(sheet))
+    assert sheet.rate_amount_input == "150.000"
+    assert sheet.rate_currency_input == "cop"  # its own, not the business's
+    assert sheet.rate_notes_input == "1 reel"
+
+
+async def test_both_empty_clears_the_price(service: FakeService, monkeypatch) -> None:
+    maria = service.seed("maria")
+    maria.rate_from, maria.rate_currency = Decimal("150000"), "COP"
+    sheet = await _sheet(service, monkeypatch, maria)
+    await _drain(CreatorSheetState.open_rate.fn(sheet))
+    CreatorSheetState.set_rate_amount.fn(sheet, "  ")
+    CreatorSheetState.set_rate_notes.fn(sheet, "")
+    await _drain(CreatorSheetState.save_rate.fn(sheet))
+    assert service.rates == [(maria.id, "", None, None)]
+    assert sheet.rate == EMPTY_RATE
+
+
+@pytest.mark.parametrize(
+    ("typed", "message"), [("ciento cincuenta", RATE_NOT_A_NUMBER), ("-5", RATE_NEGATIVE)]
+)
+async def test_a_refused_price_is_said_next_to_the_field(
+    service: FakeService, monkeypatch, typed: str, message: str
+) -> None:
+    maria = service.seed("maria")
+    sheet = await _sheet(service, monkeypatch, maria)
+    await _drain(CreatorSheetState.open_rate.fn(sheet))
+    CreatorSheetState.set_rate_amount.fn(sheet, typed)
+    await _drain(CreatorSheetState.save_rate.fn(sheet))
+    assert sheet.rate_amount_error == message
+    assert sheet.rate_amount_input == typed  # what was typed stays
+    assert sheet.rate_open and not sheet.rate_saving
+    assert service.rates == []
+
+
+async def test_too_much_text_is_refused_before_saving(service: FakeService, monkeypatch) -> None:
+    maria = service.seed("maria")
+    sheet = await _sheet(service, monkeypatch, maria)
+    await _drain(CreatorSheetState.open_rate.fn(sheet))
+    CreatorSheetState.set_rate_notes.fn(sheet, "x" * 1001)
+    assert sheet.rate_notes_over
+    assert sheet.rate_counter == "1.001 de 1.000 letras"
+    await _drain(CreatorSheetState.save_rate.fn(sheet))
+    assert sheet.rate_notes_error == RATE_NOTES_TOO_LONG
+    assert service.rates == []
+
+
+async def test_the_address_opens_the_drawer(service: FakeService, monkeypatch) -> None:
+    """A link from Comparar (`?flujo=tarifa&paso=1`) lands with the drawer open."""
+    maria = service.seed("maria")
+    sheet = await _sheet(service, monkeypatch, maria, flow=True)
+    assert sheet.rate_open
+    assert sheet.rate_currency_input == "uyu"
+
+
+async def test_the_list_says_desde(service: FakeService) -> None:
+    maria = service.seed("maria")
+    maria.rate_from, maria.rate_currency = Decimal("150"), "USD"
+    service.seed("ruta")
+    state = await _loaded_list(service)
+    by_handle = {c.handle: c.rate_from for c in state.cards}
+    assert by_handle == {"@maria": "Desde 150 dólares", "@ruta": ""}
+
+
+async def test_comparar_marks_the_lowest_price_with_the_real_backend(
+    service: FakeService, monkeypatch
+) -> None:
+    a, b, c = service.seed("maria"), service.seed("ruta"), service.seed("tachira")
+    a.rate_from, a.rate_currency = Decimal("150000"), "COP"
+    b.rate_from, b.rate_currency = Decimal("200000"), "COP"
+    comp = CreatorsCompareState()
+    ids = [str(a.id), str(b.id), str(c.id)]
+    monkeypatch.setattr(CreatorsCompareState, "_requested", lambda self: ids)
+    await _drain(CreatorsCompareState.load.fn(comp))
+    rows = {r.key: r for r in comp.comparison.rows}
+    price = rows["rate_from"]
+    assert [cell.text for cell in price.cells] == [
+        "150.000 pesos colombianos",
+        "200.000 pesos colombianos",
+        "Sin anotar",
+    ]
+    assert [cell.best for cell in price.cells] == [True, False, False]
+    assert price.cells[2].add_href == f"/creadores/{c.id}?flujo=tarifa&paso=1"
+    cost = rows["cost_per_thousand"].cells
+    assert cost[0].text.endswith("pesos colombianos") and cost[2].text == "Sin dato"
+    assert comp.comparison.mixed_note == ""
+
+
+async def test_back_and_forward_follow_the_address(service: FakeService, monkeypatch) -> None:
+    maria = service.seed("maria")
+    sheet = await _sheet(service, monkeypatch, maria)
+    monkeypatch.setattr(CreatorSheetState, "_wants_rate", lambda self: True)
+    events = CreatorSheetState.enter_history.fn(sheet, {"visit": "v1", "href": "x"})
+    assert sheet.history_ack == "v1"
+    assert f"/creadores/{maria.id}" in str(events[-1])
+    await _drain(CreatorSheetState.open_rate.fn(sheet))
+    assert sheet.rate_open
+    monkeypatch.setattr(CreatorSheetState, "_wants_rate", lambda self: False)
+    CreatorSheetState.enter_history.fn(sheet, {"visit": "v2", "href": "x"})
+    assert not sheet.rate_open and not sheet.rate_ready
+
+
+async def test_the_drawer_never_opens_on_another_creators_rate(
+    service: FakeService, monkeypatch
+) -> None:
+    maria, ruta = service.seed("maria"), service.seed("ruta")
+    maria.rate_from, maria.rate_currency = Decimal("150000"), "COP"
+    sheet = await _sheet(service, monkeypatch, maria)
+    # the address moved to @ruta, his sheet has not loaded yet
+    monkeypatch.setattr(CreatorSheetState, "_route_id", lambda self: ruta.id)
+    await _drain(CreatorSheetState.open_rate.fn(sheet))
+    assert not sheet.rate_open
+
+
+async def test_a_currency_typed_in_the_price_must_match_the_chosen_one(
+    service: FakeService, monkeypatch
+) -> None:
+    maria = service.seed("maria")
+    sheet = await _sheet(service, monkeypatch, maria)
+    await _drain(CreatorSheetState.open_rate.fn(sheet))
+    CreatorSheetState.set_rate_currency.fn(sheet, "cop")
+    CreatorSheetState.set_rate_amount.fn(sheet, "US$ 200")
+    await _drain(CreatorSheetState.save_rate.fn(sheet))
+    assert sheet.rate_amount_error == (
+        "Escribiste dólares pero elegiste pesos colombianos. Cambia la moneda o escribe "
+        "solo el número."
+    )
+    assert service.rates == [] and sheet.rate_open
+    CreatorSheetState.set_rate_currency.fn(sheet, "usd")
+    await _drain(CreatorSheetState.save_rate.fn(sheet))
+    assert service.rates == [(maria.id, "", Decimal("200.00"), "USD")]
+    assert sheet.rate.from_text == "Desde 200 dólares"
+
+
+async def test_pesos_with_cents_are_refused(service: FakeService, monkeypatch) -> None:
+    maria = service.seed("maria")
+    sheet = await _sheet(service, monkeypatch, maria)
+    await _drain(CreatorSheetState.open_rate.fn(sheet))
+    CreatorSheetState.set_rate_amount.fn(sheet, "150.5")  # currency: the business's UYU
+    await _drain(CreatorSheetState.save_rate.fn(sheet))
+    assert sheet.rate_amount_error == (
+        "Los pesos no llevan centavos. Revisa el número; por ejemplo, 150.500."
+    )
+    assert service.rates == []
+
+
+async def test_spaces_at_the_edges_do_not_count_against_the_limit(
+    service: FakeService, monkeypatch
+) -> None:
+    maria = service.seed("maria")
+    sheet = await _sheet(service, monkeypatch, maria)
+    await _drain(CreatorSheetState.open_rate.fn(sheet))
+    CreatorSheetState.set_rate_notes.fn(sheet, "   " + "x" * 1000 + "\n\n")
+    assert not sheet.rate_notes_over and sheet.rate_notes_error == ""
+    await _drain(CreatorSheetState.save_rate.fn(sheet))
+    assert service.rates == [(maria.id, "x" * 1000, None, None)]
+
+
+async def test_a_price_of_zero_reads_as_working_for_products(
+    service: FakeService, monkeypatch
+) -> None:
+    maria = service.seed("maria")
+    sheet = await _sheet(service, monkeypatch, maria)
+    await _drain(CreatorSheetState.open_rate.fn(sheet))
+    CreatorSheetState.set_rate_amount.fn(sheet, "0")
+    await _drain(CreatorSheetState.save_rate.fn(sheet))
+    assert sheet.rate.from_text == "Trabaja a cambio de productos"
+
+
+async def test_a_save_that_ends_on_another_creators_sheet_leaves_it_alone(
+    service: FakeService, monkeypatch
+) -> None:
+    """The owner moved to @ruta while @maria's price was saving: @ruta's sheet keeps its
+    own (empty) price and drawer; the saving flag is always released."""
+    maria, ruta = service.seed("maria"), service.seed("ruta")
+    sheet = await _sheet(service, monkeypatch, maria)
+    await _drain(CreatorSheetState.open_rate.fn(sheet))
+    CreatorSheetState.set_rate_amount.fn(sheet, "150.000")
+    saving = creators_provider.save_rate
+
+    def _slow_save(*args: Any, **kwargs: Any):
+        result = saving(*args, **kwargs)
+        sheet.tracked_id = str(ruta.id)  # the address moved on meanwhile
+        sheet.rate = EMPTY_RATE
+        sheet.rate_open = True
+        return result
+
+    monkeypatch.setattr(creators_provider, "save_rate", _slow_save)
+    events = await _drain(CreatorSheetState.save_rate.fn(sheet))
+    assert service.rates and service.rates[0][0] == maria.id  # @maria's price was saved
+    assert sheet.rate == EMPTY_RATE  # ... but never shown as @ruta's
+    assert sheet.rate_open  # @ruta's drawer is not closed by @maria's save
+    assert not sheet.rate_saving
+    assert events == []
+
+
+@pytest.mark.parametrize("typed", ["150.000", "abc"])
+async def test_another_creators_drawer_opens_empty_while_a_save_is_on_its_way(
+    service: FakeService, monkeypatch, typed: str
+) -> None:
+    """@maria's save is still running when the owner moves to @ruta and opens his
+    drawer: it is empty, has no error, can be saved, and @maria's outcome (her price,
+    or her refusal) never lands on it."""
+    maria, ruta = service.seed("maria"), service.seed("ruta")
+    route = {"id": maria.id}
+    monkeypatch.setattr(CreatorSheetState, "_route_id", lambda self: route["id"])
+    monkeypatch.setattr(CreatorSheetState, "_wants_rate", lambda self: False)
+    sheet = CreatorSheetState()
+    await _drain(CreatorSheetState.load.fn(sheet))
+    await _drain(CreatorSheetState.open_rate.fn(sheet))
+    CreatorSheetState.set_rate_notes.fn(sheet, "1 reel")
+    CreatorSheetState.set_rate_amount.fn(sheet, typed)
+
+    started, release = threading.Event(), threading.Event()
+    saving = creators_provider.save_rate
+
+    def _slow_save(*args: Any, **kwargs: Any):
+        started.set()
+        release.wait(5)
+        return saving(*args, **kwargs)
+
+    monkeypatch.setattr(creators_provider, "save_rate", _slow_save)
+    pending = asyncio.ensure_future(_drain(CreatorSheetState.save_rate.fn(sheet)))
+    await asyncio.to_thread(started.wait, 5)
+    assert sheet.rate_saving
+
+    route["id"] = ruta.id  # the owner opens @ruta's sheet and his drawer
+    await _drain(CreatorSheetState.load.fn(sheet))
+    await _drain(CreatorSheetState.open_rate.fn(sheet))
+    assert sheet.tracked_id == str(ruta.id) and sheet.rate_open
+    assert (sheet.rate_notes_input, sheet.rate_amount_input) == ("", "")
+    assert sheet.rate_currency_input == "uyu"  # the business's, not @maria's choice
+    assert not sheet.rate_saving
+
+    release.set()
+    assert await pending == []  # no «close the drawer» for @ruta
+    assert sheet.rate == EMPTY_RATE and sheet.rate_open
+    assert (sheet.rate_amount_error, sheet.rate_notes_error, sheet.rate_error) == ("", "", "")
+    assert not sheet.rate_saving

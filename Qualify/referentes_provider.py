@@ -34,6 +34,8 @@ from qualify_api.referentes import (
     StoredDiscoveryPhase,
     normalize_handle,
 )
+from qualify_api.referentes.brand_brief import rebuild_seed as stored_seed
+from qualify_api.vendors import usage
 
 from . import creator_discovery, referentes_review
 from .creator_discovery import Candidate, DiscoverySeed, PhaseResult
@@ -425,35 +427,10 @@ def save_manual_account(
 
 
 def rebuild_seed(payload: dict[str, Any]) -> DiscoverySeed:
-    """The `DiscoverySeed` a stored phase ran on — same fields, same order, so its
-    `phase_signature` matches what the wizard computes for the same answers and a
-    recomputed phase is a hit the next time the operator walks the flow.
-
-    Every stored hashtag is used, split back into its seed fields by origin: `catalog`
-    and `ai` ones (both came from the shared catalog) into `catalog_hashtags`, the
-    operator's pills (`operator`) into `chosen_hashtags` — so the signature matches — and
-    the rest (the brand's own) into `hashtags`. The origin is stored exactly so a recompute can
-    re-derive one set without touching the other — and a recompute reuses the stored AI
-    choice rather than asking again."""
-    items = [
-        item for item in payload.get("hashtags") or [] if isinstance(item, dict) and item.get("tag")
-    ]
-    from_catalog = (ORIGIN_CATALOG, ORIGIN_AI)
-    not_own = (*from_catalog, ORIGIN_OPERATOR)
-    hashtags = tuple(str(i["tag"]) for i in items if i.get("origin") not in not_own)
-    catalog = tuple(str(i["tag"]) for i in items if i.get("origin") in from_catalog)
-    chosen = tuple(str(i["tag"]) for i in items if i.get("origin") == ORIGIN_OPERATOR)
-    return DiscoverySeed(
-        handle=str(payload.get("handle") or ""),
-        niches=tuple(str(n) for n in payload.get("niches") or ()),
-        hashtags=hashtags,
-        catalog_hashtags=catalog,
-        chosen_hashtags=chosen,
-        country_code=str(payload.get("country_code") or ""),
-        city=str(payload.get("city") or ""),
-        related=tuple(str(r) for r in payload.get("related") or ()),
-        terms=tuple(str(t) for t in payload.get("terms") or ()),
-    )
+    """The `DiscoverySeed` a stored phase ran on (moved to
+    `qualify_api.referentes.brand_brief.rebuild_seed` by ADR 42 R4, m-24854848; unchanged
+    — see there)."""
+    return stored_seed(payload)
 
 
 @dataclass(frozen=True)
@@ -526,7 +503,12 @@ def run_phases(seed: DiscoverySeed, keys: list[str], tenant_id: UUID) -> list[Ph
     runner = creator_discovery.PhasedDiscovery(
         seed,
         payload_cache=payload_cache(tenant_id),
-        reviewer=referentes_review.make_reviewer(referentes_review.brand_brief(seed)),
+        reviewer=referentes_review.make_reviewer(
+            referentes_review.brand_brief(seed),
+            # m-24955649: the review is booked to this business
+            attribution=referentes_review.review_attribution((tenant_id,)),
+        ),
+        charge=usage.UsageCharge(tenant_id),  # ADR 42 R5: this business's caps
     )
     try:
         return [runner.run(key) for key in keys]

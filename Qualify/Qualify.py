@@ -4,8 +4,14 @@ import logging
 
 import reflex as rx
 from qualify_api.auth import LEGACY_SIGNUP_ROUTE, SIGNUP_ROUTE
+from qualify_api.creative.queue_dispatch import warn_if_inline
 from qualify_api.planner.embedded import calendar_worker
 
+from .ad_forms_page import ad_forms_index
+from .ad_forms_state import AdFormsState
+from .ad_results_page import ad_result_detail_index, ad_results_index
+from .ad_results_state import AdResultsState
+from .approved_page import approved_index
 from .auth_pages import (
     brand_start_index,
     choose_business_index,
@@ -28,6 +34,7 @@ from .catalog_page import catalog_index
 from .catalog_state import CatalogState
 from .connections_page import connections_index
 from .connections_state import ConnectionsState
+from .create_gallery_state import CreateGalleryState
 from .creative_pages import (
     create_index,
     draft_detail_index,
@@ -41,15 +48,22 @@ from .creative_wizard_pages import (
     brand_connect_setup_index,
     brand_manual_index,
 )
+from .creator_sheet_page import creator_sheet_index
+from .creators_compare_page import creators_compare_index
 from .creators_page import creators_index
+from .creators_state import CreatorsCompareState, CreatorSheetState, CreatorsState
 from .final_review_state import FinalReviewState
 from .gallery_state import GalleryState
 from .home_page import home_index
 from .home_state import HomeState
+from .page_metadata import QualifyApp
 from .piece_download import router as piece_download_router
+from .pinterest_state import PinterestState
 from .planner_back import WeekBackState
 from .planner_page import planner_index
 from .planner_state import PlannerState
+from .promotion_page import promotion_index
+from .promotion_state import PromotionState
 from .publish_hub_state import PublishHubState
 from .publishing_page import publish_index
 from .publishing_state import PublishState
@@ -58,10 +72,14 @@ from .responder_page import legacy_redirect, responder_index
 from .responder_state import ResponderState
 from .results_page import results_index
 from .results_state import ResultsState
+from .seasonal_media import router as seasonal_media_router
+from .seasonal_state import SeasonalState
 from .settings_page import settings_index
 from .signals_page import signals_index
+from .state_keepalive import install as install_state_keepalive
 from .styleguide_page import StepsDemoState, styleguide_index, styleguide_steps
 from .tiktok_state import TikTokConnectionsState, TikTokDraftState
+from .upload_route import upload_fallback
 from .variations_state import VariationsState
 from .voice_lab import VoiceLabState
 from .whatsapp_page import whatsapp_index
@@ -88,9 +106,16 @@ for _noisy_logger in ("httpx", "httpcore", "botocore", "boto3", "urllib3", "sqla
 # quick manual demo or a future fixture), just no longer wired into the app's boot path.
 
 
+# m-24946266: a live tab's saved state is refreshed on disk instead of being purged an
+# hour after it was last written, so a worker restart (OOM, deploy) keeps the login.
+install_state_keepalive()
+
+
 # R2-only media for the draft screen (`r2_media.py`), on the same backend FastAPI app the
 # avatar proxy already mounts through `api_transformer`.
 avatar_api.include_router(r2_media_router)
+# m-24976895: previews of the brand's seasonal stickers and videos (own token namespace)
+avatar_api.include_router(seasonal_media_router)
 # «Descargar todo» (m-24828908): a piece as a .zip, same backend app (`piece_download.py`).
 avatar_api.include_router(piece_download_router)
 
@@ -103,7 +128,7 @@ _FONTS = (
     "&family=IBM+Plex+Sans:wght@400;500;600;700"
     "&display=swap"
 )
-app = rx.App(
+app = QualifyApp(
     # The design system (tokens, Liquid Glass bridge + Radix skin, shell, primitives)
     # first; then one sheet per domain, each owned by its migration batch (plan D10).
     stylesheets=[
@@ -126,7 +151,9 @@ app = rx.App(
     toaster=rx.toast.provider(position="bottom-right", close_button=True),
     # The creator-discovery cards' pictures (`avatar_proxy.py`): a FastAPI app mounted
     # on the same backend, so the browser never touches a vendor's signed URL.
-    api_transformer=avatar_api,
+    # CM-9 (m-24957283): then `/_upload/<key>` falls back to R2 for an upload that is no
+    # longer on the volume (`upload_route.py`) — wrapping the whole app, so it runs first.
+    api_transformer=[avatar_api, upload_fallback],
     # The Brand Kit deck's pointer drag (`assets/deck-drag.js`) and the influence
     # ranking's (`assets/rank-drag.js`): plain DOM, delegated at the document, so they
     # are loaded once here rather than per page. These go through react-helmet, which
@@ -165,6 +192,16 @@ async def calendar_worker_lifespan():
         yield
     finally:
         await asyncio.to_thread(worker.stop)
+
+
+# m-24993021: with QUALIFY_CREATIVE_DISPATCHER unset or `inline`, generation runs in this
+# process and the parts of a video by parts are never created (only creative-worker's
+# pipeline creates them). Said once per backend process at startup, not per request.
+@app.register_lifespan_task
+@contextlib.asynccontextmanager
+async def creative_dispatcher_lifespan():
+    warn_if_inline(logging.getLogger("Qualify.creative_dispatcher"))
+    yield
 
 
 # Living style guide: static, no tenant data, so it needs no session. Not linked from
@@ -269,12 +306,14 @@ app.add_page(
     route="/menciones",
     on_load=ResultsState.redirect_mentions,
     title="Qualify · Resultados",
+    context={"metadata_route": "/resultados"},
 )
 app.add_page(
     _results_redirect,
     route="/clarity",
     on_load=ResultsState.redirect_clarity,
     title="Qualify · Resultados",
+    context={"metadata_route": "/resultados"},
 )
 app.add_page(
     connections_index,
@@ -285,6 +324,7 @@ app.add_page(
         ConnectionsState.load_connections,
         TikTokConnectionsState.read_connect_result,  # m-24921091
         TikTokConnectionsState.load,
+        PinterestState.load,
     ],
     title="Qualify · Tus redes",
 )
@@ -341,19 +381,35 @@ app.add_page(
     on_load=ResponderState.redirect_legacy,
     title="Qualify · Clientes interesados",
 )
-# The two «Pronto» screens of the menu (N10, NAV-1 m-24842957): static, no load beyond
-# the session gate; each says what is coming and links to something that works today.
+# The «Pronto» screen of the menu (N10, NAV-1 m-24842957): static, no load beyond the
+# session gate; it says what is coming and links to something that works today.
 app.add_page(
     signals_index,
     route="/signals",
     on_load=[AuthState.require_login],
     title="Qualify · Oportunidades",
 )
+# Creadores (Delivery 1, m-24946129 / m-24946132). A business off the switch
+# (`QUALIFY_CREATORS_TENANTS`, docs/diseno-modulo-creadores.md §11) still sees «Pronto»
+# here; the load only reads (the one paid call is behind a button). Comparar is
+# registered before the sheet so `/creadores/comparar` never reads as a creator id.
 app.add_page(
     creators_index,
     route="/creadores",
-    on_load=[AuthState.require_login],
+    on_load=[AuthState.require_login, CreatorsState.load],
     title="Qualify · Creadores",
+)
+app.add_page(
+    creators_compare_index,
+    route="/creadores/comparar",
+    on_load=[AuthState.require_login, CreatorsCompareState.load],
+    title="Qualify · Comparar creadores",
+)
+app.add_page(
+    creator_sheet_index,
+    route="/creadores/[creator_id]",
+    on_load=[AuthState.require_login, CreatorSheetState.load],
+    title="Qualify · Creador",
 )
 app.add_page(
     settings_index,
@@ -492,6 +548,8 @@ app.add_page(
         CreativeState.enter_create_step,
         # m-24842973 (N4): back from «Agregar producto» in Variaciones with the product
         VariationsState.load_from_query,
+        # CM-7: `?medios=` — the photos and videos chosen in Galería
+        CreateGalleryState.load,
     ],
     title="Qualify · Crear publicación",
 )
@@ -500,6 +558,14 @@ app.add_page(
     route="/drafts",
     on_load=[AuthState.require_login, GalleryState.load],
     title="Qualify · Por aprobar",
+)
+# m-24986801 (docs/ux-aprobados-y-menus.md §3): what the owner already approved —
+# publications, stickers and videos — right below «Por aprobar» in the menu.
+app.add_page(
+    approved_index,
+    route="/aprobados",
+    on_load=[AuthState.require_login, GalleryState.load_approved, SeasonalState.read_kind_filter],
+    title="Qualify · Aprobados",
 )
 app.add_page(
     draft_detail_index,
@@ -510,8 +576,33 @@ app.add_page(
         CreativeState.load_draft,
         CampaignState.load,
         TikTokDraftState.load,  # m-24921091: «Enviar a TikTok»
+        PromotionState.load_entry,
     ],
     title="Qualify · Revisar publicación",
+)
+app.add_page(
+    promotion_index,
+    route="/drafts/[draft_id]/promote",
+    on_load=[AuthState.require_login, PromotionState.load],
+    title="Qualify · Promocionar publicación",
+)
+app.add_page(
+    ad_results_index,
+    route="/promotions",
+    on_load=[AuthState.require_login, AdResultsState.load_list],
+    title="Qualify · Anuncios",
+)
+app.add_page(
+    ad_forms_index,
+    route="/promotions/forms",
+    on_load=[AuthState.require_login, AdFormsState.load, AdFormsState.read_step],
+    title="Qualify · Formularios",
+)
+app.add_page(
+    ad_result_detail_index,
+    route="/promotions/[promotion_id]",
+    on_load=[AuthState.require_login, AdResultsState.load_detail],
+    title="Qualify · Anuncios",
 )
 # QUA-108 — Planificador: calendario editorial (vista semanal por horas + lista).
 # Planifica qué POST sale, cuándo y en qué cuenta; no publica (eso es /publish ahora,
@@ -519,7 +610,12 @@ app.add_page(
 app.add_page(
     planner_index,
     route="/planner",
-    on_load=[AuthState.require_login, PlannerState.load_current_week, FinalReviewState.from_route],
+    on_load=[
+        AuthState.require_login,
+        WeekBackState.read,  # m-24986801: «‹ Aprobados» when opened from there
+        PlannerState.load_current_week,
+        FinalReviewState.from_route,
+    ],
     title="Qualify · Tu semana",
 )
 
@@ -538,12 +634,15 @@ app.add_page(
     title="Qualify · Historias",
 )
 # Catálogo de productos (plan-mvp-plantillas-remotion.md §2.1 #1): the brand's real
-# products and media — what the template engine composes. Negocio → Catálogo.
+# products and media — what the template engine composes. Publica → Galería (m-24955912).
 app.add_page(
     catalog_index,
     route="/catalog",
+    # `?cortar=` (CM-4) and `?elegir=1` (CM-5) follow the browser through the popstate
+    # path (`CatalogState.enter_history`), never on_load: an on_load can carry the address
+    # from before a push and close what just opened (measured live, CM-5)
     on_load=[AuthState.require_login, CatalogState.load_catalog],
-    title="Qualify · Tus productos",
+    title="Qualify · Galería",
 )
 
 

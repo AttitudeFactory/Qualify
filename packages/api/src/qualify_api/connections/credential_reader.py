@@ -18,12 +18,16 @@ by passing a different tenant id later.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from qualify_shared.db.credential import credential_session
 from sqlalchemy import text
 
 from qualify_api.connections.resolver import EncryptedCredential
+
+if TYPE_CHECKING:
+    from qualify_api.pinterest.repository import Credential
 
 
 class CredentialNotFound(Exception):
@@ -33,6 +37,33 @@ class CredentialNotFound(Exception):
     credential are indistinguishable here, because RLS filters the first to zero rows
     before this code sees it. Both mean "you get nothing".
     """
+
+
+def read_pinterest_credential(tenant_id: UUID) -> Credential:
+    """Current active Pinterest grant via the sole sanctioned secret-reading module."""
+    from qualify_api.pinterest.client import PinterestError
+    from qualify_api.pinterest.repository import Credential
+
+    with credential_session(tenant_id) as session:
+        row = session.execute(
+            text("""SELECT g.ciphertext,g.key_id,g.version
+            FROM pinterest_credentials g JOIN pinterest_connections c
+            ON c.id=g.connection_id AND c.tenant_id=g.tenant_id AND c.version=g.version
+            WHERE c.status='active'""")
+        ).first()
+    if row is None:
+        raise PinterestError("authentication", 401)
+    return Credential(bytes(row.ciphertext), str(row.key_id), int(row.version))
+
+
+def erase_pinterest_credentials(tenant_id: UUID, cutoff_version: int) -> None:
+    """Erase only credentials invalidated by a disconnect; never a new reconnect."""
+    with credential_session(tenant_id) as session:
+        session.execute(
+            text("""DELETE FROM pinterest_credentials
+            WHERE version <= :cutoff"""),
+            {"cutoff": cutoff_version},
+        )
 
 
 class DbCredentialReader:
@@ -58,3 +89,53 @@ class DbCredentialReader:
         return EncryptedCredential(
             ciphertext=bytes(row.ciphertext), key_id=str(row.key_id), version=int(row.version)
         )
+
+
+class DbAdCredentialReader:
+    """Current advertising or explicitly USER principal grant, never a Page token.
+
+    Resolve the current grant through the application door before the narrow secret
+    read. Revocation, reconnect, purge and expiry all fail closed.
+    """
+
+    def __init__(self, tenant_id: UUID, *, expected_version: int) -> None:
+        self._tenant_id = tenant_id
+        self._expected_version = expected_version
+
+    def read_current(self, connection_id: UUID) -> EncryptedCredential:
+        from qualify_shared.db.session import tenant_session
+
+        from qualify_api.connections.ad_accounts import _connection, _permission_reason
+
+        with tenant_session(self._tenant_id) as session:
+            try:
+                connection = _connection(session, connection_id)
+            except ValueError:
+                raise CredentialNotFound("advertising credential unavailable") from None
+        if _permission_reason(connection) or connection.version != self._expected_version:
+            raise CredentialNotFound("advertising credential unavailable")
+        # Both table names are fixed code-owned values, never caller input. The
+        # metadata door above proves a principal credential is a USER token.
+        table = (
+            "oauth_credentials"
+            if connection.credential_source == "principal"
+            else "ad_oauth_credentials"
+        )
+        with credential_session(self._tenant_id) as session:
+            row = session.execute(
+                text(f"""SELECT ciphertext,key_id,version FROM {table}
+                WHERE connection_id=:cid AND version=:version"""),
+                {"cid": connection_id, "version": connection.version},
+            ).first()
+        if row is None:
+            raise CredentialNotFound("advertising credential unavailable")
+        # The secret door and the metadata gate use different roles. Fence the read
+        # once more so an intervening reconnect/revoke cannot hand back a stale grant.
+        with tenant_session(self._tenant_id) as session:
+            try:
+                current = _connection(session, connection_id)
+            except ValueError:
+                raise CredentialNotFound("advertising credential unavailable") from None
+        if current != connection or _permission_reason(current):
+            raise CredentialNotFound("advertising credential unavailable")
+        return EncryptedCredential(bytes(row.ciphertext), str(row.key_id), int(row.version))

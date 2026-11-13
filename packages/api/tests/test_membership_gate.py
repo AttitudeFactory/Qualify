@@ -200,11 +200,13 @@ def _gated() -> list[object]:
         PostgresConversationOutboxRepository.enqueue,
         PostgresOutboxRepository.enqueue,
         ChatService.send,
+        ChatService.send_prepared,
         TemplateReplyService.send,
         CampaignService.launch,
         TemplateService.create,
         TemplateService.delete,
         PostgresMenuRepository.publish_version,
+        PostgresMenuRepository.archive_menu,
         IceBreakerService.publish,
         IceBreakerService.remove,
     ]

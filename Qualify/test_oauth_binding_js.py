@@ -167,3 +167,39 @@ def test_hostile_values_stay_data_when_executed() -> None:
     )
     assert out["assigned"] == hostile
     assert out.get("pwned") is None
+
+
+@pytest.mark.skipif(_NODE is None, reason="node not installed")
+def test_a_callback_on_the_page_host_sets_the_cookie_there_and_leaves() -> None:
+    """m-24947215: the seam put the callback on app.qualify.la, so no bounce to the other
+    host (where the client has no session) — the cookie is set on this host."""
+    script = _script(
+        callback_url="https://app.qualify.la/api/connections/tiktok/callback",
+        app_origin="https://qualify.attitudefactory.co",
+    )
+    out = _run(script, "https://app.qualify.la/connections")
+    assert out["assigned"] == CONSENT
+    assert str(out["cookie"]).startswith("qoauth_meta_0123456789abcdef=nonce-value_-;")
+
+
+class _Headers:
+    def __init__(self, origin: object) -> None:
+        self.origin = origin
+
+
+class _Router:
+    def __init__(self, origin: object) -> None:
+        self.headers = _Headers(origin)
+
+
+class _State:
+    def __init__(self, origin: object) -> None:
+        self.router = _Router(origin)
+
+
+def test_page_origin_reads_the_websocket_origin_and_tolerates_none() -> None:
+    from .oauth_binding_js import page_origin
+
+    assert page_origin(_State("https://app.qualify.la")) == "https://app.qualify.la"  # type: ignore[arg-type]
+    assert page_origin(_State(None)) == ""  # type: ignore[arg-type]
+    assert page_origin(object()) == ""  # type: ignore[arg-type]

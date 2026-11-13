@@ -194,6 +194,44 @@ class FailureReason(StrEnum):
     INVALID_PARAMETERS = "invalid_parameters"
     DEPENDENCY_FAILED = "dependency_failed"
     CANCELLED = "cancelled"
+    # Video by parts (ADR 44, VE-09). ModelArk refused an input because it shows a real
+    # person (`PrivacyInformation`): the part's vista previa is given back and the part
+    # can be made new («Nueva, inspirada en el original») — never retried by itself.
+    REFUSED_FACE = "refused_face"
+    # An «Igual al original» part whose window of the original reel cannot be cut, kept
+    # 1:1 with `SourceWindowRefused` codes (`referentes/reel_analysis_window.py`). Never
+    # switched to «Nueva» silently: the part fails, its vista previa is given back and
+    # the owner chooses (UI-7: [Hacerla nueva] [Quitar parte]).
+    SOURCE_PURGED = "source_purged"
+    NOT_EDIT_ELIGIBLE = "not_edit_eligible"
+    ANALYSIS_NOT_READY = "analysis_not_ready"
+    WINDOW_UNAVAILABLE = "window_unavailable"
+    # A part that failed for a reason of ours (a window we asked for wrongly, a process
+    # or configuration bug, a folder of another business): the part keeps its form, its
+    # vista previa is given back — not the template meaning of `invalid_parameters`.
+    PART_FAILED = "part_failed"
+
+    @property
+    def is_part_reason(self) -> bool:
+        """Only a part of a video by parts fails for this reason (its screen, UI-7)."""
+        return self in _NEW_PART_REASONS or self is FailureReason.PART_FAILED
+
+    @property
+    def can_make_part_new(self) -> bool:
+        """A part that failed for this reason can be made new from the product photos
+        and the shot's sheet (UX `docs/ux-video-por-planos.md` §4: [Hacerla nueva])."""
+        return self in _NEW_PART_REASONS
+
+
+_NEW_PART_REASONS = frozenset(
+    {
+        FailureReason.REFUSED_FACE,
+        FailureReason.SOURCE_PURGED,
+        FailureReason.NOT_EDIT_ELIGIBLE,
+        FailureReason.ANALYSIS_NOT_READY,
+        FailureReason.WINDOW_UNAVAILABLE,
+    }
+)
 
 
 class VoiceProfileStatus(StrEnum):
@@ -351,6 +389,11 @@ class ContentKind(StrEnum):
       animates from the operator's opening frame (and, optionally, the closing one), or
       follows their references — images, videos, audio — on a 2.x model. The frames and
       references come from the catalog's product or are uploaded.
+    - `SHOT_VIDEO` — a video by parts (ADR 44, «Video por partes»): the PARENT piece holds
+      the plan (`MediaInputs.parts`, 1 to `PARTS_MAX` parts) and the post's copy, and
+      makes no video of its own; each part is a child `CLIP` draft (`MediaInputs.part`)
+      and the parts are joined locally. Not offered in «¿Qué creamos?»: it is reached
+      from a Clip or a reel («Hacer uno parecido»), never as an option of its own.
     """
 
     CREATOR_SCRIPT = "creator_script"
@@ -360,6 +403,7 @@ class ContentKind(StrEnum):
     TEMPLATE = "template"
     CAROUSEL = "carousel"
     CLIP = "clip"
+    SHOT_VIDEO = "shot_video"
 
     @property
     def enabled(self) -> bool:
@@ -389,8 +433,15 @@ class ContentKind(StrEnum):
     def requires_ai_disclosure(self) -> bool:
         """A generated presenter is AI-generated footage by definition — Meta's label
         applies whatever the image route says about the product's own pixels. So is a
-        generated clip."""
-        return self.is_video or self is ContentKind.CLIP
+        generated clip, and a video joined from generated clips (`SHOT_VIDEO`)."""
+        return self.is_video or self in (ContentKind.CLIP, ContentKind.SHOT_VIDEO)
+
+    @property
+    def is_parts_parent(self) -> bool:
+        """The parent of a video by parts (ADR 44): its own generation writes only the
+        copy — no media and no vendor job; its video is the join of its child parts.
+        Deliberately not `is_video`, which opens the presenter's paths."""
+        return self is ContentKind.SHOT_VIDEO
 
     @property
     def default_format(self) -> ContentFormat:
@@ -422,6 +473,12 @@ class SlideSource(StrEnum):
     #: 2026-10-16) fitted to the format with the slide's words and the logo over every
     #: frame — never as it is: both stock licences forbid publishing it standalone.
     STOCK = "stock"
+    #: A photo or video the owner chose in Galería (CM-6, m-24955927) — of the business
+    #: (`business_media`) or of one of its products (`product_media`) — used as it is:
+    #: fitted to the format, no words over it, no model involved. The piece keeps its
+    #: own copy (`generated/{draft}/`, ADR 39), so removing it from Galería breaks
+    #: nothing already made.
+    GALLERY = "gallery"
 
     @property
     def is_generated(self) -> bool:
@@ -539,6 +596,11 @@ _KIND_FORMATS: dict[ContentKind, tuple[ContentFormat, ...]] = {
         ContentFormat.FEED_1_1,
         ContentFormat.STORY_9_16,
     ),
+    # a video by parts (ADR 44): the joined video is vertical — a Reel or a story
+    ContentKind.SHOT_VIDEO: (
+        ContentFormat.REELS_9_16,
+        ContentFormat.STORY_9_16,
+    ),
     # Instagram takes a carousel only in the feed (`ContentFormat.is_feed`).
     ContentKind.CAROUSEL: (
         ContentFormat.FEED_4_5,
@@ -577,6 +639,10 @@ def default_category(kind: ContentKind, fmt: ContentFormat | None = None) -> Pos
     renders the one output of its format (2026-10-06). The operator can change it."""
     if fmt is ContentFormat.STORY_9_16:
         return PostCategory.STORY
+    if kind is ContentKind.CAROUSEL and fmt is ContentFormat.REELS_9_16:
+        # CM-6 (founder, 2026-11-06): the only 9:16 «carousel» is ONE Galería video,
+        # published as a Reel (`ContentBrief.single_gallery_medium`)
+        return PostCategory.REEL
     if kind in (ContentKind.STATIC_FLYER, ContentKind.CAROUSEL) or (
         kind is ContentKind.TEMPLATE and fmt is not None and fmt.is_feed
     ):

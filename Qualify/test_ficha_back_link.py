@@ -73,9 +73,20 @@ def test_both_forms_say_where_they_go_and_are_thumb_sized() -> None:
     link = str(ficha_back_link())
     assert 'to:"/drafts"' in link
     assert f"to:reflex___state____state__qualify___planner_back____{_WEEK_BACK_VAR}" in link
-    assert link.count('"minHeight"] : "44px"') == 2
-    assert link.count("LucideChevronLeft") == 2
+    # m-24986801: a third form, «‹ Aprobados», for a ficha opened from there
+    assert 'to:"/aprobados"' in link
+    assert link.count('"minHeight"] : "44px"') == 3
+    assert link.count("LucideChevronLeft") == 3
     assert f'"{BACK_TO_DRAFTS}"' in link and f'"{BACK_TO_WEEK}"' in link
+    assert '"Aprobados"' in link
+
+
+def test_opened_from_aprobados_the_way_back_says_aprobados() -> None:
+    from .planner_back import WeekBackState
+
+    state = WeekBackState()
+    state.read()  # no router in tests: nothing set
+    assert not state.from_approved and state.href == ""
 
 
 def test_the_error_message_is_still_on_the_ficha() -> None:

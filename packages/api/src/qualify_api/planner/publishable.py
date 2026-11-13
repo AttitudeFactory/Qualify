@@ -126,7 +126,7 @@ REASON_TEXT: Mapping[UnpublishableReason, str] = {
     R.CATEGORY_MISSING: "La publicación no tiene categoría.",
     R.CATEGORY_NOT_PUBLISHABLE: "Esta categoría no se puede publicar automáticamente.",
     R.NO_MEDIA: "La publicación no tiene imágenes ni video.",
-    R.TOO_MANY_MEDIA: f"Una galería admite como máximo {MAX_CAROUSEL_ITEMS} elementos.",
+    R.TOO_MANY_MEDIA: f"Un carrusel admite como máximo {MAX_CAROUSEL_ITEMS} elementos.",
     R.MEDIA_ORDER_AMBIGUOUS: "El orden de los elementos de la publicación es ambiguo.",
     R.UNSUPPORTED_MEDIA_TYPE: "La publicación tiene un tipo de archivo que no se publica.",
     R.UNSUPPORTED_SHAPE: "La categoría no corresponde al contenido (p. ej. un reel con dos "

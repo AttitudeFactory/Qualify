@@ -35,6 +35,7 @@ from qualify_creative.schemas import (
     LengthTargets,
     MediaInputs,
     ToneAxes,
+    VideoPartPlan,
     VoiceSource,
 )
 
@@ -318,6 +319,7 @@ _KIND_MEDIA: dict[ContentKind, dict[str, object]] = {
         ),
         "closing_slide": True,
     },
+    ContentKind.SHOT_VIDEO: {"parts": (VideoPartPlan(seconds=3), VideoPartPlan(seconds=8))},
 }
 
 
@@ -325,8 +327,27 @@ _KIND_MEDIA: dict[ContentKind, dict[str, object]] = {
 def test_every_kind_renders_its_assignment(kind: ContentKind) -> None:
     """The template kind used to raise `KeyError` here — every template draft failed."""
     media = MediaInputs(**_KIND_MEDIA.get(kind, {}))  # type: ignore[arg-type]
-    suffix = render(brief=make_brief(kind=kind, media=media)).volatile_suffix
+    # a video by parts is vertical only; every other kind keeps the default feed format
+    extra = {"format": kind.default_format} if kind.is_parts_parent else {}
+    suffix = render(brief=make_brief(kind=kind, media=media, **extra)).volatile_suffix
     assert f"Piece kind: {kind.value}." in suffix
+
+
+def test_the_parent_of_a_video_by_parts_asks_for_the_post_and_no_shots() -> None:
+    """VE-06: the parent writes only the post's words; each part plans its own visuals.
+    Its logo is laid once over the joined video, and nothing is printed on an image."""
+    from qualify_creative.brand.render import printed_limits
+
+    kind = ContentKind.SHOT_VIDEO
+    media = MediaInputs(**_KIND_MEDIA[kind])  # type: ignore[arg-type]
+    suffix = render(
+        brief=make_brief(kind=kind, media=media, format=kind.default_format)
+    ).volatile_suffix
+    assert "several short parts joined one after another" in suffix
+    assert "- shots: array, empty for this piece" in suffix
+    assert "- script: string, empty for this piece" in suffix
+    assert "printed on the image" not in suffix
+    assert printed_limits(kind) == {}
 
 
 def test_one_option_asks_for_no_angle_and_several_do() -> None:
@@ -487,7 +508,7 @@ def test_the_brand_typeface_is_part_of_the_visual_identity() -> None:
     palette; an undeclared face reads «(none)», like every other empty field."""
     kit = make_kit(font_heading="Baloo 2", font_body="Nunito")
     prefix = render(kit=kit).stable_prefix
-    assert "Typeface: Baloo 2\n" in prefix and "Nunito" not in prefix
+    assert "Typeface: Baloo 2\n" in prefix and "Body typeface: Nunito\n" in prefix
     assert prefix.index("Palette (RGB):") < prefix.index("Typeface:") < prefix.index("Logo:")
     assert "Typeface: (none)\n" in render().stable_prefix
 
@@ -561,3 +582,49 @@ def test_the_caption_target_never_drops_below_the_minimum() -> None:
     from qualify_creative.brand.render import caption_target_chars
 
     assert caption_target_chars(LengthTargets(caption_min_chars=95, caption_max_chars=100)) == 95
+
+
+def test_a_gallery_carousel_tells_the_copy_what_each_own_medium_shows() -> None:
+    """CM-6 (m-24955927, prompt line `gallery-slide-v1`): the copy learns each Galería
+    slide from words alone — whose medium it is, a photo or a video of how long, with or
+    without its sound — and that nothing is printed on it. The file never reaches it."""
+    from uuid import uuid4
+
+    business, product = "business", "product"
+    slides = (
+        CarouselSlide(
+            source=SlideSource.GALLERY,
+            object_key="gallery/x/a/photo.jpg",
+            gallery_origin=business,
+            gallery_media_id=uuid4(),
+        ),
+        CarouselSlide(
+            source=SlideSource.GALLERY,
+            object_key="gallery/x/b/video.mp4",
+            gallery_origin=business,
+            gallery_media_id=uuid4(),
+            segment_start_ms=0,
+            segment_end_ms=42_400,
+            audio=True,
+        ),
+        CarouselSlide(
+            source=SlideSource.GALLERY,
+            object_key="uploads/x/catalog/p/clip.mp4",
+            gallery_origin=product,
+            gallery_media_id=uuid4(),
+            segment_start_ms=0,
+            segment_end_ms=9_000,
+        ),
+    )
+    media = MediaInputs(slides=slides)
+    suffix = render(brief=make_brief(kind=ContentKind.CAROUSEL, media=media)).volatile_suffix
+    assert (
+        "slide 1/3: the owner's own real photo of the business, shown as it is,"
+        " nothing printed on it"
+    ) in suffix
+    assert (
+        "slide 2/3: the owner's own real 42 s video of the business, with its own sound,"
+        " shown as it is, nothing printed on it"
+    ) in suffix
+    assert "slide 3/3: the owner's own real 9 s video of a product, without sound" in suffix
+    assert "gallery/" not in suffix and "catalog/" not in suffix  # no key reaches the model

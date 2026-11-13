@@ -1,278 +1,238 @@
-"""«Descubrir reels» in /create (§ request 2026-10-15): the most viewed reels of the
-brand's referentes — only the ones of its own product — in three tabs, «Esta semana»,
-«Este mes» and «90 días». The pipeline is `reels_discovery`; this module is its state and
-its view.
+"""«Ideas para tus reels» in /create («Descubrir reels» in the code, § request 2026-10-15):
+the reels that work best among the accounts the brand follows — only the ones of its own
+product or category — as cards the owner can watch, read and replicate.
 
-Reading is scraping (a paid vendor read per referente plus a model check), so it shows a
-spinner beside the sentence that says so (`docs/design-system.md` §5.4), and the result
-is remembered per brand (`reels_discovery.cached_discover`) — «Actualizar» reads again.
+ADR 42 R7 (m-24854854): opening the view ONLY READS WHAT IS STORED. The weekly run (R8)
+and the owner's search (R9) are what pay; the view brings their latest `ok` run from
+Postgres (`reels_discovery.load_ideas`) and shows it at once, dated in the business's
+zone (`reels_ideas_vm`). Nothing here reads ScrapeCreators or asks the model: the old
+on-mount read, «Actualizar», the 90-day tab and the on-demand «Ver transcripción» —
+all four paid inline — are gone; a card shows the transcript the run stored.
 
-§ m-24820844 (2026-10-20): the week and the month come from ONE month read; the 90 days
-are a deeper read of their own, made only after the tab shows what it costs, and then
-remembered too. The platform and referente filters only cut the cards already read: no
-vendor call, no model call.
+Two writes ride on opening, both through `reels_discovery` (decisions of 2026-11-04):
+the brand's «last opened» mark (the worker's 14-day rule) and, for a brand that never had
+a run, its first run queued (option A, confirmed by the founder) — the view then says it is
+being prepared and, from the browser (`_ticker`), reads the view again — free — every
+`POLL_SECONDS` until that run ends or has been in line too long.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import time
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from typing import Any
+from uuid import UUID
 
 import reflex as rx
 from qualify_api.referentes import reels_ai
 from qualify_api.referentes.reel_reference import ReelReferenceUnavailable
 
-from . import reels_discovery
+from . import reel_wait_vm, reels_discovery, reels_ideas_vm
 from .auth_state import AuthState
+from .catalog_vm import IDEAS_RETURN_PATH, brand_referentes_href
 from .creative_provider import default_brand_id
 from .creative_state import CreativeState
 from .r2_media import BACKEND_BASE
 from .reel_replication import import_reference
+from .reels_ideas_vm import (
+    SCREEN_CHECK_FAILED,
+    SCREEN_IDEAS,
+    SCREEN_NO_ACCOUNTS,
+    SCREEN_NO_BRIEF,
+    SCREEN_NO_IDEAS,
+    SCREEN_PREPARING,
+    SCREEN_SLOW,
+    SCREEN_UNAVAILABLE,
+)
 from .tenant import tenant_uuid
-from .ui import callout, card, empty_state, loading_spinner
+from .ui import (
+    callout,
+    card,
+    empty_state,
+    loading_spinner,
+    section,
+    signal_pill,
+    skeleton_card,
+)
 from .ui import tokens as T
 from .ui.steps import go_to_step
 
-#: Always visible on phones too; opening the form never generates a paid piece.
-REPLICATE_HELP = (
-    "Usa los primeros 5 s del reel como base, conservando planos y acciones con tu "
-    "producto y marca, sin su audio. Podrás revisarlo antes de generar."
-)
+#: «Hacer uno parecido»'s help (UI-1), always visible on phones too; opening the form
+#: never generates a paid piece.
+REPLICATE_HELP = reels_ideas_vm.SIMILAR_HELP
+#: The reel's video could not be prepared for the piece (no «referencia»: UX §2).
+PREPARE_FAILED = "No pudimos preparar este video. Inténtalo de nuevo."
+
+#: Where the empty states' buttons lead (UX review 4): «Negocios parecidos al tuyo» on the
+#: brand page, open — choosing the accounts and the search that says what the business
+#: sells (the check's brief) both live there — with «‹ Ideas de videos» to come back.
+ACCOUNTS_HREF = brand_referentes_href(IDEAS_RETURN_PATH)
+
+#: The «preparando» screen's browser clock asks for a new read (a database read, free)
+#: this often, only while that screen is on screen. How long it may spin is the data's
+#: (`reels_ideas_vm.PREPARING_LIMIT`, from the run's `queued_at`): a reload or a deploy
+#: never leaves it spinning.
+POLL_SECONDS = 12.0
 
 logger = logging.getLogger(__name__)
 
 
-def _failure_hint(exc: BaseException) -> str:
-    """A few words on why a whole read failed, for the error callout (Spanish)."""
-    if isinstance(exc, LookupError):
-        return "no encontramos la marca de esta sesión"
-    name = type(exc).__name__
-    if "OperationalError" in name or "Connection" in name:
-        return "no pudimos conectar con la base de datos o el proveedor"
-    if "ScrapeCreators" in name:
-        return "el proveedor de reels falló"
-    return f"error inesperado: {name}"
-
-
-WINDOWS = (("week", "Esta semana"), ("month", "Este mes"), ("quarter", "90 días"))
-#: The filters' «everything» value (a Radix select item cannot be "").
-ALL = "all"
-NETWORK_FILTERS = ((ALL, "Todas"), *reels_discovery.NETWORK_LABELS.items())
-
-
-#: What the 90-day tab says before reading (§ founder 2026-10-20: a plain «cargo extra»,
-#: no credits or dollars on screen).
-QUARTER_NOTE = (
-    "Ver los reels de los últimos 90 días tiene un cargo extra. Una vez leídos quedan "
-    "guardados 6 horas: volver a esta pestaña no se cobra de nuevo."
-)
-QUARTER_REFRESH_TITLE = "Vuelve a leer los 90 días (tiene un cargo extra)"
-
-
-#: Which read a window shows: the week and the month come from the month read.
-READ_OF_WINDOW = {"week": "month", "month": "month", "quarter": "quarter"}
-
-
 class DiscoverReelsState(rx.State):
-    """What the «Descubrir reels» view shows. Cards are `reels_discovery.reel_card`.
-
-    Every card of a read stays on the backend (`_cards`, by window, and `_reads`, what
-    each read said besides its cards — keyed `"month"` / `"quarter"`): the browser only
-    receives `reels`, the window's cut through the filters, at most `SHOWN_PER_WINDOW`
-    — a read can hold some 70 checked cards per window, transcripts included. The 90-day
-    read is loaded only on demand (`load_quarter`)."""
+    """What «Ideas para tus reels» shows: one `reels_ideas_vm.SCREEN_*` and its words,
+    and the stored ideas as cards (`reels.reel_card`). The cards stay on the backend
+    (`_cards`) — only a server-held card can open a replica — and the browser receives
+    `reels`, the ones the check kept for the product or its category."""
 
     replicating: str = ""
     replicate_error: str = ""
     _cards_tenant_id: str = ""
 
-    window: str = "week"
-    #: The filters (`ALL` or a network / an `account_key`): they cut the read's cards.
-    network: str = ALL
-    account: str = ALL
-    #: The accounts read (`reels_discovery.account_option`), in influence order.
-    accounts: list[dict[str, str]] = []
-    #: Referentes the last month read had — 0 says «Aún no tienes referentes».
-    referentes: int = 0
-    #: A read in progress, and why a whole read failed (before it gave any result).
-    loading: bool = False
-    quarter_loading: bool = False
-    error: str = ""
-    quarter_error: str = ""
+    #: Which `reels_ideas_vm.SCREEN_*` is on screen; "" until the first read lands.
+    screen: str = ""
+    #: The header over the ideas, or the empty state's title, body and button.
+    title: str = ""
+    body: str = ""
+    action: str = ""
+    #: What that button does (`reels_ideas_vm.ACTION_*`).
+    action_to: str = ""
+    #: A notice above stored ideas that are still true (a newer run failed its check).
+    notice_title: str = ""
+    notice_body: str = ""
+    #: The browser clock re-reads the view (`reels_ideas_vm.IdeasScreen.waiting`): the first
+    #: run in flight, or a failed run the worker will try again.
+    waiting: bool = False
+    #: Why the stored ideas could not be read (`reels_ideas_vm.LOAD_ERROR`), "" none.
+    load_error: str = ""
     #: The reel playing inside its own card (its `key`), "" when none — one at a time,
     #: so starting another stops the previous (its iframe unmounts).
     playing_key: str = ""
 
-    #: window → every card the check kept (backend only).
-    _cards: dict[str, list[dict[str, str]]] = {}
-    #: read → `check`, `check_detail`, `fetched_iso` (`rx.moment` ages it client-side, no
-    #: round trip just to move «hace 3 minutos») and `failed` (handles, comma-joined).
-    _reads: dict[str, dict[str, str]] = {}
-
-    def _read(self) -> dict[str, str]:
-        return self._reads.get(READ_OF_WINDOW.get(self.window, "month"), {})
-
-    def _window_cards(self) -> list[dict[str, str]]:
-        """The window's cards — only the ones the check called the brand's PRODUCT or
-        category: a card from an older read (another rule, or kept while a new read loads
-        or fails) never shows a reel of another product."""
-        cards = self._cards.get(self.window, [])
-        return [c for c in cards if c.get("affinity") in reels_ai.FITS]
+    #: The stored ideas, best first (backend only).
+    _cards: list[dict[str, str]] = []
+    #: Which read is the live one: a new mount, or leaving the view, supersedes the
+    #: others — a stale read never paints.
+    _load_id: int = 0
+    #: The brand the cards are of, and when the screen was last painted from a read
+    #: (epoch seconds): the «preparando» clock re-reads the same brand, and not twice at
+    #: once nor right after a read.
+    _brand_id: str = ""
+    _read_at: float = 0.0
+    _ticking: bool = False
 
     @rx.var
     def reels(self) -> list[dict[str, str]]:
-        """The window's cards through the filters, the most viewed `SHOWN_PER_WINDOW`."""
-        shown = [
-            c
-            for c in self._window_cards()
-            if self.network in (ALL, c.get("network")) and self.account in (ALL, c.get("account"))
-        ]
-        return shown[: reels_discovery.SHOWN_PER_WINDOW]
-
-    @rx.var
-    def filtered_out(self) -> bool:
-        """The window has reels, but none passes the filters."""
-        return bool(self._window_cards()) and not self.reels
-
-    @rx.var
-    def loaded(self) -> bool:
-        """Whether the month read finished once this session (an empty one counts)."""
-        return "month" in self._reads
-
-    @rx.var
-    def quarter_loaded(self) -> bool:
-        return "quarter" in self._reads
-
-    @rx.var
-    def filtering(self) -> bool:
-        return self.network != ALL or self.account != ALL
-
-    @rx.var
-    def networks(self) -> list[str]:
-        """The networks of the accounts read — the platform filter shows only with two."""
-        return list(dict.fromkeys(a["network"] for a in self.accounts))
-
-    @rx.var
-    def network_options(self) -> list[list[str]]:
-        present = set(self.networks)
-        return [[v, label] for v, label in NETWORK_FILTERS if v == ALL or v in present]
-
-    @rx.var
-    def account_options(self) -> list[list[str]]:
-        """`[key, label]` of the referente filter, of the chosen network only."""
-        multi = len(self.networks) > 1
-        return [
-            [a["key"], f"{a['handle']} · {reels_discovery.NETWORK_LABELS[a['network']]}"]
-            if multi and self.network == ALL
-            else [a["key"], a["handle"]]
-            for a in self.accounts
-            if self.network in (ALL, a["network"])
-        ]
-
-    @rx.var
-    def shown_check(self) -> str:
-        """Why the window's read could not check its reels (`reels_discovery.CHECK_*`)."""
-        return self._read().get("check", "")
-
-    @rx.var
-    def unchecked_note(self) -> str:
-        """The «inténtalo más tarde» body, with the reason the check failed when known."""
-        base = (
-            "El servicio que comprueba que cada reel sea de tu producto o tu categoría no respondió"
-        )
-        detail = self._read().get("check_detail", "")
-        if detail:
-            return f"{base}: {detail}. Inténtalo más tarde."
-        return f"{base}. Inténtalo más tarde."
-
-    @rx.var
-    def shown_iso(self) -> str:
-        """When the read on screen was made — the toolbar says only that, «Actualizado
-        hace 2 minutos» (§ founder 2026-10-20: no counts). "" until that read exists."""
-        return self._read().get("fetched_iso", "")
-
-    @rx.var
-    def failed_note(self) -> str:
-        failed = self._read().get("failed", "")
-        if not failed:
-            return ""
-        return f"No pudimos leer {failed} (privada, sin reels o no existe)."
-
-    @rx.var
-    def shown_error(self) -> str:
-        return self.quarter_error if self.window == "quarter" else self.error
-
-    @rx.event
-    def set_window(self, value: str | list[str]) -> None:
-        if isinstance(value, str) and value in dict(WINDOWS):
-            if value != self.window:
-                self.playing_key = ""
-            self.window = value
-
-    @rx.event
-    def set_network(self, value: str | list[str]) -> None:
-        """Pick a platform; a referente of another one is let go. No read."""
-        if not isinstance(value, str) or value not in dict(NETWORK_FILTERS):
-            return
-        previous = (self.network, self.account)
-        self.network = value
-        if value != ALL and not self.account.startswith(f"{value}:"):
-            self.account = ALL
-        if previous != (self.network, self.account):
-            self.playing_key = ""
-
-    @rx.event
-    def set_account(self, value: str) -> None:
-        """Pick a referente (or `ALL`). No read."""
-        if value == ALL or any(a["key"] == value for a in self.accounts):
-            if value != self.account:
-                self.playing_key = ""
-            self.account = value
-
-    @rx.event
-    def clear_filters(self) -> None:
-        if self.network != ALL or self.account != ALL:
-            self.playing_key = ""
-        self.network = ALL
-        self.account = ALL
-
-    def _keep_valid_filters(self) -> None:
-        """After a read: a filter on a network or a referente the brand no longer has
-        would hide every card behind a control that is not on screen any more."""
-        if self.network != ALL and self.network not in {a["network"] for a in self.accounts}:
-            self.network = ALL
-        if self.account != ALL and not any(a["key"] == self.account for a in self.accounts):
-            self.account = ALL
+        """The ideas the check kept for the brand's product or category — never another
+        product's reel, even from a card stored under another rule."""
+        return [c for c in self._cards if c.get("affinity") in reels_ai.FITS]
 
     def _claim_cards(self, tenant_id: str) -> None:
         if self._cards_tenant_id != tenant_id:
-            self._cards = {}
-            self._reads = {}
-            self.accounts = []
+            self._cards = []
             self.playing_key = ""
             self.failed_videos = []
+            self.failed_covers = []
+            self.expanded = []
             self._cards_tenant_id = tenant_id
 
-    def _store(self, depth: str, found: reels_discovery.DiscoveredReels) -> None:
-        """Keep the read `found` (`"month"` or `"quarter"`) on the backend, for its windows."""
-        windows = ("quarter",) if depth == "quarter" else ("week", "month")
-        self._cards = {**self._cards, **{w: getattr(found, w) for w in windows}}
-        self._reads = {
-            **self._reads,
-            depth: {
-                "check": found.check,
-                "check_detail": found.check_detail,
-                "fetched_iso": datetime.fromtimestamp(found.fetched_at, tz=UTC).isoformat(),
-                "failed": ", ".join(found.failed),
-            },
-        }
-        if depth == "month" or not self.accounts:
-            self.accounts = found.accounts
-            self._keep_valid_filters()
-        if depth == "month":
-            self.referentes = found.referentes
+    def _show(self, shown: reels_ideas_vm.IdeasScreen) -> None:
+        self.screen = shown.screen
+        self.title = shown.title
+        self.body = shown.body
+        self.action = shown.action
+        self.action_to = shown.action_to
+        self.notice_title = shown.notice_title
+        self.notice_body = shown.notice_body
+        self.waiting = shown.waiting
+        self._read_at = time.time()
+        self._cards = list(shown.cards)
+        keys = {c.get("key", "") for c in self._cards}
+        if self.playing_key not in keys:
+            self.playing_key = ""
+        self.expanded = [k for k in self.expanded if k in keys]
+
+    @rx.event(background=True)
+    async def load(self) -> None:
+        """Bring what is stored (ADR 42 R7): Postgres only — opening never reads the
+        vendor nor asks the model. Marks the brand as opened beside the read, without
+        waiting for it. Also «Ver si ya están» and «Intentar de nuevo»: one more read,
+        and the first run queued again if it never could be."""
+        async with self:
+            self._load_id += 1
+            load_id = self._load_id
+            self.load_error = ""
+            auth = await self.get_state(AuthState)
+            # the logged-in tenant only: a pre-login Brand Kit draft never opens /create
+            session_tenant_id = auth.session_tenant_id
+        tenant_id = tenant_uuid(session_tenant_id) if session_tenant_id else None
+        opened: asyncio.Task[None] | None = None
+        try:
+            brand_id = await asyncio.to_thread(default_brand_id, tenant_id) if tenant_id else None
+            if tenant_id is None or brand_id is None:
+                raise LookupError("no brand in this session")
+            # the «last opened» mark (R8's 14-day rule) goes first, in its own thread —
+            # the read never waits for it
+            opened = asyncio.create_task(
+                asyncio.to_thread(reels_discovery.mark_opened, tenant_id, brand_id)
+            )
+            shown = await asyncio.to_thread(reels_discovery.load_ideas, tenant_id, brand_id)
+        except Exception as exc:  # noqa: BLE001 — the view says it, the log keeps why
+            logger.warning("stored reel ideas unreadable: %s: %s", type(exc).__name__, exc)
+            async with self:
+                if self._load_id == load_id:
+                    self.load_error = reels_ideas_vm.LOAD_ERROR
+            await _settle(opened)
+            return
+        async with self:
+            if await _still_mine(self, load_id, tenant_id):
+                self._claim_cards(str(tenant_id))
+                self._brand_id = str(brand_id)
+                self._show(shown)
+        await _settle(opened)
+
+    @rx.event(background=True)
+    async def tick(self, _shown: str = "") -> None:
+        """The browser clock (`_ticker`, every `POLL_SECONDS`, only while `waiting`: the
+        first run in flight, or a failed run the worker will try again): read the view
+        again — a database read, free; it never queues a run nor marks the brand — until
+        the view model says the screen stops waiting (the clock is gone with it)."""
+        async with self:
+            if (
+                not self.waiting
+                or self._ticking
+                or not self._brand_id
+                or time.time() - self._read_at < POLL_SECONDS / 2
+            ):
+                return
+            self._ticking = True
+            load_id = self._load_id
+            tenant_id = tenant_uuid(self._cards_tenant_id)
+            brand_id = UUID(self._brand_id)
+        shown: reels_ideas_vm.IdeasScreen | None = None
+        try:
+            if tenant_id is not None:
+                shown = await asyncio.to_thread(
+                    reels_discovery.load_ideas, tenant_id, brand_id, first_run=False
+                )
+        except Exception as exc:  # noqa: BLE001 — the screen stays; the next tick retries
+            logger.warning("reel ideas re-read failed: %s: %s", type(exc).__name__, exc)
+        async with self:
+            self._ticking = False
+            if (
+                shown is not None
+                and tenant_id is not None
+                and await _still_mine(self, load_id, tenant_id)
+            ):
+                self._show(shown)
+
+    @rx.event
+    def leave(self) -> None:
+        """The view left the page: a read still in flight never paints (and the
+        «preparando» clock unmounts with the view)."""
+        self._load_id += 1
+        self.playing_key = ""
 
     @rx.event
     def play(self, key: str) -> None:
@@ -284,13 +244,22 @@ class DiscoverReelsState(rx.State):
         self.playing_key = ""
 
     #: Reels whose own MP4 would not play (its signed CDN URL died, ~24-33 h after the
-    #: read): they play in the network's embed instead.
+    #: run read it): they play in the network's embed instead.
     failed_videos: list[str] = []
 
     @rx.event
     def video_failed(self, key: str) -> None:
         if key not in self.failed_videos:
             self.failed_videos = [*self.failed_videos, key]
+
+    #: Reels whose cover would not load (no copy in R2 and a CDN link already dead, R12):
+    #: their card shows the placeholder instead.
+    failed_covers: list[str] = []
+
+    @rx.event
+    def cover_failed(self, key: str) -> None:
+        if key not in self.failed_covers:
+            self.failed_covers = [*self.failed_covers, key]
 
     #: Cards whose «Detalles» is open (an accordion under the figures).
     expanded: list[str] = []
@@ -302,17 +271,21 @@ class DiscoverReelsState(rx.State):
         else:
             self.expanded = [*self.expanded, key]
 
-    #: The reel whose transcript is being fetched ("" = none), and the last failure.
-    transcript_loading: str = ""
-    transcript_error: str = ""
-
     def _card(self, key: str) -> dict[str, str] | None:
-        cards = (c for window in self._cards.values() for c in window)
-        return next((c for c in cards if c.get("key") == key), None)
+        return next((c for c in self._cards if c.get("key") == key), None)
 
     @rx.event(background=True)
     async def replicate(self, key: str) -> AsyncIterator[rx.event.EventSpec]:
-        """Only a server-held card of this session can open a Seedance Clip."""
+        """«Hacer uno parecido» (ADR 44 UI-1, m-24921075): only a server-held card of
+        this session opens the create flow on «Qué mostrar» (`/create?paso=2`), with
+        «‹ Ideas para tus reels» in its head. The business is sealed once, from the
+        session (ADR 43 §2.4), and checked again before anything is applied.
+
+        What it touches: the copy of the reel's video the run kept (or its CDN link
+        while fresh) for the Clip's reference, and the reel's shared analysis — reused
+        when it is `ok`, moved ahead or queued for the `reels-worker` otherwise
+        (`reels_discovery.request_similar`). Never ScrapeCreators, never the model:
+        Reflex never analyses a reel (F5)."""
         async with self:
             if self.replicating:
                 return
@@ -327,6 +300,10 @@ class DiscoverReelsState(rx.State):
             if card is None or card.get("affinity") not in reels_ai.FITS:
                 self.replicate_error = "Este reel ya no está en la selección. Elige otro."
                 return
+            if card.get("can_replicate") != "1":
+                # its video was not kept (R2): nothing to prepare the reference from
+                self.replicate_error = reels_ideas_vm.CANNOT_REPLICATE
+                return
             if creative.gen_generating or creative.gen_mode != "discover":
                 return
             product = (creative.selected_product_id, creative.product_source)
@@ -339,11 +316,16 @@ class DiscoverReelsState(rx.State):
             async with self:
                 self.replicating = ""
                 self.replicate_error = (
-                    str(exc)
-                    if isinstance(exc, ReelReferenceUnavailable)
-                    else "No pudimos preparar la referencia. Inténtalo de nuevo."
+                    str(exc) if isinstance(exc, ReelReferenceUnavailable) else PREPARE_FAILED
                 )
             return
+        # after the reference is ready, so a failed one never spends the platform's
+        # on-demand analysis quota; a failed request never costs the owner the flow
+        asked = await asyncio.to_thread(reels_discovery.request_similar, tenant_id, card)
+        analysis_id = str(asked.id) if asked is not None and asked.id is not None else ""
+        # UI-2: what the request answered, kept even without an id (`no_video`,
+        # `daily_limit`), so step 2 can say why it will not wait
+        analysis_status = asked.status if asked is not None else reel_wait_vm.OUTCOME_UNASKED
         async with self:
             self.replicating = ""
             auth = await self.get_state(AuthState)
@@ -355,128 +337,29 @@ class DiscoverReelsState(rx.State):
                 or product != (creative.selected_product_id, creative.product_source)
             ):
                 return
-            creative._apply_reel_reference(card, imported)
+            creative._apply_reel_reference(card, imported, analysis_id, analysis_status)
             self.playing_key = ""
-        yield go_to_step("/create", 1)
+        # no `?analisis=`: the id rides in the server-side state only, and step 2's wait
+        # (UI-2) polls it from there (`CreativeState.poll_reel_analysis`); coming back
+        # via the card asks again and gets the same id (`request_analysis`)
+        yield go_to_step("/create", 2)
 
-    def _set_transcript(self, key: str, text: str) -> None:
-        """Write the transcript into the card in every window — a reel can be in all."""
-        state = "said" if text else "none"
-        self._cards = {
-            window: [
-                {**c, "transcript": text, "transcript_state": state} if c.get("key") == key else c
-                for c in cards
-            ]
-            for window, cards in self._cards.items()
-        }
 
-    @rx.event(background=True)
-    async def load_transcript(self, key: str) -> None:
-        """«Ver transcripción» (§ request 2026-10-15): fetch ONE reel's transcript on
-        demand — Instagram 1 credit, TikTok free — instead of paying for every reel."""
-        async with self:
-            card = self._card(key)
-            if card is None or self.transcript_loading:
-                return
-            self.transcript_loading = key
-            self.transcript_error = ""
-        try:
-            text = await asyncio.to_thread(reels_discovery.transcript_for_card, card)
-        except Exception as exc:  # noqa: BLE001 — the card says it; the log keeps why
-            logger.warning("transcript of %s failed: %s: %s", key, type(exc).__name__, exc)
-            async with self:
-                self.transcript_loading = ""
-                self.transcript_error = key
-            return
-        async with self:
-            self._set_transcript(key, text)
-            self.transcript_loading = ""
+async def _still_mine(state: Any, load_id: int, tenant_id: UUID) -> bool:
+    """`state`'s read `load_id` is still the live one, for the tenant still logged in.
+    Called inside `async with state`."""
+    auth = await state.get_state(AuthState)
+    # the session's tenant on the right: `test_auth_state`'s guard (only auth_state
+    # writes it) reads an equality with it on the left as an assignment
+    return state._load_id == load_id and str(tenant_id) == auth.session_tenant_id
 
-    @rx.event(background=True)
-    async def load_quarter(self, refresh: bool = False) -> None:
-        """Read the 90 days (§ m-24820844) — only when asked, after the tab said it has
-        an extra charge — or take the remembered read. A second call while one runs is
-        dropped."""
-        async with self:
-            if self.quarter_loading:
-                return
-            self.quarter_loading = True
-            self.quarter_error = ""
-            auth = await self.get_state(AuthState)
-            session_tenant_id = auth.session_tenant_id
-        try:
-            tenant_id = tenant_uuid(session_tenant_id) if session_tenant_id else None
-            brand_id = await asyncio.to_thread(default_brand_id, tenant_id) if tenant_id else None
-            if tenant_id is None or brand_id is None:
-                raise LookupError("no brand in this session")
-            found = await asyncio.to_thread(
-                reels_discovery.cached_discover,
-                tenant_id,
-                brand_id,
-                refresh=bool(refresh),
-                days=reels_discovery.QUARTER_DAYS,
-            )
-        except Exception as exc:  # noqa: BLE001 — the view says it, the log keeps why
-            logger.warning("90-day reel read failed: %s: %s", type(exc).__name__, exc, exc_info=exc)
-            async with self:
-                self.quarter_loading = False
-                self.quarter_error = (
-                    "No pudimos leer los 90 días de tus referentes "
-                    f"({_failure_hint(exc)}). Inténtalo de nuevo en unos minutos."
-                )
-            return
-        async with self:
-            auth = await self.get_state(AuthState)
-            if auth.session_tenant_id != str(tenant_id):
-                self.quarter_loading = False
-                return
-            self._claim_cards(str(tenant_id))
-            self._store("quarter", found)
-            self.quarter_loading = False
 
-    @rx.event(background=True)
-    async def load(self, refresh: bool = False) -> None:
-        """Read the reels (or take the remembered read). A second call while one runs is
-        dropped."""
-        async with self:
-            if self.loading:
-                return
-            self.loading = True
-            self.error = ""
-            auth = await self.get_state(AuthState)
-            # the logged-in tenant only: a pre-login Brand Kit draft never opens /create
-            session_tenant_id = auth.session_tenant_id
-        try:
-            tenant_id = tenant_uuid(session_tenant_id) if session_tenant_id else None
-            brand_id = await asyncio.to_thread(default_brand_id, tenant_id) if tenant_id else None
-            if tenant_id is None or brand_id is None:
-                raise LookupError("no brand in this session")
-            found = await asyncio.to_thread(
-                reels_discovery.cached_discover, tenant_id, brand_id, refresh=bool(refresh)
-            )
-            # a 90-day read already paid for shows at once on its tab — never a new read
-            deep = reels_discovery.remembered(
-                tenant_id, brand_id, days=reels_discovery.QUARTER_DAYS
-            )
-        except Exception as exc:  # noqa: BLE001 — the view says it, the log keeps why
-            logger.warning("reel discovery failed: %s: %s", type(exc).__name__, exc, exc_info=exc)
-            async with self:
-                self.loading = False
-                self.error = (
-                    "No pudimos leer los reels de tus referentes "
-                    f"({_failure_hint(exc)}). Inténtalo de nuevo en unos minutos."
-                )
-            return
-        async with self:
-            auth = await self.get_state(AuthState)
-            if auth.session_tenant_id != str(tenant_id):
-                self.loading = False
-                return
-            self._claim_cards(str(tenant_id))
-            self._store("month", found)
-            if deep is not None and not self.quarter_loading:
-                self._store("quarter", deep)
-            self.loading = False
+async def _settle(task: asyncio.Task[None] | None) -> None:
+    """Wait for the «last opened» mark after the screen was painted; it never raises
+    (`reels_discovery.mark_opened`), and nothing it does may reach the owner."""
+    if task is not None:
+        with contextlib.suppress(Exception):
+            await task
 
 
 # --------------------------------------------------------------------------------------
@@ -492,6 +375,14 @@ class _ReelVideo(rx.el.Video):
     on_error: rx.EventHandler[rx.event.no_args_event_spec]
 
 
+class _ReelCover(rx.el.Img):
+    """The reel's cover. Reflex's `img` declares no `error` trigger either; this one
+    does, so a CDN picture that expired shows the card's placeholder instead of a broken
+    image (`DiscoverReelsState.cover_failed`)."""
+
+    on_error: rx.EventHandler[rx.event.no_args_event_spec]
+
+
 def _detail(label: str, value: rx.Var[str]) -> rx.Component:
     return rx.fragment(
         rx.text(label, size="1", color=T.TEXT_MUTED),
@@ -500,19 +391,22 @@ def _detail(label: str, value: rx.Var[str]) -> rx.Component:
 
 
 def _reel_media(reel: rx.Var[dict[str, str]]) -> rx.Component:
-    """The card's picture, and its player (§ request 2026-10-15): the cover with the
-    lift, the network and the length over it; a click plays JUST the video in its place
-    — the reel's own MP4, streamed from the network's CDN, no page around it — or, when
-    the reel has no MP4 or its signed URL already died, the network's own embed."""
+    """The card's picture, and its player (§ request 2026-10-15): the cover — or, when
+    there is none or it would not load, the film placeholder — with the lift, the network
+    and the length over it; a click plays JUST the video in its place — the reel's own
+    MP4, streamed from the network's CDN, no page around it — or, when the reel has no
+    MP4 or its signed URL already died, the network's own embed."""
     key = reel["key"]
+    has_cover = (reel["cover"] != "") & ~DiscoverReelsState.failed_covers.contains(key)
     cover = rx.box(
         rx.cond(
-            reel["cover"] != "",
-            rx.image(
+            has_cover,
+            _ReelCover.create(
                 src=BACKEND_BASE + reel["cover"],
                 alt="",
                 loading="lazy",
                 class_name="q-dr-cover-img",
+                on_error=DiscoverReelsState.cover_failed(key),
             ),
             rx.center(rx.icon("film", size=28, color=T.TEXT_FAINT), class_name="q-dr-cover-img"),
         ),
@@ -595,30 +489,9 @@ def _reel_media(reel: rx.Var[dict[str, str]]) -> rx.Component:
 
 
 def _transcript_block(reel: rx.Var[dict[str, str]]) -> rx.Component:
-    """The transcript, fetched on demand only (§ 2026-10-15): a button until someone
-    asks, then the text — or «no tiene voz»."""
-    loading = DiscoverReelsState.transcript_loading == reel["key"]
-    ask = rx.vstack(
-        rx.button(
-            rx.cond(loading, loading_spinner("sm"), rx.icon("captions", size=13)),
-            rx.cond(loading, "Transcribiendo…", "Ver transcripción"),
-            size="1",
-            variant="soft",
-            on_click=DiscoverReelsState.load_transcript(reel["key"]),
-            disabled=DiscoverReelsState.transcript_loading != "",
-            title=rx.cond(
-                reel["network"] == "instagram",
-                "Usa 1 crédito de lectura (gratis si ya se transcribió)",
-                "Gratis: son los subtítulos del propio video",
-            ),
-        ),
-        rx.cond(
-            DiscoverReelsState.transcript_error == reel["key"],
-            rx.text("No pudimos transcribirlo; inténtalo de nuevo.", size="1", color=T.TEXT_MUTED),
-        ),
-        spacing="1",
-        align_items="start",
-    )
+    """What is said in the reel, as the run stored it (ADR 42 R7: the screen never pays
+    for a transcript) — «no tiene voz» when it was transcribed and says nothing, nothing
+    at all when it never was."""
     return rx.cond(
         reel["transcript"] != "",
         rx.vstack(
@@ -636,7 +509,6 @@ def _transcript_block(reel: rx.Var[dict[str, str]]) -> rx.Component:
         rx.cond(
             reel["transcript_state"] == "none",
             rx.text("Este video no tiene voz.", size="1", color=T.TEXT_MUTED),
-            ask,
         ),
     )
 
@@ -644,8 +516,7 @@ def _transcript_block(reel: rx.Var[dict[str, str]]) -> rx.Component:
 def _details_panel(reel: rx.Var[dict[str, str]]) -> rx.Component:
     """Everything else about the reel (§ request 2026-10-15): a «Detalles» bar that
     opens the card downwards — an accordion, by click, the same on a phone — with the
-    other figures, the caption, the sound, why it is of the rubro and the transcript.
-    Was a hover panel over the picture; the founder asked for something else."""
+    other figures, the caption, the sound, why it is of the rubro and the transcript."""
     figures = rx.box(
         _detail("Me gusta", reel["likes"]),
         _detail("Comentarios", reel["comments"]),
@@ -712,9 +583,9 @@ def _details_panel(reel: rx.Var[dict[str, str]]) -> rx.Component:
 
 
 def _reel_tile(reel: rx.Var[dict[str, str]]) -> rx.Component:
-    """One reel as the «C» card (§ request 2026-10-15): the picture with how it does
+    """One idea as the «C» card (§ request 2026-10-15): the picture with how it does
     against its own account, who and how many views, what it is (format and hook), the
-    rest folded into «Detalles», and «Replicar con mi marca»."""
+    rest folded into «Detalles», what its analysis saw, and «Hacer uno parecido»."""
     return card(
         rx.vstack(
             _reel_media(reel),
@@ -775,43 +646,27 @@ def _reel_tile(reel: rx.Var[dict[str, str]]) -> rx.Component:
                             class_name="q-dr-tag q-dr-tag--muted",
                         ),
                     ),
+                    _analysis_pill(reel),
                     spacing="1",
                     wrap="wrap",
+                    align="center",
                 ),
                 spacing="1",
                 width="100%",
                 align_items="start",
             ),
             _details_panel(reel),
-            rx.vstack(
-                rx.button(
-                    rx.cond(
-                        DiscoverReelsState.replicating == reel["key"],
-                        loading_spinner("sm"),
-                        rx.icon("copy", size=14),
-                    ),
-                    rx.cond(
-                        DiscoverReelsState.replicating == reel["key"],
-                        "Preparando referencia…",
-                        "Replicar con mi marca",
-                    ),
-                    size="2",
-                    width="100%",
-                    min_height="44px",
-                    variant="soft",
-                    on_click=DiscoverReelsState.replicate(reel["key"]),
-                    disabled=(DiscoverReelsState.replicating != "") | CreativeState.gen_generating,
-                    class_name="q-dr-replicate",
-                ),
+            # founder, 2026-11-04: only when the run kept the reel's video (R2) — the
+            # reference is prepared from that copy, never from a link the browser holds
+            rx.cond(
+                reel["can_replicate"] == "1",
+                _replicate(reel),
                 rx.text(
-                    REPLICATE_HELP,
-                    size="1",
+                    reels_ideas_vm.CANNOT_REPLICATE,
+                    size="2",
                     color=T.TEXT_MUTED,
                     class_name="q-dr-replicate-help",
                 ),
-                spacing="1",
-                width="100%",
-                align_items="start",
             ),
             spacing="2",
             width="100%",
@@ -820,153 +675,146 @@ def _reel_tile(reel: rx.Var[dict[str, str]]) -> rx.Component:
         padding="0.6rem",
         width="100%",
         class_name="q-dr-card",
-        # Keep each card tied to its reel when filters change its rank.
+        # Keep each card tied to its reel when the list changes.
         key=reel["key"],
     )
 
 
-def _toolbar() -> rx.Component:
-    return rx.hstack(
-        rx.segmented_control.root(
-            *(rx.segmented_control.item(label, value=value) for value, label in WINDOWS),
-            value=DiscoverReelsState.window,
-            on_change=DiscoverReelsState.set_window,
-            size="2",
-            aria_label="Periodo",
-            # fits a phone's width (`.q-seg-fit`, assets/qualify.css, m-24820845)
-            class_name="q-seg-fit",
+def _analysis_pill(reel: rx.Var[dict[str, str]]) -> rx.Component:
+    """What the reel's shared analysis says, as a pill by tone (UI-1, design §13.7):
+    «Aparece una persona» (info) when a person or a face was seen in some part, «Aún no
+    lo revisamos» (neutral) without an `ok` analysis, «Lo estamos revisando» in line.
+    Nothing when nothing was seen or the analysis could not tell — never «sin personas»."""
+    return rx.match(
+        reel["analysis"],
+        (reels_ideas_vm.BADGE_PERSON, signal_pill(reels_ideas_vm.BADGE_PERSON_TEXT, "info")),
+        (
+            reels_ideas_vm.BADGE_NOT_ANALYZED,
+            signal_pill(reels_ideas_vm.BADGE_NOT_ANALYZED_TEXT, "neutral"),
         ),
-        rx.cond(
-            DiscoverReelsState.shown_iso != "",
-            rx.text(
-                "Actualizado ",
-                # «hace 3 minutos», aged by the browser itself (react-moment re-renders
-                # every minute); nothing reaches the server for it
-                rx.moment(date=DiscoverReelsState.shown_iso, from_now=True, locale="es"),
-                size="1",
-                color=T.TEXT_MUTED,
-            ),
+        (
+            reels_ideas_vm.BADGE_LOOKING,
+            signal_pill(reels_ideas_vm.BADGE_LOOKING_TEXT, "neutral"),
         ),
-        rx.spacer(),
-        rx.cond(
-            DiscoverReelsState.window == "quarter",
-            # the 90 days refresh only once read, and say again that a new read is charged
-            rx.cond(
-                DiscoverReelsState.quarter_loaded,
-                _refresh_button(
-                    DiscoverReelsState.quarter_loading,
-                    DiscoverReelsState.load_quarter(True),
-                    QUARTER_REFRESH_TITLE,
-                ),
-            ),
-            _refresh_button(
-                DiscoverReelsState.loading,
-                DiscoverReelsState.load(True),
-                "Vuelve a leer el último mes de tus referentes",
-            ),
-        ),
-        width="100%",
-        align="center",
-        spacing="3",
-        flex_wrap="wrap",
+        rx.fragment(),
     )
 
 
-def _refresh_button(
-    busy: rx.Var[bool], on_click: rx.EventSpec, title: str | rx.Var[str]
-) -> rx.Component:
-    return rx.button(
-        rx.cond(busy, loading_spinner("sm"), rx.icon("refresh-cw", size=14)),
-        "Actualizar",
-        variant="soft",
-        color_scheme="gray",
-        size="2",
-        on_click=on_click,
-        disabled=busy,
-        title=title,
-    )
-
-
-def _filters() -> rx.Component:
-    """Platform and referente (§ m-24820844): they cut the cards already read — no
-    vendor read, no model call. The platform shows only when the referentes are on two
-    networks; nothing shows before the first read."""
-    platform = rx.cond(
-        DiscoverReelsState.networks.length() > 1,
-        rx.segmented_control.root(
-            rx.foreach(
-                DiscoverReelsState.network_options,
-                lambda option: rx.segmented_control.item(option[1], value=option[0]),
-            ),
-            value=DiscoverReelsState.network,
-            on_change=DiscoverReelsState.set_network,
-            size="1",
-            aria_label="Plataforma",
-        ),
-    )
-    referente = rx.select.root(
-        rx.select.trigger(placeholder="Todos los referentes", aria_label="Referente"),
-        rx.select.content(
-            rx.select.item("Todos los referentes", value=ALL),
-            rx.foreach(
-                DiscoverReelsState.account_options,
-                lambda option: rx.select.item(option[1], value=option[0]),
-            ),
-        ),
-        value=DiscoverReelsState.account,
-        on_change=DiscoverReelsState.set_account,
-        size="1",
-    )
-    clear = rx.cond(
-        DiscoverReelsState.filtering,
+def _replicate(reel: rx.Var[dict[str, str]]) -> rx.Component:
+    """«Hacer uno parecido» (UI-1) and what it does, always visible (a phone has no
+    hover): a 44 px button, its help in `size="2"`."""
+    busy = DiscoverReelsState.replicating == reel["key"]
+    return rx.vstack(
         rx.button(
-            rx.icon("x", size=13),
-            "Quitar filtros",
-            variant="ghost",
-            color_scheme="gray",
-            size="1",
-            on_click=DiscoverReelsState.clear_filters,
-        ),
-    )
-    return rx.cond(
-        DiscoverReelsState.accounts.length() > 0,
-        rx.hstack(
-            platform,
-            referente,
-            clear,
-            spacing="2",
-            align="center",
-            flex_wrap="wrap",
+            rx.cond(busy, loading_spinner("sm"), rx.icon("sparkles", size=14)),
+            rx.cond(busy, reels_ideas_vm.SIMILAR_BUSY, reels_ideas_vm.SIMILAR_LABEL),
+            size="2",
             width="100%",
+            min_height="44px",
+            variant="soft",
+            on_click=DiscoverReelsState.replicate(reel["key"]),
+            disabled=(DiscoverReelsState.replicating != "") | CreativeState.gen_generating,
+            class_name="q-dr-replicate",
         ),
+        rx.text(
+            REPLICATE_HELP,
+            size="2",
+            color=T.TEXT_MUTED,
+            class_name="q-dr-replicate-help",
+        ),
+        spacing="1",
+        width="100%",
+        align_items="start",
     )
 
 
-def _notices() -> rx.Component:
+def _ideas() -> rx.Component:
+    """The stored ideas under the header that dates them — and, above them, the notice
+    of a newer run that failed: «No pudimos traer ideas nuevas», in the info tone (founder,
+    2026-11-04) — the ideas below are still true and there is nothing to fix."""
+    S = DiscoverReelsState
+    grid = rx.box(
+        rx.foreach(S.reels, _reel_tile),
+        class_name="q-dr-grid",
+        role="list",
+        aria_label="Ideas para tus reels",
+    )
     return rx.vstack(
         rx.cond(
-            DiscoverReelsState.replicate_error != "",
-            callout(DiscoverReelsState.replicate_error, "error"),
+            S.notice_title != "",
+            callout(
+                rx.fragment(rx.text.strong(S.notice_title), rx.el.br(), S.notice_body),
+                "info",
+            ),
         ),
-        rx.cond(
-            DiscoverReelsState.shown_error != "", callout(DiscoverReelsState.shown_error, "error")
-        ),
-        rx.cond(
-            DiscoverReelsState.failed_note != "", callout(DiscoverReelsState.failed_note, "info")
-        ),
-        spacing="2",
+        section(S.title, grid, description=S.body),
+        spacing="4",
         width="100%",
     )
 
 
-def _waiting(text: str) -> rx.Component:
-    """A read in progress, in the middle of the view (§ founder 2026-10-20: «céntrame el
-    loader»): the spinner over the sentence that says what is happening, both centred in
-    the card's free height, like `empty_state`."""
+def _action() -> rx.Component:
+    """The empty state's one button, doing what the view model says (`action_to`):
+    - «Elegir cuentas», «Completar tu marca», «Sumar cuentas»: «Negocios parecidos al tuyo»
+      on the brand page, open, with «‹ Ideas de videos» to come back (UX review 4) — its
+      search is also what tells Qualify what the business sells;
+    - «Ver si ya están»: one more read of what is stored — free;
+    - «Crear una publicación»: back to the create flow (UX re-check 1)."""
+    S = DiscoverReelsState
+    label = S.action
+    return rx.match(
+        S.action_to,
+        (
+            reels_ideas_vm.ACTION_ACCOUNTS,
+            rx.link(rx.button(label, variant="soft", size="3"), href=ACCOUNTS_HREF),
+        ),
+        (
+            reels_ideas_vm.ACTION_REREAD,
+            rx.button(label, variant="soft", size="3", on_click=S.load),
+        ),
+        (
+            reels_ideas_vm.ACTION_CREATE,
+            rx.button(
+                label,
+                variant="soft",
+                size="3",
+                on_click=CreativeState.open_create_options,
+                disabled=CreativeState.gen_generating,
+            ),
+        ),
+        rx.fragment(),
+    )
+
+
+def _empty(icon: str) -> rx.Component:
+    """The empty state on screen: its words, and its one button when it has one."""
+    S = DiscoverReelsState
+    return empty_state(icon, S.title, S.body, rx.cond(S.action != "", _action()))
+
+
+def _ticker() -> rx.Component:
+    """The browser clock: every `POLL_SECONDS` it asks for one more read
+    (`DiscoverReelsState.tick`). It lives only while the screen waits — leaving it, or the
+    end of the wait, unmounts it — and it is the browser's, so a deploy that restarts the
+    server never leaves a screen without it. Nothing of it is seen or read."""
+    return rx.moment(
+        interval=int(POLL_SECONDS * 1000),
+        on_change=DiscoverReelsState.tick,
+        display="none",
+        aria_hidden="true",
+    )
+
+
+def _preparing() -> rx.Component:
+    """The first run is being prepared (option A): work in progress, so a spinner over
+    the sentence that says it (`docs/design-system.md` §5.4), centred like
+    `empty_state`."""
+    S = DiscoverReelsState
     return rx.center(
         rx.vstack(
             loading_spinner("md"),
-            rx.text(text, size="2", color=T.TEXT_MUTED, text_align="center", max_width="440px"),
+            rx.heading(S.title, size="5", as_="h2", text_align="center"),
+            rx.text(S.body, size="2", color=T.TEXT_MUTED, text_align="center", max_width="440px"),
             spacing="3",
             align="center",
         ),
@@ -976,156 +824,66 @@ def _waiting(text: str) -> rx.Component:
     )
 
 
-def _body() -> rx.Component:
-    loading = _waiting(
-        "Buscando los reels de tus referentes y comprobando que sean de tu producto…"
-    )
-    no_referentes = empty_state(
-        "users",
-        "Aún no tienes referentes",
-        "Marca cuentas como referente en Tu marca (o agrégalas a mano) y aquí verás "
-        "sus reels con más vistas.",
-        rx.link(rx.button("Ir a Tu marca", variant="soft", size="3"), href="/brand/kit"),
-    )
-    window = DiscoverReelsState.window
-    no_reels = empty_state(
-        "film",
-        rx.match(
-            window,
-            ("week", "Esta semana tus referentes no publicaron reels de tu producto"),
-            ("month", "Este mes tus referentes no publicaron reels de tu producto"),
-            "En 90 días tus referentes no publicaron reels de tu producto",
-        ),
-        rx.match(
-            window,
-            ("week", "Mira los del mes, o vuelve en unos días."),
-            "Agrega más referentes en Tu marca para ver más reels.",
-        ),
-        # N8 (m-24842961): the button does what the sentence says.
-        rx.cond(
-            window == "week",
-            rx.button(
-                "Ver los del mes",
-                on_click=DiscoverReelsState.set_window("month"),
-                variant="soft",
-                size="3",
-            ),
-            rx.link(rx.button("Ir a Tu marca", variant="soft", size="3"), href="/brand/kit"),
-        ),
-    )
-    filtered_out = empty_state(
-        "filter",
-        "Ningún reel de tu producto con estos filtros",
-        "Prueba con otro referente u otra plataforma, o mira otro periodo.",
-        rx.button(
-            rx.icon("x", size=14),
-            "Quitar filtros",
-            variant="soft",
-            on_click=DiscoverReelsState.clear_filters,
-        ),
-    )
-    # § m-24820844: the 90 days are a read of their own — the tab says it is charged
-    # before anything is read, and reads only on the click
-    quarter_ask = empty_state(
-        "calendar-range",
-        "Los reels de los últimos 90 días",
-        QUARTER_NOTE,
-        rx.button(
-            rx.icon("download", size=14),
-            "Leer",
-            variant="soft",
-            on_click=DiscoverReelsState.load_quarter(False),
-            disabled=DiscoverReelsState.quarter_loading,
-        ),
-    )
-    quarter_loading = _waiting(
-        "Leyendo 90 días de reels de tus referentes y comprobando que sean de tu "
-        "producto… es la lectura más larga, puede tardar un par de minutos."
-    )
-    # § founder 2026-10-16: without the product check NOTHING is shown — never a list of
-    # unchecked reels where another product's promo can slip through
-    retry_label = (rx.icon("refresh-cw", size=14), "Intentar de nuevo")
-    retry = rx.cond(
-        window == "quarter",
-        rx.button(
-            *retry_label,
-            variant="soft",
-            on_click=DiscoverReelsState.load_quarter(True),
-            disabled=DiscoverReelsState.quarter_loading,
-        ),
-        rx.button(
-            *retry_label,
-            variant="soft",
-            on_click=DiscoverReelsState.load(True),
-            disabled=DiscoverReelsState.loading,
-        ),
-    )
-    unchecked = rx.cond(
-        DiscoverReelsState.shown_check == reels_discovery.CHECK_NO_BRIEF,
-        empty_state(
-            "search",
-            "Aún no sabemos qué vende tu marca",
-            "Ejecuta la búsqueda de referentes en Tu marca: con ella filtramos los "
-            "reels para mostrarte solo los de tu producto.",
-            rx.link(rx.button("Ir a Tu marca", variant="soft", size="3"), href="/brand/kit"),
-        ),
-        empty_state(
-            "clock",
-            "No pudimos filtrar los reels ahora mismo",
-            DiscoverReelsState.unchecked_note,
-            retry,
-        ),
-    )
-    grid = rx.box(
-        rx.foreach(DiscoverReelsState.reels, _reel_tile),
+def _loading() -> rx.Component:
+    """The stored ideas are being read: content loading, so skeletons in the shape of
+    the cards (`docs/design-system.md` §5.4), never a spinner."""
+    return rx.box(
+        *(skeleton_card(lines=4) for _ in range(3)),
         class_name="q-dr-grid",
-        role="list",
-        aria_label="Reels de tus referentes",
     )
-    # what a finished read shows, whichever window: its cards, or why there are none
-    results = rx.cond(
-        DiscoverReelsState.loaded & (DiscoverReelsState.referentes == 0),
-        no_referentes,
-        rx.cond(
-            DiscoverReelsState.reels.length() > 0,
-            grid,
-            rx.cond(
-                DiscoverReelsState.filtered_out,
-                filtered_out,
-                rx.cond(DiscoverReelsState.shown_check != "", unchecked, no_reels),
-            ),
+
+
+def _load_failed() -> rx.Component:
+    """The stored ideas could not be read: the error replaces the list, with the button
+    that reads them again (a database read — it never searches nor pays)."""
+    return rx.vstack(
+        callout(DiscoverReelsState.load_error, "error"),
+        rx.button(
+            rx.icon("refresh-cw", size=14),
+            reels_ideas_vm.RETRY,
+            variant="soft",
+            on_click=DiscoverReelsState.load,
+        ),
+        spacing="3",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _body() -> rx.Component:
+    S = DiscoverReelsState
+    return rx.cond(
+        S.load_error != "",
+        _load_failed(),
+        rx.match(
+            S.screen,
+            ("", _loading()),
+            (SCREEN_IDEAS, _ideas()),
+            (SCREEN_NO_ACCOUNTS, _empty("users")),
+            (SCREEN_NO_BRIEF, _empty("store")),
+            (SCREEN_CHECK_FAILED, _empty("clock")),
+            (SCREEN_NO_IDEAS, _empty("film")),
+            (SCREEN_UNAVAILABLE, _empty("calendar-clock")),
+            (SCREEN_PREPARING, _preparing()),
+            (SCREEN_SLOW, _empty("hourglass")),
+            _loading(),
         ),
     )
-    quarter = rx.cond(
-        DiscoverReelsState.quarter_loading & (DiscoverReelsState.reels.length() == 0),
-        quarter_loading,
-        rx.cond(
-            DiscoverReelsState.quarter_loaded,
-            results,
-            rx.cond(
-                DiscoverReelsState.loaded & (DiscoverReelsState.referentes == 0),
-                no_referentes,
-                quarter_ask,
-            ),
-        ),
-    )
-    month_read = rx.cond(
-        DiscoverReelsState.loading & (DiscoverReelsState.reels.length() == 0),
-        loading,
-        rx.cond(DiscoverReelsState.loaded, results, loading),
-    )
-    return rx.cond(window == "quarter", quarter, month_read)
 
 
 def discover_view() -> rx.Component:
-    """The centre of /create when «Descubrir reels» is chosen. Reads on mount (the
-    remembered read when there is one)."""
+    """The centre of /create when «Descubrir reels» is chosen. Opening it reads only what
+    is stored (ADR 42 R7): the ideas show at once, nothing is searched or paid; leaving it
+    stops the browser clock with it."""
     return card(
         rx.vstack(
-            _toolbar(),
-            _filters(),
-            _notices(),
+            rx.cond(
+                DiscoverReelsState.replicate_error != "",
+                callout(DiscoverReelsState.replicate_error, "error"),
+            ),
             _body(),
+            # the one browser clock, while the screen waits (`DiscoverReelsState.waiting`)
+            rx.cond(DiscoverReelsState.waiting & (DiscoverReelsState.load_error == ""), _ticker()),
             spacing="4",
             width="100%",
             flex="1",
@@ -1134,5 +892,6 @@ def discover_view() -> rx.Component:
         width="100%",
         flex="1",
         display="flex",
-        on_mount=DiscoverReelsState.load(False),
+        on_mount=DiscoverReelsState.load,
+        on_unmount=DiscoverReelsState.leave,
     )

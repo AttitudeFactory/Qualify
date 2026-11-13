@@ -299,7 +299,7 @@ Tests con bios y textos grabados que llevan teléfonos; revisión con `security-
 Tarea técnica · Improvement · **P1 · M** · backend-engineer · sin dependencias
 
 **Contexto**
-`referentes/scrapecreators_client.py` lo comparten el asistente web, Referentes y la precarga. La
+`vendors/scrapecreators.py` (antes `referentes/scrapecreators_client.py`) lo comparten el asistente web, Referentes y la precarga. La
 lectura del perfil de Instagram ya trae (y pagamos) las 12 publicaciones recientes y los enlaces de
 la bio (`bio_links`), pero la instantánea (`SNAPSHOT_SCHEMA = 4`) los descarta y pide aparte
 `user-posts`.

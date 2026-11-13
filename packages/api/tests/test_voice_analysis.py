@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 from qualify_creative.schemas import ToneAxes
 
+from qualify_api.claude_tools import Attribution as _Attribution
 from qualify_api.claude_tools import ClaudeToolError
 from qualify_api.creative.voice_analysis import (
     TONE_TOOL,
@@ -20,6 +21,9 @@ from qualify_api.creative.voice_analysis import (
     parse_suggestion,
     suggest_tone,
 )
+
+#: m-24955649: who pays for the faked Claude calls of this module.
+TEST_ATTRIBUTION = _Attribution.no_business("test")
 
 TRANSCRIPT = (
     "¡Hola, parce! Aquí en el Café del Parque te tenemos el tinto más rico del centro, "
@@ -62,7 +66,9 @@ PAYLOAD = {
 
 def test_the_tool_answer_becomes_tone_axes_with_reasons() -> None:
     client = ScriptedClient(_tool_call(PAYLOAD))
-    suggestion = suggest_tone(TRANSCRIPT, api_key="k", client_factory=lambda _k: client)
+    suggestion = suggest_tone(
+        TRANSCRIPT, api_key="k", client_factory=lambda _k: client, attribution=TEST_ATTRIBUTION
+    )
     assert suggestion.axes == ToneAxes(
         formal_casual=85, sober_enthusiastic=78, technical_plain=90, brief_elaborate=40
     )
@@ -93,18 +99,28 @@ def test_out_of_range_or_broken_values_are_clamped_or_neutral() -> None:
 def test_a_model_that_never_calls_the_tool_is_asked_once_more_then_fails() -> None:
     prose = [SimpleNamespace(type="text", text="Suena cercano.")]
     client = ScriptedClient(prose, _tool_call(PAYLOAD))
-    assert suggest_tone(TRANSCRIPT, api_key="k", client_factory=lambda _k: client).axes
+    assert suggest_tone(
+        TRANSCRIPT, api_key="k", client_factory=lambda _k: client, attribution=TEST_ATTRIBUTION
+    ).axes
     assert len(client.calls) == 2
     with pytest.raises(ClaudeToolError):
         suggest_tone(
-            TRANSCRIPT, api_key="k", client_factory=lambda _k: ScriptedClient(prose, prose)
+            TRANSCRIPT,
+            api_key="k",
+            client_factory=lambda _k: ScriptedClient(prose, prose),
+            attribution=TEST_ATTRIBUTION,
         )
 
 
 def test_too_little_speech_is_refused_before_calling_claude() -> None:
     client = ScriptedClient()
     with pytest.raises(NotEnoughSpeech):
-        suggest_tone("Hola, buenas.", api_key="k", client_factory=lambda _k: client)
+        suggest_tone(
+            "Hola, buenas.",
+            api_key="k",
+            client_factory=lambda _k: client,
+            attribution=TEST_ATTRIBUTION,
+        )
     assert client.calls == []
 
 
@@ -119,7 +135,11 @@ def test_analyze_recording_transcribes_then_suggests(tmp_path: Path) -> None:
 
     client = ScriptedClient(_tool_call(PAYLOAD))
     suggestion = analyze_recording(
-        recording, transcriber=transcriber, api_key="k", client_factory=lambda _k: client
+        recording,
+        transcriber=transcriber,
+        api_key="k",
+        client_factory=lambda _k: client,
+        attribution=TEST_ATTRIBUTION,
     )
     assert heard == [recording] and suggestion.axes.formal_casual == 85
 

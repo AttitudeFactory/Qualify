@@ -32,9 +32,11 @@ from typing import Any
 from uuid import UUID
 
 from pydantic import ValidationError
+from qualify_api.claude_tools import Attribution
 from qualify_api.creative import models as orm
 from qualify_api.creative.brand_service import BrandKitService
 from qualify_api.creative.composition import media_root, production_content_service
+from qualify_api.creative.context_ai import FEATURE as CONTEXT_FEATURE
 from qualify_api.creative.context_ai import ContextInput, ContextProposal, enhance_context
 from qualify_api.creative.creations import CreationsBalance
 from qualify_api.creative.draft_mode import (
@@ -44,7 +46,9 @@ from qualify_api.creative.draft_mode import (
     draft_state,
     draft_summary,
 )
+from qualify_api.creative.final_video import PreviewUse
 from qualify_api.creative.media import LocalMediaStore, R2ReadingMediaStore
+from qualify_api.creative.part_request import parts_preview_use
 from qualify_api.creative.piece_export import (
     archive_name,
     build_archive,
@@ -60,6 +64,7 @@ from qualify_api.creative.service import DraftDetail
 from qualify_api.creative.voice_service import VoiceProfileService
 from qualify_api.stock.keys import is_stock_key
 from qualify_api.tenancy.models import Brand
+from qualify_creative.ad_destination import AdCTA
 from qualify_creative.enums import (
     BriefIntent,
     BriefObjective,
@@ -76,7 +81,11 @@ from qualify_creative.schemas import (
     CopyPayload,
     ImagePolicy,
     MediaInputs,
+    PartsProvenance,
+    PartsRequest,
+    PartsScope,
     ToneAxes,
+    VideoPartPlan,
 )
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import func, select
@@ -108,12 +117,14 @@ from .creative_vm import (
     draft_expiry_text,
     draft_kind_label,
     failure_label,
+    gallery_missing_slides,
     purged_label,
     recreate_use_text,
     renewal_day_label,
     retention_notice,
     video_draft_vm,
 )
+from .generator_summary_vm import owner_topic
 from .piece_download import issue_download_path
 from .r2_media import is_r2_key, issue_view_path
 
@@ -213,7 +224,18 @@ def load_kit_form(tenant_id: UUID, brand_id: UUID) -> KitFormVM | None:
         font_body=kit.font_body,
         has_logo=kit.logo_asset_key is not None,
         has_template=kit.template_asset_key is not None,
+        ads_destination_url=kit.ads_destination_url or "",
     )
+
+
+def brand_cta_patterns(tenant_id: UUID, brand_id: UUID) -> tuple[str, ...]:
+    """The Brand Kit's «Cómo invitas a comprar» phrases (`BrandKit.cta_patterns`) — the
+    only wording a reel replica may put on the reel's own text (m-24820842,
+    `MediaInputs.replication_brand_text`); () when the brand has no kit or no phrase."""
+    kit = BrandKitService().get_kit(tenant_id=tenant_id, brand_id=brand_id)
+    if kit is None:
+        return ()
+    return tuple(text.strip() for text in kit.cta_patterns if text.strip())
 
 
 def save_kit(
@@ -253,6 +275,7 @@ def save_kit(
         "palette_rgb": _split_commas(form.palette_rgb),
         "font_heading": form.font_heading.strip(),
         "font_body": form.font_body.strip(),
+        "ads_destination_url": form.ads_destination_url.strip() or None,
     }
     if current is not None:
         # Fields this form does not edit keep their stored values.
@@ -436,6 +459,83 @@ def submit_brief(tenant_id: UUID, brand_id: UUID, user_id: UUID, **form: Any) ->
     )
 
 
+class PartsPreviewsShort(Exception):
+    """«Revisa y crea» por partes (UI-6, m-24921081): the month's vistas previas do not
+    reach the parts asked for — nothing was created (all or nothing). `use` holds the
+    numbers read just before, for the screen's words."""
+
+    def __init__(self, use: PreviewUse, parts: int) -> None:
+        super().__init__("not enough vistas previas for the parts")
+        self.use = use
+        self.parts = parts
+
+
+def submit_parts_brief(
+    tenant_id: UUID,
+    brand_id: UUID,
+    user_id: UUID,
+    *,
+    parts: Sequence[VideoPartPlan],
+    scope: PartsScope,
+    provenance: Mapping[str, Any] | PartsProvenance | None = None,
+    content: Any = None,
+    **form: Any,
+) -> UUID:
+    """Create the PARENT of a video by parts (ADR 44 UI-6, m-24921081): a `shot_video`
+    brief with the plan (`media.parts`) and what the owner asked of its parts
+    (`media.parts_request`: `all` or `first`), and — for a plan Claude proposed without a
+    reel (m-24921079) — who proposed it (`media.parts_provenance`). The parts themselves
+    are created by the creative worker once the parent's text passes
+    (`part_request.PartsRequests`), never here. `form` is the generator's form
+    (`build_brief`'s arguments); its `kind` is replaced and its `media` keeps only what a
+    parent takes.
+
+    All or nothing: the month's vistas previas are read first
+    (`part_request.parts_preview_use`, 1 per part asked for — only the first for
+    `first`); short → `PartsPreviewsShort` and no draft. Otherwise raises what
+    `submit_brief` raises."""
+    content = content or production_content_service()
+    plans = tuple(parts)
+    asked = 1 if scope == "first" else len(plans)
+    use = parts_preview_use(content, tenant_id=tenant_id, brand_id=brand_id, parts=asked)
+    if use is not None and use.short:
+        raise PartsPreviewsShort(use, asked)
+    media = {
+        **parent_media(form.pop("media", None) or {}),
+        "parts": tuple(plans),
+        "parts_request": PartsRequest(scope=scope),
+    }
+    if provenance is not None:
+        media["parts_provenance"] = PartsProvenance.model_validate(provenance)
+    brief = build_brief(brand_id, **{**form, "kind": ContentKind.SHOT_VIDEO.value, "media": media})
+    return content.create_draft(
+        tenant_id=tenant_id, brand_id=brand_id, brief=brief, user_id=user_id
+    )
+
+
+#: What the parent of a video by parts keeps of a clip's form (m-24984421): its images
+#: with their roles and its sound, for its parts to take, and the brand's resources.
+#: Never the clip's frames, reference videos, sound files, reference mode or source
+#: reel — those are a single clip's, and the parent's brief refuses them.
+_PARENT_MEDIA_KEYS = (
+    "clip_image_keys",
+    "clip_image_roles",
+    "clip_audio",
+    "clip_subtitles",
+    "product_source",
+    "brand_logo_key",
+    "brand_logo_in_scene",
+    "brand_logo_placement",
+    "brand_logo_reference_keys",
+    "brand_element_keys",
+)
+
+
+def parent_media(media: Mapping[str, object]) -> dict[str, object]:
+    """The clip form's `media` reduced to what a video-by-parts parent takes. Pure."""
+    return {key: media[key] for key in _PARENT_MEDIA_KEYS if key in media}
+
+
 def preview_brief_prompt(tenant_id: UUID, brand_id: UUID, **form: Any) -> bool:
     """Print to the console the copy prompt this form would send (§ request 2026-10-06),
     without creating a draft or calling a vendor. False when it could not render."""
@@ -497,7 +597,8 @@ def enhance_generator_context(
         must_mention=must_mention,
         must_avoid=must_avoid,
     )
-    return enhance_context(data, kit)
+    attribution = Attribution(tenant_id=tenant_id, brand_id=brand_id, feature=CONTEXT_FEATURE)
+    return enhance_context(data, kit, attribution=attribution)
 
 
 # ---------------------------------------------------------------------------
@@ -507,7 +608,7 @@ def enhance_generator_context(
 def catalog_products(tenant_id: UUID, brand_id: UUID) -> tuple[dict[str, str], ...]:
     """The brand's products for the generator's picker, as flat string rows (a Reflex var
     cannot carry the catalog's dataclasses): `{id, name, photo_key,
-    photo_count, video_count}`. Read through the catalog's own door."""
+    photo_count, video_count, price_label, …}`. Read through the catalog's own door."""
     from .catalog_provider import list_products
 
     return tuple(
@@ -518,6 +619,12 @@ def catalog_products(tenant_id: UUID, brand_id: UUID) -> tuple[dict[str, str], .
             "photo_count": str(product.photo_count),
             "video_count": str(product.video_count),
             "counts_label": product.counts_label,
+            # the catalog's own formatting ("$25000"); "" without a price — «Datos
+            # clave» pre-fills it as «Precio» (founder request 2026-11-04)
+            "price_label": product.price_label,
+            # the product's own currency: an edited «Precio» goes back to the catalog
+            # in it, once the piece is made (founder 2026-11-04)
+            "price_currency": product.price_currency,
             "photo_keys": "\n".join(m.key for m in product.media if m.media_type == "image"),
             "video_keys": "\n".join(m.key for m in product.media if m.media_type == "video"),
         }
@@ -726,7 +833,7 @@ def list_drafts(tenant_id: UUID, brand_id: UUID) -> tuple[DraftSummaryVM, ...]:
     return tuple(
         build_draft_summary_vm(
             draft_id=str(record.id),
-            topic=topics.get(record.brief_id, ""),
+            topic=owner_topic(topics.get(record.brief_id) or ""),
             status=record.status,
             created_label=_format_dt(record.created_at),
             failure_reason=record.failure_reason,
@@ -751,6 +858,27 @@ def _draft_costs(tenant_id: UUID, draft_id: UUID) -> tuple[Decimal | None, tuple
             .order_by(orm.CreativeUsageEvent.model_id)
         ).all()
         return (Decimal(total) if total is not None else None, tuple(models))
+
+
+def _ad_destination_context(tenant_id: UUID, brief_id: UUID, brand_id: UUID) -> tuple[bool, str]:
+    """The brief decides whether an ad editor is relevant; defaults stay suggestions."""
+    with tenant_session(tenant_id) as session:
+        row = session.execute(
+            select(orm.ContentBrief.intent, orm.BrandKit.ads_destination_url)
+            .outerjoin(
+                orm.BrandKit,
+                (orm.BrandKit.brand_id == orm.ContentBrief.brand_id)
+                & (orm.BrandKit.tenant_id == orm.ContentBrief.tenant_id),
+            )
+            .where(
+                orm.ContentBrief.id == brief_id,
+                orm.ContentBrief.tenant_id == tenant_id,
+                orm.ContentBrief.brand_id == brand_id,
+            )
+        ).first()
+    if row is None or row.intent not in {"ads", "both"}:
+        return False, ""
+    return True, row.ads_destination_url or ""
 
 
 def _detail_to_vm(tenant_id: UUID, detail: DraftDetail) -> DraftVM:
@@ -810,8 +938,17 @@ def _detail_to_vm(tenant_id: UUID, detail: DraftDetail) -> DraftVM:
     active_id = str(getattr(detail, "active_version_id", None) or "")
     viewed_id = str(getattr(detail, "viewed_version_id", None) or active_id)
     preview = bool(getattr(detail, "is_version_preview", False))
+    brief_id, brand_id = getattr(detail, "brief_id", None), getattr(detail, "brand_id", None)
+    has_ad_destination, brand_ad_url = (
+        _ad_destination_context(tenant_id, brief_id, brand_id)
+        if isinstance(brief_id, UUID) and isinstance(brand_id, UUID)
+        else (False, "")
+    )
     vm = dataclasses.replace(
         vm,
+        has_ad_destination=has_ad_destination,
+        brand_ads_destination_url=brand_ad_url,
+        revision=detail.revision,
         versions=tuple(
             PieceVersionVM(
                 version_id=str(version.id),
@@ -852,6 +989,25 @@ def _detail_to_vm(tenant_id: UUID, detail: DraftDetail) -> DraftVM:
             ),
             video_params,
             approved=approved,
+        ),
+    )
+    # m-24820842: «Crear las que faltan» — a failed gallery with slides kept
+    can_finish = (
+        vm.is_failed
+        and int(getattr(detail, "kept_slides", 0) or 0) > 0
+        and not purged
+        and not preview
+    )
+    vm = dataclasses.replace(
+        vm,
+        can_finish_gallery=can_finish,
+        missing_slides=(
+            gallery_missing_slides(
+                int(getattr(detail, "gallery_slides", 0) or 0),
+                int(getattr(detail, "kept_slides", 0) or 0),
+            )
+            if can_finish
+            else 0
         ),
     )
     if purged:
@@ -1022,6 +1178,9 @@ def edit_variant(
     hashtags: str,
     cta: str,
     script: str | None = None,
+    ads_cta_type: str | None = None,
+    ads_destination_url: str | None = None,
+    expected_revision: int | None = None,
 ) -> tuple[str, ...]:
     """Re-run layer 1 over the operator's edit through the service; returns the hard
     failures as display strings ("regla: detalle"), empty when the edit was stored.
@@ -1042,12 +1201,25 @@ def edit_variant(
     }
     if script is not None:
         changes["script"] = script.strip()
+    if ads_cta_type is not None:
+        try:
+            changes["ads_cta_type"] = AdCTA(ads_cta_type)
+        except ValueError:
+            return ("Elige un botón de la lista para tu anuncio.",)
+    if ads_destination_url is not None:
+        changes["ads_destination_url"] = ads_destination_url.strip() or None
     try:
-        payload = CopyPayload.model_validate({**base.model_dump(), **changes})
+        payload = CopyPayload.model_validate(
+            {**base.model_dump(), **changes}, context={"strict_ad_cta": True}
+        )
     except ValidationError as exc:
         return tuple(_field_error(err) for err in exc.errors())
     failures = service.edit_variant(
-        tenant_id=tenant_id, variant_id=variant_id, copy=payload, user_id=user_id
+        tenant_id=tenant_id,
+        variant_id=variant_id,
+        copy=payload,
+        user_id=user_id,
+        **({"expected_revision": expected_revision} if expected_revision is not None else {}),
     )
     return tuple(failure_label(f.rule, f.detail) for f in failures)
 
@@ -1057,6 +1229,8 @@ _FIELD_LABELS = {
     "caption": "El caption",
     "cta": "El CTA",
     "script": "El guion",
+    "ads_cta_type": "El botón del anuncio",
+    "ads_destination_url": "El enlace del anuncio",
 }
 
 
@@ -1065,6 +1239,10 @@ def _field_error(err: Mapping[str, object]) -> str:
     caracteres." rather than pydantic's "hook: String should have at most 60 characters"."""
     loc = err.get("loc") or ()
     field = str(loc[0]) if loc else ""
+    if field == "ads_destination_url":
+        return "Escribe un enlace completo que empiece por https://, sin espacios."
+    if field == "ads_cta_type":
+        return "Elige un botón de la lista para tu anuncio."
     label = _FIELD_LABELS.get(field, f"El campo «{field}»")
     ctx = err.get("ctx") or {}
     kind = str(err.get("type", ""))
@@ -1193,6 +1371,15 @@ def regeneration_creations(
         balance.previews_left,
         balance.preview_quota,
     )
+
+
+def finish_gallery(tenant_id: UUID, draft_id: UUID, user_id: UUID) -> DraftVM:
+    """«Crear las que faltan» (m-24820842): a failed gallery makes only its missing
+    slides. Raises `NothingToFinish`, `InvalidTransition` or `NotEnoughCreations`."""
+    detail = production_content_service().finish_gallery(
+        tenant_id=tenant_id, draft_id=draft_id, user_id=user_id
+    )
+    return _detail_to_vm(tenant_id, detail)
 
 
 def retry_final(tenant_id: UUID, draft_id: UUID) -> DraftVM:

@@ -16,7 +16,12 @@ from botocore.config import Config
 from botocore.exceptions import ClientError
 
 from qualify_shared.objects.config import R2Settings
-from qualify_shared.objects.gate import ObjectNotFound, StoredObject
+from qualify_shared.objects.gate import (
+    DELETE_REFUSAL_CODES,
+    DeleteRefused,
+    ObjectNotFound,
+    StoredObject,
+)
 
 # S3/R2 error codes that mean "no object at this key" — as opposed to any other ClientError
 # (bad credentials, wrong bucket, throttling), which must keep propagating as-is rather than
@@ -32,20 +37,47 @@ def _raise_not_found_or_reraise(exc: ClientError, key: str) -> None:
 
 
 def _build_client(settings: R2Settings) -> Any:
+    options: dict[str, Any] = {
+        "region_name": settings.region_name,
+        "signature_version": settings.signature_version,
+    }
+    # a request path's bounds (`R2Settings.bounded`); unset, botocore's defaults stand
+    if settings.connect_timeout is not None:
+        options["connect_timeout"] = settings.connect_timeout
+    if settings.read_timeout is not None:
+        options["read_timeout"] = settings.read_timeout
+    if settings.total_attempts is not None:
+        options["retries"] = {"total_max_attempts": settings.total_attempts, "mode": "standard"}
     return boto3.client(
         "s3",
         endpoint_url=settings.endpoint_url,
         aws_access_key_id=settings.access_key_id,
         aws_secret_access_key=settings.secret_access_key,
-        config=Config(
-            region_name=settings.region_name,
-            signature_version=settings.signature_version,
-        ),
+        config=Config(**options),
     )
 
 
 class R2ObjectStore:
-    """`ObjectStore` over Cloudflare R2. Holds no tenant context — see `ObjectGate`."""
+    """`ObjectStore` over Cloudflare R2. Holds no tenant context — see `ObjectGate`.
+
+    TEST-ONLY seam (m-24955929): with `QUALIFY_OBJECT_STORE_DIR` set (never in
+    production: `local_store_dir()` refuses it there) constructing one returns a
+    `LocalDirObjectStore` over that directory instead — the one place every
+    `R2ObjectStore(R2Settings.from_env())` in the codebase goes through, so an E2E run
+    (app + media-worker) shares a fake bucket on disk and never touches R2. An explicit
+    `client` (unit tests) always gets the real class."""
+
+    def __new__(cls, settings: R2Settings, *, client: Any | None = None) -> Any:  # noqa: D102
+        if client is None:
+            from qualify_shared.objects.local_dir import (  # noqa: PLC0415
+                LocalDirObjectStore,
+                local_store_dir,
+            )
+
+            root = local_store_dir()
+            if root:
+                return LocalDirObjectStore(root)
+        return super().__new__(cls)
 
     def __init__(self, settings: R2Settings, *, client: Any | None = None) -> None:
         self._settings = settings
@@ -133,23 +165,36 @@ class R2ObjectStore:
     # -- deletion by prefix (m-24828907): the piece retention rule -------------------------
 
     def list_prefix(self, prefix: str) -> Iterator[StoredObject]:
-        """Every object under `prefix`, paginated (`ListObjectsV2`, 1,000 per page)."""
+        """Every object under `prefix`, paginated (`ListObjectsV2`, 1,000 per page), with
+        its `LastModified` (boto3 parses it to an aware `datetime`)."""
         paginator = self._client.get_paginator("list_objects_v2")
         for page in paginator.paginate(Bucket=self._settings.bucket, Prefix=prefix):
             for item in page.get("Contents", ()):
-                yield StoredObject(key=item["Key"], size=int(item.get("Size", 0)))
+                yield StoredObject(
+                    key=item["Key"],
+                    size=int(item.get("Size", 0)),
+                    last_modified=item.get("LastModified"),
+                )
 
     def delete_keys(self, keys: Sequence[str]) -> None:
         """Delete up to 1,000 keys in one `DeleteObjects`. A key that is already gone is
         not an error (S3 semantics); any per-key error R2 reports is raised, so the caller
-        never records a deletion that did not happen."""
+        never records a deletion that did not happen. Both a per-key error and a whole
+        request refused by the bucket (a lock rule, a token without delete rights) raise
+        `DeleteRefused`, so a purge can tell a refusal that will repeat from a hiccup."""
         if not keys:
             return
-        response = self._client.delete_objects(
-            Bucket=self._settings.bucket,
-            Delete={"Objects": [{"Key": key} for key in keys], "Quiet": True},
-        )
+        try:
+            response = self._client.delete_objects(
+                Bucket=self._settings.bucket,
+                Delete={"Objects": [{"Key": key} for key in keys], "Quiet": True},
+            )
+        except ClientError as exc:
+            code = str(exc.response.get("Error", {}).get("Code"))
+            if code in DELETE_REFUSAL_CODES:
+                raise DeleteRefused(len(keys), (code,)) from exc
+            raise
         errors = response.get("Errors") or []
         if errors:
-            codes = sorted({str(error.get("Code")) for error in errors})
-            raise RuntimeError(f"R2 refused to delete {len(errors)} object(s): {', '.join(codes)}")
+            codes = tuple(sorted({str(error.get("Code")) for error in errors}))
+            raise DeleteRefused(len(errors), codes)

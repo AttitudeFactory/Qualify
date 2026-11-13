@@ -26,12 +26,24 @@ from qualify_api.catalog.models import (
 
 
 def price_label(amount: Decimal | None, currency: str) -> str:
+    """Format pilot currencies for Spanish-speaking owners without changing the amount.
+
+    Whole prices omit cents; fractional prices keep both cent digits. USD retains
+    ungrouped thousands so its label also round-trips through the owner's price editor.
+    Other currencies keep their existing display contract.
+    """
     if amount is None:
         return ""
+    code = currency.upper()
+    if code in {"COP", "UYU", "VES", "USD"}:
+        text = f"{amount:.2f}" if code == "USD" else f"{amount:,.2f}"
+        if text.endswith(".00"):
+            text = text[:-3]
+        text = text.translate(str.maketrans({",": ".", ".": ","}))
+        symbol = "Bs. " if code == "VES" else "$"
+        return f"{symbol}{text}"
     text = f"{amount:.2f}".rstrip("0").rstrip(".")
-    symbol = {"USD": "$", "VES": "Bs.", "COP": "$", "UYU": "$", "EUR": "€"}.get(
-        currency.upper(), ""
-    )
+    symbol = {"EUR": "€"}.get(code, "")
     return f"{symbol}{text}" if symbol else f"{text} {currency}".strip()
 
 

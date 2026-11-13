@@ -38,7 +38,8 @@ from .nav_url import with_query
 # Tabs (m-24842998 WHATSAPP-7). Four tasks on top, two of them with sub-tabs:
 #
 #   Chats · Respuesta automática · Promociones · Tu número
-#                                  │              └─ Estado · Perfil · Códigos QR · Actividad
+#                                  │              └─ Estado · Perfil · Formas de pago ·
+#                                  │                 Códigos QR · Actividad
 #                                  └─ Enviadas · Mensajes aprobados · Clientes que aceptaron
 #
 # A PANEL is what the body renders (its own `whatsapp_tab_*.py` file, or a function in
@@ -53,12 +54,19 @@ TAB_CHATS = "chats"
 TAB_CONNECTION = "conexion"
 TAB_PROFILE = "perfil"
 TAB_QR = "qr"
+#: m-24955648 «Formas de pago». Registered ONLY in `SUBTABS` below (and drawn by
+#: `whatsapp_tab_payments.payments_tab`): moving it to Configuración, if the founder so
+#: decides, is this one entry.
+TAB_PAYMENTS = "pagos"
 TAB_ACTIVITY = "actividad"
 TAB_MENU = "menu"
 # WA-18 (QUA-217/218/219): own files `whatsapp_tab_templates.py`, `_contacts.py`, `_campaigns.py`.
 TAB_TEMPLATES = "plantillas"
 TAB_CONTACTS = "contactos"
 TAB_CAMPAIGNS = "campanas"
+#: m-24986801 §4 (decision D3): the brand's stickers and videos library, a sub-tab of
+#: «Chats» — they are sent inside a chat. It mounts `seasonal_ui.brand_section()` as is.
+TAB_STICKERS = "stickers"
 
 SECTION_CHATS = "chats"
 SECTION_AUTO_REPLY = "respuesta"
@@ -77,7 +85,11 @@ SECTION_KEYS: frozenset[str] = frozenset(key for key, _label in SECTIONS)
 # section → ((panel, sub slug, label), …); the first one is the section's default. A
 # section with a single panel has no sub-tab strip and no `?sub=`.
 SUBTABS: dict[str, tuple[tuple[str, str, str], ...]] = {
-    SECTION_CHATS: ((TAB_CHATS, "", "Chats"),),
+    # «Chats» keeps an empty slug: `/whatsapp?tab=chats` (every chat link) stays as is.
+    SECTION_CHATS: (
+        (TAB_CHATS, "", "Tus chats"),
+        (TAB_STICKERS, "stickers", "Stickers y videos"),
+    ),
     SECTION_AUTO_REPLY: ((TAB_MENU, "", "Respuesta automática"),),
     SECTION_PROMOTIONS: (
         (TAB_CAMPAIGNS, "enviadas", "Enviadas"),
@@ -87,6 +99,7 @@ SUBTABS: dict[str, tuple[tuple[str, str, str], ...]] = {
     SECTION_NUMBER: (
         (TAB_CONNECTION, "estado", "Estado"),
         (TAB_PROFILE, "perfil", "Perfil"),
+        (TAB_PAYMENTS, "pagos", "Formas de pago"),
         (TAB_QR, "qr", "Códigos QR"),
         (TAB_ACTIVITY, "actividad", "Actividad"),
     ),
@@ -98,6 +111,11 @@ PROMOTION_SUBS: tuple[tuple[str, str], ...] = tuple(
 )
 NUMBER_SUBS: tuple[tuple[str, str], ...] = tuple(
     (slug, label) for _panel, slug, label in SUBTABS[SECTION_NUMBER]
+)
+#: Chats › Chats · Stickers y videos. The default panel has no slug (its address carries
+#: no `sub`), so its control answers to the panel key: `sub_panel` takes it back.
+CHATS_SUBS: tuple[tuple[str, str], ...] = tuple(
+    (slug or panel, label) for panel, slug, label in SUBTABS[SECTION_CHATS]
 )
 
 _PANEL_PLACE: dict[str, tuple[str, str]] = {
@@ -143,7 +161,7 @@ def panel_sub(panel: str) -> str:
 def sub_panel(section: str, sub: str) -> str:
     """The panel behind `sub` inside `section`, or "" when it is not one of its subs."""
     for panel, slug, _label in SUBTABS.get(section, ()):
-        if slug and slug == sub:
+        if (slug and slug == sub) or (not slug and sub == panel):
             return panel
     return ""
 

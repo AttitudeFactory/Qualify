@@ -28,7 +28,11 @@ class ReplyDraftProvider(Protocol):
 
     model_id: str
 
-    def draft_reply(self, *, comment_text: str, business_name: str | None = None) -> str: ...
+    #: `attribution` is who pays for the call (`qualify_api.claude_tools.Attribution`,
+    #: m-24955649): required so a paid provider can never be called unbooked.
+    def draft_reply(
+        self, *, comment_text: str, attribution: object, business_name: str | None = None
+    ) -> str: ...
 
 
 class SentimentProvider(Protocol):
@@ -227,7 +231,10 @@ class HFInferenceReplyDraftProvider:
         self.model_id = model_id
         self._client = InferenceClient(model=model_id, provider=provider)
 
-    def draft_reply(self, *, comment_text: str, business_name: str | None = None) -> str:
+    def draft_reply(
+        self, *, comment_text: str, attribution: object, business_name: str | None = None
+    ) -> str:
+        del attribution  # the HF endpoint is not in the Claude ledger
         business_line = f" El negocio se llama {business_name}." if business_name else ""
         completion = self._client.chat_completion(
             messages=[

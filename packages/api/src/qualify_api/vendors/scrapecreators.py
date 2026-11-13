@@ -1,0 +1,2383 @@
+"""Thin client for the Scrape Creators API (https://scrapecreators.com) — used only by
+the Brand Kit "Ya tengo redes" flow (`creative_wizard_pages.BrandConnectState.analyze`,
+`docs/ui-brandkit-wizard.md` §4) to read a public TikTok/Instagram PROFILE by handle.
+
+Scope, deliberately narrow:
+  - Profile reads (bio, follower count, avatar, ...) plus, since 2026-09-10, the
+    user's own recent post LIST (date + like/comment/view counts per post, nothing
+    else) — enough for `profile_metrics` to report real figures over a time window
+    (`METRICS_WINDOW_DAYS`). Since 2026-10-15 also a referente's REEL list
+    (`fetch_reels`, «Descubrir reels»): link, cover, caption and figures per video.
+    Since 2026-10-25 (snapshot 5, m-24854324) also the 12 posts and the bio links
+    the Instagram profile read already carries (`recentMedia`, `bioLinks`), so a
+    typical Instagram read is one credit. Still no video/audio bytes and no comments.
+    That is `packages/scraper` territory (Zyte + the multimodal cascade, Fase 1
+    Partes 2/3, ADR 17/18) and this module has nothing to do with it: different
+    vendor, different data, different lifecycle.
+  - Every request goes through the metered gate `metered_get` (ADR 42 R2, m-24854847:
+    kill switch, 500-credit floor, stop on 402, `credits_remaining` kept in
+    `vendor_balance` through `qualify_api.vendors.balance`) — the only Postgres this
+    module touches. Where a read is remembered is still the caller's
+    business: since 2026-10-01 `BrandConnectState.analyze` keeps the normalized
+    result per tenant with a time to live in `creator_profile_cache`
+    (`creator_cache_provider`, migration 0035) — before that, one global,
+    overwritable JSON snapshot under `fixtures/` stood in for a table, with no
+    history and no tenant keying. `Qualify/fixtures/midu.dev_prueba.json` is a manual
+    reference sample only.
+
+Auth: `SCRAPECREATORS_API_KEY` in the environment. Reflex loads `.env` (gitignored,
+never committed) at startup — see `rxconfig.py`'s `env_file=".env"` comment, same
+pattern already used for the Meta OAuth / R2 secrets. Get a key at
+https://scrapecreators.com.
+
+Endpoint shapes below are pinned against the live API docs (docs.scrapecreators.com,
+verified 2026-09-04) — `/v1/instagram/profile` and `/v1/tiktok/profile`, both
+`GET ... ?handle=<username>` with an `x-api-key` header. Neither has been exercised
+against a real profile from this repo yet — the first real call should be logged as
+the observation that promotes this module past "shape from docs only", same discipline
+`qualify_api.mentions.meta_client`'s `[UNVERIFIED LIVE]` marker documents.
+"""
+
+from __future__ import annotations
+
+import logging
+import math
+import os
+import re
+import threading
+import time
+from collections import Counter
+from collections.abc import Callable
+from contextvars import ContextVar
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from typing import Any
+from urllib.parse import urlsplit
+from uuid import uuid4
+
+import httpx
+
+from qualify_api import consumption
+from qualify_api.vendors import uncapped, usage
+from qualify_api.vendors.balance import (
+    FLOOR_THRESHOLD,
+    BalanceChange,
+    BalanceStore,
+    PostgresBalanceStore,
+)
+from qualify_api.vendors.balance import SCRAPECREATORS as BALANCE_VENDOR
+from qualify_api.vendors.balance_alert import LowBalanceAlert, production_alert
+
+logger = logging.getLogger(__name__)
+
+BASE_URL = "https://api.scrapecreators.com"
+_TIMEOUT_SECONDS = 20.0
+
+#: Networks this module knows how to read. Keys match `creative_wizard_pages.NETWORKS`.
+SUPPORTED_NETWORKS = ("instagram", "tiktok")
+
+#: Bumped whenever the normalized profile shape gains a field the wizard depends on,
+#: so a cached profile written by an older normalizer is a cache MISS (one re-fetch,
+#: one credit) instead of a profile silently missing the new fields. 3 = `fetchedAt` +
+#: `recentPosts` (2026-09-10); 4 = `postId`, `shares` and the AI label per post, and
+#: `totalLikes` (2026-10-01); 5 = `bioLinks` and `recentMedia` (the 12 posts the
+#: Instagram profile read already carries), and Instagram's post list read only when
+#: those 12 do not cover the window (2026-10-25, m-24854324). Both caches
+#: (`creator_cache_provider`, `brand_prefill.RepositoryProfileCache`) read any older
+#: schema as a miss, so each cached account is read again once after a version bump.
+#: 6 = stable account id and professional-account flag for review evidence (OL2-1b).
+SNAPSHOT_SCHEMA = 6
+
+
+class ScrapeCreatorsError(Exception):
+    """A Scrape Creators API call failed — missing key, network error, non-2xx
+    response, or a response that did not carry the profile shape we expect. Never
+    interpolates the raw response body: a handle a user typed, or their bio, could end
+    up in it, same discipline every sibling `*Error` in this codebase follows.
+
+    `status_code` carries the HTTP status when the vendor answered at all (None for a
+    missing key, a network error or a malformed body) — callers that must tell "no
+    results" apart from "broken" read it instead of parsing the message: the search
+    endpoints answer an empty search with HTTP 404 `not_found` (measured 2026-09-11 on
+    `/v2/instagram/reels/search`), which is a result, not a failure."""
+
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+def _api_key() -> str:
+    key = os.environ.get("SCRAPECREATORS_API_KEY", "").strip()
+    if not key:
+        raise ScrapeCreatorsError(
+            "SCRAPECREATORS_API_KEY is not set. Add it to the repo-root .env "
+            "(gitignored) — see this module's docstring."
+        )
+    return key
+
+
+def _error_detail(response: httpx.Response) -> str:
+    """A short, safe-to-log/show snippet of why the API said no. Never the API key —
+    it never appears in a response body anyway. Scrape Creators' documented error
+    shape is `{"success": false, "error": "..."}`, but a 401/429/5xx can also come
+    back as plain text or a different JSON shape (a proxy, a gateway), so this tries a
+    few common keys and falls back to the raw body, capped so a large/binary body
+    never dominates the message."""
+    try:
+        payload = response.json()
+    except ValueError:
+        return response.text[:200]
+    if isinstance(payload, dict):
+        for key in ("error", "message", "detail"):
+            value = payload.get(key)
+            if isinstance(value, str) and value:
+                return value[:200]
+    return response.text[:200]
+
+
+# ---------------------------------------------------------------------------
+# The metered gate (ADR 42 §4, slice R2, m-24854847). EVERY request to the vendor goes
+# through `metered_get`; `test_scrapecreators_gate_sanctity.py` fails if any other module
+# names the vendor's host, `BASE_URL` or the raw request below. In order, it:
+#   0. refuses a call no business is charged for (`qualify_api.vendors.usage`: a client
+#      bound with `usage.bind` or a `usage.charge_to` context) — `no_tenant`;
+#   1. honours the kill switch `QUALIFY_SCRAPECREATORS_PAID` (off = no call at all);
+#   2. stays stopped after a 402 (out of credits) in this process;
+#   3. does not call when the last balance the vendor reported is under `CREDIT_FLOOR`;
+#   3b. books one credit for that business in `vendor_usage_events` — and does not call
+#      when that would cross its cap of 150 credits in its local day or 600 in its local
+#      month (ADR 42 R5, m-24854849); a business uncapped from its Meegle Alta
+#      (`vendors.uncapped`, m-24956180) is booked the same but its cap is not checked;
+#   4. calls;
+#   5. records `credits_remaining` from the answer (free) in `vendor_balance`, and books
+#      what `credits_charged` says beyond the first credit;
+#   6. on a 402 records 0 — which trips the floor in every other process too — and stops;
+#   7. sends the alert that write claimed — under 2,000, under the floor, or the 402 —
+#      to the team in Lark, once per episode (`qualify_api.vendors.balance_alert`); shipped
+#      OFF — only logged — until `QUALIFY_SCRAPECREATORS_BALANCE_ALERTS=1`.
+
+#: The kill switch. Unset or anything else = paid calls allowed; "0", "false", "off" or
+#: "no" = no call reaches the vendor (the gate raises `ScrapeCreatorsBlocked`).
+PAID_SWITCH_ENV = "QUALIFY_SCRAPECREATORS_PAID"
+_SWITCH_OFF = frozenset({"0", "false", "off", "no"})
+#: Below this reported balance the gate does not call (ADR 42 §2.4): the reserve keeps
+#: the account alive for the operator while the plan is topped up.
+CREDIT_FLOOR = FLOOR_THRESHOLD  # 500; the `floor` alert fires under the same number
+#: The vendor's own balance route: free, and the only way back from a 402 stop
+#: (`refresh_balance`). Shape measured 2026-11-04 with `just sc balance`:
+#: `{"success": true, "creditCount": <int>, "message": "..."}`.
+_BALANCE_PATH = "/v1/credit-balance"
+_HTTP_PAYMENT_REQUIRED = 402
+
+#: What a paid call was for — logged per call, and the `feature` of its
+#: `vendor_usage_events` row when it is charged to a business (0124 widened 0117's CHECK
+#: from the first four to all seven).
+FEATURE_PROFILE = "profile"
+FEATURE_REELS_LIST = "reels_list"
+FEATURE_REELS_TRANSCRIPT = "reels_transcript"
+FEATURE_AVATAR_REFRESH = "avatar_refresh"
+FEATURE_POSTS = "posts"
+FEATURE_SEARCH = "referentes_search"
+FEATURE_TRENDING = "trending"
+#: The Creators module (m-24946121): its own budget (50/day, 300/month) is summed over
+#: these two inside the business's R5 cap (migration 0125 widens the CHECK to nine).
+FEATURE_CREATOR_PROFILE = "creator_profile"
+FEATURE_CREATOR_REELS = "creator_reels"
+FEATURES = frozenset(
+    {
+        FEATURE_CREATOR_PROFILE,
+        FEATURE_CREATOR_REELS,
+        FEATURE_PROFILE,
+        FEATURE_REELS_LIST,
+        FEATURE_REELS_TRANSCRIPT,
+        FEATURE_AVATAR_REFRESH,
+        FEATURE_POSTS,
+        FEATURE_SEARCH,
+        FEATURE_TRENDING,
+    }
+)
+
+
+class ScrapeCreatorsBlocked(ScrapeCreatorsError):
+    """The gate refused to call: no request left the process, no credit was spent.
+
+    `reason` is one of `switch_off`, `halted` (a 402 was met), `below_floor`,
+    `balance_unreadable`, or — R5, per business — `no_tenant`, `tenant_daily_cap`,
+    `tenant_monthly_cap` or `usage_unreadable` (`usage.CAP_REASONS`). A subclass, so every
+    caller that already copes with a failed read copes with this one; callers that retry
+    check for it and do not."""
+
+    def __init__(self, message: str, *, reason: str) -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
+_balance_store: BalanceStore | None = None
+_halt_lock = threading.Lock()
+#: When this process met a 402, or None. Cleared by a balance at or over the floor that
+#: was observed AFTER it — `refresh_balance` here or in any other process (the recipe
+#: `just sc-balance-refresh`), so a running app recovers from a top-up without a restart.
+_halted_at: datetime | None = None
+
+
+def configure_balance_store(store: BalanceStore | None) -> None:
+    """Install where the gate reads and writes the balance (`None` = Postgres, the
+    default). Tests install an `InMemoryBalanceStore`; the repo-wide conftest does it
+    for every test so the gate never reaches a database offline."""
+    global _balance_store
+    _balance_store = store
+
+
+def _store() -> BalanceStore:
+    global _balance_store
+    if _balance_store is None:
+        _balance_store = PostgresBalanceStore()
+    return _balance_store
+
+
+_balance_alert: LowBalanceAlert | None = None
+
+
+def configure_balance_alert(alert: LowBalanceAlert | None) -> None:
+    """Install the low-balance alert (`None` = the production one, built from the
+    environment on first use). The repo-wide conftest installs one with a recording
+    notifier, so no offline test ever posts to a real webhook."""
+    global _balance_alert
+    _balance_alert = alert
+
+
+def _alert() -> LowBalanceAlert:
+    global _balance_alert
+    if _balance_alert is None:
+        _balance_alert = production_alert()
+    return _balance_alert
+
+
+def _observe(change: BalanceChange | None) -> None:
+    """Step 7: hand the write to the alert. Never raises into the paid call."""
+    try:
+        _alert().observe(change)
+    except Exception as exc:  # noqa: BLE001 - an alert must never cost a paid answer
+        logger.error("scrapecreators balance alert skipped: %s", type(exc).__name__)
+
+
+def paid_switch_on() -> bool:
+    return os.environ.get(PAID_SWITCH_ENV, "").strip().lower() not in _SWITCH_OFF
+
+
+def halted() -> bool:
+    """True once a 402 was met in this process, until a newer balance at or over the
+    floor is recorded (`refresh_balance`)."""
+    return _halted_at is not None
+
+
+def _halt() -> None:
+    global _halted_at
+    with _halt_lock:
+        _halted_at = datetime.now(UTC)
+
+
+def reset_halt() -> None:
+    """Forget this process's 402 stop (tests; `refresh_balance` after a top-up)."""
+    global _halted_at
+    with _halt_lock:
+        _halted_at = None
+
+
+def is_vendor_host(host: str) -> bool:
+    """Whether a request host is the vendor's API — for callers that count requests on
+    their transport (`creative.brand_prefill`) without naming the host themselves."""
+    return host.lower() == (urlsplit(BASE_URL).hostname or "")
+
+
+def _admit(path: str) -> None:
+    """Steps 1-3 of the gate. Raises `ScrapeCreatorsBlocked` when the call must not go."""
+    if not paid_switch_on():
+        raise ScrapeCreatorsBlocked(
+            f"Scrape Creators {path} not called: {PAID_SWITCH_ENV} is off", reason="switch_off"
+        )
+    try:
+        balance = _store().read(BALANCE_VENDOR)
+    except Exception as exc:  # noqa: BLE001 - any store failure fails closed
+        # Never pay for what cannot be accounted for: a balance we cannot read is a
+        # floor we cannot check.
+        logger.warning("scrapecreators balance unreadable, not calling: %s", type(exc).__name__)
+        raise ScrapeCreatorsBlocked(
+            f"Scrape Creators {path} not called: balance unreadable",
+            reason="balance_unreadable",
+        ) from exc
+    halted_at = _halted_at
+    if halted_at is not None:
+        topped_up = (
+            balance is not None
+            and balance.observed_at > halted_at
+            and balance.credits_remaining >= CREDIT_FLOOR
+        )
+        if not topped_up:
+            raise ScrapeCreatorsBlocked(
+                f"Scrape Creators {path} not called: stopped after HTTP 402 (no credits)",
+                reason="halted",
+            )
+        logger.info("scrapecreators balance back to %s: 402 stop lifted", balance.credits_remaining)
+        reset_halt()
+    if balance is not None and balance.credits_remaining < CREDIT_FLOOR:
+        raise ScrapeCreatorsBlocked(
+            f"Scrape Creators {path} not called: balance {balance.credits_remaining} is "
+            f"under the {CREDIT_FLOOR}-credit floor",
+            reason="below_floor",
+        )
+
+
+def _record_balance(
+    credits_remaining: int, observed_at: datetime, *, exhausted: bool = False
+) -> None:
+    """Step 5: keep what the vendor reported. A store failure is logged, never raised —
+    the credit is already spent and the answer is still worth returning.
+
+    `observed_at` is when the request LEFT, not when its answer arrived: a slow 200 that
+    started before a 402 must never overwrite the 0 that 402 wrote (the store keeps the
+    newest observation), or the floor would reopen for every other process. `exhausted`
+    marks the 402's write, which carries its own alert."""
+    try:
+        change = _store().record(
+            BALANCE_VENDOR, credits_remaining, observed_at, exhausted=exhausted
+        )
+    except Exception as exc:  # noqa: BLE001 - recording must not lose a paid answer
+        logger.warning("scrapecreators balance not recorded: %s", type(exc).__name__)
+        return
+    _observe(change)
+
+
+def _reported_credits(response: httpx.Response, key: str = "credits_remaining") -> int | None:
+    try:
+        payload = response.json()
+    except ValueError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    value = payload.get(key)
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _usage_event(
+    charge: usage.UsageCharge, feature: str, credits: int, request_key: str
+) -> usage.UsageEvent:
+    return usage.UsageEvent(
+        tenant_id=charge.tenant_id,
+        brand_id=charge.brand_id,
+        vendor=usage.SCRAPECREATORS,
+        feature=feature,
+        credits=credits,
+        usd_estimate=usage.usd_per_credit() * credits,
+        pricing_table_version=usage.PRICING_TABLE_VERSION,
+        request_key=request_key,
+    )  # `created_at`: the database's now()
+
+
+#: The request key of the last call `metered_get` booked in this context (thread / task):
+#: what a caller that keeps its own record of the call (the transcript's consumption row)
+#: reads right after it, so both rows carry the same key as `vendor_usage_events`.
+_last_request_key: ContextVar[str | None] = ContextVar(
+    "scrapecreators_last_request_key", default=None
+)
+
+
+def last_request_key() -> str | None:
+    """The `vendor_usage_events.request_key` of the last call booked in this context."""
+    return _last_request_key.get()
+
+
+def _book(charge: usage.UsageCharge, path: str, feature: str) -> str:
+    """Step 3b: book one credit for the business, or raise `ScrapeCreatorsBlocked` (no
+    call) when its cap would be crossed or its usage cannot be read. Returns the
+    booking's request key."""
+    request_key = f"{feature}:{uuid4()}"
+    event = _usage_event(charge, feature, 1, request_key)
+    # m-24956180: a business uncapped from its Meegle Alta is booked like any other, only
+    # its cap is not checked (the other refusals of the gate still stand)
+    capped = not uncapped.is_uncapped(charge.tenant_id)
+    try:
+        reason = usage.store().book(event, capped=capped)
+    except Exception as exc:  # noqa: BLE001 - never pay for what cannot be accounted for
+        logger.warning(
+            "scrapecreators usage of tenant %s unreadable, not calling: %s",
+            charge.tenant_id,
+            type(exc).__name__,
+        )
+        raise ScrapeCreatorsBlocked(
+            f"Scrape Creators {path} not called: usage unreadable",
+            reason=usage.REASON_USAGE_UNREADABLE,
+        ) from exc
+    if reason is not None:
+        logger.warning(
+            "scrapecreators %s not called: tenant %s reached its cap (%s)",
+            path,
+            charge.tenant_id,
+            reason,
+        )
+        raise ScrapeCreatorsBlocked(
+            f"Scrape Creators {path} not called: the business reached its {reason}",
+            reason=reason,
+        )
+    return request_key
+
+
+def _book_extra(
+    charge: usage.UsageCharge, feature: str, request_key: str, response: httpx.Response
+) -> None:
+    """Step 5b: what the vendor charged beyond the booked credit — already spent, so
+    booked without the cap. A failure is logged, never raised: the answer is paid for."""
+    charged = _reported_credits(response, "credits_charged")
+    if charged is None or charged <= 1:
+        return
+    event = _usage_event(charge, feature, charged - 1, f"{request_key}:extra")
+    try:
+        usage.store().book(event, capped=False)
+    except Exception as exc:  # noqa: BLE001 - recording must not lose a paid answer
+        logger.warning("scrapecreators extra credits not booked: %s", type(exc).__name__)
+
+
+def _vendor_request(client: httpx.Client, path: str, params: dict[str, str]) -> httpx.Response:
+    """The ONE place a request to the vendor's API is built. Only the gate calls it."""
+    return client.get(f"{BASE_URL}{path}", params=params, headers={"x-api-key": _api_key()})
+
+
+def metered_get(
+    client: httpx.Client, path: str, params: dict[str, str], *, feature: str
+) -> dict[str, Any]:
+    """GET `path` on the vendor's API through the gate and return the JSON body.
+
+    Raises `ScrapeCreatorsBlocked` (no request made) when the switch is off, a 402 was
+    met, or the last reported balance is under `CREDIT_FLOOR`; `ScrapeCreatorsError`
+    for anything the vendor or the network did. `feature` says what the credit was for
+    (one of `FEATURES`).
+
+    Charged to the business `usage.charge_of(client)` names (R5): one credit is booked
+    for it before the request leaves, and the call is refused (`tenant_daily_cap` /
+    `tenant_monthly_cap`) when that would cross its cap. A call with no business to
+    charge is not made (`no_tenant`, founder decision 2026-11-04: every paid read is
+    some business's)."""
+    if feature not in FEATURES:
+        raise ValueError(f"unknown scrapecreators feature: {feature!r}")
+    charge = usage.charge_of(client)
+    if charge is None:
+        logger.warning("scrapecreators %s not called: no business to charge", path)
+        raise ScrapeCreatorsBlocked(
+            f"Scrape Creators {path} not called: no business to charge",
+            reason=usage.REASON_NO_TENANT,
+        )
+    _admit(path)
+    request_key = _book(charge, path, feature)
+    _last_request_key.set(request_key)
+    started = datetime.now(UTC)
+    try:
+        response = _vendor_request(client, path, params)
+    except httpx.HTTPError as exc:
+        raise ScrapeCreatorsError(
+            f"Scrape Creators {path} request failed: {type(exc).__name__}"
+        ) from exc
+    if response.status_code == _HTTP_PAYMENT_REQUIRED:
+        # Out of credits: stop here and everywhere. 0 in `vendor_balance` is under the
+        # floor for every process; the in-process flag holds even if that write fails.
+        _halt()
+        _record_balance(0, datetime.now(UTC), exhausted=True)
+        logger.error("scrapecreators answered 402 on %s: paid calls stopped", path)
+    else:
+        reported = _reported_credits(response)
+        if reported is not None:
+            _record_balance(reported, started)
+        _book_extra(charge, feature, request_key, response)
+    logger.info(
+        "scrapecreators call path=%s feature=%s status=%s tenant=%s",
+        path,
+        feature,
+        response.status_code,
+        charge.tenant_id,
+    )
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        # 401/403 = bad key, 402 = out of credits, 404 = handle not found/private,
+        # 429 = rate limited — the status + vendor detail is the whole diagnosis, so
+        # both ride along rather than forcing a trip to the terminal log to see them.
+        raise ScrapeCreatorsError(
+            f"Scrape Creators {path} failed with HTTP {exc.response.status_code}: "
+            f"{_error_detail(exc.response)}",
+            status_code=exc.response.status_code,
+        ) from exc
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise ScrapeCreatorsError(f"Scrape Creators {path} returned a non-JSON response") from exc
+    if not isinstance(payload, dict) or payload.get("success") is False:
+        raise ScrapeCreatorsError(
+            f"Scrape Creators {path} responded without success: {_error_detail(response)}",
+        )
+    return payload
+
+
+def refresh_balance(*, client: httpx.Client | None = None) -> int:
+    """Read the balance from the vendor's free route, record it, and — when it is back
+    at or over the floor — clear this process's 402 stop. The operator's way back after
+    a top-up (`just sc-balance-refresh`); it spends nothing, so the switch and the floor
+    do not apply. Raises `ScrapeCreatorsError` when the vendor does not answer, and
+    whatever the balance store raises when the balance cannot be written: an operator
+    must never see a count that was not recorded."""
+    owns_client = client is None
+    active = client or httpx.Client(timeout=_TIMEOUT_SECONDS)
+    try:
+        response = _vendor_request(active, _BALANCE_PATH, {})
+        response.raise_for_status()
+        payload = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise ScrapeCreatorsError(
+            f"Scrape Creators balance unreadable: {type(exc).__name__}"
+        ) from exc
+    finally:
+        if owns_client:
+            active.close()
+    count = payload.get("creditCount") if isinstance(payload, dict) else None
+    if isinstance(count, bool) or not isinstance(count, int):
+        raise ScrapeCreatorsError("Scrape Creators balance answered without creditCount")
+    change = _store().record(BALANCE_VENDOR, count, datetime.now(UTC), authoritative=True)
+    _observe(change)
+    if count >= CREDIT_FLOOR:
+        reset_halt()
+    return count
+
+
+# ---------------------------------------------------------------------------
+# Per-network normalization -> one common profile shape (matches the old fixture's
+# `profile` object, so the rest of the wizard never has to know which network read it).
+
+
+def _clean_category(*values: object) -> str:
+    """First usable category-ish string among `values`, in priority order — skipping
+    `None`, blank, and the literal string `"None"` the API returns for an unset
+    business-category field (seen live in `business_category_name`)."""
+    for value in values:
+        text = str(value).strip() if value is not None else ""
+        if text and text.lower() != "none":
+            return text
+    return ""
+
+
+def _instagram_user(payload: dict[str, Any]) -> dict[str, Any]:
+    data = payload.get("data")
+    user = data.get("user") if isinstance(data, dict) else None
+    if not isinstance(user, dict):
+        raise ScrapeCreatorsError("instagram profile response carried no data.user object")
+    return user
+
+
+def _normalize_instagram(payload: dict[str, Any]) -> dict[str, Any]:
+    """`{"data": {"user": {...}}}` (docs.scrapecreators.com/v1/instagram/profile).
+
+    Category comes from `category_name` ("Entrepreneur", "Creator", ...) — an
+    Instagram business/professional-account field. `business_category_name` and
+    `overall_category_name` are fallbacks: both are commonly `null` or the literal
+    string `"None"` when the primary field is set, and vice versa.
+    """
+    user = _instagram_user(payload)
+    followers = user.get("edge_followed_by", {})
+    following = user.get("edge_follow", {})
+    posts = user.get("edge_owner_to_timeline_media", {})
+    return {
+        "username": str(user.get("username", "")),
+        "stable_id": str(user.get("id") or ""),
+        "isProfessionalAccount": user.get("is_professional_account") is True,
+        "fullName": str(user.get("full_name", "")),
+        "bio": str(user.get("biography", "")),
+        "category": _clean_category(
+            user.get("category_name"),
+            user.get("business_category_name"),
+            user.get("overall_category_name"),
+        ),
+        "followers": followers.get("count") if isinstance(followers, dict) else None,
+        "following": following.get("count") if isinstance(following, dict) else None,
+        "postsCount": posts.get("count") if isinstance(posts, dict) else None,
+        "isVerified": bool(user.get("is_verified", False)),
+        "isPrivate": bool(user.get("is_private", False)),
+        "profilePicUrl": str(user.get("profile_pic_url_hd") or user.get("profile_pic_url") or ""),
+        "externalUrl": str(user.get("external_url") or ""),
+        # Instagram's own "similar accounts" chaining, when the vendor carries it
+        # (`edge_related_profiles` — measured 2026-09-11: 6 accounts for `mouredev`,
+        # none for `midu.dev`). Usernames only; the creator discovery reads them.
+        "relatedProfiles": _related_usernames(user.get("edge_related_profiles")),
+    }
+
+
+def _related_usernames(edge: object) -> list[str]:
+    edges = edge.get("edges") if isinstance(edge, dict) else None
+    out: list[str] = []
+    for item in edges if isinstance(edges, list) else []:
+        node = item.get("node") if isinstance(item, dict) else None
+        username = node.get("username") if isinstance(node, dict) else None
+        if (
+            isinstance(username, str)
+            and username
+            and not (isinstance(node, dict) and node.get("is_private"))
+        ):
+            out.append(username)
+    return out
+
+
+def _normalize_tiktok(payload: dict[str, Any]) -> dict[str, Any]:
+    """`{"user": {...}, "stats": {...}}` (docs.scrapecreators.com/v1/tiktok/profile).
+
+    `category` always comes back empty: TikTok's own profile payload carries no
+    category/industry/niche field at all (verified against the documented shape,
+    2026-09-04) — unlike Instagram's `category_name`. Still present as a key so
+    callers can treat both networks uniformly instead of branching on it.
+    """
+    user = payload.get("user")
+    if not isinstance(user, dict):
+        raise ScrapeCreatorsError("tiktok profile response carried no user object")
+    stats = payload.get("stats")
+    stats = stats if isinstance(stats, dict) else {}
+    return {
+        "username": str(user.get("uniqueId", "")),
+        "fullName": str(user.get("nickname", "")),
+        "bio": str(user.get("signature", "")),
+        "category": "",
+        "followers": stats.get("followerCount"),
+        "following": stats.get("followingCount"),
+        "postsCount": stats.get("videoCount"),
+        # Likes received over every video (`heartCount`) — kept for the growth history
+        # (`qualify_api.growth`); Instagram's profile has no equivalent.
+        "totalLikes": stats.get("heartCount"),
+        "isVerified": bool(user.get("verified", False)),
+        "isPrivate": bool(user.get("privateAccount", False)),
+        "profilePicUrl": str(user.get("avatarLarger") or user.get("avatarMedium") or ""),
+        "externalUrl": "",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Recent posts — the SECOND read per analysis, behind the windowed metrics
+# (§ request 2026-09-10: "que las stats tengan un tiempo al cual sacarle la métrica,
+# por ahora semana"). Neither profile endpoint yields a dated post list (TikTok ships
+# none, Instagram a capped ~12), so a time window needs the per-user post endpoints:
+# `/v2/instagram/user/posts` (`items[]`, `taken_at`, `like_count`, `comment_count`,
+# `play_count`, paginated by `next_max_id`/`more_available`) and
+# `/v3/tiktok/profile/videos` (`aweme_list[]`, `create_time`, `statistics.{digg_count,
+# comment_count,play_count}`, paginated by `max_cursor`/`has_more`). 1 credit per page
+# on both (docs.scrapecreators.com, read 2026-09-10 — [UNVERIFIED LIVE], same marker
+# as the profile shapes above).
+
+#: The window every metric is computed over — "por ahora semana". One knob so the
+#: product can move it later (14, 30) without touching the arithmetic.
+METRICS_WINDOW_DAYS = 7
+_WINDOW_SECONDS = METRICS_WINDOW_DAYS * 24 * 3600
+
+#: Pagination cap for the post list — a hard ceiling on credits per analysis (profile +
+#: up to this many pages). Pages are ~12 (IG) / **10** (TikTok — measured 2026-10-01 on
+#: `/v3/tiktok/profile/videos`, with and without `trim`; the ~30 assumed before was the
+#: search endpoints' size). The walk stops as soon as a page's last post is older than
+#: the window, so the cap only costs on accounts that post more than ~a video a day;
+#: five pages cover a week of up to ~7/day and still stop a runaway cursor loop.
+_MAX_POST_PAGES = 5
+
+_POSTS_ENDPOINT = {
+    "instagram": "/v2/instagram/user/posts",
+    "tiktok": "/v3/tiktok/profile/videos",
+}
+
+
+def _int_or_none(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+#: What a post's "made with AI" label can say in the common shape (`aiLabel`), both
+#: platforms folded into one vocabulary (2026-10-01, measured live — see
+#: `docs/scrapecreators-crecimiento-organico-y-contenido-ia.md` §3):
+#:   "self_disclosed" — the author marked it (Instagram `SELF_DISCLOSURE_FLOW`; TikTok's
+#:                      label without a moderation pass, `aigc_label_type == 1`);
+#:   "detected"       — the platform detected it (Instagram `AI_EDITED`, which includes
+#:                      minor AI edits; TikTok `aigc_label_type == 2`, a moderation-side
+#:                      label, usually with C2PA provenance);
+#:   ""               — no label. Not "not AI": unlabeled AI content carries nothing.
+AI_LABEL_SELF_DISCLOSED = "self_disclosed"
+AI_LABEL_DETECTED = "detected"
+
+
+def _post(
+    taken_at: object,
+    likes: object,
+    comments: object,
+    views: object,
+    *,
+    post_id: object = None,
+    shares: object = None,
+    ai_generated: bool | None = None,
+    ai_label: str = "",
+    ai_source: str = "",
+) -> dict[str, Any] | None:
+    """One post in the common shape, or None when it has no usable timestamp — an
+    undated post cannot be placed inside or outside the window, so it is dropped.
+    `aiGenerated` is True when the platform's own "made with AI" label is on the post,
+    None when nothing says either way (no platform labels "not AI"); `aiLabel` says
+    who put it there (`AI_LABEL_*`) and `aiSource` what C2PA named, when it did."""
+    stamp = _int_or_none(taken_at)
+    if stamp is None:
+        return None
+    return {
+        "postId": str(post_id) if post_id not in (None, "") else "",
+        "takenAt": stamp,
+        "likes": _int_or_none(likes),
+        "comments": _int_or_none(comments),
+        "views": _int_or_none(views),
+        "shares": _int_or_none(shares),
+        "aiGenerated": ai_generated,
+        "aiLabel": ai_label,
+        "aiSource": ai_source,
+    }
+
+
+def _instagram_ai_label(item: dict[str, Any]) -> tuple[bool | None, str]:
+    """`/v2/instagram/user/posts` carries `ai_label_info` only on a labelled post
+    (3/12 measured 2026-10-01); `gen_ai_detection_method` inside says who labelled it."""
+    info = item.get("ai_label_info")
+    if not isinstance(info, dict):
+        return None, ""
+    method = str(info.get("gen_ai_detection_method") or "")
+    if method == "SELF_DISCLOSURE_FLOW":
+        return True, AI_LABEL_SELF_DISCLOSED
+    if method:
+        return True, AI_LABEL_DETECTED
+    return None, ""
+
+
+def _tiktok_ai_label(item: dict[str, Any]) -> tuple[bool | None, str, str]:
+    """`aweme.aigc_info.created_by_ai` is TikTok's label (27/30 of an "ai generated"
+    search carried it, 2026-10-01); `aigc_label_type` 1 vs 2 is read as who applied it
+    (undocumented by TikTok — inferred from `moderation_aigc_info` only appearing with
+    2); `c2pa_info.first_aigc_src` names the generator when the file kept its C2PA
+    signature ("Sora"). Absent on a `trim=true` read — never trim when this matters."""
+    info = item.get("aigc_info")
+    c2pa = item.get("c2pa_info")
+    source = str(c2pa.get("first_aigc_src") or "") if isinstance(c2pa, dict) else ""
+    if not isinstance(info, dict):
+        return None, "", source
+    label_type = _int_or_none(info.get("aigc_label_type")) or 0
+    created = info.get("created_by_ai") is True or label_type != 0
+    if not created:
+        return False, "", source
+    return True, (AI_LABEL_DETECTED if label_type == 2 else AI_LABEL_SELF_DISCLOSED), source
+
+
+def _normalize_instagram_posts(
+    payload: dict[str, Any],
+) -> tuple[list[dict[str, Any]], str | None]:
+    """`(posts, next cursor or None)` from `/v2/instagram/user/posts`."""
+    items = payload.get("items")
+    posts: list[dict[str, Any]] = []
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict):
+            continue
+        # `like_and_view_counts_disabled` leaves `like_count` as a placeholder (3 on a
+        # hidden post, measured 2026-10-01), not a figure: unknown, so `profile_metrics`
+        # leaves the post out of the means instead of averaging in a fake 3.
+        hidden = item.get("like_and_view_counts_disabled") is True
+        ai_generated, ai_label = _instagram_ai_label(item)
+        post = _post(
+            item.get("taken_at"),
+            None if hidden else item.get("like_count"),
+            item.get("comment_count"),
+            None if hidden else item.get("play_count", item.get("ig_play_count")),
+            post_id=item.get("code") or item.get("pk") or item.get("id"),
+            ai_generated=ai_generated,
+            ai_label=ai_label,
+        )
+        if post is not None:
+            posts.append(post)
+    cursor = payload.get("next_max_id")
+    return posts, (str(cursor) if payload.get("more_available") and cursor else None)
+
+
+def _normalize_tiktok_videos(
+    payload: dict[str, Any],
+) -> tuple[list[dict[str, Any]], str | None]:
+    """`(posts, next cursor or None)` from `/v3/tiktok/profile/videos`."""
+    items = payload.get("aweme_list")
+    posts: list[dict[str, Any]] = []
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict):
+            continue
+        stats = item.get("statistics")
+        stats = stats if isinstance(stats, dict) else {}
+        ai_generated, ai_label, ai_source = _tiktok_ai_label(item)
+        post = _post(
+            item.get("create_time"),
+            stats.get("digg_count"),
+            stats.get("comment_count"),
+            stats.get("play_count"),
+            post_id=item.get("aweme_id"),
+            shares=stats.get("share_count"),
+            ai_generated=ai_generated,
+            ai_label=ai_label,
+            ai_source=ai_source,
+        )
+        if post is not None:
+            posts.append(post)
+    cursor = payload.get("max_cursor")
+    return posts, (str(cursor) if payload.get("has_more") and cursor else None)
+
+
+def fetch_recent_posts(
+    network: str,
+    handle: str,
+    *,
+    since: float,
+    client: httpx.Client | None = None,
+    max_pages: int = _MAX_POST_PAGES,
+    hashtag_counts: Counter[str] | None = None,
+    caption_sink: list[str] | None = None,
+    start_cursor: str | None = None,
+    item_sink: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Every post published at or after `since` (unix seconds), newest first, in the
+    common `{takenAt, likes, comments, views}` shape. Walks the paginated post list
+    newest-to-oldest and stops as soon as a page's LAST item is older than `since` —
+    last, not any: both platforms put pinned posts first, and a pinned post from two
+    years ago on page one must not end the walk. Also stops at `max_pages`, at an
+    empty page, or when the API stops handing back a (new) cursor. Posts older than
+    `since` never make it into the result.
+
+    `hashtag_counts`, when given, is filled with the hashtags of EVERY post on every
+    page read — not only the windowed ones: a page is ~12-30 posts either way, the
+    credits are already spent, and an account that did not publish this week still
+    says what it is about in last month's captions. It is what the creator discovery
+    reads as the account's own vocabulary (`discovery_seed.seed_from_profile`).
+
+    `start_cursor` starts the walk on a later page — the Instagram profile's own
+    `end_cursor`, so the first page paid for is the 13th post onwards and not the 12
+    the profile already carried (`_instagram_continuation_cursor`). `item_sink`, when
+    given, receives every raw item read (what `recentMedia` is built from on TikTok).
+    """
+    handle = _normalize_handle(handle)
+    if not handle:
+        raise ValueError("handle must not be empty")
+    if network not in _POSTS_ENDPOINT:
+        raise ValueError(f"unsupported network: {network!r}")
+    owns_client = client is None
+    active = client or httpx.Client(timeout=_TIMEOUT_SECONDS)
+    normalize = _normalize_instagram_posts if network == "instagram" else _normalize_tiktok_videos
+    cursor_key = "next_max_id" if network == "instagram" else "max_cursor"
+    collected: list[dict[str, Any]] = []
+    cursor: str | None = start_cursor or None
+    try:
+        for _ in range(max_pages):
+            params = {"handle": handle}
+            if network == "tiktok":
+                params["sort_by"] = "latest"
+            if cursor:
+                params[cursor_key] = cursor
+            payload = metered_get(active, _POSTS_ENDPOINT[network], params, feature=FEATURE_POSTS)
+            if item_sink is not None:
+                item_sink.extend(_page_items(network, payload))
+            if hashtag_counts is not None:
+                hashtag_counts.update(_page_hashtags(network, payload))
+            if caption_sink is not None and len(caption_sink) < RECENT_CAPTIONS:
+                caption_sink.extend(_page_captions(network, payload))
+            page, next_cursor = normalize(payload)
+            if not page:
+                break
+            collected.extend(p for p in page if p["takenAt"] >= since)
+            if page[-1]["takenAt"] < since or not next_cursor or next_cursor == cursor:
+                break
+            cursor = next_cursor
+    finally:
+        if owns_client:
+            active.close()
+    collected.sort(key=lambda p: p["takenAt"], reverse=True)
+    return collected
+
+
+def _page_hashtags(network: str, payload: dict[str, Any]) -> list[str]:
+    """Lower-cased hashtags of every post on one raw post-list page. Instagram carries
+    them only inline in the caption text (`caption.text`, or a bare string on some
+    shapes); TikTok has them structured in `text_extra[].hashtag_name` AND inline in
+    `desc` — both are read and de-duplicated per post, since either can be missing."""
+    tags: list[str] = []
+    for item in _page_items(network, payload):
+        text = _item_text(network, item)
+        found = {t.lower() for t in _HASHTAG_RE.findall(text)}
+        for extra in item.get("text_extra") or []:
+            name = extra.get("hashtag_name") if isinstance(extra, dict) else None
+            if isinstance(name, str) and name:
+                found.add(name.lower())
+        tags.extend(sorted(found))
+    return tags
+
+
+def _page_items(network: str, payload: dict[str, Any]) -> list[dict[str, Any]]:
+    items = payload.get("items" if network == "instagram" else "aweme_list")
+    return [i for i in items if isinstance(i, dict)] if isinstance(items, list) else []
+
+
+def _item_text(network: str, item: dict[str, Any]) -> str:
+    """A post's own text: Instagram's caption (`caption.text`, or a bare string on some
+    shapes), TikTok's `desc`."""
+    if network == "instagram":
+        caption = item.get("caption")
+        text = caption.get("text") if isinstance(caption, dict) else caption
+    else:
+        text = item.get("desc")
+    return text if isinstance(text, str) else ""
+
+
+def _page_captions(network: str, payload: dict[str, Any]) -> list[str]:
+    """The text of every post on one raw post-list page, newest first, trimmed and cut to
+    `CAPTION_CHARS` — what the rubro step's hashtags are created from (§ 2026-10-05)."""
+    out = []
+    for item in _page_items(network, payload):
+        text = " ".join(_item_text(network, item).split())
+        if text:
+            out.append(text[:CAPTION_CHARS])
+    return out
+
+
+_HASHTAG_RE = re.compile(r"#(\w+)")
+
+
+# ---------------------------------------------------------------------------
+# A referente's reels (§ request 2026-10-15, «Descubrir reels»): link, cover, caption,
+# figures, length and sound per video. Shapes measured live 2026-10-15 (6 calls on a
+# public restaurant account): Instagram's `/v1/instagram/user/reels` lists ONLY reels,
+# each under `items[].media`, paged by `paging_info.max_id`; TikTok's
+# `/v3/tiktok/profile/videos` with `sort_by=latest` (`popular` is the account's whole
+# history by LIKES, useless for a week or a month) and `include_pinned=false`. Neither
+# filters by date: the walk goes newest to oldest and stops at the window's edge.
+#
+# `video` is the reel's own MP4 on the network's CDN (Instagram `video_versions[0]`,
+# TikTok `video.play_addr`): measured 2026-10-15, both CDNs answer a cross-origin browser
+# with `access-control-allow-origin: *` and byte ranges, so a plain `<video>` plays JUST
+# the video in Qualify — streamed, never stored. The URL is signed and dies in ~24 h
+# (TikTok) / ~33 h (Instagram); the card falls back to the network's embed when it does.
+
+#: Pages a reel walk may read per account: a month of a daily poster on Instagram (12
+#: per page) and a little less on TikTok (10 per page). The walk stops earlier as soon
+#: as a page ends before `since`, so a quieter account costs one or two credits.
+REEL_MAX_PAGES = 4
+#: The version of the reel parser (`_instagram_reel` / `_tiktok_reel`) — the
+#: `parser_version` of every `public_reels` / `public_reel_reads` row. 2 (m-24946121):
+#: paid partnership, co-authors, the sound's id and origin, and hidden counts.
+REEL_PARSER_VERSION = 2
+
+_REELS_ENDPOINT = {
+    "instagram": "/v1/instagram/user/reels",
+    "tiktok": "/v3/tiktok/profile/videos",
+}
+
+
+def _first_candidate_url(value: object) -> str:
+    """The first URL of an Instagram `image_versions2.candidates` list or a TikTok
+    `{"url_list": [...]}` wrapper; "" when there is none."""
+    if isinstance(value, dict):
+        for key in ("candidates", "url_list"):
+            inner = value.get(key)
+            if isinstance(inner, list):
+                for entry in inner:
+                    url = entry.get("url") if isinstance(entry, dict) else entry
+                    if isinstance(url, str) and url:
+                        return url
+    return value if isinstance(value, str) else ""
+
+
+def _https(value: object, *hosts: str) -> str:
+    """`value` when it is an `https://` URL — on one of `hosts` (suffix match) when any
+    are given — else "". The vendor's JSON is data: a reel's link ends up as an `href`
+    and its MP4 as a `<video src>`, so neither is taken on faith."""
+    if not isinstance(value, str) or not value.startswith("https://"):
+        return ""
+    host = (urlsplit(value).hostname or "").lower()
+    if hosts and not any(host == h or host.endswith("." + h) for h in hosts):
+        return ""
+    return value
+
+
+def _instagram_sound(item: dict[str, Any]) -> str:
+    """A reel's sound title: the licensed track's, else the original audio's name. The
+    list and the post detail disagree on the same reel at times (measured 2026-10-15):
+    this is the list's word."""
+    clips = item.get("clips_metadata")
+    if not isinstance(clips, dict):
+        return ""
+    music = clips.get("music_info")
+    asset = music.get("music_asset_info") if isinstance(music, dict) else None
+    if isinstance(asset, dict) and asset.get("title"):
+        artist = str(asset.get("display_artist") or "").strip()
+        return f"{asset['title']} · {artist}" if artist else str(asset["title"])
+    original = clips.get("original_sound_info")
+    if isinstance(original, dict) and original.get("original_audio_title"):
+        return str(original["original_audio_title"])
+    return ""
+
+
+def _instagram_media(item: dict[str, Any]) -> dict[str, Any]:
+    media = item.get("media")
+    return media if isinstance(media, dict) else item
+
+
+def _username(value: object) -> str:
+    name = value.get("username") if isinstance(value, dict) else None
+    return name.strip().lstrip("@").lower() if isinstance(name, str) else ""
+
+
+def _instagram_coauthors(media: dict[str, Any]) -> list[str]:
+    """EVERY account on a reel (parser 2): its owner (`media.user.username`) plus
+    `media.coauthor_producers[].username`, measured 2026-11-04 on
+    `/v1/instagram/user/reels`. Absolute, not relative to the account being read: the
+    value lands on the shared `public_reels` row, and a collab reel read through either
+    of its accounts must keep both (review 2026-11-04). The sheet drops its own handle
+    (`creators.metrics.collaborators`)."""
+    names = [_username(media.get("user"))]
+    producers = media.get("coauthor_producers")
+    if isinstance(producers, list):
+        names += [_username(p) for p in producers]
+    return sorted({n for n in names if n})
+
+
+def _instagram_sound_id(media: dict[str, Any]) -> tuple[str | None, bool | None]:
+    """`(sound id, is the owner's own audio)` (parser 2). A licensed track is
+    `clips_metadata.music_info.music_asset_info` (`audio_cluster_id`, else its `id`) and
+    is never the owner's; an original audio is `clips_metadata.original_sound_info`
+    (`audio_asset_id`, measured 2026-11-04), the owner's own only when its
+    `ig_artist.username` is the reel's owner — someone else's original audio reused is
+    neither. `(None, None)` when the reel says nothing about its audio."""
+    clips = media.get("clips_metadata")
+    if not isinstance(clips, dict):
+        return None, None
+    music = clips.get("music_info")
+    asset = music.get("music_asset_info") if isinstance(music, dict) else None
+    if isinstance(asset, dict):
+        sound = asset.get("audio_cluster_id") or asset.get("id")
+        if sound:
+            return f"music:{sound}", False
+    original = clips.get("original_sound_info")
+    if isinstance(original, dict) and original.get("audio_asset_id"):
+        owner = _username(media.get("user"))
+        artist = _username(original.get("ig_artist"))
+        return f"original:{original['audio_asset_id']}", bool(owner) and artist == owner
+    return None, None
+
+
+def _instagram_reel(item: dict[str, Any], handle: str) -> dict[str, Any] | None:
+    """One `/v1/instagram/user/reels` item (`{"media": {...}}`, or the media itself) in
+    the reel shape, or None for anything that is not a video. Instagram exposes neither
+    shares nor saves of someone else's reel; hidden counts read as unknown."""
+    media = _instagram_media(item)
+    if media.get("media_type") != 2 and media.get("product_type") != "clips":
+        return None
+    stamp = _int_or_none(media.get("taken_at"))
+    code = str(media.get("code") or "")
+    if stamp is None or not code:
+        return None
+    hidden = media.get("like_and_view_counts_disabled") is True
+    caption = media.get("caption")
+    text = caption.get("text") if isinstance(caption, dict) else caption
+    duration = media.get("video_duration")
+    sound_id, sound_is_original = _instagram_sound_id(media)
+    return {
+        "id": code,
+        "network": "instagram",
+        "handle": handle,
+        "url": _https(media.get("url"), "instagram.com")
+        or f"https://www.instagram.com/reel/{code}/",
+        "caption": text if isinstance(text, str) else "",
+        "cover": _first_candidate_url(media.get("image_versions2"))
+        or str(media.get("thumbnail_url") or media.get("display_uri") or ""),
+        "takenAt": stamp,
+        # `play_count` comes as null on some reels next to a real `ig_play_count`
+        "views": None
+        if hidden
+        else _int_or_none(media.get("play_count") or media.get("ig_play_count")),
+        "likes": None if hidden else _int_or_none(media.get("like_count")),
+        "comments": _int_or_none(media.get("comment_count")),
+        "shares": None,
+        "saves": None,
+        "seconds": round(duration) if isinstance(duration, (int, float)) else None,
+        "sound": _instagram_sound(media),
+        "video": _https(_first_candidate_url({"candidates": media.get("video_versions")})),
+        # parser 2 (REEL_PARSER_VERSION): what the Creators module reads
+        "paidPartnership": media.get("is_paid_partnership") is True,
+        "coauthors": _instagram_coauthors(media),
+        "soundId": sound_id,
+        "soundIsOriginal": sound_is_original,
+        "countsHidden": hidden,
+    }
+
+
+def _tiktok_reel(item: dict[str, Any], handle: str) -> dict[str, Any] | None:
+    """One TikTok video of `/v3/tiktok/profile/videos` in the reel shape, or None for a
+    photo post (`image_post_info`, or `aweme_type` 150)."""
+    if item.get("image_post_info") or item.get("aweme_type") == 150:
+        return None
+    stamp = _int_or_none(item.get("create_time"))
+    video_id = str(item.get("aweme_id") or "")
+    if stamp is None or not video_id:
+        return None
+    stats = item.get("statistics")
+    stats = stats if isinstance(stats, dict) else {}
+    video = item.get("video")
+    video = video if isinstance(video, dict) else {}
+    millis = _int_or_none(video.get("duration"))  # milliseconds on TikTok
+    music = item.get("music")
+    sound = ""
+    if isinstance(music, dict) and music.get("title"):
+        author = str(music.get("author") or "").strip()
+        sound = f"{music['title']} · {author}" if author else str(music["title"])
+    cover = ""
+    for key in ("cover", "origin_cover", "dynamic_cover"):
+        cover = _first_candidate_url(video.get(key))
+        if cover:
+            break
+    return {
+        "id": video_id,
+        "network": "tiktok",
+        "handle": handle,
+        "url": _https(item.get("url"), "tiktok.com")
+        or f"https://www.tiktok.com/@{handle}/video/{video_id}",
+        "caption": str(item.get("desc") or ""),
+        "cover": cover,
+        "takenAt": stamp,
+        "views": _int_or_none(stats.get("play_count")),
+        "likes": _int_or_none(stats.get("digg_count")),
+        "comments": _int_or_none(stats.get("comment_count")),
+        "shares": _int_or_none(stats.get("share_count")),
+        "saves": _int_or_none(stats.get("collect_count")),
+        "seconds": round(millis / 1000) if millis else None,
+        "sound": sound,
+        "captionUrl": _tiktok_caption_url(video),
+        "video": _https(_first_candidate_url(video.get("play_addr")))
+        or _https(_first_candidate_url(video.get("download_no_watermark_addr"))),
+        # parser 2 keys, so both networks share one shape. TikTok is not read by the
+        # Creators module yet (G-JOIN, ADR 33 (d)): sponsorship and co-authors are not
+        # parsed (`coauthors` None = not read), only the sound's id.
+        "paidPartnership": False,
+        "coauthors": None,
+        "soundId": f"music:{music['id']}" if isinstance(music, dict) and music.get("id") else None,
+        "soundIsOriginal": None,
+        "countsHidden": False,
+    }
+
+
+def _tiktok_caption_url(video: dict[str, Any]) -> str:
+    """The video's own subtitles (`video.cla_info.caption_infos[].url`, a WEBVTT file on
+    TikTok's CDN, valid ~30 days): free with the list — measured 2026-10-15, present when
+    the video has a voice. Spanish first, else the first language listed."""
+    cla = video.get("cla_info")
+    infos = cla.get("caption_infos") if isinstance(cla, dict) else None
+    if not isinstance(infos, list):
+        return ""
+    urls = [
+        (str(i.get("lang") or "").lower(), str(i.get("url") or ""))
+        for i in infos
+        if isinstance(i, dict) and i.get("url")
+    ]
+    spanish = [url for lang, url in urls if lang.startswith(("spa", "es"))]
+    return (spanish or [url for _, url in urls] or [""])[0]
+
+
+# ---------------------------------------------------------------------------
+# What a reel SAYS (§ request 2026-10-15): its transcript, to show on the card and to
+# judge the rubro with, and — with its timings — to spread the speech over the shots of
+# the shared analysis (ADR 44, VE-04b m-24921057). Instagram:
+# `/v2/instagram/media/transcript` — the vendor's AI speech-to-text, 1 credit for a video
+# up to 120 s (longer ones are not transcribed unless paid at 10 credits/minute, which
+# this never asks for), 0 when the vendor's own cache answers (`cache_max_age`) or there
+# is no speech. The SAME answer carries the plain text (`transcripts[].text`) and the
+# timed stretches, nested in each entry (`transcripts[].transcript_with_timestamp[]`,
+# `{"start", "end", "text"}` in float seconds — verified live 2026-11-05 and 2026-11-06
+# on a cached answer, 0 credits), so the timings cost nothing more. TikTok: the video's
+# native subtitles (WEBVTT), fetched from its CDN — no credit at all; each cue carries
+# its own timing.
+
+#: How old a vendor-cached transcript may be and still be taken for free (days).
+TRANSCRIPT_CACHE_DAYS = "30"
+#: The transcript route is synchronous and slow: the vendor asks for ≥30 s.
+TRANSCRIPT_TIMEOUT_SECONDS = 45.0
+_CAPTION_HOSTS = ("tiktokcdn.com", "tiktokcdn-eu.com", "tiktokcdn-us.com")
+_VTT_TIMING = re.compile(r"^\d{2}:\d{2}(:\d{2})?\.\d{3}\s+-->")
+_BOM = "﻿"
+#: Raise it when the way timed stretches are read changes: stored next to them as
+#: `public_reels.transcript_reader_version` (0117), their provenance.
+TRANSCRIPT_READER_VERSION = 1
+#: Which reader made a `Transcript` — the values of `public_reels.transcript_source`.
+TRANSCRIPT_VENDOR_STT = "vendor_stt"
+TRANSCRIPT_TIKTOK_VTT = "tiktok_vtt"
+#: The consumption ledger's `model_id` for a paid Instagram transcript.
+TRANSCRIPT_LEDGER_MODEL = "scrapecreators/v2/instagram/media/transcript"
+#: The vendor path of an Instagram transcript (the `vendor_payloads.path` of its answer).
+TRANSCRIPT_PATH = "/v2/instagram/media/transcript"
+
+
+@dataclass(frozen=True)
+class RawAnswer:
+    """A vendor answer as it came, to be kept (house rule: raw scrape payloads are kept,
+    so a newer reader can re-parse them without paying again): the path and the params
+    it was asked with (the `vendor_payloads` key), the whole JSON body, and the credits
+    it cost (`_transcript_credits`)."""
+
+    path: str
+    params: dict[str, str]
+    body: dict[str, Any]
+    credits: int
+
+
+@dataclass(frozen=True)
+class Segment:
+    """One timed stretch of what a reel says, in seconds from its start. `text` is kept
+    exactly as the source gave it: a stretch of music heard as "ah" stays "ah" — it is
+    what was heard, never a script."""
+
+    start_s: float
+    end_s: float
+    text: str
+
+
+@dataclass(frozen=True)
+class Transcript:
+    """What a reel says: the plain `text` (what the card and the rubro check read, the
+    same text the untimed readers return) and its timed `segments` (empty when the
+    source gave none). `source` names the reader (`TRANSCRIPT_VENDOR_STT` /
+    `TRANSCRIPT_TIKTOK_VTT`); "" = not read by a timed reader. `raw` is the vendor's answer
+    as it came (Instagram's paid speech-to-text only; None for TikTok's free subtitles,
+    re-downloadable for nothing) — left out of equality."""
+
+    text: str
+    segments: tuple[Segment, ...] = ()
+    source: str = ""
+    raw: RawAnswer | None = field(default=None, compare=False, repr=False)
+
+
+def _seconds(value: object) -> float | None:
+    """A finite, non-negative number of seconds, or None (bools and junk refused)."""
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) and number >= 0 else None
+
+
+def _timed_rows(payload: dict[str, Any]) -> list[Any]:
+    """`transcript_with_timestamp` of a transcript answer: inside each `transcripts[]`
+    entry (where the live answer has it) or — defensively — at the top level."""
+    rows = payload.get("transcript_with_timestamp")
+    if isinstance(rows, list):
+        return rows
+    parts = payload.get("transcripts")
+    nested: list[Any] = []
+    for part in parts if isinstance(parts, list) else []:
+        inner = part.get("transcript_with_timestamp") if isinstance(part, dict) else None
+        if isinstance(inner, list):
+            nested.extend(inner)
+    return nested
+
+
+def instagram_segments(payload: dict[str, Any]) -> tuple[Segment, ...]:
+    """The timed stretches of an Instagram transcript answer, in the vendor's order. A
+    stretch without a usable start and end (end before start included) or without text is
+    left out; the text of the rest is kept as given (only trimmed)."""
+    out: list[Segment] = []
+    for row in _timed_rows(payload):
+        if not isinstance(row, dict):
+            continue
+        start, end = _seconds(row.get("start")), _seconds(row.get("end"))
+        text = str(row.get("text") or "").strip()
+        if start is None or end is None or end < start or not text:
+            continue
+        out.append(Segment(start_s=start, end_s=end, text=text))
+    return tuple(out)
+
+
+def _instagram_text(payload: dict[str, Any]) -> str:
+    parts = payload.get("transcripts")
+    texts = [
+        str(p.get("text") or "").strip()
+        for p in (parts if isinstance(parts, list) else [])
+        if isinstance(p, dict)
+    ]
+    return " ".join(t for t in texts if t)
+
+
+#: Writes one row of the consumption ledger (`qualify_api.consumption.record_consumption`
+#: signature). Installed by `configure_consumption_ledger`; `None` = the real ledger.
+ConsumptionLedgerFn = Callable[..., None]
+_consumption_ledger: ConsumptionLedgerFn | None = None
+
+
+def configure_consumption_ledger(ledger: ConsumptionLedgerFn | None) -> None:
+    """Install where a paid transcript's consumption row goes (`None` = the Postgres
+    ledger, the default). The repo-wide conftest installs a no-op so no offline test
+    reaches a database; a test that checks the row installs a recorder."""
+    global _consumption_ledger
+    _consumption_ledger = ledger
+
+
+def _transcript_credits(payload: dict[str, Any]) -> int:
+    """What a transcript answer cost: `credits_charged` when the vendor says it (the live
+    answer does); when it does not, 0 for an answer from its cache (`cached: true`, free)
+    and 1 otherwise (what the gate booked)."""
+    reported = payload.get("credits_charged")
+    if isinstance(reported, int) and not isinstance(reported, bool):
+        return reported
+    return 0 if payload.get("cached") is True else 1
+
+
+def _record_transcript_consumption(
+    client: httpx.Client, payload: dict[str, Any], request_key: str | None
+) -> None:
+    """One consumption-ledger row per PAID transcript (VE-04b): the credits it cost
+    (`_transcript_credits`), none for a free answer (its cache, no speech). Charged to the
+    business the gate charged (R5), keyed by the gate's `request_key` (`idempotency_key`)
+    so the row can be traced to its `vendor_usage_events` booking (not 1:1: a cached answer
+    is booked there but leaves no row here). Never raises: the answer
+    is already paid for."""
+    charge = usage.charge_of(client)
+    credits = _transcript_credits(payload)
+    if charge is None or credits <= 0:
+        return
+    ledger = _consumption_ledger or consumption.record_consumption
+    try:
+        ledger(
+            tenant_id=charge.tenant_id,
+            brand_id=charge.brand_id,
+            operation=FEATURE_REELS_TRANSCRIPT,
+            provider=consumption.SCRAPECREATORS,
+            model_id=TRANSCRIPT_LEDGER_MODEL,
+            cost_usd=usage.usd_per_credit() * credits,
+            idempotency_key=request_key,
+            metadata={"credits": credits, "cached": payload.get("cached") is True},
+            pricing_table_version=usage.PRICING_TABLE_VERSION,
+        )
+    except Exception as exc:  # noqa: BLE001 - recording must not lose a paid answer
+        logger.warning("scrapecreators transcript consumption not recorded: %s", type(exc).__name__)
+
+
+def fetch_instagram_transcript_timed(url: str, *, client: httpx.Client | None = None) -> Transcript:
+    """What is said in an Instagram reel (its public URL): the plain text ("" = no
+    speech) and its timed stretches, both from ONE call — one credit, or none from the
+    vendor's cache. A paid one leaves a consumption-ledger row. The answer itself rides
+    along as `Transcript.raw`, for the caller to keep. Raises `ScrapeCreatorsError` on
+    failure."""
+    owns_client = client is None
+    active = client or httpx.Client(timeout=TRANSCRIPT_TIMEOUT_SECONDS)
+    params = {"url": url, "cache_max_age": TRANSCRIPT_CACHE_DAYS}
+    try:
+        _last_request_key.set(None)
+        payload = metered_get(active, TRANSCRIPT_PATH, params, feature=FEATURE_REELS_TRANSCRIPT)
+        _record_transcript_consumption(active, payload, last_request_key())
+    finally:
+        if owns_client:
+            active.close()
+    return Transcript(
+        text=_instagram_text(payload),
+        segments=instagram_segments(payload),
+        source=TRANSCRIPT_VENDOR_STT,
+        raw=RawAnswer(
+            path=TRANSCRIPT_PATH,
+            params=dict(params),
+            body=payload,
+            credits=_transcript_credits(payload),
+        ),
+    )
+
+
+def fetch_instagram_transcript(url: str, *, client: httpx.Client | None = None) -> str:
+    """What is said in an Instagram reel (its public URL), as plain text, or "" when it
+    has no speech. One credit, or none from the vendor's cache. Raises
+    `ScrapeCreatorsError` on failure. Untimed and unchanged by VE-04b:
+    `fetch_instagram_transcript_timed` reads the same single answer with its timings."""
+    owns_client = client is None
+    active = client or httpx.Client(timeout=TRANSCRIPT_TIMEOUT_SECONDS)
+    try:
+        payload = metered_get(
+            active,
+            "/v2/instagram/media/transcript",
+            {"url": url, "cache_max_age": TRANSCRIPT_CACHE_DAYS},
+            feature=FEATURE_REELS_TRANSCRIPT,
+        )
+    finally:
+        if owns_client:
+            active.close()
+    return _instagram_text(payload)
+
+
+def _vtt_cue_blocks(vtt: str) -> list[tuple[str, list[str]]]:
+    """`(timing line, text lines)` of each cue of a WEBVTT file, in order. Read block by
+    block: in a cue block, everything up to and including its timing line is not speech;
+    the header, NOTE/STYLE/REGION blocks and anything without a timing are skipped. A
+    leading BOM (the spec allows one; `str.strip` does not remove it) is dropped."""
+    cues: list[tuple[str, list[str]]] = []
+    for block in re.split(r"\n\s*\n", vtt.lstrip(_BOM).replace("\r\n", "\n")):
+        rows = [row.strip() for row in block.split("\n") if row.strip()]
+        if not rows or rows[0].startswith(("WEBVTT", "NOTE", "STYLE", "REGION")):
+            continue
+        timing = next((n for n, row in enumerate(rows) if _VTT_TIMING.match(row)), None)
+        if timing is None:
+            continue  # not a cue
+        cues.append((rows[timing], rows[timing + 1 :]))
+    return cues
+
+
+def vtt_text(vtt: str) -> str:
+    """The spoken words of a WEBVTT file, in order, without the header, cue identifiers
+    (numeric or not), timings or cue settings; a line repeated by the next cue is said
+    once. Unchanged by VE-04b (inline tags are not touched here, so the card's text stays
+    what it was)."""
+    lines: list[str] = []
+    for _, rows in _vtt_cue_blocks(vtt):
+        for line in rows:
+            if not lines or lines[-1] != line:
+                lines.append(line)
+    return " ".join(lines)
+
+
+_VTT_TAG = re.compile(r"<[^>]*>")
+_VTT_ENTITIES = (("&lt;", "<"), ("&gt;", ">"), ("&nbsp;", " "), ("&amp;", "&"))
+
+
+def _vtt_plain(line: str) -> str:
+    """A cue line without its WebVTT inline tags (`<v Ana>`, `<c.x>`...`</c>`, `<i>`,
+    `<00:00:01.000>`) - their inner text kept - and with `&lt;`/`&gt;`/`&nbsp;`/`&amp;`
+    unescaped (`&amp;` last, so `&amp;lt;` stays `&lt;`). Anything else, music heard as
+    "ah" included, is kept as given."""
+    text = _VTT_TAG.sub("", line)
+    for entity, char in _VTT_ENTITIES:
+        text = text.replace(entity, char)
+    return " ".join(text.split())
+
+
+def _vtt_stamp(stamp: str) -> float | None:
+    """`HH:MM:SS.mmm` or `MM:SS.mmm` → seconds."""
+    parts = stamp.split(":")
+    if len(parts) not in (2, 3):
+        return None
+    try:
+        numbers = [float(p) for p in parts]
+    except ValueError:
+        return None
+    seconds = 0.0
+    for number in numbers:
+        seconds = seconds * 60 + number
+    return _seconds(seconds)
+
+
+def vtt_cues(vtt: str) -> tuple[Segment, ...]:
+    """The cues of a WEBVTT file as timed stretches — one per cue with text, its lines
+    without inline tags (`_vtt_plain`) joined by a space (a repeated line is NOT merged,
+    unlike `vtt_text`: each cue is its own moment). A cue whose timing cannot be read is
+    left out."""
+    out: list[Segment] = []
+    for timing, rows in _vtt_cue_blocks(vtt):
+        start_raw, _, rest = timing.partition("-->")
+        end_raw = rest.split()[0] if rest.split() else ""
+        start, end = _vtt_stamp(start_raw.strip()), _vtt_stamp(end_raw)
+        text = " ".join(plain for plain in map(_vtt_plain, rows) if plain)
+        if start is None or end is None or end < start or not text:
+            continue
+        out.append(Segment(start_s=start, end_s=end, text=text))
+    return tuple(out)
+
+
+def fetch_tiktok_captions(url: str, *, client: httpx.Client | None = None) -> str:
+    """A TikTok video's native subtitles as plain text — `fetch_tiktok_captions_timed`
+    without the timings."""
+    return fetch_tiktok_captions_timed(url, client=client).text
+
+
+def fetch_tiktok_captions_timed(url: str, *, client: httpx.Client | None = None) -> Transcript:
+    """A TikTok video's native subtitles, from `_tiktok_caption_url`: their plain text
+    (`vtt_text`) and one timed stretch per cue (`vtt_cues`), from the same download. Free.
+    Empty only for a URL off TikTok's CDN (a definitive answer). A network error, a non-200
+    (an expired signature included: the next read of the account brings a fresh URL) or a
+    body that is not WEBVTT raises `ScrapeCreatorsError`, so the caller does not remember
+    a transient failure as "this video has no speech"."""
+    host = (urlsplit(url).hostname or "").lower()
+    if not url.startswith("https://") or not any(
+        host == h or host.endswith("." + h) for h in _CAPTION_HOSTS
+    ):
+        return Transcript(text="", source=TRANSCRIPT_TIKTOK_VTT)
+    owns_client = client is None
+    active = client or httpx.Client(timeout=_TIMEOUT_SECONDS)
+    try:
+        response = active.get(url, follow_redirects=True)
+    except httpx.HTTPError as exc:
+        raise ScrapeCreatorsError(f"tiktok captions unreadable: {type(exc).__name__}") from exc
+    finally:
+        if owns_client:
+            active.close()
+    if response.status_code != 200:
+        raise ScrapeCreatorsError(
+            f"tiktok captions answered HTTP {response.status_code}",
+            status_code=response.status_code,
+        )
+    text = response.text.lstrip(_BOM + " \t\r\n")
+    if not text.startswith("WEBVTT"):
+        raise ScrapeCreatorsError("tiktok captions are not WEBVTT")
+    return Transcript(text=vtt_text(text), segments=vtt_cues(text), source=TRANSCRIPT_TIKTOK_VTT)
+
+
+def _reel_page(network: str, payload: dict[str, Any]) -> tuple[list[dict[str, Any]], str | None]:
+    """`(raw items, next cursor or None)` of one reel-list page."""
+    if network == "instagram":
+        items = payload.get("items")
+        paging = payload.get("paging_info")
+        paging = paging if isinstance(paging, dict) else {}
+        raw_next, more = paging.get("max_id"), paging.get("more_available")
+    else:
+        items = payload.get("aweme_list")
+        raw_next, more = payload.get("max_cursor"), payload.get("has_more")
+    rows = [i for i in items if isinstance(i, dict)] if isinstance(items, list) else []
+    return rows, (str(raw_next) if more and raw_next else None)
+
+
+def _reel_stamp(network: str, item: dict[str, Any]) -> int | None:
+    if network == "instagram":
+        return _int_or_none(_instagram_media(item).get("taken_at"))
+    return _int_or_none(item.get("create_time"))
+
+
+@dataclass(frozen=True)
+class ReelPage:
+    """One paid page of an account's reel list, as `fetch_reel_pages` hands it over."""
+
+    path: str  # "/v1/instagram/user/reels"
+    params: dict[str, str]  # handle (+ cursor): the `vendor_payloads` key
+    payload: dict[str, Any]  # the raw answer, whole
+    reels: list[dict[str, Any]]  # parsed (`_instagram_reel` shape), not seen on a prior page
+    next_cursor: str | None
+    #: The raw items' unix stamps, in the vendor's order (non-videos included): where the
+    #: page ends in time, for a walk that stops at a date (`fetch_reels`).
+    stamps: tuple[int, ...] = ()
+
+
+def _walk_reel_pages(
+    network: str,
+    handle: str,
+    *,
+    max_pages: int,
+    feature: str,
+    client: httpx.Client | None,
+    on_page: Callable[[ReelPage], None] | None,
+    stop: Callable[[ReelPage, list[ReelPage]], bool],
+) -> list[ReelPage]:
+    """The one reel-list walk. Each page is one paid call through the gate; `on_page`
+    runs after it and before the next is asked for; the walk ends on an empty page, a
+    missing or repeated cursor, `max_pages`, or when `stop` says so."""
+    handle = _normalize_handle(handle)
+    if not handle:
+        raise ValueError("handle must not be empty")
+    if network not in _REELS_ENDPOINT:
+        raise ValueError(f"unsupported network: {network!r}")
+    owns_client = client is None
+    active = client or httpx.Client(timeout=_TIMEOUT_SECONDS)
+    to_reel = _instagram_reel if network == "instagram" else _tiktok_reel
+    cursor_key = "max_id" if network == "instagram" else "max_cursor"
+    path = _REELS_ENDPOINT[network]
+    seen: set[str] = set()
+    pages: list[ReelPage] = []
+    cursor: str | None = None
+    try:
+        for _ in range(max_pages):
+            params = {"handle": handle}
+            if network == "tiktok":
+                params.update(sort_by="latest", include_pinned="false")
+            if cursor:
+                params[cursor_key] = cursor
+            payload = metered_get(active, path, params, feature=feature)
+            items, next_cursor = _reel_page(network, payload)
+            fresh: list[dict[str, Any]] = []
+            for item in items:
+                reel = to_reel(item, handle)
+                if reel is not None and reel["id"] not in seen:
+                    seen.add(reel["id"])
+                    fresh.append(reel)
+            stamps = tuple(s for s in (_reel_stamp(network, i) for i in items) if s)
+            page = ReelPage(path, dict(params), payload, fresh, next_cursor, stamps)
+            pages.append(page)
+            if on_page is not None:
+                on_page(page)
+            if not items or not next_cursor or next_cursor == cursor or stop(page, pages):
+                break
+            cursor = next_cursor
+    finally:
+        if owns_client:
+            active.close()
+    return pages
+
+
+def fetch_reel_pages(
+    network: str,
+    handle: str,
+    *,
+    max_reels: int,
+    max_pages: int = REEL_MAX_PAGES,
+    feature: str = FEATURE_REELS_LIST,
+    client: httpx.Client | None = None,
+    on_page: Callable[[ReelPage], None] | None = None,
+) -> list[ReelPage]:
+    """The latest reels of `handle`, page by page, with each page's raw answer — so the
+    caller keeps the payload and charges its credit (m-24946121, design §8.1). Stops once
+    `max_reels` distinct reels are in, on an empty page, a missing or repeated cursor, or
+    at `max_pages`. A page's `reels` never repeat one of an earlier page, and the last
+    page is trimmed so the walk returns at most `max_reels`. `on_page` runs after every
+    paid page and BEFORE the next is requested: a failure on page n (raised from here)
+    leaves pages 1..n-1 handed over and accounted for."""
+    if max_reels <= 0:
+        raise ValueError("max_reels must be positive")
+    total = 0
+
+    def trim(page: ReelPage) -> ReelPage:
+        nonlocal total
+        room = max(max_reels - total, 0)
+        kept = page.reels[:room]
+        total += len(kept)
+        if len(kept) == len(page.reels):
+            return page
+        return ReelPage(page.path, page.params, page.payload, kept, page.next_cursor, page.stamps)
+
+    trimmed: list[ReelPage] = []
+
+    def handle_page(page: ReelPage) -> None:
+        page = trim(page)
+        trimmed.append(page)
+        if on_page is not None:
+            on_page(page)
+
+    _walk_reel_pages(
+        network,
+        handle,
+        max_pages=max_pages,
+        feature=feature,
+        client=client,
+        on_page=handle_page,
+        stop=lambda _page, _pages: total >= max_reels,
+    )
+    return trimmed
+
+
+def fetch_reels(
+    network: str,
+    handle: str,
+    *,
+    since: float,
+    client: httpx.Client | None = None,
+    max_pages: int = REEL_MAX_PAGES,
+) -> list[dict[str, Any]]:
+    """Every reel (video) `handle` published at or after `since` (unix seconds), newest
+    first, in the reel shape (`_instagram_reel` / `_tiktok_reel`). Walks the list newest
+    to oldest and stops at the first page whose LAST item is older than `since` (a pinned
+    post can still lead a page), an empty page, a missing or repeated cursor, or
+    `max_pages`. Each page is one credit; a video seen twice is kept once."""
+    pages = _walk_reel_pages(
+        network,
+        handle,
+        max_pages=max_pages,
+        feature=FEATURE_REELS_LIST,
+        client=client,
+        on_page=None,
+        stop=lambda page, _pages: not page.stamps or page.stamps[-1] < since,
+    )
+    reels = [r for page in pages for r in page.reels if r["takenAt"] >= since]
+    return sorted(reels, key=lambda r: r["takenAt"], reverse=True)
+
+
+#: How many of the account's own most-used hashtags the snapshot keeps.
+TOP_HASHTAGS = 12
+#: How many of its latest posts' texts the snapshot keeps, and how much of each
+#: (§ request 2026-10-05: the rubro step's hashtags are created from them).
+RECENT_CAPTIONS = 12
+CAPTION_CHARS = 300
+#: How many of its latest posts `recentMedia` keeps — the 12 the Instagram profile
+#: carries, a TikTok page and a bit — and the longest text kept per post (Instagram's
+#: own caption limit; measured 2026-10-25: the profile's texts arrive whole, up to 1191
+#: characters, byte-identical to `/v2/instagram/user/posts`).
+RECENT_MEDIA = 12
+MEDIA_CAPTION_CHARS = 2200
+#: How many leading posts can be pinned (Instagram and TikTok both allow 3).
+_MAX_PINNED = 3
+#: Hosts an Instagram thumbnail may come from (measured: `scontent-*.cdninstagram.com`).
+_INSTAGRAM_MEDIA_HOSTS = ("cdninstagram.com", "fbcdn.net")
+
+#: What a bio link is, in the snapshot's own words (`bioLinks[].kind`).
+LINK_WHATSAPP = "whatsapp"
+LINK_SOCIAL = "social"
+LINK_WEB = "web"
+_WHATSAPP_HOSTS = ("wa.me", "whatsapp.com", "wa.link")
+_SOCIAL_HOSTS = (
+    "instagram.com",
+    "facebook.com",
+    "fb.com",
+    "tiktok.com",
+    "youtube.com",
+    "youtu.be",
+    "x.com",
+    "twitter.com",
+    "threads.net",
+    "threads.com",
+)
+
+
+def _host_in(host: str, hosts: tuple[str, ...]) -> bool:
+    return any(host == h or host.endswith("." + h) for h in hosts)
+
+
+def _bio_link(title: object, url: object, link_type: object = "") -> dict[str, str] | None:
+    """One bio link as `{title, url, kind}`, or None for anything that is not an
+    http(s) URL. The URL is the business's own public link (a `wa.me/<number>` carries
+    its phone): kept as read, never logged — masking is the screen's business."""
+    if not isinstance(url, str):
+        return None
+    url = url.strip()
+    if not url.startswith(("https://", "http://")):
+        return None
+    host = (urlsplit(url).hostname or "").lower()
+    if not host:
+        return None
+    if str(link_type or "").lower() == "whatsapp" or _host_in(host, _WHATSAPP_HOSTS):
+        kind = LINK_WHATSAPP
+    elif _host_in(host, _SOCIAL_HOSTS):
+        kind = LINK_SOCIAL
+    else:
+        kind = LINK_WEB
+    return {"title": str(title or "").strip(), "url": url, "kind": kind}
+
+
+def _instagram_bio_links(user: dict[str, Any]) -> list[dict[str, str]]:
+    """`data.user.bio_links[]` (`{title, url, link_type: external|whatsapp, ...}`), in
+    the order the profile shows them, one per URL."""
+    links: list[dict[str, str]] = []
+    raw = user.get("bio_links")
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, dict):
+            continue
+        link = _bio_link(item.get("title"), item.get("url"), item.get("link_type"))
+        if link is not None and all(link["url"] != seen["url"] for seen in links):
+            links.append(link)
+    return links
+
+
+def _tiktok_bio_links(payload: dict[str, Any]) -> list[dict[str, str]]:
+    """TikTok's single bio link, `user.bioLink.link` (often the account's Instagram)."""
+    user = payload.get("user")
+    bio = user.get("bioLink") if isinstance(user, dict) else None
+    link = _bio_link("", bio.get("link")) if isinstance(bio, dict) else None
+    return [link] if link is not None else []
+
+
+def _hashtags_of(text: str) -> list[str]:
+    """Lower-cased hashtags of one text, first appearance order, each once."""
+    return list(dict.fromkeys(t.lower() for t in _HASHTAG_RE.findall(text)))
+
+
+def _ig_timeline_nodes(user: dict[str, Any]) -> list[dict[str, Any]]:
+    """The profile's own latest posts, `edge_owner_to_timeline_media.edges[].node`
+    (12 measured 2026-10-24/25, newest first)."""
+    edge = user.get("edge_owner_to_timeline_media")
+    edges = edge.get("edges") if isinstance(edge, dict) else None
+    nodes = [e.get("node") for e in edges if isinstance(e, dict)] if isinstance(edges, list) else []
+    return [n for n in nodes if isinstance(n, dict)]
+
+
+def _instagram_continuation_cursor(user: dict[str, Any]) -> str | None:
+    """Where `/v2/instagram/user/posts` picks up after the profile's 12 posts, or None
+    when the profile says there is nothing more. The profile hands `mobile:web:<token>`;
+    the post list takes `web:<token>` (measured 2026-10-25 on a 2,813-post account: the
+    stripped cursor returned posts 13-24, the raw one answered HTTP 500)."""
+    edge = user.get("edge_owner_to_timeline_media")
+    info = edge.get("page_info") if isinstance(edge, dict) else None
+    if not isinstance(info, dict) or not info.get("has_next_page"):
+        return None
+    cursor = info.get("end_cursor")
+    if not isinstance(cursor, str) or not cursor:
+        return None
+    return cursor.removeprefix("mobile:")
+
+
+def _ig_node_text(node: dict[str, Any]) -> str:
+    edge = node.get("edge_media_to_caption")
+    edges = edge.get("edges") if isinstance(edge, dict) else None
+    first = edges[0] if isinstance(edges, list) and edges else None
+    inner = first.get("node") if isinstance(first, dict) else None
+    text = inner.get("text") if isinstance(inner, dict) else None
+    return text if isinstance(text, str) else ""
+
+
+def _ig_node_counts(node: dict[str, Any]) -> tuple[int | None, int | None, int | None]:
+    """`(likes, comments, views)` of a profile post. Hidden counts read as unknown, as
+    in `_normalize_instagram_posts`; `video_play_count` is the figure that matches the
+    post list's `play_count` (measured 2026-10-25), `video_view_count` is not."""
+    hidden = node.get("like_and_view_counts_disabled") is True
+    likes_edge = node.get("edge_media_preview_like")
+    likes = likes_edge.get("count") if isinstance(likes_edge, dict) else None
+    comments = node.get("comment_count")
+    if not isinstance(comments, int):
+        comment_edge = node.get("edge_media_to_comment")
+        comments = comment_edge.get("count") if isinstance(comment_edge, dict) else None
+    views = node.get("video_play_count")
+    return (
+        None if hidden else _int_or_none(likes),
+        _int_or_none(comments),
+        None if hidden else _int_or_none(views),
+    )
+
+
+def _explicitly_pinned(item: dict[str, Any], owner_id: str) -> bool:
+    """A vendor-side pin marker, when one is there: TikTok's `is_top`, Instagram's
+    `timeline_pinned_user_ids` (the reel list carries it) or `pinned_for_users`. The
+    profile's posts and the post list carried none on 2026-10-25."""
+    if item.get("is_top") in (1, True):
+        return True
+    for key in ("timeline_pinned_user_ids", "pinned_for_users"):
+        value = item.get(key)
+        if isinstance(value, list) and value:
+            ids = {str(v.get("id") if isinstance(v, dict) else v) for v in value}
+            if not owner_id or owner_id in ids:
+                return True
+    return False
+
+
+def _pinned_flags(stamps: list[int | None], explicit: list[bool]) -> list[bool]:
+    """Which of a newest-first list are pinned: the vendor's own marker, else inferred
+    from the order — pinned posts lead the list whatever their date, so a leading post
+    older than one after it is out of place. At most `_MAX_PINNED`, only at the head."""
+    flags = [False] * len(stamps)
+    for i, stamp in enumerate(stamps[:_MAX_PINNED]):
+        later = [s for s in stamps[i + 1 :] if s is not None]
+        if explicit[i] or (stamp is not None and later and stamp < max(later)):
+            flags[i] = True
+        else:
+            break
+    for i, mark in enumerate(explicit):
+        flags[i] = flags[i] or mark
+    return flags
+
+
+def _ig_kind(node: dict[str, Any]) -> str:
+    kind = str(node.get("__typename") or "").removeprefix("XDT").removeprefix("Graph")
+    if kind == "Sidecar":
+        return "carousel"
+    if kind == "Video" or node.get("is_video") is True:
+        return "video"
+    return "photo"
+
+
+def _ig_media(node: dict[str, Any], handle: str, pinned: bool) -> dict[str, Any] | None:
+    """One profile post in the `recentMedia` shape, or None without a date or code."""
+    stamp = _int_or_none(node.get("taken_at_timestamp"))
+    code = str(node.get("shortcode") or "")
+    if stamp is None or not code:
+        return None
+    text = _ig_node_text(node)
+    likes, comments, views = _ig_node_counts(node)
+    owner = node.get("owner")
+    owner_name = str(owner.get("username") or "").lower() if isinstance(owner, dict) else ""
+    location = node.get("location")
+    coauthors = node.get("coauthor_producers")
+    return {
+        "postId": code,
+        "url": _https(node.get("url"), "instagram.com") or f"https://www.instagram.com/p/{code}/",
+        "kind": _ig_kind(node),
+        "isReel": node.get("product_type") == "clips",
+        "takenAt": stamp,
+        "caption": text[:MEDIA_CAPTION_CHARS],
+        "hashtags": _hashtags_of(text),
+        "likes": likes,
+        "comments": comments,
+        "views": views,
+        "pinned": pinned,
+        # Whose grid it came from: a collaboration shows on both owners' profiles.
+        "isOwner": (not owner_name) or owner_name == handle,
+        "isCollab": isinstance(coauthors, list) and bool(coauthors),
+        "location": str(location.get("name") or "") if isinstance(location, dict) else "",
+        "thumbnailUrl": _https(node.get("thumbnail_src"), *_INSTAGRAM_MEDIA_HOSTS)
+        or _https(node.get("display_url"), *_INSTAGRAM_MEDIA_HOSTS),
+    }
+
+
+def _tiktok_media(item: dict[str, Any], handle: str, pinned: bool) -> dict[str, Any] | None:
+    """One `/v3/tiktok/profile/videos` item in the `recentMedia` shape."""
+    stamp = _int_or_none(item.get("create_time"))
+    video_id = str(item.get("aweme_id") or "")
+    if stamp is None or not video_id:
+        return None
+    text = _item_text("tiktok", item)
+    tags = _hashtags_of(text)
+    for extra in item.get("text_extra") or []:
+        name = extra.get("hashtag_name") if isinstance(extra, dict) else None
+        if isinstance(name, str) and name and name.lower() not in tags:
+            tags.append(name.lower())
+    stats = item.get("statistics")
+    stats = stats if isinstance(stats, dict) else {}
+    video = item.get("video")
+    video = video if isinstance(video, dict) else {}
+    author = item.get("author")
+    author_name = str(author.get("unique_id") or "").lower() if isinstance(author, dict) else ""
+    place = ""
+    for anchor in item.get("anchors") or []:
+        if isinstance(anchor, dict) and str(anchor.get("schema") or "").startswith("aweme://poi"):
+            place = str(anchor.get("keyword") or "")
+            break
+    photo = bool(item.get("image_post_info")) or item.get("aweme_type") == 150
+    return {
+        "postId": video_id,
+        "url": _https(item.get("share_url") or item.get("url"), "tiktok.com")
+        or f"https://www.tiktok.com/@{handle}/video/{video_id}",
+        "kind": "carousel" if photo else "video",
+        "isReel": not photo,
+        "takenAt": stamp,
+        "caption": text[:MEDIA_CAPTION_CHARS],
+        "hashtags": tags,
+        "likes": _int_or_none(stats.get("digg_count")),
+        "comments": _int_or_none(stats.get("comment_count")),
+        "views": _int_or_none(stats.get("play_count")),
+        "pinned": pinned,
+        "isOwner": (not author_name) or author_name == handle,
+        "isCollab": False,
+        "location": place,
+        "thumbnailUrl": _https(_first_candidate_url(video.get("cover")))
+        or _https(_first_candidate_url(video.get("origin_cover"))),
+    }
+
+
+def _recent_media(
+    items: list[dict[str, Any]],
+    *,
+    handle: str,
+    to_media: Callable[[dict[str, Any], str, bool], dict[str, Any] | None],
+    stamp_key: str,
+    owner_id: str = "",
+) -> list[dict[str, Any]]:
+    """The first `RECENT_MEDIA` posts in the `recentMedia` shape, with `pinned` set."""
+    head = items[:RECENT_MEDIA]
+    flags = _pinned_flags(
+        [_int_or_none(i.get(stamp_key)) for i in head],
+        [_explicitly_pinned(i, owner_id) for i in head],
+    )
+    media = (to_media(item, handle, flag) for item, flag in zip(head, flags, strict=True))
+    return [m for m in media if m is not None]
+
+
+def needs_post_list(profile: dict[str, Any], *, since: float) -> bool:
+    """Whether an Instagram read must also pay for `/v2/instagram/user/posts`: only
+    when the profile's own 12 posts may not cover the window — its oldest NOT pinned
+    post is still inside it (a pinned post's date says nothing about the window), or
+    the profile came with no posts although the account has (or may have) some. An
+    account that says it has 0 posts, or a private one, is never asked."""
+    media = profile.get("recentMedia") or []
+    if not media:
+        count = profile.get("postsCount")
+        return not profile.get("isPrivate") and count != 0
+    unpinned = [m["takenAt"] for m in media if not m.get("pinned")]
+    return bool(unpinned) and min(unpinned) >= since
+
+
+def _merge_posts(*lists: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Newest first, a post seen twice (same `postId`) kept once."""
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for post in sorted((p for posts in lists for p in posts), key=lambda p: -p["takenAt"]):
+        key = post.get("postId") or ""
+        if key and key in seen:
+            continue
+        seen.add(key)
+        out.append(post)
+    return out
+
+
+def _read_instagram(
+    handle: str,
+    client: httpx.Client,
+    hashtags: Counter[str],
+    captions: list[str],
+    *,
+    ai_labels: bool = True,
+    max_post_pages: int = _MAX_POST_PAGES,
+) -> dict[str, Any]:
+    """The Instagram half of `fetch_profile_and_posts`: one profile read (1 credit),
+    then the post list.
+
+    `ai_labels=True` (the default: the web wizard and Referentes) reads the post list
+    from its first page exactly as before snapshot 5, because only that list carries
+    Instagram's "made with AI" label, which the growth history records per post — the
+    profile's 12 posts would leave it unknown. `ai_labels=False` (the Alta prefill)
+    reads the post list only when `needs_post_list` says the 12 posts the profile
+    carried do not cover the window — then from the profile's own cursor, so no page
+    repeats them."""
+    handle = _normalize_handle(handle)
+    user = _instagram_user(
+        metered_get(client, "/v1/instagram/profile", {"handle": handle}, feature=FEATURE_PROFILE)
+    )
+    profile = _normalize_instagram({"data": {"user": user}})
+    now = time.time()
+    since = now - _WINDOW_SECONDS
+    profile["fetchedAt"] = now
+    profile["bioLinks"] = _instagram_bio_links(user)
+    nodes = _ig_timeline_nodes(user)
+    profile["recentMedia"] = _recent_media(
+        nodes,
+        handle=handle,
+        to_media=_ig_media,
+        stamp_key="taken_at_timestamp",
+        owner_id=str(user.get("id") or ""),
+    )
+    if ai_labels:
+        try:
+            profile["recentPosts"] = fetch_recent_posts(
+                "instagram",
+                handle,
+                since=since,
+                client=client,
+                max_pages=max_post_pages,
+                hashtag_counts=hashtags,
+                caption_sink=captions,
+            )
+        except ScrapeCreatorsError as exc:
+            logger.warning("recent posts read failed, metrics will be unavailable: %s", exc)
+            profile["recentPosts"] = None
+        return profile
+    for node in nodes:
+        text = _ig_node_text(node)
+        hashtags.update(_hashtags_of(text))
+        flat = " ".join(text.split())
+        if flat:
+            captions.append(flat[:CAPTION_CHARS])
+    own = []
+    for media in profile["recentMedia"]:
+        post = _post(
+            media["takenAt"],
+            media["likes"],
+            media["comments"],
+            media["views"],
+            post_id=media["postId"],
+        )
+        if post is not None and post["takenAt"] >= since:
+            own.append(post)
+    if not needs_post_list(profile, since=since):
+        hidden = not nodes and profile.get("isPrivate") and profile.get("postsCount") != 0
+        # A private account's posts are not zero, they are unseen: unknown, not 0.
+        profile["recentPosts"] = None if hidden else _merge_posts(own)
+        return profile
+    cursor = _instagram_continuation_cursor(user) if nodes else None
+    if nodes and cursor is None:
+        # Every post the account has is already in the profile.
+        profile["recentPosts"] = _merge_posts(own)
+        return profile
+    try:
+        more = fetch_recent_posts(
+            "instagram",
+            handle,
+            since=since,
+            client=client,
+            max_pages=max_post_pages,
+            hashtag_counts=hashtags,
+            caption_sink=captions,
+            start_cursor=cursor,
+        )
+    except ScrapeCreatorsError as exc:
+        # Only part of the window was read: a partial count is not shown as the
+        # week's figure — unknown, as when the post read failed before.
+        logger.warning("recent posts read failed, metrics will be unavailable: %s", exc)
+        profile["recentPosts"] = None
+        return profile
+    profile["recentPosts"] = _merge_posts(own, more)
+    return profile
+
+
+def _read_tiktok(
+    handle: str,
+    client: httpx.Client,
+    hashtags: Counter[str],
+    captions: list[str],
+    *,
+    max_post_pages: int = _MAX_POST_PAGES,
+) -> dict[str, Any]:
+    """The TikTok half: the profile carries no videos (`itemList` came empty,
+    2026-10-24), so the windowed video list is always read, as before; `recentMedia`
+    comes free from the pages that read already paid for."""
+    handle = _normalize_handle(handle)
+    payload = metered_get(client, "/v1/tiktok/profile", {"handle": handle}, feature=FEATURE_PROFILE)
+    profile = _normalize_tiktok(payload)
+    now = time.time()
+    profile["fetchedAt"] = now
+    profile["bioLinks"] = _tiktok_bio_links(payload)
+    items: list[dict[str, Any]] = []
+    try:
+        profile["recentPosts"] = fetch_recent_posts(
+            "tiktok",
+            handle,
+            since=now - _WINDOW_SECONDS,
+            client=client,
+            max_pages=max_post_pages,
+            hashtag_counts=hashtags,
+            caption_sink=captions,
+            item_sink=items,
+        )
+    except ScrapeCreatorsError as exc:
+        logger.warning("recent posts read failed, metrics will be unavailable: %s", exc)
+        profile["recentPosts"] = None
+    profile["recentMedia"] = _recent_media(
+        items, handle=handle, to_media=_tiktok_media, stamp_key="create_time"
+    )
+    return profile
+
+
+def fetch_profile_and_posts(
+    network: str,
+    handle: str,
+    *,
+    client: httpx.Client | None = None,
+    ai_labels: bool = True,
+    max_post_pages: int = _MAX_POST_PAGES,
+) -> dict[str, Any]:
+    """What `BrandConnectState.analyze`, Referentes and the Alta prefill call: the
+    profile read plus the windowed post list, as ONE normalized dict — `fetch_profile`'s
+    shape with these extra keys:
+
+      - `fetchedAt` (unix seconds; the window is anchored here, not at render time, so a
+        cached snapshot keeps reporting the week it was read for);
+      - `recentPosts` — every post inside the `METRICS_WINDOW_DAYS` window in the
+        `fetch_recent_posts` shape, or `None` when the post read failed (the profile
+        alone is still worth showing, and `profile_metrics` treats `None` as
+        "unknown", not as "zero posts");
+      - `topHashtags` — the account's most used hashtags across every post read, most
+        used first (`[]` when the post read failed or no caption had one);
+      - `recentCaptions` — the texts of the latest posts read (`RECENT_CAPTIONS`, each
+        cut to `CAPTION_CHARS`);
+      - `bioLinks` (schema 5) — `[{title, url, kind: whatsapp|social|web}]`;
+      - `recentMedia` (schema 5) — the latest `RECENT_MEDIA` posts, `[{postId, url,
+        kind: photo|video|carousel, isReel, takenAt, caption, hashtags, likes, comments,
+        views, pinned, isOwner, isCollab, location, thumbnailUrl}]`, `[]` for an account
+        without posts. Its figures are for showing to the owner, never for a prompt.
+        Instagram: the posts the profile read carries, with no AI label (only the post
+        list has one). The thumbnail URLs are signed and die in ~4 days (IG) / ~1 day
+        (TikTok): copying them is the caller's job.
+
+    Instagram with `ai_labels=True` (the default) reads the post list as it always did,
+    for its per-post AI label (`_read_instagram`); with `ai_labels=False` (the Alta
+    prefill, which records no growth history) it is ONE credit unless `needs_post_list`
+    (a very active account, or a profile that came without its posts). TikTok is the
+    profile plus the video pages either way (they carry the label).
+
+    `max_post_pages` bounds the post-list pages read (one credit each; default
+    `_MAX_POST_PAGES`): the Alta prefill reads one at most (m-24854322), so its credits
+    are bounded by its own ceiling instead of failing at it.
+    """
+    if network not in SUPPORTED_NETWORKS:
+        raise ValueError(f"unsupported network: {network!r}")
+    if not _normalize_handle(handle):
+        raise ValueError("handle must not be empty")
+    owns_client = client is None
+    active = client or httpx.Client(timeout=_TIMEOUT_SECONDS)
+    hashtags: Counter[str] = Counter()
+    captions: list[str] = []
+    try:
+        if network == "instagram":
+            profile = _read_instagram(
+                handle,
+                active,
+                hashtags,
+                captions,
+                ai_labels=ai_labels,
+                max_post_pages=max_post_pages,
+            )
+        else:
+            profile = _read_tiktok(
+                handle, active, hashtags, captions, max_post_pages=max_post_pages
+            )
+        profile["topHashtags"] = [tag for tag, _ in hashtags.most_common(TOP_HASHTAGS)]
+        profile["recentCaptions"] = captions[:RECENT_CAPTIONS]
+    finally:
+        if owns_client:
+            active.close()
+    return profile
+
+
+# ---------------------------------------------------------------------------
+# The metrics themselves — over the window, from the normalized read above.
+
+
+def _scaled(value: float) -> tuple[float, str, int]:
+    """`(figure, suffix, decimals)` for a count: 12_400 -> (12.4, "K", 1),
+    1_900_000 -> (1.9, "M", 1), 850 -> (850, "", 0)."""
+    if value >= 1_000_000:
+        return round(value / 1_000_000, 1), "M", 1
+    if value >= 1_000:
+        return round(value / 1_000, 1), "K", 1
+    return float(round(value)), "", 0
+
+
+def _metric(label: str, value: float, suffix: str, decimals: int, hint: str) -> dict[str, Any]:
+    return {
+        "label": label,
+        "target": round(value, decimals),
+        "suffix": suffix,
+        "decimals": decimals,
+        "hint": hint,
+    }
+
+
+def profile_metrics(network: str, profile: dict[str, Any]) -> list[dict[str, Any]]:
+    """Up to three REAL figures over the last `METRICS_WINDOW_DAYS` days, each
+    `{label, target, suffix, decimals, hint}`, in display order:
+
+      - Publicaciones: how many posts landed inside the window (0 is a real answer).
+      - Interacción: mean(likes + comments) / followers over those posts, as a
+        percentage — omitted with no followers or no post carrying a like count.
+      - Likes por publicación / por vídeo: mean likes over those posts — same omission.
+
+    The window is anchored at `profile["fetchedAt"]` (when the read happened), falling
+    back to now, so a cached snapshot describes the week it was taken in rather than
+    quietly emptying out as days pass. `recentPosts` missing or `None` means the post
+    read never happened/failed -> no metrics at all (unknown is not zero).
+
+    What is NOT here, on purpose: any growth/trend figure. A follower growth needs
+    two reads apart in time and this flow keeps exactly one snapshot with no history
+    (`save_profile_snapshot`) — a made-up number is worse than no number.
+    """
+    posts = profile.get("recentPosts")
+    if not isinstance(posts, list):
+        return []
+    anchor = profile.get("fetchedAt")
+    now = float(anchor) if isinstance(anchor, (int, float)) else time.time()
+    since = now - _WINDOW_SECONDS
+    in_window = [
+        p
+        for p in posts
+        if isinstance(p, dict) and isinstance(p.get("takenAt"), int) and p["takenAt"] >= since
+    ]
+    window = f"últimos {METRICS_WINDOW_DAYS} días"
+    followers = profile.get("followers")
+    followers = followers if isinstance(followers, int) and followers > 0 else 0
+    unit = "vídeo" if network == "tiktok" else "publicación"
+
+    metrics = [_metric("Publicaciones", len(in_window), "", 0, f"Publicadas en los {window}.")]
+    with_likes = [p for p in in_window if isinstance(p.get("likes"), int)]
+    if not with_likes:
+        return metrics
+    n = len(with_likes)
+    mean_likes = sum(p["likes"] for p in with_likes) / n
+    mean_interactions = sum(p["likes"] + (p.get("comments") or 0) for p in with_likes) / n
+    if followers:
+        metrics.append(
+            _metric(
+                "Interacción",
+                mean_interactions / followers * 100,
+                "%",
+                1,
+                f"Likes + comentarios sobre seguidores, {window}.",
+            )
+        )
+    figure, suffix, decimals = _scaled(mean_likes)
+    metrics.append(
+        _metric(f"Likes por {unit}", figure, suffix, decimals, f"Media por {unit}, {window}.")
+    )
+    return metrics
+
+
+def _normalize_handle(handle: str) -> str:
+    """Case-insensitive, leading-"@"-insensitive form of a handle — both platforms
+    treat a handle this way for lookups, and it is what lets `load_cached_profile`
+    recognize "@MiduDev" and "midudev" as the same cache entry."""
+    return handle.strip().lstrip("@").lower()
+
+
+def fetch_profile(
+    network: str,
+    handle: str,
+    *,
+    client: httpx.Client | None = None,
+    feature: str = FEATURE_PROFILE,
+) -> dict[str, Any]:
+    """Read one public profile by handle, normalized to the common shape.
+
+    `client` is injectable (an `httpx.Client` over an `httpx.MockTransport`) so tests
+    never hit the network; the default constructs and closes a real one. `feature` is
+    what the credit is for (`FEATURE_AVATAR_REFRESH` from the avatar proxy). Raises
+    `ValueError` for an empty handle or an unsupported network, `ScrapeCreatorsError`
+    for anything the API itself did — the caller (`BrandConnectState.analyze`)
+    translates both into the one operator-facing message.
+    """
+    return fetch_profile_raw(network, handle, client=client, feature=feature)[1]
+
+
+PROFILE_PATHS = {"instagram": "/v1/instagram/profile", "tiktok": "/v1/tiktok/profile"}
+
+
+def fetch_profile_raw(
+    network: str, handle: str, *, feature: str, client: httpx.Client | None = None
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """`(raw answer, normalized profile)` of one public profile read — the raw half so
+    the caller keeps it as the read's provenance (m-24946121, design §8.1). Same errors
+    as `fetch_profile`, which is this without the raw half. The path and params of the
+    call are `PROFILE_PATHS[network]` and `{"handle": <normalized handle>}`."""
+    handle = _normalize_handle(handle)
+    if not handle:
+        raise ValueError("handle must not be empty")
+    if network not in SUPPORTED_NETWORKS:
+        raise ValueError(f"unsupported network: {network!r}")
+    owns_client = client is None
+    active = client or httpx.Client(timeout=_TIMEOUT_SECONDS)
+    try:
+        payload = metered_get(active, PROFILE_PATHS[network], {"handle": handle}, feature=feature)
+        if network == "instagram":
+            return payload, _normalize_instagram(payload)
+        return payload, _normalize_tiktok(payload)
+    finally:
+        if owns_client:
+            active.close()
+
+
+__all__ = [
+    "CREDIT_FLOOR",
+    "FEATURES",
+    "METRICS_WINDOW_DAYS",
+    "PAID_SWITCH_ENV",
+    "SNAPSHOT_SCHEMA",
+    "SUPPORTED_NETWORKS",
+    "ScrapeCreatorsBlocked",
+    "ScrapeCreatorsError",
+    "configure_balance_store",
+    "halted",
+    "is_vendor_host",
+    "metered_get",
+    "paid_switch_on",
+    "refresh_balance",
+    "reset_halt",
+    "FEATURE_CREATOR_PROFILE",
+    "FEATURE_CREATOR_REELS",
+    "PROFILE_PATHS",
+    "REEL_PARSER_VERSION",
+    "ReelPage",
+    "fetch_profile",
+    "fetch_profile_raw",
+    "fetch_profile_and_posts",
+    "fetch_reel_pages",
+    "fetch_recent_posts",
+    "fetch_instagram_transcript",
+    "fetch_instagram_transcript_timed",
+    "fetch_reels",
+    "fetch_tiktok_captions",
+    "fetch_tiktok_captions_timed",
+    "configure_consumption_ledger",
+    "instagram_segments",
+    "last_request_key",
+    "RawAnswer",
+    "Segment",
+    "Transcript",
+    "TRANSCRIPT_PATH",
+    "TRANSCRIPT_READER_VERSION",
+    "TRANSCRIPT_TIKTOK_VTT",
+    "TRANSCRIPT_VENDOR_STT",
+    "vtt_cues",
+    "vtt_text",
+    "needs_post_list",
+    "profile_metrics",
+]

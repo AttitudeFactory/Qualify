@@ -35,3 +35,10 @@ Sin regla en GitHub, el botón «Merge» no se bloquea. El acuerdo del equipo es
 con `just merge <pr>`**, que se niega si falta algún check requerido o alguno falló; un
 administrador puede forzarlo a propósito con `just merge <pr> --admin`, que deja constancia
 en el comentario del PR. Los agentes de Claude Code mergean por la misma receta.
+
+Antes del merge, `just merge` corre además `just migration-guard <pr>` (m-24971869), que
+`--admin` **no** salta: si el PR agrega una migración cuyo número ya existe en `main`, o cuya
+primera `down_revision` no es la cabeza de `main` (main avanzó desde que corrió el CI), o si
+edita o borra una migración que ya está en `main`, se niega — hay que mergear main en la rama
+y renumerar, o escribir una migración nueva. Un PR sin migraciones no cambia.
+`just merge <pr> --check-only` corre toda la puerta sin mergear.

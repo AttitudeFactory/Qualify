@@ -27,6 +27,7 @@ from uuid import UUID
 
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from qualify_api.consumption.models import ConsumptionLedger
@@ -56,6 +57,29 @@ class ConsumptionContext:
 _active_consumption: ContextVar[ConsumptionContext | None] = ContextVar(
     "active_consumption", default=None
 )
+
+
+def _write_rows(session: Session, rows: list[dict[str, Any]]) -> None:
+    """Insert ledger rows, dropping any whose `idempotency_key` is already booked (0136's
+    partial UNIQUE index, `WHERE idempotency_key IS NOT NULL`): a repeated key is a row
+    already recorded, never a reason to lose the rest of the scope. Rows without a key
+    (Claude's) never conflict."""
+    if not rows:
+        return
+    table = ConsumptionLedger.__table__
+    values = [
+        {("metadata" if key == "extra_metadata" else key): value for key, value in row.items()}
+        for row in rows
+    ]
+    stmt = (
+        pg_insert(table)
+        .values(values)
+        .on_conflict_do_nothing(
+            index_elements=[table.c.idempotency_key],
+            index_where=table.c.idempotency_key.is_not(None),
+        )
+    )
+    session.execute(stmt)
 
 
 def summarize_consumption(
@@ -221,9 +245,7 @@ def consumption_scope(
         if not ctx.records:
             return
         with tenant_session(tenant_id) as session:
-            for r in ctx.records:
-                session.add(ConsumptionLedger(**r))
-            session.flush()
+            _write_rows(session, ctx.records)
 
 
 def record_consumption(
@@ -291,5 +313,44 @@ def record_consumption(
         ctx.records.append(record_data)
     else:
         with tenant_session(tid) as session:
-            session.add(ConsumptionLedger(**record_data))
-            session.flush()
+            _write_rows(session, [record_data])
+
+
+def record_now(
+    *,
+    tenant_id: UUID,
+    operation: str,
+    provider: str,
+    model_id: str,
+    brand_id: UUID | None = None,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    cache_read_tokens: int = 0,
+    cache_creation_tokens: int = 0,
+    cost_usd: Decimal | float = Decimal("0"),
+    metadata: dict[str, Any] | None = None,
+    pricing_table_version: str | None = None,
+    idempotency_key: str | None = None,
+) -> None:
+    """Write ONE row now, in its own `tenant_session(tenant_id)` (RLS checks the tenant),
+    whatever scope is active: the Claude interceptor (`claude_tools`, m-24955649) books
+    each paid call the moment it is answered, so a later failure of the owner's action —
+    or a scope of another business around it — never loses or misfiles the row."""
+    row: dict[str, Any] = {
+        "tenant_id": tenant_id,
+        "brand_id": brand_id,
+        "meegle_work_item_id": None,
+        "operation": operation,
+        "provider": provider,
+        "model_id": model_id,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cache_read_tokens": cache_read_tokens,
+        "cache_creation_tokens": cache_creation_tokens,
+        "cost_usd": Decimal(str(cost_usd)),
+        "idempotency_key": idempotency_key,
+        "extra_metadata": metadata or {},
+        "pricing_table_version": pricing_table_version or DEFAULT_PRICING_TABLE_VERSION,
+    }
+    with tenant_session(tenant_id) as session:
+        _write_rows(session, [row])

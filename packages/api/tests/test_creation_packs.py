@@ -161,34 +161,37 @@ def test_with_the_plan_at_zero_a_creation_comes_from_the_pack() -> None:
     assert (balance.left, balance.extra_left) == (18, 18)
 
 
-def test_founders_example_basico_plus_two_videos_one_used() -> None:
-    ledger = InMemoryCreationsLedger(plan=BASICO, videos_used=1, clock=Clock(OCT_24))
+def test_founders_example_in_seconds_basico_plus_the_video_pack_10_used() -> None:
+    # D16 in seconds (ADR 44 F1 = (b)): Básico 40 s + «+2 videos» = 20 s, 10 s used
+    ledger = InMemoryCreationsLedger(plan=BASICO, videos_used=10, clock=Clock(OCT_24))
     ledger.add_pack(pack_by_name("+2 videos"), granted_at=OCT_24)
     balance = ledger.balance(tenant_id=uuid4(), brand_id=uuid4())
-    assert (balance.videos_left, balance.video_quota) == (5, 6)
-    assert balance.extra_videos_left == 2
+    assert (balance.videos_left, balance.video_quota) == (50, 60)
+    assert balance.extra_videos_left == 20
     assert balance.extra_videos_expires_on == date(2027, 1, 22)
 
 
 def test_the_balance_grows_after_a_pack_and_the_kind_can_be_created_again() -> None:
     tenant, brand = uuid4(), uuid4()
-    ledger = InMemoryCreationsLedger(plan=BASICO, videos_used=4, clock=Clock(OCT_24))
+    ledger = InMemoryCreationsLedger(plan=BASICO, videos_used=40, clock=Clock(OCT_24))
     draft = uuid4()
     with pytest.raises(NotEnoughCreations):
-        ledger.charge_videos(tenant_id=tenant, brand_id=brand, draft_id=draft, revision=1, videos=1)
+        ledger.charge_videos(
+            tenant_id=tenant, brand_id=brand, draft_id=draft, revision=1, videos=1, seconds=10
+        )
     ledger.add_pack(pack_by_name("+2 videos"))
-    assert ledger.balance(tenant_id=tenant, brand_id=brand).videos_left == 2
+    assert ledger.balance(tenant_id=tenant, brand_id=brand).videos_left == 20
     assert ledger.charge_videos(
-        tenant_id=tenant, brand_id=brand, draft_id=draft, revision=1, videos=1
+        tenant_id=tenant, brand_id=brand, draft_id=draft, revision=1, videos=1, seconds=10
     )
 
 
 def test_day_91_the_pack_stops_counting() -> None:
     clock = Clock(OCT_24)
-    ledger = InMemoryCreationsLedger(plan=BASICO, videos_used=4, clock=clock)
+    ledger = InMemoryCreationsLedger(plan=BASICO, videos_used=40, clock=clock)
     ledger.add_pack(pack_by_name("+2 videos"), granted_at=OCT_24)
     clock.at = OCT_24 + timedelta(days=90) - timedelta(seconds=1)
-    assert ledger.balance(tenant_id=uuid4(), brand_id=uuid4()).videos_left == 2
+    assert ledger.balance(tenant_id=uuid4(), brand_id=uuid4()).videos_left == 20
     clock.at = OCT_24 + timedelta(days=90)
     balance = ledger.balance(tenant_id=uuid4(), brand_id=uuid4())
     assert (balance.videos_left, balance.extra_videos_left) == (0, 0)
@@ -235,18 +238,21 @@ def test_a_refund_gives_the_units_back_to_the_pack_that_paid() -> None:
     assert (balance.left, balance.extra_left) == (21, 20)
 
 
-def test_a_failed_final_gives_its_video_back_to_the_last_source_first() -> None:
+def test_a_failed_final_gives_its_seconds_back_to_the_last_source_first() -> None:
     tenant, brand = uuid4(), uuid4()
-    ledger = InMemoryCreationsLedger(plan=BASICO, videos_used=3, clock=Clock(OCT_24))
+    ledger = InMemoryCreationsLedger(plan=BASICO, videos_used=30, clock=Clock(OCT_24))
     ledger.add_pack(pack_by_name("+2 videos"))
     draft = uuid4()
-    ledger.charge_videos(tenant_id=tenant, brand_id=brand, draft_id=draft, revision=1, videos=2)
-    assert ledger.balance(tenant_id=tenant, brand_id=brand).extra_videos_left == 1
+    # two 10 s slides: 10 s from the plan's month, then 10 s from the pack (D17)
+    ledger.charge_videos(
+        tenant_id=tenant, brand_id=brand, draft_id=draft, revision=1, videos=2, seconds=20
+    )
+    assert ledger.balance(tenant_id=tenant, brand_id=brand).extra_videos_left == 10
     assert ledger.refund_final(
         tenant_id=tenant, draft_id=draft, revision=1, reason="x", asset_ids=[uuid4()]
     )
     balance = ledger.balance(tenant_id=tenant, brand_id=brand)
-    assert (balance.videos_left, balance.extra_videos_left) == (2, 2)
+    assert (balance.videos_left, balance.extra_videos_left) == (20, 20)
 
 
 def test_a_revoked_pack_stops_counting() -> None:
@@ -259,7 +265,7 @@ def test_a_revoked_pack_stops_counting() -> None:
 
 def test_without_packs_the_balance_is_the_plans() -> None:
     balance = InMemoryCreationsLedger(plan=BASICO).balance(tenant_id=uuid4(), brand_id=uuid4())
-    assert (balance.quota, balance.video_quota, balance.preview_quota) == (30, 4, 20)
+    assert (balance.quota, balance.video_quota, balance.preview_quota) == (30, 40, 20)
     assert (balance.extra_left, balance.extra_videos_left, balance.extra_previews_left) == (0, 0, 0)
     assert dimension_balance(CREATIONS, 30, 5, []).quota == 30
 

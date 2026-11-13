@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import Any, Protocol
@@ -43,8 +44,29 @@ class PromotionRequest:
     targeting: dict[str, Any] = field(default_factory=dict)
     creative: dict[str, Any] = field(default_factory=dict)
     adset_options: dict[str, Any] = field(default_factory=dict)
+    audience_snapshot: dict[str, Any] = field(default_factory=dict)
+    messaging_snapshot: dict[str, Any] = field(default_factory=dict)
+    enhancements_snapshot: dict[str, Any] = field(default_factory=dict)
+    meta_currency_offset: int | None = None
 
     def snapshot(self) -> dict[str, Any]:
+        from qualify_api.ads.enhancements import validate_request_policy
+
+        validate_request_policy(self)
+        if self.messaging_snapshot:
+            from qualify_api.ads.messaging import MessagingTarget
+
+            MessagingTarget.from_snapshot(self.messaging_snapshot).validate_request(self)
+        if self.audience_snapshot:
+            from qualify_api.ads.audience import AudienceDraft
+
+            audience = AudienceDraft.from_snapshot(self.audience_snapshot)
+            if audience.targeting() != self.targeting or audience.housing != (
+                "HOUSING" in self.special_ad_categories
+            ):
+                raise ValueError("audience selection differs from approved targeting")
+        elif "custom_audiences" in self.targeting:
+            raise ValueError("custom audiences require a canonical audience selection")
         if not self.request_key.strip() or len(self.request_key) > 200:
             raise ValueError("invalid promotion request key")
         if not re.fullmatch(r"[0-9]+", self.meta_ad_account_id):
@@ -53,6 +75,13 @@ class PromotionRequest:
             raise ValueError("invalid budget kind or amount")
         if self.budget_minor <= 0 or not re.fullmatch(r"[A-Z]{3}", self.currency):
             raise ValueError("invalid budget or currency")
+        if self.meta_currency_offset is not None and (
+            type(self.meta_currency_offset) is not int
+            or self.meta_currency_offset != 1
+            or self.currency != "COP"
+            or self.budget_minor * self.meta_currency_offset % 100
+        ):
+            raise ValueError("unrepresentable verified Meta currency amount")
         if (
             any(
                 t.tzinfo is None or t.utcoffset() is None
@@ -61,7 +90,11 @@ class PromotionRequest:
             or self.end_time <= self.start_time
         ):
             raise ValueError("expected timezone-aware approval and increasing schedule")
-        if not self.objective or not self.cta_type or not self.link_url.startswith("https://"):
+        if (
+            not self.objective
+            or not self.cta_type
+            or (not self.messaging_snapshot and not self.link_url.startswith("https://"))
+        ):
             raise ValueError("objective, CTA and HTTPS destination are required")
         if not (self.content_draft_id or self.publish_attempt_id or self.source_media_id):
             raise ValueError("promotion provenance is required")
@@ -105,7 +138,15 @@ class PromotionRequest:
                 raise ValueError("creative structures must be objects, not serialized JSON")
 
         check_creative(self.creative)
-        return json.loads(json.dumps(asdict(self), default=_json_value))
+        snapshot = json.loads(json.dumps(asdict(self), default=_json_value))
+        if not self.messaging_snapshot:
+            # Preserve hashes/idempotency of approvals created before messaging support.
+            snapshot.pop("messaging_snapshot", None)
+        if not self.enhancements_snapshot:
+            snapshot.pop("enhancements_snapshot", None)
+        if self.meta_currency_offset is None:
+            snapshot.pop("meta_currency_offset", None)
+        return snapshot
 
 
 def _json_value(value: Any) -> str:
@@ -138,6 +179,8 @@ class CreationStep:
 
 
 class PromotionRepository(Protocol):
+    def current_enhancements(self, tenant_id: UUID, brand_id: UUID) -> dict[str, Any]: ...
+    def by_request_key(self, tenant_id: UUID, request_key: str) -> Promotion | None: ...
     def create_or_get(self, request: PromotionRequest) -> Promotion: ...
     def get(self, tenant_id: UUID, promotion_id: UUID) -> Promotion | None: ...
     def step(
@@ -193,7 +236,11 @@ def step_payload(promotion: Promotion, resource: Resource) -> dict[str, Any]:
             "name": name,
             "status": "PAUSED",
             "campaign_id": promotion.ids["campaigns"],
-            request["budget_kind"] + "_budget": request["budget_minor"],
+            request["budget_kind"] + "_budget": (
+                request["budget_minor"] * request["meta_currency_offset"] // 100
+                if request.get("meta_currency_offset") is not None
+                else request["budget_minor"]
+            ),
             "start_time": request["start_time"],
             "end_time": request["end_time"],
             "targeting": request["targeting"],
@@ -226,15 +273,38 @@ class PromotionService:
             raise ValueError("account binding does not match immutable promotion")
         return access
 
-    async def start(self, request: PromotionRequest) -> Promotion:
+    async def start(
+        self,
+        request: PromotionRequest,
+        *,
+        before_write: Callable[[], Awaitable[None] | None] | None = None,
+        validate_step: Callable[[Promotion, Resource, dict[str, Any]], Awaitable[None]]
+        | None = None,
+    ) -> Promotion:
         # Persist before resolving credentials or issuing any platform operation.
         promotion = self.repository.create_or_get(request)
-        return await self.resume(request.tenant_id, promotion.id)
+        return await self.resume(
+            request.tenant_id, promotion.id, before_write=before_write, validate_step=validate_step
+        )
 
-    async def resume(self, tenant_id: UUID, promotion_id: UUID) -> Promotion:
+    async def resume(
+        self,
+        tenant_id: UUID,
+        promotion_id: UUID,
+        *,
+        before_write: Callable[[], Awaitable[None] | None] | None = None,
+        validate_step: Callable[[Promotion, Resource, dict[str, Any]], Awaitable[None]]
+        | None = None,
+    ) -> Promotion:
         promotion = self.repository.get(tenant_id, promotion_id)
         if promotion is None:
             raise LookupError("promotion not found")
+        if not promotion.request.get("enhancements_snapshot") and len(promotion.ids) != len(STEPS):
+            from qualify_api.ads.enhancements import EnhancementsUnavailable
+
+            raise EnhancementsUnavailable(
+                "Esta aprobación es anterior a los permisos de cambios. Prepara otra promoción."
+            )
         for resource in STEPS:
             promotion = self.repository.get(tenant_id, promotion_id)
             assert promotion is not None
@@ -253,13 +323,20 @@ class PromotionService:
                     return self.repository.get(tenant_id, promotion_id) or promotion
                 continue
             payload = step_payload(promotion, resource)
+            if validate_step is not None:
+                await validate_step(promotion, resource, payload)
             token = uuid4()
             if not self.repository.claim(tenant_id, promotion_id, resource, payload, token):
                 return self.repository.get(tenant_id, promotion_id) or promotion
             # claim() must COMMIT independently before this call; cancellation or
             # persistence failure leaves a durable claim, which only recovery can finish.
             try:
-                identifier = await access.client.create(resource, params=payload)
+                if before_write is None:
+                    identifier = await access.client.create(resource, params=payload)
+                else:
+                    identifier = await access.client.create(
+                        resource, params=payload, before_write=before_write
+                    )
             except MarketingError:
                 return self.repository.get(tenant_id, promotion_id) or promotion
             if not self.repository.complete(tenant_id, promotion_id, resource, token, identifier):

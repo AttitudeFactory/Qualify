@@ -216,6 +216,36 @@ def test_list_prefix_pages_through_every_object_with_its_size() -> None:
     assert all(item.key.startswith("t/x/generated/d/") for item in found)
 
 
+def test_list_prefix_carries_last_modified() -> None:
+    """m-24955918 (ADR 39 amendment): the Galería reconciler needs each object's age."""
+    from datetime import UTC, datetime
+
+    moment = datetime(2026, 11, 5, 12, 0, tzinfo=UTC)
+
+    class _DatedClient(_ListingClient):
+        def get_paginator(self, name: str) -> Any:
+            client = self
+
+            class _Paginator:
+                def paginate(self, *, Bucket: str, Prefix: str) -> Any:
+                    keys = sorted(k for k in client.stored if k.startswith(Prefix))
+                    yield {
+                        "Contents": [
+                            {"Key": k, "Size": len(client.stored[k]), "LastModified": moment}
+                            for k in keys
+                        ]
+                    }
+
+            return _Paginator()
+
+    store = R2ObjectStore(_SETTINGS, client=_DatedClient({"gallery/x/m/video.mp4": b"abc"}))
+    [item] = list(store.list_prefix("gallery/x/"))
+    assert item.last_modified == moment and item.size == 3
+    # A listing without the field (the older fake above) still yields objects.
+    plain = R2ObjectStore(_SETTINGS, client=_ListingClient({"gallery/x/m/a": b"1"}))
+    assert [o.last_modified for o in plain.list_prefix("gallery/x/")] == [None]
+
+
 def test_list_prefix_of_an_empty_folder_is_empty() -> None:
     store = R2ObjectStore(_SETTINGS, client=_ListingClient({}))
     assert list(store.list_prefix("t/x/generated/d/")) == []
@@ -237,6 +267,41 @@ def test_delete_keys_raises_when_r2_refuses_one() -> None:
     store = R2ObjectStore(_SETTINGS, client=client)
     with pytest.raises(RuntimeError, match="AccessDenied"):
         store.delete_keys(["t/x/generated/d/a"])
+
+
+def test_a_refused_delete_is_typed_so_a_purge_can_stop_its_pass() -> None:
+    """m-24921060 (VE-12): the production bucket's lock refuses overwrites
+    (`ObjectLockedByBucketPolicy`, 2026-11-05) and nobody measured whether it refuses
+    deletes. Per-key errors and a whole refused request both raise `DeleteRefused`;
+    a lock or permission code says it will repeat, `InternalError` does not."""
+    from botocore.exceptions import ClientError
+
+    from qualify_shared.objects.gate import DeleteRefused, is_bucket_refusal
+
+    client = _ListingClient({"t/x/generated/d/a": b"1"}, refuse=frozenset({"t/x/generated/d/a"}))
+    with pytest.raises(DeleteRefused) as per_key:
+        R2ObjectStore(_SETTINGS, client=client).delete_keys(["t/x/generated/d/a"])
+    assert per_key.value.codes == ("AccessDenied",) and is_bucket_refusal(per_key.value)
+
+    class _Locked(_ListingClient):
+        def delete_objects(self, *, Bucket: str, Delete: dict[str, Any]) -> dict[str, Any]:
+            raise ClientError(
+                {"Error": {"Code": "ObjectLockedByBucketPolicy", "Message": "locked"}},
+                "DeleteObjects",
+            )
+
+    locked = _Locked({"t/x/generated/d/a": b"1"})
+    with pytest.raises(DeleteRefused) as whole:
+        R2ObjectStore(_SETTINGS, client=locked).delete_keys(["t/x/generated/d/a"])
+    assert whole.value.refused_by_bucket and locked.stored == {"t/x/generated/d/a": b"1"}
+
+    class _Throttled(_ListingClient):
+        def delete_objects(self, *, Bucket: str, Delete: dict[str, Any]) -> dict[str, Any]:
+            raise ClientError({"Error": {"Code": "SlowDown"}}, "DeleteObjects")
+
+    with pytest.raises(ClientError):  # anything else propagates untouched
+        R2ObjectStore(_SETTINGS, client=_Throttled({})).delete_keys(["t/x/generated/d/a"])
+    assert not is_bucket_refusal(DeleteRefused(1, ("InternalError",)))
 
 
 def test_current_final_digest_streams_in_bounded_chunks_and_closes() -> None:
@@ -267,3 +332,20 @@ def test_current_final_digest_translates_missing_object() -> None:
     store = R2ObjectStore(_SETTINGS, client=_FakeS3Client())
     with pytest.raises(ObjectNotFound):
         store.sha256("missing")
+
+
+def test_bounded_settings_build_a_client_that_gives_up_fast() -> None:
+    """R12 (m-24854859): the reel cover route reads R2 for an `<img>` request, so its client
+    connects in 2 s, reads in 5 s and never retries; every other caller keeps botocore's
+    defaults. Offline: building a boto3 client makes no request."""
+    bounded = R2ObjectStore(_SETTINGS.bounded(connect=2.0, read=5.0, attempts=1))
+    config = bounded._client.meta.config
+    assert (config.connect_timeout, config.read_timeout) == (2.0, 5.0)
+    assert config.retries == {"total_max_attempts": 1, "mode": "standard"}
+
+    default = R2ObjectStore(_SETTINGS)._client.meta.config
+    assert (default.connect_timeout, default.read_timeout) == (60, 60)
+    assert default.retries is None or "total_max_attempts" not in default.retries
+    assert "secret" not in repr(_SETTINGS.bounded(connect=2.0, read=5.0, attempts=1)).replace(
+        "secret=redacted", ""
+    )

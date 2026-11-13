@@ -1,4 +1,4 @@
-"""/catalog — Catálogo de productos (plan-mvp-plantillas-remotion.md §2.1 #1).
+"""/catalog — «Galería», the brand's products and media (plan-mvp-plantillas-remotion.md §2.1 #1).
 
 The screen where the founder puts the real products of a brand with their real photos
 and short clips — the one input the template engine cannot invent. Three blocks on one
@@ -25,9 +25,44 @@ the catalog writes to the same store (`catalog_provider`).
 from __future__ import annotations
 
 import reflex as rx
+from qualify_api.catalog.service import MAX_VIDEO_BYTES
 
-from .catalog_state import CatalogState
+from .catalog_choose_page import choose_button, choose_view
+from .catalog_choose_state import CatalogChooseState
+from .catalog_cut_state import CatalogCutState
+from .catalog_gallery_page import gallery_dialogs, gallery_section, picked_files
+from .catalog_gallery_state import CatalogGalleryState
+from .catalog_group_page import group_drawer, group_notice
+from .catalog_group_state import CatalogGroupState
+from .catalog_group_vm import ONLY_OTROS_BUTTON, ONLY_OTROS_TEXT
+from .catalog_order_state import CatalogOrderState
+from .catalog_order_vm import (
+    BACK_TO_GALLERY,
+    BACK_TO_WHATSAPP,
+    CATEGORIES_FIRST_HELP,
+    FIRST_PAGE_CUT,
+    FIRST_PAGE_CUT_CATEGORIES,
+    MOVE_DOWN,
+    MOVE_FIRST,
+    MOVE_LAST,
+    MOVE_TO,
+    MOVE_UP,
+    ORDER_BUTTON,
+    ORDER_DONE,
+    ORDER_EMPTY,
+    ORDER_HELP,
+    ORDER_ONLY_ONE,
+    ORDER_TITLE,
+    TAB_CATEGORIES,
+    TAB_CATEGORIES_VALUE,
+    TAB_PRODUCTS,
+    TAB_PRODUCTS_VALUE,
+    OrderCategoryVM,
+    OrderProductVM,
+)
+from .catalog_state import MEDIA_UPLOAD_ID, NEW_MEDIA_UPLOAD_ID, CatalogState
 from .catalog_vm import (
+    ADD_PRODUCT_LABEL,
     LEAVE_DISCARD,
     LEAVE_SAVE,
     LEAVE_STAY,
@@ -55,6 +90,7 @@ from .catalog_vm import (
     ProductMediaVM,
     ProductVM,
 )
+from .pinterest_ui import pinterest_section
 from .ui import (
     DragCard,
     app_shell,
@@ -70,6 +106,8 @@ from .ui import (
     progress_panel,
     section,
     skeleton_card,
+    skeleton_rows,
+    sort_handle,
     stepper,
     tag,
     tone_badge,
@@ -236,20 +274,31 @@ def _photo_step() -> rx.Component:
                     text_align="center",
                     color=T.TEXT_MUTED,
                 ),
+                rx.text("Fotos hasta 25 MB; videos hasta 100 MB.", size="1", color=T.TEXT_MUTED),
                 align="center",
                 spacing="2",
                 padding_y="1.5rem",
             ),
-            upload_id="catalog_new_media",
+            upload_id=NEW_MEDIA_UPLOAD_ID,
             accept=MEDIA_ACCEPT,
             multiple=True,
             max_files=12,
-            on_drop=CatalogState.handle_new_media(rx.upload_files(upload_id="catalog_new_media")),
+            max_size=MAX_VIDEO_BYTES,
+            on_drop=[
+                # the whole drop must fit in one request (Caddy's 520 MB) — checked first
+                CatalogState.check_upload_size(picked_files(), NEW_MEDIA_UPLOAD_ID),
+                CatalogState.handle_new_media(rx.upload_files(upload_id=NEW_MEDIA_UPLOAD_ID)),
+            ],
             on_drop_rejected=CatalogState.new_media_rejected,
         ),
         rx.cond(
             CatalogState.new_media_error != "",
-            callout(CatalogState.new_media_error, "error"),
+            rx.vstack(
+                callout(CatalogState.new_media_error, "error"),
+                rx.button("Cerrar aviso", on_click=CatalogState.dismiss_new_media_error, size="1"),
+                align="start",
+                width="100%",
+            ),
         ),
         rx.cond(
             CatalogState.new_previews.length() > 0,
@@ -725,14 +774,19 @@ def _upload_zone() -> rx.Component:
                 text_align="center",
                 color=T.TEXT_FAINT,
             ),
+            rx.text("Fotos hasta 25 MB; videos hasta 100 MB.", size="1", color=T.TEXT_FAINT),
             align="center",
             spacing="1",
         ),
-        upload_id="catalog_media",
+        upload_id=MEDIA_UPLOAD_ID,
         accept=MEDIA_ACCEPT,
         multiple=True,
         max_files=12,
-        on_drop=CatalogState.handle_media_upload(rx.upload_files(upload_id="catalog_media")),
+        max_size=MAX_VIDEO_BYTES,
+        on_drop=[
+            CatalogState.check_upload_size(picked_files(), MEDIA_UPLOAD_ID),
+            CatalogState.handle_media_upload(rx.upload_files(upload_id=MEDIA_UPLOAD_ID)),
+        ],
         on_drop_rejected=CatalogState.media_rejected,
         variant="compact",
     )
@@ -777,7 +831,11 @@ def _media_block() -> rx.Component:
         rx.cond(CatalogState.uploading, _upload_progress(), _upload_zone()),
         rx.cond(
             CatalogState.upload_error != "",
-            rx.text(CatalogState.upload_error, size="1", color=T.tone_color("error", 11)),
+            rx.vstack(
+                rx.text(CatalogState.upload_error, size="1", color=T.tone_color("error", 11)),
+                rx.button("Cerrar aviso", on_click=CatalogState.dismiss_upload_error, size="1"),
+                align="start",
+            ),
         ),
         rx.cond(
             product.media.length() > 0,
@@ -1265,6 +1323,371 @@ def _loading() -> rx.Component:
     )
 
 
+# -- «Ordenar tu menú» (m-24955643, docs/ux-orden-de-productos.md) -------------------------
+#
+# Built from what the design system already has — `DragCard` + `assets/rank-drag.js` (the
+# photos above, the referentes ranking) — and Radix's menu: no new component. A row is a
+# `DragCard`: a long press anywhere on it (or a press on its 44 px handle) lifts it and the
+# rows of its `data-rank-group` make room; only one category's products trade places. The
+# «⋯» menu (Primero · Subir uno · Bajar uno · Último · Mover a la posición…) is always there
+# (N12: never only dragging); the handle (`ui.sort_handle`, founder 2026-11-06) also
+# takes the keyboard: Espacio lifts and drops, ↑/↓ move, Escape puts it back.
+
+_O = CatalogOrderState
+
+
+def _order_menu(
+    label: rx.Var[str],
+    position: rx.Var[int],
+    total: rx.Var[int],
+    targets: tuple[rx.Var[int], rx.Var[int], rx.Var[int]],
+    positions: rx.Var[list[int]],
+    place: object,
+    rank_key: rx.Var[str],
+) -> rx.Component:
+    """«⋯»: the moves in words, for a finger, a mouse, the keyboard or a screen reader.
+    `place(to)` builds the event that moves the row to 0-based `to`."""
+    up_to, down_to, last_to = targets
+    at_top = position == 1
+    at_end = position == total
+    return rx.menu.root(
+        rx.menu.trigger(
+            rx.icon_button(
+                rx.icon("ellipsis", size=T.ICON_MD),
+                variant="ghost",
+                size="3",
+                type="button",
+                aria_label=label,
+                min_width=_TOUCH_MIN,
+                min_height=_TOUCH_MIN,
+                # where the focus comes back after a move (`focus_more_script`)
+                custom_attrs={"data-order-more": rank_key},
+                **T.tone_scheme("neutral"),
+            ),
+        ),
+        rx.menu.content(
+            rx.menu.item(MOVE_FIRST, on_click=place(0), disabled=at_top),  # type: ignore[operator]
+            rx.menu.item(MOVE_UP, on_click=place(up_to), disabled=at_top),  # type: ignore[operator]
+            rx.menu.item(MOVE_DOWN, on_click=place(down_to), disabled=at_end),  # type: ignore[operator]
+            rx.menu.item(MOVE_LAST, on_click=place(last_to), disabled=at_end),  # type: ignore[operator]
+            rx.menu.separator(),
+            rx.menu.sub(
+                rx.menu.sub_trigger(MOVE_TO),
+                rx.menu.sub_content(
+                    rx.foreach(
+                        positions,
+                        lambda p: rx.menu.item(
+                            p.to_string(),
+                            on_click=place(p - 1),  # type: ignore[operator]
+                            disabled=p == position,
+                        ),
+                    ),
+                    # 15+ places: it scrolls instead of opening off a 375 px screen
+                    max_height="min(60vh, 20rem)",
+                    overflow_y="auto",
+                ),
+            ),
+            align="end",
+        ),
+    )
+
+
+def _order_row(
+    *,
+    rank_group: str | rx.Var[str],
+    rank_key: rx.Var[str],
+    movable: rx.Var[bool],
+    place_label: rx.Var[str],
+    handle: rx.Component,
+    menu: rx.Component,
+    body: rx.Component,
+    on_pick: object,
+    on_drop: object,
+) -> rx.Component:
+    return DragCard.create(
+        rx.hstack(
+            rx.cond(movable, handle, rx.box(width="0.75rem", flex_shrink="0")),
+            body,
+            rx.cond(movable, menu, rx.fragment()),
+            align="center",
+            spacing="1",
+            width="100%",
+            min_height=_TOUCH_MIN,
+        ),
+        class_name="q-rank-card q-order-row",
+        custom_attrs={
+            "data-rank-group": rank_group,
+            "data-rank-key": rank_key,
+            "role": "listitem",
+            "aria-label": place_label,
+        },
+        on_drag_start=on_pick,
+        on_drop=on_drop,
+        key=rank_key,
+        width="100%",
+    )
+
+
+def _category_order_row(row: rx.Var[OrderCategoryVM]) -> rx.Component:
+    return rx.fragment(
+        _category_order_card(row),
+        rx.cond(row.after_cut, _first_page_cut(FIRST_PAGE_CUT_CATEGORIES)),
+    )
+
+
+def _category_order_card(row: rx.Var[OrderCategoryVM]) -> rx.Component:
+    return _order_row(
+        rank_group="order-categories",
+        rank_key=row.rank_key,
+        movable=row.movable,
+        place_label=row.place_label,
+        handle=sort_handle(
+            row.handle_label,
+            lambda key: _O.category_handle_key(row.name, key),
+            key=row.rank_key,
+            lifted=_O.lifted == row.rank_key,
+        ),
+        menu=_order_menu(
+            row.more_label,
+            row.position,
+            row.total,
+            (row.up_to, row.down_to, row.last_to),
+            row.positions,
+            lambda to: _O.place_category(row.name, to),
+            row.rank_key,
+        ),
+        body=rx.hstack(
+            rx.text(row.label, size="3", weight="medium", min_width="0", truncate=True),
+            rx.spacer(),
+            rx.text(row.count_label, size="2", color=T.TEXT_MUTED, class_name="q-nums"),
+            align="center",
+            flex="1",
+            min_width="0",
+            padding_right="0.25rem",
+        ),
+        on_pick=_O.pick(row.rank_key),
+        on_drop=_O.drop_category(row.name),
+    )
+
+
+def _first_page_cut(text: str = FIRST_PAGE_CUT) -> rx.Component:
+    """Where WhatsApp's first screen ends: what the customer sees without «Ver más»."""
+    return rx.hstack(
+        rx.divider(size="4", border_style="dashed", flex="1"),
+        rx.text(text, size="1", color=T.TEXT_MUTED, text_align="center"),
+        rx.divider(size="4", border_style="dashed", flex="1"),
+        align="center",
+        spacing="2",
+        width="100%",
+        role="separator",
+        padding_y="0.25rem",
+    )
+
+
+def _product_order_row(row: rx.Var[OrderProductVM]) -> rx.Component:
+    return rx.fragment(
+        _order_row(
+            rank_group=row.rank_group,
+            rank_key=row.product_id,
+            movable=row.movable,
+            place_label=row.place_label,
+            handle=sort_handle(
+                row.handle_label,
+                lambda key: _O.product_handle_key(row.product_id, key),
+                key=row.product_id,
+                lifted=_O.lifted == row.product_id,
+            ),
+            menu=_order_menu(
+                row.more_label,
+                row.position,
+                row.total,
+                (row.up_to, row.down_to, row.last_to),
+                row.positions,
+                lambda to: _O.place_product(row.product_id, to),
+                row.product_id,
+            ),
+            body=rx.hstack(
+                rx.text(row.name, size="2", weight="medium", min_width="0", truncate=True),
+                rx.spacer(),
+                rx.text(row.price_label, size="2", color=T.TEXT_MUTED, class_name="q-nums"),
+                align="center",
+                flex="1",
+                min_width="0",
+                padding_right="0.25rem",
+            ),
+            on_pick=_O.pick(row.product_id),
+            on_drop=_O.drop_product(row.product_id),
+        ),
+        rx.cond(row.after_cut, _first_page_cut()),
+    )
+
+
+def _product_order_group(group: rx.Var[OrderCategoryVM]) -> rx.Component:
+    return rx.vstack(
+        rx.hstack(
+            rx.text(group.label, size="2", weight="bold"),
+            rx.text(group.count_label, size="1", color=T.TEXT_MUTED, class_name="q-nums"),
+            align="baseline",
+            spacing="2",
+        ),
+        rx.vstack(
+            rx.foreach(group.products, _product_order_row),
+            spacing="2",
+            width="100%",
+            role="list",
+            aria_label=group.label,
+        ),
+        spacing="2",
+        width="100%",
+        align_items="start",
+        key=group.rank_key,
+    )
+
+
+def _order_only_one() -> rx.Component:
+    return rx.text(ORDER_ONLY_ONE, size="2", color=T.TEXT_MUTED)
+
+
+def _category_list() -> rx.Component:
+    return rx.vstack(
+        rx.foreach(_O.categories, _category_order_row),
+        spacing="2",
+        width="100%",
+        role="list",
+        aria_label=TAB_CATEGORIES,
+    )
+
+
+def _order_lists() -> rx.Component:
+    categories = rx.cond(
+        # only «Otros», and the backend's notice rule (and the session's dismissal) agree
+        _O.only_otros & (CatalogState.group_notice_count > 0),
+        # m-24955838 (N4): never an empty list with no way out
+        rx.vstack(
+            rx.text(ONLY_OTROS_TEXT, size="2", color=T.TEXT_MUTED),
+            rx.button(
+                rx.icon("layers", size=T.ICON_SM),
+                ONLY_OTROS_BUTTON,
+                size="3",
+                min_height=_TOUCH_MIN,
+                type="button",
+                on_click=CatalogGroupState.open_flow,
+            ),
+            spacing="2",
+            width="100%",
+            align_items="start",
+        ),
+        rx.cond(_O.single_category, _order_only_one(), _category_list()),
+    )
+    products = rx.vstack(
+        rx.cond(_O.single_product, _order_only_one()),
+        rx.foreach(_O.categories, _product_order_group),
+        spacing="4",
+        width="100%",
+    )
+    return rx.vstack(
+        rx.segmented_control.root(
+            rx.segmented_control.item(TAB_CATEGORIES, value=TAB_CATEGORIES_VALUE),
+            rx.segmented_control.item(TAB_PRODUCTS, value=TAB_PRODUCTS_VALUE),
+            value=_O.tab,
+            on_change=_O.set_tab,
+            size="3",
+            aria_label="Qué quieres ordenar",
+            width=rx.breakpoints(initial="100%", sm="auto"),
+        ),
+        rx.cond(_O.tab == TAB_PRODUCTS_VALUE, products, categories),
+        spacing="3",
+        width="100%",
+    )
+
+
+def _order_back() -> rx.Component:
+    """«‹ Tu menú de WhatsApp» when the owner came from there (N7), else
+    «‹ Galería»."""
+    look = {
+        "variant": "ghost",
+        "size": "2",
+        "min_height": _TOUCH_MIN,
+        **T.tone_scheme("neutral"),
+    }
+    return rx.cond(
+        _O.returning,
+        rx.link(
+            rx.button(rx.icon("chevron-left", size=T.ICON_SM), BACK_TO_WHATSAPP, **look),
+            href=_O.return_to,
+        ),
+        rx.button(
+            rx.icon("chevron-left", size=T.ICON_SM),
+            BACK_TO_GALLERY,
+            on_click=_O.finish_order,
+            type="button",
+            **look,
+        ),
+    )
+
+
+def _order_panel() -> rx.Component:
+    return card(
+        rx.vstack(
+            _order_back(),
+            rx.heading(ORDER_TITLE, size="5", as_="h2"),
+            rx.text(ORDER_HELP, size="2", color=T.TEXT_MUTED),
+            rx.cond(_O.by_category, rx.text(CATEGORIES_FIRST_HELP, size="2", color=T.TEXT_MUTED)),
+            rx.cond(_O.order_error != "", callout(_O.order_error, "error")),
+            rx.cond(
+                _O.loading_order,
+                skeleton_rows(rows=5, height="2.75rem"),
+                rx.cond(
+                    _O.has_order_products,
+                    _order_lists(),
+                    empty_state(
+                        "package",
+                        "Aún no tienes productos",
+                        ORDER_EMPTY,
+                        rx.button(
+                            rx.icon("plus", size=T.ICON_SM),
+                            ADD_PRODUCT_LABEL,
+                            size="3",
+                            min_height=_TOUCH_MIN,
+                            on_click=[_O.close_order, CatalogState.open_form],
+                        ),
+                    ),
+                ),
+            ),
+            # what just moved, for a screen reader (the toast is not always read)
+            rx.text(_O.announce, class_name="q-order-live", role="status", aria_live="polite"),
+            rx.hstack(
+                rx.spacer(),
+                rx.button(
+                    ORDER_DONE,
+                    on_click=_O.finish_order,
+                    size="3",
+                    min_height=_TOUCH_MIN,
+                    type="button",
+                ),
+                width="100%",
+            ),
+            spacing="3",
+            width="100%",
+            align_items="start",
+        ),
+        padding=rx.breakpoints(initial="0.75rem", sm="1rem 1.25rem"),
+    )
+
+
+def _order_button() -> rx.Component:
+    return rx.button(
+        rx.icon("arrow-up-down", size=T.ICON_SM),
+        ORDER_BUTTON,
+        variant="soft",
+        size="2",
+        type="button",
+        min_height=_TOUCH_MIN,
+        width=rx.breakpoints(initial="100%", sm="auto"),
+        on_click=_O.open_order,
+    )
+
+
 def catalog_index() -> rx.Component:
     return app_shell(
         route_history(
@@ -1273,13 +1696,17 @@ def catalog_index() -> rx.Component:
             on_leave=CatalogState.leave_flow,
         ),
         page_header(
-            "Tus productos",
-            "Sube la foto real de lo que vendes y úsala en tus publicaciones.",
-            rx.button(
-                rx.icon("plus", size=T.ICON_SM),
-                "Agregar producto",
-                size="2",
-                on_click=CatalogState.open_form,
+            "Galería",
+            "Tus productos y tu local en fotos y videos, listos para tus publicaciones.",
+            # not while choosing for a publication: a tap there would lose the choice
+            rx.cond(
+                ~CatalogChooseState.choosing,
+                rx.button(
+                    rx.icon("plus", size=T.ICON_SM),
+                    "Agregar producto",
+                    size="2",
+                    on_click=CatalogState.open_form,
+                ),
             ),
             badge=rx.cond(
                 CatalogState.has_products,
@@ -1315,7 +1742,8 @@ def catalog_index() -> rx.Component:
             # m-24842973 (N4): came from a publication and closed the form — one soft
             # way back that names its destination (N7)
             rx.cond(
-                CatalogState.returning & ~CatalogState.form_open,
+                # (not while ordering: that view names its own way back)
+                CatalogState.returning & ~CatalogState.form_open & ~CatalogOrderState.ordering,
                 rx.link(
                     rx.button(
                         rx.icon("arrow-left", size=T.ICON_SM),
@@ -1330,21 +1758,63 @@ def catalog_index() -> rx.Component:
             ),
             _new_product_drawer(),
             _editor_drawer(),
+            group_drawer(),
             _leave_dialog(),
             _delete_product_dialog(),
             _remove_media_dialog(),
+            # `?ordenar=1` (WhatsApp step 3's «Cambiar el orden») opens the ordering;
+            # the drag script is the photos' own (it guards against running twice)
+            rx.box(
+                display="none",
+                on_mount=[
+                    CatalogOrderState.arrive,
+                    CatalogGroupState.arrive,
+                    # CM-2: «Fotos y videos de tu negocio» reads its media and jobs
+                    CatalogGalleryState.arrive,
+                    rx.call_script(_RANK_DRAG_JS),
+                ],
+                on_unmount=[
+                    CatalogGalleryState.leave,
+                    CatalogCutState.page_left,
+                    CatalogChooseState.page_left,
+                ],
+            ),
+            gallery_dialogs(),
             rx.cond(
-                CatalogState.loading,
-                _loading(),
+                CatalogOrderState.ordering,
+                _order_panel(),
                 rx.cond(
-                    CatalogState.has_products,
-                    section(
-                        "Productos",
-                        _missing_photo_filter(),
-                        _grid(),
-                        description="Toca uno para editarlo y subirle fotos.",
+                    # CM-5 (m-24955926): «Elegir para una publicación» takes the page
+                    CatalogChooseState.choosing,
+                    choose_view(),
+                    rx.fragment(
+                        choose_button(),
+                        # CM-2 (m-24955919): the business's own photos and videos, above
+                        # the products («una sección junto a tus productos (arriba)»)
+                        gallery_section(),
+                        rx.cond(
+                            CatalogState.loading,
+                            _loading(),
+                            rx.cond(
+                                CatalogState.has_products,
+                                section(
+                                    "Productos",
+                                    group_notice(),
+                                    rx.flex(
+                                        _missing_photo_filter(),
+                                        _order_button(),
+                                        spacing="2",
+                                        wrap="wrap",
+                                        width="100%",
+                                    ),
+                                    _grid(),
+                                    description="Toca uno para editarlo y subirle fotos.",
+                                ),
+                                _empty(),
+                            ),
+                        ),
+                        pinterest_section(),
                     ),
-                    _empty(),
                 ),
             ),
         ),

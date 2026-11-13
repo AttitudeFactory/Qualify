@@ -47,6 +47,7 @@ UI de Meegle (10 minutos); los campos pueden crearse por API.
 | Plan | select: `Básico · Plus · Pro` | opcional (m-24852131); vacío = Básico. Las unidades de cada plan viven en `planes-v1` (código), nunca en Meegle |
 | Paquete | select: `+2 videos · +20 creaciones · +10 vistas previas` | opcional (m-24852131); los paquetes fijos de `precios-planes-v1`, 90 días desde que se aplican. Sin precios en el ítem |
 | Motivo | text | opcional (m-24852131); queda en el historial del plan y del paquete |
+| Lecturas sin límite | select: `Sí · No` | opcional (m-24956180, fundador 2026-11-05); `Sí` quita al negocio los topes de Qualify sobre las lecturas de ScrapeCreators (Creadores 50/300 y el tope del negocio 150/600, ADR 42), cada crédito se sigue anotando; `No` lo devuelve al tope; vacío no cambia nada. Se lee con «Plan»/«Paquete» al completar **Datos** o **Plan ampliado** y queda en `business_read_limits` (0131) con el ítem y quién completó el nodo |
 
 **Campos que escribe Qualify** (solo lectura para el equipo, por convención):
 
@@ -66,7 +67,7 @@ UI de Meegle (10 minutos); los campos pueden crearse por API.
 | 1 | **Datos** | persona | Completar = «enviar». Qualify valida el correo, crea la invitación, manda el correo por Resend, escribe enlace/vence/estado=invitada y comenta «Invitación enviada a …». Si falla, estado=`error` + comentario con el motivo y el nodo se revierte para que se corrija y se vuelva a completar. |
 | 2 | **Invitada** | Qualify | Lo completa al confirmar Resend la entrega (estado=entregada). Rebote → estado=`rebotó` + comentario; el nodo no avanza. |
 | 3 | **Registrada** | Qualify | Lo completa `register_business` al consumir la invitación: estado=registrada, Tenant, Registrada el. |
-| — | **Plan ampliado** | equipo (solo administradores del espacio) | m-24852131. Para un negocio ya registrado: se llenan «Plan» / «Paquete» / «Motivo» y se completa. Qualify aplica el plan (subir vale desde ya, bajar desde el mes siguiente) y suma el paquete una vez, y comenta «Plan de {negocio}: Plus. Se sumó el paquete +2 videos, vence el {fecha}.». Se puede revertir y completar otra vez: cada vez suma el paquete elegido una vez. Si el negocio aún no se registró, la elección reemplaza la que espera en la invitación. Valor no válido o rechazo: estado=`error`, comentario y el nodo se revierte. |
+| — | **Plan ampliado** | equipo (solo administradores del espacio) | m-24852131. Para un negocio ya registrado: se llenan «Plan» / «Paquete» / «Motivo» (y, si hace falta, «Lecturas sin límite») y se completa. Qualify aplica el plan (subir vale desde ya, bajar desde el mes siguiente) y suma el paquete una vez, y comenta «Plan de {negocio}: Plus. Se sumó el paquete +2 videos, vence el {fecha}.». Se puede revertir y completar otra vez: cada vez suma el paquete elegido una vez. Si el negocio aún no se registró, la elección reemplaza la que espera en la invitación. Valor no válido o rechazo: estado=`error`, comentario y el nodo se revierte. |
 | 4 | **Kit de marca listo** | Qualify (futuro, A2) | Cuando el Brand Kit queda guardado. Hoy se completa a mano. |
 | 5 | **Primera publicación** | Qualify (futuro) | Cuando sale la primera publicación por el Planificador. Hoy a mano. |
 

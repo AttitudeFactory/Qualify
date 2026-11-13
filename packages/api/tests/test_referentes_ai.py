@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 
+from qualify_api.claude_tools import Attribution as _Attribution
 from qualify_api.claude_tools import ClaudeToolError, ModelConfig
 from qualify_api.referentes.ai import (
     REVIEW_BATCH,
@@ -21,6 +22,9 @@ from qualify_api.referentes.ai import (
     BrandBrief,
     review_accounts,
 )
+
+#: m-24955649: who pays for the faked Claude calls of this module.
+TEST_ATTRIBUTION = _Attribution.no_business("test")
 
 BRAND = BrandBrief(
     handle="@casaolivo",
@@ -118,7 +122,11 @@ def test_the_answer_comes_back_per_account_and_only_for_what_was_asked() -> None
     )
     keys: list[str] = []
     reviews, stats = review_accounts(
-        BRAND, _accounts(), api_key="sk-test", client_factory=_factory(client, keys)
+        BRAND,
+        _accounts(),
+        api_key="sk-test",
+        client_factory=_factory(client, keys),
+        attribution=TEST_ATTRIBUTION,
     )
 
     assert [(r.id, r.kind, r.fits) for r in reviews] == [
@@ -142,7 +150,13 @@ def test_the_answer_comes_back_per_account_and_only_for_what_was_asked() -> None
 
 def test_the_model_reads_the_brand_and_what_each_account_says() -> None:
     client = ScriptedClient([_use({"resultados": []})])
-    review_accounts(BRAND, _accounts(), api_key="k", client_factory=_factory(client, []))
+    review_accounts(
+        BRAND,
+        _accounts(),
+        api_key="k",
+        client_factory=_factory(client, []),
+        attribution=TEST_ATTRIBUTION,
+    )
     message = client.calls[0]["messages"][0]["content"]
     assert "Marca: @casaolivo" in message
     assert "restaurante de autor" in message and "Bogotá, Colombia" in message
@@ -165,6 +179,7 @@ def test_a_thinking_model_gets_auto_and_must_still_call_the_tool() -> None:
             api_key="k",
             config=ModelConfig("claude-sonnet-5", "medium"),
             client_factory=_factory(client, []),
+            attribution=TEST_ATTRIBUTION,
         )
     assert client.calls[0]["tool_choice"] == {"type": "auto"}
     assert client.calls[0]["output_config"] == {"effort": "medium"}
@@ -185,7 +200,11 @@ def test_the_answer_may_use_the_number_the_account_was_shown_under() -> None:
         ]
     )
     reviews, _ = review_accounts(
-        BRAND, _accounts(), api_key="k", client_factory=_factory(client, [])
+        BRAND,
+        _accounts(),
+        api_key="k",
+        client_factory=_factory(client, []),
+        attribution=TEST_ATTRIBUTION,
     )
     assert [(r.id, r.fits) for r in reviews] == [
         ("instagram:donarosa", False),
@@ -201,6 +220,7 @@ def test_a_model_without_thinking_is_forced_to_the_tool() -> None:
         api_key="k",
         config=ModelConfig("claude-haiku-4-5"),
         client_factory=_factory(client, []),
+        attribution=TEST_ATTRIBUTION,
     )
     assert client.calls[0]["tool_choice"] == {"type": "tool", "name": REVIEW_TOOL}
     assert "output_config" not in client.calls[0]  # Haiku 4.5 rejects effort
@@ -209,12 +229,20 @@ def test_a_model_without_thinking_is_forced_to_the_tool() -> None:
 def test_a_refusal_is_an_error_not_an_empty_answer() -> None:
     client = ScriptedClient([], stop_reason="refusal")
     with pytest.raises(ClaudeToolError):
-        review_accounts(BRAND, _accounts(), api_key="k", client_factory=_factory(client, []))
+        review_accounts(
+            BRAND,
+            _accounts(),
+            api_key="k",
+            client_factory=_factory(client, []),
+            attribution=TEST_ATTRIBUTION,
+        )
 
 
 def test_nothing_to_review_costs_nothing() -> None:
     client = ScriptedClient([])
-    reviews, stats = review_accounts(BRAND, [], api_key="k", client_factory=_factory(client, []))
+    reviews, stats = review_accounts(
+        BRAND, [], api_key="k", client_factory=_factory(client, []), attribution=TEST_ATTRIBUTION
+    )
     assert reviews == [] and client.calls == [] and stats.cost_usd == 0
 
 
@@ -222,4 +250,10 @@ def test_one_call_takes_at_most_a_batch() -> None:
     many = [AccountToReview(id=f"tiktok:a{i}", network="TikTok", handle=f"a{i}") for i in range(31)]
     assert len(many) > REVIEW_BATCH
     with pytest.raises(ValueError):
-        review_accounts(BRAND, many, api_key="k", client_factory=_factory(ScriptedClient([]), []))
+        review_accounts(
+            BRAND,
+            many,
+            api_key="k",
+            client_factory=_factory(ScriptedClient([]), []),
+            attribution=TEST_ATTRIBUTION,
+        )

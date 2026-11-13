@@ -42,7 +42,7 @@ def _post(*, campaign: cp.CampaignOptionVM | None = None, event_count: int = 0) 
         title="Sabor de temporada",
         caption_excerpt="",
         thumbnail_url="",
-        category_label="Galería",
+        category_label="Carrusel",
         approval_label="Aprobado",
         approval_tone="ok",
         detail_href="",

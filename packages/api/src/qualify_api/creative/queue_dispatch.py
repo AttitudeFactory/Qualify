@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -40,6 +41,42 @@ def queue_enabled() -> bool:
     return value == "queue"
 
 
+INLINE_WARNING = (
+    f"{SWITCH} is inline: generation runs in request threads of this process and the parts "
+    "of a video by parts are never created (that step only runs in creative-worker). "
+    f"Set {SWITCH}=queue and run creative-worker; inline is for local development only."
+)
+_inline_warned = False
+
+
+def warn_if_inline(log: logging.Logger) -> bool:
+    """Warn once per process, at server startup, when the dispatcher is inline (m-24993021).
+
+    Returns whether it warned on this call. An invalid value is logged as an error instead
+    of raised here, so a typo does not stop the server from booting; `queue_enabled()`
+    still raises when generation actually reads the switch.
+    """
+    global _inline_warned
+    if _inline_warned:
+        return False
+    try:
+        inline = not queue_enabled()
+    except ValueError as exc:
+        _inline_warned = True
+        log.error("%s", exc)
+        return False
+    _inline_warned = True
+    if inline:
+        log.warning(INLINE_WARNING)
+    return inline
+
+
+def reset_inline_warning() -> None:
+    """For tests only: forget that this process already warned."""
+    global _inline_warned
+    _inline_warned = False
+
+
 def transactional_dispatch(method: Callable[..., Any]) -> Callable[..., Any]:
     """Repository mutations, consumption and outbox either all commit or all roll back."""
 
@@ -54,6 +91,10 @@ def transactional_dispatch(method: Callable[..., Any]) -> Callable[..., Any]:
 
 
 def generation_jobs(brief: Any) -> list[tuple[str, int, str]]:
+    if brief.kind.is_parts_parent:
+        # ADR 44: the parent of a video by parts has no vendor job of its own — each
+        # part is a child draft with its one preview, and the join is local
+        return []
     if brief.kind is ContentKind.CAROUSEL:
         animated = [
             (q.KIND_CAROUSEL_SCENE, pos, q.SEEDANCE_POOL)

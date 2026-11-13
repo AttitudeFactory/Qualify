@@ -8,7 +8,7 @@ import time
 from uuid import UUID
 
 from qualify_api.referentes.profile_cache import SNAPSHOT_TTL, MemoryProfileCacheRepository
-from qualify_api.referentes.scrapecreators_client import SNAPSHOT_SCHEMA
+from qualify_api.vendors.scrapecreators import SNAPSHOT_SCHEMA
 
 from . import creator_cache_provider as cache
 

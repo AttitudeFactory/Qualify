@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import traceback
@@ -22,6 +23,193 @@ from qualify_api.ads.fake import FakeMarketingClient
 from qualify_api.config import MetaOAuthSettings
 
 pytestmark = pytest.mark.asyncio
+
+
+async def test_delivery_fetches_primary_typed_issue_fields_using_only_get():
+    calls = []
+
+    def respond(request):
+        calls.append(request)
+        assert request.method == "GET"
+        assert "issues_info" in request.url.params["fields"].split(",")
+        return httpx.Response(
+            200,
+            json={
+                "id": "77",
+                "account_id": "12",
+                "issues_info": [{"error_summary": "El enlace no está disponible."}],
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+        client = MarketingClient(client=http, account_id="12")
+        payload = await client.delivery("77")
+    assert len(calls) == 1
+    assert payload["issues_info"][0]["error_summary"] == "El enlace no está disponible."
+
+
+async def test_validate_existing_object_exact_update_only_does_not_apply_or_retry():
+    from urllib.parse import parse_qs
+
+    calls = []
+
+    def respond(request):
+        calls.append(request)
+        values = parse_qs(request.content.decode())
+        assert request.method == "POST" and request.url.path.endswith("/77")
+        assert json.loads(values["execution_options"][0]) == ["validate_only"]
+        assert values["lifetime_budget"] == ["60000"]
+        return httpx.Response(200, json={"success": True})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+        client = MarketingClient(client=http, account_id="12")
+        await client.validate_update("77", params={"lifetime_budget": 60000})
+        with pytest.raises(ValueError):
+            await client.validate_update(
+                "77", params={"execution_options": ["include_recommendations"]}
+            )
+    assert len(calls) == 1
+
+
+async def test_validate_update_rejects_creation_response_without_retry():
+    calls = []
+
+    def respond(request):
+        calls.append(request)
+        return httpx.Response(200, json={"id": "created", "success": True})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+        client = MarketingClient(client=http, account_id="12")
+        with pytest.raises(MarketingError):
+            await client.validate_update("77", params={"status": "ACTIVE"})
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    "payload", [{"success": 1}, {"id": "123"}, {"success": True, "id": "123"}, {"success": False}]
+)
+async def test_validate_only_never_confuses_unknown_or_create_response_with_acceptance(payload):
+    calls = []
+
+    def respond(request):
+        calls.append(request)
+        assert b"validate_only" in request.content
+        return httpx.Response(200, json=payload)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+        client = MarketingClient(client=http, account_id="12")
+        with pytest.raises(MarketingError):
+            await client.validate("campaigns", params={"status": "PAUSED"})
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    "paging,accepted",
+    [
+        ({"cursors": {"after": "last-cursor"}}, True),
+        ({"next": "https://untrusted.invalid/token"}, False),
+        ({"next": "https://untrusted.invalid/token", "cursors": {"after": "more"}}, False),
+        ("malformed", False),
+    ],
+)
+async def test_child_exclusivity_accepts_last_cursor_but_rejects_incomplete_graph_edge(
+    paging, accepted
+):
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json={"data": [{"id": "9"}], "paging": paging})
+        )
+    ) as http:
+        client = MarketingClient(client=http, account_id="12")
+        if accepted:
+            assert await client.children("8", resource="ads") == ({"id": "9"},)
+        else:
+            with pytest.raises(MarketingError):
+                await client.children("8", resource="ads")
+
+
+async def test_async_creation_guard_reads_fresh_client_after_cooldown_without_lock_deadlock():
+    clock = [0.0]
+    calls = []
+
+    async def sleep(seconds):
+        clock[0] += seconds
+
+    def respond(request):
+        calls.append((request.method, request.url.path))
+        return httpx.Response(200, json={"id": "9"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+        writer = MarketingClient(
+            client=http, account_id="12", sleep=sleep, monotonic=lambda: clock[0]
+        )
+        reader = MarketingClient(client=http, account_id="12")
+        writer._not_before = 10
+
+        async def guard():
+            assert clock[0] == 10
+            await reader.read_object("8", fields="id")
+
+        assert (
+            await asyncio.wait_for(
+                writer.create("campaigns", params={"status": "PAUSED"}, before_write=guard), 1
+            )
+            == "9"
+        )
+    assert calls == [("GET", "/v26.0/8"), ("POST", "/v26.0/act_12/campaigns")]
+
+
+async def test_update_write_guard_runs_after_cooldown_and_denial_never_posts() -> None:
+    now = [0.0]
+    calls = []
+    guards = []
+
+    async def sleep(seconds):
+        now[0] += seconds
+
+    def guard():
+        guards.append(now[0])
+        raise PermissionError("consent expired")
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(200, json={"success": True})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = MarketingClient(
+            client=http, account_id="12", sleep=sleep, monotonic=lambda: now[0]
+        )
+        client._not_before = 10.0
+        with pytest.raises(PermissionError, match="expired"):
+            await client.update("9", params={"status": "ACTIVE"}, before_write=guard)
+    assert guards == [10.0] and not calls
+
+
+async def test_update_guard_is_local_not_serialized_and_fake_denial_matches_transport() -> None:
+    calls = []
+    guards = []
+
+    def handler(request):
+        calls.append(request)
+        assert request.content == b"status=ACTIVE"
+        return httpx.Response(200, json={"success": True})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = MarketingClient(client=http, account_id="12")
+        await client.update(
+            "9", params={"status": "ACTIVE"}, before_write=lambda: guards.append(True)
+        )
+    assert guards == [True] and len(calls) == 1
+    fake = FakeMarketingClient()
+    identifier = await fake.create("campaigns", params={"status": "PAUSED"})
+    previous = len(fake.calls)
+
+    def deny():
+        raise PermissionError("removed")
+
+    with pytest.raises(PermissionError):
+        await fake.update(identifier, params={"status": "ACTIVE"}, before_write=deny)
+    assert len(fake.calls) == previous and fake.objects[identifier]["status"] == "PAUSED"
 
 
 @pytest.mark.parametrize("resource", ["campaigns", "adsets", "adcreatives", "ads"])

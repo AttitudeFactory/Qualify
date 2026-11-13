@@ -115,7 +115,13 @@ def test_a_copy_call_carries_its_prompt_tokens_and_our_price(spans: Any) -> None
     # Opus 5.5 at $4 / $20 per MTok, cache reads at $0.20 like the service (m-24852539):
     # 1000 * 4 / 1e6 = 0.004, 2000 * 0.20 / 1e6 = 0.0004 and 500 * 20 / 1e6 = 0.01
     assert json.loads(attrs["langfuse.observation.cost_details"]) == pytest.approx(
-        {"input": 0.004, "cache_read": 0.0004, "cache_creation": 0.0, "output": 0.01}
+        {
+            "input": 0.004,
+            "cache_read": 0.0004,
+            "cache_creation": 0.0,
+            "output": 0.01,
+            "total": 0.0144,
+        }
     )
 
 
@@ -142,7 +148,28 @@ def test_an_image_call_counts_its_references_and_never_sends_them(
     assert sent_input["params"]["prompt"] == "Una hamburguesa en la mesa"
     assert json.loads(attrs["langfuse.observation.output"]) == {"images": 1}
     assert json.loads(attrs["langfuse.observation.usage_details"]) == {"images": 1}
-    assert json.loads(attrs["langfuse.observation.cost_details"]) == {"images": 0.035}
+    assert json.loads(attrs["langfuse.observation.cost_details"]) == {
+        "images": 0.035,
+        "total": 0.035,
+    }
+
+
+def test_pro_observation_prices_the_actual_size_and_extra_inputs(spans: Any) -> None:
+    from qualify_creative.pricing import JsonPricingTable
+
+    result = GenerationResult(
+        payload={"images": [b"image"], "sizes": ["1728x2160"], "references": 3},
+        model_id="dola-seedream-5-0-pro-260628",
+        provider="seedream",
+        usage=Usage(pieces=1),
+    )
+    request = _media_request(prompt="Producto", images=["reference"] * 3, size="1280x1600")
+    with observability.trace("pro"):
+        TracedProvider(FakeProvider("seedream", result), JsonPricingTable("v8")).generate(
+            request, api_key="k"
+        )
+    attrs = _span(spans, "imagen")
+    assert json.loads(attrs["langfuse.observation.cost_details"])["total"] == 0.096
 
 
 def test_a_video_call_is_priced_per_token_at_its_resolution(spans: Any) -> None:
@@ -167,7 +194,7 @@ def test_a_video_call_is_priced_per_token_at_its_resolution(spans: Any) -> None:
         "seconds": 5,
     }
     # 108 000 tokens at $2.5 / M
-    assert json.loads(attrs["langfuse.observation.cost_details"]) == {"video": 0.27}
+    assert json.loads(attrs["langfuse.observation.cost_details"]) == {"video": 0.27, "total": 0.27}
 
 
 def test_a_vendor_failure_propagates_and_is_recorded(spans: Any) -> None:

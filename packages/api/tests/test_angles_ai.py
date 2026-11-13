@@ -14,6 +14,7 @@ import httpx2
 import pytest
 from qualify_creative.angles import ANGLES_TOOL, PRESETS, AngleBrand, AngleProduct
 
+from qualify_api.claude_tools import Attribution as _Attribution
 from qualify_api.claude_tools import ClaudeToolError, ModelConfig
 from qualify_api.creative.angles_ai import (
     ANGLES_EFFORT,
@@ -23,6 +24,9 @@ from qualify_api.creative.angles_ai import (
     generate_angles,
     prompt_fingerprint,
 )
+
+#: m-24955649: who pays for the faked Claude calls of this module.
+TEST_ATTRIBUTION = _Attribution.no_business("test")
 
 PRODUCT = AngleProduct(
     product_id=uuid4(),
@@ -88,7 +92,12 @@ def _client(*responses: Any) -> tuple[Any, list[dict[str, Any]]]:
 def test_the_call_is_one_strict_tool_with_the_product_and_its_price() -> None:
     client, requests = _client(_response([_tool_use({"angles": _rows(10)})]))
     angles, stats, fingerprint = generate_angles(
-        PRODUCT, BRAND, PRESETS[0], api_key="k", client_factory=lambda _k: client
+        PRODUCT,
+        BRAND,
+        PRESETS[0],
+        api_key="k",
+        client_factory=lambda _k: client,
+        attribution=TEST_ATTRIBUTION,
     )
     assert len(angles) == 10 and [a.position for a in angles] == list(range(1, 11))
     (request,) = requests
@@ -116,12 +125,19 @@ def test_a_non_thinking_model_forces_the_tool_and_a_thinking_one_does_not() -> N
         count=3,
         config=ModelConfig("claude-haiku-5-5"),
         client_factory=lambda _k: client,
+        attribution=TEST_ATTRIBUTION,
     )
     assert requests[0]["tool_choice"] == {"type": "tool", "name": ANGLES_TOOL}
     assert "output_config" not in requests[0]
     client, requests = _client(_response([_tool_use({"angles": _rows(3)})]))
     generate_angles(
-        PRODUCT, BRAND, PRESETS[0], api_key="k", count=3, client_factory=lambda _k: client
+        PRODUCT,
+        BRAND,
+        PRESETS[0],
+        api_key="k",
+        count=3,
+        client_factory=lambda _k: client,
+        attribution=TEST_ATTRIBUTION,
     )
     assert requests[0]["tool_choice"] == {"type": "auto"}
 
@@ -132,7 +148,12 @@ def test_the_answer_is_bounded_and_de_duplicated() -> None:
     rows[0]["title"] = "T" * 300
     client, _ = _client(_response([_tool_use({"angles": rows})]))
     angles, _, _ = generate_angles(
-        PRODUCT, BRAND, PRESETS[0], api_key="k", client_factory=lambda _k: client
+        PRODUCT,
+        BRAND,
+        PRESETS[0],
+        api_key="k",
+        client_factory=lambda _k: client,
+        attribution=TEST_ATTRIBUTION,
     )
     assert len(angles) == 10 and len({a.scene for a in angles}) == 10
     assert len(angles[0].title) <= 60
@@ -144,7 +165,12 @@ def test_a_turn_without_the_tool_is_asked_once_more() -> None:
         _response([text], stop="end_turn"), _response([_tool_use({"angles": _rows(10)})])
     )
     angles, stats, _ = generate_angles(
-        PRODUCT, BRAND, PRESETS[0], api_key="k", client_factory=lambda _k: client
+        PRODUCT,
+        BRAND,
+        PRESETS[0],
+        api_key="k",
+        client_factory=lambda _k: client,
+        attribution=TEST_ATTRIBUTION,
     )
     assert len(angles) == 10 and stats.turns == 2
     assert requests[1]["messages"][-1]["content"].startswith("Entrega la respuesta con")
@@ -154,14 +180,28 @@ def test_two_turns_without_the_tool_fail_typed() -> None:
     text = SimpleNamespace(type="text", text="no")
     client, _ = _client(_response([text], stop="end_turn"), _response([text], stop="end_turn"))
     with pytest.raises(ClaudeToolError, match="did not call"):
-        generate_angles(PRODUCT, BRAND, PRESETS[0], api_key="k", client_factory=lambda _k: client)
+        generate_angles(
+            PRODUCT,
+            BRAND,
+            PRESETS[0],
+            api_key="k",
+            client_factory=lambda _k: client,
+            attribution=TEST_ATTRIBUTION,
+        )
 
 
 @pytest.mark.parametrize("stop", ["refusal", "max_tokens"])
 def test_a_refusal_or_a_truncation_is_a_typed_error(stop: str) -> None:
     client, _ = _client(_response([], stop=stop))
     with pytest.raises(ClaudeToolError):
-        generate_angles(PRODUCT, BRAND, PRESETS[0], api_key="k", client_factory=lambda _k: client)
+        generate_angles(
+            PRODUCT,
+            BRAND,
+            PRESETS[0],
+            api_key="k",
+            client_factory=lambda _k: client,
+            attribution=TEST_ATTRIBUTION,
+        )
 
 
 # -- the top-up call: `avoid` reaches the prompt and the de-duplication (defects 1, 2) --
@@ -175,6 +215,7 @@ def test_a_top_up_call_names_the_kept_angles_and_returns_only_new_ones() -> None
         api_key="k",
         count=7,
         client_factory=lambda _k: _client(_response([_tool_use({"angles": _rows(7)})]))[0],
+        attribution=TEST_ATTRIBUTION,
     )
     # the model answers with two of the kept scenes again and three new ones
     repeated = _rows(7)[:2]
@@ -188,6 +229,7 @@ def test_a_top_up_call_names_the_kept_angles_and_returns_only_new_ones() -> None
         count=3,
         avoid=kept,
         client_factory=lambda _k: client,
+        attribution=TEST_ATTRIBUTION,
     )
     user = requests[0]["messages"][0]["content"]
     assert "Ángulos ya propuestos" in user
@@ -207,6 +249,7 @@ def test_a_top_up_that_only_repeats_returns_nothing_new() -> None:
         api_key="k",
         count=5,
         client_factory=lambda _k: _client(_response([_tool_use({"angles": _rows(5)})]))[0],
+        attribution=TEST_ATTRIBUTION,
     )[0]
     client, _ = _client(_response([_tool_use({"angles": _rows(5)})]))
     more, _, _ = generate_angles(
@@ -217,6 +260,7 @@ def test_a_top_up_that_only_repeats_returns_nothing_new() -> None:
         count=5,
         avoid=kept,
         client_factory=lambda _k: client,
+        attribution=TEST_ATTRIBUTION,
     )
     assert more == ()
 
@@ -233,6 +277,7 @@ def test_the_call_shape_the_angle_set_service_uses_is_accepted() -> None:
         count=10,
         avoid=(),
         client_factory=lambda _k: client,
+        attribution=TEST_ATTRIBUTION,
     )
     assert len(angles) == 10
 
@@ -270,7 +315,12 @@ def test_a_vendor_failure_is_a_typed_claude_error(
 ) -> None:
     with pytest.raises(AnglesProviderError) as caught:
         generate_angles(
-            PRODUCT, BRAND, PRESETS[0], api_key="k", client_factory=lambda _k: _failing(exc)
+            PRODUCT,
+            BRAND,
+            PRESETS[0],
+            api_key="k",
+            client_factory=lambda _k: _failing(exc),
+            attribution=TEST_ATTRIBUTION,
         )
     error = caught.value
     assert isinstance(error, ClaudeToolError)  # the service's existing except catches it
@@ -287,6 +337,7 @@ def test_a_programming_error_is_not_disguised_as_a_vendor_failure() -> None:
             PRESETS[0],
             api_key="k",
             client_factory=lambda _k: _failing(ValueError("boom")),
+            attribution=TEST_ATTRIBUTION,
         )
 
 
@@ -299,6 +350,7 @@ def test_a_top_up_past_the_cap_asks_only_for_what_fits_and_never_raises() -> Non
         api_key="k",
         count=8,
         client_factory=lambda _k: _client(_response([_tool_use({"angles": _rows(8)})]))[0],
+        attribution=TEST_ATTRIBUTION,
     )[0]
     fresh = [{**row, "title": f"Nuevo {i}"} for i, row in enumerate(_rows(12)[8:], start=1)]
     client, requests = _client(_response([_tool_use({"angles": fresh})]))
@@ -310,6 +362,7 @@ def test_a_top_up_past_the_cap_asks_only_for_what_fits_and_never_raises() -> Non
         count=10,
         avoid=kept,
         client_factory=lambda _k: client,
+        attribution=TEST_ATTRIBUTION,
     )
     assert "Propón 4 ángulos" in requests[0]["messages"][0]["content"]
     assert [a.position for a in more] == [9, 10, 11, 12]
@@ -323,6 +376,7 @@ def test_a_full_set_pays_for_no_call() -> None:
         api_key="k",
         count=12,
         client_factory=lambda _k: _client(_response([_tool_use({"angles": _rows(12)})]))[0],
+        attribution=TEST_ATTRIBUTION,
     )[0]
     assert len(full) == 12
 
@@ -330,6 +384,13 @@ def test_a_full_set_pays_for_no_call() -> None:
         raise AssertionError("no call may be made for a full set")
 
     more, stats, _ = generate_angles(
-        PRODUCT, BRAND, PRESETS[0], api_key="k", count=3, avoid=full, client_factory=no_client
+        PRODUCT,
+        BRAND,
+        PRESETS[0],
+        api_key="k",
+        count=3,
+        avoid=full,
+        client_factory=no_client,
+        attribution=TEST_ATTRIBUTION,
     )
     assert more == () and stats.turns == 0

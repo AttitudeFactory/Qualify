@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Sequence
+import threading
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
-from qualify_creative.adapters.byteplus_ark import VendorBusy
+from qualify_creative.adapters.byteplus_ark import ArkAPIError, VendorBusy
 from qualify_creative.providers import GenerationRequest
 from qualify_shared.db.creative_worker import creative_worker_session
 from qualify_shared.db.session import tenant_session, tenant_unit_of_work
@@ -22,9 +23,12 @@ from qualify_api.creative.final_deadline import (
     FinalDeadlineExpired,
     final_deadline_passed,
 )
+from qualify_api.creative.part_final import JOIN_FINAL_PHASE, run_join_final
+from qualify_api.creative.part_join import JOIN_PHASE, run_join
 from qualify_api.creative.pipeline import (
     PipelineStore,
     encode_result,
+    lease_kept,
     preparing,
     request_from,
 )
@@ -32,6 +36,32 @@ from qualify_api.creative.queue_dispatch import SubmissionUncertain
 from qualify_api.creative.worker.executor import JobContext, TaskPoll
 
 logger = logging.getLogger(__name__)
+
+#: VE-10a / VE-10b: the parent's local joins (its preview, its 1080p final) — run off the
+#: loop, one at a time, with their lease kept alive
+_JOIN_PHASES = frozenset({JOIN_PHASE, JOIN_FINAL_PHASE})
+
+
+class VendorRefused(Exception):
+    """VE-09, parts only: ModelArk answered the task's creation with a 4xx that is not «busy» (an
+    input moderated as a real person, `PrivacyInformation`; a bad parameter): no task
+    exists and nothing is billed. The step keeps the vendor's code (`refused: <code>`),
+    so the generation's preparation fails the piece saying why, instead of holding a
+    slot as an uncertain submission."""
+
+
+def _is_part(job: JobContext) -> bool:
+    """Whether the job's piece is a part of a video by parts (VE-09 scope)."""
+    try:
+        with tenant_session(job.tenant_id) as session:
+            return bool(
+                session.execute(
+                    text("SELECT parent_draft_id IS NOT NULL FROM content_drafts WHERE id=:d"),
+                    {"d": job.draft_id},
+                ).scalar()
+            )
+    except Exception:  # noqa: BLE001 — unknown: today's behaviour
+        return False
 
 
 class SubmissionRecorder:
@@ -132,34 +162,17 @@ class PipelineExecutor:
                     {"j": job.job_id},
                 )
             raise
+        except ArkAPIError as exc:
+            if (
+                job.kind != q.KIND_FINAL
+                and 400 <= exc.status_code < 500
+                and self._refused(job, row, exc)
+            ):
+                raise VendorRefused(exc.code or "unknown_error") from exc
+            self._uncertain(job, row)
+            raise SubmissionUncertain("vendor acceptance requires reconciliation") from exc
         except Exception as exc:
-            # The POST may have been accepted. The pre-POST eligibility fence also
-            # survives a database outage here; recovery conservatively keeps its slot.
-            try:
-                with tenant_session(job.tenant_id) as session:
-                    known = q.load_job(session, job.job_id)
-                    if known is not None and known.vendor_task_id is None:
-                        session.execute(
-                            text("""
-                            UPDATE creative_pipeline_steps SET error='submission_uncertain'
-                            WHERE job_id=:j AND error='submitting'
-                        """),
-                            {"j": job.job_id},
-                        )
-                        session.execute(
-                            text("""
-                            UPDATE creative_pipeline_runs SET dirty_version=dirty_version+1
-                            WHERE tenant_id=:t AND draft_id=:d AND revision=:r AND phase=:p
-                        """),
-                            {
-                                "t": job.tenant_id,
-                                "d": job.draft_id,
-                                "r": job.revision,
-                                "p": row["phase"],
-                            },
-                        )
-            except Exception:
-                logger.error("creative.pipeline.reconciliation_pending job_id=%s", job.job_id)
+            self._uncertain(job, row)
             raise SubmissionUncertain("vendor acceptance requires reconciliation") from exc
         with tenant_session(job.tenant_id) as session:
             session.execute(
@@ -175,6 +188,81 @@ class PipelineExecutor:
             )
         return task_id
 
+    def _refused(self, job: JobContext, row: Any, exc: ArkAPIError) -> bool:
+        """VE-09, parts only (Deivid, 2026-11-06): a 4xx at creation proves no task
+        exists, so a PART's step fails with the vendor's code — what the preparation's
+        re-run reads. One transaction turns `submitting` into the refusal and dirties the
+        run; any other piece, or a write that fails, returns False and the caller keeps
+        today's `submission_uncertain` (the step never goes back to NULL, so it is never
+        POSTed again)."""
+        error = f"refused: HTTP {exc.status_code} {exc.code or 'unknown_error'}"
+        try:
+            with tenant_session(job.tenant_id) as session:
+                refused = self._write_refusal(session, job, row, error)
+        except Exception as write_error:  # noqa: BLE001 — falls back to uncertain
+            logger.error(
+                "creative.pipeline.refusal_not_written job_id=%s error_type=%s",
+                job.job_id,
+                type(write_error).__name__,
+            )
+            return False
+        if refused:
+            logger.warning(
+                "creative.pipeline.vendor_refused job_id=%s code=%s", job.job_id, exc.code
+            )
+        return refused
+
+    def _write_refusal(self, session: Any, job: JobContext, row: Any, error: str) -> bool:
+        changed = session.execute(
+            text("""
+            UPDATE creative_pipeline_steps SET error=:error
+            WHERE job_id=:j AND error='submitting'
+              AND EXISTS (SELECT 1 FROM content_drafts d
+                          WHERE d.id=:d AND d.parent_draft_id IS NOT NULL)
+            RETURNING step
+        """),
+            {"j": job.job_id, "d": job.draft_id, "error": error},
+        ).scalar()
+        if changed is None:
+            return False
+        session.execute(
+            text("""
+            UPDATE creative_pipeline_runs SET dirty_version=dirty_version+1
+            WHERE tenant_id=:t AND draft_id=:d AND revision=:r AND phase=:p
+        """),
+            {"t": job.tenant_id, "d": job.draft_id, "r": job.revision, "p": row["phase"]},
+        )
+        return True
+
+    def _uncertain(self, job: JobContext, row: Any) -> None:
+        """The POST may have been accepted. The pre-POST eligibility fence also survives
+        a database outage here; recovery conservatively keeps its slot."""
+        try:
+            with tenant_session(job.tenant_id) as session:
+                known = q.load_job(session, job.job_id)
+                if known is not None and known.vendor_task_id is None:
+                    session.execute(
+                        text("""
+                        UPDATE creative_pipeline_steps SET error='submission_uncertain'
+                        WHERE job_id=:j AND error='submitting'
+                    """),
+                        {"j": job.job_id},
+                    )
+                    session.execute(
+                        text("""
+                        UPDATE creative_pipeline_runs SET dirty_version=dirty_version+1
+                        WHERE tenant_id=:t AND draft_id=:d AND revision=:r AND phase=:p
+                    """),
+                        {
+                            "t": job.tenant_id,
+                            "d": job.draft_id,
+                            "r": job.revision,
+                            "p": row["phase"],
+                        },
+                    )
+        except Exception:
+            logger.error("creative.pipeline.reconciliation_pending job_id=%s", job.job_id)
+
     def _validate_reservation(self, job: JobContext) -> None:
         with tenant_session(job.tenant_id) as session:
             row = (
@@ -185,7 +273,11 @@ class PipelineExecutor:
                        coalesce((a.params->'draft'->>'final_attempt')::int,0) AS asset_attempt,
                        a.params->'draft'->>'status' AS asset_status,
                        c.status AS charge_status, c.videos,
-                       c.final_refunded_assets
+                       c.final_refunded_assets,
+                       (d.media_purged_at IS NOT NULL OR EXISTS (
+                            SELECT 1 FROM content_drafts p
+                            WHERE p.id = d.parent_draft_id AND p.media_purged_at IS NOT NULL
+                       )) AS purged
                 FROM creative_jobs j JOIN content_drafts d ON d.id=j.draft_id
                 LEFT JOIN image_assets a ON a.draft_id=j.draft_id AND a.position=j.position
                     AND a.params ? 'draft'
@@ -205,6 +297,11 @@ class PipelineExecutor:
                 or row["revision"] != job.revision
             ):
                 raise ValueError("job no longer belongs to the current piece revision")
+            if row["purged"]:
+                # m-24921069: the retention purge removed the piece (or its video by
+                # parts): no paid call for files nobody will see. Before `submitting`,
+                # so the job fails as a local validation, never as uncertain.
+                raise ValueError("piece files were purged; refusing a paid call")
             if job.kind == q.KIND_FINAL:
                 if (
                     row["draft_status"] != "approved"
@@ -349,7 +446,35 @@ class PipelineExecutor:
                 data["checkpoint_media"] = raw_key
             self.pipeline.complete_step(job.tenant_id, identity=identity, result=data)
         else:
-            self.pipeline.complete_step(job.tenant_id, identity=identity, result=None, error=status)
+            self.pipeline.complete_step(
+                job.tenant_id,
+                identity=identity,
+                result=None,
+                error=self._failed_with_code(job, vendor_task_id, status),
+            )
+
+    def _failed_with_code(self, job: JobContext, vendor_task_id: str | None, status: str) -> str:
+        """VE-09, parts only: a preview task Seedance ended `failed` keeps the vendor's code in the
+        step (`failed: <code>`), so the preparation's re-run says why — a real person
+        refused is `refused_face`, not a provider error. Read with one status GET (not
+        billed); without it the step says `failed`, as before."""
+        if status != "failed" or not vendor_task_id or job.kind == q.KIND_FINAL:
+            return status
+        if self.provider != "seedance" or not _is_part(job):
+            return status
+        try:
+            _, _, key = self._request(job)
+            code = getattr(
+                self.adapter.poll(vendor_task_id, api_key=key.api_key), "error_code", None
+            )
+        except Exception as exc:  # noqa: BLE001 — the reason is a nicety, the failure is not
+            logger.warning(
+                "creative.pipeline.failure_code_unread job_id=%s error_type=%s",
+                job.job_id,
+                type(exc).__name__,
+            )
+            return status
+        return f"{status}: {code}" if code else status
 
     def _expire_final(self, job: JobContext, phase: str) -> None:
         """Fail only this revision's asset, without credentials or any vendor call."""
@@ -403,11 +528,124 @@ class PipelineExecutor:
                 )
 
 
+def _final_asset(phase: str) -> UUID | None:
+    """The asset of a `final:<uuid>[@attempt]` phase, or None for any other name."""
+    if not phase.startswith("final:"):
+        return None
+    try:
+        return UUID(phase.split(":", 1)[1].split("@", 1)[0])
+    except ValueError:
+        return None
+
+
+#: How long a stopping worker waits for a join in flight before abandoning it (Docker
+#: gives `stop_grace_period`; the join is redone or reused on the next start).
+JOIN_SHUTDOWN_GRACE_SECONDS = 20.0
+
+
+class BackgroundJoins:
+    """VE-10a: the parents' joins off the worker's main loop — ONE at a time, on its own
+    daemon thread, so `claim_round`, `recover` and the heartbeat (`monitor.beat`) keep
+    running while a slow arm64 encodes. The thread owns the run it was handed: it keeps
+    its lease alive (`lease_kept`) and releases it when done (marked prepared only when
+    the join finished). A stopping worker waits `JOIN_SHUTDOWN_GRACE_SECONDS`, then
+    abandons it: renewals stop and the lease is released NOT done, so the next start
+    redoes the join or reuses its file (the key is its fingerprint; the save is one
+    transaction fenced by the lease, so an abandoned thread can never write after)."""
+
+    def __init__(self, store: PipelineStore) -> None:
+        self.store = store
+        self._lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+        self._run: Any = None
+        self._halt = threading.Event()
+
+    def busy(self) -> bool:
+        thread = self._thread
+        return thread is not None and thread.is_alive()
+
+    def start(self, run: Any, work: Callable[[Any], object]) -> bool:
+        """Run `work(run)` in the background; False (nothing started) while another
+        join is in flight or after shutdown. `work` gets the RUN — everything it
+        needs (tenant, draft) comes from it, never from the caller's loop variables,
+        which have moved on by the time the thread runs."""
+        with self._lock:
+            if self.busy() or self._halt.is_set():
+                return False
+
+            def body() -> None:
+                completed = False
+                try:
+                    with preparing(run), lease_kept(self.store, run, halt=self._halt):
+                        work(run)
+                    completed = True
+                except Exception as exc:
+                    logger.error(
+                        "creative.pipeline.preparation_failed draft_id=%s error_type=%s",
+                        run.draft_id,
+                        type(exc).__name__,
+                    )
+                finally:
+                    self.store.release(run, completed=completed)
+
+            self._run = run
+            self._thread = threading.Thread(target=body, name="creative-join", daemon=True)
+            self._thread.start()
+            return True
+
+    def shutdown(self, timeout: float | None = JOIN_SHUTDOWN_GRACE_SECONDS) -> bool:
+        """Stop taking joins; wait for the one in flight (`timeout=None`: as long as it
+        takes, `--once`). True when none is left running."""
+        from qualify_creative.video.join_child import WORKER_STOPPING  # noqa: PLC0415
+
+        with self._lock:
+            if timeout is not None:
+                self._halt.set()
+                # a join child killed from here on is not lost to its part (VE-10b)
+                WORKER_STOPPING.set()
+            thread, run = self._thread, self._run
+        if thread is None:
+            return True
+        thread.join(timeout)
+        if not thread.is_alive():
+            return True
+        self._halt.set()
+        logger.warning(
+            "creative.pipeline.join_abandoned draft_id=%s (redone or reused on next start)",
+            run.draft_id,
+        )
+        try:
+            self.store.release(run, completed=False)  # token-matched: never another's
+        except Exception as exc:  # noqa: BLE001 — the lease then just runs out
+            logger.warning(
+                "creative.pipeline.join_release_failed error_type=%s", type(exc).__name__
+            )
+        return False
+
+
 class PipelinePreparation:
     def __init__(
-        self, service: Any, store: PipelineStore, tenant_ids: Sequence[UUID] | None
+        self,
+        service: Any,
+        store: PipelineStore,
+        tenant_ids: Sequence[UUID] | None,
+        *,
+        background_joins: bool = False,
     ) -> None:
         self.service, self.store, self.tenant_ids = service, store, tenant_ids
+        #: VE-10a: the worker loop joins in the background (one at a time); tests and the
+        #: memory harness join inline, the same code on the calling thread
+        self.joins = BackgroundJoins(store) if background_joins else None
+        #: m-24921081: built on the first `generation` run (`_after_generation`)
+        self.parts_requests: Any = None
+
+    def shutdown(self, timeout: float | None = JOIN_SHUTDOWN_GRACE_SECONDS) -> bool:
+        """The worker is stopping: wait for (or abandon) the join in flight."""
+        if timeout is not None:
+            from qualify_creative.video.join_child import WORKER_STOPPING  # noqa: PLC0415
+
+            WORKER_STOPPING.set()  # also for an inline join (tests, the memory harness)
+        return True if self.joins is None else self.joins.shutdown(timeout)
 
     def __call__(self) -> None:
         if self.tenant_ids is None:
@@ -435,27 +673,60 @@ class PipelinePreparation:
                     .all()
                 )
             for item in runs:
+                if item["phase"] in _JOIN_PHASES and self.joins is not None and self.joins.busy():
+                    continue  # one join at a time: this one waits for the next pass
                 run = self.store.acquire(
                     tenant_id, item["draft_id"], item["revision"], item["phase"]
                 )
                 if run is None:
                     continue
-                completed = False
+                completed = handed = False
                 try:
                     draft = self.service._repo.get_draft(tenant_id=tenant_id, draft_id=run.draft_id)
                     if draft is None or draft.revision != run.revision:
                         completed = True
                         continue
+                    asset_id = _final_asset(run.phase)
+                    if (
+                        run.phase != "generation"
+                        and run.phase not in _JOIN_PHASES
+                        and asset_id is None
+                    ):
+                        # VE-10a: a phase this worker does not know is failed ONCE —
+                        # done, logged — never retried in a loop as a preparation error
+                        logger.error(
+                            "creative.pipeline.unknown_phase draft_id=%s phase=%s",
+                            run.draft_id,
+                            run.phase,
+                        )
+                        completed = True
+                        continue
+                    if run.phase in _JOIN_PHASES and self.joins is not None:
+                        # the thread owns the run (and its release) from here on
+                        handed = self.joins.start(run, self._join_run)
+                        continue
                     with preparing(run):
                         if run.phase == "generation":
                             self.service.run_generation(tenant_id=tenant_id, draft_id=run.draft_id)
+                        elif run.phase in _JOIN_PHASES:
+                            # VE-10a/VE-10b: the parent of a video by parts joins its parts'
+                            # previews or raw finals (local, cost 0); it has no job of its
+                            # own to settle. The encode can outlast the lease: kept alive.
+                            with lease_kept(self.store, run):
+                                self._join_run(run)
                         else:
                             self.service.run_queued_final(
-                                tenant_id=tenant_id,
-                                draft_id=run.draft_id,
-                                asset_id=UUID(run.phase.split(":", 1)[1].split("@", 1)[0]),
+                                tenant_id=tenant_id, draft_id=run.draft_id, asset_id=asset_id
                             )
-                    self._settle_local(run)
+                    if run.phase not in _JOIN_PHASES:
+                        self._settle_local(run)
+                    if run.phase == "generation":
+                        # m-24921081: a video by parts whose owner asked for its parts
+                        # gets them now — no screen open, first generation only. A
+                        # refusal is kept on the parent; an error is logged and the run
+                        # still completes (never retried in a loop): the owner asks
+                        # again from the screen («Crear las que faltan», `request_parts`)
+                        self._after_generation_safely(run)
                     completed = True
                 except Exception as exc:
                     logger.error(
@@ -464,7 +735,47 @@ class PipelinePreparation:
                         type(exc).__name__,
                     )
                 finally:
-                    self.store.release(run, completed=completed)
+                    if not handed:
+                        self.store.release(run, completed=completed)
+
+    def _after_generation_safely(self, run: Any) -> None:
+        """`_after_generation`, never failing the `generation` run it follows. When it
+        breaks before keeping an outcome, `refused="error"` is kept on the parent (its
+        own session) so the screen never waits forever; a second failure is only logged."""
+        try:
+            self._after_generation(run)
+        except Exception:
+            logger.exception("creative.pipeline.parts_request_failed draft_id=%s", run.draft_id)
+            try:
+                if self.parts_requests is not None:
+                    self.parts_requests.record_failure(
+                        tenant_id=run.tenant_id, parent_id=run.draft_id
+                    )
+            except Exception:
+                logger.exception(
+                    "creative.pipeline.parts_request_unrecorded draft_id=%s", run.draft_id
+                )
+
+    def _after_generation(self, run: Any) -> None:
+        """The parts the owner asked for when he created a video by parts (UI-6): made
+        once its text passed, the outcome kept on the parent (`part_request`). Outside
+        the preparation's context: the parts are new drafts with their own jobs."""
+        from qualify_api.creative.part_request import PartsRequests  # noqa: PLC0415
+
+        if self.parts_requests is None:
+            self.parts_requests = PartsRequests(self.service)
+        self.parts_requests.after_generation(tenant_id=run.tenant_id, parent_id=run.draft_id)
+
+    def _join(self, tenant_id: UUID, parent_id: UUID) -> None:
+        run_join(self.service._media, tenant_id, parent_id)
+
+    def _join_run(self, run: Any) -> None:
+        """The join of `run`: its own tenant and parent, bound from the run (never from
+        the loop's variables) — the preview (`join`) or the 1080p final (`join_final`)."""
+        if run.phase == JOIN_FINAL_PHASE:
+            run_join_final(self.service._media, run.tenant_id, run.draft_id)
+        else:
+            self._join(run.tenant_id, run.draft_id)
 
     def _settle_local(self, run: Any) -> None:
         """Image/copy-only jobs finish in preparation; videos are settled by executors."""

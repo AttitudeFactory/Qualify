@@ -29,7 +29,12 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import reflex as rx
-from qualify_api.claude_tools import ClaudeToolError, MissingAPIKey, api_key_from_env
+from qualify_api.claude_tools import (
+    Attribution,
+    ClaudeToolError,
+    MissingAPIKey,
+    api_key_from_env,
+)
 from qualify_api.creative.voice_analysis import (
     AXES,
     TRANSCRIBE_MODEL,
@@ -38,6 +43,7 @@ from qualify_api.creative.voice_analysis import (
     analyze_recording,
     suggest_tone,
 )
+from qualify_api.creative.voice_analysis import FEATURE as TONE_FEATURE
 from qualify_api.creative.voice_clone import (
     COMPLETE,
     FAILED,
@@ -76,6 +82,8 @@ from .ui import (
     status_dot,
 )
 from .ui import tokens as T
+from .upload_names import safe_upload_name
+from .upload_store import UploadNotKept, refusal_text, save_upload, upload_path
 
 logger = logging.getLogger(__name__)
 
@@ -181,6 +189,13 @@ def _audio_seconds(path: Path) -> float | None:
         return None
 
 
+def _on_sample(tenant_id: UUID, key: str, use: Any) -> Any:
+    """Blocking: `use(path)` on the voice sample — the file on the volume, or a temporary
+    copy of its R2 object (CM-9, m-24957283), removed afterwards."""
+    with upload_path(tenant_id, key) as path:
+        return use(path)
+
+
 def _transcribe_locally(path: Path) -> str:
     """Whisper on this machine; the model loads once per process. Traced in Langfuse as
     a zero-cost generation with the audio's length — never the audio, nor its file name
@@ -223,12 +238,16 @@ def prefetch_whisper() -> None:
     threading.Thread(target=run, name="whisper-warm-up", daemon=True).start()
 
 
-def analyze_voice_sample(path: Path) -> ToneSuggestion:
-    """Transcribe the recording locally and suggest its tone. Raises `MissingAPIKey`,
+def analyze_voice_sample(path: Path, *, tenant_id: UUID) -> ToneSuggestion:
+    """Transcribe the recording locally and suggest its tone (the Claude call booked to
+    `tenant_id`, m-24955649). Raises `MissingAPIKey`,
     `NotEnoughSpeech` or `ClaudeToolError` (and the decoder's own errors for a file
     that is not audio)."""
     api_key = api_key_from_env()  # before the slow part: no key, no transcription
-    return analyze_recording(path, transcriber=_transcribe_locally, api_key=api_key)
+    attribution = Attribution(tenant_id=tenant_id, feature=TONE_FEATURE)
+    return analyze_recording(
+        path, transcriber=_transcribe_locally, api_key=api_key, attribution=attribution
+    )
 
 
 #: The sample Seed Speech is sent (§ 2026-10-16): WAV, mono, 24 kHz, 16-bit — what its
@@ -475,16 +494,16 @@ class VoiceLabState(rx.State):
         if not files:
             return
         upload = files[0]
+        name = upload.name or "voz.mp3"
         try:
-            data = await upload.read()
+            # CM-9 (m-24957283): to R2, `t/<tenant>/uploads/…`, streamed, once
+            key = await save_upload(tenant_id, upload, safe_upload_name(name))
+        except UploadNotKept as exc:
+            self.sample_error = refusal_text(exc, name)
+            return
         except Exception:
             self.sample_error = "No se pudo leer el archivo. Inténtalo con otro."
             return
-        name = upload.name or "voz.mp3"
-        key = f"uploads/{tenant_id}/{uuid4().hex}_{name}"
-        target = rx.get_upload_dir() / key
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(data)
         self.sample_key, self.sample_name = key, name
         self.recording = False
         self.sample_error = ""
@@ -567,17 +586,25 @@ class VoiceLabState(rx.State):
             self.analyzing = True
             self.analysis_error = ""
             self.analysis_stage = "preparing"
-            path = rx.get_upload_dir() / self.sample_key
+            sample_key = self.sample_key
+            tenant_id = tenant_uuid(brand_tenant_id(await self.get_state(AuthState)))
         error = ""
         suggestion: ToneSuggestion | None = None
         try:
             api_key = api_key_from_env()  # before the slow part: no key, no transcription
             async with self:
                 self.analysis_stage = "transcribing"
-            transcript = await asyncio.to_thread(_transcribe_locally, path)
+            if tenant_id is None:
+                raise PermissionError("no business session")
+            transcript = await asyncio.to_thread(
+                _on_sample, tenant_id, sample_key, _transcribe_locally
+            )
             async with self:
                 self.analysis_stage = "reading_tone"
-            suggestion = await asyncio.to_thread(suggest_tone, transcript, api_key=api_key)
+            attribution = Attribution(tenant_id=tenant_id, feature=TONE_FEATURE)
+            suggestion = await asyncio.to_thread(
+                suggest_tone, transcript, api_key=api_key, attribution=attribution
+            )
         except MissingAPIKey:
             error = _NO_CLAUDE
         except NotEnoughSpeech:
@@ -658,7 +685,7 @@ class VoiceLabState(rx.State):
                 return
             self.cloning = True
             self.clone_error = ""
-            path = rx.get_upload_dir() / self.sample_key
+            sample_key = self.sample_key
             creative = await self.get_state(CreativeState)
             brand_name = creative.kit_positioning.split(".")[0][:40].strip()
             variant = creative.kit_regional_variant or "es-CO"
@@ -672,7 +699,12 @@ class VoiceLabState(rx.State):
         error = ""
         clone: VoiceClone | None = None
         try:
-            clone = await asyncio.to_thread(start_voice_clone, *ids, path, name, variant)
+            clone = await asyncio.to_thread(
+                _on_sample,
+                ids[0],
+                sample_key,
+                lambda path: start_voice_clone(*ids, path, name, variant),
+            )
         except SeedSpeechNotConfigured:
             error = _CLONE_OFF
         except SQLAlchemyError:

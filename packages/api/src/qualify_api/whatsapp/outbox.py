@@ -52,6 +52,27 @@ ambiguity the transport retry accepts; `messages` cannot duplicate (`uq_message_
 id` on `wamid`, insert is `ON CONFLICT DO NOTHING`). Two workers at once are safe: the
 claim is `SKIP LOCKED`, every settle is guarded by `status = 'sending'`.
 
+## Attachments (0123, m-24945888)
+
+A product / piece / photo sent from a chat is enqueued as an image body WITHOUT a media
+reference plus `attachment.object_key`, an R2 copy of the bytes made when the owner
+pressed «Enviar» (`whatsapp.attachments`). Right before the send the sender uploads
+those bytes (`client.upload_media`) and records the returned id on the row
+(`record_media_id`: `payload.image.id` + `attachment.media_id`) BEFORE posting the
+message, so a retry of the row — transport failure, 5xx, a crash after the upload —
+finds the id and never uploads twice. Only a crash between Meta's upload answer and that
+UPDATE re-uploads (an orphan media object on Meta's side, which Meta expires after 30
+days; never a second message). An upload error settles like a send error.
+
+## Seasonal stickers and videos (m-24976894)
+
+An attachment of kind `seasonal_media` is NOT a copy: its `object_key` is the library
+file itself (`seasonal/{tenant}/{brand}/…`). On every try the sender asks the
+`SeasonalGuard` first — a key outside the business, another attempt than the row's
+current one (`attachment_refused`), a medium no longer approved or an archived season
+(`seasonal_withdrawn`) fail the row before any upload — then reads the file through the
+business-bound gate read and uploads it once, like any other attachment.
+
 ## No user text in logs
 
 Log lines carry ids, kinds, status codes and Meta error codes — never `payload`
@@ -60,6 +81,7 @@ Log lines carry ids, kinds, status codes and Meta error codes — never `payload
 
 from __future__ import annotations
 
+import copy
 import logging
 import re
 from collections.abc import Callable
@@ -71,7 +93,7 @@ from uuid import UUID, uuid4
 
 from qualify_shared.db.session import tenant_session
 from qualify_shared.social.wa_shapes import SHAPE_VERSION
-from sqlalchemy import select, text, update
+from sqlalchemy import null, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from qualify_api.inbox.models import Message, Thread
@@ -105,6 +127,16 @@ ERROR_TRANSPORT: Final = "transport"
 ERROR_NO_RECIPIENT: Final = "no_recipient"
 ERROR_STALE_EXHAUSTED: Final = "stale_lock_attempts_exhausted"
 ERROR_OPTED_OUT: Final = "opted_out"
+# 0123: the row needs its attachment uploaded but no attachment source was wired, or its
+# bytes are gone from R2 — retried, then dead (an operator's problem, not the owner's).
+ERROR_ATTACHMENT_UNAVAILABLE: Final = "attachment_unavailable"
+# m-24955648: a payment card whose key is not under its business's payments folder.
+ERROR_ATTACHMENT_REFUSED: Final = "attachment_refused"
+ATTACHMENT_KIND_PAYMENT_METHOD: Final = "payment_method"
+# m-24976894: a seasonal sticker / video the owner sent from the chat (`seasonal_send`).
+ATTACHMENT_KIND_SEASONAL: Final = "seasonal_media"
+# m-24976894: the seasonal medium is no longer approved, or its season was archived.
+ERROR_SEASONAL_WITHDRAWN: Final = "seasonal_withdrawn"
 # The outbox kinds whose recipient must hold an ACTIVE opt-in at send time (WA-19/20).
 # Replies and automation answer a person inside their own 24 h window — no opt-in.
 OPT_IN_REQUIRED_KINDS: Final = frozenset({"campaign_send"})
@@ -173,6 +205,27 @@ class ClaimedOutboxItem:
     attempts: int
     # 0087: the category of a `template_reply`'s template; `None` for the other kinds.
     template_category: str | None = None
+    # 0123: what a chat send carries (`whatsapp.attachments`); `None` for the rest.
+    attachment: dict[str, Any] | None = None
+
+    @property
+    def pending_upload(self) -> tuple[str, str, str] | None:
+        """`(object_key, content_type, filename)` when this row's media must be uploaded
+        before it can be sent: an attachment with bytes in R2 and no media id yet in the
+        body. `None` otherwise (no attachment, a text fallback, or already uploaded)."""
+        attachment = self.attachment or {}
+        key = attachment.get("object_key")
+        media_type = self.payload.get("type")
+        media = self.payload.get(media_type) if isinstance(media_type, str) else None
+        if not isinstance(key, str) or not key or not isinstance(media, dict):
+            return None
+        if media.get("id") or media.get("link"):
+            return None
+        return (
+            key,
+            str(attachment.get("content_type") or "image/jpeg"),
+            str(attachment.get("filename") or "foto.jpg"),
+        )
 
     @property
     def recipient(self) -> str | None:
@@ -209,6 +262,7 @@ class OutboxRepository(Protocol):
         template_id: UUID | None = None,
         template_category: str | None = None,
         preview_text: str | None = None,
+        attachment: dict[str, Any] | None = None,
     ) -> UUID:
         """Queue an already-built `/messages` body. `kind` must be one of
         `models.OUTBOX_KINDS`; a free-form kind (`reply`, `automation`) needs `thread_id`
@@ -217,7 +271,20 @@ class OutboxRepository(Protocol):
         0087: a `template_reply` also needs `request_key`, `template_id` and
         `template_category`. With a `request_key` the enqueue is idempotent: a second
         call with the same `(tenant_id, request_key)` writes nothing and returns the id
-        of the row already queued."""
+        of the row already queued.
+
+        0123: `attachment` records what a chat send carries (provenance, the R2 copy of
+        its bytes); the sender fills its `media_id`."""
+        ...
+
+    def find_by_request_key(self, *, tenant_id: UUID, request_key: str) -> UUID | None:
+        """The row already queued with this idempotency key, if any (m-24945888: a
+        double tap returns it before anything is prepared again)."""
+        ...
+
+    def record_media_id(self, *, tenant_id: UUID, item_id: UUID, media_id: str) -> None:
+        """0123: write the uploaded media id into `payload.<type>.id` and
+        `attachment.media_id` of a `sending` row, so a retry sends without uploading."""
         ...
 
     def claim(
@@ -333,7 +400,7 @@ CLAIM_SQL = text(
       FROM due
      WHERE o.id = due.id
     RETURNING o.id, o.tenant_id, o.connection_id, o.thread_id, o.kind, o.payload, o.attempts,
-              o.created_at, o.template_category
+              o.created_at, o.template_category, o.attachment
     """
 )
 
@@ -342,6 +409,20 @@ _LAST_OUTBOUND = text(
     SELECT max(sent_at) FROM whatsapp_outbox
      WHERE connection_id = :connection_id AND status = 'sent' AND sent_at >= :since
        AND regexp_replace(payload->>'to', '\D', '', 'g') = :digits
+    """
+)
+
+
+# 0123: the body's media object is `payload -> payload->>'type'` (an image today). Guarded
+# by `sending`: a row settled meanwhile is not rewritten.
+_RECORD_MEDIA_ID = text(
+    """
+    UPDATE whatsapp_outbox
+       SET payload = jsonb_set(payload, ARRAY[payload->>'type', 'id'],
+                               to_jsonb(CAST(:media_id AS text))),
+           attachment = jsonb_set(COALESCE(attachment, '{}'::jsonb), '{media_id}',
+                                  to_jsonb(CAST(:media_id AS text)))
+     WHERE id = :item_id AND status = 'sending' AND payload ? (payload->>'type')
     """
 )
 
@@ -367,6 +448,7 @@ class PostgresOutboxRepository:
         template_id: UUID | None = None,
         template_category: str | None = None,
         preview_text: str | None = None,
+        attachment: dict[str, Any] | None = None,
     ) -> UUID:
         _validate_enqueue(
             kind,
@@ -391,6 +473,10 @@ class PostgresOutboxRepository:
             "template_id": template_id,
             "template_category": template_category,
             "preview_text": preview_text,
+            # 0123: SQL NULL, never JSON `null` — `ck_wa_outbox_attachment_object` takes
+            # only NULL or an object. The column maps `none_as_null`, and `null()` here
+            # keeps both the ORM and the Core insert explicit.
+            "attachment": attachment if attachment is not None else null(),
         }
         with tenant_session(tenant_id) as session:
             if request_key is None:
@@ -437,9 +523,20 @@ class PostgresOutboxRepository:
                 payload=dict(r.payload),
                 attempts=int(r.attempts),
                 template_category=r.template_category,
+                attachment=dict(r.attachment) if r.attachment else None,
             )
             for r in rows
         ]
+
+    def find_by_request_key(self, *, tenant_id: UUID, request_key: str) -> UUID | None:
+        with tenant_session(tenant_id) as session:
+            return session.scalar(
+                select(WhatsAppOutboxItem.id).where(WhatsAppOutboxItem.request_key == request_key)
+            )
+
+    def record_media_id(self, *, tenant_id: UUID, item_id: UUID, media_id: str) -> None:
+        with tenant_session(tenant_id) as session:
+            session.execute(_RECORD_MEDIA_ID, {"item_id": item_id, "media_id": media_id})
 
     def mark_sent(self, *, tenant_id: UUID, item_id: UUID, wamid: str, now: datetime) -> None:
         with tenant_session(tenant_id) as session:
@@ -566,6 +663,7 @@ class MemoryOutboxRow:
     template_id: UUID | None = None
     template_category: str | None = None
     preview_text: str | None = None
+    attachment: dict[str, Any] | None = None
     # Insertion order — the tie-break Postgres gets for free because every enqueue is its
     # own transaction with its own now(); a frozen test clock would otherwise leave two
     # rows tied on created_at and ordered by their random ids.
@@ -608,6 +706,7 @@ class MemoryOutboxRepository:
         template_id: UUID | None = None,
         template_category: str | None = None,
         preview_text: str | None = None,
+        attachment: dict[str, Any] | None = None,
     ) -> UUID:
         _validate_enqueue(
             kind,
@@ -636,6 +735,7 @@ class MemoryOutboxRepository:
             template_id=template_id,
             template_category=template_category,
             preview_text=preview_text,
+            attachment=copy.deepcopy(attachment) if attachment is not None else None,
             seq=next(self._seq),
         )
         self.rows[row.id] = row
@@ -669,12 +769,30 @@ class MemoryOutboxRepository:
                     connection_id=row.connection_id,
                     thread_id=row.thread_id,
                     kind=row.kind,
-                    payload=dict(row.payload),
+                    payload=copy.deepcopy(row.payload),
                     attempts=row.attempts,
                     template_category=row.template_category,
+                    attachment=copy.deepcopy(row.attachment) if row.attachment else None,
                 )
             )
         return claimed
+
+    def find_by_request_key(self, *, tenant_id: UUID, request_key: str) -> UUID | None:
+        for row in self.rows.values():
+            if row.tenant_id == tenant_id and row.request_key == request_key:
+                return row.id
+        return None
+
+    def record_media_id(self, *, tenant_id: UUID, item_id: UUID, media_id: str) -> None:
+        row = self._sending(tenant_id, item_id)
+        if row is None:
+            return
+        media_type = row.payload.get("type")
+        media = row.payload.get(media_type) if isinstance(media_type, str) else None
+        if not isinstance(media, dict):
+            return
+        media["id"] = media_id
+        row.attachment = {**(row.attachment or {}), "media_id": media_id}
 
     def _sending(self, tenant_id: UUID, item_id: UUID) -> MemoryOutboxRow | None:
         row = self.rows.get(item_id)
@@ -782,6 +900,22 @@ def recipient_e164(to: str) -> str:
     return to if to.startswith("+") else f"+{recipient_digits(to)}"
 
 
+class AttachmentSource(Protocol):
+    """0123: reads the R2 copy of a chat attachment — `ObjectGate.open_object`'s shape
+    (tenant prefix re-checked) in production."""
+
+    def read(self, tenant_id: UUID, object_key: str) -> bytes: ...
+
+
+class SeasonalGuard(Protocol):
+    """m-24976894: `seasonal_send.SeasonalSendGuard` — the send-time re-check of a queued
+    seasonal medium against its library row, and its business-bound read."""
+
+    def refusal(self, tenant_id: UUID, attachment: dict[str, Any]) -> str | None: ...
+
+    def read(self, tenant_id: UUID, attachment: dict[str, Any]) -> bytes: ...
+
+
 class ConnectionDegrader(Protocol):
     """`connections.composition.degrade_connection_on_auth_error`'s shape (QUA-90)."""
 
@@ -804,6 +938,55 @@ class SendReport:
     @property
     def settled(self) -> int:
         return self.sent + self.deferred + self.retried + self.failed + self.dead
+
+
+#: The pipeline stamp of a card the MENU queued (`handler.payment_card_outbox`): it sends
+#: the method's QR straight from its payments folder. A card a PERSON sent from the chat
+#: (`attachments.send_payment_method`, `wa-attach-1`) sends its chat outbound copy.
+AUTOMATION_CARD_PIPELINE: Final = "wa-payment-card-1"
+#: `attachments.ATTACHMENT_PIPELINE` (not imported: attachments imports this module).
+CHAT_CARD_PIPELINE: Final = "wa-attach-1"
+
+
+def _is_automation_card(item: ClaimedOutboxItem) -> bool:
+    return (item.attachment or {}).get("pipeline") == AUTOMATION_CARD_PIPELINE
+
+
+def _card_key_ok(item: ClaimedOutboxItem, key: str) -> bool:
+    """What a payment card may upload, by where it came from (m-24955648):
+    - the menu's card: its business's QR, under `t/{tenant}/whatsapp/payments/{brand}/`;
+    - a chat-sent card: its copy under the tenant's chat outbound folder, like every chat
+      attachment, and — when it names one — a `source_key` under that business's
+      payments folder."""
+    attachment = item.attachment or {}
+    brand = str(attachment.get("brand_id") or "")
+    payments = f"t/{item.tenant_id}/whatsapp/payments/{brand}/"
+    if _is_automation_card(item):
+        return bool(brand) and key.startswith(payments)
+    if attachment.get("pipeline") != CHAT_CARD_PIPELINE:
+        return False  # a card nobody we know of built: refused, never «chat by default»
+    if not key.startswith(f"t/{item.tenant_id}/whatsapp/outbound/"):
+        return False
+    source = attachment.get("source_key")
+    return not source or (bool(brand) and str(source).startswith(payments))
+
+
+def _is_missing(exc: Exception) -> bool:
+    from qualify_shared.objects.gate import ObjectNotFound  # noqa: PLC0415
+
+    return isinstance(exc, ObjectNotFound | KeyError | FileNotFoundError)
+
+
+def _qr_type(key: str) -> tuple[str, str]:
+    return ("image/png", "qr.png") if key.lower().endswith(".png") else ("image/jpeg", "qr.jpg")
+
+
+def _card_as_text(payload: dict[str, Any]) -> dict[str, Any]:
+    """The card without its image: the same caption as a text message."""
+    from qualify_api.whatsapp.client import build_text_body  # noqa: PLC0415
+
+    caption = str((payload.get("image") or {}).get("caption") or "")
+    return build_text_body(str(payload["to"]), caption, False)
 
 
 def _error_code(exc: WhatsAppApiError) -> str:
@@ -842,8 +1025,16 @@ class OutboxSender:
         unavailable: Callable[..., object] | None = None,
         temporary_failure: Callable[..., object] | None = None,
         success: Callable[..., object] | None = None,
+        attachments: AttachmentSource | None = None,
+        payment_qr: Callable[..., str | None] | None = None,
+        seasonal: SeasonalGuard | None = None,
     ) -> None:
         self._repo = repository
+        self._seasonal = seasonal
+        self._attachments = attachments
+        # m-24955648: `(tenant_id=, method_id=, brand_id=) -> the OFFERED method's current
+        # qr_media_key | None` (`payments.current_qr_key`).
+        self._payment_qr = payment_qr
         self._clients = client_factory
         self._degrade = degrade
         self._worker_id = worker_id
@@ -971,6 +1162,30 @@ class OutboxSender:
             report.deferred += 1
             return
 
+        attachment = item.attachment or {}
+        seasonal = attachment.get("kind") == ATTACHMENT_KIND_SEASONAL
+        if seasonal:
+            # m-24976894: re-checked on EVERY try, uploaded or not — the medium must still
+            # be approved, unarchived, of this business and at its current attempt.
+            if self._seasonal is None:
+                self._retry(item, ERROR_ATTACHMENT_UNAVAILABLE, report)
+                return
+            try:
+                refusal = self._seasonal.refusal(tenant_id, attachment)
+            except Exception as exc:  # noqa: BLE001 — a failed read is not a "yes"
+                logger.warning(
+                    "whatsapp.outbox.seasonal_check_failed item_id=%s error=%s",
+                    item.id,
+                    type(exc).__name__,
+                )
+                self._retry(item, ERROR_ATTACHMENT_UNAVAILABLE, report)
+                return
+            if refusal is not None:
+                logger.info("whatsapp.outbox.seasonal_refused item_id=%s code=%s", item.id, refusal)
+                self._repo.mark_failed(tenant_id=tenant_id, item_id=item.id, error_code=refusal)
+                report.failed += 1
+                return
+
         client = clients.get(item.connection_id)
         if self._connection_version is not None:
             version = self._connection_version(
@@ -994,8 +1209,79 @@ class OutboxSender:
                 report.dead += 1
                 return
             clients[item.connection_id] = client
+        payload = item.payload
+        upload = item.pending_upload
+        if upload is not None and seasonal:
+            assert self._seasonal is not None
+            try:
+                content = self._seasonal.read(tenant_id, attachment)
+            except Exception as exc:  # noqa: BLE001 — R2 down: retry, then dead
+                refused = getattr(exc, "outbox_error_code", None)
+                if isinstance(refused, str) and refused:
+                    # A file WhatsApp would refuse (size, shape): terminal, shown unsent.
+                    logger.info(
+                        "whatsapp.outbox.seasonal_file_refused item_id=%s code=%s",
+                        item.id,
+                        refused,
+                    )
+                    self._repo.mark_failed(tenant_id=tenant_id, item_id=item.id, error_code=refused)
+                    report.failed += 1
+                    return
+                logger.warning(
+                    "whatsapp.outbox.attachment_unreadable item_id=%s error=%s",
+                    item.id,
+                    type(exc).__name__,
+                )
+                self._retry(item, ERROR_ATTACHMENT_UNAVAILABLE, report)
+                return
+            _, content_type, filename = upload
+        elif upload is not None:
+            if self._attachments is None:
+                self._retry(item, ERROR_ATTACHMENT_UNAVAILABLE, report)
+                return
+            object_key, content_type, filename = upload
+            card = (item.attachment or {}).get("kind") == ATTACHMENT_KIND_PAYMENT_METHOD
+            if card and not _card_key_ok(item, object_key):
+                # m-24955648: a payment card only ever sends its business's QR.
+                logger.warning("whatsapp.outbox.card_key_refused item_id=%s", item.id)
+                self._repo.mark_failed(
+                    tenant_id=tenant_id, item_id=item.id, error_code=ERROR_ATTACHMENT_REFUSED
+                )
+                report.failed += 1
+                return
+            content: bytes | None
+            try:
+                content = self._attachments.read(tenant_id, object_key)
+            except Exception as exc:  # noqa: BLE001 — R2 down or the copy is gone
+                logger.warning(
+                    "whatsapp.outbox.attachment_unreadable item_id=%s error=%s",
+                    item.id,
+                    type(exc).__name__,
+                )
+                if not (card and _is_automation_card(item) and _is_missing(exc)):
+                    self._retry(item, ERROR_ATTACHMENT_UNAVAILABLE, report)
+                    return
+                # The QR was replaced or removed after the card was queued: the method's
+                # CURRENT QR, or the instructions alone — never a retry loop to dead.
+                object_key, content = self._current_card_qr(item, object_key)
+                if object_key is None:
+                    payload = _card_as_text(payload)
+                else:
+                    content_type, filename = _qr_type(object_key)
+        if upload is not None and payload.get("type") != "text":
+            assert content is not None
+            try:
+                media_id = await client.upload_media(content, content_type, filename)
+            except WhatsAppApiError as exc:
+                self._settle_api_error(item, exc, degraded=degraded, report=report)
+                return
+            # Recorded BEFORE the send: a retry of this row finds it and skips the upload.
+            self._repo.record_media_id(tenant_id=tenant_id, item_id=item.id, media_id=media_id)
+            payload = copy.deepcopy(payload)
+            payload[str(payload["type"])]["id"] = media_id
+            logger.info("whatsapp.outbox.media_uploaded item_id=%s bytes=%d", item.id, len(content))
         try:
-            wamid = await client.send_payload(item.payload)
+            wamid = await client.send_payload(payload)
         except WhatsAppApiError as exc:
             self._settle_api_error(item, exc, degraded=degraded, report=report)
             return
@@ -1003,6 +1289,31 @@ class OutboxSender:
         report.sent += 1
         if self._success is not None:
             self._observe(self._success, item)
+
+    def _current_card_qr(
+        self, item: ClaimedOutboxItem, gone: str
+    ) -> tuple[str | None, bytes | None]:
+        """(key, bytes) of the card method's current QR, or (None, None) when it has none
+        (or it cannot be read): the card then goes as text."""
+        method_id = str((item.attachment or {}).get("method_id") or "")
+        if self._payment_qr is None or not method_id or self._attachments is None:
+            return None, None
+        try:
+            current = self._payment_qr(
+                tenant_id=item.tenant_id,
+                method_id=method_id,
+                brand_id=str((item.attachment or {}).get("brand_id") or ""),
+            )
+        except Exception as exc:  # noqa: BLE001 — a lookup failure must not loop
+            logger.warning("whatsapp.outbox.card_qr_lookup_failed error=%s", type(exc).__name__)
+            return None, None
+        if not current or current == gone or not _card_key_ok(item, current):
+            return None, None
+        try:
+            return current, self._attachments.read(item.tenant_id, current)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("whatsapp.outbox.card_qr_unreadable error=%s", type(exc).__name__)
+            return None, None
 
     def _settle_api_error(
         self,
@@ -1149,9 +1460,14 @@ def production_outbox_sender(*, worker_id: str) -> OutboxSender:
         record_connection_success,
         record_connection_temporary_failure,
     )
+    from qualify_api.whatsapp.attachments import R2AttachmentSource  # noqa: PLC0415
     from qualify_api.whatsapp.optins import (  # noqa: PLC0415
         OptInService,
         PostgresOptInRepository,
+    )
+    from qualify_api.whatsapp.payments import current_qr_key  # noqa: PLC0415
+    from qualify_api.whatsapp.seasonal_send import (  # noqa: PLC0415
+        production_seasonal_send_guard,
     )
 
     versions: dict[tuple[UUID, UUID], int] = {}
@@ -1198,4 +1514,9 @@ def production_outbox_sender(*, worker_id: str) -> OutboxSender:
         unavailable=unavailable,
         temporary_failure=temporary_failure,
         success=success,
+        # 0123 (m-24945888): the R2 copy of a chat attachment, uploaded at send time.
+        attachments=R2AttachmentSource(),
+        payment_qr=current_qr_key,
+        # m-24976894: seasonal stickers / videos, re-checked and read in place.
+        seasonal=production_seasonal_send_guard(),
     )

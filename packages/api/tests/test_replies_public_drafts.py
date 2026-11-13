@@ -77,6 +77,7 @@ class FakeGroundedGenerator:
         grounding: Grounding,
         messages: Sequence[Any],
         counterpart: str,
+        attribution: Any,
         context: str | None = None,
     ) -> Proposal:
         self.calls.append(
@@ -98,7 +99,9 @@ class FakeProvider:
     def __init__(self) -> None:
         self.calls: list[str] = []
 
-    def draft_reply(self, *, comment_text: str, business_name: str | None = None) -> str:
+    def draft_reply(
+        self, *, comment_text: str, attribution: object, business_name: str | None = None
+    ) -> str:
         self.calls.append(comment_text)
         return "¡Gracias por tu comentario!"
 

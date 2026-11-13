@@ -27,6 +27,7 @@ from .creative_vm import (
     previews_left_label,
     previews_short_text,
     renewal_day_label,
+    video_seconds_use_notice,
     videos_short_text,
 )
 
@@ -151,14 +152,14 @@ def test_with_no_quota_wired_the_screen_says_nothing_about_creations() -> None:
 
 
 def _clip(
-    left: int, duration: str = "5", videos_left: int = 4, previews_left: int = 20
+    left: int, duration: str = "5", videos_left: int = 40, previews_left: int = 20
 ) -> CreativeState:
     state = CreativeState()
     state.choose_kind("clip")
     state.clip_duration = duration
     state.media_duration = "15"  # the presenter's length must not price the clip
     state.creations_left, state.creations_quota = left, 30
-    state.videos_left, state.videos_quota = videos_left, 4
+    state.videos_left, state.videos_quota = videos_left, 40
     state.previews_left, state.previews_quota = previews_left, 20
     state.creations_renews = "1 de noviembre"
     return state
@@ -168,12 +169,13 @@ def _clip(
 
 
 def test_the_video_texts_the_owner_reads() -> None:
-    assert creations_left_label(18, 30, 3, 4, 12, 20) == (
-        "Te quedan 18 de 30 creaciones y 3 de 4 videos este mes."
+    # ADR 44 F1 = (b): the month's video in seconds, never «videos del mes»
+    assert creations_left_label(18, 30, 25, 40, 12, 20) == (
+        "Te quedan 18 de 30 creaciones y 25 de 40 segundos de video este mes."
     )
     # the vistas previas only when few are left
-    assert creations_left_label(18, 30, 3, 4, 5, 20) == (
-        "Te quedan 18 de 30 creaciones y 3 de 4 videos este mes. "
+    assert creations_left_label(18, 30, 25, 40, 5, 20) == (
+        "Te quedan 18 de 30 creaciones y 25 de 40 segundos de video este mes. "
         "Te quedan 5 vistas previas este mes."
     )
     assert previews_left_label(1, 20) == "Te queda 1 vista previa este mes."
@@ -185,36 +187,91 @@ def test_the_video_texts_the_owner_reads() -> None:
         "Esta publicación usa 3 vistas previas y este mes te quedan 2. Quita 1 video "
         "animado o espera al 1 de noviembre, cuando vuelven tus 20."
     )
-    assert approval_videos_notice(1, 4, 4) == (
-        "Al aprobar usas 1 de tus 4 videos del mes. Te quedarían 3."
+    # VE-21 U2: every count of seconds carries its unit
+    assert approval_videos_notice(10, 40, 40) == (
+        "Al aprobar usas 10 de tus 40 segundos de video del mes. Te quedarían 30 segundos."
     )
-    assert approval_videos_notice(1, 2, 4) == (
-        "Al aprobar usas 1 de tus 4 videos del mes. Te quedaría 1."
+    assert approval_videos_notice(10, 11, 40) == (
+        "Al aprobar usas 10 de tus 40 segundos de video del mes. Te quedaría 1 segundo."
     )
-    assert videos_short_text(1, 0, 4, renews="1 de noviembre") == (
-        "Ya usaste tus 4 videos de este mes. Vuelven el 1 de noviembre."
+    assert videos_short_text(10, 0, 40, renews="1 de noviembre") == (
+        "Ya usaste tus 40 segundos de video de este mes. Vuelven el 1 de noviembre."
     )
-    # a carousel whose animated slides need more videos than are left: all or nothing
-    assert videos_short_text(3, 2, 4, renews="1 de noviembre") == (
-        "Esta publicación usa 3 videos y este mes te quedan 2. "
-        "Tus 4 videos vuelven el 1 de noviembre."
+    # a video by parts needing more seconds than are left: all or nothing
+    assert videos_short_text(18, 15, 40, renews="1 de noviembre") == (
+        "Esta publicación usa 18 segundos de video y este mes te quedan 15 segundos. "
+        "Tus 40 segundos vuelven el 1 de noviembre."
     )
+    assert videos_short_text(10, 1, 80, renews="1 de noviembre") == (
+        "Esta publicación usa 10 segundos de video y este mes te queda 1 segundo. "
+        "Tus 80 segundos vuelven el 1 de noviembre."
+    )
+    # R4: an unknown quota never prints a guessed number
+    assert videos_short_text(10, 0, 0, renews="1 de noviembre") == (
+        "Ya usaste tus segundos de video de este mes. Vuelven el 1 de noviembre."
+    )
+
+
+def test_the_seconds_a_video_will_use_before_creating_it() -> None:
+    """VE-21 U1: under «Duración», what the video uses of the brand's own month."""
+    assert video_seconds_use_notice(5, 30, 40) == (
+        "Este video usa 5 de tus 40 segundos de video del mes cuando lo apruebes. "
+        "Te quedarían 25 segundos."
+    )
+    assert video_seconds_use_notice(10, 80, 80) == (
+        "Este video usa 10 de tus 80 segundos de video del mes cuando lo apruebes. "
+        "Te quedarían 70 segundos."
+    )
+    assert video_seconds_use_notice(10, 11, 40).endswith("Te quedaría 1 segundo.")
+    assert video_seconds_use_notice(10, 5, 40) == (
+        "Este video usa 10 segundos de video cuando lo apruebes, y este mes te quedan 5 segundos."
+    )
+    assert video_seconds_use_notice(10, 0, 40) == (
+        "Este video usa 10 segundos de video cuando lo apruebes, y ya usaste tus "
+        "40 segundos de este mes."
+    )
+    assert video_seconds_use_notice(0, 30, 40) == ""
+    assert video_seconds_use_notice(5, 30, 0) == ""  # no quota wired / unlimited
 
 
 @pytest.mark.usefixtures("on_summary")
-def test_creating_a_clip_says_nothing_about_videos_and_uses_no_creations() -> None:
+def test_creating_a_clip_says_its_seconds_and_uses_no_creations() -> None:
     for duration in ("5", "10"):
-        state = _clip(30, duration=duration, videos_left=3)
+        state = _clip(30, duration=duration, videos_left=30)
         price = state._creations_price()
         assert price is not None and (price.weight, price.videos) == (0, 1)
         assert state._creations_problem() == ""
-        # the video is said before approving, not here
-        assert state.gen_creations_notice == ""
+        # VE-21 U1: the seconds it will use at approval are said before creating it,
+        # at the length chosen — under «Duración» and on the summary
+        expected = (
+            f"Este video usa {duration} de tus 40 segundos de video del mes cuando lo "
+            f"apruebes. Te quedarían {30 - int(duration)} segundos."
+        )
+        assert state.video_seconds_notice == expected
+        assert state.gen_creations_notice == expected
+    # the brand's own plan, not a constant: a Plus brand reads its 80
+    plus = _clip(30, duration="10", videos_left=80)
+    plus.videos_quota = 80
+    assert plus.video_seconds_notice == (
+        "Este video usa 10 de tus 80 segundos de video del mes cuando lo apruebes. "
+        "Te quedarían 70 segundos."
+    )
+    # reactive to the length: switching 10 → 5 changes the line
+    plus.set_clip_duration("5")
+    assert plus.video_seconds_notice.startswith("Este video usa 5 de tus 80 segundos")
+    # no quota wired: nothing is said
+    assert _clip(-1).video_seconds_notice == ""
+    # an image uses no seconds
+    image = CreativeState()
+    image.choose_category("image")
+    image.creations_left, image.creations_quota = 18, 30
+    image.videos_left, image.videos_quota = 40, 40
+    assert image.video_seconds_notice == ""
     # m-24852129: with no video left, Crear is not left active only to refuse at
     # approval — the zero state asks for more instead
     assert _clip(30, videos_left=0)._creations_problem() == (
-        "Ya usaste tus 4 videos de este mes. ¿Necesitas más? Pídelos y te enviamos el "
-        "enlace de pago."
+        "Ya usaste tus 40 segundos de video de este mes. ¿Necesitas más? Pídelos y te "
+        "enviamos el enlace de pago."
     )
 
 
@@ -289,7 +346,7 @@ def test_a_carousel_uses_one_vista_previa_per_animated_slide() -> None:
 @pytest.mark.usefixtures("on_summary")
 def test_the_presenter_stays_in_creations_with_no_video_left() -> None:
     state = _presenter(30, duration="15")
-    state.videos_left, state.videos_quota = 0, 4
+    state.videos_left, state.videos_quota = 0, 40
     state.previews_left, state.previews_quota = 0, 20
     assert state._creations_problem() == ""
     assert state.gen_creations_notice == (
@@ -320,12 +377,14 @@ def test_before_approving_the_piece_says_what_it_uses_and_refuses_at_0(
         monkeypatch.setattr(creative_state, "approval_videos", lambda *_: quote)
         asyncio.run(state._load_approval_videos(uuid4(), uuid4()))
 
-    load((1, 3, 4, "1 de noviembre"))
-    assert state.approve_videos_text == "Al aprobar usas 1 de tus 4 videos del mes. Te quedarían 2."
-    assert not state.approve_videos_short
-    load((1, 0, 4, "1 de noviembre"))
+    load((10, 30, 40, "1 de noviembre"))
     assert state.approve_videos_text == (
-        "Ya usaste tus 4 videos de este mes. Vuelven el 1 de noviembre."
+        "Al aprobar usas 10 de tus 40 segundos de video del mes. Te quedarían 20 segundos."
+    )
+    assert not state.approve_videos_short
+    load((10, 0, 40, "1 de noviembre"))
+    assert state.approve_videos_text == (
+        "Ya usaste tus 40 segundos de video de este mes. Vuelven el 1 de noviembre."
     )
     assert state.approve_videos_short
     load(None)  # an image, or no quota: nothing is said
@@ -589,3 +648,37 @@ def test_the_creation_screens_carry_no_money_nor_credits_wording(module: str) ->
     source = (Path(__file__).parent / module).read_text(encoding="utf-8")
     for banned in ("Consume créditos", "créditos", "Coste:", "cost_short", "USD", "~$"):
         assert banned not in source, f"{banned!r} in {module}"
+
+
+def test_a_refused_approval_says_the_brands_own_seconds(monkeypatch: pytest.MonkeyPatch) -> None:
+    """VE-21 R4: a Plus brand (80 s) refused at approval reads «tus 80 segundos», never
+    the Básico constant — the quota travels on the exception from the brand's balance."""
+    from qualify_api.creative.creations import CreationsBalance, NotEnoughCreations
+
+    from . import gallery_state
+
+    plus = CreationsBalance(
+        quota=30,
+        used=0,
+        weights_version="pesos-creaciones-v3",
+        video_quota=80,
+        videos_used=75,
+        video_in_seconds=True,
+    )
+    exc = plus.video_shortfall(10)
+    assert isinstance(exc, NotEnoughCreations)
+    assert (exc.videos, exc.videos_left, exc.video_quota) == (10, 5, 80)
+
+    def unreadable(*_: object) -> None:
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(gallery_state, "approval_videos", unreadable)
+    assert gallery_state.approval_refused_text(uuid4(), uuid4(), exc) == (
+        "Esta publicación usa 10 segundos de video y este mes te quedan 5 segundos. "
+        "Tus 80 segundos vuelven el próximo mes."
+    )
+    # an exception built without the brand's quota never prints a guessed number
+    bare = NotEnoughCreations(videos=10, videos_left=0, video_in_seconds=True)
+    assert gallery_state.approval_refused_text(uuid4(), uuid4(), bare) == (
+        "Ya usaste tus segundos de video de este mes. Vuelven el próximo mes."
+    )

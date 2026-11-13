@@ -411,3 +411,35 @@ def facts_from_saved(
         palette=palette,
         example=first_example(do_examples),
     )
+
+
+# ---------------------------------------------------------------------------------------
+# m-24973636: /brand never stays mute on its loading card
+
+#: An Alta whose account is still being read (`alta_prefill_jobs` queued, retrying or
+#: running): the page says so instead of opening empty steps the proposal would land on.
+PREPARING_TITLE = "Tu marca todavía se está preparando"
+PREPARING_HINT = (
+    "Esta pantalla se actualiza sola cuando esté lista. Si prefieres no esperar, puedes "
+    "llenarla tú, pero ya no te mostraremos la propuesta."
+)
+PREPARING_RECHECK = "Revisar ahora"
+PREPARING_SKIP = "Empezar sin esperar"
+#: The loading card, once it has lasted longer than it should (CSS-delayed, so it shows
+#: even when the connection to the server is gone).
+SLOW_HINT = "Esto está tardando más de lo normal."
+SLOW_RELOAD = "Volver a cargar"
+
+_NETWORK_LABELS = {"instagram": "Instagram", "tiktok": "TikTok"}
+
+
+def preparing_text(network: str) -> str:
+    """What is happening, in the owner's words: the account is being read to propose
+    the rubro, the colours and the logo — and that a slow answer is retried alone."""
+    label = _NETWORK_LABELS.get(network.strip().lower(), "")
+    account = f"tu cuenta de {label}" if label else "tu cuenta"
+    return (
+        f"Estamos leyendo {account} para proponerte tu rubro, tus colores y tu logo. "
+        "Suele tardar menos de un minuto; si la red social no responde, lo intentamos de "
+        "nuevo en unos minutos, sin que hagas nada."
+    )

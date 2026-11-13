@@ -21,12 +21,38 @@ def test_slugify_is_ascii_lowercase_and_never_empty() -> None:
     assert slugify("   ") == "producto"
 
 
-def test_price_label_knows_the_pilots_currencies() -> None:
-    assert price_label(Decimal("5.00"), "USD") == "$5"
-    assert price_label(Decimal("4.50"), "USD") == "$4.5"
-    assert price_label(Decimal("180"), "VES") == "Bs.180"
-    assert price_label(Decimal("12"), "GBP") == "12 GBP"
-    assert price_label(None, "USD") == ""
+@pytest.mark.parametrize(
+    ("amount", "currency", "expected"),
+    [
+        ("25000.00", "COP", "$25.000"),
+        ("1234567.50", "COP", "$1.234.567,50"),
+        ("1000000000", "COP", "$1.000.000.000"),
+        ("9999999999.99", "COP", "$9.999.999.999,99"),
+        ("10.00", "USD", "$10"),
+        ("10.50", "USD", "$10,50"),
+        ("1000.50", "USD", "$1000,50"),
+        ("9999999999.99", "USD", "$9999999999,99"),
+        ("90", "VES", "Bs. 90"),
+        ("1234.05", "VES", "Bs. 1.234,05"),
+        ("9999999999.99", "VES", "Bs. 9.999.999.999,99"),
+        ("25000", "UYU", "$25.000"),
+        ("1234.50", "UYU", "$1.234,50"),
+        ("9999999999.99", "UYU", "$9.999.999.999,99"),
+        ("4.50", "usd", "$4,50"),
+        ("0", "COP", "$0"),
+        ("0.05", "USD", "$0,05"),
+        ("0.999", "USD", "$1"),
+        ("12.50", "EUR", "€12.5"),
+        ("1234.50", "GBP", "1234.5 GBP"),
+        ("12", "", "12"),
+        (None, "USD", ""),
+    ],
+)
+def test_price_label_knows_the_pilots_currencies(
+    amount: str | None, currency: str, expected: str
+) -> None:
+    value = Decimal(amount) if amount is not None else None
+    assert price_label(value, currency) == expected
 
 
 def test_product_record_derives_its_primary_photo_and_counts() -> None:
@@ -118,7 +144,8 @@ def test_add_media_normalizes_the_photo_before_storing(monkeypatch: pytest.Monke
     )
 
     (key, data) = next(iter(store.files.items()))
-    assert key.startswith(f"uploads/{tenant_id}/catalog/{product.id}/") and key.endswith(".jpg")
+    # CM-9 (m-24957283): an R2 key under the tenant's uploads, a fresh uuid4 per file
+    assert key.startswith(f"t/{tenant_id}/uploads/catalog/{product.id}/") and key.endswith(".jpg")
     with Image.open(io.BytesIO(data)) as stored:
         assert stored.size == (1080, 1440)
     assert (record.width, record.height) == (1080, 1440)
@@ -154,6 +181,38 @@ def test_add_media_refuses_an_unreadable_file_and_a_video_without_ffmpeg(
         )
     with pytest.raises(mod.CatalogError, match="Por ahora no podemos recibir videos"):
         service.add_media(tenant_id=uuid4(), product_id=uuid4(), data=b"\x00", filename="clip.mov")
+    monkeypatch.setattr(mod, "MAX_JPEG_PIXELS", 100)
+    with pytest.raises(mod.CatalogError, match=mod.PHOTO_DIMENSIONS_TEXT):
+        service.add_media(
+            tenant_id=uuid4(), product_id=uuid4(), data=_jpeg((20, 20)), filename="photo.jpg"
+        )
+
+
+def test_add_media_rejects_oversized_inputs_before_processing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from qualify_api.catalog import service as mod
+
+    class Session:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return None
+
+        def get(self, model, pid):
+            return type("P", (), {"id": pid, "brand_id": uuid4()})()
+
+        def scalars(self, stmt):
+            return []
+
+    monkeypatch.setattr(mod, "tenant_session", lambda tenant_id: Session())
+    monkeypatch.setattr(mod, "MAX_PHOTO_BYTES", 2)
+    monkeypatch.setattr(mod, "MAX_VIDEO_BYTES", 2)
+    service = mod.CatalogService(store=type("S", (), {})())
+    for filename, message in (("x.jpg", mod.PHOTO_SIZE_TEXT), ("x.mp4", mod.VIDEO_SIZE_TEXT)):
+        with pytest.raises(mod.CatalogError, match=message):
+            service.add_media(tenant_id=uuid4(), product_id=uuid4(), data=b"123", filename=filename)
 
 
 def test_a_full_product_refuses_in_the_owners_words(monkeypatch: pytest.MonkeyPatch) -> None:

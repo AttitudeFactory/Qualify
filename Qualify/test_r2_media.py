@@ -100,6 +100,21 @@ def test_a_valid_r2_video_is_served_with_its_type(backend) -> None:
     assert "content-disposition" not in response.headers
 
 
+def test_a_gallery_photo_of_the_viewer_is_served_and_another_tenants_is_not(backend) -> None:
+    """m-24971181: Galería files live at `gallery/{tenant}/…`, outside the bucket lock on
+    `t/`; the preview serves the viewer's own and refuses anyone else's."""
+    client, _ = backend
+    mine = f"gallery/{TENANT_A}/{TENANT_B}/photo.jpg"
+    theirs = f"gallery/{TENANT_B}/{TENANT_A}/photo.jpg"
+    client.store.objects[mine] = b"\xff\xd8mine"  # type: ignore[attr-defined]
+    client.store.objects[theirs] = b"\xff\xd8theirs"  # type: ignore[attr-defined]
+    assert r2_media.is_r2_key(mine)
+    path = r2_media.issue_view_path(TENANT_A, mine, "image")
+    response = client.get(path)
+    assert response.status_code == 200 and response.content == b"\xff\xd8mine"
+    assert r2_media.issue_view_path(TENANT_A, theirs, "image") == ""
+
+
 def test_download_asks_the_browser_to_save_the_file(backend) -> None:
     client, _ = backend
     path = r2_media.issue_view_path(TENANT_A, KEY_A, "video")
@@ -350,6 +365,33 @@ def test_a_path_close_to_expiry_is_not_reused(backend, monkeypatch) -> None:
     assert r2_media.issue_view_path(TENANT_A, KEY_A, "video") != first
 
 
+def test_a_cached_path_is_reused_only_for_the_store_that_minted_it(backend) -> None:
+    """A garbage-collected store's `id()` can be reused by a new one: its cached path must
+    not be served for a token the new store never issued (CI flake on PR #604)."""
+    _, tokens = backend
+    r2_media._issued[(TENANT_A, KEY_A, id(tokens))] = (
+        "/r2media/stale",
+        r2_media.time.monotonic() + 3600,
+        object(),  # another store that happened to have the same id
+    )
+    path = r2_media.issue_view_path(TENANT_A, KEY_A, "video")
+    assert path != "/r2media/stale"
+    assert tokens.resolve(path.rsplit("/", 1)[-1]) is not None
+    assert r2_media.issue_view_path(TENANT_A, KEY_A, "video") == path
+
+
+def test_the_path_cache_is_pruned_on_insert(backend, monkeypatch) -> None:
+    """Entries past their reuse margin go on the next insert, so the cache does not keep
+    old stores (or paths) alive for the life of the process."""
+    clock = [1000.0]
+    monkeypatch.setattr(r2_media.time, "monotonic", lambda: clock[0])
+    r2_media.issue_view_path(TENANT_A, KEY_A, "video")
+    assert len(r2_media._issued) == 1
+    clock[0] += r2_media.VIEW_TTL_SECONDS  # the first path is past its margin
+    r2_media.issue_view_path(TENANT_A, KEY_BIG, "video")
+    assert len(r2_media._issued) == 1  # the stale entry went on that insert
+
+
 def test_ranged_responses_are_privately_cacheable(backend) -> None:
     client, _ = backend
     path = r2_media.issue_view_path(TENANT_A, KEY_A, "video")
@@ -428,4 +470,32 @@ def test_ranged_reads_run_off_the_event_loop(backend, monkeypatch) -> None:
     path = r2_media.issue_view_path(TENANT_A, KEY_A, "video")
     response = client.get(path, headers={"Range": "bytes=0-3"})
     assert response.status_code == 206
-    assert offloaded == ["object_size", "<lambda>"]  # the size probe and the range read
+    assert offloaded == ["_unpurged_size", "<lambda>"]  # the size probe and the range read
+
+
+# --- m-24973446: a purged piece's objects may stay in R2 (bucket lock on `t/`) ----------
+
+PURGED_DRAFT = UUID("c0000000-0000-4000-8000-00000000000c")
+KEY_PURGED = f"t/{TENANT_A}/generated/{PURGED_DRAFT}/r1/video.mp4"
+
+
+def test_a_purged_piece_is_not_served_by_any_method_although_r2_holds_it(
+    backend, monkeypatch
+) -> None:
+    from qualify_api.creative import purged_media
+
+    client, _tokens = backend
+    client.store.objects[KEY_PURGED] = VIDEO
+    purged_media.clear_cache()
+    monkeypatch.setattr(purged_media, "lookup", lambda tenant, draft: draft == PURGED_DRAFT)
+    try:
+        path = r2_media.issue_view_path(TENANT_A, KEY_PURGED, "video")
+        assert client.get(path).status_code == 404
+        assert client.get(path + "?download=1").status_code == 404
+        assert client.head(path).status_code == 404
+        assert client.get(path, headers={"Range": "bytes=0-3"}).status_code == 404
+        assert client.store.full_reads == [] and client.store.range_reads == []
+        # the same route still serves a piece that was not purged
+        assert client.get(r2_media.issue_view_path(TENANT_A, KEY_A, "video")).status_code == 200
+    finally:
+        purged_media.clear_cache()

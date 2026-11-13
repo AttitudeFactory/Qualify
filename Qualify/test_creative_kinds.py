@@ -24,7 +24,8 @@ _USER_ID = UUID("c0000000-0000-4000-8000-000000000001")
 def test_the_picker_offers_the_seven_kinds_in_order() -> None:
     assert (
         [key for key, *_ in KIND_OPTIONS]
-        == [kind.value for kind in ContentKind if kind]
+        # a video by parts (ADR 44) is reached from a Clip or a reel, never offered here
+        == [kind.value for kind in ContentKind if not kind.is_parts_parent]
         == [
             "creator_script",
             "avatar_video",
@@ -35,6 +36,20 @@ def test_the_picker_offers_the_seven_kinds_in_order() -> None:
             "clip",
         ]
     )
+
+
+def test_a_video_by_parts_has_a_name_but_no_place_in_the_picker() -> None:
+    """UX review of VE-06: without a name the piece showed an empty pill and downloaded
+    as «pieza». It is named like every kind, yet never offered in «¿Qué creamos?»."""
+    from .creative_provider import slug
+    from .creative_vm import KIND_LABELS, draft_kind_label
+
+    shot_video = ContentKind.SHOT_VIDEO.value
+    assert shot_video not in [key for key, *_ in KIND_OPTIONS]
+    assert draft_kind_label(shot_video, has_video=True) == "Video por partes"
+    assert draft_kind_label(shot_video, has_video=False) == "Video por partes"
+    assert all(KIND_LABELS.get(kind.value) for kind in ContentKind)
+    assert slug("Video por partes") not in ("", "pieza")
 
 
 def test_the_template_kind_is_chosen_and_reads_the_catalog_once() -> None:
@@ -443,7 +458,14 @@ def test_a_clip_comes_with_sound_unless_turned_off(monkeypatch: pytest.MonkeyPat
     how = str(_step_how())
     assert "set_clip_audio" in how and "Con sonido" in how
     assert "Si el modelo de video" not in how
-    assert "El sonido del video y la campa\\u00f1a. Puedes crear sin tocarlos." in how
+    # the folded hint is the state's (it names a campaign kept by «Crear otra»)
+    assert "gen_campaign_hint" in how
+    clip = CreativeState()
+    clip._set_kind("clip")
+    assert (
+        clip.gen_campaign_hint
+        == "El sonido, los subtítulos y la campaña. Puedes crear sin tocarlos."
+    )
     state.set_clip_duration("10")
     state._reset_media_inputs()
     assert state.clip_audio is True
@@ -1263,3 +1285,48 @@ def test_back_from_borradores_the_animated_avatar_reloads_its_character() -> Non
     assert "/drafts/d0000000-0000-4000-8000-000000000001" in str(events[1])
     state.brief_kind = "clip"
     assert all("load_brand_character" not in str(e) for e in state.review_in_drafts())
+
+
+def test_a_clip_has_no_subtitles_unless_turned_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Founder, 2026-11-03: «Agregar subtítulos con tu texto» — off by default, behind step
+    ③'s «Más opciones» next to «Con sonido», on the brief, and back off on a new piece."""
+    from .content_generator import CLIP_SUBTITLES_LABEL, _section_channel, _step_how
+
+    state = CreativeState()
+    assert state.clip_subtitles is False
+    assert _submit(monkeypatch, "clip", state._clip_media()).media.clip_subtitles is False
+    state.set_clip_subtitles(True)
+    assert _submit(monkeypatch, "clip", state._clip_media()).media.clip_subtitles is True
+    assert "set_clip_subtitles" not in str(_section_channel())
+    how = str(_step_how())
+    assert "set_clip_subtitles" in how and "la frase inicial y la invitaci" in how
+    # UX review 2026-11-03: the words are the proposed text's opening line and CTA
+    assert CLIP_SUBTITLES_LABEL == "Poner en el video la frase inicial y la invitación a comprar"
+    state._reset_media_inputs()
+    assert state.clip_subtitles is False
+
+
+def test_the_presenter_and_the_clip_each_render_their_own_subtitles_switch() -> None:
+    """UX review 2026-11-03: a second ``_subtitles_switch`` shadowed the presenter's, so the
+    avatar video showed the clip switch and its own subtitles could not be turned on."""
+    import ast
+    from collections import Counter
+    from pathlib import Path
+
+    from . import content_generator
+    from .content_generator import _avatar_section, _step_how
+
+    presenter = str(_avatar_section())
+    assert "set_media_subtitles" in presenter
+    assert "set_clip_subtitles" not in presenter
+    how = str(_step_how())
+    assert "set_clip_subtitles" in how
+    assert "set_media_subtitles" not in how
+
+    tree = ast.parse(Path(content_generator.__file__).read_text(encoding="utf-8"))
+    names = Counter(
+        node.name
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef)
+    )
+    assert [name for name, count in names.items() if count > 1] == []

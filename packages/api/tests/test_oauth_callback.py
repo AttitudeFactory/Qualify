@@ -102,14 +102,25 @@ class FakeMetaOAuthClient:
         self.scopes = scopes
         self.exchanged_codes: list[str] = []
         self.issued_states: list[str] = []
+        self.authorize_redirects: list[str] = []
+        self.exchange_redirects: list[str] = []
 
-    def authorization_url(self, *, state: str, rerequest: bool = False) -> str:
+    def authorization_url(
+        self,
+        *,
+        state: str,
+        rerequest: bool = False,
+        request_ads: bool = False,
+        redirect_uri: str = "",
+    ) -> str:
         self.issued_states.append(state)
+        self.authorize_redirects.append(redirect_uri)
         suffix = "&auth_type=rerequest" if rerequest else ""
         return f"https://platform.example/dialog?state={state}{suffix}"
 
-    async def exchange_code(self, code: str) -> TokenGrant:
+    async def exchange_code(self, code: str, *, redirect_uri: str = "") -> TokenGrant:
         self.exchanged_codes.append(code)
+        self.exchange_redirects.append(redirect_uri)
         return TokenGrant(access_token=TOKEN, token_type="bearer", expires_in=5184000)
 
     async def list_linked_pages(self, access_token: str) -> tuple[LinkedPage, ...]:
@@ -223,12 +234,14 @@ def build_harness(
     verify_ok: bool = True,
     repo: FakeRepository | None = None,
     page_subscriptions: PageSubscriptions | None = None,
+    redirect_hosts: frozenset[str] = frozenset(),
 ) -> Harness:
     settings = MetaOAuthSettings(
         app_id="app-1",
         app_secret="secret",
         redirect_uri="https://qualify.test/api/connections/callback",
         state_secret="state-secret",
+        redirect_hosts=redirect_hosts,
     )
     repository = repo if repo is not None else FakeRepository()
     oauth = FakeMetaOAuthClient(pages=pages, scopes=scopes)
@@ -258,6 +271,138 @@ def build_harness(
 
     service.start_connect = recording_start  # type: ignore[method-assign]
     return harness
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scopes", [("instagram_basic", "ads_management"), ("instagram_basic",)])
+async def test_principal_callback_preserves_actual_advertising_user_grant(scopes) -> None:
+    harness = build_harness(scopes=scopes)
+    records = []
+    members = []
+
+    class Recorder:
+        def record(self, **kwargs: object) -> None:
+            records.append(kwargs)
+
+    harness.service._ads_grants = Recorder()
+    harness.service._ads_membership_check = lambda tenant, user: members.append((tenant, user))
+    result = await complete(harness, code="principal", state=start_and_extract_state(harness))
+    assert result.outcome is ConnectOutcome.ACTIVE
+    assert bool(records) is ("ads_management" in scopes)
+    if records:
+        saved = records[0]
+        assert DevEncryptor().decrypt(saved["ciphertext"], key_id=saved["key_id"]) == TOKEN
+        assert saved["granted_scopes"] == scopes
+        assert saved["version"] == harness.repo.only().credential_version
+        assert members == [(TENANT, USER), (TENANT, USER)]
+    organic = harness.repo.only().grant
+    assert DevEncryptor().decrypt(organic.ciphertext, key_id=organic.key_id) == PAGE_TOKEN
+
+
+@pytest.mark.asyncio
+async def test_removed_member_cannot_persist_principal_advertising_grant() -> None:
+    from qualify_api.connections.ad_accounts import AdAccountUnavailable
+
+    harness = build_harness(scopes=("ads_management",))
+
+    class Recorder:
+        def record(self, **kwargs: object) -> None:
+            pytest.fail("removed member must not persist advertising credentials")
+
+    def removed(tenant, user):
+        raise AdAccountUnavailable("Ya no tienes acceso a este negocio.")
+
+    harness.service._ads_grants = Recorder()
+    harness.service._ads_membership_check = removed
+    with pytest.raises(AdAccountUnavailable):
+        await complete(harness, code="principal", state=start_and_extract_state(harness))
+    assert not harness.repo.credentials
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "scopes,expected",
+    [
+        (("instagram_basic", "ads_management"), ConnectOutcome.ADS_ACTIVE),
+        (("instagram_basic",), ConnectOutcome.ADS_PERMISSION_MISSING),
+    ],
+)
+async def test_optional_ads_callback_keeps_user_and_page_tokens_separate(
+    monkeypatch: pytest.MonkeyPatch, scopes: tuple[str, ...], expected: ConnectOutcome
+) -> None:
+    harness = build_harness(scopes=scopes)
+    await complete(harness, code="organic", state=start_and_extract_state(harness))
+    records = []
+
+    class Recorder:
+        def record(self, **kwargs: object) -> None:
+            records.append(kwargs)
+
+    harness.service._ads_grants = Recorder()
+    harness.service._ads_membership_check = lambda tenant, user: None
+    target = harness.repo.only().connection_id
+    monkeypatch.setattr(
+        "qualify_api.connections.service.list_connections",
+        lambda tenant: [
+            SimpleNamespace(
+                connection_id=target,
+                brand_id=BRAND,
+                platform="instagram",
+                external_account_id=IG_PAGE.instagram_account_id,
+                reconnect_reason=None,
+            )
+        ],
+    )
+    harness.service.start_connect(
+        tenant_id=TENANT, brand_id=BRAND, user_id=USER, connection_id=target, request_ads=True
+    )
+    state = harness.oauth.issued_states[-1]
+    result = await complete(harness, code="advertising", state=state)
+    assert result.outcome is expected
+    assert len(records) == 1
+    encryptor = DevEncryptor()
+    assert encryptor.decrypt(records[0]["ciphertext"], key_id=records[0]["key_id"]) == TOKEN
+    stored = harness.repo.only()
+    assert encryptor.decrypt(stored.grant.ciphertext, key_id=stored.grant.key_id) == PAGE_TOKEN
+    assert records[0]["version"] == stored.credential_version
+    assert records[0]["granted_scopes"] == scopes
+
+
+@pytest.mark.asyncio
+async def test_removed_member_cannot_finish_ads_consent_or_exchange_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from qualify_api.connections.ad_accounts import AdAccountUnavailable
+
+    harness = build_harness(scopes=("ads_management",))
+    await complete(harness, code="organic", state=start_and_extract_state(harness))
+    target = harness.repo.only().connection_id
+    monkeypatch.setattr(
+        "qualify_api.connections.service.list_connections",
+        lambda tenant: [
+            SimpleNamespace(
+                connection_id=target,
+                brand_id=BRAND,
+                platform="instagram",
+                external_account_id=IG_PAGE.instagram_account_id,
+                reconnect_reason=None,
+            )
+        ],
+    )
+    harness.service._ads_membership_check = lambda tenant, user: None
+    harness.service.start_connect(
+        tenant_id=TENANT, brand_id=BRAND, user_id=USER, connection_id=target, request_ads=True
+    )
+    state = harness.oauth.issued_states[-1]
+
+    def removed(tenant: UUID, user: UUID) -> None:
+        raise AdAccountUnavailable("Ya no tienes acceso a este negocio. Vuelve a entrar.")
+
+    harness.service._ads_membership_check = removed
+    with pytest.raises(AdAccountUnavailable):
+        await complete(harness, code="must-not-exchange", state=state)
+    assert harness.oauth.exchanged_codes == ["organic"]
+    assert len(harness.repo.credentials) == 1
 
 
 def _give_cookie(client: TestClient, name: str, value: str) -> None:
@@ -396,7 +541,7 @@ async def test_failed_token_exchange_returns_to_origin_without_reusing_state(
     await complete(harness, code="first", state=start_and_extract_state(harness))
     state = start_targeted_reconnect(harness, monkeypatch)
 
-    async def unavailable(code: str) -> TokenGrant:
+    async def unavailable(code: str, *, redirect_uri: str = "") -> TokenGrant:
         raise MetaOAuthError("unavailable")
 
     monkeypatch.setattr(harness.oauth, "exchange_code", unavailable)
@@ -769,7 +914,7 @@ async def test_missing_page_token_falls_back_to_user_token_and_warns(
 
     assert result.outcome is ConnectOutcome.ACTIVE
     stored = harness.repo.only()
-    assert stored.grant.token_type == "bearer"
+    assert stored.grant.token_type == "user"
     assert DevEncryptor().decrypt(stored.grant.ciphertext, key_id=stored.grant.key_id) == TOKEN
     assert any("USER token as fallback" in record.getMessage() for record in caplog.records)
 
@@ -1040,6 +1185,7 @@ def test_callback_redirect_codes_are_exactly_the_ui_vocabulary() -> None:
     emitted = {str(o) for o in ConnectOutcome} | {
         connections_routes.INVALID_STATE,
         connections_routes.DENIED,
+        connections_routes.ADS_DENIED,
     }
     assert emitted == {
         "active",
@@ -1050,6 +1196,9 @@ def test_callback_redirect_codes_are_exactly_the_ui_vocabulary() -> None:
         "denied",
         "permission_missing",
         "account_access_required",
+        "ads_active",
+        "ads_permission_missing",
+        "ads_denied",
     }
 
 
@@ -1071,7 +1220,7 @@ def test_connections_page_url_from_env(
     monkeypatch.delenv("REFLEX_DEPLOY_URL", raising=False)
     for key, value in env.items():
         monkeypatch.setenv(key, value)
-    assert connections_routes.get_connections_page_url() == expected
+    assert connections_routes.configured_connections_page_url() == expected
 
 
 def test_start_route_rejects_unauthenticated_with_401() -> None:
@@ -1330,3 +1479,67 @@ def test_start_route_sets_the_httponly_binding_cookie() -> None:
     payload = harness.service.callback_context(harness.oauth.issued_states[-1])
     assert binding_hash(value) == payload.binding
     assert value not in response.json()["authorization_url"]
+
+
+# --------------------------------------------------------------------------------------
+# Same host (m-24947215)
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_meta_flow_runs_on_the_page_host_once_its_callback_is_registered() -> None:
+    harness = build_harness(redirect_hosts=frozenset({"app.qualify.la"}))
+    started = harness.service.start_connect(
+        tenant_id=TENANT, brand_id=None, user_id=USER, browser_origin="https://app.qualify.la"
+    )
+    expected = "https://app.qualify.la/api/connections/callback"
+    assert started.callback_url == expected
+    assert harness.oauth.authorize_redirects[-1] == expected
+    state = harness.oauth.issued_states[-1]
+    await harness.service.complete_connect(
+        code="code-1", state=state, binding_nonce=harness.nonces[state]
+    )
+    assert harness.oauth.exchange_redirects[-1] == expected  # the exchange repeats it
+
+
+@pytest.mark.parametrize(
+    "origin", ["https://app.qualify.la", "https://evil.example", "http://qualify.test", ""]
+)
+def test_meta_stays_on_its_registered_callback_by_default(origin: str) -> None:
+    """Without `QUALIFY_META_REDIRECT_HOSTS` Meta keeps its one registered redirect URI —
+    a URI Meta does not know would fail at its dialog."""
+    harness = build_harness()
+    started = harness.service.start_connect(
+        tenant_id=TENANT, brand_id=None, user_id=USER, browser_origin=origin
+    )
+    assert started.callback_url == "https://qualify.test/api/connections/callback"
+    assert harness.oauth.authorize_redirects[-1] == started.callback_url
+
+
+@pytest.mark.asyncio
+async def test_a_legacy_state_without_redirect_uri_exchanges_with_the_configured_one() -> None:
+    harness = build_harness()
+    harness.service.start_connect(tenant_id=TENANT, brand_id=None, user_id=USER)
+    state = harness.oauth.issued_states[-1]
+    await harness.service.complete_connect(
+        code="code-1", state=state, binding_nonce=harness.nonces[state]
+    )
+    assert harness.oauth.exchange_redirects[-1] == "https://qualify.test/api/connections/callback"
+
+
+def test_meta_callback_lands_on_the_public_host_it_arrived_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("QUALIFY_PUBLIC_URL", "https://qualify.test")
+    monkeypatch.setenv("QUALIFY_PUBLIC_HOSTS", "app.qualify.la")
+    monkeypatch.setenv("QUALIFY_APP_URL", "https://qualify.test")
+    harness = build_harness()
+    app = create_app(configure_production=False)
+    app.dependency_overrides[connections_routes.get_connect_service] = lambda: harness.service
+    for host, landing in (
+        ("app.qualify.la", "https://app.qualify.la/connections?connect=denied"),
+        ("evil.example", "https://qualify.test/connections?connect=denied"),
+    ):
+        client = TestClient(app, base_url=f"https://{host}", follow_redirects=False)
+        response = client.get("/api/connections/callback?error=access_denied")
+        assert response.headers["location"] == landing

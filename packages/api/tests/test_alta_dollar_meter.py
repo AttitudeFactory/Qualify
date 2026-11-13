@@ -42,6 +42,7 @@ from qualify_api.claude_tools import (
     turn_input_ceiling,
     worst_turn_usd,
 )
+from qualify_api.claude_tools import Attribution as _Attribution
 from qualify_api.creative import brand_prefill
 from qualify_api.creative.brand_prefill import PrefillOutcome
 from qualify_api.hashtags import MemoryHashtagRepository, from_profile
@@ -50,6 +51,9 @@ from qualify_api.hashtags import catalog as hashtag_catalog
 from qualify_api.meegle import prefill as mod
 
 from .test_brand_prefill import BRAND, TENANT, Cache, Claims, Pictures, Store, Vendor
+
+#: m-24955649: who pays for the faked Claude calls of this module.
+TEST_ATTRIBUTION = _Attribution.no_business("test")
 
 SONNET = "claude-sonnet-5"
 CAPS = (Decimal("0.15"), Decimal("0.06"), Decimal("0.02"), Decimal("0.008"))
@@ -115,7 +119,10 @@ class AdversarialClaude:
         #: The conversation as each request saw it (the caller mutates its list).
         self.seen: list[str] = []
         self.billed = Decimal(0)
-        self._outputs: dict[int, int] = {}  # id(assistant content) -> its output tokens
+        #: id(assistant content) -> (that content, its output tokens). The content itself is
+        #: kept and compared by identity: a bare `id()` can be reused by a new list once a
+        #: discarded answer is garbage-collected, which would bill tokens it never carried.
+        self._outputs: dict[int, tuple[Any, int]] = {}
         self.messages = self
 
     def __call__(self, api_key: str) -> AdversarialClaude:  # the client factory
@@ -125,9 +132,11 @@ class AdversarialClaude:
         system = kwargs["system"][0]["text"]
         sent = request_bytes(system, kwargs["messages"], kwargs["tools"])
         carried = sum(
-            self._outputs.get(id(m["content"]), 0)
+            entry[1]
             for m in kwargs["messages"]
             if m.get("role") == "assistant"
+            and (entry := self._outputs.get(id(m["content"]))) is not None
+            and entry[0] is m["content"]
         )
         density = self.rng.uniform(0.25, 1.0)  # tokens per byte: never above 1
         framing = self.rng.randint(0, FIRST_TURN_MARGIN_TOKENS - 1)
@@ -187,7 +196,7 @@ class AdversarialClaude:
         if self.mode == "random" and 0.27 <= roll < 0.3:
             stop = "refusal"
         content = [] if stop != "end_turn" else self._answer(kwargs)
-        self._outputs[id(content)] = output
+        self._outputs[id(content)] = (content, output)
         reported = billed
         if self.rng.random() < 0.3:  # under-reports the prompt it billed
             reported = replace(billed, input_tokens=0, cache_read_input_tokens=0)
@@ -344,6 +353,7 @@ def _turn(client: AdversarialClaude, meter: DollarMeter | None, max_tokens: int 
         tool_choice={"type": "auto"},
         max_tokens=max_tokens,
         budget=meter,
+        attribution=TEST_ATTRIBUTION,
     )
 
 
@@ -631,7 +641,9 @@ def test_the_wizards_rubro_run_keeps_4000_tokens_and_two_attempts_without_a_mete
     claude = AdversarialClaude(random.Random(1), mode="never_choose")
     account = from_profile.AccountText(handle="heladeria", bio="Helados de yogur en Cúcuta")
     with pytest.raises(ClaudeToolError):
-        from_profile.generate(account, api_key="sk", max_tags=5, client_factory=claude)
+        from_profile.generate(
+            account, api_key="sk", max_tags=5, client_factory=claude, attribution=TEST_ATTRIBUTION
+        )
     assert [r["max_tokens"] for r in claude.requests] == [4_000, 4_000]
     assert from_profile.MAX_TOKENS == 4_000 and from_profile.ATTEMPTS == 2
 
@@ -649,7 +661,12 @@ def test_the_wizards_catalog_run_keeps_8_turns_of_16000_at_medium() -> None:
     brand = hashtag_ai.BrandProfile(handle="heladeria", bio="", category="", rubro=("helados",))
     with pytest.raises(ClaudeToolError):
         hashtag_ai.select_hashtags(
-            brand, Catalog(), {"food_drink": "Comida"}, api_key="sk", client_factory=claude
+            brand,
+            Catalog(),
+            {"food_drink": "Comida"},
+            api_key="sk",
+            client_factory=claude,
+            attribution=TEST_ATTRIBUTION,
         )
     assert len(claude.requests) == 2  # a nudge, then it gives up: same as before
     assert {r["max_tokens"] for r in claude.requests} == {16_000}
@@ -671,6 +688,7 @@ def test_the_wizards_catalog_failure_still_takes_the_rule_path() -> None:
         repository=MemoryHashtagRepository(),
         api_key="sk",
         selector=failing,
+        attribution=TEST_ATTRIBUTION,
     )
     assert choice.by == "rule" and choice.attempted
     alta = hashtag_catalog.suggest_hashtags(
@@ -680,6 +698,7 @@ def test_the_wizards_catalog_failure_still_takes_the_rule_path() -> None:
         api_key="sk",
         selector=failing,
         rule_fallback=False,
+        attribution=TEST_ATTRIBUTION,
     )
     assert alta.tags == () and alta.by == "ai" and alta.attempted
 
@@ -718,6 +737,7 @@ def test_the_last_turn_hint_goes_only_before_the_last_turn() -> None:
             max_turns=3,
             max_tokens=1_200,
             last_turn_hint=True,
+            attribution=TEST_ATTRIBUTION,
         )
     hinted = ["último turno" in seen for seen in searcher.seen]
     assert hinted == [False, False, True]

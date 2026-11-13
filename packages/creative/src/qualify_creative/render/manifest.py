@@ -111,6 +111,29 @@ class CostModel(BaseModel):
         return round(total, 1)
 
 
+class SheetSpec(BaseModel):
+    """A still that holds every frame of a short loop as a grid (CONTRACT §1, the
+    `sticker` template, m-24987158): `frames` cells of `cell` px, `columns` per row,
+    sampled at `fps`. Python slices the grid and encodes the animation itself."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    cell: int = Field(ge=16)
+    columns: int = Field(ge=1)
+    frames: int = Field(ge=2)
+    fps: int = Field(ge=1, le=60)
+
+
+class RenderSpec(BaseModel):
+    """How the service renders this template (CONTRACT §1, m-25016848): `concurrency` caps
+    the Chromium tabs of one render (never above the service's own `REMOTION_CONCURRENCY`)
+    so a heavy video stays inside the container's memory cap."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    concurrency: int | None = Field(default=None, ge=1)
+
+
 class TemplateManifest(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -123,11 +146,19 @@ class TemplateManifest(BaseModel):
     outputs: dict[str, OutputPort]
     duration: DurationSpec = DurationSpec()
     cost_model: CostModel = CostModel()
+    sheet: SheetSpec | None = None
+    render: RenderSpec | None = None
 
     @model_validator(mode="after")
     def _well_formed(self) -> TemplateManifest:
         if not self.outputs:
             raise ValueError(f"template {self.id} declares no outputs")
+        if self.sheet is not None:
+            rows = -(-self.sheet.frames // self.sheet.columns)
+            grid = (self.sheet.columns * self.sheet.cell, rows * self.sheet.cell)
+            stills = [o for o in self.outputs.values() if o.kind is OutputKind.STILL]
+            if not any((o.width, o.height) == grid for o in stills):
+                raise ValueError(f"template {self.id}: no still output is the {grid} sheet")
         for port, out in self.outputs.items():
             expected = self.composition_id(port)
             if out.composition != expected:

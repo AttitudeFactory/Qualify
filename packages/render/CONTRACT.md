@@ -48,6 +48,23 @@ Port types: `string` (with `max`, optional `enum`), `number`, `boolean`, `image`
 false. Python validates a Post against the manifest **before** asking for a render; the
 service re-validates and answers `422 invalid_parameters` if props do not match.
 
+Optional `sheet` block (m-24987158, the `sticker` template): `{"cell": 512, "columns": 6,
+"frames": 30, "fps": 15}` says that a still output holds every frame of a short loop as a
+grid, left to right, top to bottom, on a transparent background — the way to get an
+animation WITH ALPHA out of the service (its videos are H.264, which has none). Python
+slices the grid and encodes the animation itself (`qualify_creative.seasonal.sticker_c`);
+one still output must be exactly `columns × cell` by `ceil(frames / columns) × cell`. A
+template meant only for such a caller lists an angle no post has (`"serves_angles":
+["seasonal_sticker"]`) so the post recipes never pick it.
+
+Optional `render` block (m-25016848, the `seasonal_video` template): `{"concurrency": 1}`
+caps the Chromium tabs of that template's renders (Remotion's `concurrency`), never above
+the service's own `REMOTION_CONCURRENCY` — a 720p video on the 1536 MB container renders on
+one tab. A video composition may also take its **size** from the props through
+`calculateMetadata` (seasonal_video: 720 px wide, `texts.height` 720–1280 tall); the
+manifest's `width`/`height` are then the largest frame, and the job reports the size it
+actually rendered.
+
 `cost_model` is **render time**, not money: the service runs on our own machine (cost 0
 beyond the server). Python turns ETA into money only if a paid runtime (Lambda, license)
 is configured.
@@ -100,7 +117,7 @@ same id is idempotent and returns the existing job.
 | `GET /templates` | → `200 {"templates": [<manifest>, …]}` | manifests as on disk |
 | `GET /templates/{id}` | → `200 <manifest>` (latest) · `404 not_found` | `?version=N` for a pinned one |
 | `POST /assets` | multipart `file` (or raw body + `Content-Type`) → `201 {"assetId", "url", "mimeType", "bytes"}` | stored under `ASSETS_DIR`, TTL 24 h, max 200 MB |
-| `GET /assets/{assetId}` | → the file | used by Chromium during render only |
+| `GET /assets/{assetId}` | → the file | used by Chromium during render only; `Access-Control-Allow-Origin` echoed for loopback origins only (`http://localhost|127.0.0.1|[::1][:port]`, the bundle's page) so `FontFace` can load an uploaded brand font (m-24993425) |
 | `POST /estimate` | `{"templateId","version","props"}` → `200 {"outputs": {"<port>": {"kind","etaSec","durationSec"?}}, "totalEtaSec", "warnings": []}` · `422 invalid_parameters` | no render |
 | `POST /render` | `{"jobId","templateId","version","props","outputs"?: ["reel","feed"]}` → `202 <job>` · `200 <job>` if jobId exists · `422 invalid_parameters` · `404 not_found` (template) · `409 busy` never (queue instead) | queued, concurrency `RENDER_CONCURRENCY` (default 1) |
 | `GET /jobs/{jobId}` | → `200 <job>` · `404 not_found` | poll "at a modest interval" (Python: 2 s) |

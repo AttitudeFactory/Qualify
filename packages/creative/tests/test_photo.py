@@ -35,6 +35,27 @@ def _mask(size: tuple[int, int], box: tuple[int, int, int, int]) -> Image.Image:
 
 
 class TestNormalize:
+    def test_catalog_typical_phone_jpeg_is_decoded_at_half_size(self) -> None:
+        data = _jpeg(Image.new("RGB", (6000, 4000), "red"))
+        with load_normalized(data, max_pixels=50_000_000, decode_width=1080) as result:
+            assert result.size == (3000, 2000)
+
+    def test_catalog_jpeg_decodes_smaller_and_keeps_exif_orientation(self) -> None:
+        exif = Image.Exif()
+        exif[274] = 6
+        data = _jpeg(Image.new("RGB", (4000, 3000), "red"), exif)
+        result = load_normalized(data, max_pixels=50_000_000, decode_width=1500)
+        assert result.size == (1500, 2000)
+
+    def test_catalog_rejects_large_dimensions_before_decoding(self) -> None:
+        from qualify_creative.photo.normalize import PhotoDimensionsExceeded
+
+        data = _jpeg(Image.new("RGB", (100, 100), "red"))
+        with pytest.raises(PhotoDimensionsExceeded):
+            load_normalized(data, max_pixels=9999)
+        with pytest.raises(PhotoDimensionsExceeded):
+            load_normalized(data, max_aspect_ratio=0.5)
+
     def test_exif_orientation_is_baked_into_pixels(self) -> None:
         """Silent failure #1: a portrait iPhone shot carries orientation=6 and viewers
         rotate it on the fly; pixel pipelines do not. After normalization the pixels

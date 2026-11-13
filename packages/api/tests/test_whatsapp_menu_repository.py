@@ -13,8 +13,11 @@ from pydantic import ValidationError
 
 from qualify_api.whatsapp.menus import (
     MemoryMenuRepository,
+    MenuIsAnswering,
     MenuNotFound,
+    MenuRecord,
     MenuVersionNotFound,
+    MenuVersionRecord,
 )
 from qualify_api.whatsapp.menus.engine import ENGINE_VERSION
 from qualify_api.whatsapp.menus.examples import BIANKI_DEMO_MENU
@@ -151,3 +154,65 @@ def test_menu_names_are_unique_per_number_case_insensitively(repo: MemoryMenuRep
     # Same name on another number is fine.
     repo.create_menu(tenant_id=TENANT, phone_number_row_id=uuid4(), name="Principal")
     assert len(repo.list_menus(tenant_id=TENANT, phone_number_row_id=PHONE)) == 1
+
+
+# --- «Eliminar» = archive (m-24986800, decision D1) -------------------------------------
+
+
+def _published(
+    repo: MemoryMenuRepository, name: str = "Principal"
+) -> tuple[MenuRecord, MenuVersionRecord]:
+    menu = repo.create_menu(tenant_id=TENANT, phone_number_row_id=PHONE, name=name)
+    version = repo.save_version(tenant_id=TENANT, menu_id=menu.id, definition=_tiny())
+    repo.publish_version(tenant_id=TENANT, menu_id=menu.id, version_id=version.id, user_id=None)
+    return menu, version
+
+
+def test_the_answering_menu_cannot_be_archived(repo: MemoryMenuRepository) -> None:
+    menu, version = _published(repo)
+    with pytest.raises(MenuIsAnswering):
+        repo.archive_menu(tenant_id=TENANT, menu_id=menu.id)
+    kept = repo.get_menu(tenant_id=TENANT, menu_id=menu.id)
+    assert kept is not None and kept.archived_at is None and kept.is_answering
+    assert repo.load_published_menu_for_phone(PHONE) is not None
+
+
+def test_a_paused_published_menu_is_archived_and_unpublished(repo: MemoryMenuRepository) -> None:
+    menu, version = _published(repo)
+    repo.set_paused(tenant_id=TENANT, menu_id=menu.id, paused=True)
+    at = datetime(2026, 11, 9, 12, 0, tzinfo=UTC)
+    archived = repo.archive_menu(tenant_id=TENANT, menu_id=menu.id, now=at)
+    assert (archived.archived_at, archived.published_version_id) == (at, None)
+    # Out of every read and write of the editor; versions kept (provenance).
+    assert repo.get_menu(tenant_id=TENANT, menu_id=menu.id) is None
+    assert repo.get_menu(tenant_id=TENANT, menu_id=menu.id, include_archived=True) == archived
+    assert repo.list_menus(tenant_id=TENANT, phone_number_row_id=PHONE) == []
+    assert [v.id for v in repo.list_versions(tenant_id=TENANT, menu_id=menu.id)] == [version.id]
+    with pytest.raises(MenuNotFound):
+        repo.publish_version(tenant_id=TENANT, menu_id=menu.id, version_id=version.id, user_id=None)
+    with pytest.raises(MenuNotFound):
+        repo.set_paused(tenant_id=TENANT, menu_id=menu.id, paused=False)
+    with pytest.raises(MenuNotFound):
+        repo.save_version(tenant_id=TENANT, menu_id=menu.id, definition=_tiny())
+    # Never answers, even «reanudado».
+    assert repo.load_published_menu_for_phone(PHONE) is None
+
+
+def test_archiving_is_idempotent_and_frees_the_name(repo: MemoryMenuRepository) -> None:
+    menu = repo.create_menu(tenant_id=TENANT, phone_number_row_id=PHONE, name="Navidad")
+    first = repo.archive_menu(tenant_id=TENANT, menu_id=menu.id)
+    again = repo.archive_menu(tenant_id=TENANT, menu_id=menu.id)
+    assert again == first and first.archived_at is not None
+    fresh = repo.create_menu(tenant_id=TENANT, phone_number_row_id=PHONE, name="NAVIDAD")
+    assert [m.id for m in repo.list_menus(tenant_id=TENANT, phone_number_row_id=PHONE)] == [
+        fresh.id
+    ]
+
+
+def test_another_tenants_menu_cannot_be_archived(repo: MemoryMenuRepository) -> None:
+    menu = repo.create_menu(tenant_id=TENANT, phone_number_row_id=PHONE, name="Mío")
+    with pytest.raises(MenuNotFound):
+        repo.archive_menu(tenant_id=uuid4(), menu_id=menu.id)
+    with pytest.raises(MenuNotFound):
+        repo.archive_menu(tenant_id=TENANT, menu_id=uuid4())
+    assert repo.get_menu(tenant_id=TENANT, menu_id=menu.id) is not None

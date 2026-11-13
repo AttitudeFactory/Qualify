@@ -38,6 +38,7 @@ from itertools import combinations
 from pathlib import Path
 from typing import Any
 
+from qualify_api.claude_tools import Attribution
 from qualify_api.hashtags.ai import (
     CLASSIFY_BATCH,
     BrandProfile,
@@ -130,6 +131,7 @@ def run_select(config: ModelConfig, case: dict[str, Any], max_picks: int, key: s
             starting=starting,
             max_picks=max_picks,
             config=config,
+            attribution=Attribution.no_business("eval-hashtags"),
         )
     except HashtagAIError as exc:
         return {"case": case["id"], "error": str(exc), "tools": catalog.calls}
@@ -206,7 +208,13 @@ def run_classify(config: ModelConfig, rows: list[list], key: str) -> dict[str, A
         batch = tags[start : start + CLASSIFY_BATCH // 2]
         began = time.perf_counter()
         try:
-            results, stats = classify_hashtags(batch, NICHES, api_key=key, config=config)
+            results, stats = classify_hashtags(
+                batch,
+                NICHES,
+                api_key=key,
+                config=config,
+                attribution=Attribution.no_business("eval-hashtags"),
+            )
         except HashtagAIError as exc:
             errors.append(str(exc))
             continue

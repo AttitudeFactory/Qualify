@@ -760,8 +760,9 @@ def seed_from_profile(
     city: str = "",
 ) -> DiscoverySeed:
     """Read the account's own signals — bio, Instagram's business category, and the
-    hashtags it actually uses (`topHashtags`, `scrapecreators_client.
-    fetch_profile_and_posts`) — and let explicit answers from the Brand Kit's rubro
+    hashtags it actually uses (`topHashtags`,
+    `qualify_api.vendors.scrapecreators.fetch_profile_and_posts`) — and let explicit
+    answers from the Brand Kit's rubro
     step override what was detected. An explicit `sector` replaces the detected
     niches outright (the operator knows their business better than a regex over
     their bio); an explicit country keeps a detected city only if it is in that

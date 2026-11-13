@@ -264,8 +264,9 @@ def test_the_analysis_transcribes_locally_and_needs_only_claudes_key(
     monkeypatch.setattr(voice_lab, "_local_whisper", whisper)
     seen: dict[str, Any] = {}
 
-    def fake_analyze(path: Path, *, transcriber: Any, api_key: str) -> str:
+    def fake_analyze(path: Path, *, transcriber: Any, api_key: str, attribution: Any) -> str:
         seen.update(transcript=transcriber(path), api_key=api_key)
+        seen["tenant"] = attribution.tenant_id
         return "suggestion"
 
     monkeypatch.setattr(voice_lab, "analyze_recording", fake_analyze)
@@ -273,12 +274,16 @@ def test_the_analysis_transcribes_locally_and_needs_only_claudes_key(
     # no Claude key: refused before the slow local transcription runs
     monkeypatch.delenv("QUALIFY_ANTHROPIC_API_KEY", raising=False)
     with pytest.raises(MissingAPIKey):
-        voice_lab.analyze_voice_sample(recording)
+        voice_lab.analyze_voice_sample(recording, tenant_id=TENANT)
     assert whisper.heard == []
 
     monkeypatch.setenv("QUALIFY_ANTHROPIC_API_KEY", "sk-test")
-    assert voice_lab.analyze_voice_sample(recording) == "suggestion"
-    assert seen == {"transcript": "Hola, somos el Café del Parque", "api_key": "sk-test"}
+    assert voice_lab.analyze_voice_sample(recording, tenant_id=TENANT) == "suggestion"
+    assert seen == {
+        "transcript": "Hola, somos el Café del Parque",
+        "api_key": "sk-test",
+        "tenant": TENANT,
+    }
     assert whisper.heard == [recording]
 
 
@@ -440,6 +445,6 @@ def test_the_local_transcription_is_a_zero_cost_generation_without_the_audio(
     assert span.name == "whisper"
     assert attrs["langfuse.observation.model.name"] == LocalWhisper.model_id
     assert json.loads(attrs["langfuse.observation.input"]) == {"format": "m4a"}
-    assert json.loads(attrs["langfuse.observation.cost_details"]) == {"audio": 0.0}
+    assert json.loads(attrs["langfuse.observation.cost_details"]) == {"audio": 0.0, "total": 0.0}
     assert attrs["langfuse.observation.metadata.language"] == "es"
     assert "Ana" not in json.dumps(attrs)  # the file name never leaves

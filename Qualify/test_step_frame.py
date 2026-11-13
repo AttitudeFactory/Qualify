@@ -212,9 +212,26 @@ def _phone_css() -> str:
 
 def test_bottom_bar_hides_while_a_frame_is_mounted_on_a_phone() -> None:
     phone = _phone_css()
-    assert re.search(r"\.q-ground:has\(\.q-step-frame\) \.q-bottom-bar \{ display: none; \}", phone)
-    assert re.search(r"\.q-ground:has\(\.q-step-frame\) \{ --q-bottom-bar-h:", phone)
+    # m-24973636: a frame kept mounted but hidden under another face does not count
+    off = r":not\(:has\(\.q-step-frame-off\)\)"
+    assert re.search(
+        r"\.q-ground:has\(\.q-step-frame\)" + off + r" \.q-bottom-bar \{ display: none; \}", phone
+    )
+    assert re.search(r"\.q-ground:has\(\.q-step-frame\)" + off + r" \{ --q-bottom-bar-h:", phone)
     assert "position: fixed" in phone and ".q-step-slot" in phone
+
+
+def test_create_publicacion_panel_uses_the_visible_viewport_height_on_a_phone() -> None:
+    """Chrome's address bar hides while scrolling: `100vh` would leave the step bar and
+    the foot behind it, so Crear publicación's panel measures `100dvh` instead. The rule
+    is confined to its own marker class, with the inline `100vh` as the fallback."""
+    phone = _phone_css()
+    assert ".q-ground:has(.q-create-frame) { height: 100dvh !important; }" in phone
+    assert (
+        ".q-ground:has(.q-create-frame) main.q-panel {\n"
+        "    height: calc(100dvh - 2 * var(--q-gap)) !important;"
+    ) in phone
+    assert _CSS.count(".q-create-frame") == phone.count(".q-create-frame") == 2
 
 
 def test_foot_steps_aside_for_the_keyboard() -> None:
@@ -298,7 +315,11 @@ def test_disabled_primary_reads_as_disabled() -> None:
         ).render()
     )
     assert "aria-disabled" in rendered or "ariaDisabled" in rendered
-    rule = re.search(r"\.q-step-primary:is\(:disabled, \[data-disabled\]\) \{(.*?)\}", _CSS, re.S)
+    rule = re.search(
+        r"\.q-step-primary:is\(:disabled, \[data-disabled\]\)(?::not\([^)]*\))? \{(.*?)\}",
+        _CSS,
+        re.S,
+    )
     assert rule and "gray-a3" in rule.group(1) and "transform: none" in rule.group(1)
 
 

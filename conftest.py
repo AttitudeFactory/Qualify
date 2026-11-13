@@ -17,6 +17,7 @@ from __future__ import annotations
 import sys
 from collections.abc import Iterator
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 
@@ -25,6 +26,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "testing"))
 import testdb  # noqa: E402
 
 testdb.apply_test_defaults()
+
+#: The business every offline test's paid reads are charged to (ADR 42 R5).
+OFFLINE_TEST_TENANT = UUID("0ff11e00-0000-4000-8000-00000000c0de")
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -84,3 +88,59 @@ def _no_langfuse_export(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     observability.reset()
     yield
     observability.reset()
+
+
+@pytest.fixture(autouse=True)
+def _scrapecreators_gate_offline(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """The ScrapeCreators gate (ADR 42 R2) reads and writes `vendor_balance` on every
+    call. Offline tests get an empty in-memory balance (= no floor known yet), the switch
+    on and no 402 stop carried over from another test; a test that exercises the gate
+    installs its own store. Nothing here ever reaches the vendor: tests still pass a
+    `MockTransport` client, as before."""
+    try:
+        from qualify_api.vendors import scrapecreators, uncapped, usage
+        from qualify_api.vendors.balance import InMemoryBalanceStore
+        from qualify_api.vendors.balance_alert import LowBalanceAlert, NullTeamNotifier
+    except ImportError:  # a package suite that does not install qualify_api
+        yield
+        return
+    monkeypatch.delenv(scrapecreators.PAID_SWITCH_ENV, raising=False)
+    scrapecreators.configure_balance_store(InMemoryBalanceStore())
+    # R5 (m-24854849): a charged call books its credit here, never in Postgres.
+    usage.configure_store(usage.InMemoryUsageStore())
+    # m-24956180: whether a business is uncapped is read here, never in Postgres.
+    uncapped.configure_store(uncapped.InMemoryUncappedStore())
+    # VE-04b (m-24921057): a paid transcript's consumption-ledger row goes nowhere offline.
+    scrapecreators.configure_consumption_ledger(lambda **_row: None)
+    # m-24955649: a paid Claude call's ledger booking goes nowhere offline (a test that
+    # checks the booking installs its own recorder).
+    from qualify_api import claude_tools
+
+    claude_tools.configure_consumption_sink(lambda _record: None)
+    # Never the production alert: a developer's .env may carry a real Lark webhook.
+    scrapecreators.configure_balance_alert(
+        LowBalanceAlert(NullTeamNotifier(), dispatch=lambda job: job())
+    )
+    scrapecreators.reset_halt()
+    # R5: the gate refuses a read no business is charged for — and no business is in
+    # scope by default, so a screen path that forgets `usage.charge_to` fails its test.
+    # A test of the vendor module itself asks for `paid_reads_charged`.
+    yield
+    scrapecreators.configure_balance_store(None)
+    usage.configure_store(None)
+    uncapped.configure_store(None)
+    scrapecreators.configure_consumption_ledger(None)
+    claude_tools.configure_consumption_sink(None)
+    scrapecreators.configure_balance_alert(None)
+    scrapecreators.reset_halt()
+
+
+@pytest.fixture
+def paid_reads_charged() -> Iterator[UUID]:
+    """Opt-in (ADR 42 R5): charge every paid read of the test to a placeholder business
+    (in memory only) — for tests of the vendor module itself, where who pays is not
+    the point. Screen paths must open their own `usage.charge_to`."""
+    from qualify_api.vendors import usage
+
+    with usage.charge_to(OFFLINE_TEST_TENANT):
+        yield OFFLINE_TEST_TENANT

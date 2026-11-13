@@ -18,6 +18,7 @@ from .connections_state import ConnectionsState
 from .creative_state import CreativeState
 from .tiktok_state import TikTokConnectionsState, TikTokDraftState
 from .tiktok_vm import (
+    ACCOUNTS_ELEMENT_ID,
     CAN_DO,
     CONNECT_ACTION,
     CONNECTED_BODY,
@@ -25,6 +26,7 @@ from .tiktok_vm import (
     DISCONNECT_BODY,
     DISCONNECT_TITLE,
     DRAFT_ACCOUNT_PREFIX,
+    DRAFT_ACCOUNT_PREFIX_LATER,
     DRAFT_ACTION,
     DRAFT_BODY,
     DRAFT_CONNECT_HINT,
@@ -36,8 +38,10 @@ from .tiktok_vm import (
     DRAFT_TITLE,
     DRAFT_TITLE_TIKTOK,
     DRAFTS_ONLY_NOTE,
+    FINAL_WAIT_CONFIRM_ACTION,
     INVITE_BODY,
     INVITE_TITLE,
+    SEE_ACCOUNT_ACTION,
     UNAVAILABLE_NOTE,
     TikTokAccountVM,
 )
@@ -64,7 +68,9 @@ def _connect_notice() -> rx.Component:
 def tiktok_connected_panel() -> rx.Component:
     """«TikTok conectado» (N3): the result in plain words and ONE solid button to the next
     job — back where the owner came from (`?volver=`, e.g. the piece they wanted to send)
-    or on to «Crear una publicación» — plus a soft one to stay."""
+    or on to «Crear una publicación» — plus a soft «Ver mi TikTok» that closes the panel
+    and brings the account's card into view (m-24945912: on a phone it sits a long scroll
+    below; «Ver mis redes» did nothing useful on the page it was already on)."""
     return callout(
         rx.vstack(
             rx.heading(CONNECTED_TITLE, size="4", as_="h2"),
@@ -78,7 +84,7 @@ def tiktok_connected_panel() -> rx.Component:
                     min_height=_TAP,
                 ),
                 rx.button(
-                    "Ver mis redes",
+                    SEE_ACCOUNT_ACTION,
                     on_click=TikTokConnectionsState.dismiss_connected,
                     variant="soft",
                     size="3",
@@ -194,7 +200,7 @@ def tiktok_account_card(account: TikTokAccountVM) -> rx.Component:
             rx.flex(
                 rx.hstack(
                     platform_badge("tiktok"),
-                    rx.heading(account.name, size="4", as_="h3", word_break="break-word"),
+                    rx.heading(account.name, size="4", as_="h2", word_break="break-word"),
                     spacing="2",
                     align="center",
                     min_width="0",
@@ -251,7 +257,7 @@ def _invite_card() -> rx.Component:
         rx.vstack(
             rx.hstack(
                 platform_badge("tiktok"),
-                rx.heading(INVITE_TITLE, size="4", as_="h3"),
+                rx.heading(INVITE_TITLE, size="4", as_="h2"),
                 spacing="2",
                 align="center",
                 wrap="wrap",
@@ -276,13 +282,14 @@ def _invite_card() -> rx.Component:
 
 
 def tiktok_section() -> rx.Component:
-    """The TikTok block of «Tus redes». Hidden when the deployment has no TikTok app and
+    """The TikTok block of «Tus redes»: its cards, in the same list as Instagram's and
+    WhatsApp's — no heading of its own, the card's TikTok badge already says it
+    (m-24945912). Hidden when the deployment has no TikTok app and
     nothing is connected; with an account but no app, the card still lets the owner
     disconnect it and says that connecting is not possible from here for now."""
     return rx.cond(
         TikTokConnectionsState.show_section,
         rx.vstack(
-            rx.heading("TikTok", size="3", as_="h2", color=T.TEXT_MUTED),
             rx.cond(
                 TikTokConnectionsState.load_error != "",
                 callout(TikTokConnectionsState.load_error, "error"),
@@ -302,7 +309,8 @@ def tiktok_section() -> rx.Component:
             ),
             spacing="3",
             width="100%",
-            margin_top="0.5rem",
+            id=ACCOUNTS_ELEMENT_ID,
+            scroll_margin_top=T.SCROLL_MARGIN_TOP,
         ),
     )
 
@@ -373,6 +381,37 @@ def _send_button() -> rx.Component:
     )
 
 
+def _final_wait() -> rx.Component:
+    """m-24945954: the video is still a vista previa — no button to press and fail. A calm
+    line says when it can go («mañana temprano» on the nightly lane), or, when the final
+    is made, takes the owner to confirm it first («Revisar video»)."""
+    wait = TikTokDraftState.final_wait
+    return rx.vstack(
+        rx.hstack(
+            rx.icon("clock", size=16, color=T.TEXT_MUTED, flex_shrink="0"),
+            rx.text(wait.note, size="2"),
+            spacing="2",
+            align="center",
+        ),
+        rx.cond(
+            wait.review,
+            rx.link(
+                rx.button(
+                    rx.icon("eye", size=16),
+                    FINAL_WAIT_CONFIRM_ACTION,
+                    variant="soft",
+                    size="3",
+                    min_height=_TAP,
+                ),
+                href=TikTokDraftState.review_href,
+            ),
+        ),
+        spacing="2",
+        align_items="start",
+        width="100%",
+    )
+
+
 def _go_connect(hint: str, label: str, icon: str) -> rx.Component:
     """Connect (or reconnect) TikTok from the piece itself: TikTok's consent opens straight
     away, and its «TikTok conectado» panel brings the owner back here (`?volver=`)."""
@@ -424,7 +463,11 @@ def tiktok_draft_card() -> rx.Component:
                     TikTokDraftState.account_id != "",
                     rx.vstack(
                         rx.text(
-                            DRAFT_ACCOUNT_PREFIX,
+                            rx.cond(
+                                TikTokDraftState.final_wait.waiting,
+                                DRAFT_ACCOUNT_PREFIX_LATER,
+                                DRAFT_ACCOUNT_PREFIX,
+                            ),
                             rx.text.strong(TikTokDraftState.account_name),
                             size="2",
                             color=T.TEXT_MUTED,
@@ -434,7 +477,11 @@ def tiktok_draft_card() -> rx.Component:
                             TikTokDraftState.error != "",
                             callout(TikTokDraftState.error, "warn"),
                         ),
-                        _send_button(),
+                        rx.cond(
+                            TikTokDraftState.final_wait.waiting,
+                            _final_wait(),
+                            _send_button(),
+                        ),
                         spacing="3",
                         align_items="start",
                         width="100%",

@@ -25,6 +25,9 @@ _SANCTIONED = {
     # ADR 41 (m-24852160): the generation queue's worker, NOBYPASSRLS, queue columns only.
     _REPO_ROOT / "packages/shared/src/qualify_shared/db/creative_worker.py",
     _REPO_ROOT / "packages/shared/src/qualify_shared/db/connection_purge.py",
+    # ADR 44 (m-24921056): the shared reel analyses' only writer, NOBYPASSRLS (0119); and
+    # ADR 42 R8 (m-24854855): the reels-worker's scheduler and queue reader (0134).
+    _REPO_ROOT / "packages/shared/src/qualify_shared/db/reels_worker.py",
 }
 
 _FORBIDDEN = {

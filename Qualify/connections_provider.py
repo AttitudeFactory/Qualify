@@ -34,6 +34,7 @@ from qualify_api.connections import (
 from qualify_api.connections.models import SocialConnection
 from qualify_api.connections.state_token import StartedConnect
 from qualify_api.support import SupportTicket, create_support_request
+from qualify_api.tenancy.acting import current_acting_login
 from qualify_api.tenancy.models import Brand, TenantMember, User
 from qualify_api.whatsapp.models import WhatsAppPhoneNumber
 from qualify_shared.db.session import tenant_session
@@ -184,7 +185,7 @@ class NoActingUser(RuntimeError):
     """
 
 
-def connections_for(tenant_id: UUID) -> list[ConnectionVM]:
+def connections_for(tenant_id: UUID, *, refresh_ad_health: bool = False) -> list[ConnectionVM]:
     """The tenant's Meta and WhatsApp connections, newest first, as client-safe view-models.
 
     m-24921091: TikTok accounts are left out on purpose. Every caller here works with Meta
@@ -192,8 +193,14 @@ def connections_for(tenant_id: UUID) -> list[ConnectionVM]:
     would show up as an Instagram-style account and offer the wrong flows. TikTok has its
     own read: `tiktok_provider.tiktok_accounts`.
 
+    This shared projection only reads cached observations by default. The authenticated
+    Tus redes screen can explicitly request due daily checks; unrelated callers never
+    acquire a remote side effect merely by reading account labels.
+
     Blocking DB call — callers on the event loop must run it off-thread.
     """
+    if refresh_ad_health and current_acting_login() is None:
+        raise NoActingUser("Vuelve a iniciar sesión para comprobar tus cuentas publicitarias.")
     with tenant_session(tenant_id) as session:
         rows = session.execute(
             select(SocialConnection, Brand.name, WhatsAppPhoneNumber.verified_name)
@@ -208,10 +215,23 @@ def connections_for(tenant_id: UUID) -> list[ConnectionVM]:
             .order_by(SocialConnection.connected_at.desc())
         ).all()
         # Built inside the session: the ORM rows are not usable once it closes.
-        return [
+        connections = [
             _to_vm(connection, brand_name, verified_name)
             for connection, brand_name, verified_name in rows
         ]
+    # The ads seam owns its schema and authorization checks. Read outside this session
+    # so no ORM object or credential reaches the screen's serialized view models.
+    from .ad_accounts_provider import ad_accounts_for, with_ad_accounts
+
+    return [
+        with_ad_accounts(
+            connection,
+            ad_accounts_for(tenant_id, UUID(connection.id), refresh_due=refresh_ad_health),
+        )
+        if connection.platform == "instagram"
+        else connection
+        for connection in connections
+    ]
 
 
 def acting_user_id(tenant_id: UUID) -> UUID | None:
@@ -238,7 +258,9 @@ def acting_user_id(tenant_id: UUID) -> UUID | None:
         return session.scalar(select(User.id).order_by(User.created_at))
 
 
-def begin_connect(tenant_id: UUID, *, rerequest: bool = False) -> StartedConnect:
+def begin_connect(
+    tenant_id: UUID, *, rerequest: bool = False, browser_origin: str = ""
+) -> StartedConnect:
     """Start the C-04 OAuth flow: returns the Meta authorization URL to redirect to and
     the browser-binding cookie to set first (m-24921205, see `oauth_binding_js`).
 
@@ -251,15 +273,24 @@ def begin_connect(tenant_id: UUID, *, rerequest: bool = False) -> StartedConnect
 
     Blocking (Redis, plus Postgres for the actor lookup) — call it off the event loop.
     Raises `NoActingUser` when the tenant has nobody to attribute the grant to.
+
+    `browser_origin` is the page's origin (`oauth_binding_js.page_origin`): the flow stays
+    on that host when Meta has its callback registered (m-24947215).
     """
     user_id = acting_user_id(tenant_id)
     if user_id is None:
         raise NoActingUser(f"tenant {tenant_id} has no user to attribute the grant to")
-    return start_connect(tenant_id=tenant_id, brand_id=None, user_id=user_id, rerequest=rerequest)
+    return start_connect(
+        tenant_id=tenant_id,
+        brand_id=None,
+        user_id=user_id,
+        rerequest=rerequest,
+        browser_origin=browser_origin,
+    )
 
 
 def begin_reconnect(
-    tenant_id: UUID, connection_id: UUID, *, cause: str, origin: str
+    tenant_id: UUID, connection_id: UUID, *, cause: str, origin: str, browser_origin: str = ""
 ) -> StartedConnect:
     """Start an account-specific consent round trip from any screen in the same tenant."""
     user_id = acting_user_id(tenant_id)
@@ -272,6 +303,7 @@ def begin_reconnect(
         connection_id=connection_id,
         return_to=origin,
         cause=cause,
+        browser_origin=browser_origin,
     )
 
 

@@ -35,8 +35,8 @@ def _case(items: list[dict[str, Any]], case_id: str) -> dict[str, Any]:
 
 
 def test_every_case_is_a_brief_production_would_accept(items: list[dict[str, Any]]) -> None:
-    assert len(items) == 24
-    assert len({item["id"] for item in items}) == 24  # stable, unique ids → upserts
+    assert len(items) == 27
+    assert len({item["id"] for item in items}) == 27  # stable, unique ids → upserts
     kinds = set()
     for item in items:
         kit, voice, brief = build(item["input"], variants=2)
@@ -50,6 +50,7 @@ def test_every_case_is_a_brief_production_would_accept(items: list[dict[str, Any
         ContentKind.CAROUSEL,
         ContentKind.TEMPLATE,
         ContentKind.AVATAR_VIDEO,
+        ContentKind.SHOT_VIDEO,  # VE-06: the parent of a video by parts
     } <= kinds
 
 

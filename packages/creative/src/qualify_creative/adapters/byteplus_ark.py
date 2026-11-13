@@ -36,6 +36,8 @@ callers. Seedream answers inside ``generate`` (an image is synchronous).
 from __future__ import annotations
 
 import logging
+import math
+import secrets
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -45,6 +47,7 @@ from typing import Any
 from urllib.parse import quote
 
 from qualify_creative.enums import GenerationTask
+from qualify_creative.pricing import SEEDREAM_PRO_MODEL, seedream_image_cost
 from qualify_creative.providers import (
     GenerationRequest,
     GenerationResult,
@@ -56,10 +59,10 @@ from qualify_creative.providers import (
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://ark.ap-southeast.bytepluses.com/api/v3"
-#: The founder's test pair (§ request 2026-10-07): Seedance 1.0 pro for video, Seedream
-#: 5.0 lite for images. Both overridable per deployment (`composition`).
+#: Defaults: Seedance 1.0 pro for video and Seedream 5.0 pro for images.
+#: Both are overridable per deployment (`composition`).
 DEFAULT_SEEDANCE_MODEL = "seedance-1-0-pro-250528"
-DEFAULT_SEEDREAM_MODEL = "seedream-5-0-lite-260128"
+DEFAULT_SEEDREAM_MODEL = "dola-seedream-5-0-pro-260628"
 
 FPS = 24
 RATIOS = frozenset({"16:9", "4:3", "1:1", "3:4", "9:16", "21:9"})
@@ -102,6 +105,39 @@ MAX_CONSECUTIVE_POLL_ERRORS = 3
 #: measured 2026-10-08 one `RemoteProtocolError: Server disconnected without sending a
 #: response` on Seedream failed a whole avatar video the next attempt would have made.
 MAX_POST_ATTEMPTS = 3
+#: m-24820842 (2026-11-03, drafts b9c3ec5e / 3dbfe77c): a Seedream image is generated
+#: INSIDE the synchronous POST, and twice in a row each of the 3 attempts was dropped at
+#: ~63 s without a response (195 s per draft) — a cut while the image was being made, not
+#: a request the vendor never started. A dropped Seedream POST is therefore sent again only
+#: if it dropped FAST (under `SEEDREAM_FAST_DROP_SECONDS`), and only once
+#: (`SEEDREAM_MAX_POST_ATTEMPTS`): a long one may already be generating and billed.
+#: Seedance keeps `MAX_POST_ATTEMPTS`: its POST only creates a task and answers at once.
+SEEDREAM_MAX_POST_ATTEMPTS = 2
+SEEDREAM_FAST_DROP_SECONDS = 10.0
+#: m-24820842 (2026-11-03, drafts 9808559f / cb647505 / 0bcd259b): ModelArk downloads a
+#: task's reference videos INSIDE the creating POST, so a task POST can take far longer
+#: than a status query. Three clips died at the old 60 s read timeout while BytePlus kept
+#: working — one task was created a second after we hung up. The creating POST waits this
+#: long; status queries keep the adapter's shorter `request_timeout_seconds`.
+SEEDANCE_POST_TIMEOUT_SECONDS = 180.0
+#: When a task POST times out or drops after reaching ModelArk, the task may exist anyway:
+#: the account's task list is read at these delays (seconds, cumulative ~60 s) to find it
+#: and ADOPT it as the generation's task — never a second POST (that would bill twice).
+#: Not found by then: the POST's own error goes up and nothing is sent again.
+ADOPT_LIST_DELAYS_SECONDS = (2.0, 4.0, 8.0, 16.0, 30.0)
+#: ModelArk has no idempotency key or client request id (create-video-generation-task-api
+#: and list-video-generation-tasks-api, read 2026-11-03). EVERY Seedance 2.x create (a
+#: clip, a 2.5 draft's final) carries a random `execution_expires_after` mark: the expiry
+#: asked for (the default 48 h when the caller set none) plus 1..`ADOPT_MARK_RANGE`
+#: seconds, or minus them when that would pass ModelArk's 72 h ceiling (`_adopt_mark`). The
+#: list echoes `execution_expires_after`, so the task this POST created is told apart from
+#: any other task of the same model. The task list spans the whole BytePlus account, every
+#: tenant included: a task is only ever adopted by its mark, never by look-alike fields.
+#: 1.x is sent no mark and never adopted (`SeedanceFamily.adopt_mark`). The extra (< 1 h)
+#: stays inside `GIVE_UP_AFTER`'s one-hour margin.
+ADOPT_MARK_RANGE = 3000
+#: How far before the POST started a candidate's `created_at` may be (clock skew).
+ADOPT_SKEW_SECONDS = 30
 POST_RETRY_STATUSES = frozenset({429, 503})
 POST_RETRY_BACKOFF_SECONDS = 2.0
 #: m-24852159: what ModelArk answers when it is busy rather than broken — over the
@@ -148,8 +184,17 @@ MAX_CLIP_REFERENCE_IMAGES = 9
 MAX_REFERENCE_VIDEOS = 3
 MAX_REFERENCE_AUDIOS = 3
 #: Recommended prompt length for Seedream (300 Chinese chars / 600 English words) and
-#: Seedance (1,000 English words); a hard cap well under both.
+#: Seedance (1,000 English words); a hard cap well under both. Since 2026-11-02 it binds
+#: Seedream and Seedance 1.x only (`SeedanceFamily.prompt_char_cap`): neither doc states a
+#: hard limit, and a 2.x video prompt is bounded by `VIDEO_PROMPT_MAX_WORDS` instead.
 MAX_PROMPT_CHARS = 3000
+#: m-24820842 (founder, 2026-11-02): create-video-generation-task-api (`content.text`, read
+#: 2026-11-02 at ai.byteplus.com/ark/…/create-video-generation-task-api.md) states NO hard
+#: length limit for any model, only «Recommended prompt length: no more than 500 Chinese
+#: characters or 1,000 English words. Lengthy text will lead to scattered information…».
+#: Our ceiling for a Seedance 2.x prompt is that recommendation, on the COMPLETE outgoing
+#: text (dialogue included), counted as whitespace-separated words (`prompt_words`).
+VIDEO_PROMPT_MAX_WORDS = 1000
 
 _TERMINAL_OK = "succeeded"
 _TERMINAL_FAILED = frozenset({"failed", "cancelled", "expired"})
@@ -191,11 +236,22 @@ class SeedanceFamily:
     )
     #: Takes `omni_reference_task_type` (2.5 only).
     omni_task_types: bool = False
+    #: m-24820842: each reference video's (min, max) seconds and their total's max, as the
+    #: create-video-generation-task docs give them (2.0: 2-15 s each, 15 s in all; 2.5:
+    #: 2-30 s each, 30 s in all). The generator trims a clip's references to fit.
+    reference_video_seconds: tuple[float, float, float] = (2.0, 15.0, 15.0)
 
     @property
     def adaptive(self) -> bool:
         """`ratio: adaptive` and `duration: -1` are 2.x values (1.0 takes neither)."""
         return self.references
+
+    @property
+    def prompt_char_cap(self) -> int | None:
+        """Our character cap on the prompt: `MAX_PROMPT_CHARS` for 1.x (the 2026-10-08
+        guard, written when only 1.0 was in use); None for 2.x, bounded by words
+        (`VIDEO_PROMPT_MAX_WORDS`) — m-24820842, founder 2026-11-02."""
+        return None if self.references else MAX_PROMPT_CHARS
 
     @property
     def draft(self) -> bool:
@@ -204,6 +260,13 @@ class SeedanceFamily:
     @property
     def priority(self) -> bool:
         """`priority` is a 2.0 / 2.5 parameter (create-video-generation-task-api)."""
+        return self.references
+
+    @property
+    def adopt_mark(self) -> bool:
+        """m-24820842: a create carries the random `execution_expires_after` adopt mark
+        (`_adopt_mark`) only on 2.x, where the field is documented and used. A 1.x POST
+        that times out is never adopted (`SeedanceVideoAdapter._create`)."""
         return self.references
 
 
@@ -236,6 +299,7 @@ SEEDANCE_FAMILIES: dict[str, SeedanceFamily] = {
         adaptive_frames=True,
         max_references=(30, 10, 10),
         omni_task_types=True,
+        reference_video_seconds=(2.0, 30.0, 30.0),
     ),
 }
 
@@ -419,6 +483,12 @@ class VendorBusy(ArkAPIError):
         self.retry_after_seconds = retry_after_seconds
 
 
+class SeedreamDisconnected(ArkError):
+    """m-24820842: the image service dropped the connection (or never answered within the
+    read timeout) while generating — a «try again in a few minutes», not a failed image.
+    Named so the operator's message can be told apart from a video's."""
+
+
 class ArkTaskFailed(ArkError):
     """The video task ended `failed`/`cancelled`/`expired` — not billed."""
 
@@ -497,6 +567,8 @@ class _ArkClient:
         self._base_url = base_url.rstrip("/")
         self._transport = transport
         self._request_timeout = request_timeout_seconds
+        #: Seconds since an arbitrary point (an attempt's duration); replaceable in tests.
+        self._clock: Callable[[], float] = time.monotonic
         self._sleep = sleep
 
     def _post(
@@ -506,28 +578,54 @@ class _ArkClient:
         body: Mapping[str, object],
         *,
         busy_raises: bool = False,
+        max_drops: int = MAX_POST_ATTEMPTS,
+        fast_drop_seconds: float | None = None,
+        timeout: float | None = None,
     ) -> Mapping[str, Any]:
         """POST `body` and return the JSON, sent again (up to `MAX_POST_ATTEMPTS`) only
         on the failures where the vendor never started the work — see
         `MAX_POST_ATTEMPTS` for why that keeps a retry from billing twice. With
         `busy_raises` (a Seedance submit, m-24852159) a busy answer raises `VendorBusy`
-        at once instead of spending the retries."""
+        at once instead of spending the retries. `max_drops` / `fast_drop_seconds`
+        (Seedream, m-24820842): at most `max_drops` dropped connections, and a drop is sent
+        again only when it dropped within `fast_drop_seconds` — one that ran long may
+        already be generating. A busy answer (429/503: nothing created) keeps its retries.
+        Every attempt is logged at INFO with its duration and outcome."""
         import httpx  # lazy, already loaded by _client
 
+        drops = 0
         for attempt in range(1, MAX_POST_ATTEMPTS + 1):
+            started = self._clock()
+            outcome = "ok"
             try:
-                return _body_or_raise(client.post(path, json=body))
-            except (httpx.ConnectError, httpx.RemoteProtocolError):
-                if attempt == MAX_POST_ATTEMPTS:
+                extra = {"timeout": timeout} if timeout is not None else {}
+                return _body_or_raise(client.post(path, json=body, **extra))
+            except (httpx.ConnectError, httpx.RemoteProtocolError) as exc:
+                outcome = type(exc).__name__
+                # a refused connection never reached the vendor: only a DROP counts
+                drops += isinstance(exc, httpx.RemoteProtocolError)
+                slow = (
+                    fast_drop_seconds is not None
+                    and isinstance(exc, httpx.RemoteProtocolError)
+                    and self._clock() - started >= fast_drop_seconds
+                )
+                if attempt == MAX_POST_ATTEMPTS or drops >= max_drops or slow:
                     raise
             except VendorBusy as exc:
+                outcome = f"HTTP {exc.status_code}"
                 if busy_raises:
                     raise
                 if exc.status_code not in POST_RETRY_STATUSES or attempt == MAX_POST_ATTEMPTS:
                     raise
             except ArkAPIError as exc:
+                outcome = f"HTTP {exc.status_code}"
                 if exc.status_code not in POST_RETRY_STATUSES or attempt == MAX_POST_ATTEMPTS:
                     raise
+            except Exception as exc:
+                outcome = type(exc).__name__
+                raise
+            finally:
+                _log_attempt(path, attempt, self._clock() - started, outcome)
             self._sleep(POST_RETRY_BACKOFF_SECONDS * attempt)
         raise AssertionError("unreachable")  # the loop returns or raises
 
@@ -544,6 +642,10 @@ class _ArkClient:
             timeout=self._request_timeout,
             transport=self._transport,
         )
+
+
+def _log_attempt(path: str, attempt: int, seconds: float, outcome: str) -> None:
+    logger.info("ModelArk POST %s attempt %d: %s in %.1f s", path, attempt, outcome, seconds)
 
 
 def _body_or_raise(response: Any) -> Mapping[str, Any]:
@@ -610,11 +712,91 @@ def _expires_after(value: object) -> int | None:
     return value
 
 
-def _prompt(params: Mapping[str, object]) -> str:
+def _prompt_text(params: Mapping[str, object]) -> str:
     prompt = params.get("prompt")
     if not isinstance(prompt, str) or not prompt.strip():
         raise ValueError("a ModelArk generation needs a non-empty 'prompt'")
-    return _capped(prompt.strip())
+    return prompt.strip()
+
+
+def _prompt(params: Mapping[str, object]) -> str:
+    return _capped(_prompt_text(params))
+
+
+#: The fewest pixels a Seedream model takes as `widthxheight` (image-generation-api.md,
+#: read 2026-11-03): 5.0 lite and 4.5 start at 2560x1440; 5.0 pro/flash and 4.0 at
+#: 1280x720. An unknown model gets the higher minimum — never a refused request.
+_SEEDREAM_MIN_PIXELS: tuple[tuple[str, int, int], ...] = (
+    ("seedream-5-0-pro", 921_600, 4_624_220),
+    ("seedream-5-0-flash", 921_600, 4_624_220),
+    ("seedream-4-0", 921_600, 16_777_216),
+    ("seedream-5-0-lite", 3_686_400, 16_777_216),
+    ("seedream-4-5", 3_686_400, 16_777_216),
+)
+#: An unknown model: the higher minimum (never a refused request), the common maximum.
+_SEEDREAM_DEFAULT_PIXELS = (3_686_400, 16_777_216)
+#: Model ids may carry a vendor prefix (`dola-seedream-5-0-pro-260628`).
+_SEEDREAM_ID_PREFIXES = ("dola-",)
+
+
+def _seedream_pixel_range(model_id: str) -> tuple[int, int]:
+    """(fewest, most) pixels `model_id` takes as `widthxheight` (image-generation-api.md)."""
+    family = model_id
+    for prefix in _SEEDREAM_ID_PREFIXES:
+        family = family.removeprefix(prefix)
+    return next(
+        ((low, high) for name, low, high in _SEEDREAM_MIN_PIXELS if family.startswith(name)),
+        _SEEDREAM_DEFAULT_PIXELS,
+    )
+
+
+def seedream_size(size: str, model_id: str) -> str:
+    """`size` (`widthxheight`) as `model_id` takes it: unchanged when it has enough
+    pixels, else scaled up — same proportions (exact when they reduce to small terms,
+    else as close as multiples of 16 allow), multiples of 16, never over the model's
+    maximum — to the model's documented minimum (m-24820842). A named resolution («2K»)
+    passes unchanged."""
+    width_text, sep, height_text = size.partition("x")
+    if not sep or not (width_text.isdigit() and height_text.isdigit()):
+        return size
+    width, height = int(width_text), int(height_text)
+    if not width or not height:
+        return size
+    minimum, maximum = _seedream_pixel_range(model_id)
+    if width * height >= minimum:
+        return size
+    step = 16
+    unit = math.gcd(width, height)
+    unit_w, unit_h = width // unit, height // unit
+    factor = math.ceil((minimum / (unit_w * unit_h)) ** 0.5 / step) * step
+    if unit_w * unit_h * factor * factor <= maximum:
+        while unit_w * unit_h * factor * factor < minimum:
+            factor += step
+        if unit_w * unit_h * factor * factor <= maximum:
+            return f"{unit_w * factor}x{unit_h * factor}"
+    # proportions that reduce to large terms (1000x1001): the nearest multiples of 16
+    scale = (minimum / (width * height)) ** 0.5
+    new_w = math.ceil(width * scale / step) * step
+    new_h = math.ceil(height * scale / step) * step
+    return f"{new_w}x{new_h}"
+
+
+def prompt_words(text: str) -> int:
+    """Words as the video prompt ceiling counts them: whitespace-separated tokens."""
+    return len(text.split())
+
+
+def _video_prompt(prompt: str, family: SeedanceFamily) -> str:
+    """The family's own guard on the complete outgoing video prompt: 1.x keeps the
+    character cap; 2.x refuses only beyond the documented recommendation in words."""
+    if family.prompt_char_cap is not None:
+        return _capped(prompt)
+    words = prompt_words(prompt)
+    if words > VIDEO_PROMPT_MAX_WORDS:
+        raise ValueError(
+            f"prompt is {words} words; the recommended maximum is {VIDEO_PROMPT_MAX_WORDS}"
+        )
+    return prompt
 
 
 def _urls(value: object, name: str, *, data_ok: bool) -> tuple[str, ...]:
@@ -634,8 +816,11 @@ def _urls(value: object, name: str, *, data_ok: bool) -> tuple[str, ...]:
 
 
 def _capped(prompt: str) -> str:
-    """The vendor's hard cap, checked on what is actually sent — after the dialogue line
-    a video prompt gains (PR #100 review), not only on the operator's part."""
+    """Our conservative adapter cap, checked on the complete outgoing text.
+
+    This is a local guard, not a verified vendor hard limit. Check again after the
+    dialogue line a video prompt gains (PR #100 review), not just the operator's part.
+    """
     if len(prompt) > MAX_PROMPT_CHARS:
         raise ValueError(f"prompt is {len(prompt)} characters; the cap is {MAX_PROMPT_CHARS}")
     return prompt
@@ -735,12 +920,12 @@ class _VideoSpec:
             raise ValueError(f"'draft' must be a boolean, got {draft!r}")
         if draft and not family.draft:
             raise ValueError(f"{model_id} has no draft mode: use Seedance 2.5")
-        prompt = _prompt(params)
+        prompt = _video_prompt(_prompt_text(params), family)
         dialogue = params.get("dialogue")
         if isinstance(dialogue, str) and dialogue.strip() and family.audio:
             # 2.x speaks what is in double quotes (ModelArk's generate_audio guidance)
             line = dialogue.strip().replace('"', "'")
-            prompt = _capped(f'{prompt}\nDice a cámara: "{line}"')
+            prompt = _video_prompt(f'{prompt}\nDice a cámara: "{line}"', family)
         first_frame = params.get("first_frame")
         if first_frame is not None and (not isinstance(first_frame, str) or not first_frame):
             raise ValueError("'first_frame' must be an image URL or a data URL")
@@ -978,9 +1163,40 @@ class _FinalSpec:
         return body
 
 
+def _sent_by(item: Mapping[str, Any], started: float, mark: int | None) -> bool:
+    """Whether a listed task is the one this POST created (`SeedanceVideoAdapter._adopt`).
+
+    Only by its `execution_expires_after` mark: without one, nothing is ever taken. The
+    list spans the whole BytePlus account, so a look-alike (same model, ratio, resolution,
+    moment) may be another tenant's task, and adopting it would bind their video to this
+    draft. Besides the mark, a candidate must have been created since the POST started
+    and not be cancelled. Nothing else is compared: what was sent may be a placeholder
+    the list echoes resolved (`ratio: adaptive` as the frame's ratio, `duration: -1` as
+    the edited video's length), and refusing our own running task would leave it billed
+    with no draft bound to it. The random mark alone tells it apart."""
+    if mark is None:
+        return False
+    created = item.get("created_at")
+    if not isinstance(created, int | float) or created < started - ADOPT_SKEW_SECONDS:
+        return False
+    if str(item.get("status") or "") == "cancelled":
+        return False
+    return item.get("execution_expires_after") == mark
+
+
+def _adopt_mark(expires: int | None) -> int:
+    """The `execution_expires_after` a create is sent with (`ADOPT_MARK_RANGE`): the
+    expiry asked for (ModelArk's default 48 h when none was) plus a random 1..range
+    seconds, or minus them when the sum would pass the 72 h ceiling."""
+    base = VENDOR_TASK_EXPIRY_SECONDS if expires is None else expires
+    jitter = 1 + secrets.randbelow(ADOPT_MARK_RANGE)
+    return base + jitter if base + jitter <= EXPIRES_AFTER_RANGE_SECONDS[1] else base - jitter
+
+
 def _queue_fields(body: dict[str, object], priority: int | None, expires: int | None) -> None:
     """`priority` and `execution_expires_after` (m-24852159), only when the caller set
-    them — omitted, ModelArk's own defaults apply (the expiry's is 48 h)."""
+    them; omitted, ModelArk's own defaults apply (the expiry's is 48 h). On 2.x `_create`
+    then replaces the expiry with its adopt mark (`_adopt_mark`), set or not."""
     if priority is not None:
         body["priority"] = priority
     if expires is not None:
@@ -1055,6 +1271,8 @@ class SeedanceVideoAdapter(_ArkClient):
       for, never created again. The other params still price the estimate;
     - ``priority`` (0-9, 2.0 / 2.5) and ``execution_expires_after`` (3600-259200 s) —
       sent with the task when set (m-24852159); ``submit`` also takes them as arguments.
+      On 2.x the expiry always travels with a random adopt mark of under 1 h
+      (`_adopt_mark`); 1.x sends only the caller's expiry, unmarked.
 
     ``request.observer`` hears the new task's id as soon as ModelArk accepts it, and
     every poll answer (`VendorTaskObserver`).
@@ -1081,6 +1299,8 @@ class SeedanceVideoAdapter(_ArkClient):
         queue_timeout_seconds: float = DEFAULT_QUEUE_TIMEOUT_SECONDS,
         busy_budget_seconds: float = DEFAULT_BUSY_BUDGET_SECONDS,
         query_limiter: QueryRateLimiter | None = None,
+        post_timeout_seconds: float = SEEDANCE_POST_TIMEOUT_SECONDS,
+        wall_clock: Callable[[], float] = time.time,
     ) -> None:
         super().__init__(
             base_url=base_url,
@@ -1089,6 +1309,9 @@ class SeedanceVideoAdapter(_ArkClient):
             sleep=sleep,
         )
         seedance_family(model)  # an unknown default fails at wiring, not at first use
+        self._post_timeout = post_timeout_seconds
+        #: Unix seconds, compared with a task's `created_at` when adopting it.
+        self._wall = wall_clock
         self.model = model
         self._poll_interval = poll_interval_seconds
         self._poll_timeout = poll_timeout_seconds
@@ -1264,12 +1487,88 @@ class SeedanceVideoAdapter(_ArkClient):
     # -- internals ----------------------------------------------------------------------
 
     def _create(self, client: Any, spec: _VideoSpec | _FinalSpec) -> str:
-        """POST the task; a busy answer raises `VendorBusy` at once (m-24852159)."""
-        body = self._post(client, "/contents/generations/tasks", spec.body(), busy_raises=True)
-        task_id = body.get("id")
+        """POST the task; a busy answer raises `VendorBusy` at once (m-24852159).
+
+        m-24820842: the POST waits `post_timeout_seconds` (ModelArk fetches the reference
+        videos inside it) and is NEVER sent again once it may have reached ModelArk: a read
+        timeout or a dropped connection looks for the task it may have created
+        (`_adopt`) and returns that one; none found, the error goes up. Only a refused
+        connection (nothing reached the vendor) or a busy answer is sent again."""
+        import httpx  # lazy, already loaded by _client
+
+        body = spec.body()
+        # every 2.x create is marked (a clip, a draft's final, a caller-set expiry): the
+        # mark is the only way `_adopt` may ever take a listed task as this POST's own.
+        # 1.x is sent no mark (the field is documented and used for 2.x only) and is
+        # never adopted: its timed-out POST raises, as it always did
+        mark: int | None = None
+        if spec.family.adopt_mark:
+            mark = _adopt_mark(spec.execution_expires_after)
+            body["execution_expires_after"] = mark
+        started = self._wall()
+        try:
+            answer = self._post(
+                client,
+                "/contents/generations/tasks",
+                body,
+                busy_raises=True,
+                max_drops=1,
+                timeout=self._post_timeout,
+            )
+        except (httpx.TimeoutException, httpx.RemoteProtocolError) as exc:
+            if isinstance(exc, httpx.ConnectTimeout):
+                raise  # never reached ModelArk: nothing to adopt
+            adopted = self._adopt(client, body, started, mark)
+            if adopted is None:
+                raise
+            logger.warning(
+                "Seedance POST %s after %.0f s: adopted the task it created, %s",
+                type(exc).__name__,
+                self._wall() - started,
+                adopted,
+            )
+            return adopted
+        task_id = answer.get("id")
         if not task_id:
-            raise ArkError(f"create response carried no task id: {body!r}")
+            raise ArkError(f"create response carried no task id: {answer!r}")
         return str(task_id)
+
+    def _adopt(
+        self, client: Any, body: Mapping[str, object], started: float, mark: int | None
+    ) -> str | None:
+        """The task a POST that timed out or dropped created after all, or None. Reads the
+        account's newest tasks of the same model (`filter.model`) a few times over ~60 s
+        and takes the ONE created since the POST started that matches what was sent:
+        its `execution_expires_after` mark (`_sent_by`). No mark, no adoption: the POST's
+        error goes up. Two marked candidates: none is taken (never guess)."""
+        if mark is None:
+            return None
+        model = str(body.get("model") or "")
+        for delay in ADOPT_LIST_DELAYS_SECONDS:
+            self._sleep(delay)
+            try:
+                self._limiter.acquire()
+                listing = _body_or_raise(
+                    client.get(
+                        "/contents/generations/tasks",
+                        params={"page_num": 1, "page_size": 50, "filter.model": model},
+                    )
+                )
+            except Exception as exc:  # a failed read is retried at the next delay
+                logger.info("Seedance task list unreadable while adopting: %s", exc)
+                continue
+            items = listing.get("items") if isinstance(listing, Mapping) else None
+            found = [
+                item
+                for item in (items if isinstance(items, list) else [])
+                if isinstance(item, Mapping) and _sent_by(item, started, mark)
+            ]
+            if len(found) == 1 and found[0].get("id"):
+                return str(found[0]["id"])
+            if len(found) > 1:
+                logger.warning("Seedance adopt: %d candidate tasks, none taken", len(found))
+                return None
+        return None
 
     def _submit_busy_aware(
         self, client: Any, spec: _VideoSpec | _FinalSpec, observer: VendorTaskObserver | None
@@ -1395,8 +1694,9 @@ class SeedreamImageAdapter(_ArkClient):
     the advertising image's scene, or a video's first frame.
 
     ``request.params``: ``prompt`` (required); ``images`` — reference images (URLs or
-    ``data:`` URLs, ≤14) the scene must keep recognisable; ``size`` — ``"WxH"`` within the
-    model's pixel range, or a level (``"2K"``); ``model`` (default: the adapter's).
+    ``data:`` URLs, at most 14 (10 for 5.0 pro) the scene must keep recognisable;
+    ``size`` — ``"WxH"`` within the model's pixel range, or a level (``"2K"``);
+    ``model`` (default: the adapter's).
     The image comes back as bytes (``payload["images"]``), never as a 24 h URL.
     """
 
@@ -1428,20 +1728,31 @@ class SeedreamImageAdapter(_ArkClient):
 
         params = request.params
         model_id = self._model(params)
+        # Single-image generation is the default; Pro rejects this optional field.
         body: dict[str, object] = {
             "model": model_id,
             "prompt": _prompt(params),
-            "size": str(params.get("size") or "2K"),
+            "size": seedream_size(str(params.get("size") or "2K"), model_id),
             "response_format": "b64_json",
             "output_format": "jpeg",
             "watermark": False,
-            "sequential_image_generation": "disabled",
         }
-        images = _references(params.get("images"))
+        images = _references(params.get("images"), model_id=model_id)
         if images:
             body["image"] = images[0] if len(images) == 1 else list(images)
+        import httpx  # lazy, already loaded by _client
+
         with self._client(api_key) as client:
-            data = self._post(client, "/images/generations", body)
+            try:
+                data = self._post(
+                    client,
+                    "/images/generations",
+                    body,
+                    max_drops=SEEDREAM_MAX_POST_ATTEMPTS,
+                    fast_drop_seconds=SEEDREAM_FAST_DROP_SECONDS,
+                )
+            except (httpx.RemoteProtocolError, httpx.ReadTimeout) as exc:
+                raise SeedreamDisconnected(f"{type(exc).__name__}: {exc}") from exc
         items = [item for item in data.get("data") or () if isinstance(item, dict)]
         decoded = [base64.b64decode(item["b64_json"]) for item in items if item.get("b64_json")]
         if not decoded:
@@ -1475,18 +1786,19 @@ class SeedreamImageAdapter(_ArkClient):
         api_key: str | None = None,  # unused: per-piece pricing
     ) -> Decimal:
         _prompt(request.params)
-        _references(request.params.get("images"))
-        return pricing.unit_price(model_id=self._model(request.params), unit="per_piece")
+        model_id = self._model(request.params)
+        images = _references(request.params.get("images"), model_id=model_id)
+        size = seedream_size(str(request.params.get("size") or "2K"), model_id)
+        return seedream_image_cost(pricing, model_id=model_id, size=size, references=len(images))
 
 
-def _references(value: object) -> tuple[str, ...]:
+def _references(value: object, *, model_id: str = "") -> tuple[str, ...]:
     if value is None:
         return ()
     if isinstance(value, str) or not isinstance(value, Sequence):
         raise ValueError("'images' must be a list of image URLs or data URLs")
     images = tuple(str(v) for v in value if v)
-    if len(images) > MAX_REFERENCE_IMAGES:
-        raise ValueError(
-            f"{len(images)} reference images; Seedream takes at most {MAX_REFERENCE_IMAGES}"
-        )
+    limit = 10 if model_id == SEEDREAM_PRO_MODEL else MAX_REFERENCE_IMAGES
+    if len(images) > limit:
+        raise ValueError(f"{len(images)} reference images; Seedream takes at most {limit}")
     return images

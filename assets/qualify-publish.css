@@ -200,6 +200,41 @@
   box-shadow: 0 0 0 1px var(--q-card-edge);
   cursor: grab;
 }
+/* «Ordenar tu menú» (m-24955643): one category or product per row, moved by
+   `rank-drag.js` like the tiles above — a long press on the row, or a press on its
+   44 px handle (`data-rank-handle`, which never scrolls the page). A full-width row
+   grows only a little when lifted: 110 % of a phone's width would leave the screen. */
+.q-order-row.q-rank-card {
+  padding: 0 0.25rem 0 0;
+  border-radius: var(--q-radius-control);
+  background: var(--q-control-fill);
+  box-shadow: 0 0 0 1px var(--q-card-edge);
+  cursor: default;
+}
+.q-order-row.q-rank-card.q-armed  { scale: 1.02; }
+.q-order-row.q-rank-card.q-moving { scale: 1.03; }
+/* WhatsApp menu, step 2 (m-24955644): an answer row `rank-drag.js` moves, with the
+   design system's `sort_handle`; a full-width row grows only a little when lifted. */
+.q-answer-row.q-rank-card {
+  padding: 0.25rem 0.25rem 0.25rem 0;
+  border-radius: var(--q-radius-control);
+  background: transparent;
+  box-shadow: none;
+  border: 0;
+  border-top: 1px solid var(--q-card-edge);
+  cursor: default;
+}
+.q-answer-row.q-rank-card.q-armed  { scale: 1.02; }
+.q-answer-row.q-rank-card.q-moving { scale: 1.03; background: var(--q-control-fill); }
+/* Read by a screen reader after each move, never drawn. */
+.q-order-live {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
 .q-catalog-tile-foot {
   padding: 0.5rem; /* m-24842977: room for two 44 px buttons */
   border-top: 1px solid var(--q-card-edge);

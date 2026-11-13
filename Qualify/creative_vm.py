@@ -24,6 +24,7 @@ from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import NamedTuple
 
+from qualify_creative.ad_destination import AD_CTA_LABELS, AdCTA
 from qualify_creative.enums import ContentType, DraftStatus, ImageRoute
 from qualify_creative.queue_errors import (
     CANCELLED_TEXT,
@@ -95,7 +96,7 @@ FAILURE_INFO: dict[str, tuple[str, str, str]] = {
     # CREAR-5 (decision 8): the owner never reads money — the team's dollar cap is a
     # safety net, and a generation it stops gives its creations back
     "budget_exceeded": (
-        "No pudimos crear esta publicación: tu marca llegó a su límite de este mes. "
+        "No pudimos crear esta publicación: tu negocio llegó a su límite de este mes. "
         "Te devolvimos tus creaciones.",
         "Escríbenos y lo revisamos contigo",
         "",
@@ -163,18 +164,44 @@ FAILURE_INFO: dict[str, tuple[str, str, str]] = {
         "Crea un nuevo encargo para intentarlo otra vez",
         "/create",
     ),
+    # Video por partes (VE-09): a part that could not be made as planned; its vista
+    # previa was given back. The full sentence is the draft's failure_detail; the action
+    # is empty — UI-7 adds the real buttons ([Hacerla nueva] [Quitar parte]).
+    "refused_face": ("Aparece una persona en esta parte", "", ""),
+    "source_purged": ("El original de esta parte ya no está", "", ""),
+    "not_edit_eligible": ("Esta parte no puede quedar igual", "", ""),
+    "analysis_not_ready": ("Todavía estamos mirando el reel", "", ""),
+    "window_unavailable": ("No pudimos tomar este momento del reel", "", ""),
+    "part_failed": ("No pudimos crear esta parte", "", ""),
 }
 
 
-def failure_vm(reason: str | None) -> FailureVM | None:
+#: UX review 2026-11-03 #4: a refusal whose fix is in «Tu marca» (a brand image saved
+#: under two categories — `qualify_api.creative.brand_references`) carries the way there.
+BRAND_FIX_LABEL = "Ir a Tu marca"
+BRAND_FIX_ROUTE = "/brand/kit"
+#: The words such a refusal tells the owner — the backend gives no typed reason for it
+#: yet (it arrives as `invalid_parameters` with this detail, or as the form's error).
+_BRAND_FIX_MARKER = "Arréglalo en Tu marca"
+
+
+def needs_brand_fix(text: str) -> bool:
+    """Whether a refusal sends the owner to «Tu marca» to fix it."""
+    return _BRAND_FIX_MARKER in (text or "")
+
+
+def failure_vm(reason: str | None, detail: str = "") -> FailureVM | None:
     """Translate a typed failure reason; None in, None out. An unknown reason (a newer
     backend) degrades to showing the raw code with the generic retry action rather than
-    hiding that the draft failed."""
+    hiding that the draft failed. A `detail` whose fix is in «Tu marca» gets that way
+    as its action (`needs_brand_fix`)."""
     if not reason:
         return None
     label, action, route = FAILURE_INFO.get(
         reason, (f"Falló la generación ({reason}).", "Crea un nuevo encargo", "/create")
     )
+    if needs_brand_fix(detail):
+        action, route = BRAND_FIX_LABEL, BRAND_FIX_ROUTE
     return FailureVM(reason=reason, label=label, action_label=action, action_route=route)
 
 
@@ -378,6 +405,7 @@ class KitFormVM:
     font_body: str = ""
     has_logo: bool = False
     has_template: bool = False
+    ads_destination_url: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -572,6 +600,9 @@ class CopyVariantVM:
     #: A creator's script shows the post it goes out with (§ request 2026-10-08): its
     #: caption and CTA — not the hook, already the script's first line.
     description: str = ""
+    ads_cta_type: str = "LEARN_MORE"
+    ads_cta_label: str = "Más información"
+    ads_destination_url: str = ""
 
 
 def _shot_lines(payload: CopyPayload) -> tuple[str, ...]:
@@ -655,6 +686,48 @@ _FAILURE_PATTERNS: tuple[tuple[str, re.Pattern[str], Callable[[re.Match[str]], s
 )
 
 
+#: «Crear las que faltan» — the label agrees with the number (UX review 2026-11-03).
+FINISH_GALLERY_ONE = "Crear la que falta"
+FINISH_GALLERY_MANY = "Crear las que faltan"
+
+
+def finish_gallery_cost_note(weight: int, previews: int = 0) -> str:
+    """What «Crear las que faltan» costs, as `ContentService.finish_gallery` charges it
+    (founder's rule, 2026-11-04): the same as the original gallery, which its failure
+    gave back, and given back again if it fails again. `weight` (creations) and
+    `previews` (one vista previa per animated slide) come from the same quote the
+    backend charges (`regeneration_creations`). Nothing to say (both 0: an unlimited
+    plan, the quota off, a price the table does not know) → ""."""
+    parts: list[str] = []
+    if weight > 0:
+        parts.append("1 creación" if weight == 1 else f"{weight} creaciones")
+    if previews > 0:
+        parts.append("1 vista previa" if previews == 1 else f"{previews} vistas previas")
+    if not parts:
+        return ""
+    if parts == ["1 creación"] or parts == ["1 vista previa"]:
+        return (
+            f"Usa {parts[0]}, la misma que te devolvimos cuando falló. "
+            "Si vuelve a fallar, te la devolvemos."
+        )
+    return (
+        f"Usa {' y '.join(parts)}, las mismas que te devolvimos cuando falló. "
+        "Si vuelve a fallar, te las devolvemos."
+    )
+
+
+def gallery_missing_slides(gallery_slides: int, kept_slides: int) -> int:
+    """How many slides a failed gallery still lacks: `DraftDetail.gallery_slides -
+    kept_slides` — 0 when the backend does not say (the label stays plural)."""
+    if gallery_slides <= 0 or kept_slides <= 0:
+        return 0
+    return max(gallery_slides - kept_slides, 0)
+
+
+def finish_gallery_label(missing: int) -> str:
+    return FINISH_GALLERY_ONE if missing == 1 else FINISH_GALLERY_MANY
+
+
 def failure_label(rule: str, detail: str) -> str:
     """One brand-rule failure in the operator's words (Spanish, with what to do)."""
     for known_rule, pattern, render in _FAILURE_PATTERNS:
@@ -712,6 +785,9 @@ def build_variant_vm(
         shots=shots,
         script_clipboard=script_clipboard(payload.script, shots),
         description="\n\n".join(block for block in (payload.caption, payload.cta) if block),
+        ads_cta_type=(payload.ads_cta_type or AdCTA.LEARN_MORE).value,
+        ads_cta_label=AD_CTA_LABELS[payload.ads_cta_type or AdCTA.LEARN_MORE],
+        ads_destination_url=payload.ads_destination_url or "",
     )
 
 
@@ -837,7 +913,7 @@ KIND_OPTIONS: tuple[tuple[str, str, str, str], ...] = (
     (
         "static_flyer",
         "Imagen publicitaria",
-        "Un anuncio con tu producto, tu local o ambos. Una imagen o una galería.",
+        "Un anuncio con tu producto, tu local o ambos. Una imagen o un carrusel.",
         "image",
     ),
     (
@@ -848,7 +924,7 @@ KIND_OPTIONS: tuple[tuple[str, str, str, str], ...] = (
     ),
     (
         "carousel",
-        "Galería",
+        "Carrusel",
         "Tres fotos o videos en una sola publicación: escenas generadas, una animada o "
         "publicaciones que ya hiciste.",
         "gallery-horizontal-end",
@@ -860,7 +936,13 @@ KIND_OPTIONS: tuple[tuple[str, str, str, str], ...] = (
         "film",
     ),
 )
-KIND_LABELS: dict[str, str] = {key: title for key, title, _, _ in KIND_OPTIONS}
+#: Kinds a piece can be that «¿Qué creamos?» does not offer: a video by parts (ADR 44) is
+#: reached from a Clip or a reel, but the piece still needs its name (pill, download).
+_UNLISTED_KIND_LABELS: dict[str, str] = {"shot_video": "Video por partes"}
+KIND_LABELS: dict[str, str] = {
+    **{key: title for key, title, _, _ in KIND_OPTIONS},
+    **_UNLISTED_KIND_LABELS,
+}
 #: «¿Qué quieres crear?» since 2026-10-06 — (key, title, blurb, icon). Carrusel joined on
 #: 2026-10-09.
 #: Imagen publicitaria left the picker the same day ("quita la variante de imagen
@@ -893,7 +975,7 @@ CATEGORY_OPTIONS: tuple[tuple[str, str, str, str], ...] = (
     # § request 2026-10-09: "poner la opción de carrusel al momento del tipo del post"
     (
         "carousel",
-        "Galería",
+        "Carrusel",
         "Tres fotos o videos en una sola publicación: escenas generadas, un video animado "
         "como máximo o publicaciones que ya hiciste.",
         "gallery-horizontal-end",
@@ -902,7 +984,7 @@ CATEGORY_OPTIONS: tuple[tuple[str, str, str, str], ...] = (
         "image",
         "Imagen",
         "Una escena generada con IA, con tu producto o tu local si subes sus fotos, tu "
-        "texto y tu logo. Una imagen o una galería.",
+        "texto y tu logo. Una imagen o un carrusel.",
         "image",
     ),
     (
@@ -1028,6 +1110,11 @@ class DraftVM:
     #: m-24828907: «Descarga esta pieza: se elimina el …» (tone `warn`) while the piece is
     #: within 15 days of its deletion; "" otherwise.
     retention_notice: str = ""
+    #: m-24820842: a failed gallery kept the slides it finished — «Crear las que faltan»
+    #: makes only the rest (the failure detail says how many are saved).
+    can_finish_gallery: bool = False
+    #: …and how many it still lacks (0 = unknown): «Crear la que falta» for one.
+    missing_slides: int = 0
     #: The piece's files were deleted after 3 months: the screen says «Contenido
     #: eliminado» instead of the media, and offers no download.
     media_purged: bool = False
@@ -1048,6 +1135,9 @@ class DraftVM:
     can_restore_version: bool = False
     other_version_pending: str = ""
     queue: QueueVM = field(default_factory=QueueVM)
+    has_ad_destination: bool = False
+    revision: int = 1
+    brand_ads_destination_url: str = ""
 
 
 # -- Seedance 2.5 draft mode (m-24820142) --------------------------------------------------
@@ -1199,7 +1289,9 @@ FINAL_PREPARING_LABEL = "Preparando el video final"
 FINAL_RENDERING_NOTE = (
     "Tu video final estará listo en unos minutos. Te lo mostramos aquí para que lo confirmes."
 )
-FINAL_FAILED_NOTE = "No pudimos preparar el video final. Inténtalo de nuevo; no usa otro video."
+FINAL_FAILED_NOTE = (
+    "No pudimos preparar el video final. Inténtalo de nuevo; no se descuentan segundos de tu mes."
+)
 
 
 #: The toast when the final lands while the piece is on screen: it is still not out —
@@ -1450,7 +1542,7 @@ def build_draft_vm(
         can_reject=status == DraftStatus.GENERATED.value,
         can_regenerate=status in (DraftStatus.GENERATED.value, DraftStatus.REJECTED.value),
         blocking_reason=blocking_reason,
-        failure=failure_vm(failure_reason),
+        failure=failure_vm(failure_reason, failure_detail or ""),
         requires_ai_disclosure=requires_ai_disclosure,
         created_label=created_label,
         is_drafting=status == DraftStatus.DRAFTING.value,
@@ -1792,6 +1884,287 @@ def format_ctas(items: list[str]) -> str:
     return CTA_SEPARATOR.join(items)
 
 
+# -- «Datos clave»: the catalog product's price (founder request 2026-11-04) ------------
+
+#: The label of the fact the chosen catalog product's price fills in.
+PRICE_FACT_LABEL = "Precio"
+#: The grey hint under that row.
+PRICE_FACT_HINT = "Viene de la Galería. Si lo cambias, allí también cambia al crear la publicación."
+#: Another tab (or the Catálogo screen) changed the price while the piece was made.
+PRICE_CHANGED_ELSEWHERE = (
+    "El precio en la Galería cambió mientras se creaba la publicación; no lo tocamos."
+)
+
+
+def price_synced_text(label: str) -> str:
+    """The confirmation once the catalog took the price edited in «Datos clave»."""
+    return f"Actualizamos el precio en la Galería a {label}."
+
+
+def price_change_note(before: str, after: str) -> str:
+    """Under the catalog row while its value differs from the catalog's: what creating
+    the publication will do to the catalog, and the way out for a one-off promotion."""
+    return (
+        f"Al crear la publicación, el precio en la Galería pasará de {before} a {after}. "
+        "¿Es solo una promoción? Escríbela en otro dato."
+    )
+
+
+def price_unreadable_text(before: str, typed: str) -> str:
+    """The edited value is not a price the catalog can take: the catalog keeps `before`."""
+    return f"En la Galería sigue {before}: «{typed.strip()}» no lo pudimos leer como precio."
+
+
+def price_write_failed_text(before: str) -> str:
+    """The catalog refused the write (or could not be reached)."""
+    return (
+        f"No pudimos cambiar el precio en la Galería; sigue en {before}. Cámbialo allí si quieres."
+    )
+
+
+def price_kept_text(before: str) -> str:
+    """An edit that will not reach the catalog after all (the piece failed or was left,
+    or the product changed before it was made)."""
+    return f"No cambiamos el precio en la Galería; sigue en {before}."
+
+
+#: Currency words and symbols an owner may write around a price → the currencies they
+#: can mean. One that does not fit the product's currency makes the price unreadable.
+_PRICE_MARKS: tuple[tuple[str, frozenset[str]], ...] = (
+    ("us$", frozenset({"USD"})),
+    ("bs.", frozenset({"VES"})),
+    ("bs", frozenset({"VES"})),
+    ("$", frozenset({"USD", "COP", "UYU"})),
+    ("€", frozenset({"EUR"})),
+)
+_PRICE_WORDS: dict[str, frozenset[str]] = {
+    "pesos": frozenset({"COP", "UYU"}),
+    "peso": frozenset({"COP", "UYU"}),
+    "cop": frozenset({"COP"}),
+    "uyu": frozenset({"UYU"}),
+    "usd": frozenset({"USD"}),
+    "dólares": frozenset({"USD"}),
+    "dolares": frozenset({"USD"}),
+    "dólar": frozenset({"USD"}),
+    "dolar": frozenset({"USD"}),
+    "bolívares": frozenset({"VES"}),
+    "bolivares": frozenset({"VES"}),
+    "bs": frozenset({"VES"}),
+    "bs.": frozenset({"VES"}),
+    "ves": frozenset({"VES"}),
+    "eur": frozenset({"EUR"}),
+    "euros": frozenset({"EUR"}),
+}
+#: Where «.» groups thousands and «,» is the decimal mark.
+_COMMA_DECIMAL = frozenset({"COP", "UYU", "VES"})
+_DOT_DECIMAL_RE = re.compile(r"^\d+\.\d{1,2}$")
+_COMMA_GROUP_RE = re.compile(r"^\d{1,3}(,\d{3})+$")
+#: «1.999», «20.000», «1,999»: in USD a thousands group or three decimals — refused.
+_ONE_GROUP_RE = re.compile(r"^\d{1,3}[.,]\d{3}$")
+
+
+def parse_owner_price(text: str, currency: str) -> Decimal | None:
+    """The amount an owner typed in «Datos clave», in the product's own `currency` —
+    or `None` when it is not unambiguously one: «$20.000», «20000», «$20,50»,
+    «Bs. 90», «20.000 pesos». Where «.» groups thousands (COP/UYU/VES) a «20.50» or a
+    «20,000» is refused rather than guessed; for USD both conventions are read, but a
+    lone three-digit group («1.999», «20.000») is ambiguous there and refused. The
+    number itself is read by the catalog editor's own parser (`parse_price_input`)."""
+    from .catalog_vm import parse_price_input
+
+    code = (currency or "").strip().upper()
+    clean = " ".join((text or "").split()).casefold()
+    if not code or not clean:
+        return None
+    for mark, codes in _PRICE_MARKS:
+        if clean.startswith(mark):
+            if code not in codes:
+                return None
+            clean = clean[len(mark) :].strip()
+            break
+    head, _, last = clean.rpartition(" ")
+    if head and last in _PRICE_WORDS:
+        if code not in _PRICE_WORDS[last]:
+            return None
+        clean = head.strip()
+    number = clean.replace(" ", "")
+    if code in _COMMA_DECIMAL:
+        if _DOT_DECIMAL_RE.match(number) or _COMMA_GROUP_RE.match(number):
+            return None
+        if "," in number and "." in number and number.rfind(".") > number.rfind(","):
+            return None  # «1,234.56»: the decimal mark of another currency
+    elif code == "USD" and _ONE_GROUP_RE.match(number):
+        return None
+    try:
+        amount = parse_price_input(number)
+    except ValueError:
+        return None
+    if amount is None or amount <= 0:
+        return None  # «0», «-5»: no price the catalog can take
+    return amount
+
+
+def catalog_price_edit(
+    rows: Sequence[Mapping[str, str]], *, product_id: str, catalog_label: str
+) -> str | None:
+    """The value of `product_id`'s catalog price row when the owner changed it from the
+    catalog's `catalog_label` — what goes back to the catalog once the piece is made —
+    or `None` (no such row, or unchanged)."""
+    if not product_id:
+        return None
+    for row in rows:
+        if row.get("product", "") == product_id:
+            value = str(row.get("value", "")).strip()
+            if value and value != (catalog_label or "").strip():
+                return value
+            return None
+    return None
+
+
+def is_price_fact(row: Mapping[str, str]) -> bool:
+    """A row whose name says «precio» (any case, spaces around ignored)."""
+    return str(row.get("key", "")).strip().casefold() == PRICE_FACT_LABEL.casefold()
+
+
+def is_catalog_price_fact(row: Mapping[str, str]) -> bool:
+    """The row the chosen catalog product's price filled in (`product` marker). It
+    belongs to the product: it cannot be removed and its name stays «Precio» — only the
+    value is the owner's to change."""
+    return bool(row.get("product", ""))
+
+
+def prefill_price_fact(
+    rows: Sequence[Mapping[str, str]],
+    *,
+    product_id: str,
+    price_label: str,
+    limit: int,
+) -> list[dict[str, str]]:
+    """«Datos clave» after the catalog product changes: the previous product's price row
+    goes — edited or not, its value must never reach another product's piece — and this
+    product's price (`price_label`, the catalog's own formatting) comes first as
+    «Precio», unless the product has none, the owner typed a price of their own, or the
+    rows are full. `product_id` empty (no product, or a stock image) only drops it.
+
+    An owner «Precio» row left without a value says nothing: it makes way for the
+    catalog's price instead of blocking it, so there is only ever one «Precio»."""
+    kept = [dict(row) for row in rows if not is_catalog_price_fact(row)]
+    label = (price_label or "").strip()
+    if not product_id or not label:
+        return kept
+    without_empty_price = [
+        row for row in kept if not (is_price_fact(row) and not str(row.get("value", "")).strip())
+    ]
+    if any(is_price_fact(row) for row in without_empty_price):
+        return kept
+    if len(without_empty_price) >= limit:
+        return kept
+    return [
+        {"key": PRICE_FACT_LABEL, "value": label, "product": product_id},
+        *without_empty_price,
+    ]
+
+
+def refresh_price_fact(
+    rows: Sequence[Mapping[str, str]],
+    *,
+    product_id: str,
+    old_label: str,
+    new_label: str,
+    limit: int,
+) -> list[dict[str, str]]:
+    """«Datos clave» after the catalog is read again with a product still chosen: the
+    product left the catalog or lost its price (`new_label` empty) → its row goes; the
+    catalog's price changed → the row takes the new one (the catalog is the truth, over
+    an edit made against the old price); unchanged → the owner's edit stays. A price
+    the product did not have before is pre-filled as on choosing it."""
+    new = (new_label or "").strip()
+    old = (old_label or "").strip()
+    if not product_id or not new:
+        return [dict(row) for row in rows if not is_catalog_price_fact(row)]
+    out = [dict(row) for row in rows]
+    catalog = [row for row in out if row.get("product", "") == product_id]
+    if not catalog:
+        return prefill_price_fact(out, product_id=product_id, price_label=new, limit=limit)
+    if new != old:
+        for row in catalog:
+            row["value"] = new
+    return out
+
+
+def has_catalog_price(rows: Sequence[Mapping[str, str]]) -> bool:
+    """Whether a catalog product's price row is among the rows."""
+    return any(is_catalog_price_fact(row) for row in rows)
+
+
+#: «Más opciones» of step 2 while it is closed, without a catalog price.
+RULES_HINT = "El precio o una promoción, y qué decir o evitar. Puedes crear sin tocarlos."
+
+
+def rules_hint(rows: Sequence[Mapping[str, str]]) -> str:
+    """The hint under step 2's folded «Más opciones»: once the chosen product's price
+    is in «Datos clave», say so — the owner would otherwise not know it is there."""
+    for row in rows:
+        if is_catalog_price_fact(row):
+            price = str(row.get("value", "")).strip()
+            if price:
+                return f"Ya pusimos el precio de tu producto ({price}). Ábrelo para cambiarlo."
+    return RULES_HINT
+
+
+#: Under an owner row named «Precio» while the catalog's price is already there.
+DUPLICATE_PRICE_NOTE = "Ya tienes el precio de tu producto arriba. Cámbialo ahí."
+
+
+#: `amount` + currency → the catalog's own formatting of a price. The view models stay
+#: free of `qualify_api` (the state passes `qualify_api.catalog.read.price_label`).
+PriceFormatter = Callable[[Decimal, str], str]
+
+
+def catalog_row_note(value: str, before: str, currency: str, label_of: PriceFormatter) -> str:
+    """The note under the catalog price row: where it comes from while it says the
+    catalog's price; once edited, what creating the publication will do to the catalog
+    — or, already while typing, that the catalog cannot take it."""
+    typed = (value or "").strip()
+    before = (before or "").strip()
+    if not typed or not before or typed == before:
+        return PRICE_FACT_HINT
+    amount = parse_owner_price(typed, currency)
+    if amount is None:
+        return price_unreadable_text(before, typed)
+    after = label_of(amount, currency)
+    if after == before:
+        return PRICE_FACT_HINT
+    return price_change_note(before, after)
+
+
+def highlight_notes(
+    rows: Sequence[Mapping[str, str]],
+    catalog: Mapping[str, tuple[str, str]] | None = None,
+    label_of: PriceFormatter | None = None,
+) -> list[str]:
+    """The muted note under each «Datos clave» row, aligned with the rows ("" = none):
+    the catalog price row says where it comes from (or, edited, what happens to the
+    catalog — `catalog_row_note`; `catalog` maps a product id to its `(price_label,
+    currency)`); an owner row named exactly «Precio» beside it says the brief keeps
+    the catalog's (one price only)."""
+    known = catalog or {}
+    has_catalog = has_catalog_price(rows)
+    notes: list[str] = []
+    for row in rows:
+        if is_catalog_price_fact(row):
+            before, currency = known.get(row.get("product", ""), ("", ""))
+            if label_of is None:
+                notes.append(PRICE_FACT_HINT)
+            else:
+                notes.append(catalog_row_note(row.get("value", ""), before, currency, label_of))
+        elif has_catalog and is_price_fact(row):
+            notes.append(DUPLICATE_PRICE_NOTE)
+        else:
+            notes.append("")
+    return notes
+
+
 # CREAR-6 (m-24842980): «Debe mencionar» / «Debe evitar» are typed one phrase at a time
 # and shown as chips; the brief still carries them as one comma-separated text (the
 # contract `context_ai`/the copy pipeline already read), so the owner never types a comma.
@@ -1895,7 +2268,9 @@ def creations_left_label(
     extras: tuple[int, str, int, str, int, str] | None = None,
 ) -> str:
     """The month's balance, never money. With a video quota it is the founder's
-    sentence (2026-10-24): «Te quedan {n} de 30 creaciones y {v} de 4 videos este mes.»,
+    sentence (2026-10-24) with the video in SECONDS (ADR 44 F1 = (b), m-24921139: the
+    `video*` arguments are seconds): «Te quedan {n} de 30 creaciones y {s} de 40 segundos
+    de video este mes.»,
     plus the vistas previas when few are left; without one, «Te quedan 18 de 30 este
     mes». With live 90-day extras (m-24852129, `extras` = (creations left, their expiry,
     videos, expiry, vistas previas, expiry)) the total and the extras apart, one
@@ -1920,7 +2295,8 @@ def creations_left_label(
         )
     if video_quota > 0:
         text = (
-            f"{verb} {left} de {quota} creaciones y {videos_left} de {video_quota} videos este mes."
+            f"{verb} {left} de {quota} creaciones y {videos_left} de {video_quota} "
+            "segundos de video este mes."
         )
         previews = previews_left_label(previews_left, preview_quota)
         return f"{text} {previews}" if previews else text
@@ -1945,26 +2321,64 @@ def previews_short_text(
     )
 
 
+def seconds_label(seconds: int) -> str:
+    """«1 segundo» / «18 segundos» — the month's video is counted in seconds (ADR 44
+    F1 = (b), m-24921139), never in videos."""
+    return "1 segundo" if seconds == 1 else f"{seconds} segundos"
+
+
 def videos_short_text(videos: int, videos_left: int, video_quota: int, *, renews: str = "") -> str:
-    """Approving cannot pay this piece's videos — all or nothing (founder, 2026-10-24):
-    «Ya usaste tus 4 videos de este mes. Vuelven el 1 de noviembre.» — or, for a
-    carousel with more animated slides than videos left, how many it uses."""
+    """Approving cannot pay this piece's video — all or nothing (founder, 2026-10-24),
+    in SECONDS (ADR 44 F1 = (b): `videos`, `videos_left` and `video_quota` are seconds):
+    «Ya usaste tus 40 segundos de video de este mes. Vuelven el 1 de noviembre.» — or,
+    when some are left but not enough, how many it uses."""
     day = renews or "próximo mes"
+    # the brand's own month (plan + packs); never a guessed constant — unknown (0) says
+    # «tus segundos» without a number rather than a wrong one
+    yours = f"tus {seconds_label(video_quota)}" if video_quota > 0 else "tus segundos"
     if videos_left <= 0:
-        return f"Ya usaste tus {video_quota} videos de este mes. Vuelven el {day}."
-    left = "te queda 1" if videos_left == 1 else f"te quedan {videos_left}"
+        return f"Ya usaste {yours} de video de este mes. Vuelven el {day}."
+    left = ("te queda " if videos_left == 1 else "te quedan ") + seconds_label(videos_left)
     return (
-        f"Esta publicación usa {videos} videos y este mes {left}. "
-        f"Tus {video_quota} videos vuelven el {day}."
+        f"Esta publicación usa {seconds_label(videos)} de video y este mes {left}. "
+        f"{yours.capitalize()} vuelven el {day}."
+    )
+
+
+def video_seconds_use_notice(seconds: int, seconds_left: int, seconds_quota: int) -> str:
+    """Before creating a generated video (VE-21 U1, m-24921139): how many of the brand's
+    month of video seconds it will use once approved — the brand's own plan and packs,
+    never a constant: «Este video usa 5 de tus 40 segundos de video del mes cuando lo
+    apruebes. Te quedarían 35 segundos.» "" without seconds or a quota."""
+    if seconds <= 0 or seconds_quota <= 0:
+        return ""
+    if seconds_left <= 0:
+        return (
+            f"Este video usa {seconds_label(seconds)} de video cuando lo apruebes, y ya "
+            f"usaste tus {seconds_label(seconds_quota)} de este mes."
+        )
+    if seconds > seconds_left:
+        left = ("te queda " if seconds_left == 1 else "te quedan ") + seconds_label(seconds_left)
+        return (
+            f"Este video usa {seconds_label(seconds)} de video cuando lo apruebes, y este "
+            f"mes {left}."
+        )
+    after = seconds_left - seconds
+    remain = "Te quedaría" if after == 1 else "Te quedarían"
+    return (
+        f"Este video usa {seconds} de tus {seconds_label(seconds_quota)} de video del mes "
+        f"cuando lo apruebes. {remain} {seconds_label(after)}."
     )
 
 
 def approval_videos_notice(videos: int, videos_left: int, video_quota: int) -> str:
-    """Before approving (founder, 2026-10-24): «Al aprobar usas 1 de tus 4 videos del
-    mes. Te quedarían {v}.» — «Te quedaría 1.» in the singular."""
+    """Before approving (founder, 2026-10-24), in SECONDS (ADR 44 F1 = (b)): «Al aprobar
+    usas 10 de tus 40 segundos de video del mes. Te quedarían 30 segundos.» — «Te
+    quedaría 1 segundo.» in the singular."""
     after = max(videos_left - videos, 0)
     remain = "Te quedaría" if after == 1 else "Te quedarían"
-    return f"Al aprobar usas {videos} de tus {video_quota} videos del mes. {remain} {after}."
+    used = f"{videos} de tus {seconds_label(video_quota)}"
+    return f"Al aprobar usas {used} de video del mes. {remain} {seconds_label(after)}."
 
 
 _WEEKDAYS_LONG = ("lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo")
@@ -1984,6 +2398,9 @@ def draft_expiry_text(expires: datetime | None) -> str:
 
 #: The expired piece's way out (founder, 2026-10-24): a new piece from the same request.
 RECREATE_LABEL = "Crearla otra vez"
+
+#: m-24971284: «Crear» while the piece is being created — beside the kit's ring.
+CREATING_LABEL = "Creando tu publicación…"
 
 
 def recreate_use_text(weight: int, previews: int, previews_left: int, preview_quota: int) -> str:

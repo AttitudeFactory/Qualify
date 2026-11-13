@@ -318,7 +318,10 @@ def test_a_slide_whose_words_layer_cannot_be_kept_fails_the_generation() -> None
         budget=BUDGET,
     )
 
-    assert outcome.failure == FailureReason.PROVIDER_ERROR.value and not outcome.media
+    assert outcome.failure == FailureReason.PROVIDER_ERROR.value
+    # m-24820842: the failed slide is not kept; slide 2, finished and paid, rides on the
+    # failure so a retry makes only slide 1 again
+    assert [m.position for m in outcome.media] == [1]
     assert "R2" in outcome.detail
     assert outcome.spent_usd > 0  # the draft was paid: its spend is still recorded
 

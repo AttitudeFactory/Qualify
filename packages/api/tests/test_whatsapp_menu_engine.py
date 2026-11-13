@@ -1,8 +1,9 @@
 """Deterministic menu engine (WA-14): table-driven walks over `BIANKI_DEMO_MENU`.
 
 Fully offline and pure — `step` touches no network, no DB, no clock. The catalog is a
-fake of 12 items across 3 categories so the `products` node must paginate (9 + "Ver
-más" on page 1, 3 on page 2 with `page_size=10`).
+fake of 12 items across 3 categories: more than one list page, so the `products` node
+opens on its categories (m-24955838; the direct paged list is covered in
+`test_whatsapp_menu_categories_first.py`).
 """
 
 from __future__ import annotations
@@ -17,7 +18,9 @@ from qualify_shared.social.wa_shapes import WAMessage
 
 from qualify_api.whatsapp.menus.automation import to_conversational_automation
 from qualify_api.whatsapp.menus.engine import (
+    CTX_CATEGORIES_PAGE,
     CTX_ORDER,
+    CTX_PRODUCTS_CATEGORY,
     CTX_PRODUCTS_PAGE,
     ENGINE_VERSION,
     HELP_LINE,
@@ -116,25 +119,32 @@ def test_full_order_through_demo_menu(catalog: list[CatalogItem]) -> None:
     assert [b.id for b in r.actions[1].buttons] == ["ver_menu", "info", "persona"]
     assert state.node_id == "inicio" and not r.handed_off
 
-    # 2. Tap "Ver menú y pedir": page 1 of the catalog, grouped by category, + "Ver más".
+    # 2. Tap "Ver menú y pedir": 12 products in 3 categories overflow one list, so the
+    #    categories come first (m-24955838), in catalog order, with their counts.
     r = run(Inbound.button_reply("ver_menu"))
-    page1 = r.actions[0]
-    assert isinstance(page1, SendList)
-    assert [s.title for s in page1.sections] == ["Hamburguesas", "Acompañamientos", "Más"]
-    assert len(page1.rows) == 10
-    assert [r_.id for r_ in page1.rows[:9]] == [f"prod:p{i}" for i in range(1, 10)]
-    assert page1.rows[-1].id == "more:1"
-    assert page1.rows[0].description == "COP 1.000"
-    assert page1.button_label == "Ver productos"
-    assert state.node_id == "productos" and state.context[CTX_PRODUCTS_PAGE] == 0
+    cats = r.actions[0]
+    assert isinstance(cats, SendList)
+    assert cats.body == "¿Qué quieres ver?" and cats.button_label == "Ver productos"
+    assert [(r_.id, r_.title, r_.description) for r_ in cats.rows] == [
+        ("cat:hamburguesas", "Hamburguesas", "5 productos"),
+        ("cat:acompanamientos", "Acompañamientos", "4 productos"),
+        ("cat:bebidas", "Bebidas", "3 productos"),
+    ]
+    assert state.node_id == "productos"
+    assert state.context == {CTX_CATEGORIES_PAGE: 0}
 
-    # 3. "Ver más": page 2 holds the 3 drinks and no "Más" section.
-    r = run(Inbound.list_reply("more:1"))
-    page2 = r.actions[0]
-    assert isinstance(page2, SendList)
-    assert [s.title for s in page2.sections] == ["Bebidas"]
-    assert [r_.id for r_ in page2.rows] == ["prod:p10", "prod:p11", "prod:p12"]
-    assert state.context[CTX_PRODUCTS_PAGE] == 1
+    # 3. "Bebidas": only its 3 drinks, plus the way back to the categories.
+    r = run(Inbound.list_reply("cat:bebidas"))
+    drinks = r.actions[0]
+    assert isinstance(drinks, SendList)
+    assert [s.title for s in drinks.sections] == ["Bebidas", "Más"]
+    assert [r_.id for r_ in drinks.rows] == ["prod:p10", "prod:p11", "prod:p12", "cats:back"]
+    assert drinks.rows[0].description == "COP 10.000"
+    assert state.context == {
+        CTX_CATEGORIES_PAGE: 0,
+        CTX_PRODUCTS_CATEGORY: "bebidas",
+        CTX_PRODUCTS_PAGE: 0,
+    }
 
     # 4. Pick a drink: order gets one line, we land on `agregado`.
     r = run(Inbound.list_reply("prod:p11"))
@@ -144,17 +154,20 @@ def test_full_order_through_demo_menu(catalog: list[CatalogItem]) -> None:
         {"product_id": "p11", "name": "Producto 11", "qty": 1, "price": "11000", "currency": "COP"}
     ]
     assert CTX_PRODUCTS_PAGE not in state.context
+    assert CTX_PRODUCTS_CATEGORY not in state.context
     assert isinstance(r.actions[-1], SetContext) and r.actions[-1].context == state.context
 
-    # 5. "Agregar más" goes back to page 1; a typed position picks a row.
+    # 5. "Agregar más" goes back to the categories; typed positions pick rows.
     r = run(Inbound.button_reply("agregar_mas"))
-    assert isinstance(r.actions[0], SendList) and r.actions[0].rows[-1].id == "more:1"
+    assert isinstance(r.actions[0], SendList) and r.actions[0].rows[0].id == "cat:hamburguesas"
+    run(Inbound.text("1"))
     r = run(Inbound.text("2"))
     assert state.node_id == "agregado"
     assert [(o["product_id"], o["qty"]) for o in state.order] == [("p11", 1), ("p2", 1)]
 
     # 6. Picking the same product again increments instead of duplicating.
     run(Inbound.text("agregar más"))
+    run(Inbound.text("hamburguesas"))
     run(Inbound.text("Producto 2"))
     assert [(o["product_id"], o["qty"]) for o in state.order] == [("p11", 1), ("p2", 2)]
 
@@ -230,7 +243,7 @@ def test_full_order_through_demo_menu(catalog: list[CatalogItem]) -> None:
 
 
 def test_cancel_clears_the_order(catalog: list[CatalogItem]) -> None:
-    state = ThreadMenuState(node_id="productos", context={CTX_PRODUCTS_PAGE: 0})
+    state = ThreadMenuState(node_id="productos", context={CTX_PRODUCTS_CATEGORY: "hamburguesas"})
     state = step(MENU, state, Inbound.list_reply("prod:p1"), catalog=catalog).state
     state = step(MENU, state, Inbound.button_reply("ver_pedido"), catalog=catalog).state
     assert state.node_id == "resumen" and len(state.order) == 1
@@ -481,7 +494,9 @@ def test_render_handoff_pauses_and_summarizes() -> None:
 
 
 def test_step_is_pure_and_does_not_mutate_input(catalog: list[CatalogItem]) -> None:
-    state = ThreadMenuState(node_id="productos", context={CTX_PRODUCTS_PAGE: 1, CTX_ORDER: []})
+    state = ThreadMenuState(
+        node_id="productos", context={CTX_PRODUCTS_CATEGORY: "bebidas", CTX_ORDER: []}
+    )
     frozen = copy.deepcopy(state)
     first = step(MENU, state, Inbound.list_reply("prod:p12"), catalog=catalog)
     second = step(MENU, state, Inbound.list_reply("prod:p12"), catalog=catalog)

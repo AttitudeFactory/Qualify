@@ -18,7 +18,11 @@ from typing import Any
 import httpx
 import pytest
 from PIL import Image
-from qualify_creative.adapters.byteplus_ark import DEFAULT_SEEDREAM_MODEL, SeedreamImageAdapter
+from qualify_creative.adapters.byteplus_ark import (
+    DEFAULT_SEEDREAM_MODEL,
+    SeedreamDisconnected,
+    SeedreamImageAdapter,
+)
 from qualify_creative.enums import GenerationTask
 from qualify_creative.pricing import JsonPricingTable
 from qualify_creative.providers import GenerationRequest, RenderedPrompt
@@ -106,13 +110,12 @@ class _StreamingInner(httpx.BaseTransport):
         return httpx.Response(200, stream=_FailingStream())
 
 
-def test_production_defaults_are_untouched() -> None:
+def test_production_defaults_select_pro_with_v8_pricing() -> None:
     from qualify_api.creative.composition import PRICING_VERSION
 
-    # v6 is the eval's table; production moved from v5 to v7 (Seedance 2.5 with-video
-    # rates, m-24820142) and still never prices Seedream 5.0 pro.
-    assert PRICING_VERSION == "v7"
-    assert DEFAULT_SEEDREAM_MODEL == LITE
+    # The eval keeps v6; production uses the new immutable table and Pro default.
+    assert PRICING_VERSION == "v8"
+    assert DEFAULT_SEEDREAM_MODEL == PRO
 
 
 @pytest.mark.parametrize(
@@ -332,7 +335,8 @@ def test_dropped_connection_settles_the_worst_case() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ReadTimeout("slow")  # the vendor may be working on it; not retried
 
-    with pytest.raises(httpx.ReadTimeout):
+    # m-24820842: Seedream names the cut for the owner's message (`SeedreamDisconnected`)
+    with pytest.raises(SeedreamDisconnected):
         _adapter(handler, ledger, q).generate(_request(), api_key="dummy")
     assert ledger.spent_usd == Decimal("0.048")
 
@@ -512,7 +516,9 @@ def test_other_timeouts_settle_the_worst_case(error: Exception) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         raise error
 
-    with pytest.raises(type(error)):
+    # a read timeout reaches the owner as `SeedreamDisconnected` (m-24820842)
+    expected = SeedreamDisconnected if isinstance(error, httpx.ReadTimeout) else type(error)
+    with pytest.raises(expected):
         _adapter(handler, ledger, q).generate(_request(), api_key="dummy")
     snap = _snap(ledger)
     assert snap["settlements"] == 1 and snap["spent_usd"] == Decimal("0.048")

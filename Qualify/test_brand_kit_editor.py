@@ -48,7 +48,14 @@ def _bind(states: dict[type, Any], monkeypatch) -> BrandEditState:
 
 def test_the_page_is_one_view_of_sections_not_steps() -> None:
     rendered = str(brand_edit_index())
-    assert "Paso" not in rendered and "Continuar" not in rendered
+    # the page itself has no steps; the only «Paso N de 3» is the drawer of «Crear para
+    # esta temporada» (m-24976895), a flow of its own opened from its section
+    page = rendered.replace(
+        '("Paso "+reflex___state____state__qualify___seasonal_state____seasonal_state'
+        '.flow_step_rx_state_+" de 3")',
+        "",
+    )
+    assert "Paso" not in page and "Continuar" not in rendered
     for _key, title, _icon, _blurb in SECTIONS:
         assert json.dumps(title)[1:-1] in rendered
     assert "Editar mi marca" in rendered and "Ver resultados" not in rendered
@@ -257,6 +264,50 @@ def test_the_x_takes_a_searched_account_out_of_its_bucket() -> None:
     fired = wiz.BrandConnectState.remove_manual.fn(state, "TikTok:@a")
     assert state.account_buckets == {"TikTok:@b": "competencia"}
     assert "sync_labels" in str(fired)
+
+
+def test_ad_section_saves_submitted_url_after_invalid_value_and_can_clear(monkeypatch) -> None:
+    """Save receives the field value even when server state still contains the last error."""
+    creative = CreativeState()
+    creative.kit_positioning = "Un café de barrio"
+    connect = wiz.BrandConnectState()
+    saved: list[str] = []
+
+    class Editor:
+        open_section = "anuncios"
+        _before: dict = {}
+
+        async def __aenter__(self) -> Editor:
+            return self
+
+        async def __aexit__(self, *args: Any) -> None:
+            pass
+
+        async def get_state(self, cls: type) -> Any:
+            return creative if cls is CreativeState else connect
+
+    async def save(_state: Any) -> bool:
+        saved.append(creative.kit_ads_destination_url)
+        creative.kit_error = ""
+        return True
+
+    monkeypatch.setattr(brand_finish, "save_brand_kit", save)
+    editor = Editor()
+
+    async def submit(value: str) -> None:
+        async for _ in BrandEditState.save_section.fn(editor, {"ads_destination_url": value}):
+            pass
+
+    asyncio.run(submit("http://cafe.example"))
+    assert saved == [] and creative.kit_error
+    assert editor.open_section == "anuncios"
+    asyncio.run(submit("https://cafe.example/menu"))
+    assert saved == ["https://cafe.example/menu"]
+    assert not creative.kit_error and editor.open_section == ""
+    editor.open_section = "anuncios"
+    asyncio.run(submit(""))
+    assert saved[-1] == ""
+    assert creative.kit_positioning == "Un café de barrio"
 
 
 def test_a_manual_add_says_what_happened_in_a_toast_only() -> None:

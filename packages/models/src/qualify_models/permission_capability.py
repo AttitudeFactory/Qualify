@@ -108,7 +108,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel
 
-ASSESSMENT_VERSION = "perm-capability-v3"
+ASSESSMENT_VERSION = "perm-capability-v4"
 
 
 class ScopeKey(StrEnum):
@@ -120,6 +120,7 @@ class ScopeKey(StrEnum):
     live endpoint without touching a single capability rule.
     """
 
+    ADS = "ads"
     BASIC = "basic"
     CONTENT_PUBLISH = "content_publish"
     MANAGE_COMMENTS = "manage_comments"
@@ -133,6 +134,7 @@ class ScopeKey(StrEnum):
 class Capability(StrEnum):
     """A product-facing thing the connected account can do once a scope is held."""
 
+    ADVERTISE = "advertise"
     CONNECT_ACCOUNT = "connect_account"
     PUBLISH_CONTENT = "publish_content"
     READ_COMMENTS = "read_comments"
@@ -169,6 +171,7 @@ PLATFORM_WHATSAPP = "whatsapp"
 # Multiple grafias per key is the point: `resolve_scope_keys` must map any of them
 # onto the single ScopeKey, and the capability logic never sees which spelling won.
 SCOPE_LITERALS: dict[ScopeKey, tuple[str, ...]] = {
+    ScopeKey.ADS: ("ads_management",),
     ScopeKey.BASIC: (
         "instagram_business_basic",  # [V] Instagram Login (current)
         "instagram_basic",  # [V] Facebook Login fork
@@ -275,6 +278,14 @@ class _CapabilityRule(BaseModel):
 # The matrix, as data. `requires=None` means the capability has no scope gate in
 # this pure layer. Exactly one rule per Capability (pinned by test).
 CAPABILITY_RULES: tuple[_CapabilityRule, ...] = (
+    _CapabilityRule(
+        capability=Capability.ADVERTISE,
+        requires=ScopeKey.ADS,
+        provisional=True,
+        disabled_reason=(
+            "Falta el permiso para anunciar. Autoriza los anuncios en Cuentas conectadas."
+        ),
+    ),
     _CapabilityRule(
         capability=Capability.CONNECT_ACCOUNT,
         requires=ScopeKey.BASIC,

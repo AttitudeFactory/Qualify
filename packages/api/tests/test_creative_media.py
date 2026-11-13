@@ -158,6 +158,38 @@ def test_a_creator_script_has_no_media_and_costs_nothing() -> None:
     assert outcome.media == () and outcome.usage == () and outcome.failure is None
 
 
+def test_the_parent_of_a_video_by_parts_makes_no_media_and_no_job() -> None:
+    """VE-06 (ADR 44): the parent writes only its copy — its parts (child clips) make the
+    video, so nothing is read, selected, queued nor paid for the parent itself."""
+    from qualify_creative.schemas import VideoPartPlan
+
+    from qualify_api.creative.queue_dispatch import generation_jobs
+
+    store = MemoryStore()
+    vendor = SpyVendor()
+    parent = _brief(
+        ContentKind.SHOT_VIDEO,
+        parts=(VideoPartPlan(seconds=2), VideoPartPlan(seconds=8)),
+        brand_logo_key=f"uploads/{TENANT_ID}/logo.png",
+    )
+    outcome = _produce(_producer(store, vendor), parent, uuid4())
+    assert outcome.media == () and outcome.usage == () and outcome.failure is None
+    assert vendor.requests == [] and store.files == {}
+    assert generation_jobs(parent) == []
+    # the key checks still come first: another business's file is refused, not ignored
+    foreign = parent.model_copy(
+        update={
+            "media": parent.media.model_copy(
+                update={"brand_logo_key": f"uploads/{uuid4()}/logo.png"}
+            )
+        }
+    )
+    refused = _produce(_producer(store, vendor), foreign, uuid4())
+    assert refused.failure == FailureReason.ROUTE_BLOCKED_BY_POLICY.value
+    # an ordinary clip still queues its one preview
+    assert generation_jobs(_brief(ContentKind.CLIP, duration_seconds=5)) != []
+
+
 def test_a_flyer_is_rendered_locally_and_stored_for_the_draft() -> None:
     store = MemoryStore(
         {
@@ -821,6 +853,28 @@ def test_the_r2_store_keeps_through_the_gate_and_never_raises(waits: list[float]
     )
 
 
+def test_gallery_keys_are_read_from_r2_never_from_the_local_store(tmp_path: Any) -> None:
+    """m-24971181: Galería files live at `gallery/{tenant}/…` (outside the bucket lock on
+    `t/`); the generator's reader must fetch them through the gate, not the volume."""
+    from qualify_api.creative.media import R2ReadingMediaStore
+
+    key = f"gallery/{TENANT_ID}/{_OTHER_TENANT}/photo.jpg"
+    local = LocalMediaStore(tmp_path)
+    local.write(key, b"stale local copy")
+
+    class _ReadGate:
+        def __init__(self) -> None:
+            self.opened: list[tuple[UUID, str]] = []
+
+        def open_object(self, tenant_id: UUID, object_key: str) -> io.BytesIO:
+            self.opened.append((tenant_id, object_key))
+            return io.BytesIO(b"from r2")
+
+    gate = _ReadGate()
+    assert R2ReadingMediaStore(local, gate).read(key) == b"from r2"
+    assert gate.opened == [(TENANT_ID, key)]
+
+
 def test_a_passing_r2_error_is_retried(waits: list[float]) -> None:
     """m-24828909: a regenerated clip, already paid for, failed on ONE refused write."""
     from qualify_api.creative.media import R2ReadingMediaStore
@@ -897,25 +951,29 @@ class _LockedGate(_Gate):
 
 def test_a_retry_that_writes_the_same_file_again_is_a_success(waits: list[float]) -> None:
     """Review round 4: every fixed per-revision key (video.mp4, clip.mp4, slide-N.mp4,
-    first-frame.jpg…) is safe on retry — the object lock's refusal of the very same
-    bytes is the earlier success, found in one place (`keep`)."""
+    first-frame.jpg…) is safe on retry — the very same bytes already there are the
+    earlier success, found in one place (`keep`). Draft 9968b10c (2026-11-03): the key
+    is looked at first, so nothing is even put again."""
     from qualify_api.creative.media import R2ReadingMediaStore
 
     gate = _LockedGate({R2_KEY: b"mp4"})
     assert R2ReadingMediaStore(MemoryStore(), gate).keep(TENANT_ID, R2_KEY, b"mp4", "video/mp4")
-    assert gate.attempts == 1 and waits == []
+    assert gate.attempts == 0 and waits == []
 
 
 @pytest.mark.parametrize("stored", [b"other", b"MP4"])
 def test_a_different_file_under_the_key_is_never_taken_for_this_one(
     stored: bytes, waits: list[float]
 ) -> None:
-    """Another size, or the same size with other bytes: the refusal stands."""
-    from qualify_api.creative.media import R2ReadingMediaStore
+    """Another size, or the same size with other bytes: never taken, never overwritten
+    — and, the lock refusing every time, not retried either (draft 9968b10c)."""
+    from qualify_api.creative.media import OCCUPIED, R2ReadingMediaStore
 
     gate = _LockedGate({R2_KEY: stored})
-    assert not R2ReadingMediaStore(MemoryStore(), gate).keep(TENANT_ID, R2_KEY, b"mp4", "x")
-    assert gate.attempts == 3 and gate.stored[R2_KEY] == stored
+    store = R2ReadingMediaStore(MemoryStore(), gate)
+    assert not store.keep(TENANT_ID, R2_KEY, b"mp4", "x")
+    assert store.keep_outcome(TENANT_ID, R2_KEY, b"mp4", "x") == OCCUPIED
+    assert gate.attempts == 0 and waits == [] and gate.stored[R2_KEY] == stored
 
 
 def test_a_refused_write_r2_cannot_explain_still_fails(waits: list[float]) -> None:
@@ -954,6 +1012,8 @@ _OTHER_TENANT = UUID("0b0b0000-0000-4000-8000-0000000000ff")
         (f"t/{TENANT_ID}/brand/logo.png", True),
         (f"uploads/{TENANT_ID}/a.jpg", True),
         (f"generated/{TENANT_ID}/d/flyer.jpg", True),
+        (f"gallery/{TENANT_ID}/{_OTHER_TENANT}/photo.jpg", True),  # m-24971181
+        (f"gallery/{_OTHER_TENANT}/{TENANT_ID}/photo.jpg", False),
         (f"t/{_OTHER_TENANT}/brand/logo.png", False),
         (f"uploads/{_OTHER_TENANT}/a.jpg", False),
         (f"uploads/{TENANT_ID}/../{_OTHER_TENANT}/a.jpg", False),
@@ -1181,3 +1241,117 @@ def test_a_gallery_reference_without_a_public_url_fails_before_any_scene_is_paid
     assert outcome.failure == FailureReason.INVALID_PARAMETERS.value
     assert outcome.detail == CLIP_NO_PUBLIC_URL
     assert vendor.requests == [] and outcome.usage == ()
+
+
+def _public_link(*, tenant_id: UUID, key: str, data: bytes, content_type: str) -> str:
+    """A test `ReferenceLinks`: every reference gets a public URL, as in production."""
+    return f"https://media.example/{key}"
+
+
+def _gallery_following(video: str) -> ContentBrief:
+    from qualify_creative.enums import SlideSource
+    from qualify_creative.schemas import CarouselSlide
+
+    return _brief(
+        ContentKind.CAROUSEL,
+        slides=(
+            CarouselSlide(source=SlideSource.GENERATED),
+            CarouselSlide(source=SlideSource.ANIMATED, reference_video_key=video),
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "video",
+    [
+        f"t/{_OTHER_TENANT}/generated/0c0c0000-0000-4000-8000-000000000001/r1/clip.mp4",
+        f"uploads/{_OTHER_TENANT}/ref.mp4",
+        f"t/{_OTHER_TENANT}/stock/pixabay/video-1/abcdef0123456789.mp4",
+    ],
+)
+def test_another_brands_slide_reference_video_is_refused_before_any_read(video: str) -> None:
+    """m-24921086: an animated slide's reference video is a key from the browser like any
+    other. `R2ReadingMediaStore.read` takes the tenant from the key itself, so one of
+    another brand must be refused by `_key_problems` before it is read or sent to a
+    vendor. A working public linker is wired in so that, without the check, the slide
+    would read the foreign key and hand it on — the refusal is what keeps `reads` empty."""
+    store = _CountingStore({video: b"mp4"})
+    vendor = SpyVendor()
+    producer = _producer(store, vendor)
+    producer._reference_links = _public_link
+    outcome = _produce(producer, _gallery_following(video), uuid4())
+
+    assert outcome.failure == FailureReason.ROUTE_BLOCKED_BY_POLICY.value
+    assert outcome.detail == "Uno de los archivos de la pieza no es de tu marca."
+    assert store.reads == [] and outcome.spent_usd == 0
+    assert vendor.requests == []
+
+
+def test_a_malformed_slide_reference_video_is_refused_as_a_bad_path() -> None:
+    store = _CountingStore()
+    brief = _gallery_following(f"t/{TENANT_ID}/../ref.mp4")
+    outcome = _produce(_producer(store, SpyVendor()), brief, uuid4())
+
+    assert outcome.failure == FailureReason.INVALID_PARAMETERS.value
+    assert outcome.detail == (
+        "Uno de los archivos de la pieza tiene una ruta que no es válida. Vuelve a elegirlo."
+    )
+    assert store.reads == [] and outcome.spent_usd == 0
+
+
+def test_the_slides_own_reference_video_passes_the_ownership_check() -> None:
+    """The fix narrows nothing for the owner: the slide's own `t/<tenant>/…` key is not
+    another brand's, so the piece reaches its next check (here, the test store's missing
+    public URL) instead of failing as a foreign file."""
+    from qualify_api.creative.media import CLIP_NO_PUBLIC_URL
+
+    video = f"t/{TENANT_ID}/generated/0c0c0000-0000-4000-8000-000000000001/r1/clip.mp4"
+    store = MemoryStore({video: b"mp4"})
+    outcome = _produce(_producer(store, SpyVendor()), _gallery_following(video), uuid4())
+
+    assert outcome.failure == FailureReason.INVALID_PARAMETERS.value
+    assert outcome.detail == CLIP_NO_PUBLIC_URL
+
+
+_FOREIGN_TEXT = "Uno de los archivos de la pieza no es de tu marca."
+_BAD_PATH_TEXT = (
+    "Uno de los archivos de la pieza tiene una ruta que no es válida. Vuelve a elegirlo."
+)
+
+
+@pytest.mark.parametrize(
+    "video",
+    [f"uploads/{_OTHER_TENANT}/ref.mp4", f"t/{_OTHER_TENANT}/stock/pixabay/v-1/abcdef01.mp4"],
+)
+def test_another_brands_clip_reference_video_is_refused_before_any_read(video: str) -> None:
+    """m-24921086 follow-up: the Clip's own reference video goes through the same check."""
+    store = _CountingStore({video: b"mp4"})
+    vendor = SpyVendor()
+    brief = _brief(ContentKind.CLIP, reference_video_key=video)
+    outcome = _produce(_producer(store, vendor), brief, uuid4())
+
+    assert outcome.failure == FailureReason.ROUTE_BLOCKED_BY_POLICY.value
+    assert outcome.detail == _FOREIGN_TEXT
+    assert store.reads == [] and outcome.spent_usd == 0
+    assert vendor.requests == []
+
+
+def test_a_malformed_clip_reference_video_is_refused_as_a_bad_path() -> None:
+    store = _CountingStore()
+    vendor = SpyVendor()
+    brief = _brief(ContentKind.CLIP, reference_video_key=f"uploads/{TENANT_ID}/../ref.mp4")
+    outcome = _produce(_producer(store, vendor), brief, uuid4())
+
+    assert outcome.failure == FailureReason.INVALID_PARAMETERS.value
+    assert outcome.detail == _BAD_PATH_TEXT
+    assert store.reads == [] and outcome.spent_usd == 0
+    assert vendor.requests == []
+
+
+def test_the_clips_own_reference_video_passes_the_ownership_check() -> None:
+    video = f"uploads/{TENANT_ID}/ref.mp4"
+    brief = _brief(ContentKind.CLIP, reference_video_key=video)
+    outcome = _produce(_producer(MemoryStore({video: b"mp4"}), SpyVendor()), brief, uuid4())
+
+    assert outcome.failure != FailureReason.ROUTE_BLOCKED_BY_POLICY.value
+    assert outcome.detail not in (_FOREIGN_TEXT, _BAD_PATH_TEXT)

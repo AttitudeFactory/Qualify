@@ -23,19 +23,23 @@ from .ui.layout import (
 
 _HERE = Path(__file__).parent
 
-# The 11 entries of the guide §3, in its order.
+# The guide §3 order, including the advertising management entry (m-24828979).
 _GUIDE_MAP = [
     "Inicio",
     "Por responder",
     "WhatsApp",
+    # m-24955912: the catalog opens «Publica» (Galería → Crear publicación → Por aprobar).
+    "Galería",
     "Crear publicación",
     "Por aprobar",
+    # m-24986801: what the owner already approved, right below what waits for them.
+    "Aprobados",
     "Tu semana",
     "Publicar ahora",
+    "Anuncios",
     # RESULTADOS-5 (m-24843003): Menciones and Tu página web are tabs of Resultados.
     "Resultados",
     "Tu marca",
-    "Tus productos",
     "Tus redes",
     "Configuración",
 ]
@@ -58,7 +62,7 @@ def _registered_routes() -> set[str]:
     return routes
 
 
-def test_the_menu_has_the_eleven_entries_of_the_guide_in_order() -> None:
+def test_the_menu_has_the_registered_entries_in_order() -> None:
     usable = [label for label, _icon, _route, enabled in NAV_ITEMS if enabled]
     assert usable == _GUIDE_MAP
 
@@ -76,11 +80,18 @@ def test_the_blocks_are_inicio_atiende_publica_resultados_tu_negocio() -> None:
     ]
     zones = {zone: [label for label, *_ in items] for zone, _title, items in NAV_ZONES}
     assert zones["listen"] == ["Por responder", "WhatsApp"]
-    assert zones["publish"] == ["Crear publicación", "Por aprobar", "Tu semana", "Publicar ahora"]
+    assert zones["publish"] == [
+        "Galería",
+        "Crear publicación",
+        "Por aprobar",
+        "Aprobados",
+        "Tu semana",
+        "Publicar ahora",
+        "Anuncios",
+    ]
     assert BUSINESS_ZONE_LABEL == "Tu negocio"
     assert [label for label, *_ in NAV_BUSINESS] == [
         "Tu marca",
-        "Tus productos",
         "Tus redes",
         "Configuración",
     ]
@@ -151,3 +162,16 @@ def test_pronto_goes_under_the_name_and_counts_stay_on_the_right() -> None:
         column = rendered.split('["flexDirection"] : "column"', 1)[1]
         assert column.index(label) < column.index("Pronto"), label
         assert "q-soon" in rendered and "q-label" in rendered, label
+
+
+def test_aprobados_sits_right_below_por_aprobar_with_its_own_icon_and_no_count() -> None:
+    """m-24986801 (spec §3): a sibling icon, never repeated in the menu, and no number —
+    approved without a day is already Tu semana's count (N11)."""
+    labels = [label for label, *_ in NAV_ITEMS]
+    assert labels.index("Aprobados") == labels.index("Por aprobar") + 1
+    entry = next(item for item in NAV_ITEMS if item[0] == "Aprobados")
+    assert entry == ("Aprobados", "list-checks", "/aprobados", True)
+    icons = [icon for _label, icon, _route, _enabled in NAV_ITEMS]
+    assert icons.count("list-checks") == 1
+    assert "Aprobados" not in layout.NAV_COUNTERS
+    assert "Aprobados" not in layout.BOTTOM_BAR_SOURCE

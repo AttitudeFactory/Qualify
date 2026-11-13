@@ -4,7 +4,7 @@ repository / Redis / verifier. Mirrors `test_oauth_callback.py` for Meta."""
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from urllib.parse import parse_qsl, urlsplit
 from uuid import UUID, uuid4
@@ -587,3 +587,93 @@ def test_tiktok_start_route_sets_the_httponly_binding_cookie(
     assert f"max-age={SETTINGS.state_ttl_seconds}" in attrs
     state = dict(parse_qsl(urlsplit(response.json()["authorization_url"]).query))["state"]
     assert service.callback_context(state).binding == binding_hash(value)
+
+
+# --- same host (m-24947215) ----------------------------------------------------------------
+
+
+def _two_host_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TIKTOK_CLIENT_KEY", "k")
+    monkeypatch.setenv("TIKTOK_CLIENT_SECRET", "s")
+    monkeypatch.setenv("TIKTOK_REDIRECT_URI", SETTINGS.redirect_uri)
+    monkeypatch.setenv("QUALIFY_PUBLIC_URL", "https://qualify.test")
+    monkeypatch.setenv("QUALIFY_PUBLIC_HOSTS", "app.qualify.la")
+    monkeypatch.setenv("QUALIFY_APP_URL", "https://qualify.test")
+
+
+def _two_host_service(transport: httpx.MockTransport) -> TikTokConnectService:
+    settings = replace(SETTINGS, redirect_hosts=frozenset({"app.qualify.la", "qualify.test"}))
+    redis = FakeRedis()
+    return TikTokConnectService(
+        settings=settings,
+        oauth_client=HttpTikTokOAuthClient(settings, transport=transport),
+        repository=FakeRepo(),
+        jti_store=JtiStore(redis),
+        pkce_store=PkceStore(redis),
+        encryptor=DevEncryptor(),
+        verifier=FakeVerifier(True),
+        publisher=InMemoryEventPublisher(),
+    )
+
+
+def _browser_on(host: str, service: TikTokConnectService) -> TestClient:
+    """A real browser on `host`: no page-URL override, cookies kept per host."""
+    app = create_app(configure_production=False)
+    app.dependency_overrides[tiktok_routes.get_tiktok_connect_service] = lambda: service
+    app.dependency_overrides[deps.current_principal] = lambda: deps.Principal(TENANT, USER)
+    return TestClient(app, base_url=f"https://{host}", follow_redirects=False)
+
+
+def test_flow_started_on_app_qualify_la_stays_on_that_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _two_host_env(monkeypatch)
+    transport, calls = _mock_transport()
+    service = _two_host_service(transport)
+    browser = _browser_on("app.qualify.la", service)
+
+    started = browser.post("/api/connections/tiktok/start", json={})
+    assert started.status_code == 200
+    consent = dict(parse_qsl(urlsplit(started.json()["authorization_url"]).query))
+    assert consent["redirect_uri"] == "https://app.qualify.la/api/connections/tiktok/callback"
+    cookie = started.headers["set-cookie"]
+    assert "Path=/api/connections" in cookie and "domain=" not in cookie.lower()  # host-only
+
+    back = browser.get(f"/api/connections/tiktok/callback?code=c&state={consent['state']}")
+    assert back.status_code == 303
+    assert back.headers["location"] == (
+        "https://app.qualify.la/connections?connect=active&platform=tiktok"
+    )
+    exchange = next(c for c in calls if c.url.path == "/v2/oauth/token/")
+    sent = dict(parse_qsl(exchange.content.decode()))
+    assert sent["redirect_uri"] == "https://app.qualify.la/api/connections/tiktok/callback"
+
+
+def test_an_arbitrary_host_never_becomes_the_callback_or_the_landing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _two_host_env(monkeypatch)
+    transport, _ = _mock_transport()
+    service = _two_host_service(transport)
+    browser = _browser_on("evil.example", service)
+
+    started = browser.post("/api/connections/tiktok/start", json={})
+    consent = dict(parse_qsl(urlsplit(started.json()["authorization_url"]).query))
+    assert consent["redirect_uri"] == SETTINGS.redirect_uri  # the configured one
+    back = browser.get("/api/connections/tiktok/callback?error=access_denied")
+    assert back.headers["location"].startswith("https://qualify.test/connections?")
+
+
+def test_in_process_start_from_app_host_signs_that_redirect_uri() -> None:
+    transport, _ = _mock_transport()
+    service = _two_host_service(transport)
+    started = service.start_connect(
+        tenant_id=TENANT, brand_id=BRAND, user_id=USER, browser_origin="https://app.qualify.la"
+    )
+    assert started.callback_url == "https://app.qualify.la/api/connections/tiktok/callback"
+    state = dict(parse_qsl(urlsplit(started.authorization_url).query))["state"]
+    assert service.callback_context(state).redirect_uri == started.callback_url
+    other = service.start_connect(
+        tenant_id=TENANT, brand_id=BRAND, user_id=USER, browser_origin="https://evil.example"
+    )
+    assert other.callback_url == SETTINGS.redirect_uri

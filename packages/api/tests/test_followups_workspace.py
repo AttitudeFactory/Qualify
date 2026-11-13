@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
@@ -62,6 +63,7 @@ class FakeGenerator:
         grounding: Grounding,
         messages: Sequence[MessageRecord],
         counterpart: str,
+        attribution: Any,
         context: str | None = None,
     ) -> Proposal:
         self.calls.append(

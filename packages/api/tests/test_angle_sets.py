@@ -23,12 +23,13 @@ from qualify_creative.angles import (
     CreativeAngle,
     parse_angles,
     preset_by_key,
+    price_conflicts,
 )
 from qualify_creative.enums import DraftStatus
 from qualify_creative.schemas import BrandKit, ToneAxes
 
 from qualify_api.catalog.service import MediaRecord, ProductRecord, UnknownProduct
-from qualify_api.claude_tools import CallStats, ClaudeToolError, MissingAPIKey
+from qualify_api.claude_tools import Attribution, CallStats, ClaudeToolError, MissingAPIKey
 from qualify_api.creative.angle_sets import (
     ANGLE_APPROVED,
     ANGLE_DISCARDED,
@@ -55,6 +56,9 @@ from qualify_api.creative.angle_sets import (
 )
 from qualify_api.creative.angles_ai import AnglesProviderError
 from qualify_api.creative.service import BrandNotReady, DraftDetail, VariantRecord
+
+#: m-24955649: who pays for the faked Claude calls of this module.
+TEST_ATTRIBUTION = Attribution.no_business("test")
 
 TENANT = uuid4()
 BRAND = uuid4()
@@ -244,8 +248,10 @@ class FakeGenerator:
         self.error = error
         self.calls: list[dict[str, Any]] = []
 
-    def __call__(self, product, brand, preset, *, count, avoid=()):
-        self.calls.append({"count": count, "avoid": tuple(avoid), "product": product})
+    def __call__(self, product, brand, preset, *, count, attribution, avoid=()):
+        self.calls.append(
+            {"count": count, "avoid": tuple(avoid), "product": product, "paid": attribution}
+        )
         if self.error is not None:
             raise self.error
         batch = self.batches.pop(0) if self.batches else ()
@@ -446,9 +452,29 @@ def _create(service: AngleSetService, **overrides: Any) -> UUID:
 def test_product_facts_put_the_hero_photo_first_and_format_the_price() -> None:
     facts = product_facts(_product(photos=3))
     assert facts.photo_keys[0].endswith("p1.jpg") and len(facts.photo_keys) == 3
-    assert facts.price_label == "$18000.00" or facts.price_label.startswith("$")
+    assert facts.price_label == "$18.000"
     assert facts.has_price
     assert not product_facts(_product(None)).has_price
+
+
+@pytest.mark.parametrize(
+    ("amount", "currency", "label", "equivalent", "wrong"),
+    [
+        ("25000", "COP", "$25.000", "$25000", "$25"),
+        ("10.50", "USD", "$10,50", "$10.50", "$1050"),
+        ("90", "VES", "Bs. 90", "Bs.90", "Bs. 900"),
+        ("1234.50", "UYU", "$1.234,50", "$1234.50", "$123450"),
+    ],
+)
+def test_variations_keep_the_catalogs_local_price_and_reject_different_amounts(
+    amount: str, currency: str, label: str, equivalent: str, wrong: str
+) -> None:
+    record = replace(_product(Decimal(amount)), price_currency=currency)
+    facts = product_facts(record)
+    assert facts.price_label == record.price_label == label
+    assert record.price_amount == Decimal(amount)
+    assert price_conflicts((f"Hoy a {label}", f"Solo {equivalent}"), facts.price_label) == ()
+    assert price_conflicts((f"Hoy a {wrong}",), facts.price_label) == (wrong,)
 
 
 def test_the_campaign_name_is_the_product_and_the_count_within_60_chars() -> None:
@@ -460,6 +486,15 @@ def test_the_plan_quotes_the_image_rate_times_the_count() -> None:
     service, *_ = _service()
     plan = service.plan(10)
     assert plan.images_usd == Decimal("0.350") and plan.count == 10
+
+
+def test_the_plan_reserves_the_pro_upper_bound() -> None:
+    from qualify_creative.pricing import JsonPricingTable
+
+    service, *_ = _service()
+    service._pricing = JsonPricingTable("v8")
+    service._image_model_id = "dola-seedream-5-0-pro-260628"
+    assert service.plan(10).images_usd == Decimal("1.170")
 
 
 # -- creating the set -----------------------------------------------------------------------
@@ -479,6 +514,9 @@ def test_create_set_freezes_the_catalog_price_and_stores_ten_angles_with_provena
     assert all(a.status == ANGLE_PROPOSED for a in angles)
     (call,) = generator.calls
     assert call["count"] == 10 and call["product"].price_label == record.price_label
+    # m-24955649: the paid call is booked to this business and brand
+    assert call["paid"].tenant_id == TENANT and call["paid"].brand_id == record.brand_id
+    assert call["paid"].feature == "angulos"
 
 
 def test_a_product_without_price_is_told_and_nothing_is_demanded() -> None:
@@ -1235,6 +1273,7 @@ def test_the_production_wiring_calls_the_real_generate_angles(monkeypatch: Any) 
         preset_by_key("escena_producto"),
         count=3,
         avoid=(),
+        attribution=TEST_ATTRIBUTION,
     )
     assert len(angles) == 3 and stats.tool_calls == 1
 

@@ -1,0 +1,3833 @@
+{
+ "run": "ve05-20261105",
+ "ticket": "m-24921050",
+ "path": "qualify_api.referentes.reel_analysis_worker.analyze_run_ideas",
+ "analysis_version": 6,
+ "note": "Model output only. Ground truth lives in the human annotation sheet.",
+ "reels": [
+  {
+   "post_id": "DfFxwl1T9_g",
+   "handle": "smashack.ve",
+   "network": "instagram",
+   "category": "comida",
+   "people_guess_cover": "no",
+   "url": "https://www.instagram.com/reel/DfFxwl1T9_g/",
+   "vendor_seconds": 16,
+   "harness_wall_s": null,
+   "harness_calls": [],
+   "analysis": {
+    "id": "c17c7bdc-777d-4b82-8104-0ee825d2144a",
+    "status": "ok",
+    "error_code": null,
+    "model_calls": 1,
+    "attempts": 1,
+    "model_id": "claude-haiku-5-5",
+    "model_revision": "claude-haiku-5-5",
+    "prompt_version": "reel-sheet-prompt-7",
+    "schema_version": "reel-sheet-schema-3",
+    "detector_version": "luma-diff-hist-1",
+    "sampling_version": "shots-2x-anchors-1",
+    "sampling_params": {
+     "box": [
+      720,
+      1280
+     ],
+     "anchors": [
+      0.0,
+      1.0,
+      3.0
+     ],
+     "detector": {
+      "ratio": 3.0,
+      "hist_bins": 32,
+      "min_score": 12.0,
+      "thumb_width": 64,
+      "median_floor": 1.5,
+      "repeat_score": 0.5,
+      "min_hist_score": 20.0,
+      "window_seconds": 1.0,
+      "min_shot_seconds": 0.3
+     },
+     "positions": [
+      0.15,
+      0.85
+     ],
+     "max_frames": 32,
+     "frames_sent": 15,
+     "max_seconds": 60.0,
+     "jpeg_quality": 85,
+     "analysis_version": 6,
+     "two_frames_min_s": 1.0
+    },
+    "input_tokens": 22888,
+    "output_tokens": 4888,
+    "cost_usd": 0.004351,
+    "source_seconds": 15.767,
+    "width": 720,
+    "height": 1280,
+    "fps": 30.0,
+    "covered_from_s": 0.0,
+    "covered_to_s": 15.833,
+    "edit_eligible": true,
+    "transcript_source": "none",
+    "created_at": "2026-11-05T16:41:11.24207+00:00",
+    "finished_at": "2026-11-05T16:42:05.496317+00:00",
+    "row_seconds": 54.254247
+   },
+   "shots": [
+    {
+     "shot_index": 0,
+     "start_s": 0.0,
+     "end_s": 4.033,
+     "frame_times_s": [
+      0,
+      0.6333,
+      1,
+      3,
+      3.4333
+     ],
+     "people_presence": "not_observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 1,
+     "start_s": 4.033,
+     "end_s": 6.167,
+     "frame_times_s": [
+      4.3667,
+      5.8667
+     ],
+     "people_presence": "not_observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 2,
+     "start_s": 6.167,
+     "end_s": 7.933,
+     "frame_times_s": [
+      6.4333,
+      7.7
+     ],
+     "people_presence": "not_observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 3,
+     "start_s": 7.933,
+     "end_s": 9.867,
+     "frame_times_s": [
+      8.2333,
+      9.6
+     ],
+     "people_presence": "not_observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 4,
+     "start_s": 9.867,
+     "end_s": 12.533,
+     "frame_times_s": [
+      10.3,
+      12.1333
+     ],
+     "people_presence": "not_observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 5,
+     "start_s": 12.533,
+     "end_s": 15.767,
+     "frame_times_s": [
+      13.0333,
+      15.3
+     ],
+     "people_presence": "not_observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    }
+   ],
+   "detector_only_shots": null
+  },
+  {
+   "post_id": "Dem0JDcTNkR",
+   "handle": "smashack.ve",
+   "network": "instagram",
+   "category": "comida",
+   "people_guess_cover": "si",
+   "url": "https://www.instagram.com/reel/Dem0JDcTNkR/",
+   "vendor_seconds": 18,
+   "harness_wall_s": 28.1,
+   "harness_calls": [
+    {
+     "mode": "production",
+     "cost_usd": "0.002043",
+     "wall_s": 28.1
+    }
+   ],
+   "analysis": {
+    "id": "0ad8255f-bf8f-482c-87e7-381cfb0365f1",
+    "status": "ok",
+    "error_code": null,
+    "model_calls": 1,
+    "attempts": 1,
+    "model_id": "claude-haiku-5-5",
+    "model_revision": "claude-haiku-5-5",
+    "prompt_version": "reel-sheet-prompt-7",
+    "schema_version": "reel-sheet-schema-3",
+    "detector_version": "luma-diff-hist-1",
+    "sampling_version": "shots-2x-anchors-1",
+    "sampling_params": {
+     "box": [
+      720,
+      1280
+     ],
+     "anchors": [
+      0.0,
+      1.0,
+      3.0
+     ],
+     "detector": {
+      "ratio": 3.0,
+      "hist_bins": 32,
+      "min_score": 12.0,
+      "thumb_width": 64,
+      "median_floor": 1.5,
+      "repeat_score": 0.5,
+      "min_hist_score": 20.0,
+      "window_seconds": 1.0,
+      "min_shot_seconds": 0.3
+     },
+     "positions": [
+      0.15,
+      0.85
+     ],
+     "max_frames": 32,
+     "frames_sent": 5,
+     "max_seconds": 60.0,
+     "jpeg_quality": 85,
+     "analysis_version": 6,
+     "two_frames_min_s": 1.0
+    },
+    "input_tokens": 10663,
+    "output_tokens": 1742,
+    "cost_usd": 0.002043,
+    "source_seconds": 18.0,
+    "width": 720,
+    "height": 1280,
+    "fps": 30.0,
+    "covered_from_s": 0.0,
+    "covered_to_s": 18.067,
+    "edit_eligible": true,
+    "transcript_source": "vendor_stt",
+    "created_at": "2026-11-05T18:26:55.619373+00:00",
+    "finished_at": "2026-11-05T18:27:23.707933+00:00",
+    "row_seconds": 28.08856
+   },
+   "shots": [
+    {
+     "shot_index": 0,
+     "start_s": 0.0,
+     "end_s": 18.0,
+     "frame_times_s": [
+      0,
+      1,
+      2.7,
+      3,
+      15.3
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": true
+    }
+   ],
+   "detector_only_shots": null
+  },
+  {
+   "post_id": "DeXCECcCIsU",
+   "handle": "mouredev",
+   "network": "instagram",
+   "category": "educacion",
+   "people_guess_cover": "si",
+   "url": "https://www.instagram.com/reel/DeXCECcCIsU/",
+   "vendor_seconds": 22,
+   "harness_wall_s": null,
+   "harness_calls": [],
+   "analysis": {
+    "id": "5e0d806f-bf7a-4e82-a326-5b296e0201ca",
+    "status": "ok",
+    "error_code": null,
+    "model_calls": 1,
+    "attempts": 1,
+    "model_id": "claude-haiku-5-5",
+    "model_revision": "claude-haiku-5-5",
+    "prompt_version": "reel-sheet-prompt-7",
+    "schema_version": "reel-sheet-schema-3",
+    "detector_version": "luma-diff-hist-1",
+    "sampling_version": "shots-2x-anchors-1",
+    "sampling_params": {
+     "box": [
+      720,
+      1280
+     ],
+     "anchors": [
+      0.0,
+      1.0,
+      3.0
+     ],
+     "detector": {
+      "ratio": 3.0,
+      "hist_bins": 32,
+      "min_score": 12.0,
+      "thumb_width": 64,
+      "median_floor": 1.5,
+      "repeat_score": 0.5,
+      "min_hist_score": 20.0,
+      "window_seconds": 1.0,
+      "min_shot_seconds": 0.3
+     },
+     "positions": [
+      0.15,
+      0.85
+     ],
+     "max_frames": 32,
+     "frames_sent": 12,
+     "max_seconds": 60.0,
+     "jpeg_quality": 85,
+     "analysis_version": 6,
+     "two_frames_min_s": 1.0
+    },
+    "input_tokens": 19449,
+    "output_tokens": 4266,
+    "cost_usd": 0.004184,
+    "source_seconds": 21.567,
+    "width": 720,
+    "height": 1280,
+    "fps": 30.0,
+    "covered_from_s": 0.0,
+    "covered_to_s": 21.633,
+    "edit_eligible": true,
+    "transcript_source": "vendor_stt",
+    "created_at": "2026-11-05T16:40:15.14374+00:00",
+    "finished_at": "2026-11-05T16:41:05.576974+00:00",
+    "row_seconds": 50.433234
+   },
+   "shots": [
+    {
+     "shot_index": 0,
+     "start_s": 0.0,
+     "end_s": 6.8,
+     "frame_times_s": [
+      0,
+      1,
+      1.0333,
+      3,
+      5.8
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": true
+    },
+    {
+     "shot_index": 1,
+     "start_s": 6.8,
+     "end_s": 8.833,
+     "frame_times_s": [
+      7.1333,
+      8.5333
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": true
+    },
+    {
+     "shot_index": 2,
+     "start_s": 8.833,
+     "end_s": 9.867,
+     "frame_times_s": [
+      9,
+      9.7333
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 3,
+     "start_s": 9.867,
+     "end_s": 21.433,
+     "frame_times_s": [
+      11.6333,
+      19.7
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": true
+    },
+    {
+     "shot_index": 4,
+     "start_s": 21.433,
+     "end_s": 21.567,
+     "frame_times_s": [
+      21.5
+     ],
+     "people_presence": "not_observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    }
+   ],
+   "detector_only_shots": null
+  },
+  {
+   "post_id": "De7LIqOCfFf",
+   "handle": "mouredev",
+   "network": "instagram",
+   "category": "educacion",
+   "people_guess_cover": "parcial",
+   "url": "https://www.instagram.com/reel/De7LIqOCfFf/",
+   "vendor_seconds": 13,
+   "harness_wall_s": 22.1,
+   "harness_calls": [
+    {
+     "mode": "production",
+     "cost_usd": "0.001191",
+     "wall_s": 22.1
+    }
+   ],
+   "analysis": {
+    "id": "2f9090f1-6b91-445f-bd50-56abbb803977",
+    "status": "ok",
+    "error_code": null,
+    "model_calls": 1,
+    "attempts": 1,
+    "model_id": "claude-haiku-5-5",
+    "model_revision": "claude-haiku-5-5",
+    "prompt_version": "reel-sheet-prompt-7",
+    "schema_version": "reel-sheet-schema-3",
+    "detector_version": "luma-diff-hist-1",
+    "sampling_version": "shots-2x-anchors-1",
+    "sampling_params": {
+     "box": [
+      720,
+      1280
+     ],
+     "anchors": [
+      0.0,
+      1.0,
+      3.0
+     ],
+     "detector": {
+      "ratio": 3.0,
+      "hist_bins": 32,
+      "min_score": 12.0,
+      "thumb_width": 64,
+      "median_floor": 1.5,
+      "repeat_score": 0.5,
+      "min_hist_score": 20.0,
+      "window_seconds": 1.0,
+      "min_shot_seconds": 0.3
+     },
+     "positions": [
+      0.15,
+      0.85
+     ],
+     "max_frames": 32,
+     "frames_sent": 5,
+     "max_seconds": 60.0,
+     "jpeg_quality": 85,
+     "analysis_version": 6,
+     "two_frames_min_s": 1.0
+    },
+    "input_tokens": 10641,
+    "output_tokens": 1017,
+    "cost_usd": 0.001191,
+    "source_seconds": 12.5,
+    "width": 720,
+    "height": 1280,
+    "fps": 30.0,
+    "covered_from_s": 0.0,
+    "covered_to_s": 12.567,
+    "edit_eligible": true,
+    "transcript_source": "vendor_stt",
+    "created_at": "2026-11-05T18:27:36.241915+00:00",
+    "finished_at": "2026-11-05T18:27:58.377753+00:00",
+    "row_seconds": 22.135838
+   },
+   "shots": [
+    {
+     "shot_index": 0,
+     "start_s": 0.0,
+     "end_s": 12.5,
+     "frame_times_s": [
+      0,
+      1,
+      1.9,
+      3,
+      10.6333
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": true
+    }
+   ],
+   "detector_only_shots": null
+  },
+  {
+   "post_id": "DfU1xGhEhn9",
+   "handle": "ryanserhant",
+   "network": "instagram",
+   "category": "inmobiliaria",
+   "people_guess_cover": "si",
+   "url": "https://www.instagram.com/reel/DfU1xGhEhn9/",
+   "vendor_seconds": 56,
+   "harness_wall_s": 56.5,
+   "harness_calls": [
+    {
+     "mode": "production",
+     "cost_usd": "0.005469",
+     "wall_s": 62.0
+    },
+    {
+     "mode": "diagnostic_max_out_12000",
+     "cost_usd": "0.007228",
+     "wall_s": 56.5
+    }
+   ],
+   "analysis": {
+    "id": "1b23c6e0-dcb6-47b6-b475-0c3bc02eb42d",
+    "status": "ok",
+    "error_code": null,
+    "model_calls": 2,
+    "attempts": 2,
+    "model_id": "claude-haiku-5-5",
+    "model_revision": "claude-haiku-5-5",
+    "prompt_version": "reel-sheet-prompt-7",
+    "schema_version": "reel-sheet-schema-3",
+    "detector_version": "luma-diff-hist-1",
+    "sampling_version": "shots-2x-anchors-1",
+    "sampling_params": {
+     "box": [
+      720,
+      1280
+     ],
+     "anchors": [
+      0.0,
+      1.0,
+      3.0
+     ],
+     "detector": {
+      "ratio": 3.0,
+      "hist_bins": 32,
+      "min_score": 12.0,
+      "thumb_width": 64,
+      "median_floor": 1.5,
+      "repeat_score": 0.5,
+      "min_hist_score": 20.0,
+      "window_seconds": 1.0,
+      "min_shot_seconds": 0.3
+     },
+     "positions": [
+      0.15,
+      0.85
+     ],
+     "max_frames": 32,
+     "frames_sent": 20,
+     "max_seconds": 60.0,
+     "jpeg_quality": 85,
+     "analysis_version": 6,
+     "two_frames_min_s": 1.0
+    },
+    "input_tokens": 59006,
+    "output_tokens": 15119,
+    "cost_usd": 0.012697,
+    "source_seconds": 55.733,
+    "width": 720,
+    "height": 1280,
+    "fps": 30.0,
+    "covered_from_s": 0.0,
+    "covered_to_s": 55.8,
+    "edit_eligible": true,
+    "transcript_source": "vendor_stt",
+    "created_at": "2026-11-05T18:27:58.69897+00:00",
+    "finished_at": "2026-11-05T18:46:04.637036+00:00",
+    "row_seconds": 1085.938066
+   },
+   "shots": [
+    {
+     "shot_index": 0,
+     "start_s": 0.0,
+     "end_s": 4.967,
+     "frame_times_s": [
+      0,
+      1,
+      2.5,
+      3
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 1,
+     "start_s": 4.967,
+     "end_s": 6.433,
+     "frame_times_s": [
+      5.7
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 2,
+     "start_s": 6.433,
+     "end_s": 7.2,
+     "frame_times_s": [
+      6.8333
+     ],
+     "people_presence": "not_observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 3,
+     "start_s": 7.2,
+     "end_s": 11.433,
+     "frame_times_s": [
+      9.3333
+     ],
+     "people_presence": "observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 4,
+     "start_s": 11.433,
+     "end_s": 12.967,
+     "frame_times_s": [
+      12.2
+     ],
+     "people_presence": "observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 5,
+     "start_s": 12.967,
+     "end_s": 15.8,
+     "frame_times_s": [
+      14.4
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": true
+    },
+    {
+     "shot_index": 6,
+     "start_s": 15.8,
+     "end_s": 22.233,
+     "frame_times_s": [
+      19.0333
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": true
+    },
+    {
+     "shot_index": 7,
+     "start_s": 22.233,
+     "end_s": 23.633,
+     "frame_times_s": [
+      22.9333
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 8,
+     "start_s": 23.633,
+     "end_s": 25.7,
+     "frame_times_s": [
+      24.6667
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 9,
+     "start_s": 25.7,
+     "end_s": 28.267,
+     "frame_times_s": [
+      27
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": true
+    },
+    {
+     "shot_index": 10,
+     "start_s": 28.267,
+     "end_s": 30.567,
+     "frame_times_s": [
+      29.4333
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": true
+    },
+    {
+     "shot_index": 11,
+     "start_s": 30.567,
+     "end_s": 33.033,
+     "frame_times_s": [
+      31.8
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": true
+    },
+    {
+     "shot_index": 12,
+     "start_s": 33.033,
+     "end_s": 33.967,
+     "frame_times_s": [
+      33.5
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 13,
+     "start_s": 33.967,
+     "end_s": 35.567,
+     "frame_times_s": [
+      34.8
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": true
+    },
+    {
+     "shot_index": 14,
+     "start_s": 35.567,
+     "end_s": 37.833,
+     "frame_times_s": [
+      36.7
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": true
+    },
+    {
+     "shot_index": 15,
+     "start_s": 37.833,
+     "end_s": 52.5,
+     "frame_times_s": [
+      45.1667
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": true
+    },
+    {
+     "shot_index": 16,
+     "start_s": 52.5,
+     "end_s": 55.733,
+     "frame_times_s": [
+      54.1333
+     ],
+     "people_presence": "not_observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    }
+   ],
+   "detector_only_shots": null
+  },
+  {
+   "post_id": "DfAoszqCaG8",
+   "handle": "ryanserhant",
+   "network": "instagram",
+   "category": "inmobiliaria",
+   "people_guess_cover": "si",
+   "url": "https://www.instagram.com/reel/DfAoszqCaG8/",
+   "vendor_seconds": 37,
+   "harness_wall_s": 43.5,
+   "harness_calls": [
+    {
+     "mode": "production",
+     "cost_usd": "0.003294",
+     "wall_s": 43.5
+    }
+   ],
+   "analysis": {
+    "id": "625d7552-bbcb-4593-b022-7e1b6902cce7",
+    "status": "ok",
+    "error_code": null,
+    "model_calls": 1,
+    "attempts": 1,
+    "model_id": "claude-haiku-5-5",
+    "model_revision": "claude-haiku-5-5",
+    "prompt_version": "reel-sheet-prompt-7",
+    "schema_version": "reel-sheet-schema-3",
+    "detector_version": "luma-diff-hist-1",
+    "sampling_version": "shots-2x-anchors-1",
+    "sampling_params": {
+     "box": [
+      720,
+      1280
+     ],
+     "anchors": [
+      0.0,
+      1.0,
+      3.0
+     ],
+     "detector": {
+      "ratio": 3.0,
+      "hist_bins": 32,
+      "min_score": 12.0,
+      "thumb_width": 64,
+      "median_floor": 1.5,
+      "repeat_score": 0.5,
+      "min_hist_score": 20.0,
+      "window_seconds": 1.0,
+      "min_shot_seconds": 0.3
+     },
+     "positions": [
+      0.15,
+      0.85
+     ],
+     "max_frames": 32,
+     "frames_sent": 11,
+     "max_seconds": 60.0,
+     "jpeg_quality": 85,
+     "analysis_version": 6,
+     "two_frames_min_s": 1.0
+    },
+    "input_tokens": 18167,
+    "output_tokens": 3718,
+    "cost_usd": 0.003294,
+    "source_seconds": 37.033,
+    "width": 720,
+    "height": 1280,
+    "fps": 30.0,
+    "covered_from_s": 0.0,
+    "covered_to_s": 37.1,
+    "edit_eligible": true,
+    "transcript_source": "vendor_stt",
+    "created_at": "2026-11-05T18:29:01.24001+00:00",
+    "finished_at": "2026-11-05T18:29:44.714419+00:00",
+    "row_seconds": 43.474409
+   },
+   "shots": [
+    {
+     "shot_index": 0,
+     "start_s": 0.0,
+     "end_s": 9.067,
+     "frame_times_s": [
+      0,
+      1,
+      1.3667,
+      3,
+      7.7333
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": true
+    },
+    {
+     "shot_index": 1,
+     "start_s": 9.067,
+     "end_s": 14.233,
+     "frame_times_s": [
+      9.8667,
+      13.4667
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": true
+    },
+    {
+     "shot_index": 2,
+     "start_s": 14.233,
+     "end_s": 18.933,
+     "frame_times_s": [
+      14.9667,
+      18.2333
+     ],
+     "people_presence": "observed",
+     "visible_faces": "not_observed",
+     "has_speech": true
+    },
+    {
+     "shot_index": 3,
+     "start_s": 18.933,
+     "end_s": 37.033,
+     "frame_times_s": [
+      21.6667,
+      34.3333
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": true
+    }
+   ],
+   "detector_only_shots": null
+  },
+  {
+   "post_id": "DfE_7hlARpS",
+   "handle": "hudabeauty",
+   "network": "instagram",
+   "category": "belleza",
+   "people_guess_cover": "si",
+   "url": "https://www.instagram.com/reel/DfE_7hlARpS/",
+   "vendor_seconds": 9,
+   "harness_wall_s": 39.3,
+   "harness_calls": [
+    {
+     "mode": "production",
+     "cost_usd": "0.005071",
+     "wall_s": 51.1
+    },
+    {
+     "mode": "diagnostic_max_out_12000",
+     "cost_usd": "0.005313",
+     "wall_s": 39.3
+    }
+   ],
+   "analysis": {
+    "id": "a4847cce-380e-4f47-b04c-f22acfbaeafe",
+    "status": "ok",
+    "error_code": null,
+    "model_calls": 2,
+    "attempts": 2,
+    "model_id": "claude-haiku-5-5",
+    "model_revision": "claude-haiku-5-5",
+    "prompt_version": "reel-sheet-prompt-7",
+    "schema_version": "reel-sheet-schema-3",
+    "detector_version": "luma-diff-hist-1",
+    "sampling_version": "shots-2x-anchors-1",
+    "sampling_params": {
+     "box": [
+      720,
+      1280
+     ],
+     "anchors": [
+      0.0,
+      1.0,
+      3.0
+     ],
+     "detector": {
+      "ratio": 3.0,
+      "hist_bins": 32,
+      "min_score": 12.0,
+      "thumb_width": 64,
+      "median_floor": 1.5,
+      "repeat_score": 0.5,
+      "min_hist_score": 20.0,
+      "window_seconds": 1.0,
+      "min_shot_seconds": 0.3
+     },
+     "positions": [
+      0.15,
+      0.85
+     ],
+     "max_frames": 32,
+     "frames_sent": 17,
+     "max_seconds": 60.0,
+     "jpeg_quality": 85,
+     "analysis_version": 6,
+     "two_frames_min_s": 1.0
+    },
+    "input_tokens": 51048,
+    "output_tokens": 12085,
+    "cost_usd": 0.010384,
+    "source_seconds": 9.367,
+    "width": 720,
+    "height": 1280,
+    "fps": 30.0,
+    "covered_from_s": 0.0,
+    "covered_to_s": 9.433,
+    "edit_eligible": true,
+    "transcript_source": "vendor_stt",
+    "created_at": "2026-11-05T18:29:45.1868+00:00",
+    "finished_at": "2026-11-05T18:44:55.742907+00:00",
+    "row_seconds": 910.556107
+   },
+   "shots": [
+    {
+     "shot_index": 0,
+     "start_s": 0.0,
+     "end_s": 1.167,
+     "frame_times_s": [
+      0,
+      0.2,
+      1,
+      1
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 1,
+     "start_s": 1.167,
+     "end_s": 1.5,
+     "frame_times_s": [
+      1.3667
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 2,
+     "start_s": 1.5,
+     "end_s": 1.9,
+     "frame_times_s": [
+      1.7
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 3,
+     "start_s": 1.9,
+     "end_s": 2.5,
+     "frame_times_s": [
+      2.2
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 4,
+     "start_s": 2.5,
+     "end_s": 3.033,
+     "frame_times_s": [
+      2.7667,
+      3
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 5,
+     "start_s": 3.033,
+     "end_s": 3.667,
+     "frame_times_s": [
+      3.3667
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 6,
+     "start_s": 3.667,
+     "end_s": 4.567,
+     "frame_times_s": [
+      4.1333
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 7,
+     "start_s": 4.567,
+     "end_s": 5.533,
+     "frame_times_s": [
+      5.0667
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 8,
+     "start_s": 5.533,
+     "end_s": 6.433,
+     "frame_times_s": [
+      6
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 9,
+     "start_s": 6.433,
+     "end_s": 7.8,
+     "frame_times_s": [
+      6.6667,
+      7.6
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": true
+    },
+    {
+     "shot_index": 10,
+     "start_s": 7.8,
+     "end_s": 8.467,
+     "frame_times_s": [
+      8.1667
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 11,
+     "start_s": 8.467,
+     "end_s": 9.367,
+     "frame_times_s": [
+      8.9333
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": false
+    }
+   ],
+   "detector_only_shots": null
+  },
+  {
+   "post_id": "De64IIPjs6r",
+   "handle": "hudabeauty",
+   "network": "instagram",
+   "category": "belleza",
+   "people_guess_cover": "si",
+   "url": "https://www.instagram.com/reel/De64IIPjs6r/",
+   "vendor_seconds": 10,
+   "harness_wall_s": 42.9,
+   "harness_calls": [
+    {
+     "mode": "production",
+     "cost_usd": "0.005569",
+     "wall_s": 58.2
+    },
+    {
+     "mode": "diagnostic_max_out_12000",
+     "cost_usd": "0.006634",
+     "wall_s": 42.9
+    }
+   ],
+   "analysis": {
+    "id": "ba022d8c-242d-4a9b-ab15-8e8ed83b77af",
+    "status": "ok",
+    "error_code": null,
+    "model_calls": 2,
+    "attempts": 2,
+    "model_id": "claude-haiku-5-5",
+    "model_revision": "claude-haiku-5-5",
+    "prompt_version": "reel-sheet-prompt-7",
+    "schema_version": "reel-sheet-schema-3",
+    "detector_version": "luma-diff-hist-1",
+    "sampling_version": "shots-2x-anchors-1",
+    "sampling_params": {
+     "box": [
+      720,
+      1280
+     ],
+     "anchors": [
+      0.0,
+      1.0,
+      3.0
+     ],
+     "detector": {
+      "ratio": 3.0,
+      "hist_bins": 32,
+      "min_score": 12.0,
+      "thumb_width": 64,
+      "median_floor": 1.5,
+      "repeat_score": 0.5,
+      "min_hist_score": 20.0,
+      "window_seconds": 1.0,
+      "min_shot_seconds": 0.3
+     },
+     "positions": [
+      0.15,
+      0.85
+     ],
+     "max_frames": 32,
+     "frames_sent": 21,
+     "max_seconds": 60.0,
+     "jpeg_quality": 85,
+     "analysis_version": 6,
+     "two_frames_min_s": 1.0
+    },
+    "input_tokens": 61024,
+    "output_tokens": 13729,
+    "cost_usd": 0.012203,
+    "source_seconds": 10.41,
+    "width": 720,
+    "height": 1280,
+    "fps": 29.97,
+    "covered_from_s": 0.0,
+    "covered_to_s": 10.477,
+    "edit_eligible": true,
+    "transcript_source": "vendor_stt",
+    "created_at": "2026-11-05T18:30:36.541746+00:00",
+    "finished_at": "2026-11-05T18:46:47.737064+00:00",
+    "row_seconds": 971.195318
+   },
+   "shots": [
+    {
+     "shot_index": 0,
+     "start_s": 0.0,
+     "end_s": 0.4,
+     "frame_times_s": [
+      0,
+      0.2002
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 1,
+     "start_s": 0.4,
+     "end_s": 1.001,
+     "frame_times_s": [
+      0.7007,
+      1.001
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 2,
+     "start_s": 1.001,
+     "end_s": 1.602,
+     "frame_times_s": [
+      1.3013
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": true
+    },
+    {
+     "shot_index": 3,
+     "start_s": 1.602,
+     "end_s": 2.035,
+     "frame_times_s": [
+      1.8352
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 4,
+     "start_s": 2.035,
+     "end_s": 2.503,
+     "frame_times_s": [
+      2.3023
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 5,
+     "start_s": 2.503,
+     "end_s": 3.203,
+     "frame_times_s": [
+      2.8695,
+      3.003
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 6,
+     "start_s": 3.203,
+     "end_s": 3.537,
+     "frame_times_s": [
+      3.4034
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 7,
+     "start_s": 3.537,
+     "end_s": 4.037,
+     "frame_times_s": [
+      3.8038
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 8,
+     "start_s": 4.037,
+     "end_s": 4.371,
+     "frame_times_s": [
+      4.2042
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 9,
+     "start_s": 4.371,
+     "end_s": 5.239,
+     "frame_times_s": [
+      4.8048
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 10,
+     "start_s": 5.239,
+     "end_s": 5.706,
+     "frame_times_s": [
+      5.5055
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 11,
+     "start_s": 5.706,
+     "end_s": 6.64,
+     "frame_times_s": [
+      6.2062
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 12,
+     "start_s": 6.64,
+     "end_s": 7.474,
+     "frame_times_s": [
+      7.0737
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 13,
+     "start_s": 7.474,
+     "end_s": 8.275,
+     "frame_times_s": [
+      7.8745
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 14,
+     "start_s": 8.275,
+     "end_s": 9.276,
+     "frame_times_s": [
+      8.4418,
+      9.1425
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 15,
+     "start_s": 9.276,
+     "end_s": 10.41,
+     "frame_times_s": [
+      9.4761,
+      10.2436
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": false
+    }
+   ],
+   "detector_only_shots": null
+  },
+  {
+   "post_id": "De9dUoCAGth",
+   "handle": "hudabeauty",
+   "network": "instagram",
+   "category": "belleza",
+   "people_guess_cover": "si",
+   "url": "https://www.instagram.com/reel/De9dUoCAGth/",
+   "vendor_seconds": 44,
+   "harness_wall_s": 41.9,
+   "harness_calls": [
+    {
+     "mode": "production",
+     "cost_usd": "0.006082",
+     "wall_s": 68.3
+    },
+    {
+     "mode": "diagnostic_max_out_12000",
+     "cost_usd": "0.006084",
+     "wall_s": 41.9
+    }
+   ],
+   "analysis": {
+    "id": "69ada9d4-25f2-4f11-8653-ceb2bde2e503",
+    "status": "ok",
+    "error_code": null,
+    "model_calls": 2,
+    "attempts": 2,
+    "model_id": "claude-haiku-5-5",
+    "model_revision": "claude-haiku-5-5",
+    "prompt_version": "reel-sheet-prompt-7",
+    "schema_version": "reel-sheet-schema-3",
+    "detector_version": "luma-diff-hist-1",
+    "sampling_version": "shots-2x-anchors-1",
+    "sampling_params": {
+     "box": [
+      720,
+      1280
+     ],
+     "anchors": [
+      0.0,
+      1.0,
+      3.0
+     ],
+     "detector": {
+      "ratio": 3.0,
+      "hist_bins": 32,
+      "min_score": 12.0,
+      "thumb_width": 64,
+      "median_floor": 1.5,
+      "repeat_score": 0.5,
+      "min_hist_score": 20.0,
+      "window_seconds": 1.0,
+      "min_shot_seconds": 0.3
+     },
+     "positions": [
+      0.15,
+      0.85
+     ],
+     "max_frames": 32,
+     "frames_sent": 25,
+     "max_seconds": 60.0,
+     "jpeg_quality": 85,
+     "analysis_version": 6,
+     "two_frames_min_s": 1.0
+    },
+    "input_tokens": 71284,
+    "output_tokens": 11604,
+    "cost_usd": 0.012166,
+    "source_seconds": 44.167,
+    "width": 720,
+    "height": 1280,
+    "fps": 30.0,
+    "covered_from_s": 0.0,
+    "covered_to_s": 44.233,
+    "edit_eligible": true,
+    "transcript_source": "vendor_stt",
+    "created_at": "2026-11-05T18:31:35.06264+00:00",
+    "finished_at": "2026-11-05T18:47:29.914581+00:00",
+    "row_seconds": 954.851941
+   },
+   "shots": [
+    {
+     "shot_index": 0,
+     "start_s": 0.0,
+     "end_s": 18.033,
+     "frame_times_s": [
+      0,
+      1,
+      2.7333,
+      3,
+      15.3333
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": true
+    },
+    {
+     "shot_index": 1,
+     "start_s": 18.033,
+     "end_s": 19.933,
+     "frame_times_s": [
+      18.3333,
+      19.6667
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 2,
+     "start_s": 19.933,
+     "end_s": 21.5,
+     "frame_times_s": [
+      20.2,
+      21.2667
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": true
+    },
+    {
+     "shot_index": 3,
+     "start_s": 21.5,
+     "end_s": 22.133,
+     "frame_times_s": [
+      21.8333
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 4,
+     "start_s": 22.133,
+     "end_s": 23.8,
+     "frame_times_s": [
+      22.4,
+      23.5667
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 5,
+     "start_s": 23.8,
+     "end_s": 24.733,
+     "frame_times_s": [
+      24.2667
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 6,
+     "start_s": 24.733,
+     "end_s": 25.633,
+     "frame_times_s": [
+      25.2
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 7,
+     "start_s": 25.633,
+     "end_s": 29.9,
+     "frame_times_s": [
+      26.3,
+      29.2667
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": true
+    },
+    {
+     "shot_index": 8,
+     "start_s": 29.9,
+     "end_s": 34.033,
+     "frame_times_s": [
+      30.5333,
+      33.4333
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": true
+    },
+    {
+     "shot_index": 9,
+     "start_s": 34.033,
+     "end_s": 40.4,
+     "frame_times_s": [
+      35,
+      39.4667
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": true
+    },
+    {
+     "shot_index": 10,
+     "start_s": 40.4,
+     "end_s": 42.2,
+     "frame_times_s": [
+      40.7,
+      41.9333
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 11,
+     "start_s": 42.2,
+     "end_s": 42.567,
+     "frame_times_s": [
+      42.4
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 12,
+     "start_s": 42.567,
+     "end_s": 44.167,
+     "frame_times_s": [
+      42.8333,
+      43.9333
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": false
+    }
+   ],
+   "detector_only_shots": null
+  },
+  {
+   "post_id": "Dev_ZPatWha",
+   "handle": "zara",
+   "network": "instagram",
+   "category": "ropa",
+   "people_guess_cover": "si",
+   "url": "https://www.instagram.com/reel/Dev_ZPatWha/",
+   "vendor_seconds": 24,
+   "harness_wall_s": 14.0,
+   "harness_calls": [
+    {
+     "mode": "production",
+     "cost_usd": "0.001311",
+     "wall_s": 21.2
+    },
+    {
+     "mode": "diagnostic_max_out_12000",
+     "cost_usd": "0.001251",
+     "wall_s": 14.0
+    }
+   ],
+   "analysis": {
+    "id": "46a9943c-68e3-4d19-9a4b-ee0857a54bee",
+    "status": "failed",
+    "error_code": "model_failed",
+    "model_calls": 2,
+    "attempts": 3,
+    "model_id": null,
+    "model_revision": null,
+    "prompt_version": null,
+    "schema_version": null,
+    "detector_version": null,
+    "sampling_version": null,
+    "sampling_params": null,
+    "input_tokens": 17656,
+    "output_tokens": 3120,
+    "cost_usd": 0.002562,
+    "source_seconds": 23.75,
+    "width": 720,
+    "height": 900,
+    "fps": 24.0,
+    "covered_from_s": 0.0,
+    "covered_to_s": 23.833,
+    "edit_eligible": true,
+    "transcript_source": "none",
+    "created_at": "2026-11-05T18:32:43.585814+00:00",
+    "finished_at": "2026-11-05T18:53:43.284307+00:00",
+    "row_seconds": 1259.698493
+   },
+   "shots": [],
+   "detector_only_shots": [
+    {
+     "shot_index": 0,
+     "start_s": 0.0,
+     "end_s": 23.75
+    }
+   ]
+  },
+  {
+   "post_id": "DeY-zYDtQvt",
+   "handle": "zara",
+   "network": "instagram",
+   "category": "ropa",
+   "people_guess_cover": "no",
+   "url": "https://www.instagram.com/reel/DeY-zYDtQvt/",
+   "vendor_seconds": 10,
+   "harness_wall_s": 30.0,
+   "harness_calls": [
+    {
+     "mode": "production",
+     "cost_usd": "0.002562",
+     "wall_s": 30.0
+    }
+   ],
+   "analysis": {
+    "id": "412ca260-476e-45a8-a2f6-22e4ea6edecb",
+    "status": "ok",
+    "error_code": null,
+    "model_calls": 1,
+    "attempts": 1,
+    "model_id": "claude-haiku-5-5",
+    "model_revision": "claude-haiku-5-5",
+    "prompt_version": "reel-sheet-prompt-7",
+    "schema_version": "reel-sheet-schema-3",
+    "detector_version": "luma-diff-hist-1",
+    "sampling_version": "shots-2x-anchors-1",
+    "sampling_params": {
+     "box": [
+      720,
+      1280
+     ],
+     "anchors": [
+      0.0,
+      1.0,
+      3.0
+     ],
+     "detector": {
+      "ratio": 3.0,
+      "hist_bins": 32,
+      "min_score": 12.0,
+      "thumb_width": 64,
+      "median_floor": 1.5,
+      "repeat_score": 0.5,
+      "min_hist_score": 20.0,
+      "window_seconds": 1.0,
+      "min_shot_seconds": 0.3
+     },
+     "positions": [
+      0.15,
+      0.85
+     ],
+     "max_frames": 32,
+     "frames_sent": 9,
+     "max_seconds": 60.0,
+     "jpeg_quality": 85,
+     "analysis_version": 6,
+     "two_frames_min_s": 1.0
+    },
+    "input_tokens": 15553,
+    "output_tokens": 2777,
+    "cost_usd": 0.002562,
+    "source_seconds": 10.4,
+    "width": 720,
+    "height": 1280,
+    "fps": 30.0,
+    "covered_from_s": 0.0,
+    "covered_to_s": 10.467,
+    "edit_eligible": true,
+    "transcript_source": "vendor_stt",
+    "created_at": "2026-11-05T18:33:05.018325+00:00",
+    "finished_at": "2026-11-05T18:33:34.993922+00:00",
+    "row_seconds": 29.975597
+   },
+   "shots": [
+    {
+     "shot_index": 0,
+     "start_s": 0.0,
+     "end_s": 4.0,
+     "frame_times_s": [
+      0,
+      0.6,
+      1,
+      3,
+      3.4
+     ],
+     "people_presence": "not_observed",
+     "visible_faces": "not_observed",
+     "has_speech": true
+    },
+    {
+     "shot_index": 1,
+     "start_s": 4.0,
+     "end_s": 7.333,
+     "frame_times_s": [
+      4.5,
+      6.8333
+     ],
+     "people_presence": "not_observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 2,
+     "start_s": 7.333,
+     "end_s": 10.4,
+     "frame_times_s": [
+      7.8,
+      9.9667
+     ],
+     "people_presence": "not_observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    }
+   ],
+   "detector_only_shots": null
+  },
+  {
+   "post_id": "DeeU4qItcFx",
+   "handle": "zara",
+   "network": "instagram",
+   "category": "ropa",
+   "people_guess_cover": "parcial",
+   "url": "https://www.instagram.com/reel/DeeU4qItcFx/",
+   "vendor_seconds": 9,
+   "harness_wall_s": 44.6,
+   "harness_calls": [
+    {
+     "mode": "production",
+     "cost_usd": "0.004669",
+     "wall_s": 44.6
+    }
+   ],
+   "analysis": {
+    "id": "1876ddba-c121-410b-b594-f6760dd6b673",
+    "status": "ok",
+    "error_code": null,
+    "model_calls": 1,
+    "attempts": 1,
+    "model_id": "claude-haiku-5-5",
+    "model_revision": "claude-haiku-5-5",
+    "prompt_version": "reel-sheet-prompt-7",
+    "schema_version": "reel-sheet-schema-3",
+    "detector_version": "luma-diff-hist-1",
+    "sampling_version": "shots-2x-anchors-1",
+    "sampling_params": {
+     "box": [
+      720,
+      1280
+     ],
+     "anchors": [
+      0.0,
+      1.0,
+      3.0
+     ],
+     "detector": {
+      "ratio": 3.0,
+      "hist_bins": 32,
+      "min_score": 12.0,
+      "thumb_width": 64,
+      "median_floor": 1.5,
+      "repeat_score": 0.5,
+      "min_hist_score": 20.0,
+      "window_seconds": 1.0,
+      "min_shot_seconds": 0.3
+     },
+     "positions": [
+      0.15,
+      0.85
+     ],
+     "max_frames": 32,
+     "frames_sent": 15,
+     "max_seconds": 60.0,
+     "jpeg_quality": 85,
+     "analysis_version": 6,
+     "two_frames_min_s": 1.0
+    },
+    "input_tokens": 23070,
+    "output_tokens": 5487,
+    "cost_usd": 0.004669,
+    "source_seconds": 8.625,
+    "width": 720,
+    "height": 1280,
+    "fps": 24.0,
+    "covered_from_s": 0.0,
+    "covered_to_s": 8.708,
+    "edit_eligible": true,
+    "transcript_source": "vendor_stt",
+    "created_at": "2026-11-05T18:33:35.294744+00:00",
+    "finished_at": "2026-11-05T18:34:19.885731+00:00",
+    "row_seconds": 44.590987
+   },
+   "shots": [
+    {
+     "shot_index": 0,
+     "start_s": 0.0,
+     "end_s": 0.625,
+     "frame_times_s": [
+      0,
+      0.3333
+     ],
+     "people_presence": "observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 1,
+     "start_s": 0.625,
+     "end_s": 1.0,
+     "frame_times_s": [
+      0.8333
+     ],
+     "people_presence": "observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 2,
+     "start_s": 1.0,
+     "end_s": 1.667,
+     "frame_times_s": [
+      1,
+      1.375
+     ],
+     "people_presence": "observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 3,
+     "start_s": 1.667,
+     "end_s": 3.292,
+     "frame_times_s": [
+      1.9167,
+      3,
+      3.0833
+     ],
+     "people_presence": "observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 4,
+     "start_s": 3.292,
+     "end_s": 3.917,
+     "frame_times_s": [
+      3.625
+     ],
+     "people_presence": "observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 5,
+     "start_s": 3.917,
+     "end_s": 6.375,
+     "frame_times_s": [
+      4.2917,
+      6.0417
+     ],
+     "people_presence": "observed",
+     "visible_faces": "not_observed",
+     "has_speech": true
+    },
+    {
+     "shot_index": 6,
+     "start_s": 6.375,
+     "end_s": 7.167,
+     "frame_times_s": [
+      6.7917
+     ],
+     "people_presence": "observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 7,
+     "start_s": 7.167,
+     "end_s": 7.875,
+     "frame_times_s": [
+      7.5417
+     ],
+     "people_presence": "observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 8,
+     "start_s": 7.875,
+     "end_s": 8.208,
+     "frame_times_s": [
+      8.0417
+     ],
+     "people_presence": "not_observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 9,
+     "start_s": 8.208,
+     "end_s": 8.625,
+     "frame_times_s": [
+      8.4167
+     ],
+     "people_presence": "observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    }
+   ],
+   "detector_only_shots": null
+  },
+  {
+   "post_id": "DewquIkOYcp",
+   "handle": "beautifuldestinations",
+   "network": "instagram",
+   "category": "viajes",
+   "people_guess_cover": "no",
+   "url": "https://www.instagram.com/reel/DewquIkOYcp/",
+   "vendor_seconds": 11,
+   "harness_wall_s": 42.1,
+   "harness_calls": [
+    {
+     "mode": "production",
+     "cost_usd": "0.004951",
+     "wall_s": 51.3
+    },
+    {
+     "mode": "diagnostic_max_out_12000",
+     "cost_usd": "0.005471",
+     "wall_s": 42.1
+    }
+   ],
+   "analysis": {
+    "id": "8a578451-0083-4dfa-b4df-4d3f4b99a042",
+    "status": "ok",
+    "error_code": null,
+    "model_calls": 2,
+    "attempts": 2,
+    "model_id": "claude-haiku-5-5",
+    "model_revision": "claude-haiku-5-5",
+    "prompt_version": "reel-sheet-prompt-7",
+    "schema_version": "reel-sheet-schema-3",
+    "detector_version": "luma-diff-hist-1",
+    "sampling_version": "shots-2x-anchors-1",
+    "sampling_params": {
+     "box": [
+      720,
+      1280
+     ],
+     "anchors": [
+      0.0,
+      1.0,
+      3.0
+     ],
+     "detector": {
+      "ratio": 3.0,
+      "hist_bins": 32,
+      "min_score": 12.0,
+      "thumb_width": 64,
+      "median_floor": 1.5,
+      "repeat_score": 0.5,
+      "min_hist_score": 20.0,
+      "window_seconds": 1.0,
+      "min_shot_seconds": 0.3
+     },
+     "positions": [
+      0.15,
+      0.85
+     ],
+     "max_frames": 32,
+     "frames_sent": 16,
+     "max_seconds": 60.0,
+     "jpeg_quality": 85,
+     "analysis_version": 6,
+     "two_frames_min_s": 1.0
+    },
+    "input_tokens": 48652,
+    "output_tokens": 12641,
+    "cost_usd": 0.010422,
+    "source_seconds": 11.3,
+    "width": 720,
+    "height": 1280,
+    "fps": 30.0,
+    "covered_from_s": 0.0,
+    "covered_to_s": 11.367,
+    "edit_eligible": true,
+    "transcript_source": "vendor_stt",
+    "created_at": "2026-11-05T18:34:20.160458+00:00",
+    "finished_at": "2026-11-05T18:48:26.544135+00:00",
+    "row_seconds": 846.383677
+   },
+   "shots": [
+    {
+     "shot_index": 0,
+     "start_s": 0.0,
+     "end_s": 0.9,
+     "frame_times_s": [
+      0,
+      0.4667
+     ],
+     "people_presence": "not_observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 1,
+     "start_s": 0.9,
+     "end_s": 1.867,
+     "frame_times_s": [
+      1,
+      1.4
+     ],
+     "people_presence": "not_observed",
+     "visible_faces": "not_observed",
+     "has_speech": true
+    },
+    {
+     "shot_index": 2,
+     "start_s": 1.867,
+     "end_s": 2.833,
+     "frame_times_s": [
+      2.3667
+     ],
+     "people_presence": "observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 3,
+     "start_s": 2.833,
+     "end_s": 3.6,
+     "frame_times_s": [
+      3,
+      3.2333
+     ],
+     "people_presence": "not_observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 4,
+     "start_s": 3.6,
+     "end_s": 4.4,
+     "frame_times_s": [
+      4
+     ],
+     "people_presence": "not_observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 5,
+     "start_s": 4.4,
+     "end_s": 5.133,
+     "frame_times_s": [
+      4.7667
+     ],
+     "people_presence": "not_observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 6,
+     "start_s": 5.133,
+     "end_s": 5.933,
+     "frame_times_s": [
+      5.5333
+     ],
+     "people_presence": "observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 7,
+     "start_s": 5.933,
+     "end_s": 6.7,
+     "frame_times_s": [
+      6.3333
+     ],
+     "people_presence": "not_observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 8,
+     "start_s": 6.7,
+     "end_s": 7.567,
+     "frame_times_s": [
+      7.1667
+     ],
+     "people_presence": "not_observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 9,
+     "start_s": 7.567,
+     "end_s": 8.467,
+     "frame_times_s": [
+      8.0333
+     ],
+     "people_presence": "not_observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 10,
+     "start_s": 8.467,
+     "end_s": 9.4,
+     "frame_times_s": [
+      8.9667
+     ],
+     "people_presence": "observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 11,
+     "start_s": 9.4,
+     "end_s": 10.367,
+     "frame_times_s": [
+      9.9
+     ],
+     "people_presence": "not_observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 12,
+     "start_s": 10.367,
+     "end_s": 11.3,
+     "frame_times_s": [
+      10.8667
+     ],
+     "people_presence": "observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    }
+   ],
+   "detector_only_shots": null
+  },
+  {
+   "post_id": "DezCpl9RsGA",
+   "handle": "beautifuldestinations",
+   "network": "instagram",
+   "category": "viajes",
+   "people_guess_cover": "no",
+   "url": "https://www.instagram.com/reel/DezCpl9RsGA/",
+   "vendor_seconds": 13,
+   "harness_wall_s": 52.9,
+   "harness_calls": [
+    {
+     "mode": "production",
+     "cost_usd": "0.005929",
+     "wall_s": 66.1
+    },
+    {
+     "mode": "diagnostic_max_out_12000",
+     "cost_usd": "0.006222",
+     "wall_s": 52.9
+    }
+   ],
+   "analysis": {
+    "id": "f6aee603-e8ae-4638-9b34-17e663664763",
+    "status": "ok",
+    "error_code": null,
+    "model_calls": 2,
+    "attempts": 2,
+    "model_id": "claude-haiku-5-5",
+    "model_revision": "claude-haiku-5-5",
+    "prompt_version": "reel-sheet-prompt-7",
+    "schema_version": "reel-sheet-schema-3",
+    "detector_version": "luma-diff-hist-1",
+    "sampling_version": "shots-2x-anchors-1",
+    "sampling_params": {
+     "box": [
+      720,
+      1280
+     ],
+     "anchors": [
+      0.0,
+      1.0,
+      3.0
+     ],
+     "detector": {
+      "ratio": 3.0,
+      "hist_bins": 32,
+      "min_score": 12.0,
+      "thumb_width": 64,
+      "median_floor": 1.5,
+      "repeat_score": 0.5,
+      "min_hist_score": 20.0,
+      "window_seconds": 1.0,
+      "min_shot_seconds": 0.3
+     },
+     "positions": [
+      0.15,
+      0.85
+     ],
+     "max_frames": 32,
+     "frames_sent": 24,
+     "max_seconds": 60.0,
+     "jpeg_quality": 85,
+     "analysis_version": 6,
+     "two_frames_min_s": 1.0
+    },
+    "input_tokens": 68212,
+    "output_tokens": 12186,
+    "cost_usd": 0.012151,
+    "source_seconds": 13.233,
+    "width": 720,
+    "height": 1280,
+    "fps": 30.0,
+    "covered_from_s": 0.0,
+    "covered_to_s": 13.3,
+    "edit_eligible": true,
+    "transcript_source": "vendor_stt",
+    "created_at": "2026-11-05T18:35:11.755279+00:00",
+    "finished_at": "2026-11-05T18:49:19.678211+00:00",
+    "row_seconds": 847.922932
+   },
+   "shots": [
+    {
+     "shot_index": 0,
+     "start_s": 0.0,
+     "end_s": 0.8,
+     "frame_times_s": [
+      0,
+      0.4
+     ],
+     "people_presence": "not_observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 1,
+     "start_s": 0.8,
+     "end_s": 1.8,
+     "frame_times_s": [
+      0.9667,
+      1,
+      1.6667
+     ],
+     "people_presence": "not_observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 2,
+     "start_s": 1.8,
+     "end_s": 3.1,
+     "frame_times_s": [
+      2,
+      2.9333,
+      3
+     ],
+     "people_presence": "observed",
+     "visible_faces": "unknown",
+     "has_speech": true
+    },
+    {
+     "shot_index": 3,
+     "start_s": 3.1,
+     "end_s": 4.367,
+     "frame_times_s": [
+      3.3,
+      4.2
+     ],
+     "people_presence": "not_observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 4,
+     "start_s": 4.367,
+     "end_s": 5.433,
+     "frame_times_s": [
+      4.5333,
+      5.3
+     ],
+     "people_presence": "observed",
+     "visible_faces": "unknown",
+     "has_speech": false
+    },
+    {
+     "shot_index": 5,
+     "start_s": 5.433,
+     "end_s": 6.9,
+     "frame_times_s": [
+      5.6667,
+      6.7
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 6,
+     "start_s": 6.9,
+     "end_s": 8.133,
+     "frame_times_s": [
+      7.1,
+      7.9667
+     ],
+     "people_presence": "not_observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 7,
+     "start_s": 8.133,
+     "end_s": 9.367,
+     "frame_times_s": [
+      8.3333,
+      9.2
+     ],
+     "people_presence": "not_observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 8,
+     "start_s": 9.367,
+     "end_s": 10.633,
+     "frame_times_s": [
+      9.5667,
+      10.4667
+     ],
+     "people_presence": "not_observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 9,
+     "start_s": 10.633,
+     "end_s": 11.833,
+     "frame_times_s": [
+      10.8333,
+      11.6667
+     ],
+     "people_presence": "observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 10,
+     "start_s": 11.833,
+     "end_s": 13.233,
+     "frame_times_s": [
+      12.0667,
+      13.0333
+     ],
+     "people_presence": "observed",
+     "visible_faces": "unknown",
+     "has_speech": false
+    }
+   ],
+   "detector_only_shots": null
+  },
+  {
+   "post_id": "De9ffXrO_15",
+   "handle": "beautifuldestinations",
+   "network": "instagram",
+   "category": "viajes",
+   "people_guess_cover": "si",
+   "url": "https://www.instagram.com/reel/De9ffXrO_15/",
+   "vendor_seconds": 13,
+   "harness_wall_s": 36.8,
+   "harness_calls": [
+    {
+     "mode": "production",
+     "cost_usd": "0.005319",
+     "wall_s": 54.2
+    },
+    {
+     "mode": "diagnostic_max_out_12000",
+     "cost_usd": "0.005486",
+     "wall_s": 36.8
+    }
+   ],
+   "analysis": {
+    "id": "41dcb240-8d22-4764-8284-3fe4d956d091",
+    "status": "ok",
+    "error_code": null,
+    "model_calls": 2,
+    "attempts": 2,
+    "model_id": "claude-haiku-5-5",
+    "model_revision": "claude-haiku-5-5",
+    "prompt_version": "reel-sheet-prompt-7",
+    "schema_version": "reel-sheet-schema-3",
+    "detector_version": "luma-diff-hist-1",
+    "sampling_version": "shots-2x-anchors-1",
+    "sampling_params": {
+     "box": [
+      720,
+      1280
+     ],
+     "anchors": [
+      0.0,
+      1.0,
+      3.0
+     ],
+     "detector": {
+      "ratio": 3.0,
+      "hist_bins": 32,
+      "min_score": 12.0,
+      "thumb_width": 64,
+      "median_floor": 1.5,
+      "repeat_score": 0.5,
+      "min_hist_score": 20.0,
+      "window_seconds": 1.0,
+      "min_shot_seconds": 0.3
+     },
+     "positions": [
+      0.15,
+      0.85
+     ],
+     "max_frames": 32,
+     "frames_sent": 19,
+     "max_seconds": 60.0,
+     "jpeg_quality": 85,
+     "analysis_version": 6,
+     "two_frames_min_s": 1.0
+    },
+    "input_tokens": 56022,
+    "output_tokens": 11933,
+    "cost_usd": 0.010805,
+    "source_seconds": 12.72,
+    "width": 720,
+    "height": 1280,
+    "fps": 25.0,
+    "covered_from_s": 0.0,
+    "covered_to_s": 12.8,
+    "edit_eligible": true,
+    "transcript_source": "vendor_stt",
+    "created_at": "2026-11-05T18:36:18.09282+00:00",
+    "finished_at": "2026-11-05T18:49:56.698498+00:00",
+    "row_seconds": 818.605678
+   },
+   "shots": [
+    {
+     "shot_index": 0,
+     "start_s": 0.0,
+     "end_s": 0.64,
+     "frame_times_s": [
+      0,
+      0.32
+     ],
+     "people_presence": "not_observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 1,
+     "start_s": 0.64,
+     "end_s": 1.32,
+     "frame_times_s": [
+      1,
+      1
+     ],
+     "people_presence": "not_observed",
+     "visible_faces": "not_observed",
+     "has_speech": true
+    },
+    {
+     "shot_index": 2,
+     "start_s": 1.32,
+     "end_s": 2.12,
+     "frame_times_s": [
+      1.72
+     ],
+     "people_presence": "observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 3,
+     "start_s": 2.12,
+     "end_s": 2.92,
+     "frame_times_s": [
+      2.52
+     ],
+     "people_presence": "observed",
+     "visible_faces": "unknown",
+     "has_speech": true
+    },
+    {
+     "shot_index": 4,
+     "start_s": 2.92,
+     "end_s": 4.4,
+     "frame_times_s": [
+      3,
+      3.16,
+      4.2
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 5,
+     "start_s": 4.4,
+     "end_s": 5.8,
+     "frame_times_s": [
+      4.64,
+      5.6
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": true
+    },
+    {
+     "shot_index": 6,
+     "start_s": 5.8,
+     "end_s": 7.2,
+     "frame_times_s": [
+      6.04,
+      7
+     ],
+     "people_presence": "observed",
+     "visible_faces": "not_observed",
+     "has_speech": true
+    },
+    {
+     "shot_index": 7,
+     "start_s": 7.2,
+     "end_s": 8.56,
+     "frame_times_s": [
+      7.44,
+      8.36
+     ],
+     "people_presence": "observed",
+     "visible_faces": "unknown",
+     "has_speech": true
+    },
+    {
+     "shot_index": 8,
+     "start_s": 8.56,
+     "end_s": 9.92,
+     "frame_times_s": [
+      8.8,
+      9.72
+     ],
+     "people_presence": "not_observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 9,
+     "start_s": 9.92,
+     "end_s": 12.72,
+     "frame_times_s": [
+      10.36,
+      12.32
+     ],
+     "people_presence": "observed",
+     "visible_faces": "not_observed",
+     "has_speech": true
+    }
+   ],
+   "detector_only_shots": null
+  },
+  {
+   "post_id": "7704417191021645078",
+   "handle": "midudev",
+   "network": "tiktok",
+   "category": "educacion",
+   "people_guess_cover": "?",
+   "url": "https://www.tiktok.com/@midudev/video/7704417191021645078",
+   "vendor_seconds": 24,
+   "harness_wall_s": 34.1,
+   "harness_calls": [
+    {
+     "mode": "production",
+     "cost_usd": "0.004703",
+     "wall_s": 53.8
+    },
+    {
+     "mode": "diagnostic_max_out_12000",
+     "cost_usd": "0.004858",
+     "wall_s": 34.1
+    }
+   ],
+   "analysis": {
+    "id": "4ebb18c1-4bfd-45c0-8091-fcb655ef3c0a",
+    "status": "ok",
+    "error_code": null,
+    "model_calls": 2,
+    "attempts": 2,
+    "model_id": "claude-haiku-5-5",
+    "model_revision": "claude-haiku-5-5",
+    "prompt_version": "reel-sheet-prompt-7",
+    "schema_version": "reel-sheet-schema-3",
+    "detector_version": "luma-diff-hist-1",
+    "sampling_version": "shots-2x-anchors-1",
+    "sampling_params": {
+     "box": [
+      720,
+      1280
+     ],
+     "anchors": [
+      0.0,
+      1.0,
+      3.0
+     ],
+     "detector": {
+      "ratio": 3.0,
+      "hist_bins": 32,
+      "min_score": 12.0,
+      "thumb_width": 64,
+      "median_floor": 1.5,
+      "repeat_score": 0.5,
+      "min_hist_score": 20.0,
+      "window_seconds": 1.0,
+      "min_shot_seconds": 0.3
+     },
+     "positions": [
+      0.15,
+      0.85
+     ],
+     "max_frames": 32,
+     "frames_sent": 21,
+     "max_seconds": 60.0,
+     "jpeg_quality": 85,
+     "analysis_version": 6,
+     "two_frames_min_s": 1.0
+    },
+    "input_tokens": 43694,
+    "output_tokens": 11911,
+    "cost_usd": 0.009561,
+    "source_seconds": 23.633,
+    "width": 576,
+    "height": 1024,
+    "fps": 30.0,
+    "covered_from_s": 0.0,
+    "covered_to_s": 23.7,
+    "edit_eligible": true,
+    "transcript_source": "tiktok_vtt",
+    "created_at": "2026-11-05T18:37:12.545514+00:00",
+    "finished_at": "2026-11-05T18:50:30.999587+00:00",
+    "row_seconds": 798.454073
+   },
+   "shots": [
+    {
+     "shot_index": 0,
+     "start_s": 0.0,
+     "end_s": 4.1,
+     "frame_times_s": [
+      0,
+      0.6333,
+      1,
+      3,
+      3.5
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": true
+    },
+    {
+     "shot_index": 1,
+     "start_s": 4.1,
+     "end_s": 4.833,
+     "frame_times_s": [
+      4.4667
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 2,
+     "start_s": 4.833,
+     "end_s": 5.433,
+     "frame_times_s": [
+      5.1333
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 3,
+     "start_s": 5.433,
+     "end_s": 5.833,
+     "frame_times_s": [
+      5.6333
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 4,
+     "start_s": 5.833,
+     "end_s": 6.767,
+     "frame_times_s": [
+      6.3
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": true
+    },
+    {
+     "shot_index": 5,
+     "start_s": 6.767,
+     "end_s": 7.1,
+     "frame_times_s": [
+      6.9667
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 6,
+     "start_s": 7.1,
+     "end_s": 7.6,
+     "frame_times_s": [
+      7.3667
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 7,
+     "start_s": 7.6,
+     "end_s": 8.367,
+     "frame_times_s": [
+      8
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 8,
+     "start_s": 8.367,
+     "end_s": 10.133,
+     "frame_times_s": [
+      8.6333,
+      9.9
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": true
+    },
+    {
+     "shot_index": 9,
+     "start_s": 10.133,
+     "end_s": 14.333,
+     "frame_times_s": [
+      10.7667,
+      13.7333
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": true
+    },
+    {
+     "shot_index": 10,
+     "start_s": 14.333,
+     "end_s": 15.267,
+     "frame_times_s": [
+      14.8
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 11,
+     "start_s": 15.267,
+     "end_s": 17.1,
+     "frame_times_s": [
+      15.5667,
+      16.8333
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": true
+    },
+    {
+     "shot_index": 12,
+     "start_s": 17.1,
+     "end_s": 23.633,
+     "frame_times_s": [
+      18.1,
+      22.6667
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": true
+    }
+   ],
+   "detector_only_shots": null
+  },
+  {
+   "post_id": "7702633972072828190",
+   "handle": "blogilates",
+   "network": "tiktok",
+   "category": "fitness",
+   "people_guess_cover": "?",
+   "url": "https://www.tiktok.com/@blogilates/video/7702633972072828190",
+   "vendor_seconds": 52,
+   "harness_wall_s": 73.2,
+   "harness_calls": [
+    {
+     "mode": "production",
+     "cost_usd": "0.007042",
+     "wall_s": 80.5
+    },
+    {
+     "mode": "diagnostic_max_out_12000",
+     "cost_usd": "0.010142",
+     "wall_s": 73.2
+    }
+   ],
+   "analysis": {
+    "id": "5633e9cf-872a-498a-8d42-2947963ff684",
+    "status": "queued",
+    "error_code": "model_failed",
+    "model_calls": 2,
+    "attempts": 2,
+    "model_id": null,
+    "model_revision": null,
+    "prompt_version": null,
+    "schema_version": null,
+    "detector_version": null,
+    "sampling_version": null,
+    "sampling_params": null,
+    "input_tokens": 90476,
+    "output_tokens": 17800,
+    "cost_usd": 0.017184,
+    "source_seconds": 51.7,
+    "width": 720,
+    "height": 1280,
+    "fps": 30.0,
+    "covered_from_s": 0.0,
+    "covered_to_s": 51.767,
+    "edit_eligible": true,
+    "transcript_source": "tiktok_vtt",
+    "created_at": "2026-11-05T18:38:06.558179+00:00",
+    "finished_at": null,
+    "row_seconds": null
+   },
+   "shots": [],
+   "detector_only_shots": [
+    {
+     "shot_index": 0,
+     "start_s": 0.0,
+     "end_s": 0.6
+    },
+    {
+     "shot_index": 1,
+     "start_s": 0.6,
+     "end_s": 1.1
+    },
+    {
+     "shot_index": 2,
+     "start_s": 1.1,
+     "end_s": 1.6
+    },
+    {
+     "shot_index": 3,
+     "start_s": 1.6,
+     "end_s": 2.767
+    },
+    {
+     "shot_index": 4,
+     "start_s": 2.767,
+     "end_s": 3.933
+    },
+    {
+     "shot_index": 5,
+     "start_s": 3.933,
+     "end_s": 5.367
+    },
+    {
+     "shot_index": 6,
+     "start_s": 5.367,
+     "end_s": 6.067
+    },
+    {
+     "shot_index": 7,
+     "start_s": 6.067,
+     "end_s": 8.1
+    },
+    {
+     "shot_index": 8,
+     "start_s": 8.1,
+     "end_s": 8.8
+    },
+    {
+     "shot_index": 9,
+     "start_s": 8.8,
+     "end_s": 11.467
+    },
+    {
+     "shot_index": 10,
+     "start_s": 11.467,
+     "end_s": 13.633
+    },
+    {
+     "shot_index": 11,
+     "start_s": 13.633,
+     "end_s": 15.0
+    },
+    {
+     "shot_index": 12,
+     "start_s": 15.0,
+     "end_s": 16.667
+    },
+    {
+     "shot_index": 13,
+     "start_s": 16.667,
+     "end_s": 18.733
+    },
+    {
+     "shot_index": 14,
+     "start_s": 18.733,
+     "end_s": 19.3
+    },
+    {
+     "shot_index": 15,
+     "start_s": 19.3,
+     "end_s": 21.567
+    },
+    {
+     "shot_index": 16,
+     "start_s": 21.567,
+     "end_s": 22.167
+    },
+    {
+     "shot_index": 17,
+     "start_s": 22.167,
+     "end_s": 23.3
+    },
+    {
+     "shot_index": 18,
+     "start_s": 23.3,
+     "end_s": 24.167
+    },
+    {
+     "shot_index": 19,
+     "start_s": 24.167,
+     "end_s": 24.8
+    },
+    {
+     "shot_index": 20,
+     "start_s": 24.8,
+     "end_s": 25.8
+    },
+    {
+     "shot_index": 21,
+     "start_s": 25.8,
+     "end_s": 26.333
+    },
+    {
+     "shot_index": 22,
+     "start_s": 26.333,
+     "end_s": 26.733
+    },
+    {
+     "shot_index": 23,
+     "start_s": 26.733,
+     "end_s": 27.267
+    },
+    {
+     "shot_index": 24,
+     "start_s": 27.267,
+     "end_s": 27.933
+    },
+    {
+     "shot_index": 25,
+     "start_s": 27.933,
+     "end_s": 28.667
+    },
+    {
+     "shot_index": 26,
+     "start_s": 28.667,
+     "end_s": 29.233
+    },
+    {
+     "shot_index": 27,
+     "start_s": 29.233,
+     "end_s": 29.767
+    },
+    {
+     "shot_index": 28,
+     "start_s": 29.767,
+     "end_s": 30.467
+    },
+    {
+     "shot_index": 29,
+     "start_s": 30.467,
+     "end_s": 31.2
+    },
+    {
+     "shot_index": 30,
+     "start_s": 31.2,
+     "end_s": 31.733
+    },
+    {
+     "shot_index": 31,
+     "start_s": 31.733,
+     "end_s": 32.6
+    },
+    {
+     "shot_index": 32,
+     "start_s": 32.6,
+     "end_s": 33.0
+    },
+    {
+     "shot_index": 33,
+     "start_s": 33.0,
+     "end_s": 33.8
+    },
+    {
+     "shot_index": 34,
+     "start_s": 33.8,
+     "end_s": 34.6
+    },
+    {
+     "shot_index": 35,
+     "start_s": 34.6,
+     "end_s": 35.6
+    },
+    {
+     "shot_index": 36,
+     "start_s": 35.6,
+     "end_s": 36.3
+    },
+    {
+     "shot_index": 37,
+     "start_s": 36.3,
+     "end_s": 37.367
+    },
+    {
+     "shot_index": 38,
+     "start_s": 37.367,
+     "end_s": 38.233
+    },
+    {
+     "shot_index": 39,
+     "start_s": 38.233,
+     "end_s": 40.733
+    },
+    {
+     "shot_index": 40,
+     "start_s": 40.733,
+     "end_s": 42.733
+    },
+    {
+     "shot_index": 41,
+     "start_s": 42.733,
+     "end_s": 43.7
+    },
+    {
+     "shot_index": 42,
+     "start_s": 43.7,
+     "end_s": 45.667
+    },
+    {
+     "shot_index": 43,
+     "start_s": 45.667,
+     "end_s": 46.1
+    },
+    {
+     "shot_index": 44,
+     "start_s": 46.1,
+     "end_s": 47.867
+    },
+    {
+     "shot_index": 45,
+     "start_s": 47.867,
+     "end_s": 49.0
+    },
+    {
+     "shot_index": 46,
+     "start_s": 49.0,
+     "end_s": 51.7
+    }
+   ]
+  },
+  {
+   "post_id": "7703998863132265751",
+   "handle": "zara",
+   "network": "tiktok",
+   "category": "ropa",
+   "people_guess_cover": "?",
+   "url": "https://www.tiktok.com/@zara/video/7703998863132265751",
+   "vendor_seconds": 15,
+   "harness_wall_s": 54.9,
+   "harness_calls": [
+    {
+     "mode": "production",
+     "cost_usd": "0.004106",
+     "wall_s": 54.9
+    }
+   ],
+   "analysis": {
+    "id": "e4227688-e8e3-43f1-b34b-3316b4a8337c",
+    "status": "ok",
+    "error_code": null,
+    "model_calls": 1,
+    "attempts": 1,
+    "model_id": "claude-haiku-5-5",
+    "model_revision": "claude-haiku-5-5",
+    "prompt_version": "reel-sheet-prompt-7",
+    "schema_version": "reel-sheet-schema-3",
+    "detector_version": "luma-diff-hist-1",
+    "sampling_version": "shots-2x-anchors-1",
+    "sampling_params": {
+     "box": [
+      720,
+      1280
+     ],
+     "anchors": [
+      0.0,
+      1.0,
+      3.0
+     ],
+     "detector": {
+      "ratio": 3.0,
+      "hist_bins": 32,
+      "min_score": 12.0,
+      "thumb_width": 64,
+      "median_floor": 1.5,
+      "repeat_score": 0.5,
+      "min_hist_score": 20.0,
+      "window_seconds": 1.0,
+      "min_shot_seconds": 0.3
+     },
+     "positions": [
+      0.15,
+      0.85
+     ],
+     "max_frames": 32,
+     "frames_sent": 18,
+     "max_seconds": 60.0,
+     "jpeg_quality": 85,
+     "analysis_version": 6,
+     "two_frames_min_s": 1.0
+    },
+    "input_tokens": 19152,
+    "output_tokens": 5146,
+    "cost_usd": 0.004106,
+    "source_seconds": 14.667,
+    "width": 576,
+    "height": 1024,
+    "fps": 30.0,
+    "covered_from_s": 0.0,
+    "covered_to_s": 14.733,
+    "edit_eligible": true,
+    "transcript_source": "tiktok_vtt",
+    "created_at": "2026-11-05T18:39:27.348902+00:00",
+    "finished_at": "2026-11-05T18:40:22.260977+00:00",
+    "row_seconds": 54.912075
+   },
+   "shots": [
+    {
+     "shot_index": 0,
+     "start_s": 0.0,
+     "end_s": 2.4,
+     "frame_times_s": [
+      0,
+      0.3667,
+      1,
+      2.0667
+     ],
+     "people_presence": "not_observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 1,
+     "start_s": 2.4,
+     "end_s": 5.5,
+     "frame_times_s": [
+      2.8667,
+      3,
+      5.0667
+     ],
+     "people_presence": "not_observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 2,
+     "start_s": 5.5,
+     "end_s": 5.9,
+     "frame_times_s": [
+      5.7
+     ],
+     "people_presence": "not_observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 3,
+     "start_s": 5.9,
+     "end_s": 7.5,
+     "frame_times_s": [
+      6.1667,
+      7.2667
+     ],
+     "people_presence": "observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 4,
+     "start_s": 7.5,
+     "end_s": 8.6,
+     "frame_times_s": [
+      7.6667,
+      8.4667
+     ],
+     "people_presence": "not_observed",
+     "visible_faces": "not_observed",
+     "has_speech": true
+    },
+    {
+     "shot_index": 5,
+     "start_s": 8.6,
+     "end_s": 9.0,
+     "frame_times_s": [
+      8.8
+     ],
+     "people_presence": "not_observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 6,
+     "start_s": 9.0,
+     "end_s": 12.533,
+     "frame_times_s": [
+      9.5333,
+      12.0333
+     ],
+     "people_presence": "observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 7,
+     "start_s": 12.533,
+     "end_s": 12.967,
+     "frame_times_s": [
+      12.7667
+     ],
+     "people_presence": "observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 8,
+     "start_s": 12.967,
+     "end_s": 14.667,
+     "frame_times_s": [
+      13.2333,
+      14.4333
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": false
+    }
+   ],
+   "detector_only_shots": null
+  },
+  {
+   "post_id": "7703559161040211233",
+   "handle": "beautifuldestinations",
+   "network": "tiktok",
+   "category": "viajes",
+   "people_guess_cover": "?",
+   "url": "https://www.tiktok.com/@beautifuldestinations/video/7703559161040211233",
+   "vendor_seconds": 16,
+   "harness_wall_s": 34.5,
+   "harness_calls": [
+    {
+     "mode": "production",
+     "cost_usd": "0.004916",
+     "wall_s": 67.5
+    },
+    {
+     "mode": "diagnostic_max_out_12000",
+     "cost_usd": "0.004807",
+     "wall_s": 34.5
+    }
+   ],
+   "analysis": {
+    "id": "f8aad318-a7e6-46bd-94af-ad6619ae1813",
+    "status": "ok",
+    "error_code": null,
+    "model_calls": 2,
+    "attempts": 2,
+    "model_id": "claude-haiku-5-5",
+    "model_revision": "claude-haiku-5-5",
+    "prompt_version": "reel-sheet-prompt-7",
+    "schema_version": "reel-sheet-schema-3",
+    "detector_version": "luma-diff-hist-1",
+    "sampling_version": "shots-2x-anchors-1",
+    "sampling_params": {
+     "box": [
+      720,
+      1280
+     ],
+     "anchors": [
+      0.0,
+      1.0,
+      3.0
+     ],
+     "detector": {
+      "ratio": 3.0,
+      "hist_bins": 32,
+      "min_score": 12.0,
+      "thumb_width": 64,
+      "median_floor": 1.5,
+      "repeat_score": 0.5,
+      "min_hist_score": 20.0,
+      "window_seconds": 1.0,
+      "min_shot_seconds": 0.3
+     },
+     "positions": [
+      0.15,
+      0.85
+     ],
+     "max_frames": 32,
+     "frames_sent": 24,
+     "max_seconds": 60.0,
+     "jpeg_quality": 85,
+     "analysis_version": 6,
+     "two_frames_min_s": 1.0
+    },
+    "input_tokens": 47948,
+    "output_tokens": 11382,
+    "cost_usd": 0.009723,
+    "source_seconds": 16.0,
+    "width": 576,
+    "height": 1024,
+    "fps": 30.0,
+    "covered_from_s": 0.0,
+    "covered_to_s": 16.067,
+    "edit_eligible": true,
+    "transcript_source": "none",
+    "created_at": "2026-11-05T18:40:22.526803+00:00",
+    "finished_at": "2026-11-05T18:52:19.19492+00:00",
+    "row_seconds": 716.668117
+   },
+   "shots": [
+    {
+     "shot_index": 0,
+     "start_s": 0.0,
+     "end_s": 1.6,
+     "frame_times_s": [
+      0,
+      0.2667,
+      1,
+      1.3667
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 1,
+     "start_s": 1.6,
+     "end_s": 2.967,
+     "frame_times_s": [
+      1.8333,
+      2.7667
+     ],
+     "people_presence": "not_observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 2,
+     "start_s": 2.967,
+     "end_s": 4.3,
+     "frame_times_s": [
+      3,
+      3.2,
+      4.1333
+     ],
+     "people_presence": "observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 3,
+     "start_s": 4.3,
+     "end_s": 6.2,
+     "frame_times_s": [
+      4.6,
+      5.9333
+     ],
+     "people_presence": "observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 4,
+     "start_s": 6.2,
+     "end_s": 7.9,
+     "frame_times_s": [
+      6.4667,
+      7.6667
+     ],
+     "people_presence": "not_observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 5,
+     "start_s": 7.9,
+     "end_s": 9.167,
+     "frame_times_s": [
+      8.1,
+      9
+     ],
+     "people_presence": "not_observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 6,
+     "start_s": 9.167,
+     "end_s": 10.467,
+     "frame_times_s": [
+      9.3667,
+      10.3
+     ],
+     "people_presence": "not_observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 7,
+     "start_s": 10.467,
+     "end_s": 11.9,
+     "frame_times_s": [
+      10.7,
+      11.7
+     ],
+     "people_presence": "observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 8,
+     "start_s": 11.9,
+     "end_s": 12.7,
+     "frame_times_s": [
+      12.3
+     ],
+     "people_presence": "not_observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 9,
+     "start_s": 12.7,
+     "end_s": 14.433,
+     "frame_times_s": [
+      12.9667,
+      14.2
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 10,
+     "start_s": 14.433,
+     "end_s": 16.0,
+     "frame_times_s": [
+      14.7,
+      15.7667
+     ],
+     "people_presence": "observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    }
+   ],
+   "detector_only_shots": null
+  },
+  {
+   "post_id": "7703284420895116552",
+   "handle": "2foodies.ve",
+   "network": "tiktok",
+   "category": "comida",
+   "people_guess_cover": "?",
+   "url": "https://www.tiktok.com/@2foodies.ve/video/7703284420895116552",
+   "vendor_seconds": 28,
+   "harness_wall_s": 53.9,
+   "harness_calls": [
+    {
+     "mode": "production",
+     "cost_usd": "0.005526",
+     "wall_s": 91.3
+    },
+    {
+     "mode": "diagnostic_max_out_12000",
+     "cost_usd": "0.007569",
+     "wall_s": 53.9
+    }
+   ],
+   "analysis": {
+    "id": "1498ee4a-0ecb-4137-af02-b7ee142ac4b3",
+    "status": "ok",
+    "error_code": null,
+    "model_calls": 2,
+    "attempts": 2,
+    "model_id": "claude-haiku-5-5",
+    "model_revision": "claude-haiku-5-5",
+    "prompt_version": "reel-sheet-prompt-7",
+    "schema_version": "reel-sheet-schema-3",
+    "detector_version": "luma-diff-hist-1",
+    "sampling_version": "shots-2x-anchors-1",
+    "sampling_params": {
+     "box": [
+      720,
+      1280
+     ],
+     "anchors": [
+      0.0,
+      1.0,
+      3.0
+     ],
+     "detector": {
+      "ratio": 3.0,
+      "hist_bins": 32,
+      "min_score": 12.0,
+      "thumb_width": 64,
+      "median_floor": 1.5,
+      "repeat_score": 0.5,
+      "min_hist_score": 20.0,
+      "window_seconds": 1.0,
+      "min_shot_seconds": 0.3
+     },
+     "positions": [
+      0.15,
+      0.85
+     ],
+     "max_frames": 32,
+     "frames_sent": 31,
+     "max_seconds": 60.0,
+     "jpeg_quality": 85,
+     "analysis_version": 6,
+     "two_frames_min_s": 1.0
+    },
+    "input_tokens": 60150,
+    "output_tokens": 15686,
+    "cost_usd": 0.013095,
+    "source_seconds": 28.4,
+    "width": 576,
+    "height": 1024,
+    "fps": 30.0,
+    "covered_from_s": 0.0,
+    "covered_to_s": 28.467,
+    "edit_eligible": true,
+    "transcript_source": "tiktok_vtt",
+    "created_at": "2026-11-05T18:41:30.276832+00:00",
+    "finished_at": "2026-11-05T18:53:13.371804+00:00",
+    "row_seconds": 703.094972
+   },
+   "shots": [
+    {
+     "shot_index": 0,
+     "start_s": 0.0,
+     "end_s": 0.967,
+     "frame_times_s": [
+      0,
+      0.5
+     ],
+     "people_presence": "observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 1,
+     "start_s": 0.967,
+     "end_s": 1.967,
+     "frame_times_s": [
+      1,
+      1.5
+     ],
+     "people_presence": "observed",
+     "visible_faces": "not_observed",
+     "has_speech": true
+    },
+    {
+     "shot_index": 2,
+     "start_s": 1.967,
+     "end_s": 4.9,
+     "frame_times_s": [
+      2.4333,
+      3,
+      4.4667
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": true
+    },
+    {
+     "shot_index": 3,
+     "start_s": 4.9,
+     "end_s": 6.267,
+     "frame_times_s": [
+      5.1333,
+      6.0667
+     ],
+     "people_presence": "observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 4,
+     "start_s": 6.267,
+     "end_s": 7.533,
+     "frame_times_s": [
+      6.4667,
+      7.3667
+     ],
+     "people_presence": "observed",
+     "visible_faces": "not_observed",
+     "has_speech": true
+    },
+    {
+     "shot_index": 5,
+     "start_s": 7.533,
+     "end_s": 11.0,
+     "frame_times_s": [
+      8.0667,
+      10.5
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": true
+    },
+    {
+     "shot_index": 6,
+     "start_s": 11.0,
+     "end_s": 11.933,
+     "frame_times_s": [
+      11.4667
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 7,
+     "start_s": 11.933,
+     "end_s": 13.067,
+     "frame_times_s": [
+      12.1333,
+      12.9
+     ],
+     "people_presence": "not_observed",
+     "visible_faces": "not_observed",
+     "has_speech": true
+    },
+    {
+     "shot_index": 8,
+     "start_s": 13.067,
+     "end_s": 17.4,
+     "frame_times_s": [
+      13.7333,
+      16.7667
+     ],
+     "people_presence": "observed",
+     "visible_faces": "not_observed",
+     "has_speech": true
+    },
+    {
+     "shot_index": 9,
+     "start_s": 17.4,
+     "end_s": 19.067,
+     "frame_times_s": [
+      17.6667,
+      18.8333
+     ],
+     "people_presence": "observed",
+     "visible_faces": "not_observed",
+     "has_speech": true
+    },
+    {
+     "shot_index": 10,
+     "start_s": 19.067,
+     "end_s": 20.6,
+     "frame_times_s": [
+      19.3,
+      20.4
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 11,
+     "start_s": 20.6,
+     "end_s": 22.333,
+     "frame_times_s": [
+      20.8667,
+      22.1
+     ],
+     "people_presence": "observed",
+     "visible_faces": "not_observed",
+     "has_speech": true
+    },
+    {
+     "shot_index": 12,
+     "start_s": 22.333,
+     "end_s": 24.4,
+     "frame_times_s": [
+      22.6667,
+      24.1
+     ],
+     "people_presence": "not_observed",
+     "visible_faces": "not_observed",
+     "has_speech": true
+    },
+    {
+     "shot_index": 13,
+     "start_s": 24.4,
+     "end_s": 27.3,
+     "frame_times_s": [
+      24.8667,
+      26.8667
+     ],
+     "people_presence": "not_observed",
+     "visible_faces": "not_observed",
+     "has_speech": true
+    },
+    {
+     "shot_index": 14,
+     "start_s": 27.3,
+     "end_s": 28.367,
+     "frame_times_s": [
+      27.4667,
+      28.2333
+     ],
+     "people_presence": "observed",
+     "visible_faces": "observed",
+     "has_speech": false
+    },
+    {
+     "shot_index": 15,
+     "start_s": 28.367,
+     "end_s": 28.4,
+     "frame_times_s": [
+      28.3667
+     ],
+     "people_presence": "not_observed",
+     "visible_faces": "not_observed",
+     "has_speech": false
+    }
+   ],
+   "detector_only_shots": null
+  }
+ ]
+}

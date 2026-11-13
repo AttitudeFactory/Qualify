@@ -17,7 +17,7 @@ Qualify is a multi-tenant marketing CRM (Reflex UI + FastAPI-backed modular mono
 - `uv run reflex run` — launch the CRM. Reflex loads `.env` only because `rxconfig.py` sets `env_file=".env"`; production overrides config via `REFLEX_<FIELD>` env vars.
 - `just ci-lint` then `just ci-test` — CI mirrors of the lint and offline-test steps; run both before pushing. `just lint` / `just fmt` modify files.
 - `just test` — unit + db, offline; the db tests need the compose stack (`just up`). `just test-db` — only `db`-marked tests. `just test-fresh` — reset `qualify_test` first. Single test: `uv run pytest path/to/test_file.py::test_name`.
-- `just merge <pr>` — the merge gate (GitHub Free has no branch protection): refuses unless required checks are green. `--admin` is a logged contingency only.
+- `just merge <pr>` — the merge gate (GitHub Free has no branch protection): refuses unless required checks are green and the PR's migrations still sit on top of `main` (`just migration-guard`, not bypassed by `--admin`). `--admin` is a logged contingency only; `--check-only` runs the gate without merging.
 - Renderer: in `packages/render/`, `npm install`, `npm run typecheck`, `npm run bundle`; or `just render-dev` (Remotion Studio), `just render-smoke`.
 - Always `uv`, never `pip`/`conda`. Many justfile recipes use `uv run --no-sync` on purpose — a stray `uv sync` with different groups can disrupt the shared `.venv`.
 

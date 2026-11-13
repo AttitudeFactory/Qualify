@@ -199,7 +199,26 @@ def test_every_failure_reason_maps_to_action() -> None:
         vm = failure_vm(reason.value)
         assert vm is not None
         assert vm.label and not vm.label.startswith("Falló la generación (")  # translated
-        assert vm.action_label  # a CONCRETE action, never empty
+        if reason.is_part_reason:
+            # VE-09: a part's own buttons come with UI-7 — never a dead text action
+            assert vm.action_label == "" and vm.action_route == ""
+        else:
+            assert vm.action_label  # a CONCRETE action, never empty
+
+
+def test_a_part_that_failed_on_our_side_says_so_not_the_template() -> None:
+    vm = failure_vm("part_failed")
+    assert vm is not None
+    assert vm.label == "No pudimos crear esta parte"
+    assert vm.action_label == "" and vm.action_route == ""
+    assert failure_vm("invalid_parameters").label.startswith("El texto o las fotos")
+
+
+def test_a_parts_failure_has_a_short_label_and_no_dead_action() -> None:
+    vm = failure_vm("refused_face")
+    assert vm is not None
+    assert vm.label == "Aparece una persona en esta parte"
+    assert vm.action_label == "" and vm.action_route == ""
 
 
 def test_failure_vm_none_and_unknown() -> None:
@@ -683,6 +702,7 @@ def test_the_draft_screen_reads_the_composition_warnings_of_the_draft(monkeypatc
     # «Descargar todo» (m-24828908) mints its own token: kept off the real Redis here
     monkeypatch.setattr(creative_provider, "issue_download_path", lambda t, d: "/piece-download/t")
     monkeypatch.setattr(creative_provider, "_brand_name", lambda t: "Marca")
+    monkeypatch.setattr(creative_provider, "_ad_destination_context", lambda t, b, k: (False, ""))
     cover = ImageRecord(
         id=uuid4(),
         media_url="generated/t/d/slide-1.png",
@@ -860,7 +880,9 @@ def test_every_screen_words_the_approval_notice_from_the_same_choice() -> None:
     kind, text, offer, offer_open = approval_notice(failed, elsewhere="Ábrela")
     assert (
         kind == "error"
-        and text == "No pudimos preparar el video final. Inténtalo de nuevo; no usa otro video."
+        and text
+        == "No pudimos preparar el video final. "
+        "Inténtalo de nuevo; no se descuentan segundos de tu mes."
     )
     assert "programarlo" not in text and offer is True
     assert offer_open is True  # m-24842981: «Ver publicación» goes with «Ábrela»
