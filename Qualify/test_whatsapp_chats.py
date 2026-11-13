@@ -146,7 +146,8 @@ def test_window_pill_open_is_ok_with_the_local_closing_time() -> None:
 
 def test_window_pill_closing_within_the_hour_is_warn_in_minutes() -> None:
     label, tone = window_pill(True, NOW + timedelta(minutes=41, seconds=10), NOW, ZONE)
-    assert (label, tone) == ("Responde en los próximos 42 min", "warn")
+    # m-25017844: one count for row and header, rounded down (41:10 → 41).
+    assert (label, tone) == ("Responde en los próximos 41 min", "warn")
     assert window_pill(True, NOW + timedelta(seconds=5), NOW, ZONE) == (
         "Responde en el próximo minuto",
         "warn",
@@ -200,7 +201,7 @@ def test_thread_row_maps_name_number_preview_unread_and_mode() -> None:
     assert row.subtitle == "+573001234567"
     assert row.preview == "¿Tienen domicilio?"
     assert row.time_label == "hace 5 min"
-    assert (row.unread_label, row.has_unread) == ("2", True)
+    assert row.has_unread  # m-25017844: the count left the row; the dot stays
     assert (row.window_tone, row.window_open) == ("ok", True)
     assert (row.mode_label, row.mode_tone) == ("Responde el menú", "neutral")
     assert row.agent_initials == ""
@@ -215,7 +216,7 @@ def test_thread_row_without_name_shows_the_number_and_outbound_prefix() -> None:
     assert row.title == "+573001234567"
     assert row.subtitle == ""
     assert row.preview == "Tú: ¿Tienen domicilio?"
-    assert row.unread_label == ""
+    assert not row.has_unread
 
 
 def test_thread_row_paused_assigned_and_closed() -> None:
