@@ -4,7 +4,7 @@ product already chosen.
 Pins:
 1. `catalog_vm` builds `/create?producto=<id>` and reads the id back only when it is a
    UUID (anything else is "", never an error).
-2. `/create` picks the product the URL names and skips the product screen — but only
+2. `/create` picks the product the URL names (m-24985141: in «Qué mostrar») — but only
    when the business's own catalog (read under RLS) lists it: another tenant's id, a
    deleted product or a malformed value leave the picker as it was, with no error.
 """
@@ -109,7 +109,7 @@ async def test_the_product_in_the_url_is_chosen_and_the_picker_answered(
     assert state.selected_product_id == _PRODUCT
     assert state.brief_product_ref == "Producto 2"
     assert state.selected_product_photo_key == f"uploads/{_PRODUCT}/a.jpg"
-    assert state.product_tab == "catalog" and state.product_confirmed is True
+    assert not state.media_drawer_open
     assert state.catalog_error == "" and state.create_error == ""
 
 
@@ -123,7 +123,7 @@ async def test_the_same_product_already_chosen_stays_chosen(
 
     await CreativeState.load_catalog_products.fn(state)
 
-    assert state.selected_product_id == _PRODUCT and state.product_confirmed is True
+    assert state.selected_product_id == _PRODUCT
 
 
 @pytest.mark.parametrize(
@@ -142,6 +142,6 @@ async def test_a_product_the_business_does_not_have_is_ignored_without_error(
 
     await CreativeState.load_catalog_products.fn(state)
 
-    assert state.selected_product_id == "" and state.product_confirmed is False
+    assert state.selected_product_id == ""
     assert state.catalog_error == "" and state.create_error == ""
     assert len(state.catalog_items) == 1

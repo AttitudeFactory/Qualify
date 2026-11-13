@@ -959,7 +959,24 @@ button.q-biz-trigger:disabled { cursor: progress; opacity: 0.8; }
   row-gap: 2px;
 }
 .q-step-back { grid-area: back; }
-.q-step-reason { grid-area: reason; justify-self: end; text-align: right; }
+.q-step-reason {
+  grid-area: reason;
+  justify-self: end;
+  text-align: right;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+/* m-24993023: a reason gets its own row, above the buttons and as wide as the foot. In
+   the old one-row layout a narrow panel squeezed its column to nothing and the text
+   spilled over «Atrás». Desktop only: the phone layout below already stacks it. */
+@media (min-width: 641px) {
+  .q-step-foot:has(> .q-step-reason) {
+    grid-template-areas:
+      "reason reason reason reason"
+      "back . later primary";
+  }
+}
 .q-step-later { grid-area: later; }
 /* Radix pulls a ghost button out with negative margins; in a grid cell it would overlap
    the row above. */
@@ -1003,6 +1020,24 @@ button.q-biz-trigger:disabled { cursor: progress; opacity: 0.8; }
 @media (prefers-reduced-motion: reduce) {
   .q-step-body > * { animation: none; }
   .q-step-bar-fill { transition: none; }
+}
+
+/* A narrow panel on a wide screen (a side pane, a split window) gets the phone's
+   stacked foot too: the slot is the container the foot measures. After the foot's base
+   rules (same specificity: the later one wins — `.q-step-primary`'s 9rem minimum). */
+.q-step-slot { container: q-step-slot / inline-size; }
+@container q-step-slot (max-width: 480px) {
+  .q-step-foot,
+  .q-step-foot:has(> .q-step-reason) {
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-areas:
+      "reason reason"
+      "back primary"
+      "later later";
+  }
+  .q-step-reason { justify-self: stretch; text-align: center; }
+  .q-step-primary { min-width: 0; width: 100%; }
+  .q-step-later { justify-self: center; min-height: 40px; }
 }
 
 @media (max-width: 640px) {
@@ -2003,6 +2038,74 @@ button.q-biz-trigger:disabled { cursor: progress; opacity: 0.8; }
   box-shadow: inset 0 1px 0 var(--q-control-hi), 0 6px 16px rgba(0, 0, 0, 0.14);
 }
 
+/* `.q-source-seg` (m-24985141): the generator's media sources — «Tus productos · Tu
+   Galería · Subir · Publicaciones · Inspiración» — on the same `lq-segmented`, with an
+   icon and a name. Width rule: never a sideways scroll, never a cut label. Radix sizes
+   the track `min-width: max-content` with equal columns (five names do not fit the
+   512 px drawer nor a 375 px phone: QA 2026-11-12/13), so here the track takes its row
+   and the columns their content; an option not chosen shows its icon only (its name is
+   in `aria-label`/`title`), the chosen one its icon and name. Radix's sliding indicator
+   assumes equal columns, so it is hidden and the chosen option wears the same glass tab
+   itself. */
+.radix-themes .rt-SegmentedControlRoot.q-source-seg {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  grid-auto-columns: auto;
+  height: auto;
+  min-height: 44px;
+}
+.radix-themes .q-source-seg .rt-SegmentedControlIndicator { display: none; }
+.radix-themes .q-source-seg .rt-SegmentedControlItem { min-width: 44px; min-height: 44px; }
+.radix-themes .q-source-seg .rt-SegmentedControlItem[data-state="on"] {
+  border-radius: var(--segmented-control-border-radius);
+  background: var(--segmented-control-indicator-background-color);
+  box-shadow: inset 0 1px 0 var(--q-control-hi), 0 6px 16px rgba(0, 0, 0, 0.14);
+}
+/* The icon to the LEFT of the name, on one line (QA 2026-11-13: it stacked above it):
+   Radix puts the children in two copies of the label (the active one and an absolutely
+   placed inactive one that keeps the width), so each copy lays them out in a row too. */
+.radix-themes .q-source-seg .rt-SegmentedControlItemLabel,
+.radix-themes .q-source-seg .rt-SegmentedControlItemLabelActive,
+.radix-themes .q-source-seg .rt-SegmentedControlItemLabelInactive {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  white-space: nowrap;
+}
+.radix-themes .q-source-seg .rt-SegmentedControlItemLabel svg {
+  display: inline-block;
+  flex-shrink: 0;
+}
+.radix-themes .q-source-seg .rt-SegmentedControlItem[data-state="off"] .q-source-seg__text {
+  display: none;
+}
+
+/* `.lq-avatar` / `.lq-avatar-stack` → Avatar (m-24985141, §9.3-1: brought in by the lote
+   that needed it — the side panel's «Producto» bubbles). The kit's values on our tokens:
+   38 px, round, a 2 px light edge, the accent gradient behind a missing picture, bold
+   0.8rem initials. In a stack each one overlaps the previous by a third of its diameter
+   (−13 px; the kit's −10 px read as barely touching, QA 2026-11-13); the 2 px edge is
+   what tells one bubble from the next. */
+.radix-themes .q-avatar-stack { display: flex; align-items: center; }
+.radix-themes .q-avatar-stack .rt-AvatarRoot {
+  width: 38px;
+  height: 38px;
+  flex-shrink: 0;
+  box-sizing: border-box;
+  overflow: hidden;
+  border: 2px solid var(--q-control-hi);
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--accent-9), var(--accent-7));
+  color: var(--accent-contrast);
+  font-size: 0.8rem;
+  font-weight: 800;
+}
+.radix-themes .q-avatar-stack .rt-AvatarFallback { color: var(--accent-contrast); }
+.radix-themes .q-avatar-stack .rt-AvatarRoot + .rt-AvatarRoot { margin-left: -13px; }
+
 /* `.q-seg-fit` on a phone (m-24820845) — the generator's Formato, Duración and source
    tabs, and Descubrir reels' period: Radix sizes the track `min-width: max-content`
    with equal columns, so four options measure four times the longest label (624 px for
@@ -2279,6 +2382,18 @@ button.q-biz-trigger:disabled { cursor: progress; opacity: 0.8; }
   background: var(--gray-a3);
   color: var(--gray-a8);
   box-shadow: none;
+  transform: none;
+  cursor: not-allowed;
+}
+/* m-24993023: a soft/outline/surface button kept focusable while unavailable
+   (`aria-disabled`, never native `disabled`, so a screen reader reaches its reason)
+   wears the same greys as a disabled primary — never a faded accent that reads as live.
+   `:hover` is listed so the soft skin's lift does not come back on a pointer. */
+.radix-themes :is(.rt-Button, .rt-IconButton).q-button-off,
+.radix-themes :is(.rt-Button, .rt-IconButton).q-button-off:hover {
+  background: var(--gray-a3);
+  color: var(--gray-a8);
+  box-shadow: inset 0 0 0 1px var(--gray-a5);
   transform: none;
   cursor: not-allowed;
 }

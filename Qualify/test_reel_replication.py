@@ -49,7 +49,6 @@ def creative() -> CreativeState:
     state.selected_product_id = "burger"
     state.brief_product_ref = "Smash doble"
     state.selected_product_photo_key = "uploads/product.jpg"
-    state.product_confirmed = True
     return state
 
 
@@ -64,7 +63,7 @@ def test_prefill_edits_the_source_without_turning_product_photos_into_frames() -
     state._apply_reel_reference(CARD, IMPORTED)
     assert (state.gen_mode, state.gen_category, state.brief_kind) == ("create", "clip", "clip")
     assert state.gen_step == 0 and state.generator_view == "form"
-    assert state.product_confirmed and state.selected_product_id == "burger"
+    assert state.selected_product_id == "burger"
     assert state.brief_highlights == [{"key": "Precio", "value": "20 USD"}]
     assert state.clip_duration == "5" and state.effective_format == "reels_9_16"
     assert not state.own_script_on and not state.own_script
@@ -321,7 +320,7 @@ async def test_click_only_imports_the_server_card_and_opens_step_two(monkeypatch
     queued = analyses.find(UUID(TENANT), "instagram", "A", module_analysis_version())
     assert queued is not None and queued.status == "queued" and queued.wanted_at is not None
     assert len(events) == 1
-    assert "/create?paso=2" in str(events[0]) and "analisis" not in str(events[0])
+    assert "/create?paso=1" in str(events[0]) and "analisis" not in str(events[0])
     assert gen.gen_mode == "create" and not state.replicating
     assert gen.from_reel_ideas and gen.reel_analysis_id == str(queued.id)
     # UI-2: step 2 waits for it, «Siguiente» held
@@ -380,7 +379,7 @@ async def test_without_an_analysis_the_flow_still_opens_on_step_two(monkeypatch,
     monkeypatch.setattr(module, "import_reference", lambda *a: dict(IMPORTED))
     events = await run(proxy)
     assert len(events) == 1
-    assert "/create?paso=2" in str(events[0]) and "analisis" not in str(events[0])
+    assert "/create?paso=1" in str(events[0]) and "analisis" not in str(events[0])
     assert gen.from_reel_ideas and gen.reel_analysis_id == ""
     # UI-2: the outcome is kept, so step 2 says why and offers a way forward
     assert gen.reel_analysis_status == ("no_video" if why == "no_video" else "unasked")

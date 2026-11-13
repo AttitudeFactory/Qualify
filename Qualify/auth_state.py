@@ -303,6 +303,7 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
     from .final_video_card_state import FinalVideoState
     from .followups_state import FollowupsState
     from .gallery_state import GalleryState
+    from .gen_gallery_pick_state import GenGalleryPickState
     from .generation_state import GenerationState
     from .home_state import HomeState
     from .ice_breakers_state import IceBreakersState
@@ -342,6 +343,8 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
 
     return (
         AdAccountsState,
+        # m-24985141: the generator's «Elegir de tu Galería» drawer
+        GenGalleryPickState,
         AdEnhancementsState,
         AdFormsState,
         PromotionState,

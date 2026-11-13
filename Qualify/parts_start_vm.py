@@ -42,6 +42,8 @@ from . import reel_parts_vm
 CARD_TITLE = "¿Quieres un video más largo?"
 CARD_ACTION = "Armar mi video por partes"
 CARD_HELP = "Te proponemos las partes con tu producto y tu marca. Las revisas antes de crear nada."
+#: m-24985141: the product is optional — without one, the parts come from the brand.
+CARD_HELP_NO_PRODUCT = "Te proponemos las partes con tu marca. Las revisas antes de crear nada."
 
 #: The one question, once the card is open.
 QUESTION = "¿De qué trata tu video?"

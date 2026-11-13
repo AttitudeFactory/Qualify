@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import replace
 from html.parser import HTMLParser
 from urllib.parse import parse_qs, urlsplit
 from uuid import UUID
@@ -28,7 +29,9 @@ from .ad_enhancements_vm import BrandEnhancementsVM
 from .ad_health_provider import account_health_for, refresh_health
 from .ad_health_vm import AccountHealthVM
 from .promotion_audience_provider import audience_from_form
+from .promotion_unpublished_provider import unpublished_sources
 from .promotion_vm import (
+    COUNTRY_LABELS,
     LeadFormChoiceVM,
     MessagingDestinationVM,
     PromotionDraftVM,
@@ -157,6 +160,13 @@ def load_sources(
     )
     locale = read_business_locale(tenant_id)
     zone = locale.timezone if locale is not None else ""
+    if not sources and event_id is None:
+        # m-24828982: a piece not yet published can be advertised from its own files.
+        country = locale.country if locale is not None else ""
+        return [
+            replace(row, default_country=country if country in COUNTRY_LABELS else "")
+            for row in unpublished_sources(tenant_id, draft_id, check_health=check_health)
+        ], zone
     health_by_account: dict[UUID, AccountHealthVM] = {}
     messaging_by_connection: dict[UUID, list[MessagingDestinationVM]] = {}
     enhancements_by_brand: dict[UUID, BrandEnhancementsVM] = {}

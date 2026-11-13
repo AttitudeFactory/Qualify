@@ -97,39 +97,88 @@ class MessagingTarget:
 
     @property
     def cta_type(self) -> str:
+        # WHATSAPP_MESSAGE: SDK 26.0.0 adcreative.py CallToActionType. INSTAGRAM_MESSAGE is
+        # NOT in that SDK enum; Meta's click-to-Instagram guide (retrieved 2026-11-13) uses it
+        # in every creative example, existing posts included. validate_only decides.
         return "WHATSAPP_MESSAGE" if self.destination_type == "WHATSAPP" else "INSTAGRAM_MESSAGE"
+
+    def call_to_action(self) -> dict[str, Any]:
+        """Existing-post CTA verbatim from Meta's click-to-WhatsApp / click-to-Instagram
+        guides (retrieved 2026-11-13); `link` and `app_destination` are fields of SDK 26.0.0
+        `AdCreativeLinkDataCallToActionValue`. No phone number travels in the CTA."""
+        if self.destination_type == "WHATSAPP":
+            value = {"link": "https://api.whatsapp.com/send", "app_destination": "WHATSAPP"}
+        else:
+            value = {"link": "https://www.instagram.com"}
+        return {"type": self.cta_type, "value": value}
+
+    def adset_options(self) -> dict[str, Any]:
+        """SDK 26.0.0 adset.py: OptimizationGoal.CONVERSATIONS, BillingEvent.IMPRESSIONS,
+        DestinationType.WHATSAPP / INSTAGRAM_DIRECT; adpromotedobject.py: page_id,
+        whatsapp_phone_number. Both guides require IMPRESSIONS and the Page id."""
+        promoted: dict[str, Any] = {"page_id": self.page_id}
+        if self.destination_type == "WHATSAPP":
+            promoted["whatsapp_phone_number"] = self.whatsapp_phone_number
+        return {
+            "optimization_goal": "CONVERSATIONS",
+            "billing_event": "IMPRESSIONS",
+            "destination_type": self.destination_type,
+            "promoted_object": promoted,
+        }
+
+    def creative(
+        self, *, source_media_id: Any, instagram_user_id: Any, page_welcome_message: str = ""
+    ) -> dict[str, Any]:
+        """Existing Instagram post: object_id (the Page), instagram_user_id,
+        source_instagram_media_id and call_to_action (SDK 26.0.0 adcreative.py fields)."""
+        creative = {
+            "object_id": self.page_id,
+            "source_instagram_media_id": source_media_id,
+            "instagram_user_id": instagram_user_id,
+            "call_to_action": self.call_to_action(),
+        }
+        if page_welcome_message:
+            creative["page_welcome_message"] = page_welcome_message
+        return creative
+
+    def matches(self, source: Any) -> bool:
+        """Built from the promoted publication's own connection, Page and access version."""
+        return (
+            self.source_connection_id == source.connection_id
+            and self.page_id == source.linked_page_id
+            and self.source_credential_version == source.credential_version
+        )
 
     def validate_request(self, request: Any) -> None:
         self.snapshot()
-        options = request.adset_options
-        promoted = options.get("promoted_object")
         creative = request.creative
-        creative_keys = {"source_instagram_media_id", "instagram_user_id", "call_to_action"}
+        if not isinstance(creative, dict):
+            raise ValueError("messaging destination differs from approved request")
+        welcome = ""
+        greeting_snapshot = getattr(request, "greeting_snapshot", None) or {}
+        if greeting_snapshot:
+            from qualify_api.ads.messaging_greeting import MessageGreeting
+
+            greeting = MessageGreeting.from_snapshot(greeting_snapshot)
+            if str(greeting.brand_id) != str(request.brand_id):
+                raise ValueError("greeting belongs to another brand")
+            welcome = greeting.page_welcome_message()
+        expected = self.creative(
+            source_media_id=request.source_media_id,
+            instagram_user_id=creative.get("instagram_user_id"),
+            page_welcome_message=welcome,
+        )
         if getattr(request, "enhancements_snapshot", None):
             from qualify_api.ads.enhancements import validate_request_policy
 
             validate_request_policy(request)
-            creative_keys.add("degrees_of_freedom_spec")
-        promoted_keys = {"page_id"}
-        if self.destination_type == "WHATSAPP":
-            promoted_keys.add("whatsapp_phone_number")
+            expected["degrees_of_freedom_spec"] = creative.get("degrees_of_freedom_spec")
         if (
             request.objective != "OUTCOME_ENGAGEMENT"
             or request.cta_type != self.cta_type
             or request.link_url
-            or options.get("destination_type") != self.destination_type
-            or options.get("optimization_goal") != "CONVERSATIONS"
-            or not isinstance(creative, dict)
-            or set(creative) != creative_keys
+            or request.adset_options != self.adset_options()
             or numeric_id(creative.get("instagram_user_id")) is None
-            or creative.get("source_instagram_media_id") != request.source_media_id
-            or creative.get("call_to_action") != {"type": self.cta_type}
-            or not isinstance(promoted, dict)
-            or set(promoted) != promoted_keys
-            or promoted.get("page_id") != self.page_id
-            or (
-                self.destination_type == "WHATSAPP"
-                and promoted.get("whatsapp_phone_number") != self.whatsapp_phone_number
-            )
+            or creative != expected
         ):
             raise ValueError("messaging destination differs from approved request")

@@ -435,7 +435,9 @@ reservada (`--q-bottom-bar-h`) y la misma zona segura.
 2. A la derecha va el **botón principal** (sólido, ancho, ≥ 44 px): «Siguiente», y en el último
    paso un verbo que dice quién actúa y qué pasa (N13): «Crear», «Programar para el jueves»,
    «Publicar en Instagram». Si el paso todavía no es válido, el motivo se lee **junto** al botón
-   (regla de §5.8).
+   (regla de §5.8). En escritorio el motivo va **en su propia fila**, encima de los botones y a
+   todo el ancho del pie (m-24993023): en una sola fila, un panel estrecho dejaba su columna en
+   nada y el texto tapaba «Atrás». Sin motivo, el pie sigue siendo una sola fila.
 3. Debajo, **«Seguir después»** (ghost): guarda lo que lleva el dueño y lleva a **Inicio** en todos
    los asistentes (N2, decisión del fundador 2026-10-25). Inicio muestra lo que quedó a medias con
    «Seguir».
@@ -445,6 +447,10 @@ reservada (`--q-bottom-bar-h`) y la misma zona segura.
    Con el teclado abierto, el pie también se aparta.
 5. **En escritorio** el pie se pega al borde inferior del panel (`position: sticky; bottom`), como
    `.q-rv-savebar--editing`. No suma superficies de vidrio (§4.3-6).
+6. **Con un contenedor de 480 px o menos** (un panel lateral o una ventana partida en una pantalla
+   ancha) el pie **se apila como en el celular**: motivo, luego «Atrás» y el botón principal a lo
+   ancho, y «Seguir después» debajo. Lo mide el propio pie (`.q-step-slot` es el contenedor de una
+   *container query*), no el ancho de la ventana.
 
 **Comportamiento al cambiar de paso.**
 
@@ -541,6 +547,7 @@ El skin es el `lq-button` del kit sobre `.rt-Button`/`.rt-IconButton`: radio 14 
 - `soft` / `outline` / `surface` = el botón de **vidrio** (material control: `--q-control-edge` + `--q-control-hi` + `--q-control-shadow`; al hover, borde más marcado y 2 px arriba). `soft`: secundarias (Desconectar, Cancelar). `outline`: terciarias.
 - `ghost` = `lq-button--ghost`: sin relieve; dentro de tablas/filas y para el toggle de modo.
 - Pulsado: `scale(0.975)`. Deshabilitado: sin sombra ni movimiento.
+- No disponible pero enfocable: `q-button-off`. Es un `soft`/`outline`/`surface` con `aria-disabled` (nunca el `disabled` nativo, para que el lector de pantalla llegue a su motivo). Lleva los mismos grises que el principal deshabilitado: fondo `gray-a3`, texto `gray-a8`, borde `gray-a5`, sin elevarse al pasar el ratón y con `cursor: not-allowed`. Nunca un acento atenuado con opacidad, que parece activo (m-24993023, «Probar solo la parte 1»).
 - Destructiva: `soft` + `color_scheme=T.tone_scale("error")`; en el diálogo de confirmación, `solid` tomato (el degradado toma la escala del `color_scheme`).
 - Tamaños: `2` por defecto; `1` dentro de badges de sesión/filas; `3` solo en empty states.
 - Icono + texto: icono a la izquierda, `size=16` (o `ICON_SM` en size 1). Nunca icono solo sin `aria-label`.
@@ -549,6 +556,9 @@ El skin es el `lq-button` del kit sobre `.rt-Button`/`.rt-IconButton`: radio 14 
 ### 5.6 Formularios (Radix directo, con el skin del kit)
 
 - Campos, text areas y el trigger del select tienen el look `lq-field`: un **pozo de vidrio hundido** (`--q-field-fill`, radio 12 px, hairline interior) que se aclara al foco con el anillo del acento (`accent-a8` + halo `accent-a3` de 4 px). El switch encendido es un degradado del acento con el pulgar flotando (`lq-switch`); el segmented control, una pista hundida con una pestaña de vidrio (`lq-segmented`, radio 15/11 px) — sustituye a cualquier `q-flow-switch` casero.
+- **Menú de fuentes del generador (`.q-source-seg`, m-24985141):** el mismo `lq-segmented` con ícono lucide y nombre («Tus productos · Tu Galería · Subir · Publicaciones · Inspiración»). Regla de ancho: nunca scroll lateral ni texto cortado. La pista toma el ancho de su fila y cada opción el de su contenido (nunca `min-width: max-content`); la opción elegida muestra ícono y nombre y las demás solo el ícono, con su nombre en `aria-label` y `title`. Así caben las cinco en un celular de 375 px y en el drawer de 512 px. Como el indicador deslizante de Radix supone columnas iguales, se oculta y la opción elegida lleva la misma pestaña de vidrio. 44 px de alto; flechas, `aria-checked` y foco de Radix.
+- **Fotos por categoría en el generador (m-24985141):** Producto · Fondo · Estilo, la lista única del Clip, el Avatar y la Imagen, y el Carrusel diapositiva por diapositiva — ver [ux-fotos-por-categoria.md](ux-fotos-por-categoria.md).
+- **Avatar y fila de avatares (`.q-avatar-stack` sobre `rx.avatar`, m-24985141):** el `lq-avatar`/`lq-avatar-stack` del kit traído al skin (regla §9.1-8): 38 px, redondo, borde claro de 2 px, degradado del acento detrás de una foto que falta, iniciales en negrita de 0.8rem; en la fila cada uno se monta un tercio del diámetro (13 px) sobre el anterior, más que los 10 px del kit, que casi no se notaban; el borde de 2 px separa una burbuja de la otra. Uso: la fila «Producto» del panel del generador. Las burbujas muestran todas las referencias elegidas (fotos del producto, inspiración, videos con su póster o «▶», audios con «♪», lo subido, la Galería y las publicaciones) y solo caen a las fotos del producto elegido si no hay ninguna: hasta 4, o 3 y una «+N» que se lee «y N referencias más»; el grupo se lee «N referencias elegidas». Modo angosto (`.q-cr-product-chip` es un contenedor; ≤ 300 px, la columna izquierda de escritorio, unos 214 px): 2 burbujas de 24 px y su «+N», que cuenta todo lo oculto; el nombre en una línea con «…» y el nombre completo en `title`; el botón solo con su ícono, de 44×44, con `aria-label` y `title`. La fila nunca baja de línea ni se monta: el nombre se encoge (`flex: 1 1 0`, `min-width: 0`) y las burbujas y el botón no.
 - Etiqueta visible encima (`rx.text size=2 weight=medium`), ayuda debajo en `size=1 TEXT_MUTED`. Placeholder = ejemplo, no etiqueta (excepción documentada: `/login` y `/registro`, donde interferir con el autocompletado del navegador está prohibido por el fallo firmado §6.1 — allí el placeholder es la etiqueta y así se queda).
 - `name`, `type` y `required` nativos: el navegador valida y autocompleta.
 - Error de envío en `callout("error")` **encima del formulario**, no como toast.
@@ -726,7 +736,7 @@ Cerrado por el lote 0 (2026-10-08): el tooltip zen que nunca se veía (ahora eti
 
 Abierto:
 
-1. **`liquidos.css` no se carga, por diseño** (D2, §3.4). Consecuencia: cada componente del kit que se quiera usar hay que redibujarlo en el skin; lo que el kit tiene y el skin aún no cubre (avatar/avatar-stack, range/slider, check/radio, accordion, tabs, separator, `lq-tilt`/`lq-reveal`) **se ve Radix crudo** hasta que un lote lo necesite y lo traiga (regla §9.1-8). El JS del kit (ripple, sheen) tampoco: sólo la luz del puntero está portada, en `glass-nav.js`.
+1. **`liquidos.css` no se carga, por diseño** (D2, §3.4). Consecuencia: cada componente del kit que se quiera usar hay que redibujarlo en el skin; lo que el kit tiene y el skin aún no cubre (range/slider, check/radio, accordion, tabs, separator, `lq-tilt`/`lq-reveal`) **se ve Radix crudo** hasta que un lote lo necesite y lo traiga (regla §9.1-8). El JS del kit (ripple, sheen) tampoco: sólo la luz del puntero está portada, en `glass-nav.js`.
 2. **Presupuesto de `backdrop-filter`.** El shell con sesión ya gasta 7 (6 islas + header). Un overlay abierto son 8; una página con vidrio propio se pasa. Medición por ruta pendiente (lote 6); la regla «nunca en grids» hay que comprobarla en planificador, borradores y catálogo (`.q-kind-chip--glass` ya lleva un blur de 6 px por tile).
 3. **`prefers-reduced-motion` no es global** (§8): `.q-settle`, `.q-lift` y el pop del toast siguen moviéndose. Decidir si se apagan (v2 decía que sí y no era cierto).
 4. **Venv compartido con reflex 0.9.7 mientras `uv.lock` pide 0.9.12.** El skin se verificó en 0.9.7; las clases `.rt-*` de Radix Themes que el skin selecciona pueden cambiar entre versiones. No se sincroniza en worktrees (trampa documentada en `CLAUDE.md`); el upgrade se decide fuera de esta migración y obliga a repasar `/design`.

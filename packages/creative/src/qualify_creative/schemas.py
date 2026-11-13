@@ -462,6 +462,12 @@ class CarouselSlide(BaseModel):
     #: among the gallery's product photos. None (every brief before it): the guide
     #: pairs with the only product photo, and with several it is refused, as before.
     guide_product_index: int | None = Field(default=None, ge=0, lt=MAX_PRODUCT_IMAGES)
+    #: m-24985141 (Deivid, 2026-11-13): the slide is made from its GUIDE alone — the
+    #: owner's «Estilo» with no «Producto» — whatever product photos the piece has: no
+    #: product joins it (`scene_plan._target_photos`). `product_index` must point at a
+    #: composition guide and `guide_product_index` stays None. False (every brief before
+    #: it): the guide pairs with a product as before.
+    guide_alone: bool = False
     use_background: bool = True
     text: SlideText = SlideText.NONE
     seconds: int = 5
@@ -491,6 +497,15 @@ class CarouselSlide(BaseModel):
     def _source_has_its_inputs(self) -> CarouselSlide:
         if self.guide_product_index is not None and self.product_index is None:
             raise ValueError("a guide's product photo goes with the slide's guide photo")
+        if self.guide_alone and (
+            self.product_index is None
+            or self.guide_product_index is not None
+            or self.source not in (SlideSource.GENERATED, SlideSource.ANIMATED)
+        ):
+            raise ValueError(
+                "a guide-alone slide is a generated or animated slide with its guide photo"
+                " and no product photo"
+            )
         if self.reference_video_key and self.source is not SlideSource.ANIMATED:
             raise ValueError("only an animated slide takes a reference video")
         if self.audio and self.source not in (SlideSource.ANIMATED, SlideSource.GALLERY):
@@ -780,7 +795,9 @@ class PartsRequest(BaseModel):
     of the last attempt: `refused` None = nothing refused (pending while no part exists,
     done once they do); a code = why nothing was made, `part` the part it is about and
     `missing` the vistas previas short. `attempted_parts` = the parts that attempt asked
-    for (empty = every part not created yet)."""
+    for, always spelled out (m-24993031): scope `all` keeps every part of the plan not
+    removed, as `create_parts` reads «all». Empty only before any attempt — or on an
+    outcome kept before m-24993031, where empty meant «every part not created yet»."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -829,6 +846,9 @@ class MediaInputs(BaseModel):
     #: (2026-11-03, audit `auditoria-prompts-clip-20261103.md` §7) = the Seedance 2.x clip
     #: routes (motion clip, reel replica, animated gallery slide) in plain full sentences,
     #: no written text on screen, no per-field caps. 0 and 1 stay byte for byte as they were.
+    #: 3 = a gallery slide's scene in plain sentences; 4 (m-25017275) = Seedream scenes with
+    #: no new text or overlays; 5 (m-24985141) = general wording for any business and pieces
+    #: without a product (`media.PROMPT_COMPILER_VERSION`).
     prompt_compiler_version: int = 0
     #: Server-owned (m-24820842): the words a GENERATED script may have on a Seedance 2.x
     #: talking video (`MediaProducer.talking_script_word_budget`), set for the copy call

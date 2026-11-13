@@ -405,19 +405,21 @@ def test_a_wrong_type_is_said_in_its_category_and_a_fresh_clip_forgets_it() -> N
     assert state.clip_notes == {"image": "", "video": "", "audio": ""}
 
 
-def test_one_button_opens_the_picker_and_its_categories_switch() -> None:
+def test_one_button_opens_the_clip_drawer_and_its_sources_switch() -> None:
+    """m-24985141: «Elegir fotos, videos o audios» opens the media drawer; its sources
+    are «Tus productos · Tu Galería · Subir · Publicaciones · Inspiración»."""
     state = CreativeState()
-    assert not state.clip_picker_open and state.clip_picker_kind == "image"
-    state.toggle_clip_picker()
-    assert state.clip_picker_open
-    state.set_clip_picker_kind("audio")
-    assert state.clip_picker_kind == "audio"
-    state.set_clip_picker_kind(["video"])  # the segmented control may send a list
-    assert state.clip_picker_kind == "video"
-    state.set_clip_picker_kind("nada")
-    assert state.clip_picker_kind == "video"
-    state.toggle_clip_picker()
-    assert not state.clip_picker_open
+    assert not state.media_drawer_open
+    state.open_media_drawer("clip", "upload", "media-open-clip")
+    assert state.media_drawer_open and state.media_drawer_target == "clip"
+    assert state.clip_source_tab == "upload"
+    state.set_clip_source_tab(["pieces"])  # the segmented control may send a list
+    assert state.clip_source_tab == "pieces"
+    state.set_clip_source_tab("nada")
+    assert state.clip_source_tab == "pieces"
+    assert "finish" in str(state.set_media_drawer_open(False))  # what «Agregar» does
+    event = state.close_media_drawer()
+    assert not state.media_drawer_open and "media-open-clip" in str(event)
 
 
 def test_the_notes_also_show_in_one_line_under_the_grid() -> None:
@@ -446,11 +448,12 @@ def test_the_order_comes_first_then_the_reels_text_then_the_references() -> None
         rendered.index("Elegir fotos, videos o audios"),
     ]
     assert order == sorted(order)
-    # round 16: inside the one picker, each category ends with its own upload
+    # m-24985141: the uploads are the media drawer's «Subir», one per kind
+    drawer = str(cg._clip_drawer_body().render())
     for upload_id in ("clip_images", "clip_videos", "clip_audios"):
-        assert upload_id in rendered
+        assert upload_id in drawer
     for label in ('"Subir fotos"', '"Subir videos"', '"Subir audios"'):
-        assert label in rendered
+        assert label in drawer
     assert "clip_references" not in rendered  # no mixed zone
 
 

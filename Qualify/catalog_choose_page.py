@@ -10,6 +10,9 @@ row at 360 px, 44 px buttons, «N elegidas» said as it changes.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import Any
+
 import reflex as rx
 
 from .catalog_choose_state import CatalogChooseState
@@ -30,7 +33,7 @@ from .post_card import viewable_src
 from .ui import media_thumb, section, tone_badge
 from .ui import tokens as T
 
-__all__ = ["choose_button", "choose_view"]
+__all__ = ["choice_grid", "choose_button", "choose_view", "product_choice_group"]
 
 S = CatalogChooseState
 _TOUCH_MIN = "44px"
@@ -92,7 +95,7 @@ def _picture(c: rx.Var[ChoiceVM]) -> rx.Component:
     )
 
 
-def _tile(c: rx.Var[ChoiceVM]) -> rx.Component:
+def _tile(c: rx.Var[ChoiceVM], on_pick: Callable[[rx.Var[str]], Any]) -> rx.Component:
     on = c.order > 0
     return rx.el.button(
         rx.box(
@@ -116,6 +119,16 @@ def _tile(c: rx.Var[ChoiceVM]) -> rx.Component:
                 ),
             ),
             rx.cond(
+                c.added,
+                # m-24985141: already among the slot's files (the generator's Galería)
+                rx.box(
+                    tone_badge("Ya está", "ok", icon="check"),
+                    position="absolute",
+                    top="0.35rem",
+                    right="0.35rem",
+                ),
+            ),
+            rx.cond(
                 c.duration != "",
                 rx.box(
                     tone_badge(c.duration, "neutral", icon="film"),
@@ -132,7 +145,7 @@ def _tile(c: rx.Var[ChoiceVM]) -> rx.Component:
         role="checkbox",
         aria_checked=rx.cond(on, "true", "false"),
         aria_label=c.spoken,
-        on_click=S.pick(c.token),
+        on_click=on_pick(c.token),
         class_name=rx.cond(on, "q-choice-card q-choice-card--on", "q-choice-card"),
         padding="0.3rem",
         min_width="0",
@@ -140,9 +153,13 @@ def _tile(c: rx.Var[ChoiceVM]) -> rx.Component:
     )
 
 
-def _grid(choices: rx.Var[list[ChoiceVM]]) -> rx.Component:
+def choice_grid(
+    choices: rx.Var[list[ChoiceVM]], on_pick: Callable[[rx.Var[str]], Any] = S.pick
+) -> rx.Component:
+    """CM-5's tiles in a grid; `on_pick(token)` is the tap (m-24985141: the generator's
+    «Elegir de tu Galería» drawer passes its own)."""
     return rx.box(
-        rx.foreach(choices, _tile),
+        rx.foreach(choices, lambda c: _tile(c, on_pick)),
         display="grid",
         # three a row on a 360 px phone
         grid_template_columns="repeat(auto-fill, minmax(6.25rem, 1fr))",
@@ -151,10 +168,12 @@ def _grid(choices: rx.Var[list[ChoiceVM]]) -> rx.Component:
     )
 
 
-def _product_group(group: rx.Var[ProductChoicesVM]) -> rx.Component:
+def product_choice_group(
+    group: rx.Var[ProductChoicesVM], on_pick: Callable[[rx.Var[str]], Any] = S.pick
+) -> rx.Component:
     return rx.vstack(
         rx.text(group.name, size="2", weight="medium"),
-        _grid(group.choices),
+        choice_grid(group.choices, on_pick),
         spacing="2",
         width="100%",
         key=group.name,
@@ -225,13 +244,13 @@ def choose_view() -> rx.Component:
             ),
             description=CHOOSE_HELP,
         ),
-        rx.cond(S.business.length() > 0, section(GROUP_BUSINESS, _grid(S.business))),
+        rx.cond(S.business.length() > 0, section(GROUP_BUSINESS, choice_grid(S.business))),
         rx.cond(
             S.products.length() > 0,
             section(
                 GROUP_PRODUCTS,
                 rx.vstack(
-                    rx.foreach(S.products, _product_group),
+                    rx.foreach(S.products, lambda g: product_choice_group(g)),
                     spacing="4",
                     width="100%",
                 ),

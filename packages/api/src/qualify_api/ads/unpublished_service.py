@@ -36,6 +36,8 @@ from qualify_api.ads.unpublished import (
     MAX_VIDEO_SECONDS,
     MIN_VIDEO_SECONDS,
     TOO_LARGE,
+    UPLOAD_UNCERTAIN,
+    VIDEO_PROCESSING,
     ImageAdForm,
     ImageSelection,
     ImageSource,
@@ -91,6 +93,7 @@ def image_bytes(gate: ObjectGate, source: ImageSource, asset: ImageSelection) ->
         ) from None
 
 
+STANDARD_AND_STORY = ("INSTAGRAM_STANDARD", "INSTAGRAM_STORY")
 RANGE_BYTES = 16 * 1024 * 1024  # largest window one read may fetch (moov ≤ 8 MiB, chunk ≤ 16)
 
 
@@ -250,7 +253,8 @@ class UnpublishedImageService:
         if not claimed:
             raise UnpublishedUnavailable(
                 "No pudimos confirmar la carga en Meta. "
-                "Pide ayuda para revisarla antes de continuar."
+                "Pide ayuda para revisarla antes de continuar.",
+                reason=UPLOAD_UNCERTAIN,
             )
         try:
             value = await client.upload_image(data, before_write=lambda: self._guard(source, actor))
@@ -324,7 +328,8 @@ class UnpublishedImageService:
                 row["state"],
                 "No pudimos confirmar la carga del video en Meta. "
                 "Pide ayuda para revisarla antes de continuar.",
-            )
+            ),
+            reason="" if row["state"] == "failed" else UPLOAD_UNCERTAIN,
         )
 
     async def _digests(self, source: ImageSource, *, videos: bool = True) -> list[str]:
@@ -336,8 +341,8 @@ class UnpublishedImageService:
             return hashlib.sha256(image_bytes(self.gate, source, asset)).hexdigest()
 
         if not source.is_video:
-            return [await asyncio.to_thread(image, a) for a in (source.feed, source.vertical)]
-        pair = (source.feed, source.vertical)
+            return [await asyncio.to_thread(image, a) for a in source.assets]
+        pair = source.assets
         found = (
             [(await asyncio.to_thread(video_facts, self.gate, source, a))[0] for a in pair]
             if videos
@@ -374,7 +379,7 @@ class UnpublishedImageService:
         tenant_id: UUID,
         draft_id: UUID,
         ad_account_id: UUID,
-        feed_asset_id: UUID,
+        feed_asset_id: UUID | None,
         vertical_asset_id: UUID,
         form: ImageAdForm,
         actor: UUID,
@@ -384,7 +389,9 @@ class UnpublishedImageService:
         vertical_thumbnail_asset_id: UUID | None = None,
     ) -> UnpublishedPreview:
         """Images: one call. Videos: each video also needs its cover image; while Meta is
-        still processing a video this raises and the caller repeats the SAME call later."""
+        still processing a video this raises and the caller repeats the SAME call later.
+        `feed_asset_id=None` is a story ad (m-25026350): one 9:16 image or video, shown only
+        in Instagram stories; `feed_html` of the preview is then empty."""
         if confirm_preparation is not True:
             raise UnpublishedUnavailable("Confirma la preparación del anuncio en pausa.")
         form.validate(datetime.now(UTC))
@@ -397,15 +404,18 @@ class UnpublishedImageService:
             (feed_thumbnail_asset_id, vertical_thumbnail_asset_id),
         )
         self._guard(source, actor)
+        source.snapshot()  # every format rule (ratio, type, covers) before any network call
         facts: list[tuple[str, int]] = []
         if source.is_video:
             # Every local limit (size, duration, dimensions, covers) before any network call.
             facts = [
                 await asyncio.to_thread(video_facts, self.gate, source, asset)
-                for asset in (source.feed, source.vertical)
+                for asset in source.assets
             ]
-            for asset in (source.feed, source.vertical):
+            for asset in source.assets:
                 await asyncio.to_thread(image_bytes, self.gate, source, asset.thumbnail)
+        elif source.is_story:
+            await asyncio.to_thread(image_bytes, self.gate, source, source.vertical)
         recipe = self.recipes.approve(source, form, actor, request_key)
         access = await self._account(source, actor)
         client = access.client
@@ -414,16 +424,16 @@ class UnpublishedImageService:
             if source.is_video:
                 covers = [
                     await self._upload(source, asset.thumbnail, client, actor)
-                    for asset in (source.feed, source.vertical)
+                    for asset in source.assets
                 ]
                 sent = [
                     await self._upload_video(source, asset, fact, client, actor)
-                    for asset, fact in zip((source.feed, source.vertical), facts, strict=True)
+                    for asset, fact in zip(source.assets, facts, strict=True)
                 ]
                 # Both are sent first; nothing is built while either is not ready at Meta.
                 waiting = [state for state, _ in sent if state != "ready_remote"]
                 if waiting:
-                    raise UnpublishedUnavailable(VIDEO_WAIT[waiting[0]])
+                    raise UnpublishedUnavailable(VIDEO_WAIT[waiting[0]], reason=VIDEO_PROCESSING)
                 videos = [video_id for _, video_id in sent]
                 creative = video_creative_payload(
                     source, form, tuple(zip(videos, (row[0] for row in covers), strict=True))
@@ -431,8 +441,7 @@ class UnpublishedImageService:
                 digests = [fact[0] for fact in facts] + [row[1] for row in covers]
             else:
                 uploaded = [
-                    await self._upload(source, asset, client, actor)
-                    for asset in (source.feed, source.vertical)
+                    await self._upload(source, asset, client, actor) for asset in source.assets
                 ]
                 creative = creative_payload(source, form, tuple(row[0] for row in uploaded))
                 digests = [row[1] for row in uploaded]
@@ -462,7 +471,9 @@ class UnpublishedImageService:
                     targeting={
                         "geo_locations": {"countries": [form.country]},
                         "publisher_platforms": ["instagram"],
-                        "instagram_positions": ["stream", "story", "reels"],
+                        "instagram_positions": (
+                            ["story"] if source.is_story else ["stream", "story", "reels"]
+                        ),
                         "targeting_automation": {"advantage_audience": 0},
                     },
                     adset_options={
@@ -501,7 +512,8 @@ class UnpublishedImageService:
                 )
             await self._remote(client, promotion, source, actor)
             previews = []
-            for placement in ("INSTAGRAM_STANDARD", "INSTAGRAM_STORY"):
+            placements = ("INSTAGRAM_STORY",) if source.is_story else STANDARD_AND_STORY
+            for placement in placements:
                 page = await client.adpreviews(
                     promotion.ids["ads"], params={"ad_format": placement}
                 )
@@ -509,7 +521,8 @@ class UnpublishedImageService:
                 body = page.data[0].get("body") if len(page.data) == 1 else None
                 if not isinstance(body, str) or not body.strip() or len(body) > 200_000:
                     raise UnpublishedUnavailable(
-                        "Meta no devolvió las dos vistas previas del anuncio."
+                        "No pudimos preparar la vista previa del anuncio. "
+                        "Intenta de nuevo en unos minutos."
                     )
                 previews.append(body)
             review = self.reviews.create(
@@ -521,7 +534,8 @@ class UnpublishedImageService:
                     previews[0],
                     fingerprint(previews),
                     {
-                        "kind": "unpublished-videos" if source.is_video else "unpublished-images",
+                        "kind": ("unpublished-story-" if source.is_story else "unpublished-")
+                        + ("videos" if source.is_video else "images"),
                         "recipe_id": str(recipe["id"]),
                         "source": source.snapshot(),
                         "digests": digests,
@@ -531,8 +545,9 @@ class UnpublishedImageService:
                     actor,
                 )
             )
+            feed_html, vertical_html = ("", *previews) if source.is_story else previews
             return UnpublishedPreview(
-                recipe["id"], promotion.id, review.id, *previews, review.expires_at
+                recipe["id"], promotion.id, review.id, feed_html, vertical_html, review.expires_at
             )
         except MarketingError:
             raise UnpublishedUnavailable(
@@ -618,7 +633,7 @@ class UnpublishedImageService:
             tenant_id,
             UUID(snapshot["draft_id"]),
             recipe["ad_account_id"],
-            UUID(snapshot["feed"]["asset_id"]),
+            UUID(snapshot["feed"]["asset_id"]) if snapshot["feed"] else None,
             UUID(snapshot["vertical"]["asset_id"]),
             thumbnails(snapshot),
         )

@@ -226,3 +226,54 @@ def test_only_failures_main_button_opens_the_first_displayed_piece():
     target = review_url("https://app.example.invalid", failed.piece_id)
     assert target in mail.text
     assert f'class="mail-cta" href="{escape(target, quote=True)}"' in mail.html
+
+
+def _morning_pass(monkeypatch, env):
+    """m-24993031: one pass of the morning chore over one tenant, staging and sending
+    recorded instead of touching the database or Resend."""
+    from qualify_api.mail import final_summary
+
+    for name in ("QUALIFY_PUBLIC_URL", "REFLEX_DEPLOY_URL", "QUALIFY_DEPLOY_ENV"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    staged, sent = [], []
+    monkeypatch.setattr(
+        final_summary,
+        "stage_batch",
+        lambda tenant_id, *, now, base_url: staged.append((tenant_id, base_url)),
+    )
+
+    def send(tenant_id, *, now, mailer):
+        sent.append(tenant_id)
+        return 1
+
+    monkeypatch.setattr(final_summary, "send_pending", send)
+    monkeypatch.setattr(final_summary, "default_mailer", lambda: object())
+    tenant = uuid4()
+    count = final_summary.morning_chore([tenant])()
+    return tenant, count, staged, sent
+
+
+def test_morning_pass_without_public_url_uses_the_local_origin(monkeypatch):
+    tenant, count, staged, sent = _morning_pass(monkeypatch, {})
+    assert staged == [(tenant, "http://localhost:3000")] and sent == [tenant] and count == 1
+
+
+def test_morning_pass_uses_the_configured_public_url(monkeypatch):
+    env = {"QUALIFY_PUBLIC_URL": "https://app.example.invalid/"}
+    tenant, _, staged, _ = _morning_pass(monkeypatch, env)
+    assert staged == [(tenant, "https://app.example.invalid")]
+
+
+def test_morning_pass_in_production_without_url_stages_nothing_but_sends_frozen(
+    monkeypatch, caplog
+):
+    """No KeyError every pass: one clear warning, no new batch, the frozen ones still go."""
+    with caplog.at_level("WARNING", logger="qualify_api.mail.final_summary"):
+        tenant, count, staged, sent = _morning_pass(
+            monkeypatch, {"QUALIFY_DEPLOY_ENV": "production"}
+        )
+    assert staged == [] and sent == [tenant] and count == 1
+    assert "QUALIFY_PUBLIC_URL" in caplog.text
+    assert "KeyError" not in caplog.text and "pass failed" not in caplog.text

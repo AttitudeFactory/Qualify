@@ -551,7 +551,7 @@ def test_reel_parts_vm_reads_a_plan_without_a_reel() -> None:
     )
     one = reel_parts_vm.entries_from_plan(None, parts[:1])
     assert reel_parts_vm.review_summary_text(one) == (
-        "Tu video de 5 s en 1 parte. La parte se hace con tu producto y tu marca."
+        "Tu video de 5 s en 1 parte. La parte se hace con tu marca."  # m-24985141
     )
     assert "reel" not in summary
     blank = reel_parts_vm.entries_from_plan(None, vm.empty_parts())
@@ -746,8 +746,6 @@ def test_sending_a_piece_to_borradores_starts_the_card_over() -> None:
 
 # --- another product (review 2026-11-10, round 2) --------------------------------------
 
-_STOCK = {"key": "t/x/stock/pixabay/1/a.jpg", "view": "", "asset_id": "z"}
-
 
 def _with_plan() -> CreativeState:
     creative = _clip()
@@ -770,9 +768,8 @@ def _gone(creative: CreativeState) -> None:
     [
         lambda c: c.choose_product("other"),
         lambda c: c.clear_product(),
-        lambda c: c._apply_stock_selection([_STOCK], []),
     ],
-    ids=["choose_product", "clear_product", "stock"],
+    ids=["choose_product", "clear_product"],
 )
 def test_another_product_takes_away_a_plan_without_a_reel(change: Any) -> None:
     creative = _with_plan()
@@ -782,37 +779,14 @@ def test_another_product_takes_away_a_plan_without_a_reel(change: Any) -> None:
     assert creative.parts_piece > piece  # the card of the earlier product shows as new
 
 
-def test_the_same_stock_pick_again_keeps_the_plan() -> None:
-    creative = _with_plan()
-    creative._apply_stock_selection([_STOCK], [])
-    entries = vm.entries_from_proposal(_proposal(2))
-    assert apply_to_creative(creative, story="", entries=entries, provenance=None)
-    creative._apply_stock_selection([_STOCK], [])
-    assert creative.reel_parts_count == 2 and creative.reel_plan_shown
-
-
-@pytest.mark.parametrize("change", ["clear", "stock"])
-def test_another_product_keeps_a_reels_plan(change: str) -> None:
+def test_another_product_keeps_a_reels_plan() -> None:
     from .test_reel_parts_state import planned
 
     creative = planned()
     count = creative.reel_parts_count
     assert count > 0 and creative.reel_plan_shown
-    if change == "clear":
-        creative.clear_product()
-    else:
-        creative._apply_stock_selection([_STOCK], [])
+    creative.clear_product()
     assert creative.reel_parts_count == count and creative.reel_plan_shown
-
-
-async def test_a_stock_pick_drops_the_proposal_in_flight(slow_propose: dict[str, Any]) -> None:
-    slow_propose["answer"] = provider.ProposalOutcome(
-        entries=vm.entries_from_proposal(_proposal(3)), provenance={"model_id": "m"}
-    )
-    proxy = _proxy()
-    await _in_flight(proxy, lambda: proxy.creative._apply_stock_selection([_STOCK], []))
-    assert proxy.creative.reel_parts_count == 0
-    assert proxy.creative._parts_provenance is None
 
 
 async def test_the_tap_sends_what_the_field_holds_not_the_debounced_value(

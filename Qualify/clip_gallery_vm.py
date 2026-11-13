@@ -20,6 +20,8 @@ IMAGE = "image"
 VIDEO = "video"
 AUDIO = "audio"
 KINDS = (IMAGE, VIDEO, AUDIO)
+#: A zone of photos AND videos (the avatar's references, m-24985141): its refusals only.
+MIXED = "mixed"
 
 MAX_IMAGES = 9
 MAX_VIDEOS = 3
@@ -53,6 +55,7 @@ _TYPES_TEXT: Mapping[str, str] = {
     IMAGE: "aquí van fotos PNG, JPG o WEBP.",
     VIDEO: "aquí van videos MP4 o MOV.",
     AUDIO: "aquí van audios MP3 o WAV.",
+    MIXED: "aquí van fotos PNG, JPG o WEBP, o videos MP4 o MOV.",
 }
 #: The drop zones' size cap (the server's own, `_CLIP_MAX_BYTES`), in the owner's words.
 MAX_MB = 200
@@ -230,6 +233,7 @@ __all__ = [
     "MAX_AUDIOS",
     "MAX_IMAGES",
     "MAX_VIDEOS",
+    "MIXED",
     "AUDIO_SOURCE_NOTE",
     "PICK_LABEL",
     "PICK_SWITCH_LABEL",
@@ -240,9 +244,27 @@ __all__ = [
     "VIDEO",
     "VIDEO_TAG",
     "full_text",
+    "held_text",
     "refused_text",
     "rejected_text",
     "room",
     "tiles",
     "notes_line",
 ]
+
+
+def held_text(photos: int, videos: int, audios: int) -> str:
+    """What the references hold, under the media drawer: «2 fotos y 1 video en tus
+    referencias» (m-24985141); «Aún no tienes referencias» when empty."""
+    parts = []
+    for count, one, many in (
+        (photos, "foto", "fotos"),
+        (videos, "video", "videos"),
+        (audios, "audio", "audios"),
+    ):
+        if count:
+            parts.append(f"1 {one}" if count == 1 else f"{count} {many}")
+    if not parts:
+        return "Aún no tienes referencias"
+    joined = parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + " y " + parts[-1]
+    return f"{joined} en tus referencias"

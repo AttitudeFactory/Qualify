@@ -174,7 +174,7 @@ def test_short_of_vistas_previas_only_part_1_can_be_tried() -> None:
     )
     assert review.all_reason == (
         "Crear las 4 partes usa 4 vistas previas y este mes te quedan 2. Quita 2 partes en "
-        "el paso 2, prueba solo la parte 1 o espera al 1 de diciembre, cuando vuelven tus 20 "
+        "«Qué mostrar», prueba solo la parte 1 o espera al 1 de diciembre, cuando vuelven tus 20 "
         "vistas previas."
     )
     assert review.first_reason == "" and review.back_to_parts
@@ -184,7 +184,7 @@ def test_one_vista_previa_left_singular() -> None:
     text = vm.parts_previews_short_text(3, 1, 20)
     assert "y este mes te queda 1." in text and "espera al próximo mes" in text
     assert "Quita 2 partes" in text
-    assert "Quita 1 parte en el paso 2" in vm.parts_previews_short_text(3, 2, 20)
+    assert "Quita 1 parte en «Qué mostrar»" in vm.parts_previews_short_text(3, 2, 20)
     assert vm.parts_previews_short_text(3, 0, 20) == ""  # at 0: the zero state, no «prueba»
 
 
@@ -243,3 +243,46 @@ def test_parts_only_missing_a_description_are_not_said_unseen(count: int, foot: 
     assert mixed.foot_reason == "Falta contar qué pasa en algunas partes."
     reel = vm.review_actions([unseen, entry("edit")], previews_left=10, previews_quota=20)
     assert reel.foot_reason == "Falta contar qué pasa en una parte."
+
+
+# -- the generation queue is off (m-24993023) ---------------------------------------------
+
+QUEUE_OFF = (
+    "Por ahora no podemos crear videos por partes. No se usó nada de tu mes. Inténtalo más tarde."
+)
+
+
+def test_queue_off_holds_both_with_its_own_words() -> None:
+    review = vm.review_actions(
+        parts("edit", "reference", "edit"), previews_left=10, previews_quota=20, queue_on=False
+    )
+    assert review.all_reason == review.first_reason == QUEUE_OFF == vm.QUEUE_OFF_TEXT
+    assert review.foot_reason == ""  # the callout says it; the foot says nothing more
+    assert not review.back_to_parts and not review.to_ideas and review.exhausted == ""
+    # the buttons keep their words: only their reason changes
+    assert review.all_label == "Crear las 3 partes" and review.try_first
+
+
+@pytest.mark.parametrize(
+    "counters",
+    [
+        {"previews_left": 0, "previews_quota": 20, "seconds_left": 30, "seconds_quota": 40},
+        {"previews_left": 5, "previews_quota": 20, "seconds_left": 0, "seconds_quota": 40},
+        {"previews_left": 2, "previews_quota": 20, "seconds_left": 30, "seconds_quota": 40},
+    ],
+    ids=["no-previews", "no-seconds", "previews-short"],
+)
+def test_queue_off_goes_before_the_month(counters: dict[str, int]) -> None:
+    review = vm.review_actions(parts("edit", "edit", "edit"), queue_on=False, **counters)
+    assert review.all_reason == review.first_reason == vm.QUEUE_OFF_TEXT
+    assert review.exhausted == "" and not review.back_to_parts
+    assert not review.previews_said and not review.seconds_said
+
+
+def test_queue_on_is_today() -> None:
+    entries = parts("edit", "edit", "edit")
+    counters = {"previews_left": 2, "previews_quota": 20, "seconds_left": 30, "seconds_quota": 40}
+    assert vm.review_actions(entries, queue_on=True, **counters) == vm.review_actions(
+        entries, **counters
+    )
+    assert vm.review_actions(entries, **counters).all_reason != vm.QUEUE_OFF_TEXT

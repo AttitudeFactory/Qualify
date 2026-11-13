@@ -102,13 +102,12 @@ async def test_create_reopens_on_the_ideas_with_the_owners_product(
     state.router = _router("/create?modo=ideas")
     state.catalog_items = [dict(item) for item in _catalog(_OLD)]
     state.choose_product(_OLD)
-    state.product_confirmed = True
     state.gen_mode = "create"
 
     await CreativeState.load_catalog_products.fn(state)
 
     assert state.gen_mode == "discover"
-    assert state.selected_product_id == _OLD and state.product_confirmed is True
+    assert state.selected_product_id == _OLD
 
 
 # --------------------------------------------------------------------------------------

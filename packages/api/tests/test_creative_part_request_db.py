@@ -125,6 +125,7 @@ def test_a_refusal_is_kept_on_the_parent_for_the_result_screen_db(
         tenant_id=tenant, parent_id=parent
     )
     assert stored is not None and stored.refused == "not_enough_previews" and stored.missing == 1
+    assert stored.attempted_parts == (1, 2, 3, 4)  # m-24993031: «all» spelled out
     assert _children(tenant, parent) == [] and _previews_charged(tenant, brand) == 17
     progress = read_part_progress(tenant_id=tenant, parent_id=parent)
     assert progress is not None and progress.request == stored
