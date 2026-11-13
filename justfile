@@ -192,6 +192,13 @@ webhook-requeue-comments *args:
 webhook-requeue-postbacks *args:
     uv run --no-sync python -m qualify_api.webhooks.worker --requeue-postbacks {{args}}
 
+# m-25018661: requeue Instagram DMs a person unsent (`is_deleted`), recorded as
+# `unsupported` before the handler erased them, so the stored copy and the original
+# changes are erased. Needs an explicit scope; dry run unless --execute.
+#   just webhook-requeue-deleted (--account <ig_account_id> | --all-accounts) [--execute]
+webhook-requeue-deleted *args:
+    uv run --no-sync python -m qualify_api.webhooks.worker --requeue-deleted {{args}}
+
 # WA-06: manual smoke of the WhatsApp Cloud API client against the test number. DEV ONLY —
 # reads QUALIFY_WA_SYSTEM_USER_TOKEN and QUALIFY_WA_PHONE_NUMBER_ID from the environment,
 # sends for real, prints only the wamid(s).
@@ -210,8 +217,20 @@ whatsapp-smoke *args:
 whatsapp-connect *args:
     uv run --no-sync python -m qualify_api.whatsapp.connect {{args}}
 
+# ADR 48 (m-25017356): register the Commerce Manager catalog connected by hand to a brand's
+# WABA. Checks the token's scopes (catalog_management + business_management) and that the
+# catalog is listed on the WABA with the stored credential; never prints the token. Exit
+# 2 = token rejected/missing scopes, 3 = Meta refused, 4 = usage/no number, 5 = catalog not
+# on the WABA, 6 = another catalog with live items (nothing written in any of them).
+#   QUALIFY_WA_SYSTEM_USER_TOKEN=... just whatsapp-catalog-connect --tenant <uuid> \
+#       --brand <uuid> --catalog-id <id> [--link-url https://…]
+whatsapp-catalog-connect *args:
+    uv run --no-sync python -m qualify_api.whatsapp.catalog_sync.connect {{args}}
+
 # WA-08: the WhatsApp outbox sender (claim → 24 h window → pacing → send → settle). SENDS
-# FOR REAL from the connected numbers of the tenants in scope. Scope is mandatory:
+# FOR REAL from the connected numbers of the tenants in scope; since ADR 48 the same pass
+# also uploads queued WhatsApp catalog runs (--catalog-interval 0 turns that off). Scope is
+# mandatory:
 #   just whatsapp-tick --tenant <uuid>     # one pass, that tenant only (use this locally)
 #   just whatsapp-tick --all-tenants       # one pass, every tenant (production)
 whatsapp-tick *args:
@@ -594,6 +613,11 @@ sentiment-kit *args:
 # PB-6 (m-24852200): real cost of one Alta prefill — LIVE credits + tokens, local stack only.
 eval-precarga *args:
     PYTHONUTF8=1 uv run --no-sync python packages/api/evals/alta_prefill_cost/run_experiment.py {{args}}
+
+# m-25017274: «Mejorar mi texto» — six fictional food briefs, two presses each, how much
+# the answers repeat (similarity), new numbers and cost. Spends ≈ USD 0.08 per run.
+eval-mejorar-texto *args:
+    PYTHONUTF8=1 uv run --no-sync python packages/api/evals/mejorar_texto/run_experiment.py {{args}}
 
 eval-voz *args:
     PYTHONUTF8=1 uv run --no-sync python packages/api/evals/voice_ai/run_experiment.py {{args}}

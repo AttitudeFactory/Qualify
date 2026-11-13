@@ -45,7 +45,7 @@ SHAWARMA = "50000000-0000-4000-8000-000000000001"
 ENSALADA = "50000000-0000-4000-8000-000000000002"
 PRESETS = (
     "¡Gracias por tu pedido!",
-    "Bienvenido",
+    "¡Te damos la bienvenida!",
     "En camino",
     "Entregado",
     "Listo para recoger",
@@ -81,6 +81,7 @@ class FakeGateway:
     drawings: dict[str, list[CharacterCard]] = field(default_factory=dict)
     made: list[StickerCard] = field(default_factory=list)
     calls: list[tuple[str, Any]] = field(default_factory=list)
+    discarded: dict[str, tuple[str, int, CharacterCard]] = field(default_factory=dict)
     refuse_create: BaseException | None = None
 
     def brand(self, tenant_id: UUID) -> UUID:
@@ -132,9 +133,23 @@ class FakeGateway:
 
     def discard_character(self, tenant_id, brand_id, character_id, user_id):  # noqa: ANN001, ANN201
         self.calls.append(("discard", str(character_id)))
+        for product, cards in self.drawings.items():
+            for i, c in enumerate(cards):
+                if c.id == str(character_id):
+                    self.discarded[c.id] = (product, i, c)
         card = self._set(character_id, "discarded")
         for cards in self.drawings.values():
             cards[:] = [c for c in cards if c.status != "discarded"]
+        return card
+
+    def restore_character(self, tenant_id, brand_id, character_id, user_id):  # noqa: ANN001, ANN201
+        self.calls.append(("restore", str(character_id)))
+        if str(character_id) not in self.discarded:  # not discarded: returned as it is
+            return next(
+                c for cards in self.drawings.values() for c in cards if c.id == str(character_id)
+            )
+        product, i, card = self.discarded.pop(str(character_id))
+        self.drawings.setdefault(product, []).insert(i, card)
         return card
 
     def make_stickers(  # noqa: ANN201
@@ -178,7 +193,7 @@ async def _drain(gen: Any) -> list[Any]:
 
 
 async def _open(state: ProductStickerState) -> None:
-    await ProductStickerState.open_flow.fn(state)
+    await _drain(ProductStickerState.open_flow.fn(state))
 
 
 async def _to_drawings(state: ProductStickerState) -> None:
@@ -305,7 +320,7 @@ async def test_pending_or_failed_drawings_cannot_be_picked(gw: FakeGateway) -> N
     assert state.drawings[0].failure_text.endswith("Puedes pedir otro.")
     state.flow_next()
     assert state.flow_error == "Elige un dibujo listo para seguir."
-    await ProductStickerState.discard_drawing.fn(state, failed.id)
+    await _drain(ProductStickerState.discard_drawing.fn(state, failed.id))
     assert state.drawings == [] and ("discard", failed.id) in gw.calls
 
 
@@ -538,8 +553,50 @@ async def test_discarding_the_chosen_drawing_picks_the_next_one(gw: FakeGateway)
     await _open(state)
     await _to_drawings(state)
     assert state.drawing_id == newer.id
-    await ProductStickerState.discard_drawing.fn(state, newer.id)
+    events = await _drain(ProductStickerState.discard_drawing.fn(state, newer.id))
     assert [d.id for d in state.drawings] == [older.id] and state.drawing_id == older.id
+    # m-25019604: no question first — the panel offers «Deshacer» and takes the focus there
+    assert state.undo_drawing == newer.id
+    assert "product-sticker-undo" in str(events)
+
+
+async def test_undo_brings_the_drawing_back_where_it_was(gw: FakeGateway) -> None:
+    """m-25019604: «Deshacer» restores the drawing, chosen again if it was the chosen one;
+    the offer leaves once used or once the owner moves on."""
+    newer, older = _ready(SHAWARMA), _ready(SHAWARMA)
+    gw.drawings[SHAWARMA] = [newer, older]
+    state = ProductStickerState()
+    await _open(state)
+    await _to_drawings(state)
+    await _drain(ProductStickerState.discard_drawing.fn(state, newer.id))
+    await ProductStickerState.restore_drawing.fn(state)
+    assert [d.id for d in state.drawings] == [newer.id, older.id]
+    assert state.drawing_id == newer.id and state.flow_error == ""
+    assert state.undo_drawing == ""
+    await ProductStickerState.restore_drawing.fn(state)  # nothing left to bring back
+    assert gw.calls.count(("restore", newer.id)) == 1
+    await _drain(ProductStickerState.discard_drawing.fn(state, older.id))
+    assert state.undo_drawing == older.id
+    await ProductStickerState.use_drawing.fn(state)  # moving on drops the offer
+    assert state.flow_step == STEP_MESSAGE and state.undo_drawing == ""
+
+
+def test_the_undo_lives_in_the_panel_not_in_a_toast() -> None:
+    """A modal panel blocks a toast's button (measured at 375 px): «Deshacer» is inline."""
+    from .product_sticker_ui import _step_drawing
+
+    rendered = str(_step_drawing())
+    assert "Quitamos el dibujo" in rendered and "Deshacer" in rendered
+
+
+def test_the_discard_has_no_question_first() -> None:
+    import reflex as rx
+
+    from .product_sticker_ui import _discard_action
+    from .product_sticker_vm import DrawingVM
+
+    rendered = str(_discard_action(rx.Var.create(DrawingVM(id="d", alt="Dibujo")), False))
+    assert "AlertDialog" not in rendered and "No se puede deshacer" not in rendered
 
 
 async def test_an_answer_for_an_older_open_is_dropped(gw: FakeGateway) -> None:
@@ -557,15 +614,181 @@ async def test_a_reload_never_restores_a_stale_panel(
 ) -> None:
     state = ProductStickerState()
     await _open(state)
+    query = _route(monkeypatch)
+    # no flow in the address: the panel left open by an earlier visit closes
+    events = state.enter_history({"visit": "doc1:1", "href": "x"})
+    assert not state.flow_open and state.history_ack == "doc1:1"
+    assert len(events) == 1  # only the route's «ready»
+    # the old opener comes off the address first; the handler's next pass opens the flow
+    # over Tu marca's own address (steps are pushed on top of it, closing goes back there)
+    query["crear"] = "producto"
+    events = state.enter_history({"visit": "doc1:2", "href": "x"})
+    assert "/brand/kit" in str(events) and "crear=" not in str(events)
+    assert "flujo=" not in str(events) and not state.flow_open
+    query.clear()
+    events = state.enter_history({"visit": "doc1:3", "href": "x"})
+    assert "open_flow" in str(events)
+    # a reload (a new page document) with the flow open re-reads everything
+    query.clear()
+    query.update({"flujo": "sticker-producto", "paso": "3"})
+    await _open(state)
+    events = state.enter_history({"visit": "doc2:1", "href": "x"})
+    assert "open_at" in str(events)
+
+
+def _route(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     query: dict[str, str] = {}
     monkeypatch.setattr(
         ProductStickerState,
         "router",
         property(lambda self: SimpleNamespace(url=SimpleNamespace(query_parameters=query))),
     )
-    assert state.open_from_query() is None and not state.flow_open
-    query["crear"] = "producto"
-    assert state.open_from_query() is not None
+    return query
+
+
+async def test_the_phone_back_button_goes_back_one_step(
+    gw: FakeGateway, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """m-25019604: each step has its own address; «atrás» of the browser moves the panel
+    one step back, past step 1 it closes; «adelante» never skips a missing choice."""
+    gw.drawings[SHAWARMA] = [_ready(SHAWARMA)]
+    state = ProductStickerState()
+    query = _route(monkeypatch)
+    lease = {"visit": "doc1:1", "href": "x"}
+    state.enter_history(lease)  # the page mounted (no flow in the address)
+    await _open(state)
+    assert state.flow_ready
+    await _to_drawings(state)
+    await ProductStickerState.use_drawing.fn(state)
+    assert state.flow_step == STEP_MESSAGE
+    query.update({"flujo": "sticker-producto", "paso": "2"})
+    state.enter_history({"visit": "doc1:2", "href": "x"})
+    assert state.flow_open and state.flow_step == STEP_DRAWING
+    query["paso"] = "5"  # «adelante» to a later step: fine, every choice is there
+    state.enter_history({"visit": "doc1:3", "href": "x"})
+    assert state.flow_step == STEP_REVIEW
+    state.picked, state.own_on = [], False
+    state.enter_history({"visit": "doc1:4", "href": "x"})
+    assert state.flow_step == STEP_MESSAGE  # no message any more: the step that asks it
+    query.clear()  # «atrás» past step 1
+    state.enter_history({"visit": "doc1:5", "href": "x"})
+    assert not state.flow_open and not state.flow_ready
+
+
+async def test_closing_a_flow_begun_on_a_step_address_never_reopens_it(
+    gw: FakeGateway, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review finding: opened from a step's own address (a link, a reload), «✕» goes back to
+    that first entry, which is itself a flow address — the pop that lands there only
+    tidies the address, it never opens the panel again."""
+    state = ProductStickerState()
+    query = _route(monkeypatch)
+    query.update({"flujo": "sticker-producto", "paso": "1"})
+    state.enter_history({"visit": "doc1:1", "href": "x"})  # the link was opened here
+    await _open(state)
+    assert "sticker-producto" in str(state.set_flow_open(False))
+    assert not state.flow_open
+    events = state.enter_history({"visit": "doc1:2", "href": "x"})  # the close's pop
+    assert not state.flow_open and "open_at" not in str(events)
+    assert "replaceState" in str(events) and "flujo=" not in str(events)
+    # later «adelante»/«atrás» onto a step address opens it as usual
+    events = state.enter_history({"visit": "doc1:3", "href": "x"})
+    assert "open_at" in str(events)
+    # a close with no pop (nothing to go back to), then the same link opened again in a
+    # new page: it opens — the close's mark never outlives its page or a few seconds
+    await _open(state)
+    state.set_flow_open(False)
+    events = state.enter_history({"visit": "doc2:1", "href": "x"})
+    assert "open_at" in str(events)
+
+
+async def test_a_deep_link_falls_back_to_the_missing_choice(gw: FakeGateway) -> None:
+    """m-25019604: `?paso=4` without a used drawing opens on step 2; with one, on step 4;
+    without a product, on step 1."""
+    ready = _ready(SHAWARMA)
+    gw.drawings[SHAWARMA] = [ready]
+    state = ProductStickerState()
+    await _drain(ProductStickerState.open_at.fn(state, 4))
+    assert state.flow_step == STEP_DRAWING and state.drawing_id == ready.id and state.flow_ready
+    used = _ready(SHAWARMA, status="approved")
+    gw.drawings[SHAWARMA] = [ready, used]
+    await _drain(ProductStickerState.open_at.fn(state, 4))
+    assert state.flow_step == STEP_MOTION and state.drawing_id == used.id
+    gw.products_step = ProductStep(products=(), without_photo=0, preselected=None)
+    state.product_id = ""
+    await _drain(ProductStickerState.open_at.fn(state, 3))
+    assert state.flow_step == STEP_PRODUCT
+
+
+async def test_closing_takes_the_step_off_the_address(gw: FakeGateway) -> None:
+    state = ProductStickerState()
+    await _open(state)
+    closed = state.flow_back()  # «Atrás» on step 1
+    assert not state.flow_open and "sticker-producto" in str(closed)
+    await _open(state)
+    assert "sticker-producto" in str(state.set_flow_open(False))
+
+
+def test_the_flow_steps_have_their_own_address() -> None:
+    from .product_sticker_vm import FLOW_NAME, flow_address, reachable_step
+
+    assert flow_address({"crear": "producto", "seccion": "x"}, 1) == (
+        "/brand/kit?seccion=x&flujo=sticker-producto&paso=1"
+    )
+    assert FLOW_NAME == "sticker-producto"
+    approved = SimpleNamespace(approved=True)
+    ok = {"messages": ["En camino"], "own_error": "", "animated": True, "still": False}
+    assert reachable_step(9, product_id="p", drawing=approved, **ok) == STEP_REVIEW
+    assert reachable_step(0, product_id="p", drawing=approved, **ok) == STEP_PRODUCT
+    assert reachable_step(3, product_id="", drawing=approved, **ok) == STEP_PRODUCT
+    assert reachable_step(3, product_id="p", drawing=None, **ok) == STEP_DRAWING
+    not_used = SimpleNamespace(approved=False)
+    assert reachable_step(5, product_id="p", drawing=not_used, **ok) == STEP_DRAWING
+    assert (
+        reachable_step(5, product_id="p", drawing=approved, **{**ok, "messages": []})
+        == STEP_MESSAGE
+    )
+    assert (
+        reachable_step(5, product_id="p", drawing=approved, **{**ok, "animated": False})
+        == STEP_MOTION
+    )
+
+
+def test_a_reworded_preset_is_still_pre_selected() -> None:
+    """m-25019604: «Bienvenido» → «¡Te damos la bienvenida!»; an owner whose last sticker
+    said «Bienvenido» gets the new preset chosen, not an own message with the old words."""
+    from qualify_api.creative.product_stickers import MESSAGE_PRESETS, RENAMED_PRESETS
+
+    from .product_sticker_vm import preselection
+
+    assert "Bienvenido" not in MESSAGE_PRESETS
+    assert "¡Te damos la bienvenida!" in MESSAGE_PRESETS
+    assert all(len(p) <= 25 for p in MESSAGE_PRESETS)
+    assert preselection("Bienvenido", MESSAGE_PRESETS, RENAMED_PRESETS, 25) == (
+        ["¡Te damos la bienvenida!"],
+        False,
+        "",
+    )
+    assert preselection("Hola vecino", MESSAGE_PRESETS, RENAMED_PRESETS, 25) == (
+        [],
+        True,
+        "Hola vecino",
+    )
+    assert preselection("", MESSAGE_PRESETS, RENAMED_PRESETS, 25)[0] == [MESSAGE_PRESETS[0]]
+
+
+def test_no_owner_text_says_tus_productos() -> None:
+    """m-25019604: the screen is «Galería» now (its link is /catalog)."""
+    import inspect
+
+    from qualify_api.creative import product_stickers as backend
+
+    from . import product_sticker_vm as vm
+
+    assert "Tus productos" not in inspect.getsource(backend)
+    assert "Tus productos" not in inspect.getsource(vm)
+    assert vm.CATALOG_HREF == "/catalog"
+    assert "Galería" in backend.NoProductPhoto.message
 
 
 async def test_a_lost_request_never_locks_the_panel(gw: FakeGateway) -> None:

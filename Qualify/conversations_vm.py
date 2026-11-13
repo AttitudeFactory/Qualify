@@ -116,6 +116,12 @@ WINDOW_CLOSED_NOTICE = (
     "podrás responder de nuevo."
 )
 WINDOW_CLOSED_SHORT = "No se puede responder"
+#: m-25018661: the person unsent every message they had sent (Meta makes us erase them),
+#: so only the business's replies remain and there is no 24 h to count from.
+NO_INBOUND_NOTICE = (
+    "Ya no puedes responder: no queda ningún mensaje de esta persona. "
+    "Cuando vuelva a escribir, podrás responder de nuevo."
+)
 #: The rule itself, said once, so «hasta mañana a las 19:27» is never a bare deadline.
 WINDOW_RULE = (
     "Instagram solo permite responder durante las 24 h siguientes al último mensaje de la persona."
@@ -194,7 +200,7 @@ ATTACHMENT_READY: dict[str, str] = {
 
 #: `conversation_outbox.error_code` → the line under a bubble that did not go out.
 _FAILURE_LABELS: dict[str, str] = {
-    "window_closed": "No se envió: ya habían pasado las 24 h para responder.",
+    "window_closed": "No se envió: Instagram ya no permite responder a esta conversación.",
     "no_sender": "No se envió: este canal no tiene envío configurado.",
     "no_media_linker": "No se envió: el servidor no puede publicar adjuntos todavía.",
     "auth_error": "No se envió: la conexión de la cuenta caducó. Pulsa «Volver a conectar».",
@@ -224,7 +230,7 @@ SUGGESTION_REFUSALS: dict[str, str] = {
     "inbound_without_text": (
         "Este mensaje no tiene texto, así que no hay nada que sugerir. Escribe tu respuesta abajo."
     ),
-    "window_closed": "Ya no se puede responder a esta conversación (pasaron 24 h).",
+    "window_closed": "Ya no se puede responder a esta conversación.",
     "no_messages": "Esta conversación todavía no tiene mensajes.",
 }
 SUGGESTION_REFUSED_DEFAULT = "No se pudo sugerir una respuesta para este mensaje."
@@ -604,11 +610,19 @@ def _local(value: datetime, zone: tzinfo) -> datetime:
 
 
 def window_words(
-    is_open: bool, closes_at: datetime | None, now: datetime, zone: tzinfo
+    is_open: bool,
+    closes_at: datetime | None,
+    now: datetime,
+    zone: tzinfo,
+    *,
+    has_inbound: bool = True,
 ) -> tuple[str, str, str]:
     """(sentence for the header, short pill for the row — "" while comfortably open —,
     tone). «Puedes responder hasta las 17:47» / «Te quedan 12 min para responder» /
-    «Ya no puedes responder…»."""
+    «Ya no puedes responder…». `has_inbound=False` (no message of the person is left,
+    m-25018661) says that instead of the 24 h."""
+    if not has_inbound:
+        return NO_INBOUND_NOTICE, WINDOW_CLOSED_SHORT, "neutral"
     if not is_open or closes_at is None:
         return WINDOW_CLOSED_NOTICE, WINDOW_CLOSED_SHORT, "neutral"
     remaining = closes_at - now
@@ -739,7 +753,11 @@ def build_thread_row(
         preview = OUTBOUND_PREFIX + preview
     label, tone = attention_pill(view.attention)
     window_label, window_short, window_tone = window_words(
-        view.window.is_open, view.window.closes_at, now, zone
+        view.window.is_open,
+        view.window.closes_at,
+        now,
+        zone,
+        has_inbound=getattr(thread, "last_inbound_at", None) is not None,
     )
     channel = CHANNEL_LABELS.get(thread.channel, thread.channel)
     subtitle = f"{account_label} · {channel}" if account_label else channel
