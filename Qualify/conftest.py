@@ -38,6 +38,16 @@ def _no_payment_methods_read(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(whatsapp_menu_state, "_payment_options", lambda _t, _b: None)
 
 
+@pytest.fixture(autouse=True)
+def _generation_queue_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """m-24993023: a video by parts is only offered with the generation queue on
+    (`creative_provider.parts_queue_on`). Offline tests do not depend on this machine's
+    `QUALIFY_CREATIVE_DISPATCHER`: the queue is on, unless a test sets its own."""
+    from . import creative_provider
+
+    monkeypatch.setattr(creative_provider, "queue_enabled", lambda: True)
+
+
 @pytest.fixture
 def memory_r2():
     """CM-9 (m-24957283): the in-memory bucket every upload of a test lands in — with the

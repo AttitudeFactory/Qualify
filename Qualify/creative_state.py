@@ -148,6 +148,7 @@ from .creative_provider import (
     list_drafts,
     load_kit_form,
     load_voice_screen,
+    parts_queue_on,
     preview_brief_prompt,
     preview_draft_version,
     propose_voice,
@@ -4113,11 +4114,19 @@ class CreativeState(rx.State):
 
     @rx.var(cache=False)
     def reel_missing_description(self) -> bool:
-        return bool(reel_parts_vm.blocked_parts(self._reel_plan))
+        """«Contar qué pasa en la parte N» on step 5: a part still needs its description
+        AND the generation queue is on. Since m-24993023 it also reads the dispatcher
+        switch (`parts_queue_on`): with the queue off, describing a part would not unlock
+        creating them, so the action hides, as «Volver al paso 2» does."""
+        return bool(reel_parts_vm.blocked_parts(self._reel_plan)) and parts_queue_on()
 
     @rx.var(cache=False)
     def reel_unsupported_parts(self) -> bool:
-        return bool(reel_parts_vm.unsupported_parts(self._reel_plan))
+        """«Cambiar la parte N» on step 5: a part continues the previous one AND the
+        generation queue is on. Since m-24993023 it also reads the dispatcher switch
+        (`parts_queue_on`): with the queue off the action hides, as «Volver al paso 2»
+        does."""
+        return bool(reel_parts_vm.unsupported_parts(self._reel_plan)) and parts_queue_on()
 
     @rx.var(cache=False)
     def reel_describe_label(self) -> str:
@@ -4666,6 +4675,8 @@ class CreativeState(rx.State):
             seconds_left=self.videos_left,
             seconds_quota=self.videos_quota if wired else 0,
             renews=self.creations_renews,
+            # m-24993023: with the generation queue off the parts would never be made
+            queue_on=parts_queue_on(),
         )
 
     def _reel_review_open(self) -> bool:
