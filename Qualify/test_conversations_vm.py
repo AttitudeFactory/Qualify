@@ -45,6 +45,9 @@ from .conversations_vm import (
     NO_MESSAGES_YET,
     OUTBOUND_PREFIX,
     QUIET_ACCESS_KINDS,
+    STORY_LIFETIME,
+    STORY_MENTION_ICON,
+    STORY_MENTION_LABEL,
     TAP_ICON,
     WINDOW_CLOSED_NOTICE,
     WINDOW_CLOSED_SHORT,
@@ -685,7 +688,9 @@ def test_draft_vm_words_the_review_verdict() -> None:
     assert review.needs_review and "requiere revisión" in review.note
     assert review.claims == "envíos · precio"
     assert suggestion_refusal_label("last_message_outbound").startswith("Ya respondiste")
-    assert suggestion_refusal_label("inbound_without_text").startswith("El último mensaje")
+    assert suggestion_refusal_label("inbound_without_text").startswith(
+        "Este mensaje no tiene texto"
+    )
     assert suggestion_refusal_label("window_closed").startswith("Ya no se puede")
     assert suggestion_refusal_label("whatever").startswith("No se pudo sugerir")
 
@@ -711,14 +716,14 @@ def test_an_inbound_story_reply_says_so_with_the_storys_link() -> None:
         _message(), story_reply_id="17900000000000001", story_reply_url="https://cdn/story"
     )
     vm = build_message_vm(story, now=NOW, zone=ZONE)
-    assert (vm.story_reply_label, vm.story_reply_href) == (
+    assert (vm.story_label, vm.story_href) == (
         "Respondió a tu historia",
         "https://cdn/story",
     )
     expired = dataclasses.replace(story, story_reply_url=None)
-    assert build_message_vm(expired, now=NOW, zone=ZONE).story_reply_href == ""
+    assert build_message_vm(expired, now=NOW, zone=ZONE).story_href == ""
     plain = build_message_vm(_message(), now=NOW, zone=ZONE)
-    assert (plain.story_reply_label, plain.story_reply_href) == ("", "")
+    assert (plain.story_label, plain.story_href) == ("", "")
 
 
 def test_the_bubble_renders_the_story_context_only_when_there_is_one() -> None:
@@ -726,7 +731,138 @@ def test_the_bubble_renders_the_story_context_only_when_there_is_one() -> None:
     from .conversations_state import ConversationsState
 
     rendered = str(_story_reply(ConversationsState.messages[0]).render())
-    assert "story_reply_label" in rendered and "story_reply_href" in rendered
+    assert "story_label" in rendered and "story_href" in rendered
+
+
+# --- story mentions (m-25017817) --------------------------------------------------------
+
+
+def _mention(**changes: object) -> MessageRecord:
+    """The live shape (2026-11-13): an inbound DM with no text and no attachment."""
+    base = dataclasses.replace(
+        _message(text=None),
+        story_mention=True,
+        story_mention_basis="heuristic",
+        story_mention_id="17900000000000002",
+        story_mention_url="https://cdn/their-story",
+    )
+    return dataclasses.replace(base, **changes)
+
+
+def test_a_bare_story_mention_is_the_story_line_never_a_bare_mensaje() -> None:
+    vm = build_message_vm(_mention(), now=NOW, zone=ZONE)
+    assert (vm.story_label, vm.story_href) == (STORY_MENTION_LABEL, "https://cdn/their-story")
+    assert STORY_MENTION_LABEL == "Te mencionó en su historia"
+    assert vm.story_mention and vm.story_inline
+    assert vm.text == "" and vm.media_control == "" and vm.media_label == ""
+    expired = build_message_vm(_mention(story_mention_url=None), now=NOW, zone=ZONE)
+    assert expired.story_href == "" and expired.story_inline
+
+
+@pytest.mark.parametrize("basis", ["graph", "attachment", "heuristic"])
+def test_every_mention_basis_reads_the_same(basis: str) -> None:
+    vm = build_message_vm(_mention(story_mention_basis=basis), now=NOW, zone=ZONE)
+    assert (vm.story_label, vm.story_inline) == (STORY_MENTION_LABEL, True)
+
+
+def test_the_documented_mention_attachment_is_not_unsupported_content() -> None:
+    # `story_mention` attachments are stored as `other`: the mention, not a voice note.
+    vm = build_message_vm(
+        _mention(story_mention_basis="attachment", media_type="other"), now=NOW, zone=ZONE
+    )
+    assert vm.story_inline and vm.text == "" and vm.media_control == ""
+    assert "Instagram no muestra" not in vm.media_label
+
+
+def test_a_mention_with_text_shows_the_line_above_the_text() -> None:
+    vm = build_message_vm(_mention(text="¡Los mejores!"), now=NOW, zone=ZONE)
+    assert vm.text == "¡Los mejores!" and vm.story_label == STORY_MENTION_LABEL
+    assert not vm.story_inline
+
+
+def test_a_mention_is_never_also_a_story_reply_and_outbound_is_untouched() -> None:
+    both = build_message_vm(
+        _mention(story_reply_id="1790", story_reply_url="https://cdn/ours"), now=NOW, zone=ZONE
+    )
+    assert (both.story_label, both.story_href) == (STORY_MENTION_LABEL, "https://cdn/their-story")
+    echo = build_message_vm(
+        dataclasses.replace(_mention(), direction="outbound", text="gracias"), now=NOW, zone=ZONE
+    )
+    assert (echo.story_label, echo.story_mention, echo.story_inline) == ("", False, False)
+    assert echo.text == "gracias"
+
+
+def test_story_replies_and_voice_notes_keep_todays_bubble() -> None:
+    reply = build_message_vm(
+        dataclasses.replace(
+            _message(text="qué rico"), story_reply_id="1790", story_reply_url="https://cdn/s"
+        ),
+        now=NOW,
+        zone=ZONE,
+    )
+    assert (reply.text, reply.story_label, reply.story_href) == (
+        "qué rico",
+        "Respondió a tu historia",
+        "https://cdn/s",
+    )
+    assert not reply.story_mention and not reply.story_inline
+    voice = build_message_vm(_message(text=None, media="other"), now=NOW, zone=ZONE)
+    assert voice.text == "Contenido que Instagram no muestra aquí (p. ej. una nota de voz)"
+    assert voice.story_label == "" and not voice.story_inline
+
+
+def test_the_list_previews_a_mention_and_an_empty_story_reply() -> None:
+    view = _view(_thread())
+    mention = build_thread_row(view, ThreadExtra(preview_story_mention=True), now=NOW, zone=ZONE)
+    assert (mention.preview, mention.preview_icon) == (STORY_MENTION_LABEL, STORY_MENTION_ICON)
+    documented = build_thread_row(
+        view,
+        ThreadExtra(preview_story_mention=True, preview_media_type="other"),
+        now=NOW,
+        zone=ZONE,
+    )
+    assert documented.preview == STORY_MENTION_LABEL
+    with_text = build_thread_row(
+        view, ThreadExtra(preview="¡Los mejores!", preview_story_mention=True), now=NOW, zone=ZONE
+    )
+    assert with_text.preview == "¡Los mejores!"
+    reply = build_thread_row(view, ThreadExtra(preview_story_reply=True), now=NOW, zone=ZONE)
+    assert (reply.preview, reply.preview_icon) == ("Respondió a tu historia", "circle-dashed")
+    for row in (mention, documented, reply):
+        assert row.preview not in (NO_MESSAGES_YET, "Nota de voz u otro contenido")
+
+
+def test_the_list_keeps_todays_preview_for_voice_notes_and_story_replies_with_content() -> None:
+    view = _view(_thread())
+    voice = build_thread_row(view, ThreadExtra(preview_media_type="other"), now=NOW, zone=ZONE)
+    assert (voice.preview, voice.preview_icon) == ("Nota de voz u otro contenido", "circle-slash")
+    typed = build_thread_row(
+        view, ThreadExtra(preview="qué rico", preview_story_reply=True), now=NOW, zone=ZONE
+    )
+    assert (typed.preview, typed.preview_icon) == ("qué rico", "")
+    photo = build_thread_row(
+        view, ThreadExtra(preview_media_type="image", preview_story_reply=True), now=NOW, zone=ZONE
+    )
+    assert (photo.preview, photo.preview_icon) == ("Foto", "image")
+    outbound = build_thread_row(
+        view,
+        ThreadExtra(preview="listo", preview_direction="outbound", preview_story_mention=True),
+        now=NOW,
+        zone=ZONE,
+    )
+    assert outbound.preview == OUTBOUND_PREFIX + "listo"
+
+
+def test_the_bubble_draws_the_mention_inline_when_it_is_all_there_is() -> None:
+    from .conversations_page import _bubble_body
+    from .conversations_page import _message as page_message
+    from .conversations_state import ConversationsState
+
+    m = ConversationsState.messages[0]
+    body = str(_bubble_body(m).render())
+    assert "story_inline" in body and "story_label" in body
+    bubble = str(page_message(m).render())
+    assert "story_inline" in bubble and "q-conv-msg--story" in bubble
 
 
 # --- taps: ice breakers, quick replies, buttons, menu (m-24789472) ---------------------
@@ -1035,3 +1171,75 @@ def test_template_rows_carry_their_buttons() -> None:
         ("web_url", "Ver catálogo", "https://bianki.co", ""),
     ]
     assert row.buttons_label == "Con botones: Por aquí · Ver catálogo"
+
+
+# --- story line: lifetime, accessible name, touch target (m-25017817 UX review) ---------
+
+
+@pytest.mark.parametrize(
+    ("changes", "label"),
+    [
+        ({}, "Te mencionó en su historia"),
+        (
+            {
+                "story_mention": False,
+                "story_mention_basis": None,
+                "story_mention_id": None,
+                "story_mention_url": None,
+                "text": "qué rico",
+                "story_reply_id": "1790",
+                "story_reply_url": "https://cdn/their-story",
+            },
+            "Respondió a tu historia",
+        ),
+    ],
+)
+def test_the_story_link_lives_24_hours_then_reads_as_gone(
+    changes: dict[str, object], label: str
+) -> None:
+    young = _mention(**changes)
+    vm = build_message_vm(young, now=NOW, zone=ZONE)
+    assert (vm.story_label, vm.story_href) == (label, "https://cdn/their-story")
+    assert vm.story_link_label == f"{label} (se abre en otra pestaña)"
+    just_before = NOW - STORY_LIFETIME + timedelta(minutes=1)
+    still = dataclasses.replace(young, posted_at=just_before, ingested_at=just_before)
+    assert build_message_vm(still, now=NOW, zone=ZONE).story_href != ""
+    old_at = NOW - STORY_LIFETIME - timedelta(minutes=1)
+    old = build_message_vm(
+        dataclasses.replace(young, posted_at=old_at, ingested_at=old_at), now=NOW, zone=ZONE
+    )
+    assert (old.story_label, old.story_href, old.story_link_label) == (
+        f"{label} (ya no está disponible)",
+        "",
+        "",
+    )
+    # No posted_at: the ingestion instant stands in.
+    fallback = dataclasses.replace(young, posted_at=None, ingested_at=old_at)
+    assert build_message_vm(fallback, now=NOW, zone=ZONE).story_href == ""
+    assert STORY_LIFETIME == timedelta(hours=24)
+
+
+def test_the_list_preview_keeps_the_short_story_words() -> None:
+    row = build_thread_row(
+        _view(_thread(inbound=NOW - timedelta(days=3))),
+        ThreadExtra(preview_story_mention=True),
+        now=NOW,
+        zone=ZONE,
+    )
+    assert row.preview == "Te mencionó en su historia"
+
+
+def test_the_no_text_refusal_tells_what_to_do() -> None:
+    assert suggestion_refusal_label("inbound_without_text") == (
+        "Este mensaje no tiene texto, así que no hay nada que sugerir. Escribe tu respuesta abajo."
+    )
+
+
+def test_the_story_link_is_a_44px_target_with_an_accessible_name() -> None:
+    from .conversations_page import _story_line
+    from .conversations_state import ConversationsState
+
+    rendered = str(_story_line(ConversationsState.messages[0], "1").render())
+    assert "story_link_label" in rendered and "aria-label" in rendered.replace("_", "-")
+    assert "44px" in rendered
+    assert "aria-hidden" in rendered.replace("_", "-")

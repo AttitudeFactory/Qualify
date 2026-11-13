@@ -24,7 +24,11 @@ dependencies is `docs/conversaciones-limitaciones-meta.md`.
   `story_replies=True` (the `story_reply_context` capability, m-24789646) the request
   also asks for `story` (`graph-api/reference/message.md`: «The link and ID for a story.
   Only mentions and replies are supported»), and `story.reply_to` becomes the message's
-  story reply; a `story.mention` is not a reply and is ignored. Corpus-only until R3.
+  story reply; a `story.mention` is not a reply: it marks the message as a story mention
+  (m-25017817, basis `graph`), as does an attachment typed `story_mention` (basis
+  `attachment`). This field is what settles a webhook's bare `reply_to.story` (stored as a
+  `heuristic` mention): `mention` confirms it, `reply_to` turns it into a reply.
+  Corpus-only until R3.
 - `POST /{page-id}/messages` with `{"recipient": {"id": IGSID}, "message": {"text"}}`
   (`send-message.md`): text ≤ 1000 UTF-8 bytes, inside the 24 h window, and — with
   Standard Access — only to people with a role on the app. m-24789472: the same POST
@@ -70,6 +74,9 @@ from qualify_api.conversations.contracts import (
     REPLY_MEDIA_TYPES,
     REPLY_STICKERS,
     SENDER_ACTIONS,
+    STORY_MENTION_ATTACHMENT,
+    STORY_MENTION_ATTACHMENT_BASIS,
+    STORY_MENTION_GRAPH,
     AccessStatus,
     AccessVerdict,
     Page,
@@ -378,7 +385,8 @@ def parse_messages_page(payload: Mapping[str, Any], *, own_account_id: str) -> P
         username = sender.get("username")
         text = raw.get("message")
         outbound = author_id == own_account_id
-        story = None if outbound else _story_reply(raw)
+        mention = None if outbound else _story_mention(raw)
+        story = None if outbound or mention is not None else _story_reply(raw)
         items.append(
             RemoteMessage(
                 external_message_id=str(raw["id"]),
@@ -392,9 +400,46 @@ def parse_messages_page(payload: Mapping[str, Any], *, own_account_id: str) -> P
                 media_url=_media_url(raw),
                 story_reply_id=story[0] if story else None,
                 story_reply_url=story[1] if story else None,
+                story_mention=mention is not None,
+                story_mention_id=mention[1] if mention else None,
+                story_mention_url=mention[2] if mention else None,
+                story_mention_basis=mention[0] if mention else None,
+                # The node's own `story.reply_to`: Meta said «reply», which overrules a
+                # heuristic mention the webhook stored first.
+                story_reply_confirmed=story is not None,
             )
         )
     return Page(items=tuple(items), next_cursor=_next_cursor(payload))
+
+
+def _story_mention(raw: Mapping[str, Any]) -> tuple[str, str | None, str | None] | None:
+    """`(basis, story id, CDN URL)` when the Message node is a story mention, else `None`.
+    Two readings, both `[CORPUS]` (m-25017817), neither observed live yet:
+
+    - `story.mention = {"link", "id"}` — basis `graph`, the authoritative one: Meta itself
+      tells a mention from a reply (`features/story-mention.md` «Example request», `GET
+      <MESSAGE_ID>?fields=story`; `graph-api/reference/message.md` `story`). Present only
+      when the poll asks for `story` (the `story_reply_context` capability);
+    - an entry of `attachments.data` typed `story_mention` — basis `attachment` (mirrors
+      the documented webhook; the reference does not show the node carrying it). No id.
+    """
+    story = raw.get("story")
+    if isinstance(story, Mapping) and isinstance(story.get("mention"), Mapping):
+        mention = story["mention"]
+        reference = story_reference(mention)
+        if reference is not None:
+            return STORY_MENTION_GRAPH, reference[0], reference[1]
+        link = mention.get("link") or mention.get("url")
+        return STORY_MENTION_GRAPH, None, link if isinstance(link, str) and link else None
+    attachments = raw.get("attachments")
+    data = attachments.get("data") if isinstance(attachments, Mapping) else None
+    for item in data if isinstance(data, list) else []:
+        if not isinstance(item, Mapping) or item.get("type") != STORY_MENTION_ATTACHMENT:
+            continue
+        payload = item.get("payload")
+        url = payload.get("url") if isinstance(payload, Mapping) else item.get("url")
+        return STORY_MENTION_ATTACHMENT_BASIS, None, url if isinstance(url, str) and url else None
+    return None
 
 
 def _story_reply(raw: Mapping[str, Any]) -> tuple[str, str | None] | None:
