@@ -1742,7 +1742,12 @@ class WhatsAppChatsState(rx.State):
 
     @rx.var
     def pick_seasonal_earlier(self) -> list[SeasonalPickVM]:
-        return [p for p in self.pick_seasonal_shown if not p.current]
+        return [p for p in self.pick_seasonal_shown if not p.current and not p.product]
+
+    @rx.var
+    def pick_seasonal_products(self) -> list[SeasonalPickVM]:
+        """m-25017912: «De tus productos», after the seasons (founder 2026-11-12)."""
+        return [p for p in self.pick_seasonal_shown if p.product]
 
     @rx.var
     def pick_selected_seasonal(self) -> SeasonalPickVM:

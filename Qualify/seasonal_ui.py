@@ -11,12 +11,14 @@ from __future__ import annotations
 
 import reflex as rx
 
+from .product_sticker_state import ProductStickerState as P
+from .product_sticker_ui import product_start_card, product_sticker_drawer, start_card
+from .product_sticker_vm import SEASON_START_LINE, SEASON_START_TITLE
 from .r2_media import BACKEND_BASE
 from .seasonal_state import FLOW_STEPS, SeasonalState
 from .seasonal_vm import (
     AI_LINE,
     ANOTHER_AI_YES,
-    ANOTHER_LABEL,
     APPROVE_LABEL,
     APPROVE_READY_LABEL,
     APPROVED_EMPTY_TEXT,
@@ -158,6 +160,28 @@ def _season_row(season: SeasonVM) -> rx.Component:
     )
 
 
+def _start_cards() -> rx.Component:
+    """Two ways to start, each with its benefit and its price (UX doc §1): the free season
+    first, then the owner's product (m-25017912). One column on a phone."""
+    return rx.grid(
+        # with nothing yet, the empty state above already offers the season's button
+        rx.cond(
+            ~S.is_empty,
+            start_card(
+                SEASON_START_TITLE,
+                SEASON_START_LINE,
+                "",
+                _button(CREATE_LABEL, S.open_flow, icon="plus", solid=True),
+                icon="calendar-heart",
+            ),
+        ),
+        product_start_card(),
+        columns=rx.breakpoints(initial="1", sm="2"),
+        spacing="2",
+        width="100%",
+    )
+
+
 def brand_section() -> rx.Component:
     """The section in Tu marca: the library by season (the coming one first), the
     archived ones folded, and «Crear para esta temporada»."""
@@ -216,7 +240,6 @@ def brand_section() -> rx.Component:
                                     class_name="q-fold",
                                 ),
                             ),
-                            _button(CREATE_LABEL, S.open_flow, icon="plus", solid=True),
                             spacing="2",
                             width="100%",
                             align_items="start",
@@ -225,13 +248,15 @@ def brand_section() -> rx.Component:
                 ),
             ),
             rx.cond(S.action_error != "", callout(S.action_error, "error")),
+            _start_cards(),
             create_drawer(),
+            product_sticker_drawer(),
             spacing="3",
             width="100%",
             align_items="start",
         ),
-        on_mount=[S.load, S.open_from_query],
-        on_unmount=S.stop_poll,
+        on_mount=[S.load, S.open_from_query, P.load_start, P.open_from_query],
+        on_unmount=[S.stop_poll, P.stop_poll],
     )
 
 
@@ -603,6 +628,7 @@ def _item_card(item: SeasonalItemVM) -> rx.Component:
                 wrap="wrap",
                 gap="1",
             ),
+            rx.cond(item.caption != "", rx.text(item.caption, size="2", weight="medium")),
             rx.text(
                 rx.cond(item.size_label != "", item.size_label + " · ", "") + item.season_label,
                 size="1",
@@ -616,14 +642,16 @@ def _item_card(item: SeasonalItemVM) -> rx.Component:
                     # an IA piece offers «Pedir otro» only while «Con IA» has a price
                     rx.cond(
                         ~item.paid | (S.ai_redo_cost != ""),
-                        _button(ANOTHER_LABEL, S.another(item.id), disabled=busy, flex="1"),
+                        _button(item.another_label, S.another(item.id), disabled=busy, flex="1"),
                     ),
                     gap="2",
                     width="100%",
                 ),
                 rx.cond(
                     item.failed & (~item.paid | (S.ai_redo_cost != "")),
-                    _button(ANOTHER_LABEL, S.another(item.id), icon="refresh-cw", disabled=busy),
+                    _button(
+                        item.another_label, S.another(item.id), icon="refresh-cw", disabled=busy
+                    ),
                 ),
             ),
             rx.cond(

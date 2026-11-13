@@ -150,6 +150,7 @@ from .whatsapp_chats_vm import (
     SEASONAL_PENDING_ACTION,
     SEASONAL_PENDING_HREF,
     SEASONAL_PENDING_TEXT,
+    SEASONAL_PRODUCTS,
     SEASONAL_STICKER_ALONE,
     SEASONAL_STICKERS_TAB,
     SEASONAL_VIDEOS_TAB,
@@ -2156,6 +2157,15 @@ def _pick_seasonal() -> rx.Component:
             rx.vstack(
                 rx.text(SEASONAL_EARLIER, size="2", weight="medium"),
                 _seasonal_grid(S.pick_seasonal_earlier),
+                spacing="2",
+                width="100%",
+            ),
+        ),
+        rx.cond(
+            S.pick_seasonal_products.length() > 0,
+            rx.vstack(
+                rx.text(SEASONAL_PRODUCTS, size="2", weight="medium"),
+                _seasonal_grid(S.pick_seasonal_products),
                 spacing="2",
                 width="100%",
             ),

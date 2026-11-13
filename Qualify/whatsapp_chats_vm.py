@@ -41,6 +41,7 @@ from .ad_message_vm import ad_origin_href, ad_origin_label
 from .catalog_vm import CHATS_RETURN_PATH, RETURN_PARAM
 from .planner_vm import time_label_12h
 from .seasonal_vm import CREATE_HREF as SEASONAL_LIBRARY_CREATE_HREF
+from .seasonal_vm import PRODUCT_SEASON_KEY, product_message
 
 # ======================================================================================
 # Copy and limits
@@ -1739,9 +1740,14 @@ class SeasonalPickVM:
     current: bool = False
     src: str = ""
     alt: str = ""
+    #: m-25017912: a sticker of the owner's product («De tus productos»), listed after the
+    #: seasons (founder 2026-11-12).
+    product: bool = False
 
 
 EMPTY_SEASONAL = SeasonalPickVM()
+#: The group title of the product stickers in «¿Qué le mandas?».
+SEASONAL_PRODUCTS = "De tus productos"
 
 
 def build_seasonal_picks(rows: Iterable[Any], src_for: Any = None) -> list[SeasonalPickVM]:
@@ -1754,17 +1760,25 @@ def build_seasonal_picks(rows: Iterable[Any], src_for: Any = None) -> list[Seaso
         if str(getattr(row, "status", "approved") or "approved") != "approved":
             continue
         key = str(getattr(row, "season_key", "") or getattr(row, "season_label", ""))
-        current = current or key
+        product = key == PRODUCT_SEASON_KEY
+        if not product:
+            current = current or key
         video = str(getattr(row, "kind", "")) == "video"
         label = str(getattr(row, "season_label", "") or "")
+        message = product_message(row)
         picks.append(
             SeasonalPickVM(
                 id=str(row.id),
                 is_video=video,
                 season_label=label,
-                current=key == current,
+                current=not product and key == current,
                 src=src_for(row) if src_for else "",
-                alt=f"{'Video' if video else 'Sticker'} de «{label}»",
+                alt=(
+                    f"Sticker que dice «{message}»"
+                    if message
+                    else f"{'Video' if video else 'Sticker'} de «{label}»"
+                ),
+                product=product,
             )
         )
     return picks

@@ -372,6 +372,11 @@ class SeasonalItemVM:
     #: m-25016851: «Eliminar»'s question for this piece (`delete_title` / `delete_text`).
     delete_title: str = ""
     delete_text: str = ""
+    #: m-25017912: a product sticker's message («¡Gracias por tu pedido!»), shown under it.
+    caption: str = ""
+    #: «Pedir otro», or «Hacer de nuevo» on a product sticker (free; never the same label
+    #: as the paid «Pedir otro dibujo»).
+    another_label: str = ANOTHER_LABEL
 
 
 #: What each recipe makes, for the screen reader («Sticker de «Navidad 2026»: tu logo con
@@ -390,6 +395,25 @@ RECIPE_WORDS: Final[dict[str, str]] = {
 }
 
 
+#: m-25017912: the product stickers' recipes (`creative.product_stickers`) and their key.
+PRODUCT_SEASON_KEY: Final = "productos"
+PRODUCT_RECIPES: Final[dict[str, str]] = {"k-animado": "con movimiento", "k-quieto": "quieto"}
+REDO_LABEL: Final = "Hacer de nuevo"
+
+
+def product_message(row: Any) -> str:
+    """The message of a product sticker (`source_ref` = `{drawing id}:{message}`); "" for
+    anything else."""
+    if (
+        str(getattr(row, "source_kind", "") or "") != "character"
+        and str(getattr(row, "recipe", "") or "") not in PRODUCT_RECIPES
+    ):
+        return ""
+    ref = str(getattr(row, "source_ref", "") or "")
+    _id, sep, message = ref.partition(":")
+    return message if sep else ""
+
+
 def item_alt(kind_label: str, season: str, recipe: str) -> str:
     what = RECIPE_WORDS.get(recipe, "")
     head = f"{kind_label} de «{season}»"
@@ -404,6 +428,12 @@ def _row(
     reason = str(getattr(row, "fail_reason", "") or "")
     heavy = status == FAILED and ("large" in reason or "heavy" in reason)
     video = kind == VIDEO
+    recipe = str(getattr(row, "recipe", "") or "")
+    message = product_message(row)
+    if message:
+        alt = f"Sticker {PRODUCT_RECIPES.get(recipe, '')} que dice «{message}»".replace("  ", " ")
+    else:
+        alt = item_alt(VIDEO_BADGE if video else STICKER_BADGE, label, recipe)
     return SeasonalItemVM(
         id=str(row.id),
         season_key=str(getattr(row, "season_key", "") or ""),
@@ -427,14 +457,14 @@ def _row(
         # the weight only once there is a file (never «0 KB» while it is prepared)
         size_label=kb_label(getattr(row, "bytes", None)) if status in (READY, APPROVED) else "",
         src=src if status in (READY, APPROVED) else "",
-        alt=item_alt(
-            VIDEO_BADGE if video else STICKER_BADGE, label, str(getattr(row, "recipe", ""))
-        ),
+        alt=alt,
         # made with IA: «Pedir otro» is another paid call (asks first)
         paid=str(getattr(row, "recipe", "")).startswith("ai-")
         or Decimal(str(getattr(row, "cost_usd", 0) or 0)) > 0,
         delete_title=delete_title(video),
         delete_text=delete_text(status == APPROVED),
+        caption=message,
+        another_label=REDO_LABEL if message else ANOTHER_LABEL,
     )
 
 
