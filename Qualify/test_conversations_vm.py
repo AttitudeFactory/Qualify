@@ -31,6 +31,7 @@ from .conversations_vm import (
     ACCESS_UNKNOWN,
     FILTER_ALL,
     FILTER_ANSWERED,
+    FILTER_CLOSED,
     FILTER_PENDING,
     FILTER_READ,
     MAX_AUDIO_BYTES,
@@ -58,6 +59,7 @@ from .conversations_vm import (
     ThreadExtra,
     ThreadRowVM,
     UnsentItem,
+    as_chat_row,
     avatar_hue,
     build_access_vm,
     build_account_vm,
@@ -71,6 +73,7 @@ from .conversations_vm import (
     counterpart_title,
     failure_label,
     filter_counts,
+    filter_from_param,
     filter_label,
     filter_threads,
     inbox_accounts,
@@ -468,9 +471,55 @@ def test_filters_are_by_attention_and_counted() -> None:
         FILTER_PENDING: 1,
         FILTER_READ: 1,
         FILTER_ANSWERED: 1,
+        FILTER_CLOSED: 0,
     }
     assert filter_label(FILTER_PENDING, 2) == "Pendientes · 2"
     assert filter_label(FILTER_PENDING, 0) == "Pendientes"
+
+
+def test_a_closed_chat_lists_only_under_cerrados_and_counts_there() -> None:
+    """m-25026457: «Cerrar» takes the chat out of «Todas» and «Pendientes» (and the
+    others); «Cerrados» lists it; every chip's count is what the chip lists."""
+    waiting = build_thread_row(_view(_thread()), None, now=NOW, zone=ZONE)
+    closed_waiting = build_thread_row(_view(_thread(status="closed")), None, now=NOW, zone=ZONE)
+    closed_read = build_thread_row(
+        _view(_thread(status="closed", read=NOW - timedelta(minutes=1))), None, now=NOW, zone=ZONE
+    )
+    rows = [waiting, closed_waiting, closed_read]
+    assert filter_threads(rows, FILTER_ALL) == [waiting]
+    assert filter_threads(rows, FILTER_PENDING) == [waiting]
+    assert filter_threads(rows, FILTER_READ) == []
+    assert filter_threads(rows, FILTER_CLOSED) == [closed_waiting, closed_read]
+    counts = filter_counts(rows)
+    assert counts == {
+        FILTER_ALL: 1,
+        FILTER_PENDING: 1,
+        FILTER_READ: 0,
+        FILTER_ANSWERED: 0,
+        FILTER_CLOSED: 2,
+    }
+    for key, count in counts.items():
+        assert len(filter_threads(rows, key)) == count
+    assert filter_label(FILTER_CLOSED, 2) == "Cerrados · 2"
+    assert filter_label(FILTER_CLOSED, 0) == "Cerrados"
+    # Inicio's links and a typed address reach the chip by its own word.
+    assert filter_from_param("cerrados") == FILTER_CLOSED
+    # The shared row has no «closed» mark: the filter is what says it.
+    assert as_chat_row(closed_waiting) == as_chat_row(
+        dataclasses.replace(closed_waiting, is_closed=False)
+    )
+
+
+def test_a_reopened_chat_is_back_in_pending() -> None:
+    """A newer inbound reopens a closed chat (backend); the next read lists it pending."""
+    before = build_thread_row(_view(_thread(status="closed")), None, now=NOW, zone=ZONE)
+    after = build_thread_row(
+        _view(_thread(status="open", inbound=NOW - timedelta(minutes=1))), None, now=NOW, zone=ZONE
+    )
+    after = dataclasses.replace(after, thread_id=before.thread_id)
+    assert filter_threads([before], FILTER_PENDING) == []
+    assert filter_threads([after], FILTER_PENDING) == [after]
+    assert filter_threads([after], FILTER_CLOSED) == []
 
 
 def test_newly_pending_announces_only_what_changed_after_a_first_load() -> None:

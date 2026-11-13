@@ -111,6 +111,7 @@ from .conversations_vm import (
     FEATURE_OFF,
     FILTER_ALL,
     FILTER_ANSWERED,
+    FILTER_CLOSED,
     FILTER_KEYS,
     FILTER_PARAM,
     FILTER_PENDING,
@@ -229,6 +230,8 @@ _TEMPLATE_CREATED = "Plantilla creada."
 _TEMPLATE_SAVED = "Cambios guardados."
 _TEMPLATE_DELETED = "Plantilla borrada."
 _TOAST_MS = 4000
+#: m-25026457: what the header's one status button may ask for.
+CHAT_STATUS_ACTIONS = frozenset({"close", "reopen"})
 
 
 class _NoSession(Exception):
@@ -315,6 +318,8 @@ class ConversationsState(rx.State):
     conv_loaded_for: str = ""
     conv_loading_for: str = ""
     conv_error: str = ""
+    # m-25026457: «Cerrar» / «Reabrir» in flight ("close" | "reopen" | "").
+    chat_status_busy: str = ""
 
     # -- composer -----------------------------------------------------------------------
     draft_text: str = ""
@@ -423,6 +428,10 @@ class ConversationsState(rx.State):
     @rx.var
     def filter_answered_label(self) -> str:
         return filter_label(FILTER_ANSWERED, filter_counts(self.rows)[FILTER_ANSWERED])
+
+    @rx.var
+    def filter_closed_label(self) -> str:
+        return filter_label(FILTER_CLOSED, filter_counts(self.rows)[FILTER_CLOSED])
 
     @rx.var
     def pending_count(self) -> int:
@@ -922,6 +931,9 @@ class ConversationsState(rx.State):
                 for item in listing
             ]
             fresh_ids = set(newly_pending(previous, rows))
+            if self.chat_status_busy:
+                # The owner's own «Reabrir» in flight is not a new message.
+                fresh_ids.discard(self.open_thread_id)
             if fresh_ids:
                 rows = [
                     dataclasses.replace(r, fresh=True) if r.thread_id in fresh_ids else r
@@ -1068,6 +1080,58 @@ class ConversationsState(rx.State):
         if mark_read and conv.view.thread.last_inbound_at is not None:
             # The counterpart sees «Visto» on Instagram. Best-effort, after the screen.
             await gw.signal(tenant_id, connection, thread, ACTION_MARK_SEEN)
+
+    # ==================================================================================
+    # Header: «Cerrar» / «Reabrir» (m-25026457, WhatsApp's pattern)
+    # ==================================================================================
+
+    @rx.event(background=True)
+    async def change_chat_status(self, action: str) -> AsyncIterator[rx.event.EventSpec]:
+        """«Cerrar» (`"close"`) or «Reabrir» (`"reopen"`) the open chat. As in WhatsApp:
+        no confirmation and no toast — the chat stays on screen with the other button,
+        its row moves between «Cerrados» and the other chips, and the list re-reads."""
+        if action not in CHAT_STATUS_ACTIONS:
+            return
+        async with self:
+            if self.chat_status_busy or not self.open_thread_id:
+                return
+            self.chat_status_busy = action
+            self.banner = ""
+            thread_id, connection_id = self.open_thread_id, self.selected_connection_id
+            tenant_id = await self._tenant()
+        thread, connection = _uuid(thread_id), _uuid(connection_id)
+        if tenant_id is None or thread is None or connection is None:
+            async with self:
+                self.chat_status_busy = ""
+                self._set_banner(_NO_SESSION, "error")
+            return
+        gw = gateway()
+        call = gw.close if action == "close" else gw.reopen
+        try:
+            await asyncio.to_thread(call, tenant_id, connection, thread)
+        except ThreadNotFound:
+            async with self:
+                self.chat_status_busy = ""
+                self._set_banner(_THREAD_GONE, "warn")
+            yield ConversationsState.refresh
+            return
+        except _DB_ERRORS as exc:
+            logger.error("conversations %s failed: %s", action, type(exc).__name__)
+            async with self:
+                self.chat_status_busy = ""
+                self._set_banner(_ACTION_FAILED, "error")
+            return
+        async with self:
+            self.chat_status_busy = ""
+            closed = action == "close"
+            self.rows = [
+                dataclasses.replace(r, is_closed=closed, fresh=False)
+                if r.thread_id == thread_id
+                else r
+                for r in self.rows
+            ]
+        yield PendingState.refresh_now  # the menu's «por responder» count follows
+        yield ConversationsState.refresh
 
     # ==================================================================================
     # Refresh (15 s heartbeat + after every action)

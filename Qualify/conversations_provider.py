@@ -404,6 +404,7 @@ class ConversationsGateway:
             channels=[CHANNEL_DM],
             connection_id=connection_id,
             limit=THREADS_LIMIT,
+            status=None,  # m-25026457: open and closed alike — the filters are local
         )
         extras = self._store.thread_extras(tenant_id, [v.thread.id for v in views])
         return [
@@ -469,6 +470,17 @@ class ConversationsGateway:
     def mark_read(self, tenant_id: UUID, connection_id: UUID, thread_id: UUID) -> ThreadView:
         self._owned(tenant_id, connection_id, thread_id)
         return self.service.mark_read(tenant_id=tenant_id, thread_id=thread_id)
+
+    def close(self, tenant_id: UUID, connection_id: UUID, thread_id: UUID) -> ThreadView:
+        """«Cerrar» (m-25026457): the chat leaves «Por responder» and the default list
+        until the person writes again. Another account's thread is `ThreadNotFound`."""
+        self._owned(tenant_id, connection_id, thread_id)
+        return self.service.close(tenant_id=tenant_id, thread_id=thread_id)
+
+    def reopen(self, tenant_id: UUID, connection_id: UUID, thread_id: UUID) -> ThreadView:
+        """«Reabrir»: the inverse of `close`, same guarantees."""
+        self._owned(tenant_id, connection_id, thread_id)
+        return self.service.reopen(tenant_id=tenant_id, thread_id=thread_id)
 
     def hide_message(
         self, tenant_id: UUID, connection_id: UUID, thread_id: UUID, message_id: UUID

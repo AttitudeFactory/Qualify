@@ -137,11 +137,15 @@ FILTER_ALL = "all"
 FILTER_PENDING = "pending"
 FILTER_READ = "read"
 FILTER_ANSWERED = "answered"
+# m-25026457: the owner's «Cerrar» takes a chat out of every other chip; «Cerrados» is
+# the word the ticket fixes (WhatsApp's chip), kept as is for the shared list to come.
+FILTER_CLOSED = "closed"
 FILTERS: tuple[tuple[str, str], ...] = (
     (FILTER_ALL, "Todas"),
     (FILTER_PENDING, "Pendientes"),
     (FILTER_READ, "Leídas"),
     (FILTER_ANSWERED, "Respondidas"),
+    (FILTER_CLOSED, "Cerrados"),
 )
 FILTER_KEYS = frozenset(key for key, _label in FILTERS)
 DEFAULT_FILTER = FILTER_ALL
@@ -154,6 +158,7 @@ FILTER_SLUGS = {
     "pendientes": FILTER_PENDING,
     "leidas": FILTER_READ,
     "respondidas": FILTER_ANSWERED,
+    "cerrados": FILTER_CLOSED,
 }
 
 
@@ -816,11 +821,15 @@ def as_chat_row(row: ThreadRowVM) -> ChatRowVM:
 
 
 def filter_threads(rows: Iterable[ThreadRowVM], key: str) -> list[ThreadRowVM]:
-    """Todas · Pendientes · Leídas · Respondidas, by the derived attention state. An
-    unknown key falls back to Todas."""
+    """Cerrados = the chats the owner closed (m-25026457). Every other chip lists open
+    chats only: Todas = all of them, Pendientes · Leídas · Respondidas by the derived
+    attention state. An unknown key falls back to Todas."""
+    if key == FILTER_CLOSED:
+        return [r for r in rows if r.is_closed]
+    open_rows = [r for r in rows if not r.is_closed]
     if key in (FILTER_PENDING, FILTER_READ, FILTER_ANSWERED):
-        return [r for r in rows if r.attention == key]
-    return list(rows)
+        return [r for r in open_rows if r.attention == key]
+    return open_rows
 
 
 def filter_counts(rows: Sequence[ThreadRowVM]) -> dict[str, int]:
@@ -843,7 +852,10 @@ def newly_pending(previous: Sequence[ThreadRowVM], current: Sequence[ThreadRowVM
         old = before.get(row.thread_id)
         if row.attention != "pending":
             continue
-        if old is None or old.time_label != row.time_label or old.preview != row.preview:
+        if old is not None and old.is_closed and not row.is_closed:
+            # m-25026457: only a NEW message reopens a closed chat — say so, it is back.
+            fresh.append(row.thread_id)
+        elif old is None or old.time_label != row.time_label or old.preview != row.preview:
             if old is None or old.attention != "pending" or old.preview != row.preview:
                 fresh.append(row.thread_id)
     return fresh
