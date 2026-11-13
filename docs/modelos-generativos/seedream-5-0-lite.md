@@ -7,7 +7,7 @@
 | Precio | US$0,035 por imagen (`per_piece`), imágenes de entrada adicionales a US$0 (tabla de precios `v6`) |
 | Uso en Qualify | Experimento `packages/api/evals/plantillas_ai/` (`run_experiment.py`, lógica en `qualify_api/evals/template_transfer.py`). No está en producción para estas dos tareas |
 | Modelo objetivo | `dola-seedream-5-0-pro-260628` (5.0 pro). Esta prueba usó 5.0 lite porque pro no está activado en la cuenta |
-| Datos | Modelo preautorizado: cede los datos a BytePlus. Solo material ficticio generado por `fixtures/make_fixtures.py`; ninguna foto ni logo de un cliente |
+| Datos | Corregido el 2026-11-12 (m-25017372): el fundador revisó la consola de ModelArk › Data Collaboration ese día y confirmó que 5.0 lite **no cede los datos** a BytePlus. Esta ficha decía antes «Modelo preautorizado: cede los datos a BytePlus», por la autorización de la campaña de datos registrada el 2026-10-07. Falta aclarar si esa autorización se revocó o si nunca se aplicó a este modelo. Las pruebas de esta ficha usaron solo material ficticio generado por `fixtures/make_fixtures.py` |
 
 ## Prueba PLANTILLAS-001 — 2026-10-23 (exploratoria)
 

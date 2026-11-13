@@ -243,7 +243,7 @@ class RemotionStickerRenderer:
             health_client=RemotionRenderClient(base_url, timeout_seconds=HEALTH_TIMEOUT_SECONDS),
         )
 
-    def _check_ready(self) -> None:
+    def _check_ready(self, version: int = TEMPLATE_VERSION) -> None:
         try:
             health = self._health.health()
         except Exception as exc:  # noqa: BLE001 — DNS, refused, timeout: all "not there"
@@ -252,7 +252,7 @@ class RemotionStickerRenderer:
             ready = bool(health.get("ok")) and bool(health.get("bundleReady"))
             templates = health.get("templates") or []
             has_sticker = any(
-                t.get("id") == TEMPLATE_ID and int(t.get("version") or 0) >= TEMPLATE_VERSION
+                t.get("id") == TEMPLATE_ID and int(t.get("version") or 0) >= version
                 for t in templates
                 if isinstance(t, Mapping)
             )
@@ -261,7 +261,7 @@ class RemotionStickerRenderer:
         if not ready:
             raise StickerRenderError("not_ready")
         if not has_sticker:
-            raise StickerRenderError("no_template", "the service has no sticker v1")
+            raise StickerRenderError("no_template", f"the service has no sticker v{version}")
 
     def props(
         self,
@@ -338,7 +338,27 @@ class RemotionStickerRenderer:
             backing.lost_on_white,
             backing.lost_on_fill,
         )
-        self._check_ready()
+        return self.sheet(
+            art_bytes=art_bytes,
+            font=look.font,
+            build_props=lambda art_ref, font_ref: self.props(
+                recipe, look, art_ref=art_ref, font_ref=font_ref, text=words, backing=backing
+            ),
+            version=TEMPLATE_VERSION,
+        )
+
+    def sheet(
+        self,
+        *,
+        art_bytes: bytes | None,
+        font: bytes | None,
+        build_props: Callable[[str | None, str | None], dict[str, Any]],
+        version: int,
+    ) -> list[Image.Image]:
+        """One render of the `sticker` template at `version`: health check, the art and the
+        font uploaded as assets, `build_props(art_ref, font_ref)` rendered to the sheet, the
+        sheet sliced into frames. Every failure is a `StickerRenderError`."""
+        self._check_ready(version)
         job_id = self._job_ids()
         try:
             art_ref = (
@@ -350,18 +370,16 @@ class RemotionStickerRenderer:
             )
             font_ref = (
                 self._client.upload_asset(
-                    look.font, filename="heading-font", content_type=_font_type(look.font)
+                    font, filename="heading-font", content_type=_font_type(font)
                 ).ref
-                if look.font
+                if font
                 else None
             )
-            props = self.props(
-                recipe, look, art_ref=art_ref, font_ref=font_ref, text=words, backing=backing
-            )
+            props = build_props(art_ref, font_ref)
             self._client.render(
                 job_id=job_id,
                 template_id=TEMPLATE_ID,
-                version=TEMPLATE_VERSION,
+                version=version,
                 props=props,
                 outputs=[SHEET_PORT],
             )

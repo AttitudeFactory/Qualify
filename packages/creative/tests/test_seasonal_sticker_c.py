@@ -124,15 +124,20 @@ def test_the_manifest_matches_what_python_slices() -> None:
     assert SheetSpec.from_manifest(path) == SPEC
     manifest = TemplateManifest.model_validate(json.loads(path.read_text(encoding="utf-8")))
     assert (
-        manifest.sheet is not None and manifest.outputs["sheet"].composition == "sticker-v1--sheet"
+        manifest.sheet is not None and manifest.outputs["sheet"].composition == "sticker-v2--sheet"
     )
+    # m-25017372: v2 (caption mode) is the latest; v1 is kept for the seasonal recipe C,
+    # which pins `TEMPLATE_VERSION` = 1 and slices the same grid
+    kept = json.loads((path.parent / "manifest.v1.json").read_text(encoding="utf-8"))
+    assert kept["version"] == 1 and kept["outputs"]["sheet"]["composition"] == "sticker-v1--sheet"
+    assert kept["sheet"] == json.loads(path.read_text(encoding="utf-8"))["sheet"]
     assert set(manifest.inputs["motion"].enum or ()) == set(MOTION_OF.values())
     assert set(MOTION_OF) == set(STICKER_RECIPES)
 
 
 def test_the_sticker_template_is_never_offered_for_a_post() -> None:
     registry = TemplateRegistry.from_dir()
-    assert registry.get("sticker").version == 1
+    assert registry.get("sticker").version == 2
     for angle in ("product", "promotion", "price"):
         assert "sticker" not in {m.id for m in registry.for_post(angle=angle, niche=None)}
 

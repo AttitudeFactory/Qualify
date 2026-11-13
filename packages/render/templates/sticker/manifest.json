@@ -1,7 +1,7 @@
 {
   "id": "sticker",
-  "version": 1,
-  "name": "Sticker animado de temporada",
+  "version": 2,
+  "name": "Sticker animado (temporada y productos)",
   "niche": [],
   "serves_angles": ["seasonal_sticker"],
   "inputs": {
@@ -9,11 +9,13 @@
     "text":   {"type": "string", "max": 80, "optional": true},
     "backing": {"type": "string", "max": 7, "optional": true},
     "ink":    {"type": "string", "max": 7, "optional": true},
+    "captionInk": {"type": "string", "max": 7, "optional": true},
+    "captionBacking": {"type": "string", "max": 7, "optional": true},
     "art":    {"type": "image", "optional": true},
     "brand":  {"type": "brand_kit"}
   },
   "outputs": {
-    "sheet": {"kind": "still", "width": 3072, "height": 2560, "composition": "sticker-v1--sheet"}
+    "sheet": {"kind": "still", "width": 3072, "height": 2560, "composition": "sticker-v2--sheet"}
   },
   "sheet": {"cell": 512, "columns": 6, "frames": 30, "fps": 15},
   "duration": {"from": "fixed", "min_sec": 2, "max_sec": 2},

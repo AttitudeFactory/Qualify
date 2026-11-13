@@ -28,7 +28,24 @@ y [página japonesa actualizada](https://docs.byteplus.com/ja/docs/modelark/mode
 | Modelo | `dola-seedream-5-0-pro-260628` · devuelto por la API en generación sintética local del 2026-11-10 |
 | Precio (tabla `v6`, docs.byteplus.com/en/docs/modelark/model-pricing, «Last updated: October 23, 2026», verificado el 2026-10-23) | Imagen hasta 2.61 MP (1K y 1.5K): US$0,045 (`per_image_1k`) · más de 2.61 MP (2K): US$0,09 (`per_image_2k`) · imágenes de entrada: la primera gratis, desde la segunda US$0,003 cada una (`per_extra_reference_image`) · descomposición en capas: US$0,0225 / US$0,045 por capa según su tramo (`per_layer_1k` / `per_layer_2k`). Solo se cobran las imágenes generadas con éxito |
 | Uso en Qualify | Experimento `packages/api/evals/plantillas_ai/` pendiente. Producción aún no verificada; el código preparado para m-24993446 usa `v8` y Pro por defecto cuando `QUALIFY_SEEDREAM_MODEL` está vacío. |
-| Datos | Modelo preautorizado: cede los datos a BytePlus (por eso solo material ficticio o propio de Attitude Factory; ningún dato de un cliente). Cláusula de BytePlus (docs.byteplus.com/en/docs/ModelArk/BytePlus_ModelArk_Data_Processing, actualizada el 2026-09-10): sin autorización previa del cliente no usa sus datos para entrenar sus modelos; procesa en Malasia, Indonesia y/o UE/EEE, y guarda 180 días en Malasia lo que dispara el filtro de contenido |
+| Datos | **No cede los datos a BytePlus** (corregido el 2026-11-12, m-25017372): el fundador revisó la consola de ModelArk › Data Collaboration el 2026-11-12 y confirmó que ni Seedream 5.0 pro ni 5.0 lite están autorizados para compartir datos. Esta ficha decía antes «Modelo preautorizado: cede los datos a BytePlus»; esa fila venía copiada de la de 5.0 lite y no la respaldaba ninguna revisión de la consola. Con esa confirmación, las fotos del catálogo de un cliente pueden ir a Pro por el identificador del modelo (`dola-seedream-5-0-pro-260628`). Si alguien autoriza Pro en la campaña de datos, esta fila y el envío de fotos de clientes cambian ese mismo día. Cláusula de BytePlus (docs.byteplus.com/en/docs/ModelArk/BytePlus_ModelArk_Data_Processing, actualizada el 2026-09-10): sin autorización previa del cliente no usa sus datos para entrenar sus modelos; procesa en Malasia, Indonesia y/o UE/EEE, y guarda 180 días en Malasia lo que dispara el filtro de contenido |
+
+## Prueba STICKERS-KAWAII-001 — 2026-11-12 (m-25017372)
+
+Personaje tierno de un producto del catálogo para un sticker de WhatsApp. Imagen a imagen con
+una sola foto de Bianki como referencia, a 1K, por el identificador del modelo. Detalle completo en
+[pruebas.md](pruebas.md#stickers-kawaii-001).
+
+| Medida | Valor |
+|---|---|
+| Llamadas pagadas | 7 (6 generaciones + 1 `layer_decomposition`), ningún reintento, cada POST bajo `LedgerTransport` con la tabla `v8` |
+| Gasto real | US$0,315 (6 × US$0,045 + capas: 2 imágenes facturadas × US$0,0225). Tope autorizado: US$0,50 |
+| Latencia por imagen | 26,7–42,4 s (mediana 28,7 s); capas 28,9 s |
+| Revisión del modelo | `dola-seedream-5-0-pro-260628` |
+| Fondo plano pedido `#FF00FF` | Sale magenta rosado uniforme, RGB (239–248, 24–37, 157–195), nunca el valor exacto: el recorte debe medir el color del borde, no suponerlo |
+| Producto reconocible | 6 de 6 (shawarma de carne, de pollo, papas, salchipapa) |
+| Texto en la imagen | 0 de 6 (el prompt lo prohíbe; el mensaje lo pone Remotion) |
+| `layer_decomposition` | Devuelve un PNG con transparencia del personaje (690×729) más la base. La capa **se vuelve a dibujar**: no coincide píxel a píxel con la entrada (su caja es 622×660) y cambia detalles menores. Facturó 2 imágenes (US$0,045) con un prompt que pide una sola capa; sin prompt pueden ser hasta 17 (US$0,3825 en el peor caso) |
 
 ## Capacidades verificadas (API, docs.byteplus.com/en/docs/modelark/image-generation-api, «Last updated: October 17, 2026»)
 
