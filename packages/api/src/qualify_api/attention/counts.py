@@ -1,23 +1,18 @@
 """The pending counts of «Por responder» (m-24842990, ATENDER-1).
 
-One number per channel:
+One number per channel, each defined exactly as the list it opens filters it, so the
+figure the owner taps is the length of the list that opens (N11):
 
-- **messages** — Instagram private conversations (`threads.channel = 'dm'`) and
-- **whatsapp** — WhatsApp chats (`threads.channel = 'whatsapp'`),
-
-  both counted with the ONE «Por responder» rule of `qualify_api.inbox.awaiting`
-  (m-25017843, founder's decision (ii) of 2026-11-13): an open chat whose customer wrote
-  after the last reply a person sent, unless only the automatic menu answered it and
-  nobody handed it to a person and no automatic send failed. The SQL fragment is the very
-  one the unified inbox list (`qualify_api.inbox.unified`, filter `por_responder`)
-  filters by, so this figure and that list cannot differ. Until the unified list ships,
-  the per-channel screens keep their own filters: Instagram's «Pendientes» still drops a
-  chat once it is opened, and WhatsApp's «Sin leer» still counts closed chats and leaves
-  out a chat handed to a person after the menu's last message — the counts no longer do;
+- **messages** — Instagram private conversations (`threads.channel = 'dm'`) in the
+  `PENDING` attention state of `conversations.service.attention_state`: a last inbound
+  message, no outbound at or after it, and not opened since (Conversaciones' filter
+  «Pendientes»);
 - **buyers** — the commercial queries still `open` in `interaction_followups` whose
   origin comment is still visible (the «Quieren comprar» cards);
 - **comments** — the assisted public replies waiting for the owner's approval
-  (`comment_reply_drafts.status = 'proposed'`, «Respuestas listas para aprobar»).
+  (`comment_reply_drafts.status = 'proposed'`, «Respuestas listas para aprobar»);
+- **whatsapp** — WhatsApp chats with an inbound message after the last outbound one
+  (WhatsApp › Chats' filter «Sin leer»).
 
 The counts cover every connected account of the tenant; the lists they open show one
 account at a time (their own selector), so with several accounts a list can be shorter
@@ -36,16 +31,21 @@ from uuid import UUID
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import text
 
-from qualify_api.inbox.awaiting import awaiting_reply_sql
-from qualify_api.inbox.channels import CHANNEL_INSTAGRAM_DM, CHANNEL_WHATSAPP
+# A message's instant: Meta's timestamp, else when we stored it — the same expression
+# `conversations.repository` and `whatsapp.chats` order and compare by.
+_INSTANT = "COALESCE({m}.posted_at, {m}.ingested_at)"
 
-_AWAITING = awaiting_reply_sql("t")
-
-_COUNTS_SQL = f"""
+_COUNTS_SQL = """
 SELECT
   (SELECT count(*)
      FROM threads t
-    WHERE t.channel = '{CHANNEL_INSTAGRAM_DM}' AND {_AWAITING}) AS messages,
+    WHERE t.channel = 'dm'
+      AND t.last_inbound_at IS NOT NULL
+      AND (t.last_read_at IS NULL OR t.last_read_at < t.last_inbound_at)
+      AND NOT EXISTS (
+            SELECT 1 FROM messages o
+             WHERE o.thread_id = t.id AND o.direction = 'outbound'
+               AND {o_instant} >= t.last_inbound_at)) AS messages,
   (SELECT count(*)
      FROM interaction_followups f
      JOIN messages m ON m.id = f.origin_message_id
@@ -55,9 +55,22 @@ SELECT
      JOIN messages m ON m.id = d.message_id
     WHERE d.status = 'proposed') AS comments,
   (SELECT count(*)
-     FROM threads t
-    WHERE t.channel = '{CHANNEL_WHATSAPP}' AND {_AWAITING}) AS whatsapp
-"""
+     FROM threads w
+    WHERE w.channel = 'whatsapp'
+      AND EXISTS (
+            SELECT 1 FROM messages u
+             WHERE u.thread_id = w.id AND u.direction = 'inbound'
+               AND u.deleted_at IS NULL
+               AND {u_instant} > COALESCE(
+                     (SELECT max({x_instant}) FROM messages x
+                       WHERE x.thread_id = w.id AND x.direction = 'outbound'
+                         AND x.deleted_at IS NULL),
+                     CAST('-infinity' AS timestamptz)))) AS whatsapp
+""".format(
+    o_instant=_INSTANT.format(m="o"),
+    u_instant=_INSTANT.format(m="u"),
+    x_instant=_INSTANT.format(m="x"),
+)
 
 _COUNTS = text(_COUNTS_SQL)
 

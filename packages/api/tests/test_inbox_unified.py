@@ -109,25 +109,39 @@ def test_a_foreign_cursor_is_refused(token: str) -> None:
 
 def test_the_list_is_one_read_only_statement_with_the_shared_rule() -> None:
     sql = " ".join(_list_sql("por_responder", None).split())
-    assert sql.startswith("SELECT")
+    assert sql.startswith("WITH page AS MATERIALIZED (")
     for verb in ("INSERT", "UPDATE", "DELETE", "MERGE", "TRUNCATE"):
         assert not re.search(rf"\b{verb}\b", sql.upper()), verb
-    assert " ".join(awaiting_reply_sql("t").split()) in sql
-    assert "t.channel = ANY(:channels)" in sql and "aw.awaiting_reply" in sql
+    rule = " ".join(awaiting_reply_sql("t").split())
+    # The rule filters both branches of the page, and is not evaluated again per row.
+    assert sql.count(rule) == 2 and "TRUE AS awaiting_reply" in sql
+    assert "t.channel = ANY(:channels)" in sql
+    assert "UNION ALL" in sql
+    assert "FROM page t LEFT JOIN whatsapp_thread_state s" in sql  # no join back
     assert "LEFT JOIN LATERAL" in sql and "LEFT JOIN whatsapp_thread_state s" in sql
     assert sql.endswith("ORDER BY t.last_message_at DESC NULLS LAST, t.id DESC LIMIT :limit")
     assert "tenant_id" not in sql
 
 
-def test_filters_and_cursor_shape_the_where() -> None:
+def test_other_filters_compute_the_rule_only_for_the_page() -> None:
+    sql = " ".join(_list_sql("todos", None).split())
+    rule = " ".join(awaiting_reply_sql("t").split())
+    assert sql.count(rule) == 1 and f"{rule} AS awaiting_reply FROM page t" in sql
+
+
+def test_filters_and_cursor_shape_the_page() -> None:
     assert "AND t.status = 'open'" in _list_sql("todos", None)
     assert "AND t.status = 'closed'" in _list_sql("cerrados", None)
-    keyset = " ".join(_list_sql("todos", InboxCursor(NOW, uuid4())).split())
-    assert (
-        "(t.last_message_at < :at OR (t.last_message_at = :at AND t.id < :id)"
-        " OR t.last_message_at IS NULL)"
-    ) in keyset
-    tail = " ".join(_list_sql("todos", InboxCursor(None, uuid4())).split())
-    assert "AND t.last_message_at IS NULL AND t.id < :id" in tail
+    page = " ".join(_list_sql("todos", None).split())
+    assert "t.last_message_at IS NOT NULL" in page and "t.last_message_at IS NULL" in page
+    assert "ORDER BY t.last_message_at DESC, t.id DESC LIMIT :limit" in page
+    assert "ORDER BY t.id DESC LIMIT :limit" in page
+    dated = " ".join(_list_sql("todos", InboxCursor(NOW, uuid4())).split())
+    assert "(t.last_message_at < :at OR (t.last_message_at = :at AND t.id < :id))" in dated
+    assert "UNION ALL" in dated  # every undated chat still follows a dated cursor
+    undated = " ".join(_list_sql("todos", InboxCursor(None, uuid4())).split())
+    assert "UNION ALL" not in undated and ":at" not in undated
+    assert "t.last_message_at IS NULL AND t.status = 'open' AND t.id < :id" in undated
     count = " ".join(_count_sql("por_responder").split())
-    assert "t.channel = ANY(:channels) AND aw.awaiting_reply" in count
+    assert count.startswith("SELECT count(*) FROM threads t WHERE t.channel = ANY(:channels)")
+    assert " ".join(awaiting_reply_sql("t").split()) in count

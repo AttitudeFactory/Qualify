@@ -6,8 +6,11 @@ writes. One statement over `threads` lists the tenant's chats of every allow-lis
 newest activity first, one page per database round trip. Sending, outboxes, workers and
 ingestion stay per channel; this module writes nothing.
 
-**Filters.** `por_responder` — the single rule of `inbox.awaiting` (the same SQL fragment
-`attention.counts` counts with); `todos` — every open chat; `cerrados` — closed chats.
+**Not wired yet.** Nothing in production reads this module today; the unified-list
+story m-25017859 wires the screens, the menu counters and Inicio to it together.
+
+**Filters.** `por_responder` — the single rule of `inbox.awaiting` (the fragment the
+counters will use, `count_awaiting_sql`); `todos` — every open chat; `cerrados` — closed.
 An optional channel narrows to one allow-listed channel (`UnknownChannel` otherwise).
 
 **Order and pages.** `last_message_at DESC NULLS LAST, id DESC` with a composite keyset
@@ -15,10 +18,12 @@ cursor `(last_message_at, id)` — two chats with the same instant are both retu
 `before`-only paging of `whatsapp.chats` could skip one. The page reads `limit + 1` rows to
 know whether another page exists.
 
-**One statement per page.** The newest message comes from a `LEFT JOIN LATERAL`, the
-WhatsApp-only state (`whatsapp_thread_state`: the owner's hand-over, the payment record)
-from a `LEFT JOIN` that is NULL on Instagram, the outbound media kind from the matching
-`whatsapp_outbox` row. No per-thread round trip.
+**One statement per page, page first.** A MATERIALIZED `page` CTE picks the page's rows
+on `threads` alone in index order (see `_PAGE_DATED`); then, for those rows only, the
+newest message comes from a `LEFT JOIN LATERAL`, the WhatsApp-only state
+(`whatsapp_thread_state`: the owner's hand-over, the payment record) from a `LEFT JOIN`
+that is NULL on Instagram, the outbound media kind from the matching `whatsapp_outbox`
+row. No per-thread round trip.
 
 **Tenant isolation.** Only `tenant_session(tenant_id)`: RLS scopes every table read here;
 no tenant column is filtered by hand. Channels are bound as a parameter from the
@@ -50,9 +55,10 @@ MAX_PAGE_SIZE: Final = 100
 
 _INSTANT: Final = "COALESCE({m}.posted_at, {m}.ingested_at)"
 
-# What each filter keeps, over the `threads` row `t` and the lateral `aw` (the rule).
+# What each filter keeps, over the `threads` row `t`; `_RULE` stands for the rule.
+_RULE: Final = "<awaiting_reply>"
 _FILTER_SQL: Final[dict[str, str]] = {
-    "por_responder": "aw.awaiting_reply",
+    "por_responder": _RULE,
     "todos": "t.status = 'open'",
     "cerrados": "t.status = 'closed'",
 }
@@ -155,7 +161,37 @@ class InboxReader(Protocol):
 # Postgres
 # --------------------------------------------------------------------------------------
 
+# The page is chosen FIRST, on `threads` alone, in the index's order: a backward scan of
+# `ix_thread_inbox_order (tenant_id, last_message_at)` gives `last_message_at DESC` (the
+# RLS tenant qual is its index condition), an Incremental Sort adds the `id DESC`
+# tie-break, and LIMIT stops the scan as soon as the page is full. Chats with no
+# `last_message_at` sort last; they are a second, `id DESC` branch. The page carries the
+# thread columns the row needs (no join back to `threads`), and only then do the
+# per-chat joins (newest message, WhatsApp state, the rule as a column) run, for the
+# page's rows only. With `por_responder` the rule is the page's filter, evaluated chat by
+# chat in that order until the page is full.
+_PAGE_DATED: Final = """
+  (SELECT t.id, t.channel, t.connection_id, t.status, t.last_message_at, t.last_inbound_at,
+          t.last_read_at, t.external_thread_id, t.counterpart_name, t.counterpart_username,
+          t.counterpart_avatar_url
+     FROM threads t
+    WHERE t.channel = ANY(:channels) AND t.last_message_at IS NOT NULL
+      AND {filter} {after}
+    ORDER BY t.last_message_at DESC, t.id DESC
+    LIMIT :limit)"""
+
+_PAGE_UNDATED: Final = """
+  (SELECT t.id, t.channel, t.connection_id, t.status, t.last_message_at, t.last_inbound_at,
+          t.last_read_at, t.external_thread_id, t.counterpart_name, t.counterpart_username,
+          t.counterpart_avatar_url
+     FROM threads t
+    WHERE t.channel = ANY(:channels) AND t.last_message_at IS NULL
+      AND {filter} {after}
+    ORDER BY t.id DESC
+    LIMIT :limit)"""
+
 _SELECT: Final = """
+WITH page AS MATERIALIZED ({page})
 SELECT t.id, t.channel, t.connection_id, t.status, t.last_message_at, t.last_inbound_at,
        t.counterpart_username, t.counterpart_avatar_url,
        COALESCE(t.counterpart_name,
@@ -176,8 +212,8 @@ SELECT t.id, t.channel, t.connection_id, t.status, t.last_message_at, t.last_inb
        CASE WHEN t.channel = '{whatsapp}' THEN s.context->'_payment'->>'status'
        END AS payment_status,
        lm.text AS last_text, lm.direction AS last_direction, lm.kind AS last_kind,
-       aw.awaiting_reply
-  FROM threads t
+       {awaiting} AS awaiting_reply
+  FROM page t
   LEFT JOIN whatsapp_thread_state s ON s.thread_id = t.id
   LEFT JOIN LATERAL (
         SELECT m.text, m.direction,
@@ -191,8 +227,6 @@ SELECT t.id, t.channel, t.connection_id, t.status, t.last_message_at, t.last_inb
          WHERE m.thread_id = t.id AND m.deleted_at IS NULL
          ORDER BY {m_instant} DESC, m.id DESC
          LIMIT 1) lm ON true
-  CROSS JOIN LATERAL (SELECT {awaiting} AS awaiting_reply) aw
- WHERE t.channel = ANY(:channels) AND {filter} {after}
  ORDER BY t.last_message_at DESC NULLS LAST, t.id DESC
  LIMIT :limit
 """
@@ -200,43 +234,48 @@ SELECT t.id, t.channel, t.connection_id, t.status, t.last_message_at, t.last_inb
 _COUNT: Final = """
 SELECT count(*)
   FROM threads t
-  CROSS JOIN LATERAL (SELECT {awaiting} AS awaiting_reply) aw
  WHERE t.channel = ANY(:channels) AND {filter}
 """
 
-# Strictly after the cursor in `last_message_at DESC NULLS LAST, id DESC`.
-_AFTER_INSTANT: Final = (
-    "AND (t.last_message_at < :at"
-    " OR (t.last_message_at = :at AND t.id < :id)"
-    " OR t.last_message_at IS NULL)"
-)
-_AFTER_NULL: Final = "AND t.last_message_at IS NULL AND t.id < :id"
+# Strictly after the cursor in `last_message_at DESC NULLS LAST, id DESC`: inside the
+# dated branch for a dated cursor; inside the undated branch for an undated one (every
+# undated chat is after every dated one, so a dated cursor leaves that branch whole).
+_AFTER_DATED: Final = "AND (t.last_message_at < :at OR (t.last_message_at = :at AND t.id < :id))"
+_AFTER_UNDATED: Final = "AND t.id < :id"
 
 
 def _filter_sql(filter: str) -> str:
     try:
-        return _FILTER_SQL[filter]
+        rule = _FILTER_SQL[filter]
     except KeyError:
         raise ValueError(f"filter must be one of {INBOX_FILTERS}, not {filter!r}") from None
+    return awaiting_reply_sql("t") if rule == _RULE else rule
+
+
+def _page_sql(filter: str, cursor: InboxCursor | None) -> str:
+    where = _filter_sql(filter)
+    undated_cursor = cursor is not None and cursor.last_message_at is None
+    undated = _PAGE_UNDATED.format(filter=where, after=_AFTER_UNDATED if undated_cursor else "")
+    if undated_cursor:
+        return undated
+    dated = _PAGE_DATED.format(filter=where, after=_AFTER_DATED if cursor is not None else "")
+    return f"{dated}\n  UNION ALL{undated}"
 
 
 def _list_sql(filter: str, cursor: InboxCursor | None) -> str:
-    after = ""
-    if cursor is not None:
-        after = _AFTER_NULL if cursor.last_message_at is None else _AFTER_INSTANT
     return _SELECT.format(
+        page=_page_sql(filter, cursor),
         whatsapp=CHANNEL_WHATSAPP,
         dm=CHANNEL_INSTAGRAM_DM,
         n_instant=_INSTANT.format(m="n"),
         m_instant=_INSTANT.format(m="m"),
-        awaiting=awaiting_reply_sql("t"),
-        filter=_filter_sql(filter),
-        after=after,
+        # Under `por_responder` the page already holds only waiting chats.
+        awaiting="TRUE" if filter == "por_responder" else awaiting_reply_sql("t"),
     )
 
 
 def _count_sql(filter: str) -> str:
-    return _COUNT.format(awaiting=awaiting_reply_sql("t"), filter=_filter_sql(filter))
+    return _COUNT.format(filter=_filter_sql(filter))
 
 
 def _row(r: Any, now: datetime) -> InboxRow:
