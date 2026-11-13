@@ -183,6 +183,10 @@ def record_base_photos(
         "draft_id": draft_id,
         "version_id": version_id,
     }
+    # `begin_nested()` flushes whatever the outer transaction has pending first: flush it
+    # here, outside the handling below, so an error that is not about bases (an output
+    # row the database refuses) surfaces as itself — never as a «base not kept»
+    session.flush()
     try:
         with session.begin_nested():
             add_base_photos(session, media=media, **common)

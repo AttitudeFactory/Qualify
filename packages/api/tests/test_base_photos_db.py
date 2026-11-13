@@ -301,3 +301,66 @@ def test_a_piece_with_missing_bases_sends_one_alert(
     assert len(base_photo_alerts.sent) == 1
     _generated(tenant_a)  # every base kept: nothing
     assert len(base_photo_alerts.sent) == 1
+
+
+def test_an_output_row_the_database_refuses_is_never_a_base_alert(
+    seeded_ab: tuple[UUID, UUID], base_photo_alerts
+) -> None:
+    """Re-review of m-25017279: an error that is not about bases (an `image_assets` row
+    naming a render job that does not exist) surfaces as itself, and no «Foto base no
+    guardada»."""
+    from dataclasses import replace
+    from uuid import uuid4
+
+    tenant_a, _ = seeded_ab
+
+    def media_of(draft: UUID) -> tuple[MediaWrite, ...]:
+        still = _still(tenant_a, draft, 0)
+        return (replace(still, template_run_id=uuid4()),)
+
+    with pytest.raises(IntegrityError) as raised:
+        _finish(tenant_a, media_of)
+    assert "fk_image_assets_template_run" in str(raised.value)
+    assert base_photo_alerts.sent == []
+
+
+def test_the_alert_goes_out_only_after_the_commit(
+    seeded_ab: tuple[UUID, UUID], base_photo_alerts, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A transaction that does not commit sends no alert; its retry sends exactly one."""
+    from contextlib import contextmanager
+
+    from qualify_api.creative import service as service_module
+
+    real = service_module.tenant_session
+
+    @contextmanager
+    def failing_commit(tenant_id: UUID, **kwargs: object):  # noqa: ANN202
+        with real(tenant_id, **kwargs) as session:
+            yield session
+            session.flush()
+            raise RuntimeError("commit refused")  # rolls the real transaction back
+
+    tenant_a, _ = seeded_ab
+    brand, draft, _ = _piece(tenant_a, version=False)
+    media = tuple(_still(tenant_a, draft, p, kept=False) for p in range(2))
+    args = {
+        "tenant_id": tenant_a,
+        "draft_id": draft,
+        "brand_id": brand,
+        "new_status": GENERATED,
+        "failure_reason": None,
+        "variants": (),
+        "usage": (),
+        "spent_usd": Decimal(0),
+        "media": media,
+    }
+    monkeypatch.setattr(service_module, "tenant_session", failing_commit)
+    with pytest.raises(RuntimeError):
+        PostgresContentRepository().finish_generation(**args)
+    assert base_photo_alerts.sent == []
+    assert _bases(tenant_a, draft) == []
+    monkeypatch.setattr(service_module, "tenant_session", real)
+    PostgresContentRepository().finish_generation(**args)
+    assert len(base_photo_alerts.sent) == 1
+    assert [b.state for b in _bases(tenant_a, draft)] == ["missing", "missing"]

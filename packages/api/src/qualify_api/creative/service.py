@@ -1302,6 +1302,7 @@ class PostgresContentRepository:
 
         ``requires_ai_disclosure`` (PR #100 review): the label as recomputed from the media
         this generation actually made; ``None`` leaves the draft's value as it is."""
+        missing_bases: list[str] = []  # m-25017279: alerted only after the commit
         with tenant_session(tenant_id) as session:
             from qualify_api.creative.versions import snapshot_current
 
@@ -1450,6 +1451,7 @@ class PostgresContentRepository:
             # m-25017279: the base photos the stills were composed over, in their own table
             # (0165) — no reader of the piece's outputs sees them. Never fails the piece
             # (a savepoint); bases that end up missing get ONE alert, sent in the background
+            # after the commit, below
             missing_bases = record_base_photos(
                 session,
                 tenant_id=tenant_id,
@@ -1458,7 +1460,6 @@ class PostgresContentRepository:
                 version_id=version.id,
                 media=media,
             )
-            alert_missing_bases(tenant_id, draft_id, missing_bases)
             if succeeded:
                 draft.active_version_id = version.id
                 draft.selected_variant_id = None
@@ -1500,6 +1501,9 @@ class PostgresContentRepository:
                 session.flush()
                 open_parent_join(session, draft_id)
                 parent_picture(session, draft_id)
+        # m-25017279: only once the transaction above committed (`tenant_session` commits
+        # on a clean exit): a commit that fails sends no alert, and its retry sends one
+        alert_missing_bases(tenant_id, draft_id, missing_bases)
 
     def update_status(
         self,
