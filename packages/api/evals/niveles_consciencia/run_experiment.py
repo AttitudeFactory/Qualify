@@ -343,6 +343,7 @@ def run_copy(al: Any, args: Any, spend: Spend, api_key: str) -> dict[str, Any]:
                 sources=sources,
                 perks=perks if with_perks else (),
                 facts_text=stated,
+                body="\n".join([payload.get("caption", ""), payload.get("script", "") or ""]),
             )
             ideas = [
                 {

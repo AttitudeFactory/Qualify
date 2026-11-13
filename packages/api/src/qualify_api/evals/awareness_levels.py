@@ -200,7 +200,7 @@ def perks_used(text: str, perks: Sequence[str], *, share: float = 0.6) -> list[i
 # -- level rules -------------------------------------------------------------------------
 
 
-def level_rule(level: str | None, hook: str, cta: str, sources: str) -> bool | None:
+def level_rule(level: str | None, hook: str, cta: str, sources: str, body: str = "") -> bool | None:
     """The deterministic half of «does this idea follow its level»; None where only the
     judge can tell (problem_aware, solution_aware) or the level is missing.
 
@@ -208,8 +208,11 @@ def level_rule(level: str | None, hook: str, cta: str, sources: str) -> bool | N
     - product_aware: hook or CTA state at least one friction fact (an hour, price,
       payment method, address, delivery) that the sources back;
     - most_aware: hook ≤ `MOST_AWARE_HOOK_WORDS` words and CTA ≤ `MOST_AWARE_CTA_WORDS`.
+
+    `body` is the rest of what the customer reads (a copy's caption and script): the
+    unaware and product_aware rules read it too.
     """
-    text = f"{hook}\n{cta}"
+    text = f"{hook}\n{cta}\n{body}"
     if level == AwarenessLevel.UNAWARE.value:
         facts = fact_mentions(text)
         return not (facts.get("precio") or facts.get("descuento"))
@@ -603,6 +606,7 @@ def score_idea(
     perks: Sequence[str],
     level_answered: str | None = None,
     facts_text: str | None = None,
+    body: str = "",
 ) -> IdeaScore:
     """The deterministic checks of one idea. `facts_text` is what facts are read from
     (default hook + CTA), `full_text` what perks are looked for in."""
@@ -615,7 +619,7 @@ def score_idea(
         with_perks=with_perks,
         level=level,
         level_answered=level_answered,
-        rule_det=level_rule(level, hook, cta, sources),
+        rule_det=level_rule(level, hook, cta, sources, body),
         invented_det=invented_facts(stated, sources),
         perks_det=perks_used(full_text, perks) if perks else [],
         words_hook=words(hook),

@@ -91,7 +91,23 @@ def angles_report(suite: dict[str, Any], split: str) -> str:
     return "\n".join(parts) + "\n" + "\n".join(lines) + "\n"
 
 
+def rescore_copy(suite: dict[str, Any]) -> None:
+    """The copy's level rule over hook, CTA AND caption/script (results saved before the
+    rule read the caption only had hook and CTA in it)."""
+    for item, score in zip(suite["items"], suite["scores"], strict=True):
+        payload = (item.get("output") or {}).get("variants", [{}])[0].get("payload") or {}
+        # product_aware needs the case's sources, which the result does not keep: as saved
+        if not payload or score["level"] == "product_aware":
+            continue
+        body = "\n".join([payload.get("caption", ""), payload.get("script", "") or ""])
+        score["rule_det"] = al.level_rule(
+            score["level"], payload.get("hook", ""), payload.get("cta", ""), "", body
+        )
+
+
 def single_report(name: str, suite: dict[str, Any]) -> str:
+    if name == "copy":
+        rescore_copy(suite)
     scores = _scores(suite["scores"])
     parts = []
     for arm in ("base", "nuevo"):
@@ -106,7 +122,7 @@ def single_report(name: str, suite: dict[str, Any]) -> str:
             gate = it.get("gates", {}).get("puertas_ok")
             lines.append(
                 f"| {it['case']} | {it['arm']} | {it.get('objective')} | {gate}"
-                f" | {it.get('cost_usd', 0):.4f} |"
+                f" | {it.get('cost_usd') or (it.get('output') or {}).get('cost_usd', 0):.4f} |"
             )
         else:
             n = len((it.get("output") or {}).get("parts") or [])
@@ -122,7 +138,7 @@ def single_report(name: str, suite: dict[str, Any]) -> str:
             )
             lines.append(
                 f"| {it['case']} | {it['arm']} | — | {n} partes, usable {ok}"
-                f" | {it.get('cost_usd', 0):.4f} |"
+                f" | {it.get('cost_usd') or (it.get('output') or {}).get('cost_usd', 0):.4f} |"
             )
     if name == "copy" and suite.get("prefix_chars"):
         lines.append("")
