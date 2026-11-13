@@ -658,6 +658,8 @@ class ProductStickerState(rx.State):
         """Tu marca unmounted: no more reads, and the panel does not come back open (with a
         stale «Dibujando…») unless a paid request is still on its way."""
         self._poll_gen += 1
+        # a `?crear=producto` whose second pass never came (left mid-way) never opens later
+        self._open_on_enter = False
         if not self._in_flight():
             self.flow_open = False
             self.flow_ready = False
