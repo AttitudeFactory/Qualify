@@ -480,6 +480,76 @@ just reel-purge                              # qué videos de más de 30 días y
 just reel-purge --execute                    # borrarlos (no son de ningún negocio: sin --tenant)
 ```
 
+### 7.3 Traer a «Tu semana» lo publicado antes desde «Publicar» (m-25019220)
+
+**Qué hace.** Las publicaciones hechas desde «Publicar» antes de la migración 0159 no tienen pieza ni evento, así que no salen en «Tu semana». Una de ellas son las 9 imágenes del 2026-11-13. `just publish-backfill` crea, por cada una, la pieza (en «Aprobados») y su evento `published` a la hora en que salió. Además guarda la dirección de Instagram (`publish_attempts.permalink`), que es lo que hace aparecer «Ver en Instagram». Nunca publica, reintenta ni cambia una publicación. Con Graph solo lee, de a una publicación y dentro del presupuesto de 200 lecturas por hora de la cuenta, el mismo que usa Interacciones.
+
+**De dónde sale la imagen.** El archivo que subió «Publicar» sigue en R2 (`t/<negocio>/media/<cuenta>/<32 hex>`), pero la fila vieja no dice cuál es. Se toma solo si es **inequívoco**: es el único archivo de «Publicar» sin usar subido entre 5 s después del intento anterior de esa cuenta y 5 s después del propio (como mucho 120 s antes), ningún intento vecino empezó a menos de 30 s, y sus bytes son un JPEG de hasta 8 MB (un video para un reel). En ese caso la pieza es reutilizable, a calidad original («Lista para programar»). Si hay dudas, se usa **la copia de Instagram**, guardada una vez en `t/<negocio>/media/<cuenta>/ig-<id>`, y la pieza queda **solo para ver**: en «Aprobados» dice «Ya salió» con el botón «Ver», y no aparece en «Sin programar». Un reel sin archivo inequívoco se salta y se informa. En `image_assets.params` queda cómo se encontró cada archivo (`match`: `original`, `attempt_key`, `carousel_children` o `instagram_copy`) y la versión de pipeline `publish-backfill-v1`.
+
+**Antes.** Tiene que estar desplegada la migración 0160: sin ella la base rechaza guardar la dirección de Instagram en una publicación ya terminada. Buscar el id del negocio:
+
+```bash
+dc exec postgres psql -U qualify_owner qualify -c \
+  "SELECT id, name FROM tenants WHERE name ILIKE '%bianki%';"
+```
+
+**1. Prueba en vivo (ADR 25): una sola lectura de Graph, no escribe nada más que la anotación en el presupuesto.**
+
+```bash
+dc exec api python -m qualify_api.planner.publish_backfill --tenant <tenant-bianki> --probe
+```
+
+Se espera `result=readable`, `media_type=IMAGE`, `permalink=https://www.instagram.com/p/…/` y `media_url=present (… cdninstagram.com)`. Las direcciones firmadas nunca se imprimen. Si sale `result=unreadable`, revisar el permiso y el token de la cuenta antes de seguir. Con `--attempt <uuid>` se prueba una publicación concreta.
+
+**2. Ensayo (por defecto): no escribe en la base ni en R2 y no llama a Graph.**
+
+```bash
+dc exec api python -m qualify_api.planner.publish_backfill --tenant <tenant-bianki> --since 2026-11-13
+```
+
+Imprime una línea por publicación, por ejemplo `attempt=… started=2026-11-13T15:02:11+00:00 type=IMAGE action=original why="<archivo>: only file in the window, image/jpeg 812345 B (15:00:16,15:02:16]" permalink=would_read`. Las acciones posibles son `original`, `instagram_copy` (con el motivo de la duda), `carousel_children`, `attempt_key` y `skip` (con el motivo). Al final aparece el total por acción. Dos ensayos seguidos imprimen lo mismo.
+
+**3. Ejecutar.**
+
+```bash
+dc exec api python -m qualify_api.planner.publish_backfill --tenant <tenant-bianki> --since 2026-11-13 --execute
+```
+
+Cada línea agrega `result=recorded` y `permalink=filled` (o por qué no: `ignored`, `unreadable`, `connection not readable`). Si se acaba el presupuesto de la hora, termina con `stopped: … N publication(s) left`: hay que repetir el mismo comando una hora después y sigue donde quedó. Repetirlo no duplica nada: lo ya traído tiene su evento y no se vuelve a listar, y la copia de Instagram tiene un nombre fijo que se mira antes de escribir. Opciones: `--connection <uuid>` para una sola cuenta y `--limit 50` (máximo 500).
+
+**De aquí en adelante.** Lo que se publique desde «Publicar» entra solo a «Tu semana», como ya hacía. La dirección de Instagram la completa el `calendar-worker` en su pasada de cada minuto (máximo 10 lecturas por negocio por pasada, dentro del mismo presupuesto). Si Instagram no responde, se reintenta solo en los primeros 10 minutos y en tres ventanas de 3 minutos (a la 1 h, a las 6 h y a las 24 h), unas 19 lecturas como mucho, y después no se insiste más. Esto necesita el `calendar-worker` encendido.
+
+**Deshacer.** Lo que escribió `--execute`:
+
+1. Las piezas y sus eventos. Se borran con esto (solo las de `publish-backfill-v1` de ese negocio; todo o nada):
+
+```bash
+dc exec -T postgres psql -U qualify_owner qualify -v ON_ERROR_STOP=1 -v t="'<tenant-bianki>'" <<'SQL'
+BEGIN;
+SET LOCAL row_security = off;
+CREATE TEMP TABLE bf ON COMMIT DROP AS
+  SELECT id, brief_id FROM content_drafts
+   WHERE tenant_id = :t AND pipeline_version = 'publish-backfill-v1';
+DELETE FROM calendar_event_tags WHERE event_id IN
+  (SELECT id FROM calendar_events WHERE post_id IN (SELECT id FROM bf));
+DELETE FROM calendar_events WHERE post_id IN (SELECT id FROM bf);
+UPDATE content_drafts SET active_version_id = NULL, selected_variant_id = NULL
+ WHERE id IN (SELECT id FROM bf);
+DELETE FROM copy_variants   WHERE draft_id IN (SELECT id FROM bf);
+DELETE FROM image_assets    WHERE draft_id IN (SELECT id FROM bf);
+DELETE FROM piece_versions  WHERE draft_id IN (SELECT id FROM bf);
+DELETE FROM content_drafts  WHERE id IN (SELECT id FROM bf);
+DELETE FROM content_briefs  WHERE id IN (SELECT brief_id FROM bf);
+COMMIT;
+SQL
+```
+
+   Si otra función ya usó una de esas piezas (un envío por WhatsApp, por ejemplo), el borrado falla por la clave foránea y no se borra nada. En ese caso decide el fundador.
+
+2. Las direcciones de Instagram (`publish_attempts.permalink`) **se quedan**: la base solo deja pasar una vez de vacío a una dirección (0160) y nunca al revés. Son un dato verdadero de la publicación.
+
+3. Las copias de Instagram en R2 (`t/<negocio>/media/<cuenta>/ig-<id>`) **se quedan**: el bucket de producción no deja borrar ni sobrescribir nada bajo `t/`. Pesan como mucho **8 MB cada una** (el tope de la descarga), una por publicación dudosa. Si se vuelve a ejecutar, se reusan sin subirlas otra vez. Los archivos originales de «Publicar» no se tocan nunca.
+
 ## 8. Respaldos de Postgres
 
 `bootstrap-server.sh` deja un cron diario (03:15 UTC) que corre `deploy/backup-db.sh` como `deploy`:
