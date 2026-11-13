@@ -122,3 +122,10 @@ Detalle en la [bitácora, NIVELES-002](pruebas.md#niveles-002).
 - Para planes de video, el agregado `juez-niveles-v2+partes-v1` (sin cifras por diseño; el ángulo pasa como dato dado). Con él, product_aware en partes pasa de 0/6 a 6/6.
 - Las ofertas inventadas ya no dependen solo del juez: `invented_offers` (determinista) cuenta gratis, regalo, incluido, descuento, promoción y servicios como reservas, apartar, domicilio o «para llevar».
 - Otro `APITimeoutError`, esta vez del copy, quedó registrado y contado a su techo.
+
+## Uso NIVELES-003 — juez, tercera pasada (m-25026482) — 2026-11-13
+
+Detalle en la [bitácora, NIVELES-003](pruebas.md#niveles-003). Rúbrica sin cambios (`juez-niveles-v2`).
+
+- El «2/6 nombra el horario» de NIVELES-002 no fue del juez: lo dio la expresión regular determinista, que leyó la calle «de la 57» como hora. Está corregida.
+- Junto al juez van ahora dos chequeos deterministas en solution_aware: `concrete_fact` y `generic_claims`.

@@ -46,3 +46,11 @@ Detalle en la [bitácora, NIVELES-002](pruebas.md#niveles-002). Mismos ajustes; 
 
 - **Ángulos con ventajas (test):** solution_aware 0,50 → 0,70, todavía «no fiable». Ofertas o servicios inventados (determinista) 0,20 → 0,08; en most_aware 0,67 → 0,30, por «reserva» y «para llevar». Sin regresiones en test; reparto exacto 15/15. US$0,031 por juego.
 - **Partes:** v3.3 sin ventajas ni nivel es idéntica byte a byte a v3.1. product_aware pasa 6/6 con la rúbrica corregida.
+
+## Uso NIVELES-003: tercera vuelta de redacción de los niveles (m-25026482), 2026-11-13
+
+Detalle en la [bitácora, NIVELES-003](pruebas.md#niveles-003). Prompt de ángulos de `fcd2e8c0`, mismos ajustes.
+
+- **Ángulos con ventajas (test, n 30 por nivel):** solution_aware pasa de 0,70 a 0,83 (fiable). Ofertas o servicios inventados en most_aware bajan de 0,30 a 0,10, y en total de 0,08 a 0,047.
+- **Regresión:** product_aware baja de 0,90 (n 10) a 0,77, «no fiable». US$0,031 por juego.
+- **Partes:** los números de NIVELES-001/002 se tomaron sobre la v3.1 de main y ya no describen `proponer-partes-v3.4`.

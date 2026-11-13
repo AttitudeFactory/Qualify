@@ -22,6 +22,74 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
 
 ---
 
+<a id="niveles-003"></a>
+
+## NIVELES-003 — Tercera pasada: most_aware, solution_aware y «el nivel decide las ventajas» (m-25026482) — 2026-11-13
+
+- **Qué se midió:** el commit `fcd2e8c0`, más `fe3cc8f5` con la medición, contra los números
+  de [NIVELES-002](#niveles-002) en los mismos casos y la misma partición. El commit cambia
+  tres cosas: el CTA de most_aware solo usa una forma de comprar que esté en los datos;
+  solution_aware pide un dato concreto, ni repetir el producto ni frases genéricas; el nivel
+  decide qué ventajas usa la pieza. Presupuesto nuevo autorizado por el fundador:
+  US$2,00, aparte de los US$2,86 anteriores.
+- **Modelos y ajustes:** los de NIVELES-001/002: ángulos `claude-sonnet-5` @ medium, copy
+  `claude-opus-5-5` @ medium, juez `claude-haiku-5-5` @ low (`juez-niveles-v2`, sin
+  cambios). Sin trazas de Langfuse.
+- **Chequeos nuevos, escritos antes de correr** ([README](../../packages/api/evals/niveles_consciencia/README.md)):
+  - en solution_aware, `concrete_fact` (usa un dato de la descripción o una ventaja, no solo
+    el nombre del producto) y `generic_claims` («fresco», «de calidad», «expertos»,
+    «pensado para ti»… cuando los datos no lo dicen);
+  - el horario ya no confunde «de la 57» (una calle) con una hora.
+- **El «2/6 nombra el horario» de NIVELES-002 fue un error del chequeo determinista, no del
+  juez.** En `results/20261113-154626-copy-n002-copy-all.json`, dos copias de
+  `niv-bur-unaware` decían «… de la 57» y la expresión regular las leyó como hora. Con la
+  corrección, NIVELES-002 tenía 0 de 5 copias unaware con horario.
+
+### Antes → después (con ventajas; test salvo que se diga)
+
+| Qué | NIVELES-002 | NIVELES-003 |
+|---|---|---|
+| Ángulos solution_aware, cumple (juez) | 0,70 (n 10) | **0,83 (n 30), fiable**; dev 0,75 → 0,94 (n 16) |
+| … con dato concreto / con frase genérica (det) | 0,60 / 0,20 | **0,87 / 0,03** |
+| Ángulos most_aware, oferta o servicio inventado (det) | 0,30 (n 10) | **0,10 (n 30)**; dev 0,31 → 0,19 |
+| most_aware, dato inventado (juez) / cumple (juez) | 0,10 / 0,90 | 0,00 / 1,00 |
+| Ángulos, oferta o servicio inventado en total | 0,08 (n 50) | **0,047 (n 150)**; dev 0,087 → 0,05 |
+| Copy unaware, cumple (juez) | 4/5 (comida) | **6/6** (comida 3/3, inmobiliaria 3/3) |
+| Copy unaware con horario | 0/5 (corregido) | 0/6 |
+| Copy, oferta o servicio inventado | 0/17 (sin inmobiliaria) | 3/35: «separación» y «separar» del apartamento, todas en inmobiliaria |
+
+- **Lo que no empeoró (test):** unaware 1,00 → 1,00 (n 30), problem_aware 0,90 → 0,93,
+  reparto exacto 15/15 con 0 etiquetas inválidas, calidad del juez 3,62 → 3,55 (barra:
+  −0,25).
+- **Regresión:** **product_aware de ángulos baja de 0,90 (n 10) a 0,77 (n 30)**, bajo la
+  barra; en dev queda igual (0,81). Con esos tamaños la diferencia no es concluyente, pero
+  con n 30 el nivel ya no pasa. Las fallas: ganchos vagos en inmobiliaria («Tu casa propia
+  está más cerca de lo que crees»); en viajes usa «el paquete a tu medida», que es un
+  diferenciador y no quita una duda; una idea dice que el combo de almuerzo (de 12 m a
+  3 p. m.) se pide «hasta las 11 p. m.».
+- **Copy most_aware: 3/8, «no fiable».** El CTA ya solo usa Rappi, que está en los datos:
+  ningún servicio inventado. Falla por largo: el texto describe la plancha y la salsa antes
+  de la compra. El ajuste de esta vuelta no apuntaba a eso.
+- **Copy, el resto:** solution_aware 9/9 (dato concreto 9/9) y product_aware 9/9; puertas
+  35/35.
+- **Muestras ampliadas** con lo que sobró: ángulos test ×5 por producto (n 30 por nivel) y
+  copy most_aware y product_aware hasta n 8–9. Sin medir: nada de lo pedido. Las partes no
+  entran en esta pasada.
+- **Partes:** los números de partes de NIVELES-001/002 se tomaron sobre la base v3.1 de main
+  (`a6667370`) y ya **no describen el prompt de partes publicado** (`proponer-partes-v3.4`
+  sobre la v3.2 de main). Se medirán con el trabajo de clips. La identidad sin ventajas ni
+  nivel se comprueba ahora contra el `merge-base` con `origin/main`: v3.2 = v3.4, 12 pares.
+- **Costo:** juego de ángulos US$0,0309 (NIVELES-002: US$0,0311).
+- **Gasto de esta pasada: US$1,600** de los US$2,00 autorizados. Total de la tarea con los
+  dos presupuestos: US$4,46. Cero llamadas a BytePlus.
+- **Veredicto: se puede publicar con un arreglo.** Quedan «no fiable» product_aware de
+  ángulos (0,77) y most_aware del copy (3/8, por largo). Hace falta además una regla para
+  inmobiliaria: no ofrecer «separación» del apartamento si no está en los datos. solution_aware
+  y most_aware de ángulos ya pasan la barra; most_aware todavía inventa un servicio en el
+  10 % («para llevar», «reserva»).
+
+---
+
 <a id="niveles-002"></a>
 
 ## NIVELES-002 — Segunda pasada: los arreglos del dueño del prompt contra NIVELES-001 (m-25026482) — 2026-11-13
