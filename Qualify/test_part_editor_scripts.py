@@ -23,12 +23,12 @@ const emit = (kind, event = {}) => (events[kind] || []).forEach(f => f(event));
 const pop = () => (browserEvents.popstate || []).forEach(f => f({}));
 let dialog = false, observer;
 global.window = global;
-global.location = {href: 'http://localhost/create?paso=2&parte=1'};
+global.location = {href: 'http://localhost/create?paso=1&parte=1'};
 global.history = {state: {qPartEntry: true, qPrevPaso: '1'},
  replaceState(state, unused, url) {
   this.state = state; location.href = new URL(url, location.href).href; },
  pushState(state, unused, url) { this.replaceState(state, unused, url); },
- back() { this.replaceState({}, '', '/create?paso=2'); pop(); }};
+ back() { this.replaceState({}, '', '/create?paso=1'); pop(); }};
 global.addEventListener = (type, fn) => (browserEvents[type] ||= []).push(fn);
 global.requestAnimationFrame = fn => fn();
 global.MutationObserver = class { constructor(fn) { observer = fn; } observe() {} };
@@ -99,7 +99,7 @@ def test_invalid_cold_address_needs_no_asset_and_keeps_the_guarded_step(raw: str
         asset=False,
     )
     state = CreativeState()
-    assert state.reconcile_reel_editor_route(f"?paso=2&parte={raw}")
+    assert state.reconcile_reel_editor_route(f"?paso=1&parte={raw}")
     assert state.create_step_n == 1 and not state.reel_edit_open
 
 
@@ -161,9 +161,9 @@ def test_same_step_pop_before_native_exit_hook_preserves_its_pending_target(acti
     elif action == "cancel":
         state.set_reel_edit_open(False)
     else:
-        state.reconcile_reel_editor_route("?paso=2")
-    state.reconcile_reel_editor_route("?paso=2")  # browser event wins the race
-    state.reconcile_reel_editor_route("?paso=2")  # duplicate route notification is idempotent
+        state.reconcile_reel_editor_route("?paso=1")
+    state.reconcile_reel_editor_route("?paso=1")  # browser event wins the race
+    state.reconcile_reel_editor_route("?paso=1")  # duplicate route notification is idempotent
     assert key in str(state.restore_reel_edit_focus())
     assert state.restore_reel_edit_focus() is None
 
@@ -176,21 +176,21 @@ def test_sheet_history_does_not_advance_step_epoch_but_real_steps_still_settle()
     state.create_entry_epoch = 7
     assert "qStepEntry" not in str(state.enter_create_step())
     assert state.create_entry_epoch == 7
-    events = state.reconcile_reel_editor_route("?paso=2")
+    events = state.reconcile_reel_editor_route("?paso=1")
     assert state.create_entry_epoch == 7 and "qStepEntry" not in str(events)
-    events = state.reconcile_reel_editor_route("?paso=3")
-    assert state.create_step_n == 3 and state.create_entry_epoch == 8
+    events = state.reconcile_reel_editor_route("?paso=2")
+    assert state.create_step_n == 2 and state.create_entry_epoch == 8
     assert "qStepEntry" in str(events) and "q-step-title" in str(events)
-    state.reconcile_reel_editor_route("?paso=3")
+    state.reconcile_reel_editor_route("?paso=2")
     assert state.create_entry_epoch == 8
 
 
-def test_guarded_real_navigation_acknowledges_the_product_step_and_drops_pending_focus() -> None:
+def test_real_navigation_out_of_range_lands_on_the_last_step_and_drops_pending_focus() -> None:
     state = CreativeState()
     state.create_entered = True
     state.create_entry_epoch = 3
     state._reel_edit_return_id = "q-part-change-old"
     events = state.reconcile_reel_editor_route("?paso=5&parte=99")
-    assert state.create_step_n == 1 and state.create_entry_epoch == 4
+    assert state.create_step_n == state.create_step_m and state.create_entry_epoch == 4
     assert "qStepEntry" in str(events)
     assert state.restore_reel_edit_focus() is None

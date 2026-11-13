@@ -1488,3 +1488,40 @@ Un reintento suma unos US$0,024 por Alta con el perfil en caché. Una cuenta vac
 - La foto de perfil no se copió a R2 (no hay R2 en el stack local); no afecta al costo ni al resultado.
 
 **Gasto de esta prueba:** US$0,062 (las tres corridas) + US$0,019 (diagnóstico) ≈ **US$0,08** en total (Claude + 4 créditos de ScrapeCreators), dentro de la guarda de US$0,30.
+
+<a id="sinprod-001"></a>
+
+## SINPROD-001 — Prompts sin producto y en palabras generales, compilador 5 (m-24985141) — 2026-11-12
+
+**Qué cambió.** Desde ahora se puede crear sin elegir un producto del catálogo. El compilador de prompts sube de 4 a **5** (`PROMPT_COMPILER_VERSION`; el 4 es m-25017275, que ya estaba en main). Los briefs congelados con 0–4 siguen compilando igual que en main, byte por byte: se compararon 270 prompts y no hubo diferencias. Con el compilador 5:
+- Las frases fijas quedan en palabras generales, sin un rubro concreto: «appetizing» pasa a «appealing», «ingredients» a «parts/details», «food» a «people, natural materials».
+- Sin producto, ninguna instrucción nombra uno ni pide reemplazarlo.
+- Sin producto elegido, una foto sin rol se trata como «style»; con producto, sigue siendo «product».
+
+Las partes suman las versiones de prompt 3 (`PART_PROMPT_VERSION_V5`) y 4 (`PART_REFERENCE_MEDIA_PROMPT_VERSION_V5`) para el compilador 5; la 1 y la 2 de UI-4 no cambian. La propuesta de partes sube de v3.1 a v3.2, y el seleccionador pasa a `selection-v2.1` solo con el compilador 5.
+
+**Autorización:** Deivid, 2026-11-12 (opción A, «corrida chica pagada», unos pocos dólares, sin video largo).
+
+**Corrida:** `packages/api/evals/sin_producto/run_experiment.py --i-have-spend-authorization --max-usd 2`
+- 12 casos: 2 marcas ficticias de `evals/copy_ai/cases.json` («hamburguesas» e «inmobiliaria») × Clip, carrusel y avatar × con y sin producto.
+- Texto con `claude-opus-5-5`. Primer cuadro del carrusel y cuadro inicial del avatar con Seedream 5.0 pro a 1k.
+- Del Clip solo se compila el prompt de Seedance, sin generar video.
+- Resultados en `packages/api/evals/sin_producto/results/20261112-205051/`, que no se versiona.
+
+**Resultado**
+- **Prompts:** ningún prompt de un caso sin producto nombra un producto. Lo comprobó la corrida y también las pruebas offline en `test_prompts_without_product.py`.
+- **Textos (12/12 ok):** sin producto, el texto no inventa un producto.
+  - En «hamburguesas» menciona «la doble», «la triple» y «smash». Salen del Brand Kit, que es la oferta real de la marca, y no son un producto inventado.
+  - En «inmobiliaria», con y sin producto, el texto habla del servicio: acompañamiento, cuota inicial, estudio de títulos.
+- **Imágenes (6/8 ok):**
+  - 2 fallaron porque Seedream cortó la conexión («Server disconnected»), igual que en [seedream-corte-conexion-20261103](seedream-corte-conexion-20261103.md). No tiene que ver con el prompt.
+  - Sin producto salen escenas que encajan con el pedido: vecinos celebrando el aniversario, la fachada de una vivienda.
+  - **Hallazgo previo, no causado por este cambio:** en el carrusel, Seedream escribe letras deformes en el cuarto superior reservado al titular, con producto y sin producto por igual, a pesar de «Do not write any text in the image». Queda para un ticket aparte.
+- **Límite:** los casos «con producto» no llevan foto real, porque no hay fotos de muestra. Que no cambie nada con producto lo garantizan las pruebas offline que comparan con el compilador 4.
+
+**Gasto:** **US$0,56** (tope estimado US$1,40, guarda US$2).
+
+**Agregado después de la corrida (2026-11-13), cubierto solo por pruebas offline:**
+- **Fotos de Estilo:** con el compilador 5, `shows_product` no cuenta las fotos «Estilo» (rol `composition`). Si una pieza (avatar, imagen o carrusel) solo tiene fotos de estilo, recibe la redacción sin producto. Se agregaron 3 entradas a `_NO_PRODUCT_WORDING_V5` para que las líneas que protegen la guía no digan «product».
+- **Carrusel:** una diapositiva solo con estilo, sin foto de producto, usa el campo nuevo `CarouselSlide.guide_alone` (por defecto `False`). No cambia el prompt, el compilador ni la base.
+- **Medición:** la corrida pagada fue anterior a estos dos cambios. Estas rutas no se midieron con generación real.

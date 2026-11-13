@@ -224,3 +224,34 @@ def test_a_resumed_gallery_keeps_each_slide_base() -> None:
         base=base,
     )
     assert _media_write_from_json(_media_write_json(kept)) == kept
+
+
+def test_a_piece_without_a_catalog_product_keeps_its_base_too(monkeypatch) -> None:
+    """m-24985141 (create without a product, references from the Galería): the base
+    bookkeeping reads no product field — a flyer whose only reference is a Galería photo
+    (the place) keeps its base and records it like any other."""
+    from qualify_creative.enums import AdImageMode, ContentKind
+
+    from .test_creative_media_byteplus import MemoryStore, _brief
+    from .test_creative_media_byteplus import _producer as make_producer
+    from .test_v9_flyer_consumer import Capture, TextStyle
+
+    place = f"gallery/{TENANT_ID}/{uuid4()}/local.jpg"
+    vendor = Capture()
+    producer = make_producer(MemoryStore({place: PHOTO}), seedream=vendor)
+    monkeypatch.setattr(producer, "_text_style", lambda *args: TextStyle())
+    brief = _brief(
+        ContentKind.STATIC_FLYER,
+        product_keys=(),
+        background_key=place,
+        ad_mode=AdImageMode.BACKGROUND,
+        brand_application_version=2,
+        resource_plan_version=2,
+    )
+    outcome = _produce(producer, brief)
+    assert outcome.failure is None, outcome.detail
+    (write,) = outcome.media
+    assert write.base is not None and write.base.key is not None
+    assert write.base.key.endswith("/base/flyer-1.jpg")
+    assert write.base.rendered_prompt == vendor.requests[0].params["prompt"]
+    assert write.params["base_key"] == write.base.key

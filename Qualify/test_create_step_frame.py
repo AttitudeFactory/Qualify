@@ -1,4 +1,5 @@
-"""PASOS-5: product + creation steps, guarded history and session-only resume."""
+"""PASOS-5: the creation steps (m-24985141: the product is optional, chosen in «Qué
+mostrar» — never a step of its own), history and session-only resume."""
 
 from __future__ import annotations
 
@@ -21,36 +22,47 @@ def _chosen() -> CreativeState:
     return state
 
 
-def test_product_is_counted_and_first_form_step_can_go_back_without_losing_inputs() -> None:
+def test_the_flow_opens_on_que_mostrar_and_its_first_step_has_no_back() -> None:
+    """m-24985141: «Qué mostrar» is step 1 — no product screen before it."""
     state = _chosen()
+    state.gen_category, state.brief_kind = "clip", "clip"
     assert state.create_step_n == 1
-    assert state.create_step_m == len(state._gen_steps()) + 1
-    state.confirm_product()
-    assert state.create_step_n == 2
-    state.create_back()
+    assert state.create_step_m == len(state._gen_steps())
+    assert state.create_step_title == "Qué mostrar"
+    assert not state.create_has_back
+    assert state.create_back() is None
     assert state.create_step_n == 1
     assert state.brief_topic == "El almuerzo de hoy"
     assert state.selected_product_id == "catalog-product"
-    state._show_create_step(2)  # browser forward after going back to the product
-    assert state.product_confirmed
-    assert state.create_step_n == 2
 
 
-def test_an_unanswered_product_cannot_be_skipped_by_an_address_or_continue() -> None:
+def test_without_a_product_siguiente_is_never_blocked() -> None:
+    """m-24985141: no product, no block — and never «Elige un producto para continuar.»."""
     state = CreativeState()
-    state._show_create_step(5)
+    assert state.create_primary_label == "Siguiente"
+    assert not state.create_primary_disabled
+    assert state.create_reason == ""
+    state.create_continue()
+    assert state.create_step_n == 2
+    state._show_create_step(99)
+    assert state.create_step_n == state.create_step_m
+    assert state.create_reason != "Elige un producto para continuar."
+
+
+def test_an_address_opens_any_step_without_a_product() -> None:
+    state = CreativeState()
+    state._show_create_step(3)
+    assert state.create_step_n == 3
+    state._show_create_step(0)
     assert state.create_step_n == 1
-    assert state.create_continue() is None
-    assert not state.product_confirmed
 
 
 def test_step_navigation_and_summary_edit_preserve_the_brief() -> None:
     state = _chosen()
-    state.confirm_product()
     state.next_view()
-    assert state.create_step_n == 3
-    event = state.prev_view()
     assert state.create_step_n == 2
+    event = state.prev_view()
+    assert state.create_step_n == 1
     assert state.gen_direction == DIR_BACK
     assert "qStepGo" in str(event)
     state.gen_step = len(state._gen_steps()) - 1
@@ -61,7 +73,6 @@ def test_step_navigation_and_summary_edit_preserve_the_brief() -> None:
 
 def test_result_back_reopens_review_and_create_another_restarts_the_form() -> None:
     state = _chosen()
-    state.confirm_product()
     state.generator_view = "result"
     assert state.create_step_n == state.create_step_m
     state.create_back()
@@ -69,7 +80,7 @@ def test_result_back_reopens_review_and_create_another_restarts_the_form() -> No
     assert state.gen_is_last_view
     state.generator_view = "result"
     event = state.new_generation()
-    assert state.create_step_n == 2
+    assert state.create_step_n == 1
     assert "main.q-panel" in str(event)
     assert "window.scrollTo" not in str(event)
     assert state.brief_topic == "El almuerzo de hoy"
@@ -77,20 +88,18 @@ def test_result_back_reopens_review_and_create_another_restarts_the_form() -> No
 
 def test_later_leaves_for_inicio_without_resetting_the_session_draft() -> None:
     state = _chosen()
-    state.confirm_product()
     state.next_view()
     event = state.save_for_later()
     assert '"/"' in str(event)
     assert state.create_resume_pending
     state.leave_create_frame()
     assert not state.create_entered
-    assert state.create_step_n == 3
+    assert state.create_step_n == 2
     assert state.brief_topic == "El almuerzo de hoy"
 
 
 def test_going_back_while_a_draft_generates_does_not_enable_a_second_paid_call() -> None:
     state = _chosen()
-    state.confirm_product()
     state.generator_view = "result"
     state.gen_draft_id = "pending-draft"
     state.gen_draft = DraftVM(
@@ -111,7 +120,6 @@ async def test_pending_draft_keeps_polling_after_returning_to_the_form(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     state = _chosen()
-    state.confirm_product()
     state.generator_view = "result"
     state.gen_draft_id = "b0000000-0000-4000-8000-000000000001"
     state.create_back()
@@ -134,7 +142,6 @@ async def test_pending_draft_keeps_polling_after_returning_to_the_form(
 
 def test_mobile_kind_picker_opens_on_demand_and_closes_after_a_choice() -> None:
     state = _chosen()
-    state.confirm_product()
     assert not state.create_options_open
     state.toggle_create_options()
     assert state.create_options_open
@@ -152,7 +159,6 @@ def test_cancelled_generation_cannot_be_opened_from_the_sticky_review_action() -
     from .creative_vm import queue_vm
 
     state = _chosen()
-    state.confirm_product()
     state.generator_view = "result"
     state.gen_draft_id = "cancelled-draft"
     state.gen_draft = DraftVM(
@@ -172,7 +178,7 @@ def test_invalid_cold_step_without_a_product_returns_guarded_entry_ack() -> None
     state = CreativeState()
     state.router = RouterData(url=ReflexURL("http://localhost:3000/create?paso=99"))
     event = state.enter_create_step()
-    assert state.create_step_n == 1
+    assert state.create_step_n == state.create_step_m  # out of range: the nearest step
     assert state.create_entry_epoch == 1
     assert "__qStepEntry" in str(event)
     assert "99" in str(event)

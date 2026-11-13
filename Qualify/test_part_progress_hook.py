@@ -120,7 +120,6 @@ async def test_any_other_piece_still_says_it_is_ready(monkeypatch: pytest.Monkey
 
 def _ready_piece(kind: str) -> CreativeState:
     state = CreativeState()
-    state.product_confirmed = True
     state.generator_view = "result"
     state.gen_draft_id = str(uuid4())
     state.gen_draft = SimpleNamespace(  # type: ignore[assignment]

@@ -133,6 +133,50 @@ exacta de las respuestas por partes (desplazamientos como texto) y `status.video
 salen del SDK oficial 26.0 (`video_uploader.py`, `advideo.py`). Deben medirse en el ensayo
 real autorizado antes de anunciar el video, junto con `validate_only` de la creatividad.
 
+## Historia con botón de enlace (m-25026350)
+
+La API de publicación de Instagram no publica stickers en una historia, así que una historia
+orgánica no puede llevar enlace. Esta variante crea **solo el anuncio** (no se publica ninguna
+historia orgánica) con **un único archivo 9:16** (imagen, o video MP4 con su portada) y lo
+muestra **solo en las historias de Instagram**. Se pide con `feed_asset_id=None` en
+`UnpublishedImageService.prepare`; todo lo demás (cargas con reclamo previo, estado
+desconocido, espera de procesamiento del video, `validate_only`, lectura de vuelta, vistas
+previas, revisión y consentimiento de gasto en `confirm`) es el mismo camino de las parejas.
+
+- **Ubicación:** `targeting.publisher_platforms=["instagram"]`,
+  `instagram_positions=["story"]`; sin `asset_customization_rules`, sin feed ni reels. Una sola
+  vista previa (`INSTAGRAM_STORY`); `feed_html` queda vacío.
+- **Objetivo:** `OUTCOME_TRAFFIC`, `optimization_goal=LINK_CLICKS`, `destination_type=WEBSITE`,
+  `billing_event=IMPRESSIONS` (constantes de `AdSet` en el SDK oficial 26.0.0, `adset.py`).
+- **Creativo:** `object_story_spec` con `page_id`, `instagram_user_id` y `link_data`
+  (`image_hash`, `link`, `message`, `name`, `call_to_action`) para una imagen, o `video_data`
+  (`video_id`, `image_hash` de la portada, `message`, `title`, `call_to_action`) para un video.
+  `call_to_action = {type, value: {link}}`. Campos de `AdCreativeObjectStorySpec`,
+  `AdCreativeLinkData`, `AdCreativeVideoData` y `AdCreativeLinkDataCallToActionValue` del
+  [SDK oficial 26.0.0](https://github.com/facebook/facebook-python-business-sdk/tree/26.0.0/facebook_business/adobjects).
+- **Botón:** el guardado en la pieza, dentro de `WEBSITE_CTAS`; «Llamar» (`CALL_NOW`) y los
+  botones de chat se rechazan antes de llamar a Meta. v1 solo lleva a una página web (sin
+  `wa.me`; WhatsApp llegará con el objetivo de clic a mensaje).
+- **Antes de cualquier llamada a Meta:** proporción 9:16 exacta, tipo (JPEG/PNG o MP4 con
+  portada 9:16), lectura de la imagen (8 MB) o del video (100 MB, 1 a 60 segundos). Son las
+  mismas reglas locales de las parejas (los 1 a 60 segundos ya se fijaron por la tarjeta de
+  historia, la ubicación más estricta). No se aplica ninguna otra regla exclusiva de
+  historias: no leímos en una fuente oficial otro límite verificable (zona segura, largo del
+  texto en historias), y Meta valida el resto en `validate_only` antes de crear nada.
+- **Procedencia:** `pipeline_version` `ad-story-image-v1` / `ad-story-video-v1` en la fuente
+  aprobada; la revisión guarda `kind` `unpublished-story-images` / `unpublished-story-videos`.
+  Las parejas conservan exactamente su instantánea y su huella (test).
+- **Público sugerido «Tus seguidores y quienes interactuaron contigo»:** los públicos
+  personalizados de m-24828983 hoy se resuelven desde una publicación ya hecha
+  (`publish_attempt_id`), que esta pieza no tiene; por eso este backend no lo agrega al
+  anuncio. Queda como sugerencia de la pantalla hasta que exista un alcance por cuenta.
+- **Sin verificar en vivo:** que Meta devuelva `object_story_spec.link_data`/`video_data` y
+  el `targeting` sin campos normalizados de más (por ejemplo `image_url` junto a `image_hash`).
+  La lectura de vuelta compara exacto y, si no coincide, se niega a activar (falla cerrada).
+  **Antes de lanzar, hay que leer de vuelta un anuncio de historia real en pausa** en la prueba
+  en vivo m-24828971 y ajustar la comparación solo a lo que Meta añada de verdad. En esa misma
+  prueba se decide si una historia ya publicada puede promocionarse por su id.
+
 ## Pendiente del ticket completo
 
 - Integración en una pantalla de anuncios con selección de imágenes o videos y su portada,

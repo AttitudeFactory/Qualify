@@ -88,6 +88,9 @@ class ChoiceVM:
     #: What a screen reader hears — a field, not a property: the page reads it through
     #: a Reflex Var, which only carries fields (`with_order` fills it).
     spoken: str = ""
+    #: m-24985141: the generator's «Tu Galería» — already among the slot's files
+    #: (marked «Ya está»; CM-5 never sets it).
+    added: bool = False
 
 
 def spoken_label(label: str, media_type: str, order: int) -> str:

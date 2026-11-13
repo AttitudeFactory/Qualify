@@ -60,3 +60,12 @@ Diseño completo — los 11 encargos, 2 repeticiones: 56 imágenes, US$2,592
 **Corrido el 2026-11-13**: diseño completo, 56 imágenes, US$2,637. Resultado en
 `docs/modelos-generativos/pruebas.md#foto-base-001`. Hoja de contacto de la pareja:
 `contact_sheet.py <out> --versions 4 5`.
+
+**Renumerado al unir con `main` (2026-11-14).** Mientras se medía, `main` publicó su propio
+compilador 5 (m-24985141: redacción general para todo tipo de negocio y piezas sin
+producto). La foto base pasó a ser el **compilador 6** = el 5 de `main` + quitar «Datos
+clave» y tipografías. Los 28 prompts del 4 que se midieron son idénticos byte a byte a los
+de hoy; los 28 del «5» medido **no** lo son con el 6 que sale: cada uno difiere solo por la
+redacción general de `main` («appetizing» → «appealing», «the food» → «real subjects, such
+as people, materials…», «ingredients» → «parts and detail», entre otras). Quitar los datos y
+las tipografías es igual en los dos. Para medir exactamente lo que sale: `--versions 5 6`.
