@@ -18,6 +18,7 @@ from qualify_api.creative.brand_references import (
     BrandReferenceError,
     BrandReferencesSet,
 )
+from qualify_api.creative.image_pipeline import compose as compose_stage
 from qualify_api.creative.media import TextStyle
 
 from .test_creative_media_byteplus import (
@@ -48,8 +49,9 @@ def no_generation(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(av, "open", forbidden)
     monkeypatch.setattr(module, "to_reference_jpeg", lambda data: data)
     monkeypatch.setattr(module, "to_meta_jpeg", lambda data: data)
-    monkeypatch.setattr(module, "render_ad_slides", lambda **kwargs: kwargs["scenes"])
-    monkeypatch.setattr(module, "render_carousel_slide", lambda **kwargs: kwargs["scene"])
+    monkeypatch.setattr(compose_stage, "to_meta_jpeg", lambda data: data)
+    monkeypatch.setattr(compose_stage, "render_ad_slides", lambda **kwargs: kwargs["scenes"])
+    monkeypatch.setattr(compose_stage, "render_carousel_slide", lambda **kwargs: kwargs["scene"])
 
 
 class Capture(FakeSeedream):
@@ -235,7 +237,7 @@ def test_required_signature_reads_validated_bytes_once_and_reuses_them(monkeypat
         logos.append(kwargs["logo"])
         return kwargs["scenes"]
 
-    monkeypatch.setattr(module, "render_ad_slides", compose)
+    monkeypatch.setattr(compose_stage, "render_ad_slides", compose)
     outcome = producer.produce(
         tenant_id=TENANT_ID,
         draft_id=uuid4(),
@@ -281,7 +283,7 @@ def test_animated_gallery_none_still_has_signature_layer(monkeypatch):
     producer._store.files[key] = PHOTO
     producer._router._providers["seedance"] = FakeSeedance()
     producer._fitter = SimulatedFitter()
-    monkeypatch.setattr(module, "text_layer", lambda **kwargs: PHOTO)
+    monkeypatch.setattr(compose_stage, "text_layer", lambda **kwargs: PHOTO)
     slides = tuple(
         slide.model_copy(update={"source": SlideSource.ANIMATED}) for slide in brief.media.slides
     )
