@@ -30,6 +30,33 @@ y [página japonesa actualizada](https://docs.byteplus.com/ja/docs/modelark/mode
 | Uso en Qualify | Experimento `packages/api/evals/plantillas_ai/` pendiente. Producción aún no verificada; el código preparado para m-24993446 usa `v8` y Pro por defecto cuando `QUALIFY_SEEDREAM_MODEL` está vacío. |
 | Datos | **No cede los datos a BytePlus** (corregido el 2026-11-12, m-25017372): el fundador revisó la consola de ModelArk › Data Collaboration el 2026-11-12 y confirmó que ni Seedream 5.0 pro ni 5.0 lite están autorizados para compartir datos. Esta ficha decía antes «Modelo preautorizado: cede los datos a BytePlus»; esa fila venía copiada de la de 5.0 lite y no la respaldaba ninguna revisión de la consola. Con esa confirmación, las fotos del catálogo de un cliente pueden ir a Pro por el identificador del modelo (`dola-seedream-5-0-pro-260628`). Si alguien autoriza Pro en la campaña de datos, esta fila y el envío de fotos de clientes cambian ese mismo día. Cláusula de BytePlus (docs.byteplus.com/en/docs/ModelArk/BytePlus_ModelArk_Data_Processing, actualizada el 2026-09-10): sin autorización previa del cliente no usa sus datos para entrenar sus modelos; procesa en Malasia, Indonesia y/o UE/EEE, y guarda 180 días en Malasia lo que dispara el filtro de contenido |
 
+## Prueba ESCENA-SIN-LETRAS-001 — 2026-11-13 (m-25017275)
+
+Escena cruda de la imagen publicitaria y de la diapositiva de galería con el compilador de
+prompts 3 frente al 4 (`PROMPT_COMPILER_VERSION`, sin texto nuevo ni botones). Son 24 pares con
+fotos del catálogo de Bianki y su isotipo, a 1080×1920 y 1280×1600, por el identificador del
+modelo. Detalle completo en [pruebas.md](pruebas.md#escena-sin-letras-001).
+
+| Medida | Compilador 3 | Compilador 4 |
+|---|---|---|
+| Texto inventado | 15/24 | 4/24 (imagen publicitaria 1/16; galería 3/8) |
+| Botón, píldora o cinta dibujados | 7/24 | 0/24 |
+| Letras reales de las botellas conservadas | 4/4 | 4/4 |
+| Zonas de arriba y abajo tranquilas | 12/24 | 21/24 |
+| Calidad media (1–5) | 3,79 | 3,88 |
+
+- **Gasto:** US$2,322 de un tope de US$3. Son 48 imágenes y 2 cortes de conexión anotados al
+  peor caso. Mediana de 40 s por imagen. Revisión devuelta: `dola-seedream-5-0-pro-260628`.
+- **Lo que aprendimos del modelo:** Seedream dibuja lo que el prompt nombra.
+  - «A headline and a button are laid over» produce titulares y píldoras con letras sin sentido.
+  - El nombre de una letra («Unbounded») se dibuja como titular cuando la parte de arriba queda
+    vacía.
+  - «Brand colours as props» produce recortes de colores tirados en la mesa.
+  - Las letras reales de un envase de referencia (7UP, Colombiana, Pepsi) se conservan bien.
+  - Un letrero de fondo puede salir con la marca de un tercero (McDonald's, 1 de 24).
+- **Veredicto:** publicar el compilador 4. Seguimiento: quitar el nombre de la letra de los
+  prompts de Seedream.
+
 ## Prueba STICKERS-KAWAII-001 — 2026-11-12 (m-25017372)
 
 Personaje tierno de un producto del catálogo para un sticker de WhatsApp. Imagen a imagen con

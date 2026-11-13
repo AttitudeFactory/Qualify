@@ -286,3 +286,39 @@ def test_every_catalog_refusal_is_spanish_and_carries_no_library_text(
     with pytest.raises(mod.CatalogError) as unnamed:
         service.create_product(tenant_id=uuid4(), brand_id=uuid4(), user_id=uuid4(), name=" ")
     assert unnamed.value.args[0] == "El producto necesita un nombre."
+
+
+def test_a_timed_out_clip_transcode_is_the_owners_catalog_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """m-25017273: ffmpeg now has a timeout; a hung clip ends as the usual Spanish
+    refusal, never as `subprocess.TimeoutExpired` on the screen."""
+    import subprocess
+
+    from qualify_api.catalog import service as mod
+
+    class Video:
+        def normalize(self, data: bytes, *, filename: str) -> object:
+            raise subprocess.TimeoutExpired(["ffmpeg"], 180)
+
+    class Session:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return None
+
+        def get(self, model, pid):
+            return type("P", (), {"id": pid, "brand_id": uuid4()})()
+
+        def scalars(self, stmt):
+            return []
+
+    monkeypatch.setattr(mod, "tenant_session", lambda tenant_id: Session())
+    service = mod.CatalogService(
+        store=type("S", (), {"write": lambda *a: None, "read": lambda *a: b""})(),
+        video=Video(),
+    )
+    with pytest.raises(mod.CatalogError) as refused:
+        service.add_media(tenant_id=uuid4(), product_id=uuid4(), data=b"x", filename="a.mov")
+    assert refused.value.args[0] == mod.VIDEO_UNREADABLE_TEXT

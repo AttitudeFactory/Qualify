@@ -34,7 +34,9 @@ import re
 # `get_path_with_query_string` (uvicorn) includes the query string too, though this route
 # never uses one — matched regardless, since a future caller appending `?x=y` to the path
 # must not defeat the redaction.
-_TOKEN_PATH_PATTERN = re.compile(r"^(/public/media/)[^\s?]+")
+# m-25021431: `/public/catalog-media/{tenant_id}/{media_id}/{sig}.jpg` (ADR 48 §8) carries a
+# signature that is the whole credential for a product photo, so it is redacted the same way.
+_TOKEN_PATH_PATTERN = re.compile(r"^(/public/(?:catalog-)?media/)[^\s?]+")
 _REDACTED = r"\1<redacted>"
 
 # The position of the path within `record.args` for uvicorn's access-log call, verified
@@ -48,9 +50,11 @@ ACCESS_LOGGER_NAME = "uvicorn.access"
 
 
 class PublicMediaTokenRedactionFilter(logging.Filter):
-    """Rewrites `/public/media/{token}` to `/public/media/<redacted>` in uvicorn's access
-    log records — and touches nothing else. Every other path's `record.args` passes through
-    completely unmodified, so this is surgical, not a blanket log suppression.
+    """Rewrites `/public/media/{token}` to `/public/media/<redacted>` (and
+    `/public/catalog-media/{tenant}/{media}/{sig}.jpg` to `/public/catalog-media/<redacted>`,
+    m-25021431) in uvicorn's access log records — and touches nothing else. Every other
+    path's `record.args` passes through completely unmodified, so this is surgical, not a
+    blanket log suppression.
     """
 
     def filter(self, record: logging.LogRecord) -> bool:

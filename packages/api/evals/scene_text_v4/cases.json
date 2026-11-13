@@ -1,0 +1,128 @@
+{
+  "_doc": "m-25017275: paired briefs (prompt compiler 3 vs 4) for a shawarma and salad restaurant. Photos are named by role; their local files come from --inputs (never committed). F1 and F2 reproduce the two Bianki stories with drawn buttons (2026-11-13).",
+  "brand": "Bianki",
+  "kit": {
+    "positioning": "Shawarma y ensaladas hechos al momento, en un local pequeño de barrio.",
+    "audience": "Vecinos, oficinistas y jóvenes que buscan comida rica y rápida.",
+    "palette_rgb": ["#c5093b", "#ffcd00", "#00b188", "#231f20", "#ffffff"],
+    "font_heading": "Unbounded",
+    "font_body": "Unbounded",
+    "tone_axes": {"formal_casual": 75, "sober_enthusiastic": 70, "technical_plain": 85, "brief_elaborate": 30}
+  },
+  "cases": [
+    {
+      "id": "F1-ubicacion",
+      "kind": "static_flyer",
+      "format": "story_9_16",
+      "cta_or_place": true,
+      "topic": "Ubicación: estamos en el Korner. Un caballete en la acera frente al local, con el logo de la marca y un shawarma de carne encima; calle de noche con luces cálidas.",
+      "highlights": [["Dirección", "Centro comercial Korner, local 5"], ["Horario", "De martes a domingo, 5 p. m. a 11 p. m."]],
+      "must_mention": ["Ven a visitarnos"],
+      "products": ["shawarma_carne"],
+      "logo": true
+    },
+    {
+      "id": "F2-te-espera",
+      "kind": "static_flyer",
+      "format": "story_9_16",
+      "cta_or_place": true,
+      "topic": "Tu shawarma de carne te espera aquí. Una mano sostiene el shawarma de carne dentro del local, con la barra y la cocina al fondo, luz cálida.",
+      "highlights": [["Pedido", "Pide por WhatsApp y pasa a recogerlo"]],
+      "must_mention": ["Pide ya"],
+      "products": ["shawarma_carne"],
+      "logo": true
+    },
+    {
+      "id": "F3-horario",
+      "kind": "static_flyer",
+      "format": "story_9_16",
+      "cta_or_place": true,
+      "topic": "Nuevo horario: abrimos de martes a domingo de 5 p. m. a 11 p. m. La salchipapa servida sobre la barra del local por la noche.",
+      "highlights": [["Horario", "Martes a domingo, 5 p. m. a 11 p. m."]],
+      "must_mention": [],
+      "products": ["salchipapa"],
+      "logo": false
+    },
+    {
+      "id": "F4-combo",
+      "kind": "static_flyer",
+      "format": "feed_4_5",
+      "cta_or_place": true,
+      "topic": "Combo de shawarma de carne con papas y gaseosa sobre una mesa del local. Pide tu combo por WhatsApp.",
+      "highlights": [["Precio", "Combo a 35.000 pesos"], ["Pedido", "Escríbenos por WhatsApp"]],
+      "must_mention": ["Pide tu combo"],
+      "products": ["combo_carne"],
+      "logo": true
+    },
+    {
+      "id": "F5-ensalada-escena",
+      "kind": "static_flyer",
+      "format": "feed_4_5",
+      "cta_or_place": false,
+      "topic": "Una ensalada fresca de lechuga, tomate, pepino y garbanzos en un bol sobre una mesa de madera, junto a una ventana con luz de mañana.",
+      "highlights": [],
+      "must_mention": [],
+      "products": [],
+      "logo": false
+    },
+    {
+      "id": "F6-domicilio-logo",
+      "kind": "static_flyer",
+      "format": "story_9_16",
+      "cta_or_place": true,
+      "topic": "Llevamos tu pedido a domicilio. Una bolsa de papel de la marca con el logo, lista para entregar sobre la barra del local.",
+      "highlights": [["Domicilio", "Escríbenos y te lo llevamos"]],
+      "must_mention": ["Escríbenos"],
+      "products": [],
+      "logo": true
+    },
+    {
+      "id": "F7-pollo-2x1",
+      "kind": "static_flyer",
+      "format": "feed_4_5",
+      "cta_or_place": false,
+      "topic": "Martes de shawarma de pollo: dos por uno. El shawarma de pollo recién hecho sobre papel, en la barra del local.",
+      "highlights": [["Promoción", "2x1 los martes"]],
+      "must_mention": [],
+      "products": ["shawarma_pollo"],
+      "logo": false
+    },
+    {
+      "id": "F8-papas-compartir",
+      "kind": "static_flyer",
+      "format": "story_9_16",
+      "cta_or_place": false,
+      "topic": "Papas para compartir entre amigos: una porción grande de papas fritas en el centro de la mesa, manos que toman una papa.",
+      "highlights": [],
+      "must_mention": [],
+      "products": ["papas"],
+      "logo": true
+    },
+    {
+      "id": "G1-combo-galeria",
+      "kind": "carousel",
+      "format": "feed_4_5",
+      "cta_or_place": true,
+      "topic": "Combo del día: shawarma de carne, papas y gaseosa. Pídelo por WhatsApp.",
+      "products": ["shawarma_carne", "combo_carne"],
+      "logo": true,
+      "slides": [
+        {"text": "hook", "product_index": 0, "scene_prompt": "El shawarma de carne en primer plano sobre la barra del local."},
+        {"text": "cta", "product_index": 1, "scene_prompt": "El combo completo sobre una mesa del local, listo para comer."}
+      ]
+    },
+    {
+      "id": "G2-salchipapa-galeria",
+      "kind": "carousel",
+      "format": "feed_4_5",
+      "cta_or_place": true,
+      "topic": "Salchipapa doradita para picar. Estamos en el Korner, ven esta noche.",
+      "products": ["salchipapa", "papas"],
+      "logo": false,
+      "slides": [
+        {"text": "hook", "product_index": 0, "scene_prompt": "La salchipapa en su bandeja sobre una mesa del local, de noche."},
+        {"text": "cta", "product_index": 1, "scene_prompt": "Papas fritas en la barra, con la entrada del local al fondo."}
+      ]
+    }
+  ]
+}

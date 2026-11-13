@@ -13,6 +13,11 @@
 #   /api/*            -> api:8000     FastAPI (qualify_api.http.app:create_app); includes the
 #                                     Meta OAuth callback /api/connections/callback
 #   /public/media/*   -> api:8000     unauthenticated media route Meta's fetcher calls (QUA-68)
+#   /public/catalog-media/*
+#                     -> api:8000     unauthenticated signed product photo Meta's catalog
+#                                     fetches (ADR 48 §8, m-25021431)
+#   Every top-level prefix the FastAPI app mounts outside /api MUST be listed here and in
+#   @fastapi below (packages/api/tests/test_caddy_fastapi_routes.py).
 #   /_event*          -> reflex:8000  Reflex websocket (state sync)
 #   /_upload*         -> reflex:8000  Reflex uploads (POST) and uploaded files (GET)
 #                                     request bodies capped at 520 MB (m-24957794, ADR 47:
@@ -44,7 +49,7 @@
 :80 {
 	encode zstd gzip
 
-	@fastapi path /api/* /public/media/*
+	@fastapi path /api/* /public/media/* /public/catalog-media/*
 	handle @fastapi {
 		reverse_proxy api:8000
 	}

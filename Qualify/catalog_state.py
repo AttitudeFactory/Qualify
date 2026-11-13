@@ -76,6 +76,7 @@ from .catalog_vm import (
     too_much_text,
 )
 from .creative_provider import acting_user_id, default_brand_id
+from .heavy_media import heavy_media_slot, run_heavy_in_thread
 from .nav_url import close_flow_script, flow_param
 from .tenant import tenant_uuid
 from .ui.route_history import history_ack_value, route_history_ready
@@ -215,6 +216,19 @@ class CatalogState(rx.State):
     #: The backend's verdict on that notice (`uncategorized_notice`), read with the list.
     notice_show: bool = False
 
+    # -- the WhatsApp catalog layer (m-25017357, `catalog_whatsapp_state`) --------------
+    #: That layer has read once: from then on every re-read of the list refreshes it too.
+    wa_ready: bool = False
+    #: «Ver los {m} con problemas»: the products WhatsApp cannot show yet (written by
+    #: `CatalogWhatsAppState`), and whether the grid is narrowed to them.
+    wa_problem_ids: list[str] = []
+    only_wa_problems: bool = False
+    #: The problems filter already covers every product without a photo (§3): the
+    #: «sin foto» one steps aside.
+    wa_hides_photo_filter: bool = False
+    #: «Guardar y subir a WhatsApp»: the product to send once `save_product` lands.
+    _wa_after_save: str = ""
+
     # -- derived ------------------------------------------------------------------------
 
     @rx.var
@@ -297,7 +311,15 @@ class CatalogState(rx.State):
         return self.only_missing_photo and self.missing_photo_count > 0
 
     @rx.var
+    def wa_filter_on(self) -> bool:
+        """«Ver los {m} con problemas» narrows only while some problem is left."""
+        return self.only_wa_problems and len(self.wa_problem_ids) > 0
+
+    @rx.var
     def visible_products(self) -> list[ProductVM]:
+        if self.only_wa_problems and self.wa_problem_ids:
+            wanted = set(self.wa_problem_ids)
+            return [p for p in self.products if p.product_id in wanted]
         return products_to_show(self.products, only_missing_photo=self.missing_filter_on)
 
     @rx.var
@@ -308,6 +330,8 @@ class CatalogState(rx.State):
     def show_missing_filter(self) -> bool:
         """While it is on, or while some products lack a photo and others have one
         (narrowing everything to everything would mean nothing)."""
+        if self.wa_hides_photo_filter and not self.missing_filter_on:
+            return False
         n = self.missing_photo_count
         return self.missing_filter_on or 0 < n < len(self.products)
 
@@ -474,6 +498,7 @@ class CatalogState(rx.State):
             follow = self._sync_url(final=True)
         for event in follow:
             yield event
+        await self._sync_whatsapp(tenant_id, brand_id)
         async with self:
             if flow_param(self.router.url.query_parameters, "producto", 3):
                 self.restore_flow()
@@ -521,6 +546,18 @@ class CatalogState(rx.State):
             self.products = list(products)
             if self.selected_id and self.selected is not None and not keep:
                 self._fill_editor(self.selected)
+        await self._sync_whatsapp(tenant_id, brand_id)
+
+    async def _sync_whatsapp(self, tenant_id: UUID, brand_id: UUID) -> None:
+        """The WhatsApp badges follow a re-read of the list (m-25017357) — once that
+        layer has read at all, so a page without it never pays for the query."""
+        async with self:
+            ready = self.wa_ready
+        if not ready:
+            return
+        from .catalog_whatsapp_state import sync_after_catalog_change  # noqa: PLC0415 — cycle
+
+        await sync_after_catalog_change(self, tenant_id, brand_id)
 
     # -- the new-product form ---------------------------------------------------------------
 
@@ -1096,6 +1133,7 @@ class CatalogState(rx.State):
             async with self:
                 self.edit_saving = False
                 self._leave_target = ""
+                self._wa_after_save = ""
             return
         tenant_id, brand_id, _ = ids
         name, description, category = form
@@ -1144,15 +1182,22 @@ class CatalogState(rx.State):
             self.edit_saving = False
             self.edit_error = ""
             follow = self._leave(self._leave_target)
+            send, self._wa_after_save = self._wa_after_save, ""
         yield rx.toast.success(_SAVED, duration=_TOAST_MS)
         for event in follow:
             yield event
+        if send and send == str(product_id):
+            # «Guardar y subir a WhatsApp»: saved, now the owner's upload (m-25017357)
+            from .catalog_whatsapp_state import CatalogWhatsAppState  # noqa: PLC0415 — cycle
+
+            yield CatalogWhatsAppState.send_one(send)
 
     def _stay_after_refusal(self) -> list[rx.event.EventSpec]:
         """A save that did not land keeps the editor open, and forgets where
         «Guardar y salir» was going. On the phone the reason under the fields may be
         out of view, so it is said as a toast too."""
         self._leave_target = ""
+        self._wa_after_save = ""
         return [*self._restore_url(), rx.toast.error(self.edit_error, duration=_TOAST_MS)]
 
     # -- media --------------------------------------------------------------------------
@@ -1246,9 +1291,12 @@ class CatalogState(rx.State):
             try:
                 product_id = UUID(product_str)
                 data = await asyncio.to_thread(path.read_bytes)
-                await asyncio.to_thread(
-                    lambda: add_media(tenant_id, product_id, data=data, filename=name)
-                )
+                # m-25017273: Pillow or the ffmpeg transcode, one heavy job at a time in
+                # this process (shared with «Subir»'s photos); it waits, never fails
+                async with heavy_media_slot():
+                    await run_heavy_in_thread(
+                        lambda: add_media(tenant_id, product_id, data=data, filename=name)
+                    )
             except CatalogError as exc:
                 failures.append(f"{name}: {exc.args[0] if exc.args else 'no se pudo procesar'}")
             except (KeyError, ValueError):
@@ -1348,6 +1396,8 @@ class CatalogState(rx.State):
     def toggle_missing_photo(self) -> None:
         """«Ver los 2 sin foto» / «Ver todos los productos» (m-24842977)."""
         self.only_missing_photo = not self.only_missing_photo
+        if self.only_missing_photo:
+            self.only_wa_problems = False
 
     @rx.event
     def ask_remove_media(self, media_id: str) -> None:

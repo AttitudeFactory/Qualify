@@ -21,6 +21,15 @@ from .voice_lab import VoiceLabState, _on_sample
 TENANT = UUID("a0000000-0000-4000-8000-00000000c921")
 
 
+def _photo(fmt: str = "JPEG") -> bytes:
+    """A real tiny photo: since m-25017273 a photo is opened and re-encoded on upload."""
+    from PIL import Image
+
+    out = io.BytesIO()
+    Image.new("RGB", (8, 8), (10, 120, 110)).save(out, format=fmt)
+    return out.getvalue()
+
+
 class _Upload:
     """What Reflex hands a handler: a spooled `file` and the client's `name`."""
 
@@ -56,12 +65,13 @@ async def test_generator_photos_go_to_r2(monkeypatch, memory_r2, volume) -> None
     _signed_in(monkeypatch, CreativeState)
     state = CreativeState()
     saved = await CreativeState._save_uploads(
-        state, [_Upload(b"one", "uno.jpg"), _Upload(b"two", "../dos.png")]
+        state, [_Upload(_photo(), "uno.jpg"), _Upload(_photo("PNG"), "../dos.png")]
     )
     assert [name for _k, name in saved] == ["uno.jpg", "dos.png"]
     for key, _name in saved:
         assert key.startswith(f"t/{TENANT}/uploads/")
-    assert [memory_r2.objects[k] for k, _ in saved] == [b"one", b"two"]
+    assert memory_r2.objects[saved[0][0]][:2] == b"\xff\xd8"  # JPEG
+    assert memory_r2.objects[saved[1][0]][:4] == b"\x89PNG"
     assert memory_r2.content_types[saved[1][0]] == "image/png"
     assert not any(volume.rglob("*.*"))  # nothing on the local volume
     await CreativeState.handle_photo_upload.fn(state, [_Upload(b"photo", "foto.jpg")])
@@ -73,7 +83,7 @@ async def test_r2_down_tells_the_owner_and_keeps_nothing(monkeypatch, memory_r2,
     _signed_in(monkeypatch, CreativeState)
     memory_r2.fail_puts = 99
     state = CreativeState()
-    assert await CreativeState._save_uploads(state, [_Upload(b"one", "uno.jpg")]) == []
+    assert await CreativeState._save_uploads(state, [_Upload(_photo(), "uno.jpg")]) == []
     assert state.upload_error == UPLOAD_NOT_SAVED
     assert "guardar" in UPLOAD_NOT_SAVED and memory_r2.objects == {}
 
@@ -128,7 +138,7 @@ async def test_a_file_too_heavy_for_r2_says_so_on_every_screen(
     monkeypatch.setattr(gate_module, "MAX_MEDIA_BYTES", 4)
     _signed_in(monkeypatch, CreativeState)
     state = CreativeState()
-    assert await CreativeState._save_uploads(state, [_Upload(b"12345", "foto.jpg")]) == []
+    assert await CreativeState._save_uploads(state, [_Upload(_photo(), "foto.jpg")]) == []
     assert state.upload_error == UPLOAD_TOO_LARGE
     await CreativeState.handle_photo_upload.fn(state, [_Upload(b"12345", "clip.mov")])
     assert state.upload_error == "Ese video es muy pesado. Prueba con uno más corto."
