@@ -1,6 +1,6 @@
 # Catálogo de WhatsApp (WA-23): tres opciones para el fundador
 
-`[v1 2026-11-03 · m-24936714]` · Catálogo nativo de WhatsApp para negocios con muchos productos
+`[v2 2026-11-12 · m-24936714 · decisión firmada, épica m-25017354]` · Catálogo nativo de WhatsApp para negocios con muchos productos
 (ferreterías, no solo comida): hecho a mano en Commerce Manager, sincronizado desde Qualify, o ambos
 · Fecha de acceso de las fuentes de Meta: **2026-11-03**.
 
@@ -8,10 +8,55 @@ Convención de evidencia: `[V]` verificado en fuente oficial (URL) · `[S]` secu
 hipótesis/estimación · `[F]` decisión del fundador · `[NO VERIFICADO]` no pude confirmarlo hoy.
 Las URL de Meta se citan abreviadas como **[M-n]** y se listan completas al final de §2.
 
-## Decisión del fundador (pendiente)
+## Decisión del fundador (2026-11-12)
 
-_Esta sección mandará sobre el resto cuando Herwin elija._ Opción elegida: — · Fecha: — ·
-Condiciones: —. Estado del documento: `[PROPUESTO]`.
+**Esta sección manda sobre el resto.** El fundador eligió construir ya la **carga por API desde
+Qualify (opción C)**, sin esperar al piloto con catálogo hecho a mano que recomendaba el §6. En
+sus palabras: «construyamos la carga por API, desde cada producto: cargar, resincronizar, o
+cargar/sincronizar todos los productos». La recomendación del §6 (D, empezando por B) **no se
+adoptó**; se conserva como el análisis que hubo antes de la decisión. Estado: `[FIRMADO]`.
+
+| # | Decisión `[F]` | Por qué | Qué deja fuera | Qué la reabre |
+|---|---|---|---|---|
+| **D1** | Qualify sube los productos de Galería (antes «Tus productos») al catálogo de WhatsApp por la API de Meta (`items_batch`, §2.2) | El dueño ya cargó sus productos una vez; no debe cargarlos de nuevo en Meta | La opción B como paso previo (catálogo a mano + piloto) | Que el token no pueda llevar `catalog_management` con acceso estándar (§8.1): entonces se vuelve a B mientras se pide el permiso |
+| **D2** | La carga la dispara **una persona**, con tres acciones: cargar un producto, resincronizar un producto ya cargado, y cargar / sincronizar todos | Asistido, nunca autónomo; más simple que el disparo automático del §4 | La re-sincronización automática al cambiar un precio (CAT-04, criterio 3) | Que aparezcan precios viejos en WhatsApp porque el dueño olvida resincronizar |
+
+**Supuestos de implementación del hilo principal** (no los dijo el fundador; valen salvo objeción):
+
+1. El catálogo se **crea y se conecta a mano una vez** en Commerce Manager / WhatsApp Manager y se
+   registra en Qualify con su identificador (alta administrativa, como la del número). Qualify no
+   crea catálogos por API en esta entrega.
+2. El identificador de cada artículo en Meta (`retailer_id`) es el **`id` del producto** y queda
+   guardado en la fila del artículo; no se añade aún la columna `sku` ni la importación por hoja de
+   cálculo (CAT-03).
+3. La **foto principal** de cada producto se publica en una dirección pública y fija, firmada
+   (§4): Meta exige imagen por artículo y vuelve a descargarla [M-7]. Responde la pregunta 4 del
+   §7.4 por necesidad; si el fundador objeta, la carga por API no es posible.
+4. Un producto **desactivado o borrado** en Galería se retira del catálogo en la siguiente
+   sincronización de todos. Qualify nunca toca un artículo que no creó.
+5. El campo `link` que Meta exige por artículo [M-7] lleva la página web del negocio si existe y,
+   si no, el enlace `wa.me` del número.
+6. No se añade ningún servicio nuevo en producción: las llamadas a Meta salen por el worker de
+   WhatsApp que ya existe.
+
+**Riesgos que la decisión deja a la vista:**
+
+- **Permiso sin verificar.** `catalog_management` no está en el token actual y sigue sin
+  verificarse que baste el acceso estándar (§8.1–8.3). Se sabrá al regenerar el token; hasta
+  entonces el código queda probado solo contra dobles de la API.
+- **Carritos sin intérprete.** Con el catálogo visible, un cliente puede enviar un carrito; hasta
+  que exista CAT-02 llega como un mensaje que el módulo no convierte en pedido.
+- **Revisión de Meta.** Esta entrega muestra los errores del lote, no el estado de revisión de cada
+  artículo; un artículo rechazado después por las Políticas de Comercio no se ve en Qualify.
+
+**Tickets:** épica m-25017354 · conector m-25017356 · Galería m-25017357. Del borrador del §7 solo
+se crearon esos; CAT-01, CAT-02, CAT-03 y CAT-05 siguen como borrador sin ticket.
+
+**Lo que tiene que hacer el fundador en Meta para que funcione en producción** (nadie más puede):
+crear el catálogo en Commerce Manager dentro del portafolio Qualify.co y conectarlo a la cuenta de
+WhatsApp Business del negocio; asignar ese catálogo al usuario del sistema; regenerar el token del
+usuario del sistema con `catalog_management` y `business_management` además de los dos de WhatsApp;
+volver a correr el alta del número con el token nuevo y luego el alta del catálogo.
 
 ## 0. La pregunta y qué buscamos esta vez
 
