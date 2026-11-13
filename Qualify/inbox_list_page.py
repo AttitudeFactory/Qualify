@@ -2,7 +2,7 @@
 
 The left pane of the tab (`conversations_page.messages_tab` puts the Instagram chat
 pane at its right): the channel filter (only with chats on two or more channels), the
-chips, the «Se te pasaron …» notice, the shared rows (`chat_row.chat_row`) and «Ver
+chips, the «… ya no se pueden responder aquí» notice, the shared rows (`chat_row.chat_row`) and «Ver
 más». Design-system pieces only (buttons as chips like the screens before it, `callout`,
 `empty_state`, `skeleton_rows`); every count and word comes from `inbox_list_vm` through
 `InboxListState`.
@@ -90,8 +90,8 @@ def _filters() -> rx.Component:
 
 
 def _notice() -> rx.Component:
-    """«Se te pasaron N chats de Instagram · Ver»: one line inside «Por responder», not
-    part of its number; «Ocultar este aviso» until the number grows."""
+    """«N chats de Instagram ya no se pueden responder aquí · Ver»: one line inside «Por
+    responder», not part of its number; «Ocultar este aviso» until the number grows."""
     return rx.cond(
         L.notice_visible,
         card(

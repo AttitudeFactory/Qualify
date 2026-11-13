@@ -40,7 +40,7 @@ REPLY_SOON_WITHIN: Final = timedelta(hours=1)
 REPLY_SOON_TEMPLATE: Final = "Quedan {minutes} min para responder"
 #: m-25017859: an Instagram chat whose 24 h window closed while the customer had the last
 #: word — said in words, never by colour alone. UX proposal awaiting the founder.
-EXPIRED_PILL: Final = "Ya no puedes responder por aquí"
+EXPIRED_PILL: Final = "Respóndele desde la app de Instagram"
 #: m-25017859: the open Instagram chat's header pill when the rule says it waits (the
 #: chip's own word; the row says it with the dot).
 AWAITING_PILL: Final = "Por responder"
@@ -82,7 +82,7 @@ def attention_pill(
     expired: bool = False,
 ) -> tuple[str, str]:
     """(label, tone) of the row's ONE pill; ("", "neutral") when nothing asks for it.
-    «Pago por revisar» › «Ya no puedes responder por aquí» › «Quiere comprar» ›
+    «Pago por revisar» › «Respóndele desde la app de Instagram» › «Quiere comprar» ›
     «Quedan N min para responder» › «Esperando el pago»: a window about to close
     outranks a payment that is only being waited for; a window already gone outranks
     every reason to answer, since the answer can no longer go out here."""

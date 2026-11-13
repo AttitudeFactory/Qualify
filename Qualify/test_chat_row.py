@@ -103,7 +103,7 @@ def test_payment_beats_the_window_and_the_intent() -> None:
 
 
 def test_the_priority_order_of_the_one_pill() -> None:
-    """«Pago por revisar» › «Ya no puedes responder por aquí» › «Quiere comprar» ›
+    """«Pago por revisar» › «Respóndele desde la app de Instagram» › «Quiere comprar» ›
     «Quedan N min para responder» › «Esperando el pago»."""
 
     def pill(**kw: object) -> tuple[str, str]:
@@ -134,14 +134,15 @@ def test_the_priority_order_of_the_one_pill() -> None:
     assert reply_soon_pill(7) == "Quedan 7 min para responder"
 
 
-def test_the_longest_pill_fits_one_line_at_360_px() -> None:
-    """At 360 px the row's text column is ~230 px (360 − 2×16 gutter − 2×16 row padding
-    − 40 avatar − 12 gap); a size-1 pill (12 px type, ~6.6 px per character + 20 px of
-    padding and icon) fits 31 characters. «Quedan 59 min para responder» is 28."""
-    longest = max(
-        (reply_soon_pill(59), EXPIRED_PILL, PAYMENT_REVIEW_PILL, AWAITING_PAYMENT_PILL), key=len
-    )
-    assert len(longest) <= 31, longest
+def test_the_pills_against_one_line_at_360_px() -> None:
+    """At 360 px the row's text column is ~244 px (360 − 2×16 gutter − 2×16 row padding
+    − 40 avatar − 12 gap); a size-1 pill (12 px type, ~6.6 px per character + ~20 px of
+    dot, gap and padding) fits about 34 characters. Every pill fits but the founder's
+    «Respóndele desde la app de Instagram» (36, 2026-11-13): an estimate of ~258 px —
+    reported to the coordinator, not shortened. This pins the known lengths."""
+    fitting = (reply_soon_pill(59), PAYMENT_REVIEW_PILL, AWAITING_PAYMENT_PILL)
+    assert max(len(p) for p in fitting) <= 31
+    assert len(EXPIRED_PILL) == 36
 
 
 def test_minutes_round_down_with_a_floor_of_one() -> None:

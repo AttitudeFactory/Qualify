@@ -10,7 +10,7 @@ Tree (docs/ux-chats-unificados.md §2):
     Por responder › Mensajes
       [Todos] [Instagram] [WhatsApp]          only with chats on 2+ channels; no TikTok
       [Por responder · N] [Todos · N] [Cerrados · N] (+ [Pago por revisar · N] if N ≥ 1)
-      «Se te pasaron N chats de Instagram · Ver»   (inside «Por responder», dismissible)
+      «N chats de Instagram ya no se pueden responder aquí · Ver»   (in «Por responder»)
       the rows · «Ver más»
 
 Pure: no Reflex, no database.
@@ -70,7 +70,7 @@ FILTER_LABELS: Final[Mapping[str, str]] = {
     FILTER_PAYMENT: "Pago por revisar",
     # Only drawn while it is the filter on screen (opened from the notice), so the owner
     # sees what is listed and has the way back. UX proposal awaiting the founder.
-    FILTER_EXPIRED: "Se te pasaron",
+    FILTER_EXPIRED: "Sin responder a tiempo",
 }
 FILTER_KEYS: Final = frozenset(FILTER_LABELS)
 #: The chips always drawn, in order; «Pago por revisar» joins only with N ≥ 1.
@@ -139,7 +139,8 @@ def merge_refreshed(
 # --------------------------------------------------------------------------------------
 # Words (qualify-copy-es). Founder-decided: «Por responder», «Todos», «Cerrados»,
 # «Pago por revisar · {N}», «WhatsApp», «Instagram», the empty «Por responder» text.
-# UX proposals awaiting the founder: the expired notice, «Se te pasaron», the other
+# Founder-decided 2026-11-13 («Sí, los de UX»): the expired notice and pill. Applied with
+# them by the coordinator, to confirm: «Sin responder a tiempo». UX proposals: the other
 # empty texts.
 # --------------------------------------------------------------------------------------
 
@@ -147,8 +148,8 @@ MORE_LABEL: Final = "Ver más"
 FILTERS_ARIA: Final = "Qué chats ver"
 CHANNELS_ARIA: Final = "De qué red"
 
-NOTICE_ONE: Final = "Se te pasó 1 chat de Instagram"
-NOTICE_MANY: Final = "Se te pasaron {n} chats de Instagram"
+NOTICE_ONE: Final = "1 chat de Instagram ya no se puede responder aquí"
+NOTICE_MANY: Final = "{n} chats de Instagram ya no se pueden responder aquí"
 NOTICE_ACTION: Final = "Ver"
 NOTICE_DISMISS: Final = "Ocultar este aviso"
 
@@ -251,7 +252,7 @@ def chip_label(filter_key: str, count: int) -> str:
 
 def filter_chips(counts: CountsLike | None, active: str, channel: str) -> list[ChipVM]:
     """«Por responder» · «Todos» · «Cerrados», plus «Pago por revisar · N» only with N ≥ 1
-    and «Se te pasaron · N» only while it is the filter on screen. Counted on the
+    and «Sin responder a tiempo · N» only while it is the filter on screen. Counted on the
     channel the list shows."""
     keys = list(BASE_FILTERS)
     if count_of(counts, FILTER_PAYMENT, channel) > 0 or active == FILTER_PAYMENT:

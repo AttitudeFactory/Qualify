@@ -239,7 +239,7 @@ def test_an_expired_instagram_chat_says_it_in_words() -> None:
         )
     )
     assert (row.pill_label, row.pill_tone) == (EXPIRED_PILL, "neutral")
-    assert EXPIRED_PILL == "Ya no puedes responder por aquí"
+    assert EXPIRED_PILL == "Respóndele desde la app de Instagram"  # founder, 2026-11-13
     assert EXPIRED_PILL in row.aria_label and not row.waiting
 
 
@@ -275,7 +275,7 @@ def test_pago_por_revisar_only_with_one_or_more() -> None:
     assert filter_chips(none, FILTER_PAYMENT, "")[-1].key == FILTER_PAYMENT
     # The expired filter is a chip only while it is on screen (opened from the notice).
     expired = filter_chips(counts(dm={"ventana_vencida": 2}), FILTER_EXPIRED, "")
-    assert expired[-1].label == "Se te pasaron · 2" and expired[-1].pressed
+    assert expired[-1].label == "Sin responder a tiempo · 2" and expired[-1].pressed
 
 
 def test_the_channel_filter_needs_chats_on_two_channels_and_has_no_tiktok() -> None:
@@ -357,8 +357,8 @@ def test_a_whatsapp_row_opens_todays_chat_marked_from_the_list() -> None:
 
 
 def test_the_notice_words() -> None:
-    assert notice_text(1) == "Se te pasó 1 chat de Instagram"
-    assert notice_text(3) == "Se te pasaron 3 chats de Instagram"
+    assert notice_text(1) == "1 chat de Instagram ya no se puede responder aquí"
+    assert notice_text(3) == "3 chats de Instagram ya no se pueden responder aquí"
 
 
 def test_the_notice_shows_inside_por_responder_until_dismissed_and_again_when_it_grows() -> None:
@@ -386,7 +386,10 @@ async def test_the_dismissal_lasts_until_it_grows_and_a_business_switch_forgets_
     fake.expired = 2
     state = InboxListState()
     await _drain(InboxListState.load.fn(state))  # type: ignore[attr-defined]
-    assert state.notice_visible and state.notice_label == "Se te pasaron 2 chats de Instagram"
+    assert (
+        state.notice_visible
+        and state.notice_label == "2 chats de Instagram ya no se pueden responder aquí"
+    )
     InboxListState.dismiss_notice.fn(state)  # type: ignore[attr-defined]
     assert not state.notice_visible
     await _drain(InboxListState.refresh.fn(state))  # type: ignore[attr-defined]
