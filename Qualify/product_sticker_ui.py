@@ -56,8 +56,11 @@ from .product_sticker_vm import (
     STILL_LINE,
     STILL_TITLE,
     TRUST_LINE,
+    UNDO_ARIA,
     UNDO_BUTTON_ID,
     UNDO_LABEL,
+    UNDO_LINE_ID,
+    UNDO_OR_NEW,
     DrawingVM,
     ProductVM,
 )
@@ -196,7 +199,7 @@ def _step_product() -> rx.Component:
             "image-plus",
             NO_PHOTO_TITLE,
             NO_PHOTO_TEXT,
-            _link_button(GO_CATALOG_LABEL, CATALOG_HREF, "package"),
+            _link_button(GO_CATALOG_LABEL, CATALOG_HREF, "images"),
         ),
         rx.vstack(
             rx.text(PRODUCT_HELP, size="2", color=T.TEXT_MUTED),
@@ -397,19 +400,20 @@ def _undo_row() -> rx.Component:
     button) until the owner moves on or brings it back."""
     return rx.cond(
         P.undo_drawing != "",
-        rx.hstack(
-            callout(DISCARDED_LINE, "neutral", icon="trash-2", flex="1"),
+        rx.vstack(
+            callout(DISCARDED_LINE, "neutral", icon="trash-2", id=UNDO_LINE_ID),
             _button(
                 UNDO_LABEL,
                 P.restore_drawing,
                 icon="undo-2",
                 disabled=P.discarding.contains(P.undo_drawing),
                 id=UNDO_BUTTON_ID,
+                aria_label=UNDO_ARIA,
+                aria_describedby=UNDO_LINE_ID,
             ),
             width="100%",
-            align="center",
+            align_items="start",
             spacing="2",
-            wrap="wrap",
         ),
     )
 
@@ -431,8 +435,12 @@ def _step_drawing() -> rx.Component:
                     role="radiogroup",
                     aria_label="Tus dibujos de " + P.product_name,
                 ),
-                # «Toca Crear dibujo» only when there is a button to touch
-                rx.cond(P.cost_can_pay, rx.text(NO_DRAWING_YET, size="2")),
+                # «Toca Crear dibujo» only when there is a button to touch; right after
+                # quitar the only one, «Deshacer» comes first (never a paid one by mistake)
+                rx.cond(
+                    P.cost_can_pay,
+                    rx.text(rx.cond(P.undo_drawing != "", UNDO_OR_NEW, NO_DRAWING_YET), size="2"),
+                ),
             ),
         ),
         rx.cond(P.any_drawing_pending, rx.text(DRAWING_WAIT, size="1", color=T.TEXT_MUTED)),

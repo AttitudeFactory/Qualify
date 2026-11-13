@@ -81,8 +81,16 @@ DISCARD_LABEL: Final = "Quitar este dibujo"
 #: menus' drag and «Archivar» of a season — founder, 2026-11-13). The line and «Deshacer» sit
 #: INSIDE the panel, not in a toast: the panel is modal, so a toast's button cannot be
 #: touched or reached with the keyboard while it is open (measured at 375 px).
-DISCARDED_LINE: Final = "Quitamos el dibujo. Los stickers que hiciste con él se quedan."
+DISCARDED_LINE: Final = "Quitamos el dibujo. Tus stickers hechos con él se quedan."
 UNDO_LABEL: Final = "Deshacer"
+#: Read by a screen reader with the focus on the button (it lands there before the line).
+UNDO_ARIA: Final = "Deshacer: devolver el dibujo"
+UNDO_LINE_ID: Final = "product-sticker-undo-line"
+#: Step 2's empty line while «Deshacer» is offered: the way back before a paid new one.
+UNDO_OR_NEW: Final = (
+    "¿Fue sin querer? Toca «Deshacer» y vuelve tu dibujo. Si quieres uno nuevo, toca "
+    "«Crear dibujo»."
+)
 #: The quitado drawing's button leaves the page: the focus moves here, never to <body>.
 UNDO_BUTTON_ID: Final = "product-sticker-undo"
 RESTORE_FAILED: Final = "No pudimos devolver el dibujo. Vuelve a intentarlo en un momento."
@@ -364,15 +372,23 @@ def reachable_step(
     return step
 
 
-def flow_address(params: Mapping[str, object], step: int) -> str:
-    """`/brand/kit?…&flujo=sticker-producto&paso=N`: the other parameters stay; the old
-    opener `?crear=producto` goes (popping back to it would open the flow again)."""
-    kept = {
+def _kept(params: Mapping[str, object]) -> dict[str, str]:
+    return {
         k: v
         for k, v in params.items()
         if k not in ("crear", "flujo", "paso") and isinstance(v, str) and v
     }
-    return with_query(BRAND_KIT_PATH, **kept, flujo=FLOW_NAME, paso=str(step))
+
+
+def base_address(params: Mapping[str, object]) -> str:
+    """Tu marca's own address, without the flow (`flujo`, `paso`) nor its old opener
+    `?crear=producto` (popping back to it would open the flow again); the rest stays."""
+    return with_query(BRAND_KIT_PATH, **_kept(params))
+
+
+def flow_address(params: Mapping[str, object], step: int) -> str:
+    """`/brand/kit?…&flujo=sticker-producto&paso=N` — what `flow_sync` writes."""
+    return with_query(BRAND_KIT_PATH, **_kept(params), flujo=FLOW_NAME, paso=str(step))
 
 
 def preselection(

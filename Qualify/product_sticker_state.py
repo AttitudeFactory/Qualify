@@ -46,11 +46,11 @@ from .product_sticker_vm import (
     DrawingVM,
     ProductVM,
     ask_another_label,
+    base_address,
     can_next,
     chosen_messages,
     drawing_vms,
     filter_products,
-    flow_address,
     last_message,
     message_count,
     own_message_error,
@@ -128,6 +128,10 @@ class ProductStickerState(rx.State):
     history_ack: str = ""
     #: the page document the last lease came from: a new one is a reload (re-read all)
     _history_doc: str = ""
+    #: `?crear=producto` was taken off the address: open on the handler's next pass
+    _open_on_enter: bool = False
+    #: the owner closed the panel and its address is being taken back (`_close_address`)
+    _just_closed: bool = False
     loading: bool = False
     load_error: str = ""
     flow_error: str = ""
@@ -352,9 +356,12 @@ class ProductStickerState(rx.State):
         self.flow_ready = False
         self._poll_gen += 1
 
-    @staticmethod
-    def _close_address() -> Any:
-        """Take `?flujo=…&paso=N` off the address, back to where the flow was opened."""
+    def _close_address(self) -> Any:
+        """Take `?flujo=…&paso=N` off the address, back to where the flow was opened. When
+        the flow began on a step's own address (a link, a reload) that place is itself a
+        flow address: the pop that lands there is told apart (`_just_closed`) and only
+        tidies the address, never reopens the panel the owner just closed."""
+        self._just_closed = True
         return rx.call_script(close_flow_script(FLOW_NAME))
 
     @rx.event
@@ -363,19 +370,27 @@ class ProductStickerState(rx.State):
         «atrás»/«adelante» of the browser the panel follows the address. `?flujo=
         sticker-producto&paso=N` opens it (or moves it) to that step, never past a missing
         choice (`reachable_step`); no `flujo` closes it. The old opener `?crear=producto`
-        first becomes the flow's own address, so popping back never reopens the flow."""
+        comes off the address first and the flow opens over Tu marca's own address, so
+        each step is pushed on top of it and closing goes back there."""
         self.history_ack = history_ack_value(lease)
         document = self.history_ack.split(":", 1)[0]
         fresh = document != self._history_doc
         self._history_doc = document
         params = self._params()
-        if scalar_param(params, "crear") == CREATE_PARAM_VALUE:
-            target = flow_address(params, STEP_PRODUCT)
-            return [rx.call_script(replace_url_script(target) + _REENTER_JS)]
-        events: list[Any] = []
         requested = flow_param(params, FLOW_NAME, FLOW_STEPS)
+        if scalar_param(params, "crear") == CREATE_PARAM_VALUE:
+            # then this handler runs again for the clean address, with a fresh lease
+            self._open_on_enter = not self._in_flight()
+            return [rx.call_script(replace_url_script(base_address(params)) + _REENTER_JS)]
+        just_closed, self._just_closed = self._just_closed, False
+        if requested and just_closed and not self.flow_open:
+            return [rx.call_script(replace_url_script(base_address(params)) + _REENTER_JS)]
+        events: list[Any] = []
         busy = self._in_flight() or self.picking
-        if requested:
+        if self._open_on_enter:
+            self._open_on_enter = False
+            events.append(ProductStickerState.open_flow)
+        elif requested:
             if self.flow_open and self.flow_ready and not fresh:
                 if not busy:
                     events.extend(self._go_to(requested))
@@ -428,6 +443,7 @@ class ProductStickerState(rx.State):
             gen = self._gen
             self.flow_open = True
             self.flow_ready = False
+            self._just_closed = False
             self.flow_step = STEP_PRODUCT
             self.undo_drawing = ""
             self.flow_error = ""
@@ -910,9 +926,10 @@ class ProductStickerState(rx.State):
                 return
             self._close()
             self._last_message = messages[-1]
+            close_address = self._close_address()  # sets its flag under the state's lock
         from .seasonal_state import SeasonalState  # noqa: PLC0415 — no import cycle
 
-        yield self._close_address()
+        yield close_address
         yield rx.toast.success(
             STARTED_TOAST,
             duration=_TOAST_MS,

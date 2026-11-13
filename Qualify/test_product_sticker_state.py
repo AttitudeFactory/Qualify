@@ -619,11 +619,15 @@ async def test_a_reload_never_restores_a_stale_panel(
     events = state.enter_history({"visit": "doc1:1", "href": "x"})
     assert not state.flow_open and state.history_ack == "doc1:1"
     assert len(events) == 1  # only the route's «ready»
-    # the old opener first becomes the flow's own address, then runs again for it
+    # the old opener comes off the address first; the handler's next pass opens the flow
+    # over Tu marca's own address (steps are pushed on top of it, closing goes back there)
     query["crear"] = "producto"
     events = state.enter_history({"visit": "doc1:2", "href": "x"})
-    assert "flujo=sticker-producto&paso=1" in str(events) and "crear=" not in str(events)
-    assert not state.flow_open  # opened only by the second pass, for the new address
+    assert "/brand/kit" in str(events) and "crear=" not in str(events)
+    assert "flujo=" not in str(events) and not state.flow_open
+    query.clear()
+    events = state.enter_history({"visit": "doc1:3", "href": "x"})
+    assert "open_flow" in str(events)
     # a reload (a new page document) with the flow open re-reads everything
     query.clear()
     query.update({"flujo": "sticker-producto", "paso": "3"})
@@ -669,6 +673,26 @@ async def test_the_phone_back_button_goes_back_one_step(
     query.clear()  # «atrás» past step 1
     state.enter_history({"visit": "doc1:5", "href": "x"})
     assert not state.flow_open and not state.flow_ready
+
+
+async def test_closing_a_flow_begun_on_a_step_address_never_reopens_it(
+    gw: FakeGateway, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review finding: opened from a step's own address (a link, a reload), «✕» goes back to
+    that first entry, which is itself a flow address — the pop that lands there only
+    tidies the address, it never opens the panel again."""
+    state = ProductStickerState()
+    query = _route(monkeypatch)
+    query.update({"flujo": "sticker-producto", "paso": "1"})
+    await _open(state)
+    assert "sticker-producto" in str(state.set_flow_open(False))
+    assert not state.flow_open
+    events = state.enter_history({"visit": "doc1:2", "href": "x"})  # the close's pop
+    assert not state.flow_open and "open_at" not in str(events)
+    assert "replaceState" in str(events) and "flujo=" not in str(events)
+    # later «adelante»/«atrás» onto a step address opens it as usual
+    events = state.enter_history({"visit": "doc1:3", "href": "x"})
+    assert "open_at" in str(events)
 
 
 async def test_a_deep_link_falls_back_to_the_missing_choice(gw: FakeGateway) -> None:

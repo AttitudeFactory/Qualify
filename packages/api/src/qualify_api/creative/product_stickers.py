@@ -559,7 +559,9 @@ class ProductStickerService:
         found = self.character(tenant_id, brand_id, character_id)
         if found.status != STATUS_DISCARDED:
             return found
-        if found.approved_at is not None and found.object_key:
+        if found.approved_at is not None and not found.object_key:
+            raise CharacterChanged()  # cannot happen (ck_ready_has_file); never guessed
+        if found.approved_at is not None:
             status = STATUS_APPROVED
         elif found.fail_reason is not None:
             status = STATUS_FAILED
