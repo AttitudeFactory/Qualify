@@ -29,7 +29,12 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, available_timezones
 
-from qualify_api.planner.publishable import destination_options
+from qualify_api.planner.publishable import (
+    destination_options,
+    format_video_duration,
+    story_video_too_long,
+    video_seconds_of,
+)
 from qualify_api.planner.recurrence import (
     SERIES_CAP,
     InvalidRecurrence,
@@ -1692,6 +1697,7 @@ def build_post_option(
     has_live_event: bool = False,
     media_types: tuple[str, ...] = (),
     image_size: tuple[int, int] | None = None,
+    video_seconds: float | None = None,
     preferred_destination: str | None = None,
     lifecycle_status: str = "",
     campaign_name: str = "",
@@ -1757,7 +1763,7 @@ def build_post_option(
         content_kind_label=KIND_LABELS.get(content_kind, ""),
         **_kind_fields(media_types, category or "", has_outputs=bool(chips)),
         **_temperature_fields(times_published),
-        destinations=(choices := destinations_for(media_types, image_size)),
+        destinations=(choices := destinations_for(media_types, image_size, video_seconds)),
         default_destination=default_destination(
             choices, preferred_destination or _CATEGORY_DESTINATION.get(category or "")
         ),
@@ -1940,6 +1946,7 @@ def build_output_chip(
     account_label: str = "",
     media_types: tuple[str, ...] = (),
     image_size: tuple[int, int] | None = None,
+    video_seconds: float | None = None,
     preferred_destination: str | None = None,
     can_schedule_pending_final: bool = False,
 ) -> OutputChipVM:
@@ -1964,7 +1971,7 @@ def build_output_chip(
         tone=tone,
         scheduled=event_status is not None,
         note=note,
-        destinations=(choices := destinations_for(media_types, image_size)),
+        destinations=(choices := destinations_for(media_types, image_size, video_seconds)),
         default_destination=default_destination(
             choices, preferred_destination or _PORT_DESTINATION.get(port)
         ),
@@ -2043,12 +2050,22 @@ class DestinationChoiceVM:
     label: str
     available: bool
     reason: str = ""  # why it is off, printed under the selector
-    warning: str = ""  # what Meta may still refuse that cannot be checked here
+    warning: str = ""  # what Meta may still refuse: a story video too long / of unknown length
+    # m-25026481: a «Historia» whose video is KNOWN to last over 60 s, and that length
+    too_long: bool = False
+    duration_label: str = ""
+    # a «Historia» of a video whose length could NOT be read (the generic caution); a
+    # 60.0–60.5 s video also gets that caution but its length is known: False there
+    length_unknown: bool = False
 
 
-def destination_choices(options) -> list[DestinationChoiceVM]:
+def destination_choices(options, video_seconds: float | None = None) -> list[DestinationChoiceVM]:
     """The offered options of `publishable.destination_options`, as the selector shows
-    them; a destination that is not offered (a video's «Publicación») is left out."""
+    them; a destination that is not offered (a video's «Publicación») is left out. The
+    «Historia» of a video known to be too long carries that (m-25026481)."""
+    too_long = story_video_too_long(video_seconds)
+    duration = format_video_duration(video_seconds) if too_long and video_seconds else ""
+    unread = video_seconds_of(video_seconds) is None
     return [
         DestinationChoiceVM(
             key=o.destination,
@@ -2056,6 +2073,10 @@ def destination_choices(options) -> list[DestinationChoiceVM]:
             available=o.available,
             reason=o.reason,
             warning=o.warning,
+            too_long=too_long and o.destination == "story",
+            duration_label=duration if o.destination == "story" else "",
+            # only a video's story carries a warning: with no length, it is the generic one
+            length_unknown=unread and o.destination == "story" and bool(o.warning),
         )
         for o in options
         if o.offered
@@ -2067,11 +2088,60 @@ _PORT_DESTINATION: dict[str, str] = {"reel": "reel", "story": "story", "feed": "
 
 
 def destinations_for(
-    media_types: tuple[str, ...], image_size: tuple[int, int] | None
+    media_types: tuple[str, ...],
+    image_size: tuple[int, int] | None,
+    video_seconds: float | None = None,
 ) -> list[DestinationChoiceVM]:
     """The selector's buttons for content of this shape (`publishable.destination_options`
-    — the same rule the service and the executor apply)."""
-    return destination_choices(destination_options(tuple(media_types), image_size))
+    — the same rule the service and the executor apply). `video_seconds` (m-25026481): a
+    video's known length, so a «Historia» longer than 60 s warns with that length."""
+    return destination_choices(
+        destination_options(tuple(media_types), image_size, video_seconds=video_seconds),
+        video_seconds,
+    )
+
+
+#: m-25026481: what «Confirmar» says about the plan's video stories — those whose length
+#: is KNOWN to be over 60 s (each row carries `STORY_TOO_LONG_TAG`; one alone is named
+#: by its hour) and those whose length could not be read.
+STORY_TOO_LONG_TAG = "Dura más de 1 minuto"
+STORY_TOO_LONG_NOTE_ONE = (
+    "La Historia {when} dura {duration}: Instagram la rechazará. Vuelve atrás y cámbiala a Reel."
+)
+STORY_TOO_LONG_NOTE_MANY = (
+    "{n} Historias de video de este plan duran más de 1 minuto: Instagram las rechazará. "
+    "Vuelve atrás y cámbialas a Reel."
+)
+STORY_UNKNOWN_NOTE = (
+    "No pudimos leer cuánto duran algunas Historias de video de este plan. Si alguna dura "
+    "más de 1 minuto, cámbiala a Reel: Instagram la rechazará."
+)
+
+
+def _at_hour(time_text: str) -> str:
+    """«a las 2:00 p. m.» / «a la 1:00 p. m.»."""
+    return ("a la " if time_text.startswith("1:") else "a las ") + time_text
+
+
+def story_too_long_note(rows: list[PlanRowVM], *, several_days: bool = False) -> str:
+    """The note for the plan's too-long video stories: one is named by its hour (and its
+    day when the plan spans several days); several are counted — their rows say which."""
+    if not rows:
+        return ""
+    if len(rows) > 1:
+        return STORY_TOO_LONG_NOTE_MANY.format(n=len(rows))
+    row = rows[0]
+    if row.now:
+        when = "de «Ahora»"
+    elif several_days and row.day_label:
+        when = f"del {row.day_label} {_at_hour(row.time_label)}"
+    else:
+        when = "de " + _at_hour(row.time_label).removeprefix("a ")
+    return STORY_TOO_LONG_NOTE_ONE.format(when=when, duration=row.video_duration)
+
+
+def story_unknown_note(count: int) -> str:
+    return STORY_UNKNOWN_NOTE if count > 0 else ""
 
 
 def default_destination(choices: list[DestinationChoiceVM], preferred: str | None) -> str:
@@ -2296,6 +2366,15 @@ class PlanRowVM:
     accounts_line: str = ""
     sale_line: str = ""
     needs_more: bool = False
+    # m-25026481: «Historia» chosen for a video KNOWN to last over 60 s, and that length
+    # («1 min 5 s»): it opens «Más opciones» (where the warning is) and tags the row on
+    # «Confirmar».
+    story_too_long: bool = False
+    video_duration: str = ""
+    # «Historia» chosen for a video whose length could not be read: counted by the
+    # plan's «No pudimos leer…» note. Both flags are False in a reschedule: there the
+    # destination cannot change, so only the row's own warning speaks.
+    story_length_unknown: bool = False
 
 
 CAMPAIGN_NONE = "none"  # the selector's «Sin campaña» (same value as the POST detail)
@@ -2490,6 +2569,8 @@ def build_plan_row(
         destinations = post.destinations
     dest = item.destination
     chosen = next((d for d in destinations if d.key == dest), None)
+    too_long = not reschedule and chosen is not None and chosen.too_long
+    unknown_length = not reschedule and chosen is not None and chosen.length_unknown
     mock = {"reel": "reel", "story": "story"}.get(dest, "carousel" if key == "carousel" else "post")
     aspect = {"reel": "9 / 16", "story": "9 / 16", "carousel": "1 / 1"}.get(mock, "4 / 5")
     hour, minute = split_time(item.time)
@@ -2580,7 +2661,10 @@ def build_plan_row(
             now=item.now,
             button=SUBMIT_RESCHEDULE if reschedule else SUBMIT_ASSIGN,
         ),
-        needs_more=error not in _WHEN_ERRORS,
+        needs_more=error not in _WHEN_ERRORS or too_long,
+        story_too_long=too_long,
+        story_length_unknown=unknown_length,
+        video_duration=chosen.duration_label if too_long and chosen is not None else "",
         **campaign_fields,
     )
 

@@ -11,8 +11,10 @@ documents.
 from __future__ import annotations
 
 import dataclasses
+import json
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
@@ -37,6 +39,7 @@ from qualify_api.planner.service import (
     compose_instant,
 )
 
+from . import planner_vm as planner_vm_mod
 from .planner_provider import planner_error_message, view_zone
 from .planner_state import (
     CONFIRM_CANCEL,
@@ -1649,7 +1652,167 @@ def test_the_destination_is_chosen_per_piece_and_an_unavailable_one_is_ignored()
     row = state.plan_rows[0]
     assert (row.destination_label, row.mock) == ("Historia", "story")
     assert "60 segundos" in row.destination_warning
-    assert state.form_story_warnings == 1  # «Confirmar» warns once before confirming
+    # m-25026481: the length is unknown here, so «Confirmar» gives the generic caution
+    assert state.form_story_unknown_note == planner_vm_mod.STORY_UNKNOWN_NOTE
+    assert state.form_story_too_long_note == ""
+
+
+def _story_warning(post: PostOptionVM) -> str:
+    return next(d.warning for d in post.destinations if d.key == "story")
+
+
+@pytest.mark.parametrize(
+    ("seconds", "expected"),
+    [
+        (65.0, "1 min 5 s"),
+        (60.2, "Si este video es más largo"),  # inside the tolerance: the generic caution
+        (2.0, ""),
+        (None, "Si este video es más largo"),
+    ],
+)
+def test_the_video_length_reaches_the_story_warning(seconds, expected) -> None:
+    """m-25026481: provider → view model → `destination_options(video_seconds=…)`."""
+    post = _ready_post(
+        "v", category="reel", media_types=("VIDEO",), image_size=None, video_seconds=seconds
+    )
+    warning = _story_warning(post)
+    assert (expected in warning) if expected else warning == ""
+    chip = build_output_chip(
+        port="reel",
+        is_publishable=True,
+        unpublishable_reason="",
+        event_status=None,
+        media_types=("VIDEO",),
+        video_seconds=seconds,
+    )
+    assert _story_warning(chip) == warning  # type: ignore[arg-type]
+
+
+def _video(post_id: str, seconds: float | None, category: str = "reel") -> PostOptionVM:
+    return _ready_post(
+        post_id,
+        category=category,
+        media_types=("VIDEO",),
+        image_size=None,
+        video_seconds=seconds,
+    )
+
+
+def _plan_stories(state: PlannerState, *post_ids: str) -> None:
+    state.open_assign_blank()
+    for post_id in post_ids:
+        state.toggle_plan_post(post_id)
+        state.set_item_destination(post_id, "story")
+
+
+def test_confirm_names_the_one_too_long_story_by_its_hour() -> None:
+    state = _drawer_state(_video("l", 65.0), _video("s", 2.0))
+    _plan_stories(state, "l", "s")
+    state.set_item_time("l", "14:00")
+    rows = {row.post_id: row for row in state.plan_rows}
+    assert "1 min 5 s" in rows["l"].destination_warning
+    assert "Instagram la rechazará" in rows["l"].destination_warning
+    assert rows["l"].story_too_long and rows["l"].video_duration == "1 min 5 s"
+    assert not rows["s"].story_too_long and rows["s"].destination_warning == ""
+    note = state.form_story_too_long_note
+    expected_when = "de la" if rows["l"].time_label.startswith("1:") else "de las"
+    assert note == (
+        f"La Historia {expected_when} {rows['l'].time_label} dura 1 min 5 s: Instagram la "
+        "rechazará. Vuelve atrás y cámbiala a Reel."
+    )
+    assert state.form_story_unknown_note == ""
+    from . import planner_drawer  # noqa: PLC0415
+
+    view = str(planner_drawer._step_confirm())
+    tag = json.dumps(planner_vm_mod.STORY_TOO_LONG_TAG)[1:-1]  # JSX escapes the accents
+    assert tag in view and "story_too_long" in view
+
+
+def test_confirm_counts_several_too_long_stories_and_the_unknown_ones_apart() -> None:
+    state = _drawer_state(_video("a", 65.0), _video("b", 90.0), _video("u", None))
+    _plan_stories(state, "a", "b", "u")
+    assert state.form_story_too_long_note == (
+        "2 Historias de video de este plan duran más de 1 minuto: Instagram las rechazará. "
+        "Vuelve atrás y cámbialas a Reel."
+    )
+    assert state.form_story_unknown_note == planner_vm_mod.STORY_UNKNOWN_NOTE
+    assert planner_vm_mod.STORY_UNKNOWN_NOTE == (
+        "No pudimos leer cuánto duran algunas Historias de video de este plan. Si alguna "
+        "dura más de 1 minuto, cámbiala a Reel: Instagram la rechazará."
+    )
+
+
+def test_a_too_long_story_note_names_the_day_when_the_plan_spans_several() -> None:
+    row = SimpleNamespace(
+        now=False, day_label="vie 13 nov", time_label="1:00 p. m.", video_duration="2 min"
+    )
+    note = planner_vm_mod.story_too_long_note([row], several_days=True)  # type: ignore[list-item]
+    assert note.startswith("La Historia del vie 13 nov a la 1:00 p. m. dura 2 min:")
+    single = planner_vm_mod.story_too_long_note([row])  # type: ignore[list-item]
+    assert single.startswith("La Historia de la 1:00 p. m. dura 2 min:")
+
+
+def test_mas_opciones_opens_on_its_own_for_a_story_known_to_be_too_long() -> None:
+    """A piece that ARRIVES as a story (its category) with a 65 s video: the warning sits
+    in «Más opciones», so that fold opens by itself; the owner can still close it."""
+    state = _drawer_state(_video("l", 65.0, category="story"))
+    state.open_assign_blank()
+    state.toggle_plan_post("l")
+    assert state.plan_items[0].destination == "story"
+    assert state.plan_rows[0].needs_more and "l" in state.more_open
+    state.set_item_more("l", "")
+    assert "l" not in state.more_open
+    state.set_item_destination("l", "story")  # nothing new: it stays closed
+    assert "l" not in state.more_open
+
+
+@pytest.mark.parametrize("seconds", [None, 60.2, 2.0])
+def test_mas_opciones_stays_closed_for_an_unknown_or_short_story(seconds) -> None:
+    state = _drawer_state(_video("v", seconds, category="story"))
+    state.open_assign_blank()
+    state.toggle_plan_post("v")
+    assert state.plan_items[0].destination == "story"
+    assert not state.plan_rows[0].story_too_long
+    assert "v" not in state.more_open
+
+
+def test_a_rescheduled_too_long_story_keeps_its_warning_and_no_plan_note() -> None:
+    """m-25026481 re-review: a reschedule cannot change the destination, so the row's own
+    warning is all «Confirmar» says — never «No pudimos leer…» for a length we read."""
+    row = planner_vm_mod.build_plan_row(
+        planner_vm_mod.PlanItem(post_id="l", date="2026-11-20", destination="story"),
+        post=_video("l", 65.0),
+        connections=[],
+        reschedule=True,
+    )
+    assert "1 min 5 s" in row.destination_warning
+    assert not row.story_too_long and not row.story_length_unknown
+
+
+@pytest.mark.parametrize(
+    ("seconds", "unknown"),
+    [(None, True), (60.2, False), (65.0, False), (2.0, False)],
+)
+def test_only_an_unread_length_counts_as_unknown(seconds, unknown) -> None:
+    state = _drawer_state(_video("v", seconds))
+    _plan_stories(state, "v")
+    row = state.plan_rows[0]
+    assert row.story_length_unknown is unknown
+    assert state.form_story_unknown_note == (planner_vm_mod.STORY_UNKNOWN_NOTE if unknown else "")
+    if seconds == 60.2:  # the generic caution on the row, but its length was read
+        assert "Si este video es más largo" in row.destination_warning
+        assert not row.story_too_long and state.form_story_too_long_note == ""
+
+
+def test_a_mixed_plan_counts_each_kind_of_story_once() -> None:
+    state = _drawer_state(_video("u", None), _video("l", 65.0), _video("g", 60.2))
+    _plan_stories(state, "u", "l", "g")
+    rows = {row.post_id: row for row in state.plan_rows}
+    assert [p for p, r in rows.items() if r.story_too_long] == ["l"]  # the row tags
+    assert [p for p, r in rows.items() if r.story_length_unknown] == ["u"]
+    assert state.form_story_too_long_note.startswith("La Historia de")  # one, by its hour
+    assert "1 min 5 s" in state.form_story_too_long_note
+    assert state.form_story_unknown_note == planner_vm_mod.STORY_UNKNOWN_NOTE
 
 
 def test_a_piece_without_a_destination_cannot_go_on() -> None:

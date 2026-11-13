@@ -280,6 +280,8 @@ def test_the_piece_is_ready_in_list_schedulable_and_the_gallery() -> None:
     )
     assert photo.media_product_type == "IMAGE" and photo.title == "Shawarma mixto 🌯"
     assert clip.is_publishable and clip.media_types == ("VIDEO",)
+    # m-25026481: the stored length reaches the selector's rule; an image has none
+    assert (clip.video_seconds, photo.video_seconds) == (14.2, None)
     assert clip.media_product_type == "REELS" and clip.video_object_key is not None
     assert photo.thumbnail_url is not None and photo.thumbnail_url.startswith(
         f"t/{world.tenant_id}/uploads/"
