@@ -1051,8 +1051,12 @@ class EventCardVM:
     # m-25019217: the publication on Instagram («Ver en Instagram», new tab) — only for a
     # published event whose attempt recorded a permalink (`instagram_link`), "" otherwise.
     permalink: str = ""
-    # m-25026241: published events of one account in one minute share this key
-    # (`minute_group_key`); "" for an event that is never grouped (not published).
+    # m-25026486: the time in two whole tokens for the narrow calendar chip — «9:33» and
+    # «a. m.» (`time_label` split once); the chip drops the suffix, never cuts a token.
+    time_hm: str = ""
+    time_suffix: str = ""
+    # m-25026486: the published events of one batch share this key
+    # (`batch_group_keys`); "" for an event that is not in a batch of two or more.
     group_key: str = ""
 
 
@@ -1060,7 +1064,7 @@ class EventCardVM:
 class EventGroupVM:
     """m-25026241: one entry of a day (list view) or an hour cell (calendar) — a lone
     event (`is_group` False, `cards` = [it]) or the published events of one account in
-    one minute, shown folded as «2:12 a. m. · 9 publicaciones» (`group_entries`)."""
+    one batch (`batch_group_keys`), shown folded as «1:17 – 1:20 a. m. · 9 publicaciones»."""
 
     key: str
     is_group: bool
@@ -1089,7 +1093,7 @@ class DayColumnVM:
     is_past: bool
     count: int
     cards: list[EventCardVM] = field(default_factory=list)
-    #: m-25026241: `cards` with same-minute publications folded (`group_entries`).
+    #: m-25026241: `cards` with batches folded (`group_entries`).
     #: Not `entries`: a Reflex object var already has an `.entries()` method.
     groups: list[EventGroupVM] = field(default_factory=list)
 
@@ -1107,7 +1111,7 @@ class HourCellVM:
     more: list[EventCardVM] = field(default_factory=list)
     more_count: int = 0
     heading: str = ""  # «Mar 6 · 6 p. m.» — the subtitle of that list
-    #: m-25026241: the first `CELL_VISIBLE` entries (a same-minute group counts as one);
+    #: m-25026241: the first `CELL_VISIBLE` entries (a batch counts as one);
     #: the events of the entries after them are `more`.
     visible_entries: list[EventGroupVM] = field(default_factory=list)
 
@@ -1441,7 +1445,9 @@ def build_card(
     return EventCardVM(
         event_id=item.event_id,
         post_id=item.post_id,
-        time_label=time_label_12h(local),
+        time_label=(when := time_label_12h(local)),
+        time_hm=when.partition(" ")[0],
+        time_suffix=when.partition(" ")[2],
         title=item.post_title if item.post_title is not None else "Publicación no disponible",
         caption_excerpt=item.caption_excerpt,
         thumbnail_url=item.thumbnail_url or "",
@@ -1478,19 +1484,64 @@ def build_card(
 
 CELL_VISIBLE = 5
 
-# -- m-25026241: same-minute publications fold into one row -----------------------------
+# -- m-25026241 / m-25026486: a batch of publications folds into one row --------------
 
 #: How many thumbnails a folded row shows before «+N» (they fit at 375 px).
 GROUP_PREVIEW = 4
 
 
-def minute_group_key(scheduled_at: datetime, connection_id: str) -> str:
-    """THE rule for «went out together»: the same account, the same minute — 2:12:05 and
-    2:12:55 share a key, 2:12:59 and 2:13:01 do not. Keyed on the UTC minute (review
-    m-25026241): every zone's offset is whole minutes, so it is the minute the calendar
-    shows, and on a night the clocks go back the two «1:30 a. m.» stay apart. Callers
-    give it only published events."""
-    return f"{scheduled_at.astimezone(UTC):%Y-%m-%dT%H:%MZ}|{connection_id}"
+#: m-25026486: a publication joins the batch of the previous one (same account, same
+#: displayed day) when it went out at most this long after it — a chain, so a mural
+#: staged over several minutes stays one batch (founder 2026-11-14).
+BATCH_GAP = timedelta(minutes=15)
+
+
+@dataclass(frozen=True)
+class BatchInput:
+    """What the batch rule reads of one event."""
+
+    event_id: str
+    scheduled_at: datetime  # aware
+    connection_id: str
+    status: str
+
+
+def batch_group_keys(events: Iterable[BatchInput], zone: ZoneInfo) -> dict[str, str]:
+    """THE grouping rule (m-25026486): `published` events of one account on one
+    DISPLAYED day (`zone`, the calendar's) form a batch while each went out at most
+    `BATCH_GAP` after the previous one. Returns event id → batch key, only for batches of
+    two or more; scheduled / publishing / failed events and lone publications get none.
+
+    The key is the account plus the UTC second of the batch's FIRST event: stable across
+    reloads (`open_groups` keeps working); a publication that joins at the end keeps it,
+    one that lands before the first (or bridges two batches) starts a new key — that
+    group shows folded again. One sort per day and account, one walk."""
+    buckets: dict[tuple[date, str], list[BatchInput]] = {}
+    for event in events:
+        if event.status != "published":
+            continue
+        day = event.scheduled_at.astimezone(zone).date()
+        # in UTC: two datetimes sharing a zone subtract by wall time (a DST night lies)
+        utc = replace(event, scheduled_at=event.scheduled_at.astimezone(UTC))
+        buckets.setdefault((day, event.connection_id), []).append(utc)
+    keys: dict[str, str] = {}
+    for (_day, connection_id), members in buckets.items():
+        members.sort(key=lambda e: (e.scheduled_at, e.event_id))
+        batch: list[BatchInput] = []
+        for event in [*members, None]:
+            if (
+                event is not None
+                and batch
+                and event.scheduled_at - batch[-1].scheduled_at <= BATCH_GAP
+            ):
+                batch.append(event)
+                continue
+            if len(batch) > 1:
+                first = batch[0].scheduled_at.astimezone(UTC)
+                key = f"{first:%Y-%m-%dT%H:%M:%SZ}|{connection_id}"
+                keys.update((e.event_id, key) for e in batch)
+            batch = [event] if event is not None else []
+    return keys
 
 
 #: The id of an event card's «⋯» button (`planner_page._card_menu`).
@@ -1498,12 +1549,17 @@ MENU_ID_PREFIX = "q-ev-menu-"
 
 
 def menu_focus_script(event_id: str) -> str:
-    """Give the focus back to an event card's «⋯» once its panel closed (after Radix's
-    own focus return, hence the timeout). Nothing when the card is not on screen."""
+    """Give the focus back to an event card's «⋯» once its panel closed. Radix returns
+    the focus itself when the closing animation ends (to <body>, the menu that opened the
+    panel being gone), so this tries again after it — only while the focus is still
+    lost, never stealing it from where the owner already moved. Nothing when the card
+    is not on screen."""
     safe = "".join(ch for ch in event_id if ch.isalnum() or ch == "-")
     return (
-        "setTimeout(function () { var e = document.getElementById("
-        f"'{MENU_ID_PREFIX}{safe}'); if (e) {{ e.focus(); }} }}, 50);"
+        "[60, 250, 500].forEach(function (ms) { setTimeout(function () { "
+        f"var e = document.getElementById('{MENU_ID_PREFIX}{safe}'); "
+        "var a = document.activeElement; "
+        "if (e && (!a || a === document.body)) { e.focus(); } }, ms); });"
     )
 
 
@@ -1533,8 +1589,20 @@ def prune_open_groups(
 
 
 def group_label(time_label: str, count: int) -> str:
-    """«2:12 a. m. · 9 publicaciones» — a group has two or more, never one."""
+    """«1:17 – 1:20 a. m. · 9 publicaciones» — a group has two or more, never one."""
     return f"{time_label} · {count} publicaciones"
+
+
+def time_range_label(first: str, last: str) -> str:
+    """A batch's time, from the cards' own labels: one time when every publication shares
+    the displayed minute, else a range — «1:17 – 1:20 a. m.», or with both halves of the
+    day «11:50 a. m. – 12:05 p. m.»."""
+    if first == last:
+        return first
+    first_hm, _, first_suffix = first.partition(" ")
+    if first_suffix and first_suffix == last.partition(" ")[2]:
+        return f"{first_hm} – {last}"
+    return f"{first} – {last}"
 
 
 def group_entries(cards: Sequence[EventCardVM]) -> list[EventGroupVM]:
@@ -1567,18 +1635,19 @@ def group_entries(cards: Sequence[EventCardVM]) -> list[EventGroupVM]:
             continue
         placed.add(card.group_key)
         count = len(group)
+        when = time_range_label(group[0].time_label, group[-1].time_label)
         entries.append(
             EventGroupVM(
                 key=card.group_key,
                 is_group=True,
                 count=count,
-                time_label=card.time_label,
-                label=group_label(card.time_label, count),
-                chip_label=f"{count} publicaciones · {card.time_label}",
+                time_label=when,
+                label=group_label(when, count),
+                chip_label=f"{count} publicaciones",
                 aria_label=(
-                    f"{group_label(card.time_label, count)} en {card.account_label}"
+                    f"{group_label(when, count)} en {card.account_label}"
                     if card.account_label
-                    else group_label(card.time_label, count)
+                    else group_label(when, count)
                 ),
                 cards=list(group),
                 preview=list(group[:GROUP_PREVIEW]),
@@ -1589,12 +1658,19 @@ def group_entries(cards: Sequence[EventCardVM]) -> list[EventGroupVM]:
 
 
 def _cell(
-    *, day_iso: str, hour: int, is_today: bool, is_past: bool, cards, heading: str = ""
+    *,
+    day_iso: str,
+    hour: int,
+    is_today: bool,
+    is_past: bool,
+    entries: Sequence[EventGroupVM],
+    heading: str = "",
 ) -> HourCellVM:
-    """A calendar cell: all its cards (in time order), and the split the grid draws —
-    the first `CELL_VISIBLE`, then the rest behind «+N más»."""
-    cards = list(cards)
-    entries = group_entries(cards)
+    """A calendar cell: its entries (the day's groups that START in this hour, m-25026486
+    — a batch running into the next hour is not drawn there again), and the split the
+    grid draws — the first `CELL_VISIBLE`, then the rest behind «+N más»."""
+    entries = list(entries)
+    cards = [card for entry in entries for card in entry.cards]
     shown = entries[:CELL_VISIBLE]
     more = [card for entry in entries[CELL_VISIBLE:] for card in entry.cards]
     return HourCellVM(
@@ -1622,22 +1698,31 @@ def build_week(
     (calendar view). Cards are chronological everywhere. An event outside the week is
     ignored (the service already filters)."""
     week_days = [monday + timedelta(days=i) for i in range(7)]
+    in_week = [item for item in items if item.scheduled_at.astimezone(zone).date() in week_days]
+    # m-25026486: the batches of what went out (`batch_group_keys`, the one rule)
+    batch_keys = batch_group_keys(
+        (BatchInput(i.event_id, i.scheduled_at, i.connection_id, i.status) for i in in_week),
+        zone,
+    )
     by_day: dict[date, list[tuple[datetime, EventCardVM]]] = {d: [] for d in week_days}
-    by_cell: dict[tuple[int, date], list[tuple[datetime, EventCardVM]]] = {}
-    for item in items:
+    row_of: dict[str, int] = {}
+    for item in in_week:
         local = item.scheduled_at.astimezone(zone)
-        if local.date() not in by_day:
-            continue
         card = build_card(item, zone=zone, connections=connections)
-        if item.status == "published":  # m-25026241: only what went out is grouped
-            card = replace(card, group_key=minute_group_key(item.scheduled_at, item.connection_id))
+        if item.event_id in batch_keys:
+            card = replace(card, group_key=batch_keys[item.event_id])
         by_day[local.date()].append((item.scheduled_at, card))
-        by_cell.setdefault((hour_row_for(local.hour), local.date()), []).append(
-            (item.scheduled_at, card)
-        )
+        row_of[item.event_id] = hour_row_for(local.hour)
 
     def ordered(pairs: list[tuple[datetime, EventCardVM]]) -> list[EventCardVM]:
         return [card for _, card in sorted(pairs, key=lambda pair: pair[0])]
+
+    day_groups = {d: group_entries(ordered(by_day[d])) for d in week_days}
+    # a group sits in the hour cell of its FIRST publication, once
+    by_cell: dict[tuple[int, date], list[EventGroupVM]] = {}
+    for d, groups in day_groups.items():
+        for entry in groups:
+            by_cell.setdefault((row_of[entry.cards[0].event_id], d), []).append(entry)
 
     days = [
         DayColumnVM(
@@ -1648,8 +1733,8 @@ def build_week(
             is_today=d == today,
             is_past=d < today,
             count=len(by_day[d]),
-            cards=(day_cards := ordered(by_day[d])),
-            groups=group_entries(day_cards),
+            cards=ordered(by_day[d]),
+            groups=day_groups[d],
         )
         for d in week_days
     ]
@@ -1663,7 +1748,7 @@ def build_week(
                     hour=key,
                     is_today=d == today,
                     is_past=d < today,
-                    cards=ordered(by_cell.get((key, d), [])),
+                    entries=by_cell.get((key, d), []),
                     heading=f"{_WEEKDAYS[d.weekday()]} {d.day} · {hour_row_label(key)}",
                 )
                 for d in week_days

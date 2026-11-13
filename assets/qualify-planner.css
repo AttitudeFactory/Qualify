@@ -946,7 +946,20 @@
   box-shadow: inset 0 0 0 1px var(--accent-a6);
 }
 /* m-25026241: a same-minute group's chip — one line, the label yields (ellipsis). */
-.q-cell-group.rt-Button { justify-content: flex-start; min-width: 0; overflow: hidden; white-space: nowrap; }
+.q-cell-group.rt-Button { justify-content: flex-start; min-width: 0; overflow: hidden; white-space: nowrap; container-type: inline-size; }
+/* m-25026486: never a clipped word. The group chip always shows the stack glyph and the
+   NUMBER; «publicaciones» joins only where it fits whole. */
+.q-chip-count { flex: 0 0 auto; white-space: nowrap; }
+.q-chip-word { display: none; }
+@container (min-width: 10.5rem) { .q-chip-word { display: inline; } }
+/* The single chip's time, whole or not at all: «9:33», « a. m.» where it fits, and
+   nothing at all in the narrowest column (the hour row and the hover card say it). */
+.q-cal-chip { container-type: inline-size; }
+.q-chip-suffix { display: none; }
+@container (min-width: 9.5rem) { .q-chip-suffix { display: inline; } }
+@container (max-width: 6.5rem) {
+  .q-chip-line .q-chip-time, .q-chip-line .q-temp { display: none; }
+}
 
 /* The list «+N más» opens beside it: the events that did not fit, one compact row each. */
 .q-hour-list {
@@ -976,9 +989,9 @@
   display: flex; align-items: center; gap: 3px;
   width: 100%; min-width: 0;
 }
-.q-chip-line .q-chip-time { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.q-chip-line .q-chip-time { flex: 0 0 auto; white-space: nowrap; }
 .q-chip-line > :not(.q-chip-time):not(.q-chip-gap) { flex-shrink: 0; }
-.q-chip-gap { flex: 0 0 1px; }
+.q-chip-gap { flex: 1 1 1px; }
 .q-dest-dot--sm { width: 1rem; height: 1rem; }
 .q-chip-line .q-ch { width: 13px; height: 13px; border-radius: 3px; }
 .q-chip-line .q-temp--mini { padding: 0.1rem 0.22rem; }

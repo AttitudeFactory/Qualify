@@ -1,6 +1,7 @@
-"""m-25026241: publications of one account that went out in the same minute fold into one
-row of «Tu semana» («2:12 a. m. · 9 publicaciones»). The rule (`minute_group_key`) and the
-grouped structure (`group_entries`, `build_week`) are pure view-model code."""
+"""m-25026241 / m-25026486: the publications of one account that went out in one BATCH
+(each at most 15 minutes after the previous one, on one displayed day) fold into one row
+of «Tu semana» («1:17 – 1:20 a. m. · 9 publicaciones»). The rule (`batch_group_keys`) and
+the grouped structure (`group_entries`, `build_week`) are pure view-model code."""
 
 from __future__ import annotations
 
@@ -11,10 +12,12 @@ from .planner_state import PlannerState
 from .planner_vm import (
     CALENDAR_DEFAULT_TZ,
     CELL_VISIBLE,
+    BatchInput,
     CardInput,
+    batch_group_keys,
     build_week,
     group_label,
-    minute_group_key,
+    time_range_label,
 )
 
 ZONE = ZoneInfo(CALENDAR_DEFAULT_TZ)  # the zone the calendar draws in by default
@@ -48,42 +51,107 @@ def _friday(items):
     return next(day for day in week.days if day.iso == "2026-11-13"), week
 
 
-def test_nine_published_in_one_minute_are_one_folded_row() -> None:
-    items = [_item(n, _at(2, 12, n * 5)) for n in range(9)]
-    day, _ = _friday(items)
+def _key(when: datetime, conn: str = "ig1") -> str:
+    """The key a batch starting at `when` gets (account + UTC second of its first)."""
+    return f"{when.astimezone(UTC):%Y-%m-%dT%H:%M:%SZ}|{conn}"
+
+
+def test_the_real_mural_over_four_minutes_is_one_group_of_nine() -> None:
+    """The founder's mural (2026-11-14): nine settled 05:17:34 … 05:20:01 UTC."""
+    base = datetime(2026, 11, 13, 5, 17, 34, tzinfo=UTC)
+    gaps = [0, 21, 17, 19, 16, 18, 15, 20, 21]  # seconds after the previous one
+    times, t = [], base
+    for gap in gaps:
+        t += timedelta(seconds=gap)
+        times.append(t)
+    assert times[-1] == datetime(2026, 11, 13, 5, 20, 1, tzinfo=UTC)
+    day, _ = _friday([_item(n, when) for n, when in enumerate(times)])
     assert day.count == 9  # the day still counts every publication
-    assert len(day.cards) == 9
     (entry,) = day.groups
     assert entry.is_group and entry.count == 9
-    assert entry.label == "2:12 a. m. · 9 publicaciones"
-    assert entry.aria_label == "2:12 a. m. · 9 publicaciones en @bianki"
+    assert entry.key == _key(base)
+    assert entry.label == "1:17 – 1:20 a. m. · 9 publicaciones"  # Caracas, UTC−4
+    assert entry.aria_label == "1:17 – 1:20 a. m. · 9 publicaciones en @bianki"
     assert [c.event_id for c in entry.cards] == [f"e{n}" for n in range(9)]
     assert len(entry.preview) == 4 and entry.preview_more == 5
 
 
-def test_scheduled_events_in_one_minute_are_never_grouped() -> None:
-    items = [_item(n, _at(18, 0), status="scheduled") for n in range(3)]
-    items += [_item(9, _at(18, 0), status="failed")]
+def test_fifteen_minutes_apart_join_sixteen_do_not() -> None:
+    day, _ = _friday([_item(1, _at(9, 0)), _item(2, _at(9, 15))])
+    assert [(g.is_group, g.count) for g in day.groups] == [(True, 2)]
+    day, _ = _friday([_item(1, _at(9, 0)), _item(2, _at(9, 16))])
+    assert [g.is_group for g in day.groups] == [False, False]
+
+
+def test_a_long_chain_is_one_group_with_its_range() -> None:
+    times = [_at(10, 0) + timedelta(minutes=14 * n) for n in range(8)]  # 10:00 … 11:38
+    day, week = _friday([_item(n, when) for n, when in enumerate(times)])
+    (entry,) = day.groups
+    assert entry.count == 8 and entry.label == "10:00 – 11:38 a. m. · 8 publicaciones"
+    # the group sits once, in the hour cell of its FIRST publication
+    cells = [c for row in week.rows for c in row.cells if c.day_iso == "2026-11-13" and c.cards]
+    assert len(cells) == 1 and cells[0].hour == 10 and len(cells[0].cards) == 8
+
+
+def test_the_range_reads_like_the_app_times() -> None:
+    assert time_range_label("1:17 a. m.", "1:20 a. m.") == "1:17 – 1:20 a. m."
+    assert time_range_label("11:50 a. m.", "12:05 p. m.") == "11:50 a. m. – 12:05 p. m."
+    assert time_range_label("2:12 a. m.", "2:12 a. m.") == "2:12 a. m."
+    day, _ = _friday([_item(n, _at(2, 12, n * 5)) for n in range(3)])
+    assert day.groups[0].label == "2:12 a. m. · 3 publicaciones"  # one minute: one time
+
+
+def test_a_batch_across_the_displayed_midnight_is_one_group_per_day() -> None:
+    late = datetime(2026, 11, 13, 23, 50, tzinfo=ZONE)
+    times = [late + timedelta(minutes=5 * n) for n in range(4)]  # 23:50 23:55 | 00:00 00:05
+    week = build_week(
+        monday=MONDAY,
+        today=date(2026, 11, 13),
+        zone=ZONE,
+        items=[_item(n, when.astimezone(UTC)) for n, when in enumerate(times)],
+        connections=CONNECTIONS,
+    )
+    friday = next(d for d in week.days if d.iso == "2026-11-13")
+    saturday = next(d for d in week.days if d.iso == "2026-11-14")
+    assert [(g.is_group, g.count) for g in friday.groups] == [(True, 2)]
+    assert [(g.is_group, g.count) for g in saturday.groups] == [(True, 2)]
+    assert friday.groups[0].key != saturday.groups[0].key
+    assert str(ZONE) != "UTC"
+
+
+def test_scheduled_publishing_and_failed_are_never_grouped() -> None:
+    items = [_item(n, _at(18, n), status="scheduled") for n in range(3)]
+    items += [_item(8, _at(18, 4), status="publishing"), _item(9, _at(18, 5), status="failed")]
     day, _ = _friday(items)
-    assert [e.is_group for e in day.groups] == [False] * 4
+    assert [g.is_group for g in day.groups] == [False] * 5
+    keys = batch_group_keys(
+        [BatchInput(f"x{n}", _at(18, n), "ig1", "scheduled") for n in range(3)], ZONE
+    )
+    assert keys == {}
 
 
-def test_one_minute_on_two_accounts_is_two_groups() -> None:
+def test_two_accounts_never_mix() -> None:
     items = [_item(n, _at(2, 12, n), conn="ig1") for n in range(3)]
     items += [_item(10 + n, _at(2, 12, 10 + n), conn="ig2") for n in range(2)]
     day, _ = _friday(items)
-    assert [(e.is_group, e.count) for e in day.groups] == [(True, 3), (True, 2)]
+    assert [(g.is_group, g.count) for g in day.groups] == [(True, 3), (True, 2)]
     assert day.groups[1].aria_label.endswith("@polette")
 
 
-def test_the_minute_is_the_calendars() -> None:
-    same = minute_group_key(_at(2, 12, 5), "ig1")
-    assert same == minute_group_key(_at(2, 12, 55), "ig1")
-    assert minute_group_key(_at(2, 12, 59), "ig1") != minute_group_key(_at(2, 13, 1), "ig1")
-    day, _ = _friday([_item(1, _at(2, 12, 59)), _item(2, _at(2, 13, 1))])
-    assert [e.is_group for e in day.groups] == [False, False]
-    # the key is the UTC minute: the same minute the calendar draws (whole-minute offsets)
-    assert minute_group_key(_at(2, 12, 5), "ig1") == f"{_at(2, 12):%Y-%m-%dT%H:%MZ}|ig1"
+def test_the_key_stays_when_a_publication_joins_at_the_end() -> None:
+    two = batch_group_keys(
+        [BatchInput(f"e{n}", _at(9, 5 * n), "ig1", "published") for n in range(2)], ZONE
+    )
+    three = batch_group_keys(
+        [BatchInput(f"e{n}", _at(9, 5 * n), "ig1", "published") for n in range(3)], ZONE
+    )
+    assert set(two.values()) == set(three.values()) == {_key(_at(9, 0))}
+    earlier = batch_group_keys(
+        [BatchInput("z", _at(8, 50), "ig1", "published")]
+        + [BatchInput(f"e{n}", _at(9, 5 * n), "ig1", "published") for n in range(2)],
+        ZONE,
+    )
+    assert set(earlier.values()) == {_key(_at(8, 50))}  # a new first: a new key
 
 
 def test_a_lone_publication_renders_as_before() -> None:
@@ -97,18 +165,23 @@ def test_a_lone_publication_renders_as_before() -> None:
 
 def test_a_group_takes_one_place_in_the_calendar_cell() -> None:
     items = [_item(n, _at(2, 12, n)) for n in range(9)]
+    # five scheduled in the same hour (never grouped), then one more batch event in the
+    # NEXT hour that belongs to the 2:12 batch: drawn in 2 a. m., not again in 3 a. m.
     items += [_item(20 + n, _at(2, 30 + n), status="scheduled") for n in range(CELL_VISIBLE)]
+    items += [_item(30, _at(2, 12, 30) + timedelta(minutes=14))]  # 2:26:30, joins
     _, week = _friday(items)
-    cell = next(c for row in week.rows for c in row.cells if c.day_iso == "2026-11-13" and c.cards)
-    assert len(cell.cards) == 9 + CELL_VISIBLE
-    assert cell.visible_entries[0].is_group and cell.visible_entries[0].count == 9
+    friday = [c for row in week.rows for c in row.cells if c.day_iso == "2026-11-13" and c.cards]
+    (cell,) = friday
+    assert cell.hour == 2
+    assert len(cell.cards) == 10 + CELL_VISIBLE
+    assert cell.visible_entries[0].is_group and cell.visible_entries[0].count == 10
     assert len(cell.visible_entries) == CELL_VISIBLE
     assert cell.more_count == 1  # the last scheduled one, behind «+1 más»
 
 
 def test_the_state_only_remembers_which_groups_are_open() -> None:
     state = PlannerState()
-    key = minute_group_key(_at(2, 12), "ig1")
+    key = _key(_at(2, 12))
     state.toggle_group(key)
     assert state.open_groups == [key]
     state.toggle_group(key)
@@ -135,41 +208,15 @@ def rx_var(entry):  # noqa: ANN001, ANN201
     return rx.Var.create(entry)
 
 
-def test_nothing_else_moves_by_a_day_far_from_the_minute() -> None:
-    later = _at(2, 12) + timedelta(days=1)
-    day, week = _friday([_item(1, _at(2, 12)), _item(2, later)])
-    assert day.count == 1
-    saturday = next(d for d in week.days if d.iso == "2026-11-14")
-    assert saturday.count == 1 and not saturday.groups[0].is_group
-
-
-def test_a_night_the_clocks_go_back_keeps_both_half_past_ones_apart() -> None:
-    """Review m-25026241: two «1:30 a. m.» an hour apart (DST ends) are two minutes."""
-    ny = ZoneInfo("America/New_York")
-    first = datetime(2026, 11, 1, 1, 30, 10, tzinfo=ny, fold=0)
-    second = datetime(2026, 11, 1, 1, 30, 10, tzinfo=ny, fold=1)
-    assert f"{first:%H:%M}" == f"{second:%H:%M}"  # same wall-clock minute…
-    assert minute_group_key(first, "ig1") != minute_group_key(second, "ig1")  # …two keys
-    week = build_week(
-        monday=date(2026, 10, 26),
-        today=date(2026, 11, 1),
-        zone=ny,
-        items=[_item(1, first.astimezone(UTC)), _item(2, second.astimezone(UTC))],
-        connections=CONNECTIONS,
-    )
-    sunday = next(d for d in week.days if d.iso == "2026-11-01")
-    assert [g.is_group for g in sunday.groups] == [False, False]
-
-
 def test_open_groups_are_pruned_and_capped() -> None:
     from .planner_vm import OPEN_GROUPS_MAX, prune_open_groups  # noqa: PLC0415
 
-    here = minute_group_key(_at(2, 12), "ig1")
-    gone = minute_group_key(_at(3, 0), "ig1")
-    other_week = minute_group_key(_at(2, 12) - timedelta(days=14), "ig1")
+    here = _key(_at(2, 12))
+    gone = _key(_at(3, 0))
+    other_week = _key(_at(2, 12) - timedelta(days=14))
     kept = prune_open_groups([other_week, here, gone, "junk"], [here], MONDAY)
     assert kept == [other_week, here]
-    many = [minute_group_key(_at(2, 0) - timedelta(days=30 + n), "ig1") for n in range(80)]
+    many = [_key(_at(2, 0) - timedelta(days=30 + n)) for n in range(80)]
     assert len(prune_open_groups(many, [], MONDAY)) == OPEN_GROUPS_MAX
 
 
@@ -178,15 +225,9 @@ def test_logout_and_a_business_switch_forget_the_open_groups() -> None:
 
     assert PlannerState in business_state_classes()  # reset() there on logout/switch
     state = PlannerState()
-    state.toggle_group(minute_group_key(_at(2, 12), "ig1"))
+    state.toggle_group(_key(_at(2, 12)))
     state.reset()
     assert state.open_groups == []
-
-
-def test_a_group_chip_is_one_short_line() -> None:
-    day, _ = _friday([_item(n, _at(7, 24, n)) for n in range(9)])
-    assert day.groups[0].chip_label == "9 publicaciones · 7:24 a. m."
-    assert day.groups[0].label == "7:24 a. m. · 9 publicaciones"
 
 
 def test_closing_the_panel_gives_the_focus_back_to_the_cards_menu() -> None:
@@ -200,3 +241,29 @@ def test_closing_the_panel_gives_the_focus_back_to_the_cards_menu() -> None:
     events = state.set_detail_open(False)
     assert events is not None and len(events) == 2
     assert MENU_ID_PREFIX + "abc-123" in str(events[1])
+
+
+def test_the_desktop_chip_never_clips_a_word() -> None:
+    """The chip carries the number and the word in separate spans (the CSS hides the
+    word whole when the column is narrow); the single chip, its time in whole tokens."""
+    from .planner_page import _calendar_chip, _group_chip  # noqa: PLC0415
+
+    day, _ = _friday([_item(n, _at(7, 24, n)) for n in range(9)] + [_item(50, _at(9, 33))])
+    group, lone = day.groups
+    chip = str(_group_chip(rx_var(group)))
+    assert "q-chip-count" in chip and "q-chip-word" in chip
+    assert lone.cards[0].time_hm == "9:33" and lone.cards[0].time_suffix == "a. m."
+    single = str(_calendar_chip(rx_var(lone.cards[0])))
+    assert "q-chip-hm" in single and "q-chip-suffix" in single
+
+
+def test_a_night_the_clocks_go_back_is_still_judged_by_real_time() -> None:
+    """Two «1:30 a. m.» an hour apart (DST ends in New York): 60 minutes, two lone ones."""
+    ny = ZoneInfo("America/New_York")
+    first = datetime(2026, 11, 1, 1, 30, 10, tzinfo=ny, fold=0)
+    second = datetime(2026, 11, 1, 1, 30, 10, tzinfo=ny, fold=1)
+    keys = batch_group_keys(
+        [BatchInput("a", first, "ig1", "published"), BatchInput("b", second, "ig1", "published")],
+        ny,
+    )
+    assert keys == {}

@@ -266,7 +266,15 @@ def _calendar_chip(event) -> rx.Component:
         # and three glyphs, not a thumbnail too. The time gives way first (ellipsis);
         # the glyphs never shrink.
         rx.box(
-            rx.text(event.time_label, size="1", weight="bold", class_name="q-nums q-chip-time"),
+            # m-25026486: the time whole or not at all — «9:33», then « a. m.» only where
+            # it fits (`.q-cal-chip` container query); never cut mid-token.
+            rx.text(
+                rx.el.span(event.time_hm, class_name="q-chip-hm"),
+                rx.el.span(" " + event.time_suffix, class_name="q-chip-suffix"),
+                size="1",
+                weight="bold",
+                class_name="q-nums q-chip-time",
+            ),
             # The event's state by glyph (the word is in the hover card and the name):
             # ✓ published, ✕ failed, ⚠ pending / expired / not ready.
             rx.match(
@@ -441,7 +449,7 @@ def _more_pill(cell) -> rx.Component:
 
 
 def _group_chip(entry) -> rx.Component:
-    """m-25026241 (calendar): the published events of one account in one minute as ONE
+    """m-25026241 (calendar): the published events of one account in one batch (m-25026486) as ONE
     chip — «2:12 a. m. · 9 publicaciones» — that opens, right beside it, their rows
     (the same list «+N más» opens); each row opens the event's panel. Radix gives the
     trigger its keyboard and `aria-expanded`."""
@@ -449,12 +457,17 @@ def _group_chip(entry) -> rx.Component:
         rx.popover.root(
             rx.popover.trigger(
                 rx.button(
-                    # One line (review m-25026241): the count first — the hour row already
-                    # says the hour, so the time is what the ellipsis takes — then the
+                    # m-25026486: never a clipped word — the stack glyph and the NUMBER
+                    # always fit; «publicaciones» shows only where the chip is wide
+                    # enough for it whole (`.q-cell-group` container query). Then the
                     # same ✓ and network glyphs a single chip carries (never colour alone).
                     rx.box(
                         rx.icon("layers", size=12, flex_shrink="0"),
-                        rx.text(entry.chip_label, as_="span", class_name="q-chip-time"),
+                        rx.el.span(
+                            rx.el.span(entry.count.to_string(), class_name="q-nums"),
+                            rx.el.span(" publicaciones", class_name="q-chip-word"),
+                            class_name="q-chip-count",
+                        ),
                         rx.icon(
                             "circle-check", size=12, color=T.tone_color("ok", 10), flex_shrink="0"
                         ),
@@ -716,7 +729,7 @@ def _strip_thumb(card) -> rx.Component:
 
 
 def _list_group(entry) -> rx.Component:
-    """m-25026241 (list): what went out together from one account in one minute, folded
+    """m-25026241 (list): what went out together from one account in one batch (m-25026486), folded
     into one row — its time, a strip of their pictures (then «+N»), how many and where;
     a real button that unfolds the usual cards, each with its own «⋯» menu."""
     is_open = PlannerState.open_groups.contains(entry.key)
