@@ -21,8 +21,11 @@ option B, never written today). `access_state` (`ok` | `missing_permission` |
 id as text, fixed at the first send) is IMMUTABLE: `qualify_app` holds UPDATE on every
 column except `id`, `tenant_id`, `catalog_row_id` and `retailer_id`, so Postgres, not
 discipline, keeps it. `product_id` is `ON DELETE SET NULL`: the row outlives the product so
-its item can still be deleted in Meta. Provenance: `pipeline_version` (the mapping version)
-plus `last_run_id`.
+its item can still be deleted in Meta. That FK is single-column on purpose (`SET NULL` on a
+composite `(product_id, tenant_id)` would null `tenant_id` too, and `brand_products` has no
+`UNIQUE (id, tenant_id)`): that an item never points at another tenant's product rests on
+the service reading products through `tenant_session` (`store.load_products`).
+Provenance: `pipeline_version` (the mapping version) plus `last_run_id`.
 
 **`whatsapp_catalog_sync_runs`** — one per `items_batch` call (the outbox). Idempotency:
 `UNIQUE (tenant_id, request_key)`, the service inserts with `ON CONFLICT DO NOTHING`.

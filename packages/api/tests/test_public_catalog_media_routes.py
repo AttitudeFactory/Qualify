@@ -57,7 +57,7 @@ def harness(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, _Lookup]:
     lookup = _Lookup()
     app = create_app(configure_production=False)
     app.dependency_overrides[routes.get_catalog_media_lookup] = lambda: lookup
-    app.dependency_overrides[routes.get_catalog_media_gate] = lambda: ObjectGate(store)
+    app.dependency_overrides[routes.get_catalog_media_gate] = lambda: lambda: ObjectGate(store)
     return TestClient(app), lookup
 
 
@@ -139,3 +139,20 @@ def test_an_unusable_secret_answers_404(
     monkeypatch.setenv(media_url.SECRET_ENV, secret)
     assert _not_found(client, path) == b'{"detail":"not found"}'
     assert lookup.calls == []
+
+
+def test_a_gate_that_cannot_be_built_is_the_same_404_and_only_after_the_signature(
+    harness: tuple[TestClient, _Lookup],
+) -> None:
+    client, _ = harness
+    built: list[int] = []
+
+    def broken_gate() -> ObjectGate:
+        built.append(1)
+        raise KeyError("QUALIFY_R2_BUCKET")  # what a missing R2 setting raises
+
+    client.app.dependency_overrides[routes.get_catalog_media_gate] = lambda: broken_gate  # type: ignore[attr-defined]
+    _not_found(client, _path(TENANT, MEDIA, "x" * 43))
+    assert built == []  # a bad signature never builds the gate
+    assert _not_found(client, _path(TENANT, MEDIA)) == b'{"detail":"not found"}'
+    assert built == [1]

@@ -21,7 +21,12 @@ from qualify_api.whatsapp.catalog_sync.client import (
     parse_batch_ack,
     parse_batch_status,
 )
-from qualify_api.whatsapp.catalog_sync.worker import classify, poll_wait, transient_wait
+from qualify_api.whatsapp.catalog_sync.worker import (
+    classify,
+    poll_error_wait,
+    poll_wait,
+    transient_wait,
+)
 from qualify_api.whatsapp.client import WhatsAppApiError
 
 TOKEN = "SUPER_SECRET_WA_SYSTEM_USER_TOKEN"
@@ -158,6 +163,10 @@ async def test_fake_client_scripts_answers_and_records_requests() -> None:
     [
         (WhatsAppApiError("x", status=400, code=80014), "rate_limited"),
         (WhatsAppApiError("x", status=400, code=80009), "rate_limited"),
+        (WhatsAppApiError("x", status=400, code=4), "rate_limited"),
+        (WhatsAppApiError("x", status=400, code=17), "rate_limited"),
+        (WhatsAppApiError("x", status=400, code=32), "rate_limited"),
+        (WhatsAppApiError("x", status=400, code=613), "rate_limited"),
         (WhatsAppApiError("x", status=401), "auth_error"),
         (WhatsAppApiError("x", status=400, code=190), "auth_error"),
         (WhatsAppApiError("x", status=403, code=200), "missing_permission"),
@@ -185,3 +194,6 @@ def test_backoff_tables() -> None:
     assert poll_wait(timedelta(minutes=4)) == timedelta(minutes=2)
     assert poll_wait(timedelta(minutes=10)) == timedelta(minutes=5)
     assert poll_wait(timedelta(hours=3)) == timedelta(minutes=10)
+    assert poll_error_wait(timedelta(seconds=31)) == timedelta(seconds=30)
+    assert poll_error_wait(timedelta(minutes=40)) == timedelta(minutes=20)
+    assert poll_error_wait(timedelta(hours=5)) == timedelta(minutes=60)

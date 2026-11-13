@@ -586,3 +586,137 @@ def test_photo_lookup_only_for_live_items_of_the_tenant(ids: dict[str, UUID]) ->
             .values(state="deleted")
         )
     assert lookup_catalog_media(TENANT, media_id) is None
+
+
+# --- review fixes: bounded retries, stale reclaim, lost claim -----------------------------
+
+
+def _set_run(run_id: UUID, **values: object) -> None:
+    with tenant_session(TENANT) as session:
+        session.execute(
+            update(WhatsAppCatalogSyncRun)
+            .where(WhatsAppCatalogSyncRun.id == run_id)
+            .values(**values)
+        )
+
+
+async def test_a_rejected_status_poll_fails_the_run_at_once(ids: dict[str, UUID]) -> None:
+    fake = FakeWhatsAppCatalogClient(statuses=[WhatsAppApiError("x", status=400, code=100)])
+    clock = _Clock()
+    run_id = await _sent_run(ids, fake, clock)
+    clock.advance(seconds=31)
+    await _tick(TENANT, fake, clock).run_once()
+    run = _run(TENANT, run_id)
+    assert (run.status, run.error_code, run.meta_error_code) == ("failed", "meta_error", 100)
+    with tenant_session(TENANT) as session:
+        item = session.scalar(
+            select(WhatsAppCatalogItem).where(WhatsAppCatalogItem.last_run_id == run_id)
+        )
+        assert item is not None
+        assert (item.state, item.error_code) == ("error", "meta_unconfirmed")
+
+
+async def test_transient_poll_errors_back_off(ids: dict[str, UUID]) -> None:
+    fake = FakeWhatsAppCatalogClient(statuses=[WhatsAppApiError("x", status=503)])
+    clock = _Clock()
+    run_id = await _sent_run(ids, fake, clock)
+    clock.advance(hours=2)
+    await _tick(TENANT, fake, clock).run_once()
+    run = _run(TENANT, run_id)
+    assert run.status == "sent"
+    assert run.next_attempt_at >= clock.now + timedelta(minutes=60)
+
+
+async def test_a_throttle_code_is_waited_out_not_failed(ids: dict[str, UUID]) -> None:
+    fake = FakeWhatsAppCatalogClient(acks=[WhatsAppApiError("x", status=400, code=613)])
+    run_id = await _sent_run(ids, fake, _Clock())
+    assert _run(TENANT, run_id).status == "pending"
+
+
+async def test_rate_limits_stop_after_a_day(ids: dict[str, UUID]) -> None:
+    clock = _Clock()
+    product_id, _ = _product(TENANT, ids["brand"], "Shawarma")
+    run_id = _upload(ids, product_id).run_ids[0]
+    _set_run(run_id, requested_at=clock.now - timedelta(hours=23, minutes=50))
+    fake = FakeWhatsAppCatalogClient(acks=[WhatsAppApiError("x", status=400, code=80014)])
+    await _tick(TENANT, fake, clock).run_once()
+    run = _run(TENANT, run_id)
+    assert (run.status, run.error_code) == ("failed", "rate_limited")
+    item = _item(TENANT, ids["catalog"], product_id)
+    assert (item.state, item.error_code) == ("error", "send_failed")
+    # The person can act on it again.
+    assert len(_resync(ids, product_id).run_ids) == 1
+
+
+async def test_a_run_older_than_a_day_is_never_sent(ids: dict[str, UUID]) -> None:
+    clock = _Clock()
+    product_id, _ = _product(TENANT, ids["brand"], "Shawarma")
+    run_id = _upload(ids, product_id).run_ids[0]
+    _set_run(run_id, requested_at=clock.now - timedelta(hours=25))
+    fake = FakeWhatsAppCatalogClient()
+    await _tick(TENANT, fake, clock).run_once()
+    assert (_run(TENANT, run_id).status, fake.sent) == ("failed", [])
+
+
+def _crash_mid_send(run_id: UUID, product_id: UUID, clock: _Clock, attempts: int) -> None:
+    """What a worker that died after its claim committed leaves behind."""
+    _set_run(
+        run_id,
+        status="sending",
+        attempts=attempts,
+        locked_by="dead:1",
+        locked_at=clock.now - timedelta(minutes=11),
+    )
+    with tenant_session(TENANT) as session:
+        session.execute(
+            update(WhatsAppCatalogItem)
+            .where(WhatsAppCatalogItem.product_id == product_id)
+            .values(state="uploading", pending_op="upsert")
+        )
+
+
+async def test_a_stale_sending_claim_is_re_sent(ids: dict[str, UUID]) -> None:
+    clock = _Clock()
+    product_id, _ = _product(TENANT, ids["brand"], "Shawarma")
+    run_id = _upload(ids, product_id).run_ids[0]
+    _crash_mid_send(run_id, product_id, clock, attempts=1)
+    fake = FakeWhatsAppCatalogClient()
+    await _tick(TENANT, fake, clock).run_once()
+    run = _run(TENANT, run_id)
+    assert (run.status, run.attempts, run.locked_by) == ("sent", 2, None)
+    assert len(fake.sent) == 1
+
+
+async def test_a_stale_reclaim_respects_the_attempt_cap(ids: dict[str, UUID]) -> None:
+    clock = _Clock()
+    product_id, _ = _product(TENANT, ids["brand"], "Shawarma")
+    run_id = _upload(ids, product_id).run_ids[0]
+    _crash_mid_send(run_id, product_id, clock, attempts=5)
+    fake = FakeWhatsAppCatalogClient()
+    await _tick(TENANT, fake, clock).run_once()
+    run = _run(TENANT, run_id)
+    assert (run.status, run.error_code, fake.sent) == ("failed", "send_failed", [])
+    item = _item(TENANT, ids["catalog"], product_id)
+    assert (item.state, item.error_code) == ("error", "send_failed")
+
+
+class _StealingClient(FakeWhatsAppCatalogClient):
+    """Another worker re-claims the run while this one waits on Meta."""
+
+    async def items_batch(self, requests):  # noqa: ANN001, ANN201
+        with tenant_session(TENANT) as session:
+            session.execute(
+                update(WhatsAppCatalogSyncRun)
+                .where(WhatsAppCatalogSyncRun.status == "sending")
+                .values(locked_by="other:2")
+            )
+        return await super().items_batch(requests)
+
+
+async def test_a_lost_claim_is_never_settled(ids: dict[str, UUID]) -> None:
+    clock = _Clock()
+    product_id, _ = _product(TENANT, ids["brand"], "Shawarma")
+    run_id = _upload(ids, product_id).run_ids[0]
+    await _tick(TENANT, _StealingClient(), clock).run_once()
+    run = _run(TENANT, run_id)
+    assert (run.status, run.locked_by, run.handle) == ("sending", "other:2", None)

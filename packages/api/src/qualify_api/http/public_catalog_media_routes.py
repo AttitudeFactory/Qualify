@@ -4,8 +4,10 @@ stable, signed URL Meta's catalog fetcher downloads a product's primary photo fr
 Unlike `/public/media/{token}` (a 15-minute Redis token), a catalog image must stay
 fetchable for as long as the item is in the catalog: Meta re-downloads it when it wants.
 So the URL is stable and signed — `catalog_sync.media_url` holds the HMAC — and revoked by
-state instead of by expiry: deleting the photo, removing the item (`deleted`), changing the
-primary photo (the old URL leaves the catalog) or rotating the secret.
+state instead of by expiry: deleting the photo, removing the item (`deleted`) or rotating
+the secret. Changing the primary photo does NOT revoke the old URL on purpose: any image of
+a product with a live item is served, because Meta may keep the old URL until the owner
+resyncs, and a 404 meanwhile would break the picture in WhatsApp (main thread, 2026-11-12).
 
 Order of checks, every failure answering the SAME 404 byte for byte:
 
@@ -14,7 +16,11 @@ Order of checks, every failure answering the SAME 404 byte for byte:
 2. Through `tenant_session(tenant_id)`: a `product_media` image row with that id whose
    product has an item not `deleted` in one of the business's catalogs.
 3. `ObjectGate` opens the object with the tenant-prefix check (`TenantPrefixViolation`) and
-   the object exists (`ObjectNotFound`).
+   the object exists (`ObjectNotFound`). The gate is built only here, after the signature
+   verified (a missing R2 setting is the same 404, never a 500). `_open`, not
+   `_open_unpurged`: a `product_media` key is always `t/{tenant}/uploads/catalog/…`
+   (`catalog/service.py`, the only writer), never a retention-purged piece folder
+   (`t/{tenant}/generated/…`).
 
 The answer: `Content-Type` from the row, `Content-Length`, single ranges like
 `public_media_routes.py`, `Cache-Control: public, max-age=86400` (each file has a new key,
@@ -82,7 +88,11 @@ def get_catalog_media_lookup() -> CatalogMediaLookup:
     return lookup_catalog_media
 
 
-def get_catalog_media_gate() -> ObjectGate:
+GateFactory = Callable[[], ObjectGate]
+
+
+def get_catalog_media_gate() -> GateFactory:
+    """A FACTORY, called only after the signature verified (its failures are the 404)."""
     raise NotImplementedError("object gate dependency is not configured")
 
 
@@ -100,13 +110,13 @@ def _uuid(value: str) -> UUID | None:
 
 
 def _resolve(
-    lookup: CatalogMediaLookup, gate: ObjectGate, tenant_id: UUID, media_id: UUID
+    lookup: CatalogMediaLookup, gate_factory: GateFactory, tenant_id: UUID, media_id: UUID
 ) -> tuple[CatalogMediaTarget, _Opened] | None:
     target = lookup(tenant_id, media_id)
     if target is None:
         return None
     try:
-        return target, _open(gate, tenant_id, target.object_key)
+        return target, _open(gate_factory(), tenant_id, target.object_key)
     except (TenantPrefixViolation, ObjectNotFound):
         return None
 
@@ -118,7 +128,7 @@ async def get_catalog_media(
     filename: str,
     request: Request,
     lookup: CatalogMediaLookup = Depends(get_catalog_media_lookup),
-    gate: ObjectGate = Depends(get_catalog_media_gate),
+    gate_factory: GateFactory = Depends(get_catalog_media_gate),
 ) -> Response:
     tenant = _uuid(tenant_id)
     media = _uuid(media_id)
@@ -128,7 +138,7 @@ async def get_catalog_media(
         return _not_found()
 
     try:
-        found = await asyncio.to_thread(_resolve, lookup, gate, tenant, media)
+        found = await asyncio.to_thread(_resolve, lookup, gate_factory, tenant, media)
     except Exception:  # noqa: BLE001 — any lookup failure is the same 404
         return _not_found()
     if found is None:

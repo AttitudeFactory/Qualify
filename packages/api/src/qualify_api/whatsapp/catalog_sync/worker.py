@@ -17,8 +17,11 @@ service. One pass, per tenant in scope:
 4. **Settle** in a second transaction, guarded by `status` + `locked_by` so a run another
    worker re-claimed is never settled twice.
 
-Errors (§7): 80014/80009 → `pending` +15 min (not counted as an attempt); transport or
-5xx → `pending` after 1, 5, 15, 60 min, `failed` + `send_failed` at the 5th attempt;
+Errors (§7): 80014/80009 and Meta's generic throttles (4, 17, 32, 613) → `pending` +15
+min (not counted as an attempt; a run not sent 24 h after it was requested fails);
+transport or 5xx → `pending` after 1, 5, 15, 60 min, `failed` + `send_failed` at the 5th
+attempt (also on a stale-claim re-send); a failed status poll waits longer each time
+(`poll_error_wait`, ≤ 1 h) and a 4xx on it fails the run at once (`meta_unconfirmed`);
 authorization (`is_auth_error` → `auth_error`; codes 10/200-299 → `missing_permission`) →
 run `failed`, items `no_permission`, `whatsapp_catalogs.access_state` set; any other 4xx →
 `failed` + `send_failed` at once (re-sending the same request cannot fix it).
@@ -29,6 +32,7 @@ product's text.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -37,7 +41,7 @@ from typing import Any, Literal, Protocol
 from uuid import UUID
 
 from qualify_shared.db.session import tenant_session
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.orm import Session
 
 from qualify_api.whatsapp.catalog_sync.client import (
@@ -81,8 +85,18 @@ TRANSIENT_BACKOFF = (
 MAX_ATTEMPTS = 5
 UNCONFIRMED_AFTER = timedelta(hours=24)
 FIRST_POLL = timedelta(seconds=30)
-RATE_LIMIT_CODES = frozenset({80014, 80009})
+#: Catalog limits (80014 batch calls, 80009 status calls) and Meta's generic throttles
+#: (4 app, 17 user, 32 page, 613 call rate): all waited out, never a failure by themselves.
+RATE_LIMIT_CODES = frozenset({80014, 80009, 4, 17, 32, 613})
 MAX_RUNS_PER_TENANT = 10
+#: A run still not sent this long after it was requested is failed (a rate limit that never
+#: lifts must not keep its items `queued` forever: the person could never resync them).
+MAX_RUN_AGE = timedelta(hours=24)
+#: Ceiling of the wait between status polls that FAILED (transient) — see `poll_error_wait`.
+MAX_POLL_ERROR_WAIT = timedelta(minutes=60)
+#: Bounds how long a claim or settle waits on a row lock (e.g. a person's `sync_all`
+#: holding the run's items); past it the statement fails and the lease recovers the run.
+LOCK_TIMEOUT = "5s"
 
 ErrorKind = Literal["rate_limited", "auth_error", "missing_permission", "transient", "rejected"]
 
@@ -114,6 +128,12 @@ def poll_wait(elapsed: timedelta) -> timedelta:
     if elapsed < timedelta(minutes=15):
         return timedelta(minutes=5)
     return timedelta(minutes=10)
+
+
+def poll_error_wait(elapsed: timedelta) -> timedelta:
+    """After a FAILED status poll: the normal poll wait or half the time since the batch
+    was sent, whichever is longer, at most an hour — ~30 polls in 24 h, not ~1,400."""
+    return min(max(poll_wait(elapsed), elapsed / 2), MAX_POLL_ERROR_WAIT)
 
 
 def transient_wait(attempts: int) -> timedelta:
@@ -251,6 +271,10 @@ def _record_access(
         catalog.updated_at = now
 
 
+def _bounded_locks(session: Session) -> None:
+    session.execute(text(f"SET LOCAL lock_timeout = '{LOCK_TIMEOUT}'"))
+
+
 # --- the tick -----------------------------------------------------------------------------
 
 
@@ -293,9 +317,14 @@ class CatalogSyncTick:
         return report
 
     async def run_tenant(self, tenant_id: UUID, report: CatalogTenantReport) -> None:
-        """Up to `max_runs_per_tenant` claims; stops at the first empty claim."""
+        """Up to `max_runs_per_tenant` claims; stops at the first empty claim.
+
+        Every database step (claim, settle) runs in a worker thread (`asyncio.to_thread`)
+        with a bounded `lock_timeout`: this task shares the event loop with the outbox
+        sender, and a row lock held by a person's `sync_all` must never stall WhatsApp
+        messages. (`OutboxTick` runs its short, `SKIP LOCKED` statements on the loop.)"""
         for _ in range(self._max_runs):
-            work = self._claim(tenant_id, report)
+            work = await asyncio.to_thread(self._claim, tenant_id, report)
             if work is _NOTHING:
                 return
             if work is _HANDLED:
@@ -326,6 +355,7 @@ class CatalogSyncTick:
         settled inside it (deferred, failed, finished), `_NOTHING` when nothing is due."""
         now = self._clock()
         with tenant_session(tenant_id) as session:
+            _bounded_locks(session)
             run = session.scalar(
                 select(WhatsAppCatalogSyncRun)
                 .where(self._due(now))
@@ -375,6 +405,16 @@ class CatalogSyncTick:
             _fail_run(
                 session, run, error_code=catalog.access_state, item_error="no_permission", now=now
             )
+            report.failed += 1
+            return None
+        if run.attempts >= MAX_ATTEMPTS:
+            # E.g. a worker that keeps dying mid-send: the stale-claim path re-sends, and
+            # without this check it would never stop.
+            _fail_run(session, run, error_code="send_failed", item_error="send_failed", now=now)
+            report.failed += 1
+            return None
+        if now - run.requested_at >= MAX_RUN_AGE:
+            _fail_run(session, run, error_code="expired", item_error="send_failed", now=now)
             report.failed += 1
             return None
         window = session.execute(
@@ -479,7 +519,7 @@ class CatalogSyncTick:
         finally:
             if client is not None:
                 await self._close(client)
-        self._settle_send(tenant_id, work, ack, error, report)
+        await asyncio.to_thread(self._settle_send, tenant_id, work, ack, error, report)
 
     async def _poll(self, tenant_id: UUID, work: _Work, report: CatalogTenantReport) -> None:
         status: BatchStatus | None = None
@@ -493,7 +533,7 @@ class CatalogSyncTick:
         finally:
             if client is not None:
                 await self._close(client)
-        self._settle_poll(tenant_id, work, status, error, report)
+        await asyncio.to_thread(self._settle_poll, tenant_id, work, status, error, report)
 
     # -- settle ----------------------------------------------------------------------
 
@@ -547,7 +587,26 @@ class CatalogSyncTick:
                 )
                 report.failed += 1
                 return "meta_unconfirmed"
-            wait = RATE_LIMIT_WAIT if kind == "rate_limited" else timedelta(minutes=1)
+            if kind == "rejected":
+                # A 4xx on the status read (a handle Meta does not know): asking again
+                # cannot help, and whether the batch was ingested is unknown.
+                _fail_run(
+                    session,
+                    run,
+                    error_code="meta_error",
+                    item_error="meta_unconfirmed",
+                    now=now,
+                    meta_error_code=code,
+                    states=frozenset({"uploading"}),
+                )
+                report.failed += 1
+                return kind
+            elapsed = now - (run.sent_at or now)
+            wait = (
+                max(RATE_LIMIT_WAIT, poll_error_wait(elapsed))
+                if kind == "rate_limited"
+                else poll_error_wait(elapsed)
+            )
             run.next_attempt_at = now + wait
             run.locked_by = None
             run.locked_at = None
@@ -555,6 +614,17 @@ class CatalogSyncTick:
             report.retried += 1
             return kind
         # phase == "send"
+        if kind == "rate_limited" and now + RATE_LIMIT_WAIT - run.requested_at >= MAX_RUN_AGE:
+            _fail_run(
+                session,
+                run,
+                error_code="rate_limited",
+                item_error="send_failed",
+                now=now,
+                meta_error_code=code,
+            )
+            report.failed += 1
+            return kind
         if kind == "rate_limited" or (kind == "transient" and run.attempts < MAX_ATTEMPTS):
             if kind == "rate_limited":
                 run.attempts = max(run.attempts - 1, 0)  # Meta's pace, not our failure
@@ -593,6 +663,7 @@ class CatalogSyncTick:
         now = self._clock()
         outcome = ""
         with tenant_session(tenant_id) as session:
+            _bounded_locks(session)
             run = self._locked_run(session, work, "sending")
             if run is None:
                 logger.warning(
@@ -659,6 +730,7 @@ class CatalogSyncTick:
     ) -> None:
         now = self._clock()
         with tenant_session(tenant_id) as session:
+            _bounded_locks(session)
             run = self._locked_run(session, work, "sent")
             if run is None:
                 logger.warning(

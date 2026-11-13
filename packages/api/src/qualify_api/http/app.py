@@ -13,6 +13,8 @@ routes bind to.
 
 from __future__ import annotations
 
+import functools
+
 from fastapi import FastAPI
 
 from qualify_api.connections.composition import production_connect_service
@@ -101,6 +103,13 @@ def build_production_public_media_gate():  # noqa: ANN201 — see module note be
     from qualify_shared.objects.s3 import R2ObjectStore  # noqa: PLC0415
 
     return ObjectGate(R2ObjectStore(R2Settings.from_env()))
+
+
+@functools.cache
+def _cached_catalog_media_gate():  # noqa: ANN202 — an ObjectGate, built lazily
+    """ADR 48 §8: one R2 gate per process for `/public/catalog-media/*`, built on the first
+    request whose signature verified (a failure is not cached: the next request retries)."""
+    return build_production_public_media_gate()
 
 
 def build_production_inbox_sync() -> SyncComments:
@@ -321,8 +330,8 @@ def create_app(*, configure_production: bool = True) -> FastAPI:
             build_production_public_media_gate
         )
         # ADR 48 §8: the WhatsApp catalog's stable photo URL, same lazy R2 gate.
-        app.dependency_overrides[public_catalog_media_routes.get_catalog_media_gate] = (
-            build_production_public_media_gate
+        app.dependency_overrides[public_catalog_media_routes.get_catalog_media_gate] = lambda: (
+            _cached_catalog_media_gate
         )
         app.dependency_overrides[inbox_routes.get_sync_comments] = build_production_inbox_sync
         app.dependency_overrides[sentiment_routes.get_analyze_pending_comments] = (

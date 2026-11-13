@@ -254,9 +254,13 @@ por catálogo (80014) y reintentos; un lote de 1.000 bloquearía Reflex. Regla 7
 - **Respuesta:** `Content-Type` de la fila (`image/jpeg`), `Content-Length`, rangos como
   `public_media_routes.py`, `Cache-Control: public, max-age=86400` (el objeto es inmutable: cada
   archivo tiene llave nueva).
-- **Revocación:** borrar la foto (fila fuera), quitar el artículo (`deleted`), cambiar la foto
-  principal (la URL vieja deja de estar en el catálogo; la nueva tiene otro `media_id`), o rotar el
-  secreto (todas caen; el hash cambia y la pantalla las marca desactualizadas).
+- **Revocación:** la URL deja de servir al borrar la foto (fila fuera), al quitar el artículo
+  (`deleted`) o al rotar el secreto (todas caen; el hash cambia y la pantalla las marca
+  desactualizadas). Cambiar la foto principal **no** revoca la URL vieja, a propósito (hilo
+  principal, 2026-11-12): se sirve cualquier imagen de un producto con artículo vivo, porque Meta
+  puede conservar la URL vieja hasta que el dueño resincronice y un 404 rompería la imagen en
+  WhatsApp mientras tanto. La URL nueva lleva otro `media_id`, así que el producto queda
+  desactualizado.
 - **Amenazas:** ruta sin sesión; no enumerable (firma de 256 bits por medio, sin listado); no lee
   nada que no esté ya cargado al catálogo, que es público por intención; sin prefijo público en R2
   (ADR 22); un 404 uniforme no distingue «no existe» de «firma mala». Ancho de banda: Meta baja
@@ -354,3 +358,20 @@ Código: `packages/api/src/qualify_api/whatsapp/catalog_sync/`, ruta
   columna de `qualify_app` sobre los artículos excluye también `id`. El secreto se lee de
   `QUALIFY_OAUTH_STATE_SECRET` directamente (mismas reglas que `ads/edit_review.py`) para no exigir
   el resto de la configuración de Meta en la API.
+- **Revisión tras la primera entrega (mismo día):** los límites genéricos de Meta (códigos 4, 17,
+  32, 613) se tratan como 80014/80009 (esperar, sin contar intento); una corrida que no se envió
+  24 h después de pedirse falla (`expired` o `rate_limited`, artículos `send_failed`), para que sus
+  artículos no queden en `queued` para siempre; el reenvío tras un reclamo vencido respeta el tope
+  de 5 intentos. Una consulta de estado que falla con 4xx (p. ej. un `handle` desconocido) falla la
+  corrida de inmediato (`meta_error`, artículos `meta_unconfirmed`); un fallo transitorio de la
+  consulta espera cada vez más (el mayor entre la espera normal y la mitad del tiempo desde el
+  envío, tope 1 h: ~30 consultas en 24 h, no ~1.400). Todo el trabajo de base de datos del
+  worker del catálogo corre en un hilo (`asyncio.to_thread`) con `lock_timeout = 5s`, para que un
+  bloqueo de filas (p. ej. un «sincronizar todos» en curso) nunca frene el outbox de mensajes que
+  comparte el bucle de eventos. La puerta de R2 de la ruta de fotos se construye solo después de
+  verificar la firma (y una vez por proceso), así que un R2 mal configurado responde el mismo 404.
+- **`product_id` sin FK compuesta:** `ON DELETE SET NULL` sobre una FK compuesta `(product_id,
+  tenant_id)` pondría también `tenant_id` en NULL, y `brand_products` no tiene `UNIQUE (id,
+  tenant_id)`; la FK es de una columna. Que un artículo no apunte al producto de otro negocio lo
+  garantiza que el servicio lee los productos por `tenant_session` (`load_products`) y que el
+  artículo hereda el `tenant_id` del catálogo.
