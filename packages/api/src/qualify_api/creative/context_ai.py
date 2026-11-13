@@ -52,7 +52,7 @@ logger = logging.getLogger("qualify_api.creative.context_ai")
 
 CONTEXT_MODEL: Final = ModelConfig("claude-sonnet-5-5", effort="low")
 TOOL_NAME: Final = "propose_context"
-CONTEXT_PROMPT_VERSION: Final = "context-v4-three-versions"
+CONTEXT_PROMPT_VERSION: Final = "context-v5-scene-no-text"
 #: The function the consumption ledger books these calls to (m-24955649).
 FEATURE: Final = "potenciar-contexto"
 PROPOSAL_MAX_CHARS: Final = 300
@@ -130,7 +130,12 @@ SYSTEM_PROMPT: Final = (
     "relleno ni repitas contexto del brand kit que no haga falta. No cortes ni omitas "
     "instrucciones importantes para cumplir el largo.\n"
     "- Si te piden una ESCENA (una imagen), describe solo lo que se ve: sujeto, lugar, luz, "
-    "encuadre y sensación, en pocas frases; los enfoques son entonces maneras de encuadrar.\n"
+    "encuadre y sensación, en pocas frases; los enfoques son entonces maneras de encuadrar. "
+    "La imagen NO lleva nada escrito: ningún precio, cifra, letrero, cartel, etiqueta con "
+    "texto, rótulo, menú, aviso, pancarta, logo dibujado como letras ni palabra alguna; no "
+    "los nombres en la escena, ni siquiera para decir que no van. Los DATOS CLAVE de una "
+    "escena solo orientan lo que se ve (un 2x1 son dos unidades en la mesa), nunca se "
+    "muestran como texto: en una escena, la regla de conservar cifras no aplica a ellos.\n"
     "- Respeta el largo máximo que se indica, en cada versión.\n\n"
     "Responde ÚNICAMENTE llamando a la herramienta propose_context."
 )
@@ -319,11 +324,58 @@ def _same(a: str, b: str) -> bool:
     return key(a) == key(b)
 
 
+#: m-25017274 (live on Bianki, 2026-11-13): words that ask for something WRITTEN in the
+#: picture. Since the prompt compiler 4 (#629/#631) an image carries no text, sign or
+#: price, so a scene version that names one is dropped like any invalid version.
+_SCENE_TEXT_WORDS = re.compile(
+    r"\b(precios?|letreros?|carteles|cartel|etiquetas?|r[óo]tulos?|avisos?|pancartas?|"
+    r"textos?|letras?|escrito|escrita|men[úu] escrito|pizarras?|tablero de precios)\b",
+    re.IGNORECASE,
+)
+_NUMBER = re.compile(r"\d(?:[\d.,\s]*\d)?")
+#: The words right before a term that negate it («sin texto», «ni carteles»): the term is
+#: then not a request. Figures and «$» get no such exemption.
+_NEGATED = re.compile(
+    r"\b(?:sin|ni|no|ningún|ninguna|nada(?: de)?)\s+(?:\w+\s+){0,2}$", re.IGNORECASE
+)
+
+
+def _numbers(text: str) -> set[str]:
+    return {re.sub(r"\D", "", match) for match in _NUMBER.findall(text)}
+
+
+def scene_text_request(text: str, data: ContextInput) -> str:
+    """What in a SCENE version asks for something written in the picture ("" = nothing):
+    a word for a sign/price/text, a currency sign, or a figure from «Datos clave» that the
+    owner's own scene did not have. Deterministic: the image model would draw it. A word
+    the owner wrote in the scene himself (the field's own example says «la etiqueta de
+    frente», the cup's printed label) is his, not an addition, and is let through; so is
+    a negated term («Sin texto en la imagen», measured 2026-11-13)."""
+    own = data.text.casefold()
+    for word in _SCENE_TEXT_WORDS.finditer(text):
+        # «Sin texto en la imagen», «sin letreros ni precios»: a negation asks for nothing
+        if _NEGATED.search(text[: word.start()]):
+            continue
+        if word.group(0).casefold() not in own:
+            return word.group(0)
+    if "$" in text and "$" not in data.text:
+        return "$"
+    facts = set().union(*(_numbers(str(value)) for _, value in data.highlights)) - _numbers(
+        data.text
+    )
+    found = sorted(facts & _numbers(text))
+    return found[0] if found else ""
+
+
 def render_request(data: ContextInput, kit: BrandKit | None) -> str:
     """The user message: the piece, its facts, the approaches, the brand, the versions
     already shown, then the text to rewrite."""
     facts = [f"- {name}: {value}" for name, value in data.highlights if name and value]
-    what = "una ESCENA (lo que se ve en la imagen)" if data.scene else "el CONTEXTO de la pieza"
+    what = (
+        "una ESCENA (lo que se ve en la imagen, sin nada escrito en ella)"
+        if data.scene
+        else "el CONTEXTO de la pieza"
+    )
     lines = [
         f"TIPO DE PIEZA: {data.piece}",
         f"TIPO DE PUBLICACIÓN: {data.content_type.strip() or '-'}",
@@ -335,7 +387,13 @@ def render_request(data: ContextInput, kit: BrandKit | None) -> str:
         "ENFOQUES (uno por versión):",
         *(f"- {key}: {description}" for key, description in data.approaches),
         f"PRODUCTO: {data.product.strip() or '(sin producto)'}",
-        "DATOS CLAVE:" if facts else "DATOS CLAVE: (ninguno)",
+        (
+            "DATOS CLAVE (solo orientan lo que se ve; nunca se escriben en la imagen):"
+            if data.scene
+            else "DATOS CLAVE:"
+        )
+        if facts
+        else "DATOS CLAVE: (ninguno)",
         *facts,
     ]
     if data.must_mention.strip():
@@ -374,7 +432,9 @@ def _tool(
         "description": (
             "Cada hecho (precio, fecha, promoción, dato) que aparezca en alguna versión y NO "
             "esté en el contexto, los datos clave ni el brand kit. Vacío si no "
-            "añadiste ninguno: lo que sale del brand kit no se lista."
+            "añadiste ninguno: lo que sale del brand kit no se lista. En una ESCENA, los "
+            "objetos, la luz, el lugar dentro del local, las manos o el encuadre son "
+            "dirección creativa, no hechos: no se listan."
         ),
     }
     return strict_tool(TOOL_NAME, "Propone tres versiones del contexto reescrito.", properties)
@@ -441,6 +501,9 @@ def enhance_context(
             )
         except ContextUnavailable as exc:
             refusals.append(exc)
+            continue
+        if data.scene and (shown := scene_text_request(text, data)):
+            refusals.append(ContextUnavailable(f"scene version {key} shows text: {shown}"))
             continue
         if any(_same(text, other) for other in seen):
             refusals.append(ContextUnavailable(f"version {key} repeats a text already shown"))

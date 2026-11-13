@@ -18,6 +18,14 @@ It spends real money (≈ USD 0.01 per press), so it is run by hand, never in CI
 
     just eval-mejorar-texto --label v3-baseline
     just eval-mejorar-texto --label v4 --cap-usd 0.60
+    just eval-mejorar-texto --label v5-escenas --only escena-precio
+
+«Pide texto en la imagen» (m-25017274, live 2026-11-13) counts, for SCENE cases, the
+shown versions that ask for a price, figure, sign, label or any written word in the
+picture — checked here independently of the product's own filter — and «descartadas»
+how many versions the product's filter (`scene_text_request`, prompt v5+) dropped.
+`--module-file` runs an older `context_ai.py` (e.g. from `git show origin/main:…`) for
+the baseline.
 """
 
 from __future__ import annotations
@@ -62,6 +70,31 @@ def new_numbers(text: str, source: str) -> list[str]:
     return [n for n in re.findall(r"\d+", text) if n not in known]
 
 
+_TEXT_WORDS = re.compile(
+    r"\b(precios?|letreros?|carteles|cartel|etiquetas?|r[óo]tulos?|avisos?|pancartas?|"
+    r"textos?|letras?|escrito|escrita|pizarras?)\b",
+    re.IGNORECASE,
+)
+
+
+def asks_for_text(text: str, case: dict[str, Any]) -> bool:
+    """A scene version that asks for something written in the image (eval-side check)."""
+    own = case["text"].casefold()
+    negated = re.compile(r"\b(?:sin|ni|no|ningún|ninguna|nada(?: de)?)\s+(?:\w+\s+){0,2}$", re.I)
+    if any(
+        m.group(0).casefold() not in own and not negated.search(text[: m.start()])
+        for m in _TEXT_WORDS.finditer(text)
+    ):
+        return True
+    if "$" in text and "$" not in case["text"]:
+        return True
+    digits = lambda t: {re.sub(r"\D", "", m) for m in re.findall(r"\d(?:[\d.,]*\d)?", t)}  # noqa: E731
+    facts = set().union(*(digits(str(v)) for _, v in case.get("highlights", ()))) - digits(
+        case["text"]
+    )
+    return bool(facts & digits(text))
+
+
 def _mean(values: list[float]) -> float:
     return round(sum(values) / len(values), 3) if values else 0.0
 
@@ -72,6 +105,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--cases", default=str(HERE / "cases.json"))
     parser.add_argument("--label", required=True, help="names the results file")
     parser.add_argument("--cap-usd", default="0.60", help="stop making calls past this")
+    parser.add_argument("--only", default="", help="run only the case ids with this prefix")
+    parser.add_argument("--module-file", default="", help="an older context_ai.py to run")
     args = parser.parse_args(argv)
     _load_env(args.env_file)
 
@@ -79,6 +114,28 @@ def main(argv: list[str] | None = None) -> int:
 
     from qualify_api import claude_tools
     from qualify_api.creative import context_ai
+
+    if args.module_file:
+        import importlib.util
+
+        spec_ = importlib.util.spec_from_file_location("context_ai_under_test", args.module_file)
+        assert spec_ and spec_.loader
+        context_ai = importlib.util.module_from_spec(spec_)
+        sys.modules[spec_.name] = context_ai  # dataclasses look their module up here
+        spec_.loader.exec_module(context_ai)
+    dropped = {"n": 0}
+    dropped_examples: list[dict[str, str]] = []
+    if hasattr(context_ai, "scene_text_request"):
+        original_check = context_ai.scene_text_request
+
+        def counting_check(text: str, data: Any) -> str:
+            found = original_check(text, data)
+            dropped["n"] += bool(found)
+            if found:
+                dropped_examples.append({"found": found, "text": text})
+            return found
+
+        context_ai.scene_text_request = counting_check
 
     records: list[Any] = []
     claude_tools.configure_consumption_sink(records.append)
@@ -143,6 +200,8 @@ def main(argv: list[str] | None = None) -> int:
         }
 
     for case in spec["cases"]:
+        if args.only and not case["id"].startswith(args.only):
+            continue
         if spent() >= cap:
             print(f"cap reached at {spent()} USD; stopping", file=sys.stderr)
             break
@@ -176,6 +235,11 @@ def main(argv: list[str] | None = None) -> int:
             "across_presses_mean_jaccard": _mean(across_j),
             "duplicates": len(all_texts) - len({t.casefold() for t in all_texts}),
             "new_numbers": sorted({n for t in all_texts for n in new_numbers(t, source)}),
+            "scene": bool(case.get("scene")),
+            "asks_for_text": sum(asks_for_text(t, case) for t in all_texts)
+            if case.get("scene")
+            else 0,
+            "shown": len(all_texts),
         }
         rows.append(row)
         print(json.dumps({k: v for k, v in row.items() if not k.startswith("press")}))
@@ -204,6 +268,10 @@ def main(argv: list[str] | None = None) -> int:
         "across_presses_mean_jaccard": _mean([r["across_presses_mean_jaccard"] for r in rows]),
         "duplicates": sum(r["duplicates"] for r in rows),
         "cases_with_new_numbers": [r["id"] for r in rows if r["new_numbers"]],
+        "scene_versions_shown": sum(r["shown"] for r in rows if r["scene"]),
+        "scene_versions_asking_for_text": sum(r["asks_for_text"] for r in rows),
+        "scene_versions_dropped_by_filter": dropped["n"],
+        "dropped_examples": dropped_examples,
     }
     out = HERE / "results" / f"{args.label}.json"
     out.parent.mkdir(exist_ok=True)

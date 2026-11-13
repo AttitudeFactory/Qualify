@@ -1,0 +1,615 @@
+{
+  "summary": {
+    "label": "v5",
+    "prompt_version": "context-v5-scene-no-text",
+    "model": "claude-sonnet-5-5@low",
+    "model_revisions": [
+      "claude-sonnet-5-5"
+    ],
+    "when": "2026-11-13T13:15:51+00:00",
+    "cases": 12,
+    "calls": 24,
+    "errors": 0,
+    "total_usd": "0.152423400",
+    "usd_per_call": "0.0064",
+    "mean_seconds": 3.917,
+    "within_press_mean_similarity": 0.187,
+    "across_presses_max_similarity_mean": 0.372,
+    "across_presses_mean_jaccard": 0.347,
+    "duplicates": 0,
+    "cases_with_new_numbers": [],
+    "scene_versions_shown": 42,
+    "scene_versions_asking_for_text": 0,
+    "scene_versions_dropped_by_filter": 0,
+    "dropped_examples": []
+  },
+  "rows": [
+    {
+      "id": "promo-2x1",
+      "original": "promo 2x1 en shawarma de pollo los martes, que se antoje y que pidan por whatsapp",
+      "press_1": {
+        "texts": [
+          "Quiero anunciar el 2x1 en shawarma de pollo los martes. Mostrar dos shawarmas listos, recién armados, para que se antojen. Le hablo a quien trabaja o estudia cerca y pide almuerzo o cena. Cierro con: Pide por WhatsApp.",
+          "Quiero que se vea el pollo dorado y jugoso cortado al momento, el pan calientico envolviendo verduras frescas, el vapor subiendo, y dos shawarmas juntos: es el 2x1 de los martes. Que se antoje de inmediato y cierre con: Pide por WhatsApp.",
+          "Quiero contarle a quien trabaja o estudia cerca que los martes el shawarma de pollo es 2x1: uno para usted y otro para compartir en ese almuerzo o cena del día. Que se le antoje y sienta ganas de escribirnos. Cierro con: Pide por WhatsApp."
+        ],
+        "approaches": [
+          "directa",
+          "descriptiva",
+          "cercana"
+        ],
+        "added_facts": [],
+        "cost_usd": "0.010720500",
+        "seconds": 4.9,
+        "in": 724,
+        "out": 431
+      },
+      "press_2": {
+        "texts": [
+          "Los martes, shawarma de pollo en 2x1. Quiero que quien trabaja o estudia cerca lo vea y se le antoje de una vez, con dos shawarmas bien armados en pantalla. Cierro con el llamado: Pide por WhatsApp.",
+          "Quiero un clip que se pueda casi oler: pollo dorado que sale de la parrilla, pan tibio que se dobla, verduras frescas crujientes y salsa que resbala. Al final, dos shawarmas de pollo juntos: 2x1 los martes. Cierro con: Pide por WhatsApp.",
+          "Quiero hablarle a quien está en la oficina o la universidad y ya piensa en qué almorzar: los martes su shawarma de pollo viene en 2x1, para que se dé el gusto o lo comparta con alguien. Que se le antoje. Cierro con: Pide por WhatsApp."
+        ],
+        "approaches": [
+          "directa",
+          "descriptiva",
+          "cercana"
+        ],
+        "added_facts": [],
+        "cost_usd": "0.006544500",
+        "seconds": 4.6,
+        "in": 1078,
+        "out": 419
+      },
+      "within_press_mean_similarity": 0.235,
+      "within_press_max_similarity": 0.298,
+      "across_presses_max_similarity": 0.495,
+      "across_presses_mean_similarity": 0.314,
+      "across_presses_mean_jaccard": 0.384,
+      "duplicates": 0,
+      "new_numbers": [],
+      "scene": false,
+      "asks_for_text": 0,
+      "shown": 6
+    },
+    {
+      "id": "nuevo-falafel",
+      "original": "tenemos nueva ensalada de quinoa con falafel, queremos que la prueben, es fresca y llena",
+      "press_1": {
+        "texts": [
+          "Quiero anunciar nuestra nueva ensalada de quinoa con falafel: fresca y llena. Le hablo a quien trabaja o estudia cerca y quiere almorzar bien. Que den ganas de probarla. No decir que es de dieta. Cierre: Pide por WhatsApp.",
+          "Quiero mostrar la nueva ensalada de quinoa con falafel: hojas frescas, quinoa suelta, falafel dorado y crocante, hecha al momento. Que se sienta fresca y llena, sin decir que es de dieta. Invito a probarla: Pide por WhatsApp o Te esperamos en el local.",
+          "Quiero contarles, como a un cliente de confianza, que ya tenemos ensalada de quinoa con falafel. Es fresca y llena, ideal para el almuerzo entre trabajo o estudio. Que sientan ganas de probarla, sin hablar de dieta. Cierro con: Pide por WhatsApp."
+        ],
+        "approaches": [
+          "directa",
+          "descriptiva",
+          "cercana"
+        ],
+        "added_facts": [
+          "hojas frescas, quinoa suelta, falafel dorado y crocante"
+        ],
+        "cost_usd": "0.006378500",
+        "seconds": 4.3,
+        "in": 740,
+        "out": 470
+      },
+      "press_2": {
+        "texts": [
+          "Presento la ensalada de quinoa con falafel, ya disponible. Quiero que quien trabaja o estudia cerca la pruebe: es fresca y llena. No la presento como comida de dieta. Cierre: Pide por WhatsApp o Te esperamos en el local.",
+          "Quiero que se vea y se sienta la nueva ensalada de quinoa con falafel: verdes crujientes recién mezclados, granos de quinoa sueltos, falafel tostado por fuera y tierno por dentro. Fresca y llena, hecha al momento, sin hablar de dieta. Cierro: Pide por WhatsApp.",
+          "Quiero decirte con confianza que llegó nuestra nueva ensalada de quinoa con falafel. Es fresca y llena, perfecta para ese almuerzo en medio de un día largo. Quiero que la pruebes, sin mencionar dieta. Te espero: Pide por WhatsApp o Te esperamos en el local."
+        ],
+        "approaches": [
+          "directa",
+          "descriptiva",
+          "cercana"
+        ],
+        "added_facts": [],
+        "cost_usd": "0.006842500",
+        "seconds": 3.8,
+        "in": 1107,
+        "out": 443
+      },
+      "within_press_mean_similarity": 0.148,
+      "within_press_max_similarity": 0.228,
+      "across_presses_max_similarity": 0.398,
+      "across_presses_mean_similarity": 0.214,
+      "across_presses_mean_jaccard": 0.383,
+      "duplicates": 0,
+      "new_numbers": [],
+      "scene": false,
+      "asks_for_text": 0,
+      "shown": 6
+    },
+    {
+      "id": "horario",
+      "original": "recordar el horario: abrimos todos los dias de 11 am a 10 pm, domingos hasta las 8 pm",
+      "press_1": {
+        "texts": [
+          "Quiero recordar el horario: abrimos todos los días de 11 am a 10 pm, y los domingos hasta las 8 pm. Lo esencial va primero y al final invito: Pide por WhatsApp o Te esperamos en el local, en el centro de la ciudad.",
+          "Quiero recordar el horario con imágenes de shawarma y ensaladas frescas recién hechas, con su aroma y colores vivos, en el centro de la ciudad. Abrimos todos los días de 11 am a 10 pm, domingos hasta las 8 pm. Cierro con: Pide por WhatsApp.",
+          "Quiero contarle a quien trabaja o estudia cerca que, a la hora del almuerzo o de la cena, aquí nos tiene: abrimos todos los días de 11 am a 10 pm, domingos hasta las 8 pm. Cierro con calidez: Te esperamos en el local o Pide por WhatsApp."
+        ],
+        "approaches": [
+          "directa",
+          "descriptiva",
+          "cercana"
+        ],
+        "added_facts": [],
+        "cost_usd": "0.006012500",
+        "seconds": 3.2,
+        "in": 747,
+        "out": 432
+      },
+      "press_2": {
+        "texts": [
+          "Quiero dar el horario sin rodeos: lunes a sábado de 11 am a 10 pm y domingo de 11 am a 8 pm. Cierro con una sola acción clara: Pide por WhatsApp.",
+          "Quiero mostrar el shawarma caliente y las ensaladas frescas, hechas al momento, con colores vivos y vapor, en el centro de la ciudad. Luego el horario: lunes a sábado 11 am a 10 pm, domingo hasta las 8 pm. Cierro: Te esperamos en el local.",
+          "Quiero decirle a mi cliente de confianza, ese que sale a almorzar o a cenar después de trabajar o estudiar, que aquí lo esperamos: lunes a sábado de 11 am a 10 pm, domingo hasta las 8 pm. Cierro: Pide por WhatsApp o Te esperamos en el local."
+        ],
+        "approaches": [
+          "directa",
+          "descriptiva",
+          "cercana"
+        ],
+        "added_facts": [],
+        "cost_usd": "0.006562500",
+        "seconds": 3.7,
+        "in": 1102,
+        "out": 416
+      },
+      "within_press_mean_similarity": 0.432,
+      "within_press_max_similarity": 0.498,
+      "across_presses_max_similarity": 0.524,
+      "across_presses_mean_similarity": 0.398,
+      "across_presses_mean_jaccard": 0.346,
+      "duplicates": 0,
+      "new_numbers": [],
+      "scene": false,
+      "asks_for_text": 0,
+      "shown": 6
+    },
+    {
+      "id": "combo-almuerzo",
+      "original": "combo almuerzo: shawarma mixto con papas y bebida a 25.000, solo de 12 a 3",
+      "press_1": {
+        "texts": [
+          "Quiero anunciar el combo almuerzo: shawarma mixto con papas y bebida incluidas, a 25.000, solo de 12 m a 3 pm. Va dirigido a quienes trabajan o estudian cerca. Que se vea el combo completo. Cierra con: Pide por WhatsApp.",
+          "Quiero mostrar el combo almuerzo: shawarma mixto recién hecho, caliente y jugoso, con papas doradas y bebida fría, papas y bebida incluidas, a 25.000. Solo de 12 m a 3 pm. Para quien trabaja o estudia cerca. Cierra con: Te esperamos en el local.",
+          "Quiero invitar a quien trabaja o estudia cerca a hacer una pausa rica en su almuerzo: shawarma mixto con papas y bebida incluidas, a 25.000, solo de 12 m a 3 pm. Que se sienta el alivio de sentarse a comer. Cierra con: Pide por WhatsApp."
+        ],
+        "approaches": [
+          "directa",
+          "descriptiva",
+          "cercana"
+        ],
+        "added_facts": [],
+        "cost_usd": "0.006264500",
+        "seconds": 3.3,
+        "in": 758,
+        "out": 455
+      },
+      "press_2": {
+        "texts": [
+          "25.000 por el shawarma mixto, con papas y bebida incluidas. Solo de 12 m a 3 pm, para quien trabaja o estudia cerca. Quiero que se vea el combo completo sobre la mesa. Cierra con: Te esperamos en el local.",
+          "Quiero mostrar el shawarma mixto recién armado, con vapor, carne dorada y verduras frescas, junto a papas crujientes y una bebida con gotas de frío. Papas y bebida incluidas, 25.000, de 12 m a 3 pm. Cierra con: Pide por WhatsApp.",
+          "Quiero hablarle a quien sale a mediodía con hambre y poco tiempo: tu shawarma mixto, con papas y bebida incluidas, por 25.000, solo de 12 m a 3 pm. Que se sienta como almorzar tranquilo. Cierra con: Pide por WhatsApp."
+        ],
+        "approaches": [
+          "directa",
+          "descriptiva",
+          "cercana"
+        ],
+        "added_facts": [],
+        "cost_usd": "0.006720500",
+        "seconds": 4.0,
+        "in": 1136,
+        "out": 425
+      },
+      "within_press_mean_similarity": 0.383,
+      "within_press_max_similarity": 0.56,
+      "across_presses_max_similarity": 0.577,
+      "across_presses_mean_similarity": 0.346,
+      "across_presses_mean_jaccard": 0.481,
+      "duplicates": 0,
+      "new_numbers": [],
+      "scene": false,
+      "asks_for_text": 0,
+      "shown": 6
+    },
+    {
+      "id": "domicilios",
+      "original": "ya tenemos domicilios en todo el centro, pedidos por whatsapp, llega caliente",
+      "press_1": {
+        "texts": [
+          "Quiero que el avatar anuncie que ya tenemos domicilios en todo el centro. Se piden por WhatsApp y el shawarma llega caliente. Le hablo a quien trabaja o estudia cerca. Cierra con: Pide por WhatsApp.",
+          "Quiero que el avatar muestre una bolsa que se abre y deja salir el vapor del shawarma recién hecho, caliente, junto a una ensalada fresca. Cuenta que ya hay domicilios en todo el centro, por WhatsApp. Cierra: Pide por WhatsApp.",
+          "Quiero que el avatar hable como un amigo a quien trabaja o estudia cerca: ya tenemos domicilios en todo el centro, no hace falta salir a almorzar. Pides por WhatsApp y te llega caliente. Que se sienta alivio y antojo. Cierra: Pide por WhatsApp."
+        ],
+        "approaches": [
+          "directa",
+          "descriptiva",
+          "cercana"
+        ],
+        "added_facts": [],
+        "cost_usd": "0.005830500",
+        "seconds": 4.4,
+        "in": 711,
+        "out": 421
+      },
+      "press_2": {
+        "texts": [
+          "Quiero que el avatar diga en pocas palabras: domicilios en todo el centro, pedidos por WhatsApp y llega caliente. Va dirigido a quien pide almuerzo o cena. Cierra con: Pide por WhatsApp.",
+          "Quiero que el avatar sostenga un empaque tibio del que sale aroma a shawarma recién hecho, con una ensalada fresca al lado, y cuente que ya hay domicilios en todo el centro, por WhatsApp, y llega caliente. Cierra: Pide por WhatsApp.",
+          "Quiero que el avatar le hable a quien trabaja o estudia cerca, como a alguien de confianza: ya llevamos domicilios a todo el centro, pides por WhatsApp y llega caliente, justo cuando le da hambre. Que se sienta tranquilidad. Cierra: Pide por WhatsApp."
+        ],
+        "approaches": [
+          "directa",
+          "descriptiva",
+          "cercana"
+        ],
+        "added_facts": [],
+        "cost_usd": "0.006468500",
+        "seconds": 4.4,
+        "in": 1055,
+        "out": 416
+      },
+      "within_press_mean_similarity": 0.214,
+      "within_press_max_similarity": 0.353,
+      "across_presses_max_similarity": 0.745,
+      "across_presses_mean_similarity": 0.332,
+      "across_presses_mean_jaccard": 0.431,
+      "duplicates": 0,
+      "new_numbers": [],
+      "scene": false,
+      "asks_for_text": 0,
+      "shown": 6
+    },
+    {
+      "id": "escena-salsa",
+      "original": "un shawarma abierto en la barra con bastante salsa de ajo y la ensalada al lado",
+      "press_1": {
+        "texts": [
+          "Plano cerrado de un shawarma de carne abierto sobre la barra, la carne jugosa y bastante salsa de ajo cayendo por el borde. Al lado, un poco desenfocada, la ensalada fresca. Luz cálida y suave. Sin texto en la imagen.",
+          "Plano abierto de la barra del local: un shawarma de carne abierto con bastante salsa de ajo y la ensalada fresca al lado. Al fondo, el ambiente del centro de la ciudad, luz cálida y acogedora. Sin texto en la imagen.",
+          "Una mano sostiene sobre la barra un shawarma de carne abierto, con bastante salsa de ajo, justo antes del primer mordisco. La ensalada espera al lado. Sin rostros visibles, luz cálida, sensación de antojo. Sin texto."
+        ],
+        "approaches": [
+          "producto",
+          "lugar",
+          "momento"
+        ],
+        "added_facts": [],
+        "cost_usd": "0.005521600",
+        "seconds": 4.1,
+        "in": 682,
+        "out": 396
+      },
+      "press_2": {
+        "texts": [
+          "Primer plano del shawarma de carne cortado a la mitad, que llena todo el encuadre: el relleno a la vista, la carne dorada y la salsa de ajo abundante escurriendo por la tortilla. Al borde del cuadro, apenas visible, la ensalada. Luz lateral cálida.",
+          "Vista amplia desde el lado del cliente: la barra del local con un shawarma abierto y bastante salsa de ajo sobre una tabla, la ensalada al lado. Detrás, cocina y ventanal con el movimiento del centro de la ciudad, luz natural de tarde.",
+          "Dos manos sostienen un shawarma de carne abierto sobre la barra, con bastante salsa de ajo a punto de caer, un instante antes de probarlo. La ensalada queda al lado. Persona de espaldas, sin rostro visible, luz cálida y ganas de almorzar."
+        ],
+        "approaches": [
+          "producto",
+          "lugar",
+          "momento"
+        ],
+        "added_facts": [],
+        "cost_usd": "0.006353600",
+        "seconds": 4.3,
+        "in": 1003,
+        "out": 415
+      },
+      "within_press_mean_similarity": 0.113,
+      "within_press_max_similarity": 0.365,
+      "across_presses_max_similarity": 0.278,
+      "across_presses_mean_similarity": 0.155,
+      "across_presses_mean_jaccard": 0.34,
+      "duplicates": 0,
+      "new_numbers": [],
+      "scene": true,
+      "asks_for_text": 0,
+      "shown": 6
+    },
+    {
+      "id": "escena-precio-shawarma",
+      "original": "Un shawarma de carne recién hecho sobre la barra del local, con la salsa cayendo",
+      "press_1": {
+        "texts": [
+          "Plano muy cerrado de un shawarma de carne recién hecho, que llena el encuadre. La salsa cae por el pan y la carne jugosa se ve de cerca. Luz cálida sobre la barra del local, desenfocada al fondo. Sin texto en la imagen.",
+          "Plano abierto de la barra del local en el centro de la ciudad, con un shawarma de carne recién hecho en primer plano y la salsa cayendo. Al fondo, el ambiente de cocina activa, luz cálida y ordenada. Sin texto en la imagen.",
+          "Una mano sostiene sobre la barra del local un shawarma de carne recién hecho, justo cuando la salsa cae. Sin mostrar rostros, solo la mano y el torso desenfocado. Luz cálida, sensación de antojo inmediato. Sin texto en la imagen."
+        ],
+        "approaches": [
+          "producto",
+          "lugar",
+          "momento"
+        ],
+        "added_facts": [],
+        "cost_usd": "0.005639600",
+        "seconds": 4.2,
+        "in": 711,
+        "out": 402
+      },
+      "press_2": {
+        "texts": [
+          "Primer plano del shawarma de carne recién hecho: el pan dorado y tostado ocupa todo el encuadre, con tiras de carne y verduras frescas asomando y un hilo de salsa que cae despacio. Luz suave de lado, fondo borroso. Sensación de antojo.",
+          "Vista amplia de la mesa y el local en el centro de la ciudad: sobre la barra, un shawarma de carne recién hecho con la salsa cayendo. Alrededor, una ensalada fresca, la plancha y el movimiento tranquilo del mostrador. Luz natural de media tarde.",
+          "Dos manos de una persona que trabaja cerca toman el shawarma de carne recién hecho en su pausa de almuerzo, sobre la barra del local, mientras la salsa cae. Se ve solo el torso, sin rostro. Gesto relajado, luz cálida y cercana."
+        ],
+        "approaches": [
+          "producto",
+          "lugar",
+          "momento"
+        ],
+        "added_facts": [],
+        "cost_usd": "0.006413600",
+        "seconds": 3.6,
+        "in": 1038,
+        "out": 414
+      },
+      "within_press_mean_similarity": 0.108,
+      "within_press_max_similarity": 0.261,
+      "across_presses_max_similarity": 0.261,
+      "across_presses_mean_similarity": 0.097,
+      "across_presses_mean_jaccard": 0.338,
+      "duplicates": 0,
+      "new_numbers": [],
+      "scene": true,
+      "asks_for_text": 0,
+      "shown": 6
+    },
+    {
+      "id": "escena-precio-2x1",
+      "original": "dos shawarmas de pollo en una bandeja de madera, recién servidos",
+      "press_1": {
+        "texts": [
+          "Primer plano de dos shawarmas de pollo recién servidos sobre una bandeja de madera, llenando el encuadre. Envueltos y dorados, con el relleno jugoso a la vista, un leve vapor y luz cálida y suave. Sensación de hechos al momento.",
+          "Plano abierto de una mesa en un local del centro de la ciudad, con luz natural. En primer plano, una bandeja de madera con dos shawarmas de pollo recién servidos; al fondo, ambiente acogedor y desenfocado. Sensación de pausa para el almuerzo.",
+          "Una mano toma uno de los dos shawarmas de pollo recién servidos sobre la bandeja de madera, a punto de dar el primer mordisco. Otra persona al fondo, sin rostro visible. Luz cálida, sensación de antojo y de compartir."
+        ],
+        "approaches": [
+          "producto",
+          "lugar",
+          "momento"
+        ],
+        "added_facts": [],
+        "cost_usd": "0.005641600",
+        "seconds": 3.5,
+        "in": 722,
+        "out": 400
+      },
+      "press_2": {
+        "texts": [
+          "Detalle muy cercano de la tortilla tostada de un shawarma de pollo, con tiras de pollo, verduras frescas y salsa cremosa asomando por la punta. Un segundo shawarma, igual, junto a él, sobre madera. Luz lateral cálida, brillo de recién hecho.",
+          "Vista amplia desde la esquina de una mesa de un local en el centro de la ciudad: una bandeja de madera con dos shawarmas de pollo recién servidos. Ventanal con luz de media tarde, ensaladas frescas en el mostrador al fondo, ambiente tranquilo y desenfocado.",
+          "Dos manos sostienen cada una un shawarma de pollo recién servido, justo después de levantarlos de la bandeja de madera, como un brindis antes de comer. Solo se ven manos y torsos, sin rostros. Luz suave y cálida, sensación de complicidad."
+        ],
+        "approaches": [
+          "producto",
+          "lugar",
+          "momento"
+        ],
+        "added_facts": [],
+        "cost_usd": "0.006491600",
+        "seconds": 4.0,
+        "in": 1047,
+        "out": 420
+      },
+      "within_press_mean_similarity": 0.116,
+      "within_press_max_similarity": 0.337,
+      "across_presses_max_similarity": 0.177,
+      "across_presses_mean_similarity": 0.081,
+      "across_presses_mean_jaccard": 0.268,
+      "duplicates": 0,
+      "new_numbers": [],
+      "scene": true,
+      "asks_for_text": 0,
+      "shown": 6
+    },
+    {
+      "id": "escena-precio-combo",
+      "original": "el combo con shawarma mixto, papas y bebida en la mesa al mediodía",
+      "press_1": {
+        "texts": [
+          "Plano cerrado del shawarma mixto que llena el encuadre, recién armado, con carne jugosa y verduras frescas a la vista. Al borde, papas doradas y la bebida del combo desenfocadas. Luz natural cálida de mediodía. Sin texto en la imagen.",
+          "Plano abierto de una mesa del local al mediodía: el combo con shawarma mixto, papas y bebida servido sobre la mesa, con luz natural entrando por la ventana y el centro de la ciudad desenfocado al fondo. Ambiente tranquilo y apetitoso. Sin texto.",
+          "Una mano toma el shawarma mixto del combo, con las papas y la bebida al lado sobre la mesa, en plena pausa del mediodía. Sin mostrar rostros, solo manos y brazos. Luz cálida, sensación de almuerzo relajado. Sin texto en la imagen."
+        ],
+        "approaches": [
+          "producto",
+          "lugar",
+          "momento"
+        ],
+        "added_facts": [],
+        "cost_usd": "0.005833600",
+        "seconds": 3.4,
+        "in": 728,
+        "out": 418
+      },
+      "press_2": {
+        "texts": [
+          "Primer plano del shawarma mixto cortado por la mitad, con el relleno de carne y verduras frescas llenando el encuadre y el pan tostado con vapor suave. Las papas y la bebida del combo apenas se intuyen detrás, fuera de foco. Luz cálida y nítida.",
+          "Vista desde arriba de una mesa de madera en el local, con el combo de shawarma mixto, papas y bebida bien ordenados. Al lado, una ventana deja ver una calle del centro, bañada por la luz clara del mediodía. Ambiente animado pero tranquilo.",
+          "Dos manos sostienen con firmeza el shawarma mixto, a punto de dar el primer mordisco, mientras la bebida y las papas esperan sobre la mesa. Solo se ven manos y parte del torso, sin rostro. Luz de mediodía, gesto de pausa para almorzar."
+        ],
+        "approaches": [
+          "producto",
+          "lugar",
+          "momento"
+        ],
+        "added_facts": [],
+        "cost_usd": "0.006491600",
+        "seconds": 3.9,
+        "in": 1072,
+        "out": 415
+      },
+      "within_press_mean_similarity": 0.101,
+      "within_press_max_similarity": 0.15,
+      "across_presses_max_similarity": 0.175,
+      "across_presses_mean_similarity": 0.11,
+      "across_presses_mean_jaccard": 0.304,
+      "duplicates": 0,
+      "new_numbers": [],
+      "scene": true,
+      "asks_for_text": 0,
+      "shown": 6
+    },
+    {
+      "id": "escena-precio-ensalada",
+      "original": "ensalada de quinoa con falafel en un bowl blanco, luz de ventana",
+      "press_1": {
+        "texts": [
+          "Plano muy cerrado de la ensalada de quinoa con falafel en un bowl blanco, que llena el encuadre. Se aprecian la quinoa y las bolitas de falafel doradas, con luz suave de ventana que da frescura y apetito.",
+          "Plano abierto: sobre una mesa junto a la ventana, el bowl blanco con la ensalada de quinoa con falafel. La luz de ventana baña la mesa y el local se ve de fondo, desenfocado, luminoso y tranquilo, como una pausa del almuerzo.",
+          "Una mano sostiene un tenedor sobre el bowl blanco de ensalada de quinoa con falafel, a punto de probar un bocado. Luz de ventana lateral, sin mostrar rostro, con sensación de almuerzo tranquilo y fresco."
+        ],
+        "approaches": [
+          "producto",
+          "lugar",
+          "momento"
+        ],
+        "added_facts": [],
+        "cost_usd": "0.005541600",
+        "seconds": 3.3,
+        "in": 717,
+        "out": 391
+      },
+      "press_2": {
+        "texts": [
+          "Vista desde arriba, muy cerca: la quinoa y el falafel dorado llenan todo el encuadre dentro del bowl blanco. Luz de ventana que marca texturas y hojas frescas, sensación de recién hecho.",
+          "Rincón del local con una mesa de madera y el bowl blanco de ensalada de quinoa con falafel en primer plano. Luz de ventana entra en diagonal; al fondo, sillas y calle difuminadas, ambiente cálido y sereno.",
+          "Una persona sentada junto a la ventana, vista desde el hombro, sin rostro visible, pincha una bolita de falafel del bowl blanco con quinoa. Luz de ventana en sus manos, gesto relajado de pausa del día."
+        ],
+        "approaches": [
+          "producto",
+          "lugar",
+          "momento"
+        ],
+        "added_facts": [],
+        "cost_usd": "0.005913600",
+        "seconds": 3.5,
+        "in": 1033,
+        "out": 365
+      },
+      "within_press_mean_similarity": 0.045,
+      "within_press_max_similarity": 0.069,
+      "across_presses_max_similarity": 0.379,
+      "across_presses_mean_similarity": 0.155,
+      "across_presses_mean_jaccard": 0.274,
+      "duplicates": 0,
+      "new_numbers": [],
+      "scene": true,
+      "asks_for_text": 0,
+      "shown": 6
+    },
+    {
+      "id": "escena-precio-domicilio",
+      "original": "una bolsa de domicilio abierta con el shawarma y las papas saliendo",
+      "press_1": {
+        "texts": [
+          "Plano muy cerrado de un shawarma de carne que llena el encuadre, recién sacado de una bolsa de domicilio abierta; las papas asoman junto a él. Luz cálida, carne jugosa y vapor suave, apetitoso.",
+          "Una mesa de oficina en el centro de la ciudad, con luz de mediodía. Una bolsa de domicilio abierta al centro, con el shawarma y las papas saliendo de ella. Al fondo, desenfocados, un escritorio y una ventana.",
+          "Una mano saca de la bolsa de domicilio abierta el shawarma, y las papas salen a su lado. Sin mostrar el rostro de nadie. Luz natural de almuerzo, sensación de pausa antojada y a tiempo."
+        ],
+        "approaches": [
+          "producto",
+          "lugar",
+          "momento"
+        ],
+        "added_facts": [],
+        "cost_usd": "0.005351600",
+        "seconds": 4.1,
+        "in": 722,
+        "out": 371
+      },
+      "press_2": {
+        "texts": [
+          "Primer plano del shawarma de carne cortado a la mitad sobre papel, con la carne jugosa y las verduras a la vista; el borde de una bolsa de domicilio abierta y unas papas apenas asoman al fondo. Luz cálida lateral, textura apetitosa.",
+          "Plano abierto de un mostrador del local en el centro de la ciudad: una bolsa de domicilio abierta, con el shawarma y las papas saliendo, junto a ensaladas frescas recién armadas. Fondo con la cocina difuminada, luz amable y ambiente activo.",
+          "Dos manos sostienen sobre las rodillas, en un banco de parque cercano, el shawarma recién sacado de la bolsa de domicilio abierta, con las papas asomando. Sin rostros, solo torso y manos. Luz de tarde, calma y antojo antes del primer mordisco."
+        ],
+        "approaches": [
+          "producto",
+          "lugar",
+          "momento"
+        ],
+        "added_facts": [
+          "banco de parque cercano",
+          "ensaladas frescas junto a la bolsa (viene del posicionamiento)",
+          "shawarma cortado a la mitad sobre papel"
+        ],
+        "cost_usd": "0.006883600",
+        "seconds": 4.0,
+        "in": 1018,
+        "out": 465
+      },
+      "within_press_mean_similarity": 0.206,
+      "within_press_max_similarity": 0.499,
+      "across_presses_max_similarity": 0.147,
+      "across_presses_mean_similarity": 0.085,
+      "across_presses_mean_jaccard": 0.303,
+      "duplicates": 0,
+      "new_numbers": [],
+      "scene": true,
+      "asks_for_text": 0,
+      "shown": 6
+    },
+    {
+      "id": "escena-precio-papas",
+      "original": "papas fritas familiares en una canasta, con salsa de ajo al lado",
+      "press_1": {
+        "texts": [
+          "Plano cerrado de las papas fritas familiares en una canasta, doradas y calientes, llenando el encuadre. Al lado, un pocillo con salsa de ajo. Luz cálida y suave, sensación de recién hechas y para compartir entre tres.",
+          "Plano abierto de una mesa del local en el centro de la ciudad: la canasta de papas fritas familiares al centro, con salsa de ajo al lado, y al fondo desenfocado el ambiente del local. Luz natural, ambiente cómodo y acogedor.",
+          "Una mano, sin mostrar rostro, toma una papa frita de la canasta de papas familiares y la acerca a la salsa de ajo que está al lado. Hay otras manos cerca, como si compartieran entre tres. Luz cálida, ambiente relajado."
+        ],
+        "approaches": [
+          "producto",
+          "lugar",
+          "momento"
+        ],
+        "added_facts": [],
+        "cost_usd": "0.005489600",
+        "seconds": 3.2,
+        "in": 716,
+        "out": 386
+      },
+      "press_2": {
+        "texts": [
+          "Primer plano desde arriba de papas fritas familiares apiladas en la canasta, con sal brillando sobre la superficie y vapor ligero. La salsa de ajo, en un recipiente pequeño en una esquina del encuadre. Luz lateral, textura crujiente.",
+          "Barra del local con la canasta de papas fritas familiares sobre la madera y la salsa de ajo al lado. Detrás, desenfocados, un taburete y una ventana con vista a la calle del centro. Luz de media tarde, ambiente tranquilo.",
+          "Una persona sentada a la mesa, sin rostro visible, moja una papa frita en la salsa de ajo junto a la canasta de papas familiares. Plano medio sobre manos y torso, con un portátil cerrado al lado. Luz cálida, pausa de almuerzo."
+        ],
+        "approaches": [
+          "producto",
+          "lugar",
+          "momento"
+        ],
+        "added_facts": [
+          "portátil cerrado",
+          "ventana con vista a la calle",
+          "taburete",
+          "barra de madera"
+        ],
+        "cost_usd": "0.006511600",
+        "seconds": 4.3,
+        "in": 1027,
+        "out": 426
+      },
+      "within_press_mean_similarity": 0.139,
+      "within_press_max_similarity": 0.192,
+      "across_presses_max_similarity": 0.306,
+      "across_presses_mean_similarity": 0.144,
+      "across_presses_mean_jaccard": 0.307,
+      "duplicates": 0,
+      "new_numbers": [],
+      "scene": true,
+      "asks_for_text": 0,
+      "shown": 6
+    }
+  ]
+}
