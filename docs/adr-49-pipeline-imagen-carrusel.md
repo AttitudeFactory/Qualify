@@ -49,7 +49,7 @@ Las cifras marcadas **[H]** son estimaciones y las mide m-25017292. Ninguna sale
 
 **La imagen y el carrusel se producen en cuatro etapas con contratos tipados entre ellas, en un módulo propio. Seedream 5.0 pro solo hace la foto base, que se guarda. Una llamada de Claude con la foto escribe la capa de texto, elige un diseño de un conjunto cerrado y avisa si la base trae letras inventadas. Remotion compone. Otra llamada de Claude revisa la imagen compuesta y la corrige una vez. Ningún píxel de la pieza lo dibuja Pillow.**
 
-1. **Foto base solo de Seedream 5.0 pro, guardada** (§8.7: no se comparan modelos). El prompt de la escena no menciona texto, títulos, botones ni franjas. La base se guarda en `t/{tenant}/generated/{draft_id}/base/…` con su fila en `image_assets`: sha256, `vendor_task_id`, modelo, `rendered_prompt`, versión de prompt. Una fila con `vendor_task_id` nunca se vuelve a enviar (ADR 41 §8). Si la llamada de la capa informa letras o botones inventados, la base se regenera **una sola vez**, y ese tope lo impone una clave única sobre el intento, no un `if`.
+1. **Foto base solo de Seedream 5.0 pro, guardada** (§8.7: no se comparan modelos). El prompt de la escena no menciona texto, títulos, botones ni franjas. La base se guarda en `t/{tenant}/generated/{draft_id}/base/…` con su fila en `image_assets`: sha256, `vendor_task_id`, modelo, `rendered_prompt`, versión de prompt. Una fila con `vendor_task_id` nunca se vuelve a enviar (ADR 41 §8). Si la llamada de la capa informa letras o botones inventados, la base se regenera **una sola vez**, y ese tope lo impone una clave única sobre el intento, no un `if`. *(Enmienda 2026-11-14, en producción desde la migración `0165`, PR #664: la fila de la base va en una tabla propia `piece_base_photos`, no en `image_assets`; ver el bloque «Foto base» de la enmienda de §2.1.)*
 2. **La capa de texto es de Claude, sobre un esquema cerrado.** `LayerSpec` (pydantic) con título, subtítulo, frase de llamado opcional, bloques de información y un campo `base_has_invented_text` (§8.2). `layout_id` sale de un enum versionado que comparten Python y `packages/render/src/props.ts`, con largo máximo por campo según el diseño. El precio entra **por referencia** (`product_id` → precio del catálogo al componer), nunca como texto escrito por el modelo; hoy no se dibuja (decisión #10), pero el esquema ya no permite inventarlo.
 3. **Remotion compone.** Las props de Remotion se derivan de la capa, no al revés: cambiar de diseño no vuelve a llamar a Claude. Una pieza de imagen es una foto fija; un carrusel son N fotos fijas con contador de diapositiva. Cada foto se convierte a JPEG con las dimensiones exactas y se guarda en R2 como `slide-N.jpg` en cuanto termina, antes de que el limpiador del render la borre.
 4. **Revisión de la imagen compuesta, activa desde el inicio** (§8.3). Una llamada de Claude mira lo compuesto; si encuentra un defecto, escribe una capa corregida (fila hija, `source='model'`) y se recompone **una vez**, sin volver a llamar a Seedream.
@@ -68,13 +68,36 @@ La crea la migración de m-25017278 (número tomado contra `origin/main` al abri
 | `base_asset_id` → `image_assets` (foto de Seedream) o la referencia al medio de la Galería (§2.6) | La foto que vio Claude y sobre la que se compone |
 | `source` (`model` · `owner_edit` · `owner_photo`), `parent_layer_id`, `created_by` | Quién la escribió y de qué capa sale |
 | `model_id`, `prompt_version`, `pipeline_version` | Procedencia |
-| `UNIQUE (tenant_id, version_id, position)` | Idempotencia: un reintento no crea otra capa |
+| `UNIQUE (tenant_id, version_id, position)` | Idempotencia: un reintento no crea otra capa — **reemplazada por la Enmienda 2026-11-14, abajo** |
 
 **Recomponer** es una revisión nueva en `piece_versions` (`UNIQUE (tenant_id, draft_id, revision)` ya existe) que reusa la misma base, más una fila nueva en `piece_layers` con `parent_layer_id`. La acción lleva una clave de petición: el doble clic no crea otra versión.
 
 **La edición de texto del dueño** cuenta como entrada manual (excepción del 2026-11-04, `docs/arquitectura.md` §1.6) **solo en los campos que él tecleó**: la fila lleva `source='owner_edit'` y `created_by`, y por `parent_layer_id` conserva la procedencia del modelo para los campos que no tocó. No se apoya solo en Langfuse, porque la capa alimenta una publicación y «Repetir este diseño» (m-25017310) la va a reusar.
 
 **Volumen [H]:** ~30 piezas de imagen o carrusel por negocio al mes × ~3 capas (diapositivas, ediciones y la corrección de §2.4) ≈ 1 100–1 400 filas por negocio al año → ~110 000–140 000 al año con 100 negocios. Lejos de los umbrales de ADR 31.
+
+> **Enmienda 2026-11-14 — el esquema tal como quedó en producción** (migración `0163_piece_layers`, PR #651, desplegada; modelo `PieceLayer` en `creative/models.py`). La revisión del código obligó a cambiar tres cosas de la tabla de arriba. Lo de arriba queda como se firmó; esto rige.
+>
+> 1. **Unicidad.** `UNIQUE (tenant_id, version_id, position)` no servía: la capa corregida por la revisión de lo compuesto (§2 punto 4, activa desde el inicio por §8.3) vive en la **misma** versión y posición que la capa que corrige, y un recomponer es una versión nueva que deriva de la misma capa anterior, quizá varias veces. Quedaron dos claves:
+>    - **una sola capa raíz por versión y posición:** índice único parcial `uq_piece_layers_root_position` sobre `(tenant_id, version_id, position) WHERE parent_layer_id IS NULL`. Un reintento no crea una segunda raíz;
+>    - **a lo sumo una capa derivada del mismo padre dentro de una versión:** `uq_piece_layers_parent UNIQUE (tenant_id, parent_layer_id, version_id)`. Un reintento de la corrección, o del primer paso de una versión nueva, no crea una segunda hija; un cambio más dentro de esa versión deriva de la hija.
+>
+>    La capa vigente de una versión y posición es la última de su cadena: la que no tiene hija en esa versión. Una versión nueva puede no tener raíz, porque su primera capa deriva de una capa de otra versión.
+> 2. **Aislamiento también en las referencias.** `base_asset_id` → `image_assets (id, tenant_id)` y `parent_layer_id` → `piece_layers (id, tenant_id)` son FK compuestas con `tenant_id`, como `brand_id`, `draft_id`, `version_id` y `created_by`. Postgres revisa las FK sin RLS, así que una FK de una sola columna dejaba que un negocio apuntara a una fila de otro, y averiguara si existe. Para eso la migración agregó `UNIQUE (id, tenant_id)` a `image_assets` y a `piece_versions`. Las dos FK usan `ON DELETE SET NULL` solo sobre su columna: purgar la foto o la capa padre conserva la historia sin tocar `tenant_id`.
+> 3. **Dos columnas para la base, nunca las dos:** `base_asset_id` para la foto de Seedream guardada, o `base_media_ref` para un medio de la Galería, en el formato de `gallery_piece.py` (`n:<uuid>` de `business_media`, `p:<uuid>` de `product_media`), **sin FK** (`ck_piece_layers_one_base`). El candado de borrado de §2.6 no vive en esta tabla: es `piece_media_refs`, que todavía no existe y crea m-25017286.
+>
+> **Lo que el esquema no impone y tiene que cumplir quien escribe** (m-25017283, y m-25017287/m-25017288 cuando escriban):
+> - que el padre de una capa derivada sea del mismo borrador y la misma posición;
+> - qué cambio abre una versión nueva y cuál queda en la misma: ver la nota de §2.3.
+>
+> Además: `qualify_app` solo tiene `SELECT` e `INSERT` (una capa nunca se edita en su lugar); `source='model'` exige `model_id` y `prompt_version`; `source='owner_edit'` exige `created_by` y `parent_layer_id`; `position` va de 0 a 9. La tabla salió vacía, sin relleno de piezas anteriores (§8.5).
+>
+> **Foto base en su propia tabla — fusionada y desplegada el 2026-11-14** (m-25017279, PR #664, migración `0165_piece_base_photos`; reemplazó a la primera versión de esa historia, nunca fusionada, que guardaba la base como fila `role='base'` de `image_assets` y la ocultaba con una condición en la política `tenant_isolation`). Rige sobre §2 punto 1 y sobre el punto 2 de esta enmienda en lo que toca a `base_asset_id`. El prompt de la foto base es el compilador 6 (el 5 de #662 menos los «Datos clave» y el nombre de la tipografía):
+> - **La foto base cruda vive en `piece_base_photos`**, con `tenant_id` y la política de aislamiento de siempre (RLS con `NULLIF`, `ENABLE` + `FORCE`), una fila por versión y posición; no es una fila de `image_assets`.
+> - **Por qué:** una base no es una salida de la pieza. En `image_assets` habría que esconderla de unos cuarenta lectores que tratan cada fila como algo publicable (portada, carrusel, Planificador, exportación, WhatsApp). En su propia tabla, ningún lector existente puede verla, por construcción. Además, la política de aislamiento por negocio no se mezcla con una regla de visibilidad, y los lectores que saltan RLS no ven bases por casualidad.
+> - **`piece_layers.base_asset_id` apunta a `piece_base_photos (id, tenant_id)`** con FK compuesta. La migración que lo cambia mueve `fk_piece_layers_base_asset` de `0163`; las dos tablas están vacías.
+> - **Guardar en R2:** el bucket rechaza sobrescribir bajo `t/`. Si el objeto de la base ya existe con el **mismo sha256**, cuenta como guardado con éxito; así un reintento de la misma revisión no deja la pieza sin base.
+> - **Base que no se pudo guardar:** la pieza se termina igual, pero queda **marcada** como sin base, con una métrica o aviso además del log. Esa pieza no se recompone: solo se puede rehacer con «Crear otra» (como las piezas viejas, §8.5).
 
 ### 2.2 Un trabajo de render por diapositiva
 
@@ -93,6 +116,8 @@ Un carrusel de N diapositivas son **N trabajos de render**, cada uno con `jobId 
 | `layer` | `BaseImage`(s) o medios de la Galería, brief, catálogo | `LayerSpec` por diapositiva + `base_has_invented_text` | — (nuevo) |
 | `compose` | `LayerSpec` + base | Fotos fijas en R2, filas en `image_assets` y `template_runs` | Partes de `_ad_image` y `_carousel`, y el camino viejo de carrusel de `STATIC_FLYER` |
 | `check` | Fotos compuestas | Aprobada o una capa corregida | — (nuevo) |
+
+> **Enmienda 2026-11-14 (ver §2.1).** La «capa corregida» de `check` es una fila nueva en la **misma** versión y posición, hija de la capa revisada (`uq_piece_layers_parent`), y vuelve a componer con un `jobId` nuevo (§2.2). Por §2.1 y §3.4, **recomponer abre una versión nueva** en `piece_versions`, porque anula la aprobación. **Queda abierto, a decidir con el fundador:** si un cambio de texto del dueño también abre una versión nueva (lo coherente con §3.4) o es una fila nueva en la misma versión, como lo describen hoy los docstrings del modelo `PieceLayer` y de la migración `0163`. El esquema permite las dos formas; m-25017283/m-25017288 no escriben capas hasta que se decida, y alinean los docstrings con lo decidido.
 
 En `media.py` queda solo el despacho por `ContentKind`. La etapa `compose` habla con `RemotionRenderClient`; no reusa `_template` tal cual. Cada etapa se puede probar sin red con dobles de los clientes.
 
@@ -117,7 +142,7 @@ En `media.py` queda solo el despacho por `ContentKind`. La etapa `compose` habla
 
 Decisión del fundador (§8.6): *«referencia a la galería, pero no debería dejar eliminar algo de galería si se está usando de referencia para una pieza»*.
 
-**Tabla de referencias `piece_media_refs`** (misma migración que `piece_layers`, o la de m-25017286):
+**Tabla de referencias `piece_media_refs`** (misma migración que `piece_layers`, o la de m-25017286; **enmienda 2026-11-14:** no entró en `0163`, la crea la migración de m-25017286):
 
 | Columna | Para qué |
 |---|---|
@@ -126,7 +151,7 @@ Decisión del fundador (§8.6): *«referencia a la galería, pero no debería de
 | `business_media_id` → `business_media` `ON DELETE RESTRICT`, o `product_media_id` → `product_media` `ON DELETE RESTRICT` (`CHECK`: exactamente uno) | La base de datos no deja borrar la fila del medio mientras alguien la usa |
 | `UNIQUE (tenant_id, draft_id, business_media_id, product_media_id)` | Idempotencia al crear y al recomponer |
 
-Las FK van con `tenant_id` (FK compuesta `(id, tenant_id)`); si `business_media` o `product_media` no tienen esa `UNIQUE`, la migración la agrega. La procedencia de la capa (`piece_layers`) guarda el id del medio aparte, sin FK, para que liberar la referencia no borre la historia.
+Las FK van con `tenant_id` (FK compuesta `(id, tenant_id)`); si `business_media` o `product_media` no tienen esa `UNIQUE`, la migración la agrega. La procedencia de la capa (`piece_layers.base_media_ref`, enmienda 2026-11-14) guarda el id del medio aparte, sin FK, para que liberar la referencia no borre la historia.
 
 **Por qué la FK sola no alcanza:** «Quitar» pone la lápida, después borra la carpeta de R2 y **al final** borra la fila. Una FK `RESTRICT` solo saltaría en el último paso, con el archivo ya borrado. Por eso el candado tiene dos capas en la base de datos:
 1. Un disparador `BEFORE UPDATE OF deleted_at` en `business_media` (y el equivalente en `product_media`) que rechaza poner la lápida si existe una fila en `piece_media_refs`. La regla vive en la base de datos, no solo en la pantalla.
