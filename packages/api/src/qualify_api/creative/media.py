@@ -639,6 +639,11 @@ def _key_problems(
         # in the part's own folder before it is read (`MediaProducer._part_brief`)
         *media.clip_video_keys,
         *media.clip_audio_keys,
+        *(
+            key
+            for plan in (*media.parts, *media.parts_removed)
+            for key in (*(plan.clip_image_keys or ()), *plan.clip_video_keys, *plan.clip_audio_keys)
+        ),
     ]
     present = [key for key in keys if key]
     malformed = [key for key in present if parse_tenant_key(key) is None]
@@ -1776,6 +1781,9 @@ class PartWindows(Protocol):
 #: VE-09: the version of the part prompts (`part_reference_prompt`, `part_edit_prompt`),
 #: kept in every part's params next to the compiler's.
 PART_PROMPT_VERSION = 1
+#: UI-4: the version of a `reference` part prompt that also carries the part's own
+#: reference videos or audio (`part_reference_prompt` with its media), kept likewise.
+PART_REFERENCE_MEDIA_PROMPT_VERSION = 2
 
 #: The `PartWindowRefused` codes the owner may answer by making the part new (each is a
 #: `FailureReason` of the same value); anything else is our bug (`PART_FAILED_TEXT`).
@@ -3160,6 +3168,15 @@ class MediaProducer:
             return
         if brief.kind is not ContentKind.CLIP or not brief.media.clip_video_keys:
             return
+        if any(not owned_by(tenant_id, key) for key in brief.media.clip_video_keys):
+            raise BrandReferenceError(_FOREIGN_FILE)
+        if brief.media.part is not None and brief.media.clip_reference_mode == "edit":
+            seconds = self._reference_seconds(brief.media.clip_video_keys)
+            if seconds is None or abs(seconds - brief.media.duration_seconds) > 0.5:
+                raise BrandReferenceError(
+                    "El video debe durar lo mismo que esta parte. Elige otro video de "
+                    f"{brief.media.duration_seconds} segundos."
+                )
         if not self._seedance_reference_model:
             return  # no reference model: the clip falls back to its frames
         save = _Saver(self._store, tenant_id, draft_id, revision)
@@ -9904,6 +9921,11 @@ def _part_provenance(
     file. Empty on any other clip."""
     if part is None:
         return {}
+    prompt_version = (
+        PART_REFERENCE_MEDIA_PROMPT_VERSION
+        if part.mode == "reference" and (part.clip_video_keys or part.clip_audio_keys)
+        else PART_PROMPT_VERSION
+    )
     if window is not None:
         cut: dict[str, Any] | None = {
             "key": window.key,
@@ -9926,7 +9948,7 @@ def _part_provenance(
             # VE-10a: the interval the join keeps when the plan set one (VE-06)
             "trim_start_s": part.trim_start_s,
             "trim_end_s": part.trim_end_s,
-            "prompt_version": PART_PROMPT_VERSION,
+            "prompt_version": prompt_version,
             "window": cut,
             "raw_key": raw_key,
             # VE-10a: the file without the logo (the join's and the final's input) and
@@ -9934,7 +9956,7 @@ def _part_provenance(
             "clean_key": clean_key,
             "logo": dict(logo) if logo else "sin logo",
         },
-        "part_prompt_version": PART_PROMPT_VERSION,
+        "part_prompt_version": prompt_version,
     }
 
 
@@ -9998,6 +10020,17 @@ def part_reference_prompt(
         )
     elif product:
         lines.append("It shows the client's product, " + f'"{product}".')
+    if media.clip_video_keys:
+        count = len(media.clip_video_keys)
+        named = "Video 1" if count == 1 else f"Videos 1 to {count}"
+        lines.append(
+            f"Refer to the camera movement, motion and pacing of {named}, keeping the "
+            "motion details consistent, with the client's product and scene."
+        )
+    if media.clip_audio_keys:
+        count = len(media.clip_audio_keys)
+        named = "Audio 1" if count == 1 else f"Audios 1 to {count}"
+        lines.append(f"Use {named} as the soundtrack and match the rhythm to it.")
     lines.append(_PART_NEW_PEOPLE)
     lines.extend(_part_common_lines(brief, kit, model))
     return _budgeted(lines, _video_budget(brief, model), strict=False)

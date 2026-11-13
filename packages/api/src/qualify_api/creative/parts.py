@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import math
 import re
+from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass
@@ -104,6 +105,10 @@ PARENT_TEXT_CAP_TEXT = (
 )
 PARTS_NEED_TEXT_TEXT = "Espera a que esté listo el texto de tu video para crear sus partes."
 PARTS_UNAVAILABLE_TEXT = "Por ahora no podemos crear las partes de tu video. Inténtalo más tarde."
+PARTS_EXTEND_UNAVAILABLE_TEXT = (
+    "Todavía no podemos crear una parte que siga a la anterior. "
+    "Hazla nueva antes de crear el video."
+)
 PARTS_OVER_BUDGET_TEXT = (
     "No pudimos crear las partes: tu negocio llegó a su límite de este mes. "
     "Escríbenos y lo revisamos contigo."
@@ -123,9 +128,29 @@ class PartsUnavailable(Exception):
     """The parts cannot be made now (the generation queue is off: the parent would never
     be joined again). Nothing was written."""
 
+    def __init__(self, text: str = PARTS_UNAVAILABLE_TEXT) -> None:
+        super().__init__(text)
+        self.text = text
+
+
+class PartsExtendUnavailable(PartsUnavailable):
+    """VE-13 continuity is not implemented: no active extend may start new work."""
+
+    reason = "extend_unavailable"
+
     def __init__(self) -> None:
-        super().__init__(PARTS_UNAVAILABLE_TEXT)
-        self.text = PARTS_UNAVAILABLE_TEXT
+        super().__init__(PARTS_EXTEND_UNAVAILABLE_TEXT)
+
+
+class PartsSourceInvalid(PartsUnavailable):
+    """A claimed split cannot be proved from this tenant's original analysis."""
+
+    reason = "extend_invalid"
+
+    def __init__(self) -> None:
+        super().__init__(
+            "No pudimos comprobar cómo se dividió el video original. Vuelve a elegir sus partes."
+        )
 
 
 class ParentTextMissing(Exception):
@@ -774,6 +799,42 @@ def check_extend_parts(parts: Sequence[VideoPartPlan], analysis: ReelAnalysis | 
         previous = part
 
 
+def check_split_parts(parts: Sequence[VideoPartPlan], analysis: ReelAnalysis | None) -> None:
+    """Prove converted split tails against real cut lengths, without media or vendors."""
+    markers = [p for p in parts if p.original_mode == "extend"]
+    if not markers:
+        return
+    if analysis is None or any(p.analysis_id != analysis.id for p in markers):
+        raise PartsSourceInvalid()
+    seconds = {shot.shot_index: shot.seconds for shot in analysis.shots}
+    for marker in markers:
+        if (
+            len(marker.shot_indexes) != 1
+            or seconds.get(marker.shot_indexes[0], 0) <= PART_MAX_SECONDS
+        ):
+            raise PartsSourceInvalid()
+        if marker.mode == "edit" and not marker.clip_video_keys:
+            raise PartsSourceInvalid()
+    uses = Counter(
+        cut for part in parts if part.analysis_id == analysis.id for cut in part.shot_indexes
+    )
+    if any(cut not in seconds or count > len(_split(seconds[cut])) for cut, count in uses.items()):
+        raise PartsSourceInvalid()
+
+
+def check_split_parts_for_tenant(*, tenant_id: UUID, parts: Sequence[VideoPartPlan]) -> None:
+    """Fresh-parent boundary: tenant-scoped existing analysis, before costs or queue writes."""
+    markers = [p for p in parts if p.original_mode == "extend"]
+    if not markers:
+        return
+    from qualify_api.referentes.reel_analysis import get_analysis  # noqa: PLC0415
+
+    analysis_id = markers[0].analysis_id
+    if analysis_id is None:
+        raise PartsSourceInvalid()
+    check_split_parts(parts, get_analysis(tenant_id, analysis_id))
+
+
 #: A neighbour cut sharing less than this with a window does not count as «in» it (the
 #: cut times are the detector's, a frame apart).
 _WINDOW_SLACK_S = 0.05
@@ -809,6 +870,8 @@ def part_window(
     covered = sorted((s for s in shots if s.shot_index in own), key=lambda s: s.shot_index)
     if not covered or len(covered) != len(own):
         raise PartWindowRefused("window_unavailable")
+    if not all(_edit_allowed(shot) for shot in covered):
+        raise PartWindowRefused("not_edit_eligible")
     length = part.generation_seconds
     source_end = source_seconds if source_seconds is not None else max(s.end_s for s in shots)
     limit = math.floor(source_end + 1e-3)
@@ -1236,9 +1299,12 @@ def _child_brief(
     a key of the piece like any other, checked by `_key_problems` before any read)."""
     media = parent.media
     photos, roles = part_images(media, plan.mode)
+    if plan.clip_image_keys is not None:
+        photos = plan.clip_image_keys
+        roles = plan.clip_image_roles or ("product",) * len(photos)
     part = PartRef(index=index, **plan.model_dump())
-    video_keys: tuple[str, ...] = ()
-    if plan.mode == "edit" and window:
+    video_keys = plan.clip_video_keys
+    if plan.mode == "edit" and not video_keys and window:
         video_keys = (window,)
     child_media = media.model_dump()
     child_media.update(
@@ -1254,7 +1320,7 @@ def _child_brief(
         clip_video_keys=video_keys,
         clip_first_frame_key=None,
         clip_last_frame_key=None,
-        clip_audio_keys=(),
+        clip_audio_keys=plan.clip_audio_keys,
         clip_subtitles=False,
         brand_logo_key=None,
         brand_logo_reference_keys=(),
@@ -1399,6 +1465,10 @@ class PartsService:
             raise PartsUnavailable()
         parent, brief = self._parent(tenant_id, parent_id)
         plan = brief.media.parts
+        # Validate persisted and programmatically assembled plans before any child,
+        # preview charge or queue write, including paths that never used the edit API.
+        for part in plan:
+            VideoPartPlan.model_validate(part.model_dump())
         # m-24985192: a part the owner removed is never made again — «Crear las que
         # faltan» is the plan minus the parts made minus the parts removed
         removed = removed_part_indexes(self._repo, tenant_id=tenant_id, parent_id=parent_id)
@@ -1417,6 +1487,18 @@ class PartsService:
         wanted = [index for index in asked if index not in made_before]
         if not wanted:
             return [made_before[index] for index in asked]
+        # VE-13 continuity is not built: an active `extend` still to be made blocks new
+        # work (never silently made `reference`); one whose child exists already does not.
+        if any(
+            part.mode == "extend" and index not in removed and index not in made_before
+            for index, part in enumerate(plan, 1)
+        ):
+            raise PartsExtendUnavailable()
+        source_entries = (*plan, *brief.media.parts_removed)
+        if analysis is None:
+            check_split_parts_for_tenant(tenant_id=tenant_id, parts=source_entries)
+        else:
+            check_split_parts(source_entries, analysis)
         if not self._has_text(tenant_id, parent):
             raise ParentTextMissing()
         for index in wanted:
@@ -1655,6 +1737,10 @@ __all__ = [
     "PartsRepository",
     "PartsService",
     "PartsUnavailable",
+    "PartsExtendUnavailable",
+    "PartsSourceInvalid",
+    "check_split_parts",
+    "check_split_parts_for_tenant",
     "check_extend_parts",
     "check_parent_text_cap",
     "is_vertical",

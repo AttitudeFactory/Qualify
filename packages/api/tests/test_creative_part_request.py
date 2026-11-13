@@ -25,6 +25,7 @@ from qualify_api.creative.parts import (
     PLANNED,
     PartNeedsDescription,
     PartNeedsPrevious,
+    PartsExtendUnavailable,
     PartsService,
     PartsUnavailable,
 )
@@ -161,21 +162,18 @@ def test_the_parts_asked_for_are_all_or_none() -> None:
     assert ledger.rows == rows and dispatcher.calls == calls
 
 
-def test_a_part_continuing_one_not_created_is_not_made_alone() -> None:
+def test_extend_plan_makes_neither_one_nor_both_until_continuity_is_available() -> None:
     plan = (
         VideoPartPlan(seconds=5, description="La hamburguesa."),
         VideoPartPlan(seconds=5, description="Sigue la hamburguesa.", mode="extend"),
     )
     parts, _, repo, ledger, _, _, parent = world(plan=plan)
-    with pytest.raises(PartNeedsPrevious) as alone:
-        parts.create_parts(
-            tenant_id=TENANT_ID, parent_id=parent, user_id=USER_ID, part_indexes=(2,)
-        )
-    assert alone.value.index == 2 and _children(repo, parent) == [] and _previews(ledger) == 0
-    made = parts.create_parts(
-        tenant_id=TENANT_ID, parent_id=parent, user_id=USER_ID, part_indexes=(1, 2)
-    )
-    assert len(made) == 2
+    for indexes in ((1,), (2,), (1, 2)):
+        with pytest.raises(PartsExtendUnavailable):
+            parts.create_parts(
+                tenant_id=TENANT_ID, parent_id=parent, user_id=USER_ID, part_indexes=indexes
+            )
+    assert _children(repo, parent) == [] and _previews(ledger) == 0
 
 
 def test_a_part_outside_the_plan_is_unknown() -> None:

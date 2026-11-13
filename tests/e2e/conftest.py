@@ -49,7 +49,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 FRONTEND_PORT = int(os.environ.get("QUALIFY_E2E_FRONTEND_PORT", "3390"))
 BACKEND_PORT = int(os.environ.get("QUALIFY_E2E_BACKEND_PORT", "8390"))
 BOOT_TIMEOUT_S = float(os.environ.get("QUALIFY_E2E_BOOT_TIMEOUT", "420"))
-_PYTHONPATH = ":".join(
+_PYTHONPATH = os.pathsep.join(
     str(REPO_ROOT / p)
     for p in (
         "packages/api/src",
@@ -83,7 +83,9 @@ def fake_env() -> dict[str, str]:
     PYTHONPATH as the app)."""
     env = dict(os.environ)
     env.update(FAKE_ENV)
-    env["PYTHONPATH"] = _PYTHONPATH + (":" + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    env["PYTHONPATH"] = _PYTHONPATH + (
+        os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
+    )
     return env
 
 
@@ -135,8 +137,11 @@ def app_server() -> Iterator[str]:
         REFLEX_HOT_RELOAD_OVERRIDE_PATHS=tempfile.mkdtemp(prefix="qualify-e2e-noreload-"),
         **FAKE_ENV,
     )
-    env["PYTHONPATH"] = _PYTHONPATH + (":" + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
-    log = (REPO_ROOT / ".e2e-reflex.log").open("w", encoding="utf-8")
+    env["PYTHONPATH"] = _PYTHONPATH + (
+        os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
+    )
+    log_path = Path(tempfile.mkdtemp(prefix="qualify-e2e-logs-")) / "reflex.log"
+    log = log_path.open("w", encoding="utf-8")
     proc = subprocess.Popen(  # noqa: S603 — fixed argv, our own repo
         [
             "uv",
@@ -153,24 +158,34 @@ def app_server() -> Iterator[str]:
         env=env,
         stdout=log,
         stderr=subprocess.STDOUT,
-        start_new_session=True,
+        start_new_session=os.name != "nt",
+        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
     )
     base = f"http://localhost:{FRONTEND_PORT}"
     try:
         deadline = time.monotonic() + BOOT_TIMEOUT_S
         while not (_http_ok(f"http://localhost:{BACKEND_PORT}/ping") and _http_ok(base)):
             if proc.poll() is not None:
-                raise RuntimeError("reflex exited during boot; see .e2e-reflex.log")
+                raise RuntimeError(f"reflex exited during boot; see {log_path}")
             if time.monotonic() > deadline:
-                raise RuntimeError("reflex did not boot in time; see .e2e-reflex.log")
+                raise RuntimeError(f"reflex did not boot in time; see {log_path}")
             time.sleep(1.0)
         yield base
     finally:
-        os.killpg(proc.pid, signal.SIGINT)
-        try:
-            proc.wait(timeout=20)
-        except subprocess.TimeoutExpired:
-            os.killpg(proc.pid, signal.SIGKILL)
+        if os.name == "nt":
+            # Kill only the process tree this fixture created (uv plus its servers).
+            subprocess.run(
+                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        else:
+            os.killpg(proc.pid, signal.SIGINT)
+            try:
+                proc.wait(timeout=20)
+            except subprocess.TimeoutExpired:
+                os.killpg(proc.pid, signal.SIGKILL)
         log.close()
 
 
@@ -309,6 +324,10 @@ def _open_business(app_server: str, context, scopes: list[str] | None):  # noqa:
     page.get_by_placeholder("Contraseña", exact=True).fill(password)
     page.get_by_role("button", name="Entrar", exact=True).click()
     expect(page).not_to_have_url(re.compile(r"/login"), timeout=60_000)
+    # Test-only metadata from THIS signup, so fixtures never guess the latest tenant.
+    page._qualify_e2e_tenant_id = tenant_id
+    page._qualify_e2e_user_id = user_id
+    page._qualify_e2e_email = email
     return page
 
 

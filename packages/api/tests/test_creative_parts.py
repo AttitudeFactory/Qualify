@@ -40,6 +40,7 @@ from qualify_api.creative.parts import (
     ParentTextMissing,
     PartChanges,
     PartNeedsDescription,
+    PartsExtendUnavailable,
     PartsOverBudget,
     PartsService,
     PartsUnavailable,
@@ -716,7 +717,7 @@ def test_create_parts_refuses_a_short_shared_cut_before_anything_exists() -> Non
     reel, plan = _extend_plan(8.0)
     parts, _, repo, ledger, dispatcher, _, parent = world(plan=plan)
     rows = dict(ledger.rows)
-    with pytest.raises(ExtendTooShort):
+    with pytest.raises(PartsExtendUnavailable):
         parts.create_parts(tenant_id=TENANT_ID, parent_id=parent, user_id=USER_ID, analysis=reel)
     assert _children(repo, parent) == [] and ledger.rows == rows and dispatcher.calls == []
 

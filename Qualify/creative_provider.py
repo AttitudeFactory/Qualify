@@ -49,6 +49,8 @@ from qualify_api.creative.draft_mode import (
 from qualify_api.creative.final_video import PreviewUse
 from qualify_api.creative.media import LocalMediaStore, R2ReadingMediaStore
 from qualify_api.creative.part_request import parts_preview_use
+from qualify_api.creative.parts import PartsExtendUnavailable, check_split_parts_for_tenant
+from qualify_api.creative.parts_plan import check_parts_media_owned
 from qualify_api.creative.piece_export import (
     archive_name,
     build_archive,
@@ -476,13 +478,15 @@ def submit_parts_brief(
     user_id: UUID,
     *,
     parts: Sequence[VideoPartPlan],
+    removed_parts: Sequence[VideoPartPlan] = (),
     scope: PartsScope,
     provenance: Mapping[str, Any] | PartsProvenance | None = None,
     content: Any = None,
     **form: Any,
 ) -> UUID:
     """Create the PARENT of a video by parts (ADR 44 UI-6, m-24921081): a `shot_video`
-    brief with the plan (`media.parts`) and what the owner asked of its parts
+    brief with the active plan (`media.parts`), removal history (`media.parts_removed`)
+    and what the owner asked of its parts
     (`media.parts_request`: `all` or `first`), and — for a plan Claude proposed without a
     reel (m-24921079) — who proposed it (`media.parts_provenance`). The parts themselves
     are created by the creative worker once the parent's text passes
@@ -493,9 +497,15 @@ def submit_parts_brief(
     All or nothing: the month's vistas previas are read first
     (`part_request.parts_preview_use`, 1 per part asked for — only the first for
     `first`); short → `PartsPreviewsShort` and no draft. Otherwise raises what
-    `submit_brief` raises."""
-    content = content or production_content_service()
+    `submit_brief` raises; a part's own file of another business →
+    `PartsPlanRefused(PLAN_MEDIA_KEY)`, before the balance is read."""
     plans = tuple(parts)
+    removed = tuple(removed_parts)
+    if any(part.mode == "extend" for part in plans):
+        raise PartsExtendUnavailable()
+    check_split_parts_for_tenant(tenant_id=tenant_id, parts=(*plans, *removed))
+    check_parts_media_owned(tenant_id, (*plans, *removed))
+    content = content or production_content_service()
     asked = 1 if scope == "first" else len(plans)
     use = parts_preview_use(content, tenant_id=tenant_id, brand_id=brand_id, parts=asked)
     if use is not None and use.short:
@@ -503,6 +513,7 @@ def submit_parts_brief(
     media = {
         **parent_media(form.pop("media", None) or {}),
         "parts": tuple(plans),
+        "parts_removed": removed,
         "parts_request": PartsRequest(scope=scope),
     }
     if provenance is not None:

@@ -66,9 +66,11 @@ from qualify_api.creative.parts import (
     PartNeedsDescription,
     PartNeedsPrevious,
     PartRemoved,
+    PartsExtendUnavailable,
     PartsOverBudget,
     PartsPlanBusy,
     PartsService,
+    PartsSourceInvalid,
     PartsUnavailable,
 )
 from qualify_api.creative.service import (
@@ -89,6 +91,10 @@ def refusal_of(exc: BaseException) -> tuple[PartsRefusal, int | None, int] | Non
     """The stored code of a refusal of `create_parts`, the part it is about and the
     vistas previas short — or None when `exc` is not a refusal (a bug, a database
     error: the caller decides). Pure."""
+    if isinstance(exc, PartsExtendUnavailable):
+        return "extend_unavailable", None, 0
+    if isinstance(exc, PartsSourceInvalid):
+        return "extend_invalid", None, 0
     if isinstance(exc, PartsUnavailable):
         return "unavailable", None, 0
     if isinstance(exc, ParentTextMissing):

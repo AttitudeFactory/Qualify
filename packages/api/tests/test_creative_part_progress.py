@@ -47,10 +47,16 @@ from qualify_api.creative.part_progress import (
     derive_progress,
     derive_state,
 )
-from qualify_api.creative.parts import PartChangeRefused, PartChanges
+from qualify_api.creative.parts import (
+    PartChangeRefused,
+    PartChanges,
+    PartsExtendUnavailable,
+    _child_brief,
+)
+from qualify_api.creative.service import ContentService
 
 from .test_content_service import BRAND_ID, TENANT_ID, USER_ID
-from .test_creative_parts import _children, world
+from .test_creative_parts import PartsRepository, _children, world
 
 NOW = 1_800_000_000.0
 DAY = 24 * 3600.0
@@ -600,18 +606,45 @@ def test_a_published_video_refuses_a_removal() -> None:
     assert not getattr(repo, "removed", {})
 
 
+def _seed_existing_children(
+    content: ContentService, repo: PartsRepository, parent: UUID, indexes: tuple[int, ...]
+) -> list[UUID]:
+    """Preexisting child rows for UI-7 lifecycle tests, without requesting new extends.
+
+    The production creation gate now refuses unsupported continuity; these fixtures
+    represent drafts already stored before that gate, with their original briefs.
+    """
+    parent_brief = repo.briefs[repo.drafts[parent].brief_id]
+    ids: list[UUID] = []
+    for index in indexes:
+        brief = _child_brief(parent_brief, parent_brief.media.parts[index - 1], index, None)
+        child = repo.insert_brief_and_draft(
+            tenant_id=TENANT_ID,
+            user_id=USER_ID,
+            brief=brief,
+            voice_profile_version=0,
+            pipeline_version="legacy-test-fixture",
+            parent_draft_id=parent,
+            part_index=index,
+        )
+        content.run_generation(tenant_id=TENANT_ID, draft_id=child)
+        ids.append(child)
+    return ids
+
+
 def _extend_world(next_status: str = GENERATED):  # noqa: ANN202
-    """Part 3 «Sigue a la anterior» part 2, which failed."""
+    """Existing part 3 continues failed part 2; no new unsupported work is requested."""
     plan = (
         VideoPartPlan(seconds=5, description="La hamburguesa sobre la mesa."),
         VideoPartPlan(seconds=4, description="Manos que sirven papas."),
         VideoPartPlan(mode="extend", seconds=4, description="Las papas llegan a la mesa."),
         VideoPartPlan(seconds=3, description="El logo del local."),
     )
-    parts, content, repo, _ledger, _dispatcher, _router, parent = world(plan=plan)
-    ids = parts.create_parts(tenant_id=TENANT_ID, parent_id=parent, user_id=USER_ID)
-    for child in ids:
-        content.run_generation(tenant_id=TENANT_ID, draft_id=child)
+    parts, content, repo, ledger, dispatcher, _router, parent = world(plan=plan)
+    ids = _seed_existing_children(content, repo, parent, (1, 2, 3, 4))
+    rows, calls = dict(ledger.rows), list(dispatcher.calls)
+    assert parts.create_parts(tenant_id=TENANT_ID, parent_id=parent, user_id=USER_ID) == ids
+    assert ledger.rows == rows and dispatcher.calls == calls  # existing reads stay idempotent
     repo.drafts[ids[1]] = replace(repo.drafts[ids[1]], status=FAILED, failure_reason="timeout")
     repo.drafts[ids[2]] = replace(repo.drafts[ids[2]], status=next_status)
     return PartRecovery(parts), repo, parent, ids
@@ -742,28 +775,28 @@ def test_recreate_makes_a_redo_or_expired_part_again(state: PartState) -> None:
     assert len(ledger.rows) == len(rows) + 1
 
 
-def test_a_missing_extend_after_a_removed_part_is_created_new() -> None:
-    """m-24921081 × m-24985192: part 3 «Sigue a la anterior» was never created and part
-    2 was removed — «Crear las que faltan» makes part 3 «Nueva», and never part 2."""
+def test_missing_extend_after_prior_removal_refuses_new_work_without_silent_conversion() -> None:
+    """UI-7 preserves the removal and existing children; unsupported continuity needs
+    an explicit mode choice rather than an automatic new reference generation."""
     plan = (
         VideoPartPlan(seconds=5, description="La hamburguesa sobre la mesa."),
         VideoPartPlan(seconds=4, description="Manos que sirven papas."),
         VideoPartPlan(mode="extend", seconds=4, description="Las papas llegan a la mesa."),
     )
-    parts, content, repo, _ledger, _dispatcher, _router, parent = world(plan=plan)
-    first = parts.create_parts(
-        tenant_id=TENANT_ID, parent_id=parent, user_id=USER_ID, part_indexes=(1, 2)
-    )
-    for child in first:
-        content.run_generation(tenant_id=TENANT_ID, draft_id=child)
+    parts, content, repo, ledger, dispatcher, _router, parent = world(plan=plan)
+    first = _seed_existing_children(content, repo, parent, (1, 2))
     repo.drafts[first[1]] = replace(repo.drafts[first[1]], status=FAILED, failure_reason="timeout")
     PartRecovery(parts).remove_part(
         tenant_id=TENANT_ID, parent_id=parent, part_index=2, user_id=USER_ID
     )
 
-    made = parts.create_parts(tenant_id=TENANT_ID, parent_id=parent, user_id=USER_ID)
-
-    assert len(made) == 2 and made[0] == first[0]
-    third = repo.briefs[repo.drafts[made[1]].brief_id]
-    assert third.media.part is not None and third.media.part.mode == "reference"
-    assert third.media.part.index == 3
+    rows, calls = dict(ledger.rows), list(dispatcher.calls)
+    assert parts.create_parts(
+        tenant_id=TENANT_ID, parent_id=parent, user_id=USER_ID, part_indexes=(1,)
+    ) == [first[0]]
+    with pytest.raises(PartsExtendUnavailable):
+        parts.create_parts(tenant_id=TENANT_ID, parent_id=parent, user_id=USER_ID)
+    assert ledger.rows == rows and dispatcher.calls == calls
+    assert first[1] in repo.removed
+    assert [child.id for child in _children(repo, parent)] == [first[0]]
+    assert repo.briefs[repo.drafts[parent].brief_id].media.parts[2].mode == "extend"

@@ -914,6 +914,8 @@ def drawer(
     width: str = "32rem",
     icon: str | None = None,
     step: rx.Component | None = None,
+    on_open_auto_focus: Any | None = None,
+    on_close_auto_focus: Any | None = None,
 ) -> rx.Component:
     """A panel that slides in from the right edge and stays there while the operator
     works through something longer than a dialog — the Planificador's assign flow.
@@ -999,6 +1001,14 @@ def drawer(
             rx.flex(*parts, direction="column", height="100%", width="100%", gap="0"),
             class_name="q-drawer",
             style={"--q-drawer-w": width},
+            **(
+                {"on_open_auto_focus": on_open_auto_focus} if on_open_auto_focus is not None else {}
+            ),
+            **(
+                {"on_close_auto_focus": on_close_auto_focus}
+                if on_close_auto_focus is not None
+                else {}
+            ),
         ),
         open=open,
         on_open_change=on_open_change,
