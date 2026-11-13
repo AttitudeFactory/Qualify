@@ -2614,7 +2614,15 @@ def _review_panel() -> rx.Component:
         # A grid, not a flex row: from `md` up the media gets its own track and a real
         # gutter, so the video never touches the form; on phones it stacks, media first.
         rx.box(
-            rx.box(_media_column(), class_name="q-rv-stage"),
+            rx.box(
+                _media_column(),
+                # m-25019220: a view-only upload is Instagram's copy — said by its picture
+                rx.cond(
+                    draft.view_only_note != "",
+                    rx.box(callout(draft.view_only_note, "info"), margin_top="0.75rem"),
+                ),
+                class_name="q-rv-stage",
+            ),
             rx.box(_variant_editor(), min_width="0", width="100%"),
             display="grid",
             grid_template_columns=rx.breakpoints(
@@ -3128,6 +3136,8 @@ def _history_line() -> rx.Component:
     before that it does not help any decision; nothing either if the count is unknown."""
     return rx.cond(
         (CreativeState.draft_history_help != "")
+        # m-25019220: a view-only upload is not «Por probar» — its line is by the picture
+        & (CreativeState.draft.view_only_note == "")
         & ~CreativeState.draft.is_drafting
         & ~CreativeState.draft.is_failed,
         rx.hstack(
