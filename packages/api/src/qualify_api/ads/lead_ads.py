@@ -118,7 +118,7 @@ def published_lead_form(tenant_id: UUID, form_id: UUID) -> LeadFormTarget:
         ).first()
     if row is None:
         raise WizardUnavailable(
-            "Elige un formulario ya enviado a Meta desde la misma cuenta de esta publicación."
+            "Elige un formulario que ya esté listo y sea de la misma cuenta de esta publicación."
         )
     return LeadFormTarget(
         row.id,
