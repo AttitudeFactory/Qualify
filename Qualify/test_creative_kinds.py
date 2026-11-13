@@ -24,8 +24,9 @@ _USER_ID = UUID("c0000000-0000-4000-8000-000000000001")
 def test_the_picker_offers_the_seven_kinds_in_order() -> None:
     assert (
         [key for key, *_ in KIND_OPTIONS]
-        # a video by parts (ADR 44) is reached from a Clip or a reel, never offered here
-        == [kind.value for kind in ContentKind if not kind.is_parts_parent]
+        # a video by parts (ADR 44) is reached from a Clip or a reel and an own-media piece
+        # is recorded from «Publicar» (m-25019217): neither is offered here
+        == [kind.value for kind in ContentKind if kind.is_offered]
         == [
             "creator_script",
             "avatar_video",
@@ -50,6 +51,19 @@ def test_a_video_by_parts_has_a_name_but_no_place_in_the_picker() -> None:
     assert draft_kind_label(shot_video, has_video=False) == "Video por partes"
     assert all(KIND_LABELS.get(kind.value) for kind in ContentKind)
     assert slug("Video por partes") not in ("", "pieza")
+
+
+def test_an_own_media_piece_has_a_name_but_is_never_offered() -> None:
+    """m-25019217: what the owner published from «Publicar» is a piece with its own name
+    (pill, download, «Tipo» filter) that «¿Qué creamos?» never offers nor selects."""
+    from .creative_vm import draft_kind_label
+
+    own_media = ContentKind.OWN_MEDIA.value
+    assert own_media not in [key for key, *_ in KIND_OPTIONS]
+    assert draft_kind_label(own_media, has_video=False) == "Subida por ti"
+    assert draft_kind_label(own_media, has_video=True) == "Subida por ti"
+    state = CreativeState()
+    assert state.choose_kind(own_media) is None
 
 
 def test_the_template_kind_is_chosen_and_reads_the_catalog_once() -> None:

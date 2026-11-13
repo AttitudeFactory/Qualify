@@ -54,6 +54,13 @@ from typing import Any, Final, Protocol
 from qualify_api.conversations.choices import choice_label as tap_origin
 
 from .ad_message_vm import ad_origin_href, ad_origin_label
+from .chat_row_vm import (
+    CHANNEL_INSTAGRAM,
+    ChatRowVM,
+    build_chat_row,
+    minutes_left,
+    unknown_contact,
+)
 from .connection_copy import DISCONNECTED, DISCONNECTED_NOTICE, NO_ACCESS, PERMISSION_MISSING_NOTICE
 from .whatsapp_chats_vm import format_day, message_time, relative_time
 
@@ -115,7 +122,6 @@ WINDOW_CLOSED_NOTICE = (
     "Instagram solo permite contestar dentro de ese plazo; cuando vuelva a escribir, "
     "podrás responder de nuevo."
 )
-WINDOW_CLOSED_SHORT = "No se puede responder"
 #: m-25018661: the person unsent every message they had sent (Meta makes us erase them),
 #: so only the business's replies remain and there is no 24 h to count from.
 NO_INBOUND_NOTICE = (
@@ -616,23 +622,19 @@ def window_words(
     zone: tzinfo,
     *,
     has_inbound: bool = True,
-) -> tuple[str, str, str]:
-    """(sentence for the header, short pill for the row — "" while comfortably open —,
-    tone). «Puedes responder hasta las 17:47» / «Te quedan 12 min para responder» /
-    «Ya no puedes responder…». `has_inbound=False` (no message of the person is left,
-    m-25018661) says that instead of the 24 h."""
+) -> tuple[str, str]:
+    """(sentence for the header, tone). «Puedes responder hasta las 17:47» / «Te quedan
+    12 min para responder» / «Ya no puedes responder…». `has_inbound=False` (no message
+    of the person is left, m-25018661) says that instead of the 24 h. The row says the
+    window through the shared pill (`chat_row_vm`), with the same minute count."""
     if not has_inbound:
-        return NO_INBOUND_NOTICE, WINDOW_CLOSED_SHORT, "neutral"
+        return NO_INBOUND_NOTICE, "neutral"
     if not is_open or closes_at is None:
-        return WINDOW_CLOSED_NOTICE, WINDOW_CLOSED_SHORT, "neutral"
+        return WINDOW_CLOSED_NOTICE, "neutral"
     remaining = closes_at - now
     if remaining < timedelta(hours=1):
-        minutes = max(1, int(remaining.total_seconds() // 60))
-        return (
-            f"Te quedan {minutes} min para responder: {WINDOW_RULE}",
-            f"Quedan {minutes} min",
-            "warn",
-        )
+        minutes = max(1, minutes_left(is_open, closes_at, now))
+        return f"Te quedan {minutes} min para responder: {WINDOW_RULE}", "warn"
     local_close, local_now = _local(closes_at, zone), _local(now, zone)
     clock = local_close.strftime("%H:%M")
     when = (
@@ -640,7 +642,7 @@ def window_words(
         if local_close.date() == local_now.date()
         else (f"hasta mañana a las {clock}")
     )
-    return f"{WINDOW_RULE} En esta conversación, {when}.", "", "ok"
+    return f"{WINDOW_RULE} En esta conversación, {when}.", "ok"
 
 
 # ======================================================================================
@@ -651,7 +653,7 @@ def window_words(
 @dataclass(frozen=True)
 class ThreadRowVM:
     thread_id: str
-    title: str  # the person's name, else their handle, else «Persona ·id»
+    title: str  # the person's name, else their @handle, else «Cliente de Instagram»
     handle: str  # «@username» or "" (never equal to the title)
     subtitle: str  # «@account · Instagram Direct»
     preview: str
@@ -661,7 +663,6 @@ class ThreadRowVM:
     attention_label: str
     attention_tone: str
     window_label: str  # the sentence (header)
-    window_short: str  # the pill (row), "" while comfortably open
     window_tone: str
     window_open: bool
     is_closed: bool
@@ -670,6 +671,9 @@ class ThreadRowVM:
     avatar_url: str = ""
     # Set for ONE render after a refresh found a newer inbound: the row pulses.
     fresh: bool = False
+    # m-25017844: minutes until the window closes when under an hour, else 0 — the
+    # shared row's «Responde en N min».
+    window_minutes: int = 0
 
 
 EMPTY_THREAD = ThreadRowVM(
@@ -684,7 +688,6 @@ EMPTY_THREAD = ThreadRowVM(
     attention_label="Sin mensajes",
     attention_tone="neutral",
     window_label=WINDOW_CLOSED_NOTICE,
-    window_short=WINDOW_CLOSED_SHORT,
     window_tone="neutral",
     window_open=False,
     is_closed=False,
@@ -752,7 +755,7 @@ def build_thread_row(
     elif extra.preview_direction == "outbound":
         preview = OUTBOUND_PREFIX + preview
     label, tone = attention_pill(view.attention)
-    window_label, window_short, window_tone = window_words(
+    window_label, window_tone = window_words(
         view.window.is_open,
         view.window.closes_at,
         now,
@@ -781,7 +784,6 @@ def build_thread_row(
         attention_label=label,
         attention_tone=tone,
         window_label=window_label,
-        window_short=window_short,
         window_tone=window_tone,
         window_open=view.window.is_open,
         is_closed=thread.status == "closed",
@@ -789,6 +791,27 @@ def build_thread_row(
         hue=avatar_hue(thread.counterpart_external_id),
         avatar_url=avatar_url,
         fresh=fresh,
+        window_minutes=minutes_left(view.window.is_open, view.window.closes_at, now),
+    )
+
+
+def as_chat_row(row: ThreadRowVM) -> ChatRowVM:
+    """m-25017844: this channel's row in the shared shape (`chat_row_vm`). «Pendiente»
+    becomes the waiting dot (and the bold name); «Leída» / «Respondida» leave the row
+    (the filters say them); the window joins the one pill only when it is about to
+    close. Instagram has no payment step, so «Pago por revisar» never shows here."""
+    return build_chat_row(
+        thread_id=row.thread_id,
+        channel=CHANNEL_INSTAGRAM,
+        title=row.title,
+        preview=row.preview,
+        preview_icon=row.preview_icon,
+        time_label=row.time_label,
+        waiting=row.attention == "pending",
+        initials_from="" if row.title == UNKNOWN_PERSON else row.title,
+        reply_within_minutes=row.window_minutes,
+        avatar_url=row.avatar_url,
+        fresh=row.fresh,
     )
 
 
@@ -903,7 +926,8 @@ SEND_LABEL: Final = "Enviar"
 #: The Lucide icon next to a tapped message's origin (bubble and list preview).
 TAP_ICON: Final = "pointer"
 # m-24842988: who the title shows when Instagram gave neither a name nor a handle.
-UNKNOWN_PERSON: Final = "Persona sin nombre"
+# m-25017852: «Cliente de Instagram» (was «Persona sin nombre») — says where they wrote.
+UNKNOWN_PERSON: Final = unknown_contact(CHANNEL_INSTAGRAM)
 
 
 def reply_sent_message(who: str) -> str:

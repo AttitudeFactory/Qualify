@@ -1183,6 +1183,7 @@ def _done_panel() -> rx.Component:
         callout(
             rx.vstack(
                 rx.text(P.partial_text, size="3", weight="medium"),
+                rx.text(P.week_text, size="2"),
                 _done_actions(),
                 spacing="3",
                 width="100%",
@@ -1194,6 +1195,7 @@ def _done_panel() -> rx.Component:
         callout(
             rx.vstack(
                 rx.text(P.done_text, size="3", weight="medium"),
+                rx.text(P.week_text, size="2"),
                 _done_actions(),
                 spacing="3",
                 width="100%",

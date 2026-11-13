@@ -765,6 +765,48 @@ def test_reject_with_regenerate_reenters_drafting_and_redispatches() -> None:
     assert dispatcher.calls == [(TENANT_ID, draft_id)]
 
 
+def _as_own_media(repo: InMemoryRepository, draft_id: UUID) -> None:
+    """m-25019217: turn the seeded piece into one recorded from «Publicar»."""
+    brief_id = repo.drafts[draft_id].brief_id
+    repo.briefs[brief_id] = repo.briefs[brief_id].model_copy(update={"kind": ContentKind.OWN_MEDIA})
+
+
+def test_an_own_media_piece_is_never_regenerated() -> None:
+    """m-25019217: refused before the FSM, the charge and the dispatch — nothing moves."""
+    from qualify_api.creative.service import OwnMediaLocked
+
+    router = FakeRouter([ok_outcome(copy_dict())])
+    service, repo, dispatcher = make_service(router=router, kit=make_kit(), voice=make_voice())
+    draft_id, variant_id = _generated_draft_with_variant(service, repo)
+    service.approve(tenant_id=TENANT_ID, draft_id=draft_id, variant_id=variant_id, user_id=USER_ID)
+    _as_own_media(repo, draft_id)
+    before = repo.drafts[draft_id]
+    dispatched = list(dispatcher.calls)
+
+    with pytest.raises(OwnMediaLocked):
+        service.reject(
+            tenant_id=TENANT_ID, draft_id=draft_id, reason="x", user_id=USER_ID, regenerate=True
+        )
+    assert repo.drafts[draft_id] == before
+    assert dispatcher.calls == dispatched
+
+
+def test_an_own_media_piece_is_never_edited() -> None:
+    from qualify_api.creative.service import OwnMediaLocked
+
+    router = FakeRouter([ok_outcome(copy_dict())])
+    service, repo, _ = make_service(router=router, kit=make_kit(), voice=make_voice())
+    draft_id, variant_id = _generated_draft_with_variant(service, repo)
+    _as_own_media(repo, draft_id)
+    before = repo.drafts[draft_id]
+    edit = CopyPayload.model_validate(copy_dict(hook="Editado a mano"))
+
+    with pytest.raises(OwnMediaLocked):
+        service.edit_variant(tenant_id=TENANT_ID, variant_id=variant_id, copy=edit, user_id=USER_ID)
+    assert repo.variants[variant_id].edited_copy is None
+    assert repo.drafts[draft_id] == before
+
+
 # ---------------------------------------------------------------------------
 # db: full happy path against Postgres, fake adapter injected (no network)
 
