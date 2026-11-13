@@ -148,6 +148,36 @@ class WAMedia(_Shape):
     filename: str | None = None
 
 
+class WAOrderItem(_Shape):
+    """One `order.product_items[]` line (webhooks reference, `messages` › `order`, read
+    2026-11-13). Every field is loose on purpose: the reference types `item_price` as an
+    Integer but its own example is `7.99`, and one malformed line must never turn the
+    whole change into a `contract_violation` — the consumer validates each value
+    (`whatsapp.orders.cart_record` skips a line it cannot read)."""
+
+    product_retailer_id: str | int | None = None
+    quantity: Any = None
+    item_price: Any = None
+    currency: str | None = None
+
+
+class WAOrder(_Shape):
+    """The `order` object of an inbound `type = "order"` message: what a customer sent
+    from the business's WhatsApp catalog cart. Meta sends no product name — only the
+    catalog's `product_retailer_id`. `text` is the customer's optional note."""
+
+    catalog_id: str | None = None
+    text: str | None = None
+    product_items: list[WAOrderItem] = Field(default_factory=list)
+
+    @field_validator("product_items", mode="before")
+    @classmethod
+    def _only_objects(cls, value: Any) -> Any:
+        if not isinstance(value, list):
+            return []
+        return [item for item in value if isinstance(item, dict)]
+
+
 # The inbound types whose payload carries a downloadable `WAMedia` under the key of the
 # same name.
 MEDIA_MESSAGE_TYPES: Final = ("image", "audio", "video", "document", "sticker")
@@ -156,8 +186,9 @@ MEDIA_MESSAGE_TYPES: Final = ("image", "audio", "video", "document", "sticker")
 class WAMessage(_Shape):
     """One inbound message. Provisional (see module docstring) — only `id`, `from`,
     `timestamp`, `type` are asserted required; everything type-specific is optional
-    so an unmodelled type (`location`, `order`, `nfm_reply`…) still parses and reaches
-    the sink with its `type` intact. The five media types are modelled (`WAMedia`)."""
+    so an unmodelled type (`location`, `nfm_reply`…) still parses and reaches the sink
+    with its `type` intact. The five media types are modelled (`WAMedia`), and the
+    catalog cart (`order`, `WAOrder`, m-25018684)."""
 
     id: str
     from_: str = Field(alias="from")
@@ -170,6 +201,13 @@ class WAMessage(_Shape):
     video: WAMedia | None = None
     document: WAMedia | None = None
     sticker: WAMedia | None = None
+    order: WAOrder | None = None
+
+    @field_validator("order", mode="before")
+    @classmethod
+    def _order_object(cls, value: Any) -> Any:
+        # A non-object `order` reads as absent: the message still lands (type intact).
+        return value if isinstance(value, dict) else None
 
     @property
     def media(self) -> WAMedia | None:

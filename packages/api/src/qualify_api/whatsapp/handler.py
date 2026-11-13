@@ -85,6 +85,28 @@ the automation never answers it. The handler's own state save never rewrites `_p
 unless this very handoff wrote a NEW record, so a review or an owner's «received»
 written meanwhile is never undone.
 
+**The catalog cart (m-25018684).** A `type = "order"` message (the customer sent the
+cart of the business's WhatsApp catalog) is never menu input: no reply, no menu, ZERO
+outbox rows. Its message row is stored as every other (`media_type = 'other'`); then the
+cart becomes the thread's current order (`orders.record_cart_order`, keyed on its
+`wamid`), its retailer ids looked up among the receiving brand's Galería products by
+`cart_product_loader(phone_row_id, ids)` (`whatsapp.catalog.load_cart_products_for_phone`
+in production, one query). The thread is handed to a person exactly as a confirmed menu
+order is: `_handoff` (reason `CART_HANDOFF_REASON`), automation paused, the engine's
+working order and payment keys cleared. A replayed cart (the message row already
+stored) re-runs only this idempotent step, so a crash between the insert and the save
+never loses the order, and a cart already recorded — current or archived — changes
+nothing.
+
+**Replacing an order (m-25018684).** When a confirmation from another message (menu or
+cart) replaces the current order, `orders` archives the previous record under
+`_orders_previous`, and the save runs with `archive_payment=True`: the current `_payment`
+is only what this step wrote (a menu payment choice, or nothing — a cart never inherits
+the previous order's payment), and the stored one is snapshotted into the archive entry
+in the same statement when it was that order's. A proof the customer sends afterwards
+for the OLD order finds no «Esperando el pago» to move, so it lands as a plain message a
+person reads (the archive keeps that order's payment as it stood).
+
 No `mark_read` here: the sender (WA-08) marks the inbound read when it answers.
 
 Logging discipline is `wa_shapes.WAChangeSummary`'s: ids, types and enumerations only —
@@ -95,7 +117,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any, Final, Protocol
@@ -154,7 +176,16 @@ from qualify_api.whatsapp.optins import (
     is_stop_keyword,
     phone_from_wa_id,
 )
-from qualify_api.whatsapp.orders import record_confirmed_order
+from qualify_api.whatsapp.orders import (
+    CART_ENGINE_VERSION,
+    CTX_ORDER_RECORD,
+    SOURCE_CART,
+    CartProduct,
+    cart_product_ids,
+    record_cart_order,
+    record_confirmed_order,
+    recorded_order_message_ids,
+)
 from qualify_api.whatsapp.payment_status import (
     CTX_PAYMENT_RECORD,
     STATUS_AWAITING,
@@ -180,6 +211,10 @@ CTX_HANDOFF: Final = "_handoff"
 # Pre-0058 shim: where this handler kept `attempts` before the column existed. Read once
 # when the column is still 0, dropped on the next save, never written.
 CTX_ATTEMPTS: Final = "_attempts"
+
+#: m-25018684: the inbound type of a catalog cart, and the `_handoff` reason it leaves.
+ORDER_MESSAGE_TYPE: Final = "order"
+CART_HANDOFF_REASON: Final = "catalog_cart"
 
 
 @dataclass(frozen=True)
@@ -207,6 +242,8 @@ PhoneResolver = Callable[[str], PhoneResolution]
 MenuLoader = Callable[[UUID], "tuple[MenuDefinition, UUID] | PublishedMenu | None"]
 CatalogLoader = Callable[[UUID], Sequence[CatalogItem]]  # by `phone_row_id`
 PaymentLoader = Callable[[UUID], Sequence[PaymentOption]]  # by `phone_row_id`
+# By `phone_row_id` and product ids → products keyed by canonical UUID text.
+CartProductLoader = Callable[[UUID, Collection[UUID]], Mapping[str, CartProduct]]
 Clock = Callable[[], datetime]
 
 
@@ -234,6 +271,14 @@ def no_catalog(phone_row_id: UUID) -> Sequence[CatalogItem]:
     """The offline default: an empty catalog (production passes
     `whatsapp.catalog.load_catalog_for_phone`, WA-15)."""
     return ()
+
+
+def no_cart_products(
+    phone_row_id: UUID, product_ids: Collection[UUID]
+) -> Mapping[str, CartProduct]:
+    """The offline default: no cart line links to a Galería product (production passes
+    `whatsapp.catalog.load_cart_products_for_phone`, m-25018684)."""
+    return {}
 
 
 def no_payments(phone_row_id: UUID) -> Sequence[PaymentOption]:
@@ -465,6 +510,7 @@ def whatsapp_messages_handler(
     menu_loader: MenuLoader = no_menu,
     catalog_loader: CatalogLoader = no_catalog,
     payment_loader: PaymentLoader = no_payments,
+    cart_product_loader: CartProductLoader = no_cart_products,
     clock: Clock = _utcnow,
     attribute_ad: Callable[..., bool] | None = None,
     opt_outs: OptOutRepository | None = None,
@@ -521,6 +567,7 @@ def whatsapp_messages_handler(
 
         context = stored_context(result.state)
         new_payment_record = False
+        archived = False
         payloads: list[tuple[dict[str, Any], dict[str, Any] | None]] = []
         for action in result.actions:
             if isinstance(action, Handoff):
@@ -533,9 +580,16 @@ def whatsapp_messages_handler(
                 if action.summary.get("order_confirmed") is True:
                     # WA-15: the confirmed order becomes the record a person reads; the
                     # engine's working order is closed so a resumed chat starts anew.
-                    record_confirmed_order(
-                        context, action.summary, confirmed_at=at, source_message_id=message.id
+                    had_order = isinstance(context.get(CTX_ORDER_RECORD), Mapping)
+                    written = record_confirmed_order(
+                        context,
+                        action.summary,
+                        confirmed_at=at,
+                        source_message_id=message.id,
+                        payment=context.get(CTX_PAYMENT_RECORD),
                     )
+                    # m-25018684: the replaced order went to `_orders_previous`.
+                    archived = archived or (written and had_order)
                     context.pop(CTX_ORDER, None)
                     context.pop(CTX_ORDER_CONFIRMED, None)
                 choice = action.summary.get("payment")
@@ -557,6 +611,9 @@ def whatsapp_messages_handler(
             if payload is not None:
                 payloads.append((payload, None))
 
+        if archived and not new_payment_record:
+            # The previous order's payment is archived with it, never carried over.
+            context.pop(CTX_PAYMENT_RECORD, None)
         repo.save_thread_state(
             thread_id=thread_id,
             tenant_id=ctx.tenant_id,
@@ -568,8 +625,10 @@ def whatsapp_messages_handler(
                 attempts=result.state.attempts,
             ),
             # The payment record is written by guarded updates (review, «received»);
-            # only a NEW record from this handoff may replace it (m-24955648).
-            preserve_payment=not new_payment_record,
+            # only a NEW record from this handoff may replace it (m-24955648); a
+            # replaced order archives the stored one (m-25018684).
+            preserve_payment=not new_payment_record and not archived,
+            archive_payment=archived,
         )
         for payload, attachment in payloads:
             repo.enqueue_outbox(
@@ -589,6 +648,79 @@ def whatsapp_messages_handler(
             result.state.node_id,
             len(payloads),
             result.handed_off,
+        )
+
+    def _cart(ctx: _ChangeContext, *, thread_id: UUID, message: WAMessage) -> None:
+        """m-25018684: the catalog cart becomes the current order and the thread goes
+        to a person. Never a menu step, never an outbox row (see the module docs)."""
+        order = message.order
+        items = [item.model_dump() for item in order.product_items] if order else []
+        stored = repo.get_thread_state(thread_id)
+        context = dict(stored.context) if stored is not None else {}
+        if message.id in recorded_order_message_ids(context):
+            logger.info(
+                "whatsapp webhook: tenant=%s thread=%s wamid=%s cart already recorded",
+                ctx.tenant_id,
+                thread_id,
+                message.id,
+            )
+            return
+        ids = cart_product_ids(items)
+        products = cart_product_loader(ctx.phone_row_id, ids) if ids else {}
+        now = clock()
+        had_order = isinstance(context.get(CTX_ORDER_RECORD), Mapping)
+        written = record_cart_order(
+            context,
+            items=items,
+            products=products,
+            confirmed_at=epoch_to_datetime(message.timestamp) or now,
+            source_message_id=message.id,
+            archived_at=now,
+            catalog_id=order.catalog_id if order is not None else None,
+            note=order.text if order is not None else None,
+            payment=context.get(CTX_PAYMENT_RECORD),
+        )
+        archived = written and had_order
+        if written:
+            # The cart has no payment yet: the previous one never shows as its own.
+            context.pop(CTX_PAYMENT_RECORD, None)
+        context[CTX_HANDOFF] = {
+            "reason": CART_HANDOFF_REASON,
+            "summary": {
+                "source": SOURCE_CART,
+                "order_recorded": written,
+                "engine_version": CART_ENGINE_VERSION,
+            },
+            "at": now.isoformat(),
+        }
+        for key in (CTX_ORDER, CTX_ORDER_CONFIRMED, CTX_PAYMENT, CTX_PAYMENT_HANDOFF, CTX_ATTEMPTS):
+            context.pop(key, None)
+        repo.save_thread_state(
+            thread_id=thread_id,
+            tenant_id=ctx.tenant_id,
+            state=StoredThreadState(
+                menu_version_id=stored.menu_version_id if stored is not None else None,
+                node_id=None,
+                context=context,
+                paused_at=now,
+                attempts=0,
+            ),
+            preserve_payment=not written,
+            archive_payment=archived,
+        )
+        record = context.get(CTX_ORDER_RECORD)
+        lines = record.get("items", []) if written and isinstance(record, Mapping) else []
+        logger.info(
+            "whatsapp webhook: tenant=%s thread=%s wamid=%s cart items=%d lines=%d "
+            "linked=%d recorded=%s archived=%s sends=0 handed_off=True",
+            ctx.tenant_id,
+            thread_id,
+            message.id,
+            len(items),
+            len(lines),
+            sum(1 for line in lines if line.get("linked")),
+            written,
+            archived,
         )
 
     def _may_be_a_payment_proof(ctx: _ChangeContext, message: WAMessage, *, first: bool) -> bool:
@@ -673,6 +805,10 @@ def whatsapp_messages_handler(
                     channel="whatsapp",
                     referral=raw_whatsapp_referral(event, message.id, message.from_),
                 )
+            if message.type == ORDER_MESSAGE_TYPE:
+                # m-25018684: idempotent per wamid, so a replay re-runs it safely.
+                _cart(ctx, thread_id=upsert.thread_id, message=message)
+                continue
             if not inserted:
                 logger.debug(
                     "whatsapp webhook: tenant=%s thread=%s wamid=%s already stored — menu skipped",
@@ -752,8 +888,11 @@ def whatsapp_messages_handler(
 
 
 __all__ = [
+    "CART_HANDOFF_REASON",
     "CTX_ATTEMPTS",
     "CampaignReceiptSink",
+    "CartProductLoader",
+    "ORDER_MESSAGE_TYPE",
     "CTX_HANDOFF",
     "WHATSAPP_MESSAGES_HANDLER_KEY",
     "CatalogLoader",
@@ -768,6 +907,7 @@ __all__ = [
     "message_text",
     "PaymentLoader",
     "no_catalog",
+    "no_cart_products",
     "no_menu",
     "no_payments",
     "outbox_payload",

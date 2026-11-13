@@ -442,7 +442,10 @@ def production_processor(*, worker_id: str) -> Processor:
     )
     from qualify_api.webhooks.repository import WebhookQueue  # noqa: PLC0415
     from qualify_api.whatsapp.campaigns import PostgresCampaignReceiptRepository  # noqa: PLC0415
-    from qualify_api.whatsapp.catalog import load_catalog_for_phone  # noqa: PLC0415
+    from qualify_api.whatsapp.catalog import (  # noqa: PLC0415
+        load_cart_products_for_phone,
+        load_catalog_for_phone,
+    )
     from qualify_api.whatsapp.handler import (  # noqa: PLC0415
         WHATSAPP_MESSAGES_HANDLER_KEY,
         whatsapp_messages_handler,
@@ -487,6 +490,8 @@ def production_processor(*, worker_id: str) -> Processor:
                 menu_loader=load_published_menu_for_phone,
                 catalog_loader=load_catalog_for_phone,
                 payment_loader=load_payment_options_for_phone,
+                # m-25018684: a catalog cart's lines link to the brand's Galería products.
+                cart_product_loader=load_cart_products_for_phone,
                 # WA-19: an inbound STOP/BAJA/CANCELAR revokes the sender's opt-in.
                 opt_outs=PostgresOptOutRepository(),
                 # WA-20: delivery receipts of campaign sends, by wamid.
