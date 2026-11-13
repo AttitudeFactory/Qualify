@@ -52,24 +52,20 @@ def test_the_page_talks_to_the_state_only() -> None:
 
 
 def test_the_page_renders_list_conversation_composer_and_access_states() -> None:
-    from .conversations_page import conversations_index
+    from .conversations_page import messages_tab
 
-    rendered = str(conversations_index().render())
+    rendered = str(messages_tab().render())
 
     def present(text: str) -> bool:
         escaped = json.dumps(text)[1:-1].replace("\\", "\\\\")
         return text in rendered or escaped in rendered
 
     for text in (
-        "Conversaciones",
         "Elige una conversación",
         # «Enviar» (the send button) is pinned by test_the_dm_send_button_says_enviar…
         "Volver a conectar",
         "por verificar",
         "Ir a Tus redes",
-        "Aún no hay una cuenta de Instagram conectada",
-        "Todavía no se han leído mensajes de esta cuenta",
-        "Aún no hay conversaciones en esta cuenta",
         "Se muestran los últimos 50 mensajes",
         "Escribe una respuesta",
         "Enviar una foto o un video",
@@ -90,7 +86,7 @@ def test_the_page_renders_list_conversation_composer_and_access_states() -> None
     ):
         assert present(text), text
     for handler in (
-        "open_conversation",
+        "open_row",
         "close_conversation",
         "send_reply",
         "send_heart",
@@ -161,9 +157,9 @@ def test_the_inbox_opens_on_an_account_that_can_read_messages() -> None:
 def test_the_composer_offers_templates_and_their_manager() -> None:
     """m-24789472: «Plantillas» beside «Sugerir respuesta», the fill-in notice over the
     box, and the drawer that creates, edits, deletes (confirmed) and reorders."""
-    from .conversations_page import conversations_index
+    from .conversations_page import messages_tab
 
-    rendered = str(conversations_index().render())
+    rendered = str(messages_tab().render())
 
     def present(text: str) -> bool:
         escaped = json.dumps(text)[1:-1].replace("\\", "\\\\")
@@ -231,7 +227,7 @@ def test_the_picker_rows_fit_the_popover() -> None:
 def test_the_composer_offers_quick_replies_and_template_buttons() -> None:
     """m-24789472 (phase 3): «Respuestas rápidas» among the tools with its panel, the
     picked template's buttons under the box, and the buttons editor in the manager."""
-    from .conversations_page import conversations_index
+    from .conversations_page import messages_tab
     from .conversations_vm import (
         BUTTONS_HINT,
         BUTTONS_OFF_FORM_NOTICE,
@@ -240,7 +236,7 @@ def test_the_composer_offers_quick_replies_and_template_buttons() -> None:
         QUICK_REPLIES_WITH_BUTTONS,
     )
 
-    rendered = str(conversations_index().render())
+    rendered = str(messages_tab().render())
 
     def present(text: str) -> bool:
         escaped = json.dumps(text)[1:-1].replace("\\", "\\\\")

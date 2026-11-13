@@ -143,13 +143,21 @@ OUTBOUND_PREFIX = "Tú: "
 
 FILTER_OPEN = "open"
 FILTER_CLOSED = "closed"
+#: m-25017859: the chats that wait for the owner's reply under the ONE «Por responder»
+#: rule (`ThreadSummary.awaiting_reply`) — the number on the menu's WhatsApp badge. The
+#: key keeps its old value so old links (`?filtro=sin-leer`) still land here.
 FILTER_UNREAD = "unread"
+#: The chip's words, in ONE place: it lists the chats that wait for a reply, so it cannot
+#: be «Sin leer». UX proposal (m-25017859) awaiting the founder's confirmation.
+AWAITING_FILTER_LABEL = "Por responder"
+#: `?filtro=` values that open the chats on that chip (the second one is its old name).
+AWAITING_FILTER_SLUGS = frozenset({"por-responder", "sin-leer"})
 #: m-24971198: the chats whose customer answered after the payment card (spec §4).
 FILTER_PAYMENT = "payment"
 FILTERS: tuple[tuple[str, str], ...] = (
     (FILTER_OPEN, "Abiertos"),
     (FILTER_CLOSED, "Cerrados"),
-    (FILTER_UNREAD, "Sin leer"),
+    (FILTER_UNREAD, AWAITING_FILTER_LABEL),
     (FILTER_PAYMENT, "Pago por revisar"),
 )
 FILTER_KEYS = frozenset(key for key, _label in FILTERS)
@@ -406,7 +414,6 @@ class ThreadRowVM:
     subtitle: str
     preview: str
     time_label: str
-    has_unread: bool
     window_label: str
     window_tone: str
     window_open: bool
@@ -423,8 +430,11 @@ class ThreadRowVM:
     #: m-25017844 (UX review): «Esperando el pago» — the row's pill when nothing beats it.
     payment_awaiting: bool = False
     #: m-25017844: minutes until the window closes when under an hour, else 0 — the
-    #: shared row's «Responde en N min».
+    #: shared row's «Quedan N min para responder».
     window_minutes: int = 0
+    #: m-25017859: the «Por responder» rule's verdict (`ThreadSummary.awaiting_reply`):
+    #: the waiting dot and the «Por responder» chip.
+    awaiting_reply: bool = False
 
 
 EMPTY_THREAD = ThreadRowVM(
@@ -433,7 +443,6 @@ EMPTY_THREAD = ThreadRowVM(
     subtitle="",
     preview="",
     time_label="",
-    has_unread=False,
     window_label=WINDOW_CLOSED_PILL,
     window_tone="neutral",
     window_open=False,
@@ -476,7 +485,6 @@ def build_thread_row(
         subtitle=number if name else "",
         preview=preview,
         time_label=relative_time(thread.last_message_at, now, zone),
-        has_unread=thread.unread_count > 0,
         window_label=window_label,
         window_tone=window_tone,
         window_open=window_tone != "neutral",
@@ -489,17 +497,19 @@ def build_thread_row(
         status=thread.status,
         is_closed=thread.status == "closed",
         window_minutes=minutes_left(thread.window.open, thread.window.closes_at, now),
+        awaiting_reply=bool(getattr(thread, "awaiting_reply", False)),
     )
 
 
 def as_chat_row(row: ThreadRowVM) -> ChatRowVM:
-    """m-25017844: this channel's row in the shared shape (`chat_row_vm`). The unread
-    count becomes the waiting dot; «Responde el menú» / «Respondes tú» and «Cerrado»
-    leave the row (the chat and the filter say them); the payment to check and the
-    window about to close fold into the one pill («Esperando el pago» too). No second
-    line (UX doc §2): the title is the profile name, else the number, as before;
-    initials come only from the name's letters (a number-only contact gets the person
-    icon)."""
+    """m-25017844: this channel's row in the shared shape (`chat_row_vm`). The «Por
+    responder» rule (m-25017859) is the waiting dot; a closed chat is muted wherever a
+    chip mixes open and closed ones («Pago por revisar»); «Responde el menú» /
+    «Respondes tú» and «Cerrado» leave the row (the chat and the filter say them); the
+    payment to check and the window about to close fold into the one pill («Esperando
+    el pago» too). No second line (UX doc §2): the title is the profile name, else the
+    number, as before; initials come only from the name's letters (a number-only
+    contact gets the person icon)."""
     named = row.subtitle != ""
     return build_chat_row(
         thread_id=row.thread_id,
@@ -507,7 +517,8 @@ def as_chat_row(row: ThreadRowVM) -> ChatRowVM:
         title=row.title,
         preview=row.preview,
         time_label=row.time_label,
-        waiting=row.has_unread,
+        waiting=row.awaiting_reply,
+        closed=row.is_closed,
         initials_from=row.title if named else "",
         payment_review=row.payment_review,
         payment_awaiting=row.payment_awaiting,
@@ -518,12 +529,13 @@ def as_chat_row(row: ThreadRowVM) -> ChatRowVM:
 
 
 def filter_threads(rows: Iterable[ThreadRowVM], key: str) -> list[ThreadRowVM]:
-    """Abiertos = status open · Cerrados = status closed · Sin leer = any status with
-    unread inbound messages. An unknown key falls back to Abiertos."""
+    """Abiertos = status open · Cerrados = status closed · Por responder = the rule's
+    verdict (`awaiting_reply`, m-25017859: the same chats the menu's WhatsApp badge
+    counts) · Pago por revisar. An unknown key falls back to Abiertos."""
     if key == FILTER_CLOSED:
         return [r for r in rows if r.is_closed]
     if key == FILTER_UNREAD:
-        return [r for r in rows if r.has_unread]
+        return [r for r in rows if r.awaiting_reply]
     if key == FILTER_PAYMENT:
         return [r for r in rows if r.payment_review]
     return [r for r in rows if not r.is_closed]

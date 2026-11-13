@@ -2,12 +2,14 @@
 no database — what the page shows is decided here and tested offline.
 
 - **Tabs** (founder decision 3, 2026-10-23): Mensajes · Quieren comprar · Comentarios ·
-  WhatsApp · Interesados, each with its own address `?tab=<key>` (N5), so the phone's
-  «atrás» and a reload land on the same tab.
+  Interesados, each with its own address `?tab=<key>` (N5), so the phone's «atrás» and a
+  reload land on the same tab. m-25017859: «Mensajes» is the single list of every chat
+  channel (`inbox_list_vm`), so the «WhatsApp» tab (a link card) left the tree;
+  `?tab=whatsapp` redirects to «Mensajes» narrowed to WhatsApp (UX doc §2).
 - **Counts** (N11): four rows — Instagram messages, people who want to buy, comments with
   a reply ready, WhatsApp chats — each with «Ver» to its list already filtered on what is
-  pending. The WhatsApp chats stay in the WhatsApp module (out of scope to merge them):
-  its «Ver» opens `/whatsapp?tab=chats` on «Sin leer».
+  pending: the two chat rows open the single list on «Por responder» narrowed to their
+  channel, so the figure is the length of the list (both count `inbox.awaiting`).
 - **Old addresses** (`/inbox`, `/conversations`, `/leads`) redirect to their tab, keeping
   the query they carried (`/conversations?consulta=<id>` lands on that card).
 """
@@ -21,31 +23,31 @@ from urllib.parse import urlencode
 
 from qualify_api.attention import PendingCounts
 
+from .chat_row_vm import CHANNEL_INSTAGRAM, CHANNEL_WHATSAPP
+from .inbox_list_vm import FILTER_AWAITING, list_href
+
 ROUTE: Final = "/responder"
 
 TAB_MESSAGES: Final = "mensajes"
 TAB_BUYERS: Final = "comprar"
 TAB_COMMENTS: Final = "comentarios"
-TAB_WHATSAPP: Final = "whatsapp"
 TAB_LEADS: Final = "interesados"
+#: m-25017859: no longer a tab — the old address lands on the single list, WhatsApp.
+LEGACY_TAB_WHATSAPP: Final = "whatsapp"
 
 #: (key, label) in the order of the guide (ux-guia-navegacion §3).
 TABS: Final[tuple[tuple[str, str], ...]] = (
     (TAB_MESSAGES, "Mensajes"),
     (TAB_BUYERS, "Quieren comprar"),
     (TAB_COMMENTS, "Comentarios"),
-    (TAB_WHATSAPP, "WhatsApp"),
     (TAB_LEADS, "Interesados"),
 )
 TAB_KEYS: Final = frozenset(key for key, _label in TABS)
 DEFAULT_TAB: Final = TAB_MESSAGES
 
-#: `?filtro=` value that opens Mensajes on «Pendientes».
-FILTER_PARAM: Final = "filtro"
-FILTER_PENDING: Final = "pendientes"
-#: `/whatsapp?tab=chats&filtro=sin-leer` opens WhatsApp › Chats on «Sin leer».
-WHATSAPP_UNREAD: Final = "sin-leer"
-WHATSAPP_CHATS_HREF: Final = f"/whatsapp?tab=chats&{FILTER_PARAM}={WHATSAPP_UNREAD}"
+#: The single list on «Por responder», per channel: where each chat row's «Ver» lands.
+INSTAGRAM_AWAITING_HREF: Final = list_href(FILTER_AWAITING, CHANNEL_INSTAGRAM)
+WHATSAPP_AWAITING_HREF: Final = list_href(FILTER_AWAITING, CHANNEL_WHATSAPP)
 
 #: Where each old address lands.
 LEGACY_TABS: Final[dict[str, str]] = {
@@ -63,11 +65,6 @@ ALL_CLEAR_BODY: Final = (
 )
 ALL_CLEAR_ACTION: Final = "Crear publicación"
 ALL_CLEAR_HREF: Final = "/create"
-
-#: The WhatsApp tab: how many wait, and one button straight to the chats.
-WHATSAPP_TAB_TITLE: Final = "Chats de WhatsApp"
-WHATSAPP_TAB_ACTION: Final = "Responder en WhatsApp"
-WHATSAPP_NOBODY: Final = "Nadie te espera en WhatsApp. Cuando alguien te escriba, lo verás aquí."
 
 #: The visible label over the phone's tab select.
 TAB_SELECT_LABEL: Final = "Estás viendo"
@@ -100,6 +97,13 @@ def legacy_target(path: str, params: Mapping[str, object]) -> str:
     return tab_href(tab, **kept)
 
 
+def legacy_tab_target(requested: str | None) -> str | None:
+    """`?tab=whatsapp` (the tab that left, m-25017859) → the single list on «Por
+    responder» narrowed to WhatsApp; None for every other value."""
+    value = (requested or "").strip().lower()
+    return WHATSAPP_AWAITING_HREF if value == LEGACY_TAB_WHATSAPP else None
+
+
 @dataclass(frozen=True)
 class CountRowVM:
     key: str
@@ -125,27 +129,19 @@ def tab_label(label: str, count: int) -> str:
 
 
 def tab_vms(counts: PendingCounts | None = None) -> list[TabVM]:
-    """The five tabs in order, with their figure once the counts are in. Interesados is
-    never counted."""
+    """The four tabs in order, with their figure once the counts are in. «Mensajes» counts
+    every chat channel (the single list's «Por responder»); Interesados is never
+    counted."""
     figures = (
         {}
         if counts is None
         else {
-            TAB_MESSAGES: counts.messages,
+            TAB_MESSAGES: counts.messages + counts.whatsapp,
             TAB_BUYERS: counts.buyers,
             TAB_COMMENTS: counts.comments,
-            TAB_WHATSAPP: counts.whatsapp,
         }
     )
     return [TabVM(key=key, label=tab_label(label, figures.get(key, 0))) for key, label in TABS]
-
-
-def whatsapp_tab_text(count: int) -> str:
-    if count <= 0:
-        return WHATSAPP_NOBODY
-    if count == 1:
-        return "1 persona espera tu respuesta en WhatsApp."
-    return f"{count} personas esperan tu respuesta en WhatsApp."
 
 
 def count_label(count: int) -> str:
@@ -163,7 +159,7 @@ def count_rows(counts: PendingCounts) -> list[CountRowVM]:
             "messages-square",
             "Mensajes de Instagram sin responder",
             counts.messages,
-            tab_href(TAB_MESSAGES, **{FILTER_PARAM: FILTER_PENDING}),
+            INSTAGRAM_AWAITING_HREF,
         ),
         (
             TAB_BUYERS,
@@ -180,11 +176,11 @@ def count_rows(counts: PendingCounts) -> list[CountRowVM]:
             tab_href(TAB_COMMENTS),
         ),
         (
-            TAB_WHATSAPP,
+            LEGACY_TAB_WHATSAPP,
             "message-circle",
             "Chats de WhatsApp sin responder",
             counts.whatsapp,
-            WHATSAPP_CHATS_HREF,
+            WHATSAPP_AWAITING_HREF,
         ),
     )
     return [

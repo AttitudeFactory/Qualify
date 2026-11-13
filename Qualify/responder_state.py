@@ -21,16 +21,14 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState
 from .conversations_state import ConversationsState
-from .conversations_vm import FILTER_PENDING as CONVERSATIONS_PENDING
 from .followups_state import FollowupsState
+from .inbox_list_state import InboxListState
 from .inbox_state import InboxState
 from .leads_state import LeadsState
 from .responder_provider import counts_for
 from .responder_vm import (
     COUNTS_FAILED,
     DEFAULT_TAB,
-    FILTER_PARAM,
-    FILTER_PENDING,
     TAB_BUYERS,
     TAB_COMMENTS,
     TAB_KEYS,
@@ -40,11 +38,11 @@ from .responder_vm import (
     TabVM,
     all_clear,
     count_rows,
+    legacy_tab_target,
     legacy_target,
     resolve_tab,
     tab_href,
     tab_vms,
-    whatsapp_tab_text,
 )
 from .tenant import tenant_uuid
 from .ui.route_history import history_ack_value, route_history_ready
@@ -62,9 +60,8 @@ class ResponderState(rx.State):
     counts_loaded: bool = False
     counts_error: str = ""
     is_all_clear: bool = False
-    #: The five tabs, each label with its figure once the counts are in («Mensajes · 3»).
+    #: The four tabs, each label with its figure once the counts are in («Mensajes · 3»).
     tabs: list[TabVM] = tab_vms()
-    whatsapp_text: str = whatsapp_tab_text(0)
     #: The address carried `?tab=` (the owner came from a «Ver» or picked a tab): on a
     #: phone the list goes first and «Quién te espera» stays out of the way.
     has_tab_param: bool = False
@@ -83,13 +80,17 @@ class ResponderState(rx.State):
         `?tab=`, refresh the counts and load only the open tab's list."""
         params = self.router.url.query_parameters
         requested_tab = str(params.get("tab", "") or "")
+        moved = legacy_tab_target(requested_tab)
+        if moved is not None:
+            # m-25017859: the «WhatsApp» tab left; its address lands on the single list.
+            return [rx.redirect(moved, replace=True)]
         self.active_tab = resolve_tab(requested_tab)
         self.has_tab_param = requested_tab.strip() != ""
         events: list[rx.event.EventSpec] = [ResponderState.load_counts]
         if self.active_tab == TAB_MESSAGES:
-            if str(params.get(FILTER_PARAM, "") or "") == FILTER_PENDING:
-                conversations = await self.get_state(ConversationsState)
-                conversations.filter_key = CONVERSATIONS_PENDING
+            # m-25017859: the single list (its `?filtro=` / `?canal=`) and the Instagram
+            # pane beside it (accounts + the chat in the address).
+            events.append(InboxListState.enter)
             events.append(ConversationsState.enter_page)
         elif self.active_tab == TAB_BUYERS:
             events.append(FollowupsState.enter_page)
@@ -162,5 +163,4 @@ class ResponderState(rx.State):
             self.rows = count_rows(counts)
             self.is_all_clear = all_clear(counts)
             self.tabs = tab_vms(counts)
-            self.whatsapp_text = whatsapp_tab_text(counts.whatsapp)
             self.counts_loaded = True

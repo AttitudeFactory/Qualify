@@ -23,8 +23,10 @@ from dataclasses import dataclass, field
 from qualify_api.home import HomeCounts
 
 # Destinations. A query names the filter the list opens with (N11); the receiving
-# screens read it (`conversations_vm.filter_from_param`, `planner_vm.gallery_filter_from_param`).
-CONVERSATIONS_PENDING_URL = "/conversations?filtro=pendientes"
+# screens read it (`inbox_list_vm.filter_from_params`, `planner_vm.gallery_filter_from_param`).
+# m-25017859: `people_waiting` counts Instagram chats under the «Por responder» rule, so it
+# opens the single list on «Por responder» narrowed to Instagram — the same number.
+CONVERSATIONS_PENDING_URL = "/responder?tab=mensajes&filtro=por-responder&canal=instagram"
 DRAFTS_TO_APPROVE_URL = "/drafts?estado=por-completar"
 # founder 2026-10-24: the same list, every piece, the soonest-expiring vistas previas first
 VIDEOS_EXPIRING_URL = "/drafts?estado=por-completar&orden=vence"

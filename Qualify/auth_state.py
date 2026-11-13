@@ -306,6 +306,7 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
     from .generation_state import GenerationState
     from .home_state import HomeState
     from .ice_breakers_state import IceBreakersState
+    from .inbox_list_state import InboxListState
     from .inbox_state import InboxState
     from .leads_state import LeadsState
     from .offer_mark_state import OfferMarkState
@@ -438,6 +439,9 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
         # QUA-226: the private inbox — accounts, access state, threads, the open
         # conversation, the reply draft and the acting user's id
         ConversationsState,
+        # m-25017859: the single chat list of «Por responder» — rows, counts, the
+        # notice's per-business dismissal and the scroll kept for the way back
+        InboxListState,
         # m-24789646: «Consultas desde comentarios» (cards, drafts being edited)
         FollowupsState,
         # m-24789472: «Preguntas iniciales» — the account's draft questions, its status

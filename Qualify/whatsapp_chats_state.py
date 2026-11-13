@@ -80,12 +80,15 @@ from sqlalchemy.exc import SQLAlchemyError
 from .auth_state import AuthState
 from .chat_row_vm import ChatRowVM
 from .nav_url import (
+    FROM_INBOX,
+    FROM_PARAM,
     back_url_script,
     close_flow_script,
     conversation_href,
     flow_param,
     push_url_script,
     replace_url_script,
+    scalar_param,
     thread_param,
     uuid_param,
 )
@@ -95,6 +98,7 @@ from .ui.primitives import ORBIT_FOCUS_SCRIPT
 from .ui.steps import settle_step
 from .whatsapp_chats_provider import NoOrder, gateway
 from .whatsapp_chats_vm import (
+    AWAITING_FILTER_SLUGS,
     COMPOSE_BUTTONS,
     COMPOSE_KEYS,
     COMPOSE_TEXT,
@@ -475,6 +479,9 @@ class WhatsAppChatsState(rx.State):
     statuses_failed: bool = False
 
     # -- conversation -------------------------------------------------------------------
+    #: m-25017859: the open chat came from the single list of «Por responder»
+    #: (`?desde=por-responder`): its back button returns there.
+    from_inbox: bool = False
     open_thread_id: str = ""
     messages: list[MessageVM] = []
     order: OrderCardVM = EMPTY_ORDER
@@ -858,8 +865,9 @@ class WhatsAppChatsState(rx.State):
     @rx.event
     async def enter(self) -> rx.event.EventSpec | None:
         """Tab root `on_mount`: entry or number switch."""
-        # m-24842990: «Por responder» › «Ver» opens the chats on «Sin leer» (N11).
-        if self.router.url.query_parameters.get("filtro") == "sin-leer":
+        # m-24842990 / m-25017859: a link may open the chats on «Por responder» (N11);
+        # `sin-leer` is the chip's old name, kept for saved links.
+        if self.router.url.query_parameters.get("filtro") in AWAITING_FILTER_SLUGS:
             self.filter_key = FILTER_UNREAD
         if self.pick_open:
             self._reset_picker()  # back from Galería: the drawer does not reopen
@@ -967,6 +975,9 @@ class WhatsAppChatsState(rx.State):
             self._reset_conversation()
         params = self.router.url.query_parameters
         thread = thread_param(params, connection)
+        # m-25017859: a chat opened from the single list of «Por responder» goes back
+        # there, not to this number's own list.
+        self.from_inbox = bool(thread) and scalar_param(params, FROM_PARAM) == FROM_INBOX
         if thread == self.open_thread_id:
             return None
         self.open_thread_id = thread
@@ -983,6 +994,7 @@ class WhatsAppChatsState(rx.State):
             return None  # arrived over the wire; refuse an id the list does not hold
         writer = replace_url_script if self.open_thread_id else push_url_script
         self.open_thread_id = thread_id
+        self.from_inbox = False  # picked from this number's own list
         self._reset_conversation()
         self.compose_mode = COMPOSE_TEXT
         return [
@@ -992,10 +1004,24 @@ class WhatsAppChatsState(rx.State):
 
     @rx.event
     def back_to_list(self) -> rx.event.EventSpec:
-        """Mobile: leave the conversation pane."""
+        """Mobile: leave the conversation pane (from the single list: back to it)."""
+        if self.from_inbox:
+            return WhatsAppChatsState.back_to_inbox
         self.open_thread_id = ""
         self._reset_conversation()
         return rx.call_script(back_url_script(conversation_href("whatsapp", self._connection_id)))
+
+    @rx.event
+    async def back_to_inbox(self) -> rx.event.EventSpec:
+        """«‹ Por responder» (m-25017859): back to the single list with the filter, the
+        channel and the scroll it had (`InboxListState` keeps them)."""
+        from .inbox_list_state import InboxListState
+
+        self.from_inbox = False
+        self.open_thread_id = ""
+        self._reset_conversation()
+        inbox = await self.get_state(InboxListState)
+        return rx.redirect(inbox.inbox_return_href)
 
     @rx.event(background=True)
     async def load_conversation(self) -> AsyncIterator[rx.event.EventSpec]:

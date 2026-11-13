@@ -6,8 +6,10 @@ model (`chat_row_vm.ChatRowVM`) has already chosen the one pill, taken the initi
 worded the accessible name; this only draws.
 
 Anatomy: picture or initial with the channel's glyph on its corner · the breathing dot
-while the customer waits · name (bold while waiting) and time · preview with its media
-icon · the one pill and, with a team, who attends it.
+while the customer waits · name (bold while waiting), who attends it (with a team) and
+time on one line · preview with its media icon · the one pill. A closed chat (in a
+list that mixes open and closed) has its name and preview in the muted token, and
+«cerrado» in its accessible name.
 Channel identity = glyph + the platform scale (`T.PLATFORM_SCALE`, painted by
 `.q-chat-channel--{channel}` in `assets/qualify-inbox.css`). The dot and the pulse of a
 fresh row stop under `prefers-reduced-motion` (the same sheet).
@@ -164,10 +166,14 @@ def chat_row(row: ChatRowVM, *, is_open: rx.Var[bool], on_open: rx.event.EventSp
                         row.title,
                         size="3",
                         weight=rx.cond(row.waiting, "bold", "medium"),
+                        color=rx.cond(row.closed, T.TEXT_MUTED, T.TEXT_STRONG),
                         class_name="q-wa-ellipsis",
                         flex="1",
                         min_width="0",
                     ),
+                    # m-25017859: who attends it sits on the name line, so a WhatsApp row
+                    # with a team is as tall as an Instagram row (no line of its own).
+                    _agent_chip(row),
                     rx.text(
                         row.time_label,
                         size="1",
@@ -188,7 +194,7 @@ def chat_row(row: ChatRowVM, *, is_open: rx.Var[bool], on_open: rx.event.EventSp
                     rx.text(
                         row.preview,
                         size="2",
-                        color=rx.cond(row.waiting, T.TEXT_STRONG, T.TEXT_MUTED),
+                        color=rx.cond(row.waiting & ~row.closed, T.TEXT_STRONG, T.TEXT_MUTED),
                         class_name="q-wa-ellipsis",
                         flex="1",
                         min_width="0",
@@ -197,17 +203,11 @@ def chat_row(row: ChatRowVM, *, is_open: rx.Var[bool], on_open: rx.event.EventSp
                     align="center",
                     spacing="1",
                 ),
-                # ONE line of labels at most: the VM picked a single pill.
+                # ONE line of labels at most, and only for the pill the VM picked: the
+                # same third line on both channels.
                 rx.cond(
-                    (row.pill_label != "") | (row.agent_initials != ""),
-                    rx.hstack(
-                        _pill(row),
-                        rx.spacer(),
-                        _agent_chip(row),
-                        width="100%",
-                        align="center",
-                        spacing="1",
-                    ),
+                    row.pill_label != "",
+                    rx.hstack(_pill(row), width="100%", align="center", spacing="1"),
                     rx.fragment(),
                 ),
                 spacing="1",

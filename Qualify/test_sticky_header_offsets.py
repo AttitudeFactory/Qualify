@@ -96,9 +96,9 @@ def _shown(rendered: str, text: str) -> bool:
 
 
 def test_phone_back_buttons_name_the_list_and_live_in_existing_sticky_headers() -> None:
-    assert _shown(str(messages_back()), "Mensajes")
+    assert _shown(str(messages_back()), "Por responder")
     assert _shown(str(chats_back()), "Chats")
-    assert _shown(str(responder_header()), "Mensajes")
+    assert _shown(str(responder_header()), "Por responder")
     header = str(whatsapp_header())
     assert _shown(header, "Chats") and _shown(header, "Volver a los 4 pasos")
     assert not _shown(str(_advanced()), "Volver a los 4 pasos")

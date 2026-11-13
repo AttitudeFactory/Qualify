@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 from qualify_api.home import HomeCounts
 
-from .conversations_vm import FILTER_PENDING, filter_from_param
 from .home_vm import (
     BRAND_STEP_LABEL,
     BRAND_URL,
@@ -26,6 +26,7 @@ from .home_vm import (
     first_steps_progress_label,
     people_waiting_label,
 )
+from .inbox_list_vm import FILTER_AWAITING, channel_from_params, filter_from_params
 from .planner_vm import gallery_filter_from_param
 from .ui.layout import NAV_ITEMS
 
@@ -191,9 +192,13 @@ def test_session_lost_offers_login_not_retry() -> None:
 
 
 def test_destination_filters_are_read_by_the_lists() -> None:
-    assert CONVERSATIONS_PENDING_URL.endswith("filtro=pendientes")
-    assert filter_from_param("pendientes") == FILTER_PENDING
-    assert filter_from_param("") is None and filter_from_param("xx") is None
+    # m-25017859: Inicio's Instagram count opens the single list on «Por responder»,
+    # narrowed to Instagram — the same rule, so the same number.
+    query = parse_qs(urlparse(CONVERSATIONS_PENDING_URL).query)
+    assert filter_from_params({k: v[0] for k, v in query.items()}) == FILTER_AWAITING
+    assert channel_from_params({k: v[0] for k, v in query.items()}) == "instagram"
+    assert filter_from_params({"filtro": ""}) is None
+    assert filter_from_params({"filtro": "xx"}) is None
     assert DRAFTS_TO_APPROVE_URL.endswith("estado=por-completar")
     # m-24986801: the slug names the CARD state «Por revisar» (`needs_action` matched none)
     assert gallery_filter_from_param("por-completar") == "review"

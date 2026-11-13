@@ -99,25 +99,16 @@ from qualify_api.conversations.templates import (
 from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState
-from .chat_row_vm import ChatRowVM
 from .conversations_provider import gateway
 from .conversations_vm import (
     BUTTON_LINK,
     BUTTON_REPLY,
-    DEFAULT_FILTER,
     EMPTY_ACCESS,
     EMPTY_ACCOUNT,
     EMPTY_ATTACHMENT,
     EMPTY_DRAFT,
     EMPTY_THREAD,
     FEATURE_OFF,
-    FILTER_ALL,
-    FILTER_ANSWERED,
-    FILTER_CLOSED,
-    FILTER_KEYS,
-    FILTER_PARAM,
-    FILTER_PENDING,
-    FILTER_READ,
     HEART_TEXT,
     MAX_BUTTON_TEXT_CHARS,
     MAX_QUICK_REPLIES,
@@ -143,7 +134,6 @@ from .conversations_vm import (
     ThreadRowVM,
     UnsentItem,
     add_quick_reply,
-    as_chat_row,
     attention_pill,
     build_access_vm,
     build_button_vms,
@@ -157,10 +147,6 @@ from .conversations_vm import (
     classify_attachment,
     composer_enabled,
     composer_interactive_error,
-    filter_counts,
-    filter_from_param,
-    filter_label,
-    filter_threads,
     moved_order,
     newly_pending,
     quick_replies_counter,
@@ -183,7 +169,6 @@ from .nav_url import (
     thread_param,
     uuid_param,
 )
-from .next_steps_vm import all_clear as is_all_clear
 from .pending_state import PendingState
 from .tenant import tenant_uuid
 
@@ -241,6 +226,14 @@ CHAT_STATUS_ACTIONS = frozenset({"close", "reopen"})
 
 class _NoSession(Exception):
     """No tenant or ids to act on (never a subclass of a backend refusal)."""
+
+
+def _inbox_list_refresh() -> rx.event.EventHandler:
+    """m-25017859: the single list of «Por responder» re-reads after an action on a chat
+    (imported here: `inbox_list_state` imports this module)."""
+    from .inbox_list_state import InboxListState
+
+    return InboxListState.refresh
 
 
 def _suggest_failure_words(exc: Exception) -> str:
@@ -312,7 +305,6 @@ class ConversationsState(rx.State):
 
     # -- list ---------------------------------------------------------------------------
     rows: list[ThreadRowVM] = []
-    filter_key: str = DEFAULT_FILTER
     list_loaded_for: str = ""
     list_loading_for: str = ""
     list_error: str = ""
@@ -386,6 +378,9 @@ class ConversationsState(rx.State):
     _voice_parts: list[str] = []
     _voice_total: int = 0
     _voice_seconds: int = 0
+    #: m-25017859: the thread a row of the single list asked for, opened once this
+    #: account's list holds it.
+    _pending_open: str = ""
 
     # ==================================================================================
     # Computed vars
@@ -414,39 +409,9 @@ class ConversationsState(rx.State):
     def show_access_banner(self) -> bool:
         return self.selected_connection_id != "" and self.access.kind not in QUIET_ACCESS_KINDS
 
-    @rx.var
-    def visible_chat_rows(self) -> list[ChatRowVM]:
-        """m-25017844: the visible rows in the shape every channel's list draws."""
-        return [as_chat_row(r) for r in filter_threads(self.rows, self.filter_key)]
-
-    @rx.var
-    def filter_all_label(self) -> str:
-        return filter_label(FILTER_ALL, filter_counts(self.rows)[FILTER_ALL])
-
-    @rx.var
-    def filter_pending_label(self) -> str:
-        return filter_label(FILTER_PENDING, filter_counts(self.rows)[FILTER_PENDING])
-
-    @rx.var
-    def filter_read_label(self) -> str:
-        return filter_label(FILTER_READ, filter_counts(self.rows)[FILTER_READ])
-
-    @rx.var
-    def filter_answered_label(self) -> str:
-        return filter_label(FILTER_ANSWERED, filter_counts(self.rows)[FILTER_ANSWERED])
-
-    @rx.var
-    def filter_closed_label(self) -> str:
-        return filter_label(FILTER_CLOSED, filter_counts(self.rows)[FILTER_CLOSED])
-
-    @rx.var
-    def pending_count(self) -> int:
-        return filter_counts(self.rows)[FILTER_PENDING]
-
-    @rx.var
-    def all_clear(self) -> bool:
-        """m-24842961 (N3/N8): conversations exist and nobody waits for an answer."""
-        return self.list_loaded_for != "" and is_all_clear(len(self.rows), self.pending_count)
+    # m-25017859: the list and its chips are the single list of «Por responder»
+    # (`InboxListState`); `rows` stays as this account's own read — what the open
+    # chat's header, «Cerrar» / «Reabrir» and the refresh's notices need.
 
     @rx.var
     def list_ready(self) -> bool:
@@ -772,13 +737,9 @@ class ConversationsState(rx.State):
 
     @rx.event
     def enter_page(self) -> rx.event.EventSpec | None:
-        """The route's `on_load`, after `AuthState.require_login`. A `?filtro=` in the
-        address (Inicio's cards, m-24842962) opens the list with that filter."""
-        requested = filter_from_param(
-            str(self.router.url.query_parameters.get(FILTER_PARAM, "") or "")
-        )
-        if requested is not None:
-            self.filter_key = requested
+        """The «Mensajes» tab's entry, after `AuthState.require_login`: the accounts, this
+        account's read and the chat in the address (`?filtro=` is the single list's,
+        m-25017859)."""
         if self.accounts_loading:
             return None
         return ConversationsState.load_accounts
@@ -857,15 +818,14 @@ class ConversationsState(rx.State):
     # Access + list
     # ==================================================================================
 
-    @rx.event
-    def set_filter(self, key: str | list[str]) -> None:
-        if isinstance(key, str) and key in FILTER_KEYS:
-            self.filter_key = key
-
     @rx.event(background=True)
     async def load_list(self) -> AsyncIterator[rx.event.EventSpec]:
         failed = await self._read_access(silent=False)
         await self._read_list(silent=False)
+        async with self:
+            pending = self._pending_open != ""
+        if pending:
+            yield ConversationsState.open_pending  # m-25017859: a row of the single list
         if failed:
             yield rx.toast.warning(_SYNC_FAILED_TOAST, duration=_TOAST_MS)
 
@@ -978,6 +938,37 @@ class ConversationsState(rx.State):
     def open_conversation(
         self, thread_id: str
     ) -> list[rx.event.EventSpec | rx.event.EventHandler] | None:
+        return self._open(thread_id)
+
+    @rx.event
+    def open_from_inbox(
+        self, connection_id: str, thread_id: str
+    ) -> list[rx.event.EventSpec | rx.event.EventHandler] | None:
+        """m-25017859: a row of the single list of «Por responder». The chat may belong
+        to another of the business's Instagram accounts, or be newer than this account's
+        last read: switch / re-read first, then open it (`_pending_open`). Only an
+        account of this tenant (`accounts`) and a thread its own list holds are opened."""
+        if not isinstance(connection_id, str) or not isinstance(thread_id, str):
+            return None
+        if connection_id not in {a.connection_id for a in self.accounts}:
+            return None
+        if connection_id != self.selected_connection_id:
+            self.selected_connection_id = connection_id
+            self._reset_list()
+            self._sync_failure_key = ""
+            self._pending_open = thread_id
+            return [ConversationsState.load_list]
+        if thread_id in {r.thread_id for r in self.rows}:
+            return self._open(thread_id)
+        self._pending_open = thread_id
+        return [ConversationsState.load_list]
+
+    @rx.event
+    def open_pending(self) -> list[rx.event.EventSpec | rx.event.EventHandler] | None:
+        thread_id, self._pending_open = self._pending_open, ""
+        return self._open(thread_id) if thread_id else None
+
+    def _open(self, thread_id: str) -> list[rx.event.EventSpec | rx.event.EventHandler] | None:
         if not isinstance(thread_id, str) or thread_id == self.open_thread_id:
             return None
         if thread_id not in {r.thread_id for r in self.rows}:
@@ -1178,6 +1169,7 @@ class ConversationsState(rx.State):
             ]
         yield PendingState.refresh_now  # the menu's «por responder» count follows
         yield ConversationsState.refresh
+        yield _inbox_list_refresh()  # m-25017859: the single list and its chips too
 
     def _show_changed_thread(
         self, thread_id: str, view: ThreadView, extra: ThreadExtra | None, account_label: str
@@ -1762,6 +1754,7 @@ class ConversationsState(rx.State):
         yield rx.toast.info(reply_sent_message(who), duration=_TOAST_MS)
         yield PendingState.refresh_now  # m-24842963: the menu's count drops now
         yield ConversationsState.refresh
+        yield _inbox_list_refresh()  # m-25017859: the single list and its chips too
         await gw.signal(tenant_id, connection, thread, ACTION_TYPING_OFF)
 
     # ==================================================================================

@@ -82,12 +82,21 @@ def back_url_script(url: str) -> str:
     )
 
 
-def conversation_href(channel: str, connection_id: str = "", thread_id: str = "") -> str:
+#: m-25017859: `?desde=por-responder` on a WhatsApp chat opened from the single list of
+#: «Por responder», so its back button returns to that list (not the number's own).
+FROM_PARAM = "desde"
+FROM_INBOX = "por-responder"
+
+
+def conversation_href(
+    channel: str, connection_id: str = "", thread_id: str = "", *, from_inbox: bool = False
+) -> str:
     """Canonical owner-facing routes carrying only internal account/thread IDs."""
     ids = {"cuenta": connection_id, "chat": thread_id}
     safe = {key: uuid_param(ids, key) for key in ids}
     if channel == "whatsapp":
-        return with_query("/whatsapp", tab="chats", **safe)
+        origin = {FROM_PARAM: FROM_INBOX} if from_inbox and safe["chat"] else {}
+        return with_query("/whatsapp", tab="chats", **safe, **origin)
     return with_query("/responder", tab="mensajes", **safe)
 
 
