@@ -4,6 +4,7 @@ backend's own reader (`qualify_api.whatsapp.orders`), no Reflex, no Postgres."""
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
@@ -16,6 +17,7 @@ from qualify_api.whatsapp.orders import (
     read_previous_orders,
 )
 
+from . import whatsapp_chats_vm as vm_module
 from .whatsapp_chats_vm import (
     CART_BUBBLE_NO_DETAIL,
     CART_CHARGE_HINT,
@@ -25,6 +27,7 @@ from .whatsapp_chats_vm import (
     ORDER_TRUNCATED_LINE,
     PRICE_MISMATCH_LINE,
     UNLINKED_PRODUCT_NAME,
+    OrderCardVM,
     OrderFieldVM,
     PreviousOrderVM,
     build_conversation,
@@ -33,6 +36,9 @@ from .whatsapp_chats_vm import (
     cart_details,
     previous_orders_label,
     price_mismatch_notice,
+    short_code,
+    split_note,
+    unlinked_notice,
 )
 
 ZONE = ZoneInfo("America/Bogota")
@@ -144,6 +150,10 @@ def test_price_mark_names_the_galeria_price_when_the_record_has_it() -> None:
     items = _cart()["items"]
     priced = {**items[0], "gallery_unit_price": "10000", "gallery_currency": "COP"}
     card = _card({"_order": _cart(items=[priced, items[1]])})
+    # 2 × …: a unit price under a line total says «cada uno».
+    assert card.lines[0].price_note == "En tu Galería: COP 10.000 cada uno"
+    single = {**priced, "qty": 1}
+    card = _card({"_order": _cart(items=[single, items[1]])})
     assert card.lines[0].price_note == "En tu Galería: COP 10.000"
     # Only the currency differs (no Galería price kept): the mark without an amount.
     no_price = {**items[0], "gallery_unit_price": None, "gallery_currency": "USD"}
@@ -151,10 +161,26 @@ def test_price_mark_names_the_galeria_price_when_the_record_has_it() -> None:
     assert card.lines[0].price_note == PRICE_MISMATCH_LINE
 
 
-def test_customer_note_is_a_field_as_written() -> None:
-    card = _card({"_order": _cart(note="<b>Sin cebolla</b>")})
-    assert card.collected == [OrderFieldVM(label=CUSTOMER_NOTE_LABEL, value="<b>Sin cebolla</b>")]
-    assert _card({"_order": _cart(note=None)}).collected == []
+def test_customer_note_is_its_own_block_as_written() -> None:
+    card = _card({"_order": _cart(note="<b>Sin cebolla</b>\nTimbre 2")})
+    assert (card.note, card.note_rest) == ("<b>Sin cebolla</b>\nTimbre 2", "")
+    assert card.collected == []
+    assert CUSTOMER_NOTE_LABEL == "Nota del cliente"
+    assert _card({"_order": _cart(note=None)}).note == ""
+    assert _card({"_order": _MENU}).note == ""
+
+
+def test_a_long_note_shows_its_start_and_folds_the_rest() -> None:
+    lines = "Uno\nDos\nTres\nCuatro\nCinco"
+    shown, rest = split_note(lines)
+    assert (shown, rest) == ("Uno\nDos\nTres…", "Cuatro\nCinco")
+    long = "palabra " * 40
+    shown, rest = split_note(long.strip())
+    assert shown.endswith("…") and len(shown) <= 161
+    assert (shown[:-1] + " " + rest).split() == long.split()
+    assert split_note("Sin cebolla") == ("Sin cebolla", "")
+    card = _card({"_order": _cart(note=lines)})
+    assert (card.note, card.note_rest) == ("Uno\nDos\nTres…", "Cuatro\nCinco")
 
 
 def test_mixed_currencies_show_one_amount_per_currency() -> None:
@@ -183,7 +209,7 @@ def test_truncated_cart_says_so() -> None:
 
 def test_a_cut_note_ends_with_an_ellipsis() -> None:
     card = _card({"_order": _cart(note="Sin cebolla", note_truncated=True)})
-    assert card.collected == [OrderFieldVM(label=CUSTOMER_NOTE_LABEL, value="Sin cebolla…")]
+    assert card.note == "Sin cebolla…"
     assert card.truncated_line == ""
 
 
@@ -201,6 +227,7 @@ def test_menu_order_card_reads_as_before() -> None:
     assert card.total_label == "COP 30.000"
     assert card.collected == [OrderFieldVM(label="Dirección", value="Calle 10 # 5-20")]
     assert (card.price_notice, card.charge_hint, card.truncated_line) == ("", "", "")
+    assert (card.note, card.note_rest, card.unlinked_notice) == ("", "", "")
     assert (card.previous, card.previous_label) == ([], "")
 
 
@@ -241,7 +268,7 @@ def test_many_previous_orders_newest_first_and_payment_words() -> None:
         _entry(_MENU, None),
     ]
     card = _card({"_order": _cart(), "_orders_previous": entries})
-    assert card.previous_label == "5 pedidos anteriores"
+    assert card.previous_label == "5 pedidos anteriores · 1 pago por revisar"
     assert card.previous[0].origin_label == "Desde tu catálogo · 10:00"
     assert card.previous[0].items_line == "2 × Shawarma mixto, 1 × Producto sin nombre"
     assert [(p.payment_label, p.payment_tone) for p in card.previous] == [
@@ -257,6 +284,34 @@ def test_previous_orders_label_words() -> None:
     assert previous_orders_label(0) == ""
     assert previous_orders_label(1) == "1 pedido anterior"
     assert previous_orders_label(3) == "3 pedidos anteriores"
+    assert previous_orders_label(2, review=1, awaiting=1) == (
+        "2 pedidos anteriores · 1 pago por revisar"
+    )
+    assert previous_orders_label(3, review=2) == "3 pedidos anteriores · 2 pagos por revisar"
+    assert previous_orders_label(1, awaiting=1) == "1 pedido anterior · 1 esperando el pago"
+    assert previous_orders_label(3, awaiting=2) == "3 pedidos anteriores · 2 esperando el pago"
+
+
+def test_the_closed_row_names_an_awaiting_payment() -> None:
+    entries = [_entry(_MENU, {"status": "awaiting"}), _entry(_MENU, {"status": "received"})]
+    card = _card({"_order": _cart(), "_orders_previous": entries})
+    assert card.previous_label == "2 pedidos anteriores · 1 esperando el pago"
+
+
+def _walk(component: Any) -> list[Any]:
+    out = [component]
+    for child in getattr(component, "children", []) or []:
+        out.extend(_walk(child))
+    return out
+
+
+def test_previous_orders_render_without_any_action() -> None:
+    from .whatsapp_chats_state import WhatsAppChatsState
+    from .whatsapp_tab_chats import _previous_order
+
+    tree = _walk(_previous_order(WhatsAppChatsState.order.previous[0]))
+    assert len(tree) > 3
+    assert all(not getattr(c, "event_triggers", None) for c in tree)
 
 
 def test_previous_orders_are_read_only() -> None:
@@ -271,6 +326,61 @@ def test_previous_orders_are_read_only() -> None:
 
 
 # --- the cart's bubble ---------------------------------------------------------------
+
+
+def test_unlinked_lines_are_named_by_pedido_listo() -> None:
+    assert unlinked_notice(0) == ""
+    assert unlinked_notice(1) == (
+        "Un producto no está en tu Galería: en el mensaje saldrá con su código."
+    )
+    assert unlinked_notice(2) == (
+        "2 productos no están en tu Galería: en el mensaje saldrán con su código."
+    )
+    assert _card({"_order": _cart()}).unlinked_notice == unlinked_notice(1)
+
+
+def test_a_long_code_is_shortened_for_display() -> None:
+    assert short_code("ABC123") == "ABC123"
+    assert short_code("x" * 64) == "x" * 64
+    assert short_code("x" * 300) == "x" * 64 + "…"
+    items = _cart()["items"]
+    long = {**items[1], "product_id": "y" * 200, "retailer_id": "y" * 200}
+    assert _card({"_order": _cart(items=[items[0], long])}).lines[1].code == "y" * 64 + "…"
+
+
+_BANNED = re.compile(
+    r"\bSKU\b|\bID\b|\bpost\b|sincroniz|\b(?:cart|order|item|price|check|link|code)\b",
+    re.IGNORECASE,
+)
+
+
+def test_new_copy_speaks_plain_spanish() -> None:
+    texts = [
+        value
+        for name in (
+            "ORDER_TITLE_MENU",
+            "ORDER_TITLE_CART",
+            "UNLINKED_PRODUCT_NAME",
+            "UNLINKED_CODE_LABEL",
+            "PRICE_MISMATCH_LINE",
+            "PRICE_MISMATCH_AMOUNT",
+            "PRICE_MISMATCH_AMOUNT_EACH",
+            "ORDER_TRUNCATED_LINE",
+            "PRICE_MISMATCH_LINK",
+            "CUSTOMER_NOTE_LABEL",
+            "NOTE_MORE_LABEL",
+            "CART_CHARGE_HINT",
+            "PREVIOUS_FROM_CART",
+            "PREVIOUS_FROM_MENU",
+            "CART_BUBBLE",
+            "CART_BUBBLE_NO_DETAIL",
+        )
+        for value in [getattr(vm_module, name)]
+    ]
+    texts += [price_mismatch_notice(2), unlinked_notice(2), previous_orders_label(2, review=2)]
+    for text in texts:
+        words = re.sub(r"\{\w+\}", "", text)  # format slots are not copy
+        assert not _BANNED.search(words), text
 
 
 def _cart_message(wamid: str = "wamid.cart", **overrides: Any) -> MessageRecord:
@@ -341,3 +451,50 @@ def test_other_message_kinds_are_unchanged() -> None:
         ("Hola", False),
         ("[imagen]", False),
     ]
+
+
+# --- the state: the payment flag and the reset ----------------------------------------
+
+
+def test_a_failed_payment_read_never_offers_the_charge_hint() -> None:
+    from .whatsapp_chats_state import WhatsAppChatsState, _payment_status
+
+    class Failing:
+        def payment_status(self, *args: Any) -> Any:
+            raise RuntimeError("down")
+
+    class Empty:
+        def payment_status(self, *args: Any) -> Any:
+            return None
+
+    ids = (uuid4(), uuid4(), uuid4())
+    assert _payment_status(Failing(), *ids) == (None, False)
+    assert _payment_status(Empty(), *ids) == (None, True)
+
+    state = WhatsAppChatsState()
+    state._order_raw = read_order({"_order": _cart()})
+    state._render_conversation()
+    assert state.order.charge_hint == CART_CHARGE_HINT
+    state._payment_unread = True
+    state._render_conversation()
+    assert state.order.charge_hint == ""
+
+
+def test_the_cart_state_resets_with_the_conversation() -> None:
+    from .whatsapp_chats_state import WhatsAppChatsState
+
+    context = {"_order": _cart(), "_orders_previous": [_entry(_MENU)]}
+    state = WhatsAppChatsState()
+    state._order_raw = read_order(context)
+    state._previous_orders_raw = read_previous_orders(context)
+    state._cart_ids = cart_message_ids(context)
+    state._payment_unread = True
+    state._render_conversation()
+    assert state.order.previous_label == "1 pedido anterior"
+    state._reset_conversation()
+    assert state.order == OrderCardVM(present=False)
+    assert (state._previous_orders_raw, state._cart_ids, state._payment_unread) == (
+        (),
+        frozenset(),
+        False,
+    )

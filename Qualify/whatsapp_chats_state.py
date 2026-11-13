@@ -308,15 +308,16 @@ def _marked_offer(gw: Any, tenant_id: UUID, brand_id: UUID) -> Any:
         return None
 
 
-def _payment_status(gw: Any, tenant_id: UUID, connection: UUID, thread: UUID) -> Any:
-    """The open chat's payment (blocking); None when it cannot be read."""
+def _payment_status(gw: Any, tenant_id: UUID, connection: UUID, thread: UUID) -> tuple[Any, bool]:
+    """The open chat's payment (blocking) and whether it was read: `(None, True)` is «no
+    payment», `(None, False)` is «could not read» (the card then offers no charge hint)."""
     try:
-        return gw.payment_status(tenant_id, connection, thread)
+        return gw.payment_status(tenant_id, connection, thread), True
     except ThreadNotFound:
         raise
     except Exception as exc:  # noqa: BLE001
         logger.warning("whatsapp chats payment status failed: %s", type(exc).__name__)
-        return None
+        return None, False
 
 
 @dataclass(frozen=True)
@@ -548,6 +549,8 @@ class WhatsAppChatsState(rx.State):
     #: The open chat's payment (pill, «Paga con: …», «Pago recibido»).
     payment: PaymentVM = EMPTY_PAYMENT
     _payment_raw: Any = None
+    #: m-25018684: the last payment read failed — «no payment» is not known.
+    _payment_unread: bool = False
     pay_confirm_open: bool = False
     pay_message: str = ""
     pay_error: str = ""
@@ -740,6 +743,7 @@ class WhatsAppChatsState(rx.State):
         self._previous_orders_raw = ()
         self._cart_ids = frozenset()
         self._payment_raw = None
+        self._payment_unread = False
         self.payment = EMPTY_PAYMENT
         self._reset_payment_confirm()
         self._media = {}
@@ -826,7 +830,7 @@ class WhatsAppChatsState(rx.State):
             now=now,
             zone=zone,
             previous=previous,
-            has_payment=self._payment_raw is not None,
+            has_payment=self._payment_raw is not None or self._payment_unread,
         )
         self.payment = build_payment(
             self._payment_raw, now=now, zone=zone, agents={a.user_id: a for a in self.agents}
@@ -1014,7 +1018,7 @@ class WhatsAppChatsState(rx.State):
             return
         try:
             conv = await asyncio.to_thread(gateway().conversation, tenant_id, connection, thread)
-            payment = await asyncio.to_thread(
+            payment, payment_read = await asyncio.to_thread(
                 _payment_status, gateway(), tenant_id, connection, thread
             )
         except ThreadNotFound:
@@ -1055,6 +1059,7 @@ class WhatsAppChatsState(rx.State):
             self._previous_orders_raw = conv.previous_orders
             self._cart_ids = conv.cart_ids
             self._payment_raw = payment
+            self._payment_unread = not payment_read
             self._render_conversation()
             self.conv_loaded_for = thread_id
             self.conv_loading_for = ""

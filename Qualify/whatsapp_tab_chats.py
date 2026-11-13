@@ -69,6 +69,7 @@ from .whatsapp_chats_vm import (
     CREATE_APPROVED_ROUTE,
     CREATE_PIECE_LABEL,
     CREATE_PIECE_ROUTE,
+    CUSTOMER_NOTE_LABEL,
     DIRECTIONS_COMPLETE,
     DIRECTIONS_EMPTY,
     DIRECTIONS_NO_POINT,
@@ -98,6 +99,7 @@ from .whatsapp_chats_vm import (
     NO_PIECES_EMPTY,
     NO_PRODUCTS_EMPTY,
     NO_UNAPPROVED_EMPTY,
+    NOTE_MORE_LABEL,
     OFFER_BADGE,
     OFFER_CHANGE,
     OFFER_EMPTY,
@@ -625,6 +627,40 @@ def _order_field(f: OrderFieldVM) -> rx.Component:
     )
 
 
+def _customer_note() -> rx.Component:
+    """The cart's «Nota del cliente»: label above, full width, the customer's line breaks
+    kept; a long note shows its start and folds the rest (44 px summary)."""
+    order = S.order
+    return rx.cond(
+        order.note != "",
+        rx.vstack(
+            rx.text(CUSTOMER_NOTE_LABEL, size="2", color=T.TEXT_MUTED),
+            rx.text(order.note, size="2", white_space="pre-line", overflow_wrap="anywhere"),
+            rx.cond(
+                order.note_rest != "",
+                rx.el.details(
+                    rx.el.summary(
+                        rx.text(NOTE_MORE_LABEL, size="2", as_="span"),
+                        min_height="44px",
+                        padding_y="0.75rem",
+                        cursor="pointer",
+                    ),
+                    rx.text(
+                        order.note_rest,
+                        size="2",
+                        white_space="pre-line",
+                        overflow_wrap="anywhere",
+                    ),
+                    width="100%",
+                ),
+            ),
+            spacing="1",
+            width="100%",
+            align_items="start",
+        ),
+    )
+
+
 def _payment_block() -> rx.Component:
     """m-24955648 (spec §4): «Paga con: …», then «Pago recibido» (the sheet shows the
     exact message before anything goes out) and «No lo encuentro» (nothing is sent: the
@@ -803,8 +839,9 @@ def _order_card() -> rx.Component:
                     rx.vstack(rx.foreach(order.collected, _order_field), spacing="1", width="100%"),
                     rx.fragment(),
                 ),
+                _customer_note(),
                 rx.cond(
-                    (order.charge_hint != "") & ~S.payment.present,
+                    order.charge_hint != "",
                     rx.text(order.charge_hint, size="2", color=T.TEXT_MUTED),
                 ),
                 _payment_block(),
@@ -817,6 +854,7 @@ def _order_card() -> rx.Component:
                         disabled=~S.can_compose,
                         variant="soft",
                         size="2",
+                        min_height=_TAP_MIN,
                     ),
                     rx.text(
                         "Envía al cliente el resumen y el total de su pedido.",
@@ -826,6 +864,10 @@ def _order_card() -> rx.Component:
                     align="center",
                     spacing="3",
                     flex_wrap="wrap",
+                ),
+                rx.cond(
+                    order.unlinked_notice != "",
+                    rx.text(order.unlinked_notice, size="1", color=T.TEXT_MUTED),
                 ),
                 _previous_orders(),
                 spacing="3",
@@ -1012,15 +1054,21 @@ def _bubble_body(m: MessageVM) -> rx.Component:
         ),
         rx.cond(
             m.is_media_placeholder,
-            rx.hstack(
-                rx.cond(
-                    m.is_order,
-                    rx.icon("shopping-bag", size=T.ICON_SM, color=T.TEXT_MUTED, flex_shrink="0"),
-                    rx.icon("paperclip", size=T.ICON_SM, color=T.TEXT_MUTED),
+            rx.cond(
+                m.is_order,
+                # m-25018684: a catalog cart is a real message, not a missing file.
+                rx.hstack(
+                    rx.icon("shopping-bag", size=T.ICON_SM, flex_shrink="0", aria_hidden="true"),
+                    rx.text(m.text, size="2", overflow_wrap="anywhere"),
+                    spacing="2",
+                    align="center",
                 ),
-                rx.text(m.text, size="1", color=T.TEXT_MUTED),
-                spacing="2",
-                align="center",
+                rx.hstack(
+                    rx.icon("paperclip", size=T.ICON_SM, color=T.TEXT_MUTED),
+                    rx.text(m.text, size="1", color=T.TEXT_MUTED),
+                    spacing="2",
+                    align="center",
+                ),
             ),
             rx.cond(
                 m.text != "",
