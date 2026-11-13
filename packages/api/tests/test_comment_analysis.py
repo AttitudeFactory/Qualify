@@ -350,10 +350,15 @@ def test_the_runner_module_never_imports_the_models_at_load_time() -> None:
 
 
 def test_the_webhook_worker_loop_sweeps_comments_on_the_sentiment_cadence() -> None:
-    source = inspect.getsource(webhook_worker._run_loop)
-    sweep = source.index("await _sentiment_sweep()")
-    assert source.index("await _comment_analysis_sweep()") > sweep
-    assert "next_sweep = started + SENTIMENT_SWEEP_EVERY" in source
+    # m-25017174: the sweeps moved into `_Housekeeping` (after the message batch); the
+    # cadence itself is exercised in test_webhook_worker.py.
+    source = inspect.getsource(webhook_worker._Housekeeping.run_due)
+    sweep = source.index("await self._sentiment_sweep()")
+    assert source.index("await self._comment_sweep()") > sweep
+    assert "self._next_sweep = now + SENTIMENT_SWEEP_EVERY" in source
+    defaults = inspect.signature(webhook_worker._Housekeeping).parameters
+    assert defaults["sentiment_sweep"].default is webhook_worker._sentiment_sweep
+    assert defaults["comment_sweep"].default is webhook_worker._comment_analysis_sweep
 
 
 def test_the_worker_sweep_never_stops_the_loop(monkeypatch) -> None:  # noqa: ANN001

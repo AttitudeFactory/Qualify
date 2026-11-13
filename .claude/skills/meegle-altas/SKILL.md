@@ -84,7 +84,7 @@ created in the admin UI (the Meegle MCP has no field/node creation tool).
    and the account identifier (currently labeled **Cuenta de Instagram** for both channels).
    Both channel and identifier are required for the priority Alta prefill flow. If those fields are not
    visible, they are missing from the detail-page layout (§3), not from the type.
-3. **Complete «Datos»**. Within ~1 min (worker tick 30 s): Estado = invitada, Enlace, Vence, Qualify ref,
+3. **Complete «Datos»**. Within ~1 min (worker tick 5 s since m-25017174): Estado = invitada, Enlace, Vence, Qualify ref,
    and a comment «Invitación enviada a …». When Resend confirms delivery: Estado = entregada and
    «Invitada» completes. Open → abierta. Signup → registrada + Tenant + «Registrada» completes.
 4. **Resend** = roll back «Datos» and complete it again (new invite; the old one stays valid until it
@@ -117,13 +117,14 @@ Epic m-24852192, `docs/epica-prellenado-brand-kit-alta.md`. Code: `qualify_api.m
   (`enqueued`, `duplicate`, `no_handle`, `email_has_account`, `error`…); with the prefill off it
   settles exactly as before (no label). Anything the scheduler raises is swallowed — a retried
   «Datos» event would email the invitation again (§7).
-- **Run.** The `webhook-worker` loop (and `just webhook-tick`) drains due jobs after each batch
-  when the Meegle engine is configured: `prefill_brand_kit(..., source={"kind": "alta",
+- **Run.** The `webhook-worker` loop drains due jobs after the message batch, on its own
+  30 s gate (`PREFILL_EVERY`; the loop itself ticks every 5 s since m-25017174), and
+  `just webhook-tick` after its one batch, when the Meegle engine is configured: `prefill_brand_kit(..., source={"kind": "alta",
   "meegle_work_item_id": <id>}, propose=True)` with `CallCaps` derived from the cap, then ONE
   comment: «Identidad de marca propuesta.» / «…la cuenta de Instagram es privada.» / «…no se pudo
   leer la cuenta de Instagram.» (not found, read failed, cap reached, account taken). Exactly
   one retry 30 s later (`RETRY_AFTER`, m-24976695; it was 5 min until 2026-11-08) — in practice
-  ~30-60 s, since the `webhook-worker` claims it on its next 30 s batch — only for `read_failed`
+  ~30-60 s, since the `webhook-worker` claims it on its next 30 s prefill pass — only for `read_failed`
   (or a proposal that could not be saved), with the budget the first attempt left. A job found while the switch is off is settled `disabled`
   silently. The proposal lands in `brand_kit_details.connect.prefill` of the draft and the
   signup with the Alta's invite adopts it (PB-5 shows it).
