@@ -70,6 +70,8 @@ from .part_progress_vm import (
     PARTS_KIND_LABEL,
 )
 from .parts_start_view import parts_empty_notice, parts_start_card
+from .photo_upload_vm import CUT_CONNECTION_HINT, PHOTO_ACCEPT
+from .picker_tabs import upload_host_id
 from .post_card import color_swatches
 from .r2_media import BACKEND_BASE
 from .reels_ideas_vm import IDEAS_BACK_LABEL
@@ -94,6 +96,7 @@ from .ui import (
 from .ui import tokens as T
 from .ui.clip_player import clip_player, clip_player_notice, clip_player_script
 from .ui.steps import step_foot, step_frame, step_head, step_sync
+from .upload_images import PHOTO_MAX_BYTES
 from .variations_state import VariationsState
 from .variations_view import variations_view
 
@@ -137,7 +140,8 @@ def _field_label(text: str | rx.Var, hint: str | None = None) -> rx.Component:
     )
 
 
-_IMAGE_ACCEPT = {"image/*": [".png", ".jpg", ".jpeg", ".webp"]}
+#: m-25017273: JPG, PNG, WEBP and the iPhone's HEIC/HEIF (converted to JPEG on the server)
+_IMAGE_ACCEPT = PHOTO_ACCEPT
 
 
 def _help(title: str, text: str) -> rx.Component:
@@ -1125,13 +1129,18 @@ def _picker_tabs(target: str, tab: rx.Var[str], *, uploads: bool = True) -> rx.C
     stock picked) and a «Galería» beside it brings the brand's catalog (§ request
     2026-10-19). No «Stock» tab: stock is chosen once, as the inspiration."""
 
-    from .picker_tabs import reveal_picker_tab_script
+    from .picker_tabs import open_upload_picker_script, reveal_picker_tab_script
 
     def control(*items: tuple[str, str]) -> rx.Component:
         return rx.box(
             rx.segmented_control.root(
                 *(
-                    rx.segmented_control.item(label, value=value, min_height="44px")
+                    rx.segmented_control.item(
+                        label,
+                        value=value,
+                        min_height="44px",
+                        custom_attrs={"data-picker-tab": value},
+                    )
                     for value, label in items
                 ),
                 value=tab,
@@ -1147,7 +1156,12 @@ def _picker_tabs(target: str, tab: rx.Var[str], *, uploads: bool = True) -> rx.C
             min_width="0",
             overflow_x="auto",
             id=f"picker-tabs-{target}",
-            on_mount=rx.call_script(reveal_picker_tab_script(f"picker-tabs-{target}")),
+            on_mount=[
+                rx.call_script(reveal_picker_tab_script(f"picker-tabs-{target}")),
+                rx.call_script(
+                    open_upload_picker_script(f"picker-tabs-{target}", upload_host_id(target))
+                ),
+            ],
         )
 
     # UI-3 round 13: the clip's gallery has its own drop zone — no «Subir» in its picker
@@ -1180,6 +1194,18 @@ def _pinterest_source_links(target: str) -> rx.Component:
         ),
         spacing="1",
         align_items="start",
+        width="100%",
+    )
+
+
+def _upload_tab(target: str, tab: rx.Var[str], upload: rx.Component) -> rx.Component:
+    """«Subir»'s drop zone, mounted whatever tab is open and shown only on «Subir»
+    (m-25017273): its file input must exist at the very tap on «Subir», which opens the
+    picker at once (`open_upload_picker_script`) — no second tap on the zone."""
+    return rx.box(
+        upload,
+        id=upload_host_id(target),
+        display=rx.cond(tab == "upload", "block", "none"),
         width="100%",
     )
 
@@ -1305,11 +1331,12 @@ def _media_picker(
             tab,
             ("catalog", catalog_tab),
             ("brandcat", brandcat_tab),
-            ("inspiration", _inspiration_search(target, image) if searchable else upload),
+            ("inspiration", _inspiration_search(target, image) if searchable else rx.fragment()),
             ("pieces", pieces_tab),
             ("pinterest", pinterest_picker(target) if image else rx.fragment()),
-            upload if uploads else catalog_tab,
+            rx.fragment() if uploads else catalog_tab,
         ),
+        _upload_tab(target, tab, upload) if uploads else rx.fragment(),
         _pinterest_source_links(target) if image else rx.fragment(),
         spacing="2",
         width="100%",
@@ -1441,8 +1468,9 @@ def _mixed_media_picker(target: str, upload: rx.Component) -> rx.Component:
             ("inspiration", _inspiration_search(target, None)),
             ("pieces", pieces_tab),
             ("pinterest", pinterest_picker(target)),
-            upload,
+            rx.fragment(),
         ),
+        _upload_tab(target, tab, upload),
         _pinterest_source_links(target),
         spacing="2",
         width="100%",
@@ -2603,19 +2631,61 @@ def _discover_view() -> rx.Component:
 
 
 def _upload_zone(upload_id: str, label: str, handler: object, *, multiple: bool) -> rx.Component:
-    """A compact drop zone (`ui.dropzone`) for the pictures of a piece."""
+    """A compact drop zone (`ui.dropzone`) for the pictures of a piece. m-25017273: up
+    to 50 MB a photo, HEIC included; what it refuses is said in Spanish
+    (`photo_upload_rejected`), and while a photo goes up it shows how far it got."""
+    busy = CreativeState.photo_upload_id == upload_id
     return dropzone(
-        rx.vstack(
+        rx.cond(
+            busy,
+            # hidden from screen readers: the live region below already says it
+            rx.box(loading_spinner("sm"), aria_hidden="true"),
             rx.icon("image-up", size=T.ICON_MD, color=T.TEXT_FAINT),
-            rx.text(label, size="1", text_align="center", color=T.TEXT_MUTED),
-            align="center",
-            spacing="1",
+        ),
+        # one live region, always mounted: only its words change, so a screen reader
+        # announces «Subiendo…» / «Preparando…» (UX review m-25017273)
+        rx.box(
+            rx.cond(
+                busy,
+                rx.vstack(
+                    rx.text(
+                        CreativeState.photo_upload_text,
+                        size="1",
+                        text_align="center",
+                        color=T.TEXT_MUTED,
+                    ),
+                    rx.text(
+                        CUT_CONNECTION_HINT,
+                        size="1",
+                        text_align="center",
+                        color=T.TEXT_FAINT,
+                    ),
+                    align="center",
+                    spacing="1",
+                ),
+                rx.text(label, size="1", text_align="center", color=T.TEXT_MUTED),
+            ),
+            role="status",
+            aria_live="polite",
+            width="100%",
         ),
         upload_id=upload_id,
         accept=_IMAGE_ACCEPT,
         max_files=10 if multiple else 1,
+        max_size=PHOTO_MAX_BYTES,
         multiple=multiple,
-        on_drop=handler(rx.upload_files(upload_id=upload_id)),
+        on_drop=[
+            CreativeState.begin_photo_upload(upload_id, multiple),
+            handler(
+                rx.upload_files(
+                    upload_id=upload_id,
+                    on_upload_progress=CreativeState.photo_upload_progress,
+                )
+            ),
+        ],
+        on_drop_rejected=CreativeState.photo_upload_rejected,
+        # never disabled while busy: an upload the network cut never reaches the
+        # handler that clears `photo_upload_id`, and the owner must be able to retry
         variant="compact",
         width="100%",
     )
@@ -2947,9 +3017,13 @@ def _products_upload(label: str) -> rx.Component:
 
 
 def _upload_error() -> rx.Component:
-    return rx.cond(
-        CreativeState.upload_error != "",
-        rx.text(CreativeState.upload_error, size="1", color=T.tone_color("error", 11)),
+    # always mounted, `role="alert"`: a refusal is announced the moment it appears
+    return rx.box(
+        rx.cond(
+            CreativeState.upload_error != "",
+            rx.text(CreativeState.upload_error, size="1", color=T.tone_color("error", 11)),
+        ),
+        role="alert",
     )
 
 
@@ -3187,7 +3261,7 @@ def _slide_photo() -> rx.Component:
                 rx.box(
                     _upload_zone(
                         "creative_slide_photo",
-                        "Arrastra la foto o haz clic",
+                        "Toca para elegir otra foto o arrástrala aquí",
                         CreativeState.handle_slide_photo_upload,
                         multiple=False,
                     ),

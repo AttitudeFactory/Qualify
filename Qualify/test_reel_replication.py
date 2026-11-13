@@ -684,8 +684,11 @@ async def test_create_reads_the_brand_phrases_and_drops_the_option_without_them(
     monkeypatch.setattr(creative_state_module, "brand_cta_patterns", lambda t, b: phrases)
     monkeypatch.setattr(CreativeState, "_refresh_creations", _no_refresh)
     state = _reel_state()
+    state.photo_upload_id, state.photo_upload_percent = "creative_background", 40  # cut
 
     await CreativeState.load_create.fn(state)
+    # m-25017273: a reload never keeps a dead upload's «Subiendo…»
+    assert state.photo_upload_id == "" and state.photo_upload_percent == 0
     assert state.brand_cta_phrases == PHRASES and not state.brand_cta_unreadable
     assert state.brand_cta_lines == ["«Pide el tuyo por WhatsApp»", "«Escríbenos hoy»"]
     CreativeState.set_replication_brand_text.fn(state, True)
