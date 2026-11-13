@@ -59,7 +59,7 @@ KIND_SEASONAL_VIDEO = "seasonal_video"
 #: A seasonal job has no draft revision; 0096's `ck_creative_jobs_revision` wants >= 1,
 #: the generator's first revision. The seasonal identity is (medium, attempt).
 SEASONAL_JOB_REVISION = 1
-#: m-25017372 (0154): a product sticker character — ONE synchronous Seedream 5.0 pro call
+#: m-25017372 (0155): a product sticker character — ONE synchronous Seedream 5.0 pro call
 #: whose subject is `sticker_character_id` (`draft_id` and `seasonal_media_id` NULL).
 #: Enqueued only by `enqueue_character_job`; it rides its own pool (`SEEDREAM_PRO_POOL`).
 KIND_STICKER_CHARACTER = "sticker_character"
@@ -93,7 +93,7 @@ DEFAULT_POOL_SIZES: Mapping[str, int] = {
 }
 #: Any other pool, until configured (ticket m-24852160: «por defecto 10»).
 DEFAULT_POOL_SIZE = 10
-#: Rows seeded per pool (0096; 0154 for Seedream): the size can be raised up to this by
+#: Rows seeded per pool (0096; 0155 for Seedream): the size can be raised up to this by
 #: configuration alone.
 SEEDED_SLOTS: Mapping[str, int] = {SEEDANCE_POOL: 50, OMNIHUMAN_POOL: 10, SEEDREAM_PRO_POOL: 20}
 POOLS_ENV = "QUALIFY_VENDOR_POOLS"
@@ -886,7 +886,7 @@ class JobRow:
     pricing_version: str | None = None
     #: When BytePlus accepted the task (the seasonal deadline counts from it).
     submitted_at: datetime | None = None
-    #: m-25017372 (0154): a `sticker_character` job's subject.
+    #: m-25017372 (0155): a `sticker_character` job's subject.
     sticker_character_id: UUID | None = None
 
 

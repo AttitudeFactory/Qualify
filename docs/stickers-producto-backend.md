@@ -76,7 +76,7 @@ etc.) están en `product_stickers.REASON_TEXT`. Todos dicen «No se te cobró».
 están en `whatsapp.seasonal.REASON_TEXT`. Hay dos nuevos: `render_unavailable` y
 `character_unavailable`.
 
-## Datos (migración 0154)
+## Datos (migración 0155)
 
 - `product_sticker_characters`: un dibujo por fila, con RLS. Guarda la procedencia completa:
   producto y foto de origen, modelo, `prompt_version`, `pipeline_version`,

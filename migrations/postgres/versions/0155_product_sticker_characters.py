@@ -1,7 +1,7 @@
 """product sticker characters: a «tierno» drawing of a product, then its stickers (m-25017372)
 
-Revision ID: 0154
-Revises: 0153
+Revision ID: 0155
+Revises: 0154
 Create Date: 2026-11-12
 
 Ticket m-25017372 (founder, 2026-11-12; bench STICKERS-KAWAII-001 in
@@ -63,8 +63,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 
-revision = "0154"
-down_revision = "0153"
+revision = "0155"
+down_revision = "0154"
 branch_labels = None
 depends_on = None
 
@@ -232,7 +232,7 @@ def downgrade() -> None:
             IF EXISTS (SELECT 1 FROM {_TABLE})
                OR EXISTS (SELECT 1 FROM {_JOBS} WHERE sticker_character_id IS NOT NULL)
                OR EXISTS (SELECT 1 FROM {_MEDIA} WHERE source_kind = 'character') THEN
-                RAISE EXCEPTION 'downgrade 0154 refused: product sticker characters or their '
+                RAISE EXCEPTION 'downgrade 0155 refused: product sticker characters or their '
                                 'stickers exist (paid-call provenance would be lost)'
                     USING ERRCODE = '23514';
             END IF;

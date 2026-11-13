@@ -1,4 +1,4 @@
-"""Product sticker characters against the compose Postgres (m-25017372, migration 0154): the
+"""Product sticker characters against the compose Postgres (m-25017372, migration 0155): the
 row and its ONE `creative_jobs` job in one transaction, the pre-POST stamp taken once, the
 key CHECKs agree with the gate's key builder, RLS hides another business's rows, and a
 character's USD cost is booked once."""
