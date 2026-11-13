@@ -442,13 +442,14 @@ públicos y lo declaras en awareness_level. Reparte los ángulos entre los nivel
 exactamente como lo indica el pedido; dentro de un mismo nivel, las escenas siguen siendo \
 distintas.
 - unaware: todavía no piensa en el producto. Muestra el lugar y la experiencia (el \
-ambiente, el momento, con quién se comparte), no el precio: aquí brillan las ventajas del \
-negocio. Nunca menciones el precio ni una oferta.
+ambiente, el momento, con quién se comparte), no el precio. Usa solo las ventajas de la \
+experiencia (el lugar, el ambiente, las mesas, las mascotas, el parqueadero como \
+comodidad); los horarios, las formas de pago, los precios y todo lo que hable de costo \
+quedan para product_aware y most_aware. Nunca menciones el precio ni una oferta.
 - problem_aware: ya siente la necesidad («¿qué cenamos hoy?»). Nombra ese dilema en el \
 hook y presenta la propuesta como la respuesta.
-- solution_aware: sabe qué tipo de cosa quiere, pero no dónde. Muestra por qué este \
-negocio lo resuelve mejor, con datos concretos del producto que estén en su descripción \
-(porción, ingredientes, variedad).
+- solution_aware: sabe qué tipo de cosa quiere, pero no dónde. Muestra lo que distingue \
+a este negocio: datos concretos del producto o ventajas de la lista.
 - product_aware: conoce el negocio pero duda. Quita la fricción: el precio claro si existe, \
 el horario, cómo pagar, dónde queda — solo con los datos que te dieron.
 - most_aware: está listo para comprar. El camino más corto a la compra: hook y cta muy \
@@ -460,7 +461,11 @@ cada ángulo los que encajen con su nivel; no hace falta usarlos todos.
 - Nunca inventes un dato que no esté en esa lista, en los datos del producto o en la \
 marca: ni horarios, ni precios, ni formas de pago, ni direcciones, ni domicilios, ni \
 descuentos, ni promociones. Si un nivel pediría un dato que no tienes, apóyate en lo que \
-sí está."""
+sí está.
+- Cada ventaja se repite con su propio significado: nunca la conviertas en gratis, regalo, \
+incluido, descuento ni promoción si su texto no lo dice.
+- No ofrezcas ningún servicio que no esté en la lista, en el producto o en la marca (ni \
+reservas, ni domicilios, ni apartar)."""
 
 
 def angles_tool(count: int = DEFAULT_ANGLE_COUNT) -> dict[str, Any]:

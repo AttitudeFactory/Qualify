@@ -325,3 +325,44 @@ def test_perks_ride_the_cached_prefix_and_the_level_the_suffix() -> None:
     objective = lines.index("Objective: sale")
     assert lines[objective + 1].startswith("Awareness level (Eugene Schwartz): most_aware")
     assert "no long text" in lines[objective + 1]
+
+
+# -- NIVELES-001 wording fixes -------------------------------------------------------------
+
+
+def test_unaware_keeps_to_experience_perks_in_both_prompts() -> None:
+    system = angles_system_prompt()
+    unaware = system.split("- unaware:")[1].split("- problem_aware:")[0]
+    assert "solo las ventajas de la" in unaware and "quedan para product_aware" in unaware
+    suffix = render_prompt(
+        kit=_kit(business_perks=PERKS),
+        voice=_voice(),
+        brief=_brief(awareness_level=AwarenessLevel.UNAWARE),
+        task=GenerationTask.COPY,
+    ).volatile_suffix
+    assert "Use only the perks about the experience" in suffix
+    assert "opening hours, payment, prices and anything about cost" in suffix
+
+
+def test_solution_aware_is_not_food_only() -> None:
+    system = angles_system_prompt()
+    solution = system.split("- solution_aware:")[1].split("- product_aware:")[0]
+    assert "lo que distingue" in solution and "porción" not in solution
+    suffix = render_prompt(
+        kit=_kit(),
+        voice=_voice(),
+        brief=_brief(awareness_level=AwarenessLevel.SOLUTION_AWARE),
+        task=GenerationTask.COPY,
+    ).volatile_suffix
+    assert "what sets this business apart" in suffix and "portion" not in suffix
+
+
+def test_a_perk_is_never_turned_into_an_offer_or_a_service() -> None:
+    system = angles_system_prompt()
+    assert "nunca la conviertas en gratis, regalo" in system
+    assert "ni reservas, ni domicilios, ni apartar" in system
+    prefix = render_prompt(
+        kit=_kit(business_perks=PERKS), voice=_voice(), brief=_brief(), task=GenerationTask.COPY
+    ).stable_prefix
+    assert "never turn it into something free, a gift, included" in prefix
+    assert "Never offer a service (reservations, delivery" in prefix

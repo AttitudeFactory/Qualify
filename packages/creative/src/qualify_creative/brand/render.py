@@ -178,7 +178,11 @@ def _perks_section(kit: BrandKit) -> tuple[str, ...]:
         "These are the business's real facts beyond its products. Use the ones that fit the"
         " piece, stated as written. Never invent a fact that is not here, in the product data"
         " or in this briefing: no opening hours, prices, payment methods, addresses,"
-        " deliveries, discounts or promotions of your own.\n" + _bullets(kit.business_perks),
+        " deliveries, discounts or promotions of your own. Repeat each perk with its own"
+        " meaning: never turn it into something free, a gift, included, a discount or a"
+        " promotion unless its text says so. Never offer a service (reservations, delivery,"
+        " setting one aside) that is not in these perks, the product data or this"
+        " briefing.\n" + _bullets(kit.business_perks),
     )
 
 
@@ -187,17 +191,18 @@ def _perks_section(kit: BrandKit) -> tuple[str, ...]:
 AWARENESS_GUIDANCE: dict[AwarenessLevel, str] = {
     AwarenessLevel.UNAWARE: (
         "the reader is not thinking about the product yet. Show the place and the"
-        " experience (the atmosphere, the moment, who it is shared with) — the business's"
-        " perks shine here. Do not mention the price or any offer."
+        " experience (the atmosphere, the moment, who it is shared with). Use only the"
+        " perks about the experience (the place, the atmosphere, tables, pets, parking as a"
+        " comfort); opening hours, payment, prices and anything about cost belong to the"
+        " product_aware and most_aware levels. Do not mention the price or any offer."
     ),
     AwarenessLevel.PROBLEM_AWARE: (
         "the reader already feels the need (e.g. «¿qué cenamos hoy?»). Name that dilemma"
         " in the hook and present the product as the answer."
     ),
     AwarenessLevel.SOLUTION_AWARE: (
-        "the reader knows what kind of thing they want but not where to get it. Show why"
-        " this business solves it better, with concrete product facts from the data you"
-        " were given (portion, ingredients, variety)."
+        "the reader knows what kind of thing they want but not where to get it. Show what"
+        " sets this business apart: concrete product facts or perks from the list."
     ),
     AwarenessLevel.PRODUCT_AWARE: (
         "the reader knows the business but hesitates. Remove the friction: the price as"
@@ -219,7 +224,9 @@ def _awareness_lines(brief: ContentBrief) -> tuple[str, ...]:
     return (
         f"Awareness level (Eugene Schwartz): {level.value} — {AWARENESS_GUIDANCE[level]}"
         " Never invent a fact to fit the level: use only the business's facts, the product"
-        " data and the operator's words.",
+        " data and the operator's words. Never turn a perk into something free, a gift,"
+        " included, a discount or a promotion unless its text says so, and never offer a"
+        " service that is not in them.",
     )
 
 
