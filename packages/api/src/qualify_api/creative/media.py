@@ -7183,7 +7183,16 @@ def _compiled_for(fn: Callable[..., str]) -> Callable[..., str]:
 #: operator's topic as context never written, no written text but the supplied logo and
 #: the product's own label, and a photograph that fills the frame. Every other route
 #: compiles as at 2; 0, 1 and 2 stay byte for byte.
-PROMPT_COMPILER_VERSION = 3
+#: 4 (m-25017275, founder 2026-11-13): the Seedream scene of an advertising image
+#: (`ad_scene_prompt`) and of a gallery slide (`_carousel_scene_v3`) asks for no new text
+#: and no graphic overlays at all (`image_text_rule_v4`) — only lettering already on the
+#: real product/packaging and the supplied logo, unchanged — and no longer tells the model
+#: that headlines, buttons or words are laid over it afterwards (Seedream drew fake buttons
+#: with garbled letters, Bianki stories 2026-11-13): the calm areas are asked for neutrally
+#: (`CALM_TOP_V4`, `CALM_BOTTOM_V4`), the typefaces are a style cue with no «headlines»
+#: (`_image_typefaces_cue_v4`), the palette names no «text accents» (`_palette_line_v2`).
+#: Every other route compiles as at 3; 0-3 stay byte for byte.
+PROMPT_COMPILER_VERSION = 4
 #: What a flexible text (the topic, a scene, a presenter) keeps before the next one in
 #: line is trimmed: the beginning of the operator's words always reaches the model.
 _FLEX_FLOOR = 200
@@ -7660,6 +7669,15 @@ def ad_scene_prompt(
                 or bool(brief.media.resource_plan_version),
             )
         )
+    if brief.media.prompt_compiler_version >= 4:
+        # m-25017275: nothing in what Seedream reads mentions words laid over the image
+        lines.append(_facts_line(brief, _FACTS_IN_SCENE_V3))
+        lines.append(CALM_TOP_V4 + " " + CALM_BOTTOM_V4)
+        _append_brand_reference_lines(lines, brand_refs, products + int(has_background))
+        lines.append(_palette_line_v2(kit))
+        lines.append(_image_typefaces_cue_v4(kit))
+        lines.append(image_text_rule_v4(brand_refs))
+        return _budgeted(lines, strict=bool(brand_refs) or bool(brief.media.resource_plan_version))
     lines.append(_facts_line(brief, _FACTS_IN_IMAGE))
     lines.append(
         "Keep the top quarter and the bottom fifth of the frame calm and uncluttered: the "
@@ -7937,6 +7955,60 @@ def _image_typefaces_cue_v3(kit: BrandKit) -> str:
     )
 
 
+#: Compiler 4 (m-25017275): the calm areas of a Seedream scene, asked for with no reason —
+#: «a headline / a button is laid over it» made Seedream draw fake buttons and lettering.
+CALM_TOP_V4 = (
+    "Keep the top quarter of the photograph visually simple, such as sky, a wall or a soft "
+    "background, without empty space."
+)
+CALM_BOTTOM_V4 = (
+    "Keep the bottom fifth of the photograph visually simple, such as a table or the floor, "
+    "without empty space."
+)
+#: Compiler 4: no new text and no graphic overlay of any kind. It deliberately names no
+#: headline, call to action or button (naming them primed Seedream to draw them).
+NO_NEW_TEXT_IMAGE_V4 = (
+    "The image is a clean photograph: do not add any new text anywhere in it, no words, "
+    "letters, numbers, prices, captions, signs or watermarks, and do not add any graphic "
+    "overlay, no badges, stickers, banners, ribbons, frames, icons or app interface elements."
+)
+_REAL_LETTERING_LOGO_V4 = (
+    " The only lettering allowed is lettering that already exists on the real product or its "
+    "packaging in the reference images, and the supplied logo, both reproduced exactly as they "
+    "are."
+)
+_REAL_LETTERING_NO_LOGO_V4 = (
+    # the words of `NO_LOGO_SUPPLIED_V2`, defined further down with the video compiler
+    " No logo image is supplied: do not draw any logo or brand name. The only lettering allowed is "
+    "lettering that already exists on the real product or its packaging in the reference "
+    "images, reproduced exactly as it is."
+)
+
+
+def image_text_rule_v4(brand_refs: Sequence[BrandReference]) -> str:
+    """Compiler 4 (m-25017275): the text rule of a Seedream scene (advertising image and
+    gallery slide) — nothing new written or overlaid; authentic product/packaging lettering
+    and the supplied logo kept as they are."""
+    return NO_NEW_TEXT_IMAGE_V4 + (
+        _REAL_LETTERING_LOGO_V4 if _sends_logo(brand_refs) else _REAL_LETTERING_NO_LOGO_V4
+    )
+
+
+def _image_typefaces_cue_v4(kit: BrandKit) -> str:
+    """Compiler 4: the Brand Kit's typefaces as a style cue only, with no «headlines» or
+    «body text» roles (they announced words to the model)."""
+    faces = [f'"{_quoted(f.strip())}"' for f in (kit.font_heading, kit.font_body) if f.strip()]
+    if len(faces) == 2 and faces[0] == faces[1]:
+        faces = faces[:1]
+    if not faces:
+        return ""
+    names = " and ".join(faces)
+    return (
+        f"The brand's {'typefaces are' if len(faces) == 2 else 'typeface is'} {names}: let the "
+        "look of the photograph match their personality."
+    )
+
+
 def _carousel_scene_v3(
     *,
     brief: ContentBrief,
@@ -8061,6 +8133,20 @@ def _carousel_scene_v3(
             )
         )
     lines.append(_facts_line(brief, _FACTS_IN_SCENE_V3))
+    if brief.media.prompt_compiler_version >= 4:
+        # m-25017275: calm areas asked for neutrally, no words laid over, no overlays
+        if hook:
+            lines.append(CALM_TOP_V4)
+        if cta:
+            lines.append(CALM_BOTTOM_V4)
+        lines.append(FULL_FRAME_V3)
+        lines.append(_palette_line_v2(kit))
+        lines.append(_image_typefaces_cue_v4(kit))
+        lines.append(
+            brand_reference_block_v2(brand_refs, base_index=brand_start, prefix="Image", still=True)
+        )
+        lines.append(image_text_rule_v4(brand_refs))
+        return lines
     if hook:
         lines.append(
             "A headline is laid over the top quarter afterwards: keep that part of the "
