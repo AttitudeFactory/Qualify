@@ -1016,6 +1016,87 @@ async def test_a_piece_chat_button_only_refuses_goals_that_use_it(live, monkeypa
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["budget", "end_time", "resume"])
+async def test_editing_a_chat_promotion_whose_piece_has_a_whatsapp_button(
+    live, monkeypatch, action
+):
+    """The real management `_context` builds the gateway with the promotion's goal."""
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    from qualify_api.ads import live_management as management
+    from qualify_api.ads import live_wizard
+    from qualify_api.ads.edit_ledger import revision
+    from qualify_api.ads.wizard import PIECE_BUTTON_UNSUPPORTED
+
+    live["sources"][0] = replace(live["source"], unavailable_reason=PIECE_BUTTON_UNSUPPORTED)
+    use_chat(live, monkeypatch)
+    preview = await prepare(live)
+    await confirm(live, preview)
+    tenant, actor = live["args"]["tenant_id"], live["args"]["approved_by"]
+    promotion = replace(live["repo"].get(tenant, preview.promotion_id), status="active")
+    scope = SimpleNamespace(
+        tenant_id=tenant,
+        promotion_id=promotion.id,
+        connection=SimpleNamespace(connection_id=live["source"].connection_id, version=1),
+        account_id=live["source"].ad_account_id,
+    )
+    if action == "resume":
+        for resource in ("campaigns", "adsets", "ads"):
+            live["remote"].objects[promotion.ids[resource]]["status"] = "PAUSED"
+
+    @contextmanager
+    def session(*args, **kwargs):
+        yield SimpleNamespace(
+            scalar=lambda *args, **kwargs: True,  # The activation consent exists.
+            execute=lambda *args, **kwargs: SimpleNamespace(
+                mappings=lambda: SimpleNamespace(first=lambda: None)
+            ),
+        )
+
+    monkeypatch.setenv("QUALIFY_OAUTH_STATE_SECRET", "test-management-signing-secret-32-characters")
+    monkeypatch.setattr(management, "tenant_session", session)
+    monkeypatch.setattr(management, "_scope", lambda *args: scope)
+    monkeypatch.setattr(management, "_actor", lambda *args: actor)
+    monkeypatch.setattr(management, "current_acting_login", lambda: actor)
+    monkeypatch.setattr(
+        management,
+        "PostgresPromotionRepository",
+        lambda: SimpleNamespace(get=lambda *args: promotion),
+    )
+    monkeypatch.setattr(management, "effective", lambda tenant, original: (original, revision([])))
+    monkeypatch.setattr(management, "PersistedWizardSources", live_wizard.PersistedWizardSources)
+    monkeypatch.setattr(management, "authorize_actor", live_wizard.authorize_actor)
+    monkeypatch.setattr(management, "_load", lambda *args: None)
+    monkeypatch.setattr(
+        management, "_local", lambda scope, gateway, source, *rest: gateway.local_guard(source)
+    )
+    monkeypatch.setattr(management, "_claim_pause", lambda *args, **kwargs: (uuid4(), "claimed"))
+    monkeypatch.setattr(management, "_dispatch", lambda *args: None)
+    monkeypatch.setattr(management, "_finish_pause", lambda *args: None)
+    assert management._context(scope)[2].goal == "chat"
+    options = {
+        "budget": {"budget_minor": 2_000_000},
+        "end_time": {"end_time": live["args"]["form"].end_time + timedelta(days=1)},
+    }.get(action, {})
+    review = await management.prepare_promotion_edit(
+        tenant_id=tenant,
+        promotion_id=promotion.id,
+        request_key="chat-edit",
+        action=action,
+        **options,
+    )
+    result = await management.confirm_promotion_edit(
+        tenant_id=tenant,
+        promotion_id=promotion.id,
+        request_key="chat-edit",
+        approval_token=review.approval_token,
+        confirm_change=True,
+    )
+    assert result.status == "completed"
+
+
+@pytest.mark.asyncio
 async def test_read_back_accepts_the_number_echoed_with_a_plus(live, monkeypatch):
     use_chat(live, monkeypatch)
     preview = await prepare(live)

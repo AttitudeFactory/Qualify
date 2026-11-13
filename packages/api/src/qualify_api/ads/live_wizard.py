@@ -58,6 +58,7 @@ class LiveWizardGateway:
         client_factory: Callable | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         messaging_check: Callable | None = None,
+        goal: str = "website",
     ) -> None:
         self.tenant_id, self.actor = tenant_id, actor
         self.sources, self.authorize, self.clock = sources, authorize, clock
@@ -66,7 +67,7 @@ class LiveWizardGateway:
         self.messaging_check = messaging_check
         # The goal being checked (website | lead | chat): a piece's chat button refuses
         # website and lead ads, never a chat ad. Set by preflight and the promotion reads.
-        self.goal = "website"
+        self.goal = goal
         self.diagnostics: list[dict[str, str]] = []
         self._validated: dict[str, tuple[str, datetime]] = {}
 
@@ -330,7 +331,7 @@ class LiveWizardGateway:
     async def validate_step(
         self, promotion: Promotion, resource: Resource, payload: dict[str, Any]
     ) -> None:
-        self.goal = _request_goal(promotion.request)
+        self.goal = request_goal(promotion.request)
         source = self.sources.get(self.tenant_id, UUID(promotion.request["publish_attempt_id"]))
         self.local_guard(source)
         async with self.client(source) as client:
@@ -374,7 +375,7 @@ class LiveWizardGateway:
     async def remote_guard(
         self, promotion: Promotion, *, active_resources: tuple[str, ...] = ()
     ) -> None:
-        self.goal = _request_goal(promotion.request)
+        self.goal = request_goal(promotion.request)
         source = self.sources.get(self.tenant_id, UUID(promotion.request["publish_attempt_id"]))
         self.local_guard(source)
         async with self.client(source) as client:
@@ -631,7 +632,7 @@ async def production_wizard(tenant_id: UUID, actor: UUID):
         await binding.aclose()
 
 
-def _request_goal(request: dict[str, Any]) -> str:
+def request_goal(request: dict[str, Any]) -> str:
     if request.get("messaging_snapshot"):
         return "chat"
     return "lead" if request.get("lead_form_snapshot") else "website"
