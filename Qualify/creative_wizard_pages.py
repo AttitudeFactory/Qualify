@@ -2656,7 +2656,7 @@ _KIT_LIST_ITEMS = {
     "perks": CreativeState.kit_perks_items,
 }
 
-#: «Lo que ofrece tu negocio» (0163, `BrandKit.business_perks`): its own section of the
+#: «Lo que ofrece tu negocio» (0164, `BrandKit.business_perks`): its own section of the
 #: Brand Kit editor only — never in ¿Todo correcto?, whose save does not write it. The
 #: examples fit a shop, a realtor or a travel agency alike, not only a restaurant.
 _PERKS_LIST: tuple[str, str, str, str] = (

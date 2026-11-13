@@ -1,7 +1,7 @@
 """Awareness levels and business perks for generation
 
-Revision ID: 0163
-Revises: 0162
+Revision ID: 0164
+Revises: 0163
 Create Date: 2026-11-13
 
 Eugene Schwartz's five awareness levels reach content generation, fed by facts the owner
@@ -32,8 +32,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB
 
-revision = "0163"
-down_revision = "0162"
+revision = "0164"
+down_revision = "0163"
 branch_labels = None
 depends_on = None
 

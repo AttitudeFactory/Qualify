@@ -864,7 +864,7 @@ def brief_from_row(row: orm.ContentBrief) -> ContentBrief:
             "variants_requested": row.variants_requested,
             "kind": row.kind,
             "media": row.media or {},
-            # 0163: the angle's awareness level; NULL on every brief written before it
+            # 0164: the angle's awareness level; NULL on every brief written before it
             "awareness_level": getattr(row, "awareness_level", None),
         },
         context={"preserve_stored_logo_mode": True},

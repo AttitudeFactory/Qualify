@@ -1,4 +1,4 @@
-"""«Lo que ofrece tu negocio» in /brand/kit and «para quién es» on each idea (0163): the
+"""«Lo que ofrece tu negocio» in /brand/kit and «para quién es» on each idea (0164): the
 owner's perks round-trip through the editor and only their own section writes them; the
 editor holds the kit's limits; each idea card says who it talks to, and an idea from
 before the levels looks exactly as before; «video por partes» reads the perks too. The

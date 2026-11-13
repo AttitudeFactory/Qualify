@@ -2,7 +2,7 @@
 `brand_service` (written only when the caller set them, read back normalized), the
 level through the `content_briefs` row and the `creative_angles` record, the brand
 fingerprint (a perks change gives a cached set a new one, an empty list keeps the old
-one), the video-by-parts prompt and its version, and migration 0163's place in the
+one), the video-by-parts prompt and its version, and migration 0164's place in the
 chain."""
 
 from __future__ import annotations
@@ -151,17 +151,17 @@ def test_the_parts_prompt_carries_perks_and_level_only_when_present() -> None:
     assert PROPOSE_PARTS_PROMPT_VERSION == "proponer-partes-v3.3"
 
 
-# -- migration 0163 ------------------------------------------------------------------------
+# -- migration 0164 ------------------------------------------------------------------------
 
 
-def test_migration_0163_follows_0162_and_is_the_only_head() -> None:
-    text = (_VERSIONS / "0163_awareness_levels_business_perks.py").read_text()
-    assert 'revision = "0163"' in text and 'down_revision = "0162"' in text
+def test_migration_0164_follows_0163_and_is_the_only_head() -> None:
+    text = (_VERSIONS / "0164_awareness_levels_business_perks.py").read_text()
+    assert 'revision = "0164"' in text and 'down_revision = "0163"' in text
     parents = [
         re.search(r'^down_revision = "(\d+)"', path.read_text(), re.M)
         for path in _VERSIONS.glob("*.py")
     ]
-    assert [m.group(1) for m in parents if m].count("0162") == 1
+    assert [m.group(1) for m in parents if m].count("0163") == 1
     assert "def downgrade()" in text and text.count("drop_column") >= 2
 
 

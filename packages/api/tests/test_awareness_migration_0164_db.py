@@ -1,6 +1,6 @@
-"""`db`: migration 0163 — business perks on the kit, awareness level on angles and briefs.
+"""`db`: migration 0164 — business perks on the kit, awareness level on angles and briefs.
 
-Same mechanics as `test_own_media_migration_0159_db.py`: 0163's own `downgrade()` /
+Same mechanics as `test_own_media_migration_0159_db.py`: 0164's own `downgrade()` /
 `upgrade()` run inside ONE owner transaction that is rolled back, so the shared test
 database is never left downgraded.
 
@@ -27,7 +27,7 @@ pytestmark = pytest.mark.db
 
 _MIGRATION = (
     Path(__file__).resolve().parents[3]
-    / "migrations/postgres/versions/0163_awareness_levels_business_perks.py"
+    / "migrations/postgres/versions/0164_awareness_levels_business_perks.py"
 )
 _TABLES = ("brand_kits", "creative_angles", "content_briefs")
 _COLUMNS = {
@@ -38,10 +38,10 @@ _COLUMNS = {
 
 
 def _load() -> ModuleType:
-    spec = importlib.util.spec_from_file_location("migration_0163", _MIGRATION)
+    spec = importlib.util.spec_from_file_location("migration_0164", _MIGRATION)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
-    sys.modules["migration_0163"] = module
+    sys.modules["migration_0164"] = module
     spec.loader.exec_module(module)
     return module
 

@@ -481,7 +481,7 @@ def test_the_content_repository_answers_a_repeated_key_with_the_existing_draft(
 def test_the_awareness_level_round_trips_and_an_unknown_one_is_refused(
     seeded: tuple[UUID, UUID],
 ) -> None:
-    """0163: the level the model tagged an angle with is stored beside it (NULL = none),
+    """0164: the level the model tagged an angle with is stored beside it (NULL = none),
     and the CHECK keeps anything but the five levels out."""
     from qualify_creative.enums import AwarenessLevel
 
