@@ -82,6 +82,8 @@ from .conversations_vm import (
     QUICK_REPLIES_HINT,
     QUICK_REPLIES_WITH_BUTTONS,
     SEND_LABEL,
+    STORY_MENTION_ICON,
+    STORY_REPLY_ICON,
     TAP_ICON,
     TEMPLATE_HELP,
     AccountVM,
@@ -809,7 +811,8 @@ def _bubble_body(m: MessageVM) -> rx.Component:
     text = rx.cond(
         m.text != "",
         rx.text(m.text, size="2", white_space="pre-wrap", overflow_wrap="anywhere"),
-        rx.fragment(),
+        # m-25017817: a mention with no text is the story line itself, never «Mensaje».
+        rx.cond(m.story_inline, _story_line(m, "2"), rx.fragment()),
     )
     body = rx.cond(
         m.media_control != "",
@@ -861,19 +864,39 @@ def _seen_footer(m: MessageVM) -> rx.Component:
     )
 
 
-def _story_reply(m: MessageVM) -> rx.Component:
-    """«Respondió a tu historia» above an inbound bubble (m-24789646, B5)."""
-    label = rx.hstack(
-        rx.icon("circle-dashed", size=T.ICON_SM, color=T.TEXT_FAINT),
+def _story_line(m: MessageVM, size: str) -> rx.Component:
+    """The story line: «Respondió a tu historia» (m-24789646, B5) or «Te mencionó en su
+    historia» (m-25017817), linked to the story while Meta's expiring URL lasts. The
+    link is a 44 px target (N12, as «Ver anuncio») and says it opens another tab."""
+    return rx.hstack(
         rx.cond(
-            m.story_reply_href != "",
-            rx.link(m.story_reply_label, href=m.story_reply_href, is_external=True, size="1"),
-            rx.text(m.story_reply_label, size="1", color=T.TEXT_MUTED),
+            m.story_mention,
+            rx.icon(STORY_MENTION_ICON, size=T.ICON_SM, color=T.TEXT_FAINT, aria_hidden="true"),
+            rx.icon(STORY_REPLY_ICON, size=T.ICON_SM, color=T.TEXT_FAINT, aria_hidden="true"),
+        ),
+        rx.cond(
+            m.story_href != "",
+            rx.link(
+                m.story_label,
+                href=m.story_href,
+                is_external=True,
+                size=size,
+                aria_label=m.story_link_label,
+                min_height="44px",
+                display="inline-flex",
+                align_items="center",
+            ),
+            rx.text(m.story_label, size=size, color=T.TEXT_MUTED),
         ),
         spacing="1",
         align="center",
     )
-    return rx.cond(m.story_reply_label != "", label, rx.fragment())
+
+
+def _story_reply(m: MessageVM) -> rx.Component:
+    """The story line above an inbound bubble — unless it is the bubble's whole content
+    (`story_inline`: a mention with nothing else, drawn by `_bubble_body`)."""
+    return rx.cond((m.story_label != "") & ~m.story_inline, _story_line(m, "1"), rx.fragment())
 
 
 def _choice_origin(m: MessageVM) -> rx.Component:
@@ -935,7 +958,7 @@ def _message(m: MessageVM) -> rx.Component:
                 chat_bubble(_bubble_body(m), direction="in", meta=_bubble_meta(m)),
                 # `--story` stacks a context line above the bubble (story reply or tap).
                 class_name=rx.cond(
-                    (m.story_reply_label != "")
+                    ((m.story_label != "") & ~m.story_inline)
                     | (m.choice_label != "")
                     | (m.ad_origin_label != ""),
                     "q-wa-msg q-wa-msg--in q-conv-msg q-conv-msg--story",
