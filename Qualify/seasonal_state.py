@@ -39,6 +39,7 @@ from .seasonal_vm import (
     OTHER_KEY,
     OTHER_NAME_MISSING,
     PHOTOS_CHANGED,
+    PRODUCT_SEASON_KEY,
     STARTED_TOAST,
     STEP_HOW,
     STEP_OCCASION,
@@ -178,7 +179,12 @@ class SeasonalState(rx.State):
 
     @rx.var
     def library(self) -> list[SeasonVM]:
-        return [s for s in order_seasons(self.seasons, self.current_key) if not s.archived]
+        # m-25017912: «De tus productos» shows up once one of them is approved
+        return [
+            s
+            for s in order_seasons(self.seasons, self.current_key)
+            if not s.archived and (s.key != PRODUCT_SEASON_KEY or s.approved_pieces)
+        ]
 
     @rx.var
     def archived(self) -> list[SeasonVM]:

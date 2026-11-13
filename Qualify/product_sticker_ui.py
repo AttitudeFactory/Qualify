@@ -15,8 +15,13 @@ from .product_sticker_vm import (
     ANIMATED_TITLE,
     ASKING_LABEL,
     BACK_LABEL,
+    CANCEL_LABEL,
     CATALOG_HREF,
     DISCARD_LABEL,
+    DISCARD_TEXT,
+    DISCARD_TITLE,
+    DISCARD_YES,
+    DRAWING_BUSY_LABEL,
     DRAWING_FAILED_PILL,
     DRAWING_HELP,
     DRAWING_PENDING,
@@ -41,6 +46,7 @@ from .product_sticker_vm import (
     PRODUCT_HELP,
     RETRY_LABEL,
     SEARCH_LABEL,
+    SEASON_INSTEAD_LABEL,
     START_BUTTON,
     START_LINE,
     START_TITLE,
@@ -56,6 +62,7 @@ from .product_sticker_vm import (
     ProductVM,
 )
 from .r2_media import BACKEND_BASE
+from .seasonal_state import SeasonalState
 from .ui import (
     callout,
     card,
@@ -314,21 +321,51 @@ def _drawing_card(drawing: DrawingVM) -> rx.Component:
             gap="0.35rem",
             aria_label=rx.cond(drawing.pending, DRAWING_PENDING, drawing.alt),
         ),
-        rx.cond(
-            ~drawing.pending,
+        rx.cond(~drawing.pending, _discard_action(drawing, busy)),
+        spacing="1",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _discard_action(drawing: DrawingVM, busy: rx.Var[bool]) -> rx.Component:
+    """«Quitar este dibujo»: a paid drawing leaves only after a question with the same verb
+    on the title and the button (docs/design-system.md §6.2)."""
+    return rx.alert_dialog.root(
+        rx.alert_dialog.trigger(
             rx.button(
+                rx.icon("trash-2", size=T.ICON_SM),
                 DISCARD_LABEL,
-                on_click=P.discard_drawing(drawing.id),
                 variant="ghost",
                 size="1",
                 min_height=_TAP,
                 disabled=busy,
+                aria_label=DISCARD_LABEL + ": " + drawing.alt,
                 **T.tone_scheme("neutral"),
             ),
         ),
-        spacing="1",
-        width="100%",
-        align_items="start",
+        rx.alert_dialog.content(
+            rx.alert_dialog.title(DISCARD_TITLE),
+            rx.alert_dialog.description(DISCARD_TEXT, size="2"),
+            rx.flex(
+                rx.alert_dialog.cancel(_button(CANCEL_LABEL, rx.noop())),
+                rx.alert_dialog.action(
+                    rx.button(
+                        DISCARD_YES,
+                        on_click=P.discard_drawing(drawing.id),
+                        variant="solid",
+                        size="2",
+                        min_height=_TAP,
+                        **T.tone_scheme("error"),
+                    ),
+                ),
+                gap="2",
+                justify="end",
+                margin_top="1rem",
+                wrap="wrap",
+            ),
+            max_width="26rem",
+        ),
     )
 
 
@@ -340,15 +377,35 @@ def _ask_block() -> rx.Component:
             rx.cond(
                 P.cost_can_pay,
                 callout(P.cost_line, "neutral", icon="sparkles"),
-                callout(P.cost_message, "warn"),
+                rx.vstack(
+                    callout(P.cost_message, "warn"),
+                    # a way out, not just a stop: the season's stickers are free
+                    _button(
+                        SEASON_INSTEAD_LABEL,
+                        [P.close_for_season, SeasonalState.open_flow],
+                        icon="calendar-heart",
+                    ),
+                    spacing="2",
+                    width="100%",
+                    align_items="start",
+                ),
             ),
             callout(NO_COST, "warn"),
         ),
         rx.cond(
             P.cost_known & P.cost_can_pay,
-            _button(
-                rx.cond(P.asking, ASKING_LABEL, P.drawing_button),
-                P.ask_drawing,
+            rx.button(
+                rx.cond(
+                    P.asking,
+                    ASKING_LABEL,
+                    rx.cond(P.any_drawing_pending, DRAWING_BUSY_LABEL, P.drawing_button),
+                ),
+                on_click=P.ask_drawing,
+                # the main action while there is no drawing to use; secondary after that
+                variant=rx.cond(P.has_usable_drawing, "soft", "solid"),
+                color_scheme=rx.cond(P.has_usable_drawing, "gray", "teal"),
+                size="2",
+                min_height=_TAP,
                 disabled=~P.can_ask_drawing,
                 aria_busy=rx.cond(P.asking, "true", "false"),
                 white_space="nowrap",

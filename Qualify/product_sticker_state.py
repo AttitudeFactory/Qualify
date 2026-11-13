@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import AsyncIterator
 from typing import Any
 from uuid import UUID
@@ -63,6 +64,9 @@ _TOAST_MS = 6000
 POLL_SECONDS = 5.0
 #: ≈ 10 min, then the owner can come back later (it keeps being drawn).
 POLL_ROUNDS = 120
+#: A request still «in flight» after this long was lost (a deploy, a restart): its flag no
+#: longer holds the panel open nor blocks the buttons (review finding A).
+BUSY_STALE_SECONDS = 180.0
 
 
 def _worded(exc: BaseException, what: str, fallback: str = ACTION_FAILED) -> str:
@@ -90,6 +94,8 @@ class ProductStickerState(rx.State):
     start_creations: int = 0
     #: why the month cannot pay a drawing («Te falta 1 creación este mes…»), on the card
     start_blocked: str = ""
+    #: the start card's cost read finished (ok or not)
+    start_read: bool = False
 
     # -- the flow ---------------------------------------------------------------------------
     flow_open: bool = False
@@ -134,6 +140,8 @@ class ProductStickerState(rx.State):
     _brand: str = ""
     _gen: int = 0
     _poll_gen: int = 0
+    #: when `asking` / `creating` was set (time.time())
+    _busy_since: float = 0.0
 
     # -- computed ---------------------------------------------------------------------------
 
@@ -143,7 +151,7 @@ class ProductStickerState(rx.State):
 
     @rx.var
     def start_cost(self) -> str:
-        return start_cost_line(self.start_creations)
+        return start_cost_line(self.start_creations, self.start_read or self.cost_known)
 
     @rx.var
     def show_search(self) -> bool:
@@ -170,6 +178,10 @@ class ProductStickerState(rx.State):
         return next((d for d in self.drawings if d.id == self.drawing_id), DrawingVM())
 
     @rx.var
+    def has_usable_drawing(self) -> bool:
+        return any(d.usable for d in self.drawings)
+
+    @rx.var
     def any_drawing_pending(self) -> bool:
         return any(d.pending for d in self.drawings)
 
@@ -183,7 +195,13 @@ class ProductStickerState(rx.State):
 
     @rx.var
     def can_ask_drawing(self) -> bool:
-        return self.cost_known and self.cost_can_pay and not self.asking
+        # one drawing at a time: a second tap while «Dibujando…» would spend another creación
+        return (
+            self.cost_known
+            and self.cost_can_pay
+            and not self.asking
+            and not any(d.pending for d in self.drawings)
+        )
 
     @rx.var
     def messages(self) -> list[str]:
@@ -238,6 +256,18 @@ class ProductStickerState(rx.State):
         auth = await self.get_state(AuthState)
         return tenant_uuid(auth.session_tenant_id) if auth.session_tenant_id else None
 
+    def _in_flight(self) -> bool:
+        """A paid or free request is on its way (and not lost: see `BUSY_STALE_SECONDS`)."""
+        if not (self.asking or self.creating):
+            return False
+        if time.time() - self._busy_since > BUSY_STALE_SECONDS:
+            self.asking = self.creating = False
+            return False
+        return True
+
+    def _can_ask(self) -> bool:
+        return self.cost_known and self.cost_can_pay and not any(d.pending for d in self.drawings)
+
     def _set_cost(self, cost: Any) -> None:
         self.cost_creations = int(cost.creations)
         self.cost_line = str(cost.cost_line)
@@ -266,8 +296,11 @@ class ProductStickerState(rx.State):
             cost = await asyncio.to_thread(gw.cost, tenant_id, brand)
         except Exception as exc:  # noqa: BLE001 — the card says only the free part
             logger.warning("product sticker start cost failed: %s", type(exc).__name__)
+            async with self:
+                self.start_read = True
             return
         async with self:
+            self.start_read = True
             self.start_creations = int(cost.creations)
             self.start_blocked = "" if cost.can_pay else str(cost.message or "")
 
@@ -280,10 +313,10 @@ class ProductStickerState(rx.State):
             wanted = self.router.url.query_parameters.get("crear")
         except Exception:  # noqa: BLE001 — no router outside a page
             wanted = None
-        if wanted == CREATE_PARAM_VALUE and not (self.asking or self.creating):
+        if wanted == CREATE_PARAM_VALUE and not self._in_flight():
             # a reload re-reads everything (never a panel restored with stale drawings)
             return ProductStickerState.open_flow
-        if self.flow_open and not (self.asking or self.creating):
+        if self.flow_open and not self._in_flight():
             self.flow_open = False  # left open by an earlier visit of this tab
         return None
 
@@ -292,6 +325,7 @@ class ProductStickerState(rx.State):
         """«Crear sticker de producto»: step 1 with everything already chosen (the last
         product and message used), then the reads off the loop."""
         async with self:
+            self._in_flight()  # a request lost long ago (a restart) frees its flag here
             self._gen += 1
             self._poll_gen += 1
             gen = self._gen
@@ -355,14 +389,22 @@ class ProductStickerState(rx.State):
 
     @rx.event
     def set_flow_open(self, is_open: bool) -> None:
-        if not is_open and not (self.creating or self.asking):
+        if not is_open and not self._in_flight():
+            self.flow_open = False
+            self._poll_gen += 1
+
+    @rx.event
+    def close_for_season(self) -> None:
+        """«Crear para esta temporada» from an empty month: this panel closes and the free
+        seasonal one opens next (`SeasonalState.open_flow`)."""
+        if not self._in_flight():
             self.flow_open = False
             self._poll_gen += 1
 
     @rx.event
     def flow_back(self) -> None:
         """«‹ Atrás» keeps everything chosen; on step 1 it closes."""
-        if self.creating or self.asking or self.picking:
+        if self._in_flight() or self.picking:
             return
         self.flow_error = ""
         if self.flow_step <= STEP_PRODUCT:
@@ -433,6 +475,8 @@ class ProductStickerState(rx.State):
         async with self:
             # a newer open, or the owner went back and chose another product meanwhile
             if gen != self._gen or self.product_id != wanted:
+                if gen == self._gen:
+                    self.drawings_loading = False
                 return False
             self.drawings_loading = False
             if cards is None:
@@ -473,7 +517,7 @@ class ProductStickerState(rx.State):
         """Tu marca unmounted: no more reads, and the panel does not come back open (with a
         stale «Dibujando…») unless a paid request is still on its way."""
         self._poll_gen += 1
-        if not (self.asking or self.creating):
+        if not self._in_flight():
             self.flow_open = False
 
     @rx.event
@@ -498,11 +542,12 @@ class ProductStickerState(rx.State):
         """«Crear dibujo · 1 creación» / «Pedir otro dibujo · 1 creación»: always a NEW
         drawing for the cost the owner saw (`accepted_creations`); the earlier ones stay."""
         async with self:
-            if self.asking or not self.cost_known or not self.cost_can_pay:
+            if self._in_flight() or not self._can_ask():
                 return
             product, brand = _uuid(self.product_id), _uuid(self._brand)
             accepted, gen = self.cost_creations, self._gen
             self.asking = True
+            self._busy_since = time.time()
             self.flow_error = ""
             tenant_id = await self._tenant()
         from qualify_api.creative.product_stickers import (  # noqa: PLC0415
@@ -660,7 +705,7 @@ class ProductStickerState(rx.State):
         """«Preparar 3 stickers · gratis»: one library row per message and variant, to Por
         aprobar (nothing is approved, nothing is sent)."""
         async with self:
-            if self.creating or self.flow_step != STEP_REVIEW or not self.flow_open:
+            if self._in_flight() or self.flow_step != STEP_REVIEW or not self.flow_open:
                 return
             drawing, brand = _uuid(self.drawing_id), _uuid(self._brand)
             messages, animated, still = list(self.messages), self.animated, self.still
@@ -668,6 +713,7 @@ class ProductStickerState(rx.State):
                 self.flow_error = NO_MESSAGES if not messages else ACTION_FAILED
                 return
             self.creating = True
+            self._busy_since = time.time()
             self.flow_error = ""
             tenant_id = await self._tenant()
         error = ""

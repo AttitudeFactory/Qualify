@@ -447,7 +447,7 @@ def test_chat_picker_lists_product_stickers_after_the_seasons() -> None:
     rows = [_media("approved", "navidad"), _media("approved", "productos", "Entregado")]
     picks = build_seasonal_picks(rows)
     assert [(p.current, p.product) for p in picks] == [(True, False), (False, True)]
-    assert picks[1].alt == "Sticker que dice «Entregado»"
+    assert picks[1].alt == "Sticker con movimiento que dice «Entregado»"
     only = build_seasonal_picks([_media("approved", "productos")])
     assert not only[0].current and only[0].product
 
@@ -507,7 +507,7 @@ async def test_leaving_the_page_closes_the_panel_and_stops_polling(gw: FakeGatew
     state.stop_poll()
     assert not state.flow_open and state._poll_gen == poll + 1
     await _open(state)
-    state.asking = True  # a paid request on its way keeps it open
+    state.asking, state._busy_since = True, state_module.time.time()  # on its way: kept open
     state.stop_poll()
     assert state.flow_open
 
@@ -566,3 +566,43 @@ async def test_a_reload_never_restores_a_stale_panel(
     assert state.open_from_query() is None and not state.flow_open
     query["crear"] = "producto"
     assert state.open_from_query() is not None
+
+
+async def test_a_lost_request_never_locks_the_panel(gw: FakeGateway) -> None:
+    """A deploy killed `ask_drawing` mid-flight: after a while its flag frees the panel."""
+    state = ProductStickerState()
+    await _open(state)
+    state.asking = True
+    state._busy_since = state_module.time.time()
+    state.set_flow_open(False)
+    assert state.flow_open  # a request on its way keeps it open…
+    state._busy_since -= state_module.BUSY_STALE_SECONDS + 1
+    state.set_flow_open(False)
+    assert not state.flow_open and not state.asking  # …a lost one does not
+
+
+async def test_a_second_drawing_waits_for_the_first(gw: FakeGateway) -> None:
+    state = ProductStickerState()
+    await _open(state)
+    await _to_drawings(state)
+    await _drain(ProductStickerState.ask_drawing.fn(state))
+    assert state.any_drawing_pending and not state.can_ask_drawing
+    await _drain(ProductStickerState.ask_drawing.fn(state))  # «Dibujando…»: nothing spent
+    assert len([c for c in gw.calls if c[0] == "create"]) == 1
+
+
+async def test_an_empty_month_offers_the_free_season(gw: FakeGateway) -> None:
+    from .product_sticker_vm import start_cost_line
+
+    assert start_cost_line(1, read=False) == "Revisando el costo…"
+    state = ProductStickerState()
+    await _open(state)
+    state.close_for_season()
+    assert not state.flow_open
+
+
+def test_several_drawings_are_told_apart() -> None:
+    from .product_sticker_vm import drawing_vms
+
+    alts = [d.alt for d in drawing_vms([_ready(SHAWARMA), _ready(SHAWARMA)])]
+    assert alts == ["Dibujo 1 de 2 de Shawarma mixto", "Dibujo 2 de 2 de Shawarma mixto"]

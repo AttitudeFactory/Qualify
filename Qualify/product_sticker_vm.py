@@ -11,7 +11,7 @@ paid thing is a «dibujo», the free one a «sticker»."""
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Final
 
 # --- where it lives ----------------------------------------------------------------------
@@ -69,7 +69,15 @@ DRAWING_WAIT: Final = "Tu dibujo llega en unos 30 segundos. Puedes esperar aquí
 DRAWING_PENDING: Final = "Dibujando…"
 DRAWING_FAILED_PILL: Final = "No salió"
 DRAWING_USED_PILL: Final = "Ya lo usaste"
-DISCARD_LABEL: Final = "No me gusta"
+DISCARD_LABEL: Final = "Quitar este dibujo"
+DISCARD_TITLE: Final = "¿Quitar este dibujo?"
+DISCARD_TEXT: Final = (
+    "Ya no aparecerá para elegir. Los stickers que hiciste con él se quedan. No se puede deshacer."
+)
+DISCARD_YES: Final = "Quitar"
+CANCEL_LABEL: Final = "Cancelar"
+DRAWING_BUSY_LABEL: Final = "Dibujando… espera tu dibujo"
+SEASON_INSTEAD_LABEL: Final = "Crear para esta temporada"
 PICK_A_DRAWING: Final = "Elige un dibujo listo para seguir."
 ASKING_LABEL: Final = "Pidiendo el dibujo…"
 DRAWINGS_FAILED: Final = "No pudimos traer tus dibujos. Vuelve a intentarlo en un momento."
@@ -122,8 +130,11 @@ def creations_word(n: int) -> str:
     return "1 creación" if n == 1 else f"{n} creaciones"
 
 
-def start_cost_line(creations: int) -> str:
-    """The start card's price, in creaciones (0 → unknown yet: only the free part)."""
+def start_cost_line(creations: int, read: bool = True) -> str:
+    """The start card's price, in creaciones; «Revisando el costo…» until it is read, only
+    the free part when the read failed (never «everything is free» while it loads)."""
+    if not read:
+        return CHECKING_COST
     if creations <= 0:
         return "Los stickers que hagas con tu dibujo son gratis."
     return f"Cada dibujo usa {creations_word(creations)}. Los stickers que hagas con él son gratis."
@@ -206,8 +217,13 @@ def drawing_vm(card: Any) -> DrawingVM:
 
 
 def drawing_vms(cards: Iterable[Any]) -> list[DrawingVM]:
-    """Newest first, as the backend gives them; anything else is left out."""
-    return [drawing_vm(c) for c in cards if str(c.status) in (PENDING, READY, FAILED, APPROVED)]
+    """Newest first, as the backend gives them; anything else is left out. Each one is
+    told apart for a screen reader («Dibujo 2 de 3 de Shawarma mixto»)."""
+    kept = [drawing_vm(c) for c in cards if str(c.status) in (PENDING, READY, FAILED, APPROVED)]
+    n = len(kept)
+    if n <= 1:
+        return kept
+    return [replace(d, alt=f"Dibujo {i} de {n} de {d.product_name}") for i, d in enumerate(kept, 1)]
 
 
 def filter_products(products: Sequence[ProductVM], query: str) -> list[ProductVM]:

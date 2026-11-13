@@ -41,7 +41,7 @@ from .ad_message_vm import ad_origin_href, ad_origin_label
 from .catalog_vm import CHATS_RETURN_PATH, RETURN_PARAM
 from .planner_vm import time_label_12h
 from .seasonal_vm import CREATE_HREF as SEASONAL_LIBRARY_CREATE_HREF
-from .seasonal_vm import PRODUCT_SEASON_KEY, product_message
+from .seasonal_vm import PRODUCT_RECIPES, PRODUCT_SEASON_KEY, product_message
 
 # ======================================================================================
 # Copy and limits
@@ -1774,7 +1774,8 @@ def build_seasonal_picks(rows: Iterable[Any], src_for: Any = None) -> list[Seaso
                 current=not product and key == current,
                 src=src_for(row) if src_for else "",
                 alt=(
-                    f"Sticker que dice «{message}»"
+                    f"Sticker {PRODUCT_RECIPES.get(str(getattr(row, 'recipe', '')), '')} "
+                    f"que dice «{message}»".replace("  ", " ")
                     if message
                     else f"{'Video' if video else 'Sticker'} de «{label}»"
                 ),
