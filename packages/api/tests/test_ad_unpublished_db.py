@@ -193,3 +193,85 @@ def test_unpublished_promotion_has_read_pause_scope_without_publish_attempt(unpu
             _scope(source.tenant_id, promotion.id)
         with pytest.raises(NotAMember):
             repo.approve(replace(source, tenant_id=uuid4()), form, actor, uuid4())
+
+
+def test_video_source_covers_claims_and_transitions(unpublished_world):
+    source, form, login, actor = unpublished_world
+    clips, covers = [], []
+    with tenant_session(source.tenant_id) as session:
+        version = session.scalar(
+            text("SELECT active_version_id FROM content_drafts WHERE id=:id"),
+            {"id": source.draft_id},
+        )
+        for width, height in ((40, 50), (90, 160)):
+            for media, kind, out in (("video", "video/mp4", clips), ("image", "image/png", covers)):
+                asset = uuid4()
+                session.execute(
+                    text("""INSERT INTO image_assets
+                  (id,tenant_id,draft_id,version_id,media_url,object_key,content_type,width,height,
+                   media_type)
+                  VALUES(:id,:tenant,:draft,:version,'unused',:key,:kind,:width,:height,:media)"""),
+                    {
+                        "id": asset,
+                        "tenant": source.tenant_id,
+                        "draft": source.draft_id,
+                        "version": version,
+                        "key": f"t/{source.tenant_id}/generated/{asset}",
+                        "kind": kind,
+                        "width": width,
+                        "height": height,
+                        "media": media,
+                    },
+                )
+                out.append(asset)
+    repo = UnpublishedRepository()
+    with acting_login(login):
+        args = (source.tenant_id, source.draft_id, source.account_id, *clips)
+        with pytest.raises(UnpublishedUnavailable, match="portada"):
+            load_image_source(*args)
+        with pytest.raises(UnpublishedUnavailable, match="mezclar"):
+            load_image_source(
+                source.tenant_id,
+                source.draft_id,
+                source.account_id,
+                source.feed.asset_id,
+                clips[1],
+                (None, covers[1]),
+            )
+        with pytest.raises(UnpublishedUnavailable):  # a cover must be an image
+            load_image_source(*args, (clips[0], covers[1]))
+        video = load_image_source(*args, tuple(covers))
+        assert video.is_video and video.feed.thumbnail.asset_id == covers[0]
+        guard_source(video)
+        recipe = repo.approve(video, form, actor, uuid4())
+        assert recipe["pipeline_version"] == "ad-unpublished-video-v1"
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            claims = list(
+                pool.map(lambda _: repo.claim_video(video, video.feed, "c" * 64, 10), range(2))
+            )
+        tokens = [token for _, token in claims if token is not None]
+        assert len(tokens) == 1
+        row = next(row for row, token in claims if token is not None)
+        repo.video_named(video.tenant_id, row["id"], tokens[0], "901")
+        with pytest.raises(UnpublishedUnavailable):  # nothing can rename the remote video
+            repo.video_named(video.tenant_id, row["id"], tokens[0], "902")
+        with pytest.raises(IntegrityError):  # a named video never returns to ready
+            repo.finish_video(video.tenant_id, row["id"], tokens[0], "ready")
+        repo.finish_video(video.tenant_id, row["id"], tokens[0], "processing")
+        repo.video_checked(video.tenant_id, row["id"], "processing")
+        repo.video_checked(video.tenant_id, row["id"], "ready_remote")
+        again, token = repo.claim_video(video, video.feed, "c" * 64, 10)
+        assert token is None and again["state"] == "ready_remote" and again["video_id"] == "901"
+        with pytest.raises(IntegrityError), tenant_session(video.tenant_id) as session:
+            session.execute(
+                text("UPDATE ad_unpublished_videos SET state='processing' WHERE id=:id"),
+                {"id": row["id"]},
+            )
+        # Unsent claims go back to ready; an unknown send stays unknown.
+        fresh, token = repo.claim_video(video, video.vertical, "d" * 64, 10)
+        repo.finish_video(video.tenant_id, fresh["id"], token, "ready")
+        fresh, token = repo.claim_video(video, video.vertical, "d" * 64, 10)
+        repo.finish_video(video.tenant_id, fresh["id"], token, "unknown")
+        assert repo.claim_video(video, video.vertical, "d" * 64, 10)[1] is None
+        with tenant_session(uuid4()) as session:
+            assert session.scalar(text("SELECT count(*) FROM ad_unpublished_videos")) == 0
