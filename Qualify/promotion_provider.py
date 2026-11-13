@@ -9,6 +9,8 @@ from urllib.parse import parse_qs, urlsplit
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
+from qualify_api.ads.lead_ads import published_lead_form
+from qualify_api.ads.lead_forms_service import list_lead_forms
 from qualify_api.ads.messaging_destinations import load_messaging_destinations
 from qualify_api.ads.wizard import (
     WizardForm,
@@ -17,6 +19,8 @@ from qualify_api.ads.wizard import (
     prepare_promotion_preview,
 )
 from qualify_api.tenancy.locale import read_business_locale
+from qualify_shared.db.session import tenant_session
+from sqlalchemy import text
 
 from .ad_enhancements_provider import load_policy
 from .ad_enhancements_vm import BrandEnhancementsVM
@@ -24,6 +28,7 @@ from .ad_health_provider import account_health_for, refresh_health
 from .ad_health_vm import AccountHealthVM
 from .promotion_audience_provider import audience_from_form
 from .promotion_vm import (
+    LeadFormChoiceVM,
     MessagingDestinationVM,
     PromotionDraftVM,
     PromotionResultVM,
@@ -77,6 +82,37 @@ def messaging_destinations(tenant_id: UUID, connection_id: UUID) -> list[Messagi
     ]
 
 
+LEAD_FORMS_FAILED = "No pudimos consultar tus formularios. Vuelve a abrir la promoción."
+
+
+def last_used_lead_form(tenant_id: UUID) -> str:
+    """The form of this business's most recent lead-ad promotion, or ""."""
+    with tenant_session(tenant_id) as session:
+        value = session.scalar(
+            text("""SELECT request_snapshot->'lead_form_snapshot'->>'form_id'
+            FROM ad_promotions WHERE request_snapshot ? 'lead_form_snapshot'
+            ORDER BY created_at DESC LIMIT 1""")
+        )
+    return value or ""
+
+
+def ready_lead_forms(tenant_id: UUID, connection_id: UUID) -> tuple[list[LeadFormChoiceVM], str]:
+    """Forms Meta already accepted on this account, last used first; a failed read is
+    reported as such, never as «no forms»."""
+    try:
+        rows = [
+            row
+            for row in list_lead_forms(tenant_id=tenant_id, connection_id=connection_id)
+            if row.status == "published" and row.meta_form_id
+        ]
+        last = last_used_lead_form(tenant_id)
+    except Exception as exc:
+        logger.warning("lead forms read failed: %s", type(exc).__name__)
+        return [], LEAD_FORMS_FAILED
+    rows.sort(key=lambda row: str(row.id) != last)  # stable: newest first otherwise
+    return [LeadFormChoiceVM(str(row.id), row.name) for row in rows], ""
+
+
 def recheck_messaging_destinations(
     tenant_id: UUID, piece_id: UUID, publish_attempt_id: UUID, connection_id: UUID
 ) -> list[MessagingDestinationVM]:
@@ -123,6 +159,7 @@ def load_sources(
     health_by_account: dict[UUID, AccountHealthVM] = {}
     messaging_by_connection: dict[UUID, list[MessagingDestinationVM]] = {}
     enhancements_by_brand: dict[UUID, BrandEnhancementsVM] = {}
+    forms_by_connection: dict[UUID, tuple[list[LeadFormChoiceVM], str]] = {}
     for source in sources:
         if source.ad_account_id is not None and source.ad_account_id not in health_by_account:
             health_by_account[source.ad_account_id] = (
@@ -130,6 +167,9 @@ def load_sources(
             )(tenant_id, source.ad_account_id, source.timezone_name or zone)
         if check_health and source.connection_id not in messaging_by_connection:
             messaging_by_connection[source.connection_id] = messaging_destinations(
+                tenant_id, source.connection_id
+            )
+            forms_by_connection[source.connection_id] = ready_lead_forms(
                 tenant_id, source.connection_id
             )
         if check_health and source.brand_id not in enhancements_by_brand:
@@ -161,6 +201,8 @@ def load_sources(
             connection_id=str(source.connection_id),
             enhancements=enhancements_by_brand.get(source.brand_id, BrandEnhancementsVM()),
             brand_id=str(source.brand_id),
+            lead_forms=forms_by_connection.get(source.connection_id, ([], ""))[0],
+            lead_forms_error=forms_by_connection.get(source.connection_id, ([], ""))[1],
         )
         for source in sources
     ], zone
@@ -218,8 +260,9 @@ def prepare_preview(
         raise ValueError(
             "Vuelve a consultar los permisos de la marca antes de preparar el anuncio."
         )
+    lead = form.goal == "lead"
     backend_form = WizardForm(
-        link_url=form.link_url.strip(),
+        link_url="" if lead else form.link_url.strip(),
         city_name=form.city_name.strip(),
         radius_km=int(form.radius_km) if form.radius_km else 1,
         age_min=int(form.age_min),
@@ -237,6 +280,8 @@ def prepare_preview(
             form.enhancements.version,
             dict(form.enhancements.values),
         ),
+        lead_form=published_lead_form(tenant_id, UUID(form.lead_form_id)) if lead else None,
+        lead_cta=form.lead_cta if lead else "",
     )
     preview = asyncio.run(
         prepare_promotion_preview(

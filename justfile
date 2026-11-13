@@ -354,6 +354,16 @@ uploads-to-r2 *args:
 inbox-thumbs-backfill *args:
     uv run --no-sync python -m qualify_api.inbox.thumbnails_backfill {{args}}
 
+# m-25019220: bring «Publicar» publications made before 0159 into «Tu semana» (piece +
+# published event + Instagram address). DRY RUN unless --execute (no write, no Graph call);
+# --probe reads ONE media from Graph first (ADR 25 live check). --tenant is mandatory.
+# Writes to R2 and reads Meta FOR REAL with --execute: never locally against the .env
+# (production bucket). Production runbook: docs/despliegue-hetzner.md §7.3.
+#   just publish-backfill --tenant <uuid> --probe [--attempt <uuid>]
+#   just publish-backfill --tenant <uuid> [--connection <uuid>] [--since 2026-11-01] [--limit 50] [--execute]
+publish-backfill *args:
+    uv run --no-sync python -m qualify_api.planner.publish_backfill {{args}}
+
 # m-24852203: dev-only Meta READ simulator for Interacciones. Run the app with
 # QUALIFY_META_READS=fixture (synthetic dev/meta-fixtures/inbox.json, any connection, no
 # token); refused where QUALIFY_DEPLOY_ENV=production. Replies/publishing stay real.

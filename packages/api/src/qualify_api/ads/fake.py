@@ -33,6 +33,8 @@ class FakeMarketingClient(MarketingClient):
         params: Payload,
         *,
         before_write: Callable[[], None] | None = None,
+        files: Any = None,
+        base: str | None = None,
     ) -> dict[str, Any]:
         _encode(params)
         if before_write is not None:

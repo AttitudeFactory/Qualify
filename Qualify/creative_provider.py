@@ -947,6 +947,7 @@ def _detail_to_vm(tenant_id: UUID, detail: DraftDetail) -> DraftVM:
         requires_ai_disclosure=detail.requires_ai_disclosure,
         created_label=_format_dt(detail.created_at),
         kind=detail.kind,
+        reuse_type=getattr(detail, "reuse_type", None),
         media=media,
         failure_detail=detail.failure_detail,
         warnings=tuple(warning.detail for warning in detail.warnings),

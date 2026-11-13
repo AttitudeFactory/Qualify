@@ -18,6 +18,7 @@ from qualify_api.planner.draft_post_reader import DraftPostReader
 from qualify_api.planner.executor import EventExecutor
 from qualify_api.planner.immediate import sweep_recent_publications
 from qualify_api.planner.locks import PostgresAdvisoryLock
+from qualify_api.planner.permalinks import fill_recent_permalinks
 from qualify_api.planner.post_reader import PostReader
 from qualify_api.planner.repository import PostgresPlannerRepository
 from qualify_api.planner.service import PlannerService
@@ -79,6 +80,7 @@ def scoped_tick_runner(tenant_ids: Iterable[UUID]) -> TickRunner:
         repository=PostgresPlannerRepository(),
         executor=production_event_executor(),
         immediate=sweep_recent_publications,
+        permalinks=fill_recent_permalinks,
     )
 
 
@@ -92,10 +94,11 @@ def production_tick_runner() -> TickRunner:
     from qualify_api.planner.discovery import DiscoveredTenants  # noqa: PLC0415
 
     return TickRunner(
-        tenants=DiscoveredTenants(),
+        tenants=DiscoveredTenants(permalinks=True),
         repository=PostgresPlannerRepository(),
         executor=production_event_executor(),
         immediate=sweep_recent_publications,
+        permalinks=fill_recent_permalinks,
     )
 
 

@@ -107,9 +107,15 @@ class OwnMediaPiece:
     approved_at: datetime
     items: tuple[OwnMediaItem, ...]
     request_key: UUID
-    #: Where the piece came from (m-25026384): «Publicar» after publishing (the default)
-    #: or an upload from the planner's «Nueva publicación» (`creative.own_upload`).
+    #: m-25019220: the backfill of old publications records its own pipeline version,
+    #: whether the piece may be planned again, and how each file was found. The defaults
+    #: are what `record_publication` has always written. m-25026384: an upload from the
+    #: planner's «Nueva publicación» (`creative.own_upload`) sets its own pipeline version
+    #: and `source` too.
     pipeline_version: str = PIPELINE_VERSION
+    reuse_type: ReuseType = ReuseType.RECURRENTE
+    asset_params: tuple[tuple[str, str], ...] = ()
+    #: Where the piece came from: «Publicar» (the default) or `planner_upload`.
     source: str = "publish_now"
     #: The card's title when there is no caption.
     untitled: str = UNTITLED
@@ -159,6 +165,7 @@ def _asset_params(piece: OwnMediaPiece, item: OwnMediaItem) -> dict[str, object]
     params: dict[str, object] = {
         "source": piece.source,
         "pipeline_version": piece.pipeline_version,
+        **dict(piece.asset_params),  # m-25019220: how the backfill found each file
     }
     if piece.source_ref is not None:
         params["source_ref"] = piece.source_ref
@@ -217,7 +224,7 @@ def create_own_media_piece(
         request_key=piece.request_key,
         title=title_of(piece.caption, piece.untitled),
         category=piece.category.value,
-        reuse_type=ReuseType.RECURRENTE.value,
+        reuse_type=piece.reuse_type.value,
         # a still the calendar card can show; a video's card keeps its placeholder
         preview_key=(
             first_image.object_key

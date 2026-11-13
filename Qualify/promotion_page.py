@@ -7,7 +7,13 @@ import reflex as rx
 from .ad_health_ui import health_details
 from .promotion_audience_ui import promotion_audience
 from .promotion_state import PromotionState as S
-from .promotion_vm import EMPTY_SOURCES, MessagingDestinationVM, PromotionCheckVM
+from .promotion_vm import (
+    EMPTY_SOURCES,
+    LEAD_CTA_LABELS,
+    LeadFormChoiceVM,
+    MessagingDestinationVM,
+    PromotionCheckVM,
+)
 from .ui import (
     app_shell,
     callout,
@@ -134,10 +140,8 @@ def _source_choice(source: rx.Var) -> rx.Component:
 
 def _publication() -> rx.Component:
     return rx.vstack(
-        signal_pill("Visitas a tu web", "info"),
         rx.text(
-            "Mostrarás una publicación que ya salió en Instagram "
-            "para llevar más personas a tu página.",
+            "Mostrarás una publicación que ya salió en Instagram a más personas.",
             color=T.TEXT_MUTED,
         ),
         rx.text("Elige la publicación y la cuenta correctas antes de continuar.", size="2"),
@@ -179,7 +183,142 @@ def _messaging_destination(option: MessagingDestinationVM) -> rx.Component:
     )
 
 
+def _option(title: str, detail: str, selected: rx.Var[bool], on_select: object) -> rx.Component:
+    return choice_card(
+        rx.vstack(
+            rx.text(title, weight="medium"),
+            rx.text(detail, size="2", color=T.TEXT_MUTED) if detail else rx.fragment(),
+            spacing="1",
+            align="start",
+            width="100%",
+        ),
+        selected=selected,
+        on_select=on_select,
+        disabled=S.busy,
+        min_height="44px",
+        width="100%",
+        text_align="left",
+    )
+
+
+def _lead_form_choice(row: rx.Var[LeadFormChoiceVM]) -> rx.Component:
+    return choice_card(
+        rx.text(row.name, weight="medium", overflow_wrap="anywhere"),
+        selected=S.form.lead_form_id == row.id,
+        on_select=S.choose_lead_form(row.id),
+        disabled=S.busy,
+        min_height="44px",
+        width="100%",
+        text_align="left",
+    )
+
+
+def _lead_destination() -> rx.Component:
+    forms = S.selected_source.lead_forms
+    return card(
+        rx.cond(
+            S.selected_source.lead_forms_error != "",
+            callout(S.selected_source.lead_forms_error, "warn"),
+            rx.cond(
+                forms.length() > 0,
+                rx.vstack(
+                    rx.heading("Formulario", size="3", as_="h2", id="lead-form-label"),
+                    rx.text(
+                        "Es lo que llenará la gente sin salir de Instagram o Facebook.",
+                        size="2",
+                        color=T.TEXT_MUTED,
+                    ),
+                    rx.vstack(
+                        rx.foreach(forms, _lead_form_choice),
+                        role="radiogroup",
+                        aria_labelledby="lead-form-label",
+                        spacing="2",
+                        width="100%",
+                    ),
+                    rx.heading("Texto del botón", size="3", as_="h2", id="lead-cta-label"),
+                    rx.vstack(
+                        *[
+                            _option(
+                                label,
+                                "",
+                                S.form.lead_cta == code,
+                                S.choose_lead_cta(code),
+                            )
+                            for code, label in LEAD_CTA_LABELS.items()
+                        ],
+                        role="radiogroup",
+                        aria_labelledby="lead-cta-label",
+                        spacing="2",
+                        width="100%",
+                    ),
+                    rx.link(
+                        "Crear otro formulario",
+                        href="/promotions/forms",
+                        min_height="44px",
+                        display="inline-flex",
+                        align_items="center",
+                    ),
+                    spacing="3",
+                    width="100%",
+                ),
+                rx.vstack(
+                    rx.heading("Todavía no tienes un formulario listo", size="3", as_="h2"),
+                    rx.text(
+                        "Crea uno con las preguntas que quieres hacer. "
+                        "Cuando Meta lo acepte, vuelve aquí para elegirlo.",
+                        size="2",
+                        color=T.TEXT_MUTED,
+                    ),
+                    rx.link(
+                        rx.button("Crear formulario", min_height="44px", size="3"),
+                        href="/promotions/forms",
+                    ),
+                    spacing="3",
+                    align_items="start",
+                    width="100%",
+                ),
+            ),
+        ),
+        rx.button(
+            "Ya lo creé: buscar formularios",
+            on_click=S.refresh_lead_forms,
+            loading=S.forms_working,
+            disabled=S.busy | S.forms_working,
+            variant="outline",
+            min_height="44px",
+            margin_top="12px",
+        ),
+        width="100%",
+    )
+
+
 def _destination() -> rx.Component:
+    return rx.vstack(
+        rx.vstack(
+            _option(
+                "Que visite tu página",
+                "El anuncio abre tu página web.",
+                S.form.goal == "visit",
+                S.choose_goal("visit"),
+            ),
+            _option(
+                "Que te deje sus datos para contactarla",
+                "La persona llena un formulario corto y tú la contactas.",
+                S.form.goal == "lead",
+                S.choose_goal("lead"),
+            ),
+            role="radiogroup",
+            aria_label="Qué quieres que haga la gente",
+            spacing="3",
+            width="100%",
+        ),
+        rx.cond(S.form.goal == "lead", _lead_destination(), _link_destination()),
+        spacing="4",
+        width="100%",
+    )
+
+
+def _link_destination() -> rx.Component:
     return card(
         rx.vstack(
             _field(
@@ -291,8 +430,12 @@ def _review() -> rx.Component:
                         "Pendiente de elegir en Tus redes",
                     ),
                 ),
-                _fact("Botón", rx.Var.create("Más información")),
-                _fact("Página de destino", S.form.link_url),
+                _fact("Botón", S.button_label),
+                rx.cond(
+                    S.form.goal == "lead",
+                    _fact("Formulario", S.lead_form_label),
+                    _fact("Página de destino", S.form.link_url),
+                ),
                 _fact("Lugar de las personas", S.audience_location_label),
                 _fact(
                     "Distancia",

@@ -122,6 +122,7 @@ from .planner_vm import (
     assign_steps_done,
     build_plan_row,
     campaign_value,
+    can_schedule_again,
     join_es,
     now_slot,
     parse_view_param,
@@ -653,8 +654,10 @@ class PlannerState(rx.State):
 
     @rx.var
     def schedulable_ids(self) -> list[str]:
-        """The pieces «Volver a programar» can open the assistant with (m-25019224)."""
-        return [post.post_id for post in self.schedulable]
+        """The pieces «Volver a programar» offers (m-25019224): the ones «Aprobados» would
+        let the owner schedule — `schedulable` is the drawer's picker, which also lists a
+        one-shot piece that already went out (m-25019220: a view-only upload)."""
+        return [post.post_id for post in self.schedulable if can_schedule_again(post)]
 
     @rx.var
     def form_selected_ids(self) -> list[str]:

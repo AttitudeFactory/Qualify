@@ -48,11 +48,13 @@ from .promotion_provider import (
     confirm_review,
     load_sources,
     prepare_preview,
+    ready_lead_forms,
     recheck_enhancement_permissions,
     recheck_messaging_destinations,
 )
 from .promotion_vm import (
     CONFIRM_FAILED,
+    LEAD_CTA_LABELS,
     LOAD_FAILED,
     NO_SESSION,
     PREVIEW_FAILED,
@@ -114,6 +116,7 @@ class PromotionState(rx.State):
     _audience_version: int = 0
     _reach_operation: str = ""
     destinations_working: bool = False
+    forms_working: bool = False
     destinations_notice: str = ""
     _destination_operation: str = ""
     enhancements_working: bool = False
@@ -934,6 +937,86 @@ class PromotionState(rx.State):
         return PromotionState.refresh_reach()
 
     @rx.event
+    def choose_goal(self, goal: str) -> None:
+        if self.busy or goal not in {"visit", "lead"} or goal == self.form.goal:
+            return
+        self.form = replace(self.form, goal=goal)
+        self.error = ""
+        self._invalidate_review()
+
+    @rx.event
+    def choose_lead_form(self, form_id: str) -> None:
+        if self.busy or not any(row.id == form_id for row in self.selected_source.lead_forms):
+            return
+        self.form = replace(self.form, lead_form_id=form_id)
+        self.error = ""
+        self._invalidate_review()
+
+    @rx.event(background=True)
+    async def refresh_lead_forms(self) -> None:
+        """After creating a form elsewhere: re-read this account's ready forms only,
+        keeping everything else the owner already chose."""
+        async with self:
+            context = await self._session()
+            source = self.selected_source
+            if self.busy or self.loading or self.forms_working:
+                return
+            if context != self._loaded_context or not all(tenant_uuid(v) for v in context):
+                return
+            connection = tenant_uuid(source.connection_id)
+            if connection is None:
+                return
+            self.forms_working = True
+        try:
+            with acting_login(UUID(context[1])):
+                forms, problem = await asyncio.to_thread(
+                    ready_lead_forms, UUID(context[0]), connection
+                )
+        finally:
+            async with self:
+                self.forms_working = False
+        async with self:
+            if context != await self._session() or self.form.source_id != source.id:
+                return
+            self.sources = [
+                # A failed read keeps the forms already shown, so the choice survives.
+                replace(
+                    row, lead_forms=row.lead_forms if problem else forms, lead_forms_error=problem
+                )
+                if row.id == source.id
+                else row
+                for row in self.sources
+            ]
+            if not problem and not any(row.id == self.form.lead_form_id for row in forms):
+                self.form = replace(self.form, lead_form_id=forms[0].id if forms else "")
+                self._invalidate_review()
+
+    @rx.event
+    def choose_lead_cta(self, code: str) -> None:
+        if self.busy or code not in LEAD_CTA_LABELS:
+            return
+        self.form = replace(self.form, lead_cta=code)
+        self.error = ""
+        self._invalidate_review()
+
+    @rx.var
+    def lead_form_label(self) -> str:
+        return next(
+            (
+                row.name
+                for row in self.selected_source.lead_forms
+                if row.id == self.form.lead_form_id
+            ),
+            "Por elegir",
+        )
+
+    @rx.var
+    def button_label(self) -> str:
+        if self.form.goal == "lead":
+            return LEAD_CTA_LABELS.get(self.form.lead_cta, "Por elegir")
+        return "Más información"
+
+    @rx.event
     def accept_charge(self, value: bool) -> None:
         self.confirm_charge = (
             bool(value)
@@ -965,6 +1048,7 @@ class PromotionState(rx.State):
             ),
             source_id=source.id,
             link_url=source.default_link_url,
+            lead_form_id=source.lead_forms[0].id if source.lead_forms else "",
             enhancements=source.enhancements,
             **({"start_local": "", "end_local": ""} if changed_zone else {}),
         )

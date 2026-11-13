@@ -18,6 +18,14 @@ It spends real money (≈ USD 0.01 per press), so it is run by hand, never in CI
 
     just eval-mejorar-texto --label v3-baseline
     just eval-mejorar-texto --label v4 --cap-usd 0.60
+    just eval-mejorar-texto --label v5-escenas --only escena-precio
+
+«Pide texto en la imagen» (m-25017274, live 2026-11-13) counts, for SCENE cases, the
+shown versions that ask for a price, figure, sign, label or any written word in the
+picture — checked here independently of the product's own filter — and «descartadas»
+how many versions the product's filter (`scene_text_request`, prompt v5+) dropped.
+`--module-file` runs an older `context_ai.py` (e.g. from `git show origin/main:…`) for
+the baseline.
 """
 
 from __future__ import annotations
@@ -62,6 +70,148 @@ def new_numbers(text: str, source: str) -> list[str]:
     return [n for n in re.findall(r"\d+", text) if n not in known]
 
 
+#: The eval's own judge (m-25017274 review): written apart from the product's filter
+#: (`context_ai.scene_text_request`) and STRICTER, so «0» here does not just confirm that
+#: filter. It works on word tokens, not on the product's regexes; it flags any «menú»,
+#: «etiqueta», offer word, «Nx1», «se lee», «que diga», «WhatsApp», any figure of 3+
+#: digits or with a thousands separator, «$», and «<number or number word> mil». The
+#: owner's own words are NOT exempt. A term is excused only when the word (or article)
+#: right before it is a negation.
+_JUDGE_TERMS = {
+    "precio",
+    "precios",
+    "cuesta",
+    "vale",
+    "valor",
+    "oferta",
+    "ofertas",
+    "promo",
+    "promoción",
+    "promocion",
+    "descuento",
+    "gratis",
+    "pesos",
+    "dólares",
+    "dolares",
+    "letrero",
+    "letreros",
+    "cartel",
+    "carteles",
+    "rótulo",
+    "rotulo",
+    "rótulos",
+    "aviso",
+    "avisos",
+    "anuncio",
+    "anuncios",
+    "valla",
+    "vallas",
+    "pancarta",
+    "pancartas",
+    "banner",
+    "pizarra",
+    "pizarras",
+    "pizarrón",
+    "pizarron",
+    "menú",
+    "menu",
+    "menús",
+    "carta",
+    "etiqueta",
+    "etiquetas",
+    "sticker",
+    "stickers",
+    "calcomanía",
+    "calcomania",
+    "placa",
+    "texto",
+    "textos",
+    "letra",
+    "letras",
+    "escrito",
+    "escrita",
+    "escritos",
+    "escritas",
+    "palabra",
+    "palabras",
+    "frase",
+    "frases",
+    "leyenda",
+    "título",
+    "titulo",
+    "tipografía",
+    "tipografia",
+    "legible",
+    "número",
+    "numero",
+    "cifra",
+    "whatsapp",
+}
+_JUDGE_PHRASES = ("se lee", "que diga", "que dice", "se lea")
+_NEGATORS = {"sin", "ni", "no", "nada", "ningún", "ningun", "ninguna", "tampoco"}
+_ARTICLES = {"el", "la", "los", "las", "un", "una", "de", "ningún", "ninguna", "hay", "lleva"}
+_NUMBER_WORDS = {
+    "un",
+    "dos",
+    "tres",
+    "cuatro",
+    "cinco",
+    "seis",
+    "siete",
+    "ocho",
+    "nueve",
+    "diez",
+    "once",
+    "doce",
+    "trece",
+    "catorce",
+    "quince",
+    "dieciséis",
+    "diecisiete",
+    "dieciocho",
+    "diecinueve",
+    "veinte",
+    "veintiún",
+    "veintidós",
+    "veintitrés",
+    "veinticuatro",
+    "veinticinco",
+    "treinta",
+    "cuarenta",
+    "cincuenta",
+    "sesenta",
+    "setenta",
+    "ochenta",
+    "noventa",
+    "cien",
+    "ciento",
+}
+
+
+def asks_for_text(text: str, case: dict[str, Any]) -> bool:
+    """A scene version that asks for something written in the image (strict judge)."""
+    del case  # the owner's words are not exempt for the judge
+    low = text.casefold()
+    if "$" in low or any(phrase in low for phrase in _JUDGE_PHRASES):
+        return True
+    if re.search(r"\d\s*x\s*\d", low) or re.search(r"\d{3,}|\d{1,3}[.,]\d{3}", low):
+        return True
+    tokens = re.findall(r"\w+", low)
+    for i, token in enumerate(tokens):
+        if token == "mil" and i and (tokens[i - 1].isdigit() or tokens[i - 1] in _NUMBER_WORDS):
+            return True
+        if token not in _JUDGE_TERMS:
+            continue
+        before = tokens[max(0, i - 2) : i]
+        negated = bool(before) and (
+            before[-1] in _NEGATORS
+            or (len(before) == 2 and before[-1] in _ARTICLES and before[0] in _NEGATORS)
+        )
+        if not negated:
+            return True
+    return False
+
+
 def _mean(values: list[float]) -> float:
     return round(sum(values) / len(values), 3) if values else 0.0
 
@@ -72,6 +222,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--cases", default=str(HERE / "cases.json"))
     parser.add_argument("--label", required=True, help="names the results file")
     parser.add_argument("--cap-usd", default="0.60", help="stop making calls past this")
+    parser.add_argument("--only", default="", help="run only the case ids with this prefix")
+    parser.add_argument("--module-file", default="", help="an older context_ai.py to run")
     args = parser.parse_args(argv)
     _load_env(args.env_file)
 
@@ -79,6 +231,28 @@ def main(argv: list[str] | None = None) -> int:
 
     from qualify_api import claude_tools
     from qualify_api.creative import context_ai
+
+    if args.module_file:
+        import importlib.util
+
+        spec_ = importlib.util.spec_from_file_location("context_ai_under_test", args.module_file)
+        assert spec_ and spec_.loader
+        context_ai = importlib.util.module_from_spec(spec_)
+        sys.modules[spec_.name] = context_ai  # dataclasses look their module up here
+        spec_.loader.exec_module(context_ai)
+    dropped = {"n": 0}
+    dropped_examples: list[dict[str, str]] = []
+    if hasattr(context_ai, "scene_text_request"):
+        original_check = context_ai.scene_text_request
+
+        def counting_check(text: str, data: Any) -> str:
+            found = original_check(text, data)
+            dropped["n"] += bool(found)
+            if found:
+                dropped_examples.append({"found": found, "text": text})
+            return found
+
+        context_ai.scene_text_request = counting_check
 
     records: list[Any] = []
     claude_tools.configure_consumption_sink(records.append)
@@ -143,6 +317,8 @@ def main(argv: list[str] | None = None) -> int:
         }
 
     for case in spec["cases"]:
+        if args.only and not case["id"].startswith(args.only):
+            continue
         if spent() >= cap:
             print(f"cap reached at {spent()} USD; stopping", file=sys.stderr)
             break
@@ -176,6 +352,11 @@ def main(argv: list[str] | None = None) -> int:
             "across_presses_mean_jaccard": _mean(across_j),
             "duplicates": len(all_texts) - len({t.casefold() for t in all_texts}),
             "new_numbers": sorted({n for t in all_texts for n in new_numbers(t, source)}),
+            "scene": bool(case.get("scene")),
+            "asks_for_text": sum(asks_for_text(t, case) for t in all_texts)
+            if case.get("scene")
+            else 0,
+            "shown": len(all_texts),
         }
         rows.append(row)
         print(json.dumps({k: v for k, v in row.items() if not k.startswith("press")}))
@@ -204,6 +385,10 @@ def main(argv: list[str] | None = None) -> int:
         "across_presses_mean_jaccard": _mean([r["across_presses_mean_jaccard"] for r in rows]),
         "duplicates": sum(r["duplicates"] for r in rows),
         "cases_with_new_numbers": [r["id"] for r in rows if r["new_numbers"]],
+        "scene_versions_shown": sum(r["shown"] for r in rows if r["scene"]),
+        "scene_versions_asking_for_text": sum(r["asks_for_text"] for r in rows),
+        "scene_versions_dropped_by_filter": dropped["n"],
+        "dropped_examples": dropped_examples,
     }
     out = HERE / "results" / f"{args.label}.json"
     out.parent.mkdir(exist_ok=True)

@@ -38,6 +38,7 @@ from qualify_api.creative.campaigns import InvalidCampaignName, clean_name
 from qualify_api.creative.context_ai import (
     PREVIOUS_VERSIONS_SENT,
     PROPOSAL_MAX_CHARS,
+    ContextNoUsableVersion,
     ContextTooLong,
 )
 from qualify_api.creative.creations import NotEnoughCreations
@@ -318,6 +319,33 @@ def _scroll_to_view() -> rx.event.EventSpec:
         "if (window.matchMedia('(max-width: 899px)').matches) {"
         f" {_ALIGN_VIEW_JS}"
         " setTimeout(() => align(true), 120); setTimeout(() => align(false), 700); }"
+    )
+
+
+def _scroll_field_into_view(element_id: str) -> rx.event.EventSpec:
+    """m-25017274 (live 2026-11-13): after a «Mejorar mi texto» card is tapped the view
+    stayed on the cards. `rx.scroll_to` is `scrollIntoView(true)`: it puts the field's
+    top at the top of the box that scrolls (`main.q-panel` on a phone), i.e. UNDER the
+    sticky page header. Same alignment as `_ALIGN_VIEW_JS` for `#q-cr-view`, which works
+    in production: find the box that really scrolls, put the field just under the
+    header, smoothly, then correct once after the new text re-rendered. No focus: on a
+    phone that would open the keyboard over the field."""
+    return rx.call_script(
+        "(() => { const align = (smooth) => {"
+        f" const field = document.getElementById({json.dumps(element_id)});"
+        " if (!field) return;"
+        " let box = field.parentElement;"
+        " while (box && box !== document.body && !(/(auto|scroll)/.test("
+        "getComputedStyle(box).overflowY) && box.scrollHeight > box.clientHeight)) {"
+        " box = box.parentElement; }"
+        " const scroller = box && box !== document.body ? box : document.scrollingElement;"
+        " const head = field.closest('main')?.querySelector('.q-page-header');"
+        " const floor = head ? head.getBoundingClientRect().bottom : 0;"
+        " const delta = field.getBoundingClientRect().top - floor - 12;"
+        " if (smooth || Math.abs(delta) > 4) {"
+        " scroller.scrollBy({top: delta, behavior: smooth ? 'smooth' : 'auto'}); }"
+        " };"
+        " setTimeout(() => align(true), 60); setTimeout(() => align(false), 600); })()"
     )
 
 
@@ -8404,6 +8432,11 @@ class CreativeState(rx.State):
     context_choice: int = -1
     #: Every version shown since the original was set, for «Otra versión» (backend only).
     _context_shown: list[str] = []
+    #: m-25017274 review: scene versions dropped for showing text in a press where none
+    #: survived, and the text they were written from: the next press of that same text
+    #: sends them as versions not to repeat (each retry is a paid call).
+    _context_rejected: list[str] = []
+    _context_rejected_for: str = ""
     #: Which run owns `context_enhancing`, and since when (backend only).
     _context_enhance_token: str = ""
     _context_enhance_started: float = 0.0
@@ -8454,6 +8487,8 @@ class CreativeState(rx.State):
         self.context_versions = []
         self.context_choice = -1
         self._context_shown = []
+        self._context_rejected = []
+        self._context_rejected_for = ""
         self.context_enhance_note = ""
         self.context_enhance_error = ""
 
@@ -8494,7 +8529,10 @@ class CreativeState(rx.State):
                 again or self._in_context_round(field)
             )
             text = self.context_before_enhance.strip() if same_round else field
-            previous = list(self._context_shown) if same_round else []
+            previous = (list(self._context_shown) if same_round else []) + (
+                list(self._context_rejected) if self._context_rejected_for == text else []
+            )
+            previous = previous[-PREVIOUS_VERSIONS_SENT:]
             self.context_enhance_note = ""
             if len(text) < _ENHANCE_MIN_CHARS:
                 self.context_enhance_error = _ENHANCE_TOO_SHORT
@@ -8546,6 +8584,22 @@ class CreativeState(rx.State):
                     if self._own_enhance(token):
                         self.context_enhance_error = str(exc)
                 return
+            except ContextNoUsableVersion as exc:
+                # every version was dropped (a scene that showed text): the field stays,
+                # «Tu texto quedó igual», and the next press is told not to repeat them
+                logger.warning("context enhancement: no usable version (%s)", exc)
+                async with self:
+                    if self._own_enhance(token):
+                        self.context_enhance_error = _ENHANCE_TIMED_OUT
+                        if exc.rejected:
+                            kept = (
+                                self._context_rejected if self._context_rejected_for == text else []
+                            )
+                            self._context_rejected = [*kept, *exc.rejected][
+                                -PREVIOUS_VERSIONS_SENT:
+                            ]
+                            self._context_rejected_for = text
+                return
             except TimeoutError:
                 logger.warning("context enhancement timed out after %ss", ENHANCE_TIMEOUT_SECONDS)
                 async with self:
@@ -8572,9 +8626,13 @@ class CreativeState(rx.State):
                     for v in versions
                 ]
                 # only the newest are ever sent back (`PREVIOUS_VERSIONS_SENT`)
-                self._context_shown = [*previous, *(v.text for v in versions)][
-                    -PREVIOUS_VERSIONS_SENT:
-                ]
+                self._context_shown = [
+                    *previous,
+                    *(v.text for v in versions),
+                    *proposal.rejected,  # dropped ones too: never asked for again
+                ][-PREVIOUS_VERSIONS_SENT:]
+                self._context_rejected = []
+                self._context_rejected_for = ""
                 self.context_choice = -1
                 if proposal.added_facts:
                     self.context_enhance_note = _ENHANCE_ADDED_VERSIONS + "; ".join(
@@ -8592,7 +8650,7 @@ class CreativeState(rx.State):
         self._set_context_text(self.context_versions[index].get("text", ""))
         self.context_choice = index
         self.context_enhance_error = ""
-        return rx.scroll_to(CONTEXT_FIELD_ID)
+        return _scroll_field_into_view(CONTEXT_FIELD_ID)
 
     @rx.event
     def undo_enhance_context(self) -> None:
@@ -9374,7 +9432,7 @@ class CreativeState(rx.State):
         if draft_id is not None:
             async with self:
                 self.brief_topic = ""
-                self._forget_context_versions()  # nor its cards and «Ver otras tres»
+                self._forget_context_versions()  # nor its cards and «Ver otras versiones»
                 self.replication_context = ""
                 self.source_reel = {}
                 self._forget_ideas_origin()

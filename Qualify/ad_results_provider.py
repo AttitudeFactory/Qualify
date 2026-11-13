@@ -17,6 +17,8 @@ from qualify_api.ads.results_service import (
 )
 
 from .ad_results_vm import (
+    ALERTS_ALREADY_ON,
+    ALERTS_ON,
     EDIT_ACTION_LABELS,
     EDIT_UNKNOWN,
     AdDayVM,
@@ -24,12 +26,17 @@ from .ad_results_vm import (
     AdEditOutcomeVM,
     AdEditReviewVM,
     AdResultVM,
+    AlertAccountVM,
+    backend_action,
+    budget_down_summary,
     budget_input,
     date_label,
     day_label,
     end_input,
+    floor_label,
     money_label,
     number_label,
+    rejection_text,
     status_tone,
 )
 
@@ -52,7 +59,6 @@ def summary_vm(row: PromotionResultSummary) -> AdResultVM:
         approved_budget=money_label(Decimal(row.budget_minor) / 100, row.currency),
         end_label=date_label(row.end_time, row.timezone_name),
         checked_label=date_label(row.checked_at, row.timezone_name),
-        rejection_reason=row.rejection_reason,
         can_pause=row.can_pause is True and fresh,
         can_manage=row.can_manage is True and fresh,
         management_reason=row.management_reason,
@@ -70,6 +76,11 @@ def summary_vm(row: PromotionResultSummary) -> AdResultVM:
         current_end_input=end_input(current_end, row.timezone_name) if current_end_valid else "",
         can_resume=getattr(row, "can_resume", False) is True and fresh,
         operation_pending=operation_pending,
+        rejected=row.status == "DISAPPROVED",
+        rejection_reason=rejection_text(row.status, row.rejection_reason),
+        fix_href=f"/drafts/{draft}"
+        if (draft := getattr(row, "content_draft_id", None))
+        else "/drafts",
     )
 
 
@@ -99,6 +110,43 @@ def detail_vm(result: PromotionResults) -> AdDetailVM:
         insights_refresh_failed=result.insights_refresh_failed,
         observed_conversations=number_label(result.observed_conversations),
     )
+
+
+def read_floor(tenant_id: UUID, promotion_id: UUID) -> tuple[str, str]:
+    """(label, floor in whole pesos) for lowering a budget; read-only."""
+    from qualify_api.ads.results_service import read_budget_floor
+
+    floor = asyncio.run(read_budget_floor(tenant_id=tenant_id, promotion_id=promotion_id))
+    if any(
+        type(value) is not int or value < 0 or value % 100
+        for value in (floor.floor_minor, floor.spent_minor)
+    ):
+        raise ResultsUnavailable("Vuelve a consultar el mínimo con Meta.")
+    return floor_label(floor.floor_minor, floor.spent_minor), str(floor.floor_minor // 100)
+
+
+def alert_accounts(tenant_id: UUID) -> list[AlertAccountVM]:
+    """The ad accounts this business chose for ads (one per brand), for «Activar avisos»."""
+    from qualify_shared.db.session import tenant_session
+    from sqlalchemy import text
+
+    with tenant_session(tenant_id) as session:
+        rows = session.execute(
+            text("SELECT id,name FROM ad_accounts WHERE selected AND available ORDER BY name,id")
+        ).all()
+    return [AlertAccountVM(str(row.id), row.name or "Tu cuenta publicitaria") for row in rows]
+
+
+def activate_alerts(tenant_id: UUID, ad_account_id: UUID) -> str:
+    """Owner-confirmed subscription to Meta's ad-account notices; never automatic."""
+    from qualify_api.ads.status_webhook import subscribe_ad_account_webhooks
+
+    created = asyncio.run(
+        subscribe_ad_account_webhooks(
+            tenant_id=tenant_id, ad_account_id=ad_account_id, confirmed=True
+        )
+    )
+    return ALERTS_ON if created else ALERTS_ALREADY_ON
 
 
 def load_ads(tenant_id: UUID) -> list[AdResultVM]:
@@ -152,7 +200,7 @@ def prepare_edit(
             tenant_id=tenant_id,
             promotion_id=promotion_id,
             request_key=request_key,
-            action=action,
+            action=backend_action(action),
             budget_minor=budget_minor,
             end_time=end_time,
         )
@@ -160,7 +208,15 @@ def prepare_edit(
     now = datetime.now(UTC)
     if (
         action not in EDIT_ACTION_LABELS
-        or result.action != action
+        or result.action != backend_action(action)
+        or (
+            action == "budget_down"
+            and not (
+                type(result.new_budget_minor) is int
+                and type(result.current_budget_minor) is int
+                and result.new_budget_minor < result.current_budget_minor
+            )
+        )
         or not isinstance(result.approval_token, str)
         or not result.approval_token
         or not isinstance(result.expires_at, datetime)
@@ -180,13 +236,17 @@ def prepare_edit(
         AdEditReviewVM(
             action=action,
             title=EDIT_ACTION_LABELS[action],
-            summary=result.summary,
+            summary=budget_down_summary(result.current_budget_minor, result.new_budget_minor)
+            if action == "budget_down"
+            else result.summary,
             current_budget=money_label(Decimal(result.current_budget_minor) / 100, "COP"),
             new_budget=money_label(Decimal(result.new_budget_minor) / 100, "COP"),
             current_end=date_label(result.current_end_time, timezone_name),
             new_end=date_label(result.new_end_time, timezone_name),
             expires_label=date_label(result.expires_at, timezone_name),
             ready=True,
+            end_changed=result.new_end_time != result.current_end_time,
+            budget_changed=result.new_budget_minor != result.current_budget_minor,
         ),
         result.approval_token,
         result.expires_at,
@@ -212,7 +272,7 @@ def confirm_edit(
         )
     )
     expected_id = str(promotion_id)
-    valid = result.action == action and str(result.promotion_id) == expected_id
+    valid = result.action == backend_action(action) and str(result.promotion_id) == expected_id
     status = (
         result.status
         if valid and result.status in {"completed", "unknown", "pending"}

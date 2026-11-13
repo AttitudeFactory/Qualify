@@ -214,6 +214,7 @@ def _summary(row: Any) -> PromotionResultSummary:
         checked,
         review_reason(status, specific),
         caption=row["source_caption"],
+        content_draft_id=row.get("content_draft_id"),
         account_name=row["account_name"] or "",
         timezone_name=row["timezone_name"] or "",
         stale=stale,
@@ -608,6 +609,17 @@ async def prepare_promotion_edit(
             budget_minor=budget_minor,
             end_time=end_time,
         )
+    except (MarketingError, AdAccountUnavailable, WizardUnavailable):
+        raise ResultsUnavailable(UNAVAILABLE) from None
+
+
+async def read_budget_floor(*, tenant_id: UUID, promotion_id: UUID) -> Any:
+    """The decrease floor shown before the owner lowers a budget (m-25026344)."""
+    from qualify_api.ads.live_management import promotion_budget_floor
+    from qualify_api.ads.wizard import WizardUnavailable
+
+    try:
+        return await promotion_budget_floor(tenant_id=tenant_id, promotion_id=promotion_id)
     except (MarketingError, AdAccountUnavailable, WizardUnavailable):
         raise ResultsUnavailable(UNAVAILABLE) from None
 

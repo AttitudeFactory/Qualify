@@ -458,3 +458,87 @@ def test_the_executor_publishes_the_upload_at_its_hour(
     stored = PostgresPlannerRepository().get(tenant_id=world.tenant_id, event_id=event.id)
     assert stored is not None and stored.status == "publishing"
     assert stored.publish_attempt_id == result.attempt_id
+
+
+# -- view-only (m-25019220) is never a planner upload, and vice versa ----------------------
+
+
+def _published_event(world: World, post_id: UUID) -> None:
+    """A past `published` event of the piece, as if it already went out once."""
+    from qualify_api.planner.models import CalendarEvent  # noqa: PLC0415
+
+    with tenant_session(world.tenant_id) as session:
+        session.add(
+            CalendarEvent(
+                tenant_id=world.tenant_id,
+                brand_id=world.brand_id,
+                post_id=post_id,
+                connection_id=world.connection_id,
+                scheduled_at=datetime.now(UTC) - timedelta(days=2),
+                scheduled_tz="America/Caracas",
+                status="published",
+                revision=1,
+                created_by_user_id=world.user_id,
+                destination="post",
+                goals=[],
+            )
+        )
+
+
+def test_a_planner_upload_is_never_view_only_even_after_it_went_out() -> None:
+    """View-only = kind `own_media` AND `reuse_type` `promocional`
+    (`Qualify/creative_vm.is_view_only_upload`; backend: `gallery.is_reusable`). A
+    planner upload is `recurrente`, so it stays plannable once published."""
+    world = _world()
+    piece = _record(world, _image(world))
+    _published_event(world, piece.draft_id)
+    [card] = _service().list_schedulable(tenant_id=world.tenant_id, brand_id=world.brand_id)
+    assert card.reuse_type == "recurrente" and card.content_kind == "own_media"
+    assert card.is_publishable and card.times_published == 1
+    assert gallery_state(card) is GalleryState.SCHEDULABLE
+
+
+def test_a_view_only_backfilled_piece_stays_one_shot_with_the_merged_writer() -> None:
+    """The backfill's override (`publish_backfill`: `promocional` + match params) still
+    writes what main writes after our fields were added — and is never re-offered."""
+    from qualify_creative.enums import ContentFormat, PostCategory, ReuseType  # noqa: PLC0415
+
+    from qualify_api.creative.own_media import (  # noqa: PLC0415
+        OwnMediaItem,
+        OwnMediaPiece,
+        create_own_media_piece,
+        request_key_for,
+    )
+
+    world = _world()
+    key = f"t/{world.tenant_id}/media/{world.connection_id}/{uuid4()}"
+    with tenant_session(world.tenant_id) as session:
+        draft_id, _ = create_own_media_piece(
+            session,
+            tenant_id=world.tenant_id,
+            piece=OwnMediaPiece(
+                brand_id=world.brand_id,
+                user_id=world.user_id,
+                caption="Ya salió",
+                category=PostCategory.GALERIA,
+                format=ContentFormat.FEED_4_5,
+                approved_at=datetime.now(UTC),
+                items=(OwnMediaItem(key, "image/jpeg", "image", 0),),
+                request_key=request_key_for(uuid4()),
+                pipeline_version="publish-backfill-test",
+                reuse_type=ReuseType.PROMOCIONAL,
+                asset_params=(("match", "instagram_copy"),),
+            ),
+        )
+        asset = session.scalars(
+            select(creative.ImageAsset).where(creative.ImageAsset.draft_id == draft_id)
+        ).one()
+        assert asset.params == {
+            "source": "publish_now",
+            "pipeline_version": "publish-backfill-test",
+            "match": "instagram_copy",
+        }
+    _published_event(world, draft_id)
+    [card] = _service().list_schedulable(tenant_id=world.tenant_id, brand_id=world.brand_id)
+    assert card.reuse_type == "promocional"
+    assert gallery_state(card) is GalleryState.USED
