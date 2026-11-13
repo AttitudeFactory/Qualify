@@ -29,29 +29,40 @@ class ConnectionOptionVM:
     # sentence uses. Computed by the provider (`rx.foreach` cannot call Python); empty
     # for callers that do not show a selector label.
     label: str = ""
+    # 2026-11-12 (founder): only Instagram can be chosen in «Publicar»; a Facebook
+    # account is listed switched off with `note` (its reason, shown inside the card).
+    selectable: bool = True
+    note: str = ""
+    #: «@cuenta», as the account card names it.
+    handle: str = ""
 
 
 @dataclass(frozen=True)
 class PendingItemVM:
-    """One file buffered locally, not yet published (gallery redesign, QUA-99 follow-up;
-    `kind` added QUA-103).
+    """One file in the owner's list, not yet published — the ONE list every step
+    renders (gallery, order, mural, descriptions, progress), in the owner's order.
 
     Deliberately NO bytes/content_type here — those stay on `_PendingFile`
-    (`publishing_state.py`, backend-only, never reaches the client). This is the display
-    projection `rx.foreach` renders in the grid: a filename, a `kind`, and nothing else.
-    Position in the carousel is NOT a field here — it is the item's index in
-    `PublishState.pending_items`, which `rx.foreach` already hands the renderer, so there
-    is only one place order lives, never two that could drift apart.
-
-    `kind` is `"image"` or `"video"` — the UI's own display vocabulary (lowercase,
-    English words), deliberately NOT the same strings as `MediaItem.media_type`
-    (`"IMAGE"`/`"VIDEO"`, Meta's vocabulary) — this field exists only so the gallery
-    (`publishing_page.py`) knows which thumbnail strategy to use per tile, never reaches
-    a Meta call, and reusing the backend's exact vocabulary here would blur that boundary.
+    (`publishing_state.py`, backend-only, never reaches the client). `kind` is `"image"`
+    or `"video"` (the UI's display vocabulary, not Meta's). `id` is stable across moves
+    (what «⋯», the drag and the descriptions key on); `number` is the file's own number
+    («Foto 3»), kept when it moves; `position` is where it sits now (1-based) of `total`.
+    `status` is its publish state (`publish_wizard_vm.STATUS_*`) with its word and tone.
     """
 
     filename: str
     kind: str
+    id: str = ""
+    number: int = 0
+    label: str = ""
+    position: int = 0
+    total: int = 0
+    status: str = "waiting"
+    status_label: str = ""
+    status_tone: str = "neutral"
+    handle_label: str = ""
+    more_label: str = ""
+    caption_label: str = ""
 
 
 @dataclass(frozen=True)

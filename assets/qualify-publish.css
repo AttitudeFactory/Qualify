@@ -107,6 +107,52 @@
   opacity: 0.55;
 }
 
+/* ── «Así se verá tu perfil» (one by one, 2026-11-12) ────────────────────────────
+ * The mural: the gallery tile (`.q-pub-tile`) laid out as Instagram's profile grid —
+ * three columns of 3:4 tiles, the newest top-left. A tile is also a `.q-rank-card`
+ * (`rank-drag.js` moves it in two dimensions: it releases over the slot under the
+ * finger); «Antes» tiles fill the last row, quiet and empty (decorative). The «⋯» sits
+ * top-right at 44 px; while publishing, each tile carries its state pill at the foot. */
+.q-pub-mural {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 3px;
+  width: 100%;
+  max-width: 28rem;
+}
+.q-pub-tile.q-pub-mural-tile {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 3 / 4;
+  border-radius: var(--q-radius-control);
+}
+.q-pub-mural-tile.q-rank-card {
+  padding: 0;
+  cursor: grab;
+}
+.q-pub-mural-tile.q-rank-card.q-armed  { scale: 1.04; }
+.q-pub-mural-tile.q-rank-card.q-moving { scale: 1.08; }
+.q-pub-mural-before {
+  opacity: 0.5;
+  border-style: dashed;
+  border-color: var(--q-card-edge);
+  background: var(--q-field-fill);
+  box-shadow: none;
+}
+.radix-themes .rt-IconButton.q-pub-mural-more {
+  position: absolute;
+  top: 0;
+  right: 0;
+  background: var(--q-tooltip-fill);
+  color: #fff;
+}
+.q-pub-mural-pill {
+  position: absolute;
+  left: 0.3rem;
+  bottom: 0.3rem;
+  max-width: calc(100% - 0.6rem);
+}
+
 /* ── Trending panel ──────────────────────────────────────────────────────────
  * Meta's audio list: plain rows (no border box, no thumbnail — `ig_audio` carries no
  * cover art) separated by the card hairline; the chosen row is washed in the accent.

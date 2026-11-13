@@ -79,6 +79,12 @@ def gallery_image_preview_capture_anchor(*, root_id: str) -> Var[str]:
             window.__qualifyPreviews.setPreview(
               {preview_key_js(root_id, "file.name")}, reader.result
             );
+            // its form, for the carousel's crop notice (`setShape`, video_preview.py)
+            const probe = new Image();
+            probe.onload = () => window.__qualifyPreviews.setShape(
+              {preview_key_js(root_id, "file.name")}, probe.naturalWidth, probe.naturalHeight
+            );
+            probe.src = reader.result;
           }}
         }};
         // A read failure (corrupt file, browser quota) simply leaves no entry for this

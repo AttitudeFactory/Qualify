@@ -324,7 +324,6 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
     from .seasonal_state import SeasonalState
     from .settings_state import SettingsState
     from .state import DashboardState
-    from .stories_state import StoriesState
     from .tiktok_state import TikTokConnectionsState, TikTokDraftState
     from .trending_state import TrendingState
     from .variations_state import VariationsState
@@ -361,7 +360,7 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
         ClarityState,
         InboxState,
         PublishState,
-        # QUA-113: which publish flow is showing (Publicaciones / Stories)
+        # «Publicar ahora»: the assistant's motion and its leave guard
         PublishHubState,
         DashboardState,
         CreativeState,
@@ -386,7 +385,6 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
         # 2026-09-25) — tenant files and tenant kit values.
         BrandDocumentState,
         RepliesState,
-        StoriesState,
         # the trending panel: its Meta audio list belongs to a tenant account
         TrendingState,
         PlannerState,

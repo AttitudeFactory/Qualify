@@ -24,6 +24,7 @@ from typing import IO
 from uuid import UUID
 
 from qualify_api.publishing import (
+    PUBLISHABLE_PLATFORMS,
     PendingUpload,
     advance_publish,
     get_child_statuses,
@@ -34,26 +35,52 @@ from qualify_api.publishing.failure_text import failure_text
 from qualify_api.publishing.service import PublishState as ServicePublishState
 
 from .connections_provider import connections_for
-from .publish_wizard_vm import connection_label
+from .publish_wizard_vm import FACEBOOK_NOTE, account_handle, connection_label
 from .publishing_vm import ChildStatusVM, ConnectionOptionVM, PublishAttemptVM
+
+#: Listed in «Publicar» but switched off, with its reason (founder, 2026-11-12).
+_LISTED_OFF = {"facebook": FACEBOOK_NOTE}
+
+
+def publish_choice(platform: str) -> tuple[bool, bool, str]:
+    """`(listed, selectable, note)` for an active account of `platform` in «Publicar».
+
+    Only `PUBLISHABLE_PLATFORMS` (the backend's one source of truth — Instagram today)
+    can be chosen; Facebook is listed off with its reason; anything else (WhatsApp, a
+    messaging channel; TikTok, drafts only) is not offered at all."""
+    if platform in PUBLISHABLE_PLATFORMS:
+        return True, True, ""
+    note = _LISTED_OFF.get(platform)
+    if note is not None:
+        return True, False, note
+    return False, False, ""
 
 
 def active_connections(tenant_id: UUID) -> list[ConnectionOptionVM]:
-    """The tenant's connections that can actually receive a publish right now.
+    """The tenant's active accounts as «Publicar» offers them — see `publish_choice`.
 
     Blocking DB call (via `connections_for`) — callers on the event loop must run it
     off-thread, same as `connections_for` itself.
     """
-    return [
-        ConnectionOptionVM(
-            id=connection.id,
-            external_username=connection.external_username,
-            platform=connection.platform,
-            label=connection_label(connection.external_username, connection.platform),
+    options: list[ConnectionOptionVM] = []
+    for connection in connections_for(tenant_id):
+        if connection.status != "active":
+            continue
+        listed, selectable, note = publish_choice(connection.platform)
+        if not listed:
+            continue
+        options.append(
+            ConnectionOptionVM(
+                id=connection.id,
+                external_username=connection.external_username,
+                platform=connection.platform,
+                label=connection_label(connection.external_username, connection.platform),
+                selectable=selectable,
+                note=note,
+                handle=account_handle(connection.external_username),
+            )
         )
-        for connection in connections_for(tenant_id)
-        if connection.status == "active"
-    ]
+    return options
 
 
 def _to_vm(state: ServicePublishState) -> PublishAttemptVM:
