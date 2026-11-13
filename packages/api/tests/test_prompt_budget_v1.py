@@ -233,7 +233,7 @@ def test_v0_real_case_is_byte_for_byte_the_old_compiler() -> None:
 def test_new_executions_are_stamped_and_frozen_ones_are_not() -> None:
     producer, _ = _fixture_producer(Selector())
     stamped = producer.prepare_new_brief(_real(version=0), _kit())
-    assert stamped.media.prompt_compiler_version == PROMPT_COMPILER_VERSION == 4
+    assert stamped.media.prompt_compiler_version == PROMPT_COMPILER_VERSION == 5
     old = _producer(MemoryStore())
     old._reference_compiler_version = 8
     assert old.prepare_new_brief(_real(version=0), _kit()).media.prompt_compiler_version == 0

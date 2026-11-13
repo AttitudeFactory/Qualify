@@ -5,7 +5,8 @@ from compiler 3 on).
 Every brief compiles under the prompt compiler it was stamped with
 (`MediaInputs.prompt_compiler_version`, history at `media.PROMPT_COMPILER_VERSION`):
 compilers 0-4 compile byte for byte as they did inside `media.py` before m-25017278 moved
-them here. The pieces these prompts share with the video prompts — the budget
+them here; compiler 5 (`BASE_PHOTO_COMPILER`) asks for the base photograph only. The
+pieces these prompts share with the video prompts — the budget
 (`_budgeted`, `_compiled_for`), the facts, palette and typefaces lines, the text rule of
 compilers 0-3 (`_image_text_rule`), the generic background line — stay in `media.py` and
 are imported from it.
@@ -40,6 +41,17 @@ from qualify_api.creative.media import (
     _sends_logo,
     _typography_line,
 )
+
+#: Compiler 5 (m-25017279, ADR 49 §2 item 1; m-25019811): the Seedream scene is the BASE
+#: photograph only. Compared with 4 it drops the «Datos clave» line and the brand's
+#: typeface names — both are words, and the text layer (m-25017283) is what writes words.
+#: A fact that is only a count (a 2x1 shows two) is not kept either: «Datos clave» are free
+#: label/value text where a count, a price and an opening hour look alike, so no path can
+#: carry only the visual ones; the operator's scene and topic still describe what is shown.
+#: Everything else is as at 4: the calm areas, the palette as colors, the brand-reference
+#: block and the logo exactly as before (the composition stage owns «logo once», ADR 49
+#: §2.3), and `image_text_rule_v4`.
+BASE_PHOTO_COMPILER = 5
 
 
 @_compiled_for
@@ -182,11 +194,16 @@ def ad_scene_prompt(
         )
     if brief.media.prompt_compiler_version >= 4:
         # m-25017275: nothing in what Seedream reads mentions words laid over the image
-        lines.append(_facts_line(brief, _FACTS_IN_SCENE_V3))
+        # compiler 5 (m-25017279, m-25019811): a photograph only — no «Datos clave» and no
+        # typeface names, the words the text layer will write
+        base_only = brief.media.prompt_compiler_version >= BASE_PHOTO_COMPILER
+        if not base_only:
+            lines.append(_facts_line(brief, _FACTS_IN_SCENE_V3))
         lines.append(CALM_TOP_V4 + " " + CALM_BOTTOM_V4)
         _append_brand_reference_lines(lines, brand_refs, products + int(has_background))
         lines.append(_palette_line_v2(kit))
-        lines.append(_image_typefaces_cue_v4(kit))
+        if not base_only:
+            lines.append(_image_typefaces_cue_v4(kit))
         lines.append(image_text_rule_v4(brand_refs))
         return _budgeted(lines, strict=bool(brand_refs) or bool(brief.media.resource_plan_version))
     lines.append(_facts_line(brief, _FACTS_IN_IMAGE))
@@ -586,7 +603,11 @@ def _carousel_scene_v3(
                 after='". It is context only: do not write any of its words in the image.',
             )
         )
-    lines.append(_facts_line(brief, _FACTS_IN_SCENE_V3))
+    # compiler 5 (m-25017279, m-25019811): a photograph only — no «Datos clave» and no
+    # typeface names (a hook slide drew the face's name «UNUBND» as a headline, 2 of 2)
+    base_only = brief.media.prompt_compiler_version >= BASE_PHOTO_COMPILER
+    if not base_only:
+        lines.append(_facts_line(brief, _FACTS_IN_SCENE_V3))
     if brief.media.prompt_compiler_version >= 4:
         # m-25017275: calm areas asked for neutrally, no words laid over, no overlays
         if hook:
@@ -595,7 +616,8 @@ def _carousel_scene_v3(
             lines.append(CALM_BOTTOM_V4)
         lines.append(FULL_FRAME_V3)
         lines.append(_palette_line_v2(kit))
-        lines.append(_image_typefaces_cue_v4(kit))
+        if not base_only:
+            lines.append(_image_typefaces_cue_v4(kit))
         lines.append(
             brand_reference_block_v2(brand_refs, base_index=brand_start, prefix="Image", still=True)
         )

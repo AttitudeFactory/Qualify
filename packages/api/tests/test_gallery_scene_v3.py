@@ -186,8 +186,8 @@ def test_frozen_compilers_ignore_the_compiler_3_arguments(version: int) -> None:
         assert _prompts(brief, refs) == _prompts(brief, refs, new_args=False)
 
 
-def test_a_new_execution_is_stamped_with_compiler_4() -> None:
-    assert PROMPT_COMPILER_VERSION == 4
+def test_a_new_execution_is_stamped_with_the_current_compiler() -> None:
+    assert PROMPT_COMPILER_VERSION == 5  # m-25017279: compiler 5, the base photo only
 
 
 # -- compiler 3 ------------------------------------------------------------------------------
