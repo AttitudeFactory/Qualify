@@ -54,7 +54,7 @@ from uuid import UUID
 
 from qualify_creative.enums import ContentFormat, PostCategory
 from qualify_shared.db.session import tenant_session
-from sqlalchemy import select, text
+from sqlalchemy import Select, or_, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -417,28 +417,73 @@ def _owner_of(session: Session, tenant_id: UUID) -> UUID | None:
     )
 
 
+def _recordable_since(since: datetime) -> Select[tuple[UUID]]:
+    """The attempts `record_publication` CAN record, settled since `since`: published,
+    not the executor's, no event yet — and only those whose own preconditions hold, so a
+    permanent skip never comes back every tick nor takes a slot of `SWEEP_LIMIT`:
+
+    - its connection still exists, belongs to a brand and is not being deleted;
+    - its media product type is one `plan_publication` maps;
+    - a single attempt recorded its staged object (`media_object_key`, 0158 — NULL on
+      every attempt written before it: those wait for the backfill, m-25019220) and, for
+      a video or story, its content type; a carousel has at least one child.
+
+    What is left to skip after this is a race (the connection lost its brand meanwhile),
+    which `record_publication` still refuses safely."""
+    no_event = (
+        ~select(CalendarEvent.id)
+        .where(
+            (CalendarEvent.publish_attempt_id == PublishAttempt.id)
+            & (CalendarEvent.tenant_id == PublishAttempt.tenant_id)
+        )
+        .exists()
+    )
+    has_children = (
+        select(PublishAttemptChild.id)
+        .where(
+            (PublishAttemptChild.attempt_id == PublishAttempt.id)
+            & (PublishAttemptChild.tenant_id == PublishAttempt.tenant_id)
+        )
+        .exists()
+    )
+    single_types = (MEDIA_TYPE_IMAGE, MEDIA_TYPE_REELS, MEDIA_TYPE_VIDEO, MEDIA_TYPE_STORIES)
+    has_media = or_(
+        (PublishAttempt.media_product_type == MEDIA_TYPE_CAROUSEL) & has_children,
+        PublishAttempt.media_product_type.in_(single_types)
+        & PublishAttempt.media_object_key.is_not(None)
+        & (
+            (PublishAttempt.media_product_type == MEDIA_TYPE_IMAGE)
+            | PublishAttempt.media_content_type.is_not(None)
+        ),
+    )
+    return (
+        select(PublishAttempt.id)
+        .join(
+            SocialConnection,
+            (SocialConnection.id == PublishAttempt.connection_id)
+            & (SocialConnection.tenant_id == PublishAttempt.tenant_id),
+        )
+        .where(
+            PublishAttempt.status == ATTEMPT_PUBLISHED,
+            PublishAttempt.settled_at.is_not(None),
+            PublishAttempt.settled_at >= since,
+            ~PublishAttempt.idempotency_key.startswith(CALENDAR_KEY_PREFIX, autoescape=True),
+            SocialConnection.brand_id.is_not(None),
+            SocialConnection.purge_started_at.is_(None),
+            has_media,
+            no_event,
+        )
+    )
+
+
 def unrecorded_publications(
     session: Session, *, since: datetime, limit: int = SWEEP_LIMIT
 ) -> list[UUID]:
-    """Attempts settled `published` since `since`, not the executor's, with no event —
-    newest first, at most `limit`. Under the caller's session (RLS-scoped)."""
-    no_event = (
-        ~select(CalendarEvent.id)
-        .where(CalendarEvent.publish_attempt_id == PublishAttempt.id)
-        .exists()
-    )
+    """Recordable attempts (`_recordable_since`) newest first, at most `limit`. Under the
+    caller's session (RLS-scoped)."""
     return list(
         session.scalars(
-            select(PublishAttempt.id)
-            .where(
-                PublishAttempt.status == ATTEMPT_PUBLISHED,
-                PublishAttempt.settled_at.is_not(None),
-                PublishAttempt.settled_at >= since,
-                ~PublishAttempt.idempotency_key.startswith(CALENDAR_KEY_PREFIX, autoescape=True),
-                no_event,
-            )
-            .order_by(PublishAttempt.settled_at.desc())
-            .limit(limit)
+            _recordable_since(since).order_by(PublishAttempt.settled_at.desc()).limit(limit)
         ).all()
     )
 
@@ -459,7 +504,11 @@ def sweep_recent_publications(
     if not pending:
         return []
     if author is None:
-        return [_skipped(attempt_id, Skip.NO_AUTHOR, tenant_id=tenant_id) for attempt_id in pending]
+        # once per sweep, not per attempt: a tenant without users repeats every tick
+        logger.info("calendar.immediate_no_author tenant_id=%s pending=%s", tenant_id, len(pending))
+        return [
+            RecordResult(attempt_id, Outcome.SKIPPED, skip=Skip.NO_AUTHOR) for attempt_id in pending
+        ]
     results: list[RecordResult] = []
     for attempt_id in pending:
         try:
@@ -467,35 +516,26 @@ def sweep_recent_publications(
                 record_publication(tenant_id=tenant_id, attempt_id=attempt_id, user_id=author)
             )
         except Exception as exc:  # one publication's failure never blocks the next
+            # the exception's own message (a constraint, a lock) — never the caption,
+            # which this code never puts in an exception
             logger.error(
-                "calendar.immediate_failed tenant_id=%s attempt_id=%s error=%s",
+                "calendar.immediate_failed tenant_id=%s attempt_id=%s error=%s: %s",
                 tenant_id,
                 attempt_id,
                 type(exc).__name__,
+                str(exc)[:300],
             )
     return results
 
 
 def tenants_with_unrecorded_publications(session: Session, *, since: datetime) -> list[UUID]:
-    """Ids of tenants with an unrecorded publication since `since` — for the production
-    discovery (`discovery.DiscoveredTenants`, admin session, ids only)."""
-    no_event = (
-        ~select(CalendarEvent.id)
-        .where(
-            (CalendarEvent.publish_attempt_id == PublishAttempt.id)
-            & (CalendarEvent.tenant_id == PublishAttempt.tenant_id)
-        )
-        .exists()
-    )
+    """Ids of tenants with a RECORDABLE publication since `since` (`_recordable_since`)
+    — for the production discovery (`discovery.DiscoveredTenants`, admin session, ids
+    only). A tenant whose only unrecorded attempts can never be recorded is not listed."""
     return list(
         session.scalars(
-            select(PublishAttempt.tenant_id)
-            .where(
-                PublishAttempt.status == ATTEMPT_PUBLISHED,
-                PublishAttempt.settled_at >= since,
-                ~PublishAttempt.idempotency_key.startswith(CALENDAR_KEY_PREFIX, autoescape=True),
-                no_event,
-            )
+            _recordable_since(since)
+            .with_only_columns(PublishAttempt.tenant_id)
             .distinct()
             .order_by(PublishAttempt.tenant_id)
         ).all()

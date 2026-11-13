@@ -214,6 +214,16 @@ class ApprovalBlocked(Exception):
         self.detail = detail
 
 
+class OwnMediaLocked(Exception):
+    """m-25019217: an own-media piece (`ContentKind.OWN_MEDIA`, what the owner published
+    from «Publicar») is the published file and caption as they went out — never edited
+    and never regenerated. Raised before any charge, write or dispatch."""
+
+    def __init__(self, draft_id: UUID) -> None:
+        super().__init__(f"own-media piece {draft_id} cannot be edited or regenerated")
+        self.draft_id = draft_id
+
+
 class DraftExpired(Exception):
     """A draft video's id can no longer make its final (m-24820142: ModelArk keeps a
     draft 7 days). Raised before any write or vendor call; the operator regenerates."""
@@ -3758,6 +3768,7 @@ class ContentService:
             or draft.revision != expected_revision
         ):
             raise DraftEditConflict()
+        self._refuse_own_media(tenant_id=tenant_id, draft_id=draft.id, brief_id=draft.brief_id)
         # The FSM decides whether this draft may be edited at all, and what an edit does
         # to it — before the rules run, so a published draft is refused, not "validated".
         new_status = apply_transition(draft.status, DraftTrigger.EDIT)
@@ -4784,6 +4795,13 @@ class ContentService:
             self.dispatcher.dispatch_generation(tenant_id=tenant_id, draft_id=draft_id)
         return self._require_detail(tenant_id=tenant_id, draft_id=draft_id)
 
+    def _refuse_own_media(self, *, tenant_id: UUID, draft_id: UUID, brief_id: UUID) -> None:
+        """m-25019217: `OwnMediaLocked` for an own-media piece (see the exception)."""
+        if self._repo.brief_kind(tenant_id=tenant_id, brief_id=brief_id) == (
+            ContentKind.OWN_MEDIA.value
+        ):
+            raise OwnMediaLocked(draft_id)
+
     @fenced_regeneration
     @transactional_dispatch
     def reject(
@@ -4800,6 +4818,9 @@ class ContentService:
         ``user_id`` are logged — the schema carries no rejection-audit columns yet, and
         stuffing them into ``failure_reason`` (which belongs to ``FAILED``) would lie."""
         record = self._require_draft(tenant_id=tenant_id, draft_id=draft_id)
+        if regenerate:
+            # before the FSM, the charge and the dispatch: nothing is written
+            self._refuse_own_media(tenant_id=tenant_id, draft_id=draft_id, brief_id=record.brief_id)
         if regenerate and record.status == REJECTED:
             # Already rejected: "Rechazar y regenerar" only needs the regenerate edge.
             # Applying REJECT again is not a legal edge (rejected → rejected) and used to

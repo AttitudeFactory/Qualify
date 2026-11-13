@@ -111,6 +111,9 @@ def upgrade() -> None:
 def downgrade() -> None:
     # `own_media` pieces cannot exist below this revision: remove them and every row that
     # points at them, children first (the FKs are not all ON DELETE CASCADE).
+    # The owner is a superuser; `row_security = off` makes a non-bypassing role fail
+    # loudly instead of matching zero rows through FORCE RLS (as 0081, 0087, 0094 do).
+    op.execute("SET LOCAL row_security = off;")
     owned_drafts = (
         "SELECT d.id FROM content_drafts d JOIN content_briefs b ON b.id = d.brief_id "
         "WHERE b.kind = 'own_media'"
@@ -132,6 +135,7 @@ def downgrade() -> None:
         "DELETE FROM content_briefs b WHERE b.kind = 'own_media' "
         "AND NOT EXISTS (SELECT 1 FROM content_drafts d WHERE d.brief_id = b.id)"
     )
+    op.execute("SET LOCAL row_security = on;")
 
     op.drop_constraint("ck_content_briefs_kind", "content_briefs", type_="check")
     op.create_check_constraint(

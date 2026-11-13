@@ -109,6 +109,7 @@ def _attempt(
     key: str | None = None,
     content_type: str | None = "image/jpeg",
     children: tuple[tuple[str, str, str], ...] = (),
+    media_key: bool = True,
 ) -> UUID:
     with tenant_session(world.tenant_id) as session:
         row = PublishAttempt(
@@ -121,7 +122,7 @@ def _attempt(
             status=status,
             settled_at=settled_at,
             published_media_id="1789" if status == "published" else None,
-            media_object_key=None if product == "CAROUSEL" else _key(world),
+            media_object_key=None if product == "CAROUSEL" or not media_key else _key(world),
             media_content_type=None if product == "CAROUSEL" else content_type,
         )
         session.add(row)
@@ -442,3 +443,33 @@ def test_a_recorded_piece_is_not_pending_and_can_be_scheduled_again() -> None:
     )
     assert (again.status, again.publish_attempt_id) == ("scheduled", None)
     assert result.draft_id not in {p.post_id for p in service.list_unscheduled(**ids)}
+
+
+# -- what the sweep never picks up (review of m-25019217) -------------------------------------
+
+
+def test_an_attempt_without_its_media_key_is_neither_swept_nor_discovered() -> None:
+    world = _world()
+    now = datetime.now(UTC)
+    # as an attempt written before 0158: no staged object recorded (settled rows are
+    # immutable, so it is born that way)
+    _attempt(world, settled_at=now - timedelta(minutes=2), media_key=False)
+    assert sweep_recent_publications(tenant_id=world.tenant_id, now=now) == []
+    assert world.tenant_id not in DiscoveredTenants().tenants(now=now)
+    assert _counts(world) == (0, 0)
+
+
+def test_a_recordable_attempt_behind_many_unrecordable_ones_is_still_recorded() -> None:
+    world = _world()
+    branded = world
+    unbranded = _world(brand=False)
+    now = datetime.now(UTC)
+    recordable = _attempt(branded, settled_at=now - timedelta(hours=2))
+    for n in range(55):  # newer than the recordable one, none can ever be recorded
+        _attempt(branded, settled_at=now - timedelta(minutes=n + 1), media_key=False)
+    # a brandless connection's attempts are not even listed for its tenant
+    _attempt(unbranded, settled_at=now - timedelta(minutes=1))
+    results = sweep_recent_publications(tenant_id=branded.tenant_id, now=now)
+    assert [(r.attempt_id, r.outcome) for r in results] == [(recordable, Outcome.RECORDED)]
+    assert sweep_recent_publications(tenant_id=unbranded.tenant_id, now=now) == []
+    assert unbranded.tenant_id not in DiscoveredTenants().tenants(now=now)
