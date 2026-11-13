@@ -19,6 +19,7 @@ MAX_IMAGE_BYTES = 8 * 1024 * 1024  # Local policy, not a claimed Meta limit.
 MAX_VIDEO_BYTES = 100 * 1024 * 1024
 MIN_VIDEO_SECONDS, MAX_VIDEO_SECONDS = 1.0, 60.0
 MAX_MOOV_BYTES = 8 * 1024 * 1024  # bounded metadata read
+MAX_TOP_LEVEL_BOXES = 1000  # real MP4s have a handful
 TOO_LARGE = "Cada video del anuncio debe ocupar como máximo 100 MB. Recórtalo o elige otro."
 
 
@@ -297,8 +298,12 @@ def mp4_facts(stream: IO[bytes]) -> tuple[int, float, int, int]:
     try:
         if size <= 0:
             raise ValueError("unsized")
-        moov, offset = None, 0
+        moov, offset, boxes = None, 0, 0
         while offset < size and moov is None:
+            # Each header is a ranged read: a file of tiny boxes must not cost millions of them.
+            boxes += 1
+            if boxes > MAX_TOP_LEVEL_BOXES:
+                raise ValueError("too many boxes")
             length, kind = struct.unpack(">I4s", stream.read(8))
             body = 8
             if length == 1:

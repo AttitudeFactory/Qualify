@@ -206,7 +206,15 @@ def test_mp4_facts_reads_metadata_and_refuses_non_mp4(monkeypatch):
     open_ended = head + struct.pack(">I4s", 0, b"moov") + moov
     assert mp4_facts(io.BytesIO(open_ended))[1:] == (5.0, 90, 160)
     oversized_moov = head + box(b"moov", bytes(domain.MAX_MOOV_BYTES + 1))
-    for data in (b"not a video", mp4(90, 160)[:-10], box(b"moov", b""), b"", oversized_moov):
+    tiny_boxes = head + box(b"free", b"") * (domain.MAX_TOP_LEVEL_BOXES + 1) + box(b"moov", moov)
+    for data in (
+        b"not a video",
+        mp4(90, 160)[:-10],
+        box(b"moov", b""),
+        b"",
+        oversized_moov,
+        tiny_boxes,
+    ):
         with pytest.raises(UnpublishedUnavailable, match="No pudimos leer"):
             mp4_facts(io.BytesIO(data))
 
