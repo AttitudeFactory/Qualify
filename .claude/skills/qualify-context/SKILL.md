@@ -34,11 +34,11 @@ exists** — `ls`, `git log`, `gh pr list` beat any paragraph here, including th
   from Meegle — skill `meegle-altas`.
 - **Meta:** business portfolio **verified 2026-10-05**; the app is Live; App Review is the open
   administrative clock (publishing/messaging scopes, and now `ads_management` for ADR 38).
-  Standard access works for assets the founder administers (ADR 29). Signed 2026-11-13 (D1):
+  Standard access works for assets the founder administers (ADR 29). Founder, 2026-11-13: (D1)
   client assets live inside Qualify's portfolio («Model A») only for businesses the founder
-  operates; every other client keeps its own portfolio and delegates to the app, and
+  operates; every other client keeps its own portfolio and delegates to the app; (D3)
   `catalog_management` goes in the same App Review submission as third-party WhatsApp — see
-  `docs/arquitectura-meta-negocios-ajenos.md`.
+  `docs/arquitectura-meta-negocios-ajenos.md` and `docs/plan-video-app-review-catalog-management.md`.
 - **Domains:** product landing `qualify.la` (Vercel); company domain `attitudefactory.co`.
 
 ## 2. The application, as built

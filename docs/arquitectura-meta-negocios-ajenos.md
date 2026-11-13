@@ -19,14 +19,26 @@ dábamos por hechas (§9.2).
 
 ## Decisión del fundador (2026-11-13)
 
-**Esta sección manda sobre el resto.** El fundador respondió las tres preguntas de §9.4 el
-2026-11-13 (ticket m-25026326). §9.4 se conserva como el análisis previo a la decisión.
+**Esta sección manda sobre el resto.** El fundador respondió en la conversación del 2026-11-13
+(ticket m-25026326) tres preguntas cerradas que le hicimos con las palabras de abajo, no el
+texto de §9.4. §9.4 se conserva como el análisis previo a la decisión.
 
-| | Decisión `[F]` | Por qué | Qué descarta | Qué cuesta o arriesga | Qué la reabre |
-|---|---|---|---|---|---|
-| **D1** | **El Modelo A queda solo para los negocios que opera el fundador** (Bianki, Polette, pilotos propios). Todo cliente ajeno entra con su propio portafolio (Modelo B) cuando pase el App Review | El de la recomendación de §9.4, que aceptó: el número y el catálogo de un tercero no deben quedar a nombre de Qualify sin una salida documentada (§2.4); Qualify no responde ante Meta por activos ajenos | Usar el Modelo A por defecto para clientes pequeños sin portafolio | Hasta que pase el App Review de WhatsApp, **ningún cliente ajeno tiene WhatsApp en Qualify** | Que P-2 (§9.3) muestre una salida limpia y documentada |
-| **D2** | **En el Modelo A, Qualify traslada al cliente el costo de los mensajes que Meta le cobra, al costo**, salvo Bianki y Polette mientras se mide | El de la recomendación de §9.4, que aceptó tal como estaba escrita: el cobro de Meta a Qualify.co debe tener una línea de recuperación | Absorber el costo dentro del plan | Con D1 vigente no hay terceros en A: el traslado solo aplica a excepciones. **La acción viva es medir Bianki y Polette con el libro de consumo** (m-24955649) | Un mes de datos reales en el libro |
-| **D3** | **`catalog_management` va en el MISMO envío de App Review que los permisos de WhatsApp para terceros** («sí, junto con los de WhatsApp para terceros») y se construye lo necesario para grabar su video | El fundador no dio el motivo. Lectura nuestra `[H]`: que el cliente del Modelo B pueda sincronizar su catálogo desde el día uno, sin un cuarto envío | El envío posterior que recomendaba §9.4 | Ver abajo | Un rechazo de `catalog_management` que el fundador prefiera no reintentar |
+**Lo que dijo** (literal, `[F]`):
+
+| | Pregunta, tal como se le hizo | Respuesta, literal |
+|---|---|---|
+| **D1** | «¿El modelo actual queda solo para los negocios que tú operas, y todo cliente ajeno entra con su propio portafolio?» | «sí.» |
+| **D2** | «En el modelo actual, ¿Qualify le traslada al cliente lo que Meta cobra por sus mensajes?» | Repitió la línea que se le presentó: «Recomendación: sí, al costo, salvo Bianki y Polette mientras se mide.» |
+| **D3** | «¿El permiso de catálogos se pide junto con los de WhatsApp para terceros o en un envío posterior?» | «si, junto con los de whatsapp para terceros» |
+
+**Cómo lo leemos** (análisis nuestro, `[H]` salvo donde se cita otra cosa — no son palabras del
+fundador):
+
+| | Lectura nuestra de la decisión | Qué descarta | Qué cuesta o arriesga | Qué la reabriría |
+|---|---|---|---|---|
+| **D1** | El Modelo A (activos del cliente dentro de Qualify.co) queda para los negocios que opera el fundador (Bianki, Polette); todo cliente ajeno entra por el Modelo B. Que «pilotos propios» cuenten como negocios del fundador, y que el Modelo B solo exista tras el App Review, es deducción nuestra, no algo que él dijera | Usar el Modelo A por defecto para clientes pequeños sin portafolio | Mientras no pase el App Review de WhatsApp, ningún cliente ajeno puede tener WhatsApp en Qualify | Que P-2 (§9.3) muestre una salida limpia y documentada |
+| **D2** | Acepta la recomendación tal como se le presentó en la conversación: traslado al costo, salvo Bianki y Polette mientras se mide | Absorber el costo dentro del plan | Con D1 vigente no hay terceros en A: el traslado solo aplica a excepciones. **La acción viva es medir Bianki y Polette con el libro de consumo** (m-24955649) | Un mes de datos reales en el libro |
+| **D3** | `catalog_management` va en el mismo envío de App Review que los permisos de WhatsApp para terceros, y se construye lo necesario para grabar su video (lo pidió después: «desarrollemos lo necesario para poder grabar ese video»). No dio motivo; el nuestro sería que el cliente del Modelo B sincronice su catálogo desde el día uno | El envío posterior que recomendaba §9.4 | Ver abajo | Un rechazo de `catalog_management` en ese envío; qué hacer entonces lo decide el fundador |
 
 **D3 va contra la recomendación de §9.4**, y su riesgo se lleva adelante tal cual:
 
@@ -97,7 +109,7 @@ Meta.
 | **Cuenta de WhatsApp** (WAAC, parte de la antigua WABA) | Identidad: número, perfil, **catálogos** | «Siempre del cliente o del desarrollador directo» `[V N-4]` | Lo que el cliente ve como «su WhatsApp» | La de Bianki está en Qualify.co |
 | **Cuenta de mensajería** (Messaging account, la otra mitad; conserva el `waba_id`) | Plantillas, **facturación y método de pago**, suscripción a webhooks | Una **por socio** que atiende al cliente `[V N-4]` | Separa plantillas y cobros entre socios | La de Bianki, en Qualify.co |
 | **Número** | El teléfono registrado en la Cloud API | Dentro de una cuenta de WhatsApp | Enviar y recibir; guarda historial y calidad `[V N-4]` | El de Bianki |
-| **Catálogo** | Productos en Commerce Manager; **uno por cuenta de WhatsApp** `[V N-16]` | De un portafolio; se comparte con socios | Mensajes de producto y carrito | Aún no creado (ADR 48 §10) |
+| **Catálogo** | Productos en Commerce Manager; **uno por jerarquía de cuentas de WhatsApp** («one catalog per WhatsApp account hierarchy») `[V N-16]` | De un portafolio; se comparte con socios | Mensajes de producto y carrito | Aún no creado (ADR 48 §10) |
 | **Página de Facebook, cuenta de Instagram, cuenta publicitaria** | Activos de redes y anuncios | De un portafolio (o de una persona) | Publicar, Directos, anuncios | Las de Bianki/Polette, reclamadas en Qualify.co (2026-10-14) |
 
 **La vieja WABA ya no es una sola cosa** `[V N-4]`: desde el 2026-09-23 Meta la separa en cuenta
@@ -320,8 +332,10 @@ esto es un servicio nuevo, una base nueva ni una cola nueva (ADR 31).
    `[V N-7]` y se contrasta con el del token (`GET /me?fields=client_business_id`, ADR 29). Es lo
    que permite verificar contra Meta de quién es una conexión.
 4. **El catálogo (ADR 48) — supuestos que cambian:**
-   - **Quién lo crea:** el cliente, en su portafolio. Si no tiene, Meta ofrece crearlo **bajo el id
-     del socio** `[V N-16]` — eso es volver al Modelo A para el catálogo; **no recomendado** `[H]`.
+   - **Quién lo crea:** vive en el portafolio del cliente. Lo crea el cliente en Commerce Manager
+     o, tras el plan del video (D3), **Qualify desde Galería con el permiso del cliente**
+     (`docs/plan-video-app-review-catalog-management.md`). Meta también ofrece crearlo **bajo el
+     id del socio** `[V N-16]` — eso es volver al Modelo A para el catálogo; **no recomendado** `[H]`.
    - **Cómo se registra:** de la sesión del registro (`catalog_ids` `[V N-7]`, pidiendo el activo
      catálogo solo si hace falta porque Meta advierte que ahí se abandona el flujo) en lugar del CLI
      `whatsapp-catalog-connect`; la verificación `CATALOG_REQUIRED_SCOPES` se hace sobre **el token
@@ -354,7 +368,7 @@ Ambos en la épica **m-24786384** «Meta App Review (permisos, videos y Tech Pro
 | Entrega | Registro integrado v4, token BISU por cliente, registrar número, suscribir webhooks, coexistencia, límites de alta | Crear, renombrar y eliminar el catálogo de WhatsApp desde Galería (plan del video, m-25026326); lectura y escritura del catálogo del cliente con su token |
 | Envío de App Review | **Uno solo (D3):** `whatsapp_business_messaging` + `whatsapp_business_management` + `catalog_management` (y `business_management` si Meta lo exige aparte, R2 del plan) | ídem |
 | Gates | Verificación del negocio (hecha); 2 videos de WhatsApp `[V N-9]`; `client_business_id` (m-24849197); **ya no** verificación de acceso (m-24789561, ver §9.2) | Video que muestra inicio de sesión + crear, actualizar y eliminar `[V N-15]`; las funciones deben existir en producción antes del envío |
-| Depende de | Envíos 1 y 2 no lo bloquean (la revisión es por permiso, ADR 29) | La construcción del plan; su ruta de inicio de sesión preferida es el registro integrado de m-24789620 (plan §3) |
+| Depende de | Envíos 1 y 2 no lo bloquean (la revisión es por permiso, ADR 29). **Por D3 su envío espera a que la construcción del video de catálogo esté en producción** | La construcción del plan; su ruta de inicio de sesión se elige en el paso 1 del plan (§3.1: la evidencia apunta a una configuración propia de Facebook Login for Business, porque con la app en Live el registro integrado de m-24789620 solo mostraría permisos ya aprobados `[S]`) |
 | Video para Meta | (1) mensaje enviado desde Qualify y recibido en un teléfono; (2) plantilla creada desde Qualify; y el registro integrado completo | Inicio de sesión + crear catálogo, renombrarlo, subir un producto, eliminarlo **desde Qualify** (guion: plan §6) |
 
 **Orden decidido (D3, 2026-11-13):** (1) se construye lo del video de catálogo
@@ -418,8 +432,10 @@ cliente posee sus activos): lo confirma para WhatsApp `[V N-2][V N-6][V N-8]`.
 
 ### 9.4 Lo que debe decidir el fundador
 
-`[DECIDIDO 2026-11-13 — D1: A · D2: la recomendación tal cual · D3: B (mismo envío), contra la
-recomendación. Ver «Decisión del fundador» arriba; opciones y recomendaciones quedan como registro.]`
+`[DECIDIDO 2026-11-13 en la conversación, con preguntas redactadas allí — D1 «sí.» (lectura: opción
+A) · D2: repitió la recomendación tal como se le presentó · D3 «si, junto con los de whatsapp para
+terceros» (lectura: opción B, contra la recomendación). Ver «Decisión del fundador» arriba;
+opciones y recomendaciones quedan como registro.]`
 
 **D1. ¿El Modelo A queda solo para los negocios que tú operas, y todo cliente ajeno entra por el
 Modelo B cuando pase el App Review?**
