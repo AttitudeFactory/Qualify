@@ -252,7 +252,7 @@ def test_the_dialog_shows_only_counts_above_zero_and_states_removals() -> None:
 
 def test_summary_and_progress() -> None:
     ok = vm.run_summary(status="finished", sent=5, deletes=1, failed=0, problems=0)
-    assert ok == vm.Summary("Listo: 5 ya están en WhatsApp y quitamos 1 que borraste.", "ok", 0)
+    assert ok == vm.Summary("Listo: 5 ya están en WhatsApp y se quitó 1 que borraste.", "ok", 0)
     # the second number is the filter's («Ver los 3 con problemas»), not the run's
     partial = vm.run_summary(status="partial", sent=3, deletes=0, failed=1, problems=3)
     assert partial.tone == "warn" and partial.problems == 3
@@ -739,3 +739,21 @@ async def test_a_refused_product_reaches_the_team_from_its_editor(world, fake) -
     assert len(fake.team) == 1 and fake.team[0]["screen"] == vm.ASK_REJECTED_SCREEN
     assert "«Shawarma mixto»" in fake.team[0]["message"]
     assert wa.team_asked == [_A] and wa.team_notice_for == _A and not wa.team_sent
+
+
+async def test_a_made_up_product_files_nothing(world, fake) -> None:
+    """Re-review A: only a product whose editor offers «Escribir al equipo» can file one."""
+    wa, _ = world
+    fake.view = SyncViewVM(
+        connection="connected",
+        states={_A: ("error", "meta_rejected"), _B: ("error", "send_failed")},
+    )
+    await _drain(CatalogWhatsAppState.load.fn(wa))
+    for made_up in ("d0000000-0000-4000-8000-0000000000aa", "x", _B):
+        await CatalogWhatsAppState.ask_team.fn(wa, made_up)
+    assert fake.team == [] and wa.team_asked == []
+
+
+def test_removals_are_said_impersonally() -> None:
+    many = vm.run_summary(status="finished", sent=0, deletes=2, failed=0, problems=0)
+    assert many.text == "Listo: se quitaron 2 que borraste."

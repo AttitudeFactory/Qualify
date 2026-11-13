@@ -596,7 +596,7 @@ def run_summary(
     if status == "failed" and (error_code in LOST_ACCESS or error_code == "no_permission"):
         return Summary(LOST_ACCESS_TEXT, "error", problems)
     went = max(sent - failed, 0)
-    removed = "quitamos 1 que borraste" if deletes == 1 else f"quitamos {deletes} que borraste"
+    removed = "se quitó 1 que borraste" if deletes == 1 else f"se quitaron {deletes} que borraste"
     if went and deletes:
         head = f"Listo: {_n(went, 'ya está', 'ya están')} en WhatsApp y {removed}."
     elif went:

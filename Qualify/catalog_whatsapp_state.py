@@ -618,6 +618,11 @@ class CatalogWhatsAppState(rx.State):
         one per place in this tab."""
         product_id = str(product_id or "")
         async with self:
+            if product_id and self.ed_team.get(product_id) != "1":
+                # only a product this screen offers the button for (WhatsApp refused it):
+                # a made-up id from the wire files nothing (`ed_team` holds the brand's
+                # listed products only)
+                return
             already = self.team_sent if not product_id else product_id in self.team_asked
             if self.team_busy or already:
                 return
