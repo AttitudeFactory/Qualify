@@ -16,8 +16,8 @@ leída hoy (URL y fecha) o código en disco; `[H]` inferencia nuestra; `[NO VERI
 2. Tres acciones, **siempre disparadas por una persona**: cargar un producto, resincronizar un
    producto, cargar/sincronizar todos (con un «plan» en seco que la pantalla muestra antes de
    confirmar). Sin sincronización automática.
-3. Tres tablas nuevas con RLS en **una** revisión `0154_whatsapp_catalog_sync` (sobre la cabeza
-   `0153_seasonal_media_delete_no_cap`): `whatsapp_catalogs`, `whatsapp_catalog_items`,
+3. Tres tablas nuevas con RLS en **una** revisión `0156_whatsapp_catalog_sync` (sobre la cabeza
+   `0155_product_sticker_characters`): `whatsapp_catalogs`, `whatsapp_catalog_items`,
    `whatsapp_catalog_sync_runs`. Un Postgres (ADR 31), sin cola nueva.
 4. Las llamadas a Meta salen del **`whatsapp-worker` existente** (una segunda tarea junto a
    `OutboxTick`), nunca en la petición. **Ningún servicio nuevo en producción.**
@@ -57,7 +57,7 @@ Todas consultadas el 2026-11-12; ninguna muestra fecha de actualización.
 | Que `link` pueda omitirse en un catálogo solo de WhatsApp, o que Meta acepte `https://wa.me/…` | `[NO VERIFICADO]` — [CR] apunta en contra (ver §11, R1) |
 | Que COP, VES y UYU se acepten como moneda de artículo; estado de revisión por artículo por API | `[NO VERIFICADO]` |
 
-## 3. Tablas (revisión `0154_whatsapp_catalog_sync`)
+## 3. Tablas (revisión `0156_whatsapp_catalog_sync`)
 
 Todas: `tenant_id uuid NOT NULL` → `tenants.id`; `ENABLE` + `FORCE ROW LEVEL SECURITY`; política
 `tenant_isolation` con `tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid`;
@@ -328,7 +328,7 @@ por catálogo; un negocio con > 3.000 productos; el fundador pide sincronizació
 ## 12. Implementación (m-25017356, 2026-11-12) — lo que el código hace distinto o precisa
 
 Código: `packages/api/src/qualify_api/whatsapp/catalog_sync/`, ruta
-`http/public_catalog_media_routes.py`, revisión `0154_whatsapp_catalog_sync`.
+`http/public_catalog_media_routes.py`, revisión `0156_whatsapp_catalog_sync` (renumerada de `0154` el 2026-11-12: `main` ocupó `0154` y `0155` mientras se trabajaba).
 
 - **Elegibilidad:** razón nueva `photo_format` (foto principal que no es JPEG ni PNG; Meta solo
   acepta esos dos [CR]).
