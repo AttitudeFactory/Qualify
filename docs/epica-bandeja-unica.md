@@ -12,7 +12,7 @@
 > Fuentes: la propuesta UX aceptada `docs/ux-chats-unificados.md` (D1–D5, 2026-11-12) y su maqueta
 > `docs/mockups/chats-unificados.html`; la nota de arquitectura `docs/arquitectura-bandeja-unica.md`
 > (opción C para la bandeja, opción (b) para los menús, cortes C1–C11 y M1–M7); el pedido del
-> fundador del 2026-11-12/13; la descripción del PR #608. Cada afirmación tomada de esos
+> fundador del 2026-11-12; la descripción del PR #608. Cada afirmación tomada de esos
 > documentos lleva su sección entre corchetes, p. ej. `[arq §2.3]`, `[UX §3 D2]`, `[PR #608]`.
 > Lo marcado **[supuesto PO]** es mío y no tiene otra fuente.
 >

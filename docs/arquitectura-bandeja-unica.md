@@ -285,7 +285,7 @@ No decido el texto, sólo lo marco para el fundador y UX:
 | «Al responder, la respuesta automática se pausa en esta conversación.» | `Qualify/whatsapp_tab_chats.py:2481` |
 | «…tomar el control de la respuesta automática…» | `Qualify/whatsapp_tab_chats.py:2558` |
 | «…puede publicar el menú automático ni la bienvenida.» | `Qualify/capabilities.py:111` |
-| «Está respondiendo tu menú automático · Responder yo» (franja propuesta) | `docs/ux-chats-unificados.md:78` y la maqueta `docs/mockups/chats-unificados.html` |
+| «Está respondiendo tu menú automático · Responder yo» (franja propuesta) | `docs/ux-chats-unificados.md:83` (ya marcada allí como pendiente de la decisión de nombres) y la maqueta `docs/mockups/chats-unificados.html` |
 | «WhatsApp: Respuesta automática» en el árbol de «Ajustes de chats» | `docs/ux-chats-unificados.md:63` |
 | Aviso al cliente propuesto en esta nota, «Te responde el menú automático de {negocio}» | §5 P6 de esta nota. Lo lee el **cliente final**, no el dueño; la condición 3 habla de «la app». Si cae dentro, choca con ella; si no, es la vía para el aviso que Meta recomienda (§3.4) |
 | Nombre del corte M5, «Respuesta automática» dentro de «Ajustes de chats» | §4.2 de esta nota |
