@@ -181,7 +181,9 @@ def _perks_section(kit: BrandKit) -> tuple[str, ...]:
     return (
         "== What the business offers (facts the owner wrote) ==\n"
         "These are the business's real facts beyond its products. Use the ones that fit the"
-        " piece, stated as written. Never invent a fact that is not here, in the product data"
+        " piece, stated as written. When the assignment names an awareness level, the level"
+        " decides which of them the piece may use: a perk that does not fit it is left out,"
+        " even though it is true. Never invent a fact that is not here, in the product data"
         " or in this briefing: no opening hours, prices, payment methods, addresses,"
         " deliveries, discounts or promotions of your own. Repeat each perk with its own"
         " meaning: never turn it into something free, a gift, included, a discount or a"
@@ -199,7 +201,8 @@ AWARENESS_GUIDANCE: dict[AwarenessLevel, str] = {
         " experience (the atmosphere, the moment, who it is shared with). Use only the"
         " perks about the experience (the place, the atmosphere, tables, pets, parking as a"
         " comfort); opening hours, payment, prices and anything about cost belong to the"
-        " product_aware and most_aware levels. Do not mention the price or any offer."
+        " product_aware and most_aware levels: leave them out even though they are among"
+        " the business's facts. Do not mention the price or any offer."
     ),
     AwarenessLevel.PROBLEM_AWARE: (
         "the reader already feels the need (e.g. «¿qué cenamos hoy?»). Name that dilemma"
@@ -207,7 +210,10 @@ AWARENESS_GUIDANCE: dict[AwarenessLevel, str] = {
     ),
     AwarenessLevel.SOLUTION_AWARE: (
         "the reader knows what kind of thing they want but not where to get it. Show what"
-        " sets this business apart: concrete product facts or perks from the list."
+        " sets this business apart with at least one concrete fact from the product data or"
+        " one perk from the list, stated as given. Restating what the product is, generic"
+        " claims (fresh, quality, experts, made for you) or attributes not in the data are"
+        " not enough; prices and payment belong to product_aware."
     ),
     AwarenessLevel.PRODUCT_AWARE: (
         "the reader knows the business but hesitates. Remove the friction: the price as"
@@ -215,7 +221,10 @@ AWARENESS_GUIDANCE: dict[AwarenessLevel, str] = {
     ),
     AwarenessLevel.MOST_AWARE: (
         "the reader is ready to buy. Give the shortest path to the purchase: a short hook,"
-        " a direct call to action and a brief caption, no long text."
+        " a direct call to action and a brief caption, no long text. The call to action uses"
+        " only a way to buy that the business's facts, the product data or this briefing"
+        " give; if there is none, simply invite people to come or to write, without naming a"
+        " service (no reservations, takeaway, pickup or delivery)."
     ),
 }
 

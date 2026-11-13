@@ -377,3 +377,49 @@ def test_a_perk_is_never_turned_into_an_offer_or_a_service() -> None:
     ).stable_prefix
     assert "never turn it into something free, a gift, included" in prefix
     assert "Never offer a service (reservations, delivery" in prefix
+
+
+# -- NIVELES-002 wording fixes -------------------------------------------------------------
+
+
+def _level_text(system: str, level: str, after: str) -> str:
+    return system.split(f"- {level}:")[1].split(after)[0]
+
+
+def test_most_aware_buys_only_through_a_given_way_in_both_prompts() -> None:
+    most = _level_text(angles_system_prompt(), "most_aware", "Datos reales del negocio")
+    assert "solo una forma de comprar que esté" in most and "invita a venir o a" in most
+    assert "ni reservar, ni para llevar, ni recoger, ni domicilio" in most
+    suffix = render_prompt(
+        kit=_kit(business_perks=PERKS),
+        voice=_voice(),
+        brief=_brief(awareness_level=AwarenessLevel.MOST_AWARE),
+        task=GenerationTask.COPY,
+    ).volatile_suffix
+    assert "uses only a way to buy" in suffix
+    assert "no reservations, takeaway, pickup or delivery" in suffix
+
+
+def test_solution_aware_asks_for_one_concrete_given_fact() -> None:
+    solution = _level_text(angles_system_prompt(), "solution_aware", "- product_aware:")
+    assert "al menos un dato concreto" in solution and "frases" in solution
+    assert "quedan para product_aware" in solution
+    suffix = render_prompt(
+        kit=_kit(),
+        voice=_voice(),
+        brief=_brief(awareness_level=AwarenessLevel.SOLUTION_AWARE),
+        task=GenerationTask.COPY,
+    ).volatile_suffix
+    assert "at least one concrete fact" in suffix and "generic" in suffix
+
+
+def test_the_level_decides_which_perks_a_piece_may_use() -> None:
+    assert "El nivel manda" in angles_system_prompt()
+    rendered = render_prompt(
+        kit=_kit(business_perks=PERKS),
+        voice=_voice(),
+        brief=_brief(awareness_level=AwarenessLevel.UNAWARE),
+        task=GenerationTask.COPY,
+    )
+    assert "the level decides which of them the piece may use" in rendered.stable_prefix
+    assert "leave them out even though they are among" in rendered.volatile_suffix

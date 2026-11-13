@@ -449,15 +449,21 @@ quedan para product_aware y most_aware. Nunca menciones el precio ni una oferta.
 - problem_aware: ya siente la necesidad («¿qué cenamos hoy?»). Nombra ese dilema en el \
 hook y presenta la propuesta como la respuesta.
 - solution_aware: sabe qué tipo de cosa quiere, pero no dónde. Muestra lo que distingue \
-a este negocio: datos concretos del producto o ventajas de la lista.
+a este negocio con al menos un dato concreto de la descripción del producto o una ventaja \
+de la lista, dicho tal cual. No basta con repetir qué es el producto, ni con frases \
+genéricas (fresco, de calidad, expertos, pensado para ti), ni con atributos que no estén \
+en los datos; los precios y las formas de pago quedan para product_aware.
 - product_aware: conoce el negocio pero duda. Quita la fricción: el precio claro si existe, \
 el horario, cómo pagar, dónde queda — solo con los datos que te dieron.
 - most_aware: está listo para comprar. El camino más corto a la compra: hook y cta muy \
-breves y directos, sin explicaciones largas.
+breves y directos, sin explicaciones largas. El cta usa solo una forma de comprar que esté \
+en los datos (la lista, el producto o la marca); si no hay ninguna, invita a venir o a \
+escribir, sin nombrar un servicio: ni reservar, ni para llevar, ni recoger, ni domicilio.
 
 Datos reales del negocio:
 - La lista «Lo que ofrece el negocio» son hechos que escribió el dueño. Úsalos tal cual, \
-cada ángulo los que encajen con su nivel; no hace falta usarlos todos.
+cada ángulo los que encajen con su nivel; no hace falta usarlos todos. El nivel manda: \
+una ventaja que no encaja con el nivel del ángulo se deja fuera aunque sea cierta.
 - Nunca inventes un dato que no esté en esa lista, en los datos del producto o en la \
 marca: ni horarios, ni precios, ni formas de pago, ni direcciones, ni domicilios, ni \
 descuentos, ni promociones. Si un nivel pediría un dato que no tienes, apóyate en lo que \
