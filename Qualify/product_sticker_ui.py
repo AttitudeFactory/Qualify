@@ -17,6 +17,7 @@ from .product_sticker_vm import (
     BACK_LABEL,
     CATALOG_HREF,
     DISCARD_LABEL,
+    DISCARDED_LINE,
     DRAWING_BUSY_LABEL,
     DRAWING_FAILED_PILL,
     DRAWING_HELP,
@@ -55,6 +56,8 @@ from .product_sticker_vm import (
     STILL_LINE,
     STILL_TITLE,
     TRUST_LINE,
+    UNDO_BUTTON_ID,
+    UNDO_LABEL,
     DrawingVM,
     ProductVM,
 )
@@ -326,8 +329,8 @@ def _drawing_card(drawing: DrawingVM) -> rx.Component:
 
 
 def _discard_action(drawing: DrawingVM, busy: rx.Var[bool]) -> rx.Component:
-    """«Quitar este dibujo»: at once, with «Deshacer» on the toast that follows (the
-    menus' drag and a season's «Archivar» work the same way; founder, 2026-11-13)."""
+    """«Quitar este dibujo»: at once, no question first, with «Deshacer» in the panel right
+    after (`_undo_row`; founder, 2026-11-13)."""
     return rx.button(
         rx.icon("trash-2", size=T.ICON_SM),
         DISCARD_LABEL,
@@ -389,9 +392,32 @@ def _ask_block() -> rx.Component:
     )
 
 
+def _undo_row() -> rx.Component:
+    """«Quitamos el dibujo…» + «Deshacer», inside the panel (a modal panel blocks a toast's
+    button) until the owner moves on or brings it back."""
+    return rx.cond(
+        P.undo_drawing != "",
+        rx.hstack(
+            callout(DISCARDED_LINE, "neutral", icon="trash-2", flex="1"),
+            _button(
+                UNDO_LABEL,
+                P.restore_drawing,
+                icon="undo-2",
+                disabled=P.discarding.contains(P.undo_drawing),
+                id=UNDO_BUTTON_ID,
+            ),
+            width="100%",
+            align="center",
+            spacing="2",
+            wrap="wrap",
+        ),
+    )
+
+
 def _step_drawing() -> rx.Component:
     return rx.vstack(
         rx.text(DRAWING_HELP, size="2", color=T.TEXT_MUTED),
+        _undo_row(),
         rx.cond(
             P.drawings_loading & (P.drawings.length() == 0),
             skeleton_rows(2, height="8rem"),

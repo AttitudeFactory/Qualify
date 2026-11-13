@@ -23,7 +23,6 @@ from .product_sticker_vm import (
     ACTION_FAILED,
     BRAND_KIT_PATH,
     CREATE_PARAM_VALUE,
-    DISCARDED_TOAST,
     DRAFTS_STICKERS_HREF,
     DRAWINGS_FAILED,
     FLOW_NAME,
@@ -43,8 +42,7 @@ from .product_sticker_vm import (
     STEP_PRODUCT,
     STEP_REVIEW,
     STEP_TITLES,
-    UNDO_LABEL,
-    UNDO_TOAST_MS,
+    UNDO_BUTTON_ID,
     DrawingVM,
     ProductVM,
     ask_another_label,
@@ -155,6 +153,9 @@ class ProductStickerState(rx.State):
     #: «Siguiente» on step 2 marks the drawing as used (`use_character`)
     picking: bool = False
     discarding: list[str] = []
+    #: the drawing just quitado, while «Deshacer» is offered under step 2's help line
+    undo_drawing: str = ""
+    _undo_chosen: bool = False
 
     presets: list[str] = []
     max_chars: int = 25
@@ -399,6 +400,8 @@ class ProductStickerState(rx.State):
         )
         before, self.flow_step = self.flow_step, target
         self.flow_error = ""
+        if target != before:
+            self.undo_drawing = ""
         if target == STEP_DRAWING and before == STEP_PRODUCT:
             return [ProductStickerState.read_drawings]
         return []
@@ -426,6 +429,7 @@ class ProductStickerState(rx.State):
             self.flow_open = True
             self.flow_ready = False
             self.flow_step = STEP_PRODUCT
+            self.undo_drawing = ""
             self.flow_error = ""
             self.load_error = ""
             self.loading = True
@@ -526,6 +530,7 @@ class ProductStickerState(rx.State):
             self._close()
             return self._close_address()
         self.flow_step -= 1
+        self.undo_drawing = ""
         return None
 
     @rx.event
@@ -550,6 +555,7 @@ class ProductStickerState(rx.State):
         if not self.can_go_on or step >= FLOW_STEPS:
             return None
         self.flow_step += 1
+        self.undo_drawing = ""
         if step == STEP_PRODUCT:
             return ProductStickerState.read_drawings
         return None
@@ -706,7 +712,9 @@ class ProductStickerState(rx.State):
     @rx.event(background=True)
     async def discard_drawing(self, drawing_id: str) -> AsyncIterator[Any]:
         """«Quitar este dibujo»: the drawing leaves the list at once (stickers made from it
-        stay) and the toast offers «Deshacer» (`restore_drawing`) — no question first."""
+        stay) and the panel offers «Deshacer» (`restore_drawing`) — no question first. The
+        way back lives in the panel, not in a toast: the panel is modal, so a toast's button
+        could not be touched nor reached with the keyboard while it is open."""
         async with self:
             found = next((d for d in self.drawings if d.id == drawing_id), None)
             brand = _uuid(self._brand)
@@ -739,20 +747,19 @@ class ProductStickerState(rx.State):
             if self.drawing_id == drawing_id:
                 first = next((d for d in self.drawings if d.usable), None)
                 self.drawing_id = first.id if first is not None else ""
-        yield rx.toast.success(
-            DISCARDED_TOAST,
-            duration=UNDO_TOAST_MS,
-            action={
-                "label": UNDO_LABEL,
-                "on_click": ProductStickerState.restore_drawing(drawing_id, was_chosen),
-            },
+            self.undo_drawing, self._undo_chosen = drawing_id, was_chosen
+        # its «Quitar» button is gone with it: the focus lands on «Deshacer», not on <body>
+        yield rx.call_script(
+            "window.requestAnimationFrame(() =>"
+            f" document.getElementById({UNDO_BUTTON_ID!r})?.focus());"
         )
 
     @rx.event(background=True)
-    async def restore_drawing(self, drawing_id: str, was_chosen: bool = False) -> None:
-        """«Deshacer» on the toast: the drawing comes back as it was (backend
+    async def restore_drawing(self) -> None:
+        """«Deshacer»: the last drawing quitado comes back as it was (backend
         `restore_character`: only while it is still discarded; a second tap is harmless)."""
         async with self:
+            drawing_id, was_chosen = self.undo_drawing, self._undo_chosen
             brand, character = _uuid(self._brand), _uuid(drawing_id)
             if brand is None or character is None or drawing_id in self.discarding:
                 return
@@ -778,6 +785,8 @@ class ProductStickerState(rx.State):
             if error:
                 self.flow_error = error
                 return
+            if self.undo_drawing == drawing_id:
+                self.undo_drawing = ""
             if was_chosen:
                 self.drawing_id = drawing_id
         # the list is re-read (its order and the others' state are the backend's)
@@ -794,6 +803,7 @@ class ProductStickerState(rx.State):
                 return
             if chosen.approved:
                 self.flow_step = STEP_MESSAGE
+                self.undo_drawing = ""
                 return
             self.picking = True
             gen = self._gen
@@ -821,6 +831,7 @@ class ProductStickerState(rx.State):
             updated = drawing_vms([card])
             self.drawings = [updated[0] if d.id == card.id else d for d in self.drawings]
             self.flow_step = STEP_MESSAGE
+            self.undo_drawing = ""
 
     # -- step 3 and 4 -----------------------------------------------------------------------
 

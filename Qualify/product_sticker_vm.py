@@ -77,12 +77,14 @@ DRAWING_PENDING: Final = "Dibujando…"
 DRAWING_FAILED_PILL: Final = "No salió"
 DRAWING_USED_PILL: Final = "Ya lo usaste"
 DISCARD_LABEL: Final = "Quitar este dibujo"
-#: «Quitar este dibujo» acts at once; the toast offers the way back (no question first, like
-#: the menus' drag and «Archivar» of a season — founder, 2026-11-13).
-DISCARDED_TOAST: Final = "Quitamos el dibujo. Los stickers que hiciste con él se quedan."
+#: «Quitar este dibujo» acts at once and offers the way back (no question first, like the
+#: menus' drag and «Archivar» of a season — founder, 2026-11-13). The line and «Deshacer» sit
+#: INSIDE the panel, not in a toast: the panel is modal, so a toast's button cannot be
+#: touched or reached with the keyboard while it is open (measured at 375 px).
+DISCARDED_LINE: Final = "Quitamos el dibujo. Los stickers que hiciste con él se quedan."
 UNDO_LABEL: Final = "Deshacer"
-#: Long enough to read the line and reach «Deshacer» on a phone.
-UNDO_TOAST_MS: Final = 10_000
+#: The quitado drawing's button leaves the page: the focus moves here, never to <body>.
+UNDO_BUTTON_ID: Final = "product-sticker-undo"
 RESTORE_FAILED: Final = "No pudimos devolver el dibujo. Vuelve a intentarlo en un momento."
 DRAWING_BUSY_LABEL: Final = "Dibujando… espera tu dibujo"
 SEASON_INSTEAD_LABEL: Final = "Crear para esta temporada"

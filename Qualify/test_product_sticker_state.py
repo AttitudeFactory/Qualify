@@ -555,26 +555,38 @@ async def test_discarding_the_chosen_drawing_picks_the_next_one(gw: FakeGateway)
     assert state.drawing_id == newer.id
     events = await _drain(ProductStickerState.discard_drawing.fn(state, newer.id))
     assert [d.id for d in state.drawings] == [older.id] and state.drawing_id == older.id
-    # m-25019604: no question first — the toast says what happened and offers «Deshacer»
-    toast = json.dumps(str(events), ensure_ascii=False)
-    assert "Quitamos el dibujo" in toast and "Deshacer" in toast
+    # m-25019604: no question first — the panel offers «Deshacer» and takes the focus there
+    assert state.undo_drawing == newer.id
+    assert "product-sticker-undo" in str(events)
 
 
 async def test_undo_brings_the_drawing_back_where_it_was(gw: FakeGateway) -> None:
     """m-25019604: «Deshacer» restores the drawing, chosen again if it was the chosen one;
-    a second tap is harmless (the backend returns a drawing not discarded as it is)."""
+    the offer leaves once used or once the owner moves on."""
     newer, older = _ready(SHAWARMA), _ready(SHAWARMA)
     gw.drawings[SHAWARMA] = [newer, older]
     state = ProductStickerState()
     await _open(state)
     await _to_drawings(state)
     await _drain(ProductStickerState.discard_drawing.fn(state, newer.id))
-    await ProductStickerState.restore_drawing.fn(state, newer.id, True)
+    await ProductStickerState.restore_drawing.fn(state)
     assert [d.id for d in state.drawings] == [newer.id, older.id]
     assert state.drawing_id == newer.id and state.flow_error == ""
-    await ProductStickerState.restore_drawing.fn(state, newer.id, True)
-    assert [d.id for d in state.drawings] == [newer.id, older.id]
-    assert gw.calls.count(("restore", newer.id)) == 2
+    assert state.undo_drawing == ""
+    await ProductStickerState.restore_drawing.fn(state)  # nothing left to bring back
+    assert gw.calls.count(("restore", newer.id)) == 1
+    await _drain(ProductStickerState.discard_drawing.fn(state, older.id))
+    assert state.undo_drawing == older.id
+    await ProductStickerState.use_drawing.fn(state)  # moving on drops the offer
+    assert state.flow_step == STEP_MESSAGE and state.undo_drawing == ""
+
+
+def test_the_undo_lives_in_the_panel_not_in_a_toast() -> None:
+    """A modal panel blocks a toast's button (measured at 375 px): «Deshacer» is inline."""
+    from .product_sticker_ui import _step_drawing
+
+    rendered = str(_step_drawing())
+    assert "Quitamos el dibujo" in rendered and "Deshacer" in rendered
 
 
 def test_the_discard_has_no_question_first() -> None:
