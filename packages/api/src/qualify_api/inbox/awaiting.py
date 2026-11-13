@@ -44,9 +44,13 @@ counts when the business owes a reply to a person:
    window is still open. The window is `conversations.window` (= `whatsapp.window`, the
    ONE policy): open for `WINDOW` after `threads.last_inbound_at`, closed AT the boundary;
    in SQL `last_inbound_at > now - WINDOW`, the duration interpolated from `WINDOW`.
-   `last_inbound_at` is bumped by every inbound message, hidden ones included — the
-   window is Meta's, and a message the owner hid still let the business reply. A new
-   inbound message reopens the window, so the chat counts again. The Human Agent tag
+   The rule reads the COLUMN as ingestion keeps it, not the messages: it moves forward
+   with each stored inbound that has an instant (the webhook path always gives one; the
+   re-sync path only when Meta returns `created_time`), a message the owner hid
+   («Eliminar para mí») included — the window is Meta's, and a hidden message still let
+   the business reply — and is recomputed without a message the customer unsent
+   (`conversations.repository._RECOMPUTE_THREAD`). A new inbound message reopens the
+   window, so the chat counts again. The Human Agent tag
    (7 days) is not modelled — neither the Instagram sender nor `conversations.window`
    uses it — so the bound is the plain 24 h.
    WhatsApp is NOT bounded: after the window an approved message (`template_reply`) still
@@ -258,33 +262,27 @@ class AutomationSend:
 class ThreadSnapshot:
     """What the rule reads of one chat (`threads.channel`, `threads.status`, …).
 
-    `last_inbound_at` is `threads.last_inbound_at`, which every inbound ingestion bumps
-    (hidden messages included) and the 24 h window rests on; when not given, it is the
-    newest inbound message's instant, which is what ingestion sets it to. (The SQL also
-    requires it as a cheap pre-filter; a chat with a visible inbound message always has
-    it.)"""
+    `last_inbound_at` is the column `threads.last_inbound_at` exactly as stored —
+    required, never derived from `messages`: ingestion does not always move it with a
+    message (an unsent one is left out, one without `posted_at` from the re-sync is not
+    bumped; see condition 4), so the twin reads the same fact the SQL reads. The SQL
+    requires it as a pre-filter on every channel, and so does the twin."""
 
     status: str
     channel: str
+    last_inbound_at: datetime | None
     messages: Sequence[MessageFact] = ()
     automation_sends: Sequence[AutomationSend] = ()
     handed_to_person: bool = False
-    last_inbound_at: datetime | None = None
-
-
-def _last_inbound_at(chat: ThreadSnapshot) -> datetime | None:
-    if chat.last_inbound_at is not None:
-        return chat.last_inbound_at
-    return max((m.at for m in chat.messages if m.direction == "inbound"), default=None)
 
 
 def awaits_reply(chat: ThreadSnapshot, now: datetime) -> bool:
     """`awaiting_reply_sql`, over a snapshot already read. See the module docstring."""
-    if chat.status != "open":
+    if chat.status != "open" or chat.last_inbound_at is None:
         return False
     if (
         chat.channel in WINDOW_BOUND_CHANNELS
-        and not window_state(_last_inbound_at(chat), now).is_open
+        and not window_state(chat.last_inbound_at, now).is_open
     ):
         return False
     inbound = [m.at for m in chat.messages if m.direction == "inbound" and not m.hidden]

@@ -353,6 +353,16 @@ class PostgresInboxReader:
 # --------------------------------------------------------------------------------------
 
 
+def _aware_now(now: datetime | None) -> datetime:
+    """The instant the rule and the rows' window are judged at. A naive `now` is refused:
+    SQL would read it in the session's time zone and `window_state` as UTC."""
+    if now is None:
+        return datetime.now(UTC)
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise ValueError("now must be timezone-aware")
+    return now
+
+
 def list_inbox(
     tenant_id: UUID,
     *,
@@ -380,7 +390,7 @@ def list_inbox(
         channels=channels,
         cursor=cursor,
         limit=limit,
-        now=now or datetime.now(UTC),
+        now=_aware_now(now),
     )
 
 
@@ -397,5 +407,5 @@ def count_inbox(
     _filter_sql(filter)
     channels = resolve_channels(channel)
     return (reader or PostgresInboxReader()).count(
-        tenant_id, filter=filter, channels=channels, now=now or datetime.now(UTC)
+        tenant_id, filter=filter, channels=channels, now=_aware_now(now)
     )

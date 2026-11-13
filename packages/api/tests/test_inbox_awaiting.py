@@ -33,8 +33,26 @@ OWNER = MessageFact("outbound", LATER)
 MENU = MessageFact("outbound", LATER, automatic=True)
 
 
-def _open(*messages: MessageFact, channel: str = "whatsapp", **kwargs: object) -> ThreadSnapshot:
-    return ThreadSnapshot(status="open", channel=channel, messages=messages, **kwargs)  # type: ignore[arg-type]
+_SEEDED: object = object()
+
+
+def _open(
+    *messages: MessageFact,
+    channel: str = "whatsapp",
+    last_inbound_at: datetime | None | object = _SEEDED,
+    **kwargs: object,
+) -> ThreadSnapshot:
+    """An open chat. Unless given, the seeded `threads.last_inbound_at` is what the
+    webhook ingestion leaves for these messages: the newest inbound's instant."""
+    if last_inbound_at is _SEEDED:
+        last_inbound_at = max((m.at for m in messages if m.direction == "inbound"), default=None)
+    return ThreadSnapshot(
+        status="open",
+        channel=channel,
+        last_inbound_at=last_inbound_at,  # type: ignore[arg-type]
+        messages=messages,
+        **kwargs,  # type: ignore[arg-type]
+    )
 
 
 def test_an_unanswered_inbound_counts() -> None:
@@ -112,12 +130,19 @@ def test_outbound_first_and_empty_chats() -> None:
 @pytest.mark.parametrize(
     "chat",
     [
-        ThreadSnapshot(status="closed", channel="dm", messages=(IN,)),
-        ThreadSnapshot(status="closed", channel="whatsapp", messages=(IN,)),
-        ThreadSnapshot(status="closed", channel="whatsapp", messages=(IN,), handed_to_person=True),
+        ThreadSnapshot(status="closed", channel="dm", last_inbound_at=T0, messages=(IN,)),
+        ThreadSnapshot(status="closed", channel="whatsapp", last_inbound_at=T0, messages=(IN,)),
         ThreadSnapshot(
             status="closed",
             channel="whatsapp",
+            last_inbound_at=T0,
+            messages=(IN,),
+            handed_to_person=True,
+        ),
+        ThreadSnapshot(
+            status="closed",
+            channel="whatsapp",
+            last_inbound_at=T0,
             messages=(IN,),
             automation_sends=(AutomationSend("failed", LATER),),
         ),
@@ -207,6 +232,20 @@ def test_the_window_rests_on_last_inbound_at_hidden_messages_included() -> None:
     explicit = _open(IN, channel="dm", last_inbound_at=hidden.at)
     assert awaits_reply(explicit, hidden.at + timedelta(hours=1))
     assert not awaits_reply(explicit, hidden.at + WINDOW)
+
+
+def test_the_twin_reads_the_column_not_the_messages() -> None:
+    """Ingestion does not always move `threads.last_inbound_at` with a message: an unsent
+    one is left out of it (`_RECOMPUTE_THREAD`), one the re-sync stored without
+    `posted_at` is not bumped. The twin reads the column as stored, like the SQL."""
+    two_days_ago = MessageFact("inbound", NOW - timedelta(days=2))
+    unsent = MessageFact("inbound", NOW - timedelta(minutes=5), hidden=True)
+    assert not awaits_reply(
+        _open(two_days_ago, unsent, channel="dm", last_inbound_at=two_days_ago.at), NOW
+    )
+    # The column was never set (only an un-dated re-synced inbound): no channel counts it.
+    for channel in ("dm", "whatsapp"):
+        assert not awaits_reply(_open(IN, channel=channel, last_inbound_at=None), NOW)
 
 
 def test_whatsapp_keeps_counting_after_its_window() -> None:

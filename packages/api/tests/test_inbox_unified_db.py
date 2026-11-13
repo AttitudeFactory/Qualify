@@ -128,20 +128,45 @@ class _Chat:
         return self.biz.whatsapp if self.channel == "whatsapp" else self.biz.instagram
 
     def inbound(
-        self, at: datetime, *, hidden: bool = False, text: str | None = "¿tienen domicilio?"
+        self,
+        at: datetime,
+        *,
+        hidden: bool = False,
+        text: str | None = "¿tienen domicilio?",
+        unsent: bool = False,
+        dated: bool = True,
     ) -> _Chat:
+        """A customer's message. `unsent`: the person unsent it (redacted, hidden, left
+        out of `last_inbound_at` — `_RECOMPUTE_THREAD`); `dated=False`: stored by the
+        re-sync without `posted_at` (its instant is `ingested_at`; the bump skips it)."""
         self.messages.append(
             {
                 "direction": "inbound",
-                "posted_at": at,
-                "deleted_at": at if hidden else None,
-                "text": text,
-                "author_username": "Cliente",
-                "media_type": None if text else "other",
+                "at": at,
+                "posted_at": at if dated else None,
+                "ingested_at": None if dated else at,
+                "deleted_at": at if hidden or unsent else None,
+                "unsent_at": at if unsent else None,
+                "text": None if unsent else text,
+                "author_username": None if unsent else "Cliente",
+                "media_type": None if unsent or text else "other",
             }
         )
-        self.snapshot_messages.append(MessageFact("inbound", at, hidden=hidden))
+        self.snapshot_messages.append(MessageFact("inbound", at, hidden=hidden or unsent))
         return self
+
+    @property
+    def last_inbound_at(self) -> datetime | None:
+        """`threads.last_inbound_at` as ingestion leaves it: the newest inbound that was
+        bumped (dated) and not unsent."""
+        return max(
+            (
+                m["posted_at"]
+                for m in self.messages
+                if m["direction"] == "inbound" and m["posted_at"] and not m["unsent_at"]
+            ),
+            default=None,
+        )
 
     def reply(
         self,
@@ -156,6 +181,7 @@ class _Chat:
         self.messages.append(
             {
                 "direction": "outbound",
+                "at": at,
                 "posted_at": at,
                 "deleted_at": at if hidden else None,
                 "text": "Hola",
@@ -189,6 +215,7 @@ class _Chat:
         return ThreadSnapshot(
             status=self.status,
             channel=self.channel,
+            last_inbound_at=self.last_inbound_at,
             messages=tuple(self.snapshot_messages),
             automation_sends=tuple(self.snapshot_sends),
             handed_to_person=bool(self.paused),
@@ -196,8 +223,7 @@ class _Chat:
 
     def save(self) -> UUID:
         tenant_id = self.biz.tenant_id
-        inbound = [m["posted_at"] for m in self.messages if m["direction"] == "inbound"]
-        every = [m["posted_at"] for m in self.messages]
+        every = [m["at"] for m in self.messages]
         with tenant_session(tenant_id) as session:
             thread = Thread(
                 tenant_id=tenant_id,
@@ -206,14 +232,16 @@ class _Chat:
                 external_thread_id=f"ext-{uuid4().hex[:12]}",
                 status=self.status,
                 last_message_at=max(every, default=None),
-                last_inbound_at=max(inbound, default=None),
+                last_inbound_at=self.last_inbound_at,
                 counterpart_name=self.name,
             )
             session.add(thread)
             session.flush()
             for m in self.messages:
+                undated = {"ingested_at": m["ingested_at"]} if m.get("ingested_at") else {}
                 session.add(
                     Message(
+                        **undated,
                         tenant_id=tenant_id,
                         thread_id=thread.id,
                         connection_id=self.connection,
@@ -224,6 +252,7 @@ class _Chat:
                         text=m["text"],
                         posted_at=m["posted_at"],
                         deleted_at=m["deleted_at"],
+                        unsent_at=m.get("unsent_at"),
                         media_type=m.get("media_type"),
                         delivery_status=m.get("delivery_status"),
                         shape_version="test",
@@ -386,6 +415,13 @@ def test_the_sql_rule_its_twin_and_count_inbox_agree_on_every_case() -> None:
         base, hidden=True
     )  # a hidden inbound still opened Meta's window; the visible one is unanswered
     chat(wa).inbound(real_now - timedelta(days=30))  # WhatsApp: not bounded
+    # The twin reads `last_inbound_at` as ingestion stores it, not the messages.
+    chat(ig).inbound(real_now - timedelta(days=2)).inbound(
+        base, unsent=True
+    )  # a newer message the customer unsent does not keep the window open
+    chat(ig).inbound(base, dated=False)  # only an un-dated re-synced inbound: column NULL
+    chat(wa).inbound(base, dated=False)
+    chat(ig).inbound(before).reply(base).inbound(after, dated=False)  # window from `before`
 
     chat(wa).inbound(base).reply(after, menu=True)  # answered only by the menu
     chat(wa).inbound(fresh_in).menu_send("pending", real_now)  # menu still answering
@@ -412,10 +448,10 @@ def test_the_sql_rule_its_twin_and_count_inbox_agree_on_every_case() -> None:
     per_channel = {c: count_inbox(biz.tenant_id, channel=c, now=now) for c in (ig, wa)}
     assert sum(per_channel.values()) == len(waiting)
     # Per channel, by hand from the cases above: dm 3 (unanswered, outbound-first then
-    # customer, wrote again) + window open + window reopened + hidden-opened window = 6;
-    # whatsapp those 3 + 30-day-old + stuck queue + handed + failed + dead + Meta-failed +
-    # queued-before-inbound = 10.
-    assert per_channel == {ig: 6, wa: 10}
+    # customer, wrote again) + window open + window reopened + hidden-opened window +
+    # un-dated newest inbound in an open window = 7; whatsapp those 3 + 30-day-old + stuck
+    # queue + handed + failed + dead + Meta-failed + queued-before-inbound = 10.
+    assert per_channel == {ig: 7, wa: 10}
     assert {c: _counter(biz, c, now) for c in (ig, wa)} == per_channel
 
 

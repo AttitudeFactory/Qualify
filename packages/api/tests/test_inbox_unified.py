@@ -89,6 +89,16 @@ def test_unknown_filter_and_bad_limits_are_refused() -> None:
     assert reader.calls == []
 
 
+def test_a_naive_now_is_refused() -> None:
+    reader = _FakeReader()
+    naive = NOW.replace(tzinfo=None)
+    with pytest.raises(ValueError, match="timezone-aware"):
+        list_inbox(uuid4(), now=naive, reader=reader)
+    with pytest.raises(ValueError, match="timezone-aware"):
+        count_inbox(uuid4(), now=naive, reader=reader)
+    assert reader.calls == []
+
+
 def test_count_goes_through_the_reader() -> None:
     reader = _FakeReader()
     assert count_inbox(uuid4(), reader=reader, now=NOW) == 7
