@@ -259,8 +259,8 @@ WITHOUT = _routes(None)
 WITH = _routes(PRODUCT)
 
 
-def test_compiler_5_is_stamped_on_new_pieces() -> None:
-    assert PROMPT_COMPILER_VERSION == 5
+def test_compiler_5_or_later_is_stamped_on_new_pieces() -> None:
+    assert PROMPT_COMPILER_VERSION >= 5  # 6: m-25017279, the base photo, on top of this one
     # one number per combination (rebase over UI-4): base / own reference media, by compiler
     assert (PART_PROMPT_VERSION, PART_REFERENCE_MEDIA_PROMPT_VERSION) == (1, 2)
     assert (PART_PROMPT_VERSION_V5, PART_REFERENCE_MEDIA_PROMPT_VERSION_V5) == (3, 4)

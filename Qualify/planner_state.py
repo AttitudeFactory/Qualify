@@ -23,6 +23,7 @@ from qualify_api.creative.fsm import InvalidTransition as CreativeInvalidTransit
 from qualify_api.creative.own_upload import OwnUpload, OwnUploadRefused
 from qualify_api.planner.service import PlannerError
 from qualify_api.publishing.client import IMAGE_MAX_BYTES
+from qualify_creative.video import VideoStill
 
 from .auth_state import AuthState
 from .campaign_provider import (
@@ -132,6 +133,8 @@ from .planner_vm import (
     prune_open_groups,
     scheduled_message,
     split_time,
+    story_too_long_note,
+    story_unknown_note,
     timezone_options,
     tz_option,
     waiting_copy,
@@ -144,6 +147,7 @@ from .ui.steps import step_settle_script
 from .upload_images import PhotoBusy, PhotoTooBig, PhotoUnreadable, normalize_photo_when_free
 from .upload_names import safe_upload_name
 from .upload_store import UploadNotKept, refusal_text, save_upload, save_upload_bytes
+from .upload_video_still import video_still_when_free
 
 logger = logging.getLogger(__name__)
 
@@ -474,6 +478,11 @@ class PlannerState(rx.State):
     _own_upload_width: int = 0
     _own_upload_height: int = 0
     _own_upload_size: int = 0
+    # m-25026481: a video's length and the key of its JPEG poster (under the same
+    # `uploads/planner/` folder); 0 / "" when unknown — sent as None, never 0 or "".
+    # The poster key is public (like `own_upload_key`): the view shows it on the video.
+    _own_upload_duration: float = 0.0
+    own_upload_poster_key: str = ""
 
     # -- the event panel --------------------------------------------------------
     detail_open: bool = False
@@ -826,10 +835,21 @@ class PlannerState(rx.State):
         return SUBMIT_ASSIGN if n <= 1 else f"{SUBMIT_ASSIGN} {n} publicaciones"
 
     @rx.var
-    def form_story_warnings(self) -> int:
-        """Pieces whose destination carries a limit we cannot check here (a video story's
-        60 s) — «Confirmar» says so once, before the operator confirms."""
-        return sum(1 for row in self.plan_rows if row.destination_warning)
+    def form_story_too_long_note(self) -> str:
+        """m-25026481: «Confirmar» names the video story KNOWN to last over 60 s by its hour
+        (with its day when the plan spans several), or counts several (their rows are
+        tagged)."""
+        rows = self.plan_rows
+        days = {row.date for row in rows if not row.now}
+        return story_too_long_note(
+            [row for row in rows if row.story_too_long], several_days=len(days) > 1
+        )
+
+    @rx.var
+    def form_story_unknown_note(self) -> str:
+        """The video stories whose length could NOT be read (`story_length_unknown`),
+        said once — never a known length (too long, or the 60.0–60.5 s caution)."""
+        return story_unknown_note(sum(1 for row in self.plan_rows if row.story_length_unknown))
 
     @rx.var
     def form_goal_count(self) -> int:
@@ -1689,7 +1709,8 @@ class PlannerState(rx.State):
         """The picked file to R2 (`t/{tenant}/uploads/planner/…`). A photo is checked and
         converted to a JPEG of at most 8 MB (Meta's rule) through the serialized
         normaliser; a video is streamed from the upload's spooled file, never read into
-        memory. Every refusal is decided BEFORE any storage call. Foreground: Reflex
+        memory, after its optional still (size, length, JPEG poster — m-25026481,
+        `upload_video_still`). Every refusal is decided BEFORE any storage call. Foreground: Reflex
         refuses uploads in background handlers."""
         try:
             await self._store_own_upload(files)
@@ -1703,8 +1724,15 @@ class PlannerState(rx.State):
             # never replaces the one being saved
             self.own_upload_error = SAVING_WAIT_TEXT
             return
+        if not files:
+            # the picker refused the only file: react-dropzone still calls `on_drop` with
+            # nothing, and `own_upload_rejected` (same drop) says why — this upload, which
+            # may arrive after it, must not replace that sentence (m-25026481, E2E race)
+            if not self.own_upload_error:
+                self.own_upload_error = NO_FILE_TEXT
+            return
         if len(files) != 1:
-            self.own_upload_error = TOO_MANY_TEXT if files else NO_FILE_TEXT
+            self.own_upload_error = TOO_MANY_TEXT
             return
         upload = files[0]
         # the client's name reduced to a safe basename: it names the key's last segment
@@ -1727,6 +1755,13 @@ class PlannerState(rx.State):
             self.own_upload_error = _NO_TENANT
             return
         width = height = 0
+        duration = 0.0
+        poster_key = ""
+        # m-25026481: a video's still (size, length, poster) is read BEFORE anything is
+        # stored, so the slow, queued part — waiting for the heavy-media slot, copying,
+        # ffmpeg — leaves nothing in R2 if the owner leaves meanwhile; the two storage
+        # calls then run back to back. Optional: any failure leaves it unknown.
+        still = await self._video_still(upload, name) if kind != IMAGE else None
         try:
             if kind == IMAGE:
                 upload.file.seek(0)
@@ -1741,6 +1776,11 @@ class PlannerState(rx.State):
             else:
                 content_type = VIDEO_CONTENT_TYPES[_suffix(name)]
                 key = await save_upload(tenant_id, upload, name, folder=_OWN_UPLOAD_FOLDER)
+                if still is not None:
+                    width = still.facts.width or 0
+                    height = still.facts.height or 0
+                    duration = still.facts.duration_seconds or 0.0
+                    poster_key = await self._save_poster(tenant_id, still.poster_jpeg, name)
         except PhotoUnreadable:
             self.own_upload_error = PHOTO_UNREADABLE_TEXT
             return
@@ -1767,6 +1807,33 @@ class PlannerState(rx.State):
         self._own_upload_width = width
         self._own_upload_height = height
         self._own_upload_size = size
+        self._own_upload_duration = duration
+        self.own_upload_poster_key = poster_key
+
+    @staticmethod
+    async def _video_still(upload: Any, name: str) -> VideoStill | None:
+        """The picked video's still, or None — never raises (gate busy, ffmpeg missing or
+        failing, anything else): the video is kept without it."""
+        try:
+            return await video_still_when_free(upload.file, _suffix(name))
+        except Exception as exc:  # noqa: BLE001 — optional: the upload goes on without it
+            logger.warning("planner video still failed: %s", type(exc).__name__)
+            return None
+
+    @staticmethod
+    async def _save_poster(tenant_id: UUID, jpeg: bytes | None, video_name: str) -> str:
+        """The poster to `t/{tenant}/uploads/planner/…`, named after the video; "" when
+        there is none or it could not be kept (the piece is created without it)."""
+        if not jpeg:
+            return ""
+        stem = video_name.rsplit(".", 1)[0] or "video"
+        try:
+            return await save_upload_bytes(
+                tenant_id, jpeg, f"{stem}.jpg", folder=_OWN_UPLOAD_FOLDER
+            )
+        except Exception as exc:  # noqa: BLE001 — optional: the video is stored already
+            logger.warning("planner video poster not kept: %s", type(exc).__name__)
+            return ""
 
     def _clear_own_upload(self) -> None:
         self.own_upload_view = False
@@ -1781,6 +1848,8 @@ class PlannerState(rx.State):
         self._own_upload_width = 0
         self._own_upload_height = 0
         self._own_upload_size = 0
+        self._own_upload_duration = 0.0
+        self.own_upload_poster_key = ""
 
     def _own_upload_request(self) -> OwnUpload:
         return OwnUpload(
@@ -1792,6 +1861,8 @@ class PlannerState(rx.State):
             width=self._own_upload_width or None,
             height=self._own_upload_height or None,
             size_bytes=self._own_upload_size or None,
+            duration_seconds=self._own_upload_duration or None,
+            poster_object_key=self.own_upload_poster_key or None,
         )
 
     @rx.event(background=True)

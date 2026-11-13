@@ -95,7 +95,7 @@ class BrandKit(Base):
     reference_image_keys: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
     image_policy: Mapped[dict | None] = mapped_column(JSONB, nullable=True)  # ImagePolicy shape
     ads_destination_url: Mapped[str | None] = mapped_column(Text, nullable=True)
-    #: The owner's business perks (0165): short lines, manual input; `[]` = none.
+    #: The owner's business perks (0166): short lines, manual input; `[]` = none.
     business_perks: Mapped[list] = mapped_column(
         JSONB, nullable=False, server_default=text("'[]'::jsonb")
     )
@@ -373,7 +373,7 @@ class ContentBrief(Base):
     # ContentKind value and its MediaInputs (0026)
     kind: Mapped[str] = mapped_column(Text, nullable=False, server_default="static_flyer")
     media: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
-    #: The angle's awareness level (0165, `AwarenessLevel` values); NULL = none.
+    #: The angle's awareness level (0166, `AwarenessLevel` values); NULL = none.
     awareness_level: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
@@ -683,6 +683,52 @@ class ImageAsset(Base):
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
     updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+
+
+class PieceBasePhoto(Base):
+    """The raw Seedream photograph a still was composed over (0165, ADR 49 §2 item 1,
+    m-25017279), one per version and position — or the record that it could NOT be kept
+    (`state='missing'`), so a later re-compose knows to offer only «Crear otra».
+
+    Its own table, not an `image_assets` row: no reader of a piece's outputs (cover,
+    media, carousel, Planificador, export) can see a base by construction.
+    `piece_layers.base_asset_id` points here. Composite keys with `tenant_id` are enforced
+    by the migration."""
+
+    __tablename__ = "piece_base_photos"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "version_id", "position", name="uq_piece_base_photos_position"
+        ),
+        UniqueConstraint("id", "tenant_id", name="uq_piece_base_photos_id_tenant"),
+        Index("ix_piece_base_photos_draft", "tenant_id", "draft_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    tenant_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False
+    )
+    brand_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    draft_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    version_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    state: Mapped[str] = mapped_column(Text, nullable=False)  # 'stored' | 'missing'
+    object_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sha256: Mapped[str | None] = mapped_column(Text, nullable=True)
+    content_type: Mapped[str | None] = mapped_column(Text, nullable=True)
+    width: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    height: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rendered_prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    model_id: Mapped[str] = mapped_column(Text, nullable=False)
+    provider: Mapped[str] = mapped_column(Text, nullable=False)
+    prompt_compiler_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    pipeline_version: Mapped[str] = mapped_column(Text, nullable=False)
+    missing_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
 
@@ -1194,7 +1240,7 @@ class CreativeAngle(Base):
     hook: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
     cta: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
     rationale: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
-    #: Which awareness level the model tagged it with (0165, `AwarenessLevel` values);
+    #: Which awareness level the model tagged it with (0166, `AwarenessLevel` values);
     #: NULL on angles proposed before the levels, or when the answer named none.
     awareness_level: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default="proposed")

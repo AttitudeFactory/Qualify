@@ -12,16 +12,22 @@ Storage, the normaliser and the backend are faked: nothing touches R2 or the dat
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
+import shutil
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest
 from qualify_api.creative.own_upload import OwnUploadRefused, UploadRefusal
 from qualify_creative.enums import ContentFormat, PostCategory
+from qualify_creative.video import VideoFacts, VideoStill
 
-from . import planner_drawer, planner_state, planner_upload_vm
+from . import planner_drawer, planner_state, planner_upload_vm, upload_video_still
+from .heavy_media import heavy_media_slot
 from .planner_state import PlannerState
 from .planner_upload_vm import (
     ADD_TILE_TITLE,
@@ -34,6 +40,8 @@ from .planner_upload_vm import (
 )
 from .planner_vm import STEP_POST, STEP_WHEN, PostOptionVM
 from .upload_images import StoredPhoto
+from .upload_store import UploadNotKept
+from .upload_video_still import video_still_when_free
 
 _TENANT = UUID("00000000-0000-0000-0000-0000000000aa")
 _DRAFT = UUID("00000000-0000-0000-0000-0000000000d1")
@@ -97,6 +105,13 @@ def storage(monkeypatch) -> dict[str, list]:
     monkeypatch.setattr(planner_state, "normalize_photo_when_free", fake_normalize)
     monkeypatch.setattr(planner_state, "save_upload_bytes", fake_save_bytes)
     monkeypatch.setattr(planner_state, "save_upload", fake_save)
+
+    async def no_still(fileobj, suffix, *, wait_seconds=None):
+        calls.setdefault("still", []).append(suffix)
+        return None
+
+    # m-25026481: ffmpeg never runs here; the video tests below set their own still
+    monkeypatch.setattr(planner_state, "video_still_when_free", no_still)
     return calls
 
 
@@ -518,3 +533,256 @@ def test_a_stale_saving_flag_is_cleared_when_the_owner_comes_back() -> None:
     state._reset_form()  # the assign panel opening again
     assert state.own_upload_saving is False
     assert state.own_upload_key == _KEY
+
+
+# --- m-25026481: a video's size, length and poster --------------------------------------
+
+_FIXTURES = Path(__file__).resolve().parents[1] / "packages/creative/tests/fixtures"
+
+
+def _still(width=1080, height=1920, seconds=65.0, poster=b"\xff\xd8poster") -> VideoStill:
+    return VideoStill(VideoFacts(width, height, seconds), poster)
+
+
+def _video_upload(name: str = "mi clip.mp4") -> _Upload:
+    return _Upload(name, size=40 * 1024 * 1024, head=_MP4_HEAD)
+
+
+def _with_still(monkeypatch, result) -> list:
+    """`video_still_when_free` answers `result` (or raises it when it is an exception)."""
+    seen: list = []
+
+    async def fake(fileobj, suffix, *, wait_seconds=None):
+        seen.append((fileobj, suffix))
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+    monkeypatch.setattr(planner_state, "video_still_when_free", fake)
+    return seen
+
+
+async def test_a_video_still_fills_the_request_with_size_length_and_poster(
+    storage, monkeypatch
+) -> None:
+    seen = _with_still(monkeypatch, _still())
+    state = PlannerState()
+    upload = _video_upload("mi_clip.mp4")
+    await PlannerState.handle_own_upload.fn(state, [upload])
+
+    assert seen == [(upload.file, ".mp4")]
+    # the video streamed, then the poster saved next to it, named after it
+    assert storage["stream"][0][1] is upload
+    assert storage["bytes"] == [(_TENANT, b"\xff\xd8poster", "mi_clip.jpg", "planner")]
+    poster_key = f"t/{_TENANT}/uploads/planner/abc_mi_clip.jpg"
+    assert state.own_upload_poster_key == poster_key
+    state.own_upload_caption = ""
+    request = state._own_upload_request()
+    assert (request.width, request.height, request.duration_seconds) == (1080, 1920, 65.0)
+    assert request.poster_object_key == poster_key
+    assert request.size_bytes == 40 * 1024 * 1024
+    assert state.own_upload_error == ""
+
+
+def _assert_unknown(state: PlannerState) -> None:
+    request = state._own_upload_request()
+    assert state.own_upload_key and state.own_upload_media == "video"
+    assert state.own_upload_error == ""
+    assert (request.width, request.height, request.duration_seconds) == (None, None, None)
+    assert request.poster_object_key is None
+    assert request.size_bytes == 40 * 1024 * 1024  # what the upload measured stays
+
+
+async def test_a_still_with_nothing_known_keeps_the_video_without_facts(
+    storage, monkeypatch
+) -> None:
+    _with_still(monkeypatch, _still(None, None, None, None))
+    state = PlannerState()
+    await PlannerState.handle_own_upload.fn(state, [_video_upload()])
+    _assert_unknown(state)
+    assert storage["bytes"] == []  # no poster to save
+
+
+@pytest.mark.parametrize("error", [RuntimeError("boom"), OSError("disk"), ValueError("x")])
+async def test_an_unexpected_error_in_the_still_never_blocks_the_upload(
+    storage, monkeypatch, error
+) -> None:
+    _with_still(monkeypatch, error)
+    state = PlannerState()
+    await PlannerState.handle_own_upload.fn(state, [_video_upload()])
+    _assert_unknown(state)
+
+
+async def test_a_busy_heavy_media_slot_skips_the_still(storage, monkeypatch) -> None:
+    """The real gate, held by another job: the still is skipped, the video kept."""
+    monkeypatch.setattr(planner_state, "video_still_when_free", video_still_when_free)
+    monkeypatch.setattr(upload_video_still, "VIDEO_STILL_WAIT_SECONDS", 0.05)
+
+    def never(*_args):  # the copy and ffmpeg must not even start
+        raise AssertionError("ran while the slot was busy")
+
+    monkeypatch.setattr(upload_video_still, "still_from_spooled", never)
+    holding, release = asyncio.Event(), asyncio.Event()
+
+    async def other_job() -> None:
+        async with heavy_media_slot():
+            holding.set()
+            await release.wait()
+
+    task = asyncio.create_task(other_job())
+    await holding.wait()
+    try:
+        state = PlannerState()
+        await PlannerState.handle_own_upload.fn(state, [_video_upload()])
+    finally:
+        release.set()
+        await task
+    _assert_unknown(state)
+
+
+async def test_a_poster_that_cannot_be_kept_keeps_size_and_length(storage, monkeypatch) -> None:
+    _with_still(monkeypatch, _still(720, 1280, 12.5))
+
+    async def failing_bytes(tenant_id, data, name, *, folder=""):
+        raise UploadNotKept("r2 down")
+
+    monkeypatch.setattr(planner_state, "save_upload_bytes", failing_bytes)
+    state = PlannerState()
+    await PlannerState.handle_own_upload.fn(state, [_video_upload()])
+
+    request = state._own_upload_request()
+    assert state.own_upload_error == "" and state.own_upload_key
+    assert (request.width, request.height, request.duration_seconds) == (720, 1280, 12.5)
+    assert request.poster_object_key is None
+
+
+async def test_a_second_file_resets_the_first_files_length_and_poster(storage, monkeypatch) -> None:
+    _with_still(monkeypatch, _still())
+    state = PlannerState()
+    await PlannerState.handle_own_upload.fn(state, [_video_upload()])
+    assert state.own_upload_poster_key and state._own_upload_duration == 65.0
+
+    _with_still(monkeypatch, _still(None, None, None, None))
+    await PlannerState.handle_own_upload.fn(state, [_video_upload("otro.mov")])
+    assert state.own_upload_poster_key == "" and state._own_upload_duration == 0.0
+
+    _with_still(monkeypatch, _still())
+    await PlannerState.handle_own_upload.fn(state, [_video_upload()])
+    state._clear_own_upload()
+    assert state.own_upload_poster_key == "" and state._own_upload_duration == 0.0
+
+
+async def test_a_photo_request_is_unchanged_and_runs_no_still(storage) -> None:
+    state = PlannerState()
+    await PlannerState.handle_own_upload.fn(state, [_Upload("foto.jpg")])
+    request = state._own_upload_request()
+    assert "still" not in storage
+    assert (request.width, request.height) == (1080, 1350)
+    assert request.duration_seconds is None and request.poster_object_key is None
+
+
+class _BoundedOnly(io.BytesIO):
+    """A spooled file that fails on any read without a bounded size."""
+
+    def read(self, size: int | None = -1) -> bytes:
+        if size is None or size < 0 or size > upload_video_still.COPY_CHUNK_BYTES:
+            raise AssertionError(f"unbounded read({size})")
+        return super().read(size)
+
+
+async def test_the_video_is_copied_in_bounded_chunks_and_the_copy_is_deleted(
+    storage, monkeypatch
+) -> None:
+    monkeypatch.setattr(planner_state, "video_still_when_free", video_still_when_free)
+    body = _MP4_HEAD + bytes(range(256)) * 9000  # ~2.3 MB: three chunks
+    seen: dict[str, object] = {}
+
+    def fake_still(path: Path) -> VideoStill:
+        seen["path"], seen["bytes"] = path, path.read_bytes()
+        return _still(180, 320, 2.0)
+
+    monkeypatch.setattr(upload_video_still, "video_still", fake_still)
+    upload = _video_upload()
+    upload.file = _BoundedOnly(body)
+    upload.file.seek(5)
+    state = PlannerState()
+    await PlannerState.handle_own_upload.fn(state, [upload])
+
+    assert seen["bytes"] == body  # the whole file reached ffmpeg's path
+    assert not Path(str(seen["path"])).exists()  # and the copy is gone
+    assert state._own_upload_duration == 2.0 and state.own_upload_error == ""
+
+
+def test_the_copy_puts_the_position_back() -> None:
+    src, out = io.BytesIO(b"abcdef"), io.BytesIO()
+    src.seek(3)
+    assert upload_video_still.copy_spooled(src, out) == 6
+    assert out.getvalue() == b"abcdef" and src.tell() == 3
+
+
+@pytest.mark.skipif(
+    shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
+    reason="needs ffmpeg/ffprobe on PATH",
+)
+@pytest.mark.parametrize(("clip", "seconds"), [("video-portrait-65s.mp4", 65.0)])
+def test_the_real_still_of_a_spooled_fixture_clip(clip: str, seconds: float) -> None:
+    """End to end with the real ffmpeg, from a Starlette-like spooled file in memory."""
+    spooled = tempfile.SpooledTemporaryFile(max_size=1024 * 1024)
+    spooled.write((_FIXTURES / clip).read_bytes())
+    still = upload_video_still.still_from_spooled(spooled, ".mp4")
+    assert still.facts.duration_seconds == pytest.approx(seconds, abs=0.2)
+    assert (still.facts.width, still.facts.height) == (90, 160)
+    assert still.poster_jpeg is not None and still.poster_jpeg[:2] == b"\xff\xd8"
+
+
+async def test_cancelling_during_the_still_deletes_the_copy_and_frees_the_slot(
+    storage, monkeypatch
+) -> None:
+    """The client leaves (Reflex cancels the handler) while ffmpeg runs: the handler
+    waits for the thread, the temp copy is deleted, the slot is released, nothing is
+    stored and nothing recorded."""
+    import threading
+
+    monkeypatch.setattr(planner_state, "video_still_when_free", video_still_when_free)
+    started, release = threading.Event(), threading.Event()
+    seen: dict[str, Path] = {}
+
+    def slow_still(path: Path) -> VideoStill:
+        seen["path"] = path
+        started.set()
+        release.wait(5)
+        return _still()
+
+    monkeypatch.setattr(upload_video_still, "video_still", slow_still)
+    state = PlannerState()
+    task = asyncio.create_task(PlannerState.handle_own_upload.fn(state, [_video_upload()]))
+    while not started.is_set():
+        await asyncio.sleep(0.01)
+    assert seen["path"].exists()  # the copy is there while ffmpeg reads it
+    task.cancel()
+    await asyncio.sleep(0.05)
+    assert not task.done()  # the cancelled handler still waits for its thread
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert not seen["path"].exists()
+    async with heavy_media_slot(timeout=0.5):  # free again
+        pass
+    assert storage["stream"] == [] and storage["bytes"] == []
+    assert state.own_upload_key == "" and state.own_upload_poster_key == ""
+    assert state.own_upload_busy is False
+
+
+async def test_an_empty_upload_after_a_refusal_keeps_the_refusal(storage) -> None:
+    """react-dropzone: `on_drop([])` then `on_drop_rejected([pdf])`; the upload of the
+    empty list can reach the server after the refusal — the refusal must stay."""
+    state = PlannerState()
+    PlannerState.begin_own_upload.fn(state)
+    rejected = [{"file": {"path": "menu.pdf"}, "errors": [{"code": "file-invalid-type"}]}]
+    PlannerState.own_upload_rejected.fn(state, rejected)
+    await PlannerState.handle_own_upload.fn(state, [])
+    assert state.own_upload_error == WRONG_TYPE_TEXT
+    alone = PlannerState()
+    await PlannerState.handle_own_upload.fn(alone, [])  # nothing refused: ask for a file
+    assert alone.own_upload_error == planner_upload_vm.NO_FILE_TEXT

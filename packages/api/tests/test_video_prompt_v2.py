@@ -120,7 +120,7 @@ def test_new_executions_are_stamped_with_compiler_2() -> None:
 
     producer, _ = _fixture_producer(Selector())
     stamped = producer.prepare_new_brief(_real(version=0), _kit())
-    assert stamped.media.prompt_compiler_version == PROMPT_COMPILER_VERSION == 5
+    assert stamped.media.prompt_compiler_version == PROMPT_COMPILER_VERSION == 6
 
 
 #: sha256 of the compiler-0 and compiler-1 prompts of the anonymized case, taken 2026-11-03

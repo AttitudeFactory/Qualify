@@ -85,6 +85,7 @@ from .planner_vm import (
     STEP_POST,
     STEP_PREVIEW,
     STEP_WHEN,
+    STORY_TOO_LONG_TAG,
     TAG_COLORS,
     VIEW_ON_INSTAGRAM,
     WEEKDAY_INITIALS,
@@ -103,7 +104,16 @@ from .post_card import (
 )
 from .promotion_entry import promotion_event_query, promotion_link
 from .r2_media import BACKEND_BASE
-from .ui import callout, drawer, dropzone, loading_spinner, media_thumb, skeleton_card, stepper
+from .ui import (
+    callout,
+    drawer,
+    dropzone,
+    loading_spinner,
+    media_thumb,
+    skeleton_card,
+    stepper,
+    tone_badge,
+)
 from .ui import tokens as T
 from .ui.flow_history import flow_sync
 from .ui.steps import step_progress
@@ -494,6 +504,12 @@ def _own_upload_preview() -> rx.Component:
                     src=src,
                     controls=True,
                     preload="metadata",
+                    # m-25026481: the frame Qualify took, while the video itself loads
+                    poster=rx.cond(
+                        PlannerState.own_upload_poster_key != "",
+                        rx.get_upload_url(PlannerState.own_upload_poster_key),
+                        "",
+                    ),
                     plays_inline=True,
                     aria_label="Tu video: " + PlannerState.own_upload_name,
                     width="100%",
@@ -864,6 +880,10 @@ def _repeat(row) -> rx.Component:
     )
 
 
+def _dest_warning_id(row) -> rx.Var:
+    return "dest-warn-" + row.post_id
+
+
 def _destination_button(row, d) -> rx.Component:
     on = row.destination == d.key
     return rx.el.button(
@@ -874,6 +894,9 @@ def _destination_button(row, d) -> rx.Component:
         role="radio",
         aria_checked=on,
         disabled=~d.available,
+        # m-25026481: the chosen button is described by its warning (a video story too
+        # long / of unknown length), which is only drawn while it is chosen
+        aria_describedby=rx.cond(on & (row.destination_warning != ""), _dest_warning_id(row), ""),
         title=rx.cond(d.available, d.label, d.label + ": " + d.reason),
         class_name=rx.cond(
             on, "q-dest-btn q-dest-btn--on q-dest-" + d.key, "q-dest-btn q-dest-" + d.key
@@ -938,6 +961,7 @@ def _destination_selector(row) -> rx.Component:
                 rx.hstack(
                     rx.icon("triangle-alert", size=13, flex_shrink="0"),
                     rx.text(row.destination_warning, size="1"),
+                    id=_dest_warning_id(row),
                     class_name="q-plan-status q-plan-status--todo",
                     margin_top="0.45rem",
                     align="start",
@@ -1518,6 +1542,12 @@ def _timeline_item(row) -> rx.Component:
                     width="100%",
                 ),
                 rx.text(row.title, size="2", weight="bold", style=_CLAMP_2),
+                # m-25026481: which story is too long (the plan note counts several); on its
+                # own line, so the badge row above never overflows
+                rx.cond(
+                    row.story_too_long,
+                    rx.box(tone_badge(STORY_TOO_LONG_TAG, "warn", icon="clock-alert")),
+                ),
                 rx.cond(row.sale_line != "", rx.text(row.sale_line, size="2")),
                 rx.flex(
                     rx.foreach(
@@ -1653,12 +1683,12 @@ def _step_confirm() -> rx.Component:
             ),
         ),
         rx.cond(
-            PlannerState.form_story_warnings > 0,
-            callout(
-                "Tienes historias de video en este plan. Instagram rechaza una Historia de "
-                "video de más de 60 segundos; revisa su duración antes de confirmar.",
-                "warn",
-            ),
+            PlannerState.form_story_too_long_note != "",
+            callout(PlannerState.form_story_too_long_note, "warn"),
+        ),
+        rx.cond(
+            PlannerState.form_story_unknown_note != "",
+            callout(PlannerState.form_story_unknown_note, "warn"),
         ),
         rx.cond(PlannerState.form_error != "", callout(PlannerState.form_error, "error")),
         spacing="5",

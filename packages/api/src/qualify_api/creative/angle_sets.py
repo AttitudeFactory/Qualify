@@ -232,7 +232,7 @@ class AngleRecord:
     reserved_at: datetime | None = None
     #: «Guardar para después»: put aside from the review (0077); None = on the review.
     saved_at: datetime | None = None
-    #: The reader the angle speaks to (0165, `AwarenessLevel`); None on older angles.
+    #: The reader the angle speaks to (0166, `AwarenessLevel`); None on older angles.
     awareness_level: AwarenessLevel | None = None
 
     @property

@@ -11,11 +11,25 @@ table — as its first argument rather than owning one.
 
 m-25017278 is a move: what is asked of Seedream, what is paid and what is stored are the
 same as before it.
+
+m-25017279 (ADR 49 §2 item 1): the base photograph of the advertising image and of every
+GENERATED gallery slide is kept the moment it is paid for, before any composition, as the
+vendor made it (after the band fill of compilers ≥ 3: the bytes the composition used), at
+`t/{tenant}/generated/{draft_id}/r{revision}/base/…` — inside the piece's folder, so the
+retention purge of ADR 39 takes it with the piece — and described in `piece_base_photos`
+(0165) by `finish_generation`. A base R2 will not keep does not fail the paid piece: it is
+recorded as `missing` and the team is alerted (`keep_base`). An animated slide's first
+frame is not a base: it is kept, as before, for its own resume.
+
+A flyer whose plans give several scenes but a single still (not a gallery) draws only the
+first: the other scenes' bases are kept in R2 with no row (no still was composed over
+them) and go with the folder when the piece is purged.
 """
 
 from __future__ import annotations
 
 import hashlib
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -42,23 +56,132 @@ from qualify_api.creative.image_pipeline.base_prompt import (
 from qualify_api.creative.media import (
     SCENE_SIZES,
     SEEDREAM,
+    BasePhoto,
     MediaUsage,
     _data_url,
     _MediaFailed,
     _physical_scene_plan,
+    _Saver,
 )
 
 if TYPE_CHECKING:
     from qualify_api.creative.media import MediaProducer
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True)
 class BaseScene:
-    """One base photograph as the `base` stage hands it to `compose`: the vendor's bytes
-    and the compiled prompt Seedream was sent for them (provenance of the slide)."""
+    """One base photograph as the `base` stage hands it to `compose`: the vendor's bytes,
+    the compiled prompt Seedream was sent for them (provenance of the slide) and its
+    record (`stored`: kept, or missing with a reason); None where no base is kept (an
+    animated slide's frame, a caller without a saver)."""
 
     image: bytes
     prompt: str
+    stored: BasePhoto | None = None
+
+
+def _image_type(data: bytes) -> tuple[str, str]:
+    """The MIME type and file extension of a vendor image, by its magic bytes."""
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png", "png"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp", "webp"
+    return "image/jpeg", "jpg"
+
+
+#: The largest side `image_size` believes (a Seedream image is ~2 MP; JPEG and WebP
+#: cannot exceed 65,535 either): anything else is a corrupt header, not a size.
+MAX_SIDE = 65_535
+
+
+def image_size(data: bytes) -> tuple[int, int] | None:
+    """Width and height from a PNG, JPEG or WebP header — no decoding. None unless both are
+    in 1..`MAX_SIDE`: a truncated or corrupt header (an IHDR of zeros, a 4-billion-pixel
+    side) is no size at all. The size is provenance, never a reason to fail."""
+    try:
+        size = _header_size(data)
+    except Exception:  # noqa: BLE001 - provenance only
+        return None
+    if size is None:
+        return None
+    width, height = size
+    return (width, height) if 0 < width <= MAX_SIDE and 0 < height <= MAX_SIDE else None
+
+
+def _header_size(data: bytes) -> tuple[int, int] | None:
+    try:
+        # every field is read whole: a header cut short is no size, never half of one
+        if data.startswith(b"\x89PNG\r\n\x1a\n") and data[12:16] == b"IHDR" and len(data) >= 24:
+            return int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
+        if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+            if data[12:16] == b"VP8X" and len(data) >= 30:
+                return int.from_bytes(data[24:27], "little") + 1, int.from_bytes(
+                    data[27:30], "little"
+                ) + 1
+            return None
+        if data[:2] == b"\xff\xd8":
+            i = 2
+            while i + 9 <= len(data):
+                if data[i] != 0xFF:
+                    return None
+                marker = data[i + 1]
+                length = int.from_bytes(data[i + 2 : i + 4], "big")
+                # SOF0-SOF15 carry the frame size, except DHT (C4), JPG (C8) and DAC (CC)
+                if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
+                    height = int.from_bytes(data[i + 5 : i + 7], "big")
+                    width = int.from_bytes(data[i + 7 : i + 9], "big")
+                    return width, height
+                i += 2 + length
+    except (IndexError, ValueError):
+        return None
+    return None
+
+
+def keep_base(
+    save: _Saver,
+    *,
+    name: str,
+    image: bytes,
+    prompt: str,
+    usage: Sequence[MediaUsage],
+    compiler: int,
+) -> BasePhoto:
+    """Keep one paid base photograph under `base/` and describe it.
+
+    R2 never overwrites under `t/` and the key is fixed per revision
+    (`r{n}/base/{name}`), so a retry finds its own earlier write: the store compares the
+    object byte for byte (`R2ReadingMediaStore.keep_outcome`) — the same bytes there are a
+    success and nothing is written again; DIFFERENT bytes there (another paid photograph of
+    the same revision) are never taken for these, and these are kept under a key named by
+    their own SHA-256 (`_Saver`: `base/slide-1-<12 hex>.jpg`). Only a write R2 will not
+    take at all leaves the base unkept: the paid piece is not failed for it, the base comes
+    back with `key=None` and a `missing_reason` (stored as a `missing` row, so a re-compose
+    knows), and the team gets ONE alert for the piece once its media is saved
+    (`base_photos.alert_missing_bases`, from `finish_generation`)."""
+    content_type, extension = _image_type(image)
+    missing_reason = "R2 did not keep the base photo"
+    try:
+        key = save.optional(f"base/{name}.{extension}", image, content_type)
+    except Exception as exc:  # noqa: BLE001 - a base never fails the paid piece
+        logger.warning("base %s of draft %s not kept: %s", name, save.draft_id, exc)
+        key, missing_reason = None, f"base not kept: {type(exc).__name__}"
+    made = usage[-1] if usage else None
+    size = image_size(image)
+    missing_reason = None if key is not None else missing_reason
+    return BasePhoto(
+        key=key,
+        sha256=hashlib.sha256(image).hexdigest(),
+        content_type=content_type,
+        model_id=made.model_id if made is not None else SEEDREAM,
+        provider=made.provider if made is not None else SEEDREAM,
+        rendered_prompt=prompt,
+        prompt_compiler_version=compiler,
+        width=size[0] if size else None,
+        height=size[1] if size else None,
+        missing_reason=missing_reason,
+    )
 
 
 def scene_image(
@@ -173,6 +296,7 @@ def flyer_scenes(
     ratio: str,
     budget: BudgetContext,
     usage: list[MediaUsage],
+    save: _Saver | None = None,
 ) -> list[BaseScene]:
     """The advertising image's base photographs: one Seedream scene per group of product
     photos (one group, or one per slide of the old gallery inside `STATIC_FLYER`), each
@@ -212,7 +336,19 @@ def flyer_scenes(
             if plans is not None
             else None,
         )
-        scenes.append(BaseScene(image=image, prompt=prompt))
+        stored = (
+            keep_base(
+                save,
+                name=f"flyer-{index + 1}",
+                image=image,
+                prompt=prompt,
+                usage=usage,
+                compiler=brief.media.prompt_compiler_version,
+            )
+            if save is not None
+            else None
+        )
+        scenes.append(BaseScene(image=image, prompt=prompt, stored=stored))
     return scenes
 
 
@@ -239,6 +375,7 @@ def carousel_slide_scene(
     animated: bool,
     budget: BudgetContext,
     usage: list[MediaUsage],
+    save: _Saver | None = None,
 ) -> BaseScene:
     """One gallery slide's base photograph (a generated slide, or an animated slide's
     first frame), compiled under the gallery's own compiler."""
@@ -282,4 +419,17 @@ def carousel_slide_scene(
         reference_plan=_physical_scene_plan(plan, brand_refs.refs) if plan is not None else None,
         fill_bands=media.prompt_compiler_version >= 3,
     )
-    return BaseScene(image=image, prompt=prompt)
+    # an animated slide's frame is not a base: it is kept for its own resume, as before
+    stored = (
+        keep_base(
+            save,
+            name=f"slide-{number}",
+            image=image,
+            prompt=prompt,
+            usage=usage,
+            compiler=media.prompt_compiler_version,
+        )
+        if save is not None and not animated
+        else None
+    )
+    return BaseScene(image=image, prompt=prompt, stored=stored)

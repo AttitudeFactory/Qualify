@@ -67,3 +67,21 @@ def _uploads_go_to_memory_r2(monkeypatch: pytest.MonkeyPatch, memory_r2) -> None
 
     gate = ObjectGate(memory_r2)
     monkeypatch.setattr(upload_store, "_gate", lambda: gate)
+
+
+@pytest.fixture(autouse=True)
+def _no_base_photo_alerts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """m-25017279: a missing base photo's alert never reaches the real team channel."""
+    from qualify_api.creative import base_photos
+
+    class _Recorder:  # the app never imports `qualify_api.plans` (test_plans.py)
+        def __init__(self) -> None:
+            self.sent: list[str] = []
+
+        def notify(self, text: str) -> bool:
+            self.sent.append(text)
+            return True
+
+    recorder = _Recorder()
+    monkeypatch.setattr(base_photos, "notifier_factory", lambda: recorder)
+    monkeypatch.setattr(base_photos, "alert_dispatch", lambda send: send())

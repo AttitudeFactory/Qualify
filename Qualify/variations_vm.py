@@ -47,7 +47,7 @@ from .creative_vm import failure_vm, status_label
 
 # -- vocabularies ------------------------------------------------------------------------
 
-#: Who each idea talks to (0165, the angle's `AwarenessLevel`), in the owner's words —
+#: Who each idea talks to (0166, the angle's `AwarenessLevel`), in the owner's words —
 #: never the marketing term. An idea proposed before the levels has none and no tag.
 AUDIENCE_LABELS: dict[AwarenessLevel, str] = {
     AwarenessLevel.UNAWARE: "Para quien aún no piensa en ti",
