@@ -236,6 +236,8 @@ por catálogo (80014) y reintentos; un lote de 1.000 bloquearía Reflex. Regla 7
 
 - `GET/HEAD /public/catalog-media/{tenant_id}/{media_id}/{sig}.jpg`, router propio bajo
   `/public/` (`http/public_catalog_media_routes.py`), como ADR 28e.
+  El prefijo está en el matcher `@fastapi` de `deploy/Caddyfile` (m-25021431: sin él, la ruta caía
+  al frontend estático y respondía `200 text/html`); `test_caddy_fastapi_routes.py` lo vigila.
 - `sig = base64url(HMAC-SHA256(K, DOMAIN ‖ tenant_id ‖ 0x00 ‖ media_id))` (enmienda del hilo
   principal, 2026-11-12: sin `object_key`, para que la firma se compruebe **antes** de tocar la
   base; la llave del objeto es inmutable por fila, así que no hace falta atarla) sin
