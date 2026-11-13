@@ -26,7 +26,11 @@ from sqlalchemy.exc import DBAPIError
 from qualify_api.catalog.models import BrandProduct
 from qualify_api.connections.models import PlatformApp, SocialConnection
 from qualify_api.tenancy.models import Brand, Tenant, User
-from qualify_api.whatsapp.catalog import FALLBACK_CATEGORY, load_catalog_for_phone
+from qualify_api.whatsapp.catalog import (
+    FALLBACK_CATEGORY,
+    load_cart_products_for_phone,
+    load_catalog_for_phone,
+)
 from qualify_api.whatsapp.models import WhatsAppPhoneNumber
 
 pytestmark = pytest.mark.db
@@ -240,3 +244,44 @@ def test_loader_never_mixes_tenants(seeded) -> None:
     theirs = {i.name for i in load_catalog_for_phone(seeded["other_phone"])}
     assert "Ajeno" not in mine
     assert theirs == {"Ajeno"}
+
+
+# --- m-25018684: the cart lookup --------------------------------------------------------
+
+
+def _product_ids(tenant_id: UUID, brand_id: UUID) -> dict[str, UUID]:
+    from sqlalchemy import select
+
+    with tenant_session(tenant_id) as session:
+        rows = session.execute(
+            select(BrandProduct.name, BrandProduct.id).where(BrandProduct.brand_id == brand_id)
+        ).all()
+    return {name: product_id for name, product_id in rows}
+
+
+def test_cart_lookup_finds_the_brands_products_active_or_not(seeded) -> None:
+    mine = _product_ids(TENANT, seeded["brand"])
+    theirs = _product_ids(OTHER_TENANT, seeded["other_brand"])
+    asked = [mine["Agua"], mine["Descontinuado"], theirs["Ajeno"], uuid4()]
+
+    found = load_cart_products_for_phone(seeded["phone"], asked)
+
+    assert set(found) == {str(mine["Agua"]), str(mine["Descontinuado"])}
+    agua = found[str(mine["Agua"])]
+    assert (agua.product_id, agua.name, agua.price_amount, agua.price_currency) == (
+        str(mine["Agua"]),
+        "Agua",
+        Decimal("10000.00"),
+        "COP",
+    )
+
+
+def test_cart_lookup_never_crosses_brands_or_tenants(seeded) -> None:
+    mine = _product_ids(TENANT, seeded["brand"])
+    theirs = _product_ids(OTHER_TENANT, seeded["other_brand"])
+    # Another tenant's number asking for my ids, and my number asking for theirs.
+    assert load_cart_products_for_phone(seeded["other_phone"], list(mine.values())) == {}
+    assert load_cart_products_for_phone(seeded["phone"], list(theirs.values())) == {}
+    assert load_cart_products_for_phone(seeded["phone_no_brand"], list(mine.values())) == {}
+    assert load_cart_products_for_phone(uuid4(), list(mine.values())) == {}
+    assert load_cart_products_for_phone(seeded["phone"], []) == {}

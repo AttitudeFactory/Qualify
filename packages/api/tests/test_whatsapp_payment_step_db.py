@@ -288,3 +288,84 @@ def test_the_current_qr_is_only_an_offered_methods_of_that_business(seeded) -> N
     assert current_qr_key(tenant_id=TENANT, method_id=off_id, brand_id=brand) is None
     assert current_qr_key(tenant_id=TENANT, method_id=offered_id, brand_id=str(uuid4())) is None
     assert current_qr_key(tenant_id=OTHER, method_id=offered_id, brand_id=brand) is None
+
+
+def test_an_archiving_save_snapshots_the_payment_as_stored_and_never_carries_it(seeded) -> None:
+    """m-25018684 `archive_payment`: the stored `_payment` — even one an owner marked
+    received after the handler read the row — goes into the new archive entry when it was
+    the archived order's; the current `_payment` is only the save's own."""
+    from qualify_api.whatsapp.repository import StoredThreadState
+
+    repo = PostgresWhatsAppInboxRepository()
+    old_order = {"items": [], "total": "18", "currency": "USD", "source_message_id": "wamid.o1"}
+    awaiting = {"status": "awaiting", "order_message_id": "wamid.o1", "name": "Pago móvil"}
+    repo.save_thread_state(
+        thread_id=seeded["thread"],
+        tenant_id=TENANT,
+        state=StoredThreadState(context={"_order": old_order, "_payment": awaiting}),
+    )
+    # The owner taps «Pago recibido» between the handler's read and its save.
+    PostgresPaymentStatusStore().mark_received(
+        tenant_id=TENANT,
+        thread_id=seeded["thread"],
+        user_id=seeded["user"],
+        at=NOW,
+        notified=False,
+        outbox_id=None,
+    )
+    cart = {"items": [], "source": "cart", "source_message_id": "wamid.cart"}
+    archive = [{"order": old_order, "archived_at": NOW.isoformat(), "payment": awaiting}]
+    repo.save_thread_state(
+        thread_id=seeded["thread"],
+        tenant_id=TENANT,
+        state=StoredThreadState(context={"_order": cart, "_orders_previous": archive}),
+        archive_payment=True,
+    )
+    context = _context(seeded["thread"])
+    assert "_payment" not in context
+    assert context["_order"]["source_message_id"] == "wamid.cart"
+    (entry,) = context["_orders_previous"]
+    assert entry["payment"]["status"] == "received"  # as stored, not as read
+    assert entry["order"]["source_message_id"] == "wamid.o1"
+
+    # A payment that was NOT the archived order's is not snapshotted; a NEW payment
+    # written by the save (a menu choice) stays current.
+    repo.save_thread_state(
+        thread_id=seeded["thread"],
+        tenant_id=TENANT,
+        state=StoredThreadState(
+            context={"_order": cart, "_payment": {"status": "awaiting", "order_message_id": "x"}}
+        ),
+    )
+    menu = {"items": [], "source_message_id": "wamid.menu"}
+    fresh = {"status": "awaiting", "order_message_id": "wamid.menu"}
+    archive = [
+        {"order": cart, "archived_at": NOW.isoformat(), "payment": {"stale": True}},
+        entry,
+    ]
+    repo.save_thread_state(
+        thread_id=seeded["thread"],
+        tenant_id=TENANT,
+        state=StoredThreadState(
+            context={"_order": menu, "_payment": fresh, "_orders_previous": archive}
+        ),
+        archive_payment=True,
+    )
+    context = _context(seeded["thread"])
+    assert context["_payment"] == fresh
+    newest, older = context["_orders_previous"]
+    assert newest["payment"] is None
+    assert older["payment"]["status"] == "received"  # older entries are untouched
+
+
+def test_payment_flags_are_exclusive(seeded) -> None:
+    from qualify_api.whatsapp.repository import StoredThreadState
+
+    with pytest.raises(ValueError):
+        PostgresWhatsAppInboxRepository().save_thread_state(
+            thread_id=seeded["thread"],
+            tenant_id=TENANT,
+            state=StoredThreadState(),
+            preserve_payment=True,
+            archive_payment=True,
+        )
