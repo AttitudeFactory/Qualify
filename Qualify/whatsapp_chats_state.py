@@ -85,6 +85,7 @@ from .nav_url import (
     back_url_script,
     close_flow_script,
     conversation_href,
+    filter_address_script,
     flow_param,
     push_url_script,
     replace_url_script,
@@ -98,7 +99,6 @@ from .ui.primitives import ORBIT_FOCUS_SCRIPT
 from .ui.steps import settle_step
 from .whatsapp_chats_provider import NoOrder, gateway
 from .whatsapp_chats_vm import (
-    AWAITING_FILTER_SLUGS,
     COMPOSE_BUTTONS,
     COMPOSE_KEYS,
     COMPOSE_TEXT,
@@ -117,6 +117,7 @@ from .whatsapp_chats_vm import (
     FILTER_KEYS,
     FILTER_OPEN,
     FILTER_PAYMENT,
+    FILTER_SLUG,
     FILTER_UNREAD,
     LEGACY_PICK_FLOW,
     MAX_BUTTON_TITLE_CHARS,
@@ -214,6 +215,7 @@ from .whatsapp_chats_vm import (
     composer_enabled,
     filter_counts,
     filter_empty_text,
+    filter_from_slug,
     filter_label,
     filter_products,
     filter_threads,
@@ -864,16 +866,9 @@ class WhatsAppChatsState(rx.State):
 
     @rx.event
     async def enter(self) -> rx.event.EventSpec | None:
-        """Tab root `on_mount`: entry or number switch."""
-        # m-24842990 / m-25017859: a link may open the chats on «Por responder» (N11);
-        # `sin-leer` is the chip's old name, kept for saved links. The address is the
-        # truth: without `?filtro=` the chats open on their default («Abiertos»), never
-        # on a chip an earlier link left.
-        self.filter_key = (
-            FILTER_UNREAD
-            if self.router.url.query_parameters.get("filtro") in AWAITING_FILTER_SLUGS
-            else DEFAULT_FILTER
-        )
+        """Tab root `on_mount`: entry or number switch. It never decides the chip: a
+        remount (another WhatsApp tab and back, a number switch, back from Galería)
+        keeps the one the owner picked (`apply_address_filter` runs on navigation)."""
         if self.pick_open:
             self._reset_picker()  # back from Galería: the drawer does not reopen
         shell = await self.get_state(WhatsAppState)
@@ -894,9 +889,21 @@ class WhatsAppChatsState(rx.State):
         return WhatsAppChatsState.load_list
 
     @rx.event
-    def set_filter(self, key: str | list[str]) -> None:
-        if isinstance(key, str) and key in FILTER_KEYS:
-            self.filter_key = key
+    def apply_address_filter(self) -> None:
+        """m-24842990 / m-25017859: on a NAVIGATION to `/whatsapp` (its route
+        `on_load`, via `WhatsAppState.enter_page`) the address decides the chip: the
+        sidebar's badge link and the single list's deep link carry `?filtro=por-responder`
+        (`sin-leer`: the chip's old name), a bare `/whatsapp` is the default «Abiertos»."""
+        self.filter_key = filter_from_slug(self.router.url.query_parameters.get("filtro"))
+
+    @rx.event
+    def set_filter(self, key: str | list[str]) -> rx.event.EventSpec | None:
+        """A chip tap: the choice stands until the next navigation, and the address says
+        it (replaced, not pushed), so a reload shows the same chip."""
+        if not isinstance(key, str) or key not in FILTER_KEYS:
+            return None
+        self.filter_key = key
+        return rx.call_script(filter_address_script(FILTER_SLUG[key]))
 
     @rx.event(background=True)
     async def load_list(self) -> None:

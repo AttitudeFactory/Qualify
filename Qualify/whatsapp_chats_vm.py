@@ -152,6 +152,25 @@ FILTER_UNREAD = "unread"
 AWAITING_FILTER_LABEL = "Por responder"
 #: `?filtro=` values that open the chats on that chip (the second one is its old name).
 AWAITING_FILTER_SLUGS = frozenset({"por-responder", "sin-leer"})
+#: m-25017859: every chip's `?filtro=`, so the address says the chip on screen (a reload
+#: or «atrás» shows it) — the first slug of each is the one written.
+FILTER_SLUG: dict[str, str] = {
+    "open": "abiertos",
+    "closed": "cerrados",
+    "unread": "por-responder",
+    "payment": "pago-por-revisar",
+}
+
+
+def filter_from_slug(slug: object) -> str:
+    """The chip a navigation's `?filtro=` asks for; anything else (none, unknown) is the
+    default «Abiertos»."""
+    value = slug.strip().lower() if isinstance(slug, str) else ""
+    if value in AWAITING_FILTER_SLUGS:
+        return "unread"
+    return next((k for k, s in FILTER_SLUG.items() if s == value), "open")
+
+
 #: m-24971198: the chats whose customer answered after the payment card (spec §4).
 FILTER_PAYMENT = "payment"
 FILTERS: tuple[tuple[str, str], ...] = (

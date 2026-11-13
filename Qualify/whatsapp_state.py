@@ -277,11 +277,19 @@ class WhatsAppState(rx.State):
     def enter_page(self) -> list[rx.event.EventHandler]:
         """`/whatsapp` on_load: pick the panel from `?tab=`/`?sub=` and load the numbers.
         Also runs on «atrás» (a real navigation), so the previous tab comes back."""
+        from .whatsapp_chats_state import WhatsAppChatsState
+
         params = self.router.url.query_parameters
         self.active_tab = resolve_panel(
             str(params.get(TAB_PARAM, "") or ""), str(params.get(SUB_PARAM, "") or "")
         )
-        return [WhatsAppState.prepare_flow_address, WhatsAppState.load_numbers]
+        # m-25017859: a navigation (not a remount of the Chats section) lets the address
+        # decide the Chats chip.
+        return [
+            WhatsAppChatsState.apply_address_filter,
+            WhatsAppState.prepare_flow_address,
+            WhatsAppState.load_numbers,
+        ]
 
     @rx.event
     async def prepare_flow_address(self) -> None:

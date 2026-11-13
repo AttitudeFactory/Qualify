@@ -144,6 +144,18 @@ def thread_param(params: Mapping[str, object], connection_id: str) -> str:
     return uuid_param(params, "chat")
 
 
+def filter_address_script(slug: str) -> str:
+    """JS that sets `?filtro=` of the current address in place (no new history step),
+    keeping every other parameter. `slug` is one of the app's own chip slugs."""
+    value = json.dumps(_slug(slug))
+    return (
+        "(() => { const u = new URL(window.location.href);"
+        f" u.searchParams.set('filtro', {value});"
+        " window.history.replaceState(window.history.state, '', u.pathname + u.search + u.hash);"
+        " })();"
+    )
+
+
 def flow_param(params: Mapping[str, object], flow: str, total: int) -> int:
     """The active flow's clamped step, or 0 when this form is not in the address."""
     if scalar_param(params, "flujo") != flow:

@@ -1033,30 +1033,73 @@ async def test_a_gone_chat_over_another_open_one_is_only_a_toast(
     assert any("toast" in str(e).lower() for e in out)
 
 
-async def test_whatsapp_chats_without_filtro_open_on_the_default(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """After one visit through the badge link, a bare `/whatsapp` opens «Abiertos»."""
+def _wa_at(state: Any, query: str) -> None:
     from reflex.istate.data import ReflexURL, RouterData
 
+    state.router = RouterData(url=ReflexURL(f"http://localhost/whatsapp?{query}"))
+
+
+@pytest.fixture
+def wa(monkeypatch: pytest.MonkeyPatch) -> Any:
+    from types import SimpleNamespace
+
     from .whatsapp_chats_state import WhatsAppChatsState
-    from .whatsapp_chats_vm import DEFAULT_FILTER, FILTER_UNREAD
 
     async def no_shell(self: Any, cls: Any) -> Any:
-        from types import SimpleNamespace
-
         return SimpleNamespace(selected_connection_id="")
 
     monkeypatch.setattr(WhatsAppChatsState, "get_state", no_shell)
-    wa = WhatsAppChatsState()
-    wa.router = RouterData(
-        url=ReflexURL("http://localhost/whatsapp?tab=chats&filtro=por-responder")
-    )
-    await WhatsAppChatsState.enter.fn(wa)  # type: ignore[attr-defined]
+    return WhatsAppChatsState()
+
+
+async def test_whatsapp_navigation_with_filtro_applies_it_and_without_it_is_abiertos(
+    wa: Any,
+) -> None:
+    from .whatsapp_chats_state import WhatsAppChatsState
+    from .whatsapp_chats_vm import DEFAULT_FILTER, FILTER_UNREAD
+
+    _wa_at(wa, "tab=chats&filtro=por-responder")  # the badge / the single list's link
+    WhatsAppChatsState.apply_address_filter.fn(wa)  # type: ignore[attr-defined]
     assert wa.filter_key == FILTER_UNREAD
-    wa.router = RouterData(url=ReflexURL("http://localhost/whatsapp?tab=chats"))
-    await WhatsAppChatsState.enter.fn(wa)  # type: ignore[attr-defined]
+    _wa_at(wa, "tab=chats")  # a bare /whatsapp, arrived at by navigation
+    WhatsAppChatsState.apply_address_filter.fn(wa)  # type: ignore[attr-defined]
     assert wa.filter_key == DEFAULT_FILTER
+
+
+async def test_a_remount_keeps_the_picked_chip_even_with_a_stale_filtro(wa: Any) -> None:
+    from .whatsapp_chats_state import WhatsAppChatsState
+    from .whatsapp_chats_vm import FILTER_CLOSED
+
+    _wa_at(wa, "tab=chats&filtro=por-responder")
+    WhatsAppChatsState.apply_address_filter.fn(wa)  # type: ignore[attr-defined]
+    spec = WhatsAppChatsState.set_filter.fn(wa, FILTER_CLOSED)  # type: ignore[attr-defined]
+    assert "replaceState" in str(spec) and "cerrados" in str(spec)  # the address says it
+    await WhatsAppChatsState.enter.fn(wa)  # type: ignore[attr-defined]  # a remount
+    assert wa.filter_key == FILTER_CLOSED
+
+
+async def test_a_picked_chip_survives_a_tab_switch_and_back(wa: Any) -> None:
+    """Another WhatsApp tab and back is a pushState (no `on_load`), then a remount."""
+    from .whatsapp_chats_state import WhatsAppChatsState
+    from .whatsapp_chats_vm import FILTER_PAYMENT
+
+    _wa_at(wa, "tab=chats")
+    WhatsAppChatsState.apply_address_filter.fn(wa)  # type: ignore[attr-defined]
+    WhatsAppChatsState.set_filter.fn(wa, FILTER_PAYMENT)  # type: ignore[attr-defined]
+    _wa_at(wa, "tab=menu")
+    _wa_at(wa, "tab=chats")
+    await WhatsAppChatsState.enter.fn(wa)  # type: ignore[attr-defined]
+    assert wa.filter_key == FILTER_PAYMENT
+
+
+def test_only_the_route_on_load_decides_the_chip() -> None:
+    import inspect
+
+    from .whatsapp_chats_state import WhatsAppChatsState
+    from .whatsapp_state import WhatsAppState
+
+    assert "apply_address_filter" in inspect.getsource(WhatsAppState.enter_page.fn)  # type: ignore[attr-defined]
+    assert "filter_key" not in inspect.getsource(WhatsAppChatsState.enter.fn)  # type: ignore[attr-defined]
 
 
 def test_off_mensajes_the_sidebar_poll_refreshes_the_chat_cards_too() -> None:
