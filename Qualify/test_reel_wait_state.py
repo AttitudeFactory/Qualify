@@ -75,7 +75,6 @@ def replica(outcome: str = "queued", analysis_id: str | None = None) -> Creative
     state = CreativeState()
     state.selected_product_id = "burger"
     state.brief_product_ref = "Smash doble"
-    state.product_confirmed = True
     aid = str(uuid4()) if analysis_id is None else analysis_id
     state._apply_reel_reference(CARD, IMPORTED, aid, outcome)
     return state
@@ -169,7 +168,6 @@ def test_an_outcome_without_an_id_is_kept_and_says_why(outcome: str, title: str)
 def test_a_normal_clip_has_no_wait_and_nothing_held() -> None:
     state = CreativeState()
     state.selected_product_id = "burger"
-    state.product_confirmed = True
     state.gen_mode = "create"
     assert not state.reel_wait_shown and not state.create_primary_disabled
     assert state.create_reason == ""
@@ -476,11 +474,11 @@ def test_the_page_load_resumes_a_pending_wait() -> None:
     from reflex.istate.data import ReflexURL, RouterData
 
     state = replica("queued")
-    state.router = RouterData(url=ReflexURL("http://localhost:3000/create?paso=2"))
+    state.router = RouterData(url=ReflexURL("http://localhost:3000/create?paso=1"))
     events = state.enter_create_step()
     assert "__qStepEntry" in str(events) and "poll_reel_analysis" in str(events)
     plain = CreativeState()
-    plain.router = RouterData(url=ReflexURL("http://localhost:3000/create?paso=2"))
+    plain.router = RouterData(url=ReflexURL("http://localhost:3000/create?paso=1"))
     assert "poll_reel_analysis" not in str(plain.enter_create_step())
 
 

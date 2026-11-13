@@ -28,7 +28,7 @@ def close_load_state() -> CreativeState:
     state._brand_id = _LOAD_BRAND
     state.router = RouterData(
         session=SessionData(session_id="mounted-socket"),
-        url=ReflexURL("http://localhost/create?paso=2&parte=1"),
+        url=ReflexURL("http://localhost/create?paso=1&parte=1"),
     )
     state.create_entered = True
     state._create_loaded_identity = (_LOAD_TENANT, _LOAD_BRAND, "mounted-socket")
@@ -38,7 +38,7 @@ def close_load_state() -> CreativeState:
 
 
 def close_url(
-    state: CreativeState, path: str = "/create?paso=2", sid: str = "mounted-socket"
+    state: CreativeState, path: str = "/create?paso=1", sid: str = "mounted-socket"
 ) -> None:
     state.router = RouterData(
         session=SessionData(session_id=sid), url=ReflexURL("http://localhost" + path)
@@ -54,8 +54,8 @@ def test_only_the_armed_editor_close_can_suppress_one_loading_remount(action: st
         state.set_reel_edit_open(False)
     close_url(state)
     # Both route callbacks can precede the close-autofocus event and page loader.
-    state.reconcile_reel_editor_route("?paso=2")
-    state.reconcile_reel_editor_route("?paso=2")
+    state.reconcile_reel_editor_route("?paso=1")
+    state.reconcile_reel_editor_route("?paso=1")
     assert state._consume_editor_close_load(_LOAD_TENANT)
     assert not state._consume_editor_close_load(_LOAD_TENANT)
     state.edit_reel_part(state._reel_plan[0]["key"])
@@ -87,14 +87,14 @@ def test_editor_close_loading_guard_never_crosses_a_changed_context(field: str, 
 @pytest.mark.parametrize(
     ("path", "sid", "tenant"),
     [
-        ("/create?paso=2", "new-cold-or-reconnected-socket", _LOAD_TENANT),
-        ("/create?paso=2", "", _LOAD_TENANT),
-        ("/create?paso=2", "mounted-socket", "another-tenant"),
-        ("/create?paso=3", "mounted-socket", _LOAD_TENANT),
-        ("/create?paso=2&producto=another", "mounted-socket", _LOAD_TENANT),
-        ("/create?paso=2&parte=1", "mounted-socket", _LOAD_TENANT),
-        ("/create?paso=2&modo=variaciones", "mounted-socket", _LOAD_TENANT),
-        ("/catalog?paso=2", "mounted-socket", _LOAD_TENANT),
+        ("/create?paso=1", "new-cold-or-reconnected-socket", _LOAD_TENANT),
+        ("/create?paso=1", "", _LOAD_TENANT),
+        ("/create?paso=1", "mounted-socket", "another-tenant"),
+        ("/create?paso=2", "mounted-socket", _LOAD_TENANT),
+        ("/create?paso=1&producto=another", "mounted-socket", _LOAD_TENANT),
+        ("/create?paso=1&parte=1", "mounted-socket", _LOAD_TENANT),
+        ("/create?paso=1&modo=variaciones", "mounted-socket", _LOAD_TENANT),
+        ("/catalog?paso=1", "mounted-socket", _LOAD_TENANT),
     ],
 )
 def test_cold_session_real_navigation_or_extra_query_keeps_normal_loading(
@@ -335,14 +335,14 @@ def test_step_five_description_action_opens_correct_part_and_second_step() -> No
 def test_route_reconciles_back_forward_and_invalid_part_without_changing_wrong_part() -> None:
     state = editor(2)
     key = state.reel_edit_key
-    state.reconcile_reel_editor_route("?paso=2")
-    assert not state.reel_edit_open and state.create_step_n == 2
-    state.reconcile_reel_editor_route("?paso=2&parte=2")
+    state.reconcile_reel_editor_route("?paso=1")
+    assert not state.reel_edit_open and state.create_step_n == 1
+    state.reconcile_reel_editor_route("?paso=1&parte=2")
     assert state.reel_edit_key == key and state.reel_edit_open
-    state.reconcile_reel_editor_route("?paso=2&parte=99")
+    state.reconcile_reel_editor_route("?paso=1&parte=99")
     assert not state.reel_edit_open
-    state.reconcile_reel_editor_route("?paso=3&parte=2")
-    assert state.create_step_n == 3 and not state.reel_edit_open
+    state.reconcile_reel_editor_route("?paso=2&parte=2")
+    assert state.create_step_n == 2 and not state.reel_edit_open
 
 
 @pytest.mark.parametrize("raw", ["-1", "0", "1.0", "٢", "x", "7", ""])
@@ -781,10 +781,11 @@ async def _add_from(state: CreativeState, kind: str, origin: str, monkeypatch: A
         else:
             state._selected_product_video_keys = [key]
         state.pick_media(_TARGET[kind], "catalog", key)
-    elif origin == "galeria-marca":  # the brand's Galería tab
-        field = "photo_keys" if kind == "image" else "video_keys"
-        state.catalog_items = [{"name": "Vaso", field: key}]
-        state.pick_media(_TARGET[kind], "brandcat", key)
+    elif origin == "galeria-marca":  # «Tu Galería» (m-24985141), added with «Agregar»
+        from .gen_gallery_pick_provider import GalleryPick
+
+        pick = GalleryPick(key, kind, "Foto de tu negocio", "place", "n:1")
+        assert state.add_gallery_picks([pick], _TARGET[kind]) == 1
     elif origin == "publicaciones":
         state.piece_items = [{"key": key, "label": "Publicación", "media_type": kind}]
         state.pick_media(_TARGET[kind], "pieces", key)

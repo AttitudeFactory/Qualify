@@ -115,6 +115,7 @@ def options(
     videos: Sequence[Mapping[str, str]],
     audios: Sequence[Mapping[str, str]],
     durations: Mapping[str, float | None],
+    has_product: bool = True,
 ) -> list[dict[str, str]]:
     original = bool(entry["plan"].get("analysis_id"))
     return [
@@ -129,7 +130,9 @@ def options(
         },
         {
             "mode": "reference",
-            "label": parts.FORM_INSPIRED if original else parts.FORM_NEW,
+            "label": parts.FORM_INSPIRED
+            if original
+            else (parts.FORM_NEW if has_product else parts.FORM_NEW_BRAND),
             "help": REFERENCE_HELP
             if original and (entry.get("person") or entry.get("reason") == parts.REASON_UNCLEAR)
             else NEW_HELP,

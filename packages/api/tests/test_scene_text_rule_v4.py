@@ -68,8 +68,8 @@ def _gallery_with_cta(version: int) -> list[str]:
     return _prompts(brief, (_isologo(),))
 
 
-def test_new_executions_compile_at_4() -> None:
-    assert PROMPT_COMPILER_VERSION == 4
+def test_new_executions_compile_at_4_or_later() -> None:
+    assert PROMPT_COMPILER_VERSION >= 4  # 5: m-24985141, on top of this one
 
 
 @pytest.mark.parametrize("logo", [True, False])

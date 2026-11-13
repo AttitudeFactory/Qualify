@@ -21,6 +21,7 @@ from qualify_creative.schemas import PartRef, VideoPartPlan
 from qualify_api.creative.media import (
     PART_FAILED_TEXT,
     PART_PROMPT_VERSION,
+    PART_PROMPT_VERSION_V5,
     PART_WINDOW_TEXTS,
     REAL_PERSON_TEXT,
     REFUSED_ORIGINAL_TEXT,
@@ -372,7 +373,13 @@ def test_criterion_3_the_part_records_what_it_was_made_from() -> None:
     assert params["part"]["analysis_id"] == str(ANALYSIS_ID)
     assert params["part"]["shot_indexes"] == [3]
     assert params["part"]["mode"] == "edit" and params["part"]["index"] == 2
-    assert params["part"]["prompt_version"] == params["part_prompt_version"] == PART_PROMPT_VERSION
+    # m-24985141: a part compiled before compiler 5 records the part prompt it was made with (1)
+    assert (
+        params["part"]["prompt_version"]
+        == params["part_prompt_version"]
+        == 1
+        == PART_PROMPT_VERSION
+    )
     assert video.model_id == V25 and video.provider == "seedance"
     (usage,) = outcome.usage  # what becomes the `creative_usage_events` row
     assert usage.model_id == V25 and usage.cost_usd > 0
@@ -732,7 +739,7 @@ def test_a_made_part_records_its_cost_as_a_usage_event() -> None:
     assert repo.drafts[child].status == "generated", repo.drafts[child].failure_detail
     (asset,) = repo.media_for(tenant_id=tenant, draft_id=child)
     assert asset.params["part"]["analysis_id"] == str(ANALYSIS_ID)
-    assert asset.params["part_prompt_version"] == PART_PROMPT_VERSION
+    assert asset.params["part_prompt_version"] == PART_PROMPT_VERSION_V5  # compiler 5
     usage = [u for u in repo.usage if u.provider == "seedance"]
     assert len(usage) == 1 and usage[0].model_id == V25 and usage[0].cost_usd > 0
 
