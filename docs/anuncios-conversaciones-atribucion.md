@@ -131,9 +131,23 @@ asistidas.
 - Los límites de longitud del saludo y las preguntas son de Qualify: Meta no los
   publica para anuncios (el máximo de 4 preguntas viene de la API de Ice Breakers de
   Instagram).
-- Una pieza cuyo botón guardado es de chat sigue bloqueada para cualquier objetivo
-  (`PIECE_BUTTON_UNSUPPORTED`); falta decidir si el objetivo de chat la admite.
+- **Antes de habilitar la pantalla**, confirmar en una cuenta de pruebas cómo devuelve
+  Meta `page_welcome_message` y `promoted_object.whatsapp_phone_number` al leerlos. Hoy
+  la lectura acepta el JSON como texto u objeto, en cualquier orden de claves, y el
+  número con «+» o espacios; cualquier otra diferencia bloquea la activación.
+  Las promociones con enlace o formulario no piden ni comparan `page_welcome_message`.
 - Nada de esto se ha probado contra una cuenta real: no hubo escrituras en Meta.
+
+**Botón de la pieza.** Un anuncio de chat arma su propio botón con el chat elegido, así
+que una pieza guardada con botón de chat o de llamada sí puede abrir un chat; los
+anuncios con enlace o formulario siguen rechazándola, cada uno con su mensaje.
+
+**Pantalla.** Mientras `CHAT_GOAL_ON_SCREEN` sea falso, las tarjetas de destino
+conservan el aviso actual («todavía no está habilitada») y `available=False`, aunque
+el servidor ya tenga el destino exacto. La pantalla que añada el objetivo debe cambiar
+esa constante. Cada destino lleva `reason_code` (`ready`, `unlinked`, `unknown`,
+`no_number`, `several_numbers`) para que la pantalla muestre «Unir mi WhatsApp» y lleve
+a Tus redes.
 
 ## Evidencia y límites
 

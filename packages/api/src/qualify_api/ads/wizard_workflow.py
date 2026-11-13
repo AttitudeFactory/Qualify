@@ -22,6 +22,7 @@ from qualify_api.ads.messaging import MessagingTarget
 from qualify_api.ads.messaging_greeting import MessageGreeting
 from qualify_api.ads.promotions import Promotion, PromotionRequest, PromotionService, fingerprint
 from qualify_api.ads.wizard import (
+    CHAT_OF_ANOTHER_ACCOUNT,
     PromotionPreview,
     PromotionResult,
     PromotionSource,
@@ -74,7 +75,7 @@ def _guard_checks(
             "El formulario no corresponde a la cuenta de esta publicación. Elige otro."
         )
     if form.messaging is not None and not form.messaging.matches(source):
-        raise WizardUnavailable("El chat no corresponde a la cuenta de esta publicación.")
+        raise WizardUnavailable(CHAT_OF_ANOTHER_ACCOUNT)
     if form.greeting is not None and form.greeting.brand_id != source.brand_id:
         raise WizardUnavailable("El saludo corresponde a otra marca.")
     if form.enhancements is not None:

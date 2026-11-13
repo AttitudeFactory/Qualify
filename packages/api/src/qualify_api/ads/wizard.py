@@ -44,6 +44,25 @@ PIECE_BUTTON_UNSUPPORTED = (
     "El botón de esta pieza abre un chat o una llamada y no sirve para un anuncio "
     "que lleva a tu página. Cambia el botón en la pieza antes de promocionarla."
 )
+CHAT_OF_ANOTHER_ACCOUNT = (
+    "Este chat es de otra cuenta. Elige el chat de la cuenta que hizo la publicación."
+)
+PIECE_BUTTON_LEAD = (
+    "El botón de esta pieza abre un chat o una llamada y no sirve para un anuncio "
+    "con formulario. Cambia el botón en la pieza antes de promocionarla."
+)
+
+
+def goal_reason(reason: str, *, chat: bool, lead: bool) -> str:
+    """The source's refusal for this goal (m-24828980).
+
+    A chat ad builds its own button from the chosen chat and never uses the piece's, so a
+    piece saved with a chat or call button can still open a chat. Every other reason
+    (account, currency, unreadable piece) refuses every goal.
+    """
+    if reason != PIECE_BUTTON_UNSUPPORTED:
+        return reason
+    return "" if chat else PIECE_BUTTON_LEAD if lead else reason
 
 
 class WizardUnavailable(ValueError):
@@ -110,20 +129,34 @@ class WizardForm:
 
     def validate(self, *, for_execution: bool = False) -> None:
         if self.messaging is not None or self.greeting is not None:
+            if self.messaging is None:
+                raise WizardUnavailable("Elige a qué chat llevará el anuncio.")
             if (
-                self.messaging is None
-                or self.lead_form is not None
+                self.lead_form is not None
                 or self.lead_cta
                 or self.link_url
                 or self.cta_type != "LEARN_MORE"  # The website button never rides a chat ad.
             ):
-                raise WizardUnavailable("Elige a qué chat llevará el anuncio.")
+                raise WizardUnavailable(
+                    "Un anuncio que abre un chat no lleva enlace, formulario ni otro botón."
+                )
             try:
                 self.messaging.snapshot()
-                if self.greeting is not None:
-                    self.greeting.snapshot()
             except ValueError:
-                raise WizardUnavailable("Revisa el chat y el saludo del anuncio.") from None
+                raise WizardUnavailable("Vuelve a elegir a qué chat llevará el anuncio.") from None
+            if self.greeting is not None:
+                from qualify_api.ads.messaging_greeting import GreetingUnavailable, clean
+
+                try:
+                    clean(self.greeting.welcome_text, self.greeting.questions)
+                except GreetingUnavailable as error:
+                    raise WizardUnavailable(str(error)) from None
+                try:
+                    self.greeting.snapshot()
+                except ValueError:
+                    raise WizardUnavailable(
+                        "Vuelve a guardar el saludo antes de continuar."
+                    ) from None
         elif self.lead_form is not None or self.lead_cta:
             if (
                 self.lead_form is None
@@ -366,8 +399,13 @@ async def prepare_promotion_preview(
     if not any(s.publish_attempt_id == publish_attempt_id for s in sources):
         raise WizardUnavailable("Esta publicación de Instagram ya no está disponible.")
     source = next(s for s in sources if s.publish_attempt_id == publish_attempt_id)
-    if source.unavailable_reason:
-        raise WizardUnavailable(source.unavailable_reason)
+    reason = goal_reason(
+        source.unavailable_reason,
+        chat=form.messaging is not None,
+        lead=form.lead_form is not None,
+    )
+    if reason:
+        raise WizardUnavailable(reason)
     from qualify_api.ads.live_wizard import production_wizard
 
     async with production_wizard(tenant_id, approved_by) as wizard:

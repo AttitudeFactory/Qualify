@@ -222,6 +222,82 @@ def test_chat_form_refuses_mixed_goals_without_network(changes) -> None:
         form(**changes).validate()
 
 
+def test_a_piece_chat_or_call_button_refuses_website_and_lead_never_chat() -> None:
+    from qualify_api.ads.wizard import PIECE_BUTTON_LEAD, PIECE_BUTTON_UNSUPPORTED, goal_reason
+
+    reason = PIECE_BUTTON_UNSUPPORTED
+    assert goal_reason(reason, chat=True, lead=False) == ""
+    assert goal_reason(reason, chat=False, lead=False) == PIECE_BUTTON_UNSUPPORTED
+    assert goal_reason(reason, chat=False, lead=True) == PIECE_BUTTON_LEAD
+    other = "Elige una cuenta publicitaria para esta marca en Tus redes."
+    assert goal_reason(other, chat=True, lead=False) == other  # Account reasons refuse all.
+
+
+@pytest.mark.parametrize(
+    "changes,message",
+    [
+        ({"messaging": None}, "Elige a qué chat"),
+        ({"greeting": greeting(welcome_text="")}, "saludo de bienvenida"),
+        ({"greeting": greeting(welcome_text="x" * 301)}, "300 caracteres"),
+        ({"greeting": greeting(questions=())}, "entre 1 y 4"),
+        ({"greeting": greeting(questions=tuple("abcde"))}, "entre 1 y 4"),
+        ({"greeting": greeting(questions=("x" * 81,))}, "80 caracteres"),
+        ({"greeting": greeting(questions=(" ¿Uno? ",))}, "Vuelve a guardar el saludo"),
+    ],
+)
+def test_chat_form_names_the_exact_field_that_failed(changes, message) -> None:
+    with pytest.raises(WizardUnavailable, match=message):
+        form(**changes).validate()
+
+
+@pytest.mark.parametrize(
+    "observed,same",
+    [
+        # Meta returns the field as a JSON string (SDK type); key order is free.
+        (
+            '{"version":2,"type":"VISUAL_EDITOR","media_type":"text",'
+            '"landing_screen_type":"welcome_message","text_format":{"message":{'
+            '"ice_breakers":[{"title":"¿Hacen domicilios?"},{"title":"¿Precios?"}],'
+            '"text":"¡Hola!"},"customer_action_type":"ice_breakers"}}',
+            True,
+        ),
+        ("__parsed__", True),
+        ("__other_text__", False),
+        ("not json", False),
+        (None, False),
+        ("", False),
+    ],
+)
+def test_welcome_read_back_normalizes_serialization_and_fails_closed(observed, same) -> None:
+    from qualify_api.ads.live_wizard import _same_welcome
+
+    expected = greeting().page_welcome_message()
+    if observed == "__parsed__":
+        observed = json.loads(expected)
+    elif observed == "__other_text__":
+        observed = greeting(welcome_text="Otro").page_welcome_message()
+    assert _same_welcome(observed, expected) is same
+
+
+@pytest.mark.parametrize(
+    "observed,same",
+    [
+        ({"page_id": "77", "whatsapp_phone_number": "573001112233"}, True),
+        ({"page_id": "77", "whatsapp_phone_number": "+57 300 111 2233"}, True),
+        ({"page_id": "77", "whatsapp_phone_number": "+57 300 999 2233"}, False),
+        ({"page_id": "78", "whatsapp_phone_number": "+57 300 111 2233"}, False),
+        ({"page_id": "77", "whatsapp_phone_number": "+573001112233", "x": 1}, False),
+        ({"page_id": "77"}, False),
+    ],
+)
+def test_promoted_number_read_back_compares_digits_only(observed, same) -> None:
+    from qualify_api.ads.live_wizard import _same_option
+
+    approved = target().adset_options()["promoted_object"]
+    assert _same_option("promoted_object", observed, approved) is same
+    assert _same_option("destination_type", "WHATSAPP", "WHATSAPP")
+
+
 def test_chat_of_another_connection_or_page_is_refused_before_meta() -> None:
     from qualify_api.ads.wizard_workflow import VerifiedChecks, _guard_checks
 
@@ -231,7 +307,7 @@ def test_chat_of_another_connection_or_page_is_refused_before_meta() -> None:
         replace(target(), page_id="78"),
         replace(target(), source_credential_version=2),
     ):
-        with pytest.raises(WizardUnavailable, match="chat"):
+        with pytest.raises(WizardUnavailable, match="Este chat es de otra cuenta"):
             _guard_checks(source(), form(messaging=changed), checks, NOW)
     with pytest.raises(WizardUnavailable, match="saludo"):
         _guard_checks(source(), form(greeting=greeting(brand_id=uuid4())), checks, NOW)

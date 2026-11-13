@@ -27,17 +27,20 @@ from qualify_api.connections.ad_accounts import (
 )
 from qualify_api.tenancy.acting import current_acting_login, require_acting_member
 
+# The screen cannot choose a chat goal yet: until its PR flips this, a passed check keeps
+# today's notice and `available=False`, while the backend still gets the exact target.
+CHAT_GOAL_ON_SCREEN = False
+PENDING = "La creación de anuncios para abrir chats todavía no está habilitada."
 READY = "Puedes preparar un anuncio que abra este chat."
-# shortcut: old name kept for Qualify/test_ad_messaging_destinations.py; drop with the screen.
-PENDING = READY
 LINK_GUIDE = (
-    "Vincula el número de WhatsApp de este negocio a su página de Facebook en Meta Business Suite. "
-    "Después vuelve a comprobarlo aquí."
+    "Tu WhatsApp aún no está unido a tu página de Facebook. Únelo en Tus redes y vuelve aquí."
 )
 UNKNOWN = (
-    "No pudimos comprobar si el número está vinculado a la página. "
-    "Revisa la vinculación en Meta Business Suite y vuelve a intentarlo."
+    "No pudimos comprobar si tu WhatsApp está unido a tu página de Facebook. "
+    "Vuelve a intentarlo en un momento."
 )
+NO_NUMBER = "Conecta el WhatsApp de este negocio en Tus redes y vuelve aquí."
+SEVERAL_NUMBERS = "Este negocio tiene varios números conectados. Falta elegir y comprobar uno."
 
 
 @dataclass(frozen=True)
@@ -50,6 +53,14 @@ class MessagingDestination:
     linked: bool | None = None
     # The exact destination a promotion may freeze; set only when the check passed.
     target: MessagingTarget | None = None
+    # Typed reason for the screen's action («Unir mi WhatsApp» → Tus redes):
+    # ready | unlinked | unknown | no_number | several_numbers.
+    reason_code: str = ""
+
+
+def _offer() -> tuple[bool, str]:
+    """(available, reason) of a destination whose check passed, per CHAT_GOAL_ON_SCREEN."""
+    return (True, READY) if CHAT_GOAL_ON_SCREEN else (False, PENDING)
 
 
 class PageMessagingReader(Protocol):
@@ -109,23 +120,24 @@ async def check_messaging_destinations(
 ) -> tuple[MessagingDestination, ...]:
     context = _context(tenant_id, connection_id)
     source, page, phones = context
+    instagram_target = MessagingTarget(
+        "INSTAGRAM_DIRECT", connection_id, connection_id, page, source.version, source.version
+    )
     instagram = MessagingDestination(
         "instagram_direct",
-        "Instagram Direct",
-        True,
-        READY,
+        "Mensajes de Instagram",
+        *_offer(),
         connection_id,
-        target=MessagingTarget(
-            "INSTAGRAM_DIRECT", connection_id, connection_id, page, source.version, source.version
-        ),
+        target=instagram_target,
+        reason_code="ready",
     )
     if len(phones) != 1:
-        reason = (
-            "Conecta el número de WhatsApp de este negocio en Tus redes. " + LINK_GUIDE
-            if not phones
-            else "Este negocio tiene varios números conectados. Falta elegir y comprobar uno."
+        code = "no_number" if not phones else "several_numbers"
+        reason = NO_NUMBER if not phones else SEVERAL_NUMBERS
+        return (
+            instagram,
+            MessagingDestination("whatsapp", "WhatsApp", False, reason, None, reason_code=code),
         )
-        return (instagram, MessagingDestination("whatsapp", "WhatsApp", False, reason, None))
     phone_connection, phone_number_id, phone_number, phone_version = phones[0]
     linked = None
     client = None
@@ -171,17 +183,22 @@ async def check_messaging_destinations(
         except ValueError:
             target, linked = None, None  # A malformed saved number is unknown, not linked.
     # Only an explicit, exact Page↔number match enables a WhatsApp promotion.
-    reason = READY if target else LINK_GUIDE if linked is False else UNKNOWN
+    if target is not None:
+        available, reason, code = *_offer(), "ready"
+    else:
+        available = False
+        reason, code = (LINK_GUIDE, "unlinked") if linked is False else (UNKNOWN, "unknown")
     return (
         instagram,
         MessagingDestination(
             "whatsapp",
             "WhatsApp",
-            target is not None,
+            available,
             reason,
             phone_connection,
             linked,
             target=target,
+            reason_code=code,
         ),
     )
 
@@ -198,7 +215,8 @@ async def resolve_messaging_target(
         tenant_id=tenant_id, connection_id=source.connection_id, reader=reader
     )
     row = next((r for r in rows if r.key == destination), None)
-    if row is None or row.target is None or not row.available:
+    # The exact target is the gate, not `available` (which also tracks the screen).
+    if row is None or row.target is None:
         raise WizardUnavailable(row.reason if row else "Elige a qué chat llevará el anuncio.")
     if not row.target.matches(source):
         raise WizardUnavailable("Las cuentas cambiaron. Abre la promoción y comprueba de nuevo.")

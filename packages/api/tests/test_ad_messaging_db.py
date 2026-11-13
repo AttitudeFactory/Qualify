@@ -20,7 +20,12 @@ from qualify_api.ads.messaging_attribution import (
     attribute_inbound_message,
     promotion_conversation_count,
 )
-from qualify_api.ads.messaging_destinations import check_messaging_destinations
+from qualify_api.ads.messaging_destinations import (
+    LINK_GUIDE,
+    PENDING,
+    UNKNOWN,
+    check_messaging_destinations,
+)
 from qualify_api.ads.promotion_repository import PostgresPromotionRepository
 from qualify_api.ads.promotions import PromotionRequest
 from qualify_api.connections.models import PlatformApp, SocialConnection
@@ -522,12 +527,18 @@ async def test_only_an_exact_page_number_link_offers_whatsapp_with_its_target(me
             connection_id=w["source"],
             reader=Reader({"has_whatsapp_number": False}),
         )
-    assert whatsapp.available and whatsapp.target == MessagingTarget(
+    assert whatsapp.target == MessagingTarget(
         "WHATSAPP", w["source"], w["target"], "7", 1, 1, w["phone_id"], "584240000000"
     )
-    assert instagram.available and instagram.target.destination_type == "INSTAGRAM_DIRECT"
+    assert whatsapp.reason_code == "ready"
+    assert instagram.target.destination_type == "INSTAGRAM_DIRECT"
+    assert instagram.label == "Mensajes de Instagram"
+    # The screen cannot choose a chat goal yet: today's notice, not offered as available.
+    assert not whatsapp.available and not instagram.available
+    assert whatsapp.reason == PENDING == instagram.reason
     assert not unlinked[1].available and unlinked[1].target is None
-    assert "Vincula el número" in unlinked[1].reason
+    assert unlinked[1].reason == LINK_GUIDE and unlinked[1].reason_code == "unlinked"
+    assert "Meta Business Suite" not in LINK_GUIDE + UNKNOWN
 
 
 def test_greeting_versions_are_append_only_tenant_scoped_and_idempotent(messaging_world):
@@ -581,6 +592,34 @@ def test_greeting_versions_are_append_only_tenant_scoped_and_idempotent(messagin
         s.execute(text("UPDATE ad_message_greetings SET welcome_text='x'"))
     with tenant_session(uuid4()) as s:
         assert s.execute(text("SELECT count(*) FROM ad_message_greetings")).scalar() == 0
+
+
+def test_a_concurrent_save_of_the_same_text_is_a_harmless_double_submit(
+    messaging_world, monkeypatch
+):
+    from qualify_api.ads import messaging_greeting as module
+
+    w = messaging_world
+    save = dict(tenant_id=w["tenant"], brand_id=w["brand"], expected_version=0)
+    with acting_login(w["login"]):
+        first = module.save_greeting(welcome_text="¡Hola!", questions=["¿Precios?"], **save)
+        real = module._latest
+        reads = []
+
+        def stale_then_real(session, brand_id):
+            reads.append(brand_id)
+            # The first read misses the version another request committed meanwhile.
+            return None if len(reads) == 1 else real(session, brand_id)
+
+        monkeypatch.setattr(module, "_latest", stale_then_real)
+        assert module.save_greeting(welcome_text="¡Hola!", questions=["¿Precios?"], **save) == (
+            first
+        )
+        reads.clear()
+        with pytest.raises(module.GreetingUnavailable, match="Te mostramos el más reciente"):
+            module.save_greeting(welcome_text="Otro", questions=["¿Precios?"], **save)
+    with tenant_session(w["tenant"]) as s:
+        assert s.execute(text("SELECT count(*) FROM ad_message_greetings")).scalar() == 1
 
 
 def test_promotion_freezes_only_a_saved_greeting_version(messaging_world):

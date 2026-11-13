@@ -37,17 +37,21 @@ MAX_WELCOME = 300
 MAX_QUESTION = 80
 
 
+CHANGED_WHILE_EDITING = (
+    "Alguien cambió el saludo mientras lo editabas. "
+    "Te mostramos el más reciente; revísalo y guarda."
+)
+
+
 class GreetingUnavailable(ValueError):
     """A safe Spanish explanation for the owner."""
 
 
 def clean(welcome_text: str, questions: list[str] | tuple[str, ...]) -> tuple[str, tuple[str, ...]]:
-    if (
-        not isinstance(welcome_text, str)
-        or not isinstance(questions, (list, tuple))
-        or any(not isinstance(q, str) for q in questions)
-    ):
-        raise GreetingUnavailable("Revisa el saludo y las preguntas.")
+    if not isinstance(welcome_text, str):
+        raise GreetingUnavailable("Escribe el saludo de bienvenida como texto.")
+    if not isinstance(questions, (list, tuple)) or any(not isinstance(q, str) for q in questions):
+        raise GreetingUnavailable("Escribe cada pregunta sugerida como texto.")
     welcome = welcome_text.strip()
     asked = tuple(q.strip() for q in questions if q.strip())  # Empty boxes are skipped.
     if not welcome or len(welcome) > MAX_WELCOME:
@@ -143,18 +147,7 @@ def current_greeting(*, tenant_id: UUID, brand_id: UUID) -> MessageGreeting | No
     """The brand's latest saved greeting, or None when the owner never wrote one."""
     _member(tenant_id)
     with tenant_session(tenant_id, independent=True) as session:
-        row = (
-            session.execute(
-                text(
-                    "SELECT id,brand_id,version,welcome_text,questions FROM ad_message_greetings "
-                    "WHERE brand_id=:brand ORDER BY version DESC LIMIT 1"
-                ),
-                {"brand": brand_id},
-            )
-            .mappings()
-            .first()
-        )
-    return _row(row) if row else None
+        return _latest(session, brand_id)
 
 
 def save_greeting(
@@ -180,24 +173,11 @@ def save_greeting(
             is None
         ):
             raise GreetingUnavailable("Esta marca ya no está disponible en este negocio.")
-        latest = (
-            session.execute(
-                text(
-                    "SELECT id,brand_id,version,welcome_text,questions FROM ad_message_greetings "
-                    "WHERE brand_id=:brand ORDER BY version DESC LIMIT 1"
-                ),
-                {"brand": brand_id},
-            )
-            .mappings()
-            .first()
-        )
-        current = _row(latest) if latest else None
+        current = _latest(session, brand_id)
         if current and (current.welcome_text, current.questions) == (welcome, asked):
             return current
         if (current.version if current else 0) != expected_version:
-            raise GreetingUnavailable(
-                "Alguien cambió el saludo mientras lo editabas. Revisa la versión actual."
-            )
+            raise GreetingUnavailable(CHANGED_WHILE_EDITING)
         row = (
             session.execute(
                 text(
@@ -220,8 +200,26 @@ def save_greeting(
             .mappings()
             .first()
         )
-    if row is None:
-        raise GreetingUnavailable(
-            "Alguien cambió el saludo mientras lo editabas. Revisa la versión actual."
-        )
+        if row is None:
+            # A concurrent save took this version first (READ COMMITTED: a new statement
+            # sees it). The same text is a harmless double submit; another text is not.
+            current = _latest(session, brand_id)
+            if current and (current.welcome_text, current.questions) == (welcome, asked):
+                return current
+            raise GreetingUnavailable(CHANGED_WHILE_EDITING)
     return _row(row)
+
+
+def _latest(session: Any, brand_id: UUID) -> MessageGreeting | None:
+    row = (
+        session.execute(
+            text(
+                "SELECT id,brand_id,version,welcome_text,questions FROM ad_message_greetings "
+                "WHERE brand_id=:brand ORDER BY version DESC LIMIT 1"
+            ),
+            {"brand": brand_id},
+        )
+        .mappings()
+        .first()
+    )
+    return _row(row) if row else None

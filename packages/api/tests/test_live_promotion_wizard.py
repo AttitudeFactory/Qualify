@@ -981,7 +981,7 @@ async def test_unlinked_whatsapp_number_never_reaches_meta(live, monkeypatch):
 
     current = use_chat(live, monkeypatch)
     current[0] = WizardUnavailable(LINK_GUIDE)
-    with pytest.raises(WizardUnavailable, match="Vincula el número"):
+    with pytest.raises(WizardUnavailable, match="no está unido a tu página"):
         await prepare(live)
     assert not live["remote"].calls
 
@@ -994,6 +994,44 @@ async def test_number_changed_after_approval_blocks_activation(live, monkeypatch
     with pytest.raises(WizardUnavailable, match="chat del anuncio cambió"):
         await confirm(live, preview)
     assert not live["remote"].activations
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("goal", ["chat", "website", "lead"])
+async def test_a_piece_chat_button_only_refuses_goals_that_use_it(live, monkeypatch, goal):
+    from qualify_api.ads.wizard import PIECE_BUTTON_LEAD, PIECE_BUTTON_UNSUPPORTED
+
+    live["sources"][0] = replace(live["source"], unavailable_reason=PIECE_BUTTON_UNSUPPORTED)
+    if goal == "chat":
+        use_chat(live, monkeypatch)
+        preview = await prepare(live)
+        assert (await confirm(live, preview)).status == "active"
+        return
+    if goal == "lead":
+        use_lead_form(live)
+    expected = PIECE_BUTTON_LEAD if goal == "lead" else PIECE_BUTTON_UNSUPPORTED
+    with pytest.raises(WizardUnavailable) as error:
+        await prepare(live)
+    assert str(error.value) == expected and not live["remote"].calls
+
+
+@pytest.mark.asyncio
+async def test_read_back_accepts_the_number_echoed_with_a_plus(live, monkeypatch):
+    use_chat(live, monkeypatch)
+    preview = await prepare(live)
+    live["remote"].objects["101"]["promoted_object"] = {
+        "page_id": "77",
+        "whatsapp_phone_number": "+57 300 111 2233",
+    }
+    assert (await confirm(live, preview)).status == "active"
+
+
+@pytest.mark.asyncio
+async def test_website_promotion_never_reads_or_compares_a_welcome_message(live):
+    preview = await prepare(live)
+    # Only a requested field comes back: a stray welcome on a website ad is never read.
+    live["remote"].objects["102"]["page_welcome_message"] = "{}"
+    assert (await confirm(live, preview)).status == "active"
 
 
 @pytest.mark.asyncio
