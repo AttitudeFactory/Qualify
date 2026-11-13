@@ -13,6 +13,8 @@ from sqlalchemy import text
 from qualify_api.ads.audience import AudienceDraft, AudienceUnavailable
 from qualify_api.ads.enhancements import BrandEnhancementSettings
 from qualify_api.ads.lead_ads import LEAD_CTAS, LeadFormTarget
+from qualify_api.ads.messaging import MessagingTarget
+from qualify_api.ads.messaging_greeting import MessageGreeting
 from qualify_api.tenancy.acting import require_acting_member
 
 LIVE_UNAVAILABLE = (
@@ -101,9 +103,28 @@ class WizardForm:
     lead_cta: str = ""
     # The website promotion's button; part of the approved request (and its hash).
     cta_type: str = "LEARN_MORE"
+    # A messaging promotion opens a chat instead of a link (m-24828980); the greeting is
+    # optional and only rides a messaging promotion.
+    messaging: MessagingTarget | None = None
+    greeting: MessageGreeting | None = None
 
     def validate(self, *, for_execution: bool = False) -> None:
-        if self.lead_form is not None or self.lead_cta:
+        if self.messaging is not None or self.greeting is not None:
+            if (
+                self.messaging is None
+                or self.lead_form is not None
+                or self.lead_cta
+                or self.link_url
+                or self.cta_type != "LEARN_MORE"  # The website button never rides a chat ad.
+            ):
+                raise WizardUnavailable("Elige a qué chat llevará el anuncio.")
+            try:
+                self.messaging.snapshot()
+                if self.greeting is not None:
+                    self.greeting.snapshot()
+            except ValueError:
+                raise WizardUnavailable("Revisa el chat y el saludo del anuncio.") from None
+        elif self.lead_form is not None or self.lead_cta:
             if (
                 self.lead_form is None
                 or self.lead_cta not in LEAD_CTAS

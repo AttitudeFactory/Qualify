@@ -224,6 +224,26 @@ class PostgresPromotionRepository:
                     )
                 ):
                     raise ValueError("messaging destination does not match the published source")
+            if request.greeting_snapshot:
+                from qualify_api.ads.messaging_greeting import MessageGreeting
+
+                greeting = MessageGreeting.from_snapshot(request.greeting_snapshot)
+                # Versions are append-only (0164 grants no UPDATE): the saved row must be
+                # exactly the text the owner approved.
+                saved = session.execute(
+                    text("""SELECT 1 FROM ad_message_greetings WHERE id=:id AND brand_id=:brand
+                      AND version=:version AND welcome_text=:welcome
+                      AND questions=CAST(:questions AS jsonb)"""),
+                    {
+                        "id": greeting.greeting_id,
+                        "brand": request.brand_id,
+                        "version": greeting.version,
+                        "welcome": greeting.welcome_text,
+                        "questions": json.dumps(list(greeting.questions)),
+                    },
+                ).first()
+                if saved is None:
+                    raise ValueError("greeting is not a saved version of this brand")
             if request.lead_form_snapshot:
                 from qualify_api.ads.lead_ads import LeadFormTarget
 

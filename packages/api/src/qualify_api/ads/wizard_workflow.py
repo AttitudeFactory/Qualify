@@ -18,6 +18,8 @@ from qualify_api.ads.enhancements import (
     verify_remote_preview,
 )
 from qualify_api.ads.lead_ads import LeadFormTarget
+from qualify_api.ads.messaging import MessagingTarget
+from qualify_api.ads.messaging_greeting import MessageGreeting
 from qualify_api.ads.promotions import Promotion, PromotionRequest, PromotionService, fingerprint
 from qualify_api.ads.wizard import (
     PromotionPreview,
@@ -71,6 +73,10 @@ def _guard_checks(
         raise WizardUnavailable(
             "El formulario no corresponde a la cuenta de esta publicación. Elige otro."
         )
+    if form.messaging is not None and not form.messaging.matches(source):
+        raise WizardUnavailable("El chat no corresponde a la cuenta de esta publicación.")
+    if form.greeting is not None and form.greeting.brand_id != source.brand_id:
+        raise WizardUnavailable("El saludo corresponde a otra marca.")
     if form.enhancements is not None:
         if form.enhancements.brand_id != source.brand_id:
             raise WizardUnavailable("Los permisos corresponden a otra marca.")
@@ -138,7 +144,7 @@ def _request(
 ) -> PromotionRequest:
     policy = form.enhancements or BrandEnhancementSettings(tenant_id, source.brand_id)
     lead = form.lead_form
-    return PromotionRequest(
+    request = PromotionRequest(
         tenant_id=tenant_id,
         brand_id=source.brand_id,
         request_key=request_key,
@@ -190,6 +196,25 @@ def _request(
         },
         lead_form_snapshot=lead.snapshot() if lead else {},
     )
+    chat = form.messaging
+    if chat is None:
+        return request
+    # Same audience, budget and dates; only the goal, chat and creative differ (m-24828980).
+    creative = chat.creative(
+        source_media_id=source.source_media_id,
+        instagram_user_id=source.instagram_user_id,
+        page_welcome_message=form.greeting.page_welcome_message() if form.greeting else "",
+    )
+    return replace(
+        request,
+        objective="OUTCOME_ENGAGEMENT",
+        cta_type=chat.cta_type,
+        link_url="",
+        creative={**creative, "degrees_of_freedom_spec": policy.creative_spec()},
+        adset_options=chat.adset_options(),
+        messaging_snapshot=chat.snapshot(),
+        greeting_snapshot=form.greeting.snapshot() if form.greeting else {},
+    )
 
 
 def _form(promotion: Promotion, checks: ActivationReview) -> WizardForm:
@@ -201,6 +226,13 @@ def _form(promotion: Promotion, checks: ActivationReview) -> WizardForm:
             "lead_cta": request["cta_type"],
         }
         if request.get("lead_form_snapshot")
+        else {
+            "messaging": MessagingTarget.from_snapshot(request["messaging_snapshot"]),
+            "greeting": MessageGreeting.from_snapshot(request["greeting_snapshot"])
+            if request.get("greeting_snapshot")
+            else None,
+        }
+        if request.get("messaging_snapshot")
         else {"cta_type": request["cta_type"]}
     )
     if request.get("audience_snapshot"):

@@ -49,6 +49,8 @@ class PromotionRequest:
     enhancements_snapshot: dict[str, Any] = field(default_factory=dict)
     meta_currency_offset: int | None = None
     lead_form_snapshot: dict[str, Any] = field(default_factory=dict)
+    # The owner's chat greeting (m-24828980); only a messaging promotion carries one.
+    greeting_snapshot: dict[str, Any] = field(default_factory=dict)
 
     def snapshot(self) -> dict[str, Any]:
         from qualify_api.ads.enhancements import validate_request_policy
@@ -64,6 +66,12 @@ class PromotionRequest:
             LeadFormTarget.from_snapshot(self.lead_form_snapshot).validate_request(self)
         elif self.objective == "OUTCOME_LEADS":
             raise ValueError("a lead promotion requires an approved published form")
+        if not self.messaging_snapshot and (
+            self.greeting_snapshot
+            or self.objective == "OUTCOME_ENGAGEMENT"
+            or "page_welcome_message" in self.creative
+        ):
+            raise ValueError("a chat greeting or goal requires an approved messaging destination")
         if self.audience_snapshot:
             from qualify_api.ads.audience import AudienceDraft
 
@@ -137,8 +145,11 @@ class PromotionRequest:
                         not isinstance(child, dict) or child.get("type") != self.cta_type
                     ):
                         raise ValueError("creative CTA differs from approved metadata")
-                    if key == "link" and child != self.link_url:
+                    # A chat CTA carries Meta's fixed chat link; MessagingTarget checked it.
+                    if key == "link" and child != self.link_url and not self.messaging_snapshot:
                         raise ValueError("creative link differs from approved metadata")
+                    if key == "page_welcome_message":
+                        continue  # A JSON string by contract (SDK type), checked exactly above.
                     if key == "source_instagram_media_id" and child != self.source_media_id:
                         raise ValueError("creative source differs from approved media")
                     check_creative(child)
@@ -157,6 +168,8 @@ class PromotionRequest:
             snapshot.pop("enhancements_snapshot", None)
         if not self.lead_form_snapshot:
             snapshot.pop("lead_form_snapshot", None)
+        if not self.greeting_snapshot:
+            snapshot.pop("greeting_snapshot", None)
         if self.meta_currency_offset is None:
             snapshot.pop("meta_currency_offset", None)
         return snapshot
