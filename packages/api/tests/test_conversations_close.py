@@ -28,7 +28,13 @@ from qualify_api.conversations.memory_source import (
 )
 from qualify_api.conversations.outbox import MemoryConversationOutboxRepository
 from qualify_api.conversations.repository import MemoryConversationRepository
-from qualify_api.conversations.service import AttentionState, ConversationService, ThreadNotFound
+from qualify_api.conversations.service import (
+    AttentionState,
+    ConversationService,
+    ThreadChangedSinceSeen,
+    ThreadNotFound,
+    ThreadView,
+)
 from qualify_api.conversations.sync import ConversationSyncService
 from qualify_api.conversations.webhook import instagram_messages_handler
 from qualify_api.mentions.resolve import ResolutionOutcome, TenantResolution
@@ -83,6 +89,15 @@ def _status(repo: MemoryConversationRepository, thread_id) -> str:
     return thread.status
 
 
+def _close(service: ConversationService, tenant_id, thread_id) -> ThreadView:
+    """Close with what a fresh screen would show (the UI passes its own view's instant)."""
+    try:
+        seen = service.get_thread(tenant_id=tenant_id, thread_id=thread_id).thread.last_inbound_at
+    except ThreadNotFound:
+        seen = None
+    return service.close(tenant_id=tenant_id, thread_id=thread_id, seen_last_inbound_at=seen)
+
+
 # --- the service ----------------------------------------------------------------------
 
 
@@ -90,10 +105,10 @@ def test_close_and_reopen_move_the_status_and_are_idempotent(world) -> None:
     repo, service, _sync, thread_id = world
     assert _status(repo, thread_id) == "open"
 
-    view = service.close(tenant_id=TENANT, thread_id=thread_id)
+    view = _close(service, TENANT, thread_id)
     assert view.thread.status == "closed" and _status(repo, thread_id) == "closed"
     # Closing a closed chat is a no-op, not an error.
-    assert service.close(tenant_id=TENANT, thread_id=thread_id).thread.status == "closed"
+    assert _close(service, TENANT, thread_id).thread.status == "closed"
 
     view = service.reopen(tenant_id=TENANT, thread_id=thread_id)
     assert view.thread.status == "open" and _status(repo, thread_id) == "open"
@@ -103,7 +118,7 @@ def test_close_and_reopen_move_the_status_and_are_idempotent(world) -> None:
 def test_closing_moves_nothing_but_the_status(world) -> None:
     repo, service, _sync, thread_id = world
     before = repo.get_thread(tenant_id=TENANT, thread_id=thread_id)
-    view = service.close(tenant_id=TENANT, thread_id=thread_id)
+    view = _close(service, TENANT, thread_id)
     assert before is not None
     assert view.thread.last_inbound_at == before.last_inbound_at
     assert view.thread.last_message_at == before.last_message_at
@@ -116,11 +131,11 @@ def test_closing_moves_nothing_but_the_status(world) -> None:
 def test_another_tenants_thread_is_not_found_and_untouched(world) -> None:
     repo, service, _sync, thread_id = world
     with pytest.raises(ThreadNotFound):
-        service.close(tenant_id=OTHER, thread_id=thread_id)
+        _close(service, OTHER, thread_id)
     with pytest.raises(ThreadNotFound):
         service.reopen(tenant_id=OTHER, thread_id=thread_id)
     with pytest.raises(ThreadNotFound):
-        service.close(tenant_id=TENANT, thread_id=uuid4())
+        _close(service, TENANT, uuid4())
     assert _status(repo, thread_id) == "open"
 
 
@@ -133,7 +148,7 @@ def test_a_thread_of_another_channel_is_refused(world) -> None:
         counterpart_external_id="573000000000",
     ).thread_id
     with pytest.raises(ThreadNotFound):
-        service.close(tenant_id=TENANT, thread_id=whatsapp)
+        _close(service, TENANT, whatsapp)
     assert _status(repo, whatsapp) == "open"
     # The repository door is bounded by channel too.
     assert not repo.set_status(
@@ -158,7 +173,7 @@ def test_list_threads_filters_by_status_and_each_row_says_which(world) -> None:
         conversation=RemoteConversation(counterpart_external_id="igsid-bob"),
         message=_msg("mid.bob", at=T0),
     )
-    service.close(tenant_id=TENANT, thread_id=thread_id)
+    _close(service, TENANT, thread_id)
 
     every = service.list_threads(tenant_id=TENANT, channels=[CHANNEL_DM])
     assert {v.thread.status for v in every} == {"open", "closed"}
@@ -168,12 +183,86 @@ def test_list_threads_filters_by_status_and_each_row_says_which(world) -> None:
     assert thread_id not in {v.thread.id for v in open_} and len(open_) == 1
 
 
+# --- «Cerrar» is a compare-and-set on what the screen showed --------------------------
+
+
+def test_close_with_a_stale_view_is_refused_and_the_chat_stays_pending(world) -> None:
+    repo, service, sync, thread_id = world
+    seen = service.get_thread(tenant_id=TENANT, thread_id=thread_id)  # the owner's screen
+    # The person writes again while the screen is stale.
+    sync.ingest_message(
+        CONNECTION,
+        channel=CHANNEL_DM,
+        conversation=ALICE,
+        message=_msg("mid.new", at=T0 + timedelta(seconds=10)),
+    )
+    with pytest.raises(ThreadChangedSinceSeen) as refused:
+        service.close(
+            tenant_id=TENANT,
+            thread_id=thread_id,
+            seen_last_inbound_at=seen.thread.last_inbound_at,
+        )
+    assert _status(repo, thread_id) == "open"
+    fresh = refused.value.view
+    assert fresh.thread.status == "open" and fresh.attention is AttentionState.PENDING
+    assert fresh.thread.last_inbound_at == T0 + timedelta(seconds=10)
+    # With the refreshed view the owner can close it.
+    closed = service.close(
+        tenant_id=TENANT, thread_id=thread_id, seen_last_inbound_at=fresh.thread.last_inbound_at
+    )
+    assert closed.thread.status == "closed"
+
+
+def test_close_with_a_current_view_closes_and_a_closed_chat_stays_closed(world) -> None:
+    repo, service, _sync, thread_id = world
+    seen = service.get_thread(tenant_id=TENANT, thread_id=thread_id).thread.last_inbound_at
+    assert seen is not None
+    service.close(tenant_id=TENANT, thread_id=thread_id, seen_last_inbound_at=seen)
+    # Idempotent even with an older (or no) instant: nothing could have reopened it.
+    service.close(tenant_id=TENANT, thread_id=thread_id, seen_last_inbound_at=None)
+    assert _status(repo, thread_id) == "closed"
+
+
+def test_close_without_a_seen_inbound_is_refused_once_the_person_wrote(world) -> None:
+    repo, service, _sync, thread_id = world
+    with pytest.raises(ThreadChangedSinceSeen):
+        service.close(tenant_id=TENANT, thread_id=thread_id, seen_last_inbound_at=None)
+    assert _status(repo, thread_id) == "open"
+
+
+def test_a_thread_with_no_inbound_closes_with_none(world) -> None:
+    repo, service, _sync, _thread_id = world
+    empty = repo.upsert_thread(
+        tenant_id=TENANT,
+        connection_id=CONNECTION.connection_id,
+        channel=CHANNEL_DM,
+        counterpart_external_id="igsid-empty",
+    ).thread_id
+    service.close(tenant_id=TENANT, thread_id=empty, seen_last_inbound_at=None)
+    assert _status(repo, empty) == "closed"
+
+
 # --- what reopens a closed chat -------------------------------------------------------
+
+
+def test_a_duplicate_mid_with_a_later_instant_does_not_reopen(world) -> None:
+    # The poll stores Graph's whole seconds; the webhook later brings the same `mid` with
+    # milliseconds. Same message: the chat stays closed.
+    repo, service, sync, thread_id = world
+    _close(service, TENANT, thread_id)
+    result = sync.ingest_message(
+        CONNECTION,
+        channel=CHANNEL_DM,
+        conversation=ALICE,
+        message=_msg("mid.1", at=T0 + timedelta(milliseconds=431)),
+    )
+    assert result.message_created is False
+    assert _status(repo, thread_id) == "closed"
 
 
 def test_a_newer_inbound_by_the_single_message_door_reopens(world) -> None:
     repo, service, sync, thread_id = world
-    service.close(tenant_id=TENANT, thread_id=thread_id)
+    _close(service, TENANT, thread_id)
     sync.ingest_message(
         CONNECTION,
         channel=CHANNEL_DM,
@@ -185,7 +274,7 @@ def test_a_newer_inbound_by_the_single_message_door_reopens(world) -> None:
 
 def test_an_outbound_an_echo_or_a_replay_does_not_reopen(world) -> None:
     repo, service, sync, thread_id = world
-    service.close(tenant_id=TENANT, thread_id=thread_id)
+    _close(service, TENANT, thread_id)
     # The business's own message (sent from Qualify or echoed from Instagram).
     sync.ingest_message(
         CONNECTION,
@@ -219,7 +308,7 @@ def test_an_unsent_message_does_not_reopen(world) -> None:
         source_event_id=None,
         pipeline_version="test",
     )
-    service.close(tenant_id=TENANT, thread_id=thread_id)
+    _close(service, TENANT, thread_id)
     result = sync.ingest_message(
         CONNECTION,
         channel=CHANNEL_DM,
@@ -232,7 +321,7 @@ def test_an_unsent_message_does_not_reopen(world) -> None:
 
 async def test_the_poll_reopens_on_a_newer_inbound_only(world) -> None:
     repo, service, sync, thread_id = world
-    service.close(tenant_id=TENANT, thread_id=thread_id)
+    _close(service, TENANT, thread_id)
     source = MemoryConversationSource()
     # The poll reads back what is stored plus the business's own answer: still closed.
     source.add_message(ALICE, _msg("mid.1", at=T0))
@@ -272,7 +361,7 @@ def _resolve(**_kwargs) -> TenantResolution:
 async def test_the_webhook_reopens_on_inbound_and_not_on_an_echo(world) -> None:
     repo, service, sync, thread_id = world
     handler = instagram_messages_handler(resolve=_resolve, sync=sync)
-    service.close(tenant_id=TENANT, thread_id=thread_id)
+    _close(service, TENANT, thread_id)
 
     echo = {
         "sender": {"id": IGID},
@@ -291,3 +380,27 @@ async def test_the_webhook_reopens_on_inbound_and_not_on_an_echo(world) -> None:
     }
     assert (await handler(_event(inbound))).status == STATUS_PROCESSED
     assert _status(repo, thread_id) == "open"
+
+
+async def test_the_webhook_redelivering_a_stored_mid_later_does_not_reopen(world) -> None:
+    repo, service, sync, thread_id = world
+    handler = instagram_messages_handler(resolve=_resolve, sync=sync)
+    _close(service, TENANT, thread_id)
+    # `mid.1` was stored at T0 (whole seconds); Meta's webhook carries T0 + 431 ms.
+    same = {
+        "sender": {"id": "igsid-alice"},
+        "recipient": {"id": IGID},
+        "timestamp": int(T0.timestamp() * 1000) + 431,
+        "message": {"mid": "mid.1", "text": "hola"},
+    }
+    assert (await handler(_event(same))).status == STATUS_PROCESSED
+    assert _status(repo, thread_id) == "closed"
+
+
+async def test_the_poll_reading_a_stored_mid_later_does_not_reopen(world) -> None:
+    repo, service, sync, thread_id = world
+    _close(service, TENANT, thread_id)
+    source = MemoryConversationSource()
+    source.add_message(ALICE, _msg("mid.1", at=T0 + timedelta(seconds=1)))
+    await sync.sync_connection(CONNECTION, source)
+    assert _status(repo, thread_id) == "closed"

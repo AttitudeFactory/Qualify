@@ -16,6 +16,8 @@ Fresh tenants per test: the app role cannot DELETE `threads`/`messages`.
 
 from __future__ import annotations
 
+import threading
+import time
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -38,10 +40,18 @@ from qualify_api.conversations.memory_source import (
 )
 from qualify_api.conversations.outbox import PostgresConversationOutboxRepository
 from qualify_api.conversations.repository import (
+    _BUMP_THREAD,
+    _CLOSE_IF_UNSEEN,
+    STORE_DUPLICATE,
     STORE_UNSENT,
     PostgresConversationRepository,
 )
-from qualify_api.conversations.service import ConversationService, ThreadNotFound
+from qualify_api.conversations.service import (
+    ConversationService,
+    ThreadChangedSinceSeen,
+    ThreadNotFound,
+    ThreadView,
+)
 from qualify_api.home import read_home_counts
 from qualify_api.tenancy.models import Tenant, User
 
@@ -142,6 +152,142 @@ def _status(repo: PostgresConversationRepository, tenant_id: UUID, thread_id: UU
     return thread.status
 
 
+def _close(service: ConversationService, tenant_id: UUID, thread_id: UUID) -> ThreadView:
+    """Close with what a fresh screen would show."""
+    try:
+        seen = service.get_thread(tenant_id=tenant_id, thread_id=thread_id).thread.last_inbound_at
+    except ThreadNotFound:
+        seen = None
+    return service.close(tenant_id=tenant_id, thread_id=thread_id, seen_last_inbound_at=seen)
+
+
+def _in_background(fn) -> tuple[threading.Thread, dict[str, object]]:
+    box: dict[str, object] = {}
+
+    def run() -> None:
+        try:
+            box["result"] = fn()
+        except BaseException as error:  # noqa: BLE001 — handed back to the test
+            box["error"] = error
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    return worker, box
+
+
+def test_close_with_a_stale_view_is_refused() -> None:
+    tenant_id, connection_id = _tenant()
+    repo = PostgresConversationRepository()
+    service = _service(repo)
+    counterpart = f"igsid-{uuid4().hex[:10]}"
+    thread_id = _store(repo, tenant_id, connection_id, counterpart, _msg(uuid4().hex, at=T0))
+    seen = service.get_thread(tenant_id=tenant_id, thread_id=thread_id.thread_id)
+    _store(
+        repo, tenant_id, connection_id, counterpart, _msg(uuid4().hex, at=T0 + timedelta(seconds=3))
+    )
+    with pytest.raises(ThreadChangedSinceSeen) as refused:
+        service.close(
+            tenant_id=tenant_id,
+            thread_id=seen.thread.id,
+            seen_last_inbound_at=seen.thread.last_inbound_at,
+        )
+    assert refused.value.view.thread.status == "open"
+    assert PostgresPendingCounts().read(tenant_id).messages == 1
+    closed = service.close(
+        tenant_id=tenant_id,
+        thread_id=seen.thread.id,
+        seen_last_inbound_at=refused.value.view.thread.last_inbound_at,
+    )
+    assert closed.thread.status == "closed"
+
+
+def test_bump_then_close_concurrently_refuses_the_close() -> None:
+    """The inbound's transaction holds the row; «Cerrar» (stale screen) waits on it, then
+    re-evaluates its guard against the committed row and refuses."""
+    tenant_id, connection_id = _tenant()
+    repo = PostgresConversationRepository()
+    service = _service(repo)
+    thread_id = _waiting_dm(repo, tenant_id, connection_id)
+    seen = service.get_thread(tenant_id=tenant_id, thread_id=thread_id).thread.last_inbound_at
+    with tenant_session(tenant_id) as session:
+        session.execute(
+            _BUMP_THREAD,
+            {
+                "thread_id": thread_id,
+                "inbound": T0 + timedelta(seconds=5),
+                "message_at": T0 + timedelta(seconds=5),
+                "open": "open",
+                "reopen": True,
+            },
+        )
+        worker, box = _in_background(
+            lambda: service.close(
+                tenant_id=tenant_id, thread_id=thread_id, seen_last_inbound_at=seen
+            )
+        )
+        time.sleep(0.5)
+        assert worker.is_alive()  # blocked on the row lock
+    worker.join(10)
+    assert isinstance(box.get("error"), ThreadChangedSinceSeen)
+    assert _status(repo, tenant_id, thread_id) == "open"
+
+
+def test_close_then_bump_concurrently_reopens() -> None:
+    """«Cerrar» holds the row; the new inbound's `store_message` waits, then reopens."""
+    tenant_id, connection_id = _tenant()
+    repo = PostgresConversationRepository()
+    counterpart = f"igsid-{uuid4().hex[:10]}"
+    first = _store(repo, tenant_id, connection_id, counterpart, _msg(uuid4().hex, at=T0))
+    thread_id = first.thread_id
+    assert thread_id is not None
+    with tenant_session(tenant_id) as session:
+        closed = session.execute(
+            _CLOSE_IF_UNSEEN,
+            {"thread_id": thread_id, "channel": CHANNEL_DM, "closed": "closed", "seen": T0},
+        )
+        assert closed.rowcount == 1
+        worker, box = _in_background(
+            lambda: _store(
+                repo,
+                tenant_id,
+                connection_id,
+                counterpart,
+                _msg(uuid4().hex, at=T0 + timedelta(seconds=5)),
+            )
+        )
+        time.sleep(0.5)
+        assert worker.is_alive()
+    worker.join(10)
+    assert "error" not in box
+    assert _status(repo, tenant_id, thread_id) == "open"
+    assert PostgresPendingCounts().read(tenant_id).messages == 1
+
+
+def test_a_duplicate_mid_with_a_later_instant_does_not_reopen() -> None:
+    tenant_id, connection_id = _tenant()
+    repo = PostgresConversationRepository()
+    service = _service(repo)
+    counterpart = f"igsid-{uuid4().hex[:10]}"
+    mid = uuid4().hex
+    thread_id = _store(repo, tenant_id, connection_id, counterpart, _msg(mid, at=T0)).thread_id
+    assert thread_id is not None
+    _close(service, tenant_id, thread_id)
+    again = _store(
+        repo,
+        tenant_id,
+        connection_id,
+        counterpart,
+        _msg(mid, at=T0 + timedelta(milliseconds=431)),
+    )
+    assert again.outcome == STORE_DUPLICATE
+    assert _status(repo, tenant_id, thread_id) == "closed"
+    # A genuinely new inbound still reopens.
+    _store(
+        repo, tenant_id, connection_id, counterpart, _msg(uuid4().hex, at=T0 + timedelta(seconds=2))
+    )
+    assert _status(repo, tenant_id, thread_id) == "open"
+
+
 def test_close_reopen_idempotent_and_listed_by_status() -> None:
     tenant_id, connection_id = _tenant()
     repo = PostgresConversationRepository()
@@ -149,8 +295,8 @@ def test_close_reopen_idempotent_and_listed_by_status() -> None:
     closed_id = _waiting_dm(repo, tenant_id, connection_id)
     open_id = _waiting_dm(repo, tenant_id, connection_id)
 
-    assert service.close(tenant_id=tenant_id, thread_id=closed_id).thread.status == "closed"
-    assert service.close(tenant_id=tenant_id, thread_id=closed_id).thread.status == "closed"
+    assert _close(service, tenant_id, closed_id).thread.status == "closed"
+    assert _close(service, tenant_id, closed_id).thread.status == "closed"
     with tenant_session(tenant_id) as session:
         stored = session.execute(
             text("SELECT status FROM threads WHERE id = :id"), {"id": closed_id}
@@ -189,7 +335,7 @@ def test_rls_another_tenant_cannot_close_or_see_it() -> None:
     thread_id = _waiting_dm(repo, mine, my_connection)
 
     with pytest.raises(ThreadNotFound):
-        service.close(tenant_id=other, thread_id=thread_id)
+        _close(service, other, thread_id)
     # The repository door alone matches nothing under the other tenant's RLS.
     assert not repo.set_status(
         tenant_id=other, thread_id=thread_id, channel=CHANNEL_DM, status="closed"
@@ -197,7 +343,7 @@ def test_rls_another_tenant_cannot_close_or_see_it() -> None:
     assert _status(repo, mine, thread_id) == "open"
     assert repo.list_threads(tenant_id=other, channels=[CHANNEL_DM], status=None) == []
 
-    service.close(tenant_id=mine, thread_id=thread_id)
+    _close(service, mine, thread_id)
     with pytest.raises(ThreadNotFound):
         service.reopen(tenant_id=other, thread_id=thread_id)
     assert repo.list_threads(tenant_id=other, channels=[CHANNEL_DM], status="closed") == []
@@ -214,7 +360,7 @@ def test_a_whatsapp_thread_is_not_moved_by_this_door() -> None:
         counterpart_external_id="573000000000",
     ).thread_id
     with pytest.raises(ThreadNotFound):
-        _service(repo).close(tenant_id=tenant_id, thread_id=whatsapp)
+        _close(_service(repo), tenant_id, whatsapp)
     assert not repo.set_status(
         tenant_id=tenant_id, thread_id=whatsapp, channel=CHANNEL_DM, status="closed"
     )
@@ -229,7 +375,7 @@ def test_only_a_newer_inbound_reopens_through_store_message() -> None:
     first = _msg(uuid4().hex, at=T0)
     thread_id = _store(repo, tenant_id, connection_id, counterpart, first).thread_id
     assert thread_id is not None
-    service.close(tenant_id=tenant_id, thread_id=thread_id)
+    _close(service, tenant_id, thread_id)
 
     # An outbound (the sender's row or an echo), a replay, an older inbound: still closed.
     _store(
@@ -279,7 +425,7 @@ def test_a_closed_chat_leaves_the_counters_until_reopened() -> None:
     assert PostgresPendingCounts().read(tenant_id).messages == 2
     assert read_home_counts(tenant_id, now=now).people_waiting == 2
 
-    service.close(tenant_id=tenant_id, thread_id=closed_id)
+    _close(service, tenant_id, closed_id)
     assert PostgresPendingCounts().read(tenant_id).messages == 1
     assert read_home_counts(tenant_id, now=now).people_waiting == 1
 

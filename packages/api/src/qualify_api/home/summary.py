@@ -10,8 +10,8 @@ number the owner finds on arrival:
 
 - `people_waiting` — Instagram Direct threads whose attention state is «pendiente»
   (`conversations.service.attention_state`): an inbound message newer than the last
-  reply AND than the last time someone opened the thread. Same filter as
-  Conversaciones › «Pendientes».
+  reply AND than the last time someone opened the thread, and not closed by the owner
+  (m-25026457; a newer inbound reopens it). Same filter as `attention.counts` messages.
 - `drafts_to_approve` — publications generated and waiting for the human gate
   (`content_drafts.status = 'generated'`, the creative FSM's HITL #2; the planner reads
   it as `ApprovalStatus.PENDING`). This is only the fallback: Inicio's provider

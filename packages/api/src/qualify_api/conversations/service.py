@@ -52,7 +52,6 @@ from qualify_api.conversations.outbox import (
     OutboxMedia,
 )
 from qualify_api.conversations.repository import (
-    THREAD_CLOSED,
     THREAD_OPEN,
     ConversationRepository,
     MessageRecord,
@@ -79,6 +78,16 @@ class AttentionState(StrEnum):
 class ThreadNotFound(LookupError):
     """No thread with this id for this tenant (another tenant's included — RLS makes the
     two indistinguishable, and this module keeps it that way)."""
+
+
+class ThreadChangedSinceSeen(Exception):  # noqa: N818 — named for what happened
+    """«Cerrar» was refused (m-25026457): the person wrote after the instant the owner's
+    screen showed, so closing would hide a message nobody read. Nothing was written;
+    `view` is the thread as it is now (still open, with the new `last_inbound_at`)."""
+
+    def __init__(self, view: ThreadView) -> None:
+        super().__init__("the thread has an inbound message newer than the one seen")
+        self.view = view
 
 
 #: m-24789472: what the person reads when a quick reply / button template is refused
@@ -221,25 +230,45 @@ class ConversationService:
             )
         ]
 
-    def close(self, *, tenant_id: UUID, thread_id: UUID) -> ThreadView:
-        """«Cerrar» an Instagram Direct chat (m-25026457), WhatsApp's semantics: the chat
-        leaves «Por responder» and the default list until the person writes again (a NEWER
-        inbound reopens it, `repository.bump_thread_activity`). Closing a closed chat is a
-        no-op. Another tenant's thread, or a thread of another channel, is
-        `ThreadNotFound` and nothing is written."""
-        return self._set_status(tenant_id, thread_id, THREAD_CLOSED)
+    def close(
+        self, *, tenant_id: UUID, thread_id: UUID, seen_last_inbound_at: datetime | None
+    ) -> ThreadView:
+        """«Cerrar» an Instagram Direct chat (m-25026457): the chat leaves «Por responder»
+        and the default list until the person writes again (a NEWER inbound reopens it).
+
+        `seen_last_inbound_at` is `view.thread.last_inbound_at` of the `ThreadView` the
+        owner's screen shows (None if it showed no inbound). The close is a compare-and-set
+        in one statement: if an inbound newer than that is stored — the person wrote while
+        the screen was stale — nothing is written and `ThreadChangedSinceSeen` carries
+        the refreshed view («te acaba de escribir»). Closing a closed chat is a no-op.
+        Another tenant's thread, or a thread of another channel, is `ThreadNotFound`."""
+        self._dm_thread(tenant_id, thread_id)
+        if not self._repo.close_if_unseen(
+            tenant_id=tenant_id,
+            thread_id=thread_id,
+            channel=CHANNEL_DM,
+            seen_last_inbound_at=seen_last_inbound_at,
+        ):
+            # Refused, or the thread vanished in between: re-read to tell which.
+            self._dm_thread(tenant_id, thread_id)
+            raise ThreadChangedSinceSeen(self.get_thread(tenant_id=tenant_id, thread_id=thread_id))
+        return self.get_thread(tenant_id=tenant_id, thread_id=thread_id)
 
     def reopen(self, *, tenant_id: UUID, thread_id: UUID) -> ThreadView:
-        """«Reabrir»: the inverse of `close`, same guarantees."""
-        return self._set_status(tenant_id, thread_id, THREAD_OPEN)
-
-    def _set_status(self, tenant_id: UUID, thread_id: UUID, status: str) -> ThreadView:
-        thread = self._thread(tenant_id, thread_id)
-        if thread.channel != CHANNEL_DM or not self._repo.set_status(
-            tenant_id=tenant_id, thread_id=thread_id, channel=CHANNEL_DM, status=status
+        """«Reabrir»: reopening an open chat is a no-op; another tenant's thread or a
+        thread of another channel is `ThreadNotFound`."""
+        self._dm_thread(tenant_id, thread_id)
+        if not self._repo.set_status(
+            tenant_id=tenant_id, thread_id=thread_id, channel=CHANNEL_DM, status=THREAD_OPEN
         ):
             raise ThreadNotFound(str(thread_id))
         return self.get_thread(tenant_id=tenant_id, thread_id=thread_id)
+
+    def _dm_thread(self, tenant_id: UUID, thread_id: UUID) -> ThreadRecord:
+        thread = self._thread(tenant_id, thread_id)
+        if thread.channel != CHANNEL_DM:
+            raise ThreadNotFound(str(thread_id))
+        return thread
 
     def get_thread(self, *, tenant_id: UUID, thread_id: UUID) -> ThreadView:
         return self._view(self._thread(tenant_id, thread_id), self._clock())
