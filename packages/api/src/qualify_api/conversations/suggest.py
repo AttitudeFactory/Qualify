@@ -184,12 +184,14 @@ class DraftGenerator(Protocol):
 
 def transcript(messages: Sequence[MessageRecord], counterpart: str, business: str) -> str:
     """The newest `CONTEXT_MESSAGES`, oldest first, one line each. A media-only message
-    is named by its kind so the model knows something was sent."""
+    is named by its kind so the model knows something was sent; a story mention
+    (m-25017817) by `[story_mention]` instead of its stored `media_type` (`other`)."""
     window = list(messages)[-CONTEXT_MESSAGES:]
     lines: list[str] = []
     for m in window:
         who = counterpart if m.direction == "inbound" else business
-        body = (m.text or "").strip() or f"[{m.media_type or 'adjunto'}]"
+        kind = "story_mention" if m.story_mention else m.media_type
+        body = (m.text or "").strip() or f"[{kind or 'adjunto'}]"
         lines.append(f"{who}: {body}")
     return "\n".join(lines)
 

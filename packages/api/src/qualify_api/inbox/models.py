@@ -191,6 +191,23 @@ class Message(Base):
         CheckConstraint(
             "choice_kind IS NULL OR direction = 'inbound'", name="ck_message_choice_inbound"
         ),
+        CheckConstraint(
+            "NOT story_mention OR direction = 'inbound'",
+            name="ck_message_story_mention_inbound",
+        ),
+        CheckConstraint(
+            "story_mention OR (story_mention_id IS NULL AND story_mention_url IS NULL)",
+            name="ck_message_story_mention_ref_flagged",
+        ),
+        CheckConstraint(
+            "story_mention = (story_mention_basis IS NOT NULL)",
+            name="ck_message_story_mention_has_basis",
+        ),
+        CheckConstraint(
+            "story_mention_basis IS NULL OR "
+            "story_mention_basis IN ('graph','attachment','heuristic')",
+            name="ck_message_story_mention_basis",
+        ),
         Index("ix_message_tenant", "tenant_id"),
         Index("ix_message_thread", "thread_id", "posted_at"),
     )
@@ -244,6 +261,16 @@ class Message(Base):
     # kind (`conversations.choices.CHOICE_KINDS`) and Meta's payload. NULL when typed.
     choice_kind: Mapped[str | None] = mapped_column(Text, nullable=True)
     choice_payload: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 0154 (m-25017817): an inbound Instagram DM that is a mention of the account in the
+    # person's own story. The flag, how it was recognised (`graph` / `attachment` /
+    # `heuristic`, `conversations.contracts.STORY_MENTION_BASES`), and the mentioner's
+    # story id and CDN URL (expiring with the story). False / NULL on everything else.
+    story_mention: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=sql_now("false")
+    )
+    story_mention_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    story_mention_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    story_mention_basis: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class InboxMetaCallLog(Base):

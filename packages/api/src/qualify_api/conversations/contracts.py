@@ -114,6 +114,36 @@ class RemoteMessage:
     # webhook knows them (the Message node has neither): `None` from the poll.
     choice_kind: str | None = None
     choice_payload: str | None = None
+    # m-25017817: the person mentioned the account in THEIR OWN story, delivered as an
+    # inbound DM. `story_mention_basis` says how sure the reading is
+    # (`STORY_MENTION_BASES`); the id/URL are the mentioner's story (the URL is signed and
+    # expires with it). A mention never sets `story_reply_*`. All unset on anything else.
+    story_mention: bool = False
+    story_mention_id: str | None = None
+    story_mention_url: str | None = None
+    story_mention_basis: str | None = None
+    # True when the Message node's `story` field was read and said `reply_to`: Meta's own
+    # discrimination, which overrules a heuristic mention. Never persisted as such.
+    story_reply_confirmed: bool = False
+
+
+#: The attachment kind Instagram documents for a story mention (`features/story-mention.md`).
+STORY_MENTION_ATTACHMENT: Final = "story_mention"
+#: How a story mention was recognised, strongest first:
+#: - `graph`: the Message node's `story.mention` — Meta discriminates mention vs reply;
+#: - `attachment`: the documented webhook shape, an attachment typed `story_mention`
+#:   (documented only, never observed here);
+#: - `heuristic`: the webhook shape VERIFIED live on 2026-11-13 (one event) — a
+#:   `reply_to.story` with no text and no attachment. The same key a story reply uses, so
+#:   this is an inference: a later `graph` reading confirms it or turns it into a reply.
+STORY_MENTION_GRAPH: Final = "graph"
+STORY_MENTION_ATTACHMENT_BASIS: Final = "attachment"
+STORY_MENTION_HEURISTIC: Final = "heuristic"
+STORY_MENTION_BASES: Final = (
+    STORY_MENTION_GRAPH,
+    STORY_MENTION_ATTACHMENT_BASIS,
+    STORY_MENTION_HEURISTIC,
+)
 
 
 def story_reference(value: Any) -> tuple[str, str | None] | None:
