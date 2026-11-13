@@ -101,7 +101,7 @@ class HashtagTerm(Base):
 
 class HashtagPostSighting(Base):
     """A public post a catalog tag was seen on, with its views and date (m-25026377,
-    migration 0161). Shared like its parent table: no tenant, no RLS (0161's docstring)."""
+    migration 0162). Shared like its parent table: no tenant, no RLS (0162's docstring)."""
 
     __tablename__ = "hashtag_post_sightings"
     __table_args__ = (
@@ -112,7 +112,7 @@ class HashtagPostSighting(Base):
             "source IN ('referentes','public_reels')", name="ck_hashtag_sighting_source"
         ),
         CheckConstraint("parser_version <> ''", name="ck_hashtag_sighting_provenance"),
-        # the kind of read only — never a query's words (0161)
+        # the kind of read only — never a query's words (0162)
         CheckConstraint(
             "source_ref ~ '^(tiktok|instagram):[a-z_]{1,32}$'",
             name="ck_hashtag_sighting_source_ref",

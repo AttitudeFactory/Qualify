@@ -30,7 +30,7 @@ Two rules the callers can rely on:
 - **Seeding is idempotent, observing accumulates.** A `NewTermLink` with `accumulate=False`
   (the taxonomy seed) leaves an existing link alone; with `accumulate=True` (a real search
   saw it again) its weight grows.
-- **A post counts once per tag** (m-25026377, migration 0161). `record_post_sightings`
+- **A post counts once per tag** (m-25026377, migration 0162). `record_post_sightings`
   keeps one row per (tag, network, post): seeing the same post again keeps the higher
   view count and the first known date, never a second row. «Popular» is
   `recent_views` — the views of the posts carrying the tag that were posted in the last
@@ -76,10 +76,10 @@ POPULAR_WINDOW_DAYS = 90
 POPULAR_POOL_FACTOR = 4
 POPULAR_MIN_POOL = 20
 
-#: Where a post sighting came from (0161 `ck_hashtag_sighting_source`).
+#: Where a post sighting came from (0162 `ck_hashtag_sighting_source`).
 SIGHTING_SOURCES = ("referentes", "public_reels")
 NETWORKS = ("tiktok", "instagram")
-#: `<network>:<kind>` and nothing else (0161 `ck_hashtag_sighting_source_ref`): no room
+#: `<network>:<kind>` and nothing else (0162 `ck_hashtag_sighting_source_ref`): no room
 #: for a search's words.
 SOURCE_REF = re.compile(r"(tiktok|instagram):[a-z_]{1,32}")
 
@@ -285,7 +285,7 @@ class ResolvedHashtag:
     #: 1.0 for an exact match, the similarity otherwise.
     score: float
     #: Views of the distinct posts carrying the tag posted in the last
-    #: `POPULAR_WINDOW_DAYS` (0161), and how many posts — 0 when nothing recent is known.
+    #: `POPULAR_WINDOW_DAYS` (0162), and how many posts — 0 when nothing recent is known.
     #: Filled by `resolve_popular`; `resolve` leaves them at 0.
     recent_views: int = 0
     recent_posts: int = 0
@@ -421,8 +421,17 @@ def _rank_by_recent_views(
     return tuple(enriched[:limit])
 
 
+def lock_key(item: NewHashtag | NewTermLink | Classification | NewPostSighting) -> str:
+    """THE lock order of every writer of `hashtags`: the tag by Unicode code point — what
+    Python's `str` comparison does and what SQL's `COLLATE "C"` does on UTF-8. Never the
+    database's default collation (`en_US.utf8` sorts `ñoquis` before `pizza`, code point
+    after), or two writers sharing tags could still take their row locks in opposite
+    orders and deadlock."""
+    return item.tag
+
+
 def merge_sighting(current: NewPostSighting, item: NewPostSighting) -> NewPostSighting:
-    """Two reads of the same (tag, network, post), as 0161's upsert merges them: the
+    """Two reads of the same (tag, network, post), as 0162's upsert merges them: the
     higher view count wins and names the provenance, a known date stays."""
     newer = item.views is not None and (current.views is None or item.views >= current.views)
     views = [v for v in (current.views, item.views) if v is not None]
@@ -439,7 +448,7 @@ def sighting_batch(
     """`(tags, sightings)` for one write: each (tag, network, post) once (merged with
     `merge_sighting`), sorted by (tag, network, post); and each tag once with the networks
     it was seen on, sorted by tag. The sort is the deadlock rule: every writer locks
-    `hashtags` rows in tag order."""
+    `hashtags` rows in tag order, by code point (`lock_key`; plain `str` tuples here)."""
     merged: dict[tuple[str, str, str], NewPostSighting] = {}
     for item in items:
         key = (item.tag, item.network, item.post_id)
@@ -492,7 +501,7 @@ class MemoryHashtagRepository:
     _tags: dict[str, StoredHashtag] = field(default_factory=dict)
     _links: dict[tuple[str, str], _Link] = field(default_factory=dict)
     _last: datetime | None = None
-    #: (tag, network, post_id) → the stored sighting (0161's natural key).
+    #: (tag, network, post_id) → the stored sighting (0162's natural key).
     _sightings: dict[tuple[str, str, str], NewPostSighting] = field(default_factory=dict)
     #: What `public_reels` (0117) holds, for `public_reels_since`; tests fill it.
     public_reels: list[ReelPost] = field(default_factory=list)
@@ -635,9 +644,11 @@ class MemoryHashtagRepository:
         return tuple(rows[:limit])
 
     def _reel_only(self, stored: StoredHashtag) -> bool:
-        """As `_NOT_REEL_ONLY`: never counted by a search, never linked to a term, and met
-        in at least one reel caption."""
-        if stored.seen_count > 0 or any(link.tag == stored.tag for link in self._links.values()):
+        """As `_NOT_REEL_ONLY`: created as `observed`, never counted by a search, never
+        linked to a term, and met in at least one reel caption."""
+        if stored.source != "observed" or stored.seen_count > 0:
+            return False
+        if any(link.tag == stored.tag for link in self._links.values()):
             return False
         return any(
             tag == stored.tag and s.source == "public_reels"
@@ -822,8 +833,10 @@ _APPLY_CLASSIFICATION = text(
 #: m-25026377: a tag only ever met in a reel caption (`public_reels` sighting, never
 #: counted by a search, never linked to a term) stays out of the paid classification
 #: queue — reels reads must not grow the Haiku batch billed to the next search.
+#: Only an `observed` tag can be reel-only: one created by `ai` (`remember_created`),
+#: `manual` or `taxonomy` keeps its behaviour even when a reel caption carries it.
 _NOT_REEL_ONLY = (
-    "(h.seen_count > 0 "
+    "(h.source <> 'observed' OR h.seen_count > 0 "
     "OR EXISTS (SELECT 1 FROM hashtag_terms t WHERE t.hashtag_id = h.id) "
     "OR NOT EXISTS (SELECT 1 FROM hashtag_post_sightings s "
     "WHERE s.hashtag_id = h.id AND s.source = 'public_reels'))"
@@ -860,7 +873,7 @@ _UPSERT_SIGHTING_TAGS = text(
            string_to_array(u.nets, ','), 0
     FROM unnest(CAST(:tags AS text[]), CAST(:slugs AS text[]), CAST(:nets AS text[]))
          AS u(tag, slug, nets)
-    ORDER BY u.tag
+    ORDER BY u.tag COLLATE "C"
     ON CONFLICT (tag) DO UPDATE SET
         last_seen_at = now(),
         networks = ARRAY(
@@ -885,7 +898,7 @@ _UPSERT_SIGHTINGS = text(
         CAST(:parser_versions AS text[])
     ) AS u(tag, network, post_id, posted_at, views, source, source_ref, parser_version)
     JOIN hashtags h ON h.tag = u.tag
-    ORDER BY u.tag, u.network, u.post_id
+    ORDER BY u.tag COLLATE "C", u.network COLLATE "C", u.post_id COLLATE "C"
     ON CONFLICT (hashtag_id, network, post_id) DO UPDATE SET
         views = GREATEST(hashtag_post_sightings.views, EXCLUDED.views),
         posted_at = COALESCE(hashtag_post_sightings.posted_at, EXCLUDED.posted_at),
@@ -940,8 +953,8 @@ class PostgresHashtagRepository:
     def upsert_hashtags(self, tenant_id: UUID, items: Iterable[NewHashtag]) -> int:
         written: set[str] = set()
         with tenant_session(tenant_id) as session:
-            # tag order (stable for repeats): the same lock order as `record_post_sightings`
-            for item in sorted(items, key=lambda i: i.tag):
+            # tag order (stable for repeats): the same lock order as every writer
+            for item in sorted(items, key=lock_key):
                 session.execute(
                     _UPSERT_HASHTAG,
                     {
@@ -962,7 +975,7 @@ class PostgresHashtagRepository:
     def link_terms(self, tenant_id: UUID, links: Iterable[NewTermLink]) -> int:
         written: set[tuple[str, str]] = set()
         with tenant_session(tenant_id) as session:
-            for link in links:
+            for link in sorted(links, key=lock_key):
                 session.execute(
                     _UPSERT_HASHTAG,
                     {
@@ -1058,7 +1071,7 @@ class PostgresHashtagRepository:
     def apply_classifications(self, tenant_id: UUID, items: Iterable[Classification]) -> int:
         changed = 0
         with tenant_session(tenant_id) as session:
-            for item in items:
+            for item in sorted(items, key=lock_key):
                 result = session.execute(
                     _APPLY_CLASSIFICATION,
                     {

@@ -2,8 +2,8 @@
 shared catalog was seen on (m-25026377, epic m-25026375 «Etiquetas que se están viendo»,
 `docs/epica-etiquetas-publicaciones.md`)
 
-Revision ID: 0161
-Revises: 0160
+Revision ID: 0162
+Revises: 0161
 Create Date: 2026-11-13
 
 ## Why this exists
@@ -57,8 +57,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 
-revision = "0161"
-down_revision = "0160"
+revision = "0162"
+down_revision = "0161"
 branch_labels = None
 depends_on = None
 

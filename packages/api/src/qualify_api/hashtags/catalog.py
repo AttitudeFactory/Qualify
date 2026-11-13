@@ -133,7 +133,7 @@ class CaptureSummary:
     hashtags: int = 0
     links: int = 0
     skipped: int = 0
-    #: Distinct (tag, network, post) whose views and date were stored (0161).
+    #: Distinct (tag, network, post) whose views and date were stored (0162).
     sightings: int = 0
 
 
@@ -671,7 +671,7 @@ def capture(
     a sighting per account), and — for the sector phase only — a link from each of the
     rubro's words to the hashtags at least `MIN_ACCOUNTS_FOR_LINK` distinct accounts used.
     Since m-25026377 it also stores, per hashtag, the views and date of each feed post it
-    was on (`post_sightings`, migration 0161) — what «popular» is ranked by.
+    was on (`post_sightings`, migration 0162) — what «popular» is ranked by.
 
     The link is the whole point: it is how "peluquería canina" comes to mean
     `#peluqueriacanina` and `#groomingperros` the next time anyone types it. A typo'd

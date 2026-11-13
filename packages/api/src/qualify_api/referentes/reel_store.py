@@ -462,7 +462,7 @@ _logger = logging.getLogger(__name__)
 def capture_reel_hashtags(
     tenant_id: UUID, reels: Sequence[PublicReel], repository: Any = None
 ) -> int:
-    """Feed the shared hashtag catalog (m-25026377, migration 0161) with the views and date
+    """Feed the shared hashtag catalog (m-25026377, migration 0162) with the views and date
     of every hashtag in the reels just stored — data already in hand, no vendor call.
 
     Best effort, called only AFTER the reels' own write has committed: the catalog opens

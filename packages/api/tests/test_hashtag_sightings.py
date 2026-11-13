@@ -1,5 +1,5 @@
 """m-25026377 — the catalog keeps the views and date of the posts each tag was on
-(migration 0161), and «popular» means views in the last 90 days.
+(migration 0162), and «popular» means views in the last 90 days.
 
 Runs against BOTH implementations: `MemoryHashtagRepository` offline and
 `PostgresHashtagRepository` against the compose Postgres (`db` marker), so the upsert's
@@ -12,6 +12,7 @@ from __future__ import annotations
 import string
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import httpx
@@ -198,8 +199,9 @@ class _Recorder:
     def __exit__(self, *exc: object) -> None:
         return None
 
-    def execute(self, statement: object, params: dict) -> None:
+    def execute(self, statement: object, params: dict) -> object:
         self.calls.append((str(statement), params))
+        return SimpleNamespace(rowcount=0)
 
 
 def test_postgres_writes_n_reels_in_two_statements_in_tag_order(
@@ -221,7 +223,9 @@ def test_postgres_writes_n_reels_in_two_statements_in_tag_order(
     assert (
         tag_params["tags"] == sorted(tag_params["tags"]) == ["alfa", "mid0", "mid1", "mid2", "zeta"]
     )
-    assert "ORDER BY u.tag, u.network, u.post_id" in sighting_sql
+    assert (
+        'ORDER BY u.tag COLLATE "C", u.network COLLATE "C", u.post_id COLLATE "C"' in sighting_sql
+    )
     keys = list(
         zip(sighting_params["tags"], sighting_params["networks"], sighting_params["post_ids"])
     )
@@ -448,3 +452,65 @@ def test_public_reels_since_reads_the_shared_table() -> None:
     since = NOW - timedelta(days=POPULAR_WINDOW_DAYS)
     rows = PostgresHashtagRepository().public_reels_since(TENANT, since)
     assert all(r.taken_at >= since for r in rows)
+
+
+# -- one lock order for every writer (re-review item B) -----------------------------------
+
+_NON_ASCII = ["pizza", "ñoquis", "árepa", "arepa", "zumo", "éxito", "Ñame".lower(), "café"]
+
+
+def test_every_writer_sorts_by_code_point(monkeypatch: pytest.MonkeyPatch) -> None:
+    from qualify_api.hashtags import Classification
+    from qualify_api.hashtags import repository as module
+
+    expected = sorted(_NON_ASCII)  # Python `str` order = code point
+    assert expected.index("pizza") < expected.index("ñoquis")  # en_US would invert these
+    shuffled = list(reversed(_NON_ASCII))
+    repo = PostgresHashtagRepository()
+
+    for write in (
+        lambda: repo.upsert_hashtags(
+            TENANT, [NewHashtag(tag=t, source="observed") for t in shuffled]
+        ),
+        lambda: repo.link_terms(
+            TENANT, [NewTermLink(term="x" * 3, tag=t, source="observed") for t in shuffled]
+        ),
+        lambda: repo.apply_classifications(
+            TENANT, [Classification(tag=t, kind="topic") for t in shuffled]
+        ),
+    ):
+        recorder = _Recorder()
+        monkeypatch.setattr(module, "tenant_session", recorder)
+        write()
+        order = list(dict.fromkeys(params["tag"] for _sql, params in recorder.calls))
+        assert order == expected
+
+    recorder = _Recorder()
+    monkeypatch.setattr(module, "tenant_session", recorder)
+    repo.record_post_sightings(TENANT, [_sighting(t, "p", views=1, days_ago=1) for t in shuffled])
+    (tag_sql, tag_params), (sighting_sql, sighting_params) = recorder.calls
+    assert tag_params["tags"] == expected and sighting_params["tags"] == expected
+    assert 'ORDER BY u.tag COLLATE "C"' in tag_sql and 'u.tag COLLATE "C"' in sighting_sql
+
+
+@pytest.mark.db
+def test_python_order_and_sql_order_agree_on_non_ascii_tags() -> None:
+    with tenant_session(TENANT) as session:
+        by_c = session.scalars(
+            text('SELECT t FROM unnest(CAST(:tags AS text[])) AS t ORDER BY t COLLATE "C"'),
+            {"tags": list(reversed(_NON_ASCII))},
+        ).all()
+    assert by_c == sorted(_NON_ASCII)
+
+
+# -- the reel-only exclusion applies to reel-born tags only (re-review item C) -------------
+
+
+def test_an_ai_tag_seen_in_a_reel_keeps_its_place_in_the_queue(repo: HashtagRepository) -> None:
+    tag = _word()
+    repo.upsert_hashtags(TENANT, [NewHashtag(tag=tag, source="ai")])  # remember_created, no term
+    assert tag in {t.tag for t in repo.needs_classification(TENANT, limit=100_000)}
+    hashtag_catalog.capture_reels(
+        TENANT, [ReelPost("tiktok", _word(), NOW, f"#{tag}", 3, 2)], repository=repo
+    )
+    assert tag in {t.tag for t in repo.needs_classification(TENANT, limit=100_000)}
