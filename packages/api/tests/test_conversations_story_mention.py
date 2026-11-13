@@ -329,7 +329,7 @@ def test_a_graph_basis_is_never_lowered_to_attachment() -> None:
 
 
 def test_a_legacy_reply_row_is_upgraded_by_a_confirmed_mention() -> None:
-    """A row stored as a story reply before 0155 (the prod event of 2026-11-13) becomes a
+    """A row stored as a story reply before 0156 (the prod event of 2026-11-13) becomes a
     mention when the node says so, keeping the story id/URL it had."""
     legacy = RemoteMessage(
         external_message_id="mid.m1",

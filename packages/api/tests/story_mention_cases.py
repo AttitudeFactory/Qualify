@@ -66,7 +66,7 @@ CASES: list[tuple[tuple[str, ...], tuple[str | None, str | None, str | None, str
     (("graph_reply", "heuristic"), (None, None, None, STORY, "inbound")),
     # a confirmed graph mention is never downgraded
     (("graph_mention", "graph_reply"), ("graph", STORY, LATER, None, "inbound")),
-    # a row stored as a reply before 0155 is upgraded by a confirmed mention ...
+    # a row stored as a reply before 0156 is upgraded by a confirmed mention ...
     (("legacy_reply", "graph_mention"), ("graph", STORY, LATER, None, "inbound")),
     (("legacy_reply", "attachment"), ("attachment", STORY, ATT, None, "inbound")),
     # ... but never by a heuristic

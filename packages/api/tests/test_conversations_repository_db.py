@@ -197,7 +197,7 @@ _STORY = _load_story_cases()
 
 @pytest.mark.parametrize(("readings", "expected"), _STORY.CASES)
 def test_story_mention_merge_in_every_order(seeded, readings, expected) -> None:
-    """m-25017817 (0155): the `_INSERT_MESSAGE` conflict rules against Postgres — the same
+    """m-25017817 (0156): the `_INSERT_MESSAGE` conflict rules against Postgres — the same
     table `test_conversations_story_mention.py` asserts on the in-memory twin."""
     repo = PostgresConversationRepository()
     service = ConversationSyncService(repository=repo, clock=lambda: T0)
