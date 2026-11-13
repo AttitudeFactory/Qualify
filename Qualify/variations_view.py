@@ -547,7 +547,7 @@ def _angle_card(angle: rx.Var) -> rx.Component:
             _angle_field("Escenario", angle.scene),
             _angle_field("Composición", angle.composition),
             _angle_field("Gancho", angle.hook),
-            _angle_field("Llamada a la acción", angle.cta),
+            _angle_field("Invitación a comprar o escribir", angle.cta),
             _angle_field("Por qué", angle.rationale),
             rx.cond(angle.failure_text != "", callout(angle.failure_text, "error")),
             # what the composition left out is said once for the set, in the header
@@ -670,8 +670,8 @@ def _scene_editor() -> rx.Component:
                         ),
                     ),
                     _editor_field(
-                        "Llamada a la acción",
-                        "Lo que le pides al público.",
+                        "Invitación a comprar o escribir",
+                        "No se dibuja sobre la imagen.",
                         rx.input(
                             value=VariationsState.editor_cta,
                             on_change=VariationsState.set_editor_cta,

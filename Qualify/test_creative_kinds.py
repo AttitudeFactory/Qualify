@@ -1242,8 +1242,10 @@ def test_the_gallery_explains_its_options_and_says_titulo_and_boton() -> None:
     assert rendered("Título") in section and "toggle_slide_title" in section
     assert rendered("Botón de acción") not in str(_slide_generated_fields())
     # § 2026-10-16: a «Video de stock» slide has no scene holding a button, and it must
-    # carry words — the title or, when the title is on another slide, the button
-    assert rendered("Botón de acción") in str(_slide_stock_fields())
+    # carry words — the title or, when the title is on another slide, the CTA phrase
+    # (m-25017276: printed as text, never a button — no longer called «Botón de acción»)
+    assert rendered("Botón de acción") not in str(_slide_stock_fields())
+    assert rendered("Invitación a comprar o escribir") in str(_slide_stock_fields())
     assert "Gancho" not in section and "Llamado (CTA)" not in section
     for help_title in ("Foto del producto", "Fondo común (opcional)"):
         assert rendered(f"Qué es «{help_title}»") in section

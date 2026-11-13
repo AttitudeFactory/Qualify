@@ -73,7 +73,7 @@ DRAFT_TONES: dict[str, str] = {
     DraftStatus.FAILED.value: "error",
 }
 #: Shown on a set whose product has no catalog price (requirement 8).
-NO_PRICE_TEXT = "Este producto no tiene precio en el catálogo: las piezas no mostrarán ninguno."
+NO_PRICE_TEXT = "Este producto no tiene precio en la Galería. Si quieres que se vea, agrégalo allí."
 #: CREAR-5 (decision 8): creations of the month, never money.
 PLAN_NOTE = "Proponer las ideas no usa tus creaciones del mes; cada publicación que crees usa 1."
 INTERRUPTED_TEXT = "La generación se interrumpió. Puedes reintentarla: no se cuenta dos veces."

@@ -123,8 +123,8 @@ PRESETS: tuple[AnglePreset, ...] = (
         key="escena_producto",
         name="Escena fotográfica",
         description=(
-            "Tu producto real fotografiado en diez escenarios distintos, con tu texto, "
-            "tu logo y el precio del catálogo encima. Feed 4:5."
+            "Tu producto real fotografiado en diez escenarios distintos, con tu texto y "
+            "tu logo encima. Feed 4:5."
         ),
         engine="ad_image",
         format=ContentFormat.FEED_4_5,
@@ -139,7 +139,7 @@ PRESETS: tuple[AnglePreset, ...] = (
         name="Historia vertical",
         description=(
             "Las mismas diez escenas pensadas para historia 9:16: encuadre vertical, "
-            "producto grande, texto corto y precio visible."
+            "producto grande y texto corto."
         ),
         engine="ad_image",
         format=ContentFormat.STORY_9_16,
