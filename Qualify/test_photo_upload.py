@@ -349,3 +349,59 @@ def test_the_zone_has_one_live_region_and_errors_are_alerts() -> None:
     assert '{"aria-hidden":"true"}' in zone and '"aria-live":"polite"' in zone
     assert "Si se corta tu conexi" in zone
     assert 'role:"alert"' in str(_upload_error())
+
+
+def _mpo(size: tuple[int, int]) -> bytes:
+    """A camera-style JPEG Pillow reports as MPO (a second frame: depth, gain map)."""
+    first, second = Image.new("RGB", size, (200, 120, 40)), Image.new("RGB", (64, 48))
+    out = io.BytesIO()
+    first.save(out, format="MPO", save_all=True, append_images=[second], quality=50)
+    data = out.getvalue()
+    with Image.open(io.BytesIO(data)) as check:
+        assert check.format == "MPO"
+    return data
+
+
+def test_a_12_mp_camera_jpeg_reported_as_mpo_passes() -> None:
+    photo = normalize_photo(io.BytesIO(_mpo((4032, 3024))), "20261113_101010.jpg")
+    assert photo.content_type == "image/jpeg" and photo.name == "20261113_101010.jpg"
+    with Image.open(io.BytesIO(photo.data)) as image:
+        assert image.format == "JPEG" and image.size == (4032, 3024)
+        assert getattr(image, "n_frames", 1) == 1  # the first frame only
+
+
+def test_a_big_mpo_is_decoded_reduced_like_a_jpeg() -> None:
+    photo = normalize_photo(io.BytesIO(_mpo((6000, 4500))), "grande.jpg")
+    with Image.open(io.BytesIO(photo.data)) as image:
+        assert image.size == (3000, 2250)
+
+
+def test_an_mpo_uses_the_jpeg_cap(monkeypatch) -> None:
+    data = _mpo((40, 30))
+    monkeypatch.setitem(upload_images.PHOTO_MAX_PIXELS, "JPEG", 40 * 30 - 1)
+    with pytest.raises(PhotoTooBig):
+        normalize_photo(io.BytesIO(data), "a.jpg")
+    monkeypatch.setitem(upload_images.PHOTO_MAX_PIXELS, "JPEG", 60_000_000)
+    assert upload_images.PHOTO_MAX_PIXELS["JPEG"] < 8000 * 7600  # a 60.8 MP MPO is refused
+
+
+@pytest.mark.parametrize("fmt", ["JPEG", "MPO", "PNG", "WEBP", "HEIF"])
+def test_every_format_pillow_reports_for_an_accepted_photo_has_its_cap(fmt: str) -> None:
+    """Each format the picker's types can open as maps to an explicit cap and is stored."""
+    if fmt == "HEIF":
+        data = _heic((40, 30))
+    elif fmt == "MPO":
+        data = _mpo((40, 30))
+    else:
+        data = _encode(Image.new("RGB", (40, 30)), fmt)
+    assert upload_images._SAME_AS.get(fmt, fmt) in upload_images.PHOTO_MAX_PIXELS
+    photo = normalize_photo(io.BytesIO(data), "foto.x")
+    with Image.open(io.BytesIO(photo.data)) as image:
+        assert image.size == (40, 30)
+
+
+@pytest.mark.parametrize("fmt", ["GIF", "TIFF", "BMP"])
+def test_any_other_format_renamed_as_a_photo_is_unreadable(fmt: str) -> None:
+    data = _encode(Image.new("RGB", (40, 30)), fmt)
+    with pytest.raises(PhotoUnreadable):
+        normalize_photo(io.BytesIO(data), "renombrada.jpg")

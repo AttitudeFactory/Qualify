@@ -84,6 +84,9 @@ def _ensure_heif() -> None:
     from pillow_heif import register_heif_opener  # noqa: PLC0415 — once per process is enough
 
     register_heif_opener()
+    from PIL import Image  # noqa: PLC0415
+
+    Image.init()  # every plugin (MPO, WebP), so `Image.open(formats=...)` knows them
 
 
 def _renamed(name: str, suffix: str) -> str:
@@ -126,8 +129,13 @@ async def normalize_photo_when_free(
         return await run_heavy_in_thread(normalize_photo, fileobj, name)
 
 
-def _pixel_cap(pillow_format: str) -> int:
-    return PHOTO_MAX_PIXELS.get(pillow_format, min(PHOTO_MAX_PIXELS.values()))
+#: The only formats Pillow may open a photo as (`Image.open(formats=...)`): anything else
+#: — a GIF, a TIFF, a PSD renamed `.jpg` — is unreadable, never decoded under a guessed
+#: cap. MPO is how Pillow names most camera JPEGs (Samsung, Android, an iPhone JPEG with
+#: a depth or gain map): a JPEG whose first frame is the photo, decoded as one. Pillow
+#: has no MPO opener of its own: the JPEG opener returns it, hence not in this list.
+_OPEN_FORMATS = ("JPEG", "PNG", "WEBP", "HEIF")
+_SAME_AS = {"MPO": "JPEG"}
 
 
 def _normalize(fileobj: IO[bytes], name: str, max_side: int) -> StoredPhoto:
@@ -135,10 +143,11 @@ def _normalize(fileobj: IO[bytes], name: str, max_side: int) -> StoredPhoto:
 
     _ensure_heif()
     try:
-        with Image.open(fileobj) as source:
+        with Image.open(fileobj, formats=_OPEN_FORMATS) as source:
             width, height = source.size
-            pillow_format = (source.format or "").upper()
-            if width * height > _pixel_cap(pillow_format):
+            raw_format = (source.format or "").upper()
+            pillow_format = _SAME_AS.get(raw_format, raw_format)
+            if width * height > PHOTO_MAX_PIXELS[pillow_format]:
                 raise PhotoTooBig(f"{pillow_format} {width}x{height}")
             icc = source.info.get("icc_profile")
             long_side = max(width, height)
