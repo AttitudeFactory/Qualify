@@ -1,10 +1,12 @@
 """A video by parts (ADR 44, VE-08 m-24921065): its plan from a reel's analysis, its parts
 as child drafts, and «Crear otra versión» of one part.
 
-- `plan_from_analysis` is PURE: the analysed cuts (`ReelAnalysis`, VE-04c) become 1 to
-  `PARTS_MAX` parts of 1-10 s — the mode by who is seen (F6), short cuts joined (P2), a cut
-  longer than 10 s split with `extend` (design §3), a source that is not 9:16 always made
-  new (N5) — with what the owner should read about each part (`PartNotice`).
+- `plan_from_analysis` is pure given `extend_on` (with `extend_on=None` it reads the
+  «Sigue a la anterior» switch, `QUALIFY_PARTS_EXTEND`): the analysed cuts (`ReelAnalysis`,
+  VE-04c) become 1 to `PARTS_MAX` parts of 1-10 s — the mode by who is seen (F6), short
+  cuts joined (P2), a cut longer than 10 s split with `extend` (design §3), a source that
+  is not 9:16 always made new (N5) — with what the owner should read about each part
+  (`PartNotice`).
 - `PartsService.create_parts` makes the children of a parent not made yet — every one, or
   those of `part_indexes` (m-24921081: the first, one, the ones left) — at once: briefs
   and drafts, their vistas previas charged all or nothing (`charge_many`, D7) and one
@@ -78,10 +80,15 @@ from qualify_api.creative.service import (
     PostgresContentRepository,
     UnknownDraft,
 )
+from qualify_api.creative.video_pipeline.mode_choice import (
+    ModeContext,
+    ModePart,
+    choose_part_mode,
+    edit_allowed,
+    people_unclear,
+)
 from qualify_api.referentes.reel_analysis_types import (
-    NOT_OBSERVED,
     OBSERVED,
-    UNKNOWN,
     ReelAnalysis,
     ShotAnalysis,
 )
@@ -619,18 +626,6 @@ def clip_description(text_: str, limit: int = PART_DESCRIPTION_MAX) -> str:
     return head[:space].rstrip(" ,;:") if space > 0 else text_[:limit]
 
 
-def _edit_allowed(shot: ShotAnalysis) -> bool:
-    """F6: «Igual al original» only when no person and no face was seen."""
-    return shot.people_presence == NOT_OBSERVED and shot.visible_faces == NOT_OBSERVED
-
-
-def _people_unclear(shot: ShotAnalysis) -> bool:
-    """The analysis could not tell whether someone is in the cut."""
-    return shot.people_presence == UNKNOWN or (
-        shot.people_presence == NOT_OBSERVED and shot.visible_faces == UNKNOWN
-    )
-
-
 def _talks(shot: ShotAnalysis) -> bool:
     """Someone seems to talk to the camera: speech falls in the cut and a face is seen."""
     return bool(shot.spoken_text.strip()) and shot.visible_faces == OBSERVED
@@ -668,7 +663,7 @@ def _same_mode(a: Sequence[ShotAnalysis], b: Sequence[ShotAnalysis], editable: b
     part — joining across that line would make it new and lose the original's look."""
     if not editable:
         return True
-    return all(_edit_allowed(s) for s in a) == all(_edit_allowed(s) for s in b)
+    return all(edit_allowed(s) for s in a) == all(edit_allowed(s) for s in b)
 
 
 def _groups(shots: Sequence[ShotAnalysis], editable: bool) -> list[list[ShotAnalysis]]:
@@ -722,9 +717,9 @@ def _split(seconds: float) -> list[int]:
 
 
 def plan_from_analysis(
-    analysis: ReelAnalysis, *, products: Sequence[str] = ()
+    analysis: ReelAnalysis, *, products: Sequence[str] = (), extend_on: bool | None = None
 ) -> tuple[VideoPartPlan, ...]:
-    """The parts a reel's analysis proposes, in order (pure; no I/O, no model call).
+    """The parts a reel's analysis proposes, in order (no I/O but the switch, no model call).
 
     - mode by people (F6): `edit` («Igual al original») only for cuts where no person and
       no face was seen, the source is 9:16 (N5) and can be edited; anything else
@@ -732,8 +727,13 @@ def plan_from_analysis(
       about → `people_unclear`, never `edit`;
     - consecutive cuts shorter than 4 s are joined up to 10 s (P2), and, past
       `PARTS_MAX` parts, the shortest neighbours that fit; past that, the first six;
-    - a cut longer than 10 s becomes parts of at most 10 s, every one after the first an
-      `extend` («Sigue a la anterior») that starts on that same cut;
+    - a cut longer than 10 s becomes parts of at most 10 s, every one after the first born
+      `extend` (`original_mode`, «Sigue a la anterior») on that same cut;
+    - every part's `mode` is the mode rule's (EF-09, `video_pipeline.mode_choice`), with its
+      `mode_rule_version` and `mode_reason`: the same as above, except a split tail while
+      «Sigue a la anterior» is off (`extend_on`; None reads
+      `part_extend.extend_available()`), which is made `reference` (`extend_unavailable`)
+      and stays identifiable by `original_mode="extend"`;
     - `talks_to_camera` = speech in the cut and a face seen; a part whose cuts show
       nothing the analysis could see → `describe_it`, no description;
     - descriptions never assume age or gender (`neutral_people`).
@@ -750,10 +750,16 @@ def plan_from_analysis(
         and is_vertical(analysis.width, analysis.height)
     )
     reel_product = reel_product_noun(analysis)
+    context = ModeContext(
+        source="reel",
+        source_available=analysis.source_available,
+        edit_eligible=analysis.edit_eligible,
+        vertical=is_vertical(analysis.width, analysis.height),
+        extend_on=extend_available() if extend_on is None else extend_on,
+    )
     plan: list[VideoPartPlan] = []
     for group in _groups(shots, editable):
-        unclear = any(_people_unclear(shot) for shot in group)
-        mode = "edit" if editable and all(_edit_allowed(s) for s in group) else "reference"
+        unclear = any(people_unclear(shot) for shot in group)
         description = join_unique(shot_description(s, products, reel_product) for s in group)
         notices: list[PartNotice] = []
         if unclear:
@@ -767,13 +773,25 @@ def plan_from_analysis(
             "talks_to_camera": any(_talks(s) for s in group),
             "notices": tuple(notices),
         }
-        if len(group) == 1 and group[0].seconds > PART_MAX_SECONDS:
-            for at, seconds in enumerate(_split(group[0].seconds)):
-                made = mode if at == 0 else "extend"
-                plan.append(VideoPartPlan(mode=made, original_mode=made, seconds=seconds, **common))
-        else:
-            seconds = _seconds(_group_seconds(group))
-            plan.append(VideoPartPlan(mode=mode, original_mode=mode, seconds=seconds, **common))
+        lengths = (
+            _split(group[0].seconds)
+            if len(group) == 1 and group[0].seconds > PART_MAX_SECONDS
+            else [_seconds(_group_seconds(group))]
+        )
+        for at, seconds in enumerate(lengths):
+            # the grouping decides where a part is born `extend`; the rule decides its mode
+            choice = choose_part_mode(ModePart(shots=tuple(group), split_tail=at > 0), context)
+            plan.append(
+                VideoPartPlan(
+                    mode=choice.mode,
+                    original_mode="extend" if at > 0 else choice.mode,
+                    seconds=seconds,
+                    mode_rule_version=choice.rule_version,
+                    mode_reason=choice.reason_code,
+                    mode_changed_by_owner=False,
+                    **common,
+                )
+            )
     return tuple(plan[:PARTS_MAX])
 
 
@@ -862,7 +880,7 @@ def _window_clean(shots: Sequence[ShotAnalysis], own: set[int], start: int, end:
     """No cut of someone else's (a person or a face seen, or unknown) inside the window."""
     for shot in shots:
         inside = min(shot.end_s, end) - max(shot.start_s, start)
-        if shot.shot_index not in own and inside > _WINDOW_SLACK_S and not _edit_allowed(shot):
+        if shot.shot_index not in own and inside > _WINDOW_SLACK_S and not edit_allowed(shot):
             return False
     return True
 
@@ -888,7 +906,7 @@ def part_window(
     covered = sorted((s for s in shots if s.shot_index in own), key=lambda s: s.shot_index)
     if not covered or len(covered) != len(own):
         raise PartWindowRefused("window_unavailable")
-    if not all(_edit_allowed(shot) for shot in covered):
+    if not all(edit_allowed(shot) for shot in covered):
         raise PartWindowRefused("not_edit_eligible")
     length = part.generation_seconds
     source_end = source_seconds if source_seconds is not None else max(s.end_s for s in shots)

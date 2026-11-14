@@ -45,6 +45,7 @@ from qualify_api.creative.parts import (
     PartsService,
     PartsUnavailable,
     check_extend_parts,
+    check_split_parts,
     clip_description,
     join_unique,
     neutral_people,
@@ -393,7 +394,8 @@ def test_never_more_than_six_parts() -> None:
 
 
 def test_a_cut_over_ten_seconds_is_split_and_continued() -> None:
-    plan = plan_from_analysis(analysis(shot(0, 0.0, 3.0), shot(1, 3.0, 17.0), shot(2, 17.0, 42.0)))
+    reel = analysis(shot(0, 0.0, 3.0), shot(1, 3.0, 17.0), shot(2, 17.0, 42.0))
+    plan = plan_from_analysis(reel, extend_on=True)
     assert [(p.mode, p.seconds, p.shot_indexes) for p in plan] == [
         ("edit", 3, (0,)),
         ("edit", 7, (1,)),
@@ -402,7 +404,28 @@ def test_a_cut_over_ten_seconds_is_split_and_continued() -> None:
         ("extend", 8, (2,)),
         ("extend", 8, (2,)),
     ]
-    check_extend_parts(plan, analysis(shot(0, 0.0, 3.0), shot(1, 3.0, 17.0), shot(2, 17.0, 42.0)))
+    check_extend_parts(plan, reel)
+    parent_brief(*plan)
+
+
+def test_with_extend_off_a_split_tail_is_made_new_and_stays_born_extend() -> None:
+    """EF-09: «Sigue a la anterior» switched off → the mode rule makes every split tail
+    `reference` (`extend_unavailable`), never in silence; `original_mode` keeps it a
+    converted split tail, which every check of the plan accepts."""
+    reel = analysis(shot(0, 0.0, 3.0), shot(1, 3.0, 17.0), shot(2, 17.0, 42.0))
+    plan = plan_from_analysis(reel, extend_on=False)
+    assert [(p.mode, p.original_mode, p.mode_reason) for p in plan] == [
+        ("edit", "edit", "reel_no_people"),
+        ("edit", "edit", "reel_no_people"),
+        ("reference", "extend", "extend_unavailable"),
+        ("edit", "edit", "reel_no_people"),
+        ("reference", "extend", "extend_unavailable"),
+        ("reference", "extend", "extend_unavailable"),
+    ]
+    on = plan_from_analysis(reel, extend_on=True)
+    assert [(p.seconds, p.shot_indexes) for p in plan] == [(p.seconds, p.shot_indexes) for p in on]
+    check_extend_parts(plan, reel)
+    check_split_parts(plan, reel)
     parent_brief(*plan)
 
 
