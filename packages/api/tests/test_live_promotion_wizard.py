@@ -1121,6 +1121,6 @@ async def test_remote_greeting_edit_blocks_activation(live, monkeypatch):
     preview = await prepare(live)
     creative = live["remote"].objects["102"]
     creative["page_welcome_message"]["text_format"]["message"]["text"] = "Otro saludo"
-    with pytest.raises(WizardUnavailable, match="no coincide"):
+    with pytest.raises(WizardUnavailable, match="saludo del chat distinto"):
         await confirm(live, preview)
     assert not live["remote"].activations

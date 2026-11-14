@@ -38,9 +38,11 @@ MAX_QUESTION = 80
 
 
 CHANGED_WHILE_EDITING = (
-    "Alguien cambió el saludo mientras lo editabas. "
-    "Te mostramos el más reciente; revísalo y guarda."
+    "Otra persona de tu negocio cambió el saludo mientras lo editabas. "
+    "Te mostramos su versión. Revísala y toca Siguiente para usarla."
 )
+WELCOME_EMPTY = "Escribe tu mensaje de bienvenida."
+WELCOME_TOO_LONG = f"Tu mensaje de bienvenida pasa de {MAX_WELCOME} caracteres. Acórtalo un poco."
 
 
 class GreetingUnavailable(ValueError):
@@ -54,10 +56,10 @@ def clean(welcome_text: str, questions: list[str] | tuple[str, ...]) -> tuple[st
         raise GreetingUnavailable("Escribe cada pregunta sugerida como texto.")
     welcome = welcome_text.strip()
     asked = tuple(q.strip() for q in questions if q.strip())  # Empty boxes are skipped.
-    if not welcome or len(welcome) > MAX_WELCOME:
-        raise GreetingUnavailable(
-            f"Escribe un saludo de bienvenida de hasta {MAX_WELCOME} caracteres."
-        )
+    if not welcome:
+        raise GreetingUnavailable(WELCOME_EMPTY)
+    if len(welcome) > MAX_WELCOME:
+        raise GreetingUnavailable(WELCOME_TOO_LONG)
     if not 1 <= len(asked) <= MAX_QUESTIONS:
         raise GreetingUnavailable(f"Escribe entre 1 y {MAX_QUESTIONS} preguntas sugeridas.")
     if any(len(q) > MAX_QUESTION for q in asked):
