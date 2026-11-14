@@ -32,7 +32,7 @@ import math
 import unicodedata
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timedelta, tzinfo
+from datetime import UTC, datetime, timedelta, tzinfo
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import urlencode
@@ -348,8 +348,16 @@ def message_time(value: datetime | None, now: datetime, zone: tzinfo) -> str:
 
 def bubble_clock(value: datetime | None, zone: tzinfo) -> str:
     """A bubble's time: the clock alone — the day separator above says the day
-    (m-25027371, as Instagram's thread)."""
-    return format_clock(value, zone) if value is not None else ""
+    (m-25027371, as Instagram's thread). A naive instant is UTC: the WhatsApp read
+    (`qualify_api.whatsapp.chats`) hands `messages.posted_at`, a `timestamp` column
+    stored in UTC, without its zone — Instagram's repository already marks it
+    (`conversations.repository`); without this the bubble said the UTC clock."""
+    return format_clock(as_utc(value), zone) if value is not None else ""
+
+
+def as_utc(value: datetime) -> datetime:
+    """A naive database instant is UTC; an aware one is kept."""
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
 def window_pill(
@@ -926,11 +934,11 @@ def build_conversation(
     `loading` decorate the inbound media messages (see `MediaResolution`)."""
     keyed: list[tuple[datetime, int, MessageVM]] = []
     for m in messages:
-        instant = m.posted_at or now
+        instant = as_utc(m.posted_at) if m.posted_at else now
         vm = build_message_vm(m, now=now, zone=zone, media=media, loading=loading, carts=carts)
         keyed.append((instant, 0, vm))
     for item in unsent:
-        keyed.append((item.created_at, 1, build_unsent_vm(item, now=now, zone=zone)))
+        keyed.append((as_utc(item.created_at), 1, build_unsent_vm(item, now=now, zone=zone)))
     keyed.sort(key=lambda entry: (entry[0], entry[1]))
     # m-25027371: the day separators of the shared thread («Hoy», «Ayer», «12 oct»).
     return mark_days(

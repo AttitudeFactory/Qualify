@@ -146,6 +146,21 @@ def test_whatsapp_gets_day_separators_and_clock_only_bubbles() -> None:
     assert vms[1].tick == "read" and vms[2].tick == "queued"
 
 
+def test_whatsapp_reads_a_naive_database_instant_as_utc() -> None:
+    """Seen on screen (m-25027371): WhatsApp's read hands `posted_at` without its zone,
+    and the bubble said the UTC clock (04:22 for a message sent at 11:22 p. m. in
+    Bogotá). A naive instant is UTC, as Instagram's repository already says."""
+    naive_utc = datetime(2026, 11, 14, 4, 22)  # 2026-11-13 23:22 in Bogotá
+    vms = build_conversation(
+        [_Msg("a", "inbound", "Hola", naive_utc)],
+        [UnsentItem(id="q", text="Ya", status="pending", created_at=datetime(2026, 11, 14, 4, 30))],
+        now=NOW,
+        zone=ZONE,
+    )
+    assert [v.time_label for v in vms] == ["23:22", "23:30"]
+    assert vms[0].day_label == "Ayer"
+
+
 # --- the order strip -----------------------------------------------------------------------
 
 
