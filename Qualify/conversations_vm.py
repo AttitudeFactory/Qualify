@@ -63,7 +63,7 @@ from .chat_row_vm import (
 )
 from .chat_thread_vm import day_label, window_line
 from .connection_copy import DISCONNECTED, DISCONNECTED_NOTICE, NO_ACCESS, PERMISSION_MISSING_NOTICE
-from .whatsapp_chats_vm import message_time, relative_time
+from .whatsapp_chats_vm import bubble_clock, message_time, relative_time
 
 # ======================================================================================
 # Copy and limits
@@ -1003,7 +1003,7 @@ def build_message_vm(
         message_id=str(message.id),
         is_outbound=outbound,
         text=text,
-        time_label=message_time(message.posted_at or message.ingested_at, now, zone),
+        time_label=bubble_clock(message.posted_at or message.ingested_at, zone),
         tick=tick,
         tick_label=_TICK_LABELS.get(tick, ""),
         error_label="",
@@ -1043,7 +1043,7 @@ def build_unsent_vm(item: UnsentItem, *, now: datetime, zone: tzinfo) -> Message
         message_id=f"outbox-{item.id}",
         is_outbound=True,
         text=item.text or ("" if control else "Mensaje"),
-        time_label=message_time(item.created_at, now, zone),
+        time_label=bubble_clock(item.created_at, zone),
         tick=tick,
         tick_label=_TICK_LABELS[tick],
         error_label=failure_label(item.error_code) if failed else "",

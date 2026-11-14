@@ -74,6 +74,8 @@ FAKE_ENV = {
     "QUALIFY_COPY_FAKE": "1",
     # nothing in the background acts for real on the dev database's tenants
     "QUALIFY_CALENDAR_WORKER": "off",
+    # m-25027371: Instagram DMs read through the in-memory channel, never Meta
+    "QUALIFY_CONVERSATIONS_DM_CHANNEL": "memory",
     "QUALIFY_VENDOR_RECOVERY": "off",
 }
 
@@ -335,6 +337,19 @@ def _open_business(app_server: str, context, scopes: list[str] | None):  # noqa:
 def signed_up_page(app_server: str, context):  # noqa: ANN001, ANN201 — pytest-playwright
     """A page logged into a brand-new business with no connected accounts yet."""
     return _open_business(app_server, context, scopes=None)
+
+
+@pytest.fixture()
+def chats_page(app_server: str, context):  # noqa: ANN001, ANN201 — pytest-playwright
+    """m-25027371: a business with a WhatsApp number and an Instagram account, each with
+    chats in every state the shared thread draws (`chat_fixtures.seed_chats`). The page
+    carries the seeded ids as `_qualify_e2e_chats`. Needs the app to read Instagram
+    through the in-memory channel (`QUALIFY_CONVERSATIONS_DM_CHANNEL=memory`)."""
+    from .chat_fixtures import seed_chats
+
+    page = _open_business(app_server, context, scopes=None)
+    page._qualify_e2e_chats = seed_chats(page._qualify_e2e_tenant_id, page._qualify_e2e_user_id)
+    return page
 
 
 @pytest.fixture()
