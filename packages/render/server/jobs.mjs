@@ -13,6 +13,8 @@ const FINISHED = new Set(['completed', 'failed', 'cancelled']);
 
 export const classifyError = (err) => {
   const msg = String(err?.message ?? err ?? '');
+  // a composition's calculateMetadata refusing its props (layer_still re-checks the layer)
+  if (/invalid_parameters/.test(msg)) return 'invalid_parameters';
   if (/delayRender|timed out|timeout/i.test(msg)) return 'timeout';
   if (/Error loading image|Could not load|failed to load|net::ERR|ERR_CONNECTION|font|ENOENT/i.test(msg)) {
     return 'dependency_failed';
@@ -47,6 +49,7 @@ const publicOutput = (o) => {
   if (o.status === 'completed') {
     Object.assign(out, {mimeType: o.mimeType, bytes: o.bytes, width: o.width, height: o.height});
   }
+  if (o.report) out.report = o.report;
   if (o.failureReason) out.failureReason = o.failureReason;
   if (o.errorMessage) out.errorMessage = o.errorMessage;
   return out;
@@ -108,6 +111,7 @@ export class JobManager {
         bytes: null,
         failureReason: null,
         errorMessage: null,
+        report: null,
         cancel: null,
       };
     }
@@ -211,6 +215,9 @@ export class JobManager {
         logLevel: 'error',
         timeoutInMilliseconds: this.config.delayRenderTimeoutMs,
       });
+      // layer_still: what the compositor decided (effective layout, fallbacks, sizes, contrast),
+      // computed in calculateMetadata and carried on the resolved props
+      out.report = composition.props?.resolved?.report ?? null;
       if (out.kind === 'video') {
         job.durationSec = composition.durationInFrames / composition.fps;
         await renderMedia({

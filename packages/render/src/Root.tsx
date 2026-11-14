@@ -18,6 +18,8 @@ import {FPS, buildScript} from './templates/promo_producto/script';
 import stickerManifest from '../templates/sticker/manifest.json';
 import stickerManifestV1 from '../templates/sticker/manifest.v1.json';
 import {CELL, SHEET, StickerPreview, StickerSheet, type StickerProps} from './templates/sticker/Sticker';
+import {FIXTURE_PHOTO, FixturePhoto} from './templates/layer_still/FixturePhoto';
+import {LayerStill, PORTS as LAYER_PORTS, layerStillMetadata, type LayerStillProps} from './templates/layer_still/LayerStill';
 import seasonalVideoManifest from '../templates/seasonal_video/manifest.json';
 import {
   FPS as SEASONAL_VIDEO_FPS,
@@ -86,7 +88,43 @@ const promoReelMetadata: CalculateMetadataFunction<PropsInput & {bounds: typeof 
   };
 };
 
-type PromoManifest = typeof promoManifest | typeof promoManifestV1;
+// m-25017285: `layer_still` v1 — one still per port from a LayerSpec (ADR 49). The checks
+// and the fallback chain run in calculateMetadata (LayerStill.tsx).
+const layerStillDefaults: LayerStillProps = {
+  meta: {templateId: 'layer_still', version: 1, port: 'feed'},
+  brand: {name: 'Panadería La Espiga', palette: ['#B5532A', '#FFFFFF', '#FFF4E6'], fonts: {heading: 'Poppins', body: 'Inter'}, logo: null},
+  texts: {price_text: '$ 12.000', is_food: true},
+  photos: [staticFile('sample/photo-1.jpg')],
+  layer: {
+    layout_id: 'plate',
+    layout_version: 1,
+    title: 'Tu pan, recién horneado',
+    subtitle: 'Masa madre de la casa',
+    call_phrase: 'Pídelo por WhatsApp',
+    anchor: 'top_left',
+    container_color: 'surface',
+    accent_word: 1,
+    price_ref: 'p-1',
+    subject_box: [0.2, 0.2, 0.8, 0.8],
+    logo_in_photo: false,
+  },
+  slide: null,
+};
+
+const layerStillCompositions = (): React.ReactNode[] =>
+  Object.entries(LAYER_PORTS).map(([port, spec]) => (
+    <Still
+      key={spec.composition}
+      id={spec.composition}
+      component={LayerStill}
+      width={spec.width}
+      height={spec.height}
+      defaultProps={{...layerStillDefaults, meta: {templateId: 'layer_still', version: 1, port}}}
+      calculateMetadata={layerStillMetadata}
+    />
+  ));
+
+type PromoManifest =typeof promoManifest | typeof promoManifestV1;
 type PortSpec = {kind: string; width: number; height: number; composition: string};
 
 /** One <Composition>/<Still> per output port of a promo manifest version. */
@@ -157,6 +195,13 @@ export const RemotionRoot: React.FC = () => {
         durationInFrames={Math.round(seasonalVideoManifest.duration.min_sec * SEASONAL_VIDEO_FPS)}
         defaultProps={seasonalVideoDefaults}
         calculateMetadata={seasonalVideoMetadata}
+      />
+      {layerStillCompositions()}
+      <Still
+        id="layer-still-fixture-photo"
+        component={FixturePhoto}
+        width={FIXTURE_PHOTO.width}
+        height={FIXTURE_PHOTO.height}
       />
       <Composition
         id="sticker-v1-preview"

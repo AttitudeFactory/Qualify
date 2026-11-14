@@ -38,7 +38,6 @@ const prepare = async (body) => {
   if (version !== undefined && !Number.isInteger(version)) throw new HttpError(422, 'invalid_parameters', 'version must be an integer');
   const manifest = manifests.get(body.templateId, version);
   const props = body.props;
-  assertValid(manifest, props);
   const missing = [];
   for (const id of collectAssetRefs(props)) if (!(await assets.exists(id))) missing.push(id);
   if (missing.length > 0) {
@@ -57,6 +56,8 @@ const prepare = async (body) => {
     }
     ports = [...new Set(body.outputs)];
   }
+  // after the ports: a layer's limits depend on the format of the port it renders (layer_still)
+  assertValid(manifest, props, ports);
   return {manifest, props, ports, warnings: fontWarnings(props.brand)};
 };
 
