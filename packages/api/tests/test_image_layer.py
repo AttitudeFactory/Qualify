@@ -231,6 +231,10 @@ def test_a_photo_over_5_mb_is_not_sent() -> None:
         "Domicilio a toda la ciudad",
         "Envío sin costo",
         "Shawarma 2x1",
+        "Abierto hoy hasta tarde",
+        "Estamos abiertos",
+        "Cerrado los lunes",
+        "Te esperamos el sábado",
     ],
 )
 def test_a_claim_not_in_the_brief_or_the_saved_data_asks_for_repair(text: str) -> None:
@@ -247,6 +251,18 @@ def test_a_claim_not_in_the_brief_or_the_saved_data_asks_for_repair(text: str) -
         ("Domicilio en tu barrio", {"scene": "Pedido a domicilio en moto"}),
         ("Te esperamos, abrimos hoy", {"facts": BusinessFacts(hours="Lunes a sábado, 11 a 9")}),
         ("Envíos a toda la ciudad", {"topic": "Hacemos envíos a toda la ciudad"}),
+        # the approved hook and invitation, and the catalog's product names, are sources
+        ("Pide a domicilio", {"cta": "Pide a domicilio por WhatsApp"}),
+        ("Martes de 2x1", {"hook": "Este martes, 2x1 en shawarmas"}),
+        (
+            "Tu Combo Domingo",
+            {"products": (CatalogProduct(uuid4(), "Combo Domingo", has_price=True),)},
+        ),
+        # plain language, not a claim
+        ("Cielo abierto", {}),
+        ("Recién abierto el horno", {}),
+        ("Tu sábado sabe mejor", {}),
+        ("Para tus domingos en familia", {}),
     ],
 )
 def test_what_the_brief_or_the_saved_data_says_is_no_claim(text: str, over: Any) -> None:

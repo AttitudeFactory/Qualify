@@ -482,20 +482,30 @@ def _text(value: object) -> str | None:
 
 
 #: What a free text may not promise unless the brief or the saved data says it (UX review
-#: of capa-v1: invented promotions and opening hours passed, having no digits).
+#: of capa-v1: invented promotions and opening hours passed, having no digits). A pattern's
+#: group `w`, when it has one, is the word looked up in the allowed sources.
+#: Plain language left out on purpose: a day after «tu/tus/su/sus/mi» («Tu sábado sabe
+#: mejor»); «abierto/cerrado» only with an availability word («abierto hoy», «estamos
+#: cerrados»), so «Cielo abierto» or «Recién abierto el horno» pass.
+_DAY = (
+    r"(?:lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bados?|domingos?|"
+    r"fin(?:es)? de semana)"
+)
+_AVAILABILITY = r"(?:hoy|ma[nñ]ana|todos|todo|los|las|desde|hasta|ya|siempre|24|este|esta)"
 _CLAIMS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "a day",
-        re.compile(
-            r"\b(?:lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bados?|domingos?|"
-            r"fin(?:es)? de semana)\b",
-            re.IGNORECASE,
-        ),
+        re.compile(rf"(?<!\btu )(?<!\btus )(?<!\bsu )(?<!\bsus )(?<!\bmi )\b{_DAY}\b", re.I),
     ),
     ("every day", re.compile(r"\btodos los d[ií]as\b", re.IGNORECASE)),
     (
         "opening hours",
-        re.compile(r"\b(?:abiert[oa]s?|abrimos|cerramos|cerrad[oa]s?|24\s*horas)\b", re.I),
+        re.compile(
+            rf"\b(?P<w>abrimos|cerramos|24\s*horas)\b|"
+            rf"\b(?:estamos|seguimos|ya)\s+(?P<w2>abiert[oa]s?|cerrad[oa]s?)\b|"
+            rf"\b(?P<w3>abiert[oa]s?|cerrad[oa]s?)\s+{_AVAILABILITY}\b",
+            re.IGNORECASE,
+        ),
     ),
     (
         "a discount",
@@ -518,17 +528,21 @@ def _folded(text: str) -> str:
 
 def unsupported_claims(text: str, request: LayerRequest) -> list[str]:
     """What `text` promises — a day, opening hours, a discount, something free, delivery,
-    a 2x1 — that neither «De qué trata la publicación» (topic and scene) nor the saved
-    business data says. «100% natural» or «500 g» are no claim."""
+    a 2x1 — that nothing handed to Claude says: «De qué trata la publicación» (topic and
+    scene), the approved hook and invitation, the catalog product names, the saved business
+    data. «100% natural» or «500 g» are no claim."""
     source = _folded(
         " ".join(
-            [request.topic, request.scene] + [request.facts.value(kind) or "" for kind in InfoKind]
+            [request.topic, request.scene, request.hook, request.cta]
+            + [product.name for product in request.products]
+            + [request.facts.value(kind) or "" for kind in InfoKind]
         )
     )
     found = []
     for what, pattern in _CLAIMS:
         for match in pattern.finditer(text):
-            token = _folded(match.group()).replace(" ", "")
+            named = [g for g in (match.groupdict().values()) if g]
+            token = _folded(named[0] if named else match.group()).replace(" ", "")
             if token and token in source.replace(" ", ""):
                 continue
             if what == "opening hours" and request.facts.value(InfoKind.HOURS):
