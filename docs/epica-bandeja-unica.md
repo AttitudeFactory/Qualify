@@ -1,10 +1,10 @@
 # Épica — Bandeja única de chats y respuesta automática en todos los canales
 
-`[EN CURSO · planeada 2026-11-12, actualizada 2026-11-14 · épica m-25017839 · ticket base m-24789459 · product-owner · 17 tickets en Meegle, 19 historias sin ticket · primer incremento fusionado]`
+`[EN CURSO · planeada 2026-11-12, actualizada 2026-11-13 · épica m-25017839 · ticket base m-24789459 · product-owner · 17 tickets en Meegle, 19 historias sin ticket · primer incremento fusionado]`
 
-> **Estado al 2026-11-14.** El primer incremento (m-25017843 → m-25017844 → m-25017859) está
-> fusionado en `main`; m-25017859 (PR #665) se fusionó el 2026-11-14 y su despliegue no estaba
-> confirmado al escribir esto. BU-A13 tiene ticket: **m-25026457** (PR #653, en producción).
+> **Estado al 2026-11-13.** El primer incremento (m-25017843 → m-25017844 → m-25017859) está
+> fusionado en `main`; m-25017859 (PR #665) se fusionó el 2026-11-13 (hora de Colombia) y quedó
+> desplegado esa noche (contenedores en `91b06afa`, sanos). BU-A13 tiene ticket: **m-25026457** (PR #653, en producción).
 > Nada de la lista única ni de «Cerrar» en Instagram se ha visto funcionar en un navegador. Detalle
 > por historia en §3 y §7; decisiones del fundador de la lista en §6 (vii); seguimientos sin ticket
 > en §5.
@@ -194,7 +194,7 @@ canal, con dos outboxes y dos workers `[arq §1.2, §1.3]`. Cortes de origen C1�
 
 ### m-25017859 (BU-A3) · Conversaciones: lista única de chats bajo «Por responder»
 
-> **Fusionada el 2026-11-14 — PR #665 (commit `91b06afa`); ticket RESOLVED, nunca vista en un
+> **Fusionada el 2026-11-13 — PR #665 (commit `91b06afa`); ticket RESOLVED, nunca vista en un
 > navegador.** Antes, el PR #649 (2026-11-13) agregó a la regla el límite de la ventana de
 > Instagram. Entregado: una lista de WhatsApp e Instagram bajo «Por responder» › «Mensajes» con la
 > fila compartida y filtro de canal; filtros «Por responder · Todos · Cerrados · Pago por revisar»
@@ -868,8 +868,8 @@ el nombre de las tablas `[arq §3.1, «Conclusión»]`. Cortes de origen M1–M7
 
 ## 5. Primer incremento y lo que corre en paralelo
 
-**Primer incremento — fusionado (2026-11-13/14):** m-25017843 (PR #625) y m-25017844 (PR #624)
-Done; m-25017859 (PRs #649 y #665) fusionada el 2026-11-14, RESOLVED y sin ver en un navegador;
+**Primer incremento — fusionado (2026-11-13):** m-25017843 (PR #625) y m-25017844 (PR #624)
+Done; m-25017859 (PRs #649 y #665) fusionada el 2026-11-13, RESOLVED y sin ver en un navegador;
 m-25026457 (BU-A13, PR #653) en producción, RESOLVED y sin ver en un navegador. Lo que sigue es
 la comprobación en producción, en celular y escritorio, de la lista y de «Cerrar».
 
@@ -999,19 +999,19 @@ en un PR).
    respuesta: «{N} chats de Instagram ya no se pueden responder aquí · Ver». Explicación única del
    cambio de números: «Ahora "Por responder" muestra solo a quien espera que una persona le
    conteste. Los chats que ya resolvió tu menú no cuentan.», con el botón «Entendido».
-5. **2026-11-14, «Solo dos semanas»** (m-25017859). La explicación se muestra hasta el 27 de
+5. **2026-11-13, «Solo dos semanas»** (m-25017859). La explicación se muestra hasta el 27 de
    noviembre inclusive (desde el 2026-11-28, hora de Bogotá, ya no) en vez de recordar en el
    navegador que se descartó: una marca guardada en el navegador sobreviviría a la sesión del
    negocio y choca con la regla de limpieza al cerrar sesión
    (`docs/modelo-negocio-operador-multi-emprendimiento.md` §6.1); se descartó abrir una excepción.
    «Entendido» la oculta por el resto de la sesión en ese negocio. El código de la explicación se
    borra después de esa fecha (seguimiento sin ticket, §5).
-6. **2026-11-14, «Respóndele desde Instagram»** (m-25017859). Etiqueta y marca de cabecera de un
+6. **2026-11-13, «Respóndele desde Instagram»** (m-25017859). Etiqueta y marca de cabecera de un
    chat de Instagram vencido sin respuesta. Elegida sobre la de UX, «Respóndele desde la app de
    Instagram», porque no se pudo comprobar que cupiera en una fila de 360 px.
-7. **2026-11-14, «Sí, Por responder»** (m-25017859). En WhatsApp › Chats el filtro «Sin leer» se
+7. **2026-11-13, «Sí, Por responder»** (m-25017859). En WhatsApp › Chats el filtro «Sin leer» se
    llama «Por responder» y lista por la regla.
-8. **2026-11-14, «Sí, ese nombre»** (m-25017859). El filtro de los chats de Instagram que vencieron
+8. **2026-11-13, «Sí, ese nombre»** (m-25017859). El filtro de los chats de Instagram que vencieron
    sin respuesta se llama «Sin responder a tiempo».
 9. **Prioridad de la etiqueta de la fila, como quedó construida:** «Pago por revisar» › («Quiere
    comprar»: lugar vacío, todavía no hay señal del backend) › etiqueta de tiempo › «Esperando el
@@ -1228,7 +1228,7 @@ Se crean sin el campo «Feature» y con «Relacionado con» hacia la épica.
 7. **«Por responder» con el menú** (decisión ii) bloqueaba m-25017843; el fundador la tomó el
    2026-11-13 («Solo si pasó a persona»), así que el primer incremento ya puede empezar.
 
-## 9. Prompt para `/qualify-team-dev` (actualizado 2026-11-14, con el primer incremento fusionado)
+## 9. Prompt para `/qualify-team-dev` (actualizado 2026-11-13, con el primer incremento fusionado)
 
 ```
 /qualify-team-dev Épica «Bandeja única de chats y respuesta automática» — doc
