@@ -22,6 +22,74 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
 
 ---
 
+<a id="niveles-005"></a>
+
+## NIVELES-005 — Medidas de most_aware, dilema de problem_aware en partes y horarios fuera de solution_aware (m-25026509) — 2026-11-13
+
+- **Qué se midió:** los commits `5a295629` y `6965678c`, más `ab4bdfd3` con la medición,
+  contra NIVELES-004 en los mismos casos. Cambios: (1) most_aware con medidas (gancho de unas
+  6 palabras, CTA de unas 5 con una forma de comprar, texto de 1 o 2 frases de unas 25
+  palabras, nunca bajo el mínimo de la marca); (2) problem_aware en partes: la primera parte
+  muestra a alguien viviendo el dilema, ahora `proponer-partes-v3.5`; (3) solution_aware deja
+  también los horarios a product_aware. Mismos modelos que NIVELES-004.
+- **Rúbrica alineada antes de juzgar** ([README](../../packages/api/evals/niveles_consciencia/README.md)):
+  `juez-niveles-v3` lleva las medidas de most_aware, y el agregado de clips ya no dice «el
+  texto largo cuenta en contra». Las salidas guardadas de NIVELES-004 (clips) y NIVELES-003
+  (piezas) se **volvieron a juzgar con la v3**: el «antes» y el «después» usan la misma
+  vara. Nuevo chequeo determinista `medida_most`: gancho ≤ 8, CTA ≤ 7, texto ≤ 35 palabras.
+- **Huellas de partes:** sin nivel y con los niveles que no cambiaron, el prompt es idéntico
+  a NIVELES-004. Solo cambia problem_aware: no hizo falta volver a correr los demás.
+- **Ediciones ajenas durante la medición:** otro agente modificó sin commitear
+  `angles.py`, `schemas.py` y `creative_state.py` entre las 20:49 y las 20:50; los cambios
+  son la detección de monedas y de montos para quitar precios. Las corridas de clips
+  most_aware y del nuevo juicio empezaron antes. Las demás importaron esos archivos, pero
+  con estos casos los prompts no cambian: el precio va en la fila «Precio», que se quita por
+  su nombre en cualquier caso.
+
+### Antes → después (juez v3 en ambos lados)
+
+| Qué | NIVELES-004 / 003 | NIVELES-005 |
+|---|---|---|
+| Clip most_aware, cumple (juez) | 0/12 | **3/11** (n 12, falta 1 lectura) |
+| Clip most_aware, medida determinista | 0/12 | **12/12** |
+| Clip most_aware, palabras gancho / CTA / texto | 7,6 / 9,4 / 52 | 6,0 / 4,8 / 27 |
+| Pieza most_aware, cumple (juez) | 0/7 | **5/8** |
+| Pieza most_aware, medida / palabras del texto | 7/8 · 33 | 8/8 · 22 |
+| Partes problem_aware, cumple (juez) | 3/6 | **8/10** (2 omitidas por el tope) |
+| Clip solution_aware, cumple (juez) | 3/5 | **7/7** (n 9, faltan 2 lecturas) |
+| Clip product_aware, cumple (juez) | 12/12 | 13/15 |
+| Clip unaware, cumple (juez) / precio en el copy | 4/5 · 0/6 | **6/9** · 0/9 |
+
+- **Puertas:** ninguna copia rechazada por corta. Clips most_aware 12/12, piezas 8/8,
+  solution_aware 9/9, unaware y product_aware 24/24. Ofertas inventadas en most_aware: 0/20.
+- **Partes válidas:** 10/10, 4–5 partes, 18–20 s, sin precios ni rechazos. Las 2 que fallan
+  (inmobiliaria, viajes) muestran la ilusión o la pregunta, pero no nombran el dilema.
+- **most_aware todavía falla por contenido, no por largo:** 8 de 11 clips suman ventajas
+  extra al texto (recogida en el hotel, acompañamiento legal, «abierto hasta las 11 p. m.»)
+  o una pregunta. Ejemplos: «Machu Picchu al amanecer, desde Cusco» / «Escríbenos por
+  WhatsApp y salimos» con recogida, grupo pequeño y guía bilingüe en el texto; «Tu primer
+  apartamento en Bello» / «Escríbenos ya por WhatsApp» con acompañamiento legal y subsidio;
+  en piezas, «Combo doble smash, listo ya» / «Cáele al local de la 57» con «abierto hasta las
+  11 p. m.». Redacción que probaría: «el texto dice solo el producto, el precio si lo hay y
+  cómo comprar: ninguna otra ventaja, ni horario, ni pregunta».
+- **Posibles regresiones, no concluyentes:**
+  - clip unaware baja a 6/9 (antes 4/5): el texto empuja el producto o las ventajas de
+    trámite; el precio sigue fuera en 9/9;
+  - clip product_aware 13/15 (antes 12/12): los 2 fallos son de viajes, que inventa un
+    horario («en la mañana», «de madrugada»); la calidad del juez baja de 3,67 a 3,07.
+  
+  Con estos tamaños ninguna diferencia es significativa.
+- **Sin medir:** nada de lo pedido. Faltaron 2 lecturas del juez en solution_aware y 1 en
+  most_aware (sin error registrado), y el tope omitió 2 de 12 propuestas de problem_aware.
+- **Gasto de la pasada: US$1,330** de US$1,75: nuevo juicio US$0,010, clips most_aware
+  US$0,227, piezas US$0,127, partes US$0,084, clips solution_aware US$0,285, unaware y
+  product_aware US$0,599. Ticket m-25026509: US$2,98 de US$3,40. Cero llamadas a BytePlus.
+- **Veredicto: se puede publicar con un arreglo.** problem_aware en partes y solution_aware
+  en clips pasan; product_aware se mantiene (0,87). **No fiable:** most_aware (clip 3/11,
+  pieza 5/8; el largo ya cumple, falta quitar las ventajas extra) y unaware de clip (6/9).
+
+---
+
 <a id="niveles-004"></a>
 
 ## NIVELES-004 — El nivel en clips y en el video por partes (m-25026509) — 2026-11-13

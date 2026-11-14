@@ -138,3 +138,10 @@ Detalle en la [bitácora, NIVELES-004](pruebas.md#niveles-004).
 - Partes con el agregado de NIVELES-002.
 - Sigue sin validar contra etiquetas humanas.
 - En 2 de 66 copias faltó la lectura informada.
+
+## Uso NIVELES-005 — rúbrica v3 alineada con las medidas de most_aware (m-25026509) — 2026-11-13
+
+Detalle en la [bitácora, NIVELES-005](pruebas.md#niveles-005).
+
+- `juez-niveles-v3`: la regla de most_aware lleva las medidas de la consigna (gancho de unas 6 palabras, CTA de unas 5, texto de unas 25 palabras, el mínimo de la marca permitido). El agregado de clips (`clip-v2`) ya no castiga el texto largo por sí solo.
+- Las salidas guardadas de NIVELES-003/004 se volvieron a juzgar con la v3 para comparar con la misma vara: US$0,010 por 20 copias.

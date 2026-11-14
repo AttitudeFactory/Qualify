@@ -62,3 +62,10 @@ Detalle en la [bitácora, NIVELES-004](pruebas.md#niveles-004). `proponer-partes
 - **Validez:** 36/36 propuestas sin rechazos ni precios, 4–5 partes, 17–20 s.
 - **Cumple su nivel (juez, n 6):** unaware 6/6, product_aware 6/6, solution_aware 5/6, problem_aware 3/6 (no muestra el dilema). most_aware 0/6: es la base por diseño, con la misma huella de prompt.
 - US$0,006–0,008 por propuesta.
+
+## Uso NIVELES-005: dilema de problem_aware en partes (m-25026509), 2026-11-13
+
+Detalle en la [bitácora, NIVELES-005](pruebas.md#niveles-005). Prompt `proponer-partes-v3.5`.
+
+- **problem_aware:** cumple su nivel en 8/10 (antes 3/6). Las 10 propuestas son válidas: 4–5 partes, 18–20 s, sin precios ni rechazos.
+- Las huellas del prompt sin nivel y con los demás niveles son iguales a las de NIVELES-004.

@@ -1,0 +1,980 @@
+{
+ "ticket": "m-25026482",
+ "baseline_ref": "a6667370",
+ "split": "all",
+ "pricing_version": "v9",
+ "judge": "claude-haiku-5-5@low",
+ "judge_prompt_version": "juez-niveles-v3",
+ "judge_parts_version": "juez-niveles-v3+partes-v1",
+ "code_commit": "a0b6ffdd",
+ "arms": [],
+ "levels": [
+  "solution_aware"
+ ],
+ "repeat": 4,
+ "tracing": false,
+ "date": "2026-11-13T20:55:39",
+ "suites": {
+  "clips": {
+   "items": [
+    {
+     "case": "hamburguesas",
+     "brand": "hamburguesas",
+     "arm": "solution_aware",
+     "level": "solution_aware",
+     "leftover": false,
+     "sentence": "Quiero que la gente se antoje del combo doble smash y venga al local con sus amigos",
+     "objective": "consideration",
+     "highlights": [
+      [
+       "Precio",
+       "$32.900"
+      ]
+     ],
+     "output": {
+      "kind": "clip",
+      "variants": [
+       {
+        "payload": {
+         "hook": "¿Oyes esa plancha? Es tu doble smash",
+         "caption": "¿Oyes esa plancha? Es tu doble smash 🔥 Dos carnes maduradas aplastadas a la plancha, costra dorada y salsa de la casa. Arma el parche: hay mesas para comer en el local y parqueadero gratis. ¿Antojo de dulce? Hay combo con el postre de la heladería de al lado. ¿Y los más valientes? Los retamos a terminarse la triple.",
+         "hashtags": [
+          "brasanorte",
+          "smashburger",
+          "chapinero",
+          "hamburguesasbogota"
+         ],
+         "cta": "Cáiganle con los amigos al local de la 57",
+         "script": "",
+         "shots": [
+          {
+           "visual": "Primer plano: dos bolas de carne caen sobre la plancha caliente y la espátula las aplasta, chisporroteo y humo subiendo.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "Las carnes se voltean mostrando la costra dorada, se apilan en el pan con salsa de la casa y se arma la doble smash.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "La doble smash llega a una mesa del local donde un grupo de amigos estira la mano para agarrarla entre risas.",
+           "line": "",
+           "seconds": 1
+          }
+         ]
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 13.67,
+        "cost_usd": 0.027455
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.027455,
+     "price_in_copy": false,
+     "three_shots": true,
+     "filmable_shots": 3,
+     "caption_words": 58,
+     "most_measure": false,
+     "juez_ciego_usd": 0.000519,
+     "juez_informado_usd": 0.000622
+    },
+    {
+     "case": "hamburguesas",
+     "brand": "hamburguesas",
+     "arm": "solution_aware",
+     "level": "solution_aware",
+     "leftover": false,
+     "sentence": "Quiero que la gente se antoje del combo doble smash y venga al local con sus amigos",
+     "objective": "consideration",
+     "highlights": [
+      [
+       "Precio",
+       "$32.900"
+      ]
+     ],
+     "output": {
+      "kind": "clip",
+      "variants": [
+       {
+        "payload": {
+         "hook": "¿Oyes esa plancha? Es tu doble smash",
+         "caption": "¿Oyes esa plancha? Es tu doble smash. Dos carnes maduradas aplastadas a la plancha, costra dorada, queso derretido y salsa de la casa. El combo doble smash: $32.900. Arma el parche: hay mesas en el local, parqueadero gratis y se admiten mascotas. ¿Y después? Atrévete con la triple 🔥",
+         "hashtags": [
+          "brasanorte",
+          "smashburger",
+          "chapinero",
+          "hamburguesasbogota"
+         ],
+         "cta": "Cae con tus amigos al local de la 57",
+         "script": "",
+         "shots": [
+          {
+           "visual": "Primer plano de dos bolas de carne cayendo sobre la plancha caliente y una espátula aplastándolas de golpe; sale vapor y chisporrotea la grasa.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "Los bordes se doran en costra, cae el queso y se derrite sobre las dos carnes; se arma la doble con salsa de la casa en el pan.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "La doble smash del combo llega a una mesa del local y un grupo de amigos, con un perro a su lado, la agarra entre risas.",
+           "line": "",
+           "seconds": 1
+          }
+         ]
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 12.56,
+        "cost_usd": 0.027635
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.027635,
+     "price_in_copy": true,
+     "three_shots": true,
+     "filmable_shots": 3,
+     "caption_words": 47,
+     "most_measure": false,
+     "juez_ciego_usd": 0.000534,
+     "juez_informado_usd": 0.000587
+    },
+    {
+     "case": "hamburguesas",
+     "brand": "hamburguesas",
+     "arm": "solution_aware",
+     "level": "solution_aware",
+     "leftover": false,
+     "sentence": "Quiero que la gente se antoje del combo doble smash y venga al local con sus amigos",
+     "objective": "consideration",
+     "highlights": [
+      [
+       "Precio",
+       "$32.900"
+      ]
+     ],
+     "output": {
+      "kind": "clip",
+      "variants": [
+       {
+        "payload": {
+         "hook": "¿Oyes esa plancha? Es tu doble smash",
+         "caption": "¿Oyes esa plancha? Es tu doble smash. Carne madurada aplastada a tope, costra dorada, queso derretido y salsa de la casa. Arma el parche y cáiganle al local: hay mesas para todos, parqueadero gratis y combo con el postre de la heladería de al lado. ¿Y quién se le mide a la triple? 🍔🔥",
+         "hashtags": [
+          "brasanorte",
+          "smashburger",
+          "chapinero",
+          "hamburguesasbogota"
+         ],
+         "cta": "Arma el parche y caigan al local en la 57",
+         "script": "",
+         "shots": [
+          {
+           "visual": "Primerísimo plano: dos bolas de carne caen sobre la plancha caliente y una espátula las aplasta de golpe, soltando vapor y chispas de grasa.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "Los discos de carne se voltean mostrando la costra dorada, el queso se derrite encima y se arma la doble smash con salsa de la casa en el pan.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "La doble smash llega a una mesa del local donde un grupo de amigos ríe y estira la mano para agarrarla, junto a un postre de helado.",
+           "line": "",
+           "seconds": 1
+          }
+         ]
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 12.54,
+        "cost_usd": 0.027315
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.027315,
+     "price_in_copy": false,
+     "three_shots": true,
+     "filmable_shots": 3,
+     "caption_words": 53,
+     "most_measure": false,
+     "juez_ciego_usd": 0.000546,
+     "juez_informado_usd": 0.000538
+    },
+    {
+     "case": "hamburguesas",
+     "brand": "hamburguesas",
+     "arm": "solution_aware",
+     "level": "solution_aware",
+     "leftover": false,
+     "sentence": "Quiero que la gente se antoje del combo doble smash y venga al local con sus amigos",
+     "objective": "consideration",
+     "highlights": [
+      [
+       "Precio",
+       "$32.900"
+      ]
+     ],
+     "output": {
+      "kind": "clip",
+      "variants": [
+       {
+        "payload": {
+         "hook": "¿Oyes esa plancha? Es tu doble smash",
+         "caption": "¿Oyes esa plancha? Es tu doble smash 🔥 Carne madurada aplastada a tope, costra crocante y salsa de la casa. Combo doble smash a $32.900. Trae al parche: hay mesas para comer en el local y parqueadero gratis. ¿Y la triple? Esa es pa' valientes, a ver quién se la termina. Caigan con los amigos al local en la 57 🍔",
+         "hashtags": [
+          "brasanorte",
+          "smashburger",
+          "chapinero",
+          "hamburguesasbogota"
+         ],
+         "cta": "Arma el parche y caigan al local en la 57",
+         "script": "",
+         "shots": [
+          {
+           "visual": "Primer plano: una bola de carne madurada cae sobre la plancha caliente y una espátula la aplasta de un golpe, soltando vapor y chispas de grasa.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "Las dos carnes forman costra dorada, el queso se derrite encima y se arma la doble smash con salsa de la casa chorreando por el borde.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "El combo doble smash aterriza en una mesa del local rodeado de amigos que estiran la mano al mismo tiempo.",
+           "line": "",
+           "seconds": 1
+          }
+         ]
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 12.89,
+        "cost_usd": 0.028115
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.028115,
+     "price_in_copy": true,
+     "three_shots": true,
+     "filmable_shots": 3,
+     "caption_words": 57,
+     "most_measure": false,
+     "juez_ciego_usd": 0.000441,
+     "juez_informado_usd": 0.000532
+    },
+    {
+     "case": "inmobiliaria",
+     "brand": "inmobiliaria",
+     "arm": "solution_aware",
+     "level": "solution_aware",
+     "leftover": false,
+     "sentence": "Mostrar los apartamentos de dos alcobas en Bello para familias que quieren su primera casa",
+     "objective": "consideration",
+     "highlights": [
+      [
+       "Precio",
+       "Desde $280 millones"
+      ]
+     ],
+     "output": {
+      "kind": "clip",
+      "variants": [
+       {
+        "payload": {
+         "hook": "Tu primera casa en Bello, con alguien a tu lado",
+         "caption": "Tu primera casa en Bello, con alguien a tu lado.\n\nSi están buscando apartamento de dos alcobas para empezar en familia, en Bello tenemos opciones pensadas para ese primer paso. Y no lo tienen que recorrer solos: les damos asesoría sin costo y acompañamiento legal en cada etapa.\n\nUn paso que muchas familias pasan por alto es el estudio de títulos. Antes de firmar la promesa de compraventa, lo revisamos con ustedes para confirmar que el inmueble esté en regla. También los guiamos con el subsidio Mi Casa Ya, para que sepan cómo aplicar y cómo se relaciona con su cuota inicial.\n\nAtendemos por WhatsApp, a su ritmo y sin presiones, desde la separación hasta la entrega. 🏡\n\n¿Qué duda tienen hoy sobre su primera vivienda?",
+         "hashtags": [
+          "habitatinmobiliaria",
+          "ViviendaBello",
+          "PrimeraVivienda",
+          "MiCasaYa"
+         ],
+         "cta": "Escríbannos por WhatsApp y agenden su asesoría sin costo",
+         "script": "",
+         "shots": [
+          {
+           "visual": "Una pareja joven con su hija pequeña abre la puerta de un apartamento vacío y luminoso en Bello y se detiene a mirar el espacio.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "La familia recorre las dos alcobas; la niña corre hacia una de ellas mientras los padres revisan documentos junto a un asesor en la sala.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "Plano amplio de la familia en la sala del apartamento, sonriendo frente a la ventana con vista al Valle de Aburrá.",
+           "line": "",
+           "seconds": 1
+          }
+         ]
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 11.03,
+        "cost_usd": 0.037773
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.037773,
+     "price_in_copy": false,
+     "three_shots": true,
+     "filmable_shots": 3,
+     "caption_words": 125,
+     "most_measure": false,
+     "juez_ciego_usd": 0.000558,
+     "juez_informado_usd": 0.000642
+    },
+    {
+     "case": "inmobiliaria",
+     "brand": "inmobiliaria",
+     "arm": "solution_aware",
+     "level": "solution_aware",
+     "leftover": false,
+     "sentence": "Mostrar los apartamentos de dos alcobas en Bello para familias que quieren su primera casa",
+     "objective": "consideration",
+     "highlights": [
+      [
+       "Precio",
+       "Desde $280 millones"
+      ]
+     ],
+     "output": {
+      "kind": "clip",
+      "variants": [
+       {
+        "payload": {
+         "hook": "Tu primera casa en Bello, con dos alcobas",
+         "caption": "Tu primera casa en Bello, con dos alcobas. Tenemos apartamentos de 2 alcobas para familias que van a comprar vivienda por primera vez, desde $280 millones. Un paso que muchos pasan por alto: antes de separar, conviene revisar el estudio de títulos del inmueble. Nosotros lo hacemos contigo, con acompañamiento legal, para que sepas con claridad qué estás comprando. También te guiamos con el subsidio Mi Casa Ya, para que entiendas los requisitos y cómo se relaciona con tu cuota inicial. La asesoría es sin costo y te atendemos por WhatsApp, a tu ritmo y sin presiones. ¿Qué es lo que más te inquieta de comprar tu primera vivienda?",
+         "hashtags": [
+          "habitatinmobiliaria",
+          "ViviendaBello",
+          "PrimeraVivienda",
+          "MiCasaYa"
+         ],
+         "cta": "Escríbenos al WhatsApp y conversemos sobre tu primer apartamento en Bello.",
+         "script": "",
+         "shots": [
+          {
+           "visual": "Una pareja joven con su hijo abre la puerta de un apartamento nuevo y vacío en Bello; la luz de la tarde entra por la ventana de la sala.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "La familia recorre las dos alcobas: el niño corre a la más pequeña mientras los padres miden con la mirada la principal; luego revisan unos documentos sobre el mesón de la cocina con un asesor.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "Plano amplio del apartamento con la familia en la sala junto a la ventana, la ciudad de fondo, tranquilos y sonriendo.",
+           "line": "",
+           "seconds": 1
+          }
+         ]
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 14.28,
+        "cost_usd": 0.033473
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.033473,
+     "price_in_copy": true,
+     "three_shots": true,
+     "filmable_shots": 3,
+     "caption_words": 107,
+     "most_measure": false,
+     "juez_ciego_usd": 0.000429,
+     "juez_informado_usd": 0.000487
+    },
+    {
+     "case": "inmobiliaria",
+     "brand": "inmobiliaria",
+     "arm": "solution_aware",
+     "level": "solution_aware",
+     "leftover": false,
+     "sentence": "Mostrar los apartamentos de dos alcobas en Bello para familias que quieren su primera casa",
+     "objective": "consideration",
+     "highlights": [
+      [
+       "Precio",
+       "Desde $280 millones"
+      ]
+     ],
+     "output": {
+      "kind": "clip",
+      "variants": [
+       {
+        "payload": {
+         "hook": "Tu primera casa en Bello, con dos alcobas",
+         "caption": "Tu primera casa en Bello, con dos alcobas. 🏡 Estos apartamentos de 2 alcobas en Bello están desde $280 millones y son pensados para familias que dan su primer paso hacia vivienda propia. Antes de separar hay un paso que muchos pasan por alto: el estudio de títulos. Ahí se revisa que el inmueble esté en regla, para que firmes con tranquilidad. Por eso te damos acompañamiento legal y estudio de títulos, y te guiamos con el subsidio Mi Casa Ya mientras organizas tu cuota inicial. La asesoría es sin costo y atendemos por WhatsApp, a tu ritmo y sin presiones. ¿Ya sabes con cuánto cuentas para la cuota inicial?",
+         "hashtags": [
+          "habitatinmobiliaria",
+          "PrimeraVivienda",
+          "ViviendaBello",
+          "MiCasaYa"
+         ],
+         "cta": "Escríbenos por WhatsApp y agenda tu asesoría sin costo para conocer los apartamentos en Bello.",
+         "script": "",
+         "shots": [
+          {
+           "visual": "Una pareja joven con su hija abre la puerta de un apartamento vacío y luminoso; la niña entra corriendo hacia la ventana.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "Recorrido por las dos alcobas: los padres miden un espacio con las manos imaginando la cama, mientras un asesor revisa documentos con ellos en la mesa del comedor.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "La familia, abrazada frente al ventanal con la vista de Bello al atardecer, en el apartamento que puede ser su primera casa.",
+           "line": "",
+           "seconds": 1
+          }
+         ]
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 14.53,
+        "cost_usd": 0.031873
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.031873,
+     "price_in_copy": true,
+     "three_shots": true,
+     "filmable_shots": 3,
+     "caption_words": 107,
+     "most_measure": false,
+     "juez_ciego_usd": 0.000577,
+     "juez_informado_usd": 0.000517
+    },
+    {
+     "case": "inmobiliaria",
+     "brand": "inmobiliaria",
+     "arm": "solution_aware",
+     "level": "solution_aware",
+     "leftover": false,
+     "sentence": "Mostrar los apartamentos de dos alcobas en Bello para familias que quieren su primera casa",
+     "objective": "consideration",
+     "highlights": [
+      [
+       "Precio",
+       "Desde $280 millones"
+      ]
+     ],
+     "output": {
+      "kind": "clip",
+      "variants": [
+       {
+        "payload": {
+         "hook": "Tu primera casa en Bello, con dos alcobas",
+         "caption": "Tu primera casa en Bello, con dos alcobas. Apartamentos pensados para familias que dan este paso por primera vez, desde $280 millones.\n\nUn paso que muchos pasan por alto: antes de separar, conviene revisar el estudio de títulos del proyecto. En Habitat te damos acompañamiento legal y hacemos ese estudio contigo, para que firmes con claridad. También te guiamos con el subsidio Mi Casa Ya y te ayudamos a organizar tu cuota inicial, desde la separación hasta la entrega.\n\nLa asesoría es sin costo y te atendemos por WhatsApp. ¿Qué dudas tienes hoy sobre tu primera vivienda?",
+         "hashtags": [
+          "habitatinmobiliaria",
+          "ViviendaBello",
+          "PrimeraVivienda",
+          "MiCasaYa"
+         ],
+         "cta": "Escríbenos por WhatsApp y agenda tu asesoría sin costo.",
+         "script": "",
+         "shots": [
+          {
+           "visual": "Una pareja joven con su hija abre la puerta de un apartamento vacío y luminoso en Bello y se queda mirando el espacio con calma.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "La familia recorre las dos alcobas: la niña elige la suya junto a la ventana mientras los padres revisan documentos con una asesora en la sala.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "Plano amplio de la familia en el balcón al atardecer, con vista al valle, recibiendo un juego de llaves.",
+           "line": "",
+           "seconds": 1
+          }
+         ]
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 9.65,
+        "cost_usd": 0.022593
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.022593,
+     "price_in_copy": true,
+     "three_shots": true,
+     "filmable_shots": 3,
+     "caption_words": 96,
+     "most_measure": false,
+     "juez_ciego_usd": 0.000596,
+     "juez_informado_usd": 0.000557
+    },
+    {
+     "case": "viajes",
+     "brand": "viajes",
+     "arm": "solution_aware",
+     "level": "solution_aware",
+     "leftover": false,
+     "sentence": "Que se animen a conocer Machu Picchu con nosotros saliendo desde Cusco",
+     "objective": "consideration",
+     "highlights": [
+      [
+       "Precio",
+       "US$180"
+      ]
+     ],
+     "output": {
+      "kind": "clip",
+      "variants": [
+       {
+        "payload": {
+         "hook": "Machu Picchu al amanecer, saliendo desde Cusco",
+         "caption": "Machu Picchu al amanecer, saliendo desde Cusco 🌄\nTe recogemos en tu hotel de Cusco y arrancamos la ruta bien temprano. Vas en grupo pequeño, con guías locales que hablan español e inglés y te cuentan la historia de cada rincón. ¿Quieres sumarle días o la selva? Te armamos el paquete a tu medida.",
+         "hashtags": [
+          "viajesandinos",
+          "machupicchu",
+          "cusco",
+          "viajeaperu"
+         ],
+         "cta": "Escríbenos por WhatsApp y cuadramos tu viaje a Machu Picchu 📲",
+         "script": "",
+         "shots": [
+          {
+           "visual": "Primera luz del amanecer sobre Machu Picchu: la niebla se abre lentamente y deja ver las terrazas y el Huayna Picchu.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "Madrugada en Cusco: un grupo pequeño de viajeros sube a la van frente a su hotel, y luego camina por la ruta siguiendo a un guía local que señala los muros de piedra.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "El grupo llega al mirador y contempla Machu Picchu completo bañado por el sol de la mañana, sonriendo en silencio.",
+           "line": "",
+           "seconds": 1
+          }
+         ]
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 10.61,
+        "cost_usd": 0.039053
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.039053,
+     "price_in_copy": false,
+     "three_shots": true,
+     "filmable_shots": 3,
+     "caption_words": 53,
+     "most_measure": false,
+     "juez_ciego_usd": 0.000589,
+     "juez_informado_usd": 0.000418
+    }
+   ],
+   "scores": [
+    {
+     "arm": "solution_aware",
+     "case": "hamburguesas",
+     "split": "test",
+     "sector": "comida",
+     "with_perks": true,
+     "level": "solution_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [
+      1,
+      3,
+      5
+     ],
+     "judge_level": "product_aware",
+     "judge_quality": 3,
+     "judge_invented": [],
+     "judge_perks": [
+      1,
+      3,
+      5
+     ],
+     "judge_fit": true,
+     "judge_reason": "Para solution_aware muestra el producto con datos reales (smash a la plancha, carne madurada, doble smash) y ventajas del negocio (mesas, parqueadero, combo con postre), sin inventar horario, precio, ",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 7,
+     "words_cta": 9
+    },
+    {
+     "arm": "solution_aware",
+     "case": "hamburguesas",
+     "split": "test",
+     "sector": "comida",
+     "with_perks": true,
+     "level": "solution_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [
+      1,
+      2,
+      3
+     ],
+     "judge_level": "most_aware",
+     "judge_quality": 2,
+     "judge_invented": [],
+     "judge_perks": [
+      1,
+      2,
+      3
+     ],
+     "judge_fit": null,
+     "judge_reason": "",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 7,
+     "words_cta": 9
+    },
+    {
+     "arm": "solution_aware",
+     "case": "hamburguesas",
+     "split": "test",
+     "sector": "comida",
+     "with_perks": true,
+     "level": "solution_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [
+      1,
+      3,
+      5
+     ],
+     "judge_level": "product_aware",
+     "judge_quality": 3,
+     "judge_invented": [
+      "Menciona una 'triple', producto que no aparece en los datos del negocio"
+     ],
+     "judge_perks": [
+      1,
+      3,
+      5
+     ],
+     "judge_fit": true,
+     "judge_reason": "Muestra datos reales del producto y del local (carne madurada, mesas para comer, parqueadero gratis, combo con postre) que justifican por qué este negocio es la mejor opción; no inventa horario, preci",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 7,
+     "words_cta": 10
+    },
+    {
+     "arm": "solution_aware",
+     "case": "hamburguesas",
+     "split": "test",
+     "sector": "comida",
+     "with_perks": true,
+     "level": "solution_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [
+      1,
+      3
+     ],
+     "judge_level": "product_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      1,
+      3
+     ],
+     "judge_fit": null,
+     "judge_reason": "",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 7,
+     "words_cta": 10
+    },
+    {
+     "arm": "solution_aware",
+     "case": "inmobiliaria",
+     "split": "test",
+     "sector": "inmobiliaria",
+     "with_perks": true,
+     "level": "solution_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [
+      1,
+      2,
+      3,
+      4
+     ],
+     "judge_level": "problem_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      1,
+      2,
+      3,
+      4
+     ],
+     "judge_fit": true,
+     "judge_reason": "Muestra por qué este negocio resuelve mejor la compra con datos reales (apartamentos de dos alcobas en Bello, asesoría sin costo, estudio de títulos, guía con Mi Casa Ya y atención por WhatsApp) y no ",
+     "offers_det": [
+      [
+       "servicio",
+       "separacion"
+      ]
+     ],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 10,
+     "words_cta": 9
+    },
+    {
+     "arm": "solution_aware",
+     "case": "inmobiliaria",
+     "split": "test",
+     "sector": "inmobiliaria",
+     "with_perks": true,
+     "level": "solution_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [
+      1,
+      2,
+      3,
+      4
+     ],
+     "judge_level": "problem_aware",
+     "judge_quality": 3,
+     "judge_invented": [],
+     "judge_perks": [
+      1,
+      2,
+      3,
+      4
+     ],
+     "judge_fit": true,
+     "judge_reason": "Muestra por qué este servicio resuelve mejor la compra con datos reales (2 alcobas en Bello, desde $280 millones, estudio de títulos, guía con Mi Casa Ya, asesoría sin costo) y no inventa precios, hor",
+     "offers_det": [
+      [
+       "servicio",
+       "separar"
+      ]
+     ],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 8,
+     "words_cta": 11
+    },
+    {
+     "arm": "solution_aware",
+     "case": "inmobiliaria",
+     "split": "test",
+     "sector": "inmobiliaria",
+     "with_perks": true,
+     "level": "solution_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [
+      1,
+      2,
+      3,
+      4
+     ],
+     "judge_level": "product_aware",
+     "judge_quality": 3,
+     "judge_invented": [],
+     "judge_perks": [
+      1,
+      2,
+      3,
+      4
+     ],
+     "judge_fit": true,
+     "judge_reason": "Muestra por qué este negocio lo resuelve mejor con datos reales (2 alcobas en Bello, desde $280 millones, asesoría sin costo, estudio de títulos, guía con Mi Casa Ya), sin inventar horarios, precios n",
+     "offers_det": [
+      [
+       "servicio",
+       "separar"
+      ]
+     ],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 8,
+     "words_cta": 15
+    },
+    {
+     "arm": "solution_aware",
+     "case": "inmobiliaria",
+     "split": "test",
+     "sector": "inmobiliaria",
+     "with_perks": true,
+     "level": "solution_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [
+      1,
+      2,
+      3,
+      4
+     ],
+     "judge_level": "problem_aware",
+     "judge_quality": 3,
+     "judge_invented": [],
+     "judge_perks": [
+      1,
+      2,
+      3,
+      4
+     ],
+     "judge_fit": true,
+     "judge_reason": "Para solution_aware muestra por qué este negocio resuelve mejor la compra con datos reales (dos alcobas en Bello, desde $280 millones, asesoría sin costo, estudio de títulos, guía con Mi Casa Ya, What",
+     "offers_det": [
+      [
+       "servicio",
+       "separar"
+      ],
+      [
+       "servicio",
+       "separacion"
+      ]
+     ],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 8,
+     "words_cta": 9
+    },
+    {
+     "arm": "solution_aware",
+     "case": "viajes",
+     "split": "test",
+     "sector": "viajes",
+     "with_perks": true,
+     "level": "solution_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [
+      1,
+      2,
+      3,
+      4
+     ],
+     "judge_level": "product_aware",
+     "judge_quality": 3,
+     "judge_invented": [
+      "Salida al amanecer o de madrugada: el horario de salida no aparece en los datos del negocio"
+     ],
+     "judge_perks": [
+      1,
+      2,
+      3,
+      4
+     ],
+     "judge_fit": true,
+     "judge_reason": "Muestra por qué este negocio lo resuelve mejor con ventajas reales de los datos (recogida en el hotel, guías que hablan español e inglés, grupos pequeños, paquete a medida) y no inventa horarios, prec",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 7,
+     "words_cta": 10
+    }
+   ]
+  }
+ },
+ "spend_usd": {
+  "clips": 0.284974
+ },
+ "spend_total_usd": 0.284974,
+ "skipped_by_cap": [
+  "clips viajes solution_aware",
+  "clips viajes solution_aware",
+  "clips viajes solution_aware"
+ ],
+ "ledger_calls": 18
+}
