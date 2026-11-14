@@ -12,9 +12,12 @@ rubro's videos carry this week. The worker CLI is `qualify_api.hashtags.worker`.
 same ones the referentes search runs with), in the order they were chosen, the first
 five the catalog would accept (`readable_tag`; a pill it would refuse is skipped and does
 not take a slot). A business without pills is not read: Qualify never guesses a rubro to
-pay for. In production (`--all-tenants`) only the businesses the reels worker treats as
-active are read (`reel_schedule.is_active` over `PostgresReelQueue.opened_brands`, ADR 42
-§2.6). **Known limitation, for the founder to decide before switching this on:** that
+pay for. During the pilot (D3) production reads only the businesses listed in
+`QUALIFY_HASHTAG_WEEKLY_TENANTS` (`hashtags.pilot`), for the reels worker and the CLI's
+`--all-tenants` alike. `run_tick(None)` — unused while the pilot lasts — would read the
+businesses the reels worker treats as active (`reel_schedule.is_active` over
+`PostgresReelQueue.opened_brands`, ADR 42 §2.6). **Known limitation, for the founder to
+decide before opening it to everyone (D3):** that
 gate means exactly «a brand of the business opened the «Ideas para tus reels» screen in
 the last 14 days» — not «the business is a paying, active client». A business that
 publishes every day but never opens that screen is not read; one that opened it once and
@@ -677,6 +680,9 @@ DONE = "done"
 FAILED = "failed"
 CAPPED = "capped"
 BLOCKED = "blocked"
+#: `TickReport.stopped` / `BusinessOutcome.reason` when the caller's `should_stop` asked
+#: the pass to end early (the reels worker's SIGTERM, `hashtags.pilot`).
+STOPPING = "stopping"
 
 
 @dataclass
@@ -722,11 +728,13 @@ def _read_tags(
     claims: Claims,
     client: httpx.Client,
     now: datetime,
+    should_stop: Callable[[], bool] | None = None,
 ) -> None:
     """Read `pending` until `MAX_TAGS` credits are booked in the last 7 days: each
     hashtag under its own claim (`claim_tag`), re-checked inside it — a pass for another
     business may have kept it in the meantime — so two businesses sharing a hashtag never
-    both pay for it.
+    both pay for it. `should_stop` is asked before each hashtag: when it says so, the
+    rest wait for a later pass (`reason=STOPPING`).
 
     What counts is what the gate BOOKED — its first credit and the `:extra` row of what
     the vendor reports beyond it (`credits_charged`) — re-read from the ledger before
@@ -736,6 +744,9 @@ def _read_tags(
     usage.bind(client, usage.UsageCharge(tenant, rubro.brand_id))
     week = now - REREAD_AFTER
     for tag in pending:
+        if should_stop is not None and should_stop():
+            outcome.reason = STOPPING
+            return
         if log.credits_since(tenant, week) >= MAX_TAGS:
             return
         with claims.claim_tag(tenant, tag) as taken:
@@ -808,6 +819,7 @@ def read_business(
     client: httpx.Client,
     now: datetime,
     claims: Claims,
+    should_stop: Callable[[], bool] | None = None,
 ) -> BusinessOutcome:
     """One business's weekly read, under its claim (the switches are the caller's). The
     rules of the module docstring, in order; raises nothing a vendor or the catalog
@@ -844,6 +856,7 @@ def read_business(
             claims=claims,
             client=client,
             now=now,
+            should_stop=should_stop,
         )
         return outcome
 
@@ -871,11 +884,14 @@ def run_tick(
     client_factory: ClientFactory = _default_client,
     now: datetime | None = None,
     env: Mapping[str, str] | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> TickReport:
     """One pass over `tenant_ids` (None = every active business: production only). With a
     switch off or no vendor key it returns at once — no database read, no booking, no
     vendor call. `env` is where the weekly switch is read (default: the environment);
-    the gate's switch and the key are always read from the environment."""
+    the gate's switch and the key are always read from the environment. `should_stop`
+    (optional) is asked before each business and each hashtag: when it says so the pass
+    ends with `stopped=STOPPING`, after the read in flight at most."""
     reason = _not_ready(env)
     if reason is not None:
         logger.info("hashtags.weekly not run: %s", reason)
@@ -889,19 +905,33 @@ def run_tick(
     moment = now or datetime.now(UTC)
     report = TickReport()
     for tenant in source.businesses(tenant_ids, now=moment):
+        if should_stop is not None and should_stop():
+            report.stopped = STOPPING
+            break
         try:
             rubro = source.rubro(tenant)
         except Exception as exc:  # noqa: BLE001 - one business never stops the others
-            logger.warning("hashtags.weekly rubro unreadable tenant=%s: %s", tenant, exc)
+            # the type only: a database error's text can carry its parameters (a tag)
+            logger.warning(
+                "hashtags.weekly rubro unreadable tenant=%s: %s", tenant, type(exc).__name__
+            )
             report.outcomes.append(BusinessOutcome(tenant, FAILED, errors=1))
             continue
         client = client_factory()
         try:
             outcome = read_business(
-                rubro, log=log, repository=repository, client=client, now=moment, claims=claims
+                rubro,
+                log=log,
+                repository=repository,
+                client=client,
+                now=moment,
+                claims=claims,
+                should_stop=should_stop,
             )
         except Exception as exc:  # noqa: BLE001 - e.g. the ledger is unreadable
-            logger.warning("hashtags.weekly business failed tenant=%s: %s", tenant, exc)
+            logger.warning(
+                "hashtags.weekly business failed tenant=%s: %s", tenant, type(exc).__name__
+            )
             outcome = BusinessOutcome(tenant, FAILED, errors=1)
         finally:
             client.close()
@@ -919,6 +949,9 @@ def run_tick(
         if outcome.status == BLOCKED and outcome.reason in _GLOBAL_BLOCKS:
             report.stopped = outcome.reason
             break
+        if outcome.reason == STOPPING:
+            report.stopped = STOPPING
+            break
     return report
 
 
@@ -934,6 +967,7 @@ __all__ = [
     "RETRY_AFTER",
     "SOURCE",
     "SOURCE_REF",
+    "STOPPING",
     "SWITCH_ENV",
     "WINDOW_DAYS",
     "BusinessOutcome",

@@ -213,7 +213,8 @@ AWARENESS_GUIDANCE: dict[AwarenessLevel, str] = {
         " sets this business apart with at least one concrete fact from the product data or"
         " one perk from the list, stated as given. Restating what the product is, generic"
         " claims (fresh, quality, experts, made for you) or attributes not in the data are"
-        " not enough; prices, payment and opening hours belong to product_aware."
+        " not enough; prices, payment and opening hours belong to the product_aware and"
+        " most_aware levels."
     ),
     AwarenessLevel.PRODUCT_AWARE: (
         "the reader knows the business but hesitates. Remove the friction: the price as"
@@ -222,9 +223,13 @@ AWARENESS_GUIDANCE: dict[AwarenessLevel, str] = {
     AwarenessLevel.MOST_AWARE: (
         "the reader is ready to buy. Give the shortest path to the purchase: a hook of about"
         " 6 words, a call to action of about 5 words with one way to buy, and a caption of"
-        " one or two sentences (about 25 words) holding the product, the price if there is"
-        " one, and how to buy — no more, though never below the caption minimum above."
-        " The call to action uses"
+        " one or two sentences (about 25 words), never below the caption minimum above. The"
+        " caption says only the product, the price if there is one, and how to buy: the way"
+        " to order (one or two the business uses together, even when they are among its"
+        " perks) and, when the business's facts give them, when and where (opening hours,"
+        " the place). This assignment's own key facts and must-mention entries always go in"
+        " too. Nothing else: no other perk of the business (parking, pets, atmosphere, the"
+        " brand's story) and no question. The call to action uses"
         " only a way to buy that the business's facts, the product data or this briefing"
         " give; if there is none, simply invite people to come or to write, without naming a"
         " service (no reservations, takeaway, pickup or delivery)."
