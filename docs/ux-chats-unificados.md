@@ -138,62 +138,82 @@ opción (otro paso de alfa) antes de pasar a otra.
 Descartadas: degradado del canal oscurecido con texto blanco (más vistoso, contraste sin medir);
 una sola burbuja de acento teal (borra el color que gustó).
 
-#### D2 medido (m-25017860, 2026-11-14) — **el tinte `{canal}-a4` pasa; D2 queda medido**
+#### D2 medido (m-25017860, 2026-11-14) — **lo aceptado pasa; D2 queda medido**
 
 **Método.** Chrome, página de prueba local con la hoja de Radix Themes 3.3.0 de `.web` (solo los
 valores sRGB; se quitó el bloque display-p3), `assets/qualify.css` y `assets/qualify-inbox.css`
-reales, tema `teal`/`slate`, `.light` y `.dark`. Cada token se leyó con `getComputedStyle` y las
-capas traslúcidas se componen sobre lo que tienen detrás (panel opaco `--color-panel-solid` →
-tarjeta `--q-card-fill` en sus dos extremos → fondo del hilo `--gray-a2` → burbuja
-`--q-control-fill` + degradado `{canal}-a4 → a3`); cada razón es la **peor** de esas combinaciones,
-WCAG 2.x. La burbuja de Instagram con tinte no existe todavía: se midió con la regla de WhatsApp
-(`.q-wa-msg--glass…--out`) cambiando `green` por `pink`. La maqueta solo tiene tema oscuro y
-colores a mano (`wa-a4` = verde al 24 %), más oscuros que los tokens de verdad; sus valores van
-aparte, solo como referencia.
+reales, tema `teal`/`slate`, `.light` y `.dark`. Cada token se leyó con `getComputedStyle` sobre la
+página dibujada, y las capas traslúcidas se componen sobre lo que tienen detrás; cada razón es la
+**peor** combinación, WCAG 2.x. Captura: `docs/mockups/contraste-tinte-canal-2026-11-14.jpg`
+(claro a la izquierda, oscuro a la derecha). La página de prueba no se guarda en el repo: se
+rehace con esas tres hojas y una burbuja con las clases de `Qualify/whatsapp_tab_chats.py`.
 
-**Fondo del hilo que se midió como final:** `--gray-a2` solo, sin el lavado del canal debajo de
-los mensajes. Hoy WhatsApp pinta debajo del hilo `green-a3` (`.q-wa-card`) y `green-a2`
-(`.q-wa-scroll--glass`); con ese lavado, en oscuro el texto principal de WhatsApp cae a **4,39**
-(falla) y la hora del cliente a 3,44. D2 ya pone el lavado `{canal}-a3` en la cabecera: que se
-quede **solo** ahí.
+**Lo que hay detrás de la burbuja, leído en la página dibujada (no solo en el CSS).**
+`.q-wa-card` y `.q-conv-card` (`assets/qualify-inbox.css`, cargada después) ponen su propio
+`background-image` y **reemplazan** el relleno de `.q-card` (`--q-card-fill`): el color calculado
+de la tarjeta es transparente y su imagen es solo el lavado del canal, `{canal}-a3` en una esquina
+que se desvanece al 55 %. Por eso «hoy» = panel opaco `--color-panel-solid` → lavado `{canal}-a3`
+(peor punto: la esquina, a toda fuerza) → `--gray-a2` → `{canal}-a2` arriba del hilo → burbuja
+`--q-control-fill` + `{canal}-a4 → a3`. La burbuja de Instagram con tinte no existe todavía: se
+midió con la regla de WhatsApp (`.q-wa-msg--glass…--out`) cambiando `green` por `pink`, sobre el
+lavado rosa que ya tiene `.q-conv-card`.
 
-| Par (texto 12–15 px salvo indicación) | Claro WA | Claro IG | Oscuro WA | Oscuro IG | Resultado |
+| Par, con el fondo de hoy (texto 12–15 px salvo indicación) | Claro WA | Claro IG | Oscuro WA | Oscuro IG | Resultado |
 |---|---|---|---|---|---|
-| Texto `gray-12` sobre burbuja del negocio `{canal}-a4→a3` | 13,44 | 12,72 | 5,95 | 7,52 | **Pasa** (4,5) |
-| Hora, «Enviado»: `gray-10` (`TEXT_MUTED`, hoy) | 3,10 | 2,94 | 1,63 | 2,06 | Falla |
-| Hora, «Enviado»: `gray-11` | 4,87 | 4,61 | 3,32 | 4,19 | Falla en oscuro |
-| Hora, «Enviado»: **`gray-12`** (propuesta) | 13,44 | 12,72 | 5,95 | 7,52 | **Pasa** |
-| Enlace `accent-11` (lo que pinta `rx.link`) | 3,74 | 3,54 | 3,79 | 4,79 | Falla |
-| Enlace **`accent-12`** (propuesta) | 9,89 | 9,36 | 5,36 | 6,77 | **Pasa** |
-| Error «No se envió» `tomato-11` | 4,09 | 3,87 | 3,28 | 4,15 | Falla |
-| Error **`tomato-12`** (propuesta) | 9,76 | 9,23 | 5,03 | 6,35 | **Pasa** |
-| Ícono «Leído» `accent-11` (no texto, 3:1) | 3,74 | 3,54 | 3,79 | 4,79 | Pasa (3:1) |
-| Borde: relleno de la burbuja vs. fondo del hilo (no texto, 3:1) | 1,08 | 1,12 | 1,65 | 1,44 | No llega · no exigible¹ |
-| Borde: anillo `{canal}-a5` vs. fondo (no texto, 3:1) | 1,40 | 1,54 | 2,70 | 1,91 | No llega · no exigible¹ |
-| *Comparación:* cliente, texto `gray-12` sobre `--q-control-fill` | 16,07 | = | 8,86 | = | Pasa |
-| *Comparación:* cliente, hora `gray-10` / **`gray-11`** | 3,71 / **5,82** | = | 2,43 / **4,94** | = | `gray-10` falla, `gray-11` pasa |
-| *Comparación:* cliente, enlace `accent-11` / **`accent-12`** | 4,48 / **11,83** | = | 5,64 / 7,98 | = | `accent-11` falla en claro |
-| *Hoy (hallazgo 7):* blanco sobre degradado IG `purple-9 / pink-9 / orange-9` | — | 5,18 / 4,12 / **2,97** | — | igual | Falla (hora al 85 %: 2,53) |
+| Texto `gray-12` sobre la burbuja del negocio `{canal}-a4→a3` | 12,78 | 11,93 | 5,11 | 6,90 | **Pasa** (4,5) |
+| Hora, «Enviado»: `gray-10` (`TEXT_MUTED`, lo de hoy) | 2,95 | 2,76 | 1,40 | 1,89 | Falla |
+| Hora, «Enviado»: `gray-11` | 4,63 | 4,32 | 2,85 | 3,85 | Pasa solo claro WA |
+| Hora, «Enviado»: `gray-12` | 12,78 | 11,93 | 5,11 | 6,90 | Pasa |
+| Enlace de `rx.link` (`--accent-a11`, Radix `components.css:589`) | 3,56 | 3,32 | 3,74 | 4,65 | Falla, salvo oscuro IG |
+| Enlace `--accent-12` (lo que pinta `rx.link(high_contrast=True)`) | 9,40 | 8,78 | 4,60 | 6,21 | Pasa |
+| Error «No se envió» `tomato-11` | 3,89 | 3,63 | 2,82 | 3,80 | Falla |
+| Error `tomato-12` | 9,28 | 8,66 | **4,32** | 5,83 | Falla en oscuro WA (pasa sin lavado: 6,11) |
+| Ícono «Leído» `accent-11` (no texto, 3:1) | 3,56 | 3,32 | 3,26 | 4,39 | Pasa (3:1) |
+| Borde: relleno de la burbuja vs. fondo del hilo (no texto, 3:1) | 1,01 | 1,01 | 1,63 | 1,47 | No llega · no exigible¹ |
+| Borde: anillo `{canal}-a5` vs. fondo (no texto, 3:1) | 1,25 | 1,35 | 2,56 | 1,97 | No llega · no exigible¹ |
+| *Cliente:* texto `gray-12` | 15,16 | 14,98 | 7,55 | 8,62 | Pasa |
+| *Cliente:* hora `gray-10` / `gray-11` | 3,50 / 5,49 | 3,46 / 5,43 | 2,07 / **4,21** | 2,36 / 4,81 | `gray-10` falla; `gray-11` falla en oscuro WA |
+| *Cliente:* enlace `--accent-a11` / `--accent-12` | 4,22 / 11,16 | 4,17 / 11,02 | 5,29 / 6,80 | 5,83 / 7,76 | `accent-a11` falla en claro |
+| *Hoy (hallazgo 7):* blanco sobre `purple-9` / `pink-9` / `orange-9` | — | 5,18 / 4,12 / **2,97** | — | igual | Falla (hora al 85 %: 2,53) |
 | *Maqueta (solo oscuro, colores a mano):* texto / hora `gray-11` | — | — | 9,80 / 5,47 | 10,82 / 6,03 | Pasa, pero no son los tokens |
 
 ¹ WCAG 1.4.11 pide 3:1 a controles y a gráficos necesarios para entender; el fondo de la burbuja
-no lo es: quién habla lo dicen el lado (derecha = tú) y el texto, que sí pasa. Ningún paso de alfa
-de la misma escala lo alcanza en claro (el máximo medido, `{canal}-a8`, da 2,3–2,5), así que no se
-cambia el borde.
+no lo es: quién habla lo dicen el lado (derecha = tú) y el texto, que sí pasa. En claro, sobre
+`--gray-a2`, el anillo no llega a 3:1 hasta `{canal}-a8` (2,41–2,47 WA; 2,46–2,62 IG); desde
+`{canal}-a9` sí llega (3,08–3,12 WA; 4,06–4,14 IG; `a11` 4,55–5,18; sólido `9` 3,00 / 3,92), pero
+eso ya es un borde de color lleno, no un tinte suave. No se propone cambiar el borde.
 
-**Valores que BU-A5 usa (los mismos en claro y en oscuro; Radix cambia el valor solo):**
+**Peor caso, no el de hoy.** Si el hilo nuevo de BU-A5 se montara sobre una `ui.card` que conserve
+`--q-card-fill` **y** además llevara el lavado `{canal}-a3` a toda fuerza debajo de los mensajes,
+el texto principal de WhatsApp en oscuro caería a **4,39** (falla). Hoy no pasa: la tarjeta de
+chat no tiene ese relleno y el lavado es una esquina que se desvanece.
 
-| Pieza | WhatsApp | Instagram |
-|---|---|---|
-| Relleno de la burbuja del negocio | `--q-control-fill` + `linear-gradient(160deg, var(--green-a4), var(--green-a3))` | igual con `--pink-a4`, `--pink-a3` |
-| Anillo | `inset 0 0 0 1px var(--green-a5)` | `var(--pink-a5)` |
-| Texto, hora, «Enviado», ✓ y ✓✓ sin leer | `--gray-12` | `--gray-12` |
-| Enlace dentro de la burbuja | `--accent-12` (con subrayado) | `--accent-12` |
-| Error dentro de la burbuja | `--tomato-12` | `--tomato-12` |
-| ✓✓ «Leído» | `--accent-11` (ícono) | `--accent-11` |
-| Burbuja del cliente: texto / hora / enlace | `--gray-12` / `--gray-11` / `--accent-12` | igual |
-| Fondo del hilo | `--gray-a2` solo | `--gray-a2` solo |
-| Lavado del canal | `--green-a3` solo en la cabecera del chat | `--pink-a3` solo en la cabecera |
+**Con el fondo del hilo solo en `--gray-a2`** (propuesta 9 de abajo), los mismos pares quedan:
+texto 13,44 / 12,72 / 7,23 / 8,93; hora `gray-11` 4,87 / 4,61 / 4,03 / 4,98; enlace
+`--accent-a11` 3,74 / 3,54 / 5,10 / 5,97; `--accent-12` 9,89 / 9,36 / 6,51 / 8,04; error
+`tomato-12` 9,76 / 9,23 / 6,11 / 7,54; hora del cliente `gray-11` 5,82 / 5,82 / 6,24 / 6,24.
+
+**Propuesta de UX para BU-A5.** Los mismos nombres de token en claro y en oscuro; Radix cambia el
+valor solo.
+
+| # | Pieza | Valor (WhatsApp `green` · Instagram `pink`) | Estado |
+|---|---|---|---|
+| 1 | Relleno de la burbuja del negocio | `--q-control-fill` + `linear-gradient(160deg, var(--{canal}-a4), var(--{canal}-a3))` | Aceptado en D2 |
+| 2 | Texto del mensaje | `--gray-12` | Aceptado en D2 |
+| 3 | Glifo y lavado `{canal}-a3` en la cabecera del chat | como dice D2 | Aceptado en D2 |
+| 4 | Anillo de la burbuja | `inset 0 0 0 1px var(--{canal}-a5)` (lo de WhatsApp hoy) | Sin cambio; no exigible¹ |
+| 5 | Hora, «Enviado», ✓ y ✓✓ sin leer, dentro de la burbuja del negocio | `--gray-12` (hoy `gray-10`) | Propuesta, falta el visto bueno del fundador |
+| 6 | Enlace dentro de cualquier burbuja | `--accent-12` = `rx.link(high_contrast=True)`, con subrayado | Propuesta, falta el visto bueno del fundador |
+| 7 | Error dentro de la burbuja del negocio | `--tomato-12` | Propuesta, falta el visto bueno del fundador |
+| 8 | Hora en la burbuja del cliente | `--gray-11` (hoy `gray-10`); **no hay token de rol** para el paso 11 (`Qualify/ui/tokens.py` tiene `TEXT_MUTED` = 10, `TEXT_FAINT` = 8, `TEXT_STRONG` = 12, y la regla P7 pide tokens por rol): BU-A5 necesita un token nuevo o una decisión del sistema de diseño | Propuesta, falta el visto bueno del fundador |
+| 9 | Fondo debajo de los mensajes | `--gray-a2` solo, sin lavado del canal debajo del hilo (WhatsApp hoy sí lo tiene) | Propuesta, falta el visto bueno del fundador |
+| — | ✓✓ «Leído» | `--accent-11` (ícono, pasa 3:1) | Sin cambio |
+
+La 9 es una preferencia, no una obligación: con el fondo de hoy lo aceptado en D2 pasa. Sirve
+para que en oscuro pasen con margen la hora del cliente (`gray-11`: 4,21 → 6,24) y el error
+(`tomato-12`: 4,32 → 6,11) y para que el color del canal se lea en un solo lugar (la burbuja y la
+cabecera). Si el fundador prefiere conservar el lavado, la hora del cliente y el error en oscuro
+pasan a `gray-12`, igual que en la burbuja del negocio.
 
 TikTok (`purple`) no se midió: no tiene chat todavía.
 
@@ -204,7 +224,7 @@ no se midieron. (3) Fotos, stickers y videos dentro de la burbuja. (4) Lectura a
 contraste no la mide.
 
 **Hallazgos fuera de esta historia (para el fundador o el sistema de diseño, no bloquean BU-A5).**
-`TEXT_MUTED` (`gray-10`) no llega a 4,5:1 ni sobre la burbuja del cliente (3,71 en claro), y
+`TEXT_MUTED` (`gray-10`) no llega a 4,5:1 ni sobre la burbuja del cliente (3,50 en claro), y
 `docs/design-system.md` §3 dice a la vez «secundario = gray-10» y «texto solo en pasos 11-12»;
 conviene revisarlo en todo el sistema. Y «Entregado» y «Leído» usan el mismo ✓✓ y se distinguen
 solo por el color (WCAG 1.4.1): en el chat tiene `aria-label`, pero a la vista no.
@@ -322,4 +342,14 @@ D1–D5 están decididas (§3). Lo que sigue abierto:
    «Está respondiendo tu menú automático» (§2); alternativas propuestas: «Tu menú de bienvenida» y
    «Este cliente está usando tu menú · Responder yo».
 6. ~~Condición de D2: medir el contraste del tinte en claro y oscuro.~~ Hecho el 2026-11-14
-   (m-25017860, «D2 medido»): `{canal}-a4` pasa; BU-A5 usa los valores de esa tabla.
+   (m-25017860, «D2 medido»): lo aceptado en D2 (`{canal}-a4` con texto `gray-12`) pasa.
+7. **Para el fundador — letra secundaria del chat (propuestas 5 a 9 de «D2 medido»).** «En los
+   chats, la hora, el "Enviado" y las marcas ✓ de tus mensajes hoy salen en un gris claro que
+   cuesta leer, sobre todo con el celular en modo oscuro. Proponemos: ponerlos del mismo color que
+   el texto, solo más pequeños; que los enlaces y los avisos de "No se envió" vayan en un tono más
+   oscuro de su color, con el enlace subrayado; que la hora de los mensajes del cliente sea un gris
+   un poco más oscuro que hoy; y quitar el verde suave que WhatsApp tiene hoy detrás de toda la
+   conversación, dejando el color del canal solo en tus burbujas y en la franja de arriba del chat.
+   Verías los chats un poco más sobrios y todo se leería mejor. ¿Lo hacemos así, o prefieres
+   conservar el verde de fondo en WhatsApp?» Si dice que conserve el verde, la 9 se cae y la hora
+   del cliente y el error en oscuro van en `gray-12` (ver la nota bajo la tabla).
