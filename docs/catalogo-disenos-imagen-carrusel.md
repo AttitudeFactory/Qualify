@@ -1,6 +1,6 @@
-# Catálogo cerrado de diseños para imagen y carrusel (PROPUESTA, pendiente de aprobación del fundador)
+# Catálogo cerrado de diseños para imagen y carrusel
 
-`[PROPUESTA · ux-designer · 2026-11-13 · sin aprobar]` · Épica **m-25017272** · ADR 49
+`[APROBADO por el fundador el 2026-11-14 · propuesta de ux-designer · límites de texto y tamaños siguen siendo hipótesis hasta medirlos]` · Épica **m-25017272** · ADR 49
 (`docs/adr-49-pipeline-imagen-carrusel.md`) · Historias que lo usan: m-25017283 (capa de texto),
 m-25017285 (composición en Remotion), m-25017287 (segunda mirada), m-25017294 (texto por
 diapositiva), m-25017303 y m-25017304 (destacados), m-25017307 (datos del negocio), m-25017308
@@ -833,3 +833,18 @@ a la foto?, ¿hubo `fallbacks`? Si corrige, solo puede cambiar diseño, `anchor`
    la portada, abajo a la derecha**: le dice a quien mira que hay más para deslizar, y Instagram solo
    muestra su propio contador unos segundos.
 
+
+
+## 12. Decisiones del fundador (2026-11-14)
+
+El fundador aprobó el catálogo de siete diseños y respondió las cinco preguntas de §11:
+
+| # | Pregunta | Decisión |
+|---|---|---|
+| 1 | ¿Vuelve el precio a la imagen? | Sí, como una línea de texto dentro del recuadro o de la franja; nunca pastilla ni botón; solo el precio del catálogo del negocio |
+| 2 | ¿Puede el dueño cambiar el diseño? | Sí: «Probar otro diseño», hasta 3 alternativas que pasen las comprobaciones, gratis; cuenta como edición (una pieza aprobada vuelve a «Por aprobar») |
+| 3 | Logo en el carrusel | En la primera y la última diapositiva |
+| 4 | ¿Se incluye «Texto sobre sombra»? | Sí, con sus límites (títulos cortos, sin precio) |
+| 5 | Contador del carrusel | En todas las diapositivas, abajo a la derecha, portada incluida |
+
+Siguen siendo hipótesis, a validar con composiciones reales (m-25017292) y con dueños: los límites de caracteres, los tamaños de letra y las zonas seguras de cada formato.
