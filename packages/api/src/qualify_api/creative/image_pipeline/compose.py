@@ -148,7 +148,8 @@ def ad_image(
     based = flyer_scenes(producer, **scene_args)
     # m-25017283: the text layer, between the base and the composition — only with
     # QUALIFY_IMAGE_LAYER=on (off: returns at once, nothing changes); a base with invented
-    # text is made again once (the scene of the same index)
+    # text is made again once (the scene of the same index). NO router call may follow
+    # this stage: a regeneration moves `run.step` (layer_run «Step numbers»)
     outcome = run_layer_stage(
         producer,
         tenant_id=tenant_id,
@@ -504,7 +505,9 @@ def carousel(
             raise
     if generated and not deferred and scene_failure is None:
         # m-25017283: only once every slide is made — a pending or failed slide means
-        # another pass (or «Crear las que faltan»), and the layer is paid once, then
+        # another pass (or «Crear las que faltan»), and the layer is paid once, then.
+        # NO router call may follow (the closing slide is drawn locally): a regeneration
+        # moves `run.step` (layer_run «Step numbers», pinned by a test)
         _gallery_layers(
             producer,
             out=out,
