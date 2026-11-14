@@ -1241,7 +1241,7 @@ Se crean sin el campo «Feature» y con «Relacionado con» hacia la épica.
 docs/epica-bandeja-unica.md. Ya fusionado: m-25017843 (PR #625), m-25017844 (PR #624),
 m-25017859 (PRs #649, #665), m-25026457 (BU-A13, PR #653), m-25017852 (PR #622). Regla de
 «Por responder» en packages/api/src/qualify_api/inbox/awaiting.py; decisiones (ii) y (vii) en §6.
-Menú en Instagram: decidido el 2026-10-23 (m-24789557); el ADR 48 lo escribe principal-architect.
+Menú en Instagram: decidido el 2026-10-23 (m-24789557); el ADR del menú lo escribe principal-architect (aquí «ADR 48» es un nombre provisional: el 48 y el 49 ya están ocupados, toma el siguiente libre).
 Pendientes del fundador: (i-a/b/c), (iii), (iv), (vi) y «Todas las redes». Siguiente:
 - Comprobar en producción, celular y escritorio, la lista única de m-25017859 y «Cerrar» de
   m-25026457 (ninguna se vio en un navegador); con eso pasan de RESOLVED a Done.
