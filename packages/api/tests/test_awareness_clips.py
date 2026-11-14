@@ -181,3 +181,19 @@ def test_problem_aware_parts_open_on_someone_living_the_dilemma() -> None:
     assert "la primera parte muestra a alguien viviendo ese dilema" in text
     assert "el producto, si eligió uno, o lo que cuenta el dueño" in text
     assert PROPOSE_PARTS_PROMPT_VERSION == "proponer-partes-v3.5"
+
+
+@pytest.mark.parametrize(
+    ("text", "flagged"),
+    [("Ref 2045", False), ("ref 3", False), ("Ref. 2045", False), ("REF 7", True)],
+)
+def test_the_parts_guard_tells_a_reference_code_from_a_price(text: str, flagged: bool) -> None:
+    from qualify_api.creative.parts_ai import parse_parts
+
+    rows = [
+        {"description": f"Unas manos muestran la blusa {text} sobre la mesa.", "seconds": 5},
+        {"description": "La blusa colgada junto a la ventana del local.", "seconds": 5},
+        {"description": "Una persona se prueba la blusa frente al espejo.", "seconds": 5},
+    ]
+    _, problems = parse_parts({"parts": rows})
+    assert any("menciona un precio" in p for p in problems) is flagged

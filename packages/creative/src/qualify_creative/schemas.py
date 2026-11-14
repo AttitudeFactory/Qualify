@@ -1142,12 +1142,24 @@ _WORDED_AMOUNT = re.compile(
 )
 
 
+#: A number that is a discount — about cost, so an unaware piece drops it too: «18 mil
+#: de descuento», «20% off», «15 % dto». «2x1» names no amount and stays.
+_DISCOUNT_AMOUNT = re.compile(
+    r"\b\d[\d.,]*\s*(?:%|mil\b|millones?\b)?\s*(?:de\s+)?(?:descuentos?|dto\.?|off)\b",
+    re.IGNORECASE,
+)
+
+
 def quotes_money(text: str) -> bool:
-    """Whether `text` quotes an amount of money (`angles.price_mentions`, or an amount
-    said in words before its currency)."""
+    """Whether `text` quotes an amount of money (`angles.price_mentions`, an amount said
+    in words, or a discount amount)."""
     from qualify_creative.angles import price_mentions  # noqa: PLC0415 — angles imports us
 
-    return bool(price_mentions(text)) or bool(_WORDED_AMOUNT.search(text or ""))
+    return (
+        bool(price_mentions(text))
+        or bool(_WORDED_AMOUNT.search(text or ""))
+        or bool(_DISCOUNT_AMOUNT.search(text or ""))
+    )
 
 
 def is_price_fact(name: str, value: str) -> bool:

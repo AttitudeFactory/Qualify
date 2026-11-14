@@ -29,6 +29,7 @@ from qualify_creative.angles import (
     awareness_level_or_none,
     level_plan,
     parse_angles,
+    price_mentions,
 )
 from qualify_creative.brand import render_prompt
 from qualify_creative.enums import (
@@ -475,6 +476,10 @@ PRICES = (
     "UYU 250",
     "250 pesos",
     "2 millones de pesos",
+    "18 mil de descuento",
+    "20% de descuento",
+    "20% off",
+    "15 % dto",
 )
 NOT_PRICES = (
     "2x1",
@@ -486,6 +491,10 @@ NOT_PRICES = (
     "3 cuotas",
     "mil hojas",
     "20 mil seguidores",
+    "Ref 2045",
+    "ref 3",
+    "Ref. 2045",
+    "referencia 12",
 )
 
 
@@ -526,3 +535,19 @@ def test_other_levels_keep_a_price_written_any_way() -> None:
         )
         assert brief.constraints.highlights == (("Combo", "REF 7"),)
         assert brief.constraints.must_mention == ("$U 250",)
+
+
+@pytest.mark.parametrize("code", ["Ref 2045", "ref 3", "Ref. 2045", "referencia 12"])
+def test_a_reference_code_is_not_a_price_for_the_idea_guard(code: str) -> None:
+    from qualify_creative.angles import price_problem
+
+    assert price_mentions(f"Llévate la {code}") == ()
+    assert price_problem((f"Llévate la {code}",), "$18.000") is None
+
+
+@pytest.mark.parametrize("price", ["REF 7", "7 REF"])
+def test_uppercase_ref_is_still_money_for_the_idea_guard(price: str) -> None:
+    from qualify_creative.angles import price_problem
+
+    assert price_mentions(f"Solo {price}") == (price,)
+    assert price_problem((f"Solo {price}",), "") is not None

@@ -599,11 +599,12 @@ def angles_user_prompt(
 #: m-25026509: the markers of the three markets as owners write them — Venezuela's
 #: «REF 7» / «7 REF» and «USDT», Uruguay's «$U 250» / «UYU 250» / «U$S» (the same markers
 #: `whatsapp.menus.import_ai._CURRENCY_MARKERS` reads currencies from). Longer markers come
-#: first so «$U 250» and «US$180» are never read as a bare «$».
+#: first so «$U 250» and «US$180» are never read as a bare «$». «REF» counts only in
+#: uppercase: «Ref 2045» / «ref 3» is a product reference code, not a price.
 _MONEY = re.compile(
-    r"(?:(?:USDT|USD|US\$|U\$S|\$U|UYU|REF|COP|MXN|EUR|ARS|CLP|PEN|VES|Bs\.?|S/\.?|\$|€)"
+    r"(?:(?:USDT|USD|US\$|U\$S|\$U|UYU|(?-i:REF)|COP|MXN|EUR|ARS|CLP|PEN|VES|Bs\.?|S/\.?|\$|€)"
     r"\s?\d[\d.,]*"
-    r"|\d[\d.,]*\s?(?:USDT|USD|U\$S|UYU|REF|COP|MXN|EUR|ARS|CLP|PEN|VES|Bs\.?|€|pesos"
+    r"|\d[\d.,]*\s?(?:USDT|USD|U\$S|UYU|(?-i:REF)|COP|MXN|EUR|ARS|CLP|PEN|VES|Bs\.?|€|pesos"
     r"|dólares|dolares|soles"
     # a suffix ends the word: "6 copas" or "2 pendientes" are not prices
     r"|bolívares|bolivares)(?![^\W\d_]))",
