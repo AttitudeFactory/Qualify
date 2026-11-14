@@ -12,6 +12,7 @@ from qualify_creative.render.adapter import RemotionTemplateAdapter
 from qualify_creative.render.client import RemotionRenderClient, RenderServiceError
 from qualify_creative.render.layer_compose import (
     LayerComposeRequest,
+    LayerRefused,
     build_layer_props,
     compose_layer,
     spec_sha256,
@@ -35,9 +36,18 @@ class FakeRenderService:
     """CONTRACT §4 in memory for `layer_still`: the job completes on the first poll with the
     report the composition would compute (or fails with `invalid_parameters`)."""
 
-    def __init__(self, *, rendered: str = "band", fail: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        rendered: str = "band",
+        fail: str | None = None,
+        refusal: dict[str, Any] | None = None,
+        overflow: list[str] | None = None,
+    ) -> None:
         self.rendered = rendered
         self.fail = fail
+        self.refusal = refusal
+        self.overflow = overflow or []
         self.assets: dict[str, bytes] = {}
         self.jobs: dict[str, dict[str, Any]] = {}
         self.posts: list[dict[str, Any]] = []
@@ -87,6 +97,8 @@ class FakeRenderService:
                 failureReason=self.fail,
                 errorMessage="invalid_parameters: layer.title: 40 chars exceeds 28",
             )
+            if self.refusal:
+                out["refusal"] = self.refusal
             job["status"] = "failed"
         else:
             layer = next(p for p in self.posts if p["jobId"] == job["jobId"])["props"]["layer"]
@@ -109,7 +121,7 @@ class FakeRenderService:
                     "contrast": {"text": 7.1},
                     "logo": "top_right",
                     "counter": None,
-                    "overflow": [],
+                    "overflow": self.overflow,
                 },
             )
             job["status"] = "completed"
@@ -242,7 +254,54 @@ def test_a_refused_layer_raises_and_stores_nothing() -> None:
             _client(service), _request(), read_media=MEDIA.__getitem__, store=stored.__setitem__
         )
     assert err.value.code == "invalid_parameters"
+    assert not isinstance(err.value, LayerRefused)
     assert stored == {}
+
+
+def test_an_unrenderable_layer_surfaces_the_slot_to_rewrite() -> None:
+    refusal = {
+        "code": "layer_unrenderable",
+        "slot": "title",
+        "reason": "word_too_wide",
+        "detail": "«Supercalifragilisticoespiral» is 1210 px at 72 px; the box is 952 px",
+        "format": "4:5",
+        "layout_requested": "plate",
+        "attempts": ["plate/top_left: word_too_wide"],
+    }
+    service = FakeRenderService(fail="invalid_parameters", refusal=refusal)
+    stored: dict[str, bytes] = {}
+    with pytest.raises(LayerRefused) as err:
+        compose_layer(
+            _client(service), _request(), read_media=MEDIA.__getitem__, store=stored.__setitem__
+        )
+    assert err.value.code == "invalid_parameters"
+    assert (err.value.slot, err.value.reason) == ("title", "word_too_wide")
+    assert "Supercalifragilisticoespiral" in err.value.detail
+    assert stored == {}
+
+
+def test_a_report_with_overflow_is_never_stored() -> None:
+    service = FakeRenderService(rendered="info_card", overflow=["info_blocks[0].value|3 lines"])
+    stored: dict[str, bytes] = {}
+    with pytest.raises(RenderServiceError) as err:
+        compose_layer(
+            _client(service), _request(), read_media=MEDIA.__getitem__, store=stored.__setitem__
+        )
+    assert err.value.code == "invalid_parameters"
+    assert stored == {}
+
+
+def test_a_base_photo_needs_its_fingerprint() -> None:
+    with pytest.raises(ValueError, match="base_sha256"):
+        _request(base_sha256=None)
+    assert _request(base_key=None, base_sha256=None).job_id()  # no photo, no fingerprint
+
+
+def test_the_layer_id_is_in_the_job_key_and_reaches_the_report() -> None:
+    assert _request(layer_id="L1").job_id() != _request(layer_id="L9").job_id()
+    props = build_layer_props(_request(), photo_ref=None, logo_ref=None)
+    assert props["layer"]["layer_id"] == "L1"
+    assert "layer_id" not in SPEC  # the spec's hash is taken without it
 
 
 def test_props_carry_the_layer_price_and_the_port_of_its_format() -> None:

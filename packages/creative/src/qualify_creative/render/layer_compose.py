@@ -9,10 +9,11 @@ layout it actually drew; this module hands that back so the caller records it wi
 Keys (ADR 49 §2.2 and §2.4, and the R2 rule that the bucket refuses to overwrite under
 ``t/``):
 
-- **job id** = ``uuid5`` over the template version, ``version_id``, ``position``,
-  ``spec_sha256``, ``layout_version``, the base photo's sha256, the port and a digest of every
-  other input that changes pixels (brand kit, logo, price line). Same inputs → same job (a
-  retry is idempotent on the service); any edit → a new job, never the old image.
+- **job id** = ``uuid5`` over the template version, the layer id (ADR 49 §2.3 amendment),
+  ``version_id``, ``position``, ``spec_sha256``, ``layout_version``, the base photo's sha256,
+  the port and a digest of every other input that changes pixels (brand kit, logo, price
+  line). Same inputs → same job (a retry is idempotent on the service); any edit → a new job,
+  never the old image.
 - **object key** = ``t/{tenant}/generated/{draft}/compose/{layer_id}/{spec_sha256[:16]}/
   {job_id}/slide-{position+1}.jpg``: a re-compose after an edit is a new layer row and a new
   sha, so it lands on a new key and never overwrites.
@@ -90,6 +91,12 @@ class LayerComposeRequest:
     #: ``piece_layers.spec_sha256`` when the caller has it; computed from ``spec`` otherwise
     spec_digest: str | None = None
 
+    def __post_init__(self) -> None:
+        # the base's fingerprint is part of the render key (ADR 49 §2.2): without it two
+        # different base photos would share one job id and one object key
+        if self.base_key and not self.base_sha256:
+            raise ValueError("base_sha256 is required when base_key is set")
+
     @property
     def format(self) -> str:
         return str(self.spec.get("format") or "")
@@ -126,15 +133,18 @@ class LayerComposeRequest:
 
     def job_id(self) -> str:
         """ADR 49 §2.2: uuid5(version_id, position, spec_sha256, layout_version, base sha256),
-        plus the template version, the port and the other pixel inputs."""
+        plus the layer id (§2.3 amendment: the layer id is in the compose job key and the object
+        key — an undo re-renders identical pixels under a new job, accepted), the template
+        version, the port and the other pixel inputs."""
         name = "|".join(
             [
                 f"{TEMPLATE_ID}@{TEMPLATE_VERSION}",
+                self.layer_id,
                 self.version_id,
                 str(self.position),
                 self.digest,
                 str(self.layout_version),
-                self.base_sha256 or "-",
+                self.base_sha256 or "no-base",
                 self.port,
                 self._pixel_inputs(),
             ]
@@ -146,6 +156,21 @@ class LayerComposeRequest:
             f"t/{self.tenant_id}/generated/{self.draft_id}/compose/{self.layer_id}/"
             f"{self.digest[:16]}/{self.job_id()}/slide-{self.position + 1}.jpg"
         )
+
+
+class LayerRefused(RenderServiceError):
+    """No layout of the catalog's fallback chain could draw this layer (the service answered
+    ``invalid_parameters`` with a ``refusal``). ``slot`` names what the layer stage must rewrite
+    (``title``, ``info_blocks[1].value``, ``highlight_content.word``…) and ``reason`` why
+    (``word_too_wide``, ``too_many_lines``, ``too_tall``, ``outside_safe_zone``…). Retrying the
+    same layer returns the same failed job: the fix is a new layer."""
+
+    def __init__(self, refusal: Mapping[str, Any], message: str) -> None:
+        super().__init__("invalid_parameters", 422, message)
+        self.refusal = dict(refusal)
+        self.slot = str(refusal.get("slot", ""))
+        self.reason = str(refusal.get("reason", ""))
+        self.detail = str(refusal.get("detail", ""))
 
 
 @dataclass(frozen=True)
@@ -175,6 +200,8 @@ def build_layer_props(
     texts: dict[str, Any] = {"is_food": request.is_food}
     if request.price_text:
         texts["price_text"] = request.price_text
+    layer = dict(request.spec)
+    layer["layer_id"] = request.layer_id  # echoed in the report; not part of the spec's hash
     return {
         "meta": {"templateId": TEMPLATE_ID, "version": TEMPLATE_VERSION, "port": request.port},
         "brand": brand,
@@ -182,7 +209,7 @@ def build_layer_props(
         "photos": [photo_ref] if photo_ref else [],
         "video": None,
         "products": [],
-        "layer": dict(request.spec),
+        "layer": layer,
     }
 
 
@@ -196,9 +223,10 @@ def compose_layer(
 ) -> ComposedStill:
     """Upload the base and the logo, submit the one-port job, wait, download the PNG, and
     hand back the still with the layout actually rendered. A failed render raises
-    ``RenderServiceError`` with the service's typed reason (``invalid_parameters`` for a layer
-    that breaks the catalog); nothing is stored then, so a failed re-compose never destroys
-    what the owner already had."""
+    ``RenderServiceError`` with the service's typed reason — ``LayerRefused`` (a subclass) when
+    no layout could draw the layer, with the slot to rewrite. Nothing is stored then, nor when a
+    report shows any overflow, so a failed re-compose never destroys what the owner already
+    had and no still with text past its lines or its safe zone is ever kept."""
     photo_ref = _upload(client, request.base_key, read_media) if request.base_key else None
     logo_ref = _upload(client, request.logo_key, read_media) if request.logo_key else None
     job_id = request.job_id()
@@ -215,6 +243,9 @@ def compose_layer(
     state = job.outputs.get(request.port)
     if state is None or state.status is not JobStatus.COMPLETED:
         code = (state.failure_reason if state else None) or job.status.value
+        message = (state.error_message if state else None) or f"compose job {job_id} failed"
+        if state is not None and state.refusal:
+            raise LayerRefused(state.refusal, message)
         raise RenderServiceError(
             code,
             500,
@@ -224,6 +255,14 @@ def compose_layer(
     if not report.get("layout_rendered"):
         raise RenderServiceError(
             "internal_error", 500, f"compose job {job_id} completed without a layout report"
+        )
+    if report.get("overflow"):
+        # the service refuses these; this guard keeps an older or misbehaving service from
+        # ever putting such a still in the bucket
+        raise RenderServiceError(
+            "invalid_parameters",
+            422,
+            f"compose job {job_id} reports overflow: {report['overflow']}",
         )
     png, _mime = client.download(job_id, request.port)
     key = request.object_key()
