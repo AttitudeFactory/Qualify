@@ -271,10 +271,18 @@ def promotion_audience() -> rx.Component:
                         S.form.radius_km,
                     ),
                     rx.text(
-                        "Meta admite entre 17 y 80 km alrededor de una ciudad.",
+                        "Escribe entre 17 y 80 km. Si lo dejas vacío, el anuncio se muestra "
+                        "en toda la ciudad.",
                         size="2",
-                        color=T.TEXT_MUTED,
+                        color=rx.cond(
+                            S.radius_out_of_range,
+                            rx.color(T.tone_scale("error"), 11),
+                            T.TEXT_MUTED,
+                        ),
                     ),
+                    # Open whenever a distance exists, so a saved one outside 17-80 km shows;
+                    # bound to "out of range" only, it would snap shut mid-typing at 17.
+                    open=S.form.radius_km != "",
                     width="100%",
                 ),
             ),

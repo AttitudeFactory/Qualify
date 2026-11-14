@@ -107,7 +107,9 @@ class MapPoint:
             or not _coordinate(self.longitude, 180)
             or not _label(self.name)
         ):
-            raise AudienceUnavailable("Vuelve a marcar el punto en el mapa.")
+            raise AudienceUnavailable(
+                "Vuelve a elegir el punto alrededor del cual mostrar el anuncio."
+            )
 
 
 # Meta targeting reference, «Custom locations» and «Cities», retrieved 2026-11-14:
@@ -126,10 +128,19 @@ def interest_statuses(
     `validation` is act_<id>/targetingvalidation (`valid`); `option_status` is
     search?type=targetingoptionstatus (`current_status`). Meta's targeting search reference
     (retrieved 2026-11-14): DEPRECATING «can't be used to create new or update ad sets»,
-    NON-DELIVERABLE «does not deliver». Only valid + NORMAL counts as active.
+    NON-DELIVERABLE «does not deliver». Only valid + NORMAL counts as active. Only exact
+    types count (a string id, a boolean `valid`, a string status); anything else is unknown.
     """
-    valid = {str(row.get("id")): row.get("valid") for row in validation}
-    current = {str(row.get("id")): row.get("current_status") for row in option_status}
+    valid = {
+        row["id"]: row["valid"]
+        for row in validation
+        if isinstance(row.get("id"), str) and type(row.get("valid")) is bool
+    }
+    current = {
+        row["id"]: row["current_status"]
+        for row in option_status
+        if isinstance(row.get("id"), str) and isinstance(row.get("current_status"), str)
+    }
     result = {}
     for key in valid.keys() | current.keys():
         if valid.get(key) is False or current.get(key) == "NON-DELIVERABLE":
@@ -176,7 +187,9 @@ class AudienceDraft:
         self.location.validate()
         if self.point is not None:
             if not isinstance(self.point, MapPoint):
-                raise AudienceUnavailable("Vuelve a marcar el punto en el mapa.")
+                raise AudienceUnavailable(
+                    "Vuelve a elegir el punto alrededor del cual mostrar el anuncio."
+                )
             self.point.validate()
             if (
                 self.location.type != "country"
@@ -265,6 +278,9 @@ class AudienceDraft:
         geo: dict[str, Any]
         if self.point is not None:
             # Only the point: adding its country would widen the area to the whole country.
+            # Open question: the basic-targeting page says a country is required unless a
+            # Custom Audience is used. Confirm point-only with one validate_only call
+            # (m-24828971) before relying on it; Meta's validate_only blocks it otherwise.
             geo = {
                 "custom_locations": [
                     {

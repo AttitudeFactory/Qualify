@@ -235,8 +235,8 @@ class LiveWizardGateway:
         ):
             self.fail(
                 "validation",
-                "Meta pide un radio de al menos 17 km alrededor de una ciudad. "
-                "Auméntalo o marca un punto en el mapa.",
+                "Alrededor de una ciudad, la distancia mínima es 17 km. Cámbiala a 17 km o "
+                "más, o déjala vacía para mostrar el anuncio en toda la ciudad.",
             )
         retired = tuple(
             item
@@ -356,7 +356,7 @@ class LiveWizardGateway:
             self.fail(
                 "validation",
                 "Meta no confirmó esta configuración. Revisa el presupuesto, las fechas, "
-                "el enlace, el público y las ubicaciones.",
+                "el enlace, el público y dónde aparece el anuncio.",
                 unavailable=True,
             )
 
@@ -732,7 +732,7 @@ def _blocked_interests(interests: tuple[InterestOption, ...]) -> str:
     names = ", ".join(item.name for item in interests)
     return (
         f"Meta ya no permite usar estos intereses: {names}. "
-        "Quítalos y elige otros de la búsqueda antes de continuar."
+        "Vuelve a «¿A quién quieres llegar?», quítalos y elige otros."
     )
 
 
@@ -740,12 +740,13 @@ def _blocked_interests(interests: tuple[InterestOption, ...]) -> str:
 # nothing else may appear, except these normalizations; any other extra key fails closed:
 # - geo_locations.location_types == ["home", "recent"], the documented default when it is
 #   omitted (basic-targeting reference, retrieved 2026-11-14);
-# - descriptive labels beside an approved id or point (`_LABELS`).
-# Interests compare as a set of ids (names and order are Meta's). Coordinates allow 1e-6
-# degrees, the precision we approve at: Meta documents no rounding, so this only absorbs a
-# float serialization; a farther point, another radius or another unit is another location.
+# - descriptive labels beside an approved id or point (`_LABELS`; an interest may carry only
+#   `name`, checked in `_same_node`).
+# Interests compare as a set of ids (names and order are Meta's). Coordinates allow 5e-7
+# degrees, half the 6-decimal step we approve at: Meta documents no rounding, so this only
+# absorbs a float serialization and can never accept a different approved point. Another
+# radius or another unit is another location.
 _LABELS = {
-    "interests": {"name"},
     "cities": {"name", "region", "region_id", "country"},
     "regions": {"name", "country"},
     "custom_locations": {"name", "country", "primary_city_id", "region_id"},
@@ -774,7 +775,7 @@ def _same_node(actual: Any, approved: Any, key: str) -> bool:
         return all(_same_node(a, b, key) for a, b in zip(actual, approved, strict=True))
     if key in {"latitude", "longitude", "radius"}:
         observed = _number(actual)
-        tolerance = 0 if key == "radius" else 1e-6
+        tolerance = 0 if key == "radius" else 5e-7
         return observed is not None and abs(observed - approved) <= tolerance
     return actual == approved
 

@@ -251,7 +251,8 @@ async def test_interest_validity_uses_exact_bool_keyed_by_id(monkeypatch):
             {"id": "7", "current_status": "UNKNOWN"},
         )
 
-    monkeypatch.setattr(service, "_read", read)
+    shared = use_shared_api(monkeypatch)
+    monkeypatch.setattr(service, "_read", lambda *a, api: (shared.append(api), read(*a))[1])
     options = tuple(InterestOption(i, "Name") for i in ids)
     actual = await service._interest_status(None, options)
     assert [i.status for i in actual] == [
@@ -263,18 +264,48 @@ async def test_interest_validity_uses_exact_bool_keyed_by_id(monkeypatch):
         "unavailable",
         "unknown",
     ]
+    assert shared == ["opened", "api", "api", "closed"]  # one client for both reads
+
+
+def use_shared_api(monkeypatch):
+    from contextlib import asynccontextmanager
+
+    events = []
+
+    @asynccontextmanager
+    async def api(scope):
+        events.append("opened")
+        yield "api"
+        events.append("closed")
+
+    monkeypatch.setattr(service, "_api", api)
+    return events
 
 
 @pytest.mark.asyncio
-async def test_interest_status_read_failure_is_not_evidence(monkeypatch):
-    async def read(scope, operation, params):
+async def test_status_read_failure_keeps_the_validation_answer(monkeypatch):
+    async def read(scope, operation, params, *, api):
         if operation == "search":
             raise AudienceUnavailable("No pudimos consultar el público en Meta.")
-        return ({"id": "1", "valid": True},)
+        return ({"id": "1", "valid": True}, {"id": "2", "valid": False})
 
+    use_shared_api(monkeypatch)
+    monkeypatch.setattr(service, "_read", read)
+    options = (InterestOption("1", "Café"), InterestOption("2", "Té"))
+    actual = await service._interest_status(None, options)
+    # valid=false stays "unavailable"; valid=true without a NORMAL status is not "active".
+    assert [i.status for i in actual] == ["unknown", "unavailable"]
+
+
+@pytest.mark.asyncio
+async def test_validation_read_failure_is_not_evidence(monkeypatch):
+    async def read(scope, operation, params, *, api):
+        raise AudienceUnavailable("No pudimos consultar el público en Meta.")
+
+    use_shared_api(monkeypatch)
     monkeypatch.setattr(service, "_read", read)
     monkeypatch.setattr(service, "_same", lambda scope: None)
-    options = (InterestOption("1", "Café"),)
+    options = (InterestOption("1", "Café", "active"),)
     assert await service._interest_status(None, options) == options
 
 
@@ -294,13 +325,15 @@ async def test_interest_search_wire_is_meta_targeting_search_with_spanish_errors
     )
     monkeypatch.setattr(service, "_scope", lambda **kwargs: scope)
     monkeypatch.setattr(service, "_same", lambda value: None)
+    from contextlib import asynccontextmanager
+
     api = FakeMarketingClient(account_id="12")
-    original = service._read
 
-    async def fake_read(target, operation, params):
-        return await original(target, operation, params, api=api)
+    @asynccontextmanager
+    async def shared(target):
+        yield api
 
-    monkeypatch.setattr(service, "_read", fake_read)
+    monkeypatch.setattr(service, "_api", shared)
     api.responses[("GET", "search")] = {
         "data": [
             {"id": "6003", "name": "Café", "path": ["Interests"]},
@@ -457,6 +490,13 @@ def test_pre_existing_audience_and_request_fingerprints_are_byte_identical():
         "096e791fa2c4a9aa007c6ed45d6945e8c73042f646109d3a5a5ece80b1917e31",
         "b081e64dd57aa8b814077ea432b1d8e2507919a1f26a39817837c150fe674e40",
     ]
+    # The exact-validation receipt's form hash, also pinned on main before the change.
+    from qualify_api.ads.validation import context
+
+    assert (
+        context(source, website)["form_hash"]
+        == "264dc9263503bec4a5521da70f82213b4eec991de46c8cac165a3f32b6ed2381"
+    )
 
 
 def test_immutable_promotion_targeting_and_selection_restore_and_policy_gate():

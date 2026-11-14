@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from typing import Any
 from uuid import UUID
@@ -113,18 +115,33 @@ def _query(value: str) -> str:
     return value.strip()
 
 
+@asynccontextmanager
+async def _api(scope: AudienceScope) -> AsyncIterator[MarketingAPI]:
+    """One authenticated client for one or more reads; closed afterwards."""
+    try:
+        client = await _authenticated_client(
+            scope.tenant_id,
+            scope.connection.connection_id,
+            expected_version=scope.connection.version,
+        )
+    except AdAccountUnavailable:
+        raise AudienceUnavailable(
+            "No pudimos consultar el público en Meta. Vuelve a intentarlo."
+        ) from None
+    try:
+        yield MarketingClient(client=client, account_id=scope.meta_account_id)
+    finally:
+        if hasattr(client, "aclose"):
+            await client.aclose()
+
+
 async def _read(
     scope: AudienceScope, operation: str, params: dict[str, Any], *, api: MarketingAPI | None = None
 ) -> tuple[dict[str, Any], ...]:
-    client = None
+    if api is None:
+        async with _api(scope) as shared:
+            return await _read(scope, operation, params, api=shared)
     try:
-        if api is None:
-            client = await _authenticated_client(
-                scope.tenant_id,
-                scope.connection.connection_id,
-                expected_version=scope.connection.version,
-            )
-            api = MarketingClient(client=client, account_id=scope.meta_account_id)
         _same(scope)
         if operation == "reach":
             page = await api.reachestimate(targeting_spec=params)
@@ -138,9 +155,6 @@ async def _read(
         raise AudienceUnavailable(
             "No pudimos consultar el público en Meta. Vuelve a intentarlo."
         ) from None
-    finally:
-        if client is not None and hasattr(client, "aclose"):
-            await client.aclose()
 
 
 def _locations(rows: tuple[dict[str, Any], ...], kind: str) -> tuple[LocationOption, ...]:
@@ -182,19 +196,22 @@ async def _interest_status(
         return ()
     ids = [option.id for option in options]
     try:
-        valid = await _read(scope, "validate", {"ids": ids})
-        current = await _read(
-            scope, "search", {"type": "targetingoptionstatus", "targeting_option_list": ids}
-        )
+        async with _api(scope) as api:
+            valid = await _read(scope, "validate", {"ids": ids}, api=api)
+            try:
+                current = await _read(
+                    scope,
+                    "search",
+                    {"type": "targetingoptionstatus", "targeting_option_list": ids},
+                    api=api,
+                )
+            except AudienceUnavailable:
+                current = ()  # A valid=false answer stays "unavailable"; the rest unknown.
     except AudienceUnavailable:
         # This is not evidence that an interest is available or retiring.
         _same(scope)
         return options
-    # Only exact types count; anything else stays "unknown".
-    statuses = interest_statuses(
-        tuple(r for r in valid if isinstance(r.get("id"), str) and type(r.get("valid")) is bool),
-        tuple(r for r in current if isinstance(r.get("id"), str)),
-    )
+    statuses = interest_statuses(valid, current)
     return tuple(replace(option, status=statuses.get(option.id, "unknown")) for option in options)
 
 

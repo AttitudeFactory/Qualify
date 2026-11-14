@@ -94,6 +94,7 @@ from .promotion_vm import (
     promotion_checks,
     promotion_result,
     questions_shown,
+    radius_problem,
     readable_date,
     step_count,
     step_counter,
@@ -564,6 +565,11 @@ class PromotionState(rx.State):
             )
             if value
         )
+
+    @rx.var
+    def radius_out_of_range(self) -> bool:
+        """A typed or saved city distance outside 17-80 km (empty = the whole city)."""
+        return radius_problem(self.form.radius_km) != ""
 
     @rx.var
     def audience_interests_label(self) -> str:

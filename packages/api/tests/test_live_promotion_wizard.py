@@ -1273,7 +1273,10 @@ async def test_read_back_refuses_another_location_or_interest_set(live, change):
 async def test_retired_interest_on_meta_blocks_before_any_write(live, remote_status):
     use_point_and_interests(live)
     live["remote"].interests["6004"] = remote_status
-    with pytest.raises(WizardUnavailable, match="ya no permite usar estos intereses: Té\\."):
+    with pytest.raises(
+        WizardUnavailable,
+        match="ya no permite usar estos intereses: Té\\. Vuelve a «¿A quién quieres llegar\\?»",
+    ):
         await prepare(live)
     assert not [c for c in live["remote"].calls if c[0] == "POST"]
 
@@ -1316,7 +1319,7 @@ async def test_city_radius_follows_meta_minimum(live):
     live["args"]["form"] = replace(
         live["args"]["form"], audience=AudienceDraft(location=city, radius_km=10)
     )
-    with pytest.raises(WizardUnavailable, match="al menos 17 km"):
+    with pytest.raises(WizardUnavailable, match="la distancia mínima es 17 km"):
         await prepare(live)
     assert not live["remote"].calls
     live["args"]["form"] = replace(
@@ -1344,4 +1347,8 @@ def test_read_back_comparator_without_a_meta_round_trip():
     observed["geo_locations"]["custom_locations"][0]["longitude"] = True
     assert not same_targeting(observed, approved)
     observed["geo_locations"]["custom_locations"][0]["longitude"] = "nan"
+    assert not same_targeting(observed, approved)
+    observed["geo_locations"]["custom_locations"][0]["longitude"] = -72.507821 + 4e-7
+    assert same_targeting(observed, approved)  # float serialization, same 6-decimal point
+    observed["geo_locations"]["custom_locations"][0]["longitude"] = -72.507821 + 6e-7
     assert not same_targeting(observed, approved)
