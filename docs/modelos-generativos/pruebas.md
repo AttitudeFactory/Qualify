@@ -42,6 +42,22 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
 | Gasto | **US$0,163** por 14 llamadas (10 + 4 reparaciones): **US$0,009–0,027 por foto**, US$0,016 de media |
 
 - **Lectura:** el esquema y la reparación se sostienen; la mitad de las fotos pidieron reparar (subtítulos largos o una frase fuera de regla) y todas salieron válidas. Claude prefiere `band` (la opción segura) sobre `plate` con fotos de Seedream que llenan el cuadro; nadie eligió `scrim`. El falso positivo de F3 regeneraría una base sin necesidad (a lo sumo una vez, por la clave única). F3 escribió «Abrimos de martes a domingo…» en el subtítulo: sin cifras pasa la regla de §1.8, pero es un dato del horario en texto libre — una regla a endurecer.
+- **Textos que escribió, por foto** (los guardados de esta corrida; no se volvió a llamar a Claude):
+
+| Foto | Diseño | Título | Subtítulo | Invitación |
+|---|---|---|---|---|
+| F1-ubicacion-r1-v4 | `band` | «Tu shawarma te espera en el Korner» | «Pasa por la acera de enfrente y pruébalo recién hecho» | «Te esperamos hoy» |
+| F1-ubicacion-r1-v5 | `band` | «Tu shawarma te espera en el Korner» | «Pasa por el caballete de la acera y pídelo recién hecho.» | «Te esperamos hoy» |
+| F2-te-espera-r1-v4 | `band` | «Tu shawarma de carne, aquí» | «Pan tostado, carne jugosa y salsa cremosa» | «Pídelo hoy mismo» |
+| F3-horario-r1-v5 | `band` | «Tu salchipapa, ahora de noche» | «Abrimos de martes a domingo para antojos nocturnos.» | «Te esperamos esta noche» |
+| F4-combo-r1-v5 | `band` | «Tu combo de shawarma completo» | «Carne jugosa, papas doradas y gaseosa bien fría.» | «Pídelo por WhatsApp» |
+| F5-ensalada-escena-r1-v5 | `plate` | «Tu ensalada, fresca» | «Lechuga, tomate, pepino y garbanzos para empezar el día.» | «Pídela hoy» |
+| F7-pollo-2x1-r1-v5 | `plate` | «Martes de shawarma 2x1» | «Pollo recién hecho, para compartir.» | «Ven este martes» |
+| F8-papas-compartir-r1-v5 | `band` | «Papas para compartir» | «Una porción grande al centro de la mesa y todos a picar.» | «Pídelas para tu grupo» |
+| G1-combo-galeria-s2-r1-v5 | `band` | «Tu combo del día, completo» | «Shawarma de carne, papas y gaseosa» | «Pídelo por WhatsApp» |
+| G2-salchipapa-galeria-s1-r1-v4 | `band` | «Salchipapa doradita» | «Crocante, jugosa y perfecta para picar entre amigos.» | «Ven esta noche al Korner» |
+
+- **Revisión de UX sobre estos textos → `capa-v2` (sin medir):** «Abrimos de martes a domingo» (F3) y una promoción o un día que el encargo no traiga son datos inventados; F1 y G2 repiten el nombre del negocio, que ya va en el logo. `capa-v2` pide no escribir días, horarios, descuentos, «gratis», domicilios ni promociones que no estén en «De qué trata la publicación» o en los datos guardados (y la validación pide reparar si aparecen; «100% natural» o «500 g» no cuentan), trato de tú y apuntar a dos tercios de cada límite. El «2x1» y el martes de F7 vienen del encargo, así que siguen permitidos. `capa-v2` **no se ha medido**: se medirá con el tope que apruebe el fundador.
 - **Pendiente:** medir con más fotos y galerías completas en una sola llamada (m-25017292), con la composición real (m-25017285), y la latencia (no se midió).
 
 ---
