@@ -142,8 +142,8 @@ def window_text(text: rx.Var[str], tone: rx.Var[str]) -> rx.Component:
         rx.hstack(
             rx.cond(
                 tone == "warn",
-                rx.icon("clock-alert", size=T.ICON_SM, aria_hidden="true"),
-                rx.icon("clock", size=T.ICON_SM, aria_hidden="true"),
+                rx.icon("clock-alert", size=T.ICON_SM, aria_hidden="true", flex_shrink="0"),
+                rx.icon("clock", size=T.ICON_SM, aria_hidden="true", flex_shrink="0"),
             ),
             rx.text(text, size="1"),
             spacing="1",
