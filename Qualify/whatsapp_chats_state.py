@@ -80,12 +80,16 @@ from sqlalchemy.exc import SQLAlchemyError
 from .auth_state import AuthState
 from .chat_row_vm import ChatRowVM
 from .nav_url import (
+    FROM_INBOX,
+    FROM_PARAM,
     back_url_script,
     close_flow_script,
     conversation_href,
+    filter_address_script,
     flow_param,
     push_url_script,
     replace_url_script,
+    scalar_param,
     thread_param,
     uuid_param,
 )
@@ -113,6 +117,7 @@ from .whatsapp_chats_vm import (
     FILTER_KEYS,
     FILTER_OPEN,
     FILTER_PAYMENT,
+    FILTER_SLUG,
     FILTER_UNREAD,
     LEGACY_PICK_FLOW,
     MAX_BUTTON_TITLE_CHARS,
@@ -210,6 +215,7 @@ from .whatsapp_chats_vm import (
     composer_enabled,
     filter_counts,
     filter_empty_text,
+    filter_from_slug,
     filter_label,
     filter_products,
     filter_threads,
@@ -475,6 +481,9 @@ class WhatsAppChatsState(rx.State):
     statuses_failed: bool = False
 
     # -- conversation -------------------------------------------------------------------
+    #: m-25017859: the open chat came from the single list of «Por responder»
+    #: (`?desde=por-responder`): its back button returns there.
+    from_inbox: bool = False
     open_thread_id: str = ""
     messages: list[MessageVM] = []
     order: OrderCardVM = EMPTY_ORDER
@@ -857,10 +866,9 @@ class WhatsAppChatsState(rx.State):
 
     @rx.event
     async def enter(self) -> rx.event.EventSpec | None:
-        """Tab root `on_mount`: entry or number switch."""
-        # m-24842990: «Por responder» › «Ver» opens the chats on «Sin leer» (N11).
-        if self.router.url.query_parameters.get("filtro") == "sin-leer":
-            self.filter_key = FILTER_UNREAD
+        """Tab root `on_mount`: entry or number switch. It never decides the chip: a
+        remount (another WhatsApp tab and back, a number switch, back from Galería)
+        keeps the one the owner picked (`apply_address_filter` runs on navigation)."""
         if self.pick_open:
             self._reset_picker()  # back from Galería: the drawer does not reopen
         shell = await self.get_state(WhatsAppState)
@@ -881,9 +889,28 @@ class WhatsAppChatsState(rx.State):
         return WhatsAppChatsState.load_list
 
     @rx.event
-    def set_filter(self, key: str | list[str]) -> None:
-        if isinstance(key, str) and key in FILTER_KEYS:
-            self.filter_key = key
+    async def apply_address_filter(self) -> None:
+        """m-24842990 / m-25017859: on a NAVIGATION to `/whatsapp` (its route
+        `on_load`, via `WhatsAppState.enter_page`) the address decides the chip: the
+        sidebar's badge link and the single list's deep link carry `?filtro=por-responder`
+        (`sin-leer`: the chip's old name), a bare `/whatsapp` is the default «Abiertos»."""
+        self.filter_key = filter_from_slug(self.router.url.query_parameters.get("filtro"))
+        (await self.get_state(WhatsAppState))._chats_chip = self._chip()
+
+    @rx.event
+    async def set_filter(self, key: str | list[str]) -> rx.event.EventSpec | None:
+        """A chip tap: the choice stands until the next navigation, and the address says
+        it (replaced, not pushed), so a reload shows the same chip. The page keeps it for
+        the addresses it writes later (a tab and back: `WhatsAppState._panel_address`)."""
+        if not isinstance(key, str) or key not in FILTER_KEYS:
+            return None
+        self.filter_key = key
+        (await self.get_state(WhatsAppState))._chats_chip = self._chip()
+        return rx.call_script(filter_address_script(FILTER_SLUG[key]))
+
+    def _chip(self) -> str:
+        """The `?filtro=` of the chip on screen; "" for the default (no parameter)."""
+        return "" if self.filter_key == DEFAULT_FILTER else FILTER_SLUG[self.filter_key]
 
     @rx.event(background=True)
     async def load_list(self) -> None:
@@ -967,6 +994,9 @@ class WhatsAppChatsState(rx.State):
             self._reset_conversation()
         params = self.router.url.query_parameters
         thread = thread_param(params, connection)
+        # m-25017859: a chat opened from the single list of «Por responder» goes back
+        # there, not to this number's own list.
+        self.from_inbox = bool(thread) and scalar_param(params, FROM_PARAM) == FROM_INBOX
         if thread == self.open_thread_id:
             return None
         self.open_thread_id = thread
@@ -983,19 +1013,41 @@ class WhatsAppChatsState(rx.State):
             return None  # arrived over the wire; refuse an id the list does not hold
         writer = replace_url_script if self.open_thread_id else push_url_script
         self.open_thread_id = thread_id
+        self.from_inbox = False  # picked from this number's own list
         self._reset_conversation()
         self.compose_mode = COMPOSE_TEXT
         return [
-            rx.call_script(writer(conversation_href("whatsapp", self._connection_id, thread_id))),
+            rx.call_script(
+                writer(
+                    conversation_href("whatsapp", self._connection_id, thread_id, chip=self._chip())
+                )
+            ),
             WhatsAppChatsState.load_conversation,
         ]
 
     @rx.event
     def back_to_list(self) -> rx.event.EventSpec:
-        """Mobile: leave the conversation pane."""
+        """Mobile: leave the conversation pane (from the single list: back to it)."""
+        if self.from_inbox:
+            return WhatsAppChatsState.back_to_inbox
         self.open_thread_id = ""
         self._reset_conversation()
-        return rx.call_script(back_url_script(conversation_href("whatsapp", self._connection_id)))
+        return rx.call_script(
+            back_url_script(conversation_href("whatsapp", self._connection_id, chip=self._chip()))
+        )
+
+    @rx.event
+    async def back_to_inbox(self) -> rx.event.EventSpec:
+        """«‹ Por responder» (m-25017859): back to the single list with the filter, the
+        channel and the scroll it had (`InboxListState` keeps them)."""
+        from .inbox_list_state import InboxListState
+
+        self.from_inbox = False
+        self.open_thread_id = ""
+        self._reset_conversation()
+        inbox = await self.get_state(InboxListState)
+        # Replace, not push: the phone's «atrás» after this never reopens the chat.
+        return rx.redirect(inbox.inbox_return_href, replace=True)
 
     @rx.event(background=True)
     async def load_conversation(self) -> AsyncIterator[rx.event.EventSpec]:

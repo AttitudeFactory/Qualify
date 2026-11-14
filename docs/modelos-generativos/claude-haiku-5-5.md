@@ -129,3 +129,27 @@ Detalle en la [bitácora, NIVELES-003](pruebas.md#niveles-003). Rúbrica sin cam
 
 - El «2/6 nombra el horario» de NIVELES-002 no fue del juez: lo dio la expresión regular determinista, que leyó la calle «de la 57» como hora. Está corregida.
 - Junto al juez van ahora dos chequeos deterministas en solution_aware: `concrete_fact` y `generic_claims`.
+
+## Uso NIVELES-004 — juez de clips y partes con nivel (m-25026509) — 2026-11-13
+
+Detalle en la [bitácora, NIVELES-004](pruebas.md#niveles-004).
+
+- Agregado de clips (`juez-niveles-v2+clip-v1`), escrito antes de correr: un clip no tiene guion hablado, así que se juzgan gancho, texto, CTA y las 3 tomas; en most_aware el texto largo cuenta en contra.
+- Partes con el agregado de NIVELES-002.
+- Sigue sin validar contra etiquetas humanas.
+- En 2 de 66 copias faltó la lectura informada.
+
+## Uso NIVELES-005 — rúbrica v3 alineada con las medidas de most_aware (m-25026509) — 2026-11-13
+
+Detalle en la [bitácora, NIVELES-005](pruebas.md#niveles-005).
+
+- `juez-niveles-v3`: la regla de most_aware lleva las medidas de la consigna (gancho de unas 6 palabras, CTA de unas 5, texto de unas 25 palabras, el mínimo de la marca permitido). El agregado de clips (`clip-v2`) ya no castiga el texto largo por sí solo.
+- Las salidas guardadas de NIVELES-003/004 se volvieron a juzgar con la v3 para comparar con la misma vara: US$0,010 por 20 copias.
+
+## Uso NIVELES-006 — rúbrica v4 de most_aware y fuentes del juez (m-25027151) — 2026-11-14
+
+Detalle en la [bitácora, NIVELES-006](pruebas.md#niveles-006).
+
+- **Rúbrica v4:** para most_aware, el horario y el lugar cuentan como parte de «cómo comprar». La v3 los marcaba como falla, en contra del ejemplo del fundador.
+- **Fuentes:** el juez ahora recibe lo de «Debe mencionar» y los ejemplos del kit como datos dados. Sin ellos marcó «al amanecer» como inventado en 6 de 7 clips de viajes.
+- Las salidas guardadas se volvieron a juzgar con la misma vara (US$0,049 por 81 copias, en dos tandas).

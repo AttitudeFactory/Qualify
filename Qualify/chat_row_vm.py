@@ -35,19 +35,28 @@ WANTS_TO_BUY_PILL: Final = "Quiere comprar"
 AWAITING_PAYMENT_PILL: Final = "Esperando el pago"
 #: A window closing within this shows the reply-soon pill (both channels' warn threshold).
 REPLY_SOON_WITHIN: Final = timedelta(hours=1)
-#: The reply-soon pill's words, in ONE place (wording pending the founder's call).
-REPLY_SOON_TEMPLATE: Final = "Responde en {minutes} min"
+#: The reply-soon pill's words, in ONE place (founder decision 2026-11-13, m-25017859:
+#: replaces «Responde en N min»).
+REPLY_SOON_TEMPLATE: Final = "Quedan {minutes} min para responder"
+#: m-25017859: an Instagram chat whose 24 h window closed while the customer had the last
+#: word — said in words, never by colour alone. UX proposal awaiting the founder.
+EXPIRED_PILL: Final = "Respóndele desde Instagram"
+#: m-25017859: the open Instagram chat's header pill when the rule says it waits (the
+#: chip's own word; the row says it with the dot).
+AWAITING_PILL: Final = "Por responder"
 
-#: What the waiting dot means, per channel, in each screen's own filter words: WhatsApp's
-#: dot is unread messages («Sin leer»); Instagram's is «Pendiente» (not answered yet).
-WAITING_LABELS: Final[dict[str, str]] = {
-    CHANNEL_WHATSAPP: "sin leer",
-    CHANNEL_INSTAGRAM: "sin responder",
-}
+#: What the waiting dot means — the same «Por responder» rule on every channel
+#: (m-25017859, `qualify_api.inbox.awaiting`), so one word for both.
+WAITING_LABEL: Final = "por responder"
+#: A closed chat is muted on the row; the accessible name says it in words too.
+CLOSED_LABEL: Final = "cerrado"
+#: m-25017859 (N7): the button that leaves an open chat names the single list it returns
+#: to, on both channels — «‹ Por responder».
+INBOX_BACK_LABEL: Final = "Por responder"
 
 
 def reply_soon_pill(minutes: int) -> str:
-    """«Responde en 12 min» — the row's short form of a window about to close."""
+    """«Quedan 12 min para responder» — the row's form of a window about to close."""
     return REPLY_SOON_TEMPLATE.format(minutes=max(1, minutes))
 
 
@@ -70,12 +79,17 @@ def attention_pill(
     reply_within_minutes: int,
     wants_to_buy: bool = False,
     payment_awaiting: bool = False,
+    expired: bool = False,
 ) -> tuple[str, str]:
     """(label, tone) of the row's ONE pill; ("", "neutral") when nothing asks for it.
-    «Pago por revisar» › «Quiere comprar» › «Responde en N min» › «Esperando el pago»:
-    a window about to close outranks a payment that is only being waited for."""
+    «Pago por revisar» › «Respóndele desde Instagram» › «Quiere comprar» ›
+    «Quedan N min para responder» › «Esperando el pago»: a window about to close
+    outranks a payment that is only being waited for; a window already gone outranks
+    every reason to answer, since the answer can no longer go out here."""
     if payment_review:
         return PAYMENT_REVIEW_PILL, "warn"
+    if expired:
+        return EXPIRED_PILL, "neutral"
     if wants_to_buy:
         return WANTS_TO_BUY_PILL, "info"
     if reply_within_minutes > 0:
@@ -113,12 +127,16 @@ def unknown_contact(channel: str) -> str:
     return f"Cliente de {channel_label(channel)}"
 
 
-def accessible_name(title: str, channel: str, *, waiting: bool, pill: str) -> str:
-    """The row's one accessible name: «Ana, por WhatsApp, sin leer, Pago por revisar» —
-    the channel always, the rest only when it applies."""
+def accessible_name(
+    title: str, channel: str, *, waiting: bool, pill: str, closed: bool = False
+) -> str:
+    """The row's one accessible name: «Ana, por WhatsApp, por responder, Pago por
+    revisar» — the channel always, the rest only when it applies («cerrado» too)."""
     parts = [title or unknown_contact(channel), f"por {channel_label(channel)}"]
+    if closed:
+        parts.append(CLOSED_LABEL)
     if waiting:
-        parts.append(WAITING_LABELS.get(channel, "sin responder"))
+        parts.append(WAITING_LABEL)
     if pill:
         parts.append(pill)
     return ", ".join(parts)
@@ -134,7 +152,7 @@ class ChatRowVM:
     preview: str  # «Tú: …» when the business wrote last
     preview_icon: str  # "" or a Lucide name for a media / tapped preview
     time_label: str
-    waiting: bool  # the breathing dot (WhatsApp: unread; Instagram: «Pendiente»)
+    waiting: bool  # the breathing dot: the «Por responder» rule, on every channel
     pill_label: str  # "" or the ONE attention pill
     pill_tone: str
     initials: str  # "" → the avatar shows the person icon
@@ -143,6 +161,12 @@ class ChatRowVM:
     agent_name: str
     fresh: bool  # one pulse after a refresh brought a newer inbound
     aria_label: str
+    #: m-25017859: muted (name and preview) in a list that mixes open and closed chats.
+    closed: bool = False
+    #: m-25017859: the unified list opens a chat by its channel and account.
+    connection_id: str = ""
+    #: m-25017859: the row's place in the single list's order (`inbox_list_vm.sort_key`).
+    sort_key: str = ""
 
 
 def build_chat_row(
@@ -164,6 +188,10 @@ def build_chat_row(
     agent_initials: str = "",
     agent_name: str = "",
     fresh: bool = False,
+    expired: bool = False,
+    closed: bool = False,
+    connection_id: str = "",
+    sort_key: str = "",
 ) -> ChatRowVM:
     """The one place the pill is chosen, the initials are taken and the accessible name
     is worded. `initials_from` is the person's name or handle ("" when only a number or
@@ -174,6 +202,7 @@ def build_chat_row(
         reply_within_minutes=reply_within_minutes,
         wants_to_buy=wants_to_buy,
         payment_awaiting=payment_awaiting,
+        expired=expired,
     )
     return ChatRowVM(
         thread_id=thread_id,
@@ -190,5 +219,8 @@ def build_chat_row(
         agent_initials=agent_initials,
         agent_name=agent_name,
         fresh=fresh,
-        aria_label=accessible_name(title, channel, waiting=waiting, pill=pill_label),
+        aria_label=accessible_name(title, channel, waiting=waiting, pill=pill_label, closed=closed),
+        closed=closed,
+        connection_id=connection_id,
+        sort_key=sort_key,
     )

@@ -1,0 +1,922 @@
+{
+ "ticket": "m-25026482",
+ "baseline_ref": "a6667370",
+ "split": "all",
+ "pricing_version": "v9",
+ "judge": "claude-haiku-5-5@low",
+ "judge_prompt_version": "juez-niveles-v3",
+ "judge_parts_version": "juez-niveles-v3+partes-v1",
+ "code_commit": "9a462688",
+ "arms": [],
+ "levels": [
+  "problem_aware"
+ ],
+ "repeat": 4,
+ "tracing": false,
+ "date": "2026-11-13T20:53:19",
+ "suites": {
+  "partslevel": {
+   "items": [
+    {
+     "case": "hamburguesas",
+     "arm": "problem_aware",
+     "level": "problem_aware",
+     "prompt_version": "proponer-partes-v3.5",
+     "output": {
+      "parts": [
+       {
+        "description": "Dos amigos salen cansados del trabajo en una calle de Chapinero, mirando el celular sin saber dónde comer.",
+        "seconds": 5
+       },
+       {
+        "description": "De cerca, dos carnes se aplastan y se doran sobre la plancha caliente.",
+        "seconds": 5
+       },
+       {
+        "description": "El combo doble smash completo con papas y gaseosa, visto desde arriba sobre la mesa del local.",
+        "seconds": 4
+       },
+       {
+        "description": "Los mismos amigos entran al local, se sientan en una mesa y se ve todo el lugar alrededor.",
+        "seconds": 5
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.5",
+       "prompt_fingerprint": "e2bf58b6bc21e466",
+       "pricing_version": "v8",
+       "cost_usd": "0.019499",
+       "input_tokens": 2143,
+       "output_tokens": 1025,
+       "turns": 2
+      },
+      "cost_usd": 0.019499,
+      "latency_s": 12.84
+     },
+     "scores": {
+      "costo_usd": 0.019499,
+      "latencia_s": 12.84,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": true,
+      "partes_en_rango": true,
+      "segundos_totales": 19.0,
+      "desvio_duracion": 0.05,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": true,
+      "cierre_consigue": false,
+      "cierre_usa": false,
+      "palabras_max": 18.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.000518,
+     "juez_informado_usd": 0.000426
+    },
+    {
+     "case": "hamburguesas",
+     "arm": "problem_aware",
+     "level": "problem_aware",
+     "prompt_version": "proponer-partes-v3.5",
+     "output": {
+      "parts": [
+       {
+        "description": "Un grupo de amigos sentados en una mesa después del trabajo, mirando el menú sin decidirse, con cara de hambre y duda.",
+        "seconds": 4
+       },
+       {
+        "description": "De cerca, dos smash burgers jugosas se apilan una sobre otra mientras el queso derretido cae por los bordes.",
+        "seconds": 4
+       },
+       {
+        "description": "Desde arriba se ve toda la bandeja del combo doble smash con las papas doradas y el vaso de gaseosa al lado.",
+        "seconds": 4
+       },
+       {
+        "description": "Unas manos parten la hamburguesa por la mitad y se ve el relleno jugoso entre el pan tostado.",
+        "seconds": 4
+       },
+       {
+        "description": "El grupo de amigos en la mesa del local recibe la bandeja del combo y se sirven las papas entre todos sonriendo.",
+        "seconds": 4
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.5",
+       "prompt_fingerprint": "e2bf58b6bc21e466",
+       "pricing_version": "v8",
+       "cost_usd": "0.005004",
+       "input_tokens": 648,
+       "output_tokens": 334,
+       "turns": 1
+      },
+      "cost_usd": 0.005004,
+      "latency_s": 4.56
+     },
+     "scores": {
+      "costo_usd": 0.005004,
+      "latencia_s": 4.56,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": false,
+      "partes_en_rango": true,
+      "segundos_totales": 20.0,
+      "desvio_duracion": 0.0,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": true,
+      "cierre_consigue": true,
+      "cierre_usa": false,
+      "palabras_max": 22.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.00041,
+     "juez_informado_usd": 0.000315
+    },
+    {
+     "case": "hamburguesas",
+     "arm": "problem_aware",
+     "level": "problem_aware",
+     "prompt_version": "proponer-partes-v3.5",
+     "output": {
+      "parts": [
+       {
+        "description": "Un grupo de amigos sale de trabajar y camina por la calle mirando el teléfono, sin decidir a dónde ir a comer.",
+        "seconds": 5
+       },
+       {
+        "description": "De cerca, el combo doble smash sobre la mesa: la carne jugosa con queso derretido, las papas doradas y la gaseosa al lado.",
+        "seconds": 5
+       },
+       {
+        "description": "Desde arriba se ve la mesa del local con amigos compartiendo el combo y riendo, mientras una mascota descansa cerca de sus pies.",
+        "seconds": 5
+       },
+       {
+        "description": "Los amigos llegan y se sientan en una mesa del local pequeño, y unas manos les dejan el combo doble smash recién listo.",
+        "seconds": 5
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.5",
+       "prompt_fingerprint": "e2bf58b6bc21e466",
+       "pricing_version": "v8",
+       "cost_usd": "0.008214",
+       "input_tokens": 648,
+       "output_tokens": 655,
+       "turns": 1
+      },
+      "cost_usd": 0.008214,
+      "latency_s": 8.71
+     },
+     "scores": {
+      "costo_usd": 0.008214,
+      "latencia_s": 8.71,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": false,
+      "partes_en_rango": true,
+      "segundos_totales": 20.0,
+      "desvio_duracion": 0.0,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": true,
+      "cierre_consigue": false,
+      "cierre_usa": false,
+      "palabras_max": 23.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.000431,
+     "juez_informado_usd": 0.000305
+    },
+    {
+     "case": "hamburguesas",
+     "arm": "problem_aware",
+     "level": "problem_aware",
+     "prompt_version": "proponer-partes-v3.5",
+     "output": {
+      "parts": [
+       {
+        "description": "En la calle de Chapinero al anochecer, dos personas salen del trabajo y se miran dudando dónde ir a comer.",
+        "seconds": 5
+       },
+       {
+        "description": "De cerca, unas manos levantan la doble smash jugosa del combo, con las papas y la gaseosa al lado en la mesa.",
+        "seconds": 5
+       },
+       {
+        "description": "Desde arriba se ve la mesa llena con el combo doble smash, las papas y la gaseosa, lista para compartir entre amigos.",
+        "seconds": 5
+       },
+       {
+        "description": "Un grupo de amigos entra al local de Brasa Norte y se sienta en una mesa mientras un mesero les acerca el combo.",
+        "seconds": 5
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.5",
+       "prompt_fingerprint": "e2bf58b6bc21e466",
+       "pricing_version": "v8",
+       "cost_usd": "0.007324",
+       "input_tokens": 648,
+       "output_tokens": 566,
+       "turns": 1
+      },
+      "cost_usd": 0.007324,
+      "latency_s": 7.09
+     },
+     "scores": {
+      "costo_usd": 0.007324,
+      "latencia_s": 7.09,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": false,
+      "partes_en_rango": true,
+      "segundos_totales": 20.0,
+      "desvio_duracion": 0.0,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": true,
+      "cierre_consigue": false,
+      "cierre_usa": false,
+      "palabras_max": 23.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.000379,
+     "juez_informado_usd": 0.000258
+    },
+    {
+     "case": "inmobiliaria",
+     "arm": "problem_aware",
+     "level": "problem_aware",
+     "prompt_version": "proponer-partes-v3.5",
+     "output": {
+      "parts": [
+       {
+        "description": "Una familia mira desde afuera un edificio nuevo en Bello, con cara de ilusión por tener casa propia.",
+        "seconds": 5
+       },
+       {
+        "description": "Dentro de un apartamento de dos alcobas nuevo, se ve toda la sala y la cocina vacías, bien iluminadas.",
+        "seconds": 5
+       },
+       {
+        "description": "Unas manos abren la puerta de una de las alcobas del apartamento y se ve el cuarto vacío, listo para habitar.",
+        "seconds": 4
+       },
+       {
+        "description": "Unas manos sostienen un teléfono y escriben un mensaje de WhatsApp pidiendo asesoría para comprar el apartamento.",
+        "seconds": 4
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.5",
+       "prompt_fingerprint": "82137d0c6953ca0d",
+       "pricing_version": "v8",
+       "cost_usd": "0.004586",
+       "input_tokens": 699,
+       "output_tokens": 282,
+       "turns": 1
+      },
+      "cost_usd": 0.004586,
+      "latency_s": 5.08
+     },
+     "scores": {
+      "costo_usd": 0.004586,
+      "latencia_s": 5.08,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": false,
+      "partes_en_rango": true,
+      "segundos_totales": 18.0,
+      "desvio_duracion": 0.1,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": true,
+      "cierre_consigue": true,
+      "cierre_usa": false,
+      "palabras_max": 21.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.000393,
+     "juez_informado_usd": 0.000487
+    },
+    {
+     "case": "inmobiliaria",
+     "arm": "problem_aware",
+     "level": "problem_aware",
+     "prompt_version": "proponer-partes-v3.5",
+     "output": {
+      "parts": [
+       {
+        "description": "Una familia mira desde afuera la ventana de un apartamento vacío en un edificio nuevo de Bello, con gesto de ilusión y duda.",
+        "seconds": 4
+       },
+       {
+        "description": "Se ve completa la sala de uno de los apartamentos nuevos de dos alcobas, amplia y con luz natural entrando por las ventanas.",
+        "seconds": 4
+       },
+       {
+        "description": "La imagen recorre despacio una de las alcobas del apartamento, mostrando el espacio vacío listo para una familia.",
+        "seconds": 4
+       },
+       {
+        "description": "Unas manos sostienen un teléfono y escriben un mensaje de WhatsApp pidiendo asesoría sobre el apartamento.",
+        "seconds": 4
+       },
+       {
+        "description": "La misma familia entra por la puerta principal del apartamento y camina hacia la sala, mirando el lugar con emoción.",
+        "seconds": 4
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.5",
+       "prompt_fingerprint": "82137d0c6953ca0d",
+       "pricing_version": "v8",
+       "cost_usd": "0.005236",
+       "input_tokens": 699,
+       "output_tokens": 347,
+       "turns": 1
+      },
+      "cost_usd": 0.005236,
+      "latency_s": 4.58
+     },
+     "scores": {
+      "costo_usd": 0.005236,
+      "latencia_s": 4.58,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": false,
+      "partes_en_rango": true,
+      "segundos_totales": 20.0,
+      "desvio_duracion": 0.0,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": true,
+      "cierre_consigue": false,
+      "cierre_usa": false,
+      "palabras_max": 23.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.000384,
+     "juez_informado_usd": 0.000382
+    },
+    {
+     "case": "inmobiliaria",
+     "arm": "problem_aware",
+     "level": "problem_aware",
+     "prompt_version": "proponer-partes-v3.5",
+     "output": {
+      "parts": [
+       {
+        "description": "Una familia mira desde afuera la ventana de un apartamento vacío, pensando si ese podría ser su primer hogar.",
+        "seconds": 5
+       },
+       {
+        "description": "Se ve completa la sala de uno de los apartamentos de dos alcobas, nuevo y con luz entrando por las ventanas.",
+        "seconds": 5
+       },
+       {
+        "description": "La imagen recorre despacio una de las alcobas vacías, mostrando el espacio amplio para una familia.",
+        "seconds": 5
+       },
+       {
+        "description": "Unas manos sostienen un teléfono y escriben un mensaje de WhatsApp pidiendo asesoría para comprar el apartamento.",
+        "seconds": 5
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.5",
+       "prompt_fingerprint": "82137d0c6953ca0d",
+       "pricing_version": "v8",
+       "cost_usd": "0.004516",
+       "input_tokens": 699,
+       "output_tokens": 275,
+       "turns": 1
+      },
+      "cost_usd": 0.004516,
+      "latency_s": 3.73
+     },
+     "scores": {
+      "costo_usd": 0.004516,
+      "latencia_s": 3.73,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": false,
+      "partes_en_rango": true,
+      "segundos_totales": 20.0,
+      "desvio_duracion": 0.0,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": true,
+      "cierre_consigue": true,
+      "cierre_usa": false,
+      "palabras_max": 21.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.000364,
+     "juez_informado_usd": 0.000496
+    },
+    {
+     "case": "inmobiliaria",
+     "arm": "problem_aware",
+     "level": "problem_aware",
+     "prompt_version": "proponer-partes-v3.5",
+     "output": {
+      "parts": [
+       {
+        "description": "Una familia mira desde afuera la fachada de un edificio nuevo en Bello, con cara de ilusión por tener casa propia.",
+        "seconds": 5
+       },
+       {
+        "description": "Se ve la sala de un apartamento de dos alcobas, amplia y con luz natural entrando por la ventana.",
+        "seconds": 4
+       },
+       {
+        "description": "Unas manos abren la puerta de una de las alcobas del apartamento y se ve el espacio vacío listo para habitar.",
+        "seconds": 4
+       },
+       {
+        "description": "Unas manos sostienen un teléfono y escriben un mensaje de WhatsApp pidiendo asesoría para comprar vivienda.",
+        "seconds": 5
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.5",
+       "prompt_fingerprint": "82137d0c6953ca0d",
+       "pricing_version": "v8",
+       "cost_usd": "0.004526",
+       "input_tokens": 699,
+       "output_tokens": 276,
+       "turns": 1
+      },
+      "cost_usd": 0.004526,
+      "latency_s": 3.86
+     },
+     "scores": {
+      "costo_usd": 0.004526,
+      "latencia_s": 3.86,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": false,
+      "partes_en_rango": true,
+      "segundos_totales": 18.0,
+      "desvio_duracion": 0.1,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": true,
+      "cierre_consigue": true,
+      "cierre_usa": false,
+      "palabras_max": 21.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.000357,
+     "juez_informado_usd": 0.000351
+    },
+    {
+     "case": "viajes",
+     "arm": "problem_aware",
+     "level": "problem_aware",
+     "prompt_version": "proponer-partes-v3.5",
+     "output": {
+      "parts": [
+       {
+        "description": "En un cuarto de hotel en Cusco, una persona mira fotos de Machu Picchu en su teléfono con cara de duda, sentada en la cama.",
+        "seconds": 4
+       },
+       {
+        "description": "Frente a un hotel en Cusco, una persona sube a una camioneta mientras un guía la recibe con una sonrisa.",
+        "seconds": 5
+       },
+       {
+        "description": "Un pequeño grupo camina por un sendero de montaña junto a un guía que señala el paisaje a lo lejos.",
+        "seconds": 4
+       },
+       {
+        "description": "El grupo llega a un mirador y observa Machu Picchu completo desde arriba, maravillado con el lugar.",
+        "seconds": 6
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.5",
+       "prompt_fingerprint": "bc3fec70dd2c2aa7",
+       "pricing_version": "v8",
+       "cost_usd": "0.009472",
+       "input_tokens": 642,
+       "output_tokens": 782,
+       "turns": 1
+      },
+      "cost_usd": 0.009472,
+      "latency_s": 9.23
+     },
+     "scores": {
+      "costo_usd": 0.009472,
+      "latencia_s": 9.23,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": false,
+      "partes_en_rango": true,
+      "segundos_totales": 19.0,
+      "desvio_duracion": 0.05,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": false,
+      "cierre_consigue": false,
+      "cierre_usa": false,
+      "palabras_max": 25.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.000303,
+     "juez_informado_usd": 0.000382
+    },
+    {
+     "case": "viajes",
+     "arm": "problem_aware",
+     "level": "problem_aware",
+     "prompt_version": "proponer-partes-v3.5",
+     "output": {
+      "parts": [
+       {
+        "description": "En una calle de Cusco, unas manos sostienen un teléfono mirando fotos de Machu Picchu con cara de duda sobre cómo llegar.",
+        "seconds": 5
+       },
+       {
+        "description": "Frente a un hotel en Cusco, unas personas suben a una camioneta turística que las recoge por la mañana.",
+        "seconds": 5
+       },
+       {
+        "description": "Un grupo pequeño camina por un sendero de montaña junto a un guía que señala el paisaje, se ve todo el camino.",
+        "seconds": 5
+       },
+       {
+        "description": "Las personas llegan caminando hasta la vista completa de Machu Picchu y se detienen a contemplarla desde arriba.",
+        "seconds": 5
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.5",
+       "prompt_fingerprint": "bc3fec70dd2c2aa7",
+       "pricing_version": "v8",
+       "cost_usd": "0.007382",
+       "input_tokens": 642,
+       "output_tokens": 573,
+       "turns": 1
+      },
+      "cost_usd": 0.007382,
+      "latency_s": 8.3
+     },
+     "scores": {
+      "costo_usd": 0.007382,
+      "latencia_s": 8.3,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": false,
+      "partes_en_rango": true,
+      "segundos_totales": 20.0,
+      "desvio_duracion": 0.0,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": false,
+      "cierre_consigue": false,
+      "cierre_usa": false,
+      "palabras_max": 22.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.000428,
+     "juez_informado_usd": 0.000465
+    }
+   ],
+   "scores": [
+    {
+     "arm": "problem_aware",
+     "case": "hamburguesas",
+     "split": "test",
+     "sector": "comida",
+     "with_perks": true,
+     "level": "problem_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [
+      3
+     ],
+     "judge_level": "problem_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      3
+     ],
+     "judge_fit": true,
+     "judge_reason": "El gancho nombra el dilema de no saber dónde comer después del trabajo, y el video presenta el combo doble smash como la respuesta. No inventa precios, horarios ni formas de pago, y las mesas del loca",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "problem_aware",
+     "case": "hamburguesas",
+     "split": "test",
+     "sector": "comida",
+     "with_perks": true,
+     "level": "problem_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [],
+     "judge_level": "product_aware",
+     "judge_quality": 3,
+     "judge_invented": [],
+     "judge_perks": [
+      3
+     ],
+     "judge_fit": true,
+     "judge_reason": "La primera parte muestra el dilema de qué pedir (amigos indecisos ante el menú) y el combo doble smash aparece como la respuesta, sin precios, horarios ni datos inventados.",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "problem_aware",
+     "case": "hamburguesas",
+     "split": "test",
+     "sector": "comida",
+     "with_perks": true,
+     "level": "problem_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [
+      3
+     ],
+     "judge_level": "solution_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      2,
+      3
+     ],
+     "judge_fit": true,
+     "judge_reason": "El gancho nombra el dilema de no saber a dónde ir a comer después del trabajo, y las partes siguientes presentan el combo doble smash como la respuesta, sin inventar precios, horarios ni formas de pag",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "problem_aware",
+     "case": "hamburguesas",
+     "split": "test",
+     "sector": "comida",
+     "with_perks": true,
+     "level": "problem_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [
+      3
+     ],
+     "judge_level": "product_aware",
+     "judge_quality": 3,
+     "judge_invented": [],
+     "judge_perks": [
+      3
+     ],
+     "judge_fit": true,
+     "judge_reason": "El gancho nombra el dilema (dos personas dudando dónde ir a comer al salir del trabajo) y presenta el combo doble smash con papas y gaseosa como la respuesta, sin inventar precios, horarios ni promoci",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "problem_aware",
+     "case": "inmobiliaria",
+     "split": "test",
+     "sector": "inmobiliaria",
+     "with_perks": true,
+     "level": "problem_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [],
+     "judge_level": "product_aware",
+     "judge_quality": 3,
+     "judge_invented": [],
+     "judge_perks": [
+      1,
+      4
+     ],
+     "judge_fit": true,
+     "judge_reason": "La familia con ilusión de tener casa propia expresa la necesidad, el producto (apartamentos de dos alcobas nuevos en Bello) aparece como respuesta y termina en la asesoría por WhatsApp, que está en lo",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "problem_aware",
+     "case": "inmobiliaria",
+     "split": "test",
+     "sector": "inmobiliaria",
+     "with_perks": true,
+     "level": "problem_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [],
+     "judge_level": "solution_aware",
+     "judge_quality": 3,
+     "judge_invented": [],
+     "judge_perks": [
+      4
+     ],
+     "judge_fit": false,
+     "judge_reason": "La escena muestra ilusión y duda, pero ninguna parte nombra el dilema de la primera vivienda (costos, trámites, subsidio) ni presenta la asesoría como respuesta; el apartamento y el WhatsApp aparecen ",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "problem_aware",
+     "case": "inmobiliaria",
+     "split": "test",
+     "sector": "inmobiliaria",
+     "with_perks": true,
+     "level": "problem_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [],
+     "judge_level": "product_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      4
+     ],
+     "judge_fit": true,
+     "judge_reason": "La primera parte nombra el dilema de la familia (si ese apartamento podría ser su primer hogar) y la última presenta la asesoría por WhatsApp como respuesta, sin inventar precios, horarios ni formas d",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "problem_aware",
+     "case": "inmobiliaria",
+     "split": "test",
+     "sector": "inmobiliaria",
+     "with_perks": true,
+     "level": "problem_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [],
+     "judge_level": "product_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      4
+     ],
+     "judge_fit": true,
+     "judge_reason": "Muestra el deseo de casa propia (la familia con ilusión frente al edificio) y presenta la asesoría por WhatsApp como la respuesta, sin inventar precios, horarios ni promociones; el dilema se sugiere e",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "problem_aware",
+     "case": "viajes",
+     "split": "test",
+     "sector": "viajes",
+     "with_perks": true,
+     "level": "problem_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [
+      1,
+      3
+     ],
+     "judge_level": "problem_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      1,
+      2,
+      3
+     ],
+     "judge_fit": true,
+     "judge_reason": "La primera parte muestra la duda del viajero frente a sus fotos de Machu Picchu, que es el dilema, y las partes siguientes presentan el tour con recogida en el hotel, guías que hablan español e inglés",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "problem_aware",
+     "case": "viajes",
+     "split": "test",
+     "sector": "viajes",
+     "with_perks": true,
+     "level": "problem_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [
+      1,
+      3
+     ],
+     "judge_level": "problem_aware",
+     "judge_quality": 3,
+     "judge_invented": [
+      "La recogida \"por la mañana\" es un horario que no aparece en los datos del negocio"
+     ],
+     "judge_perks": [
+      1,
+      2,
+      3
+     ],
+     "judge_fit": false,
+     "judge_reason": "El gancho sí nombra el dilema (cómo llegar a Machu Picchu) y la recogida en hotel y el grupo con guía presentan el servicio como respuesta, pero la parte 2 afirma que la camioneta recoge \"por la mañan",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 0,
+     "words_cta": 0
+    }
+   ]
+  }
+ },
+ "spend_usd": {
+  "partslevel": 0.083593
+ },
+ "spend_total_usd": 0.083593,
+ "skipped_by_cap": [
+  "partslevel viajes problem_aware",
+  "partslevel viajes problem_aware"
+ ],
+ "ledger_calls": 31
+}

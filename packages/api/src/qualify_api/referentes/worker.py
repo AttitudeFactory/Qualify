@@ -18,8 +18,12 @@ Scope is MANDATORY and explicit, like every worker here:
   to the shared analysis (`analyze_run_ideas`), the analysis queue is drained
   (`reel_analysis_worker.drain_once`, as `just reel-analysis-tick`: downloads from the
   networks' CDNs into R2, no paid call) and the 30-day purge of what it stored — sources,
-  frames and covers — runs daily (`reel_retention.purge_all`). With `--tenant` none of it
-  happens: a local run writes no global analysis row and no public R2 object.
+  frames and covers — runs daily (`reel_retention.purge_all`). Every six hours, last in
+  its pass, it also runs the weekly TikTok hashtag read of the PILOT businesses listed in
+  `QUALIFY_HASHTAG_WEEKLY_TENANTS` (`qualify_api.hashtags.pilot`, m-25026378, D3): off
+  unless `QUALIFY_HASHTAG_WEEKLY_READ` is on, nobody when the list is empty, and anything
+  it raises is logged and swallowed. With `--tenant` none of it happens: a local run writes
+  no global analysis row and no public R2 object, and pays no hashtag read.
 
 Modes:
 - `--once`: one pass — the weekly scheduling forced, the recovery, at most `--batch`
@@ -98,8 +102,9 @@ def production_worker(
     tenants. Only that service touches what belongs to no business: it copies its runs'
     idea covers to R2 and hands the ideas to the shared analysis, drains that queue and
     purges the stored reel sources and covers, deleting for real only with
-    `QUALIFY_REEL_PURGE_EXECUTE`. A `--tenant` worker runs `scoped_run`: no analysis row,
-    no R2 object."""
+    `QUALIFY_REEL_PURGE_EXECUTE`, and runs the daily hashtag pilot (`_hashtag_chore`).
+    A `--tenant` worker runs `scoped_run`: no analysis row, no R2 object, no hashtag
+    read."""
     every = tenant_ids is None
     return ReelsWorker(
         PostgresReelQueue(tenants=tenant_ids),
@@ -110,6 +115,7 @@ def production_worker(
         should_stop=should_stop,
         purge=_production_purge if every else None,
         drain=production_drain if every else None,
+        hashtags=_hashtag_chore(should_stop) if every else None,
     )
 
 
@@ -120,6 +126,19 @@ def _production_purge(now: datetime) -> object:
     return reel_retention.purge_all(
         reel_retention.production_gate(), now, reel_retention.execute_from_env()
     )
+
+
+def _hashtag_chore(should_stop: Callable[[], bool]) -> Callable[[datetime], object]:
+    """The weekly hashtag read of the pilot businesses (`hashtags.pilot.run_pilot`), with
+    the worker's stop signal. Imported on use: the reels worker loads nothing of it until
+    its first hashtag pass."""
+
+    def chore(now: datetime) -> object:
+        from qualify_api.hashtags import pilot  # noqa: PLC0415 — loaded on first use
+
+        return pilot.run_pilot(now, should_stop=should_stop)
+
+    return chore
 
 
 # --- the loop -----------------------------------------------------------------------------
@@ -147,6 +166,14 @@ def _log_report(report: PassReport) -> None:
                 due.brand_id,
                 due.run_date,
             )
+    chore = report.hashtags
+    if chore is not None and getattr(chore, "stopped", None) != "switch_off":
+        logger.info(
+            "reels.worker.hashtags businesses=%d errors=%d stopped=%s",
+            len(getattr(chore, "outcomes", ())),
+            getattr(chore, "errors", 0),
+            getattr(chore, "stopped", None),
+        )
     for outcome in report.outcomes:
         logger.info(
             "reels.worker.ran run_id=%s status=%s ran=%s recorded=%s credits=%d ideas=%d",

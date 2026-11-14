@@ -1,6 +1,8 @@
 """`PostgresPendingCounts` against the real database (m-24842990): what only Postgres can
-prove — the Instagram-messages count follows `attention_state` (pending, not read, not
-answered) and RLS keeps another tenant's people out of the counts.
+prove — the Instagram-messages count follows the «Por responder» rule (`inbox.awaiting`,
+m-25017859: unanswered, window open; reading does not clear it) and RLS keeps another
+tenant's people out of the counts. The full agreement with the unified list is
+`test_inbox_counters_db.py`.
 
 Seeding follows `test_followups_schema_db.py`: tenants/user/app via `admin_session`, the
 connection and the rows through `tenant_session`. Fresh tenants per test, so exact counts
@@ -16,7 +18,7 @@ import pytest
 from qualify_shared.db.admin import admin_session
 from qualify_shared.db.session import tenant_session
 
-from qualify_api.attention import PostgresPendingCounts
+from qualify_api.attention import PendingCounts, PostgresPendingCounts
 from qualify_api.connections.models import PlatformApp, SocialConnection
 from qualify_api.inbox.models import Message, Thread
 from qualify_api.tenancy.models import Brand, Tenant, User
@@ -118,17 +120,24 @@ def _dm(
         session.flush()
 
 
-def test_messages_count_only_pending_conversations() -> None:
+def _counts(tenant_id: UUID, now: datetime = NOW + timedelta(hours=1)) -> PendingCounts:
+    return PostgresPendingCounts(clock=lambda: now).read(tenant_id)
+
+
+def test_messages_count_the_chats_waiting_for_a_reply() -> None:
+    """m-25017859: the ONE «Por responder» rule — opening a chat no longer clears it (only
+    a reply or «Cerrar chat» does), and the reply window bounds Instagram."""
     tenant_id, connection_id, _user = _tenant()
     _dm(tenant_id, connection_id)
     _dm(tenant_id, connection_id)
     _dm(tenant_id, connection_id, read=True)
     _dm(tenant_id, connection_id, answered=True)
 
-    counts = PostgresPendingCounts().read(tenant_id)
+    counts = _counts(tenant_id)
 
-    assert counts.messages == 2
+    assert counts.messages == 3
     assert (counts.buyers, counts.comments, counts.whatsapp) == (0, 0, 0)
+    assert _counts(tenant_id, NOW + timedelta(hours=24)).messages == 0  # window closed
 
 
 def test_rls_keeps_another_tenants_people_out() -> None:
@@ -138,5 +147,5 @@ def test_rls_keeps_another_tenants_people_out() -> None:
     for _ in range(3):
         _dm(other, other_connection)
 
-    assert PostgresPendingCounts().read(mine).messages == 1
-    assert PostgresPendingCounts().read(other).messages == 3
+    assert _counts(mine).messages == 1
+    assert _counts(other).messages == 3

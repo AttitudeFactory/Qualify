@@ -1,0 +1,370 @@
+{
+ "ticket": "m-25026482",
+ "baseline_ref": "a6667370",
+ "split": "all",
+ "pricing_version": "v9",
+ "judge": "claude-haiku-5-5@low",
+ "judge_prompt_version": "juez-niveles-v3",
+ "judge_parts_version": "juez-niveles-v3+partes-v1",
+ "code_commit": "ab4bdfd3",
+ "arms": [],
+ "levels": [
+  "most_aware"
+ ],
+ "repeat": 1,
+ "tracing": false,
+ "date": "2026-11-13T20:47:01",
+ "suites": {
+  "rejudge": {
+   "items": [
+    {
+     "file": "20261113-201328-clips-n004-clips-all.json",
+     "suite": "clips",
+     "case": "hamburguesas",
+     "level": "most_aware",
+     "judge_fit": false,
+     "reason": "El texto supera con creces las 25 palabras de most_aware (son unas 50) y mete ventajas extra (horario), una pregunta (\"¿Alguien se le mide a la triple?\") y un relato (\"arma el parche\"), que la regla p",
+     "measure": false,
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     }
+    },
+    {
+     "file": "20261113-201328-clips-n004-clips-all.json",
+     "suite": "clips",
+     "case": "hamburguesas",
+     "level": "most_aware",
+     "judge_fit": false,
+     "reason": "Nivel most_aware exige el camino más corto a la compra, y el texto se extiende con horario, mesas y frases de ambiente (\"Arme el parche\", \"Vengan con hambre\") en vez de solo producto, precio y cómo co",
+     "measure": false,
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     }
+    },
+    {
+     "file": "20261113-201328-clips-n004-clips-all.json",
+     "suite": "clips",
+     "case": "inmobiliaria",
+     "level": "most_aware",
+     "judge_fit": false,
+     "reason": "Para most_aware el texto debe tener 1 o 2 frases de unas 25 palabras, pero aquí son unas 60 y suma ventajas (subsidio, estudio de títulos, acompañamiento legal hasta la entrega) y una pregunta, y el g",
+     "measure": false,
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     }
+    },
+    {
+     "file": "20261113-201328-clips-n004-clips-all.json",
+     "suite": "clips",
+     "case": "inmobiliaria",
+     "level": "most_aware",
+     "judge_fit": false,
+     "reason": "Como most_aware debía ser un texto de una o dos frases con producto, precio y cómo comprar, pero el texto es largo, suma ventajas (asesoría, estudio de títulos, subsidio) y termina con una pregunta, l",
+     "measure": false,
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     }
+    },
+    {
+     "file": "20261113-201328-clips-n004-clips-all.json",
+     "suite": "clips",
+     "case": "viajes",
+     "level": "most_aware",
+     "judge_fit": false,
+     "reason": "Como most_aware el texto debe ser una o dos frases de unas 25 palabras, pero aquí son cinco frases que suman ventajas (recogida, grupo pequeño, guías), una pregunta sobre más días y el paquete a medid",
+     "measure": false,
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     }
+    },
+    {
+     "file": "20261113-201328-clips-n004-clips-all.json",
+     "suite": "clips",
+     "case": "viajes",
+     "level": "most_aware",
+     "judge_fit": false,
+     "reason": "El gancho (7 palabras) sirve, pero el texto supera con creces las 25 palabras y suma ventajas (guías, grupo pequeño), una pregunta (\"¿Quieres sumarle más días?\") y el paquete a medida, y la llamada a ",
+     "measure": false,
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     }
+    },
+    {
+     "file": "20261113-203350-clips-n004-clips-c-all.json",
+     "suite": "clips",
+     "case": "hamburguesas",
+     "level": "most_aware",
+     "judge_fit": false,
+     "reason": "Para most_aware el texto debe ser de una o dos frases (unas 25 palabras) con producto, precio y cómo comprar, pero aquí se suma una pregunta, las ventajas de mesas y horario, y la CTA lleva a visitar ",
+     "measure": false,
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     }
+    },
+    {
+     "file": "20261113-203350-clips-n004-clips-c-all.json",
+     "suite": "clips",
+     "case": "hamburguesas",
+     "level": "most_aware",
+     "judge_fit": false,
+     "reason": "Como most_aware debe ir directo a la compra en unas 25 palabras, pero el texto tiene varias frases, suma mesas y horario, una pregunta sobre la triple y emojis, y la llamada a la acción tiene unas 10 ",
+     "measure": false,
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     }
+    },
+    {
+     "file": "20261113-203350-clips-n004-clips-c-all.json",
+     "suite": "clips",
+     "case": "inmobiliaria",
+     "level": "most_aware",
+     "judge_fit": false,
+     "reason": "Para most_aware el texto debe ser de una o dos frases (unas 25 palabras) con producto, precio y cómo comprar, pero aquí tiene unas 60 palabras, suma ventajas (asesoría legal, subsidio Mi Casa Ya) y te",
+     "measure": false,
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     }
+    },
+    {
+     "file": "20261113-203350-clips-n004-clips-c-all.json",
+     "suite": "clips",
+     "case": "inmobiliaria",
+     "level": "most_aware",
+     "judge_fit": false,
+     "reason": "Como most_aware debe ser directa, pero el texto tiene unas 70 palabras en vez de 1 o 2 frases de unas 25, suma ventajas (estudio de títulos, subsidio, asesoría sin costo) y hace una pregunta, y la lla",
+     "measure": false,
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     }
+    },
+    {
+     "file": "20261113-203350-clips-n004-clips-c-all.json",
+     "suite": "clips",
+     "case": "viajes",
+     "level": "most_aware",
+     "judge_fit": false,
+     "reason": "Como most_aware debe ir directo a la compra, pero el texto suma ventajas (recogida, guía, grupo pequeño), una pregunta sobre más días o la selva y otro paquete a medida, y la llamada a la acción se al",
+     "measure": false,
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     }
+    },
+    {
+     "file": "20261113-203350-clips-n004-clips-c-all.json",
+     "suite": "clips",
+     "case": "viajes",
+     "level": "most_aware",
+     "judge_fit": false,
+     "reason": "Como most_aware el texto debe ser una o dos frases de unas 25 palabras con producto, precio y cómo comprar, pero aquí tiene unas 60 palabras, varias frases, una pregunta (¿Quieres sumar más días o la ",
+     "measure": false,
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     }
+    },
+    {
+     "file": "20261113-184117-copy-n003-copy-all.json",
+     "suite": "copy",
+     "case": "niv-bur-most",
+     "level": "most_aware",
+     "judge_fit": false,
+     "reason": "Nivel most_aware exige una sola forma de compra y un texto corto, pero la idea ofrece dos caminos (Rappi o ir al local en la 57), suma escena sensorial, sus ventajas de horario y varias frases más all",
+     "measure": true,
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     }
+    },
+    {
+     "file": "20261113-184117-copy-n003-copy-all.json",
+     "suite": "copy",
+     "case": "niv-bur-most",
+     "level": "most_aware",
+     "judge_fit": null,
+     "reason": "",
+     "measure": true,
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     }
+    },
+    {
+     "file": "20261113-184117-copy-n003-copy-all.json",
+     "suite": "copy",
+     "case": "niv-bur-most",
+     "level": "most_aware",
+     "judge_fit": false,
+     "reason": "Incumple la regla de most_aware: el texto tiene tres frases con una pregunta, una escena de costra y el horario hasta las 11 p. m. como ventaja extra, supera de largo las unas 25 palabras, y ofrece do",
+     "measure": true,
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     }
+    },
+    {
+     "file": "20261113-184640-copy-n003-copy-extra-all.json",
+     "suite": "copy",
+     "case": "niv-bur-most",
+     "level": "most_aware",
+     "judge_fit": false,
+     "reason": "Para most_aware el texto debe ser corto, con una sola forma de comprar, pero aquí ofrece dos (Rappi o ir al local), mete dos preguntas y frases de relleno como «Sin rodeos, parce», y se pasa de unas 2",
+     "measure": true,
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     }
+    },
+    {
+     "file": "20261113-190405-copy-n003-copy-extra2-all.json",
+     "suite": "copy",
+     "case": "niv-bur-most",
+     "level": "most_aware",
+     "judge_fit": false,
+     "reason": "Para most_aware el texto debe ser de unas 25 palabras y aquí llega a unas 40, con pregunta, historia y horario extra; la llamada a la acción ofrece dos formas de comprar (Rappi o ir al local) cuando l",
+     "measure": true,
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     }
+    },
+    {
+     "file": "20261113-190405-copy-n003-copy-extra2-all.json",
+     "suite": "copy",
+     "case": "niv-bur-most",
+     "level": "most_aware",
+     "judge_fit": false,
+     "reason": "El gancho y la llamada a la acción son cortos, pero el texto pasa de 25 palabras (unas 40), ofrece dos formas de comprar (Rappi o ir al local) en vez de una, y suma ventajas extra (horario hasta las 1",
+     "measure": false,
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     }
+    },
+    {
+     "file": "20261113-190405-copy-n003-copy-extra2-all.json",
+     "suite": "copy",
+     "case": "niv-bur-most",
+     "level": "most_aware",
+     "judge_fit": false,
+     "reason": "Usa precio, Rappi y local en la 57 bien, pero incumple la regla de most_aware: incluye una pregunta (\"¿Oye esa plancha?\"), suma una ventaja extra (horario hasta las 11 p. m.), da dos formas de comprar",
+     "measure": true,
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     }
+    },
+    {
+     "file": "20261113-190405-copy-n003-copy-extra2-all.json",
+     "suite": "copy",
+     "case": "niv-bur-most",
+     "level": "most_aware",
+     "judge_fit": false,
+     "reason": "Para most_aware el texto debe ir directo a la compra con una sola forma de pagar, pero aquí ofrece dos (Rappi o el local), suma la ventaja de horario (hasta las 11 p. m.) y el texto pasa de 25 palabra",
+     "measure": true,
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     }
+    }
+   ],
+   "scores": []
+  }
+ },
+ "spend_usd": {
+  "rejudge": 0.009634
+ },
+ "spend_total_usd": 0.009634,
+ "skipped_by_cap": [],
+ "ledger_calls": 20
+}

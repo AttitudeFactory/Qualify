@@ -7,14 +7,15 @@ Layout (docs/design-system.md §9.1): `app_shell(page_header(...), page_body(...
    with a reply ready, WhatsApp chats), each a figure + «Ver» to its list already
    filtered (N11). With nobody waiting, one empty state with the next step: create the
    next publication (N8). Loading is a skeleton; a failed count says so with «Reintentar».
-2. **The tabs** Mensajes · Quieren comprar · Comentarios · WhatsApp · Interesados, each at
-   `?tab=` (N5). From the `md` breakpoint up a segmented control; on a phone a select —
-   five segments do not fit 360 px and N12 allows no sideways scroll for tabs.
-3. **The open tab's list** — only that tab is in the tree, so only its state loads. Each
-   list is the existing screen's own content (`conversations_page.messages_tab`,
-   `followups_page.followups_panel`, `inbox_page.comments_tab`, `leads_page.leads_tab`);
-   WhatsApp chats stay in the WhatsApp module (merging the inboxes is out of scope), so
-   that tab links to `/whatsapp?tab=chats`.
+2. **The tabs** Mensajes · Quieren comprar · Comentarios · Interesados, each at `?tab=`
+   (N5). From the `md` breakpoint up a segmented control; on a phone a select — the
+   segments do not fit 360 px and N12 allows no sideways scroll for tabs.
+3. **The open tab's list** — only that tab is in the tree, so only its state loads.
+   «Mensajes» is the single list of every chat channel with the Instagram chat beside it
+   (`conversations_page.messages_tab`, m-25017859; a WhatsApp row opens today's WhatsApp
+   chat, whose «‹ Por responder» comes back); the others are their screens' own content
+   (`followups_page.followups_panel`, `inbox_page.comments_tab`, `leads_page.leads_tab`).
+   The «WhatsApp» tab left: `?tab=whatsapp` redirects to «Mensajes» narrowed to WhatsApp.
 
 Data: `ResponderState` (`responder_state.py`) over `responder_provider` → VMs from
 `responder_vm.py`. The page imports neither the provider nor any backend module.
@@ -41,10 +42,6 @@ from .responder_vm import (
     TAB_LEADS,
     TAB_MESSAGES,
     TAB_SELECT_LABEL,
-    TAB_WHATSAPP,
-    WHATSAPP_CHATS_HREF,
-    WHATSAPP_TAB_ACTION,
-    WHATSAPP_TAB_TITLE,
     CountRowVM,
     TabVM,
 )
@@ -225,32 +222,6 @@ def _tab_strip() -> rx.Component:
     )
 
 
-def _whatsapp_tab() -> rx.Component:
-    return card(
-        rx.vstack(
-            rx.hstack(
-                rx.icon("message-circle", size=T.ICON_MD, color=T.TEXT_MUTED),
-                rx.heading(WHATSAPP_TAB_TITLE, size="4", as_="h2"),
-                spacing="2",
-                align="center",
-            ),
-            rx.text(R.whatsapp_text, size="2", color=T.TEXT_MUTED),
-            rx.link(
-                rx.button(
-                    WHATSAPP_TAB_ACTION,
-                    rx.icon("chevron-right", size=T.ICON_SM),
-                    size="3",
-                    min_height=_TARGET,
-                ),
-                href=WHATSAPP_CHATS_HREF,
-            ),
-            spacing="3",
-            align_items="start",
-            width="100%",
-        ),
-    )
-
-
 def _tab_body() -> rx.Component:
     """Only the open tab is in the tree, so only its list loads and polls."""
     return rx.box(
@@ -259,7 +230,6 @@ def _tab_body() -> rx.Component:
             (TAB_MESSAGES, messages_tab()),
             (TAB_BUYERS, followups_panel()),
             (TAB_COMMENTS, comments_tab()),
-            (TAB_WHATSAPP, _whatsapp_tab()),
             (TAB_LEADS, leads_tab()),
             messages_tab(),
         ),

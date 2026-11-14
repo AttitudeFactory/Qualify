@@ -30,13 +30,9 @@ from . import conversations_state as state_module
 from .conversations_state import _ACTION_FAILED, _THREAD_GONE, ConversationsState
 from .conversations_vm import (
     EMPTY_THREAD,
-    FILTER_ALL,
-    FILTER_CLOSED,
-    FILTER_PENDING,
     ThreadExtra,
+    ThreadRowVM,
     changed_since_seen_notice,
-    filter_counts,
-    filter_threads,
     seen_inbound_at,
 )
 from .pending_state import PendingState
@@ -67,6 +63,16 @@ async def _listed_state(world: World) -> tuple[ConversationsState, UUID]:
     return state, thread
 
 
+def _pending(rows: list[ThreadRowVM]) -> list[str]:
+    """Open chats still waiting (m-25017859: the chips left; the single list counts by
+    `inbox.awaiting`, tested in `test_inbox_list.py`)."""
+    return [r.thread_id for r in rows if not r.is_closed and r.attention == "pending"]
+
+
+def _closed(rows: list[ThreadRowVM]) -> list[str]:
+    return [r.thread_id for r in rows if r.is_closed]
+
+
 def _status(world: World, thread: UUID) -> str:
     record = world.repo.get_thread(tenant_id=TENANT, thread_id=thread)
     assert record is not None
@@ -84,7 +90,7 @@ async def _act(state: ConversationsState, action: str) -> list[Any]:
 
 async def test_closing_moves_the_chat_to_cerrados_and_keeps_it_on_screen(world: World) -> None:
     state, thread = await _listed_state(world)
-    assert filter_counts(state.rows)[FILTER_PENDING] == 1
+    assert len(_pending(state.rows)) == 1
     events = await _act(state, "close")
     assert _status(world, thread) == "closed"
     assert state.chat_status_busy == "" and state.banner == ""
@@ -93,11 +99,8 @@ async def test_closing_moves_the_chat_to_cerrados_and_keeps_it_on_screen(world: 
     # The 15 s heartbeat (or the refresh it yields) reads it back closed.
     await state._read_list(silent=True)
     assert state.open_thread_id == str(thread)  # still open on screen
-    counts = filter_counts(state.rows)
-    assert (counts[FILTER_ALL], counts[FILTER_PENDING], counts[FILTER_CLOSED]) == (0, 0, 1)
-    assert [r.thread_id for r in filter_threads(state.rows, FILTER_CLOSED)] == [str(thread)]
-    assert state.filter_closed_label == "Cerradas · 1"
-    assert state.filter_all_label == "Abiertas" and state.pending_count == 0
+    assert _pending(state.rows) == [] and _closed(state.rows) == [str(thread)]
+    assert all(r.is_closed for r in state.rows)
 
 
 async def test_reopening_brings_it_back(world: World) -> None:
@@ -107,8 +110,8 @@ async def test_reopening_brings_it_back(world: World) -> None:
     assert _status(world, thread) == "open"
     await state._read_list(silent=True)
     assert not state.open_thread.is_closed
-    assert filter_counts(state.rows)[FILTER_CLOSED] == 0
-    assert [r.thread_id for r in filter_threads(state.rows, FILTER_PENDING)] == [str(thread)]
+    assert len(_closed(state.rows)) == 0
+    assert _pending(state.rows) == [str(thread)]
 
 
 async def test_closing_twice_is_harmless(world: World) -> None:
@@ -122,13 +125,13 @@ async def test_a_new_message_reopens_it_and_the_refresh_lists_it_pending(world: 
     state, thread = await _listed_state(world)
     await _act(state, "close")
     await state._read_list(silent=True)
-    assert filter_counts(state.rows)[FILTER_PENDING] == 0
+    assert len(_pending(state.rows)) == 0
     again = world.inbound(at=NOW - timedelta(minutes=5))  # same person, newer message
     assert again == thread
     fresh = await state._read_list(silent=True)
     assert _status(world, thread) == "open"
-    assert [r.thread_id for r in filter_threads(state.rows, FILTER_PENDING)] == [str(thread)]
-    assert filter_counts(state.rows)[FILTER_CLOSED] == 0
+    assert _pending(state.rows) == [str(thread)]
+    assert len(_closed(state.rows)) == 0
     assert [r.thread_id for r in fresh] == [str(thread)]  # announced and pulsing
 
 
@@ -186,7 +189,7 @@ async def test_an_unknown_action_or_no_open_chat_does_nothing(world: World) -> N
 
 
 def test_the_header_draws_one_status_button_for_both_states() -> None:
-    from .conversations_page import _conversation_header, _filters
+    from .conversations_page import _conversation_header
 
     rendered = str(_conversation_header().render())
 
@@ -203,8 +206,6 @@ def test_the_header_draws_one_status_button_for_both_states() -> None:
     # The tap carries what the row on screen shows, not a later read.
     binding = rendered[rendered.index("change_chat_status") :][:600]
     assert "last_inbound_iso" in binding and "thread_id" in binding
-    chips = str(_filters().render())
-    assert "filter_closed_label" in chips
 
 
 NOTICE = "@alice te acaba de escribir. Lee su mensaje antes de cerrar."
@@ -227,7 +228,7 @@ async def test_a_close_over_a_stale_screen_is_refused_and_shows_the_new_message(
     assert not row.is_closed and row.attention == "pending" and row.last_inbound_iso != seen
     assert row.title == "@alice" and state.open_thread_id == str(thread)
     assert row.preview == "¿Tienen domicilio?"  # the new message is on the row already
-    assert filter_counts(state.rows)[FILTER_PENDING] == 1
+    assert len(_pending(state.rows)) == 1
     assert ConversationsState.refresh in events and state.chat_status_busy == ""
     # The refresh that follows does not announce it again: the notice already did.
     assert await state._read_list(silent=True) == []
@@ -365,9 +366,8 @@ async def test_a_microsecond_instant_reaches_the_backend_unchanged(
     assert _status(world, thread) == "closed"  # the backend accepted the same instant
 
 
-def test_the_filter_chips_are_44_px_and_say_which_is_pressed() -> None:
-    from .conversations_page import _filters
+def test_the_close_refreshes_the_single_list_too() -> None:
+    """m-25017859: after «Cerrar» / «Reabrir» the single list and its chips re-read."""
+    from .inbox_list_state import InboxListState
 
-    chips = str(_filters().render())
-    assert chips.count("44px") == 5
-    assert "aria-pressed" in chips or "ariaPressed" in chips
+    assert state_module._inbox_list_refresh() is InboxListState.refresh

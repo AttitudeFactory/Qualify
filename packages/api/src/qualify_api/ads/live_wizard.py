@@ -461,35 +461,32 @@ class LiveWizardGateway:
                 and creative.get("instagram_user_id") == source.instagram_user_id
                 and cta == request["creative"]["call_to_action"]
                 and ("link_url" not in creative or creative["link_url"] in allowed_links)
-                and (
-                    not greeted
-                    or _same_welcome(
-                        creative.get("page_welcome_message"),
-                        request["creative"]["page_welcome_message"],
-                    )
-                )
                 and creative.get("degrees_of_freedom_spec")
                 == request["creative"]["degrees_of_freedom_spec"]
                 and all(not value for value in request["enhancements_snapshot"]["values"].values())
                 and set(request["enhancements_snapshot"]["values"]) == set(FEATURES)
             )
-            if not all(
-                (
-                    statuses,
-                    chain,
-                    campaign_matches,
-                    budget,
-                    dates,
-                    targeting,
-                    options,
-                    creative_matches,
-                )
-            ):
-                self.fail(
-                    "remote",
-                    "El anuncio de Meta no coincide con el presupuesto, el público, "
-                    "las fechas o el enlace aprobados. No se activó.",
-                )
+            welcome_matches = not greeted or _same_welcome(
+                creative.get("page_welcome_message"),
+                request["creative"]["page_welcome_message"],
+            )
+            reason = read_back_mismatch(
+                all(
+                    (
+                        statuses,
+                        chain,
+                        campaign_matches,
+                        budget,
+                        dates,
+                        targeting,
+                        options,
+                        creative_matches,
+                    )
+                ),
+                welcome_matches,
+            )
+            if reason:
+                self.fail("remote", reason)
             self.check(
                 "remote",
                 "Los objetos de Meta coinciden con la aprobación y el anuncio está en pausa."
@@ -632,6 +629,24 @@ async def production_wizard(tenant_id: UUID, actor: UUID):
         await binding.aclose()
 
 
+READ_BACK_MISMATCH = (
+    "El anuncio de Meta no coincide con el presupuesto, el público, "
+    "las fechas o el enlace aprobados. No se activó."
+)
+GREETING_READ_BACK_MISMATCH = (
+    "Meta guardó el saludo del chat distinto al que aprobaste. No activamos el anuncio; "
+    "queda en pausa. Pide ayuda y lo revisamos."
+)
+
+
+def read_back_mismatch(rest_matches: bool, welcome_matches: bool) -> str:
+    """The owner's reason when Meta's objects differ from the approval ("" = they match).
+    Only the greeting differing gets its own words; anything else is the general one."""
+    if rest_matches and welcome_matches:
+        return ""
+    return GREETING_READ_BACK_MISMATCH if rest_matches else READ_BACK_MISMATCH
+
+
 def request_goal(request: dict[str, Any]) -> str:
     if request.get("messaging_snapshot"):
         return "chat"
@@ -641,8 +656,9 @@ def request_goal(request: dict[str, Any]) -> str:
 def _same_welcome(actual: Any, expected: str) -> bool:
     """The same JSON, however Meta serializes it (a string per the SDK, key order free).
 
-    shortcut: the real read-back shape is unmeasured; confirm on a sandbox account before
-    enabling the chat goal on screen. Any other difference fails closed.
+    shortcut: the real read-back shape is unmeasured, so the screen's chat goal stays behind
+    QUALIFY_ADS_CHAT_GOAL; enable in prod after m-24828971 measures the read-back. Any other
+    difference fails closed.
     """
     import json
 

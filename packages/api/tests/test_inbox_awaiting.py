@@ -18,6 +18,8 @@ from qualify_api.inbox.awaiting import (
     awaiting_reply_sql,
     awaits_reply,
     count_awaiting_sql,
+    expired_unanswered,
+    expired_unanswered_sql,
 )
 from qualify_api.inbox.channels import UnknownChannel
 from qualify_api.whatsapp.outbox import STALE_AFTER
@@ -256,3 +258,46 @@ def test_whatsapp_keeps_counting_after_its_window() -> None:
 def test_the_alias_is_a_plain_identifier(alias: str) -> None:
     with pytest.raises(ValueError):
         awaiting_reply_sql(alias)
+
+
+# --------------------------------------------------------------------------------------
+# Expired without an answer (m-25017859)
+# --------------------------------------------------------------------------------------
+
+
+def test_an_instagram_chat_whose_window_closed_unanswered_is_expired_not_waiting() -> None:
+    chat = _open(IN, channel="dm")
+    closed = T0 + WINDOW
+    assert expired_unanswered(chat, closed) and not awaits_reply(chat, closed)
+    just_before = closed - timedelta(microseconds=1)
+    assert not expired_unanswered(chat, just_before) and awaits_reply(chat, just_before)
+
+
+def test_an_answered_closed_or_whatsapp_chat_is_never_expired() -> None:
+    late = T0 + timedelta(days=3)
+    assert not expired_unanswered(_open(IN, OWNER, channel="dm"), late)
+    closed = ThreadSnapshot(status="closed", channel="dm", last_inbound_at=T0, messages=(IN,))
+    assert not expired_unanswered(closed, late)
+    assert not expired_unanswered(_open(IN), late)  # WhatsApp: no window bound
+    assert not expired_unanswered(
+        _open(MessageFact("inbound", T0, hidden=True), channel="dm"), late
+    )
+    assert not expired_unanswered(_open(channel="dm", last_inbound_at=None), late)
+
+
+def test_a_later_inbound_reopens_the_window_and_clears_expired() -> None:
+    again = T0 + timedelta(days=2)
+    chat = _open(IN, OWNER, MessageFact("inbound", again), channel="dm")
+    assert awaits_reply(chat, again + timedelta(hours=1))
+    assert not expired_unanswered(chat, again + timedelta(hours=1))
+    assert expired_unanswered(chat, again + WINDOW)
+
+
+def test_expired_sql_is_false_off_the_bound_channels_and_shares_the_facts() -> None:
+    sql = " ".join(expired_unanswered_sql("t", now_param="now").split())
+    assert "t.channel IN ('dm')" in sql
+    assert "t.last_inbound_at <= CAST(:now AS timestamptz) - CAST('86400 seconds'" in sql
+    assert "aw_f.last_in > COALESCE(aw_f.last_person_out" in sql
+    assert "now()" in " ".join(expired_unanswered_sql("t").split())
+    with pytest.raises(ValueError):
+        expired_unanswered_sql("aw_t")

@@ -1,0 +1,207 @@
+{
+ "success": true,
+ "credits_charged": 1,
+ "cursor": 20,
+ "aweme_list": [
+  {
+   "aweme_id": "7000000000000000001",
+   "desc": "#recetasfaciles #shawarma #f #cocina #chef",
+   "desc_language": "es",
+   "create_time": 1785098835,
+   "is_ad": false,
+   "statistics": {
+    "play_count": 577240
+   }
+  },
+  {
+   "aweme_id": "7000000000000000002",
+   "desc": "#shawarma #cabudare #foodies",
+   "desc_language": "es",
+   "create_time": 1765916966,
+   "is_ad": false,
+   "statistics": {
+    "play_count": 442964
+   }
+  },
+  {
+   "aweme_id": "7000000000000000003",
+   "desc": "#cocinaparaforaneos #shawarmacasero #shawarma #receta #recetadeshawarma",
+   "desc_language": "es",
+   "create_time": 1773709584,
+   "is_ad": false,
+   "statistics": {
+    "play_count": 1972445
+   }
+  },
+  {
+   "aweme_id": "7000000000000000004",
+   "desc": "#shawarma #burrito #wrap #ideasdecomida #recetasfaciles",
+   "desc_language": "es",
+   "create_time": 1769908912,
+   "is_ad": false,
+   "statistics": {
+    "play_count": 7775655
+   }
+  },
+  {
+   "aweme_id": "7000000000000000005",
+   "desc": "#fby #parati #Viral #carne #shawarma",
+   "desc_language": "un",
+   "create_time": 1718814448,
+   "is_ad": false,
+   "statistics": {
+    "play_count": 820960
+   }
+  },
+  {
+   "aweme_id": "7000000000000000006",
+   "desc": "#comida #shawarma #arabe #descuento #quindio",
+   "desc_language": "es",
+   "create_time": 1793398535,
+   "is_ad": false,
+   "statistics": {
+    "play_count": 13712
+   }
+  },
+  {
+   "aweme_id": "7000000000000000007",
+   "desc": "#Viral #shawarma #restaurante",
+   "desc_language": "it",
+   "create_time": 1791699488,
+   "is_ad": false,
+   "statistics": {
+    "play_count": 211173
+   }
+  },
+  {
+   "aweme_id": "7000000000000000008",
+   "desc": "#recipe #shawarma",
+   "desc_language": "en",
+   "create_time": 1790019558,
+   "is_ad": false,
+   "statistics": {
+    "play_count": 10509078
+   }
+  },
+  {
+   "aweme_id": "7000000000000000009",
+   "desc": "#54 #caldasantioquia #shawarma #comidarapida #dondecomer",
+   "desc_language": "es",
+   "create_time": 1787269828,
+   "is_ad": false,
+   "statistics": {
+    "play_count": 43718
+   }
+  },
+  {
+   "aweme_id": "7000000000000000010",
+   "desc": "#egypt #shawarma #foodielima",
+   "desc_language": "en",
+   "create_time": 1734566975,
+   "is_ad": false,
+   "statistics": {
+    "play_count": 963225
+   }
+  },
+  {
+   "aweme_id": "7000000000000000011",
+   "desc": "#52 #RestauranteLocal #Shawarma #Medellín #50OFF",
+   "desc_language": "es",
+   "create_time": 1793480711,
+   "is_ad": false,
+   "statistics": {
+    "play_count": 80168
+   }
+  },
+  {
+   "aweme_id": "7000000000000000012",
+   "desc": "#shawarma #huecas #fastfoodlife #restaurante #quito_ecuador",
+   "desc_language": "es",
+   "create_time": 1790549933,
+   "is_ad": false,
+   "statistics": {
+    "play_count": 463208
+   }
+  },
+  {
+   "aweme_id": "7000000000000000013",
+   "desc": "#shawarmakiosk #shawarma #roblox",
+   "desc_language": "un",
+   "create_time": 1790198074,
+   "is_ad": false,
+   "statistics": {
+    "play_count": 70826
+   }
+  },
+  {
+   "aweme_id": "7000000000000000014",
+   "desc": "#comidavenezolanas #ricorico #cocinandoencasa #shawarma",
+   "desc_language": "es",
+   "create_time": 1793797537,
+   "is_ad": false,
+   "statistics": {
+    "play_count": 233455
+   }
+  },
+  {
+   "aweme_id": "7000000000000000015",
+   "desc": "#shawarma #shawarmalovers #halal #halalfood #chickenshawarma #bestshawarma #viralfood #FoodTok #foodtiktok #wanasshawarma",
+   "desc_language": "en",
+   "create_time": 1752620213,
+   "is_ad": false,
+   "statistics": {
+    "play_count": 1305554
+   }
+  },
+  {
+   "aweme_id": "7000000000000000016",
+   "desc": "#kebab #durum #shawarma #mejorkebabalicante #mejordurumalicante",
+   "desc_language": "es",
+   "create_time": 1793037698,
+   "is_ad": false,
+   "statistics": {
+    "play_count": 277029
+   }
+  },
+  {
+   "aweme_id": "7000000000000000017",
+   "desc": "#shawarma #comidaarabe #lacandelaria #elrecreo",
+   "desc_language": "es",
+   "create_time": 1780609833,
+   "is_ad": false,
+   "statistics": {
+    "play_count": 1029197
+   }
+  },
+  {
+   "aweme_id": "7000000000000000018",
+   "desc": "#lima #shawarma #fyp",
+   "desc_language": "es",
+   "create_time": 1692232604,
+   "is_ad": false,
+   "statistics": {
+    "play_count": 1432920
+   }
+  },
+  {
+   "aweme_id": "7000000000000000019",
+   "desc": "#mukbang #ecuador #mukbangecuador #ASMR #shawarma",
+   "desc_language": "es",
+   "create_time": 1768523682,
+   "is_ad": false,
+   "statistics": {
+    "play_count": 421843
+   }
+  },
+  {
+   "aweme_id": "7000000000000000020",
+   "desc": "#recetas #recetasfaciles #recetascaseras #Shawarma #shawarmadepollo",
+   "desc_language": "es",
+   "create_time": 1785366218,
+   "is_ad": false,
+   "statistics": {
+    "play_count": 583538
+   }
+  }
+ ]
+}

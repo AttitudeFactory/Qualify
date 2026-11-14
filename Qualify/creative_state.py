@@ -78,6 +78,7 @@ from qualify_creative.enums import (
     ContentKind,
     ContentType,
     DraftStatus,
+    objective_for_level,
 )
 from qualify_creative.scene_plan import ScenePlanError
 from qualify_creative.schemas import (
@@ -169,6 +170,9 @@ from .creative_provider import (
 )
 from .creative_vm import (
     APPROVE_VERSION_LABEL,
+    AUDIENCE_NONE,
+    AUDIENCE_SUMMARY_LABEL,
+    AUDIENCE_SUMMARY_NO_PRICE,
     CAPTION_LIMIT,
     CATEGORY_OPTIONS,
     CREATING_LABEL,
@@ -198,6 +202,9 @@ from .creative_vm import (
     add_phrase,
     approval_notice,
     approval_videos_notice,
+    audience_hides_price,
+    audience_options,
+    audience_value,
     best_ideas_button_label,
     best_ideas_to_add,
     caption_hashtag_suggestions,
@@ -1353,6 +1360,14 @@ class CreativeState(rx.State):
     #: 2026-10-06). Read on load; a failed read never flags.
     kit_voice_missing: bool = False
     brief_objective: str = "consideration"
+    #: m-25026509: «¿A quién le habla este video?» — an `AwarenessLevel` value, or ""
+    #: for «Sin preferencia». Asked only for a clip (and its video by parts, whose card
+    #: shows the same value); any other kind neither shows nor sends it.
+    brief_audience: str = ""
+    #: «Cambiar» on «Qué decir»'s closed line opened the dropdown again.
+    audience_editing: bool = False
+    #: Backend only: the «Precio» row the unaware answer took out, given back as it was.
+    _audience_hidden_price: list[dict[str, str]] = []
     brief_content_type: str = "product"
     brief_topic: str = ""
     #: Backend only (live test 2026-11-03): the product name ``choose_product`` put in
@@ -5133,6 +5148,8 @@ class CreativeState(rx.State):
         self.clip_sequence = []
         self.clip_first_frame_key = self.clip_first_frame_name = ""
         self.clip_last_frame_key = self.clip_last_frame_name = ""
+        # m-25026509: a fresh clip — the last piece's answer never rides on
+        self._forget_audience()
         self._set_kind("clip")
         self._sync_clip_frames()
         # m-24820836: the copiar guidance is a BACKGROUND layer merged under the
@@ -5929,10 +5946,126 @@ class CreativeState(rx.State):
         }
         return highlight_notes(self.brief_highlights, catalog, price_label)
 
+    # -- «¿A quién le habla este video?» (m-25026509) ---------------------------------
+
+    def _forget_audience(self) -> None:
+        """A new piece starts at «Sin preferencia» (m-25026509): every entry that opens
+        one calls this — «Crear una publicación nueva», «Crear otra», «Revisar y aprobar
+        en Borradores» and «Hacer uno parecido». A price row the old answer kept aside
+        comes back first: the next piece is not price-free."""
+        hid = self._audience_hides_price()
+        self.brief_audience = ""
+        self._apply_audience_price(hid)
+        self.audience_editing = False
+        self._audience_hidden_price = []
+
+    def clip_audience_level(self) -> str:
+        """The level a clip (or its video by parts) is asked for: "" for «Sin
+        preferencia» and for every other kind, which never sends one."""
+        return self.brief_audience if self.brief_kind == "clip" else ""
+
+    def _audience_hides_price(self) -> bool:
+        return audience_hides_price(self.clip_audience_level())
+
+    def _apply_audience_price(self, hid_before: bool) -> None:
+        """The catalog's «Precio» row follows the audience ONLY when the answer starts
+        or stops hiding it (review 2026-11-13): «Sin preferencia», any other answer and a
+        kind change that does not cross that line leave the row — owner's edit included
+        — exactly as it was. Hidden, the row is kept aside; given back, the owner's own
+        value returns (or the catalog's, for a product chosen meanwhile)."""
+        hides = self._audience_hides_price()
+        if hides == hid_before:
+            return
+        if hides:
+            self._audience_hidden_price = [
+                dict(row) for row in self.brief_highlights if is_catalog_price_fact(row)
+            ]
+            self.brief_highlights = [
+                row for row in self.brief_highlights if not is_catalog_price_fact(row)
+            ]
+            return
+        kept = [
+            row
+            for row in self._audience_hidden_price
+            if row.get("product") == self.selected_product_id
+        ]
+        self._audience_hidden_price = []
+        if (
+            kept
+            and not any(is_catalog_price_fact(row) for row in self.brief_highlights)
+            and len(self.brief_highlights) < HIGHLIGHTS_MAX
+        ):
+            self.brief_highlights = [*kept, *self.brief_highlights]
+            return
+        self._sync_audience_price()
+
+    def _sync_audience_price(self) -> None:
+        """The chosen catalog product's own price row, as a product change puts it
+        (`_sync_price_fact`, which leaves it out while the answer hides it)."""
+        item = next(
+            (i for i in self.catalog_items if i.get("id") == self.selected_product_id), None
+        )
+        if item is None:
+            return
+        self._sync_price_fact(self.selected_product_id, item.get("price_label", ""))
+
+    @rx.event
+    def set_brief_audience(self, value: str) -> None:
+        """The answer, the same in step 3 and in «Armar mi video por partes»."""
+        hid = self._audience_hides_price()
+        self.brief_audience = audience_value(value)
+        self._apply_audience_price(hid)
+
+    @rx.var
+    def audience_select_value(self) -> str:
+        """The select's value: «Sin preferencia» is `AUDIENCE_NONE` there."""
+        return self.brief_audience or AUDIENCE_NONE
+
+    @rx.var
+    def audience_answer_label(self) -> str:
+        """The answer in words («Sin preferencia» included), for the closed line."""
+        return dict(audience_options()).get(self.brief_audience or AUDIENCE_NONE, "")
+
+    @rx.var
+    def audience_closed(self) -> bool:
+        """«Qué decir» shows the answer as a closed line («A quién le habla: …» ·
+        «Cambiar») when the parts card already asked it — the plan came from that card —
+        so the question is not asked twice. A plain clip keeps the open question."""
+        return (
+            self.brief_kind == "clip"
+            and self.parts_without_reel
+            and not self.from_reel_ideas
+            and not self.audience_editing
+        )
+
+    @rx.event
+    def edit_audience(self) -> None:
+        """«Cambiar» on the closed line: the dropdown opens in its place."""
+        self.audience_editing = True
+
+    def _price_hidden_by_audience(self) -> bool:
+        """The answer hid the chosen catalog product's price (it had one)."""
+        if not self._audience_hides_price():
+            return False
+        item = next(
+            (i for i in self.catalog_items if i.get("id") == self.selected_product_id), None
+        )
+        return bool(item is not None and (item.get("price_label") or "").strip())
+
+    @rx.var
+    def audience_no_price(self) -> bool:
+        """Say «Este video no mencionará el precio.» (a clip for someone who does not
+        know the business yet)."""
+        return self._audience_hides_price()
+
     def _sync_price_fact(self, product_id: str = "", price_label: str = "") -> None:
         """The chosen catalog product's price as a «Dato clave» (founder request
         2026-11-04): the row belongs to the product, so a product change replaces it —
-        edited or not — see `prefill_price_fact`. No product (or a stock one) drops it."""
+        edited or not — see `prefill_price_fact`. No product (or a stock one) drops it.
+        m-25026509: a clip for «Para quien aún no piensa en ti» carries no price, so the
+        row is not shown then (`_sync_audience_price` brings it back)."""
+        if self._audience_hides_price():
+            product_id = ""
         self.brief_highlights = prefill_price_fact(
             self.brief_highlights,
             product_id=product_id,
@@ -6742,7 +6875,11 @@ class CreativeState(rx.State):
             # live test 2026-11-03: another kind is not a replica — nothing of the reel
             # (guidance, origin, brand-text choice, its video) rides on into its brief
             self._forget_replica()
+        hid = self._audience_hides_price()
         self.brief_kind = key
+        # m-25026509: the audience is a clip's — leaving or entering a clip whose answer
+        # hides the price moves the row; any other kind change leaves it alone
+        self._apply_audience_price(hid)
         self.brief_format = ""  # each kind starts on its own default format
         self.create_error = ""
         # the cards and the original of «Mejorar mi texto» belong to the kind's own field
@@ -7922,6 +8059,7 @@ class CreativeState(rx.State):
         draft_id = self.gen_draft_id
         self._back_to_form()
         self.brief_topic = ""
+        self._forget_audience()  # m-25026509: the next piece starts at «Sin preferencia»
         self._forget_context_versions()  # the last piece's cards never reach the next
         self.replication_context = ""
         self.carried_text_kind = ""
@@ -7982,6 +8120,7 @@ class CreativeState(rx.State):
         last piece. The kind stays; an animated avatar reloads its character."""
         self._back_to_form()
         self.brief_topic = ""
+        self._forget_audience()
         self.brief_highlights = []
         self.brief_must_mention = ""
         self.brief_must_avoid = ""
@@ -9434,11 +9573,20 @@ class CreativeState(rx.State):
                 "channel" + SHOW_MORE_SUFFIX,
             )
         facts = " · ".join(f"{name}: {fact}" for name, fact in self._highlight_pairs())
-        row("Datos clave", facts or "Ninguno", "rules")
+        # m-25026509: the price the answer hid is said, never shown as «Ninguno»
+        empty = AUDIENCE_SUMMARY_NO_PRICE if self._price_hidden_by_audience() else "Ninguno"
+        row("Datos clave", facts or empty, "rules")
         if self.brief_must_mention.strip():
             row("Debe mencionar", self.brief_must_mention.strip(), "rules")
         if self.brief_must_avoid.strip():
             row("Debe evitar", self.brief_must_avoid.strip(), "rules")
+        if self.clip_audience_level():
+            # m-25026509: an optional answer, listed only when given (like «Debe evitar»)
+            row(
+                AUDIENCE_SUMMARY_LABEL,
+                dict(audience_options()).get(self.clip_audience_level(), ""),
+                "topic",
+            )
         replica = kind == "clip" and has_reel_video(self.clip_videos)
         if kind == "static_flyer":
             row("Escena", self._effective_topic() or "Falta: es lo único obligatorio", "topic")
@@ -9780,8 +9928,11 @@ class CreativeState(rx.State):
     def _generator_form(self) -> dict[str, object]:
         """The generator's brief as `creative_provider.build_brief` takes it — what
         Generar submits and what «¿Todo listo?» previews (caller holds the lock)."""
+        level = self.clip_audience_level()
         return {
-            "objective": self.brief_objective,
+            # m-25026509: the reader the owner picked sets the objective; none keeps it
+            "objective": objective_for_level(level, self.brief_objective),
+            "awareness_level": level or None,
             "content_type": self.brief_content_type,
             "topic": self._effective_topic(),
             "product_ref": self.brief_product_ref,

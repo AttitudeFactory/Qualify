@@ -54,3 +54,18 @@ Detalle en la [bitácora, NIVELES-003](pruebas.md#niveles-003). Prompt de ángul
 - **Ángulos con ventajas (test, n 30 por nivel):** solution_aware pasa de 0,70 a 0,83 (fiable). Ofertas o servicios inventados en most_aware bajan de 0,30 a 0,10, y en total de 0,08 a 0,047.
 - **Regresión:** product_aware baja de 0,90 (n 10) a 0,77, «no fiable». US$0,031 por juego.
 - **Partes:** los números de NIVELES-001/002 se tomaron sobre la v3.1 de main y ya no describen `proponer-partes-v3.4`.
+
+## Uso NIVELES-004: el nivel en el video por partes (m-25026509), 2026-11-13
+
+Detalle en la [bitácora, NIVELES-004](pruebas.md#niveles-004). `proponer-partes-v3.4` sobre la v3.2 de main, con el nivel por `PartsBrief.awareness_level`. Reemplaza los números de partes de NIVELES-001/002, que se tomaron sobre la v3.1.
+
+- **Validez:** 36/36 propuestas sin rechazos ni precios, 4–5 partes, 17–20 s.
+- **Cumple su nivel (juez, n 6):** unaware 6/6, product_aware 6/6, solution_aware 5/6, problem_aware 3/6 (no muestra el dilema). most_aware 0/6: es la base por diseño, con la misma huella de prompt.
+- US$0,006–0,008 por propuesta.
+
+## Uso NIVELES-005: dilema de problem_aware en partes (m-25026509), 2026-11-13
+
+Detalle en la [bitácora, NIVELES-005](pruebas.md#niveles-005). Prompt `proponer-partes-v3.5`.
+
+- **problem_aware:** cumple su nivel en 8/10 (antes 3/6). Las 10 propuestas son válidas: 4–5 partes, 18–20 s, sin precios ni rechazos.
+- Las huellas del prompt sin nivel y con los demás niveles son iguales a las de NIVELES-004.

@@ -20,17 +20,16 @@ from .responder_vm import (
     TAB_COMMENTS,
     TAB_LEADS,
     TAB_MESSAGES,
-    TAB_WHATSAPP,
     TABS,
-    WHATSAPP_CHATS_HREF,
+    WHATSAPP_AWAITING_HREF,
     all_clear,
     count_label,
     count_rows,
+    legacy_tab_target,
     legacy_target,
     resolve_tab,
     tab_href,
     tab_vms,
-    whatsapp_tab_text,
 )
 
 _HERE = Path(__file__).parent
@@ -39,14 +38,32 @@ _HERE = Path(__file__).parent
 # --- Tabs ------------------------------------------------------------------------------
 
 
-def test_the_tabs_are_the_founders_five_in_order() -> None:
+def test_the_tabs_are_four_in_order_without_whatsapp() -> None:
+    """m-25017859: «Mensajes» is the single list of every chat channel, so the «WhatsApp»
+    tab (a link card) left the tree (UX doc §2)."""
     assert [label for _key, label in TABS] == [
         "Mensajes",
         "Quieren comprar",
         "Comentarios",
-        "WhatsApp",
         "Interesados",
     ]
+
+
+def test_the_old_whatsapp_tab_lands_on_the_single_list_narrowed_to_whatsapp() -> None:
+    assert (
+        legacy_tab_target(" WhatsApp ")
+        == WHATSAPP_AWAITING_HREF
+        == "/responder?tab=mensajes&filtro=por-responder&canal=whatsapp"
+    )
+    assert legacy_tab_target("mensajes") is None and legacy_tab_target(None) is None
+
+
+def test_entering_with_the_old_whatsapp_tab_redirects_in_place() -> None:
+    import inspect
+
+    source = inspect.getsource(ResponderState.enter_page.fn)  # type: ignore[attr-defined]
+    assert "legacy_tab_target(requested_tab)" in source
+    assert "rx.redirect(moved, replace=True)" in source
 
 
 @pytest.mark.parametrize(
@@ -55,7 +72,6 @@ def test_the_tabs_are_the_founders_five_in_order() -> None:
         ("mensajes", TAB_MESSAGES),
         ("comprar", TAB_BUYERS),
         ("COMENTARIOS", TAB_COMMENTS),
-        (" whatsapp ", TAB_WHATSAPP),
         ("interesados", TAB_LEADS),
         ("", DEFAULT_TAB),
         (None, DEFAULT_TAB),
@@ -110,17 +126,18 @@ def test_select_tab_refuses_unknown_values_and_the_open_tab(tab: object) -> None
 
 
 def test_count_rows_one_per_channel_with_their_filtered_list() -> None:
+    """m-25017859: both chat rows open the single list on «Por responder» narrowed to
+    their channel — the same `inbox.awaiting` rule the figure counts."""
     rows = count_rows(PendingCounts(messages=3, buyers=1, comments=0, whatsapp=2))
-    assert [r.key for r in rows] == [TAB_MESSAGES, TAB_BUYERS, TAB_COMMENTS, TAB_WHATSAPP]
+    assert [r.key for r in rows] == [TAB_MESSAGES, TAB_BUYERS, TAB_COMMENTS, "whatsapp"]
     assert [r.count for r in rows] == [3, 1, 0, 2]
     assert [r.tone for r in rows] == ["warn", "warn", "ok", "warn"]
     assert [r.href for r in rows] == [
-        "/responder?tab=mensajes&filtro=pendientes",
+        "/responder?tab=mensajes&filtro=por-responder&canal=instagram",
         "/responder?tab=comprar",
         "/responder?tab=comentarios",
-        WHATSAPP_CHATS_HREF,
+        "/responder?tab=mensajes&filtro=por-responder&canal=whatsapp",
     ]
-    assert WHATSAPP_CHATS_HREF == "/whatsapp?tab=chats&filtro=sin-leer"
     assert {r.action_label for r in rows} == {"Ver"}
 
 
@@ -141,26 +158,9 @@ def test_all_clear_only_when_nobody_waits_anywhere() -> None:
 
 def test_the_tab_labels_carry_their_figure() -> None:
     labels = [t.label for t in tab_vms(PendingCounts(messages=3, buyers=1, whatsapp=4))]
-    assert labels == [
-        "Mensajes · 3",
-        "Quieren comprar · 1",
-        "Comentarios",
-        "WhatsApp · 4",
-        "Interesados",
-    ]
+    # «Mensajes» counts both chat channels: its «Por responder» chip shows the same 7.
+    assert labels == ["Mensajes · 7", "Quieren comprar · 1", "Comentarios", "Interesados"]
     assert [t.label for t in tab_vms()] == [label for _key, label in TABS]
-
-
-@pytest.mark.parametrize(
-    ("count", "text"),
-    [
-        (0, "Nadie te espera en WhatsApp. Cuando alguien te escriba, lo verás aquí."),
-        (1, "1 persona espera tu respuesta en WhatsApp."),
-        (4, "4 personas esperan tu respuesta en WhatsApp."),
-    ],
-)
-def test_whatsapp_tab_text(count: int, text: str) -> None:
-    assert whatsapp_tab_text(count) == text
 
 
 def test_the_comments_row_uses_a_comment_icon() -> None:
@@ -236,13 +236,10 @@ def test_the_page_renders_header_tabs_counts_and_all_clear() -> None:
         "Mensajes",
         "Quieren comprar",
         "Comentarios",
-        "WhatsApp",
         # «Interesados» is not checked here: the tab labels come from `R.tabs` (covered by
         # the view-model tests above); the static match used to come from the old menu row
         # that NAV-1 (m-24842957) folded into «Por responder».
         "Reintentar",
-        "Responder en WhatsApp",
-        "Chats de WhatsApp",
         "Estás viendo",
         "Quién te espera",
     ):
@@ -259,7 +256,7 @@ def test_the_page_talks_to_the_state_only() -> None:
 def test_targets_are_thumb_sized_and_nothing_is_hover_only() -> None:
     """N12: every button of the page is ≥ 44 px; no tooltip/hover card carries content."""
     source = (_HERE / "responder_page.py").read_text(encoding="utf-8")
-    assert source.count("min_height=_TARGET") >= 5
+    assert source.count("min_height=_TARGET") >= 4
     assert "interactive=True" in source  # the whole count row is the target (N11)
     assert '_TARGET = "44px"' in source
     assert "tooltip" not in source and "hover_card" not in source

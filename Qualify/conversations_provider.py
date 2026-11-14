@@ -417,6 +417,17 @@ class ConversationsGateway:
         extras = self._store.thread_extras(tenant_id, [view.thread.id])
         return ThreadListing(view=view, extra=extras.get(str(view.thread.id), ThreadExtra()))
 
+    def thread_listing(
+        self, tenant_id: UUID, connection_id: UUID, thread_id: UUID
+    ) -> ThreadListing:
+        """m-25017859: ONE chat of this account as `threads` lists it, by id — a row of
+        the single list that is not among this account's newest `THREADS_LIMIT`.
+        `ThreadNotFound` for another tenant, channel or account, or an all-unsent chat."""
+        view = self.service.get_dm_thread(
+            tenant_id=tenant_id, thread_id=thread_id, connection_id=connection_id
+        )
+        return self.listing(tenant_id, view)
+
     def _owned(self, tenant_id: UUID, connection_id: UUID, thread_id: UUID) -> ThreadView:
         view = self.service.get_thread(tenant_id=tenant_id, thread_id=thread_id)
         if view.thread.connection_id != connection_id or view.thread.channel != CHANNEL_DM:

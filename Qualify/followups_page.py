@@ -42,8 +42,6 @@ from .followups_vm import (
     STEP_REVIEW,
     STEP_TITLES,
     SUGGEST_ONE,
-    VIEW_MESSAGES,
-    VIEW_QUERIES,
     FollowupCardVM,
     FollowupIntentVM,
     UndeliveredVM,
@@ -58,17 +56,6 @@ F = FollowupsState
 
 #: N12: every target on the card is at least 44 px tall.
 _TAP: dict[str, str] = {"min_height": "44px"}
-
-
-def followups_toggle() -> rx.Component:
-    return rx.segmented_control.root(
-        rx.segmented_control.item("Mensajes", value=VIEW_MESSAGES),
-        rx.segmented_control.item(F.toggle_label, value=VIEW_QUERIES),
-        value=F.view,
-        on_change=F.set_view,
-        size="2",
-        aria_label="Qué ver",
-    )
 
 
 def _intent_chip(chip: FollowupIntentVM) -> rx.Component:

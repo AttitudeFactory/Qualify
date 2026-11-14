@@ -22,6 +22,276 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
 
 ---
 
+<a id="capa-001"></a>
+
+## CAPA-001 — Claude escribe la capa de texto viendo la foto base: prueba de humo (m-25017283) — 2026-11-14
+
+- **Qué se probó:** la etapa `layer` de ADR 49 (`qualify_api.creative.image_pipeline.layer.write_layers`), con el prompt `capa-v1` y la herramienta estricta `escribir_capa`: Claude mira la foto, informa `subject_box`, `logo_in_photo` y `base_has_invented_text`, elige uno de los siete diseños del catálogo (`docs/catalogo-disenos-imagen-carrusel.md`) y escribe título, subtítulo y frase de invitación. La respuesta se valida con `LayerSpec` (límites del catálogo, reglas de §1.8); una diapositiva que no pasa recibe un turno de reparación.
+- **Modelo:** `claude-sonnet-5-5`, esfuerzo `low`, `tool_choice: auto` (piensa) con obligación de llamar la herramienta; sin parámetros de muestreo.
+- **Entradas:** 10 fotos base de Seedream de FOTO-BASE-001 (compiladores 4 y 5, fuera del repositorio), con los encargos de `packages/api/evals/scene_text_v4/cases.json`; los «Datos clave» del caso pasan como datos guardados del negocio (dirección, horario, pedidos). Una llamada por foto (las diapositivas de galería, sueltas). Sin Seedream, nada en R2 ni en la base.
+- **Arnés:** `packages/api/evals/capa_texto/run.py --images <dir> --scores <scores.csv de FOTO-BASE-001> --max-usd 0.5`.
+- **Resultado (10 fotos):**
+
+| Medida | Valor |
+|---|---|
+| Capa válida según el esquema | **10/10** (4 necesitaron el turno de reparación) |
+| Diseño contra la regla «elegirlo cuando» del catálogo | 0 incumplimientos (8 `band`, 2 `plate`; ningún `scrim`) |
+| Precio alterado | 0 (ningún `price_ref` fuera del producto del caso) |
+| Números en el texto libre | 1, el «2x1» de F7 (permitido) |
+| `base_has_invented_text` contra la etiqueta humana de FOTO-BASE-001 | **9/10** de acuerdo: detectó el letrero inventado de F1 (compilador 4); un falso positivo en F3 (compilador 5) |
+| Gasto | **US$0,163** por 14 llamadas (10 + 4 reparaciones): **US$0,009–0,027 por foto**, US$0,016 de media |
+
+- **Lectura:** el esquema y la reparación se sostienen; la mitad de las fotos pidieron reparar (subtítulos largos o una frase fuera de regla) y todas salieron válidas. Claude prefiere `band` (la opción segura) sobre `plate` con fotos de Seedream que llenan el cuadro; nadie eligió `scrim`. El falso positivo de F3 regeneraría una base sin necesidad (a lo sumo una vez, por la clave única). F3 escribió «Abrimos de martes a domingo…» en el subtítulo: sin cifras pasa la regla de §1.8, pero es un dato del horario en texto libre — una regla a endurecer.
+- **Textos que escribió, por foto** (los guardados de esta corrida; no se volvió a llamar a Claude):
+
+| Foto | Diseño | Título | Subtítulo | Invitación |
+|---|---|---|---|---|
+| F1-ubicacion-r1-v4 | `band` | «Tu shawarma te espera en el Korner» | «Pasa por la acera de enfrente y pruébalo recién hecho» | «Te esperamos hoy» |
+| F1-ubicacion-r1-v5 | `band` | «Tu shawarma te espera en el Korner» | «Pasa por el caballete de la acera y pídelo recién hecho.» | «Te esperamos hoy» |
+| F2-te-espera-r1-v4 | `band` | «Tu shawarma de carne, aquí» | «Pan tostado, carne jugosa y salsa cremosa» | «Pídelo hoy mismo» |
+| F3-horario-r1-v5 | `band` | «Tu salchipapa, ahora de noche» | «Abrimos de martes a domingo para antojos nocturnos.» | «Te esperamos esta noche» |
+| F4-combo-r1-v5 | `band` | «Tu combo de shawarma completo» | «Carne jugosa, papas doradas y gaseosa bien fría.» | «Pídelo por WhatsApp» |
+| F5-ensalada-escena-r1-v5 | `plate` | «Tu ensalada, fresca» | «Lechuga, tomate, pepino y garbanzos para empezar el día.» | «Pídela hoy» |
+| F7-pollo-2x1-r1-v5 | `plate` | «Martes de shawarma 2x1» | «Pollo recién hecho, para compartir.» | «Ven este martes» |
+| F8-papas-compartir-r1-v5 | `band` | «Papas para compartir» | «Una porción grande al centro de la mesa y todos a picar.» | «Pídelas para tu grupo» |
+| G1-combo-galeria-s2-r1-v5 | `band` | «Tu combo del día, completo» | «Shawarma de carne, papas y gaseosa» | «Pídelo por WhatsApp» |
+| G2-salchipapa-galeria-s1-r1-v4 | `band` | «Salchipapa doradita» | «Crocante, jugosa y perfecta para picar entre amigos.» | «Ven esta noche al Korner» |
+
+- **Revisión de UX sobre estos textos → `capa-v2` (sin medir):** «Abrimos de martes a domingo» (F3) y una promoción o un día que el encargo no traiga son datos inventados; F1 y G2 repiten el nombre del negocio, que ya va en el logo. `capa-v2` pide no escribir días, horarios, descuentos, «gratis», domicilios ni promociones que no estén en «De qué trata la publicación» o en los datos guardados (y la validación pide reparar si aparecen; «100% natural» o «500 g» no cuentan), trato de tú y apuntar a dos tercios de cada límite. El «2x1» y el martes de F7 vienen del encargo, así que siguen permitidos. `capa-v2` **no se ha medido**: se medirá con el tope que apruebe el fundador.
+- **Pendiente:** medir con más fotos y galerías completas en una sola llamada (m-25017292), con la composición real (m-25017285), y la latencia (no se midió).
+
+---
+
+<a id="niveles-006"></a>
+
+## NIVELES-006 — most_aware: solo producto, precio y cómo comprar (con cuándo y dónde) (m-25027151) — 2026-11-14
+
+- **Qué se midió:** la regla final del texto de most_aware (`78242f75`, rama
+  `fix/m-25027151-listo-para-comprar`): producto, precio si lo hay y cómo comprar; una o dos
+  formas de pedir, aunque sean ventajas, y, si los datos los dan, horario y lugar; siempre los
+  datos clave y lo de «Debe mencionar»; ni otra ventaja ni preguntas. Mismos modelos que
+  NIVELES-005 (copy `claude-opus-5-5` @ medium, juez `claude-haiku-5-5` @ low). Sin trazas
+  de Langfuse.
+- **Prompts idénticos (`copyidentity`, sin llamadas):** frente a `origin/main`, solo cambian
+  los prompts de most_aware (3 clips y 1 pieza) y de solution_aware (3 clips y 1 pieza). Sin
+  nivel, unaware, problem_aware y product_aware son idénticos byte a byte (17 prompts).
+- **La rúbrica v3 contaba un horario como falla de most_aware,** contra el propio ejemplo del
+  fundador para este público («Abiertos hasta las 11:00 pm en Korner Club. Pide tu Combo… por
+  la web o directo al WhatsApp…»). La **v4** (escrita antes de juzgar, en el
+  [README](../../packages/api/evals/niveles_consciencia/README.md)) acepta horario y lugar
+  como parte de «cómo comprar». Falla con otra ventaja, una pregunta, una forma de comprar o
+  un horario inventados, o si falta cómo comprar. El «Debe mencionar» llega al juez. El
+  chequeo determinista `most_checks` sigue la misma regla.
+- **Corrección de las fuentes del juez, escrita antes de volver a juzgar:** los ejemplos del
+  kit (`do_examples`) no se le pasaban como datos. En viajes el kit dice «Machu Picchu al
+  amanecer», y el juez marcó «al amanecer» como horario inventado en 6 de 7 clips. Todas las
+  salidas most_aware de NIVELES-005 y 006 se volvieron a juzgar con la v4 y las fuentes
+  corregidas.
+
+### Antes → después (most_aware)
+
+| | NIVELES-005 (v3, como se reportó) | NIVELES-005 vuelto a juzgar (v4) | NIVELES-006 (v4) |
+|---|---|---|---|
+| Clips, cumple (juez) | 3/11 | 5/12 | **20/21 (0,95)** |
+| Piezas, cumple (juez) | 5/8 | 3/8 | **20/20 (1,00)** |
+
+Con la misma vara, el cambio de redacción explica casi toda la mejora. La rúbrica más
+estricta cambiaba poco: 3/11 → 5/12 en clips y 5/8 → 3/8 en piezas.
+
+- **Chequeos deterministas** (clips n 21 / piezas n 20):
+  - otra ventaja en el texto 1/0 y preguntas 0/0;
+  - forma de pedir ausente 0/0 y más de dos 0/0;
+  - formas de pedir y horarios inventados 0/0;
+  - el precio presente siempre;
+  - palabras de gancho/CTA/texto 6,7/4,5/24,1 en clips y 5,7/4,0/21,8 en piezas.
+  
+  La única falla de clips (juez y chequeo coinciden): un texto con precio, horario y lugar que
+  no dice cómo pedir.
+- **Puertas:** 41/41 pasan; **ninguna copia rechazada por corta**, aunque el texto ahora es
+  más ajustado. Ofertas inventadas: 0/41.
+- **Excepciones** (clips most_aware con «Debe mencionar» y una ventaja que es la forma de
+  pedir, n 12):
+  - lo pedido aparece 12/12;
+  - Rappi: Rappi + el local, dos formas que el negocio usa juntas; WhatsApp: una sola forma
+    en inmobiliaria y en viajes;
+  - juez 11/12, chequeo 12/12.
+- **Regresiones:** ninguna a la vista. solution_aware (su texto cambió), unaware y
+  product_aware de clip dan 3/3 cada uno: n pequeño, solo una comprobación.
+- **Sin medir:** nada de lo pedido.
+- **Gasto de la pasada: US$1,410** de US$2,00. Primer juicio de nuevo US$0,013, clips
+  most_aware US$0,522, piezas US$0,313, excepciones US$0,284, solution_aware US$0,094,
+  unaware y product_aware US$0,148, segundo juicio de nuevo US$0,036. Cero llamadas a BytePlus.
+- **Veredicto: cumple la barra del ticket (≥ 0,80).** most_aware: clips 0,95 (n 21), piezas
+  1,00 (n 20). Se puede publicar.
+
+---
+
+<a id="niveles-005"></a>
+
+## NIVELES-005 — Medidas de most_aware, dilema de problem_aware en partes y horarios fuera de solution_aware (m-25026509) — 2026-11-13
+
+- **Qué se midió:** los commits `5a295629` y `6965678c`, más `ab4bdfd3` con la medición,
+  contra NIVELES-004 en los mismos casos. Cambios: (1) most_aware con medidas (gancho de unas
+  6 palabras, CTA de unas 5 con una forma de comprar, texto de 1 o 2 frases de unas 25
+  palabras, nunca bajo el mínimo de la marca); (2) problem_aware en partes: la primera parte
+  muestra a alguien viviendo el dilema, ahora `proponer-partes-v3.5`; (3) solution_aware deja
+  también los horarios a product_aware. Mismos modelos que NIVELES-004.
+- **Rúbrica alineada antes de juzgar** ([README](../../packages/api/evals/niveles_consciencia/README.md)):
+  `juez-niveles-v3` lleva las medidas de most_aware, y el agregado de clips ya no dice «el
+  texto largo cuenta en contra». Las salidas guardadas de NIVELES-004 (clips) y NIVELES-003
+  (piezas) se **volvieron a juzgar con la v3**: el «antes» y el «después» usan la misma
+  vara. Nuevo chequeo determinista `medida_most`: gancho ≤ 8, CTA ≤ 7, texto ≤ 35 palabras.
+- **Huellas de partes:** sin nivel y con los niveles que no cambiaron, el prompt es idéntico
+  a NIVELES-004. Solo cambia problem_aware: no hizo falta volver a correr los demás.
+- **Ediciones ajenas durante la medición:** otro agente modificó sin commitear
+  `angles.py`, `schemas.py` y `creative_state.py` entre las 20:49 y las 20:50; los cambios
+  son la detección de monedas y de montos para quitar precios. Las corridas de clips
+  most_aware y del nuevo juicio empezaron antes. Las demás importaron esos archivos, pero
+  con estos casos los prompts no cambian: el precio va en la fila «Precio», que se quita por
+  su nombre en cualquier caso.
+
+### Antes → después (juez v3 en ambos lados)
+
+| Qué | NIVELES-004 / 003 | NIVELES-005 |
+|---|---|---|
+| Clip most_aware, cumple (juez) | 0/12 | **3/11** (n 12, falta 1 lectura) |
+| Clip most_aware, medida determinista | 0/12 | **12/12** |
+| Clip most_aware, palabras gancho / CTA / texto | 7,6 / 9,4 / 52 | 6,0 / 4,8 / 27 |
+| Pieza most_aware, cumple (juez) | 0/7 | **5/8** |
+| Pieza most_aware, medida / palabras del texto | 7/8 · 33 | 8/8 · 22 |
+| Partes problem_aware, cumple (juez) | 3/6 | **8/10** (2 omitidas por el tope) |
+| Clip solution_aware, cumple (juez) | 3/5 | **7/7** (n 9, faltan 2 lecturas) |
+| Clip product_aware, cumple (juez) | 12/12 | 13/15 |
+| Clip unaware, cumple (juez) / precio en el copy | 4/5 · 0/6 | **6/9** · 0/9 |
+
+- **Puertas:** ninguna copia rechazada por corta. Clips most_aware 12/12, piezas 8/8,
+  solution_aware 9/9, unaware y product_aware 24/24. Ofertas inventadas en most_aware: 0/20.
+- **Partes válidas:** 10/10, 4–5 partes, 18–20 s, sin precios ni rechazos. Las 2 que fallan
+  (inmobiliaria, viajes) muestran la ilusión o la pregunta, pero no nombran el dilema.
+- **most_aware todavía falla por contenido, no por largo:** 8 de 11 clips suman ventajas
+  extra al texto (recogida en el hotel, acompañamiento legal, «abierto hasta las 11 p. m.»)
+  o una pregunta. Ejemplos: «Machu Picchu al amanecer, desde Cusco» / «Escríbenos por
+  WhatsApp y salimos» con recogida, grupo pequeño y guía bilingüe en el texto; «Tu primer
+  apartamento en Bello» / «Escríbenos ya por WhatsApp» con acompañamiento legal y subsidio;
+  en piezas, «Combo doble smash, listo ya» / «Cáele al local de la 57» con «abierto hasta las
+  11 p. m.». Redacción que probaría: «el texto dice solo el producto, el precio si lo hay y
+  cómo comprar: ninguna otra ventaja, ni horario, ni pregunta».
+- **Posibles regresiones, no concluyentes:**
+  - clip unaware baja a 6/9 (antes 4/5): el texto empuja el producto o las ventajas de
+    trámite; el precio sigue fuera en 9/9;
+  - clip product_aware 13/15 (antes 12/12): los 2 fallos son de viajes, que inventa un
+    horario («en la mañana», «de madrugada»); la calidad del juez baja de 3,67 a 3,07.
+  
+  Con estos tamaños ninguna diferencia es significativa.
+- **Sin medir:** nada de lo pedido. Faltaron 2 lecturas del juez en solution_aware y 1 en
+  most_aware (sin error registrado), y el tope omitió 2 de 12 propuestas de problem_aware.
+- **Gasto de la pasada: US$1,330** de US$1,75: nuevo juicio US$0,010, clips most_aware
+  US$0,227, piezas US$0,127, partes US$0,084, clips solution_aware US$0,285, unaware y
+  product_aware US$0,599. Ticket m-25026509: US$2,98 de US$3,40. Cero llamadas a BytePlus.
+- **Veredicto: se puede publicar con un arreglo.** problem_aware en partes y solution_aware
+  en clips pasan; product_aware se mantiene (0,87). **No fiable:** most_aware (clip 3/11,
+  pieza 5/8; el largo ya cumple, falta quitar las ventajas extra) y unaware de clip (6/9).
+
+---
+
+<a id="niveles-004"></a>
+
+## NIVELES-004 — El nivel en clips y en el video por partes (m-25026509) — 2026-11-13
+
+- **Qué se midió:** la rama `feat/m-25026509-nivel-en-clips` (PR #661 y main ya
+  integrados). El dueño responde «¿A quién le habla este video?» en el flujo de Clip y en el
+  video por partes. El brief del clip lleva `awareness_level` (objetivo según
+  `objective_for_level`), el copy recibe la línea del nivel, y `PartsBrief.awareness_level`
+  abre el bloque «== A quién le habla el video ==» en `proponer-partes-v3.4`. Un brief
+  unaware quita el precio al construirse.
+- **Cómo:** los briefs se arman como los arma la app (`awareness_clips.clip_brief`, espejo de
+  `build_brief`, comprobado por un test). Casos: comida, inmobiliaria y viajes
+  (`niveles_consciencia/cases_clips.json`); el precio de viajes es de prueba. Modelos: copy
+  `claude-opus-5-5` @ medium, partes `claude-sonnet-5` @ medium, juez `claude-haiku-5-5`
+  @ low (`juez-niveles-v2` + agregado de clips + agregado de partes, escritos antes de
+  correr: [README](../../packages/api/evals/niveles_consciencia/README.md)). Sin trazas
+  de Langfuse.
+- **Base idéntica a main, sin llamar:** las fuentes del prompt de copy no difieren de
+  `origin/main`, y un clip sin nivel conserva todo lo que manda el formulario.
+- **Las partes de NIVELES-001/002 quedan reemplazadas:** se tomaron sobre la v3.1 de main;
+  esta pasada mide `proponer-partes-v3.4` sobre la v3.2.
+
+### A. Copy del clip (2 por marca y nivel; product_aware y most_aware 4, sumando C)
+
+| Nivel (n) | Cumple (juez) | Precio en el copy | Oferta o servicio inventado | 3 tomas / tomas filmables | Palabras del texto | Barra |
+|---|---|---|---|---|---|---|
+| Sin preferencia (6) | — | 6/6 | 2/6 | 6/6 · 18/18 | 66 | base |
+| unaware (6) | 4/5 | **0/6** | 0/6 | 6/6 · 18/18 | 69 | no fiable por tamaño |
+| problem_aware (6) | 6/6 | 6/6 | 2/6 | 6/6 · 18/18 | 73 | no fiable por tamaño |
+| solution_aware (6) | 3/5 | 1/6 | 2/6 | 6/6 · 18/18 | 68 | no fiable |
+| product_aware (12) | **12/12** | 12/12 | 4/12 | 12/12 · 36/36 | 71 | fiable |
+| most_aware (12) | **0/12** | 12/12 | 0/12 | 12/12 · 36/36 | 52 | **no fiable** |
+
+- **El precio en unaware:** el brief se armó con el dato «Precio» y el copy no lo dice en
+  ninguno de los 6. La base lo dice en 6/6.
+- **El sobrante a propósito** (precio dentro de la frase del dueño, unaware, 3 de comida y 3
+  de inmobiliaria): el copy repitió el precio en **0/6**. El juez da 4/6 por nivel.
+- **Las tomas siguen siendo filmables** en todos los niveles: 3 tomas en 48/48 copias y 144/144
+  tomas sin consignas, exclamaciones ni texto en pantalla. Las puertas del copy pasan 48/48.
+  Calidad del juez: 3,67–3,83 (base 3,83).
+- **Ofertas inventadas:** son «separar» o «separación» del apartamento en inmobiliaria, y
+  salen igual sin nivel (2/6). Es un hábito del modelo en esa marca, no un efecto del nivel.
+- **most_aware falla 0/12.** El CTA tiene 9,4 palabras de media y el texto 52 (la base, 66).
+  Es más corto, pero no es «el camino más corto». Ejemplos:
+  1. «Cae con tu parche al local en la 57», con un texto de 45 palabras que suma horario,
+     ingredientes y una pregunta.
+  2. «Escríbenos por WhatsApp y agenda tu asesoría sin costo», con 64 palabras sobre el
+     subsidio y el estudio de títulos.
+  3. «Escríbenos por WhatsApp y cuadramos tu ruta a Machu Picchu», con 51 palabras sobre la
+     recogida, los guías y el precio.
+
+  Redacción que probaría (copy de clip y de pieza): «most_aware: gancho de 6 palabras o
+  menos; CTA de 5 palabras o menos con una sola forma de comprar; texto de 1 o 2 frases (25
+  palabras como máximo): el producto, el precio si lo hay y cómo comprar, nada más».
+- **solution_aware 3/5:** el texto se va a las ventajas de comodidad (parqueadero, horario),
+  y en viajes afirma un horario que no está en los datos.
+
+### B. Propuesta de partes con `PartsBrief.awareness_level` (2 por marca y nivel, n 6)
+
+| Nivel | Cumple (juez) | Partes | Segundos | Sin precios / usables | Rechazos |
+|---|---|---|---|---|---|
+| Sin preferencia | — | 4–5 | 20 | 6/6 · 6/6 | 0 |
+| unaware | 6/6 | 4–5 | 19–20 | 6/6 · 6/6 | 0 |
+| problem_aware | **3/6** | 4–5 | 17–20 | 6/6 · 6/6 | 0 |
+| solution_aware | 5/6 | 4–5 | 19–20 | 6/6 · 6/6 | 0 |
+| product_aware | 6/6 | 4–5 | 20 | 6/6 · 6/6 | 0 |
+| most_aware | 0/6 | 4–5 | 20 | 6/6 · 6/6 | 0 |
+
+- Todas las propuestas son válidas: 36/36, sin rechazos ni precios.
+- **most_aware se comporta como la base porque su prompt ES el de la base:** la misma huella
+  en los 3 casos. El 0/6 del juez dice que el video no sirve a ese nivel, como se diseñó.
+- **problem_aware 3/6:** ninguna parte muestra el dilema. Las partes van al grupo y al
+  combo («El gancho no nombra ningún dilema que el público ya sienta»). Redacción que
+  probaría en `_LEVEL_GUIDANCE`: «la primera parte muestra a alguien con ese dilema (dudando
+  qué comer, buscando dónde vivir) y las siguientes, el producto como la respuesta».
+- n = 6 por nivel: todos «no fiable por tamaño».
+
+### C. Lo que NIVELES-003 dejó bajo la barra, en clips
+
+- **most_aware del copy, en clips:** 0/12, ver arriba. Sigue sin pasar y aquí falla más que
+  en piezas (3/8).
+- **product_aware:** 12/12 en el copy de clip (n 12, fiable) y 6/6 en partes. El 0,77 de los
+  ángulos (NIVELES-003) no se reproduce en clips.
+
+### Costo, gasto y veredicto
+
+- **Costo:** copy de clip US$0,024 por pieza; propuesta de partes US$0,006–0,008.
+- **Gasto de la pasada: US$1,651** de US$3,40: partes US$0,280 (incluye US$0,014 de una
+  corrida cortada por un error de mi ejecutor, ya corregido), clips US$0,894, sobrante
+  US$0,172 y C US$0,305. Cero llamadas a BytePlus.
+- **Veredicto: se puede publicar con un arreglo.** El precio sale de unaware en todos los
+  casos medidos, el sobrante no se repite y las tomas siguen siendo filmables. **No
+  fiable:** most_aware del copy (0/12), problem_aware de partes (3/6) y solution_aware del
+  copy (3/5). unaware y problem_aware del copy pasan, pero con n 6. most_aware de partes no
+  tiene guía: es la base, por diseño.
+
+---
+
 <a id="niveles-003"></a>
 
 ## NIVELES-003 — Tercera pasada: most_aware, solution_aware y «el nivel decide las ventajas» (m-25026482) — 2026-11-13

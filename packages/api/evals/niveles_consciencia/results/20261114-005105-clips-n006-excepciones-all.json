@@ -1,0 +1,1464 @@
+{
+ "ticket": "m-25026482",
+ "baseline_ref": "a6667370",
+ "split": "all",
+ "pricing_version": "v9",
+ "judge": "claude-haiku-5-5@low",
+ "judge_prompt_version": "juez-niveles-v4",
+ "judge_parts_version": "juez-niveles-v4+partes-v1",
+ "code_commit": "0c3e9237",
+ "arms": [],
+ "levels": [],
+ "repeat": 4,
+ "tracing": false,
+ "date": "2026-11-14T00:51:05",
+ "suites": {
+  "clips": {
+   "items": [
+    {
+     "case": "excepcion-bur",
+     "brand": "hamburguesas",
+     "arm": "most_aware",
+     "level": "most_aware",
+     "leftover": false,
+     "sentence": "Quiero que la gente se antoje del combo doble smash y venga al local con sus amigos",
+     "objective": "sale",
+     "highlights": [
+      [
+       "Precio",
+       "$32.900"
+      ]
+     ],
+     "output": {
+      "kind": "clip",
+      "variants": [
+       {
+        "payload": {
+         "hook": "Suena la plancha: llegó la doble",
+         "caption": "Suena la plancha: llegó la doble 🔥 Combo doble smash con salsa de la casa a $32.900. Cáele al local en la 57, en Chapinero, hasta las 11 p. m., o pídelo por Rappi.",
+         "hashtags": [
+          "brasanorte",
+          "smashburger",
+          "chapinero",
+          "hamburguesasbogota"
+         ],
+         "cta": "Cáele con el parche a la 57",
+         "script": "",
+         "shots": [
+          {
+           "visual": "Primer plano de la plancha caliente: dos bolas de carne se aplastan con la espátula y chisporrotean, soltando humo.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "La carne voltea mostrando la costra dorada, el queso se derrite encima y cae un chorro de salsa de la casa sobre el pan.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "El combo doble smash servido en una mesa del local mientras varias manos de amigos se acercan a agarrarlo.",
+           "line": "",
+           "seconds": 1
+          }
+         ]
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 9.63,
+        "cost_usd": 0.033482
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.033482,
+     "price_in_copy": true,
+     "three_shots": true,
+     "filmable_shots": 3,
+     "caption_words": 30,
+     "most_measure": true,
+     "most_checks": {
+      "extra_perks": [],
+      "question": false,
+      "ways": [
+       "rappi",
+       "local"
+      ],
+      "invented_ways": [],
+      "invented_hours": [],
+      "price_present": true,
+      "must_mention_ok": true,
+      "measure": true,
+      "ok": true
+     },
+     "exception": {
+      "id": "excepcion-bur",
+      "brand": "hamburguesas",
+      "extra_perks": [
+       "Pedidos a domicilio por Rappi"
+      ],
+      "must_mention": "salsa de la casa",
+      "way_to_buy": "rappi"
+     },
+     "juez_ciego_usd": 0.000515,
+     "juez_informado_usd": 0.000595
+    },
+    {
+     "case": "excepcion-bur",
+     "brand": "hamburguesas",
+     "arm": "most_aware",
+     "level": "most_aware",
+     "leftover": false,
+     "sentence": "Quiero que la gente se antoje del combo doble smash y venga al local con sus amigos",
+     "objective": "sale",
+     "highlights": [
+      [
+       "Precio",
+       "$32.900"
+      ]
+     ],
+     "output": {
+      "kind": "clip",
+      "variants": [
+       {
+        "payload": {
+         "hook": "Suena la plancha: doble smash listo",
+         "caption": "Suena la plancha: doble smash listo 🔥 Combo doble smash con costra dorada y salsa de la casa a $32.900. Cáele al local en la 57, en Chapinero, hasta las 11 p. m., o pídelo por Rappi.",
+         "hashtags": [
+          "brasanorte",
+          "smashburger",
+          "chapinero",
+          "hamburguesasbogota"
+         ],
+         "cta": "Cáele con los parceros a la 57",
+         "script": "",
+         "shots": [
+          {
+           "visual": "Primer plano de dos bolas de carne cayendo sobre la plancha caliente y siendo aplastadas con la espátula; salta el chisporroteo y el humo.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "La carne voltea mostrando la costra dorada, el queso se derrite encima y la salsa de la casa chorrea sobre el pan de la doble.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "El combo doble smash servido en la mesa del local mientras manos de varios amigos se acercan a agarrarlo.",
+           "line": "",
+           "seconds": 1
+          }
+         ]
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 8.88,
+        "cost_usd": 0.020378
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.020378,
+     "price_in_copy": true,
+     "three_shots": true,
+     "filmable_shots": 3,
+     "caption_words": 33,
+     "most_measure": true,
+     "most_checks": {
+      "extra_perks": [],
+      "question": false,
+      "ways": [
+       "rappi",
+       "local"
+      ],
+      "invented_ways": [],
+      "invented_hours": [],
+      "price_present": true,
+      "must_mention_ok": true,
+      "measure": true,
+      "ok": true
+     },
+     "exception": {
+      "id": "excepcion-bur",
+      "brand": "hamburguesas",
+      "extra_perks": [
+       "Pedidos a domicilio por Rappi"
+      ],
+      "must_mention": "salsa de la casa",
+      "way_to_buy": "rappi"
+     },
+     "juez_ciego_usd": 0.000422,
+     "juez_informado_usd": 0.000644
+    },
+    {
+     "case": "excepcion-bur",
+     "brand": "hamburguesas",
+     "arm": "most_aware",
+     "level": "most_aware",
+     "leftover": false,
+     "sentence": "Quiero que la gente se antoje del combo doble smash y venga al local con sus amigos",
+     "objective": "sale",
+     "highlights": [
+      [
+       "Precio",
+       "$32.900"
+      ]
+     ],
+     "output": {
+      "kind": "clip",
+      "variants": [
+       {
+        "payload": {
+         "hook": "Suena la plancha: doble smash listo",
+         "caption": "Suena la plancha: doble smash listo 🔥 Combo doble smash con salsa de la casa a $32.900. Cáele al local en la 57 o pídelo por Rappi, abiertos hasta las 11 p. m.",
+         "hashtags": [
+          "brasanorte",
+          "smashburger",
+          "doblesmash",
+          "chapinero"
+         ],
+         "cta": "Cáele con el parche a la 57",
+         "script": "",
+         "shots": [
+          {
+           "visual": "Primer plano de dos bolas de carne cayendo sobre la plancha caliente y aplastadas de golpe, chisporroteo y humo subiendo.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "La costra dorada se forma, el queso se derrite encima de la doble y la salsa de la casa cae sobre el pan tostado al armar la hamburguesa.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "El combo doble smash servido en una mesa del local mientras varias manos de amigos lo agarran entre risas.",
+           "line": "",
+           "seconds": 1
+          }
+         ]
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 8.39,
+        "cost_usd": 0.020038
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.020038,
+     "price_in_copy": true,
+     "three_shots": true,
+     "filmable_shots": 3,
+     "caption_words": 29,
+     "most_measure": true,
+     "most_checks": {
+      "extra_perks": [],
+      "question": false,
+      "ways": [
+       "rappi",
+       "local"
+      ],
+      "invented_ways": [],
+      "invented_hours": [],
+      "price_present": true,
+      "must_mention_ok": true,
+      "measure": true,
+      "ok": true
+     },
+     "exception": {
+      "id": "excepcion-bur",
+      "brand": "hamburguesas",
+      "extra_perks": [
+       "Pedidos a domicilio por Rappi"
+      ],
+      "must_mention": "salsa de la casa",
+      "way_to_buy": "rappi"
+     },
+     "juez_ciego_usd": 0.00049,
+     "juez_informado_usd": 0.000579
+    },
+    {
+     "case": "excepcion-bur",
+     "brand": "hamburguesas",
+     "arm": "most_aware",
+     "level": "most_aware",
+     "leftover": false,
+     "sentence": "Quiero que la gente se antoje del combo doble smash y venga al local con sus amigos",
+     "objective": "sale",
+     "highlights": [
+      [
+       "Precio",
+       "$32.900"
+      ]
+     ],
+     "output": {
+      "kind": "clip",
+      "variants": [
+       {
+        "payload": {
+         "hook": "Suena la plancha: llegó tu doble 🔥",
+         "caption": "Suena la plancha: llegó tu doble 🔥 Combo doble smash con salsa de la casa a $32.900. Cáele al local en la 57, Chapinero, hasta las 11 p. m., o pídelo por Rappi.",
+         "hashtags": [
+          "brasanorte",
+          "smashburger",
+          "chapinero",
+          "hamburguesasbogota"
+         ],
+         "cta": "Cáiganle a la 57 con el parche",
+         "script": "",
+         "shots": [
+          {
+           "visual": "Primer plano de dos bolas de carne aplastadas de golpe sobre la plancha caliente, chisporroteando y soltando humo.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "La costra dorada se voltea, el queso se derrite encima de las dos carnes y cae la salsa de la casa sobre el pan.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "El combo doble smash servido en una mesa del local mientras varias manos de amigos se acercan a agarrarlo.",
+           "line": "",
+           "seconds": 1
+          }
+         ]
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 9.76,
+        "cost_usd": 0.021478
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.021478,
+     "price_in_copy": true,
+     "three_shots": true,
+     "filmable_shots": 3,
+     "caption_words": 29,
+     "most_measure": true,
+     "most_checks": {
+      "extra_perks": [],
+      "question": false,
+      "ways": [
+       "rappi",
+       "local"
+      ],
+      "invented_ways": [],
+      "invented_hours": [],
+      "price_present": true,
+      "must_mention_ok": true,
+      "measure": true,
+      "ok": true
+     },
+     "exception": {
+      "id": "excepcion-bur",
+      "brand": "hamburguesas",
+      "extra_perks": [
+       "Pedidos a domicilio por Rappi"
+      ],
+      "must_mention": "salsa de la casa",
+      "way_to_buy": "rappi"
+     },
+     "juez_ciego_usd": 0.000441,
+     "juez_informado_usd": 0.000479
+    },
+    {
+     "case": "excepcion-inm",
+     "brand": "inmobiliaria",
+     "arm": "most_aware",
+     "level": "most_aware",
+     "leftover": false,
+     "sentence": "Mostrar los apartamentos de dos alcobas en Bello para familias que quieren su primera casa",
+     "objective": "sale",
+     "highlights": [
+      [
+       "Precio",
+       "Desde $280 millones"
+      ]
+     ],
+     "output": {
+      "kind": "clip",
+      "variants": [
+       {
+        "payload": {
+         "hook": "Tu primera casa en Bello, dos alcobas",
+         "caption": "Tu primera casa en Bello, dos alcobas. Apartamentos de 2 alcobas en Bello desde $280 millones, y te guiamos con el subsidio Mi Casa Ya. Escríbenos por WhatsApp y te contamos cómo avanzar.",
+         "hashtags": [
+          "habitatinmobiliaria",
+          "ViviendaBello",
+          "MiCasaYa",
+          "PrimeraVivienda"
+         ],
+         "cta": "Escríbenos ahora por WhatsApp",
+         "script": "",
+         "shots": [
+          {
+           "visual": "Una pareja joven con su hija abre la puerta de un apartamento nuevo y luminoso en Bello y se detiene a mirar el espacio vacío con una sonrisa.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "La familia recorre las dos alcobas: la niña corre hacia la que será su cuarto mientras los padres miran por la ventana de la alcoba principal hacia las montañas del Valle de Aburrá.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "Plano amplio del edificio en Bello al atardecer con la familia en el balcón, abrazada, disfrutando de su primer hogar.",
+           "line": "",
+           "seconds": 1
+          }
+         ]
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 7.74,
+        "cost_usd": 0.034277
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.034277,
+     "price_in_copy": true,
+     "three_shots": true,
+     "filmable_shots": 3,
+     "caption_words": 31,
+     "most_measure": true,
+     "most_checks": {
+      "extra_perks": [],
+      "question": false,
+      "ways": [
+       "whatsapp"
+      ],
+      "invented_ways": [],
+      "invented_hours": [],
+      "price_present": true,
+      "must_mention_ok": true,
+      "measure": true,
+      "ok": true
+     },
+     "exception": {
+      "id": "excepcion-inm",
+      "brand": "inmobiliaria",
+      "extra_perks": [],
+      "must_mention": "subsidio Mi Casa Ya",
+      "way_to_buy": "whatsapp"
+     },
+     "juez_ciego_usd": 0.000723,
+     "juez_informado_usd": 0.000567
+    },
+    {
+     "case": "excepcion-inm",
+     "brand": "inmobiliaria",
+     "arm": "most_aware",
+     "level": "most_aware",
+     "leftover": false,
+     "sentence": "Mostrar los apartamentos de dos alcobas en Bello para familias que quieren su primera casa",
+     "objective": "sale",
+     "highlights": [
+      [
+       "Precio",
+       "Desde $280 millones"
+      ]
+     ],
+     "output": {
+      "kind": "clip",
+      "variants": [
+       {
+        "payload": {
+         "hook": "Dos alcobas en Bello para tu familia",
+         "caption": "Dos alcobas en Bello para tu familia. Apartamentos nuevos desde $280 millones, y te guiamos con el subsidio Mi Casa Ya. Escríbenos por WhatsApp para empezar.",
+         "hashtags": [
+          "habitatinmobiliaria",
+          "ViviendaBello",
+          "MiCasaYa",
+          "PrimeraVivienda"
+         ],
+         "cta": "Hablemos hoy por WhatsApp",
+         "script": "",
+         "shots": [
+          {
+           "visual": "Una pareja joven con su hijo abre la puerta de un apartamento nuevo y vacío en Bello; la luz de la tarde entra por la ventana de la sala.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "La familia recorre las dos alcobas: el niño corre hacia la más pequeña y los padres miran la principal, imaginando dónde va cada cosa.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "Plano amplio de la sala con la familia junto a la ventana y el Valle de Aburrá al fondo, el apartamento como protagonista.",
+           "line": "",
+           "seconds": 1
+          }
+         ]
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 8.19,
+        "cost_usd": 0.020457
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.020457,
+     "price_in_copy": true,
+     "three_shots": true,
+     "filmable_shots": 3,
+     "caption_words": 25,
+     "most_measure": true,
+     "most_checks": {
+      "extra_perks": [],
+      "question": false,
+      "ways": [
+       "whatsapp"
+      ],
+      "invented_ways": [],
+      "invented_hours": [],
+      "price_present": true,
+      "must_mention_ok": true,
+      "measure": true,
+      "ok": true
+     },
+     "exception": {
+      "id": "excepcion-inm",
+      "brand": "inmobiliaria",
+      "extra_perks": [],
+      "must_mention": "subsidio Mi Casa Ya",
+      "way_to_buy": "whatsapp"
+     },
+     "juez_ciego_usd": 0.00053,
+     "juez_informado_usd": 0.000569
+    },
+    {
+     "case": "excepcion-inm",
+     "brand": "inmobiliaria",
+     "arm": "most_aware",
+     "level": "most_aware",
+     "leftover": false,
+     "sentence": "Mostrar los apartamentos de dos alcobas en Bello para familias que quieren su primera casa",
+     "objective": "sale",
+     "highlights": [
+      [
+       "Precio",
+       "Desde $280 millones"
+      ]
+     ],
+     "output": {
+      "kind": "clip",
+      "variants": [
+       {
+        "payload": {
+         "hook": "Tu primer hogar en Bello, dos alcobas",
+         "caption": "Tu primer hogar en Bello, dos alcobas: apartamentos de 2 alcobas desde $280 millones, y te guiamos con el subsidio Mi Casa Ya. Escríbenos por WhatsApp para conocerlos.",
+         "hashtags": [
+          "habitatinmobiliaria",
+          "ViviendaBello",
+          "MiCasaYa",
+          "PrimeraVivienda"
+         ],
+         "cta": "Escríbenos hoy por WhatsApp",
+         "script": "",
+         "shots": [
+          {
+           "visual": "Una pareja joven con su hija abre la puerta de un apartamento nuevo y vacío en Bello, con luz natural entrando por la ventana.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "La familia recorre las dos alcobas: la niña corre hacia la que será su cuarto y los padres revisan juntos unos documentos sobre el mesón de la cocina.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "Toma amplia de la sala con la familia abrazada frente al ventanal, con las montañas del Valle de Aburrá de fondo.",
+           "line": "",
+           "seconds": 1
+          }
+         ]
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 6.85,
+        "cost_usd": 0.018757
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.018757,
+     "price_in_copy": true,
+     "three_shots": true,
+     "filmable_shots": 3,
+     "caption_words": 26,
+     "most_measure": true,
+     "most_checks": {
+      "extra_perks": [],
+      "question": false,
+      "ways": [
+       "whatsapp"
+      ],
+      "invented_ways": [],
+      "invented_hours": [],
+      "price_present": true,
+      "must_mention_ok": true,
+      "measure": true,
+      "ok": true
+     },
+     "exception": {
+      "id": "excepcion-inm",
+      "brand": "inmobiliaria",
+      "extra_perks": [],
+      "must_mention": "subsidio Mi Casa Ya",
+      "way_to_buy": "whatsapp"
+     },
+     "juez_ciego_usd": 0.000538,
+     "juez_informado_usd": 0.000531
+    },
+    {
+     "case": "excepcion-inm",
+     "brand": "inmobiliaria",
+     "arm": "most_aware",
+     "level": "most_aware",
+     "leftover": false,
+     "sentence": "Mostrar los apartamentos de dos alcobas en Bello para familias que quieren su primera casa",
+     "objective": "sale",
+     "highlights": [
+      [
+       "Precio",
+       "Desde $280 millones"
+      ]
+     ],
+     "output": {
+      "kind": "clip",
+      "variants": [
+       {
+        "payload": {
+         "hook": "Tu primer hogar en Bello: dos alcobas",
+         "caption": "Tu primer hogar en Bello: dos alcobas. Apartamentos de 2 alcobas en Bello desde $280 millones, y te guiamos con el subsidio Mi Casa Ya. Escríbenos por WhatsApp y te atendemos.",
+         "hashtags": [
+          "habitatinmobiliaria",
+          "ApartamentosBello",
+          "MiCasaYa",
+          "PrimeraVivienda"
+         ],
+         "cta": "Conversemos hoy por WhatsApp",
+         "script": "",
+         "shots": [
+          {
+           "visual": "Una pareja joven con su hija abre la puerta de un apartamento nuevo e iluminado y se detiene a mirar la sala vacía con emoción contenida.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "La familia recorre las dos alcobas: la niña corre hacia la que será su cuarto y los padres revisan juntos unos documentos sobre el mesón de la cocina.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "Plano amplio del apartamento con la familia en la ventana, mirando el paisaje de Bello al atardecer, ya sintiéndose en casa.",
+           "line": "",
+           "seconds": 1
+          }
+         ]
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 7.81,
+        "cost_usd": 0.020817
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.020817,
+     "price_in_copy": true,
+     "three_shots": true,
+     "filmable_shots": 3,
+     "caption_words": 29,
+     "most_measure": true,
+     "most_checks": {
+      "extra_perks": [],
+      "question": false,
+      "ways": [
+       "whatsapp"
+      ],
+      "invented_ways": [],
+      "invented_hours": [],
+      "price_present": true,
+      "must_mention_ok": true,
+      "measure": true,
+      "ok": true
+     },
+     "exception": {
+      "id": "excepcion-inm",
+      "brand": "inmobiliaria",
+      "extra_perks": [],
+      "must_mention": "subsidio Mi Casa Ya",
+      "way_to_buy": "whatsapp"
+     },
+     "juez_ciego_usd": 0.000561,
+     "juez_informado_usd": 0.000513
+    },
+    {
+     "case": "excepcion-via",
+     "brand": "viajes",
+     "arm": "most_aware",
+     "level": "most_aware",
+     "leftover": false,
+     "sentence": "Que se animen a conocer Machu Picchu con nosotros saliendo desde Cusco",
+     "objective": "sale",
+     "highlights": [
+      [
+       "Precio",
+       "US$180"
+      ]
+     ],
+     "output": {
+      "kind": "clip",
+      "variants": [
+       {
+        "payload": {
+         "hook": "Machu Picchu al amanecer, desde Cusco",
+         "caption": "Machu Picchu al amanecer, desde Cusco. Tour a Machu Picchu con salida desde Cusco por US$180. Reserva tu cupo escribiéndonos por WhatsApp.",
+         "hashtags": [
+          "viajesandinos",
+          "MachuPicchu",
+          "Cusco",
+          "TourMachuPicchu"
+         ],
+         "cta": "Escríbenos por WhatsApp y reserva",
+         "script": "",
+         "shots": [
+          {
+           "visual": "Primera luz del amanecer sobre la ciudadela de Machu Picchu, la niebla se abre lentamente entre las montañas verdes.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "Calles de piedra de Cusco aún oscuras; un pequeño grupo de viajeros sube a la van con su guía y arranca la ruta hacia Machu Picchu.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "Los viajeros llegan al mirador y contemplan Machu Picchu bañado por el sol de la mañana, sonriendo en silencio.",
+           "line": "",
+           "seconds": 1
+          }
+         ]
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 4.68,
+        "cost_usd": 0.026482
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.026482,
+     "price_in_copy": true,
+     "three_shots": true,
+     "filmable_shots": 3,
+     "caption_words": 22,
+     "most_measure": true,
+     "most_checks": {
+      "extra_perks": [],
+      "question": false,
+      "ways": [
+       "whatsapp"
+      ],
+      "invented_ways": [],
+      "invented_hours": [],
+      "price_present": true,
+      "must_mention_ok": true,
+      "measure": true,
+      "ok": true
+     },
+     "exception": {
+      "id": "excepcion-via",
+      "brand": "viajes",
+      "extra_perks": [
+       "Reservas por WhatsApp"
+      ],
+      "must_mention": "salida desde Cusco",
+      "way_to_buy": "whatsapp"
+     },
+     "juez_ciego_usd": 0.000866,
+     "juez_informado_usd": 0.000495
+    },
+    {
+     "case": "excepcion-via",
+     "brand": "viajes",
+     "arm": "most_aware",
+     "level": "most_aware",
+     "leftover": false,
+     "sentence": "Que se animen a conocer Machu Picchu con nosotros saliendo desde Cusco",
+     "objective": "sale",
+     "highlights": [
+      [
+       "Precio",
+       "US$180"
+      ]
+     ],
+     "output": {
+      "kind": "clip",
+      "variants": [
+       {
+        "payload": {
+         "hook": "Desde Cusco hasta Machu Picchu, temprano",
+         "caption": "Desde Cusco hasta Machu Picchu, temprano. Tour a Machu Picchu con salida desde Cusco por US$180. Haz tu reserva escribiéndonos por WhatsApp.",
+         "hashtags": [
+          "viajesandinos",
+          "machupicchu",
+          "cusco",
+          "peru"
+         ],
+         "cta": "Escríbenos por WhatsApp y reserva",
+         "script": "",
+         "shots": [
+          {
+           "visual": "Calles de piedra de Cusco con la primera luz del amanecer; una camioneta arranca por la ruta que sale de la ciudad hacia las montañas.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "Un grupo pequeño de viajeros camina con su guía por un sendero entre montañas verdes, mirando con asombro mientras se abre la neblina.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "Plano amplio de Machu Picchu bañado por el sol de la mañana, con los viajeros sonriendo frente a la ciudadela.",
+           "line": "",
+           "seconds": 1
+          }
+         ]
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 7.68,
+        "cost_usd": 0.020789
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.020789,
+     "price_in_copy": true,
+     "three_shots": true,
+     "filmable_shots": 3,
+     "caption_words": 22,
+     "most_measure": true,
+     "most_checks": {
+      "extra_perks": [],
+      "question": false,
+      "ways": [
+       "whatsapp"
+      ],
+      "invented_ways": [],
+      "invented_hours": [],
+      "price_present": true,
+      "must_mention_ok": true,
+      "measure": true,
+      "ok": true
+     },
+     "exception": {
+      "id": "excepcion-via",
+      "brand": "viajes",
+      "extra_perks": [
+       "Reservas por WhatsApp"
+      ],
+      "must_mention": "salida desde Cusco",
+      "way_to_buy": "whatsapp"
+     },
+     "juez_ciego_usd": 0.000682,
+     "juez_informado_usd": 0.000624
+    },
+    {
+     "case": "excepcion-via",
+     "brand": "viajes",
+     "arm": "most_aware",
+     "level": "most_aware",
+     "leftover": false,
+     "sentence": "Que se animen a conocer Machu Picchu con nosotros saliendo desde Cusco",
+     "objective": "sale",
+     "highlights": [
+      [
+       "Precio",
+       "US$180"
+      ]
+     ],
+     "output": {
+      "kind": "clip",
+      "variants": [
+       {
+        "payload": {
+         "hook": "Cusco de madrugada, Machu Picchu al amanecer",
+         "caption": "Cusco de madrugada, Machu Picchu al amanecer. Tour a Machu Picchu con salida desde Cusco por US$180; resérvalo por WhatsApp y te contamos la ruta.",
+         "hashtags": [
+          "viajesandinos",
+          "machupicchu",
+          "cusco"
+         ],
+         "cta": "Escríbenos y reserva por WhatsApp",
+         "script": "",
+         "shots": [
+          {
+           "visual": "Primera luz del amanecer sobre Machu Picchu: el sol asoma tras las montañas y la niebla se abre lentamente sobre las terrazas de piedra.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "Calles de Cusco todavía oscuras de madrugada; un pequeño grupo de viajeros con mochilas sale contento hacia la ruta y avanza por el valle verde.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "El grupo llega al mirador y contempla Machu Picchu completo bañado por la luz dorada de la mañana.",
+           "line": "",
+           "seconds": 1
+          }
+         ]
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 8.36,
+        "cost_usd": 0.020469
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.020469,
+     "price_in_copy": true,
+     "three_shots": true,
+     "filmable_shots": 3,
+     "caption_words": 25,
+     "most_measure": true,
+     "most_checks": {
+      "extra_perks": [],
+      "question": false,
+      "ways": [
+       "whatsapp"
+      ],
+      "invented_ways": [],
+      "invented_hours": [],
+      "price_present": true,
+      "must_mention_ok": true,
+      "measure": true,
+      "ok": true
+     },
+     "exception": {
+      "id": "excepcion-via",
+      "brand": "viajes",
+      "extra_perks": [
+       "Reservas por WhatsApp"
+      ],
+      "must_mention": "salida desde Cusco",
+      "way_to_buy": "whatsapp"
+     },
+     "juez_ciego_usd": 0.000593,
+     "juez_informado_usd": 0.000607
+    },
+    {
+     "case": "excepcion-via",
+     "brand": "viajes",
+     "arm": "most_aware",
+     "level": "most_aware",
+     "leftover": false,
+     "sentence": "Que se animen a conocer Machu Picchu con nosotros saliendo desde Cusco",
+     "objective": "sale",
+     "highlights": [
+      [
+       "Precio",
+       "US$180"
+      ]
+     ],
+     "output": {
+      "kind": "clip",
+      "variants": [
+       {
+        "payload": {
+         "hook": "Machu Picchu al amanecer, desde Cusco",
+         "caption": "Machu Picchu al amanecer, desde Cusco: Tour a Machu Picchu con salida desde Cusco por US$180. Reservas por WhatsApp, escríbenos y separamos tu fecha.",
+         "hashtags": [
+          "viajesandinos",
+          "machupicchu",
+          "cusco",
+          "perutravel"
+         ],
+         "cta": "Reserva tu tour por WhatsApp",
+         "script": "",
+         "shots": [
+          {
+           "visual": "Primera luz del amanecer sobre las terrazas de Machu Picchu, la niebla se abre y aparece la ciudadela con el Huayna Picchu al fondo.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "Una van sale temprano por las calles empedradas de Cusco todavía en penumbra; un grupo pequeño de viajeros mira por la ventana la ruta entre montañas.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "El grupo llega al mirador y contempla Machu Picchu bañado de sol, una viajera sonríe y levanta los brazos frente a la ciudadela.",
+           "line": "",
+           "seconds": 1
+          }
+         ]
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 4.57,
+        "cost_usd": 0.012809
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.012809,
+     "price_in_copy": true,
+     "three_shots": true,
+     "filmable_shots": 3,
+     "caption_words": 24,
+     "most_measure": true,
+     "most_checks": {
+      "extra_perks": [],
+      "question": false,
+      "ways": [
+       "whatsapp"
+      ],
+      "invented_ways": [],
+      "invented_hours": [],
+      "price_present": true,
+      "must_mention_ok": true,
+      "measure": true,
+      "ok": true
+     },
+     "exception": {
+      "id": "excepcion-via",
+      "brand": "viajes",
+      "extra_perks": [
+       "Reservas por WhatsApp"
+      ],
+      "must_mention": "salida desde Cusco",
+      "way_to_buy": "whatsapp"
+     },
+     "juez_ciego_usd": 0.000619,
+     "juez_informado_usd": 0.000567
+    }
+   ],
+   "scores": [
+    {
+     "arm": "most_aware",
+     "case": "excepcion-bur",
+     "split": "test",
+     "sector": "comida",
+     "with_perks": true,
+     "level": "most_aware",
+     "level_answered": null,
+     "rule_det": false,
+     "invented_det": [],
+     "perks_det": [],
+     "judge_level": "most_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      4,
+      6
+     ],
+     "judge_fit": true,
+     "judge_reason": "Gancho de 7 palabras, CTA corta, y el texto da producto, precio de $32.900, salsa de la casa, cómo comprar (local en la 57 o Rappi), horario hasta las 11 p. m. y zona, todo tomado de los datos sin inv",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 6,
+     "words_cta": 7
+    },
+    {
+     "arm": "most_aware",
+     "case": "excepcion-bur",
+     "split": "test",
+     "sector": "comida",
+     "with_perks": true,
+     "level": "most_aware",
+     "level_answered": null,
+     "rule_det": false,
+     "invented_det": [],
+     "perks_det": [],
+     "judge_level": "most_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      4,
+      6
+     ],
+     "judge_fit": false,
+     "judge_reason": "El gancho y la llamada a la acción tienen buen largo y todos los datos están en la lista (precio, salsa de la casa, 57, Chapinero, 11 p. m., Rappi), pero el texto tiene tres frases y unas 35 palabras,",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 6,
+     "words_cta": 7
+    },
+    {
+     "arm": "most_aware",
+     "case": "excepcion-bur",
+     "split": "test",
+     "sector": "comida",
+     "with_perks": true,
+     "level": "most_aware",
+     "level_answered": null,
+     "rule_det": false,
+     "invented_det": [],
+     "perks_det": [
+      4
+     ],
+     "judge_level": "most_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      3,
+      4,
+      6
+     ],
+     "judge_fit": true,
+     "judge_reason": "Cumple la regla most_aware: gancho de unas 6 palabras, CTA de unas 5, texto con producto, precio ($32.900), salsa de la casa, cómo comprar (local o Rappi), dirección (57) y horario (11 p. m.), todo to",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 6,
+     "words_cta": 7
+    },
+    {
+     "arm": "most_aware",
+     "case": "excepcion-bur",
+     "split": "test",
+     "sector": "comida",
+     "with_perks": true,
+     "level": "most_aware",
+     "level_answered": null,
+     "rule_det": false,
+     "invented_det": [],
+     "perks_det": [],
+     "judge_level": "most_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      4,
+      6
+     ],
+     "judge_fit": true,
+     "judge_reason": "El gancho tiene unas 6 palabras, el texto da producto, precio ($32.900), salsa de la casa, cómo pedir (local o Rappi) y cuándo y dónde (hasta las 11 p. m., calle 57, Chapinero), todo con datos reales;",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 6,
+     "words_cta": 7
+    },
+    {
+     "arm": "most_aware",
+     "case": "excepcion-inm",
+     "split": "test",
+     "sector": "inmobiliaria",
+     "with_perks": true,
+     "level": "most_aware",
+     "level_answered": null,
+     "rule_det": true,
+     "invented_det": [],
+     "perks_det": [
+      3
+     ],
+     "judge_level": "most_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      3,
+      4
+     ],
+     "judge_fit": true,
+     "judge_reason": "Como most_aware, el texto da el producto (apartamentos de 2 alcobas en Bello), el precio (desde $280 millones), el subsidio Mi Casa Ya que debe mencionar y cómo comprar (WhatsApp, con la guía del subs",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 7,
+     "words_cta": 4
+    },
+    {
+     "arm": "most_aware",
+     "case": "excepcion-inm",
+     "split": "test",
+     "sector": "inmobiliaria",
+     "with_perks": true,
+     "level": "most_aware",
+     "level_answered": null,
+     "rule_det": true,
+     "invented_det": [],
+     "perks_det": [
+      3
+     ],
+     "judge_level": "most_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      3,
+      4
+     ],
+     "judge_fit": true,
+     "judge_reason": "Cumple la regla de most_aware: gancho de 8 palabras, llamada a la acción de 4, texto de unas 26 palabras con producto, precio desde $280 millones, subsidio Mi Casa Ya y la forma de pedir por WhatsApp,",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 7,
+     "words_cta": 4
+    },
+    {
+     "arm": "most_aware",
+     "case": "excepcion-inm",
+     "split": "test",
+     "sector": "inmobiliaria",
+     "with_perks": true,
+     "level": "most_aware",
+     "level_answered": null,
+     "rule_det": true,
+     "invented_det": [],
+     "perks_det": [
+      3
+     ],
+     "judge_level": "most_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      3,
+      4
+     ],
+     "judge_fit": true,
+     "judge_reason": "Gancho de 7 palabras, CTA de 4 y texto de unas 28 palabras con producto, precio desde $280 millones, subsidio Mi Casa Ya (que debe mencionarse) y cómo comprar por WhatsApp, sin datos inventados; el te",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 7,
+     "words_cta": 4
+    },
+    {
+     "arm": "most_aware",
+     "case": "excepcion-inm",
+     "split": "test",
+     "sector": "inmobiliaria",
+     "with_perks": true,
+     "level": "most_aware",
+     "level_answered": null,
+     "rule_det": true,
+     "invented_det": [],
+     "perks_det": [
+      3,
+      4
+     ],
+     "judge_level": "most_aware",
+     "judge_quality": 3,
+     "judge_invented": [],
+     "judge_perks": [
+      3,
+      4
+     ],
+     "judge_fit": true,
+     "judge_reason": "El gancho (7 palabras) y la llamada a la acción (4) están en rango, el texto de unas 30 palabras incluye producto, precio, subsidio Mi Casa Ya y cómo comprar por WhatsApp, sin datos inventados; calida",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 7,
+     "words_cta": 4
+    },
+    {
+     "arm": "most_aware",
+     "case": "excepcion-via",
+     "split": "test",
+     "sector": "viajes",
+     "with_perks": true,
+     "level": "most_aware",
+     "level_answered": null,
+     "rule_det": true,
+     "invented_det": [],
+     "perks_det": [
+      3,
+      5
+     ],
+     "judge_level": "most_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      2,
+      3,
+      5
+     ],
+     "judge_fit": true,
+     "judge_reason": "Gancho de 6 palabras, CTA de 5 y texto de unas 25 palabras que nombra el tour, la salida desde Cusco, el precio de US$180 y la reserva por WhatsApp, todo con datos dados y sin inventar horario, precio",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 6,
+     "words_cta": 5
+    },
+    {
+     "arm": "most_aware",
+     "case": "excepcion-via",
+     "split": "test",
+     "sector": "viajes",
+     "with_perks": true,
+     "level": "most_aware",
+     "level_answered": null,
+     "rule_det": true,
+     "invented_det": [],
+     "perks_det": [
+      3,
+      5
+     ],
+     "judge_level": "most_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      3,
+      5
+     ],
+     "judge_fit": true,
+     "judge_reason": "Cumple la regla de most_aware: gancho de 6 palabras, CTA de 5, texto corto con producto, precio US$180, salida desde Cusco y la forma de reservar por WhatsApp; 'temprano' sale de los datos y no hay da",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 6,
+     "words_cta": 5
+    },
+    {
+     "arm": "most_aware",
+     "case": "excepcion-via",
+     "split": "test",
+     "sector": "viajes",
+     "with_perks": true,
+     "level": "most_aware",
+     "level_answered": null,
+     "rule_det": true,
+     "invented_det": [],
+     "perks_det": [
+      3,
+      5
+     ],
+     "judge_level": "most_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      5
+     ],
+     "judge_fit": true,
+     "judge_reason": "Gancho de 7 palabras y CTA de 5 (\"Escríbenos y reserva por WhatsApp\"); el texto, de unas 30 palabras, dice el producto, el precio real de US$180, la salida desde Cusco (dato obligatorio) y la forma de",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 7,
+     "words_cta": 5
+    },
+    {
+     "arm": "most_aware",
+     "case": "excepcion-via",
+     "split": "test",
+     "sector": "viajes",
+     "with_perks": true,
+     "level": "most_aware",
+     "level_answered": null,
+     "rule_det": true,
+     "invented_det": [],
+     "perks_det": [
+      3,
+      5
+     ],
+     "judge_level": "most_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      5,
+      3
+     ],
+     "judge_fit": true,
+     "judge_reason": "Cumple la medida de most_aware: gancho de 6 palabras, CTA de 5, texto de unas 27 palabras con producto, precio US$180, WhatsApp como forma de compra y 'salida desde Cusco'; no inventa horario, precio ",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 6,
+     "words_cta": 5
+    }
+   ]
+  }
+ },
+ "spend_usd": {
+  "clips": 0.283983
+ },
+ "spend_total_usd": 0.283983,
+ "skipped_by_cap": [],
+ "ledger_calls": 24
+}

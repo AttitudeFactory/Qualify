@@ -1,0 +1,385 @@
+{
+  "$defs": {
+    "Anchor": {
+      "enum": [
+        "top_left",
+        "top_right",
+        "bottom_left",
+        "bottom_right",
+        "top_center",
+        "bottom_center",
+        "top",
+        "bottom"
+      ],
+      "title": "Anchor",
+      "type": "string"
+    },
+    "CarouselPlace": {
+      "additionalProperties": false,
+      "description": "Where a slide sits in its carousel (catalog §6).",
+      "properties": {
+        "count": {
+          "maximum": 10,
+          "minimum": 2,
+          "title": "Count",
+          "type": "integer"
+        },
+        "index": {
+          "maximum": 9,
+          "minimum": 0,
+          "title": "Index",
+          "type": "integer"
+        },
+        "role": {
+          "$ref": "#/$defs/CarouselRole"
+        }
+      },
+      "required": [
+        "role",
+        "index",
+        "count"
+      ],
+      "title": "CarouselPlace",
+      "type": "object"
+    },
+    "CarouselRole": {
+      "enum": [
+        "cover",
+        "body",
+        "closing"
+      ],
+      "title": "CarouselRole",
+      "type": "string"
+    },
+    "ContainerColor": {
+      "enum": [
+        "surface",
+        "accent"
+      ],
+      "title": "ContainerColor",
+      "type": "string"
+    },
+    "HighlightContent": {
+      "additionalProperties": false,
+      "properties": {
+        "icon_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Icon Id"
+        },
+        "kind": {
+          "$ref": "#/$defs/HighlightKind"
+        },
+        "word": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Word"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "title": "HighlightContent",
+      "type": "object"
+    },
+    "HighlightKind": {
+      "enum": [
+        "icon",
+        "word",
+        "photo"
+      ],
+      "title": "HighlightKind",
+      "type": "string"
+    },
+    "InfoBlock": {
+      "additionalProperties": false,
+      "description": "A data block: Claude chooses the kind and the order; the label is fixed (catalog\n§1.5) and the value is the business's SAVED datum, filled by the layer stage.",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/InfoKind"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "value": {
+          "minLength": 1,
+          "title": "Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "label",
+        "value"
+      ],
+      "title": "InfoBlock",
+      "type": "object"
+    },
+    "InfoKind": {
+      "enum": [
+        "location",
+        "hours",
+        "payment",
+        "products",
+        "contact"
+      ],
+      "title": "InfoKind",
+      "type": "string"
+    },
+    "LayoutId": {
+      "enum": [
+        "photo_only",
+        "plate",
+        "scrim",
+        "band",
+        "info_card",
+        "brand_fill",
+        "highlight_circle"
+      ],
+      "title": "LayoutId",
+      "type": "string"
+    },
+    "PhotoReading": {
+      "additionalProperties": false,
+      "description": "What Claude reports about the photo BEFORE choosing a layout (catalog §1.2).",
+      "properties": {
+        "base_has_invented_text": {
+          "title": "Base Has Invented Text",
+          "type": "boolean"
+        },
+        "logo_in_photo": {
+          "title": "Logo In Photo",
+          "type": "boolean"
+        },
+        "subject_box": {
+          "maxItems": 4,
+          "minItems": 4,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Subject Box",
+          "type": "array"
+        }
+      },
+      "required": [
+        "subject_box",
+        "logo_in_photo",
+        "base_has_invented_text"
+      ],
+      "title": "PhotoReading",
+      "type": "object"
+    },
+    "PriceRef": {
+      "additionalProperties": false,
+      "description": "A catalog product whose price the composition prints (founder 2026-11-14: a text\nline inside the plate or the band, never a pill). Only the id: the price itself is\nread from the catalog, whole or not at all — never written by the model.",
+      "properties": {
+        "product_id": {
+          "format": "uuid",
+          "title": "Product Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "product_id"
+      ],
+      "title": "PriceRef",
+      "type": "object"
+    }
+  },
+  "$id": "https://qualify.la/schemas/layer_spec_v1.json",
+  "additionalProperties": false,
+  "description": "Qualify LayerSpec v1 (m-25017283). Limits per layout and format live in catalog_v1.json; this schema states the shape, the Python model enforces the rules.",
+  "properties": {
+    "accent_word": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Accent Word"
+    },
+    "anchor": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Anchor"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "call_phrase": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Call Phrase"
+    },
+    "carousel": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CarouselPlace"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "container_color": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ContainerColor"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "fallbacks": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Fallbacks",
+      "type": "array"
+    },
+    "format": {
+      "enum": [
+        "4:5",
+        "1:1",
+        "9:16"
+      ],
+      "title": "Format",
+      "type": "string"
+    },
+    "highlight_content": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/HighlightContent"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "info_blocks": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/InfoBlock"
+      },
+      "title": "Info Blocks",
+      "type": "array"
+    },
+    "layout_id": {
+      "$ref": "#/$defs/LayoutId"
+    },
+    "layout_version": {
+      "default": 1,
+      "title": "Layout Version",
+      "type": "integer"
+    },
+    "photo": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PhotoReading"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "photo_strip": {
+      "default": false,
+      "title": "Photo Strip",
+      "type": "boolean"
+    },
+    "price_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PriceRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "spec_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Spec Version",
+      "type": "integer"
+    },
+    "subtitle": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Subtitle"
+    },
+    "title": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Title"
+    }
+  },
+  "required": [
+    "layout_id",
+    "format"
+  ],
+  "title": "LayerSpec",
+  "type": "object"
+}

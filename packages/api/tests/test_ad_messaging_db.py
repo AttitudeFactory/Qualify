@@ -23,6 +23,7 @@ from qualify_api.ads.messaging_attribution import (
 from qualify_api.ads.messaging_destinations import (
     LINK_GUIDE,
     PENDING,
+    READY,
     UNKNOWN,
     check_messaging_destinations,
 )
@@ -507,8 +508,11 @@ async def test_destination_read_is_unknown_on_missing_fields_and_rejects_late_co
 
 
 @pytest.mark.asyncio
-async def test_only_an_exact_page_number_link_offers_whatsapp_with_its_target(messaging_world):
+async def test_only_an_exact_page_number_link_offers_whatsapp_with_its_target(
+    messaging_world, monkeypatch
+):
     w = messaging_world
+    monkeypatch.setenv("QUALIFY_ADS_CHAT_GOAL", "1")
 
     class Reader:
         def __init__(self, payload):
@@ -533,12 +537,21 @@ async def test_only_an_exact_page_number_link_offers_whatsapp_with_its_target(me
     assert whatsapp.reason_code == "ready"
     assert instagram.target.destination_type == "INSTAGRAM_DIRECT"
     assert instagram.label == "Mensajes de Instagram"
-    # The screen cannot choose a chat goal yet: today's notice, not offered as available.
-    assert not whatsapp.available and not instagram.available
-    assert whatsapp.reason == PENDING == instagram.reason
+    # The wizard offers the chat goal: an exact link is available with its target.
+    assert whatsapp.available and instagram.available
+    assert whatsapp.reason == READY == instagram.reason
     assert not unlinked[1].available and unlinked[1].target is None
     assert unlinked[1].reason == LINK_GUIDE and unlinked[1].reason_code == "unlinked"
     assert "Meta Business Suite" not in LINK_GUIDE + UNKNOWN
+    # QUALIFY_ADS_CHAT_GOAL off (the default): the same exact target, not offered.
+    monkeypatch.delenv("QUALIFY_ADS_CHAT_GOAL")
+    with acting_login(w["login"]):
+        instagram, whatsapp = await check_messaging_destinations(
+            tenant_id=w["tenant"], connection_id=w["source"], reader=Reader(linked)
+        )
+    assert whatsapp.target is not None and instagram.target is not None
+    assert not whatsapp.available and not instagram.available
+    assert whatsapp.reason == PENDING == instagram.reason
 
 
 def test_greeting_versions_are_append_only_tenant_scoped_and_idempotent(messaging_world):
@@ -616,7 +629,7 @@ def test_a_concurrent_save_of_the_same_text_is_a_harmless_double_submit(
             first
         )
         reads.clear()
-        with pytest.raises(module.GreetingUnavailable, match="Te mostramos el más reciente"):
+        with pytest.raises(module.GreetingUnavailable, match="Te mostramos su versión"):
             module.save_greeting(welcome_text="Otro", questions=["¿Precios?"], **save)
     with tenant_session(w["tenant"]) as s:
         assert s.execute(text("SELECT count(*) FROM ad_message_greetings")).scalar() == 1

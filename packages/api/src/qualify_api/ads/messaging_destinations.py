@@ -8,6 +8,7 @@ paused creation and explicit consent; this module never writes to Meta.
 from __future__ import annotations
 
 import asyncio
+import os
 from dataclasses import dataclass
 from typing import Any, Protocol
 from uuid import UUID
@@ -27,9 +28,18 @@ from qualify_api.connections.ad_accounts import (
 )
 from qualify_api.tenancy.acting import current_acting_login, require_acting_member
 
-# The screen cannot choose a chat goal yet: until its PR flips this, a passed check keeps
-# today's notice and `available=False`, while the backend still gets the exact target.
-CHAT_GOAL_ON_SCREEN = False
+# The promotion wizard offers the chat goal (m-24828980) only with QUALIFY_ADS_CHAT_GOAL
+# set to "1"/"true"; anything else (unset included) keeps PENDING and `available=False`,
+# while the exact target still flows. shortcut: off by default because Meta's read-back of
+# `page_welcome_message` is unmeasured (`live_wizard._same_welcome`); enable in prod after
+# m-24828971 measures the read-back.
+CHAT_GOAL_ENV = "QUALIFY_ADS_CHAT_GOAL"
+
+
+def chat_goal_on_screen() -> bool:
+    return os.environ.get(CHAT_GOAL_ENV, "").strip().lower() in {"1", "true"}
+
+
 PENDING = "La creación de anuncios para abrir chats todavía no está habilitada."
 READY = "Puedes preparar un anuncio que abra este chat."
 LINK_GUIDE = (
@@ -59,8 +69,8 @@ class MessagingDestination:
 
 
 def _offer() -> tuple[bool, str]:
-    """(available, reason) of a destination whose check passed, per CHAT_GOAL_ON_SCREEN."""
-    return (True, READY) if CHAT_GOAL_ON_SCREEN else (False, PENDING)
+    """(available, reason) of a destination whose check passed, per QUALIFY_ADS_CHAT_GOAL."""
+    return (True, READY) if chat_goal_on_screen() else (False, PENDING)
 
 
 class PageMessagingReader(Protocol):

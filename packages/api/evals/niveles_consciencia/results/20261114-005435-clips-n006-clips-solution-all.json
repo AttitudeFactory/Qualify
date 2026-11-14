@@ -1,0 +1,342 @@
+{
+ "ticket": "m-25026482",
+ "baseline_ref": "a6667370",
+ "split": "all",
+ "pricing_version": "v9",
+ "judge": "claude-haiku-5-5@low",
+ "judge_prompt_version": "juez-niveles-v4",
+ "judge_parts_version": "juez-niveles-v4+partes-v1",
+ "code_commit": "0c3e9237",
+ "arms": [],
+ "levels": [
+  "solution_aware"
+ ],
+ "repeat": 1,
+ "tracing": false,
+ "date": "2026-11-14T00:54:35",
+ "suites": {
+  "clips": {
+   "items": [
+    {
+     "case": "hamburguesas",
+     "brand": "hamburguesas",
+     "arm": "solution_aware",
+     "level": "solution_aware",
+     "leftover": false,
+     "sentence": "Quiero que la gente se antoje del combo doble smash y venga al local con sus amigos",
+     "objective": "consideration",
+     "highlights": [
+      [
+       "Precio",
+       "$32.900"
+      ]
+     ],
+     "output": {
+      "kind": "clip",
+      "variants": [
+       {
+        "payload": {
+         "hook": "¿Oyes ese chss en la plancha? Es tu doble smash",
+         "caption": "¿Oyes ese chss en la plancha? Es tu doble smash 🔥\nDos carnes maduradas, aplastadas a tope, costra dorada y salsa de la casa. Así es el combo doble smash.\nTrae al parche: hay mesas en el local, parqueadero gratis y tu perro también entra 🐶. Y hay combo con el postre de la heladería de al lado.\n¿La doble te queda corta? Te reto a terminarte la triple.",
+         "hashtags": [
+          "brasanorte",
+          "smashburger",
+          "chapinero",
+          "hamburguesasbogota"
+         ],
+         "cta": "Cáiganle con los amigos al local en la 57",
+         "script": "",
+         "shots": [
+          {
+           "visual": "Primer plano de dos bolas de carne cayendo sobre la plancha caliente y una espátula aplastándolas, el humo sube y los bordes chisporrotean.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "La carne se voltea mostrando la costra dorada, el queso se derrite encima y se arma la doble con salsa de la casa en el pan.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "La doble smash servida en una mesa del local mientras varias manos de amigos se estiran para agarrarla entre risas.",
+           "line": "",
+           "seconds": 1
+          }
+         ]
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 13.2,
+        "cost_usd": 0.026967
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.026967,
+     "price_in_copy": false,
+     "three_shots": true,
+     "filmable_shots": 3,
+     "caption_words": 67,
+     "most_measure": false,
+     "most_checks": null,
+     "exception": null,
+     "juez_ciego_usd": 0.000533,
+     "juez_informado_usd": 0.000518
+    },
+    {
+     "case": "inmobiliaria",
+     "brand": "inmobiliaria",
+     "arm": "solution_aware",
+     "level": "solution_aware",
+     "leftover": false,
+     "sentence": "Mostrar los apartamentos de dos alcobas en Bello para familias que quieren su primera casa",
+     "objective": "consideration",
+     "highlights": [
+      [
+       "Precio",
+       "Desde $280 millones"
+      ]
+     ],
+     "output": {
+      "kind": "clip",
+      "variants": [
+       {
+        "payload": {
+         "hook": "Dos alcobas en Bello para tu primera vivienda",
+         "caption": "Dos alcobas en Bello para tu primera vivienda.\n\nSi tu familia está buscando apartamento nuevo en el Valle de Aburrá, te mostramos opciones de dos alcobas en Bello y te acompañamos en cada paso, sin presiones.\n\nUn paso que muchos pasan por alto es el estudio de títulos: antes de firmar la separación, revisamos con lupa que el inmueble esté libre de problemas legales. Ese acompañamiento legal hace parte de nuestra asesoría, que es sin costo.\n\nAdemás, te guiamos con el subsidio Mi Casa Ya, para que sepas cómo aplicar y cómo encaja con tu cuota inicial.\n\n¿Qué es lo que más te preocupa de comprar tu primera vivienda? Cuéntanos y lo revisamos juntos 🏡",
+         "hashtags": [
+          "habitatinmobiliaria",
+          "PrimeraVivienda",
+          "ViviendaBello",
+          "MiCasaYa"
+         ],
+         "cta": "Escríbenos por WhatsApp y separa un espacio para tu asesoría sin costo",
+         "script": "",
+         "shots": [
+          {
+           "visual": "Una pareja joven con su hija pequeña entra a un apartamento nuevo y luminoso en Bello; la niña corre por la sala vacía hacia una ventana con vista a las montañas.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "La familia recorre las dos alcobas; luego, en una mesa, un asesor revisa con ellos documentos del estudio de títulos mientras asienten tranquilos.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "Plano amplio del apartamento al atardecer: la familia sentada en el piso de la sala, mirando por la ventana, y el padre sostiene unas llaves.",
+           "line": "",
+           "seconds": 1
+          }
+         ]
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 10.73,
+        "cost_usd": 0.024565
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.024565,
+     "price_in_copy": false,
+     "three_shots": true,
+     "filmable_shots": 3,
+     "caption_words": 114,
+     "most_measure": false,
+     "most_checks": null,
+     "exception": null,
+     "juez_ciego_usd": 0.000378,
+     "juez_informado_usd": 0.000577
+    },
+    {
+     "case": "viajes",
+     "brand": "viajes",
+     "arm": "solution_aware",
+     "level": "solution_aware",
+     "leftover": false,
+     "sentence": "Que se animen a conocer Machu Picchu con nosotros saliendo desde Cusco",
+     "objective": "consideration",
+     "highlights": [
+      [
+       "Precio",
+       "US$180"
+      ]
+     ],
+     "output": {
+      "kind": "clip",
+      "variants": [
+       {
+        "payload": {
+         "hook": "Desde Cusco hasta Machu Picchu, de madrugada",
+         "caption": "Desde Cusco hasta Machu Picchu, de madrugada. Pasamos por ti a tu hotel en Cusco, vas en un grupo pequeño y con guías locales que hablan español e inglés. Haces la ruta con calma y ves la ciudadela con la primera luz del amanecer 🌄 ¿Te animas a conocerla con nosotros?",
+         "hashtags": [
+          "viajesandinos",
+          "machupicchu",
+          "cusco",
+          "peru"
+         ],
+         "cta": "Escríbenos por WhatsApp y cuadramos tu salida a Machu Picchu",
+         "script": "",
+         "shots": [
+          {
+           "visual": "Calle empedrada de Cusco antes del amanecer, cielo azul oscuro; una camioneta se detiene frente a la puerta iluminada de un hotel.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "Un grupo pequeño de viajeros camina por la ruta entre montañas verdes junto a su guía local, que señala el camino mientras la luz empieza a subir.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "Machu Picchu desde lo alto con el sol del amanecer tocando las terrazas; el grupo se queda quieto mirando la ciudadela.",
+           "line": "",
+           "seconds": 1
+          }
+         ]
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 10.47,
+        "cost_usd": 0.039325
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.039325,
+     "price_in_copy": false,
+     "three_shots": true,
+     "filmable_shots": 3,
+     "caption_words": 50,
+     "most_measure": false,
+     "most_checks": null,
+     "exception": null,
+     "juez_ciego_usd": 0.000427,
+     "juez_informado_usd": 0.000362
+    }
+   ],
+   "scores": [
+    {
+     "arm": "solution_aware",
+     "case": "hamburguesas",
+     "split": "test",
+     "sector": "comida",
+     "with_perks": true,
+     "level": "solution_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [
+      1,
+      3,
+      5
+     ],
+     "judge_level": "product_aware",
+     "judge_quality": 3,
+     "judge_invented": [],
+     "judge_perks": [
+      1,
+      2,
+      3,
+      5
+     ],
+     "judge_fit": true,
+     "judge_reason": "Muestra el producto con datos reales de la lista (carne madurada, smash a la plancha, doble) y lo sitúa en el local; calidad 4 por el gancho y las tomas fuertes, con el detalle flojo de mencionar una ",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 10,
+     "words_cta": 9
+    },
+    {
+     "arm": "solution_aware",
+     "case": "inmobiliaria",
+     "split": "test",
+     "sector": "inmobiliaria",
+     "with_perks": true,
+     "level": "solution_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [
+      1,
+      2,
+      3
+     ],
+     "judge_level": "problem_aware",
+     "judge_quality": 3,
+     "judge_invented": [],
+     "judge_perks": [
+      1,
+      2,
+      3,
+      4
+     ],
+     "judge_fit": true,
+     "judge_reason": "Muestra por qué este negocio resuelve mejor la compra con datos reales (apartamentos nuevos de dos alcobas en Bello, asesoría sin costo, estudio de títulos y guía con Mi Casa Ya) sin inventar horarios",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 8,
+     "words_cta": 12
+    },
+    {
+     "arm": "solution_aware",
+     "case": "viajes",
+     "split": "test",
+     "sector": "viajes",
+     "with_perks": true,
+     "level": "solution_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [
+      1,
+      2,
+      3
+     ],
+     "judge_level": "solution_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      1,
+      2,
+      3
+     ],
+     "judge_fit": true,
+     "judge_reason": "Para solution_aware, muestra por qué este negocio lo resuelve mejor con datos reales del servicio (recogida en el hotel, guías que hablan español e inglés, grupos pequeños), sin inventar precios, hora",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 7,
+     "words_cta": 10
+    }
+   ]
+  }
+ },
+ "spend_usd": {
+  "clips": 0.093652
+ },
+ "spend_total_usd": 0.093652,
+ "skipped_by_cap": [],
+ "ledger_calls": 6
+}

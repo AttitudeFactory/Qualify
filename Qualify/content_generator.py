@@ -22,6 +22,7 @@ import reflex as rx
 
 from . import clip_gallery_vm, part_editor_vm, reel_parts_vm, reel_wait_vm
 from .ask_more_ui import ask_more_block
+from .audience_view import audience_question
 from .campaign_provider import COLOR_LABELS, NEW_CAMPAIGN, NO_CAMPAIGN
 from .catalog_vm import ADD_PRODUCT_LABEL, CREATE_RETURN_PATH, new_product_href
 from .creative_state import (
@@ -4287,6 +4288,11 @@ def _section_topic() -> rx.Component:
             ),
         ),
         _context_ai_tools(),
+        # m-25026509: only a clip asks who the video talks to — in plain view, under the
+        # sentence and «Mejorar mi texto», so both stay on the first screen
+        rx.cond(
+            CreativeState.brief_kind == "clip", audience_question("clip-audience", closable=True)
+        ),
     )
 
 

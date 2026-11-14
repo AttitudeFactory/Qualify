@@ -350,9 +350,9 @@ def test_the_panel_uses_the_design_system_and_talks_to_the_state_only() -> None:
 
 
 def test_the_page_renders_the_panel() -> None:
-    from .conversations_page import conversations_index
+    from .conversations_page import messages_tab
 
-    rendered = str(conversations_index().render())
+    rendered = str(messages_tab().render())
 
     def present(text: str) -> bool:
         escaped = json.dumps(text)[1:-1].replace("\\", "\\\\")

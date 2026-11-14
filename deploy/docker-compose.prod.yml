@@ -660,6 +660,18 @@ services:
       QUALIFY_REELS_WORKER_DSN: postgresql+psycopg://qualify_reels_worker:${QUALIFY_DB_REELS_WORKER_PASSWORD:-}@postgres:5432/qualify
       # ADR 44 F9 (VE-12): the 30-day purge of the stored reel sources deletes for real.
       QUALIFY_REEL_PURGE_EXECUTE: "1"
+      # m-25026378 (D3, founder 2026-11-14): the weekly TikTok hashtag read runs inside this
+      # worker (checked every 6 h, last in its pass; each business is still read at most
+      # once a week), ONLY for the pilot businesses listed below
+      # (tenant UUIDs, commas; `qualify_api.hashtags.pilot`). A listed business is read even
+      # if it never opened «Ideas para tus reels». EMPTY = NOBODY is read, even with the
+      # switch on (fail closed): deploying with it empty pays nothing. Each business pays at
+      # most 5 credits in any 7 days (25 a month), charged to its own caps; the gate's
+      # QUALIFY_SCRAPECREATORS_PAID=0 stops it too. Set here, not in .env.prod: these values
+      # override the env file. `python -m qualify_api.hashtags.worker --all-tenants` run by hand
+      # here reads this same list. Widening it beyond a pilot is a later decision.
+      QUALIFY_HASHTAG_WEEKLY_READ: "1"
+      QUALIFY_HASHTAG_WEEKLY_TENANTS: ""
     command:
       - python
       - -m

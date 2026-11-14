@@ -47,7 +47,12 @@ from qualify_creative.scene_plan import carousel_scene_plans, flyer_scene_plans
 from qualify_creative.schemas import BrandKit, ContentBrief, CopyPayload
 
 from qualify_api.creative.brand_references import BrandReferencesSet
-from qualify_api.creative.image_pipeline.base import carousel_slide_scene, flyer_scenes
+from qualify_api.creative.image_pipeline.base import (
+    BaseScene,
+    carousel_slide_scene,
+    flyer_scenes,
+)
+from qualify_api.creative.image_pipeline.layer_run import run_layer_stage
 from qualify_api.creative.media import (
     _TASK_RUN,
     COMPOSE_MODEL,
@@ -123,24 +128,43 @@ def ad_image(
         if media.carousel and products
         else [products]
     )
-    based = flyer_scenes(
+    scene_args: dict[str, Any] = {
+        "tenant_id": tenant_id,
+        "draft_id": draft_id,
+        "brief": brief,
+        "kit": kit,
+        "brand": brand,
+        "mode": mode,
+        "groups": groups,
+        "plans": plans,
+        "background": background,
+        "brand_images": brand_images,
+        "brand_refs": brand_refs,
+        "ratio": ratio,
+        "budget": budget,
+        "usage": usage,
+        "save": save,
+    }
+    based = flyer_scenes(producer, **scene_args)
+    # m-25017283: the text layer, between the base and the composition — only with
+    # QUALIFY_IMAGE_LAYER=on (off: returns at once, nothing changes); a base with invented
+    # text is made again once (the scene of the same index). NO router call may follow
+    # this stage: a regeneration moves `run.step` (layer_run «Step numbers»)
+    outcome = run_layer_stage(
         producer,
         tenant_id=tenant_id,
         draft_id=draft_id,
+        revision=save.revision,
         brief=brief,
-        kit=kit,
+        copy=copy,
         brand=brand,
-        mode=mode,
-        groups=groups,
-        plans=plans,
-        background=background,
-        brand_images=brand_images,
-        brand_refs=brand_refs,
-        ratio=ratio,
-        budget=budget,
-        usage=usage,
-        save=save,
+        scenes=dict(enumerate(based)),
+        regenerate=lambda index: flyer_scenes(producer, **scene_args, only=index)[0],
+        gallery=media.carousel,
+        slide_count=len(based) + 1 if media.carousel else None,
     )
+    based = [outcome.scenes[index] for index in range(len(based))]
+    layers = outcome.layers
     scenes = [scene.image for scene in based]
     scene_prompts = [scene.prompt for scene in based]
     # m-25017279: slide N is drawn from scene N, so it carries scene N's stored base
@@ -181,6 +205,7 @@ def ad_image(
                 ),
                 rendered_prompt=scene_prompts[0],
                 base=bases[0],
+                layer=layers.get(0),
             )
         ]
     out: list[MediaWrite] = []
@@ -202,6 +227,7 @@ def ad_image(
                 # slide N is drawn from scene N; a gallery's closing slide has no scene
                 rendered_prompt=scene_prompts[position] if position < len(scene_prompts) else None,
                 base=bases[position] if position < len(bases) else None,
+                layer=layers.get(position),
                 params={
                     "ad_mode": mode.value,
                     "scene_prompt": media.scene_prompt,
@@ -276,6 +302,8 @@ def carousel(
     gallery = producer._gallery_media(tenant_id, brief)
     brand_images = producer._brand_reference_images(brand_refs)
     out: list[MediaWrite] = []
+    #: m-25017283: each generated still slide — its base, how it was made, its place in `out`
+    generated: dict[int, tuple[BaseScene, dict[str, Any], int]] = {}
     deferred = False
     scene_failure = None
     for position, slide in enumerate(media.slides):
@@ -340,34 +368,30 @@ def carousel(
             resumed_scene = (
                 _resumed_scene_key(run, position) if animated and run is not None else None
             )
-            based = (
-                None
-                if resumed_scene
-                else carousel_slide_scene(
-                    producer,
-                    tenant_id=tenant_id,
-                    draft_id=draft_id,
-                    brief=brief,
-                    kit=kit,
-                    brand=brand,
-                    slide=slide,
-                    number=number,
-                    total=total,
-                    ratio=ratio,
-                    has_product=product is not None,
-                    has_background=place is not None,
-                    plan=plan,
-                    references=references,
-                    background_index=background_index,
-                    brand_refs=brand_refs,
-                    hook=hook,
-                    cta=cta,
-                    animated=animated,
-                    budget=budget,
-                    usage=usage,
-                    save=save,
-                )
-            )
+            slide_args: dict[str, Any] = {
+                "tenant_id": tenant_id,
+                "draft_id": draft_id,
+                "brief": brief,
+                "kit": kit,
+                "brand": brand,
+                "slide": slide,
+                "number": number,
+                "total": total,
+                "ratio": ratio,
+                "has_product": product is not None,
+                "has_background": place is not None,
+                "plan": plan,
+                "references": references,
+                "background_index": background_index,
+                "brand_refs": brand_refs,
+                "hook": hook,
+                "cta": cta,
+                "animated": animated,
+                "budget": budget,
+                "usage": usage,
+                "save": save,
+            }
+            based = None if resumed_scene else carousel_slide_scene(producer, **slide_args)
             scene = based.image if based is not None else producer._store.read(resumed_scene)
             still = render_carousel_slide(
                 scene=scene,
@@ -416,6 +440,8 @@ def carousel(
                         base=based.stored if based is not None else None,
                     )
                 )
+                if based is not None:
+                    generated[position] = (based, slide_args, len(out) - 1)
                 continue
             overlay = (
                 text_layer(
@@ -477,6 +503,27 @@ def carousel(
         except Exception as exc:
             _keep_made(exc, number, out)
             raise
+    if generated and not deferred and scene_failure is None:
+        # m-25017283: only once every slide is made — a pending or failed slide means
+        # another pass (or «Crear las que faltan»), and the layer is paid once, then.
+        # NO router call may follow (the closing slide is drawn locally): a regeneration
+        # moves `run.step` (layer_run «Step numbers», pinned by a test)
+        _gallery_layers(
+            producer,
+            out=out,
+            generated=generated,
+            tenant_id=tenant_id,
+            draft_id=draft_id,
+            brief=brief,
+            kit=kit,
+            copy=copy,
+            brand=brand,
+            logo=logo,
+            size=size,
+            style=style,
+            save=save,
+            total=total,
+        )
     if media.closing_slide:
         closing = render_closing_slide(
             line=copy.cta or copy.hook,
@@ -523,3 +570,62 @@ def _base_params(base: BasePhoto | None) -> dict[str, Any]:
     if base.key is None:
         return {"base_missing": True}
     return {"base_key": base.key, "base_sha256": base.sha256}
+
+
+def _gallery_layers(
+    producer: MediaProducer,
+    *,
+    out: list[MediaWrite],
+    generated: dict[int, tuple[BaseScene, dict[str, Any], int]],
+    tenant_id: UUID,
+    draft_id: UUID,
+    brief: ContentBrief,
+    kit: BrandKit,
+    copy: CopyPayload,
+    brand: str,
+    logo: bytes | None,
+    size: tuple[int, int],
+    style: TextStyle,
+    save: _Saver,
+    total: int,
+) -> None:
+    """m-25017283: ONE layer call for the gallery's generated still slides (ADR 49 §2.5),
+    only with QUALIFY_IMAGE_LAYER=on. A slide whose base was made again once (invented text)
+    is composed again over the new base; every slide with a layer carries it."""
+    outcome = run_layer_stage(
+        producer,
+        tenant_id=tenant_id,
+        draft_id=draft_id,
+        revision=save.revision,
+        brief=brief,
+        copy=copy,
+        brand=brand,
+        scenes={position: made[0] for position, made in generated.items()},
+        regenerate=lambda position: carousel_slide_scene(producer, **generated[position][1]),
+        gallery=True,
+        slide_count=total,
+    )
+    for position, (_based, args, index) in generated.items():
+        write = out[index]
+        if position in outcome.regenerated:
+            fresh = outcome.scenes[position]
+            still = render_carousel_slide(
+                scene=fresh.image,
+                hook=args["hook"],
+                cta=args["cta"],
+                palette=kit.palette_rgb,
+                logo=logo,
+                size=size,
+                style=style,
+            )
+            key = save(f"slide-{args['number']}.jpg", to_meta_jpeg(still), JPEG)
+            params = {k: v for k, v in write.params.items() if not k.startswith("base_")}
+            write = replace(
+                write,
+                media_url=key,
+                object_key=key,
+                rendered_prompt=fresh.prompt,
+                base=fresh.stored,
+                params={**params, **_base_params(fresh.stored), "base_regenerated": True},
+            )
+        out[index] = replace(write, layer=outcome.layers.get(position))

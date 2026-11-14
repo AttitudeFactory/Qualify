@@ -319,6 +319,32 @@ def test_an_unsent_message_does_not_reopen(world) -> None:
     assert _status(repo, thread_id) == "closed"
 
 
+def test_get_dm_thread_reads_one_chat_with_the_closes_checks(world) -> None:
+    """m-25017859: one chat by id, as the lists show it, for a row of the unified list
+    beyond the newest the Instagram screen loaded."""
+    repo, service, _sync, thread_id = world
+    view = service.get_dm_thread(tenant_id=TENANT, thread_id=thread_id)
+    assert view.thread.id == thread_id and view.thread.channel == CHANNEL_DM
+    assert view.thread.connection_id == CONNECTION.connection_id
+    assert view.thread.awaiting_reply is not None  # computed, unlike `get_thread`
+    whatsapp = repo.upsert_thread(
+        tenant_id=TENANT,
+        connection_id=CONNECTION.connection_id,
+        channel="whatsapp",
+        counterpart_external_id="573000000000",
+    ).thread_id
+    for tenant, thread in ((OTHER, thread_id), (TENANT, whatsapp), (TENANT, uuid4())):
+        with pytest.raises(ThreadNotFound):
+            service.get_dm_thread(tenant_id=tenant, thread_id=thread)
+    # The connected account, when the screen names one.
+    same = service.get_dm_thread(
+        tenant_id=TENANT, thread_id=thread_id, connection_id=CONNECTION.connection_id
+    )
+    assert same.thread.id == thread_id
+    with pytest.raises(ThreadNotFound):
+        service.get_dm_thread(tenant_id=TENANT, thread_id=thread_id, connection_id=uuid4())
+
+
 async def test_the_poll_reopens_on_a_newer_inbound_only(world) -> None:
     repo, service, sync, thread_id = world
     _close(service, TENANT, thread_id)

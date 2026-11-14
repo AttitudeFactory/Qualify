@@ -22,23 +22,76 @@ lectura en TikTok); C la incluye entera y suma la lectura. Manda esta decisión 
   de TikTok, o si la lectura semanal pasa de 60 créditos al mes por negocio.
 - **Puerta de dos vías:** todo se apaga con un interruptor; no sale ningún dato de clientes.
 
+**D2 —** Los negocios ya guardados conservan el máximo de 10 etiquetas; no se migra a 5. El máximo de 5 aplica a los
+negocios que se guarden desde el PR #642. Mientras no exista una pantalla para elegirlo, cambiar
+un negocio actual es un cambio a mano en su política. Decidido por Herwin en chat el 2026-11-13
+`[F]`.
+
+**D3 —** (2026-11-14) La lectura semanal corre dentro del proceso de reels, que la revisa
+varias veces al día (cada negocio se sigue leyendo como mucho una vez por semana), solo para un
+negocio piloto (Bianki) durante cuatro semanas. Descartado: un proceso nuevo (más
+memoria en un servidor justo), una tarea programada en el servidor (fuera de los caminos de
+despliegue) y dejarla apagada. Costo máximo: 25 créditos al mes. Se reabre si al 2026-12-15 la
+entrega 4 no muestra más alcance o si la pasada retrasa las lecturas de reels. Qué negocios
+cuentan como activos se decide cuando se abra a todos.
+
 ## 1. Objetivo
 
 Que las pocas etiquetas que lleva una publicación sean las que la gente del rubro está viendo, sin
 que el dueño tenga que investigarlas y sin subir el costo. Qualify sugiere; el dueño aprueba.
 
-## 2. Lo que ya existe en el disco (2026-11-13, `main` en `a4debe59`)
+## 2. Lo que ya existe en el disco (2026-11-13, `main` en `9a027a46`)
 
 - Al crear la pieza, Claude escribe las etiquetas con las de la marca y su política
-  (`packages/creative/src/qualify_creative/brand/render.py`).
+  (`packages/creative/src/qualify_creative/brand/render.py`). Desde el PR #642 la política trae
+  un máximo de 5 por defecto (`HashtagPolicy.maximum`); una marca que ya guardó su máximo lo
+  conserva (D2).
 - En el editor: sugerencias al instante del catálogo y del texto (`Qualify/creative_vm.py`,
   `caption_hashtag_suggestions`) y «Sugerir con IA» (`qualify_api/hashtags/caption.py`, Claude
-  Haiku, hasta 12 en popular / nicho / marca).
+  Haiku, hasta 12 en popular / nicho / marca); «Sugerir con IA» marca las 5 mejores y con más de
+  5 el editor avisa en una línea y deja publicar (PR #642). El editor acepta hasta 30
+  (`HASHTAG_LIMIT`, lo que admite la API de Meta), también al guardar en el servidor.
 - El catálogo compartido (`hashtags`, `hashtag_terms`, migración 0023) aprende de las búsquedas de
-  referentes: guarda cuántas veces vimos cada etiqueta, no cuántas vistas tuvo ni cuándo.
-- Topes: 30 por publicación en el editor (`HASHTAG_LIMIT`), máximo 10 por defecto en la política
-  de marca (`HashtagPolicy`).
-- No existe: vistas ni fecha por etiqueta, lectura por etiqueta en TikTok, ni tope de cinco.
+  referentes y cuenta cuántas veces vimos cada etiqueta.
+- Desde el PR #644, la migración 0162 (`hashtag_post_sightings`) guarda por etiqueta las vistas y
+  la fecha de cada publicación pública en que la vimos (búsquedas de referentes y lecturas de
+  reels, sin gastar créditos nuevos), con su procedencia y sin ningún dato del negocio.
+  `resolve_popular` ordena por vistas de los últimos 90 días sin que una coincidencia más lejana
+  pase por delante de una más cercana. Las etiquetas que solo vimos en reels no entran a la cola
+  de clasificación pagada.
+- Desde el PR #647, el editor usa `resolve_popular`: las sugerencias del catálogo y la lista que
+  recibe «Sugerir con IA» van primero con las etiquetas más vistas en los últimos 90 días.
+- Entrega 3 (PR #666, m-25026378): la lectura semanal en TikTok (`qualify_api/hashtags/weekly.py`,
+  migración 0167), apagada hasta encender `QUALIFY_HASHTAG_WEEKLY_READ`. Una etiqueta con una
+  respuesta guardada en los últimos 7 días no se vuelve a leer; un negocio se intenta como mucho
+  una vez al día; se detiene en el primer error; deja margen al dueño (no lee si el negocio ya
+  gastó más de dos tercios de su tope del día o cinco sextos del mes). Tope fijo: un negocio
+  nunca gasta más de 5 créditos de esta lectura en 7 días seguidos, cuente lecturas buenas o
+  fallidas y aunque cambie sus etiquetas cada día; como mucho 25 en un mes. Si dos negocios
+  leen la misma etiqueta a la vez, solo uno paga.
+- Piloto de la entrega 3 (D3, m-25026378): el trabajador de reels de producción revisa esa
+  lectura cada 6 horas, al final de su pasada (revisar seguido no cuesta: cada negocio se lee
+  como mucho una vez por semana y, tras un fallo, se reintenta al día siguiente), solo para los
+  negocios de `QUALIFY_HASHTAG_WEEKLY_TENANTS` (en el servicio `reels-worker` de
+  `deploy/docker-compose.prod.yml`). Un negocio de la lista se lee aunque no haya abierto «Ideas
+  para tus reels»; con la lista vacía no se lee a nadie aunque el interruptor esté encendido. Un
+  fallo de la lectura se anota y el trabajador sigue con los reels; al apagarse (un despliegue)
+  la lectura se corta entre etiquetas. `python -m qualify_api.hashtags.worker --all-tenants`
+  también lee solo esa lista; `--tenant` sigue sirviendo para una prueba puntual en local.
+- **Límite conocido, a decidir cuando se abra a todos (D3):** la regla de «negocios activos» que
+  trae el código (hoy sin uso: durante el piloto `--all-tenants` lee solo la lista) leería solo
+  los negocios que el trabajador de reels considera activos, y eso significa exactamente «una
+  marca del negocio abrió la pantalla «Ideas para tus reels» en los últimos 14 días». No
+  significa «cliente activo»: un negocio que publica a diario pero nunca abre esa pantalla no se
+  lee, y uno que la abrió una vez y se fue se sigue leyendo dos semanas más.
+- **Reparto desigual del costo:** cuando dos negocios comparten etiquetas, paga el que se procesa
+  primero y el otro no paga nada por esas etiquetas esa semana. Lo que gasta cada negocio en
+  esta lectura no refleja cuánto la aprovecha.
+- La respuesta cruda se guarda en `vendor_payloads`, que guarda una fila por ruta y parámetros:
+  cada semana reemplaza a la anterior de la misma etiqueta y país, y comparte esa fila con la
+  memoria de las búsquedas de referentes. Por eso las vistas y fechas solo se pueden reconstruir
+  desde la lectura más reciente; las de semanas anteriores quedan en `hashtag_post_sightings`
+  pero no se pueden volver a leer.
 
 ## 3. Evidencia
 
@@ -57,12 +110,12 @@ Las cuatro lecturas costaron 8 créditos (4 se repitieron por un error al guarda
 
 ## 4. Las cuatro entregas
 
-| # | Entrega | Ticket | Qué gana el dueño | Depende de |
-|---|---|---|---|---|
-| 1 | **Cinco, bien elegidas** | m-25026376 | Una publicación con las cinco etiquetas que más le sirven, no doce | — |
-| 2 | **El catálogo sabe qué se ve** | m-25026377 | «Popular» significa vistas recientes en su rubro, no «lo vimos muchas veces» | — |
-| 3 | **Lectura semanal en TikTok** | m-25026378 | Etiquetas que acompañan esta semana a los videos más vistos de su rubro | 2 |
-| 4 | **Medir si sirve** | m-25026379 | Saber si el cambio trajo más alcance, con un negocio real | 1, 3 |
+| # | Entrega | Ticket | Qué gana el dueño | Depende de | Estado |
+|---|---|---|---|---|---|
+| 1 | **Cinco, bien elegidas** | m-25026376 | Una publicación con las cinco etiquetas que más le sirven, no doce | — | Hecha: PR #642 (2026-11-13) |
+| 2 | **El catálogo sabe qué se ve** | m-25026377 | «Popular» significa vistas recientes en su rubro, no «lo vimos muchas veces» | — | Hecha: PR #644 (migración 0162) y PR #647 (el editor usa `resolve_popular`), 2026-11-13 |
+| 3 | **Lectura semanal en TikTok** | m-25026378 | Etiquetas que acompañan esta semana a los videos más vistos de su rubro | 2 | Construida: PR #666 (migración 0167). Piloto (D3): el trabajador de reels la revisa cada 6 horas, solo para el negocio de la lista; se enciende en producción cuando se ponga su UUID en el servicio `reels-worker` |
+| 4 | **Medir si sirve** | m-25026379 | Saber si el cambio trajo más alcance, con un negocio real | 1, 3 | Pendiente |
 
 ## 5. Criterios de aceptación (los que valen son los de cada ticket)
 

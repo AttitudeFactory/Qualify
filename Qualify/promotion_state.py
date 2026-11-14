@@ -12,8 +12,14 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import reflex as rx
 from qualify_api.ads.audience import AudienceUnavailable
+from qualify_api.ads.messaging_greeting import (
+    CHANGED_WHILE_EDITING,
+    WELCOME_EMPTY,
+    WELCOME_TOO_LONG,
+    GreetingUnavailable,
+)
 from qualify_api.ads.unpublished import UnpublishedUnavailable
-from qualify_api.ads.wizard import WizardUnavailable
+from qualify_api.ads.wizard import WizardUnavailable, goal_reason
 from qualify_api.tenancy.acting import acting_login
 
 from .ad_custom_audiences_provider import read_custom_audiences, request_custom_audience
@@ -47,16 +53,22 @@ from .promotion_audience_vm import (
 )
 from .promotion_provider import (
     confirm_review,
+    latest_greeting,
     load_sources,
     prepare_preview,
     ready_lead_forms,
     recheck_enhancement_permissions,
     recheck_messaging_destinations,
+    store_greeting,
 )
 from .promotion_unpublished_provider import confirm_unpublished, prepare_unpublished
 from .promotion_vm import (
+    CHAT_BUTTON_LABELS,
     CONFIRM_FAILED,
     COUNTRY_LABELS,
+    GREETING_QUESTION_SLOTS,
+    GREETING_RELOAD,
+    GREETING_SAVE_FAILED,
     LEAD_CTA_LABELS,
     LOAD_FAILED,
     NO_SESSION,
@@ -75,11 +87,17 @@ from .promotion_vm import (
     cop_label,
     cop_minor,
     first_problem,
+    greeting_buttons_label,
+    greeting_from_saved,
+    greeting_problem,
+    preselect_channel,
     promotion_checks,
     promotion_result,
+    questions_shown,
     readable_date,
     step_count,
     step_counter,
+    step_key_at,
     step_keys,
     step_problem,
     step_title,
@@ -143,6 +161,8 @@ class PromotionState(rx.State):
     forms_working: bool = False
     destinations_notice: str = ""
     _destination_operation: str = ""
+    # «+ Agregar otra pregunta»: boxes the owner opened beyond those with text.
+    question_boxes: int = 1
     enhancements_working: bool = False
     enhancements_notice: str = ""
     _enhancements_operation: str = ""
@@ -516,7 +536,12 @@ class PromotionState(rx.State):
                         else row
                         for row in self.sources
                     ]
-                    self.destinations_notice = "Comprobación terminada. Revisa cada destino."
+                    if self.form.goal == "chat":
+                        chosen = preselect_channel(self.form, options)
+                        if chosen != self.form:
+                            self.form = chosen
+                            self._invalidate_review()
+                    self.destinations_notice = "Comprobación terminada. Revisa cada chat."
         finally:
             async with self:
                 if await self._destination_current(
@@ -897,8 +922,7 @@ class PromotionState(rx.State):
 
     @rx.var
     def step_key(self) -> str:
-        keys = step_keys(self.form)
-        return keys[min(max(self.step, 1), len(keys)) - 1]
+        return step_key_at(self.form, self.step)
 
     @rx.var
     def is_unpublished(self) -> bool:
@@ -917,8 +941,14 @@ class PromotionState(rx.State):
 
     @rx.var
     def execution_reason(self) -> str:
-        if self.selected_source.unavailable_reason:
-            return self.selected_source.unavailable_reason
+        # The backend's per-goal refusal: a chat ad never uses the piece's own button.
+        reason = goal_reason(
+            self.selected_source.unavailable_reason,
+            chat=self.form.goal == "chat",
+            lead=self.form.goal == "lead",
+        )
+        if reason:
+            return reason
         if self.form.source_id and not self.form.enhancements.loaded:
             return "Vuelve a consultar los permisos de esta marca antes de preparar el anuncio."
         return ""
@@ -1050,11 +1080,134 @@ class PromotionState(rx.State):
 
     @rx.event
     def choose_goal(self, goal: str) -> None:
-        if self.busy or goal not in {"visit", "lead"} or goal == self.form.goal:
+        if self.busy or goal not in {"visit", "lead", "chat"} or goal == self.form.goal:
+            return
+        # The chat goal rides a published post only (never a story or an unpublished
+        # piece), and only while QUALIFY_ADS_CHAT_GOAL offers it.
+        if goal == "chat" and (
+            self.form.story or self.form.media_kind or not self.selected_source.chat_goal
+        ):
             return
         self.form = replace(self.form, goal=goal)
+        if goal == "chat":
+            self.form = preselect_channel(self.form, self.selected_source.messaging_destinations)
         self.error = ""
         self._invalidate_review()
+
+    @rx.event
+    def choose_channel(self, key: str) -> None:
+        options = self.selected_source.messaging_destinations
+        if self.busy or not any(row.key == key and row.available for row in options):
+            return
+        self.form = replace(self.form, channel=key)
+        self.error = ""
+        self._invalidate_review()
+
+    @rx.event
+    def edit_welcome(self, value: str) -> None:
+        if self.busy or value == self.form.welcome_text:
+            return
+        self.form = replace(self.form, welcome_text=value, greeting_id="")
+        self.error = ""
+        self._invalidate_review()
+
+    @rx.event
+    def edit_question(self, index: int, value: str) -> None:
+        if self.busy or not 0 <= index < GREETING_QUESTION_SLOTS:
+            return
+        if self.form.questions[index] == value:
+            return
+        questions = list(self.form.questions)
+        questions[index] = value
+        self.form = replace(self.form, questions=questions, greeting_id="")
+        self.error = ""
+        self._invalidate_review()
+
+    @rx.var
+    def channel_label(self) -> str:
+        return next(
+            (
+                row.label
+                for row in self.selected_source.messaging_destinations
+                if row.key == self.form.channel
+            ),
+            "Por elegir",
+        )
+
+    @rx.var
+    def welcome_preview(self) -> str:
+        return self.form.welcome_text.strip() or "Aquí va tu saludo."
+
+    @rx.var
+    def welcome_error(self) -> str:
+        """The banner's welcome problem, repeated under its field."""
+        return self.error if self.error in {WELCOME_EMPTY, WELCOME_TOO_LONG} else ""
+
+    @rx.var
+    def greeting_buttons_label(self) -> str:
+        return greeting_buttons_label(self.form)
+
+    @rx.var
+    def questions_shown(self) -> int:
+        return questions_shown(self.form, self.question_boxes)
+
+    @rx.event
+    def add_question(self) -> None:
+        if not self.busy:
+            self.question_boxes = questions_shown(self.form, self.question_boxes) + 1
+
+    @rx.event(background=True)
+    async def save_greeting(self) -> AsyncIterator[rx.event.EventSpec]:
+        """The greeting step's «Siguiente»: the backend's versioned save, then the next step.
+        A conflict shows its message and the latest saved greeting to review."""
+        async with self:
+            context = await self._session()
+            if self.busy or self.loading or step_key_at(self.form, self.step) != "greeting":
+                return
+            if context != self._loaded_context or not all(tenant_uuid(v) for v in context):
+                self.error = NO_SESSION
+                return
+            brand = tenant_uuid(self.selected_source.brand_id)
+            if brand is None:
+                self.error = GREETING_SAVE_FAILED
+                return
+            self.busy = True
+            self.error = ""
+            form = self.form
+        saved = latest = None
+        problem = ""
+        try:
+            with acting_login(UUID(context[1])):
+                saved = await asyncio.to_thread(store_greeting, UUID(context[0]), brand, form)
+        except Exception as exc:
+            logger.warning("promotion greeting save failed: %s", type(exc).__name__)
+            problem = str(exc) if isinstance(exc, GreetingUnavailable) else GREETING_SAVE_FAILED
+            if problem == CHANGED_WHILE_EDITING:
+                try:
+                    with acting_login(UUID(context[1])):
+                        latest = await asyncio.to_thread(latest_greeting, UUID(context[0]), brand)
+                except Exception as read_exc:
+                    logger.warning("promotion greeting read failed: %s", type(read_exc).__name__)
+                    # Without the newer version every retry would conflict again.
+                    problem = GREETING_RELOAD
+        advance = False
+        async with self:
+            self.busy = False
+            # Typing, another publication or another session meanwhile wins over this save.
+            if context != await self._session() or self.form != form:
+                return
+            fresh = saved or latest
+            if fresh is not None:
+                self.form = greeting_from_saved(self.form, fresh)
+                self.sources = [
+                    replace(row, greeting=fresh) if row.brand_id == str(brand) else row
+                    for row in self.sources
+                ]
+                self._invalidate_review()
+            self.error = problem
+            advance = saved is not None
+        if advance:
+            yield PromotionState.next_step()
 
     @rx.event
     def choose_lead_form(self, form_id: str) -> None:
@@ -1144,6 +1297,8 @@ class PromotionState(rx.State):
 
     @rx.var
     def button_label(self) -> str:
+        if self.form.goal == "chat":
+            return CHAT_BUTTON_LABELS.get(self.form.channel, "Por elegir")
         if self.form.goal == "lead":
             return LEAD_CTA_LABELS.get(self.form.lead_cta, "Por elegir")
         return WEBSITE_CTA_LABELS.get(self.form.cta_type, "Por elegir")
@@ -1173,10 +1328,13 @@ class PromotionState(rx.State):
         zone = source.timezone_name or self._tenant_timezone
         changed_zone = zone != self.timezone_name
         self.form = replace(
-            PromotionDraftVM(
-                budget=self.form.budget,
-                start_local=self.form.start_local,
-                end_local=self.form.end_local,
+            greeting_from_saved(
+                PromotionDraftVM(
+                    budget=self.form.budget,
+                    start_local=self.form.start_local,
+                    end_local=self.form.end_local,
+                ),
+                source.greeting,
             ),
             source_id=source.id,
             link_url=source.default_link_url,
@@ -1188,6 +1346,7 @@ class PromotionState(rx.State):
         )
         self.timezone_name = zone
         self.error = ""
+        self.question_boxes = 1
         self._audience_version = 0
         self.place_query = ""
         self.interest_query = ""
@@ -1278,6 +1437,12 @@ class PromotionState(rx.State):
     def next_step(self) -> rx.event.EventSpec | None:
         if self.busy or self.loading or not self.sources or self.preparation_blocked:
             return None
+        if (
+            step_key_at(self.form, self.step) == "greeting"
+            and not self.form.greeting_id
+            and not greeting_problem(self.form)
+        ):
+            return PromotionState.save_greeting()  # it moves on once the backend saved it
         problem = step_problem(self.form, self.step, self.timezone_name)
         if problem:
             self.error = problem
@@ -1517,6 +1682,7 @@ class PromotionState(rx.State):
                         form,
                         zone,
                         request_key,
+                        source.connection_id if source else "",
                     )
         except Exception as exc:
             logger.warning("promotion command failed: %s", type(exc).__name__)

@@ -33,7 +33,6 @@ from .conversations_state import (
 )
 from .conversations_vm import (
     EMPTY_THREAD,
-    FILTER_PENDING,
     NO_INBOUND_NOTICE,
     WINDOW_CLOSED_NOTICE,
     AttachmentVM,
@@ -95,10 +94,9 @@ async def test_an_empty_composer_stays_silent(world: World) -> None:
     assert state.open_thread_id == "" and state.banner == ""
 
 
-async def test_an_account_switch_or_a_filter_change_never_blames_anyone(world: World) -> None:
+async def test_an_account_switch_never_blames_anyone(world: World) -> None:
     state = _state_with_vanished_chat(world)
     state.draft_text = "Hola"
-    state.set_filter(FILTER_PENDING)  # filters are client-side: nothing leaves the list
     assert state.open_thread_id != "" and state.banner == ""
     state.select_account(str(OTHER_CONNECTION))
     await state._read_list(silent=False)

@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 
 from qualify_api.attention import PendingCounts, pending_counts
 from qualify_api.attention.counts import _COUNTS_SQL
+from qualify_api.inbox.awaiting import count_awaiting_sql
 
 
 class _FakeStore:
@@ -42,14 +43,17 @@ def test_the_query_only_reads() -> None:
 
 def test_each_channel_matches_its_list_filter() -> None:
     sql = " ".join(_COUNTS_SQL.split())
-    # Mensajes «Pendientes» = attention_state PENDING: inbound, unanswered, unread.
-    assert "t.channel = 'dm'" in sql
-    assert "t.last_read_at IS NULL OR t.last_read_at < t.last_inbound_at" in sql
+    # m-25017859: both chat counts are the ONE «Por responder» rule, verbatim, judged at
+    # one bound instant — the fragment the unified list filters by.
+    for channel in ("dm", "whatsapp"):
+        fragment = " ".join(count_awaiting_sql(channel, now_param="now").split())
+        assert fragment in sql, channel
+    assert "now()" not in sql
+    # Reading a chat no longer clears it: the old «Pendientes» read check is gone.
+    assert "last_read_at" not in sql
     # Quieren comprar = open followups whose comment is still visible.
     assert "f.status = 'open'" in sql and "JOIN messages m ON m.id = f.origin_message_id" in sql
     # Comentarios = the replies waiting for approval.
     assert "d.status = 'proposed'" in sql
-    # WhatsApp «Sin leer» = an inbound after the last outbound.
-    assert "w.channel = 'whatsapp'" in sql and "CAST('-infinity' AS timestamptz)" in sql
     # No hand-written tenant filter: RLS through tenant_session scopes every table.
     assert "tenant_id" not in sql
