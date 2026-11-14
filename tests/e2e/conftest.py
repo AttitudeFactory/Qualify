@@ -11,6 +11,9 @@ How it runs
   Tests that store media (the Galería's) also need `QUALIFY_OBJECT_STORE_DIR` and
   `QUALIFY_COPY_FAKE=1` on that app, with `QUALIFY_E2E_OBJECTS_DIR` pointing at the
   same directory here — they skip otherwise, so they never write to the real bucket.
+  The chat tests (`chats_page`, m-25027371) need `QUALIFY_CONVERSATIONS_DM_CHANNEL=memory`
+  on that app, so Instagram DMs (and the «Preguntas iniciales» client and the follow-ups
+  notice that read the same switch) never reach Meta.
   It must also use this run's database: the root conftest points pytest at
   `qualify_test` (`testing/testdb.py`), so start that app with the same `QUALIFY_*_DSN`.
 * Or the harness boots one (it inherits the test DSNs, the fake bucket and fake copy) on
