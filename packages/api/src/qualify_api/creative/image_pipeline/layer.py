@@ -46,7 +46,10 @@ from __future__ import annotations
 
 import base64
 import logging
+import math
 import os
+import re
+import unicodedata
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -86,7 +89,7 @@ logger = logging.getLogger(__name__)
 LAYER_SWITCH_ENV = "QUALIFY_IMAGE_LAYER"
 LAYER_MODEL = ModelConfig("claude-sonnet-5-5", effort="low")
 #: Prompt provenance (`piece_layers.prompt_version`, the ledger's prompt version).
-LAYER_PROMPT_VERSION = "capa-v1"
+LAYER_PROMPT_VERSION = "capa-v2"  # capa-v1: CAPA-001; v2 (review): tú, claims, 2/3 of limits
 #: The pipeline that writes `piece_layers` rows (`piece_layers.pipeline_version`).
 LAYER_PIPELINE_VERSION = "image-pipeline-layer-v1"
 LAYER_TOOL = "escribir_capa"
@@ -96,8 +99,30 @@ LAYER_BUDGET_USD = Decimal("0.25")
 MAX_OUTPUT_TOKENS = 4000
 #: The API's per-image limit is 5 MB; a base above it is not sent (no re-encoding here).
 MAX_IMAGE_BYTES = 4_500_000
-#: [H] tokens of one ~2 MP photo, for the budget's input bound (ADR 49 §2.5: ~1,600).
-TOKENS_PER_PHOTO = 1_800
+#: Image tokens, from Anthropic's vision docs («Calculate image costs»,
+#: https://platform.claude.com/docs/en/build-with-claude/vision): tokens ≈ width × height /
+#: 750, after the API scales an image down so its long edge is at most 1,568 px and it is at
+#: most ~1.15 megapixels. Seedream's base sizes (`media.SCENE_SIZES`): 1280×1600 (4:5),
+#: 1280×1280 (1:1), 1080×1920 (9:16), 1248×1664 (3:4) all scale to ~1.15 MP, ~1,530 tokens
+#: (`image_tokens`). An unreadable size takes the ceiling the same docs give (~1,600).
+VISION_LONG_EDGE = 1568
+VISION_MAX_PIXELS = 1_150_000
+VISION_TOKEN_CEILING = 1600
+#: Tool schema, system prompt framing and the per-message overhead the API adds.
+FRAMING_TOKENS = 1500
+
+
+def image_tokens(width: int | None, height: int | None) -> int:
+    """≈ input tokens of one image of that size, per the documented rule above."""
+    if not width or not height:
+        return VISION_TOKEN_CEILING
+    scale = min(
+        1.0,
+        VISION_LONG_EDGE / max(width, height),
+        (VISION_MAX_PIXELS / (width * height)) ** 0.5,
+    )
+    pixels = int(width * scale) * int(height * scale)
+    return min(VISION_TOKEN_CEILING, math.ceil(pixels / 750))
 
 
 def layer_enabled(env: dict[str, str] | None = None) -> bool:
@@ -327,19 +352,23 @@ Parámetros: container_color "surface" o "accent" (en plate, band, info_card y b
 acento, o -1 (nunca en scrim ni photo_only); anchor "none" donde el diseño no lleva.
 
 Cómo escribir:
-- El título dice qué gana el cliente o qué es el producto («Tu shawarma, recién hecho»), \
+- El título dice qué gana el cliente o qué es el producto («Tu shawarma, al momento»), \
 nunca una etiqueta: prohibido como título completo «Ubicación», «Horario», «Métodos de \
 pago», «Productos», «Promoción», «Información», «Menú».
+- Trata al cliente de tú («Pídelo», «Te esperamos»); nunca vos ni usted.
 - Español neutro, sin anglicismos ni modismos de un solo país; sin emojis, sin «#», sin \
 palabras en MAYÚSCULAS sostenidas; a lo sumo un «¡…!» en toda la pieza.
 - NINGÚN dato en el texto libre: ni precios, ni símbolos de moneda, ni teléfonos, ni horas, \
 ni direcciones. Esos datos entran solo por info_blocks (eliges el tipo; el valor sale de \
 lo que el negocio guardó) y por price_product_id (eliges el producto; el precio lo pone \
-el catálogo). Un «2x1» sí puede ir en el título.
+el catálogo).
+- No escribas días, horarios, descuentos, «gratis», domicilios ni promociones (como 2x1) \
+si no aparecen en «De qué trata la publicación». Si el negocio no los guardó, no existen.
 - call_phrase es una invitación en forma de frase («Pídelo por WhatsApp», «Te esperamos \
 hoy»), no la etiqueta de un botón. Vacío si no aporta.
 - No repitas el nombre del negocio: el logo ya va en la pieza.
-- Respeta los límites de caracteres del diseño y el formato que elijas (te los damos)."""
+- Respeta los límites de caracteres del diseño y el formato que elijas (te los damos). \
+Apunta a dos tercios del límite: en el teléfono se lee mejor corto."""
 
 
 def _limits_text(fmt: str) -> str:
@@ -452,6 +481,62 @@ def _text(value: object) -> str | None:
     return text or None
 
 
+#: What a free text may not promise unless the brief or the saved data says it (UX review
+#: of capa-v1: invented promotions and opening hours passed, having no digits).
+_CLAIMS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "a day",
+        re.compile(
+            r"\b(?:lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bados?|domingos?|"
+            r"fin(?:es)? de semana)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    ("every day", re.compile(r"\btodos los d[ií]as\b", re.IGNORECASE)),
+    (
+        "opening hours",
+        re.compile(r"\b(?:abiert[oa]s?|abrimos|cerramos|cerrad[oa]s?|24\s*horas)\b", re.I),
+    ),
+    (
+        "a discount",
+        re.compile(
+            r"-\s*\d+\s*%|\d+\s*%\s*(?:de\s+)?(?:descuento|dcto|off|menos)|"
+            r"\b(?:descuentos?|rebajas?)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    ("something free", re.compile(r"\b(?:gratis|gratuit[oa]s?|de regalo)\b", re.IGNORECASE)),
+    ("delivery", re.compile(r"\b(?:domicilios?|env[ií]os?|delivery)\b", re.IGNORECASE)),
+    ("a promotion", re.compile(r"\b\d+\s*x\s*\d+\b", re.IGNORECASE)),
+)
+
+
+def _folded(text: str) -> str:
+    plain = unicodedata.normalize("NFKD", text.lower())
+    return " ".join("".join(c for c in plain if not unicodedata.combining(c)).split())
+
+
+def unsupported_claims(text: str, request: LayerRequest) -> list[str]:
+    """What `text` promises — a day, opening hours, a discount, something free, delivery,
+    a 2x1 — that neither «De qué trata la publicación» (topic and scene) nor the saved
+    business data says. «100% natural» or «500 g» are no claim."""
+    source = _folded(
+        " ".join(
+            [request.topic, request.scene] + [request.facts.value(kind) or "" for kind in InfoKind]
+        )
+    )
+    found = []
+    for what, pattern in _CLAIMS:
+        for match in pattern.finditer(text):
+            token = _folded(match.group()).replace(" ", "")
+            if token and token in source.replace(" ", ""):
+                continue
+            if what == "opening hours" and request.facts.value(InfoKind.HOURS):
+                continue
+            found.append(f"«{match.group()}» ({what}) is not in the brief or the saved data")
+    return found
+
+
 def spec_from_answer(raw: dict[str, Any], request: LayerRequest, slide: SlideInput) -> LayerSpec:
     """One slide of the tool's answer → a validated `LayerSpec`. Raises `ValueError` (a
     `ValidationError` included) naming every broken rule."""
@@ -503,10 +588,20 @@ def spec_from_answer(raw: dict[str, Any], request: LayerRequest, slide: SlideInp
             "word": _text(raw.get("highlight_word")),
         }
     photo = raw.get("foto") if slide.photo is not None else None
-    if photo is not None and slide.owner_photo:
-        photo = {**photo, "base_has_invented_text": False}
-    if photo is not None:
-        photo = {**photo, "subject_box": [round(float(v) * 20) / 20 for v in photo["subject_box"]]}
+    try:  # a malformed answer goes to the repair turn, never drops the other layers
+        if photo is not None and slide.owner_photo:
+            photo = {**photo, "base_has_invented_text": False}
+        if photo is not None:
+            box = [round(float(v) * 20) / 20 for v in photo["subject_box"]]
+            photo = {**photo, "subject_box": box}
+        accent = raw.get("accent_word")
+        accent = None if accent in (None, -1) else int(accent)
+    except (TypeError, KeyError, ValueError, AttributeError) as exc:
+        raise ValueError(f"malformed answer: {type(exc).__name__}: {exc}") from exc
+    for slot in ("title", "subtitle", "call_phrase"):
+        text = _text(raw.get(slot))
+        if text:
+            problems.extend(f"{slot}: {p}" for p in unsupported_claims(text, request))
     fields: dict[str, Any] = {
         "spec_version": SPEC_VERSION,
         "layout_id": layout,
@@ -517,7 +612,7 @@ def spec_from_answer(raw: dict[str, Any], request: LayerRequest, slide: SlideInp
         "container_color": None
         if raw.get("container_color") in (None, "", "none")
         else raw["container_color"],
-        "accent_word": None if raw.get("accent_word") in (None, -1) else int(raw["accent_word"]),
+        "accent_word": accent,
         "title": _text(raw.get("title")),
         "subtitle": _text(raw.get("subtitle")),
         "call_phrase": _text(raw.get("call_phrase")),
@@ -584,7 +679,8 @@ def write_layers(
             raise LayerError(f"the photo of position {slide.position} is over 5 MB")
     client = (client_factory or default_client)(api_key)
     meter = Meter(config)
-    budget = budget or DollarMeter(LAYER_BUDGET_USD)
+    if budget is None:  # the stage passes ONE meter for the whole piece (layer_run)
+        budget = DollarMeter(LAYER_BUDGET_USD)
     attribution = Attribution(
         tenant_id=request.tenant_id,
         brand_id=request.brand_id,
@@ -600,8 +696,24 @@ def write_layers(
             content.append(_image_block(slide))
     content.append({"type": "text", "text": _instructions(request)})
     messages: list[dict[str, Any]] = [{"role": "user", "content": content}]
-    photos = sum(1 for s in request.slides if s.photo is not None)
-    ceiling = photos * TOKENS_PER_PHOTO + (len(SYSTEM) + len(_instructions(request))) // 2 + 3000
+    from qualify_api.creative.image_pipeline.base import image_size  # noqa: PLC0415
+
+    photo_tokens = sum(
+        image_tokens(*(image_size(s.photo) or (None, None)))
+        for s in request.slides
+        if s.photo is not None
+    )
+    text_chars = len(SYSTEM) + len(_instructions(request)) + len(str(tool))
+    # the request's input bound: photos by the vision rule, text at ~2 chars per token
+    # (Spanish, conservative), and each later turn grows it by what it actually added
+    bound = {"tokens": photo_tokens + text_chars // 2 + FRAMING_TOKENS}
+
+    def grow(response: Any, user_text: str) -> None:
+        """A nudge or repair turn re-sends the previous answer (its real output tokens,
+        thinking included) and our short message."""
+        usage = getattr(response, "usage", None)
+        added = int(getattr(usage, "output_tokens", 0) or 0)
+        bound["tokens"] += added + len(user_text) // 2 + 100
 
     def turn() -> Any:
         try:
@@ -616,7 +728,7 @@ def write_layers(
                 max_tokens=MAX_OUTPUT_TOKENS,
                 attribution=attribution,
                 budget=budget,
-                input_ceiling=ceiling + 2000 * (len(messages) - 1),
+                input_ceiling=bound["tokens"],
             )
         except ClaudeToolError as exc:
             raise LayerError(str(exc), stats=exc.stats or meter.stats()) from exc
@@ -624,8 +736,10 @@ def write_layers(
     response = turn()
     answer = _answer_slides(response)
     if answer is None:
+        nudge = f"Entrega la capa con {LAYER_TOOL}."
         messages.append({"role": "assistant", "content": response.content})
-        messages.append({"role": "user", "content": f"Entrega la capa con {LAYER_TOOL}."})
+        messages.append({"role": "user", "content": nudge})
+        grow(response, nudge)
         response = turn()
         answer = _answer_slides(response)
         if answer is None:
@@ -651,6 +765,11 @@ def write_layers(
             broken[position] = str(exc)
     if broken:
         result.repairs = 1
+        repair = (
+            f"Corrige SOLO estas imágenes y vuelve a entregar la capa completa con {LAYER_TOOL}:\n"
+            + "\n".join(f"- imagen {p}: {why}" for p, why in sorted(broken.items()))
+        )
+        grow(response, repair)
         messages.append({"role": "assistant", "content": response.content})
         messages.append(
             {
@@ -660,9 +779,7 @@ def write_layers(
                         "type": "tool_result",
                         "tool_use_id": use.id,
                         "is_error": True,
-                        "content": "Corrige SOLO estas imágenes y vuelve a entregar la capa "
-                        f"completa con {LAYER_TOOL}:\n"
-                        + "\n".join(f"- imagen {p}: {why}" for p, why in sorted(broken.items())),
+                        "content": repair,
                     }
                 ],
             }

@@ -172,7 +172,7 @@ def test_an_info_block_without_saved_data_is_refused() -> None:
     raw = _slide(
         layout_id="brand_fill",
         anchor="none",
-        title="Abrimos el festivo",
+        title="Te esperamos este festivo",
         price_product_id="",
         info_blocks=["hours"],
     )
@@ -215,3 +215,89 @@ def test_a_photo_over_5_mb_is_not_sent() -> None:
     request = _request(slides=(SlideInput(0, b"x" * 5_000_000),))
     with pytest.raises(LayerError):
         _run(request)
+
+
+# -- review fixes (capa-v2) -----------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Abrimos de martes a domingo",
+        "Todos los días contigo",
+        "Abierto 24 horas",
+        "Ahora con 20% de descuento",
+        "Bebida gratis con tu combo",
+        "Domicilio a toda la ciudad",
+        "Envío sin costo",
+        "Shawarma 2x1",
+    ],
+)
+def test_a_claim_not_in_the_brief_or_the_saved_data_asks_for_repair(text: str) -> None:
+    assert layer.unsupported_claims(text, _request())
+
+
+@pytest.mark.parametrize(
+    ("text", "over"),
+    [
+        ("100% natural", {}),
+        ("500 g de pollo", {}),
+        ("Tu shawarma, al momento", {}),
+        ("Martes de shawarma 2x1", {"topic": "Martes de 2x1 en shawarma"}),
+        ("Domicilio en tu barrio", {"scene": "Pedido a domicilio en moto"}),
+        ("Te esperamos, abrimos hoy", {"facts": BusinessFacts(hours="Lunes a sábado, 11 a 9")}),
+        ("Envíos a toda la ciudad", {"topic": "Hacemos envíos a toda la ciudad"}),
+    ],
+)
+def test_what_the_brief_or_the_saved_data_says_is_no_claim(text: str, over: Any) -> None:
+    assert layer.unsupported_claims(text, _request(**over)) == []
+
+
+def test_an_invented_promotion_gets_its_repair_turn() -> None:
+    promo = _slide(title="Martes de shawarma 2x1")
+    result, client = _run(_request(), _response([promo]), _response([_slide()], "t2"))
+    assert result.repairs == 1 and result.specs[0].title == "Tu shawarma, recién hecho"
+    assert "2x1" in client.requests[1]["messages"][-1]["content"][0]["content"]
+
+
+@pytest.mark.parametrize(
+    "foto", [{"logo_in_photo": False}, "a box", {**SEEN, "subject_box": ["x", 1, 1, 1]}]
+)
+def test_a_malformed_photo_answer_goes_to_repair_not_dropping_the_other_layers(foto: Any) -> None:
+    slides = [_slide(position=0, foto=foto), _slide(position=1, price_product_id="")]
+    fixed = [_slide(position=0), _slide(position=1, price_product_id="")]
+    request = _request(2, piece_type=CAROUSEL)
+    slides[1].update(layout_id="brand_fill", anchor="none", container_color="accent")
+    fixed[1].update(layout_id="brand_fill", anchor="none", container_color="accent")
+    result, client = _run(request, _response(slides), _response(fixed, "t2"))
+    assert set(result.specs) == {0, 1} and result.failed == {} and result.repairs == 1
+    assert "malformed answer" in client.requests[1]["messages"][-1]["content"][0]["content"]
+
+
+@pytest.mark.parametrize(
+    ("size", "tokens"),
+    [((1280, 1600), 1532), ((1280, 1280), 1533), ((1080, 1920), 1532), ((1248, 1664), 1532)],
+)
+def test_image_tokens_follow_the_documented_vision_rule(size: tuple[int, int], tokens: int):
+    """Anthropic vision docs: ≈ w×h/750 after scaling to ≤1,568 px and ≤~1.15 MP."""
+    assert layer.image_tokens(*size) == tokens
+    assert layer.image_tokens(400, 500) == 267  # a small image is not scaled
+    assert layer.image_tokens(None, None) == layer.VISION_TOKEN_CEILING
+
+
+def test_the_repair_turn_bound_grows_by_the_answer_it_re_sends(monkeypatch) -> None:  # noqa: ANN001
+    ceilings: list[int] = []
+    real = layer.create_turn
+
+    def spy(*args: Any, **kwargs: Any) -> Any:
+        ceilings.append(kwargs["input_ceiling"])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(layer, "create_turn", spy)
+    bad = _slide(title="Promoción")
+    budget = claude_tools.DollarMeter(layer.LAYER_BUDGET_USD)
+    client = FakeClient(_response([bad]), _response([_slide()], "t2"))
+    write_layers(_request(), api_key="k", client_factory=lambda _k: client, budget=budget)
+    # the first answer billed 300 output tokens: the repair re-sends them, plus our note
+    assert 300 + 100 < ceilings[1] - ceilings[0] < 300 + 100 + 400
+    assert budget.overruns == 0
