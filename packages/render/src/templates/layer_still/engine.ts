@@ -12,6 +12,12 @@ export type LayoutId = 'photo_only' | 'plate' | 'scrim' | 'band' | 'info_card' |
 export type Rect = {x: number; y: number; w: number; h: number};
 export type FontRole = 'heading' | 'body';
 export type Measure = (text: string, font: {role: FontRole; size: number; weight: number}) => number;
+/** Glyph metrics of a run of text (canvas `measureText`): ink above/below the baseline and the
+ * font's own ascent/descent, which place the baseline in a CSS line box. */
+export type Ink = (
+  text: string,
+  font: {role: FontRole; size: number; weight: number},
+) => {ascent: number; descent: number; fontAscent: number; fontDescent: number};
 
 // ---- the contract: `LayerSpec` v1 as m-25017283 defines it (qualify_creative.layer_spec,
 // layer_spec_v1.schema.json). Field names are theirs; do not rename.
@@ -110,6 +116,10 @@ export type Input = {
   headingFamily: string;
   hasLogo: boolean;
   measure: Measure;
+  /** optional glyph metrics (the composition passes the canvas'; the Node tests omit it) */
+  ink?: Ink;
+  /** the families actually used for measuring AND drawing, for the report */
+  fonts?: {heading: string; body: string};
 };
 
 // ------------------------------------------------------------------ output shape
@@ -145,8 +155,34 @@ export type Report = {
   contrast: Record<string, number>;
   logo: string;
   counter: string | null;
+  /** always empty on a rendered still: an overflow fails the layout (kept for the contract) */
   overflow: string[];
+  fonts: {heading: string; body: string} | null;
+  /** title line height and the gap under the title, from the glyphs' measured ink */
+  title_metrics: {line_height: number; gap_after: number} | null;
 };
+
+/** Why no layout of the chain could draw the layer — machine-readable, so the layer stage can
+ * rewrite the text. Thrown as `LayerRefusal`; the server turns it into `invalid_parameters`. */
+export type Refusal = {
+  code: 'layer_unrenderable';
+  /** the slot to rewrite (`title`, `subtitle`, `info_blocks[1].value`, `highlight_content.word`…) */
+  slot: string;
+  /** `title_does_not_fit` · `word_too_wide` · `too_many_lines` · `outside_safe_zone` · … */
+  reason: string;
+  detail: string;
+  format: Format;
+  layout_requested: LayoutId;
+  attempts: string[];
+};
+export const REFUSAL_MARK = 'layer_unrenderable ';
+export class LayerRefusal extends Error {
+  refusal: Refusal;
+  constructor(refusal: Refusal) {
+    super(`invalid_parameters: ${REFUSAL_MARK}${JSON.stringify(refusal)}`);
+    this.refusal = refusal;
+  }
+}
 export type Resolved = {
   width: number;
   height: number;
@@ -168,6 +204,14 @@ const hex = (c: string): [number, number, number] => {
   if (s.length === 3) s = s.split('').map((ch) => ch + ch).join('');
   s = s.slice(0, 6);
   return [parseInt(s.slice(0, 2), 16), parseInt(s.slice(2, 4), 16), parseInt(s.slice(4, 6), 16)];
+};
+/** `#rgb`, `#rrggbb`, `#rrggbbaa` → `#RRGGBB`: containers, text and tiles are always opaque
+ * (catalog §1.3: «100 %, sin transparencia»); an alpha channel would make contrast depend on
+ * the photo again. */
+export const opaque = (c: string): string => {
+  let s = c.trim().replace('#', '');
+  if (s.length === 3 || s.length === 4) s = s.slice(0, 3).split('').map((ch) => ch + ch).join('');
+  return `#${s.slice(0, 6).toUpperCase()}`;
 };
 const channel = (v: number): number => {
   const c = v / 255;
@@ -350,6 +394,31 @@ const titleSizes = (ctx: Ctx, key: 'title' | 'title_brand_fill'): SizePair => {
 };
 
 /**
+ * The title's line height and the room its ink needs under the last line, from measured
+ * glyphs (UX finding: script faces such as Pacifico hang their descenders into the next slot).
+ * Baselines are set at least ascent + descent + 4 px apart; the slot under the title starts at
+ * least 0.25 × the title size below the title's lowest measured ink. Without an ink measurer
+ * (Node tests): 1.08 and the fixed gaps.
+ */
+const titleMetrics = (ctx: Ctx, fit: Fit): {lh: number; below: number} => {
+  if (!ctx.ink) return {lh: LINE_HEIGHT.title, below: 0};
+  const font = {role: 'heading' as const, size: fit.size, weight: 700};
+  const m = fit.lines.map((l) => ctx.ink!(l, font));
+  const ascent = Math.max(...m.map((x) => x.ascent));
+  const descent = Math.max(...m.map((x) => x.descent));
+  const fA = m[0]?.fontAscent ?? fit.size * 0.9;
+  const fD = m[0]?.fontDescent ?? fit.size * 0.25;
+  const lh = Math.max(LINE_HEIGHT.title, (ascent + descent + 4) / fit.size);
+  const box = lh * fit.size;
+  const baseline = (box - (fA + fD)) / 2 + fA;
+  const lastDescent = m[m.length - 1]?.descent ?? descent;
+  // ink under (positive) or above (negative) the bottom of the last line box
+  const inkPastBox = baseline + lastDescent - box;
+  // the next slot's line box starts at least a quarter of the title size below the lowest ink
+  return {lh: Math.round(lh * 1000) / 1000, below: Math.max(0, Math.ceil(0.25 * fit.size + inkPastBox))};
+};
+
+/**
  * Fits title / price / subtitle / call phrase into `width`, dropping call_phrase then subtitle
  * (§1.7 check 3) while the stack is taller than `maxHeight` or a slot does not fit its lines.
  * The title is never dropped: null when it cannot fit at its minimum.
@@ -361,16 +430,16 @@ const fitStack = (
   dropped: string[],
   titleKey: 'title' | 'title_brand_fill' = 'title',
   titleWidth = width,
-  /** layouts with no fallback (info_card, brand_fill): draw the title at its minimum with the lines it needs and record it here */
-  forceTitle: string[] | null = null,
+  /** slots this layout draws elsewhere (info_card puts the call phrase under its blocks) */
+  skip: Array<'subtitle' | 'call_phrase'> = [],
 ): Stack | null => {
   const {layer, def, format, measure} = ctx;
   const limit = (slot: 'title' | 'subtitle' | 'call_phrase'): number => def.slots[slot]?.[format]?.[1] ?? 0;
   const title = (layer.title ?? '').trim();
   const priceOn = def.price && !!layer.price_ref && ctx.priceText.trim() !== '';
   let keep = {
-    subtitle: !!(layer.subtitle ?? '').trim() && limit('subtitle') > 0,
-    call_phrase: !!(layer.call_phrase ?? '').trim() && limit('call_phrase') > 0,
+    subtitle: !skip.includes('subtitle') && !!(layer.subtitle ?? '').trim() && limit('subtitle') > 0,
+    call_phrase: !skip.includes('call_phrase') && !!(layer.call_phrase ?? '').trim() && limit('call_phrase') > 0,
   };
   // §2.4: a 1:1 band carries the call phrase only when there is no subtitle
   if (ctx.layoutId === 'band' && format === '1:1' && keep.subtitle && keep.call_phrase) {
@@ -379,7 +448,6 @@ const fitStack = (
   }
   // `step` lowers every slot's starting size by 4 px per step (never below its minimum):
   // a stack that is too tall first gets smaller, then loses slots
-  let forcedNote: string | null = null;
   const cap = ([max, min]: SizePair, step: number): SizePair => [Math.max(max - 4 * step, min), min];
   const build = (step: number): {pieces: Piece[]; failed: SlotName | null; atMin: boolean} => {
     const pieces: Piece[] = [];
@@ -389,34 +457,36 @@ const fitStack = (
       if (c[0] > c[1]) atMin = false;
       return c;
     };
-    forcedNote = null;
+    let afterTitle = 0; // extra room the title's descenders need below its last line box
     if (title) {
       const sizes = titleSizes(ctx, titleKey);
-      let fit = fitText(title, capped(sizes), limit('title'), titleWidth, measure, 'heading', 700);
-      if (!fit && forceTitle) {
-        fit = forceAtMin(title, sizes[1], titleWidth, measure, 'heading', 700);
-        forcedNote = `title needs ${fit.lines.length} lines at ${sizes[1]} px (limit ${limit('title')})`;
-      }
+      const fit = fitText(title, capped(sizes), limit('title'), titleWidth, measure, 'heading', 700);
       if (!fit) return {pieces, failed: 'title', atMin};
-      pieces.push({slot: 'title', text: title, fit, role: 'heading', weight: 700, lh: LINE_HEIGHT.title, gapBefore: 0});
+      const {lh, below} = titleMetrics(ctx, fit);
+      afterTitle = below;
+      pieces.push({slot: 'title', text: title, fit, role: 'heading', weight: 700, lh, gapBefore: 0});
       if (priceOn) {
         // §4: a text line in the title's face at 70 % of its size, same container
         const size = Math.round(fit.size * 0.7);
         const pfit = fitText(ctx.priceText.trim(), [size, size], 1, titleWidth, measure, 'heading', 700);
-        if (pfit) pieces.push({slot: 'price', text: ctx.priceText.trim(), fit: pfit, role: 'heading', weight: 700, lh: LINE_HEIGHT.title, gapBefore: GAP.price});
+        if (pfit) {
+          pieces.push({slot: 'price', text: ctx.priceText.trim(), fit: pfit, role: 'heading', weight: 700, lh: LINE_HEIGHT.title, gapBefore: Math.max(GAP.price, afterTitle)});
+          afterTitle = 0;
+        }
       }
     }
     if (keep.subtitle) {
       const sizes = ctx.catalog.font_sizes.subtitle?.[format] ?? [40, 40];
       const fit = fitText((layer.subtitle ?? '').trim(), capped(sizes), limit('subtitle'), width, measure, 'body', 400);
       if (!fit) return {pieces, failed: 'subtitle', atMin};
-      pieces.push({slot: 'subtitle', text: (layer.subtitle ?? '').trim(), fit, role: 'body', weight: 400, lh: LINE_HEIGHT.other, gapBefore: GAP.subtitle});
+      pieces.push({slot: 'subtitle', text: (layer.subtitle ?? '').trim(), fit, role: 'body', weight: 400, lh: LINE_HEIGHT.other, gapBefore: Math.max(GAP.subtitle, afterTitle)});
+      afterTitle = 0;
     }
     if (keep.call_phrase) {
       const sizes = ctx.catalog.font_sizes.call_phrase?.[format] ?? [40, 40];
       const fit = fitText((layer.call_phrase ?? '').trim(), capped(sizes), 1, width, measure, 'body', 600);
       if (!fit) return {pieces, failed: 'call_phrase', atMin};
-      pieces.push({slot: 'call_phrase', text: (layer.call_phrase ?? '').trim(), fit, role: 'body', weight: 600, lh: LINE_HEIGHT.other, gapBefore: GAP.call_phrase});
+      pieces.push({slot: 'call_phrase', text: (layer.call_phrase ?? '').trim(), fit, role: 'body', weight: 600, lh: LINE_HEIGHT.other, gapBefore: Math.max(GAP.call_phrase, afterTitle)});
     }
     return {pieces, failed: null, atMin};
   };
@@ -425,7 +495,6 @@ const fitStack = (
     const {pieces, failed, atMin} = build(step);
     const tooTall = failed === null && stackHeight(pieces) > maxHeight;
     if (failed === null && !tooTall) {
-      if (forcedNote && forceTitle) forceTitle.push(forcedNote);
       const w = Math.max(0, ...pieces.map((p) => Math.max(...p.fit.widths)));
       return {pieces, width: w, height: stackHeight(pieces)};
     }
@@ -556,9 +625,25 @@ const placeLogo = (
 // ------------------------------------------------------------------ one attempt per layout
 
 type Attempt = {layout: LayoutId; anchor: string | null; reduced: boolean};
-type Outcome =
-  | {ok: true; resolved: Omit<Resolved, 'report'>; partial: Partial<Report>}
-  | {ok: false; reason: string};
+type Failure = {ok: false; reason: string; slot?: string; detail?: string};
+type Outcome = {ok: true; resolved: Omit<Resolved, 'report'>; partial: Partial<Report>} | Failure;
+
+/** Why the title does not fit `width` at its minimum: one word too wide, or too many lines. */
+const titleFailure = (ctx: Ctx, width: number, key: 'title' | 'title_brand_fill' = 'title', fallback = 'title_does_not_fit'): Failure => {
+  const title = (ctx.layer.title ?? '').trim();
+  const [, min] = titleSizes(ctx, key);
+  const at = (t: string) => ctx.measure(t, {role: 'heading', size: min, weight: 700});
+  const wide = title.split(/\s+/).find((w) => at(w) > width - WIDTH_SLACK);
+  if (wide) {
+    return {ok: false, reason: 'word_too_wide', slot: 'title', detail: `«${wide}» is ${Math.round(at(wide))} px at ${min} px; the box is ${Math.round(width)} px`};
+  }
+  const forced = forceAtMin(title, min, width, ctx.measure, 'heading', 700);
+  const limit = ctx.def.slots.title?.[ctx.format]?.[1] ?? 2;
+  if (forced.lines.length > limit) {
+    return {ok: false, reason: 'too_many_lines', slot: 'title', detail: `needs ${forced.lines.length} lines at ${min} px (limit ${limit}) in ${Math.round(width)} px`};
+  }
+  return {ok: false, reason: fallback, slot: 'title', detail: `does not fit the room left at ${min} px`};
+};
 
 const fullCanvas = (ctx: Ctx): Rect => ({x: 0, y: 0, w: ctx.fmt.width, h: ctx.fmt.height});
 
@@ -603,7 +688,7 @@ const tryPlate = (ctx: Ctx, anchor: string, fallbacks: string[], dropped: string
   if (subj0) room = v === 'top' ? subj0.y - SUBJECT_TOLERANCE - sy0 : sy1 - (subj0.y + subj0.h + SUBJECT_TOLERANCE);
   if (room < 2 * pad + 60) return {ok: false, reason: 'covers_subject'};
   const stack = fitStack(ctx, maxW - 2 * pad, room - 2 * pad, dropped);
-  if (!stack) return {ok: false, reason: subj0 ? 'no_room_beside_subject' : 'title_does_not_fit'};
+  if (!stack) return titleFailure(ctx, maxW - 2 * pad, 'title', subj0 ? 'no_room_beside_subject' : 'title_does_not_fit');
   const w = Math.ceil(stack.width + 2 * pad);
   const h = Math.ceil(stack.height + 2 * pad);
   const x = hpos === 'left' ? minX : hpos === 'right' ? maxX - w : Math.round((fmt.width - w) / 2);
@@ -652,7 +737,7 @@ const tryScrim = (ctx: Ctx, anchor: 'top' | 'bottom', _fallbacks: string[], drop
   const bottomEdge = counter0 ? Math.min(sy1, counter0.rect.y - 16) : sy1;
   const room = anchor === 'bottom' ? bottomEdge - (H - cover + minFade + textPad) : cover - minFade - textPad - sy0;
   const stack = fitStack(ctx, width, room, dropped);
-  if (!stack) return {ok: false, reason: 'title_does_not_fit'};
+  if (!stack) return titleFailure(ctx, width);
   const top = anchor === 'bottom' ? bottomEdge - stack.height : sy0;
   const rect: Rect = {x: x0, y: top, w: stack.width, h: stack.height};
   if (!inside(rect, fmt.safe)) return {ok: false, reason: 'outside_safe_zone'};
@@ -702,7 +787,7 @@ const tryBand = (ctx: Ctx, anchor: 'top' | 'bottom', reduced: boolean, fallbacks
     maxText = anchor === 'bottom' ? sy1 - (bandTop + pad) : H - bandTop - pad - sy0;
   } else maxText = maxF * H - pad - fmt.margin - counterRoom; // the text keeps the band's padding and the safe margin
   const stack = fitStack(ctx, width, maxText, dropped);
-  if (!stack) return {ok: false, reason: 'title_does_not_fit'};
+  if (!stack) return titleFailure(ctx, width);
 
   let band: Rect;
   let textTop: number;
@@ -802,7 +887,7 @@ const layoutBlocks = (
     let value = fitText(b.value.trim(), valueSizes, valueLimit[1], textW, measure, 'body', 400);
     if (!value) {
       value = forceAtMin(b.value.trim(), valueSizes[1], textW, measure, 'body', 400);
-      overflow.push(`info_blocks[${i}].value: needs ${value.lines.length} lines at ${valueSizes[1]} px (limit ${valueLimit[1]})`);
+      overflow.push(`info_blocks[${i}].value|needs ${value.lines.length} lines at ${valueSizes[1]} px (limit ${valueLimit[1]}) in ${Math.round(textW)} px`);
     }
     if (single) {
       icons.push({id: iconId, x, y: cy, size: iconSize, color});
@@ -840,8 +925,14 @@ const shiftBlocks = (blocks: TextBlock[], dy: number): void => {
   for (const b of blocks) for (const l of b.lines) l.y += dy;
 };
 
-const tryInfoCard = (ctx: Ctx, fallbacks: string[], dropped: string[], overflow: string[]): Outcome => {
-  const {fmt, def} = ctx;
+/** Turns an overflow note `slot|detail` into a failure of the layout. */
+const overflowFailure = (notes: string[]): Failure => {
+  const [slot, detail] = (notes[0] ?? 'layout|does not fit').split('|');
+  return {ok: false, reason: 'too_many_lines', slot: slot ?? 'layout', detail: detail ?? ''};
+};
+
+const tryInfoCard = (ctx: Ctx, fallbacks: string[], dropped: string[]): Outcome => {
+  const {fmt, def, format, measure} = ctx;
   const [sx0, sy0, sx1, sy1] = fmt.safe;
   const width = sx1 - sx0;
   const bg = containerColor(ctx);
@@ -863,22 +954,53 @@ const tryInfoCard = (ctx: Ctx, fallbacks: string[], dropped: string[], overflow:
   const bottom = counter ? Math.min(sy1, counter.rect.y - 16) : sy1;
   const zone = fmt.title_zone_x;
   const titleW = Math.min(sx1, zone[1]) - Math.max(sx0, zone[0]);
-  // blocks first (they cannot be dropped), then the title stack in what is left
-  const probe = layoutBlocks(ctx, blocks, sx0, 0, width, color, single, []);
-  const stack = fitStack(ctx, width, Math.max(0, bottom - top - probe.height - 40), dropped, 'title', titleW, overflow);
+  // blocks first (they cannot be dropped and are measured at the width they are drawn at),
+  // then the title stack in what is left; the call phrase (9:16) goes UNDER the blocks
+  const notes: string[] = [];
+  const probe = layoutBlocks(ctx, blocks, sx0, 0, width, color, single, notes);
+  if (notes.length) return overflowFailure(notes);
+  const room = bottom - top;
+  const stack = fitStack(ctx, width, Math.max(0, room - probe.height - 40), dropped, 'title', titleW, ['call_phrase']);
   const hasTitle = !!(ctx.layer.title ?? '').trim();
-  if (hasTitle && !stack) return {ok: false, reason: 'title_does_not_fit'};
+  if (hasTitle && !stack) return titleFailure(ctx, titleW);
+  const stackH = stack && stack.pieces.length ? stack.height + 40 : 0;
+  if (stackH + probe.height > room) {
+    return {ok: false, reason: 'too_tall', slot: 'info_blocks', detail: `content ${Math.round(stackH + probe.height)} px > ${Math.round(room)} px available`};
+  }
+  // the call phrase, if it fits under the last block; otherwise it is dropped
+  let call: Fit | null = null;
+  const callText = (ctx.layer.call_phrase ?? '').trim();
+  const callLimit = def.slots.call_phrase?.[format];
+  if (callText && callLimit) {
+    const sizes = ctx.catalog.font_sizes.call_phrase?.[format] ?? [40, 40];
+    call = fitText(callText, sizes, 1, width, measure, 'body', 600);
+    const callH = call ? 40 + call.size * LINE_HEIGHT.other : 0;
+    if (!call || stackH + probe.height + callH > room) {
+      call = null;
+      dropped.push('call_phrase');
+    }
+  }
+  const callH = call ? 40 + call.size * LINE_HEIGHT.other : 0;
+  const total = stackH + probe.height + callH;
+  const y0 = top + Math.max(0, (room - total) / (single ? 2 : 3));
   const accent = accentFor(ctx, bg, contrastLog, fallbacks);
-  const stackH = stack ? stack.height : 0;
-  const total = stackH + (stack && stack.pieces.length ? 40 : 0) + probe.height;
-  if (total > bottom - top) overflow.push(`info_card: content ${Math.round(total)} px > ${Math.round(bottom - top)} px available`);
-  const y0 = top + Math.max(0, (bottom - top - total) / (single ? 2 : 3));
   const texts: TextBlock[] = stack ? placeStack(ctx, stack, Math.max(sx0, zone[0]), y0, stack.width, 'left', color, accent) : [];
-  const blocksY = y0 + (stack && stack.pieces.length ? stackH + 40 : 0);
-  const laid = layoutBlocks(ctx, blocks, sx0, blocksY, width, color, single, overflow);
-  // the call phrase (9:16 only) goes after the blocks
-  const call = texts.find((t) => t.slot === 'call_phrase');
-  if (call) shiftBlocks([call], laid.height + 40);
+  const blocksY = y0 + stackH;
+  const laid = layoutBlocks(ctx, blocks, sx0, blocksY, width, color, single, []);
+  const sizes: Record<string, number> = {...(stack ? sizesOf(stack) : {}), ...laid.sizes};
+  if (call) {
+    const cy = blocksY + laid.height + 40;
+    texts.push({
+      slot: 'call_phrase',
+      role: 'body',
+      size: call.size,
+      weight: 600,
+      lineHeight: LINE_HEIGHT.other,
+      align: 'left',
+      lines: [{x: sx0, y: cy, width: call.widths[0] ?? 0, spans: [{text: call.lines[0] ?? '', color}]}],
+    });
+    sizes.call_phrase = call.size;
+  }
   return {
     ok: true,
     resolved: {
@@ -893,11 +1015,11 @@ const tryInfoCard = (ctx: Ctx, fallbacks: string[], dropped: string[], overflow:
       logo: null,
       counter: null,
     },
-    partial: {sizes: {...(stack ? sizesOf(stack) : {}), ...laid.sizes}, contrast: contrastLog},
+    partial: {sizes, contrast: contrastLog},
   };
 };
 
-const tryBrandFill = (ctx: Ctx, fallbacks: string[], dropped: string[], overflow: string[]): Outcome => {
+const tryBrandFill = (ctx: Ctx, fallbacks: string[], dropped: string[]): Outcome => {
   const {fmt, def} = ctx;
   const [sx0, sy0, sx1, sy1] = fmt.safe;
   const width = sx1 - sx0;
@@ -910,18 +1032,24 @@ const tryBrandFill = (ctx: Ctx, fallbacks: string[], dropped: string[], overflow
   const counter = counterOf(ctx);
   const bottom = counter ? Math.min(sy1, counter.rect.y - 16) : sy1;
   const blocks = ctx.layer.info_blocks ?? [];
-  const probe = layoutBlocks(ctx, blocks, sx0, 0, width, color, false, []);
+  // the blocks are drawn 40 px in from each side: measure them at that width (review #4)
+  const blocksX = sx0 + 40;
+  const blocksW = width - 80;
+  const notes: string[] = [];
+  const probe = layoutBlocks(ctx, blocks, blocksX, 0, blocksW, color, false, notes);
+  if (notes.length) return overflowFailure(notes);
   const zone = fmt.title_zone_x;
   const titleW = Math.min(sx1, zone[1]) - Math.max(sx0, zone[0]);
   const blocksGap = blocks.length ? 48 : 0;
-  const stack = fitStack(ctx, width, bottom - top - probe.height - blocksGap, dropped, 'title_brand_fill', titleW, overflow);
-  if (!stack) return {ok: false, reason: 'title_does_not_fit'};
-  const accent = accentFor(ctx, bg, contrastLog, fallbacks);
+  const room = bottom - top;
+  const stack = fitStack(ctx, width, room - probe.height - blocksGap, dropped, 'title_brand_fill', titleW);
+  if (!stack) return titleFailure(ctx, titleW, 'title_brand_fill');
   const total = stack.height + blocksGap + probe.height;
-  if (total > bottom - top) overflow.push(`brand_fill: content ${Math.round(total)} px > ${Math.round(bottom - top)} px available`);
-  const y0 = top + Math.max(0, (bottom - top - total) / 2);
+  if (total > room) return {ok: false, reason: 'too_tall', slot: 'title', detail: `content ${Math.round(total)} px > ${Math.round(room)} px available`};
+  const accent = accentFor(ctx, bg, contrastLog, fallbacks);
+  const y0 = top + Math.max(0, (room - total) / 2);
   const texts = placeStack(ctx, stack, sx0, y0, width, 'center', color, accent);
-  const laid = layoutBlocks(ctx, blocks, sx0 + 40, y0 + stack.height + blocksGap, width - 80, color, false, overflow);
+  const laid = layoutBlocks(ctx, blocks, blocksX, y0 + stack.height + blocksGap, blocksW, color, false, []);
   return {
     ok: true,
     resolved: {
@@ -940,7 +1068,7 @@ const tryBrandFill = (ctx: Ctx, fallbacks: string[], dropped: string[], overflow
   };
 };
 
-const tryHighlight = (ctx: Ctx, overflow: string[]): Outcome => {
+const tryHighlight = (ctx: Ctx): Outcome => {
   const {fmt, def, measure} = ctx;
   const bg = containerColor(ctx);
   const {color, ratio} = textColorOn(bg, ctx.palette);
@@ -956,8 +1084,11 @@ const tryHighlight = (ctx: Ctx, overflow: string[]): Outcome => {
   } else if (hc?.type === 'word') {
     const pair = ctx.catalog.font_sizes.highlight_word?.['9:16'] ?? [140, 96];
     const inner = circle.d - 40;
-    const fit = fitText(hc.word.trim(), pair, 1, inner, measure, 'heading', 700) ?? forceAtMin(hc.word.trim(), pair[1], inner, measure, 'heading', 700);
-    if ((fit.widths[0] ?? 0) > inner) overflow.push(`highlight word wider than the circle at ${pair[1]} px`);
+    const fit = fitText(hc.word.trim(), pair, 1, inner, measure, 'heading', 700);
+    if (!fit) {
+      const w = measure(hc.word.trim(), {role: 'heading', size: pair[1], weight: 700});
+      return {ok: false, reason: 'word_too_wide', slot: 'highlight_content.word', detail: `${Math.round(w)} px at ${pair[1]} px; the circle holds ${inner} px`};
+    }
     const w = fit.widths[0] ?? 0;
     texts.push({
       slot: 'highlight_word',
@@ -1018,17 +1149,52 @@ export const chainOf = (layout: LayoutId, anchor: string | null, def: LayoutDef,
   return [{layout, anchor: null, reduced: false}];
 };
 
+/**
+ * §1.7 check 2, enforced on what will be drawn (review #4): every text line and icon inside the
+ * safe zone of the format (the highlight circle keeps its content inside the circle instead).
+ * A layout that breaks it failed — the chain moves on.
+ */
+const safeZoneCheck = (ctx: Ctx, o: Outcome): Outcome => {
+  if (!o.ok || ctx.layoutId === 'highlight_circle') return o;
+  const safe = ctx.fmt.safe;
+  for (const t of o.resolved.texts) {
+    for (const l of t.lines) {
+      const r = {x: l.x, y: l.y, w: l.width, h: t.size * t.lineHeight};
+      if (!inside(r, safe)) {
+        return {ok: false, reason: 'outside_safe_zone', slot: t.slot.replace(/\.label$/, '.value'), detail: `line «${l.spans.map((x) => x.text).join('')}» at y ${Math.round(r.y)}–${Math.round(r.y + r.h)}, safe zone y ${safe[1]}–${safe[3]}`};
+      }
+    }
+  }
+  for (const ic of o.resolved.icons) {
+    if (!inside({x: ic.x, y: ic.y, w: ic.size, h: ic.size}, safe)) {
+      return {ok: false, reason: 'outside_safe_zone', slot: 'info_blocks', detail: `icon ${ic.id} at y ${Math.round(ic.y)}`};
+    }
+  }
+  return o;
+};
+
 const describe = (a: Attempt): string => `${a.layout}${a.anchor ? `/${a.anchor}` : ''}${a.reduced ? '/reduced' : ''}`;
+
+const titleMetricsOf = (texts: TextBlock[]): Report['title_metrics'] => {
+  const i = texts.findIndex((t) => t.slot === 'title');
+  const title = texts[i];
+  if (!title) return null;
+  const next = texts[i + 1];
+  const lastY = title.lines[title.lines.length - 1]?.y ?? 0;
+  const gap = next && next.lines[0] ? Math.round(next.lines[0].y - (lastY + title.size * title.lineHeight)) : 0;
+  return {line_height: title.lineHeight, gap_after: gap};
+};
 
 export const resolveLayer = (raw: Input): Resolved => {
   const flat = toInternal(raw.layer);
   // info_card draws its photo strip only when the spec asks for it
   const photo = raw.layer.layout_id === 'info_card' && !raw.layer.photo_strip ? null : raw.photo;
-  const input: Inner = {...raw, photo, layer: flat.layer, slide: flat.slide};
+  // containers, text and tiles are opaque: an alpha channel in the brand palette is dropped (review #6)
+  const palette = {accent: opaque(raw.palette.accent), text: opaque(raw.palette.text), surface: opaque(raw.palette.surface)};
+  const input: Inner = {...raw, palette, photo, layer: flat.layer, slide: flat.slide};
   const {catalog, format, layer} = input;
   const fmt = catalog.formats[format];
   const fallbacks: string[] = [];
-  const overflow: string[] = [];
   const requested = layer.layout_id;
   let effective: LayoutId = requested;
   if ((effective === 'plate' || effective === 'scrim' || effective === 'band') && !(layer.title ?? '').trim()) {
@@ -1039,6 +1205,7 @@ export const resolveLayer = (raw: Input): Resolved => {
   let outcome: Outcome | null = null;
   let used: Attempt = attempts[0]!;
   let dropped: string[] = [];
+  let lastFailure: Failure | null = null;
   for (const attempt of attempts) {
     const def = catalog.layouts[attempt.layout];
     const ctx: Ctx = {...input, def, fmt, layoutId: attempt.layout};
@@ -1056,17 +1223,18 @@ export const resolveLayer = (raw: Input): Resolved => {
         o = tryBand(ctx, (attempt.anchor ?? 'bottom') as 'top' | 'bottom', attempt.reduced, localFallbacks, localDropped);
         break;
       case 'info_card':
-        o = tryInfoCard(ctx, localFallbacks, localDropped, overflow);
+        o = tryInfoCard(ctx, localFallbacks, localDropped);
         break;
       case 'brand_fill':
-        o = tryBrandFill(ctx, localFallbacks, localDropped, overflow);
+        o = tryBrandFill(ctx, localFallbacks, localDropped);
         break;
       case 'highlight_circle':
-        o = tryHighlight(ctx, overflow);
+        o = tryHighlight(ctx);
         break;
       default:
         o = tryPhotoOnly(ctx);
     }
+    if (o.ok) o = safeZoneCheck(ctx, o);
     if (o.ok) {
       outcome = o;
       used = attempt;
@@ -1075,23 +1243,21 @@ export const resolveLayer = (raw: Input): Resolved => {
       break;
     }
     fallbacks.push(`${describe(attempt)}: ${o.reason}`);
+    lastFailure = o;
   }
   if (!outcome || !outcome.ok) {
-    // even the reduced band failed: the title does not fit at its minimum. Draw the band
-    // at the minimum size with every line it needs, and say so (never cut a word).
-    const def = catalog.layouts.band;
-    const ctx: Ctx = {...input, def, fmt, layoutId: 'band', layer: {...layer, subtitle: null, call_phrase: null}};
-    const sizes = titleSizes(ctx, 'title');
-    const zone = fmt.title_zone_x;
-    const width = Math.min(fmt.safe[2], zone[1]) - Math.max(fmt.safe[0], zone[0]);
-    const forced = forceAtMin((layer.title ?? '').trim(), sizes[1], width, input.measure, 'heading', 700);
-    overflow.push(`title needs ${forced.lines.length} lines at ${sizes[1]} px (limit ${def.slots.title?.[format]?.[1] ?? 2})`);
-    const patched: Catalog = {...catalog, layouts: {...catalog.layouts, band: {...def, slots: {title: {[format]: [999, forced.lines.length]}}, height: {[format]: [0.2, 0.75]}}}};
-    const anchor = attempts[attempts.length - 1]?.anchor === 'top' ? 'top' : 'bottom';
-    used = {layout: 'band', anchor, reduced: true};
-    dropped = ['call_phrase', 'subtitle'].filter((s) => !!(layer[s as 'subtitle'] ?? '').trim());
-    outcome = tryBand({...ctx, catalog: patched, def: patched.layouts.band}, anchor, true, fallbacks, []);
-    if (!outcome.ok) throw new Error(`layer_still: no layout could draw this layer (${outcome.reason})`);
+    // every layout of the chain failed: refuse with the slot to rewrite (review #2) — never
+    // draw text past its lines or its safe zone
+    const f = lastFailure ?? {ok: false, reason: 'unknown', slot: 'layout', detail: ''};
+    throw new LayerRefusal({
+      code: 'layer_unrenderable',
+      slot: f.slot ?? 'layout',
+      reason: f.reason,
+      detail: f.detail ?? '',
+      format,
+      layout_requested: requested,
+      attempts: fallbacks,
+    });
   }
   const resolved = outcome.resolved;
   const def = catalog.layouts[used.layout];
@@ -1154,7 +1320,9 @@ export const resolveLayer = (raw: Input): Resolved => {
       contrast: outcome.partial.contrast ?? {},
       logo: logoWhere,
       counter: counterWhere,
-      overflow,
+      overflow: [],
+      fonts: raw.fonts ?? null,
+      title_metrics: titleMetricsOf(resolved.texts),
     },
   };
 };

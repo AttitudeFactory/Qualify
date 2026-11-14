@@ -123,7 +123,7 @@ const layerStillCompositions = (): React.ReactNode[] =>
     />
   ));
 
-type PromoManifest =typeof promoManifest | typeof promoManifestV1;
+type PromoManifest = typeof promoManifest | typeof promoManifestV1;
 type PortSpec = {kind: string; width: number; height: number; composition: string};
 
 /** One <Composition>/<Still> per output port of a promo manifest version. */

@@ -17,7 +17,7 @@
 import React from 'react';
 import {AbsoluteFill, Img, type CalculateMetadataFunction} from 'remotion';
 import manifest from '../../../templates/layer_still/manifest.json';
-import {loadFamily, useBrandFonts, FALLBACK_BODY, FALLBACK_HEADING} from '../../fonts';
+import {resolveBrandFamilies, useExactFamilies} from '../../fonts';
 import {normalizeProps, paletteOf, type PropsInput} from '../../props';
 import {resolveLayer, type Catalog, type Format, type LayerSpec, type Resolved} from './engine';
 import {Icon} from './icons';
@@ -59,15 +59,28 @@ export const layerStillMetadata: CalculateMetadataFunction<LayerStillProps> = as
   const problems = layerProblems(CATALOG, props.layer, {formats: [format], hasPhoto: !!photoSrc});
   if (problems.length > 0) throw new Error(`invalid_parameters: ${problems.join('; ')}`);
 
-  const headingFamily = await loadFamily(base.brand.fonts.heading, FALLBACK_HEADING);
-  const bodyFamily = await loadFamily(base.brand.fonts.body, FALLBACK_BODY);
+  // the same families (and the same timeout → fallback rule) the component draws with
+  const families = await resolveBrandFamilies(base.brand.fonts.heading, base.brand.fonts.body);
   await document.fonts.ready;
   const canvas = document.createElement('canvas');
   const g = canvas.getContext('2d');
   if (!g) throw new Error('layer_still: no 2D canvas to measure text');
+  const setFont = (f: {role: 'heading' | 'body'; size: number; weight: number}) => {
+    g.font = `${f.weight} ${f.size}px ${quoted(f.role === 'heading' ? families.heading : families.body)}`;
+  };
   const measure = (text: string, f: {role: 'heading' | 'body'; size: number; weight: number}): number => {
-    g.font = `${f.weight} ${f.size}px ${quoted(f.role === 'heading' ? headingFamily : bodyFamily)}`;
+    setFont(f);
     return g.measureText(text).width;
+  };
+  const ink = (text: string, f: {role: 'heading' | 'body'; size: number; weight: number}) => {
+    setFont(f);
+    const m = g.measureText(text);
+    return {
+      ascent: m.actualBoundingBoxAscent,
+      descent: m.actualBoundingBoxDescent,
+      fontAscent: m.fontBoundingBoxAscent,
+      fontDescent: m.fontBoundingBoxDescent,
+    };
   };
   const photo = photoSrc ? await naturalSize(photoSrc) : null;
   const texts = base.texts;
@@ -82,6 +95,8 @@ export const layerStillMetadata: CalculateMetadataFunction<LayerStillProps> = as
     headingFamily: base.brand.fonts.heading ?? '',
     hasLogo: !!base.brand.logo,
     measure,
+    ink,
+    fonts: families,
   });
   return {props: {...props, resolved}};
 };
@@ -145,8 +160,8 @@ const Scrim: React.FC<{scrim: NonNullable<Resolved['scrim']>}> = ({scrim}) => {
 
 export const LayerStill: React.FC<LayerStillProps> = (raw) => {
   const props = normalizeProps(raw);
-  const fonts = useBrandFonts(props.brand.fonts.heading, props.brand.fonts.body);
   const resolved = raw.resolved;
+  const fonts = useExactFamilies(resolved?.report.fonts);
   if (!resolved) {
     // calculateMetadata always sets it; without it nothing was checked, so draw nothing
     return <AbsoluteFill style={{background: '#000'}} />;

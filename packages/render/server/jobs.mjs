@@ -25,6 +25,23 @@ export const classifyError = (err) => {
   return 'internal_error';
 };
 
+/**
+ * layer_still: the machine-readable refusal a composition threw when no layout of the catalog's
+ * fallback chain could draw the layer (`invalid_parameters: layer_unrenderable {json}`) — the
+ * slot to rewrite and why, so the layer stage can fix the text. null for any other error.
+ */
+export const refusalOf = (err) => {
+  const msg = String(err?.message ?? err ?? '');
+  const m = /layer_unrenderable (\{[^\n]*\})/.exec(msg);
+  if (!m) return null;
+  try {
+    const r = JSON.parse(m[1]);
+    return r && typeof r === 'object' && typeof r.slot === 'string' ? r : null;
+  } catch {
+    return null;
+  }
+};
+
 /** Chromium tabs for one render: the manifest's `render.concurrency` when it sets one
  * (never above the service's own REMOTION_CONCURRENCY), else the service's value. */
 export const renderConcurrencyOf = (manifest, serviceValue) => {
@@ -50,6 +67,7 @@ const publicOutput = (o) => {
     Object.assign(out, {mimeType: o.mimeType, bytes: o.bytes, width: o.width, height: o.height});
   }
   if (o.report) out.report = o.report;
+  if (o.refusal) out.refusal = o.refusal;
   if (o.failureReason) out.failureReason = o.failureReason;
   if (o.errorMessage) out.errorMessage = o.errorMessage;
   return out;
@@ -112,6 +130,7 @@ export class JobManager {
         failureReason: null,
         errorMessage: null,
         report: null,
+        refusal: null,
         cancel: null,
       };
     }
@@ -265,6 +284,7 @@ export class JobManager {
         out.status = 'failed';
         out.failureReason = timedOut ? 'timeout' : err?.failureReason ?? classifyError(err);
         out.errorMessage = String(err?.message ?? err).slice(0, 2000);
+        out.refusal = refusalOf(err);
         log('warn', 'output failed', {jobId: job.jobId, port, reason: out.failureReason, err: out.errorMessage});
       }
     } finally {

@@ -26,8 +26,6 @@ class PortType(StrEnum):
     #: `layer_still` (m-25017285): the LayerSpec of ADR 49, checked by the service against
     #: the manifest's `layer_catalog` for the format of each requested port.
     LAYER_SPEC = "layer_spec"
-    #: `layer_still`: the carousel slide `{index, total, role}` (checked with the layer).
-    SLIDE = "slide"
 
 
 class OutputKind(StrEnum):
@@ -158,7 +156,9 @@ class TemplateManifest(BaseModel):
     render: RenderSpec | None = None
     #: `layer_still`: the closed layout catalog (docs/catalogo-disenos-imagen-carrusel.md) —
     #: formats, safe zones, font sizes, per-layout slot limits. The service reads it to
-    #: validate a layer; it is the one copy of those numbers.
+    #: validate a layer — what the render enforces. The layer stage (m-25017283) keeps its own
+    #: `qualify_creative/layer_spec/catalog_v1.json`; a test comparing the two lands with
+    #: whichever of the two branches merges second.
     layer_catalog: dict[str, Any] | None = None
 
     @model_validator(mode="after")

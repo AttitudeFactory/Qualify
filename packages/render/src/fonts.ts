@@ -5,7 +5,7 @@
 // so what the job reports and what the composition draws always agree.
 import {useEffect, useState} from 'react';
 import {getAvailableFonts} from '@remotion/google-fonts';
-import {continueRender, delayRender} from 'remotion';
+import {cancelRender, continueRender, delayRender} from 'remotion';
 
 export const FALLBACK_HEADING = 'Noto Sans';
 export const FALLBACK_BODY = 'Noto Sans';
@@ -118,4 +118,46 @@ export const useBrandFonts = (
   }, [headingFamily, bodyFamily, handle]);
 
   return fonts;
+};
+
+/**
+ * The families a `layer_still` is measured with (review m-25017285 #8): the brand's, or the
+ * fallback when a family is unknown or does not load within FONT_TIMEOUT_MS — the same rule
+ * `useBrandFonts` applies. Plain family names, recorded in the report.
+ */
+export const resolveBrandFamilies = async (
+  headingFamily: string | undefined,
+  bodyFamily: string | undefined,
+): Promise<{heading: string; body: string}> => {
+  const [heading, body] = await Promise.all([
+    withTimeout(loadFamily(headingFamily, FALLBACK_HEADING), FALLBACK_HEADING),
+    withTimeout(loadFamily(bodyFamily, FALLBACK_BODY), FALLBACK_BODY),
+  ]);
+  return {heading, body};
+};
+
+const NOT_LOADED = '\u0000font-not-loaded';
+
+/**
+ * Draws with EXACTLY the families the layout was measured with. A family that measured fine
+ * but then fails to load here fails the render (dependency_failed) instead of silently drawing
+ * a different face than the one the boxes were sized for.
+ */
+export const useExactFamilies = (families: {heading: string; body: string} | null | undefined): Fonts => {
+  const heading = families?.heading ?? FALLBACK_HEADING;
+  const body = families?.body ?? FALLBACK_BODY;
+  const [handle] = useState(() =>
+    delayRender(`measured fonts: ${heading} / ${body}`, {timeoutInMilliseconds: FONT_TIMEOUT_MS + 10_000}),
+  );
+  useEffect(() => {
+    const need = (f: string, fallback: string) => (f === fallback ? Promise.resolve(f) : loadFamily(f, NOT_LOADED));
+    Promise.all([need(heading, FALLBACK_HEADING), need(body, FALLBACK_BODY)]).then((got) => {
+      if (got.includes(NOT_LOADED)) {
+        cancelRender(new Error(`font '${got[0] === NOT_LOADED ? heading : body}' measured but failed to load for drawing`));
+        return;
+      }
+      continueRender(handle);
+    });
+  }, [heading, body, handle]);
+  return {heading: `"${heading}", ${GENERIC}`, body: `"${body}", ${GENERIC}`};
 };

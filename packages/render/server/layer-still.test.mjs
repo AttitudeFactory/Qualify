@@ -10,7 +10,8 @@ import {test} from 'node:test';
 import {fileURLToPath} from 'node:url';
 import {validateProps} from './validate.mjs';
 import {layerProblems} from '../src/templates/layer_still/spec.mjs';
-import {contrast, resolveLayer, textColorOn, wrap} from '../src/templates/layer_still/engine.ts';
+import {LayerRefusal, contrast, opaque, resolveLayer, textColorOn, wrap} from '../src/templates/layer_still/engine.ts';
+import {refusalOf} from './jobs.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const manifest = JSON.parse(fs.readFileSync(path.join(here, '..', 'templates', 'layer_still', 'manifest.json'), 'utf8'));
@@ -179,7 +180,7 @@ test('plate: a subject that fills the frame ends on band, recorded step by step'
 test('plate: a word too long for the plate at the minimum size goes to band', () => {
   const r = run({layout_id: 'plate', title: 'Supercalifragilístico', anchor: 'top_left', subject_box: [0.5, 0.6, 0.9, 0.95]});
   assert.equal(r.report.layout_rendered, 'band');
-  assert.ok(r.report.fallbacks.some((f) => /title_does_not_fit|no_room_beside_subject/.test(f)));
+  assert.ok(r.report.fallbacks.some((f) => /word_too_wide|no_room_beside_subject/.test(f)));
 });
 
 test('scrim: subject reaching the text edge falls to band; text sits where the shadow is ≥ 60 %', () => {
@@ -313,10 +314,122 @@ test('info_card and brand_fill lay out at the catalog limits without overflow (f
   }
 });
 
-test('info_card has no fallback layout: a title over its lines is drawn at the minimum and reported', () => {
-  const r = run({layout_id: 'info_card', title: 'Te esperamos en el local', info_blocks: [{kind: 'hours', value: 'De 8 a 20'}]}, {format: '1:1', photo: null});
-  assert.equal(r.report.layout_rendered, 'info_card');
-  assert.match(r.report.overflow.join(), /title needs 2 lines at 72 px \(limit 1\)/);
+/** Runs and returns the refusal the engine throws (fails the test when it renders instead). */
+const refusalFor = (layer, over = {}) => {
+  try {
+    run(layer, over);
+  } catch (e) {
+    assert.ok(e instanceof LayerRefusal, String(e));
+    return e;
+  }
+  assert.fail('expected a LayerRefusal');
+};
+
+test('all fallbacks fail: a 28-char word is refused with the slot to rewrite, never drawn', () => {
+  const e = refusalFor({layout_id: 'plate', title: 'Supercalifragilisticoespiral', anchor: 'top_left', subject_box: [0.5, 0.6, 0.9, 0.95]});
+  assert.equal(e.refusal.code, 'layer_unrenderable');
+  assert.equal(e.refusal.slot, 'title');
+  assert.equal(e.refusal.reason, 'word_too_wide');
+  assert.match(e.refusal.detail, /Supercalifragilisticoespiral/);
+  assert.equal(e.refusal.layout_requested, 'plate');
+  assert.ok(e.refusal.attempts.length >= 8, 'every layout of the chain was tried');
+  // the message is what the server classifies (invalid_parameters) and parses (refusal)
+  assert.match(e.message, /^invalid_parameters: layer_unrenderable \{/);
+  const parsed = refusalOf(new Error(`Error: ${e.message}\n    at calculateMetadata (bundle.js:1:1)`));
+  assert.deepEqual(parsed, e.refusal);
+  assert.equal(refusalOf(new Error('Chromium crashed')), null);
+});
+
+test('info_card has no fallback: a title over its lines is refused, not drawn at the minimum', () => {
+  const e = refusalFor({layout_id: 'info_card', title: 'Te esperamos en el local', info_blocks: [{kind: 'hours', value: 'De 8 a 20'}]}, {format: '1:1', photo: null});
+  assert.equal(e.refusal.slot, 'title');
+  assert.equal(e.refusal.reason, 'too_many_lines');
+  assert.match(e.refusal.detail, /needs 2 lines at 72 px \(limit 1\)/);
+});
+
+test('overflow is enforced: a value over its lines refuses with that block', () => {
+  const long = 'Calle 10 # 4-25, local 3, frente al parque principal centro';
+  const e = refusalFor(
+    {layout_id: 'brand_fill', title: 'Te esperamos', info_blocks: [{kind: 'location', value: long}]},
+    {format: '4:5', photo: null, measure: (t, {role, size}) => [...t].length * size * (role === 'heading' ? 0.6 : 0.8)},
+  );
+  assert.equal(e.refusal.slot, 'info_blocks[0].value');
+  assert.equal(e.refusal.reason, 'too_many_lines');
+});
+
+test('brand_fill measures its blocks at the width it draws them (9:16 stays inside y 1536)', () => {
+  for (const format of FORMATS) {
+    const r = run(
+      {
+        layout_id: 'brand_fill',
+        title: 'Este festivo abrimos todo el día',
+        subtitle: 'Te esperamos con el horno encendido',
+        call_phrase: 'Te esperamos hoy',
+        info_blocks: [
+          {kind: 'contact', value: '+57 300 123 4567'},
+          ...(format === '9:16' ? [{kind: 'hours', value: 'Lunes a sábado de 7:00 a 20:00 y domingos de 8:00 a 13:00'}] : []),
+        ],
+      },
+      {format, photo: null},
+    );
+    const safe = catalog.formats[format].safe;
+    for (const l of lineRects(r)) assert.ok(within(l, safe), `${format}: ${JSON.stringify(l)}`);
+    assert.deepEqual(r.report.overflow, []);
+  }
+});
+
+test('info_card 9:16: the call phrase goes under the last block, or is dropped', () => {
+  const blocks = ['location', 'hours'].map((kind) => ({kind, value: 'Dato guardado del negocio'}));
+  const r = run({layout_id: 'info_card', title: 'Te esperamos', call_phrase: 'Pídelo por WhatsApp', info_blocks: blocks}, {format: '9:16', photo: null});
+  const call = r.texts.find((t) => t.slot === 'call_phrase');
+  const lastValue = r.texts.filter((t) => t.slot.endsWith('.value')).at(-1);
+  assert.ok(call && lastValue);
+  const lastBottom = Math.max(...lastValue.lines.map((l) => l.y + lastValue.size * lastValue.lineHeight));
+  assert.ok(call.lines[0].y >= lastBottom, `call phrase at ${call.lines[0].y}, last block ends at ${lastBottom}`);
+  const four = ['location', 'hours', 'payment', 'products'].map((kind) => ({kind, value: 'Calle 10 # 4-25, local 3, frente al parque principal centro'}));
+  const full = run({layout_id: 'info_card', title: 'Te esperamos', call_phrase: 'Pídelo por WhatsApp', info_blocks: four}, {format: '9:16', photo: null});
+  const c2 = full.texts.find((t) => t.slot === 'call_phrase');
+  if (c2) {
+    const lv = full.texts.filter((t) => t.slot.endsWith('.value')).at(-1);
+    assert.ok(c2.lines[0].y >= Math.max(...lv.lines.map((l) => l.y + lv.size * lv.lineHeight)));
+  } else assert.ok(full.report.dropped_slots.includes('call_phrase'));
+});
+
+test('translucent brand colours are drawn opaque and contrast is computed on the opaque colour', () => {
+  assert.equal(opaque('#b5532a80'), '#B5532A');
+  assert.equal(opaque('#abc'), '#AABBCC');
+  const r = run({layout_id: 'band', title: 'Tu pan de hoy', anchor: 'bottom', container_color: 'surface', subject_box: [0.3, 0.1, 0.7, 0.5]}, {palette: {accent: '#B5532A33', text: '#FFFFFF00', surface: '#FFF4E680'}});
+  assert.equal(r.containers[0].color, '#FFF4E6');
+  for (const t of r.texts) for (const l of t.lines) for (const sp of l.spans) assert.match(sp.color, /^#[0-9A-F]{6}$/i);
+  assert.ok(r.report.contrast.text >= 4.5);
+  assert.equal(r.logo.tile, '#FFF4E6');
+});
+
+test('script faces: line height and the gap under the title come from the measured ink', () => {
+  // a Pacifico-like face: tall ascenders and long descenders
+  const ink = (_t, {size}) => ({ascent: size * 1.05, descent: size * 0.45, fontAscent: size * 1.16, fontDescent: size * 0.55});
+  const layer = {layout_id: 'band', title: 'Te esperamos hoy en el local', subtitle: 'Helado de yogur recién hecho', anchor: 'bottom', subject_box: [0.3, 0.1, 0.7, 0.5]};
+  const plain = run(layer);
+  const script = run(layer, {ink});
+  assert.equal(plain.report.title_metrics.line_height, 1.08);
+  assert.ok(script.report.title_metrics.line_height > 1.5, JSON.stringify(script.report.title_metrics));
+  assert.ok(script.report.title_metrics.gap_after > plain.report.title_metrics.gap_after, JSON.stringify([plain.report.title_metrics, script.report.title_metrics]));
+});
+
+test('the sibling LayerSpec v1 dumps (m-25017283) pass the boundary and render', () => {
+  const fixture = JSON.parse(fs.readFileSync(path.join(here, 'fixtures', 'layer-spec-v1-sibling.json'), 'utf8'));
+  assert.ok(fixture.specs.length >= 7);
+  for (const spec of fixture.specs) {
+    const hasPhoto = !!spec.photo || spec.highlight_content?.kind === 'photo';
+    assert.deepEqual(layerProblems(catalog, spec, {formats: [spec.format], hasPhoto}), [], spec.layout_id);
+    const r = resolveLayer({catalog, format: spec.format, layer: spec, photo: hasPhoto ? PHOTO : null, priceText: '$ 12.000', isFood: true, palette, headingFamily: 'Poppins', hasLogo: true, measure});
+    assert.ok(r.report.layout_rendered, spec.layout_id);
+  }
+});
+
+test('the layer id reaches the report', () => {
+  const r = run({layout_id: 'plate', title: 'Tu pan', anchor: 'top_left', subject_box: [0.3, 0.6, 0.7, 0.9], layer_id: 'L-42'});
+  assert.equal(r.report.layer_id, 'L-42');
 });
 
 test('wrap never cuts a word', () => {
