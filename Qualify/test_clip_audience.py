@@ -33,6 +33,7 @@ from .creative_vm import (
     AUDIENCE_NONE_LABEL,
     AUDIENCE_QUESTION,
     AUDIENCE_SUMMARY_LABEL,
+    AUDIENCE_SUMMARY_NO_PRICE,
     PRICE_FACT_LABEL,
     audience_options,
     audience_value,
@@ -82,8 +83,14 @@ def _price_rows(state: CreativeState) -> list[dict[str, str]]:
 
 def test_the_question_and_its_six_answers_in_the_owners_words() -> None:
     assert AUDIENCE_QUESTION == "¿A quién le habla este video?"
-    assert AUDIENCE_HINT == "Opcional. Si no sabes, déjalo en «Sin preferencia»."
-    assert AUDIENCE_NO_PRICE == "Este video no mencionará el precio."
+    assert AUDIENCE_HINT == (
+        "Así el video le habla a ese cliente. Si no sabes, déjalo en «Sin preferencia»."
+    )
+    assert AUDIENCE_NO_PRICE == (
+        "Este video no dirá el precio porque es para quien aún no piensa en ti. Elige otra "
+        "opción si quieres mostrarlo."
+    )
+    assert AUDIENCE_SUMMARY_NO_PRICE == "Sin precio: el video es para quien aún no piensa en ti"
     assert audience_options() == (
         (AUDIENCE_NONE, "Sin preferencia"),
         ("unaware", "Para quien aún no piensa en ti"),
@@ -304,3 +311,67 @@ async def test_the_card_proposes_with_step_threes_answer(
     PartsStartState.set_story.fn(proxy.state, "Mi video")
     await PartsStartState.propose.fn(proxy)
     assert calls[0]["awareness_level"] == sent
+
+
+# --- UX review (m-25026509): the summary's price, the closed line, the live region ------
+
+
+def test_the_summary_says_why_there_is_no_price_never_ninguno(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _clip()
+    state.pick_catalog_product("p1")
+    assert _summary(state, monkeypatch)["Datos clave"] == "Precio: $18.000"
+    state.set_brief_audience("unaware")
+    assert _summary(state, monkeypatch)["Datos clave"] == AUDIENCE_SUMMARY_NO_PRICE
+    # a fact the owner added still shows as today
+    state.brief_highlights = [*state.brief_highlights, {"key": "Horario", "value": "Hasta las 11"}]
+    assert _summary(state, monkeypatch)["Datos clave"] == "Horario: Hasta las 11"
+    # no product (nothing was hidden): «Ninguno» as before
+    other = _clip()
+    other.set_brief_audience("unaware")
+    assert _summary(other, monkeypatch)["Datos clave"] == "Ninguno"
+
+
+def test_after_the_parts_card_que_decir_shows_a_closed_line_until_cambiar() -> None:
+    state = _clip()
+    state.set_brief_audience("most_aware")
+    assert state.audience_closed is False  # a plain clip: the open question
+    state.parts_without_reel = True  # the plan came from «Armar mi video por partes»
+    assert state.audience_closed is True
+    assert state.audience_answer_label == "Para quien está listo para comprar"
+    state.edit_audience()
+    assert state.audience_closed is False  # «Cambiar» opens the dropdown in place
+    state._start_clean()
+    assert state.audience_editing is False
+
+
+def test_the_closed_line_says_sin_preferencia_too() -> None:
+    state = _clip()
+    state.parts_without_reel = True
+    assert state.audience_answer_label == "Sin preferencia"
+
+
+def test_step_three_can_close_the_question_the_parts_card_never_does() -> None:
+    from .audience_view import audience_question
+
+    step3 = str(audience_question("clip-audience", closable=True))
+    assert "audience_closed" in step3 and "edit_audience" in step3
+    assert _js(AUDIENCE_SUMMARY_LABEL + ": ") in step3
+    card = str(audience_question("parts-audience"))
+    assert "audience_closed" not in card and "edit_audience" not in card
+
+
+def test_the_no_price_status_is_always_mounted_and_only_its_text_changes() -> None:
+    from .audience_view import audience_question
+
+    rendered = str(audience_question("clip-audience"))
+    # the status element is a sibling of the select, drawn unconditionally ...
+    status = rendered[rendered.index('jsx(RadixThemesText,{"aria-live":"polite"') :]
+    head, children = status.split("},", 1)
+    assert 'role:"status"' in head
+    # ... and only its text depends on the answer
+    assert children.startswith("(reflex___state____state__qualify___creative_state")
+    assert "audience_no_price" in children.split("?", 1)[0]
+    assert _js(AUDIENCE_NO_PRICE) in children
+    assert rendered.count('role:"status"') == 1
