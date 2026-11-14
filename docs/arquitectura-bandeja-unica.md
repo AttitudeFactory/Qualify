@@ -15,7 +15,7 @@
 - **Menú automático.** Un motor neutral con un traductor por canal y un menú por negocio (§3.2).
 - **Menú en Instagram.** Ya lo decidió el fundador el 2026-10-23 (m-24789557: menú fijo,
   «Hablar con alguien» siempre, ningún texto que diga que Qualify responde solo). Lo que falta:
-  - escribir el ADR 48 en §6 (nunca se escribió);
+  - escribir el ADR 48 en §6 (nunca se escribió; número provisional: el 48 ya lo ocupa el ADR del catálogo de WhatsApp (PR #618) y el 49 está firmado; el ADR del menú toma el siguiente número libre al escribirse);
   - hacer obligatoria en el esquema la entrega a persona;
   - revisar los textos de la app que chocan con la tercera condición (§3.3).
 - **Lo que bloquea a clientes reales en Instagram** es el App Review de mensajes (§5).
@@ -134,9 +134,17 @@ Propuesta `[PROPUESTO]`, igual para todos los canales:
 - El predicado vive **una vez** en SQL (función de Python que devuelve el fragmento) y lo usan la
   lista y `attention/counts.py`, para que el número del menú y la lista no puedan diferir.
 
-Cerrar un chat en Instagram no necesita migración: `threads.status` ya admite `closed`. Falta
-decidir si un mensaje entrante nuevo lo reabre (en WhatsApp: verificar en `chats.py` y
-`handler.py` antes del corte C9).
+Cerrar un chat en Instagram no necesita migración: `threads.status` ya admite `closed`.
+
+> **Decidido y construido después de esta nota (2026-11-13).** La regla quedó en
+> `packages/api/src/qualify_api/inbox/awaiting.py` y difiere de la propuesta de arriba en dos
+> puntos: una respuesta del menú automático no saca el chat si se entregó a una persona o falló un
+> envío automático (decisión (ii), «Solo si pasó a persona»), y un chat de Instagram cuenta solo
+> mientras su ventana de 24 h está abierta («Ventana + cerrar chat»). La lista única los usa
+> desde m-25017859 (PR #665), con el filtro adicional «Sin responder a tiempo». El corte C9 se
+> entregó en m-25026457 (PR #653): en Instagram solo un mensaje realmente nuevo reabre un chat
+> cerrado; WhatsApp sigue reabriendo con cualquier entrante, incluso repetido (seguimiento sin
+> ticket). Detalle: `docs/epica-bandeja-unica.md` §6 (ii) y (vii).
 
 ## 3. Respuesta automática (menú) también en Instagram Direct
 
