@@ -3,9 +3,10 @@ layer stage (Claude, `qualify_api.creative.image_pipeline.layer`, m-25017283) an
 Remotion composition (`packages/render`, m-25017285).
 
 Everything here comes from the closed catalog (`docs/catalogo-disenos-imagen-carrusel.md`,
-approved by the founder 2026-11-14), read from a data file, `catalog_v1.json`: layout ids, the parameters each layout takes (§1.6), the text slots
-and their character limits per layout and format (§1.5, §2), the fixed info-block labels
-(§1.5), the carousel roles (§6) and the writing rules a free text must pass (§1.8).
+approved by the founder 2026-11-14), read from a data file, `catalog_v1.json`: layout ids,
+the parameters each layout takes (§1.6), the text slots and their character limits per
+layout and format (§1.5, §2), the fixed info-block labels (§1.5), the carousel roles (§6)
+and the writing rules a free text must pass (§1.8).
 
 Validation is deterministic and strict: a spec that breaks any rule raises
 `pydantic.ValidationError`, never gets trimmed or guessed. What it cannot see — whether a
