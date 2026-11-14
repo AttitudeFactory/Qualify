@@ -90,6 +90,7 @@ from qualify_api.creative.media import (
     LocalMediaStore,
     MediaProducer,
     PartWindows,
+    PreviousParts,
     R2ReadingMediaStore,
 )
 from qualify_api.creative.observed import traced_providers
@@ -474,6 +475,8 @@ def production_content_service() -> ContentService:
             part_windows=_part_windows(),
             # VE-10a: the joined preview of a video by parts (the worker's `join` phase)
             part_joins=_part_joins(),
+            # VE-13: the previous part a «Sigue a la anterior» part continues
+            previous_parts=_previous_parts(),
         ),
     )
     service.dispatcher = (
@@ -496,6 +499,13 @@ def _part_joins() -> PartJoinStore:
     from qualify_api.creative.part_join import DbPartJoins  # noqa: PLC0415
 
     return DbPartJoins()
+
+
+def _previous_parts() -> PreviousParts:
+    """VE-13's lookup of the previous part (as the owning tenant, `tenant_session`)."""
+    from qualify_api.creative.part_extend import DbPreviousParts  # noqa: PLC0415
+
+    return DbPreviousParts()
 
 
 def _record_progress(tenant_id: UUID, draft_id: UUID) -> None:

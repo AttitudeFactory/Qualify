@@ -147,3 +147,40 @@ despliegue y corra una semana; se anotan aquí como SD25-003 (borrador y final d
   para 2.x, así que un POST de 1.x que vence sube su error como antes (sin duplicar).
 - **Pendiente.** Medir en vivo el tiempo del POST con referencias ligeras (próxima prueba
   SD25-003 o en uso real).
+
+## `extend` («Sigue a la anterior») — construido sin prueba en vivo — 2026-11-13
+
+- **Tickets:** m-24880328 (modo `extend` en adaptador, esquema y servicio) y m-24921070
+  (VE-13, el cableado por parte). Sin gasto: **ninguna tarea `extend` se ha mandado todavía**.
+- **Qué se manda.** Una tarea omni de 2.5 con `omni_reference_task_type: extend`,
+  `ratio: adaptive`, `duration` = los segundos de la parte (4–10), `draft: true` (480p),
+  `generate_audio` como cualquier parte, las fotos del producto como `reference_images` y
+  **un** `reference_video`: el archivo de la parte anterior tal como salió de Seedance (la
+  copia byte a byte que guarda la cola, `queue-{job}.bin`, copiada sin recodificar a
+  `extend-source-{asset}.mp4` en la carpeta de la parte). Sin recodificar porque BytePlus
+  acepta rostros solo en salidas propias sin editar. El precio se estima con
+  `reference_video_seconds` = lo que dura ese archivo (tarifa «con video de entrada»).
+  Prompt: `part_extend_prompt` (versión de prompt de parte 5), empieza por «Extend video
+  @Video1: continue it seamlessly from its last frame…»; el modelo clasifica la tarea por el
+  prompt (`TaskTypeMismatch` si no la pide).
+- **Lo que no se sabe [H] y cómo lo cubre el código:**
+  1. *¿`extend` acepta `draft: true`?* Interruptor `QUALIFY_PARTS_EXTEND` (`off` por
+     omisión, `draft` para activarlo). Apagado, nada crea ni manda una parte `extend`: el
+     plan la rechaza con «Todavía no podemos crear una parte que siga a la anterior» y la
+     pantalla muestra la opción desactivada. Si la prueba muestra que no acepta borrador,
+     se queda apagado (nunca se pasa a un final sin vista previa).
+  2. *¿Devuelve solo el tramo nuevo o el video entero?* `QUALIFY_SEEDANCE_EXTEND_OUTPUT`
+     (`auto` por omisión, `segment`, `whole`). En `auto` se mide la salida y se compara con
+     las dos lecturas (segundos pedidos frente a entrada + pedidos). La pieza guarda
+     `params.part.extend.output`, `input_seconds` y `output_seconds`; la unión se queda solo
+     con el tramo nuevo en los dos casos (`part_join.part_span`), así que ningún cuadro de la
+     parte anterior sale dos veces (prueba sintética con PyAV en
+     `test_creative_part_extend.py`).
+  3. *¿Cómo se interpreta `duration`?* Se manda la duración del tramo nuevo. Si la prueba
+     muestra que es la duración total, se corrige aquí y en `_clip`.
+- **Prueba en vivo propuesta (pendiente del OK de Deivid):** con un producto de Nibbles,
+  parte 1 «Nueva» (borrador 5 s, sin video de entrada, ≈ US$0,53) y parte 2 `extend` sobre
+  ella (borrador 5 s con 5 s de entrada: ≈ 95.000 tokens a 6,40/M ≈ US$0,61; si devuelve el
+  video entero y se cobra por la salida de 10 s, ≈ US$0,93). Total ≈ **US$1,15–1,50**. Con
+  el final 1080p de la parte 2 para ver si el contrato se mantiene (R10/VE-16), ≈ US$1,70–4,20
+  más. Registrar ids de tarea, tokens, duración de salida y si la unión empalma.
