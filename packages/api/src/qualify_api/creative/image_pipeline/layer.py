@@ -29,7 +29,7 @@ that slide has no layer (`LayerResult.failed`), never a guessed one.
 **The base check folded in** (ADR 49 §8.2, founder decision 2): `base_has_invented_text`
 is part of this same answer. `LayerResult.invented_text` lists the positions whose
 Seedream base shows invented letters, buttons or a logo; the caller regenerates that base
-ONCE — the cap is a unique key in the database (`piece_base_regenerations`, 0166), not an
+ONCE — the cap is a unique key in the database (`piece_base_regenerations`, 0168), not an
 `if` — and asks for that slide's layer again.
 
 **Data:** the photos travel as base64 image blocks, never a public URL; `claude_tools`
@@ -182,10 +182,17 @@ class LayerRequest:
     tone: str = ""
     facts: BusinessFacts = field(default_factory=BusinessFacts)
     products: tuple[CatalogProduct, ...] = ()
+    #: A gallery's number of slides when only some are sent (its generated ones): the
+    #: roles (cover, body, closing) follow the whole gallery. None: `len(slides)`.
+    slide_count: int | None = None
 
     @property
     def is_carousel(self) -> bool:
         return self.piece_type == CAROUSEL
+
+    @property
+    def count(self) -> int:
+        return self.slide_count or len(self.slides)
 
 
 @dataclass
@@ -365,7 +372,7 @@ def _coverage_text(request: LayerRequest) -> str:
             "o un dato por imagen, título corto: {body}); la última es el cierre (la invitación y "
             "cómo pedir: {closing}). Paleta y container_color iguales en todas."
         ).format(
-            n=len(request.slides),
+            n=request.count,
             cover=", ".join(roles["cover"]),
             body=", ".join(roles["body"]),
             closing=", ".join(roles["closing"]),
@@ -451,7 +458,7 @@ def spec_from_answer(raw: dict[str, Any], request: LayerRequest, slide: SlideInp
     layout = str(raw.get("layout_id") or "")
     problems: list[str] = []
     allowed = (
-        catalog()["carousel_roles"][_role(slide.position, len(request.slides)).value]
+        catalog()["carousel_roles"][_role(slide.position, request.count).value]
         if request.is_carousel
         else _COVERAGE.get(request.piece_type, _COVERAGE[FREE_IDEA])
     )
@@ -519,9 +526,9 @@ def spec_from_answer(raw: dict[str, Any], request: LayerRequest, slide: SlideInp
         "highlight_content": highlight,
         "photo_strip": layout == "info_card" and slide.photo is not None,
         "carousel": {
-            "role": _role(slide.position, len(request.slides)).value,
+            "role": _role(slide.position, request.count).value,
             "index": slide.position,
-            "count": len(request.slides),
+            "count": request.count,
         }
         if request.is_carousel
         else None,
