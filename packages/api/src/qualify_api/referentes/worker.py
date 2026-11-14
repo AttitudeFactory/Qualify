@@ -102,7 +102,7 @@ def production_worker(
     tenants. Only that service touches what belongs to no business: it copies its runs'
     idea covers to R2 and hands the ideas to the shared analysis, drains that queue and
     purges the stored reel sources and covers, deleting for real only with
-    `QUALIFY_REEL_PURGE_EXECUTE`, and runs the daily hashtag pilot (`_production_hashtags`).
+    `QUALIFY_REEL_PURGE_EXECUTE`, and runs the daily hashtag pilot (`_hashtag_chore`).
     A `--tenant` worker runs `scoped_run`: no analysis row, no R2 object, no hashtag
     read."""
     every = tenant_ids is None
