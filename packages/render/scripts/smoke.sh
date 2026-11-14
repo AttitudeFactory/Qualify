@@ -76,7 +76,7 @@ curl -sS -o /dev/null -w "unknown layout → %{http_code}\n" -X POST "$BASE/esti
 
 echo "== layer_still: one plate still (feed), report on the output"
 J3=$(uuid); T0=$(now)
-LAYER="{\"layout_id\":\"plate\",\"layout_version\":1,\"title\":\"Tu yogurt de hoy\",\"anchor\":\"top_left\",\"container_color\":\"surface\",\"subject_box\":[0.2,0.2,0.8,0.8]}"
+LAYER="{\"layout_id\":\"plate\",\"layout_version\":1,\"title\":\"Tu yogurt de hoy\",\"anchor\":\"top_left\",\"container_color\":\"surface\",\"format\":\"4:5\",\"photo\":{\"subject_box\":[0.2,0.55,0.8,0.95],\"logo_in_photo\":false,\"base_has_invented_text\":false}}"
 curl -fsS -o /dev/null -w "POST /render → %{http_code}\n" -X POST "$BASE/render" -H 'content-type: application/json' \
   -d "{\"jobId\":\"$J3\",\"templateId\":\"layer_still\",\"version\":1,\"outputs\":[\"feed\"],\"props\":{\"brand\":{\"name\":\"Polette\",\"palette\":[\"#F4C2C2\",\"#5A2A27\",\"#FFFFFF\"],\"fonts\":{\"heading\":\"Poppins\",\"body\":\"Inter\"},\"logo\":\"asset://$A2\"},\"photos\":[\"asset://$A1\"],\"layer\":$LAYER}}"
 poll "$J3"; T1=$(now); echo "layer_still wall-clock: $(( (T1 - T0) / 1000 )) s"
