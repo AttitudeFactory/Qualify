@@ -41,6 +41,12 @@ A pass, in order:
    (step 7 of `run`), while their CDN links are fresh; a `--tenant` worker (local) runs
    `scoped_run`, which writes no global analysis row and no public R2 object. A stop
    requested while the next run was being picked starts nothing: the run stays `queued`.
+7. **Hashtags** — at start and then every 24 h, when the worker was built with it (only
+   the `--all-tenants` service) and no stop was requested: the weekly TikTok read of the
+   pilot businesses (`qualify_api.hashtags.pilot.run_pilot`, m-25026378, D3). Last, so it
+   never delays a run; anything it raises is logged by type and the worker goes on; it
+   gets the stop signal and checks it between businesses and between hashtags. With
+   `QUALIFY_HASHTAG_WEEKLY_READ` off it reads nothing at all.
 
 There is no switch of its own (architect, 2026-11-04): the screen reads only what the
 runs store, so with the worker off every screen would stay empty. What bounds the spend:
@@ -175,13 +181,16 @@ class PassReport:
     retried: list[RecoveredRun] = field(default_factory=list)
     #: What the purge of the stored reel sources did, when this pass ran it.
     purge: Any = None
+    #: What the daily hashtag chore did (`weekly.TickReport`), when this pass ran it.
+    hashtags: Any = None
     #: The outcomes of the analysis rows this pass drained (`reel_analysis_worker.Outcome`).
     analyses: list[Any] = field(default_factory=list)
     outcomes: list[reel_runs.RunOutcome] = field(default_factory=list)
     #: Runs whose `run` raised (it ends its own failures `error`; this is what escaped
     #: it, e.g. the database going away — the run stays `running` until recovered).
     run_errors: int = 0
-    #: The steps that failed outright (`schedule`, `recover`, `retry`, `purge`, `drain`, `next`).
+    #: The steps that failed outright (`schedule`, `recover`, `retry`, `purge`, `drain`, `next`,
+    #: `hashtags`).
     errors: list[str] = field(default_factory=list)
 
     @property
@@ -210,6 +219,8 @@ class ReelsWorker:
         purge_every: timedelta = timedelta(hours=24),
         drain: Callable[[], Any] | None = None,
         drain_max: int = DRAIN_PER_PASS,
+        hashtags: Callable[[datetime], Any] | None = None,
+        hashtags_every: timedelta = timedelta(hours=24),
         max_attempts: int = reel_runs.MAX_ATTEMPTS,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         should_stop: Callable[[], bool] = lambda: False,
@@ -231,6 +242,8 @@ class ReelsWorker:
         self.purge_every = purge_every
         self._drain = drain
         self.drain_max = drain_max
+        self._hashtags = hashtags
+        self.hashtags_every = hashtags_every
         self.max_attempts = max_attempts
         self._clock = clock
         self._should_stop = should_stop
@@ -238,6 +251,7 @@ class ReelsWorker:
         self._next_schedule: datetime | None = None
         self._next_retry: datetime | None = None
         self._next_purge: datetime | None = None
+        self._next_hashtags: datetime | None = None
         self._failure_logged: dict[str, float] = {}
         #: True while `reel_runs.run` is in flight: the CLI's signal handler raises
         #: `RunInterrupted` into it only then.
@@ -283,7 +297,24 @@ class ReelsWorker:
                 self._failed("purge", report, exc)
         self._drain_analyses(report)
         self._start_runs(report)
+        self._hashtag_chore(now, report)
         return report
+
+    # -- 7. hashtags -------------------------------------------------------------------
+
+    def _hashtag_chore(self, now: datetime, report: PassReport) -> None:
+        """The daily weekly-hashtag pass (step 7): at most once per `hashtags_every` in
+        this process, remembered like the purge. Never raises: the reels loop must not
+        suffer for it."""
+        if self._hashtags is None or self._should_stop():
+            return
+        if self._next_hashtags is not None and now < self._next_hashtags:
+            return
+        self._next_hashtags = now + self.hashtags_every
+        try:
+            report.hashtags = self._hashtags(now)
+        except Exception as exc:  # noqa: BLE001 — logged by type; tomorrow tries again
+            self._failed("hashtags", report, exc)
 
     # -- 1. schedule -------------------------------------------------------------------
 

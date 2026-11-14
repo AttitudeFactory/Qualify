@@ -27,6 +27,13 @@ negocios que se guarden desde el PR #642. Mientras no exista una pantalla para e
 un negocio actual es un cambio a mano en su política. Decidido por Herwin en chat el 2026-11-13
 `[F]`.
 
+**D3 —** (2026-11-14) La lectura semanal corre dentro del proceso de reels, una pasada al día,
+solo para un negocio piloto (Bianki) durante cuatro semanas. Descartado: un proceso nuevo (más
+memoria en un servidor justo), una tarea programada en el servidor (fuera de los caminos de
+despliegue) y dejarla apagada. Costo máximo: 25 créditos al mes. Se reabre si al 2026-12-15 la
+entrega 4 no muestra más alcance o si la pasada retrasa las lecturas de reels. Qué negocios
+cuentan como activos se decide cuando se abra a todos.
+
 ## 1. Objetivo
 
 Que las pocas etiquetas que lleva una publicación sean las que la gente del rubro está viendo, sin
@@ -53,7 +60,7 @@ que el dueño tenga que investigarlas y sin subir el costo. Qualify sugiere; el 
   de clasificación pagada.
 - Desde el PR #647, el editor usa `resolve_popular`: las sugerencias del catálogo y la lista que
   recibe «Sugerir con IA» van primero con las etiquetas más vistas en los últimos 90 días.
-- Entrega 3 (este PR, m-25026378): la lectura semanal en TikTok (`qualify_api/hashtags/weekly.py`,
+- Entrega 3 (PR #666, m-25026378): la lectura semanal en TikTok (`qualify_api/hashtags/weekly.py`,
   migración 0167), apagada hasta encender `QUALIFY_HASHTAG_WEEKLY_READ`. Una etiqueta con una
   respuesta guardada en los últimos 7 días no se vuelve a leer; un negocio se intenta como mucho
   una vez al día; se detiene en el primer error; deja margen al dueño (no lee si el negocio ya
@@ -61,7 +68,14 @@ que el dueño tenga que investigarlas y sin subir el costo. Qualify sugiere; el 
   nunca gasta más de 5 créditos de esta lectura en 7 días seguidos, cuente lecturas buenas o
   fallidas y aunque cambie sus etiquetas cada día; como mucho 25 en un mes. Si dos negocios
   leen la misma etiqueta a la vez, solo uno paga.
-- **Límite conocido, a decidir por el fundador antes de encenderla:** en producción solo se leen
+- Piloto de la entrega 3 (D3, m-25026378): el trabajador de reels de producción corre esa
+  lectura una vez al día, al final de su pasada, solo para los negocios de
+  `QUALIFY_HASHTAG_WEEKLY_TENANTS` (en el servicio `reels-worker` de
+  `deploy/docker-compose.prod.yml`). Un negocio de la lista se lee aunque no haya abierto «Ideas
+  para tus reels»; con la lista vacía no se lee a nadie aunque el interruptor esté encendido. Un
+  fallo de la lectura se anota y el trabajador sigue con los reels; al apagarse (un despliegue)
+  la lectura se corta entre etiquetas.
+- **Límite conocido, a decidir cuando se abra a todos (D3):** con `--all-tenants` solo se leen
   los negocios que el trabajador de reels considera activos, y eso significa exactamente «una
   marca del negocio abrió la pantalla «Ideas para tus reels» en los últimos 14 días». No
   significa «cliente activo»: un negocio que publica a diario pero nunca abre esa pantalla no se
@@ -96,7 +110,7 @@ Las cuatro lecturas costaron 8 créditos (4 se repitieron por un error al guarda
 |---|---|---|---|---|---|
 | 1 | **Cinco, bien elegidas** | m-25026376 | Una publicación con las cinco etiquetas que más le sirven, no doce | — | Hecha: PR #642 (2026-11-13) |
 | 2 | **El catálogo sabe qué se ve** | m-25026377 | «Popular» significa vistas recientes en su rubro, no «lo vimos muchas veces» | — | Hecha: PR #644 (migración 0162) y PR #647 (el editor usa `resolve_popular`), 2026-11-13 |
-| 3 | **Lectura semanal en TikTok** | m-25026378 | Etiquetas que acompañan esta semana a los videos más vistos de su rubro | 2 | En revisión: migración 0167, apagada por defecto |
+| 3 | **Lectura semanal en TikTok** | m-25026378 | Etiquetas que acompañan esta semana a los videos más vistos de su rubro | 2 | Construida: PR #666 (migración 0167). Piloto (D3): corre una vez al día dentro del trabajador de reels, solo para el negocio de la lista; se enciende en producción cuando se ponga su UUID en el servicio `reels-worker` |
 | 4 | **Medir si sirve** | m-25026379 | Saber si el cambio trajo más alcance, con un negocio real | 1, 3 | Pendiente |
 
 ## 5. Criterios de aceptación (los que valen son los de cada ticket)
