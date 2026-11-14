@@ -47,9 +47,12 @@ for that id **under RLS** (`tenant_session`) and calls the channel's EXISTING se
   text), `ApprovalRequired`, `NotAMember` (only when the caller wraps the call in
   `tenancy.acting.acting_login`), `CapabilityUnavailable`, WhatsApp's `UnknownAgent`,
   Instagram's `ThreadChangedSinceSeen` (its `view` is the thread as it is now).
-  **Caveat:** `UnknownChannel` and WhatsApp's `UnknownAgent` are `ValueError`s (their
-  existing bases), so a caller's `except ValueError` meant for «texto rechazado» must
-  catch them first.
+  **Caveats:** two of those pass-through errors ARE `PermissionError`s (their existing
+  bases): `ApprovalRequired` (reachable only when a caller passes no approval — a caller
+  bug) and `CapabilityUnavailable` (unreachable today: the dispatcher never passes quick
+  replies). A caller must catch them before a generic `except PermissionError` («no
+  session»). Likewise `UnknownChannel` and WhatsApp's `UnknownAgent` are `ValueError`s,
+  so a caller's `except ValueError` meant for «texto rechazado» must catch them first.
 
 ## What it does NOT check — the caller's job
 
@@ -61,9 +64,14 @@ for that id **under RLS** (`tenant_session`) and calls the channel's EXISTING se
   (`Qualify/conversations_state.py` `account_can_reply`), and revoked accounts are not
   listed; the WhatsApp screen has no such rule today. The dispatcher does not repeat
   either rule: it is per channel, lives in the connections projection, and a status-only
-  check here would be a third, new rule. Both workers already hold a queued row while its
-  connection is not `active` (`connection_unavailable`, retried every 60 s, attempts kept)
-  and re-check the 24 h window before sending.
+  check here would be a third, new rule. What happens today to a row queued on a
+  connection that is not `active`: in both workers the connection check runs BEFORE the
+  24 h window check, so the row is put back (`connection_unavailable`, retried every 60 s,
+  attempts kept). If the connection never becomes `active` again it is re-polled every
+  60 s indefinitely and never reaches `window_closed`. Once the connection is `active`
+  again, the window is checked: within 24 h of the customer's last message the approved
+  text goes out late; after that it fails as `window_closed`. Capping those retries is
+  worker work, outside this module.
 - **Membership on close/reopen/assign.** Neither channel service gates those on
   `require_acting_member` today; only the sends do.
 
