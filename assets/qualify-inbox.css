@@ -365,7 +365,10 @@
    gray-12, the channel's wash in the HEADER. The rest are UX PROPOSALS still awaiting
    his nod, each one variable on `.q-chat-thread` so it flips in one line:
      --q-chat-scroll-wash  (a) nothing under the messages (today's WhatsApp had a green
-                               wash there); the alternative is kept, commented, beside it
+                               wash there). Both variants pass in the built screen, light
+                               and dark (m-25027371); «none» is a UX preference — on a
+                               phone the two look alike. The alternative is commented
+                               beside it.
      --q-chat-out-meta     (b) time, «Enviado», unread ticks inside the business bubble
      --q-chat-out-error    (c) an error inside the business bubble (links: (c) is
                                `rx.link(high_contrast=True)`, `BUBBLE_LINK_HIGH_CONTRAST`)
@@ -383,7 +386,6 @@
 }
 /* The header: the channel's wash lives here, and only here. */
 .q-chat-head {
-  margin: -0.25rem -0.25rem 0;
   padding: 0.5rem 0.75rem 0.75rem;
   border-radius: var(--q-radius-control);
   background: var(--q-chat-tint-3);
@@ -480,10 +482,11 @@
   background: var(--q-control-fill);
   box-shadow: inset 0 0 0 1px var(--q-control-edge);
 }
-.q-chat-order .rt-AccordionTrigger {
+/* Reflex's accordion names its parts without Radix Themes' `rt-` prefix. */
+.q-chat-order .AccordionTrigger {
   min-height: 44px;
 }
-.q-chat-order .rt-AccordionContent > * {
+.q-chat-order .AccordionContent > * {
   margin-top: 0.25rem;
 }
 /* The «⋯» menu's entries are ≥ 44 px targets (N12). */
@@ -517,13 +520,14 @@
   .q-chat-msg--bare .q-bubble--out {
     box-shadow: none;
   }
-  /* m-24984052 kept: the composer clears the iPhone's home bar; its buttons and
-     «Cargar anteriores» are ≥ 44 px targets (the back button already is). */
-  .q-chat-thread .q-wa-composer {
+  /* m-24984052 kept, WhatsApp only (as before): the composer clears the iPhone's home
+     bar; its buttons and «Cargar anteriores» are ≥ 44 px targets. Instagram's reply box
+     is the composer story's (m-25027374) and keeps its look here. */
+  .q-chat-thread--whatsapp .q-wa-composer {
     padding-bottom: max(0.25rem, env(safe-area-inset-bottom));
   }
-  .q-chat-thread .q-wa-composer .rt-Button,
-  .q-chat-scroll .rt-Button {
+  .q-chat-thread--whatsapp .q-wa-composer .rt-Button,
+  .q-chat-thread--whatsapp .q-chat-scroll .rt-Button {
     min-height: 44px;
   }
 }

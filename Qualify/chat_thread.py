@@ -12,7 +12,8 @@ sees is the same on both:
   para responder»), the channel's state pills, and «⋯» with what is used seldom
   (Asignar, Cerrar / Reabrir, Ajustes de este canal). The header carries the channel's
   wash (`--q-chat-tint-3`), and ONLY the header: under the messages the thread is
-  `--gray-a2` (D2 measured, m-25017860 — a green wash there broke the dark theme);
+  `--gray-a2` by default (a UX preference awaiting the founder: with or without a
+  wash under the messages, both pass the contrast measured in the built screen);
 - the **bubbles**: the business's on the channel's soft tint with dark text, the
   customer's on the control material; time, «Enviado» and the ticks inside the business
   bubble in `--gray-12`, «Leído» in `--accent-11`, an error in `--tomato-12`, a link in
