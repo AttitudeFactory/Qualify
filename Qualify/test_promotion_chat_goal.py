@@ -11,7 +11,12 @@ from uuid import UUID, uuid4
 import pytest
 from qualify_api.ads import messaging_destinations as backend_destinations
 from qualify_api.ads.messaging import MessagingTarget
-from qualify_api.ads.messaging_destinations import LINK_GUIDE, READY, MessagingDestination
+from qualify_api.ads.messaging_destinations import (
+    LINK_GUIDE,
+    PENDING,
+    READY,
+    MessagingDestination,
+)
 from qualify_api.ads.messaging_greeting import CHANGED_WHILE_EDITING, GreetingUnavailable
 from qualify_api.ads.wizard import PIECE_BUTTON_UNSUPPORTED
 
@@ -21,14 +26,17 @@ from .ad_enhancements_vm import BrandEnhancementsVM
 from .promotion_state import PromotionState
 from .promotion_vm import (
     CHAT_STEPS,
+    GREETING_RELOAD,
     GreetingVM,
     MessagingDestinationVM,
     PromotionDraftVM,
     PromotionSourceVM,
     first_problem,
+    greeting_buttons_label,
     greeting_from_saved,
     greeting_problem,
     preselect_channel,
+    questions_shown,
     step_keys,
     step_problem,
 )
@@ -82,8 +90,10 @@ class Context:
                 connection_id=str(CONNECTION),
                 brand_id=str(BRAND),
                 messaging_destinations=destinations,
+                chat_goal=True,
             )
         ]
+        self.question_boxes = 1
         self.form = chat_form(**form)
         self.review = None
         self.result = SimpleNamespace(status="")
@@ -174,8 +184,12 @@ def test_the_piece_button_refusal_does_not_block_a_chat_ad() -> None:
 @pytest.mark.parametrize(
     "welcome, questions, problem",
     [
-        ("", ["¿Hay domicilios?"], "Escribe un saludo de bienvenida de hasta 300 caracteres."),
-        ("a" * 301, ["¿Hay?"], "Escribe un saludo de bienvenida de hasta 300 caracteres."),
+        ("", ["¿Hay domicilios?"], "Escribe tu mensaje de bienvenida."),
+        (
+            "a" * 301,
+            ["¿Hay?"],
+            "Tu mensaje de bienvenida pasa de 300 caracteres. Acórtalo un poco.",
+        ),
         ("Hola", ["", "", "", ""], "Escribe entre 1 y 4 preguntas sugeridas."),
         ("Hola", ["b" * 81], "Cada pregunta puede tener hasta 80 caracteres."),
         ("Hola", ["¿Hay?", "¿Hay?"], "Hay preguntas repetidas. Deja una sola de cada una."),
@@ -295,6 +309,77 @@ async def test_a_refused_greeting_shows_the_backend_words(monkeypatch: pytest.Mo
     assert context.form.greeting_id == ""
 
 
+@pytest.mark.asyncio
+async def test_a_conflict_whose_latest_cannot_be_read_asks_to_reopen(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = Context([INSTAGRAM_OK], greeting_id="", greeting_version=1)
+
+    def store(*args: object) -> GreetingVM:
+        raise GreetingUnavailable(CHANGED_WHILE_EDITING)
+
+    def unreadable(*args: object) -> GreetingVM:
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(state_module, "store_greeting", store)
+    monkeypatch.setattr(state_module, "latest_greeting", unreadable)
+    assert await _drain(context) == []
+    assert context.error == GREETING_RELOAD
+    assert "Vuelve a abrir la promoción" in context.error
+
+
+def test_review_lists_the_chat_buttons_and_new_boxes_open_one_by_one() -> None:
+    form = chat_form(questions=["¿Domicilios?", "", "¿Horario?", ""])
+    assert greeting_buttons_label(form) == "¿Domicilios? · ¿Horario?"
+    assert greeting_buttons_label(chat_form(questions=["", "", "", ""])) == "Por escribir"
+    assert questions_shown(chat_form(questions=["", "", "", ""]), 1) == 1
+    assert questions_shown(form, 1) == 3
+    assert questions_shown(chat_form(questions=["a", "", "", ""]), 2) == 2
+    assert questions_shown(form, 9) == 4
+    context = Context([INSTAGRAM_OK], questions=["a", "", "", ""])
+    PromotionState.add_question.fn(context)
+    assert context.question_boxes == 2
+
+
+@pytest.mark.parametrize("goal", ["visit", "lead"])
+def test_leaving_the_chat_goal_sends_no_chat_or_greeting_and_keeps_the_link(
+    monkeypatch: pytest.MonkeyPatch, goal: str
+) -> None:
+    context = Context([INSTAGRAM_OK], link_url="https://negocio.example/oferta")
+    PromotionState.choose_goal.fn(context, goal)
+    assert context.form.goal == goal
+    monkeypatch.setattr(
+        provider,
+        "load_messaging_destinations",
+        lambda **kwargs: pytest.fail("no chat is read for a link or form ad"),
+    )
+    monkeypatch.setattr(
+        provider, "published_lead_form", lambda tenant, form_id: SimpleNamespace(id=form_id)
+    )
+    captured = {}
+
+    async def prepare(**kwargs: Any) -> SimpleNamespace:
+        captured.update(kwargs)
+        raise RuntimeError("stop after capturing the form")
+
+    monkeypatch.setattr(provider, "prepare_promotion_preview", prepare)
+    monkeypatch.setattr(provider, "audience_from_form", lambda form: None)
+    form = replace(context.form, lead_form_id=str(uuid4()))
+    with pytest.raises(RuntimeError, match="stop after"):
+        provider.prepare_preview(TENANT, uuid4(), USER, form, ZONE, "key", str(CONNECTION))
+    sent = captured["form"]
+    assert sent.messaging is None and sent.greeting is None
+    assert sent.link_url == ("https://negocio.example/oferta" if goal == "visit" else "")
+
+
+def test_the_lead_goal_keeps_the_backends_form_refusal() -> None:
+    from qualify_api.ads.wizard import PIECE_BUTTON_LEAD
+
+    context = Context([WHATSAPP_OK], goal="lead")
+    context.sources = [replace(context.sources[0], unavailable_reason=PIECE_BUTTON_UNSUPPORTED)]
+    assert PromotionState.execution_reason.fget(context) == PIECE_BUTTON_LEAD
+
+
 def test_the_saved_greeting_and_the_exact_chat_reach_the_backend_form(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -360,9 +445,59 @@ def test_an_unavailable_chat_never_reaches_the_backend_form(
 # --- Flag and story ---
 
 
-def test_the_chat_goal_is_on_screen() -> None:
-    assert backend_destinations.CHAT_GOAL_ON_SCREEN is True
-    assert backend_destinations._offer() == (True, READY)
+@pytest.mark.parametrize(
+    "value, on",
+    [(None, False), ("", False), ("0", False), ("yes", False), ("1", True), (" TRUE ", True)],
+)
+def test_the_chat_goal_switch_is_off_unless_the_env_says_1_or_true(
+    monkeypatch: pytest.MonkeyPatch, value: str | None, on: bool
+) -> None:
+    if value is None:
+        monkeypatch.delenv("QUALIFY_ADS_CHAT_GOAL", raising=False)
+    else:
+        monkeypatch.setenv("QUALIFY_ADS_CHAT_GOAL", value)
+    assert backend_destinations.chat_goal_on_screen() is on
+    assert backend_destinations._offer() == ((True, READY) if on else (False, PENDING))
+
+
+@pytest.mark.parametrize("on", [True, False])
+def test_published_sources_carry_the_switch(monkeypatch: pytest.MonkeyPatch, on: bool) -> None:
+    from qualify_api.ads.wizard import PromotionSource
+
+    source = PromotionSource(uuid4(), uuid4(), uuid4(), uuid4(), "1", "2", "Oferta", "@negocio")
+    monkeypatch.setattr(provider, "list_promotion_sources", lambda **kwargs: [source])
+    monkeypatch.setattr(provider, "read_business_locale", lambda tenant: None)
+    monkeypatch.setattr(provider, "chat_goal_on_screen", lambda: on)
+    rows, _ = provider.load_sources(uuid4(), source.content_draft_id)
+    assert rows[0].chat_goal is on
+
+
+def test_with_the_switch_off_the_old_notice_shows_and_chat_is_not_offered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from .promotion_page import _destination, _link_destination
+
+    monkeypatch.delenv("QUALIFY_ADS_CHAT_GOAL", raising=False)
+    row = MessagingDestination(
+        "instagram_direct",
+        "Mensajes de Instagram",
+        *backend_destinations._offer(),
+        CONNECTION,
+        reason_code="ready",
+    )
+    monkeypatch.setattr(provider, "load_messaging_destinations", lambda **kwargs: (row,))
+    [option] = provider.messaging_destinations(uuid4(), uuid4())
+    assert option.notice == PENDING and not option.available
+    assert not option.action and not option.status
+    context = Context([option], goal="visit", channel="")
+    context.sources = [replace(context.sources[0], chat_goal=False)]
+    PromotionState.choose_goal.fn(context, "chat")
+    assert context.form.goal == "visit"
+    # The screen still renders: the goal option only behind the switch, the old
+    # diagnosis under the website form.
+    assert "chat_goal" in str(_destination())
+    website = str(_link_destination())
+    assert "Anuncios que abren un chat" in website and "messaging_destinations" in website
 
 
 def test_the_goal_step_offers_the_chat_goal_without_the_old_notice() -> None:

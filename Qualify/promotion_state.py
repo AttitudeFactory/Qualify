@@ -12,7 +12,12 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import reflex as rx
 from qualify_api.ads.audience import AudienceUnavailable
-from qualify_api.ads.messaging_greeting import CHANGED_WHILE_EDITING, GreetingUnavailable
+from qualify_api.ads.messaging_greeting import (
+    CHANGED_WHILE_EDITING,
+    WELCOME_EMPTY,
+    WELCOME_TOO_LONG,
+    GreetingUnavailable,
+)
 from qualify_api.ads.unpublished import UnpublishedUnavailable
 from qualify_api.ads.wizard import WizardUnavailable, goal_reason
 from qualify_api.tenancy.acting import acting_login
@@ -62,6 +67,7 @@ from .promotion_vm import (
     CONFIRM_FAILED,
     COUNTRY_LABELS,
     GREETING_QUESTION_SLOTS,
+    GREETING_RELOAD,
     GREETING_SAVE_FAILED,
     LEAD_CTA_LABELS,
     LOAD_FAILED,
@@ -81,11 +87,13 @@ from .promotion_vm import (
     cop_label,
     cop_minor,
     first_problem,
+    greeting_buttons_label,
     greeting_from_saved,
     greeting_problem,
     preselect_channel,
     promotion_checks,
     promotion_result,
+    questions_shown,
     readable_date,
     step_count,
     step_counter,
@@ -153,6 +161,8 @@ class PromotionState(rx.State):
     forms_working: bool = False
     destinations_notice: str = ""
     _destination_operation: str = ""
+    # «+ Agregar otra pregunta»: boxes the owner opened beyond those with text.
+    question_boxes: int = 1
     enhancements_working: bool = False
     enhancements_notice: str = ""
     _enhancements_operation: str = ""
@@ -1072,8 +1082,11 @@ class PromotionState(rx.State):
     def choose_goal(self, goal: str) -> None:
         if self.busy or goal not in {"visit", "lead", "chat"} or goal == self.form.goal:
             return
-        # The chat goal rides a published post only: never a story or an unpublished piece.
-        if goal == "chat" and (self.form.story or self.form.media_kind):
+        # The chat goal rides a published post only (never a story or an unpublished
+        # piece), and only while QUALIFY_ADS_CHAT_GOAL offers it.
+        if goal == "chat" and (
+            self.form.story or self.form.media_kind or not self.selected_source.chat_goal
+        ):
             return
         self.form = replace(self.form, goal=goal)
         if goal == "chat":
@@ -1125,6 +1138,24 @@ class PromotionState(rx.State):
     def welcome_preview(self) -> str:
         return self.form.welcome_text.strip() or "Aquí va tu saludo."
 
+    @rx.var
+    def welcome_error(self) -> str:
+        """The banner's welcome problem, repeated under its field."""
+        return self.error if self.error in {WELCOME_EMPTY, WELCOME_TOO_LONG} else ""
+
+    @rx.var
+    def greeting_buttons_label(self) -> str:
+        return greeting_buttons_label(self.form)
+
+    @rx.var
+    def questions_shown(self) -> int:
+        return questions_shown(self.form, self.question_boxes)
+
+    @rx.event
+    def add_question(self) -> None:
+        if not self.busy:
+            self.question_boxes = questions_shown(self.form, self.question_boxes) + 1
+
     @rx.event(background=True)
     async def save_greeting(self) -> AsyncIterator[rx.event.EventSpec]:
         """The greeting step's «Siguiente»: the backend's versioned save, then the next step.
@@ -1157,6 +1188,8 @@ class PromotionState(rx.State):
                         latest = await asyncio.to_thread(latest_greeting, UUID(context[0]), brand)
                 except Exception as read_exc:
                     logger.warning("promotion greeting read failed: %s", type(read_exc).__name__)
+                    # Without the newer version every retry would conflict again.
+                    problem = GREETING_RELOAD
         advance = False
         async with self:
             self.busy = False
@@ -1313,6 +1346,7 @@ class PromotionState(rx.State):
         )
         self.timezone_name = zone
         self.error = ""
+        self.question_boxes = 1
         self._audience_version = 0
         self.place_query = ""
         self.interest_query = ""

@@ -24,6 +24,9 @@ from .promotion_unpublished_ui import (
     unpublished_vertical_video,
 )
 from .promotion_vm import (
+    CHAT_GOAL_DETAIL,
+    CHAT_GOAL_FROM_PIECE,
+    CONNECTIONS_RETURN_HINT,
     EMPTY_SOURCES,
     GREETING_QUESTION_SLOTS,
     LEAD_CTA_LABELS,
@@ -188,6 +191,11 @@ def _source_choice(source: rx.Var) -> rx.Component:
                 source.unavailable_reason != "",
                 rx.text(source.unavailable_reason, size="2", color=T.TEXT_MUTED),
             ),
+            # A chat ad never uses the piece's button, so that refusal leaves the chat goal.
+            rx.cond(
+                source.fix_in_piece & source.chat_goal,
+                rx.text(CHAT_GOAL_FROM_PIECE, size="2", weight="medium"),
+            ),
             spacing="2",
             align="start",
             width="100%",
@@ -264,12 +272,18 @@ def _publication() -> rx.Component:
 
 
 def _messaging_destination(option: MessagingDestinationVM) -> rx.Component:
-    """One chat the ad may open; an unavailable one stays visible, with the backend's
+    """One chat the ad may open; an unavailable one stays visible, with its status, the
     reason and, by its `reason_code`, the way to fix it in Tus redes."""
     return rx.vstack(
         choice_card(
             rx.vstack(
-                rx.text(option.label, weight="medium"),
+                rx.hstack(
+                    rx.text(option.label, weight="medium"),
+                    rx.cond(option.status != "", signal_pill(option.status, "warn")),
+                    spacing="2",
+                    align="center",
+                    wrap="wrap",
+                ),
                 rx.text(option.notice, size="2", color=T.TEXT_MUTED, overflow_wrap="anywhere"),
                 spacing="1",
                 align="start",
@@ -285,14 +299,25 @@ def _messaging_destination(option: MessagingDestinationVM) -> rx.Component:
         rx.cond(
             option.action != "",
             rx.link(
-                option.action,
+                option.action + CONNECTIONS_RETURN_HINT,
                 href="/connections",
                 min_height="44px",
                 display="inline-flex",
                 align_items="center",
             ),
         ),
-        spacing="1",
+        rx.cond(
+            ~option.available,
+            rx.button(
+                "Ya lo conecté, comprobar de nuevo",
+                on_click=S.recheck_destinations,
+                disabled=S.busy | S.loading | S.destinations_working,
+                loading=S.destinations_working,
+                variant="outline",
+                min_height="44px",
+            ),
+        ),
+        spacing="2",
         align_items="start",
         width="100%",
     )
@@ -304,16 +329,8 @@ def _channel() -> rx.Component:
             rx.foreach(S.selected_source.messaging_destinations, _messaging_destination),
             role="radiogroup",
             aria_label="Por dónde quieres que te escriban",
-            spacing="3",
+            spacing="4",
             width="100%",
-        ),
-        rx.button(
-            "Volver a comprobar",
-            on_click=S.recheck_destinations,
-            disabled=S.busy | S.loading | S.destinations_working,
-            loading=S.destinations_working,
-            variant="outline",
-            min_height="44px",
         ),
         rx.cond(
             S.destinations_notice != "",
@@ -325,11 +342,15 @@ def _channel() -> rx.Component:
     )
 
 
+def _counter(value: rx.Var[str], limit: int) -> rx.Component:
+    return rx.text(value.length().to_string() + f" de {limit}", size="1", color=T.TEXT_MUTED)
+
+
 def _question_field(index: int) -> rx.Component:
     field_id = f"promotion-question-{index}"
-    return rx.vstack(
+    field = rx.vstack(
         rx.el.label(
-            f"Pregunta {index + 1}" + ("" if index == 0 else " (opcional)"),
+            f"Botón {index + 1}" + ("" if index == 0 else " (opcional)"),
             html_for=field_id,
             font_weight="500",
         ),
@@ -343,9 +364,12 @@ def _question_field(index: int) -> rx.Component:
             min_height="44px",
             width="100%",
         ),
+        _counter(S.form.questions[index], MAX_QUESTION),
         spacing="1",
         width="100%",
     )
+    # Box 1 always shows; the others once they have text or «Agregar» opened them.
+    return field if index == 0 else rx.cond(S.questions_shown > index, field)
 
 
 def _chat_bubble(text: rx.Var[str], *, mine: bool = False) -> rx.Component:
@@ -363,7 +387,7 @@ def _chat_bubble(text: rx.Var[str], *, mine: bool = False) -> rx.Component:
 def _greeting_preview() -> rx.Component:
     questions = S.form.questions
     return rx.vstack(
-        rx.text("Así lo verá la persona al abrir el chat", size="2", color=T.TEXT_MUTED),
+        rx.heading("Así lo ve quien toca tu anuncio", size="3", as_="h2"),
         rx.vstack(
             _chat_bubble(S.welcome_preview),
             *[
@@ -379,11 +403,6 @@ def _greeting_preview() -> rx.Component:
             border_radius="16px",
             background=T.CARD_BG,
         ),
-        rx.text(
-            "Las preguntas son botones: la persona toca una y te llega el mensaje. Tú respondes.",
-            size="2",
-            color=T.TEXT_MUTED,
-        ),
         spacing="2",
         width="100%",
         aria_label="Vista previa del chat",
@@ -392,6 +411,7 @@ def _greeting_preview() -> rx.Component:
 
 def _greeting() -> rx.Component:
     return rx.vstack(
+        card(_greeting_preview(), width="100%"),
         card(
             rx.vstack(
                 rx.el.label(
@@ -408,26 +428,35 @@ def _greeting() -> rx.Component:
                     placeholder="Ejemplo: ¡Hola! Gracias por escribirnos. ¿En qué te ayudamos?",
                     rows="3",
                     width="100%",
+                    aria_invalid=rx.cond(S.welcome_error != "", "true", "false"),
                 ),
-                rx.text(
-                    S.form.welcome_text.length().to_string() + f" de {MAX_WELCOME} caracteres",
-                    size="1",
-                    color=T.TEXT_MUTED,
+                _counter(S.form.welcome_text, MAX_WELCOME),
+                rx.cond(
+                    S.welcome_error != "",
+                    rx.text(S.welcome_error, size="2", color=T.tone_color("error", 11)),
                 ),
-                rx.heading("Preguntas sugeridas", size="3", as_="h2"),
+                rx.heading("Botones para tu cliente", size="3", as_="h2"),
                 rx.text(
-                    f"Escribe entre 1 y {GREETING_QUESTION_SLOTS}, de hasta {MAX_QUESTION} "
-                    "caracteres cada una.",
+                    "La persona toca uno y te escribe sin teclear. Pon al menos uno.",
                     size="2",
                     color=T.TEXT_MUTED,
                 ),
                 *[_question_field(index) for index in range(GREETING_QUESTION_SLOTS)],
+                rx.cond(
+                    S.questions_shown < GREETING_QUESTION_SLOTS,
+                    rx.button(
+                        "+ Agregar otra pregunta",
+                        on_click=S.add_question,
+                        disabled=S.busy,
+                        variant="ghost",
+                        min_height="44px",
+                    ),
+                ),
                 spacing="3",
                 width="100%",
             ),
             width="100%",
         ),
-        card(_greeting_preview(), width="100%"),
         spacing="4",
         width="100%",
     )
@@ -557,11 +586,14 @@ def _destination() -> rx.Component:
                 S.form.goal == "lead",
                 S.choose_goal("lead"),
             ),
-            _option(
-                "Que te escriban",
-                "Te llega un mensaje y respondes tú.",
-                S.form.goal == "chat",
-                S.choose_goal("chat"),
+            rx.cond(
+                S.selected_source.chat_goal,
+                _option(
+                    "Que te escriban",
+                    CHAT_GOAL_DETAIL,
+                    S.form.goal == "chat",
+                    S.choose_goal("chat"),
+                ),
             ),
             role="radiogroup",
             aria_label="Qué quieres que haga la gente",
@@ -604,6 +636,17 @@ def _link_destination() -> rx.Component:
                 "Revisa que el enlace lleve a lo que ofreces en esta publicación.",
                 size="2",
                 color=T.TEXT_MUTED,
+            ),
+            # QUALIFY_ADS_CHAT_GOAL off: the chats stay a diagnosis, never a choice.
+            rx.cond(
+                ~S.selected_source.chat_goal
+                & (S.selected_source.messaging_destinations.length() > 0),
+                rx.vstack(
+                    rx.text("Anuncios que abren un chat", weight="medium"),
+                    _channel(),
+                    spacing="2",
+                    width="100%",
+                ),
             ),
             spacing="4",
             width="100%",
@@ -685,7 +728,8 @@ def _review() -> rx.Component:
                         "chat",
                         rx.vstack(
                             _fact("Te escriben por", S.channel_label),
-                            _fact("Saludo", S.form.welcome_text),
+                            _fact("Mensaje de bienvenida", S.form.welcome_text),
+                            _fact("Botones del chat", S.greeting_buttons_label),
                             spacing="3",
                             width="100%",
                         ),

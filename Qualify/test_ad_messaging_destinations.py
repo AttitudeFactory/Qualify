@@ -23,9 +23,15 @@ from .promotion_vm import PromotionSourceVM
 @pytest.mark.parametrize(
     "available, code, reason, notice, action",
     [
-        (True, "ready", READY, "Te llega el mensaje a tu WhatsApp.", ""),
+        (True, "ready", READY, "Te escriben a tu WhatsApp.", ""),
         (False, "unlinked", LINK_GUIDE, LINK_GUIDE, "Unir mi WhatsApp"),
-        (False, "no_number", NO_NUMBER, NO_NUMBER, "Conectar mi WhatsApp"),
+        (
+            False,
+            "no_number",
+            NO_NUMBER,
+            "Para recibir mensajes por WhatsApp, primero conéctalo.",
+            "Conectar mi WhatsApp",
+        ),
         (False, "unknown", UNKNOWN, UNKNOWN, ""),
     ],
 )
@@ -106,7 +112,8 @@ def test_chat_cards_live_in_their_own_step_not_in_the_website_form() -> None:
     assert "dangerouslySetInnerHTML" not in channel
     website = str(_link_destination().render())
     assert "link_url" in website
-    assert "messaging_destinations" not in website
+    # Only with QUALIFY_ADS_CHAT_GOAL off does the website form list the chats.
+    assert "chat_goal" in website
     assert "todavía no" not in str(_destination().render())
 
 

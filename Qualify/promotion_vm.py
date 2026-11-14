@@ -140,9 +140,27 @@ EMPTY_SOURCES = (
 
 # The chat card's line when it can be chosen (benefit, not the backend's status).
 CHANNEL_DETAILS = {
-    "whatsapp": "Te llega el mensaje a tu WhatsApp.",
-    "instagram_direct": "Te llega el mensaje a tus mensajes de Instagram.",
+    "whatsapp": "Te escriben a tu WhatsApp.",
+    "instagram_direct": "Te escriben por mensaje directo de Instagram.",
 }
+# The unavailable card's status label and, where the backend's sentence is long, a shorter one.
+CHANNEL_STATUS = {
+    "no_number": "Falta conectar",
+    "unlinked": "Falta unir",
+    "several_numbers": "Falta elegir número",
+}
+CHANNEL_NOTICES = {"no_number": "Para recibir mensajes por WhatsApp, primero conéctalo."}
+CHAT_GOAL_DETAIL = (
+    "El anuncio abre un chat contigo por WhatsApp o Instagram. Tú respondes cada mensaje."
+)
+CHAT_GOAL_FROM_PIECE = "Puedes usarla para que te escriban."
+# Appended to «Unir mi WhatsApp»: going to Tus redes and back (browser back, same session)
+# keeps the draft at its step — checked live on 2026-11-13.
+CONNECTIONS_RETURN_HINT = " (tu anuncio te espera aquí)"
+GREETING_RELOAD = (
+    "Otra persona de tu negocio cambió el saludo y no pudimos traer su versión. "
+    "Vuelve a abrir la promoción para verla."
+)
 # The button Meta shows on a chat ad, per chat (CTA WHATSAPP_MESSAGE / INSTAGRAM_MESSAGE).
 CHAT_BUTTON_LABELS = {
     "whatsapp": "Enviar mensaje de WhatsApp",
@@ -168,6 +186,7 @@ class MessagingDestinationVM:
     reason_code: str = ""
     # «Unir mi WhatsApp»-style link to Tus redes, by `reason_code`; "" = none.
     action: str = ""
+    status: str = ""  # «Falta conectar»-style label of an unavailable card
 
 
 @dataclass(frozen=True)
@@ -220,6 +239,8 @@ class PromotionSourceVM:
     lead_forms: list[LeadFormChoiceVM] = field(default_factory=list)
     lead_forms_error: str = ""
     greeting: GreetingVM = field(default_factory=GreetingVM)
+    # QUALIFY_ADS_CHAT_GOAL is on and this is a published post: «Que te escriban» is offered.
+    chat_goal: bool = False
     # m-24828982: "" = a published post; "images"/"videos" = the piece's unpublished pair.
     media_kind: str = ""
     feed_media: list[AdMediaVM] = field(default_factory=list)
@@ -566,6 +587,18 @@ def greeting_problem(draft: PromotionDraftVM) -> str:
     except GreetingUnavailable as error:
         return str(error)
     return ""
+
+
+def greeting_buttons_label(draft: PromotionDraftVM) -> str:
+    """The review's «Botones del chat»: the non-empty questions, in order."""
+    return " · ".join(q.strip() for q in draft.questions if q.strip()) or "Por escribir"
+
+
+def questions_shown(draft: PromotionDraftVM, opened: int) -> int:
+    """Question boxes on screen: the first, every box up to the last one with text, and
+    the ones «+ Agregar otra pregunta» opened; never more than the backend allows."""
+    filled = max((i + 1 for i, q in enumerate(draft.questions) if q), default=0)
+    return min(max(1, filled, opened), GREETING_QUESTION_SLOTS)
 
 
 def greeting_from_saved(draft: PromotionDraftVM, saved: GreetingVM) -> PromotionDraftVM:

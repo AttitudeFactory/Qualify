@@ -13,7 +13,10 @@ from zoneinfo import ZoneInfo
 from qualify_api.ads.lead_ads import published_lead_form
 from qualify_api.ads.lead_forms_service import list_lead_forms
 from qualify_api.ads.messaging import MessagingTarget
-from qualify_api.ads.messaging_destinations import load_messaging_destinations
+from qualify_api.ads.messaging_destinations import (
+    chat_goal_on_screen,
+    load_messaging_destinations,
+)
 from qualify_api.ads.messaging_greeting import (
     MessageGreeting,
     clean,
@@ -41,6 +44,8 @@ from .promotion_unpublished_provider import unpublished_sources
 from .promotion_vm import (
     CHANNEL_ACTIONS,
     CHANNEL_DETAILS,
+    CHANNEL_NOTICES,
+    CHANNEL_STATUS,
     CHANNELS_FAILED,
     COUNTRY_LABELS,
     GreetingVM,
@@ -78,10 +83,13 @@ def messaging_destinations(tenant_id: UUID, connection_id: UUID) -> list[Messagi
         MessagingDestinationVM(
             key=row.key,
             label=row.label,
-            notice=CHANNEL_DETAILS[row.key] if row.available else row.reason,
+            notice=CHANNEL_DETAILS[row.key]
+            if row.available
+            else CHANNEL_NOTICES.get(row.reason_code, row.reason),
             available=row.available,
             reason_code=row.reason_code,
             action="" if row.available else CHANNEL_ACTIONS.get(row.reason_code, ""),
+            status="" if row.available else CHANNEL_STATUS.get(row.reason_code, ""),
         )
         # WhatsApp first: it is where most of these businesses already answer.
         for row in sorted(rows, key=lambda row: row.key != "whatsapp")
@@ -99,7 +107,7 @@ def latest_greeting(tenant_id: UUID, brand_id: UUID) -> GreetingVM:
 
 
 def store_greeting(tenant_id: UUID, brand_id: UUID, form: PromotionDraftVM) -> GreetingVM:
-    """The backend's versioned save; its GreetingUnavailable (rules, «Alguien cambió…»)
+    """The backend's versioned save; its GreetingUnavailable (rules, conflict)
     reaches the screen as is."""
     saved = save_greeting(
         tenant_id=tenant_id,
@@ -211,6 +219,7 @@ def load_sources(
     messaging_by_connection: dict[UUID, list[MessagingDestinationVM]] = {}
     enhancements_by_brand: dict[UUID, BrandEnhancementsVM] = {}
     greeting_by_brand: dict[UUID, GreetingVM] = {}
+    chat_goal = chat_goal_on_screen()  # only a published post reaches this point
     forms_by_connection: dict[UUID, tuple[list[LeadFormChoiceVM], str]] = {}
     for source in sources:
         if source.ad_account_id is not None and source.ad_account_id not in health_by_account:
@@ -262,6 +271,7 @@ def load_sources(
             lead_forms=forms_by_connection.get(source.connection_id, ([], ""))[0],
             lead_forms_error=forms_by_connection.get(source.connection_id, ([], ""))[1],
             greeting=greeting_by_brand.get(source.brand_id, GreetingVM()),
+            chat_goal=chat_goal,
         )
         for source in sources
     ], zone
