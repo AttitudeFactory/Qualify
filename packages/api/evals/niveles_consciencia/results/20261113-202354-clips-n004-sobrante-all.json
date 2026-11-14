@@ -1,0 +1,589 @@
+{
+ "ticket": "m-25026482",
+ "baseline_ref": "a6667370",
+ "split": "all",
+ "pricing_version": "v9",
+ "judge": "claude-haiku-5-5@low",
+ "judge_prompt_version": "juez-niveles-v2",
+ "judge_parts_version": "juez-niveles-v2+partes-v1",
+ "code_commit": "790448bd",
+ "arms": [],
+ "levels": [],
+ "repeat": 3,
+ "tracing": false,
+ "date": "2026-11-13T20:23:54",
+ "suites": {
+  "clips": {
+   "items": [
+    {
+     "case": "sobrante-bur",
+     "brand": "hamburguesas",
+     "arm": "unaware",
+     "level": "unaware",
+     "leftover": true,
+     "sentence": "Que la gente venga por el combo doble smash a 32.900 y se quede con los amigos",
+     "objective": "awareness",
+     "highlights": [],
+     "output": {
+      "kind": "clip",
+      "variants": [
+       {
+        "payload": {
+         "hook": "¿Oyes eso? Es la plancha cantando",
+         "caption": "¿Oyes eso? Es la plancha cantando 🔥 Doble smash, costra dorada, queso derretido y salsa de la casa. Arma el parche después de la oficina y cáiganle a Chapinero. Mesas para quedarse un buen rato, tu perro también entra y hay parqueadero gratis. ¿Y la triple? Esa es para los que se le miden. ¿Tú te la terminas?",
+         "hashtags": [
+          "brasanorte",
+          "smashburger",
+          "chapinero",
+          "bogota"
+         ],
+         "cta": "Cáele con tu parche al local de la 57 🍔",
+         "script": "",
+         "shots": [
+          {
+           "visual": "Primerísimo plano: dos bolas de carne caen sobre la plancha caliente y una espátula las aplasta de golpe, el chisporroteo y el humo saltan hacia la cámara.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "Los bordes se ponen dorados y crujientes, el queso se derrite sobre las dos carnes y la salsa de la casa cae sobre el pan tostado mientras se arma la doble.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "En una mesa del local, un grupo de amigos con un perro a sus pies levanta la doble smash, la parte por la mitad y se ríe mientras el queso se estira.",
+           "line": "",
+           "seconds": 1
+          }
+         ]
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 11.39,
+        "cost_usd": 0.036617
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.036617,
+     "price_in_copy": false,
+     "three_shots": true,
+     "filmable_shots": 3,
+     "caption_words": 57,
+     "juez_ciego_usd": 0.000576,
+     "juez_informado_usd": 0.00053
+    },
+    {
+     "case": "sobrante-bur",
+     "brand": "hamburguesas",
+     "arm": "unaware",
+     "level": "unaware",
+     "leftover": true,
+     "sentence": "Que la gente venga por el combo doble smash a 32.900 y se quede con los amigos",
+     "objective": "awareness",
+     "highlights": [],
+     "output": {
+      "kind": "clip",
+      "variants": [
+       {
+        "payload": {
+         "hook": "¿Oyes eso? Es la plancha cantando 🔥",
+         "caption": "¿Oyes eso? Es la plancha cantando 🔥 Doble smash, carne madurada, costra dorada y salsa de la casa chorreando. Arma el parche después del trabajo, cojan mesa y traigan al perro, que también es bienvenido. ¿Vienes en carro? Hay parqueadero gratis. Aquí la noche sabe a plancha 🍔",
+         "hashtags": [
+          "brasanorte",
+          "smashburger",
+          "chapinero",
+          "hamburguesasbogota"
+         ],
+         "cta": "Cae al local en la 57 con tu combo de amigos",
+         "script": "",
+         "shots": [
+          {
+           "visual": "Primerísimo plano de dos bolas de carne cayendo sobre la plancha caliente y aplastadas de golpe, el humo y el chisporroteo llenando el cuadro.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "Los bordes se doran en costra, el queso se derrite encima de las dos carnes y la salsa de la casa cae sobre el pan mientras se arma la doble.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "Un grupo de amigos en una mesa del local pequeño, con un perro a sus pies, levanta la doble smash y le da el primer mordisco entre risas.",
+           "line": "",
+           "seconds": 1
+          }
+         ]
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 10.74,
+        "cost_usd": 0.022255
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.022255,
+     "price_in_copy": false,
+     "three_shots": true,
+     "filmable_shots": 3,
+     "caption_words": 46,
+     "juez_ciego_usd": 0.00045,
+     "juez_informado_usd": 0.000491
+    },
+    {
+     "case": "sobrante-bur",
+     "brand": "hamburguesas",
+     "arm": "unaware",
+     "level": "unaware",
+     "leftover": true,
+     "sentence": "Que la gente venga por el combo doble smash a 32.900 y se quede con los amigos",
+     "objective": "awareness",
+     "highlights": [],
+     "output": {
+      "kind": "clip",
+      "variants": [
+       {
+        "payload": {
+         "hook": "¿Oyes ese chasquido? Es tu doble en la plancha",
+         "caption": "¿Oyes ese chasquido? Es tu doble en la plancha. Carne madurada, costra dorada, queso chorreando y salsa de la casa. Llama al parche, trae al perro, que hay mesas para todos y parqueadero gratis. Chapinero después del trabajo, sin afán y con hambre. 🍔🔥",
+         "hashtags": [
+          "brasanorte",
+          "smashburger",
+          "chapinero",
+          "hamburguesasbogota"
+         ],
+         "cta": "Cae al local en la 57 con tu gente",
+         "script": "",
+         "shots": [
+          {
+           "visual": "Primerísimo plano de dos bolas de carne cayendo sobre la plancha caliente y una espátula aplastándolas; saltan chispas de grasa y sube el humo.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "Los bordes se ponen dorados y crujientes, el queso se derrite encima de las dos carnes y la salsa de la casa baña el pan mientras arman la doble.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "La doble smash llega a una mesa llena de amigos riendo en el local pequeño, con un perro echado al lado; varias manos la alcanzan a la vez.",
+           "line": "",
+           "seconds": 1
+          }
+         ]
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 10.73,
+        "cost_usd": 0.024395
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.024395,
+     "price_in_copy": false,
+     "three_shots": true,
+     "filmable_shots": 3,
+     "caption_words": 43,
+     "juez_ciego_usd": 0.00041,
+     "juez_informado_usd": 0.000464
+    },
+    {
+     "case": "sobrante-inm",
+     "brand": "inmobiliaria",
+     "arm": "unaware",
+     "level": "unaware",
+     "leftover": true,
+     "sentence": "Mostrar los apartamentos de dos alcobas en Bello desde 280 millones para familias jóvenes",
+     "objective": "awareness",
+     "highlights": [],
+     "output": {
+      "kind": "clip",
+      "variants": [
+       {
+        "payload": {
+         "hook": "El primer hogar de tu familia, en Bello",
+         "caption": "El primer hogar de tu familia, en Bello. Una alcoba para ustedes y otra para lo que viene: así se imaginan muchas familias jóvenes su primera vivienda nueva en el Valle de Aburrá. Antes de elegir, hay un paso que conviene no saltarse: el estudio de títulos, que revisa que el inmueble esté en regla antes de firmar cualquier documento. En ese camino te damos acompañamiento legal, sin presiones y a tu ritmo, desde la primera visita hasta la entrega de las llaves. 🏡 ¿Cómo te imaginas la primera mañana en tu propio apartamento?",
+         "hashtags": [
+          "habitatinmobiliaria",
+          "ViviendaNuevaBello",
+          "PrimeraVivienda"
+         ],
+         "cta": "Cuéntanos por WhatsApp qué buscas para tu familia y lo conversamos con calma.",
+         "script": "",
+         "shots": [
+          {
+           "visual": "Una pareja joven abre la puerta de un apartamento nuevo y vacío; la luz de la mañana entra por la ventana mientras se miran con una sonrisa tranquila.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "La pareja recorre las dos alcobas: en una imaginan su cama, en la otra él sostiene un pequeño móvil de cuna junto a la ventana mientras ella mide el espacio con la mirada.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "Plano amplio de la sala del apartamento con la pareja sentada en el piso, compartiendo un café entre cajas de trasteo, en su nuevo hogar en Bello.",
+           "line": "",
+           "seconds": 1
+          }
+         ]
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 13.42,
+        "cost_usd": 0.028829
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.028829,
+     "price_in_copy": false,
+     "three_shots": true,
+     "filmable_shots": 3,
+     "caption_words": 93,
+     "juez_ciego_usd": 0.000456,
+     "juez_informado_usd": 0.000488
+    },
+    {
+     "case": "sobrante-inm",
+     "brand": "inmobiliaria",
+     "arm": "unaware",
+     "level": "unaware",
+     "leftover": true,
+     "sentence": "Mostrar los apartamentos de dos alcobas en Bello desde 280 millones para familias jóvenes",
+     "objective": "awareness",
+     "highlights": [],
+     "output": {
+      "kind": "clip",
+      "variants": [
+       {
+        "payload": {
+         "hook": "Imagina el primer desayuno en tu propia casa",
+         "caption": "Imagina el primer desayuno en tu propia casa. Una alcoba para ustedes y otra para los niños, o para ese rincón de trabajo que tanto les hace falta. Así se viven los apartamentos de dos alcobas en Bello que acompañamos para familias jóvenes del Valle de Aburrá. 🏡\n\nAntes de llegar a ese momento hay un paso que muchas familias pasan por alto: el estudio de títulos. Consiste en revisar que el inmueble esté en regla legalmente antes de firmar cualquier documento. En Habitat Inmobiliaria lo hacemos contigo, con calma y con acompañamiento legal, desde la separación hasta la entrega.\n\n¿Ya se imaginan cómo sería ese primer domingo en casa propia?",
+         "hashtags": [
+          "habitatinmobiliaria",
+          "ViviendaBello",
+          "PrimeraVivienda",
+          "FamiliasMedellin"
+         ],
+         "cta": "Escríbenos por WhatsApp y conversamos sobre tu primer hogar en Bello.",
+         "script": "",
+         "shots": [
+          {
+           "visual": "Luz de mañana entra por la ventana de una cocina abierta; una pareja joven sirve café mientras su hijo pequeño se sienta a la mesa.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "La cámara recorre el apartamento: la alcoba principal con la cama tendida y la segunda alcoba con juguetes y un pequeño escritorio, mientras la familia se mueve con naturalidad.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "La familia se asoma al balcón y mira las montañas de Bello al atardecer, abrazados en su nuevo hogar.",
+           "line": "",
+           "seconds": 1
+          }
+         ]
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 12.23,
+        "cost_usd": 0.030029
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.030029,
+     "price_in_copy": false,
+     "three_shots": true,
+     "filmable_shots": 3,
+     "caption_words": 110,
+     "juez_ciego_usd": 0.000565,
+     "juez_informado_usd": 0.000582
+    },
+    {
+     "case": "sobrante-inm",
+     "brand": "inmobiliaria",
+     "arm": "unaware",
+     "level": "unaware",
+     "leftover": true,
+     "sentence": "Mostrar los apartamentos de dos alcobas en Bello desde 280 millones para familias jóvenes",
+     "objective": "awareness",
+     "highlights": [],
+     "output": {
+      "kind": "clip",
+      "variants": [
+       {
+        "payload": {
+         "hook": "Dos alcobas en Bello: una para ustedes y otra para crecer",
+         "caption": "Dos alcobas en Bello: una para ustedes y otra para crecer.\n\nHay un momento en que el arriendo se queda corto. Llega el bebé, o el proyecto de tenerlo, y la conversación en la mesa cambia: ¿dónde queremos vivir los próximos años? Los apartamentos de dos alcobas en Bello están pensados para ese punto de la vida, con espacio para la familia que empieza y para la que viene en camino.\n\nUn paso que muchos pasan por alto: antes de firmar, conviene revisar el estudio de títulos del inmueble. Así sabes que lo que compras está en regla. En Hábitat te damos acompañamiento legal en ese proceso, sin afanes y con explicaciones claras.\n\n¿Cómo se imaginan ustedes su primer hogar?",
+         "hashtags": [
+          "habitatinmobiliaria",
+          "ViviendaBello",
+          "PrimeraVivienda"
+         ],
+         "cta": "Escríbenos por WhatsApp y conversemos sobre tu primer hogar en Bello",
+         "script": "",
+         "shots": [
+          {
+           "visual": "Una pareja joven abre la puerta de un apartamento vacío y luminoso en Bello; ella sostiene la mano de un niño pequeño que entra corriendo.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "Recorrido por las dos alcobas: en una, la pareja imagina su cama junto a la ventana; en la otra, el niño se sienta en el piso donde irá su cuarto.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "La familia se asoma al balcón al atardecer con la vista del Valle de Aburrá de fondo, abrazados, ya en casa.",
+           "line": "",
+           "seconds": 1
+          }
+         ]
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 10.95,
+        "cost_usd": 0.023989
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.023989,
+     "price_in_copy": false,
+     "three_shots": true,
+     "filmable_shots": 3,
+     "caption_words": 120,
+     "juez_ciego_usd": 0.000368,
+     "juez_informado_usd": 0.000506
+    }
+   ],
+   "scores": [
+    {
+     "arm": "unaware",
+     "case": "sobrante-bur",
+     "split": "test",
+     "sector": "comida",
+     "with_perks": true,
+     "level": "unaware",
+     "level_answered": null,
+     "rule_det": false,
+     "invented_det": [],
+     "perks_det": [
+      1,
+      3
+     ],
+     "judge_level": "solution_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      1,
+      2,
+      3
+     ],
+     "judge_fit": true,
+     "judge_reason": "Cumple la regla de unaware porque no menciona precio ni oferta y muestra el ambiente (plancha, mesas, amigos, perro) y el momento (después de la oficina); el texto menciona la triple, que no figura en",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 6,
+     "words_cta": 9
+    },
+    {
+     "arm": "unaware",
+     "case": "sobrante-bur",
+     "split": "test",
+     "sector": "comida",
+     "with_perks": true,
+     "level": "unaware",
+     "level_answered": null,
+     "rule_det": false,
+     "invented_det": [],
+     "perks_det": [
+      1
+     ],
+     "judge_level": "solution_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      1,
+      2,
+      3
+     ],
+     "judge_fit": false,
+     "judge_reason": "La escena del local, la plancha y la mesa con amigos encaja con unaware, pero la llamada a la acción invita a pedir el combo de amigos y el texto enumera el producto y el parqueadero gratis como ofert",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 6,
+     "words_cta": 11
+    },
+    {
+     "arm": "unaware",
+     "case": "sobrante-bur",
+     "split": "test",
+     "sector": "comida",
+     "with_perks": true,
+     "level": "unaware",
+     "level_answered": null,
+     "rule_det": false,
+     "invented_det": [],
+     "perks_det": [
+      1,
+      3
+     ],
+     "judge_level": "solution_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      1,
+      2,
+      3
+     ],
+     "judge_fit": true,
+     "judge_reason": "Abre con un gancho sensorial y muestra ambiente, compañía y momento (después del trabajo, mesa con amigos, perro), sin precio ni promoción; el parqueadero gratis y las mesas son atributos del lugar, a",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 9,
+     "words_cta": 9
+    },
+    {
+     "arm": "unaware",
+     "case": "sobrante-inm",
+     "split": "test",
+     "sector": "inmobiliaria",
+     "with_perks": true,
+     "level": "unaware",
+     "level_answered": null,
+     "rule_det": true,
+     "invented_det": [],
+     "perks_det": [
+      2
+     ],
+     "judge_level": "problem_aware",
+     "judge_quality": 3,
+     "judge_invented": [],
+     "judge_perks": [
+      2,
+      4
+     ],
+     "judge_fit": true,
+     "judge_reason": "Cumple la regla de unaware: no menciona precio ni oferta y se centra en la escena del hogar y la experiencia familiar, aunque el texto deriva hacia el estudio de títulos y el acompañamiento legal, que",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 8,
+     "words_cta": 13
+    },
+    {
+     "arm": "unaware",
+     "case": "sobrante-inm",
+     "split": "test",
+     "sector": "inmobiliaria",
+     "with_perks": true,
+     "level": "unaware",
+     "level_answered": null,
+     "rule_det": true,
+     "invented_det": [],
+     "perks_det": [
+      2
+     ],
+     "judge_level": "problem_aware",
+     "judge_quality": 3,
+     "judge_invented": [],
+     "judge_perks": [
+      2,
+      4
+     ],
+     "judge_fit": true,
+     "judge_reason": "El gancho muestra una experiencia de hogar (primer desayuno, familia, alcobas) sin precio, oferta ni dato inventado; aunque el texto explica el estudio de títulos y cierra con WhatsApp, la regla de un",
+     "offers_det": [
+      [
+       "servicio",
+       "separacion"
+      ]
+     ],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 8,
+     "words_cta": 11
+    },
+    {
+     "arm": "unaware",
+     "case": "sobrante-inm",
+     "split": "test",
+     "sector": "inmobiliaria",
+     "with_perks": true,
+     "level": "unaware",
+     "level_answered": null,
+     "rule_det": true,
+     "invented_det": [],
+     "perks_det": [
+      2
+     ],
+     "judge_level": "problem_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      2,
+      4
+     ],
+     "judge_fit": false,
+     "judge_reason": "Para unaware no debe venderse el producto, pero el texto habla de dos alcobas, del estudio de títulos y del acompañamiento legal y cierra pidiendo contacto por WhatsApp, lo que empuja al público hacia",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 11,
+     "words_cta": 11
+    }
+   ]
+  }
+ },
+ "spend_usd": {
+  "clips": 0.172
+ },
+ "spend_total_usd": 0.172,
+ "skipped_by_cap": [],
+ "ledger_calls": 12
+}

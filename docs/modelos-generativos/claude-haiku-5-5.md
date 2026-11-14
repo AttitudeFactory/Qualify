@@ -129,3 +129,12 @@ Detalle en la [bitácora, NIVELES-003](pruebas.md#niveles-003). Rúbrica sin cam
 
 - El «2/6 nombra el horario» de NIVELES-002 no fue del juez: lo dio la expresión regular determinista, que leyó la calle «de la 57» como hora. Está corregida.
 - Junto al juez van ahora dos chequeos deterministas en solution_aware: `concrete_fact` y `generic_claims`.
+
+## Uso NIVELES-004 — juez de clips y partes con nivel (m-25026509) — 2026-11-13
+
+Detalle en la [bitácora, NIVELES-004](pruebas.md#niveles-004).
+
+- Agregado de clips (`juez-niveles-v2+clip-v1`), escrito antes de correr: un clip no tiene guion hablado, así que se juzgan gancho, texto, CTA y las 3 tomas; en most_aware el texto largo cuenta en contra.
+- Partes con el agregado de NIVELES-002.
+- Sigue sin validar contra etiquetas humanas.
+- En 2 de 66 copias faltó la lectura informada.

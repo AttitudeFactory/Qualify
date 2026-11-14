@@ -785,6 +785,8 @@ def run_clips(al: Any, args: Any, spend: Spend, api_key: str) -> dict[str, Any]:
 
 def run_parts_level(al: Any, args: Any, spend: Spend, api_key: str) -> dict[str, Any]:
     """B: the parts proposal with `PartsBrief.awareness_level` (the app's path)."""
+    from qualify_creative.enums import AwarenessLevel
+
     from qualify_api.creative.parts_ai import (
         PROPOSE_PARTS_PROMPT_VERSION,
         PartsBrief,
@@ -811,7 +813,7 @@ def run_parts_level(al: Any, args: Any, spend: Spend, api_key: str) -> dict[str,
             brand=angle_brand,
             product=product,
             target_seconds=20,
-            awareness_level=al.awareness_level_or_none(level) if level else None,
+            awareness_level=AwarenessLevel(level) if level else None,
         )
         started = time.monotonic()
         try:
