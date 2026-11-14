@@ -555,3 +555,29 @@ def test_uppercase_ref_is_still_money_for_the_idea_guard(price: str) -> None:
 
     assert price_mentions(f"Solo {price}") == (price,)
     assert price_problem((f"Solo {price}",), "") is not None
+
+
+def test_most_aware_caption_holds_only_product_price_and_how_to_buy() -> None:
+    """NIVELES-005: the caption added other perks, hours or a question. The way to buy
+    may be a perk; an owner's must-mention still goes in."""
+    suffix = render_prompt(
+        kit=_kit(business_perks=PERKS),
+        voice=_voice(),
+        brief=_brief(awareness_level=AwarenessLevel.MOST_AWARE),
+        task=GenerationTask.COPY,
+    ).volatile_suffix
+    assert "The caption says only the product, the price if there is one, and how to buy" in suffix
+    assert "even when it is one of the business's perks" in suffix
+    assert "plus whatever this assignment's must-mention list asks for" in suffix
+    assert "no other perk, no opening hours and no question" in suffix
+    # the other levels keep their lines
+    for level in AwarenessLevel:
+        if level is AwarenessLevel.MOST_AWARE:
+            continue
+        other = render_prompt(
+            kit=_kit(),
+            voice=_voice(),
+            brief=_brief(awareness_level=level),
+            task=GenerationTask.COPY,
+        ).volatile_suffix
+        assert "no other perk, no opening hours and no question" not in other
