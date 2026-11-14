@@ -452,7 +452,7 @@ hook y presenta la propuesta como la respuesta.
 a este negocio con al menos un dato concreto de la descripción del producto o una ventaja \
 de la lista, dicho tal cual. No basta con repetir qué es el producto, ni con frases \
 genéricas (fresco, de calidad, expertos, pensado para ti), ni con atributos que no estén \
-en los datos; los precios y las formas de pago quedan para product_aware.
+en los datos; los precios, las formas de pago y los horarios quedan para product_aware.
 - product_aware: conoce el negocio pero duda. Quita la fricción: el precio claro si existe, \
 el horario, cómo pagar, dónde queda — solo con los datos que te dieron.
 - most_aware: está listo para comprar. El camino más corto a la compra: hook y cta muy \

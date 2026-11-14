@@ -335,7 +335,7 @@ def test_perks_ride_the_cached_prefix_and_the_level_the_suffix() -> None:
     lines = leveled.volatile_suffix.splitlines()
     objective = lines.index("Objective: sale")
     assert lines[objective + 1].startswith("Awareness level (Eugene Schwartz): most_aware")
-    assert "no long text" in lines[objective + 1]
+    assert "a hook of about 6 words" in lines[objective + 1]
 
 
 # -- NIVELES-001 wording fixes -------------------------------------------------------------
@@ -423,3 +423,31 @@ def test_the_level_decides_which_perks_a_piece_may_use() -> None:
     )
     assert "the level decides which of them the piece may use" in rendered.stable_prefix
     assert "leave them out even though they are among" in rendered.volatile_suffix
+
+
+# -- NIVELES-004 wording fixes -------------------------------------------------------------
+
+
+def test_most_aware_copy_has_a_measured_length_that_yields_to_the_kit_minimum() -> None:
+    suffix = render_prompt(
+        kit=_kit(),
+        voice=_voice(),
+        brief=_brief(awareness_level=AwarenessLevel.MOST_AWARE),
+        task=GenerationTask.COPY,
+    ).volatile_suffix
+    assert "a hook of about 6 words" in suffix
+    assert "a call to action of about 5 words with one way to buy" in suffix
+    assert "one or two sentences (about 25 words)" in suffix
+    assert "never below the caption minimum above" in suffix
+
+
+def test_solution_aware_leaves_opening_hours_to_product_aware() -> None:
+    solution = _level_text(angles_system_prompt(), "solution_aware", "- product_aware:")
+    assert "los horarios quedan para product_aware" in solution
+    suffix = render_prompt(
+        kit=_kit(),
+        voice=_voice(),
+        brief=_brief(awareness_level=AwarenessLevel.SOLUTION_AWARE),
+        task=GenerationTask.COPY,
+    ).volatile_suffix
+    assert "prices, payment and opening hours belong to product_aware" in suffix
