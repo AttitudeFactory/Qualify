@@ -62,6 +62,70 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
 
 ---
 
+<a id="niveles-006"></a>
+
+## NIVELES-006 — most_aware: solo producto, precio y cómo comprar (con cuándo y dónde) (m-25027151) — 2026-11-14
+
+- **Qué se midió:** la regla final del texto de most_aware (`78242f75`, rama
+  `fix/m-25027151-listo-para-comprar`): producto, precio si lo hay y cómo comprar; una o dos
+  formas de pedir, aunque sean ventajas, y, si los datos los dan, horario y lugar; siempre los
+  datos clave y lo de «Debe mencionar»; ni otra ventaja ni preguntas. Mismos modelos que
+  NIVELES-005 (copy `claude-opus-5-5` @ medium, juez `claude-haiku-5-5` @ low). Sin trazas
+  de Langfuse.
+- **Prompts idénticos (`copyidentity`, sin llamadas):** frente a `origin/main`, solo cambian
+  los prompts de most_aware (3 clips y 1 pieza) y de solution_aware (3 clips y 1 pieza). Sin
+  nivel, unaware, problem_aware y product_aware son idénticos byte a byte (17 prompts).
+- **La rúbrica v3 contaba un horario como falla de most_aware,** contra el propio ejemplo del
+  fundador para este público («Abiertos hasta las 11:00 pm en Korner Club. Pide tu Combo… por
+  la web o directo al WhatsApp…»). La **v4** (escrita antes de juzgar, en el
+  [README](../../packages/api/evals/niveles_consciencia/README.md)) acepta horario y lugar
+  como parte de «cómo comprar». Falla con otra ventaja, una pregunta, una forma de comprar o
+  un horario inventados, o si falta cómo comprar. El «Debe mencionar» llega al juez. El
+  chequeo determinista `most_checks` sigue la misma regla.
+- **Corrección de las fuentes del juez, escrita antes de volver a juzgar:** los ejemplos del
+  kit (`do_examples`) no se le pasaban como datos. En viajes el kit dice «Machu Picchu al
+  amanecer», y el juez marcó «al amanecer» como horario inventado en 6 de 7 clips. Todas las
+  salidas most_aware de NIVELES-005 y 006 se volvieron a juzgar con la v4 y las fuentes
+  corregidas.
+
+### Antes → después (most_aware)
+
+| | NIVELES-005 (v3, como se reportó) | NIVELES-005 vuelto a juzgar (v4) | NIVELES-006 (v4) |
+|---|---|---|---|
+| Clips, cumple (juez) | 3/11 | 5/12 | **20/21 (0,95)** |
+| Piezas, cumple (juez) | 5/8 | 3/8 | **20/20 (1,00)** |
+
+Con la misma vara, el cambio de redacción explica casi toda la mejora. La rúbrica más
+estricta cambiaba poco: 3/11 → 5/12 en clips y 5/8 → 3/8 en piezas.
+
+- **Chequeos deterministas** (clips n 21 / piezas n 20):
+  - otra ventaja en el texto 1/0 y preguntas 0/0;
+  - forma de pedir ausente 0/0 y más de dos 0/0;
+  - formas de pedir y horarios inventados 0/0;
+  - el precio presente siempre;
+  - palabras de gancho/CTA/texto 6,7/4,5/24,1 en clips y 5,7/4,0/21,8 en piezas.
+  
+  La única falla de clips (juez y chequeo coinciden): un texto con precio, horario y lugar que
+  no dice cómo pedir.
+- **Puertas:** 41/41 pasan; **ninguna copia rechazada por corta**, aunque el texto ahora es
+  más ajustado. Ofertas inventadas: 0/41.
+- **Excepciones** (clips most_aware con «Debe mencionar» y una ventaja que es la forma de
+  pedir, n 12):
+  - lo pedido aparece 12/12;
+  - Rappi: Rappi + el local, dos formas que el negocio usa juntas; WhatsApp: una sola forma
+    en inmobiliaria y en viajes;
+  - juez 11/12, chequeo 12/12.
+- **Regresiones:** ninguna a la vista. solution_aware (su texto cambió), unaware y
+  product_aware de clip dan 3/3 cada uno: n pequeño, solo una comprobación.
+- **Sin medir:** nada de lo pedido.
+- **Gasto de la pasada: US$1,410** de US$2,00. Primer juicio de nuevo US$0,013, clips
+  most_aware US$0,522, piezas US$0,313, excepciones US$0,284, solution_aware US$0,094,
+  unaware y product_aware US$0,148, segundo juicio de nuevo US$0,036. Cero llamadas a BytePlus.
+- **Veredicto: cumple la barra del ticket (≥ 0,80).** most_aware: clips 0,95 (n 21), piezas
+  1,00 (n 20). Se puede publicar.
+
+---
+
 <a id="niveles-005"></a>
 
 ## NIVELES-005 — Medidas de most_aware, dilema de problem_aware en partes y horarios fuera de solution_aware (m-25026509) — 2026-11-13
