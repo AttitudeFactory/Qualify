@@ -11,7 +11,7 @@ Keys (ADR 49 §2.2 and §2.4, and the R2 rule that the bucket refuses to overwri
 
 - **job id** = ``uuid5`` over the template version, ``version_id``, ``position``,
   ``spec_sha256``, ``layout_version``, the base photo's sha256, the port and a digest of every
-  other input that changes pixels (brand kit, price line, slide). Same inputs → same job (a
+  other input that changes pixels (brand kit, logo, price line). Same inputs → same job (a
   retry is idempotent on the service); any edit → a new job, never the old image.
 - **object key** = ``t/{tenant}/generated/{draft}/compose/{layer_id}/{spec_sha256[:16]}/
   {job_id}/slide-{position+1}.jpg``: a re-compose after an edit is a new layer row and a new
@@ -66,29 +66,18 @@ def spec_sha256(spec: Mapping[str, Any]) -> str:
 
 
 @dataclass(frozen=True)
-class SlideInfo:
-    """A carousel slide: 1-based ``index`` of ``total`` (2–10), with its catalog role."""
-
-    index: int
-    total: int
-    role: Literal["cover", "body", "closing"]
-
-    def to_payload(self) -> dict[str, Any]:
-        return {"index": self.index, "total": self.total, "role": self.role}
-
-
-@dataclass(frozen=True)
 class LayerComposeRequest:
-    """Everything one still needs. ``spec`` is the LayerSpec as stored in ``piece_layers.spec``
-    (its ``info_blocks[].value`` already filled from the business's saved data — never by the
-    model); ``base_key``/``logo_key`` are store keys, read and uploaded by the adapter."""
+    """Everything one still needs. ``spec`` is the LayerSpec v1 of m-25017283 as stored in
+    ``piece_layers.spec`` (``LayerSpec.model_dump(mode="json")``): its ``format`` picks the port,
+    its ``carousel`` gives the counter and the logo rule, its ``info_blocks[].value`` are the
+    business's saved data. ``base_key``/``logo_key`` are store keys, read and uploaded by the
+    adapter."""
 
     tenant_id: str
     draft_id: str
     version_id: str
     layer_id: str
     position: int
-    format: Format
     spec: Mapping[str, Any]
     brand: Mapping[str, Any]
     base_key: str | None = None
@@ -98,16 +87,19 @@ class LayerComposeRequest:
     #: currency (catalog §4); empty = no price line
     price_text: str = ""
     is_food: bool = False
-    slide: SlideInfo | None = None
     #: ``piece_layers.spec_sha256`` when the caller has it; computed from ``spec`` otherwise
     spec_digest: str | None = None
+
+    @property
+    def format(self) -> str:
+        return str(self.spec.get("format") or "")
 
     @property
     def port(self) -> str:
         try:
             return PORT_FOR_FORMAT[self.format]
         except KeyError:
-            raise ValueError(f"unknown format {self.format!r}") from None
+            raise ValueError(f"the layer has no known format ({self.format!r})") from None
 
     @property
     def layout_version(self) -> int:
@@ -128,7 +120,6 @@ class LayerComposeRequest:
                     "logo_key": self.logo_key,
                     "price_text": self.price_text,
                     "is_food": self.is_food,
-                    "slide": self.slide.to_payload() if self.slide else None,
                 }
             ).encode("utf-8")
         ).hexdigest()
@@ -178,7 +169,7 @@ class ComposedStill:
 def build_layer_props(
     request: LayerComposeRequest, *, photo_ref: str | None, logo_ref: str | None
 ) -> dict[str, Any]:
-    """The props of ``layer_still`` (CONTRACT §2 shape + ``layer``/``slide``)."""
+    """The props of ``layer_still`` (CONTRACT §2 shape + ``layer``)."""
     brand = dict(request.brand)
     brand["logo"] = logo_ref
     texts: dict[str, Any] = {"is_food": request.is_food}
@@ -192,7 +183,6 @@ def build_layer_props(
         "video": None,
         "products": [],
         "layer": dict(request.spec),
-        "slide": request.slide.to_payload() if request.slide else None,
     }
 
 

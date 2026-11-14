@@ -19,7 +19,7 @@ import {AbsoluteFill, Img, type CalculateMetadataFunction} from 'remotion';
 import manifest from '../../../templates/layer_still/manifest.json';
 import {loadFamily, useBrandFonts, FALLBACK_BODY, FALLBACK_HEADING} from '../../fonts';
 import {normalizeProps, paletteOf, type PropsInput} from '../../props';
-import {resolveLayer, type Catalog, type Format, type Layer, type Resolved, type Slide} from './engine';
+import {resolveLayer, type Catalog, type Format, type LayerSpec, type Resolved} from './engine';
 import {Icon} from './icons';
 import {layerProblems} from './spec.mjs';
 
@@ -28,8 +28,8 @@ type PortSpec = {kind: string; width: number; height: number; composition: strin
 export const PORTS = manifest.outputs as unknown as Record<string, PortSpec>;
 
 export type LayerStillProps = PropsInput & {
-  layer: Layer;
-  slide?: Slide | null;
+  /** the LayerSpec of m-25017283 (carousel place, photo reading and price ref inside it) */
+  layer: LayerSpec;
   resolved?: Resolved | null;
 };
 
@@ -56,7 +56,7 @@ export const layerStillMetadata: CalculateMetadataFunction<LayerStillProps> = as
   const base = normalizeProps(props);
   const format = formatOf(base.meta?.port);
   const photoSrc = base.photos[0] ?? '';
-  const problems = layerProblems(CATALOG, props.layer, {formats: [format], hasPhoto: !!photoSrc, slide: props.slide ?? undefined});
+  const problems = layerProblems(CATALOG, props.layer, {formats: [format], hasPhoto: !!photoSrc});
   if (problems.length > 0) throw new Error(`invalid_parameters: ${problems.join('; ')}`);
 
   const headingFamily = await loadFamily(base.brand.fonts.heading, FALLBACK_HEADING);
@@ -78,7 +78,6 @@ export const layerStillMetadata: CalculateMetadataFunction<LayerStillProps> = as
     photo,
     priceText: typeof texts.price_text === 'string' ? texts.price_text : '',
     isFood: texts.is_food === true,
-    slide: props.slide ?? null,
     palette: paletteOf(base.brand),
     headingFamily: base.brand.fonts.heading ?? '',
     hasLogo: !!base.brand.logo,

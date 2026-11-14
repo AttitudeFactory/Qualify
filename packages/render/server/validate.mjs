@@ -10,7 +10,6 @@
 //   product[]                  → props.products
 //   layer_spec                 → props.layer   (layer_still: checked against manifest.layer_catalog
 //                                               for the formats of the requested ports)
-//   slide                      → props.slide   (checked with the layer)
 import {HttpError} from './http.mjs';
 import {layerProblems} from '../src/templates/layer_still/spec.mjs';
 
@@ -145,13 +144,8 @@ export const validateProps = (manifest, props, ports = undefined) => {
         const wanted = ports ?? Object.keys(manifest.outputs ?? {});
         const formats = [...new Set(wanted.map((p) => manifest.outputs?.[p]?.format).filter(Boolean))];
         const hasPhoto = Array.isArray(props.photos) && props.photos.length > 0;
-        problems.push(...layerProblems(manifest.layer_catalog, props.layer, {formats, hasPhoto, slide: props.slide}));
+        problems.push(...layerProblems(manifest.layer_catalog, props.layer, {formats, hasPhoto}));
         break;
-      }
-      case 'slide': {
-        const v = props.slide;
-        if ((v === undefined || v === null) && !optional) problems.push('slide: required');
-        break; // its shape is checked with the layer (layer_spec)
       }
       default:
         problems.push(`manifest port '${name}' has unknown type '${port.type}'`);

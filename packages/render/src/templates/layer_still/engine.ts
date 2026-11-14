@@ -13,6 +13,31 @@ export type Rect = {x: number; y: number; w: number; h: number};
 export type FontRole = 'heading' | 'body';
 export type Measure = (text: string, font: {role: FontRole; size: number; weight: number}) => number;
 
+// ---- the contract: `LayerSpec` v1 as m-25017283 defines it (qualify_creative.layer_spec,
+// layer_spec_v1.schema.json). Field names are theirs; do not rename.
+export type SubjectBox = [number, number, number, number];
+export type LayerSpec = {
+  spec_version?: 1;
+  layout_id: LayoutId;
+  layout_version: number;
+  format?: Format;
+  photo?: {subject_box: SubjectBox; logo_in_photo: boolean; base_has_invented_text?: boolean} | null;
+  anchor?: string | null;
+  container_color?: 'surface' | 'accent' | null;
+  accent_word?: number | null;
+  title?: string | null;
+  subtitle?: string | null;
+  call_phrase?: string | null;
+  info_blocks?: Array<{kind: string; label?: string; value: string}> | null;
+  price_ref?: {product_id: string} | null;
+  highlight_content?: {kind: 'icon' | 'word' | 'photo'; icon_id?: string | null; word?: string | null} | null;
+  photo_strip?: boolean;
+  carousel?: {role: 'cover' | 'body' | 'closing'; index: number; count: number} | null;
+  fallbacks?: string[];
+  layer_id?: string | null;
+};
+
+// ---- what the engine works with (flattened from the spec by `toInternal`)
 export type InfoBlock = {kind: string; value: string};
 export type HighlightContent = {type: 'icon'; icon_id: string} | {type: 'word'; word: string} | {type: 'photo'};
 export type Layer = {
@@ -76,12 +101,11 @@ export type Catalog = {
 export type Input = {
   catalog: Catalog;
   format: Format;
-  layer: Layer;
+  layer: LayerSpec;
   /** natural size of photos[0]; null = no photo */
   photo: {width: number; height: number} | null;
   priceText: string;
   isFood: boolean;
-  slide: Slide | null;
   palette: Palette;
   headingFamily: string;
   hasLogo: boolean;
@@ -281,7 +305,38 @@ const GAP = {subtitle: 20, call_phrase: 28, price: 12};
 const stackHeight = (pieces: Piece[]): number =>
   pieces.reduce((h, p, i) => h + (i === 0 ? 0 : p.gapBefore) + p.fit.lines.length * p.fit.size * p.lh, 0);
 
-type Ctx = Input & {
+/** The spec flattened: subject box and logo flag out of `photo`, the 1-based slide out of
+ * `carousel`, the highlight's `kind` as `type`, `price_ref` as the product id. */
+export const toInternal = (spec: LayerSpec): {layer: Layer; slide: Slide | null} => {
+  const hc = spec.highlight_content;
+  let highlight: HighlightContent | null = null;
+  if (hc?.kind === 'icon') highlight = {type: 'icon', icon_id: hc.icon_id ?? ''};
+  else if (hc?.kind === 'word') highlight = {type: 'word', word: hc.word ?? ''};
+  else if (hc?.kind === 'photo') highlight = {type: 'photo'};
+  const c = spec.carousel;
+  return {
+    layer: {
+      layout_id: spec.layout_id,
+      layout_version: spec.layout_version,
+      title: spec.title ?? null,
+      subtitle: spec.subtitle ?? null,
+      call_phrase: spec.call_phrase ?? null,
+      info_blocks: (spec.info_blocks ?? []).map((b) => ({kind: b.kind, value: b.value})),
+      price_ref: spec.price_ref?.product_id ?? null,
+      anchor: spec.anchor ?? null,
+      container_color: spec.container_color ?? null,
+      accent_word: spec.accent_word ?? null,
+      highlight_content: highlight,
+      subject_box: spec.photo?.subject_box ?? null,
+      logo_in_photo: spec.photo?.logo_in_photo ?? false,
+      layer_id: spec.layer_id ?? null,
+    },
+    slide: c ? {index: c.index + 1, total: c.count, role: c.role} : null,
+  };
+};
+
+type Inner = Omit<Input, 'layer'> & {layer: Layer; slide: Slide | null};
+type Ctx = Inner & {
   def: LayoutDef;
   fmt: Catalog['formats'][Format];
   layoutId: LayoutId;
@@ -965,7 +1020,11 @@ export const chainOf = (layout: LayoutId, anchor: string | null, def: LayoutDef,
 
 const describe = (a: Attempt): string => `${a.layout}${a.anchor ? `/${a.anchor}` : ''}${a.reduced ? '/reduced' : ''}`;
 
-export const resolveLayer = (input: Input): Resolved => {
+export const resolveLayer = (raw: Input): Resolved => {
+  const flat = toInternal(raw.layer);
+  // info_card draws its photo strip only when the spec asks for it
+  const photo = raw.layer.layout_id === 'info_card' && !raw.layer.photo_strip ? null : raw.photo;
+  const input: Inner = {...raw, photo, layer: flat.layer, slide: flat.slide};
   const {catalog, format, layer} = input;
   const fmt = catalog.formats[format];
   const fallbacks: string[] = [];

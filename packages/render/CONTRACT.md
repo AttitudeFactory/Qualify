@@ -73,6 +73,21 @@ one tab. A video composition may also take its **size** from the props through
 manifest's `width`/`height` are then the largest frame, and the job reports the size it
 actually rendered.
 
+`layer_still` **v1** (m-25017285, ADR 49 §2, catalog `docs/catalogo-disenos-imagen-carrusel.md`)
+renders ONE still per job from a `LayerSpec`: ports `feed` (4:5), `square` (1:1), `story`
+(9:16), each output carrying its catalog `format`. Two port types exist only for it:
+`layer_spec` (`props.layer`) and `slide` (`props.slide = {index, total, role}`, 1-based,
+2–10, no 9:16). The manifest's `layer_catalog` block is the single copy of the catalog's
+numbers (safe zones, font sizes, slot limits per layout and format, info kinds, icon set);
+`src/templates/layer_still/spec.mjs` checks a layer against it — the server answers
+`422 invalid_parameters` per requested port (unknown `layout_id`, unknown field, slot over
+its character limit, a parameter the layout does not take) and the composition re-checks.
+`texts.price_text` (the catalog price, formatted whole by Python) and `texts.is_food` are
+the only texts. The checks of catalog §1.7 (subject box, safe zones, fit at the minimum
+size, contrast, logo once) and the fixed fallback chain to `band` run in the composition's
+`calculateMetadata` (real fonts, canvas measurement; `engine.ts`), and the decision is
+returned on the job output as `report` (§4.1). A carousel is N jobs (ADR 49 §2.2).
+
 `cost_model` is **render time**, not money: the service runs on our own machine (cost 0
 beyond the server). Python turns ETA into money only if a paid runtime (Lambda, license)
 is configured.
@@ -150,7 +165,11 @@ same id is idempotent and returns the existing job.
 }
 ```
 
-A failed output adds `"failureReason"` and `"errorMessage"`. Rollup rule (ElevenCreative):
+A failed output adds `"failureReason"` and `"errorMessage"`. A `layer_still` output adds
+`"report"` once its composition was selected: `{layer_id, layout_requested, layout_rendered,
+anchor, format, fallbacks[], dropped_slots[], sizes{}, contrast{}, logo, counter, overflow[]}`
+— Python records `layout_rendered` and `fallbacks` with the piece. A layer the composition
+refuses fails the output with `invalid_parameters`. Rollup rule (ElevenCreative):
 `pending` until an output starts; `generating` while any output is unfinished; `completed`
 once every output completed; `failed` once every output finished and at least one failed;
 `cancelled` if cancelled before completion.

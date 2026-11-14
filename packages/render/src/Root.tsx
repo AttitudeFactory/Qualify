@@ -96,19 +96,18 @@ const layerStillDefaults: LayerStillProps = {
   texts: {price_text: '$ 12.000', is_food: true},
   photos: [staticFile('sample/photo-1.jpg')],
   layer: {
+    spec_version: 1,
     layout_id: 'plate',
     layout_version: 1,
+    format: '4:5',
+    photo: {subject_box: [0.2, 0.55, 0.8, 0.95], logo_in_photo: false, base_has_invented_text: false},
     title: 'Tu pan, recién horneado',
     subtitle: 'Masa madre de la casa',
-    call_phrase: 'Pídelo por WhatsApp',
     anchor: 'top_left',
     container_color: 'surface',
     accent_word: 1,
-    price_ref: 'p-1',
-    subject_box: [0.2, 0.2, 0.8, 0.8],
-    logo_in_photo: false,
+    price_ref: {product_id: '00000000-0000-4000-8000-000000000001'},
   },
-  slide: null,
 };
 
 const layerStillCompositions = (): React.ReactNode[] =>
@@ -119,7 +118,7 @@ const layerStillCompositions = (): React.ReactNode[] =>
       component={LayerStill}
       width={spec.width}
       height={spec.height}
-      defaultProps={{...layerStillDefaults, meta: {templateId: 'layer_still', version: 1, port}}}
+      defaultProps={{...layerStillDefaults, meta: {templateId: 'layer_still', version: 1, port}, layer: {...layerStillDefaults.layer, format: spec.format}}}
       calculateMetadata={layerStillMetadata}
     />
   ));

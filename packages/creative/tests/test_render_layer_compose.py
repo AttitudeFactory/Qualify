@@ -12,7 +12,6 @@ from qualify_creative.render.adapter import RemotionTemplateAdapter
 from qualify_creative.render.client import RemotionRenderClient, RenderServiceError
 from qualify_creative.render.layer_compose import (
     LayerComposeRequest,
-    SlideInfo,
     build_layer_props,
     compose_layer,
     spec_sha256,
@@ -132,14 +131,29 @@ def _client(service: FakeRenderService) -> RemotionRenderClient:
     )
 
 
+#: a LayerSpec v1 as m-25017283 dumps it (`LayerSpec.model_dump(mode="json")`)
 SPEC = {
+    "spec_version": 1,
     "layout_id": "plate",
     "layout_version": 1,
-    "title": "Tu pan, recién horneado",
+    "format": "4:5",
+    "photo": {
+        "subject_box": [0.25, 0.4, 0.75, 0.8],
+        "logo_in_photo": False,
+        "base_has_invented_text": False,
+    },
     "anchor": "top_left",
     "container_color": "surface",
-    "subject_box": [0.25, 0.4, 0.75, 0.8],
-    "logo_in_photo": False,
+    "accent_word": None,
+    "title": "Tu pan, recién horneado",
+    "subtitle": None,
+    "call_phrase": None,
+    "info_blocks": [],
+    "price_ref": None,
+    "highlight_content": None,
+    "photo_strip": False,
+    "carousel": None,
+    "fallbacks": [],
 }
 MEDIA = {"t/ten/generated/d1/base/b.jpg": b"jpeg-base", "brand/logo.png": b"png-logo"}
 
@@ -151,7 +165,6 @@ def _request(**over: Any) -> LayerComposeRequest:
         "version_id": "v1",
         "layer_id": "L1",
         "position": 0,
-        "format": "4:5",
         "spec": SPEC,
         "brand": {
             "name": "Panadería",
@@ -206,11 +219,12 @@ def test_keys_change_with_the_content_and_never_collide() -> None:
         edited,
         _request(spec={**SPEC, "layout_id": "band", "anchor": "bottom"}),  # «Probar otro diseño»
         _request(base_sha256="cd" * 32),
-        _request(format="1:1"),
+        _request(spec={**SPEC, "format": "1:1"}),
         _request(position=1),
         _request(price_text="$ 12.000"),
         _request(brand={**a.brand, "palette": ["#000000"]}),
-        _request(slide=SlideInfo(index=1, total=3, role="cover")),
+        _request(spec={**SPEC, "carousel": {"role": "cover", "index": 0, "count": 3}}),
+        _request(logo_key="brand/logo-2.png"),
     ]
     ids = {a.job_id(), *(v.job_id() for v in variants)}
     keys = {a.object_key(), *(v.object_key() for v in variants)}
@@ -231,15 +245,18 @@ def test_a_refused_layer_raises_and_stores_nothing() -> None:
     assert stored == {}
 
 
-def test_props_carry_layer_slide_price_and_port() -> None:
-    req = _request(format="1:1", price_text="$ 9.500", is_food=True, slide=SlideInfo(2, 5, "body"))
+def test_props_carry_the_layer_price_and_the_port_of_its_format() -> None:
+    carousel = {"role": "body", "index": 1, "count": 5}
+    req = _request(
+        spec={**SPEC, "format": "1:1", "carousel": carousel}, price_text="$ 9.500", is_food=True
+    )
     props = build_layer_props(req, photo_ref="asset://p", logo_ref=None)
     assert props["meta"]["port"] == "square"
     assert props["texts"] == {"is_food": True, "price_text": "$ 9.500"}
-    assert props["slide"] == {"index": 2, "total": 5, "role": "body"}
+    assert props["layer"]["carousel"] == carousel  # the counter and logo rule ride on the spec
     assert props["brand"]["logo"] is None
     with pytest.raises(ValueError):
-        _ = _request(format="16:9").port
+        _ = _request(spec={**SPEC, "format": "16:9"}).port
 
 
 def test_the_manifest_parses_and_never_serves_a_post_recipe() -> None:

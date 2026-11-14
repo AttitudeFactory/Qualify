@@ -97,7 +97,7 @@ for (const [key, b] of Object.entries(BRANDS)) {
     const base = {layout_version: 1, subject_box: SUBJECT, logo_in_photo: false};
     push({brand: key, format, name: 'photo_only', photo: true, layer: {...base, layout_id: 'photo_only'}});
     push({brand: key, format, name: 'plate top_left (price)', photo: true, layer: {...base, layout_id: 'plate', anchor: 'top_left', container_color: 'surface', accent_word: 1, price_ref: 'p-1', ...maxText('plate', format)}});
-    push({brand: key, format, name: 'scrim bottom', photo: true, layer: {...base, layout_id: 'scrim', anchor: 'top', subject_box: [0.25, 0.5, 0.75, 0.9], ...maxText('scrim', format)}});
+    push({brand: key, format, name: 'scrim top', photo: true, layer: {...base, layout_id: 'scrim', anchor: 'top', subject_box: [0.25, 0.5, 0.75, 0.9], ...maxText('scrim', format)}});
     push({brand: key, format, name: 'band bottom (price)', photo: true, layer: {...base, layout_id: 'band', anchor: 'bottom', container_color: 'accent', accent_word: 0, price_ref: 'p-1', ...maxText('band', format)}});
     const range = catalog.layouts.info_card.blocks[format];
     const lim = catalog.layouts.info_card.value[format][0];
@@ -130,6 +130,23 @@ for (const [key, b] of Object.entries(BRANDS)) {
     }),
   );
 }
+
+/** The fixtures are written flat; this is the LayerSpec v1 of m-25017283 they stand for. */
+const PRODUCT = '00000000-0000-4000-8000-000000000001';
+const toSpec = (c) => {
+  const {subject_box, logo_in_photo, price_ref, highlight_content, info_blocks, ...rest} = c.layer;
+  const spec = {spec_version: 1, ...rest, format: c.format};
+  if (subject_box) spec.photo = {subject_box, logo_in_photo: !!logo_in_photo, base_has_invented_text: false};
+  if (price_ref) spec.price_ref = {product_id: PRODUCT};
+  if (highlight_content) {
+    const {type, ...hc} = highlight_content;
+    spec.highlight_content = {kind: type, ...hc};
+  }
+  if (info_blocks) spec.info_blocks = info_blocks.map((b) => ({kind: b.kind, label: catalog.info_kinds[b.kind].label, value: b.value}));
+  if (spec.layout_id === 'info_card') spec.photo_strip = c.photo;
+  if (c.slide) spec.carousel = {role: c.slide.role, index: c.slide.index - 1, count: c.slide.total};
+  return spec;
+};
 
 // ------------------------------------------------------------------ memory sampling
 
@@ -200,8 +217,7 @@ for (const c of cases) {
     brand: b.brand,
     texts: {price_text: b.price, is_food: b.isFood},
     photos: c.photo ? [photoUrl] : [],
-    layer: c.layer,
-    slide: c.slide ?? null,
+    layer: toSpec(c),
   };
   const file = `${String(n).padStart(2, '0')}-${c.brand}-${c.format.replace(':', 'x')}-${c.name.replace(/[^a-z0-9]+/gi, '-')}.png`;
   const mem = sampler();

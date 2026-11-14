@@ -68,5 +68,21 @@ for port in reel feed story; do
   curl -fsS -o "$OUT/promo_$port.$ext" "$BASE/jobs/$J2/outputs/$port"
   file "$OUT/promo_$port.$ext"
 done
+echo "== layer_still: 422 on a layer that breaks the catalog"
+BADLAYER="{\"layout_id\":\"poster\",\"layout_version\":1}"
+curl -sS -o /dev/null -w "unknown layout → %{http_code}\n" -X POST "$BASE/estimate" -H 'content-type: application/json' \
+  -d "{\"templateId\":\"layer_still\",\"version\":1,\"props\":{\"brand\":{},\"photos\":[\"asset://$A1\"],\"layer\":$BADLAYER}}" | grep -q 422 \
+  && echo "unknown layout → 422" || { echo "expected 422"; exit 1; }
+
+echo "== layer_still: one plate still (feed), report on the output"
+J3=$(uuid); T0=$(now)
+LAYER="{\"layout_id\":\"plate\",\"layout_version\":1,\"title\":\"Tu yogurt de hoy\",\"anchor\":\"top_left\",\"container_color\":\"surface\",\"subject_box\":[0.2,0.2,0.8,0.8]}"
+curl -fsS -o /dev/null -w "POST /render → %{http_code}\n" -X POST "$BASE/render" -H 'content-type: application/json' \
+  -d "{\"jobId\":\"$J3\",\"templateId\":\"layer_still\",\"version\":1,\"outputs\":[\"feed\"],\"props\":{\"brand\":{\"name\":\"Polette\",\"palette\":[\"#F4C2C2\",\"#5A2A27\",\"#FFFFFF\"],\"fonts\":{\"heading\":\"Poppins\",\"body\":\"Inter\"},\"logo\":\"asset://$A2\"},\"photos\":[\"asset://$A1\"],\"layer\":$LAYER}}"
+poll "$J3"; T1=$(now); echo "layer_still wall-clock: $(( (T1 - T0) / 1000 )) s"
+curl -fsS "$BASE/jobs/$J3" | json outputs.feed.report.layout_rendered
+curl -fsS -o "$OUT/layer_still_feed.png" "$BASE/jobs/$J3/outputs/feed"
+file "$OUT/layer_still_feed.png"
+
 ls -la "$OUT"
 echo "== OK"
