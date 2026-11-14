@@ -2,9 +2,9 @@
 
 `[PROPUESTA UX DECIDIDA por el fundador 2026-11-12 · m-24789459 · fila y lista única construidas (m-25017844, m-25017859), el resto sin implementar]`
 
-> **Cambios de texto posteriores (2026-11-13/14), decididos por el fundador:** «Responde en N min»
+> **Cambios de texto posteriores (2026-11-13), decididos por el fundador:** «Responde en N min»
 > pasó a «Quedan {N} min para responder»; la lista suma el filtro «Sin responder a tiempo · N» para
-> los chats de Instagram vencidos sin respuesta. Detalle y resto de textos en
+> los chats de Instagram vencidos sin respuesta (solo se dibuja al abrirlo desde el aviso). Detalle y resto de textos en
 > `docs/epica-bandeja-unica.md` §6 (vii).
 
 > Propuesta de experiencia (ux-designer, 2026-11-12). El fundador aceptó las cinco

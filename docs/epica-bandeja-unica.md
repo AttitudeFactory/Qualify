@@ -155,9 +155,11 @@ canal, con dos outboxes y dos workers `[arq §1.2, §1.3]`. Cortes de origen C1�
   - [x] Prueba que une el descriptor con la realidad: `attachments` de Instagram ==
         `REPLY_MEDIA_TYPES`; `suggest_reply` de WhatsApp es `False` `[arq §2.1]`.
   - [x] p95 de una página de 50 hilos < 300 ms con los datos de prueba (si no, se anota y se abre
-        la desnormalización de `last_outbound_at`, no otro almacén) `[arq §2.2]`.
+        la desnormalización de `last_outbound_at`, no otro almacén) `[arq §2.2]`. Medido a mano por
+        el autor (PR #625); la prueba es opcional y no corre en CI.
   - Pruebas en `packages/api/tests/test_inbox_unified_db.py`, `test_inbox_unified.py`,
-    `test_inbox_channels.py` y `test_inbox_awaiting.py`.
+    `test_inbox_channels.py` y `test_inbox_awaiting.py`; la igualdad entre `attention/counts.py` y
+    la lista la prueba `test_inbox_counters_db.py`, que llegó con el PR #665.
 - **Texto para el cliente:** ninguno (backend).
 - **Fuera de alcance:** cambiar pantallas; unir outboxes o workers; unir la identidad de una persona
   entre canales `[arq §1.3]`.
@@ -194,11 +196,11 @@ canal, con dos outboxes y dos workers `[arq §1.2, §1.3]`. Cortes de origen C1�
 
 ### m-25017859 (BU-A3) · Conversaciones: lista única de chats bajo «Por responder»
 
-> **Fusionada el 2026-11-13 — PR #665 (commit `91b06afa`); ticket RESOLVED, nunca vista en un
-> navegador.** Antes, el PR #649 (2026-11-13) agregó a la regla el límite de la ventana de
+> **Fusionada y desplegada el 2026-11-13 — PR #665 (commit `91b06afa`); ticket RESOLVED, nunca
+> vista en un navegador.** Antes, el PR #649 (2026-11-13) agregó a la regla el límite de la ventana de
 > Instagram. Entregado: una lista de WhatsApp e Instagram bajo «Por responder» › «Mensajes» con la
 > fila compartida y filtro de canal; filtros «Por responder · Todos · Cerrados · Pago por revisar»
-> más «Sin responder a tiempo · N»; los contadores del menú, las tarjetas, las pestañas e Inicio
+> más «Sin responder a tiempo · N» (solo se dibuja al abrirlo desde el aviso); los contadores del menú, las tarjetas, las pestañas e Inicio
 > leen la misma regla que la lista; aviso de chats de Instagram vencidos sin respuesta; explicación
 > única del cambio de números; «Quedan {N} min para responder»; en WhatsApp › Chats el filtro
 > «Sin leer» pasa a «Por responder» y lista por la regla. Se quitaron la pestaña «WhatsApp» y los
@@ -230,7 +232,7 @@ canal, con dos outboxes y dos workers `[arq §1.2, §1.3]`. Cortes de origen C1�
   - [x] El contador «Por responder» del menú lateral y el total de la lista coinciden (señal 1 de §1):
         prueba con base de datos `test_inbox_counters_db.py`, en los dos canales. La lectura en
         producción del negocio de Bianki sigue pendiente.
-  - [x] «Cargar más» trae la página siguiente sin repetir ni saltar chats (prueba con el cursor de m-25017843).
+  - [x] «Cargar más» (entregado como «Ver más») trae la página siguiente sin repetir ni saltar chats (prueba con el cursor de m-25017843).
   - [x] Después de abrir un chat desde la lista única, «‹ Por responder» vuelve a la lista única, no a la lista propia del canal (si no, el dueño queda con dos listas, peor que hoy) — prueba e2e o del VM `[revisión UX, puntos 6–7]` (prueba del VM en `Qualify/test_inbox_list.py`).
 - **Texto para el cliente:** «Por responder», «Todos», «Cerrados», «Pago por revisar · {N}»,
   «WhatsApp», «Instagram». Lista vacía: «Ya respondiste a todos. Aquí verás a quien te escriba por WhatsApp o Instagram.» `[revisión UX]`.
@@ -634,7 +636,7 @@ el nombre de las tablas `[arq §3.1, «Conclusión»]`. Cortes de origen M1–M7
 | Corte | Qué hice | Por qué |
 |---|---|---|
 | M1 | Partido en m-25017846 (puntos 1–2: transacción única + candado) y m-25017866 (puntos 3–4 + métricas) | Cuatro arreglos en el código que hoy cobra pedidos reales: dos PR más chicos se revisan mejor; m-25017866 puede necesitar migración (estado `cancelled`) y m-25017846 no |
-| M3 | Partido en BU-B4 (destinos del menú por canal + estado neutral) y BU-B5 (`kind='automation'` en `conversation_outbox`) | Solo BU-B5 quita la garantía deliberada de Instagram y necesita el ADR 48 (número provisional: el PR #618 también reclama el 48; el ADR toma el siguiente número libre al escribirse) escrito (transcripción de m-24789557), la decisión (i-c) y `security-review` `[arq §3.3, §4.2 M3]`; BU-B4 es un cambio de esquema para WhatsApp con relleno que no la toca |
+| M3 | Partido en BU-B4 (destinos del menú por canal + estado neutral) y BU-B5 (`kind='automation'` en `conversation_outbox`) | Solo BU-B5 quita la garantía deliberada de Instagram y necesita el ADR 48 (número provisional: el 48 ya lo ocupa el ADR del catálogo de WhatsApp (PR #618) y el 49 está firmado; el ADR del menú toma el siguiente número libre al escribirse) escrito (transcripción de m-24789557), la decisión (i-c) y `security-review` `[arq §3.3, §4.2 M3]`; BU-B4 es un cambio de esquema para WhatsApp con relleno que no la toca |
 
 ### m-25017846 (BU-B1) · WhatsApp: el menú automático guarda su paso y su respuesta juntos, una conversación a la vez
 
@@ -869,7 +871,8 @@ el nombre de las tablas `[arq §3.1, «Conclusión»]`. Cortes de origen M1–M7
 ## 5. Primer incremento y lo que corre en paralelo
 
 **Primer incremento — fusionado (2026-11-13):** m-25017843 (PR #625) y m-25017844 (PR #624)
-Done; m-25017859 (PRs #649 y #665) fusionada el 2026-11-13, RESOLVED y sin ver en un navegador;
+Done; m-25017859 (PRs #649 y #665) fusionada y desplegada el 2026-11-13, RESOLVED y sin ver en un
+navegador;
 m-25026457 (BU-A13, PR #653) en producción, RESOLVED y sin ver en un navegador. Lo que sigue es
 la comprobación en producción, en celular y escritorio, de la lista y de «Cerrar».
 
@@ -890,7 +893,8 @@ su canal `[arq §1.2 «Primer corte con valor visible»]`. Advertencia: mientras
 Access de Instagram, los clientes reales de Bianki solo aparecerán por WhatsApp (riesgo v, §8
 punto 1).
 
-**En paralelo desde el día uno** (sin dependencias entre sí, dueños distintos):
+**En paralelo desde el día uno** (sin dependencias entre sí, dueños distintos; plan original: de
+esta tabla ya están Done m-25017843, m-25017844 y m-25017852):
 
 | Línea | Historias | Dueño |
 |---|---|---|
@@ -974,14 +978,15 @@ automático. Contestado solo por el menú, no cuenta. Es la opción B que se rec
 Descartadas: A, cualquier respuesta del menú saca el chat de la lista (escondía fallos y entregas a
 persona); C, solo cuenta la respuesta del dueño (lista larga, el menú parece no servir).
 
-Ya no bloquea: m-25017843 y m-25017859 pueden empezar. Decisión de dos vías: es un predicado en una
+Ya no bloquea: m-25017843 y m-25017859 están fusionadas. Decisión de dos vías: es un predicado en una
 función, se cambia en un PR. Construida en m-25017843 (PR #625); la regla vive en
 `packages/api/src/qualify_api/inbox/awaiting.py`.
 
 ### (vii) Lista única: chats vencidos de Instagram, cerrar chats y textos — **DECIDIDAS**
 
-Decisiones del fundador tomadas durante m-25017859 y m-25026457, en sus palabras, con la fecha que
-registra el comentario del ticket. Todas son de dos vías (una constante o un predicado, se cambian
+Decisiones del fundador tomadas durante m-25017859 y m-25026457, en sus palabras, con la fecha en hora
+de Colombia (algunos comentarios del ticket traen la fecha UTC, un día después; un comentario
+posterior lo corrige). Todas son de dos vías (una constante o un predicado, se cambian
 en un PR).
 
 1. **2026-11-13, «Ventana + cerrar chat»** (m-25017859). Un chat de Instagram cuenta como «Por
@@ -992,7 +997,7 @@ en un PR).
    primer filtro pasó de «Todas» a «Abiertas» y el de cerrados a «Cerradas»; la marca de la cabecera
    es «Cerrado». La lista única (m-25017859) quitó después esos filtros propios de Instagram: los
    filtros de la lista son «Por responder · Todos · Cerrados · Pago por revisar» más «Sin responder a
-   tiempo · N».
+   tiempo · N», que solo se dibuja al abrirlo desde el aviso.
 3. **2026-11-13, «Quedan N min»** (m-25017859). La etiqueta de tiempo de la fila dice «Quedan {N} min
    para responder»; reemplaza a «Responde en N min» de la propuesta UX.
 4. **2026-11-13, «Sí, los de UX»** (m-25017859). Aviso de chats de Instagram que vencieron sin
@@ -1000,7 +1005,7 @@ en un PR).
    cambio de números: «Ahora "Por responder" muestra solo a quien espera que una persona le
    conteste. Los chats que ya resolvió tu menú no cuentan.», con el botón «Entendido».
 5. **2026-11-13, «Solo dos semanas»** (m-25017859). La explicación se muestra hasta el 27 de
-   noviembre inclusive (desde el 2026-11-28, hora de Bogotá, ya no) en vez de recordar en el
+   noviembre inclusive (desde el 2026-11-28, en la hora de cada negocio, ya no) en vez de recordar en el
    navegador que se descartó: una marca guardada en el navegador sobreviviría a la sesión del
    negocio y choca con la regla de limpieza al cerrar sesión
    (`docs/modelo-negocio-operador-multi-emprendimiento.md` §6.1); se descartó abrir una excepción.
@@ -1013,9 +1018,10 @@ en un PR).
    llama «Por responder» y lista por la regla.
 8. **2026-11-13, «Sí, ese nombre»** (m-25017859). El filtro de los chats de Instagram que vencieron
    sin respuesta se llama «Sin responder a tiempo».
-9. **Prioridad de la etiqueta de la fila, como quedó construida:** «Pago por revisar» › («Quiere
-   comprar»: lugar vacío, todavía no hay señal del backend) › etiqueta de tiempo › «Esperando el
-   pago».
+9. **Prioridad de la etiqueta de la fila, como quedó construida:** «Pago por revisar» ›
+   «Respóndele desde Instagram» (chat de Instagram vencido sin respuesta) › («Quiere comprar»: lugar
+   vacío, todavía no hay señal del backend) › «Quedan {N} min para responder» › «Esperando el pago»
+   (`Qualify/chat_row_vm.py`).
 
 **Sigue sin decidir por el fundador:** «Todas las redes» en vez del segundo «Todos» en el filtro de
 canal.
@@ -1226,7 +1232,7 @@ Se crean sin el campo «Feature» y con «Relacionado con» hacia la épica.
 6. **Riesgo de conflictos en `whatsapp_tab_chats.py` y su estado** `[arq §5]`: casi la mitad de la
    pista A y BU-B7/BU-B8 pasan por ahí. Un solo `reflex-ui-engineer` dueño de esos archivos, en serie.
 7. **«Por responder» con el menú** (decisión ii) bloqueaba m-25017843; el fundador la tomó el
-   2026-11-13 («Solo si pasó a persona»), así que el primer incremento ya puede empezar.
+   2026-11-13 («Solo si pasó a persona»), y el primer incremento ya está fusionado.
 
 ## 9. Prompt para `/qualify-team-dev` (actualizado 2026-11-13, con el primer incremento fusionado)
 
