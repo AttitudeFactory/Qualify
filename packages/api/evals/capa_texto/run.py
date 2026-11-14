@@ -156,7 +156,8 @@ def main() -> int:
     claude_tools.configure_consumption_sink(booked.append)  # no ledger row from an eval
     api_key = _env(Path(args.env_file)).get(claude_tools.API_KEY_ENV, "")
     if not api_key:
-        print(f"{claude_tools.API_KEY_ENV} is not set", file=sys.stderr)
+        # a fixed message: nothing read from the environment is ever printed
+        print("No Anthropic key in the environment or --env-file.", file=sys.stderr)
         return 2
     meter = DollarMeter(Decimal(args.max_usd))
     rows = []
