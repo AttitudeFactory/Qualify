@@ -68,6 +68,7 @@ from qualify_api.creative.fsm import (
     apply_transition,
 )
 from qualify_api.creative.media import PartWindowRefused
+from qualify_api.creative.part_extend import extend_available, release_next_extend
 from qualify_api.creative.part_join import PART_FINAL
 from qualify_api.creative.queue_dispatch import queue_enabled
 from qualify_api.creative.service import (
@@ -135,7 +136,8 @@ class PartsUnavailable(Exception):
 
 
 class PartsExtendUnavailable(PartsUnavailable):
-    """VE-13 continuity is not implemented: no active extend may start new work."""
+    """«Sigue a la anterior» is switched off (`part_extend.extend_available`): no active
+    extend may start new work."""
 
     reason = "extend_unavailable"
 
@@ -978,6 +980,8 @@ def mark_parent_dirty(session: Session, child_id: UUID) -> None:
         """),
         {"child": child_id},
     )
+    # VE-13: the «Sigue a la anterior» part right after it, waiting for it, tries again
+    release_next_extend(session, child_id)
 
 
 def open_parent_join(session: Session, parent_id: UUID) -> None:
@@ -1496,9 +1500,10 @@ class PartsService:
         wanted = [index for index in asked if index not in made_before]
         if not wanted:
             return [made_before[index] for index in asked]
-        # VE-13 continuity is not built: an active `extend` still to be made blocks new
+        # VE-13: while «Sigue a la anterior» is switched off (`QUALIFY_PARTS_EXTEND`, until
+        # a paid draft test proves it), an active `extend` still to be made blocks new
         # work (never silently made `reference`); one whose child exists already does not.
-        if any(
+        if not extend_available() and any(
             part.mode == "extend" and index not in removed and index not in made_before
             for index, part in enumerate(plan, 1)
         ):

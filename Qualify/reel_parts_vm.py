@@ -29,6 +29,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from qualify_api.creative.part_extend import extend_available
 from qualify_api.creative.parts import NOTICE_TEXTS, PartsExtendUnavailable, is_vertical
 from qualify_api.referentes.reel_analysis_types import OBSERVED, ReelAnalysis
 from qualify_creative.schemas import (
@@ -628,8 +629,14 @@ def blocked_parts(entries: Sequence[dict[str, Any]]) -> list[int]:
     ]
 
 
-def unsupported_parts(entries: Sequence[dict[str, Any]]) -> list[int]:
-    """Preserve stored extends, but never charge/create a plan VE-13 cannot produce."""
+def unsupported_parts(
+    entries: Sequence[dict[str, Any]], *, extend_on: bool | None = None
+) -> list[int]:
+    """The parts that cannot be created now: «Sigue a la anterior» while it is switched
+    off (`part_extend.extend_available`; stored extends are preserved, never charged).
+    `extend_on` None reads the switch."""
+    if extend_available() if extend_on is None else extend_on:
+        return []
     return [at for at, entry in enumerate(entries, 1) if entry["plan"].get("mode") == "extend"]
 
 
