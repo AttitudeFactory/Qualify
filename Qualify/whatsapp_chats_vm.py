@@ -47,7 +47,6 @@ from .chat_row_vm import (
     minutes_left,
 )
 from .chat_thread_vm import mark_days, window_line
-from .planner_vm import time_label_12h
 from .seasonal_vm import CREATE_HREF as SEASONAL_LIBRARY_CREATE_HREF
 from .seasonal_vm import PRODUCT_RECIPES, PRODUCT_SEASON_KEY, product_message
 
@@ -358,28 +357,15 @@ def bubble_clock(value: datetime | None, zone: tzinfo) -> str:
 def window_pill(
     is_open: bool, closes_at: datetime | None, now: datetime, zone: tzinfo
 ) -> tuple[str, str]:
-    """(label, tone) of the 24 h window: `ok` open, `warn` closing within the hour
-    («Responde en los próximos 42 min»), `neutral` closed («Solo con mensaje aprobado»).
-    Worded by what the owner can do, never «ventana»."""
-    if not is_open or closes_at is None:
+    """(label, tone) of the 24 h window: `ok` open (the header's «Puedes escribirle hasta
+    las 17:47»), `warn` closing within the hour (the founder's «Quedan 42 min para
+    responder», m-25027371: the row, the header and the send panel say the same),
+    `neutral` closed («Solo con mensaje aprobado»). Worded by what the owner can do,
+    never «ventana»."""
+    if not is_open or closes_at is None or closes_at - now <= timedelta(0):
         return WINDOW_CLOSED_PILL, "neutral"
-    remaining = closes_at - now
-    if remaining <= timedelta(0):
-        return WINDOW_CLOSED_PILL, "neutral"
-    if remaining < WINDOW_WARN_WITHIN:
-        # m-25017844: the same count as the row's pill (`chat_row_vm.minutes_left`).
-        minutes = minutes_left(is_open, closes_at, now)
-        if minutes == 1:
-            return "Responde en el próximo minuto", "warn"
-        return f"Responde en los próximos {minutes} min", "warn"
-    return deadline_label(_local(closes_at, zone)), "ok"
-
-
-def deadline_label(local_close: datetime) -> str:
-    """«Puedes escribirle hasta las 5:00 p. m.» — «la» for one o'clock (m-24842994)."""
-    clock = time_label_12h(local_close)
-    article = "la" if clock.startswith("1:") else "las"
-    return f"Puedes escribirle hasta {article} {clock}"
+    text, tone = window_line(is_open, closes_at, now, zone)
+    return text, tone
 
 
 #: m-24842994: the chat's badge says who answers, in the owner's words.

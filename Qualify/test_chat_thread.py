@@ -71,12 +71,12 @@ def test_the_menu_keeps_todays_words() -> None:
 
 def test_window_line_says_until_when_today() -> None:
     text, tone = window_line(True, NOW + timedelta(hours=5), NOW, ZONE)
-    assert (text, tone) == ("Puedes escribirle hasta las 5:00 p. m.", "ok")
+    assert (text, tone) == ("Puedes escribirle hasta las 17:00", "ok")
 
 
 def test_window_line_says_tomorrow_when_it_closes_another_day() -> None:
     text, tone = window_line(True, NOW + timedelta(hours=20), NOW, ZONE)
-    assert text == "Puedes escribirle hasta mañana a las 8:00 a. m." and tone == "ok"
+    assert text == "Puedes escribirle hasta mañana a las 08:00" and tone == "ok"
 
 
 def test_window_line_uses_the_rows_words_under_an_hour() -> None:

@@ -17,7 +17,7 @@ What this module words, and never re-derives:
 - the **attention state** («pendiente / leída / respondida») is `service.attention_state`,
   computed from the thread's instants; here it only gets a label and a tone;
 - the **24 h window** is `window.window_state`; here it becomes plain words («Puedes
-  responder hasta las 17:47», «Te quedan 12 min», «Ya no puedes responder»);
+  responder hasta las 17:47», «Quedan 12 min para responder», «Ya no puedes responder»);
 - the **access verdict** (`conversation_sync_state.access_status`) is the sync's; here it
   becomes the banner the person sees — and `unknown` is NEVER rendered as «no hay
   mensajes»: it is a «por verificar» state with its own words (§6.4). A failed sync is
@@ -59,6 +59,7 @@ from .chat_row_vm import (
     CHANNEL_INSTAGRAM,
     EXPIRED_PILL,
     minutes_left,
+    reply_soon_pill,
     unknown_contact,
 )
 from .chat_thread_vm import day_label, window_line
@@ -600,7 +601,7 @@ def window_words(
     *,
     has_inbound: bool = True,
 ) -> tuple[str, str]:
-    """(sentence for the header, tone). «Puedes responder hasta las 17:47» / «Te quedan
+    """(sentence for the header, tone). «Puedes responder hasta las 17:47» / «Quedan
     12 min para responder» / «Ya no puedes responder…». `has_inbound=False` (no message
     of the person is left, m-25018661) says that instead of the 24 h. The row says the
     window through the shared pill (`chat_row_vm`), with the same minute count."""
@@ -611,7 +612,7 @@ def window_words(
     remaining = closes_at - now
     if remaining < timedelta(hours=1):
         minutes = max(1, minutes_left(is_open, closes_at, now))
-        return f"Te quedan {minutes} min para responder: {WINDOW_RULE}", "warn"
+        return f"{reply_soon_pill(minutes)}: {WINDOW_RULE}", "warn"
     local_close, local_now = _local(closes_at, zone), _local(now, zone)
     clock = local_close.strftime("%H:%M")
     when = (

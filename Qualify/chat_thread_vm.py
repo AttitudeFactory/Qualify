@@ -25,7 +25,6 @@ from .chat_row_vm import (
     minutes_left,
     reply_soon_pill,
 )
-from .planner_vm import time_label_12h
 from .ui.tokens import platform_scale
 
 # ======================================================================================
@@ -104,8 +103,9 @@ def window_line(
 ) -> tuple[str, str]:
     """(text, tone) of the header line that says until when the owner can write.
 
-    Open with more than an hour left → «Puedes escribirle hasta las 5:00 p. m.» (`ok`),
-    or «… hasta mañana a las …» when it closes on another day of the tenant's calendar;
+    Open with more than an hour left → «Puedes escribirle hasta las 17:47» (`ok`), or
+    «… hasta mañana a las 01:18» when it closes on another day of the tenant's calendar
+    — the bubbles' 24 h clock, and the clock of Instagram's composer line;
     under an hour → the row's own «Quedan 12 min para responder» (`warn`), the same
     count (`chat_row_vm.minutes_left`); closed → `closed_text` (each channel says what
     the owner can still do) with the `neutral` tone, "" for no line."""
@@ -115,11 +115,11 @@ def window_line(
     if minutes:
         return reply_soon_pill(minutes), "warn"
     local_close = _local(closes_at, zone)
-    clock = time_label_12h(local_close)
-    article = "la" if clock.startswith("1:") else "las"
+    # The bubbles' clock (24 h, «17:47»): one fact, one way of saying the time.
+    clock = local_close.strftime("%H:%M")
     if local_close.date() == _local(now, zone).date():
-        return f"Puedes escribirle hasta {article} {clock}", "ok"
-    return f"Puedes escribirle hasta mañana a {article} {clock}", "ok"
+        return f"Puedes escribirle hasta las {clock}", "ok"
+    return f"Puedes escribirle hasta mañana a las {clock}", "ok"
 
 
 def _local(value: datetime, zone: tzinfo) -> datetime:

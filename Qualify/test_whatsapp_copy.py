@@ -20,7 +20,7 @@ from .whatsapp_campaigns_vm import (
     send_error_note,
 )
 from .whatsapp_chats_state import _QUEUED
-from .whatsapp_chats_vm import deadline_label, mode_pill, window_pill
+from .whatsapp_chats_vm import mode_pill, window_pill
 from .whatsapp_contacts_vm import source_label
 from .whatsapp_menu_vm import NEXT_STEP_QR
 from .whatsapp_metrics_vm import _PRICING_CATEGORY
@@ -72,8 +72,10 @@ def test_chat_badges_say_who_answers_and_until_when() -> None:
     assert mode_pill(True) == ("Respondes tú", "info")
     now = datetime(2026, 10, 14, 12, 0, tzinfo=UTC)
     label, tone = window_pill(True, datetime(2026, 10, 14, 17, 0, tzinfo=UTC), now, UTC)
-    assert (label, tone) == ("Puedes escribirle hasta las 5:00 p. m.", "ok")
-    assert deadline_label(datetime(2026, 10, 14, 13, 30)) == "Puedes escribirle hasta la 1:30 p. m."
+    # m-25027371: the bubbles' 24 h clock, one way of saying the time in the thread
+    assert (label, tone) == ("Puedes escribirle hasta las 17:00", "ok")
+    label, _tone = window_pill(True, datetime(2026, 10, 15, 1, 30, tzinfo=UTC), now, UTC)
+    assert label == "Puedes escribirle hasta mañana a las 01:30"
 
 
 def test_follow_up_strings_are_exact() -> None:

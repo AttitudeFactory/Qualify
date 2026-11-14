@@ -173,7 +173,7 @@ def test_row_and_chat_header_say_the_same_minutes() -> None:
         assert ig is not None
         header, _tone = window_words(True, IG_NOW + left, IG_NOW, IG_ZONE)
         assert ig.pill_label == f"Quedan {said} min para responder"
-        assert header.startswith(f"Te quedan {said} min para responder")
+        assert header.startswith(f"Quedan {said} min para responder: ")
         wa_row = wa_chat_row(
             wa_build(
                 wa_thread(window=WindowView(open=True, closes_at=WA_NOW + left)),
@@ -183,10 +183,8 @@ def test_row_and_chat_header_say_the_same_minutes() -> None:
         )
         wa_header, _ = window_pill(True, WA_NOW + left, WA_NOW, WA_ZONE)
         assert wa_row.pill_label == f"Quedan {said} min para responder"
-        expected = (
-            "Responde en el próximo minuto" if said == 1 else f"Responde en los próximos {said} min"
-        )
-        assert wa_header == expected
+        # m-25027371: the header and the send panel use the row's words too
+        assert wa_header == f"Quedan {said} min para responder"
 
 
 # --- names and initials ---------------------------------------------------------------------

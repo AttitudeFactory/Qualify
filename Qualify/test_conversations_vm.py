@@ -366,7 +366,7 @@ def test_window_words_are_plain_spanish() -> None:
     sentence, tone = window_words(True, tomorrow, NOW, ZONE)
     assert sentence.endswith("hasta mañana a las 01:00.") and tone == "ok"
     sentence, tone = window_words(True, NOW + timedelta(minutes=42), NOW, ZONE)
-    assert sentence.startswith("Te quedan 42 min para responder: Instagram")
+    assert sentence.startswith("Quedan 42 min para responder: Instagram")
     assert tone == "warn"  # m-25017844: the row's short pill lives in chat_row_vm
     assert window_words(False, None, NOW, ZONE) == (WINDOW_CLOSED_NOTICE, "neutral")
 
