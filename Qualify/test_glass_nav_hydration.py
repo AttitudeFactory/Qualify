@@ -52,9 +52,14 @@ def test_glass_nav_script_is_rendered_once_and_only_after_hydration() -> None:
     assert conds == ("qHydrated",), conds
 
 
-def test_hydrated_flag_starts_false_and_flips_in_an_effect() -> None:
-    """False in the prerendered HTML and in the first client render (so both agree),
-    true only from the first effect, which runs after hydration has committed."""
-    hooks = "".join(layout._after_hydration()._get_all_var_data().hooks)
-    assert "useState(false)" in hooks
-    assert "useEffect(() => setQHydrated(true), [])" in hooks
+def test_sidebar_declares_the_hydrated_flag_as_state_set_in_an_effect() -> None:
+    """The real sidebar carries the flag: false in the prerendered HTML and in the first
+    client render (so both agree), true only from the first effect, which runs after
+    hydration has committed."""
+    sidebar = layout.sidebar()
+    hooks = [hook for hook in sidebar._get_all_hooks() if "qHydrated" in hook]
+    assert len(hooks) == 1, hooks
+    assert "useState(false)" in hooks[0]
+    assert "useEffect(() => setQHydrated(true), [])" in hooks[0]
+    react = {getattr(i, "tag", i) for i in sidebar._get_all_imports().get("react", [])}
+    assert {"useState", "useEffect"} <= react, react

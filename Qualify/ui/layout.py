@@ -483,7 +483,10 @@ def _after_hydration() -> rx.Var:
     known at prerender since m-24993451), React found a node it never rendered (minified
     error #418) and re-created the whole document client-side, which re-appended
     `__reflex_global_styles` after emotion's `<style>` tags so Radix base `display`
-    rules beat emotion's responsive ones (mobile controls shown on desktop)."""
+    rules beat emotion's responsive ones (mobile controls shown on desktop).
+
+    Really "after mount": it also starts false on every client-side page mount, which is
+    harmless — React dedupes the async script and `glass-nav.js` guards `__qGlassNav`."""
     hydrated = VarData(
         imports={"react": ["useEffect", "useState"]},
         hooks={
