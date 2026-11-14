@@ -250,20 +250,21 @@ def append_layer(
         raise LayerWriteRefused("a new layer derives from the current leaf of its slide only")
     if layer.spec.get("layout_id") != layer.layout_id:
         raise LayerWriteRefused("the layer's layout_id and its spec disagree")
+    # built from the row just read and checked, never from the caller's object
     row = orm.PieceLayer(
-        tenant_id=parent.tenant_id,
-        brand_id=parent.brand_id,
-        draft_id=parent.draft_id,  # same draft, by construction
-        version_id=parent.version_id,  # same version
-        position=parent.position,  # same position
+        tenant_id=leaf.tenant_id,
+        brand_id=leaf.brand_id,
+        draft_id=leaf.draft_id,  # same draft, by construction
+        version_id=leaf.version_id,  # same version
+        position=leaf.position,  # same position
         layout_id=layer.layout_id,
         layout_version=layer.layout_version,
         spec=layer.spec,
         spec_sha256=layer.spec_sha256,
-        base_asset_id=parent.base_asset_id,
-        base_media_ref=parent.base_media_ref,
+        base_asset_id=leaf.base_asset_id,
+        base_media_ref=leaf.base_media_ref,
         source=source,
-        parent_layer_id=parent.id,
+        parent_layer_id=leaf.id,
         created_by=created_by,
         model_id=layer.model_id if source == MODEL_SOURCE else None,
         prompt_version=layer.prompt_version if source == MODEL_SOURCE else None,

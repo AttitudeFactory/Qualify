@@ -5,16 +5,32 @@ the piece without a layer — never without the piece."""
 
 from __future__ import annotations
 
+from decimal import Decimal
+from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
 
 import pytest
+from qualify_creative.enums import ContentKind, SlideSource
 from qualify_creative.layer_spec import LayerSpec
+from qualify_creative.schemas import CarouselSlide
 
+from qualify_api.claude_tools import DollarMeter
+from qualify_api.creative import pipeline
 from qualify_api.creative.brand_references import BrandReferencesSet
-from qualify_api.creative.image_pipeline.layer import BusinessFacts, LayerRequest, LayerResult
+from qualify_api.creative.image_pipeline import layer_run
+from qualify_api.creative.image_pipeline.base import BaseScene
+from qualify_api.creative.image_pipeline.layer import (
+    LAYER_BUDGET_USD,
+    BusinessFacts,
+    LayerRequest,
+    LayerResult,
+)
+from qualify_api.creative.media import _MediaPending
+from qualify_api.creative.queue_dispatch import CheckpointError, GenerationDeferred
 
-from .test_creative_media_byteplus import BUDGET, COPY, TENANT_ID, _kit
+from .test_creative_media_byteplus import BUDGET, COPY, TENANT_ID, _brief, _kit
+from .test_creative_queue_pipeline import Checkpoints
 from .test_v9_flyer_consumer import (  # noqa: F401 - `no_generation` is autouse
     gallery_setup,
     no_generation,
@@ -43,15 +59,30 @@ def _spec(position: int, count: int | None, *, invented: bool = False) -> LayerS
 
 
 class Writer:
-    def __init__(self, *, invented: tuple[int, ...] = (), fail: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        invented: tuple[int, ...] = (),
+        fail: bool = False,
+        raises: BaseException | None = None,
+        spend: Decimal = Decimal(0),
+    ) -> None:
         self.requests: list[LayerRequest] = []
+        self.budgets: list[DollarMeter] = []
         self.invented = invented
         self.fail = fail
+        self.raises = raises
+        self.spend = spend
 
-    def __call__(self, request: LayerRequest) -> LayerResult:
+    def __call__(self, request: LayerRequest, *, budget: DollarMeter) -> LayerResult:
         self.requests.append(request)
+        self.budgets.append(budget)
+        if self.raises is not None:
+            raise self.raises
         if self.fail:
             raise RuntimeError("model down")
+        if self.spend:
+            budget.charge(self.spend, what="layer")
         first = len(self.requests) == 1
         count = request.slide_count if request.is_carousel else None
         specs = {
@@ -163,3 +194,163 @@ def test_a_failing_layer_never_costs_the_piece(monkeypatch: pytest.MonkeyPatch) 
     _wire(producer, Writer(fail=True), [])
     outcome = _produce(producer, brief)
     assert outcome.failure is None and all(w.layer is None for w in outcome.media)
+
+
+# -- the stage on its own: queue signals, one budget, replays -------------------------------
+
+ON = {"QUALIFY_IMAGE_LAYER": "on"}
+DRAFT = uuid4()
+
+
+class Regenerator:
+    """Stands for the base stage's regeneration: one router call per base, which in a
+    preparation takes the next router step number (as `CheckpointRouter._run` does)."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[int, int | None]] = []
+
+    def __call__(self, position: int) -> BaseScene:
+        run = pipeline.current_preparation()
+        step = None
+        if run is not None:
+            step = run.step
+            run.step += 1
+        self.calls.append((position, step))
+        return BaseScene(image=b"fresh", prompt=f"again {position}")
+
+
+def _stage(writer: Writer, claims: list[dict[str, Any]], regenerate: Any, **over: Any):  # noqa: ANN202
+    producer = SimpleNamespace()
+    _wire(producer, writer, claims, claim=over.pop("claim", True))
+    values: dict[str, Any] = {
+        "tenant_id": TENANT_ID,
+        "draft_id": DRAFT,
+        "revision": 1,
+        "brief": _brief(
+            ContentKind.CAROUSEL,
+            slides=tuple(CarouselSlide(source=SlideSource.GENERATED) for _ in range(2)),
+        ),
+        "copy": COPY,
+        "brand": "Korner",
+        "scenes": {0: BaseScene(b"a", "p0"), 1: BaseScene(b"b", "p1")},
+        "regenerate": regenerate,
+        "gallery": True,
+        "slide_count": 2,
+        "env": ON,
+    }
+    values.update(over)
+    return layer_run.run_layer_stage(producer, **values)
+
+
+def _pass(checkpoints: Checkpoints, monkeypatch: pytest.MonkeyPatch, *args: Any, **kw: Any):  # noqa: ANN202
+    """One preparation pass (a fresh `Preparation`, as after a restart): the router
+    already took two steps for the gallery's slides."""
+    monkeypatch.setattr(pipeline, "PipelineStore", lambda: checkpoints)
+    run = pipeline.Preparation(TENANT_ID, DRAFT, 1, "generation", uuid4(), 1, step=2)
+    with pipeline.preparing(run):
+        return _stage(*args, **kw), run
+
+
+@pytest.mark.parametrize(
+    "signal", [GenerationDeferred(), CheckpointError("lease lost"), _MediaPending()]
+)
+def test_the_queue_s_signals_are_never_swallowed(signal: BaseException) -> None:
+    with pytest.raises(type(signal)):
+        _stage(Writer(raises=signal), [], Regenerator())
+
+
+def test_a_signal_from_the_regeneration_is_never_swallowed() -> None:
+    def deferred(position: int) -> BaseScene:
+        raise GenerationDeferred()
+
+    with pytest.raises(GenerationDeferred):
+        _stage(Writer(invented=(1,)), [], deferred)
+
+
+def test_both_calls_of_a_piece_draw_on_one_budget() -> None:
+    writer = Writer(invented=(1,), spend=Decimal("0.10"))
+    outcome = _stage(writer, [], Regenerator())
+    assert len(writer.requests) == 2 and writer.budgets[0] is writer.budgets[1]
+    assert writer.budgets[0].limit_usd == LAYER_BUDGET_USD
+    assert writer.budgets[0].remaining_usd == LAYER_BUDGET_USD - Decimal("0.20")
+    assert outcome.regenerated == (1,)
+
+
+def test_the_cap_holds_across_both_calls() -> None:
+    """The first call leaves US$0.10; the second cannot spend US$0.15 more: the piece
+    keeps the first answer's other layers, never spends past US$0.25."""
+    writer = Writer(invented=(1,), spend=Decimal("0.15"))
+    outcome = _stage(writer, [], Regenerator())
+    assert len(writer.requests) == 2
+    assert writer.budgets[0].spent_usd == Decimal("0.15")  # the second charge was refused
+    assert outcome.layers == {}  # the stage failed safe: no layer, the piece goes on
+
+
+def test_a_replay_reuses_the_answer_and_the_regeneration(monkeypatch) -> None:  # noqa: ANN001
+    checkpoints, claims = Checkpoints(), []
+    writer, regen = Writer(invented=(1,)), Regenerator()
+    first, run = _pass(checkpoints, monkeypatch, writer, claims, regen)
+    assert set(checkpoints.rows) == {-100, -101}
+    assert checkpoints.rows[-100]["result"]["regenerate"] == [1]
+    assert len(writer.requests) == 2 and len(claims) == 1 and regen.calls == [(1, 2)]
+    # a second pass (a restart): nothing paid, nothing claimed, the same router step
+    again, _ = _pass(checkpoints, monkeypatch, writer, claims, regen, claim=False)
+    assert len(writer.requests) == 2 and len(claims) == 1
+    assert regen.calls == [(1, 2), (1, 2)]  # same base, same router step: its saved result
+    assert again.regenerated == first.regenerated == (1,)
+    assert {p: w.spec_sha256 for p, w in again.layers.items()} == {
+        p: w.spec_sha256 for p, w in first.layers.items()
+    }
+
+
+def test_the_step_numbers_do_not_depend_on_the_switch(monkeypatch) -> None:  # noqa: ANN001
+    """The layer's steps sit in fixed slots: with or without a regeneration, the router's
+    numbering after the stage is the same as with the switch off."""
+    for invented, router_steps in (((), 2), ((1,), 3)):
+        checkpoints = Checkpoints()
+        _, run = _pass(checkpoints, monkeypatch, Writer(invented=invented), [], Regenerator())
+        assert run.step == router_steps
+        assert all(step < 0 for step in checkpoints.rows)
+    checkpoints = Checkpoints()
+    _, run = _pass(checkpoints, monkeypatch, Writer(), [], Regenerator(), env={})
+    assert run.step == 2 and checkpoints.rows == {}
+
+
+def test_a_call_left_in_flight_is_never_paid_again(monkeypatch) -> None:  # noqa: ANN001
+    checkpoints = Checkpoints()
+    checkpoints.rows[-100] = {"request": {}, "job_id": None, "result": None, "error": "in_flight"}
+    writer = Writer()
+    outcome, _ = _pass(checkpoints, monkeypatch, writer, [], Regenerator())
+    assert writer.requests == [] and outcome.layers == {}
+
+
+def test_a_failed_call_is_recorded_and_not_repeated(monkeypatch) -> None:  # noqa: ANN001
+    checkpoints, writer = Checkpoints(), Writer(fail=True)
+    _pass(checkpoints, monkeypatch, writer, [], Regenerator())
+    assert checkpoints.rows[-100]["error"] == "layer failed: RuntimeError"
+    _pass(checkpoints, monkeypatch, writer, [], Regenerator())
+    assert len(writer.requests) == 1
+
+
+def test_a_gallery_with_a_pending_slide_waits_for_its_layer(monkeypatch) -> None:  # noqa: ANN001
+    """A deferred pass (a slide still being made) makes no layer call: the layer is paid
+    once, on the pass where every slide is there."""
+    monkeypatch.setenv("QUALIFY_IMAGE_LAYER", "on")
+    producer, brief, _ = gallery_setup(monkeypatch)
+    writer = Writer()
+    _wire(producer, writer, [])
+    slides = brief.media.slides
+    animated = slides[1].model_copy(update={"source": SlideSource.ANIMATED})
+    brief = brief.model_copy(
+        update={"media": brief.media.model_copy(update={"slides": (slides[0], animated)})}
+    )
+    waited: list[int] = []
+
+    def pending_video(**kwargs: Any) -> Any:
+        waited.append(kwargs["position"])
+        raise GenerationDeferred()
+
+    monkeypatch.setattr(producer, "_animated_slide", pending_video)
+    outcome = _produce(producer, brief)
+    assert outcome.pending and waited == [1]
+    assert writer.requests == []  # slide 0 is made, but the layer waits for the next pass

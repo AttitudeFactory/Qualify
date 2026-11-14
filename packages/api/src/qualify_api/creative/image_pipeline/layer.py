@@ -841,4 +841,4 @@ __all__ = [
 ]
 
 #: For the caller's type hints: what builds a `LayerResult` from a request.
-LayerWriter = Callable[[LayerRequest], LayerResult]
+LayerWriter = Callable[..., LayerResult]  # (request, *, budget) -> result

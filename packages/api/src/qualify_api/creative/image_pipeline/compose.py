@@ -502,7 +502,9 @@ def carousel(
         except Exception as exc:
             _keep_made(exc, number, out)
             raise
-    if generated:
+    if generated and not deferred and scene_failure is None:
+        # m-25017283: only once every slide is made — a pending or failed slide means
+        # another pass (or «Crear las que faltan»), and the layer is paid once, then
         _gallery_layers(
             producer,
             out=out,
