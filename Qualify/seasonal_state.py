@@ -39,6 +39,7 @@ from .seasonal_vm import (
     OTHER_KEY,
     OTHER_NAME_MISSING,
     PHOTOS_CHANGED,
+    PRODUCT_SEASON_KEY,
     STARTED_TOAST,
     STEP_HOW,
     STEP_OCCASION,
@@ -179,6 +180,13 @@ class SeasonalState(rx.State):
     @rx.var
     def library(self) -> list[SeasonVM]:
         return [s for s in order_seasons(self.seasons, self.current_key) if not s.archived]
+
+    @rx.var
+    def shelf(self) -> list[SeasonVM]:
+        """Tu marca's rows: the library, with «De tus productos» only once one of them is
+        approved (m-25017912 — «Nada aprobado todavía» says nothing there; Por aprobar
+        still shows the ones waiting)."""
+        return [s for s in self.library if s.key != PRODUCT_SEASON_KEY or s.approved_pieces]
 
     @rx.var
     def archived(self) -> list[SeasonVM]:
@@ -845,6 +853,8 @@ class SeasonalState(rx.State):
             brand = _uuid(self._brand)
             if season is None or brand is None or season.archived == archived:
                 return
+            if archived and season_key == PRODUCT_SEASON_KEY:
+                return  # m-25017912: the product stickers are for every day, never archived
             label, gen = season.label, self._gen
             self.action_error = ""
             tenant_id = await self._tenant()

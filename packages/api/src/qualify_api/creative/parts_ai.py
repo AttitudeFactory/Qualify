@@ -40,6 +40,7 @@ from typing import Any
 
 from qualify_creative.adapters.anthropic_copy import strict_schema
 from qualify_creative.angles import AngleBrand, AngleProduct, CreativeAngle, price_mentions
+from qualify_creative.enums import AwarenessLevel
 from qualify_creative.pricing import JsonPricingTable
 from qualify_creative.schemas import (
     PART_DESCRIPTION_MAX,
@@ -73,7 +74,12 @@ from .parts import neutral_people
 logger = logging.getLogger(__name__)
 
 #: Bump on ANY change of the system prompt, the user prompt or the tool (provenance).
-PROPOSE_PARTS_PROMPT_VERSION = "proponer-partes-v3.1"
+#: v3.2 (m-24985141): general for any business and for a video without a product.
+#: v3.4 (m-25026482): v3.2 plus the owner's perks and the angle's awareness level (the
+#: branch measured them as v3.2/v3.3 on top of v3.1 — NIVELES-001/002 — so v3.4 is new).
+#: v3.5 (m-25026509, NIVELES-004): problem_aware's first part shows someone living the
+#: dilemma; the rest show the answer.
+PROPOSE_PARTS_PROMPT_VERSION = "proponer-partes-v3.5"
 PROPOSE_TOOL = "proponer_partes_video"
 
 PROPOSE_MODEL = "claude-sonnet-5"
@@ -289,6 +295,10 @@ class PartsBrief:
     brand: AngleBrand = field(default_factory=AngleBrand)
     product: AngleProduct | None = None
     target_seconds: int = DEFAULT_TARGET_SECONDS
+    #: m-25026509: who the video talks to («¿A quién le habla este video?»); None =
+    #: «Sin preferencia», and the prompt is exactly as before. A chosen angle's own level
+    #: wins over it.
+    awareness_level: AwarenessLevel | None = None
 
 
 @dataclass(frozen=True)
@@ -309,23 +319,26 @@ class PartsProposal:
 
 SYSTEM_PROMPT = f"""\
 Eres director creativo de videos cortos verticales (9:16) para las redes sociales de \
-negocios pequeños. Recibes lo que el dueño quiere contar en su video, el producto que \
-quiere mostrar (si lo hay), una breve descripción de su marca y, a veces, un ángulo \
-creativo ya elegido. Propones el video PARTE POR PARTE: entre {PARTS_MIN} y {PARTS_MAX} \
-partes en orden. Cada parte se crea por separado con inteligencia artificial a partir de \
-las fotos reales del producto, y luego se unen en un solo video. Entregas la respuesta con \
-la herramienta {PROPOSE_TOOL}, una sola vez.
+negocios pequeños de cualquier rubro. Recibes lo que el dueño quiere contar en su video, \
+el producto que quiere mostrar (si eligió uno), una breve descripción de su marca y, a \
+veces, un ángulo creativo ya elegido. Propones el video PARTE POR PARTE: entre \
+{PARTS_MIN} y {PARTS_MAX} partes en orden. Cada parte se crea por separado con \
+inteligencia artificial, a partir de las fotos reales del negocio cuando las hay, y luego \
+se unen en un solo video. Entregas la respuesta con la herramienta {PROPOSE_TOOL}, una \
+sola vez.
 
 Reglas:
 - Arco del video: la primera parte engancha desde el primer segundo; las del medio \
-muestran el producto y lo que lo hace valioso; la última parte muestra cómo el cliente \
-consigue el producto: lo pide, lo recibe o se lo lleva, como el dueño lo pide. Usarlo, \
-probarlo o disfrutarlo no es el cierre, y el producto solo, girando o cada vez más de \
-cerca, tampoco.
+muestran lo que el dueño quiere contar y lo que lo hace valioso (el producto, si eligió \
+uno); la última parte muestra cómo el cliente da el siguiente paso, como el dueño lo pide: \
+lo pide, lo recibe, se lo lleva, reserva, escribe o llega al lugar. Usarlo, probarlo o \
+disfrutarlo no es el cierre, y el producto solo, girando o cada vez más de cerca, tampoco.
 - Comienzo: elige el gancho que mejor cuente lo que pide el dueño (un momento de uso, un \
 detalle que sorprende, una reacción, una forma llamativa de mirar, una situación \
-cotidiana…). No empieces por costumbre con la elaboración del producto: solo si el dueño \
-habla de cómo se hace.
+cotidiana…). No empieces por costumbre mostrando cómo se hace o se prepara algo: solo si \
+el dueño habla de eso.
+- Si no eligió un producto, no inventes uno ni muestres un producto concreto como si fuera \
+del negocio: muestra lo que cuenta el dueño (el lugar, el equipo, un servicio, un momento).
 - description: lo que se VE en la parte, en español, concreto, UNA sola frase de \
 {DESCRIPTION_WORDS_MAX} palabras como máximo (se lee en un teléfono), con palabras de \
 todos los días, como se lo contarías al dueño del negocio: dónde pasa, qué pasa y desde \
@@ -358,6 +371,33 @@ def propose_system_prompt() -> str:
 
 def _story(text: str) -> str:
     return " ".join((text or "").split())[:STORY_MAX].strip()
+
+
+#: What the video tells, per awareness level of the chosen angle — the parts never show a
+#: price or a figure, so the levels that lean on one tell the moment instead. No line for
+#: `most_aware` (NIVELES-001: «pocas partes» changed nothing — the length
+#: is the owner's target and the minimum is PARTS_MIN; a ready buyer is served by the
+#: copy's short call to buy, not by the plan of the parts); `solution_aware` no longer
+#: speaks of food only.
+_LEVEL_GUIDANCE: dict[AwarenessLevel, str] = {
+    AwarenessLevel.UNAWARE: (
+        "todavía no piensa en el producto: muestra el lugar y la experiencia (el ambiente, "
+        "el momento, con quién se comparte)"
+    ),
+    AwarenessLevel.PROBLEM_AWARE: (
+        "ya siente la necesidad: la primera parte muestra a alguien viviendo ese dilema "
+        "(dónde pasa, qué le pasa), y las demás muestran la respuesta: el producto, si eligió "
+        "uno, o lo que cuenta el dueño"
+    ),
+    AwarenessLevel.SOLUTION_AWARE: (
+        "sabe qué quiere pero no dónde: muestra lo que distingue a este negocio (datos "
+        "concretos del producto o ventajas de la lista)"
+    ),
+    AwarenessLevel.PRODUCT_AWARE: (
+        "conoce el negocio pero duda: muestra lo fácil que es venir o pedir (el lugar, la "
+        "atención), sin precios ni cifras"
+    ),
+}
 
 
 def propose_user_prompt(brief: PartsBrief, angle: CreativeAngle | None = None) -> str:
@@ -396,6 +436,19 @@ def propose_user_prompt(brief: PartsBrief, angle: CreativeAngle | None = None) -
             "",
         ]
     )
+    if brand.perks:
+        lines.append(
+            "== Lo que ofrece el negocio (datos reales escritos por el dueño; muestra solo "
+            "estos, nunca inventes otros) =="
+        )
+        lines.extend(f"- {perk}" for perk in brand.perks)
+        lines.append("")
+    level = (angle.awareness_level if angle is not None else None) or brief.awareness_level
+    level_line = (
+        f"Nivel de consciencia del público: {level.value} — {_LEVEL_GUIDANCE[level]}."
+        if level in _LEVEL_GUIDANCE
+        else ""
+    )
     if angle is not None:
         lines.extend(
             [
@@ -403,9 +456,14 @@ def propose_user_prompt(brief: PartsBrief, angle: CreativeAngle | None = None) -
                 f"{angle.title}: {angle.scene}",
                 f"Gancho: {angle.hook or '(sin gancho)'}",
                 f"Invitación: {angle.cta or '(sin invitación)'}",
-                "",
             ]
         )
+        if level_line:
+            lines.append(level_line)
+        lines.append("")
+    elif level_line:
+        # m-25026509: the owner's answer to «¿A quién le habla este video?», no angle
+        lines.extend(["== A quién le habla el video ==", level_line, ""])
     target = _target(brief.target_seconds)
     lines.append(
         f"Duración total: como máximo {target} segundos, y no menos de "

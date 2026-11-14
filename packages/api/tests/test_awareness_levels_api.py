@@ -1,0 +1,215 @@
+"""Awareness levels and business perks on the API side, offline: the kit's perks through
+`brand_service` (written only when the caller set them, read back normalized), the
+level through the `content_briefs` row and the `creative_angles` record, the brand
+fingerprint (a perks change gives a cached set a new one, an empty list keeps the old
+one), the video-by-parts prompt and its version, and migration 0166's place in the
+chain."""
+
+from __future__ import annotations
+
+import hashlib
+import re
+from pathlib import Path
+from uuid import UUID, uuid4
+
+from qualify_creative.angles import AngleBrand, AngleProduct, CreativeAngle
+from qualify_creative.enums import AwarenessLevel, BriefObjective, ImageRoute
+from qualify_creative.schemas import BrandKit, ContentBrief, ToneAxes
+
+from qualify_api.creative import models as orm
+from qualify_api.creative.angle_sets import _angle_record, brand_fingerprint
+from qualify_api.creative.brand_service import _apply_kit, kit_from_row
+from qualify_api.creative.parts_ai import (
+    PROPOSE_PARTS_PROMPT_VERSION,
+    PartsBrief,
+    propose_system_prompt,
+    propose_user_prompt,
+)
+from qualify_api.creative.service import _brief_row, brief_from_row
+
+BRAND_ID = uuid4()
+PERKS = ("Parqueadero gratis", "Pet friendly", "Abierto hasta las 11 p. m.")
+_VERSIONS = Path(__file__).resolve().parents[3] / "migrations/postgres/versions"
+#: The parts prompt with no perks and no level, as origin/main renders it (`_parts_corpus`
+#: run on 9129e688's code, 2026-11-13). Re-baselined (from origin/main's code) whenever
+#: the parts prompt changes on purpose.
+PARTS_MAIN_DIGEST = "c349724d404309694ebf7b36aebde58c0dec95a8f13f4e57ddfe1ee3fc8255b2"
+
+
+def _kit(**overrides: object) -> BrandKit:
+    base: dict[str, object] = {
+        "brand_id": BRAND_ID,
+        "positioning": "Shawarma de patio de comidas",
+        "audience": "Familias",
+        "tone_axes": ToneAxes(
+            formal_casual=50, sober_enthusiastic=50, technical_plain=50, brief_elaborate=50
+        ),
+    }
+    base.update(overrides)
+    return BrandKit(**base)  # type: ignore[arg-type]
+
+
+# -- the kit's perks -----------------------------------------------------------------------
+
+
+def test_perks_are_written_normalized_and_read_back() -> None:
+    row = orm.BrandKit(tenant_id=uuid4(), brand_id=BRAND_ID, language="es")
+    _apply_kit(row, _kit(business_perks=["Pet friendly ", "pet friendly", "", "Mesas"]))
+    assert row.business_perks == ["Pet friendly", "Mesas"]
+    assert kit_from_row(row).business_perks == ("Pet friendly", "Mesas")
+
+
+def test_a_kit_that_does_not_set_the_perks_never_wipes_them() -> None:
+    row = orm.BrandKit(tenant_id=uuid4(), brand_id=BRAND_ID, language="es")
+    _apply_kit(row, _kit(business_perks=list(PERKS)))
+    _apply_kit(row, _kit())  # an older caller that knows nothing of perks
+    assert row.business_perks == list(PERKS)
+    _apply_kit(row, _kit(business_perks=[]))  # an explicit empty list clears them
+    assert row.business_perks == []
+
+
+def test_a_row_without_perks_reads_as_none() -> None:
+    row = orm.BrandKit(tenant_id=uuid4(), brand_id=BRAND_ID, language="es")
+    _apply_kit(row, _kit())
+    row.business_perks = None  # a row the column default has not reached yet
+    assert kit_from_row(row).business_perks == ()
+
+
+# -- the level through the rows ------------------------------------------------------------
+
+
+def test_the_brief_row_keeps_the_level_and_an_old_one_reads_none() -> None:
+    brief = ContentBrief(
+        brand_id=BRAND_ID,
+        objective=BriefObjective.AWARENESS,
+        topic="Mesa del patio",
+        image_route=ImageRoute.TEMPLATE_ONLY,
+        awareness_level=AwarenessLevel.UNAWARE,
+    )
+    row = _brief_row(uuid4(), uuid4(), brief)
+    assert row.awareness_level == "unaware"
+    assert brief_from_row(row).awareness_level is AwarenessLevel.UNAWARE
+    row.awareness_level = None
+    assert brief_from_row(row).awareness_level is None
+
+
+def _angle_row(level: str | None) -> orm.CreativeAngle:
+    return orm.CreativeAngle(
+        id=uuid4(),
+        set_id=uuid4(),
+        position=1,
+        title="Mesa",
+        scene="en la mesa del patio",
+        composition="",
+        hook="",
+        cta="",
+        rationale="",
+        status="proposed",
+        attempts=0,
+        awareness_level=level,
+    )
+
+
+def test_the_angle_record_exposes_the_level_and_tolerates_old_or_unknown_rows() -> None:
+    record = _angle_record(_angle_row("most_aware"))
+    assert record.awareness_level is AwarenessLevel.MOST_AWARE
+    assert record.angle.awareness_level is AwarenessLevel.MOST_AWARE
+    assert _angle_record(_angle_row(None)).awareness_level is None
+    assert _angle_record(_angle_row("otro")).awareness_level is None
+
+
+# -- the brand fingerprint -----------------------------------------------------------------
+
+
+def test_the_fingerprint_moves_with_the_perks_and_not_without_them() -> None:
+    brand = AngleBrand(name="Bianki", sector="shawarma")
+    # the formula before the perks: a kit without them keeps its old fingerprint
+    old = hashlib.sha256("\n".join(("Bianki", "", "", "shawarma", "", "")).encode()).hexdigest()
+    assert brand_fingerprint(brand) == old[:16]
+    with_perks = brand_fingerprint(AngleBrand(name="Bianki", sector="shawarma", perks=PERKS))
+    assert with_perks != brand_fingerprint(brand)
+    other = brand_fingerprint(AngleBrand(name="Bianki", sector="shawarma", perks=PERKS[:2]))
+    assert other != with_perks
+
+
+# -- the video-by-parts prompt -------------------------------------------------------------
+
+
+def test_the_parts_prompt_carries_perks_and_level_only_when_present() -> None:
+    product = AngleProduct(product_id=uuid4(), name="Shawarma mixto")
+    angle = CreativeAngle(
+        position=1, title="Mesa", scene="en la mesa", awareness_level=AwarenessLevel.UNAWARE
+    )
+    rich = propose_user_prompt(
+        PartsBrief(story="Ven", brand=AngleBrand(name="Bianki", perks=PERKS), product=product),
+        angle,
+    )
+    for perk in PERKS:
+        assert f"- {perk}\n" in rich
+    assert "nunca inventes otros" in rich
+    assert "Nivel de consciencia del público: unaware — " in rich
+    plain = propose_user_prompt(
+        PartsBrief(story="Ven", brand=AngleBrand(name="Bianki"), product=product),
+        CreativeAngle(position=1, title="Mesa", scene="en la mesa"),
+    )
+    assert "Lo que ofrece el negocio" not in plain and "Nivel de consciencia" not in plain
+    assert PROPOSE_PARTS_PROMPT_VERSION == "proponer-partes-v3.5"
+
+
+# -- migration 0166 ------------------------------------------------------------------------
+
+
+def test_migration_0166_follows_0165_and_is_the_only_head() -> None:
+    text = (_VERSIONS / "0166_awareness_levels_business_perks.py").read_text()
+    assert 'revision = "0166"' in text and 'down_revision = "0165"' in text
+    parents = [
+        re.search(r'^down_revision = "(\d+)"', path.read_text(), re.M)
+        for path in _VERSIONS.glob("*.py")
+    ]
+    assert [m.group(1) for m in parents if m].count("0165") == 1
+    assert "def downgrade()" in text and text.count("drop_column") >= 2
+
+
+def test_the_parts_prompt_gives_no_most_aware_line_and_no_food_only_wording() -> None:
+    """NIVELES-001: «pocas partes» changed nothing (the length is the owner's target), so
+    a ready buyer gets no line in the parts plan; solution_aware fits any business."""
+    product = AngleProduct(product_id=uuid4(), name="Apartamento en Cúcuta")
+
+    def prompt(level: AwarenessLevel) -> str:
+        angle = CreativeAngle(position=1, title="Sala", scene="en la sala", awareness_level=level)
+        return propose_user_prompt(PartsBrief(story="Ven", product=product), angle)
+
+    assert "Nivel de consciencia" not in prompt(AwarenessLevel.MOST_AWARE)
+    solution = prompt(AwarenessLevel.SOLUTION_AWARE)
+    assert "lo que distingue a este negocio" in solution and "porción" not in solution
+
+
+def _parts_corpus() -> str:
+    """The parts prompts of briefs and angles without perks or level — only names `main`
+    already has, so the function runs unchanged on both trees."""
+    product = AngleProduct(
+        product_id=UUID(int=1),
+        name="Shawarma",
+        description="Pollo",
+        category="Plato",
+        photo_keys=("a",),
+    )
+    out = [propose_system_prompt()]
+    brands = (
+        AngleBrand(),
+        AngleBrand(name="Bianki", sector="Comida", palette=("#fff",), typeface="Baloo"),
+    )
+    angles = (None, CreativeAngle(position=1, title="Mesa", scene="en la mesa", hook="h", cta="c"))
+    for brand in brands:
+        for prod in (None, product):
+            for angle in angles:
+                for secs in (15, 30):
+                    brief = PartsBrief(
+                        story="Ven a probar", brand=brand, product=prod, target_seconds=secs
+                    )
+                    out.append(propose_user_prompt(brief, angle))
+    return "\x01".join(out)
+
+
+def test_without_perks_and_level_the_parts_prompt_is_byte_identical_to_main() -> None:
+    assert hashlib.sha256(_parts_corpus().encode()).hexdigest() == PARTS_MAIN_DIGEST

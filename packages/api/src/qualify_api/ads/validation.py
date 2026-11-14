@@ -30,8 +30,18 @@ def context(source: Any, form: Any) -> dict[str, Any]:
                 "linked_page_id",
             )
         },
-        "form_hash": fingerprint(json.loads(json.dumps(asdict(form), default=str))),
+        "form_hash": fingerprint(_form_fields(form)),
     }
+
+
+def _form_fields(form: Any) -> dict[str, Any]:
+    fields = json.loads(json.dumps(asdict(form), default=str))
+    if fields.get("cta_type") == "LEARN_MORE":
+        fields.pop("cta_type")  # Receipts from before the button choice keep their hash.
+    for key in ("messaging", "greeting"):
+        if fields.get(key) is None:
+            fields.pop(key, None)  # Non-chat receipts keep their hash (m-24828980).
+    return fields
 
 
 def payloads_for_validation(

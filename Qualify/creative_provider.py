@@ -25,7 +25,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
@@ -49,7 +49,11 @@ from qualify_api.creative.draft_mode import (
 from qualify_api.creative.final_video import PreviewUse
 from qualify_api.creative.media import LocalMediaStore, R2ReadingMediaStore
 from qualify_api.creative.part_request import parts_preview_use
-from qualify_api.creative.parts import PartsExtendUnavailable, check_split_parts_for_tenant
+from qualify_api.creative.parts import (
+    PartsExtendUnavailable,
+    PartsUnavailable,
+    check_split_parts_for_tenant,
+)
 from qualify_api.creative.parts_plan import check_parts_media_owned
 from qualify_api.creative.piece_export import (
     archive_name,
@@ -59,6 +63,7 @@ from qualify_api.creative.piece_export import (
     piece_text,
     slug,
 )
+from qualify_api.creative.queue_dispatch import queue_enabled
 from qualify_api.creative.queue_visibility import cancel_queued, queue_status
 from qualify_api.creative.readiness import readiness
 from qualify_api.creative.retention import Retention, retention_of
@@ -68,6 +73,7 @@ from qualify_api.stock.keys import is_stock_key
 from qualify_api.tenancy.models import Brand
 from qualify_creative.ad_destination import AdCTA
 from qualify_creative.enums import (
+    AwarenessLevel,
     BriefIntent,
     BriefObjective,
     ContentFormat,
@@ -129,6 +135,7 @@ from .creative_vm import (
 from .generator_summary_vm import owner_topic
 from .piece_download import issue_download_path
 from .r2_media import is_r2_key, issue_view_path
+from .reel_parts_vm import QUEUE_OFF_TEXT
 
 logger = logging.getLogger(__name__)
 
@@ -227,6 +234,7 @@ def load_kit_form(tenant_id: UUID, brand_id: UUID) -> KitFormVM | None:
         has_logo=kit.logo_asset_key is not None,
         has_template=kit.template_asset_key is not None,
         ads_destination_url=kit.ads_destination_url or "",
+        business_perks="\n".join(kit.business_perks),
     )
 
 
@@ -247,8 +255,13 @@ def save_kit(
     form: KitFormVM,
     *,
     adopt_voice: bool = True,
+    business_perks: tuple[str, ...] | None = None,
 ) -> None:
     """Parse the form back into the pydantic kit and upsert it through the service.
+
+    `business_perks` (0166) joins the kit only when given: the service keeps the stored
+    list for a kit built without it, so every save but «Lo que ofrece tu negocio»'s own
+    passes None and cannot wipe it; `()` clears it.
 
     The image policy, logo/template/reference keys are preserved from the stored kit —
     this form does not edit them, and an upsert must not erase what it does not model.
@@ -279,6 +292,8 @@ def save_kit(
         "font_body": form.font_body.strip(),
         "ads_destination_url": form.ads_destination_url.strip() or None,
     }
+    if business_perks is not None:
+        data["business_perks"] = business_perks
     if current is not None:
         # Fields this form does not edit keep their stored values.
         data.update(
@@ -402,6 +417,7 @@ def build_brief(
     kind: str = "static_flyer",
     media: Mapping[str, object] | None = None,
     content_format: str = "",
+    awareness_level: str | None = None,
 ) -> ContentBrief:
     """The frozen `ContentBrief` of a form — shared by `submit_brief` and
     `preview_brief_prompt`, so the preview is the brief Generar sends.
@@ -444,6 +460,8 @@ def build_brief(
         media=inputs,
         # the format the operator picked, else the kind's default
         format=ContentFormat(content_format) if content_format else content_kind.default_format,
+        # m-25026509: «¿A quién le habla este video?»; None = «Sin preferencia»
+        awareness_level=AwarenessLevel(awareness_level) if awareness_level else None,
     )
 
 
@@ -472,6 +490,19 @@ class PartsPreviewsShort(Exception):
         self.parts = parts
 
 
+def parts_queue_on(read: Callable[[], bool] | None = None) -> bool:
+    """Whether the parts of a video by parts can be created now (m-24993023): only the
+    creative worker creates them, so the generation queue must be on. An invalid
+    `QUALIFY_CREATIVE_DISPATCHER` counts as off — logged, never raised to the screen.
+    `read` defaults to `queue_enabled`, looked up now (offline tests replace it)."""
+    read = read or queue_enabled
+    try:
+        return bool(read())
+    except ValueError as exc:
+        logger.debug("parts held: %s", exc)  # boot already logs it (warn_if_inline)
+        return False
+
+
 def submit_parts_brief(
     tenant_id: UUID,
     brand_id: UUID,
@@ -482,6 +513,7 @@ def submit_parts_brief(
     scope: PartsScope,
     provenance: Mapping[str, Any] | PartsProvenance | None = None,
     content: Any = None,
+    queue_on: Callable[[], bool] | None = None,
     **form: Any,
 ) -> UUID:
     """Create the PARENT of a video by parts (ADR 44 UI-6, m-24921081): a `shot_video`
@@ -498,7 +530,13 @@ def submit_parts_brief(
     (`part_request.parts_preview_use`, 1 per part asked for — only the first for
     `first`); short → `PartsPreviewsShort` and no draft. Otherwise raises what
     `submit_brief` raises; a part's own file of another business →
-    `PartsPlanRefused(PLAN_MEDIA_KEY)`, before the balance is read."""
+    `PartsPlanRefused(PLAN_MEDIA_KEY)`, before the balance is read.
+
+    m-24993023: with the generation queue off (`queue_on`, `parts_queue_on`) the parts
+    would never be created, so nothing is — `PartsUnavailable(QUEUE_OFF_TEXT)` before
+    anything is read or written, even when a disabled button's event arrives anyway."""
+    if not parts_queue_on(queue_on):  # an invalid switch, injected or not, counts as off
+        raise PartsUnavailable(QUEUE_OFF_TEXT)
     plans = tuple(parts)
     removed = tuple(removed_parts)
     if any(part.mode == "extend" for part in plans):
@@ -594,10 +632,15 @@ def enhance_generator_context(
     highlights: Sequence[Sequence[str]],
     must_mention: str,
     must_avoid: str,
+    content_type: str = "",
+    format: str = "",
+    previous_versions: Sequence[str] = (),
 ) -> ContextProposal:
-    """«Potenciar con IA» (§ request 2026-10-20): the context the operator wrote,
-    rewritten with the brand's kit and the piece's «Datos clave» — no new facts
-    (`qualify_api.creative.context_ai`). Nothing is created or stored."""
+    """«Mejorar mi texto» (§ request 2026-10-20): three versions of the context the
+    operator wrote, with the brand's kit, the piece's «Datos clave», the publication's
+    kind and format — no new facts (`qualify_api.creative.context_ai`). «Otra versión»
+    passes the versions already shown (m-25017274). Nothing is created or stored and no
+    creación is consumed: the call is only booked, in dollars, to the consumption ledger."""
     kit = BrandKitService().get_kit(tenant_id=tenant_id, brand_id=brand_id)
     data = ContextInput(
         text=text,
@@ -607,6 +650,9 @@ def enhance_generator_context(
         highlights=tuple((str(name), str(fact)) for name, fact in highlights),
         must_mention=must_mention,
         must_avoid=must_avoid,
+        content_type=content_type,
+        format=format,
+        previous_versions=tuple(str(text) for text in previous_versions),
     )
     attribution = Attribution(tenant_id=tenant_id, brand_id=brand_id, feature=CONTEXT_FEATURE)
     return enhance_context(data, kit, attribution=attribution)
@@ -939,6 +985,7 @@ def _detail_to_vm(tenant_id: UUID, detail: DraftDetail) -> DraftVM:
         requires_ai_disclosure=detail.requires_ai_disclosure,
         created_label=_format_dt(detail.created_at),
         kind=detail.kind,
+        reuse_type=getattr(detail, "reuse_type", None),
         media=media,
         failure_detail=detail.failure_detail,
         warnings=tuple(warning.detail for warning in detail.warnings),

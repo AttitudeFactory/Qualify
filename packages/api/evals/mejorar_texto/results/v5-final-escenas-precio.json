@@ -1,0 +1,316 @@
+{
+  "summary": {
+    "label": "v5-final-escenas-precio",
+    "prompt_version": "context-v5-scene-no-text",
+    "model": "claude-sonnet-5-5@low",
+    "model_revisions": [
+      "claude-sonnet-5-5"
+    ],
+    "when": "2026-11-13T13:33:34+00:00",
+    "cases": 6,
+    "calls": 12,
+    "errors": 0,
+    "total_usd": "0.075428000",
+    "usd_per_call": "0.0063",
+    "mean_seconds": 3.842,
+    "within_press_mean_similarity": 0.166,
+    "across_presses_max_similarity_mean": 0.287,
+    "across_presses_mean_jaccard": 0.289,
+    "duplicates": 0,
+    "cases_with_new_numbers": [],
+    "scene_versions_shown": 36,
+    "scene_versions_asking_for_text": 0,
+    "scene_versions_dropped_by_filter": 0,
+    "dropped_examples": []
+  },
+  "rows": [
+    {
+      "id": "escena-precio-shawarma",
+      "original": "Un shawarma de carne recién hecho sobre la barra del local, con la salsa cayendo",
+      "press_1": {
+        "texts": [
+          "Plano cerrado de un shawarma de carne recién hecho que llena el encuadre, con la salsa cayendo por el pan y la carne jugosa a la vista. Luz cálida y lateral, fondo suave de la barra del local. Se antoja al instante.",
+          "Plano abierto de la barra del local, con un shawarma de carne recién hecho en primer plano y la salsa cayendo. Al fondo, el ambiente de cocina al momento, luz cálida y superficies limpias. Sensación de local céntrico y fresco.",
+          "Una mano sostiene sobre la barra del local un shawarma de carne recién hecho, justo cuando la salsa cae. Sin rostros, solo la mano y el gesto de ir a darle el primer mordisco. Luz cálida, sensación de antojo y pausa del almuerzo."
+        ],
+        "approaches": [
+          "producto",
+          "lugar",
+          "momento"
+        ],
+        "added_facts": [],
+        "cost_usd": "0.010417000",
+        "seconds": 4.8,
+        "in": 711,
+        "out": 392
+      },
+      "press_2": {
+        "texts": [
+          "Primer plano del shawarma de carne cortado por la mitad sobre la barra del local: capas de carne, verduras y salsa que escurre despacio. El pan dorado ocupa todo el encuadre, con vapor leve y luz clara de frente.",
+          "Vista amplia de la barra del local en el centro de la ciudad, con un shawarma de carne recién hecho a un lado y la salsa cayendo. Alrededor, ensaladas frescas, tablas limpias y luz natural de la tarde que entra por la vitrina.",
+          "Una persona de espaldas, sin rostro visible, recibe sobre la barra el shawarma de carne recién hecho con la salsa cayendo. Solo se ven sus manos y el papel que lo envuelve; un instante tranquilo antes de comer, luz cálida."
+        ],
+        "approaches": [
+          "producto",
+          "lugar",
+          "momento"
+        ],
+        "added_facts": [],
+        "cost_usd": "0.006109000",
+        "seconds": 4.5,
+        "in": 1028,
+        "out": 385
+      },
+      "within_press_mean_similarity": 0.077,
+      "within_press_max_similarity": 0.286,
+      "across_presses_max_similarity": 0.24,
+      "across_presses_mean_similarity": 0.121,
+      "across_presses_mean_jaccard": 0.322,
+      "duplicates": 0,
+      "new_numbers": [],
+      "scene": true,
+      "asks_for_text": 0,
+      "shown": 6
+    },
+    {
+      "id": "escena-precio-2x1",
+      "original": "dos shawarmas de pollo en una bandeja de madera, recién servidos",
+      "press_1": {
+        "texts": [
+          "Plano cerrado de dos shawarmas de pollo recién servidos sobre una bandeja de madera, llenando el encuadre. Se ve el relleno jugoso y el pan tibio, con vapor suave y luz cálida. Sensación de recién hecho.",
+          "Plano abierto de una mesa del local con una bandeja de madera y dos shawarmas de pollo recién servidos. Alrededor, el ambiente sencillo y luminoso del centro de la ciudad, con ensaladas frescas al fondo, desenfocadas.",
+          "Una mano sostiene uno de los dos shawarmas de pollo recién servidos, justo antes del primer bocado. La bandeja de madera con el otro shawarma queda al frente. Luz cálida, sin rostros reconocibles."
+        ],
+        "approaches": [
+          "producto",
+          "lugar",
+          "momento"
+        ],
+        "added_facts": [],
+        "cost_usd": "0.005407000",
+        "seconds": 3.4,
+        "in": 722,
+        "out": 376
+      },
+      "press_2": {
+        "texts": [
+          "Primer plano muy cerrado de un shawarma de pollo cortado a la mitad, con el relleno dorado y las verduras frescas a la vista. Otro shawarma asoma al lado, sobre madera. Luz lateral cálida, brillo jugoso, sensación de hecho al momento.",
+          "Vista desde arriba de una mesa junto a la ventana del local, con una bandeja de madera y dos shawarmas de pollo recién servidos. A los lados, un vaso y una ensalada fresca. Luz natural de ciudad, ambiente tranquilo y cotidiano.",
+          "Dos manos, de dos personas distintas, levantan a la vez cada una un shawarma de pollo desde la bandeja de madera, como un brindis antes de comer. Encuadre a la altura de la mesa, sin rostros, luz cálida, aire de pausa de almuerzo compartida."
+        ],
+        "approaches": [
+          "producto",
+          "lugar",
+          "momento"
+        ],
+        "added_facts": [],
+        "cost_usd": "0.006361000",
+        "seconds": 4.3,
+        "in": 1024,
+        "out": 411
+      },
+      "within_press_mean_similarity": 0.237,
+      "within_press_max_similarity": 0.536,
+      "across_presses_max_similarity": 0.208,
+      "across_presses_mean_similarity": 0.095,
+      "across_presses_mean_jaccard": 0.244,
+      "duplicates": 0,
+      "new_numbers": [],
+      "scene": true,
+      "asks_for_text": 0,
+      "shown": 6
+    },
+    {
+      "id": "escena-precio-combo",
+      "original": "el combo con shawarma mixto, papas y bebida en la mesa al mediodía",
+      "press_1": {
+        "texts": [
+          "Plano cerrado del shawarma mixto que llena el encuadre, recién armado, con carne dorada y verduras frescas asomando. Al borde, unas papas calientes y un vaso de bebida fría con gotas. Luz cálida de mediodía.",
+          "Plano abierto de una mesa del local al mediodía: el combo con shawarma mixto, papas y bebida servido sobre la mesa. Luz natural clara desde la ventana, ambiente tranquilo de almuerzo en el centro de la ciudad.",
+          "Una mano sostiene el shawarma mixto a punto de darle un mordisco; en la mesa, las papas y la bebida del combo. Luz de mediodía, sin rostros reconocibles, sensación de pausa antojada del almuerzo."
+        ],
+        "approaches": [
+          "producto",
+          "lugar",
+          "momento"
+        ],
+        "added_facts": [],
+        "cost_usd": "0.005379000",
+        "seconds": 4.2,
+        "in": 728,
+        "out": 372
+      },
+      "press_2": {
+        "texts": [
+          "Primer plano del shawarma mixto cortado por la mitad, con el relleno de carne y verduras frescas a la vista y el pan tostado llenando el encuadre. Al fondo, desenfocadas, las papas y la bebida del combo. Luz suave y cálida.",
+          "Vista desde arriba de una mesa junto a la ventana del local: bandeja con el combo de shawarma mixto, papas y bebida, y alrededor cubiertos y servilletas. Luz clara del mediodía, calma de almuerzo en el centro.",
+          "Dos manos, sin rostros, abren el papel del shawarma mixto sobre la mesa mientras una toma una papa. La bebida está al lado y el sol de mediodía cae sobre el combo. Sensación de descanso y antojo."
+        ],
+        "approaches": [
+          "producto",
+          "lugar",
+          "momento"
+        ],
+        "added_facts": [],
+        "cost_usd": "0.006015000",
+        "seconds": 3.3,
+        "in": 1026,
+        "out": 376
+      },
+      "within_press_mean_similarity": 0.284,
+      "within_press_max_similarity": 0.403,
+      "across_presses_max_similarity": 0.569,
+      "across_presses_mean_similarity": 0.242,
+      "across_presses_mean_jaccard": 0.316,
+      "duplicates": 0,
+      "new_numbers": [],
+      "scene": true,
+      "asks_for_text": 0,
+      "shown": 6
+    },
+    {
+      "id": "escena-precio-ensalada",
+      "original": "ensalada de quinoa con falafel en un bowl blanco, luz de ventana",
+      "press_1": {
+        "texts": [
+          "Plano cerrado de la ensalada de quinoa con falafel en un bowl blanco, que llena el encuadre. Se ven los granos de quinoa y los falafel dorados, con luz de ventana suave que da frescura y apetito.",
+          "Plano abierto: un bowl blanco con ensalada de quinoa y falafel sobre una mesa del local, junto a una ventana. La luz natural entra de lado y deja el fondo suave, con ambiente tranquilo de almuerzo.",
+          "Una mano sostiene un tenedor sobre el bowl blanco de ensalada de quinoa con falafel, junto a una ventana. Luz natural cálida, sin rostros visibles, con la sensación de una pausa de almuerzo."
+        ],
+        "approaches": [
+          "producto",
+          "lugar",
+          "momento"
+        ],
+        "added_facts": [],
+        "cost_usd": "0.005237000",
+        "seconds": 3.4,
+        "in": 717,
+        "out": 360
+      },
+      "press_2": {
+        "texts": [
+          "Vista muy cercana desde arriba de la ensalada de quinoa con falafel en un bowl blanco: hojas verdes crujientes, falafel partido que muestra su interior, quinoa brillante. Luz de ventana lateral, sombras suaves, sensación fresca y recién hecha.",
+          "Mesa de madera clara en el local, con el bowl blanco de ensalada de quinoa con falafel en primer plano y una ventana grande al fondo desenfocada. Luz de ventana que baña la mesa, ambiente luminoso y tranquilo, a la hora del almuerzo.",
+          "Una persona, solo de torso y manos, se inclina sobre el bowl blanco y pincha un falafel con el tenedor, con un poco de quinoa. Luz de ventana sobre sus manos y la mesa, rostro fuera de cuadro, sensación de descanso y antojo."
+        ],
+        "approaches": [
+          "producto",
+          "lugar",
+          "momento"
+        ],
+        "added_facts": [],
+        "cost_usd": "0.006319000",
+        "seconds": 3.7,
+        "in": 1003,
+        "out": 411
+      },
+      "within_press_mean_similarity": 0.258,
+      "within_press_max_similarity": 0.605,
+      "across_presses_max_similarity": 0.246,
+      "across_presses_mean_similarity": 0.115,
+      "across_presses_mean_jaccard": 0.319,
+      "duplicates": 0,
+      "new_numbers": [],
+      "scene": true,
+      "asks_for_text": 0,
+      "shown": 6
+    },
+    {
+      "id": "escena-precio-domicilio",
+      "original": "una bolsa de domicilio abierta con el shawarma y las papas saliendo",
+      "press_1": {
+        "texts": [
+          "Plano muy cerrado: el shawarma de carne llena el encuadre, saliendo de una bolsa de domicilio abierta, con las papas asomando al lado. Luz cálida, carne jugosa y vegetales frescos a la vista. Da ganas de morderlo.",
+          "Plano abierto de un escritorio de trabajo en el centro de la ciudad, con una bolsa de domicilio abierta de la que salen el shawarma y las papas. Luz natural de mediodía, ambiente tranquilo y cotidiano, sensación de pausa para almorzar.",
+          "Una mano, sin rostro visible, saca de una bolsa de domicilio abierta el shawarma de carne, con las papas asomando. Luz cálida, encuadre a media distancia, sensación de antojo cumplido justo al llegar el almuerzo."
+        ],
+        "approaches": [
+          "producto",
+          "lugar",
+          "momento"
+        ],
+        "added_facts": [],
+        "cost_usd": "0.005587000",
+        "seconds": 3.6,
+        "in": 722,
+        "out": 394
+      },
+      "press_2": {
+        "texts": [
+          "Primer plano del shawarma de carne partido a la mitad, con la carne en tiras brillantes y la ensalada fresca a la vista. Detrás, borrosa, la bolsa de domicilio abierta y unas papas. Luz cálida lateral, sensación de recién hecho.",
+          "Mesa de un local del centro vista desde arriba: bolsa de domicilio abierta, el shawarma y las papas saliendo de ella, un vaso y servilletas al lado. Luz clara de tarde por la ventana, ambiente relajado y acogedor.",
+          "Unas manos sin rostro, sentadas en un banco junto a la calle, sostienen el shawarma recién sacado de la bolsa de domicilio abierta sobre las piernas, con las papas asomando. Luz dorada de media tarde, gesto de primer bocado."
+        ],
+        "approaches": [
+          "producto",
+          "lugar",
+          "momento"
+        ],
+        "added_facts": [],
+        "cost_usd": "0.006215000",
+        "seconds": 3.3,
+        "in": 1041,
+        "out": 393
+      },
+      "within_press_mean_similarity": 0.061,
+      "within_press_max_similarity": 0.11,
+      "across_presses_max_similarity": 0.225,
+      "across_presses_mean_similarity": 0.129,
+      "across_presses_mean_jaccard": 0.266,
+      "duplicates": 0,
+      "new_numbers": [],
+      "scene": true,
+      "asks_for_text": 0,
+      "shown": 6
+    },
+    {
+      "id": "escena-precio-papas",
+      "original": "papas fritas familiares en una canasta, con salsa de ajo al lado",
+      "press_1": {
+        "texts": [
+          "Plano cerrado de papas fritas familiares doradas y crocantes que llenan el encuadre, dentro de una canasta. Al lado, un pocillo de salsa de ajo cremosa. Luz cálida y lateral que resalta el brillo y el vapor. Sensación de recién hechas, para compartir entre tres.",
+          "Plano abierto de una mesa del local con una canasta de papas fritas familiares en el centro y la salsa de ajo al lado. Alrededor, bandejas de shawarma y ensalada fresca, luz natural de ventana. Ambiente cálido y cotidiano, sin letreros ni texto.",
+          "Una mano toma una papa frita de la canasta familiar y la acerca a la salsa de ajo que está al lado. Se ve solo la mano y parte del brazo, sin rostro. Luz cálida, mesa de almuerzo compartido, sensación de pausa del trabajo y ganas de picar."
+        ],
+        "approaches": [
+          "producto",
+          "lugar",
+          "momento"
+        ],
+        "added_facts": [],
+        "cost_usd": "0.005935000",
+        "seconds": 3.6,
+        "in": 716,
+        "out": 430
+      },
+      "press_2": {
+        "texts": [
+          "Primerísimo plano desde arriba de las papas fritas familiares apiladas en la canasta, bordes dorados y sal visible. La salsa de ajo, en un pocillo al borde del encuadre, con una papa a medio sumergir. Luz suave y cálida, textura crocante.",
+          "Mostrador del local visto desde la entrada, con la canasta de papas fritas familiares y la salsa de ajo al lado, listas para llevar. Al fondo, desenfocado, el trabajo de la cocina. Luz de tarde por la vidriera, ambiente cálido de centro de ciudad.",
+          "Dos manos comparten la canasta de papas fritas familiares sobre un escritorio de oficina, una moja una papa en la salsa de ajo al lado. Sin rostros, solo manos y mangas de camisa. Luz de media tarde, sensación de pausa y compañía."
+        ],
+        "approaches": [
+          "producto",
+          "lugar",
+          "momento"
+        ],
+        "added_facts": [],
+        "cost_usd": "0.006447000",
+        "seconds": 4.0,
+        "in": 1072,
+        "out": 410
+      },
+      "within_press_mean_similarity": 0.076,
+      "within_press_max_similarity": 0.185,
+      "across_presses_max_similarity": 0.232,
+      "across_presses_mean_similarity": 0.144,
+      "across_presses_mean_jaccard": 0.264,
+      "duplicates": 0,
+      "new_numbers": [],
+      "scene": true,
+      "asks_for_text": 0,
+      "shown": 6
+    }
+  ]
+}

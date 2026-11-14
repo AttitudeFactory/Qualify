@@ -208,6 +208,19 @@ class Message(Base):
             "story_mention_basis IN ('graph','attachment','heuristic')",
             name="ck_message_story_mention_basis",
         ),
+        CheckConstraint(
+            "unsent_at IS NULL OR direction = 'inbound'", name="ck_message_unsent_inbound"
+        ),
+        CheckConstraint(
+            "unsent_at IS NULL OR (text IS NULL AND author_username IS NULL"
+            " AND media_type IS NULL AND media_url IS NULL AND media_object_key IS NULL"
+            " AND media_id IS NULL AND media_mime IS NULL AND raw_payload_r2_key IS NULL"
+            " AND story_reply_id IS NULL AND story_reply_url IS NULL AND NOT story_mention"
+            " AND story_mention_id IS NULL AND story_mention_url IS NULL"
+            " AND story_mention_basis IS NULL AND choice_kind IS NULL"
+            " AND choice_payload IS NULL AND deleted_at IS NOT NULL)",
+            name="ck_message_unsent_redacted",
+        ),
         Index("ix_message_tenant", "tenant_id"),
         Index("ix_message_thread", "thread_id", "posted_at"),
     )
@@ -271,6 +284,10 @@ class Message(Base):
     story_mention_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     story_mention_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     story_mention_basis: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 0157 (m-25018661): the person unsent this inbound Instagram DM. The row is kept
+    # redacted (ids and instants only, `ck_message_unsent_redacted`) and hidden
+    # (`deleted_at`); the tombstone that blocks re-ingest is `message_unsends`.
+    unsent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class InboxMetaCallLog(Base):

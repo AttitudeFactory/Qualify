@@ -18,7 +18,6 @@ _APP = Path(__file__).parent
 #   - the design guide (`styleguide_page.py`) and the primitive itself.
 _EXCEPTIONS: frozenset[tuple[str, str]] = frozenset(
     {
-        ("content_generator.py", "Busca una imagen o un video para tu producto"),
         ("whatsapp_page.py", "Aún no tienes códigos QR"),
         ("whatsapp_tab_chats.py", "Elige una conversación"),
     }

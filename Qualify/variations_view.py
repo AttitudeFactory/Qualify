@@ -36,6 +36,7 @@ from .ui import (
     loading_spinner,
     media_thumb,
     skeleton_card,
+    tag,
     tone_badge,
 )
 from .ui import tokens as T
@@ -542,12 +543,14 @@ def _angle_card(angle: rx.Var) -> rx.Component:
                 align="center",
                 width="100%",
             ),
+            # who the idea talks to (0166); an idea from before the levels has no tag
+            rx.cond(angle.audience_label != "", tag(angle.audience_label)),
             # only once a piece exists: a discarded angle showed an empty frame
             rx.cond(angle.draft_id != "", _angle_preview(angle)),
             _angle_field("Escenario", angle.scene),
             _angle_field("Composición", angle.composition),
             _angle_field("Gancho", angle.hook),
-            _angle_field("Llamada a la acción", angle.cta),
+            _angle_field("Invitación a comprar o escribir", angle.cta),
             _angle_field("Por qué", angle.rationale),
             rx.cond(angle.failure_text != "", callout(angle.failure_text, "error")),
             # what the composition left out is said once for the set, in the header
@@ -670,8 +673,8 @@ def _scene_editor() -> rx.Component:
                         ),
                     ),
                     _editor_field(
-                        "Llamada a la acción",
-                        "Lo que le pides al público.",
+                        "Invitación a comprar o escribir",
+                        "No se dibuja sobre la imagen.",
                         rx.input(
                             value=VariationsState.editor_cta,
                             on_change=VariationsState.set_editor_cta,

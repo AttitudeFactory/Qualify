@@ -1,6 +1,8 @@
 """The price pill (ticket 24803289): `FlyerText.price` is printed on the flyer and on the
 advertising image exactly as given, and nothing is printed when it is empty — the price
-is the catalog's label, never a model's figure."""
+is the catalog's label, never a model's figure. Since m-25017276 (founder, 2026-11-13) the
+pills are drawn only with `pills=True` (off by default, `test_compose_no_pills.py`): these
+tests pin how they are drawn when asked for."""
 
 from __future__ import annotations
 
@@ -37,9 +39,11 @@ def _pill_zone(image: Image.Image) -> Image.Image:
 def test_a_price_prints_a_light_pill_above_the_cta_and_no_price_prints_none() -> None:
     scene = _png((1080, 1350), (30, 90, 160, 255))
     (with_price,) = render_ad_slides(
-        scenes=[scene], text=FlyerText(hook="Hoy", cta="Pide ya", price="$18.000")
+        scenes=[scene], text=FlyerText(hook="Hoy", cta="Pide ya", price="$18.000"), pills=True
     )
-    (without,) = render_ad_slides(scenes=[scene], text=FlyerText(hook="Hoy", cta="Pide ya"))
+    (without,) = render_ad_slides(
+        scenes=[scene], text=FlyerText(hook="Hoy", cta="Pide ya"), pills=True
+    )
     assert with_price != without
     zone = _pill_zone(_open(with_price)).getcolors(maxcolors=200_000)
     assert zone is not None
@@ -54,17 +58,21 @@ def test_a_price_prints_a_light_pill_above_the_cta_and_no_price_prints_none() ->
 def test_the_flyer_and_a_carousel_cover_carry_the_price_too() -> None:
     product = _png((400, 600), (200, 40, 40, 255))
     (flyer,) = render_flyer(
-        text=FlyerText(hook="Hoy", cta="Pide", price="USD 9.50"), products=[product]
+        text=FlyerText(hook="Hoy", cta="Pide", price="USD 9.50"), products=[product], pills=True
     )
-    (plain,) = render_flyer(text=FlyerText(hook="Hoy", cta="Pide"), products=[product])
+    (plain,) = render_flyer(text=FlyerText(hook="Hoy", cta="Pide"), products=[product], pills=True)
     assert flyer != plain and _open(flyer).size == FEED_SIZE
     slides = render_flyer(
         text=FlyerText(hook="Hoy", cta="Pide", price="USD 9.50"),
         products=[product, product],
         carousel=True,
+        pills=True,
     )
     bare = render_flyer(
-        text=FlyerText(hook="Hoy", cta="Pide"), products=[product, product], carousel=True
+        text=FlyerText(hook="Hoy", cta="Pide"),
+        products=[product, product],
+        carousel=True,
+        pills=True,
     )
     assert slides[0] != bare[0]  # the cover prints it
     assert slides[1] == bare[1] and slides[-1] == bare[-1]  # the rest do not
@@ -72,7 +80,11 @@ def test_the_flyer_and_a_carousel_cover_carry_the_price_too() -> None:
 
 def test_the_price_is_deterministic_and_emoji_free() -> None:
     scene = _png((1080, 1350), (30, 90, 160, 255))
-    args = {"scenes": [scene], "text": FlyerText(hook="Hoy", cta="Ya", price="$18.000 🔥")}
+    args = {
+        "scenes": [scene],
+        "text": FlyerText(hook="Hoy", cta="Ya", price="$18.000 🔥"),
+        "pills": True,
+    }
     assert render_ad_slides(**args) == render_ad_slides(**args)
 
 
@@ -97,9 +109,11 @@ def test_price_fits_tells_whole_from_impossible() -> None:
 def test_a_long_price_shrinks_and_still_prints_whole() -> None:
     scene = _png((1080, 1350), (30, 90, 160, 255))
     (shrunk,) = render_ad_slides(
-        scenes=[scene], text=FlyerText(hook="Hoy", cta="Pide ya", price=NEEDS_SHRINK)
+        scenes=[scene], text=FlyerText(hook="Hoy", cta="Pide ya", price=NEEDS_SHRINK), pills=True
     )
-    (without,) = render_ad_slides(scenes=[scene], text=FlyerText(hook="Hoy", cta="Pide ya"))
+    (without,) = render_ad_slides(
+        scenes=[scene], text=FlyerText(hook="Hoy", cta="Pide ya"), pills=True
+    )
     assert shrunk != without
     zone = _pill_zone(_open(shrunk)).getcolors(maxcolors=200_000)
     assert zone is not None
@@ -111,12 +125,16 @@ def test_a_price_too_long_to_print_whole_prints_nothing_never_a_cut_figure() -> 
     product = _png((400, 600), (200, 40, 40, 255))
     # the slide is byte for byte the one without a price: no pill, no «…», no scrim change
     (ad_long,) = render_ad_slides(
-        scenes=[scene], text=FlyerText(hook="Hoy", cta="Pide ya", price=TOO_LONG)
+        scenes=[scene], text=FlyerText(hook="Hoy", cta="Pide ya", price=TOO_LONG), pills=True
     )
-    (ad_none,) = render_ad_slides(scenes=[scene], text=FlyerText(hook="Hoy", cta="Pide ya"))
+    (ad_none,) = render_ad_slides(
+        scenes=[scene], text=FlyerText(hook="Hoy", cta="Pide ya"), pills=True
+    )
     assert ad_long == ad_none
     (flyer_long,) = render_flyer(
-        text=FlyerText(hook="Hoy", cta="Pide", price=TOO_LONG), products=[product]
+        text=FlyerText(hook="Hoy", cta="Pide", price=TOO_LONG), products=[product], pills=True
     )
-    (flyer_none,) = render_flyer(text=FlyerText(hook="Hoy", cta="Pide"), products=[product])
+    (flyer_none,) = render_flyer(
+        text=FlyerText(hook="Hoy", cta="Pide"), products=[product], pills=True
+    )
     assert flyer_long == flyer_none

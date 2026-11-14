@@ -128,13 +128,17 @@ def test_the_owners_own_text_is_shown_as_what_goes_out_without_methods() -> None
 
 
 def test_the_payment_pill_comes_first_in_the_row_and_the_header() -> None:
-    """At 375 px a third pill drops to a second line: «Pago por revisar» goes first."""
+    """At 375 px a third pill drops to a second line: «Pago por revisar» goes first.
+    m-25017844: the row carries ONE pill, chosen in the VM (payment beats the window —
+    `test_chat_row.py`); the header keeps its order."""
     import inspect
 
     from . import whatsapp_tab_chats
+    from .chat_row_vm import attention_pill
 
+    assert attention_pill(payment_review=True, reply_within_minutes=5, wants_to_buy=False)[0] == (
+        "Pago por revisar"
+    )
     source = inspect.getsource(whatsapp_tab_chats)
-    row = source.index("_tone_pill(row.payment_label, row.payment_tone)")
-    assert row < source.index("_tone_pill(row.window_label, row.window_tone)")
     head = source.index("_tone_pill(S.payment.label, S.payment.tone)")
     assert head < source.index("_tone_pill(thread.window_label, thread.window_tone)")

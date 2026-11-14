@@ -96,6 +96,7 @@ def _thread(**overrides: object) -> ThreadSummary:
         "assigned_agent_id": None,
         "automation_paused": False,
         "window": WindowView(open=True, closes_at=NOW + timedelta(hours=23, minutes=55)),
+        "awaiting_reply": True,
     }
     values.update(overrides)
     return ThreadSummary(**values)  # type: ignore[arg-type]
@@ -146,7 +147,8 @@ def test_window_pill_open_is_ok_with_the_local_closing_time() -> None:
 
 def test_window_pill_closing_within_the_hour_is_warn_in_minutes() -> None:
     label, tone = window_pill(True, NOW + timedelta(minutes=41, seconds=10), NOW, ZONE)
-    assert (label, tone) == ("Responde en los próximos 42 min", "warn")
+    # m-25017844: one count for row and header, rounded down (41:10 → 41).
+    assert (label, tone) == ("Responde en los próximos 41 min", "warn")
     assert window_pill(True, NOW + timedelta(seconds=5), NOW, ZONE) == (
         "Responde en el próximo minuto",
         "warn",
@@ -200,7 +202,7 @@ def test_thread_row_maps_name_number_preview_unread_and_mode() -> None:
     assert row.subtitle == "+573001234567"
     assert row.preview == "¿Tienen domicilio?"
     assert row.time_label == "hace 5 min"
-    assert (row.unread_label, row.has_unread) == ("2", True)
+    assert row.awaiting_reply  # m-25017859: the rule's verdict, not the unread count
     assert (row.window_tone, row.window_open) == ("ok", True)
     assert (row.mode_label, row.mode_tone) == ("Responde el menú", "neutral")
     assert row.agent_initials == ""
@@ -208,14 +210,19 @@ def test_thread_row_maps_name_number_preview_unread_and_mode() -> None:
 
 def test_thread_row_without_name_shows_the_number_and_outbound_prefix() -> None:
     row = build_thread_row(
-        _thread(contact_name=None, last_message_direction="outbound", unread_count=0),
+        _thread(
+            contact_name=None,
+            last_message_direction="outbound",
+            unread_count=0,
+            awaiting_reply=False,
+        ),
         now=NOW,
         zone=ZONE,
     )
     assert row.title == "+573001234567"
     assert row.subtitle == ""
     assert row.preview == "Tú: ¿Tienen domicilio?"
-    assert row.unread_label == ""
+    assert not row.awaiting_reply
 
 
 def test_thread_row_paused_assigned_and_closed() -> None:
@@ -271,23 +278,37 @@ def test_initials() -> None:
 # --- filters -------------------------------------------------------------------------
 
 
-def test_filters_split_open_closed_and_unread() -> None:
+def test_filters_split_open_closed_and_por_responder_by_the_rule() -> None:
+    """m-25017859: the chip the menu's WhatsApp badge opens lists by the «Por responder»
+    rule (`awaiting_reply`), not by unread messages: read but unanswered waits, answered
+    with unread does not, closed never does."""
     rows = [
         build_thread_row(_thread(id=uuid4(), unread_count=1), now=NOW, zone=ZONE),
         build_thread_row(_thread(id=uuid4(), unread_count=0), now=NOW, zone=ZONE),
-        build_thread_row(_thread(id=uuid4(), status="closed", unread_count=3), now=NOW, zone=ZONE),
+        build_thread_row(
+            _thread(id=uuid4(), unread_count=2, awaiting_reply=False), now=NOW, zone=ZONE
+        ),
+        build_thread_row(
+            _thread(id=uuid4(), status="closed", unread_count=3, awaiting_reply=False),
+            now=NOW,
+            zone=ZONE,
+        ),
     ]
-    assert len(filter_threads(rows, FILTER_OPEN)) == 2
+    assert len(filter_threads(rows, FILTER_OPEN)) == 3
     assert len(filter_threads(rows, FILTER_CLOSED)) == 1
-    assert len(filter_threads(rows, FILTER_UNREAD)) == 2
-    assert len(filter_threads(rows, "junk")) == 2
+    assert [r.thread_id for r in filter_threads(rows, FILTER_UNREAD)] == [
+        rows[0].thread_id,
+        rows[1].thread_id,
+    ]
+    assert len(filter_threads(rows, "junk")) == 3
     assert filter_counts(rows) == {
-        FILTER_OPEN: 2,
+        FILTER_OPEN: 3,
         FILTER_CLOSED: 1,
         FILTER_UNREAD: 2,
         "payment": 0,  # m-24971198: «Pago por revisar» (its own tests)
     }
-    assert filter_label(FILTER_UNREAD, 2) == "Sin leer · 2"
+    # UX proposal awaiting the founder, in ONE constant (`AWAITING_FILTER_LABEL`).
+    assert filter_label(FILTER_UNREAD, 2) == "Por responder · 2"
     assert filter_label(FILTER_CLOSED, 0) == "Cerrados"
 
 

@@ -226,7 +226,9 @@ class Harness:
         # without needing to remember to pass one in.
         self.linker = media_linker if media_linker is not None else FakeMediaLinker()
         self.targets = {
-            (TENANT, CONNECTION): ConnectionTarget(ig_user_id=IG_USER, status=connection_status)
+            (TENANT, CONNECTION): ConnectionTarget(
+                ig_user_id=IG_USER, status=connection_status, platform="instagram"
+            )
         }
         harness = self
 
@@ -1888,7 +1890,7 @@ async def test_start_image_never_writes_status_uploading() -> None:
 
     class Connections:
         def read(self, *, tenant_id: UUID, connection_id: UUID) -> ConnectionTarget | None:
-            return ConnectionTarget(ig_user_id=IG_USER, status="active")
+            return ConnectionTarget(ig_user_id=IG_USER, status="active", platform="instagram")
 
     class Factory:
         async def client_for(self, *, tenant_id: UUID, connection_id: UUID):
@@ -1935,7 +1937,7 @@ async def test_start_image_requires_a_configured_media_linker() -> None:
 
     class Connections:
         def read(self, *, tenant_id: UUID, connection_id: UUID) -> ConnectionTarget | None:
-            return ConnectionTarget(ig_user_id=IG_USER, status="active")
+            return ConnectionTarget(ig_user_id=IG_USER, status="active", platform="instagram")
 
     class Factory:
         async def client_for(self, *, tenant_id: UUID, connection_id: UUID):
@@ -2355,3 +2357,36 @@ async def test_a_feed_image_still_sends_no_container_media_type() -> None:
     await h.start_image()
 
     assert h.client.image_container_calls[0]["media_type"] is None
+
+
+# --- m-25019217: the attempt records its staged object -------------------------------------
+
+
+async def test_a_single_attempt_records_its_staged_object_and_type() -> None:
+    """`planner.immediate` points the owner's piece at this object once published."""
+    h = Harness()
+    state = await h.start_image()
+    record = h.repo.get_attempt(tenant_id=TENANT, attempt_id=state.attempt_id)
+    assert record is not None
+    assert (record.media_object_key, record.media_content_type) == (h.image_key, "image/jpeg")
+
+
+async def test_a_single_video_from_start_many_records_its_type_without_changing_the_path() -> None:
+    h = Harness()
+    items = h.stage_videos(1)
+    state = await h.start_many(items)
+    record = h.repo.get_attempt(tenant_id=TENANT, attempt_id=state.attempt_id)
+    assert record is not None
+    assert record.media_object_key == items[0].media_object_key
+    assert record.media_content_type == "video/mp4"
+    assert record.media_product_type == "REELS"
+    assert h.client.calls["create"] == 1  # still the resumable VIDEO path
+
+
+async def test_a_carousel_attempt_keeps_its_items_on_the_children_only() -> None:
+    h = Harness()
+    items = h.stage_videos(2)
+    state = await h.start_many(items)
+    record = h.repo.get_attempt(tenant_id=TENANT, attempt_id=state.attempt_id)
+    assert record is not None
+    assert (record.media_object_key, record.media_content_type) == (None, None)

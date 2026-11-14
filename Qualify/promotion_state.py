@@ -12,7 +12,14 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import reflex as rx
 from qualify_api.ads.audience import AudienceUnavailable
-from qualify_api.ads.wizard import WizardUnavailable
+from qualify_api.ads.messaging_greeting import (
+    CHANGED_WHILE_EDITING,
+    WELCOME_EMPTY,
+    WELCOME_TOO_LONG,
+    GreetingUnavailable,
+)
+from qualify_api.ads.unpublished import UnpublishedUnavailable
+from qualify_api.ads.wizard import WizardUnavailable, goal_reason
 from qualify_api.tenancy.acting import acting_login
 
 from .ad_custom_audiences_provider import read_custom_audiences, request_custom_audience
@@ -46,28 +53,56 @@ from .promotion_audience_vm import (
 )
 from .promotion_provider import (
     confirm_review,
+    latest_greeting,
     load_sources,
     prepare_preview,
+    ready_lead_forms,
     recheck_enhancement_permissions,
     recheck_messaging_destinations,
+    store_greeting,
 )
+from .promotion_unpublished_provider import confirm_unpublished, prepare_unpublished
 from .promotion_vm import (
+    CHAT_BUTTON_LABELS,
     CONFIRM_FAILED,
+    COUNTRY_LABELS,
+    GREETING_QUESTION_SLOTS,
+    GREETING_RELOAD,
+    GREETING_SAVE_FAILED,
+    LEAD_CTA_LABELS,
     LOAD_FAILED,
     NO_SESSION,
     PREVIEW_FAILED,
-    STEP_TITLES,
+    STORY_AD_OPTION,
+    STORY_FORMAT,
+    STORY_REVIEW_TITLE,
+    UNPUBLISHED_SOURCE_TITLE,
+    WEBSITE_CTA_LABELS,
+    AdMediaVM,
     PromotionCheckVM,
     PromotionDraftVM,
     PromotionResultVM,
     PromotionReviewVM,
     PromotionSourceVM,
     cop_label,
+    cop_minor,
     first_problem,
+    greeting_buttons_label,
+    greeting_from_saved,
+    greeting_problem,
+    preselect_channel,
     promotion_checks,
     promotion_result,
+    questions_shown,
     readable_date,
+    step_count,
+    step_counter,
+    step_key_at,
+    step_keys,
     step_problem,
+    step_title,
+    video_outcome,
+    zone_label,
 )
 from .tenant import tenant_uuid
 from .ui import go_to_step, settle_step
@@ -91,7 +126,16 @@ class PromotionState(rx.State):
     success: str = ""
     reviewed: bool = False
     confirm_charge: bool = False
+    # m-24828982: Meta is still processing a video (repeat the same preparation), or an
+    # upload is uncertain (ask for help; never offer to send it again).
+    video_waiting: bool = False
+    needs_help: bool = False
+    covers_open: bool = False
     entry_available: bool = False
+    entry_unpublished: bool = False
+    # m-25026350: opened as «Agregar un botón con enlace» (`?formato=historia`).
+    story_entry: bool = False
+    story_cta_open: bool = False
     back_href: str = "/drafts"
     back_label: str = "Por aprobar"
     _loaded_context: tuple[str, str, str] = ("", "", "")
@@ -114,8 +158,11 @@ class PromotionState(rx.State):
     _audience_version: int = 0
     _reach_operation: str = ""
     destinations_working: bool = False
+    forms_working: bool = False
     destinations_notice: str = ""
     _destination_operation: str = ""
+    # «+ Agregar otra pregunta»: boxes the owner opened beyond those with text.
+    question_boxes: int = 1
     enhancements_working: bool = False
     enhancements_notice: str = ""
     _enhancements_operation: str = ""
@@ -489,7 +536,12 @@ class PromotionState(rx.State):
                         else row
                         for row in self.sources
                     ]
-                    self.destinations_notice = "Comprobación terminada. Revisa cada destino."
+                    if self.form.goal == "chat":
+                        chosen = preselect_channel(self.form, options)
+                        if chosen != self.form:
+                            self.form = chosen
+                            self._invalidate_review()
+                    self.destinations_notice = "Comprobación terminada. Revisa cada chat."
         finally:
             async with self:
                 if await self._destination_current(
@@ -807,9 +859,78 @@ class PromotionState(rx.State):
     def title(self) -> str:
         if self.preparation_blocked:
             return "Revisa tu cuenta antes de promocionar"
+        if self.story_entry and not self.sources:
+            return STORY_AD_OPTION  # its empty state names the problem underneath
         if self.reviewed:
+            if self.form.story:
+                return STORY_REVIEW_TITLE
             return "Revisa tu anuncio antes de autorizarlo"
-        return STEP_TITLES[min(max(self.step, 1), 4) - 1]
+        if (
+            self.step <= 1
+            and any(row.media_kind for row in self.sources)
+            and step_keys(self.form)[0] == "source"
+        ):
+            return UNPUBLISHED_SOURCE_TITLE
+        return step_title(self.form, self.step)
+
+    @rx.var
+    def step_total(self) -> int:
+        return step_count(self.form)
+
+    @rx.var
+    def display_total(self) -> int:
+        return step_counter(self.form, self._offered(), self.step, self.reviewed)[1]
+
+    @rx.var
+    def display_step(self) -> int:
+        return step_counter(self.form, self._offered(), self.step, self.reviewed)[0]
+
+    def _offered(self) -> PromotionDraftVM:
+        if not self.sources:
+            return self.form
+        return replace(
+            PromotionDraftVM(), **_unpublished_defaults(self.sources[0], len(self.sources) == 1)
+        )
+
+    def _media(self, rows: list[AdMediaVM], asset_id: str) -> AdMediaVM:
+        return next((row for row in rows if row.id == asset_id), AdMediaVM(id=""))
+
+    @rx.var
+    def chosen_feed(self) -> AdMediaVM:
+        return self._media(self.selected_source.feed_media, self.form.feed_asset_id)
+
+    @rx.var
+    def chosen_vertical(self) -> AdMediaVM:
+        return self._media(self.selected_source.vertical_media, self.form.vertical_asset_id)
+
+    @rx.var
+    def chosen_feed_cover(self) -> AdMediaVM:
+        return self._media(self.selected_source.feed_covers, self.form.feed_cover_id)
+
+    @rx.var
+    def chosen_vertical_cover(self) -> AdMediaVM:
+        return self._media(self.selected_source.vertical_covers, self.form.vertical_cover_id)
+
+    @rx.event
+    def toggle_covers(self) -> None:
+        if not self.busy:
+            self.covers_open = not self.covers_open
+
+    @rx.var
+    def zone_label(self) -> str:
+        return zone_label(self.timezone_name)
+
+    @rx.var
+    def step_key(self) -> str:
+        return step_key_at(self.form, self.step)
+
+    @rx.var
+    def is_unpublished(self) -> bool:
+        return self.form.media_kind != ""
+
+    @rx.var
+    def country_label(self) -> str:
+        return COUNTRY_LABELS.get(self.form.country, "Por elegir")
 
     @rx.var
     def selected_source(self) -> PromotionSourceVM:
@@ -820,8 +941,14 @@ class PromotionState(rx.State):
 
     @rx.var
     def execution_reason(self) -> str:
-        if self.selected_source.unavailable_reason:
-            return self.selected_source.unavailable_reason
+        # The backend's per-goal refusal: a chat ad never uses the piece's own button.
+        reason = goal_reason(
+            self.selected_source.unavailable_reason,
+            chat=self.form.goal == "chat",
+            lead=self.form.goal == "lead",
+        )
+        if reason:
+            return reason
         if self.form.source_id and not self.form.enhancements.loaded:
             return "Vuelve a consultar los permisos de esta marca antes de preparar el anuncio."
         return ""
@@ -847,6 +974,15 @@ class PromotionState(rx.State):
         return cop_label(self.form.budget)
 
     @rx.var
+    def budget_valid(self) -> bool:
+        """The «Total: $25.000 COP» line shows only for an amount that parses."""
+        try:
+            cop_minor(self.form.budget)
+        except ValueError:
+            return False
+        return True
+
+    @rx.var
     def charge_button(self) -> str:
         return "Autorizar hasta " + self.budget_label
 
@@ -867,6 +1003,11 @@ class PromotionState(rx.State):
         return bool(self.result.status)
 
     @rx.var
+    def piece_href(self) -> str:
+        piece = tenant_uuid(self._piece_id)
+        return f"/drafts/{piece}" if piece else "/drafts"
+
+    @rx.var
     def promotion_status_href(self) -> str:
         reference = self.result.promotion_id or self.review.promotion_id
         promotion_id = tenant_uuid(reference)
@@ -881,6 +1022,8 @@ class PromotionState(rx.State):
         self.checks = []
         self.reviewed = False
         self.confirm_charge = False
+        self.video_waiting = False
+        self.needs_help = False
         if not getattr(self, "result", PromotionResultVM()).status:
             self.success = ""
             self._request_key = str(uuid4())
@@ -895,6 +1038,8 @@ class PromotionState(rx.State):
             "budget",
             "start_local",
             "end_local",
+            "message",
+            "headline",
         }:
             return
         if getattr(self.form, name) != value:
@@ -934,6 +1079,231 @@ class PromotionState(rx.State):
         return PromotionState.refresh_reach()
 
     @rx.event
+    def choose_goal(self, goal: str) -> None:
+        if self.busy or goal not in {"visit", "lead", "chat"} or goal == self.form.goal:
+            return
+        # The chat goal rides a published post only (never a story or an unpublished
+        # piece), and only while QUALIFY_ADS_CHAT_GOAL offers it.
+        if goal == "chat" and (
+            self.form.story or self.form.media_kind or not self.selected_source.chat_goal
+        ):
+            return
+        self.form = replace(self.form, goal=goal)
+        if goal == "chat":
+            self.form = preselect_channel(self.form, self.selected_source.messaging_destinations)
+        self.error = ""
+        self._invalidate_review()
+
+    @rx.event
+    def choose_channel(self, key: str) -> None:
+        options = self.selected_source.messaging_destinations
+        if self.busy or not any(row.key == key and row.available for row in options):
+            return
+        self.form = replace(self.form, channel=key)
+        self.error = ""
+        self._invalidate_review()
+
+    @rx.event
+    def edit_welcome(self, value: str) -> None:
+        if self.busy or value == self.form.welcome_text:
+            return
+        self.form = replace(self.form, welcome_text=value, greeting_id="")
+        self.error = ""
+        self._invalidate_review()
+
+    @rx.event
+    def edit_question(self, index: int, value: str) -> None:
+        if self.busy or not 0 <= index < GREETING_QUESTION_SLOTS:
+            return
+        if self.form.questions[index] == value:
+            return
+        questions = list(self.form.questions)
+        questions[index] = value
+        self.form = replace(self.form, questions=questions, greeting_id="")
+        self.error = ""
+        self._invalidate_review()
+
+    @rx.var
+    def channel_label(self) -> str:
+        return next(
+            (
+                row.label
+                for row in self.selected_source.messaging_destinations
+                if row.key == self.form.channel
+            ),
+            "Por elegir",
+        )
+
+    @rx.var
+    def welcome_preview(self) -> str:
+        return self.form.welcome_text.strip() or "Aquí va tu saludo."
+
+    @rx.var
+    def welcome_error(self) -> str:
+        """The banner's welcome problem, repeated under its field."""
+        return self.error if self.error in {WELCOME_EMPTY, WELCOME_TOO_LONG} else ""
+
+    @rx.var
+    def greeting_buttons_label(self) -> str:
+        return greeting_buttons_label(self.form)
+
+    @rx.var
+    def questions_shown(self) -> int:
+        return questions_shown(self.form, self.question_boxes)
+
+    @rx.event
+    def add_question(self) -> None:
+        if not self.busy:
+            self.question_boxes = questions_shown(self.form, self.question_boxes) + 1
+
+    @rx.event(background=True)
+    async def save_greeting(self) -> AsyncIterator[rx.event.EventSpec]:
+        """The greeting step's «Siguiente»: the backend's versioned save, then the next step.
+        A conflict shows its message and the latest saved greeting to review."""
+        async with self:
+            context = await self._session()
+            if self.busy or self.loading or step_key_at(self.form, self.step) != "greeting":
+                return
+            if context != self._loaded_context or not all(tenant_uuid(v) for v in context):
+                self.error = NO_SESSION
+                return
+            brand = tenant_uuid(self.selected_source.brand_id)
+            if brand is None:
+                self.error = GREETING_SAVE_FAILED
+                return
+            self.busy = True
+            self.error = ""
+            form = self.form
+        saved = latest = None
+        problem = ""
+        try:
+            with acting_login(UUID(context[1])):
+                saved = await asyncio.to_thread(store_greeting, UUID(context[0]), brand, form)
+        except Exception as exc:
+            logger.warning("promotion greeting save failed: %s", type(exc).__name__)
+            problem = str(exc) if isinstance(exc, GreetingUnavailable) else GREETING_SAVE_FAILED
+            if problem == CHANGED_WHILE_EDITING:
+                try:
+                    with acting_login(UUID(context[1])):
+                        latest = await asyncio.to_thread(latest_greeting, UUID(context[0]), brand)
+                except Exception as read_exc:
+                    logger.warning("promotion greeting read failed: %s", type(read_exc).__name__)
+                    # Without the newer version every retry would conflict again.
+                    problem = GREETING_RELOAD
+        advance = False
+        async with self:
+            self.busy = False
+            # Typing, another publication or another session meanwhile wins over this save.
+            if context != await self._session() or self.form != form:
+                return
+            fresh = saved or latest
+            if fresh is not None:
+                self.form = greeting_from_saved(self.form, fresh)
+                self.sources = [
+                    replace(row, greeting=fresh) if row.brand_id == str(brand) else row
+                    for row in self.sources
+                ]
+                self._invalidate_review()
+            self.error = problem
+            advance = saved is not None
+        if advance:
+            yield PromotionState.next_step()
+
+    @rx.event
+    def choose_lead_form(self, form_id: str) -> None:
+        if self.busy or not any(row.id == form_id for row in self.selected_source.lead_forms):
+            return
+        self.form = replace(self.form, lead_form_id=form_id)
+        self.error = ""
+        self._invalidate_review()
+
+    @rx.event(background=True)
+    async def refresh_lead_forms(self) -> None:
+        """After creating a form elsewhere: re-read this account's ready forms only,
+        keeping everything else the owner already chose."""
+        async with self:
+            context = await self._session()
+            source = self.selected_source
+            if self.busy or self.loading or self.forms_working:
+                return
+            if context != self._loaded_context or not all(tenant_uuid(v) for v in context):
+                return
+            connection = tenant_uuid(source.connection_id)
+            if connection is None:
+                return
+            self.forms_working = True
+        try:
+            with acting_login(UUID(context[1])):
+                forms, problem = await asyncio.to_thread(
+                    ready_lead_forms, UUID(context[0]), connection
+                )
+        finally:
+            async with self:
+                self.forms_working = False
+        async with self:
+            if context != await self._session() or self.form.source_id != source.id:
+                return
+            self.sources = [
+                # A failed read keeps the forms already shown, so the choice survives.
+                replace(
+                    row, lead_forms=row.lead_forms if problem else forms, lead_forms_error=problem
+                )
+                if row.id == source.id
+                else row
+                for row in self.sources
+            ]
+            if not problem and not any(row.id == self.form.lead_form_id for row in forms):
+                self.form = replace(self.form, lead_form_id=forms[0].id if forms else "")
+                self._invalidate_review()
+
+    @rx.event
+    def choose_lead_cta(self, code: str) -> None:
+        if self.busy or code not in LEAD_CTA_LABELS:
+            return
+        self.form = replace(self.form, lead_cta=code)
+        self.error = ""
+        self._invalidate_review()
+
+    @rx.event
+    def choose_cta(self, code: str) -> None:
+        if self.busy or code not in WEBSITE_CTA_LABELS:
+            return
+        self.form = replace(self.form, cta_type=code)
+        self.error = ""
+        self._invalidate_review()
+
+    @rx.event
+    def toggle_story_cta(self) -> None:
+        """Story step 1: the saved button is one line; «Cambiar» opens the list."""
+        if not self.busy:
+            self.story_cta_open = not self.story_cta_open
+
+    @rx.event
+    def choose_story_cta(self, code: str) -> None:
+        PromotionState.choose_cta.fn(self, code)
+        if self.form.cta_type == code:
+            self.story_cta_open = False
+
+    @rx.var
+    def lead_form_label(self) -> str:
+        return next(
+            (
+                row.name
+                for row in self.selected_source.lead_forms
+                if row.id == self.form.lead_form_id
+            ),
+            "Por elegir",
+        )
+
+    @rx.var
+    def button_label(self) -> str:
+        if self.form.goal == "chat":
+            return CHAT_BUTTON_LABELS.get(self.form.channel, "Por elegir")
+        if self.form.goal == "lead":
+            return LEAD_CTA_LABELS.get(self.form.lead_cta, "Por elegir")
+        return WEBSITE_CTA_LABELS.get(self.form.cta_type, "Por elegir")
+
+    @rx.event
     def accept_charge(self, value: bool) -> None:
         self.confirm_charge = (
             bool(value)
@@ -958,29 +1328,67 @@ class PromotionState(rx.State):
         zone = source.timezone_name or self._tenant_timezone
         changed_zone = zone != self.timezone_name
         self.form = replace(
-            PromotionDraftVM(
-                budget=self.form.budget,
-                start_local=self.form.start_local,
-                end_local=self.form.end_local,
+            greeting_from_saved(
+                PromotionDraftVM(
+                    budget=self.form.budget,
+                    start_local=self.form.start_local,
+                    end_local=self.form.end_local,
+                ),
+                source.greeting,
             ),
             source_id=source.id,
             link_url=source.default_link_url,
+            cta_type=source.default_cta_type,
+            lead_form_id=source.lead_forms[0].id if source.lead_forms else "",
             enhancements=source.enhancements,
             **({"start_local": "", "end_local": ""} if changed_zone else {}),
+            **_unpublished_defaults(source, len(self.sources) == 1),
         )
         self.timezone_name = zone
         self.error = ""
+        self.question_boxes = 1
         self._audience_version = 0
         self.place_query = ""
         self.interest_query = ""
         self.place_results = []
         self.interest_results = []
         self._invalidate_audience()
+        self._invalidate_review()
         return (
             PromotionState.restore_audience()
-            if source.ad_account_id and not source.health.blocks_preparation
+            if source.ad_account_id
+            and not source.health.blocks_preparation
+            and not source.media_kind
             else None
         )
+
+    @rx.event
+    def choose_media(self, slot: str, asset_id: str) -> None:
+        """One of the piece's own files for a slot; never an id outside its lists."""
+        source = self.selected_source
+        lists = {
+            "feed_asset_id": source.feed_media,
+            "vertical_asset_id": source.vertical_media,
+            "feed_cover_id": source.feed_covers,
+            "vertical_cover_id": source.vertical_covers,
+        }
+        if self.busy or slot not in lists or not any(row.id == asset_id for row in lists[slot]):
+            return
+        if getattr(self.form, slot) != asset_id:
+            self.form = replace(self.form, **{slot: asset_id})
+            self.error = ""
+            # «Cambiar portada» lives in the summary: drop Meta's review but stay there.
+            stay = slot.endswith("_cover_id") and self.reviewed
+            self._invalidate_review()
+            self.reviewed = stay
+
+    @rx.event
+    def choose_country(self, code: str) -> None:
+        if self.busy or code not in COUNTRY_LABELS or code == self.form.country:
+            return
+        self.form = replace(self.form, country=code)
+        self.error = ""
+        self._invalidate_review()
 
     @rx.event
     def choose_another_source(self) -> None:
@@ -1003,15 +1411,19 @@ class PromotionState(rx.State):
         return PromotionState.load()
 
     def _step_completeness(self) -> list[bool]:
-        return [not step_problem(self.form, n, self.timezone_name) for n in range(1, 5)]
+        return [
+            not step_problem(self.form, n, self.timezone_name)
+            for n in range(1, step_count(self.form) + 1)
+        ]
 
     @rx.event
     def read_step(self) -> rx.event.EventSpec:
         params = self.router.url.query_parameters
-        target = guard_step(parse_step_param(params.get("paso"), 4), self._step_completeness())
+        last = step_count(self.form)
+        target = guard_step(parse_step_param(params.get("paso"), last), self._step_completeness())
         self.direction = step_direction(self.step, target, self.direction)
         reviewed = (
-            target == 4
+            target == last
             and params.get("revision") == "1"
             and not first_problem(self.form, self.timezone_name)
         )
@@ -1025,16 +1437,23 @@ class PromotionState(rx.State):
     def next_step(self) -> rx.event.EventSpec | None:
         if self.busy or self.loading or not self.sources or self.preparation_blocked:
             return None
+        if (
+            step_key_at(self.form, self.step) == "greeting"
+            and not self.form.greeting_id
+            and not greeting_problem(self.form)
+        ):
+            return PromotionState.save_greeting()  # it moves on once the backend saved it
         problem = step_problem(self.form, self.step, self.timezone_name)
         if problem:
             self.error = problem
             return None
         self.error = ""
-        if self.step == 4:
+        last = step_count(self.form)
+        if self.step >= last:
             self.reviewed = True
             self.confirm_charge = False
             return go_to_step(
-                f"/drafts/{self._piece_id}/promote", 4, revision="1", **self._return_params
+                f"/drafts/{self._piece_id}/promote", last, revision="1", **self._return_params
             )
         self.step += 1
         self.direction = "next"
@@ -1049,7 +1468,10 @@ class PromotionState(rx.State):
         if self.reviewed:
             self.reviewed = False
             return go_to_step(
-                f"/drafts/{self._piece_id}/promote", 4, back=True, **self._return_params
+                f"/drafts/{self._piece_id}/promote",
+                step_count(self.form),
+                back=True,
+                **self._return_params,
             )
         self.step = max(1, self.step - 1)
         self.direction = "back"
@@ -1065,6 +1487,7 @@ class PromotionState(rx.State):
     async def load_entry(self) -> None:
         async with self:
             self.entry_available = False
+            self.entry_unpublished = False
             context = await self._session()
             piece = tenant_uuid(str(getattr(self, "draft_id", "")))
         if piece is None or not all(tenant_uuid(value) for value in context):
@@ -1082,6 +1505,7 @@ class PromotionState(rx.State):
                 # Keep the route discoverable: a blocked account opens its explanation
                 # and Meta action instead of silently removing the owner's next step.
                 self.entry_available = bool(rows)
+                self.entry_unpublished = any(row.media_kind for row in rows)
 
     @rx.event(background=True)
     async def load(self) -> AsyncIterator[rx.event.EventSpec]:
@@ -1089,6 +1513,8 @@ class PromotionState(rx.State):
             context = await self._session()
             piece = tenant_uuid(str(getattr(self, "draft_id", "")))
             params = dict(self.router.url.query_parameters)
+            # m-25026350: «Agregar un botón con enlace» from Tu semana's historia.
+            story = params.get("formato") == STORY_FORMAT
             if piece is None or not all(tenant_uuid(value) for value in context):
                 self.loading = False
                 self.error = NO_SESSION if piece else LOAD_FAILED
@@ -1097,6 +1523,7 @@ class PromotionState(rx.State):
                 self._loaded_context == context
                 and self._piece_id == str(piece)
                 and self.sources
+                and self.sources[0].story == story
                 and params.get("paso")
             ):
                 self.read_step()
@@ -1124,17 +1551,21 @@ class PromotionState(rx.State):
             self._operation = operation = str(uuid4())
             self._return_params = {
                 key: str(params[key])
-                for key in ("desde", "semana", "vista", "evento")
+                for key in ("desde", "semana", "vista", "evento", "formato")
                 if params.get(key)
             }
             week = back_to_week_href(params)
+            self.story_entry = story
+            self.story_cta_open = False
             self.back_href = week or f"/drafts/{piece}"
-            self.back_label = "Tu semana" if week else "Revisar publicación"
+            self.back_label = (
+                "Tu semana" if week else "Revisar pieza" if story else "Revisar publicación"
+            )
             event_id = tenant_uuid(str(params.get("evento", "")))
         try:
             with acting_login(UUID(context[1])):
                 rows, zone = await asyncio.to_thread(
-                    load_sources, UUID(context[0]), piece, event_id, True
+                    load_sources, UUID(context[0]), piece, event_id, True, story=story
                 )
         except Exception as exc:
             logger.warning("promotion sources read failed: %s", type(exc).__name__)
@@ -1146,6 +1577,9 @@ class PromotionState(rx.State):
                 if context != await self._session() or operation != self._operation:
                     return
                 self.sources = rows
+                if rows and rows[0].media_kind and self.back_label != "Tu semana":
+                    self.back_label = "Revisar pieza"  # never published: one name, «pieza»
+                self.covers_open = False
                 self._tenant_timezone = zone
                 self.timezone_name = zone
                 if len(rows) == 1:
@@ -1166,7 +1600,12 @@ class PromotionState(rx.State):
                     self.loading = False
         yield settle_step()
         source = next((row for row in self.sources if row.id == self.form.source_id), None)
-        if source and source.ad_account_id and not source.health.blocks_preparation:
+        if (
+            source
+            and source.ad_account_id
+            and not source.health.blocks_preparation
+            and not source.media_kind
+        ):
             yield PromotionState.restore_audience()
 
     @rx.event(background=True)
@@ -1188,6 +1627,7 @@ class PromotionState(rx.State):
                 or self.success
                 or getattr(self, "result", PromotionResultVM()).status
                 or self.preparation_blocked
+                or (getattr(self, "needs_help", False) and not confirm)
             ):
                 return
             if context != self._loaded_context or not all(tenant_uuid(v) for v in context):
@@ -1212,9 +1652,26 @@ class PromotionState(rx.State):
             piece, request_key = self._piece_id, self._request_key
         try:
             with acting_login(UUID(context[1])):
-                if confirm:
+                if confirm and form.media_kind:
+                    outcome = await asyncio.to_thread(
+                        confirm_unpublished, UUID(context[0]), UUID(context[2]), review
+                    )
+                elif confirm:
                     outcome = await asyncio.to_thread(
                         confirm_review, UUID(context[0]), UUID(context[2]), review, True
+                    )
+                elif form.media_kind:
+                    # A video Meta is still processing: the SAME key repeats the
+                    # preparation and never uploads it again.
+                    prepared = await asyncio.to_thread(
+                        prepare_unpublished,
+                        UUID(context[0]),
+                        UUID(piece),
+                        UUID(context[2]),
+                        form,
+                        source,
+                        zone,
+                        request_key,
                     )
                 else:
                     prepared = await asyncio.to_thread(
@@ -1225,6 +1682,7 @@ class PromotionState(rx.State):
                         form,
                         zone,
                         request_key,
+                        source.connection_id if source else "",
                     )
         except Exception as exc:
             logger.warning("promotion command failed: %s", type(exc).__name__)
@@ -1243,15 +1701,21 @@ class PromotionState(rx.State):
                         else ()
                     )
                     self.confirm_charge = False
-                    if confirm and not isinstance(exc, WizardUnavailable):
+                    readable = isinstance(exc, WizardUnavailable | UnpublishedUnavailable)
+                    if confirm and not readable:
                         self.result = promotion_result(None, review.promotion_id)
                     self.error = (
-                        str(exc)
-                        if isinstance(exc, WizardUnavailable)
-                        else CONFIRM_FAILED
-                        if confirm
-                        else PREVIEW_FAILED
+                        str(exc) if readable else CONFIRM_FAILED if confirm else PREVIEW_FAILED
                     )
+                    outcome_kind = (
+                        video_outcome(exc)
+                        if isinstance(exc, UnpublishedUnavailable) and not confirm
+                        else ""
+                    )
+                    self.video_waiting = outcome_kind == "waiting"
+                    self.needs_help = outcome_kind == "help"
+                    if self.video_waiting:
+                        self.error = ""
         else:
             async with self:
                 if (
@@ -1267,6 +1731,7 @@ class PromotionState(rx.State):
                         self.success = outcome.message if outcome.status == "active" else ""
                         self.confirm_charge = False
                     elif form.enhancements == self.form.enhancements:
+                        self.video_waiting = False
                         self.review = prepared
                         self.checks = prepared.checks
                         self.confirm_charge = False
@@ -1274,3 +1739,31 @@ class PromotionState(rx.State):
             async with self:
                 if context == await self._session() and operation == self._operation:
                     self.busy = False
+
+
+def _unpublished_defaults(
+    source: PromotionSourceVM, single_source: bool = False
+) -> dict[str, str | bool]:
+    """Prefill a piece's own pair: its first 4:5 and 9:16 files and, for videos, the
+    first image of each format as the cover. Everything stays visible and changeable.
+    A story ad (m-25026350) uses only the 9:16 file; a single source is not a step."""
+    if not source.media_kind:
+        return {}
+
+    def first(rows: list) -> str:
+        return rows[0].id if rows else ""
+
+    return {
+        "media_kind": source.media_kind,
+        "single_feed": len(source.feed_media) == 1,
+        "single_vertical": len(source.vertical_media) == 1,
+        "feed_asset_id": first(source.feed_media),
+        "vertical_asset_id": first(source.vertical_media),
+        "feed_cover_id": first(source.feed_covers),
+        "vertical_cover_id": first(source.vertical_covers),
+        "message": source.default_message,
+        "headline": source.default_headline,
+        "country": source.default_country,
+        "story": source.story,
+        "single_source": single_source and source.story,
+    }

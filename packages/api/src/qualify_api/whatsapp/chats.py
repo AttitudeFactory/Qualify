@@ -47,8 +47,10 @@ assigned to another tenant's user.
   `media_kind`. An outbound row never `has_media` (we sent the link/id, we do not
   re-serve it here).
 - **Previews** name the kind: «[imagen]», «[audio]», «[video]», «[documento]»,
-  «[sticker]», «[ubicación]», «[contacto]», «[pedido]»… (`MEDIA_PREVIEWS`); a caption is
-  stored as `text`, so a captioned photo previews as its caption.
+  «[sticker]», «[ubicación]», «[contacto]»… (`MEDIA_PREVIEWS`); a caption is
+  stored as `text`, so a captioned photo previews as its caption. A catalog cart
+  (inbound `type = "order"`, stored as `media_type = 'order'` — it is in 0061's list)
+  previews as «Pedido desde tu catálogo» (m-25018684).
 - **The bytes** go through a `MediaLocator`; production's is
   `whatsapp.media.CapturingMediaLocator` (download from Meta on first request, copy to
   R2, serve through the public-media token). Its outcomes are the exceptions below,
@@ -75,6 +77,13 @@ from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import text
 
+from qualify_api.inbox.awaiting import (
+    AutomationSend,
+    MessageFact,
+    ThreadSnapshot,
+    awaiting_reply_sql,
+    awaits_reply,
+)
 from qualify_api.tenancy.acting import require_acting_member
 from qualify_api.whatsapp.client import (
     MAX_BUTTONS,
@@ -104,7 +113,7 @@ MEDIA_PREVIEWS: Final[dict[str, str]] = {
     "contacts": "[contacto]",
     "button": "[botón]",
     "interactive": "[respuesta]",
-    "order": "[pedido]",
+    "order": "Pedido desde tu catálogo",
     "template": "[plantilla]",
 }
 GENERIC_PREVIEW: Final = "[mensaje]"
@@ -252,6 +261,9 @@ class ThreadRecord:
     last_message_direction: str | None
     unread_count: int
     automation_paused_at: datetime | None
+    # m-25017859: the «Por responder» rule's verdict (`inbox.awaiting`), computed in the
+    # list statement — what «Sin leer» must list so it matches the menu counter.
+    awaiting_reply: bool = False
 
 
 @dataclass(frozen=True)
@@ -295,6 +307,8 @@ class ThreadSummary:
     assigned_agent_id: UUID | None
     automation_paused: bool
     window: WindowView
+    # m-25017859: `ThreadRecord.awaiting_reply` — the rule the menu counter counts.
+    awaiting_reply: bool = False
 
 
 def message_preview(text_value: str | None, media_kind: str | None) -> str:
@@ -327,6 +341,7 @@ def _summarize(record: ThreadRecord, now: datetime) -> ThreadSummary:
         assigned_agent_id=record.assigned_agent_id,
         automation_paused=record.automation_paused_at is not None,
         window=WindowView(open=window.is_open, closes_at=window.closes_at),
+        awaiting_reply=record.awaiting_reply,
     )
 
 
@@ -414,7 +429,8 @@ SELECT t.id, t.connection_id, t.external_thread_id AS wa_id, t.status, t.assigne
                     FROM messages o
                    WHERE o.thread_id = t.id AND o.direction = 'outbound'
                      AND o.deleted_at IS NULL),
-                 CAST('-infinity' AS timestamptz))) AS unread_count
+                 CAST('-infinity' AS timestamptz))) AS unread_count,
+       {awaiting} AS awaiting_reply
   FROM threads t
   LEFT JOIN whatsapp_thread_state s ON s.thread_id = t.id
   LEFT JOIN LATERAL (
@@ -437,6 +453,9 @@ SELECT t.id, t.connection_id, t.external_thread_id AS wa_id, t.status, t.assigne
     u_instant=_INSTANT.format(m="u"),
     o_instant=_INSTANT.format(m="o"),
     m_instant=_INSTANT.format(m="m"),
+    # m-25017859: the ONE «Por responder» rule, as a column (judged at the database's
+    # `now()`); like the other per-row subqueries, Postgres evaluates it after the LIMIT.
+    awaiting=awaiting_reply_sql("t"),
     filters="{filters}",
 )
 
@@ -569,6 +588,7 @@ class PostgresChatRepository:
                 last_message_direction=r.last_direction,
                 unread_count=int(r.unread_count),
                 automation_paused_at=r.automation_paused_at,
+                awaiting_reply=bool(r.awaiting_reply),
             )
             for r in rows
         ]
@@ -819,6 +839,21 @@ class MemoryChatRepository:
             last_message_direction=last.direction if last else None,
             unread_count=unread,
             automation_paused_at=state.automation_paused_at if state else None,
+            awaiting_reply=awaits_reply(self._snapshot(thread, state), datetime.now(UTC)),
+        )
+
+    def _snapshot(self, thread: MemoryThread, state: MemoryThreadState | None) -> ThreadSnapshot:
+        """The rule's facts in memory. No outbox here: every outbound reads as a person's
+        reply, and there are no automatic sends — enough for the fakes' callers."""
+        rows = [m for m in self.messages if m.thread_id == thread.id]
+        no_sends: tuple[AutomationSend, ...] = ()
+        return ThreadSnapshot(
+            status=thread.status,
+            channel=thread.channel,
+            last_inbound_at=thread.last_inbound_at,
+            messages=tuple(MessageFact(m.direction, m.posted_at, hidden=m.deleted) for m in rows),
+            automation_sends=no_sends,
+            handed_to_person=bool(state and state.automation_paused_at),
         )
 
     def list_threads(

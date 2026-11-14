@@ -36,8 +36,11 @@ this content go" — verified against Meta's IG User Media reference
 - a carousel (2–10 images/videos) → Publicación only (a story is one item; a reel cannot
   live in a carousel).
 
-A video story longer than 60 s is refused by Meta; the duration is not stored, so that
-limit is a warning, never a block. With a destination, `evaluate` derives the
+A video story longer than 60 s is refused by Meta. That limit is a warning, never a block
+(m-25026481): when the video's length is known (`image_assets.params.duration_seconds`, read
+by the planner readers into `video_seconds`), Historia warns only a video that is really
+too long, naming its length; when it is unknown, every video Historia carries the generic
+caution. With a destination, `evaluate` derives the
 `media_product_type` from it and the media's shape; without one (an event whose POST
 could not be backfilled), the category/port rule above still applies.
 
@@ -51,8 +54,10 @@ What this does NOT decide, on purpose (QUA-109/110 contract gaps, recorded in QU
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Any
 from uuid import UUID
 
 from qualify_creative.enums import PostCategory
@@ -72,6 +77,7 @@ from qualify_api.publishing.client import (
     MEDIA_TYPE_STORIES,
     MEDIA_TYPE_VIDEO,
 )
+from qualify_api.publishing.platforms import PLATFORM_INSTAGRAM, PUBLISHABLE_PLATFORMS
 from qualify_api.publishing.service import MAX_CAROUSEL_ITEMS, MEDIA_TYPE_CAROUSEL
 from qualify_api.stock.keys import is_stock_key
 
@@ -113,9 +119,10 @@ _PORT_PRODUCT_TYPE: dict[str, tuple[str, frozenset[str]]] = {
 OUTPUT_PORTS: tuple[str, ...] = tuple(_PORT_PRODUCT_TYPE)
 
 # Channels the Planificador can publish to. TikTok scheduled publishing is blocked by the
-# platform (ADR 23c) and Facebook has no publisher: only Instagram today (QUA-118).
-PLATFORM_INSTAGRAM = "instagram"
-SCHEDULABLE_PLATFORMS: frozenset[str] = frozenset({PLATFORM_INSTAGRAM})
+# platform (ADR 23c) and Facebook has no publisher: only Instagram today (QUA-118). The set
+# itself lives in `publishing.platforms` (one source of truth with «Publicar», 2026-11-12);
+# this name is an alias kept for the existing importers.
+SCHEDULABLE_PLATFORMS: frozenset[str] = PUBLISHABLE_PLATFORMS
 
 REASON_TEXT: Mapping[UnpublishableReason, str] = {
     R.POST_NOT_FOUND: "La publicación ya no existe.",
@@ -175,14 +182,79 @@ STORY_VIDEO_WARNING = (
     "Una Historia de video puede durar como máximo 60 segundos. Si este video es más "
     "largo, Instagram la rechazará al publicar."
 )
+#: The video's length is known and over the limit (m-25026481): `{duration}` is
+#: `format_video_duration`'s «1 min 25 s».
+STORY_VIDEO_TOO_LONG_WARNING = (
+    "Este video dura {duration} y una Historia admite hasta 1 minuto: Instagram la "
+    "rechazará. Elige Reel o sube un video más corto."
+)
 STORY_CAPTION_NOTE = "Las historias no muestran el texto de la publicación."
+
+# Meta's limit for a video story (IG User Media, "Story video": 60 s max).
+STORY_VIDEO_MAX_SECONDS = 60
+# A phone clip recorded to exactly one minute often reads 60.02–60.4 s in its container
+# (audio/video track padding, the last frame's duration), and the probe reports that raw
+# figure. Calling such a clip "too long" would be a false alarm on the most common case,
+# so a video counts as over the limit (the specific warning, `story_video_too_long`) only
+# beyond this tolerance. Inside it — over 60 s, up to 60 s + tolerance — nothing proves Meta
+# takes the clip either, so it is not silent: it gets the generic `STORY_VIDEO_WARNING`.
+STORY_VIDEO_TOLERANCE_SECONDS = 0.5
+
+
+def video_seconds_of(value: Any) -> float | None:
+    """A stored video length (`image_assets.params.duration_seconds`: a JSON number, or a
+    numeric string as some pipelines write it) as seconds, or None when absent, not a
+    number, not finite or not positive. `params` is JSON written by several pipelines,
+    so nothing about it is assumed."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return None
+    return seconds if math.isfinite(seconds) and seconds > 0 else None
+
+
+def story_video_too_long(video_seconds: float | None) -> bool:
+    """True when the video's length is KNOWN and over Meta's story limit (beyond the
+    tolerance). Unknown (None, ≤ 0, not finite) is never "too long": the selector then
+    shows the generic caution instead."""
+    seconds = video_seconds_of(video_seconds)
+    return seconds is not None and seconds > (
+        STORY_VIDEO_MAX_SECONDS + STORY_VIDEO_TOLERANCE_SECONDS
+    )
+
+
+def format_video_duration(seconds: float) -> str:
+    """A video's length as the owner reads it: «59 s», «1 min», «1 min 25 s», «2 min 5 s».
+    Rounded to the whole second (half up)."""
+    total = max(0, int(math.floor(seconds + 0.5)))
+    minutes, rest = divmod(total, 60)
+    if minutes == 0:
+        return f"{rest} s"
+    if rest == 0:
+        return f"{minutes} min"
+    return f"{minutes} min {rest} s"
+
+
+def _story_video_warning(video_seconds: float | None) -> str:
+    seconds = video_seconds_of(video_seconds)
+    if seconds is None:
+        return STORY_VIDEO_WARNING
+    if story_video_too_long(seconds):
+        return STORY_VIDEO_TOO_LONG_WARNING.format(duration=format_video_duration(seconds))
+    if seconds > STORY_VIDEO_MAX_SECONDS:  # the grey zone of the tolerance: maybe refused
+        return STORY_VIDEO_WARNING
+    return ""
 
 
 @dataclass(frozen=True)
 class DestinationOption:
     """One button of «¿Dónde quieres publicarlo?». `offered=False` → not shown at all
     (a video has no separate «Publicación»); `reason` says why an offered one is off;
-    `warning` is what Meta may still refuse that cannot be checked here."""
+    `warning` is what Meta may still refuse at publish time: a check made here that only
+    warns (a video Historia over 60 s, m-25026481) or a limit that cannot be checked
+    because the input is unknown (a video whose length is not stored)."""
 
     destination: str
     offered: bool
@@ -216,10 +288,19 @@ def feed_ratio_ok(image_size: tuple[int, int] | None) -> bool:
 
 
 def destination_options(
-    media_types: tuple[str, ...], image_size: tuple[int, int] | None = None
+    media_types: tuple[str, ...],
+    image_size: tuple[int, int] | None = None,
+    *,
+    video_seconds: float | None = None,
 ) -> tuple[DestinationOption, ...]:
     """Where content of this shape may go, in the selector's order (Publicación, Reel,
-    Historia). `media_types` is the publisher's vocabulary (IMAGE / VIDEO)."""
+    Historia). `media_types` is the publisher's vocabulary (IMAGE / VIDEO).
+
+    `video_seconds` (m-25026481) is the single video's stored length: unknown → Historia
+    carries the generic `STORY_VIDEO_WARNING`; ≤ 60 s → no warning; over 60 s but within
+    the tolerance → the generic warning too; beyond it → `STORY_VIDEO_TOO_LONG_WARNING`
+    with the length. Historia stays
+    available either way (a warning, never a block). Images and carousels ignore it."""
     shape = _shape(media_types)
     post = DestinationOption(DESTINATION_POST, True, False, DESTINATION_WHY["no_shape"])
     reel = DestinationOption(DESTINATION_REEL, True, False, DESTINATION_WHY["no_shape"])
@@ -236,7 +317,9 @@ def destination_options(
     elif shape == "video":
         post = DestinationOption(DESTINATION_POST, False, False)
         reel = DestinationOption(DESTINATION_REEL, True, True)
-        story = DestinationOption(DESTINATION_STORY, True, True, warning=STORY_VIDEO_WARNING)
+        story = DestinationOption(
+            DESTINATION_STORY, True, True, warning=_story_video_warning(video_seconds)
+        )
     elif shape == "carousel":
         post = DestinationOption(DESTINATION_POST, True, True)
         reel = DestinationOption(

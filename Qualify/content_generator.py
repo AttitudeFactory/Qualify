@@ -22,21 +22,26 @@ import reflex as rx
 
 from . import clip_gallery_vm, part_editor_vm, reel_parts_vm, reel_wait_vm
 from .ask_more_ui import ask_more_block
+from .audience_view import audience_question
 from .campaign_provider import COLOR_LABELS, NEW_CAMPAIGN, NO_CAMPAIGN
 from .catalog_vm import ADD_PRODUCT_LABEL, CREATE_RETURN_PATH, new_product_href
 from .creative_state import (
     _INSPIRATION_TARGETS,
     _NO_CATALOG_TARGETS,
     _OWN_HITS_TARGETS,
+    CLIP_SOURCE_TABS,
+    CONTEXT_FIELD_ID,
     DURATIONS,
     INSPIRATION_PLACEHOLDERS,
     INSPIRATION_SLOT_LIMITS,
+    MEDIA_DRAWER_CLIP,
+    MEDIA_DRAWER_PRODUCT,
     PINTEREST_IMAGE_TARGETS,
+    PRODUCT_ROW_ID,
     REEL_PART_CARD_ID,
     REEL_PART_UNDO_ID,
     REEL_WAIT_HEARTBEAT_MS,
     SLIDE_SECONDS,
-    STOCK_MAX_PICKS,
     CreativeState,
     _own_key,
 )
@@ -69,6 +74,8 @@ from .part_progress_vm import (
     PARTS_KIND_LABEL,
 )
 from .parts_start_view import parts_empty_notice, parts_start_card
+from .photo_upload_vm import CUT_CONNECTION_HINT, PHOTO_ACCEPT
+from .picker_tabs import upload_host_id
 from .post_card import color_swatches
 from .r2_media import BACKEND_BASE
 from .reels_ideas_vm import IDEAS_BACK_LABEL
@@ -78,6 +85,7 @@ from .ui import (
     card,
     choice_card,
     choice_card_check,
+    drawer,
     dropzone,
     empty_state,
     expandable_text,
@@ -87,12 +95,12 @@ from .ui import (
     progress_panel,
     removable_pill,
     skeleton_card,
-    skeleton_rows,
     tag,
 )
 from .ui import tokens as T
 from .ui.clip_player import clip_player, clip_player_notice, clip_player_script
 from .ui.steps import step_foot, step_frame, step_head, step_sync
+from .upload_images import PHOTO_MAX_BYTES
 from .variations_state import VariationsState
 from .variations_view import variations_view
 
@@ -136,7 +144,8 @@ def _field_label(text: str | rx.Var, hint: str | None = None) -> rx.Component:
     )
 
 
-_IMAGE_ACCEPT = {"image/*": [".png", ".jpg", ".jpeg", ".webp"]}
+#: m-25017273: JPG, PNG, WEBP and the iPhone's HEIC/HEIF (converted to JPEG on the server)
+_IMAGE_ACCEPT = PHOTO_ACCEPT
 
 
 def _help(title: str, text: str) -> rx.Component:
@@ -364,7 +373,8 @@ def _kind_picker() -> rx.Component:
 def _options_panel() -> rx.Component:
     """The side panel, the full height of the screen beside the views (§ request
     2026-10-14); on a phone, on top of them (`.q-cr-options`). Inert while a piece
-    generates."""
+    generates. Deivid 2026-11-13: «Producto» (and «Elegir producto») under «¿Qué
+    creamos?» and the month's creations, right above the options."""
     return rx.box(
         card(
             rx.vstack(
@@ -424,6 +434,8 @@ def _options_panel() -> rx.Component:
                     align_items="start",
                     display=rx.breakpoints({"0px": "none", "900px": "flex"}),
                 ),
+                # Deivid 2026-11-13 (round 9): «Producto» right above the options
+                _product_chip(),
                 rx.box(
                     _kind_picker(),
                     id="create-kind-options",
@@ -435,7 +447,6 @@ def _options_panel() -> rx.Component:
                         }
                     ),
                 ),
-                _product_chip(),
                 spacing="3",
                 width="100%",
                 align_items="start",
@@ -635,27 +646,7 @@ def _reference_body() -> rx.Component:
                 align_items="start",
             ),
         ),
-        _media_picker(
-            "reference",
-            dropzone(
-                rx.vstack(
-                    rx.icon("clapperboard", size=T.ICON_LG, color=T.TEXT_FAINT),
-                    rx.text("Arrastra tu clip o elígelo", size="2", weight="medium"),
-                    rx.text("MP4, MOV o WEBM · hasta 200 MB", size="1", color=T.TEXT_MUTED),
-                    align="center",
-                    spacing="1",
-                ),
-                upload_id="reference_video",
-                accept=_VIDEO_ACCEPT,
-                max_files=1,
-                max_size=_REFERENCE_MAX_BYTES,
-                on_drop=CreativeState.handle_reference_upload(
-                    rx.upload_files(upload_id="reference_video")
-                ),
-                width="100%",
-            ),
-            media_type="video",
-        ),
+        _slot_open_button("reference"),
         _upload_error(),
         spacing="4",
         width="100%",
@@ -879,7 +870,7 @@ def _catalog_picker_tile(
     """A file of the chosen product in a slot's «Galería» / «Inspiración» tab. A stock
     product's files live in R2 (`piece_views` maps them, a video to its POSTER), a
     catalog product's in the upload store."""
-    label = rx.cond(CreativeState.product_source == "stock", "Inspiración", "De la Galería")
+    label = "De tu producto"
     if image:
         return _picker_tile(_key_src(key), _key_has(key), selected, on_select, "image", label)
     src = _product_video_src(key)
@@ -1119,51 +1110,127 @@ def _inspiration_search_body(target: str, image: bool | None) -> rx.Component:
     )
 
 
-def _picker_tabs(target: str, tab: rx.Var[str], *, uploads: bool = True) -> rx.Component:
-    """The slot's sources. With a stock product, «Galería» becomes «Inspiración» (the
-    stock picked) and a «Galería» beside it brings the brand's catalog (§ request
-    2026-10-19). No «Stock» tab: stock is chosen once, as the inspiration."""
+#: m-24985141 (Deivid): a picker's sources, in this order — the same in the Clip's drawer
+#: and in every slot's.
+PICKER_TAB_LABELS = {
+    "catalog": "Tus productos",
+    "gallery": "Tu Galería",
+    "upload": "Subir",
+    "pieces": "Publicaciones",
+    "inspiration": "Inspiración",
+    "pinterest": "Pinterest",
+}
 
-    from .picker_tabs import reveal_picker_tab_script
 
-    def control(*items: tuple[str, str]) -> rx.Component:
-        return rx.box(
-            rx.segmented_control.root(
-                *(
-                    rx.segmented_control.item(label, value=value, min_height="44px")
-                    for value, label in items
-                ),
-                value=tab,
-                on_change=lambda value: CreativeState.set_picker_tab(target, value),
-                size="1",
-                aria_label="De dónde viene",
-                class_name="q-seg-fit",
-                min_width="max-content",
-                min_height="44px",
+#: The sources' menu (m-24985141, Deivid 2026-11-13, round 7): the kit's `lq-segmented`
+#: (Radix segmented control + the «Liquid Glass: Radix skin»), icon and text.
+#: `.q-source-seg` (assets/qualify.css) is its width rule: tracks sized to their content
+#: and the row's width — never `min-width: max-content` — and an option not chosen shows
+#: its icon only (its name in `aria-label` and `title`), so the five fit a 375 px phone
+#: and the 512 px drawer whole: no sideways scroll, no cut label.
+SOURCE_TABS_CLASS = "q-source-seg"
+SOURCE_TAB_ICONS = {
+    "catalog": "package",
+    "gallery": "images",
+    "upload": "upload",
+    "pieces": "layout-grid",
+    "inspiration": "sparkles",
+    "pinterest": "pin",
+}
+
+
+def _source_tabs(
+    items: list[str],
+    value: rx.Var[str],
+    on_change: object,
+    control_id: str,
+    *,
+    upload_host: str = "",
+) -> rx.Component:
+    """The sources as the design system's segmented menu (`lq-segmented`) with an icon
+    and its name; the chosen one shows both, the others their icon (`.q-source-seg`).
+    Radix's radios: arrows move, `aria-checked`, the kit's focus ring; 44 px tall.
+    `upload_host`: the always-mounted «Subir» zone (m-25017273) — a tap on «Subir» opens
+    the file picker at once (`open_upload_picker_script`)."""
+    from .picker_tabs import open_upload_picker_script
+
+    return rx.box(
+        rx.segmented_control.root(
+            *(
+                rx.segmented_control.item(
+                    rx.icon(SOURCE_TAB_ICONS[v], size=16, aria_hidden="true"),
+                    rx.el.span(PICKER_TAB_LABELS[v], class_name="q-source-seg__text"),
+                    value=v,
+                    min_height="44px",
+                    aria_label=PICKER_TAB_LABELS[v],
+                    title=PICKER_TAB_LABELS[v],
+                    custom_attrs={"data-picker-tab": v},
+                )
+                for v in items
             ),
-            width="100%",
-            max_width="100%",
-            min_width="0",
-            overflow_x="auto",
-            id=f"picker-tabs-{target}",
-            on_mount=rx.call_script(reveal_picker_tab_script(f"picker-tabs-{target}")),
-        )
-
-    # UI-3 round 13: the clip's gallery has its own drop zone — no «Subir» in its picker
-    pinterest = (("pinterest", "Pinterest"),) if target in PINTEREST_IMAGE_TARGETS else ()
-    rest = ((("upload", "Subir"),) if uploads else ()) + (("pieces", "Publicaciones"),) + pinterest
-    # with a catalog product, «Inspiración» searches — only where the licence lets stock
-    # go (`_INSPIRATION_TARGETS`): never the product photos nor the avatar's reference
-    search = (("inspiration", "Inspiración"),) if target in _INSPIRATION_TARGETS else ()
-    # a background or a motion reference is not a product: no catalog tab there
-    no_catalog = target in _NO_CATALOG_TARGETS
-    brand = () if no_catalog else (("brandcat", "Galería"),)
-    own = () if no_catalog else (("catalog", "Galería"),)
-    return rx.cond(
-        CreativeState.product_source == "stock",
-        control(("catalog", "Inspiración"), *brand, *rest),
-        control(*own, *search, *rest),
+            value=value,
+            on_change=on_change,
+            size="2",
+            aria_label="De dónde viene",
+            class_name=SOURCE_TABS_CLASS,
+        ),
+        width="100%",
+        min_width="0",
+        id=control_id,
+        on_mount=(
+            rx.call_script(open_upload_picker_script(control_id, upload_host))
+            if upload_host
+            else None
+        ),
     )
+
+
+def _picker_tabs(target: str, tab: rx.Var[str], *, uploads: bool = True) -> rx.Component:
+    """The slot's sources: «Tus productos · Tu Galería · Subir · Publicaciones ·
+    Inspiración» (m-24985141) — Pinterest lives inside «Inspiración». A background or a
+    motion reference is not a product: no «Tus productos» there."""
+    items = [
+        *(() if target in _NO_CATALOG_TARGETS else ("catalog",)),
+        "gallery",
+        *(("upload",) if uploads else ()),
+        "pieces",
+        *(("inspiration",) if target in _INSPIRATION_TARGETS else ()),
+    ]
+    return _source_tabs(
+        items,
+        tab,
+        lambda value: CreativeState.set_picker_tab(target, value),
+        f"picker-tabs-{target}",
+        upload_host=upload_host_id(target) if uploads else "",
+    )
+
+
+def _pinterest_block(target: str) -> rx.Component:
+    """Pinterest, inside «Inspiración» (m-24985141: five tabs, no sixth): a button that
+    opens the boards here, and the boards."""
+    from .pinterest_ui import pinterest_picker
+
+    return rx.vstack(
+        rx.button(
+            rx.icon("pin", size=T.ICON_SM),
+            "Buscar en Pinterest",
+            variant="soft",
+            color_scheme="gray",
+            size="3",
+            min_height="44px",
+            on_click=CreativeState.open_pinterest(target),
+        ),
+        pinterest_picker(target),
+        spacing="3",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _with_pinterest(target: str, search: rx.Component) -> rx.Component:
+    if target not in PINTEREST_IMAGE_TARGETS:
+        return search
+    return rx.vstack(search, _pinterest_block(target), spacing="4", width="100%")
 
 
 def _pinterest_source_links(target: str) -> rx.Component:
@@ -1183,25 +1250,251 @@ def _pinterest_source_links(target: str) -> rx.Component:
     )
 
 
-def _media_picker(
+def _upload_tab(target: str, tab: rx.Var[str], upload: rx.Component) -> rx.Component:
+    """«Subir»'s drop zone, mounted whatever tab is open and shown only on «Subir»
+    (m-25017273): its file input must exist at the very tap on «Subir», which opens the
+    picker at once (`open_upload_picker_script`) — no second tap on the zone."""
+    return rx.box(
+        upload,
+        id=upload_host_id(target),
+        display=rx.cond(tab == "upload", "block", "none"),
+        width="100%",
+    )
+
+
+def _product_files(tiles: list[rx.Component], has: rx.Var[bool], noun: str) -> rx.Component:
+    """Under «Tus productos»: the chosen product's own files, to tick into the slot."""
+    return rx.cond(
+        CreativeState.selected_product_id != "",
+        rx.vstack(
+            rx.text(
+                "Fotos y videos de " + CreativeState.brief_product_ref,
+                size="2",
+                weight="medium",
+            ),
+            rx.cond(
+                has,
+                rx.flex(*tiles, wrap="wrap", spacing="2"),
+                _picker_note(f"El producto que elegiste no tiene {noun}."),
+            ),
+            spacing="2",
+            width="100%",
+            align_items="start",
+        ),
+    )
+
+
+def _products_tab(files: rx.Component | None = None) -> rx.Component:
+    """«Tus productos» (m-24985141): a tap makes it THE product of the publication — its
+    name and its real photos go in —, one at a time, changed or taken out here. With no
+    product the list comes first; with one, its photos for this slot come first (`files`)
+    and the list to change it after (round 11)."""
+    chosen = CreativeState.selected_product_id != ""
+    status = rx.cond(
+        chosen,
+        rx.hstack(
+            rx.icon("circle-check", size=T.ICON_SM, color=T.tone_color("accent", 11)),
+            rx.text(
+                "Producto de la publicación: ",
+                rx.text.strong(CreativeState.brief_product_ref),
+                size="2",
+                flex="1",
+                min_width="0",
+                overflow_wrap="anywhere",
+            ),
+            rx.button(
+                "Quitar el producto",
+                variant="ghost",
+                color_scheme="gray",
+                size="3",
+                min_height="44px",
+                on_click=CreativeState.remove_catalog_product,
+            ),
+            align="center",
+            width="100%",
+            flex_wrap="wrap",
+            spacing="2",
+        ),
+        rx.text(
+            "Es opcional: sin producto, la publicación se hace con tu marca.",
+            size="1",
+            color=T.TEXT_MUTED,
+        ),
+    )
+    add = rx.link(
+        rx.button(
+            rx.icon("plus", size=T.ICON_SM),
+            ADD_PRODUCT_LABEL,
+            variant="ghost",
+            size="3",
+            min_height="44px",
+        ),
+        href=new_product_href(CREATE_RETURN_PATH),
+    )
+    files = files if files is not None else rx.fragment()
+    return rx.cond(
+        chosen,
+        rx.vstack(
+            files,
+            status,
+            _product_change_note(),
+            rx.text("Cambiar de producto", size="2", weight="medium"),
+            _catalog_product_grid(),
+            add,
+            spacing="3",
+            width="100%",
+            align_items="start",
+        ),
+        rx.vstack(
+            # Deivid 2026-11-13: choosing the product is the first thing the drawer shows
+            _catalog_product_grid(),
+            status,
+            _product_change_note(),
+            add,
+            spacing="3",
+            width="100%",
+            align_items="start",
+        ),
+    )
+
+
+def _inline_product_files(files: rx.Component) -> rx.Component:
+    """«Tus productos» in a part's sheet: the chosen product's files only, and where to
+    change it — the side panel (never here: it would close the sheet)."""
+    return rx.vstack(
+        files,
+        rx.text(
+            rx.cond(
+                CreativeState.selected_product_id != "",
+                rx.fragment(
+                    "Producto de la publicación: ",
+                    rx.text.strong(CreativeState.brief_product_ref),
+                    ". Para cambiarlo, toca «Cambiar» en el panel.",
+                ),
+                "Elige el producto de tu publicación en el panel, en «Producto».",
+            ),
+            size="2",
+            color=T.TEXT_MUTED,
+        ),
+        spacing="3",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _product_change_note() -> rx.Component:
+    """After a product change: which photos left the references, and what of the new
+    one did not fit (m-24985141)."""
+    return rx.fragment(
+        rx.cond(
+            CreativeState.product_change_note != "",
+            rx.box(
+                callout(CreativeState.product_change_note, "info"),
+                role="status",
+                width="100%",
+            ),
+        ),
+        rx.cond(
+            CreativeState.product_seed_note != "",
+            rx.box(
+                callout(CreativeState.product_seed_note, "warn"),
+                role="status",
+                width="100%",
+            ),
+        ),
+    )
+
+
+def _product_confirm_dialog() -> rx.Component:
+    """«¿Cambiar el producto?» — a video's parts are planned, and a new product makes
+    them again (review 2026-11-13). The system's alert dialog: «Dejar como está» first
+    and on Esc, the verb second."""
+    return rx.alert_dialog.root(
+        rx.alert_dialog.content(
+            rx.alert_dialog.title(
+                rx.cond(
+                    CreativeState.product_confirm_removes,
+                    "¿Quitar el producto?",
+                    "¿Cambiar el producto?",
+                ),
+                size="4",
+            ),
+            rx.alert_dialog.description(
+                rx.cond(
+                    CreativeState.product_confirm_removes,
+                    "Las partes de tu video se borran y las vuelves a pedir sin producto.",
+                    "Las partes de tu video se borran y las vuelves a pedir con el producto nuevo.",
+                ),
+                size="2",
+            ),
+            rx.flex(
+                rx.alert_dialog.cancel(
+                    rx.button(
+                        "Dejar como está",
+                        variant="soft",
+                        color_scheme="gray",
+                        size="3",
+                        min_height="44px",
+                    ),
+                ),
+                rx.alert_dialog.action(
+                    rx.button(
+                        rx.cond(
+                            CreativeState.product_confirm_removes,
+                            "Quitar producto",
+                            "Cambiar producto",
+                        ),
+                        size="3",
+                        min_height="44px",
+                        on_click=CreativeState.confirm_product_change,
+                    ),
+                ),
+                gap="0.75rem",
+                justify="end",
+                wrap="wrap",
+                margin_top="1rem",
+            ),
+            max_width="28rem",
+        ),
+        open=CreativeState.product_confirm != "",
+        on_open_change=CreativeState.set_product_confirm_open,
+    )
+
+
+def media_picker_inline(
     target: str, upload: rx.Component, *, media_type: str = "image", uploads: bool = True
 ) -> rx.Component:
-    """A slot's sources: the chosen product's files (the stock inspiration's, when it
-    came from stock — then the brand's catalog is a tab of its own), inspiration to
-    search where the licence lets stock go, an upload (the slot's own drop zone,
-    `upload`) and the brand's pieces. A tile is ticked while the slot holds it; a click
-    puts it in or takes it out (`CreativeState.pick_media`)."""
-    from .pinterest_ui import pinterest_picker
+    """A slot's selector IN LINE — what the media drawer shows, and what a sheet that is
+    already a drawer (UI-4's part sheet) embeds instead of opening a second one (one
+    drawer at a time, never nested). «Tu Galería» then carries its own «Agregar»."""
+    return _media_picker(target, upload, media_type=media_type, uploads=uploads, inline=True)
+
+
+def _media_picker(
+    target: str,
+    upload: rx.Component,
+    *,
+    media_type: str = "image",
+    uploads: bool = True,
+    inline: bool = False,
+) -> rx.Component:
+    """A slot's sources (m-24985141): «Tus productos» (choose THE product; its files
+    for this slot under it), «Tu Galería» (the business's and the products' photos and
+    videos, added with «Agregar»), an upload (`upload`), the brand's pieces, inspiration
+    to search where the licence lets stock go, Pinterest where it applies. A tile is
+    ticked while the slot holds it; a click puts it in or takes it out
+    (`CreativeState.pick_media`). `inline`: not inside the media drawer (the Galería's
+    «Agregar» goes with it)."""
+    from .gen_gallery_pick_page import gallery_tab
 
     image = media_type == "image"
     tab = CreativeState.picker_tab_view[target].to(str)
     if not uploads:
-        # no «Subir» tab here: a slot that would open on it opens on «Galería»
+        # no «Subir» tab here: a slot that would open on it opens on «Tus productos»
         tab = rx.cond(tab == "upload", "catalog", tab).to(str)
     held = CreativeState.picker_selected[target].to(list[str])
     icon = "image" if image else "film"
     noun = "fotos" if image else "videos"
-    stock = CreativeState.product_source == "stock"
     catalog = CreativeState.product_photo_keys if image else CreativeState.product_video_keys
     pieces = CreativeState.piece_images if image else CreativeState.piece_videos
 
@@ -1213,54 +1506,11 @@ def _media_picker(
             ),
         )
     ]
-    has_product_files = catalog.length() > 0
-    searchable = target in (*_INSPIRATION_TARGETS, "products")
-    catalog_tab = rx.cond(
-        has_product_files,
-        rx.flex(*product_tiles, wrap="wrap", spacing="2"),
-        _picker_note(
-            rx.cond(
-                stock,
-                f"Tu inspiración no tiene {noun}: búscalas en la Galería o súbelas.",
-                rx.cond(
-                    CreativeState.selected_product_id != "",
-                    f"El producto que elegiste no tiene {noun} en la Galería.",
-                    f"Elige un producto de la Galería al empezar y sus {noun} aparecen aquí.",
-                ),
-            )
-        ),
-    )
-    brand_files = (
-        CreativeState.brand_catalog_photos if image else CreativeState.brand_catalog_videos
-    )
-
-    def brand_tile(item: rx.Var[dict[str, str]]) -> rx.Component:
-        key = item["key"]
-        on_select = CreativeState.pick_media(target, "brandcat", key)
-        if image:
-            return _picker_tile(
-                _key_src(key), key != "", held.contains(key), on_select, icon, item["name"]
-            )
-        return _picker_video_tile(
-            key, None, rx.get_upload_url(key), held.contains(key), on_select, item["name"]
-        )
-
-    brandcat_tab = rx.cond(
-        CreativeState.catalog_loading,
-        _picker_note("Cargando tu Galería…"),
-        rx.cond(
-            brand_files.length() > 0,
-            rx.flex(
-                rx.foreach(brand_files, brand_tile),
-                wrap="wrap",
-                spacing="2",
-                max_height="18rem",
-                overflow_y="auto",
-                width="100%",
-            ),
-            _picker_note(f"Tu Galería aún no tiene {noun}."),
-        ),
-    )
+    files = _product_files(product_tiles, catalog.length() > 0, noun)
+    # review 2026-11-13 (blocker): in a part's sheet, «Tus productos» only shows the
+    # chosen product's files — changing THE product there would close the sheet and lose
+    # the draft (or a plan made without a reel)
+    catalog_tab = _inline_product_files(files) if inline else _products_tab(files)
     pieces_tab = rx.cond(
         CreativeState.pieces_loading,
         _picker_note("Cargando tus publicaciones…"),
@@ -1287,28 +1537,23 @@ def _media_picker(
             _picker_note(f"Aún no tienes publicaciones con {noun}."),
         ),
     )
-    if target == "background":
-        # a stock product: its picks, then the search for more — only for a background
-        # (§ 2026-10-19: elsewhere «Inspiración» keeps to what was picked on the product
-        # screen, no new search)
-        catalog_tab = rx.vstack(
-            catalog_tab,
-            rx.cond(stock, _inspiration_search(target, image)),
-            spacing="3",
-            width="100%",
-            align_items="start",
-        )
+    searchable = target in _INSPIRATION_TARGETS
     return rx.vstack(
         _picker_tabs(target, tab, uploads=uploads),
         rx.match(
             tab,
             ("catalog", catalog_tab),
-            ("brandcat", brandcat_tab),
-            ("inspiration", _inspiration_search(target, image) if searchable else upload),
+            ("gallery", gallery_tab(inline=target if inline else "")),
+            (
+                "inspiration",
+                _with_pinterest(target, _inspiration_search(target, image))
+                if searchable
+                else rx.fragment(),
+            ),
             ("pieces", pieces_tab),
-            ("pinterest", pinterest_picker(target) if image else rx.fragment()),
-            upload if uploads else catalog_tab,
+            rx.fragment() if uploads else catalog_tab,
         ),
+        _upload_tab(target, tab, upload) if uploads else rx.fragment(),
         _pinterest_source_links(target) if image else rx.fragment(),
         spacing="2",
         width="100%",
@@ -1319,14 +1564,12 @@ def _media_picker(
 def _mixed_media_picker(target: str, upload: rx.Component) -> rx.Component:
     """A mixed slot's sources (§ request 2026-10-20: «cuando se quiera un video se junten
     … videos e imágenes»): the same tabs as `_media_picker`, each showing the images AND
-    the videos it has — the product's (catalog or inspiration), the brand's catalog, an
-    inspiration search, an upload and the pieces. A click sends the file to the slot of
-    its type (`CreativeState.pick_mixed_media`)."""
-    from .pinterest_ui import pinterest_picker
+    the videos it has. A click sends the file to the slot of its type
+    (`CreativeState.pick_mixed_media`)."""
+    from .gen_gallery_pick_page import gallery_tab
 
     tab = CreativeState.picker_tab_view[target].to(str)
     held = CreativeState.picker_selected[target].to(list[str])
-    stock = CreativeState.product_source == "stock"
 
     def pick(source: str, key: rx.Var[str], media: str) -> object:
         return CreativeState.pick_mixed_media(target, source, key, media)
@@ -1342,70 +1585,22 @@ def _mixed_media_picker(target: str, upload: rx.Component) -> rx.Component:
         )
 
     photos, videos = CreativeState.product_photo_keys, CreativeState.product_video_keys
-    catalog_tab = rx.cond(
-        (photos.length() + videos.length()) > 0,
-        tiles(
-            rx.foreach(
-                photos,
-                lambda key: _catalog_picker_tile(
-                    key, held.contains(key), pick("catalog", key, "image"), True
-                ),
-            ),
-            rx.foreach(
-                videos,
-                lambda key: _catalog_picker_tile(
-                    key, held.contains(key), pick("catalog", key, "video"), False
-                ),
+    product_tiles = [
+        rx.foreach(
+            photos,
+            lambda key: _catalog_picker_tile(
+                key, held.contains(key), pick("catalog", key, "image"), True
             ),
         ),
-        _picker_note(
-            rx.cond(
-                stock,
-                "Tu inspiración no tiene fotos ni videos: búscalos en la Galería o súbelos.",
-                rx.cond(
-                    CreativeState.selected_product_id != "",
-                    "El producto que elegiste no tiene fotos ni videos en la Galería.",
-                    "Elige un producto de la Galería al empezar y sus fotos y videos "
-                    "aparecen aquí.",
-                ),
-            )
+        rx.foreach(
+            videos,
+            lambda key: _catalog_picker_tile(
+                key, held.contains(key), pick("catalog", key, "video"), False
+            ),
         ),
-    )
-
-    def brand_photo(item: rx.Var[dict[str, str]]) -> rx.Component:
-        key = item["key"]
-        return _picker_tile(
-            _key_src(key),
-            key != "",
-            held.contains(key),
-            pick("brandcat", key, "image"),
-            "image",
-            item["name"],
-        )
-
-    def brand_video(item: rx.Var[dict[str, str]]) -> rx.Component:
-        key = item["key"]
-        return _picker_video_tile(
-            key,
-            None,
-            rx.get_upload_url(key),
-            held.contains(key),
-            pick("brandcat", key, "video"),
-            item["name"],
-        )
-
-    brand_photos, brand_videos = (
-        CreativeState.brand_catalog_photos,
-        CreativeState.brand_catalog_videos,
-    )
-    brandcat_tab = rx.cond(
-        CreativeState.catalog_loading,
-        _picker_note("Cargando tu Galería…"),
-        rx.cond(
-            (brand_photos.length() + brand_videos.length()) > 0,
-            tiles(rx.foreach(brand_photos, brand_photo), rx.foreach(brand_videos, brand_video)),
-            _picker_note("Tu Galería aún no tiene fotos ni videos."),
-        ),
+    ]
+    catalog_tab = _products_tab(
+        _product_files(product_tiles, (photos.length() + videos.length()) > 0, "fotos ni videos")
     )
 
     def piece(item: rx.Var[dict[str, str]], media: str) -> rx.Component:
@@ -1436,12 +1631,12 @@ def _mixed_media_picker(target: str, upload: rx.Component) -> rx.Component:
         rx.match(
             tab,
             ("catalog", catalog_tab),
-            ("brandcat", brandcat_tab),
-            ("inspiration", _inspiration_search(target, None)),
+            ("gallery", gallery_tab()),
+            ("inspiration", _with_pinterest(target, _inspiration_search(target, None))),
             ("pieces", pieces_tab),
-            ("pinterest", pinterest_picker(target)),
-            upload,
+            rx.fragment(),
         ),
+        _upload_tab(target, tab, upload),
         _pinterest_source_links(target),
         spacing="2",
         width="100%",
@@ -1456,9 +1651,17 @@ _CLIP_MAX_BYTES = 200 * 1024 * 1024
 
 
 def _clip_drop(
-    upload_id: str, label: str, hint: str, accept: dict, handler: object, *, max_files: int
+    upload_id: str,
+    label: str,
+    hint: str,
+    accept: dict,
+    handler: object,
+    *,
+    max_files: int,
+    on_rejected: object = None,
 ) -> rx.Component:
-    """A compact drop zone for one kind of clip input."""
+    """A compact drop zone for one kind of clip input. `on_rejected`: what the browser
+    refused (over 200 MB, another type) is said, never dropped in silence."""
     return dropzone(
         rx.vstack(
             rx.icon("upload", size=T.ICON_MD, color=T.TEXT_FAINT),
@@ -1470,9 +1673,10 @@ def _clip_drop(
         upload_id=upload_id,
         accept=accept,
         max_files=max_files,
-        multiple=max_files > 1,
+        multiple=max_files != 1,  # 0 = no cap: several files (re-review)
         max_size=_CLIP_MAX_BYTES,
         on_drop=handler(rx.upload_files(upload_id=upload_id)),  # type: ignore[operator]
+        **({"on_drop_rejected": on_rejected} if on_rejected is not None else {}),
         variant="compact",
         width="100%",
     )
@@ -1543,19 +1747,27 @@ def _removable(picture: rx.Component, on_remove: object, label: str) -> rx.Compo
     )
 
 
-def _clip_role_select(key: rx.Var[str], role: rx.Var[str]) -> rx.Component:
+def _clip_role_select(
+    key: rx.Var[str], role: rx.Var[str], on_change: object = None
+) -> rx.Component:
     """What a clip image is for (§ 2026-10-14: the prompt names it so) — «Producto»,
-    «Lugar» or «Estilo», kept in `clip_images[].role`. The strip's selector, and (UI-3
+    «Fondo» or «Estilo», kept in `clip_images[].role`. The strip's selector, and (UI-3
     round 9) the one under each held image in «Imágenes» while a reel's parts show."""
     return rx.select.root(
         rx.select.trigger(width="100%", min_height="44px", aria_label="Para qué es esta foto"),
         rx.select.content(
             rx.select.item("Producto", value="product"),
-            rx.select.item("Lugar", value="place"),
+            # m-24985141 round 13 (Deivid): the label says what it is — the role
+            # stored stays `place` (saved drafts, prompts)
+            rx.select.item("Fondo", value="place"),
             rx.select.item("Estilo", value="style"),
         ),
         value=role,
-        on_change=lambda value: CreativeState.set_clip_image_role(key, value),
+        on_change=(
+            on_change
+            if on_change is not None
+            else lambda value: CreativeState.set_clip_image_role(key, value)
+        ),
         size="1",
     )
 
@@ -1639,7 +1851,7 @@ def _clip_block(title: str, hint: str, *body: rx.Component) -> rx.Component:
 
 
 def _clip_references_view() -> rx.Component:
-    """The clip's step 2 (UI-3, Deivid 2026-11-09): «Orden del clip» first (a reel's parts,
+    """The clip's «Qué mostrar» (UI-3, Deivid 2026-11-09): «Orden del clip» first (a reel's parts,
     or the strip of files without a plan), the reel's own text choice, then «Referencias
     (opcional)» — ONE gallery of every image, video and audio, one drop zone and «Elegir
     de tus fotos y videos» — and the brand's resources."""
@@ -1689,7 +1901,7 @@ def _clip_references_view() -> rx.Component:
         _brand_resources(),
         _upload_error(),
         # m-24921079: «¿Quieres un video más largo? Armar mi video por partes» — under what
-        # step 2 of a Clip shows today, only while no plan is on screen
+        # «Qué mostrar» of a Clip shows today, only while no plan is on screen
         rx.cond(CreativeState.parts_start_shown, parts_start_card()),
         spacing="5",
         width="100%",
@@ -1714,7 +1926,7 @@ def _gallery_picture(picture: rx.Component, on_remove: rx.event.EventSpec) -> rx
 
 
 def _image_tile(tile: rx.Var) -> rx.Component:
-    """A photo with its small ✕ and «Producto / Lugar / Estilo» — the one place its role
+    """A photo with its small ✕ and «Producto / Fondo / Estilo» — the one place its role
     is chosen (`clip_images[].role`, what the strip used)."""
     key = tile["key"]
     return rx.vstack(
@@ -1837,73 +2049,330 @@ def _ref_upload(kind: str, upload_id: str, accept: dict, handler: object) -> rx.
     )
 
 
-def _ref_category(kind: str) -> rx.Component:
-    """One category inside the picker: its sources (the usual tabs, without «Subir»),
-    then «Subir …» at the end, then what it could not take."""
-    image, video = clip_gallery_vm.IMAGE, clip_gallery_vm.VIDEO
-    if kind == image:
-        sources = _media_picker("clip_images", rx.fragment(), uploads=False)
-        upload = _ref_upload(
+def _clip_upload_tab() -> rx.Component:
+    """The Clip drawer's «Subir»: one place per kind — photos, videos, music — each with
+    what it takes, «Subir …», and what it could not take."""
+    image, video, audio = clip_gallery_vm.IMAGE, clip_gallery_vm.VIDEO, clip_gallery_vm.AUDIO
+    uploads = {
+        image: _ref_upload(
             image, "clip_images", _CLIP_IMAGE_ACCEPT, CreativeState.handle_clip_image_uploads
-        )
-    elif kind == video:
-        sources = _media_picker("clip_videos", rx.fragment(), media_type="video", uploads=False)
-        upload = _ref_upload(
+        ),
+        video: _ref_upload(
             video, "clip_videos", _CLIP_VIDEO_ACCEPT, CreativeState.handle_clip_video_uploads
-        )
-    else:
-        # no source of audio but the owner's own files
-        sources = rx.text(clip_gallery_vm.AUDIO_SOURCE_NOTE, size="2", color=T.TEXT_MUTED)
-        upload = _ref_upload(
-            kind, "clip_audios", _CLIP_AUDIO_ACCEPT, CreativeState.handle_clip_audio_uploads
-        )
+        ),
+        audio: _ref_upload(
+            audio, "clip_audios", _CLIP_AUDIO_ACCEPT, CreativeState.handle_clip_audio_uploads
+        ),
+    }
     return rx.vstack(
-        rx.text(clip_gallery_vm.SECTION_HINTS[kind], size="1", color=T.TEXT_MUTED),
-        sources,
-        upload,
-        _ref_note(CreativeState.clip_notes[kind].to(str)),
+        *(
+            rx.vstack(
+                rx.text(clip_gallery_vm.SECTION_TITLES[kind], size="2", weight="medium"),
+                rx.text(clip_gallery_vm.SECTION_HINTS[kind], size="1", color=T.TEXT_MUTED),
+                uploads[kind],
+                _ref_note(CreativeState.clip_notes[kind].to(str)),
+                spacing="2",
+                width="100%",
+                align_items="start",
+            )
+            for kind in clip_gallery_vm.KINDS
+        ),
+        rx.text(clip_gallery_vm.AUDIO_SOURCE_NOTE, size="1", color=T.TEXT_MUTED),
+        spacing="5",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _clip_pieces_tab() -> rx.Component:
+    """The Clip drawer's «Publicaciones»: the brand's pieces, photos and videos together;
+    a tap puts it in the references (or takes it out)."""
+    images, videos = CreativeState.piece_images, CreativeState.piece_videos
+    held_images = CreativeState.picker_selected["clip_images"].to(list[str])
+    held_videos = CreativeState.picker_selected["clip_videos"].to(list[str])
+
+    def tile(item: rx.Var[dict[str, str]], video: bool) -> rx.Component:
+        target, held = ("clip_videos", held_videos) if video else ("clip_images", held_images)
+        return _picker_tile(
+            BACKEND_BASE + item["view"],
+            item["view"] != "",
+            held.contains(item["key"]),
+            CreativeState.pick_media(target, "pieces", item["key"]),
+            "film" if video else "image",
+            item["label"],
+        )
+
+    return rx.cond(
+        CreativeState.pieces_loading,
+        _picker_note("Cargando tus publicaciones…"),
+        rx.cond(
+            (images.length() + videos.length()) > 0,
+            rx.flex(
+                rx.foreach(images, lambda item: tile(item, False)),
+                rx.foreach(videos, lambda item: tile(item, True)),
+                wrap="wrap",
+                spacing="2",
+                width="100%",
+            ),
+            _picker_note("Aún no tienes publicaciones con fotos o videos."),
+        ),
+    )
+
+
+def _clip_inspiration_tab() -> rx.Component:
+    """The Clip drawer's «Inspiración»: the banks' photos and videos (no people; videos
+    up to 15 s), and Pinterest for a photo of style."""
+
+    return rx.vstack(
+        rx.text("Fotos", size="2", weight="medium"),
+        _inspiration_search("clip_images", True),
+        rx.text("Videos", size="2", weight="medium"),
+        _inspiration_search("clip_videos", False),
+        _pinterest_block("clip_images"),
+        _pinterest_source_links("clip_images"),
         spacing="3",
         width="100%",
         align_items="start",
     )
 
 
+def _clip_drawer_body() -> rx.Component:
+    """The Clip's selector in the drawer (m-24985141, Deivid: «todo integrado junto a
+    elegir fotos, videos o audios»): «Tus productos · Tu Galería · Subir · Publicaciones
+    · Inspiración». The same for a video in parts — nothing here is about parts."""
+    from .gen_gallery_pick_page import gallery_tab
+
+    held_images = CreativeState.picker_selected["clip_images"].to(list[str])
+    held_videos = CreativeState.picker_selected["clip_videos"].to(list[str])
+    photos, videos = CreativeState.product_photo_keys, CreativeState.product_video_keys
+    product_tiles = [
+        rx.foreach(
+            photos,
+            lambda key: _catalog_picker_tile(
+                key,
+                held_images.contains(key),
+                CreativeState.pick_media("clip_images", "catalog", key),
+                True,
+            ),
+        ),
+        rx.foreach(
+            videos,
+            lambda key: _catalog_picker_tile(
+                key,
+                held_videos.contains(key),
+                CreativeState.pick_media("clip_videos", "catalog", key),
+                False,
+            ),
+        ),
+    ]
+    return rx.vstack(
+        _source_tabs(
+            list(CLIP_SOURCE_TABS),
+            CreativeState.clip_source_tab,
+            CreativeState.set_clip_source_tab,
+            "clip-source-tabs",
+        ),
+        rx.match(
+            CreativeState.clip_source_tab,
+            (
+                "catalog",
+                _products_tab(
+                    _product_files(
+                        product_tiles,
+                        (photos.length() + videos.length()) > 0,
+                        "fotos ni videos",
+                    )
+                ),
+            ),
+            ("gallery", gallery_tab()),
+            ("upload", _clip_upload_tab()),
+            ("pieces", _clip_pieces_tab()),
+            _clip_inspiration_tab(),
+        ),
+        spacing="4",
+        width="100%",
+        align_items="start",
+        padding_bottom="1rem",
+    )
+
+
+#: Each slot's selector in the drawer: its upload is the slot's own (the same handler as
+#: before m-24985141, when it showed in line).
+def _slot_drawer_body(target: str) -> rx.Component:
+    if target == "products":
+        return _media_picker(
+            "products",
+            _upload_zone(
+                "creative_products",
+                "Arrastra una o varias fotos de producto (hasta 10). Con fondo transparente"
+                " quedan mejor.",
+                CreativeState.handle_product_uploads,
+                multiple=True,
+            ),
+        )
+    if target == "background":
+        return _media_picker(
+            "background",
+            _upload_zone(
+                "creative_background",
+                BACKGROUND_UPLOAD_HINT,
+                CreativeState.handle_background_upload,
+                multiple=False,
+            ),
+        )
+    if target == "slide":
+        return _media_picker(
+            "slide",
+            _upload_zone(
+                "creative_slide_photo",
+                "Toca para elegir otra foto o arrástrala aquí",
+                CreativeState.handle_slide_photo_upload,
+                multiple=False,
+            ),
+        )
+    if target == "reference":
+        return _media_picker(
+            "reference",
+            dropzone(
+                rx.vstack(
+                    rx.icon("clapperboard", size=T.ICON_LG, color=T.TEXT_FAINT),
+                    rx.text("Arrastra tu clip o elígelo", size="2", weight="medium"),
+                    rx.text("MP4, MOV o WEBM · hasta 200 MB", size="1", color=T.TEXT_MUTED),
+                    align="center",
+                    spacing="1",
+                ),
+                upload_id="reference_video",
+                accept=_VIDEO_ACCEPT,
+                max_files=1,
+                max_size=_REFERENCE_MAX_BYTES,
+                on_drop=CreativeState.handle_reference_upload(
+                    rx.upload_files(upload_id="reference_video")
+                ),
+            ),
+            media_type="video",
+        )
+    if target == "avatar_refs":
+        # round 13: the avatar's references — photos and its reference video
+        return _mixed_media_picker(
+            "avatar_refs",
+            _clip_drop(
+                "creative_avatar_refs",
+                "Arrastra tus fotos y un video, o toca para elegirlos",
+                "JPG, PNG o WEBP · MP4 o MOV hasta 200 MB",
+                {**_CLIP_IMAGE_ACCEPT, **_CLIP_VIDEO_ACCEPT},
+                CreativeState.handle_avatar_ref_uploads,
+                # no cap here: what does not fit is said by the handler (review)
+                max_files=0,
+                on_rejected=CreativeState.ref_files_rejected,
+            ),
+        )
+    if target == "slide_style":
+        return _media_picker(
+            "slide_style",
+            _upload_zone(
+                "creative_slide_style",
+                "Toca para elegir una foto de estilo o arrástrala aquí",
+                CreativeState.handle_slide_style_upload,
+                multiple=False,
+            ),
+        )
+    if target == "slide_reference":
+        return _media_picker(
+            "slide_reference",
+            _clip_drop(
+                "creative_slide_reference",
+                "Arrastra el video o toca para elegirlo",
+                "MP4 o MOV hasta 200 MB",
+                _CLIP_VIDEO_ACCEPT,
+                CreativeState.handle_slide_reference_upload,
+                max_files=1,
+            ),
+            media_type="video",
+        )
+    # slide_media: an animated slide's photo and motion video together
+    return _mixed_media_picker(
+        "slide_media",
+        _clip_drop(
+            "creative_slide_media",
+            "Arrastra una foto y/o un video, o haz clic",
+            "JPG, PNG o WEBP · MP4 o MOV hasta 200 MB",
+            {**_CLIP_IMAGE_ACCEPT, **_CLIP_VIDEO_ACCEPT},
+            CreativeState.handle_slide_media_upload,
+            max_files=2,
+        ),
+    )
+
+
+_SLOT_DRAWER_TARGETS = (
+    "products",
+    "background",
+    "slide",
+    "reference",
+    "slide_media",
+    "slide_style",
+    "slide_reference",
+    "avatar_refs",
+)
+#: The buttons that open a slot's selector, by slot.
+_SLOT_OPEN_LABELS = {
+    "products": "Elegir fotos para tu publicación",
+    "slide": "Elegir la foto de la diapositiva",
+    "reference": "Elegir el video de referencia",
+    "slide_media": "Elegir la foto y el video",
+    "avatar_refs": "Elegir fotos y videos",
+}
+
+
+def _slot_open_button(target: str) -> rx.Component:
+    """A slot's one way in to its files: the selector opens in the media drawer."""
+    opener = f"media-open-{target}"
+    return rx.button(
+        rx.icon("images", size=T.ICON_MD),
+        _SLOT_OPEN_LABELS[target],
+        variant="soft",
+        size="3",
+        min_height="44px",
+        id=opener,
+        aria_haspopup="dialog",
+        on_click=CreativeState.open_media_drawer(target, "", opener),
+    )
+
+
+def media_drawer() -> rx.Component:
+    """The ONE media drawer of the create flow (m-24985141): the Clip's references, a
+    slot's files, or the product alone (the side panel's «Producto» row) — on the right
+    on a desktop, the whole screen on a phone. «Agregar» adds what «Tu Galería» holds
+    chosen and closes it; Esc, the backdrop and ✕ close it too, and the focus goes back
+    to the button that opened it. Never opened from inside another drawer."""
+    from .gen_gallery_pick_page import gallery_add_bar
+
+    target = CreativeState.media_drawer_target
+    return drawer(
+        rx.cond(
+            CreativeState.media_drawer_open,
+            rx.match(
+                target,
+                (MEDIA_DRAWER_CLIP, _clip_drawer_body()),
+                (MEDIA_DRAWER_PRODUCT, _products_tab()),
+                *((t, _slot_drawer_body(t)) for t in _SLOT_DRAWER_TARGETS),
+                rx.fragment(),
+            ),
+        ),
+        open=CreativeState.media_drawer_open,
+        on_open_change=CreativeState.set_media_drawer_open,
+        title=CreativeState.media_drawer_title,
+        icon="images",
+        footer=gallery_add_bar(CreativeState.media_drawer_summary),
+    )
+
+
 def _clip_gallery() -> rx.Component:
     """The references, together (round 16, Deivid: «centralizado en un botón»): every
     chosen photo, video and audio in one grid (never the reel's original), what could
-    not be added in one line under it (so it stays when the picker closes), and ONE
-    button that opens the picker — «Fotos · Videos · Audios» first, each with its
-    sources and «Subir …» at the end."""
-    picker = rx.cond(
-        CreativeState.clip_picker_open,
-        rx.vstack(
-            rx.segmented_control.root(
-                *(
-                    rx.segmented_control.item(clip_gallery_vm.SECTION_TITLES[k], value=k)
-                    for k in clip_gallery_vm.KINDS
-                ),
-                value=CreativeState.clip_picker_kind,
-                on_change=CreativeState.set_clip_picker_kind,
-                size="3",
-                min_height="44px",
-                aria_label=clip_gallery_vm.PICK_SWITCH_LABEL,
-            ),
-            rx.match(
-                CreativeState.clip_picker_kind,
-                (clip_gallery_vm.VIDEO, _ref_category(clip_gallery_vm.VIDEO)),
-                (clip_gallery_vm.AUDIO, _ref_category(clip_gallery_vm.AUDIO)),
-                _ref_category(clip_gallery_vm.IMAGE),
-            ),
-            spacing="3",
-            width="100%",
-            align_items="start",
-            padding="0.75rem",
-            border=T.BORDER,
-            border_radius=T.RADIUS_CARD,
-            box_sizing="border-box",
-            min_width="0",
-        ),
-    )
+    not be added in one line under it, and ONE button — «Elegir fotos, videos o audios»
+    — that opens the selector in the media drawer (m-24985141). The same in a normal
+    video and in a video by parts."""
+    opener = "media-open-clip"
     return rx.vstack(
         rx.cond(
             CreativeState.clip_reference_tiles.length() > 0,
@@ -1914,18 +2383,19 @@ def _clip_gallery() -> rx.Component:
                 width="100%",
             ),
         ),
-        # with the picker open its category says it there: the line only when closed
-        rx.cond(~CreativeState.clip_picker_open, _ref_note(CreativeState.clip_notes_line)),
+        _ref_note(CreativeState.clip_notes_line),
+        _ref_note(CreativeState.gallery_pick_note),
+        _product_change_note(),
         rx.button(
             rx.icon("images", size=T.ICON_MD),
             clip_gallery_vm.PICK_LABEL,
             variant="soft",
             size="3",
             min_height="44px",
-            on_click=CreativeState.toggle_clip_picker,
-            aria_expanded=rx.cond(CreativeState.clip_picker_open, "true", "false"),
+            id=opener,
+            aria_haspopup="dialog",
+            on_click=CreativeState.open_media_drawer(MEDIA_DRAWER_CLIP, "", opener),
         ),
-        picker,
         spacing="3",
         width="100%",
         align_items="start",
@@ -2010,76 +2480,9 @@ def _replica_brand_text() -> rx.Component:
     )
 
 
-def _product_screen() -> rx.Component:
-    """Before the side panel (§ requests 2026-10-14/19): the catalog product the piece is
-    about, or the inspiration that illustrates it — one or the other, switched with the
-    button beside «Continuar» (no tabs, no «Continuar sin producto»)."""
-    inspiration = CreativeState.product_tab == "stock"
-    return card(
-        rx.vstack(
-            rx.hstack(
-                rx.vstack(
-                    rx.heading(
-                        rx.cond(
-                            inspiration, "Busca tu inspiración", "¿Sobre qué producto creamos?"
-                        ),
-                        size="5",
-                        as_="h2",
-                    ),
-                    rx.text(
-                        rx.cond(
-                            inspiration,
-                            "Imágenes y videos que ilustran lo que vendes: elige uno o varios.",
-                            "Elige un producto de tu catálogo: su nombre y sus fotos reales "
-                            "entran en la publicación.",
-                        ),
-                        size="2",
-                        color=T.TEXT_MUTED,
-                    ),
-                    spacing="1",
-                    align_items="start",
-                ),
-                rx.spacer(),
-                # m-24842973 (N4): the product that is missing is added in Tus
-                # productos, and saving it comes back here with it chosen.
-                rx.link(
-                    rx.button(
-                        rx.icon("plus", size=T.ICON_SM),
-                        ADD_PRODUCT_LABEL,
-                        variant="soft",
-                        size="3",
-                        width=rx.breakpoints(initial="100%", sm="auto"),
-                    ),
-                    href=new_product_href(CREATE_RETURN_PATH),
-                    flex_shrink="0",
-                    width=rx.breakpoints(initial="100%", sm="auto"),
-                ),
-                width="100%",
-                align="start",
-                spacing="3",
-                # 360 px (N12): the button drops under the heading instead of squeezing it
-                wrap="wrap",
-            ),
-            rx.cond(
-                inspiration,
-                _stock_product_panel(),
-                _catalog_product_grid(),
-            ),
-            _product_screen_nav(),
-            spacing="5",
-            width="100%",
-            flex="1",
-        ),
-        padding="1.5rem",
-        width="100%",
-        flex="1",
-        display="flex",
-        class_name="q-cr-view",
-    )
-
-
 def _catalog_product_grid() -> rx.Component:
-    """«Mi catálogo»: the brand's products (the screen as it was before stock)."""
+    """«Elige un producto de tu catálogo» unfolded (m-24985141): the brand's products as
+    large cards; a tap chooses one and folds the grid away."""
     return rx.fragment(
         rx.cond(
             CreativeState.catalog_error != "",
@@ -2107,9 +2510,15 @@ def _catalog_product_grid() -> rx.Component:
                     empty_state(
                         "package",
                         "Aún no hay productos en tu catálogo",
-                        "Agrega tu producto con sus fotos y vuelves aquí con él ya elegido. "
-                        "También puedes usar una inspiración: imágenes y videos que ilustran "
-                        "lo que vendes.",
+                        rx.cond(
+                            CreativeState.media_drawer_target == MEDIA_DRAWER_PRODUCT,
+                            "Agrega tu producto con sus fotos y vuelves aquí con él ya "
+                            "elegido. También puedes crear sin producto: la publicación se "
+                            "hace con tu marca.",
+                            "Agrega tu producto con sus fotos y vuelves aquí con él ya "
+                            "elegido. También puedes crear sin producto y buscar imágenes "
+                            "en «Inspiración».",
+                        ),
                         # N8 (m-24842961); coming back with it chosen (m-24842973, N4)
                         action=rx.link(
                             rx.button(rx.icon("plus", size=T.ICON_SM), ADD_PRODUCT_LABEL, size="3"),
@@ -2124,444 +2533,173 @@ def _catalog_product_grid() -> rx.Component:
     )
 
 
-def _product_screen_nav() -> rx.Component:
-    """The product screen's bottom bar: what is chosen, the switch to the other source
-    — «Usar inspiración» on the catalog, «Usar mi catálogo» on the inspiration (§ request
-    2026-10-19: it replaces «Continuar sin producto» and the tabs) — and «Continuar»."""
-    return rx.hstack(
-        rx.cond(
-            (CreativeState.selected_product_id != "") & (CreativeState.product_tab == "catalog"),
-            rx.hstack(
-                rx.icon("check", size=T.ICON_SM, color=T.tone_color("accent", 11)),
-                rx.text(CreativeState.brief_product_ref, size="2", weight="medium"),
-                spacing="2",
-                align="center",
-            ),
-        ),
-        rx.spacer(),
-        rx.cond(
-            CreativeState.product_tab == "stock",
-            rx.button(
-                rx.icon("package", size=T.ICON_SM),
-                "Usar mi catálogo",
-                variant="soft",
-                color_scheme="gray",
-                size="3",
-                radius=_CONTROL_RADIUS,
-                on_click=CreativeState.set_product_tab("catalog"),
-            ),
-            rx.button(
-                rx.icon("sparkles", size=T.ICON_SM),
-                "Usar inspiración",
-                variant="soft",
-                color_scheme="gray",
-                size="3",
-                radius=_CONTROL_RADIUS,
-                on_click=CreativeState.set_product_tab("stock"),
-            ),
-        ),
-        width="100%",
-        align="center",
-        spacing="3",
-        flex_wrap="wrap",
-        class_name="q-cr-view-nav",
-    )
+def _product_bubble(item: rx.Var[dict[str, str]]) -> rx.Component:
+    """One reference as a bubble: a photo; a video's poster (its play mark when it has
+    none); an audio's music mark."""
+    key = item["key"].to(str)
 
-
-# -- the product from stock (plan-integracion-stock R2, 2026-10-16) ----------------------
-
-_STOCK_NOTE = (
-    "Es una imagen ilustrativa, no la foto de tu producto. Revisa que la publicación no "
-    "prometa algo distinto de lo que vendes."
-)
-_STOCK_VIDEO_NOTE = (
-    "Es un video ilustrativo, no de tu producto: sirve para un Clip o un Carrusel. Revisa "
-    "que la publicación no prometa algo distinto de lo que vendes."
-)
-_STOCK_MIXED_NOTE = (
-    "Son imágenes y videos ilustrativos, no de tu producto: los videos sirven para un Clip "
-    "o una Galería. Revisa que la publicación no prometa algo distinto de lo que vendes."
-)
-
-
-def _stock_picked(tile: rx.Var[dict[str, str]], media: str) -> rx.Var[bool]:
-    """Whether `tile` is one of the product screen's picks (`CreativeState.stock_picks`)."""
-    return CreativeState.stock_picks.contains(f"{media}|" + tile["id"])
-
-
-def _stock_tile(tile: rx.Var[dict[str, str]]) -> rx.Component:
-    """One stock image on the product screen: the bank's thumbnail (shown, never kept),
-    its author, the bank. A click adds it to the picks or takes it out."""
-    selected = _stock_picked(tile, "image")
-    return rx.box(
-        choice_card(
-            rx.box(
-                media_thumb(
-                    tile["thumb"],
-                    size=None,
-                    width="100%",
-                    height="9rem",
-                    alt=tile["author"],
-                    custom_attrs={"referrerpolicy": "no-referrer"},
-                ),
-                rx.cond(selected, rx.box(choice_card_check(), class_name="q-cr-ghost-check")),
-                rx.text(tile["provider_label"], class_name="q-cr-mark q-cr-stock-bank"),
-                position="relative",
-            ),
-            key=tile["id"],
-            selected=selected,
-            on_select=CreativeState.choose_stock_product(tile["id"], "image"),
-            role="checkbox",
-            padding="0.3rem",
-            width="100%",
-            aria_label=tile["author"],
-        ),
-        _stock_credit_link(tile),
-        width="100%",
-    )
-
-
-def _stock_credit_link(tile: rx.Var[dict[str, str]]) -> rx.Component:
-    """The author under a stock tile, linked to their page (the banks ask for it)."""
-    return rx.link(
-        tile["author"],
-        href=tile["author_url"],
-        is_external=True,
-        size="1",
-        class_name="q-cr-stock-credit",
-        title=tile["author"],
-    )
-
-
-def _stock_video_tile(tile: rx.Var[dict[str, str]]) -> rx.Component:
-    """One stock video on the product screen, picked like an image: its poster (shown,
-    never kept), the bank, its length, «Vertical», the author and the round play in the
-    centre. Play shows the bank's small rendition in the SAME frame — whole (letterboxed,
-    never cropped) and without moving the grid (§ requests 2026-10-19); a click on the
-    playing video picks it, the pause on hover stops it."""
-    selected = _stock_picked(tile, "video")
-    on_select = CreativeState.choose_stock_product(tile["id"], "video")
-    poster = rx.box(
-        choice_card(
-            rx.box(
-                media_thumb(
-                    tile["thumb"],
-                    size=None,
-                    width="100%",
-                    height="9rem",
-                    icon="film",
-                    alt=tile["author"],
-                    custom_attrs={"referrerpolicy": "no-referrer"},
-                ),
-                rx.cond(selected, rx.box(choice_card_check(), class_name="q-cr-ghost-check")),
-                rx.text(tile["provider_label"], class_name="q-cr-mark q-cr-stock-bank"),
-                rx.cond(
-                    tile["duration"] != "",
-                    rx.text(tile["duration"], class_name="q-cr-mark q-cr-stock-length"),
-                ),
-                rx.cond(
-                    tile["vertical"] != "",
-                    rx.text("Vertical", class_name="q-cr-mark q-cr-stock-vertical"),
-                ),
-                position="relative",
-            ),
-            key=tile["id"],
-            selected=selected,
-            on_select=on_select,
-            role="checkbox",
-            padding="0.3rem",
-            width="100%",
-            aria_label=tile["author"],
-        ),
-        rx.cond(
-            tile["preview"] != "",
-            _play_button(CreativeState.play_stock_video(tile["id"]), "calc(0.3rem + 4.5rem)"),
-        ),
-        position="relative",
-        class_name="q-cr-play-host",
-    )
-    player = rx.box(
-        rx.el.video(
-            src=tile["preview"],
-            auto_play=True,
-            muted=~CreativeState.preview_sound,
-            loop=True,
-            plays_inline=True,
-            preload="auto",
-            custom_attrs={"referrerPolicy": "no-referrer"},
-            class_name="q-cr-stock-video",
-        ),
-        _pick_hit(on_select, selected, tile["author"]),
-        rx.cond(selected, rx.box(choice_card_check(), class_name="q-cr-ghost-check")),
-        _pause_button(),
-        _sound_button(),
-        class_name=rx.cond(
-            selected, "q-cr-stock-player q-cr-stock-player--on", "q-cr-stock-player"
-        ),
-    )
-    return rx.box(
-        rx.cond(CreativeState.hit_playing == tile["id"], player, poster),
-        _stock_credit_link(tile),
-        width="100%",
-    )
-
-
-def _stock_mixed_tile(tile: rx.Var[dict[str, str]]) -> rx.Component:
-    """«Stock»'s one grid holds images and videos: each tile as its kind."""
-    return rx.cond(tile["media_type"] == "video", _stock_video_tile(tile), _stock_tile(tile))
-
-
-def _stock_chosen_thumb(tile: rx.Var[dict[str, str]]) -> rx.Component:
-    """One pick in the strip under the grid: its thumbnail and ✕ to take it out."""
-    return rx.box(
-        media_thumb(
-            tile["thumb"],
-            size="3.5rem",
-            icon="film",
-            alt=tile["author"],
-            custom_attrs={"referrerpolicy": "no-referrer"},
-        ),
-        rx.cond(
-            tile["media_type"] == "video",
-            rx.center(rx.icon("film", size=11), class_name="q-cr-stock-chosen-kind"),
-        ),
-        rx.icon_button(
-            rx.icon("x", size=11),
-            size="1",
-            variant="solid",
-            color_scheme="gray",
-            high_contrast=True,
+    def mark(glyph: str) -> rx.Component:
+        return rx.avatar(
+            fallback=glyph,
+            size="2",
             radius="full",
-            aria_label="Quitar " + tile["author"],
-            title="Quitar",
-            on_click=CreativeState.choose_stock_product(tile["id"], tile["media_type"]),
-            class_name="q-cr-stock-chosen-x",
-        ),
-        class_name="q-cr-stock-chosen",
-    )
+            aria_hidden="true",
+            class_name="q-avatar-thumb",
+        )
 
-
-def _stock_product_panel() -> rx.Component:
-    """«Stock»: images AND videos in one grid (§ requests 2026-10-16/17) — both banks
-    searched at once (on Enter or the button, never while typing), pick one or several
-    (§ request 2026-10-19) — inspiration, so no product name. A fixed note says it only
-    illustrates it. A video fits the Clip and the Galería; with no image among the picks, the other
-    options say so in a popup (`_kind_conflict_dialog`)."""
-    results = rx.cond(
-        CreativeState.stock_any_loading & (CreativeState.stock_tiles.length() == 0),
-        skeleton_rows(rows=2, height="9rem"),
-        rx.cond(
-            CreativeState.stock_tiles.length() > 0,
-            rx.vstack(
-                rx.grid(
-                    rx.foreach(CreativeState.stock_tiles, _stock_mixed_tile),
-                    columns=rx.breakpoints(initial="2", sm="3", lg="4", xl="5"),
-                    spacing="3",
-                    width="100%",
-                    role="group",
-                    aria_label="Imágenes y videos de inspiración",
-                ),
-                rx.hstack(
-                    rx.text("Imágenes y videos de ", size="1", color=T.TEXT_MUTED),
-                    rx.foreach(
-                        CreativeState.stock_credits,
-                        lambda c: rx.link(c["name"], href=c["url"], is_external=True, size="1"),
-                    ),
-                    rx.spacer(),
-                    rx.cond(
-                        CreativeState.stock_any_more,
-                        rx.button(
-                            "Ver más",
-                            variant="soft",
-                            color_scheme="gray",
-                            size="1",
-                            loading=CreativeState.stock_any_loading,
-                            on_click=CreativeState.more_stock_products,
-                        ),
-                    ),
-                    width="100%",
-                    align="center",
-                    spacing="1",
-                    class_name="q-cr-stock-credits",
-                ),
-                spacing="2",
-                width="100%",
-            ),
-            empty_state(
-                "image",
-                "Busca una imagen o un video para tu producto",
-                "Escribe qué vendes —«hamburguesa», «uñas acrílicas», «pastel de chocolate»— "
-                "o deja la caja vacía para usar tu marca. Solo mostramos material sin "
-                "personas; los videos, hasta 15 s y sin sonido.",
+    return rx.match(
+        item["kind"],
+        (
+            "image",
+            rx.avatar(
+                src=_key_src(key),
+                fallback="",
+                size="2",
+                radius="full",
+                aria_hidden="true",
+                class_name="q-avatar-thumb",
             ),
         ),
-    )
-    chosen = rx.cond(
-        CreativeState.stock_chosen.length() > 0,
-        rx.vstack(
-            rx.hstack(
-                rx.text(
-                    rx.cond(
-                        CreativeState.stock_chosen.length() == 1,
-                        "1 elegido",
-                        CreativeState.stock_chosen.length().to_string() + " elegidos",
-                    ),
-                    size="2",
-                    weight="medium",
-                ),
-                rx.text(f"· hasta {STOCK_MAX_PICKS}", size="1", color=T.TEXT_MUTED),
-                spacing="1",
-                align="baseline",
-            ),
-            rx.flex(
-                rx.foreach(CreativeState.stock_chosen, _stock_chosen_thumb),
-                gap="0.5rem",
-                wrap="wrap",
-                role="list",
-                aria_label="Lo que elegiste",
-            ),
+        (
+            "video",
             rx.cond(
-                CreativeState.stock_pick_notice != "",
-                rx.text(CreativeState.stock_pick_notice, size="1", color=T.tone_color("warn", 11)),
-            ),
-            callout(
-                rx.cond(
-                    CreativeState.stock_chosen_has_video,
-                    rx.cond(
-                        CreativeState.stock_chosen_has_image, _STOCK_MIXED_NOTE, _STOCK_VIDEO_NOTE
-                    ),
-                    _STOCK_NOTE,
+                CreativeState.piece_views.contains(key),
+                rx.avatar(
+                    src=BACKEND_BASE + CreativeState.piece_views[key].to(str),
+                    fallback="▶",
+                    size="2",
+                    radius="full",
+                    aria_hidden="true",
+                    class_name="q-avatar-thumb",
                 ),
-                "warn",
-                class_name="q-cr-stock-note",
-            ),
-            spacing="3",
-            width="100%",
-        ),
-    )
-    from_kit = (CreativeState.stock_from_kit | CreativeState.vstock_from_kit) & (
-        CreativeState.stock_tiles.length() > 0
-    )
-    kit_words = rx.cond(
-        CreativeState.stock_kit_words.length() > 0,
-        CreativeState.stock_kit_words.join(" · "),
-        CreativeState.vstock_kit_words.join(" · "),
-    )
-    return rx.vstack(
-        rx.hstack(
-            rx.input(
-                rx.input.slot(rx.icon("search", size=T.ICON_SM)),
-                value=CreativeState.stock_query,
-                on_change=CreativeState.set_stock_query,
-                on_key_down=CreativeState.stock_search_on_enter,
-                placeholder="Busca tu producto: hamburguesa, uñas, pastel…",
-                max_length=100,
-                size="3",
-                flex="1",
-                aria_label="Buscar imágenes y videos de inspiración",
-            ),
-            rx.button(
-                "Buscar",
-                size="3",
-                radius=_CONTROL_RADIUS,
-                loading=CreativeState.stock_any_loading,
-                disabled=~CreativeState.stock_on,
-                on_click=CreativeState.search_stock_products,
-            ),
-            width="100%",
-            spacing="2",
-        ),
-        rx.cond(
-            ~CreativeState.stock_on,
-            callout("La inspiración no está disponible ahora mismo.", "warn"),
-        ),
-        rx.cond(
-            from_kit,
-            rx.text(
-                "Con lo que sabemos de tu marca buscamos: ",
-                rx.text.strong(kit_words),
-                ". Escribe otras palabras si buscas otra cosa.",
-                size="1",
-                color=T.TEXT_MUTED,
+                mark("▶"),
             ),
         ),
-        rx.cond(
-            CreativeState.stock_view_error != "",
-            callout(CreativeState.stock_view_error, "warn"),
-        ),
-        rx.cond(
-            (CreativeState.stock_error != "") & (CreativeState.stock_tiles.length() > 0),
-            callout(CreativeState.stock_error, "warn"),
-        ),
-        rx.box(results, width="100%", flex="1"),
-        chosen,
-        spacing="4",
-        width="100%",
-        flex="1",
+        mark("♪"),
     )
+
+
+def _product_bubbles() -> rx.Component:
+    """The kit's avatar stack (`lq-avatar-stack`, brought in by m-24985141 as the skin
+    `.q-avatar-stack` over Radix's avatar, design-system §5.6): up to 4 round pictures —
+    every reference the piece holds, the product's photos among them — and «+N» for the
+    rest («y 5 referencias más»)."""
+    return rx.cond(
+        CreativeState.product_row_thumbs.length() > 0,
+        rx.flex(
+            rx.foreach(CreativeState.product_row_thumbs, _product_bubble),
+            # a wide row: 4 bubbles, or 3 and «+N»
+            rx.cond(
+                CreativeState.product_row_more > 0,
+                rx.avatar(
+                    fallback="+" + CreativeState.product_row_more.to_string(),
+                    size="2",
+                    radius="full",
+                    role="img",
+                    aria_label=CreativeState.product_row_more_label,
+                    title=CreativeState.product_row_more_label,
+                    class_name="q-avatar-more q-avatar-more--wide",
+                ),
+            ),
+            # a narrow row (the desktop's left column, ~214 px): 1 bubble and «+N» counting
+            # everything hidden (`.q-cr-product-chip` container query)
+            rx.cond(
+                CreativeState.product_row_more_narrow > 0,
+                rx.avatar(
+                    fallback="+" + CreativeState.product_row_more_narrow.to_string(),
+                    size="2",
+                    radius="full",
+                    role="img",
+                    aria_label=CreativeState.product_row_more_narrow_label,
+                    title=CreativeState.product_row_more_narrow_label,
+                    class_name="q-avatar-more q-avatar-more--narrow",
+                ),
+            ),
+            class_name="q-avatar-stack",
+            flex_shrink="0",
+            # the bubbles themselves are pictures only: the group says how many there are
+            role="group",
+            aria_label=CreativeState.product_row_total_label,
+        ),
+        rx.center(
+            rx.icon("package", size=T.ICON_SM, color=T.TEXT_MUTED),
+            width="2rem",
+            height="2rem",
+            flex_shrink="0",
+        ),
+    )
+
+
+#: The product's name in the side panel's row: its own clamp (`.q-cr-product-row-name`:
+#: two lines on a wide row, one with «…» on a narrow one; the whole name in `title`).
+PRODUCT_ROW_NAME_CLASS = "q-cr-product-row-name"
 
 
 def _product_chip() -> rx.Component:
-    """At the end of the side panel (§ requests 2026-10-19: beside the centre's heading
-    it wrapped onto its own row and pushed the view down): the product the piece is
-    about — or the stock it takes as inspiration — and «Cambiar», back to «Mi catálogo ·
-    Stock»."""
-    return rx.hstack(
-        rx.cond(
-            CreativeState.product_chip_key != "",
-            media_thumb(
-                _key_src(CreativeState.product_chip_key),
-                has=_key_has(CreativeState.product_chip_key),
-                size="2rem",
-                alt=CreativeState.brief_product_ref,
-            ),
-            rx.center(
-                rx.icon("package", size=T.ICON_SM, color=T.TEXT_MUTED),
-                width="2rem",
-                height="2rem",
-                flex_shrink="0",
-            ),
-        ),
-        rx.vstack(
-            rx.hstack(
+    """Right above the options of the side panel: the product the piece is about, shown
+    only (m-24985141) — every reference as overlapping bubbles, its name and, on the same
+    line, «Cambiar» / «Elegir producto», which opens the media drawer on «Tus productos»
+    (the Clip's drawer for a Clip); the focus comes back to it.
+
+    The row never wraps and the button never drops under the name (Deivid, round 9).
+    Nothing ever overlaps (round 10): the name's block takes what is left (`flex: 1 1 0`,
+    `min-width: 0`) and clamps its text (the whole name in `title`); the bubbles and the
+    button never shrink. The box is a size container: a narrow row — the desktop's left
+    column — shows 1 smaller bubble and «+N», the name on one line with «…», and the
+    button as its icon only (44×44, its name in `aria-label` and `title`)."""
+    chosen = CreativeState.selected_product_id != ""
+    name = rx.cond(chosen, CreativeState.brief_product_ref, "Sin producto")
+    label = rx.cond(chosen, "Cambiar el producto", "Elegir producto")
+    return rx.box(
+        rx.hstack(
+            _product_bubbles(),
+            rx.vstack(
+                rx.text("Producto", size="1", color=T.TEXT_MUTED),
                 rx.text(
-                    rx.cond(CreativeState.product_source == "stock", "Inspiración", "Producto"),
-                    size="1",
-                    color=T.TEXT_MUTED,
+                    name,
+                    size="2",
+                    weight="medium",
+                    class_name=PRODUCT_ROW_NAME_CLASS,
+                    title=name,
                 ),
-                spacing="1",
-                align="center",
+                spacing="0",
+                flex="1 1 0",
+                min_width="0",
+                align_items="stretch",
+                overflow="hidden",
+                class_name="q-cr-product-row-text",
             ),
-            rx.text(
-                rx.cond(
-                    CreativeState.product_source == "stock",
-                    CreativeState.stock_inspiration_label,
+            rx.button(
+                rx.el.span(
                     rx.cond(
-                        CreativeState.selected_product_id != "",
-                        CreativeState.brief_product_ref,
-                        "Sin producto",
+                        chosen,
+                        rx.icon("pencil", size=18, aria_hidden="true"),
+                        rx.icon("package-plus", size=18, aria_hidden="true"),
                     ),
+                    class_name="q-cr-product-btn-icon",
                 ),
+                rx.el.span(
+                    rx.cond(chosen, "Cambiar", "Elegir producto"),
+                    class_name="q-cr-product-btn-text",
+                ),
+                variant="soft",
+                color_scheme="gray",
                 size="2",
-                weight="medium",
-                class_name="q-cr-product-name",
-                title=CreativeState.brief_product_ref,
+                min_height="44px",
+                min_width="44px",
+                on_click=CreativeState.change_product,
+                flex_shrink="0",
+                id=PRODUCT_ROW_ID,
+                aria_haspopup="dialog",
+                aria_label=label,
+                title=label,
+                class_name="q-cr-product-btn",
             ),
-            spacing="0",
-            min_width="0",
-            flex="1",
+            spacing="3",
+            align="center",
+            width="100%",
+            class_name="q-cr-product-row",
         ),
-        rx.button(
-            "Cambiar",
-            variant="soft",
-            color_scheme="gray",
-            size="1",
-            on_click=CreativeState.change_product,
-            flex_shrink="0",
-            aria_label="Cambiar el producto",
-        ),
-        spacing="2",
-        align="center",
         width="100%",
         class_name="q-cr-product-chip",
     )
@@ -2602,19 +2740,61 @@ def _discover_view() -> rx.Component:
 
 
 def _upload_zone(upload_id: str, label: str, handler: object, *, multiple: bool) -> rx.Component:
-    """A compact drop zone (`ui.dropzone`) for the pictures of a piece."""
+    """A compact drop zone (`ui.dropzone`) for the pictures of a piece. m-25017273: up
+    to 50 MB a photo, HEIC included; what it refuses is said in Spanish
+    (`photo_upload_rejected`), and while a photo goes up it shows how far it got."""
+    busy = CreativeState.photo_upload_id == upload_id
     return dropzone(
-        rx.vstack(
+        rx.cond(
+            busy,
+            # hidden from screen readers: the live region below already says it
+            rx.box(loading_spinner("sm"), aria_hidden="true"),
             rx.icon("image-up", size=T.ICON_MD, color=T.TEXT_FAINT),
-            rx.text(label, size="1", text_align="center", color=T.TEXT_MUTED),
-            align="center",
-            spacing="1",
+        ),
+        # one live region, always mounted: only its words change, so a screen reader
+        # announces «Subiendo…» / «Preparando…» (UX review m-25017273)
+        rx.box(
+            rx.cond(
+                busy,
+                rx.vstack(
+                    rx.text(
+                        CreativeState.photo_upload_text,
+                        size="1",
+                        text_align="center",
+                        color=T.TEXT_MUTED,
+                    ),
+                    rx.text(
+                        CUT_CONNECTION_HINT,
+                        size="1",
+                        text_align="center",
+                        color=T.TEXT_FAINT,
+                    ),
+                    align="center",
+                    spacing="1",
+                ),
+                rx.text(label, size="1", text_align="center", color=T.TEXT_MUTED),
+            ),
+            role="status",
+            aria_live="polite",
+            width="100%",
         ),
         upload_id=upload_id,
         accept=_IMAGE_ACCEPT,
         max_files=10 if multiple else 1,
+        max_size=PHOTO_MAX_BYTES,
         multiple=multiple,
-        on_drop=handler(rx.upload_files(upload_id=upload_id)),
+        on_drop=[
+            CreativeState.begin_photo_upload(upload_id, multiple),
+            handler(
+                rx.upload_files(
+                    upload_id=upload_id,
+                    on_upload_progress=CreativeState.photo_upload_progress,
+                )
+            ),
+        ],
+        on_drop_rejected=CreativeState.photo_upload_rejected,
+        # never disabled while busy: an upload the network cut never reaches the
+        # handler that clears `photo_upload_id`, and the owner must be able to retry
         variant="compact",
         width="100%",
     )
@@ -2854,11 +3034,76 @@ def _brand_resources(*, folded: bool = True) -> rx.Component:
     )
 
 
-def _images_section() -> rx.Component:
-    """Background and product images — optional for the avatar videos."""
+def _ref_list_tile(item: rx.Var[dict[str, str]]) -> rx.Component:
+    """A photo of the single list: its ✕ and «Producto / Fondo / Estilo» (the Clip's
+    select)."""
+    key = item["key"].to(str)
     return rx.vstack(
-        _background_upload("Fondo (opcional)", BACKGROUND_UPLOAD_HINT),
-        _products_upload("Producto o productos (opcional)"),
+        _gallery_picture(_clip_thumb(key, size=_GALLERY_TILE), CreativeState.remove_ref(key)),
+        _clip_role_select(key, item["role"], lambda value: CreativeState.set_ref_role(key, value)),
+        spacing="1",
+        width=_GALLERY_TILE,
+        align_items="stretch",
+    )
+
+
+#: m-24985141 round 11: the single list's words.
+REF_LIST_TITLE = clip_gallery_vm.TITLE  # «Referencias (opcional)», as the Clip's
+REF_LIST_HINT = (
+    "Elige qué es cada foto: tu producto, el fondo (solo una) o un estilo para inspirar la imagen."
+)
+#: Round 13 (Deivid: «adaptar los avatars a lo que está en el clip»): the avatar's one
+#: references section, photos and its reference video.
+AVATAR_REF_HINT = (
+    "Todo lo que el video debe seguir: fotos de tu producto, el fondo, un estilo y, si "
+    "quieres, un video de referencia."
+)
+
+
+def _avatar_reference_tile() -> rx.Component:
+    """The avatar's reference video in its references: its picture, ✕, «Video de
+    referencia»."""
+    key = CreativeState.reference_video_key
+    return rx.vstack(
+        _gallery_picture(_reference_video_thumb(key), CreativeState.clear_reference_video),
+        rx.text("Video de referencia", size="1", color=T.TEXT_MUTED, text_align="center"),
+        spacing="1",
+        width=_GALLERY_TILE,
+        align_items="center",
+    )
+
+
+def _reference_video_thumb(key: rx.Var[str], size: str = _GALLERY_TILE) -> rx.Component:
+    """A reference video's picture: its poster when it has one (an inspiration or a
+    piece), else its first frame (QA round 12: never a dark box)."""
+    return rx.cond(
+        CreativeState.piece_views.contains(key),
+        _clip_thumb(key, size=size),
+        _video_thumb(rx.get_upload_url(key), size=size),
+    )
+
+
+def _images_section(*, video: bool = False) -> rx.Component:
+    """m-24985141 (Deivid): ONE references section with ONE button, like the Clip's
+    «Referencias (opcional)» — each photo with «Producto», «Fondo» (the background, only
+    one) or «Estilo»; the avatar's (`video`) also holds its reference video. The section
+    title is the kind's own heading for the avatar, this list's for the ad image."""
+    return rx.vstack(
+        rx.fragment() if video else _field_label(REF_LIST_TITLE, REF_LIST_HINT),
+        rx.flex(
+            rx.foreach(CreativeState.ref_items, _ref_list_tile),
+            rx.cond(CreativeState.reference_video_key != "", _avatar_reference_tile())
+            if video
+            else rx.fragment(),
+            gap="0.75rem",
+            wrap="wrap",
+            width="100%",
+        ),
+        rx.cond(
+            CreativeState.ref_role_note != "",
+            rx.box(callout(CreativeState.ref_role_note, "info"), role="status", width="100%"),
+        ),
+        _slot_open_button("avatar_refs" if video else "products"),
         _upload_error(),
         spacing="2",
         width="100%",
@@ -2872,39 +3117,6 @@ BACKGROUND_UPLOAD_HINT = (
     "Toca para subir la foto del lugar donde quieres ver tu producto: tu local, una mesa, "
     "una playa…"
 )
-
-
-def _background_upload(label: str, hint: str, help_text: str = "") -> rx.Component:
-    """The background, shown as a picture with its ✕, and its sources (§ request
-    2026-10-19): «Inspiración» — the licence lets stock be a background —, an upload or
-    a piece. No catalog tab: the catalog holds products, not places."""
-    return rx.vstack(
-        (
-            _label_with_help(label, label, help_text, size="2", weight="medium")
-            if help_text
-            else rx.text(label, size="2", weight="medium")
-        ),
-        rx.cond(
-            CreativeState.media_background_key != "",
-            _preview_thumb(
-                CreativeState.media_background_key,
-                CreativeState.clear_background,
-                "Quitar fondo",
-            ),
-        ),
-        _media_picker(
-            "background",
-            _upload_zone(
-                "creative_background",
-                hint,
-                CreativeState.handle_background_upload,
-                multiple=False,
-            ),
-        ),
-        spacing="2",
-        width="100%",
-        align_items="start",
-    )
 
 
 def _products_upload(label: str) -> rx.Component:
@@ -2928,16 +3140,7 @@ def _products_upload(label: str) -> rx.Component:
                 spacing="2",
             ),
         ),
-        _media_picker(
-            "products",
-            _upload_zone(
-                "creative_products",
-                "Arrastra una o varias fotos de producto (hasta 10). Con fondo transparente"
-                " quedan mejor.",
-                CreativeState.handle_product_uploads,
-                multiple=True,
-            ),
-        ),
+        _slot_open_button("products"),
         # § 2026-10-09: no «Hacerlo carrusel» here any more — the carousel is its own kind
         spacing="2",
         width="100%",
@@ -2946,9 +3149,13 @@ def _products_upload(label: str) -> rx.Component:
 
 
 def _upload_error() -> rx.Component:
-    return rx.cond(
-        CreativeState.upload_error != "",
-        rx.text(CreativeState.upload_error, size="1", color=T.tone_color("error", 11)),
+    # always mounted, `role="alert"`: a refusal is announced the moment it appears
+    return rx.box(
+        rx.cond(
+            CreativeState.upload_error != "",
+            rx.text(CreativeState.upload_error, size="1", color=T.tone_color("error", 11)),
+        ),
+        role="alert",
     )
 
 
@@ -3143,114 +3350,6 @@ def _carousel_strip() -> rx.Component:
     )
 
 
-def _slide_photo() -> rx.Component:
-    """The open slide's product photo (§ 2026-10-14): none by default; picked among the
-    catalog product's photos, uploaded or taken from a piece — the same tile again
-    takes it off, and without one the scene comes from its words alone."""
-    current = CreativeState.carousel_current
-    return _slide_panel(
-        _label_with_help(
-            "Foto del producto",
-            "Foto del producto",
-            "La foto que la IA usa de referencia para que tu producto salga igual (forma, "
-            "colores, etiqueta): del catálogo, subida o de una publicación que ya hiciste. Si no "
-            "eliges ninguna, la escena se crea solo con tu descripción.",
-            size="1",
-            color=T.TEXT_MUTED,
-        ),
-        rx.vstack(
-            rx.cond(
-                current["photo_key"] != "",
-                rx.hstack(
-                    _clip_thumb(current["photo_key"], size="6rem"),
-                    rx.vstack(
-                        rx.text(current["photo_name"], size="2"),
-                        rx.button(
-                            rx.icon("x", size=12),
-                            "Quitar",
-                            variant="ghost",
-                            color_scheme="gray",
-                            size="1",
-                            on_click=CreativeState.clear_slide_photo,
-                        ),
-                        spacing="1",
-                        align_items="start",
-                    ),
-                    spacing="3",
-                    align="end",
-                ),
-                _picker_note("Sin foto: la escena se crea solo con tu descripción."),
-            ),
-            _media_picker(
-                "slide",
-                rx.box(
-                    _upload_zone(
-                        "creative_slide_photo",
-                        "Arrastra la foto o haz clic",
-                        CreativeState.handle_slide_photo_upload,
-                        multiple=False,
-                    ),
-                    width="100%",
-                    max_width="20rem",
-                ),
-            ),
-            spacing="3",
-            width="100%",
-            align_items="start",
-        ),
-        width="100%",
-    )
-
-
-#: The guide slide's product choice (live test 2026-11-03).
-SLIDE_GUIDE_LABEL = "Producto que aparece en esta diapositiva"
-SLIDE_GUIDE_HINT = (
-    "Tu foto de inspiración solo guía cómo se ve la escena. Elige cuál de tus productos "
-    "aparece en ella; si no cambias nada, usamos el primero."
-)
-
-
-def _slide_guide_product() -> rx.Component:
-    """When the open slide's photo is an inspiration guide and the gallery has product
-    photos: which one appears in it (the first by default), one tap to change it."""
-    return _slide_panel(
-        rx.text(SLIDE_GUIDE_LABEL, size="1", weight="medium", color=T.TEXT_MUTED),
-        rx.vstack(
-            rx.text(SLIDE_GUIDE_HINT, size="1", color=T.TEXT_MUTED),
-            rx.flex(
-                rx.foreach(
-                    CreativeState.slide_guide_choices,
-                    lambda item: choice_card(
-                        rx.box(
-                            _clip_thumb(item["key"], size="4.5rem"),
-                            rx.cond(
-                                item["chosen"] != "",
-                                rx.box(choice_card_check(), class_name="q-cr-ghost-check"),
-                            ),
-                            position="relative",
-                        ),
-                        selected=item["chosen"] != "",
-                        role="radio",
-                        on_select=CreativeState.set_slide_guide_product(item["key"]),
-                        padding="0.3rem",
-                        width="auto",
-                        aria_label=item["name"],
-                        title=item["name"],
-                    ),
-                ),
-                wrap="wrap",
-                spacing="2",
-                role="radiogroup",
-                aria_label=SLIDE_GUIDE_LABEL,
-            ),
-            spacing="2",
-            width="100%",
-            align_items="start",
-        ),
-        width="100%",
-    )
-
-
 def _slide_reference_thumb(key: rx.Var[str]) -> rx.Component:
     """The motion reference held: a piece by its poster, an inspiration or catalog video
     by its first frame (a stock one plays from R2, `_product_video_src`)."""
@@ -3258,85 +3357,6 @@ def _slide_reference_thumb(key: rx.Var[str]) -> rx.Component:
         CreativeState.piece_views.contains(key),
         _slide_thumb(CreativeState.piece_views[key].to(str), rx.Var.create("video"), "4.5rem"),
         _video_thumb(_product_video_src(key)),
-    )
-
-
-def _slide_media() -> rx.Component:
-    """An animated slide's files (§ request 2026-10-20: «cuando se quiera un video se
-    junten … videos e imágenes»): ONE picker where every tab shows images and videos
-    together — an image is the product photo the scene is generated from, a video the
-    motion reference the animation follows (never shown in the gallery). One of each."""
-    current = CreativeState.carousel_current
-    photo = rx.hstack(
-        _removable(
-            _clip_thumb(current["photo_key"]), CreativeState.clear_slide_photo, "Quitar foto"
-        ),
-        rx.vstack(
-            rx.text("Foto del producto", size="1", weight="medium"),
-            rx.text(current["photo_name"], size="1", color=T.TEXT_MUTED),
-            spacing="0",
-            align_items="start",
-        ),
-        spacing="2",
-        align="center",
-    )
-    reference = rx.hstack(
-        _removable(
-            _slide_reference_thumb(current["ref_key"]),
-            CreativeState.clear_slide_reference,
-            "Quitar video",
-        ),
-        rx.vstack(
-            rx.text("Video de referencia", size="1", weight="medium"),
-            rx.text(current["ref_name"], size="1", color=T.TEXT_MUTED),
-            spacing="0",
-            align_items="start",
-        ),
-        spacing="2",
-        align="center",
-    )
-    return _slide_panel(
-        _label_with_help(
-            "Imágenes y video",
-            "Imágenes y video",
-            "Elige una foto y, si quieres, un video, de donde estén: tu catálogo, tu "
-            "inspiración, tus publicaciones o subidos. La foto es la referencia para que tu "
-            "producto salga igual; el video, el movimiento de cámara y el ritmo que sigue "
-            "la animación (no aparece en el carrusel).",
-            size="1",
-            color=T.TEXT_MUTED,
-        ),
-        rx.vstack(
-            rx.cond(
-                (current["photo_key"] != "") | (current["ref_key"] != ""),
-                rx.flex(
-                    rx.cond(current["photo_key"] != "", photo),
-                    rx.cond(current["ref_key"] != "", reference),
-                    wrap="wrap",
-                    spacing="4",
-                ),
-                _picker_note("Sin foto ni video: la escena se crea solo con tu descripción."),
-            ),
-            _mixed_media_picker(
-                "slide_media",
-                rx.box(
-                    _clip_drop(
-                        "creative_slide_media",
-                        "Arrastra una foto y/o un video, o haz clic",
-                        "JPG, PNG o WEBP · MP4 o MOV hasta 200 MB",
-                        {**_CLIP_IMAGE_ACCEPT, **_CLIP_VIDEO_ACCEPT},
-                        CreativeState.handle_slide_media_upload,
-                        max_files=2,
-                    ),
-                    width="100%",
-                    max_width="20rem",
-                ),
-            ),
-            spacing="3",
-            width="100%",
-            align_items="start",
-        ),
-        width="100%",
     )
 
 
@@ -3349,6 +3369,155 @@ def _slide_panel(label: rx.Component, control: rx.Component, **props: object) ->
         padding="0.75rem 0.9rem",
         class_name="q-cr-tray",
         **props,
+    )
+
+
+def _slide_element(
+    label: str,
+    key: rx.Var[str],
+    which: str,
+    noun: str,
+    *,
+    chosen_word: str = "Elegida",
+    video: bool = False,
+    on_remove: object,
+) -> rx.Component:
+    """One element of the open slide (round 14, «Uno para todo»): its picture or «Sin
+    …», «Elegir …» / «Cambiar …» — the media drawer on that slot, closed when it holds
+    the file — and «Quitar …»."""
+    has = key != ""
+    return rx.hstack(
+        rx.cond(
+            has,
+            _reference_video_thumb(key, size="3.5rem")
+            if video
+            else _clip_thumb(key, size="3.5rem"),
+            rx.center(
+                rx.icon("film" if video else "image-off", size=T.ICON_SM),
+                width="3.5rem",
+                height="3.5rem",
+                color=T.TEXT_FAINT,
+                flex_shrink="0",
+            ),
+        ),
+        rx.vstack(
+            rx.text(label, size="1", color=T.TEXT_MUTED),
+            rx.text(rx.cond(has, chosen_word, f"Sin {noun}"), size="2"),
+            spacing="0",
+            flex="1",
+            min_width="0",
+        ),
+        rx.flex(
+            rx.button(
+                rx.cond(has, f"Cambiar {noun}", f"Elegir {noun}"),
+                variant="soft",
+                color_scheme="gray",
+                size="2",
+                min_height="44px",
+                id=f"slide-open-{which}",
+                aria_haspopup="dialog",
+                on_click=CreativeState.open_slide_drawer(which),
+            ),
+            rx.cond(
+                has,
+                rx.button(
+                    f"Quitar {noun}",
+                    variant="ghost",
+                    color_scheme="gray",
+                    size="2",
+                    min_height="44px",
+                    on_click=on_remove,
+                ),
+            ),
+            gap="0.5rem",
+            wrap="wrap",
+            justify="end",
+        ),
+        align="center",
+        width="100%",
+        spacing="3",
+    )
+
+
+SLIDE_BACKGROUND_NOTE = "El fondo es el mismo en todas las diapositivas."
+
+
+def _slide_assignment(animated: rx.Var[bool]) -> rx.Component:
+    """Round 14 (Deivid, «Uno para todo»): what the open slide shows, chosen here — its
+    photo (the product), its style (a guide), its motion (an animated one) and the
+    background, ONE for the whole carousel, with «Usar el fondo» for this slide."""
+    plan = CreativeState.carousel_current_plan
+    current = CreativeState.carousel_current
+    index = CreativeState.carousel_selected
+    return _slide_panel(
+        rx.text("Lo que sale en esta diapositiva", size="1", color=T.TEXT_MUTED),
+        rx.vstack(
+            _slide_element(
+                "Foto",
+                plan["photo"].to(str),
+                "photo",
+                "foto",
+                on_remove=CreativeState.clear_slide_photo,
+            ),
+            _slide_element(
+                "Estilo",
+                plan["guide"].to(str),
+                "style",
+                "estilo",
+                chosen_word="Elegido",
+                on_remove=CreativeState.clear_slide_style,
+            ),
+            rx.cond(
+                animated,
+                _slide_element(
+                    "Movimiento",
+                    plan["motion"].to(str),
+                    "motion",
+                    "movimiento",
+                    chosen_word="Elegido",
+                    video=True,
+                    on_remove=CreativeState.clear_slide_reference,
+                ),
+            ),
+            _slide_element(
+                "Fondo",
+                CreativeState.media_background_key,
+                "background",
+                "fondo",
+                chosen_word="Elegido",
+                on_remove=CreativeState.clear_background,
+            ),
+            rx.cond(
+                CreativeState.media_background_key != "",
+                rx.vstack(
+                    rx.text(SLIDE_BACKGROUND_NOTE, size="1", color=T.TEXT_MUTED),
+                    _switch_row(
+                        "Usar el fondo",
+                        current["background"] != "",
+                        lambda _: CreativeState.toggle_slide_background(index),
+                    ),
+                    spacing="1",
+                    width="100%",
+                ),
+            ),
+            spacing="3",
+            width="100%",
+        ),
+        width="100%",
+    )
+
+
+def _switch_row(label: str, checked: rx.Var[bool], on_change: object) -> rx.Component:
+    """A switch and its words in one label (the words toggle it too), 44 px tall."""
+    return rx.el.label(
+        rx.hstack(
+            rx.switch(checked=checked, on_change=on_change, size="2"),
+            rx.text(label, size="2"),
+            spacing="2",
+            align="center",
+            min_height="44px",
+        ),
+        cursor="pointer",
     )
 
 
@@ -3369,19 +3538,6 @@ def _slide_generated_fields() -> rx.Component:
                 max_length=600,
                 width="100%",
             ),
-            rx.cond(
-                CreativeState.media_background_key != "",
-                rx.hstack(
-                    rx.switch(
-                        checked=current["background"] != "",
-                        on_change=lambda _: CreativeState.toggle_slide_background(index),
-                        size="1",
-                    ),
-                    rx.text("Usar el fondo común", size="1"),
-                    spacing="2",
-                    align="center",
-                ),
-            ),
             spacing="2",
             width="100%",
         ),
@@ -3396,15 +3552,10 @@ def _slide_generated_fields() -> rx.Component:
             spacing="1",
             align="center",
         ),
-        rx.hstack(
-            rx.switch(
-                checked=current["text"] == "hook",
-                on_change=lambda _: CreativeState.toggle_slide_title(index),
-                size="2",
-            ),
-            rx.text("Poner el gancho encima de esta diapositiva", size="2"),
-            spacing="2",
-            align="center",
+        _switch_row(
+            "Poner el gancho encima de esta diapositiva",
+            current["text"] == "hook",
+            lambda _: CreativeState.toggle_slide_title(index),
         ),
         width="100%",
     )
@@ -3433,9 +3584,7 @@ def _slide_generated_fields() -> rx.Component:
     # what it shows, then its text beside its length (a phone stacks them). An animated
     # slide takes its photo and its motion video from ONE picker (§ request 2026-10-20)
     return rx.vstack(
-        rx.cond(animated, _slide_media(), _slide_photo()),
-        # live test 2026-11-03: an inspiration photo is a guide — which product it shows
-        rx.cond(CreativeState.slide_guide_choices.length() > 0, _slide_guide_product()),
+        _slide_assignment(animated),
         what_it_shows,
         rx.grid(
             text,
@@ -3657,14 +3806,6 @@ def _carousel_section() -> rx.Component:
     slides — dragged to reorder, a click opens one in the editor below, where its kind
     changes. One video at most; no closing slide."""
     return rx.vstack(
-        _background_upload(
-            "Fondo común (opcional)",
-            BACKGROUND_UPLOAD_HINT + " Cada diapositiva elige si la usa.",
-            help_text=(
-                "Una foto de tu local o del lugar donde quieres ver tu producto. Sirve para "
-                "todo el carrusel: en cada diapositiva decides si se usa."
-            ),
-        ),
         _upload_error(),
         rx.divider(),
         _field_label(
@@ -3691,14 +3832,8 @@ def _ad_image_section() -> rx.Component:
     optional since 2026-10-12, no picker: whatever is uploaded is used (`AdImageMode`
     derived in the state); the words and the logo are set on top. Its scene is asked in
     «Contexto», like every option's context (§ request 2026-10-20)."""
-    return rx.vstack(
-        _background_upload("Foto del fondo (opcional)", BACKGROUND_UPLOAD_HINT),
-        _products_upload("Foto del producto (opcional)"),
-        _upload_error(),
-        spacing="2",
-        width="100%",
-        align_items="start",
-    )
+    # m-24985141 round 11: the single list with a category, like the avatar's
+    return _images_section()
 
 
 def _voice_select() -> rx.Component:
@@ -4089,7 +4224,7 @@ def _catalog_card(item: rx.Var[dict[str, str]]) -> rx.Component:
             ),
             key=item["id"],
             selected=selected,
-            on_select=CreativeState.choose_product(item["id"]),
+            on_select=CreativeState.pick_catalog_product(item["id"]),
             padding="0.3rem",
             width="100%",
             aria_label=item["name"],
@@ -4119,7 +4254,8 @@ def _section_topic() -> rx.Component:
         ),
         rx.cond(
             flyer,
-            "Qué se ve, dónde y cómo se siente. Es lo único obligatorio.",
+            "Qué se ve, dónde y cómo se siente. Es lo único obligatorio. La imagen sale sin "
+            "letras ni precios: escríbelos en el texto de la publicación.",
             "Un contexto general: de qué trata, qué debe transmitir, a quién le habla y "
             "cualquier detalle que importe. Es lo único obligatorio.",
         ),
@@ -4129,9 +4265,10 @@ def _section_topic() -> rx.Component:
             rx.text_area(
                 value=CreativeState.ad_scene_prompt,
                 on_change=CreativeState.set_ad_scene_prompt,
+                id=CONTEXT_FIELD_ID,
                 placeholder=(
-                    "Una mano sosteniendo el vaso a la altura del pecho, la etiqueta de "
-                    "frente, con el local desenfocado detrás y luz cálida…"
+                    "Una mano sosteniendo el vaso a la altura del pecho, de frente, con el "
+                    "local desenfocado detrás y luz cálida…"
                 ),
                 width="100%",
                 rows="5",
@@ -4140,6 +4277,7 @@ def _section_topic() -> rx.Component:
             rx.text_area(
                 value=CreativeState.brief_topic,
                 on_change=CreativeState.set_brief_topic,
+                id=CONTEXT_FIELD_ID,
                 placeholder=(
                     "Ej.: quiero mostrar nuestra hamburguesa doble con papas, en promo solo "
                     "este fin de semana. Que se sienta antojable y cercano, para gente joven "
@@ -4150,6 +4288,11 @@ def _section_topic() -> rx.Component:
             ),
         ),
         _context_ai_tools(),
+        # m-25026509: only a clip asks who the video talks to — in plain view, under the
+        # sentence and «Mejorar mi texto», so both stay on the first screen
+        rx.cond(
+            CreativeState.brief_kind == "clip", audience_question("clip-audience", closable=True)
+        ),
     )
 
 
@@ -4183,52 +4326,160 @@ def _carried_text_notice() -> rx.Component:
     )
 
 
-def _context_ai_tools() -> rx.Component:
-    """«Potenciar con IA» (§ request 2026-10-20): the text above rewritten into a fuller
-    brief with the Brand Kit and the «Datos clave» — no invented facts — before anything
-    is generated; «Deshacer» brings the operator's own words back."""
+#: m-25017274: what «Mejorar mi texto» says around its three cards.
+ENHANCE_LABEL = "Mejorar mi texto"
+ENHANCE_BUSY_LABEL = "Mejorando…"
+ENHANCE_HINT = (
+    "Te proponemos versiones con lo que sabemos de tu marca, sin inventar precios ni "
+    "promociones. No gasta creaciones."
+)
+ENHANCE_PICK_TITLE = "Elige una versión"
+ENHANCE_PICK_HINT = "Al tocarla, la copiamos arriba en tu texto. Puedes cambiarla antes de crear."
+ENHANCE_AGAIN_LABEL = "Ver otras versiones"
+ENHANCE_RESTORE_LABEL = "Volver a mi texto"
+
+
+def _context_version_card(version: rx.Var[dict[str, str]], index: rx.Var[int]) -> rx.Component:
+    """One version: its approach in small letters over the whole text, a radio card (the
+    design system's `choice_card`) that fills the field when tapped."""
+    selected = CreativeState.context_chosen == index
+    return choice_card(
+        rx.vstack(
+            rx.hstack(
+                rx.text(version["label"], size="1", weight="medium", color=T.TEXT_MUTED),
+                rx.cond(selected, choice_card_check()),
+                spacing="2",
+                align="center",
+                justify="between",
+                width="100%",
+            ),
+            rx.text(version["text"], size="2", text_align="left", white_space="normal"),
+            spacing="1",
+            align_items="start",
+            width="100%",
+        ),
+        selected=selected,
+        role="radio",
+        disabled=CreativeState.context_enhancing,
+        on_select=CreativeState.choose_context_version(index),
+        padding="0.75rem 1rem",
+        min_height="44px",
+        width="100%",
+        text_align="left",
+    )
+
+
+def _context_versions() -> rx.Component:
+    """The cards of the last press (up to three), «Ver otras versiones» and the way back to the
+    operator's own words (m-25017274). One column: they read whole on a phone. Once the
+    owner edits the text they go (UX review): only «Mejorar mi texto» stays, from the
+    new words. A polite live region, so a screen reader hears the cards arrive."""
     enhancing = CreativeState.context_enhancing
+    return rx.el.div(
+        rx.cond(
+            (CreativeState.context_versions.length() > 0) & ~CreativeState.context_text_edited,
+            _context_versions_block(enhancing),
+        ),
+        aria_live="polite",
+        width="100%",
+    )
+
+
+def _context_versions_block(enhancing: rx.Var[bool]) -> rx.Component:
     return rx.vstack(
+        rx.text(ENHANCE_PICK_TITLE, size="2", weight="medium"),
+        rx.text(ENHANCE_PICK_HINT, size="1", color=T.TEXT_MUTED),
+        rx.el.div(
+            rx.foreach(CreativeState.context_versions, _context_version_card),
+            role="radiogroup",
+            aria_label=ENHANCE_PICK_TITLE,
+            style={"display": "flex", "flexDirection": "column", "gap": "0.5rem"},
+            width="100%",
+        ),
         rx.hstack(
             rx.button(
-                rx.icon("sparkles", size=T.ICON_SM),
-                rx.cond(enhancing, "Mejorando…", "Mejorar mi texto"),
+                rx.icon("refresh-cw", size=T.ICON_SM),
+                ENHANCE_AGAIN_LABEL,
                 variant="soft",
                 size="2",
                 radius=_CONTROL_RADIUS,
+                min_height="44px",
                 loading=enhancing,
-                on_click=CreativeState.enhance_context,
-            ),
-            rx.cond(
-                (CreativeState.context_before_enhance != "") & ~enhancing,
-                rx.button(
-                    rx.icon("undo-2", size=T.ICON_SM),
-                    "Deshacer",
-                    variant="ghost",
-                    color_scheme="gray",
-                    size="2",
-                    on_click=CreativeState.undo_enhance_context,
-                ),
-            ),
-            rx.text(
-                "Ordenamos tu texto con lo que sabemos de tu marca, sin inventar precios ni "
-                "promociones. Revísalo antes de crear.",
-                size="1",
-                color=T.TEXT_MUTED,
-                flex="1",
-                min_width="12rem",
+                on_click=CreativeState.enhance_context(True),
             ),
             spacing="3",
             align="center",
             wrap="wrap",
             width="100%",
         ),
+        spacing="2",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _context_ai_tools() -> rx.Component:
+    """«Mejorar mi texto» (§ request 2026-10-20; three versions since m-25017274): the
+    text above rewritten three ways with the Brand Kit and the «Datos clave» — no invented
+    facts — before anything is generated. The operator's text stays until a card is
+    chosen, and «Volver a mi texto» brings it back."""
+    enhancing = CreativeState.context_enhancing
+    return rx.vstack(
+        # right under the text field (UX review): after a card is chosen on a phone the
+        # field is in view, and the way back sits next to it; it stays after an edit
+        rx.cond(
+            (CreativeState.context_before_enhance != "")
+            & ~CreativeState.context_is_original
+            & ~enhancing,
+            rx.button(
+                rx.icon("undo-2", size=T.ICON_SM),
+                ENHANCE_RESTORE_LABEL,
+                variant="ghost",
+                color_scheme="gray",
+                size="2",
+                min_height="44px",
+                on_click=CreativeState.undo_enhance_context,
+            ),
+        ),
+        rx.cond(
+            # with cards on screen it comes back only once the text was edited: a press
+            # then starts from the new words (otherwise «Ver otras versiones» is the way)
+            (CreativeState.context_versions.length() > 0) & ~CreativeState.context_text_edited,
+            rx.fragment(),
+            rx.hstack(
+                rx.button(
+                    rx.icon("sparkles", size=T.ICON_SM),
+                    rx.cond(enhancing, ENHANCE_BUSY_LABEL, ENHANCE_LABEL),
+                    variant="soft",
+                    size="2",
+                    radius=_CONTROL_RADIUS,
+                    min_height="44px",
+                    loading=enhancing,
+                    on_click=CreativeState.enhance_context(False),
+                ),
+                rx.text(
+                    ENHANCE_HINT,
+                    size="1",
+                    color=T.TEXT_MUTED,
+                    flex="1",
+                    min_width="12rem",
+                ),
+                spacing="3",
+                align="center",
+                wrap="wrap",
+                width="100%",
+            ),
+        ),
+        _context_versions(),
         rx.cond(
             CreativeState.context_enhance_error != "",
             callout(CreativeState.context_enhance_error, "warn"),
         ),
         rx.cond(
-            CreativeState.context_enhance_note != "",
+            # it names «estas versiones»: it goes with the cards
+            (CreativeState.context_enhance_note != "")
+            & (CreativeState.context_versions.length() > 0)
+            & ~CreativeState.context_text_edited,
             callout(CreativeState.context_enhance_note, "warn"),
         ),
         spacing="2",
@@ -4415,16 +4666,8 @@ def _template_details() -> rx.Component:
             CreativeState.selected_product_id != "",
             callout(
                 rx.text(
-                    rx.cond(
-                        CreativeState.product_source == "stock",
-                        rx.fragment(
-                            "Inspiración: ",
-                            rx.text.strong(CreativeState.stock_inspiration_label),
-                        ),
-                        rx.fragment(
-                            "De la Galería: ", rx.text.strong(CreativeState.brief_product_ref)
-                        ),
-                    ),
+                    "Tu producto: ",
+                    rx.text.strong(CreativeState.brief_product_ref),
                     rx.cond(
                         CreativeState.template_photo_count == 1,
                         " · 1 foto",
@@ -4457,7 +4700,7 @@ _DETAILS_HEADINGS: dict[str, tuple[str, str]] = {
         "Imágenes generadas, videos animados o publicaciones que ya hiciste, en el orden "
         "en que salen.",
     ),
-    "video": ("El fondo", "Qué se ve detrás del avatar y, si quieres, un video de referencia."),
+    "video": (clip_gallery_vm.TITLE, AVATAR_REF_HINT),
     "clip": (
         "Fotogramas",
         "La foto con la que empieza el clip y, si quieres, con la que termina.",
@@ -4491,22 +4734,15 @@ def _section_details() -> rx.Component:
             ("carousel", _carousel_section()),
             rx.vstack(
                 # CREAR-2: the script is asked in step 2, «Qué decir»
-                _field_label(
-                    "Fondo y productos",
-                    "Se componen en una sola imagen detrás del avatar.",
-                ),
-                _images_section(),
-                # § request 2026-10-20: no «Referencia» view of its own for an avatar; UX
-                # review (N6): it and the brand resources are folded under «Más opciones»
+                # round 13 (Deivid): like the Clip — ONE references section, its reference
+                # video among them; the brand resources stay under «Más opciones»
+                _images_section(video=True),
                 rx.divider(),
                 _more_options(
                     CreativeState.show_more_open,
                     CreativeState.toggle_show_more,
-                    "Un video de referencia y tus fotos de marca. Puedes crear sin tocarlos.",
+                    "Tus fotos de marca. Puedes crear sin tocarlas.",
                     rx.vstack(
-                        _field_label("Video de referencia (opcional)", _REFERENCE_HINT),
-                        _reference_body(),
-                        rx.cond(CreativeState.brand_media_items.length() > 0, rx.divider()),
                         _brand_resources(folded=False),
                         spacing="4",
                         align_items="start",
@@ -4754,8 +4990,10 @@ def _section_rules() -> rx.Component:
         rx.vstack(
             rx.heading("Datos clave (opcional)", size="4", as_="h3"),
             rx.text(
-                "Lo que la publicación tiene que destacar tal cual: el precio, un descuento, una "
-                "fecha, un código… La IA los usa exactos, sin cambiarlos ni inventar otros.",
+                # m-25017279: from prompt compiler 5 they no longer shape the image
+                "Lo que el texto de la publicación debe decir tal cual: el precio, un "
+                "descuento, una fecha, un código… La IA no los cambia ni inventa otros. Por "
+                "ahora no se dibujan sobre la imagen; revisa el texto antes de aprobar.",
                 size="1",
                 color=T.TEXT_MUTED,
             ),
@@ -5498,7 +5736,9 @@ def _part_media_editor(kind: str) -> rx.Component:
 
     return rx.vstack(
         rx.flex(rx.foreach(held, item), gap="0.5rem", wrap="wrap", width="100%"),
-        _media_picker(target, upload, media_type=kind) if kind != "audio" else upload,
+        # m-24985141: the sheet is a drawer already — the selector goes in line, never
+        # a second drawer
+        media_picker_inline(target, upload, media_type=kind) if kind != "audio" else upload,
         spacing="2",
         width="100%",
         align_items="start",
@@ -5507,7 +5747,7 @@ def _part_media_editor(kind: str) -> rx.Component:
 
 
 def _reel_wait_view() -> rx.Component:
-    """UI-2 (m-24921076): step 2's wait for the reel's analysis, and how it ended. Only
+    """UI-2 (m-24921076): «Qué mostrar»'s wait for the reel's analysis, and how it ended. Only
     for a piece from «Hacer uno parecido» with an analysis in play; mounting it starts
     the poll (one at a time), unmounting stops it."""
     waiting = CreativeState.reel_wait_pending
@@ -5926,7 +6166,9 @@ def _try_first_button() -> rx.Component:
         "width": rx.breakpoints(initial="100%", sm="auto"),
     }
     label = (rx.icon("sparkles", size=T.ICON_SM), reel_parts_vm.TRY_FIRST_LABEL)
-    off = {"aria_disabled": "true", "opacity": "0.55", "cursor": "not-allowed"}
+    # m-24993023: the design system's unavailable greys (`q-button-off`, as the disabled
+    # primary beside it), never a faded accent; `aria-disabled` keeps it focusable
+    off = {"aria_disabled": "true", "class_name": "q-button-off"}
     return rx.cond(
         CreativeState.reel_try_first_reason != "",
         rx.button(*label, aria_describedby=REEL_CREATE_REASON_ID, **off, **look),
@@ -6615,20 +6857,17 @@ def _brand_flag() -> rx.Component:
 
 
 def _generator_body() -> rx.Component:
-    """The product or workspace, shared by the step frame and the non-wizard modes."""
+    """The workspace, shared by the step frame and the non-wizard modes (m-24985141: no
+    product screen before it — the product is optional, chosen in «Tus productos»)."""
     return rx.cond(
         CreativeState.create_loading | ~CreativeState.create_entered,
         card(_loading_view("Cargando el generador"), width="100%"),
-        rx.cond(
-            CreativeState.product_confirmed,
-            rx.box(
-                _options_panel(),
-                _workspace(CreativeState.readiness),
-                class_name="q-cr-layout",
-                width="100%",
-                flex="1",
-            ),
-            _product_screen(),
+        rx.box(
+            _options_panel(),
+            _workspace(CreativeState.readiness),
+            class_name="q-cr-layout",
+            width="100%",
+            flex="1",
         ),
     )
 
@@ -6646,7 +6885,8 @@ def _generator_frame() -> rx.Component:
             ),
         ),
         _generator_body(),
-        _kind_conflict_dialog(),
+        media_drawer(),
+        _product_confirm_dialog(),
         head=rx.cond(
             active,
             step_head(
@@ -6657,14 +6897,11 @@ def _generator_frame() -> rx.Component:
                 # «Hacer uno parecido», back to the ideas; else «‹ Inicio»
                 back_label=CreativeState.create_back_label,
                 on_exit=CreativeState.exit_create,
-                below=rx.cond(
-                    CreativeState.product_confirmed & (CreativeState.generator_view != "result"),
-                    _view_steps(),
-                ),
+                below=rx.cond(CreativeState.generator_view != "result", _view_steps()),
             ),
             page_header(
                 "Crear publicación",
-                "Elige el producto, luego qué quieres crear.",
+                "Elige qué quieres crear.",
                 kicker=rx.cond(
                     (CreativeState.gen_mode == "variations") & VariationsState.has_set,
                     rx.button(
@@ -6701,7 +6938,7 @@ def _generator_frame() -> rx.Component:
                     on_back=CreativeState.create_back,
                     on_later=CreativeState.save_for_later,
                     primary_disabled=CreativeState.create_primary_disabled,
-                    primary_loading=CreativeState.is_submitting | CreativeState.stock_importing,
+                    primary_loading=CreativeState.is_submitting,
                     primary_busy=CreativeState.create_primary_busy,
                     reason=CreativeState.create_reason,
                 ),
@@ -6722,60 +6959,13 @@ def _generator_frame() -> rx.Component:
 
 
 def generator_page() -> rx.Component:
-    """Create's product and four real steps share one frame. Variations remains a form.
-    CM-7 (m-24955928): `/create?medios=…` — what the owner chose in Galería — is its
-    own short screen (`create_gallery_page`), never the product step."""
+    """Create's real steps share one frame. Variations remains a form. CM-7
+    (m-24955928): `/create?medios=…` — what the owner chose in Galería — is its own short
+    screen (`create_gallery_page`), never the generator."""
     from .create_gallery_page import create_gallery_view  # noqa: PLC0415
     from .create_gallery_state import CreateGalleryState  # noqa: PLC0415
 
     return app_shell(rx.cond(CreateGalleryState.active, create_gallery_view(), _generator_frame()))
-
-
-def _kind_conflict_dialog() -> rx.Component:
-    """«Este video no sirve aquí» (§ request 2026-10-16): the product is a stock video
-    and the option picked cannot take one — use it in a Clip or a Carrusel, or change
-    the product."""
-    return rx.alert_dialog.root(
-        rx.alert_dialog.content(
-            rx.alert_dialog.title("Este video no sirve aquí", size="4"),
-            rx.alert_dialog.description(CreativeState.kind_conflict, size="2"),
-            rx.flex(
-                rx.alert_dialog.cancel(
-                    rx.button(
-                        "Cambiar el producto",
-                        variant="soft",
-                        color_scheme="gray",
-                        size="2",
-                        on_click=CreativeState.resolve_kind_conflict("product"),
-                    ),
-                ),
-                rx.alert_dialog.action(
-                    rx.button(
-                        rx.icon("images", size=T.ICON_SM),
-                        "Usar en un Carrusel",
-                        variant="soft",
-                        size="2",
-                        on_click=CreativeState.resolve_kind_conflict("carousel"),
-                    ),
-                ),
-                rx.alert_dialog.action(
-                    rx.button(
-                        rx.icon("clapperboard", size=T.ICON_SM),
-                        "Usar en un Clip",
-                        size="2",
-                        on_click=CreativeState.resolve_kind_conflict("clip"),
-                    ),
-                ),
-                justify="end",
-                gap="0.75rem",
-                margin_top="1.25rem",
-                flex_wrap="wrap",
-            ),
-            max_width="30rem",
-        ),
-        open=CreativeState.kind_conflict != "",
-        on_open_change=CreativeState.set_kind_conflict_open,
-    )
 
 
 def _join_not_ready() -> rx.Var:
@@ -6904,7 +7094,8 @@ def _slide_stock_fields() -> rx.Component:
             rx.text("Texto encima", size="1", color=T.TEXT_MUTED),
             rx.segmented_control.root(
                 rx.segmented_control.item("Título", value="hook"),
-                rx.segmented_control.item("Botón de acción", value="cta"),
+                # m-25017276: printed as text, never a button
+                rx.segmented_control.item("Invitación a comprar o escribir", value="cta"),
                 value=current["text"],
                 on_change=lambda value: CreativeState.set_slide_field(index, "text", value),
                 size="2",

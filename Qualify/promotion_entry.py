@@ -10,11 +10,16 @@ def promotion_event_query(query: rx.Var[str], event_id: rx.Var[str]) -> rx.Var[s
     return query + "&evento=" + event_id
 
 
-def promotion_link(piece_id: rx.Var[str], *, query: rx.Var[str] | str = "") -> rx.Component:
+def promotion_link(
+    piece_id: rx.Var[str],
+    *,
+    query: rx.Var[str] | str = "",
+    label: rx.Var[str] | str = "Promocionar",
+) -> rx.Component:
     return rx.link(
         rx.button(
             rx.icon("megaphone", size=16),
-            "Promocionar",
+            label,
             variant="outline",
             size="2",
             min_height="44px",

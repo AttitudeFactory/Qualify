@@ -19,13 +19,13 @@ from __future__ import annotations
 import re
 import unicodedata
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import NamedTuple
 
 from qualify_creative.ad_destination import AD_CTA_LABELS, AdCTA
-from qualify_creative.enums import ContentType, DraftStatus, ImageRoute
+from qualify_creative.enums import AwarenessLevel, ContentType, DraftStatus, ImageRoute
 from qualify_creative.queue_errors import (
     CANCELLED_TEXT,
     FINAL_EXPIRED_TEXT,
@@ -34,7 +34,13 @@ from qualify_creative.queue_errors import (
     UNCERTAIN_VIDEO_TEXT,
     uncertain_error,
 )
-from qualify_creative.schemas import CopyPayload, ImagePolicy
+from qualify_creative.schemas import (
+    BUSINESS_PERKS_MAX,
+    HASHTAG_HARD_LIMIT,
+    CopyPayload,
+    ImagePolicy,
+    normalize_business_perks,
+)
 
 from .ask_more_vm import balance_with_extras
 
@@ -118,7 +124,7 @@ FAILURE_INFO: dict[str, tuple[str, str, str]] = {
     ),
     "fidelity_rejected": (
         "Ningún texto generado cumplió las reglas de tu marca (palabras prohibidas, "
-        "promesas que no se pueden hacer, largo, emojis o hashtags), así que la "
+        "promesas que no se pueden hacer, largo, emojis o etiquetas), así que la "
         "publicación no se guardó. Reintenta: cada intento escribe textos nuevos.",
         "Reintenta, o revisa las reglas en Tu marca",
         "/brand/kit",
@@ -406,6 +412,78 @@ class KitFormVM:
     has_logo: bool = False
     has_template: bool = False
     ads_destination_url: str = ""
+    #: «Lo que ofrece tu negocio» (`BrandKit.business_perks`), one per line.
+    business_perks: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Who a piece talks to (0166 / m-25026509): the idea cards' tag and the clip's
+# «¿A quién le habla este video?», in the owner's words — never the marketing term.
+
+#: The angle's (or the clip's) `AwarenessLevel` as the owner reads it.
+AUDIENCE_LABELS: dict[AwarenessLevel, str] = {
+    AwarenessLevel.UNAWARE: "Para quien aún no piensa en ti",
+    AwarenessLevel.PROBLEM_AWARE: "Para quien ya busca algo así",
+    AwarenessLevel.SOLUTION_AWARE: "Para quien está comparando opciones",
+    AwarenessLevel.PRODUCT_AWARE: "Para quien te conoce pero no se decide",
+    AwarenessLevel.MOST_AWARE: "Para quien está listo para comprar",
+}
+AUDIENCE_QUESTION = "¿A quién le habla este video?"
+AUDIENCE_HINT = "Así el video le habla a ese cliente. Si no sabes, déjalo en «Sin preferencia»."
+AUDIENCE_NONE_LABEL = "Sin preferencia"
+#: The select's value for «Sin preferencia» (a Radix select item cannot be ""); the
+#: state keeps "" for it.
+AUDIENCE_NONE = "none"
+#: Step 5's row label (shown only when the owner chose someone).
+AUDIENCE_SUMMARY_LABEL = "A quién le habla"
+#: Said instead of the catalog's «Precio» row when the video is for someone who does not
+#: know the business yet: the brief carries no price then (`ContentBrief`).
+AUDIENCE_NO_PRICE = (
+    "Este video no dirá el precio porque es para quien aún no piensa en ti. Elige otra "
+    "opción si quieres mostrarlo."
+)
+#: Step 5's «Datos clave» when that answer hid the catalog's price and nothing else is
+#: there — never «Ninguno», which reads as if the price was lost.
+AUDIENCE_SUMMARY_NO_PRICE = "Sin precio: el video es para quien aún no piensa en ti"
+#: The closed line in «Qué decir» once the parts card asked it: «A quién le habla: …».
+AUDIENCE_CHANGE_LABEL = "Cambiar"
+
+
+def audience_label(level: AwarenessLevel | None) -> str:
+    """The tag for a level; "" (no tag) when there is none."""
+    return AUDIENCE_LABELS.get(level, "") if level is not None else ""
+
+
+def audience_options() -> tuple[tuple[str, str], ...]:
+    """«¿A quién le habla este video?»'s choices as (select value, label): «Sin
+    preferencia» first, then the five readers in funnel order."""
+    return ((AUDIENCE_NONE, AUDIENCE_NONE_LABEL),) + tuple(
+        (level.value, label) for level, label in AUDIENCE_LABELS.items()
+    )
+
+
+def audience_value(raw: object) -> str:
+    """What the state keeps: a level's value, or "" for «Sin preferencia» (and for
+    anything that is not a level)."""
+    text = str(raw or "").strip()
+    return text if text in {level.value for level in AwarenessLevel} else ""
+
+
+def audience_hides_price(value: str) -> bool:
+    """«Para quien aún no piensa en ti»: the video does not mention the price."""
+    return value == AwarenessLevel.UNAWARE.value
+
+
+def perks_count_label(count: int) -> str:
+    """How many perks the owner wrote against what the kit keeps: «3 de 12»."""
+    return f"{count} de {BUSINESS_PERKS_MAX}"
+
+
+def perks_for_save(text: str) -> tuple[str, ...]:
+    """The editor's newline-joined perks as the kit stores them
+    (`normalize_business_perks`): what the owner sees is what is saved, since the editor
+    already holds each one to the kit's limits."""
+    return normalize_business_perks(text)
 
 
 # ---------------------------------------------------------------------------
@@ -532,7 +610,7 @@ def build_route_options(
 #: `qualify_creative.brand.fidelity` in the operator's words.
 HARD_RULES_HINT = (
     "Lo que tu marca no permite: palabras prohibidas, promesas que no se pueden "
-    "hacer, largo del texto, emojis y hashtags fuera de tu política."
+    "hacer, largo del texto, emojis y etiquetas fuera de tu política."
 )
 #: Why a piece carries the AI mark, on its pill's hover.
 AI_LABEL_HINT = (
@@ -666,22 +744,22 @@ _FAILURE_PATTERNS: tuple[tuple[str, re.Pattern[str], Callable[[re.Match[str]], s
     (
         "hashtag_policy",
         re.compile(r"(\d+) hashtags, below the brand minimum of (\d+)"),
-        lambda m: f"Hay {m[1]} hashtags y tu marca pide al menos {m[2]}.",
+        lambda m: f"Hay {m[1]} etiquetas y tu marca pide al menos {m[2]}.",
     ),
     (
         "hashtag_policy",
         re.compile(r"(\d+) hashtags, above the brand maximum of (\d+)"),
-        lambda m: f"Hay {m[1]} hashtags y tu marca permite como máximo {m[2]}.",
+        lambda m: f"Hay {m[1]} etiquetas y tu marca permite como máximo {m[2]}.",
     ),
     (
         "hashtag_policy",
         re.compile(r"hashtag '#(.+)' is on the brand's never list"),
-        lambda m: f"El hashtag #{m[1]} está entre los que tu marca nunca usa.",
+        lambda m: f"La etiqueta #{m[1]} está entre las que tu marca nunca usa.",
     ),
     (
         "hashtag_policy",
         re.compile(r"required hashtag '#(.+)' is missing from the copy"),
-        lambda m: f"Falta el hashtag #{m[1]}, que tu marca usa siempre.",
+        lambda m: f"Falta la etiqueta #{m[1]}, que tu marca usa siempre.",
     ),
 )
 
@@ -936,9 +1014,29 @@ KIND_OPTIONS: tuple[tuple[str, str, str, str], ...] = (
         "film",
     ),
 )
-#: Kinds a piece can be that «¿Qué creamos?» does not offer: a video by parts (ADR 44) is
-#: reached from a Clip or a reel, but the piece still needs its name (pill, download).
-_UNLISTED_KIND_LABELS: dict[str, str] = {"shot_video": "Video por partes"}
+#: Kinds a piece can be that «¿Qué creamos?» does not offer (`ContentKind.is_offered`): a
+#: video by parts (ADR 44) is reached from a Clip or a reel; an own-media piece is what the
+#: owner published from «Publicar» (m-25019217). Both still need their name (pill, download).
+#: `ContentKind.OWN_MEDIA` (m-25019217).
+OWN_MEDIA_KIND = "own_media"
+#: `ReuseType.PROMOCIONAL` — published once, never offered again.
+_ONE_SHOT_REUSE = "promocional"
+#: m-25019220: what a view-only upload says on its card and next to its picture.
+VIEW_ONLY_NOTE = "Solo para ver: no encontramos tu foto original, guardamos la de Instagram."
+
+
+def is_view_only_upload(kind: str | None, reuse_type: str | None) -> bool:
+    """THE definition of a view-only own upload (m-25019220): a past «Publicar»
+    publication whose original file was not recovered, so the backfill kept Instagram's
+    lower-quality copy and recorded it as one-shot (`promocional`) — it can be seen and
+    downloaded, never scheduled again. A recovered one is `recurrente` (reusable)."""
+    return kind == OWN_MEDIA_KIND and reuse_type == _ONE_SHOT_REUSE
+
+
+_UNLISTED_KIND_LABELS: dict[str, str] = {
+    "shot_video": "Video por partes",
+    "own_media": "Subida por ti",
+}
 KIND_LABELS: dict[str, str] = {
     **{key: title for key, title, _, _ in KIND_OPTIONS},
     **_UNLISTED_KIND_LABELS,
@@ -1101,8 +1199,14 @@ class DraftVM:
     #: What the composition had to leave out (ticket 24803289: a catalog price that
     #: could not be printed whole), in the operator's words.
     warnings: tuple[str, ...] = ()
-    #: The copy may be edited (the FSM's `edit` edge exists from this status).
+    #: The copy may be edited (the FSM's `edit` edge exists from this status) — never on
+    #: an own-media piece (m-25019217).
     can_edit: bool = False
+    #: m-25019217: the owner's photo or video published from «Publicar» — never
+    #: generated, so nothing that makes, remakes or edits a piece is offered on it.
+    is_own_media: bool = False
+    #: m-25019220: a view-only upload's line next to its picture (`VIEW_ONLY_NOTE`), "".
+    view_only_note: str = ""
     #: «Descargar todo» (m-24828908): the backend path of the piece's `.zip` and its file
     #: name — "" while there is nothing to download (a draft still generating).
     download_path: str = ""
@@ -1507,6 +1611,7 @@ def build_draft_vm(
     warnings: Sequence[str] = (),
     waiting_vendor: bool = False,
     source_reel: Mapping[str, object] | None = None,
+    reuse_type: str | None = None,
 ) -> DraftVM:
     """Assemble the detail view-model. `can_approve` is the FSM fact (only a GENERATED
     draft has the approve edge); which VARIANT may be approved is per-variant `passed` —
@@ -1522,7 +1627,10 @@ def build_draft_vm(
         fidelity_summary = "Cumple las reglas de tu marca"
     else:
         fidelity_summary = f"{passing} de {len(variants)} textos cumplen las reglas de tu marca"
-    can_approve = status == DraftStatus.GENERATED.value
+    own_media = kind == OWN_MEDIA_KIND
+    if own_media:  # m-25019224: Qualify never checked the owner's own text
+        fidelity_summary = ""
+    can_approve = status == DraftStatus.GENERATED.value and not own_media
     blocking_reason: str | None = None
     if can_approve and variants and passing == 0:
         can_approve = False
@@ -1539,8 +1647,10 @@ def build_draft_vm(
         cost_short=format_cost_label(total_cost_usd, None, ()),
         can_approve=can_approve,
         # an approved piece is rejected from Piezas, where the calendar is known
-        can_reject=status == DraftStatus.GENERATED.value,
-        can_regenerate=status in (DraftStatus.GENERATED.value, DraftStatus.REJECTED.value),
+        can_reject=status == DraftStatus.GENERATED.value and not own_media,
+        # m-25019224 (code review): never offered on an own upload, whatever its status
+        can_regenerate=status in (DraftStatus.GENERATED.value, DraftStatus.REJECTED.value)
+        and not own_media,
         blocking_reason=blocking_reason,
         failure=failure_vm(failure_reason, failure_detail or ""),
         requires_ai_disclosure=requires_ai_disclosure,
@@ -1556,7 +1666,11 @@ def build_draft_vm(
         has_script=kind in ("creator_script", "avatar_video", "animated_avatar_video"),
         failure_detail=failure_detail or "",
         warnings=tuple(warnings),
-        can_edit=status in EDITABLE_DRAFT_STATUSES,
+        # m-25019217: the owner's own upload is what went out, word for word — editing
+        # it would send it back to «Por aprobar», where it never belongs.
+        can_edit=status in EDITABLE_DRAFT_STATUSES and not own_media,
+        is_own_media=own_media,
+        view_only_note=VIEW_ONLY_NOTE if is_view_only_upload(kind, reuse_type) else "",
         waiting_vendor=waiting_vendor and status == DraftStatus.DRAFTING.value,
         source_reel_note=source_note,
         source_reel_url=source_url,
@@ -1748,6 +1862,13 @@ __all__ = [
     "build_draft_summary_vm",
     "build_draft_vm",
     "build_readiness_vm",
+    "AUDIENCE_LABELS",
+    "audience_hides_price",
+    "audience_label",
+    "audience_options",
+    "audience_value",
+    "perks_count_label",
+    "perks_for_save",
     "build_recipe_options",
     "build_route_options",
     "build_variant_vm",
@@ -1792,7 +1913,10 @@ _HASHTAG_STOPWORDS: frozenset[str] = frozenset(
     your from have will just more about into
     """.split()
 )
-HASHTAG_LIMIT = 30  # Instagram's own limit per post
+HASHTAG_LIMIT = HASHTAG_HARD_LIMIT  # what Meta's API accepts per post
+#: m-25026376 (founder, 2026-11-13): five well-chosen tags. The Instagram app keeps posts
+#: to five, but the API takes up to 30 — so more than five only warns, never blocks.
+HASHTAG_RECOMMENDED = 5
 CAPTION_LIMIT = 2200
 HOOK_LIMIT = 60
 
@@ -1889,7 +2013,13 @@ def format_ctas(items: list[str]) -> str:
 #: The label of the fact the chosen catalog product's price fills in.
 PRICE_FACT_LABEL = "Precio"
 #: The grey hint under that row.
-PRICE_FACT_HINT = "Viene de la Galería. Si lo cambias, allí también cambia al crear la publicación."
+PRICE_FACT_HINT = (
+    "Viene de la Galería. Si lo cambias, allí también cambia al crear la publicación. "
+    # m-25017276: no price pill on the image; the copy prompt asks to feature it, but
+    # nothing guarantees the caption carries it
+    "El precio no se dibuja sobre la imagen. Si quieres que se vea, escríbelo en el texto "
+    "de la publicación."
+)
 #: Another tab (or the Catálogo screen) changed the price while the piece was made.
 PRICE_CHANGED_ELSEWHERE = (
     "El precio en la Galería cambió mientras se creaba la publicación; no lo tocamos."
@@ -2224,6 +2354,71 @@ class HashtagIdeaVM:
     kind: str  # popular / nicho / marca
     reason: str
     seen_label: str = ""  # "visto 1.2k veces" when the catalog has seen it on real posts
+    best: bool = False  # among the first HASHTAG_RECOMMENDED of the AI's own order
+
+
+def mark_best_ideas(
+    ideas: list[HashtagIdeaVM], limit: int = HASHTAG_RECOMMENDED
+) -> list[HashtagIdeaVM]:
+    """m-25026376: `suggest_for_caption` returns its picks best first, so the best are
+    simply the first `limit` of that order — marked, never reordered."""
+    return [replace(idea, best=i < limit) for i, idea in enumerate(ideas)]
+
+
+def best_ideas_to_add(ideas: list[HashtagIdeaVM], chosen: list[str]) -> list[str]:
+    """What «Agregar las N mejores» really adds: the marked ideas not chosen yet, only up
+    to the recommended five counting what the piece already carries (3 chosen → 2 more),
+    and never past the hard cap. Nothing when there is no room."""
+    taken = set(chosen)
+    room = max(0, min(HASHTAG_RECOMMENDED, HASHTAG_LIMIT) - len(chosen))
+    return [i.tag for i in ideas if i.best and i.tag not in taken][:room]
+
+
+def best_ideas_button_label(count: int) -> str:
+    """«Agregar las 3 mejores»: the number is what the button will really add."""
+    if count <= 0:
+        return ""
+    if count == 1:
+        return "Agregar la mejor"
+    return f"Agregar las {count} mejores"
+
+
+#: The tooltip of a marked idea, and the visible word next to its star (UX: never
+#: an icon alone).
+BEST_IDEA_HINT = "Una de las que más te sirven"
+BEST_IDEA_MARK = "Mejor"
+#: What the panel says about the mark — no number: fewer than five may come back.
+BEST_IDEAS_EXPLAINED = (
+    "Leemos tu texto y te proponemos etiquetas populares, de tu tipo de negocio y de tu "
+    "zona. Las marcadas como «Mejor» son las que más te sirven."
+)
+
+
+def hashtag_count_label(count: int, recommended: int = HASHTAG_RECOMMENDED) -> str:
+    """«6 de 5 recomendadas»: the number on screen is the advice, not the hard cap of 30
+    (still enforced by `add_hashtag`)."""
+    return f"{count} de {recommended} recomendadas"
+
+
+def hashtags_over_notice(
+    count: int,
+    *,
+    editing: bool = True,
+    can_edit: bool = True,
+    recommended: int = HASHTAG_RECOMMENDED,
+) -> str:
+    """One line when a publication carries more than the recommended tags. It informs
+    only: the owner can still approve and publish (the API takes up to 30). The gesture
+    named is the real one: the chips' × while editing, «Editar texto» otherwise. A piece
+    that can no longer be edited (scheduled, published) gets nothing: there is nothing
+    left to do about it."""
+    if count <= recommended or not (editing or can_edit):
+        return ""
+    how = "toca la × para quitar" if editing else "toca «Editar texto» y quita"
+    return (
+        f"Tienes {count} etiquetas. Con {recommended} bien elegidas basta: {how} las que "
+        "sobren. Igual puedes aprobar y publicar."
+    )
 
 
 def seen_label(count: int) -> str:

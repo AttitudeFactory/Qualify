@@ -62,6 +62,8 @@ def apply_to_creative(
         return False
     if story:
         creative.brief_topic = story
+        # m-25017274 review: cards written for the old text never stay under the new one
+        creative._forget_context_versions()
     creative._reel_removed = []
     creative._set_reel_plan(entries)
     # no reel's «Este reel no cambia de escena.» rides on a plan without one
@@ -202,6 +204,8 @@ class PartsStartState(rx.State):
                 return
             product_id = creative.selected_product_id
             product_name = creative.brief_product_ref
+            # m-25026509: the same answer step 3 shows — one value, two places
+            awareness_level = creative.clip_audience_level()
             token = uuid.uuid4().hex
             self._token = token
             self.phase = vm.PHASE_PROPOSING
@@ -229,6 +233,7 @@ class PartsStartState(rx.State):
                 story=story,
                 product_id=product_id,
                 product_name=product_name,
+                awareness_level=awareness_level,
             )
         )
         stage = 0

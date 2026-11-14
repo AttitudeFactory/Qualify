@@ -273,7 +273,7 @@ def test_the_review_editor_adds_and_removes_hashtags_and_uses_a_cta(monkeypatch)
     assert state.edit_hashtag_query == ""
     state.remove_hashtag("promo")
     assert state.edit_hashtag_chips == ["hamburguesas", "viernes"]
-    assert state.hashtag_count_label == "2/30"
+    assert state.hashtag_count_label == "2 de 5 recomendadas"
     # Several calls to action, kept as one list in the `cta` field.
     state.edit_cta = ""
     state.add_cta("Escríbenos por DM")
@@ -301,8 +301,87 @@ def test_ai_hashtag_ideas_are_grouped_and_hide_once_chosen(monkeypatch) -> None:
     assert [h.tag for h in state.ai_brand] == ["caracas"]
     state.add_hashtag("postres")
     assert state.ai_popular == [] and state.ai_pending_count == 2
+    state.add_all_ai_hashtags()  # none is marked best: nothing more is added
+    assert state.edit_hashtag_chips == ["postres"]
+
+
+def test_ai_suggestions_mark_the_five_best_and_add_only_those(monkeypatch) -> None:
+    """m-25026376: the picks come best first; the first five are marked and «Agregar las
+    5 mejores» adds only those, not the twelve."""
+    from .creative_vm import HashtagIdeaVM, mark_best_ideas
+
+    state = _state(monkeypatch)
+    kinds = ("popular", "nicho", "marca")
+    state.ai_hashtags = mark_best_ideas(
+        [HashtagIdeaVM(tag=f"tag{i}", kind=kinds[i % 3], reason="r") for i in range(12)]
+    )
+    assert [h.tag for h in state.ai_hashtags if h.best] == [f"tag{i}" for i in range(5)]
+    assert state.ai_best_pending_count == 5
+    assert state.ai_best_button_label == "Agregar las 5 mejores"
+    state.add_hashtag("tag1")
+    assert state.ai_best_button_label == "Agregar las 4 mejores"
     state.add_all_ai_hashtags()
-    assert state.edit_hashtag_chips == ["postres", "heladoartesanal", "caracas"]
+    assert state.edit_hashtag_chips == ["tag1", "tag0", "tag2", "tag3", "tag4"]
+    assert state.ai_best_pending_count == 0 and state.ai_best_button_label == ""
+    assert state.hashtags_over_notice == ""
+
+
+def test_bulk_add_counts_the_tags_already_on_the_piece(monkeypatch) -> None:
+    """m-25026376 (review): 3 chosen + «Agregar» = 5, never 8; nothing to add → no button."""
+    from .creative_vm import HashtagIdeaVM, mark_best_ideas
+
+    state = _state(monkeypatch)
+    state.edit_hashtags = "#uno #dos #tres"
+    state.ai_hashtags = mark_best_ideas(
+        [HashtagIdeaVM(tag=f"tag{i}", kind="nicho", reason="r") for i in range(8)]
+    )
+    assert state.ai_best_to_add == ["tag0", "tag1"]
+    assert state.ai_best_button_label == "Agregar las 2 mejores"
+    state.add_all_ai_hashtags()
+    assert state.edit_hashtag_chips == ["uno", "dos", "tres", "tag0", "tag1"]
+    assert state.ai_best_pending_count == 0 and state.ai_best_button_label == ""
+    state.add_all_ai_hashtags()  # a stale click adds nothing
+    assert len(state.edit_hashtag_chips) == 5
+
+
+def test_more_than_five_tags_warns_without_blocking(monkeypatch) -> None:
+    """m-25026376: past five, one line; the hard cap stays at 30 (what Meta's API takes)."""
+    state = _state(monkeypatch)
+    state.edit_hashtags = " ".join(f"#t{i}" for i in range(6))
+    state.edit_mode = False
+    state.draft = _tags_draft(can_edit=True)  # in review: «Editar texto» is there
+    assert state.hashtags_over_notice == (
+        "Tienes 6 etiquetas. Con 5 bien elegidas basta: toca «Editar texto» y quita las "
+        "que sobren. Igual puedes aprobar y publicar."
+    )
+    state.edit_mode = True
+    assert "toca la × para quitar las que sobren" in state.hashtags_over_notice
+    state.add_hashtag(" ".join(f"x{i}" for i in range(40)))
+    assert len(state.edit_hashtag_chips) == 30  # the hard cap still holds
+    assert state.hashtag_count_label == "30 de 5 recomendadas"
+
+
+def _tags_draft(*, can_edit: bool) -> DraftVM:
+    return DraftVM(
+        draft_id="d1",
+        status="generated" if can_edit else "published",
+        status_label="Por revisar" if can_edit else "Publicada",
+        status_tone="gray",
+        variants=(),
+        can_edit=can_edit,
+    )
+
+
+def test_no_over_five_notice_on_a_piece_that_cannot_be_edited(monkeypatch) -> None:
+    """m-25026376 (re-review): a scheduled or published piece has no «Editar texto» and
+    is already out — the notice would point at nothing, so it is not shown."""
+    state = _state(monkeypatch)
+    state.edit_hashtags = " ".join(f"#t{i}" for i in range(8))
+    state.edit_mode = False
+    state.draft = _tags_draft(can_edit=False)
+    assert state.hashtags_over_notice == ""
+    state.draft = None
+    assert state.hashtags_over_notice == ""
 
 
 def test_caption_rules_show_under_the_caption(monkeypatch) -> None:
@@ -776,3 +855,174 @@ def test_the_final_polls_light_read_is_the_screens_own_state(monkeypatch) -> Non
     never_ordered = creative_provider.final_video_state(_TENANT_ID, UUID(int=21))
     assert never_ordered.can_retry and never_ordered.state == "failed"
     assert creative_provider.final_video_state(_TENANT_ID, UUID(int=22)) is None
+
+
+# -- m-25026377: the caption's catalog tags, most watched lately first ------------------
+
+
+def _catalog(monkeypatch, *, views: dict[str, int] | None = None, fuzzy: bool = False):
+    """A memory catalog where «shawarma» means two tags: `shawarmalovers` (seen often,
+    strong link) and `shawarmacasero` (seen little, weak link) — `resolve` puts the first
+    one first. `views` adds recent dated posts for a tag. With `fuzzy`, «carne» has no
+    term link (it resolves in the fuzzy-tag tier): the exact `carne` (seen 120×, no
+    views) next to the typo neighbours `carnet` / `carnes`, met only in reels and
+    well watched. No database, no paid call."""
+    from datetime import UTC, datetime, timedelta
+
+    from qualify_api.hashtags import catalog as hashtag_catalog
+    from qualify_api.hashtags.repository import (
+        MemoryHashtagRepository,
+        NewHashtag,
+        NewPostSighting,
+        NewTermLink,
+    )
+
+    repo = MemoryHashtagRepository()
+    repo.upsert_hashtags(
+        _TENANT_ID,
+        [
+            NewHashtag(tag="shawarmalovers", source="observed", network="tiktok", seen=40),
+            NewHashtag(tag="shawarmacasero", source="observed", network="tiktok", seen=2),
+        ],
+    )
+    repo.link_terms(
+        _TENANT_ID,
+        [
+            NewTermLink(term="shawarma", tag="shawarmalovers", source="observed", weight=9),
+            NewTermLink(term="shawarma", tag="shawarmacasero", source="observed", weight=1),
+        ],
+    )
+    now = datetime.now(UTC)
+    repo.record_post_sightings(
+        _TENANT_ID,
+        [
+            NewPostSighting(
+                tag=tag,
+                network="tiktok",
+                post_id=f"p-{tag}",
+                source="referentes",
+                source_ref="tiktok:hashtag",
+                parser_version="test/1",
+                posted_at=now - timedelta(days=5),
+                views=n,
+            )
+            for tag, n in (views or {}).items()
+        ],
+    )
+    if fuzzy:
+        repo.upsert_hashtags(
+            _TENANT_ID,
+            [NewHashtag(tag="carne", source="observed", network="tiktok", seen=120)],
+        )
+        repo.record_post_sightings(
+            _TENANT_ID,
+            [
+                NewPostSighting(
+                    tag=tag,
+                    network="instagram",
+                    post_id=f"r-{tag}",
+                    source="public_reels",
+                    source_ref="instagram:public_reels",
+                    parser_version="test/1",
+                    posted_at=now - timedelta(days=3),
+                    views=n,
+                )
+                for tag, n in (("carnet", 50_000), ("carnes", 80_000))
+            ],
+        )
+    monkeypatch.setattr(hashtag_catalog, "REPOSITORY", repo)
+    return repo
+
+
+def _capture_model_input(monkeypatch) -> list[list[tuple[str, int]]]:
+    """Stand in for Claude: record the catalog list the model would receive."""
+    from qualify_api.hashtags import caption as caption_module
+
+    received: list[list[tuple[str, int]]] = []
+
+    def fake_suggest(caption, *, attribution, seen=(), current=(), api_key, **_):
+        received.append([(s.tag, s.seen_count) for s in seen])
+        return []
+
+    monkeypatch.setattr(caption_module, "suggest_for_caption", fake_suggest)
+    monkeypatch.setenv("QUALIFY_ANTHROPIC_API_KEY", "test-key-not-used")
+    return received
+
+
+async def _suggest(state: CreativeState) -> None:
+    result = CreativeState.suggest_hashtags_ai.fn(state)
+    if hasattr(result, "__aiter__"):
+        async for _ in result:
+            pass
+    else:
+        await result
+
+
+async def _load_catalog(state: CreativeState) -> None:
+    result = CreativeState.load_catalog_hashtags.fn(state)
+    if hasattr(result, "__aiter__"):
+        async for _ in result:
+            pass
+    else:
+        await result
+
+
+async def test_the_model_gets_the_most_watched_catalog_tags_first(monkeypatch) -> None:
+    _catalog(monkeypatch, views={"shawarmacasero": 9000, "shawarmalovers": 120})
+    received = _capture_model_input(monkeypatch)
+    state = _state(monkeypatch)
+    state.edit_caption = "Shawarma de pollo al carbón"
+    await _suggest(state)
+    # fewer sightings, more recent views → first; the format stays `tag (seen_count)`
+    assert received == [[("shawarmacasero", 2), ("shawarmalovers", 40)]]
+    await _load_catalog(state)
+    assert state.edit_catalog_tags[:2] == ["shawarmacasero", "shawarmalovers"]
+
+    # A fuzzy tier keeps `resolve`'s similarity order: «carne» has no term link, so the
+    # exact `carne` keeps its slot over the well-watched `carnet`/`carnes`, while the term
+    # tier («shawarma») is still re-ordered by views.
+    _catalog(monkeypatch, views={"shawarmacasero": 9000, "shawarmalovers": 120}, fuzzy=True)
+    received = _capture_model_input(monkeypatch)
+    state = _state(monkeypatch)
+    state.edit_caption = "Shawarma de carne"
+    await _suggest(state)
+    tags = [tag for tag, _ in received[0]]
+    assert tags[:2] == ["shawarmacasero", "shawarmalovers"]
+    assert tags.index("carne") < min(tags.index("carnes"), tags.index("carnet"))
+    await _load_catalog(state)  # the instant lookup: 2 slots per word
+    assert "carne" in state.edit_catalog_tags
+    assert state.edit_catalog_tags.index("carne") < state.edit_catalog_tags.index("carnes")
+
+
+async def test_with_no_views_known_the_order_is_exactly_resolves(monkeypatch) -> None:
+    """Production today: the sightings table starts empty."""
+    repo = _catalog(monkeypatch)
+    plain = [h.hashtag.tag for h in repo.resolve(_TENANT_ID, "shawarma", limit=4)]
+    assert plain == ["shawarmalovers", "shawarmacasero"]
+    received = _capture_model_input(monkeypatch)
+    state = _state(monkeypatch)
+    state.edit_caption = "Shawarma de pollo al carbón"
+    await _suggest(state)
+    assert [tag for tag, _ in received[0]] == plain
+    await _load_catalog(state)
+    assert state.edit_catalog_tags[:2] == plain
+
+
+async def test_a_catalog_failure_leaves_the_editor_working(monkeypatch) -> None:
+    repo = _catalog(monkeypatch)
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("catalog down")
+
+    monkeypatch.setattr(repo, "resolve_popular", broken)
+    received = _capture_model_input(monkeypatch)
+    state = _state(monkeypatch)
+    state.edit_caption = "Shawarma de pollo al carbón"
+    state.edit_catalog_tags = ["antes"]
+    await _suggest(state)
+    assert received == [[]]  # the model is still asked, without grounding
+    assert state.ai_hashtags_loading is False
+    assert state.ai_hashtags_note == "No hubo sugerencias nuevas para este texto."
+    await _load_catalog(state)
+    assert state.edit_catalog_tags == ["antes"]  # untouched, no error raised
+    assert "shawarma" in state.hashtag_suggestions  # the caption's own words still help

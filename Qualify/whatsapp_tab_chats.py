@@ -31,6 +31,9 @@ from __future__ import annotations
 
 import reflex as rx
 
+from .chat_row import chat_row
+from .chat_row import tone_pill as _tone_pill
+from .chat_row_vm import INBOX_BACK_LABEL, ChatRowVM
 from .r2_media import BACKEND_BASE
 from .ui import (
     OrbitItem,
@@ -69,6 +72,7 @@ from .whatsapp_chats_vm import (
     CREATE_APPROVED_ROUTE,
     CREATE_PIECE_LABEL,
     CREATE_PIECE_ROUTE,
+    CUSTOMER_NOTE_LABEL,
     DIRECTIONS_COMPLETE,
     DIRECTIONS_EMPTY,
     DIRECTIONS_NO_POINT,
@@ -98,6 +102,7 @@ from .whatsapp_chats_vm import (
     NO_PIECES_EMPTY,
     NO_PRODUCTS_EMPTY,
     NO_UNAPPROVED_EMPTY,
+    NOTE_MORE_LABEL,
     OFFER_BADGE,
     OFFER_CHANGE,
     OFFER_EMPTY,
@@ -134,6 +139,8 @@ from .whatsapp_chats_vm import (
     PICK_SOURCE_CARDS,
     PIECE_TABS,
     PIECES_APPROVED,
+    PRICE_MISMATCH_HREF,
+    PRICE_MISMATCH_LINK,
     PRODUCTS_NO_MATCH,
     PRODUCTS_ROUTE,
     PRODUCTS_SEARCH,
@@ -150,6 +157,7 @@ from .whatsapp_chats_vm import (
     SEASONAL_PENDING_ACTION,
     SEASONAL_PENDING_HREF,
     SEASONAL_PENDING_TEXT,
+    SEASONAL_PRODUCTS,
     SEASONAL_STICKER_ALONE,
     SEASONAL_STICKERS_TAB,
     SEASONAL_VIDEOS_TAB,
@@ -161,6 +169,7 @@ from .whatsapp_chats_vm import (
     TEMPLATE_PREVIEW_LABEL,
     TEXT_ONLY_LABEL,
     UNAPPROVED_WARNING,
+    UNLINKED_CODE_LABEL,
     VIDEO_BADGE,
     VIDEO_HEAVY_PILL,
     VIDEO_TOO_LARGE,
@@ -172,11 +181,11 @@ from .whatsapp_chats_vm import (
     OrderLineVM,
     PaymentCardVM,
     PieceCardVM,
+    PreviousOrderVM,
     ProductCardVM,
     SeasonalPickVM,
     TemplateChoiceVM,
     TemplateFieldVM,
-    ThreadRowVM,
 )
 from .whatsapp_state import WhatsAppState
 from .whatsapp_vm import TAB_QR
@@ -193,14 +202,6 @@ _TAP_MIN = "2.75rem"
 # ======================================================================================
 # Tone helpers (the VM ships the tone as data; the system needs it at build time)
 # ======================================================================================
-
-
-def _tone_pill(label: rx.Var[str], tone: rx.Var[str]) -> rx.Component:
-    return rx.match(
-        tone,
-        *[(t, signal_pill(label, t)) for t in _TONES[:-1]],
-        signal_pill(label, "neutral"),
-    )
 
 
 def _banner(message: rx.Var[str], tone: rx.Var[str]) -> rx.Component:
@@ -220,89 +221,18 @@ def _heartbeat() -> rx.Component:
     return rx.moment(interval=_REFRESH_MS, on_change=lambda _tick: S.refresh, display="none")
 
 
-def _agent_chip(initials: rx.Var[str], name: rx.Var[str]) -> rx.Component:
-    return rx.cond(
-        initials != "",
-        rx.tooltip(tag(initials), content=rx.cond(name != "", name, "Asignado")),
-        rx.fragment(),
-    )
-
-
 # ======================================================================================
 # Thread list
 # ======================================================================================
 
 
-def _thread_row(row: ThreadRowVM) -> rx.Component:
-    return rx.box(
-        rx.vstack(
-            rx.hstack(
-                rx.text(
-                    row.title,
-                    size="2",
-                    weight=rx.cond(row.has_unread, "bold", "medium"),
-                    trim="both",
-                    class_name="q-wa-ellipsis",
-                    flex="1",
-                    min_width="0",
-                ),
-                rx.text(row.time_label, size="1", color=T.TEXT_MUTED, white_space="nowrap"),
-                rx.cond(
-                    row.has_unread,
-                    rx.badge(
-                        row.unread_label,
-                        variant="soft",
-                        radius="full",
-                        size="1",
-                        class_name="q-nums",
-                        aria_label="Mensajes sin leer",
-                    ),
-                    rx.fragment(),
-                ),
-                width="100%",
-                align="center",
-                spacing="2",
-            ),
-            rx.text(
-                row.preview,
-                size="2",
-                color=rx.cond(row.has_unread, T.TEXT_STRONG, T.TEXT_MUTED),
-                class_name="q-wa-ellipsis",
-                width="100%",
-            ),
-            rx.hstack(
-                # m-24955648: the payment pill FIRST — «Pago por revisar» (warn) asks for
-                # attention, and at 375 px a third pill drops to a second line
-                rx.cond(
-                    row.payment_label != "",
-                    _tone_pill(row.payment_label, row.payment_tone),
-                    rx.fragment(),
-                ),
-                _tone_pill(row.window_label, row.window_tone),
-                _tone_pill(row.mode_label, row.mode_tone),
-                rx.cond(row.is_closed, tag("Cerrado"), rx.fragment()),
-                rx.spacer(),
-                _agent_chip(row.agent_initials, row.agent_name),
-                width="100%",
-                align="center",
-                spacing="1",
-                flex_wrap="wrap",
-            ),
-            spacing="1",
-            width="100%",
-        ),
-        on_click=S.open_conversation(row.thread_id),
-        class_name=rx.cond(
-            row.thread_id == S.open_thread_id,
-            "q-card q-lift q-wa-row q-wa-row--active",
-            "q-card q-lift q-wa-row",
-        ),
-        role="button",
-        tab_index=0,
-        aria_label=row.title,
-        cursor="pointer",
-        padding="0.75rem 0.9rem",
-        width="100%",
+def _thread_row(row: ChatRowVM) -> rx.Component:
+    """m-25017844: the row Conversaciones draws too (`chat_row`), fed by this channel's
+    adapter (`whatsapp_chats_vm.as_chat_row`, via `S.visible_chat_rows`)."""
+    return chat_row(
+        row,
+        is_open=row.thread_id == S.open_thread_id,
+        on_open=S.open_conversation(row.thread_id),
     )
 
 
@@ -382,9 +312,9 @@ def _list_body() -> rx.Component:
                     ),
                 ),
                 rx.cond(
-                    S.visible_rows.length() > 0,
+                    S.visible_chat_rows.length() > 0,
                     rx.vstack(
-                        rx.foreach(S.visible_rows, _thread_row),
+                        rx.foreach(S.visible_chat_rows, _thread_row),
                         spacing="2",
                         width="100%",
                         class_name="q-wa-scroll q-wa-scroll--list",
@@ -419,16 +349,30 @@ def _list_pane() -> rx.Component:
 
 def _back_button() -> rx.Component:
     """Phone only (the list and the conversation share one pane there). N7: the
-    button names where it goes — «‹ Chats», never a bare arrow."""
-    return rx.button(
-        rx.icon("chevron-left", size=T.ICON_MD),
-        "Chats",
-        on_click=S.back_to_list,
-        variant="ghost",
-        size="2",
-        min_height="44px",
-        class_name="q-wa-chats__back",
-        **T.tone_scheme("neutral"),
+    button names where it goes — «‹ Chats», never a bare arrow. m-25017859: a chat
+    opened from the single list of «Por responder» says «‹ Por responder» and goes back
+    there, on every size (on a desk this number's own list is not the way back)."""
+    return rx.cond(
+        S.from_inbox,
+        rx.button(
+            rx.icon("chevron-left", size=T.ICON_MD),
+            INBOX_BACK_LABEL,
+            on_click=S.back_to_inbox,
+            variant="ghost",
+            size="2",
+            min_height="44px",
+            **T.tone_scheme("neutral"),
+        ),
+        rx.button(
+            rx.icon("chevron-left", size=T.ICON_MD),
+            "Chats",
+            on_click=S.back_to_list,
+            variant="ghost",
+            size="2",
+            min_height="44px",
+            class_name="q-wa-chats__back",
+            **T.tone_scheme("neutral"),
+        ),
     )
 
 
@@ -527,11 +471,86 @@ def _conversation_header() -> rx.Component:
 
 
 def _order_line(line: OrderLineVM) -> rx.Component:
-    return rx.hstack(
-        rx.text(line.label, size="2", flex="1", min_width="0"),
-        rx.text(line.amount, size="2", class_name="q-nums", white_space="nowrap"),
+    """One product. A cart line may add a muted second line: its catalog code (a product
+    not in Galería) or «En tu Galería tiene otro precio» (m-25018684, spec §1)."""
+    return rx.vstack(
+        rx.hstack(
+            rx.text(line.label, size="2", flex="1", min_width="0"),
+            rx.text(line.amount, size="2", class_name="q-nums", white_space="nowrap"),
+            width="100%",
+            spacing="3",
+        ),
+        rx.cond(
+            line.code != "",
+            rx.flex(
+                rx.text(UNLINKED_CODE_LABEL, size="1", color=T.TEXT_MUTED),
+                mono(line.code, size="1", overflow_wrap="anywhere", color=T.TEXT_MUTED),
+                gap="0.25rem",
+                wrap="wrap",
+                align="baseline",
+            ),
+        ),
+        rx.cond(
+            line.price_note != "",
+            rx.text(line.price_note, size="1", color=T.TEXT_MUTED),
+        ),
+        spacing="0",
         width="100%",
-        spacing="3",
+    )
+
+
+def _previous_order(entry: PreviousOrderVM) -> rx.Component:
+    """An archived order: read only — no title, no badge, no buttons (decision 3)."""
+    return rx.vstack(
+        rx.text(entry.origin_label, size="1", color=T.TEXT_MUTED),
+        rx.text(
+            entry.items_line,
+            size="2",
+            width="100%",
+            overflow="hidden",
+            text_overflow="ellipsis",
+            white_space="nowrap",
+        ),
+        rx.hstack(
+            rx.text(entry.summary_label, size="1", class_name="q-nums"),
+            rx.cond(
+                entry.payment_label != "",
+                _tone_pill(entry.payment_label, entry.payment_tone),
+            ),
+            spacing="2",
+            align="center",
+            flex_wrap="wrap",
+        ),
+        spacing="1",
+        width="100%",
+        min_width="0",
+    )
+
+
+def _previous_orders() -> rx.Component:
+    """«N pedidos anteriores»: always closed at first; the current order leads."""
+    order = S.order
+    return rx.cond(
+        order.previous.length() > 0,
+        rx.el.details(
+            rx.el.summary(
+                rx.text(order.previous_label, size="2", as_="span"),
+                # list-item keeps the native ▸/▾ marker (flex would hide it); the padding
+                # brings the tap target to 44 px.
+                min_height="44px",
+                padding_y="0.75rem",
+                cursor="pointer",
+            ),
+            rx.vstack(
+                rx.foreach(order.previous, _previous_order),
+                spacing="3",
+                width="100%",
+                padding_top="0.25rem",
+            ),
+            width="100%",
+            padding_top="0.25rem",
+            border_top=T.BORDER,
+        ),
     )
 
 
@@ -542,6 +561,40 @@ def _order_field(f: OrderFieldVM) -> rx.Component:
         width="100%",
         spacing="3",
         align="baseline",
+    )
+
+
+def _customer_note() -> rx.Component:
+    """The cart's «Nota del cliente»: label above, full width, the customer's line breaks
+    kept; a long note shows its start and folds the rest (44 px summary)."""
+    order = S.order
+    return rx.cond(
+        order.note != "",
+        rx.vstack(
+            rx.text(CUSTOMER_NOTE_LABEL, size="2", color=T.TEXT_MUTED),
+            rx.text(order.note, size="2", white_space="pre-line", overflow_wrap="anywhere"),
+            rx.cond(
+                order.note_rest != "",
+                rx.el.details(
+                    rx.el.summary(
+                        rx.text(NOTE_MORE_LABEL, size="2", as_="span"),
+                        min_height="44px",
+                        padding_y="0.75rem",
+                        cursor="pointer",
+                    ),
+                    rx.text(
+                        order.note_rest,
+                        size="2",
+                        white_space="pre-line",
+                        overflow_wrap="anywhere",
+                    ),
+                    width="100%",
+                ),
+            ),
+            spacing="1",
+            width="100%",
+            align_items="start",
+        ),
     )
 
 
@@ -682,7 +735,7 @@ def _order_card() -> rx.Component:
             rx.vstack(
                 rx.hstack(
                     rx.icon("shopping-bag", size=T.ICON_MD, color=T.tone_color("ok", 11)),
-                    rx.text("Pedido confirmado", size="2", weight="bold"),
+                    rx.text(order.title, size="2", weight="bold"),
                     tone_badge(order.items_label, "ok"),
                     rx.spacer(),
                     rx.text(order.confirmed_label, size="1", color=T.TEXT_MUTED),
@@ -692,6 +745,10 @@ def _order_card() -> rx.Component:
                     flex_wrap="wrap",
                 ),
                 rx.vstack(rx.foreach(order.lines, _order_line), spacing="1", width="100%"),
+                rx.cond(
+                    order.truncated_line != "",
+                    rx.text(order.truncated_line, size="1", color=T.TEXT_MUTED),
+                ),
                 rx.hstack(
                     rx.text("Total", size="2", weight="bold", flex="1"),
                     rx.text(order.total_label, size="3", weight="bold", class_name="q-nums"),
@@ -699,9 +756,30 @@ def _order_card() -> rx.Component:
                     align="baseline",
                 ),
                 rx.cond(
+                    order.price_notice != "",
+                    rx.vstack(
+                        callout(order.price_notice, "warn"),
+                        rx.link(
+                            PRICE_MISMATCH_LINK,
+                            href=PRICE_MISMATCH_HREF,
+                            size="2",
+                            min_height=_TAP_MIN,
+                            display="inline-flex",
+                            align_items="center",
+                        ),
+                        spacing="1",
+                        width="100%",
+                    ),
+                ),
+                rx.cond(
                     order.collected.length() > 0,
                     rx.vstack(rx.foreach(order.collected, _order_field), spacing="1", width="100%"),
                     rx.fragment(),
+                ),
+                _customer_note(),
+                rx.cond(
+                    order.charge_hint != "",
+                    rx.text(order.charge_hint, size="2", color=T.TEXT_MUTED),
                 ),
                 _payment_block(),
                 rx.hstack(
@@ -713,6 +791,7 @@ def _order_card() -> rx.Component:
                         disabled=~S.can_compose,
                         variant="soft",
                         size="2",
+                        min_height=_TAP_MIN,
                     ),
                     rx.text(
                         "Envía al cliente el resumen y el total de su pedido.",
@@ -723,6 +802,11 @@ def _order_card() -> rx.Component:
                     spacing="3",
                     flex_wrap="wrap",
                 ),
+                rx.cond(
+                    order.unlinked_notice != "",
+                    rx.text(order.unlinked_notice, size="1", color=T.TEXT_MUTED),
+                ),
+                _previous_orders(),
                 spacing="3",
                 width="100%",
             ),
@@ -907,11 +991,21 @@ def _bubble_body(m: MessageVM) -> rx.Component:
         ),
         rx.cond(
             m.is_media_placeholder,
-            rx.hstack(
-                rx.icon("paperclip", size=T.ICON_SM, color=T.TEXT_MUTED),
-                rx.text(m.text, size="1", color=T.TEXT_MUTED),
-                spacing="2",
-                align="center",
+            rx.cond(
+                m.is_order,
+                # m-25018684: a catalog cart is a real message, not a missing file.
+                rx.hstack(
+                    rx.icon("shopping-bag", size=T.ICON_SM, flex_shrink="0", aria_hidden="true"),
+                    rx.text(m.text, size="2", overflow_wrap="anywhere"),
+                    spacing="2",
+                    align="center",
+                ),
+                rx.hstack(
+                    rx.icon("paperclip", size=T.ICON_SM, color=T.TEXT_MUTED),
+                    rx.text(m.text, size="1", color=T.TEXT_MUTED),
+                    spacing="2",
+                    align="center",
+                ),
             ),
             rx.cond(
                 m.text != "",
@@ -2156,6 +2250,15 @@ def _pick_seasonal() -> rx.Component:
             rx.vstack(
                 rx.text(SEASONAL_EARLIER, size="2", weight="medium"),
                 _seasonal_grid(S.pick_seasonal_earlier),
+                spacing="2",
+                width="100%",
+            ),
+        ),
+        rx.cond(
+            S.pick_seasonal_products.length() > 0,
+            rx.vstack(
+                rx.text(SEASONAL_PRODUCTS, size="2", weight="medium"),
+                _seasonal_grid(S.pick_seasonal_products),
                 spacing="2",
                 width="100%",
             ),

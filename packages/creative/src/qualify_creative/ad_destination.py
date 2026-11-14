@@ -30,10 +30,10 @@ AD_CTA_LABELS: dict[AdCTA, str] = {
     AdCTA.ORDER_NOW: "Pedir ahora",
     AdCTA.BOOK_TRAVEL: "Reservar viaje",
     AdCTA.BOOK_NOW: "Reservar",
-    AdCTA.GET_QUOTE: "Solicitar cotización",
+    AdCTA.GET_QUOTE: "Pedir cotización",
     AdCTA.CONTACT_US: "Contáctanos",
     AdCTA.CALL_NOW: "Llamar",
-    AdCTA.SIGN_UP: "Registrarte",
+    AdCTA.SIGN_UP: "Registrarme",
     AdCTA.SHOP_NOW: "Comprar",
 }
 
@@ -60,6 +60,8 @@ _LEGACY.update(
         "contactar": AdCTA.CONTACT_US,
         "contactanos": AdCTA.CONTACT_US,
         "registrarse": AdCTA.SIGN_UP,
+        "registrarte": AdCTA.SIGN_UP,
+        "solicitar cotizacion": AdCTA.GET_QUOTE,
         "send message": AdCTA.MESSAGE_PAGE,
         "instagram message": AdCTA.MESSAGE_PAGE,
         "whatsapp": AdCTA.WHATSAPP_MESSAGE,

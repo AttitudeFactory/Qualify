@@ -63,6 +63,7 @@ from qualify_api.referentes import discovery_seed
 from qualify_api.vendors import scrapecreators as scrapecreators_client
 from qualify_api.vendors import usage
 from qualify_creative.brand import fonts as brand_fonts
+from qualify_creative.schemas import BUSINESS_PERKS_MAX
 from reflex.constants import Dirs
 from reflex.utils.imports import ImportVar
 from reflex.vars import VarData
@@ -82,7 +83,7 @@ from . import (
 from .auth_state import BRAND_READY_QUERY, AuthState, brand_tenant_id
 from .connections_provider import acting_user_id
 from .creative_provider import default_brand_id
-from .creative_state import CreativeState
+from .creative_state import KIT_PILL_LIMITS, CreativeState
 from .r2_media import BACKEND_BASE, issue_view_path
 from .tenant import tenant_uuid
 from .ui import (
@@ -2652,29 +2653,63 @@ _KIT_LIST_ITEMS = {
     "cta": CreativeState.kit_cta_items,
     "banned": CreativeState.kit_banned_items,
     "claims": CreativeState.kit_claims_items,
+    "perks": CreativeState.kit_perks_items,
 }
 
+#: «Lo que ofrece tu negocio» (0166, `BrandKit.business_perks`): its own section of the
+#: Brand Kit editor only — never in ¿Todo correcto?, whose save does not write it. The
+#: examples fit a shop, a realtor or a travel agency alike, not only a restaurant.
+_PERKS_LIST: tuple[str, str, str, str] = (
+    "perks",
+    # not shown (the section title already names it): only the «+»'s accessible name
+    "Lo que ofrece tu negocio",
+    "Una cosa por vez. Ej.: «Pago en cuotas», «Abierto hasta las 11 de la noche».",
+    "Estacionamiento gratis",
+)
+#: The capped lists (`KIT_PILL_LIMITS`): how many they hold («3 de 12») and whether the
+#: «+» still has room.
+_KIT_LIST_COUNT = {"perks": CreativeState.kit_perks_count_label}
+_KIT_LIST_FULL = {"perks": CreativeState.kit_perks_full}
+#: Said under a full list instead of its «+».
+PERKS_FULL_TEXT = f"Ya tienes {BUSINESS_PERKS_MAX}, el máximo. Quita una para agregar otra."
 
-def _kit_list_editor(field: str, label: str, hint: str, example: str) -> rx.Component:
+
+def _kit_list_editor(
+    field: str, label: str, hint: str, example: str, *, show_label: bool = True
+) -> rx.Component:
     """One kit list (¿Todo correcto? and the Brand Kit editor): its label and what it is
     for, the values as pills that edit in place (`_editable_pill`) and a "+" at their
     end — no input until it is pressed, like Tu rubro's hashtags (§ request 2026-10-06);
     Enter or leaving it adds, Escape or leaving it empty puts the "+" back. While the
-    list is empty its example sits there as a faint pill, and goes with the first value."""
+    list is empty its example sits there as a faint pill, and goes with the first value.
+    A capped list (`KIT_PILL_LIMITS`) shows its count, stops its inputs at the length the
+    kit keeps and trades the «+» for a note once full — nothing is cut on save."""
     items = _KIT_LIST_ITEMS[field]
     adding = CreativeState.kit_pill_adding == field
+    max_items, max_chars = KIT_PILL_LIMITS.get(field, (0, 0))
+    full = _KIT_LIST_FULL.get(field)
+    can_add = ~adding & ~full if full is not None else ~adding
+    input_limit = {"max_length": max_chars} if max_chars else {}
     return rx.vstack(
-        rx.vstack(
-            rx.text(label, size="2", weight="medium"),
-            rx.text(hint, size="1", color=T.TEXT_MUTED),
-            spacing="0",
-            align_items="start",
+        rx.hstack(
+            rx.vstack(
+                *((rx.text(label, size="2", weight="medium"),) if show_label else ()),
+                rx.text(hint, size="1", color=T.TEXT_MUTED),
+                spacing="0",
+                align_items="start",
+                min_width="0",
+                flex="1",
+            ),
+            *((tag(_KIT_LIST_COUNT[field]),) if max_items else ()),
+            spacing="2",
+            align="start",
+            width="100%",
         ),
         rx.flex(
             rx.foreach(items, lambda item, index: _editable_pill(field, item, index)),
             rx.cond(items.length() == 0, _example_pill(example)),
             rx.cond(
-                ~adding,
+                can_add,
                 rx.icon_button(
                     rx.icon("plus", size=T.ICON_SM),
                     on_click=CreativeState.open_kit_pill_input(field),
@@ -2705,11 +2740,22 @@ def _kit_list_editor(field: str, label: str, hint: str, example: str) -> rx.Comp
                     width="100%",
                     size="2",
                     radius=_CONTROL_RADIUS,
+                    **input_limit,
+                ),
+                *(
+                    (rx.text(f"Hasta {max_chars} caracteres.", size="1", color=T.TEXT_MUTED),)
+                    if max_chars
+                    else ()
                 ),
                 on_submit=CreativeState.add_kit_pill(field),
                 reset_on_submit=False,
                 width="100%",
             ),
+        ),
+        *(
+            (rx.cond(full, rx.text(PERKS_FULL_TEXT, size="1", color=T.TEXT_MUTED)),)
+            if full is not None
+            else ()
         ),
         spacing="2",
         width="100%",
@@ -2842,6 +2888,7 @@ def _editable_pill(field: str, item: rx.Var[str], index: rx.Var[int]) -> rx.Comp
                 radius="full",
                 min_width="12rem",
                 aria_label="Editar valor",
+                **({"max_length": KIT_PILL_LIMITS[field][1]} if field in KIT_PILL_LIMITS else {}),
             ),
             on_submit=CreativeState.save_kit_pill_edit,
             reset_on_submit=False,

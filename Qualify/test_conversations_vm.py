@@ -29,10 +29,6 @@ from .conversations_vm import (
     ACCESS_PERMISSION_MISSING,
     ACCESS_SYNC_FAILED,
     ACCESS_UNKNOWN,
-    FILTER_ALL,
-    FILTER_ANSWERED,
-    FILTER_PENDING,
-    FILTER_READ,
     MAX_AUDIO_BYTES,
     MAX_DOCUMENT_BYTES,
     MAX_IMAGE_BYTES,
@@ -50,7 +46,6 @@ from .conversations_vm import (
     STORY_MENTION_LABEL,
     TAP_ICON,
     WINDOW_CLOSED_NOTICE,
-    WINDOW_CLOSED_SHORT,
     AccessVM,
     AccountVM,
     AttachmentVM,
@@ -71,9 +66,6 @@ from .conversations_vm import (
     composer_enabled,
     counterpart_title,
     failure_label,
-    filter_counts,
-    filter_label,
-    filter_threads,
     inbox_accounts,
     initials_of,
     media_label,
@@ -367,23 +359,16 @@ def test_the_profile_the_sync_fetched_names_the_row() -> None:
 
 def test_window_words_are_plain_spanish() -> None:
     closes = NOW + timedelta(hours=5)
-    sentence, short, tone = window_words(True, closes, NOW, ZONE)
+    sentence, tone = window_words(True, closes, NOW, ZONE)
     assert sentence.startswith("Instagram solo permite responder durante las 24 h")
-    assert sentence.endswith("En esta conversación, hasta las 17:00.") and (short, tone) == (
-        "",
-        "ok",
-    )
+    assert sentence.endswith("En esta conversación, hasta las 17:00.") and tone == "ok"
     tomorrow = NOW + timedelta(hours=13)
-    sentence, short, tone = window_words(True, tomorrow, NOW, ZONE)
-    assert sentence.endswith("hasta mañana a las 01:00.") and short == "" and tone == "ok"
-    sentence, short, tone = window_words(True, NOW + timedelta(minutes=42), NOW, ZONE)
+    sentence, tone = window_words(True, tomorrow, NOW, ZONE)
+    assert sentence.endswith("hasta mañana a las 01:00.") and tone == "ok"
+    sentence, tone = window_words(True, NOW + timedelta(minutes=42), NOW, ZONE)
     assert sentence.startswith("Te quedan 42 min para responder: Instagram")
-    assert (short, tone) == ("Quedan 42 min", "warn")
-    assert window_words(False, None, NOW, ZONE) == (
-        WINDOW_CLOSED_NOTICE,
-        WINDOW_CLOSED_SHORT,
-        "neutral",
-    )
+    assert tone == "warn"  # m-25017844: the row's short pill lives in chat_row_vm
+    assert window_words(False, None, NOW, ZONE) == (WINDOW_CLOSED_NOTICE, "neutral")
 
 
 # --- thread rows --------------------------------------------------------------------------
@@ -408,7 +393,6 @@ def test_row_words_attention_window_preview_and_identity() -> None:
         "warn",
     )
     assert row.window_open and row.window_tone == "ok"
-    assert row.window_short == ""
     assert row.window_label.startswith("Instagram solo permite responder")
     assert row.time_label == "hace 2 h"
     assert not row.is_closed and not row.fresh
@@ -423,7 +407,8 @@ def test_row_prefixes_our_own_last_message_and_falls_back_without_a_handle() -> 
         zone=ZONE,
     )
     assert row.preview == OUTBOUND_PREFIX + "claro que sí"
-    assert row.title == "Persona sin nombre" and "123456" not in row.title
+    # m-25017852: the fallback names the channel («Cliente de Instagram»).
+    assert row.title == "Cliente de Instagram" and "123456" not in row.title
     assert row.initials == "6"
     assert row.subtitle == "Instagram Direct"
     assert (row.attention, row.attention_label) == ("answered", "Respondida")
@@ -433,7 +418,7 @@ def test_row_states_read_closed_window_media_and_empty() -> None:
     read = _thread(inbound=NOW - timedelta(hours=30), read=NOW - timedelta(hours=1))
     row = build_thread_row(_view(read), ThreadExtra(preview_media_type="image"), now=NOW, zone=ZONE)
     assert row.attention == "read" and row.attention_label == "Leída"
-    assert not row.window_open and row.window_short == WINDOW_CLOSED_SHORT
+    assert not row.window_open and row.window_minutes == 0
     assert row.window_label == WINDOW_CLOSED_NOTICE
     assert row.preview == "Foto" and row.preview_icon == "image"
     audio = build_thread_row(
@@ -455,30 +440,23 @@ def test_row_states_read_closed_window_media_and_empty() -> None:
 def test_counterpart_title_rules() -> None:
     assert counterpart_title("@a", "x") == "@a"
     assert counterpart_title("a", "x") == "@a"
-    assert counterpart_title("", "") == "Persona sin nombre"
-    assert counterpart_title("", "17841400000123456") == "Persona sin nombre"
+    assert counterpart_title("", "") == "Cliente de Instagram"
+    assert counterpart_title("", "17841400000123456") == "Cliente de Instagram"
 
 
-def test_filters_are_by_attention_and_counted() -> None:
+def test_the_row_keeps_its_attention_state_for_the_open_chat() -> None:
+    """m-25017859: the chips left with the list, but the open chat's header still reads
+    the derived attention state (pending / read / answered) and the closed flag."""
     rows = [
         build_thread_row(_view(_thread()), None, now=NOW, zone=ZONE),
         build_thread_row(_view(_thread(read=NOW - timedelta(minutes=1))), None, now=NOW, zone=ZONE),
         build_thread_row(
             _view(_thread(outbound=NOW - timedelta(minutes=1))), None, now=NOW, zone=ZONE
         ),
+        build_thread_row(_view(_thread(status="closed")), None, now=NOW, zone=ZONE),
     ]
-    assert [r.attention for r in filter_threads(rows, FILTER_PENDING)] == ["pending"]
-    assert [r.attention for r in filter_threads(rows, FILTER_READ)] == ["read"]
-    assert [r.attention for r in filter_threads(rows, FILTER_ANSWERED)] == ["answered"]
-    assert filter_threads(rows, FILTER_ALL) == rows == filter_threads(rows, "nope")
-    assert filter_counts(rows) == {
-        FILTER_ALL: 3,
-        FILTER_PENDING: 1,
-        FILTER_READ: 1,
-        FILTER_ANSWERED: 1,
-    }
-    assert filter_label(FILTER_PENDING, 2) == "Pendientes · 2"
-    assert filter_label(FILTER_PENDING, 0) == "Pendientes"
+    assert [r.attention for r in rows[:3]] == ["pending", "read", "answered"]
+    assert [r.is_closed for r in rows] == [False, False, False, True]
 
 
 def test_newly_pending_announces_only_what_changed_after_a_first_load() -> None:
@@ -540,7 +518,10 @@ def test_unsent_bubbles_say_sending_or_why_not() -> None:
         now=NOW,
         zone=ZONE,
     )
-    assert failed.tick == "failed" and "24 h" in failed.error_label
+    assert failed.tick == "failed"
+    assert failed.error_label == (
+        "No se envió: Instagram ya no permite responder a esta conversación."
+    )
     media = build_unsent_vm(
         UnsentItem(
             id="o3",
@@ -1243,3 +1224,32 @@ def test_the_story_link_is_a_44px_target_with_an_accessible_name() -> None:
     assert "story_link_label" in rendered and "aria-label" in rendered.replace("_", "-")
     assert "44px" in rendered
     assert "aria-hidden" in rendered.replace("_", "-")
+
+
+# --- unsent messages erased (m-25018661) ------------------------------------------------
+
+
+def test_no_inbound_left_says_so_instead_of_the_24_hours() -> None:
+    only_ours = build_thread_row(
+        _view(_thread(inbound=None, outbound=NOW - timedelta(hours=1))), None, now=NOW, zone=ZONE
+    )
+    assert only_ours.window_label == (
+        "Ya no puedes responder: no queda ningún mensaje de esta persona. "
+        "Cuando vuelva a escribir, podrás responder de nuevo."
+    )
+    # m-25017844: the row's short window pill moved to the shared row (no minutes left).
+    assert not only_ours.window_open and only_ours.window_minutes == 0
+    expired = build_thread_row(
+        _view(_thread(inbound=NOW - timedelta(hours=30))), None, now=NOW, zone=ZONE
+    )
+    assert expired.window_label == WINDOW_CLOSED_NOTICE
+    assert "24 h" in WINDOW_CLOSED_NOTICE
+
+
+def test_window_closed_failures_no_longer_claim_the_24_hours() -> None:
+    assert failure_label("window_closed") == (
+        "No se envió: Instagram ya no permite responder a esta conversación."
+    )
+    assert suggestion_refusal_label("window_closed") == (
+        "Ya no se puede responder a esta conversación."
+    )

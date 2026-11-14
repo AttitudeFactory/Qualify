@@ -4,7 +4,7 @@
 and stops it on unmount. Nothing renders while the parent has no parts to show.
 
 m-25016656 (Deivid, «Sí, opción A» / «En los dos» — /create and /drafts alike): ONE
-status line («Creando tus partes: 2 de 3», «Tus 3 partes están listas»…) and only the
+status line («Creando tus partes: 2 de 3», «Tus 3 partes están creadas»…) and only the
 rows that wait for the owner's decision, open with their buttons. No bar, no big title,
 no «Ver las N partes». The panel stays mounted with no row on screen: it is the screen's
 only poll and holds its ONE `aria-live="polite"` region (`PartProgressState.announce`,
@@ -57,6 +57,7 @@ _SR_ONLY = {
     "margin": "-1px",
     "overflow": "hidden",
     "clip": "rect(0, 0, 0, 0)",
+    "clip_path": "inset(50%)",
     "white_space": "nowrap",
     "border": "0",
 }
@@ -67,6 +68,11 @@ def _closed_here(parent_id: rx.Var[str] | str) -> rx.Var[bool]:
     `FinalVideoState` keeps the last video it read — a failed parent's page mounts the
     panel without the card, so another video's `closed` must never count here."""
     return FinalVideoState.closed & (FinalVideoState.parent_id == parent_id)
+
+
+def _joining_here(parent_id: rx.Var[str] | str) -> rx.Var[bool]:
+    """THIS panel's video is being joined («Tu video completo» read it so)."""
+    return FinalVideoState.wants_refresh & (FinalVideoState.parent_id == parent_id)
 
 
 def _shows_decisions(parent_id: rx.Var[str] | str) -> rx.Var[bool]:
@@ -292,7 +298,10 @@ def part_progress_panel(parent_id: rx.Var[str] | str) -> rx.Component:
     return rx.box(
         # a session that closed or reads that keep failing: said even without rows
         rx.cond(S.top_error != "", callout(S.top_error, "error")),
-        rx.cond(S.has_progress, _content(parent_id)),
+        # Deivid, 2026-11-13: while THIS video's parts are joined, «Tu video completo»
+        # is only its wait — nothing under it either. The panel stays mounted (it owns
+        # the poll that brings everything back), only its words hide.
+        rx.cond(S.has_progress & ~_joining_here(parent_id), _content(parent_id)),
         # the vista previa players' script and their «renew» button: also for the one
         # the tiles of «Tus partes» in «Tu video completo» play theirs (`part_tiles`)
         clip_player_script(),

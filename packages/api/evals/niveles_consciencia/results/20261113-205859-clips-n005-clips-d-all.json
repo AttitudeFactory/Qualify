@@ -1,0 +1,640 @@
+{
+ "ticket": "m-25026482",
+ "baseline_ref": "a6667370",
+ "split": "all",
+ "pricing_version": "v9",
+ "judge": "claude-haiku-5-5@low",
+ "judge_prompt_version": "juez-niveles-v3",
+ "judge_parts_version": "juez-niveles-v3+partes-v1",
+ "code_commit": "a0b6ffdd",
+ "arms": [],
+ "levels": [
+  "product_aware",
+  "unaware"
+ ],
+ "repeat": 1,
+ "tracing": false,
+ "date": "2026-11-13T20:58:59",
+ "suites": {
+  "clips": {
+   "items": [
+    {
+     "case": "hamburguesas",
+     "brand": "hamburguesas",
+     "arm": "unaware",
+     "level": "unaware",
+     "leftover": false,
+     "sentence": "Quiero que la gente se antoje del combo doble smash y venga al local con sus amigos",
+     "objective": "awareness",
+     "highlights": [],
+     "output": {
+      "kind": "clip",
+      "variants": [
+       {
+        "payload": {
+         "hook": "¿Oyes eso? Es la plancha llamando al parche",
+         "caption": "¿Oyes eso? Es la plancha llamando al parche 🔥 Doble smash con costra dorada, queso derretido y salsa de la casa. Mesas para todo el combo de amigos, tu perro también entra y hay parqueadero gratis. Salir del trabajo y caer aquí, ese es el plan. ¿Quién se le mide a la triple? 🍔",
+         "hashtags": [
+          "brasanorte",
+          "smashburger",
+          "chapinero",
+          "planbogota"
+         ],
+         "cta": "Arma el parche y cae al local de la 57",
+         "script": "",
+         "shots": [
+          {
+           "visual": "Primerísimo plano: una bola de carne cae sobre la plancha caliente y la espátula la aplasta, soltando humo y chisporroteo.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "Las dos carnes forman costra dorada, el queso se derrite encima y se arma la doble con salsa de la casa en el pan.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "En una mesa del local, un grupo de amigos con un perro a sus pies levanta la doble smash y brinda entre risas.",
+           "line": "",
+           "seconds": 1
+          }
+         ]
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 11.63,
+        "cost_usd": 0.023355
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.023355,
+     "price_in_copy": false,
+     "three_shots": true,
+     "filmable_shots": 3,
+     "caption_words": 52,
+     "most_measure": false,
+     "juez_ciego_usd": 0.00048,
+     "juez_informado_usd": 0.000446
+    },
+    {
+     "case": "hamburguesas",
+     "brand": "hamburguesas",
+     "arm": "product_aware",
+     "level": "product_aware",
+     "leftover": false,
+     "sentence": "Quiero que la gente se antoje del combo doble smash y venga al local con sus amigos",
+     "objective": "sale",
+     "highlights": [
+      [
+       "Precio",
+       "$32.900"
+      ]
+     ],
+     "output": {
+      "kind": "clip",
+      "variants": [
+       {
+        "payload": {
+         "hook": "Escuchen esa plancha: combo doble smash 🔥",
+         "caption": "Escuchen esa plancha: combo doble smash 🔥 Carne madurada, costra dorada y salsa de la casa por $32.900. Armen el parche: hay mesas en el local, parqueadero gratis y abrimos hasta las 11 p. m. ¿Y después de la doble? Los reto a terminarse la triple. Caigan a la 57, en Chapinero.",
+         "hashtags": [
+          "brasanorte",
+          "smashburger",
+          "chapinero",
+          "hamburguesasbogota"
+         ],
+         "cta": "Caigan con el parche al local de la 57",
+         "script": "",
+         "shots": [
+          {
+           "visual": "Primerísimo plano: una bola de carne cae sobre la plancha caliente y la espátula la aplasta de un golpe, chisporroteo y humo subiendo.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "Los bordes de las dos carnes se doran en costra, el queso se derrite encima y se arma la doble con salsa de la casa en el pan.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "El combo doble smash aterriza en una mesa del local y varias manos de amigos se lanzan sobre él entre risas.",
+           "line": "",
+           "seconds": 1
+          }
+         ]
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 9.73,
+        "cost_usd": 0.020655
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.020655,
+     "price_in_copy": true,
+     "three_shots": true,
+     "filmable_shots": 3,
+     "caption_words": 48,
+     "most_measure": false,
+     "juez_ciego_usd": 0.000482,
+     "juez_informado_usd": 0.000527
+    },
+    {
+     "case": "inmobiliaria",
+     "brand": "inmobiliaria",
+     "arm": "unaware",
+     "level": "unaware",
+     "leftover": false,
+     "sentence": "Mostrar los apartamentos de dos alcobas en Bello para familias que quieren su primera casa",
+     "objective": "awareness",
+     "highlights": [],
+     "output": {
+      "kind": "clip",
+      "variants": [
+       {
+        "payload": {
+         "hook": "Dos alcobas en Bello: una para ustedes, otra para soñar",
+         "caption": "Dos alcobas en Bello: una para ustedes, otra para soñar.\n\nHay un momento en que la familia empieza a imaginar su propio espacio: la alcoba de los niños, el desayuno de domingo, las llaves en la mano el día de la entrega. Los apartamentos de dos alcobas en Bello están pensados para ese primer hogar.\n\nUn paso que muchas familias pasan por alto: antes de separar, conviene revisar el estudio de títulos del inmueble. Ahí se confirma que todo esté en regla, y en ese proceso te damos acompañamiento legal para que avances con calma y sin presiones.\n\n¿Ya se imaginan cómo sería su primera mañana en casa propia? 🏡",
+         "hashtags": [
+          "habitatinmobiliaria",
+          "PrimeraVivienda",
+          "ViviendaNuevaBello",
+          "Medellin"
+         ],
+         "cta": "Cuéntanos por WhatsApp cómo te imaginas tu primer hogar y lo conversamos.",
+         "script": "",
+         "shots": [
+          {
+           "visual": "Una pareja joven con su hija pequeña abre la puerta de un apartamento nuevo y vacío en Bello; la luz de la mañana entra por la ventana.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "La niña corre hacia una de las dos alcobas y la recorre con asombro, mientras los padres miran la otra alcoba y se toman de la mano.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "La familia, ya instalada, comparte un desayuno en la sala del apartamento, con las llaves sobre la mesa.",
+           "line": "",
+           "seconds": 1
+          }
+         ]
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 13.07,
+        "cost_usd": 0.028957
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.028957,
+     "price_in_copy": false,
+     "three_shots": true,
+     "filmable_shots": 3,
+     "caption_words": 109,
+     "most_measure": false,
+     "juez_ciego_usd": 0.000453,
+     "juez_informado_usd": 0.000451
+    },
+    {
+     "case": "inmobiliaria",
+     "brand": "inmobiliaria",
+     "arm": "product_aware",
+     "level": "product_aware",
+     "leftover": false,
+     "sentence": "Mostrar los apartamentos de dos alcobas en Bello para familias que quieren su primera casa",
+     "objective": "sale",
+     "highlights": [
+      [
+       "Precio",
+       "Desde $280 millones"
+      ]
+     ],
+     "output": {
+      "kind": "clip",
+      "variants": [
+       {
+        "payload": {
+         "hook": "Tu primer apartamento en Bello, paso a paso",
+         "caption": "Tu primer apartamento en Bello, paso a paso.\n\nLos apartamentos de 2 alcobas en Bello están desde $280 millones, pensados para familias que compran su primera vivienda. Sabemos que la primera compra genera dudas, por eso te explicamos un paso clave: antes de separar, revisamos contigo el estudio de títulos para que conozcas la situación legal del inmueble y firmes con tranquilidad.\n\nTambién te guiamos con el subsidio Mi Casa Ya y resolvemos tus preguntas sobre la cuota inicial. La asesoría es sin costo y nuestro acompañamiento legal sigue contigo hasta la entrega. 🏡\n\n¿Qué es lo que más te frena hoy para dar el paso? Cuéntanos y lo revisamos juntos.",
+         "hashtags": [
+          "habitatinmobiliaria",
+          "ApartamentosBello",
+          "PrimeraVivienda",
+          "MiCasaYa"
+         ],
+         "cta": "Escríbenos por WhatsApp y agenda tu asesoría, no tiene costo",
+         "script": "",
+         "shots": [
+          {
+           "visual": "Una pareja joven con su hija abre la puerta de un apartamento vacío y luminoso en Bello y se detiene a mirar la sala por primera vez.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "La familia recorre las dos alcobas: la niña elige su cuarto junto a la ventana mientras los padres revisan documentos sobre la mesa con una asesora que señala cada hoja con calma.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "Plano amplio del apartamento al atardecer con la familia sentada en el piso de la sala, sonriendo, con las llaves en la mano.",
+           "line": "",
+           "seconds": 1
+          }
+         ]
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 12.7,
+        "cost_usd": 0.028713
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.028713,
+     "price_in_copy": true,
+     "three_shots": true,
+     "filmable_shots": 3,
+     "caption_words": 108,
+     "most_measure": false,
+     "juez_ciego_usd": 0.000491,
+     "juez_informado_usd": 0.00046
+    },
+    {
+     "case": "viajes",
+     "brand": "viajes",
+     "arm": "unaware",
+     "level": "unaware",
+     "leftover": false,
+     "sentence": "Que se animen a conocer Machu Picchu con nosotros saliendo desde Cusco",
+     "objective": "awareness",
+     "highlights": [],
+     "output": {
+      "kind": "clip",
+      "variants": [
+       {
+        "payload": {
+         "hook": "Machu Picchu al amanecer, saliendo desde Cusco",
+         "caption": "Machu Picchu al amanecer, saliendo desde Cusco. Te recogemos en tu hotel cuando la ciudad aún duerme y tomamos la ruta hacia la montaña. Allá arriba, la neblina se abre despacio y las piedras se pintan de luz 🌄 Vas en grupo pequeño, con un guía local que te cuenta la historia en español o en inglés, sin afanes. ¿Te le mides? Escríbenos y armamos tu viaje a tu medida.",
+         "hashtags": [
+          "viajesandinos",
+          "MachuPicchu",
+          "Cusco",
+          "PeruAndino"
+         ],
+         "cta": "Escríbenos y armamos juntos tu ruta a Machu Picchu",
+         "script": "",
+         "shots": [
+          {
+           "visual": "Plano amplio de Machu Picchu al amanecer: la neblina se levanta entre las montañas y el primer sol toca las terrazas de piedra.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "Madrugada en Cusco: una van recoge a viajeros en la puerta de su hotel; luego un grupo pequeño camina por la ruta mientras un guía local señala el paisaje.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "El grupo llega al mirador y contempla la ciudadela completa bañada por la luz dorada de la mañana, sonriendo en silencio.",
+           "line": "",
+           "seconds": 1
+          }
+         ]
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 6.61,
+        "cost_usd": 0.014187
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.014187,
+     "price_in_copy": false,
+     "three_shots": true,
+     "filmable_shots": 3,
+     "caption_words": 69,
+     "most_measure": false,
+     "juez_ciego_usd": 0.000535,
+     "juez_informado_usd": 0.000505
+    },
+    {
+     "case": "viajes",
+     "brand": "viajes",
+     "arm": "product_aware",
+     "level": "product_aware",
+     "leftover": false,
+     "sentence": "Que se animen a conocer Machu Picchu con nosotros saliendo desde Cusco",
+     "objective": "sale",
+     "highlights": [
+      [
+       "Precio",
+       "US$180"
+      ]
+     ],
+     "output": {
+      "kind": "clip",
+      "variants": [
+       {
+        "payload": {
+         "hook": "Machu Picchu en la mañana, saliendo desde Cusco",
+         "caption": "Machu Picchu en la mañana, saliendo desde Cusco 🌄 Pasamos por ti a tu hotel de Cusco y te vas en grupo pequeño, con guías locales que hablan español e inglés. El tour a Machu Picchu cuesta US$180. ¿Te provoca sumarle la selva o más días? Te armamos el paquete a tu medida. Escríbenos por WhatsApp y cuadramos tu ruta.",
+         "hashtags": [
+          "viajesandinos",
+          "machupicchu",
+          "cusco",
+          "viajeaperu"
+         ],
+         "cta": "Escríbenos por WhatsApp y cuadramos tu ruta a Machu Picchu",
+         "script": "",
+         "shots": [
+          {
+           "visual": "La luz de la mañana entra sobre las terrazas de Machu Picchu y la neblina se abre lentamente frente al Huayna Picchu.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "Un grupo pequeño de viajeros sale de un hotel en una calle empedrada de Cusco y luego camina por la ruta con su guía local, que señala los muros incas.",
+           "line": "",
+           "seconds": 2
+          },
+          {
+           "visual": "Plano abierto de Machu Picchu a pleno sol con el grupo en el mirador, sonriendo frente a la ciudadela.",
+           "line": "",
+           "seconds": 1
+          }
+         ]
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 11.89,
+        "cost_usd": 0.027203
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.027203,
+     "price_in_copy": true,
+     "three_shots": true,
+     "filmable_shots": 3,
+     "caption_words": 59,
+     "most_measure": false,
+     "juez_ciego_usd": 0.00049,
+     "juez_informado_usd": 0.000638
+    }
+   ],
+   "scores": [
+    {
+     "arm": "unaware",
+     "case": "hamburguesas",
+     "split": "test",
+     "sector": "comida",
+     "with_perks": true,
+     "level": "unaware",
+     "level_answered": null,
+     "rule_det": false,
+     "invented_det": [],
+     "perks_det": [
+      1,
+      3
+     ],
+     "judge_level": "most_aware",
+     "judge_quality": 3,
+     "judge_invented": [],
+     "judge_perks": [
+      1,
+      2,
+      3
+     ],
+     "judge_fit": false,
+     "judge_reason": "Para unaware no debe haber oferta ni venta del producto, pero el texto empuja el doble smash con sus ingredientes y destaca el parqueadero gratis como ventaja, además de cerrar con una llamada a compr",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 8,
+     "words_cta": 10
+    },
+    {
+     "arm": "product_aware",
+     "case": "hamburguesas",
+     "split": "test",
+     "sector": "comida",
+     "with_perks": true,
+     "level": "product_aware",
+     "level_answered": null,
+     "rule_det": true,
+     "invented_det": [],
+     "perks_det": [
+      1,
+      3
+     ],
+     "judge_level": "product_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      1,
+      3,
+      4
+     ],
+     "judge_fit": true,
+     "judge_reason": "Para product_aware quita la fricción con datos reales: precio de $32.900, horario hasta las 11 p. m., parqueadero, mesas y ubicación en la 57 de Chapinero, sin inventar precio, horario ni dirección, a",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 6,
+     "words_cta": 9
+    },
+    {
+     "arm": "unaware",
+     "case": "inmobiliaria",
+     "split": "test",
+     "sector": "inmobiliaria",
+     "with_perks": true,
+     "level": "unaware",
+     "level_answered": null,
+     "rule_det": true,
+     "invented_det": [],
+     "perks_det": [
+      2
+     ],
+     "judge_level": "problem_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      2,
+      4
+     ],
+     "judge_fit": false,
+     "judge_reason": "Las tomas muestran bien la experiencia del hogar, pero el texto ofrece el acompañamiento legal y el estudio de títulos como solución y pide escribir por WhatsApp, lo que es una oferta de servicio y no",
+     "offers_det": [
+      [
+       "servicio",
+       "separar"
+      ]
+     ],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 10,
+     "words_cta": 12
+    },
+    {
+     "arm": "product_aware",
+     "case": "inmobiliaria",
+     "split": "test",
+     "sector": "inmobiliaria",
+     "with_perks": true,
+     "level": "product_aware",
+     "level_answered": null,
+     "rule_det": true,
+     "invented_det": [],
+     "perks_det": [
+      1,
+      2,
+      3
+     ],
+     "judge_level": "solution_aware",
+     "judge_quality": 3,
+     "judge_invented": [],
+     "judge_perks": [
+      1,
+      2,
+      3,
+      4
+     ],
+     "judge_fit": true,
+     "judge_reason": "Quita la fricción con datos reales (precio desde $280 millones, Bello, asesoría sin costo, contacto por WhatsApp) y no inventa horarios, descuentos ni formas de pago, aunque el texto es largo para el ",
+     "offers_det": [
+      [
+       "servicio",
+       "separar"
+      ]
+     ],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 8,
+     "words_cta": 10
+    },
+    {
+     "arm": "unaware",
+     "case": "viajes",
+     "split": "test",
+     "sector": "viajes",
+     "with_perks": true,
+     "level": "unaware",
+     "level_answered": null,
+     "rule_det": true,
+     "invented_det": [],
+     "perks_det": [
+      1,
+      2,
+      3,
+      4
+     ],
+     "judge_level": "solution_aware",
+     "judge_quality": 4,
+     "judge_invented": [
+      "Salida al amanecer o de madrugada (horario de salida no está en los datos)"
+     ],
+     "judge_perks": [
+      1,
+      2,
+      3,
+      4
+     ],
+     "judge_fit": true,
+     "judge_reason": "El gancho y las tomas muestran lugar y experiencia (amanecer, neblina, grupo caminando, ciudadela bañada por la luz) sin precio ni oferta; las ventajas mencionadas (recogida en hotel, guía bilingüe, g",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 7,
+     "words_cta": 9
+    },
+    {
+     "arm": "product_aware",
+     "case": "viajes",
+     "split": "test",
+     "sector": "viajes",
+     "with_perks": true,
+     "level": "product_aware",
+     "level_answered": null,
+     "rule_det": true,
+     "invented_det": [
+      [
+       "horario",
+       "abierto"
+      ]
+     ],
+     "perks_det": [
+      1,
+      2,
+      3,
+      4
+     ],
+     "judge_level": "product_aware",
+     "judge_quality": 3,
+     "judge_invented": [],
+     "judge_perks": [
+      1,
+      2,
+      3,
+      4
+     ],
+     "judge_fit": false,
+     "judge_reason": "El gancho y el texto afirman una salida \"en la mañana\", un horario que no aparece en los datos del negocio, así que es un dato inventado; además, la pregunta sobre la selva y las ventajas extra (guías",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 8,
+     "words_cta": 10
+    }
+   ]
+  }
+ },
+ "spend_usd": {
+  "clips": 0.149028
+ },
+ "spend_total_usd": 0.149028,
+ "skipped_by_cap": [],
+ "ledger_calls": 12
+}

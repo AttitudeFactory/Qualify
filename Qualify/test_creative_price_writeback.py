@@ -349,7 +349,9 @@ def test_the_note_says_what_creating_will_do_to_the_catalog() -> None:
     state.choose_product(PRODUCT)
     assert state.highlight_notes == [PRICE_FACT_HINT]
     assert PRICE_FACT_HINT == (
-        "Viene de la Galería. Si lo cambias, allí también cambia al crear la publicación."
+        "Viene de la Galería. Si lo cambias, allí también cambia al crear la publicación. "
+        "El precio no se dibuja sobre la imagen. Si quieres que se vea, escríbelo en el texto "
+        "de la publicación."
     )
     state.set_highlight(0, "value", "$20.000")
     assert state.highlight_notes == [

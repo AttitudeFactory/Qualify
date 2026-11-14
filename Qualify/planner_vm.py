@@ -20,15 +20,21 @@ unit-testable without the Reflex runtime.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
+from datetime import UTC, date, datetime, timedelta
 from functools import lru_cache
 from importlib import resources
 from pathlib import Path
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, available_timezones
 
-from qualify_api.planner.publishable import destination_options
+from qualify_api.planner.publishable import (
+    destination_options,
+    format_video_duration,
+    story_video_too_long,
+    video_seconds_of,
+)
 from qualify_api.planner.recurrence import (
     SERIES_CAP,
     InvalidRecurrence,
@@ -36,7 +42,15 @@ from qualify_api.planner.recurrence import (
     weekly_days_on,
 )
 
-from .creative_vm import FINAL_PREPARING_LABEL, KIND_LABELS, REVIEW_PORT_LABELS
+from .creative_vm import (
+    CONTENT_TYPE_LABELS,
+    FINAL_PREPARING_LABEL,
+    KIND_LABELS,
+    OWN_MEDIA_KIND,
+    REVIEW_PORT_LABELS,
+    VIEW_ONLY_NOTE,
+    is_view_only_upload,
+)
 
 VIEW_CALENDAR = "calendar"
 VIEW_LIST = "list"
@@ -350,14 +364,25 @@ def is_pending(status: str, approval: str | None) -> bool:
     return status == "scheduled" and approval is not None and approval != "approved"
 
 
-def category_label(category: str | None) -> str:
+#: m-25019217: `galeria` (`PostCategory.GALERIA`) is ONE feed image or a carousel — the
+#: category alone cannot say which; the number of files can.
+_SINGLE_GALERIA_LABEL = "Publicación"
+
+
+def category_label(category: str | None, item_count: int = 0) -> str:
+    """The category's word. With `item_count` (the POST's files), a `galeria` POST with
+    ONE file reads «Publicación» — only 2+ files are a «Carrusel»; 0 = unknown."""
     if not category:
         return "Sin categoría"
+    if category == "galeria" and item_count == 1:
+        return _SINGLE_GALERIA_LABEL
     return _CATEGORY_LABEL.get(category, category.replace("_", " ").capitalize())
 
 
 def content_type_label(content_type: str | None) -> str:
-    return content_type.replace("_", " ").capitalize() if content_type else ""
+    """The content type in the owner's words (`creative_vm.CONTENT_TYPE_LABELS`); "" for
+    none or one without a Spanish word — never the raw value («product»)."""
+    return CONTENT_TYPE_LABELS.get(content_type or "", "")
 
 
 def week_label(monday: date) -> str:
@@ -818,8 +843,62 @@ def is_approved_card(post: PostOptionVM) -> bool:
 
 
 def is_pending_card(post: PostOptionVM) -> bool:
-    """«Por aprobar»: everything not discarded that the owner has not approved yet."""
+    """«Por aprobar»: everything not discarded that the owner has not approved yet. An
+    own-media piece (m-25019217) never is: it was born approved, from «Publicar»."""
+    if post.content_kind == OWN_MEDIA_KIND:
+        return False
     return post.card_state != DISCARDED and not is_approved_card(post)
+
+
+# -- «Aprobados» › «Tipo»: the owner's own uploads apart from what was generated --------
+# (m-25019217, founder 2026-11-13). Two groups on top of the per-kind options.
+
+#: Every kind that Qualify generated (all but `OWN_MEDIA_KIND`) — a filter value only.
+GENERATED_KINDS = "generated"
+OWN_MEDIA_OPTION = "Subidas por ti"
+GENERATED_OPTION = "Creadas en Qualify"
+
+
+def is_own_media(post: PostOptionVM) -> bool:
+    return post.content_kind == OWN_MEDIA_KIND
+
+
+def can_schedule_again(post: PostOptionVM) -> bool:
+    """«Volver a programar» (m-25019220): the same verdict as «Aprobados»' card — ready
+    to schedule (`gallery_state` «schedulable», which a used one-shot piece is not) and
+    never a view-only upload."""
+    return post.gallery_state == "schedulable" and not post.view_only
+
+
+def matches_kind(post: PostOptionVM, content_kind: str) -> bool:
+    """«Tipo»: no filter, the generated group, or one kind exactly."""
+    if content_kind in ("", GALLERY_FILTER_ALL):
+        return True
+    if content_kind == GENERATED_KINDS:
+        return not is_own_media(post)
+    return post.content_kind == content_kind
+
+
+def approved_kind_choices(posts: Iterable[PostOptionVM]) -> list[CategoryOptionVM]:
+    """«Aprobados»' «Tipo» options (the «Todos los tipos» entry is the page's): with
+    uploads AND generated pieces, «Subidas por ti» and «Creadas en Qualify» first, then
+    each generated kind; otherwise only the kinds that exist — never an empty choice."""
+    posts = list(posts)
+    own = any(is_own_media(p) for p in posts)
+    kinds: dict[str, str] = {}
+    for post in posts:
+        if not is_own_media(post) and post.content_kind_label:
+            kinds.setdefault(post.content_kind, post.content_kind_label)
+    options = [CategoryOptionVM(value=key, label=label) for key, label in kinds.items()]
+    if own and kinds:
+        return [
+            CategoryOptionVM(value=OWN_MEDIA_KIND, label=OWN_MEDIA_OPTION),
+            CategoryOptionVM(value=GENERATED_KINDS, label=GENERATED_OPTION),
+            *options,
+        ]
+    if own:
+        return [CategoryOptionVM(value=OWN_MEDIA_KIND, label=OWN_MEDIA_OPTION)]
+    return options
 
 
 def sort_pending(posts: Iterable[PostOptionVM]) -> list[PostOptionVM]:
@@ -974,6 +1053,37 @@ class EventCardVM:
     # Identity, never state: drawn with the tag palette, never on the status edge.
     campaign_name: str = ""
     campaign_color: str = ""
+    # m-25019217: the publication on Instagram («Ver en Instagram», new tab) — only for a
+    # published event whose attempt recorded a permalink (`instagram_link`), "" otherwise.
+    permalink: str = ""
+    # m-25026486: the time in two whole tokens for the narrow calendar chip — «9:33» and
+    # «a. m.» (`time_label` split once); the chip drops the suffix, never cuts a token.
+    time_hm: str = ""
+    time_suffix: str = ""
+    # m-25026486: the published events of one batch share this key
+    # (`batch_group_keys`); "" for an event that is not in a batch of two or more.
+    group_key: str = ""
+
+
+@dataclass(frozen=True)
+class EventGroupVM:
+    """m-25026241: one entry of a day (list view) or an hour cell (calendar) — a lone
+    event (`is_group` False, `cards` = [it]) or the published events of one account in
+    one batch (`batch_group_keys`), shown folded as «1:17 – 1:20 a. m. · 9 publicaciones»."""
+
+    key: str
+    is_group: bool
+    count: int
+    time_label: str
+    label: str  # «2:12 a. m. · 9 publicaciones» ("" for a lone event)
+    #: The calendar chip's one line: «9 publicaciones · 2:12 a. m.» — the count first,
+    #: so the ellipsis takes the time (the hour row already says it).
+    chip_label: str
+    aria_label: str  # the row's accessible name: time, count and account
+    cards: list[EventCardVM] = field(default_factory=list)
+    #: The thumbnails the folded row shows (`GROUP_PREVIEW`), then «+N» for the rest.
+    preview: list[EventCardVM] = field(default_factory=list)
+    preview_more: int = 0
 
 
 @dataclass(frozen=True)
@@ -988,6 +1098,9 @@ class DayColumnVM:
     is_past: bool
     count: int
     cards: list[EventCardVM] = field(default_factory=list)
+    #: m-25026241: `cards` with batches folded (`group_entries`).
+    #: Not `entries`: a Reflex object var already has an `.entries()` method.
+    groups: list[EventGroupVM] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -997,12 +1110,15 @@ class HourCellVM:
     is_today: bool
     is_past: bool
     cards: list[EventCardVM] = field(default_factory=list)
-    # Up to `CELL_VISIBLE` chips show in the cell (the hour row grows to fit them); from
-    # the next one on, a «+N más» pill opens, beside it, the ones that did not fit.
-    visible: list[EventCardVM] = field(default_factory=list)
+    # Up to `CELL_VISIBLE` entries show in the cell (`visible_entries`, the hour row grows
+    # to fit them); from the next one on, a «+N más» pill opens, beside it, the events
+    # that did not fit.
     more: list[EventCardVM] = field(default_factory=list)
     more_count: int = 0
     heading: str = ""  # «Mar 6 · 6 p. m.» — the subtitle of that list
+    #: m-25026241: the first `CELL_VISIBLE` entries (a batch counts as one);
+    #: the events of the entries after them are `more`.
+    visible_entries: list[EventGroupVM] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -1104,6 +1220,9 @@ class PostOptionVM:
     # review that lacks something else still belongs to «Por aprobar»).
     approved_at: str = ""
     is_approved: bool = False
+    #: m-25019220: a view-only own upload (`creative_vm.is_view_only_upload`) — no «Por
+    #: probar», a plain line saying why (`history_help`), never scheduled again.
+    view_only: bool = False
 
 
 def retention_badge(state: str, days_left: int | None) -> tuple[str, str]:
@@ -1184,6 +1303,13 @@ class EventDetailVM:
     # QUA-143: the POST's campaign ("" when independent), read through the POST.
     campaign_name: str = ""
     campaign_color: str = ""
+    # m-25019217: «Ver en Instagram» — `instagram_link`, "" when there is none.
+    permalink: str = ""
+    #: m-25019224: the event already went out (`published`) — the panel speaks in the
+    #: past and offers looking at it or scheduling it again (`panel_title`, `panel_hint`).
+    went_out: bool = False
+    panel_title: str = field(init=False, default="")
+    panel_hint: str = field(init=False, default="")
     # N13 (m-24842959): «Aprobada por ti: sale el lunes 28 de septiembre a las 3:00 p. m.»
     # — derived from local_date/local_time, so every builder gets it without passing it.
     approved_line: str = field(init=False, default="")
@@ -1192,6 +1318,9 @@ class EventDetailVM:
     review_line: str = field(init=False, default=REVIEW_NOTHING_WITHOUT_YOU)
 
     def __post_init__(self) -> None:
+        title, hint = event_panel_texts(went_out=self.went_out, has_link=self.permalink != "")
+        object.__setattr__(self, "panel_title", title)
+        object.__setattr__(self, "panel_hint", hint)
         object.__setattr__(self, "approved_line", approved_line(self.local_date, self.local_time))
         object.__setattr__(
             self,
@@ -1225,6 +1354,9 @@ class CardInput:
     caption_excerpt: str = ""
     thumbnail_url: str | None = None
     category: str | None = None
+    #: m-25019217: the POST's number of files (`PostSummary.asset_count`), 0 = unknown —
+    #: a `galeria` with one file reads «Publicación», not «Carrusel»
+    item_count: int = 0
     content_type: str | None = None
     approval: str | None = None
     detail_href: str = ""
@@ -1239,6 +1371,47 @@ class CardInput:
     times_published: int | None = None  # the POST's history (D2) — None: POST unreadable
     campaign_name: str = ""  # QUA-143: `PostSummary.campaign.name`, "" when independent
     campaign_color: str = ""
+    permalink: str = ""  # m-25019217: `publish_attempts.permalink` of the event's attempt
+
+
+#: The event panel's heading (m-25019224, UX review): planned, or already out.
+PANEL_TITLE_PLANNED = "Publicación planificada"
+PANEL_HINT_PLANNED = "Qué sale, cuándo y dónde. Desde aquí la apruebas, la mueves o la cancelas."
+PANEL_TITLE_OUT = "Publicación que ya salió"
+PANEL_HINT_OUT_LINK = "Mírala en Instagram o vuelve a programarla."
+PANEL_HINT_OUT = "Puedes volver a programarla desde Aprobados."
+#: The stage badge's prefix: «Sale como Publicación» / «Salió como publicación».
+DEST_PREFIX_PLANNED = "Sale como "
+DEST_PREFIX_OUT = "Salió como "
+
+
+def event_panel_texts(*, went_out: bool, has_link: bool) -> tuple[str, str]:
+    """`(title, hint)` of the event panel: in the past once it went out, naming Instagram
+    only when there is a link to open."""
+    if not went_out:
+        return PANEL_TITLE_PLANNED, PANEL_HINT_PLANNED
+    return PANEL_TITLE_OUT, PANEL_HINT_OUT_LINK if has_link else PANEL_HINT_OUT
+
+
+#: The published card's «⋯» menu (m-25019224): what to do with one that went out.
+RESCHEDULE_AGAIN = "Volver a programar"
+MORE_DETAILS = "Más detalles"
+
+#: «Ver en Instagram» (m-25019217): the link of a publication that went out.
+VIEW_ON_INSTAGRAM = "Ver en Instagram"
+_INSTAGRAM_HOSTS = ("instagram.com", "www.instagram.com")
+
+
+def instagram_link(status: str, permalink: str | None) -> str:
+    """The publication's address on Instagram, or "" — only for an event that WENT OUT
+    and only an `https://` Instagram address (the link opens in a new tab; anything else
+    — an empty permalink, another scheme or host — is never offered)."""
+    if status != "published" or not permalink:
+        return ""
+    parts = urlsplit(permalink.strip())
+    if parts.scheme != "https" or parts.hostname not in _INSTAGRAM_HOSTS:
+        return ""
+    return permalink.strip()
 
 
 def event_readiness(
@@ -1277,13 +1450,15 @@ def build_card(
     return EventCardVM(
         event_id=item.event_id,
         post_id=item.post_id,
-        time_label=time_label_12h(local),
+        time_label=(when := time_label_12h(local)),
+        time_hm=when.partition(" ")[0],
+        time_suffix=when.partition(" ")[2],
         title=item.post_title if item.post_title is not None else "Publicación no disponible",
         caption_excerpt=item.caption_excerpt,
         thumbnail_url=item.thumbnail_url or "",
         platform=platform,
         account_label=account,
-        category_label=category_label(item.category),
+        category_label=category_label(item.category, item.item_count),
         content_type_label=content_type_label(item.content_type),
         approval_label=ready.label,
         approval_short=ready.short,
@@ -1307,29 +1482,214 @@ def build_card(
         destination_label=DESTINATION_LABELS.get(item.destination or "", ""),
         campaign_name=item.campaign_name,
         campaign_color=item.campaign_color,
+        permalink=instagram_link(item.status, item.permalink),
         **(_temperature_fields(item.times_published) if item.times_published is not None else {}),
     )
 
 
 CELL_VISIBLE = 5
 
+# -- m-25026241 / m-25026486: a batch of publications folds into one row --------------
+
+#: How many thumbnails a folded row shows before «+N» (they fit at 375 px).
+GROUP_PREVIEW = 4
+
+
+#: m-25026486: a batch lasts at most this long, counted from its FIRST publication (same
+#: account, same displayed day) — a mural staged over a few minutes is one batch, and a
+#: group never swallows a whole afternoon (UX review: a chain rule hid two hour rows).
+BATCH_SPAN = timedelta(minutes=15)
+
+
+@dataclass(frozen=True)
+class BatchInput:
+    """What the batch rule reads of one event."""
+
+    event_id: str
+    scheduled_at: datetime  # aware
+    connection_id: str
+    status: str
+
+
+def batch_group_keys(events: Iterable[BatchInput], zone: ZoneInfo) -> dict[str, str]:
+    """THE grouping rule (m-25026486): `published` events of one account on one
+    DISPLAYED day (`zone`, the calendar's) form a batch: the first opens it, every later
+    one that went out at most `BATCH_SPAN` after THAT first joins, the next opens a new
+    batch — so a batch never lasts more than 15 minutes. Returns event id → batch key,
+    only for batches of two or more; scheduled / publishing / failed events and lone
+    publications get none.
+
+    The key is the account plus the UTC second of the batch's FIRST event: stable across
+    reloads (`open_groups` keeps working); a publication that joins at the end keeps it,
+    one that lands before the first (or bridges two batches) starts a new key — that
+    group shows folded again. One sort per day and account, one walk."""
+    buckets: dict[tuple[date, str], list[BatchInput]] = {}
+    for event in events:
+        if event.status != "published":
+            continue
+        day = event.scheduled_at.astimezone(zone).date()
+        # in UTC: two datetimes sharing a zone subtract by wall time (a DST night lies)
+        utc = replace(event, scheduled_at=event.scheduled_at.astimezone(UTC))
+        buckets.setdefault((day, event.connection_id), []).append(utc)
+    keys: dict[str, str] = {}
+    for (_day, connection_id), members in buckets.items():
+        members.sort(key=lambda e: (e.scheduled_at, e.event_id))
+        batch: list[BatchInput] = []
+        for event in [*members, None]:
+            if (
+                event is not None
+                and batch
+                and event.scheduled_at - batch[0].scheduled_at <= BATCH_SPAN
+            ):
+                batch.append(event)
+                continue
+            if len(batch) > 1:
+                first = batch[0].scheduled_at.astimezone(UTC)
+                key = f"{first:%Y-%m-%dT%H:%M:%SZ}|{connection_id}"
+                keys.update((e.event_id, key) for e in batch)
+            batch = [event] if event is not None else []
+    return keys
+
+
+#: The id of an event card's «⋯» button (`planner_page._card_menu`).
+MENU_ID_PREFIX = "q-ev-menu-"
+
+
+def menu_focus_script(event_id: str) -> str:
+    """Give the focus back to an event card's «⋯» once its panel closed. Radix returns
+    the focus itself when the closing animation ends (to <body>, the menu that opened the
+    panel being gone), so this tries again after it — only while the focus is still
+    lost, never stealing it from where the owner already moved. Nothing when the card
+    is not on screen."""
+    safe = "".join(ch for ch in event_id if ch.isalnum() or ch == "-")
+    return (
+        "[60, 250, 500, 900, 1500].forEach(function (ms) { setTimeout(function () { "
+        f"var e = document.getElementById('{MENU_ID_PREFIX}{safe}'); "
+        "var a = document.activeElement; "
+        "if (e && (!a || a === document.body)) { e.focus(); } }, ms); });"
+    )
+
+
+#: At most this many open groups are remembered per session (oldest dropped first).
+OPEN_GROUPS_MAX = 50
+
+
+def prune_open_groups(
+    open_keys: Sequence[str], week_keys: Iterable[str], monday: date
+) -> list[str]:
+    """The open groups worth remembering after a week was read (review m-25026241): a
+    key of THIS week stays only while its group still exists; a key of another week is
+    kept (coming back finds it open); at most `OPEN_GROUPS_MAX`, newest kept. A key's day
+    is its UTC date, so the week is widened by a day each side."""
+    present = set(week_keys)
+    first, last = monday - timedelta(days=1), monday + timedelta(days=8)
+    kept: list[str] = []
+    for key in open_keys:
+        try:
+            day = date.fromisoformat(key[:10])
+        except ValueError:
+            continue  # not a group key at all
+        if first <= day <= last and key not in present:
+            continue
+        kept.append(key)
+    return kept[-OPEN_GROUPS_MAX:]
+
+
+def group_label(time_label: str, count: int) -> str:
+    """«1:17 – 1:20 a. m. · 9 publicaciones» — a group has two or more, never one."""
+    return f"{time_label} · {count} publicaciones"
+
+
+def time_range_label(first: str, last: str) -> str:
+    """A batch's time, from the cards' own labels: one time when every publication shares
+    the displayed minute, else a range — «1:17 – 1:20 a. m.», or with both halves of the
+    day «11:50 a. m. – 12:05 p. m.»."""
+    if first == last:
+        return first
+    first_hm, _, first_suffix = first.partition(" ")
+    if first_suffix and first_suffix == last.partition(" ")[2]:
+        return f"{first_hm} – {last}"
+    return f"{first} – {last}"
+
+
+def group_entries(cards: Sequence[EventCardVM]) -> list[EventGroupVM]:
+    """`cards` (already in time order) as entries: published events sharing a
+    `group_key` with at least one other become ONE group, placed where its first event
+    was; every other event stays a lone entry, exactly as before. Pure."""
+    members: dict[str, list[EventCardVM]] = {}
+    for card in cards:
+        if card.group_key:
+            members.setdefault(card.group_key, []).append(card)
+    entries: list[EventGroupVM] = []
+    placed: set[str] = set()
+    for card in cards:
+        group = members.get(card.group_key, []) if card.group_key else []
+        if len(group) < 2:
+            entries.append(
+                EventGroupVM(
+                    key=card.event_id,
+                    is_group=False,
+                    count=1,
+                    time_label=card.time_label,
+                    label="",
+                    chip_label="",
+                    aria_label=card.title,
+                    cards=[card],
+                )
+            )
+            continue
+        if card.group_key in placed:
+            continue
+        placed.add(card.group_key)
+        count = len(group)
+        when = time_range_label(group[0].time_label, group[-1].time_label)
+        entries.append(
+            EventGroupVM(
+                key=card.group_key,
+                is_group=True,
+                count=count,
+                time_label=when,
+                label=group_label(when, count),
+                chip_label=f"{count} publicaciones",
+                aria_label=(
+                    f"{group_label(when, count)} en {card.account_label}"
+                    if card.account_label
+                    else group_label(when, count)
+                ),
+                cards=list(group),
+                preview=list(group[:GROUP_PREVIEW]),
+                preview_more=max(count - GROUP_PREVIEW, 0),
+            )
+        )
+    return entries
+
 
 def _cell(
-    *, day_iso: str, hour: int, is_today: bool, is_past: bool, cards, heading: str = ""
+    *,
+    day_iso: str,
+    hour: int,
+    is_today: bool,
+    is_past: bool,
+    entries: Sequence[EventGroupVM],
+    heading: str = "",
 ) -> HourCellVM:
-    """A calendar cell: all its cards (in time order), and the split the grid draws —
-    the first `CELL_VISIBLE`, then the rest behind «+N más»."""
-    cards = list(cards)
+    """A calendar cell: its entries (the day's groups that START in this hour, m-25026486
+    — a batch running into the next hour is not drawn there again), and the split the
+    grid draws — the first `CELL_VISIBLE`, then the rest behind «+N más»."""
+    entries = list(entries)
+    cards = [card for entry in entries for card in entry.cards]
+    shown = entries[:CELL_VISIBLE]
+    more = [card for entry in entries[CELL_VISIBLE:] for card in entry.cards]
     return HourCellVM(
         day_iso=day_iso,
         hour=hour,
         is_today=is_today,
         is_past=is_past,
         cards=cards,
-        visible=cards[:CELL_VISIBLE],
-        more=cards[CELL_VISIBLE:],
-        more_count=max(len(cards) - CELL_VISIBLE, 0),
+        more=more,
+        more_count=len(more),
         heading=heading,
+        visible_entries=shown,
     )
 
 
@@ -1345,20 +1705,31 @@ def build_week(
     (calendar view). Cards are chronological everywhere. An event outside the week is
     ignored (the service already filters)."""
     week_days = [monday + timedelta(days=i) for i in range(7)]
+    in_week = [item for item in items if item.scheduled_at.astimezone(zone).date() in week_days]
+    # m-25026486: the batches of what went out (`batch_group_keys`, the one rule)
+    batch_keys = batch_group_keys(
+        (BatchInput(i.event_id, i.scheduled_at, i.connection_id, i.status) for i in in_week),
+        zone,
+    )
     by_day: dict[date, list[tuple[datetime, EventCardVM]]] = {d: [] for d in week_days}
-    by_cell: dict[tuple[int, date], list[tuple[datetime, EventCardVM]]] = {}
-    for item in items:
+    row_of: dict[str, int] = {}
+    for item in in_week:
         local = item.scheduled_at.astimezone(zone)
-        if local.date() not in by_day:
-            continue
         card = build_card(item, zone=zone, connections=connections)
+        if item.event_id in batch_keys:
+            card = replace(card, group_key=batch_keys[item.event_id])
         by_day[local.date()].append((item.scheduled_at, card))
-        by_cell.setdefault((hour_row_for(local.hour), local.date()), []).append(
-            (item.scheduled_at, card)
-        )
+        row_of[item.event_id] = hour_row_for(local.hour)
 
     def ordered(pairs: list[tuple[datetime, EventCardVM]]) -> list[EventCardVM]:
         return [card for _, card in sorted(pairs, key=lambda pair: pair[0])]
+
+    day_groups = {d: group_entries(ordered(by_day[d])) for d in week_days}
+    # a group sits in the hour cell of its FIRST publication, once
+    by_cell: dict[tuple[int, date], list[EventGroupVM]] = {}
+    for d, groups in day_groups.items():
+        for entry in groups:
+            by_cell.setdefault((row_of[entry.cards[0].event_id], d), []).append(entry)
 
     days = [
         DayColumnVM(
@@ -1370,6 +1741,7 @@ def build_week(
             is_past=d < today,
             count=len(by_day[d]),
             cards=ordered(by_day[d]),
+            groups=day_groups[d],
         )
         for d in week_days
     ]
@@ -1383,7 +1755,7 @@ def build_week(
                     hour=key,
                     is_today=d == today,
                     is_past=d < today,
-                    cards=ordered(by_cell.get((key, d), [])),
+                    entries=by_cell.get((key, d), []),
                     heading=f"{_WEEKDAYS[d.weekday()]} {d.day} · {hour_row_label(key)}",
                 )
                 for d in week_days
@@ -1412,6 +1784,7 @@ def build_post_option(
     has_live_event: bool = False,
     media_types: tuple[str, ...] = (),
     image_size: tuple[int, int] | None = None,
+    video_seconds: float | None = None,
     preferred_destination: str | None = None,
     lifecycle_status: str = "",
     campaign_name: str = "",
@@ -1428,6 +1801,7 @@ def build_post_option(
     expires_at: float = 0.0,
     content_kind: str = "",
     approved_at: str = "",
+    reuse_type: str | None = None,
 ) -> PostOptionVM:
     ready = readiness(approval, is_publishable=is_publishable, reason=unpublishable_reason)
     r_label, r_tone = retention_badge(retention_state, purge_days_left)
@@ -1441,10 +1815,12 @@ def build_post_option(
         times_published=times_published,
         final_rendering=final_rendering,
     )
-    shows_history = card is not None and card.key in HISTORY_CARD_STATES
+    view_only = is_view_only_upload(content_kind, reuse_type)
+    # m-25019220: a view-only upload is never «Por probar» — nothing to repeat
+    shows_history = card is not None and card.key in HISTORY_CARD_STATES and not view_only
     if card is not None:  # the same words on every surface that prints the state
         g_label, g_tone = card.label, card.tone
-    kind, aspect = frame_shape(category or "", "")
+    kind, aspect = frame_shape(category or "", "", len(media_types), image_size)
     ratio = aspect.replace(" / ", ":")
     medium = "Video" if video_url else "Imagen"
     return PostOptionVM(
@@ -1452,7 +1828,7 @@ def build_post_option(
         title=title,
         caption_excerpt=caption_excerpt,
         thumbnail_url=thumbnail_url or "",
-        category_label=category_label(category),
+        category_label=category_label(category, len(media_types)),
         approval_label=ready.label,
         approval_tone=ready.tone,
         detail_href=detail_href,
@@ -1474,7 +1850,7 @@ def build_post_option(
         content_kind_label=KIND_LABELS.get(content_kind, ""),
         **_kind_fields(media_types, category or "", has_outputs=bool(chips)),
         **_temperature_fields(times_published),
-        destinations=(choices := destinations_for(media_types, image_size)),
+        destinations=(choices := destinations_for(media_types, image_size, video_seconds)),
         default_destination=default_destination(
             choices, preferred_destination or _CATEGORY_DESTINATION.get(category or "")
         ),
@@ -1495,9 +1871,12 @@ def build_post_option(
         preview_expired=preview_expired and lifecycle_status == "generated",
         recreate_note=recreate_note if preview_expired else "",
         expires_at=expires_at if lifecycle_status == "generated" else 0.0,
-        history_help=history_help(times_published) if shows_history else "",
+        history_help=(
+            VIEW_ONLY_NOTE if view_only else history_help(times_published) if shows_history else ""
+        ),
         approved_at=approved_at or "",
         is_approved=approval == "approved",
+        view_only=view_only,
     )
 
 
@@ -1511,7 +1890,7 @@ def filter_posts(
         for post in posts
         if (state in ("", GALLERY_FILTER_ALL) or post.card_state == state)
         and (category in ("", GALLERY_FILTER_ALL) or post.category == category)
-        and (content_kind in ("", GALLERY_FILTER_ALL) or post.content_kind == content_kind)
+        and matches_kind(post, content_kind)
     ]
 
 
@@ -1598,9 +1977,17 @@ def assign_steps_done(*, post_ok: bool, when_ok: bool, reached: int) -> list[boo
     return [post_ok, post_ok and when_ok and reached >= STEP_WHEN, False]
 
 
-def frame_shape(category: str, output_port: str) -> tuple[str, str]:
+def frame_shape(
+    category: str,
+    output_port: str,
+    item_count: int = 0,
+    image_size: tuple[int, int] | None = None,
+) -> tuple[str, str]:
     """(kind label, CSS aspect ratio) for a preview frame: the template output when the
-    event publishes one, else the POST's category."""
+    event publishes one, else the POST's category. m-25019217: a `galeria` POST with ONE
+    file (`item_count`) is a feed image («Publicación» 4:5), not a «Carrusel»; with its
+    first image's real size known (`image_size`, code review m-25019224) a square one
+    keeps 1:1 — 4:5 only when the size is unknown or not square."""
     if output_port == "reel":
         return "Reel", "9 / 16"
     if output_port == "story":
@@ -1611,16 +1998,26 @@ def frame_shape(category: str, output_port: str) -> tuple[str, str]:
         return "Reel", "9 / 16"
     if category == "story":
         return "Historia", "9 / 16"
-    if category == "galeria":
+    if category == "galeria" and item_count != 1:
         return "Carrusel", "1 / 1"
+    if _is_square(image_size):
+        return "Publicación", "1 / 1"
     return "Publicación", "4 / 5"
+
+
+def _is_square(size: tuple[int, int] | None) -> bool:
+    """Width and height within 2 % of each other (a 1080×1080 or 1024×1024 image)."""
+    if not size or size[0] <= 0 or size[1] <= 0:
+        return False
+    return abs(size[0] - size[1]) <= 0.02 * max(size)
 
 
 def media_label(post: PostOptionVM | None, output_port: str) -> str:
     """ "Video · Reel 9:16" — the POST's media as the summary card prints it."""
     if post is None:
         return ""
-    kind, aspect = frame_shape(post.category, output_port)
+    single = 1 if post.kind in (_IMAGE_KIND[0], _VIDEO_KIND[0]) else 0
+    kind, aspect = frame_shape(post.category, output_port, single)
     medium = "Video" if post.video_url else "Imagen"
     ratio = aspect.replace(" / ", ":")
     return f"{medium} · {kind}" + ("" if ratio in kind else f" {ratio}")
@@ -1636,6 +2033,7 @@ def build_output_chip(
     account_label: str = "",
     media_types: tuple[str, ...] = (),
     image_size: tuple[int, int] | None = None,
+    video_seconds: float | None = None,
     preferred_destination: str | None = None,
     can_schedule_pending_final: bool = False,
 ) -> OutputChipVM:
@@ -1660,7 +2058,7 @@ def build_output_chip(
         tone=tone,
         scheduled=event_status is not None,
         note=note,
-        destinations=(choices := destinations_for(media_types, image_size)),
+        destinations=(choices := destinations_for(media_types, image_size, video_seconds)),
         default_destination=default_destination(
             choices, preferred_destination or _PORT_DESTINATION.get(port)
         ),
@@ -1739,12 +2137,22 @@ class DestinationChoiceVM:
     label: str
     available: bool
     reason: str = ""  # why it is off, printed under the selector
-    warning: str = ""  # what Meta may still refuse that cannot be checked here
+    warning: str = ""  # what Meta may still refuse: a story video too long / of unknown length
+    # m-25026481: a «Historia» whose video is KNOWN to last over 60 s, and that length
+    too_long: bool = False
+    duration_label: str = ""
+    # a «Historia» of a video whose length could NOT be read (the generic caution); a
+    # 60.0–60.5 s video also gets that caution but its length is known: False there
+    length_unknown: bool = False
 
 
-def destination_choices(options) -> list[DestinationChoiceVM]:
+def destination_choices(options, video_seconds: float | None = None) -> list[DestinationChoiceVM]:
     """The offered options of `publishable.destination_options`, as the selector shows
-    them; a destination that is not offered (a video's «Publicación») is left out."""
+    them; a destination that is not offered (a video's «Publicación») is left out. The
+    «Historia» of a video known to be too long carries that (m-25026481)."""
+    too_long = story_video_too_long(video_seconds)
+    duration = format_video_duration(video_seconds) if too_long and video_seconds else ""
+    unread = video_seconds_of(video_seconds) is None
     return [
         DestinationChoiceVM(
             key=o.destination,
@@ -1752,6 +2160,10 @@ def destination_choices(options) -> list[DestinationChoiceVM]:
             available=o.available,
             reason=o.reason,
             warning=o.warning,
+            too_long=too_long and o.destination == "story",
+            duration_label=duration if o.destination == "story" else "",
+            # only a video's story carries a warning: with no length, it is the generic one
+            length_unknown=unread and o.destination == "story" and bool(o.warning),
         )
         for o in options
         if o.offered
@@ -1763,11 +2175,60 @@ _PORT_DESTINATION: dict[str, str] = {"reel": "reel", "story": "story", "feed": "
 
 
 def destinations_for(
-    media_types: tuple[str, ...], image_size: tuple[int, int] | None
+    media_types: tuple[str, ...],
+    image_size: tuple[int, int] | None,
+    video_seconds: float | None = None,
 ) -> list[DestinationChoiceVM]:
     """The selector's buttons for content of this shape (`publishable.destination_options`
-    — the same rule the service and the executor apply)."""
-    return destination_choices(destination_options(tuple(media_types), image_size))
+    — the same rule the service and the executor apply). `video_seconds` (m-25026481): a
+    video's known length, so a «Historia» longer than 60 s warns with that length."""
+    return destination_choices(
+        destination_options(tuple(media_types), image_size, video_seconds=video_seconds),
+        video_seconds,
+    )
+
+
+#: m-25026481: what «Confirmar» says about the plan's video stories — those whose length
+#: is KNOWN to be over 60 s (each row carries `STORY_TOO_LONG_TAG`; one alone is named
+#: by its hour) and those whose length could not be read.
+STORY_TOO_LONG_TAG = "Dura más de 1 minuto"
+STORY_TOO_LONG_NOTE_ONE = (
+    "La Historia {when} dura {duration}: Instagram la rechazará. Vuelve atrás y cámbiala a Reel."
+)
+STORY_TOO_LONG_NOTE_MANY = (
+    "{n} Historias de video de este plan duran más de 1 minuto: Instagram las rechazará. "
+    "Vuelve atrás y cámbialas a Reel."
+)
+STORY_UNKNOWN_NOTE = (
+    "No pudimos leer cuánto duran algunas Historias de video de este plan. Si alguna dura "
+    "más de 1 minuto, cámbiala a Reel: Instagram la rechazará."
+)
+
+
+def _at_hour(time_text: str) -> str:
+    """«a las 2:00 p. m.» / «a la 1:00 p. m.»."""
+    return ("a la " if time_text.startswith("1:") else "a las ") + time_text
+
+
+def story_too_long_note(rows: list[PlanRowVM], *, several_days: bool = False) -> str:
+    """The note for the plan's too-long video stories: one is named by its hour (and its
+    day when the plan spans several days); several are counted — their rows say which."""
+    if not rows:
+        return ""
+    if len(rows) > 1:
+        return STORY_TOO_LONG_NOTE_MANY.format(n=len(rows))
+    row = rows[0]
+    if row.now:
+        when = "de «Ahora»"
+    elif several_days and row.day_label:
+        when = f"del {row.day_label} {_at_hour(row.time_label)}"
+    else:
+        when = "de " + _at_hour(row.time_label).removeprefix("a ")
+    return STORY_TOO_LONG_NOTE_ONE.format(when=when, duration=row.video_duration)
+
+
+def story_unknown_note(count: int) -> str:
+    return STORY_UNKNOWN_NOTE if count > 0 else ""
 
 
 def default_destination(choices: list[DestinationChoiceVM], preferred: str | None) -> str:
@@ -1992,6 +2453,15 @@ class PlanRowVM:
     accounts_line: str = ""
     sale_line: str = ""
     needs_more: bool = False
+    # m-25026481: «Historia» chosen for a video KNOWN to last over 60 s, and that length
+    # («1 min 5 s»): it opens «Más opciones» (where the warning is) and tags the row on
+    # «Confirmar».
+    story_too_long: bool = False
+    video_duration: str = ""
+    # «Historia» chosen for a video whose length could not be read: counted by the
+    # plan's «No pudimos leer…» note. Both flags are False in a reschedule: there the
+    # destination cannot change, so only the row's own warning speaks.
+    story_length_unknown: bool = False
 
 
 CAMPAIGN_NONE = "none"  # the selector's «Sin campaña» (same value as the POST detail)
@@ -2186,6 +2656,8 @@ def build_plan_row(
         destinations = post.destinations
     dest = item.destination
     chosen = next((d for d in destinations if d.key == dest), None)
+    too_long = not reschedule and chosen is not None and chosen.too_long
+    unknown_length = not reschedule and chosen is not None and chosen.length_unknown
     mock = {"reel": "reel", "story": "story"}.get(dest, "carousel" if key == "carousel" else "post")
     aspect = {"reel": "9 / 16", "story": "9 / 16", "carousel": "1 / 1"}.get(mock, "4 / 5")
     hour, minute = split_time(item.time)
@@ -2276,7 +2748,10 @@ def build_plan_row(
             now=item.now,
             button=SUBMIT_RESCHEDULE if reschedule else SUBMIT_ASSIGN,
         ),
-        needs_more=error not in _WHEN_ERRORS,
+        needs_more=error not in _WHEN_ERRORS or too_long,
+        story_too_long=too_long,
+        story_length_unknown=unknown_length,
+        video_duration=chosen.duration_label if too_long and chosen is not None else "",
         **campaign_fields,
     )
 

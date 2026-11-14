@@ -24,8 +24,9 @@ _USER_ID = UUID("c0000000-0000-4000-8000-000000000001")
 def test_the_picker_offers_the_seven_kinds_in_order() -> None:
     assert (
         [key for key, *_ in KIND_OPTIONS]
-        # a video by parts (ADR 44) is reached from a Clip or a reel, never offered here
-        == [kind.value for kind in ContentKind if not kind.is_parts_parent]
+        # a video by parts (ADR 44) is reached from a Clip or a reel and an own-media piece
+        # is recorded from «Publicar» (m-25019217): neither is offered here
+        == [kind.value for kind in ContentKind if kind.is_offered]
         == [
             "creator_script",
             "avatar_video",
@@ -50,6 +51,19 @@ def test_a_video_by_parts_has_a_name_but_no_place_in_the_picker() -> None:
     assert draft_kind_label(shot_video, has_video=False) == "Video por partes"
     assert all(KIND_LABELS.get(kind.value) for kind in ContentKind)
     assert slug("Video por partes") not in ("", "pieza")
+
+
+def test_an_own_media_piece_has_a_name_but_is_never_offered() -> None:
+    """m-25019217: what the owner published from «Publicar» is a piece with its own name
+    (pill, download, «Tipo» filter) that «¿Qué creamos?» never offers nor selects."""
+    from .creative_vm import draft_kind_label
+
+    own_media = ContentKind.OWN_MEDIA.value
+    assert own_media not in [key for key, *_ in KIND_OPTIONS]
+    assert draft_kind_label(own_media, has_video=False) == "Subida por ti"
+    assert draft_kind_label(own_media, has_video=True) == "Subida por ti"
+    state = CreativeState()
+    assert state.choose_kind(own_media) is None
 
 
 def test_the_template_kind_is_chosen_and_reads_the_catalog_once() -> None:
@@ -483,7 +497,7 @@ def test_the_gallerys_video_is_silent_unless_turned_on(monkeypatch: pytest.Monke
     assert state.carousel_slides[0]["audio"] == ""
     state.toggle_slide_audio(1)
     assert state.carousel_slides[1]["audio"] == "1"
-    _, slides = state._carousel_slides_payload(False)
+    _, _roles, slides = state._carousel_brief_slides(False)
     assert [slide.get("audio") for slide in slides] == [None, True, None]
     brief = _submit(monkeypatch, "carousel", {"slides": slides})
     assert [slide.audio for slide in brief.media.slides] == [False, True, False]
@@ -1242,11 +1256,13 @@ def test_the_gallery_explains_its_options_and_says_titulo_and_boton() -> None:
     assert rendered("Título") in section and "toggle_slide_title" in section
     assert rendered("Botón de acción") not in str(_slide_generated_fields())
     # § 2026-10-16: a «Video de stock» slide has no scene holding a button, and it must
-    # carry words — the title or, when the title is on another slide, the button
-    assert rendered("Botón de acción") in str(_slide_stock_fields())
+    # carry words — the title or, when the title is on another slide, the CTA phrase
+    # (m-25017276: printed as text, never a button — no longer called «Botón de acción»)
+    assert rendered("Botón de acción") not in str(_slide_stock_fields())
+    assert rendered("Invitación a comprar o escribir") in str(_slide_stock_fields())
     assert "Gancho" not in section and "Llamado (CTA)" not in section
-    for help_title in ("Foto del producto", "Fondo común (opcional)"):
-        assert rendered(f"Qué es «{help_title}»") in section
+    # m-24985141 round 14: each slide chooses its photo, style and the one background
+    assert "slide-open-photo" in section and "slide-open-background" in section
     assert "Diapositiva de cierre" not in section
     for kind in ("Imagen generada", "Video animado", "De una publicación"):
         assert rendered(f"Qué es «{kind}»") in kinds

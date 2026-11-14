@@ -380,8 +380,12 @@ class StepResult:
 
 def format_money(amount: Decimal, currency: str | None) -> str:
     """`COP 12.500` / `USD 9,99`: thousands with `.`, decimals with `,` only when the
-    amount has cents. Deterministic, locale-free."""
-    q = amount.quantize(Decimal("0.01"))
+    amount has cents. Deterministic, locale-free. An amount too large to round (beyond
+    28 digits) is written as is rather than raising (m-25018684)."""
+    try:
+        q = amount.quantize(Decimal("0.01"))
+    except InvalidOperation:
+        return f"{currency} {amount}" if currency else str(amount)
     if q == q.to_integral_value():
         num = f"{int(q):,}".replace(",", ".")
     else:

@@ -323,7 +323,8 @@ _KIND_MEDIA: dict[ContentKind, dict[str, object]] = {
 }
 
 
-@pytest.mark.parametrize("kind", list(ContentKind))
+# m-25019217: an own-media piece is recorded from «Publicar», never written by a model
+@pytest.mark.parametrize("kind", [kind for kind in ContentKind if not kind.is_own_media])
 def test_every_kind_renders_its_assignment(kind: ContentKind) -> None:
     """The template kind used to raise `KeyError` here — every template draft failed."""
     media = MediaInputs(**_KIND_MEDIA.get(kind, {}))  # type: ignore[arg-type]

@@ -39,9 +39,13 @@ from .planner_state import REFRESH_SECONDS, SCROLL_ID, PlannerState
 from .planner_vm import (
     CREATE_ACTION,
     EMPTY_WEEK_TITLE,
+    MENU_ID_PREFIX,
+    MORE_DETAILS,
     NO_APPROVED_BODY,
+    RESCHEDULE_AGAIN,
     VIEW_CALENDAR,
     VIEW_LIST,
+    VIEW_ON_INSTAGRAM,
 )
 from .post_card import (
     DropBox,
@@ -54,6 +58,7 @@ from .post_card import (
     post_card,
     readiness_note,
     temperature_badge,
+    thumbnail,
 )
 from .ui import (
     app_shell,
@@ -101,16 +106,46 @@ def _card_menu(event) -> rx.Component:
                 aria_label="Acciones de la publicación",
                 min_width=_TOUCH_MIN,
                 min_height=_TOUCH_MIN,
+                id=MENU_ID_PREFIX + event.event_id,
             ),
         ),
         rx.dropdown_menu.content(
-            rx.dropdown_menu.item("Ver detalle", on_click=PlannerState.open_detail(event.event_id)),
             rx.cond(
-                event.detail_href != "",
-                # m-24842987: the ficha says «‹ Tu semana» and comes back to this week.
-                rx.dropdown_menu.item(
-                    "Ver publicación",
-                    on_click=rx.redirect(event.detail_href + PlannerState.week_return_query),
+                event.status_label == "Publicado",
+                # m-25019224: one that went out — look at it, plan it again, or the rest
+                rx.fragment(
+                    rx.cond(
+                        event.permalink != "",
+                        rx.dropdown_menu.item(
+                            VIEW_ON_INSTAGRAM,
+                            on_click=rx.redirect(event.permalink, is_external=True),
+                        ),
+                    ),
+                    rx.cond(
+                        PlannerState.schedulable_ids.contains(event.post_id),
+                        rx.dropdown_menu.item(
+                            RESCHEDULE_AGAIN,
+                            on_click=PlannerState.schedule_again(event.post_id),
+                        ),
+                    ),
+                    rx.dropdown_menu.item(
+                        MORE_DETAILS, on_click=PlannerState.open_detail(event.event_id)
+                    ),
+                ),
+                rx.fragment(
+                    rx.dropdown_menu.item(
+                        MORE_DETAILS, on_click=PlannerState.open_detail(event.event_id)
+                    ),
+                    rx.cond(
+                        event.detail_href != "",
+                        # m-24842987: the ficha says «‹ Tu semana» and comes back here.
+                        rx.dropdown_menu.item(
+                            "Ver publicación",
+                            on_click=rx.redirect(
+                                event.detail_href + PlannerState.week_return_query
+                            ),
+                        ),
+                    ),
                 ),
             ),
             rx.cond(
@@ -231,7 +266,15 @@ def _calendar_chip(event) -> rx.Component:
         # and three glyphs, not a thumbnail too. The time gives way first (ellipsis);
         # the glyphs never shrink.
         rx.box(
-            rx.text(event.time_label, size="1", weight="bold", class_name="q-nums q-chip-time"),
+            # m-25026486: the time whole or not at all — «9:33», then « a. m.» only where
+            # it fits (`.q-cal-chip` container query); never cut mid-token.
+            rx.text(
+                rx.el.span(event.time_hm, class_name="q-chip-hm"),
+                rx.el.span(" " + event.time_suffix, class_name="q-chip-suffix"),
+                size="1",
+                weight="bold",
+                class_name="q-nums q-chip-time",
+            ),
             # The event's state by glyph (the word is in the hover card and the name):
             # ✓ published, ✕ failed, ⚠ pending / expired / not ready.
             rx.match(
@@ -405,6 +448,71 @@ def _more_pill(cell) -> rx.Component:
     )
 
 
+def _group_chip(entry) -> rx.Component:
+    """m-25026241 (calendar): the published events of one account in one batch (m-25026486) as ONE
+    chip — «2:12 a. m. · 9 publicaciones» — that opens, right beside it, their rows
+    (the same list «+N más» opens); each row opens the event's panel. Radix gives the
+    trigger its keyboard and `aria-expanded`."""
+    return rx.box(
+        rx.popover.root(
+            rx.popover.trigger(
+                rx.button(
+                    # m-25026486: never a clipped word — the stack glyph and the NUMBER
+                    # always fit; «publicaciones» shows only where the chip is wide
+                    # enough for it whole (`.q-cell-group` container query). Then the
+                    # same ✓ and network glyphs a single chip carries (never colour alone).
+                    rx.box(
+                        rx.icon("layers", size=12, flex_shrink="0", class_name="q-chip-stack"),
+                        # «7:00 · 9» — the start time first, like the single chips, so the
+                        # number never reads as an hour; «publicaciones» only when whole.
+                        rx.el.span(
+                            rx.el.span(entry.cards[0].time_hm, class_name="q-nums"),
+                            " · ",
+                            rx.el.span(entry.count.to_string(), class_name="q-nums"),
+                            rx.el.span(" publicaciones", class_name="q-chip-word"),
+                            class_name="q-chip-count",
+                        ),
+                        rx.icon(
+                            "circle-check",
+                            size=12,
+                            color=T.tone_color("ok", 10),
+                            flex_shrink="0",
+                            class_name="q-chip-ok",
+                        ),
+                        channel_mark(entry.cards[0].platform),
+                        class_name="q-chip-line",
+                    ),
+                    type="button",
+                    variant="soft",
+                    size="1",
+                    class_name="q-cell-more q-cell-group",
+                    aria_label=entry.aria_label,
+                    title=entry.label,
+                ),
+            ),
+            rx.popover.content(
+                rx.vstack(
+                    rx.text(entry.label, size="2", weight="bold"),
+                    rx.box(rx.foreach(entry.cards, _hour_list_row), class_name="q-hour-list"),
+                    spacing="2",
+                    width="19rem",
+                    max_width="calc(100vw - 2rem)",
+                ),
+                side="right",
+                align="center",
+                side_offset=6,
+                size="1",
+            ),
+        ),
+        on_click=rx.event.stop_propagation,
+        width="100%",
+    )
+
+
+def _cell_entry(entry) -> rx.Component:
+    return rx.cond(entry.is_group, _group_chip(entry), _calendar_chip(entry.cards[0]))
+
+
 def _day_header(day) -> rx.Component:
     """A day's head, sticky over its column: name and number, today in the accent with
     its underline, a past day muted (`.q-cal-day*`, `assets/qualify-planner.css`)."""
@@ -438,7 +546,7 @@ def _hour_cell(cell) -> rx.Component:
             ~cell.is_past & (cell.cards.length() == 0),
             rx.el.span(rx.icon("plus", size=T.ICON_SM), class_name="q-planner-slot-plus"),
         ),
-        rx.foreach(cell.visible, _calendar_chip),
+        rx.foreach(cell.visible_entries, _cell_entry),
         rx.cond(cell.more_count > 0, _more_pill(cell)),
         # One chip leaves room under it: the "+" shows there on hover, never over a chip.
         rx.cond(
@@ -559,7 +667,11 @@ def _list_item(event) -> rx.Component:
                         temperature_badge(
                             event.temperature, event.temperature_label, event.temperature_hint
                         ),
-                        tag(event.category_label),
+                        # m-25019224: never the same word twice («Publicación» · «Publicación»)
+                        rx.cond(
+                            event.category_label != event.destination_label,
+                            tag(event.category_label),
+                        ),
                         rx.cond(event.output_label != "", tag(event.output_label)),
                         campaign_badge(event.campaign_name, event.campaign_color),
                         rx.foreach(event.tags, tag_badge_plain),
@@ -608,6 +720,110 @@ def _list_item(event) -> rx.Component:
     )
 
 
+def _strip_thumb(card) -> rx.Component:
+    """One picture of a folded row's strip: the image, or — a reel with no poster — the
+    film glyph on the neutral tile (never an empty frame; no video is loaded here)."""
+    return rx.cond(
+        (card.thumbnail_url == "") & (card.video_url != ""),
+        rx.center(
+            rx.icon("film", size=T.ICON_SM),
+            width="2.5rem",
+            height="2.5rem",
+            min_width="2.5rem",
+            class_name="q-post-media q-post-media--empty",
+        ),
+        thumbnail(card.thumbnail_url, "2.5rem"),
+    )
+
+
+def _list_group(entry) -> rx.Component:
+    """m-25026241 (list): what went out together from one account in one batch (m-25026486), folded
+    into one row — its time, a strip of their pictures (then «+N»), how many and where;
+    a real button that unfolds the usual cards, each with its own «⋯» menu."""
+    is_open = PlannerState.open_groups.contains(entry.key)
+    first = entry.cards[0]
+    row = rx.el.button(
+        rx.vstack(
+            rx.hstack(
+                rx.foreach(entry.preview, _strip_thumb),
+                rx.cond(
+                    entry.preview_more > 0,
+                    rx.text(
+                        "+" + entry.preview_more.to_string(),
+                        size="2",
+                        weight="bold",
+                        color=T.TEXT_MUTED,
+                    ),
+                ),
+                rx.spacer(),
+                rx.cond(
+                    is_open,
+                    rx.icon("chevron-up", size=T.ICON_MD),
+                    rx.icon("chevron-down", size=T.ICON_MD),
+                ),
+                spacing="1",
+                align="center",
+                width="100%",
+            ),
+            rx.hstack(
+                rx.text(entry.count.to_string() + " publicaciones", size="3", weight="bold"),
+                pill(first.status_label, first.status_tone),
+                align="center",
+                spacing="2",
+                wrap="wrap",
+            ),
+            rx.hstack(
+                platform_badge(first.platform),
+                rx.text(first.account_label, size="1", color=T.TEXT_MUTED, style=_ONE_LINE),
+                align="center",
+                spacing="2",
+                min_width="0",
+                max_width="100%",
+            ),
+            spacing="2",
+            width="100%",
+            align_items="start",
+        ),
+        type="button",
+        aria_label=entry.aria_label,
+        aria_expanded=rx.cond(is_open, "true", "false"),
+        on_click=PlannerState.toggle_group(entry.key),
+        class_name="q-plist-card q-lift q-plist-group",
+        min_height=_TOUCH_MIN,
+    )
+    return rx.vstack(
+        rx.hstack(
+            rx.text(
+                entry.time_label,
+                size="4",
+                weight="medium",
+                class_name="q-nums q-plist-time",
+                min_width="4.5rem",
+                padding_top="0.9rem",
+            ),
+            row,
+            align="start",
+            spacing="3",
+            width="100%",
+            class_name="q-plist-item",
+        ),
+        rx.cond(
+            is_open,
+            rx.vstack(
+                rx.foreach(entry.cards, _list_item),
+                spacing="2",
+                width="100%",
+            ),
+        ),
+        spacing="2",
+        width="100%",
+    )
+
+
+def _list_entry(entry) -> rx.Component:
+    return rx.cond(entry.is_group, _list_group(entry), _list_item(entry.cards[0]))
+
+
 def _list_day(day) -> rx.Component:
     return rx.cond(
         day.count > 0,
@@ -634,7 +850,7 @@ def _list_day(day) -> rx.Component:
                 align="center",
                 width="100%",
             ),
-            rx.foreach(day.cards, _list_item),
+            rx.foreach(day.groups, _list_entry),
             spacing="2",
             width="100%",
             padding_bottom="0.75rem",

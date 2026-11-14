@@ -1,0 +1,319 @@
+{
+  "summary": {
+    "label": "v4-escenas-precio",
+    "prompt_version": "context-v4-three-versions",
+    "model": "claude-sonnet-5-5@low",
+    "model_revisions": [
+      "claude-sonnet-5-5"
+    ],
+    "when": "2026-11-13T13:12:13+00:00",
+    "cases": 6,
+    "calls": 12,
+    "errors": 0,
+    "total_usd": "0.075303600",
+    "usd_per_call": "0.0063",
+    "mean_seconds": 4.008,
+    "within_press_mean_similarity": 0.207,
+    "across_presses_max_similarity_mean": 0.485,
+    "across_presses_mean_jaccard": 0.373,
+    "duplicates": 0,
+    "cases_with_new_numbers": [],
+    "scene_versions_shown": 36,
+    "scene_versions_asking_for_text": 26,
+    "scene_versions_dropped_by_filter": 0
+  },
+  "rows": [
+    {
+      "id": "escena-precio-shawarma",
+      "original": "Un shawarma de carne recién hecho sobre la barra del local, con la salsa cayendo",
+      "press_1": {
+        "texts": [
+          "Plano cerrado de un shawarma de carne recién hecho, que llena todo el encuadre. La salsa cae sobre la carne y se ve el relleno jugoso. Luz cálida y nítida, con el precio $22.000 visible. Cierra con: Pide por WhatsApp.",
+          "Plano abierto de la barra del local con un shawarma de carne recién hecho en primer plano y la salsa cayendo. Al fondo, el ambiente del local, claro y acogedor. Se ve el precio $22.000. Cierra con: Te esperamos en el local.",
+          "Una mano toma sobre la barra del local un shawarma de carne recién hecho, con la salsa cayendo. Sin mostrar el rostro de nadie. Sensación de antojo y de pausa en el almuerzo. Precio $22.000. Cierra con: Pide por WhatsApp."
+        ],
+        "approaches": [
+          "producto",
+          "lugar",
+          "momento"
+        ],
+        "added_facts": [],
+        "cost_usd": "0.009900000",
+        "seconds": 5.2,
+        "in": 675,
+        "out": 406
+      },
+      "press_2": {
+        "texts": [
+          "Primerísimo primer plano del shawarma de carne recién hecho, cortado a la mitad sobre la barra del local: la carne apretada en el pan tostado y la salsa cayendo despacio. El producto ocupa todo el encuadre. Luz cálida. Se ve el precio $22.000.",
+          "Vista amplia de la barra del local en hora de almuerzo, con mesas y ambiente de centro de ciudad al fondo, algo desenfocado. En el centro, un shawarma de carne recién hecho con la salsa cayendo. Luz natural y acogedora. Se ve el precio $22.000.",
+          "Dos manos sostienen sobre la barra del local un shawarma de carne recién hecho, justo cuando la salsa cae y antes del primer mordisco. Sin rostros, solo el gesto y el antojo. Luz cálida. Se ve el precio $22.000."
+        ],
+        "approaches": [
+          "producto",
+          "lugar",
+          "momento"
+        ],
+        "added_facts": [],
+        "cost_usd": "0.006301600",
+        "seconds": 4.1,
+        "in": 1006,
+        "out": 411
+      },
+      "within_press_mean_similarity": 0.293,
+      "within_press_max_similarity": 0.393,
+      "across_presses_max_similarity": 0.398,
+      "across_presses_mean_similarity": 0.265,
+      "across_presses_mean_jaccard": 0.399,
+      "duplicates": 0,
+      "new_numbers": [],
+      "scene": true,
+      "asks_for_text": 6,
+      "shown": 6
+    },
+    {
+      "id": "escena-precio-2x1",
+      "original": "dos shawarmas de pollo en una bandeja de madera, recién servidos",
+      "press_1": {
+        "texts": [
+          "Plano cerrado de dos shawarmas de pollo recién servidos sobre una bandeja de madera, llenando el encuadre. Se ve el relleno jugoso y el vapor. Texto en la imagen: 2x1 los martes, 18.000. Cierre: Pide por WhatsApp.",
+          "Plano abierto de una mesa del local en el centro de la ciudad, con una bandeja de madera y dos shawarmas de pollo recién servidos al centro. Luz cálida, ambiente acogedor. Texto: 2x1 los martes, 18.000. Cierre: Te esperamos en el local.",
+          "Una mano levanta uno de los dos shawarmas de pollo recién servidos de una bandeja de madera, sin mostrar rostros. Luz natural, sensación de pausa del almuerzo. Texto: 2x1 los martes, 18.000. Cierre: Pide por WhatsApp."
+        ],
+        "approaches": [
+          "producto",
+          "lugar",
+          "momento"
+        ],
+        "added_facts": [],
+        "cost_usd": "0.005771600",
+        "seconds": 4.3,
+        "in": 686,
+        "out": 422
+      },
+      "press_2": {
+        "texts": [
+          "Primer plano de un shawarma de pollo cortado por la mitad, con el pan dorado y el pollo y las verduras frescas a la vista, junto a otro igual sobre bandeja de madera. Texto: 2x1 los martes, 18.000. Cierre: Pide por WhatsApp.",
+          "Vista amplia desde la ventana del local, en el centro de la ciudad: al fondo la barra y la calle, y en primer plano una bandeja de madera con dos shawarmas de pollo recién servidos. Texto: 2x1 los martes, 18.000. Cierre: Te esperamos en el local.",
+          "Dos manos de personas distintas chocan suavemente dos shawarmas de pollo recién servidos, como un brindis, sobre la bandeja de madera; sin rostros. Ambiente de almuerzo entre colegas. Texto: 2x1 los martes, 18.000. Cierre: Pide por WhatsApp."
+        ],
+        "approaches": [
+          "producto",
+          "lugar",
+          "momento"
+        ],
+        "added_facts": [
+          "Ventana, barra y calle al fondo del local",
+          "Shawarma cortado por la mitad",
+          "Brindis entre dos manos"
+        ],
+        "cost_usd": "0.006997600",
+        "seconds": 4.8,
+        "in": 1034,
+        "out": 475
+      },
+      "within_press_mean_similarity": 0.276,
+      "within_press_max_similarity": 0.41,
+      "across_presses_max_similarity": 0.535,
+      "across_presses_mean_similarity": 0.347,
+      "across_presses_mean_jaccard": 0.399,
+      "duplicates": 0,
+      "new_numbers": [],
+      "scene": true,
+      "asks_for_text": 6,
+      "shown": 6
+    },
+    {
+      "id": "escena-precio-combo",
+      "original": "el combo con shawarma mixto, papas y bebida en la mesa al mediodía",
+      "press_1": {
+        "texts": [
+          "Plano cerrado del shawarma mixto, que llena el encuadre, recién hecho, con las papas y la bebida apenas asomando al borde. Luz cálida de mediodía, sensación de antojo.",
+          "Plano abierto de una mesa del local al mediodía: el combo de shawarma mixto, papas y bebida servido, con luz natural y el ambiente del centro de la ciudad al fondo, desenfocado. Sensación de pausa para almorzar.",
+          "Una mano sostiene el shawarma mixto a punto de darle un mordisco, sobre la mesa al mediodía, con las papas y la bebida al lado. Sin mostrar rostro. Luz cálida, sensación de almuerzo disfrutado."
+        ],
+        "approaches": [
+          "producto",
+          "lugar",
+          "momento"
+        ],
+        "added_facts": [],
+        "cost_usd": "0.005153600",
+        "seconds": 3.0,
+        "in": 692,
+        "out": 359
+      },
+      "press_2": {
+        "texts": [
+          "Primer plano del corte del shawarma mixto, con la carne y las verduras a la vista, tan cerca que casi se siente el calor. Atrás, desenfocadas, las papas y la bebida del combo. Luz suave, sensación de antojo.",
+          "Vista desde arriba de la mesa al mediodía: el combo con shawarma mixto, papas y bebida sobre una bandeja, con servilletas y la luz de la ventana. Al borde, el local en calma, sensación de almuerzo tranquilo.",
+          "Una persona, sin rostro visible, toma una papa con los dedos junto al shawarma mixto y la bebida, sobre la mesa a pleno mediodía. Plano medio desde el hombro, luz natural, gesto relajado de quien disfruta su pausa."
+        ],
+        "approaches": [
+          "producto",
+          "lugar",
+          "momento"
+        ],
+        "added_facts": [],
+        "cost_usd": "0.005901600",
+        "seconds": 3.7,
+        "in": 976,
+        "out": 377
+      },
+      "within_press_mean_similarity": 0.234,
+      "within_press_max_similarity": 0.572,
+      "across_presses_max_similarity": 0.422,
+      "across_presses_mean_similarity": 0.148,
+      "across_presses_mean_jaccard": 0.328,
+      "duplicates": 0,
+      "new_numbers": [],
+      "scene": true,
+      "asks_for_text": 1,
+      "shown": 6
+    },
+    {
+      "id": "escena-precio-ensalada",
+      "original": "ensalada de quinoa con falafel en un bowl blanco, luz de ventana",
+      "press_1": {
+        "texts": [
+          "Plano cerrado de la ensalada de quinoa con falafel en un bowl blanco, que llena todo el encuadre. Luz de ventana suave sobre la quinoa y los falafel dorados. Se siente fresca, hecha al momento. Precio visible: $19.500.",
+          "Plano abierto: sobre una mesa junto a la ventana, un bowl blanco con la ensalada de quinoa con falafel. La luz de ventana ilumina la mesa y el local se intuye al fondo, desenfocado. Se ve el precio: $19.500.",
+          "Una mano sostiene un tenedor sobre el bowl blanco con la ensalada de quinoa con falafel, junto a una ventana. Luz de ventana cálida, sin mostrar rostros. Sensación de pausa del almuerzo. Precio: $19.500."
+        ],
+        "approaches": [
+          "producto",
+          "lugar",
+          "momento"
+        ],
+        "added_facts": [],
+        "cost_usd": "0.005481600",
+        "seconds": 4.5,
+        "in": 681,
+        "out": 394
+      },
+      "press_2": {
+        "texts": [
+          "Primerísimo plano desde arriba de la ensalada de quinoa con falafel en un bowl blanco, con los falafel dorados y la quinoa llenando todo el encuadre. Luz de ventana lateral que marca las texturas. Sensación de frescura. Se lee el precio: $19.500.",
+          "Vista amplia de una mesa del local con el bowl blanco de ensalada de quinoa con falafel como protagonista, luz de ventana entrando por un costado y el ambiente del centro de la ciudad al fondo, suave. Se ve el precio: $19.500.",
+          "Unas manos acercan el bowl blanco de ensalada de quinoa con falafel hacia sí, cerca de una ventana con luz natural. Sin rostros. Se siente un almuerzo tranquilo entre el trabajo o el estudio. Precio visible: $19.500."
+        ],
+        "approaches": [
+          "producto",
+          "lugar",
+          "momento"
+        ],
+        "added_facts": [],
+        "cost_usd": "0.006209600",
+        "seconds": 4.3,
+        "in": 1000,
+        "out": 403
+      },
+      "within_press_mean_similarity": 0.15,
+      "within_press_max_similarity": 0.315,
+      "across_presses_max_similarity": 0.5,
+      "across_presses_mean_similarity": 0.237,
+      "across_presses_mean_jaccard": 0.397,
+      "duplicates": 0,
+      "new_numbers": [],
+      "scene": true,
+      "asks_for_text": 6,
+      "shown": 6
+    },
+    {
+      "id": "escena-precio-domicilio",
+      "original": "una bolsa de domicilio abierta con el shawarma y las papas saliendo",
+      "press_1": {
+        "texts": [
+          "Plano cerrado de una bolsa de domicilio abierta: el shawarma de carne llena el encuadre, con las papas saliendo de la bolsa. Luz cálida, textura jugosa. Se ve el precio, 22.000, y el cierre: Pide por WhatsApp.",
+          "Plano abierto de una mesa en el centro de la ciudad con una bolsa de domicilio abierta; el shawarma de carne y las papas salen de ella. Ambiente de almuerzo, luz natural. Se lee: domicilio gratis desde $30.000. Pide por WhatsApp.",
+          "Una mano sin rostro visible saca de la bolsa de domicilio abierta el shawarma de carne, con las papas asomando. Escritorio de trabajo, pausa de almuerzo, sensación de antojo. Se ve 22.000 y Pide por WhatsApp."
+        ],
+        "approaches": [
+          "producto",
+          "lugar",
+          "momento"
+        ],
+        "added_facts": [],
+        "cost_usd": "0.005631600",
+        "seconds": 3.7,
+        "in": 686,
+        "out": 408
+      },
+      "press_2": {
+        "texts": [
+          "Primer plano del shawarma de carne recién cortado, con la carne jugosa y la verdura fresca a la vista, sostenido sobre el borde de una bolsa de domicilio abierta de la que asoman las papas. Luz cálida. Texto: 22.000. Pide por WhatsApp.",
+          "Vista amplia de una mesa junto a una ventana, en el centro de la ciudad, con una bolsa de domicilio abierta de la que salen el shawarma de carne y las papas. Luz de media tarde. Texto: domicilio gratis desde $30.000. Pide por WhatsApp.",
+          "Unas manos sin rostro visible abren la bolsa de domicilio sobre un escritorio y destapan el shawarma de carne, con las papas saliendo de la bolsa. Sensación de pausa y antojo. Texto: 22.000. Pide por WhatsApp."
+        ],
+        "approaches": [
+          "producto",
+          "lugar",
+          "momento"
+        ],
+        "added_facts": [],
+        "cost_usd": "0.006319600",
+        "seconds": 3.6,
+        "in": 1020,
+        "out": 410
+      },
+      "within_press_mean_similarity": 0.214,
+      "within_press_max_similarity": 0.307,
+      "across_presses_max_similarity": 0.556,
+      "across_presses_mean_similarity": 0.243,
+      "across_presses_mean_jaccard": 0.422,
+      "duplicates": 0,
+      "new_numbers": [],
+      "scene": true,
+      "asks_for_text": 6,
+      "shown": 6
+    },
+    {
+      "id": "escena-precio-papas",
+      "original": "papas fritas familiares en una canasta, con salsa de ajo al lado",
+      "press_1": {
+        "texts": [
+          "Plano muy cerrado de papas fritas familiares en una canasta que llena el encuadre, doradas y crujientes, con la salsa de ajo al lado en un pocillo. Luz cálida y lateral, sensación de recién hechas.",
+          "Plano abierto de una mesa del local en el centro de la ciudad: la canasta de papas fritas familiares al centro, la salsa de ajo al lado, y al fondo desenfocado el mostrador. Luz cálida de almuerzo, ambiente acogedor.",
+          "Una mano toma una papa frita de la canasta familiar y la acerca a la salsa de ajo que está al lado. Sin mostrar el rostro, solo mano y brazo, fondo suave y luz cálida, con sensación de antojo compartido."
+        ],
+        "approaches": [
+          "producto",
+          "lugar",
+          "momento"
+        ],
+        "added_facts": [],
+        "cost_usd": "0.005269600",
+        "seconds": 3.1,
+        "in": 680,
+        "out": 373
+      },
+      "press_2": {
+        "texts": [
+          "Primer plano desde arriba de las papas fritas familiares, apiladas en su canasta hasta los bordes, con sal visible y vapor ligero. La salsa de ajo, en un recipiente pequeño, asoma en una esquina del encuadre. Luz natural suave, colores vivos.",
+          "Plano abierto de una mesa junto a la ventana del local, con vista a la calle del centro. La canasta de papas fritas familiares queda en primer plano, la salsa de ajo al lado, y alrededor vasos y servilletas. Luz de media tarde, ambiente tranquilo.",
+          "Dos manos sobre una mesa comparten la canasta de papas fritas familiares: una sostiene una papa que baja hacia la salsa de ajo, la otra ya se acerca por otra. Sin rostros, solo manos y torsos al borde del encuadre. Luz cálida, sensación de pausa entre amigos."
+        ],
+        "approaches": [
+          "producto",
+          "lugar",
+          "momento"
+        ],
+        "added_facts": [],
+        "cost_usd": "0.006365600",
+        "seconds": 3.8,
+        "in": 978,
+        "out": 423
+      },
+      "within_press_mean_similarity": 0.072,
+      "within_press_max_similarity": 0.152,
+      "across_presses_max_similarity": 0.497,
+      "across_presses_mean_similarity": 0.118,
+      "across_presses_mean_jaccard": 0.292,
+      "duplicates": 0,
+      "new_numbers": [],
+      "scene": true,
+      "asks_for_text": 1,
+      "shown": 6
+    }
+  ]
+}

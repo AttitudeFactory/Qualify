@@ -8,6 +8,7 @@ description: Qualify's local development environment — every `just` recipe (de
 Run `just --list` for the live recipe list; the notes below are what the list does not say.
 
 **Workers that act for real** (`calendar-tick`, `whatsapp-tick`, `conversations-tick` and their `*-worker` loops) publish or send through the real Meta/WhatsApp APIs. Locally always pass `--tenant <uuid>`, never `--all-tenants`: the dev database holds dozens of test tenants.
+Even a scoped `calendar-tick --tenant <uuid>` READS Graph since m-25019220 (it fills missing Instagram permalinks of published attempts, up to 50 reads/hour per connection): with real credentials in the local database those are real Meta calls on the account's budget.
 
 ## Reference (moved from CLAUDE.md on 2026-10-22)
 

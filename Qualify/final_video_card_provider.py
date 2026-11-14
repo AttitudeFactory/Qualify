@@ -13,6 +13,7 @@ them into the owner's words.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 from uuid import UUID
 
@@ -203,16 +204,25 @@ def create_missing(tenant_id: UUID, parent_id: UUID, user_id: UUID) -> list[UUID
 
 
 def change_part(
-    tenant_id: UUID, parent_id: UUID, part_index: int, description: str, user_id: UUID
+    tenant_id: UUID,
+    parent_id: UUID,
+    part_index: int,
+    description: str,
+    user_id: UUID,
+    photo_keys: Sequence[str] | None = None,
 ) -> UUID:
-    """«Cambiar una parte»: another version of ONE part (VE-10b), with its new
-    description when the owner wrote one (empty keeps what it had). 1 vista previa."""
+    """«Crear otra versión» of ONE part (VE-10b; m-24921083): `description` is the WHOLE
+    description of the part as the owner left it in «¿Qué pasa en esta parte?» (filled
+    in with what it had) — never a change written on top of it; empty keeps what it had.
+    `photo_keys`: the photos chosen in «Fotos de tu producto» (None keeps them). The
+    mode never changes (`PartChanges`). 1 vista previa."""
     text = description.strip()
+    photos = None if photo_keys is None else tuple(dict.fromkeys(k for k in photo_keys if k))
     return PartsService(production_content_service()).regenerate_part(
         tenant_id=tenant_id,
         parent_id=parent_id,
         part_index=part_index,
-        changes=PartChanges(description=text or None),
+        changes=PartChanges(description=text or None, photo_keys=photos),
         user_id=user_id,
     )
 

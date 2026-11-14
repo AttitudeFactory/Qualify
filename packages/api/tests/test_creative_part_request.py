@@ -228,7 +228,33 @@ def test_the_worker_creates_every_part_when_asked_so() -> None:
     parts, content, repo, ledger, _, _, parent = world(media={"parts_request": PartsRequest()})
     stored = requests(parts, content, repo).after_generation(tenant_id=TENANT_ID, parent_id=parent)
     assert len(_children(repo, parent)) == 4 and _previews(ledger) == 4
-    assert stored is not None and stored.refused is None and stored.attempted_parts == ()
+    # m-24993031: «all» spells out the parts it asked for, as «first» does
+    assert stored is not None and stored.refused is None and stored.attempted_parts == (1, 2, 3, 4)
+
+
+def test_the_parts_left_are_kept_spelled_out_without_the_removed_ones() -> None:
+    """m-24993031: «Crear las que faltan» (no indexes) keeps the plan minus the parts
+    the owner removed — the same parts `create_parts` reads and returns."""
+    parts, content, repo, _, _, _, parent = world(
+        media={"parts_request": PartsRequest(scope="first")}
+    )
+    asks = requests(parts, content, repo)
+    asks.after_generation(tenant_id=TENANT_ID, parent_id=parent)
+    (first,) = _children(repo, parent)
+    repo.mark_part_removed(tenant_id=TENANT_ID, draft_id=first.id, user_id=USER_ID)
+    ids = asks.request_parts(tenant_id=TENANT_ID, parent_id=parent, user_id=USER_ID)
+    asked = _asked(repo, parent)
+    assert asked is not None and asked.refused is None and asked.attempted_parts == (2, 3, 4)
+    assert len(ids) == 3
+
+
+def test_an_outcome_kept_before_the_fix_still_reads() -> None:
+    """m-24993031: outcomes stored with an empty `attempted_parts` (the old «all») parse
+    as they were; nothing reads the empty tuple as a meaning of its own."""
+    old = PartsRequest.model_validate(
+        {"scope": "all", "refused": None, "attempted_parts": [], "attempt": 1}
+    )
+    assert old.attempted_parts == () and old.scope == "all" and old.attempt == 1
 
 
 def test_a_refusal_is_kept_for_the_result_screen_and_nothing_is_charged() -> None:
@@ -237,6 +263,7 @@ def test_a_refusal_is_kept_for_the_result_screen_and_nothing_is_charged() -> Non
     )
     stored = requests(parts, content, repo).after_generation(tenant_id=TENANT_ID, parent_id=parent)
     assert stored is not None and stored.refused == "not_enough_previews" and stored.missing == 1
+    assert stored.attempted_parts == (1, 2, 3, 4)  # what the refused attempt asked for
     assert _asked(repo, parent) == stored
     assert _children(repo, parent) == [] and _previews(ledger) == 17 and dispatcher.calls == []
 

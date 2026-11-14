@@ -493,3 +493,55 @@ def test_a_reel_shared_by_two_accounts_keeps_both_whichever_is_read_last(monkeyp
         assert (
             sheet is not None and other in sheet.collaborators and handle not in sheet.collaborators
         )
+
+
+def _tagged_vendor(now: datetime, handle: str, hashtag: str) -> object:
+    """One page of 12 reels, each caption carrying `#<hashtag>` (m-25026377)."""
+    tag = uuid4().hex[:8]
+    items = [
+        fake.reel_item(f"{tag}{i:02d}", days_ago=1 + i, now=now, owner=handle, views=100 * i)
+        for i in range(12)
+    ]
+    for item in items:
+        item["media"]["caption"] = {"text": f"hoy #{hashtag}"}
+    return fake.FakeVendor(pages=[items])
+
+
+def test_a_postgres_creators_read_feeds_the_hashtag_catalog_once(monkeypatch) -> None:
+    """m-25026377 review item 1: the Postgres creators path writes reels with
+    `upsert_reels_in`, not through `PostgresReelRunStore.upsert_reels`; its own hook must
+    feed the catalog — the same rows the memory path writes — and a second read of the
+    same reels adds none."""
+    from qualify_api.hashtags import PostgresHashtagRepository
+
+    tenant, brand = _world()
+    monkeypatch.setenv(access.ENV, str(tenant))
+    now = datetime.now(UTC).replace(microsecond=0)
+    handle, hashtag = _handle(), f"cr{uuid4().hex[:10]}"
+    tracked = service.add_creator(tenant, brand, handle, user_id=_user(tenant))
+    vendor = _tagged_vendor(now, handle, hashtag)
+    outcome = service.refresh_creator(tenant, brand, tracked.id, now=now, client=vendor.client())
+    assert outcome.status == "read"
+    catalog = PostgresHashtagRepository()
+    recent = catalog.recent_views(tenant, [hashtag], now=now)
+    assert (recent[hashtag].views, recent[hashtag].posts) == (sum(100 * i for i in range(12)), 12)
+    with tenant_session(tenant) as session:
+        refs = session.scalars(
+            text(
+                "SELECT DISTINCT s.source_ref FROM hashtag_post_sightings s "
+                "JOIN hashtags h ON h.id = s.hashtag_id WHERE h.tag = :t"
+            ),
+            {"t": hashtag},
+        ).all()
+    assert refs == ["instagram:public_reels"]
+    assert hashtag not in {t.tag for t in catalog.needs_classification(tenant, limit=100_000)}
+
+    # the same reels stored again by the store's own door: no duplicate row
+    from qualify_api.referentes.reel_store import PostgresReelRunStore
+
+    rows = PostgresReelRunStore().reels_of(
+        tenant, [("instagram", handle)], since=now - timedelta(days=60)
+    )
+    assert len(rows) == 12
+    PostgresReelRunStore().upsert_reels(tenant, rows)
+    assert catalog.recent_views(tenant, [hashtag], now=now)[hashtag].posts == 12

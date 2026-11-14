@@ -1,0 +1,172 @@
+{
+  "_doc": "Awareness levels + business perks (m-25026482). Brands and products are REUSED from the repo's anonymised eval case files, nothing new from a database: the shawarma-and-salads shop of ../mejorar_texto/cases.json (perks = the founder's own example for food, 2026-11-13), the ice-cream shop and the real-estate advisor of ../copy_ai/cases.json (perks taken from that brand's own case topics: hel-05, hel-06, hel-07; inm-02, inm-03 and its kit's CTAs), the travel agency of ../reels_ai/cases.json (Cusco, Peru — the only travel brand in the repo's cases; its perks are written for this eval from its bio and flagged). Prices only where a case already states one (mejorar_texto combo-almuerzo 25.000, copy_ai hel-02 9.000, inm-01 280 millones). Split: dev cases tune the judge and the regexes, test cases are reported and never tuned on. Every angle case runs twice with the new prompt (with perks, with none) and once with the baseline prompt (which cannot read perks).",
+  "brands": {
+    "shawarma": {
+      "sector_eval": "comida",
+      "source": "mejorar_texto/cases.json brand",
+      "angle_brand": {
+        "name": "Shawarma y Ensaladas",
+        "sector": "Comida rápida: shawarma y ensaladas",
+        "location": "Centro de la ciudad",
+        "positioning": "Shawarma y ensaladas frescas hechas al momento, en el centro de la ciudad",
+        "audience": "Gente que trabaja o estudia cerca y pide almuerzo o cena a domicilio"
+      },
+      "perks": [
+        "Parqueadero gratis",
+        "Se admiten mascotas",
+        "Mesas para comer en el local",
+        "Abierto hasta las 11 p. m.",
+        "Combo con el postre de la heladería de al lado"
+      ]
+    },
+    "heladeria": {
+      "sector_eval": "comida",
+      "source": "copy_ai/cases.json brand heladeria",
+      "angle_brand": {
+        "name": "La Ceiba Helados",
+        "sector": "Heladería artesanal",
+        "location": "Malecón, Cúcuta",
+        "positioning": "Helados artesanales con frutas del Norte de Santander, hechos cada mañana en Cúcuta",
+        "audience": "Familias y parejas jóvenes de Cúcuta que salen a pasear el fin de semana"
+      },
+      "perks": [
+        "Abrimos de 2 a 10 de la noche en el Malecón",
+        "Carrito de helados para fiestas infantiles",
+        "2x1 en paletas de guanábana los martes"
+      ]
+    },
+    "inmobiliaria": {
+      "sector_eval": "inmobiliaria",
+      "source": "copy_ai/cases.json brand inmobiliaria",
+      "angle_brand": {
+        "name": "Asesoría de Vivienda Aburrá",
+        "sector": "Asesoría inmobiliaria, vivienda nueva",
+        "location": "Medellín y Valle de Aburrá",
+        "positioning": "Asesoría para comprar vivienda nueva en el Valle de Aburrá, sin presiones y con acompañamiento legal",
+        "audience": "Familias y profesionales de Medellín que compran su primera vivienda"
+      },
+      "perks": [
+        "Asesoría sin costo",
+        "Acompañamiento legal y estudio de títulos",
+        "Te guiamos con el subsidio Mi Casa Ya",
+        "Atendemos por WhatsApp"
+      ]
+    },
+    "viajes": {
+      "sector_eval": "viajes",
+      "source": "reels_ai/cases.json travel-agency (perks written for this eval from its bio)",
+      "angle_brand": {
+        "name": "Viajes Andinos",
+        "sector": "Agencia de viajes: tours y paquetes",
+        "location": "Cusco, Perú",
+        "positioning": "Tours y paquetes a Cusco, Machu Picchu y la selva",
+        "audience": "Viajeros que visitan Cusco y quieren conocer Machu Picchu y la selva"
+      },
+      "perks": [
+        "Recogida en tu hotel de Cusco",
+        "Guías locales que hablan español e inglés",
+        "Grupos pequeños",
+        "Te armamos el paquete a tu medida"
+      ]
+    }
+  },
+  "angle_cases": [
+    {
+      "id": "comida-ensalada-falafel",
+      "split": "dev",
+      "brand": "shawarma",
+      "product": {
+        "name": "Ensalada de quinoa con falafel",
+        "description": "Ensalada fresca de quinoa con falafel, fresca y llena",
+        "category": "Ensaladas",
+        "price_label": "",
+        "photos": 2
+      }
+    },
+    {
+      "id": "comida-cono-doble",
+      "split": "dev",
+      "brand": "heladeria",
+      "product": {
+        "name": "Cono doble",
+        "description": "Dos bolas de helado artesanal con fruta del Norte de Santander, en cono",
+        "category": "Helados",
+        "price_label": "$9.000",
+        "photos": 2
+      }
+    },
+    {
+      "id": "inmo-balcon",
+      "split": "dev",
+      "brand": "inmobiliaria",
+      "product": {
+        "name": "Apartamento de dos habitaciones con balcón",
+        "description": "Apartamento nuevo de dos habitaciones con balcón, listo para entregar",
+        "category": "Vivienda nueva",
+        "price_label": "",
+        "photos": 2
+      }
+    },
+    {
+      "id": "viajes-selva",
+      "split": "dev",
+      "brand": "viajes",
+      "product": {
+        "name": "Paquete a la selva",
+        "description": "Paquete de varios días a la selva peruana saliendo desde Cusco",
+        "category": "Paquetes",
+        "price_label": "",
+        "photos": 2
+      }
+    },
+    {
+      "id": "comida-combo-shawarma",
+      "split": "test",
+      "brand": "shawarma",
+      "product": {
+        "name": "Combo shawarma mixto",
+        "description": "Shawarma mixto con papas y bebida incluidas; combo de almuerzo de 12 m a 3 p. m.",
+        "category": "Combos",
+        "price_label": "$25.000",
+        "photos": 2
+      }
+    },
+    {
+      "id": "inmo-bello",
+      "split": "test",
+      "brand": "inmobiliaria",
+      "product": {
+        "name": "Apartamentos de 2 alcobas en Bello",
+        "description": "Apartamentos nuevos de 2 alcobas en Bello, proyecto de vivienda nueva",
+        "category": "Vivienda nueva",
+        "price_label": "Desde $280 millones",
+        "photos": 2
+      }
+    },
+    {
+      "id": "viajes-machu-picchu",
+      "split": "test",
+      "brand": "viajes",
+      "product": {
+        "name": "Tour a Machu Picchu",
+        "description": "Tour de un día a Machu Picchu saliendo desde Cusco",
+        "category": "Tours",
+        "price_label": "",
+        "photos": 2
+      }
+    }
+  ],
+  "parts_cases": {
+    "_doc": "Video by parts (suite C): the smash-burger brand of ../copy_ai/cases.json with the founder's food perks, its combo of bur-01, and the five hand-written angles of ../copy_ai/cases_niveles.json (one per level). New = angle with its level + brand perks; baseline = the same, level and perks stripped.",
+    "story": "Queremos que la gente venga al local a comerse el combo doble smash con sus amigos",
+    "target_seconds": 20,
+    "copy_brand": "hamburguesas",
+    "angle_brand": {
+      "name": "Brasa Norte",
+      "sector": "Hamburguesería smash",
+      "location": "Chapinero, Bogotá",
+      "positioning": "Smash burgers a la plancha con carne madurada, en un local pequeño de Chapinero",
+      "audience": "Jóvenes de 20 a 35 años en Bogotá que buscan hamburguesas para compartir después del trabajo"
+    }
+  }
+}

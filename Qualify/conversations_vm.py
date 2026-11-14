@@ -54,6 +54,13 @@ from typing import Any, Final, Protocol
 from qualify_api.conversations.choices import choice_label as tap_origin
 
 from .ad_message_vm import ad_origin_href, ad_origin_label
+from .chat_row_vm import (
+    AWAITING_PILL,
+    CHANNEL_INSTAGRAM,
+    EXPIRED_PILL,
+    minutes_left,
+    unknown_contact,
+)
 from .connection_copy import DISCONNECTED, DISCONNECTED_NOTICE, NO_ACCESS, PERMISSION_MISSING_NOTICE
 from .whatsapp_chats_vm import format_day, message_time, relative_time
 
@@ -115,40 +122,21 @@ WINDOW_CLOSED_NOTICE = (
     "Instagram solo permite contestar dentro de ese plazo; cuando vuelva a escribir, "
     "podrás responder de nuevo."
 )
-WINDOW_CLOSED_SHORT = "No se puede responder"
+#: m-25018661: the person unsent every message they had sent (Meta makes us erase them),
+#: so only the business's replies remain and there is no 24 h to count from.
+NO_INBOUND_NOTICE = (
+    "Ya no puedes responder: no queda ningún mensaje de esta persona. "
+    "Cuando vuelva a escribir, podrás responder de nuevo."
+)
 #: The rule itself, said once, so «hasta mañana a las 19:27» is never a bare deadline.
 WINDOW_RULE = (
     "Instagram solo permite responder durante las 24 h siguientes al último mensaje de la persona."
 )
 
-FILTER_ALL = "all"
-FILTER_PENDING = "pending"
-FILTER_READ = "read"
-FILTER_ANSWERED = "answered"
-FILTERS: tuple[tuple[str, str], ...] = (
-    (FILTER_ALL, "Todas"),
-    (FILTER_PENDING, "Pendientes"),
-    (FILTER_READ, "Leídas"),
-    (FILTER_ANSWERED, "Respondidas"),
-)
-FILTER_KEYS = frozenset(key for key, _label in FILTERS)
-DEFAULT_FILTER = FILTER_ALL
-
-# m-24842962 (N11): Inicio's «personas esperan tu respuesta» opens the list already
-# filtered — `/conversations?filtro=pendientes`. The slugs are the chips' own words.
-FILTER_PARAM = "filtro"
-FILTER_SLUGS = {
-    "todas": FILTER_ALL,
-    "pendientes": FILTER_PENDING,
-    "leidas": FILTER_READ,
-    "respondidas": FILTER_ANSWERED,
-}
-
-
-def filter_from_param(slug: str) -> str | None:
-    """`?filtro=pendientes` → `FILTER_PENDING`; absent or unknown → None (keep the
-    filter the owner already had)."""
-    return FILTER_SLUGS.get(slug.strip().lower()) if slug else None
+# m-25017859: the Instagram-only chips (Abiertas · Pendientes · Leídas · Respondidas ·
+# Cerradas) left with this screen's own list: the single list of «Por responder»
+# (`inbox_list_vm`) lists every channel by the one rule, and maps their old `?filtro=`
+# slugs. `ThreadRowVM.attention` stays for the open chat's header pill.
 
 
 #: `service.AttentionState` value → (label, tone).
@@ -194,7 +182,7 @@ ATTACHMENT_READY: dict[str, str] = {
 
 #: `conversation_outbox.error_code` → the line under a bubble that did not go out.
 _FAILURE_LABELS: dict[str, str] = {
-    "window_closed": "No se envió: ya habían pasado las 24 h para responder.",
+    "window_closed": "No se envió: Instagram ya no permite responder a esta conversación.",
     "no_sender": "No se envió: este canal no tiene envío configurado.",
     "no_media_linker": "No se envió: el servidor no puede publicar adjuntos todavía.",
     "auth_error": "No se envió: la conexión de la cuenta caducó. Pulsa «Volver a conectar».",
@@ -224,7 +212,7 @@ SUGGESTION_REFUSALS: dict[str, str] = {
     "inbound_without_text": (
         "Este mensaje no tiene texto, así que no hay nada que sugerir. Escribe tu respuesta abajo."
     ),
-    "window_closed": "Ya no se puede responder a esta conversación (pasaron 24 h).",
+    "window_closed": "Ya no se puede responder a esta conversación.",
     "no_messages": "Esta conversación todavía no tiene mensajes.",
 }
 SUGGESTION_REFUSED_DEFAULT = "No se pudo sugerir una respuesta para este mensaje."
@@ -604,21 +592,25 @@ def _local(value: datetime, zone: tzinfo) -> datetime:
 
 
 def window_words(
-    is_open: bool, closes_at: datetime | None, now: datetime, zone: tzinfo
-) -> tuple[str, str, str]:
-    """(sentence for the header, short pill for the row — "" while comfortably open —,
-    tone). «Puedes responder hasta las 17:47» / «Te quedan 12 min para responder» /
-    «Ya no puedes responder…»."""
+    is_open: bool,
+    closes_at: datetime | None,
+    now: datetime,
+    zone: tzinfo,
+    *,
+    has_inbound: bool = True,
+) -> tuple[str, str]:
+    """(sentence for the header, tone). «Puedes responder hasta las 17:47» / «Te quedan
+    12 min para responder» / «Ya no puedes responder…». `has_inbound=False` (no message
+    of the person is left, m-25018661) says that instead of the 24 h. The row says the
+    window through the shared pill (`chat_row_vm`), with the same minute count."""
+    if not has_inbound:
+        return NO_INBOUND_NOTICE, "neutral"
     if not is_open or closes_at is None:
-        return WINDOW_CLOSED_NOTICE, WINDOW_CLOSED_SHORT, "neutral"
+        return WINDOW_CLOSED_NOTICE, "neutral"
     remaining = closes_at - now
     if remaining < timedelta(hours=1):
-        minutes = max(1, int(remaining.total_seconds() // 60))
-        return (
-            f"Te quedan {minutes} min para responder: {WINDOW_RULE}",
-            f"Quedan {minutes} min",
-            "warn",
-        )
+        minutes = max(1, minutes_left(is_open, closes_at, now))
+        return f"Te quedan {minutes} min para responder: {WINDOW_RULE}", "warn"
     local_close, local_now = _local(closes_at, zone), _local(now, zone)
     clock = local_close.strftime("%H:%M")
     when = (
@@ -626,7 +618,7 @@ def window_words(
         if local_close.date() == local_now.date()
         else (f"hasta mañana a las {clock}")
     )
-    return f"{WINDOW_RULE} En esta conversación, {when}.", "", "ok"
+    return f"{WINDOW_RULE} En esta conversación, {when}.", "ok"
 
 
 # ======================================================================================
@@ -637,7 +629,7 @@ def window_words(
 @dataclass(frozen=True)
 class ThreadRowVM:
     thread_id: str
-    title: str  # the person's name, else their handle, else «Persona ·id»
+    title: str  # the person's name, else their @handle, else «Cliente de Instagram»
     handle: str  # «@username» or "" (never equal to the title)
     subtitle: str  # «@account · Instagram Direct»
     preview: str
@@ -647,7 +639,6 @@ class ThreadRowVM:
     attention_label: str
     attention_tone: str
     window_label: str  # the sentence (header)
-    window_short: str  # the pill (row), "" while comfortably open
     window_tone: str
     window_open: bool
     is_closed: bool
@@ -656,6 +647,12 @@ class ThreadRowVM:
     avatar_url: str = ""
     # Set for ONE render after a refresh found a newer inbound: the row pulses.
     fresh: bool = False
+    # m-25017844: minutes until the window closes when under an hour, else 0 — the
+    # shared row's «Responde en N min».
+    window_minutes: int = 0
+    # m-25026457: the person's last message as this row shows it (ISO 8601, "" when
+    # none) — what «Cerrar» sends as «seen», and how a refresh tells a new message apart.
+    last_inbound_iso: str = ""
 
 
 EMPTY_THREAD = ThreadRowVM(
@@ -670,7 +667,6 @@ EMPTY_THREAD = ThreadRowVM(
     attention_label="Sin mensajes",
     attention_tone="neutral",
     window_label=WINDOW_CLOSED_NOTICE,
-    window_short=WINDOW_CLOSED_SHORT,
     window_tone="neutral",
     window_open=False,
     is_closed=False,
@@ -682,6 +678,25 @@ EMPTY_THREAD = ThreadRowVM(
 def attention_pill(attention: Any) -> tuple[str, str]:
     key = getattr(attention, "value", attention)
     return ATTENTION_PILLS.get(str(key), ATTENTION_PILLS["none"])
+
+
+def header_pill(view: Any) -> tuple[str, str]:
+    """m-25017859: the open chat's pill says what its row in the single list says — the
+    «Por responder» rule (`ThreadView.awaiting_reply`) instead of read / unread. A read
+    that did not compute the rule (`thread.awaiting_reply is None`) keeps the old
+    read-based pill. Waiting → «Por responder»; the window gone with the customer's
+    word last → «Respóndele desde Instagram»; answered → «Respondida»."""
+    awaiting = getattr(view.thread, "awaiting_reply", None)
+    if awaiting is None:
+        return attention_pill(view.attention)
+    if awaiting:
+        return AWAITING_PILL, "warn"
+    key = str(getattr(view.attention, "value", view.attention))
+    if key in ("answered", "none"):
+        return attention_pill(key)
+    if not view.window.is_open and getattr(view.thread, "status", "open") != "closed":
+        return EXPIRED_PILL, "neutral"
+    return "", "neutral"
 
 
 def counterpart_title(username: str | None, counterpart_external_id: str) -> str:
@@ -737,9 +752,13 @@ def build_thread_row(
         preview = NO_MESSAGES_YET
     elif extra.preview_direction == "outbound":
         preview = OUTBOUND_PREFIX + preview
-    label, tone = attention_pill(view.attention)
-    window_label, window_short, window_tone = window_words(
-        view.window.is_open, view.window.closes_at, now, zone
+    label, tone = header_pill(view)
+    window_label, window_tone = window_words(
+        view.window.is_open,
+        view.window.closes_at,
+        now,
+        zone,
+        has_inbound=getattr(thread, "last_inbound_at", None) is not None,
     )
     channel = CHANNEL_LABELS.get(thread.channel, thread.channel)
     subtitle = f"{account_label} · {channel}" if account_label else channel
@@ -763,7 +782,6 @@ def build_thread_row(
         attention_label=label,
         attention_tone=tone,
         window_label=window_label,
-        window_short=window_short,
         window_tone=window_tone,
         window_open=view.window.is_open,
         is_closed=thread.status == "closed",
@@ -771,24 +789,32 @@ def build_thread_row(
         hue=avatar_hue(thread.counterpart_external_id),
         avatar_url=avatar_url,
         fresh=fresh,
+        window_minutes=minutes_left(view.window.is_open, view.window.closes_at, now),
+        last_inbound_iso=inbound_iso(getattr(thread, "last_inbound_at", None)),
     )
 
 
-def filter_threads(rows: Iterable[ThreadRowVM], key: str) -> list[ThreadRowVM]:
-    """Todas · Pendientes · Leídas · Respondidas, by the derived attention state. An
-    unknown key falls back to Todas."""
-    if key in (FILTER_PENDING, FILTER_READ, FILTER_ANSWERED):
-        return [r for r in rows if r.attention == key]
-    return list(rows)
+def inbound_iso(value: datetime | None) -> str:
+    """`last_inbound_at` → the row's exact string ("" for None); `seen_inbound_at`
+    reads it back."""
+    return value.isoformat() if value is not None else ""
 
 
-def filter_counts(rows: Sequence[ThreadRowVM]) -> dict[str, int]:
-    return {key: len(filter_threads(rows, key)) for key, _label in FILTERS}
+def seen_inbound_at(value: str) -> datetime | None:
+    """The row's `last_inbound_iso` → what «Cerrar» tells the backend the owner saw.
+    Raises `ValueError` for anything that is not the row's own string."""
+    return datetime.fromisoformat(value) if value else None
 
 
-def filter_label(key: str, count: int) -> str:
-    label = dict(FILTERS).get(key, key)
-    return f"{label} · {count}" if count else label
+def changed_since_seen_notice(title: str) -> str:
+    """«Cerrar» refused because the person wrote after the screen was drawn."""
+    who = title.strip() or UNKNOWN_PERSON
+    return f"{who} te acaba de escribir. Lee su mensaje antes de cerrar."
+
+
+# m-25017859: this channel's list adapter (`as_chat_row`) and chips (`filter_threads`)
+# left with its own list — the single list draws Instagram rows from `InboxRow`
+# (`inbox_list_vm.as_chat_row`).
 
 
 def newly_pending(previous: Sequence[ThreadRowVM], current: Sequence[ThreadRowVM]) -> list[str]:
@@ -802,7 +828,11 @@ def newly_pending(previous: Sequence[ThreadRowVM], current: Sequence[ThreadRowVM
         old = before.get(row.thread_id)
         if row.attention != "pending":
             continue
-        if old is None or old.time_label != row.time_label or old.preview != row.preview:
+        if old is not None and old.last_inbound_iso != row.last_inbound_iso:
+            # m-25026457: a genuinely new message from the person (this is also what
+            # reopens a closed chat); a status flip alone («Reabrir») announces nothing.
+            fresh.append(row.thread_id)
+        elif old is None or old.time_label != row.time_label or old.preview != row.preview:
             if old is None or old.attention != "pending" or old.preview != row.preview:
                 fresh.append(row.thread_id)
     return fresh
@@ -885,7 +915,8 @@ SEND_LABEL: Final = "Enviar"
 #: The Lucide icon next to a tapped message's origin (bubble and list preview).
 TAP_ICON: Final = "pointer"
 # m-24842988: who the title shows when Instagram gave neither a name nor a handle.
-UNKNOWN_PERSON: Final = "Persona sin nombre"
+# m-25017852: «Cliente de Instagram» (was «Persona sin nombre») — says where they wrote.
+UNKNOWN_PERSON: Final = unknown_contact(CHANNEL_INSTAGRAM)
 
 
 def reply_sent_message(who: str) -> str:

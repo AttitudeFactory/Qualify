@@ -64,10 +64,10 @@ Cuenta publicitaria (act_<id>, del cliente: moneda, zona horaria, método de pag
 | Enviar mensaje (Instagram/Messenger) | `MESSAGE_PAGE` / `INSTAGRAM_MESSAGE` | todos |
 | Pedir ahora | `ORDER_NOW` | comida |
 | Reservar viaje / Reservar | `BOOK_TRAVEL` / `BOOK_NOW` | agencia de viajes |
-| Solicitar cotización | `GET_QUOTE` | inmobiliaria, viajes |
+| Pedir cotización | `GET_QUOTE` | inmobiliaria, viajes |
 | Contáctanos | `CONTACT_US` | todos |
 | Llamar | `CALL_NOW` | todos (no funciona en historias) |
-| Registrarte | `SIGN_UP` | anuncios de clientes potenciales |
+| Registrarme | `SIGN_UP` | anuncios de clientes potenciales |
 | Comprar | `SHOP_NOW` | tiendas |
 
 Qué botón vale para qué objetivo no está en la referencia del enum: ADS-00 lo mide. Los errores 1373054 y 2446383 son los que avisan de una combinación inválida.
@@ -323,6 +323,12 @@ Al terminar se crea todo en `PAUSED`, se muestra la vista previa de Meta (`adpre
 **Criterios de aceptación**
 - [ ] Una pieza con salida feed + historia genera un solo anuncio con dos reglas de ubicación.
 - [ ] Los textos que pasan los límites de Meta se cortan o se rechazan antes de llamar a la API.
+
+**Historia con botón de enlace (m-25026350).** El anuncio solo en historias reutiliza este
+camino con un único archivo 9:16 (`docs/anuncios-pieza-sin-publicar.md`). **Veredicto sobre
+promocionar una historia ya publicada por su id: ABIERTO, sin verificar.** No hay fuente
+oficial leída que lo confirme ni lo descarte; se decide en la prueba en vivo m-24828971. Hasta
+entonces siempre se sube el archivo y no se publica la historia orgánica.
 
 ### ADS-13 · Anuncios: públicos personalizados y similares
 **Tipo:** Feature · **Etiqueta:** Feature · **P3**

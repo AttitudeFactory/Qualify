@@ -1,0 +1,286 @@
+{
+ "ticket": "m-25026482",
+ "baseline_ref": "a6667370",
+ "split": "all",
+ "pricing_version": "v9",
+ "judge": "claude-haiku-5-5@low",
+ "judge_prompt_version": "juez-niveles-v2",
+ "judge_parts_version": "juez-niveles-v2+partes-v1",
+ "code_commit": "440eefa6",
+ "arms": [
+  "nuevo"
+ ],
+ "levels": [
+  "unaware"
+ ],
+ "repeat": 3,
+ "tracing": false,
+ "date": "2026-11-13T16:05:36",
+ "suites": {
+  "copy": {
+   "items": [
+    {
+     "case": "niv-bur-unaware",
+     "arm": "nuevo",
+     "level": "unaware",
+     "objective": "awareness",
+     "must_mention": [],
+     "output": {
+      "kind": "static_flyer",
+      "variants": [
+       {
+        "payload": {
+         "hook": "El parche se arma en la plancha",
+         "caption": "Sales del trabajo, juntas al parche y caes a Chapinero. Suena la plancha, se arma la costra y la doble smash llega a la mesa con salsa de la casa. Mesas para todos, y si traes al perro, también se queda 🐶. ¿Quién del grupo se atreve con la triple? 🔥",
+         "hashtags": [
+          "brasanorte",
+          "smashburger",
+          "chapinero",
+          "planbogota"
+         ],
+         "cta": "Cae con el parche a la 57",
+         "script": "",
+         "shots": []
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 12.69,
+        "cost_usd": 0.032113
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.032113,
+     "juez_ciego_usd": 0.0005,
+     "juez_informado_usd": 0.000421
+    },
+    {
+     "case": "niv-bur-unaware",
+     "arm": "nuevo",
+     "level": "unaware",
+     "objective": "awareness",
+     "must_mention": [],
+     "output": {
+      "kind": "static_flyer",
+      "variants": [
+       {
+        "payload": {
+         "hook": "El parche suena a plancha",
+         "caption": "Ese tsss de la plancha es la señal: llegó el parche. Doble smash con costra, salsa de la casa y la mesa llena de amigos. ¿Traes al perro? Que venga también. ¿Vienen en carro? Hay parqueadero gratis. Ahora sí, ¿quién del parche se atreve con la triple? 🍔🔥",
+         "hashtags": [
+          "brasanorte",
+          "smashburger",
+          "chapinero",
+          "parchebogota"
+         ],
+         "cta": "Cae con el parche a la 57",
+         "script": "",
+         "shots": []
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 8.46,
+        "cost_usd": 0.017842
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.017842,
+     "juez_ciego_usd": 0.000475,
+     "juez_informado_usd": 0.000483
+    },
+    {
+     "case": "niv-bur-unaware",
+     "arm": "nuevo",
+     "level": "unaware",
+     "objective": "awareness",
+     "must_mention": [],
+     "output": {
+      "kind": "static_flyer",
+      "variants": [
+       {
+        "payload": {
+         "hook": "El parche se arma alrededor de la doble",
+         "caption": "Sale del trabajo, cae el parche y suena la plancha: tsssss. 🔥 La doble smash con costra, queso derretido y salsa de la casa, en la mitad de la mesa. Mesas para todo el combo de amigos, parqueadero gratis y el perro también entra. 🐶 ¿Quién del grupo se le mide a terminarse la triple? Arme el plan y caigan a Chapinero.",
+         "hashtags": [
+          "brasanorte",
+          "smashburger",
+          "chapinero",
+          "planconamigos"
+         ],
+         "cta": "Arme el parche en la 57",
+         "script": "",
+         "shots": []
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 9.75,
+        "cost_usd": 0.018562
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.018562,
+     "juez_ciego_error": "APITimeoutError: Request timed out or interrupted. This could be due to a network timeout, dropped connection, or request cancellation. See https://docs.anthropic.com/en/api/errors#long-requests for m",
+     "juez_informado_error": "APITimeoutError: Request timed out or interrupted. This could be due to a network timeout, dropped connection, or request cancellation. See https://docs.anthropic.com/en/api/errors#long-requests for m"
+    },
+    {
+     "case": "niv-inm-unaware",
+     "arm": "nuevo",
+     "level": "unaware",
+     "objective": "awareness",
+     "must_mention": [],
+     "output": {
+      "kind": "static_flyer",
+      "variants": [
+       {
+        "error": "APITimeoutError: Request timed out or interrupted. This could be due to a network timeout, dropped connection, or request cancellation. See https://docs.anthropic.com/en/api/errors#long-requests for more details."
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 0.0,
+      "reglas_ok": 0.0,
+      "largos_ok": 0.0,
+      "restricciones_ok": 0.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 0.0
+     },
+     "cost_usd": 0.12
+    }
+   ],
+   "scores": [
+    {
+     "arm": "nuevo",
+     "case": "niv-bur-unaware",
+     "split": "test",
+     "sector": "hamburguesas",
+     "with_perks": true,
+     "level": "unaware",
+     "level_answered": null,
+     "rule_det": true,
+     "invented_det": [],
+     "perks_det": [],
+     "judge_level": "solution_aware",
+     "judge_quality": 3,
+     "judge_invented": [],
+     "judge_perks": [
+      2,
+      3
+     ],
+     "judge_fit": true,
+     "judge_reason": "Es unaware: muestra el lugar y la experiencia (salir del trabajo, la plancha, mesas para todos, traer al perro) sin precio ni oferta; la mención de la triple no es un dato inventado de las siete clase",
+     "offers_det": [],
+     "words_hook": 7,
+     "words_cta": 7
+    },
+    {
+     "arm": "nuevo",
+     "case": "niv-bur-unaware",
+     "split": "test",
+     "sector": "hamburguesas",
+     "with_perks": true,
+     "level": "unaware",
+     "level_answered": null,
+     "rule_det": false,
+     "invented_det": [],
+     "perks_det": [
+      1
+     ],
+     "judge_level": "product_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      1,
+      2,
+      3
+     ],
+     "judge_fit": false,
+     "judge_reason": "Para unaware la regla es no mostrar precio ni oferta, y aquí anuncia el parqueadero gratis como beneficio promocional y empuja el producto (doble smash, salsa, triple) en vez de quedarse en el lugar y",
+     "offers_det": [],
+     "words_hook": 5,
+     "words_cta": 7
+    },
+    {
+     "arm": "nuevo",
+     "case": "niv-bur-unaware",
+     "split": "test",
+     "sector": "hamburguesas",
+     "with_perks": true,
+     "level": "unaware",
+     "level_answered": null,
+     "rule_det": false,
+     "invented_det": [],
+     "perks_det": [
+      1
+     ],
+     "judge_level": null,
+     "judge_quality": null,
+     "judge_invented": [],
+     "judge_perks": [],
+     "judge_fit": null,
+     "judge_reason": "",
+     "offers_det": [],
+     "words_hook": 8,
+     "words_cta": 6
+    },
+    {
+     "arm": "nuevo",
+     "case": "niv-inm-unaware",
+     "split": "test",
+     "sector": "inmobiliaria",
+     "with_perks": true,
+     "level": "unaware",
+     "level_answered": null,
+     "rule_det": true,
+     "invented_det": [],
+     "perks_det": [],
+     "judge_level": null,
+     "judge_quality": null,
+     "judge_invented": [],
+     "judge_perks": [],
+     "judge_fit": null,
+     "judge_reason": "",
+     "offers_det": [],
+     "words_hook": 0,
+     "words_cta": 0
+    }
+   ],
+   "prefix_chars": {
+    "hamburguesas": {
+     "nuevo": 3484
+    },
+    "inmobiliaria": {
+     "nuevo": 3522
+    }
+   }
+  }
+ },
+ "spend_usd": {
+  "copy": 0.198396
+ },
+ "spend_total_usd": 0.198396,
+ "skipped_by_cap": [
+  "copy niv-inm-unaware nuevo",
+  "copy niv-inm-unaware nuevo"
+ ],
+ "ledger_calls": 4
+}

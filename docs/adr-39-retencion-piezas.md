@@ -112,3 +112,11 @@ Detalle y plan de producción: `docs/mudanza-subidas-r2.md`.
 5. Una pieza cuyo borrado **sí** funciona se comporta exactamente como antes. El log del job dice cuántas fueron solo lógicas (`logical_only=N`).
 
 **Bajada de la migración:** quita las dos columnas; las piezas siguen ocultas por `media_purged_at`, pero se olvida qué archivos quedaron en R2 — correr `--pending --execute` antes si el borrado ya funciona.
+
+## Enmienda — lo publicado desde «Publicar» no vence (2026-11-13, m-25019217, épica m-25019215)
+
+**Estado:** `[DECIDIDA por el fundador el 2026-11-13]`.
+
+**Decisión.** Cada publicación hecha desde «Publicar» (publicar ahora) se guarda, una vez que Instagram la aceptó, como una pieza propia del dueño — tipo `own_media` (`ContentKind.OWN_MEDIA`) — que aparece en «Tu semana» como publicada a la hora en que salió y en «Aprobados» para volver a programarla. Estas piezas **quedan fuera de los 90 días de esta ADR**: nunca tienen fecha límite, aviso ni borrado.
+
+**Cómo se cumple.** `creative.retention` las excluye por tipo (`EXEMPT_KINDS`): `read_facts` no les da hechos (estado «no aplica») y `_family_candidates` no las lista para el borrado. Sus archivos son los que «Publicar» ya subió (`t/{tenant}/media/{conexión}/{uuid}`), fuera de `generated/` y de `PURGEABLE_ROOTS`; no se copian ni pasan por Galería. La exclusión se declara por tipo para que un cambio futuro de dónde viven no las meta en los 90 días sin decisión. Prueba: `packages/api/tests/test_own_media_retention.py`.

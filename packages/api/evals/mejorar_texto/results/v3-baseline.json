@@ -1,0 +1,222 @@
+{
+  "summary": {
+    "label": "v3-baseline",
+    "prompt_version": "context-v3-compact-300",
+    "model": "claude-sonnet-5-5@low",
+    "model_revisions": [
+      "claude-sonnet-5-5"
+    ],
+    "when": "2026-11-13T05:49:03+00:00",
+    "cases": 6,
+    "calls": 12,
+    "errors": 0,
+    "total_usd": "0.037888400",
+    "usd_per_call": "0.0032",
+    "mean_seconds": 2.483,
+    "within_press_mean_similarity": 0.0,
+    "across_presses_max_similarity_mean": 0.995,
+    "across_presses_mean_jaccard": 0.981,
+    "duplicates": 4,
+    "cases_with_new_numbers": []
+  },
+  "rows": [
+    {
+      "id": "promo-2x1",
+      "original": "promo 2x1 en shawarma de pollo los martes, que se antoje y que pidan por whatsapp",
+      "press_1": {
+        "texts": [
+          "Quiero un clip del shawarma de pollo recién hecho que antoje a quienes trabajan o estudian cerca del centro. Destaco la promo 2x1 los martes. Cierro con: Pide por WhatsApp."
+        ],
+        "approaches": [],
+        "added_facts": [],
+        "cost_usd": "0.005577500",
+        "seconds": 5.0,
+        "in": 495,
+        "out": 149
+      },
+      "press_2": {
+        "texts": [
+          "Quiero un clip del shawarma de pollo recién hecho, que antoje a quienes trabajan o estudian cerca del centro. Destaco la promo 2x1 los martes. Cierro con: Pide por WhatsApp."
+        ],
+        "approaches": [],
+        "added_facts": [],
+        "cost_usd": "0.002695900",
+        "seconds": 2.5,
+        "in": 536,
+        "out": 150
+      },
+      "within_press_mean_similarity": 0.0,
+      "within_press_max_similarity": null,
+      "across_presses_max_similarity": 0.997,
+      "across_presses_mean_similarity": 0.997,
+      "across_presses_mean_jaccard": 1.0,
+      "duplicates": 0,
+      "new_numbers": []
+    },
+    {
+      "id": "nuevo-falafel",
+      "original": "tenemos nueva ensalada de quinoa con falafel, queremos que la prueben, es fresca y llena",
+      "press_1": {
+        "texts": [
+          "Quiero presentar nuestra nueva ensalada de quinoa con falafel a quienes trabajan o estudian cerca y piden almuerzo. Que se sienta fresca, llena y hecha al momento; muéstrenla en galería. No decir que es de dieta. Cierre: Pide por WhatsApp."
+        ],
+        "approaches": [],
+        "added_facts": [],
+        "cost_usd": "0.002937900",
+        "seconds": 2.3,
+        "in": 512,
+        "out": 179
+      },
+      "press_2": {
+        "texts": [
+          "Quiero presentar nuestra nueva ensalada de quinoa con falafel a quienes trabajan o estudian cerca y piden almuerzo. Que se sienta fresca, llena y hecha al momento; muéstrenla en galería. No decir que es de dieta. Cierre: Pide por WhatsApp."
+        ],
+        "approaches": [],
+        "added_facts": [],
+        "cost_usd": "0.003077900",
+        "seconds": 1.7,
+        "in": 582,
+        "out": 179
+      },
+      "within_press_mean_similarity": 0.0,
+      "within_press_max_similarity": null,
+      "across_presses_max_similarity": 1.0,
+      "across_presses_mean_similarity": 1.0,
+      "across_presses_mean_jaccard": 1.0,
+      "duplicates": 1,
+      "new_numbers": []
+    },
+    {
+      "id": "horario",
+      "original": "recordar el horario: abrimos todos los dias de 11 am a 10 pm, domingos hasta las 8 pm",
+      "press_1": {
+        "texts": [
+          "Quiero recordar nuestro horario: abrimos todos los días de 11 am a 10 pm, y los domingos hasta las 8 pm. Galería con shawarma y ensaladas frescas, para quienes trabajan o estudian cerca y quieren almuerzo o cena. Cierra con: Pide por WhatsApp."
+        ],
+        "approaches": [],
+        "added_facts": [],
+        "cost_usd": "0.002999900",
+        "seconds": 2.5,
+        "in": 518,
+        "out": 184
+      },
+      "press_2": {
+        "texts": [
+          "Quiero recordar nuestro horario: abrimos todos los días de 11 am a 10 pm, y los domingos hasta las 8 pm. Galería con shawarma y ensaladas frescas, para quienes trabajan o estudian cerca y quieren almuerzo o cena. Cierra con: Pide por WhatsApp."
+        ],
+        "approaches": [],
+        "added_facts": [],
+        "cost_usd": "0.003143900",
+        "seconds": 2.1,
+        "in": 590,
+        "out": 184
+      },
+      "within_press_mean_similarity": 0.0,
+      "within_press_max_similarity": null,
+      "across_presses_max_similarity": 1.0,
+      "across_presses_mean_similarity": 1.0,
+      "across_presses_mean_jaccard": 1.0,
+      "duplicates": 1,
+      "new_numbers": []
+    },
+    {
+      "id": "combo-almuerzo",
+      "original": "combo almuerzo: shawarma mixto con papas y bebida a 25.000, solo de 12 a 3",
+      "press_1": {
+        "texts": [
+          "Galería para quienes trabajan o estudian cerca: quiero mostrar el combo almuerzo, shawarma mixto con papas y bebida incluidas, a 25.000, solo de 12 m a 3 pm. Que den ganas de almorzar rico y rápido. Cierro con: Pide por WhatsApp."
+        ],
+        "approaches": [],
+        "added_facts": [],
+        "cost_usd": "0.002991900",
+        "seconds": 1.9,
+        "in": 529,
+        "out": 181
+      },
+      "press_2": {
+        "texts": [
+          "Galería para quienes trabajan o estudian cerca: quiero mostrar el combo almuerzo, shawarma mixto con papas y bebida incluidas, a 25.000, solo de 12 m a 3 pm. Que den ganas de almorzar rico y rápido. Cierro con: Pide por WhatsApp."
+        ],
+        "approaches": [],
+        "added_facts": [],
+        "cost_usd": "0.003135900",
+        "seconds": 2.4,
+        "in": 601,
+        "out": 181
+      },
+      "within_press_mean_similarity": 0.0,
+      "within_press_max_similarity": null,
+      "across_presses_max_similarity": 1.0,
+      "across_presses_mean_similarity": 1.0,
+      "across_presses_mean_jaccard": 1.0,
+      "duplicates": 1,
+      "new_numbers": []
+    },
+    {
+      "id": "domicilios",
+      "original": "ya tenemos domicilios en todo el centro, pedidos por whatsapp, llega caliente",
+      "press_1": {
+        "texts": [
+          "Avatar animado que cuenta con buena energía que ya tenemos domicilios en todo el centro. Le hablo a quien trabaja o estudia cerca. Debe sentir tranquilidad: pide por WhatsApp y llega caliente. Cierre: Pide por WhatsApp."
+        ],
+        "approaches": [],
+        "added_facts": [],
+        "cost_usd": "0.002799900",
+        "seconds": 3.0,
+        "in": 483,
+        "out": 171
+      },
+      "press_2": {
+        "texts": [
+          "Quiero un avatar animado que cuente con buena energía que ya tenemos domicilios en todo el centro. Le hablo a quien trabaja o estudia cerca. Debe sentir tranquilidad: pide por WhatsApp y llega caliente. Cierre: Pide por WhatsApp."
+        ],
+        "approaches": [],
+        "added_facts": [],
+        "cost_usd": "0.002961900",
+        "seconds": 1.6,
+        "in": 549,
+        "out": 174
+      },
+      "within_press_mean_similarity": 0.0,
+      "within_press_max_similarity": null,
+      "across_presses_max_similarity": 0.973,
+      "across_presses_mean_similarity": 0.973,
+      "across_presses_mean_jaccard": 0.886,
+      "duplicates": 0,
+      "new_numbers": []
+    },
+    {
+      "id": "escena-salsa",
+      "original": "un shawarma abierto en la barra con bastante salsa de ajo y la ensalada al lado",
+      "press_1": {
+        "texts": [
+          "Un shawarma de carne abierto sobre la barra, con bastante salsa de ajo escurriendo entre la carne, y al lado una ensalada fresca. Luz cálida, plano cercano y ligeramente cenital, sensación de recién hecho y antojo."
+        ],
+        "approaches": [],
+        "added_facts": [],
+        "cost_usd": "0.002719900",
+        "seconds": 2.5,
+        "in": 488,
+        "out": 162
+      },
+      "press_2": {
+        "texts": [
+          "Un shawarma de carne abierto sobre la barra, con bastante salsa de ajo escurriendo entre la carne, y al lado una ensalada fresca. Luz cálida, plano cercano y ligeramente cenital, sensación de recién hecho y antojo."
+        ],
+        "approaches": [],
+        "added_facts": [],
+        "cost_usd": "0.002845900",
+        "seconds": 2.3,
+        "in": 546,
+        "out": 163
+      },
+      "within_press_mean_similarity": 0.0,
+      "within_press_max_similarity": null,
+      "across_presses_max_similarity": 1.0,
+      "across_presses_mean_similarity": 1.0,
+      "across_presses_mean_jaccard": 1.0,
+      "duplicates": 1,
+      "new_numbers": []
+    }
+  ]
+}

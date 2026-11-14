@@ -19,6 +19,7 @@ Seeding follows `test_whatsapp_outbox_repository_db.py`: tenant/user/app via
 from __future__ import annotations
 
 import importlib.util
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -590,6 +591,66 @@ def test_profile_is_saved_without_erasing_what_a_previous_one_knew(seeded) -> No
     # Another tenant neither sees nor changes it.
     repo.save_profile(tenant_id=OTHER, thread_id=tid, profile=RemoteProfile(name="X"), now=T0)
     assert repo.get_thread(tenant_id=TENANT, thread_id=tid).counterpart_name == "Yesika Roa"
+
+
+def test_an_empty_profile_only_moves_the_instant(seeded) -> None:
+    """m-25017852: the nameless backoff saves an empty profile with an older instant;
+    COALESCE must keep everything stored."""
+    repo = PostgresConversationRepository()
+    tid = _thread_with_inbound(repo, seeded)
+    repo.save_profile(
+        tenant_id=TENANT,
+        thread_id=tid,
+        profile=RemoteProfile(name="Ana", username="ana.cocina", avatar_url="https://p/1"),
+        now=T0,
+    )
+    backoff = T0 - timedelta(hours=23)
+    repo.save_profile(tenant_id=TENANT, thread_id=tid, profile=RemoteProfile(), now=backoff)
+    thread = repo.get_thread(tenant_id=TENANT, thread_id=tid)
+    assert (thread.counterpart_name, thread.counterpart_username) == ("Ana", "ana.cocina")
+    assert thread.counterpart_avatar_url == "https://p/1"
+    assert thread.counterpart_profile_at == backoff
+
+
+def test_a_later_reading_backfills_a_missing_author_handle_only(seeded) -> None:
+    """m-25017852: the webhook stores `author_username` NULL; the poll's reading fills it,
+    a stored handle is never replaced, and a fill is not a new message."""
+    repo = PostgresConversationRepository()
+    tid = _thread_with_inbound(repo, seeded)
+    mid = f"mid.{uuid4().hex[:8]}"
+    assert repo.insert_message(
+        tenant_id=TENANT,
+        thread_id=tid,
+        connection_id=seeded["connection"],
+        message=_msg(mid, at=T0),
+    )
+    polled = replace(_msg(mid, at=T0), author_username="ana.cocina")
+    assert not repo.insert_message(
+        tenant_id=TENANT, thread_id=tid, connection_id=seeded["connection"], message=polled
+    )
+    other = replace(_msg(mid, at=T0), author_username="otro")
+    assert not repo.insert_message(
+        tenant_id=TENANT, thread_id=tid, connection_id=seeded["connection"], message=other
+    )
+    (message,) = repo.list_messages(tenant_id=TENANT, thread_id=tid)
+    assert message.author_username == "ana.cocina"
+
+
+def test_an_outbound_row_never_gets_an_author_backfilled(seeded) -> None:
+    """m-25017852: the fill is inbound-only, like every other conflict fill."""
+    repo = PostgresConversationRepository()
+    tid = _thread_with_inbound(repo, seeded)
+    mid = f"mid.{uuid4().hex[:8]}"
+    out = _msg(mid, at=T0, direction="outbound")
+    assert repo.insert_message(
+        tenant_id=TENANT, thread_id=tid, connection_id=seeded["connection"], message=out
+    )
+    echo = replace(out, author_username="mi.negocio")
+    assert not repo.insert_message(
+        tenant_id=TENANT, thread_id=tid, connection_id=seeded["connection"], message=echo
+    )
+    (message,) = repo.list_messages(tenant_id=TENANT, thread_id=tid)
+    assert message.author_username is None
 
 
 def _inbound_message_id(repo: PostgresConversationRepository, tid: UUID, seeded) -> UUID:

@@ -23,7 +23,6 @@ def _last_step() -> CreativeState:
     state = CreativeState()
     state.choose_category("script")
     state.brief_topic = "La smash doble cayendo en cámara lenta"
-    state.product_confirmed = True
     state.go_to_view(str(len(state.gen_views) - 1))
     assert state.gen_is_last_view
     return state

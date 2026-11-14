@@ -45,11 +45,13 @@ from qualify_api.creative.service import ApprovalBlocked, DraftExpired, UnknownD
 from . import final_video_card_provider as provider
 from . import final_video_card_state as module
 from . import final_video_vm as vm
+from . import part_review_provider as review_provider
 from .creative_vm import videos_short_text
 from .final_video_card import final_video_card
 from .final_video_card_state import FinalVideoState, refusal_text
 from .final_video_vm import JOIN_FAILED_TEXT, JOINING_TEXT
 from .part_progress_state import PartProgressState
+from .part_review_vm import PartReview
 from .pending_state import PendingState
 
 _HERE = Path(__file__).parent
@@ -134,9 +136,15 @@ class Backend:
         return [UUID(int=6)]
 
     def change_part(
-        self, tenant_id: UUID, parent_id: UUID, index: int, text: str, user_id: UUID
+        self,
+        tenant_id: UUID,
+        parent_id: UUID,
+        index: int,
+        text: str,
+        user_id: UUID,
+        photos: list[str] | None = None,
     ) -> UUID:
-        self._call("change", tenant_id, parent_id, index, text, user_id)
+        self._call("change", tenant_id, parent_id, index, text, user_id, photos)
         return UUID(int=index)
 
 
@@ -157,6 +165,12 @@ def backend(monkeypatch: pytest.MonkeyPatch) -> Iterator[Backend]:
         "create_missing",
     ):
         monkeypatch.setattr(provider, name, getattr(fake, name))
+
+    def bare(*_: Any) -> Any:  # m-24921083: the panel itself is pinned in test_part_review
+        return PartReview(mode="reference", description="", photo_keys=())
+
+    monkeypatch.setattr(review_provider, "read_review", bare)
+    monkeypatch.setattr(review_provider, "inspiration", lambda tenant, parent: ("", ""))
     yield fake
 
 
@@ -165,6 +179,12 @@ async def _drain(events: Any) -> list[Any]:
         return [event async for event in events]
     await events
     return []
+
+
+async def _choose(state: FinalVideoState, index: str) -> None:
+    """«Cambiar esta», and its panel's one read (a bare one here)."""
+    FinalVideoState.choose_part.fn(state, index)
+    await _drain(FinalVideoState.load_review.fn(state, index))
 
 
 async def _loaded(parent: UUID = PARENT) -> FinalVideoState:
@@ -397,14 +417,16 @@ async def test_change_a_part(backend: Backend) -> None:
     assert state.error == module.CHOOSE_PART_TEXT and backend.calls == []
     FinalVideoState.choose_part.fn(state, "7")  # not a part of this video
     assert state.change_index == "" and not state.change_open
-    FinalVideoState.choose_part.fn(state, "2")  # «Cambiar esta» on part 2
+    await _choose(state, "2")  # «Cambiar esta» on part 2
     assert state.change_open and state.change_index == "2" and state.change_number == "2"
     FinalVideoState.set_change_text.fn(state, "Más cerca del producto")
     await _drain(FinalVideoState.change_part.fn(state))
-    assert backend.calls == [("change", (TENANT, PARENT, 2, "Más cerca del producto", USER))]
+    # m-24921083: the panel was not read here (no photos shown): the part keeps its own
+    assert backend.calls == [("change", (TENANT, PARENT, 2, "Más cerca del producto", USER, None))]
     assert not state.change_open and state.change_text == "" and state.error == ""
     assert state.change_index == ""  # done: nothing stays chosen
-    FinalVideoState.choose_part.fn(state, "1")
+    await _choose(state, "1")
+    FinalVideoState.set_change_text.fn(state, "Una mano acerca el vaso.")
     backend.fail["change"] = PartChangeRefused(PART_SCHEDULED_TEXT)
     await _drain(FinalVideoState.change_part.fn(state))
     assert state.error == PART_SCHEDULED_TEXT and state.change_open
@@ -432,7 +454,7 @@ def test_the_card_compiles_with_the_design_system() -> None:
     assert "aria-disabled" in flat or "ariaDisabled" in rendered
     assert "aria-pressed" in flat or "ariaPressed" in rendered
     assert "RadixThemesSelect" not in rendered
-    for word in ("Elegir d", "le cambiamos?", "Crear otra versi", "Cambiar esta"):
+    for word in ("Elegir d", "pasa en esta parte?", "Crear otra versi", "Cambiar esta"):
         assert word in rendered  # ASCII: the accents are escaped
     source = (_HERE / "final_video_card.py").read_text(encoding="utf-8")
     assert "loading_spinner" not in source and "rx.spinner" not in source
@@ -750,7 +772,8 @@ def _polls(events: list[Any]) -> list[Any]:
 
 async def _run(state: FinalVideoState, action: str) -> list[Any]:
     if action == "change_part":
-        FinalVideoState.set_change_index.fn(state, "1")
+        await _choose(state, "1")
+        FinalVideoState.set_change_text.fn(state, "Una mano acerca el vaso.")
     return await _drain(getattr(FinalVideoState, action).fn(state))
 
 
@@ -820,7 +843,8 @@ def test_the_change_words_name_the_chosen_part() -> None:
     assert state.change_number == "2"
     from . import final_video_card as view
 
-    assert view.CHANGE_TEXT_LABEL == ": ¿qué le cambiamos? (opcional)"
+    # m-24921083: the free «¿qué le cambiamos?» note is gone; the panel is titled «Parte 2»
+    assert not hasattr(view, "CHANGE_TEXT_LABEL")
     panel = str(view._change_panel().render())
     assert "final_video_state.change_number" in panel
 
@@ -927,7 +951,8 @@ async def test_crear_otra_version_takes_the_keyboard_to_the_status_line(
 
     assert module.PARTS_STATUS_ID == STATUS_ID
     state = await _loaded()
-    FinalVideoState.choose_part.fn(state, "2")
+    await _choose(state, "2")
+    FinalVideoState.set_change_text.fn(state, "Una mano acerca el vaso.")
     events = await _drain(FinalVideoState.change_part.fn(state))
     assert STATUS_ID in str(events[0]) and events[-1].name == module.PART_PROGRESS_POLL
 
@@ -987,3 +1012,16 @@ def test_another_video_is_never_closed_by_the_previous_one() -> None:
     assert state.closed
     FinalVideoState._reset(state, str(OTHER))
     assert state.parent_id == str(OTHER) and not state.closed
+
+
+async def test_a_join_starting_lets_the_chosen_part_go(backend: Backend) -> None:
+    """m-24921083 (Deivid, 2026-11-13): while the parts are joined the card is only the
+    wait — a part chosen before is let go, its panel and words with it."""
+    state = await _loaded()
+    await _choose(state, "2")
+    FinalVideoState.set_change_text.fn(state, "más luz")
+    assert state.change_open and state.review_ready
+    backend.final = _final(JoinState.JOINING)
+    await _drain(FinalVideoState.refresh.fn(state, str(PARENT)))
+    assert state.wants_refresh and not state.change_open
+    assert state.change_text == "" and not state.review_ready

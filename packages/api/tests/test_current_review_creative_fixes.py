@@ -11,6 +11,7 @@ from qualify_creative.render.client import RenderServiceError
 from qualify_api.creative import media as m
 from qualify_api.creative.brand_references import BrandReferencesSet
 from qualify_api.creative.context_ai import normalize_context_proposal
+from qualify_api.creative.image_pipeline import compose as compose_stage
 from qualify_api.creative.service import ContentService, _add_usage
 
 from .test_creative_media_byteplus import (
@@ -28,8 +29,9 @@ from .test_v9_flyer_consumer import PHOTO, Capture, template_setup
 @pytest.fixture(autouse=True)
 def existing_bytes_only(monkeypatch):
     monkeypatch.setattr(m, "to_meta_jpeg", lambda data: data)
+    monkeypatch.setattr(compose_stage, "to_meta_jpeg", lambda data: data)
     monkeypatch.setattr(m, "to_reference_jpeg", lambda data: data)
-    monkeypatch.setattr(m, "render_ad_slides", lambda **kwargs: kwargs["scenes"])
+    monkeypatch.setattr(compose_stage, "render_ad_slides", lambda **kwargs: kwargs["scenes"])
 
 
 def persist_usage(outcome):

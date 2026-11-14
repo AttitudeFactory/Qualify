@@ -37,22 +37,57 @@ from qualify_api.planner.publishable import STORY_CAPTION_NOTE
 from .campaign_provider import COLOR_LABELS
 from .offer_mark_ui import offer_mark_control
 from .planner_state import CONFIRM_CANCEL, CONFIRM_REMOVE, PlannerState
+from .planner_upload_vm import (
+    ACCEPT as OWN_UPLOAD_ACCEPT,
+)
+from .planner_upload_vm import (
+    ADD_TILE_HINT,
+    ADD_TILE_ID,
+    ADD_TILE_LABEL,
+    ADD_TILE_TITLE,
+    BACK_TO_GRID,
+    CAPTION_LABEL,
+    CAPTION_PLACEHOLDER,
+    CHANGE_FILE,
+    CUT_CONNECTION_HINT,
+    DROP_HINT,
+    EMPTY_HINT,
+    NOT_LISTED_TEXT,
+    PICK_DESKTOP_HINT,
+    PICK_HINT,
+    PICK_TITLE,
+    PICKER_MAX_BYTES,
+    SHOW_AGAIN,
+    UPLOAD_ID,
+    VIEW_HINT,
+    VIEW_TITLE,
+    VIEW_TITLE_ID,
+)
+from .planner_upload_vm import SAVE as OWN_UPLOAD_SAVE
+from .planner_upload_vm import VIDEO as OWN_UPLOAD_VIDEO
 from .planner_vm import (
     ASSIGN_STEP_ICONS,
     ASSIGN_STEPS,
     AUTO_PUBLISH_ACTIVE,
     AUTO_PUBLISH_NO_CONNECTION,
     BACK_TO_WEEK,
+    DEST_PREFIX_OUT,
+    DEST_PREFIX_PLANNED,
     EXPIRED_NOTE,
     KIND_ICONS,
     NOW_LABEL,
+    PANEL_HINT_PLANNED,
+    PANEL_TITLE_PLANNED,
     PLAN_GOALS,
+    RESCHEDULE_AGAIN,
     REVIEW_EDIT_LINK,
     REVIEW_NOTHING_WITHOUT_YOU,
     STEP_POST,
     STEP_PREVIEW,
     STEP_WHEN,
+    STORY_TOO_LONG_TAG,
     TAG_COLORS,
+    VIEW_ON_INSTAGRAM,
     WEEKDAY_INITIALS,
     WEEKDAY_NAMES,
 )
@@ -68,8 +103,25 @@ from .post_card import (
     viewable_src,
 )
 from .promotion_entry import promotion_event_query, promotion_link
+from .promotion_vm import (
+    STORY_AD_CONTINUE,
+    STORY_AD_DECLINE,
+    STORY_AD_HINT,
+    STORY_AD_NOTICE,
+    STORY_AD_ONLY,
+    STORY_AD_OPTION,
+)
 from .r2_media import BACKEND_BASE
-from .ui import callout, drawer, skeleton_card, stepper
+from .ui import (
+    callout,
+    drawer,
+    dropzone,
+    loading_spinner,
+    media_thumb,
+    skeleton_card,
+    stepper,
+    tone_badge,
+)
 from .ui import tokens as T
 from .ui.flow_history import flow_sync
 from .ui.steps import step_progress
@@ -172,11 +224,15 @@ def tag_dot(tag) -> rx.Component:
     )
 
 
-def _section_title(icon: str, title: str, hint: str | rx.Var | None = None) -> rx.Component:
+def _section_title(
+    icon: str, title: str, hint: str | rx.Var | None = None, *, title_id: str = ""
+) -> rx.Component:
+    """`title_id` makes the title a focus target for a script (never a Tab stop)."""
+    focus = {"id": title_id, "tab_index": -1, "as_": "p"} if title_id else {}
     return rx.hstack(
         rx.center(rx.icon(icon, size=15), class_name="q-section-glyph"),
         rx.vstack(
-            rx.text(title, size="3", weight="bold"),
+            rx.text(title, size="3", weight="bold", **focus),
             *([rx.text(hint, size="1", color=T.TEXT_MUTED)] if hint is not None else []),
             spacing="0",
         ),
@@ -342,16 +398,259 @@ def _legend() -> rx.Component:
     )
 
 
-def _step_content() -> rx.Component:
+def _add_tile() -> rx.Component:
+    """The grid's first card (m-25026384): «Subir foto o video» — the owner's own photo
+    or video, uploaded right here and scheduled like any other piece. A real button of
+    the tiles' size; the «+» never speaks alone (its words are on the card)."""
+    return rx.el.button(
+        rx.center(
+            rx.vstack(
+                rx.center(rx.icon("plus", size=22), class_name="q-tile-add-plus"),
+                rx.text(ADD_TILE_TITLE, size="2", weight="bold", text_align="center"),
+                align="center",
+                spacing="2",
+            ),
+            class_name="q-tile-media q-tile-add-media",
+        ),
+        rx.box(
+            rx.text(ADD_TILE_HINT, size="1", color=T.TEXT_MUTED, text_align="left"),
+            class_name="q-tile-body",
+        ),
+        type="button",
+        id=ADD_TILE_ID,
+        aria_label=ADD_TILE_LABEL,
+        title=ADD_TILE_LABEL,
+        class_name="q-tile q-tile-add",
+        on_click=PlannerState.open_own_upload,
+    )
+
+
+def _own_upload_status() -> rx.Component:
+    """One live region, always mounted: only its words change, so a screen reader hears
+    «Subiendo…» / «Preparando…» (same as «Crear publicación»)."""
+    return rx.box(
+        rx.cond(
+            PlannerState.own_upload_busy,
+            rx.vstack(
+                rx.hstack(
+                    rx.box(loading_spinner("sm"), aria_hidden="true"),
+                    rx.text(PlannerState.own_upload_text, size="2", weight="medium"),
+                    align="center",
+                    spacing="2",
+                ),
+                rx.text(CUT_CONNECTION_HINT, size="1", color=T.TEXT_FAINT),
+                align="center",
+                spacing="1",
+            ),
+        ),
+        role="status",
+        aria_live="polite",
+        width="100%",
+    )
+
+
+def _own_upload_zone(*children: rx.Component, variant: str) -> rx.Component:
+    """The ONE dropzone of the view (`ui.dropzone`): the big «Toca para elegir» when
+    nothing is stored yet, «Cambiar archivo» under the preview once it is. Never
+    disabled while busy: an upload the network cut never reaches the handler that ends
+    «Subiendo…», and the owner must be able to pick again."""
+    return dropzone(
+        *children,
+        upload_id=UPLOAD_ID,
+        accept=OWN_UPLOAD_ACCEPT,
+        max_files=1,
+        max_size=PICKER_MAX_BYTES,
+        multiple=False,
+        on_drop=[
+            PlannerState.begin_own_upload,
+            PlannerState.handle_own_upload(
+                rx.upload_files(
+                    upload_id=UPLOAD_ID,
+                    on_upload_progress=PlannerState.own_upload_progress,
+                )
+            ),
+        ],
+        on_drop_rejected=PlannerState.own_upload_rejected,
+        # m-25026384 review: no new file while «Guardar y continuar» runs (the saved
+        # file and the one on screen must stay the same)
+        disabled=PlannerState.own_upload_saving,
+        variant=variant,
+        drop_hint=DROP_HINT if variant == "zone" else None,
+        width="100%",
+    )
+
+
+def _own_upload_pick() -> rx.Component:
+    return _own_upload_zone(
+        rx.vstack(
+            rx.center(rx.icon("image-plus", size=22), class_name="q-section-glyph q-glyph-lg"),
+            rx.text(PICK_TITLE, size="3", weight="medium"),
+            rx.text(PICK_HINT, size="1", color=T.TEXT_MUTED),
+            rx.text(
+                PICK_DESKTOP_HINT,
+                size="1",
+                color=T.TEXT_FAINT,
+                display=rx.breakpoints(initial="none", sm="block"),
+            ),
+            _own_upload_status(),
+            align="center",
+            spacing="2",
+            text_align="center",
+            width="100%",
+        ),
+        variant="zone",
+    )
+
+
+def _own_upload_preview() -> rx.Component:
+    src = rx.get_upload_url(PlannerState.own_upload_key)
+    return rx.vstack(
+        rx.box(
+            rx.cond(
+                PlannerState.own_upload_media == OWN_UPLOAD_VIDEO,
+                rx.el.video(
+                    src=src,
+                    controls=True,
+                    preload="metadata",
+                    # m-25026481: the frame Qualify took, while the video itself loads
+                    poster=rx.cond(
+                        PlannerState.own_upload_poster_key != "",
+                        rx.get_upload_url(PlannerState.own_upload_poster_key),
+                        "",
+                    ),
+                    plays_inline=True,
+                    aria_label="Tu video: " + PlannerState.own_upload_name,
+                    width="100%",
+                    height="100%",
+                ),
+                media_thumb(
+                    src,
+                    width="100%",
+                    height="100%",
+                    fit="contain",
+                    alt="Tu foto: " + PlannerState.own_upload_name,
+                ),
+            ),
+            class_name="q-own-upload-preview",
+        ),
+        rx.hstack(
+            rx.icon(
+                rx.cond(PlannerState.own_upload_media == OWN_UPLOAD_VIDEO, "film", "image"),
+                size=14,
+                color=T.TEXT_MUTED,
+            ),
+            rx.text(PlannerState.own_upload_name, size="1", color=T.TEXT_MUTED, style=_ONE_LINE),
+            align="center",
+            spacing="2",
+            min_width="0",
+            width="100%",
+        ),
+        _own_upload_zone(
+            rx.hstack(
+                rx.icon("refresh-cw", size=14),
+                rx.text(CHANGE_FILE, size="2", weight="medium"),
+                align="center",
+                justify="center",
+                spacing="2",
+            ),
+            variant="compact",
+        ),
+        _own_upload_status(),
+        spacing="2",
+        width="100%",
+    )
+
+
+def _own_upload_view() -> rx.Component:
+    """«Sube tu foto o video» — step 1's body while the owner uploads ONE file: the
+    zone (or the stored file's preview and «Cambiar archivo»), the optional text and
+    «Guardar y continuar», which creates the piece, selects it and opens «Cuándo sale».
+    Same panel, no second drawer and no dialog (§9.1). No format is asked here: step 2
+    asks «¿Dónde quieres publicarlo?»."""
+    has_file = PlannerState.own_upload_key != ""
+    return rx.vstack(
+        rx.button(
+            rx.icon("chevron-left", size=16),
+            BACK_TO_GRID,
+            variant="ghost",
+            color_scheme="gray",
+            size="2",
+            # a 44 px tap target on the phone (the ghost button alone is ~32 px)
+            min_height="2.75rem",
+            disabled=PlannerState.own_upload_saving,
+            on_click=PlannerState.close_own_upload,
+        ),
+        rx.box(
+            _section_title("image-plus", VIEW_TITLE, VIEW_HINT, title_id=VIEW_TITLE_ID),
+            class_name="q-step-panel",
+        ),
+        rx.cond(has_file, _own_upload_preview(), _own_upload_pick()),
+        rx.cond(
+            has_file,
+            rx.vstack(
+                rx.el.label(
+                    CAPTION_LABEL, html_for="q-own-upload-caption", class_name="q-field-label"
+                ),
+                rx.text_area(
+                    id="q-own-upload-caption",
+                    value=PlannerState.own_upload_caption,
+                    on_change=PlannerState.set_own_upload_caption,
+                    placeholder=CAPTION_PLACEHOLDER,
+                    max_length=2200,
+                    disabled=PlannerState.own_upload_saving,
+                    rows="3",
+                    size="3",
+                    width="100%",
+                ),
+                spacing="1",
+                width="100%",
+            ),
+        ),
+        rx.cond(
+            PlannerState.own_upload_error != "",
+            callout(PlannerState.own_upload_error, "error"),
+        ),
+        # saved, but the reload did not list it yet: read again (same file, same piece)
+        rx.cond(
+            PlannerState.own_upload_not_listed,
+            rx.vstack(
+                callout(NOT_LISTED_TEXT, "info"),
+                rx.button(
+                    rx.icon("refresh-cw", size=16),
+                    SHOW_AGAIN,
+                    variant="soft",
+                    size="3",
+                    loading=PlannerState.own_upload_saving,
+                    on_click=PlannerState.save_own_upload,
+                    width="100%",
+                ),
+                spacing="2",
+                width="100%",
+            ),
+        ),
+        rx.cond(
+            has_file & ~PlannerState.own_upload_not_listed,
+            rx.button(
+                OWN_UPLOAD_SAVE,
+                rx.icon("chevron-right", size=16),
+                size="3",
+                loading=PlannerState.own_upload_saving,
+                disabled=PlannerState.own_upload_busy | PlannerState.own_upload_saving,
+                on_click=PlannerState.save_own_upload,
+                class_name="q-cta",
+                width="100%",
+            ),
+        ),
+        spacing="4",
+        width="100%",
+    )
+
+
+def _step_grid() -> rx.Component:
     empty = rx.vstack(
         rx.center(rx.icon("layout-grid", size=22), class_name="q-section-glyph q-glyph-lg"),
         rx.text("No hay publicaciones para programar", size="3", weight="bold"),
-        rx.text(
-            "Crea una publicación y apruébala: aparecerá aquí lista para programar.",
-            size="2",
-            color=T.TEXT_MUTED,
-            text_align="center",
-        ),
+        rx.text(EMPTY_HINT, size="2", color=T.TEXT_MUTED, text_align="center"),
         rx.link(
             rx.button(
                 rx.icon("sparkles", size=16), "Crear una publicación", variant="soft", size="3"
@@ -372,7 +671,8 @@ def _step_content() -> rx.Component:
             _section_title(
                 "layout-grid",
                 "¿Qué vas a publicar?",
-                "Elige una o varias publicaciones listas. Cada una tendrá su propio horario.",
+                "Elige una o varias publicaciones listas, o sube una foto o un video tuyo. "
+                "Cada una tendrá su propio horario.",
             ),
             rx.cond(
                 PlannerState.schedulable.length() > 0,
@@ -385,14 +685,21 @@ def _step_content() -> rx.Component:
             ),
             class_name="q-step-panel",
         ),
-        rx.cond(
-            PlannerState.schedulable.length() > 0,
-            rx.box(rx.foreach(PlannerState.form_tiles, _tile), class_name="q-tile-grid"),
-            empty,
+        # m-25026384: «Subir foto o video» is always the first card, with or without
+        # ready publications.
+        rx.box(
+            _add_tile(),
+            rx.foreach(PlannerState.form_tiles, _tile),
+            class_name="q-tile-grid",
         ),
+        rx.cond(PlannerState.schedulable.length() == 0, empty),
         spacing="4",
         width="100%",
     )
+
+
+def _step_content() -> rx.Component:
+    return rx.cond(PlannerState.own_upload_view, _own_upload_view(), _step_grid())
 
 
 # ---------------------------------------------------------------------------
@@ -581,6 +888,10 @@ def _repeat(row) -> rx.Component:
     )
 
 
+def _dest_warning_id(row) -> rx.Var:
+    return "dest-warn-" + row.post_id
+
+
 def _destination_button(row, d) -> rx.Component:
     on = row.destination == d.key
     return rx.el.button(
@@ -591,6 +902,9 @@ def _destination_button(row, d) -> rx.Component:
         role="radio",
         aria_checked=on,
         disabled=~d.available,
+        # m-25026481: the chosen button is described by its warning (a video story too
+        # long / of unknown length), which is only drawn while it is chosen
+        aria_describedby=rx.cond(on & (row.destination_warning != ""), _dest_warning_id(row), ""),
         title=rx.cond(d.available, d.label, d.label + ": " + d.reason),
         class_name=rx.cond(
             on, "q-dest-btn q-dest-btn--on q-dest-" + d.key, "q-dest-btn q-dest-" + d.key
@@ -655,6 +969,7 @@ def _destination_selector(row) -> rx.Component:
                 rx.hstack(
                     rx.icon("triangle-alert", size=13, flex_shrink="0"),
                     rx.text(row.destination_warning, size="1"),
+                    id=_dest_warning_id(row),
                     class_name="q-plan-status q-plan-status--todo",
                     margin_top="0.45rem",
                     align="start",
@@ -939,6 +1254,74 @@ def _more_options(row) -> rx.Component:
     )
 
 
+def _story_ad_offer(row) -> rx.Component:
+    """m-25026350: a historia cannot carry a link unless it is paid. The option first
+    says so in one line and asks; only «Hacer anuncio pagado» leaves for the wizard, and then
+    the historia is NOT scheduled (the ad replaces it)."""
+    asking = PlannerState.story_ad_post == row.post_id
+    # Drawn only once the piece is checked to be a story ad source (`check_story_ad`,
+    # run when «Cuándo sale» mounts and when Historia is chosen).
+    return rx.cond(
+        PlannerState.story_ad_ready.contains(row.post_id),
+        _story_ad_choice(row, asking),
+    )
+
+
+def _story_ad_choice(row, asking) -> rx.Component:
+    return rx.box(
+        rx.cond(
+            asking,
+            rx.vstack(
+                rx.hstack(
+                    rx.icon("megaphone", size=16, flex_shrink="0", margin_top="2px"),
+                    rx.text(STORY_AD_NOTICE, size="2", weight="medium"),
+                    align="start",
+                    spacing="2",
+                ),
+                rx.text(STORY_AD_ONLY, size="2", color=T.TEXT_MUTED),
+                rx.hstack(
+                    rx.button(
+                        STORY_AD_CONTINUE,
+                        on_click=PlannerState.continue_story_ad,
+                        disabled=PlannerState.story_ad_busy | PlannerState.saving,
+                        loading=PlannerState.story_ad_busy,
+                        size="2",
+                        min_height="44px",
+                    ),
+                    rx.button(
+                        STORY_AD_DECLINE,
+                        on_click=PlannerState.dismiss_story_ad,
+                        variant="outline",
+                        size="2",
+                        min_height="44px",
+                    ),
+                    spacing="2",
+                    wrap="wrap",
+                ),
+                spacing="2",
+                width="100%",
+                role="group",
+                aria_label=STORY_AD_OPTION,
+            ),
+            rx.vstack(
+                rx.button(
+                    rx.icon("link", size=16),
+                    STORY_AD_OPTION,
+                    on_click=PlannerState.ask_story_ad(row.post_id),
+                    variant="soft",
+                    size="2",
+                    min_height="44px",
+                ),
+                rx.text(STORY_AD_HINT, size="1", color=T.TEXT_MUTED),
+                spacing="1",
+                align_items="start",
+            ),
+        ),
+        class_name="q-soft-box",
+        width="100%",
+    )
+
+
 def _plan_card(row) -> rx.Component:
     return rx.box(
         rx.box(
@@ -979,6 +1362,10 @@ def _plan_card(row) -> rx.Component:
         ),
         _when_fields(row),
         _where_line(row),
+        rx.cond(
+            (row.destination == "story") & PlannerState.story_ad_offered,
+            _story_ad_offer(row),
+        ),
         rx.hstack(
             rx.cond(
                 row.error != "",
@@ -1063,6 +1450,8 @@ def _step_schedule() -> rx.Component:
         rx.foreach(PlannerState.plan_rows, _plan_card),
         spacing="4",
         width="100%",
+        # m-25026350: is the lone historia a story ad source? (draws its option)
+        on_mount=PlannerState.check_story_ad,
     )
 
 
@@ -1235,6 +1624,12 @@ def _timeline_item(row) -> rx.Component:
                     width="100%",
                 ),
                 rx.text(row.title, size="2", weight="bold", style=_CLAMP_2),
+                # m-25026481: which story is too long (the plan note counts several); on its
+                # own line, so the badge row above never overflows
+                rx.cond(
+                    row.story_too_long,
+                    rx.box(tone_badge(STORY_TOO_LONG_TAG, "warn", icon="clock-alert")),
+                ),
                 rx.cond(row.sale_line != "", rx.text(row.sale_line, size="2")),
                 rx.flex(
                     rx.foreach(
@@ -1370,12 +1765,12 @@ def _step_confirm() -> rx.Component:
             ),
         ),
         rx.cond(
-            PlannerState.form_story_warnings > 0,
-            callout(
-                "Tienes historias de video en este plan. Instagram rechaza una Historia de "
-                "video de más de 60 segundos; revisa su duración antes de confirmar.",
-                "warn",
-            ),
+            PlannerState.form_story_too_long_note != "",
+            callout(PlannerState.form_story_too_long_note, "warn"),
+        ),
+        rx.cond(
+            PlannerState.form_story_unknown_note != "",
+            callout(PlannerState.form_story_unknown_note, "warn"),
         ),
         rx.cond(PlannerState.form_error != "", callout(PlannerState.form_error, "error")),
         spacing="5",
@@ -1462,6 +1857,12 @@ def _assign_footer() -> rx.Component:
             ),
             gap="0.75rem",
             flex_shrink="0",
+            # m-25026384: the upload view has its own «Guardar y continuar»
+            display=rx.cond(
+                PlannerState.own_upload_view & (PlannerState.form_step == STEP_POST),
+                "none",
+                "flex",
+            ),
             class_name="q-assign-foot-nav",
         ),
         align="center",
@@ -1662,7 +2063,13 @@ def _detail_body() -> rx.Component:
         ),
         rx.box(media, class_name="q-detail-media q-detail-media--" + d.destination),
         rx.box(
-            destination_badge(d.destination, d.destination_label, prefix="Sale como "),
+            rx.cond(
+                d.went_out,
+                destination_badge(
+                    d.destination, d.destination_label.lower(), prefix=DEST_PREFIX_OUT
+                ),
+                destination_badge(d.destination, d.destination_label, prefix=DEST_PREFIX_PLANNED),
+            ),
             class_name="q-stage-bottom",
         ),
         class_name="q-stage q-dest-" + d.destination,
@@ -1968,6 +2375,34 @@ def _detail_footer() -> rx.Component:
         ),
     )
     actions = rx.box(
+        # m-25019224: one that went out can be planned again, with this piece chosen
+        rx.cond(
+            d.went_out & PlannerState.schedulable_ids.contains(d.post_id),
+            rx.button(
+                rx.icon("calendar-plus", size=16),
+                RESCHEDULE_AGAIN,
+                variant="soft",
+                size="3",
+                on_click=PlannerState.schedule_again(d.post_id),
+            ),
+        ),
+        # m-25019217: the publication on Instagram, in a new tab — only with its address
+        rx.cond(
+            d.permalink != "",
+            rx.link(
+                rx.button(
+                    rx.icon("external-link", size=16),
+                    VIEW_ON_INSTAGRAM,
+                    variant="soft",
+                    size="3",
+                    width="100%",
+                ),
+                href=d.permalink,
+                is_external=True,
+                aria_label=VIEW_ON_INSTAGRAM + " (se abre en otra pestaña)",
+                width="100%",
+            ),
+        ),
         rx.cond(
             (d.status_label == "Publicado")
             & (d.platform == "instagram")
@@ -2063,13 +2498,21 @@ def event_panel() -> rx.Component:
                 on_click=PlannerState.set_detail_open(False),
                 class_name="q-narrow-only",
             ),
-            rx.el.span("Publicación planificada"),
+            rx.el.span(
+                rx.cond(
+                    PlannerState.detail.panel_title != "",
+                    PlannerState.detail.panel_title,
+                    PANEL_TITLE_PLANNED,
+                )
+            ),
             display="flex",
             align_items="center",
             gap="0.5rem",
         ),
         icon="calendar-check",
-        description="Qué sale, cuándo y dónde. Desde aquí la apruebas, la mueves o la cancelas.",
+        description=rx.cond(
+            PlannerState.detail.panel_hint != "", PlannerState.detail.panel_hint, PANEL_HINT_PLANNED
+        ),
         footer=_detail_footer(),
         width="36rem",
     )

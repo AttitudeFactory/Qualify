@@ -17,6 +17,8 @@ from qualify_shared.social.wa_shapes import (
     FIELD_TEMPLATE_QUALITY,
     FIELD_TEMPLATE_STATUS,
     SHAPE_VERSION,
+    WAMessage,
+    WAMessagesValue,
     WATemplateQualityUpdate,
     WATemplateStatusUpdate,
     parse_whatsapp_notification,
@@ -29,6 +31,7 @@ SYNTHETIC_INBOUND = FIXTURES / "whatsapp_inbound_synthetic.json"
 TEMPLATE_APPROVED = FIXTURES / "whatsapp_template_status_approved_doc.json"
 TEMPLATE_REJECTED = FIXTURES / "whatsapp_template_status_rejected_doc.json"
 TEMPLATE_QUALITY = FIXTURES / "whatsapp_template_quality_doc.json"
+ORDER_DOC = FIXTURES / "whatsapp_order_doc.json"
 
 
 def _load(path: Path) -> dict:
@@ -230,3 +233,69 @@ def test_template_changes_summarize_with_empty_tuples() -> None:
     assert summary.field == FIELD_TEMPLATE_STATUS
     assert summary.phone_number_id is None
     assert summary.message_ids == ()
+
+
+# --- catalog cart (`type = "order"`, m-25018684, doc-derived) --------------------------
+
+
+def test_order_doc_example_parses_into_the_cart() -> None:
+    _, change = _only_change(ORDER_DOC)
+    value = WAMessagesValue.model_validate(change.value)
+    (message,) = value.messages
+    assert message.type == "order"
+    assert message.media is None
+    order = message.order
+    assert order is not None
+    assert order.catalog_id == "194836987003835"
+    assert order.text == "Love these!"
+    assert [
+        (i.product_retailer_id, i.quantity, i.item_price, i.currency) for i in order.product_items
+    ] == [
+        ("di9ozbzfi4", 2, 30, "USD"),
+        ("nqryix03ez", 1, 25, "USD"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "order",
+    [
+        "not an object",
+        {"product_items": "nope"},
+        {"product_items": [1, None, {"quantity": "x", "item_price": [1]}]},
+        {"catalog_id": None, "text": None},
+    ],
+)
+def test_a_malformed_order_never_rejects_the_message(order: object) -> None:
+    message = WAMessage.model_validate(
+        {"id": "wamid.X", "from": "1", "timestamp": "1", "type": "order", "order": order}
+    )
+    assert message.type == "order"
+    if message.order is not None:
+        assert all(isinstance(i.quantity, object) for i in message.order.product_items)
+
+
+@pytest.mark.parametrize(
+    ("item", "expected_id", "expected_currency"),
+    [
+        ({"product_retailer_id": 1.5, "currency": 840}, "1.5", "840"),
+        ({"product_retailer_id": {"x": 1}, "currency": ["USD"]}, None, None),
+        ({"product_retailer_id": True, "currency": False}, None, None),
+        ({"product_retailer_id": 42, "currency": "USD"}, "42", "USD"),
+    ],
+)
+def test_order_text_fields_take_any_type(
+    item: dict, expected_id: str | None, expected_currency: str | None
+) -> None:
+    message = WAMessage.model_validate(
+        {
+            "id": "wamid.X",
+            "from": "1",
+            "timestamp": "1",
+            "type": "order",
+            "order": {"catalog_id": 123, "text": ["x"], "product_items": [item]},
+        }
+    )
+    assert message.order is not None
+    assert (message.order.catalog_id, message.order.text) == ("123", None)
+    (line,) = message.order.product_items
+    assert (line.product_retailer_id, line.currency) == (expected_id, expected_currency)

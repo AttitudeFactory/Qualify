@@ -65,7 +65,6 @@ _LOGOS = [
 def _piece_in_progress() -> CreativeState:
     state = CreativeState()
     state.choose_category("carousel")
-    state.product_confirmed = True
     state.brief_topic = "Promo de la galería"
     state.brief_highlights = [{"key": "precio", "value": "20 $"}]
     state.brief_must_mention = "Envío gratis"
@@ -100,7 +99,7 @@ def test_a_new_publication_starts_with_the_brand_only() -> None:
     assert state.brand_logo_key == "" and state.brand_element_keys == []
     assert state.media_product_keys == [] and state.clip_images == []
     assert state.gen_campaign == CreativeState().gen_campaign
-    assert state.product_confirmed is False
+    assert state.selected_product_id == "" and not state.media_drawer_open
     assert state.brand_media_items == _LOGOS  # the brand stays
 
 
@@ -375,8 +374,11 @@ def test_a_clips_middle_catalog_photo_reaches_the_brief() -> None:
         {"key": "t/stock/pixabay/i.jpg", "name": "Insp", "source": "inspiration", "role": "style"},
     ]
     state._sync_clip_frames()
-    for n in (1, 2):
-        state._place_stock_video({"key": f"t/stock/pixabay/v{n}.mp4", "author": "a"})
+    state.clip_videos = [
+        {"key": f"t/stock/pixabay/v{n}.mp4", "name": "Insp", "source": "inspiration"}
+        for n in (1, 2)
+    ]
+    state._sync_clip_frames()
     assert [i["key"] for i in state._clip_strip()] == [
         "t/catalog/p1.jpg",
         "t/catalog/p2.jpg",
@@ -420,10 +422,9 @@ async def test_the_live_clip_sequence_through_the_real_handlers_keeps_the_middle
         {"id": "p1", "name": "Smash", "photo_key": a, "photo_keys": f"{a}\n{b}", "video_keys": ""}
     ]
     state.choose_product("p1")
-    state.confirm_product()
     state.choose_category("clip")
     assert state.clip_first_frame_key == a  # the product's photo opens the clip
-    state.pick_media("clip_images", "catalog", b)
+    # m-24985141: both product photos came in (b too)
     state._stock_items = {"c": {"key": c}}
     state._vstock_items = {f"v{n}": {"key": f"t/stock/pixabay/V{n}.mp4"} for n in (1, 2)}
     await CreativeState.use_inspiration_hit.fn(_Proxy(state), "clip_images", "c", "image")
@@ -456,9 +457,8 @@ async def test_changing_the_duration_and_creating_still_sends_the_middle_photo(
         {"id": "p1", "name": "Smash", "photo_key": a, "photo_keys": f"{a}\n{b}", "video_keys": ""}
     ]
     state.choose_product("p1")
-    state.confirm_product()
     state.choose_category("clip")
-    state.pick_media("clip_images", "catalog", b)
+    # m-24985141: both product photos came in (b too)
     state._inspiration_files = {c: {"name": "Inspiración · rolfvandewal", "media": "image"}}
     state.pick_media("clip_images", "inspiration", c)
     state.set_clip_duration("10")

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from qualify_api.ads.wizard import WEBSITE_CTAS
+from qualify_creative.ad_destination import AD_CTA_LABELS, AdCTA
 
 from .ad_custom_audiences_vm import CustomAudienceVM
 from .ad_enhancements_vm import BrandEnhancementsVM
@@ -14,10 +17,106 @@ from .promotion_audience_vm import AudienceInterestVM
 
 STEP_TITLES = (
     "¿Qué publicación quieres promocionar?",
-    "¿A qué página los llevamos?",
+    "¿Qué quieres que haga la gente?",
     "¿A quién quieres llegar?",
     "¿Cuánto quieres invertir?",
 )
+# m-24828982: an approved, unpublished piece is another source of the same wizard. Its
+# steps follow the backend's recipe (two files of the piece, explicit text, one country);
+# placements are fixed: 4:5 in the feed, 9:16 in stories and reels.
+PUBLISHED_STEPS = ("source", "destination", "audience", "budget")
+# m-24828980: «Que te escriban» adds two decisions: the chat, then the greeting.
+CHAT_STEPS = ("source", "destination", "channel", "greeting", "audience", "budget")
+IMAGE_STEPS = ("source", "images", "text", "country", "budget")
+# A format with a single file of the piece is not a decision: it is prefilled and
+# skipped (shown in the summary). Covers are prefilled too and change from the summary.
+VIDEO_STEPS = ("source", "feed_video", "vertical_video", "text", "country", "budget")
+# m-25026350: a story with a link button is ONLY an ad (no organic story): one 9:16 file,
+# shown only in Instagram stories. A single source or a single file is not a step.
+STORY_STEPS = ("source", "story_media", "story_link", "story_audience", "budget")
+STEP_TITLE_BY_KEY = dict(zip(PUBLISHED_STEPS, STEP_TITLES, strict=True)) | {
+    "images": "Elige las dos imágenes del anuncio",
+    "feed_video": "Video para el perfil",
+    "vertical_video": "Video vertical de pantalla completa",
+    "text": "¿Qué dirá tu anuncio?",
+    "country": "¿En qué país quieres mostrarlo?",
+    "story_media": "¿Qué imagen o video lleva tu historia?",
+    "story_link": "¿A dónde lleva el botón?",
+    "story_audience": "¿Quién la ve?",
+    "channel": "¿Por dónde quieres que te escriban?",
+    "greeting": "Tu saludo",
+}
+UNPUBLISHED_SOURCE_TITLE = "¿Con qué quieres anunciar esta pieza?"
+STORY_REVIEW_TITLE = "Revisa y aprueba"
+STORY_PLACEMENT = (
+    "Solo en las historias de Instagram, entre las historias de otras cuentas. "
+    "No se publica en tu perfil."
+)
+#: m-24828983's audience cannot be applied to an unpublished piece yet: a suggestion only.
+STORY_AUDIENCE_SUGGESTION = (
+    "Pronto podrás mostrarla a tus seguidores y a quienes ya te escribieron. Por ahora la "
+    "verán personas del país que elijas."
+)
+#: Step 1 when it came from Tu semana: the historia left the plan.
+STORY_LEFT_WEEK = (
+    "Tu historia ya no quedó en Tu semana. Si prefieres publicarla sin botón, vuelve a Tu "
+    "semana y prográmala de nuevo."
+)
+STORY_NO_CHARGE = "Todavía no se cobra nada. Primero verás cómo queda tu anuncio y luego decides."
+STORY_PREVIEW_BUTTON = "Ver cómo queda (sin cobrar)"
+STORY_AUTO_CHANGES_LABEL = "Ajustes por su cuenta"
+STORY_AUTO_CHANGES = "No: el anuncio sale tal como lo apruebas"
+STORY_BACK_TO_PIECE = "Volver a la pieza"
+STORY_EMPTY = (
+    "Esta pieza no tiene una imagen o un video vertical (9:16) listo para anunciar en "
+    "historias. Vuelve a la pieza y revisa que esté aprobada y sin publicar."
+)
+#: `/drafts/<id>/promote?formato=historia` — the wizard opened as a story with a button.
+STORY_FORMAT = "historia"
+#: Tu semana's historia (m-25026350): the option, and its one-line notice BEFORE the wizard.
+STORY_AD_OPTION = "Agregar un botón con enlace"
+STORY_AD_HINT = "Desde aquí, el botón con enlace solo se puede poner en una historia pagada."
+STORY_AD_NOTICE = (
+    "Es un anuncio pagado: tú eliges cuánto invertir y se muestra entre las historias de "
+    "otras cuentas, no en tu perfil."
+)
+STORY_AD_ONLY = (
+    "Si haces el anuncio, esta historia ya no sale en tu perfil. No se cobra nada hasta que "
+    "apruebes el presupuesto."
+)
+STORY_AD_CONTINUE = "Hacer anuncio pagado"
+STORY_AD_DECLINE = "Dejar la historia sin botón"
+#: The 9:16 safe zones Instagram covers with the account name (top) and the button (bottom).
+STORY_SAFE_TOP = "Aquí va tu nombre"
+STORY_SAFE_BOTTOM = "Aquí va el botón"
+STORY_SAFE_HINT = "No pongas texto en las zonas marcadas: Instagram las tapa."
+
+
+def story_ad_href(piece_id: str, return_query: str = "") -> str:
+    """The story-only ad wizard for a piece, keeping Tu semana's way back (`?desde=…`)."""
+    tail = "&" + return_query.lstrip("?") if return_query.lstrip("?") else ""
+    return f"/drafts/{piece_id}/promote?formato={STORY_FORMAT}{tail}"
+
+
+COUNTRY_LABELS = {"CO": "Colombia", "VE": "Venezuela", "UY": "Uruguay"}
+VIDEO_WAITING = (
+    "Meta todavía está preparando tu video. Vuelve en unos minutos y toca "
+    "«Revisar ahora»; no tienes que subirlo de nuevo."
+)
+ZONE_LABELS = {
+    "America/Bogota": "hora de Colombia",
+    "America/Caracas": "hora de Venezuela",
+    "America/Montevideo": "hora de Uruguay",
+}
+# Lead-ad buttons in the order the owner sees them (m-25026344); codes from `lead_ads.LEAD_CTAS`.
+LEAD_CTA_LABELS = {
+    "GET_QUOTE": "Pedir cotización",
+    "SIGN_UP": "Registrarme",
+    "LEARN_MORE": "Más información",
+}
+# Buttons for an ad that opens a web page (m-24828976): the server allowlist, with the
+# same names the owner saw when saving the piece.
+WEBSITE_CTA_LABELS = {code: AD_CTA_LABELS[AdCTA(code)] for code in WEBSITE_CTAS}
 CHECK_LABELS = {
     "permissions": "Permisos de Meta",
     "account": "Cuenta publicitaria",
@@ -39,11 +138,81 @@ EMPTY_SOURCES = (
 )
 
 
+# The chat card's line when it can be chosen (benefit, not the backend's status).
+CHANNEL_DETAILS = {
+    "whatsapp": "Te escriben a tu WhatsApp.",
+    "instagram_direct": "Te escriben por mensaje directo de Instagram.",
+}
+# The unavailable card's status label and, where the backend's sentence is long, a shorter one.
+CHANNEL_STATUS = {
+    "no_number": "Falta conectar",
+    "unlinked": "Falta unir",
+    "several_numbers": "Falta elegir número",
+}
+CHANNEL_NOTICES = {"no_number": "Para recibir mensajes por WhatsApp, primero conéctalo."}
+CHAT_GOAL_DETAIL = (
+    "El anuncio abre un chat contigo por WhatsApp o Instagram. Tú respondes cada mensaje."
+)
+CHAT_GOAL_FROM_PIECE = "Puedes usarla para que te escriban."
+# Appended to «Unir mi WhatsApp»: going to Tus redes and back (browser back, same session)
+# keeps the draft at its step — checked live on 2026-11-13.
+CONNECTIONS_RETURN_HINT = " (luego vuelve con el botón Atrás)"
+GREETING_RELOAD = (
+    "Otra persona de tu negocio cambió el saludo y no pudimos traer su versión. "
+    "Vuelve a abrir la promoción para verla."
+)
+# The button Meta shows on a chat ad, per chat (CTA WHATSAPP_MESSAGE / INSTAGRAM_MESSAGE).
+CHAT_BUTTON_LABELS = {
+    "whatsapp": "Enviar mensaje de WhatsApp",
+    "instagram_direct": "Enviar mensaje",
+}
+# What the owner can do about an unavailable WhatsApp, by the backend's `reason_code`.
+CHANNEL_ACTIONS = {
+    "unlinked": "Unir mi WhatsApp",
+    "no_number": "Conectar mi WhatsApp",
+    "several_numbers": "Revisar mis números",
+}
+CHANNELS_FAILED = "No pudimos comprobar tus chats. Vuelve a comprobar en un momento."
+GREETING_SAVE_FAILED = "No pudimos guardar el saludo. Vuelve a intentarlo."
+GREETING_QUESTION_SLOTS = 4
+
+
 @dataclass(frozen=True)
 class MessagingDestinationVM:
     key: str
     label: str
     notice: str
+    available: bool = False
+    reason_code: str = ""
+    # «Unir mi WhatsApp»-style link to Tus redes, by `reason_code`; "" = none.
+    action: str = ""
+    status: str = ""  # «Falta conectar»-style label of an unavailable card
+
+
+@dataclass(frozen=True)
+class GreetingVM:
+    """The brand's last saved greeting (id "" = never written)."""
+
+    id: str = ""
+    version: int = 0
+    welcome_text: str = ""
+    questions: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class LeadFormChoiceVM:
+    id: str
+    name: str
+
+
+@dataclass(frozen=True)
+class AdMediaVM:
+    """One final file of the piece's active version; `url` is a short-lived view path."""
+
+    id: str
+    url: str = ""
+    media_type: str = "image"
+    label: str = ""
 
 
 @dataclass(frozen=True)
@@ -54,21 +223,50 @@ class PromotionSourceVM:
     account_name: str = ""
     currency: str = ""
     default_link_url: str = ""
+    default_cta_type: str = "LEARN_MORE"
     timezone_name: str = ""
     published_label: str = ""
     unavailable_reason: str = ""
+    # The block is the piece's own button: the fix is in the piece, not in Tus redes.
+    fix_in_piece: bool = False
     health: AccountHealthVM = field(default_factory=AccountHealthVM)
     ad_account_id: str = ""
     messaging_destinations: list[MessagingDestinationVM] = field(default_factory=list)
     connection_id: str = ""
     enhancements: BrandEnhancementsVM = field(default_factory=BrandEnhancementsVM)
     brand_id: str = ""
+    # Ready (published) forms of this source's account, last used first.
+    lead_forms: list[LeadFormChoiceVM] = field(default_factory=list)
+    lead_forms_error: str = ""
+    greeting: GreetingVM = field(default_factory=GreetingVM)
+    # QUALIFY_ADS_CHAT_GOAL is on and this is a published post: «Que te escriban» is offered.
+    chat_goal: bool = False
+    # m-24828982: "" = a published post; "images"/"videos" = the piece's unpublished pair.
+    media_kind: str = ""
+    feed_media: list[AdMediaVM] = field(default_factory=list)
+    vertical_media: list[AdMediaVM] = field(default_factory=list)
+    feed_covers: list[AdMediaVM] = field(default_factory=list)
+    vertical_covers: list[AdMediaVM] = field(default_factory=list)
+    default_message: str = ""
+    default_headline: str = ""
+    default_country: str = ""
+    story: bool = False  # m-25026350: one 9:16 file, an ad only in Instagram stories
 
 
 @dataclass(frozen=True)
 class PromotionDraftVM:
     source_id: str = ""
+    goal: str = "visit"  # "visit" (link), "lead" (Meta form) or "chat" (m-24828980)
+    channel: str = ""  # "whatsapp" | "instagram_direct" for the chat goal
+    welcome_text: str = ""
+    questions: list[str] = field(default_factory=lambda: [""] * GREETING_QUESTION_SLOTS)
+    # The saved greeting this text IS (cleared on any edit) and the version it was based on.
+    greeting_id: str = ""
+    greeting_version: int = 0
     link_url: str = ""
+    lead_form_id: str = ""
+    lead_cta: str = "GET_QUOTE"
+    cta_type: str = "LEARN_MORE"
     city_name: str = ""
     location_key: str = ""
     location_kind: str = "city"
@@ -88,6 +286,20 @@ class PromotionDraftVM:
     start_local: str = ""
     end_local: str = ""
     enhancements: BrandEnhancementsVM = field(default_factory=BrandEnhancementsVM)
+    media_kind: str = ""
+    # The piece has one file of that format: no step to choose it (m-24828982).
+    single_feed: bool = False
+    single_vertical: bool = False
+    feed_asset_id: str = ""
+    vertical_asset_id: str = ""
+    feed_cover_id: str = ""
+    vertical_cover_id: str = ""
+    message: str = ""
+    headline: str = ""
+    country: str = ""
+    story: bool = False
+    # The piece offers a single source (one ad account, one kind): not a step (story only).
+    single_source: bool = False
 
 
 @dataclass(frozen=True)
@@ -148,6 +360,9 @@ class PromotionReviewVM:
     charge_notice: str = ""
     expires_label: str = ""
     checks: list[PromotionCheckVM] = field(default_factory=list)
+    # m-24828982: the unpublished recipe and its 9:16 preview (stories and reels).
+    recipe_id: str = ""
+    vertical_preview_url: str = ""
 
 
 @dataclass(frozen=True)
@@ -218,23 +433,117 @@ def local_datetime(value: str, timezone_name: str) -> datetime:
         raise ValueError("Revisa las fechas y la zona horaria de tu negocio.") from None
 
 
+def step_keys(draft: PromotionDraftVM) -> tuple[str, ...]:
+    if draft.story:
+        skip = {"source"} if draft.single_source else set()
+        skip |= {"story_media"} if draft.single_vertical else set()
+        return tuple(key for key in STORY_STEPS if key not in skip)
+    if draft.media_kind == "videos":
+        skip = {"feed_video"} if draft.single_feed else set()
+        skip |= {"vertical_video"} if draft.single_vertical else set()
+        return tuple(key for key in VIDEO_STEPS if key not in skip)
+    if draft.media_kind == "images":
+        both_single = draft.single_feed and draft.single_vertical
+        return tuple(key for key in IMAGE_STEPS if not (both_single and key == "images"))
+    return CHAT_STEPS if draft.goal == "chat" else PUBLISHED_STEPS
+
+
+def step_key_at(draft: PromotionDraftVM, step: int) -> str:
+    keys = step_keys(draft)
+    return keys[min(max(step, 1), len(keys)) - 1]
+
+
+def step_count(draft: PromotionDraftVM) -> int:
+    return len(step_keys(draft))
+
+
+def step_title(draft: PromotionDraftVM, step: int) -> str:
+    keys = step_keys(draft)
+    return STEP_TITLE_BY_KEY[keys[min(max(step, 1), len(keys)) - 1]]
+
+
+def link_problem(value: str) -> str:
+    try:
+        url = urlsplit(value.strip())
+        valid = (
+            url.scheme == "https"
+            and url.hostname
+            and not (url.username or url.password)
+            and not any(char.isspace() for char in value)
+        )
+    except ValueError:
+        valid = False
+    return "" if valid else "Escribe un enlace completo que comience por https://."
+
+
+UNPUBLISHED_PROBLEMS = {
+    "images": lambda d: (
+        ""
+        if d.feed_asset_id and d.vertical_asset_id
+        else "Elige una imagen para el perfil y otra vertical de pantalla completa."
+    ),
+    "feed_video": lambda d: "" if d.feed_asset_id else "Elige el video para el perfil.",
+    "vertical_video": lambda d: (
+        "" if d.vertical_asset_id else "Elige el video vertical de pantalla completa."
+    ),
+    "covers": lambda d: (
+        "" if d.feed_cover_id and d.vertical_cover_id else "Elige la portada de cada video."
+    ),
+    "country": lambda d: (
+        "" if d.country in COUNTRY_LABELS else "Elige el país donde quieres mostrar el anuncio."
+    ),
+    "story_media": lambda d: (
+        "" if d.vertical_asset_id else "Elige la imagen o el video vertical de tu historia."
+    ),
+    "story_audience": lambda d: (
+        "" if d.country in COUNTRY_LABELS else "Elige el país donde quieres mostrar tu historia."
+    ),
+}
+
+
+def text_problem(draft: PromotionDraftVM) -> str:
+    if not draft.message.strip():
+        return "Escribe el texto del anuncio."
+    if len(draft.message) > 2200:
+        return "El texto del anuncio admite hasta 2.200 caracteres."
+    if not draft.headline.strip():
+        return "Escribe el título del anuncio."
+    if len(draft.headline) > 100:
+        return "El título del anuncio admite hasta 100 caracteres."
+    return ""
+
+
 def step_problem(draft: PromotionDraftVM, step: int, timezone_name: str = "") -> str:
     """Local form guidance only; Meta eligibility, minimum and payment are server gates."""
-    if step == 1:
+    keys = step_keys(draft)
+    key = keys[step - 1] if 1 <= step <= len(keys) else ""
+    if key in UNPUBLISHED_PROBLEMS:
+        return UNPUBLISHED_PROBLEMS[key](draft)
+    if key == "text":
+        return text_problem(draft) or link_problem(draft.link_url)
+    if key == "story_link":
+        if draft.cta_type not in WEBSITE_CTAS:
+            return "Elige el texto del botón."
+        return link_problem(draft.link_url) or text_problem(draft)
+    if key == "source":
         return "Elige la publicación que quieres promocionar." if not draft.source_id else ""
-    if step == 2:
-        try:
-            url = urlsplit(draft.link_url.strip())
-            valid = (
-                url.scheme == "https"
-                and url.hostname
-                and not (url.username or url.password)
-                and not any(char.isspace() for char in draft.link_url)
-            )
-        except ValueError:
-            valid = False
-        return "" if valid else "Escribe un enlace completo que comience por https://."
-    if step == 3:
+    if key == "destination" and draft.goal == "chat":
+        return ""
+    if key == "channel":
+        return (
+            "" if draft.channel in CHANNEL_DETAILS else "Elige por dónde quieres que te escriban."
+        )
+    if key == "greeting":
+        return greeting_problem(draft) or (
+            "" if draft.greeting_id else "Guarda el saludo antes de continuar."
+        )
+    if key == "destination" and draft.goal == "lead":
+        if not draft.lead_form_id:
+            return "Elige el formulario que llenará la gente."
+        return "" if draft.lead_cta in LEAD_CTA_LABELS else "Elige el texto del botón."
+    if key == "destination":
+        return link_problem(draft.link_url)
+    if key == "audience":
         if draft.housing and any(row.kind == "lookalike" for row in draft.custom_audiences):
             return "Quita el público de personas parecidas antes de continuar con vivienda."
         if any(not row.available for row in draft.custom_audiences):
@@ -257,7 +566,7 @@ def step_problem(draft: PromotionDraftVM, step: int, timezone_name: str = "") ->
         ):
             return "Quita los intereses que Meta va a retirar o ya no permite usar."
         return ""
-    if step == 4:
+    if key == "budget":
         try:
             cop_minor(draft.budget)
             start = local_datetime(draft.start_local, timezone_name)
@@ -269,7 +578,98 @@ def step_problem(draft: PromotionDraftVM, step: int, timezone_name: str = "") ->
     return ""
 
 
-def first_problem(draft: PromotionDraftVM, timezone_name: str) -> str:
-    return next(
-        (reason for n in range(1, 5) if (reason := step_problem(draft, n, timezone_name))), ""
+def greeting_problem(draft: PromotionDraftVM) -> str:
+    """The backend's own rules and words (`messaging_greeting.clean`), before saving."""
+    from qualify_api.ads.messaging_greeting import GreetingUnavailable, clean  # noqa: PLC0415
+
+    try:
+        clean(draft.welcome_text, draft.questions)
+    except GreetingUnavailable as error:
+        return str(error)
+    return ""
+
+
+def greeting_buttons_label(draft: PromotionDraftVM) -> str:
+    """The review's «Botones del chat»: the non-empty questions, in order."""
+    return " · ".join(q.strip() for q in draft.questions if q.strip()) or "Por escribir"
+
+
+def questions_shown(draft: PromotionDraftVM, opened: int) -> int:
+    """Question boxes on screen: the first, every box up to the last one with text, and
+    the ones «+ Agregar otra pregunta» opened; never more than the backend allows."""
+    filled = max((i + 1 for i, q in enumerate(draft.questions) if q), default=0)
+    return min(max(1, filled, opened), GREETING_QUESTION_SLOTS)
+
+
+def greeting_from_saved(draft: PromotionDraftVM, saved: GreetingVM) -> PromotionDraftVM:
+    """Prefill the greeting step with the brand's last saved version (or empty boxes)."""
+    slots = (list(saved.questions) + [""] * GREETING_QUESTION_SLOTS)[:GREETING_QUESTION_SLOTS]
+    return replace(
+        draft,
+        welcome_text=saved.welcome_text,
+        questions=slots,
+        greeting_id=saved.id,
+        greeting_version=saved.version,
     )
+
+
+def preselect_channel(
+    draft: PromotionDraftVM, options: list[MessagingDestinationVM]
+) -> PromotionDraftVM:
+    """Keep the chosen chat only while it is available; a single available chat is chosen."""
+    available = [row.key for row in options if row.available]
+    if draft.channel in available:
+        return draft
+    return replace(draft, channel=available[0] if len(available) == 1 else "")
+
+
+def first_problem(draft: PromotionDraftVM, timezone_name: str) -> str:
+    # Steps a single file skips and the covers (changed from the summary) still count.
+    if draft.story:
+        if not draft.vertical_asset_id:
+            return UNPUBLISHED_PROBLEMS["story_media"](draft)
+        if draft.media_kind == "videos" and not draft.vertical_cover_id:
+            return "Elige la portada del video."
+    elif draft.media_kind and not (draft.feed_asset_id and draft.vertical_asset_id):
+        return "Elige los dos archivos de la pieza para el anuncio."
+    elif draft.media_kind == "videos" and not (draft.feed_cover_id and draft.vertical_cover_id):
+        return UNPUBLISHED_PROBLEMS["covers"](draft)
+    return next(
+        (
+            reason
+            for n in range(1, step_count(draft) + 1)
+            if (reason := step_problem(draft, n, timezone_name))
+        ),
+        "",
+    )
+
+
+def video_outcome(error: Exception) -> str:
+    """What a refused unpublished preparation means for the screen, from the backend's
+    typed reason (never its wording): "waiting" (Meta is processing a video: repeat the
+    same preparation later), "help" (an uncertain upload: never offer to send it again)
+    or "" (an ordinary, owner-fixable refusal)."""
+    from qualify_api.ads.unpublished import UPLOAD_UNCERTAIN, VIDEO_PROCESSING  # noqa: PLC0415
+
+    reason = getattr(error, "reason", "")
+    return {VIDEO_PROCESSING: "waiting", UPLOAD_UNCERTAIN: "help"}.get(reason, "")
+
+
+def zone_label(timezone_name: str) -> str:
+    """The business's clock in the owner's words, never an IANA name."""
+    return ZONE_LABELS.get(timezone_name, "la hora de tu negocio")
+
+
+def step_counter(
+    draft: PromotionDraftVM, offered: PromotionDraftVM, step: int, reviewed: bool
+) -> tuple[int, int]:
+    """«Paso N de M» for the head. Before the choice, `offered` (the draft the first
+    source would prefill) decides M — a piece is either published or not. An unpublished
+    piece counts its review as its own last step (m-24828982); the published flow keeps
+    its four steps as before."""
+    current = draft if draft.source_id else offered
+    kind = current.media_kind
+    total = step_count(current)
+    if not kind:
+        return step, total
+    return (total + 1 if reviewed else step), total + 1

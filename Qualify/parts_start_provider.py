@@ -30,6 +30,7 @@ from qualify_api.creative.parts_ai import (
     propose_parts,
 )
 from qualify_creative.angles import AngleBrand, AngleProduct
+from qualify_creative.enums import AwarenessLevel
 
 from . import parts_start_vm as vm
 
@@ -101,6 +102,8 @@ def brand_facts(tenant_id: UUID, brand_id: UUID) -> AngleBrand:
         location=context.location if context is not None else "",
         palette=tuple(kit.palette_rgb) if kit is not None else (),
         typeface=kit.typeface if kit is not None else "",
+        # «Lo que ofrece tu negocio»: the only venue facts the parts may state
+        perks=tuple(kit.business_perks) if kit is not None else (),
     )
 
 
@@ -153,9 +156,16 @@ def build_brief(
     brand: AngleBrand,
     product: AngleProduct | None,
     target_seconds: int = DEFAULT_TARGET_SECONDS,
+    awareness_level: str = "",
 ) -> PartsBrief:
+    """`awareness_level` is «¿A quién le habla este video?» (m-25026509): a level's
+    value, or "" for «Sin preferencia» — the prompt is then as before."""
     return PartsBrief(
-        story=vm.clean_story(story), brand=brand, product=product, target_seconds=target_seconds
+        story=vm.clean_story(story),
+        brand=brand,
+        product=product,
+        target_seconds=target_seconds,
+        awareness_level=AwarenessLevel(awareness_level) if awareness_level else None,
     )
 
 
@@ -167,6 +177,7 @@ def propose(
     product_id: str = "",
     product_name: str = "",
     target_seconds: int = DEFAULT_TARGET_SECONDS,
+    awareness_level: str = "",
     facts: FactsReader = read_facts,
     proposer: Proposer = _platform_proposer,
 ) -> ProposalOutcome:
@@ -176,7 +187,7 @@ def propose(
         return ProposalOutcome(error=vm.STORY_MISSING_TEXT)
     try:
         brand, product = facts(tenant_id, brand_id, product_id, product_name)
-        brief = build_brief(story, brand, product, target_seconds)
+        brief = build_brief(story, brand, product, target_seconds, awareness_level)
         proposal = proposer(
             brief,
             attribution=Attribution(tenant_id=tenant_id, brand_id=brand_id, feature=FEATURE),

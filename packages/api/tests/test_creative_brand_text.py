@@ -18,6 +18,7 @@ from qualify_creative.video import FittedVideo, SubtitleLayer
 from qualify_api.creative import media as media_module
 from qualify_api.creative.brand_fonts import DbBrandFontFiles
 from qualify_api.creative.brand_kit_store import BrandAsset
+from qualify_api.creative.image_pipeline import compose as compose_stage
 from qualify_api.creative.media import (
     BRAND_COLORS_DEFAULT,
     BRAND_FONT_DEFAULT,
@@ -229,13 +230,13 @@ def test_only_a_piece_that_prints_words_reads_the_brand_style() -> None:
 def _ad_styles(monkeypatch: pytest.MonkeyPatch) -> list[TextStyle]:
     """The style every advertising image is composed with."""
     seen: list[TextStyle] = []
-    real = media_module.render_ad_slides
+    real = compose_stage.render_ad_slides
 
     def spy(**kwargs: Any) -> list[bytes]:
         seen.append(kwargs["style"])
         return real(**kwargs)
 
-    monkeypatch.setattr(media_module, "render_ad_slides", spy)
+    monkeypatch.setattr(compose_stage, "render_ad_slides", spy)
     return seen
 
 

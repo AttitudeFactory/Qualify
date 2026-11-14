@@ -34,13 +34,18 @@ from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, tzinfo
 from decimal import Decimal
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import urlencode
 
 from .ad_message_vm import ad_origin_href, ad_origin_label
 from .catalog_vm import CHATS_RETURN_PATH, RETURN_PARAM
+from .chat_row_vm import CHANNEL_WHATSAPP, ChatRowVM, build_chat_row, minutes_left
 from .planner_vm import time_label_12h
 from .seasonal_vm import CREATE_HREF as SEASONAL_LIBRARY_CREATE_HREF
+from .seasonal_vm import PRODUCT_RECIPES, PRODUCT_SEASON_KEY, product_message
+
+if TYPE_CHECKING:  # the reader's shapes; this module stays free of backend imports
+    from qualify_api.whatsapp.orders import OrderLine, OrderSummary, PreviousOrder
 
 # ======================================================================================
 # Copy and limits
@@ -103,10 +108,14 @@ _KIND_LABELS: dict[str, str] = {
     "contacts": "[contacto]",
     "button": "[botón]",
     "interactive": "[respuesta]",
-    "order": "[pedido]",
     "template": "[mensaje de WhatsApp]",
     "reaction": "[reacción]",
 }
+#: m-25018684 (spec §3): an inbound catalog cart (`media_type = 'order'`). With its
+#: order still on record the bubble says what came; without it (a cart older than the
+#: archive) it says the detail is gone — never «[pedido]».
+CART_BUBBLE = "Mandó un pedido desde tu catálogo: {detail}"
+CART_BUBBLE_NO_DETAIL = "Mandó un pedido desde tu catálogo. El detalle ya no está guardado."
 #: How long a resolved URL is reused. The public-media token lives 15 min
 #: (`publishing.media_token.TOKEN_TTL_SECONDS`); the margin keeps a player started near
 #: the end from hitting a dead link mid-stream.
@@ -134,13 +143,40 @@ OUTBOUND_PREFIX = "Tú: "
 
 FILTER_OPEN = "open"
 FILTER_CLOSED = "closed"
+#: m-25017859: the chats that wait for the owner's reply under the ONE «Por responder»
+#: rule (`ThreadSummary.awaiting_reply`) — the number on the menu's WhatsApp badge. The
+#: key keeps its old value so old links (`?filtro=sin-leer`) still land here.
 FILTER_UNREAD = "unread"
+#: The chip's words, in ONE place: it lists the chats that wait for a reply, so it cannot
+#: be «Sin leer». UX proposal (m-25017859) awaiting the founder's confirmation.
+AWAITING_FILTER_LABEL = "Por responder"
+#: `?filtro=` values that open the chats on that chip (the second one is its old name).
+AWAITING_FILTER_SLUGS = frozenset({"por-responder", "sin-leer"})
+#: m-25017859: every chip's `?filtro=`, so the address says the chip on screen (a reload
+#: or «atrás» shows it) — the first slug of each is the one written.
+FILTER_SLUG: dict[str, str] = {
+    "open": "abiertos",
+    "closed": "cerrados",
+    "unread": "por-responder",
+    "payment": "pago-por-revisar",
+}
+
+
+def filter_from_slug(slug: object) -> str:
+    """The chip a navigation's `?filtro=` asks for; anything else (none, unknown) is the
+    default «Abiertos»."""
+    value = slug.strip().lower() if isinstance(slug, str) else ""
+    if value in AWAITING_FILTER_SLUGS:
+        return "unread"
+    return next((k for k, s in FILTER_SLUG.items() if s == value), "open")
+
+
 #: m-24971198: the chats whose customer answered after the payment card (spec §4).
 FILTER_PAYMENT = "payment"
 FILTERS: tuple[tuple[str, str], ...] = (
     (FILTER_OPEN, "Abiertos"),
     (FILTER_CLOSED, "Cerrados"),
-    (FILTER_UNREAD, "Sin leer"),
+    (FILTER_UNREAD, AWAITING_FILTER_LABEL),
     (FILTER_PAYMENT, "Pago por revisar"),
 )
 FILTER_KEYS = frozenset(key for key, _label in FILTERS)
@@ -315,7 +351,8 @@ def window_pill(
     if remaining <= timedelta(0):
         return WINDOW_CLOSED_PILL, "neutral"
     if remaining < WINDOW_WARN_WITHIN:
-        minutes = max(1, math.ceil(remaining.total_seconds() / 60))
+        # m-25017844: the same count as the row's pill (`chat_row_vm.minutes_left`).
+        minutes = minutes_left(is_open, closes_at, now)
         if minutes == 1:
             return "Responde en el próximo minuto", "warn"
         return f"Responde en los próximos {minutes} min", "warn"
@@ -357,12 +394,6 @@ def phone_label(wa_id: str) -> str:
     return digits if digits.startswith("+") or not digits.isdigit() else f"+{digits}"
 
 
-def unread_label(count: int) -> str:
-    if count <= 0:
-        return ""
-    return "99+" if count > 99 else str(count)
-
-
 def collected_label(key: str) -> str:
     lowered = key.strip().lower()
     if lowered in _COLLECTED_LABELS:
@@ -402,8 +433,6 @@ class ThreadRowVM:
     subtitle: str
     preview: str
     time_label: str
-    unread_label: str
-    has_unread: bool
     window_label: str
     window_tone: str
     window_open: bool
@@ -415,11 +444,16 @@ class ThreadRowVM:
     agent_initials: str
     status: str
     is_closed: bool
-    #: m-24955648 — «Esperando el pago», «Pago por revisar» (warn), … ("" = none).
-    payment_label: str = ""
-    payment_tone: str = "neutral"
-    #: «Pago por revisar»: the filter's own test (the pill's text is for people).
+    #: «Pago por revisar»: the filter's own test and the row's most urgent pill.
     payment_review: bool = False
+    #: m-25017844 (UX review): «Esperando el pago» — the row's pill when nothing beats it.
+    payment_awaiting: bool = False
+    #: m-25017844: minutes until the window closes when under an hour, else 0 — the
+    #: shared row's «Quedan N min para responder».
+    window_minutes: int = 0
+    #: m-25017859: the «Por responder» rule's verdict (`ThreadSummary.awaiting_reply`):
+    #: the waiting dot and the «Por responder» chip.
+    awaiting_reply: bool = False
 
 
 EMPTY_THREAD = ThreadRowVM(
@@ -428,8 +462,6 @@ EMPTY_THREAD = ThreadRowVM(
     subtitle="",
     preview="",
     time_label="",
-    unread_label="",
-    has_unread=False,
     window_label=WINDOW_CLOSED_PILL,
     window_tone="neutral",
     window_open=False,
@@ -472,8 +504,6 @@ def build_thread_row(
         subtitle=number if name else "",
         preview=preview,
         time_label=relative_time(thread.last_message_at, now, zone),
-        unread_label=unread_label(thread.unread_count),
-        has_unread=thread.unread_count > 0,
         window_label=window_label,
         window_tone=window_tone,
         window_open=window_tone != "neutral",
@@ -485,16 +515,46 @@ def build_thread_row(
         agent_initials=agent.initials if agent else "",
         status=thread.status,
         is_closed=thread.status == "closed",
+        window_minutes=minutes_left(thread.window.open, thread.window.closes_at, now),
+        awaiting_reply=bool(getattr(thread, "awaiting_reply", False)),
+    )
+
+
+def as_chat_row(row: ThreadRowVM) -> ChatRowVM:
+    """m-25017844: this channel's row in the shared shape (`chat_row_vm`). The «Por
+    responder» rule (m-25017859) is the waiting dot; a closed chat is muted wherever a
+    chip mixes open and closed ones («Pago por revisar»); «Responde el menú» /
+    «Respondes tú» and «Cerrado» leave the row (the chat and the filter say them); the
+    payment to check and the window about to close fold into the one pill («Esperando
+    el pago» too). No second line (UX doc §2): the title is the profile name, else the
+    number, as before; initials come only from the name's letters (a number-only
+    contact gets the person icon)."""
+    named = row.subtitle != ""
+    return build_chat_row(
+        thread_id=row.thread_id,
+        channel=CHANNEL_WHATSAPP,
+        title=row.title,
+        preview=row.preview,
+        time_label=row.time_label,
+        waiting=row.awaiting_reply,
+        closed=row.is_closed,
+        initials_from=row.title if named else "",
+        payment_review=row.payment_review,
+        payment_awaiting=row.payment_awaiting,
+        reply_within_minutes=row.window_minutes,
+        agent_initials=row.agent_initials,
+        agent_name=row.agent_name,
     )
 
 
 def filter_threads(rows: Iterable[ThreadRowVM], key: str) -> list[ThreadRowVM]:
-    """Abiertos = status open · Cerrados = status closed · Sin leer = any status with
-    unread inbound messages. An unknown key falls back to Abiertos."""
+    """Abiertos = status open · Cerrados = status closed · Por responder = the rule's
+    verdict (`awaiting_reply`, m-25017859: the same chats the menu's WhatsApp badge
+    counts) · Pago por revisar. An unknown key falls back to Abiertos."""
     if key == FILTER_CLOSED:
         return [r for r in rows if r.is_closed]
     if key == FILTER_UNREAD:
-        return [r for r in rows if r.has_unread]
+        return [r for r in rows if r.awaiting_reply]
     if key == FILTER_PAYMENT:
         return [r for r in rows if r.payment_review]
     return [r for r in rows if not r.is_closed]
@@ -570,6 +630,8 @@ class MessageVM:
     #: «Ver en el mapa» for that pin — built ONLY from the stored numbers
     #: (`MessageRecord.latitude/longitude`), never from the text; "" without them.
     location_href: str = ""
+    #: m-25018684: an inbound catalog cart — drawn with the shopping-bag icon.
+    is_order: bool = False
 
 
 VIEW_ON_MAP = "Ver en el mapa"
@@ -704,7 +766,10 @@ def build_message_vm(
     zone: tzinfo,
     media: Mapping[str, MediaResolution] | None = None,
     loading: Collection[str] = (),
+    carts: Mapping[str, str] | None = None,
 ) -> MessageVM:
+    """`carts` maps a cart message's `external_message_id` to its detail («3 productos ·
+    COP 45.000», `cart_details`); a cart message not in it is worded without detail."""
     outbound = message.direction == "outbound"
     text = (message.text or "").strip()
     placeholder = False
@@ -712,7 +777,12 @@ def build_message_vm(
     if not outbound and getattr(message, "has_media", False):
         media_fields = _media_fields(message, now=now, media=media or {}, loading=loading)
     location = (message.media_kind or "").lower() == "location"
-    if not text:
+    is_order = not outbound and (message.media_kind or "").lower() == "order"
+    if not text and is_order:
+        detail = (carts or {}).get(str(getattr(message, "external_message_id", "") or ""), "")
+        text = CART_BUBBLE.format(detail=detail) if detail else CART_BUBBLE_NO_DETAIL
+        placeholder = True
+    elif not text:
         if outbound:
             from_kind = {
                 "image": "[imagen]",
@@ -742,6 +812,7 @@ def build_message_vm(
         ad_origin_href=ad_origin_href(message),
         is_location=location,
         location_href=_pin_href(message) if location else "",
+        is_order=is_order,
         **media_fields,
     )
 
@@ -822,13 +893,14 @@ def build_conversation(
     zone: tzinfo,
     media: Mapping[str, MediaResolution] | None = None,
     loading: Collection[str] = (),
+    carts: Mapping[str, str] | None = None,
 ) -> list[MessageVM]:
     """Messages and not-yet-sent outbox rows, chronological (oldest first). `media` /
     `loading` decorate the inbound media messages (see `MediaResolution`)."""
     keyed: list[tuple[datetime, int, MessageVM]] = []
     for m in messages:
         instant = m.posted_at or now
-        vm = build_message_vm(m, now=now, zone=zone, media=media, loading=loading)
+        vm = build_message_vm(m, now=now, zone=zone, media=media, loading=loading, carts=carts)
         keyed.append((instant, 0, vm))
     for item in unsent:
         keyed.append((item.created_at, 1, build_unsent_vm(item, now=now, zone=zone)))
@@ -857,16 +929,114 @@ def merge_pages(older: Sequence[Any], newest: Sequence[Any]) -> list[Any]:
 # ======================================================================================
 
 
+#: m-25018684 (spec `ux-carrito-pedido` §1–§2): the order card words where the order came
+#: from. A menu order reads exactly as before; a catalog cart is not «confirmed» — the
+#: customer sent it and the owner still has to look at it.
+ORDER_TITLE_MENU = "Pedido confirmado"
+ORDER_TITLE_CART = "Pedido desde tu catálogo"
+UNLINKED_PRODUCT_NAME = "Producto sin nombre"
+UNLINKED_CODE_LABEL = "Código en tu catálogo de WhatsApp:"
+#: The backend does not cap a catalog code: the card shows at most this many characters.
+MAX_CODE_CHARS = 64
+#: A mismatched cart line names Galería's UNIT price when the record kept it
+#: (`OrderLine.gallery_unit_price` / `gallery_currency`) — «cada uno» when the line has
+#: more than one, so it is not read against the line total; an older record without it
+#: says only that there is a difference.
+PRICE_MISMATCH_LINE = "En tu Galería tiene otro precio"
+PRICE_MISMATCH_AMOUNT = "En tu Galería: {price}"
+PRICE_MISMATCH_AMOUNT_EACH = "En tu Galería: {price} cada uno"
+#: A cart the backend cut to its first 100 lines (`OrderSummary.lines_truncated`).
+ORDER_TRUNCATED_LINE = "Este pedido es muy largo: mostramos los primeros 100 productos."
+PRICE_MISMATCH_LINK = "Revisar en tu Galería"
+PRICE_MISMATCH_HREF = "/catalog"
+CUSTOMER_NOTE_LABEL = "Nota del cliente"
+NOTE_MORE_LABEL = "Ver el resto de la nota"
+#: A note longer than this (characters or lines) shows its start and folds the rest.
+NOTE_PREVIEW_CHARS = 160
+NOTE_PREVIEW_LINES = 3
+#: A cart with no payment yet: what the owner can do (nothing goes out by itself).
+CART_CHARGE_HINT = "Para cobrarle, toca + y elige Formas de pago."
+PREVIOUS_FROM_CART = "Desde tu catálogo"
+PREVIOUS_FROM_MENU = "Por el menú"
+
+
+def price_mismatch_notice(count: int) -> str:
+    """The card's one warning for the lines whose catalog price is not Galería's."""
+    if count <= 0:
+        return ""
+    what = "1 producto" if count == 1 else f"{count} productos"
+    return (
+        f"El precio de {what} en tu catálogo de WhatsApp no es el de tu Galería. "
+        "El total usa el precio que vio tu cliente."
+    )
+
+
+def unlinked_notice(count: int) -> str:
+    """By «Pedido listo»: the message names a product not in Galería by its code."""
+    if count <= 0:
+        return ""
+    if count == 1:
+        return "Un producto no está en tu Galería: en el mensaje saldrá con su código."
+    return f"{count} productos no están en tu Galería: en el mensaje saldrán con su código."
+
+
+def previous_orders_label(count: int, *, review: int = 0, awaiting: int = 0) -> str:
+    """«2 pedidos anteriores · 1 pago por revisar» — the closed row names an unsettled
+    payment, so it is not hidden inside the folded section (review first, else
+    awaiting)."""
+    if count <= 0:
+        return ""
+    label = "1 pedido anterior" if count == 1 else f"{count} pedidos anteriores"
+    if review > 0:
+        label += " · 1 pago por revisar" if review == 1 else f" · {review} pagos por revisar"
+    elif awaiting > 0:
+        label += f" · {awaiting} esperando el pago"
+    return label
+
+
+def split_note(note: str) -> tuple[str, str]:
+    """(shown, folded) of a customer's note: a short note is all shown; a long one shows
+    its first lines (cut at a space) and folds the rest behind «Ver el resto de la nota»."""
+    lines = note.split("\n")
+    head = "\n".join(lines[:NOTE_PREVIEW_LINES])
+    if len(lines) <= NOTE_PREVIEW_LINES and len(note) <= NOTE_PREVIEW_CHARS:
+        return note, ""
+    if len(head) > NOTE_PREVIEW_CHARS:
+        cut = head.rfind(" ", 0, NOTE_PREVIEW_CHARS)
+        head = head[: cut if cut > 0 else NOTE_PREVIEW_CHARS]
+    rest = note[len(head) :].lstrip()
+    return (head.rstrip() + "…", rest) if rest else (note, "")
+
+
+def short_code(code: str) -> str:
+    return code if len(code) <= MAX_CODE_CHARS else code[:MAX_CODE_CHARS] + "…"
+
+
 @dataclass(frozen=True)
 class OrderLineVM:
     label: str
     amount: str
+    #: An unlinked cart line: the raw catalog code (shown in the mono face).
+    code: str = ""
+    #: A cart line whose catalog price is not Galería's (muted second line).
+    price_note: str = ""
 
 
 @dataclass(frozen=True)
 class OrderFieldVM:
     label: str
     value: str
+
+
+@dataclass(frozen=True)
+class PreviousOrderVM:
+    """One archived order, read only: no actions (founder decision 3)."""
+
+    origin_label: str  # «Desde tu catálogo · ayer 15:42»
+    items_line: str  # «2 × Shawarma mixto, 1 × Producto sin nombre»
+    summary_label: str  # «3 productos · COP 45.000»
+    payment_label: str = ""
+    payment_tone: str = "neutral"
 
 
 @dataclass(frozen=True)
@@ -877,6 +1047,21 @@ class OrderCardVM:
     items_label: str = ""
     collected: list[OrderFieldVM] = field(default_factory=list)
     confirmed_label: str = ""
+    title: str = ORDER_TITLE_MENU
+    is_cart: bool = False
+    #: The single warn notice for price differences ("" = none).
+    price_notice: str = ""
+    #: «Para cobrarle, …» — a cart with no payment yet ("" otherwise).
+    charge_hint: str = ""
+    #: «Este pedido es muy largo: …» — a cart the backend truncated ("" otherwise).
+    truncated_line: str = ""
+    #: The customer's note: what is shown, and the rest folded ("" = none).
+    note: str = ""
+    note_rest: str = ""
+    #: By «Pedido listo»: lines not in Galería go out by their code ("" = none).
+    unlinked_notice: str = ""
+    previous: list[PreviousOrderVM] = field(default_factory=list)
+    previous_label: str = ""
 
 
 EMPTY_ORDER = OrderCardVM(present=False)
@@ -894,20 +1079,69 @@ def format_money(amount: Decimal, currency: str | None) -> str:
     return f"{currency} {num}" if currency else num
 
 
-def build_order_card(order: Any | None, *, now: datetime, zone: tzinfo) -> OrderCardVM:
-    """`order` is `qualify_api.whatsapp.orders.OrderSummary` (or `None`)."""
+def order_total_label(order: OrderSummary) -> str:
+    """The order's total; an order in several currencies gets one amount per currency
+    («COP 15.000 + USD 10», as «Pedido listo» words it) — never a single made-up sum."""
+    if order.mixed_currency:
+        return " + ".join(
+            format_money(amount, code or None) for code, amount in order.totals_by_currency.items()
+        )
+    return format_money(order.total, order.currency)
+
+
+def _items_label(count: int) -> str:
+    return f"{count} producto" if count == 1 else f"{count} productos"
+
+
+def _unlinked(line: OrderLine) -> bool:
+    return not line.linked and not line.name
+
+
+def _line_name(line: OrderLine) -> str:
+    return UNLINKED_PRODUCT_NAME if _unlinked(line) else (line.name or line.product_id)
+
+
+def _price_note(line: OrderLine) -> str:
+    """The muted mark of a mismatched cart line: Galería's unit price when known."""
+    if line.gallery_unit_price is None:
+        return PRICE_MISMATCH_LINE
+    template = PRICE_MISMATCH_AMOUNT_EACH if line.qty > 1 else PRICE_MISMATCH_AMOUNT
+    return template.format(price=format_money(line.gallery_unit_price, line.gallery_currency))
+
+
+def order_summary_label(order: OrderSummary) -> str:
+    """«3 productos · COP 45.000» — the cart bubble and a previous order's line."""
+    return f"{_items_label(order.item_count)} · {order_total_label(order)}"
+
+
+def build_order_card(
+    order: OrderSummary | None,
+    *,
+    now: datetime,
+    zone: tzinfo,
+    previous: Sequence[PreviousOrder] = (),
+    has_payment: bool = True,
+) -> OrderCardVM:
+    """`previous` are the thread's archived orders (newest first); `has_payment` is
+    whether the chat has a payment record — `True` too when it could not be read, so a
+    cart only gets the «Para cobrarle…» hint when there is certainly none."""
     if order is None:
         return EMPTY_ORDER
+    cart = order.is_cart
     lines = []
+    mismatches = 0
     for line in order.lines:
         total = line.line_total
+        mismatch = cart and line.price_mismatch
+        mismatches += 1 if mismatch else 0
         lines.append(
             OrderLineVM(
-                label=f"{line.qty} × {line.name or line.product_id}",
+                label=f"{line.qty} × {_line_name(line)}",
                 amount=format_money(total, line.currency or order.currency) if total else "",
+                code=short_code(line.retailer_id or line.product_id) if _unlinked(line) else "",
+                price_note=_price_note(line) if mismatch else "",
             )
         )
-    count = order.item_count
     fields = [
         OrderFieldVM(label=collected_label(str(k)), value=str(v))
         for k, v in order.collected.items()
@@ -919,17 +1153,81 @@ def build_order_card(order: Any | None, *, now: datetime, zone: tzinfo) -> Order
         fields,
         key=lambda f: _FIELD_ORDER.index(f.label) if f.label in _FIELD_ORDER else len(_FIELD_ORDER),
     )
+    # The customer's own words, as text (the page never interprets them).
+    note = (order.note or "").strip() if cart else ""
+    if note and order.note_truncated:
+        note += "…"  # the backend kept only the first part of a very long note
+    note_shown, note_rest = split_note(note) if note else ("", "")
     confirmed = ""
     if order.confirmed_at is not None:
-        confirmed = f"Confirmado {message_time(order.confirmed_at, now, zone)}"
+        verb = "Llegó" if cart else "Confirmado"
+        confirmed = f"{verb} {message_time(order.confirmed_at, now, zone)}"
+    previous_vms = [build_previous_order(p, now=now, zone=zone) for p in previous]
+    statuses = [p.payment.status if p.payment is not None else None for p in previous]
     return OrderCardVM(
         present=True,
         lines=lines,
-        total_label=format_money(order.total, order.currency),
-        items_label=f"{count} producto" if count == 1 else f"{count} productos",
+        total_label=order_total_label(order),
+        items_label=_items_label(order.item_count),
         collected=collected,
         confirmed_label=confirmed,
+        title=ORDER_TITLE_CART if cart else ORDER_TITLE_MENU,
+        is_cart=cart,
+        price_notice=price_mismatch_notice(mismatches),
+        charge_hint=CART_CHARGE_HINT if cart and not has_payment else "",
+        truncated_line=ORDER_TRUNCATED_LINE if cart and order.lines_truncated else "",
+        note=note_shown,
+        note_rest=note_rest,
+        unlinked_notice=unlinked_notice(sum(1 for line in order.lines if _unlinked(line))),
+        previous=previous_vms,
+        previous_label=previous_orders_label(
+            len(previous_vms),
+            review=statuses.count("review"),
+            awaiting=statuses.count("awaiting"),
+        ),
     )
+
+
+def _status_labels() -> dict[str, str]:
+    from qualify_api.whatsapp.payment_status import STATUS_LABELS  # noqa: PLC0415
+
+    return dict(STATUS_LABELS)
+
+
+def build_previous_order(
+    previous: PreviousOrder, *, now: datetime, zone: tzinfo
+) -> PreviousOrderVM:
+    """The payment pill keeps the word it had when the order was replaced (no «only that
+    day» rule here); an order without a payment status shows no pill."""
+    order = previous.order
+    origin = PREVIOUS_FROM_CART if order.is_cart else PREVIOUS_FROM_MENU
+    when = message_time(order.confirmed_at, now, zone)
+    status = (previous.payment.status or "") if previous.payment is not None else ""
+    label = _status_labels().get(status, "")
+    return PreviousOrderVM(
+        origin_label=f"{origin} · {when}" if when else origin,
+        items_line=", ".join(f"{line.qty} × {_line_name(line)}" for line in order.lines),
+        summary_label=order_summary_label(order),
+        payment_label=label,
+        payment_tone=_PAYMENT_TONES.get(status, "neutral") if label else "neutral",
+    )
+
+
+def cart_details(
+    order: OrderSummary | None,
+    previous: Sequence[PreviousOrder] = (),
+    cart_ids: Collection[str] = (),
+) -> dict[str, str]:
+    """`external_message_id` of each cart still on record → «3 productos · COP 45.000»,
+    for its bubble. Only the ids `orders.cart_message_ids` names are kept."""
+    out: dict[str, str] = {}
+    for summary in [order, *(p.order for p in previous)]:
+        if summary is None or not summary.is_cart:
+            continue
+        source = summary.source_message_id
+        if source and source in cart_ids and source not in out:
+            out[source] = order_summary_label(summary)
+    return out
 
 
 # ======================================================================================
@@ -1739,9 +2037,14 @@ class SeasonalPickVM:
     current: bool = False
     src: str = ""
     alt: str = ""
+    #: m-25017912: a sticker of the owner's product («De tus productos»), listed after the
+    #: seasons (founder 2026-11-12).
+    product: bool = False
 
 
 EMPTY_SEASONAL = SeasonalPickVM()
+#: The group title of the product stickers in «¿Qué le mandas?».
+SEASONAL_PRODUCTS = "De tus productos"
 
 
 def build_seasonal_picks(rows: Iterable[Any], src_for: Any = None) -> list[SeasonalPickVM]:
@@ -1754,17 +2057,26 @@ def build_seasonal_picks(rows: Iterable[Any], src_for: Any = None) -> list[Seaso
         if str(getattr(row, "status", "approved") or "approved") != "approved":
             continue
         key = str(getattr(row, "season_key", "") or getattr(row, "season_label", ""))
-        current = current or key
+        product = key == PRODUCT_SEASON_KEY
+        if not product:
+            current = current or key
         video = str(getattr(row, "kind", "")) == "video"
         label = str(getattr(row, "season_label", "") or "")
+        message = product_message(row)
         picks.append(
             SeasonalPickVM(
                 id=str(row.id),
                 is_video=video,
                 season_label=label,
-                current=key == current,
+                current=not product and key == current,
                 src=src_for(row) if src_for else "",
-                alt=f"{'Video' if video else 'Sticker'} de «{label}»",
+                alt=(
+                    f"Sticker {PRODUCT_RECIPES.get(str(getattr(row, 'recipe', '')), '')} "
+                    f"que dice «{message}»".replace("  ", " ")
+                    if message
+                    else f"{'Video' if video else 'Sticker'} de «{label}»"
+                ),
+                product=product,
             )
         )
     return picks
@@ -2070,22 +2382,22 @@ def build_payment(
 
 
 def with_payment_pills(
-    rows: Sequence[ThreadRowVM], statuses: Mapping[str, Any], now: datetime, zone: tzinfo
+    rows: Sequence[ThreadRowVM], statuses: Mapping[str, Any]
 ) -> list[ThreadRowVM]:
-    """The list's rows with their payment pill (one `payment_statuses` read for all)."""
+    """The list's rows with their payment marks (one `payment_statuses` read for all):
+    «Pago por revisar» and «Esperando el pago» are what the row can show; «Pago
+    recibido» / «Paga al recibir» stay in the chat's header."""
     out: list[ThreadRowVM] = []
     for row in rows:
         payment = statuses.get(row.thread_id)
         if payment is None:
             out.append(row)
             continue
-        label, tone = payment_pill(payment.status, payment.label, payment.confirmed_at, now, zone)
         out.append(
             replace(
                 row,
-                payment_label=label,
-                payment_tone=tone,
                 payment_review=payment.status == "review",
+                payment_awaiting=payment.status == "awaiting",
             )
         )
     return out
@@ -2106,9 +2418,8 @@ def carry_payment_marks(
         out.append(
             replace(
                 row,
-                payment_label=old.payment_label,
-                payment_tone=old.payment_tone,
                 payment_review=old.payment_review,
+                payment_awaiting=old.payment_awaiting,
             )
         )
     return out

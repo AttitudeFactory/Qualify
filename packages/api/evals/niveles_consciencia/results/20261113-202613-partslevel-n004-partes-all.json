@@ -1,0 +1,3309 @@
+{
+ "ticket": "m-25026482",
+ "baseline_ref": "a6667370",
+ "split": "all",
+ "pricing_version": "v9",
+ "judge": "claude-haiku-5-5@low",
+ "judge_prompt_version": "juez-niveles-v2",
+ "judge_parts_version": "juez-niveles-v2+partes-v1",
+ "code_commit": "790448bd",
+ "arms": [],
+ "levels": [],
+ "repeat": 2,
+ "tracing": false,
+ "date": "2026-11-13T20:26:13",
+ "suites": {
+  "partslevel": {
+   "items": [
+    {
+     "case": "hamburguesas",
+     "arm": "sin_nivel",
+     "level": null,
+     "prompt_version": "proponer-partes-v3.4",
+     "output": {
+      "parts": [
+       {
+        "description": "De cerca, unas manos levantan la doble hamburguesa smash y el queso derretido se estira al separar los panes.",
+        "seconds": 4
+       },
+       {
+        "description": "Sobre la mesa se ve el combo completo: la hamburguesa doble smash, las papas y la gaseosa, mirado desde arriba.",
+        "seconds": 4
+       },
+       {
+        "description": "Un grupo de amigos sentados en una mesa del local comparte risas mientras reparten las papas del combo entre todos.",
+        "seconds": 4
+       },
+       {
+        "description": "De lado, una persona muerde la hamburguesa y se ve la carne jugosa y las capas bien apiladas del combo.",
+        "seconds": 4
+       },
+       {
+        "description": "Un mesero acerca el combo doble smash a la mesa donde esperan los amigos, listo para comer en el local.",
+        "seconds": 4
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.4",
+       "prompt_fingerprint": "63cc53e9bb712422",
+       "pricing_version": "v8",
+       "cost_usd": "0.008913",
+       "input_tokens": 534,
+       "output_tokens": 325,
+       "turns": 1
+      },
+      "cost_usd": 0.008913,
+      "latency_s": 5.47
+     },
+     "scores": {
+      "costo_usd": 0.008913,
+      "latencia_s": 5.47,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": false,
+      "partes_en_rango": true,
+      "segundos_totales": 20.0,
+      "desvio_duracion": 0.0,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": true,
+      "cierre_consigue": false,
+      "cierre_usa": true,
+      "palabras_max": 20.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.000712
+    },
+    {
+     "case": "hamburguesas",
+     "arm": "sin_nivel",
+     "level": null,
+     "prompt_version": "proponer-partes-v3.4",
+     "output": {
+      "parts": [
+       {
+        "description": "De cerca, unas manos levantan la hamburguesa doble smash y el queso derretido se estira, se ve jugosa y recién hecha.",
+        "seconds": 6
+       },
+       {
+        "description": "Desde arriba se ve toda la mesa con el combo: la hamburguesa doble, las papas y la gaseosa juntas.",
+        "seconds": 5
+       },
+       {
+        "description": "Un grupo de amigos sentado en una mesa del local comparte el combo y se ve el lugar pequeño y acogedor.",
+        "seconds": 5
+       },
+       {
+        "description": "Una persona entra al local y se acerca al mostrador para pedir, se ve la entrada de Brasa Norte.",
+        "seconds": 4
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.4",
+       "prompt_fingerprint": "63cc53e9bb712422",
+       "pricing_version": "v8",
+       "cost_usd": "0.009006",
+       "input_tokens": 534,
+       "output_tokens": 757,
+       "turns": 1
+      },
+      "cost_usd": 0.009006,
+      "latency_s": 9.81
+     },
+     "scores": {
+      "costo_usd": 0.009006,
+      "latencia_s": 9.81,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": false,
+      "partes_en_rango": true,
+      "segundos_totales": 20.0,
+      "desvio_duracion": 0.0,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": true,
+      "cierre_consigue": true,
+      "cierre_usa": false,
+      "palabras_max": 21.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.00045
+    },
+    {
+     "case": "hamburguesas",
+     "arm": "unaware",
+     "level": "unaware",
+     "prompt_version": "proponer-partes-v3.4",
+     "output": {
+      "parts": [
+       {
+        "description": "De cerca, dos manos levantan una doble hamburguesa smash goteando queso derretido sobre una mesa de madera en el local.",
+        "seconds": 4
+       },
+       {
+        "description": "Desde el lado, se ve una mesa llena con el combo doble smash, las papas y la gaseosa, mientras unas manos reparten las papas.",
+        "seconds": 4
+       },
+       {
+        "description": "Se ve todo el local pequeño y lleno de gente conversando y riendo en las mesas, con un perro descansando junto a una silla.",
+        "seconds": 4
+       },
+       {
+        "description": "De cerca, unas manos parten la hamburguesa a la mitad mostrando las capas de carne jugosa entre el pan.",
+        "seconds": 4
+       },
+       {
+        "description": "Desde la puerta del local, un grupo de amigos entra sonriendo y se dirige a una mesa libre.",
+        "seconds": 4
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.4",
+       "prompt_fingerprint": "2b7386a0971387d5",
+       "pricing_version": "v8",
+       "cost_usd": "0.004962",
+       "input_tokens": 607,
+       "output_tokens": 338,
+       "turns": 1
+      },
+      "cost_usd": 0.004962,
+      "latency_s": 4.56
+     },
+     "scores": {
+      "costo_usd": 0.004962,
+      "latencia_s": 4.56,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": false,
+      "partes_en_rango": true,
+      "segundos_totales": 20.0,
+      "desvio_duracion": 0.0,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": true,
+      "cierre_consigue": false,
+      "cierre_usa": false,
+      "palabras_max": 24.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.000399,
+     "juez_informado_usd": 0.000548
+    },
+    {
+     "case": "hamburguesas",
+     "arm": "unaware",
+     "level": "unaware",
+     "prompt_version": "proponer-partes-v3.4",
+     "output": {
+      "parts": [
+       {
+        "description": "Unas manos parten el combo doble smash y el queso derretido se estira, visto de cerca.",
+        "seconds": 6
+       },
+       {
+        "description": "Una mesa llena de combos doble smash, papas y gaseosas, con amigos compartiendo, vista desde arriba.",
+        "seconds": 5
+       },
+       {
+        "description": "Un grupo de amigos ríe y brinda con sus gaseosas en el local de Brasa Norte por la noche.",
+        "seconds": 5
+       },
+       {
+        "description": "Una persona llega al local con su mascota y se sienta en una mesa, se ve todo el lugar lleno.",
+        "seconds": 4
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.4",
+       "prompt_fingerprint": "2b7386a0971387d5",
+       "pricing_version": "v8",
+       "cost_usd": "0.010822",
+       "input_tokens": 607,
+       "output_tokens": 924,
+       "turns": 1
+      },
+      "cost_usd": 0.010822,
+      "latency_s": 10.87
+     },
+     "scores": {
+      "costo_usd": 0.010822,
+      "latencia_s": 10.87,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": false,
+      "partes_en_rango": true,
+      "segundos_totales": 20.0,
+      "desvio_duracion": 0.0,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": true,
+      "cierre_consigue": false,
+      "cierre_usa": false,
+      "palabras_max": 20.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.000482,
+     "juez_informado_usd": 0.000411
+    },
+    {
+     "case": "hamburguesas",
+     "arm": "problem_aware",
+     "level": "problem_aware",
+     "prompt_version": "proponer-partes-v3.4",
+     "output": {
+      "parts": [
+       {
+        "description": "Un grupo de amigos llega riendo a una mesa del local de Chapinero, se sientan juntos después del trabajo, se ve todo el lugar.",
+        "seconds": 4
+       },
+       {
+        "description": "De cerca, unas manos parten el doble smash y se ve la carne jugosa y el queso derretido entre los panes.",
+        "seconds": 4
+       },
+       {
+        "description": "Desde arriba se ve la mesa completa con el combo doble smash, las papas y la gaseosa, lista para compartir.",
+        "seconds": 4
+       },
+       {
+        "description": "Unas manos acercan la hamburguesa y le dan una mordida, se ve de cerca el combo recién servido.",
+        "seconds": 4
+       },
+       {
+        "description": "Un mesero deja sobre la mesa el postre de la heladería de al lado junto al combo, los amigos sonríen al verlo.",
+        "seconds": 4
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.4",
+       "prompt_fingerprint": "15458d9dad2cc790",
+       "pricing_version": "v8",
+       "cost_usd": "0.004882",
+       "input_tokens": 597,
+       "output_tokens": 332,
+       "turns": 1
+      },
+      "cost_usd": 0.004882,
+      "latency_s": 4.32
+     },
+     "scores": {
+      "costo_usd": 0.004882,
+      "latencia_s": 4.32,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": false,
+      "partes_en_rango": true,
+      "segundos_totales": 20.0,
+      "desvio_duracion": 0.0,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": false,
+      "cierre_consigue": false,
+      "cierre_usa": false,
+      "palabras_max": 24.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.000542,
+     "juez_informado_usd": 0.000325
+    },
+    {
+     "case": "hamburguesas",
+     "arm": "problem_aware",
+     "level": "problem_aware",
+     "prompt_version": "proponer-partes-v3.4",
+     "output": {
+      "parts": [
+       {
+        "description": "Un grupo de amigos llega riendo a una mesa del local pequeño de Chapinero, se ven todas las sillas y el ambiente cálido.",
+        "seconds": 4
+       },
+       {
+        "description": "De cerca, unas manos levantan el combo doble smash y se ve la carne jugosa entre el pan, junto a las papas y la gaseosa.",
+        "seconds": 5
+       },
+       {
+        "description": "De lado, unas manos parten la hamburguesa doble smash y se ve cómo la carne se abre jugosa frente al plato de papas.",
+        "seconds": 4
+       },
+       {
+        "description": "Un grupo de amigos se acerca a la caja del local y pide su combo doble smash mirando el menú en el mostrador.",
+        "seconds": 4
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.4",
+       "prompt_fingerprint": "15458d9dad2cc790",
+       "pricing_version": "v8",
+       "cost_usd": "0.011343",
+       "input_tokens": 1689,
+       "output_tokens": 723,
+       "turns": 2
+      },
+      "cost_usd": 0.011343,
+      "latency_s": 8.6
+     },
+     "scores": {
+      "costo_usd": 0.011343,
+      "latencia_s": 8.6,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": true,
+      "partes_en_rango": true,
+      "segundos_totales": 17.0,
+      "desvio_duracion": 0.15,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": true,
+      "cierre_consigue": true,
+      "cierre_usa": false,
+      "palabras_max": 25.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.000394,
+     "juez_informado_usd": 0.000283
+    },
+    {
+     "case": "hamburguesas",
+     "arm": "solution_aware",
+     "level": "solution_aware",
+     "prompt_version": "proponer-partes-v3.4",
+     "output": {
+      "parts": [
+       {
+        "description": "Unas manos parten por la mitad el doble smash y se ve la carne jugosa y el queso derretido estirarse, de cerca",
+        "seconds": 5
+       },
+       {
+        "description": "El combo completo sobre la mesa de madera, las dos carnes smash apiladas, papas doradas al lado y la gaseosa helada, visto desde arriba",
+        "seconds": 5
+       },
+       {
+        "description": "Un grupo de amigos sentados en una mesa del local comparte risas mientras reparten las papas del combo, visto de lado",
+        "seconds": 5
+       },
+       {
+        "description": "Unas manos entregan la bandeja con el combo doble smash y el postre de la heladería a los amigos en la mesa, de cerca",
+        "seconds": 5
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.4",
+       "prompt_fingerprint": "fd5c3b153fb0c486",
+       "pricing_version": "v8",
+       "cost_usd": "0.004464",
+       "input_tokens": 613,
+       "output_tokens": 287,
+       "turns": 1
+      },
+      "cost_usd": 0.004464,
+      "latency_s": 4.1
+     },
+     "scores": {
+      "costo_usd": 0.004464,
+      "latencia_s": 4.1,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": false,
+      "partes_en_rango": true,
+      "segundos_totales": 20.0,
+      "desvio_duracion": 0.0,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": true,
+      "cierre_consigue": true,
+      "cierre_usa": false,
+      "palabras_max": 24.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.000372,
+     "juez_informado_usd": 0.000536
+    },
+    {
+     "case": "hamburguesas",
+     "arm": "solution_aware",
+     "level": "solution_aware",
+     "prompt_version": "proponer-partes-v3.4",
+     "output": {
+      "parts": [
+       {
+        "description": "Unas manos parten por la mitad la doble smash y se ve la carne jugosa y el queso derretido estirándose, de muy cerca.",
+        "seconds": 4
+       },
+       {
+        "description": "Sobre la mesa del local se ve el combo completo: la doble smash, las papas y la gaseosa, mirado desde arriba.",
+        "seconds": 4
+       },
+       {
+        "description": "Un grupo de amigos sentado en una mesa del local comparte risas mientras reparte las papas del combo, visto de lado.",
+        "seconds": 4
+       },
+       {
+        "description": "Se ve el postre de la heladería de al lado puesto junto al combo en la misma mesa, de cerca.",
+        "seconds": 4
+       },
+       {
+        "description": "Una persona entra al local de Brasa Norte en Chapinero con sus amigos y se sienta en una mesa, se ve todo el lugar.",
+        "seconds": 4
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.4",
+       "prompt_fingerprint": "fd5c3b153fb0c486",
+       "pricing_version": "v8",
+       "cost_usd": "0.004944",
+       "input_tokens": 613,
+       "output_tokens": 335,
+       "turns": 1
+      },
+      "cost_usd": 0.004944,
+      "latency_s": 4.39
+     },
+     "scores": {
+      "costo_usd": 0.004944,
+      "latencia_s": 4.39,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": false,
+      "partes_en_rango": true,
+      "segundos_totales": 20.0,
+      "desvio_duracion": 0.0,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": true,
+      "cierre_consigue": false,
+      "cierre_usa": false,
+      "palabras_max": 24.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.000433,
+     "juez_informado_usd": 0.000487
+    },
+    {
+     "case": "hamburguesas",
+     "arm": "product_aware",
+     "level": "product_aware",
+     "prompt_version": "proponer-partes-v3.4",
+     "output": {
+      "parts": [
+       {
+        "description": "Unas manos parten despacio una hamburguesa doble smash y se ve cómo el queso derretido se estira entre las dos capas de carne.",
+        "seconds": 4
+       },
+       {
+        "description": "La carne se dora en la plancha mientras una persona la presiona con una espátula hasta dejarla bien tostada.",
+        "seconds": 4
+       },
+       {
+        "description": "Sobre la mesa del local se ve completo el combo doble smash con las papas y la gaseosa al lado, listo para comer.",
+        "seconds": 4
+       },
+       {
+        "description": "Un grupo de amigos sentado en una mesa del local comparte risas mientras reparten las hamburguesas y las papas entre todos.",
+        "seconds": 4
+       },
+       {
+        "description": "Se ve la entrada del local de Brasa Norte en Chapinero desde afuera, con una persona llegando acompañada de su perro.",
+        "seconds": 4
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.4",
+       "prompt_fingerprint": "3a07b5415aea25fa",
+       "pricing_version": "v8",
+       "cost_usd": "0.011089",
+       "input_tokens": 1662,
+       "output_tokens": 703,
+       "turns": 2
+      },
+      "cost_usd": 0.011089,
+      "latency_s": 7.73
+     },
+     "scores": {
+      "costo_usd": 0.011089,
+      "latencia_s": 7.73,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": true,
+      "partes_en_rango": true,
+      "segundos_totales": 20.0,
+      "desvio_duracion": 0.0,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": true,
+      "cierre_consigue": false,
+      "cierre_usa": false,
+      "palabras_max": 23.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.000488,
+     "juez_informado_usd": 0.000468
+    },
+    {
+     "case": "hamburguesas",
+     "arm": "product_aware",
+     "level": "product_aware",
+     "prompt_version": "proponer-partes-v3.4",
+     "output": {
+      "parts": [
+       {
+        "description": "Unas manos parten una hamburguesa doble smash por la mitad y el queso derretido se estira entre las dos partes, de cerca.",
+        "seconds": 5
+       },
+       {
+        "description": "El combo doble smash completo sobre la mesa: las dos hamburguesas, las papas y la gaseosa, mirado desde arriba.",
+        "seconds": 5
+       },
+       {
+        "description": "Un grupo de amigos sentado en una mesa del local comparte papas y hamburguesas, se ve todo el lugar pequeño y acogedor.",
+        "seconds": 5
+       },
+       {
+        "description": "Unas manos reciben la bandeja con el combo doble smash en el mostrador del local y la llevan hacia la mesa.",
+        "seconds": 5
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.4",
+       "prompt_fingerprint": "3a07b5415aea25fa",
+       "pricing_version": "v8",
+       "cost_usd": "0.004472",
+       "input_tokens": 612,
+       "output_tokens": 288,
+       "turns": 1
+      },
+      "cost_usd": 0.004472,
+      "latency_s": 3.29
+     },
+     "scores": {
+      "costo_usd": 0.004472,
+      "latencia_s": 3.29,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": false,
+      "partes_en_rango": true,
+      "segundos_totales": 20.0,
+      "desvio_duracion": 0.0,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": true,
+      "cierre_consigue": true,
+      "cierre_usa": false,
+      "palabras_max": 22.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.000449,
+     "juez_informado_usd": 0.00037
+    },
+    {
+     "case": "hamburguesas",
+     "arm": "most_aware",
+     "level": "most_aware",
+     "prompt_version": "proponer-partes-v3.4",
+     "output": {
+      "parts": [
+       {
+        "description": "De cerca, unas manos levantan una de las dos hamburguesas smash del combo y el queso derretido se estira un poco.",
+        "seconds": 5
+       },
+       {
+        "description": "Sobre la mesa se ve el combo completo: las dos hamburguesas, las papas y la gaseosa, mirado desde arriba.",
+        "seconds": 5
+       },
+       {
+        "description": "Se ve el local pequeño de Chapinero con varias mesas y personas comiendo y compartiendo entre amigos.",
+        "seconds": 5
+       },
+       {
+        "description": "Un grupo de amigos entra al local sonriendo y se sienta en una mesa junto a una mascota que los acompaña.",
+        "seconds": 5
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.4",
+       "prompt_fingerprint": "63cc53e9bb712422",
+       "pricing_version": "v8",
+       "cost_usd": "0.004176",
+       "input_tokens": 534,
+       "output_tokens": 274,
+       "turns": 1
+      },
+      "cost_usd": 0.004176,
+      "latency_s": 3.6
+     },
+     "scores": {
+      "costo_usd": 0.004176,
+      "latencia_s": 3.6,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": false,
+      "partes_en_rango": true,
+      "segundos_totales": 20.0,
+      "desvio_duracion": 0.0,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": true,
+      "cierre_consigue": false,
+      "cierre_usa": false,
+      "palabras_max": 21.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.000334,
+     "juez_informado_usd": 0.000276
+    },
+    {
+     "case": "hamburguesas",
+     "arm": "most_aware",
+     "level": "most_aware",
+     "prompt_version": "proponer-partes-v3.4",
+     "output": {
+      "parts": [
+       {
+        "description": "De muy cerca se ve la hamburguesa doble smash recién hecha, con el queso derritiéndose sobre la carne jugosa.",
+        "seconds": 5
+       },
+       {
+        "description": "Sobre la mesa, unas manos acomodan el combo completo: la hamburguesa, las papas y la gaseosa, todo listo para comer.",
+        "seconds": 5
+       },
+       {
+        "description": "Un grupo de amigos comparte la mesa del local pequeño, riendo mientras reparten las papas entre todos.",
+        "seconds": 5
+       },
+       {
+        "description": "Desde afuera se ve la entrada del local de Chapinero mientras un grupo de amigos llega caminando y entra juntos.",
+        "seconds": 5
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.4",
+       "prompt_fingerprint": "63cc53e9bb712422",
+       "pricing_version": "v8",
+       "cost_usd": "0.008256",
+       "input_tokens": 534,
+       "output_tokens": 682,
+       "turns": 1
+      },
+      "cost_usd": 0.008256,
+      "latency_s": 8.71
+     },
+     "scores": {
+      "costo_usd": 0.008256,
+      "latencia_s": 8.71,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": false,
+      "partes_en_rango": true,
+      "segundos_totales": 20.0,
+      "desvio_duracion": 0.0,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": true,
+      "cierre_consigue": false,
+      "cierre_usa": false,
+      "palabras_max": 20.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.00034,
+     "juez_informado_usd": 0.000385
+    },
+    {
+     "case": "inmobiliaria",
+     "arm": "sin_nivel",
+     "level": null,
+     "prompt_version": "proponer-partes-v3.4",
+     "output": {
+      "parts": [
+       {
+        "description": "Una familia entra tomada de la mano a un apartamento nuevo y vacío, se ve toda la sala con luz natural desde la entrada.",
+        "seconds": 4
+       },
+       {
+        "description": "Unas manos abren la puerta de una de las alcobas del apartamento, se ve el cuarto amplio y vacío desde el centro.",
+        "seconds": 4
+       },
+       {
+        "description": "Se ve completa la segunda alcoba del apartamento, la imagen se acerca despacio hacia la ventana con luz natural.",
+        "seconds": 4
+       },
+       {
+        "description": "Una persona revisa unos documentos sobre una mesa dentro del apartamento, de cerca se ven los papeles y una mano señalando.",
+        "seconds": 4
+       },
+       {
+        "description": "Unas manos sostienen un teléfono escribiendo un mensaje de WhatsApp, se ve la pantalla de cerca dentro del apartamento.",
+        "seconds": 4
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.4",
+       "prompt_fingerprint": "70a2d8287c023e79",
+       "pricing_version": "v8",
+       "cost_usd": "0.005058",
+       "input_tokens": 585,
+       "output_tokens": 352,
+       "turns": 1
+      },
+      "cost_usd": 0.005058,
+      "latency_s": 4.5
+     },
+     "scores": {
+      "costo_usd": 0.005058,
+      "latencia_s": 4.5,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": false,
+      "partes_en_rango": true,
+      "segundos_totales": 20.0,
+      "desvio_duracion": 0.0,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": true,
+      "cierre_consigue": false,
+      "cierre_usa": false,
+      "palabras_max": 24.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.000145
+    },
+    {
+     "case": "inmobiliaria",
+     "arm": "sin_nivel",
+     "level": null,
+     "prompt_version": "proponer-partes-v3.4",
+     "output": {
+      "parts": [
+       {
+        "description": "Una familia entra tomada de la mano a un apartamento nuevo y vacío, se ve todo el lugar lleno de luz desde la puerta.",
+        "seconds": 5
+       },
+       {
+        "description": "Unas manos abren la puerta de una de las dos alcobas del apartamento, mirando desde el pasillo hacia adentro.",
+        "seconds": 5
+       },
+       {
+        "description": "La sala y la cocina del apartamento nuevo se ven de lado, con la luz entrando por la ventana grande.",
+        "seconds": 5
+       },
+       {
+        "description": "Unas manos sostienen un teléfono escribiendo un mensaje de WhatsApp, de cerca, con el apartamento al fondo.",
+        "seconds": 5
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.4",
+       "prompt_fingerprint": "70a2d8287c023e79",
+       "pricing_version": "v8",
+       "cost_usd": "0.009761",
+       "input_tokens": 1558,
+       "output_tokens": 591,
+       "turns": 2
+      },
+      "cost_usd": 0.009761,
+      "latency_s": 6.67
+     },
+     "scores": {
+      "costo_usd": 0.009761,
+      "latencia_s": 6.67,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": true,
+      "partes_en_rango": true,
+      "segundos_totales": 20.0,
+      "desvio_duracion": 0.0,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": true,
+      "cierre_consigue": false,
+      "cierre_usa": false,
+      "palabras_max": 24.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.000343
+    },
+    {
+     "case": "inmobiliaria",
+     "arm": "unaware",
+     "level": "unaware",
+     "prompt_version": "proponer-partes-v3.4",
+     "output": {
+      "parts": [
+       {
+        "description": "Una familia entra a la sala vacía de un apartamento nuevo y mira alrededor con asombro, se ve todo el espacio con luz natural.",
+        "seconds": 4
+       },
+       {
+        "description": "Unas manos abren la puerta de una de las dos alcobas y la imagen muestra el cuarto vacío con una ventana amplia.",
+        "seconds": 4
+       },
+       {
+        "description": "Se ve la cocina del apartamento desde la entrada, completa y nueva, mientras una persona recorre el lugar despacio.",
+        "seconds": 4
+       },
+       {
+        "description": "Desde el balcón del apartamento se ve el paisaje de Bello y parte de la familia conversando junto a la baranda.",
+        "seconds": 4
+       },
+       {
+        "description": "Unas manos sostienen un teléfono y escriben un mensaje de WhatsApp frente a la fachada del edificio nuevo.",
+        "seconds": 4
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.4",
+       "prompt_fingerprint": "64e2a1171c266295",
+       "pricing_version": "v8",
+       "cost_usd": "0.005104",
+       "input_tokens": 658,
+       "output_tokens": 342,
+       "turns": 1
+      },
+      "cost_usd": 0.005104,
+      "latency_s": 4.72
+     },
+     "scores": {
+      "costo_usd": 0.005104,
+      "latencia_s": 4.72,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": false,
+      "partes_en_rango": true,
+      "segundos_totales": 20.0,
+      "desvio_duracion": 0.0,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": true,
+      "cierre_consigue": false,
+      "cierre_usa": false,
+      "palabras_max": 24.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.000333,
+     "juez_informado_usd": 0.000399
+    },
+    {
+     "case": "inmobiliaria",
+     "arm": "unaware",
+     "level": "unaware",
+     "prompt_version": "proponer-partes-v3.4",
+     "output": {
+      "parts": [
+       {
+        "description": "Una familia entra a un apartamento vacío y nuevo, las manos de una persona abren la puerta y se ve la sala con luz natural",
+        "seconds": 4
+       },
+       {
+        "description": "Se ve completa la sala y comedor del apartamento nuevo, con ventanas grandes que dejan entrar mucha luz",
+        "seconds": 4
+       },
+       {
+        "description": "Unas manos recorren la pared de una de las dos alcobas, de lado, mostrando el espacio vacío y amplio del cuarto",
+        "seconds": 4
+       },
+       {
+        "description": "Desde la ventana de la sala se ve el paisaje de Bello y los edificios del proyecto de vivienda nueva alrededor",
+        "seconds": 4
+       },
+       {
+        "description": "Una persona sostiene su teléfono y escribe un mensaje de WhatsApp sonriendo, de cerca, con el apartamento de fondo",
+        "seconds": 4
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.4",
+       "prompt_fingerprint": "64e2a1171c266295",
+       "pricing_version": "v8",
+       "cost_usd": "0.005124",
+       "input_tokens": 658,
+       "output_tokens": 344,
+       "turns": 1
+      },
+      "cost_usd": 0.005124,
+      "latency_s": 4.72
+     },
+     "scores": {
+      "costo_usd": 0.005124,
+      "latencia_s": 4.72,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": false,
+      "partes_en_rango": true,
+      "segundos_totales": 20.0,
+      "desvio_duracion": 0.0,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": true,
+      "cierre_consigue": false,
+      "cierre_usa": false,
+      "palabras_max": 25.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.000308,
+     "juez_informado_usd": 0.000331
+    },
+    {
+     "case": "inmobiliaria",
+     "arm": "problem_aware",
+     "level": "problem_aware",
+     "prompt_version": "proponer-partes-v3.4",
+     "output": {
+      "parts": [
+       {
+        "description": "Una familia mira desde la acera un edificio nuevo de apartamentos, con el gesto de quien sueña con tener casa propia.",
+        "seconds": 4
+       },
+       {
+        "description": "Se ve de cerca la sala de un apartamento nuevo de dos alcobas, amplia y con luz natural entrando por la ventana.",
+        "seconds": 4
+       },
+       {
+        "description": "Unas manos abren la puerta de una de las alcobas del apartamento, mostrando el espacio vacío listo para una familia.",
+        "seconds": 4
+       },
+       {
+        "description": "Una persona revisa unos documentos sobre una mesa junto a unas manos que señalan un papel, mostrando el acompañamiento legal.",
+        "seconds": 4
+       },
+       {
+        "description": "Unas manos sostienen un teléfono escribiendo un mensaje de WhatsApp, con el edificio nuevo visible al fondo, de lado.",
+        "seconds": 4
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.4",
+       "prompt_fingerprint": "24f846cebeb846db",
+       "pricing_version": "v8",
+       "cost_usd": "0.005174",
+       "input_tokens": 648,
+       "output_tokens": 351,
+       "turns": 1
+      },
+      "cost_usd": 0.005174,
+      "latency_s": 4.66
+     },
+     "scores": {
+      "costo_usd": 0.005174,
+      "latencia_s": 4.66,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": false,
+      "partes_en_rango": true,
+      "segundos_totales": 20.0,
+      "desvio_duracion": 0.0,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": true,
+      "cierre_consigue": false,
+      "cierre_usa": false,
+      "palabras_max": 22.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.000308,
+     "juez_informado_usd": 0.000471
+    },
+    {
+     "case": "inmobiliaria",
+     "arm": "problem_aware",
+     "level": "problem_aware",
+     "prompt_version": "proponer-partes-v3.4",
+     "output": {
+      "parts": [
+       {
+        "description": "Una familia mira juntos por la ventana de un apartamento vacío, se ve todo el lugar lleno de luz natural y espacio.",
+        "seconds": 4
+       },
+       {
+        "description": "Unas manos recorren la pared de una alcoba amplia, se ve de cerca el acabado nuevo y limpio del cuarto.",
+        "seconds": 4
+       },
+       {
+        "description": "Se ve toda la sala y cocina del apartamento desde la entrada, el espacio se ve amplio y recién terminado.",
+        "seconds": 4
+       },
+       {
+        "description": "Unas manos sostienen un teléfono mostrando una conversación de WhatsApp sobre el apartamento, se ve de cerca la pantalla.",
+        "seconds": 4
+       },
+       {
+        "description": "Una persona entra por la puerta principal del edificio nuevo cargando una caja, se ve desde afuera el frente del proyecto.",
+        "seconds": 4
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.4",
+       "prompt_fingerprint": "24f846cebeb846db",
+       "pricing_version": "v8",
+       "cost_usd": "0.005104",
+       "input_tokens": 648,
+       "output_tokens": 344,
+       "turns": 1
+      },
+      "cost_usd": 0.005104,
+      "latency_s": 4.66
+     },
+     "scores": {
+      "costo_usd": 0.005104,
+      "latencia_s": 4.66,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": false,
+      "partes_en_rango": true,
+      "segundos_totales": 20.0,
+      "desvio_duracion": 0.0,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": true,
+      "cierre_consigue": false,
+      "cierre_usa": false,
+      "palabras_max": 22.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.00037,
+     "juez_informado_usd": 0.000413
+    },
+    {
+     "case": "inmobiliaria",
+     "arm": "solution_aware",
+     "level": "solution_aware",
+     "prompt_version": "proponer-partes-v3.4",
+     "output": {
+      "parts": [
+       {
+        "description": "Una familia entra tomada de la mano al apartamento nuevo y mira la sala vacía con luz natural entrando por la ventana.",
+        "seconds": 4
+       },
+       {
+        "description": "Se ve completa la sala del apartamento de dos alcobas, amplia y con acabados nuevos, desde una esquina del cuarto.",
+        "seconds": 4
+       },
+       {
+        "description": "Unas manos abren la puerta de una de las alcobas y se ve el cuarto vacío listo para amoblar, desde la entrada.",
+        "seconds": 4
+       },
+       {
+        "description": "Una persona revisa unos documentos sobre una mesa junto a unas manos que señalan un papel, mostrando el acompañamiento legal.",
+        "seconds": 4
+       },
+       {
+        "description": "Una persona escribe en su teléfono un mensaje de WhatsApp mientras camina por el pasillo del edificio nuevo.",
+        "seconds": 4
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.4",
+       "prompt_fingerprint": "b6234eb4306bad1f",
+       "pricing_version": "v8",
+       "cost_usd": "0.005146",
+       "input_tokens": 664,
+       "output_tokens": 345,
+       "turns": 1
+      },
+      "cost_usd": 0.005146,
+      "latency_s": 4.79
+     },
+     "scores": {
+      "costo_usd": 0.005146,
+      "latencia_s": 4.79,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": false,
+      "partes_en_rango": true,
+      "segundos_totales": 20.0,
+      "desvio_duracion": 0.0,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": true,
+      "cierre_consigue": false,
+      "cierre_usa": false,
+      "palabras_max": 22.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.000355,
+     "juez_informado_usd": 0.000566
+    },
+    {
+     "case": "inmobiliaria",
+     "arm": "solution_aware",
+     "level": "solution_aware",
+     "prompt_version": "proponer-partes-v3.4",
+     "output": {
+      "parts": [
+       {
+        "description": "Una familia entra tomada de la mano a un apartamento nuevo vacío y mira el espacio con ilusión, se ve todo el lugar.",
+        "seconds": 4
+       },
+       {
+        "description": "Unas manos abren la puerta de una de las dos alcobas y la luz entra por la ventana, se ve desde adentro.",
+        "seconds": 4
+       },
+       {
+        "description": "Una persona recorre despacio la sala del apartamento nuevo, la imagen se acerca mostrando los acabados y el piso.",
+        "seconds": 4
+       },
+       {
+        "description": "Unas manos revisan unos papeles sobre una mesa dentro del apartamento, de cerca, mientras otra persona señala algo en la hoja.",
+        "seconds": 4
+       },
+       {
+        "description": "Una familia sale del apartamento sonriendo y mira el edificio desde afuera, de lado, con ganas de volver.",
+        "seconds": 4
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.4",
+       "prompt_fingerprint": "b6234eb4306bad1f",
+       "pricing_version": "v8",
+       "cost_usd": "0.011637",
+       "input_tokens": 1781,
+       "output_tokens": 734,
+       "turns": 2
+      },
+      "cost_usd": 0.011637,
+      "latency_s": 8.65
+     },
+     "scores": {
+      "costo_usd": 0.011637,
+      "latencia_s": 8.65,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": true,
+      "partes_en_rango": true,
+      "segundos_totales": 20.0,
+      "desvio_duracion": 0.0,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": false,
+      "cierre_consigue": false,
+      "cierre_usa": false,
+      "palabras_max": 23.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.000446,
+     "juez_informado_usd": 0.000498
+    },
+    {
+     "case": "inmobiliaria",
+     "arm": "product_aware",
+     "level": "product_aware",
+     "prompt_version": "proponer-partes-v3.4",
+     "output": {
+      "parts": [
+       {
+        "description": "Una familia entra tomada de la mano a un apartamento nuevo y vacío, se ve toda la sala iluminada desde la puerta.",
+        "seconds": 4
+       },
+       {
+        "description": "Unas manos abren la puerta de una de las alcobas vacías del apartamento y la luz entra por la ventana.",
+        "seconds": 4
+       },
+       {
+        "description": "Se ve completa la segunda alcoba del apartamento, vacía y con buena luz, mirando desde la entrada del cuarto.",
+        "seconds": 4
+       },
+       {
+        "description": "Una persona revisa unos papeles sobre una mesa dentro del apartamento, mientras otra persona le explica señalando el documento.",
+        "seconds": 4
+       },
+       {
+        "description": "Unas manos sostienen un teléfono y escriben un mensaje de WhatsApp dentro del apartamento, de cerca.",
+        "seconds": 4
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.4",
+       "prompt_fingerprint": "d3f7bcee9e971929",
+       "pricing_version": "v8",
+       "cost_usd": "0.005034",
+       "input_tokens": 663,
+       "output_tokens": 334,
+       "turns": 1
+      },
+      "cost_usd": 0.005034,
+      "latency_s": 5.04
+     },
+     "scores": {
+      "costo_usd": 0.005034,
+      "latencia_s": 5.04,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": false,
+      "partes_en_rango": true,
+      "segundos_totales": 20.0,
+      "desvio_duracion": 0.0,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": true,
+      "cierre_consigue": false,
+      "cierre_usa": false,
+      "palabras_max": 22.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.000143,
+     "juez_informado_usd": 0.000321
+    },
+    {
+     "case": "inmobiliaria",
+     "arm": "product_aware",
+     "level": "product_aware",
+     "prompt_version": "proponer-partes-v3.4",
+     "output": {
+      "parts": [
+       {
+        "description": "Una familia camina tomada de la mano entrando a un conjunto residencial nuevo en Bello, se ve todo el lugar desde lejos.",
+        "seconds": 4
+       },
+       {
+        "description": "Una persona recorre despacio la sala de un apartamento de dos alcobas, se ve todo el espacio vacío y luminoso.",
+        "seconds": 4
+       },
+       {
+        "description": "Unas manos abren la puerta de una de las alcobas y se ve el cuarto completo desde la entrada.",
+        "seconds": 4
+       },
+       {
+        "description": "Unas manos sostienen un teléfono escribiendo un mensaje de WhatsApp, se ve de cerca la pantalla con una conversación.",
+        "seconds": 4
+       },
+       {
+        "description": "Una persona sonríe mientras recibe las llaves de manos de otra persona en la entrada del apartamento, se ve de cerca.",
+        "seconds": 4
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.4",
+       "prompt_fingerprint": "d3f7bcee9e971929",
+       "pricing_version": "v8",
+       "cost_usd": "0.005094",
+       "input_tokens": 663,
+       "output_tokens": 340,
+       "turns": 1
+      },
+      "cost_usd": 0.005094,
+      "latency_s": 4.0
+     },
+     "scores": {
+      "costo_usd": 0.005094,
+      "latencia_s": 4.0,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": false,
+      "partes_en_rango": true,
+      "segundos_totales": 20.0,
+      "desvio_duracion": 0.0,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": true,
+      "cierre_consigue": true,
+      "cierre_usa": false,
+      "palabras_max": 22.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.000365,
+     "juez_informado_usd": 0.000299
+    },
+    {
+     "case": "inmobiliaria",
+     "arm": "most_aware",
+     "level": "most_aware",
+     "prompt_version": "proponer-partes-v3.4",
+     "output": {
+      "parts": [
+       {
+        "description": "Una familia entra tomada de la mano a un apartamento vacío y nuevo, mirando la sala con luz natural, se ve todo el lugar.",
+        "seconds": 4
+       },
+       {
+        "description": "De cerca, unas manos abren la puerta de una de las dos alcobas del apartamento, mostrando el espacio limpio y amplio.",
+        "seconds": 4
+       },
+       {
+        "description": "Desde la ventana de la sala se ve el conjunto residencial nuevo de Bello, con otros edificios y zonas verdes alrededor.",
+        "seconds": 4
+       },
+       {
+        "description": "De cerca, unas manos sostienen un teléfono mostrando una conversación de WhatsApp, con el apartamento vacío detrás.",
+        "seconds": 4
+       },
+       {
+        "description": "La familia se abraza en medio de la sala vacía del apartamento, mirando alrededor con calma, se ve todo el espacio.",
+        "seconds": 4
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.4",
+       "prompt_fingerprint": "70a2d8287c023e79",
+       "pricing_version": "v8",
+       "cost_usd": "0.011649",
+       "input_tokens": 1647,
+       "output_tokens": 762,
+       "turns": 2
+      },
+      "cost_usd": 0.011649,
+      "latency_s": 8.76
+     },
+     "scores": {
+      "costo_usd": 0.011649,
+      "latencia_s": 8.76,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": true,
+      "partes_en_rango": true,
+      "segundos_totales": 20.0,
+      "desvio_duracion": 0.0,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": false,
+      "cierre_consigue": false,
+      "cierre_usa": false,
+      "palabras_max": 24.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.000352,
+     "juez_informado_usd": 0.00032
+    },
+    {
+     "case": "inmobiliaria",
+     "arm": "most_aware",
+     "level": "most_aware",
+     "prompt_version": "proponer-partes-v3.4",
+     "output": {
+      "parts": [
+       {
+        "description": "Una familia entra tomada de la mano a un apartamento nuevo y vacío, se ve toda la sala con luz natural entrando por la ventana.",
+        "seconds": 4
+       },
+       {
+        "description": "Se ve de cerca una de las alcobas del apartamento, con el piso nuevo y las paredes recién pintadas, nadie dentro.",
+        "seconds": 4
+       },
+       {
+        "description": "Unas manos revisan unos papeles y documentos sobre una mesa, al lado de una persona que señala algo con el dedo.",
+        "seconds": 4
+       },
+       {
+        "description": "Desde el pasillo se ve todo el apartamento de dos alcobas, mostrando la cocina y la sala conectadas, con buena luz.",
+        "seconds": 4
+       },
+       {
+        "description": "Unas manos sostienen un teléfono y escriben un mensaje de WhatsApp, de cerca, con el apartamento vacío detrás.",
+        "seconds": 4
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.4",
+       "prompt_fingerprint": "70a2d8287c023e79",
+       "pricing_version": "v8",
+       "cost_usd": "0.011577",
+       "input_tokens": 1651,
+       "output_tokens": 754,
+       "turns": 2
+      },
+      "cost_usd": 0.011577,
+      "latency_s": 8.77
+     },
+     "scores": {
+      "costo_usd": 0.011577,
+      "latencia_s": 8.77,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": true,
+      "partes_en_rango": true,
+      "segundos_totales": 20.0,
+      "desvio_duracion": 0.0,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": true,
+      "cierre_consigue": false,
+      "cierre_usa": false,
+      "palabras_max": 25.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.000398,
+     "juez_informado_usd": 0.000446
+    },
+    {
+     "case": "viajes",
+     "arm": "sin_nivel",
+     "level": null,
+     "prompt_version": "proponer-partes-v3.4",
+     "output": {
+      "parts": [
+       {
+        "description": "Una persona sale de un hotel en Cusco de madrugada y sube a una camioneta que la espera en la puerta.",
+        "seconds": 4
+       },
+       {
+        "description": "Desde arriba se ve el camino entre montañas verdes rumbo a Machu Picchu, la neblina cubre los cerros.",
+        "seconds": 4
+       },
+       {
+        "description": "Machu Picchu se ve completo desde lejos entre la neblina que se despeja poco a poco.",
+        "seconds": 4
+       },
+       {
+        "description": "Un guía conversa con un grupo pequeño de viajeros señalando las ruinas de piedra desde cerca.",
+        "seconds": 4
+       },
+       {
+        "description": "Unas manos revisan un mapa junto al guía mientras planean el recorrido a la medida del grupo.",
+        "seconds": 4
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.4",
+       "prompt_fingerprint": "02f72b3322613bdd",
+       "pricing_version": "v8",
+       "cost_usd": "0.004504",
+       "input_tokens": 528,
+       "output_tokens": 308,
+       "turns": 1
+      },
+      "cost_usd": 0.004504,
+      "latency_s": 4.94
+     },
+     "scores": {
+      "costo_usd": 0.004504,
+      "latencia_s": 4.94,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": false,
+      "partes_en_rango": true,
+      "segundos_totales": 20.0,
+      "desvio_duracion": 0.0,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": false,
+      "cierre_consigue": false,
+      "cierre_usa": false,
+      "palabras_max": 21.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.000473
+    },
+    {
+     "case": "viajes",
+     "arm": "sin_nivel",
+     "level": null,
+     "prompt_version": "proponer-partes-v3.4",
+     "output": {
+      "parts": [
+       {
+        "description": "Una persona parada frente a Machu Picchu al amanecer, mirando la ciudadela entre la neblina, se ve todo el lugar desde arriba.",
+        "seconds": 4
+       },
+       {
+        "description": "Unas manos suben a una camioneta frente a un hotel en Cusco temprano en la mañana, se ve la calle empedrada alrededor.",
+        "seconds": 4
+       },
+       {
+        "description": "Un guía conversa con un grupo pequeño de viajeros en un camino de piedra, la imagen se acerca despacio hacia el grupo.",
+        "seconds": 4
+       },
+       {
+        "description": "Las ruinas de Machu Picchu se ven de lado entre montañas verdes y nubes bajas, con el grupo caminando pequeño entre las piedras.",
+        "seconds": 4
+       },
+       {
+        "description": "Una persona sonríe mirando el paisaje desde una terraza de piedra, de cerca se ve su mirada y detrás las montañas.",
+        "seconds": 4
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.4",
+       "prompt_fingerprint": "02f72b3322613bdd",
+       "pricing_version": "v8",
+       "cost_usd": "0.005094",
+       "input_tokens": 528,
+       "output_tokens": 367,
+       "turns": 1
+      },
+      "cost_usd": 0.005094,
+      "latency_s": 4.91
+     },
+     "scores": {
+      "costo_usd": 0.005094,
+      "latencia_s": 4.91,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": false,
+      "partes_en_rango": true,
+      "segundos_totales": 20.0,
+      "desvio_duracion": 0.0,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": false,
+      "cierre_consigue": false,
+      "cierre_usa": false,
+      "palabras_max": 23.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.000418
+    },
+    {
+     "case": "viajes",
+     "arm": "unaware",
+     "level": "unaware",
+     "prompt_version": "proponer-partes-v3.4",
+     "output": {
+      "parts": [
+       {
+        "description": "La niebla se despeja poco a poco sobre Machu Picchu, visto desde arriba, dejando ver las ruinas de piedra entre las montañas.",
+        "seconds": 6
+       },
+       {
+        "description": "Una camioneta espera afuera de un hotel en una calle de Cusco al amanecer, mientras una persona sube con su mochila.",
+        "seconds": 4
+       },
+       {
+        "description": "Un grupo pequeño de viajeros camina junto a un guía por un sendero de piedra dentro de las ruinas, mirando alrededor.",
+        "seconds": 5
+       },
+       {
+        "description": "Desde atrás, unas manos señalan hacia las montañas mientras el grupo llega caminando hasta la entrada de Machu Picchu.",
+        "seconds": 5
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.4",
+       "prompt_fingerprint": "89425e66a51a6e9b",
+       "pricing_version": "v8",
+       "cost_usd": "0.00977",
+       "input_tokens": 601,
+       "output_tokens": 820,
+       "turns": 1
+      },
+      "cost_usd": 0.00977,
+      "latency_s": 10.4
+     },
+     "scores": {
+      "costo_usd": 0.00977,
+      "latencia_s": 10.4,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": false,
+      "partes_en_rango": true,
+      "segundos_totales": 20.0,
+      "desvio_duracion": 0.0,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": true,
+      "cierre_consigue": false,
+      "cierre_usa": false,
+      "palabras_max": 22.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.000383,
+     "juez_informado_usd": 0.000291
+    },
+    {
+     "case": "viajes",
+     "arm": "unaware",
+     "level": "unaware",
+     "prompt_version": "proponer-partes-v3.4",
+     "output": {
+      "parts": [
+       {
+        "description": "Machu Picchu aparece entre la niebla de la mañana, se ve todo el lugar desde lejos y la imagen se acerca despacio.",
+        "seconds": 5
+       },
+       {
+        "description": "Una persona sale de un hotel en Cusco y sube a una camioneta, se ve desde el lado de la calle.",
+        "seconds": 4
+       },
+       {
+        "description": "Un grupo pequeño camina entre las ruinas siguiendo a un guía que señala algo a lo lejos, se ve de lado.",
+        "seconds": 5
+       },
+       {
+        "description": "Unas personas suben contentas a un bus turístico en Cusco listas para partir hacia Machu Picchu, se ve desde afuera.",
+        "seconds": 5
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.4",
+       "prompt_fingerprint": "89425e66a51a6e9b",
+       "pricing_version": "v8",
+       "cost_usd": "0.00902",
+       "input_tokens": 601,
+       "output_tokens": 745,
+       "turns": 1
+      },
+      "cost_usd": 0.00902,
+      "latency_s": 8.99
+     },
+     "scores": {
+      "costo_usd": 0.00902,
+      "latencia_s": 8.99,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": false,
+      "partes_en_rango": true,
+      "segundos_totales": 19.0,
+      "desvio_duracion": 0.05,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": false,
+      "cierre_consigue": false,
+      "cierre_usa": false,
+      "palabras_max": 22.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.000406,
+     "juez_informado_usd": 0.000273
+    },
+    {
+     "case": "viajes",
+     "arm": "problem_aware",
+     "level": "problem_aware",
+     "prompt_version": "proponer-partes-v3.4",
+     "output": {
+      "parts": [
+       {
+        "description": "Una persona mira un mapa de Cusco con cara de duda, pensando cómo llegar a Machu Picchu, de cerca.",
+        "seconds": 4
+       },
+       {
+        "description": "Una camioneta recoge a unas personas frente a un hotel de Cusco temprano en la mañana, se ve desde el lado.",
+        "seconds": 4
+       },
+       {
+        "description": "Un guía conversa con un grupo pequeño de viajeros mientras caminan por un camino con montañas andinas alrededor.",
+        "seconds": 4
+       },
+       {
+        "description": "Machu Picchu aparece completo entre la neblina que se despeja, se ve todo el lugar desde arriba.",
+        "seconds": 4
+       },
+       {
+        "description": "Un grupo pequeño de personas camina feliz por las terrazas de piedra de Machu Picchu, se ve desde lejos.",
+        "seconds": 4
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.4",
+       "prompt_fingerprint": "20d69224bb85395b",
+       "pricing_version": "v8",
+       "cost_usd": "0.00485",
+       "input_tokens": 591,
+       "output_tokens": 330,
+       "turns": 1
+      },
+      "cost_usd": 0.00485,
+      "latency_s": 4.5
+     },
+     "scores": {
+      "costo_usd": 0.00485,
+      "latencia_s": 4.5,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": false,
+      "partes_en_rango": true,
+      "segundos_totales": 20.0,
+      "desvio_duracion": 0.0,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": false,
+      "cierre_consigue": false,
+      "cierre_usa": false,
+      "palabras_max": 21.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.00032,
+     "juez_informado_usd": 0.000292
+    },
+    {
+     "case": "viajes",
+     "arm": "problem_aware",
+     "level": "problem_aware",
+     "prompt_version": "proponer-partes-v3.4",
+     "output": {
+      "parts": [
+       {
+        "description": "Una persona mira un mapa de Cusco con cara de duda, pensando cómo llegar a Machu Picchu, de cerca sobre sus manos.",
+        "seconds": 4
+       },
+       {
+        "description": "Una camioneta pequeña recoge a unas personas en la puerta de un hotel de Cusco, se ve toda la calle temprano en la mañana.",
+        "seconds": 4
+       },
+       {
+        "description": "Un guía conversa con un grupo pequeño de viajeros durante el camino, se ve desde dentro del vehículo mirando hacia ellos.",
+        "seconds": 4
+       },
+       {
+        "description": "Machu Picchu aparece entre la neblina de la montaña, la imagen se acerca despacio mostrando toda la ciudadela de lado.",
+        "seconds": 4
+       },
+       {
+        "description": "Unas personas caminan entre las ruinas siguiendo al guía que señala una construcción, se ve el lugar desde arriba.",
+        "seconds": 4
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.4",
+       "prompt_fingerprint": "20d69224bb85395b",
+       "pricing_version": "v8",
+       "cost_usd": "0.00515",
+       "input_tokens": 591,
+       "output_tokens": 360,
+       "turns": 1
+      },
+      "cost_usd": 0.00515,
+      "latency_s": 4.5
+     },
+     "scores": {
+      "costo_usd": 0.00515,
+      "latencia_s": 4.5,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": false,
+      "partes_en_rango": true,
+      "segundos_totales": 20.0,
+      "desvio_duracion": 0.0,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": false,
+      "cierre_consigue": false,
+      "cierre_usa": false,
+      "palabras_max": 24.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.000405,
+     "juez_informado_usd": 0.000329
+    },
+    {
+     "case": "viajes",
+     "arm": "solution_aware",
+     "level": "solution_aware",
+     "prompt_version": "proponer-partes-v3.4",
+     "output": {
+      "parts": [
+       {
+        "description": "Machu Picchu se ve completo entre la neblina de la mañana, con las montañas verdes alrededor, mirado desde arriba del camino de piedra.",
+        "seconds": 5
+       },
+       {
+        "description": "Unas manos revisan un mapa y boletos junto a una ventana de una van, mientras afuera se ve el paisaje de Cusco pasando.",
+        "seconds": 4
+       },
+       {
+        "description": "Un grupo pequeño de personas camina junto a un guía entre las terrazas de piedra de Machu Picchu, mirado de lado.",
+        "seconds": 5
+       },
+       {
+        "description": "Una persona se acerca al hotel en Cusco y sube a una van turística que la espera en la puerta, visto desde la calle.",
+        "seconds": 5
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.4",
+       "prompt_fingerprint": "e09ef6d3f871bd5c",
+       "pricing_version": "v8",
+       "cost_usd": "0.004532",
+       "input_tokens": 607,
+       "output_tokens": 295,
+       "turns": 1
+      },
+      "cost_usd": 0.004532,
+      "latency_s": 4.03
+     },
+     "scores": {
+      "costo_usd": 0.004532,
+      "latencia_s": 4.03,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": false,
+      "partes_en_rango": true,
+      "segundos_totales": 19.0,
+      "desvio_duracion": 0.05,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": true,
+      "cierre_consigue": false,
+      "cierre_usa": false,
+      "palabras_max": 24.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.000385,
+     "juez_informado_usd": 0.00037
+    },
+    {
+     "case": "viajes",
+     "arm": "solution_aware",
+     "level": "solution_aware",
+     "prompt_version": "proponer-partes-v3.4",
+     "output": {
+      "parts": [
+       {
+        "description": "Unas manos corren una cortina de hotel en Cusco y se asoman montañas al amanecer, la imagen se acerca despacio",
+        "seconds": 4
+       },
+       {
+        "description": "Una persona sube a una van cómoda frente a su hotel, se ve desde afuera cómo la recibe el conductor",
+        "seconds": 4
+       },
+       {
+        "description": "Machu Picchu aparece completo entre la neblina que se despeja, visto desde arriba de la montaña",
+        "seconds": 4
+       },
+       {
+        "description": "Un grupo pequeño de personas camina entre las ruinas mientras un guía señala las construcciones de piedra, se ve de lado",
+        "seconds": 4
+       },
+       {
+        "description": "Una persona sonríe mirando el paisaje desde una terraza de piedra, la imagen se acerca a su rostro despacio",
+        "seconds": 4
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.4",
+       "prompt_fingerprint": "e09ef6d3f871bd5c",
+       "pricing_version": "v8",
+       "cost_usd": "0.004812",
+       "input_tokens": 607,
+       "output_tokens": 323,
+       "turns": 1
+      },
+      "cost_usd": 0.004812,
+      "latency_s": 4.88
+     },
+     "scores": {
+      "costo_usd": 0.004812,
+      "latencia_s": 4.88,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": false,
+      "partes_en_rango": true,
+      "segundos_totales": 20.0,
+      "desvio_duracion": 0.0,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": false,
+      "cierre_consigue": false,
+      "cierre_usa": false,
+      "palabras_max": 21.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.00046,
+     "juez_informado_usd": 0.000289
+    },
+    {
+     "case": "viajes",
+     "arm": "product_aware",
+     "level": "product_aware",
+     "prompt_version": "proponer-partes-v3.4",
+     "output": {
+      "parts": [
+       {
+        "description": "Una persona se asoma por una ventana de la zona del hotel en Cusco y mira hacia afuera con sorpresa, de cerca en su rostro.",
+        "seconds": 4
+       },
+       {
+        "description": "Una camioneta de turismo espera frente a un hotel de Cusco mientras una persona sube con su mochila, se ve desde un costado.",
+        "seconds": 4
+       },
+       {
+        "description": "Machu Picchu aparece completo entre la neblina que se despeja despacio, mirado desde arriba, se ve todo el lugar.",
+        "seconds": 4
+       },
+       {
+        "description": "Un guía local conversa y señala las ruinas a un grupo pequeño de personas paradas frente a Machu Picchu.",
+        "seconds": 4
+       },
+       {
+        "description": "Una persona camina entre los muros de piedra de Machu Picchu mirando alrededor, se ve de lado mientras avanza despacio.",
+        "seconds": 4
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.4",
+       "prompt_fingerprint": "c5f0c5f3efa2ed09",
+       "pricing_version": "v8",
+       "cost_usd": "0.00506",
+       "input_tokens": 606,
+       "output_tokens": 348,
+       "turns": 1
+      },
+      "cost_usd": 0.00506,
+      "latency_s": 5.16
+     },
+     "scores": {
+      "costo_usd": 0.00506,
+      "latencia_s": 5.16,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": false,
+      "partes_en_rango": true,
+      "segundos_totales": 20.0,
+      "desvio_duracion": 0.0,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": false,
+      "cierre_consigue": false,
+      "cierre_usa": false,
+      "palabras_max": 25.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.000405,
+     "juez_informado_usd": 0.000442
+    },
+    {
+     "case": "viajes",
+     "arm": "product_aware",
+     "level": "product_aware",
+     "prompt_version": "proponer-partes-v3.4",
+     "output": {
+      "parts": [
+       {
+        "description": "Machu Picchu se ve entero entre la neblina que se despeja despacio, desde arriba, con las montañas verdes alrededor",
+        "seconds": 4
+       },
+       {
+        "description": "Una persona sale de un hotel en Cusco y sube a una camioneta donde ya la espera un guía sonriente",
+        "seconds": 4
+       },
+       {
+        "description": "Un grupo pequeño de personas camina por un sendero de piedra en Machu Picchu siguiendo a su guía, se ve todo el lugar",
+        "seconds": 4
+       },
+       {
+        "description": "De cerca, el guía señala las construcciones antiguas mientras las personas del grupo miran y escuchan con atención",
+        "seconds": 4
+       },
+       {
+        "description": "Las personas se acercan a una oficina de la agencia en Cusco y conversan con alguien sobre armar su viaje",
+        "seconds": 4
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.4",
+       "prompt_fingerprint": "c5f0c5f3efa2ed09",
+       "pricing_version": "v8",
+       "cost_usd": "0.00499",
+       "input_tokens": 606,
+       "output_tokens": 341,
+       "turns": 1
+      },
+      "cost_usd": 0.00499,
+      "latency_s": 4.9
+     },
+     "scores": {
+      "costo_usd": 0.00499,
+      "latencia_s": 4.9,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": false,
+      "partes_en_rango": true,
+      "segundos_totales": 20.0,
+      "desvio_duracion": 0.0,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": false,
+      "cierre_consigue": false,
+      "cierre_usa": false,
+      "palabras_max": 23.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.000501,
+     "juez_informado_usd": 0.000327
+    },
+    {
+     "case": "viajes",
+     "arm": "most_aware",
+     "level": "most_aware",
+     "prompt_version": "proponer-partes-v3.4",
+     "output": {
+      "parts": [
+       {
+        "description": "Una persona mira hacia arriba sorprendida al llegar y ver Machu Picchu entero rodeado de montañas verdes.",
+        "seconds": 4
+       },
+       {
+        "description": "Desde el hotel en Cusco, unas manos suben a una movilidad mientras un guía las recibe con una sonrisa.",
+        "seconds": 4
+       },
+       {
+        "description": "Un grupo pequeño de viajeros camina junto a un guía entre las piedras antiguas de Machu Picchu, escuchando explicaciones.",
+        "seconds": 4
+       },
+       {
+        "description": "De cerca, se ve la ciudadela de Machu Picchu entre la neblina, con el grupo pequeño recorriendo despacio los caminos de piedra.",
+        "seconds": 4
+       },
+       {
+        "description": "Una persona se acerca a un mostrador de la agencia en Cusco y conversa con un guía mientras arman juntos un paquete de viaje.",
+        "seconds": 4
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.4",
+       "prompt_fingerprint": "02f72b3322613bdd",
+       "pricing_version": "v8",
+       "cost_usd": "0.004994",
+       "input_tokens": 528,
+       "output_tokens": 357,
+       "turns": 1
+      },
+      "cost_usd": 0.004994,
+      "latency_s": 5.08
+     },
+     "scores": {
+      "costo_usd": 0.004994,
+      "latencia_s": 5.08,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": false,
+      "partes_en_rango": true,
+      "segundos_totales": 20.0,
+      "desvio_duracion": 0.0,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": true,
+      "cierre_consigue": true,
+      "cierre_usa": false,
+      "palabras_max": 24.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.000347,
+     "juez_informado_usd": 0.000328
+    },
+    {
+     "case": "viajes",
+     "arm": "most_aware",
+     "level": "most_aware",
+     "prompt_version": "proponer-partes-v3.4",
+     "output": {
+      "parts": [
+       {
+        "description": "Una persona asombrada mira de frente la ciudadela de Machu Picchu entre la niebla que se abre despacio, desde arriba del lugar.",
+        "seconds": 4
+       },
+       {
+        "description": "Una camioneta recoge a una persona con mochila en la puerta de un hotel en una calle empedrada de Cusco, se ve todo el lugar.",
+        "seconds": 4
+       },
+       {
+        "description": "Un guía conversa y señala las montañas a un grupo pequeño de personas mientras caminan por un sendero de piedra, se ve de lado.",
+        "seconds": 4
+       },
+       {
+        "description": "La imagen se acerca despacio a las ruinas de piedra de Machu Picchu con las montañas verdes detrás, se ve todo el lugar.",
+        "seconds": 4
+       },
+       {
+        "description": "Una persona entrega un boleto a otra en una ventanilla de madera, de cerca, con la ciudadela al fondo entre la vegetación.",
+        "seconds": 4
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.4",
+       "prompt_fingerprint": "02f72b3322613bdd",
+       "pricing_version": "v8",
+       "cost_usd": "0.005074",
+       "input_tokens": 528,
+       "output_tokens": 365,
+       "turns": 1
+      },
+      "cost_usd": 0.005074,
+      "latency_s": 4.94
+     },
+     "scores": {
+      "costo_usd": 0.005074,
+      "latencia_s": 4.94,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": false,
+      "partes_en_rango": true,
+      "segundos_totales": 20.0,
+      "desvio_duracion": 0.0,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": true,
+      "cierre_consigue": true,
+      "cierre_usa": false,
+      "palabras_max": 25.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.000395,
+     "juez_informado_usd": 0.000371
+    }
+   ],
+   "scores": [
+    {
+     "arm": "sin_nivel",
+     "case": "hamburguesas",
+     "split": "test",
+     "sector": "comida",
+     "with_perks": true,
+     "level": null,
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [
+      3
+     ],
+     "judge_level": "solution_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      3
+     ],
+     "judge_fit": null,
+     "judge_reason": "",
+     "offers_det": [
+      [
+       "servicio",
+       "separar"
+      ]
+     ],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "sin_nivel",
+     "case": "hamburguesas",
+     "split": "test",
+     "sector": "comida",
+     "with_perks": true,
+     "level": null,
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [],
+     "judge_level": "product_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      3
+     ],
+     "judge_fit": null,
+     "judge_reason": "",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "unaware",
+     "case": "hamburguesas",
+     "split": "test",
+     "sector": "comida",
+     "with_perks": true,
+     "level": "unaware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [
+      3
+     ],
+     "judge_level": "solution_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      2,
+      3
+     ],
+     "judge_fit": true,
+     "judge_reason": "Muestra el local, las mesas llenas, a los amigos entrando y un perro (mascotas admitidas, dato real), sin precio, horario, descuento ni promoción; solo menciona el combo como comida, aunque tiene bast",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "unaware",
+     "case": "hamburguesas",
+     "split": "test",
+     "sector": "comida",
+     "with_perks": true,
+     "level": "unaware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [],
+     "judge_level": "solution_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      2,
+      3
+     ],
+     "judge_fit": true,
+     "judge_reason": "Muestra experiencia y ambiente (amigos riendo por la noche, mesas llenas, llegada con mascota) sin precio, oferta ni dato inventado; el combo aparece como parte de la escena, no como oferta.",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "problem_aware",
+     "case": "hamburguesas",
+     "split": "test",
+     "sector": "comida",
+     "with_perks": true,
+     "level": "problem_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [
+      5
+     ],
+     "judge_level": "solution_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      3,
+      5
+     ],
+     "judge_fit": false,
+     "judge_reason": "El gancho no nombra ningún dilema que el público ya sienta (por ejemplo, no saber dónde compartir después del trabajo o cansarse de lo mismo); arranca con una escena de amigos y el combo, sin plantear",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "problem_aware",
+     "case": "hamburguesas",
+     "split": "test",
+     "sector": "comida",
+     "with_perks": true,
+     "level": "problem_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [],
+     "judge_level": "product_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      3
+     ],
+     "judge_fit": false,
+     "judge_reason": "Para problem_aware el gancho debe nombrar el dilema del público y presentar el producto como respuesta; esta idea solo muestra al grupo, las sillas y el combo, sin ningún dilema o necesidad planteada,",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "solution_aware",
+     "case": "hamburguesas",
+     "split": "test",
+     "sector": "comida",
+     "with_perks": true,
+     "level": "solution_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [
+      5
+     ],
+     "judge_level": "solution_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      3,
+      5
+     ],
+     "judge_fit": true,
+     "judge_reason": "Muestra datos concretos del producto de los datos (doble smash con dos carnes, papas, gaseosa y el postre de la heladería de al lado), aunque no señala con claridad por qué este local lo resuelve mejo",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "solution_aware",
+     "case": "hamburguesas",
+     "split": "test",
+     "sector": "comida",
+     "with_perks": true,
+     "level": "solution_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [
+      5
+     ],
+     "judge_level": "product_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      3,
+      5
+     ],
+     "judge_fit": true,
+     "judge_reason": "Para solution_aware muestra datos concretos del producto que sí están en los datos (doble smash, papas y gaseosa del combo, y el postre de la heladería de al lado), y no inventa horarios, precios, pag",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "product_aware",
+     "case": "hamburguesas",
+     "split": "test",
+     "sector": "comida",
+     "with_perks": true,
+     "level": "product_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [
+      3
+     ],
+     "judge_level": "solution_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      2,
+      3
+     ],
+     "judge_fit": true,
+     "judge_reason": "Para product_aware, la última parte muestra la entrada del local en Chapinero y una ventaja real (se admiten mascotas), y las mesas del local quitan la duda de dónde comer; no inventa horario, precio,",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "product_aware",
+     "case": "hamburguesas",
+     "split": "test",
+     "sector": "comida",
+     "with_perks": true,
+     "level": "product_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [],
+     "judge_level": "product_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      3
+     ],
+     "judge_fit": true,
+     "judge_reason": "Muestra con datos dados lo fácil que es venir y comer: el mostrador donde se recibe el combo, la mesa del local para comer en grupo y el ambiente pequeño, sin cifras ni datos inventados; la llamada a ",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "most_aware",
+     "case": "hamburguesas",
+     "split": "test",
+     "sector": "comida",
+     "with_perks": true,
+     "level": "most_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [
+      3
+     ],
+     "judge_level": "product_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      2,
+      3
+     ],
+     "judge_fit": false,
+     "judge_reason": "Para most_aware debe ser el camino más corto a la compra con llamada a la acción directa, pero la idea son cuatro escenas sin ninguna llamada a la acción (ni 'Pide por Rappi' ni 'Ven al local en la 57",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "most_aware",
+     "case": "hamburguesas",
+     "split": "test",
+     "sector": "comida",
+     "with_perks": true,
+     "level": "most_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [
+      3
+     ],
+     "judge_level": "product_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      3
+     ],
+     "judge_fit": false,
+     "judge_reason": "Para most_aware el camino a la compra debe ser corto y con llamada a la acción directa, pero la idea dedica casi todas sus partes a ambiente y escena de amigos y no tiene una CTA clara como «Pide por ",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "sin_nivel",
+     "case": "inmobiliaria",
+     "split": "test",
+     "sector": "inmobiliaria",
+     "with_perks": true,
+     "level": null,
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [],
+     "judge_level": "solution_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [],
+     "judge_fit": null,
+     "judge_reason": "",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "sin_nivel",
+     "case": "inmobiliaria",
+     "split": "test",
+     "sector": "inmobiliaria",
+     "with_perks": true,
+     "level": null,
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [],
+     "judge_level": "unaware",
+     "judge_quality": 3,
+     "judge_invented": [],
+     "judge_perks": [
+      4
+     ],
+     "judge_fit": null,
+     "judge_reason": "",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "unaware",
+     "case": "inmobiliaria",
+     "split": "test",
+     "sector": "inmobiliaria",
+     "with_perks": true,
+     "level": "unaware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [],
+     "judge_level": "solution_aware",
+     "judge_quality": 3,
+     "judge_invented": [],
+     "judge_perks": [
+      4
+     ],
+     "judge_fit": true,
+     "judge_reason": "Muestra solo el lugar y la experiencia (sala, alcobas, cocina, balcón, familia conversando) sin precio ni oferta; la última parte, con el WhatsApp, es un llamado de contacto borderline para un nivel u",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "unaware",
+     "case": "inmobiliaria",
+     "split": "test",
+     "sector": "inmobiliaria",
+     "with_perks": true,
+     "level": "unaware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [],
+     "judge_level": "unaware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      4
+     ],
+     "judge_fit": true,
+     "judge_reason": "Muestra el lugar y la experiencia (luz, espacio, paisaje de Bello, la familia en el apartamento) sin precio, oferta ni datos inventados; el cierre con WhatsApp es un detalle leve de llamada a la acció",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "problem_aware",
+     "case": "inmobiliaria",
+     "split": "test",
+     "sector": "inmobiliaria",
+     "with_perks": true,
+     "level": "problem_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [],
+     "judge_level": "unaware",
+     "judge_quality": 3,
+     "judge_invented": [],
+     "judge_perks": [
+      2,
+      4
+     ],
+     "judge_fit": true,
+     "judge_reason": "El gancho nombra el deseo de tener casa propia (la necesidad ya sentida) y las partes presentan los apartamentos nuevos de dos alcobas, el acompañamiento legal y el WhatsApp como la respuesta, sin pre",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "problem_aware",
+     "case": "inmobiliaria",
+     "split": "test",
+     "sector": "inmobiliaria",
+     "with_perks": true,
+     "level": "problem_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [],
+     "judge_level": "solution_aware",
+     "judge_quality": 3,
+     "judge_invented": [],
+     "judge_perks": [
+      4
+     ],
+     "judge_fit": false,
+     "judge_reason": "Declarada como problem_aware, pero ninguna parte nombra el dilema del público (arrendar, no poder comprar la primera casa, no saber cómo acceder al subsidio); las escenas muestran el apartamento y la ",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "solution_aware",
+     "case": "inmobiliaria",
+     "split": "test",
+     "sector": "inmobiliaria",
+     "with_perks": true,
+     "level": "solution_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [],
+     "judge_level": "product_aware",
+     "judge_quality": 3,
+     "judge_invented": [],
+     "judge_perks": [
+      2,
+      4
+     ],
+     "judge_fit": true,
+     "judge_reason": "Muestra el producto concreto de los datos (apartamento nuevo de 2 alcobas en Bello) y el acompañamiento legal como ventaja, sin inventar precios, horarios ni promociones, aunque no argumenta del todo ",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "solution_aware",
+     "case": "inmobiliaria",
+     "split": "test",
+     "sector": "inmobiliaria",
+     "with_perks": true,
+     "level": "solution_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [],
+     "judge_level": "unaware",
+     "judge_quality": 3,
+     "judge_invented": [],
+     "judge_perks": [],
+     "judge_fit": false,
+     "judge_reason": "Muestra el apartamento nuevo de dos alcobas, que sí son datos reales, pero no explica por qué este negocio lo resuelve mejor: la ventaja legal aparece solo como unos papeles sin nombrar la asesoría si",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "product_aware",
+     "case": "inmobiliaria",
+     "split": "test",
+     "sector": "inmobiliaria",
+     "with_perks": true,
+     "level": "product_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [],
+     "judge_level": "solution_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [],
+     "judge_fit": true,
+     "judge_reason": "Muestra ventajas reales del negocio sin cifras ni datos inventados: una persona explica los papeles (acompañamiento legal) y se ve el mensaje por WhatsApp (atención por WhatsApp), lo que quita fricció",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "product_aware",
+     "case": "inmobiliaria",
+     "split": "test",
+     "sector": "inmobiliaria",
+     "with_perks": true,
+     "level": "product_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [],
+     "judge_level": "product_aware",
+     "judge_quality": 3,
+     "judge_invented": [],
+     "judge_perks": [
+      4
+     ],
+     "judge_fit": true,
+     "judge_reason": "Muestra el lugar (conjunto nuevo en Bello), la atención por WhatsApp de forma visible y la entrega de llaves como ventaja de acompañamiento, sin cifras ni datos inventados, así que facilita ver lo sen",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "most_aware",
+     "case": "inmobiliaria",
+     "split": "test",
+     "sector": "inmobiliaria",
+     "with_perks": true,
+     "level": "most_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [],
+     "judge_level": "product_aware",
+     "judge_quality": 3,
+     "judge_invented": [],
+     "judge_perks": [
+      4
+     ],
+     "judge_fit": false,
+     "judge_reason": "Para most_aware el camino debe ser el más corto a la compra, con gancho y llamada a la acción breves; esta idea es un recorrido emocional lento por el apartamento, y el WhatsApp aparece solo en una pa",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "most_aware",
+     "case": "inmobiliaria",
+     "split": "test",
+     "sector": "inmobiliaria",
+     "with_perks": true,
+     "level": "most_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [],
+     "judge_level": "product_aware",
+     "judge_quality": 3,
+     "judge_invented": [],
+     "judge_perks": [
+      2,
+      4
+     ],
+     "judge_fit": false,
+     "judge_reason": "Para most_aware el camino debe ser el más corto a la compra, y aquí son cinco partes con recorrido por el apartamento y papeles, lo que se parece más a product_aware; la llamada a la acción por WhatsA",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "sin_nivel",
+     "case": "viajes",
+     "split": "test",
+     "sector": "viajes",
+     "with_perks": true,
+     "level": null,
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [
+      1,
+      3
+     ],
+     "judge_level": "solution_aware",
+     "judge_quality": 3,
+     "judge_invented": [],
+     "judge_perks": [
+      1,
+      2,
+      3,
+      4
+     ],
+     "judge_fit": null,
+     "judge_reason": "",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "sin_nivel",
+     "case": "viajes",
+     "split": "test",
+     "sector": "viajes",
+     "with_perks": true,
+     "level": null,
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [
+      1,
+      3
+     ],
+     "judge_level": "unaware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      1,
+      2,
+      3
+     ],
+     "judge_fit": null,
+     "judge_reason": "",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "unaware",
+     "case": "viajes",
+     "split": "test",
+     "sector": "viajes",
+     "with_perks": true,
+     "level": "unaware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [
+      1,
+      3
+     ],
+     "judge_level": "unaware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      1,
+      2,
+      3
+     ],
+     "judge_fit": true,
+     "judge_reason": "Muestra solo lugar y experiencia (niebla sobre Machu Picchu, amanecer en Cusco, grupo caminando con guía) sin precio, oferta ni dato inventado, así que respeta la regla de unaware.",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "unaware",
+     "case": "viajes",
+     "split": "test",
+     "sector": "viajes",
+     "with_perks": true,
+     "level": "unaware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [
+      1,
+      3
+     ],
+     "judge_level": "unaware",
+     "judge_quality": 3,
+     "judge_invented": [],
+     "judge_perks": [
+      1,
+      2,
+      3
+     ],
+     "judge_fit": true,
+     "judge_reason": "Muestra el lugar (Machu Picchu entre la niebla, Cusco, el grupo caminando entre ruinas) y la experiencia sin mencionar precio ni oferta, y la recogida en el hotel es un dato real del negocio, no inven",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "problem_aware",
+     "case": "viajes",
+     "split": "test",
+     "sector": "viajes",
+     "with_perks": true,
+     "level": "problem_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [
+      1,
+      3
+     ],
+     "judge_level": "problem_aware",
+     "judge_quality": 3,
+     "judge_invented": [],
+     "judge_perks": [
+      1,
+      2,
+      3
+     ],
+     "judge_fit": true,
+     "judge_reason": "El gancho del mapa y la duda nombra el dilema de cómo llegar a Machu Picchu, y la recogida en el hotel, el guía y el grupo pequeño presentan el servicio como la respuesta, sin inventar precios, horari",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "problem_aware",
+     "case": "viajes",
+     "split": "test",
+     "sector": "viajes",
+     "with_perks": true,
+     "level": "problem_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [
+      1,
+      3
+     ],
+     "judge_level": "problem_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      1,
+      2,
+      3
+     ],
+     "judge_fit": true,
+     "judge_reason": "El gancho muestra el dilema de cómo llegar a Machu Picchu (mapa y cara de duda), y las partes siguientes presentan la respuesta con la recogida en el hotel, los guías y los grupos pequeños, sin invent",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "solution_aware",
+     "case": "viajes",
+     "split": "test",
+     "sector": "viajes",
+     "with_perks": true,
+     "level": "solution_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [
+      1,
+      3
+     ],
+     "judge_level": "product_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      1,
+      2,
+      3
+     ],
+     "judge_fit": true,
+     "judge_reason": "Muestra ventajas reales del negocio (recogida en el hotel, grupo pequeño con guía) sin inventar horarios, precios ni condiciones, aunque la diferenciación se ve más que se dice.",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "solution_aware",
+     "case": "viajes",
+     "split": "test",
+     "sector": "viajes",
+     "with_perks": true,
+     "level": "solution_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [
+      1,
+      3
+     ],
+     "judge_level": "product_aware",
+     "judge_quality": 3,
+     "judge_invented": [],
+     "judge_perks": [
+      1,
+      2,
+      3
+     ],
+     "judge_fit": true,
+     "judge_reason": "Muestra ventajas concretas de los datos (recogida en tu hotel, grupo pequeño, guía local) como razón para elegir este servicio, sin inventar precios, horarios ni promociones.",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "product_aware",
+     "case": "viajes",
+     "split": "test",
+     "sector": "viajes",
+     "with_perks": true,
+     "level": "product_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [
+      1,
+      3
+     ],
+     "judge_level": "unaware",
+     "judge_quality": 3,
+     "judge_invented": [],
+     "judge_perks": [
+      1,
+      2,
+      3
+     ],
+     "judge_fit": true,
+     "judge_reason": "Muestra la facilidad de venir con ventajas reales de los datos (recogida en el hotel, camioneta, guía que habla español e inglés, grupo pequeño) sin cifras ni datos inventados, lo que quita la fricció",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "product_aware",
+     "case": "viajes",
+     "split": "test",
+     "sector": "viajes",
+     "with_perks": true,
+     "level": "product_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [
+      1,
+      3
+     ],
+     "judge_level": "solution_aware",
+     "judge_quality": 3,
+     "judge_invented": [
+      "Oficina de la agencia en Cusco (los datos no mencionan oficina ni dirección)"
+     ],
+     "judge_perks": [
+      1,
+      2,
+      3,
+      4
+     ],
+     "judge_fit": true,
+     "judge_reason": "Para product_aware quita la fricción con datos dados: muestra la recogida en el hotel de Cusco, el guía que espera, el grupo pequeño y cómo armar el viaje con la agencia, sin cifras ni datos inventado",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "most_aware",
+     "case": "viajes",
+     "split": "test",
+     "sector": "viajes",
+     "with_perks": true,
+     "level": "most_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [
+      1,
+      3
+     ],
+     "judge_level": "solution_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      1,
+      2,
+      3,
+      4
+     ],
+     "judge_fit": false,
+     "judge_reason": "Declarada como most_aware, pero da un recorrido largo de cinco partes que muestra la experiencia y no un camino corto a la compra: no hay gancho breve ni una llamada directa como «Escríbenos y armamos",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "most_aware",
+     "case": "viajes",
+     "split": "test",
+     "sector": "viajes",
+     "with_perks": true,
+     "level": "most_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [
+      1,
+      3
+     ],
+     "judge_level": "product_aware",
+     "judge_quality": 3,
+     "judge_invented": [],
+     "judge_perks": [
+      1,
+      2,
+      3
+     ],
+     "judge_fit": false,
+     "judge_reason": "Para most_aware el camino a la compra debe ser corto y directo, pero la idea solo muestra paisajes, la recogida y un guía sin ningún gancho de compra ni llamada a la acción como «Escríbenos» o «Pregún",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 0,
+     "words_cta": 0
+    }
+   ]
+  }
+ },
+ "spend_usd": {
+  "partslevel": 0.266265
+ },
+ "spend_total_usd": 0.266265,
+ "skipped_by_cap": [],
+ "ledger_calls": 108
+}

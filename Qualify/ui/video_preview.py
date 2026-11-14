@@ -93,7 +93,22 @@ _STORE_SETUP = """
         window.__qualifyPreviews.listeners.forEach(function (cb) { cb(); });
       };
     }
+    if (typeof window !== "undefined" && !window.__qualifyPreviews.setShape) {
+      // 2026-11-12 (carousel crop notice): the form of each picked file, from the
+      // pixels the preview already decoded — «cuadrada», «vertical» or «horizontal»,
+      // stored next to its thumbnail under `<key>#forma`.
+      window.__qualifyPreviews.setShape = function (key, width, height) {
+        if (!width || !height) { return; }
+        var ratio = width / height;
+        var shape = ratio >= 0.95 && ratio <= 1.05
+          ? "cuadrada" : (ratio < 1 ? "vertical" : "horizontal");
+        window.__qualifyPreviews.setPreview(key + "#forma", shape);
+      };
+    }
 """
+
+#: Suffix of a file's form in the shared store (`setShape` above).
+SHAPE_SUFFIX = "#forma"
 
 
 def preview_key_js(root_id: str, filename_js: str) -> str:
@@ -164,6 +179,9 @@ def gallery_preview_capture_anchor(*, root_id: str) -> Var[str]:
             window.__qualifyPreviews.setPreview(
               {preview_key_js(root_id, "file.name")}, canvas.toDataURL("image/jpeg", 0.7)
             );
+            window.__qualifyPreviews.setShape(
+              {preview_key_js(root_id, "file.name")}, video.videoWidth, video.videoHeight
+            );
           }} catch (captureErr) {{
             // Capture failed (e.g. a codec the browser can decode but not paint to a
             // canvas) -- leave the fallback icon in place rather than a broken image.
@@ -199,6 +217,25 @@ def gallery_preview_capture_anchor(*, root_id: str) -> Var[str]:
     ).guess_type()
 
 
+# The ONE reader hook of the shared store: every Var that reads it uses this exact text,
+# so a component that uses two of them declares `previews` once (hooks dedupe by text).
+_PREVIEWS_HOOK = f"""
+    {_STORE_SETUP}
+    const previews = useSyncExternalStore(
+      (cb) => {{
+        if (typeof window === "undefined" || !window.__qualifyPreviews) {{ return () => {{}}; }}
+        window.__qualifyPreviews.listeners.add(cb);
+        return () => window.__qualifyPreviews.listeners.delete(cb);
+      }},
+      () => {{
+        if (typeof window === "undefined" || !window.__qualifyPreviews) {{ return {{}}; }}
+        return window.__qualifyPreviews.data;
+      }},
+      () => ({{}})
+    );
+    """
+
+
 def video_frame_preview_src(*, root_id: str, filename: Var[str]) -> Var[str]:
     """A reactive `Var[str]` — a `data:` URI of `filename`'s first video frame, once the
     gallery-wide capture anchor (`gallery_preview_capture_anchor`) has seen and
@@ -217,26 +254,39 @@ def video_frame_preview_src(*, root_id: str, filename: Var[str]) -> Var[str]:
     # itself SSR-safe: without it, React calls `getSnapshot` during server rendering
     # too, which would reach for `window` there. The empty-object snapshot is exactly
     # right for a server render anyway — no file has ever been dropped on the server.
-    hook = f"""
-    {_STORE_SETUP}
-    const previews = useSyncExternalStore(
-      (cb) => {{
-        if (typeof window === "undefined" || !window.__qualifyPreviews) {{ return () => {{}}; }}
-        window.__qualifyPreviews.listeners.add(cb);
-        return () => window.__qualifyPreviews.listeners.delete(cb);
-      }},
-      () => {{
-        if (typeof window === "undefined" || !window.__qualifyPreviews) {{ return {{}}; }}
-        return window.__qualifyPreviews.data;
-      }},
-      () => ({{}})
-    );
-    """
+    hook = _PREVIEWS_HOOK
     return Var(
         _js_expr=f'(previews[{preview_key_js(root_id, str(filename))}] || "")',
         _var_type=str,
         _var_data=VarData.merge(
             VarData(imports={"react": ["useSyncExternalStore"]}, hooks={hook: None}),
             filename._get_all_var_data(),
+        ),
+    ).guess_type()
+
+
+def gallery_crop_warning(*, root_id: str, filenames: Var[list[str]], template: str) -> Var[str]:
+    """The carousel's crop notice, or ``""`` (spec `publicar-varias-imagenes.md` §3a):
+    `template` with ``{forma}`` replaced by the FIRST file's form, only when the known
+    forms differ and the first one is known — from the forms the gallery's capture
+    anchors stored (`setShape`). Reactive: it follows the order as the owner moves
+    files, so a new cover updates (and, in an `aria-live` region, announces) it."""
+    hook = _PREVIEWS_HOOK
+    key = preview_key_js(root_id, "f")
+    expr = (
+        f"((names) => {{ const s = (names || []).map((f) => previews[{key} + "
+        f'"{SHAPE_SUFFIX}"] || ""); '
+        'if (s.length < 2 || !s[0]) { return ""; } '
+        "const known = s.filter(Boolean); "
+        'if (new Set(known).size < 2) { return ""; } '
+        f'return {LiteralStringVar.create(template)!s}.replace("{{forma}}", s[0]); '
+        f"}})({filenames!s})"
+    )
+    return Var(
+        _js_expr=expr,
+        _var_type=str,
+        _var_data=VarData.merge(
+            VarData(imports={"react": ["useSyncExternalStore"]}, hooks={hook: None}),
+            filenames._get_all_var_data(),
         ),
     ).guess_type()

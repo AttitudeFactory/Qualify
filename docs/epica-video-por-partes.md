@@ -147,6 +147,8 @@ Lo que fijan las decisiones y los cuatro documentos:
 | P6 | ¿Avisar que «Igual al original» conserva manos y fondo de otra cuenta? | Validar con 3 dueños; sin aviso en la fase 1 | UX §7 |
 | Orden | ADR 42 no existe en main | R1, R2, R3, R4, R5, R7 y R8 entran en la fase 1 de esta épica, en paralelo | diseño §13.4 |
 
+**Modelo del texto del padre (fundador, 2026-11-13, m-24993031):** el texto (copy) del video por partes lo sigue escribiendo **`claude-opus-5-5` con esfuerzo `medium`**, el mismo del copy de todo el generador. Sale de `anthropic_copy.py:54` (`DEFAULT_MODEL_ID`) y `:58` (`DEFAULT_EFFORT`); no hay cambio por variable de entorno ni por ruta (`composition.py:391` crea `AnthropicCopyAdapter()` sin argumentos y la cadena de copy es `COPY_CHAIN = ("anthropic",)`). El ticket m-24993031 suponía Sonnet porque Sonnet sí está en otras piezas de este flujo: «Proponerme las partes» (`parts_ai.py:79`, `claude-sonnet-5`) y «Mejorar mi texto» (`claude-sonnet-5-5`), no en el texto del padre. Comparar Opus 5.5 con Sonnet 5.5 para este texto queda en un ticket aparte. Detalle en [`modelos-generativos/pruebas.md`](modelos-generativos/pruebas.md#decision-texto-padre-opus).
+
 **Queda por decidir (no bloquea el arranque):** las cifras del cupo en segundos (Herwin); si R8 se parte en R8a (servicio, rol, análisis, purga) y R8b (corridas programadas) (backend §6); el texto de «Sin analizar» (ux-designer).
 
 ## 5. Tickets que esta épica absorbe, reemplaza o ajusta (comentarios ya dejados el 2026-11-02)

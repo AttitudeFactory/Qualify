@@ -28,8 +28,8 @@ from qualify_creative.providers import GenerationRequest, GenerationResult, Usag
 from qualify_creative.scene_plan import carousel_scene_plans
 from qualify_creative.schemas import BrandKit, CarouselSlide, ContentBrief, ToneAxes
 
-from qualify_api.creative import media as media_module
 from qualify_api.creative.brand_references import BrandReference
+from qualify_api.creative.image_pipeline import base as base_stage
 from qualify_api.creative.media import (
     MEDIA_PROMPT_BUDGET,
     PROMPT_COMPILER_VERSION,
@@ -186,8 +186,8 @@ def test_frozen_compilers_ignore_the_compiler_3_arguments(version: int) -> None:
         assert _prompts(brief, refs) == _prompts(brief, refs, new_args=False)
 
 
-def test_a_new_execution_is_stamped_with_compiler_3() -> None:
-    assert PROMPT_COMPILER_VERSION == 3
+def test_a_new_execution_is_stamped_with_compiler_4_or_later() -> None:
+    assert PROMPT_COMPILER_VERSION >= 4  # 5: m-24985141
 
 
 # -- compiler 3 ------------------------------------------------------------------------------
@@ -362,7 +362,7 @@ def _recording_bands(monkeypatch: pytest.MonkeyPatch) -> list[int]:
         calls.append(len(data))
         return fill_blank_bands(data)
 
-    monkeypatch.setattr(media_module, "fill_blank_bands", record)
+    monkeypatch.setattr(base_stage, "fill_blank_bands", record)
     return calls
 
 

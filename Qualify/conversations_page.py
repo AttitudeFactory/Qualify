@@ -1,14 +1,15 @@
-"""`/conversations` (QUA-226, E2): the multichannel private inbox — where a person reads
-and answers the private messages of the business's connected accounts (Instagram Direct
-first; a channel is one `ConversationSource`/`ConversationSender` pair, and this page
-never names one).
+"""«Por responder» › «Mensajes» (QUA-226, E2; m-24842990; m-25017859): where a person
+reads and answers the private messages of the business's connected accounts (Instagram
+Direct here; WhatsApp chats open on their own screen).
 
-Layout (docs/design-system.md §9.1): `app_shell(page_header(...), page_body(...))`; two
-panes on desktop — the thread list left, the conversation right; under 768 px one pane at
-a time with a back button (the `.q-wa-chats` recipe of `assets/qualify-inbox.css`, shared
-with WhatsApp → Chats, plus the `.q-conv-*` recipes of this screen: the profile avatar with
-the channel's mark, day chips, the bubble entrance, the «Enviando» dots, the pulse of a
-fresh row, the voice recorder, the suggestion chip). States are TONES through
+Layout: the tab of `/responder` (`responder_page`, `app_shell(page_header, page_body)`);
+two panes on desktop — the single list of every chat channel left (`inbox_list_page`,
+m-25017859: it replaced this screen's own Instagram list and its chips), the Instagram
+conversation right; under 768 px one pane at a time with a back button (the
+`.q-wa-chats` recipe of `assets/qualify-inbox.css`, shared with WhatsApp → Chats, plus
+the `.q-conv-*` recipes of this screen: the profile avatar with the channel's mark, day
+chips, the bubble entrance, the «Enviando» dots, the voice recorder, the suggestion
+chip). States are TONES through
 `signal_pill` / `tone_badge` / `callout`; content loading is a skeleton, work in progress
 (sending, attaching, suggesting) is the button's own `loading`.
 
@@ -53,6 +54,9 @@ from __future__ import annotations
 
 import reflex as rx
 
+from .chat_row import instagram_glyph
+from .chat_row import tone_pill as _tone_pill
+from .chat_row_vm import INBOX_BACK_LABEL
 from .conversations_state import ConversationsState
 from .conversations_vm import (
     BUTTON_KINDS,
@@ -62,10 +66,6 @@ from .conversations_vm import (
     BUTTONS_OFF_FORM_NOTICE,
     BUTTONS_OFF_NOTICE,
     DOCUMENT_ACCEPT,
-    FILTER_ALL,
-    FILTER_ANSWERED,
-    FILTER_PENDING,
-    FILTER_READ,
     MAX_BUTTON_TITLE_CHARS,
     MAX_DOCUMENT_BYTES,
     MAX_MEDIA_BYTES,
@@ -92,26 +92,21 @@ from .conversations_vm import (
     TemplateVM,
     ThreadRowVM,
 )
-from .followups_page import followups_panel, followups_toggle
-from .followups_state import FollowupsState
 from .ice_breakers_panel import ice_breakers_panel
 from .ice_breakers_panel import open_button as ice_breakers_button
-from .next_steps_vm import ALL_CLEAR_BODY, ALL_CLEAR_TITLE, CREATE_LABEL, CREATE_ROUTE
+from .inbox_list_page import inbox_list_pane
 from .reconnect_panel import reconnect_button, reconnect_result_panel
 from .ui import (
-    app_shell,
     callout,
     card,
     chat_bubble,
     drawer,
     dropzone,
     empty_state,
-    page_body,
-    page_header,
     platform_badge,
     removable_pill,
-    signal_pill,
     skeleton_rows,
+    tag,
     tone_badge,
 )
 from .ui import tokens as T
@@ -128,14 +123,6 @@ _FILE_UPLOAD_ID = "conversations_file"
 # ======================================================================================
 # Tone helpers (the VM ships the tone as data; the system needs it at build time)
 # ======================================================================================
-
-
-def _tone_pill(label: rx.Var[str], tone: rx.Var[str]) -> rx.Component:
-    return rx.match(
-        tone,
-        *[(t, signal_pill(label, t)) for t in _TONES[:-1]],
-        signal_pill(label, "neutral"),
-    )
 
 
 def _banner(message: rx.Var[str], tone: rx.Var[str]) -> rx.Component:
@@ -165,26 +152,6 @@ def _retry_button(label: str, on_click: rx.event.EventHandler) -> rx.Component:
     )
 
 
-def _instagram_glyph() -> rx.Component:
-    """Instagram's mark, inline (Lucide carries no brand icons): a rounded square, the
-    lens and the flash dot, in the current colour."""
-    return rx.el.svg(
-        rx.el.svg.rect(x="2", y="2", width="20", height="20", rx="5", ry="5"),
-        rx.el.svg.circle(cx="12", cy="12", r="4"),
-        rx.el.svg.circle(cx="17.5", cy="6.5", r="1.2", fill="currentColor"),
-        view_box="0 0 24 24",
-        width="10",
-        height="10",
-        fill="none",
-        stroke="currentColor",
-        stroke_width="2.2",
-        stroke_linecap="round",
-        stroke_linejoin="round",
-        color="white",
-        aria_hidden="true",
-    )
-
-
 def _avatar(row: ThreadRowVM, size: str = "md") -> rx.Component:
     """The counterpart's mark: their Instagram picture when the sync fetched one, else
     initials over a hue the stylesheet turns into the kit's gradient (`--q-conv-hue` is a
@@ -200,7 +167,7 @@ def _avatar(row: ThreadRowVM, size: str = "md") -> rx.Component:
             custom_attrs={"referrerpolicy": "no-referrer"},
         ),
         rx.box(
-            _instagram_glyph(),
+            instagram_glyph(color="white"),
             class_name="q-conv-channel",
             aria_label="Instagram",
         ),
@@ -245,29 +212,10 @@ def account_selector() -> rx.Component:
     )
 
 
-def _pending_badge() -> rx.Component:
-    return rx.cond(
-        S.pending_count > 0,
-        tone_badge(S.pending_count.to(str) + " sin responder", "warn", icon="bell"),
-        rx.fragment(),
-    )
-
-
 def _ice_breakers_door() -> rx.Component:
     """«Preguntas iniciales» (m-24789472) of the selected account: here, because their
     taps arrive in this inbox and the account is already chosen in this header."""
     return rx.cond(S.has_accounts, ice_breakers_button(S.selected_connection_id), rx.fragment())
-
-
-def conversations_header() -> rx.Component:
-    return page_header(
-        "Conversaciones",
-        "Los mensajes privados que llegan a tus cuentas conectadas, en una sola bandeja.",
-        account_selector(),
-        _ice_breakers_door(),
-        badge=_pending_badge(),
-        kicker=rx.cond(S.has_open_thread, _back_button()),
-    )
 
 
 # ======================================================================================
@@ -329,288 +277,17 @@ def access_banner() -> rx.Component:
 
 
 # ======================================================================================
-# Thread list
-# ======================================================================================
-
-
-def _thread_row(row: ThreadRowVM) -> rx.Component:
-    is_open = row.thread_id == S.open_thread_id
-    return rx.box(
-        rx.hstack(
-            rx.box(
-                _avatar(row),
-                rx.cond(
-                    row.attention == "pending",
-                    rx.box(class_name="q-conv-unread", aria_label="Sin responder"),
-                    rx.fragment(),
-                ),
-                position="relative",
-                flex_shrink="0",
-            ),
-            rx.vstack(
-                rx.hstack(
-                    rx.text(
-                        row.title,
-                        size="3",
-                        weight=rx.cond(row.attention == "pending", "bold", "medium"),
-                        class_name="q-wa-ellipsis",
-                        flex="1",
-                        min_width="0",
-                    ),
-                    rx.text(
-                        row.time_label,
-                        size="1",
-                        color=T.TEXT_MUTED,
-                        white_space="nowrap",
-                        class_name="q-nums",
-                    ),
-                    width="100%",
-                    align="center",
-                    spacing="2",
-                ),
-                rx.cond(
-                    row.handle != "",
-                    rx.text(row.handle, size="1", color=T.TEXT_MUTED, class_name="q-wa-ellipsis"),
-                    rx.fragment(),
-                ),
-                rx.hstack(
-                    rx.cond(
-                        row.preview_icon != "",
-                        rx.icon(row.preview_icon, size=T.ICON_SM, color=T.TEXT_MUTED),
-                        rx.fragment(),
-                    ),
-                    rx.text(
-                        row.preview,
-                        size="2",
-                        color=rx.cond(row.attention == "pending", T.TEXT_STRONG, T.TEXT_MUTED),
-                        class_name="q-wa-ellipsis",
-                        flex="1",
-                        min_width="0",
-                    ),
-                    width="100%",
-                    align="center",
-                    spacing="1",
-                ),
-                rx.hstack(
-                    _tone_pill(row.attention_label, row.attention_tone),
-                    rx.cond(
-                        row.window_short != "",
-                        _tone_pill(row.window_short, row.window_tone),
-                        rx.fragment(),
-                    ),
-                    width="100%",
-                    align="center",
-                    spacing="1",
-                    flex_wrap="wrap",
-                ),
-                spacing="1",
-                width="100%",
-                min_width="0",
-            ),
-            spacing="3",
-            align="start",
-            width="100%",
-        ),
-        on_click=S.open_conversation(row.thread_id),
-        class_name=rx.cond(
-            is_open,
-            rx.cond(
-                row.fresh,
-                "q-card q-lift q-wa-row q-conv-row q-wa-row--active q-conv-row--fresh",
-                "q-card q-lift q-wa-row q-conv-row q-wa-row--active",
-            ),
-            rx.cond(
-                row.fresh,
-                "q-card q-lift q-wa-row q-conv-row q-conv-row--fresh",
-                "q-card q-lift q-wa-row q-conv-row",
-            ),
-        ),
-        role="button",
-        tab_index=0,
-        aria_label=row.title,
-        cursor="pointer",
-        width="100%",
-    )
-
-
-def _filter_chip(label: rx.Var[str], key: str) -> rx.Component:
-    active = S.filter_key == key
-    return rx.button(
-        label,
-        on_click=S.set_filter(key),
-        variant=rx.cond(active, "solid", "soft"),
-        size="1",
-        type="button",
-        class_name="q-conv-filter",
-        **T.tone_scheme("neutral"),
-    )
-
-
-def _filters() -> rx.Component:
-    """Chips that wrap instead of a segmented control that overflows the narrow pane."""
-    return rx.flex(
-        _filter_chip(S.filter_all_label, FILTER_ALL),
-        _filter_chip(S.filter_pending_label, FILTER_PENDING),
-        _filter_chip(S.filter_read_label, FILTER_READ),
-        _filter_chip(S.filter_answered_label, FILTER_ANSWERED),
-        wrap="wrap",
-        gap="0.4rem",
-        width="100%",
-        class_name="q-conv-filters",
-        role="tablist",
-        aria_label="Filtrar conversaciones",
-    )
-
-
-def _empty_list() -> rx.Component:
-    """Worded by the access verdict: under a provisional one the list is NOT «no hay
-    mensajes», it is «no se ha podido leer todavía»."""
-    return rx.cond(
-        S.access.provisional,
-        empty_state(
-            "mail-question",
-            "Todavía no se han leído mensajes de esta cuenta",
-            "Mientras el acceso a los mensajes esté por verificar, una lista vacía no "
-            "significa que nadie haya escrito. Revisa el aviso de arriba.",
-            # N8: the access is granted in «Tus redes».
-            action=rx.link(
-                rx.button("Ir a Tus redes", variant="soft", size="3"), href="/connections"
-            ),
-        ),
-        empty_state(
-            "messages-square",
-            "Aún no hay conversaciones en esta cuenta",
-            "Cuando alguien escriba por mensaje privado a esta cuenta, su conversación "
-            "aparece aquí y puedes responderla desde esta pantalla.",
-            # N8: a publication is what makes people write.
-            action=_create_link(),
-        ),
-    )
-
-
-def _create_link() -> rx.Component:
-    """The one solid next step once nobody waits: the next publication (N3, N8)."""
-    return rx.link(
-        rx.button(rx.icon("wand-sparkles", size=16), CREATE_LABEL, size="3"),
-        href=CREATE_ROUTE,
-    )
-
-
-def _all_clear_state() -> rx.Component:
-    """m-24842961: zero people waiting — «¡Al día!» and the next job, never a blank list."""
-    return empty_state("circle-check", ALL_CLEAR_TITLE, ALL_CLEAR_BODY, action=_create_link())
-
-
-def _all_clear_card() -> rx.Component:
-    """The same news above a list with nothing pending (filter «Todas»): one line and the
-    button, wrapping under the text at 360 px (N12)."""
-    return card(
-        rx.flex(
-            rx.hstack(
-                rx.icon("circle-check", size=T.ICON_MD, color=T.tone_color("ok", 11)),
-                rx.vstack(
-                    rx.text(ALL_CLEAR_TITLE, size="2", weight="medium"),
-                    rx.text(ALL_CLEAR_BODY, size="2", color=T.TEXT_MUTED),
-                    spacing="0",
-                    align_items="start",
-                ),
-                spacing="3",
-                align="center",
-            ),
-            _create_link(),
-            justify="between",
-            align="center",
-            wrap="wrap",
-            gap="0.75rem",
-            width="100%",
-        ),
-        padding="0.75rem 1rem",
-    )
-
-
-def _list_body() -> rx.Component:
-    return rx.cond(
-        S.list_error != "",
-        rx.vstack(
-            callout(S.list_error, "error"),
-            _retry_button("Reintentar", S.load_list),
-            width="100%",
-            spacing="3",
-        ),
-        rx.cond(
-            S.list_ready,
-            rx.cond(
-                S.list_empty,
-                _empty_list(),
-                rx.cond(
-                    S.visible_rows.length() > 0,
-                    rx.vstack(
-                        rx.cond(
-                            S.all_clear & (S.filter_key == FILTER_ALL),
-                            _all_clear_card(),
-                        ),
-                        rx.vstack(
-                            rx.foreach(S.visible_rows, _thread_row),
-                            spacing="2",
-                            width="100%",
-                            class_name="q-wa-scroll q-wa-scroll--list q-conv-list",
-                        ),
-                        spacing="2",
-                        width="100%",
-                    ),
-                    rx.cond(
-                        S.filter_key == FILTER_PENDING,
-                        _all_clear_state(),
-                        # Filter exception (listed in the PR): the way out is the chip
-                        # «Todas», given as a button so the empty list is not a dead end.
-                        rx.vstack(
-                            rx.text(
-                                "No hay conversaciones con este filtro.",
-                                size="2",
-                                color=T.TEXT_MUTED,
-                            ),
-                            rx.button(
-                                "Ver todas",
-                                on_click=S.set_filter(FILTER_ALL),
-                                variant="soft",
-                                size="2",
-                                min_height="44px",
-                                type="button",
-                                **T.tone_scheme("neutral"),
-                            ),
-                            spacing="2",
-                            padding="1rem 0.25rem",
-                            align_items="start",
-                        ),
-                    ),
-                ),
-            ),
-            skeleton_rows(6, height="5.5rem", radius=T.RADIUS_CARD),
-        ),
-    )
-
-
-def _list_pane() -> rx.Component:
-    return rx.vstack(
-        _filters(),
-        _list_body(),
-        spacing="3",
-        width="100%",
-        class_name="q-wa-chats__list",
-    )
-
-
-# ======================================================================================
 # Conversation
 # ======================================================================================
 
 
 def _back_button() -> rx.Component:
     """Phone only (the list and the conversation share one pane there). N7: the
-    button names where it goes — «‹ Mensajes», never a bare arrow."""
+    button names where it goes — «‹ Por responder» (m-25017859: the single list),
+    never a bare arrow."""
     return rx.button(
         rx.icon("chevron-left", size=T.ICON_MD),
-        "Mensajes",
+        INBOX_BACK_LABEL,
         on_click=S.close_conversation,
         variant="ghost",
         size="2",
@@ -626,13 +303,57 @@ def _close_button() -> rx.Component:
         on_click=S.close_conversation,
         variant="ghost",
         size="2",
-        aria_label="Cerrar la conversación",
+        # m-25026457: it only hides the pane — «Cerrar» (the chat) is the other button.
+        aria_label="Volver a la lista",
+        title="Volver a la lista",
         class_name="q-conv-close",
         **T.tone_scheme("neutral"),
     )
 
 
+def _chat_status_button() -> rx.Component:
+    """m-25026457: «Cerrar» / «Reabrir», WhatsApp's words, icons and place (the right end
+    of the row under the name). ONE button whose label flips, so the keyboard focus stays
+    on it after the click instead of falling back to the page."""
+    thread = S.open_thread
+    action = rx.cond(thread.is_closed, "reopen", "close")
+    return rx.button(
+        rx.cond(
+            thread.is_closed,
+            rx.icon("rotate-ccw", size=T.ICON_SM),
+            rx.icon("archive", size=T.ICON_SM),
+        ),
+        rx.cond(thread.is_closed, "Reabrir", "Cerrar"),
+        # What the SCREEN shows goes with the tap: the backend refuses a close if the
+        # person wrote after it (m-25026457).
+        on_click=S.change_chat_status(action, thread.thread_id, thread.last_inbound_iso),
+        loading=S.chat_status_busy != "",
+        variant="soft",
+        size="2",
+        min_height="44px",
+        type="button",
+        class_name="q-conv-status",
+        **T.tone_scheme("neutral"),
+    )
+
+
 def _conversation_header() -> rx.Component:
+    return rx.vstack(
+        _conversation_identity(),
+        rx.hstack(
+            rx.spacer(),
+            _chat_status_button(),
+            width="100%",
+            align="center",
+            spacing="2",
+        ),
+        spacing="3",
+        width="100%",
+        class_name="q-conv-head",
+    )
+
+
+def _conversation_identity() -> rx.Component:
     thread = S.open_thread
     return rx.hstack(
         _avatar(thread, size="lg"),
@@ -652,6 +373,8 @@ def _conversation_header() -> rx.Component:
             rx.hstack(
                 rx.text(thread.subtitle, size="1", color=T.TEXT_MUTED),
                 _tone_pill(thread.attention_label, thread.attention_tone),
+                # m-25026457: WhatsApp's header mark for a closed chat (the row has none).
+                rx.cond(thread.is_closed, tag("Cerrado"), rx.fragment()),
                 spacing="2",
                 flex_wrap="wrap",
                 align="center",
@@ -664,7 +387,6 @@ def _conversation_header() -> rx.Component:
         width="100%",
         align="center",
         spacing="3",
-        class_name="q-conv-head",
     )
 
 
@@ -2058,28 +1780,61 @@ def _conversation_pane() -> rx.Component:
 
 
 # ======================================================================================
-# Page
+# The tab
 # ======================================================================================
 
 
-def _no_accounts_state() -> rx.Component:
-    return empty_state(
-        "messages-square",
-        "Aún no hay una cuenta de Instagram conectada",
-        "Conecta la cuenta de Instagram del negocio en Tus redes, concediendo el permiso "
-        "de mensajes, y sus conversaciones privadas aparecerán aquí.",
-        action=rx.link(
-            rx.button(rx.icon("link", size=T.ICON_SM), "Ir a Tus redes", size="2"),
-            href="/connections",
+def _accounts_error() -> rx.Component:
+    """The Instagram accounts could not be read: the single list still works, but an
+    Instagram row cannot open until this is retried."""
+    return rx.cond(
+        S.load_error != "",
+        rx.vstack(
+            callout(S.load_error, "error"),
+            _retry_button("Reintentar", S.load_accounts),
+            width="100%",
+            spacing="3",
         ),
+        rx.fragment(),
     )
 
 
-def _chats() -> rx.Component:
+def _instagram_tools() -> rx.Component:
+    """The Instagram account's own doors, over the list: which account (only with more
+    than one), its «Preguntas iniciales» and the access banner (§6.3)."""
+    return rx.cond(
+        S.has_accounts,
+        rx.vstack(
+            rx.hstack(
+                rx.cond(S.has_many_accounts, account_selector(), rx.fragment()),
+                _ice_breakers_door(),
+                spacing="3",
+                align="center",
+                wrap="wrap",
+                width="100%",
+            ),
+            access_banner(),
+            spacing="3",
+            width="100%",
+        ),
+        rx.fragment(),
+    )
+
+
+def messages_tab() -> rx.Component:
+    """«Por responder» › «Mensajes» (m-24842990; m-25017859): the single list of every
+    connected chat channel (`inbox_list_page`) at the left, and this screen's Instagram
+    chat pane at the right — a WhatsApp row opens today's WhatsApp chat on its own
+    screen. Under 768 px one pane at a time (`.q-wa-chats--open`)."""
     return rx.vstack(
-        access_banner(),
+        reconnect_result_panel(),
+        _heartbeat(),
+        rx.script(src="/qualify-voice.js"),
+        ice_breakers_panel(),
+        _accounts_error(),
+        _instagram_tools(),
         rx.box(
-            _list_pane(),
+            inbox_list_pane(),
             _conversation_pane(),
             class_name=rx.cond(
                 S.has_open_thread,
@@ -2091,72 +1846,3 @@ def _chats() -> rx.Component:
         spacing="4",
         width="100%",
     )
-
-
-def _inbox() -> rx.Component:
-    """Two views (m-24789646): the private inbox, and the commercial queries found in
-    Interacciones waiting to be answered in private (`followups_page.py`)."""
-    return rx.vstack(
-        followups_toggle(),
-        rx.cond(FollowupsState.showing_queries, followups_panel(), _chats()),
-        spacing="4",
-        width="100%",
-    )
-
-
-def _guarded(content: rx.Component) -> rx.Component:
-    """Load error → retry; accounts loading → skeleton; no account → how to connect one;
-    else `content`."""
-    return rx.cond(
-        S.load_error != "",
-        rx.vstack(
-            callout(S.load_error, "error"),
-            _retry_button("Reintentar", S.load_accounts),
-            width="100%",
-            spacing="3",
-        ),
-        rx.cond(
-            ~S.accounts_loaded,
-            rx.vstack(skeleton_rows(1, height="2.25rem"), skeleton_rows(4, height="5.5rem")),
-            rx.cond(S.show_no_accounts, _no_accounts_state(), content),
-        ),
-    )
-
-
-def _body() -> rx.Component:
-    return page_body(
-        reconnect_result_panel(),
-        _heartbeat(),
-        rx.script(src="/qualify-voice.js"),
-        ice_breakers_panel(),
-        _guarded(_inbox()),
-    )
-
-
-def messages_tab() -> rx.Component:
-    """m-24842990: the «Mensajes» tab of «Por responder» — the private inbox without the
-    Mensajes / Consultas toggle (the queries are the «Quieren comprar» tab there). The
-    account selector, the «Preguntas iniciales» door and the pending badge move from the
-    page header into the tab."""
-    return rx.vstack(
-        reconnect_result_panel(),
-        _heartbeat(),
-        rx.script(src="/qualify-voice.js"),
-        ice_breakers_panel(),
-        rx.hstack(
-            account_selector(),
-            _ice_breakers_door(),
-            _pending_badge(),
-            spacing="3",
-            align="center",
-            wrap="wrap",
-            width="100%",
-        ),
-        _guarded(_chats()),
-        spacing="4",
-        width="100%",
-    )
-
-
-def conversations_index() -> rx.Component:
-    return app_shell(conversations_header(), _body())

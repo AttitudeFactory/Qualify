@@ -50,6 +50,7 @@ from qualify_api.publishing.client import (
     PublishError,
     is_image_story,
 )
+from qualify_api.publishing.platforms import require_publishable_platform
 from qualify_api.publishing.repository import (
     CHILD_TERMINAL_STATUSES,
     AlreadySettled,
@@ -139,11 +140,16 @@ class TooManyItems(Exception):
 
 @dataclass(frozen=True)
 class ConnectionTarget:
-    """What publishing needs to know about a connection: where to publish and whether the
-    credential is believed to work."""
+    """What publishing needs to know about a connection: where to publish, whether the
+    credential is believed to work, and which platform it is (`social_connections.platform`
+    — checked against `platforms.PUBLISHABLE_PLATFORMS` before anything else happens).
+
+    `platform` has no default on purpose: a reader that forgets it must fail at
+    construction, never be waved through as Instagram."""
 
     ig_user_id: str
     status: str
+    platform: str
 
 
 class ConnectionTargetReader(Protocol):
@@ -312,6 +318,33 @@ class PublishService:
         # that could route a real image publish somewhere wrong.
         self._media_linker = media_linker
 
+    def require_publishable_connection(
+        self, *, tenant_id: UUID, connection_id: UUID
+    ) -> ConnectionTarget:
+        """The connection, if it exists in this tenant AND its platform is publishable.
+
+        Raises `UnknownConnection` (missing / RLS-filtered) or `platforms.UnsupportedPlatform`
+        (founder, 2026-11-12: only Instagram from «Publicar»). Pure read — no attempt row,
+        no staging, no platform call — so composition calls it BEFORE staging to R2 and
+        `start()` / `start_many()` call it again before their write-ahead."""
+        target = self._connections.read(tenant_id=tenant_id, connection_id=connection_id)
+        if target is None:
+            raise UnknownConnection(str(connection_id))
+        require_publishable_platform(connection_id=connection_id, platform=target.platform)
+        return target
+
+    def existing_attempt_state(
+        self, *, tenant_id: UUID, connection_id: UUID, idempotency_key: str
+    ) -> PublishState | None:
+        """The state of the attempt this `idempotency_key` already names on this connection,
+        or `None` when the key is new. Read-only: lets composition answer a retried call
+        WITHOUT staging the same bytes to R2 again (the attempt itself is already protected
+        by `uq_attempt_idempotency` inside `start()` / `start_many()`)."""
+        record = self._repo.find_by_idempotency_key(
+            tenant_id=tenant_id, connection_id=connection_id, idempotency_key=idempotency_key
+        )
+        return None if record is None else _state(record)
+
     async def start(
         self,
         *,
@@ -323,18 +356,25 @@ class PublishService:
         caption: str | None = None,
         thumb_offset: int | None = None,
         content_type: str | None = None,
+        media_content_type: str | None = None,
     ) -> PublishState:
         """Write-ahead → container → upload. Returns with the row in `processing` on the
         happy path; the client then drives `advance()` at the recommended cadence.
+
+        Raises `UnknownConnection` / `platforms.UnsupportedPlatform` before any write.
 
         `content_type` (QUA-68) is used ONLY by the IMAGE branch below, to mint the public
         media link with the right `Content-Type` — the VIDEO path ignores it entirely
         (it already knows its own bytes' shape via `upload_bytes`), so every pre-existing
         caller omitting it is unaffected.
+
+        `media_content_type` (m-25019217) is only RECORDED with the attempt, never used to
+        route: `start_many` passes a single video's type here without changing the VIDEO
+        path (`content_type` stays None there). Recorded = it, else `content_type`.
         """
-        target = self._connections.read(tenant_id=tenant_id, connection_id=connection_id)
-        if target is None:
-            raise UnknownConnection(str(connection_id))
+        target = self.require_publishable_connection(
+            tenant_id=tenant_id, connection_id=connection_id
+        )
 
         # The caption is recorded with the attempt (column 0017) — the SAME value this
         # call hands to create_container / create_image_container below, so the audit
@@ -346,6 +386,10 @@ class PublishService:
             media_product_type=media_product_type,
             adapter_version=self._adapter_version,
             caption=caption,
+            # m-25019217: the staged object travels with the attempt, so the owner's piece
+            # (`planner.immediate`) can point at it once Instagram accepted it
+            media_object_key=media_object_key,
+            media_content_type=media_content_type or content_type,
         )
         if not start.created:
             # The idempotent path: same key → the existing outcome, never a second publish.
@@ -896,13 +940,14 @@ class PublishService:
                 idempotency_key=idempotency_key,
                 caption=caption,
                 content_type=item.content_type if item.media_type == MEDIA_TYPE_IMAGE else None,
+                media_content_type=item.content_type,
             )
         if len(items) > MAX_CAROUSEL_ITEMS:
             raise TooManyItems(len(items))
 
-        target = self._connections.read(tenant_id=tenant_id, connection_id=connection_id)
-        if target is None:
-            raise UnknownConnection(str(connection_id))
+        target = self.require_publishable_connection(
+            tenant_id=tenant_id, connection_id=connection_id
+        )
 
         # QUA-99 (4.5/6): persisted here because _create_carousel (below) needs it much
         # later, across repeated advance() calls whose signature cannot carry one — see

@@ -4,6 +4,7 @@ Runs on `MemoryHashtagRepository` — the Postgres implementation has its own co
 
 from __future__ import annotations
 
+import time
 from uuid import UUID
 
 import pytest
@@ -483,3 +484,52 @@ def test_a_repeated_creation_does_not_gain_weight(repo, monkeypatch) -> None:
     hits = repo.resolve(TENANT, "xilofonos")
     assert [h.hashtag.tag for h in hits] == ["xilofonista"]
     assert repo.get(TENANT, "xilofonista").seen_count == 0
+
+
+# -- post sightings: views and date of what the feeds showed (m-25026377) ----------------
+
+
+def test_feed_parsers_keep_post_id_views_and_date_for_the_catalog(repo) -> None:
+    fresh = int(time.time()) - 5 * 86_400
+    tiktok = {
+        "aweme_list": [
+            {
+                "aweme_id": "7301",
+                "create_time": fresh,
+                "author": {"unique_id": "parrilla.cuc", "follower_count": 0},
+                "statistics": {"digg_count": 5, "comment_count": 1, "play_count": 42_000},
+                "desc": "Lo mejor #shawarmacucuta",
+                "text_extra": [{"hashtag_name": "comidarapida"}],
+            }
+        ]
+    }
+    instagram = {
+        "reels": [
+            {
+                "shortcode": "DeZ1",
+                "taken_at": fresh,
+                "caption": "Martes #shawarmacucuta",
+                "owner": {"username": "bianki.cuc"},
+            }
+        ]
+    }
+    (tt,) = creator_discovery.candidates_from_tiktok_videos(tiktok, "tiktok:hashtag:#shawarma")
+    (ig,) = creator_discovery.candidates_from_instagram_reels(instagram, "instagram:reels:x")
+    assert [(p.post_id, p.posted_ts, p.views) for p in tt.post_sightings] == [
+        ("7301", fresh, 42_000)
+    ]
+    assert tt.post_sightings[0].hashtags == ("shawarmacucuta", "comidarapida")
+    assert tt.post_sightings[0].source == "tiktok:hashtag:#shawarma"
+    # the Instagram reels search carries no view count: the date alone is kept
+    assert [(p.post_id, p.views) for p in ig.post_sightings] == [("DeZ1", None)]
+
+    # a second sighting of the same account carries its posts along
+    twin = Candidate(network="tiktok", username="parrilla.cuc")
+    twin.merge(tt)
+    assert twin.post_sightings == tt.post_sightings
+
+    summary = hashtag_catalog.capture(TENANT, _seed(), "national", [tt, ig], repository=repo)
+    assert summary.sightings == 3
+    recent = repo.recent_views(TENANT, ["shawarmacucuta", "comidarapida"])
+    assert (recent["shawarmacucuta"].views, recent["shawarmacucuta"].posts) == (42_000, 2)
+    assert recent["comidarapida"].views == 42_000

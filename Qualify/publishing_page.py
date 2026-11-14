@@ -1,172 +1,171 @@
-"""Publish screen (A5 vertical slice) — upload 1-10 files, pick a connected account,
-publish. 2-10 videos publish together as one Instagram carousel (QUA-99).
+"""«Publicar ahora» (`/publish`) — one or several photos and videos to Instagram, now.
 
-Built on the `ui` shell (`app_shell` / `page_header` / `page_body`); badges and callouts
-follow the design-system tones (docs/design-system.md). Adds the `/publish` route only.
+Spec: `docs/mockups/publicar-varias-imagenes.md` (visual reference
+`docs/mockups/publicar-varias-imagenes.html`); founder decisions 2026-11-12. A step
+assistant (N6) with one question per step, M counted live:
 
-QUA-98 started as a visual-only pass — every original `PublishState` binding (`value=`,
-`on_change=`, `on_click=`, `disabled=`) is still byte-for-byte the same expression. One
-narrow, explicitly-authorized addition later touched `publishing_state.py` too (never Meta
-calls/payloads/auth/account selection/video loading/caption logic/the publish button's
-core behavior): the success/failure toasts and the post-success form reset — see
-`_success_toast`/`_failure_toast` and the `self.caption = ""` reset there (the
-gallery-redesign follow-up below replaced QUA-98's original `rx.clear_selected_files`
-reset with clearing `pending_items` directly, since the dropzone's own client-side
-selection state is no longer what the gallery renders from).
+1. ¿Qué vas a publicar? — the gallery (`_what_step`).
+2. ¿Cómo sale? / ¿Cómo salen? — publicación or historia; with several, «Juntas en un
+   carrusel», «Una por una» (a mural, ≤ 9) or «Como historias» (`_how_step`).
+3. The order, only with 2 or more — a list for a carousel or historias, the profile grid
+   for a mural (`_order_step`). Drag (`assets/rank-drag.js`, `DragCard` + `sort_handle`)
+   or «⋯» (Primero · Subir uno · Bajar uno · Último · Quitar): never drag alone.
+4. ¿En qué Instagram sale? — only with 2 or more Instagram accounts; Facebook listed
+   off with its reason, WhatsApp not listed (`_account_step`).
+5. Revisa y publica — the description(s), «Publicar», then the progress, a failure with
+   «Continuar», or the «listo» (`_review_step`, `_done_panel`).
 
-QUA-99 (6/6): the dropzone gained `multiple=True`/`max_files` raised from 1 to 10 — the
-SAME `rx.upload` widget, no new upload abstraction. The caption field
-(`_caption_section`) is completely UNTOUCHED — one field, one source of truth, used
-identically for 1 file or a carousel; only `publishing_state.py` decides downstream
-which provider seam (`start_publish` vs `start_many_publish`) the SAME `self.caption`
-value reaches. QUA-103 then added `image/jpeg` to `accept` — see that ticket's note
-below for the image path this screen gained.
-
-**Gallery redesign (QUA-99 UX follow-up)** replaced the plain list of selected names with
-a grid — see `_pending_tile`'s docstring for the shape. Each tile shows a REAL thumbnail,
-captured entirely client-side (a first-frame capture for video, a direct read for image —
-`ui/video_preview.py` / `ui/image_preview.py`, native browser APIs, no library, no backend
-change), falling back to a kind-appropriate icon while nothing has been captured yet (or
-never could be). The polling status (`_status_block`) also stopped being one generic
-spinner: while a carousel is being assembled it now shows which child video is
-uploading/processing, or that the carousel/final confirmation step is under way
-(`PublishState.carousel_stage_label`), plus how long the wait has been running
-(`PublishState.elapsed_label`) and a plain-language note that Meta's own processing can
-take several minutes — all derived from data the backend already had, nothing invented.
-
-**QUA-103** added JPEG images as a first-class selection alongside video — the `accept`
-dropzone, the thumbnail strategy per tile (`PendingItemVM.kind`), and the copy below all
-know about both kinds. A carousel (2-10 items) may now be any mix of image and video —
-`PublishState`/`PublishService` bifurcate per item by its own `media_type`; this screen's
-own code never branches on it beyond picking a thumbnail.
-
-**Known, deliberately unaddressed risk (documented, not fixed, in this ticket):** Meta
-crops every item in a carousel to the aspect ratio of its FIRST item
-(`content-publishing.md:110`) — if a mixed carousel starts with an image, any video(s)
-after it are cropped to that image's ratio, not their own. Neither this screen nor
-`PublishService` does anything about it (no reordering, no warning) — the operator's own
-selection order is respected exactly as given. Any UX mitigation (a warning, a suggested
-reorder) is a follow-up decision, not part of this ticket's scope.
-
-**PUBLICAR-4 (m-24842986): three steps and a «listo».** `/publish` is now one
-assistant (N6) — ① ¿Qué vas a publicar? (this gallery) ② ¿Dónde sale? (publication on
-the profile or a 24-hour historia, and the account, preselected when there is only
-one) ③ Revisa y publica (the review in words, the text only for a publication). Every
-step stays MOUNTED and is only hidden (`_step_panel`), so «Atrás» never loses a file,
-a thumbnail or a word. Formats and sizes no longer show up front: only in the error
-when a file does not fit. A confirmed publish replaces the assistant with a persistent
-`callout` and two buttons (N3: «Ver mi semana», «Publicar otra») — the toast stays as
-an extra. «Tendencias e inspiración» left the flow: it opens behind «Ideas para tu
-próxima publicación». The step and the kind live in `PublishHubState`; a historia is
-published by `StoriesState` (`publish_now` hands the file over); the historia-only
-pieces are in `stories_page.py`. Before this, QUA-113 had put two separate forms
-behind a `Publicaciones | Historias` selector here, with an «Antes de publicar» card.
+Every step stays MOUNTED and is only hidden (`_step_panel`), so «Atrás» never loses a
+file, a thumbnail or a word. Only design-system pieces (`Qualify/ui/`); the mural grid is
+the gallery tile (`.q-pub-tile`) laid out in three columns (`assets/qualify-publish.css`).
+The state is `PublishState` (data + the run) and `PublishHubState` (navigation).
 """
 
 from __future__ import annotations
 
 import reflex as rx
 
-from .publish_hub_state import FLOW_POSTS, FLOW_STORIES, PublishHubState
+from .publish_hub_state import PublishHubState, link_guard_script
 from .publish_wizard_vm import (
+    BACK,
+    BEFORE_TILE,
+    CAPTION_EXAMPLE,
+    CAPTION_HELP,
+    CAPTION_LABEL,
+    CONTINUE,
+    COPY_CAPTION,
+    COVER_BADGE,
+    DISCARD,
+    GALLERY_FULL,
+    KEEP_AS_IS,
+    KEEP_AS_IS_TITLE,
+    LEAVE_GO,
+    LEAVE_STAY,
+    LEAVE_TITLE,
+    MODE_CAROUSEL,
+    MODE_ONE_BY_ONE,
+    MODE_POST,
+    MODE_STORIES,
+    MODE_STORY,
+    MURAL_HELP,
+    MURAL_SHIFT_NOTE,
+    ONE_STORY_OPEN_HINT,
+    ORDER_HELP,
+    PICK_NEXT_HINT,
+    PROGRESS_DETAIL,
+    RECONNECT,
     REJECTED_FILE_HELP,
     REJECTED_FILE_TITLE,
+    STEP_ACCOUNT,
+    STEP_HOW,
+    STEP_ORDER,
     STEP_REVIEW,
-    STEP_TITLES,
     STEP_WHAT,
-    STEP_WHERE,
-    STORY_NEEDS_ONE_FILE,
-    TOTAL_STEPS,
+    STORIES_NO_TEXT,
+    STORIES_ORDER_HELP,
 )
-from .publishing_state import _UPLOAD_ID, _WAIT_EXPLANATION, PublishState
+from .publishing_state import _UPLOAD_ID, PublishState
 from .publishing_vm import ConnectionOptionVM, PendingItemVM
-from .stories_page import share_to_instagram_button, stories_status_block
-from .stories_state import StoriesState
+from .stories_page import share_to_instagram_button
 from .trending_panel import trending_card
 from .ui import (
+    DragCard,
     app_shell,
+    asset_script,
     callout,
+    card,
     choice_card,
     choice_card_check,
     dropzone,
     empty_state,
     loading_spinner,
+    media_thumb,
     page_body,
     page_header,
+    platform_badge,
+    progress_panel,
     section,
+    signal_pill,
+    sort_handle,
+    tone_badge,
 )
 from .ui import tokens as T
 from .ui.image_preview import gallery_image_preview_capture_anchor
 from .ui.steps import step_foot, step_frame, step_head, step_sync
-from .ui.video_preview import gallery_preview_capture_anchor, video_frame_preview_src
+from .ui.video_preview import (
+    gallery_crop_warning,
+    gallery_preview_capture_anchor,
+    video_frame_preview_src,
+)
 
-# Gallery redesign, part 2 (QUA-99 UX follow-up) — a stable DOM id `video_preview.py`
-# listens on (native `drop`/`change` delegation) to find each tile's own `File` for its
-# real thumbnail. Lives here, not there, for the same reason `_UPLOAD_ID` does: this
-# module owns the actual DOM structure, `video_preview.py` stays a plain generic helper
-# with no knowledge of this specific screen's layout.
+P = PublishState
+H = PublishHubState
+
+# The DOM id the preview capture anchors listen on (`ui/video_preview.py`).
 _GALLERY_ROOT_ID = "publish-gallery-root"
-
-# PUBLICAR-4: «Abrir en Instagram» (a historia) shares the File `ui/video_preview.py`
-# stashed for this gallery — the LAST one picked. Removing any tile forgets it, so a
-# removed file can never be the one shared; the owner picks it again instead.
+# «Abrir en Instagram» shares the LAST File picked; removing any tile forgets it.
 _FORGET_SHARED_FILE = (
     "if (window.__qualifyPreviews && window.__qualifyPreviews.filesByRoot) "
     f"{{ delete window.__qualifyPreviews.filesByRoot['{_GALLERY_ROOT_ID}']; }}"
 )
-
+_RANK_DRAG_JS = asset_script("rank-drag.js")
+_CROP_TEMPLATE = (
+    "Instagram corta todas a la forma de la primera ({forma}). Si alguna se ve cortada, "
+    "pon primero la que tiene la forma que quieres."
+)
 # N12: every control on this screen is at least 44 px tall.
 _TARGET = "44px"
 
 
-def _connection_item(conn: ConnectionOptionVM) -> rx.Component:
-    return rx.select.item(conn.label, value=conn.id)
+def _preview(item: PendingItemVM) -> rx.Var[str]:
+    return video_frame_preview_src(root_id=_GALLERY_ROOT_ID, filename=item.filename)
 
 
-def _connection_selector() -> rx.Component:
-    return rx.select.root(
-        rx.select.trigger(placeholder="Elige una cuenta conectada", width="100%"),
-        rx.select.content(
-            rx.foreach(PublishState.connections, _connection_item),
-        ),
-        value=PublishState.selected_connection_id,
-        on_change=PublishState.select_connection,
-        size="3",
-        width="100%",
+def _kind_icon(item: PendingItemVM, size: int = 20) -> rx.Component:
+    return rx.cond(
+        item.kind == "image",
+        rx.icon("image", size=size, color=T.tone_color("ok", 9)),
+        rx.icon("film", size=size, color=T.tone_color("ok", 9)),
     )
 
 
-def _pending_tile(item: PendingItemVM, index: rx.Var[int]) -> rx.Component:
-    """One already-selected file, image or video (gallery redesign, QUA-99 UX
-    follow-up; image support QUA-103).
+def _thumb56(item: PendingItemVM) -> rx.Component:
+    src = _preview(item)
+    return rx.cond(
+        item.kind == "image",
+        media_thumb(src, size="56px", icon="image", alt="", has=src != ""),
+        media_thumb(src, size="56px", icon="film", alt="", has=src != ""),
+    )
 
-    Shows a REAL thumbnail (`video_frame_preview_src`, `ui/video_preview.py` /
-    `ui/image_preview.py` — native browser APIs, client-side only, no backend/Meta call)
-    once the gallery's shared capture hook has processed it; falls back to a
-    kind-appropriate icon+filename tile while it is not ready yet (a moment, right after
-    the file is picked) or never could be (an unsupported codec for video — the fallback
-    is not an error state, just what "no preview" always looked like here). `preview_src`
-    reads the SAME shared store regardless of which anchor (video or image) wrote it —
-    see `video_frame_preview_src`'s docstring for why the capture logic itself has to
-    live in gallery-wide hooks rather than one hook per tile (a per-tile hook cannot see
-    `rx.foreach`'s per-item Var at all; `previews[filename]`, a plain lookup rather than
-    a hook, can).
 
-    Rendered as a SIBLING of the dropzone (`_gallery_zone` below), never as its child —
-    that is what makes clicking a tile or its `X` never reopen the file picker; only the
-    `+` tile (the actual `rx.upload` widget) is wired to do that.
-    """
-    preview_src = video_frame_preview_src(root_id=_GALLERY_ROOT_ID, filename=item.filename)
+def _step_panel(step: str, *children: rx.Component) -> rx.Component:
+    """One step's content. Hidden — never unmounted — while another step shows."""
+    return rx.vstack(
+        *children,
+        spacing="4",
+        width="100%",
+        align_items="stretch",
+        display=rx.cond(P.step_id == step, "flex", "none"),
+    )
+
+
+def _muted(text: str | rx.Var, size: str = "2") -> rx.Component:
+    return rx.text(text, size=size, color=T.TEXT_MUTED)
+
+
+# -- ① ¿Qué vas a publicar? ---------------------------------------------------------------
+
+
+def _pending_tile(item: PendingItemVM) -> rx.Component:
+    """One selected file: its real thumbnail (or an icon while there is none), its
+    position chip and the ✕ (spec §3, paso 1 — the order changes in step 3)."""
+    preview_src = _preview(item)
     return rx.box(
         rx.cond(
             preview_src != "",
-            rx.el.img(src=preview_src, alt=item.filename, class_name="q-pub-tile-img"),
+            rx.el.img(src=preview_src, alt=item.label, class_name="q-pub-tile-img"),
             rx.vstack(
-                rx.cond(
-                    item.kind == "image",
-                    rx.icon("image", size=24, color=T.tone_color("ok", 9)),
-                    rx.icon("film", size=24, color=T.tone_color("ok", 9)),
-                ),
+                _kind_icon(item, 24),
                 rx.text(
                     item.filename,
                     size="1",
@@ -184,23 +183,13 @@ def _pending_tile(item: PendingItemVM, index: rx.Var[int]) -> rx.Component:
                 padding="0.4rem",
             ),
         ),
-        # The carousel position: a dark glass chip (`.q-pub-tile-pos`), readable on any
-        # first frame — a chip, never a solid badge.
-        rx.box(index + 1, class_name="q-pub-tile-pos", aria_hidden="true"),
-        # A thumbnail can be almost any color underneath this — the dark glass chip
-        # with its ring (`.q-pub-tile-x`, assets/qualify-publish.css) is what keeps the
-        # X readable regardless (a plain solid red circle alone was reported hard to
-        # notice against a busy first frame). Soft under the skin, so «Publicar» stays
-        # the screen's one solid button.
+        rx.box(item.position, class_name="q-pub-tile-pos", aria_hidden="true"),
         rx.icon_button(
             rx.icon("x", size=14),
-            on_click=[
-                PublishState.remove_pending_file(index),
-                rx.call_script(_FORGET_SHARED_FILE),
-            ],
-            disabled=~PublishState.can_edit_gallery,
-            title="Quitar este archivo",
-            aria_label="Quitar este archivo",
+            on_click=[P.remove_item(item.id, False), rx.call_script(_FORGET_SHARED_FILE)],
+            disabled=~P.can_edit_gallery,
+            title="Quitar " + item.label,
+            aria_label="Quitar " + item.label,
             size="1",
             variant="soft",
             color_scheme=T.tone_scale("error"),
@@ -212,64 +201,23 @@ def _pending_tile(item: PendingItemVM, index: rx.Var[int]) -> rx.Component:
 
 
 def _upload_widget(children: rx.Component, *, compact: bool) -> rx.Component:
-    """The ONE actual dropzone (`rx.upload`) on this screen — either the big empty-state
-    prompt (`compact=False`, nothing selected yet) or the small `+` tile that sits inside
-    the grid alongside already-selected tiles (`compact=True`). Same widget, same props,
-    either way: `multiple=True` and a dynamic `max_files` (QUA-99 UX follow-up —
-    `PublishState.remaining_slots`, so a half-full gallery cannot accept more than the
-    10-item cap actually leaves room for) plus the real, server-side invariant in
-    `PublishState.add_files`, which this is only a client-side nicety on top of, same
-    posture the original single-video dropzone already documented for itself.
-    """
+    """The ONE dropzone: the big empty prompt, or the `+` tile inside the grid. The real
+    limits are server-side (`PublishState.add_files`, the staging service)."""
     return dropzone(
         children,
         upload_id=_UPLOAD_ID,
-        # QUA-103: JPEG joins the two video containers Meta already accepted here —
-        # JPEG is the ONLY image format Meta's Content Publishing API supports at all
-        # (a platform restriction, not an incomplete whitelist — see
-        # `qualify_api.publishing.client.IMAGE_CONTENT_TYPE`'s docstring). This is a
-        # client-side nicety, same posture as everything else in this widget: the real
-        # gate is `MediaStagingService.stage_media`'s content-type + magic-byte check.
         accept={
             "video/mp4": [".mp4"],
             "video/quicktime": [".mov"],
             "image/jpeg": [".jpg", ".jpeg"],
         },
         multiple=True,
-        max_files=PublishState.remaining_slots,
-        # Client-side mirror of `ObjectGate.MAX_MEDIA_BYTES` (qualify_shared/objects/
-        # gate.py) — the video ceiling, and the widest one `rx.upload` can express in one
-        # `max_size` (react-dropzone has no per-accepted-type limit). The real,
-        # load-bearing barriers are server-side and per-format: 300 MB for video, 8 MB
-        # for IMAGE (`MediaStagingService`/`client.IMAGE_MAX_BYTES`) — an oversized JPEG
-        # still passes this client-side check and is rejected there, with a clear toast
-        # (`publishing_state._IMAGE_TOO_LARGE`), same "server-side guard is the real
-        # invariant" posture this widget already documents for everything else.
+        max_files=P.remaining_slots,
         max_size=300 * 1024 * 1024,
-        disabled=~PublishState.can_edit_gallery,
-        # QUA-99 UX follow-up: bound to `add_files`, which BUFFERS onto whatever is
-        # already selected (gallery redesign) rather than replacing it — see
-        # `PublishState.add_files`'s docstring for why a plain `rx.selected_files`-driven
-        # gallery cannot support "add more without losing what's there" at all.
-        # `video_frame_preview_src` (`ui/video_preview.py`) gets its own real `File`
-        # access to the SAME dropped files a different way (a native `drop`/`change`
-        # DOM listener on `_GALLERY_ROOT_ID`, never touching this `on_drop` wiring) — see
-        # that module's docstring for why reusing Reflex's own `filesById` Context here
-        # turned out not to be composable with a second handler in this list.
-        on_drop=PublishState.add_files,
-        # Replaces Reflex's default English "Files not Accepted" toast
-        # (reflex_components_core.core.upload._default_drop_rejected) with one in
-        # Spanish, consistent with the rest of Qualify. Static on purpose: it covers
-        # every rejection reason (wrong format, too large, more than the cap) with one
-        # message rather than inspecting `rejected_files` via undocumented internal Var
-        # APIs.
-        # PUBLICAR-4: formats and sizes are said HERE, in the error, and nowhere up
-        # front. Static on purpose: one message for every rejection reason (wrong
-        # format, too large, more than the cap), never `rejected_files` internals.
-        # UX review: the toast vanishes in seconds, so step 1 also keeps the reason in
-        # a callout (`_rejected_callout`) until the next valid pick (N3).
+        disabled=~P.can_edit_gallery,
+        on_drop=P.add_files,
         on_drop_rejected=[
-            PublishState.mark_drop_rejected,
+            P.mark_drop_rejected,
             rx.toast.error(REJECTED_FILE_TITLE, description=REJECTED_FILE_HELP),
         ],
         variant="tile" if compact else "zone",
@@ -291,9 +239,7 @@ def _empty_state_content() -> rx.Component:
     return rx.vstack(
         rx.icon("image-plus", size=32, color=T.TEXT_FAINT),
         rx.text("Toca para elegir fotos o videos de tu teléfono", size="3", weight="medium"),
-        rx.text(
-            "Desde la computadora también puedes arrastrarlos aquí.", size="1", color=T.TEXT_MUTED
-        ),
+        _muted("Desde la computadora también puedes arrastrarlos aquí.", "1"),
         spacing="2",
         align="center",
         text_align="center",
@@ -301,208 +247,103 @@ def _empty_state_content() -> rx.Component:
 
 
 def _preview_capture_anchor() -> rx.Component:
-    """Mounted UNCONDITIONALLY (a sibling of the `rx.cond` below, never inside either
-    branch of it) so the gallery's shared thumbnail-capture listeners
-    (`gallery_preview_capture_anchor` for video, `gallery_image_preview_capture_anchor`
-    for JPEG — QUA-103) are already attached before the very FIRST file is ever picked —
-    not only once a tile exists to ask for one.
-
-    Without this, the FIRST video (always selected while the gallery still shows the
-    empty-state prompt, since `pending_items` starts empty) never got a real thumbnail
-    while every LATER one did — reported exactly this way, 2026-09-10. The empty-state
-    prompt is one `rx.cond` branch, the tile grid is the other, and the tile grid is
-    the only place a capture listener used to get mounted — so a file dropped while the
-    empty prompt was still showing had nothing listening yet. Renders nothing visible;
-    only the hook's side effect (attaching the listeners) matters here.
-    """
+    """Mounted unconditionally so the very first pick already gets its thumbnail."""
     return rx.box(
         gallery_preview_capture_anchor(root_id=_GALLERY_ROOT_ID),
-        # QUA-103: a SECOND, independent capture anchor for JPEG files — mounted
-        # alongside the video one, never replacing it. See `ui/image_preview.py`'s
-        # module docstring for why two listeners on the same root id is safe.
         gallery_image_preview_capture_anchor(root_id=_GALLERY_ROOT_ID),
         display="none",
     )
 
 
 def _gallery_zone() -> rx.Component:
-    """Instagram-carousel-style grid (gallery redesign, QUA-99 UX follow-up) — replaces
-    the old plain list of file names. Each already-selected video is its own tile
-    (`_pending_tile`, position badge + `X`), followed by a `+` tile while there is still
-    room (`PublishState.remaining_slots > 0`); once the gallery is empty, the whole area
-    collapses back to the original big drag-and-drop prompt. Visual order here IS
-    `PublishState.pending_items`' order, which IS the order `publish_background` sends
-    downstream as carousel `position` (`PublishService.start_many`, QUA-99 4/6) —
-    `rx.foreach`'s own index is the only place that order is read from, never a second,
-    separately-tracked position field that could drift from it.
-    """
     return rx.box(
         _preview_capture_anchor(),
         rx.cond(
-            PublishState.pending_items.length() > 0,
-            rx.flex(
-                rx.foreach(PublishState.pending_items, _pending_tile),
+            P.file_count > 0,
+            rx.box(
+                rx.foreach(P.pending_items, _pending_tile),
                 rx.cond(
-                    PublishState.remaining_slots > 0,
+                    P.remaining_slots > 0,
                     _upload_widget(_add_tile_content(), compact=True),
                     rx.fragment(),
                 ),
-                wrap="wrap",
-                gap="0.75rem",
-                width="100%",
+                # three columns, like the profile grid (UX review 2026-11-12)
+                class_name="q-pub-gallery",
             ),
             _upload_widget(_empty_state_content(), compact=False),
         ),
-        # QUA-99 UX follow-up: the element `_preview_capture_anchor`/`video_frame_
-        # preview_src` (`ui/video_preview.py`) listen on for native `drop`/`change`
-        # delegation — see `_GALLERY_ROOT_ID`. This wrapping box stays mounted for the
-        # whole time the gallery is on screen, regardless of which `rx.cond` branch
-        # above is currently showing.
         id=_GALLERY_ROOT_ID,
         width="100%",
     )
 
 
-def _status_block() -> rx.Component:
-    # QUA-99 (6/6): "el video" (singular) only makes sense while exactly one file is
-    # selected. `pending_items` is still populated during "staging_and_starting" (it is
-    # only released once staging actually succeeds, `publishing_state.py`), so it is a
-    # correct read here — unlike during "polling", where it has already been cleared,
-    # which is exactly why the polling arm below reads `carousel_stage_label` instead
-    # (server-tracked via `_is_carousel`, QUA-99 UX follow-up) rather than this Var.
-    is_carousel = PublishState.pending_items.length() > 1
-    return rx.match(
-        PublishState.phase,
-        (
-            "staging_and_starting",
-            callout(
-                rx.hstack(
-                    loading_spinner("sm"),
-                    rx.cond(
-                        is_carousel,
-                        rx.text(
-                            "Subiendo tus fotos y videos...",
-                            size="2",
-                        ),
-                        rx.text("Subiendo tu publicación...", size="2"),
-                    ),
-                    spacing="2",
-                    align="center",
-                ),
-                "neutral",
-                icon="upload",
-            ),
-        ),
-        (
-            "polling",
-            callout(
-                rx.vstack(
-                    rx.hstack(
-                        loading_spinner("sm"),
-                        # QUA-99 UX follow-up: `carousel_stage_label` is only non-empty
-                        # for a carousel attempt that has already taken its first poll
-                        # tick — everything else (a single video, or the first tick
-                        # before any child status has been read yet) falls back to the
-                        # original generic message, never a blank line.
-                        rx.cond(
-                            PublishState.carousel_stage_label != "",
-                            rx.text(PublishState.carousel_stage_label, size="2", weight="medium"),
-                            rx.text(
-                                "Publicando, esperando que Instagram lo confirme...",
-                                size="2",
-                                weight="medium",
-                            ),
-                        ),
-                        rx.cond(
-                            PublishState.elapsed_label != "",
-                            rx.text(
-                                PublishState.elapsed_label,
-                                size="1",
-                                color=T.TEXT_FAINT,
-                                class_name="q-mono q-nums",
-                            ),
-                            rx.fragment(),
-                        ),
-                        spacing="2",
-                        align="center",
-                        width="100%",
-                    ),
-                    rx.text(_WAIT_EXPLANATION, size="1", color=T.TEXT_MUTED),
-                    spacing="1",
-                    align_items="start",
-                    width="100%",
-                ),
-                "warn",
-                icon="clock",
-            ),
-        ),
-        # "success" has no arm: since PUBLICAR-4 the page replaces the whole assistant
-        # with a persistent «listo» and the next step (`_done_panel`, N3); the toast
-        # fired from `publishing_state.py` is only an extra.
-        ("failure", callout(PublishState.error, "error")),
-        rx.fragment(),
-    )
-
-
-# ---------------------------------------------------------------------------
-# PUBLICAR-4: the three steps, the «listo» and the ideas behind a link.
-
-
-def _is_stories() -> rx.Var[bool]:
-    return PublishHubState.active_flow == FLOW_STORIES
-
-
-def _busy() -> rx.Var[bool]:
-    """A publish is in flight in either machine — nothing moves then."""
-    return ~PublishState.can_edit_gallery | ~StoriesState.can_edit_gallery
-
-
-def _file_count() -> rx.Var[int]:
-    return PublishState.pending_items.length()
-
-
-def _step_panel(step: int, *children: rx.Component) -> rx.Component:
-    """One step's content. Hidden — never unmounted — while another step shows, so
-    going back finds every file, thumbnail and word where the owner left it (N6)."""
-    return rx.vstack(
-        *children,
-        spacing="4",
-        width="100%",
-        align_items="stretch",
-        display=rx.cond(PublishHubState.step == step, "flex", "none"),
-    )
-
-
-# -- ① ¿Qué vas a publicar? -------------------------------------------------
-
-
 def _rejected_callout() -> rx.Component:
-    """The refused pick's reason, kept on screen until a valid file comes in (N3)."""
     return rx.cond(
-        PublishState.last_drop_rejected,
+        P.last_drop_rejected,
         callout(f"{REJECTED_FILE_TITLE}. {REJECTED_FILE_HELP}", "error"),
         rx.fragment(),
     )
 
 
-def _no_accounts_first() -> rx.Component:
-    """No account connected at all: say so before the owner picks any file, not in
-    step 2 after the work is done (UX review). Step 2 keeps its own as a backstop."""
-    no_account = (
-        PublishState.connections_loaded
-        & (PublishState.load_error == "")
-        & (PublishState.connections.length() == 0)
-    )
+def _no_instagram_first() -> rx.Component:
+    """No Instagram account to publish to: said before any file is picked (a business
+    with only WhatsApp or Facebook sees it too — spec §3, paso 1)."""
     return rx.cond(
-        no_account,
+        P.connections_loaded & (P.load_error == "") & ~P.has_instagram,
         empty_state(
             "link",
             "Primero conecta tu Instagram",
             "Para publicar, primero conecta tu Instagram. Toma un par de minutos.",
             action=rx.link(
-                rx.button("Conectar mi Instagram", size="3", min_height=_TARGET),
+                rx.button(RECONNECT, size="3", min_height=_TARGET),
                 href="/connections",
             ),
+        ),
+        rx.fragment(),
+    )
+
+
+def _leftover_callout() -> rx.Component:
+    """«Te quedaron {r} sin publicar…» — a mural or historias left unfinished."""
+    return rx.cond(
+        P.leftover_text != "",
+        callout(
+            rx.vstack(
+                rx.text(P.leftover_text, size="3", weight="medium"),
+                rx.flex(
+                    rx.cond(
+                        P.needs_reconnect | ~P.pinned_account_ready,
+                        rx.link(
+                            rx.button(RECONNECT, size="3", width="100%", min_height=_TARGET),
+                            href="/connections",
+                            width="100%",
+                        ),
+                        rx.button(
+                            CONTINUE,
+                            on_click=H.resume_leftover,
+                            size="3",
+                            width="100%",
+                            min_height=_TARGET,
+                        ),
+                    ),
+                    rx.button(
+                        DISCARD,
+                        on_click=H.start_over,
+                        variant="soft",
+                        size="3",
+                        width="100%",
+                        min_height=_TARGET,
+                    ),
+                    direction=rx.breakpoints(initial="column", sm="row"),
+                    gap="0.75rem",
+                    width="100%",
+                ),
+                spacing="3",
+                width="100%",
+                align_items="stretch",
+            ),
+            "warn",
+            icon="triangle-alert",
         ),
         rx.fragment(),
     )
@@ -511,29 +352,27 @@ def _no_accounts_first() -> rx.Component:
 def _what_step() -> rx.Component:
     return _step_panel(
         STEP_WHAT,
-        _no_accounts_first(),
+        _leftover_callout(),
+        _no_instagram_first(),
         _gallery_zone(),
         _rejected_callout(),
-        rx.cond(
-            _file_count() > 1,
-            rx.text(
-                "Con dos o más, salen juntas en una sola publicación que se desliza "
-                "(carrusel), en este orden.",
-                size="2",
-                color=T.TEXT_MUTED,
-            ),
-            rx.fragment(),
-        ),
+        rx.cond(P.remaining_slots == 0, _muted(GALLERY_FULL), rx.fragment()),
+        rx.cond(P.file_count > 1, _muted(PICK_NEXT_HINT), rx.fragment()),
     )
 
 
-# -- ② ¿Dónde sale? ---------------------------------------------------------
+# -- ② ¿Cómo sale? / ¿Cómo salen? ----------------------------------------------------------
 
 
 def _kind_choice(
-    flow: str, icon: str, title: str, description: rx.Component, *, disabled: rx.Var[bool]
+    mode: str,
+    icon: str,
+    title: str,
+    description: rx.Component,
+    *,
+    disabled: rx.Var[bool] | bool = False,
 ) -> rx.Component:
-    selected = PublishHubState.active_flow == flow
+    selected = P.mode == mode
     return choice_card(
         rx.hstack(
             rx.icon(icon, size=T.ICON_MD, color=T.tone_color("accent", 9)),
@@ -550,104 +389,337 @@ def _kind_choice(
             width="100%",
         ),
         selected=selected,
-        on_select=PublishHubState.select_flow(flow),
-        disabled=disabled,
+        on_select=H.select_kind(mode),
+        disabled=P.busy | disabled if isinstance(disabled, rx.Var) else P.busy,
         width="100%",
         min_height=_TARGET,
         text_align="left",
     )
 
 
-def _kind_choices() -> rx.Component:
-    story_blocked = _file_count() != 1
-    return rx.vstack(
+def _how_step() -> rx.Component:
+    one = rx.vstack(
         _kind_choice(
-            FLOW_POSTS,
+            MODE_POST,
             "layout-grid",
             "Publicación en tu perfil",
-            rx.text("Queda en tu perfil, con su texto.", size="2", color=T.TEXT_MUTED),
-            disabled=_busy(),
+            _muted("Queda en tu perfil, con su descripción."),
         ),
         _kind_choice(
-            FLOW_STORIES,
+            MODE_STORY,
             "circle-dashed",
             "Historia (24 h)",
-            rx.cond(
-                story_blocked,
-                rx.text(STORY_NEEDS_ONE_FILE, size="2", color=T.TEXT_MUTED),
-                rx.text("Se ve durante 24 horas, sin texto.", size="2", color=T.TEXT_MUTED),
-            ),
-            disabled=_busy() | story_blocked,
+            _muted("Se ve durante 24 horas, sin texto."),
         ),
         spacing="3",
         width="100%",
         role="radiogroup",
         aria_label="Cómo sale",
     )
+    many = rx.vstack(
+        _kind_choice(
+            MODE_CAROUSEL,
+            "gallery-horizontal",
+            "Juntas en un carrusel",
+            _muted("Una sola publicación que se desliza, con una descripción."),
+        ),
+        _kind_choice(
+            MODE_ONE_BY_ONE,
+            "layout-grid",
+            "Una por una",
+            rx.cond(
+                P.one_by_one_reason != "",
+                _muted(P.one_by_one_reason),
+                _muted(
+                    "Cada foto es su propia publicación, con su descripción. Así se arma "
+                    "un mural en tu perfil."
+                ),
+            ),
+            disabled=P.one_by_one_reason != "",
+        ),
+        _kind_choice(
+            MODE_STORIES,
+            "circle-dashed",
+            "Como historias",
+            _muted(
+                "Una historia por cada foto o video, una tras otra. Se ven 24 horas, sin texto."
+            ),
+        ),
+        spacing="3",
+        width="100%",
+        role="radiogroup",
+        aria_label="Cómo salen",
+    )
+    return _step_panel(STEP_HOW, rx.cond(P.file_count > 1, many, one))
+
+
+# -- ③ the order ---------------------------------------------------------------------------
+
+
+def _move_menu(item: PendingItemVM, *, overlay: bool = False) -> rx.Component:
+    at_top = item.position == 1
+    at_end = item.position == item.total
+    return rx.menu.root(
+        rx.menu.trigger(
+            rx.icon_button(
+                rx.icon("ellipsis", size=T.ICON_MD),
+                variant="soft" if overlay else "ghost",
+                size="3",
+                type="button",
+                aria_label=item.more_label,
+                min_width=_TARGET,
+                min_height=_TARGET,
+                class_name="q-pub-mural-more" if overlay else "",
+                **T.tone_scheme("neutral"),
+            ),
+        ),
+        rx.menu.content(
+            rx.menu.item("Primero", on_click=P.place(item.id, 0), disabled=at_top),
+            rx.menu.item(
+                "Subir uno", on_click=P.place(item.id, item.position - 2), disabled=at_top
+            ),
+            rx.menu.item("Bajar uno", on_click=P.place(item.id, item.position), disabled=at_end),
+            rx.menu.item("Último", on_click=P.place(item.id, item.total - 1), disabled=at_end),
+            rx.menu.separator(),
+            rx.menu.item(
+                rx.icon("x", size=T.ICON_SM),
+                "Quitar",
+                on_click=[P.remove_item(item.id, True), rx.call_script(_FORGET_SHARED_FILE)],
+                color=T.tone_color("error", 11),
+            ),
+            align="end",
+        ),
+    )
+
+
+def _order_row(item: PendingItemVM) -> rx.Component:
+    """A carousel or historias row: handle · 56 px thumbnail · «Foto k» · «Portada» · ⋯"""
+    return DragCard.create(
+        rx.hstack(
+            sort_handle(
+                item.handle_label,
+                lambda key: P.handle_key(item.id, key),
+                key=item.id,
+                lifted=P.lifted == item.id,
+            ),
+            _thumb56(item),
+            rx.hstack(
+                rx.text(item.label, size="3", weight="medium"),
+                rx.cond(
+                    (P.mode == MODE_CAROUSEL) & (item.position == 1),
+                    tone_badge(COVER_BADGE, "accent"),
+                    rx.fragment(),
+                ),
+                spacing="2",
+                align="center",
+                flex="1",
+                min_width="0",
+                wrap="wrap",
+            ),
+            _move_menu(item),
+            align="center",
+            spacing="2",
+            width="100%",
+        ),
+        class_name="q-rank-card q-order-row",
+        custom_attrs={
+            "data-rank-group": "publish-order",
+            "data-rank-key": item.id,
+            "role": "listitem",
+        },
+        on_drag_start=P.pick(item.id),
+        on_drop=P.drop(item.id),
+        key=item.id,
+        width="100%",
+        padding_y="0.25rem",
+    )
+
+
+def _mural_image(item: PendingItemVM) -> rx.Component:
+    preview_src = _preview(item)
+    return rx.cond(
+        preview_src != "",
+        rx.el.img(src=preview_src, alt=item.label, class_name="q-pub-tile-img"),
+        rx.center(_kind_icon(item, 24), height="100%"),
+    )
+
+
+def _mural_tile(item: PendingItemVM) -> rx.Component:
+    """One tile of the profile grid: its position top-left (with the film icon for a
+    video), «⋯» top-right; a long press lifts it (no handle: it does not fit in ~105 px —
+    the keyboard and screen readers use «⋯», spec §7)."""
+    return DragCard.create(
+        _mural_image(item),
+        rx.hstack(
+            rx.text(item.position, as_="span"),
+            rx.cond(item.kind == "video", rx.icon("film", size=12), rx.fragment()),
+            class_name="q-pub-tile-pos",
+            spacing="1",
+            align="center",
+            aria_hidden="true",
+        ),
+        _move_menu(item, overlay=True),
+        class_name="q-rank-card q-pub-tile q-pub-mural-tile",
+        custom_attrs={
+            "data-rank-group": "publish-mural",
+            "data-rank-key": item.id,
+            "role": "listitem",
+            "aria-label": item.label + ", posición " + item.position.to_string(),
+        },
+        on_drag_start=P.pick(item.id),
+        on_drop=P.drop(item.id),
+        key=item.id,
+    )
+
+
+def _before_tile(_slot: rx.Var[int]) -> rx.Component:
+    return rx.center(
+        rx.text(BEFORE_TILE, size="1", color=T.TEXT_FAINT),
+        class_name="q-pub-tile q-pub-mural-tile q-pub-mural-before",
+        aria_hidden="true",
+    )
+
+
+def _mural_grid(tile: object) -> rx.Component:
+    return rx.box(
+        rx.foreach(P.pending_items, tile),
+        rx.foreach(P.before_slots, _before_tile),
+        class_name="q-pub-mural",
+        role="list",
+        aria_label="Así se verá tu perfil",
+    )
+
+
+def _crop_notice() -> rx.Component:
+    warning = gallery_crop_warning(
+        root_id=_GALLERY_ROOT_ID, filenames=P.pending_filenames, template=_CROP_TEMPLATE
+    )
+    return rx.box(
+        rx.cond(warning != "", callout(warning, "warn"), rx.fragment()),
+        role="status",
+        aria_live="polite",
+        width="100%",
+    )
+
+
+def _order_step() -> rx.Component:
+    rows = rx.vstack(
+        rx.foreach(P.pending_items, _order_row),
+        spacing="2",
+        width="100%",
+        role="list",
+        aria_label="Orden",
+    )
+    return _step_panel(
+        STEP_ORDER,
+        rx.cond(
+            P.mode == MODE_ONE_BY_ONE,
+            rx.vstack(
+                _muted(MURAL_HELP),
+                _muted(ORDER_HELP, "1"),
+                _mural_grid(_mural_tile),
+                rx.cond(P.rows_hint != "", callout(P.rows_hint, "info"), rx.fragment()),
+                _muted(MURAL_SHIFT_NOTE, "1"),
+                # the fixed foot covers the page's bottom on a phone: keep the note clear
+                rx.box(class_name="q-pub-foot-room", aria_hidden="true"),
+                spacing="3",
+                width="100%",
+                align_items="stretch",
+            ),
+            rx.vstack(
+                rx.cond(P.mode == MODE_STORIES, _muted(STORIES_ORDER_HELP), rx.fragment()),
+                _muted(ORDER_HELP, "1"),
+                rows,
+                rx.cond(P.mode == MODE_CAROUSEL, _crop_notice(), rx.fragment()),
+                rx.box(class_name="q-pub-foot-room", aria_hidden="true"),
+                spacing="3",
+                width="100%",
+                align_items="stretch",
+            ),
+        ),
+        rx.text(P.announce, class_name="q-order-live", role="status", aria_live="polite"),
+        rx.box(display="none", on_mount=rx.call_script(_RANK_DRAG_JS)),
+    )
+
+
+# -- ④ ¿En qué Instagram sale? ------------------------------------------------------------
+
+
+def _account_card(conn: ConnectionOptionVM) -> rx.Component:
+    selected = P.selected_connection_id == conn.id
+    return choice_card(
+        rx.hstack(
+            platform_badge(conn.platform),
+            rx.vstack(
+                rx.text(conn.handle, size="3", weight="medium"),
+                rx.cond(conn.note != "", _muted(conn.note), rx.fragment()),
+                spacing="1",
+                align_items="start",
+            ),
+            rx.spacer(),
+            rx.cond(selected, choice_card_check(), rx.fragment()),
+            spacing="3",
+            align="center",
+            width="100%",
+        ),
+        selected=selected,
+        on_select=P.select_connection(conn.id),
+        disabled=~conn.selectable | P.account_locked,
+        width="100%",
+        min_height=_TARGET,
+        text_align="left",
+    )
 
 
 def _no_accounts() -> rx.Component:
     return empty_state(
         "link",
-        "Aún no tienes una cuenta conectada",
+        "Aún no tienes una cuenta de Instagram conectada",
         "Conecta tu Instagram y vuelve aquí para publicar.",
-        action=rx.link(
-            rx.button("Conectar mi Instagram", size="3", min_height=_TARGET),
-            href="/connections",
-        ),
+        action=rx.link(rx.button(RECONNECT, size="3", min_height=_TARGET), href="/connections"),
     )
 
 
-def _account_picker() -> rx.Component:
-    return rx.cond(
-        PublishState.load_error != "",
-        callout(PublishState.load_error, "error"),
-        rx.cond(
-            PublishState.is_loading_connections,
-            rx.hstack(
-                loading_spinner("sm"),
-                rx.text("Buscando tus cuentas...", size="2", color=T.TEXT_MUTED),
-                spacing="2",
-                align="center",
-            ),
-            rx.cond(
-                PublishState.connections.length() > 0,
-                section(
-                    "Cuenta",
-                    _connection_selector(),
-                    description="Dónde sale lo que elegiste.",
-                ),
-                _no_accounts(),
-            ),
-        ),
-    )
-
-
-def _where_step() -> rx.Component:
+def _account_step() -> rx.Component:
     return _step_panel(
-        STEP_WHERE,
-        _kind_choices(),
-        _account_picker(),
+        STEP_ACCOUNT,
+        rx.cond(
+            P.load_error != "",
+            callout(P.load_error, "error"),
+            rx.cond(
+                P.is_loading_connections,
+                rx.hstack(
+                    loading_spinner("sm"),
+                    _muted("Buscando tus cuentas..."),
+                    spacing="2",
+                    align="center",
+                ),
+                rx.cond(
+                    P.has_instagram,
+                    rx.vstack(
+                        rx.foreach(P.connections, _account_card),
+                        spacing="3",
+                        width="100%",
+                        role="radiogroup",
+                        aria_label="Cuenta",
+                    ),
+                    _no_accounts(),
+                ),
+            ),
+        ),
     )
 
 
-# -- ③ Revisa y publica -----------------------------------------------------
+# -- ⑤ Revisa y publica ------------------------------------------------------------------
 
 
 def _review_thumb(item: PendingItemVM) -> rx.Component:
-    preview_src = video_frame_preview_src(root_id=_GALLERY_ROOT_ID, filename=item.filename)
+    preview_src = _preview(item)
     return rx.box(
         rx.cond(
             preview_src != "",
-            rx.el.img(src=preview_src, alt=item.filename, class_name="q-pub-tile-img"),
-            rx.center(
-                rx.cond(
-                    item.kind == "image",
-                    rx.icon("image", size=20, color=T.tone_color("ok", 9)),
-                    rx.icon("film", size=20, color=T.tone_color("ok", 9)),
-                ),
-                height="100%",
-            ),
+            rx.el.img(src=preview_src, alt=item.label, class_name="q-pub-tile-img"),
+            rx.center(_kind_icon(item), height="100%"),
         ),
         class_name="q-pub-tile",
         style={"--q-dropzone-tile": "4.5rem"},
@@ -656,25 +728,17 @@ def _review_thumb(item: PendingItemVM) -> rx.Component:
 
 def _review_summary() -> rx.Component:
     return rx.vstack(
+        rx.hstack(
+            rx.icon("send", size=T.ICON_SM, color=T.tone_color("accent", 9)),
+            rx.text(P.review_text, size="3", weight="medium"),
+            spacing="2",
+            align="start",
+        ),
         rx.flex(
-            rx.foreach(PublishState.pending_items, _review_thumb),
+            rx.foreach(P.pending_items, _review_thumb),
             wrap="wrap",
             gap="0.5rem",
             width="100%",
-        ),
-        rx.hstack(
-            rx.icon("send", size=T.ICON_SM, color=T.tone_color("accent", 9)),
-            rx.text(
-                rx.cond(
-                    _is_stories(),
-                    PublishState.review_story_sentence,
-                    PublishState.review_post_sentence,
-                ),
-                size="3",
-                weight="medium",
-            ),
-            spacing="2",
-            align="start",
         ),
         spacing="3",
         width="100%",
@@ -683,22 +747,247 @@ def _review_summary() -> rx.Component:
 
 def _caption_field() -> rx.Component:
     return section(
-        "Texto de la publicación (opcional)",
+        CAPTION_LABEL,
         rx.text_area(
-            placeholder="Ej.: Hoy combo vecino a mitad de precio hasta las 9 p. m.",
-            value=PublishState.caption,
-            on_change=PublishState.set_caption,
+            placeholder=CAPTION_EXAMPLE,
+            value=P.caption,
+            on_change=P.set_caption,
             rows="4",
             size="3",
             width="100%",
-            disabled=_busy(),
+            disabled=P.busy,
+            aria_label=CAPTION_LABEL,
         ),
-        description="Sale tal como lo escribas.",
+        description=CAPTION_HELP,
+    )
+
+
+def _item_caption(item: PendingItemVM) -> rx.Component:
+    """«Una por una»: one card per photo, in the mural's order (spec §3, paso 5)."""
+    field_id = "q-pub-caption-" + item.id
+    return card(
+        rx.vstack(
+            rx.hstack(
+                rx.box(
+                    _thumb56(item),
+                    rx.box(item.position, class_name="q-pub-tile-pos", aria_hidden="true"),
+                    position="relative",
+                ),
+                rx.text(item.publication_title, size="3", weight="medium"),
+                spacing="3",
+                align="center",
+            ),
+            rx.el.label(item.caption_label, html_for=field_id, class_name="rt-Text rt-r-size-2"),
+            rx.text_area(
+                id=field_id,
+                placeholder=CAPTION_EXAMPLE,
+                value=P.item_captions[item.id],
+                on_change=lambda value: P.set_item_caption(item.id, value),
+                rows="3",
+                size="3",
+                width="100%",
+                disabled=P.busy,
+            ),
+            rx.cond(
+                item.position == 1,
+                rx.button(
+                    COPY_CAPTION,
+                    on_click=P.copy_first_caption,
+                    variant="soft",
+                    size="3",
+                    min_height=_TARGET,
+                    disabled=~P.can_copy_caption,
+                ),
+                rx.fragment(),
+            ),
+            spacing="2",
+            width="100%",
+            align_items="stretch",
+        ),
+        padding="1rem",
+    )
+
+
+def _descriptions() -> rx.Component:
+    return rx.match(
+        P.mode,
+        (
+            MODE_ONE_BY_ONE,
+            rx.vstack(
+                rx.foreach(P.pending_items, _item_caption),
+                _muted(CAPTION_HELP, "1"),
+                spacing="3",
+                width="100%",
+            ),
+        ),
+        (MODE_STORIES, _muted(STORIES_NO_TEXT)),
+        (
+            MODE_STORY,
+            rx.vstack(
+                _muted(STORIES_NO_TEXT + " " + ONE_STORY_OPEN_HINT),
+                spacing="2",
+                width="100%",
+            ),
+        ),
+        _caption_field(),
+    )
+
+
+def _single_status() -> rx.Component:
+    """One publication, a carousel or one historia going out (spec §4.1, as before)."""
+    return rx.cond(
+        P.busy,
+        rx.cond(
+            P.run_waiting,
+            callout(
+                rx.vstack(
+                    rx.hstack(
+                        loading_spinner("sm"),
+                        rx.cond(
+                            P.carousel_stage_label != "",
+                            rx.text(P.carousel_stage_label, size="2", weight="medium"),
+                            rx.text(
+                                "Publicando, esperando que Instagram lo confirme...",
+                                size="2",
+                                weight="medium",
+                            ),
+                        ),
+                        rx.cond(
+                            P.elapsed_label != "",
+                            rx.text(
+                                P.elapsed_label,
+                                size="1",
+                                color=T.TEXT_FAINT,
+                                class_name="q-mono q-nums",
+                            ),
+                            rx.fragment(),
+                        ),
+                        spacing="2",
+                        align="center",
+                        width="100%",
+                    ),
+                    _muted(P.wait_text, "1"),
+                    spacing="1",
+                    align_items="start",
+                    width="100%",
+                ),
+                "warn",
+                icon="clock",
+            ),
+            callout(
+                rx.hstack(
+                    loading_spinner("sm"),
+                    rx.text("Subiendo tus fotos y videos...", size="2"),
+                    spacing="2",
+                    align="center",
+                ),
+                "neutral",
+                icon="upload",
+            ),
+        ),
+        rx.cond(
+            (P.phase == "failure") & (P.error != ""),
+            callout(P.error, "error"),
+            rx.fragment(),
+        ),
+    )
+
+
+def _piece_row(item: PendingItemVM) -> rx.Component:
+    return rx.hstack(
+        _thumb56(item),
+        rx.text(item.label, size="3", weight="medium", flex="1"),
+        signal_pill(item.status_label, item.status_tone),
+        spacing="3",
+        align="center",
+        width="100%",
+        role="listitem",
+    )
+
+
+def _piece_tile(item: PendingItemVM) -> rx.Component:
+    return rx.box(
+        _mural_image(item),
+        rx.box(item.position, class_name="q-pub-tile-pos", aria_hidden="true"),
+        rx.box(signal_pill(item.status_label, item.status_tone), class_name="q-pub-mural-pill"),
+        class_name="q-pub-tile q-pub-mural-tile",
+        role="listitem",
+        aria_label=item.label + ": " + item.status_label,
+    )
+
+
+def _pieces() -> rx.Component:
+    """Each piece with its word (spec §4.2) — the mural marks itself from the last to
+    the first, as it goes out."""
+    return rx.cond(
+        P.run_mode == MODE_ONE_BY_ONE,
+        _mural_grid(_piece_tile),
+        rx.vstack(
+            rx.foreach(P.pending_items, _piece_row),
+            spacing="2",
+            width="100%",
+            role="list",
+            aria_label="Historias",
+        ),
+    )
+
+
+def _series_failure() -> rx.Component:
+    """«Salieron {s} de {n}. La foto {k} no salió.» + why + what «Continuar» does."""
+    return callout(
+        rx.vstack(
+            rx.cond(
+                P.failed_title != "",
+                rx.text(P.failed_title, size="3", weight="medium"),
+                rx.text(P.leftover_text, size="3", weight="medium"),
+            ),
+            rx.cond(P.error != "", rx.text(P.error, size="2"), rx.fragment()),
+            rx.cond(P.failed_next != "", rx.text(P.failed_next, size="2"), rx.fragment()),
+            rx.flex(
+                rx.cond(
+                    P.needs_reconnect | ~P.pinned_account_ready,
+                    rx.link(
+                        rx.button(RECONNECT, size="3", width="100%", min_height=_TARGET),
+                        href="/connections",
+                        width="100%",
+                    ),
+                    rx.fragment(),
+                ),
+                rx.button(
+                    KEEP_AS_IS,
+                    on_click=H.ask_keep_as_is,
+                    variant="soft",
+                    size="3",
+                    width="100%",
+                    min_height=_TARGET,
+                ),
+                direction=rx.breakpoints(initial="column", sm="row"),
+                gap="0.75rem",
+                width="100%",
+            ),
+            spacing="2",
+            width="100%",
+            align_items="stretch",
+        ),
+        "error",
+    )
+
+
+def _series_view() -> rx.Component:
+    return rx.vstack(
+        rx.cond(
+            P.busy,
+            progress_panel(P.progress_title, PROGRESS_DETAIL, value=P.progress_value),
+            _series_failure(),
+        ),
+        _pieces(),
+        spacing="4",
+        width="100%",
+        align_items="stretch",
     )
 
 
 def _or_divider() -> rx.Component:
-    """«o» between «Publicar» and the softer way out to Instagram."""
     return rx.hstack(
         rx.separator(size="4", flex="1"),
         rx.text("o", size="2", color=T.TEXT_MUTED),
@@ -710,139 +999,211 @@ def _or_divider() -> rx.Component:
 
 
 def _review_step() -> rx.Component:
-    """Summary → (text box, only for a publication) → the solid «Publicar» → its
-    progress. For a historia, «Abrir en Instagram ↗» comes only after an «o», soft and
-    last, so it never reads as the way to publish (UX review, N6/N9)."""
+    series_on_screen = P.is_series_run & (P.busy | P.resumable)
     return _step_panel(
         STEP_REVIEW,
-        _review_summary(),
         rx.cond(
-            _is_stories(),
-            rx.text(
-                "Una historia sale sin texto. Si quieres escribirle algo, ábrela en Instagram.",
-                size="2",
-                color=T.TEXT_MUTED,
-            ),
-            _caption_field(),
-        ),
-        rx.cond(_is_stories(), stories_status_block(), _status_block()),
-        rx.cond(
-            _is_stories(),
+            series_on_screen,
+            _series_view(),
             rx.vstack(
-                _or_divider(),
-                share_to_instagram_button(root_id=_GALLERY_ROOT_ID, enabled=_file_count() == 1),
+                _review_summary(),
+                _descriptions(),
+                _single_status(),
+                rx.cond(
+                    (P.mode == MODE_STORY) & ~P.busy,
+                    rx.vstack(
+                        _or_divider(),
+                        share_to_instagram_button(
+                            root_id=_GALLERY_ROOT_ID, enabled=P.file_count == 1
+                        ),
+                        spacing="3",
+                        width="100%",
+                        align_items="stretch",
+                    ),
+                    rx.fragment(),
+                ),
+                spacing="4",
+                width="100%",
+                align_items="stretch",
+            ),
+        ),
+    )
+
+
+# -- dialogs -------------------------------------------------------------------------------
+
+
+def _leave_dialog() -> rx.Component:
+    return rx.alert_dialog.root(
+        rx.alert_dialog.content(
+            rx.alert_dialog.title(LEAVE_TITLE),
+            rx.alert_dialog.description(P.leave_text, size="2"),
+            rx.flex(
+                rx.button(
+                    LEAVE_STAY, on_click=H.stay, size="3", min_height=_TARGET, auto_focus=True
+                ),
+                rx.button(
+                    LEAVE_GO,
+                    on_click=H.leave_anyway,
+                    variant="soft",
+                    size="3",
+                    min_height=_TARGET,
+                ),
+                direction=rx.breakpoints(initial="column", sm="row-reverse"),
+                gap="0.75rem",
+                margin_top="1rem",
+            ),
+        ),
+        open=H.leave_open,
+    )
+
+
+def _keep_dialog() -> rx.Component:
+    return rx.alert_dialog.root(
+        rx.alert_dialog.content(
+            rx.alert_dialog.title(KEEP_AS_IS_TITLE),
+            rx.alert_dialog.description(P.keep_as_is_text, size="2"),
+            rx.flex(
+                rx.button(
+                    KEEP_AS_IS,
+                    on_click=H.confirm_keep_as_is,
+                    size="3",
+                    min_height=_TARGET,
+                ),
+                rx.button(
+                    BACK,
+                    on_click=H.cancel_keep_as_is,
+                    variant="soft",
+                    size="3",
+                    min_height=_TARGET,
+                    auto_focus=True,
+                ),
+                direction=rx.breakpoints(initial="column", sm="row-reverse"),
+                gap="0.75rem",
+                margin_top="1rem",
+            ),
+        ),
+        open=H.keep_open,
+    )
+
+
+def _leave_guard() -> rx.Component:
+    """While a series goes out: links outside the assistant ask first (spec §4.2)."""
+    return rx.fragment(
+        rx.box(display="none", on_mount=rx.call_script(link_guard_script())),
+        rx.cond(
+            P.busy & P.is_series_run,
+            rx.el.button(
+                id="q-pub-leave-ask",
+                on_click=H.ask_leave,
+                type="button",
+                tab_index=-1,
+                aria_hidden="true",
+                style={"display": "none"},
+            ),
+            rx.fragment(),
+        ),
+        _leave_dialog(),
+        _keep_dialog(),
+    )
+
+
+# -- the frame -----------------------------------------------------------------------------
+
+
+def _assistant_frame() -> rx.Component:
+    reviewing = P.step_id == STEP_REVIEW
+    review_ready = rx.cond(P.resumable, P.can_continue, P.can_publish)
+    return step_frame(
+        rx.cond(
+            H.entered,
+            step_sync(P.step_number, H.direction, epoch=H.entry_epoch),
+        ),
+        _what_step(),
+        _how_step(),
+        _order_step(),
+        _account_step(),
+        _review_step(),
+        # only on the first step: on the order and the review it distracts (UX review)
+        rx.cond(P.step_id == STEP_WHAT, _ideas(), rx.fragment()),
+        _leave_guard(),
+        head=step_head(
+            P.step_title,
+            step=P.step_number,
+            total=P.step_total,
+            back_label="Inicio",
+            on_exit=H.leave,
+        ),
+        foot=step_foot(
+            rx.cond(reviewing, P.primary_label, "Siguiente"),
+            step=P.step_number,
+            on_primary=H.continue_or_publish,
+            on_back=H.go_back,
+            on_later=H.leave,
+            primary_disabled=rx.cond(reviewing, ~review_ready, ~P.can_go),
+            primary_busy=P.busy,
+            reason=rx.cond(P.busy | reviewing, "", P.step_reason),
+        ),
+        # The gallery's native files and preview cache stay mounted between steps.
+        step=1,
+        direction=H.direction,
+        on_pop=H.read_step,
+        on_leave=H.leave_frame,
+    )
+
+
+# -- the «listo» (N3) and the ideas -----------------------------------------------------
+
+
+def _done_actions() -> rx.Component:
+    return rx.flex(
+        rx.link(
+            rx.button("Ver mi semana", size="3", width="100%", min_height=_TARGET),
+            href="/planner",
+            width="100%",
+        ),
+        rx.button(
+            "Publicar otra",
+            on_click=H.start_over,
+            variant="soft",
+            size="3",
+            width="100%",
+            min_height=_TARGET,
+        ),
+        direction=rx.breakpoints(initial="column", sm="row"),
+        gap="0.75rem",
+        width="100%",
+    )
+
+
+def _done_panel() -> rx.Component:
+    """Persistent, not a toast: what happened and the next step (N3, spec §4.4)."""
+    return rx.cond(
+        P.phase == "partial",
+        callout(
+            rx.vstack(
+                rx.text(P.partial_text, size="3", weight="medium"),
+                rx.text(P.week_text, size="2"),
+                _done_actions(),
                 spacing="3",
                 width="100%",
                 align_items="stretch",
             ),
-            rx.fragment(),
+            "warn",
+            icon="triangle-alert",
         ),
-    )
-
-
-def _assistant_frame() -> rx.Component:
-    can_continue = rx.cond(
-        PublishHubState.step == STEP_WHAT,
-        _file_count() > 0,
-        (PublishState.selected_connection_id != "")
-        & (_file_count() > 0)
-        & (~_is_stories() | (_file_count() == 1)),
-    )
-    ready = rx.cond(
-        _is_stories(),
-        (_file_count() == 1) & (PublishState.selected_connection_id != ""),
-        PublishState.can_publish,
-    )
-    reviewing = PublishHubState.step == STEP_REVIEW
-    reason = rx.cond(
-        _file_count() == 0,
-        "Elige al menos una foto o un video.",
-        rx.cond(
-            (PublishHubState.step == STEP_WHERE) & (PublishState.selected_connection_id == ""),
-            "Elige la cuenta donde vas a publicar.",
-            rx.cond(
-                (PublishHubState.step == STEP_WHERE) & _is_stories() & (_file_count() != 1),
-                STORY_NEEDS_ONE_FILE,
-                "",
-            ),
-        ),
-    )
-    return step_frame(
-        rx.cond(
-            PublishHubState.entered,
-            step_sync(
-                PublishHubState.step,
-                PublishHubState.direction,
-                epoch=PublishHubState.entry_epoch,
-            ),
-        ),
-        _what_step(),
-        _where_step(),
-        _review_step(),
-        _ideas(),
-        head=step_head(
-            rx.match(PublishHubState.step, *STEP_TITLES.items(), STEP_TITLES[STEP_WHAT]),
-            step=PublishHubState.step,
-            total=TOTAL_STEPS,
-            back_label="Inicio",
-            on_exit=PublishHubState.leave,
-        ),
-        foot=step_foot(
-            rx.cond(reviewing, "Publicar", "Siguiente"),
-            step=PublishHubState.step,
-            on_primary=PublishHubState.continue_or_publish,
-            on_back=PublishHubState.go_back,
-            on_later=PublishHubState.leave,
-            primary_disabled=_busy() | rx.cond(reviewing, ~ready, ~can_continue),
-            primary_loading=_busy(),
-            reason=rx.cond(_busy() | reviewing, "", reason),
-        ),
-        # The gallery's native files and preview cache must stay mounted between
-        # steps. Its panels toggle visibility instead of using the frame's step key.
-        step=STEP_WHAT,
-        direction=PublishHubState.direction,
-        on_pop=PublishHubState.read_step,
-        on_leave=PublishHubState.leave_frame,
-    )
-
-
-# -- the «listo» (N3) and the ideas ------------------------------------------
-
-
-def _is_done() -> rx.Var[bool]:
-    return rx.cond(_is_stories(), StoriesState.phase == "success", PublishState.phase == "success")
-
-
-def _done_panel() -> rx.Component:
-    """Persistent, not a toast: what happened and the next step — one solid button
-    to the next job, one soft to start again (N3)."""
-    return callout(
-        rx.vstack(
-            rx.text(PublishHubState.done_text, size="3", weight="medium"),
-            rx.flex(
-                rx.link(
-                    rx.button("Ver mi semana", size="3", width="100%", min_height=_TARGET),
-                    href="/planner",
-                    width="100%",
-                ),
-                rx.button(
-                    "Publicar otra",
-                    on_click=PublishHubState.start_over,
-                    variant="soft",
-                    size="3",
-                    width="100%",
-                    min_height=_TARGET,
-                ),
-                direction=rx.breakpoints(initial="column", sm="row"),
-                gap="0.75rem",
+        callout(
+            rx.vstack(
+                rx.text(P.done_text, size="3", weight="medium"),
+                rx.text(P.week_text, size="2"),
+                _done_actions(),
+                spacing="3",
                 width="100%",
+                align_items="stretch",
             ),
-            spacing="3",
-            width="100%",
-            align_items="stretch",
+            "ok",
+            icon="circle-check",
         ),
-        "ok",
-        icon="circle-check",
     )
 
 
@@ -852,17 +1213,17 @@ def _ideas() -> rx.Component:
             rx.icon("lightbulb", size=T.ICON_SM),
             "Ideas para tu próxima publicación",
             rx.cond(
-                PublishHubState.show_ideas,
+                H.show_ideas,
                 rx.icon("chevron-up", size=T.ICON_SM),
                 rx.icon("chevron-down", size=T.ICON_SM),
             ),
-            on_click=PublishHubState.toggle_ideas,
+            on_click=H.toggle_ideas,
             variant="ghost",
             size="3",
             min_height=_TARGET,
-            aria_expanded=rx.cond(PublishHubState.show_ideas, "true", "false"),
+            aria_expanded=rx.cond(H.show_ideas, "true", "false"),
         ),
-        rx.cond(PublishHubState.show_ideas, trending_card(), rx.fragment()),
+        rx.cond(H.show_ideas, trending_card(), rx.fragment()),
         spacing="3",
         width="100%",
         align_items="start",
@@ -872,14 +1233,14 @@ def _ideas() -> rx.Component:
 def publish_topbar() -> rx.Component:
     return page_header(
         "Publicar ahora",
-        "Sube una foto o un video de tu teléfono y publícalo en tu Instagram.",
+        "Sube fotos o videos de tu teléfono y publícalos en tu Instagram.",
     )
 
 
 def publish_index() -> rx.Component:
     return app_shell(
         rx.cond(
-            _is_done(),
+            (P.phase == "success") | (P.phase == "partial"),
             rx.fragment(publish_topbar(), page_body(_done_panel(), _ideas())),
             _assistant_frame(),
         )

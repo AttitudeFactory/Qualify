@@ -140,8 +140,9 @@ class Client(FakeMarketingClient):
         return value
 
     async def read_object(self, identifier, *, fields):
+        # Like Graph, only the requested fields come back (FakeMarketingClient honours them).
         async with self.read_lock:
-            return deepcopy(self.objects[identifier])
+            return await FakeMarketingClient._request(self, "GET", identifier, {"fields": fields})
 
     async def children(self, parent, *, resource):
         field = "campaign_id" if resource == "adsets" else "adset_id"
@@ -290,7 +291,7 @@ async def test_changed_r2_bytes_and_source_never_activate(service, monkeypatch):
         data, format="PNG"
     )
     store.objects[selected.feed.object_key] = data.getvalue()
-    with pytest.raises(UnpublishedUnavailable, match="imágenes cambiaron"):
+    with pytest.raises(UnpublishedUnavailable, match="cambiaron"):
         await obj.confirm(
             tenant_id=selected.tenant_id,
             recipe_id=preview.recipe_id,
@@ -414,3 +415,24 @@ async def test_concurrent_confirmation_dispatches_one_activation_only(service, m
     outcomes = await asyncio.gather(confirm(), confirm())
     assert "active" in outcomes
     assert len(client.updates) == 3
+
+
+@pytest.mark.parametrize("cta", ["LEARN_MORE", "SHOP_NOW", "GET_QUOTE", "ORDER_NOW"])
+def test_saved_website_button_is_accepted_and_reaches_the_creative(cta):
+    """m-24828982: the piece's saved button (same allowlist as published posts)."""
+    chosen = replace(form(), cta_type=cta)
+    chosen.validate(datetime.now(UTC))
+    assert chosen.snapshot()["cta_type"] == cta
+    spec = creative_payload(source(), chosen, ("hash-feed", "hash-vertical"))["asset_feed_spec"]
+    assert spec["call_to_action_types"] == [cta]
+
+
+@pytest.mark.parametrize("cta", ["WHATSAPP_MESSAGE", "CALL_NOW", "MESSAGE_PAGE", "", "learn_more"])
+def test_chat_call_or_unknown_buttons_are_refused_before_meta(cta):
+    with pytest.raises(UnpublishedUnavailable):
+        replace(form(), cta_type=cta).validate(datetime.now(UTC))
+
+
+def test_learn_more_stays_the_default_and_its_snapshot_is_unchanged():
+    assert form().cta_type == "LEARN_MORE"
+    assert form().snapshot()["cta_type"] == "LEARN_MORE"

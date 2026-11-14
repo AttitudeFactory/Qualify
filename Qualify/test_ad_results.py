@@ -26,6 +26,7 @@ from .ad_results_vm import (
     AdEditOutcomeVM,
     AdEditReviewVM,
     AdResultVM,
+    AlertAccountVM,
     EditInputError,
     day_label,
     edit_budget,
@@ -155,6 +156,15 @@ class Context:
         self._edit_token = ""
         self._edit_expires = ""
         self.promotion_id = str(PROMOTION)
+        self.floor_label = ""
+        self.floor_loading = False
+        self._floor_input = ""
+        self.alert_accounts = []
+        self.alert_target = AlertAccountVM("", "")
+        self.alerts_busy = False
+        self.alerts_on = []
+        self.alerts_notice = ""
+        self.alerts_error = ""
 
     async def __aenter__(self) -> Context:
         return self
@@ -288,7 +298,8 @@ def test_actual_primary_action_render_has_one_button_for_each_review_phase(
     assert len(active["children"]) == 1
     button = active["children"][0]
     assert button["name"] == "RadixThemesButton"
-    assert button["children"] == [{"contents": f'"{label}"'}]
+    # The confirm label depends on the action («Guardar presupuesto» when lowering it).
+    assert f'"{label}"' in str(button["children"])
     assert any(event in prop for prop in button["props"])
     assert not any(
         ("prepare_change" if ready else "confirm_change") in prop for prop in button["props"]

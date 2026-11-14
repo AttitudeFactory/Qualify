@@ -25,7 +25,6 @@ from qualify_api.creative import product_stickers as ps
 from qualify_api.creative.creations import InMemoryCreationsLedger
 from qualify_api.creative.product_sticker_ai import (
     BUDGET_CAP,
-    NO_BUDGET_CAP,
     UNCERTAIN,
     VENDOR_FAILED,
     Budget,
@@ -154,7 +153,7 @@ def test_a_changed_cost_or_a_product_without_photo_charges_nothing() -> None:
         service.request_character(TENANT, BRAND, PRODUCT, USER, accepted_creations=2)
     with pytest.raises(ps.NoProductPhoto) as refused:
         service.request_character(TENANT, BRAND, uuid4(), USER, accepted_creations=1)
-    assert "Sube la foto en Tus productos" in refused.value.message
+    assert "Sube la foto en Galería" in refused.value.message
     assert ledger.balance(tenant_id=TENANT, brand_id=BRAND).used == 0
     assert repo.rows == {}
 
@@ -249,6 +248,36 @@ def test_discarding_hides_a_character_but_keeps_the_row() -> None:
     ready = _ready(service, repo)
     service.discard_character(TENANT, BRAND, ready.id, USER)
     assert service.characters(TENANT, BRAND) == []
+    assert repo.rows[ready.id].status == ps.STATUS_DISCARDED
+
+
+def test_restoring_brings_a_discarded_character_back_as_it_was() -> None:
+    """m-25019604: «Deshacer» — the status comes back from the row itself (ready, approved
+    or failed); idempotent; only this business; nothing is charged or refunded."""
+    service, repo, ledger, _ = _service()
+    ready = _ready(service, repo)
+    service.discard_character(TENANT, BRAND, ready.id, USER)
+    back = service.restore_character(TENANT, BRAND, ready.id, USER)
+    assert back.status == ps.STATUS_READY
+    assert [c.id for c in service.characters(TENANT, BRAND)] == [ready.id]
+    assert service.restore_character(TENANT, BRAND, ready.id, USER).status == ps.STATUS_READY
+
+    service.approve_character(TENANT, BRAND, ready.id, USER)
+    service.discard_character(TENANT, BRAND, ready.id, USER)
+    assert service.restore_character(TENANT, BRAND, ready.id, USER).status == ps.STATUS_APPROVED
+
+    failed = service.request_character(TENANT, BRAND, PRODUCT, USER, accepted_creations=1)
+    service.mark_character_failed(
+        tenant_id=TENANT, brand_id=BRAND, character_id=failed.id, reason="vendor_failed"
+    )
+    before = repr(ledger.__dict__)
+    service.discard_character(TENANT, BRAND, failed.id, USER)
+    assert service.restore_character(TENANT, BRAND, failed.id, USER).status == ps.STATUS_FAILED
+    assert repr(ledger.__dict__) == before  # no charge, no refund
+
+    service.discard_character(TENANT, BRAND, ready.id, USER)
+    with pytest.raises(ps.CharacterNotFound):
+        service.restore_character(TENANT, OTHER_BRAND, ready.id, USER)
     assert repo.rows[ready.id].status == ps.STATUS_DISCARDED
 
 
@@ -386,21 +415,50 @@ def test_one_paid_call_then_a_ready_character_with_its_cost_and_files() -> None:
     assert seedream.calls == 1
 
 
-@pytest.mark.parametrize(
-    ("budget", "reason"), [(None, NO_BUDGET_CAP), (Budget(Decimal("0.01")), BUDGET_CAP)]
-)
-def test_the_price_guard_refuses_before_any_call_and_gives_the_creation_back(
-    budget: Budget | None, reason: str
-) -> None:
-    executor, service, ledger, _, usage, seedream, _ = _executor(budget=budget)
+def test_the_price_guard_refuses_before_any_call_and_gives_the_creation_back() -> None:
+    # a configured HARD cap the quote does not fit in: refused, nothing reaches BytePlus
+    executor, service, ledger, _, usage, seedream, _ = _executor(
+        budget=Budget(Decimal("0.01"), hard_stop=True)
+    )
     c = service.request_character(TENANT, BRAND, PRODUCT, USER, accepted_creations=1)
     with pytest.raises(PriceGuardRefused):
         executor.submit(_job(c.id))
     assert seedream.calls == 0 and usage.booked == {}
     failed = service.character(TENANT, BRAND, c.id)
-    assert failed.status == ps.STATUS_FAILED and failed.fail_reason == reason
+    assert failed.status == ps.STATUS_FAILED and failed.fail_reason == BUDGET_CAP
     assert "No se te cobró" in failed.failure_text
     assert ledger.balance(tenant_id=TENANT, brand_id=BRAND).used == 0
+
+
+@pytest.mark.parametrize(
+    "budget",
+    [None, Budget(Decimal("0.01"), hard_stop=False), Budget(Decimal("-3"), hard_stop=False)],
+    ids=["no-config-row", "soft-cap-over", "soft-cap-overspent"],
+)
+def test_no_config_row_or_a_soft_cap_is_no_dollar_cap(budget: Budget | None) -> None:
+    # m-25018822: like the generator (`service._UNLIMITED_BUDGET`, `parts.py`) — the owner's
+    # limit is the creaciones quota, already charged by `create_character`
+    executor, service, ledger, _, usage, seedream, _ = _executor(budget=budget)
+    c = service.request_character(TENANT, BRAND, PRODUCT, USER, accepted_creations=1)
+    task = executor.submit(_job(c.id))
+    assert task == task_id_of(c.id) and seedream.calls == 1
+    assert usage.booked == {c.id: Decimal("0.045")}  # the real cost is still booked
+    executor.finish(_job(c.id), task, SUCCEEDED)
+    assert service.character(TENANT, BRAND, c.id).status == ps.STATUS_READY
+    assert ledger.balance(tenant_id=TENANT, brand_id=BRAND).used == 1
+
+
+def test_a_hard_cap_with_room_proceeds() -> None:
+    executor, service, _, _, _, seedream, _ = _executor(
+        budget=Budget(Decimal("0.05"), hard_stop=True)
+    )
+    c = service.request_character(TENANT, BRAND, PRODUCT, USER, accepted_creations=1)
+    executor.submit(_job(c.id))
+    assert seedream.calls == 1
+
+
+def test_the_legacy_no_budget_cap_reason_still_reads_for_old_rows() -> None:
+    assert "no se te cobró" in ps.REASON_TEXT["no_budget_cap"].lower()
 
 
 def test_a_claim_after_a_started_post_never_posts_again() -> None:

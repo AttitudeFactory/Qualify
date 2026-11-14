@@ -47,7 +47,7 @@ from .auth_state import AuthState, brand_tenant_id, reload_business_logo
 from .brand_minimal_vm import MINIMAL_FLOW as _MINIMAL_FLOW
 from .connections_provider import acting_user_id
 from .creative_provider import brand_readiness, default_brand_id, save_kit
-from .creative_vm import KitFormVM
+from .creative_vm import KitFormVM, perks_for_save
 from .r2_media import is_r2_key, issue_view_path
 from .tenant import tenant_uuid
 from .upload_names import safe_upload_name
@@ -87,6 +87,9 @@ class KitSnapshot:
     logo_brief: dict[str, Any] | None = None
     connect: dict[str, Any] | None = None
     profile: dict[str, Any] | None = None
+    #: «Lo que ofrece tu negocio»: None = this save did not edit them and the stored list
+    #: stays; a tuple (even empty) replaces it. Only that section's «Guardar» sets it.
+    business_perks: tuple[str, ...] | None = None
 
 
 class FilesNotSaved(RuntimeError):
@@ -181,7 +184,14 @@ def persist_brand_kit(
     `{local key: R2 key}` for what it uploaded, so the session can stop holding the
     local key and the next save does not upload it again. Raises `FilesNotSaved` when
     only the files failed."""
-    save_kit(tenant_id, brand_id, user_id, snapshot.form, adopt_voice=adopt_voice)
+    save_kit(
+        tenant_id,
+        brand_id,
+        user_id,
+        snapshot.form,
+        adopt_voice=adopt_voice,
+        business_perks=snapshot.business_perks,
+    )
     store = store or BrandKitStore()
     documents = {
         name: document
@@ -470,9 +480,13 @@ async def _progress_document(state: Any, flow: str, *, completed: bool) -> dict[
     }
 
 
-async def snapshot_states(state: Any, progress: dict[str, Any] | None = None) -> KitSnapshot:
+async def snapshot_states(
+    state: Any, progress: dict[str, Any] | None = None, *, with_perks: bool = False
+) -> KitSnapshot:
     """Copy the kit out of `CreativeState`, `BrandWizardState` and `BrandConnectState`
-    (under `state`'s lock — the caller holds it). `progress` rides in `connect`."""
+    (under `state`'s lock — the caller holds it). `progress` rides in `connect`.
+    `with_perks` carries «Lo que ofrece tu negocio» too — only its own section's save
+    does, so no other save can wipe a list it never loaded."""
     from .creative_state import CreativeState
     from .creative_wizard_pages import (
         FONT_SLOTS,
@@ -529,6 +543,7 @@ async def snapshot_states(state: Any, progress: dict[str, Any] | None = None) ->
         logo_brief=brief if any(v.strip() for v in brief.values()) else None,
         connect=_connect_document(connect, progress),
         profile=_profile_document(connect),
+        business_perks=perks_for_save(creative.kit_business_perks) if with_perks else None,
     )
     return snapshot
 
@@ -634,11 +649,12 @@ async def save_progress(state: Any, flow: str) -> None:
             wizard._progress_saving = False
 
 
-async def save_brand_kit(state: Any, flow: str | None = None) -> bool:
+async def save_brand_kit(state: Any, flow: str | None = None, *, with_perks: bool = False) -> bool:
     """Save everything from a background handler's `state`; True on success. The outcome
     lands in `CreativeState.kit_notice` / `kit_error`, and `kit_saving` drives the
     buttons' spinner. A wizard passes its `flow`: the kit is then marked finished
-    (`progress.completed`, § 2026-10-02)."""
+    (`progress.completed`, § 2026-10-02). `with_perks`: «Lo que ofrece tu negocio» is
+    written too (its own section in `/brand/kit`); every other save leaves it alone."""
     from .creative_state import CreativeState
 
     async with state:
@@ -658,7 +674,7 @@ async def save_brand_kit(state: Any, flow: str | None = None) -> bool:
             progress = (
                 await _progress_document(state, flow, completed=True) if flow is not None else None
             )
-            snapshot = await snapshot_states(state, progress)
+            snapshot = await snapshot_states(state, progress, with_perks=with_perks)
         try:
             uploaded = await asyncio.to_thread(
                 persist_brand_kit, *ids, snapshot, upload_dir=rx.get_upload_dir()

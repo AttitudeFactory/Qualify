@@ -228,7 +228,6 @@ def test_review_waits_until_the_piece_is_done() -> None:
     state.gen_draft = DraftVM(draft_id="d", status="generated", status_label="", status_tone="")
     assert state.gen_is_done is True
     state.gen_draft_id = "d"
-    state.product_confirmed = True
     state.generator_view = "result"
     assert not state.create_primary_disabled
     state.gen_draft = None
@@ -1201,29 +1200,33 @@ def test_the_copy_is_told_the_chosen_resources_and_their_use() -> None:
     assert "t/x/iso" not in rendered.stable_prefix
 
 
-def test_the_catalog_product_comes_before_the_panel() -> None:
-    """§ request 2026-10-14: «Crear pieza» opens on the catalog product; continuing with
-    one brings the panel, «Cambiar» goes back, and sending a piece to review starts over
-    on the product screen. § 2026-10-19: no «Continuar sin producto» and no tabs — a
-    button switches between the catalog and the inspiration."""
-    from .content_generator import generator_page
+def test_the_catalog_product_is_optional_and_chosen_in_tus_productos() -> None:
+    """m-24985141 (Deivid): «Crear publicación» opens straight on its first step; the
+    catalog product is optional and chosen in the media drawer's «Tus productos» —
+    chosen, changed or taken out there. Sending a piece to review starts over with no
+    product."""
+    from .content_generator import _products_tab, generator_page
 
     rendered = str(generator_page())
-    assert "product_confirmed" in rendered and "Continuar sin producto" not in rendered
-    assert "Usar inspiraci" in rendered and "Usar mi cat" in rendered
+    assert "product_confirmed" not in rendered and "Continuar sin producto" not in rendered
+    assert "Elige el producto, luego" not in rendered
+    tab = str(_products_tab())
+    assert "pick_catalog_product" in tab and "remove_catalog_product" in tab
+    assert "44px" in tab
     state = CreativeState()
-    assert state.product_confirmed is False
+    state.catalog_loaded = True
     state.catalog_items = [
         {"id": "p1", "name": "Smash doble", "photo_key": "t/p1.jpg", "photo_keys": "t/p1.jpg"}
     ]
-    state.choose_product("p1")
-    state.confirm_product()
-    assert state.product_confirmed and state.brief_product_ref == "Smash doble"
-    state.change_product()
-    assert state.product_confirmed is False and state.selected_product_id == "p1"
+    state.pick_catalog_product("p1")
+    assert state.brief_product_ref == "Smash doble"
+    assert state.create_step_n == 1
+    state.remove_catalog_product()
+    assert state.selected_product_id == "" and state.brief_product_ref == ""
+    state.pick_catalog_product("p1")
     state.gen_draft_id = "d1"
     state.review_in_drafts()
-    assert state.product_confirmed is False
+    assert state.selected_product_id == "" and not state.media_drawer_open
 
 
 def test_the_catalog_photos_ride_along_for_every_kind_that_composes_photos() -> None:
@@ -1344,7 +1347,9 @@ def test_the_four_steps_render_with_mas_opciones_folded() -> None:
     # an avatar's reference video and brand resources are behind step 1's fold
     details = str(_section_details())
     assert "toggle_show_more" in details
-    assert has(details, "Un video de referencia y tus fotos de marca.")
+    # round 13: the avatar's reference video joined its references (like the Clip)
+    assert has(details, "Tus fotos de marca. Puedes crear sin tocarlas.")
+    assert "media-open-avatar_refs" in details
     rules = str(_section_rules())
     assert "tu marca no cambia" in rules
     # the avatar's script is asked in «Qué decir», with a named switch and a 44 px label
@@ -1384,7 +1389,6 @@ def _clip_state_with_product() -> CreativeState:
         }
     ]
     state.choose_product("p1")
-    state.confirm_product()
     return state
 
 
@@ -1405,10 +1409,12 @@ def test_a_clip_follows_the_ads_flow_and_starts_on_the_catalog_photo() -> None:
         "Revisa y crea",
     ]
     assert state.clip_first_frame_key == "uploads/t/p1.jpg"
-    assert state.clip_image_keys == ["uploads/t/p1.jpg"]
+    # m-24985141 (Deivid): ALL the product's photos come in, the main one first
+    assert state.clip_image_keys == ["uploads/t/p1.jpg", "uploads/t/p1b.jpg"]
     assert state.product_photo_keys == ["uploads/t/p1.jpg", "uploads/t/p1b.jpg"]
     media = state._media_inputs()
     assert media["clip_first_frame_key"] == "uploads/t/p1.jpg"
+    assert media["clip_last_frame_key"] == "uploads/t/p1b.jpg"
     assert media["clip_image_keys"] == [] and "product_keys" not in media
     assert state.brief_product_ref == "Smash doble"
 
@@ -1420,8 +1426,7 @@ def test_a_clip_takes_catalog_and_uploaded_references_and_frames() -> None:
 
     p1, p1b, ref = "uploads/t/p1.jpg", "uploads/t/p1b.jpg", "uploads/t/ref.mp4"
     state = _clip_state_with_product()
-    state.choose_category("clip")
-    state.pick_media("clip_images", "catalog", p1b)
+    state.choose_category("clip")  # m-24985141: both product photos come in
     state.pick_media("clip_images", "catalog", "uploads/other-tenant/x.jpg")  # not listed
     assert state.clip_image_keys == [p1, p1b]
     assert (state.clip_first_frame_key, state.clip_last_frame_key) == (p1, p1b)
@@ -1463,8 +1468,7 @@ def test_a_video_can_open_or_close_the_clip() -> None:
 
     p1, p1b, ref = "uploads/t/p1.jpg", "uploads/t/p1b.jpg", "uploads/t/ref.mp4"
     state = _clip_state_with_product()
-    state.choose_category("clip")
-    state.pick_media("clip_images", "catalog", p1b)
+    state.choose_category("clip")  # m-24985141: both product photos come in
     state.clip_videos = [{"key": ref, "name": "ref.mp4", "source": "upload"}]
     state._sync_clip_frames()
     assert [item["kind"] for item in state.clip_strip] == ["image", "video", "image"]
@@ -1487,9 +1491,10 @@ def test_the_clip_views_render() -> None:
     from .content_generator import _SLIDE_DRAG_JS, _clip_references_view
 
     refs = str(_clip_references_view())
-    # UI-3 round 12: one gallery of images, videos and audios, one drop zone
-    assert "clip_reference_tiles" in refs and "clip_audios" in refs
-    assert "pick_media" in refs and "drop_clip_image" in refs and "start_clip_image_drag" in refs
+    # UI-3 round 12: one gallery of images, videos and audios; m-24985141: ONE button
+    # opens their sources in the media drawer
+    assert "clip_reference_tiles" in refs and "open_media_drawer" in refs
+    assert "drop_clip_image" in refs and "start_clip_image_drag" in refs
     assert "data-slide-group" in refs and "q-cr-slide--drag" in refs
     assert "Inicio" in refs and "Final" in refs and "Seedance" not in refs
     assert "clip" in _SLIDE_DRAG_JS
@@ -1534,7 +1539,7 @@ def test_every_kind_takes_the_catalog_product_chosen_first() -> None:
     assert state.carousel_slides[2]["photo_key"] == "uploads/t/p1b.jpg"
     state.select_carousel_slide(0)
     state.set_slide_photo_from_catalog("uploads/t/p1.jpg")
-    photos_sent, _slides = state._carousel_slides_payload(False)
+    photos_sent, _roles, _slides = state._carousel_brief_slides(False)
     assert photos_sent == ["uploads/t/p1.jpg", "uploads/t/p1b.jpg"]
     state.set_slide_photo_from_catalog("uploads/t/p1.jpg")  # the same again: taken off
     assert state.carousel_slides[0]["photo_key"] == ""
@@ -1548,13 +1553,16 @@ def test_the_gallery_slide_editor_sits_under_the_slides_and_picks_catalog_photos
     no upload while the product has photos; the drag animated by `slide-drag.js`."""
     from pathlib import Path
 
-    from .content_generator import _carousel_section, _slide_editor, _slide_photo
+    from .content_generator import _carousel_section, _slide_editor, _slot_drawer_body
 
-    photo = str(_slide_photo())
-    assert "pick_media" in photo and "product_photo_keys" in photo
-    assert "creative_slide_photo" in photo  # only the fallback, with no catalog photos
+    # m-24985141 round 14: each slide chooses its photo in the drawer («Tus productos»
+    # first), its style, its motion and the one background
+    body = str(_slot_drawer_body("slide"))
+    assert "pick_media" in body and "product_photo_keys" in body
+    assert "creative_slide_photo" in body
     editor = str(_slide_editor())
-    for label in ("Tipo de diapositiva", "Foto del producto", "Título", "Duración"):
+    assert "open_slide_drawer" in editor and "slide-open-photo" in editor
+    for label in ("Tipo de diapositiva", "Título", "Duración"):
         assert label in editor or json.dumps(label)[1:-1] in editor, label
     section = str(_carousel_section())
     assert "data-slide-key" in section and "q-cr-slide--drag" in section
@@ -1585,7 +1593,7 @@ def test_a_gallery_slide_keeps_its_identity_through_moves_and_kind_changes() -> 
     state.piece_items = [{"key": "t/x/a.jpg", "media_type": "image", "label": "A", "view": ""}]
     state.pick_piece("t/x/a.jpg")
     assert state.carousel_slides[1]["uid"] == uids[2]
-    _photos, payload = state._carousel_slides_payload(False)
+    _photos, _roles, payload = state._carousel_brief_slides(False)
     assert all("uid" not in slide for slide in payload)  # never reaches the brief
 
 
@@ -1639,7 +1647,8 @@ def test_every_slot_takes_the_catalog_an_upload_or_a_piece() -> None:
     clip = state._media_inputs()
     assert clip["clip_first_frame_key"] == "uploads/t/p1.jpg"
     assert clip["clip_last_frame_key"] == piece
-    assert clip["clip_image_keys"] == []
+    # m-24985141: the product's second photo came in too — between the frames
+    assert clip["clip_image_keys"] == ["uploads/t/p1b.jpg"]
     assert clip["clip_video_keys"] == [reel]
     state.pick_media("clip_images", "pieces", piece)  # out: the video is last now
     assert state.clip_last_frame_key == reel  # a video closes the clip (§ 2026-10-19)
@@ -1647,15 +1656,17 @@ def test_every_slot_takes_the_catalog_an_upload_or_a_piece() -> None:
     state.choose_category("carousel")
     state.pick_media("slide", "pieces", piece)
     assert state.carousel_slides[0]["photo_key"] == piece
-    assert state._carousel_slides_payload(False)[0] == [piece]
+    # round 12: a photo set on the slide stays; the others follow «Tus fotos»
+    assert state._carousel_brief_slides(False)[0][0] == piece
 
 
 def test_each_slot_opens_on_the_catalog_when_it_has_something_for_it() -> None:
     state = _picker_state()
     tabs = state.picker_tab_view
     assert tabs["products"] == "catalog" and tabs["clip_images"] == "catalog"
-    assert tabs["background"] == "upload"  # no catalog tab: not a product (2026-10-19)
-    assert tabs["reference"] == "upload"  # the product has no videos
+    # no «Tus productos» there: not a product (2026-10-19) — «Tu Galería» first
+    assert tabs["background"] == "gallery"
+    assert tabs["reference"] == "catalog"  # m-24985141: «Tus productos» always first
     assert state.set_picker_tab("reference", "pieces") is None  # pieces already listed
     assert state.picker_tab_view["reference"] == "pieces"
     state.set_picker_tab("reference", "nowhere")
@@ -1663,46 +1674,39 @@ def test_each_slot_opens_on_the_catalog_when_it_has_something_for_it() -> None:
     state.piece_items = []
     assert state.set_picker_tab("products", "pieces") is not None  # loads the pieces
     state.clear_product()
-    assert state.picker_tab_view["clip_images"] == "upload"
+    assert state.picker_tab_view["clip_images"] == "catalog"  # to choose one
 
 
 def test_the_picker_is_in_every_slot_that_takes_a_file() -> None:
+    """m-24985141: every slot's sources are «Tus productos · Tu Galería · Subir ·
+    Publicaciones · Inspiración», in the media drawer (a part's sheet: in line)."""
     from .content_generator import (
-        _background_upload,
-        _clip_references_view,
+        _clip_drawer_body,
         _part_media_editor,
         _products_upload,
-        _ref_category,
         _reference_view,
-        _slide_photo,
+        _slot_drawer_body,
     )
 
-    every = ("Galería", "Subir", "Publicaciones")
-    # UI-3 round 13: the clip's gallery has its own drop zone — no «Subir» in its picker
-    clip = ("Galería", "Publicaciones")
-    for slot, target, tabs in (
-        (_products_upload("Productos"), "products", every),
-        (_reference_view(), "reference", every),
-        (_ref_category("image"), "clip_images", clip),
-        (_ref_category("video"), "clip_videos", clip),
-        (_part_media_editor("image"), "part_images", every),
-        (_part_media_editor("video"), "part_videos", every),
-        (_slide_photo(), "slide", every),
+    every = ("Tus productos", "Tu Galería", "Subir", "Publicaciones")
+    for opener, target in (
+        (_products_upload("Productos"), "products"),
+        (_reference_view(), "reference"),
     ):
-        rendered = str(slot)
+        assert "open_media_drawer" in str(opener), target
+        rendered = str(_slot_drawer_body(target))
+        assert "set_picker_tab" in rendered and target in rendered, target
+        for tab in every[1:]:
+            assert json.dumps(tab)[1:-1] in rendered or tab in rendered, (target, tab)
+    for kind, target in (("image", "part_images"), ("video", "part_videos")):
+        rendered = str(_part_media_editor(kind))
         assert "pick_media" in rendered and "set_picker_tab" in rendered, target
-        assert target in rendered, target
-        for tab in tabs:
-            assert tab in rendered or json.dumps(tab)[1:-1] in rendered, (target, tab)
-        if target in ("clip_images", "clip_videos"):
-            assert '"Subir"' not in rendered, target
-    # The enclosing clip view also contains UI-4's own per-part pickers. Their upload
-    # tabs do not change the separate upload button of the original clip references.
-    assert "part_images" in str(_clip_references_view())
-    # § 2026-10-19: the background has «Inspiración», «Subir» and «Piezas» — no catalog
-    background = str(_background_upload("Fondo", "Arrastra"))
-    assert "pick_media" in background and "creative_background" in background
-    assert "Inspiraci" in background
+        assert "open_media_drawer" not in rendered  # in line: never a second drawer
+        for tab in every:
+            assert json.dumps(tab)[1:-1] in rendered or tab in rendered, (target, tab)
+    clip = str(_clip_drawer_body())
+    for tab in (*every, "Inspiración"):
+        assert json.dumps(tab)[1:-1] in clip or tab in clip, tab
 
 
 def test_datos_clave_carry_any_fact() -> None:
@@ -1753,26 +1757,28 @@ def test_datos_clave_view_offers_rows_and_the_old_rules() -> None:
     assert "JSON" not in rendered and "Reglas" not in rendered
 
 
-def test_the_flyer_puts_its_background_first_and_shows_its_photos() -> None:
-    """§ request 2026-10-14: no «Tus fotos (opcionales)»; the background first, uploaded
-    only; the product photos — the catalog's ticked and the uploaded — as pictures."""
+def test_the_flyer_keeps_one_list_of_photos_with_a_category() -> None:
+    """m-24985141 round 11 (Deivid): the advertising image and the avatar keep ONE list
+    of photos — «Producto», «Lugar» (the background) or «Estilo» — like the Clip, one
+    button that opens the media drawer; the catalog product's photos are in it."""
     from .content_generator import _ad_image_section, _carousel_section
 
     flyer = str(_ad_image_section())
     assert "Tus fotos" not in flyer and "aparece tal cual" not in flyer
-    assert flyer.index("creative_background") < flyer.index("creative_products")
-    assert "product_previews" in flyer and "remove_product_preview" in flyer
+    assert "ref_items" in flyer and "set_ref_role" in flyer and "remove_ref" in flyer
+    assert "media-open-products" in flyer and "media-open-background" not in flyer
     gallery = str(_carousel_section())
     assert "Las escenas se generan con IA" not in gallery
+    assert "slide-open-background" in gallery  # round 14: one background, per slide
     state = _clip_state_with_product()
     state.choose_category("image")
-    keys = [item["key"] for item in state.product_previews]
+    keys = [item["key"] for item in state.ref_items]
     assert keys == ["uploads/t/p1.jpg", "uploads/t/p1b.jpg"]
-    state.remove_product_preview("uploads/t/p1b.jpg")  # a catalog one: unticked
+    state.remove_ref("uploads/t/p1b.jpg")  # a catalog one: unticked
     assert state.catalog_off == ["uploads/t/p1b.jpg"]
     state.media_product_keys, state.media_product_names = ["uploads/t/mine.jpg"], ["mine.jpg"]
-    state.remove_product_preview("uploads/t/mine.jpg")
-    assert [item["key"] for item in state.product_previews] == ["uploads/t/p1.jpg"]
+    state.remove_ref("uploads/t/mine.jpg")
+    assert [item["key"] for item in state.ref_items] == ["uploads/t/p1.jpg"]
 
 
 def test_generar_guion_asks_its_length_in_publicacion() -> None:
@@ -1809,9 +1815,8 @@ def test_each_clip_reference_image_has_a_role() -> None:
     a style; a piece already made starts as a style, a catalog photo as the product. The
     first and last images are the frames: only the ones between carry a role."""
     state = _picker_state()
-    state.choose_category("clip")
+    state.choose_category("clip")  # m-24985141: both product photos come in
     piece = "t/x/generated/d/r1/a.png"
-    state.pick_media("clip_images", "catalog", "uploads/t/p1b.jpg")
     state.pick_media("clip_images", "pieces", piece)
     assert [item["role"] for item in state.clip_images] == ["product", "product", "style"]
     state.set_clip_image_role("uploads/t/p1b.jpg", "place")
@@ -1825,8 +1830,10 @@ def test_each_clip_reference_image_has_a_role() -> None:
 
     rendered = str(_clip_references_view())
     assert "set_clip_image_role" in rendered
-    for word in ("Producto", "Lugar", "Estilo"):
+    # round 13 (Deivid): «Lugar» reads «Fondo» (the role stays `place`)
+    for word in ("Producto", "Fondo", "Estilo"):
         assert word in rendered
+    assert '"Lugar"' not in rendered
 
 
 def test_a_picture_is_removed_with_its_trash_button() -> None:
@@ -2004,20 +2011,40 @@ class _Proxy:
         setattr(self._state, name, value)
 
 
-async def test_potenciar_replaces_the_context_and_deshacer_brings_it_back(
+def _proposal(*texts: str, added: tuple[str, ...] = ()) -> object:
+    """A provider answer of «Mejorar mi texto»: one version per text, in approach order."""
+    from qualify_api.creative.context_ai import APPROACHES, ContextProposal, ContextVersion
+
+    return ContextProposal(
+        versions=tuple(
+            ContextVersion(approach=key, text=text)
+            for (key, _), text in zip(APPROACHES, texts, strict=False)
+        ),
+        added_facts=added,
+    )
+
+
+_THREE = (
+    "Quiero mostrar la smash doble. Pide por WhatsApp.",
+    "Quiero que se vea la smash doble jugosa y dorada.",
+    "Quiero contarte que llegó la smash doble.",
+)
+
+
+async def test_mejorar_shows_three_cards_keeps_the_original_and_restores_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """m-25017274: one press = three cards; the field keeps the owner's words until a
+    card is chosen, and «Volver a mi texto» brings them back. No creación is spent."""
     from uuid import uuid4
-
-    from qualify_api.creative.context_ai import ContextProposal
 
     from . import creative_state as module
 
     seen: dict[str, object] = {}
 
-    def fake(tenant_id: object, brand_id: object, **form: object) -> ContextProposal:
+    def fake(tenant_id: object, brand_id: object, **form: object) -> object:
         seen.update(form)
-        return ContextProposal(text="Quiero mostrar la smash doble…", added_facts=("2x1",))
+        return _proposal(*_THREE, added=("2x1",))
 
     async def ids(self: CreativeState) -> tuple[object, object, object]:
         return uuid4(), uuid4(), uuid4()
@@ -2027,23 +2054,123 @@ async def test_potenciar_replaces_the_context_and_deshacer_brings_it_back(
     state = CreativeState()
     state.choose_category("clip")
     state.brief_topic = "smash doble"
+    state.brief_content_type = "promotion"
     state.brief_highlights = [{"key": "precio", "value": "20 $"}]
+    left = state.creations_left
     await CreativeState.enhance_context.fn(_Proxy(state))
 
-    assert state.brief_topic == "Quiero mostrar la smash doble…"
+    assert state.brief_topic == "smash doble"  # nothing replaced yet
+    assert [v["text"] for v in state.context_versions] == list(_THREE)
+    assert [v["label"] for v in state.context_versions] == [
+        "Más directa",
+        "Más descriptiva",
+        "Más cercana",
+    ]
     assert seen["text"] == "smash doble" and seen["piece"] == "Clip"
+    assert seen["content_type"] == "Promoción" and seen["format"] != ""
+    assert seen["previous_versions"] == []
     assert seen["highlights"] == [["precio", "20 $"]]
     assert "2x1" in state.context_enhance_note and not state.context_enhancing
+    assert state.creations_left == left  # free
+    assert state.context_is_original and not state.context_text_edited
+
+    state.choose_context_version(1)
+    assert state.brief_topic == _THREE[1] and state.context_choice == 1
+    assert not state.context_is_original and not state.context_text_edited
     state.undo_enhance_context()
-    assert state.brief_topic == "smash doble" and state.context_before_enhance == ""
+    assert state.brief_topic == "smash doble" and state.context_choice == -1
+    assert state.context_before_enhance == "smash doble"
+    assert len(state.context_versions) == 3  # the cards stay to choose again
+    state.choose_context_version(7)  # out of range: nothing happens
+    assert state.brief_topic == "smash doble"
 
 
-async def test_potenciar_writes_a_flyers_scene_and_needs_some_words_first(
+async def test_otra_version_asks_from_the_original_with_the_versions_already_shown(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from uuid import uuid4
 
-    from qualify_api.creative.context_ai import ContextProposal
+    from . import creative_state as module
+
+    calls: list[dict[str, object]] = []
+    answers = [
+        _proposal(*_THREE),
+        _proposal("Otra directa de la smash", "Otra descriptiva", "Otra cercana"),
+        _proposal("Tercera vez directa", "Tercera descriptiva", "Tercera cercana"),
+        _proposal("Desde lo editado", "Editado dos", "Editado tres"),
+    ]
+
+    def fake(tenant_id: object, brand_id: object, **form: object) -> object:
+        calls.append(dict(form))
+        return answers[len(calls) - 1]
+
+    async def ids(self: CreativeState) -> tuple[object, object, object]:
+        return uuid4(), uuid4(), uuid4()
+
+    monkeypatch.setattr(module, "enhance_generator_context", fake)
+    monkeypatch.setattr(CreativeState, "_session_ids", ids)
+    state = CreativeState()
+    state.choose_category("clip")
+    state.brief_topic = "smash doble con papas"
+    await CreativeState.enhance_context.fn(_Proxy(state))
+    state.choose_context_version(0)
+
+    await CreativeState.enhance_context.fn(_Proxy(state), True)  # «Otra versión»
+    assert calls[1]["text"] == "smash doble con papas"  # the original, never the card
+    assert calls[1]["previous_versions"] == list(_THREE)
+    assert state.context_versions[0]["text"] == "Otra directa de la smash"
+    assert state.brief_topic == _THREE[0]  # the chosen card stays until another is picked
+    assert state.context_choice == -1
+
+    # «Mejorar mi texto» again on an untouched card is the same round
+    await CreativeState.enhance_context.fn(_Proxy(state))
+    assert calls[2]["text"] == "smash doble con papas"
+    assert len(calls[2]["previous_versions"]) == 6  # type: ignore[arg-type]
+
+    # an edited text starts a new round from the new words
+    state.brief_topic = "smash doble con papas y gaseosa"
+    assert state.context_text_edited
+    await CreativeState.enhance_context.fn(_Proxy(state))
+    assert calls[3]["text"] == "smash doble con papas y gaseosa"
+    assert calls[3]["previous_versions"] == []
+    assert state.context_before_enhance == "smash doble con papas y gaseosa"
+
+
+async def test_a_failed_otra_version_keeps_the_field_and_the_cards(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from uuid import uuid4
+
+    from . import creative_state as module
+
+    answers: list[object] = [_proposal(*_THREE)]
+
+    def fake(tenant_id: object, brand_id: object, **form: object) -> object:
+        if not answers:
+            raise RuntimeError("network down")
+        return answers.pop(0)
+
+    async def ids(self: CreativeState) -> tuple[object, object, object]:
+        return uuid4(), uuid4(), uuid4()
+
+    monkeypatch.setattr(module, "enhance_generator_context", fake)
+    monkeypatch.setattr(CreativeState, "_session_ids", ids)
+    state = CreativeState()
+    state.choose_category("clip")
+    state.brief_topic = "smash doble con papas"
+    await CreativeState.enhance_context.fn(_Proxy(state))
+    state.choose_context_version(2)
+    await CreativeState.enhance_context.fn(_Proxy(state), True)
+    assert state.brief_topic == _THREE[2]
+    assert [v["text"] for v in state.context_versions] == list(_THREE)
+    assert state.context_enhance_error == module._ENHANCE_FAILED
+    assert state.context_before_enhance == "smash doble con papas"
+
+
+async def test_mejorar_writes_a_flyers_scene_and_needs_some_words_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from uuid import uuid4
 
     from . import creative_state as module
 
@@ -2051,7 +2178,9 @@ async def test_potenciar_writes_a_flyers_scene_and_needs_some_words_first(
         return uuid4(), uuid4(), uuid4()
 
     monkeypatch.setattr(
-        module, "enhance_generator_context", lambda *a, **k: ContextProposal(text="Escena rica")
+        module,
+        "enhance_generator_context",
+        lambda *a, **k: _proposal_scene("Escena rica de cerca", "El local", "Una mano"),
     )
     monkeypatch.setattr(CreativeState, "_session_ids", ids)
     state = CreativeState()
@@ -2059,29 +2188,43 @@ async def test_potenciar_writes_a_flyers_scene_and_needs_some_words_first(
     state.ad_scene_prompt = "vaso"
     await CreativeState.enhance_context.fn(_Proxy(state))
     assert state.context_enhance_error != "" and state.ad_scene_prompt == "vaso"
+    assert state.context_versions == []
     state.ad_scene_prompt = "un vaso en la barra"
     await CreativeState.enhance_context.fn(_Proxy(state))
-    assert state.ad_scene_prompt == "Escena rica" and state.brief_topic == ""
-    state.choose_category("clip")  # another kind: nothing of the flyer's to undo
-    assert state.context_before_enhance == ""
+    assert state.context_versions[0]["label"] == "El producto de cerca"
+    state.choose_context_version(0)
+    assert state.ad_scene_prompt == "Escena rica de cerca" and state.brief_topic == ""
+    state.choose_category("clip")  # another kind: nothing of the flyer's comes back
+    assert state.context_before_enhance == "" and state.context_versions == []
+
+
+def _proposal_scene(*texts: str) -> object:
+    from qualify_api.creative.context_ai import SCENE_APPROACHES, ContextProposal, ContextVersion
+
+    return ContextProposal(
+        versions=tuple(
+            ContextVersion(approach=key, text=text)
+            for (key, _), text in zip(SCENE_APPROACHES, texts, strict=True)
+        )
+    )
 
 
 @pytest.mark.parametrize("category,manual_max", [("image", 600), ("clip", 1200)])
 @pytest.mark.parametrize("provider_raises", [False, True])
-async def test_potenciar_keeps_original_and_explains_the_real_limit(
+async def test_mejorar_keeps_original_and_explains_the_real_limit(
     monkeypatch: pytest.MonkeyPatch, category: str, manual_max: int, provider_raises: bool
 ) -> None:
-    from qualify_api.creative.context_ai import ContextProposal, ContextTooLong
+    from qualify_api.creative.context_ai import ContextTooLong
 
     from . import creative_state as module
 
     async def ids(self: CreativeState) -> tuple[UUID, UUID, UUID]:
         return _TENANT_ID, _BRAND_ID, _TENANT_ID
 
-    def fake(*args: object, **kwargs: object) -> ContextProposal:
+    def fake(*args: object, **kwargs: object) -> object:
         if provider_raises:
             raise ContextTooLong(301, 300)
-        return ContextProposal(text="á" * 301, added_facts=("No mostrar",))
+        return _proposal("á" * 301, "é" * 302, added=("No mostrar",))
 
     monkeypatch.setattr(module, "enhance_generator_context", fake)
     monkeypatch.setattr(CreativeState, "_session_ids", ids)
@@ -2090,7 +2233,6 @@ async def test_potenciar_keeps_original_and_explains_the_real_limit(
     prefix = "Quiero café a las 8:30, #Oferta y el símbolo ⭐."
     original = prefix + "á" * (manual_max - len(prefix))
     state._set_context_text(original)
-    state.context_before_enhance = "Texto anterior para deshacer"
     setter_calls: list[str] = []
     monkeypatch.setattr(
         CreativeState, "_set_context_text", lambda self, value: setter_calls.append(value)
@@ -2101,7 +2243,7 @@ async def test_potenciar_keeps_original_and_explains_the_real_limit(
     assert state._user_topic_text() == original
     assert len(state._user_topic_text()) == manual_max
     assert setter_calls == []
-    assert state.context_before_enhance == "Texto anterior para deshacer"
+    assert state.context_versions == [] and state.context_before_enhance == ""
     # UX review 2026-11-04 B3: what happened and what to do, no character counts
     assert "demasiado larga" in state.context_enhance_error
     assert "dejamos tu texto como estaba" in state.context_enhance_error
@@ -2112,11 +2254,9 @@ async def test_potenciar_keeps_original_and_explains_the_real_limit(
 
 @pytest.mark.parametrize("category,manual_max", [("image", 600), ("clip", 1200)])
 @pytest.mark.parametrize("proposed_chars", [299, 300])
-async def test_potenciar_accepts_299_or_300_without_changing_requested_unicode(
+async def test_mejorar_accepts_299_or_300_without_changing_requested_unicode(
     monkeypatch: pytest.MonkeyPatch, category: str, manual_max: int, proposed_chars: int
 ) -> None:
-    from qualify_api.creative.context_ai import ContextProposal
-
     from . import creative_state as module
 
     async def ids(self: CreativeState) -> tuple[UUID, UUID, UUID]:
@@ -2126,9 +2266,9 @@ async def test_potenciar_accepts_299_or_300_without_changing_requested_unicode(
     proposed = prefix + "á" * (proposed_chars - len(prefix))
     seen: dict[str, object] = {}
 
-    def fake(*args: object, **kwargs: object) -> ContextProposal:
+    def fake(*args: object, **kwargs: object) -> object:
         seen.update(kwargs)
-        return ContextProposal(text=proposed)
+        return _proposal(proposed, "x" * 301)  # the overlong one is not shown
 
     monkeypatch.setattr(module, "enhance_generator_context", fake)
     monkeypatch.setattr(CreativeState, "_session_ids", ids)
@@ -2139,6 +2279,8 @@ async def test_potenciar_accepts_299_or_300_without_changing_requested_unicode(
     state._set_context_text(original)
 
     await CreativeState.enhance_context.fn(_Proxy(state))
+    assert [v["text"] for v in state.context_versions] == [proposed]
+    state.choose_context_version(0)
 
     assert state._user_topic_text() == proposed
     assert len(state._user_topic_text()) == proposed_chars
@@ -2147,6 +2289,112 @@ async def test_potenciar_accepts_299_or_300_without_changing_requested_unicode(
     state.undo_enhance_context()
     assert state._user_topic_text() == original
     assert len(state._user_topic_text()) == manual_max
+
+
+def test_the_version_cards_read_in_spanish_on_one_column() -> None:
+    from .content_generator import (
+        ENHANCE_AGAIN_LABEL,
+        ENHANCE_HINT,
+        ENHANCE_LABEL,
+        ENHANCE_PICK_TITLE,
+        ENHANCE_RESTORE_LABEL,
+        _context_ai_tools,
+    )
+
+    rendered = str(_context_ai_tools())
+    for text in (
+        ENHANCE_LABEL,
+        ENHANCE_HINT,
+        ENHANCE_PICK_TITLE,
+        ENHANCE_AGAIN_LABEL,
+        ENHANCE_RESTORE_LABEL,
+    ):
+        assert text in rendered or json.dumps(text) in rendered, text
+    assert "radiogroup" in rendered and "No gasta creaciones" in ENHANCE_HINT
+    # UX review: no promised count, the new button name, a polite live region
+    assert "tres" not in ENHANCE_HINT and ENHANCE_AGAIN_LABEL == "Ver otras versiones"
+    assert "polite" in rendered and "context_text_edited" in rendered
+
+
+async def _three_cards(monkeypatch: pytest.MonkeyPatch, *answers: object) -> CreativeState:
+    from uuid import uuid4
+
+    from . import creative_state as module
+
+    queue = list(answers) or [_proposal(*_THREE, added=("2x1",))]
+
+    async def ids(self: CreativeState) -> tuple[object, object, object]:
+        return uuid4(), uuid4(), uuid4()
+
+    monkeypatch.setattr(module, "enhance_generator_context", lambda *a, **k: queue.pop(0))
+    monkeypatch.setattr(CreativeState, "_session_ids", ids)
+    state = CreativeState()
+    state.choose_category("clip")
+    state.brief_topic = "smash doble con papas"
+    await CreativeState.enhance_context.fn(_Proxy(state))
+    assert len(state.context_versions) == 3
+    return state
+
+
+@pytest.mark.parametrize("how", ["review_in_drafts", "start_clean"])
+async def test_the_next_piece_never_shows_the_last_pieces_cards(
+    monkeypatch: pytest.MonkeyPatch, how: str
+) -> None:
+    """Code review m-25017274: a piece sent on (Borradores or a clean start) takes its
+    cards, its original and «Ver otras versiones» with it. The created case is
+    `test_submit_success_forgets_the_cards_in_source`."""
+    state = await _three_cards(monkeypatch)
+    state.choose_context_version(0)
+    if how == "review_in_drafts":
+        state.review_in_drafts()
+    else:
+        state._start_clean()
+    assert state.context_versions == [] and state.context_before_enhance == ""
+    assert state._context_shown == [] and state.context_enhance_note == ""
+    assert state.context_chosen == -1
+
+
+def test_submit_success_forgets_the_cards_in_source() -> None:
+    """The success branch of `submit_brief_form` resets the cards with the topic."""
+    import inspect
+
+    source = inspect.getsource(CreativeState.submit_brief_form.fn)
+    reset = source.index('self.brief_topic = ""')
+    assert "self._forget_context_versions()" in source[reset : reset + 200]
+
+
+async def test_an_edit_hides_the_cards_and_drops_the_mark(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from . import creative_state as module
+
+    state = await _three_cards(monkeypatch)
+    assert "en alguna de estas versiones" in state.context_enhance_note
+    assert state.context_enhance_note.startswith(module._ENHANCE_ADDED_VERSIONS)
+    spec = state.choose_context_version(1)
+    assert spec is not None and state.context_chosen == 1
+    # live 2026-11-13: scrollIntoView left the field under the sticky header; the
+    # script aligns it under `.q-page-header` in the box that scrolls, and never focuses
+    script = str(spec)
+    assert module.CONTEXT_FIELD_ID in script and "q-page-header" in script
+    assert "scrollBy" in script and "scrollIntoView" not in script and "focus" not in script
+    state.brief_topic = _THREE[1] + " y gaseosa"
+    assert state.context_chosen == -1 and state.context_text_edited
+
+
+async def test_the_rounds_memory_keeps_only_what_is_sent_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from qualify_api.creative.context_ai import PREVIOUS_VERSIONS_SENT
+
+    answers = [
+        _proposal(*(f"Versión {n}-{k} de la smash doble" for k in range(3))) for n in range(5)
+    ]
+    state = await _three_cards(monkeypatch, *answers)
+    for _ in range(4):
+        await CreativeState.enhance_context.fn(_Proxy(state), True)
+    assert len(state._context_shown) == PREVIOUS_VERSIONS_SENT
+    assert state._context_shown[-1] == "Versión 4-2 de la smash doble"
 
 
 def test_the_clips_middle_images_are_named_on_the_summary() -> None:
@@ -2193,3 +2441,124 @@ def test_the_tag_suggestions_agree_with_etiquetas() -> None:
     assert "Sugeridas para tu texto" in rendered
     assert "Sugeridos" not in rendered
     assert "de nicho" not in rendered and "La IA" not in rendered
+
+
+async def test_the_parts_card_writing_the_story_forgets_the_cards(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Re-review m-25017274: «Proponerme las partes» overwrites «Qué decir»; cards written
+    for the old text go with it."""
+    from .parts_start_state import apply_to_creative
+
+    state = await _three_cards(monkeypatch)
+    assert apply_to_creative(state, story="Combo para pedir hoy", entries=[], provenance=None)
+    assert state.brief_topic == "Combo para pedir hoy"
+    assert state.context_versions == [] and state.context_before_enhance == ""
+
+
+def test_the_way_back_outlives_the_cards_and_the_notice_does_not() -> None:
+    """Re-review: «Volver a mi texto» hangs on the original alone (it stays after an
+    edit hides the cards); the added-data notice names «estas versiones», so it hides
+    with them."""
+    from .content_generator import _context_ai_tools, _context_versions
+
+    assert "Volver a mi texto" not in str(_context_versions())
+    rendered = str(_context_ai_tools())
+    assert "Volver a mi texto" in rendered and "context_before_enhance" in rendered
+    note = rendered.index("context_enhance_note")
+    assert "context_text_edited" in rendered[max(0, note - 600) : note + 600]
+
+
+def test_the_scene_field_says_the_image_carries_no_writing() -> None:
+    """m-25017274 UX review: the help says where prices go; the example no longer names
+    a label (it invited printed text into the scene)."""
+    from .content_generator import _section_topic
+
+    rendered = str(_section_topic())
+    help_text = (
+        "Qué se ve, dónde y cómo se siente. Es lo único obligatorio. La imagen sale sin "
+        "letras ni precios: escríbelos en el texto de la publicación."
+    )
+    assert help_text in rendered or json.dumps(help_text) in rendered
+    assert "la etiqueta de frente" not in rendered
+    assert "sosteniendo el vaso a la altura del pecho, de frente, con el local" in rendered
+
+
+def test_volver_a_mi_texto_sits_above_the_cards() -> None:
+    """UX review: right under the field, so it is in view after a card is chosen."""
+    from .content_generator import ENHANCE_RESTORE_LABEL, _context_ai_tools
+
+    rendered = str(_context_ai_tools())
+    assert rendered.index(ENHANCE_RESTORE_LABEL) < rendered.index("radiogroup")
+
+
+async def test_no_surviving_version_keeps_the_text_and_remembers_the_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """m-25017274 review: when every scene version showed text the owner reads «Tu texto
+    quedó igual…», and the next press sends the rejected ones as texts not to repeat."""
+    from uuid import uuid4
+
+    from qualify_api.creative.context_ai import ContextNoUsableVersion
+
+    from . import creative_state as module
+
+    calls: list[dict[str, object]] = []
+    rejected = ("Se ve el precio $22.000.", "Un cartel al fondo.")
+
+    def fake(tenant_id: object, brand_id: object, **form: object) -> object:
+        calls.append(dict(form))
+        if len(calls) == 1:
+            raise ContextNoUsableVersion("no usable version proposed", rejected)
+        return _proposal_scene("Plano cerrado", "La barra", "Una mano")
+
+    async def ids(self: CreativeState) -> tuple[object, object, object]:
+        return uuid4(), uuid4(), uuid4()
+
+    monkeypatch.setattr(module, "enhance_generator_context", fake)
+    monkeypatch.setattr(CreativeState, "_session_ids", ids)
+    state = CreativeState()
+    state.choose_category("image")
+    state.ad_scene_prompt = "un shawarma sobre la barra del local"
+    await CreativeState.enhance_context.fn(_Proxy(state))
+    assert state.context_enhance_error == module._ENHANCE_TIMED_OUT
+    assert state.ad_scene_prompt == "un shawarma sobre la barra del local"
+    assert state.context_versions == []
+
+    await CreativeState.enhance_context.fn(_Proxy(state))
+    assert calls[1]["previous_versions"] == list(rejected)
+    assert len(state.context_versions) == 3
+    assert state._context_rejected == [] and set(rejected) <= set(state._context_shown)
+
+
+async def test_dropped_versions_of_a_shown_press_are_never_asked_for_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from uuid import uuid4
+
+    from qualify_api.creative.context_ai import SCENE_APPROACHES, ContextProposal, ContextVersion
+
+    from . import creative_state as module
+
+    calls: list[dict[str, object]] = []
+
+    def fake(tenant_id: object, brand_id: object, **form: object) -> object:
+        calls.append(dict(form))
+        return ContextProposal(
+            versions=(
+                ContextVersion(approach=SCENE_APPROACHES[0][0], text=f"Plano cerrado {len(calls)}"),
+            ),
+            rejected=(f"Cartel {len(calls)}",),
+        )
+
+    async def ids(self: CreativeState) -> tuple[object, object, object]:
+        return uuid4(), uuid4(), uuid4()
+
+    monkeypatch.setattr(module, "enhance_generator_context", fake)
+    monkeypatch.setattr(CreativeState, "_session_ids", ids)
+    state = CreativeState()
+    state.choose_category("image")
+    state.ad_scene_prompt = "un shawarma sobre la barra del local"
+    await CreativeState.enhance_context.fn(_Proxy(state))
+    await CreativeState.enhance_context.fn(_Proxy(state), True)
+    assert calls[1]["previous_versions"] == ["Plano cerrado 1", "Cartel 1"]

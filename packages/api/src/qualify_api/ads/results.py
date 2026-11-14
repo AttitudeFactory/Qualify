@@ -63,6 +63,8 @@ class PromotionResultSummary:
     current_end_time: datetime | None = None
     can_resume: bool = False
     operation_pending: bool = False
+    # The piece the promotion came from, so a rejected ad can lead back to it (m-25026344).
+    content_draft_id: UUID | None = None
 
 
 @dataclass(frozen=True)

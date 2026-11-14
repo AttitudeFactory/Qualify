@@ -78,13 +78,18 @@ from qualify_api.whatsapp.template_reply import (
 from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState
+from .chat_row_vm import ChatRowVM
 from .nav_url import (
+    FROM_INBOX,
+    FROM_PARAM,
     back_url_script,
     close_flow_script,
     conversation_href,
+    filter_address_script,
     flow_param,
     push_url_script,
     replace_url_script,
+    scalar_param,
     thread_param,
     uuid_param,
 )
@@ -112,6 +117,7 @@ from .whatsapp_chats_vm import (
     FILTER_KEYS,
     FILTER_OPEN,
     FILTER_PAYMENT,
+    FILTER_SLUG,
     FILTER_UNREAD,
     LEGACY_PICK_FLOW,
     MAX_BUTTON_TITLE_CHARS,
@@ -190,6 +196,7 @@ from .whatsapp_chats_vm import (
     TemplateFieldVM,
     ThreadRowVM,
     UnsentItem,
+    as_chat_row,
     build_conversation,
     build_menu_preview,
     build_offer,
@@ -204,9 +211,11 @@ from .whatsapp_chats_vm import (
     caption_count,
     caption_error,
     carry_payment_marks,
+    cart_details,
     composer_enabled,
     filter_counts,
     filter_empty_text,
+    filter_from_slug,
     filter_label,
     filter_products,
     filter_threads,
@@ -307,15 +316,16 @@ def _marked_offer(gw: Any, tenant_id: UUID, brand_id: UUID) -> Any:
         return None
 
 
-def _payment_status(gw: Any, tenant_id: UUID, connection: UUID, thread: UUID) -> Any:
-    """The open chat's payment (blocking); None when it cannot be read."""
+def _payment_status(gw: Any, tenant_id: UUID, connection: UUID, thread: UUID) -> tuple[Any, bool]:
+    """The open chat's payment (blocking) and whether it was read: `(None, True)` is «no
+    payment», `(None, False)` is «could not read» (the card then offers no charge hint)."""
     try:
-        return gw.payment_status(tenant_id, connection, thread)
+        return gw.payment_status(tenant_id, connection, thread), True
     except ThreadNotFound:
         raise
     except Exception as exc:  # noqa: BLE001
         logger.warning("whatsapp chats payment status failed: %s", type(exc).__name__)
-        return None
+        return None, False
 
 
 @dataclass(frozen=True)
@@ -471,6 +481,9 @@ class WhatsAppChatsState(rx.State):
     statuses_failed: bool = False
 
     # -- conversation -------------------------------------------------------------------
+    #: m-25017859: the open chat came from the single list of «Por responder»
+    #: (`?desde=por-responder`): its back button returns there.
+    from_inbox: bool = False
     open_thread_id: str = ""
     messages: list[MessageVM] = []
     order: OrderCardVM = EMPTY_ORDER
@@ -547,6 +560,8 @@ class WhatsAppChatsState(rx.State):
     #: The open chat's payment (pill, «Paga con: …», «Pago recibido»).
     payment: PaymentVM = EMPTY_PAYMENT
     _payment_raw: Any = None
+    #: m-25018684: the last payment read failed — «no payment» is not known.
+    _payment_unread: bool = False
     pay_confirm_open: bool = False
     pay_message: str = ""
     pay_error: str = ""
@@ -572,6 +587,9 @@ class WhatsAppChatsState(rx.State):
     _records: list[MessageRecord] = []
     _unsent: list[UnsentItem] = []
     _order_raw: Any = None
+    # m-25018684: the archived orders and the wamids of the carts still on record.
+    _previous_orders_raw: Any = ()
+    _cart_ids: Any = frozenset()
     _refreshing: bool = False
     # message id → what the media locator answered (URL + expiry, or the failure code).
     _media: dict[str, MediaResolution] = {}
@@ -598,8 +616,9 @@ class WhatsAppChatsState(rx.State):
     # ==================================================================================
 
     @rx.var
-    def visible_rows(self) -> list[ThreadRowVM]:
-        return filter_threads(self.rows, self.filter_key)
+    def visible_chat_rows(self) -> list[ChatRowVM]:
+        """m-25017844: the visible rows in the shape every channel's list draws."""
+        return [as_chat_row(r) for r in filter_threads(self.rows, self.filter_key)]
 
     @rx.var
     def filter_open_label(self) -> str:
@@ -733,7 +752,10 @@ class WhatsAppChatsState(rx.State):
         self._records = []
         self._unsent = []
         self._order_raw = None
+        self._previous_orders_raw = ()
+        self._cart_ids = frozenset()
         self._payment_raw = None
+        self._payment_unread = False
         self.payment = EMPTY_PAYMENT
         self._reset_payment_confirm()
         self._media = {}
@@ -805,6 +827,7 @@ class WhatsAppChatsState(rx.State):
     def _render_conversation(self) -> None:
         zone = _zone(self._zone_name)
         now = self._now()
+        previous = tuple(self._previous_orders_raw or ())
         self.messages = build_conversation(
             self._records,
             self._unsent,
@@ -812,8 +835,15 @@ class WhatsAppChatsState(rx.State):
             zone=zone,
             media=self._media,
             loading=self._media_loading,
+            carts=cart_details(self._order_raw, previous, self._cart_ids or ()),
         )
-        self.order = build_order_card(self._order_raw, now=now, zone=zone)
+        self.order = build_order_card(
+            self._order_raw,
+            now=now,
+            zone=zone,
+            previous=previous,
+            has_payment=self._payment_raw is not None or self._payment_unread,
+        )
         self.payment = build_payment(
             self._payment_raw, now=now, zone=zone, agents={a.user_id: a for a in self.agents}
         )
@@ -836,10 +866,9 @@ class WhatsAppChatsState(rx.State):
 
     @rx.event
     async def enter(self) -> rx.event.EventSpec | None:
-        """Tab root `on_mount`: entry or number switch."""
-        # m-24842990: «Por responder» › «Ver» opens the chats on «Sin leer» (N11).
-        if self.router.url.query_parameters.get("filtro") == "sin-leer":
-            self.filter_key = FILTER_UNREAD
+        """Tab root `on_mount`: entry or number switch. It never decides the chip: a
+        remount (another WhatsApp tab and back, a number switch, back from Galería)
+        keeps the one the owner picked (`apply_address_filter` runs on navigation)."""
         if self.pick_open:
             self._reset_picker()  # back from Galería: the drawer does not reopen
         shell = await self.get_state(WhatsAppState)
@@ -860,9 +889,28 @@ class WhatsAppChatsState(rx.State):
         return WhatsAppChatsState.load_list
 
     @rx.event
-    def set_filter(self, key: str | list[str]) -> None:
-        if isinstance(key, str) and key in FILTER_KEYS:
-            self.filter_key = key
+    async def apply_address_filter(self) -> None:
+        """m-24842990 / m-25017859: on a NAVIGATION to `/whatsapp` (its route
+        `on_load`, via `WhatsAppState.enter_page`) the address decides the chip: the
+        sidebar's badge link and the single list's deep link carry `?filtro=por-responder`
+        (`sin-leer`: the chip's old name), a bare `/whatsapp` is the default «Abiertos»."""
+        self.filter_key = filter_from_slug(self.router.url.query_parameters.get("filtro"))
+        (await self.get_state(WhatsAppState))._chats_chip = self._chip()
+
+    @rx.event
+    async def set_filter(self, key: str | list[str]) -> rx.event.EventSpec | None:
+        """A chip tap: the choice stands until the next navigation, and the address says
+        it (replaced, not pushed), so a reload shows the same chip. The page keeps it for
+        the addresses it writes later (a tab and back: `WhatsAppState._panel_address`)."""
+        if not isinstance(key, str) or key not in FILTER_KEYS:
+            return None
+        self.filter_key = key
+        (await self.get_state(WhatsAppState))._chats_chip = self._chip()
+        return rx.call_script(filter_address_script(FILTER_SLUG[key]))
+
+    def _chip(self) -> str:
+        """The `?filtro=` of the chip on screen; "" for the default (no parameter)."""
+        return "" if self.filter_key == DEFAULT_FILTER else FILTER_SLUG[self.filter_key]
 
     @rx.event(background=True)
     async def load_list(self) -> None:
@@ -921,7 +969,7 @@ class WhatsAppChatsState(rx.State):
                 self.rows = carry_payment_marks(rows, self.rows if same else [])
                 self.statuses_failed = True
             else:
-                self.rows = with_payment_pills(rows, statuses, now, zone)
+                self.rows = with_payment_pills(rows, statuses)
                 self.statuses_failed = False
             self.list_loaded_for = connection_id
             self.list_loading_for = ""
@@ -946,6 +994,9 @@ class WhatsAppChatsState(rx.State):
             self._reset_conversation()
         params = self.router.url.query_parameters
         thread = thread_param(params, connection)
+        # m-25017859: a chat opened from the single list of «Por responder» goes back
+        # there, not to this number's own list.
+        self.from_inbox = bool(thread) and scalar_param(params, FROM_PARAM) == FROM_INBOX
         if thread == self.open_thread_id:
             return None
         self.open_thread_id = thread
@@ -962,19 +1013,41 @@ class WhatsAppChatsState(rx.State):
             return None  # arrived over the wire; refuse an id the list does not hold
         writer = replace_url_script if self.open_thread_id else push_url_script
         self.open_thread_id = thread_id
+        self.from_inbox = False  # picked from this number's own list
         self._reset_conversation()
         self.compose_mode = COMPOSE_TEXT
         return [
-            rx.call_script(writer(conversation_href("whatsapp", self._connection_id, thread_id))),
+            rx.call_script(
+                writer(
+                    conversation_href("whatsapp", self._connection_id, thread_id, chip=self._chip())
+                )
+            ),
             WhatsAppChatsState.load_conversation,
         ]
 
     @rx.event
     def back_to_list(self) -> rx.event.EventSpec:
-        """Mobile: leave the conversation pane."""
+        """Mobile: leave the conversation pane (from the single list: back to it)."""
+        if self.from_inbox:
+            return WhatsAppChatsState.back_to_inbox
         self.open_thread_id = ""
         self._reset_conversation()
-        return rx.call_script(back_url_script(conversation_href("whatsapp", self._connection_id)))
+        return rx.call_script(
+            back_url_script(conversation_href("whatsapp", self._connection_id, chip=self._chip()))
+        )
+
+    @rx.event
+    async def back_to_inbox(self) -> rx.event.EventSpec:
+        """«‹ Por responder» (m-25017859): back to the single list with the filter, the
+        channel and the scroll it had (`InboxListState` keeps them)."""
+        from .inbox_list_state import InboxListState
+
+        self.from_inbox = False
+        self.open_thread_id = ""
+        self._reset_conversation()
+        inbox = await self.get_state(InboxListState)
+        # Replace, not push: the phone's «atrás» after this never reopens the chat.
+        return rx.redirect(inbox.inbox_return_href, replace=True)
 
     @rx.event(background=True)
     async def load_conversation(self) -> AsyncIterator[rx.event.EventSpec]:
@@ -1000,7 +1073,7 @@ class WhatsAppChatsState(rx.State):
             return
         try:
             conv = await asyncio.to_thread(gateway().conversation, tenant_id, connection, thread)
-            payment = await asyncio.to_thread(
+            payment, payment_read = await asyncio.to_thread(
                 _payment_status, gateway(), tenant_id, connection, thread
             )
         except ThreadNotFound:
@@ -1038,7 +1111,10 @@ class WhatsAppChatsState(rx.State):
                 self.has_more = conv.has_more
             self._unsent = conv.unsent
             self._order_raw = conv.order
+            self._previous_orders_raw = conv.previous_orders
+            self._cart_ids = conv.cart_ids
             self._payment_raw = payment
+            self._payment_unread = not payment_read
             self._render_conversation()
             self.conv_loaded_for = thread_id
             self.conv_loading_for = ""
@@ -1742,7 +1818,12 @@ class WhatsAppChatsState(rx.State):
 
     @rx.var
     def pick_seasonal_earlier(self) -> list[SeasonalPickVM]:
-        return [p for p in self.pick_seasonal_shown if not p.current]
+        return [p for p in self.pick_seasonal_shown if not p.current and not p.product]
+
+    @rx.var
+    def pick_seasonal_products(self) -> list[SeasonalPickVM]:
+        """m-25017912: «De tus productos», after the seasons (founder 2026-11-12)."""
+        return [p for p in self.pick_seasonal_shown if p.product]
 
     @rx.var
     def pick_selected_seasonal(self) -> SeasonalPickVM:
@@ -2129,7 +2210,11 @@ class WhatsAppChatsState(rx.State):
     def _mark_window_closed(self, thread_id: str) -> None:
         self.rows = [
             dataclasses.replace(
-                r, window_open=False, window_label=WINDOW_CLOSED_PILL, window_tone="neutral"
+                r,
+                window_open=False,
+                window_label=WINDOW_CLOSED_PILL,
+                window_tone="neutral",
+                window_minutes=0,
             )
             if r.thread_id == thread_id
             else r

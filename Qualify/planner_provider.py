@@ -12,12 +12,14 @@ It never publishes: the planner service it calls has no publish path.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, time
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from qualify_api.creative.fsm import InvalidTransition as CreativeInvalidTransition
+from qualify_api.creative.own_upload import OwnUpload, UploadedPiece, record_planner_upload
 from qualify_api.creative.service import ApprovalBlocked
 from qualify_api.planner.composition import (
     production_planner_service,
@@ -58,11 +60,14 @@ from qualify_api.planner.service import (
     resolve_zone,
     week_start,
 )
+from qualify_api.publishing.models import PublishAttempt
+from qualify_shared.db.session import tenant_session
+from sqlalchemy import select
 
 from .campaign_provider import CampaignOptionVM, brand_campaign_options
 from .connections_provider import acting_user_id, connections_for
 from .creative_provider import default_brand_id, final_video_state, recreate_note
-from .creative_vm import VideoDraftVM
+from .creative_vm import OWN_MEDIA_KIND, VideoDraftVM
 from .planner_vm import (
     AUTO_PUBLISH_UNAVAILABLE,
     CALENDAR_DEFAULT_TZ,
@@ -89,6 +94,7 @@ from .planner_vm import (
     event_actions,
     event_readiness,
     goal_labels,
+    instagram_link,
     is_pending,
     month_label,
     output_label,
@@ -294,6 +300,7 @@ def _post_option(
                 account_label=account,
                 media_types=output.media_types,
                 image_size=output.image_size,
+                video_seconds=output.video_seconds,
                 preferred_destination=destination_for_product_type(output.media_product_type),
             )
         )
@@ -316,6 +323,7 @@ def _post_option(
         has_live_event=post.has_live_event,
         media_types=post.media_types,
         image_size=post.image_size,
+        video_seconds=post.video_seconds,
         preferred_destination=destination_for_product_type(post.media_product_type),
         lifecycle_status=post.lifecycle_status,
         **_campaign_fields(post),
@@ -329,6 +337,7 @@ def _post_option(
         recreate_note=recreate_note,
         expires_at=video.expires_at if video is not None else 0.0,
         approved_at=post.approved_at or "",  # m-24986801: «Aprobados» newest first
+        reuse_type=post.reuse_type,  # m-25019220: a view-only upload
     )
     if (
         video is not None
@@ -494,6 +503,7 @@ def _card_input(
     video_urls: dict[str, str] | None = None,
     thumbnails: dict[str, str | None] | None = None,
     video_states: dict[str, VideoDraftVM | None] | None = None,
+    permalinks: dict[UUID, str] | None = None,
 ) -> CardInput:
     event, post = planned.event, planned.post
     video = (video_states or {}).get(str(event.post_id))
@@ -522,6 +532,7 @@ def _card_input(
             else None
         ),
         category=post.category if post is not None else None,
+        item_count=post.asset_count if post is not None else 0,
         content_type=post.content_type if post is not None else None,
         approval=post.approval.value if post is not None else None,
         detail_href=post.detail_href if post is not None else "",
@@ -532,8 +543,31 @@ def _card_input(
         output_port=event.output_port,
         destination=event_destination(event, post),
         times_published=post.times_published if post is not None else None,
+        permalink=(permalinks or {}).get(event.publish_attempt_id, "")
+        if event.publish_attempt_id is not None
+        else "",
         **_campaign_fields(post),
     )
+
+
+def _permalinks(tenant_id: UUID, attempt_ids: Iterable[UUID | None]) -> dict[UUID, str]:
+    """m-25019217: each attempt's address on Instagram (`publish_attempts.permalink`),
+    for «Ver en Instagram». One RLS-scoped read; an attempt without one is left out. A
+    failed read costs only the links, never the week."""
+    ids = {attempt_id for attempt_id in attempt_ids if attempt_id is not None}
+    if not ids:
+        return {}
+    try:
+        with tenant_session(tenant_id) as session:
+            rows = session.execute(
+                select(PublishAttempt.id, PublishAttempt.permalink).where(
+                    PublishAttempt.id.in_(ids), PublishAttempt.permalink.is_not(None)
+                )
+            ).all()
+    except Exception as exc:  # noqa: BLE001 — a link is not worth failing the week
+        logger.warning("planner permalinks not read: %s", type(exc).__name__)
+        return {}
+    return {row.id: row.permalink for row in rows if row.permalink}
 
 
 def _week_video_urls(tenant_id: UUID, planned: list[PlannedEvent]) -> dict[str, str]:
@@ -609,11 +643,14 @@ def load_week(
         if p.video_object_key and (url := _video_url(tenant_id, p.video_object_key))
     }
     video_states = {pid: _video_state(tenant_id, post) for pid, post in posts.items()}
+    permalinks = _permalinks(
+        tenant_id, (p.event.publish_attempt_id for p in planned if p.event.status == "published")
+    )
     grid = build_week(
         monday=monday,
         today=today,
         zone=zone,
-        items=[_card_input(p, video_urls, thumbnails, video_states) for p in planned],
+        items=[_card_input(p, video_urls, thumbnails, video_states, permalinks) for p in planned],
         connections=index,
     )
     return WeekData(
@@ -873,6 +910,21 @@ def reject_post(tenant_id: UUID, event_id: str) -> None:
     )
 
 
+def record_upload_piece(tenant_id: UUID, upload: OwnUpload) -> UploadedPiece:
+    """m-25026384: the owner's photo or video, already in R2 under
+    `t/{tenant}/uploads/`, as an approved own piece the planner can schedule — the
+    backend's `record_planner_upload`, for this tenant's brand and acting user.
+    Idempotent on `upload.upload_id`; `OwnUploadRefused` (nothing written) propagates
+    with the owner's sentence. Blocking (one `tenant_session`)."""
+    brand_id = _require_brand(tenant_id)
+    user_id = acting_user_id(tenant_id)
+    if user_id is None:
+        raise NoBrand(str(tenant_id))
+    return record_planner_upload(
+        tenant_id=tenant_id, brand_id=brand_id, user_id=user_id, upload=upload
+    )
+
+
 def approve_post(tenant_id: UUID, event_id: str) -> None:
     """m-24842984: «Aprobar» on the event panel — the gallery's approval, unchanged: the
     first version of the text that passes the brand rules becomes the POST's approved
@@ -985,8 +1037,16 @@ def event_detail(tenant_id: UUID, event_id: str, tz_override: str = "") -> Event
         thumbnail_url=(
             (_thumbnail_url(tenant_id, post.thumbnail_url) or "") if post is not None else ""
         ),
-        category_label=category_label(post.category if post is not None else None),
-        content_type_label=content_type_label(post.content_type if post is not None else None),
+        category_label=category_label(
+            post.category if post is not None else None,
+            post.asset_count if post is not None else 0,
+        ),
+        # m-25019224: an own upload has no content type that means anything to the owner
+        content_type_label=(
+            content_type_label(post.content_type)
+            if post is not None and post.content_kind != OWN_MEDIA_KIND
+            else ""
+        ),
         approval_label=ready.label,
         approval_tone=ready.tone,
         approved=post is not None and post.approval.value == "approved",
@@ -1014,6 +1074,13 @@ def event_detail(tenant_id: UUID, event_id: str, tz_override: str = "") -> Event
         destination_label=DESTINATION_LABELS.get(dest, ""),
         goals=goal_labels(event.goals),
         goal_keys=list(event.goals),
+        went_out=event.status == "published",
+        permalink=instagram_link(
+            event.status,
+            _permalinks(tenant_id, (event.publish_attempt_id,)).get(event.publish_attempt_id)
+            if event.status == "published" and event.publish_attempt_id is not None
+            else None,
+        ),
         **_detail_kind(post, event.output_port),
         **_campaign_fields(post),
     )

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from copy import deepcopy
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
@@ -28,7 +28,12 @@ from qualify_api.ads.edit_review import (
     seal,
     unseal,
 )
-from qualify_api.ads.live_wizard import LiveWizardGateway, PersistedWizardSources, authorize_actor
+from qualify_api.ads.live_wizard import (
+    LiveWizardGateway,
+    PersistedWizardSources,
+    authorize_actor,
+    request_goal,
+)
 from qualify_api.ads.promotion_repository import PostgresPromotionRepository
 from qualify_api.ads.promotions import Promotion, fingerprint
 from qualify_api.ads.results import ResultsUnavailable
@@ -91,6 +96,9 @@ def _context(scope: ResultScope) -> tuple[Promotion, str, LiveWizardGateway, Any
         actor=actor,
         sources=PersistedWizardSources(),
         authorize=authorize_actor,
+        # Local guards run before any read-back: they must know a chat ad ignores the
+        # piece's button (m-24828980).
+        goal=request_goal(promotion.request),
     )
     source = gateway.sources.get(scope.tenant_id, UUID(promotion.request["publish_attempt_id"]))
     return promotion, ledger, gateway, source
@@ -217,6 +225,19 @@ FLOOR_UNAVAILABLE = "No pudimos comprobar lo gastado y el mínimo de Meta. Inté
 async def _decrease_floor(
     gateway: LiveWizardGateway, source: Any, promotion: Promotion, new_minor: int
 ) -> dict[str, int]:
+    floor = await _budget_floor(gateway, source, promotion)
+    if new_minor < floor["floor"]:
+        amount = f"{floor['floor'] // 100:,}".replace(",", ".")
+        raise ResultsUnavailable(
+            f"Puedes bajarlo hasta ${amount}. Por debajo, Meta no deja que tu anuncio siga "
+            "saliendo los días que faltan."
+        )
+    return floor
+
+
+async def _budget_floor(
+    gateway: LiveWizardGateway, source: Any, promotion: Promotion
+) -> dict[str, int]:
     """Lowest lifetime budget (minor units) Qualify lets the owner set right now.
 
     floor = max(spent + daily_min x remaining_days, daily_min x schedule_days), where
@@ -260,13 +281,25 @@ async def _decrease_floor(
     remaining_days = max(0, -(-(end - max(datetime.now(UTC), start)) // day))
     spent = lifetime - remaining
     floor = max(spent + minimum * remaining_days, minimum * schedule_days) * 100
-    if new_minor < floor:
-        amount = f"{floor // 100:,}".replace(",", ".")
-        raise ResultsUnavailable(
-            f"Puedes bajarlo hasta ${amount}. Por debajo, Meta no deja que tu anuncio siga "
-            "saliendo los días que faltan."
-        )
     return {"spent_minor": spent * 100, "daily_minimum_minor": minimum * 100, "floor": floor}
+
+
+@dataclass(frozen=True)
+class BudgetFloor:
+    """What the owner sees before lowering a budget (m-25026344); read-only, no consent."""
+
+    current_minor: int
+    floor_minor: int
+    spent_minor: int
+
+
+async def promotion_budget_floor(*, tenant_id: UUID, promotion_id: UUID) -> BudgetFloor:
+    """Read-only: the same floor `prepare_promotion_edit` enforces on a decrease, shown
+    before the owner types the amount. Writes nothing; prepare re-checks it anyway."""
+    scope = _scope(tenant_id, promotion_id)
+    promotion, _ledger, gateway, source = _context(scope)
+    floor = await _budget_floor(gateway, source, promotion)
+    return BudgetFloor(promotion.request["budget_minor"], floor["floor"], floor["spent_minor"])
 
 
 async def prepare_promotion_edit(
@@ -545,6 +578,7 @@ async def reconcile_promotion_edit(scope: ResultScope, *, system: bool = False) 
         actor=UUID(body["actor"]),
         sources=PersistedWizardSources(),
         authorize=authorize,
+        goal=request_goal(after.request),
     )
     active = tuple(RESOURCES) if own["action"] == "resume" else tuple(body["baseline"])
     try:

@@ -15,7 +15,9 @@ State: `final_video_card_state.FinalVideoState`. Words: `final_video_vm`.
 from __future__ import annotations
 
 import reflex as rx
+from qualify_creative.schemas import PART_DESCRIPTION_MAX
 
+from . import part_review_vm as RV
 from .creative_pages import (
     APPROVED_BODY,
     APPROVED_NOT_READY_BODY,
@@ -25,12 +27,18 @@ from .creative_pages import (
 from .final_video_card_state import (
     APPROVE,
     CHANGE,
+    CHANGE_DESCRIPTION_ID,
+    CHANGE_PHOTOS_ID,
+    CHANGE_TITLE_ID,
     CHOOSE_ID_PREFIX,
     CREATE,
     RECREATE,
     REJOIN,
+    REVIEW_RETRY_ID,
     SCHEDULE_BUTTON_ID,
+    USE,
     FinalVideoState,
+    PhotoChoiceView,
 )
 from .final_video_vm import ExpiredPartVM
 from .part_progress_state import PartProgressState
@@ -48,18 +56,20 @@ from .ui.primitives import (
 )
 
 S = FinalVideoState
+P = PartProgressState
 
 #: N12: every tap target at least 44 px tall on a phone.
 _TAP = "2.75rem"
 CARD_ID = "q-final-video"
 APPROVE_WHY_ID = "q-final-video-approve-why"
 CHANGE_PANEL_ID = "q-final-video-change"
-#: «Parte 2: ¿qué le cambiamos? (opcional)» — the part's number goes before it
-CHANGE_TEXT_LABEL = ": ¿qué le cambiamos? (opcional)"
-CHANGE_TEXT_ID = "q-final-video-change-label"
-CHANGE_TEXT_PLACEHOLDER = "Ej.: que se vea el producto más de cerca"
+#: m-24921083: the chosen part's fields and what «Crear otra versión» says
+CHANGE_EXAMPLE_ID = "q-final-video-change-example"
+CHANGE_USE_ID = "q-final-video-change-use"
+CHANGE_WHY_ID = "q-final-video-change-why"
+USE_NOTE_ID = "q-final-video-use-note"
+_PHOTOS_LABEL_ID = "q-final-video-change-photos-label"
 CHANGE_SUBMIT = "Crear otra versión"
-CHANGE_NOTE = "Usa 1 vista previa. Las demás partes no cambian."
 CHANGE_CANCEL = "Cancelar"
 PART_WORD = "Parte "
 VIDEO_LABEL = "Vista previa de tu video completo"
@@ -71,6 +81,7 @@ _SCREEN_READER_ONLY = {
     "height": "1px",
     "overflow": "hidden",
     "clip": "rect(0 0 0 0)",
+    "clip_path": "inset(50%)",
     "white_space": "nowrap",
 }
 
@@ -225,7 +236,10 @@ def _changing() -> rx.Var[bool]:
 def _actions() -> rx.Component:
     """The card's last row, «Aprobar» first (founder's call) — and, with a part chosen
     in «Tus partes», [Crear otra versión] [Cancelar]. On a 375 px phone it may take two
-    lines; «Aprobar» stays the solid one."""
+    lines; «Aprobar» stays the solid one. m-24921083: «Crear otra versión» waits, still
+    focusable (`aria-disabled`), while its panel says why (empty description, no photo,
+    no vista previa left this month)."""
+    waits = S.review_blocked != ""
     return rx.flex(
         rx.cond(S.card.approve_visible, _approve_button()),
         rx.cond(
@@ -237,8 +251,11 @@ def _actions() -> rx.Component:
                     variant="soft",
                     size="3",
                     min_height=_TAP,
-                    disabled=S.working,
+                    disabled=S.working | S.review_loading,
                     loading=S.busy == CHANGE,
+                    aria_disabled=rx.cond(waits, "true", "false"),
+                    aria_describedby=CHANGE_WHY_ID + " " + CHANGE_USE_ID,
+                    opacity=rx.cond(waits, "0.6", "1"),
                     on_click=S.change_part,
                 ),
                 rx.button(
@@ -298,10 +315,58 @@ def _pill(word: rx.Var, tone: rx.Var) -> rx.Component:
     )
 
 
+def _peeking(tile: rx.Var) -> rx.Var[bool]:
+    """This tile's part is chosen and the owner looks at one of its earlier versions."""
+    return (S.change_index == tile.index) & (S.review_peek.version_id != "")
+
+
+def _peek_frame(tile: rx.Var) -> rx.Component:
+    """Deivid, 2026-11-13: «Ver la anterior» plays THAT version in the part's tile —
+    the same `clip_player` and lazy load, keyed by the version (a new player), marked
+    «Versión 1 de 2» above it and named by it. The whole video does not change until
+    «Usar esta versión»."""
+    peek = S.review_peek
+    return rx.vstack(
+        tag(peek.label, size="1"),
+        rx.cond(
+            peek.video_url != "",
+            clip_player(
+                rx.cond(peek.poster_url != "", BACKEND_BASE + peek.poster_url, ""),
+                src=BACKEND_BASE + peek.video_url,
+                label=peek.play_label,
+                pause_label=peek.pause_label,
+                key=tile.key + "-" + peek.version_id,
+                framed=True,
+                renew=True,
+                width="100%",
+                aspect_ratio="9 / 16",
+            ),
+            rx.center(
+                rx.icon("film", size=20, color=T.TEXT_MUTED),
+                class_name="q-thumb",
+                width="100%",
+                aspect_ratio="9 / 16",
+            ),
+        ),
+        spacing="1",
+        width="100%",
+        align_items="start",
+    )
+
+
 def _tile_frame(tile: rx.Var) -> rx.Component:
     """The part's own vista previa, played inside its tile (the parts' rows' player:
     `ui.clip_player`, muted with a sound button, renewed when its address expired) —
-    or, with no clip yet, an empty 9:16 frame with a film glyph."""
+    an earlier version while the owner looks at it (`_peek_frame`) — or, with no clip
+    yet, an empty 9:16 frame with a film glyph."""
+    return rx.cond(
+        _peeking(tile),
+        _peek_frame(tile),
+        _current_frame(tile),
+    )
+
+
+def _current_frame(tile: rx.Var) -> rx.Component:
     return rx.cond(
         tile.preview_url != "",
         clip_player(
@@ -324,6 +389,26 @@ def _tile_frame(tile: rx.Var) -> rx.Component:
     )
 
 
+def _like_button(tile: rx.Var) -> rx.Component:
+    """«Me gusta así» / «✓ Lista» (m-24921083): one tap marks the part, another takes
+    the mark off. Pressed = the word, the tick and `aria-pressed`, never the colour
+    alone; its name starts with its visible words and says which part."""
+    liked = tile.liked
+    return rx.button(
+        rx.cond(liked, rx.icon("check", size=14)),
+        rx.cond(liked, RV.LIKED_LABEL, RV.LIKE_LABEL),
+        # «Aprobar» stays the card's one filled button
+        variant=rx.cond(liked, "soft", "outline"),
+        size="2",
+        width="100%",
+        min_height=_TAP,
+        aria_pressed=rx.cond(liked, "true", "false"),
+        # a fixed name (UX review): the state is `aria-pressed` alone
+        aria_label=RV.LIKE_LABEL + ": parte " + tile.number.to_string(),
+        on_click=P.toggle_like(tile.index),
+    )
+
+
 def _part_card(tile: rx.Var) -> rx.Component:
     """One part (m-25016656): its vista previa playing in place, «Parte N», its seconds,
     the word of its state while it has no clip, and «Cambiar esta» / «✓ Elegida» when
@@ -342,6 +427,10 @@ def _part_card(tile: rx.Var) -> rx.Component:
             ),
             # an approved video's parts are only to watch: no decision word
             rx.cond((tile.word != "") & ~S.closed, _pill(tile.word, tile.tone)),
+            # m-24921083 (Deivid, «A: en cada tarjeta»): «Me gusta así» above «Cambiar
+            # esta»; liked, «✓ Lista» — a second tap takes it off. Never a condition of
+            # «Aprobar»; an approved video has none.
+            rx.cond(tile.can_like & ~S.closed, _like_button(tile)),
             rx.cond(
                 can_choose,
                 rx.button(
@@ -359,7 +448,7 @@ def _part_card(tile: rx.Var) -> rx.Component:
                     + ": parte "
                     + tile.number.to_string(),
                     id=CHOOSE_ID_PREFIX + tile.index,
-                    on_click=S.choose_part(tile.index),
+                    on_click=S.choose_part(tile.index, tile.draft_id),
                 ),
             ),
             spacing="2",
@@ -406,29 +495,259 @@ def _parts_strip(layout: str) -> rx.Component:
     )
 
 
-def _change_panel() -> rx.Component:
-    """The chosen part's optional words — another version of that part only (1 vista
-    previa). Chosen in its tile («Cambiar esta»), so this asks one thing."""
-    return rx.vstack(
-        rx.text(
-            PART_WORD + S.change_number + CHANGE_TEXT_LABEL,
-            size="2",
-            weight="medium",
-            id=CHANGE_TEXT_ID,
-        ),
-        rx.text_area(
-            value=S.change_text,
-            on_change=S.set_change_text,
-            placeholder=CHANGE_TEXT_PLACEHOLDER,
-            aria_labelledby=CHANGE_TEXT_ID,
-            max_length=500,
-            rows="3",
+def _joining_only() -> rx.Component:
+    """The card while its parts are joined (Deivid, 2026-11-13: «que se oculte todo y
+    solo esté el loader en el medio»): no video, no «Tus partes», no panel, no buttons
+    — the house's `progress_panel`, its stage line above the bar, centred. The poll
+    already running brings everything back once the join ends."""
+    return rx.center(
+        rx.box(
+            progress_panel(S.card.title, steps=S.joining_steps, creep_seconds=90),
             width="100%",
+            max_width="28rem",
         ),
-        rx.text(CHANGE_NOTE, size="2", color=T.TEXT_MUTED),
-        # its buttons live in the card's last row, beside «Aprobar» (`_actions`)
-        id=CHANGE_PANEL_ID,
+        min_height="16rem",
+        width="100%",
+    )
+
+
+def _versions() -> rx.Component:
+    """«Versión 2 de 2 · Ver la anterior» (only with two or more): an earlier version
+    shows its own video and description, and [Usar esta versión] — no vista previa used;
+    an expired one keeps the button off, with its reason."""
+    version = S.review_version
+    nav = rx.flex(
+        rx.text(version.label, size="2", class_name="q-nums"),
+        rx.text("·", size="2", color=T.TEXT_MUTED, aria_hidden="true"),
+        rx.cond(
+            S.review_has_previous,
+            rx.button(
+                RV.SEE_PREVIOUS,
+                variant="ghost",
+                size="2",
+                min_height=_TAP,
+                on_click=S.show_version(-1),
+            ),
+        ),
+        rx.cond(
+            S.review_has_next,
+            rx.button(
+                RV.SEE_NEXT,
+                variant="ghost",
+                size="2",
+                min_height=_TAP,
+                on_click=S.show_version(1),
+            ),
+        ),
+        gap="0.5rem",
+        align="center",
+        wrap="wrap",
+    )
+    off = (version.use_reason != "") | S.working
+    earlier = rx.vstack(
+        rx.cond(version.made_with != "", rx.text(version.made_with, size="2")),
+        rx.button(
+            rx.icon("history", size=16),
+            RV.USE_VERSION,
+            variant="outline",
+            size="3",
+            min_height=_TAP,
+            loading=S.busy == USE,
+            aria_disabled=rx.cond(off, "true", "false"),
+            aria_describedby=USE_NOTE_ID,
+            opacity=rx.cond(off, "0.6", "1"),
+            on_click=S.use_version,
+        ),
+        rx.text(
+            rx.cond(version.use_reason != "", version.use_reason, RV.USE_VERSION_NOTE),
+            size="2",
+            color=T.TEXT_MUTED,
+            id=USE_NOTE_ID,
+        ),
         spacing="2",
+        width="100%",
+        align_items="start",
+    )
+    return rx.cond(
+        S.review_versions.length() > 1,
+        rx.vstack(
+            nav,
+            rx.cond(~version.current & (version.version_id != ""), earlier),
+            spacing="2",
+            width="100%",
+            align_items="start",
+        ),
+    )
+
+
+def _photo(photo: PhotoChoiceView) -> rx.Component:
+    """One photo of the product: a tap puts it in or takes it out of the part. Chosen =
+    the tick and `aria-pressed`, never the border alone."""
+    on = S.review_selected.contains(photo.key)
+    src = rx.cond(photo.url != "", BACKEND_BASE + photo.url, rx.get_upload_url(photo.key))
+    return rx.el.button(
+        rx.image(
+            src=src,
+            alt="",
+            width="100%",
+            height="100%",
+            object_fit="cover",
+            border_radius=T.RADIUS_CONTROL,
+        ),
+        rx.cond(
+            on,
+            rx.center(
+                rx.icon("check", size=14),
+                position="absolute",
+                top="0.25rem",
+                right="0.25rem",
+                width="1.25rem",
+                height="1.25rem",
+                border_radius="9999px",
+                background=T.SURFACE_BG_RAISED,
+                color=T.TEXT_STRONG,
+            ),
+        ),
+        type="button",
+        aria_pressed=rx.cond(on, "true", "false"),
+        aria_label=photo.label,
+        on_click=S.toggle_photo(photo.key),
+        # the system's choice ring (`ui.choice_card`'s classes): accent ring when on
+        class_name=rx.cond(on, "q-choice-card q-choice-card--on", "q-choice-card"),
+        position="relative",
+        width="4.5rem",
+        height="4.5rem",
+        padding="0.25rem",
+        flex_shrink="0",
+    )
+
+
+def _fields() -> rx.Component:
+    """«¿Cómo la hacemos?» read only, «¿Qué pasa en esta parte?» filled in with the
+    description of the version on screen, and «Fotos de tu producto»."""
+    return rx.vstack(
+        rx.cond(
+            S.review_mode_label != "",
+            rx.vstack(
+                rx.text(RV.QUESTION, size="2", weight="medium"),
+                rx.text(S.review_mode_label, size="2"),
+                rx.text(S.review_mode_help, size="2", color=T.TEXT_MUTED),
+                spacing="0",
+                width="100%",
+                align_items="start",
+            ),
+        ),
+        rx.vstack(
+            rx.el.label(
+                RV.DESCRIPTION_LABEL,
+                html_for=CHANGE_DESCRIPTION_ID,
+                style={"fontWeight": "500", "fontSize": "var(--font-size-2)"},
+            ),
+            rx.text_area(
+                value=S.change_text,
+                on_change=S.set_change_text,
+                id=CHANGE_DESCRIPTION_ID,
+                aria_describedby=CHANGE_EXAMPLE_ID,
+                max_length=PART_DESCRIPTION_MAX,
+                rows="3",
+                width="100%",
+            ),
+            rx.text(RV.DESCRIPTION_EXAMPLE, size="1", color=T.TEXT_MUTED, id=CHANGE_EXAMPLE_ID),
+            spacing="1",
+            width="100%",
+            align_items="start",
+        ),
+        rx.vstack(
+            rx.text(RV.PHOTOS_LABEL, size="2", weight="medium", id=_PHOTOS_LABEL_ID),
+            rx.cond(
+                S.review_photos.length() > 0,
+                rx.flex(
+                    rx.foreach(S.review_photos, _photo),
+                    # the keyboard lands on its first photo when one is missing
+                    id=CHANGE_PHOTOS_ID,
+                    role="group",
+                    aria_labelledby=_PHOTOS_LABEL_ID,
+                    gap="0.5rem",
+                    wrap="wrap",
+                    width="100%",
+                ),
+                # live test 2026-11-13: said, never an empty section
+                rx.text(RV.NO_PHOTOS_TEXT, size="2", color=T.TEXT_MUTED),
+            ),
+            spacing="1",
+            width="100%",
+            align_items="start",
+        ),
+        spacing="3",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _review_failed() -> rx.Component:
+    """«No pudimos abrir esta parte.» and [Intentar de nuevo] (one more read). Its text
+    also describes the waiting «Crear otra versión» (`CHANGE_WHY_ID`)."""
+    return rx.vstack(
+        rx.box(_note(S.review_error, "warn"), id=CHANGE_WHY_ID, width="100%"),
+        rx.button(
+            rx.icon("refresh-cw", size=16),
+            RV.REVIEW_RETRY,
+            variant="soft",
+            size="3",
+            min_height=_TAP,
+            id=REVIEW_RETRY_ID,
+            on_click=S.retry_review,
+        ),
+        spacing="2",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _change_panel() -> rx.Component:
+    """m-24921083 «Revisar y rehacer una parte»: the chosen part (its tile says «✓
+    Elegida»), under «Tus partes» — its versions (the one looked at plays in the
+    part's tile), how it is made, what happens in it, its photos and what another version
+    uses. Its buttons stay in the card's last row, beside «Aprobar» (`_actions`)."""
+    return rx.vstack(
+        rx.heading(
+            PART_WORD + S.change_number,
+            as_="h4",
+            size="3",
+            id=CHANGE_TITLE_ID,
+            tab_index=-1,
+        ),
+        # Deivid, 2026-11-13: while it is read, nothing at all — no box shaped like a
+        # video, no skeleton (the read is short; the title says which part)
+        rx.cond(
+            S.review_loading,
+            rx.fragment(),
+            rx.cond(
+                S.review_ready,
+                rx.fragment(
+                    _versions(),
+                    _fields(),
+                    rx.cond(
+                        (S.review_blocked != "") & (S.review_blocked != S.review_use_text),
+                        rx.text(S.review_blocked, size="2", color=T.TEXT_MUTED, id=CHANGE_WHY_ID),
+                    ),
+                    rx.text(
+                        rx.cond(S.review_use_text != "", S.review_use_text, RV.CHANGE_NOTE),
+                        size="2",
+                        color=T.TEXT_MUTED,
+                        class_name="q-nums",
+                        id=CHANGE_USE_ID,
+                    ),
+                ),
+                # UX review: unread, no fields at all (never an empty box that would
+                # replace the description) — the reason and [Intentar de nuevo]
+                rx.cond(S.review_error != "", _review_failed()),
+            ),
+        ),
+        id=CHANGE_PANEL_ID,
+        role="region",
+        aria_labelledby=CHANGE_TITLE_ID,
+        spacing="3",
         width="100%",
         align_items="start",
     )
@@ -552,6 +871,8 @@ def _decisions(layout: str) -> rx.Component:
         rx.cond(S.card.recreate_visible, _recreate()),
         rx.cond(S.approved_here, _approved()),
         _parts_strip(layout),
+        # m-24921083: a «Me gusta así» that did not go through (the tile went back)
+        rx.cond(P.like_error != "", _note(P.like_error, "warn")),
         rx.cond(_changing(), _change_panel()),
         rx.cond(S.card.approve_visible, _approve_texts()),
         _actions(),  # «Aprobar» is always last (Deivid, 2026-11-09)
@@ -604,7 +925,13 @@ def final_video_card(parent_id: rx.Var[str] | str, layout: str = COLUMNS) -> rx.
             rx.fragment(),
             rx.cond(
                 S.loaded,
-                card(_body(layout), padding="1.25rem 1.5rem"),
+                rx.cond(
+                    # Deivid, 2026-11-13: while the parts are joined, only the wait —
+                    # a failed join is not joining: its notice and actions still show
+                    S.wants_refresh,
+                    card(_joining_only(), padding="1.25rem 1.5rem"),
+                    card(_body(layout), padding="1.25rem 1.5rem"),
+                ),
                 # the first read failed (or no session): say so, never a skeleton forever
                 rx.cond(S.error != "", callout(S.error, "warn"), skeleton_card(3)),
             ),

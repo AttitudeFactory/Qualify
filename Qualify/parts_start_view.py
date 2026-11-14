@@ -13,6 +13,7 @@ import reflex as rx
 from qualify_api.creative.parts_ai import STORY_MAX
 
 from . import parts_start_vm as vm
+from .audience_view import audience_question
 from .creative_state import CreativeState
 from .parts_start_state import PartsStartState
 from .ui import callout, card, progress_panel
@@ -36,7 +37,11 @@ def _closed() -> rx.Component:
     """The invitation: the question, the benefit, and the one button that opens it."""
     return rx.vstack(
         rx.text(vm.CARD_TITLE, size="3", weight="medium", as_="p"),
-        rx.text(vm.CARD_HELP, size="2", color=T.TEXT_MUTED),
+        rx.text(
+            rx.cond(CreativeState.selected_product_id != "", vm.CARD_HELP, vm.CARD_HELP_NO_PRODUCT),
+            size="2",
+            color=T.TEXT_MUTED,
+        ),
         rx.button(
             rx.icon("film", size=T.ICON_SM),
             vm.CARD_ACTION,
@@ -85,6 +90,8 @@ def _question() -> rx.Component:
             resize="vertical",
         ),
         rx.text(vm.QUESTION_HINT, id=_HINT_ID, size="1", color=T.TEXT_MUTED),
+        # m-25026509: the same answer as step 3's, before «Proponerme las partes»
+        rx.box(audience_question("parts-audience"), width="100%", padding_top="0.5rem"),
         rx.cond(PartsStartState.error != "", callout(PartsStartState.error, "warn")),
         rx.flex(
             rx.button(

@@ -19,7 +19,8 @@ Un solo servidor con **dos composes independientes**: el de Qualify y el **proxy
                                           ▼
                                  :80  caddy  (router interno de Qualify + frontend estático; sin puertos publicados)
                                           │
-        /api/*, /public/media/*  ─────────┼──► api      FastAPI  (uvicorn, qualify_api.http.app:create_app)
+        /api/*, /public/media/*,          │
+        /public/catalog-media/*  ─────────┼──► api      FastAPI  (uvicorn, qualify_api.http.app:create_app)
         /_event, /_upload, /ping,         │
         /_health, /avatar/*, /r2media/* ──┼──► reflex   backend de Reflex (websocket + rutas propias)
         todo lo demás  ───────────────────┘    /srv     export estático del frontend de Reflex
@@ -35,6 +36,7 @@ Un solo servidor con **dos composes independientes**: el de Qualify y el **proxy
 |---|---|---|
 | `/api/*` | `api:8000` | FastAPI. Incluye el callback OAuth de Meta `/api/connections/callback` |
 | `/public/media/*` | `api:8000` | Ruta sin autenticación desde la que **Meta descarga** las imágenes que se publican (QUA-68) |
+| `/public/catalog-media/*` | `api:8000` | Ruta sin autenticación, firmada y estable, desde la que **Meta descarga** la foto principal de cada producto del catálogo de WhatsApp (ADR 48 §8, m-25021431). Todo prefijo que FastAPI monte fuera de `/api` va en el matcher `@fastapi` de `deploy/Caddyfile`; lo exige `packages/api/tests/test_caddy_fastapi_routes.py` |
 | `/_event` | `reflex:8000` | WebSocket de Reflex (sincronización de estado) |
 | `/_upload`, `/_upload/*` | `reflex:8000` | Subidas (POST) y archivos subidos (GET) |
 | `/ping`, `/_health`, `/_all_routes` | `reflex:8000` | Salud e introspección de Reflex |
@@ -42,7 +44,7 @@ Un solo servidor con **dos composes independientes**: el de Qualify y el **proxy
 | `/r2media/*` | `reflex:8000` | Medios de R2 para borradores (`Qualify/r2_media.py`, mismo `api_transformer`) |
 | todo lo demás | `/srv` en Caddy | Frontend estático (`reflex export --frontend-only`); rutas dinámicas como `/drafts/[id]` las resuelve el cliente desde `404.html` |
 
-No hay colisiones: las rutas que monta el `api_transformer` de Reflex (`/avatar`, `/r2media`) no comparten prefijo con FastAPI (`/api`, `/public/media`), y ninguna página de Reflex usa esos prefijos.
+No hay colisiones: las rutas que monta el `api_transformer` de Reflex (`/avatar`, `/r2media`) no comparten prefijo con FastAPI (`/api`, `/public/media`, `/public/catalog-media`), y ninguna página de Reflex usa esos prefijos.
 
 **Por qué dos imágenes y no tres.** `qualify-app` (Python) sirve a la vez `api`, `reflex`, `migrate` y `calendar-worker`, cambiando sólo el comando: el proceso de Reflex ya importa `qualify_api` en proceso (servicios de conexiones y publicación, e `inbox_provider.py` llama a `create_app()` por `httpx.ASGITransport`), así que una imagen "sólo API" tendría exactamente las mismas dependencias. `qualify-web` es Caddy con el frontend ya exportado adentro: en producción el frontend no necesita ni Node ni Python.
 
@@ -478,6 +480,119 @@ just reel-purge                              # qué videos de más de 30 días y
 just reel-purge --execute                    # borrarlos (no son de ningún negocio: sin --tenant)
 ```
 
+### 7.3 Traer a «Tu semana» lo publicado antes desde «Publicar» (m-25019220)
+
+**Qué hace.** Las publicaciones hechas desde «Publicar» antes de la migración 0159 no tienen pieza ni evento, así que no salen en «Tu semana». Entre ellas están las 9 imágenes del 2026-11-13. `just publish-backfill` crea, por cada una, la pieza (en «Aprobados») y su evento publicado a la hora en que salió. Además guarda la dirección de Instagram, que es lo que hace aparecer «Ver en Instagram». Nunca publica, reintenta ni cambia una publicación. De Graph solo lee, una lectura por publicación, y deja a Interacciones al menos 100 de las 200 lecturas por hora de la cuenta.
+
+Cada pieza sale de una de dos formas:
+
+- **Con el archivo original**, cuando se sabe sin duda cuál subió «Publicar». La pieza queda reutilizable («Lista para programar»).
+- **Con la copia de Instagram**, cuando hay dudas. Nunca se adjunta un archivo que podría ser de otra publicación. La pieza queda solo para ver: en «Aprobados» dice «Ya salió» con el botón «Ver», y no aparece en «Por programar». Un reel con dudas se salta y se informa.
+
+Los detalles de cómo se decide están en el anexo técnico al final de esta sección.
+
+**Antes.** Tiene que estar desplegada la migración 0160: sin ella la base rechaza guardar la dirección de Instagram en una publicación ya terminada. Buscar el id del negocio:
+
+```bash
+dc exec postgres psql -U qualify_owner qualify -c \
+  "SELECT id, name FROM tenants WHERE name ILIKE '%bianki%';"
+```
+
+**1. Prueba en vivo (ADR 25): una sola lectura de Graph. Solo anota esa lectura en el presupuesto de la hora.**
+
+```bash
+dc exec api python -m qualify_api.planner.publish_backfill --tenant <tenant-bianki> --probe
+```
+
+Se espera `result=readable`, `media_type=IMAGE`, `permalink=https://www.instagram.com/p/…/` y `media_url=present (… cdninstagram.com)`. Las direcciones firmadas nunca se imprimen. Con `--attempt <uuid>` se prueba una publicación concreta.
+
+**Si sale `result=unreadable`, no sigas:** reconecta la cuenta de Instagram en «Tus redes» (vuelve a dar los permisos) y repite la prueba hasta que salga `readable`.
+
+**2. Ensayo (por defecto): no escribe en la base ni en R2 y no llama a Graph.**
+
+```bash
+dc exec api python -m qualify_api.planner.publish_backfill --tenant <tenant-bianki> --since 2026-11-13
+```
+
+Imprime una línea por publicación. `why` empieza por la regla que decidió:
+
+- `action=original why="window: <archivo>: only file in the window, …"`: archivo original de una publicación suelta.
+- `action=original why="burst 3/9: <archivo>: file 3/9 of the burst, …"`: archivo original de una ráfaga «Una por una».
+- `action=instagram_copy why="doubtful: <motivo>; burst of 9: <motivo>"`: copia de Instagram, con el motivo de cada regla.
+- `carousel_children`, `attempt_key` y `skip`: carrusel, intento con su archivo ya anotado, o se salta (con el motivo).
+
+Cada línea trae además `permalink=would_read`. Al final aparece el total por acción. Dos ensayos seguidos imprimen lo mismo.
+
+**Detente si** las 9 imágenes del 2026-11-13 no salen todas como `action=original`, sea con `burst 1/9` … `burst 9/9` o con `window`. Por ejemplo, si alguna dice `instagram_copy` o `skip`, o si son más o menos de 9. En ese caso no ejecutes: copia la salida completa del ensayo y repórtala.
+
+**Antes de ejecutar, ten en cuenta que las copias de Instagram quedan en R2 para siempre.** Cada publicación con `action=instagram_copy` guarda una imagen de hasta 8 MB en `t/<negocio>/media/<cuenta>/ig-<id>`, y el bucket de producción no deja borrar nada bajo `t/`. «Deshacer» quita las piezas, pero no esas copias.
+
+**3. Ejecutar.**
+
+```bash
+dc exec api python -m qualify_api.planner.publish_backfill --tenant <tenant-bianki> --since 2026-11-13 --execute
+```
+
+Cada línea agrega `result=recorded` y `permalink=filled`, o por qué no se guardó la dirección: `ignored`, `unreadable` o `connection not readable`. Si sale `unreadable` o `connection not readable`, reconecta la cuenta en «Tus redes» y vuelve a correr el mismo comando. Si se agota la parte de la hora que le toca (100 lecturas), termina con `stopped: … N publication(s) left`: repite el mismo comando una hora después y sigue donde quedó. Repetirlo no duplica nada. Opciones: `--connection <uuid>` para una sola cuenta y `--limit 50` (máximo 500).
+
+**De aquí en adelante.** Lo que se publique desde «Publicar» entra solo a «Tu semana», como ya hacía. La dirección de Instagram la completa el `calendar-worker` en su pasada de cada minuto. Usa como mucho 50 de las 200 lecturas por hora de la cuenta, para no dejar sin lecturas a Interacciones. Si Instagram no responde, reintenta solo en los primeros 10 minutos y en tres ventanas de 3 minutos (a la 1 h, a las 6 h y a las 24 h), y después no insiste más. Para esto, el `calendar-worker` tiene que estar encendido.
+
+**Deshacer.** Lo que escribió `--execute`:
+
+1. Las piezas y sus eventos. Se borran con esto (solo las de `publish-backfill-v1` de ese negocio; todo o nada):
+
+```bash
+dc exec -T postgres psql -U qualify_owner qualify -v ON_ERROR_STOP=1 -v t="'<tenant-bianki>'" <<'SQL'
+BEGIN;
+SET LOCAL row_security = off;
+CREATE TEMP TABLE bf ON COMMIT DROP AS
+  SELECT id, brief_id FROM content_drafts
+   WHERE tenant_id = :t AND pipeline_version = 'publish-backfill-v1';
+DELETE FROM calendar_event_tags WHERE event_id IN
+  (SELECT id FROM calendar_events WHERE post_id IN (SELECT id FROM bf));
+DELETE FROM calendar_events WHERE post_id IN (SELECT id FROM bf);
+UPDATE content_drafts SET active_version_id = NULL, selected_variant_id = NULL
+ WHERE id IN (SELECT id FROM bf);
+DELETE FROM copy_variants   WHERE draft_id IN (SELECT id FROM bf);
+DELETE FROM image_assets    WHERE draft_id IN (SELECT id FROM bf);
+DELETE FROM piece_versions  WHERE draft_id IN (SELECT id FROM bf);
+DELETE FROM content_drafts  WHERE id IN (SELECT id FROM bf);
+DELETE FROM content_briefs  WHERE id IN (SELECT brief_id FROM bf);
+COMMIT;
+SQL
+```
+
+   Si otra función ya usó una de esas piezas (un envío por WhatsApp, por ejemplo), el borrado falla por la clave foránea y no se borra nada. En ese caso decide el fundador.
+
+2. Las direcciones de Instagram (`publish_attempts.permalink`) **se quedan**: la base solo deja pasar una vez de vacío a una dirección (0160) y nunca al revés. Son un dato verdadero de la publicación.
+
+3. Las copias de Instagram en R2 (`t/<negocio>/media/<cuenta>/ig-<id>`) **se quedan** (ver el aviso antes del paso 3): el bucket de producción no deja borrar ni sobrescribir nada bajo `t/`. Pesan como mucho **8 MB cada una** (el tope de la descarga), una por publicación dudosa. Si se vuelve a ejecutar, se reusan sin subirlas otra vez. Los archivos originales de «Publicar» no se tocan nunca.
+
+**Anexo técnico: cómo se elige el archivo.** El archivo que subió «Publicar» sigue en R2 (`t/<negocio>/media/<cuenta>/<32 hex>`), pero la fila vieja no dice cuál es. Solo se usa si alguna de estas dos reglas lo da por inequívoco:
+
+- **Ventana** (publicaciones sueltas). Tiene que cumplir todo esto:
+  - es el único archivo de «Publicar» sin usar subido entre 5 s después del intento anterior de esa cuenta y 5 s después del propio, como mucho 120 s antes;
+  - también es el único sin usar en los 30 min anteriores (sin pasar del intento anterior), así que un archivo suelto que nunca se publicó no le gana al verdadero de una subida lenta;
+  - ningún intento vecino empezó a menos de 30 s;
+  - sus bytes son un JPEG de hasta 8 MB, o un video si es un reel.
+- **Ráfaga** («Una por una»: intentos de la misma cuenta separados por menos de 30 s, también los fallidos). Se cuentan, por un lado, los intentos sueltos de la ráfaga que todavía no tienen archivo y, por otro, los archivos sin usar subidos entre el comienzo de la ráfaga y 5 s después de su último intento. Solo se emparejan por orden (el 1.º archivo con el 1.º intento, y así) si se cumple todo esto:
+  - hay la misma cantidad de archivos que de intentos;
+  - no hay dos archivos del mismo segundo;
+  - cada archivo es del tipo de su intento;
+  - cada archivo se subió después de que empezara el intento anterior, sin tolerancia, porque «Una por una» no sube el siguiente antes de eso, y como mucho 5 s después de que empezara el suyo.
+
+  Si algo falla, **toda la ráfaga** pasa a dudosa: nunca se empareja a medias. Eso incluye dos pestañas publicando a la vez en la misma cuenta. Un carrusel dentro de la ráfaga no entra en la cuenta, porque sus archivos ya están anotados. Un intento fallido se queda con su archivo aunque no se traiga.
+
+Diferencia de reloj aceptada entre R2 y la base: R2 puede ir adelantado hasta 5 s menos lo que tarda en subirse el archivo. Puede ir atrasado menos de lo que tardó en salir cada publicación anterior de la ráfaga.
+
+En `image_assets.params` queda cómo se encontró cada archivo:
+
+- `match`: `original`, `attempt_key`, `carousel_children` o `instagram_copy`;
+- `match_rule`: `window`, `burst k/N` o `instagram_copy`;
+- `match_reason`: el motivo.
+
+Todas estas piezas llevan la versión de pipeline `publish-backfill-v1`.
+
 ## 8. Respaldos de Postgres
 
 `bootstrap-server.sh` deja un cron diario (03:15 UTC) que corre `deploy/backup-db.sh` como `deploy`:
@@ -577,6 +692,30 @@ Se activan con `COMPOSE_PROFILES` en `/opt/qualify/.env.prod` y un deploy. Para 
 
 - **`render`** — servicio Remotion (Node + Chromium headless) para el generador por plantillas. Pide ~1 GB de RAM al renderizar (tope `mem_limit` de 1,5 GB, para que un render no tumbe Postgres): en un CX23 hay riesgo de quedarse sin memoria; usar CX33. Sin él, el generador por plantillas falla con error claro; el resto de la app no se entera.
 
+### 10.1 Salud de `render` y su aviso (m-25017289)
+
+Con la épica m-25017272 toda la composición de imágenes y carruseles pasa a Remotion sin respaldo en Pillow: si `render` cae, esa generación falla. Dos piezas lo vigilan, sin servicios nuevos:
+
+- **Chequeo de salud del contenedor** (`healthcheck` en `deploy/docker-compose.prod.yml`): cada 10 s pregunta `GET /health` dentro del contenedor y lo da por sano solo si responde `ok` y `bundleReady` (el mismo criterio del camino de stickers y de la imagen). Tres fallas seguidas (≈ 30 s) lo marcan `unhealthy`; el primer minuto tras arrancar no cuenta. El deploy sigue esperando `healthy` antes de darse por bueno.
+- **Aviso al equipo**: el `calendar-worker` ya revisa cada minuto el latido del `creative-worker`; en esa misma pasada consulta `http://render:3200/health` con 3 s de tiempo máximo. Si `render` sigue sin responder sano **3 minutos seguidos**, manda **un** mensaje:
+
+> Servicio de render · caído
+> El servicio de render no responde bien desde hace {min} min ({motivo}). Mientras tanto fallan las imágenes y carruseles que se arman con Remotion. Revisar: `just deploy-status qualify-prod` y `just deploy-logs qualify-prod render`.
+
+El motivo es corto (`ConnectError`, `HTTP 503`, `bundleReady=false`…). No repite mientras siga caído; cuando vuelve a responder bien el incidente se cierra en silencio (no hay mensaje de recuperación), y una nueva caída avisa otra vez. El estado vive en Redis (`qualify:creative-queue:render:*`), compartido si el worker se reinicia; caduca a las 4 h si ninguna revisión fallida lo renueva, y se borra al arrancar sin el perfil `render`, para que un estado viejo nunca se salte los 3 minutos ni silencie una caída nueva.
+
+**Leer la salud** (solo lectura, sin pedir permiso):
+
+```bash
+just deploy-status qualify-prod        # la fila de render dice (healthy) / (unhealthy) / (health: starting)
+just deploy-logs qualify-prod render   # «listening» y «using prebuilt bundle» al arrancar; errores de Remotion
+just deploy-logs qualify-prod calendar-worker   # render.watch.unhealthy reason=… for_minutes=…
+```
+
+**Qué significa el aviso:** la generación que compone con Remotion está fallando ahora mismo. Docker **no reinicia** un contenedor `unhealthy` (`restart: unless-stopped` solo actúa si el proceso termina, por ejemplo cuando el tope de memoria lo mata), así que el aviso pide una persona: mirar estado y logs, revisar el último deploy (`gh run list --workflow deploy --limit 5`) y **proponer** al fundador el reinicio o el rollback — reiniciar fuera de un deploy sigue pidiendo su permiso (`qualify-prod-ops`).
+
+**Destino del mensaje:** el bot de Qualify-devs si el servidor tiene `QUALIFY_DEVOPS_WEBHOOK_URL` (copia en `.env.prod` del secreto `DEVOPS_WEBHOOK_URL` de GitHub, que la app no hereda); si no, `QUALIFY_SUPPORT_WEBHOOK_URL`; sin ninguna, solo queda en el log (`render.watch.alert_not_sent`) y se reintenta cada minuto. Si el bot exige palabras clave («Deploy»), añadir «render» o Lark rechaza el mensaje. Solo se vigila cuando `render` está en `COMPOSE_PROFILES`: con el perfil apagado no hay servicio y no es una caída.
+
 ## 11. Pendientes conocidos (no bloquean el despliegue)
 
 1. ~~**El callback OAuth termina en JSON.**~~ **Resuelto (QUA-123, 2026-10-06).** `/api/connections/callback` responde siempre `303` a `/connections?connect=<código>` (`active`, `degraded`, `link_required`, `page_access_required`, `invalid_state`, `denied`) y la pantalla muestra el aviso correspondiente. En la URL sólo viaja ese código: ni ids, ni usuario, ni conteos (los conteos de páginas siguen en el log del servicio `api`). El destino sale de `QUALIFY_APP_URL` o, si no está, de `REFLEX_DEPLOY_URL`, que el compose ya fija a `QUALIFY_PUBLIC_URL`.
@@ -607,6 +746,7 @@ QUALIFY_ENV_FILE=/ruta/.env.smoke docker compose -p qualify-smoke \
 | `/ping`, `/_health` | 200 (backend de Reflex) |
 | `/api/connections/callback?code=x&state=x` | **403** `invalid or expired state` → llegó a FastAPI (no 502). *Desde QUA-123 la respuesta esperada es **303** a `/connections?connect=invalid_state`.* |
 | `/public/media/<token inexistente>` | 404 desde FastAPI |
+| `/public/catalog-media/<uuid>/<uuid>/<firma de 43 caracteres>.jpg` (firma mala) | 404 desde FastAPI (`application/json`), no el HTML del frontend (m-25021431) |
 | `/avatar/tiktok/nobody`, `/r2media/<token malo>` | 200 / 404 desde el backend de Reflex (`api_transformer`) |
 | WebSocket `/_event` | `101 Switching Protocols` + paquete de apertura de Engine.IO; en un navegador real, `/connections` sin sesión ejecuta su `on_load` por el websocket y redirige a `/brand/start` |
 | Puertos publicados | Sólo Caddy; `postgres`/`redis`/`api`/`reflex` sin puertos en el host |

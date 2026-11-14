@@ -162,6 +162,41 @@ def test_get_drafts_equals_get_draft_for_every_draft(seeded: tuple[UUID, UUID, U
     assert batch[ids[1]].media == () and batch[ids[1]].image is None
 
 
+def test_the_cover_is_the_first_slide_by_position_in_both_reads(
+    seeded: tuple[UUID, UUID, UUID],
+) -> None:
+    """m-25017278 (PR #651 CI): every slide of a generation is written in ONE transaction,
+    so their `created_at` ties. Ordering the cover by `created_at` alone let the single read
+    return any slide while the batch read returned the first one: the cover is the first
+    slide by position, then the earliest, then the id, in both reads."""
+    brand_a, _, user_id = seeded
+    draft_id = _draft(TENANT_A, brand_a, user_id, assets=0)
+    stamp = datetime.now(UTC)
+    with tenant_session(TENANT_A) as session:
+        for position in (2, 1, 0):  # stored last-slide first: heap order is not the answer
+            session.add(
+                ImageAsset(
+                    tenant_id=TENANT_A,
+                    draft_id=draft_id,
+                    media_url=f"generated/{TENANT_A}/{draft_id}/slide-{position}.jpg",
+                    object_key=f"generated/{TENANT_A}/{draft_id}/slide-{position}.jpg",
+                    position=position,
+                    created_at=stamp,
+                )
+            )
+    service = _service()
+    single = service.get_draft(tenant_id=TENANT_A, draft_id=draft_id)
+    batch = service.get_drafts(tenant_id=TENANT_A, draft_ids=[draft_id])[draft_id]
+    assert single is not None and single.image is not None
+    assert single.image.media_url.endswith("slide-0.jpg")
+    assert batch == single
+    assert [m.media_url.rsplit("/", 1)[1] for m in single.media] == [
+        "slide-0.jpg",
+        "slide-1.jpg",
+        "slide-2.jpg",
+    ]
+
+
 def test_get_drafts_never_crosses_tenants(seeded: tuple[UUID, UUID, UUID]) -> None:
     brand_a, brand_b, user_id = seeded
     service = _service()

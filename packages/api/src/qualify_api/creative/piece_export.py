@@ -94,7 +94,7 @@ def piece_text(*, title: str, kind_label: str, copy: CopyPayload | None) -> str:
         _section("GANCHO", copy.hook),
         _section("DESCRIPCIÓN", copy.caption),
         _section("LLAMADO A LA ACCIÓN", copy.cta),
-        _section("HASHTAGS", " ".join(f"#{tag.lstrip('#')}" for tag in copy.hashtags)),
+        _section("ETIQUETAS", " ".join(f"#{tag.lstrip('#')}" for tag in copy.hashtags)),
         _section("TEXTO LISTO PARA PEGAR", copy.rendered_caption()),
         _section("GUION", copy.script),
         _section("TOMAS", shots),

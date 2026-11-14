@@ -40,6 +40,7 @@ from .creative_state import CreativeState
 from .creative_vm import KitFormVM
 from .creative_wizard_pages import (  # the wizard's own controls, shared on purpose
     _KIT_LISTS,
+    _PERKS_LIST,
     BrandConnectState,
     BrandWizardState,
     _brand_extras,
@@ -75,6 +76,12 @@ SECTIONS: tuple[tuple[str, str, str, str], ...] = (
     ("paleta", "Colores", "palette", "Los colores con los que se te reconoce."),
     ("voz", "Voz y tono", "mic", "Tu voz grabada y cómo suena tu marca."),
     (
+        "ofrece",
+        "Lo que ofrece tu negocio",
+        "store",
+        "Tus ideas contarán por qué vale la pena visitarte o comprarte.",
+    ),
+    (
         "habla",
         "Cómo hablas",
         "message-circle",
@@ -99,6 +106,10 @@ SECTION_KEYS = frozenset(key for key, *_ in SECTIONS)
 SECTION_PARAM = "seccion"
 RETURN_PARAM = "volver"
 VOICE_SECTION = "voz"
+#: «Lo que ofrece tu negocio» (0166): the only section whose «Guardar» writes the perks.
+PERKS_SECTION = "ofrece"
+#: Its closed summary while the owner has written none.
+PERKS_EMPTY = "Todavía no has escrito nada"
 
 #: The brandboard's files, put back by "Cancelar" with the kit's fields.
 _ASSET_FIELDS = ("logo_versions", "logo_version_context", "brand_extras", "font_files")
@@ -253,12 +264,13 @@ class BrandEditState(rx.State):
                         "Escribe un enlace completo que empiece por https://, sin espacios."
                     )
                     return
+            with_perks = self.open_section == PERKS_SECTION
             connect = await self.get_state(BrandConnectState)
             was = connect.voice_configured
             if self.open_section == VOICE_SECTION:
                 # saving Voz y tono IS configuring it, cloned voice or not
                 connect.voice_configured = True
-        saved = await save_brand_kit(self)
+        saved = await save_brand_kit(self, with_perks=with_perks)
         async with self:
             if not saved:
                 # nothing was stored: Voz y tono is as configured as it was before
@@ -371,6 +383,8 @@ def _summary(key: str) -> rx.Component:
         return _voice_summary()
     if key == "anuncios":
         return _summary_text(CreativeState.kit_ads_destination_url, "Sin enlace predeterminado")
+    if key == PERKS_SECTION:
+        return _summary_text(CreativeState.kit_perks_summary, PERKS_EMPTY)
     blurb = next(text for k, _t, _i, text in SECTIONS if k == key)
     return rx.text(blurb, size="2", color=T.TEXT_MUTED)
 
@@ -395,6 +409,9 @@ def _editor(key: str) -> tuple[rx.Component, ...]:
         return (voice_lab_panel(), voice_analysis_result(), *_tone_sliders())
     if key == "habla":
         return tuple(_kit_list_editor(*lists[k]) for k in ("do", "dont", "cta"))
+    if key == PERKS_SECTION:
+        # the section title names the list; only its hint shows under it
+        return (_kit_list_editor(*_PERKS_LIST, show_label=False),)
     if key == "anuncios":
         return (
             rx.el.label("Enlace para anuncios", html_for="brand-ad-destination-url"),

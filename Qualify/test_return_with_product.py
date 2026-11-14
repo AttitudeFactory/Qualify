@@ -281,7 +281,7 @@ async def test_back_from_crear_the_new_product_is_chosen_and_the_text_kept(
 
     await CreativeState.load_catalog_products.fn(state)
 
-    assert state.selected_product_id == _NEW and state.product_confirmed is True
+    assert state.selected_product_id == _NEW
     assert state.brief_topic == "Promo del viernes, 2x1 en shawarmas"
     assert state.gen_mode == "create"
 
@@ -292,12 +292,11 @@ async def test_back_from_variaciones_crear_keeps_its_own_product(
     state = _creative_state(monkeypatch, f"?modo=variaciones&producto={_NEW}")
     state.catalog_items = [dict(item) for item in _catalog(_OLD)]
     state.choose_product(_OLD)
-    state.product_confirmed = True
 
     await CreativeState.load_catalog_products.fn(state)
 
     assert state.gen_mode == "variations"
-    assert state.selected_product_id == _OLD and state.product_confirmed is True
+    assert state.selected_product_id == _OLD
 
 
 def _route(key: str) -> RouteOptionVM:

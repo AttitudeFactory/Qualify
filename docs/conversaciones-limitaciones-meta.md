@@ -25,9 +25,11 @@ Instagram en vivo.
 | Adjuntos: foto, audio, vídeo y PDF en ambos sentidos; corazón (`like_heart`) saliente | `instagram_source` (CDN URL entrante, `attachment` saliente con `document → file`), `sender` (URL pública al enviar; un sticker no enlaza nada), `conversations_page` (cuatro dropzones + ❤️) | Hecho; **sin verificar en vivo** |
 | Nota de voz grabada en el navegador | `assets/qualify-voice.js` (Web Audio → WAV 16 kHz mono, en partes base64 < 1 MB) → `conversations_state.voice_*` → R2 como cualquier audio | Hecho; sin ffmpeg ni códec: Instagram acepta `wav` |
 | Textos largos | `service.split_reply` + `reply_text`: una fila de outbox por cada ≤ 1000 caracteres, cortadas por párrafo/frase/palabra | Hecho; la pantalla avisa «Se enviará en N mensajes» y ya no limita |
-| Perfil del contacto (nombre, usuario, foto) | `instagram_source.fetch_profile` (User Profile API, `GET /{IGSID}?fields=name,username,profile_pic`), `sync.refresh_profile` (al crear el hilo y cada 24 h: la URL de la foto caduca), `threads.counterpart_*` (0065) | Hecho; **sin verificar en vivo**; sin perfil la UI muestra iniciales |
+| Perfil del contacto (nombre, usuario, foto) | `instagram_source.fetch_profile` (User Profile API, `GET /{IGSID}?fields=name,username,profile_pic`), `sync.refresh_profile` (al crear el hilo y cada 24 h: la URL de la foto caduca), `threads.counterpart_*` (0065). **m-25017852:** el @usuario del listado (`participants.username`) llena el hilo siempre que no tenga uno, sin llamada a Graph y aunque el perfil siga vigente; si la consulta deja el hilo sin nombre ni usuario, se reintenta en 1 h (`NAMELESS_RETRY_AFTER`, escrito como un `counterpart_profile_at` más antiguo), máximo 5 reintentos por conexión y ronda, los de sello más antiguo primero (`MAX_NAMELESS_RETRIES_PER_SYNC`; con el intervalo por defecto de 300 s, `QUALIFY_CONVERSATIONS_SYNC_INTERVAL`, son ≤ 60 llamadas/hora de reintento por conexión; el tope cuenta solo reintentos: la primera consulta de cada hilo nuevo y el refresco de 24 h siguen sin tope, como antes, además de una llamada `list_messages` por conversación y ronda); pasados 7 días sin mensajes de la persona, el reintento vuelve a ser diario (`NAMELESS_RETRY_WINDOW`); el `author_username` que el webhook guardó vacío se completa en la siguiente lectura | Hecho; la consulta de perfil respondió 403 código 230 en vivo (§ más abajo); sin perfil la UI muestra el @usuario o iniciales |
 | Borradores asistidos con modelo (E4) | `conversations/suggest.py` (compuerta → `claude-haiku-5-5` con *strict tool use* → veredicto de *grounding*), `conversation_drafts` (0065, RLS, coste por fila), `PostgresDraftRepository`, `composition.grounding_for` (marca + catálogo) | Hecho y probado offline; el envío sigue siendo solo `reply(..., approval=HumanApproval(draft_id))` |
 | Paginación histórica de un hilo («cargar anteriores») | `repository.list_messages(limit)` | **Fuera de alcance**: se muestran los últimos 50; el repositorio no expone cursor |
+
+**Para soporte (perfil del contacto):** «Instagram solo comparte el nombre y la foto si la persona lo permite; mientras tanto ves su @usuario».
 
 ## 2. Dependencias de Meta, con evidencia
 
@@ -48,11 +50,12 @@ Instagram en vivo.
 | 11c | Señales al cliente: `POST /{page-id}/messages` con `sender_action` = `mark_seen` / `typing_on` / `typing_off`, solo con `recipient` | `features/sender-actions.md` | `InstagramDirectSender.send_action`; `service.signal` las ignora si la ventana está cerrada; nunca pasan por el outbox | Se envían al abrir un hilo y mientras se escribe (cada ≥ 6 s) | — | Pendiente |
 | 11d | Lo que Instagram **no** expone: «escribiendo…» del cliente y «entregado» | `webhooks.md` (campos: `messages`, `messaging_postbacks`, `messaging_seen`, `message_reactions`, …) | La UI no muestra typing ajeno ni «entregado»; solo «Enviando» (outbox), «Enviado» (200 de Meta) y «Visto» | — | — | No existe en la API |
 | 11e | Adjuntos: entrada `attachments[].payload.url` (webhook) / `image_data.url`, `video_data.url`, `file_url` (edge); salida `message.attachment.{type,payload.url}` con URL pública — `image` png/jpeg ≤ 8 MB, `audio` aac/m4a/wav/mp4 ≤ 25 MB, `video` mp4/ogg/avi/mov/webm ≤ 25 MB, `file` pdf ≤ 25 MB; sticker `like_heart` sin payload | `webhooks.md:66-77`; `graph-api/reference/message.md:98`; `send-message.md` («Send an image», «Send a heart sticker», «Limitations») | `messages.media_url` guarda la URL CDN entrante; un adjunto saliente se sube a R2 y el sender publica la URL (`/public/media/{token}`, 15 min) **al enviar**; `document` se traduce a `file` en el cable; el corazón va como `media_type = sticker` sin objeto | `QUALIFY_PUBLIC_MEDIA_BASE_URL` apunta al túnel hacia el servidor de `qualify_api` (en local `uvicorn` en el puerto 8010; no a Reflex en el 3000, que no tiene la ruta `/public/media`; ver `.env.example`) | Encuestas y ubicación **no existen** en la API de envío de Instagram | Pendiente (ni un adjunto entrante ni uno saliente observados aún) |
-| 11f | Perfil del contacto: `GET /{IGSID}?fields=name,username,profile_pic` con token de Página; consentimiento implícito al escribir al negocio; la URL de la foto caduca en días | `features/user-profile.md` | `fetch_profile` → `threads.counterpart_name/username/avatar_url/profile_at`; se refresca cada 24 h; cualquier error deja el hilo sin perfil (iniciales) | — | Advanced Access para cuentas sin rol, como el resto | Pendiente |
+| 11f | Perfil del contacto: `GET /{IGSID}?fields=name,username,profile_pic` con token de Página; consentimiento implícito al escribir al negocio; la URL de la foto caduca en días | `features/user-profile.md` | `fetch_profile` → `threads.counterpart_name/username/avatar_url/profile_at`; se refresca cada 24 h; si no llega nombre ni usuario, reintento en 1 h (máx. 5 reintentos por conexión y ronda); una línea `conversations.profile.unnamed` por consulta fallida o vacía (prefijos de id y código de error, sin datos personales): WARNING si el hilo queda sin nombre ni usuario o el error es inesperado, INFO para el rechazo esperado (403 código 230) en un hilo que ya tiene nombre o @usuario; el @usuario del listado siempre se conserva | — | Advanced Access para cuentas sin rol, como el resto | Pendiente |
 | 11g | Tiempos de Graph y envíos ambiguos: httpx espera 5 s por defecto y Meta tarda más en el edge de mensajes con adjuntos y en un envío cuya media descarga de Qualify durante la petición | Observado 2026-10-16: `ReadTimeout` repetidos en `GET /{conversation-id}/messages`; un envío de foto hizo `ReadTimeout`, se reintentó y **llegó dos veces** | Lecturas con 30 s y envíos con 60 s (`READ_TIMEOUT_S`/`SEND_TIMEOUT_S`); un fallo de transporte **después** de enviar la petición (`ReadTimeout`, `RemoteProtocolError`, …) es `is_ambiguous`: el sender lo cierra como `failed` con `send_ambiguous` y no reintenta; la pantalla dice «puede haber salido» y la sincronización muestra el eco si salió | — | La Messenger Platform no admite claves de idempotencia | Verificado el fallo; la mitigación, pendiente de observar |
 | 11h | Sticker `like_heart` por API | `send-message.md` («Send a heart sticker») | `reply_sticker` existe y funciona (POST 200, 2026-10-16) | — | En la app de la persona llega como un **corazón blanco**, no el rojo de la app | **Verificado**; por eso el botón ❤️ envía el emoji como texto (`HEART_TEXT`) |
 | 11i | Audio por la API de lectura: **no existe**. Cualquier mensaje de audio (las notas de voz de la persona y los ecos de los audios que envía Qualify) vuelve del edge `GET /{conversation-id}/messages` como `is_unsupported: true`, con `message` vacío y sin `attachments` | **Verificado en vivo 2026-10-16** (sonda sobre el hilo real) | El parser lo guarda como `media_type = other`; la pantalla dice «Contenido que Instagram no muestra aquí (p. ej. una nota de voz)» y la lista «Nota de voz u otro contenido»; el envío de audio sí funciona (POST 200 y la persona lo oye) | — | Un webhook `messages` con `is_unsupported` se trata igual | Verificado |
 | 11j | Deshacer el envío («eliminar para todos») y editar un mensaje | Ningún endpoint en el corpus (`features/*`, `webhooks.md`: solo `is_deleted` cuando el **cliente** borra) | «Eliminar para mí» = `messages.deleted_at` (local, por tenant); no hay «para todos» ni «editar» en la pantalla | — | No existe en la Messenger Platform para Instagram | Documentado |
+| 11k | Mensaje que la persona **anula** («unsend»): ítem `messages` con `message.mid` + `is_deleted: true`; Meta exige borrarlo al recibir el aviso | `webhooks.md:79` («Included when a customer deletes a message»); `overview.md:70` («Delete messages when you receive a webhooks notification to do so») | **Construido (m-25018661, migración 0157):** `webhook.parse_messaging_item` → `RemoteUnsend` → `ConversationSyncService.unsend_message`: lápida `message_unsends`, fila redactada (`messages.unsent_at`), borradores sin decidir descartados, ventana recalculada, cambios crudos del webhook borrados. Ver §12 | Sin webhook real en local; pruebas offline y `-m db` | Solo documentado: la forma no se ha observado en vivo (`[CORPUS]`) | **Pendiente** (se graba en el video de App Review de `instagram_manage_messages`) |
 | 12 | Códigos de error (190 auth, 10 y 2xx permisos, 429/5xx reintentables) | `graph_errors.py` (190 verificado en vivo 2026-08-14 en otro módulo); el resto, lectura del corpus | `InstagramDirectError.is_auth_error / is_permission_error / is_retryable` | — | — | Solo 190 verificado (en otro endpoint) |
 | 13 | Presupuesto de llamadas en Development Mode: 200/h por par Página-app | `ACCESS-MODEL.md` vía QUA-20 | `--sync-interval` 300 s por defecto; el ledger de llamadas del inbox **no** está cableado | — | — | Pendiente |
 
@@ -491,3 +494,59 @@ Numeración: R5–R8 son las de §8–§10. En el ticket, **R1** = preguntas ini
 **Menú persistente (opcional, no construido).** Estado: **pendiente**.
 
 - [ ] Solo si se decide construirlo o probarlo a mano: configurar dos elementos por la API (`postback` `QFM_HORARIO` y un `web_url`), tocar el `postback` desde el teléfono y comprobar que llega como menú; anotar cuánto tarda en aparecer en un chat abierto y en uno nuevo, y si las preguntas iniciales siguen publicadas después del `POST`.
+
+## 12. Mensajes que la persona anula (m-25018661)
+
+Cuando una persona **anula** («unsend») un mensaje directo que le escribió al negocio, Meta
+manda por el webhook `messages` un ítem con el `mid` de ese mensaje y `is_deleted: true`
+(`webhooks.md:79`) y exige que la app lo borre (`overview.md:70`). Meta revisa en el video de
+App Review de `instagram_manage_messages` cómo se procesa. **Solo documentado:** la forma no
+se ha observado en vivo en Qualify (`[CORPUS]`); la primera prueba real debe anotar aquí el
+payload que llegue.
+
+### Qué hace Qualify
+
+| Dónde estaba el contenido | Qué pasa |
+| --- | --- |
+| La fila de `messages` (texto, tipo de adjunto y su URL de CDN, `media_id`/`media_mime`, historia respondida o mencionada con su id y URL, opción tocada y su payload, `author_username`) | Se **redacta en el sitio**: todas esas columnas a `NULL`, `story_mention = false`, `deleted_at` y `unsent_at` con la hora. Quedan solo ids e instantes (`id`, hilo, conexión, `external_message_id`, dirección, `author_external_id` = el IGSID que ya es la clave del hilo, `posted_at`, `ingested_at`). La CHECK `ck_message_unsent_redacted` (0157) impide que una fila anulada vuelva a tener contenido. No se borra la fila porque `qualify_app` no tiene `DELETE` sobre `messages` ni sobre las filas que la referencian, y este ticket no amplía permisos. |
+| R2 | Nada: ningún camino de Instagram Direct entrante guarda copia en R2 (`media_object_key` y `raw_payload_r2_key` solo los usan el outbox y WhatsApp). Se ponen a `NULL` igual. |
+| Borrador sugerido (`conversation_drafts`) sin decidir | Pasa a `discarded`, `generated_text = ''`, `final_text = NULL` y sale de su `grounding` la opción tocada (`choice`). Uno que una persona ya aceptó, editó o envió es mensaje del negocio y no se toca. |
+| Consulta abierta (`interaction_followups`) que nació de ese DM (respuesta a historia) | Deja de listarse en «Consultas desde comentarios» y en el contador de compradores; no se puede descartar sin una persona (CHECK de 0071). No guarda texto. |
+| Clasificación de intención (`comment_intent_results`) | **Se queda**: solo clases, confianzas y procedencia, sin texto; la tabla es de solo inserción y no hay permiso para borrarla. Los lectores ya ignoran mensajes con `deleted_at`. |
+| Atribución a un anuncio (`ad_message_attributions`) | Solo ids; desaparece en cascada al borrar el cambio crudo del webhook que la originó. |
+| Cambios crudos del webhook (`meta_webhook_events.value`) y el cuerpo HTTP de su entrega (`meta_webhook_deliveries.raw_body`) | Se **borran** todos los cambios `messages` de esa cuenta que traían ese `mid`, en cualquier estado, y el cuerpo de su entrega (por la puerta `qualify_webhook_worker`, que tiene `DELETE`; no tiene `UPDATE` sobre `value`). Los demás cambios de esa misma entrega conservan su `value`; solo se pierde la copia cruda. El cambio del aviso de anulación se queda (no tiene contenido). |
+| Hilo (`threads`) | `last_inbound_at` y `last_message_at` se recalculan con lo que queda (pueden ir hacia atrás o a `NULL`). Si el mensaje anulado era el que abría la ventana de 24 h, la ventana pasa a contar desde el mensaje anterior de la persona, o se cierra si no hay otro; «pendiente / leído» se deriva de esos valores y se recalcula solo. Un hilo cuyo único contenido era el mensaje anulado deja de listarse. El estado abierto/cerrado no cambia. |
+| Contadores de Inicio (mensajes y personas de la semana) | No cuentan mensajes anulados. |
+
+**La lápida** (`message_unsends`): `(connection_id, external_message_id)` único, hora,
+`source_event_id` (el cambio del webhook) y `pipeline_version`; sin texto ni URLs, con
+`tenant_id` + RLS. Existe porque el aviso puede llegar **antes** que el mensaje (fuera de
+orden) o la sincronización puede seguir listándolo. El alta de un mensaje (hilo + fila +
+instantes del hilo) es **una sola transacción** bajo un candado por mensaje
+(`pg_advisory_xact_lock`, `store_message`) que la anulación también toma: o la anulación
+termina antes (el alta no guarda nada, no crea hilo ni mueve la ventana) o después (recalcula
+sobre el hilo bloqueado). Ningún orden deja la ventana apuntando al mensaje anulado. Un aviso para un `mid` desconocido guarda solo la lápida, sin crear hilo.
+Cuando el original llega después, no se guarda nada y su cambio crudo se borra en vez de
+archivarse (`Outcome(erase=True)`). La purga de una conexión (0106) borra también sus
+lápidas.
+
+**Idempotencia.** Repetir el aviso no cambia nada (lápida única, fila ya redactada). Un aviso
+que llega de otra cuenta solo alcanza filas de su propio tenant (RLS y la conexión resuelta).
+
+**Fuera de alcance.** Un `is_deleted` con `is_echo` (el negocio borró su propio mensaje) se
+archiva `unsupported` (`message_deleted_echo`) sin tocar nada; también uno cuyo `mid` está
+guardado como saliente (`message_deleted_outbound`).
+
+**Lo que no se puede borrar desde aquí.** Las trazas que ya se enviaron a observabilidad
+externa (Langfuse: los prompts de «Sugerir respuesta» llevan la conversación) **no se
+purgan**; tampoco lo que el modelo de Anthropic recibió en su momento. Los registros de la
+aplicación no llevan texto (solo ids, tipos y resultados).
+
+**Reprocesar los avisos ya guardados.** Antes de este ticket los avisos quedaban
+`unsupported` con `last_error = 'message_deleted'`. Se reprocesan con
+`just webhook-requeue-deleted --account <ig_account_id> [--execute]` (o `--all-accounts` en
+producción); sin `--execute` solo cuenta. Solo alcanza los de los últimos 29 días (los demás
+ya se purgaron, junto con su original).
+
+**Para la pantalla.** No se muestra nada: la fila anulada sale de `list_messages` (filtro
+`deleted_at`) y el hilo vacío sale de `list_threads`. No hay nuevo campo que pintar.

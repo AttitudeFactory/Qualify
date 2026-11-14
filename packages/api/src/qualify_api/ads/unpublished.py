@@ -1,22 +1,45 @@
-"""Canonical image-pair recipes, independent of creative copy generation (m-24828982)."""
+"""Canonical image- or video-pair recipes, independent of creative copy (m-24828982)."""
 
 from __future__ import annotations
 
 import re
+import struct
 from dataclasses import asdict, dataclass
 from datetime import datetime
-from typing import Any
+from typing import IO, Any
 from urllib.parse import urlsplit
 from uuid import UUID
 
 from qualify_api.ads.promotions import fingerprint
+from qualify_api.ads.wizard import WEBSITE_CTAS  # the piece's saved button (m-24828976)
 
 PIPELINE = "ad-unpublished-images-v1"
+VIDEO_PIPELINE = "ad-unpublished-video-v1"
+# m-25026350: one 9:16 asset shown only in Instagram stories (an organic story cannot carry a
+# link sticker through the publishing API; a story ad carries the button).
+STORY_PIPELINE = "ad-story-image-v1"
+STORY_VIDEO_PIPELINE = "ad-story-video-v1"
+STORY_FORMAT = "Elige una foto o un video vertical, de pantalla completa, para la historia."
 MAX_IMAGE_BYTES = 8 * 1024 * 1024  # Local policy, not a claimed Meta limit.
+# Local policy, not claimed Meta limits: one story card is the tightest placement we target.
+MAX_VIDEO_BYTES = 100 * 1024 * 1024
+MIN_VIDEO_SECONDS, MAX_VIDEO_SECONDS = 1.0, 60.0
+MAX_MOOV_BYTES = 8 * 1024 * 1024  # bounded metadata read
+MAX_TOP_LEVEL_BOXES = 1000  # real MP4s have a handful
+TOO_LARGE = "Cada video del anuncio debe ocupar como máximo 100 MB. Recórtalo o elige otro."
+
+
+# Typed reasons a screen can switch on; the owner-readable message stays the text.
+VIDEO_PROCESSING = "video_processing"  # repeat the same preparation later, never re-upload
+UPLOAD_UNCERTAIN = "upload_uncertain"  # a send whose outcome is unknown: ask for help
 
 
 class UnpublishedUnavailable(ValueError):
     """Owner-readable boundary error; never a provider payload."""
+
+    def __init__(self, message: str, *, reason: str = "") -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
 @dataclass(frozen=True)
@@ -27,7 +50,7 @@ class ImageSelection:
     width: int
     height: int
 
-    def validate(self, ratio: tuple[int, int]) -> None:
+    def validate(self, ratio: tuple[int, int], wrong: str = "") -> None:
         if (
             self.content_type not in {"image/jpeg", "image/png"}
             or type(self.width) is not int
@@ -36,8 +59,44 @@ class ImageSelection:
             or self.width * ratio[1] != self.height * ratio[0]
         ):
             raise UnpublishedUnavailable(
-                "Elige dos imágenes: una de 4:5 para las publicaciones y otra vertical de 9:16."
+                wrong
+                or "Elige dos imágenes: una de 4:5 para las publicaciones y otra vertical de 9:16."
             )
+
+
+@dataclass(frozen=True)
+class VideoSelection:
+    """An MP4 of the piece's active version plus the explicit cover the owner chose.
+
+    Meta's asset feed video takes a thumbnail; we never invent a URL or hash for it.
+    """
+
+    asset_id: UUID
+    object_key: str
+    content_type: str
+    width: int
+    height: int
+    thumbnail: ImageSelection | None
+
+    def validate(self, ratio: tuple[int, int], wrong: str = "") -> None:
+        if (
+            self.content_type != "video/mp4"
+            or type(self.width) is not int
+            or type(self.height) is not int
+            or min(self.width, self.height) <= 0
+            or self.width * ratio[1] != self.height * ratio[0]
+        ):
+            raise UnpublishedUnavailable(
+                wrong
+                or "Elige dos videos MP4: uno para el perfil (4:5) y otro vertical de pantalla "
+                "completa (9:16)."
+            )
+        if self.thumbnail is None:
+            raise UnpublishedUnavailable(
+                "Falta la portada de cada video. Elige una imagen de la misma pieza "
+                "con el mismo formato del video."
+            )
+        self.thumbnail.validate(ratio, wrong)
 
 
 @dataclass(frozen=True)
@@ -55,17 +114,37 @@ class ImageSource:
     page_id: str
     currency: str
     timezone_name: str
-    feed: ImageSelection
-    vertical: ImageSelection
+    # None = a story ad (m-25026350): only `vertical`, placed only in Instagram stories.
+    feed: ImageSelection | VideoSelection | None
+    vertical: ImageSelection | VideoSelection
+
+    @property
+    def is_video(self) -> bool:
+        return isinstance(self.vertical, VideoSelection)
+
+    @property
+    def is_story(self) -> bool:
+        return self.feed is None
+
+    @property
+    def assets(self) -> tuple[ImageSelection | VideoSelection, ...]:
+        return (self.vertical,) if self.feed is None else (self.feed, self.vertical)
 
     def snapshot(self) -> dict[str, Any]:
         import json
 
+        if self.feed is None:
+            self.vertical.validate((9, 16), STORY_FORMAT)
+            pipeline = STORY_VIDEO_PIPELINE if self.is_video else STORY_PIPELINE
+            return json.loads(json.dumps(asdict(self), default=str)) | {"pipeline": pipeline}
+        if type(self.feed) is not type(self.vertical):
+            raise UnpublishedUnavailable("Usa dos imágenes o dos videos; no se pueden mezclar.")
         self.feed.validate((4, 5))
         self.vertical.validate((9, 16))
         if self.feed.asset_id == self.vertical.asset_id:
-            raise UnpublishedUnavailable("Elige una imagen distinta para cada formato.")
-        return json.loads(json.dumps(asdict(self), default=str)) | {"pipeline": PIPELINE}
+            raise UnpublishedUnavailable("Elige un archivo distinto para cada formato.")
+        pipeline = VIDEO_PIPELINE if self.is_video else PIPELINE
+        return json.loads(json.dumps(asdict(self), default=str)) | {"pipeline": pipeline}
 
 
 @dataclass(frozen=True)
@@ -124,7 +203,7 @@ class ImageAdForm:
             or len(self.message) > 2200
             or not self.headline.strip()
             or len(self.headline) > 100
-            or self.cta_type != "LEARN_MORE"
+            or self.cta_type not in WEBSITE_CTAS
             or type(self.budget_minor) is not int
             or self.budget_minor <= 0
             or self.budget_minor % 100
@@ -144,21 +223,102 @@ class ImageAdForm:
         }
 
 
-def creative_payload(source: ImageSource, form: ImageAdForm, hashes: tuple[str, str]) -> dict:
+def _image_hash(value: object) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,128}", value) is not None
+
+
+def _video_id(value: object) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"[0-9]{1,32}", value) is not None
+
+
+def creative_payload(source: ImageSource, form: ImageAdForm, hashes: tuple[str, ...]) -> dict:
     """SDK26 fields; exact account compatibility must still pass Meta validate_only."""
     source.snapshot()
-    if len(hashes) != 2 or any(
-        not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", value)
-        for value in hashes
+    if (
+        source.is_video
+        or len(hashes) != len(source.assets)
+        or not all(_image_hash(value) for value in hashes)
     ):
         raise UnpublishedUnavailable("Meta no confirmó las imágenes de este anuncio.")
+    if source.is_story:
+        return _story(
+            source,
+            form,
+            "link_data",
+            {
+                "image_hash": hashes[0],
+                "link": form.link_url,
+                "message": form.message,
+                "name": form.headline,
+            },
+        )
+    media = [{"hash": value} for value in hashes]
+    return _asset_feed(source, form, "SINGLE_IMAGE", "images", "image_label", media)
+
+
+def video_creative_payload(
+    source: ImageSource, form: ImageAdForm, videos: tuple[tuple[str, str], ...]
+) -> dict:
+    """`videos` = (video id, cover image hash) for feed, then vertical. An image hash is
+    never accepted as a video id, nor the other way round."""
+    source.snapshot()
+    if (
+        not source.is_video
+        or len(videos) != len(source.assets)
+        or not all(
+            len(pair) == 2 and _video_id(pair[0]) and _image_hash(pair[1]) for pair in videos
+        )
+    ):
+        raise UnpublishedUnavailable("Meta no confirmó los videos de este anuncio.")
+    if source.is_story:
+        (video, cover), *_ = videos
+        return _story(
+            source,
+            form,
+            "video_data",
+            {
+                "video_id": video,
+                "image_hash": cover,
+                "message": form.message,
+                "title": form.headline,
+            },
+        )
+    media = [{"video_id": video, "thumbnail_hash": cover} for video, cover in videos]
+    return _asset_feed(source, form, "SINGLE_VIDEO", "videos", "video_label", media)
+
+
+def _story(source: ImageSource, form: ImageAdForm, field: str, data: dict[str, str]) -> dict:
+    """A plain single-asset creative; stories-only placement lives in the ad set targeting.
+
+    facebook-python-business-sdk 26.0.0 `adobjects/`: AdCreativeObjectStorySpec (page_id,
+    instagram_user_id, link_data, video_data), AdCreativeLinkData (image_hash, link, message,
+    name, call_to_action), AdCreativeVideoData (video_id, image_hash, message, title,
+    call_to_action), AdCreativeLinkDataCallToActionValue (link)."""
+    cta = {"type": form.cta_type, "value": {"link": form.link_url}}
+    return {
+        "object_story_spec": {
+            "page_id": source.page_id,
+            "instagram_user_id": source.instagram_id,
+            field: data | {"call_to_action": cta},
+        }
+    }
+
+
+def _asset_feed(
+    source: ImageSource,
+    form: ImageAdForm,
+    ad_format: str,
+    field: str,
+    label: str,
+    media: list[dict[str, str]],
+) -> dict:
     return {
         "object_story_spec": {"page_id": source.page_id, "instagram_user_id": source.instagram_id},
         "asset_feed_spec": {
-            "ad_formats": ["SINGLE_IMAGE"],
-            "images": [
-                {"hash": value, "adlabels": [{"name": name}]}
-                for value, name in zip(hashes, ("feed", "vertical"), strict=True)
+            "ad_formats": [ad_format],
+            field: [
+                item | {"adlabels": [{"name": name}]}
+                for item, name in zip(media, ("feed", "vertical"), strict=True)
             ],
             "bodies": [{"text": form.message}],
             "titles": [{"text": form.headline}],
@@ -170,7 +330,7 @@ def creative_payload(source: ImageSource, form: ImageAdForm, hashes: tuple[str, 
                         "publisher_platforms": ["instagram"],
                         "instagram_positions": positions,
                     },
-                    "image_label": {"name": name},
+                    label: {"name": name},
                     "priority": index,
                 }
                 for index, (name, positions) in enumerate(
@@ -183,3 +343,73 @@ def creative_payload(source: ImageSource, form: ImageAdForm, hashes: tuple[str, 
 
 def recipe_hash(source: ImageSource, form: ImageAdForm, actor: UUID) -> str:
     return fingerprint({"source": source.snapshot(), "form": form.snapshot(), "actor": str(actor)})
+
+
+def _boxes(data: bytes) -> dict[bytes, list[bytes]]:
+    found: dict[bytes, list[bytes]] = {}
+    index = 0
+    while index + 8 <= len(data):
+        length, kind = struct.unpack(">I4s", data[index : index + 8])
+        if length < 8 or index + length > len(data):
+            raise ValueError("truncated box")
+        found.setdefault(kind, []).append(data[index + 8 : index + length])
+        index += length
+    return found
+
+
+def mp4_facts(stream: IO[bytes]) -> tuple[int, float, int, int]:
+    """(bytes, seconds, width, height) of a seekable MP4, reading box headers and `moov` only.
+
+    The size is checked first; media bytes are then skipped with seeks (the stream decides
+    what a read costs). Fails closed: anything that is not a plain MP4 with exactly one sized
+    video track raises an owner-readable error.
+    """
+    try:
+        size = stream.seek(0, 2)
+        stream.seek(0)
+    except OSError:
+        size = -1
+    if size > MAX_VIDEO_BYTES:
+        raise UnpublishedUnavailable(TOO_LARGE)
+    try:
+        if size <= 0:
+            raise ValueError("unsized")
+        moov, offset, boxes = None, 0, 0
+        while offset < size and moov is None:
+            # Each header is a ranged read: a file of tiny boxes must not cost millions of them.
+            boxes += 1
+            if boxes > MAX_TOP_LEVEL_BOXES:
+                raise ValueError("too many boxes")
+            length, kind = struct.unpack(">I4s", stream.read(8))
+            body = 8
+            if length == 1:
+                length, body = struct.unpack(">Q", stream.read(8))[0], 16
+            elif length == 0:
+                length = size - offset
+            if length < body or offset + length > size or (offset == 0 and kind != b"ftyp"):
+                raise ValueError("not an mp4")
+            if kind == b"moov":
+                if length - body > MAX_MOOV_BYTES:
+                    raise ValueError("oversized metadata")
+                moov = stream.read(length - body)
+            offset += length
+            stream.seek(offset)
+        stream.seek(0)
+        top = _boxes(moov or b"")
+        (mvhd,) = top[b"mvhd"]
+        layout = ">IQ" if mvhd[0] == 1 else ">II"
+        start = 20 if mvhd[0] == 1 else 12
+        scale, duration = struct.unpack_from(layout, mvhd, start)
+        tracks = []
+        for trak in top.get(b"trak", []):
+            inner = _boxes(trak)
+            if _boxes(inner[b"mdia"][0])[b"hdlr"][0][8:12] == b"vide":
+                width, height = struct.unpack(">II", inner[b"tkhd"][0][-8:])
+                tracks.append((width >> 16, height >> 16))
+        if len(tracks) != 1 or not scale:
+            raise ValueError("expected one video track")
+    except (OSError, KeyError, IndexError, ValueError, struct.error):
+        raise UnpublishedUnavailable(
+            "No pudimos leer el video de esta pieza. Elige otro video MP4."
+        ) from None
+    return size, duration / scale, *tracks[0]

@@ -289,6 +289,7 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
     from .catalog_group_state import CatalogGroupState
     from .catalog_order_state import CatalogOrderState
     from .catalog_state import CatalogState
+    from .catalog_whatsapp_state import CatalogWhatsAppState
     from .clarity_state import ClarityState
     from .connections_state import ConnectionsState
     from .conversations_state import ConversationsState
@@ -302,9 +303,11 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
     from .final_video_card_state import FinalVideoState
     from .followups_state import FollowupsState
     from .gallery_state import GalleryState
+    from .gen_gallery_pick_state import GenGalleryPickState
     from .generation_state import GenerationState
     from .home_state import HomeState
     from .ice_breakers_state import IceBreakersState
+    from .inbox_list_state import InboxListState
     from .inbox_state import InboxState
     from .leads_state import LeadsState
     from .offer_mark_state import OfferMarkState
@@ -314,6 +317,7 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
     from .pinterest_state import PinterestState
     from .planner_back import WeekBackState
     from .planner_state import PlannerState
+    from .product_sticker_state import ProductStickerState
     from .promotion_state import PromotionState
     from .publish_hub_state import PublishHubState
     from .publishing_state import PublishState
@@ -324,7 +328,6 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
     from .seasonal_state import SeasonalState
     from .settings_state import SettingsState
     from .state import DashboardState
-    from .stories_state import StoriesState
     from .tiktok_state import TikTokConnectionsState, TikTokDraftState
     from .trending_state import TrendingState
     from .variations_state import VariationsState
@@ -341,6 +344,8 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
 
     return (
         AdAccountsState,
+        # m-24985141: the generator's «Elegir de tu Galería» drawer
+        GenGalleryPickState,
         AdEnhancementsState,
         AdFormsState,
         PromotionState,
@@ -361,7 +366,7 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
         ClarityState,
         InboxState,
         PublishState,
-        # QUA-113: which publish flow is showing (Publicaciones / Stories)
+        # «Publicar ahora»: the assistant's motion and its leave guard
         PublishHubState,
         DashboardState,
         CreativeState,
@@ -386,7 +391,6 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
         # 2026-09-25) — tenant files and tenant kit values.
         BrandDocumentState,
         RepliesState,
-        StoriesState,
         # the trending panel: its Meta audio list belongs to a tenant account
         TrendingState,
         PlannerState,
@@ -412,6 +416,9 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
         # m-24955838 «Agrupa tus productos»: the products without a category, the
         # proposed groups and the last move («Deshacer»)
         CatalogGroupState,
+        # m-25017357 Galería › WhatsApp catalog: the per-product states, the plan the
+        # owner is confirming and the products sent from this tab
+        CatalogWhatsAppState,
         # m-24955648 «Formas de pago»: the business's methods, the open form and the QR
         # parked for it
         WhatsAppPaymentsState,
@@ -435,6 +442,9 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
         # QUA-226: the private inbox — accounts, access state, threads, the open
         # conversation, the reply draft and the acting user's id
         ConversationsState,
+        # m-25017859: the single chat list of «Por responder» — rows, counts, the
+        # notice's per-business dismissal and the scroll kept for the way back
+        InboxListState,
         # m-24789646: «Consultas desde comentarios» (cards, drafts being edited)
         FollowupsState,
         # m-24789472: «Preguntas iniciales» — the account's draft questions, its status
@@ -458,6 +468,8 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
         SettingsState,
         # m-24976895: the brand's seasonal stickers and videos and their flow
         SeasonalState,
+        # m-25017912: «Tu producto en sticker»'s products, drawings and chosen messages
+        ProductStickerState,
         # m-24852129: the ask-more button — whether this business's request waits
         AskMoreState,
         # m-24921079: «Armar mi video por partes» — the sentence about this business's product

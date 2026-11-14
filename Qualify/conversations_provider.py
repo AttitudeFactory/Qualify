@@ -404,11 +404,29 @@ class ConversationsGateway:
             channels=[CHANNEL_DM],
             connection_id=connection_id,
             limit=THREADS_LIMIT,
+            status=None,  # m-25026457: open and closed alike — the filters are local
         )
         extras = self._store.thread_extras(tenant_id, [v.thread.id for v in views])
         return [
             ThreadListing(view=v, extra=extras.get(str(v.thread.id), ThreadExtra())) for v in views
         ]
+
+    def listing(self, tenant_id: UUID, view: ThreadView) -> ThreadListing:
+        """One row of `threads` for a view the service just returned (m-25026457: a
+        refused «Cerrar» puts the new message's preview on screen at once)."""
+        extras = self._store.thread_extras(tenant_id, [view.thread.id])
+        return ThreadListing(view=view, extra=extras.get(str(view.thread.id), ThreadExtra()))
+
+    def thread_listing(
+        self, tenant_id: UUID, connection_id: UUID, thread_id: UUID
+    ) -> ThreadListing:
+        """m-25017859: ONE chat of this account as `threads` lists it, by id — a row of
+        the single list that is not among this account's newest `THREADS_LIMIT`.
+        `ThreadNotFound` for another tenant, channel or account, or an all-unsent chat."""
+        view = self.service.get_dm_thread(
+            tenant_id=tenant_id, thread_id=thread_id, connection_id=connection_id
+        )
+        return self.listing(tenant_id, view)
 
     def _owned(self, tenant_id: UUID, connection_id: UUID, thread_id: UUID) -> ThreadView:
         view = self.service.get_thread(tenant_id=tenant_id, thread_id=thread_id)
@@ -469,6 +487,27 @@ class ConversationsGateway:
     def mark_read(self, tenant_id: UUID, connection_id: UUID, thread_id: UUID) -> ThreadView:
         self._owned(tenant_id, connection_id, thread_id)
         return self.service.mark_read(tenant_id=tenant_id, thread_id=thread_id)
+
+    def close(
+        self,
+        tenant_id: UUID,
+        connection_id: UUID,
+        thread_id: UUID,
+        seen_last_inbound_at: datetime | None,
+    ) -> ThreadView:
+        """«Cerrar» (m-25026457): the chat leaves «Por responder» and the default list
+        until the person writes again. `seen_last_inbound_at` is the person's last message
+        as the owner's SCREEN showed it (never a fresh read): a newer one refuses with
+        `ThreadChangedSinceSeen`. Another account's thread is `ThreadNotFound`."""
+        self._owned(tenant_id, connection_id, thread_id)
+        return self.service.close(
+            tenant_id=tenant_id, thread_id=thread_id, seen_last_inbound_at=seen_last_inbound_at
+        )
+
+    def reopen(self, tenant_id: UUID, connection_id: UUID, thread_id: UUID) -> ThreadView:
+        """«Reabrir»: the inverse of `close`, same guarantees."""
+        self._owned(tenant_id, connection_id, thread_id)
+        return self.service.reopen(tenant_id=tenant_id, thread_id=thread_id)
 
     def hide_message(
         self, tenant_id: UUID, connection_id: UUID, thread_id: UUID, message_id: UUID

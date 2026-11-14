@@ -21,7 +21,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from qualify_api.planner.fsm import EventStatus, EventTrigger, InvalidTransition, apply_transition
-from qualify_api.planner.gallery import is_reusable
+from qualify_api.planner.gallery import awaits_scheduling
 from qualify_api.planner.models import EVENT_GOALS, TAG_COLORS
 from qualify_api.planner.post_reader import (
     ApprovalStatus,
@@ -315,12 +315,21 @@ class PlannerService:
         if output_port is not None:
             output = next(o for o in post.outputs if o.port == output_port)
             types, size, product = output.media_types, output.image_size, output.media_product_type
+            seconds = output.video_seconds
         else:
             types, size, product = post.media_types, post.image_size, post.media_product_type
+            seconds = post.video_seconds
         if destination is None:
             return destination_for_product_type(product)
+        # A long video story only WARNS (m-25026481): `available` does not depend on the
+        # length, so passing it changes nothing here but keeps the rule's inputs whole.
         option = next(
-            (o for o in destination_options(types, size) if o.destination == destination), None
+            (
+                o
+                for o in destination_options(types, size, video_seconds=seconds)
+                if o.destination == destination
+            ),
+            None,
         )
         if option is None or not (option.offered and option.available):
             raise UnsupportedDestination(
@@ -739,12 +748,16 @@ class PlannerService:
         has no live event — the panel is where the remaining outputs get planned from.
 
         QUA-118 A2: a `recurrente` POST is always here — a live or published occurrence
-        never blocks the next one (`gallery.is_reusable`)."""
+        never blocks the next one (`gallery.is_reusable`). m-25019217: except an
+        own-media piece, which already went out from «Publicar»: once it has its event it
+        leaves this panel and its count, and stays plannable from the gallery
+        (`gallery.awaits_scheduling`)."""
         occupied = self.occupied_outputs(tenant_id=tenant_id, brand_id=brand_id)
         return [
             post
             for post in self._posts.list_schedulable(tenant_id=tenant_id, brand_id=brand_id)
-            if is_reusable(post) or not self._fully_planned(post, occupied.get(post.post_id, {}))
+            if awaits_scheduling(post)
+            or not self._fully_planned(post, occupied.get(post.post_id, {}))
         ]
 
     @staticmethod

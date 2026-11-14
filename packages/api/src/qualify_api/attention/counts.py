@@ -3,20 +3,20 @@
 One number per channel, each defined exactly as the list it opens filters it, so the
 figure the owner taps is the length of the list that opens (N11):
 
-- **messages** — Instagram private conversations (`threads.channel = 'dm'`) in the
-  `PENDING` attention state of `conversations.service.attention_state`: a last inbound
-  message, no outbound at or after it, and not opened since (Conversaciones' filter
-  «Pendientes»);
+- **messages** and **whatsapp** — the chats of Instagram Direct (`dm`) and of WhatsApp
+  that wait for a reply under the ONE «Por responder» rule (`inbox.awaiting`, story
+  m-25017859): open, the customer wrote after the last reply a person sent, and nobody
+  answered / handed to a person / an automatic send failed; on Instagram only while the
+  reply window is open. Both are `inbox.awaiting.count_awaiting_sql`, judged at one bound
+  instant, so they equal `inbox.unified.count_inbox(channel=…)` — the unified list's
+  total — by construction (`test_inbox_counters_db.py`). Reading a chat does not clear
+  it; closing it does.
 - **buyers** — the commercial queries still `open` in `interaction_followups` whose
   origin comment is still visible (the «Quieren comprar» cards);
 - **comments** — the assisted public replies waiting for the owner's approval
-  (`comment_reply_drafts.status = 'proposed'`, «Respuestas listas para aprobar»);
-- **whatsapp** — WhatsApp chats with an inbound message after the last outbound one
-  (WhatsApp › Chats' filter «Sin leer»).
+  (`comment_reply_drafts.status = 'proposed'`, «Respuestas listas para aprobar»).
 
-The counts cover every connected account of the tenant; the lists they open show one
-account at a time (their own selector), so with several accounts a list can be shorter
-than its figure until the owner switches account.
+The counts cover every connected account of the tenant, like the unified list.
 
 Every statement runs through `tenant_session(tenant_id)`: RLS on each table scopes the
 counts to the tenant, and another tenant's rows are invisible, not filtered by hand.
@@ -24,55 +24,39 @@ counts to the tenant, and another tenant's rows are invisible, not filtered by h
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Protocol
 from uuid import UUID
 
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import text
 
-# A message's instant: Meta's timestamp, else when we stored it — the same expression
-# `conversations.repository` and `whatsapp.chats` order and compare by.
-_INSTANT = "COALESCE({m}.posted_at, {m}.ingested_at)"
+from qualify_api.inbox.awaiting import count_awaiting_sql
+from qualify_api.inbox.channels import CHANNEL_INSTAGRAM_DM, CHANNEL_WHATSAPP
+from qualify_api.inbox.unified import NO_JIT_SQL
 
-_COUNTS_SQL = """
+# Both chat counts judge the rule at ONE bound instant (`:now`), the one `inbox.unified`
+# binds too — never two clocks.
+_NOW_PARAM = "now"
+
+_COUNTS_SQL = f"""
 SELECT
-  (SELECT count(*)
-     FROM threads t
-    WHERE t.channel = 'dm'
-      AND t.last_inbound_at IS NOT NULL
-      AND (t.last_read_at IS NULL OR t.last_read_at < t.last_inbound_at)
-      AND NOT EXISTS (
-            SELECT 1 FROM messages o
-             WHERE o.thread_id = t.id AND o.direction = 'outbound'
-               AND {o_instant} >= t.last_inbound_at)) AS messages,
+  {count_awaiting_sql(CHANNEL_INSTAGRAM_DM, now_param=_NOW_PARAM)} AS messages,
   (SELECT count(*)
      FROM interaction_followups f
      JOIN messages m ON m.id = f.origin_message_id
-    WHERE f.status = 'open') AS buyers,
+    WHERE f.status = 'open' AND m.unsent_at IS NULL) AS buyers,
   (SELECT count(*)
      FROM comment_reply_drafts d
      JOIN messages m ON m.id = d.message_id
     WHERE d.status = 'proposed') AS comments,
-  (SELECT count(*)
-     FROM threads w
-    WHERE w.channel = 'whatsapp'
-      AND EXISTS (
-            SELECT 1 FROM messages u
-             WHERE u.thread_id = w.id AND u.direction = 'inbound'
-               AND u.deleted_at IS NULL
-               AND {u_instant} > COALESCE(
-                     (SELECT max({x_instant}) FROM messages x
-                       WHERE x.thread_id = w.id AND x.direction = 'outbound'
-                         AND x.deleted_at IS NULL),
-                     CAST('-infinity' AS timestamptz)))) AS whatsapp
-""".format(
-    o_instant=_INSTANT.format(m="o"),
-    u_instant=_INSTANT.format(m="u"),
-    x_instant=_INSTANT.format(m="x"),
-)
+  {count_awaiting_sql(CHANNEL_WHATSAPP, now_param=_NOW_PARAM)} AS whatsapp
+"""
 
 _COUNTS = text(_COUNTS_SQL)
+_NO_JIT = text(NO_JIT_SQL)
 
 
 @dataclass(frozen=True)
@@ -93,12 +77,23 @@ class PendingCountsStore(Protocol):
     def read(self, tenant_id: UUID) -> PendingCounts: ...
 
 
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
+
+
 class PostgresPendingCounts:
-    """One round trip, one `tenant_session` — the only sanctioned door."""
+    """One round trip, one `tenant_session` — the only sanctioned door. `clock` is the
+    instant the chat rule is judged at (tests pin it; default: the wall clock)."""
+
+    def __init__(self, clock: Callable[[], datetime] = _utcnow) -> None:
+        self._clock = clock
 
     def read(self, tenant_id: UUID) -> PendingCounts:
         with tenant_session(tenant_id) as session:
-            row = session.execute(_COUNTS).one()
+            # Polled every 30 s per open tab: JIT compilation cost more than the query
+            # (measured ~110 ms → ~40 ms on 3,000 chats). Transaction-local.
+            session.execute(_NO_JIT)
+            row = session.execute(_COUNTS, {_NOW_PARAM: self._clock()}).one()
         return PendingCounts(
             messages=max(0, int(row.messages or 0)),
             buyers=max(0, int(row.buyers or 0)),

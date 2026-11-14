@@ -98,6 +98,17 @@ def thumbnail(url: rx.Var[str], size: str) -> rx.Component:
     )
 
 
+def _video_poster_props(thumbnail_url: rx.Var[str]) -> dict[str, rx.Var]:
+    """m-25026481: a video card with a poster (the owner's own video: the frame taken at
+    upload) shows that picture and loads none of the video; without one it loads only
+    the metadata, so the browser paints the first frame."""
+    has_poster = thumbnail_url != ""
+    return {
+        "poster": rx.cond(has_poster, viewable_src(thumbnail_url), ""),
+        "preload": rx.cond(has_poster, "none", "metadata"),
+    }
+
+
 def card_media(thumbnail_url: rx.Var[str], video_url: rx.Var[str], size: str) -> rx.Component:
     """A card's picture: the first frame of the POST's R2-only video when it has one (a
     muted, controls-less `<video>` that only loads metadata — served with HTTP Range, so
@@ -107,7 +118,7 @@ def card_media(thumbnail_url: rx.Var[str], video_url: rx.Var[str], size: str) ->
         rx.el.video(
             src=BACKEND_BASE + video_url + "#t=0.1",
             muted=True,
-            preload="metadata",
+            **_video_poster_props(thumbnail_url),
             plays_inline=True,
             aria_hidden="true",
             width=size,
@@ -192,7 +203,7 @@ def media_fill(thumbnail_url: rx.Var[str], video_url: rx.Var[str], kind: rx.Var[
         rx.el.video(
             src=BACKEND_BASE + video_url + "#t=0.1",
             muted=True,
-            preload="metadata",
+            **_video_poster_props(thumbnail_url),
             plays_inline=True,
             aria_hidden="true",
             class_name="q-media-fill",

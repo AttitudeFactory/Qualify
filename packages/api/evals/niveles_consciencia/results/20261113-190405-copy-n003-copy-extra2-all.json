@@ -1,0 +1,709 @@
+{
+ "ticket": "m-25026482",
+ "baseline_ref": "a6667370",
+ "split": "all",
+ "pricing_version": "v9",
+ "judge": "claude-haiku-5-5@low",
+ "judge_prompt_version": "juez-niveles-v2",
+ "judge_parts_version": "juez-niveles-v2+partes-v1",
+ "code_commit": "fe3cc8f5",
+ "arms": [
+  "nuevo"
+ ],
+ "levels": [
+  "most_aware",
+  "product_aware"
+ ],
+ "repeat": 4,
+ "tracing": false,
+ "date": "2026-11-13T19:04:05",
+ "suites": {
+  "copy": {
+   "items": [
+    {
+     "case": "niv-bur-product",
+     "arm": "nuevo",
+     "level": "product_aware",
+     "objective": "sale",
+     "must_mention": [
+      "$32.900"
+     ],
+     "output": {
+      "kind": "static_flyer",
+      "variants": [
+       {
+        "payload": {
+         "hook": "Combo doble smash: $32.900. Sin vueltas.",
+         "caption": "Sin vueltas: combo doble smash a $32.900. 🍔 Dos carnes aplastadas en la plancha, costra dorada y salsa de la casa. ¿Dónde? En el local de la 57, Chapinero. Mesas para comerla ahí mismo, parqueadero gratis y se admiten mascotas. Abierto hasta las 11 p. m. Y si la doble te queda corta, la triple te está esperando. ¿Te le mides?",
+         "hashtags": [
+          "brasanorte",
+          "smashburger",
+          "hamburguesasbogota",
+          "chapinero"
+         ],
+         "cta": "Te esperamos en la 57",
+         "script": "",
+         "shots": []
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 11.8,
+        "cost_usd": 0.037269
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.037269,
+     "juez_ciego_usd": 0.000474,
+     "juez_informado_usd": 0.000569
+    },
+    {
+     "case": "niv-bur-product",
+     "arm": "nuevo",
+     "level": "product_aware",
+     "objective": "sale",
+     "must_mention": [
+      "$32.900"
+     ],
+     "output": {
+      "kind": "static_flyer",
+      "variants": [
+       {
+        "payload": {
+         "hook": "Combo doble smash: $32.900",
+         "caption": "Sin vueltas: Combo doble smash a $32.900. Doble carne madurada aplastada en la plancha, costra dorada y ese chasquido que se oye desde la puerta. 🔥 ¿Dónde? En la 57, Chapinero. Abierto hasta las 11 p. m., parqueadero gratis, mesas pa' quedarse y el perro también entra 🐶. Caigan después del trabajo o pídanlo por Rappi.",
+         "hashtags": [
+          "brasanorte",
+          "smashburger",
+          "chapinero",
+          "hamburguesasbogota"
+         ],
+         "cta": "Cae a la 57, Chapinero",
+         "script": "",
+         "shots": []
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 9.93,
+        "cost_usd": 0.022507
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.022507,
+     "juez_ciego_usd": 0.000363,
+     "juez_informado_usd": 0.000514
+    },
+    {
+     "case": "niv-bur-product",
+     "arm": "nuevo",
+     "level": "product_aware",
+     "objective": "sale",
+     "must_mention": [
+      "$32.900"
+     ],
+     "output": {
+      "kind": "static_flyer",
+      "variants": [
+       {
+        "payload": {
+         "hook": "Doble smash a $32.900. Sin vueltas.",
+         "caption": "Combo doble smash a $32.900. Así de claro. Dos carnes madurada a la plancha, costra dorada y salsa de la casa. ¿Oyes ese chisporroteo? 🔥 Estamos en Chapinero, en la 57. Mesas pa' comer aquí, parqueadero gratis y tu mascota también entra 🐶. Abierto hasta las 11 p. m. ¿Antojo de dulce? Combo con el postre de la heladería de al lado. Cae al local o pide por Rappi.",
+         "hashtags": [
+          "brasanorte",
+          "smashburger",
+          "chapinero",
+          "hamburguesasbogota"
+         ],
+         "cta": "Cae a la 57 o pide por Rappi",
+         "script": "",
+         "shots": []
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 11.24,
+        "cost_usd": 0.023747
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.023747,
+     "juez_ciego_usd": 0.000439,
+     "juez_informado_usd": 0.000455
+    },
+    {
+     "case": "niv-bur-product",
+     "arm": "nuevo",
+     "level": "product_aware",
+     "objective": "sale",
+     "must_mention": [
+      "$32.900"
+     ],
+     "output": {
+      "kind": "static_flyer",
+      "variants": [
+       {
+        "payload": {
+         "hook": "Combo doble smash a $32.900",
+         "caption": "Combo doble smash: $32.900. Sin vueltas. 🍔 Doble carne madurada aplastada en la plancha, costra dorada y salsa de la casa. ¿Dónde? En Chapinero, en la 57. Mesas para comer acá, parqueadero gratis y tu mascota también entra 🐶. Abierto hasta las 11 p. m. ¿Oyes esa plancha sonando? Te está llamando, parce.",
+         "hashtags": [
+          "brasanorte",
+          "smashburger",
+          "chapinero",
+          "hamburguesasbogota"
+         ],
+         "cta": "Cáele a la 57 o pide por Rappi",
+         "script": "",
+         "shots": []
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 10.04,
+        "cost_usd": 0.022347
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.022347,
+     "juez_ciego_usd": 0.000429,
+     "juez_informado_usd": 0.000357
+    },
+    {
+     "case": "niv-bur-most",
+     "arm": "nuevo",
+     "level": "most_aware",
+     "objective": "sale",
+     "must_mention": [
+      "$32.900"
+     ],
+     "output": {
+      "kind": "static_flyer",
+      "variants": [
+       {
+        "payload": {
+         "hook": "Combo doble smash: $32.900",
+         "caption": "¿Oyes esa plancha? Es tu doble smash cogiendo costra. Combo doble smash con salsa de la casa por $32.900. Sin vueltas, parce: pídelo por Rappi o cáele al local en la 57. Abierto hasta las 11 p. m. 🍔🔥",
+         "hashtags": [
+          "brasanorte",
+          "smashburger",
+          "chapinero",
+          "hamburguesasbogota"
+         ],
+         "cta": "Pide por Rappi o ven a la 57",
+         "script": "",
+         "shots": []
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 7.33,
+        "cost_usd": 0.015947
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.015947,
+     "juez_ciego_usd": 0.000391,
+     "juez_informado_usd": 0.00049
+    },
+    {
+     "case": "niv-bur-most",
+     "arm": "nuevo",
+     "level": "most_aware",
+     "objective": "sale",
+     "must_mention": [
+      "$32.900"
+     ],
+     "output": {
+      "kind": "static_flyer",
+      "variants": [
+       {
+        "payload": {
+         "hook": "Combo doble smash a $32.900",
+         "caption": "Escucha esa plancha. Doble smash con costra dorada, queso derretido y salsa de la casa. Combo doble smash a $32.900, listo para pedir. Pídelo por Rappi o cae al local en la 57, abierto hasta las 11 p. m. 🍔",
+         "hashtags": [
+          "brasanorte",
+          "smashburger",
+          "chapinero",
+          "hamburguesasbogota"
+         ],
+         "cta": "Pídelo ya por Rappi",
+         "script": "",
+         "shots": []
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 7.51,
+        "cost_usd": 0.016527
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.016527,
+     "juez_ciego_usd": 0.000354,
+     "juez_informado_usd": 0.000329
+    },
+    {
+     "case": "niv-bur-most",
+     "arm": "nuevo",
+     "level": "most_aware",
+     "objective": "sale",
+     "must_mention": [
+      "$32.900"
+     ],
+     "output": {
+      "kind": "static_flyer",
+      "variants": [
+       {
+        "payload": {
+         "hook": "Combo doble smash: $32.900",
+         "caption": "Combo doble smash a $32.900. Doble carne con costra, queso derretido y salsa de la casa. ¿Oye esa plancha? Ya está sonando 🔥 Pídelo por Rappi o cáele al local en la 57. Abierto hasta las 11 p. m.",
+         "hashtags": [
+          "brasanorte",
+          "smashburger",
+          "chapinero",
+          "hamburguesasbogota"
+         ],
+         "cta": "Pídelo ya por Rappi",
+         "script": "",
+         "shots": []
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 6.28,
+        "cost_usd": 0.014867
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.014867,
+     "juez_ciego_usd": 0.000386,
+     "juez_informado_usd": 0.000433
+    },
+    {
+     "case": "niv-bur-most",
+     "arm": "nuevo",
+     "level": "most_aware",
+     "objective": "sale",
+     "must_mention": [
+      "$32.900"
+     ],
+     "output": {
+      "kind": "static_flyer",
+      "variants": [
+       {
+        "payload": {
+         "hook": "Combo doble smash: $32.900",
+         "caption": "Suena la plancha. Doble smash, costra dorada, salsa de la casa. Combo doble smash a $32.900, listo para usted. Pídalo por Rappi o caiga al local en la 57, abierto hasta las 11 p. m. 🍔🔥",
+         "hashtags": [
+          "brasanorte",
+          "smashburger",
+          "hamburguesasbogota",
+          "chapinero"
+         ],
+         "cta": "Pídelo ya por Rappi",
+         "script": "",
+         "shots": []
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 5.76,
+        "cost_usd": 0.014427
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.014427,
+     "juez_ciego_usd": 0.000306,
+     "juez_informado_usd": 0.000462
+    },
+    {
+     "case": "niv-inm-product",
+     "arm": "nuevo",
+     "level": "product_aware",
+     "objective": "sale",
+     "must_mention": [
+      "Desde $280 millones"
+     ],
+     "output": {
+      "kind": "static_flyer",
+      "variants": [
+       {
+        "payload": {
+         "hook": "2 alcobas en Bello, con cuentas claras",
+         "caption": "Si ya conoces los apartamentos de 2 alcobas en Bello y lo que te frena es el trámite o el precio, vamos por partes. El valor es desde $280 millones, y antes de separar revisamos contigo cómo se arma la cuota inicial y si puedes aplicar al subsidio Mi Casa Ya.\n\nUn paso que muchas familias pasan por alto: el estudio de títulos. Nuestro acompañamiento legal lo revisa contigo para que sepas qué estás comprando antes de firmar.\n\nLa asesoría es sin costo y te atendemos por WhatsApp, a tu ritmo y sin presiones. ¿Qué parte del proceso te genera más dudas hoy?",
+         "hashtags": [
+          "habitatinmobiliaria",
+          "ViviendaBello",
+          "MiCasaYa",
+          "PrimeraVivienda"
+         ],
+         "cta": "Escríbenos por WhatsApp hoy",
+         "script": "",
+         "shots": []
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 4.96,
+        "cost_usd": 0.024609
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.024609,
+     "juez_ciego_usd": 0.000428,
+     "juez_informado_usd": 0.000445
+    }
+   ],
+   "scores": [
+    {
+     "arm": "nuevo",
+     "case": "niv-bur-product",
+     "split": "test",
+     "sector": "hamburguesas",
+     "with_perks": true,
+     "level": "product_aware",
+     "level_answered": null,
+     "rule_det": true,
+     "invented_det": [],
+     "perks_det": [
+      1,
+      2,
+      3,
+      4
+     ],
+     "judge_level": "most_aware",
+     "judge_quality": 3,
+     "judge_invented": [],
+     "judge_perks": [
+      1,
+      2,
+      3,
+      4
+     ],
+     "judge_fit": true,
+     "judge_reason": "Como product_aware quita fricción con datos reales: precio del combo ($32.900), ubicación en la 57, horario hasta las 11 p. m., mesas, parqueadero gratis y mascotas. Resta que menciona una «triple» qu",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 7,
+     "words_cta": 5
+    },
+    {
+     "arm": "nuevo",
+     "case": "niv-bur-product",
+     "split": "test",
+     "sector": "hamburguesas",
+     "with_perks": true,
+     "level": "product_aware",
+     "level_answered": null,
+     "rule_det": true,
+     "invented_det": [],
+     "perks_det": [
+      1,
+      4
+     ],
+     "judge_level": "product_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      1,
+      2,
+      3,
+      4
+     ],
+     "judge_fit": true,
+     "judge_reason": "Quita la fricción con datos reales: precio de $32.900, ubicación en la 57 de Chapinero, horario hasta las 11 p. m., parqueadero gratis y pedido por Rappi, sin inventar ningún dato; aunque no aclara qu",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 5,
+     "words_cta": 5
+    },
+    {
+     "arm": "nuevo",
+     "case": "niv-bur-product",
+     "split": "test",
+     "sector": "hamburguesas",
+     "with_perks": true,
+     "level": "product_aware",
+     "level_answered": null,
+     "rule_det": true,
+     "invented_det": [],
+     "perks_det": [
+      1,
+      3,
+      4,
+      5
+     ],
+     "judge_level": "product_aware",
+     "judge_quality": 3,
+     "judge_invented": [],
+     "judge_perks": [
+      1,
+      2,
+      3,
+      4,
+      5
+     ],
+     "judge_fit": true,
+     "judge_reason": "Quita fricción con datos reales (precio $32.900, sede en la 57 de Chapinero, abierto hasta las 11 p. m., Rappi, parqueadero y mesas) sin inventar ningún dato; el texto es denso y tiene una concordanci",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 7,
+     "words_cta": 8
+    },
+    {
+     "arm": "nuevo",
+     "case": "niv-bur-product",
+     "split": "test",
+     "sector": "hamburguesas",
+     "with_perks": true,
+     "level": "product_aware",
+     "level_answered": null,
+     "rule_det": true,
+     "invented_det": [],
+     "perks_det": [
+      1,
+      3,
+      4
+     ],
+     "judge_level": "product_aware",
+     "judge_quality": 3,
+     "judge_invented": [],
+     "judge_perks": [
+      1,
+      2,
+      3,
+      4
+     ],
+     "judge_fit": true,
+     "judge_reason": "Quita la fricción con datos reales (precio $32.900, ubicación en la 57 de Chapinero, horario hasta las 11 p. m., pedido por Rappi) y no afirma ningún dato inventado, aunque mezcla demasiadas ventajas.",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 6,
+     "words_cta": 8
+    },
+    {
+     "arm": "nuevo",
+     "case": "niv-bur-most",
+     "split": "test",
+     "sector": "hamburguesas",
+     "with_perks": true,
+     "level": "most_aware",
+     "level_answered": null,
+     "rule_det": false,
+     "invented_det": [],
+     "perks_det": [
+      4
+     ],
+     "judge_level": "product_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      4
+     ],
+     "judge_fit": true,
+     "judge_reason": "El gancho (\"¿Oyes esa plancha? Es tu doble smash cogiendo costra.\") y el cierre (\"Pide por Rappi o cáele al local en la 57\") son directos, y precio, Rappi, dirección y horario coinciden con los datos;",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 5,
+     "words_cta": 8
+    },
+    {
+     "arm": "nuevo",
+     "case": "niv-bur-most",
+     "split": "test",
+     "sector": "hamburguesas",
+     "with_perks": true,
+     "level": "most_aware",
+     "level_answered": null,
+     "rule_det": true,
+     "invented_det": [],
+     "perks_det": [
+      4
+     ],
+     "judge_level": "most_aware",
+     "judge_quality": 3,
+     "judge_invented": [],
+     "judge_perks": [
+      4
+     ],
+     "judge_fit": false,
+     "judge_reason": "Los datos (precio, Rappi, local en la 57, hasta las 11 p. m.) son reales, pero el gancho y el texto son demasiado largos para most_aware: el camino a la compra debe ser corto y directo, y aquí hay tre",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 6,
+     "words_cta": 4
+    },
+    {
+     "arm": "nuevo",
+     "case": "niv-bur-most",
+     "split": "test",
+     "sector": "hamburguesas",
+     "with_perks": true,
+     "level": "most_aware",
+     "level_answered": null,
+     "rule_det": true,
+     "invented_det": [],
+     "perks_det": [
+      4
+     ],
+     "judge_level": "most_aware",
+     "judge_quality": 3,
+     "judge_invented": [],
+     "judge_perks": [
+      4
+     ],
+     "judge_fit": true,
+     "judge_reason": "Para most_aware el gancho es directo (combo y precio de los datos), la llamada a la acción es corta (\"Pídelo ya por Rappi\") y no inventa horarios, precios ni formas de pago; el texto intermedio se ala",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 5,
+     "words_cta": 4
+    },
+    {
+     "arm": "nuevo",
+     "case": "niv-bur-most",
+     "split": "test",
+     "sector": "hamburguesas",
+     "with_perks": true,
+     "level": "most_aware",
+     "level_answered": null,
+     "rule_det": true,
+     "invented_det": [],
+     "perks_det": [
+      4
+     ],
+     "judge_level": "most_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      4
+     ],
+     "judge_fit": false,
+     "judge_reason": "No inventa datos (precio, Rappi, local en la 57 y horario hasta las 11 p. m. están en los datos), pero el texto es un párrafo largo con escena, dos canales y horario, cuando el nivel most_aware exige ",
+     "offers_det": [],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 5,
+     "words_cta": 4
+    },
+    {
+     "arm": "nuevo",
+     "case": "niv-inm-product",
+     "split": "test",
+     "sector": "inmobiliaria",
+     "with_perks": true,
+     "level": "product_aware",
+     "level_answered": null,
+     "rule_det": true,
+     "invented_det": [],
+     "perks_det": [
+      1,
+      2,
+      3,
+      4
+     ],
+     "judge_level": "product_aware",
+     "judge_quality": 3,
+     "judge_invented": [],
+     "judge_perks": [
+      1,
+      2,
+      3,
+      4
+     ],
+     "judge_fit": true,
+     "judge_reason": "Quita la fricción de un product_aware con datos reales (precio desde $280 millones, asesoría sin costo, atención por WhatsApp, subsidio Mi Casa Ya) sin inventar horarios, formas de pago ni descuentos;",
+     "offers_det": [
+      [
+       "servicio",
+       "separar"
+      ]
+     ],
+     "concrete_det": null,
+     "generic_det": [],
+     "words_hook": 7,
+     "words_cta": 4
+    }
+   ],
+   "prefix_chars": {
+    "hamburguesas": {
+     "nuevo": 3646
+    },
+    "inmobiliaria": {
+     "nuevo": 3684
+    }
+   }
+  }
+ },
+ "spend_usd": {
+  "copy": 0.199871
+ },
+ "spend_total_usd": 0.199871,
+ "skipped_by_cap": [
+  "copy niv-inm-product nuevo",
+  "copy niv-inm-product nuevo",
+  "copy niv-inm-product nuevo"
+ ],
+ "ledger_calls": 18
+}

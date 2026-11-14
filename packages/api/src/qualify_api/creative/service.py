@@ -70,6 +70,7 @@ from qualify_creative.queue_errors import (
 )
 from qualify_creative.router import BudgetContext, CreativeRouter, Hop, HopAction
 from qualify_creative.schemas import (
+    HASHTAG_HARD_LIMIT,
     BrandContext,
     BrandKit,
     BrandVoiceProfile,
@@ -85,6 +86,7 @@ from sqlalchemy.exc import IntegrityError
 from qualify_api.claude_tools import cost_breakdown
 from qualify_api.creative import models as orm
 from qualify_api.creative import review, trace
+from qualify_api.creative.base_photos import alert_missing_bases, record_base_photos
 from qualify_api.creative.creations import (
     CreationsBalance,
     CreationsLedger,
@@ -212,6 +214,16 @@ class ApprovalBlocked(Exception):
     def __init__(self, detail: str) -> None:
         super().__init__(detail)
         self.detail = detail
+
+
+class OwnMediaLocked(Exception):
+    """m-25019217: an own-media piece (`ContentKind.OWN_MEDIA`, what the owner published
+    from «Publicar») is the published file and caption as they went out — never edited
+    and never regenerated. Raised before any charge, write or dispatch."""
+
+    def __init__(self, draft_id: UUID) -> None:
+        super().__init__(f"own-media piece {draft_id} cannot be edited or regenerated")
+        self.draft_id = draft_id
 
 
 class DraftExpired(Exception):
@@ -853,6 +865,8 @@ def brief_from_row(row: orm.ContentBrief) -> ContentBrief:
             "variants_requested": row.variants_requested,
             "kind": row.kind,
             "media": row.media or {},
+            # 0166: the angle's awareness level; NULL on every brief written before it
+            "awareness_level": getattr(row, "awareness_level", None),
         },
         context={"preserve_stored_logo_mode": True},
     )
@@ -877,6 +891,7 @@ def _brief_row(tenant_id: UUID, user_id: UUID, brief: ContentBrief) -> orm.Conte
         constraints=brief.constraints.model_dump(mode="json"),
         kind=brief.kind.value,
         media=brief.media.model_dump(mode="json"),
+        awareness_level=brief.awareness_level.value if brief.awareness_level else None,
         created_by=user_id,
     )
 
@@ -892,6 +907,13 @@ def _variant_record(row: orm.CopyVariant) -> VariantRecord:
         model_id=row.model_id,
         model_revision=row.model_revision,
     )
+
+
+#: The order of a draft's media, and so its cover (the first): by slide position, then
+#: the earliest, then the id. Every slide of a generation is written in one transaction
+#: (their `created_at` tie), so the id is what makes the single and the batch read agree
+#: (m-25017278, PR #651 CI).
+_MEDIA_ORDER = (orm.ImageAsset.position, orm.ImageAsset.created_at, orm.ImageAsset.id)
 
 
 def _image_record(row: orm.ImageAsset) -> ImageRecord:
@@ -1190,7 +1212,7 @@ class PostgresContentRepository:
             for row in session.scalars(
                 select(orm.ImageAsset)
                 .where(orm.ImageAsset.draft_id.in_(ids), visible_version(orm.ImageAsset))
-                .order_by(orm.ImageAsset.position, orm.ImageAsset.created_at)
+                .order_by(*_MEDIA_ORDER)
             ):
                 assets.setdefault(row.draft_id, []).append(row)
             versions: dict[UUID, list[VersionSummary]] = {}
@@ -1214,8 +1236,8 @@ class PostgresContentRepository:
             bundles: dict[UUID, DraftBundle] = {}
             for draft, kind in drafts:
                 rows = assets.get(draft.id, [])
-                # `image_for` is the earliest asset; `media_for` all of them in order
-                first = min(rows, key=lambda a: a.created_at) if rows else None
+                # the cover (`image_for`) is the first of `media_for`'s order (`_MEDIA_ORDER`)
+                first = rows[0] if rows else None
                 bundles[draft.id] = DraftBundle(
                     record=_draft_record(draft),
                     variants=tuple(variants.get(draft.id, ())),
@@ -1283,6 +1305,7 @@ class PostgresContentRepository:
 
         ``requires_ai_disclosure`` (PR #100 review): the label as recomputed from the media
         this generation actually made; ``None`` leaves the draft's value as it is."""
+        missing_bases: list[str] = []  # m-25017279: alerted only after the commit
         with tenant_session(tenant_id) as session:
             from qualify_api.creative.versions import snapshot_current
 
@@ -1425,8 +1448,21 @@ class PostgresContentRepository:
                         output_port=item.output_port,
                         template_run_id=item.template_run_id,
                         content_type=item.content_type,
+                        rendered_prompt=item.rendered_prompt,
                     )
                 )
+            # m-25017279: the base photos the stills were composed over, in their own table
+            # (0165) — no reader of the piece's outputs sees them. Never fails the piece
+            # (a savepoint); bases that end up missing get ONE alert, sent in the background
+            # after the commit, below
+            missing_bases = record_base_photos(
+                session,
+                tenant_id=tenant_id,
+                brand_id=brand_id,
+                draft_id=draft_id,
+                version_id=version.id,
+                media=media,
+            )
             if succeeded:
                 draft.active_version_id = version.id
                 draft.selected_variant_id = None
@@ -1468,6 +1504,9 @@ class PostgresContentRepository:
                 session.flush()
                 open_parent_join(session, draft_id)
                 parent_picture(session, draft_id)
+        # m-25017279: only once the transaction above committed (`tenant_session` commits
+        # on a clean exit): a commit that fails sends no alert, and its retry sends one
+        alert_missing_bases(tenant_id, draft_id, missing_bases)
 
     def update_status(
         self,
@@ -1586,7 +1625,8 @@ class PostgresContentRepository:
             row = session.scalars(
                 select(orm.ImageAsset)
                 .where(orm.ImageAsset.draft_id == draft_id, visible_version(orm.ImageAsset))
-                .order_by(orm.ImageAsset.created_at)
+                .order_by(*_MEDIA_ORDER)
+                .limit(1)
             ).first()
             if row is None:
                 return None
@@ -1597,7 +1637,7 @@ class PostgresContentRepository:
             rows = session.scalars(
                 select(orm.ImageAsset)
                 .where(orm.ImageAsset.draft_id == draft_id, visible_version(orm.ImageAsset))
-                .order_by(orm.ImageAsset.position, orm.ImageAsset.created_at)
+                .order_by(*_MEDIA_ORDER)
             )
             return tuple(_image_record(row) for row in rows)
 
@@ -1624,7 +1664,7 @@ class PostgresContentRepository:
             assets = session.scalars(
                 select(orm.ImageAsset)
                 .where(orm.ImageAsset.version_id == version.id)
-                .order_by(orm.ImageAsset.position, orm.ImageAsset.created_at)
+                .order_by(*_MEDIA_ORDER)
             ).all()
             slides = tuple(
                 write
@@ -1647,6 +1687,7 @@ class PostgresContentRepository:
                         content_type=row.content_type,
                         # only paid gallery slides are kept, and every one is AI imagery
                         ai_generated=True,
+                        rendered_prompt=row.rendered_prompt,
                     )
                     for row in assets
                     if row.object_key
@@ -1705,7 +1746,7 @@ class PostgresContentRepository:
                     orm.ImageAsset.params.has_key("draft"),
                     visible_version(orm.ImageAsset),
                 )
-                .order_by(orm.ImageAsset.position, orm.ImageAsset.created_at)
+                .order_by(*_MEDIA_ORDER)
             )
             return tuple(_image_record(row) for row in rows)
 
@@ -2241,6 +2282,9 @@ class ContentService:
         # VE-08 (criterion 6): a part is born with its parent, all its siblings charged
         # together (`parts.PartsService.create_parts`) — never as a loose piece
         check_part_link(brief, None, None)
+        if brief.kind is ContentKind.OWN_MEDIA:
+            # m-25019217: recorded from a publication (`creative.own_media`), never generated
+            raise ValueError("an own-media piece is recorded from «Publicar», not generated")
         if request_key is not None:
             existing = self._repo.draft_id_for_request(tenant_id=tenant_id, request_key=request_key)
             if existing is not None:
@@ -3755,6 +3799,7 @@ class ContentService:
             or draft.revision != expected_revision
         ):
             raise DraftEditConflict()
+        self._refuse_own_media(tenant_id=tenant_id, draft_id=draft.id, brief_id=draft.brief_id)
         # The FSM decides whether this draft may be edited at all, and what an edit does
         # to it — before the rules run, so a published draft is refused, not "validated".
         new_status = apply_transition(draft.status, DraftTrigger.EDIT)
@@ -3764,6 +3809,16 @@ class ContentService:
         # The kit's caption length is a TARGET for generation, not a rule for the human
         # (founder, 2026-10-06: «quiero agregar lo que yo quiera en el caption»). Every
         # other layer-1 rule — banned words, forbidden claims, emoji — still holds.
+        # m-25026376: likewise the tag-count maximum guides generation; past it the editor
+        # only warns (Meta's API takes up to 30). The minimum and the `always`/`never`
+        # lists still hold for the human: only the ceiling is lifted, and only here —
+        # up to HASHTAG_HARD_LIMIT (30, what Meta's API takes), which the same rule
+        # still refuses past it.
+        policy = kit.hashtag_policy
+        if len(copy.hashtags) > policy.maximum:
+            ceiling = max(policy.maximum, min(len(copy.hashtags), HASHTAG_HARD_LIMIT))
+            lifted = policy.model_copy(update={"maximum": ceiling})
+            kit = kit.model_copy(update={"hashtag_policy": lifted})
         failures = tuple(f for f in check_hard_rules(copy, kit) if f.rule != RULE_CAPTION_LENGTH)
         if failures:
             return failures
@@ -4781,6 +4836,13 @@ class ContentService:
             self.dispatcher.dispatch_generation(tenant_id=tenant_id, draft_id=draft_id)
         return self._require_detail(tenant_id=tenant_id, draft_id=draft_id)
 
+    def _refuse_own_media(self, *, tenant_id: UUID, draft_id: UUID, brief_id: UUID) -> None:
+        """m-25019217: `OwnMediaLocked` for an own-media piece (see the exception)."""
+        if self._repo.brief_kind(tenant_id=tenant_id, brief_id=brief_id) == (
+            ContentKind.OWN_MEDIA.value
+        ):
+            raise OwnMediaLocked(draft_id)
+
     @fenced_regeneration
     @transactional_dispatch
     def reject(
@@ -4797,6 +4859,9 @@ class ContentService:
         ``user_id`` are logged — the schema carries no rejection-audit columns yet, and
         stuffing them into ``failure_reason`` (which belongs to ``FAILED``) would lie."""
         record = self._require_draft(tenant_id=tenant_id, draft_id=draft_id)
+        if regenerate:
+            # before the FSM, the charge and the dispatch: nothing is written
+            self._refuse_own_media(tenant_id=tenant_id, draft_id=draft_id, brief_id=record.brief_id)
         if regenerate and record.status == REJECTED:
             # Already rejected: "Rechazar y regenerar" only needs the regenerate edge.
             # Applying REJECT again is not a legal edge (rejected → rejected) and used to

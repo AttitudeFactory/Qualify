@@ -482,3 +482,93 @@ async def test_lead_form_of_another_account_or_unsupported_button_never_creates(
     with pytest.raises(WizardUnavailable):
         await wizard.prepare(**args)
     assert not client.calls and not client.objects
+
+
+# --- The website promotion's button (m-24828976) ---
+
+
+def test_default_button_keeps_the_exact_approval_hash_from_before_the_choice() -> None:
+    from uuid import UUID
+
+    from qualify_api.ads.promotions import fingerprint
+    from qualify_api.ads.wizard_workflow import _request
+
+    ids = [UUID(int=i) for i in range(1, 7)]
+    source = PromotionSource(
+        *ids[:4], "99", "88", "c", "l", meta_ad_account_id="12", currency="COP"
+    )
+    form = WizardForm(
+        "https://example.org/landing",
+        "Bogotá",
+        NOW + timedelta(days=1),
+        NOW + timedelta(days=3),
+        city_key="city-key",
+        budget_minor=150_00,
+    )
+    request = _request(ids[4], source, form, ids[5], "test-request", NOW)
+    # Pinned against origin/main's `_request` (hard-coded LEARN_MORE) for the same inputs.
+    assert (
+        fingerprint(request.snapshot())
+        == "d82ed0280fc623fbf05c04c754d4eeee8e053f50e63b6e673912dbbc64a94d7a"
+    )
+    chosen = _request(
+        ids[4], source, replace(form, cta_type="SHOP_NOW"), ids[5], "test-request", NOW
+    )
+    assert fingerprint(chosen.snapshot()) != fingerprint(request.snapshot())
+
+
+@pytest.mark.asyncio
+async def test_chosen_website_button_is_created_approved_and_activated() -> None:
+    wizard, client, _, _, args, _ = setup()
+    args["form"] = replace(args["form"], cta_type="SHOP_NOW")
+    preview = await wizard.prepare(**args)
+    assert client.objects["3"]["call_to_action"] == {
+        "type": "SHOP_NOW",
+        "value": {"link": args["form"].link_url},
+    }
+    promotion = wizard.creation.repository.get(args["tenant_id"], preview.promotion_id)
+    assert promotion.request["cta_type"] == "SHOP_NOW"
+    result = await wizard.confirm(
+        tenant_id=args["tenant_id"],
+        promotion_id=preview.promotion_id,
+        review_id=preview.review_id,
+        approved_by=args["approved_by"],
+        confirm_charge=True,
+    )
+    assert result.status == "active"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cta", ["CALL_NOW", "WHATSAPP_MESSAGE", "MESSAGE_PAGE", "", "learn_more"])
+async def test_button_outside_the_website_allowlist_is_refused_before_meta(cta: str) -> None:
+    wizard, client, _, _, args, _ = setup()
+    with pytest.raises(WizardUnavailable, match="botón"):
+        await wizard.prepare(**{**args, "form": replace(args["form"], cta_type=cta)})
+    assert not client.calls and not client.objects
+
+
+@pytest.mark.asyncio
+async def test_button_changed_after_approval_cannot_be_activated() -> None:
+    wizard, client, _, _, args, _ = setup()
+    preview = await wizard.prepare(**args)
+    # Tamper with the stored row itself (the repository hands out copies).
+    promotion = wizard.creation.repository.promotions[preview.promotion_id]
+    promotion.request["cta_type"] = "SHOP_NOW"
+    promotion.request["creative"]["call_to_action"]["type"] = "SHOP_NOW"
+    with pytest.raises(WizardUnavailable, match="no corresponde"):
+        await wizard.confirm(
+            tenant_id=args["tenant_id"],
+            promotion_id=preview.promotion_id,
+            review_id=preview.review_id,
+            approved_by=args["approved_by"],
+            confirm_charge=True,
+        )
+    assert not any(params.get("status") == "ACTIVE" for _, _, params in client.calls)
+
+
+@pytest.mark.asyncio
+async def test_a_website_button_never_rides_a_lead_ad() -> None:
+    wizard, client, _, args, _ = lead_setup()
+    with pytest.raises(WizardUnavailable, match="botón"):
+        await wizard.prepare(**{**args, "form": replace(args["form"], cta_type="SHOP_NOW")})
+    assert not client.calls and not client.objects
