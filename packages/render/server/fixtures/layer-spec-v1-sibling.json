@@ -1,5 +1,5 @@
 {
-  "_source": "LayerSpec.model_dump_json() of qualify_creative.layer_spec.schema on origin/feat/m-25017283-capa-de-texto @ 4f6da785 (generated 2026-11-14, m-25017285 review). Regenerate when that schema changes.",
+  "_source": "LayerSpec.model_dump_json() of qualify_creative.layer_spec.schema on origin/feat/m-25017283-capa-de-texto @ 3dad52cd (generated 2026-11-14, m-25017285 review). Regenerate when that schema changes.",
   "specs": [
     {
       "spec_version": 1,

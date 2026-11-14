@@ -53,24 +53,59 @@ const BRANDS = {
   },
 };
 
-/** The longest prefix of `text` that ends on a word and has at most `n` characters. */
-const atMost = (text, n) => {
-  if ([...text].length <= n) return text;
-  const cut = [...text].slice(0, n + 1).join('');
-  return cut.slice(0, cut.lastIndexOf(' ')).replace(/[,.;:]$/, '');
+// Fixture texts are COMPLETE phrases (review: cutting a sentence at the limit made the sheet
+// look broken): for each slot, the longest phrase of its pool within the slot's limit.
+const PHRASES = {
+  title: [
+    'Pan recién horneado',
+    'Empanadas de la abuela',
+    'Tu pan de masa madre hoy',
+    'Empanadas recién horneadas',
+    'Empanadas recién salidas del horno',
+    'Tus empanadas recién horneadas',
+    'Empanadas recién hechas, como en casa',
+    'Las empanadas de siempre, recién horneadas',
+    'Empanadas recién horneadas para compartir en casa',
+    'Este festivo abrimos con empanadas recién horneadas',
+    'Este festivo abrimos todo el día con empanadas recién horneadas',
+    'Este festivo te esperamos con empanadas recién horneadas',
+    'Este festivo te esperamos con empanadas recién horneadas hoy',
+    'Empanadas recién hechas hoy',
+    'Empanadas caseras, recién hechas',
+    'Las empanadas de la abuela, al horno',
+    'Empanadas recién horneadas para toda la familia',
+  ],
+  subtitle: [
+    'Masa crujiente y relleno jugoso',
+    'Masa crujiente y la salsa de la casa',
+    'Con masa crujiente y la salsa de la casa',
+    'Masa crujiente, relleno jugoso y salsa de la casa',
+    'Masa crujiente, relleno jugoso y la salsa de la casa',
+    'Masa crujiente, relleno jugoso y la salsa de la casa de siempre',
+    'Masa crujiente y relleno jugoso, preparados cada mañana en el local',
+    'Masa crujiente, relleno jugoso y la salsa de la casa, preparada cada mañana',
+    'Masa crujiente y relleno jugoso, preparados cada mañana con ingredientes del mercado',
+    'Masa crujiente, relleno jugoso y la salsa de la casa, preparada cada mañana con ingredientes frescos',
+    'Masa crujiente, relleno jugoso y la salsa de la casa, preparada cada mañana con ingredientes frescos del mercado',
+    'Masa crujiente, relleno jugoso y la salsa de la casa de hoy',
+    'Masa crujiente, relleno jugoso y buena salsa',
+    'Masa crujiente, relleno jugoso y la salsa de la casa, preparada cada mañana con ingredientes frescos del día',
+  ],
+  call_phrase: ['Pídelo por WhatsApp', 'Pídelo hoy por WhatsApp', 'Pídelo hoy en el mostrador', 'Te esperamos hoy en el local'],
+  location: ['Calle 10 # 4-25, local 3', 'Calle 10 # 4-25, local 3, frente al parque', 'Calle 10 # 4-25, local 3, frente al parque principal'],
+  hours: ['Lunes a sábado de 7:00 a 20:00', 'Lunes a sábado de 7:00 a 20:00 y domingos', 'Lunes a sábado de 7:00 a 20:00 y domingos de 8:00 a 13:00'],
+  payment: ['Efectivo · Transferencia · Tarjeta', 'Efectivo · Transferencia · Tarjeta débito', 'Efectivo · Transferencia · Tarjeta débito · Tarjeta crédito'],
+  products: ['Empanada de carne · Pan de bono', 'Empanada de carne · Pan de bono · Café negro','Empanada de carne · Pan de bono · Café con leche'],
+  contact: ['+57 300 123 4567'],
 };
-const POOL = {
-  title: 'Empanadas recién horneadas con la receta de la abuela para compartir en familia',
-  subtitle: 'Masa crujiente, relleno jugoso y una salsa de la casa que se prepara cada mañana con ingredientes frescos del mercado',
-  call_phrase: 'Pídelo hoy por WhatsApp y recógelo caliente en el local',
+const len = (s) => [...s].length;
+/** The longest complete phrase of the pool within `n` characters. */
+const phraseFor = (pool, n) => {
+  const fit = PHRASES[pool].filter((p) => len(p) <= n).sort((a, b) => len(b) - len(a));
+  if (!fit.length) throw new Error(`no ${pool} phrase within ${n}`);
+  return fit[0];
 };
-const VALUES = {
-  location: 'Calle 10 # 4-25, local 3, frente al parque principal del barrio centro',
-  hours: 'Lunes a sábado de 7:00 a 20:00 y domingos de 8:00 a 13:00 sin falta',
-  payment: 'Efectivo · Transferencia · Tarjeta débito · Tarjeta crédito',
-  products: 'Empanada de carne · Pan de bono · Café con leche · Avena',
-  contact: '+57 300 123 4567',
-};
+const VALUE = (kind, n) => phraseFor(kind, n);
 const SUBJECT = [0.25, 0.4, 0.75, 0.8];
 const PORT_OF = {'4:5': 'feed', '1:1': 'square', '9:16': 'story'};
 
@@ -80,7 +115,7 @@ const maxText = (layoutId, format) => {
   const out = {};
   for (const slot of ['title', 'subtitle', 'call_phrase']) {
     const lim = def.slots[slot]?.[format];
-    if (lim) out[slot] = atMost(POOL[slot], lim[0]);
+    if (lim) out[slot] = phraseFor(slot, lim[0]);
   }
   if (layoutId === 'band' && format === '1:1') delete out.call_phrase; // only without subtitle
   return out;
@@ -103,10 +138,10 @@ for (const [key, b] of Object.entries(BRANDS)) {
     const lim = catalog.layouts.info_card.value[format][0];
     const kinds = ['location', 'hours', 'payment', 'products'].slice(0, range[1]);
     const info = {...base, subject_box: null, layout_id: 'info_card', container_color: 'surface', accent_word: 0, ...maxText('info_card', format)};
-    push({brand: key, format, name: `info_card ${kinds.length} blocks`, photo: false, layer: {...info, info_blocks: kinds.map((k) => ({kind: k, value: atMost(VALUES[k], lim)}))}});
-    push({brand: key, format, name: 'info_card 1 block + photo strip', photo: true, layer: {...info, subject_box: SUBJECT, info_blocks: [{kind: 'location', value: atMost(VALUES.location, lim)}]}});
+    push({brand: key, format, name: `info_card ${kinds.length} blocks`, photo: false, layer: {...info, info_blocks: kinds.map((k) => ({kind: k, value: VALUE(k, lim)}))}});
+    push({brand: key, format, name: 'info_card 1 block + photo strip', photo: true, layer: {...info, subject_box: SUBJECT, info_blocks: [{kind: 'location', value: VALUE('location', lim)}]}});
     const bfMax = catalog.layouts.brand_fill.blocks[format][1];
-    push({brand: key, format, name: 'brand_fill', photo: false, layer: {...base, subject_box: null, layout_id: 'brand_fill', container_color: 'accent', accent_word: 2, ...maxText('brand_fill', format), info_blocks: ['contact', 'hours'].slice(0, bfMax).map((k) => ({kind: k, value: atMost(VALUES[k], catalog.layouts.brand_fill.value[format][0])}))}});
+    push({brand: key, format, name: 'brand_fill', photo: false, layer: {...base, subject_box: null, layout_id: 'brand_fill', container_color: 'accent', accent_word: 2, ...maxText('brand_fill', format), info_blocks: ['contact', 'hours'].slice(0, bfMax).map((k) => ({kind: k, value: VALUE(k, catalog.layouts.brand_fill.value[format][0])}))}});
     if (format === '9:16') {
       push({brand: key, format, name: 'highlight icon', photo: false, layer: {layout_id: 'highlight_circle', layout_version: 1, container_color: 'accent', highlight_content: {type: 'icon', icon_id: 'utensils'}}});
       push({brand: key, format, name: 'highlight word', photo: false, layer: {layout_id: 'highlight_circle', layout_version: 1, container_color: 'accent', highlight_content: {type: 'word', word: 'Domicilio'}}});
@@ -117,7 +152,7 @@ for (const [key, b] of Object.entries(BRANDS)) {
   const slides = [
     {role: 'cover', layer: {layout_id: 'plate', anchor: 'top_left', container_color: 'surface', title: 'Así nace tu pan', subtitle: 'Desliza y mira el paso a paso'}},
     {role: 'body', layer: {layout_id: 'band', anchor: 'bottom', container_color: 'surface', title: 'Amasado a mano', subtitle: 'Doce horas de reposo'}},
-    {role: 'closing', layer: {layout_id: 'brand_fill', container_color: 'accent', title: 'Te esperamos hoy', call_phrase: 'Pídelo por WhatsApp', info_blocks: [{kind: 'contact', value: VALUES.contact}]}},
+    {role: 'closing', layer: {layout_id: 'brand_fill', container_color: 'accent', title: 'Te esperamos hoy', call_phrase: 'Pídelo por WhatsApp', info_blocks: [{kind: 'contact', value: PHRASES.contact[0]}]}},
   ];
   slides.forEach((s, i) =>
     push({
@@ -229,7 +264,12 @@ for (const c of cases) {
     report = composition.props?.resolved?.report ?? null;
     await renderStill({composition, serveUrl, output: path.join(OUT, file), inputProps, chromiumOptions, imageFormat: 'png', logLevel: 'error'});
   } catch (e) {
-    error = String(e?.message ?? e).slice(0, 400);
+    const msg = String(e?.message ?? e);
+    const m = /layer_unrenderable (\{[^\n]*\})/.exec(msg);
+    if (m) {
+      const r = JSON.parse(m[1]);
+      error = `refused (invalid_parameters): ${r.slot} — ${r.reason}: ${r.detail}`;
+    } else error = msg.slice(0, 400);
   }
   const ms = Date.now() - t0;
   const peak = await mem.done();
@@ -257,10 +297,11 @@ const card = (r) => {
   const fell = rep && rep.layout_rendered !== rep.layout_requested;
   const notes = rep ? [...rep.fallbacks, ...rep.overflow.map((o) => `OVERFLOW ${o}`)] : [];
   return `<figure class="${r.error ? 'err' : fell || rep?.overflow.length ? 'warn' : ''}">
-  ${r.error ? `<div class="ph">error</div>` : `<a href="${esc(r.file)}"><img src="${esc(r.file)}" loading="lazy"></a>`}
+  ${r.error ? `<div class="ph">${r.error.startsWith("refused") ? "rechazada: el texto no cabe en ningún diseño" : "error"}</div>` : `<a href="${esc(r.file)}"><img src="${esc(r.file)}" loading="lazy"></a>`}
   <figcaption><b>${esc(r.name)}</b> · ${esc(r.format)} · ${esc(BRANDS[r.brand].label.split(' (')[0])}<br>
   ${rep ? `${esc(rep.layout_requested)} → <b>${esc(rep.layout_rendered)}</b>${rep.anchor ? ` / ${esc(rep.anchor)}` : ''} · logo ${esc(rep.logo)}` : esc(r.error)}<br>
   ${rep ? `tamaños ${esc(Object.entries(rep.sizes).map(([k, v]) => `${k} ${v}`).join(', '))} · contraste ${esc(Object.entries(rep.contrast).map(([k, v]) => `${k} ${v}`).join(', '))}` : ''}<br>
+  ${rep?.fonts ? `fuentes ${esc(rep.fonts.heading)} / ${esc(rep.fonts.body)}` : ""}${rep?.title_metrics ? ` · título interlínea ${rep.title_metrics.line_height}, espacio debajo ${rep.title_metrics.gap_after} px` : ""}<br>
   ${r.ms} ms · ${r.peakMb} MB
   ${notes.length ? `<ul>${notes.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}</figcaption></figure>`;
 };
