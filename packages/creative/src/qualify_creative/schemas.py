@@ -1130,11 +1130,14 @@ class MediaInputs(BaseModel):
 PRICE_FACT_NAME = "precio"
 
 
-#: An amount said in words before its currency («20 mil pesos», «2 millones de pesos»),
-#: which `angles.price_mentions` (figure then currency, or currency then figure) misses.
+#: An amount said in thousands or millions (COP and UYU are written that way): «18 lucas»
+#: always; «18 mil» / «2 millones» when a currency follows or nothing does (end of the text
+#: or punctuation) — «20 mil seguidores» counts something else and is not a price.
 _WORDED_AMOUNT = re.compile(
-    r"\d[\d.,]*\s*(?:mil|millones?)\s+(?:de\s+)?"
-    r"(?:pesos|d[oó]lares|bol[ií]vares|soles|euros)\b",
+    r"\b\d[\d.,]*\s*lucas\b"
+    r"|\b\d[\d.,]*\s*(?:mil|millones?)\s+(?:de\s+)?"
+    r"(?:pesos|d[oó]lares|bol[ií]vares|soles|euros)\b"
+    r"|\b\d[\d.,]*\s*(?:mil|millones?)\b(?!\s*(?:de\s+)?[^\W\d_])",
     re.IGNORECASE,
 )
 
@@ -1150,7 +1153,7 @@ def quotes_money(text: str) -> bool:
 def is_price_fact(name: str, value: str) -> bool:
     """Whether a «Datos clave» row is a price: named «precio», or quoting an amount of
     money in its name or value («$18.000», «20 mil pesos»…)."""
-    return name.strip().casefold() == PRICE_FACT_NAME or quotes_money(f"{name} {value}")
+    return name.strip().casefold() == PRICE_FACT_NAME or quotes_money(name) or quotes_money(value)
 
 
 def strip_prices(

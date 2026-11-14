@@ -596,9 +596,15 @@ def angles_user_prompt(
 
 # -- the price guard ---------------------------------------------------------------------
 
+#: m-25026509: the markers of the three markets as owners write them — Venezuela's
+#: «REF 7» / «7 REF» and «USDT», Uruguay's «$U 250» / «UYU 250» / «U$S» (the same markers
+#: `whatsapp.menus.import_ai._CURRENCY_MARKERS` reads currencies from). Longer markers come
+#: first so «$U 250» and «US$180» are never read as a bare «$».
 _MONEY = re.compile(
-    r"(?:(?:USD|US\$|COP|MXN|EUR|ARS|CLP|PEN|VES|Bs\.?|S/\.?|\$|€)\s?\d[\d.,]*"
-    r"|\d[\d.,]*\s?(?:USD|COP|MXN|EUR|ARS|CLP|PEN|VES|Bs\.?|€|pesos|dólares|dolares|soles"
+    r"(?:(?:USDT|USD|US\$|U\$S|\$U|UYU|REF|COP|MXN|EUR|ARS|CLP|PEN|VES|Bs\.?|S/\.?|\$|€)"
+    r"\s?\d[\d.,]*"
+    r"|\d[\d.,]*\s?(?:USDT|USD|U\$S|UYU|REF|COP|MXN|EUR|ARS|CLP|PEN|VES|Bs\.?|€|pesos"
+    r"|dólares|dolares|soles"
     # a suffix ends the word: "6 copas" or "2 pendientes" are not prices
     r"|bolívares|bolivares)(?![^\W\d_]))",
     re.IGNORECASE,

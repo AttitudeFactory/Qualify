@@ -451,3 +451,78 @@ def test_solution_aware_leaves_opening_hours_to_product_aware() -> None:
         task=GenerationTask.COPY,
     ).volatile_suffix
     assert "prices, payment and opening hours belong to product_aware" in suffix
+
+
+# -- m-25026509: prices as the three markets write them --------------------------------
+
+PRICES = (
+    "$18.000",
+    "18.000 pesos",
+    "18 mil",
+    "18 lucas",
+    "COP 22.000",
+    "REF 7",
+    "7 REF",
+    "Bs 250",
+    "Bs. 250",
+    "250 bolívares",
+    "$7",
+    "7 USD",
+    "US$180",
+    "7 USDT",
+    "USDT 7",
+    "$U 250",
+    "UYU 250",
+    "250 pesos",
+    "2 millones de pesos",
+)
+NOT_PRICES = (
+    "2x1",
+    "300 g",
+    "10 shawarmas",
+    "Calle 57 #18-20",
+    "Abierto hasta las 11",
+    "+58 414 1234567",
+    "3 cuotas",
+    "mil hojas",
+    "20 mil seguidores",
+)
+
+
+def _unaware(highlights: tuple[tuple[str, str], ...], mention: tuple[str, ...]) -> ContentBrief:
+    return ContentBrief.model_validate(
+        {
+            **_brief().model_dump(),
+            "awareness_level": AwarenessLevel.UNAWARE,
+            "constraints": {"highlights": highlights, "must_mention": mention},
+        }
+    )
+
+
+@pytest.mark.parametrize("price", PRICES)
+def test_an_unaware_brief_strips_a_price_in_a_fact_name_value_or_mention(price: str) -> None:
+    by_value = _unaware((("Combo", price),), ())
+    by_name = _unaware(((f"Combo {price}", "doble"),), ())
+    by_mention = _unaware((), (f"Combo a {price}",))
+    assert by_value.constraints.highlights == () and by_name.constraints.highlights == ()
+    assert by_mention.constraints.must_mention == ()
+
+
+@pytest.mark.parametrize("text", NOT_PRICES)
+def test_an_unaware_brief_keeps_what_is_not_a_price(text: str) -> None:
+    brief = _unaware((("Dato", text),), (text,))
+    assert brief.constraints.highlights == (("Dato", text),)
+    assert brief.constraints.must_mention == (text,)
+
+
+def test_other_levels_keep_a_price_written_any_way() -> None:
+    for level in (None, AwarenessLevel.PRODUCT_AWARE):
+        brief = ContentBrief.model_validate(
+            {
+                **_brief().model_dump(),
+                "awareness_level": level,
+                "constraints": {"highlights": (("Combo", "REF 7"),), "must_mention": ("$U 250",)},
+            }
+        )
+        assert brief.constraints.highlights == (("Combo", "REF 7"),)
+        assert brief.constraints.must_mention == ("$U 250",)
