@@ -811,3 +811,143 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
   box-shadow: inset 0 0 0 1px var(--gray-a6);
   color: var(--gray-10);
 }
+
+/* ── The live edit preview (ED-01, m-25026605): the video's stretch, turned and cropped to
+   9:16, with the text and the effect over it — all in the browser, nothing decoded on the
+   server. `ui.edit_preview` + `assets/edit-preview.js`. ───────────────────────────── */
+.q-edit-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.q-edit-preview { display: flex; flex-direction: column; align-items: center; gap: var(--space-2); width: 100%; }
+.q-edit-preview__frame {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  container-type: inline-size;
+  aspect-ratio: 9 / 16;
+  height: 36svh;
+  max-width: 100%;
+  border-radius: var(--q-radius-control);
+  background: black;
+  box-shadow: inset 0 0 0 1px var(--q-card-edge);
+}
+.q-edit-preview__poster,
+.q-edit-preview__video {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform: translate(-50%, -50%);
+}
+.q-edit-preview__video { z-index: 1; background: black; }
+/* A quarter turn: the video is laid out with its sides swapped (16/9 of the frame's
+   width, 9/16 of its height) and turned, so it still fills the 9:16 frame. */
+.q-edit-preview__frame[data-rotate="90"] .q-edit-preview__video,
+.q-edit-preview__frame[data-rotate="270"] .q-edit-preview__video {
+  width: 177.7778%;
+  height: 56.25%;
+}
+.q-edit-preview__frame[data-rotate="90"] .q-edit-preview__video { transform: translate(-50%, -50%) rotate(90deg); }
+.q-edit-preview__frame[data-rotate="180"] .q-edit-preview__video { transform: translate(-50%, -50%) rotate(180deg); }
+.q-edit-preview__frame[data-rotate="270"] .q-edit-preview__video { transform: translate(-50%, -50%) rotate(270deg); }
+.q-edit-preview__effect {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  mix-blend-mode: screen;
+  pointer-events: none;
+}
+.q-edit-preview__effect[data-edit-effect-off] { display: none; }
+.q-edit-preview__empty {
+  position: absolute;
+  inset: 0;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  color: var(--gray-11);
+  background: var(--q-field-fill);
+}
+/* The owner's text: #674's `scrim` layout (m-25017283, `layer_spec/catalog_v1.json`,
+   docs/catalogo-disenos-imagen-carrusel.md §1.1, §1.3, §1.4, §2.3) scaled to the frame —
+   white text, no outline nor text shadow, over a black gradient 0 → 75 % across 45 % of
+   the height of its side; inside the 9:16 safe zone (x 64–1016, y 270–1536 of
+   1080×1920: 5.93 %, 14.06 % and 20 %); bold, 112 px → 76 px of 1080 (10.37 → 7.04 cqw).
+   The catalog has no middle for `scrim`: «En el medio» centres the same gradient. */
+.q-edit-preview__text {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 3;
+  display: flex;
+  justify-content: center;
+  padding-inline: 5.93%;
+  pointer-events: none;
+}
+.q-edit-preview__text[data-place="top"] {
+  top: 0;
+  height: 45%;
+  align-items: flex-start;
+  padding-top: 14.06%;
+  background: linear-gradient(to bottom, rgba(0, 0, 0, 0.75), rgba(0, 0, 0, 0.6) 60%, transparent);
+}
+.q-edit-preview__text[data-place="middle"] {
+  top: 27.5%;
+  height: 45%;
+  align-items: center;
+  background: linear-gradient(to bottom, transparent, rgba(0, 0, 0, 0.6) 30%, rgba(0, 0, 0, 0.75) 50%, rgba(0, 0, 0, 0.6) 70%, transparent);
+}
+.q-edit-preview__text[data-place="bottom"] {
+  bottom: 0;
+  height: 45%;
+  align-items: flex-end;
+  padding-bottom: 20%;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.75), rgba(0, 0, 0, 0.6) 60%, transparent);
+}
+.q-edit-preview__text-line {
+  margin: 0;
+  max-width: 100%;
+  font-family: var(--heading-font-family, inherit);
+  font-size: 10.37cqw;
+  font-weight: 700;
+  line-height: 1.15;
+  text-align: center;
+  color: white;
+  overflow-wrap: break-word;
+}
+.q-edit-preview__text[data-long="true"] .q-edit-preview__text-line { font-size: 7.04cqw; }
+.q-edit-preview__play {
+  z-index: 4;
+  top: 50%;
+  left: 50%;
+  width: 3rem;
+  height: 3rem;
+  transform: translate(-50%, -50%);
+}
+.q-edit-preview__play::after { content: ""; position: absolute; inset: -0.25rem; }
+.q-edit-preview__glyph-pause { display: none; }
+.q-edit-preview[data-edit-state="playing"] .q-edit-preview__glyph-play { display: none; }
+.q-edit-preview[data-edit-state="playing"] .q-edit-preview__glyph-pause { display: block; }
+.q-edit-preview[data-edit-state="playing"] .q-edit-preview__play { opacity: 0.55; }
+.q-edit-preview .q-edit-preview__sound { display: flex; z-index: 4; }
+.q-edit-preview[data-edit-state="broken"] .q-edit-preview__video,
+.q-edit-preview[data-edit-state="broken"] .q-edit-preview__play,
+.q-edit-preview[data-edit-state="broken"] .q-edit-preview__sound,
+.q-edit-preview[data-edit-state="broken"] .q-edit-preview__time { display: none; }
+.q-edit-preview__time { font-size: var(--font-size-1); font-weight: 600; }
+.q-edit-preview__time:empty { display: none; }
+.q-edit-preview__broken { display: none; margin: 0; font-size: var(--font-size-1); color: var(--gray-11); text-align: center; }
+.q-edit-preview[data-edit-state="broken"] .q-edit-preview__broken { display: block; }
