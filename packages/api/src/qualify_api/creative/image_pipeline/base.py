@@ -297,12 +297,18 @@ def flyer_scenes(
     budget: BudgetContext,
     usage: list[MediaUsage],
     save: _Saver | None = None,
+    only: int | None = None,
 ) -> list[BaseScene]:
     """The advertising image's base photographs: one Seedream scene per group of product
     photos (one group, or one per slide of the old gallery inside `STATIC_FLYER`), each
-    with the background and then the brand references after the group's photos."""
+    with the background and then the brand references after the group's photos.
+
+    `only` (m-25017283): make just that scene again — the one regeneration of a base the
+    layer stage found invented text in, with the same prompt, references and name."""
     scenes: list[BaseScene] = []
     for index, group in enumerate(groups):
+        if only is not None and index != only:
+            continue
         # brand references come AFTER the existing references, preserving their indices
         references = [
             *group,

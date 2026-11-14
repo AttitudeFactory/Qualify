@@ -22,6 +22,46 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
 
 ---
 
+<a id="capa-001"></a>
+
+## CAPA-001 — Claude escribe la capa de texto viendo la foto base: prueba de humo (m-25017283) — 2026-11-14
+
+- **Qué se probó:** la etapa `layer` de ADR 49 (`qualify_api.creative.image_pipeline.layer.write_layers`), con el prompt `capa-v1` y la herramienta estricta `escribir_capa`: Claude mira la foto, informa `subject_box`, `logo_in_photo` y `base_has_invented_text`, elige uno de los siete diseños del catálogo (`docs/catalogo-disenos-imagen-carrusel.md`) y escribe título, subtítulo y frase de invitación. La respuesta se valida con `LayerSpec` (límites del catálogo, reglas de §1.8); una diapositiva que no pasa recibe un turno de reparación.
+- **Modelo:** `claude-sonnet-5-5`, esfuerzo `low`, `tool_choice: auto` (piensa) con obligación de llamar la herramienta; sin parámetros de muestreo.
+- **Entradas:** 10 fotos base de Seedream de FOTO-BASE-001 (compiladores 4 y 5, fuera del repositorio), con los encargos de `packages/api/evals/scene_text_v4/cases.json`; los «Datos clave» del caso pasan como datos guardados del negocio (dirección, horario, pedidos). Una llamada por foto (las diapositivas de galería, sueltas). Sin Seedream, nada en R2 ni en la base.
+- **Arnés:** `packages/api/evals/capa_texto/run.py --images <dir> --scores <scores.csv de FOTO-BASE-001> --max-usd 0.5`.
+- **Resultado (10 fotos):**
+
+| Medida | Valor |
+|---|---|
+| Capa válida según el esquema | **10/10** (4 necesitaron el turno de reparación) |
+| Diseño contra la regla «elegirlo cuando» del catálogo | 0 incumplimientos (8 `band`, 2 `plate`; ningún `scrim`) |
+| Precio alterado | 0 (ningún `price_ref` fuera del producto del caso) |
+| Números en el texto libre | 1, el «2x1» de F7 (permitido) |
+| `base_has_invented_text` contra la etiqueta humana de FOTO-BASE-001 | **9/10** de acuerdo: detectó el letrero inventado de F1 (compilador 4); un falso positivo en F3 (compilador 5) |
+| Gasto | **US$0,163** por 14 llamadas (10 + 4 reparaciones): **US$0,009–0,027 por foto**, US$0,016 de media |
+
+- **Lectura:** el esquema y la reparación se sostienen; la mitad de las fotos pidieron reparar (subtítulos largos o una frase fuera de regla) y todas salieron válidas. Claude prefiere `band` (la opción segura) sobre `plate` con fotos de Seedream que llenan el cuadro; nadie eligió `scrim`. El falso positivo de F3 regeneraría una base sin necesidad (a lo sumo una vez, por la clave única). F3 escribió «Abrimos de martes a domingo…» en el subtítulo: sin cifras pasa la regla de §1.8, pero es un dato del horario en texto libre — una regla a endurecer.
+- **Textos que escribió, por foto** (los guardados de esta corrida; no se volvió a llamar a Claude):
+
+| Foto | Diseño | Título | Subtítulo | Invitación |
+|---|---|---|---|---|
+| F1-ubicacion-r1-v4 | `band` | «Tu shawarma te espera en el Korner» | «Pasa por la acera de enfrente y pruébalo recién hecho» | «Te esperamos hoy» |
+| F1-ubicacion-r1-v5 | `band` | «Tu shawarma te espera en el Korner» | «Pasa por el caballete de la acera y pídelo recién hecho.» | «Te esperamos hoy» |
+| F2-te-espera-r1-v4 | `band` | «Tu shawarma de carne, aquí» | «Pan tostado, carne jugosa y salsa cremosa» | «Pídelo hoy mismo» |
+| F3-horario-r1-v5 | `band` | «Tu salchipapa, ahora de noche» | «Abrimos de martes a domingo para antojos nocturnos.» | «Te esperamos esta noche» |
+| F4-combo-r1-v5 | `band` | «Tu combo de shawarma completo» | «Carne jugosa, papas doradas y gaseosa bien fría.» | «Pídelo por WhatsApp» |
+| F5-ensalada-escena-r1-v5 | `plate` | «Tu ensalada, fresca» | «Lechuga, tomate, pepino y garbanzos para empezar el día.» | «Pídela hoy» |
+| F7-pollo-2x1-r1-v5 | `plate` | «Martes de shawarma 2x1» | «Pollo recién hecho, para compartir.» | «Ven este martes» |
+| F8-papas-compartir-r1-v5 | `band` | «Papas para compartir» | «Una porción grande al centro de la mesa y todos a picar.» | «Pídelas para tu grupo» |
+| G1-combo-galeria-s2-r1-v5 | `band` | «Tu combo del día, completo» | «Shawarma de carne, papas y gaseosa» | «Pídelo por WhatsApp» |
+| G2-salchipapa-galeria-s1-r1-v4 | `band` | «Salchipapa doradita» | «Crocante, jugosa y perfecta para picar entre amigos.» | «Ven esta noche al Korner» |
+
+- **Revisión de UX sobre estos textos → `capa-v2` (sin medir):** «Abrimos de martes a domingo» (F3) y una promoción o un día que el encargo no traiga son datos inventados; F1 y G2 repiten el nombre del negocio, que ya va en el logo. `capa-v2` pide no escribir días, horarios, descuentos, «gratis», domicilios ni promociones que no estén en «De qué trata la publicación» o en los datos guardados (y la validación pide reparar si aparecen; «100% natural» o «500 g» no cuentan), trato de tú y apuntar a dos tercios de cada límite. El «2x1» y el martes de F7 vienen del encargo, así que siguen permitidos. `capa-v2` **no se ha medido**: se medirá con el tope que apruebe el fundador.
+- **Pendiente:** medir con más fotos y galerías completas en una sola llamada (m-25017292), con la composición real (m-25017285), y la latencia (no se midió).
+
+---
+
 <a id="niveles-006"></a>
 
 ## NIVELES-006 — most_aware: solo producto, precio y cómo comprar (con cuándo y dónde) (m-25027151) — 2026-11-14

@@ -316,6 +316,44 @@ class MediaWrite:
     #: version and position — `stored`, or `missing` when R2 did not keep it. None when the
     #: file had no base of its own (a closing slide, a reused piece, a video).
     base: BasePhoto | None = None
+    #: m-25017283 (ADR 49 §2 item 2): the text layer Claude wrote for this file, written by
+    #: `finish_generation` as the ROOT `piece_layers` row of its version and position. None
+    #: while the layer stage is off (`QUALIFY_IMAGE_LAYER`) or when no valid layer came.
+    layer: LayerWrite | None = None
+
+
+@dataclass(frozen=True)
+class LayerWrite:
+    """A `LayerSpec` as the layer stage wrote it, kept as its JSON (`spec`) so this module
+    need not know the schema, with the provenance `piece_layers` stores."""
+
+    spec: dict[str, Any]
+    spec_sha256: str
+    layout_id: str
+    layout_version: int
+    model_id: str
+    prompt_version: str
+
+    def as_json(self) -> dict[str, Any]:
+        return {
+            "spec": self.spec,
+            "spec_sha256": self.spec_sha256,
+            "layout_id": self.layout_id,
+            "layout_version": self.layout_version,
+            "model_id": self.model_id,
+            "prompt_version": self.prompt_version,
+        }
+
+    @classmethod
+    def from_json(cls, row: Mapping[str, Any]) -> LayerWrite:
+        return cls(
+            spec=dict(row["spec"]),
+            spec_sha256=str(row["spec_sha256"]),
+            layout_id=str(row["layout_id"]),
+            layout_version=int(row["layout_version"]),
+            model_id=str(row["model_id"]),
+            prompt_version=str(row["prompt_version"]),
+        )
 
 
 @dataclass(frozen=True)
@@ -1437,6 +1475,10 @@ class _Saver:
     def draft_id(self) -> UUID:
         return self._draft_id
 
+    @property
+    def revision(self) -> int:
+        return self._revision
+
     def key_for(self, name: str) -> str:
         """The key `name` is kept under by this saver (before any content-named fallback)."""
         if getattr(self._store, "keep", None) is None:
@@ -1959,6 +2001,8 @@ def _media_write_json(write: MediaWrite, seedance_slots: int = 0) -> dict[str, A
         **({"rendered_prompt": write.rendered_prompt} if write.rendered_prompt else {}),
         # m-25017279: and its stored base photo, so a resumed run never makes it again
         **({"base": write.base.as_json()} if write.base is not None else {}),
+        # m-25017283: and its layer, so a resumed run never pays the layer call again
+        **({"layer": write.layer.as_json()} if write.layer is not None else {}),
     }
 
 
@@ -1978,6 +2022,7 @@ def _media_write_from_json(row: Mapping[str, Any]) -> MediaWrite:
         ai_generated=bool(row.get("ai_generated")),
         rendered_prompt=row.get("rendered_prompt") or None,
         base=BasePhoto.from_json(row["base"]) if row.get("base") else None,
+        layer=LayerWrite.from_json(row["layer"]) if row.get("layer") else None,
     )
 
 

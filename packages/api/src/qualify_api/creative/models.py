@@ -733,22 +733,57 @@ class PieceBasePhoto(Base):
     )
 
 
+class PieceBaseRegeneration(Base):
+    """One claimed regeneration of a slide's Seedream base (0168, ADR 49 §2 item 1, §8.2,
+    m-25017283): the unique key IS the cap of one per draft, revision and slide."""
+
+    __tablename__ = "piece_base_regenerations"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "draft_id",
+            "revision",
+            "position",
+            name="uq_piece_base_regenerations_slide",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    tenant_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False
+    )
+    brand_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    draft_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    model_id: Mapped[str] = mapped_column(Text, nullable=False)
+    prompt_version: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+
+
 class PieceLayer(Base):
-    """The text layer of one slide of an image or carousel piece (0163, ADR 49 §2.1,
-    m-25017278): what the composition draws over the base photo, per version and position.
+    """The text layer of one slide of an image or carousel piece (0163, ADR 49 §2.1 and
+    the §2.3 amendment of 2026-11-14, m-25017278/m-25017283): what the composition draws
+    over the base photo, per version and position — a `LayerSpec` (`spec`).
 
     A layer is never edited in place. One ROOT layer per version and position
-    (`parent_layer_id IS NULL`); the visual check's correction or an owner's edit is a new
-    row at the same version and position with `parent_layer_id`, at most one per parent
-    within a version (a further change in that version derives from that row); a re-compose
-    is a new version, which may derive from the same older layer again. Every key carries
-    `tenant_id` — to `brands`, `content_drafts`, `piece_versions`, `image_assets`, `users`
-    and this table — enforced by the migration (Postgres checks keys without RLS). The table
-    ships empty and m-25017283 is its first writer.
+    (`parent_layer_id IS NULL`), written by the layer stage with the piece. **Editing** —
+    the owner's text or layout change, or the visual check's correction — stays in the SAME
+    version: a new row at the same version and position whose parent is the current LEAF
+    (the layer with no child in that version), so edits chain linearly and «Deshacer»
+    is a new child carrying the earlier spec. An owner's edit voids the approval (ADR 49
+    §2.3). **Re-doing** — a new base, another photo, generating again — is a new
+    `piece_versions` revision with its own root. Every key carries `tenant_id` — to
+    `brands`, `content_drafts`, `piece_versions`, `piece_base_photos` (0165), `users` and
+    this table — enforced by the migration (Postgres checks keys without RLS).
 
-    TODO(m-25017283): the writer must check that a derived layer's parent belongs to the
-    same draft and the same position — the schema does not stop a parent from another
-    position or another piece of the same business."""
+    What the schema does not enforce, the writer does (`layer_store.append_layer`): the
+    parent belongs to the same draft and position and is the current leaf."""
 
     __tablename__ = "piece_layers"
     __table_args__ = (

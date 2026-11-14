@@ -1463,6 +1463,18 @@ class PostgresContentRepository:
                 version_id=version.id,
                 media=media,
             )
+            # m-25017283: the ROOT text layer of each still that carries one (none while
+            # QUALIFY_IMAGE_LAYER is off), pointing at the base row above; never fails it
+            from qualify_api.creative.layer_store import record_layers
+
+            record_layers(
+                session,
+                tenant_id=tenant_id,
+                brand_id=brand_id,
+                draft_id=draft_id,
+                version_id=version.id,
+                media=media,
+            )
             if succeeded:
                 draft.active_version_id = version.id
                 draft.selected_variant_id = None
