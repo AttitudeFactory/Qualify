@@ -293,7 +293,7 @@ async def test_direct_deep_link_checks_health_before_presenting_form(
     blocked = replace(context.sources[0], health=AccountHealthVM(blocks_preparation=True))
     calls = []
 
-    def load(*args: object) -> tuple[list, str]:
+    def load(*args: object, **_: object) -> tuple[list, str]:
         calls.append(args)
         return [blocked], "America/Bogota"
 

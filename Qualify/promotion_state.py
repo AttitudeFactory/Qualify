@@ -61,6 +61,9 @@ from .promotion_vm import (
     LOAD_FAILED,
     NO_SESSION,
     PREVIEW_FAILED,
+    STORY_AD_OPTION,
+    STORY_FORMAT,
+    STORY_REVIEW_TITLE,
     UNPUBLISHED_SOURCE_TITLE,
     WEBSITE_CTA_LABELS,
     AdMediaVM,
@@ -70,6 +73,7 @@ from .promotion_vm import (
     PromotionReviewVM,
     PromotionSourceVM,
     cop_label,
+    cop_minor,
     first_problem,
     promotion_checks,
     promotion_result,
@@ -111,6 +115,9 @@ class PromotionState(rx.State):
     covers_open: bool = False
     entry_available: bool = False
     entry_unpublished: bool = False
+    # m-25026350: opened as «Agregar un botón con enlace» (`?formato=historia`).
+    story_entry: bool = False
+    story_cta_open: bool = False
     back_href: str = "/drafts"
     back_label: str = "Por aprobar"
     _loaded_context: tuple[str, str, str] = ("", "", "")
@@ -827,9 +834,17 @@ class PromotionState(rx.State):
     def title(self) -> str:
         if self.preparation_blocked:
             return "Revisa tu cuenta antes de promocionar"
+        if self.story_entry and not self.sources:
+            return STORY_AD_OPTION  # its empty state names the problem underneath
         if self.reviewed:
+            if self.form.story:
+                return STORY_REVIEW_TITLE
             return "Revisa tu anuncio antes de autorizarlo"
-        if self.step <= 1 and any(row.media_kind for row in self.sources):
+        if (
+            self.step <= 1
+            and any(row.media_kind for row in self.sources)
+            and step_keys(self.form)[0] == "source"
+        ):
             return UNPUBLISHED_SOURCE_TITLE
         return step_title(self.form, self.step)
 
@@ -848,7 +863,9 @@ class PromotionState(rx.State):
     def _offered(self) -> PromotionDraftVM:
         if not self.sources:
             return self.form
-        return replace(PromotionDraftVM(), **_unpublished_defaults(self.sources[0]))
+        return replace(
+            PromotionDraftVM(), **_unpublished_defaults(self.sources[0], len(self.sources) == 1)
+        )
 
     def _media(self, rows: list[AdMediaVM], asset_id: str) -> AdMediaVM:
         return next((row for row in rows if row.id == asset_id), AdMediaVM(id=""))
@@ -925,6 +942,15 @@ class PromotionState(rx.State):
     @rx.var
     def budget_label(self) -> str:
         return cop_label(self.form.budget)
+
+    @rx.var
+    def budget_valid(self) -> bool:
+        """The «Total: $25.000 COP» line shows only for an amount that parses."""
+        try:
+            cop_minor(self.form.budget)
+        except ValueError:
+            return False
+        return True
 
     @rx.var
     def charge_button(self) -> str:
@@ -1093,6 +1119,18 @@ class PromotionState(rx.State):
         self.error = ""
         self._invalidate_review()
 
+    @rx.event
+    def toggle_story_cta(self) -> None:
+        """Story step 1: the saved button is one line; «Cambiar» opens the list."""
+        if not self.busy:
+            self.story_cta_open = not self.story_cta_open
+
+    @rx.event
+    def choose_story_cta(self, code: str) -> None:
+        PromotionState.choose_cta.fn(self, code)
+        if self.form.cta_type == code:
+            self.story_cta_open = False
+
     @rx.var
     def lead_form_label(self) -> str:
         return next(
@@ -1146,7 +1184,7 @@ class PromotionState(rx.State):
             lead_form_id=source.lead_forms[0].id if source.lead_forms else "",
             enhancements=source.enhancements,
             **({"start_local": "", "end_local": ""} if changed_zone else {}),
-            **_unpublished_defaults(source),
+            **_unpublished_defaults(source, len(self.sources) == 1),
         )
         self.timezone_name = zone
         self.error = ""
@@ -1310,6 +1348,8 @@ class PromotionState(rx.State):
             context = await self._session()
             piece = tenant_uuid(str(getattr(self, "draft_id", "")))
             params = dict(self.router.url.query_parameters)
+            # m-25026350: «Agregar un botón con enlace» from Tu semana's historia.
+            story = params.get("formato") == STORY_FORMAT
             if piece is None or not all(tenant_uuid(value) for value in context):
                 self.loading = False
                 self.error = NO_SESSION if piece else LOAD_FAILED
@@ -1318,6 +1358,7 @@ class PromotionState(rx.State):
                 self._loaded_context == context
                 and self._piece_id == str(piece)
                 and self.sources
+                and self.sources[0].story == story
                 and params.get("paso")
             ):
                 self.read_step()
@@ -1345,17 +1386,21 @@ class PromotionState(rx.State):
             self._operation = operation = str(uuid4())
             self._return_params = {
                 key: str(params[key])
-                for key in ("desde", "semana", "vista", "evento")
+                for key in ("desde", "semana", "vista", "evento", "formato")
                 if params.get(key)
             }
             week = back_to_week_href(params)
+            self.story_entry = story
+            self.story_cta_open = False
             self.back_href = week or f"/drafts/{piece}"
-            self.back_label = "Tu semana" if week else "Revisar publicación"
+            self.back_label = (
+                "Tu semana" if week else "Revisar pieza" if story else "Revisar publicación"
+            )
             event_id = tenant_uuid(str(params.get("evento", "")))
         try:
             with acting_login(UUID(context[1])):
                 rows, zone = await asyncio.to_thread(
-                    load_sources, UUID(context[0]), piece, event_id, True
+                    load_sources, UUID(context[0]), piece, event_id, True, story=story
                 )
         except Exception as exc:
             logger.warning("promotion sources read failed: %s", type(exc).__name__)
@@ -1530,9 +1575,12 @@ class PromotionState(rx.State):
                     self.busy = False
 
 
-def _unpublished_defaults(source: PromotionSourceVM) -> dict[str, str | bool]:
+def _unpublished_defaults(
+    source: PromotionSourceVM, single_source: bool = False
+) -> dict[str, str | bool]:
     """Prefill a piece's own pair: its first 4:5 and 9:16 files and, for videos, the
-    first image of each format as the cover. Everything stays visible and changeable."""
+    first image of each format as the cover. Everything stays visible and changeable.
+    A story ad (m-25026350) uses only the 9:16 file; a single source is not a step."""
     if not source.media_kind:
         return {}
 
@@ -1550,4 +1598,6 @@ def _unpublished_defaults(source: PromotionSourceVM) -> dict[str, str | bool]:
         "message": source.default_message,
         "headline": source.default_headline,
         "country": source.default_country,
+        "story": source.story,
+        "single_source": single_source and source.story,
     }

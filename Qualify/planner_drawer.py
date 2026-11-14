@@ -103,6 +103,14 @@ from .post_card import (
     viewable_src,
 )
 from .promotion_entry import promotion_event_query, promotion_link
+from .promotion_vm import (
+    STORY_AD_CONTINUE,
+    STORY_AD_DECLINE,
+    STORY_AD_HINT,
+    STORY_AD_NOTICE,
+    STORY_AD_ONLY,
+    STORY_AD_OPTION,
+)
 from .r2_media import BACKEND_BASE
 from .ui import (
     callout,
@@ -1246,6 +1254,74 @@ def _more_options(row) -> rx.Component:
     )
 
 
+def _story_ad_offer(row) -> rx.Component:
+    """m-25026350: a historia cannot carry a link unless it is paid. The option first
+    says so in one line and asks; only «Hacer anuncio pagado» leaves for the wizard, and then
+    the historia is NOT scheduled (the ad replaces it)."""
+    asking = PlannerState.story_ad_post == row.post_id
+    # Drawn only once the piece is checked to be a story ad source (`check_story_ad`,
+    # run when «Cuándo sale» mounts and when Historia is chosen).
+    return rx.cond(
+        PlannerState.story_ad_ready.contains(row.post_id),
+        _story_ad_choice(row, asking),
+    )
+
+
+def _story_ad_choice(row, asking) -> rx.Component:
+    return rx.box(
+        rx.cond(
+            asking,
+            rx.vstack(
+                rx.hstack(
+                    rx.icon("megaphone", size=16, flex_shrink="0", margin_top="2px"),
+                    rx.text(STORY_AD_NOTICE, size="2", weight="medium"),
+                    align="start",
+                    spacing="2",
+                ),
+                rx.text(STORY_AD_ONLY, size="2", color=T.TEXT_MUTED),
+                rx.hstack(
+                    rx.button(
+                        STORY_AD_CONTINUE,
+                        on_click=PlannerState.continue_story_ad,
+                        disabled=PlannerState.story_ad_busy | PlannerState.saving,
+                        loading=PlannerState.story_ad_busy,
+                        size="2",
+                        min_height="44px",
+                    ),
+                    rx.button(
+                        STORY_AD_DECLINE,
+                        on_click=PlannerState.dismiss_story_ad,
+                        variant="outline",
+                        size="2",
+                        min_height="44px",
+                    ),
+                    spacing="2",
+                    wrap="wrap",
+                ),
+                spacing="2",
+                width="100%",
+                role="group",
+                aria_label=STORY_AD_OPTION,
+            ),
+            rx.vstack(
+                rx.button(
+                    rx.icon("link", size=16),
+                    STORY_AD_OPTION,
+                    on_click=PlannerState.ask_story_ad(row.post_id),
+                    variant="soft",
+                    size="2",
+                    min_height="44px",
+                ),
+                rx.text(STORY_AD_HINT, size="1", color=T.TEXT_MUTED),
+                spacing="1",
+                align_items="start",
+            ),
+        ),
+        class_name="q-soft-box",
+        width="100%",
+    )
+
+
 def _plan_card(row) -> rx.Component:
     return rx.box(
         rx.box(
@@ -1286,6 +1362,10 @@ def _plan_card(row) -> rx.Component:
         ),
         _when_fields(row),
         _where_line(row),
+        rx.cond(
+            (row.destination == "story") & PlannerState.story_ad_offered,
+            _story_ad_offer(row),
+        ),
         rx.hstack(
             rx.cond(
                 row.error != "",
@@ -1370,6 +1450,8 @@ def _step_schedule() -> rx.Component:
         rx.foreach(PlannerState.plan_rows, _plan_card),
         spacing="4",
         width="100%",
+        # m-25026350: is the lone historia a story ad source? (draws its option)
+        on_mount=PlannerState.check_story_ad,
     )
 
 

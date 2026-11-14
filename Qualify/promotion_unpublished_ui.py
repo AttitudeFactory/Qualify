@@ -376,8 +376,9 @@ def _help() -> rx.Component:
     )
 
 
-def unpublished_review() -> rx.Component:
-    return rx.vstack(
+def review_states() -> rx.Component:
+    """What blocks the review: the account, a video Meta still prepares, or help."""
+    return rx.fragment(
         rx.cond(S.execution_reason != "", callout(S.execution_reason, "warn")),
         rx.cond(
             S.video_waiting,
@@ -393,19 +394,29 @@ def unpublished_review() -> rx.Component:
             ),
         ),
         rx.cond(S.needs_help, _help()),
+    )
+
+
+def ad_status_pill() -> rx.Component:
+    return rx.cond(
+        ~S.paid_operation_locked,
+        signal_pill("Anuncio en pausa", "info"),
+        rx.cond(
+            S.result.status == "active",
+            signal_pill("Activación solicitada a Meta", "info"),
+            signal_pill("Activación por comprobar", "warn"),
+        ),
+    )
+
+
+def unpublished_review() -> rx.Component:
+    return rx.vstack(
+        review_states(),
         # The ad itself first: nobody authorizes without having seen it.
         rx.cond(
             S.has_remote_review,
             rx.vstack(
-                rx.cond(
-                    ~S.paid_operation_locked,
-                    signal_pill("Anuncio en pausa", "info"),
-                    rx.cond(
-                        S.result.status == "active",
-                        signal_pill("Activación solicitada a Meta", "info"),
-                        signal_pill("Activación por comprobar", "warn"),
-                    ),
-                ),
+                ad_status_pill(),
                 rx.grid(
                     _preview("En el inicio y el perfil", S.review.preview_url, "520px"),
                     _preview("En historias y reels", S.review.vertical_preview_url, "640px"),
