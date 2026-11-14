@@ -3,8 +3,7 @@ layer stage (Claude, `qualify_api.creative.image_pipeline.layer`, m-25017283) an
 Remotion composition (`packages/render`, m-25017285).
 
 Everything here comes from the closed catalog (`docs/catalogo-disenos-imagen-carrusel.md`,
-approved by the founder 2026-11-14), read from ONE data file, `catalog_v1.json`, that the
-composition reads too: layout ids, the parameters each layout takes (§1.6), the text slots
+approved by the founder 2026-11-14), read from a data file, `catalog_v1.json`: layout ids, the parameters each layout takes (§1.6), the text slots
 and their character limits per layout and format (§1.5, §2), the fixed info-block labels
 (§1.5), the carousel roles (§6) and the writing rules a free text must pass (§1.8).
 
@@ -18,6 +17,11 @@ The JSON Schema of this model is committed next to it (`layer_spec_v1.schema.jso
 `export_json_schema`); a test keeps the two equal. `spec_version` changes when this shape
 changes; `layout_version` when the catalog's numbers change (it enters the render key,
 ADR 49 §2.2).
+
+`packages/render` keeps its own copy of the same numbers (`manifest.layer_catalog`,
+m-25017285); a test comparing the two catalogs lands with whichever branch merges second.
+A valid spec the composition still cannot draw (one 28-character word in a title) comes back
+from the render service as `invalid_parameters` with a machine-readable reason.
 """
 
 from __future__ import annotations
@@ -44,7 +48,7 @@ Format = Literal["4:5", "1:1", "9:16"]
 
 @cache
 def catalog() -> dict[str, Any]:
-    """The catalog data file (the same one `packages/render` reads)."""
+    """The catalog data file (`packages/render` keeps the same numbers in its manifest)."""
     text = resources.files(__package__).joinpath(CATALOG_FILE).read_text(encoding="utf-8")
     return json.loads(text)
 
