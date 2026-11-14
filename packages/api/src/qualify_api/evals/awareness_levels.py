@@ -64,7 +64,7 @@ PRICING_VERSION = "v9"
 JUDGE_CONFIG = ModelConfig("claude-haiku-5-5", "low")
 JUDGE_TOOL = "calificar_ideas"
 JUDGE_MAX_TOKENS = 6000
-JUDGE_PROMPT_VERSION = "juez-niveles-v3"
+JUDGE_PROMPT_VERSION = "juez-niveles-v4"
 LEVELS: tuple[str, ...] = tuple(level.value for level in AwarenessLevel)
 _NIL = UUID(int=0)
 
@@ -538,10 +538,14 @@ variedad) que estén en los datos dados.
 - product_aware: conoce el negocio pero duda. Regla: quita la fricción con datos dados \
 (precio claro, horario, cómo pagar, dónde queda).
 - most_aware: listo para comprar. Regla: el camino más corto a la compra: gancho de unas \
-6 palabras, llamada a la acción de unas 5 con una sola forma de comprar y, si hay texto, \
-una o dos frases (unas 25 palabras) con el producto, el precio si lo hay y cómo comprar. \
-Pasarse un poco cumple; sumar otras ventajas, historias o preguntas no cumple; un texto \
-que solo llega al mínimo de la marca cumple.
+6 palabras, llamada a la acción de unas 5 y un texto de una o dos frases (unas 25 \
+palabras) que dice solo el producto, el precio si lo hay y cómo comprar: la forma de pedir \
+(una o dos que el negocio usa juntas, aunque sean ventajas de la lista) y, si los datos los \
+dan, cuándo y dónde (horario, el lugar). Los datos clave y lo que pide «Debe mencionar» \
+también van. Pasarse un poco de largo, o llegar justo al mínimo de la marca, cumple. \
+No cumple: otra ventaja del negocio \
+(parqueadero, mascotas, ambiente, historia de la marca), una pregunta, una forma de \
+comprar o un horario inventados, o que falte cómo comprar.
 
 Datos reales: solo cuentan los que aparecen en «Datos del negocio». Un dato inventado es \
 un horario, precio, forma de pago, dirección, domicilio, descuento o promoción que la \
@@ -560,7 +564,7 @@ anglicismos; 1 = no sirve para publicar.
 #: NIVELES-002: added for video plans only, written before judging them (README). The
 #: parts prompt forbids every figure (no price, hour or number on screen), so a plan
 #: cannot meet the product_aware rule above as written.
-JUDGE_PARTS_VERSION = "juez-niveles-v3+partes-v1"
+JUDGE_PARTS_VERSION = "juez-niveles-v4+partes-v1"
 JUDGE_PARTS_ADDENDUM = """
 Estas ideas son planes de VIDEO POR PARTES: por diseño ninguna parte muestra precios, \
 cifras, horarios escritos ni texto en pantalla, así que no los exijas. En un video, \

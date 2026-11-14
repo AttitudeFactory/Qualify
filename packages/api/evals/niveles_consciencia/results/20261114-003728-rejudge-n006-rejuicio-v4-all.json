@@ -1,0 +1,370 @@
+{
+ "ticket": "m-25026482",
+ "baseline_ref": "a6667370",
+ "split": "all",
+ "pricing_version": "v9",
+ "judge": "claude-haiku-5-5@low",
+ "judge_prompt_version": "juez-niveles-v4",
+ "judge_parts_version": "juez-niveles-v4+partes-v1",
+ "code_commit": "0c3e9237",
+ "arms": [],
+ "levels": [
+  "most_aware"
+ ],
+ "repeat": 1,
+ "tracing": false,
+ "date": "2026-11-14T00:37:28",
+ "suites": {
+  "rejudge": {
+   "items": [
+    {
+     "file": "20261113-204824-clips-n005-clips-most-all.json",
+     "suite": "clips",
+     "case": "hamburguesas",
+     "level": "most_aware",
+     "judge_fit": true,
+     "reason": "Cumple la regla de most_aware: gancho de unas 6 palabras, CTA de unas 7 con la ubicación (la 57), texto con producto, precio de $32.900 y cómo comprar (ir al local), y las tres tomas muestran el combo",
+     "measure": true,
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     }
+    },
+    {
+     "file": "20261113-204824-clips-n005-clips-most-all.json",
+     "suite": "clips",
+     "case": "hamburguesas",
+     "level": "most_aware",
+     "judge_fit": false,
+     "reason": "Gancho, llamada a la acción y texto tienen la extensión correcta, con precio, combo y forma de llegar (\"ven al local en la 57\"), pero el texto omite el horario (abierto hasta las 11 p. m.), que los da",
+     "measure": true,
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     }
+    },
+    {
+     "file": "20261113-204824-clips-n005-clips-most-all.json",
+     "suite": "clips",
+     "case": "hamburguesas",
+     "level": "most_aware",
+     "judge_fit": true,
+     "reason": "El gancho (6 palabras) y la llamada a la acción (5) están en medida, el texto da producto, precio de $32.900 y la forma de comprar (ir al local en la 57), y no inventa datos; le falta mencionar el hor",
+     "measure": true,
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     }
+    },
+    {
+     "file": "20261113-204824-clips-n005-clips-most-all.json",
+     "suite": "clips",
+     "case": "hamburguesas",
+     "level": "most_aware",
+     "judge_fit": false,
+     "reason": "El gancho, la llamada a la acción y el precio están bien, pero el texto omite el horario (abierto hasta las 11 p. m.), que la regla de most_aware pide cuando los datos lo dan, y solo menciona ir al lo",
+     "measure": true,
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     }
+    },
+    {
+     "file": "20261113-204824-clips-n005-clips-most-all.json",
+     "suite": "clips",
+     "case": "inmobiliaria",
+     "level": "most_aware",
+     "judge_fit": false,
+     "reason": "El texto incluye la pregunta «¿Cuándo hablamos?», que la regla de most_aware no permite; por lo demás trae precio, WhatsApp y un gancho y CTA de longitud adecuada.",
+     "measure": true,
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     }
+    },
+    {
+     "file": "20261113-204824-clips-n005-clips-most-all.json",
+     "suite": "clips",
+     "case": "inmobiliaria",
+     "level": "most_aware",
+     "judge_fit": false,
+     "reason": "El texto de la publicación incluye una pregunta («¿Conversamos por WhatsApp?»), que la regla de most_aware prohíbe; por lo demás tiene gancho, precio, ciudad y formas de compra (asesoría con WhatsApp)",
+     "measure": true,
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     }
+    },
+    {
+     "file": "20261113-204824-clips-n005-clips-most-all.json",
+     "suite": "clips",
+     "case": "inmobiliaria",
+     "level": "most_aware",
+     "judge_fit": false,
+     "reason": "El texto incluye una pregunta («¿Hablamos por WhatsApp?»), que la regla de most_aware prohíbe; el gancho y la llamada a la acción sí cumplen, y el precio y la forma de compra están bien, pero la pregu",
+     "measure": true,
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     }
+    },
+    {
+     "file": "20261113-204824-clips-n005-clips-most-all.json",
+     "suite": "clips",
+     "case": "inmobiliaria",
+     "level": "most_aware",
+     "judge_fit": false,
+     "reason": "El texto termina en una pregunta («¿Hablamos por WhatsApp sobre tu cuota inicial?»), que la regla de most_aware no permite, y menciona una cuota inicial que no aparece en los datos del negocio.",
+     "measure": true,
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     }
+    },
+    {
+     "file": "20261113-204824-clips-n005-clips-most-all.json",
+     "suite": "clips",
+     "case": "viajes",
+     "level": "most_aware",
+     "judge_fit": false,
+     "reason": "El gancho (6 palabras) y la llamada a la acción (5) están bien y el precio y WhatsApp están, pero el texto suma tres ventajas (recogida en el hotel, grupos pequeños y guías locales) además de la forma",
+     "measure": true,
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     }
+    },
+    {
+     "file": "20261113-204824-clips-n005-clips-most-all.json",
+     "suite": "clips",
+     "case": "viajes",
+     "level": "most_aware",
+     "judge_fit": false,
+     "reason": "El texto afirma un horario que no está en los datos (\"al amanecer\") y además usa tres ventajas del negocio (recogida en hotel, grupo pequeño, guía bilingüe) como argumento de venta en lugar de limitar",
+     "measure": true,
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     }
+    },
+    {
+     "file": "20261113-204824-clips-n005-clips-most-all.json",
+     "suite": "clips",
+     "case": "viajes",
+     "level": "most_aware",
+     "judge_fit": false,
+     "reason": "El texto afirma un horario que no está en los datos (\"al amanecer\", con salida de madrugada) y enumera tres ventajas (recogida en hotel, grupo pequeño y guía local) en lugar de una o dos formas de ped",
+     "measure": true,
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     }
+    },
+    {
+     "file": "20261113-204824-clips-n005-clips-most-all.json",
+     "suite": "clips",
+     "case": "viajes",
+     "level": "most_aware",
+     "judge_fit": false,
+     "reason": "El gancho y las tomas afirman un horario de «amanecer» que no aparece en los datos del negocio, así que es un horario inventado; el resto del texto (precio, WhatsApp, recogida en hotel) sí está respal",
+     "measure": true,
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     }
+    },
+    {
+     "file": "20261113-205127-copy-n005-pieza-most-all.json",
+     "suite": "copy",
+     "case": "niv-bur-most",
+     "level": "most_aware",
+     "judge_fit": false,
+     "reason": "Tiene gancho, precio, Rappi y el local de la 57, pero omite el horario (abierto hasta las 11 p. m.), que los datos dan y la regla pide cuando está disponible; la frase «cero vueltas» es un eslogan sin",
+     "measure": true,
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     }
+    },
+    {
+     "file": "20261113-205127-copy-n005-pieza-most-all.json",
+     "suite": "copy",
+     "case": "niv-bur-most",
+     "level": "most_aware",
+     "judge_fit": false,
+     "reason": "Tiene gancho de 6 palabras, CTA y precio con la forma de pedir (Rappi), sin datos inventados; pero omite dónde (calle 57, Chapinero) y cuándo (abierto hasta las 11 p. m.), que los datos sí dan y la re",
+     "measure": true,
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     }
+    },
+    {
+     "file": "20261113-205127-copy-n005-pieza-most-all.json",
+     "suite": "copy",
+     "case": "niv-bur-most",
+     "level": "most_aware",
+     "judge_fit": true,
+     "reason": "Gancho de 6 palabras, CTA de 6, texto de unas 28 palabras con producto, precio de $32.900, horario y local de la 57 de los datos; no inventa datos, aunque omite «Pide por Rappi» y su forma de compra e",
+     "measure": true,
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     }
+    },
+    {
+     "file": "20261113-205127-copy-n005-pieza-most-all.json",
+     "suite": "copy",
+     "case": "niv-bur-most",
+     "level": "most_aware",
+     "judge_fit": true,
+     "reason": "Gancho de 6 palabras, CTA corta, precio correcto ($32.900) y forma de compra (Rappi) sin datos inventados; omite horario y ubicación que sí están en los datos, y el emoji y la repetición de Rappi rest",
+     "measure": true,
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     }
+    },
+    {
+     "file": "20261113-205127-copy-n005-pieza-most-all.json",
+     "suite": "copy",
+     "case": "niv-bur-most",
+     "level": "most_aware",
+     "judge_fit": false,
+     "reason": "Gancho y llamada a la acción son claros y el precio y la forma de pedir (Rappi) están bien, pero omite dónde (local en la 57) y cuándo (abierto hasta las 11 p. m.), que sí están en los datos y la regl",
+     "measure": true,
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     }
+    },
+    {
+     "file": "20261113-205127-copy-n005-pieza-most-all.json",
+     "suite": "copy",
+     "case": "niv-bur-most",
+     "level": "most_aware",
+     "judge_fit": true,
+     "reason": "Gancho de 5 palabras y CTA de 5, texto de unas 25 palabras con producto, precio ($32.900), lugar (la 57) y horario (hasta las 11 p. m.), todos en los datos; la forma de compra es ir al local, aunque o",
+     "measure": true,
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     }
+    },
+    {
+     "file": "20261113-205127-copy-n005-pieza-most-all.json",
+     "suite": "copy",
+     "case": "niv-bur-most",
+     "level": "most_aware",
+     "judge_fit": false,
+     "reason": "El gancho (5 palabras) y la llamada a la acción (5 palabras) están bien, y el texto trae producto, precio y cómo comprar por Rappi sin datos inventados; pero omite el lugar (local en la 57) y el horar",
+     "measure": true,
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     }
+    },
+    {
+     "file": "20261113-205127-copy-n005-pieza-most-all.json",
+     "suite": "copy",
+     "case": "niv-bur-most",
+     "level": "most_aware",
+     "judge_fit": false,
+     "reason": "Falta la forma de compra que el negocio usa, «Pide por Rappi»; la idea solo manda a ir al local a pedir, y además no menciona el horario ni la forma de pedir de los datos.",
+     "measure": true,
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     }
+    }
+   ],
+   "scores": []
+  }
+ },
+ "spend_usd": {
+  "rejudge": 0.01335
+ },
+ "spend_total_usd": 0.01335,
+ "skipped_by_cap": [],
+ "ledger_calls": 20
+}

@@ -145,3 +145,11 @@ Detalle en la [bitácora, NIVELES-005](pruebas.md#niveles-005).
 
 - `juez-niveles-v3`: la regla de most_aware lleva las medidas de la consigna (gancho de unas 6 palabras, CTA de unas 5, texto de unas 25 palabras, el mínimo de la marca permitido). El agregado de clips (`clip-v2`) ya no castiga el texto largo por sí solo.
 - Las salidas guardadas de NIVELES-003/004 se volvieron a juzgar con la v3 para comparar con la misma vara: US$0,010 por 20 copias.
+
+## Uso NIVELES-006 — rúbrica v4 de most_aware y fuentes del juez (m-25027151) — 2026-11-14
+
+Detalle en la [bitácora, NIVELES-006](pruebas.md#niveles-006).
+
+- **Rúbrica v4:** para most_aware, el horario y el lugar cuentan como parte de «cómo comprar». La v3 los marcaba como falla, en contra del ejemplo del fundador.
+- **Fuentes:** el juez ahora recibe lo de «Debe mencionar» y los ejemplos del kit como datos dados. Sin ellos marcó «al amanecer» como inventado en 6 de 7 clips de viajes.
+- Las salidas guardadas se volvieron a juzgar con la misma vara (US$0,049 por 81 copias, en dos tandas).
