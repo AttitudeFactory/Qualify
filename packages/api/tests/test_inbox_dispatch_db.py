@@ -24,6 +24,7 @@ from qualify_shared.db.session import tenant_session
 from sqlalchemy import text
 
 from qualify_api.assisted.approval import HumanApproval
+from qualify_api.auth import NotAMember
 from qualify_api.connections.models import PlatformApp, SocialConnection
 from qualify_api.conversations.contracts import CHANNEL_DM, ChannelRegistry, RemoteMessage
 from qualify_api.conversations.instagram_source import InstagramDirectSender
@@ -42,6 +43,7 @@ from qualify_api.inbox.dispatch import (
     ThreadNotFound,
 )
 from qualify_api.inbox.models import Thread
+from qualify_api.tenancy.acting import acting_login
 from qualify_api.tenancy.models import Brand, Tenant, User
 from qualify_api.whatsapp.chats import ChatService, PostgresChatRepository
 from qualify_api.whatsapp.client import build_text_body
@@ -72,7 +74,9 @@ class _Biz:
     wa_id: str
 
 
-def _connection(tenant_id: UUID, app_id: UUID, brand_id: UUID, user_id: UUID, platform: str):
+def _connection(
+    tenant_id: UUID, app_id: UUID, brand_id: UUID, user_id: UUID, platform: str
+) -> SocialConnection:
     whatsapp = platform == "whatsapp"
     return SocialConnection(
         tenant_id=tenant_id,
@@ -198,12 +202,21 @@ def test_each_send_lands_in_its_own_channels_outbox_in_todays_shape() -> None:
         tenant_id=biz.tenant_id, thread_id=biz.wa_thread, text="Sí hay", approval=_approval(biz)
     )
     (wa_row,) = _rows(
-        biz, "SELECT id, thread_id, kind, payload, created_by_user_id, status FROM whatsapp_outbox"
+        biz,
+        "SELECT id, thread_id, kind, payload, created_by_user_id, status, request_key "
+        "FROM whatsapp_outbox",
     )
     assert wa_row["id"] == wa_id and wa_row["thread_id"] == biz.wa_thread
     assert (wa_row["kind"], wa_row["status"]) == ("reply", "pending")
     assert wa_row["payload"] == build_text_body(biz.wa_id, "Sí hay", False)
     assert wa_row["created_by_user_id"] == biz.user_id
+    assert wa_row["request_key"] is None  # today's `ChatService.send` takes none
+    # The takeover `ChatService.send` does today: the menu cannot answer over the owner.
+    (paused,) = _rows(
+        biz, "SELECT thread_id, automation_paused_at, paused_by_user_id FROM whatsapp_thread_state"
+    )
+    assert paused["thread_id"] == biz.wa_thread and paused["automation_paused_at"] is not None
+    assert paused["paused_by_user_id"] == biz.user_id
     assert _rows(biz, "SELECT id FROM conversation_outbox") == []
 
     (ig_id,) = dispatcher.send_text(
@@ -287,4 +300,19 @@ def test_a_comment_thread_is_not_a_chat_and_nothing_is_written() -> None:
         )
     with pytest.raises(UnknownChannel):
         dispatcher.reopen(tenant_id=biz.tenant_id, thread_id=biz.comment_thread)
+    assert _state(biz) == before
+
+
+def test_a_login_that_is_not_a_member_sends_nothing_on_either_channel() -> None:
+    """The S5 gate (m-24849192) each channel's send runs fresh: under `acting_login` of a
+    login with no membership in this business, `NotAMember` passes through and neither
+    outbox nor the automation state is written."""
+    biz, dispatcher = _business(), _dispatcher()
+    before = _state(biz)
+    with acting_login(uuid4()):
+        for thread in (biz.ig_thread, biz.wa_thread):
+            with pytest.raises(NotAMember):
+                dispatcher.send_text(
+                    tenant_id=biz.tenant_id, thread_id=thread, text="hola", approval=_approval(biz)
+                )
     assert _state(biz) == before
