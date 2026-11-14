@@ -313,6 +313,7 @@ def run_copy(al: Any, args: Any, spend: Spend, api_key: str) -> dict[str, Any]:
                 kit.get("positioning", ""),
                 kit.get("audience", ""),
                 *kit.get("cta_patterns", []),
+                *kit.get("do_examples", []),
                 *case["angle"].values(),
             ]
         )
@@ -635,6 +636,7 @@ def _clip_sources(brand: dict[str, Any], sentence: str) -> str:
             kit.get("positioning", ""),
             kit.get("audience", ""),
             *kit.get("cta_patterns", []),
+            *kit.get("do_examples", []),
             sentence,
         ]
     )
@@ -968,6 +970,7 @@ def run_rejudge(al: Any, args: Any, spend: Spend, api_key: str) -> dict[str, Any
                             kit.get("positioning", ""),
                             kit.get("audience", ""),
                             *kit.get("cta_patterns", []),
+                            *kit.get("do_examples", []),
                             *case["angle"].values(),
                         ]
                     )

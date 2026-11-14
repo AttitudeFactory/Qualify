@@ -196,3 +196,10 @@ Club. Pide tu Combo… por la web o directo al WhatsApp…»). Cambia a:
   piezas) se vuelven a juzgar con la v4.
 - **Excepciones** (`cases_clips.json` → `exceptions`, `--exceptions`): clips most_aware con un
   «Debe mencionar» y una ventaja que es la forma de pedir (Rappi, la línea de WhatsApp).
+- **Corrección de fuentes (2026-11-14, escrita antes de volver a juzgar):** los datos que el
+  juez y `invented_facts` tomaban como dados no incluían los ejemplos del kit
+  (`do_examples`). En viajes, el propio kit dice «Machu Picchu al amanecer, sin correr» y «…
+  salimos temprano», y el juez marcó «al amanecer» como horario inventado en 6 de 7 clips. Desde
+  aquí los ejemplos del kit cuentan como datos del negocio (clips, piezas y nuevo juicio).
+  Las salidas most_aware de NIVELES-005 y NIVELES-006 se vuelven a juzgar con estas fuentes,
+  las dos con la v4.
