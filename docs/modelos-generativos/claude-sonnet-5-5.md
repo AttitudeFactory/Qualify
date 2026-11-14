@@ -121,3 +121,16 @@ Detalle, tabla completa y lo que queda sin medir: [`pruebas.md` § MEJORAR-TEXTO
 | Costo medido | US$0,0058 por pulsación en escena, US$0,0068 en texto |
 
 Detalle: [`pruebas.md` § MEJORAR-TEXTO-002](pruebas.md#mejorar-texto-002).
+
+## Uso CAPA-001: la capa de texto de imagen y carrusel (m-25017283), 2026-11-14
+
+| Campo | Valor |
+|---|---|
+| Código | `qualify_api.creative.image_pipeline.layer.write_layers`, función de consumo `capa-de-texto` |
+| Versión de prompt | `capa-v1` |
+| Configuración | `claude-sonnet-5-5`, esfuerzo `low`, herramienta estricta `escribir_capa` (una entrada por imagen), `max_tokens` 4.000, tope de US$0,25 por pieza; la foto va en base64 y se enmascara en Langfuse |
+| Interruptor | `QUALIFY_IMAGE_LAYER=on`; apagado por defecto (nada consume la capa hasta m-25017285) |
+| Costo medido | US$0,009–0,027 por foto, media US$0,016 (10 fotos, 4 reparaciones) |
+| Calidad medida | 10/10 capas válidas; `base_has_invented_text` de acuerdo con la etiqueta humana 9/10 |
+
+Detalle: [`pruebas.md` § CAPA-001](pruebas.md#capa-001).

@@ -22,6 +22,30 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
 
 ---
 
+<a id="capa-001"></a>
+
+## CAPA-001 — Claude escribe la capa de texto viendo la foto base: prueba de humo (m-25017283) — 2026-11-14
+
+- **Qué se probó:** la etapa `layer` de ADR 49 (`qualify_api.creative.image_pipeline.layer.write_layers`), con el prompt `capa-v1` y la herramienta estricta `escribir_capa`: Claude mira la foto, informa `subject_box`, `logo_in_photo` y `base_has_invented_text`, elige uno de los siete diseños del catálogo (`docs/catalogo-disenos-imagen-carrusel.md`) y escribe título, subtítulo y frase de invitación. La respuesta se valida con `LayerSpec` (límites del catálogo, reglas de §1.8); una diapositiva que no pasa recibe un turno de reparación.
+- **Modelo:** `claude-sonnet-5-5`, esfuerzo `low`, `tool_choice: auto` (piensa) con obligación de llamar la herramienta; sin parámetros de muestreo.
+- **Entradas:** 10 fotos base de Seedream de FOTO-BASE-001 (compiladores 4 y 5, fuera del repositorio), con los encargos de `packages/api/evals/scene_text_v4/cases.json`; los «Datos clave» del caso pasan como datos guardados del negocio (dirección, horario, pedidos). Una llamada por foto (las diapositivas de galería, sueltas). Sin Seedream, nada en R2 ni en la base.
+- **Arnés:** `packages/api/evals/capa_texto/run.py --images <dir> --scores <scores.csv de FOTO-BASE-001> --max-usd 0.5`.
+- **Resultado (10 fotos):**
+
+| Medida | Valor |
+|---|---|
+| Capa válida según el esquema | **10/10** (4 necesitaron el turno de reparación) |
+| Diseño contra la regla «elegirlo cuando» del catálogo | 0 incumplimientos (8 `band`, 2 `plate`; ningún `scrim`) |
+| Precio alterado | 0 (ningún `price_ref` fuera del producto del caso) |
+| Números en el texto libre | 1, el «2x1» de F7 (permitido) |
+| `base_has_invented_text` contra la etiqueta humana de FOTO-BASE-001 | **9/10** de acuerdo: detectó el letrero inventado de F1 (compilador 4); un falso positivo en F3 (compilador 5) |
+| Gasto | **US$0,163** por 14 llamadas (10 + 4 reparaciones): **US$0,009–0,027 por foto**, US$0,016 de media |
+
+- **Lectura:** el esquema y la reparación se sostienen; la mitad de las fotos pidieron reparar (subtítulos largos o una frase fuera de regla) y todas salieron válidas. Claude prefiere `band` (la opción segura) sobre `plate` con fotos de Seedream que llenan el cuadro; nadie eligió `scrim`. El falso positivo de F3 regeneraría una base sin necesidad (a lo sumo una vez, por la clave única). F3 escribió «Abrimos de martes a domingo…» en el subtítulo: sin cifras pasa la regla de §1.8, pero es un dato del horario en texto libre — una regla a endurecer.
+- **Pendiente:** medir con más fotos y galerías completas en una sola llamada (m-25017292), con la composición real (m-25017285), y la latencia (no se midió).
+
+---
+
 <a id="niveles-005"></a>
 
 ## NIVELES-005 — Medidas de most_aware, dilema de problem_aware en partes y horarios fuera de solution_aware (m-25026509) — 2026-11-13
