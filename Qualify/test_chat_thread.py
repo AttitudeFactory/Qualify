@@ -6,7 +6,9 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
+from uuid import UUID
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -25,6 +27,7 @@ from .chat_thread_vm import (
     thread_style,
     window_line,
 )
+from .test_whatsapp_chats_payments import gw  # noqa: F401 — the fake gateway fixture
 from .whatsapp_chats_state import WhatsAppChatsState
 from .whatsapp_chats_vm import (
     WINDOW_CLOSED_PILL,
@@ -146,20 +149,6 @@ def test_whatsapp_gets_day_separators_and_clock_only_bubbles() -> None:
     assert vms[1].tick == "read" and vms[2].tick == "queued"
 
 
-def test_whatsapp_reads_a_naive_database_instant_as_utc() -> None:
-    """A naive instant (a hand-made or legacy record) is UTC, as Instagram's repository
-    already reads it — never the tenant's clock taken as is."""
-    naive_utc = datetime(2026, 11, 14, 4, 22)  # 2026-11-13 23:22 in Bogotá
-    vms = build_conversation(
-        [_Msg("a", "inbound", "Hola", naive_utc)],
-        [UnsentItem(id="q", text="Ya", status="pending", created_at=datetime(2026, 11, 14, 4, 30))],
-        now=NOW,
-        zone=ZONE,
-    )
-    assert [v.time_label for v in vms] == ["23:22", "23:30"]
-    assert vms[0].day_label == "Ayer"
-
-
 # --- the order strip -----------------------------------------------------------------------
 
 
@@ -265,3 +254,42 @@ def test_the_status_mark_has_its_word_and_no_inline_colour() -> None:
 
 def test_no_channel_says_window_closed_twice() -> None:
     assert WINDOW_CLOSED_PILL == "Solo con mensaje aprobado"
+
+
+# --- the business's zone reaches a chat opened by its address ------------------------------
+
+
+async def test_a_chat_loaded_before_the_zone_is_redrawn_in_it(gw, monkeypatch) -> None:  # noqa: ANN001, F811
+    """Seen in the browser (m-25027371): a chat opened from «Por responder» can load
+    before the first list read knows the business's zone, and drew the UTC clock. The
+    list read redraws it: bubbles, separators, the order and the payment lines."""
+    from qualify_api.whatsapp.orders import OrderLine, OrderSummary
+
+    from .test_whatsapp_chats import _message, _thread
+    from .test_whatsapp_chats_payments import CONN, THREAD, _status
+
+    noon = datetime(2026, 11, 14, 12, 0, tzinfo=UTC)
+    at = datetime(2026, 11, 14, 3, 30, tzinfo=UTC)  # 2026-11-13 22:30 in Bogotá
+    monkeypatch.setattr(WhatsAppChatsState, "_now", lambda self: noon)
+    monkeypatch.setattr(gw, "timezone", lambda t: "America/Bogota", raising=False)
+    monkeypatch.setattr(gw, "agents", lambda t: [], raising=False)
+    monkeypatch.setattr(gw, "threads", lambda t, c: [_thread(id=UUID(THREAD))], raising=False)
+    state = WhatsAppChatsState()
+    state._connection_id = CONN
+    state.open_thread_id = THREAD
+    state.conv_loaded_for = THREAD
+    state._records = [_message(posted_at=at)]
+    state._order_raw = OrderSummary(
+        lines=(OrderLine(product_id="p", name="Shawarma", qty=1),),
+        total=Decimal("25000"),
+        currency="COP",
+        confirmed_at=at,
+    )
+    state._payment_raw = _status("received", confirmed_at=at + timedelta(minutes=10))
+    state._render_conversation()  # before the zone: UTC
+    assert state.messages[0].time_label == "03:30" and state.messages[0].day_label == "Hoy"
+
+    assert await WhatsAppChatsState._read_list(state, silent=False)
+    assert state.messages[0].time_label == "22:30" and state.messages[0].day_label == "Ayer"
+    assert "22:30" in state.order.confirmed_label
+    assert "22:40" in state.payment.confirmed_line
