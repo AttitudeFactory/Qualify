@@ -147,9 +147,8 @@ def test_whatsapp_gets_day_separators_and_clock_only_bubbles() -> None:
 
 
 def test_whatsapp_reads_a_naive_database_instant_as_utc() -> None:
-    """Seen on screen (m-25027371): WhatsApp's read hands `posted_at` without its zone,
-    and the bubble said the UTC clock (04:22 for a message sent at 11:22 p. m. in
-    Bogotá). A naive instant is UTC, as Instagram's repository already says."""
+    """A naive instant (a hand-made or legacy record) is UTC, as Instagram's repository
+    already reads it — never the tenant's clock taken as is."""
     naive_utc = datetime(2026, 11, 14, 4, 22)  # 2026-11-13 23:22 in Bogotá
     vms = build_conversation(
         [_Msg("a", "inbound", "Hola", naive_utc)],

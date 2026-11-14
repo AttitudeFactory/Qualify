@@ -348,10 +348,9 @@ def message_time(value: datetime | None, now: datetime, zone: tzinfo) -> str:
 
 def bubble_clock(value: datetime | None, zone: tzinfo) -> str:
     """A bubble's time: the clock alone — the day separator above says the day
-    (m-25027371, as Instagram's thread). A naive instant is UTC: the WhatsApp read
-    (`qualify_api.whatsapp.chats`) hands `messages.posted_at`, a `timestamp` column
-    stored in UTC, without its zone — Instagram's repository already marks it
-    (`conversations.repository`); without this the bubble said the UTC clock."""
+    (m-25027371, as Instagram's thread). A naive instant is read as UTC, the way
+    Instagram's repository does (`conversations.repository`); the columns are
+    `timestamptz`, so this is only a guard for a hand-made or legacy record."""
     return format_clock(as_utc(value), zone) if value is not None else ""
 
 

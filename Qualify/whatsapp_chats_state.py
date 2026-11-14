@@ -970,6 +970,12 @@ class WhatsAppChatsState(rx.State):
             if need_context:
                 self._zone_name = zone_name
                 self.agents = agents
+                # m-25027371 (seen in the browser): a chat opened by its address (from
+                # «Por responder») can load before this first list read knows the
+                # business's zone, and its bubbles said the UTC clock until the next
+                # 15 s refresh. Redraw it in the right zone now.
+                if self.conv_loaded_for and self.conv_loaded_for == self.open_thread_id:
+                    self._render_conversation()
             by_id = {a.user_id: a for a in self.agents}
             zone = _zone(self._zone_name)
             now = self._now()
