@@ -474,6 +474,26 @@ def route_is_current(route: str, routes: Sequence[str] = NAV_ROUTES) -> rx.Var:
     return is_current(route, routes, path, origin == FROM_WEEK, origin == FROM_APPROVED)
 
 
+def _after_hydration() -> rx.Var:
+    """True from the first effect after React hydrated the prerendered page; false in
+    the prerendered HTML and in the first client render, so both agree.
+
+    For a browser script that edits the rail's DOM (`assets/glass-nav.js`): loaded
+    before hydration, it added the capsule to the server's HTML (the active row is
+    known at prerender since m-24993451), React found a node it never rendered (minified
+    error #418) and re-created the whole document client-side, which re-appended
+    `__reflex_global_styles` after emotion's `<style>` tags so Radix base `display`
+    rules beat emotion's responsive ones (mobile controls shown on desktop)."""
+    hydrated = VarData(
+        imports={"react": ["useEffect", "useState"]},
+        hooks={
+            "const [qHydrated, setQHydrated] = useState(false);"
+            " useEffect(() => setQHydrated(true), []);": None
+        },
+    )
+    return rx.Var(_js_expr="qHydrated", _var_type=bool, _var_data=hydrated).guess_type()
+
+
 def _nav_item(
     label: str, icon: str, route: str, enabled: bool, routes: Sequence[str] = NAV_ROUTES
 ) -> rx.Component:
@@ -838,8 +858,11 @@ def sidebar() -> rx.Component:
         # head and loads it once per document whatever page mounts the rail, and it
         # does not depend on react-helmet (which `head_components` use, and which only
         # injects on Reflex >= 0.9.9 — the shared venv was at 0.9.7 on 2026-10-08).
-        # The file guards its own double-run.
-        rx.el.script(src="/glass-nav.js", async_=True),
+        # The file guards its own double-run. Rendered only once React has hydrated
+        # (`_after_hydration`): the script adds the capsule to the prerendered rail, and
+        # doing that before hydration makes React throw the whole document away and
+        # re-create it, which re-appends the global stylesheet after emotion's rules.
+        rx.cond(_after_hydration(), rx.el.script(src="/glass-nav.js", async_=True)),
         # m-24842963 (NAV-6): the pending counts are re-read on every screen (the rail
         # mounts with each page) and every 30 s while one is open; the same read writes
         # «(N)» at the start of the tab title. Browser-side timer, stops with the page.
