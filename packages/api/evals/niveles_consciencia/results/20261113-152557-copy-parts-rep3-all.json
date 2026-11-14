@@ -1,0 +1,1755 @@
+{
+ "ticket": "m-25026482",
+ "baseline_ref": "a6667370",
+ "split": "all",
+ "pricing_version": "v9",
+ "judge": "claude-haiku-5-5@low",
+ "judge_prompt_version": "juez-niveles-v2",
+ "tracing": false,
+ "date": "2026-11-13T15:25:57",
+ "suites": {
+  "copy": {
+   "items": [
+    {
+     "case": "niv-bur-unaware",
+     "arm": "base",
+     "level": "unaware",
+     "objective": "sale",
+     "must_mention": [
+      "$32.900"
+     ],
+     "output": {
+      "kind": "static_flyer",
+      "variants": [
+       {
+        "payload": {
+         "hook": "El parche se arma en la plancha",
+         "caption": "Llegan los amigos, suena la plancha y arranca el plan. Combo doble smash: carne madurada, costra dorada y salsa de la casa. Todo por $32.900. Pidan otra ronda y que nadie se quede con hambre. ¿Quién se le mide a la triple? 🔥 Caigan al local en la 57 o pídanla por Rappi.",
+         "hashtags": [
+          "brasanorte",
+          "smashburger",
+          "chapinero",
+          "planconamigos"
+         ],
+         "cta": "Caigan al local en la 57",
+         "script": "",
+         "shots": []
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 4.9,
+        "cost_usd": 0.006822
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.006822,
+     "juez_ciego_usd": 0.000345,
+     "juez_informado_usd": 0.000222
+    },
+    {
+     "case": "niv-bur-unaware",
+     "arm": "nuevo",
+     "level": "unaware",
+     "objective": "awareness",
+     "must_mention": [],
+     "output": {
+      "kind": "static_flyer",
+      "variants": [
+       {
+        "payload": {
+         "hook": "El parche de hoy suena a plancha",
+         "caption": "Salen del trabajo, arman el parche y caen a Chapinero. 🍔 La plancha chilla, la costra se arma y la doble smash llega a la mesa con salsa de la casa. Mesas para quedarse, parqueadero gratis y el perro también entra. 🐶 Abiertos hasta las 11 p. m., así que nadie se afana. ¿Quién se apunta?",
+         "hashtags": [
+          "brasanorte",
+          "smashburger",
+          "chapinero",
+          "parchebogota"
+         ],
+         "cta": "Caigan al local de la 57",
+         "script": "",
+         "shots": []
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 8.6,
+        "cost_usd": 0.017982
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.017982,
+     "juez_ciego_usd": 0.000405,
+     "juez_informado_usd": 0.000519
+    },
+    {
+     "case": "niv-bur-problem",
+     "arm": "base",
+     "level": "problem_aware",
+     "objective": "sale",
+     "must_mention": [
+      "$32.900"
+     ],
+     "output": {
+      "kind": "static_flyer",
+      "variants": [
+       {
+        "payload": {
+         "hook": "¿Qué cenamos? Doble smash, parce",
+         "caption": "La eterna pregunta después del camello: ¿qué cenamos? Fácil. Combo doble smash por $32.900. Dos carnes aplastadas en la plancha, costra dorada, queso derretido y salsa de la casa. Escucha ese tsss y ya sabes la respuesta. ¿Te le mides a la triple después? 🍔🔥 Cae al local en la 57 o pídela por Rappi.",
+         "hashtags": [
+          "brasanorte",
+          "smashburger",
+          "chapinero",
+          "comidabogota"
+         ],
+         "cta": "Cae a la 57 o pide por Rappi",
+         "script": "",
+         "shots": []
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 3.48,
+        "cost_usd": 0.007434
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.007434,
+     "juez_ciego_usd": 0.000314,
+     "juez_informado_usd": 0.000366
+    },
+    {
+     "case": "niv-bur-problem",
+     "arm": "nuevo",
+     "level": "problem_aware",
+     "objective": "consideration",
+     "must_mention": [
+      "$32.900"
+     ],
+     "output": {
+      "kind": "static_flyer",
+      "variants": [
+       {
+        "payload": {
+         "hook": "¿Qué cenamos hoy? Fácil: doble smash",
+         "caption": "¿Otra vez el dilema de la cena? Ya se lo resolvimos. 🍔 Combo doble smash por $32.900: carne a la plancha, costra crocante y salsa de la casa. Escuche ese chirrido de la plancha y no le dé más vueltas. Hay mesas en el local, parqueadero gratis y su perro también entra. Abierto hasta las 11 p. m. Pídalo por Rappi o caiga al local en la 57. 🔥",
+         "hashtags": [
+          "brasanorte",
+          "smashburger",
+          "chapinero",
+          "quecenamos"
+         ],
+         "cta": "Pídela ya por Rappi",
+         "script": "",
+         "shots": []
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 4.37,
+        "cost_usd": 0.008242
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.008242,
+     "juez_ciego_usd": 0.000469,
+     "juez_informado_usd": 0.000378
+    },
+    {
+     "case": "niv-bur-solution",
+     "arm": "base",
+     "level": "solution_aware",
+     "objective": "sale",
+     "must_mention": [
+      "$32.900"
+     ],
+     "output": {
+      "kind": "static_flyer",
+      "variants": [
+       {
+        "payload": {
+         "hook": "Escucha esa plancha. Mira esa costra.",
+         "caption": "¿Oyes ese chasquido? Es la carne madurada aplastada a la plancha hasta sacar costra. 🔥 Doble smash, queso derretido y salsa de la casa. Por eso esta smash es distinta. Combo doble smash a $32.900. Tráete al parche después del trabajo y caigan al local en la 57, Chapinero. ¿Se le miden?",
+         "hashtags": [
+          "brasanorte",
+          "smashburger",
+          "chapinero",
+          "hamburguesasbogota"
+         ],
+         "cta": "Caiga al local en la 57",
+         "script": "",
+         "shots": []
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 4.04,
+        "cost_usd": 0.007126
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.007126,
+     "juez_ciego_usd": 0.000405,
+     "juez_informado_usd": 0.000499
+    },
+    {
+     "case": "niv-bur-solution",
+     "arm": "nuevo",
+     "level": "solution_aware",
+     "objective": "consideration",
+     "must_mention": [
+      "$32.900"
+     ],
+     "output": {
+      "kind": "static_flyer",
+      "variants": [
+       {
+        "payload": {
+         "hook": "Doble smash con costra de verdad",
+         "caption": "¿Oyes eso? Es la plancha chillando. 🔥 Aplastamos la carne madurada a la plancha hasta que suelta esa costra dorada y crocante. Doble carne, queso derretido, salsa de la casa. Combo doble smash a $32.900. Mesas en el local, parqueadero gratis y trae al perro. Abierto hasta las 11 p. m. Pídela por Rappi o cáele al local en la 57, parce.",
+         "hashtags": [
+          "brasanorte",
+          "smashburger",
+          "chapinero",
+          "hamburguesasbogota"
+         ],
+         "cta": "Cáele a la 57 o pide por Rappi",
+         "script": "",
+         "shots": []
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 4.19,
+        "cost_usd": 0.008122
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.008122,
+     "juez_ciego_usd": 0.0004,
+     "juez_informado_usd": 0.000461
+    },
+    {
+     "case": "niv-bur-product",
+     "arm": "base",
+     "level": "product_aware",
+     "objective": "sale",
+     "must_mention": [
+      "$32.900"
+     ],
+     "output": {
+      "kind": "static_flyer",
+      "variants": [
+       {
+        "payload": {
+         "hook": "Combo doble smash a $32.900",
+         "caption": "Sin vueltas: doble smash a la plancha, carne madurada, buena costra y salsa de la casa. Todo por $32.900. ¿Dónde? En el localcito de Chapinero, sobre la 57. Escuche ese chisss de la plancha y caiga con el parche, o pídala por Rappi. ¿Se le mide? 🍔",
+         "hashtags": [
+          "brasanorte",
+          "smashburger",
+          "chapinero",
+          "hamburguesasbogota"
+         ],
+         "cta": "Caiga al local en la 57",
+         "script": "",
+         "shots": []
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 8.64,
+        "cost_usd": 0.017298
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.017298,
+     "juez_ciego_usd": 0.000406,
+     "juez_informado_usd": 0.000273
+    },
+    {
+     "case": "niv-bur-product",
+     "arm": "nuevo",
+     "level": "product_aware",
+     "objective": "sale",
+     "must_mention": [
+      "$32.900"
+     ],
+     "output": {
+      "kind": "static_flyer",
+      "variants": [
+       {
+        "payload": {
+         "hook": "Doble smash + postre: $32.900",
+         "caption": "Combo doble smash a $32.900. Sin vueltas. 🍔\nDoble carne madurada a la plancha, costra dorada y salsa de la casa. De cierre, el postre de la heladería de al lado.\n¿Dónde? Local pequeño en Chapinero, en la 57. Mesas para comer ahí, parqueadero gratis y su perro también entra 🐶. Abierto hasta las 11 p. m.\nEscuche esa plancha sonando. ¿Se le mide? Caiga hoy.",
+         "hashtags": [
+          "brasanorte",
+          "smashburger",
+          "chapinero",
+          "hamburguesasbogota"
+         ],
+         "cta": "Caiga a la 57, en Chapinero",
+         "script": "",
+         "shots": []
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 10.03,
+        "cost_usd": 0.022166
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.022166,
+     "juez_ciego_usd": 0.000644,
+     "juez_informado_usd": 0.000756
+    },
+    {
+     "case": "niv-bur-most",
+     "arm": "base",
+     "level": "most_aware",
+     "objective": "sale",
+     "must_mention": [
+      "$32.900"
+     ],
+     "output": {
+      "kind": "static_flyer",
+      "variants": [
+       {
+        "payload": {
+         "hook": "Doble smash, costra y queso. Ya.",
+         "caption": "¿Oyes eso? Es la plancha sonando. 🔥 Dos carnes madurada aplastadas, costra dorada, queso derretido y salsa de la casa. Combo doble smash por $32.900. Pídelo ya por Rappi o caele al local en la 57, en Chapinero. ¿Y si te le mides a la triple? Te reto.",
+         "hashtags": [
+          "brasanorte",
+          "smashburger",
+          "chapinero",
+          "hamburguesasbogota"
+         ],
+         "cta": "Pídelo ya por Rappi",
+         "script": "",
+         "shots": []
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 3.29,
+        "cost_usd": 0.006942
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.006942,
+     "juez_ciego_usd": 0.000376,
+     "juez_informado_usd": 0.000415
+    },
+    {
+     "case": "niv-bur-most",
+     "arm": "nuevo",
+     "level": "most_aware",
+     "objective": "sale",
+     "must_mention": [
+      "$32.900"
+     ],
+     "output": {
+      "kind": "static_flyer",
+      "variants": [
+       {
+        "payload": {
+         "hook": "Doble smash. $32.900. Ya.",
+         "caption": "Combo doble smash a $32.900 🍔 Dos carnes a la plancha, costra dorada y salsa de la casa. Escucha ese chsss y no lo pienses más. Pídelo por Rappi o cáete al local en la 57, que hay parqueadero gratis y abrimos hasta las 11 p. m. ¿Quién se le mide?",
+         "hashtags": [
+          "brasanorte",
+          "smashburger",
+          "chapinero",
+          "hamburguesasbogota"
+         ],
+         "cta": "Pídela ya por Rappi",
+         "script": "",
+         "shots": []
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 3.64,
+        "cost_usd": 0.00731
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.00731,
+     "juez_ciego_usd": 0.000331,
+     "juez_informado_usd": 0.00052
+    },
+    {
+     "case": "niv-inm-unaware",
+     "arm": "base",
+     "level": "unaware",
+     "objective": "sale",
+     "must_mention": [
+      "Desde $280 millones"
+     ],
+     "output": {
+      "kind": "static_flyer",
+      "variants": [
+       {
+        "payload": {
+         "hook": "Tu primera mañana en casa propia",
+         "caption": "Imagina abrir los ojos un domingo, preparar el café con calma y saber que esas paredes son tuyas. Esa primera mañana en casa propia empieza mucho antes de la entrega: empieza con una decisión bien acompañada.\n\nTenemos apartamentos de 2 alcobas en Bello. Desde $280 millones, pensados para familias y profesionales que dan el paso hacia su primera vivienda.\n\nUn paso clave del proceso: antes de la separación, revisamos contigo cuánto necesitas para la cuota inicial y si puedes aplicar a un subsidio. Así planeas tus pagos sin presiones y con acompañamiento legal en cada etapa.\n\n¿Cómo te imaginas esa primera mañana en tu apartamento? 🏡",
+         "hashtags": [
+          "habitatinmobiliaria",
+          "ViviendaNuevaBello",
+          "PrimeraVivienda"
+         ],
+         "cta": "Agenda tu cita sin costo",
+         "script": "",
+         "shots": []
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 9.99,
+        "cost_usd": 0.022837
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.022837,
+     "juez_ciego_usd": 0.000413,
+     "juez_informado_usd": 0.000307
+    },
+    {
+     "case": "niv-inm-unaware",
+     "arm": "nuevo",
+     "level": "unaware",
+     "objective": "awareness",
+     "must_mention": [],
+     "output": {
+      "kind": "static_flyer",
+      "variants": [
+       {
+        "payload": {
+         "hook": "La primera mañana en tu propia casa",
+         "caption": "Imagina abrir los ojos y saber que esas paredes son tuyas. El café en tu cocina, la luz entrando por tu ventana, los niños despertando en su propia alcoba. Esa primera mañana en casa propia se siente distinta, y empieza a construirse mucho antes de la entrega de llaves.\n\nUn paso que muchas familias pasan por alto: antes de separar, vale la pena revisar el estudio de títulos del inmueble. En Hábitat te acompañamos en ese proceso legal y te guiamos con el subsidio Mi Casa Ya, para que avances con calma y sin presiones. La asesoría no tiene costo y te atendemos por WhatsApp.\n\nPronto te contamos más sobre los apartamentos de 2 alcobas en Bello. Mientras tanto, cuéntanos: ¿cómo te imaginas tu primera mañana en casa propia? ☕",
+         "hashtags": [
+          "habitatinmobiliaria",
+          "viviendanueva",
+          "bello",
+          "casapropia"
+         ],
+         "cta": "Escríbenos por WhatsApp",
+         "script": "",
+         "shots": []
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 5.25,
+        "cost_usd": 0.011124
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.011124,
+     "juez_ciego_usd": 0.000565,
+     "juez_informado_usd": 0.000386
+    },
+    {
+     "case": "niv-inm-product",
+     "arm": "base",
+     "level": "product_aware",
+     "objective": "sale",
+     "must_mention": [
+      "Desde $280 millones"
+     ],
+     "output": {
+      "kind": "static_flyer",
+      "variants": [
+       {
+        "payload": {
+         "hook": "2 alcobas en Bello, con cuentas claras",
+         "caption": "Apartamentos de 2 alcobas en Bello, desde $280 millones. Antes de separar, te mostramos el valor completo: precio del inmueble, cuota inicial, gastos de notaría y registro, y el subsidio al que podrías aplicar si cumples los requisitos.\n\nHay un paso que muchas familias pasan por alto: el estudio de títulos. Lo revisamos contigo para verificar que el inmueble no tenga pendientes legales antes de firmar la promesa de compraventa.\n\nTe damos acompañamiento desde la primera visita hasta la entrega, sin afanes y con cada cifra por escrito. ¿Qué parte del trámite te genera más dudas? Escríbenos por WhatsApp y lo conversamos 🏡",
+         "hashtags": [
+          "habitatinmobiliaria",
+          "ViviendaBello",
+          "PrimeraVivienda",
+          "ValleDeAburra"
+         ],
+         "cta": "Pide tu asesoría sin costo",
+         "script": "",
+         "shots": []
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 9.01,
+        "cost_usd": 0.019881
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.019881,
+     "juez_ciego_usd": 0.000382,
+     "juez_informado_usd": 0.000493
+    },
+    {
+     "case": "niv-inm-product",
+     "arm": "nuevo",
+     "level": "product_aware",
+     "objective": "sale",
+     "must_mention": [
+      "Desde $280 millones"
+     ],
+     "output": {
+      "kind": "static_flyer",
+      "variants": [
+       {
+        "payload": {
+         "hook": "2 alcobas en Bello, con cuentas claras",
+         "caption": "Apartamentos de 2 alcobas en Bello, desde $280 millones. Ese es el punto de partida, y queremos que sepas desde el primer día qué estás pagando y en qué etapa del proceso vas.\n\nUn paso que muchas familias pasan por alto: antes de separar, conviene revisar el estudio de títulos del inmueble. Nosotros te damos acompañamiento legal en esa revisión, para que firmes con tranquilidad y sin letra menuda.\n\nTambién te guiamos con el subsidio Mi Casa Ya y te explicamos, según tu caso, cómo organizar la cuota inicial, desde la separación hasta la entrega.\n\nLa asesoría es sin costo y te atendemos por WhatsApp.\n\n¿Qué parte del trámite te genera más dudas hoy?",
+         "hashtags": [
+          "habitatinmobiliaria",
+          "ViviendaBello",
+          "PrimeraVivienda",
+          "MiCasaYa"
+         ],
+         "cta": "Escríbenos y revisamos tu caso",
+         "script": "",
+         "shots": []
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 9.14,
+        "cost_usd": 0.023148
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.023148,
+     "juez_ciego_usd": 0.00037,
+     "juez_informado_usd": 0.000344
+    }
+   ],
+   "scores": [
+    {
+     "arm": "base",
+     "case": "niv-bur-unaware",
+     "split": "test",
+     "sector": "hamburguesas",
+     "with_perks": false,
+     "level": "unaware",
+     "level_answered": null,
+     "rule_det": false,
+     "invented_det": [],
+     "perks_det": [],
+     "judge_level": "product_aware",
+     "judge_quality": 3,
+     "judge_invented": [],
+     "judge_perks": [],
+     "judge_fit": false,
+     "judge_reason": "Su nivel declarado es unaware, cuya regla prohíbe precio u oferta, y la idea incluye \"Todo por $32.900\" y pide ir al local o pedir por Rappi, además de mencionar \"la triple\", que no aparece en los dat",
+     "words_hook": 7,
+     "words_cta": 6
+    },
+    {
+     "arm": "nuevo",
+     "case": "niv-bur-unaware",
+     "split": "test",
+     "sector": "hamburguesas",
+     "with_perks": true,
+     "level": "unaware",
+     "level_answered": null,
+     "rule_det": false,
+     "invented_det": [],
+     "perks_det": [
+      1,
+      3,
+      4
+     ],
+     "judge_level": "product_aware",
+     "judge_quality": 3,
+     "judge_invented": [],
+     "judge_perks": [
+      1,
+      2,
+      3,
+      4
+     ],
+     "judge_fit": false,
+     "judge_reason": "Para unaware no debe haber oferta, y 'parqueadero gratis' funciona como incentivo de venta, mientras que el texto también mete beneficios de producto (doble smash, salsa) y horario en vez de quedarse ",
+     "words_hook": 7,
+     "words_cta": 6
+    },
+    {
+     "arm": "base",
+     "case": "niv-bur-problem",
+     "split": "test",
+     "sector": "hamburguesas",
+     "with_perks": false,
+     "level": "problem_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [],
+     "judge_level": "problem_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [],
+     "judge_fit": true,
+     "judge_reason": "El gancho nombra el dilema de la cena (¿qué cenamos?) y presenta el combo doble smash como la respuesta, que es lo que pide la regla de problem_aware. Los datos que menciona (precio de $32.900, local ",
+     "words_hook": 5,
+     "words_cta": 8
+    },
+    {
+     "arm": "nuevo",
+     "case": "niv-bur-problem",
+     "split": "test",
+     "sector": "hamburguesas",
+     "with_perks": true,
+     "level": "problem_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [
+      1,
+      3,
+      4
+     ],
+     "judge_level": "problem_aware",
+     "judge_quality": 3,
+     "judge_invented": [],
+     "judge_perks": [
+      1,
+      2,
+      3,
+      4
+     ],
+     "judge_fit": true,
+     "judge_reason": "El gancho nombra el dilema de la cena (\"¿Qué cenamos hoy?\") y presenta el doble smash como la respuesta, que es lo que pide la regla de problem_aware; no inventa datos, ya que precio, mesas, parqueade",
+     "words_hook": 6,
+     "words_cta": 4
+    },
+    {
+     "arm": "base",
+     "case": "niv-bur-solution",
+     "split": "test",
+     "sector": "hamburguesas",
+     "with_perks": false,
+     "level": "solution_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [],
+     "judge_level": "solution_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [],
+     "judge_fit": true,
+     "judge_reason": "Para solution_aware muestra por qué esta smash es distinta con datos del producto (carne madurada, costra a la plancha, doble con queso) y el precio del combo que consta en los datos, sin inventar hor",
+     "words_hook": 6,
+     "words_cta": 6
+    },
+    {
+     "arm": "nuevo",
+     "case": "niv-bur-solution",
+     "split": "test",
+     "sector": "hamburguesas",
+     "with_perks": true,
+     "level": "solution_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [
+      1,
+      3,
+      4
+     ],
+     "judge_level": "product_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      1,
+      2,
+      3,
+      4
+     ],
+     "judge_fit": null,
+     "judge_reason": "",
+     "words_hook": 6,
+     "words_cta": 8
+    },
+    {
+     "arm": "base",
+     "case": "niv-bur-product",
+     "split": "test",
+     "sector": "hamburguesas",
+     "with_perks": false,
+     "level": "product_aware",
+     "level_answered": null,
+     "rule_det": true,
+     "invented_det": [],
+     "perks_det": [],
+     "judge_level": "product_aware",
+     "judge_quality": 3,
+     "judge_invented": [],
+     "judge_perks": [],
+     "judge_fit": true,
+     "judge_reason": "Para product_aware quita la fricción con datos reales: precio claro ($32.900), dónde queda (local en la 57, Chapinero) y cómo pedir (Rappi); no inventa horario, domicilio ni promoción.",
+     "words_hook": 6,
+     "words_cta": 6
+    },
+    {
+     "arm": "nuevo",
+     "case": "niv-bur-product",
+     "split": "test",
+     "sector": "hamburguesas",
+     "with_perks": true,
+     "level": "product_aware",
+     "level_answered": null,
+     "rule_det": true,
+     "invented_det": [],
+     "perks_det": [
+      1,
+      3,
+      4,
+      5
+     ],
+     "judge_level": "product_aware",
+     "judge_quality": 3,
+     "judge_invented": [
+      "Presenta el combo como doble smash + postre a $32.900; en los datos, ese precio corresponde al combo con papas y gaseosa, y la composición con postre no tiene precio dado"
+     ],
+     "judge_perks": [
+      1,
+      2,
+      3,
+      4,
+      5
+     ],
+     "judge_fit": false,
+     "judge_reason": "Quita fricción con precio, horario, ubicación, parqueadero, mascotas y mesas que sí están en los datos, pero asocia el precio de $32.900 a doble smash con postre y omite papas y gaseosa, que son lo qu",
+     "words_hook": 5,
+     "words_cta": 6
+    },
+    {
+     "arm": "base",
+     "case": "niv-bur-most",
+     "split": "test",
+     "sector": "hamburguesas",
+     "with_perks": false,
+     "level": "most_aware",
+     "level_answered": null,
+     "rule_det": true,
+     "invented_det": [],
+     "perks_det": [],
+     "judge_level": "most_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [],
+     "judge_fit": false,
+     "judge_reason": "El gancho es corto y directo, pero el texto mete una descripción larga, el reto de la triple (producto que no está en los datos) y varias frases antes de la llamada a la acción, cuando en most_aware d",
+     "words_hook": 6,
+     "words_cta": 4
+    },
+    {
+     "arm": "nuevo",
+     "case": "niv-bur-most",
+     "split": "test",
+     "sector": "hamburguesas",
+     "with_perks": true,
+     "level": "most_aware",
+     "level_answered": null,
+     "rule_det": true,
+     "invented_det": [],
+     "perks_det": [
+      1
+     ],
+     "judge_level": "most_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      1,
+      4
+     ],
+     "judge_fit": true,
+     "judge_reason": "El gancho («Doble smash. $32.900. Ya.») y la CTA («Pídela ya por Rappi») son breves y directos, y no hay datos inventados; el cuerpo del texto es largo y mete parqueadero y horario, lo que resta un po",
+     "words_hook": 5,
+     "words_cta": 4
+    },
+    {
+     "arm": "base",
+     "case": "niv-inm-unaware",
+     "split": "test",
+     "sector": "inmobiliaria",
+     "with_perks": false,
+     "level": "unaware",
+     "level_answered": null,
+     "rule_det": false,
+     "invented_det": [],
+     "perks_det": [],
+     "judge_level": "problem_aware",
+     "judge_quality": 3,
+     "judge_invented": [],
+     "judge_perks": [],
+     "judge_fit": false,
+     "judge_reason": "Para unaware la regla prohíbe precio y oferta, y la idea incluye \"Desde $280 millones\" y menciona el subsidio y la cuota inicial, cuando el público aún no piensa en comprar; la escena de la primera ma",
+     "words_hook": 6,
+     "words_cta": 5
+    },
+    {
+     "arm": "nuevo",
+     "case": "niv-inm-unaware",
+     "split": "test",
+     "sector": "inmobiliaria",
+     "with_perks": true,
+     "level": "unaware",
+     "level_answered": null,
+     "rule_det": true,
+     "invented_det": [],
+     "perks_det": [
+      1,
+      2,
+      3,
+      4
+     ],
+     "judge_level": "unaware",
+     "judge_quality": 3,
+     "judge_invented": [],
+     "judge_perks": [
+      1,
+      2,
+      3,
+      4
+     ],
+     "judge_fit": false,
+     "judge_reason": "Declarada como unaware, pero el texto abandona la escena de la primera mañana para hablar de estudio de títulos, subsidio Mi Casa Ya y 'la asesoría no tiene costo', que es una oferta, además de cerrar",
+     "words_hook": 7,
+     "words_cta": 3
+    },
+    {
+     "arm": "base",
+     "case": "niv-inm-product",
+     "split": "test",
+     "sector": "inmobiliaria",
+     "with_perks": false,
+     "level": "product_aware",
+     "level_answered": null,
+     "rule_det": true,
+     "invented_det": [],
+     "perks_det": [],
+     "judge_level": "product_aware",
+     "judge_quality": 3,
+     "judge_invented": [],
+     "judge_perks": [],
+     "judge_fit": true,
+     "judge_reason": "Para product_aware quita la fricción con datos dados: precio desde $280 millones, asesoría sin costo, estudio de títulos, subsidio Mi Casa Ya y contacto por WhatsApp; no inventa horarios, descuentos n",
+     "words_hook": 7,
+     "words_cta": 5
+    },
+    {
+     "arm": "nuevo",
+     "case": "niv-inm-product",
+     "split": "test",
+     "sector": "inmobiliaria",
+     "with_perks": true,
+     "level": "product_aware",
+     "level_answered": null,
+     "rule_det": true,
+     "invented_det": [],
+     "perks_det": [
+      1,
+      2,
+      3,
+      4
+     ],
+     "judge_level": "product_aware",
+     "judge_quality": 3,
+     "judge_invented": [],
+     "judge_perks": [
+      1,
+      2,
+      3,
+      4
+     ],
+     "judge_fit": true,
+     "judge_reason": "Quita la fricción con datos dados (precio desde $280 millones, asesoría sin costo, atención por WhatsApp) sin inventar horarios, descuentos ni formas de pago; el texto es largo y algo genérico para un",
+     "words_hook": 7,
+     "words_cta": 5
+    }
+   ],
+   "prefix_chars": {
+    "hamburguesas": {
+     "base": 2713,
+     "nuevo": 3212
+    },
+    "inmobiliaria": {
+     "base": 2773,
+     "nuevo": 3250
+    }
+   }
+  },
+  "parts": {
+   "items": [
+    {
+     "case": "niv-bur-unaware",
+     "arm": "base",
+     "level": "unaware",
+     "prompt_version": "proponer-partes-v3.2",
+     "output": {
+      "parts": [
+       {
+        "description": "Unas manos chocan vasos sobre una mesa de madera del local por la noche, con luz cálida y servilletas alrededor.",
+        "seconds": 4
+       },
+       {
+        "description": "Sobre la mesa se ve el combo doble smash completo con papas y gaseosa, visto desde arriba entre los vasos.",
+        "seconds": 4
+       },
+       {
+        "description": "Unas manos levantan la hamburguesa doble smash desde el plato, de lado, mostrando las capas de carne y queso.",
+        "seconds": 4
+       },
+       {
+        "description": "Las papas del combo se ven de cerca en su empaque junto al vaso de gaseosa sobre la mesa.",
+        "seconds": 4
+       },
+       {
+        "description": "Se ve todo el local pequeño de noche con la mesa lista y sillas vacías esperando, invitando a sentarse con el parche.",
+        "seconds": 4
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.2",
+       "prompt_fingerprint": "98a7bc8e7971b5ac",
+       "pricing_version": "v8",
+       "cost_usd": "0.004687",
+       "input_tokens": 523,
+       "output_tokens": 330,
+       "turns": 1
+      },
+      "cost_usd": 0.004687,
+      "latency_s": 4.8
+     },
+     "scores": {
+      "costo_usd": 0.004687,
+      "latencia_s": 4.8,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": false,
+      "partes_en_rango": true,
+      "segundos_totales": 20.0,
+      "desvio_duracion": 0.0,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": true,
+      "cierre_consigue": false,
+      "cierre_usa": false,
+      "palabras_max": 22.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.000418,
+     "juez_informado_usd": 0.000478
+    },
+    {
+     "case": "niv-bur-unaware",
+     "arm": "nuevo",
+     "level": "unaware",
+     "prompt_version": "proponer-partes-v3.2",
+     "output": {
+      "parts": [
+       {
+        "description": "Una mesa de madera por la noche se llena de risas mientras unas manos chocan vasos de gaseosa, luz cálida alrededor.",
+        "seconds": 4
+       },
+       {
+        "description": "Desde arriba se ve la mesa completa con el combo doble smash, papas y gaseosa recién servidos entre vasos y servilletas.",
+        "seconds": 4
+       },
+       {
+        "description": "De cerca, unas manos levantan la doble smash dejando ver las dos carnes jugosas y el queso derretido entre el pan.",
+        "seconds": 4
+       },
+       {
+        "description": "Desde un lado se ve a un grupo de amigos compartiendo papas de la bandeja en medio de la mesa iluminada.",
+        "seconds": 4
+       },
+       {
+        "description": "La imagen se acerca despacio a la mesa mostrando el combo completo servido junto al postre de la heladería de al lado.",
+        "seconds": 4
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.2",
+       "prompt_fingerprint": "2f7a02bc4adc485e",
+       "pricing_version": "v8",
+       "cost_usd": "0.005151",
+       "input_tokens": 700,
+       "output_tokens": 341,
+       "turns": 1
+      },
+      "cost_usd": 0.005151,
+      "latency_s": 4.73
+     },
+     "scores": {
+      "costo_usd": 0.005151,
+      "latencia_s": 4.73,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": false,
+      "partes_en_rango": true,
+      "segundos_totales": 20.0,
+      "desvio_duracion": 0.0,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": false,
+      "cierre_consigue": false,
+      "cierre_usa": false,
+      "palabras_max": 22.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.000448,
+     "juez_informado_usd": 0.000332
+    },
+    {
+     "case": "niv-bur-problem",
+     "arm": "base",
+     "failed": "La parte 1 tiene 26 palabras: dila en una sola frase de 25 palabras como máximo.",
+     "cost_usd": 0.0112908
+    },
+    {
+     "case": "niv-bur-problem",
+     "arm": "nuevo",
+     "level": "problem_aware",
+     "prompt_version": "proponer-partes-v3.2",
+     "output": {
+      "parts": [
+       {
+        "description": "Sobre la barra de madera, un celular boca abajo y unas llaves quietas, nadie decide qué cenar, se ve de cerca.",
+        "seconds": 5
+       },
+       {
+        "description": "El combo doble smash aparece junto al celular y las llaves sobre la barra, visto desde arriba.",
+        "seconds": 5
+       },
+       {
+        "description": "Unas manos levantan la hamburguesa doble smash y se ven las papas y la gaseosa al lado, de cerca.",
+        "seconds": 5
+       },
+       {
+        "description": "Un grupo de amigos sentados en una mesa del local reciben el combo que una persona deja frente a ellos, visto de lado.",
+        "seconds": 5
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.2",
+       "prompt_fingerprint": "8e908575215e63ff",
+       "pricing_version": "v8",
+       "cost_usd": "0.006993",
+       "input_tokens": 686,
+       "output_tokens": 528,
+       "turns": 1
+      },
+      "cost_usd": 0.006993,
+      "latency_s": 6.71
+     },
+     "scores": {
+      "costo_usd": 0.006993,
+      "latencia_s": 6.71,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": false,
+      "partes_en_rango": true,
+      "segundos_totales": 20.0,
+      "desvio_duracion": 0.0,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": true,
+      "cierre_consigue": true,
+      "cierre_usa": false,
+      "palabras_max": 23.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.000369,
+     "juez_informado_usd": 0.000249
+    },
+    {
+     "case": "niv-bur-solution",
+     "arm": "base",
+     "level": "solution_aware",
+     "prompt_version": "proponer-partes-v3.2",
+     "output": {
+      "parts": [
+       {
+        "description": "De cerca, la carne se prensa contra la plancha caliente y se forma una costra dorada con bordes crocantes.",
+        "seconds": 5
+       },
+       {
+        "description": "Desde arriba, el queso se derrite despacio sobre las dos carnes smash mientras siguen en la plancha.",
+        "seconds": 5
+       },
+       {
+        "description": "De lado, unas manos arman la doble smash completa junto a las papas y la gaseosa sobre la mesa del local.",
+        "seconds": 5
+       },
+       {
+        "description": "Se ve todo el lugar pequeño de Chapinero, unos amigos sentados a la mesa reciben el combo doble smash recién servido.",
+        "seconds": 5
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.2",
+       "prompt_fingerprint": "03dcf58f52286f52",
+       "pricing_version": "v8",
+       "cost_usd": "0.004081",
+       "input_tokens": 515,
+       "output_tokens": 271,
+       "turns": 1
+      },
+      "cost_usd": 0.004081,
+      "latency_s": 3.64
+     },
+     "scores": {
+      "costo_usd": 0.004081,
+      "latencia_s": 3.64,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": false,
+      "partes_en_rango": true,
+      "segundos_totales": 20.0,
+      "desvio_duracion": 0.0,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": true,
+      "cierre_consigue": true,
+      "cierre_usa": false,
+      "palabras_max": 21.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.000299,
+     "juez_informado_usd": 0.000537
+    },
+    {
+     "case": "niv-bur-solution",
+     "arm": "nuevo",
+     "level": "solution_aware",
+     "prompt_version": "proponer-partes-v3.2",
+     "output": {
+      "parts": [
+       {
+        "description": "De cerca, la carne se prensa contra la plancha caliente y se forma una costra dorada en los bordes.",
+        "seconds": 5
+       },
+       {
+        "description": "De cerca, el queso se derrite despacio sobre las dos carnes apiladas y empieza a caer por los lados.",
+        "seconds": 5
+       },
+       {
+        "description": "Desde arriba, se ve la mesa con el combo doble smash completo, las papas y la gaseosa, junto al postre de la heladería.",
+        "seconds": 5
+       },
+       {
+        "description": "Unas manos reparten las hamburguesas armadas entre varios amigos sentados juntos en una mesa del local.",
+        "seconds": 5
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.2",
+       "prompt_fingerprint": "303b81e10ad069d8",
+       "pricing_version": "v8",
+       "cost_usd": "0.004501",
+       "input_tokens": 700,
+       "output_tokens": 276,
+       "turns": 1
+      },
+      "cost_usd": 0.004501,
+      "latency_s": 3.83
+     },
+     "scores": {
+      "costo_usd": 0.004501,
+      "latencia_s": 3.83,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": false,
+      "partes_en_rango": true,
+      "segundos_totales": 20.0,
+      "desvio_duracion": 0.0,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": true,
+      "cierre_consigue": false,
+      "cierre_usa": false,
+      "palabras_max": 23.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.000373,
+     "juez_informado_usd": 0.000431
+    },
+    {
+     "case": "niv-bur-product",
+     "arm": "base",
+     "level": "product_aware",
+     "prompt_version": "proponer-partes-v3.2",
+     "output": {
+      "parts": [
+       {
+        "description": "Sobre el mostrador de madera, una bandeja con la doble smash, las papas y la gaseosa, mirada de frente y de cerca.",
+        "seconds": 4
+       },
+       {
+        "description": "Unas manos levantan la doble smash de la bandeja y se ven las capas de carne jugosa y queso derretido, mirada de cerca.",
+        "seconds": 4
+       },
+       {
+        "description": "La imagen se acerca despacio a las papas doradas y la gaseosa helada junto a la hamburguesa en la bandeja.",
+        "seconds": 4
+       },
+       {
+        "description": "Dos personas sentadas frente a frente comparten la mesa, cada una con su bandeja del combo doble smash, se ve todo el lugar.",
+        "seconds": 4
+       },
+       {
+        "description": "Desde la puerta del local en la 57, se ve el mostrador y la gente esperando para pedir su combo doble smash.",
+        "seconds": 4
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.2",
+       "prompt_fingerprint": "ce9c0cfb7258e0ea",
+       "pricing_version": "v8",
+       "cost_usd": "0.004821",
+       "input_tokens": 520,
+       "output_tokens": 344,
+       "turns": 1
+      },
+      "cost_usd": 0.004821,
+      "latency_s": 4.32
+     },
+     "scores": {
+      "costo_usd": 0.004821,
+      "latencia_s": 4.32,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": false,
+      "partes_en_rango": true,
+      "segundos_totales": 20.0,
+      "desvio_duracion": 0.0,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": true,
+      "cierre_consigue": true,
+      "cierre_usa": false,
+      "palabras_max": 23.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.000747,
+     "juez_informado_usd": 0.000355
+    },
+    {
+     "case": "niv-bur-product",
+     "arm": "nuevo",
+     "level": "product_aware",
+     "prompt_version": "proponer-partes-v3.2",
+     "output": {
+      "parts": [
+       {
+        "description": "Sobre el mostrador, una bandeja con la doble smash, las papas y la gaseosa, la imagen se acerca despacio al combo completo.",
+        "seconds": 4
+       },
+       {
+        "description": "De cerca, unas manos levantan la doble smash de la bandeja y se ve el queso derretido escurrir entre las capas de carne.",
+        "seconds": 4
+       },
+       {
+        "description": "Desde arriba, se ve la bandeja completa con las papas doradas al lado de la gaseosa helada con gotas de agua en el vaso.",
+        "seconds": 4
+       },
+       {
+        "description": "Unas manos chocan la hamburguesa con una papa en señal de brindis sobre la mesa, con el local de Chapinero de fondo.",
+        "seconds": 4
+       },
+       {
+        "description": "De lado, unas manos entregan la bandeja con el combo a otra persona sentada en una mesa del local, lista para compartir.",
+        "seconds": 4
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.2",
+       "prompt_fingerprint": "9fb8513e4b91870a",
+       "pricing_version": "v8",
+       "cost_usd": "0.005245",
+       "input_tokens": 702,
+       "output_tokens": 350,
+       "turns": 1
+      },
+      "cost_usd": 0.005245,
+      "latency_s": 4.89
+     },
+     "scores": {
+      "costo_usd": 0.005245,
+      "latencia_s": 4.89,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": false,
+      "partes_en_rango": true,
+      "segundos_totales": 20.0,
+      "desvio_duracion": 0.0,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": true,
+      "cierre_consigue": true,
+      "cierre_usa": false,
+      "palabras_max": 24.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.00055,
+     "juez_informado_usd": 0.000266
+    },
+    {
+     "case": "niv-bur-most",
+     "arm": "base",
+     "level": "most_aware",
+     "prompt_version": "proponer-partes-v3.2",
+     "output": {
+      "parts": [
+       {
+        "description": "Sobre el mostrador de madera se ve de cerca una bolsa de papel abierta con el combo doble smash asomando y vapor saliendo.",
+        "seconds": 5
+       },
+       {
+        "description": "Dos personas sentadas en una mesa pequeña del local sacan las hamburguesas y las papas de la bolsa, vistas desde el lado.",
+        "seconds": 5
+       },
+       {
+        "description": "De cerca se ve la gaseosa y las papas dentro de la bolsa mientras unas manos las acomodan sobre la mesa.",
+        "seconds": 4
+       },
+       {
+        "description": "Desde el mostrador, unas manos entregan la bolsa de papel cerrada a un cliente que la recibe con una sonrisa, vista de frente.",
+        "seconds": 5
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.2",
+       "prompt_fingerprint": "e233e4380290728f",
+       "pricing_version": "v8",
+       "cost_usd": "0.015991",
+       "input_tokens": 1904,
+       "output_tokens": 1150,
+       "turns": 2
+      },
+      "cost_usd": 0.015991,
+      "latency_s": 14.3
+     },
+     "scores": {
+      "costo_usd": 0.015991,
+      "latencia_s": 14.3,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": true,
+      "partes_en_rango": true,
+      "segundos_totales": 19.0,
+      "desvio_duracion": 0.05,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": true,
+      "cierre_consigue": true,
+      "cierre_usa": false,
+      "palabras_max": 23.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.000446,
+     "juez_informado_usd": 0.00025
+    },
+    {
+     "case": "niv-bur-most",
+     "arm": "nuevo",
+     "level": "most_aware",
+     "prompt_version": "proponer-partes-v3.2",
+     "output": {
+      "parts": [
+       {
+        "description": "Sobre el mostrador de madera una bolsa de papel se abre dejando ver el combo doble smash con papas, de cerca.",
+        "seconds": 5
+       },
+       {
+        "description": "Unas manos levantan la hamburguesa doble smash de la bolsa mientras se ven las papas y el vaso de gaseosa al lado, desde arriba.",
+        "seconds": 5
+       },
+       {
+        "description": "La hamburguesa doble smash se acerca despacio mostrando las capas de carne jugosa entre el pan, de lado.",
+        "seconds": 4
+       },
+       {
+        "description": "Unas manos sostienen un teléfono mostrando la pantalla de pedido mientras la bolsa con el combo espera lista en el mostrador.",
+        "seconds": 5
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.2",
+       "prompt_fingerprint": "f8da20986b4d92e1",
+       "pricing_version": "v8",
+       "cost_usd": "0.006317",
+       "input_tokens": 658,
+       "output_tokens": 466,
+       "turns": 1
+      },
+      "cost_usd": 0.006317,
+      "latency_s": 6.05
+     },
+     "scores": {
+      "costo_usd": 0.006317,
+      "latencia_s": 6.05,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": false,
+      "partes_en_rango": true,
+      "segundos_totales": 19.0,
+      "desvio_duracion": 0.05,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": true,
+      "cierre_consigue": true,
+      "cierre_usa": false,
+      "palabras_max": 24.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.000375,
+     "juez_informado_usd": 0.000375
+    }
+   ],
+   "scores": [
+    {
+     "arm": "base",
+     "case": "niv-bur-unaware",
+     "split": "test",
+     "sector": "comida",
+     "with_perks": false,
+     "level": "unaware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [],
+     "judge_level": "solution_aware",
+     "judge_quality": 3,
+     "judge_invented": [],
+     "judge_perks": [],
+     "judge_fit": true,
+     "judge_reason": "La escena principal (manos chocando vasos, mesa de madera, luz cálida, local de noche con sillas esperando) muestra lugar, momento y compañía sin precio ni oferta, aunque las tomas del combo empujan u",
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "nuevo",
+     "case": "niv-bur-unaware",
+     "split": "test",
+     "sector": "comida",
+     "with_perks": true,
+     "level": "unaware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [
+      5
+     ],
+     "judge_level": "solution_aware",
+     "judge_quality": 3,
+     "judge_invented": [],
+     "judge_perks": [
+      3,
+      5
+     ],
+     "judge_fit": false,
+     "judge_reason": "Declarada como unaware, pero la última escena ofrece el combo con el postre de la heladería (una oferta) y nombra el combo doble smash, cuando la regla pide solo lugar y experiencia, sin precio ni ofe",
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "nuevo",
+     "case": "niv-bur-problem",
+     "split": "test",
+     "sector": "comida",
+     "with_perks": true,
+     "level": "problem_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [],
+     "judge_level": "problem_aware",
+     "judge_quality": 3,
+     "judge_invented": [],
+     "judge_perks": [
+      3
+     ],
+     "judge_fit": true,
+     "judge_reason": "El gancho nombra el dilema (un celular boca abajo, llaves quietas, nadie decide qué cenar) y luego presenta el combo doble smash como la respuesta, sin inventar precio, oferta ni horario.",
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "base",
+     "case": "niv-bur-solution",
+     "split": "test",
+     "sector": "comida",
+     "with_perks": false,
+     "level": "solution_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [],
+     "judge_level": "solution_aware",
+     "judge_quality": 3,
+     "judge_invented": [],
+     "judge_perks": [],
+     "judge_fit": false,
+     "judge_reason": "Muestra con detalle el producto (dos carnes smash, queso, papas, gaseosa) sin inventar datos, pero no explica por qué Brasa Norte lo resuelve mejor: falta el diferencial de la carne madurada y la idea",
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "nuevo",
+     "case": "niv-bur-solution",
+     "split": "test",
+     "sector": "comida",
+     "with_perks": true,
+     "level": "solution_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [
+      5
+     ],
+     "judge_level": "solution_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      3,
+      5
+     ],
+     "judge_fit": true,
+     "judge_reason": "Muestra el producto concreto (doble smash con papas y gaseosa, más el postre de la heladería) y la técnica smash a la plancha, sin inventar precios, horarios ni promociones; aunque es una secuencia de",
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "base",
+     "case": "niv-bur-product",
+     "split": "test",
+     "sector": "comida",
+     "with_perks": false,
+     "level": "product_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [
+      [
+       "direccion",
+       "en la 57"
+      ]
+     ],
+     "perks_det": [],
+     "judge_level": "solution_aware",
+     "judge_quality": 3,
+     "judge_invented": [],
+     "judge_perks": [],
+     "judge_fit": false,
+     "judge_reason": "Para product_aware debía quitar fricción con datos dados (precio, horario, forma de pago o dónde queda), y la idea no muestra ninguno; además la mención «en la 57» es una dirección inventada, porque l",
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "nuevo",
+     "case": "niv-bur-product",
+     "split": "test",
+     "sector": "comida",
+     "with_perks": true,
+     "level": "product_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [
+      5
+     ],
+     "judge_level": "solution_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      3
+     ],
+     "judge_fit": false,
+     "judge_reason": "La regla de product_aware exige quitar fricción con datos dados (precio, horario, forma de pago o ubicación), y la idea solo muestra escenas del combo sin ningún dato que resuelva una duda, aunque el ",
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "base",
+     "case": "niv-bur-most",
+     "split": "test",
+     "sector": "comida",
+     "with_perks": false,
+     "level": "most_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [],
+     "judge_level": "solution_aware",
+     "judge_quality": 2,
+     "judge_invented": [],
+     "judge_perks": [],
+     "judge_fit": false,
+     "judge_reason": "Para most_aware debe haber un gancho y una llamada a la acción breves y directos, y esta idea describe escenas del producto sin ninguna invitación a comprar ni a ir al local.",
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "nuevo",
+     "case": "niv-bur-most",
+     "split": "test",
+     "sector": "comida",
+     "with_perks": true,
+     "level": "most_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [],
+     "judge_level": "solution_aware",
+     "judge_quality": 3,
+     "judge_invented": [],
+     "judge_perks": [],
+     "judge_fit": false,
+     "judge_reason": "Muestra el combo con escenas fotografiables, pero no tiene llamada a la acción clara y directa para comprar, y la última escena (pantalla de pedido) sugiere un canal de pedido que no está en los datos",
+     "words_hook": 0,
+     "words_cta": 0
+    }
+   ]
+  }
+ },
+ "spend_usd": {
+  "copy": 0.198198,
+  "parts": 0.0763758
+ },
+ "spend_total_usd": 0.2745738,
+ "skipped_by_cap": [],
+ "ledger_calls": 58
+}

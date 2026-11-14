@@ -292,7 +292,7 @@ def test_ad_section_saves_submitted_url_after_invalid_value_and_can_clear(monkey
         async def get_state(self, cls: type) -> Any:
             return creative if cls is CreativeState else connect
 
-    async def save(_state: Any) -> bool:
+    async def save(_state: Any, **_kw: Any) -> bool:
         saved.append(creative.kit_ads_destination_url)
         creative.kit_error = ""
         return True

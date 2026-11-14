@@ -59,6 +59,9 @@ class BrandKit(Base):
     __table_args__ = (
         UniqueConstraint("brand_id", name="uq_brand_kits_brand"),
         Index("ix_brand_kits_tenant", "tenant_id"),
+        CheckConstraint(
+            "jsonb_typeof(business_perks) = 'array'", name="ck_brand_kits_business_perks_array"
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(
@@ -92,6 +95,10 @@ class BrandKit(Base):
     reference_image_keys: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
     image_policy: Mapped[dict | None] = mapped_column(JSONB, nullable=True)  # ImagePolicy shape
     ads_destination_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: The owner's business perks (0166): short lines, manual input; `[]` = none.
+    business_perks: Mapped[list] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb")
+    )
     photo_recipe: Mapped[dict | None] = mapped_column(JSONB, nullable=True)  # D17/D18 params
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
@@ -333,7 +340,14 @@ class ContentBrief(Base):
     Immutable input to a draft — regeneration re-reads the brief, never edits it."""
 
     __tablename__ = "content_briefs"
-    __table_args__ = (Index("ix_content_briefs_tenant", "tenant_id"),)
+    __table_args__ = (
+        Index("ix_content_briefs_tenant", "tenant_id"),
+        CheckConstraint(
+            "awareness_level IS NULL OR awareness_level IN ('unaware','problem_aware',"
+            "'solution_aware','product_aware','most_aware')",
+            name="ck_content_briefs_awareness_level",
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
@@ -359,6 +373,8 @@ class ContentBrief(Base):
     # ContentKind value and its MediaInputs (0026)
     kind: Mapped[str] = mapped_column(Text, nullable=False, server_default="static_flyer")
     media: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    #: The angle's awareness level (0166, `AwarenessLevel` values); NULL = none.
+    awareness_level: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
     )
@@ -1197,6 +1213,11 @@ class CreativeAngle(Base):
             name="ck_creative_angles_status",
         ),
         CheckConstraint("position BETWEEN 1 AND 12", name="ck_creative_angles_position"),
+        CheckConstraint(
+            "awareness_level IS NULL OR awareness_level IN ('unaware','problem_aware',"
+            "'solution_aware','product_aware','most_aware')",
+            name="ck_creative_angles_awareness_level",
+        ),
         Index("ix_creative_angles_tenant", "tenant_id"),
         Index("ix_creative_angles_draft", "draft_id"),
     )
@@ -1219,6 +1240,9 @@ class CreativeAngle(Base):
     hook: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
     cta: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
     rationale: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    #: Which awareness level the model tagged it with (0166, `AwarenessLevel` values);
+    #: NULL on angles proposed before the levels, or when the answer named none.
+    awareness_level: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default="proposed")
     draft_id: Mapped[UUID | None] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("content_drafts.id", ondelete="SET NULL"), nullable=True

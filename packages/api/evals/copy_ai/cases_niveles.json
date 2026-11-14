@@ -1,0 +1,129 @@
+{
+  "_doc": "Copy cases with an awareness level + business perks (m-25026482), run by `just eval-niveles --suite copy` (not by `just eval-copy`, whose 27 cases stay as they were). Brands are the FICTIONAL kits of cases.json by key; `perks` are added to the kit only on the new side. Each case is ONE hand-written angle (title, scene, hook, CTA, rationale) of its level, made into a brief by `angle_brief` exactly as production does: new = the angle with its level (objective from the level; an unaware brief carries no price) and the kit with perks; baseline = the same angle through the baseline ref's `angle_brief` (always SALE, price always mentioned) and the kit without perks. The food perks are the founder's example (2026-11-13); the real-estate ones come from that brand's own cases (inm-02, inm-03, its CTAs). Prices come from bur-01 (32.900) and inm-01 (280 millones).",
+  "brands": {
+    "hamburguesas": {
+      "perks": [
+        "Parqueadero gratis",
+        "Se admiten mascotas",
+        "Mesas para comer en el local",
+        "Abierto hasta las 11 p. m.",
+        "Combo con el postre de la heladería de al lado"
+      ],
+      "product": {
+        "name": "Combo doble smash",
+        "description": "Doble smash con papas y gaseosa",
+        "category": "Combos",
+        "price_label": "$32.900",
+        "photos": 2
+      }
+    },
+    "inmobiliaria": {
+      "perks": [
+        "Asesoría sin costo",
+        "Acompañamiento legal y estudio de títulos",
+        "Te guiamos con el subsidio Mi Casa Ya",
+        "Atendemos por WhatsApp"
+      ],
+      "product": {
+        "name": "Apartamentos de 2 alcobas en Bello",
+        "description": "Apartamentos nuevos de 2 alcobas en Bello, proyecto de vivienda nueva",
+        "category": "Vivienda nueva",
+        "price_label": "Desde $280 millones",
+        "photos": 2
+      }
+    }
+  },
+  "cases": [
+    {
+      "id": "niv-bur-unaware",
+      "brand": "hamburguesas",
+      "level": "unaware",
+      "angle": {
+        "title": "Mesa de amigos",
+        "scene": "El combo doble smash sobre una mesa de madera del local, con vasos y servilletas alrededor, luz cálida de noche",
+        "composition": "Plano cenital, el combo al centro, espacio libre arriba para el texto",
+        "hook": "La noche se arma alrededor de una mesa",
+        "cta": "Ven con tu parche",
+        "rationale": "Vende el plan de salir con amigos antes que el producto"
+      }
+    },
+    {
+      "id": "niv-bur-problem",
+      "brand": "hamburguesas",
+      "level": "problem_aware",
+      "angle": {
+        "title": "¿Qué cenamos?",
+        "scene": "El combo doble smash en la barra, al lado de un celular boca abajo y unas llaves",
+        "composition": "Plano medio a la altura de la barra, el combo a la derecha",
+        "hook": "¿Otra vez sin saber qué cenar?",
+        "cta": "Resuélvelo con una doble",
+        "rationale": "Nombra el dilema de la cena y da la respuesta"
+      }
+    },
+    {
+      "id": "niv-bur-solution",
+      "brand": "hamburguesas",
+      "level": "solution_aware",
+      "angle": {
+        "title": "Costra a la plancha",
+        "scene": "Detalle macro de la doble smash recién salida de la plancha, el queso derretido sobre la carne",
+        "composition": "Macro lateral, fondo desenfocado, el borde crujiente en primer plano",
+        "hook": "Carne madurada, prensada a la plancha",
+        "cta": "Pruébala hoy",
+        "rationale": "Muestra por qué esta smash es distinta"
+      }
+    },
+    {
+      "id": "niv-bur-product",
+      "brand": "hamburguesas",
+      "level": "product_aware",
+      "angle": {
+        "title": "Sin vueltas",
+        "scene": "El combo completo en una bandeja sobre el mostrador: la doble, las papas y la gaseosa",
+        "composition": "Plano frontal, la bandeja centrada, zona inferior limpia para el precio",
+        "hook": "Doble smash, papas y gaseosa en un solo combo",
+        "cta": "Ven al local en la 57",
+        "rationale": "Quita dudas: qué trae el combo y dónde está"
+      }
+    },
+    {
+      "id": "niv-bur-most",
+      "brand": "hamburguesas",
+      "level": "most_aware",
+      "angle": {
+        "title": "Listo para pedir",
+        "scene": "El combo doble smash en una bolsa de papel abierta sobre el mostrador",
+        "composition": "Plano cerrado de la bolsa, el combo asomando",
+        "hook": "Tu doble te espera",
+        "cta": "Pide por Rappi",
+        "rationale": "El camino más corto a la compra"
+      }
+    },
+    {
+      "id": "niv-inm-unaware",
+      "brand": "inmobiliaria",
+      "level": "unaware",
+      "angle": {
+        "title": "Primera mañana",
+        "scene": "Un balcón con luz de mañana, una taza de café sobre la baranda y la ciudad de fondo",
+        "composition": "Plano medio desde adentro hacia el balcón, cielo libre arriba",
+        "hook": "Imagina tu primer café en casa propia",
+        "cta": "Conoce cómo empezar",
+        "rationale": "Despierta el deseo de casa propia antes de hablar del proyecto"
+      }
+    },
+    {
+      "id": "niv-inm-product",
+      "brand": "inmobiliaria",
+      "level": "product_aware",
+      "angle": {
+        "title": "Cuentas claras",
+        "scene": "Unas llaves y los planos del apartamento sobre una mesa de comedor, luz natural",
+        "composition": "Plano cenital, llaves en primer plano, espacio limpio a la izquierda",
+        "hook": "Dos alcobas en Bello, con acompañamiento legal",
+        "cta": "Agenda tu asesoría sin costo",
+        "rationale": "Quita la duda del trámite y del precio"
+      }
+    }
+  ]
+}

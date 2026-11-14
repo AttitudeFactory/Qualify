@@ -101,6 +101,8 @@ def brand_facts(tenant_id: UUID, brand_id: UUID) -> AngleBrand:
         location=context.location if context is not None else "",
         palette=tuple(kit.palette_rgb) if kit is not None else (),
         typeface=kit.typeface if kit is not None else "",
+        # «Lo que ofrece tu negocio»: the only venue facts the parts may state
+        perks=tuple(kit.business_perks) if kit is not None else (),
     )
 
 

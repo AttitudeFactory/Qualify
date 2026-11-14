@@ -1,0 +1,26 @@
+{
+ "ticket": "m-25026482",
+ "baseline_ref": "a6667370",
+ "split": "all",
+ "pricing_version": "v9",
+ "judge": "claude-haiku-5-5@low",
+ "judge_prompt_version": "juez-niveles-v2",
+ "judge_parts_version": "juez-niveles-v2+partes-v1",
+ "code_commit": "1a5352ba",
+ "arms": [],
+ "levels": [],
+ "repeat": 1,
+ "tracing": false,
+ "date": "2026-11-13T15:46:05",
+ "suites": {
+  "identity": {
+   "identical_pairs": 12,
+   "old_version": "proponer-partes-v3.1",
+   "new_version": "proponer-partes-v3.3"
+  }
+ },
+ "spend_usd": {},
+ "spend_total_usd": 0.0,
+ "skipped_by_cap": [],
+ "ledger_calls": 0
+}
