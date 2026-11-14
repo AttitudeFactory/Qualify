@@ -39,6 +39,8 @@ class MetaHTTP:
         self.before_request = None
         self.spent = 0  # whole COP the ad set has already spent
         self.min_daily = 1500  # whole COP, act_12/minimum_budgets
+        # interest id -> (targetingvalidation `valid`, targetingoptionstatus `current_status`)
+        self.interests: dict[str, tuple[bool, str]] = {}
 
     def respond(self, request):
         assert "secret" not in str(request.url)
@@ -72,6 +74,11 @@ class MetaHTTP:
                 ]
             elif path == "act_12/connected_instagram_accounts":
                 data = [{"id": "99"}]
+            elif path == "act_12/targetingvalidation":
+                data = [{"id": k, "valid": v[0]} for k, v in self.interests.items()]
+            elif path == "search":
+                assert request.url.params["type"] == "targetingoptionstatus"
+                data = [{"id": k, "current_status": v[1]} for k, v in self.interests.items()]
             elif path == "act_12":
                 return httpx.Response(
                     200, json={"account_id": "12", "currency": "COP", "failed_delivery_checks": []}
@@ -1124,3 +1131,217 @@ async def test_remote_greeting_edit_blocks_activation(live, monkeypatch):
     with pytest.raises(WizardUnavailable, match="saludo del chat distinto"):
         await confirm(live, preview)
     assert not live["remote"].activations
+
+
+# m-24828977: a radius around a map point and interests reach the live path.
+
+
+def use_point_and_interests(live, *, radius_km=3, statuses=("active", "active"), **changes):
+    from qualify_api.ads.audience import InterestOption, MapPoint
+
+    interests = tuple(
+        InterestOption(key, name, status)
+        for (key, name), status in zip((("6003", "Café"), ("6004", "Té")), statuses, strict=True)
+    )
+    live["remote"].interests = {item.id: (True, "NORMAL") for item in interests}
+    audience = AudienceDraft(
+        location=LocationOption("CO", "Colombia", "country", "CO"),
+        point=MapPoint(7.893907, -72.507821, "Calle 10 # 5-20, Cúcuta"),
+        radius_km=radius_km,
+        interests=interests,
+        **changes,
+    )
+    live["args"]["form"] = replace(live["args"]["form"], audience=audience)
+    return audience
+
+
+APPROVED_GEO = {
+    "custom_locations": [
+        {"latitude": 7.893907, "longitude": -72.507821, "radius": 3, "distance_unit": "kilometer"}
+    ]
+}
+
+
+@pytest.mark.asyncio
+async def test_point_radius_and_interests_validate_create_paused_and_activate(live):
+    use_point_and_interests(live)
+    remote = live["remote"]
+    preview = await prepare(live)
+    assert preview.status == "paused" and not remote.activations
+    validated = [c for c in remote.calls if c[2].get("execution_options") == ["validate_only"]]
+    adset_checks = [c[2]["targeting"] for c in validated if c[1] == "act_12/adsets"]
+    created = next(row for row in remote.objects.values() if row["_resource"] == "adsets")
+    for targeting in [*adset_checks, created["targeting"]]:
+        assert targeting["geo_locations"] == APPROVED_GEO
+        assert targeting["flexible_spec"] == [{"interests": [{"id": "6003"}, {"id": "6004"}]}]
+    # Both interests were re-confirmed live before any write.
+    first_post = next(i for i, c in enumerate(remote.calls) if c[0] == "POST")
+    assert any(c[1] == "act_12/targetingvalidation" for c in remote.calls[:first_post])
+    row = live["repo"].get(live["args"]["tenant_id"], preview.promotion_id)
+    assert row.request["audience_snapshot"]["point"]["latitude"] == 7.893907
+    result = await confirm(live, preview)
+    # The fake returns only requested fields, so activating proves `targeting` was asked for.
+    assert result.status == "active"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "remote_targeting",
+    [
+        {"geo_locations": {**APPROVED_GEO, "location_types": ["home", "recent"]}},
+        {
+            "geo_locations": {
+                "custom_locations": [
+                    {
+                        "latitude": "7.8939070000001",
+                        "longitude": -72.507821,
+                        "radius": 3.0,
+                        "distance_unit": "kilometer",
+                        "name": "Cúcuta",
+                        "country": "CO",
+                    }
+                ]
+            },
+            "flexible_spec": [
+                {"interests": [{"id": "6004", "name": "Té"}, {"id": "6003", "name": "Café"}]}
+            ],
+        },
+    ],
+)
+async def test_read_back_accepts_only_documented_normalizations(live, remote_targeting):
+    use_point_and_interests(live)
+    preview = await prepare(live)
+    adset = live["remote"].objects["101"]
+    adset["targeting"] = {**adset["targeting"], **remote_targeting}
+    assert (await confirm(live, preview)).status == "active"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "change",
+    [
+        "radius",
+        "unit",
+        "point",
+        "missing_interest",
+        "extra_interest",
+        "other_interest",
+        "extra_location",
+        "location_types",
+        "unknown_key",
+        "unknown_location_key",
+        "interest_extra_key",
+    ],
+)
+async def test_read_back_refuses_another_location_or_interest_set(live, change):
+    use_point_and_interests(live)
+    preview = await prepare(live)
+    targeting = live["remote"].objects["101"]["targeting"]
+    place = targeting["geo_locations"]["custom_locations"][0]
+    interests = targeting["flexible_spec"][0]["interests"]
+    if change == "radius":
+        place["radius"] = 4
+    elif change == "unit":
+        place["distance_unit"] = "mile"
+    elif change == "point":
+        place["latitude"] = 7.894907
+    elif change == "missing_interest":
+        interests.pop()
+    elif change == "extra_interest":
+        interests.append({"id": "6005"})
+    elif change == "other_interest":
+        interests[1] = {"id": "6005"}
+    elif change == "extra_location":
+        targeting["geo_locations"]["countries"] = ["CO"]
+    elif change == "location_types":
+        targeting["geo_locations"]["location_types"] = ["travel_in"]
+    elif change == "unknown_key":
+        targeting["excluded_custom_audiences"] = [{"id": "1"}]
+    elif change == "unknown_location_key":
+        place["address_string"] = "Otra dirección"
+    else:
+        interests[0]["topic"] = "Comida"
+    with pytest.raises(WizardUnavailable, match="no coincide"):
+        await confirm(live, preview)
+    assert not live["remote"].activations
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "remote_status", [(True, "DEPRECATING"), (False, "NORMAL"), (True, "NON-DELIVERABLE")]
+)
+async def test_retired_interest_on_meta_blocks_before_any_write(live, remote_status):
+    use_point_and_interests(live)
+    live["remote"].interests["6004"] = remote_status
+    with pytest.raises(WizardUnavailable, match="ya no permite usar estos intereses: Té\\."):
+        await prepare(live)
+    assert not [c for c in live["remote"].calls if c[0] == "POST"]
+
+
+@pytest.mark.asyncio
+async def test_interest_missing_from_status_answer_blocks(live):
+    use_point_and_interests(live)
+    del live["remote"].interests["6003"]
+    with pytest.raises(WizardUnavailable, match="Café"):
+        await prepare(live)
+    assert not [c for c in live["remote"].calls if c[0] == "POST"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "setup,message",
+    [
+        ({"statuses": ("active", "retiring")}, "ya no permite usar estos intereses: Té"),
+        ({"statuses": ("unavailable", "active")}, "ya no permite usar estos intereses: Café"),
+        ({"housing": True}, "Vivienda"),
+        ({"advantage_audience": True}, "público ampliado"),
+    ],
+)
+async def test_supported_still_refuses_before_any_meta_call(live, setup, message):
+    use_point_and_interests(live, **setup)
+    form = live["args"]["form"]
+    live["args"]["form"] = replace(
+        form,
+        housing=form.audience.housing,
+        advantage_audience=form.audience.advantage_audience,
+    )
+    with pytest.raises(WizardUnavailable, match=message):
+        await prepare(live)
+    assert not live["remote"].calls
+
+
+@pytest.mark.asyncio
+async def test_city_radius_follows_meta_minimum(live):
+    city = LocationOption("123", "Bogotá", "city", "CO")
+    live["args"]["form"] = replace(
+        live["args"]["form"], audience=AudienceDraft(location=city, radius_km=10)
+    )
+    with pytest.raises(WizardUnavailable, match="al menos 17 km"):
+        await prepare(live)
+    assert not live["remote"].calls
+    live["args"]["form"] = replace(
+        live["args"]["form"], audience=AudienceDraft(location=city, radius_km=17)
+    )
+    preview = await prepare(live)
+    adset = live["remote"].objects["101"]
+    assert adset["targeting"]["geo_locations"] == {
+        "cities": [{"key": "123", "radius": 17, "distance_unit": "kilometer"}]
+    }
+    adset["targeting"]["geo_locations"]["cities"][0].update(
+        name="Bogotá", region="Bogotá D.C.", region_id="2", country="CO"
+    )
+    assert (await confirm(live, preview)).status == "active"
+
+
+def test_read_back_comparator_without_a_meta_round_trip():
+    from qualify_api.ads.live_wizard import same_targeting
+
+    approved = {"geo_locations": deepcopy(APPROVED_GEO), "age_min": 18}
+    assert same_targeting(deepcopy(approved), approved)
+    assert not same_targeting(None, approved)
+    assert not same_targeting({"geo_locations": deepcopy(APPROVED_GEO)}, approved)
+    observed = deepcopy(approved)
+    observed["geo_locations"]["custom_locations"][0]["longitude"] = True
+    assert not same_targeting(observed, approved)
+    observed["geo_locations"]["custom_locations"][0]["longitude"] = "nan"
+    assert not same_targeting(observed, approved)

@@ -37,7 +37,7 @@ def _number(label: str, name: str, value: rx.Var[str]) -> rx.Component:
             value=value,
             on_change=lambda text: S.edit(name, text),
             type="number",
-            min="1" if name == "radius_km" else "18",
+            min="17" if name == "radius_km" else "18",
             max="80" if name == "radius_km" else "65",
             disabled=S.busy,
             min_height="44px",
@@ -271,8 +271,7 @@ def promotion_audience() -> rx.Component:
                         S.form.radius_km,
                     ),
                     rx.text(
-                        "Esta distancia es una preparación. Meta debe confirmar "
-                        "si está permitida antes de crear el anuncio.",
+                        "Meta admite entre 17 y 80 km alrededor de una ciudad.",
                         size="2",
                         color=T.TEXT_MUTED,
                     ),

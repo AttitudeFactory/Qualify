@@ -11,12 +11,14 @@ from qualify_shared.db.session import tenant_session
 from sqlalchemy import text
 
 from qualify_api.ads.audience import (
+    CITY_RADIUS_KM,
     AudienceDraft,
     AudienceUnavailable,
     InterestOption,
     LocationOption,
     ReachEstimate,
     SavedAudience,
+    interest_statuses,
 )
 from qualify_api.ads.client import MarketingAPI, MarketingClient
 from qualify_api.ads.errors import MarketingError
@@ -178,27 +180,22 @@ async def _interest_status(
 ) -> tuple[InterestOption, ...]:
     if not options:
         return ()
+    ids = [option.id for option in options]
     try:
-        rows = await _read(scope, "validate", {"ids": [option.id for option in options]})
+        valid = await _read(scope, "validate", {"ids": ids})
+        current = await _read(
+            scope, "search", {"type": "targetingoptionstatus", "targeting_option_list": ids}
+        )
     except AudienceUnavailable:
         # This is not evidence that an interest is available or retiring.
         _same(scope)
         return options
-    statuses: dict[str, bool] = {}
-    for row in rows:
-        if isinstance(row.get("id"), str) and type(row.get("valid")) is bool:
-            statuses[row["id"]] = row["valid"]
-    return tuple(
-        replace(
-            option,
-            status="active"
-            if statuses.get(option.id) is True
-            else "unavailable"
-            if statuses.get(option.id) is False
-            else "unknown",
-        )
-        for option in options
+    # Only exact types count; anything else stays "unknown".
+    statuses = interest_statuses(
+        tuple(r for r in valid if isinstance(r.get("id"), str) and type(r.get("valid")) is bool),
+        tuple(r for r in current if isinstance(r.get("id"), str)),
     )
+    return tuple(replace(option, status=statuses.get(option.id, "unknown")) for option in options)
 
 
 async def search_audience_locations(
@@ -305,8 +302,13 @@ async def estimate_audience(
         ad_account_id=ad_account_id,
     )
     targeting = audience.targeting()
-    # Radius and special-category policy cannot be inferred from an SDK schema.
-    if audience.radius_km is not None or audience.housing or audience.custom_audiences:
+    if audience.point is None and (audience.radius_km or CITY_RADIUS_KM[0]) < CITY_RADIUS_KM[0]:
+        return ReachEstimate(
+            message="Meta pide un radio de al menos 17 km alrededor de una ciudad.",
+            audience_hash=audience.fingerprint,
+        )
+    # Special-category policy cannot be inferred from an SDK schema.
+    if audience.housing or audience.custom_audiences:
         return ReachEstimate(
             message="Falta comprobar con Meta las reglas de este público.",
             audience_hash=audience.fingerprint,

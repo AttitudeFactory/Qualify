@@ -16,9 +16,24 @@ Al preparar una promoción aprobada mediante la composición explícita de prueb
 
 El compilador de Vivienda construye la segmentación desde una lista permitida. Nunca incluye edades, género, intereses ni exclusiones aunque existan valores antiguos en el borrador. La interfaz limpia las opciones que oculta. Siempre se envía explícitamente `targeting_automation.advantage_audience`.
 
-El intervalo local de radio de 1 a 80 km es solamente un límite del formulario preparatorio. **No es una afirmación sobre los radios que Meta acepta.** No se pudo verificar una regla actual aplicable a cada país para ciudades o Vivienda. Por eso cualquier radio explícito o público de Vivienda muestra estimación no disponible y no consulta alcance con una política inventada. El formulario nuevo exige una comprobación independiente de políticas y la huella exacta del público antes de ejecutar, aun si Meta devuelve una estimación.
+El intervalo local de radio de 1 a 80 km es solamente un límite del formulario preparatorio. **No es una afirmación sobre los radios que Meta acepta.** No se pudo verificar una regla actual aplicable a cada país para ciudades o Vivienda. Por eso un público de Vivienda (y, desde la actualización de abajo, un radio de ciudad menor de 17 km) muestra estimación no disponible y no consulta alcance con una política inventada. El formulario nuevo exige una comprobación independiente de políticas y la huella exacta del público antes de ejecutar, aun si Meta devuelve una estimación.
 
 Los puntos personalizados en mapa quedan pendientes. No se añade un control que prometa una regla geográfica aún no verificada.
+
+### Promoción real con radio e intereses (actualización del 14 de noviembre de 2026)
+
+La promoción real ya admite un radio alrededor de un punto (`AudienceDraft.point`: latitud, longitud y una etiqueta que nunca se envía a Meta), un radio alrededor de una ciudad e intereses. Vivienda, el público ampliado, las mejoras automáticas y los públicos personalizados siguen rechazados como antes.
+
+Campos y límites, tomados de la [referencia de segmentación básica de Meta](https://developers.facebook.com/docs/marketing-api/audiences/reference/basic-targeting) consultada ese día:
+
+- Punto: `geo_locations.custom_locations[{latitude, longitude, radius, distance_unit: "kilometer"}]`, radio «de 1 a 80 kilómetros». Se envía solo el punto; añadir su país ampliaría la zona al país entero. El país elegido queda como contexto de la pantalla. No se envía `location_types`: Meta lo da por `["home", "recent"]` cuando falta.
+- Ciudad con radio: `cities[{key, radius, distance_unit}]`, radio «de 17 a 80 kilómetros». El borrador local conserva su rango antiguo (1 a 80) para no romper borradores guardados; la promoción real y la pantalla exigen 17.
+- Intereses: `flexible_spec[{interests: [{id}]}]`, ids obtenidos solo de `search?type=adinterest`.
+- Vigencia de intereses: `act_<id>/targetingvalidation` (`valid`) y `search?type=targetingoptionstatus` (`current_status`; la [referencia de búsqueda](https://developers.facebook.com/docs/marketing-api/audiences/reference/targeting-search) dice que `DEPRECATING` no puede usarse en conjuntos nuevos). Solo `valid=true` + `NORMAL` cuenta como disponible. La promoción real vuelve a preguntar justo antes de validar y antes de crear; cualquier otra respuesta, incluida la ausencia del id, bloquea con un mensaje que nombra los intereses. Meta no documenta reemplazos, así que no se proponen; la pantalla ofrece «intereses parecidos» con `adinterestsuggestion`.
+
+Lectura de comprobación del conjunto de anuncios: se pide `targeting` y cada clave aprobada debe volver igual. Se aceptan únicamente estas normalizaciones y cualquier otra clave extra bloquea la activación: `geo_locations.location_types == ["home", "recent"]` (el valor por omisión documentado) y etiquetas descriptivas junto a un id o un punto (`name` en intereses; `name`, `region`, `region_id`, `country` en ciudades; `name`, `country`, `primary_city_id`, `region_id` en puntos). Los intereses se comparan como conjunto de ids. Las coordenadas admiten una diferencia de 0,000001 grados, la precisión que se aprueba: Meta no documenta redondeo y la tolerancia solo absorbe la serialización. Otro punto, otro radio u otra unidad bloquean.
+
+No verificado con Meta real: la forma exacta en que Meta devuelve `targeting` (claves añadidas, redondeo de coordenadas, radio en otra unidad), la respuesta de `targetingoptionstatus` con una cuenta de cliente y los códigos de error de intereses retirados durante `validate_only`. Si Meta añade una clave no listada, la activación falla cerrada y queda en pausa hasta revisar esta lista.
 
 ## Consultas y estimación
 

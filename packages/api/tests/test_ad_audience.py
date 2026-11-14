@@ -226,19 +226,237 @@ def test_load_rechecks_scope_after_read(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_interest_validity_uses_exact_bool_keyed_by_id(monkeypatch):
+    ids = ["1", "2", "3", "4", "5", "6", "7"]
+
     async def read(scope, operation, params):
-        assert operation == "validate" and params == {"ids": ["1", "2", "3", "4"]}
+        if operation == "validate":
+            assert params == {"ids": ids}
+            return (
+                {"id": "1", "valid": True},
+                {"id": "2", "valid": False},
+                {"id": "3", "valid": "true"},
+                {"id": "4", "is_valid": True},
+                {"id": "5", "valid": True},
+                {"id": "6", "valid": True},
+                {"id": "7", "valid": True},
+            )
+        assert operation == "search"
+        assert params == {"type": "targetingoptionstatus", "targeting_option_list": ids}
         return (
-            {"id": "1", "valid": True},
-            {"id": "2", "valid": False},
-            {"id": "3", "valid": "true"},
-            {"id": "4", "is_valid": True},
+            {"id": "1", "current_status": "NORMAL"},
+            {"id": "2", "current_status": "NORMAL"},
+            {"id": "3", "current_status": "NORMAL"},
+            {"id": "5", "current_status": "DEPRECATING"},
+            {"id": "6", "current_status": "NON-DELIVERABLE"},
+            {"id": "7", "current_status": "UNKNOWN"},
         )
 
     monkeypatch.setattr(service, "_read", read)
-    options = tuple(InterestOption(str(i), "Name") for i in range(1, 5))
+    options = tuple(InterestOption(i, "Name") for i in ids)
     actual = await service._interest_status(None, options)
-    assert [i.status for i in actual] == ["active", "unavailable", "unknown", "unknown"]
+    assert [i.status for i in actual] == [
+        "active",
+        "unavailable",
+        "unknown",
+        "unknown",
+        "retiring",
+        "unavailable",
+        "unknown",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_interest_status_read_failure_is_not_evidence(monkeypatch):
+    async def read(scope, operation, params):
+        if operation == "search":
+            raise AudienceUnavailable("No pudimos consultar el público en Meta.")
+        return ({"id": "1", "valid": True},)
+
+    monkeypatch.setattr(service, "_read", read)
+    monkeypatch.setattr(service, "_same", lambda scope: None)
+    options = (InterestOption("1", "Café"),)
+    assert await service._interest_status(None, options) == options
+
+
+@pytest.mark.asyncio
+async def test_interest_search_wire_is_meta_targeting_search_with_spanish_errors(monkeypatch):
+    from qualify_api.ads.errors import MarketingError
+
+    ids = {
+        key: uuid4()
+        for key in ("tenant_id", "content_draft_id", "publish_attempt_id", "ad_account_id")
+    }
+    scope = service.AudienceScope(
+        **ids,
+        brand_id=uuid4(),
+        connection=AdConnection(uuid4(), uuid4(), "42", 1, "active", (), None, True),
+        meta_account_id="12",
+    )
+    monkeypatch.setattr(service, "_scope", lambda **kwargs: scope)
+    monkeypatch.setattr(service, "_same", lambda value: None)
+    api = FakeMarketingClient(account_id="12")
+    original = service._read
+
+    async def fake_read(target, operation, params):
+        return await original(target, operation, params, api=api)
+
+    monkeypatch.setattr(service, "_read", fake_read)
+    api.responses[("GET", "search")] = {
+        "data": [
+            {"id": "6003", "name": "Café", "path": ["Interests"]},
+            {"id": "café libre", "name": "Texto"},  # not a Meta id: dropped
+            {"id": "6004", "name": "Té", "current_status": "DEPRECATING"},
+        ]
+    }
+    api.responses[("GET", "act_12/targetingvalidation")] = {
+        "data": [{"id": "6003", "valid": True}, {"id": "6004", "valid": True}]
+    }
+    found = await service.search_audience_interests(**ids, query="café")
+    # The fake answers every search with the same rows: 6004's DEPRECATING comes from the
+    # status read, 6003 has no NORMAL there, so it stays unknown rather than active.
+    assert [(i.id, i.status) for i in found] == [("6003", "unknown"), ("6004", "retiring")]
+    assert api.calls[0][2] == {"type": "adinterest", "q": "café", "limit": 25}
+    assert api.calls[2][2]["type"] == "targetingoptionstatus"
+    api.failures.append(MarketingError("secret provider body"))
+    with pytest.raises(AudienceUnavailable, match="No pudimos consultar el público"):
+        await service.search_audience_interests(**ids, query="café")
+    with pytest.raises(AudienceUnavailable, match="entre dos y cien"):
+        await service.search_audience_interests(**ids, query="c")
+    retired = audience(interests=(found[1],))
+    with pytest.raises(AudienceUnavailable, match="ya no permite"):
+        retired.targeting()
+
+
+POINT = {"latitude": 7.893907, "longitude": -72.507821, "name": "Calle 10 # 5-20, Cúcuta"}
+
+
+def pointed(**changes):
+    from qualify_api.ads.audience import MapPoint
+
+    return audience(
+        **{
+            "location": LocationOption("CO", "Colombia", "country", "CO"),
+            "point": MapPoint(**POINT),
+            "radius_km": 3,
+            **changes,
+        }
+    )
+
+
+def test_point_radius_compiles_to_custom_location_only_and_roundtrips():
+    draft = pointed(interests=(InterestOption("6003", "Café", "active"),))
+    assert draft.targeting()["geo_locations"] == {
+        "custom_locations": [
+            {
+                "latitude": 7.893907,
+                "longitude": -72.507821,
+                "radius": 3,
+                "distance_unit": "kilometer",
+            }
+        ]
+    }
+    assert draft.targeting()["flexible_spec"] == [{"interests": [{"id": "6003"}]}]
+    assert draft.snapshot()["point"] == POINT
+    assert AudienceDraft.from_snapshot(draft.snapshot()) == draft
+    assert pointed().fingerprint != pointed(radius_km=4).fingerprint
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"radius_km": None},
+        {"radius_km": 0},
+        {"radius_km": 81},
+        {"radius_km": 2.5},
+        {"location": LocationOption("123", "Cúcuta", "city", "CO")},
+        {"point_latitude": 91},
+        {"point_latitude": True},
+        {"point_latitude": float("nan")},
+        {"point_longitude": -180.5},
+        {"point_longitude": 1.1234567},
+        {"point_name": ""},
+    ],
+)
+def test_point_rules_reject_out_of_range_or_untrusted_values(changes):
+    from qualify_api.ads.audience import MapPoint
+
+    point = {k.removeprefix("point_"): v for k, v in changes.items() if k.startswith("point_")}
+    rest = {k: v for k, v in changes.items() if not k.startswith("point_")}
+    with pytest.raises(AudienceUnavailable):
+        pointed(point=MapPoint(**{**POINT, **point}), **rest).targeting()
+
+
+def test_pre_existing_audience_and_request_fingerprints_are_byte_identical():
+    """Pinned on main before m-24828977: adding the optional map point changes no hash."""
+    from uuid import UUID
+
+    from qualify_api.ads.enhancements import BrandEnhancementSettings
+    from qualify_api.ads.lead_ads import LeadFormTarget
+    from qualify_api.ads.messaging import MessagingTarget
+    from qualify_api.ads.promotions import fingerprint
+
+    city = AudienceDraft(location=LocationOption("123", "Bogotá", "city", "CO"))
+    country = AudienceDraft(location=LocationOption("CO", "Colombia", "country", "CO"))
+    rich = AudienceDraft(
+        location=LocationOption("123", "Bogotá", "city", "CO"),
+        radius_km=20,
+        interests=(InterestOption("6003", "Café", "active"),),
+        placements=("instagram_feed",),
+    )
+    assert [a.fingerprint for a in (city, country, rich)] == [
+        "b593c7a11a634a224f9357005fecf292d258b0f46ddfa75ab67a6ca24a5ebd94",
+        "6496f68ad15c16bebb455fb70ca22e39b0c5238425c8c714cbeb7c14b6be6561",
+        "87fca34c52b1f1068d4b0fe8b6ae18d09431bf14af014a55467cbef1d69b71b8",
+    ]
+    u = UUID(int=1)
+    source = PromotionSource(
+        u,
+        u,
+        u,
+        u,
+        "99",
+        "88",
+        "Published",
+        "IG",
+        meta_ad_account_id="12",
+        currency="COP",
+        timezone_name="America/Bogota",
+        ad_account_id=u,
+        credential_version=1,
+        linked_page_id="77",
+        unavailable_reason="",
+    )
+    t = datetime(2030, 1, 1, tzinfo=UTC)
+    website = WizardForm(
+        "https://example.org/offer",
+        "Bogotá",
+        t,
+        datetime(2030, 1, 3, tzinfo=UTC),
+        city_key="123",
+        budget_minor=1_000_000,
+        enhancements=BrandEnhancementSettings(u, u),
+        audience=city,
+    )
+    lead = replace(
+        website,
+        link_url="",
+        lead_form=LeadFormTarget(u, "555", "77", u, u, 1),
+        lead_cta="GET_QUOTE",
+    )
+    chat = replace(
+        website,
+        link_url="",
+        messaging=MessagingTarget("WHATSAPP", u, u, "77", 1, 1, "555", "573001112233"),
+    )
+    hashes = [
+        fingerprint(_request(u, source, form, u, "k", t, currency_offset=1).snapshot())
+        for form in (website, lead, chat)
+    ]
+    assert hashes == [
+        "116d1e8dbf4a34285ca4fc90063abd2d957e919b3257e2a05b6fc3d62dc1c793",
+        "096e791fa2c4a9aa007c6ed45d6945e8c73042f646109d3a5a5ece80b1917e31",
+        "b081e64dd57aa8b814077ea432b1d8e2507919a1f26a39817837c150fe674e40",
+    ]
 
 
 def test_immutable_promotion_targeting_and_selection_restore_and_policy_gate():

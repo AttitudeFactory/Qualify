@@ -41,6 +41,8 @@ def _form_fields(form: Any) -> dict[str, Any]:
     for key in ("messaging", "greeting"):
         if fields.get(key) is None:
             fields.pop(key, None)  # Non-chat receipts keep their hash (m-24828980).
+    if isinstance(fields.get("audience"), dict) and fields["audience"].get("point") is None:
+        fields["audience"].pop("point", None)  # Receipts without a map point keep their hash.
     return fields
 
 

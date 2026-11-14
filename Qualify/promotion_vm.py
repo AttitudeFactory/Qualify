@@ -554,7 +554,8 @@ def step_problem(draft: PromotionDraftVM, step: int, timezone_name: str = "") ->
             low, high = int(draft.age_min), int(draft.age_max)
             valid = draft.housing or 18 <= low <= high <= 65
             if draft.radius_km:
-                valid = valid and draft.location_kind == "city" and 1 <= int(draft.radius_km) <= 80
+                # Meta's city radius: 17 to 80 km (qualify_api.ads.audience.CITY_RADIUS_KM).
+                valid = valid and draft.location_kind == "city" and 17 <= int(draft.radius_km) <= 80
         except ValueError:
             valid = False
         if not valid:
