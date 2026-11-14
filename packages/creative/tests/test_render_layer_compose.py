@@ -297,6 +297,16 @@ def test_a_base_photo_needs_its_fingerprint() -> None:
     assert _request(base_key=None, base_sha256=None).job_id()  # no photo, no fingerprint
 
 
+def test_the_engine_revision_is_in_the_job_key_and_the_object_key() -> None:
+    from qualify_creative.render.layer_compose import engine_revision
+
+    assert engine_revision() >= 2  # read from the published manifest
+    a, b = _request(engine_rev=2), _request(engine_rev=3)
+    assert a.job_id() != b.job_id()
+    assert a.object_key() != b.object_key()  # the key carries the job id
+    assert _request().job_id() == _request(engine_rev=engine_revision()).job_id()
+
+
 def test_the_layer_id_is_in_the_job_key_and_reaches_the_report() -> None:
     assert _request(layer_id="L1").job_id() != _request(layer_id="L9").job_id()
     props = build_layer_props(_request(), photo_ref=None, logo_ref=None)

@@ -101,6 +101,16 @@ as failed and the chain moves on; when every layout of the chain fails, the outp
 with `invalid_parameters` and a machine-readable `refusal` (§4.1) — never an image with
 overflowing text. A carousel is N jobs (ADR 49 §2.2).
 
+**Engine revision** (`layer_catalog.engine_revision`, today 2). The template version pins the
+props contract; the engine revision pins the pixels. It is bumped with ANY change to
+`engine.ts`, `LayerStill.tsx`, `icons.tsx` or the font loading that can move a pixel, it is
+echoed as `report.engine_revision`, and Python puts it in the compose job id (and therefore in
+the object key, which carries the job id): a recompose after an engine change is a new job and a
+new object, never «same key, different pixels». Fonts follow the same rule: a brand family the
+Google Fonts catalogue knows is measured AND drawn with that face or the job fails (`timeout` /
+`dependency_failed`) — it never silently falls back to Noto Sans under the same key; only an
+unknown family uses the fallback, deterministically, with a `warnings` entry.
+
 Order of the 422 checks (changed with m-25017285): `POST /estimate` and `/render` now check
 that every `asset://` exists **before** validating the props against the manifest, because a
 layer's limits depend on the requested ports. A request with both problems answers the

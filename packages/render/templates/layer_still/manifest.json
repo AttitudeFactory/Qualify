@@ -19,6 +19,8 @@
   "cost_model": {"seconds_per_still": 3.0},
   "layer_catalog": {
     "layout_version": 1,
+    "engine_revision": 2,
+    "engine_revision_doc": "Bump with ANY change to engine.ts, LayerStill.tsx, icons.tsx or the font loading that can move a pixel of a layer_still; it is part of the compose job id and object key (CONTRACT.md). 1 = first build; 2 = review round 2 (logo/counter collisions, price drop reported, strict fonts).",
     "source": "docs/catalogo-disenos-imagen-carrusel.md (approved 2026-11-14); limits are [H] until m-25017292 measures them",
     "formats": {
       "4:5":  {"width": 1080, "height": 1350, "margin": 64, "safe": [64, 64, 1016, 1286], "title_zone_x": [64, 1016]},

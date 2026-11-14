@@ -42,6 +42,11 @@ const loaded = new Map<string, Promise<string>>();
 export const loadFamily = (family: string | undefined, fallback: string): Promise<string> => {
   const entry = findGoogleFont(family);
   if (!entry) return Promise.resolve(fallback);
+  // the cache keeps the raw load (which may reject) so each caller applies its OWN fallback
+  return loadEntry(entry).catch(() => fallback);
+};
+
+const loadEntry = (entry: NonNullable<ReturnType<typeof findGoogleFont>>): Promise<string> => {
   const cached = loaded.get(entry.fontFamily);
   if (cached) return cached;
 
@@ -60,8 +65,9 @@ export const loadFamily = (family: string | undefined, fallback: string): Promis
     });
     await waitUntilDone();
     return fontFamily;
-  })().catch(() => fallback);
-
+  })();
+  // a failed load is not cached: the next caller retries it
+  p.catch(() => loaded.delete(entry.fontFamily));
   loaded.set(entry.fontFamily, p);
   return p;
 };
@@ -121,18 +127,34 @@ export const useBrandFonts = (
 };
 
 /**
- * The families a `layer_still` is measured with (review m-25017285 #8): the brand's, or the
- * fallback when a family is unknown or does not load within FONT_TIMEOUT_MS — the same rule
- * `useBrandFonts` applies. Plain family names, recorded in the report.
+ * The families a `layer_still` is measured with (review m-25017285, round 2 #4). Strict:
+ * - a family the Google Fonts catalogue does not know → the fallback, always (deterministic:
+ *   the same props measure and draw the same face every time; the server warns about it);
+ * - a known family that fails or does not load within FONT_TIMEOUT_MS → THROWS (`timeout` /
+ *   `dependency_failed`), never a silent fallback. Otherwise a transient network hiccup would
+ *   store a still in the fallback face under the same job id and object key as the brand-face
+ *   still. Plain family names, recorded in the report.
  */
 export const resolveBrandFamilies = async (
   headingFamily: string | undefined,
   bodyFamily: string | undefined,
 ): Promise<{heading: string; body: string}> => {
-  const [heading, body] = await Promise.all([
-    withTimeout(loadFamily(headingFamily, FALLBACK_HEADING), FALLBACK_HEADING),
-    withTimeout(loadFamily(bodyFamily, FALLBACK_BODY), FALLBACK_BODY),
-  ]);
+  const strict = async (family: string | undefined, fallback: string): Promise<string> => {
+    const entry = findGoogleFont(family);
+    if (!entry) return fallback;
+    type Got = {family: string} | {error: string} | {timedOut: true};
+    const got = await withTimeout<Got>(
+      loadEntry(entry).then(
+        (f) => ({family: f}),
+        (e: unknown) => ({error: String(e)}),
+      ),
+      {timedOut: true},
+    );
+    if ('timedOut' in got) throw new Error(`font '${entry.fontFamily}' did not load within ${FONT_TIMEOUT_MS / 1000} s (timeout)`);
+    if ('error' in got) throw new Error(`font '${entry.fontFamily}' failed to load: ${got.error}`);
+    return got.family;
+  };
+  const [heading, body] = await Promise.all([strict(headingFamily, FALLBACK_HEADING), strict(bodyFamily, FALLBACK_BODY)]);
   return {heading, body};
 };
 

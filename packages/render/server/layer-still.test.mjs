@@ -11,7 +11,7 @@ import {fileURLToPath} from 'node:url';
 import {validateProps} from './validate.mjs';
 import {layerProblems} from '../src/templates/layer_still/spec.mjs';
 import {LayerRefusal, contrast, opaque, resolveLayer, textColorOn, wrap} from '../src/templates/layer_still/engine.ts';
-import {refusalOf} from './jobs.mjs';
+import {classifyError, refusalOf} from './jobs.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const manifest = JSON.parse(fs.readFileSync(path.join(here, '..', 'templates', 'layer_still', 'manifest.json'), 'utf8'));
@@ -244,6 +244,25 @@ const SUBJECTS = {
   bottom_third: [0.2, 0.67, 0.8, 0.95],
   full: [0.05, 0.05, 0.95, 0.95],
 };
+/** Logo and counter never touch text, icons or each other; the logo never covers the subject
+ * wherever the photo is drawn (review round 2 #1 and #2). */
+const assertNoCollisions = (r, subject_box, label) => {
+  const text = [...lineRects(r), ...r.icons.map((ic) => ({x: ic.x, y: ic.y, w: ic.size, h: ic.size}))];
+  if (r.logo) {
+    for (const t of text) assert.ok(!overlap(r.logo.rect, t), `${label}: logo over text ${JSON.stringify([r.logo.rect, t])}`);
+    if (r.counter) assert.ok(!overlap(r.logo.rect, r.counter.rect), `${label}: logo over the counter`);
+    if (subject_box && r.photo) {
+      const {box, window: w} = r.photo;
+      const x0 = Math.max(w.x, box.x + subject_box[0] * box.w);
+      const y0 = Math.max(w.y, box.y + subject_box[1] * box.h);
+      const x1 = Math.min(w.x + w.w, box.x + subject_box[2] * box.w);
+      const y1 = Math.min(w.y + w.h, box.y + subject_box[3] * box.h);
+      if (x1 > x0 && y1 > y0) assert.ok(!overlap(r.logo.rect, {x: x0, y: y0, w: x1 - x0, h: y1 - y0}), `${label}: logo over the subject`);
+    }
+  }
+  if (r.counter) for (const t of text) assert.ok(!overlap(r.counter.rect, t), `${label}: counter over text`);
+};
+
 const PALETTES = {
   clear: {accent: '#FFE8A3', text: '#FFFFFF', surface: '#FFFFFF'},
   medium: {accent: '#777777', text: '#777777', surface: '#777777'},
@@ -257,15 +276,18 @@ for (const layout of ['plate', 'scrim', 'band', 'photo_only']) {
     test(`${layout} ${format}: every subject × palette × logo stays legal`, () => {
       for (const [sname, subject_box] of Object.entries(SUBJECTS)) {
         for (const [pname, pal] of Object.entries(PALETTES)) {
-          for (const hasLogo of [true, false]) {
+          for (const [hasLogo, slide] of [[true, null], [false, null], [true, {index: 1, total: 4, role: 'cover'}], [true, {index: 4, total: 4, role: 'closing'}]]) {
+            if (slide && format === '9:16') continue;
+            if (slide && slide.role === 'closing' && layout !== 'band') continue;
             const layer = {
               layout_id: layout,
               title: layout === 'photo_only' ? null : LONG_WORD_TITLE,
               subtitle: layout === 'photo_only' || (layout === 'scrim' && format === '1:1') ? null : 'Recién hechas',
               subject_box,
             };
-            const r = run(layer, {format, photo: photoFor(format), palette: pal, hasLogo});
-            const label = `${layout} ${format} ${sname} ${pname} logo=${hasLogo} → ${r.report.layout_rendered}`;
+            const r = run(layer, {format, photo: photoFor(format), palette: pal, hasLogo, slide});
+            const label = `${layout} ${format} ${sname} ${pname} logo=${hasLogo} slide=${slide?.role ?? '-'} → ${r.report.layout_rendered}`;
+            assertNoCollisions(r, subject_box, label);
             const safe = catalog.formats[format].safe;
             for (const l of lineRects(r)) assert.ok(within(l, safe), `${label}: line outside the safe zone ${JSON.stringify(l)}`);
             if (r.logo) assert.ok(within(r.logo.rect, safe), `${label}: logo outside the safe zone`);
@@ -430,6 +452,58 @@ test('the sibling LayerSpec v1 dumps (m-25017283) pass the boundary and render',
 test('the layer id reaches the report', () => {
   const r = run({layout_id: 'plate', title: 'Tu pan', anchor: 'top_left', subject_box: [0.3, 0.6, 0.7, 0.9], layer_id: 'L-42'});
   assert.equal(r.report.layer_id, 'L-42');
+});
+
+test('review 2 #1: carousel cover, plate bottom_left, subject on top — the logo never lands on the title', () => {
+  const r = run(
+    {layout_id: 'plate', title: 'Tu pan, recién horneado', anchor: 'bottom_left', subject_box: [0, 0, 1, 0.55]},
+    {slide: {index: 1, total: 4, role: 'cover'}},
+  );
+  assertNoCollisions(r, [0, 0, 1, 0.55], 'repro #1');
+  if (!r.logo) {
+    assert.ok(r.report.dropped_slots.includes('logo'));
+    assert.ok(r.report.fallbacks.some((f) => /logo: no free spot, dropped/.test(f)));
+  }
+});
+
+test('review 2 #2: a band fallback never puts the logo on the subject', () => {
+  // with the fake metrics the plate fits under the subject; the band case is checked directly
+  const r = run({layout_id: 'plate', title: 'Tu pan, recién horneado', subtitle: 'Masa madre de la casa', anchor: 'top_left', subject_box: [0, 0, 1, 0.55]});
+  assertNoCollisions(r, [0, 0, 1, 0.55], 'repro #2 (plate)');
+  const b = run({layout_id: 'band', title: 'Tu pan, recién horneado', anchor: 'bottom', subject_box: [0, 0, 1, 0.55]});
+  assert.equal(b.report.layout_rendered, 'band');
+  assertNoCollisions(b, [0, 0, 1, 0.55], 'repro #2 (band)');
+  assert.notEqual(b.report.logo, 'top_left');
+  // info_card's photo strip counts too
+  const ic = run({layout_id: 'info_card', photo_strip: true, title: 'Te esperamos', info_blocks: [{kind: 'hours', value: 'De 8 a 20'}], subject_box: [0, 0, 1, 1]});
+  assertNoCollisions(ic, [0, 0, 1, 1], 'info_card strip');
+  assert.ok(ic.report.logo !== 'top_left' || !ic.logo || ic.logo.rect.y >= ic.photo.window.h, JSON.stringify(ic.logo));
+});
+
+test('review 2 #3: a price that does not fit is reported, never dropped silently', () => {
+  const r = run(
+    {layout_id: 'band', title: 'Pan', anchor: 'bottom', price_ref: {product_id: 'p'}, subject_box: [0.3, 0.1, 0.7, 0.5]},
+    {priceText: '$ 1.234.567.890.123.456.789.012'},
+  );
+  assert.ok(!r.texts.some((t) => t.slot === 'price'));
+  assert.ok(r.report.dropped_slots.includes('price'));
+  const none = run({layout_id: 'band', title: 'Pan', anchor: 'bottom', price_ref: {product_id: 'p'}, subject_box: [0.3, 0.1, 0.7, 0.5]}, {priceText: ''});
+  assert.ok(none.report.fallbacks.some((f) => /no catalog price/.test(f)));
+});
+
+test('review 2 #4: the engine revision is in the report and comes from the manifest', () => {
+  assert.ok(Number.isInteger(catalog.engine_revision) && catalog.engine_revision >= 2);
+  const r = run({layout_id: 'plate', title: 'Tu pan', anchor: 'top_left', subject_box: [0.3, 0.6, 0.7, 0.9]});
+  assert.equal(r.report.engine_revision, catalog.engine_revision);
+});
+
+test('review 2 #5: classifyError maps a refusal (and any composition 422) to invalid_parameters', () => {
+  const e = refusalFor({layout_id: 'plate', title: 'Supercalifragilisticoespiral', anchor: 'top_left', subject_box: [0.5, 0.6, 0.9, 0.95]});
+  assert.equal(classifyError(e), 'invalid_parameters');
+  assert.equal(classifyError(new Error(`Error: ${e.message}\n at renderStill`)), 'invalid_parameters');
+  // the strict font loader's errors land on the transient reasons, not on invalid_parameters
+  assert.equal(classifyError(new Error("font 'Poppins' did not load within 12 s (timeout)")), 'timeout');
+  assert.equal(classifyError(new Error("font 'Poppins' failed to load: TypeError")), 'dependency_failed');
 });
 
 test('wrap never cuts a word', () => {

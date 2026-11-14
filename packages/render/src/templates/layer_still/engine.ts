@@ -95,6 +95,8 @@ type LayoutDef = {
 };
 export type Catalog = {
   layout_version: number;
+  /** bumped with any change that can move a pixel (manifest; part of the compose job id) */
+  engine_revision: number;
   formats: Record<Format, {width: number; height: number; margin: number; safe: [number, number, number, number]; title_zone_x: [number, number]}>;
   font_sizes: Record<string, Partial<Record<Format, SizePair>>>;
   script_title_min: number;
@@ -160,6 +162,8 @@ export type Report = {
   fonts: {heading: string; body: string} | null;
   /** title line height and the gap under the title, from the glyphs' measured ink */
   title_metrics: {line_height: number; gap_after: number} | null;
+  /** the compositor revision that drew this still (manifest `layer_catalog.engine_revision`) */
+  engine_revision: number;
 };
 
 /** Why no layout of the chain could draw the layer — machine-readable, so the layer stage can
@@ -449,9 +453,11 @@ const fitStack = (
   // `step` lowers every slot's starting size by 4 px per step (never below its minimum):
   // a stack that is too tall first gets smaller, then loses slots
   const cap = ([max, min]: SizePair, step: number): SizePair => [Math.max(max - 4 * step, min), min];
+  let priceDropped = false;
   const build = (step: number): {pieces: Piece[]; failed: SlotName | null; atMin: boolean} => {
     const pieces: Piece[] = [];
     let atMin = true;
+    priceDropped = false;
     const capped = (pair: SizePair): SizePair => {
       const c = cap(pair, step);
       if (c[0] > c[1]) atMin = false;
@@ -472,7 +478,7 @@ const fitStack = (
         if (pfit) {
           pieces.push({slot: 'price', text: ctx.priceText.trim(), fit: pfit, role: 'heading', weight: 700, lh: LINE_HEIGHT.title, gapBefore: Math.max(GAP.price, afterTitle)});
           afterTitle = 0;
-        }
+        } else priceDropped = true; // wider than the title box: reported, never silent (review 2 #3)
       }
     }
     if (keep.subtitle) {
@@ -495,6 +501,7 @@ const fitStack = (
     const {pieces, failed, atMin} = build(step);
     const tooTall = failed === null && stackHeight(pieces) > maxHeight;
     if (failed === null && !tooTall) {
+      if (priceDropped) dropped.push('price');
       const w = Math.max(0, ...pieces.map((p) => Math.max(...p.fit.widths)));
       return {pieces, width: w, height: stackHeight(pieces)};
     }
@@ -596,10 +603,13 @@ const wantsLogo = (ctx: Ctx): boolean => {
 /** §4: first free corner TL → TR → BR → BL (BR belongs to the counter in a carousel). */
 const placeLogo = (
   ctx: Ctx,
+  /** what a corner logo must not touch (text, icons, counter, and a plate's own box) */
   obstacles: Rect[],
   subject: Rect | null,
   fallbackContainer: Rect | null,
   pad: number,
+  /** what a logo inside the container must not touch (text, icons, counter) */
+  insideObstacles: Rect[] = obstacles,
 ): {rect: Rect; where: string} | null => {
   const [sx0, sy0, sx1, sy1] = ctx.fmt.safe;
   const top = ctx.format === '9:16' ? sy0 + 24 : sy0; // §4: «en 9:16, desde y 294»
@@ -616,8 +626,22 @@ const placeLogo = (
     return {rect, where};
   }
   if (fallbackContainer) {
+    // §4: 88 px inside a corner of the plate or band — only where it touches no text, icon,
+    // counter or subject and stays in the safe zone (review 2 #1: it used to land on the title)
     const c = fallbackContainer;
-    return {rect: {x: c.x + c.w - pad / 2 - LOGO_SMALL, y: c.y + pad / 2, w: LOGO_SMALL, h: LOGO_SMALL}, where: 'in_container'};
+    const inset = pad / 2;
+    const spots: Rect[] = [
+      {x: c.x + c.w - inset - LOGO_SMALL, y: c.y + inset, w: LOGO_SMALL, h: LOGO_SMALL},
+      {x: c.x + inset, y: c.y + inset, w: LOGO_SMALL, h: LOGO_SMALL},
+      {x: c.x + c.w - inset - LOGO_SMALL, y: c.y + c.h - inset - LOGO_SMALL, w: LOGO_SMALL, h: LOGO_SMALL},
+      {x: c.x + inset, y: c.y + c.h - inset - LOGO_SMALL, w: LOGO_SMALL, h: LOGO_SMALL},
+    ];
+    for (const rect of spots) {
+      if (!inside(rect, ctx.fmt.safe)) continue;
+      if (insideObstacles.some((o) => intersects(rect, o, 8))) continue;
+      if (subject && intersects(rect, subject, SUBJECT_TOLERANCE)) continue;
+      return {rect, where: 'in_container'};
+    }
   }
   return null;
 };
@@ -1149,6 +1173,12 @@ export const chainOf = (layout: LayoutId, anchor: string | null, def: LayoutDef,
   return [{layout, anchor: null, reduced: false}];
 };
 
+/** Every drawn text line and icon as a rectangle (with the slot it belongs to). */
+const textRects = (r: Pick<Resolved, 'texts' | 'icons'>): Array<Rect & {slot: string}> => [
+  ...r.texts.flatMap((t) => t.lines.map((l) => ({x: l.x, y: l.y, w: l.width, h: t.size * t.lineHeight, slot: t.slot}))),
+  ...r.icons.map((ic) => ({x: ic.x, y: ic.y, w: ic.size, h: ic.size, slot: 'info_blocks'})),
+];
+
 /**
  * §1.7 check 2, enforced on what will be drawn (review #4): every text line and icon inside the
  * safe zone of the format (the highlight circle keeps its content inside the circle instead).
@@ -1157,6 +1187,12 @@ export const chainOf = (layout: LayoutId, anchor: string | null, def: LayoutDef,
 const safeZoneCheck = (ctx: Ctx, o: Outcome): Outcome => {
   if (!o.ok || ctx.layoutId === 'highlight_circle') return o;
   const safe = ctx.fmt.safe;
+  // the counter keeps its place on every slide: no text line or icon may touch it
+  const counter = counterOf(ctx);
+  if (counter) {
+    const hit = textRects(o.resolved).find((r) => intersects(r, counter.rect, 8));
+    if (hit) return {ok: false, reason: 'covers_counter', slot: hit.slot, detail: `text at y ${Math.round(hit.y)} reaches the counter at y ${counter.rect.y}`};
+  }
   for (const t of o.resolved.texts) {
     for (const l of t.lines) {
       const r = {x: l.x, y: l.y, w: l.width, h: t.size * t.lineHeight};
@@ -1281,31 +1317,40 @@ export const resolveLayer = (raw: Input): Resolved => {
   // the logo, once (brand_fill places its own)
   let logoWhere = outcome.partial.logo ?? 'none';
   if (used.layout !== 'brand_fill' && wantsLogo(ctx)) {
-    const obstacles = [...resolved.containers.map((c) => c.rect), ...resolved.texts.flatMap((t) => t.lines.map((l) => ({x: l.x, y: l.y, w: l.width, h: t.size * t.lineHeight})))];
+    const drawn = textRects(resolved);
+    const obstacles: Rect[] = [...drawn];
     if (resolved.counter) obstacles.push(resolved.counter.rect);
-    const subject = used.layout === 'plate' || used.layout === 'scrim' || used.layout === 'photo_only' ? photoFull(ctx).subject : null;
+    // the subject wherever the photo is drawn (plate, scrim, photo_only, band, info_card strip)
+    const ph = resolved.photo;
+    const subject = ph && layer.subject_box ? subjectRect(layer.subject_box, ph.box, ph.window) : null;
     let placed: {rect: Rect; where: string} | null;
     if (used.layout === 'info_card' && !resolved.photo) {
-      placed = {rect: {x: fmt.safe[0], y: fmt.safe[1], w: LOGO, h: LOGO}, where: 'top_left'};
+      const rect = {x: fmt.safe[0], y: fmt.safe[1], w: LOGO, h: LOGO};
+      placed = obstacles.some((o) => intersects(rect, o, 8)) ? null : {rect, where: 'top_left'};
     } else {
-      // a band's own rect is an obstacle only for the text; the logo may sit on the band's free corner
-      const bandFree = used.layout === 'band' ? obstacles.slice(1) : obstacles;
-      placed = placeLogo(ctx, bandFree, subject, resolved.containers[0]?.rect ?? null, def.padding ?? 48);
+      // a plate's own box is an obstacle for a corner logo; a band's is not (the logo may sit on
+      // its free corner) — text, icons, counter and subject always are
+      const boxes = used.layout === 'plate' ? resolved.containers.map((c) => c.rect) : [];
+      placed = placeLogo(ctx, [...boxes, ...obstacles], subject, resolved.containers[0]?.rect ?? null, def.padding ?? 48, obstacles);
     }
+    if (placed && [...obstacles].some((o) => intersects(placed!.rect, o, 0))) placed = null; // never over text
     if (placed) {
       const small = placed.where === 'in_container';
       resolved.logo = {rect: placed.rect, tile: input.palette.surface, radius: small ? Math.round(LOGO_RADIUS * (LOGO_SMALL / LOGO)) : LOGO_RADIUS};
       logoWhere = placed.where;
       if (small) fallbacks.push('logo: no free corner, 88 px inside the container');
     } else {
+      // catalog §4 has no further spot: the logo is dropped and said so — never drawn over text
       logoWhere = 'none';
-      fallbacks.push('logo: no free corner and no container, not drawn');
+      dropped.push('logo');
+      fallbacks.push('logo: no free spot, dropped');
     }
   } else if (used.layout !== 'brand_fill') {
     logoWhere = layer.logo_in_photo ? 'in_photo' : 'none';
   }
 
-  for (const d of dropped) fallbacks.push(`dropped ${d} (does not fit)`);
+  if (layer.price_ref && !input.priceText.trim()) fallbacks.push('price: the product has no catalog price, not drawn');
+  for (const d of dropped) if (d !== 'logo') fallbacks.push(`dropped ${d} (does not fit)`);
   return {
     ...resolved,
     report: {
@@ -1323,6 +1368,7 @@ export const resolveLayer = (raw: Input): Resolved => {
       overflow: [],
       fonts: raw.fonts ?? null,
       title_metrics: titleMetricsOf(resolved.texts),
+      engine_revision: catalog.engine_revision,
     },
   };
 };

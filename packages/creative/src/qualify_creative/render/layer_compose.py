@@ -10,10 +10,11 @@ Keys (ADR 49 §2.2 and §2.4, and the R2 rule that the bucket refuses to overwri
 ``t/``):
 
 - **job id** = ``uuid5`` over the template version, the layer id (ADR 49 §2.3 amendment),
-  ``version_id``, ``position``, ``spec_sha256``, ``layout_version``, the base photo's sha256,
-  the port and a digest of every other input that changes pixels (brand kit, logo, price
-  line). Same inputs → same job (a retry is idempotent on the service); any edit → a new job,
-  never the old image.
+  the engine revision (manifest ``layer_catalog.engine_revision``, bumped with any pixel-moving
+  change), ``version_id``, ``position``, ``spec_sha256``, ``layout_version``, the base
+  photo's sha256, the port and a digest of every other input that changes pixels (brand kit,
+  logo, price line). Same inputs → same job (a retry is idempotent on the service); any edit →
+  a new job, never the old image.
 - **object key** = ``t/{tenant}/generated/{draft}/compose/{layer_id}/{spec_sha256[:16]}/
   {job_id}/slide-{position+1}.jpg``: a re-compose after an edit is a new layer row and a new
   sha, so it lands on a new key and never overwrites.
@@ -30,6 +31,7 @@ import json
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from functools import cache
 from typing import Any, Literal
 
 from qualify_creative.render.client import (
@@ -42,6 +44,22 @@ TEMPLATE_ID = "layer_still"
 TEMPLATE_VERSION = 1
 #: The catalog version this template draws (manifest ``layer_catalog.layout_version``).
 LAYOUT_VERSION = 1
+
+
+@cache
+def engine_revision() -> int:
+    """The compositor revision of the published `layer_still` manifest
+    (`layer_catalog.engine_revision`): bumped with any render change that can move a pixel, and
+    part of the compose job id so a recompose after such a change never reuses a key."""
+    from qualify_creative.render.registry import TemplateRegistry
+
+    catalog = TemplateRegistry.from_dir().get(TEMPLATE_ID, TEMPLATE_VERSION).layer_catalog or {}
+    rev = catalog.get("engine_revision")
+    if not isinstance(rev, int) or isinstance(rev, bool) or rev < 1:
+        raise ValueError("layer_still manifest has no engine_revision")
+    return rev
+
+
 MODEL_ID = "remotion_selfhost"
 
 Format = Literal["4:5", "1:1", "9:16"]
@@ -90,6 +108,8 @@ class LayerComposeRequest:
     is_food: bool = False
     #: ``piece_layers.spec_sha256`` when the caller has it; computed from ``spec`` otherwise
     spec_digest: str | None = None
+    #: the compositor revision; defaults to the manifest's (`engine_revision()`)
+    engine_rev: int | None = None
 
     def __post_init__(self) -> None:
         # the base's fingerprint is part of the render key (ADR 49 §2.2): without it two
@@ -139,6 +159,7 @@ class LayerComposeRequest:
         name = "|".join(
             [
                 f"{TEMPLATE_ID}@{TEMPLATE_VERSION}",
+                f"engine{self.engine_rev or engine_revision()}",
                 self.layer_id,
                 self.version_id,
                 str(self.position),
@@ -288,6 +309,9 @@ def compose_layer(
             "model_id": MODEL_ID,
             "template": f"{TEMPLATE_ID}@{TEMPLATE_VERSION}",
             "layout_version": request.layout_version,
+            "engine_revision": report.get(
+                "engine_revision", request.engine_rev or engine_revision()
+            ),
             "layer_id": request.layer_id,
             "spec_sha256": request.digest,
             "base_sha256": request.base_sha256,
