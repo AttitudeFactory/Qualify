@@ -206,13 +206,43 @@ class CarouselPlace(_Strict):
 
 # -- free-text rules (catalog §1.8) -------------------------------------------------------
 
-_CURRENCY = re.compile(
-    r"[$€£¥₡₲₱]|\b(cop|usd|ves|uyu|bs\.?|bsf|bss|pesos?|bol[ií]vares|d[oó]lares)\b",
+#: a currency symbol, anywhere
+_CURRENCY_SYMBOL = re.compile(r"[$€£¥₡₲₱]")
+#: an amount word: a currency code or name, or «mil»/«k»/«lucas», glued or next to a digit
+#: («15 mil», «15mil», «A 20bs», «Por 5usd», «12 lucas», «20 soles», «USD 5»). Written-out
+#: numbers («Por veinte mil») are out of reach of a rule and left to the prompt.
+_AMOUNT_WORD = (
+    r"(?:cop|usd|us\$|ves|uyu|bs\.?|bsf|bss|eur|euros?|pesos?|soles?|bol[ií]vares|"
+    r"d[oó]lares?|lucas|mil|k)"
+)
+_AMOUNT = re.compile(
+    rf"\d\s*{_AMOUNT_WORD}(?![a-záéíóúñ])|(?<![a-záéíóúñ]){_AMOUNT_WORD}\s*\d",
     re.IGNORECASE,
 )
-#: a price figure: a number with a thousands separator or decimals, or of 3+ digits
-_PRICE_FIGURE = re.compile(r"\d{1,3}(?:[.,]\d{3})+|\d+[.,]\d{1,2}\b|\d{3,}")
+#: a price figure: a number with a thousands separator or with cents
+_SEPARATED = re.compile(r"\b\d{1,3}(?:[.,]\d{3})+\b|\b\d+[.,]\d{2}\b")
+#: what a number of 3+ digits may be without being a price: a year, or a quantity with
+#: its unit or a percentage («Desde 1998», «Novedades 2026», «500 g», «100% natural»)
+_YEAR = re.compile(r"^(?:19|20)\d{2}$")
+_UNIT = re.compile(
+    r"\s*(?:%|g\b|gr\b|grs\b|gramos\b|kg\b|kilos?\b|ml\b|l\b|litros?\b|cc\b|cm\b|m\b|"
+    r"metros?\b|m2\b|m²|unidades\b|piezas\b|porciones\b)",
+    re.IGNORECASE,
+)
+_NUMBER = re.compile(r"\d{3,}")
 _PHONE = re.compile(r"(?:\d[\s.-]?){7,}")
+
+
+def _price_figure(text: str) -> bool:
+    if _SEPARATED.search(text):
+        return True
+    for match in _NUMBER.finditer(text):
+        if _YEAR.match(match.group()) or _UNIT.match(text, match.end()):
+            continue
+        return True
+    return False
+
+
 _HOUR = re.compile(
     r"\b\d{1,2}(?::\d{2})?\s*(?:a\.?\s*m\.?|p\.?\s*m\.?|hrs?\b|h\b)|\b\d{1,2}:\d{2}\b",
     re.IGNORECASE,
@@ -233,11 +263,11 @@ def free_text_problems(text: str) -> list[str]:
     """Why a title, subtitle or call phrase breaks catalog §1.8 (empty: it passes). No
     datum travels in free text: prices, phones and hours enter only by reference."""
     problems = []
-    if _CURRENCY.search(text):
+    if _CURRENCY_SYMBOL.search(text) or _AMOUNT.search(text):
         problems.append("currency")
     if _PHONE.search(text):
         problems.append("phone number")
-    elif _PRICE_FIGURE.search(text):
+    elif _price_figure(text):
         problems.append("price figure")
     if _HOUR.search(text):
         problems.append("hour")

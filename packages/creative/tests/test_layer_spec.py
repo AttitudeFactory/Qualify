@@ -288,3 +288,44 @@ def test_no_datum_travels_in_free_text(text: str, problem: str) -> None:
 
 def test_a_promotion_count_is_not_a_price() -> None:
     assert free_text_problems("2x1 en shawarmas este martes") == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Solo 15 mil",
+        "15mil el combo",
+        "A 20bs",
+        "Por 5usd",
+        "12 lucas",
+        "20 soles",
+        "USD 5",
+        "Combo a $25.000",
+        "Solo 25.000",
+        "Ahora 10,50",
+        "Por 15k",
+        "Desde 2500",
+    ],
+)
+def test_a_price_in_any_spelling_is_refused(text: str) -> None:
+    assert {"currency", "price figure"} & set(free_text_problems(text)), text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Novedades 2026",
+        "Desde 1998 contigo",
+        "100% natural",
+        "500 g de pollo",
+        "2x1 en shawarmas",
+        "3x2 este martes",
+        "Mil sabores en tu mesa",
+        "Pesos pesados del sabor",
+        "1 litro de limonada",
+        # written-out numbers are out of a rule's reach: left to the prompt
+        "Por veinte mil",
+    ],
+)
+def test_years_units_and_claims_are_not_prices(text: str) -> None:
+    assert not {"currency", "price figure"} & set(free_text_problems(text)), text
