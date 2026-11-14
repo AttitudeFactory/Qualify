@@ -4,7 +4,12 @@ clip and its last one to close it; an image frame passes as it is."""
 
 from __future__ import annotations
 
+import hashlib
 import io
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 
@@ -86,3 +91,115 @@ def test_the_last_frame_of_a_longer_video_after_seeking() -> None:
             container.mux(packet)
     green = _centre(media_module._video_frame(out.getvalue(), last=True))
     assert green[1] > 200 and green[0] < 60
+
+
+# --- EF-01: a phone video's display rotation ------------------------------------------
+
+#: `packages/creative/tests/fixtures`: 64×36 stored, a red band on the stored top edge;
+#: `video-rotated-<n>.mp4` carries a display matrix of n° counter-clockwise
+#: (`make_rotated_fixtures.py`). Turned 90° the red band ends on the left, 270° on the right.
+FIXTURES = Path(__file__).resolve().parents[2] / "creative" / "tests" / "fixtures"
+
+
+def _rotated(rotation: int) -> bytes:
+    return (FIXTURES / f"video-rotated-{rotation}.mp4").read_bytes()
+
+
+@pytest.mark.parametrize(("rotation", "red_edge"), [(90, "left"), (270, "right")])
+@pytest.mark.parametrize("last", [False, True])
+def test_a_phone_video_lends_an_upright_frame(rotation: int, red_edge: str, last: bool) -> None:
+    image = Image.open(io.BytesIO(media_module._video_frame(_rotated(rotation), last=last)))
+    width, height = image.size
+    assert height > width, f"{width}×{height} lies on its side"
+    edges = {
+        "left": image.convert("RGB").getpixel((2, height // 2)),
+        "right": image.convert("RGB").getpixel((width - 3, height // 2)),
+    }
+    red = edges[red_edge]
+    other = edges["right" if red_edge == "left" else "left"]
+    assert red[0] > 180 and red[1] < 80 and red[2] < 80, edges
+    assert not (other[0] > 180 and other[1] < 80), edges
+
+
+#: SHA-256 of the JPEG `_video_frame` made of `video-portrait-2s.mp4` on origin/main
+#: (b7fbff73, before EF-01, PyAV 19.0.1): a video without a turn gives the same bytes.
+UNTURNED_FRAME_SHA256 = {
+    False: "0de0fda28db4cff700b9b018b0aa3ab6ce2bdcc111379b67673b10884576fdcb",
+    True: "f0f4c35c03a9ecd44bf71427e846f6c36a63e3ec3e2dc2c9c34853694b3d909d",
+}
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32" or av.__version__ != "19.0.1",
+    reason="hashes pinned on Windows with PyAV 19.0.1; the platform-free check is below",
+)
+@pytest.mark.parametrize("last", [False, True])
+def test_a_video_without_a_turn_lends_the_same_frame_as_before(last: bool) -> None:
+    video = (FIXTURES / "video-portrait-2s.mp4").read_bytes()
+    jpeg = media_module._video_frame(video, last=last)
+    assert hashlib.sha256(jpeg).hexdigest() == UNTURNED_FRAME_SHA256[last]
+
+
+@pytest.mark.parametrize("last", [False, True])
+def test_without_a_turn_the_frame_is_the_one_before_ef01(
+    last: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Any platform: the JPEG is byte for byte the one made with `to_image()` alone, as
+    `_video_frame` did before EF-01."""
+    video = (FIXTURES / "video-portrait-2s.mp4").read_bytes()
+    jpeg = media_module._video_frame(video, last=last)
+    monkeypatch.setattr(
+        media_module, "upright_image", lambda frame: frame.to_image().convert("RGB")
+    )
+    assert media_module._video_frame(video, last=last) == jpeg
+
+
+def test_a_rotation_that_is_not_a_right_angle_is_refused_and_said_plainly() -> None:
+    from qualify_creative.video import VideoSourceError  # noqa: PLC0415
+
+    video = _rotated(45)
+    with pytest.raises(VideoSourceError) as refused:
+        media_module._video_frame(video, last=False)
+    assert refused.value.reason == "rotation_unsupported"
+
+    class _Store:
+        def read(self, key: str) -> bytes:
+            return video
+
+    producer = media_module.MediaProducer.__new__(media_module.MediaProducer)
+    producer._store = _Store()
+    with pytest.raises(media_module._MediaFailed) as failed:
+        producer._clip_frame("uploads/t/phone.mov", last=False)
+    assert "fotograma" in failed.value.detail
+    assert isinstance(failed.value.__cause__, VideoSourceError)
+
+
+def test_a_reference_video_with_such_a_rotation_fails_as_unreadable() -> None:
+    """`_fitted_references`: the fitter's `rotation_unsupported` reaches the owner as the
+    reference video that could not be prepared, never as a traceback."""
+    from qualify_creative.video import PyAvVideoFitter, VideoSourceError  # noqa: PLC0415
+
+    video = _rotated(45)
+
+    class _Store:
+        def read(self, key: str) -> bytes:
+            if key != "uploads/t/phone.mov":
+                raise KeyError(key)  # no fitted reference kept yet
+            return video
+
+    class _Save:
+        def key_for(self, name: str) -> str:
+            return f"generated/{name}"
+
+        def __call__(self, name: str, data: bytes, content_type: str) -> str:
+            raise AssertionError("nothing is saved for a refused video")
+
+    producer = media_module.MediaProducer.__new__(media_module.MediaProducer)
+    producer._store = _Store()
+    producer._fitter = PyAvVideoFitter()
+    producer._seedance_reference_model = None  # edit mode: never cut
+    media = SimpleNamespace(clip_video_keys=("uploads/t/phone.mov",), clip_reference_mode="edit")
+    with pytest.raises(media_module._MediaFailed) as failed:
+        producer._fitted_references(uuid4(), media, _Save())
+    assert failed.value.detail == media_module.REFERENCE_VIDEO_UNREADABLE_TEXT
+    assert isinstance(failed.value.__cause__, VideoSourceError)

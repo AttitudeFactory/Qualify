@@ -35,6 +35,7 @@ from qualify_creative.video._source import (
     open_video,
     probe,
 )
+from qualify_creative.video.upright import upright_frame
 
 #: A part's whole seconds (design §13, P2: parts of 4-10 s).
 MIN_WINDOW_SECONDS = 4
@@ -260,7 +261,13 @@ def _write_frames(
                 continue
             if time_s >= window_end - half_frame:
                 break
-            picture = _upright(av, frame, stored_w, stored_h, timeline.rotation)
+            picture = upright_frame(
+                frame,
+                width=stored_w,
+                height=stored_h,
+                format="yuv420p",
+                rotation=timeline.rotation,
+            )
             # stamped by hand from 0 (see `fit._encode`: no pts = time 0)
             picture.pts = frames
             picture.time_base = tick
@@ -310,7 +317,13 @@ def _write_retimed(
             # a repeated frame may be the SAME object (`reformat` returns it unchanged when
             # nothing changes): safe, the encoder takes its own reference to the frame and
             # its pts at `encode` time, so re-stamping it for the next tick touches nothing sent
-            picture = _upright(av, frame, stored_w, stored_h, timeline.rotation)
+            picture = upright_frame(
+                frame,
+                width=stored_w,
+                height=stored_h,
+                format="yuv420p",
+                rotation=timeline.rotation,
+            )
             picture.pts = frames  # stamped by hand from 0 (see `_write_frames`)
             picture.time_base = tick
             for packet in encoder.encode(picture):
@@ -387,18 +400,6 @@ def _seek(container: Any, stream: Any, seconds: float | None) -> None:
         container.seek(0)
     else:
         container.seek(int(seconds / stream.time_base), stream=stream, backward=True)
-
-
-def _upright(av: Any, frame: Any, width: int, height: int, rotation: int) -> Any:
-    """The frame as `yuv420p` at the stored size made even, turned `rotation` degrees
-    counter-clockwise (the display matrix's turn) when it has one."""
-    if not rotation:
-        return frame.reformat(width=width, height=height, format="yuv420p")
-    import numpy as np  # noqa: PLC0415
-
-    pixels = frame.reformat(width=width, height=height, format="rgb24").to_ndarray()
-    turned = np.ascontiguousarray(np.rot90(pixels, k=rotation // 90))
-    return av.VideoFrame.from_ndarray(turned, format="rgb24").reformat(format="yuv420p")
 
 
 __all__ = [

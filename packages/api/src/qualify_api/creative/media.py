@@ -184,6 +184,7 @@ from qualify_creative.text_colors import text_colors
 from qualify_creative.video import SubtitleLayer, VideoFitter
 from qualify_creative.video.fit import DETAIL_X264
 from qualify_creative.video.speech import voice_spans
+from qualify_creative.video.upright import upright_image
 from qualify_shared.objects.keys import (
     is_object_store_key,
     reel_windows_root,
@@ -1363,14 +1364,16 @@ def _video_frame(data: bytes, *, last: bool) -> bytes:
     """A video's first frame — or its last — as a JPEG. Raises when the file has no
     video frame. For the last one it seeks to the keyframe before the final second and
     decodes from there, not the whole file (review 2026-10-19); a container that cannot
-    seek is decoded from the start, as before."""
+    seek is decoded from the start, as before. Upright (EF-01): a phone's display
+    rotation is applied (`upright_image`); one that is not a right angle raises
+    `VideoSourceError("rotation_unsupported")`."""
     frame = _decode_frame(data, last=last, seek=last)
     if frame is None and last:
         frame = _decode_frame(data, last=True, seek=False)
     if frame is None:
         raise ValueError("the video has no frame")
     out = io.BytesIO()
-    frame.to_image().convert("RGB").save(out, format="JPEG", quality=92)
+    upright_image(frame).save(out, format="JPEG", quality=92)
     return out.getvalue()
 
 

@@ -17,3 +17,16 @@ ffmpeg -y -f lavfi -i "testsrc=size=90x160:rate=1:duration=65" -c:v libx264 -pre
   `test_brief_fixtures_ef02.py` checks they read unchanged. Never regenerate them from a newer
   main: they are the old shape on purpose. `f55f1d73` is newer than the `9129e688` the
   EF-02 criterion names (`9129e688` is its ancestor) and is itself an ancestor of main.
+
+- `video-rotated-90.mp4`, `video-rotated-270.mp4`, `video-rotated-45.mp4` (≈2 KB each) — phone-like
+  clips for EF-01 (`test_video_upright.py`, `packages/api/tests/test_creative_clip_video_frames.py`):
+  a 64×36 landscape picture stored as a phone stores it, 1 s at 10 fps, with the turn a player
+  applies written in the container's display matrix (90° / 270° counter-clockwise; 45° is the
+  one that must be refused as `rotation_unsupported`). Grey with a red band along the stored
+  top edge and a blue one along the stored left edge, so a test checks the direction of the
+  turn and not only the aspect. Generated with PyAV alone (`VideoStream.set_display_rotation`,
+  no `ffmpeg` binary), from the repository root:
+
+```bash
+uv run --no-sync python packages/creative/tests/fixtures/make_rotated_fixtures.py
+```

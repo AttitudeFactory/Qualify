@@ -63,6 +63,13 @@ from qualify_creative.video.still import (
     probe_video_file,
     video_still,
 )
+from qualify_creative.video.upright import (
+    turn_pixels,
+    upright_filters,
+    upright_frame,
+    upright_image,
+    upright_size,
+)
 
 __all__ = [
     "BUSINESS_MAX_SECONDS",
@@ -118,5 +125,10 @@ __all__ = [
     "VideoStillError",
     "poster_from_video_file",
     "probe_video_file",
+    "turn_pixels",
+    "upright_filters",
+    "upright_frame",
+    "upright_image",
+    "upright_size",
     "video_still",
 ]
