@@ -145,6 +145,9 @@ WINDOW_CLOSED_NOTICE = (
     "WhatsApp solo deja escribirle con un mensaje aprobado."
 )
 WINDOW_CLOSED_PILL = "Solo con mensaje aprobado"
+#: m-25027371: the open chat's header line once the 24 h have passed — says approved by
+#: whom (new text, awaiting the founder; the row and the panels keep the pill above).
+WINDOW_CLOSED_LINE = "Pasaron 24 h: solo puedes enviarle un mensaje ya aprobado por WhatsApp"
 NO_MESSAGES_YET = "Sin mensajes todavía"
 OUTBOUND_PREFIX = "Tú: "
 
@@ -477,7 +480,7 @@ class ThreadRowVM:
     #: m-25027371: the open chat's header — the person's initials ("" → the person
     #: icon) and the shared window line («Puedes escribirle hasta las …»).
     initials: str = ""
-    window_line: str = WINDOW_CLOSED_PILL
+    window_line: str = WINDOW_CLOSED_LINE
     window_line_tone: str = "neutral"
 
 
@@ -519,7 +522,7 @@ def build_thread_row(
         preview = OUTBOUND_PREFIX + preview
     window_label, window_tone = window_pill(thread.window.open, thread.window.closes_at, now, zone)
     line, line_tone = window_line(
-        thread.window.open, thread.window.closes_at, now, zone, closed_text=WINDOW_CLOSED_PILL
+        thread.window.open, thread.window.closes_at, now, zone, closed_text=WINDOW_CLOSED_LINE
     )
     mode_label, mode_tone = mode_pill(thread.automation_paused)
     agent_id = str(thread.assigned_agent_id) if thread.assigned_agent_id else ""

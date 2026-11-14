@@ -179,6 +179,7 @@ from .whatsapp_chats_vm import (
     SENDING_LABEL,
     TEMPLATE_FILL_HINT,
     TEMPLATE_PICK_HINT,
+    WINDOW_CLOSED_LINE,
     WINDOW_CLOSED_NOTICE,
     WINDOW_CLOSED_PILL,
     AgentVM,
@@ -2233,6 +2234,9 @@ class WhatsAppChatsState(rx.State):
                 window_label=WINDOW_CLOSED_PILL,
                 window_tone="neutral",
                 window_minutes=0,
+                # m-25027371: the header reads these — never «Quedan 5 min» on a closed chat
+                window_line=WINDOW_CLOSED_LINE,
+                window_line_tone="neutral",
             )
             if r.thread_id == thread_id
             else r

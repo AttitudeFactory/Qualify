@@ -44,7 +44,13 @@ from .test_whatsapp_chats import NOW as WA_NOW
 from .test_whatsapp_chats import ZONE as WA_ZONE
 from .test_whatsapp_chats import _thread as wa_thread
 from .whatsapp_chats_state import WhatsAppChatsState
-from .whatsapp_chats_vm import AWAITING_FILTER_LABEL, FILTER_UNREAD, OUTBOUND_PREFIX, window_pill
+from .whatsapp_chats_vm import (
+    AWAITING_FILTER_LABEL,
+    FILTER_UNREAD,
+    OUTBOUND_PREFIX,
+    WINDOW_CLOSED_LINE,
+    window_pill,
+)
 from .whatsapp_chats_vm import FILTERS as WA_FILTERS
 from .whatsapp_chats_vm import as_chat_row as wa_chat_row
 from .whatsapp_chats_vm import build_thread_row as wa_build
@@ -347,6 +353,7 @@ def test_whatsapp_window_closed_while_choosing_clears_the_minutes() -> None:
     )
     state.rows = [closing]
     assert state.visible_chat_rows[0].pill_label == "Quedan 5 min para responder"
+    assert closing.window_line == "Quedan 5 min para responder"
     state._mark_window_closed(closing.thread_id)
     marked = state.rows[0]
     assert (marked.window_open, marked.window_tone, marked.window_minutes) == (
@@ -355,6 +362,21 @@ def test_whatsapp_window_closed_while_choosing_clears_the_minutes() -> None:
         0,
     )
     assert state.visible_chat_rows[0].pill_label == ""
+    # m-25027371: the open chat's header line closes with it (never «Quedan 5 min»)
+    assert (marked.window_line, marked.window_line_tone) == (WINDOW_CLOSED_LINE, "neutral")
+    state.open_thread_id = closing.thread_id
+    assert state.open_thread.window_line == WINDOW_CLOSED_LINE
+
+
+def test_whatsapp_window_fields_change_together() -> None:
+    """Every place that rewrites a row's window writes the header's line too (the state
+    has one, `_mark_window_closed`; the VM builds them in one call)."""
+    import inspect
+
+    from . import whatsapp_chats_state
+
+    source = inspect.getsource(whatsapp_chats_state)
+    assert source.count("window_label=") == source.count("window_line=")
 
 
 # --- the rendered row -----------------------------------------------------------------------
