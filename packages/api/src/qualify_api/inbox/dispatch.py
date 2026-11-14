@@ -27,18 +27,45 @@ for that id **under RLS** (`tenant_session`) and calls the channel's EXISTING se
   approved this exact text, and when) for BOTH channels; there is no overload without it.
   Instagram gets it unchanged — `conversation_outbox.enqueue` keeps demanding it and its
   NOT NULL column keeps holding it (`test_conversations_outbox_sanctity.py`); WhatsApp
-  gets `approval.user_id`, the `created_by_user_id` its outbox stores today. Nothing is
-  sent inline: both services only queue, and each channel's own worker sends.
+  gets `approval.user_id` only — the `created_by_user_id` its outbox stores today. Its
+  outbox has no column for `approved_at` or `draft_id`, so `approved_at` is dropped and an
+  approval carrying a `draft_id` is refused on WhatsApp (`DraftNotSupported`, nothing
+  written): no WhatsApp caller passes one today, and WhatsApp has no AI drafts
+  (`suggest_reply=False`). Nothing is sent inline: both services only queue, and each
+  channel's own worker sends.
 - **No second idempotency layer.** Each call is the channel call the screens make today,
   with the same arguments, so each outbox's own guarantees hold unchanged. Neither text
   send takes a request key today (WhatsApp's `send` and Instagram's `reply_text`), so
   this one does not either.
-- **Errors.** The two channels' `ThreadNotFound` and `WindowClosed` are translated to the
-  ones below (the cause chained), so a caller catches one type whatever the channel.
-  Everything else a channel service raises passes through unchanged: `ValueError` (empty
-  or too long text), `ApprovalRequired`, `NotAMember`, `CapabilityUnavailable`,
-  WhatsApp's `UnknownAgent`, Instagram's `ThreadChangedSinceSeen` (its `view` is the
-  thread as it is now).
+- **Errors.** The two channels' `ThreadNotFound` and `WindowClosed`, and Instagram's
+  «no sender for this channel» (`conversations.contracts.UnknownChannel`), are translated
+  to the ones below (the cause chained), so a caller catches one type whatever the
+  channel. `WindowClosed`, `ActionNotSupported` and `DraftNotSupported` derive from plain
+  `Exception` on purpose — not `PermissionError` (the chat screens read a
+  `PermissionError` as «no session»), not `ValueError`, not `LookupError`. Everything else
+  a channel service raises passes through unchanged: `ValueError` (empty or too long
+  text), `ApprovalRequired`, `NotAMember` (only when the caller wraps the call in
+  `tenancy.acting.acting_login`), `CapabilityUnavailable`, WhatsApp's `UnknownAgent`,
+  Instagram's `ThreadChangedSinceSeen` (its `view` is the thread as it is now).
+  **Caveat:** `UnknownChannel` and WhatsApp's `UnknownAgent` are `ValueError`s (their
+  existing bases), so a caller's `except ValueError` meant for «texto rechazado» must
+  catch them first.
+
+## What it does NOT check — the caller's job
+
+- **Which account the screen is on.** The screens check that the thread belongs to the
+  connection they show (`_owned` in `Qualify/conversations_provider.py` and
+  `Qualify/whatsapp_chats_provider.py`); the dispatcher only knows the business.
+- **Whether the account may answer now.** The Instagram composer opens only for an
+  account whose C-05 matrix grants `manage_dms` and that is not degraded
+  (`Qualify/conversations_state.py` `account_can_reply`), and revoked accounts are not
+  listed; the WhatsApp screen has no such rule today. The dispatcher does not repeat
+  either rule: it is per channel, lives in the connections projection, and a status-only
+  check here would be a third, new rule. Both workers already hold a queued row while its
+  connection is not `active` (`connection_unavailable`, retried every 60 s, attempts kept)
+  and re-check the 24 h window before sending.
+- **Membership on close/reopen/assign.** Neither channel service gates those on
+  `require_acting_member` today; only the sends do.
 
 The two outboxes and their workers are untouched (out of scope: unifying them).
 No screen calls this yet; BU-A7 (m-25027371) and m-25027374 will.
@@ -54,10 +81,11 @@ from typing import Final, Literal, Protocol
 from uuid import UUID
 
 from qualify_shared.db.session import tenant_session
-from sqlalchemy import text
+from sqlalchemy import text as sql_text
 
 from qualify_api.assisted.approval import ApprovalRequired, HumanApproval
 from qualify_api.conversations import service as instagram
+from qualify_api.conversations.contracts import UnknownChannel as NoSenderForChannel
 from qualify_api.inbox.channels import (
     CHANNEL_INSTAGRAM_DM,
     CHANNEL_WHATSAPP,
@@ -75,7 +103,7 @@ class ThreadNotFound(LookupError):
     makes the two indistinguishable, and the dispatcher keeps it that way."""
 
 
-class WindowClosed(PermissionError):
+class WindowClosed(Exception):
     """The channel's 24 h window is closed, so a free-form text would be refused. Nothing
     was written. `closes_at` is the instant it closed when the channel knows it (WhatsApp),
     else `None`; `channel` is the thread's."""
@@ -86,7 +114,7 @@ class WindowClosed(PermissionError):
         self.closes_at = closes_at
 
 
-class ActionNotSupported(PermissionError):
+class ActionNotSupported(Exception):
     """The thread's channel does not offer this action (its `ChannelCapabilities` says
     so). Raised before the channel service is called: nothing was written."""
 
@@ -94,6 +122,16 @@ class ActionNotSupported(PermissionError):
         super().__init__(f"{channel} chats do not support {action!r}")
         self.channel = channel
         self.action = action
+
+
+class DraftNotSupported(Exception):
+    """The approval names an AI draft (`draft_id`) but the thread's channel keeps no
+    record of it (WhatsApp's outbox stores only who approved). Refused before the channel
+    service is called: nothing was written."""
+
+    def __init__(self, channel: str) -> None:
+        super().__init__(f"{channel} chats do not record the draft a reply came from")
+        self.channel = channel
 
 
 # ======================================================================================
@@ -108,7 +146,7 @@ class ThreadChannels(Protocol):
     def channel_of(self, *, tenant_id: UUID, thread_id: UUID) -> str | None: ...
 
 
-_CHANNEL_OF: Final = text("SELECT channel FROM threads WHERE id = :thread_id")
+_CHANNEL_OF: Final = sql_text("SELECT channel FROM threads WHERE id = :thread_id")
 
 
 class PostgresThreadChannels:
@@ -152,6 +190,8 @@ def _channel_errors(channel: str) -> Iterator[None]:
         raise WindowClosed(channel, error.window.closes_at) from error
     except whatsapp.WindowClosed as error:
         raise WindowClosed(channel, error.closes_at) from error
+    except NoSenderForChannel as error:
+        raise UnknownChannel(f"channel {channel!r} has no sender") from error
 
 
 class ChatDispatcher:
@@ -188,13 +228,16 @@ class ChatDispatcher:
     ) -> list[UUID]:
         """Queue the owner's approved text on the thread's own channel; returns the outbox
         row ids (Instagram splits a text over 1000 characters into several messages;
-        WhatsApp queues one). The approval is checked before the channel is read."""
+        WhatsApp queues one). The approval is checked before the channel is read;
+        WhatsApp receives only `approval.user_id` (module docstring)."""
         if not isinstance(approval, HumanApproval):
             raise ApprovalRequired("a reply needs a human approval")
         body = text.strip()
         if not body:
             raise ValueError("an empty reply cannot be sent")
         caps = self.capabilities(tenant_id=tenant_id, thread_id=thread_id)
+        if caps.channel == CHANNEL_WHATSAPP and approval.draft_id is not None:
+            raise DraftNotSupported(caps.channel)
         with _channel_errors(caps.channel):
             if caps.channel == CHANNEL_INSTAGRAM_DM:
                 return self._instagram.reply_text(
@@ -269,6 +312,7 @@ __all__ = [
     "Action",
     "ActionNotSupported",
     "ChatDispatcher",
+    "DraftNotSupported",
     "MemoryThreadChannels",
     "PostgresThreadChannels",
     "ThreadChannels",

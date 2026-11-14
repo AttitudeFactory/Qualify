@@ -39,10 +39,12 @@ from qualify_api.conversations.service import (
     ThreadChangedSinceSeen,
 )
 from qualify_api.conversations.sync import ConversationSyncService
+from qualify_api.inbox import dispatch
 from qualify_api.inbox.channels import INSTAGRAM_DM, WHATSAPP, UnknownChannel
 from qualify_api.inbox.dispatch import (
     ActionNotSupported,
     ChatDispatcher,
+    DraftNotSupported,
     MemoryThreadChannels,
     ThreadNotFound,
     WindowClosed,
@@ -206,7 +208,7 @@ def test_a_closed_window_is_one_error_on_both_channels_and_writes_nothing() -> N
         world.dispatcher.send_text(
             tenant_id=TENANT, thread_id=world.ig_thread, text="hola", approval=world.approval()
         )
-    assert ig.value.channel == "dm"
+    assert ig.value.channel == "dm" and ig.value.closes_at is None
     assert world.state() == before
 
 
@@ -289,12 +291,16 @@ def test_close_and_reopen_reach_each_channels_service(world: _World) -> None:
 
 
 def test_instagram_close_keeps_its_stale_screen_guard(world: _World) -> None:
-    with pytest.raises(ThreadChangedSinceSeen):
+    with pytest.raises(ThreadChangedSinceSeen) as refused:
         world.dispatcher.close(
             tenant_id=TENANT,
             thread_id=world.ig_thread,
             seen_last_inbound_at=T0 - timedelta(minutes=5),
         )
+    # The refreshed view passes through intact: the chat as it is now.
+    view = refused.value.view
+    assert view.thread.id == world.ig_thread and view.thread.status == "open"
+    assert view.thread.last_inbound_at == T0
     assert _ig_status(world) == "open"
 
 
@@ -326,3 +332,77 @@ def test_the_assign_capability_matches_the_channel_services() -> None:
     """The descriptor against reality: only the service with an `assign` door says so."""
     assert INSTAGRAM_DM.assign is hasattr(ConversationService, "assign") is False
     assert WHATSAPP.assign is hasattr(ChatService, "assign") is True
+
+
+# --- error types, drafts, routes with no service ----------------------------------------
+
+
+@pytest.mark.parametrize("error", [WindowClosed, ActionNotSupported, DraftNotSupported])
+def test_the_dispatchers_refusals_are_not_caught_as_something_else(error: type) -> None:
+    """The chat screens read `PermissionError` as «no session» and `ValueError` as «texto
+    rechazado»: a closed window or an unsupported action must never land there."""
+    assert issubclass(error, Exception)
+    assert not issubclass(error, PermissionError | ValueError | LookupError)
+
+
+def test_a_draft_on_whatsapp_is_refused_and_writes_nothing(world: _World) -> None:
+    before = world.state()
+    with_draft = HumanApproval(user_id=OWNER, approved_at=NOW, draft_id=uuid4())
+    with pytest.raises(DraftNotSupported):
+        world.dispatcher.send_text(
+            tenant_id=TENANT, thread_id=world.wa_thread, text="hola", approval=with_draft
+        )
+    assert world.state() == before
+    # Instagram records it, as `reply_text` does today.
+    world.dispatcher.send_text(
+        tenant_id=TENANT, thread_id=world.ig_thread, text="hola", approval=with_draft
+    )
+    (row,) = world.ig_outbox.rows.values()
+    assert row.draft_id == with_draft.draft_id
+
+
+def test_instagram_with_no_sender_is_the_dispatchers_unknown_channel(world: _World) -> None:
+    world.instagram._registry = ChannelRegistry()  # noqa: SLF001 — no sender for `dm`
+    before = world.state()
+    with pytest.raises(UnknownChannel):
+        world.dispatcher.send_text(
+            tenant_id=TENANT, thread_id=world.ig_thread, text="hola", approval=world.approval()
+        )
+    assert world.state() == before
+
+
+def test_a_listed_channel_with_no_route_fails_closed(
+    world: _World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A descriptor registered in `inbox.channels` before its service exists here (TikTok
+    tomorrow), or one granting `assign` to a channel without that door, writes nothing."""
+    future = replace(WHATSAPP, channel="tiktok_dm")
+    lying = replace(INSTAGRAM_DM, assign=True)
+    descriptors = {"tiktok_dm": future, "dm": lying, "whatsapp": WHATSAPP}
+    monkeypatch.setattr(dispatch, "capabilities_for", descriptors.__getitem__)
+    tiktok = uuid4()
+    world.channels.add(tenant_id=TENANT, thread_id=tiktok, channel="tiktok_dm")
+    before = world.state()
+    with pytest.raises(UnknownChannel):
+        world.dispatcher.reopen(tenant_id=TENANT, thread_id=tiktok)
+    with pytest.raises(ActionNotSupported):
+        world.dispatcher.assign(tenant_id=TENANT, thread_id=world.ig_thread, agent_user_id=OWNER)
+    assert world.state() == before
+
+
+def test_the_production_wiring_builds_both_channel_services(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Smoke: no database is touched to build it; the in-memory Instagram pair avoids
+    reading Meta settings."""
+    from qualify_api.conversations import composition  # noqa: PLC0415
+
+    monkeypatch.setenv(composition.DM_CHANNEL_ENV, composition.DM_CHANNEL_MEMORY)
+    composition.production_registry.cache_clear()
+    try:
+        built = dispatch.production_chat_dispatcher()
+    finally:
+        composition.production_registry.cache_clear()
+    assert isinstance(built._channels, dispatch.PostgresThreadChannels)  # noqa: SLF001
+    assert isinstance(built._instagram, ConversationService)  # noqa: SLF001
+    assert isinstance(built._whatsapp, ChatService)  # noqa: SLF001
