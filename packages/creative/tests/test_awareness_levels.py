@@ -444,14 +444,14 @@ def test_most_aware_copy_has_a_measured_length_that_yields_to_the_kit_minimum() 
 
 def test_solution_aware_leaves_opening_hours_to_product_aware() -> None:
     solution = _level_text(angles_system_prompt(), "solution_aware", "- product_aware:")
-    assert "los horarios quedan para product_aware" in solution
+    assert "los horarios quedan para product_aware y" in solution
     suffix = render_prompt(
         kit=_kit(),
         voice=_voice(),
         brief=_brief(awareness_level=AwarenessLevel.SOLUTION_AWARE),
         task=GenerationTask.COPY,
     ).volatile_suffix
-    assert "prices, payment and opening hours belong to product_aware" in suffix
+    assert "opening hours belong to the product_aware and" in suffix
 
 
 # -- m-25026509: prices as the three markets write them --------------------------------
@@ -558,8 +558,8 @@ def test_uppercase_ref_is_still_money_for_the_idea_guard(price: str) -> None:
 
 
 def test_most_aware_caption_holds_only_product_price_and_how_to_buy() -> None:
-    """NIVELES-005: the caption added other perks, hours or a question. The way to buy
-    may be a perk; an owner's must-mention still goes in."""
+    """NIVELES-005 and the founder's example (m-25027151): for a buyer, the way to order
+    and when and where are the path to the purchase; other perks and questions are not."""
     suffix = render_prompt(
         kit=_kit(business_perks=PERKS),
         voice=_voice(),
@@ -567,10 +567,11 @@ def test_most_aware_caption_holds_only_product_price_and_how_to_buy() -> None:
         task=GenerationTask.COPY,
     ).volatile_suffix
     assert "The caption says only the product, the price if there is one, and how to buy" in suffix
-    assert "even when it is one of the business's perks" in suffix
-    assert "plus whatever this assignment's must-mention list asks for" in suffix
-    assert "no other perk, no opening hours and no question" in suffix
-    # the other levels keep their lines
+    assert "one or two the business uses together" in suffix
+    assert "when and where (opening hours, the place)" in suffix
+    assert "This assignment's own key facts and must-mention entries always go in" in suffix
+    assert "no other perk of the business (parking, pets, atmosphere" in suffix
+    assert "no opening hours" not in suffix
     for level in AwarenessLevel:
         if level is AwarenessLevel.MOST_AWARE:
             continue
@@ -580,4 +581,29 @@ def test_most_aware_caption_holds_only_product_price_and_how_to_buy() -> None:
             brief=_brief(awareness_level=level),
             task=GenerationTask.COPY,
         ).volatile_suffix
-        assert "no other perk, no opening hours and no question" not in other
+        assert "when and where (opening hours, the place)" not in other
+
+
+@pytest.mark.parametrize("kind", [ContentKind.STATIC_FLYER, ContentKind.CLIP])
+def test_a_most_aware_piece_keeps_its_key_facts_and_mentions_beside_the_caption_rule(
+    kind: ContentKind,
+) -> None:
+    """Code review of 07ef32ca: the caption rule must not exclude what the assignment
+    asks for — the «Datos clave» line and the must-mention line stand beside it."""
+    brief = ContentBrief.model_validate(
+        {
+            **_brief(kind=kind).model_dump(),
+            "awareness_level": AwarenessLevel.MOST_AWARE,
+            "constraints": {
+                "highlights": (("precio", "$18.000"), ("Porción", "350 g")),
+                "must_mention": ("Combo doble",),
+            },
+        }
+    )
+    suffix = render_prompt(
+        kit=_kit(business_perks=PERKS), voice=_voice(), brief=brief, task=GenerationTask.COPY
+    ).volatile_suffix
+    assert '"Porción": "350 g"' in suffix and "state each value exactly as written" in suffix
+    assert "Must mention: Combo doble" in suffix
+    assert "key facts and must-mention entries always go in" in suffix
+    assert "says only" in suffix  # the rule names the facts as allowed, not excluded
