@@ -1366,6 +1366,8 @@ class CreativeState(rx.State):
     brief_audience: str = ""
     #: «Cambiar» on «Qué decir»'s closed line opened the dropdown again.
     audience_editing: bool = False
+    #: Backend only: the «Precio» row the unaware answer took out, given back as it was.
+    _audience_hidden_price: list[dict[str, str]] = []
     brief_content_type: str = "product"
     brief_topic: str = ""
     #: Backend only (live test 2026-11-03): the product name ``choose_product`` put in
@@ -5146,6 +5148,8 @@ class CreativeState(rx.State):
         self.clip_sequence = []
         self.clip_first_frame_key = self.clip_first_frame_name = ""
         self.clip_last_frame_key = self.clip_last_frame_name = ""
+        # m-25026509: a fresh clip — the last piece's answer never rides on
+        self._forget_audience()
         self._set_kind("clip")
         self._sync_clip_frames()
         # m-24820836: the copiar guidance is a BACKGROUND layer merged under the
@@ -5944,6 +5948,17 @@ class CreativeState(rx.State):
 
     # -- «¿A quién le habla este video?» (m-25026509) ---------------------------------
 
+    def _forget_audience(self) -> None:
+        """A new piece starts at «Sin preferencia» (m-25026509): every entry that opens
+        one calls this — «Crear una publicación nueva», «Crear otra», «Revisar y aprobar
+        en Borradores» and «Hacer uno parecido». A price row the old answer kept aside
+        comes back first: the next piece is not price-free."""
+        hid = self._audience_hides_price()
+        self.brief_audience = ""
+        self._apply_audience_price(hid)
+        self.audience_editing = False
+        self._audience_hidden_price = []
+
     def clip_audience_level(self) -> str:
         """The level a clip (or its video by parts) is asked for: "" for «Sin
         preferencia» and for every other kind, which never sends one."""
@@ -5952,10 +5967,41 @@ class CreativeState(rx.State):
     def _audience_hides_price(self) -> bool:
         return audience_hides_price(self.clip_audience_level())
 
+    def _apply_audience_price(self, hid_before: bool) -> None:
+        """The catalog's «Precio» row follows the audience ONLY when the answer starts
+        or stops hiding it (review 2026-11-13): «Sin preferencia», any other answer and a
+        kind change that does not cross that line leave the row — owner's edit included
+        — exactly as it was. Hidden, the row is kept aside; given back, the owner's own
+        value returns (or the catalog's, for a product chosen meanwhile)."""
+        hides = self._audience_hides_price()
+        if hides == hid_before:
+            return
+        if hides:
+            self._audience_hidden_price = [
+                dict(row) for row in self.brief_highlights if is_catalog_price_fact(row)
+            ]
+            self.brief_highlights = [
+                row for row in self.brief_highlights if not is_catalog_price_fact(row)
+            ]
+            return
+        kept = [
+            row
+            for row in self._audience_hidden_price
+            if row.get("product") == self.selected_product_id
+        ]
+        self._audience_hidden_price = []
+        if (
+            kept
+            and not any(is_catalog_price_fact(row) for row in self.brief_highlights)
+            and len(self.brief_highlights) < HIGHLIGHTS_MAX
+        ):
+            self.brief_highlights = [*kept, *self.brief_highlights]
+            return
+        self._sync_audience_price()
+
     def _sync_audience_price(self) -> None:
-        """The catalog's «Precio» row follows the audience: gone while the clip is for
-        «Para quien aún no piensa en ti» (the brief drops every price then), back with
-        any other choice or kind."""
+        """The chosen catalog product's own price row, as a product change puts it
+        (`_sync_price_fact`, which leaves it out while the answer hides it)."""
         item = next(
             (i for i in self.catalog_items if i.get("id") == self.selected_product_id), None
         )
@@ -5966,8 +6012,9 @@ class CreativeState(rx.State):
     @rx.event
     def set_brief_audience(self, value: str) -> None:
         """The answer, the same in step 3 and in «Armar mi video por partes»."""
+        hid = self._audience_hides_price()
         self.brief_audience = audience_value(value)
-        self._sync_audience_price()
+        self._apply_audience_price(hid)
 
     @rx.var
     def audience_select_value(self) -> str:
@@ -6828,9 +6875,11 @@ class CreativeState(rx.State):
             # live test 2026-11-03: another kind is not a replica — nothing of the reel
             # (guidance, origin, brand-text choice, its video) rides on into its brief
             self._forget_replica()
+        hid = self._audience_hides_price()
         self.brief_kind = key
-        # m-25026509: the audience is a clip's; another kind gets its price row back
-        self._sync_audience_price()
+        # m-25026509: the audience is a clip's — leaving or entering a clip whose answer
+        # hides the price moves the row; any other kind change leaves it alone
+        self._apply_audience_price(hid)
         self.brief_format = ""  # each kind starts on its own default format
         self.create_error = ""
         # the cards and the original of «Mejorar mi texto» belong to the kind's own field
@@ -8010,6 +8059,7 @@ class CreativeState(rx.State):
         draft_id = self.gen_draft_id
         self._back_to_form()
         self.brief_topic = ""
+        self._forget_audience()  # m-25026509: the next piece starts at «Sin preferencia»
         self._forget_context_versions()  # the last piece's cards never reach the next
         self.replication_context = ""
         self.carried_text_kind = ""
@@ -8070,8 +8120,7 @@ class CreativeState(rx.State):
         last piece. The kind stays; an animated avatar reloads its character."""
         self._back_to_form()
         self.brief_topic = ""
-        self.brief_audience = ""  # m-25026509: back to «Sin preferencia»
-        self.audience_editing = False
+        self._forget_audience()
         self.brief_highlights = []
         self.brief_must_mention = ""
         self.brief_must_avoid = ""
