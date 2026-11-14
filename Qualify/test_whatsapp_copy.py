@@ -110,7 +110,10 @@ def test_screens_use_the_proposed_labels() -> None:
     metrics = inspect.getsource(whatsapp_metrics_block)
     assert '"Cuánto tardas en responder (la mitad de las veces)"' in metrics
     # m-25017862: the promotions left this screen, so its line no longer promises them.
-    assert WHATSAPP_SUBTITLE == "Atiende por WhatsApp: tus chats, tu menú automático y tu número."
+    # «tu menú de bienvenida»: the founder's name (2026-11-14); the tab keeps its own.
+    assert WHATSAPP_SUBTITLE == (
+        "Atiende por WhatsApp: tus chats, tu menú de bienvenida y tu número."
+    )
     assert "WHATSAPP_SUBTITLE" in inspect.getsource(whatsapp_page.whatsapp_header)
     assert PROMOTIONS_SUBTITLE == (
         "Envía promociones a los clientes que aceptaron recibirlas y mira cuántos las leyeron."

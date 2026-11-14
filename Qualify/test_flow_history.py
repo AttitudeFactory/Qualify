@@ -504,3 +504,38 @@ console.log(JSON.stringify({{first,second,back,closed,elsewhere:entries[pos].hre
         "closed": "/brand/kit",
         "elsewhere": "/catalog",
     }
+
+
+@pytest.mark.parametrize(
+    ("href", "flow", "synced"),
+    [
+        # m-25017862: the two promotions forms live on «Promociones por WhatsApp».
+        ("/whatsapp/promociones?sub=enviadas", "promocion", True),
+        ("/whatsapp/promociones", "promocion", True),  # «Enviadas» is the default sub
+        ("/whatsapp/promociones?sub=aprobados", "mensaje-aprobado", True),
+        # Each form only on its own sub-tab, and never on the old addresses any more
+        # (they redirect before anything can be written).
+        ("/whatsapp/promociones?sub=aprobados", "promocion", False),
+        ("/whatsapp/promociones?sub=clientes", "mensaje-aprobado", False),
+        ("/whatsapp?tab=promociones&sub=enviadas", "promocion", False),
+        ("/whatsapp?tab=plantillas", "mensaje-aprobado", False),
+    ],
+)
+def test_promotions_forms_write_their_step_on_their_own_page(
+    href: str, flow: str, synced: bool
+) -> None:
+    script = (
+        _HARNESS
+        + f"""
+entries[0].href={json.dumps(href)}; apply();
+drawer={{dataset:{{flow:{json.dumps(flow)},step:'2'}}}};
+{_FLOW_SCRIPT}
+console.log(JSON.stringify({{pos,href:entries[pos].href}}));
+"""
+    )
+    result = _node(script)
+    if synced:
+        assert result["pos"] == 1
+        assert result["href"].startswith(href) and f"flujo={flow}&paso=2" in result["href"]
+    else:
+        assert result == {"pos": 0, "href": href}

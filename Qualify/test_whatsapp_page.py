@@ -14,18 +14,20 @@ They pin:
 from __future__ import annotations
 
 import dataclasses
-import inspect
 import json
 import pathlib
 import typing
 from datetime import datetime
+from types import SimpleNamespace
 
 import pytest
 import reflex as rx
+from reflex.istate.data import ReflexURL, RouterData
 
 from . import whatsapp_page, whatsapp_tab_chats, whatsapp_tab_menu
 from .connections_vm import WHATSAPP_RECONNECT_HINT
 from .ui.layout import NAV_ITEMS, NAV_ZONES
+from .whatsapp_state import WhatsAppState
 from .whatsapp_vm import (
     DEFAULT_TAB,
     EMPTY_NUMBER,
@@ -87,6 +89,7 @@ from .whatsapp_vm import (
 )
 
 _HERE = pathlib.Path(__file__).parent
+_UUID = "00000000-0000-4000-8000-0000000000aa"
 _FORBIDDEN_FIELD_FRAGMENTS = (
     "token",
     "credential",
@@ -416,10 +419,29 @@ def test_every_panel_has_an_address_that_reads_back(panel: str) -> None:
         ({"tab": "plantillas"}, "/whatsapp/promociones?sub=aprobados"),
         ({"tab": "campanas"}, "/whatsapp/promociones?sub=enviadas"),
         ({"tab": "contactos"}, "/whatsapp/promociones?sub=clientes"),
-        # The number and a half-filled form ride along; a repeated value is dropped.
+        # The number and a half-filled form ride along, each in its own shape.
         (
-            {"tab": "promociones", "sub": "enviadas", "cuenta": "abc", "flujo": "promocion"},
-            "/whatsapp/promociones?sub=enviadas&cuenta=abc&flujo=promocion",
+            {"tab": "promociones", "cuenta": _UUID, "flujo": "promocion", "paso": "2"},
+            f"/whatsapp/promociones?sub=enviadas&cuenta={_UUID}&flujo=promocion&paso=2",
+        ),
+        (
+            {"tab": "plantillas", "flujo": "mensaje-aprobado", "paso": "3"},
+            "/whatsapp/promociones?sub=aprobados&flujo=mensaje-aprobado&paso=3",
+        ),
+        # Junk is dropped, never echoed: a key that collides with `with_query`'s own
+        # argument (`path`), unknown keys, a non-UUID number, another form, a bad step,
+        # a repeated value.
+        (
+            {"tab": "plantillas", "path": "x", "chat": _UUID, "otro": "<script>"},
+            "/whatsapp/promociones?sub=aprobados",
+        ),
+        (
+            {"tab": "campanas", "cuenta": "abc", "flujo": "menu", "paso": "2"},
+            "/whatsapp/promociones?sub=enviadas",
+        ),
+        (
+            {"tab": "campanas", "flujo": "promocion", "paso": "-1"},
+            "/whatsapp/promociones?sub=enviadas&flujo=promocion",
         ),
         ({"tab": "plantillas", "paso": ["1", "2"]}, "/whatsapp/promociones?sub=aprobados"),
     ],
@@ -463,8 +485,6 @@ def test_the_promotions_page_has_its_own_header_and_strip() -> None:
         assert present(label), label
     assert present(PROMOTIONS_TITLE) and present(PROMOTIONS_SUBTITLE)
     assert not present("Secciones de WhatsApp")  # the /whatsapp strip is not here
-    source = inspect.getsource(whatsapp_page.whatsapp_promotions_index)
-    assert "sub_strip()" in source and "tab_strip()" not in source
 
 
 def test_promotions_route_is_registered_behind_login() -> None:
@@ -585,17 +605,70 @@ def test_every_table_has_phone_cards(module: str) -> None:
     assert source.count("rx.table.root(") == source.count("table_or_cards(")
 
 
-def test_selecting_a_tab_writes_the_address() -> None:
-    source = (_HERE / "whatsapp_state.py").read_text()
-    start = source.index("def _show_panel(")
-    block = source[start : source.index("@rx.event", start)]
-    assert "push_url_script(self._panel_address(panel))" in block
-    start = source.index("def _read_address(")
-    block = source[start : source.index("def _show_panel(", start)]
-    assert "resolve_panel(" in block and "SUB_PARAM" in block
-    # m-25017862: the promotions page reads its sub-tab; an old address is redirected.
-    assert "promotions_panel(" in block and "legacy_promotions_target(" in block
-    assert "rx.redirect(moved, replace=True)" in block
+def _visit(path: str) -> WhatsAppState:
+    """A `WhatsAppState` whose router is at `path` (as on_load sees it)."""
+    state = WhatsAppState()
+    state.router = RouterData(url=ReflexURL(f"http://localhost:3000{path}"))
+    return state
+
+
+def _signed_in(monkeypatch: pytest.MonkeyPatch, tenant: str) -> None:
+    """`get_state(AuthState)` on a bare state: a session for `tenant` ("" = none)."""
+
+    async def get_state(self: WhatsAppState, cls: type) -> object:
+        return SimpleNamespace(session_tenant_id=tenant)
+
+    monkeypatch.setattr(WhatsAppState, "get_state", get_state)
+
+
+@pytest.mark.parametrize(
+    ("path", "panel"),
+    [
+        ("/whatsapp", TAB_CHATS),
+        ("/whatsapp?tab=respuesta", TAB_MENU),
+        ("/whatsapp?tab=numero&sub=qr", TAB_QR),
+        ("/whatsapp/promociones", TAB_CAMPAIGNS),
+        ("/whatsapp/promociones?sub=aprobados", TAB_TEMPLATES),
+        ("/whatsapp/promociones/?sub=clientes", TAB_CONTACTS),
+        ("/whatsapp/promociones?sub=qr", TAB_CAMPAIGNS),  # another page's sub is junk
+    ],
+)
+def test_entering_a_page_shows_the_panel_of_its_address(path: str, panel: str) -> None:
+    state = _visit(path)
+    events = WhatsAppState.enter_page.fn(state)  # type: ignore[attr-defined]
+    assert state.active_tab == panel
+    assert len(events) == 3  # the chip, the stale forms, then the numbers
+
+
+_OLD = [
+    ("/whatsapp?tab=promociones&sub=aprobados", "/whatsapp/promociones?sub=aprobados"),
+    ("/whatsapp?tab=plantillas", "/whatsapp/promociones?sub=aprobados"),
+    ("/whatsapp?tab=campanas&flujo=promocion&paso=2", None),
+    ("/whatsapp?tab=contactos&path=x&tab2=y", "/whatsapp/promociones?sub=clientes"),
+]
+
+
+@pytest.mark.parametrize(("path", "target"), _OLD)
+async def test_an_old_address_is_redirected_once_and_only_when_signed_in(
+    monkeypatch: pytest.MonkeyPatch, path: str, target: str | None
+) -> None:
+    """m-25017862: the loader leaves an old «Promociones» address alone (nothing set,
+    nothing loaded); the page's history handler — its mount and every «atrás» — sends
+    it to the new page, with `replace`, and only with a session (`require_login` takes
+    a visitor without one to log in first)."""
+    expected = target or "/whatsapp/promociones?sub=enviadas&flujo=promocion&paso=2"
+    state = _visit(path)
+    assert WhatsAppState.enter_page.fn(state) == []  # type: ignore[attr-defined]
+    assert state.active_tab == DEFAULT_TAB
+
+    _signed_in(monkeypatch, "")
+    assert await WhatsAppState.enter_history.fn(_visit(path), {"visit": "v"}) == []  # type: ignore[attr-defined]
+
+    _signed_in(monkeypatch, "00000000-0000-4000-8000-000000000001")
+    events = await WhatsAppState.enter_history.fn(_visit(path), {"visit": "v"})  # type: ignore[attr-defined]
+    assert len(events) == 1
+    rendered = str(events[0])
+    assert f'"{expected}"' in rendered and "replace" in rendered
 
 
 def test_tabs_exist_behind_the_agreed_hooks() -> None:

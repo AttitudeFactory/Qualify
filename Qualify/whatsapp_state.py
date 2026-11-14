@@ -306,10 +306,11 @@ class WhatsAppState(rx.State):
         previous tab comes back."""
         from .whatsapp_chats_state import WhatsAppChatsState
 
-        moved = self._read_address()
-        if moved is not None:
-            # m-25017862: «Promociones» left this screen; a bookmark lands on its page.
-            return [rx.redirect(moved, replace=True)]
+        if self._read_address() is not None:
+            # m-25017862: an old address of «Promociones». `enter_history` (the page's
+            # mount, and every «atrás») is the ONE place that redirects it, so the two
+            # handlers never both send the browser away; nothing is loaded meanwhile.
+            return []
         # m-25017859: a navigation (not a remount of the Chats section) lets the address
         # decide the Chats chip.
         return [
@@ -354,7 +355,12 @@ class WhatsAppState(rx.State):
     async def enter_history(self, lease: dict) -> list[rx.event.EventSpec | rx.event.EventHandler]:
         moved = self._read_address()
         if moved is not None:
-            return [rx.redirect(moved, replace=True)]
+            # m-25017862: «Promociones» left this screen; a bookmark lands on its page —
+            # once signed in. Without a session `require_login` sends the visitor to log
+            # in (and back here afterwards); a redirect now would only bounce through
+            # the new address on the way.
+            signed_in = bool((await self.get_state(AuthState)).session_tenant_id)
+            return [rx.redirect(moved, replace=True)] if signed_in else []
         await self.prepare_flow_address()
         self.history_ack = history_ack_value(lease)
         return [

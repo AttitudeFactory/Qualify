@@ -33,7 +33,7 @@ from .connection_copy import (
     connection_status_display as connection_status_display,
 )
 from .connections_vm import whatsapp_label
-from .nav_url import with_query
+from .nav_url import uuid_param, with_query
 
 # --------------------------------------------------------------------------------------
 # Tabs (m-24842998 WHATSAPP-7). Three tasks on top, one of them with sub-tabs:
@@ -95,7 +95,9 @@ PROMOTIONS_SUBTITLE: Final = (
     "Envía promociones a los clientes que aceptaron recibirlas y mira cuántos las leyeron."
 )
 #: `/whatsapp`'s header line: what is left there once «Promociones» moved out.
-WHATSAPP_SUBTITLE: Final = "Atiende por WhatsApp: tus chats, tu menú automático y tu número."
+#: «tu menú de bienvenida»: the founder's name of 2026-11-14 (the tab keeps its own
+#: name until m-25017861).
+WHATSAPP_SUBTITLE: Final = "Atiende por WhatsApp: tus chats, tu menú de bienvenida y tu número."
 
 # section → ((panel, sub slug, label), …); the first one is the section's default. A
 # section with a single panel has no sub-tab strip and no `?sub=`.
@@ -146,6 +148,12 @@ WHATSAPP_ROUTE: Final = "/whatsapp"
 PROMOTIONS_ROUTE: Final = "/whatsapp/promociones"
 TAB_PARAM: Final = "tab"
 SUB_PARAM: Final = "sub"
+ACCOUNT_PARAM: Final = "cuenta"
+FLOW_PARAM: Final = "flujo"
+STEP_PARAM: Final = "paso"
+#: The `?flujo=` of the promotions panels' forms (`ui/flow_history.py`): the new
+#: promotion and the new approved message.
+PROMOTION_FLOWS: frozenset[str] = frozenset({"promocion", "mensaje-aprobado"})
 
 
 def resolve_tab(requested: str) -> str:
@@ -214,16 +222,19 @@ def legacy_promotions_target(params: Mapping[str, object]) -> str | None:
     """m-25017862: where an old `/whatsapp` address of a promotions panel lands now —
     `/whatsapp?tab=promociones&sub=aprobados&cuenta=…` →
     `/whatsapp/promociones?sub=aprobados&cuenta=…` — or None when the address is not
-    one (it stays on `/whatsapp`). Every other plain parameter rides along (the number,
-    an open form's `flujo`/`paso`), so a bookmark or a half-filled promotion keeps its
-    place; `tab` is dropped and `sub` becomes the canonical slug."""
+    one (it stays on `/whatsapp`). Only what those panels ever read rides along, each
+    in its own shape: the number (`cuenta`, a canonical UUID) and an open form
+    (`flujo` of a promotions form, `paso` a step number), so a bookmark or a half-filled
+    promotion keeps its place. Anything else is dropped, never echoed."""
     panel = resolve_panel(_text(params.get(TAB_PARAM)), _text(params.get(SUB_PARAM)))
     if not is_promotions_panel(panel):
         return None
+    flow = _text(params.get(FLOW_PARAM))
+    step = _text(params.get(STEP_PARAM))
     kept = {
-        key: value
-        for key, raw in params.items()
-        if key not in (TAB_PARAM, SUB_PARAM) and (value := _text(raw))
+        ACCOUNT_PARAM: uuid_param(params, ACCOUNT_PARAM),
+        FLOW_PARAM: flow if flow in PROMOTION_FLOWS else "",
+        STEP_PARAM: step if flow in PROMOTION_FLOWS and step.isdigit() and len(step) < 3 else "",
     }
     return with_query(PROMOTIONS_ROUTE, **{SUB_PARAM: panel_sub(panel)}, **kept)
 

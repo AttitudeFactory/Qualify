@@ -13,6 +13,8 @@ import inspect
 from pathlib import Path
 from uuid import uuid4
 
+from reflex.istate.data import ReflexURL, RouterData
+
 from .followups_state import FollowupsState
 from .followups_vm import VIEW_MESSAGES, VIEW_QUERIES, view_from_param, view_url
 from .inbox_state import InboxState
@@ -203,9 +205,15 @@ def test_select_reel_pushes_the_detail_address() -> None:
 
 
 def test_entry_handlers_read_their_parameter() -> None:
-    whatsapp = inspect.getsource(WhatsAppState._read_address)  # noqa: SLF001
-    assert "TAB_PARAM" in whatsapp and "SUB_PARAM" in whatsapp
-    assert "_read_address()" in inspect.getsource(WhatsAppState.enter_page.fn)
+    # WhatsApp: read for real, from the address (m-25017862 split it over two pages).
+    for url, panel in (
+        ("/whatsapp?tab=numero&sub=qr", TAB_QR),
+        ("/whatsapp/promociones?sub=clientes", TAB_CONTACTS),
+    ):
+        state = WhatsAppState()
+        state.router = RouterData(url=ReflexURL(f"http://localhost:3000{url}"))
+        WhatsAppState.enter_page.fn(state)  # type: ignore[attr-defined]
+        assert state.active_tab == panel, url
     assert "VIEW_PARAM" in inspect.getsource(FollowupsState.enter_page.fn)
     inbox = inspect.getsource(InboxState.enter_screen.fn)
     assert "POST_PARAM" in inbox and "_try_uuid(wanted)" in inbox
