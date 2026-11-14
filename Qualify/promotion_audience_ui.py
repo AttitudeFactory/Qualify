@@ -276,7 +276,7 @@ def promotion_audience() -> rx.Component:
                         size="2",
                         color=rx.cond(
                             S.radius_out_of_range,
-                            rx.color(T.tone_scale("error"), 11),
+                            T.tone_color("error", 11),
                             T.TEXT_MUTED,
                         ),
                     ),
