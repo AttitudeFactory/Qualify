@@ -82,13 +82,59 @@ def back_url_script(url: str) -> str:
     )
 
 
-def conversation_href(channel: str, connection_id: str = "", thread_id: str = "") -> str:
-    """Canonical owner-facing routes carrying only internal account/thread IDs."""
+#: m-25017859: `?desde=por-responder` on a WhatsApp chat opened from the single list of
+#: «Por responder», so its back button returns to that list (not the number's own).
+FROM_PARAM = "desde"
+FROM_INBOX = "por-responder"
+#: The canonical `?filtro=` of WhatsApp › Chats' «Por responder» chip (the menu's
+#: WhatsApp badge and a chat opened from the single list land on it).
+WHATSAPP_AWAITING_SLUG = "por-responder"
+WHATSAPP_AWAITING_HREF = f"/whatsapp?tab=chats&filtro={WHATSAPP_AWAITING_SLUG}"
+
+
+#: m-25017859: the single list's own view (`?filtro=` / `?canal=`) rides along the
+#: Instagram chat addresses it opens, so «atrás» and a reload keep the list as it was.
+LIST_VIEW_PARAMS = ("filtro", "canal")
+
+
+def _slug(value: object) -> str:
+    """A view slug as it may travel in an address: lowercase letters and dashes only."""
+    text = value if isinstance(value, str) else ""
+    return (
+        text
+        if len(text) <= 32 and all(c.isascii() and (c.isalpha() or c == "-") for c in text)
+        else ""
+    )
+
+
+def list_view(params: Mapping[str, object]) -> dict[str, str]:
+    """The `?filtro=` / `?canal=` of the current address, if they are plain slugs."""
+    return {k: s for k in LIST_VIEW_PARAMS if (s := _slug(params.get(k, "")).lower())}
+
+
+def conversation_href(
+    channel: str,
+    connection_id: str = "",
+    thread_id: str = "",
+    *,
+    from_inbox: bool = False,
+    view: Mapping[str, str] | None = None,
+    chip: str = "",
+) -> str:
+    """Canonical owner-facing routes carrying only internal account/thread IDs (plus,
+    on WhatsApp, the `?desde=` of the single list and the chip it opens on, or the
+    owner's own chip `chip` — "" for the default, which needs no parameter; on the
+    single list, its `view` slugs)."""
     ids = {"cuenta": connection_id, "chat": thread_id}
     safe = {key: uuid_param(ids, key) for key in ids}
     if channel == "whatsapp":
-        return with_query("/whatsapp", tab="chats", **safe)
-    return with_query("/responder", tab="mensajes", **safe)
+        if from_inbox and safe["chat"]:
+            origin = {"filtro": WHATSAPP_AWAITING_SLUG, FROM_PARAM: FROM_INBOX}
+        else:
+            origin = {"filtro": _slug(chip)} if _slug(chip) else {}
+        return with_query("/whatsapp", tab="chats", **safe, **origin)
+    kept = {k: _slug(v) for k, v in (view or {}).items() if k in LIST_VIEW_PARAMS}
+    return with_query("/responder", tab="mensajes", **kept, **safe)
 
 
 def thread_param(params: Mapping[str, object], connection_id: str) -> str:
@@ -97,6 +143,18 @@ def thread_param(params: Mapping[str, object], connection_id: str) -> str:
     if "cuenta" in params and (not requested or requested != connection_id):
         return ""
     return uuid_param(params, "chat")
+
+
+def filter_address_script(slug: str) -> str:
+    """JS that sets `?filtro=` of the current address in place (no new history step),
+    keeping every other parameter. `slug` is one of the app's own chip slugs."""
+    value = json.dumps(_slug(slug))
+    return (
+        "(() => { const u = new URL(window.location.href);"
+        f" u.searchParams.set('filtro', {value});"
+        " window.history.replaceState(window.history.state, '', u.pathname + u.search + u.hash);"
+        " })();"
+    )
 
 
 def flow_param(params: Mapping[str, object], flow: str, total: int) -> int:

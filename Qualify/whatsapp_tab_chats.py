@@ -33,7 +33,7 @@ import reflex as rx
 
 from .chat_row import chat_row
 from .chat_row import tone_pill as _tone_pill
-from .chat_row_vm import ChatRowVM
+from .chat_row_vm import INBOX_BACK_LABEL, ChatRowVM
 from .r2_media import BACKEND_BASE
 from .ui import (
     OrbitItem,
@@ -349,16 +349,30 @@ def _list_pane() -> rx.Component:
 
 def _back_button() -> rx.Component:
     """Phone only (the list and the conversation share one pane there). N7: the
-    button names where it goes — «‹ Chats», never a bare arrow."""
-    return rx.button(
-        rx.icon("chevron-left", size=T.ICON_MD),
-        "Chats",
-        on_click=S.back_to_list,
-        variant="ghost",
-        size="2",
-        min_height="44px",
-        class_name="q-wa-chats__back",
-        **T.tone_scheme("neutral"),
+    button names where it goes — «‹ Chats», never a bare arrow. m-25017859: a chat
+    opened from the single list of «Por responder» says «‹ Por responder» and goes back
+    there, on every size (on a desk this number's own list is not the way back)."""
+    return rx.cond(
+        S.from_inbox,
+        rx.button(
+            rx.icon("chevron-left", size=T.ICON_MD),
+            INBOX_BACK_LABEL,
+            on_click=S.back_to_inbox,
+            variant="ghost",
+            size="2",
+            min_height="44px",
+            **T.tone_scheme("neutral"),
+        ),
+        rx.button(
+            rx.icon("chevron-left", size=T.ICON_MD),
+            "Chats",
+            on_click=S.back_to_list,
+            variant="ghost",
+            size="2",
+            min_height="44px",
+            class_name="q-wa-chats__back",
+            **T.tone_scheme("neutral"),
+        ),
     )
 
 

@@ -202,7 +202,7 @@ def test_back_links_name_their_destination() -> None:
     from .whatsapp_tab_chats import _back_button as chats_back
 
     for component, label, handler in (
-        (messages_back(), "Mensajes", "close_conversation"),
+        (messages_back(), "Por responder", "close_conversation"),
         (chats_back(), "Chats", "back_to_list"),
         (_reel_detail_header(), "Comentarios", "back_to_reel_list"),
     ):

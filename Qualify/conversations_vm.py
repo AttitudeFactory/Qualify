@@ -55,9 +55,9 @@ from qualify_api.conversations.choices import choice_label as tap_origin
 
 from .ad_message_vm import ad_origin_href, ad_origin_label
 from .chat_row_vm import (
+    AWAITING_PILL,
     CHANNEL_INSTAGRAM,
-    ChatRowVM,
-    build_chat_row,
+    EXPIRED_PILL,
     minutes_left,
     unknown_contact,
 )
@@ -133,42 +133,10 @@ WINDOW_RULE = (
     "Instagram solo permite responder durante las 24 h siguientes al último mensaje de la persona."
 )
 
-FILTER_ALL = "all"
-FILTER_PENDING = "pending"
-FILTER_READ = "read"
-FILTER_ANSWERED = "answered"
-# m-25026457: the owner's «Cerrar» takes a chat out of every other chip; «Cerradas» lists
-# it. Founder, 2026-11-13: «Abiertas y Cerradas» (the first chip lists every open chat).
-# the word the ticket fixes (WhatsApp's chip), kept as is for the shared list to come.
-FILTER_CLOSED = "closed"
-FILTERS: tuple[tuple[str, str], ...] = (
-    (FILTER_ALL, "Abiertas"),
-    (FILTER_PENDING, "Pendientes"),
-    (FILTER_READ, "Leídas"),
-    (FILTER_ANSWERED, "Respondidas"),
-    (FILTER_CLOSED, "Cerradas"),
-)
-FILTER_KEYS = frozenset(key for key, _label in FILTERS)
-DEFAULT_FILTER = FILTER_ALL
-
-# m-24842962 (N11): Inicio's «personas esperan tu respuesta» opens the list already
-# filtered — `/conversations?filtro=pendientes`. The slugs are the chips' own words.
-FILTER_PARAM = "filtro"
-FILTER_SLUGS = {
-    "abiertas": FILTER_ALL,
-    "todas": FILTER_ALL,  # the chip's name until 2026-11-13: old links keep working
-    "pendientes": FILTER_PENDING,
-    "leidas": FILTER_READ,
-    "respondidas": FILTER_ANSWERED,
-    "cerradas": FILTER_CLOSED,
-    "cerrados": FILTER_CLOSED,  # alias, never deployed as the chip's name
-}
-
-
-def filter_from_param(slug: str) -> str | None:
-    """`?filtro=pendientes` → `FILTER_PENDING`; absent or unknown → None (keep the
-    filter the owner already had)."""
-    return FILTER_SLUGS.get(slug.strip().lower()) if slug else None
+# m-25017859: the Instagram-only chips (Abiertas · Pendientes · Leídas · Respondidas ·
+# Cerradas) left with this screen's own list: the single list of «Por responder»
+# (`inbox_list_vm`) lists every channel by the one rule, and maps their old `?filtro=`
+# slugs. `ThreadRowVM.attention` stays for the open chat's header pill.
 
 
 #: `service.AttentionState` value → (label, tone).
@@ -712,6 +680,25 @@ def attention_pill(attention: Any) -> tuple[str, str]:
     return ATTENTION_PILLS.get(str(key), ATTENTION_PILLS["none"])
 
 
+def header_pill(view: Any) -> tuple[str, str]:
+    """m-25017859: the open chat's pill says what its row in the single list says — the
+    «Por responder» rule (`ThreadView.awaiting_reply`) instead of read / unread. A read
+    that did not compute the rule (`thread.awaiting_reply is None`) keeps the old
+    read-based pill. Waiting → «Por responder»; the window gone with the customer's
+    word last → «Respóndele desde Instagram»; answered → «Respondida»."""
+    awaiting = getattr(view.thread, "awaiting_reply", None)
+    if awaiting is None:
+        return attention_pill(view.attention)
+    if awaiting:
+        return AWAITING_PILL, "warn"
+    key = str(getattr(view.attention, "value", view.attention))
+    if key in ("answered", "none"):
+        return attention_pill(key)
+    if not view.window.is_open and getattr(view.thread, "status", "open") != "closed":
+        return EXPIRED_PILL, "neutral"
+    return "", "neutral"
+
+
 def counterpart_title(username: str | None, counterpart_external_id: str) -> str:
     handle = (username or "").strip()
     if handle:
@@ -765,7 +752,7 @@ def build_thread_row(
         preview = NO_MESSAGES_YET
     elif extra.preview_direction == "outbound":
         preview = OUTBOUND_PREFIX + preview
-    label, tone = attention_pill(view.attention)
+    label, tone = header_pill(view)
     window_label, window_tone = window_words(
         view.window.is_open,
         view.window.closes_at,
@@ -825,45 +812,9 @@ def changed_since_seen_notice(title: str) -> str:
     return f"{who} te acaba de escribir. Lee su mensaje antes de cerrar."
 
 
-def as_chat_row(row: ThreadRowVM) -> ChatRowVM:
-    """m-25017844: this channel's row in the shared shape (`chat_row_vm`). «Pendiente»
-    becomes the waiting dot (and the bold name); «Leída» / «Respondida» leave the row
-    (the filters say them); the window joins the one pill only when it is about to
-    close. Instagram has no payment step, so «Pago por revisar» never shows here."""
-    return build_chat_row(
-        thread_id=row.thread_id,
-        channel=CHANNEL_INSTAGRAM,
-        title=row.title,
-        preview=row.preview,
-        preview_icon=row.preview_icon,
-        time_label=row.time_label,
-        waiting=row.attention == "pending",
-        initials_from="" if row.title == UNKNOWN_PERSON else row.title,
-        reply_within_minutes=row.window_minutes,
-        avatar_url=row.avatar_url,
-        fresh=row.fresh,
-    )
-
-
-def filter_threads(rows: Iterable[ThreadRowVM], key: str) -> list[ThreadRowVM]:
-    """Cerradas = the chats the owner closed (m-25026457). Every other chip lists open
-    chats only: Abiertas = all of them, Pendientes · Leídas · Respondidas by the derived
-    attention state. An unknown key falls back to Abiertas."""
-    if key == FILTER_CLOSED:
-        return [r for r in rows if r.is_closed]
-    open_rows = [r for r in rows if not r.is_closed]
-    if key in (FILTER_PENDING, FILTER_READ, FILTER_ANSWERED):
-        return [r for r in open_rows if r.attention == key]
-    return open_rows
-
-
-def filter_counts(rows: Sequence[ThreadRowVM]) -> dict[str, int]:
-    return {key: len(filter_threads(rows, key)) for key, _label in FILTERS}
-
-
-def filter_label(key: str, count: int) -> str:
-    label = dict(FILTERS).get(key, key)
-    return f"{label} · {count}" if count else label
+# m-25017859: this channel's list adapter (`as_chat_row`) and chips (`filter_threads`)
+# left with its own list — the single list draws Instagram rows from `InboxRow`
+# (`inbox_list_vm.as_chat_row`).
 
 
 def newly_pending(previous: Sequence[ThreadRowVM], current: Sequence[ThreadRowVM]) -> list[str]:

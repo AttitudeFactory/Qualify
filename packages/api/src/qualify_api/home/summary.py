@@ -8,10 +8,11 @@ drift from the screens the figures link to.
 Each figure follows the rule of the screen it opens, so the number on Inicio is the
 number the owner finds on arrival:
 
-- `people_waiting` — Instagram Direct threads whose attention state is «pendiente»
-  (`conversations.service.attention_state`): an inbound message newer than the last
-  reply AND than the last time someone opened the thread, and not closed by the owner
-  (m-25026457; a newer inbound reopens it). Same filter as `attention.counts` messages.
+- `people_waiting` — Instagram Direct chats that wait for a reply under the ONE «Por
+  responder» rule (`inbox.awaiting.count_awaiting_sql('dm')`, story m-25017859): open,
+  the customer wrote after the last reply a person sent, and the reply window still
+  open; reading a chat no longer clears it. Instagram only (the scope it always had;
+  WhatsApp has its own card), and exactly `attention.counts` messages at the same `now`.
 - `drafts_to_approve` — publications generated and waiting for the human gate
   (`content_drafts.status = 'generated'`, the creative FSM's HITL #2; the planner reads
   it as `ApprovalStatus.PENDING`). This is only the fallback: Inicio's provider
@@ -50,6 +51,9 @@ from qualify_shared.db.session import tenant_session
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from qualify_api.inbox.awaiting import count_awaiting_sql
+from qualify_api.inbox.channels import CHANNEL_INSTAGRAM_DM
+
 #: «Así te fue esta semana» = the last 7 days, counted back from now.
 WEEK = timedelta(days=7)
 #: «{n} videos vencen pronto»: from 2 days before a vista previa expires (founder,
@@ -85,16 +89,7 @@ class HomeCounts:
 HOME_COUNTS_SQL = text(
     """
     SELECT
-      (SELECT count(*) FROM threads t
-        WHERE t.channel = 'dm'
-          AND t.status = 'open'
-          AND t.last_inbound_at IS NOT NULL
-          AND (t.last_read_at IS NULL OR t.last_read_at < t.last_inbound_at)
-          AND NOT EXISTS (
-                SELECT 1 FROM messages o
-                 WHERE o.thread_id = t.id AND o.direction = 'outbound'
-                   AND COALESCE(o.posted_at, o.ingested_at) >= t.last_inbound_at)
-      ) AS people_waiting,
+      {people_waiting} AS people_waiting,
       (SELECT count(*) FROM content_drafts d
         WHERE d.status = 'generated' AND d.parent_draft_id IS NULL)
         AS drafts_to_approve,
@@ -201,7 +196,7 @@ HOME_COUNTS_SQL = text(
       ) AS instagram_connected,
       EXISTS (SELECT 1 FROM content_drafts d WHERE d.status <> 'failed')
         AS has_publication
-    """
+    """.replace("{people_waiting}", count_awaiting_sql(CHANNEL_INSTAGRAM_DM, now_param="now"))
 )
 
 SessionFactory = Callable[[UUID], AbstractContextManager[Session]]

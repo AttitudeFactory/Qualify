@@ -219,11 +219,11 @@ def test_conversations_loads_the_queries_on_entry_and_shows_the_toggle() -> None
     # hands over to FollowupsState.enter_page; /conversations keeps the toggle.
     source = (Path(__file__).parent / "responder_state.py").read_text(encoding="utf-8")
     assert "FollowupsState.enter_page" in source
-    from .conversations_page import conversations_index
+    # m-25017859: the legacy /conversations page (and its Mensajes / Consultas toggle)
+    # is gone; the queries are only «Quieren comprar».
+    from .followups_page import followups_panel
 
-    rendered = str(conversations_index().render())
-    assert "Mensajes" in rendered
-    assert "esperando para comprar" in rendered and "Ver comentarios" in rendered
+    rendered = str(followups_panel().render())
     assert "/responder?tab=comentarios" in rendered
 
 

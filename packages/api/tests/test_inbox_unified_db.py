@@ -31,6 +31,7 @@ from qualify_shared.db.session import tenant_session
 from sqlalchemy import event, insert, text
 from sqlalchemy.engine import Engine
 
+from qualify_api.attention import PostgresPendingCounts
 from qualify_api.connections.models import PlatformApp, SocialConnection
 from qualify_api.inbox.awaiting import (
     AutomationSend,
@@ -40,7 +41,7 @@ from qualify_api.inbox.awaiting import (
     count_awaiting_sql,
 )
 from qualify_api.inbox.models import Message, Thread
-from qualify_api.inbox.unified import InboxCursor, count_inbox, list_inbox
+from qualify_api.inbox.unified import InboxCursor, count_inbox, inbox_counts, list_inbox
 from qualify_api.tenancy.models import Brand, Tenant, User
 from qualify_api.whatsapp.models import WhatsAppOutboxItem, WhatsAppThreadState
 from qualify_api.whatsapp.outbox import STALE_AFTER
@@ -643,7 +644,7 @@ def seed_volume(biz: _Biz, chats: int, messages_per_chat: int, waiting_percent: 
 
 @pytest.mark.slow
 @_skip_unless_opted_in
-@pytest.mark.parametrize("waiting_percent", [67, 2])
+@pytest.mark.parametrize("waiting_percent", [67, 10, 2])
 def test_a_page_of_50_chats_has_p95_under_300_ms(waiting_percent: int) -> None:
     """Opt-in only — `QUALIFY_RUN_INBOX_BENCHMARK=1 pytest -m slow -k inbox`.
 
@@ -664,8 +665,15 @@ def test_a_page_of_50_chats_has_p95_under_300_ms(waiting_percent: int) -> None:
 
         with psycopg.connect(owner_dsn.replace("+psycopg", ""), autocommit=True) as conn:
             conn.execute("ANALYZE threads, messages, whatsapp_outbox")
-    waiting = count_inbox(biz.tenant_id)
-    timings: dict[str, list[float]] = {"todos": [], "por_responder": [], "count": []}
+    waiting = count_inbox(biz.tenant_id, now=NOW)
+    menu = PostgresPendingCounts(clock=lambda: NOW)
+    timings: dict[str, list[float]] = {
+        "todos": [],
+        "por_responder": [],
+        "count": [],
+        "menu_counters": [],  # attention.counts, polled ~every 20 s per open session
+        "inbox_counts": [],  # every chip of the unified list, one statement
+    }
     for _ in range(11):
         for filter in ("todos", "por_responder"):
             started = time.perf_counter()
@@ -673,8 +681,15 @@ def test_a_page_of_50_chats_has_p95_under_300_ms(waiting_percent: int) -> None:
             timings[filter].append(time.perf_counter() - started)
             assert len(page.rows) == (50 if filter == "todos" else min(50, waiting))
         started = time.perf_counter()
-        count_inbox(biz.tenant_id)
+        count_inbox(biz.tenant_id, now=NOW)
         timings["count"].append(time.perf_counter() - started)
+        started = time.perf_counter()
+        counted = menu.read(biz.tenant_id)
+        timings["menu_counters"].append(time.perf_counter() - started)
+        assert counted.messages + counted.whatsapp == waiting
+        started = time.perf_counter()
+        assert inbox_counts(biz.tenant_id, now=NOW).por_responder == waiting
+        timings["inbox_counts"].append(time.perf_counter() - started)
     # The first round is the warm-up.
     p95 = {k: statistics.quantiles(v[1:], n=20)[-1] for k, v in timings.items()}
     print(
