@@ -989,6 +989,79 @@ def run_rejudge(al: Any, args: Any, spend: Spend, api_key: str) -> dict[str, Any
     return {}
 
 
+def run_copy_identity(al: Any, args: Any) -> dict[str, Any]:
+    """Free (NIVELES-006): the copy prompt of every clip and flyer case, per level, under
+    this tree's `render.py` and under `--identity-ref`'s (default HEAD~1). Which levels'
+    prompts moved, by digest."""
+    import hashlib
+
+    import qualify_creative.angles as new_angles
+    from qualify_creative.brand import render as current
+    from qualify_creative.enums import GenerationTask
+    from qualify_creative.schemas import BrandKit, BrandVoiceProfile, ContentBrief
+
+    from qualify_api.evals import awareness_clips as ac
+    from qualify_api.evals import copy_quality as cq
+
+    ref = args.identity_ref or "HEAD~1"
+    old = al.load_module_at(
+        ref,
+        "packages/creative/src/qualify_creative/brand/render.py",
+        "qualify_creative.brand.render_prev",
+        ROOT,
+    )
+
+    def digest(module: Any, kit: Any, voice: Any, brief: ContentBrief) -> str:
+        p = module.render_prompt(kit=kit, voice=voice, brief=brief, task=GenerationTask.COPY)
+        return hashlib.sha256((p.stable_prefix + "\x01" + p.volatile_suffix).encode()).hexdigest()
+
+    moved: dict[str, list[str]] = {}
+    same: dict[str, int] = {}
+    clip_cases = ac.load_clip_cases(CLIP_CASES, COPY_CASES)
+    pairs: list[tuple[str, str, Any, Any, ContentBrief]] = []
+    for key, brand in clip_cases["brands"].items():
+        kit = BrandKit.model_validate(brand["kit"])
+        voice = BrandVoiceProfile.model_validate(brand["voice"])
+        for level in ac.levels_with_none():
+            brief = ac.clip_brief(kit.brand_id, **ac.clip_form(brand, level))
+            pairs.append((f"clip {key}", level or "sin_nivel", kit, voice, brief))
+    base, levels = _copy_cases(al, args)
+    for case in levels["cases"]:
+        extra = levels["brands"][case["brand"]]
+        kit_d = dict(base["brands"][case["brand"]]["kit"], business_perks=list(extra["perks"]))
+        p = extra["product"]
+        angle = new_angles.CreativeAngle(
+            **dict(case["angle"], position=1), awareness_level=case["level"]
+        )
+        product = new_angles.AngleProduct(
+            product_id=UUID(int=0),
+            name=p["name"],
+            description=p["description"],
+            category=p["category"],
+            price_label=p["price_label"],
+            photo_keys=tuple(f"foto-{i}" for i in range(p["photos"])),
+        )
+        brief = new_angles.angle_brief(
+            angle=angle,
+            preset=new_angles.PRESETS[0],
+            product=product,
+            brand_id=UUID(kit_d["brand_id"]),
+        )
+        item = {
+            "kit": kit_d,
+            "voice": base["brands"][case["brand"]]["voice"],
+            "brief": brief.model_dump(mode="json"),
+        }
+        k, v, b = cq.build(item, 1)
+        pairs.append((f"pieza {case['id']}", case["level"], k, v, b))
+    for name, level, kit, voice, brief in pairs:
+        if digest(current, kit, voice, brief) == digest(old, kit, voice, brief):
+            same[level] = same.get(level, 0) + 1
+        else:
+            moved.setdefault(level, []).append(name)
+    return {"ref": ref, "identical_by_level": same, "moved_by_level": moved}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--env-file", default=str(ROOT / ".env"))
@@ -1065,13 +1138,16 @@ def main(argv: list[str] | None = None) -> int:
         out.write_text(text, encoding="utf-8")
 
     args.checkpoint = save
+    if "copyidentity" in suites:
+        report["suites"]["copyidentity"] = run_copy_identity(al, args)
+        print(f"copyidentity: {report['suites']['copyidentity']}")
     if "clipidentity" in suites:
         report["suites"]["clipidentity"] = run_clip_identity(al, args)
         print(f"clipidentity: {report['suites']['clipidentity']}")
     if "identity" in suites:
         report["suites"]["identity"] = run_identity(al, args)
         print(f"identity: {report['suites']['identity']}")
-    paid = [s for s in suites if s not in ("identity", "clipidentity")]
+    paid = [s for s in suites if s not in ("identity", "clipidentity", "copyidentity")]
     if paid:
         api_key = os.environ.get("QUALIFY_ANTHROPIC_API_KEY", "").strip()
         if not api_key:

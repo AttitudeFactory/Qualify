@@ -86,3 +86,21 @@ def test_the_judge_rubric_carries_the_most_aware_measures() -> None:
     for words in ("6 palabras", "unas 5", "unas 25 palabras", "mínimo de la marca"):
         assert words in al.JUDGE_RUBRIC
     assert "texto largo" not in ac.JUDGE_CLIP_ADDENDUM
+
+
+def test_ways_to_buy_counts_channels() -> None:
+    assert ac.ways_to_buy("Pídelo por Rappi") == ["rappi"]
+    assert ac.ways_to_buy("Escríbenos por WhatsApp o ven al local") == ["whatsapp", "local"]
+    assert ac.ways_to_buy("Doble smash con costra dorada") == []
+
+
+def test_question_and_must_mention() -> None:
+    assert ac.asks_question("¿Vienes hoy?")
+    assert not ac.asks_question("Ven hoy.")
+    assert ac.mentions_all("Con la salsa de la casa", ["Salsa de la casa"])
+    assert not ac.mentions_all("Doble smash", ["salsa de la casa"])
+
+
+def test_exception_cases_are_well_formed() -> None:
+    assert {c["way_to_buy"] for c in CASES["exceptions"]} <= {"rappi", "whatsapp"}
+    assert all(c["must_mention"] for c in CASES["exceptions"])

@@ -208,6 +208,37 @@ def most_aware_measure(payload: Mapping[str, Any]) -> bool:
     )
 
 
+#: NIVELES-006: the ways to buy a caption can name, by channel (one channel = one way).
+_BUY_WAYS: dict[str, re.Pattern[str]] = {
+    "whatsapp": re.compile(r"whatsapp|wasap|wpp", re.I),
+    "rappi": re.compile(r"\brappi\b", re.I),
+    "domicilio": re.compile(r"\bdomicilio", re.I),
+    "dm": re.compile(r"\b(?:dm|mensaje directo|inbox)\b", re.I),
+    "web": re.compile(r"\b(?:web|p[aá]gina|link|enlace)\b", re.I),
+    "llamada": re.compile(r"\bll[aá]m(?:a|anos|ar)\b", re.I),
+    "local": re.compile(
+        r"\b(?:local|tienda|sede|ven|v[eé]nganse|c[aá][eé]le|ca[eé]|pasa por)\b", re.I
+    ),
+}
+
+
+def ways_to_buy(text: str) -> list[str]:
+    """The distinct channels `text` offers to buy through."""
+    return [name for name, pattern in _BUY_WAYS.items() if pattern.search(text or "")]
+
+
+def asks_question(text: str) -> bool:
+    return "?" in (text or "") or "¿" in (text or "")
+
+
+def mentions_all(text: str, must_mention: Sequence[str]) -> bool:
+    """Every «Debe mencionar» entry appears (case and accents ignored)."""
+    from qualify_api.evals.awareness_levels import fold  # noqa: PLC0415 — levels imports us
+
+    folded = fold(text)
+    return all(fold(item) in folded for item in must_mention if item.strip())
+
+
 def judge_ideas(payload: Mapping[str, Any], level: str | None) -> list[dict[str, str]]:
     """The clip as the judge reads it (one idea)."""
     shots = [str((s or {}).get("visual", "")) for s in payload.get("shots") or ()]
@@ -235,7 +266,10 @@ __all__ = [
     "clip_form",
     "clip_text",
     "filmable_shot",
+    "asks_question",
     "judge_ideas",
+    "mentions_all",
+    "ways_to_buy",
     "levels_with_none",
     "load_clip_cases",
     "most_aware_measure",
