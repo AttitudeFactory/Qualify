@@ -429,7 +429,7 @@ AUDIENCE_LABELS: dict[AwarenessLevel, str] = {
     AwarenessLevel.MOST_AWARE: "Para quien está listo para comprar",
 }
 AUDIENCE_QUESTION = "¿A quién le habla este video?"
-AUDIENCE_HINT = "Opcional. Si no sabes, déjalo en «Sin preferencia»."
+AUDIENCE_HINT = "Así el video le habla a ese cliente. Si no sabes, déjalo en «Sin preferencia»."
 AUDIENCE_NONE_LABEL = "Sin preferencia"
 #: The select's value for «Sin preferencia» (a Radix select item cannot be ""); the
 #: state keeps "" for it.
@@ -438,7 +438,15 @@ AUDIENCE_NONE = "none"
 AUDIENCE_SUMMARY_LABEL = "A quién le habla"
 #: Said instead of the catalog's «Precio» row when the video is for someone who does not
 #: know the business yet: the brief carries no price then (`ContentBrief`).
-AUDIENCE_NO_PRICE = "Este video no mencionará el precio."
+AUDIENCE_NO_PRICE = (
+    "Este video no dirá el precio porque es para quien aún no piensa en ti. Elige otra "
+    "opción si quieres mostrarlo."
+)
+#: Step 5's «Datos clave» when that answer hid the catalog's price and nothing else is
+#: there — never «Ninguno», which reads as if the price was lost.
+AUDIENCE_SUMMARY_NO_PRICE = "Sin precio: el video es para quien aún no piensa en ti"
+#: The closed line in «Qué decir» once the parts card asked it: «A quién le habla: …».
+AUDIENCE_CHANGE_LABEL = "Cambiar"
 
 
 def audience_label(level: AwarenessLevel | None) -> str:

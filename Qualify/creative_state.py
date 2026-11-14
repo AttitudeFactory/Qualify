@@ -172,6 +172,7 @@ from .creative_vm import (
     APPROVE_VERSION_LABEL,
     AUDIENCE_NONE,
     AUDIENCE_SUMMARY_LABEL,
+    AUDIENCE_SUMMARY_NO_PRICE,
     CAPTION_LIMIT,
     CATEGORY_OPTIONS,
     CREATING_LABEL,
@@ -1363,6 +1364,8 @@ class CreativeState(rx.State):
     #: for «Sin preferencia». Asked only for a clip (and its video by parts, whose card
     #: shows the same value); any other kind neither shows nor sends it.
     brief_audience: str = ""
+    #: «Cambiar» on «Qué decir»'s closed line opened the dropdown again.
+    audience_editing: bool = False
     brief_content_type: str = "product"
     brief_topic: str = ""
     #: Backend only (live test 2026-11-03): the product name ``choose_product`` put in
@@ -5972,6 +5975,37 @@ class CreativeState(rx.State):
         return self.brief_audience or AUDIENCE_NONE
 
     @rx.var
+    def audience_answer_label(self) -> str:
+        """The answer in words («Sin preferencia» included), for the closed line."""
+        return dict(audience_options()).get(self.brief_audience or AUDIENCE_NONE, "")
+
+    @rx.var
+    def audience_closed(self) -> bool:
+        """«Qué decir» shows the answer as a closed line («A quién le habla: …» ·
+        «Cambiar») when the parts card already asked it — the plan came from that card —
+        so the question is not asked twice. A plain clip keeps the open question."""
+        return (
+            self.brief_kind == "clip"
+            and self.parts_without_reel
+            and not self.from_reel_ideas
+            and not self.audience_editing
+        )
+
+    @rx.event
+    def edit_audience(self) -> None:
+        """«Cambiar» on the closed line: the dropdown opens in its place."""
+        self.audience_editing = True
+
+    def _price_hidden_by_audience(self) -> bool:
+        """The answer hid the chosen catalog product's price (it had one)."""
+        if not self._audience_hides_price():
+            return False
+        item = next(
+            (i for i in self.catalog_items if i.get("id") == self.selected_product_id), None
+        )
+        return bool(item is not None and (item.get("price_label") or "").strip())
+
+    @rx.var
     def audience_no_price(self) -> bool:
         """Say «Este video no mencionará el precio.» (a clip for someone who does not
         know the business yet)."""
@@ -8037,6 +8071,7 @@ class CreativeState(rx.State):
         self._back_to_form()
         self.brief_topic = ""
         self.brief_audience = ""  # m-25026509: back to «Sin preferencia»
+        self.audience_editing = False
         self.brief_highlights = []
         self.brief_must_mention = ""
         self.brief_must_avoid = ""
@@ -9489,7 +9524,9 @@ class CreativeState(rx.State):
                 "channel" + SHOW_MORE_SUFFIX,
             )
         facts = " · ".join(f"{name}: {fact}" for name, fact in self._highlight_pairs())
-        row("Datos clave", facts or "Ninguno", "rules")
+        # m-25026509: the price the answer hid is said, never shown as «Ninguno»
+        empty = AUDIENCE_SUMMARY_NO_PRICE if self._price_hidden_by_audience() else "Ninguno"
+        row("Datos clave", facts or empty, "rules")
         if self.brief_must_mention.strip():
             row("Debe mencionar", self.brief_must_mention.strip(), "rules")
         if self.brief_must_avoid.strip():
