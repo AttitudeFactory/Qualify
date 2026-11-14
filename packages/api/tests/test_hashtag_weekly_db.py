@@ -1,12 +1,12 @@
-"""m-25026378 against the live schema (0036 + 0117 + 0162 + 0165): the weekly TikTok read
+"""m-25026378 against the live schema (0036 + 0117 + 0162 + 0167): the weekly TikTok read
 per rubro hashtag with the production stores — `PostgresRubroSource`, `PostgresReadLog`,
 `PostgresHashtagRepository` and the gate's `PostgresUsageStore`. The vendor is an
 `httpx.MockTransport`: nothing leaves the process.
 
 - the rubro is the «Tu rubro» pills in `brand_kit_details.connect`, the region its
   country (else the business's);
-- every read is booked as `hashtag_weekly` (0165's CHECK) to its business, its answer
-  lands in `vendor_payloads`, its sightings as `hashtag_weekly` (0165's CHECK);
+- every read is booked as `hashtag_weekly` (0167's CHECK) to its business, its answer
+  lands in `vendor_payloads`, its sightings as `hashtag_weekly` (0167's CHECK);
 - re-running writes no row and books no credit; another business in another country does
   not read the same hashtag again, and a referentes page of it counts as read;
 - the shared tables have no column that could name the business;
@@ -232,7 +232,7 @@ def test_the_shared_tables_cannot_name_a_business() -> None:
     assert named == []
 
 
-def test_0165_checks_admit_the_weekly_read_and_nothing_new_besides() -> None:
+def test_0167_checks_admit_the_weekly_read_and_nothing_new_besides() -> None:
     with admin_session() as session:
         checks = dict(
             session.execute(

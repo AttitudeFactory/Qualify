@@ -184,7 +184,7 @@ FEATURE_TRENDING = "trending"
 FEATURE_CREATOR_PROFILE = "creator_profile"
 FEATURE_CREATOR_REELS = "creator_reels"
 #: The weekly TikTok read per hashtag of a business's rubro (m-25026378,
-#: `qualify_api.hashtags.weekly`; migration 0165 widens the CHECK to ten).
+#: `qualify_api.hashtags.weekly`; migration 0167 widens the CHECK to ten).
 FEATURE_HASHTAG_WEEKLY = "hashtag_weekly"
 FEATURES = frozenset(
     {
