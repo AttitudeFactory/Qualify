@@ -34,7 +34,12 @@ def audience_question(select_id: str) -> rx.Component:
                 id=select_id,
                 width="100%",
                 min_height="44px",
+                height="auto",
+                padding_y="0.5rem",
                 aria_describedby=hint_id,
+                # the answers are sentences: at 375 px the longest wraps instead of
+                # ending in «…» (Radix truncates the trigger's text by default)
+                style={"& .rt-SelectTriggerInner": {"whiteSpace": "normal", "textAlign": "left"}},
             ),
             rx.select.content(
                 *(rx.select.item(label, value=value) for value, label in audience_options()),
