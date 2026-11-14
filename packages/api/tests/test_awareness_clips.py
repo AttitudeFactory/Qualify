@@ -170,3 +170,14 @@ def test_the_parts_proposal_reads_the_briefs_level_when_no_angle_gives_one() -> 
     # most_aware has no line by design (v3.4), with or without an angle
     most = PartsBrief(story="Ven", awareness_level=AwarenessLevel.MOST_AWARE)
     assert "Nivel de consciencia" not in propose_user_prompt(most)
+
+
+def test_problem_aware_parts_open_on_someone_living_the_dilemma() -> None:
+    from qualify_api.creative.parts_ai import PROPOSE_PARTS_PROMPT_VERSION
+
+    text = propose_user_prompt(
+        PartsBrief(story="Ven", awareness_level=AwarenessLevel.PROBLEM_AWARE)
+    )
+    assert "la primera parte muestra a alguien viviendo ese dilema" in text
+    assert "el producto, si eligió uno, o lo que cuenta el dueño" in text
+    assert PROPOSE_PARTS_PROMPT_VERSION == "proponer-partes-v3.5"

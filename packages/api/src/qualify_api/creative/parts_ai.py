@@ -77,7 +77,9 @@ logger = logging.getLogger(__name__)
 #: v3.2 (m-24985141): general for any business and for a video without a product.
 #: v3.4 (m-25026482): v3.2 plus the owner's perks and the angle's awareness level (the
 #: branch measured them as v3.2/v3.3 on top of v3.1 — NIVELES-001/002 — so v3.4 is new).
-PROPOSE_PARTS_PROMPT_VERSION = "proponer-partes-v3.4"
+#: v3.5 (m-25026509, NIVELES-004): problem_aware's first part shows someone living the
+#: dilemma; the rest show the answer.
+PROPOSE_PARTS_PROMPT_VERSION = "proponer-partes-v3.5"
 PROPOSE_TOOL = "proponer_partes_video"
 
 PROPOSE_MODEL = "claude-sonnet-5"
@@ -383,7 +385,9 @@ _LEVEL_GUIDANCE: dict[AwarenessLevel, str] = {
         "el momento, con quién se comparte)"
     ),
     AwarenessLevel.PROBLEM_AWARE: (
-        "ya siente la necesidad: abre con ese dilema y muestra el producto como la respuesta"
+        "ya siente la necesidad: la primera parte muestra a alguien viviendo ese dilema "
+        "(dónde pasa, qué le pasa), y las demás muestran la respuesta: el producto, si eligió "
+        "uno, o lo que cuenta el dueño"
     ),
     AwarenessLevel.SOLUTION_AWARE: (
         "sabe qué quiere pero no dónde: muestra lo que distingue a este negocio (datos "
