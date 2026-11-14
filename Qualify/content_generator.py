@@ -20,11 +20,12 @@ from __future__ import annotations
 
 import reflex as rx
 
-from . import clip_gallery_vm, part_editor_vm, reel_parts_vm, reel_wait_vm
+from . import clip_editor_vm, clip_gallery_vm, part_editor_vm, reel_parts_vm, reel_wait_vm
 from .ask_more_ui import ask_more_block
 from .audience_view import audience_question
 from .campaign_provider import COLOR_LABELS, NEW_CAMPAIGN, NO_CAMPAIGN
 from .catalog_vm import ADD_PRODUCT_LABEL, CREATE_RETURN_PATH, new_product_href
+from .clip_editor_view import arma_tu_video
 from .creative_state import (
     _INSPIRATION_TARGETS,
     _NO_CATALOG_TARGETS,
@@ -435,7 +436,8 @@ def _options_panel() -> rx.Component:
                     display=rx.breakpoints({"0px": "none", "900px": "flex"}),
                 ),
                 # Deivid 2026-11-13 (round 9): «Producto» right above the options
-                _product_chip(),
+                # ED-05 (m-25026630): on «Arma tu video» the row lives in «Fotos y videos»
+                rx.cond(~CreativeState.clip_editor_on_screen, _product_chip()),
                 rx.box(
                     _kind_picker(),
                     id="create-kind-options",
@@ -1812,7 +1814,12 @@ def _clip_strip_item(item: rx.Var[dict[str, str]], index: rx.Var[int]) -> rx.Com
         rx.cond(
             first | last,
             rx.text(
-                rx.cond(first, "Abre el clip", "Cierra el clip"),
+                # ED-05: on «Arma tu video» it is «tu video»; with the switch off, as before
+                rx.cond(
+                    CreativeState.clip_editor_shown,
+                    rx.cond(first, clip_editor_vm.STRIP_OPENS, clip_editor_vm.STRIP_CLOSES),
+                    rx.cond(first, "Abre el clip", "Cierra el clip"),
+                ),
                 size="1",
                 color=T.TEXT_MUTED,
                 text_align="center",
@@ -1823,6 +1830,11 @@ def _clip_strip_item(item: rx.Var[dict[str, str]], index: rx.Var[int]) -> rx.Com
                 # round 12: what an image is for is chosen in the gallery above
                 rx.fragment(),
             ),
+        ),
+        # ED-05: a second video only guides the movement (only on «Arma tu video»)
+        rx.cond(
+            CreativeState.clip_strip_motion_keys.contains(key),
+            rx.text(clip_editor_vm.MOTION_ONLY_NOTE, size="1", color=T.TEXT_MUTED),
         ),
         on_drag_start=CreativeState.start_clip_image_drag(index),
         on_drop=CreativeState.drop_clip_image(index),
@@ -1954,7 +1966,18 @@ def _video_tile(tile: rx.Var) -> rx.Component:
             ),
             CreativeState.remove_clip_video(key),
         ),
-        rx.text(clip_gallery_vm.VIDEO_TAG, size="1", color=T.TEXT_MUTED, text_align="center"),
+        rx.text(
+            # ED-05 (m-25026630): on «Arma tu video» the video the editor plays and cuts is
+            # «Tu video», not a motion reference
+            rx.cond(
+                CreativeState.clip_editor_shown & (key == CreativeState.clip_edit_video_key),
+                clip_editor_vm.OWN_VIDEO_TAG,
+                clip_gallery_vm.VIDEO_TAG,
+            ),
+            size="1",
+            color=T.TEXT_MUTED,
+            text_align="center",
+        ),
         spacing="1",
         width=_GALLERY_TILE,
         align_items="center",
@@ -5803,6 +5826,136 @@ def _reel_wait_view() -> rx.Component:
     )
 
 
+def _clip_editor_product_row() -> rx.Component:
+    """ED-05 (m-25026630): the side panel's «Producto» row, moved into «Fotos y videos» —
+    «Tu producto: {nombre}» · «Cambiar», or «Elegir un producto»; the same bubbles and the
+    same drawer («Tus productos»), the focus coming back to it (`PRODUCT_ROW_ID`)."""
+    chosen = CreativeState.selected_product_id != ""
+    label = rx.cond(chosen, clip_editor_vm.PRODUCT_CHANGE_LABEL, clip_editor_vm.PRODUCT_CHOOSE)
+    return rx.hstack(
+        _product_bubbles(),
+        rx.cond(
+            chosen,
+            rx.text(
+                clip_editor_vm.PRODUCT_PREFIX + CreativeState.brief_product_ref,
+                size="2",
+                weight="medium",
+                truncate=True,
+                title=CreativeState.brief_product_ref,
+                flex="1 1 0",
+                min_width="0",
+            ),
+            rx.box(flex="1 1 0"),
+        ),
+        rx.button(
+            rx.cond(chosen, clip_editor_vm.PRODUCT_CHANGE, clip_editor_vm.PRODUCT_CHOOSE),
+            variant="soft",
+            color_scheme="gray",
+            size="2",
+            min_height="44px",
+            flex_shrink="0",
+            on_click=CreativeState.change_product,
+            id=PRODUCT_ROW_ID,
+            aria_haspopup="dialog",
+            aria_label=label,
+        ),
+        spacing="3",
+        align="center",
+        width="100%",
+    )
+
+
+def _clip_editor_media() -> rx.Component:
+    """ED-05 (m-25026630) «Fotos y videos»: the product row, what the Clip already uses
+    (its tiles, each with its ✕), the SAME media drawer of today («Agregar fotos o
+    videos»), the clip's order when there are two files or more, and the brand's
+    resources — nothing new, only moved."""
+    opener = "media-open-clip"
+    several = CreativeState.clip_strip.length() > 1
+    return rx.vstack(
+        _clip_editor_product_row(),
+        # one file: its tile; two or more: «Orden de tu video» alone (it has the ✕) —
+        # only the audios, which the order does not hold, keep their tiles
+        rx.cond(
+            CreativeState.clip_reference_tiles.length() > 0,
+            rx.flex(
+                rx.foreach(
+                    CreativeState.clip_reference_tiles,
+                    lambda tile: rx.cond(
+                        ~several | (tile["kind"] == clip_gallery_vm.AUDIO),
+                        _ref_tile(tile),
+                    ),
+                ),
+                gap="0.75rem",
+                wrap="wrap",
+                width="100%",
+            ),
+        ),
+        _ref_note(CreativeState.clip_notes_line),
+        _ref_note(CreativeState.gallery_pick_note),
+        _product_change_note(),
+        rx.button(
+            rx.icon("images", size=T.ICON_MD, aria_hidden="true"),
+            clip_editor_vm.ADD_MEDIA,
+            variant="soft",
+            size="3",
+            min_height="44px",
+            id=opener,
+            aria_haspopup="dialog",
+            on_click=CreativeState.open_media_drawer(MEDIA_DRAWER_CLIP, "", opener),
+        ),
+        rx.cond(
+            CreativeState.clip_strip.length() > 1,
+            _clip_block(
+                clip_editor_vm.ORDER_TITLE,
+                clip_editor_vm.ORDER_HINT,
+                rx.flex(
+                    rx.foreach(CreativeState.clip_strip, _clip_strip_item),
+                    _script_on_mount(_SLIDE_DRAG_JS),
+                    spacing="3",
+                    wrap="wrap",
+                ),
+                # what sits between the first and the last file is a reference — only the
+                # advanced video model takes it (same note as «Qué mostrar»)
+                rx.cond(
+                    CreativeState.clip_strip.length() > 2,
+                    callout(CLIP_MIDDLE_NOTE, "info"),
+                ),
+            ),
+        ),
+        _brand_resources(),
+        _upload_error(),
+        spacing="4",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _clip_editor() -> rx.Component:
+    """ED-02 (m-25026621): «Arma tu video» — the preview, the card and the tools."""
+
+    poster = _key_src(CreativeState.clip_edit_poster_key)
+    key = CreativeState.clip_edit_video_key
+    thumb = rx.cond(
+        key != "",
+        rx.cond(
+            CreativeState.piece_views.contains(key),
+            _slide_thumb(CreativeState.piece_views[key].to(str), rx.Var.create("video"), "3.5rem"),
+            _video_thumb(rx.get_upload_url(key), size="3.5rem"),
+        ),
+        media_thumb(
+            rx.cond(CreativeState.clip_edit_poster_key != "", poster, ""),
+            size="3.5rem",
+            icon="film",
+        ),
+    )
+    return arma_tu_video(
+        _clip_editor_media(),
+        rx.cond(CreativeState.clip_edit_poster_key != "", poster, ""),
+        thumb,
+    )
+
+
 def _step_show() -> rx.Component:
     """① Qué mostrar: Avatar's types, the references, the presenter and the kind's own
     section — everything a kind cannot do without (CREAR-2). From «Hacer uno parecido»,
@@ -5813,7 +5966,13 @@ def _step_show() -> rx.Component:
             _has_view("reference"),
             rx.cond(
                 CreativeState.gen_category == "clip",
-                _clip_references_view(),
+                # ED-02 (m-25026621): a normal Clip is «Arma tu video»; a video by parts
+                # and «Hacer uno parecido» keep «Qué mostrar» as it was
+                rx.cond(
+                    CreativeState.clip_editor_shown,
+                    _clip_editor(),
+                    _clip_references_view(),
+                ),
                 _reference_view(),
             ),
         ),
