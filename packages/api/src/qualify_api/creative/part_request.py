@@ -67,6 +67,7 @@ from qualify_api.creative.parts import (
     PartNeedsPrevious,
     PartRemoved,
     PartsExtendUnavailable,
+    PartsLocalUnavailable,
     PartsOverBudget,
     PartsPlanBusy,
     PartsService,
@@ -80,6 +81,7 @@ from qualify_api.creative.service import (
     RouteBlockedByPolicy,
     UnknownDraft,
 )
+from qualify_api.creative.video_pipeline.recipe import RecipeRefused
 from qualify_api.referentes.reel_analysis_types import ReelAnalysis
 
 logger = logging.getLogger(__name__)
@@ -91,7 +93,25 @@ FIRST_PART: tuple[int, ...] = (1,)
 def refusal_of(exc: BaseException) -> tuple[PartsRefusal, int | None, int] | None:
     """The stored code of a refusal of `create_parts`, the part it is about and the
     vistas previas short — or None when `exc` is not a refusal (a bug, a database
-    error: the caller decides). Pure."""
+    error: the caller decides). Pure.
+
+    EF-02: a `RecipeRefused` is stored as `local_unavailable` if any problem says so,
+    else `recipe_unavailable` if any does — while the effects engine does not exist that
+    one WINS over a bad recipe (`effects_invalid`): the owner first learns that effects
+    cannot be made yet, not that one of them is wrong."""
+    if isinstance(exc, PartsLocalUnavailable):
+        return "local_unavailable", None, 0
+    if isinstance(exc, RecipeRefused):
+        # EF-02: what the engine cannot make yet says so; anything else is a bad recipe
+        codes = {p.code for p in exc.problems}
+        code: PartsRefusal = (
+            "local_unavailable"
+            if "local_unavailable" in codes
+            else "recipe_unavailable"
+            if "recipe_unavailable" in codes
+            else "effects_invalid"
+        )
+        return code, next((p.part for p in exc.problems if p.part), None), 0
     if isinstance(exc, PartsExtendUnavailable):
         return "extend_unavailable", None, 0
     if isinstance(exc, PartsSourceInvalid):

@@ -672,6 +672,11 @@ def _same_segments(found: tuple[str, ...], wanted: tuple[str, ...]) -> bool:
 _TENANT_ROOTS = ("t", "gallery", "reel-windows", "uploads", "generated")
 _FOREIGN_FILE = "Uno de los archivos de la pieza no es de tu marca."
 _BAD_KEY = "Uno de los archivos de la pieza tiene una ruta que no es válida. Vuelve a elegirlo."
+#: EF-02: a Clip made only from the owner's video with effects (`local`) — not built yet.
+LOCAL_CLIP_UNAVAILABLE = (
+    "Todavía no podemos armar un video solo con tu grabación y sus efectos. "
+    "Elige otra forma de hacerlo."
+)
 _MISSING_PIECE = "La pieza de la diapositiva {n} ya no está disponible. Elige otra."
 _MISSING_STOCK = "El video de stock de la diapositiva {n} ya no está disponible. Elige otro."
 #: CM-6: a Galería medium removed (or its product deactivated, or its video being cut)
@@ -754,6 +759,15 @@ def _key_problems(
             key
             for plan in (*media.parts, *media.parts_removed)
             for key in (*(plan.clip_image_keys or ()), *plan.clip_video_keys, *plan.clip_audio_keys)
+        ),
+        # EF-02: the stretches of the owner's own video a Clip, a child's part or a
+        # parent's plan entry (kept or removed) is made from
+        *(segment.key for segment in media.segments),
+        *(segment.key for segment in (media.part.segments if media.part else ())),
+        *(
+            segment.key
+            for plan in (*media.parts, *media.parts_removed)
+            for segment in plan.segments
         ),
     ]
     present = [key for key in keys if key]
@@ -2608,6 +2622,14 @@ class MediaProducer:
             # ADR 44: the parent of a video by parts makes no video of its own — its parts
             # (child clips) do, and the join is local. Nothing read, selected nor paid.
             return MediaOutcome()
+        if brief.kind is ContentKind.CLIP and brief.media.clip_reference_mode == "local":
+            # EF-02: «Tu video, con efectos» is not produced until EF-05/EF-06 — refused
+            # before any read, spend or vendor call, never made as a Seedance clip. The
+            # service's gate (`video_pipeline.refuse_unbuilt_recipe`) refuses it first.
+            logger.warning("creative media for draft %s refused: local clip not built", draft_id)
+            return MediaOutcome(
+                failure=FailureReason.INVALID_PARAMETERS.value, detail=LOCAL_CLIP_UNAVAILABLE
+            )
         # m-24820842: the chosen Brand Kit resources (mascot, elementos) are resolved and
         # revalidated against the LIVE Brand Kit on a NEW generation (a substituted or
         # deleted resource is rejected before any R2 read or paid call), then frozen per
