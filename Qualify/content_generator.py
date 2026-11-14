@@ -4290,7 +4290,9 @@ def _section_topic() -> rx.Component:
         _context_ai_tools(),
         # m-25026509: only a clip asks who the video talks to — in plain view, under the
         # sentence and «Mejorar mi texto», so both stay on the first screen
-        rx.cond(CreativeState.brief_kind == "clip", audience_question("clip-audience")),
+        rx.cond(
+            CreativeState.brief_kind == "clip", audience_question("clip-audience", closable=True)
+        ),
     )
 
 
