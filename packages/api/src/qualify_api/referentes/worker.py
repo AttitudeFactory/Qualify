@@ -18,8 +18,8 @@ Scope is MANDATORY and explicit, like every worker here:
   to the shared analysis (`analyze_run_ideas`), the analysis queue is drained
   (`reel_analysis_worker.drain_once`, as `just reel-analysis-tick`: downloads from the
   networks' CDNs into R2, no paid call) and the 30-day purge of what it stored — sources,
-  frames and covers — runs daily (`reel_retention.purge_all`). Once a day, last in its
-  pass, it also runs the weekly TikTok hashtag read of the PILOT businesses listed in
+  frames and covers — runs daily (`reel_retention.purge_all`). Every six hours, last in
+  its pass, it also runs the weekly TikTok hashtag read of the PILOT businesses listed in
   `QUALIFY_HASHTAG_WEEKLY_TENANTS` (`qualify_api.hashtags.pilot`, m-25026378, D3): off
   unless `QUALIFY_HASHTAG_WEEKLY_READ` is on, nobody when the list is empty, and anything
   it raises is logged and swallowed. With `--tenant` none of it happens: a local run writes
@@ -131,7 +131,7 @@ def _production_purge(now: datetime) -> object:
 def _hashtag_chore(should_stop: Callable[[], bool]) -> Callable[[datetime], object]:
     """The weekly hashtag read of the pilot businesses (`hashtags.pilot.run_pilot`), with
     the worker's stop signal. Imported on use: the reels worker loads nothing of it until
-    its first daily pass."""
+    its first hashtag pass."""
 
     def chore(now: datetime) -> object:
         from qualify_api.hashtags import pilot  # noqa: PLC0415 — loaded on first use

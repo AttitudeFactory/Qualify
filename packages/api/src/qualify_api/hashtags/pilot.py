@@ -2,11 +2,13 @@
 (m-25026378, epic m-25026375; founder decision D3, 2026-11-14, «option C — inside the
 reels worker, pilot with Bianki», `docs/epica-etiquetas-publicaciones.md`).
 
-The `--all-tenants` reels worker (`qualify_api.referentes.worker`) calls `run_pilot` once
-a day, the way it runs its daily purge (`ReelsWorker.pass_once`, step 7). What it reads is
+The `--all-tenants` reels worker (`qualify_api.referentes.worker`) calls `run_pilot` every
+six hours, the way it runs its daily purge (`ReelsWorker.pass_once`, step 7); each
+business is still read at most once a week. What it reads is
 `weekly.run_tick` over an explicit list of businesses — every guard of that pass applies
 unchanged (5 credits per business in any 7 days, a hashtag kept this week is not read
 again, one attempt a day, the headroom rule, the claims, the gate's switches and floor).
+The standalone CLI's `--all-tenants` (`qualify_api.hashtags.worker`) reads this same list.
 
 **Who is read: an allowlist, failing closed.** `QUALIFY_HASHTAG_WEEKLY_TENANTS` holds the
 pilot businesses' tenant UUIDs, separated by commas:
@@ -88,7 +90,7 @@ def run_pilot(
     *,
     should_stop: Callable[[], bool],
     env: Mapping[str, str] | None = None,
-    tick: Tick = weekly.run_tick,
+    tick: Tick | None = None,
 ) -> weekly.TickReport:
     """One weekly-read pass over the pilot businesses (see the module docstring). Returns
     `stopped="switch_off"` with the switch off and `stopped=NO_PILOT_TENANTS` with an
@@ -99,7 +101,7 @@ def run_pilot(
     if not tenants:
         logger.info("hashtags.pilot not run: %s names no business", TENANTS_ENV)
         return weekly.TickReport(stopped=NO_PILOT_TENANTS)
-    return tick(tenants, now=now, env=env, should_stop=should_stop)
+    return (tick or weekly.run_tick)(tenants, now=now, env=env, should_stop=should_stop)
 
 
 __all__ = ["NO_PILOT_TENANTS", "TENANTS_ENV", "pilot_tenants", "run_pilot"]

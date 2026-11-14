@@ -41,12 +41,17 @@ A pass, in order:
    (step 7 of `run`), while their CDN links are fresh; a `--tenant` worker (local) runs
    `scoped_run`, which writes no global analysis row and no public R2 object. A stop
    requested while the next run was being picked starts nothing: the run stays `queued`.
-7. **Hashtags** — at start and then every 24 h, when the worker was built with it (only
-   the `--all-tenants` service) and no stop was requested: the weekly TikTok read of the
-   pilot businesses (`qualify_api.hashtags.pilot.run_pilot`, m-25026378, D3). Last, so it
-   never delays a run; anything it raises is logged by type and the worker goes on; it
-   gets the stop signal and checks it between businesses and between hashtags. With
-   `QUALIFY_HASHTAG_WEEKLY_READ` off it reads nothing at all.
+7. **Hashtags** — at start and then every `HASHTAGS_EVERY` (6 h), when the worker was
+   built with it (only the `--all-tenants` service) and no stop was requested: the weekly
+   TikTok read of the pilot businesses (`qualify_api.hashtags.pilot.run_pilot`,
+   m-25026378, D3), on a fresh clock (not the pass's start, which a run may have left
+   minutes behind). Checking several times a day is free: each business is still read at
+   most once a week, and attempted at most once a day after a failure — those guards live
+   in `hashtags.weekly`. Last, so it never delays a run; anything it raises is logged by
+   type and the worker goes on, trying again `HASHTAGS_EVERY` later; a pass cut short by
+   the stop signal (checked between businesses and between hashtags) does not count, so
+   the next pass that is not stopping runs it again. With `QUALIFY_HASHTAG_WEEKLY_READ`
+   off it reads nothing at all.
 
 There is no switch of its own (architect, 2026-11-04): the screen reads only what the
 runs store, so with the worker off every screen would stay empty. What bounds the spend:
@@ -104,6 +109,13 @@ LOG_FAILURE_EVERY_SECONDS = 60.0
 
 RunFn = Callable[[UUID, UUID], reel_runs.RunOutcome]
 
+
+#: How often the weekly hashtag read (step 7) is looked at. Short on purpose: a weekly
+#: cycle checked once a day slips to 8 days when the bookings land after the check's
+#: moment; the spend guards of `hashtags.weekly` make every extra check free.
+HASHTAGS_EVERY = timedelta(hours=6)
+#: `stopped` of a hashtag pass the stop signal cut short (`hashtags.weekly.STOPPING`).
+_HASHTAGS_STOPPING = "stopping"
 
 #: Rows of the shared analysis queue a pass drains (`just reel-analysis-tick`'s `--max`).
 DRAIN_PER_PASS = 1
@@ -220,7 +232,7 @@ class ReelsWorker:
         drain: Callable[[], Any] | None = None,
         drain_max: int = DRAIN_PER_PASS,
         hashtags: Callable[[datetime], Any] | None = None,
-        hashtags_every: timedelta = timedelta(hours=24),
+        hashtags_every: timedelta = HASHTAGS_EVERY,
         max_attempts: int = reel_runs.MAX_ATTEMPTS,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         should_stop: Callable[[], bool] = lambda: False,
@@ -297,24 +309,30 @@ class ReelsWorker:
                 self._failed("purge", report, exc)
         self._drain_analyses(report)
         self._start_runs(report)
-        self._hashtag_chore(now, report)
+        self._hashtag_chore(report)
         return report
 
     # -- 7. hashtags -------------------------------------------------------------------
 
-    def _hashtag_chore(self, now: datetime, report: PassReport) -> None:
-        """The daily weekly-hashtag pass (step 7): at most once per `hashtags_every` in
-        this process, remembered like the purge. Never raises: the reels loop must not
-        suffer for it."""
+    def _hashtag_chore(self, report: PassReport) -> None:
+        """The weekly-hashtag pass (step 7): at most once per `hashtags_every` in this
+        process, remembered like the purge, on a fresh clock. Never raises: the reels loop
+        must not suffer for it. After a failure the next try is `hashtags_every` later
+        (and `hashtags.weekly` holds a business that booked a failed attempt for 24 h); a
+        pass the stop signal cut short does not count as done."""
         if self._hashtags is None or self._should_stop():
             return
+        now = self._now()
         if self._next_hashtags is not None and now < self._next_hashtags:
             return
         self._next_hashtags = now + self.hashtags_every
         try:
             report.hashtags = self._hashtags(now)
-        except Exception as exc:  # noqa: BLE001 — logged by type; tomorrow tries again
+        except Exception as exc:  # noqa: BLE001 — logged by type; retried next interval
             self._failed("hashtags", report, exc)
+            return
+        if getattr(report.hashtags, "stopped", None) == _HASHTAGS_STOPPING:
+            self._next_hashtags = None
 
     # -- 1. schedule -------------------------------------------------------------------
 

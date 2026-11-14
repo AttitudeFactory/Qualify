@@ -12,9 +12,12 @@ rubro's videos carry this week. The worker CLI is `qualify_api.hashtags.worker`.
 same ones the referentes search runs with), in the order they were chosen, the first
 five the catalog would accept (`readable_tag`; a pill it would refuse is skipped and does
 not take a slot). A business without pills is not read: Qualify never guesses a rubro to
-pay for. In production (`--all-tenants`) only the businesses the reels worker treats as
-active are read (`reel_schedule.is_active` over `PostgresReelQueue.opened_brands`, ADR 42
-§2.6). **Known limitation, for the founder to decide before switching this on:** that
+pay for. During the pilot (D3) production reads only the businesses listed in
+`QUALIFY_HASHTAG_WEEKLY_TENANTS` (`hashtags.pilot`), for the reels worker and the CLI's
+`--all-tenants` alike. `run_tick(None)` — unused while the pilot lasts — would read the
+businesses the reels worker treats as active (`reel_schedule.is_active` over
+`PostgresReelQueue.opened_brands`, ADR 42 §2.6). **Known limitation, for the founder to
+decide before opening it to everyone (D3):** that
 gate means exactly «a brand of the business opened the «Ideas para tus reels» screen in
 the last 14 days» — not «the business is a paying, active client». A business that
 publishes every day but never opens that screen is not read; one that opened it once and

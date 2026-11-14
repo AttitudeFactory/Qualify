@@ -1,5 +1,5 @@
 """The weekly hashtag read as a one-business pilot inside the reels worker (m-25026378,
-D3 of `docs/epica-etiquetas-publicaciones.md`): `hashtags.pilot` and the daily chore of
+D3 of `docs/epica-etiquetas-publicaciones.md`): `hashtags.pilot` and the chore of
 `ReelsWorker` (step 7). Offline: a fake ScrapeCreators (`httpx.MockTransport`), the
 in-memory ledger the conftest installs, memory doors — nothing reaches a vendor or a
 database."""
@@ -7,8 +7,9 @@ database."""
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Callable, Sequence
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -16,11 +17,13 @@ import httpx
 import pytest
 
 from qualify_api.hashtags import MemoryHashtagRepository, pilot, weekly
+from qualify_api.hashtags import worker as weekly_worker
 from qualify_api.referentes import worker as cli
 from qualify_api.referentes.reel_queue import MemoryReelQueue
 from qualify_api.referentes.reel_schedule import ScheduledBrand
 from qualify_api.referentes.reel_store import MemoryReelRunStore
-from qualify_api.referentes.reel_worker import ReelsWorker
+from qualify_api.referentes.reel_worker import HASHTAGS_EVERY, ReelsWorker
+from qualify_api.vendors import usage
 
 from .test_hashtag_weekly import Vendor, _ledger
 from .test_referentes_reels_worker import SIX_AM, Clock, Runs, _opened, _ready
@@ -191,7 +194,7 @@ def test_the_stop_signal_ends_the_pass_between_businesses() -> None:
     assert [o.tenant_id for o in report.outcomes] == [PILOT] and source.reads == 1
 
 
-# -- the daily chore inside the reels worker ------------------------------------------------
+# -- the chore inside the reels worker ------------------------------------------------
 
 
 class _Chore:
@@ -226,17 +229,121 @@ def _worker(
     return worker, store
 
 
-def test_the_chore_runs_at_start_then_once_a_day() -> None:
+def test_the_chore_runs_at_start_then_every_six_hours() -> None:
+    assert timedelta(hours=6) == HASHTAGS_EVERY
     clock, chore = Clock(), _Chore()
     worker, _ = _worker(clock, chore)
     worker.pass_once(force_schedule=True)
-    for minutes in (1, 60, 23 * 60 + 59):
+    for minutes in (1, 60, 5 * 60 + 59):
         clock.now = SIX_AM + timedelta(minutes=minutes)
         assert worker.pass_once().hashtags is None
     assert chore.calls == [SIX_AM]
-    clock.now = SIX_AM + timedelta(hours=24)
+    clock.now = SIX_AM + timedelta(hours=6)
     assert worker.pass_once().hashtags is not None
-    assert chore.calls == [SIX_AM, SIX_AM + timedelta(hours=24)]
+    assert chore.calls == [SIX_AM, SIX_AM + timedelta(hours=6)]
+
+
+def test_the_chore_gets_a_fresh_clock_not_the_pass_start() -> None:
+    clock, chore = Clock(), _Chore()
+
+    def slow_drain() -> None:
+        clock.now += timedelta(minutes=10)  # a run or a download took 10 minutes
+
+    store = MemoryReelRunStore()
+    worker = ReelsWorker(
+        MemoryReelQueue(store),
+        store,
+        run=Runs(),
+        ready=_ready,
+        clock=clock,
+        hashtags=chore,
+        drain=slow_drain,
+    )
+    assert worker.pass_once(force_schedule=True).started_at == SIX_AM
+    assert chore.calls == [SIX_AM + timedelta(minutes=10)]
+
+
+def test_a_pass_cut_by_the_stop_signal_does_not_count_as_done() -> None:
+    clock = Clock()
+    calls: list[datetime] = []
+
+    def chore(now: datetime) -> weekly.TickReport:
+        calls.append(now)
+        return weekly.TickReport(stopped=weekly.STOPPING if len(calls) == 1 else None)
+
+    worker, _ = _worker(clock, chore)
+    worker.pass_once(force_schedule=True)
+    clock.now += timedelta(minutes=1)
+    worker.pass_once()  # the process kept running: the cut pass is run again
+    clock.now += timedelta(minutes=1)
+    worker.pass_once()  # done now: not again before six hours
+    assert calls == [SIX_AM, SIX_AM + timedelta(minutes=1)]
+
+
+SIM_START = datetime(2030, 3, 4, 0, 0, tzinfo=UTC)
+
+
+def _simulate(
+    monkeypatch: pytest.MonkeyPatch, hours: int, *, restart_every: int | None = None
+) -> tuple[list[int], Vendor]:
+    """`hours` hourly passes of the production chore over the real weekly pass; every
+    pass first spends 10 minutes (a reel run), so the bookings land 10 minutes after
+    the pass's start. `restart_every`: a new process every that many hours."""
+    clock = Clock(SIM_START)
+
+    class _Now(datetime):
+        @classmethod
+        def now(cls, tz: Any = None) -> datetime:  # type: ignore[override]
+            return clock.now
+
+    monkeypatch.setattr(usage, "datetime", _Now)  # the ledger stamps simulated time
+    vendor = Vendor()
+    tick = _real_tick(vendor, _Source(_NoQueue(), {PILOT: _rubro(PILOT, "uno", "dos")}))
+    env = {**ON, pilot.TENANTS_ENV: str(PILOT)}
+
+    def chore(now: datetime) -> weekly.TickReport:
+        return pilot.run_pilot(now, should_stop=_no_stop, env=env, tick=tick)
+
+    def slow_drain() -> None:
+        clock.now += timedelta(minutes=10)
+
+    def build() -> ReelsWorker:
+        store = MemoryReelRunStore()
+        return ReelsWorker(
+            MemoryReelQueue(store),
+            store,
+            run=Runs(),
+            ready=_ready,
+            clock=clock,
+            hashtags=chore,
+            drain=slow_drain,
+        )
+
+    worker, days = build(), []
+    for hour in range(hours):
+        if restart_every and hour and hour % restart_every == 0:
+            worker = build()
+        clock.now = SIM_START + timedelta(hours=hour)
+        before = len(vendor.requests)
+        worker.pass_once()
+        if len(vendor.requests) > before:
+            days.append(hour // 24)
+    return days, vendor
+
+
+def test_a_ten_minute_booking_lag_still_reads_on_days_0_7_and_14(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    days, vendor = _simulate(monkeypatch, 15 * 24)
+    assert days == [0, 7, 14]
+    assert len(vendor.requests) == 6  # two tags, three weeks
+    events = [e for e in _ledger().of(PILOT) if e.feature == "hashtag_weekly"]
+    assert len(events) == 6
+
+
+def test_restarts_are_still_free(monkeypatch: pytest.MonkeyPatch) -> None:
+    days, vendor = _simulate(monkeypatch, 8 * 24, restart_every=2)  # a deploy every 2 h
+    assert days == [0, 7] and len(vendor.requests) == 4
 
 
 def test_a_failing_chore_leaves_the_reels_loop_running() -> None:
@@ -287,6 +394,53 @@ def test_with_the_switch_off_the_chore_reads_nothing(monkeypatch: pytest.MonkeyP
     worker, _ = _worker(clock, cli._hashtag_chore(_no_stop))
     report = worker.pass_once(force_schedule=True)
     assert report.errors == [] and report.hashtags.stopped == "switch_off"
+
+
+# -- the standalone CLI honours the allowlist too -------------------------------------------
+
+
+def _recording_run_tick(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[Sequence[UUID] | None]:
+    seen: list[Sequence[UUID] | None] = []
+
+    def run_tick(ids: Sequence[UUID] | None, **_: Any) -> weekly.TickReport:
+        seen.append(list(ids) if ids is not None else None)
+        return weekly.TickReport()
+
+    monkeypatch.setattr(weekly, "run_tick", run_tick)
+    monkeypatch.setenv(weekly.SWITCH_ENV, "1")
+    return seen
+
+
+@pytest.mark.parametrize("listed", [None, "", "typo"])
+def test_cli_all_tenants_with_an_empty_list_reads_nobody(
+    monkeypatch: pytest.MonkeyPatch, listed: str | None
+) -> None:
+    seen = _recording_run_tick(monkeypatch)
+    if listed is None:
+        monkeypatch.delenv(pilot.TENANTS_ENV, raising=False)
+    else:
+        monkeypatch.setenv(pilot.TENANTS_ENV, listed)
+    tick = weekly_worker.default_tick(threading.Event())
+    assert weekly_worker.main(["--all-tenants", "--once"], tick=tick) == 0
+    assert seen == []
+
+
+def test_cli_all_tenants_reads_only_the_listed_tenant(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = _recording_run_tick(monkeypatch)
+    monkeypatch.setenv(pilot.TENANTS_ENV, str(PILOT))
+    tick = weekly_worker.default_tick(threading.Event())
+    assert weekly_worker.main(["--all-tenants", "--once"], tick=tick) == 0
+    assert seen == [[PILOT]]
+
+
+def test_cli_tenant_stays_an_explicit_one_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = _recording_run_tick(monkeypatch)
+    monkeypatch.delenv(pilot.TENANTS_ENV, raising=False)  # not listed, still read
+    tick = weekly_worker.default_tick(threading.Event())
+    assert weekly_worker.main(["--tenant", str(OTHER), "--once"], tick=tick) == 0
+    assert seen == [[OTHER]]
 
 
 def test_only_the_all_tenants_service_runs_the_chore() -> None:

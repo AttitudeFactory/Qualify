@@ -8,9 +8,10 @@ Scope is MANDATORY and explicit, like every worker here:
 - `--tenant <uuid>` (repeatable): exactly those businesses. Use it locally — with
   `QUALIFY_HASHTAG_WEEKLY_READ=1` a pass PAYS ScrapeCreators FOR REAL (one credit per
   hashtag read; `QUALIFY_SCRAPECREATORS_PAID=0` makes the gate refuse every read).
-- `--all-tenants`: the production scope — every ACTIVE business (a brand opened in the
-  last 14 days), read through the reels worker's own door (`PostgresReelQueue`), so the
-  process needs `QUALIFY_REELS_WORKER_DSN` like the reels worker.
+- `--all-tenants`: the production scope — while the pilot allowlist exists (D3,
+  `hashtags.pilot`), «all tenants» means «all LISTED tenants»: only the businesses in
+  `QUALIFY_HASHTAG_WEEKLY_TENANTS`, and an empty list reads nobody. The same list the
+  reels worker reads, so running this by hand inside `reels-worker` cannot widen it.
 
 Modes: `--once` runs one pass and exits (0, or 1 when a business failed, the vendor key
 is missing or a global gate refusal stopped the pass); by default a pass every
@@ -27,11 +28,12 @@ import logging
 import signal
 import threading
 from collections.abc import Callable, Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from types import FrameType
 from uuid import UUID
 
-from qualify_api.hashtags import weekly
+from qualify_api.hashtags import pilot, weekly
 
 logger = logging.getLogger("qualify_api.hashtags.worker")
 
@@ -56,9 +58,9 @@ def run_loop(
         except Exception:  # noqa: BLE001 - logged; the loop goes on
             logger.exception("hashtags.worker.pass_failed")
         if once:
-            # a switch turned off on purpose is not a failure; a missing key or a gate
-            # refusal (floor, 402) is
-            deliberate = (None, "switch_off", "paid_off")
+            # a switch turned off on purpose, an empty pilot list or a stop is not a
+            # failure; a missing key or a gate refusal (floor, 402) is
+            deliberate = (None, "switch_off", "paid_off", pilot.NO_PILOT_TENANTS, weekly.STOPPING)
             failed = report is None or report.errors > 0 or report.stopped not in deliberate
             return 1 if failed else 0
         if stop.wait(interval):
@@ -88,7 +90,11 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="UUID",
         help="Only this tenant (repeatable). Use this locally.",
     )
-    scope.add_argument("--all-tenants", action="store_true", help="Every tenant (production).")
+    scope.add_argument(
+        "--all-tenants",
+        action="store_true",
+        help=f"Every tenant listed in {pilot.TENANTS_ENV} (production pilot; empty = nobody).",
+    )
     parser.add_argument("--once", action="store_true", help="Run one pass and exit.")
     parser.add_argument(
         "--interval",
@@ -98,6 +104,18 @@ def build_parser() -> argparse.ArgumentParser:
         f"minimum {MIN_INTERVAL_SECONDS:g}).",
     )
     return parser
+
+
+def default_tick(stop: threading.Event) -> Tick:
+    """`--tenant` ids go straight to `weekly.run_tick`; `--all-tenants` (None) reads the
+    pilot allowlist (`pilot.run_pilot`): empty = nobody."""
+
+    def tick(ids: Sequence[UUID] | None) -> weekly.TickReport:
+        if ids is None:
+            return pilot.run_pilot(datetime.now(UTC), should_stop=stop.is_set)
+        return weekly.run_tick(ids, should_stop=stop.is_set)
+
+    return tick
 
 
 def main(argv: Sequence[str] | None = None, *, tick: Tick | None = None) -> int:
@@ -123,7 +141,7 @@ def main(argv: Sequence[str] | None = None, *, tick: Tick | None = None) -> int:
         args.interval,
     )
     code = run_loop(
-        tick or (lambda ids: weekly.run_tick(ids)),
+        tick or default_tick(stop),
         scope,
         once=args.once,
         interval=args.interval,
