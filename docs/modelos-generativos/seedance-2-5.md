@@ -168,7 +168,7 @@ despliegue y corra una semana; se anotan aquí como SD25-003 (borrador y final d
 - **Lo que no se sabe [H] y cómo lo cubre el código:**
   1. *¿`extend` acepta `draft: true`?* Interruptor `QUALIFY_PARTS_EXTEND` (`off` por
      omisión, `draft` para activarlo). Apagado, nada crea ni manda una parte `extend`: el
-     plan la rechaza con «Todavía no podemos crear una parte que siga a la anterior» y la
+     plan la rechaza con «Por ahora no podemos crear una parte que siga a la anterior» y la
      pantalla muestra la opción desactivada. Si la prueba muestra que no acepta borrador,
      se queda apagado (nunca se pasa a un final sin vista previa).
   2. *¿Devuelve solo el tramo nuevo o el video entero?* `QUALIFY_SEEDANCE_EXTEND_OUTPUT`

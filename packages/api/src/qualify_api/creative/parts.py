@@ -108,8 +108,8 @@ PARENT_TEXT_CAP_TEXT = (
 PARTS_NEED_TEXT_TEXT = "Espera a que esté listo el texto de tu video para crear sus partes."
 PARTS_UNAVAILABLE_TEXT = "Por ahora no podemos crear las partes de tu video. Inténtalo más tarde."
 PARTS_EXTEND_UNAVAILABLE_TEXT = (
-    "Todavía no podemos crear una parte que siga a la anterior. "
-    "Hazla nueva antes de crear el video."
+    "Por ahora no podemos crear una parte que siga a la anterior. "
+    "Ábrela y elige otra forma antes de crear el video."
 )
 PARTS_OVER_BUDGET_TEXT = (
     "No pudimos crear las partes: tu negocio llegó a su límite de este mes. "

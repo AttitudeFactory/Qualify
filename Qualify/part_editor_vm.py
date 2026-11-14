@@ -28,8 +28,8 @@ EXTEND_FIRST_REASON = "La primera parte no tiene una anterior."
 #: VE-13: only a part the plan split from one long take of the original continues the
 #: part before it (`parts_plan._editable_match`: a part born another way never may).
 EXTEND_SPLIT_ONLY_REASON = (
-    "Solo sirve cuando una escena larga del video original quedó partida en dos. "
-    "Para esta parte, elige otra forma."
+    "Solo se puede cuando esta parte y la anterior eran un mismo momento del video "
+    "original. Elige otra forma."
 )
 MORE_LABEL = "Video o audio tuyo"
 SHEET_HELP = "Cambia solo esta parte; las demás quedan igual."
