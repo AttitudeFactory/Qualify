@@ -62,6 +62,7 @@ from qualify_creative.video._source import (
     probe,
 )
 from qualify_creative.video.cut import WINDOW_X264, _decode_from
+from qualify_creative.video.upright import turn_pixels
 
 #: The vertical frame every prepared video fits into, never grown past it.
 TARGET_SIZE: tuple[int, int] = (1080, 1920)
@@ -422,7 +423,6 @@ def apply_prepare(
     source, repeated or thinned where a variable-rate one is slower or faster (`_encode`).
     `speed` is EF-04's, not applied here. Raises `PrepareRejected` / `VideoSourceError`."""
     import av  # noqa: PLC0415 — lazy, like every PyAV use in this package
-    import numpy as np  # noqa: PLC0415
 
     out_path = os.fspath(out)
     folder, name = os.path.split(out_path)
@@ -436,9 +436,7 @@ def apply_prepare(
         with open_video(source) as (container, stream):
             _bound(stream.codec_context, threads)
             try:
-                frames, coverage = _encode(
-                    av, np, container, stream, timeline, plan, partial, threads
-                )
+                frames, coverage = _encode(av, container, stream, timeline, plan, partial, threads)
             except av.error.FFmpegError as error:
                 # the decode surfaces its own errors (`decoded`): this is the writing
                 raise PrepareRejected(
@@ -479,7 +477,6 @@ def prepared_frame(source: str | os.PathLike[str], plan: PreparePlan, at_s: floa
     BT.709 `yuv420p` picture `apply_prepare` encodes, so the thumbnail's colours are the
     video's. Seeks to the keyframe before `at_s` and decodes from there only."""
     import av  # noqa: PLC0415
-    import numpy as np  # noqa: PLC0415
 
     if not (-_EPSILON <= at_s <= plan.source.duration_s + _EPSILON):
         raise PrepareRejected(
@@ -503,7 +500,7 @@ def prepared_frame(source: str | os.PathLike[str], plan: PreparePlan, at_s: floa
             held = frame
         if held is None:
             raise PrepareRejected("time_out_of_range", f"no frame at {at_s} s")
-        picture = _Shaper(av, np, plan, PREPARE_THREADS)(held)
+        picture = _Shaper(av, plan, PREPARE_THREADS)(held)
         return picture.to_ndarray(format="rgb24", src_colorspace="ITU709", src_color_range="MPEG")
 
 
@@ -664,8 +661,8 @@ class _Shaper:
     swscale pass with the source's own matrix and range, turn, then RGB → `yuv420p` limited
     BT.709. The only full-size arrays are the output's (1080×1920 at most)."""
 
-    def __init__(self, av: Any, np: Any, plan: PreparePlan, threads: int) -> None:
-        self._av, self._np, self._plan, self._threads = av, np, plan, threads
+    def __init__(self, av: Any, plan: PreparePlan, threads: int) -> None:
+        self._av, self._plan, self._threads = av, plan, threads
         self._crop = _stored_crop(plan)
         turned = plan.turn in (90, 270)
         self._scaled = (plan.height, plan.width) if turned else (plan.width, plan.height)
@@ -685,15 +682,11 @@ class _Shaper:
             interpolation="BICUBIC",
             threads=self._threads,
         ).to_ndarray()
-        # EF-01: `cut._upright` is the straightener EF-01 is unifying; it is not called
-        # here because its turned path goes RGB → `yuv420p` with swscale's defaults (BT.601
-        # matrix, range unset), which breaks this output's BT.709 tag, and it turns the
-        # whole stored picture (a 4K RGB copy). The turn uses its mechanism (`np.rot90`,
-        # counter-clockwise), once, for the display rotation AND the asked turn together,
-        # on the already cropped and scaled picture — swap in EF-01's straightener when it
-        # lands.
+        # the shared turn (`upright.turn_pixels`), once for the display rotation AND the
+        # asked turn, on the already cropped and scaled RGB — not `upright_frame`, which
+        # would turn the whole stored picture before the crop
         if self._plan.turn:
-            pixels = self._np.ascontiguousarray(self._np.rot90(pixels, k=self._plan.turn // 90))
+            pixels = turn_pixels(pixels, self._plan.turn)
         picture = self._av.VideoFrame.from_ndarray(pixels, format="rgb24")
         return picture.reformat(
             format="yuv420p",
@@ -731,7 +724,6 @@ class _Shaper:
 
 def _encode(
     av: Any,
-    np: Any,
     container: Any,
     stream: Any,
     timeline: Timeline,
@@ -754,7 +746,7 @@ def _encode(
     start, end = plan.start_s, plan.end_s
     last_tick = end - half_frame
     frames = 0
-    shape = _Shaper(av, np, plan, threads)
+    shape = _Shaper(av, plan, threads)
     held: Any = None
     first_s: float | None = None
     held_s = 0.0
