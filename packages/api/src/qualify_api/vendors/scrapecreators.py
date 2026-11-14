@@ -183,10 +183,14 @@ FEATURE_TRENDING = "trending"
 #: these two inside the business's R5 cap (migration 0125 widens the CHECK to nine).
 FEATURE_CREATOR_PROFILE = "creator_profile"
 FEATURE_CREATOR_REELS = "creator_reels"
+#: The weekly TikTok read per hashtag of a business's rubro (m-25026378,
+#: `qualify_api.hashtags.weekly`; migration 0167 widens the CHECK to ten).
+FEATURE_HASHTAG_WEEKLY = "hashtag_weekly"
 FEATURES = frozenset(
     {
         FEATURE_CREATOR_PROFILE,
         FEATURE_CREATOR_REELS,
+        FEATURE_HASHTAG_WEEKLY,
         FEATURE_PROFILE,
         FEATURE_REELS_LIST,
         FEATURE_REELS_TRANSCRIPT,
