@@ -12,6 +12,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 import pytest
+from qualify_api.whatsapp.chats import WindowView
 
 from . import chat_thread, conversations_page, whatsapp_tab_chats
 from .chat_thread_vm import (
@@ -30,7 +31,7 @@ from .chat_thread_vm import (
 from .test_whatsapp_chats_payments import gw  # noqa: F401 — the fake gateway fixture
 from .whatsapp_chats_state import WhatsAppChatsState
 from .whatsapp_chats_vm import (
-    WINDOW_CLOSED_PILL,
+    WINDOW_CLOSED_LINE,
     AgentVM,
     OrderCardVM,
     PaymentVM,
@@ -61,9 +62,23 @@ def test_the_state_counts_the_people_with_access() -> None:
 
 
 def test_the_menu_keeps_todays_words() -> None:
-    """m-25026457 chose «Cerrar» / «Reabrir»; the ticket's «Cerrar chat» is not applied."""
+    """m-25026457 chose «Cerrar» / «Reabrir»; the ticket's «Cerrar chat» is not applied.
+    Both menus draw them, and «Ajustes de este canal»."""
     assert (CLOSE_LABEL, REOPEN_LABEL) == ("Cerrar", "Reabrir")
-    assert SETTINGS_LABEL == "Ajustes de este canal"
+    for menu in (whatsapp_tab_chats._more_menu(), conversations_page._more_menu()):
+        rendered = str(menu)
+        assert '"Cerrar"' in rendered and '"Reabrir"' in rendered
+        assert "Cerrar chat" not in rendered
+        assert SETTINGS_LABEL in rendered
+
+
+def test_whatsapp_settings_go_to_the_automatic_reply() -> None:
+    """Until «Ajustes de chats» exists (m-25017861): WhatsApp's own automatic reply."""
+    from .chat_thread_vm import WHATSAPP_SETTINGS_HREF
+    from .whatsapp_vm import TAB_MENU, resolve_panel
+
+    assert WHATSAPP_SETTINGS_HREF == "/whatsapp?tab=respuesta"
+    assert resolve_panel("respuesta") == TAB_MENU
 
 
 # --- the header's window line ---------------------------------------------------------------
@@ -158,13 +173,19 @@ def test_order_strip_label_reads_items_total_and_payment() -> None:
         == "Pedido · 3 productos · COP 45.000 · Pago por revisar"
     )
     assert order_strip_label("1 producto", "COP 9.000") == "Pedido · 1 producto · COP 9.000"
+    assert (
+        order_strip_label("3 productos", "COP 45.000", "Pago por revisar", payment_in_header=True)
+        == "Pedido · 3 productos · COP 45.000"
+    )
 
 
-def test_the_state_folds_the_order_with_its_payment() -> None:
+def test_the_state_folds_the_order_and_leaves_the_payment_to_the_header() -> None:
     state = WhatsAppChatsState()
     state.order = OrderCardVM(present=True, items_label="2 productos", total_label="COP 20.000")
+    assert state.order_strip_label == "Pedido · 2 productos · COP 20.000"  # no payment yet
     state.payment = PaymentVM(present=True, label="Pago recibido", tone="ok")
-    assert state.order_strip_label == "Pedido · 2 productos · COP 20.000 · Pago recibido"
+    # the header shows «Pago recibido» as a pill right above: not said twice
+    assert state.order_strip_label == "Pedido · 2 productos · COP 20.000"
 
 
 def test_the_order_card_opens_inside_the_strip_unchanged() -> None:
@@ -252,8 +273,27 @@ def test_the_status_mark_has_its_word_and_no_inline_colour() -> None:
     assert MORE_ACTIONS_LABEL == "Más acciones de este chat"
 
 
-def test_no_channel_says_window_closed_twice() -> None:
-    assert WINDOW_CLOSED_PILL == "Solo con mensaje aprobado"
+def test_a_closed_window_is_said_once_per_channel() -> None:
+    """WhatsApp's header says what is left (an approved message, by WhatsApp);
+    Instagram's says nothing — its pill and its composer already do."""
+    from .conversations_vm import build_thread_row as ig_build
+    from .test_conversations_vm import NOW as IG_NOW
+    from .test_conversations_vm import ZONE as IG_ZONE
+    from .test_conversations_vm import _thread as ig_thread
+    from .test_conversations_vm import _view as ig_view
+    from .test_whatsapp_chats import _thread as wa_thread
+    from .whatsapp_chats_vm import build_thread_row as wa_build
+
+    closed = WindowView(open=False, closes_at=None)
+    wa = wa_build(wa_thread(window=closed), now=NOW, zone=ZONE)
+    assert (wa.window_line, wa.window_line_tone) == (WINDOW_CLOSED_LINE, "neutral")
+    assert WINDOW_CLOSED_LINE.endswith("aprobado por WhatsApp")
+    old = ig_thread(inbound=IG_NOW - timedelta(days=2), outbound=None)
+    ig = ig_build(ig_view(old), None, now=IG_NOW, zone=IG_ZONE)
+    assert not ig.window_open and ig.window_line == ""
+    # no message of the person left (m-25018661): no window to state either
+    gone = ig_thread(inbound=None, outbound=IG_NOW - timedelta(hours=1))
+    assert ig_build(ig_view(gone), None, now=IG_NOW, zone=IG_ZONE).window_line == ""
 
 
 # --- the business's zone reaches a chat opened by its address ------------------------------

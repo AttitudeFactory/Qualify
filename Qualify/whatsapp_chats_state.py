@@ -687,7 +687,13 @@ class WhatsAppChatsState(rx.State):
     def order_strip_label(self) -> str:
         """m-25027371: the folded order — «Pedido · 3 productos · COP 45.000 · Pago por
         revisar»."""
-        return order_strip_label(self.order.items_label, self.order.total_label, self.payment.label)
+        # the header shows the payment pill whenever there is a label
+        return order_strip_label(
+            self.order.items_label,
+            self.order.total_label,
+            self.payment.label,
+            payment_in_header=self.payment.label != "",
+        )
 
     @rx.var
     def can_compose(self) -> bool:

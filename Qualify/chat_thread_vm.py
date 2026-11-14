@@ -26,6 +26,7 @@ from .chat_row_vm import (
     reply_soon_pill,
 )
 from .ui.tokens import platform_scale
+from .whatsapp_vm import TAB_MENU, tab_url
 
 # ======================================================================================
 # Words
@@ -74,7 +75,7 @@ BUBBLE_LINK_HIGH_CONTRAST: Final = True
 #: WhatsApp, the automatic reply — what the owner wants to fix when the menu answered
 #: wrong (D1's reason). Instagram's own setting today is «Preguntas iniciales», which the
 #: page opens in its drawer (no route).
-WHATSAPP_SETTINGS_HREF: Final = "/whatsapp?tab=respuesta"
+WHATSAPP_SETTINGS_HREF: Final = tab_url(TAB_MENU)
 
 
 # ======================================================================================
@@ -169,10 +170,19 @@ def mark_days[T](
 # ======================================================================================
 
 
-def order_strip_label(items_label: str, total_label: str, payment_label: str = "") -> str:
+def order_strip_label(
+    items_label: str,
+    total_label: str,
+    payment_label: str = "",
+    *,
+    payment_in_header: bool = False,
+) -> str:
     """«Pedido · 3 productos · COP 45.000 · Pago por revisar» — the folded order. Empty
-    parts are left out (an order with no payment yet has no payment part)."""
-    parts = [ORDER_STRIP_WORD, items_label, total_label, payment_label]
+    parts are left out (an order with no payment yet has no payment part), and so is the
+    payment when the header right above already shows it as a pill (review of
+    m-25027371: said twice in a row, and two lines at 360 px)."""
+    payment = "" if payment_in_header else payment_label
+    parts = [ORDER_STRIP_WORD, items_label, total_label, payment]
     return " · ".join(p.strip() for p in parts if p and p.strip())
 
 

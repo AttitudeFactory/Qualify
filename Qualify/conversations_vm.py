@@ -27,7 +27,7 @@ What this module words, and never re-derives:
   «Visto». Instagram exposes no «delivered», so there is none to word;
 - the **counterpart's identity** is the thread's profile (name, handle, picture — the
   User Profile API, refreshed by the sync); without one, the handle of their latest
-  message, then initials over a stable hue.
+  message, then its initials.
 
 **Media.** An inbound attachment renders from the channel's CDN URL (`media_url`); an
 outbound one from the R2 object Qualify sent, through the `/r2media/<token>` path the
@@ -327,15 +327,6 @@ def initials_of(handle: str, fallback_id: str = "") -> str:
     if len(words) == 1:
         return words[0][:1].upper()
     return (words[0][0] + words[-1][0]).upper()
-
-
-def avatar_hue(seed: str) -> int:
-    """A stable hue (0-359) for an avatar's gradient — data, not a colour literal: the
-    page hands it to the stylesheet as a CSS variable and the kit's own palette paints."""
-    total = 0
-    for i, ch in enumerate(seed or "?"):
-        total = (total * 31 + ord(ch) * (i + 7)) % 100003
-    return total % 360
 
 
 # ======================================================================================
@@ -645,7 +636,6 @@ class ThreadRowVM:
     window_open: bool
     is_closed: bool
     initials: str
-    hue: int
     avatar_url: str = ""
     # Set for ONE render after a refresh found a newer inbound: the row pulses.
     fresh: bool = False
@@ -677,7 +667,6 @@ EMPTY_THREAD = ThreadRowVM(
     window_open=False,
     is_closed=False,
     initials="?",
-    hue=0,
 )
 
 
@@ -795,7 +784,6 @@ def build_thread_row(
         window_open=view.window.is_open,
         is_closed=thread.status == "closed",
         initials=initials_of(name or username, thread.counterpart_external_id),
-        hue=avatar_hue(thread.counterpart_external_id),
         avatar_url=avatar_url,
         fresh=fresh,
         window_minutes=minutes_left(view.window.is_open, view.window.closes_at, now),

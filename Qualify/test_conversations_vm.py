@@ -54,7 +54,6 @@ from .conversations_vm import (
     ThreadExtra,
     ThreadRowVM,
     UnsentItem,
-    avatar_hue,
     build_access_vm,
     build_account_vm,
     build_conversation,
@@ -226,15 +225,12 @@ def test_account_label_never_doubles_the_at_and_names_the_channel() -> None:
 # --- identity -----------------------------------------------------------------------------
 
 
-def test_initials_and_hue_are_stable_data() -> None:
+def test_initials_are_stable_data() -> None:
     assert initials_of("@alice.compras") == "AC"
     assert initials_of("@yesii_roa") == "YR"
     assert initials_of("@maria") == "M"
     assert initials_of("", "igsid-98765") == "5"
     assert initials_of("", "") == "?"
-    assert 0 <= avatar_hue("igsid-123456") < 360
-    assert avatar_hue("igsid-123456") == avatar_hue("igsid-123456")
-    assert avatar_hue("a") != avatar_hue("b")
 
 
 # --- access banner ------------------------------------------------------------------------
@@ -384,7 +380,7 @@ def test_row_words_attention_window_preview_and_identity() -> None:
         account_label="@qualifymkt.co",
     )
     assert row.title == "@alice" and row.handle == "" and row.initials == "A"
-    assert row.hue == avatar_hue("igsid-123456") and row.avatar_url == ""
+    assert row.avatar_url == ""
     assert row.subtitle == "@qualifymkt.co · Instagram Direct"
     assert row.preview == "¿tienen talla M?" and row.preview_icon == ""
     assert (row.attention, row.attention_label, row.attention_tone) == (
