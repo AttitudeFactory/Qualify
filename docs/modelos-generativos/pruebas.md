@@ -22,6 +22,41 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
 
 ---
 
+<a id="ext-001"></a>
+
+## EXT-001 — Seedance 2.5 `extend` («Sigue a la anterior») en borrador: primera prueba en vivo (m-24880328) — 2026-11-14
+
+**Resultado: `extend` acepta `draft: true` y devuelve solo el tramo nuevo.** `QUALIFY_SEEDANCE_EXTEND_OUTPUT` pasa a `segment` por omisión; una salida que mida como entrada + pedido se registra como `creative.extend.unexpected_whole` y se trata como `whole`. El interruptor `QUALIFY_PARTS_EXTEND` sigue en `off` hasta que se decida encenderlo.
+
+- **Qué se probó:** las tres preguntas abiertas de `extend` en [seedance-2-5.md](seedance-2-5.md) (§`extend`) — si acepta borrador, si devuelve el tramo nuevo o el video entero, y qué significa `duration`.
+- **Modelo:** `dreamina-seedance-2-5-260628`, endpoint personalizado de ModelArk (no los preajustes que ceden datos). Borradores a **480p**, 5 s, con audio, `return_last_frame`.
+- **Entradas:** la foto del producto «Super Smash» de Nibbles como `reference_images`.
+  - **Parte 1 «Nueva»:** `omni_reference_task_type: reference`, `ratio: 9:16`, sin video de entrada.
+  - **Parte 2 `extend`:** `omni_reference_task_type: extend`, `ratio: adaptive`, `duration: 5`, y como `reference_video` el MP4 de la parte 1 tal como salió (5,042 s). El prompt empieza por «Extend video @Video1: continue it seamlessly from its last frame…» y pide que una mano levante la hamburguesa.
+- **Arnés:** script fuera del repositorio (`extend-test-scripts/ext_run.py`, carpeta temporal de la sesión): una tarea a la vez, sin repeticiones (se niega a mandar dos veces el mismo paso), tope de **US$1,50** comprobado con la estimación del peor caso antes de cada tarea. Usó la llave de la app (`QUALIFY_BYTEPLUS_ARK_API_KEY`), no la de evaluación, y corrió de día (12:52–13:03, hora de Bogotá), fuera del [horario de evaluaciones con video](#byteplus-llave-y-horario). Nada se escribió en la base, en R2 ni en la carpeta de subidas.
+
+| Tarea | Paso | Tokens (`completion_tokens`) | Tarifa | Costo | Salida | Render |
+|---|---|---|---|---|---|---|
+| `cgt-20261114205252-35pwm` | Parte 1 «Nueva» | 48.437 | 10,70/M (sin video de entrada) | US$0,518276 | 5,042 s | 55 s (`created_at` → `updated_at`); el arnés midió 57 s |
+| `cgt-20261114210137-3ugjk` | Parte 2 `extend` | 96.075 | 6,40/M (con video de entrada) | US$0,614880 | **5,000 s** | 58 s (`created_at` → `updated_at`); el arnés midió 67 s |
+| | **Total** | | | **US$1,133156** | | |
+
+- **`draft: true`:** aceptado. La tarea responde `draft: true`, `resolution: 480p` y `framespersecond: 24`.
+- **Tramo nuevo o video entero:** **solo el tramo nuevo** (`segment`). Se pidieron 5 s y llegaron 5,000 s; `duration` es la duración del tramo nuevo, no la total.
+- **Tokens:** cuadran con la fórmula de SD25-001 sumando la entrada: (5,04 s de entrada + 5 s de salida) × ~9.607 tokens/s ≈ 96.475 estimados frente a 96.075 cobrados. La estimación previa al gasto (`estimate_video_tokens` con `input_video_seconds`) ya calcula así.
+- **`ratio`:** la parte 2 vuelve con `ratio: 240:427`, el del video de entrada (480×854), no `adaptive` ni `9:16`. El código guarda el `ratio` del encargo, así que no rompe nada; queda anotado.
+- **La unión:** el cuadro 0 de la parte 2 se diferencia del último de la parte 1 lo mismo que dos cuadros seguidos (3,0 frente a 3,1 de diferencia media por píxel): no repite ni salta. Las dos partes traen audio, con nivel parecido en la unión (RMS 0,014 → 0,012).
+- **Fidelidad del producto:** ya en la parte 1 el queso se vuelve salsa chorreante, faltan los pepinillos y la cebolla, y al fondo aparece el logo redondo de **otra cadena**. La parte 2 conserva todo eso (lo hereda del video de entrada); el pan crece y aparece la mano que pide el prompt.
+- **Descargas:** ModelArk pidió el MP4 de entrada **dos veces** a la URL pública temporal. La URL de `/public/media/{token}` tiene que aguantar más de una lectura.
+- **Riesgos y lo que no se midió:**
+  - **n = 1.** Una sola pareja de tareas, un producto, una marca.
+  - **El final 1080p de una parte `extend` no se midió.** No se sabe si vuelve a cobrar el video de entrada ni si el contrato (tramo nuevo, `duration`) se mantiene (R10/VE-16). La estimación supone que sí cobra la entrada, para no quedarse corta.
+  - **La fidelidad del producto se degrada desde la parte 1 y `extend` la arrastra:** continuar una parte con el producto alterado propaga el error a la siguiente. Una parte `extend` hereda los defectos de su anterior; rehacer la anterior la deja «Hay que rehacerla».
+  - **Logo de otra cadena al fondo:** el control de marca debería verlo antes de que la pieza llegue al dueño.
+- **Archivos (fuera del repositorio, carpeta temporal de la sesión):** `extend-test/part1.mp4`, `part2.mp4`, `seam-strip.png`, `p1-strip.png`, `p1-task.json`, `p2-task.json`, `ledger.json`.
+
+---
+
 <a id="capa-001"></a>
 
 ## CAPA-001 — Claude escribe la capa de texto viendo la foto base: prueba de humo (m-25017283) — 2026-11-14

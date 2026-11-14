@@ -53,6 +53,7 @@ from sqlalchemy import text
 from qualify_api.creative.draft_mode import DRAFT_FAILED, DRAFT_READY, draft_expired, draft_state
 from qualify_api.creative.fsm import APPROVED, GENERATED
 from qualify_api.creative.media import JPEG, MP4, MediaWrite, owned_by
+from qualify_api.creative.part_extend import extend_offset
 from qualify_api.creative.pipeline import PipelineStore, current_preparation
 
 logger = logging.getLogger(__name__)
@@ -177,6 +178,9 @@ def part_span(params: Mapping[str, Any] | None) -> tuple[float, float | None]:
     from its first frame (`end_s=None`: to its end). Pure.
 
     `reference` / `extend`: asked for `generation_seconds`, keeps the first `seconds`.
+    VE-13: an `extend` part whose vendor returned the WHOLE video (the previous part's
+    file followed by the new stretch, `part.extend.output == "whole"`) keeps only the
+    new stretch, from `part.extend.input_seconds` — never the previous part twice.
     `edit`: the part's own cuts inside its window — `[offset, offset + seconds]` cut to
     `[0, generation_seconds]` (the signed `offset_s` of VE-09). A part without its
     provenance (or a window cut before the part existed, whose offset is unknown) is
@@ -191,6 +195,16 @@ def part_span(params: Mapping[str, Any] | None) -> tuple[float, float | None]:
         return 0.0, None
     whole = generated if generated is not None and generated > 0 else None
     trim_start, trim_end = _number(part.get("trim_start_s")), _number(part.get("trim_end_s"))
+    shift = extend_offset(part)
+    if shift > 0:
+        # VE-13: the vendor handed back the previous part followed by the new stretch:
+        # only the new stretch is kept, so no frame of the previous part shows twice
+        new = whole if whole is not None else seconds
+        if trim_start is not None and trim_end is not None and trim_end - trim_start >= _MIN_SPAN_S:
+            end = min(trim_end, new)
+            if end - trim_start >= _MIN_SPAN_S:
+                return round(shift + max(0.0, trim_start), 3), round(shift + end, 3)
+        return round(shift, 3), round(shift + min(seconds, new), 3)
     if trim_start is not None and trim_end is not None and trim_end - trim_start >= _MIN_SPAN_S:
         if whole is not None:
             trim_end = min(trim_end, whole)
