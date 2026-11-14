@@ -27,9 +27,9 @@ from qualify_api.connections.ad_accounts import (
 )
 from qualify_api.tenancy.acting import current_acting_login, require_acting_member
 
-# The screen cannot choose a chat goal yet: until its PR flips this, a passed check keeps
-# today's notice and `available=False`, while the backend still gets the exact target.
-CHAT_GOAL_ON_SCREEN = False
+# The promotion wizard offers the chat goal (m-24828980 screen): a passed check is available.
+# Turning it off again shows PENDING and `available=False`; the exact target still flows.
+CHAT_GOAL_ON_SCREEN = True
 PENDING = "La creación de anuncios para abrir chats todavía no está habilitada."
 READY = "Puedes preparar un anuncio que abra este chat."
 LINK_GUIDE = (

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -25,6 +25,8 @@ STEP_TITLES = (
 # steps follow the backend's recipe (two files of the piece, explicit text, one country);
 # placements are fixed: 4:5 in the feed, 9:16 in stories and reels.
 PUBLISHED_STEPS = ("source", "destination", "audience", "budget")
+# m-24828980: «Que te escriban» adds two decisions: the chat, then the greeting.
+CHAT_STEPS = ("source", "destination", "channel", "greeting", "audience", "budget")
 IMAGE_STEPS = ("source", "images", "text", "country", "budget")
 # A format with a single file of the piece is not a decision: it is prefilled and
 # skipped (shown in the summary). Covers are prefilled too and change from the summary.
@@ -41,6 +43,8 @@ STEP_TITLE_BY_KEY = dict(zip(PUBLISHED_STEPS, STEP_TITLES, strict=True)) | {
     "story_media": "¿Qué imagen o video lleva tu historia?",
     "story_link": "¿A dónde lleva el botón?",
     "story_audience": "¿Quién la ve?",
+    "channel": "¿Por dónde quieres que te escriban?",
+    "greeting": "Tu saludo",
 }
 UNPUBLISHED_SOURCE_TITLE = "¿Con qué quieres anunciar esta pieza?"
 STORY_REVIEW_TITLE = "Revisa y aprueba"
@@ -134,11 +138,46 @@ EMPTY_SOURCES = (
 )
 
 
+# The chat card's line when it can be chosen (benefit, not the backend's status).
+CHANNEL_DETAILS = {
+    "whatsapp": "Te llega el mensaje a tu WhatsApp.",
+    "instagram_direct": "Te llega el mensaje a tus mensajes de Instagram.",
+}
+# The button Meta shows on a chat ad, per chat (CTA WHATSAPP_MESSAGE / INSTAGRAM_MESSAGE).
+CHAT_BUTTON_LABELS = {
+    "whatsapp": "Enviar mensaje de WhatsApp",
+    "instagram_direct": "Enviar mensaje",
+}
+# What the owner can do about an unavailable WhatsApp, by the backend's `reason_code`.
+CHANNEL_ACTIONS = {
+    "unlinked": "Unir mi WhatsApp",
+    "no_number": "Conectar mi WhatsApp",
+    "several_numbers": "Revisar mis números",
+}
+CHANNELS_FAILED = "No pudimos comprobar tus chats. Vuelve a comprobar en un momento."
+GREETING_SAVE_FAILED = "No pudimos guardar el saludo. Vuelve a intentarlo."
+GREETING_QUESTION_SLOTS = 4
+
+
 @dataclass(frozen=True)
 class MessagingDestinationVM:
     key: str
     label: str
     notice: str
+    available: bool = False
+    reason_code: str = ""
+    # «Unir mi WhatsApp»-style link to Tus redes, by `reason_code`; "" = none.
+    action: str = ""
+
+
+@dataclass(frozen=True)
+class GreetingVM:
+    """The brand's last saved greeting (id "" = never written)."""
+
+    id: str = ""
+    version: int = 0
+    welcome_text: str = ""
+    questions: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -180,6 +219,7 @@ class PromotionSourceVM:
     # Ready (published) forms of this source's account, last used first.
     lead_forms: list[LeadFormChoiceVM] = field(default_factory=list)
     lead_forms_error: str = ""
+    greeting: GreetingVM = field(default_factory=GreetingVM)
     # m-24828982: "" = a published post; "images"/"videos" = the piece's unpublished pair.
     media_kind: str = ""
     feed_media: list[AdMediaVM] = field(default_factory=list)
@@ -195,7 +235,13 @@ class PromotionSourceVM:
 @dataclass(frozen=True)
 class PromotionDraftVM:
     source_id: str = ""
-    goal: str = "visit"  # "visit" (link) or "lead" (Meta form)
+    goal: str = "visit"  # "visit" (link), "lead" (Meta form) or "chat" (m-24828980)
+    channel: str = ""  # "whatsapp" | "instagram_direct" for the chat goal
+    welcome_text: str = ""
+    questions: list[str] = field(default_factory=lambda: [""] * GREETING_QUESTION_SLOTS)
+    # The saved greeting this text IS (cleared on any edit) and the version it was based on.
+    greeting_id: str = ""
+    greeting_version: int = 0
     link_url: str = ""
     lead_form_id: str = ""
     lead_cta: str = "GET_QUOTE"
@@ -378,7 +424,12 @@ def step_keys(draft: PromotionDraftVM) -> tuple[str, ...]:
     if draft.media_kind == "images":
         both_single = draft.single_feed and draft.single_vertical
         return tuple(key for key in IMAGE_STEPS if not (both_single and key == "images"))
-    return PUBLISHED_STEPS
+    return CHAT_STEPS if draft.goal == "chat" else PUBLISHED_STEPS
+
+
+def step_key_at(draft: PromotionDraftVM, step: int) -> str:
+    keys = step_keys(draft)
+    return keys[min(max(step, 1), len(keys)) - 1]
 
 
 def step_count(draft: PromotionDraftVM) -> int:
@@ -455,6 +506,16 @@ def step_problem(draft: PromotionDraftVM, step: int, timezone_name: str = "") ->
         return link_problem(draft.link_url) or text_problem(draft)
     if key == "source":
         return "Elige la publicación que quieres promocionar." if not draft.source_id else ""
+    if key == "destination" and draft.goal == "chat":
+        return ""
+    if key == "channel":
+        return (
+            "" if draft.channel in CHANNEL_DETAILS else "Elige por dónde quieres que te escriban."
+        )
+    if key == "greeting":
+        return greeting_problem(draft) or (
+            "" if draft.greeting_id else "Guarda el saludo antes de continuar."
+        )
     if key == "destination" and draft.goal == "lead":
         if not draft.lead_form_id:
             return "Elige el formulario que llenará la gente."
@@ -494,6 +555,39 @@ def step_problem(draft: PromotionDraftVM, step: int, timezone_name: str = "") ->
         except ValueError as exc:
             return str(exc)
     return ""
+
+
+def greeting_problem(draft: PromotionDraftVM) -> str:
+    """The backend's own rules and words (`messaging_greeting.clean`), before saving."""
+    from qualify_api.ads.messaging_greeting import GreetingUnavailable, clean  # noqa: PLC0415
+
+    try:
+        clean(draft.welcome_text, draft.questions)
+    except GreetingUnavailable as error:
+        return str(error)
+    return ""
+
+
+def greeting_from_saved(draft: PromotionDraftVM, saved: GreetingVM) -> PromotionDraftVM:
+    """Prefill the greeting step with the brand's last saved version (or empty boxes)."""
+    slots = (list(saved.questions) + [""] * GREETING_QUESTION_SLOTS)[:GREETING_QUESTION_SLOTS]
+    return replace(
+        draft,
+        welcome_text=saved.welcome_text,
+        questions=slots,
+        greeting_id=saved.id,
+        greeting_version=saved.version,
+    )
+
+
+def preselect_channel(
+    draft: PromotionDraftVM, options: list[MessagingDestinationVM]
+) -> PromotionDraftVM:
+    """Keep the chosen chat only while it is available; a single available chat is chosen."""
+    available = [row.key for row in options if row.available]
+    if draft.channel in available:
+        return draft
+    return replace(draft, channel=available[0] if len(available) == 1 else "")
 
 
 def first_problem(draft: PromotionDraftVM, timezone_name: str) -> str:

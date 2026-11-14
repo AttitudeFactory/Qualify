@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import reflex as rx
+from qualify_api.ads.messaging_greeting import MAX_QUESTION, MAX_WELCOME
 
 from .ad_health_ui import health_details
 from .promotion_audience_ui import promotion_audience
@@ -24,6 +25,7 @@ from .promotion_unpublished_ui import (
 )
 from .promotion_vm import (
     EMPTY_SOURCES,
+    GREETING_QUESTION_SLOTS,
     LEAD_CTA_LABELS,
     STORY_EMPTY,
     STORY_PLACEMENT,
@@ -262,11 +264,171 @@ def _publication() -> rx.Component:
 
 
 def _messaging_destination(option: MessagingDestinationVM) -> rx.Component:
+    """One chat the ad may open; an unavailable one stays visible, with the backend's
+    reason and, by its `reason_code`, the way to fix it in Tus redes."""
     return rx.vstack(
-        rx.text(option.label, weight="medium"),
-        rx.text(option.notice, size="2", color=T.TEXT_MUTED, overflow_wrap="anywhere"),
+        choice_card(
+            rx.vstack(
+                rx.text(option.label, weight="medium"),
+                rx.text(option.notice, size="2", color=T.TEXT_MUTED, overflow_wrap="anywhere"),
+                spacing="1",
+                align="start",
+                width="100%",
+            ),
+            selected=S.form.channel == option.key,
+            on_select=S.choose_channel(option.key),
+            disabled=S.busy | ~option.available,
+            min_height="44px",
+            width="100%",
+            text_align="left",
+        ),
+        rx.cond(
+            option.action != "",
+            rx.link(
+                option.action,
+                href="/connections",
+                min_height="44px",
+                display="inline-flex",
+                align_items="center",
+            ),
+        ),
         spacing="1",
         align_items="start",
+        width="100%",
+    )
+
+
+def _channel() -> rx.Component:
+    return rx.vstack(
+        rx.vstack(
+            rx.foreach(S.selected_source.messaging_destinations, _messaging_destination),
+            role="radiogroup",
+            aria_label="Por dónde quieres que te escriban",
+            spacing="3",
+            width="100%",
+        ),
+        rx.button(
+            "Volver a comprobar",
+            on_click=S.recheck_destinations,
+            disabled=S.busy | S.loading | S.destinations_working,
+            loading=S.destinations_working,
+            variant="outline",
+            min_height="44px",
+        ),
+        rx.cond(
+            S.destinations_notice != "",
+            rx.text(S.destinations_notice, size="2", color=T.TEXT_MUTED),
+        ),
+        spacing="3",
+        align_items="start",
+        width="100%",
+    )
+
+
+def _question_field(index: int) -> rx.Component:
+    field_id = f"promotion-question-{index}"
+    return rx.vstack(
+        rx.el.label(
+            f"Pregunta {index + 1}" + ("" if index == 0 else " (opcional)"),
+            html_for=field_id,
+            font_weight="500",
+        ),
+        rx.input(
+            id=field_id,
+            value=S.form.questions[index],
+            on_change=lambda text: S.edit_question(index, text),
+            max_length=MAX_QUESTION,
+            disabled=S.busy,
+            placeholder="Ejemplo: ¿Hacen domicilios?" if index == 0 else "",
+            min_height="44px",
+            width="100%",
+        ),
+        spacing="1",
+        width="100%",
+    )
+
+
+def _chat_bubble(text: rx.Var[str], *, mine: bool = False) -> rx.Component:
+    return rx.box(
+        rx.text(text, size="2", white_space="pre-wrap", overflow_wrap="anywhere"),
+        background=T.tone_color("accent", 3) if mine else T.SURFACE_BG,
+        border=T.BORDER,
+        border_radius="14px",
+        padding="8px 12px",
+        max_width="85%",
+        align_self="end" if mine else "start",
+    )
+
+
+def _greeting_preview() -> rx.Component:
+    questions = S.form.questions
+    return rx.vstack(
+        rx.text("Así lo verá la persona al abrir el chat", size="2", color=T.TEXT_MUTED),
+        rx.vstack(
+            _chat_bubble(S.welcome_preview),
+            *[
+                rx.cond(
+                    questions[index].strip() != "",
+                    _chat_bubble(questions[index], mine=True),
+                )
+                for index in range(GREETING_QUESTION_SLOTS)
+            ],
+            spacing="2",
+            width="100%",
+            padding="12px",
+            border_radius="16px",
+            background=T.CARD_BG,
+        ),
+        rx.text(
+            "Las preguntas son botones: la persona toca una y te llega el mensaje. Tú respondes.",
+            size="2",
+            color=T.TEXT_MUTED,
+        ),
+        spacing="2",
+        width="100%",
+        aria_label="Vista previa del chat",
+    )
+
+
+def _greeting() -> rx.Component:
+    return rx.vstack(
+        card(
+            rx.vstack(
+                rx.el.label(
+                    "Mensaje de bienvenida",
+                    html_for="promotion-welcome",
+                    font_weight="500",
+                ),
+                rx.text_area(
+                    id="promotion-welcome",
+                    value=S.form.welcome_text,
+                    on_change=S.edit_welcome,
+                    max_length=MAX_WELCOME,
+                    disabled=S.busy,
+                    placeholder="Ejemplo: ¡Hola! Gracias por escribirnos. ¿En qué te ayudamos?",
+                    rows="3",
+                    width="100%",
+                ),
+                rx.text(
+                    S.form.welcome_text.length().to_string() + f" de {MAX_WELCOME} caracteres",
+                    size="1",
+                    color=T.TEXT_MUTED,
+                ),
+                rx.heading("Preguntas sugeridas", size="3", as_="h2"),
+                rx.text(
+                    f"Escribe entre 1 y {GREETING_QUESTION_SLOTS}, de hasta {MAX_QUESTION} "
+                    "caracteres cada una.",
+                    size="2",
+                    color=T.TEXT_MUTED,
+                ),
+                *[_question_field(index) for index in range(GREETING_QUESTION_SLOTS)],
+                spacing="3",
+                width="100%",
+            ),
+            width="100%",
+        ),
+        card(_greeting_preview(), width="100%"),
+        spacing="4",
         width="100%",
     )
 
@@ -395,12 +557,23 @@ def _destination() -> rx.Component:
                 S.form.goal == "lead",
                 S.choose_goal("lead"),
             ),
+            _option(
+                "Que te escriban",
+                "Te llega un mensaje y respondes tú.",
+                S.form.goal == "chat",
+                S.choose_goal("chat"),
+            ),
             role="radiogroup",
             aria_label="Qué quieres que haga la gente",
             spacing="3",
             width="100%",
         ),
-        rx.cond(S.form.goal == "lead", _lead_destination(), _link_destination()),
+        rx.match(
+            S.form.goal,
+            ("lead", _lead_destination()),
+            ("chat", rx.fragment()),  # the chat and its greeting are the next two steps
+            _link_destination(),
+        ),
         spacing="4",
         width="100%",
     )
@@ -431,35 +604,6 @@ def _link_destination() -> rx.Component:
                 "Revisa que el enlace lleve a lo que ofreces en esta publicación.",
                 size="2",
                 color=T.TEXT_MUTED,
-            ),
-            rx.cond(
-                S.selected_source.messaging_destinations.length() > 0,
-                rx.vstack(
-                    rx.text("Anuncios que abren un chat", weight="medium"),
-                    rx.text(
-                        "Estos destinos todavía no se pueden elegir aquí. "
-                        "Revisa qué falta para usar los chats de tu negocio.",
-                        size="2",
-                        color=T.TEXT_MUTED,
-                    ),
-                    rx.foreach(S.selected_source.messaging_destinations, _messaging_destination),
-                    rx.button(
-                        "Volver a comprobar destinos",
-                        on_click=S.recheck_destinations,
-                        disabled=S.busy | S.loading | S.destinations_working,
-                        loading=S.destinations_working,
-                        variant="outline",
-                        min_height="44px",
-                    ),
-                    rx.cond(
-                        S.destinations_notice != "",
-                        rx.text(S.destinations_notice, size="2", color=T.TEXT_MUTED),
-                    ),
-                    spacing="3",
-                    align_items="start",
-                    width="100%",
-                ),
-                rx.fragment(),
             ),
             spacing="4",
             width="100%",
@@ -534,9 +678,18 @@ def _review() -> rx.Component:
                     ),
                 ),
                 _fact("Botón", S.button_label),
-                rx.cond(
-                    S.form.goal == "lead",
-                    _fact("Formulario", S.lead_form_label),
+                rx.match(
+                    S.form.goal,
+                    ("lead", _fact("Formulario", S.lead_form_label)),
+                    (
+                        "chat",
+                        rx.vstack(
+                            _fact("Te escriben por", S.channel_label),
+                            _fact("Saludo", S.form.welcome_text),
+                            spacing="3",
+                            width="100%",
+                        ),
+                    ),
                     _fact("Página de destino", S.form.link_url),
                 ),
                 _fact("Lugar de las personas", S.audience_location_label),
@@ -740,6 +893,8 @@ def promotion_index() -> rx.Component:
                     ("story_audience", story_audience()),
                     ("source", _publication()),
                     ("destination", _destination()),
+                    ("channel", _channel()),
+                    ("greeting", _greeting()),
                     ("audience", promotion_audience()),
                     ("images", unpublished_images()),
                     ("feed_video", unpublished_feed_video()),

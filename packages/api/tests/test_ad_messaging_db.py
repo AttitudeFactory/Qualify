@@ -22,7 +22,7 @@ from qualify_api.ads.messaging_attribution import (
 )
 from qualify_api.ads.messaging_destinations import (
     LINK_GUIDE,
-    PENDING,
+    READY,
     UNKNOWN,
     check_messaging_destinations,
 )
@@ -533,9 +533,9 @@ async def test_only_an_exact_page_number_link_offers_whatsapp_with_its_target(me
     assert whatsapp.reason_code == "ready"
     assert instagram.target.destination_type == "INSTAGRAM_DIRECT"
     assert instagram.label == "Mensajes de Instagram"
-    # The screen cannot choose a chat goal yet: today's notice, not offered as available.
-    assert not whatsapp.available and not instagram.available
-    assert whatsapp.reason == PENDING == instagram.reason
+    # The wizard offers the chat goal: an exact link is available with its target.
+    assert whatsapp.available and instagram.available
+    assert whatsapp.reason == READY == instagram.reason
     assert not unlinked[1].available and unlinked[1].target is None
     assert unlinked[1].reason == LINK_GUIDE and unlinked[1].reason_code == "unlinked"
     assert "Meta Business Suite" not in LINK_GUIDE + UNKNOWN
