@@ -105,3 +105,41 @@ reales de clientes; si esta carpeta recibe alguna vez casos reales, `results/` p
   cuando los datos no lo dicen. La barra del nivel sigue siendo la del juez (≥ 0,80).
 - La identidad del prompt de partes se compara con el `merge-base` con `origin/main` (las
   partes ya no parten de la v3.1 de `a6667370`).
+
+## NIVELES-004 (2026-11-13, m-25026509) — clips y video por partes, escrito ANTES de correr
+
+```bash
+just eval-niveles --suite clipidentity                                    # gratis
+just eval-niveles --suite clips --repeat 2 --cap-usd 1.40                 # A
+just eval-niveles --suite clips --leftover --repeat 3 --cap-usd 0.35      # el sobrante
+just eval-niveles --suite partslevel --repeat 2 --cap-usd 0.45            # B
+just eval-niveles --suite clips --levels most_aware,product_aware --repeat 2 --cap-usd 0.55  # C
+```
+
+- **Casos** (`cases_clips.json`): comida, inmobiliaria y viajes. Cada caso es el formulario
+  que manda el flujo de Clip (`_generator_form`): la frase del dueño, un producto del
+  catálogo, su dato «Precio» como lo precarga la pantalla, tipo clip con los medios por
+  defecto (5 s, audio, una foto de referencia). Pasa por `awareness_clips.clip_brief`, un
+  espejo de `Qualify.creative_provider.build_brief` (un test los compara). El precio de
+  viajes (US$180) es **de prueba**: los casos de viajes no traen precio. Brazos: «Sin
+  preferencia» (base) y los cinco niveles.
+- **Base idéntica a main sin llamar:** `clipidentity` comprueba que las fuentes del prompt de
+  copy no difieren de `origin/main` y que un brief sin nivel conserva todo lo que mandó el
+  formulario.
+- **Chequeos deterministas por pieza:** las puertas del copy (`copy_quality.gates`); precio
+  en el copy (`quotes_price`: la etiqueta, su cifra o cualquier monto) en gancho, texto, CTA
+  y tomas; ofertas o servicios inventados (`invented_offers`); la regla del nivel
+  (`level_rule`, con texto y tomas como cuerpo); exactamente 3 tomas, y cuántas siguen
+  siendo filmables (`filmable_shot`: al menos 6 palabras, sin «¡!», «¿?», comillas ni texto
+  en pantalla); palabras del texto (para el largo de most_aware).
+- **El sobrante a propósito:** dos clips unaware con el precio dentro de la frase del dueño
+  («… a 32.900», «… desde 280 millones»). Se cuenta en cuántos el copy lo repite.
+- **Juez:** `juez-niveles-v2` más el agregado de clips (`JUDGE_CLIP_ADDENDUM`,
+  `juez-niveles-v2+clip-v1`): un clip no tiene guion hablado, se juzgan gancho, texto, CTA y
+  las 3 tomas; en most_aware el texto largo cuenta en contra. Partes: el agregado de
+  NIVELES-002 (`juez-niveles-v2+partes-v1`).
+- **Partes (B):** `PartsBrief.awareness_level`, el camino de la app, con el prompt
+  `proponer-partes-v3.4` sobre la v3.2 de main. Base = el mismo caso sin nivel. most_aware no
+  tiene línea en las partes: se compara con la base.
+- **Barra:** la de siempre. Juez ≥ 0,80 y datos inventados ≤ 5 % por nivel; un nivel con
+  n < 8 se reporta «no fiable» por tamaño.

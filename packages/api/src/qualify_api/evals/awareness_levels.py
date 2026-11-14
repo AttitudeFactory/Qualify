@@ -645,7 +645,16 @@ def call_judge(
     """`medium` "video" adds `JUDGE_PARTS_ADDENDUM` to the rubric (a plan of parts never
     shows a figure, by design)."""
     meter = Meter(JUDGE_CONFIG)
-    system = JUDGE_RUBRIC + (JUDGE_PARTS_ADDENDUM if medium == "video" else "")
+    from qualify_api.evals.awareness_clips import (  # noqa: PLC0415 — clips import us
+        JUDGE_CLIP_ADDENDUM,
+        JUDGE_CLIP_VERSION,
+    )
+
+    addendum = {"video": JUDGE_PARTS_ADDENDUM, "clip": JUDGE_CLIP_ADDENDUM}.get(medium, "")
+    system = JUDGE_RUBRIC + addendum
+    version = {"video": JUDGE_PARTS_VERSION, "clip": JUDGE_CLIP_VERSION}.get(
+        medium, JUDGE_PROMPT_VERSION
+    )
     client = client or default_client(api_key)
     response = create_turn(
         client,
@@ -658,7 +667,7 @@ def call_judge(
         max_tokens=JUDGE_MAX_TOKENS,
         attribution=eval_attribution(
             "eval-niveles-juez",
-            prompt_version=JUDGE_PROMPT_VERSION if medium == "idea" else JUDGE_PARTS_VERSION,
+            prompt_version=version,
         ),
     )
     calls = [u for u in tool_uses(response) if u.name == JUDGE_TOOL]
