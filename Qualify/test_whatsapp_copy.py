@@ -25,6 +25,7 @@ from .whatsapp_contacts_vm import source_label
 from .whatsapp_menu_vm import NEXT_STEP_QR
 from .whatsapp_metrics_vm import _PRICING_CATEGORY
 from .whatsapp_templates_vm import CATEGORIES
+from .whatsapp_vm import PROMOTIONS_SUBTITLE, WHATSAPP_SUBTITLE
 
 _SCREEN_FILES = sorted(Path(__file__).parent.glob("whatsapp_*.py"))
 
@@ -108,7 +109,9 @@ def test_screens_use_the_proposed_labels() -> None:
     assert "rate_card_status" not in campaigns
     metrics = inspect.getsource(whatsapp_metrics_block)
     assert '"Cuánto tardas en responder (la mitad de las veces)"' in metrics
-    assert (
-        "Atiende y vende por WhatsApp: tus chats, tu menú automático y tus promociones."
-        in inspect.getsource(whatsapp_page)
+    # m-25017862: the promotions left this screen, so its line no longer promises them.
+    assert WHATSAPP_SUBTITLE == "Atiende por WhatsApp: tus chats, tu menú automático y tu número."
+    assert "WHATSAPP_SUBTITLE" in inspect.getsource(whatsapp_page.whatsapp_header)
+    assert PROMOTIONS_SUBTITLE == (
+        "Envía promociones a los clientes que aceptaron recibirlas y mira cuántos las leyeron."
     )

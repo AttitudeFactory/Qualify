@@ -36,7 +36,8 @@ ATIENDE  (tinte «listen», el de hoy)
   Por responder        (5)       /responder            pestañas: Mensajes · Quieren comprar ·
                                                        Comentarios · WhatsApp · Interesados
   WhatsApp                       /whatsapp             pestañas: Chats · Respuesta automática ·
-                                                       Promociones · Tu número
+                                                       Tu número («Promociones» salió a su
+                                                       propia entrada, D3, m-25017862)
 
 PUBLICA  (tinte «publish», el de hoy)
   Galería                        /catalog              ← primera de Publica (§7 #12)
@@ -46,6 +47,11 @@ PUBLICA  (tinte «publish», el de hoy)
                                                        pestañas: Publicaciones · Stickers y videos
   Tu semana            (1)       /planner
   Publicar ahora                 /publish
+  Anuncios                       /promotions
+  Promociones por WhatsApp       /whatsapp/promociones ← m-25017862 (D3 de ux-chats-unificados):
+                                                       Enviadas · Mensajes aprobados · Clientes
+                                                       que aceptaron; los enlaces viejos
+                                                       /whatsapp?tab=promociones redirigen aquí
 
   Resultados                     /resultados           pestañas: Redes · WhatsApp · Tu página web ·
                                                        Quién habla de ti (hoy Menciones)

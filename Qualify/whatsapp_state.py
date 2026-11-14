@@ -64,6 +64,7 @@ from .whatsapp_vm import (
     EMPTY_PROFILE,
     GRAPH_UNAVAILABLE,
     MAX_QR_MESSAGE_CHARS,
+    PROMOTIONS_ROUTE,
     QR_DEFAULT_CHANNEL,
     SECTION_KEYS,
     SUB_PARAM,
@@ -75,9 +76,12 @@ from .whatsapp_vm import (
     WhatsAppNumberVM,
     compose_qr_message,
     graph_error_notice,
+    legacy_promotions_target,
     needs_help,
+    panel_route,
     panel_section,
     panel_sub,
+    promotions_panel,
     resolve_panel,
     resolve_tab,
     sub_panel,
@@ -276,16 +280,36 @@ class WhatsAppState(rx.State):
     # Shell
     # ==================================================================================
 
-    @rx.event
-    def enter_page(self) -> list[rx.event.EventHandler]:
-        """`/whatsapp` on_load: pick the panel from `?tab=`/`?sub=` and load the numbers.
-        Also runs on «atrás» (a real navigation), so the previous tab comes back."""
-        from .whatsapp_chats_state import WhatsAppChatsState
+    def _read_address(self) -> str | None:
+        """Set the panel from the address, or return where an old address now lives.
 
-        params = self.router.url.query_parameters
+        `/whatsapp/promociones` (m-25017862) shows a promotions panel from `?sub=`;
+        `/whatsapp` reads `?tab=`/`?sub=`, except an old address of a promotions panel,
+        which is answered with its new place (the caller redirects, nothing is set)."""
+        url = self.router.url
+        params = url.query_parameters
+        if url.path.rstrip("/") == PROMOTIONS_ROUTE:
+            self.active_tab = promotions_panel(str(params.get(SUB_PARAM, "") or ""))
+            return None
+        moved = legacy_promotions_target(params)
+        if moved is not None:
+            return moved
         self.active_tab = resolve_panel(
             str(params.get(TAB_PARAM, "") or ""), str(params.get(SUB_PARAM, "") or "")
         )
+        return None
+
+    @rx.event
+    def enter_page(self) -> list[rx.event.EventSpec | rx.event.EventHandler]:
+        """`/whatsapp` and `/whatsapp/promociones` on_load: pick the panel from the
+        address and load the numbers. Also runs on «atrás» (a real navigation), so the
+        previous tab comes back."""
+        from .whatsapp_chats_state import WhatsAppChatsState
+
+        moved = self._read_address()
+        if moved is not None:
+            # m-25017862: «Promociones» left this screen; a bookmark lands on its page.
+            return [rx.redirect(moved, replace=True)]
         # m-25017859: a navigation (not a remount of the Chats section) lets the address
         # decide the Chats chip.
         return [
@@ -328,10 +352,15 @@ class WhatsAppState(rx.State):
 
     @rx.event
     async def enter_history(self, lease: dict) -> list[rx.event.EventSpec | rx.event.EventHandler]:
-        self.enter_page()
+        moved = self._read_address()
+        if moved is not None:
+            return [rx.redirect(moved, replace=True)]
         await self.prepare_flow_address()
         self.history_ack = history_ack_value(lease)
-        return [WhatsAppState.load_numbers, route_history_ready("/whatsapp", lease)]
+        return [
+            WhatsAppState.load_numbers,
+            route_history_ready(panel_route(self.active_tab), lease),
+        ]
 
     @rx.event
     def pop_page(self) -> rx.event.EventSpec:
@@ -360,6 +389,11 @@ class WhatsAppState(rx.State):
     def _show_panel(self, panel: str) -> rx.event.EventSpec | None:
         if panel == self.active_tab:
             return None
+        if panel_route(panel) != panel_route(self.active_tab):
+            # m-25017862: from «Promociones por WhatsApp» to the chats (or back) is a
+            # change of page, so a real navigation: the menu lights the right entry, and
+            # the arriving page's `enter_page` sets the panel (no flash of it here).
+            return rx.redirect(self._panel_address(panel))
         self.active_tab = panel
         # N5: a new history step, so «atrás» returns to the previous tab and reloading
         # keeps this one; `enter_page` reads it back on either.

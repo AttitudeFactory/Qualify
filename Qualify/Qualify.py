@@ -82,7 +82,7 @@ from .tiktok_state import TikTokConnectionsState, TikTokDraftState
 from .upload_route import upload_fallback
 from .variations_state import VariationsState
 from .voice_lab import VoiceLabState
-from .whatsapp_page import whatsapp_index
+from .whatsapp_page import whatsapp_index, whatsapp_promotions_index
 from .whatsapp_state import WhatsAppState
 
 # QUA-99 latency follow-up: this app never configured Python's logging at all before
@@ -335,6 +335,15 @@ app.add_page(
     route="/whatsapp",
     on_load=[AuthState.require_login, WhatsAppState.enter_page],
     title="Qualify · WhatsApp",
+)
+# m-25017862 (D3): «Promociones por WhatsApp», the promotions panels on their own menu
+# entry next to «Anuncios». Same state and loader; `enter_page` reads `?sub=` here, and
+# on `/whatsapp` redirects an old promotions address to this route.
+app.add_page(
+    whatsapp_promotions_index,
+    route="/whatsapp/promociones",
+    on_load=[AuthState.require_login, WhatsAppState.enter_page],
+    title="Qualify · Promociones por WhatsApp",
 )
 app.add_page(
     publish_index,

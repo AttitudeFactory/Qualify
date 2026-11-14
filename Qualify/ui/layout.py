@@ -84,7 +84,8 @@ NAV_ZONES: list[tuple[str, str, list[Item]]] = [
             # One place to answer (founder decision 3): messages, buyers, comments,
             # WhatsApp chats and interested people are tabs of «Por responder».
             ("Por responder", "messages-square", RESPOND_ROUTE, True),
-            # WA-12: the WhatsApp module keeps the auto-reply menu and promotions.
+            # WA-12: the WhatsApp module keeps the auto-reply menu and the number; its
+            # promotions have their own entry in «Publica» (m-25017862).
             ("WhatsApp", "message-circle", "/whatsapp", True),
         ],
     ),
@@ -108,6 +109,9 @@ NAV_ZONES: list[tuple[str, str, list[Item]]] = [
             # QUA-113: Stories is a flow inside Publicar, not an entry of its own.
             ("Publicar ahora", "upload", "/publish", True),
             ("Anuncios", "megaphone", "/promotions", True),
+            # m-25017862 (D3, founder 2026-11-12): WhatsApp's promotions sit next to
+            # «Anuncios» — both reach people who are not writing to you today.
+            ("Promociones por WhatsApp", "badge-percent", "/whatsapp/promociones", True),
         ],
     ),
 ]

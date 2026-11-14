@@ -23,6 +23,7 @@ _PAGE_SOURCE: dict[str, str] = {
     "/resultados": "results_page.py",
     "/connections": "connections_page.py",
     "/whatsapp": "whatsapp_page.py",
+    "/whatsapp/promociones": "whatsapp_page.py",  # m-25017862
     "/inbox": "inbox_page.py",
     "/conversations": "conversations_page.py",
     "/responder": "responder_page.py",

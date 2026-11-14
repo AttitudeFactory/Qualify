@@ -19,7 +19,17 @@ from .inbox_state import InboxState
 from .inbox_vm import ReelSummaryVM, inbox_url
 from .nav_url import push_url_script, replace_url_script, with_query
 from .whatsapp_state import WhatsAppState
-from .whatsapp_vm import DEFAULT_TAB, TAB_KEYS, TAB_TEMPLATES, resolve_panel, tab_url
+from .whatsapp_vm import (
+    DEFAULT_TAB,
+    TAB_CHATS,
+    TAB_CONTACTS,
+    TAB_KEYS,
+    TAB_QR,
+    TAB_TEMPLATES,
+    promotions_panel,
+    resolve_panel,
+    tab_url,
+)
 
 _HERE = Path(__file__).parent
 
@@ -55,12 +65,16 @@ def test_history_scripts_quote_the_address_as_a_js_string() -> None:
 
 def test_every_whatsapp_tab_has_an_address_and_reads_back() -> None:
     # m-24842998: the address carries the top tab and, when it has one, the sub-tab.
+    # m-25017862: a promotions panel lives on its own page and carries only the sub-tab.
     for key in TAB_KEYS:
         url = tab_url(key)
-        assert url.startswith("/whatsapp?tab=")
         query = dict(part.split("=", 1) for part in url.split("?", 1)[1].split("&"))
-        assert resolve_panel(query["tab"], query.get("sub", "")) == key
-    assert tab_url(TAB_TEMPLATES) == "/whatsapp?tab=promociones&sub=aprobados"
+        if url.startswith("/whatsapp/promociones?"):
+            assert promotions_panel(query["sub"]) == key
+        else:
+            assert url.startswith("/whatsapp?tab=")
+            assert resolve_panel(query["tab"], query.get("sub", "")) == key
+    assert tab_url(TAB_TEMPLATES) == "/whatsapp/promociones?sub=aprobados"
     assert tab_url("junk") == tab_url(DEFAULT_TAB) == "/whatsapp?tab=chats"
 
 
@@ -84,14 +98,33 @@ def test_inbox_detail_address() -> None:
 
 def test_whatsapp_tab_change_writes_the_address() -> None:
     state = WhatsAppState()
-    spec = WhatsAppState.select_tab.fn(state, TAB_TEMPLATES)  # type: ignore[attr-defined]
-    assert state.active_tab == TAB_TEMPLATES
-    assert "/whatsapp?tab=promociones&sub=aprobados" in _script_of(spec)
+    spec = WhatsAppState.select_tab.fn(state, TAB_QR)  # type: ignore[attr-defined]
+    assert state.active_tab == TAB_QR
+    assert "/whatsapp?tab=numero&sub=qr" in _script_of(spec)
     assert "pushState" in _script_of(spec)
     # Junk over the wire changes nothing and writes nothing.
     assert WhatsAppState.select_tab.fn(state, "nope") is None  # type: ignore[attr-defined]
     assert WhatsAppState.select_tab.fn(state, ["qr"]) is None  # type: ignore[attr-defined]
-    assert state.active_tab == TAB_TEMPLATES
+    assert state.active_tab == TAB_QR
+
+
+def test_whatsapp_tab_on_the_other_page_is_a_navigation() -> None:
+    """m-25017862: a promotions panel from `/whatsapp` (and the chats from «Promociones
+    por WhatsApp») is a change of page — a redirect, so the menu lights the right entry;
+    the arriving page's `enter_page` sets the panel."""
+    state = WhatsAppState()
+    spec = WhatsAppState.select_tab.fn(state, TAB_TEMPLATES)  # type: ignore[attr-defined]
+    assert "/whatsapp/promociones?sub=aprobados" in str(spec)
+    assert "pushState" not in str(spec)
+    assert state.active_tab == DEFAULT_TAB
+    state.active_tab = TAB_TEMPLATES
+    back = WhatsAppState.select_tab.fn(state, TAB_CHATS)  # type: ignore[attr-defined]
+    assert "/whatsapp?tab=chats" in str(back) and "pushState" not in str(back)
+    # Inside «Promociones por WhatsApp», a sub-tab stays an in-place history step.
+    inside = WhatsAppState.select_tab.fn(state, TAB_CONTACTS)  # type: ignore[attr-defined]
+    assert "/whatsapp/promociones?sub=clientes" in _script_of(inside)
+    assert "pushState" in _script_of(inside)
+    assert state.active_tab == TAB_CONTACTS
 
 
 def test_conversations_view_change_writes_the_address() -> None:
@@ -170,8 +203,9 @@ def test_select_reel_pushes_the_detail_address() -> None:
 
 
 def test_entry_handlers_read_their_parameter() -> None:
-    whatsapp = inspect.getsource(WhatsAppState.enter_page.fn)
+    whatsapp = inspect.getsource(WhatsAppState._read_address)  # noqa: SLF001
     assert "TAB_PARAM" in whatsapp and "SUB_PARAM" in whatsapp
+    assert "_read_address()" in inspect.getsource(WhatsAppState.enter_page.fn)
     assert "VIEW_PARAM" in inspect.getsource(FollowupsState.enter_page.fn)
     inbox = inspect.getsource(InboxState.enter_screen.fn)
     assert "POST_PARAM" in inbox and "_try_uuid(wanted)" in inbox

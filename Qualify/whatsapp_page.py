@@ -7,10 +7,15 @@ every state is a TONE (`ok`/`warn`/`error`/`info`/`neutral`) through `signal_pil
 `platform_badge("whatsapp")`.
 
 **The shell** (m-24842998). Header + number selector (only when the tenant has more than
-one number) + four task tabs (Chats · Respuesta automática · Promociones · Tu número) +
-a second, smaller strip for the two tabs that group several panels + the active panel's
-body. From `md` up the strips are segmented controls; on a phone they are a grid of
-44 px buttons, so all four fit at 360 px without sliding sideways (N12). The body renders
+one number) + three task tabs (Chats · Respuesta automática · Tu número) + a second,
+smaller strip for «Tu número»'s panels + the active panel's body. From `md` up the strips
+are segmented controls; on a phone they are a grid of 44 px buttons, so they fit at
+360 px without sliding sideways (N12).
+
+**«Promociones por WhatsApp»** (m-25017862, decision D3): the promotions panels (Enviadas
+· Mensajes aprobados · Clientes que aceptaron) left the strip for their own menu entry,
+next to «Anuncios», at `/whatsapp/promociones` (`whatsapp_promotions_index`). Same
+state, same panels, same number selector; only the header and the strip differ. The body renders
 ONLY the active panel, inside a box keyed by `WhatsAppState.selected_connection_id`, so a
 panel's root `on_mount` fires on entry and on every number switch: that is how Perfil
 and QR load their data, and how Chats (WA-11, `whatsapp_tab_chats.py`) and the automatic
@@ -66,6 +71,8 @@ from .whatsapp_vm import (
     NO_NUMBER_TITLE,
     NUMBER_SUBS,
     PROMOTION_SUBS,
+    PROMOTIONS_SUBTITLE,
+    PROMOTIONS_TITLE,
     QR_CHANNELS,
     REVIEW_ACTION,
     SECTION_NUMBER,
@@ -82,6 +89,7 @@ from .whatsapp_vm import (
     TAB_QR,
     TAB_TEMPLATES,
     VERTICALS,
+    WHATSAPP_SUBTITLE,
     QrCodeVM,
     WhatsAppNumberVM,
 )
@@ -160,7 +168,7 @@ def number_selector() -> rx.Component:
 def whatsapp_header() -> rx.Component:
     return page_header(
         "WhatsApp",
-        "Atiende y vende por WhatsApp: tus chats, tu menú automático y tus promociones.",
+        WHATSAPP_SUBTITLE,
         number_selector(),
         kicker=rx.cond(
             (WhatsAppState.active_tab == TAB_CHATS) & WhatsAppChatsState.has_open_thread,
@@ -229,23 +237,23 @@ def _choice_strip(
 
 
 def tab_strip() -> rx.Component:
-    """The four tasks (m-24842998): Chats · Respuesta automática · Promociones · Tu
-    número. Two of them open a second, smaller strip (`sub_strip`)."""
+    """The three tasks (m-24842998, m-25017862): Chats · Respuesta automática · Tu
+    número. «Tu número» opens a second, smaller strip (`sub_strip`)."""
     return _choice_strip(
         SECTIONS,
         WhatsAppState.active_section,
         WhatsAppState.select_section,
         label="Secciones de WhatsApp",
-        phone_columns="2",
+        phone_columns="3",
         solid=True,
         size="3",
     )
 
 
 def sub_strip() -> rx.Component:
-    """Promociones › Enviadas · Mensajes aprobados · Clientes que aceptaron; Tu número ›
-    Estado · Perfil · Formas de pago · Códigos QR · Actividad. «Chats» has no sub-tabs
-    (m-25017173): it opens the chat list directly."""
+    """Promociones por WhatsApp › Enviadas · Mensajes aprobados · Clientes que aceptaron
+    (its page's only strip); Tu número › Estado · Perfil · Formas de pago · Códigos QR ·
+    Actividad. «Chats» has no sub-tabs (m-25017173): it opens the chat list directly."""
     return rx.match(
         WhatsAppState.active_section,
         (
@@ -254,7 +262,7 @@ def sub_strip() -> rx.Component:
                 PROMOTION_SUBS,
                 WhatsAppState.active_sub,
                 WhatsAppState.select_sub,
-                label="Promociones",
+                label=PROMOTIONS_TITLE,
                 phone_columns="3",
                 solid=False,
                 size="2",
@@ -349,7 +357,8 @@ def _no_numbers_state() -> rx.Component:
     )
 
 
-def _whatsapp_body() -> rx.Component:
+def _whatsapp_body(*strips: rx.Component) -> rx.Component:
+    """Loading, error and no-number states, then the page's `strips` and the panel."""
     return page_body(
         rx.cond(
             WhatsAppState.load_error != "",
@@ -375,8 +384,7 @@ def _whatsapp_body() -> rx.Component:
                             ),
                             rx.fragment(),
                         ),
-                        tab_strip(),
-                        sub_strip(),
+                        *strips,
                         tab_body(),
                         spacing="3",
                         width="100%",
@@ -400,8 +408,24 @@ def whatsapp_index() -> rx.Component:
             & WhatsAppMenuState.has_menu
             & ~WhatsAppMenuState.advanced_open,
             menu_step_frame(),
-            rx.fragment(whatsapp_header(), _whatsapp_body()),
+            rx.fragment(whatsapp_header(), _whatsapp_body(tab_strip(), sub_strip())),
         ),
+    )
+
+
+def whatsapp_promotions_index() -> rx.Component:
+    """`/whatsapp/promociones` (m-25017862): «Promociones por WhatsApp», the menu entry
+    next to «Anuncios». The same three panels and states as before, under their own
+    header; the sub-tab strip is the page's only strip."""
+    return app_shell(
+        route_history(
+            WhatsAppState.enter_history,
+            ack=WhatsAppState.history_ack,
+            on_leave=WhatsAppState.leave_page_flows,
+        ),
+        # The menu's own word (N1); `test_nav_one_name` reads it here, as a literal.
+        page_header("Promociones por WhatsApp", PROMOTIONS_SUBTITLE, number_selector()),
+        _whatsapp_body(sub_strip()),
     )
 
 

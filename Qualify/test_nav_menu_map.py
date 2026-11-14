@@ -37,6 +37,8 @@ _GUIDE_MAP = [
     "Tu semana",
     "Publicar ahora",
     "Anuncios",
+    # m-25017862 (D3): WhatsApp's promotions, next to «Anuncios».
+    "Promociones por WhatsApp",
     # RESULTADOS-5 (m-24843003): Menciones and Tu página web are tabs of Resultados.
     "Resultados",
     "Tu marca",
@@ -88,6 +90,7 @@ def test_the_blocks_are_inicio_atiende_publica_resultados_tu_negocio() -> None:
         "Tu semana",
         "Publicar ahora",
         "Anuncios",
+        "Promociones por WhatsApp",
     ]
     assert BUSINESS_ZONE_LABEL == "Tu negocio"
     assert [label for label, *_ in NAV_BUSINESS] == [

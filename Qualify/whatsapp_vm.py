@@ -20,6 +20,7 @@ mappings can be asserted by plain unit tests (`test_whatsapp_page.py`).
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Final
@@ -35,19 +36,27 @@ from .connections_vm import whatsapp_label
 from .nav_url import with_query
 
 # --------------------------------------------------------------------------------------
-# Tabs (m-24842998 WHATSAPP-7). Four tasks on top, two of them with sub-tabs:
+# Tabs (m-24842998 WHATSAPP-7). Three tasks on top, one of them with sub-tabs:
 #
-#   Chats · Respuesta automática · Promociones · Tu número
-#                                  │              └─ Estado · Perfil · Formas de pago ·
-#                                  │                 Códigos QR · Actividad
-#                                  └─ Enviadas · Mensajes aprobados · Clientes que aceptaron
+#   Chats · Respuesta automática · Tu número
+#                                  └─ Estado · Perfil · Formas de pago · Códigos QR ·
+#                                     Actividad
+#
+# m-25017862 (BU-A12, decision D3 of docs/ux-chats-unificados.md, founder 2026-11-12):
+# «Promociones» is selling, not a setting, so it left that strip for its own menu entry
+# next to «Anuncios». Same panels, own address (`PROMOTIONS_ROUTE`):
+#
+#   Promociones por WhatsApp › Enviadas · Mensajes aprobados · Clientes que aceptaron
+#
+# An old address of one of them (`/whatsapp?tab=promociones&sub=aprobados`,
+# `/whatsapp?tab=plantillas`) redirects there (`legacy_promotions_target`).
 #
 # A PANEL is what the body renders (its own `whatsapp_tab_*.py` file, or a function in
 # `whatsapp_page.py`). Its key is the old flat tab key, kept so every in-app jump
 # (`WhatsAppState.select_tab(TAB_QR)`) and every address already shared or bookmarked
 # (`/whatsapp?tab=plantillas`) keeps landing on the same content. A SECTION is a top
 # tab; a SUB is the slug of a panel inside its section. The address carries both
-# (`?tab=promociones&sub=aprobados`, N5) and `resolve_panel` reads it back.
+# (`?tab=numero&sub=qr`, N5) and `resolve_panel` reads it back.
 # --------------------------------------------------------------------------------------
 
 TAB_CHATS = "chats"
@@ -73,14 +82,20 @@ SECTION_AUTO_REPLY = "respuesta"
 SECTION_PROMOTIONS = "promociones"
 SECTION_NUMBER = "numero"
 
-# (section key, label): the order is the strip's order.
+# (section key, label) of the `/whatsapp` strip: the order is the strip's order.
+# «Promociones» is not in it any more (m-25017862): its panels live on `PROMOTIONS_ROUTE`.
 SECTIONS: tuple[tuple[str, str], ...] = (
     (SECTION_CHATS, "Chats"),
     (SECTION_AUTO_REPLY, "Respuesta automática"),
-    (SECTION_PROMOTIONS, "Promociones"),
     (SECTION_NUMBER, "Tu número"),
 )
-SECTION_KEYS: frozenset[str] = frozenset(key for key, _label in SECTIONS)
+#: The menu entry and page title of the promotions panels (D3's name).
+PROMOTIONS_TITLE: Final = "Promociones por WhatsApp"
+PROMOTIONS_SUBTITLE: Final = (
+    "Envía promociones a los clientes que aceptaron recibirlas y mira cuántos las leyeron."
+)
+#: `/whatsapp`'s header line: what is left there once «Promociones» moved out.
+WHATSAPP_SUBTITLE: Final = "Atiende por WhatsApp: tus chats, tu menú automático y tu número."
 
 # section → ((panel, sub slug, label), …); the first one is the section's default. A
 # section with a single panel has no sub-tab strip and no `?sub=`.
@@ -111,6 +126,10 @@ NUMBER_SUBS: tuple[tuple[str, str], ...] = tuple(
     (slug, label) for _panel, slug, label in SUBTABS[SECTION_NUMBER]
 )
 
+#: Every section an address may name, «promociones» included (an old link to it still
+#: resolves, and then redirects).
+SECTION_KEYS: frozenset[str] = frozenset(SUBTABS)
+
 _PANEL_PLACE: dict[str, tuple[str, str]] = {
     panel: (section, slug) for section, subs in SUBTABS.items() for panel, slug, _ in subs
 }
@@ -121,6 +140,10 @@ TAB_KEYS: frozenset[str] = frozenset(_PANEL_PLACE)
 DEFAULT_TAB = TAB_CHATS
 
 WHATSAPP_ROUTE: Final = "/whatsapp"
+#: m-25017862: the promotions panels' own address (menu entry «Promociones por WhatsApp»).
+#: Under `/whatsapp` so the shared `WhatsAppState` keeps serving it; the menu lights the
+#: most specific entry, so «WhatsApp» stays dark here.
+PROMOTIONS_ROUTE: Final = "/whatsapp/promociones"
 TAB_PARAM: Final = "tab"
 SUB_PARAM: Final = "sub"
 
@@ -159,13 +182,55 @@ def sub_panel(section: str, sub: str) -> str:
     return ""
 
 
+def is_promotions_panel(panel: str) -> bool:
+    """Whether a panel is one of «Promociones por WhatsApp» (m-25017862)."""
+    return panel in TAB_KEYS and panel_section(panel) == SECTION_PROMOTIONS
+
+
+def panel_route(panel: str) -> str:
+    """The page a panel is drawn on: `PROMOTIONS_ROUTE` or `/whatsapp`."""
+    return PROMOTIONS_ROUTE if is_promotions_panel(panel) else WHATSAPP_ROUTE
+
+
+def promotions_panel(sub: str) -> str:
+    """`PROMOTIONS_ROUTE?sub=…` → the panel to show (the first one, «Enviadas», when
+    `sub` is missing or junk)."""
+    return sub_panel(SECTION_PROMOTIONS, sub) or SUBTABS[SECTION_PROMOTIONS][0][0]
+
+
 def tab_url(panel: str) -> str:
-    """The address of a panel (N5): `/whatsapp?tab=promociones&sub=aprobados`. An
+    """The address of a panel (N5): `/whatsapp?tab=numero&sub=qr`, or
+    `/whatsapp/promociones?sub=aprobados` for a promotions panel (m-25017862). An
     unknown key is the default panel, the same rule `resolve_tab` applies."""
     known = resolve_tab(panel)
+    if is_promotions_panel(known):
+        return with_query(PROMOTIONS_ROUTE, **{SUB_PARAM: panel_sub(known)})
     return with_query(
         WHATSAPP_ROUTE, **{TAB_PARAM: panel_section(known), SUB_PARAM: panel_sub(known)}
     )
+
+
+def legacy_promotions_target(params: Mapping[str, object]) -> str | None:
+    """m-25017862: where an old `/whatsapp` address of a promotions panel lands now —
+    `/whatsapp?tab=promociones&sub=aprobados&cuenta=…` →
+    `/whatsapp/promociones?sub=aprobados&cuenta=…` — or None when the address is not
+    one (it stays on `/whatsapp`). Every other plain parameter rides along (the number,
+    an open form's `flujo`/`paso`), so a bookmark or a half-filled promotion keeps its
+    place; `tab` is dropped and `sub` becomes the canonical slug."""
+    panel = resolve_panel(_text(params.get(TAB_PARAM)), _text(params.get(SUB_PARAM)))
+    if not is_promotions_panel(panel):
+        return None
+    kept = {
+        key: value
+        for key, raw in params.items()
+        if key not in (TAB_PARAM, SUB_PARAM) and (value := _text(raw))
+    }
+    return with_query(PROMOTIONS_ROUTE, **{SUB_PARAM: panel_sub(panel)}, **kept)
+
+
+def _text(value: object) -> str:
+    """A query parameter as one string ("" for a missing or repeated one)."""
+    return value if isinstance(value, str) else ""
 
 
 # --------------------------------------------------------------------------------------

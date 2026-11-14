@@ -41,10 +41,8 @@ _FLOW_INSTALL_SCRIPT = r"""
       programar: path === '/planner', reprogramar: path === '/planner',
       consulta: path === '/responder' || path === '/conversations',
       menu: path === '/whatsapp' && ['menu', 'respuesta'].includes(tab),
-      promocion: path === '/whatsapp' &&
-        (tab === 'campanas' || (tab === 'promociones' && (!sub || sub === 'enviadas'))),
-      'mensaje-aprobado': path === '/whatsapp' &&
-        (tab === 'plantillas' || (tab === 'promociones' && sub === 'aprobados')),
+      promocion: path === '/whatsapp/promociones' && (!sub || sub === 'enviadas'),
+      'mensaje-aprobado': path === '/whatsapp/promociones' && sub === 'aprobados',
       'mensaje-chat': path === '/whatsapp' && tab === 'chats',
       enviar: path === '/whatsapp' && tab === 'chats',
       'sticker-producto': path === '/brand/kit'
