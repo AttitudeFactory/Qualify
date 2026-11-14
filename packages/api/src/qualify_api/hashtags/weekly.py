@@ -911,7 +911,10 @@ def run_tick(
         try:
             rubro = source.rubro(tenant)
         except Exception as exc:  # noqa: BLE001 - one business never stops the others
-            logger.warning("hashtags.weekly rubro unreadable tenant=%s: %s", tenant, exc)
+            # the type only: a database error's text can carry its parameters (a tag)
+            logger.warning(
+                "hashtags.weekly rubro unreadable tenant=%s: %s", tenant, type(exc).__name__
+            )
             report.outcomes.append(BusinessOutcome(tenant, FAILED, errors=1))
             continue
         client = client_factory()
@@ -926,7 +929,9 @@ def run_tick(
                 should_stop=should_stop,
             )
         except Exception as exc:  # noqa: BLE001 - e.g. the ledger is unreadable
-            logger.warning("hashtags.weekly business failed tenant=%s: %s", tenant, exc)
+            logger.warning(
+                "hashtags.weekly business failed tenant=%s: %s", tenant, type(exc).__name__
+            )
             outcome = BusinessOutcome(tenant, FAILED, errors=1)
         finally:
             client.close()

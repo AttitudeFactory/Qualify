@@ -451,3 +451,44 @@ def test_only_the_all_tenants_service_runs_the_chore() -> None:
 
     assert build([PILOT])._hashtags is None
     assert build(None)._hashtags is not None
+
+
+# -- the per-business warning logs the exception type only ---------------------------------
+
+
+class _BoomSource(weekly.MemoryRubroSource):
+    def __init__(self, fail_rubro: bool) -> None:
+        super().__init__({PILOT: _rubro(PILOT, "secretotag")})
+        self.fail_rubro = fail_rubro
+
+    def rubro(self, tenant_id: UUID) -> weekly.BusinessRubro:
+        if self.fail_rubro:
+            raise RuntimeError("[parameters: {'tag': 'secretotag'}]")
+        return super().rubro(tenant_id)
+
+
+class _BoomLog(weekly.MemoryReadLog):
+    def tag_read_since(self, tenant_id: UUID, tag: str, since: datetime) -> bool:
+        raise RuntimeError(f"[parameters: {{'tag': '{tag}'}}]")
+
+
+@pytest.mark.parametrize("fail_rubro", [True, False])
+def test_a_failed_business_logs_the_exception_type_not_its_text(
+    caplog: pytest.LogCaptureFixture, fail_rubro: bool
+) -> None:
+    vendor = Vendor()
+    with caplog.at_level(logging.DEBUG, logger="qualify_api.hashtags.weekly"):
+        report = weekly.run_tick(
+            [PILOT],
+            source=_BoomSource(fail_rubro),
+            log=_BoomLog(_ledger()),
+            repository=MemoryHashtagRepository(),
+            claims=weekly.MemoryClaims(),
+            client_factory=vendor.client,
+            env=ON,
+        )
+    assert report.outcomes[0].status == weekly.FAILED and vendor.requests == []
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1 and warnings[0].exc_info is None
+    assert "RuntimeError" in warnings[0].getMessage()
+    assert all("secretotag" not in r.getMessage() for r in caplog.records)
