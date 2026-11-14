@@ -226,25 +226,71 @@ _AMOUNT = re.compile(
 )
 #: a price figure: a number with a thousands separator or with cents
 _SEPARATED = re.compile(r"\b\d{1,3}(?:[.,]\d{3})+\b|\b\d+[.,]\d{2}\b")
-#: what a number of 3+ digits may be without being a price: a year, or a quantity with
-#: its unit or a percentage («Desde 1998», «Novedades 2026», «500 g», «100% natural»)
+#: a year (1900-2099) — only a year where its context says so (`_YEAR_CONTEXT`)
 _YEAR = re.compile(r"^(?:19|20)\d{2}$")
+#: what follows a number that is a quantity, not a price: a unit, a percentage or a thing
+#: counted («500 g», «100% natural», «1 litro», «2 personas», «en 5 minutos», «3 sabores»)
 _UNIT = re.compile(
-    r"\s*(?:%|g\b|gr\b|grs\b|gramos\b|kg\b|kilos?\b|ml\b|l\b|litros?\b|cc\b|cm\b|m\b|"
-    r"metros?\b|m2\b|m²|unidades\b|piezas\b|porciones\b)",
+    r"\s*(?:%|(?:g|gr|grs|gramos|kg|kilos?|ml|l|litros?|cc|cm|m|metros?|m2|km|cuadras?|"
+    r"unidades|piezas?|porci[oó]n|porciones|personas?|sabores|ingredientes|opciones|"
+    r"tipos|pasos|segundos|minutos|min|horas|d[ií]as|semanas|meses|a[nñ]os)\b|m²)",
     re.IGNORECASE,
 )
-_NUMBER = re.compile(r"\d{3,}")
+#: the words that put a price after them («a 2000», «por 25», «solo 99», «desde 15»,
+#: «precio 18», «en 25»)
+_PRICE_WORDS = frozenset({"a", "por", "solo", "sólo", "desde", "precio", "en"})
+#: of those, the ones a year may follow («desde 1998», «en 2026»): a 4-digit 1900-2099
+#: after them is read as a year, anything else as a price — «Desde 1998» a year, «Desde
+#: 15» a price (resolved by range; the cost is that «Desde 2000» passes as a year)
+_YEAR_AFTER_PRICE_WORD = frozenset({"desde", "en"})
+#: the words a year may follow when no price word does («Novedades 2026», «temporada
+#: 2026», «edición 2026», «Navidad 2026», «el año 2026»); elsewhere a 3+ digit number is
+#: a price («Empanadas 2000»)
+_YEAR_CONTEXT = frozenset(
+    {
+        "edición",
+        "edicion",
+        "temporada",
+        "novedades",
+        "colección",
+        "coleccion",
+        "año",
+        "navidad",
+        "verano",
+        "invierno",
+        "del",
+        "de",
+    }
+)
+_WORD_BEFORE = re.compile(r"([^\W\d_]+)\s+$")
+_ANY_NUMBER = re.compile(r"(?<![\d.,])\d+(?![\d.,]\d)")
+#: a promotion count is no amount («2x1», «3 x 2»)
+_PROMO_AFTER = re.compile(r"\s*x\s*\d", re.IGNORECASE)
+_PROMO_BEFORE = re.compile(r"\d\s*x\s*$", re.IGNORECASE)
 _PHONE = re.compile(r"(?:\d[\s.-]?){7,}")
 
 
 def _price_figure(text: str) -> bool:
+    """A number that reads as an amount: separated thousands or cents; any number right
+    after a price word unless it counts something or is a year where a year fits; or a
+    bare number of 3+ digits that is not a year in a year context."""
     if _SEPARATED.search(text):
         return True
-    for match in _NUMBER.finditer(text):
-        if _YEAR.match(match.group()) or _UNIT.match(text, match.end()):
+    for match in _ANY_NUMBER.finditer(text):
+        number, start, end = match.group(), match.start(), match.end()
+        if _PROMO_AFTER.match(text, end) or _PROMO_BEFORE.search(text, 0, start):
             continue
-        return True
+        if _UNIT.match(text, end):
+            continue
+        before = _WORD_BEFORE.search(text, 0, start)
+        word = before.group(1).lower() if before else ""
+        is_year = bool(_YEAR.match(number))
+        if word in _PRICE_WORDS:
+            if is_year and word in _YEAR_AFTER_PRICE_WORD:
+                continue
+            return True
+        if len(number) >= 3 and not (is_year and word in _YEAR_CONTEXT):
+            return True
     return False
 
 

@@ -305,6 +305,16 @@ def test_a_promotion_count_is_not_a_price() -> None:
         "Ahora 10,50",
         "Por 15k",
         "Desde 2500",
+        # second review: years and two-digit amounts after a price word
+        "Empanadas a 2000",
+        "Llévate 3 por 2000",
+        "Combo por 25",
+        "Solo 99",
+        "Desde 15",  # «desde» + not a year: a price
+        "Precio 18",
+        "Shawarma en 25",
+        "Empanadas 2000",  # a year-like number outside a year context
+        "Tu combo 2026",
     ],
 )
 def test_a_price_in_any_spelling_is_refused(text: str) -> None:
@@ -325,6 +335,19 @@ def test_a_price_in_any_spelling_is_refused(text: str) -> None:
         "1 litro de limonada",
         # written-out numbers are out of a rule's reach: left to the prompt
         "Por veinte mil",
+        # years where a year fits, counts and quantities after a price word
+        "En 2026, más sabores",
+        "Edición 2026",
+        "Temporada 2026",
+        "Navidad 2026 en tu mesa",
+        "Desde 2000 contigo",  # «desde» + 1900-2099 is read as a year (the known cost)
+        "Listo en 5 minutos",
+        "A 2 cuadras de ti",
+        "Por 2 personas, un combo",
+        "Solo 3 ingredientes",
+        "2x1 por tiempo limitado",
+        "Tu combo de 2",
+        "Martes de shawarma 2x1",
     ],
 )
 def test_years_units_and_claims_are_not_prices(text: str) -> None:
