@@ -156,7 +156,7 @@ CHAT_GOAL_DETAIL = (
 CHAT_GOAL_FROM_PIECE = "Puedes usarla para que te escriban."
 # Appended to «Unir mi WhatsApp»: going to Tus redes and back (browser back, same session)
 # keeps the draft at its step — checked live on 2026-11-13.
-CONNECTIONS_RETURN_HINT = " (tu anuncio te espera aquí)"
+CONNECTIONS_RETURN_HINT = " (luego vuelve con el botón Atrás)"
 GREETING_RELOAD = (
     "Otra persona de tu negocio cambió el saludo y no pudimos traer su versión. "
     "Vuelve a abrir la promoción para verla."

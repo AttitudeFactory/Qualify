@@ -307,9 +307,14 @@ def _messaging_destination(option: MessagingDestinationVM) -> rx.Component:
             ),
         ),
         rx.cond(
-            ~option.available,
+            # Only when the owner can fix it (an action) or we could not check it at all.
+            ~option.available & ((option.action != "") | (option.reason_code == "unknown")),
             rx.button(
-                "Ya lo conecté, comprobar de nuevo",
+                rx.cond(
+                    option.action != "",
+                    "Ya lo conecté, comprobar de nuevo",
+                    "Comprobar de nuevo",
+                ),
                 on_click=S.recheck_destinations,
                 disabled=S.busy | S.loading | S.destinations_working,
                 loading=S.destinations_working,
