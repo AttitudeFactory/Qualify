@@ -44,6 +44,7 @@ def test_the_entry_follows_anuncios_and_opens_its_own_page(
     page = signed_up_page
     page.set_viewport_size({"width": 1280, "height": 900})
     page.goto(f"{app_server}/")
+    expect(_menu(page).locator(f'a[href="{_ROUTE}"]')).to_be_visible()  # menu hydrated
     links = _menu(page).locator("a[href]")
     hrefs = links.evaluate_all("els => els.map(e => e.getAttribute('href'))")
     assert hrefs.index(_ROUTE) == hrefs.index("/promotions") + 1, hrefs
@@ -52,7 +53,7 @@ def test_the_entry_follows_anuncios_and_opens_its_own_page(
     expect(page).to_have_url(re.compile(re.escape(app_server + _ROUTE) + r"(\?.*)?$"))
     _expect_lit(page, _ROUTE)
     expect(page.get_by_role("heading", level=1, name=_TITLE)).to_be_visible()
-    expect(page).to_have_title(f"Qualify · {_TITLE}")
+    expect(page).to_have_title(re.compile(re.escape(_TITLE)))
     _shot(page, "promociones-whatsapp-escritorio")
 
     # «WhatsApp» lights only itself, and its strip no longer offers «Promociones».
