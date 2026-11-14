@@ -480,6 +480,7 @@ PRICES = (
     "20% de descuento",
     "20% off",
     "15 % dto",
+    "20 % OFF",
 )
 NOT_PRICES = (
     "2x1",
@@ -495,6 +496,9 @@ NOT_PRICES = (
     "ref 3",
     "Ref. 2045",
     "referencia 12",
+    "Talla 2 off-white",
+    "2 off-white",
+    "offline 24",
 )
 
 

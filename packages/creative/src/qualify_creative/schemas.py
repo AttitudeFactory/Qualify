@@ -1145,7 +1145,7 @@ _WORDED_AMOUNT = re.compile(
 #: A number that is a discount — about cost, so an unaware piece drops it too: «18 mil
 #: de descuento», «20% off», «15 % dto». «2x1» names no amount and stays.
 _DISCOUNT_AMOUNT = re.compile(
-    r"\b\d[\d.,]*\s*(?:%|mil\b|millones?\b)?\s*(?:de\s+)?(?:descuentos?|dto\.?|off)\b",
+    r"\b\d[\d.,]*\s*(?:%|mil\b|millones?\b)?\s*(?:de\s+)?(?:descuentos?\b|dto\b\.?|off(?![-\w]))",
     re.IGNORECASE,
 )
 
