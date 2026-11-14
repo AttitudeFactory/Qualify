@@ -1,0 +1,230 @@
+{
+  "_source": "LayerSpec.model_dump_json() of qualify_creative.layer_spec.schema on origin/feat/m-25017283-capa-de-texto @ 78ea55c9. Regenerate with server/fixtures/dump_sibling_layer_specs.py when that schema changes.",
+  "specs": [
+    {
+      "spec_version": 1,
+      "layout_id": "plate",
+      "layout_version": 1,
+      "format": "4:5",
+      "photo": {
+        "subject_box": [
+          0.25,
+          0.4,
+          0.75,
+          0.8
+        ],
+        "logo_in_photo": false,
+        "base_has_invented_text": false
+      },
+      "anchor": "top_left",
+      "container_color": "surface",
+      "accent_word": 1,
+      "title": "Tu pan, recién horneado",
+      "subtitle": "Masa madre de la casa",
+      "call_phrase": null,
+      "info_blocks": [],
+      "price_ref": {
+        "product_id": "00000000-0000-4000-8000-000000000001"
+      },
+      "highlight_content": null,
+      "photo_strip": false,
+      "carousel": null,
+      "fallbacks": []
+    },
+    {
+      "spec_version": 1,
+      "layout_id": "scrim",
+      "layout_version": 1,
+      "format": "1:1",
+      "photo": {
+        "subject_box": [
+          0.25,
+          0.4,
+          0.75,
+          0.8
+        ],
+        "logo_in_photo": false,
+        "base_has_invented_text": false
+      },
+      "anchor": "bottom",
+      "container_color": null,
+      "accent_word": null,
+      "title": "Así se ve el almuerzo",
+      "subtitle": null,
+      "call_phrase": null,
+      "info_blocks": [],
+      "price_ref": null,
+      "highlight_content": null,
+      "photo_strip": false,
+      "carousel": null,
+      "fallbacks": []
+    },
+    {
+      "spec_version": 1,
+      "layout_id": "band",
+      "layout_version": 1,
+      "format": "4:5",
+      "photo": {
+        "subject_box": [
+          0.25,
+          0.4,
+          0.75,
+          0.8
+        ],
+        "logo_in_photo": false,
+        "base_has_invented_text": false
+      },
+      "anchor": "bottom",
+      "container_color": "accent",
+      "accent_word": null,
+      "title": "Amasado a mano",
+      "subtitle": null,
+      "call_phrase": null,
+      "info_blocks": [],
+      "price_ref": null,
+      "highlight_content": null,
+      "photo_strip": false,
+      "carousel": {
+        "role": "body",
+        "index": 1,
+        "count": 3
+      },
+      "fallbacks": []
+    },
+    {
+      "spec_version": 1,
+      "layout_id": "info_card",
+      "layout_version": 1,
+      "format": "4:5",
+      "photo": null,
+      "anchor": null,
+      "container_color": "surface",
+      "accent_word": null,
+      "title": "Te esperamos",
+      "subtitle": null,
+      "call_phrase": null,
+      "info_blocks": [
+        {
+          "kind": "location",
+          "label": "Dónde estamos",
+          "value": "Calle 10 # 4-25"
+        },
+        {
+          "kind": "hours",
+          "label": "Horario",
+          "value": "Lunes a sábado de 7 a 20"
+        }
+      ],
+      "price_ref": null,
+      "highlight_content": null,
+      "photo_strip": false,
+      "carousel": null,
+      "fallbacks": []
+    },
+    {
+      "spec_version": 1,
+      "layout_id": "brand_fill",
+      "layout_version": 1,
+      "format": "4:5",
+      "photo": null,
+      "anchor": null,
+      "container_color": "accent",
+      "accent_word": null,
+      "title": "Te esperamos hoy",
+      "subtitle": null,
+      "call_phrase": "Pídelo por WhatsApp",
+      "info_blocks": [
+        {
+          "kind": "contact",
+          "label": "Pedidos",
+          "value": "300 123 4567"
+        }
+      ],
+      "price_ref": null,
+      "highlight_content": null,
+      "photo_strip": false,
+      "carousel": {
+        "role": "closing",
+        "index": 2,
+        "count": 3
+      },
+      "fallbacks": []
+    },
+    {
+      "spec_version": 1,
+      "layout_id": "brand_fill",
+      "layout_version": 1,
+      "format": "1:1",
+      "photo": null,
+      "anchor": null,
+      "container_color": "accent",
+      "accent_word": null,
+      "title": "Te esperamos",
+      "subtitle": null,
+      "call_phrase": null,
+      "info_blocks": [
+        {
+          "kind": "location",
+          "label": "Dónde estamos",
+          "value": "Calle 10 # 4-25, local 3, frente al parque principal"
+        }
+      ],
+      "price_ref": null,
+      "highlight_content": null,
+      "photo_strip": false,
+      "carousel": null,
+      "fallbacks": []
+    },
+    {
+      "spec_version": 1,
+      "layout_id": "highlight_circle",
+      "layout_version": 1,
+      "format": "9:16",
+      "photo": null,
+      "anchor": null,
+      "container_color": "accent",
+      "accent_word": null,
+      "title": null,
+      "subtitle": null,
+      "call_phrase": null,
+      "info_blocks": [],
+      "price_ref": null,
+      "highlight_content": {
+        "kind": "word",
+        "icon_id": null,
+        "word": "Domicilio"
+      },
+      "photo_strip": false,
+      "carousel": null,
+      "fallbacks": []
+    },
+    {
+      "spec_version": 1,
+      "layout_id": "photo_only",
+      "layout_version": 1,
+      "format": "9:16",
+      "photo": {
+        "subject_box": [
+          0.25,
+          0.4,
+          0.75,
+          0.8
+        ],
+        "logo_in_photo": false,
+        "base_has_invented_text": false
+      },
+      "anchor": null,
+      "container_color": null,
+      "accent_word": null,
+      "title": null,
+      "subtitle": null,
+      "call_phrase": null,
+      "info_blocks": [],
+      "price_ref": null,
+      "highlight_content": null,
+      "photo_strip": false,
+      "carousel": null,
+      "fallbacks": []
+    }
+  ]
+}

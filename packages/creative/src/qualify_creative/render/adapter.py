@@ -32,6 +32,12 @@ from qualify_creative.render.client import (
     RenderServiceError,
     to_failure_reason,
 )
+from qualify_creative.render.layer_compose import (
+    ComposedStill,
+    LayerComposeRequest,
+    StillStore,
+    compose_layer,
+)
 from qualify_creative.render.props import ASSET_SCHEME, KEY_SCHEME, RenderProps
 
 logger = logging.getLogger(__name__)
@@ -184,6 +190,25 @@ class RemotionTemplateAdapter:
             model_revision=f"{spec.template_id}@{spec.version}",
             media_url=None,
             media_expires_at_seconds=None,
+        )
+
+    # -- layer_still (ADR 49, m-25017285) -----------------------------------------------
+
+    def compose_layer(
+        self,
+        request: LayerComposeRequest,
+        *,
+        store: StillStore | None = None,
+        timeout_seconds: float = 180.0,
+    ) -> ComposedStill:
+        """One still from one layer: one job, one port. Returns the PNG, the object key it
+        belongs under and the layout the compositor actually drew (with its fallbacks)."""
+        return compose_layer(
+            self._client,
+            request,
+            read_media=self._read,
+            store=store,
+            timeout_seconds=timeout_seconds,
         )
 
     # -- media -------------------------------------------------------------------------

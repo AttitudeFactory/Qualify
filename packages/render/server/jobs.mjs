@@ -13,6 +13,8 @@ const FINISHED = new Set(['completed', 'failed', 'cancelled']);
 
 export const classifyError = (err) => {
   const msg = String(err?.message ?? err ?? '');
+  // a composition's calculateMetadata refusing its props (layer_still re-checks the layer)
+  if (/invalid_parameters/.test(msg)) return 'invalid_parameters';
   if (/delayRender|timed out|timeout/i.test(msg)) return 'timeout';
   if (/Error loading image|Could not load|failed to load|net::ERR|ERR_CONNECTION|font|ENOENT/i.test(msg)) {
     return 'dependency_failed';
@@ -21,6 +23,23 @@ export const classifyError = (err) => {
     return 'render_error';
   }
   return 'internal_error';
+};
+
+/**
+ * layer_still: the machine-readable refusal a composition threw when no layout of the catalog's
+ * fallback chain could draw the layer (`invalid_parameters: layer_unrenderable {json}`) — the
+ * slot to rewrite and why, so the layer stage can fix the text. null for any other error.
+ */
+export const refusalOf = (err) => {
+  const msg = String(err?.message ?? err ?? '');
+  const m = /layer_unrenderable (\{[^\n]*\})/.exec(msg);
+  if (!m) return null;
+  try {
+    const r = JSON.parse(m[1]);
+    return r && typeof r === 'object' && typeof r.slot === 'string' ? r : null;
+  } catch {
+    return null;
+  }
 };
 
 /** Chromium tabs for one render: the manifest's `render.concurrency` when it sets one
@@ -47,6 +66,8 @@ const publicOutput = (o) => {
   if (o.status === 'completed') {
     Object.assign(out, {mimeType: o.mimeType, bytes: o.bytes, width: o.width, height: o.height});
   }
+  if (o.report) out.report = o.report;
+  if (o.refusal) out.refusal = o.refusal;
   if (o.failureReason) out.failureReason = o.failureReason;
   if (o.errorMessage) out.errorMessage = o.errorMessage;
   return out;
@@ -108,6 +129,8 @@ export class JobManager {
         bytes: null,
         failureReason: null,
         errorMessage: null,
+        report: null,
+        refusal: null,
         cancel: null,
       };
     }
@@ -211,6 +234,9 @@ export class JobManager {
         logLevel: 'error',
         timeoutInMilliseconds: this.config.delayRenderTimeoutMs,
       });
+      // layer_still: what the compositor decided (effective layout, fallbacks, sizes, contrast),
+      // computed in calculateMetadata and carried on the resolved props
+      out.report = composition.props?.resolved?.report ?? null;
       if (out.kind === 'video') {
         job.durationSec = composition.durationInFrames / composition.fps;
         await renderMedia({
@@ -258,6 +284,7 @@ export class JobManager {
         out.status = 'failed';
         out.failureReason = timedOut ? 'timeout' : err?.failureReason ?? classifyError(err);
         out.errorMessage = String(err?.message ?? err).slice(0, 2000);
+        out.refusal = refusalOf(err);
         log('warn', 'output failed', {jobId: job.jobId, port, reason: out.failureReason, err: out.errorMessage});
       }
     } finally {
