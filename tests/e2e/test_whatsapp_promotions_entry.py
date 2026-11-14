@@ -55,6 +55,10 @@ def test_the_entry_follows_anuncios_and_opens_its_own_page(
     _expect_lit(page, _ROUTE)
     expect(page.get_by_role("heading", level=1, name=_TITLE)).to_be_visible()
     expect(page).to_have_title(re.compile(re.escape(_TITLE)))
+    # Loaded, not the skeleton: no number yet, so the no-number state, under this header.
+    expect(page.get_by_text("Conecta tu WhatsApp para atender y vender desde aquí")).to_be_visible(
+        timeout=60_000
+    )
     _shot(page, "promociones-whatsapp-escritorio")
 
     # «WhatsApp» lights only itself, and its strip no longer offers «Promociones».
@@ -101,7 +105,17 @@ def test_on_a_phone_the_entry_is_in_the_more_drawer(
     bar = page.locator('nav[aria-label="Accesos rápidos"]')
     expect(bar.locator('.q-bottom-cell[data-active="true"] .q-bottom-label')).to_have_text("Más")
     expect(page.get_by_role("heading", level=1, name=_TITLE)).to_be_visible()
+    expect(page.get_by_text("Conecta tu WhatsApp para atender y vender desde aquí")).to_be_visible(
+        timeout=60_000
+    )
     _shot(page, "promociones-whatsapp-celular")
+    # The drawer, opened on this page, marks the entry it came from.
+    page.locator(".q-bottom-more").click()
+    expect(page.locator("#q-sidebar")).to_have_class(re.compile(r"q-mobile-open"))
+    expect(entry).to_have_attribute("aria-current", "page")
+    entry.scroll_into_view_if_needed()
+    page.wait_for_timeout(800)  # the drawer's slide, for the picture only
+    _shot(page, "promociones-whatsapp-cajon-encendida")
 
 
 # --- with a number: the panels load (review of 2026-11-14) -------------------------------
@@ -200,3 +214,11 @@ def test_switching_pages_never_draws_the_other_pages_panel(
     expect(page.get_by_role("heading", level=1, name="WhatsApp")).to_be_visible()
     expect(page.locator(".q-wa-chats")).to_be_visible(timeout=60_000)
     assert page.evaluate("window.__qWrongPanel") == []
+
+    # On a phone, /whatsapp's strip is three buttons in one row, «Promociones» gone.
+    page.set_viewport_size({"width": 360, "height": 780})
+    page.goto(f"{app_server}/whatsapp?tab=numero&sub=estado")
+    strip = page.get_by_role("group", name="Secciones de WhatsApp")
+    expect(strip).to_be_visible(timeout=60_000)
+    expect(strip.get_by_role("button")).to_have_text(["Chats", "Respuesta automática", "Tu número"])
+    _shot(page, "whatsapp-tres-secciones-360")
