@@ -1,13 +1,22 @@
 # Épica — Bandeja única de chats y respuesta automática en todos los canales
 
-`[PLANEADA · 2026-11-12 · épica m-25017839 · ticket base m-24789459 · product-owner · 16 tickets en Meegle, 20 historias sin ticket]`
+`[EN CURSO · planeada 2026-11-12, actualizada 2026-11-14 · épica m-25017839 · ticket base m-24789459 · product-owner · 17 tickets en Meegle, 19 historias sin ticket · primer incremento fusionado]`
+
+> **Estado al 2026-11-14.** El primer incremento (m-25017843 → m-25017844 → m-25017859) está
+> fusionado en `main`; m-25017859 (PR #665) se fusionó el 2026-11-14 y su despliegue no estaba
+> confirmado al escribir esto. BU-A13 tiene ticket: **m-25026457** (PR #653, en producción).
+> Nada de la lista única ni de «Cerrar» en Instagram se ha visto funcionar en un navegador. Detalle
+> por historia en §3 y §7; decisiones del fundador de la lista en §6 (vii); seguimientos sin ticket
+> en §5.
 
 > Épica en Meegle: **m-25017839** (Feature, Product Feature Request,
 > https://project.larksuite.com/5h2wsx/story/detail/25017839). El fundador aprobó el 2026-11-12
 > crear la épica y **solo los 16 tickets que pueden empezar ya**: 12 historias enlazadas a la épica
 > y los 4 Issues aparte de §7 (sin enlace a la épica). Las historias con ticket llevan su `m-<id>`;
 > las otras 20 (19 del borrador más BU-B10, agregada en la revisión) conservan su id provisional `BU-*` y dicen «Sin ticket todavía» y qué esperan.
-> Todos en Backlog, Reporter y Assignee el fundador (sin desarrollador asignado todavía).
+> El 2026-11-13 se creó m-25026457 para BU-A13 tras la decisión «Ventana + cerrar chat» (§6 (vii)):
+> quedan 19 sin ticket.
+> Al crearse, todos en Backlog, Reporter y Assignee el fundador (sin desarrollador asignado todavía).
 >
 > Fuentes: la propuesta UX aceptada `docs/ux-chats-unificados.md` (D1–D5, 2026-11-12) y su maqueta
 > `docs/mockups/chats-unificados.html`; la nota de arquitectura `docs/arquitectura-bandeja-unica.md`
@@ -63,6 +72,7 @@ configuración separada de los mensajes, menos pestañas y submenús) `[UX §0]`
 | BU-A4 | m-25017860 | P2 |
 | BU-A9 | m-25017861 | P2 |
 | BU-A12 | m-25017862 | P2 |
+| BU-A13 | m-25026457 (creado el 2026-11-13) | P1 |
 | BU-A16 | m-25017863 | P2 |
 | BU-A19 | m-25017864 | P2 |
 | BU-A20 | m-25017865 | P3 |
@@ -84,8 +94,9 @@ configuración separada de los mensajes, menos pestañas y submenús) `[UX §0]`
   campo «Feature» lo sacaría de esa épica, por eso no se tocó.
 - Todas las historias con Assignee al crearlas (sin Assignee el equipo no puede moverlas).
 - Ya entregado esta semana, **no se replanea**: m-25017173 (PR #606: sin subpestaña «Stickers y
-  videos» en WhatsApp › Chats, «Enviar» en los dos canales) y m-25017174 (PR #608: demora de los
-  mensajes).
+  videos» en WhatsApp › Chats, «Enviar» en los dos canales, camino de vuelta desde Tu marca; en
+  producción, ticket RESOLVED, falta la comprobación visual) y m-25017174 (PR #608: demora de los
+  mensajes; Done, el fundador confirmó «Llegan rápido»).
 
 **Convenciones de este documento.** Prioridad según `docs/formato-tickets-meegle.md` §3 (P1 =
 bloquea otro trabajo o es de esta semana; P2 = lo normal; P3 = cuando haya hueco). Tamaño S
@@ -113,6 +124,11 @@ canal, con dos outboxes y dos workers `[arq §1.2, §1.3]`. Cortes de origen C1�
 
 ### m-25017843 (BU-A1) · Bandeja: una sola consulta de chats y una sola definición de «por responder»
 
+> **Done — PR #625, fusionado el 2026-11-13.** La regla vive en
+> `packages/api/src/qualify_api/inbox/awaiting.py`. El PR #649 (bajo m-25017859, fusionado el
+> 2026-11-13) le agregó el límite de la ventana de Instagram (§6 (vii) 1); el PR #665 la conectó a
+> la lista, los contadores, las tarjetas e Inicio.
+
 - **Tipo / etiqueta:** Issue · `Improvement` · **P1** (bloquea m-25017859, BU-A6, BU-A13) · **M** · dueño `backend`
 - **Depende de:** — · **Bloqueada por:** — (la decisión (ii) quedó decidida por el fundador el 2026-11-13: «Solo si pasó a persona»; regla en §6 (ii))
 - **Historia:** Como dueño de un local de comida que atiende por WhatsApp e Instagram, quiero que
@@ -125,27 +141,34 @@ canal, con dos outboxes y dos workers `[arq §1.2, §1.3]`. Cortes de origen C1�
   `ChannelCapabilities` congelada por canal en `inbox/channels.py` `[arq §2.1]`; el predicado de
   «por responder» vive una vez y lo usan la lista y `attention/counts.py` `[arq §2.3]`.
 - **Criterios de aceptación**
-  - [ ] Prueba: con hilos de WhatsApp e Instagram del mismo negocio, la consulta devuelve una lista
+  - [x] Prueba: con hilos de WhatsApp e Instagram del mismo negocio, la consulta devuelve una lista
         ordenada por hora y una página por ida a la base (sin N+1: la prueba cuenta las consultas).
-  - [ ] Prueba: dos hilos con el mismo `last_message_at` aparecen los dos al paginar (cursor compuesto).
-  - [ ] Prueba: el número de `attention/counts.py` y el total de «Por responder» de la consulta son
+  - [x] Prueba: dos hilos con el mismo `last_message_at` aparecen los dos al paginar (cursor compuesto).
+  - [x] Prueba: el número de `attention/counts.py` y el total de «Por responder» de la consulta son
         iguales en los casos: entrante sin respuesta, respondido por el dueño, respondido por el
         menú, entregado a una persona, envío automático fallido, chat cerrado.
-  - [ ] Prueba de la regla decidida (ii): un chat abierto contestado solo por el menú **no** cuenta;
+  - [x] Prueba de la regla decidida (ii): un chat abierto contestado solo por el menú **no** cuenta;
         uno entregado a una persona («Hablar con alguien» o turno del dueño) **sí** cuenta; uno con un
         envío automático fallido **sí** cuenta; uno cerrado no cuenta.
-  - [ ] Prueba de aislamiento: con dos negocios, la consulta en `tenant_session` del negocio A no
+  - [x] Prueba de aislamiento: con dos negocios, la consulta en `tenant_session` del negocio A no
         devuelve hilos de B; un canal fuera de la lista blanca se rechaza.
-  - [ ] Prueba que une el descriptor con la realidad: `attachments` de Instagram ==
+  - [x] Prueba que une el descriptor con la realidad: `attachments` de Instagram ==
         `REPLY_MEDIA_TYPES`; `suggest_reply` de WhatsApp es `False` `[arq §2.1]`.
-  - [ ] p95 de una página de 50 hilos < 300 ms con los datos de prueba (si no, se anota y se abre
+  - [x] p95 de una página de 50 hilos < 300 ms con los datos de prueba (si no, se anota y se abre
         la desnormalización de `last_outbound_at`, no otro almacén) `[arq §2.2]`.
+  - Pruebas en `packages/api/tests/test_inbox_unified_db.py`, `test_inbox_unified.py`,
+    `test_inbox_channels.py` y `test_inbox_awaiting.py`.
 - **Texto para el cliente:** ninguno (backend).
 - **Fuera de alcance:** cambiar pantallas; unir outboxes o workers; unir la identidad de una persona
   entre canales `[arq §1.3]`.
 - **Migración:** no `[arq §4.1 C1]` · **Medición:** no · **Firma:** ya tomada (decisión (ii), 2026-11-13).
 
 ### m-25017844 (BU-A2) · Conversaciones: una sola fila de chat para WhatsApp e Instagram
+
+> **Done — PR #624, fusionado el 2026-11-13.** El fundador vio la fila en su celular en producción
+> («se ve bien», 2026-11-13). Sin ver en pantalla: el orden de las etiquetas, abrir con Enter o
+> Espacio, un chat con carrito, la captura a 360 px. La etiqueta de tiempo cambió después a
+> «Quedan {N} min para responder» y la prioridad final es la de §6 (vii) 9.
 
 - **Tipo:** Issue · `Improvement`, `UI` · **P2** · **M** · dueño `reflex-ui`
 - **Depende de:** — (puede leer los VM de hoy `[arq §4.1 C2]`) · **Bloqueada por:** —
@@ -157,17 +180,36 @@ canal, con dos outboxes y dos workers `[arq §1.2, §1.3]`. Cortes de origen C1�
   «Pago por revisar» › «Responde en N min» › «Quiere comprar»; sin «Cerrado» en la fila
   `[UX §2, §4 punto 7, §5]`.
 - **Criterios de aceptación**
-  - [ ] Prueba del VM: con pago por revisar, ventana por cerrar e intención de compra a la vez, la
-        fila muestra solo «Pago por revisar».
+  - [x] Prueba del VM: con pago por revisar, ventana por cerrar e intención de compra a la vez, la
+        fila muestra solo «Pago por revisar» (`Qualify/test_chat_row.py`).
   - [ ] Pantalla a 360 px: ninguna fila ocupa más de un renglón de etiquetas (captura en el PR).
-  - [ ] La fila muestra el glifo del canal, el punto de espera, el nombre, la hora y la vista previa
-        con «Tú: » cuando el último mensaje es del negocio.
+        Solo hay prueba (`test_the_pills_against_one_line_at_360_px`); la captura sigue debiéndose.
+  - [x] La fila muestra el glifo del canal, el punto de espera, el nombre, la hora y la vista previa
+        con «Tú: » cuando el último mensaje es del negocio (visto en producción, 2026-11-13).
 - **Texto para el cliente:** «Pago por revisar», «Responde en {N} min», «Quiere comprar»,
-  «Tú: » (ya existen; no se crean nuevos).
+  «Tú: » (ya existen; no se crean nuevos). Reemplazado el 2026-11-13: «Responde en {N} min» →
+  «Quedan {N} min para responder» (§6 (vii) 3).
 - **Fuera de alcance:** la lista unificada (BU-A3); colores de burbuja (BU-A5).
 - **Migración / medición / firma:** no / no / no.
 
 ### m-25017859 (BU-A3) · Conversaciones: lista única de chats bajo «Por responder»
+
+> **Fusionada el 2026-11-14 — PR #665 (commit `91b06afa`); ticket RESOLVED, nunca vista en un
+> navegador.** Antes, el PR #649 (2026-11-13) agregó a la regla el límite de la ventana de
+> Instagram. Entregado: una lista de WhatsApp e Instagram bajo «Por responder» › «Mensajes» con la
+> fila compartida y filtro de canal; filtros «Por responder · Todos · Cerrados · Pago por revisar»
+> más «Sin responder a tiempo · N»; los contadores del menú, las tarjetas, las pestañas e Inicio
+> leen la misma regla que la lista; aviso de chats de Instagram vencidos sin respuesta; explicación
+> única del cambio de números; «Quedan {N} min para responder»; en WhatsApp › Chats el filtro
+> «Sin leer» pasa a «Por responder» y lista por la regla. Se quitaron la pestaña «WhatsApp» y los
+> filtros propios de Instagram («Abiertas», «Cerradas»). Sin migración. Textos y decisiones en
+> §6 (vii).
+>
+> **Límites conocidos:** Inicio todavía cuenta solo Instagram; la lista sigue refrescándose
+> mientras la tapa un chat abierto en el celular; no hay índice en
+> `whatsapp_outbox (connection_id, wamid)` (2,5–3 s con 3.000 chats, anterior a esta historia); la
+> columna propuesta `threads.last_person_reply_at` no se hizo; un chat cuyo mensaje más reciente se
+> anula con tres o más páginas cargadas puede salir de la lista hasta cambiar de filtro.
 
 - **Tipo:** Issue · `Feature`, `UI` · **P1** (primer valor visible de la épica) · **M** · dueño `reflex-ui`
 - **Depende de:** m-25017843, m-25017844 · **Bloqueada por:** — (decisión (ii) tomada el 2026-11-13); para que muestre chats
@@ -179,15 +221,22 @@ canal, con dos outboxes y dos workers `[arq §1.2, §1.3]`. Cortes de origen C1�
   canales conectados; al tocar un chat se abre **el chat de hoy de su canal** (enlace profundo)
   `[arq §1.2 «Primer corte…», §4.1 C3; UX §2, §4 punto 5]`. TikTok no se dibuja `[UX §4 punto 6]`.
 - **Criterios de aceptación**
-  - [ ] Prueba del VM: con un solo canal conectado no se dibuja el filtro de canal; con dos, sí.
-  - [ ] Prueba del VM: «Pago por revisar · N» aparece solo con N ≥ 1.
+  - [x] Prueba del VM: con un solo canal conectado no se dibuja el filtro de canal; con dos, sí
+        (la prueba lo decide por chats en dos canales: `test_the_channel_filter_needs_chats_on_two_channels_and_has_no_tiktok`).
+  - [x] Prueba del VM: «Pago por revisar · N» aparece solo con N ≥ 1.
   - [ ] Pantalla: tocar un chat de WhatsApp abre su chat en la pantalla de WhatsApp de hoy, y uno de
-        Instagram el de Conversaciones, en el mismo hilo (prueba e2e o captura en el PR).
-  - [ ] El contador «Por responder» del menú lateral y el total de la lista coinciden (señal 1 de §1).
-  - [ ] «Cargar más» trae la página siguiente sin repetir ni saltar chats (prueba con el cursor de m-25017843).
-  - [ ] Después de abrir un chat desde la lista única, «‹ Por responder» vuelve a la lista única, no a la lista propia del canal (si no, el dueño queda con dos listas, peor que hoy) — prueba e2e o del VM `[revisión UX, puntos 6–7]`.
+        Instagram el de Conversaciones, en el mismo hilo (prueba e2e o captura en el PR). Sin ver en
+        un navegador.
+  - [x] El contador «Por responder» del menú lateral y el total de la lista coinciden (señal 1 de §1):
+        prueba con base de datos `test_inbox_counters_db.py`, en los dos canales. La lectura en
+        producción del negocio de Bianki sigue pendiente.
+  - [x] «Cargar más» trae la página siguiente sin repetir ni saltar chats (prueba con el cursor de m-25017843).
+  - [x] Después de abrir un chat desde la lista única, «‹ Por responder» vuelve a la lista única, no a la lista propia del canal (si no, el dueño queda con dos listas, peor que hoy) — prueba e2e o del VM `[revisión UX, puntos 6–7]` (prueba del VM en `Qualify/test_inbox_list.py`).
 - **Texto para el cliente:** «Por responder», «Todos», «Cerrados», «Pago por revisar · {N}»,
   «WhatsApp», «Instagram». Lista vacía: «Ya respondiste a todos. Aquí verás a quien te escriba por WhatsApp o Instagram.» `[revisión UX]`.
+  Agregados por las decisiones de §6 (vii): «Sin responder a tiempo · {N}»,
+  «Quedan {N} min para responder», «{N} chats de Instagram ya no se pueden responder aquí · Ver»,
+  «Respóndele desde Instagram», la explicación única con «Entendido».
 - **Fuera de alcance:** chat y cuadro de respuesta compartidos (BU-A5, BU-A7); recordar el filtro de
   canal (pregunta abierta `[UX §6.1]`).
 - **Migración / medición / firma:** no / no / no.
@@ -240,7 +289,7 @@ canal, con dos outboxes y dos workers `[arq §1.2, §1.3]`. Cortes de origen C1�
 
 ### BU-A6 · Bandeja: enviar desde cualquier chat por el canal correcto
 
-> **Sin ticket todavía — espera a m-25017843.**
+> **Sin ticket todavía — m-25017843 ya está fusionada (2026-11-13); puede crearse.**
 
 - **Tipo:** Issue · `Improvement` · **P2** · **M** · dueño `backend`
 - **Depende de:** m-25017843 · **Bloqueada por:** —
@@ -387,11 +436,19 @@ canal, con dos outboxes y dos workers `[arq §1.2, §1.3]`. Cortes de origen C1�
 - **Fuera de alcance:** cambios a cómo se envían las promociones.
 - **Migración / medición / firma:** no / no / no.
 
-### BU-A13 · Conversaciones: cerrar y reabrir chats de Instagram
+### m-25026457 (BU-A13) · Conversaciones: cerrar y reabrir chats de Instagram
 
-> **Sin ticket todavía — espera a m-25017843.**
+> **Fusionada y en producción — PR #653 (2026-11-13, commit `ec0d79fc`); ticket RESOLVED: «Cerrar»
+> nunca se vio funcionar en un navegador.** Ticket creado el 2026-11-13 por la decisión «Ventana +
+> cerrar chat» (§6 (vii) 1). Entregado: «Cerrar» / «Reabrir» y marca «Cerrado» en la cabecera, en el
+> mismo lugar que WhatsApp; los contadores dejan de contar los cerrados. El cierre no procede si
+> llegó un mensaje del cliente más nuevo que el que mostraba la pantalla («{nombre} te acaba de
+> escribir. Lee su mensaje antes de cerrar.»); solo un mensaje realmente nuevo reabre un chat
+> cerrado (uno repetido no). En la pantalla de Instagram los filtros quedaron «Abiertas» y
+> «Cerradas» (§6 (vii) 2), que la lista única de m-25017859 quitó después. Las mismas dos
+> protecciones en WhatsApp quedan sin ticket (§5).
 
-- **Tipo:** Issue · `Feature` · **P2** · **M** · dueño `backend` (+ `reflex-ui`)
+- **Tipo:** Issue · `Feature` · **P1** en Meegle (el borrador decía P2) · **M** · dueño `backend` (+ `reflex-ui`)
 - **Depende de:** m-25017843 · **Bloqueada por:** —
 - **Historia:** Como dueño, quiero cerrar un chat de Instagram ya atendido como hago en WhatsApp,
   para que solo me quede a la vista lo pendiente.
@@ -399,10 +456,13 @@ canal, con dos outboxes y dos workers `[arq §1.2, §1.3]`. Cortes de origen C1�
   reapertura al llegar un mensaje en los dos canales (verificar primero qué hace hoy WhatsApp en
   `chats.py` y `handler.py`) `[arq §2.3 último párrafo, §4.1 C9]`.
 - **Criterios de aceptación**
-  - [ ] Prueba: un chat de Instagram cerrado sale de «Por responder» y aparece en «Cerrados».
-  - [ ] Prueba: un mensaje nuevo del cliente reabre el chat en los dos canales (o la regla que se
-        decida, escrita en el PR con lo que se encontró en WhatsApp).
-- **Texto para el cliente:** «Cerrar chat», «Reabrir».
+  - [x] Prueba: un chat de Instagram cerrado sale de «Por responder» y aparece en «Cerrados».
+  - [x] Prueba: un mensaje nuevo del cliente reabre el chat en los dos canales (o la regla que se
+        decida, escrita en el PR con lo que se encontró en WhatsApp). Lo hallado en WhatsApp (PR
+        #653): cierra sin comprobar si entró un mensaje y reabre con cualquier entrante, incluso
+        repetido; corregirlo queda sin ticket.
+- **Texto para el cliente:** «Cerrar chat», «Reabrir». Entregado: «Cerrar», «Reabrir», «Cerrado»,
+  «{nombre} te acaba de escribir. Lee su mensaje antes de cerrar.».
 - **Fuera de alcance:** asignar chats.
 - **Migración:** no (`threads.status` ya admite `closed`) · **Medición / firma:** no / no.
 
@@ -808,7 +868,22 @@ el nombre de las tablas `[arq §3.1, «Conclusión»]`. Cortes de origen M1–M7
 
 ## 5. Primer incremento y lo que corre en paralelo
 
-**Primer incremento (lo más chico que el dueño ya ve): m-25017843 → m-25017844 → m-25017859.** Una lista bajo
+**Primer incremento — fusionado (2026-11-13/14):** m-25017843 (PR #625) y m-25017844 (PR #624)
+Done; m-25017859 (PRs #649 y #665) fusionada el 2026-11-14, RESOLVED y sin ver en un navegador;
+m-25026457 (BU-A13, PR #653) en producción, RESOLVED y sin ver en un navegador. Lo que sigue es
+la comprobación en producción, en celular y escritorio, de la lista y de «Cerrar».
+
+**Seguimientos sin ticket** (salieron de los PR #649, #653 y #665):
+
+- Las mismas protecciones de cerrar y reabrir en WhatsApp (hoy cierra sin comprobar si entró un
+  mensaje y reabre con cualquier entrante, incluso repetido).
+- `threads.last_inbound_at` queda vacío cuando Meta no entrega la hora de un mensaje que llega solo
+  por la resincronización de Instagram; ese chat sería invisible para la regla.
+- Borrar el código de la explicación única después del 2026-11-28.
+- Inicio contando las dos redes (hoy solo Instagram).
+- Contraste del gris de las filas cerradas.
+
+**Primer incremento, como se planeó: m-25017843 → m-25017844 → m-25017859.** Una lista bajo
 «Por responder» con los clientes que esperan en WhatsApp e Instagram, ordenados por hora, con una
 sola etiqueta por fila y el mismo número en el menú y en la lista; al tocar, abre el chat de hoy de
 su canal `[arq §1.2 «Primer corte con valor visible»]`. Advertencia: mientras no haya Advanced
@@ -825,8 +900,8 @@ punto 1).
 | Medición | m-25017860 (contraste), m-25017863 (Sugerir respuesta) | `ux`, `datasci` |
 | Fuera de la épica | m-25017848…m-25017852 (§7) | `backend` / `platform` |
 
-**Después:** m-25017859 → BU-A5 → BU-A7 → (BU-A8, BU-A11, BU-A15, BU-A18, BU-A21); BU-A6 tras m-25017843;
-BU-A13 tras m-25017843; BU-A14 tras m-25017861. Pista B: BU-B4 tras m-25017868; BU-B5 → BU-B6 → (BU-B7 Instagram,
+**Después:** m-25017859 → BU-A5 → BU-A7 → (BU-A8, BU-A11, BU-A15, BU-A18, BU-A21); BU-A6 tras m-25017843
+(ya fusionada, BU-A6 puede empezar); BU-A13 = m-25026457, ya entregada; BU-A14 tras m-25017861. Pista B: BU-B4 tras m-25017868; BU-B5 → BU-B6 → (BU-B7 Instagram,
 BU-B8 Instagram, BU-B9) con el ADR 48 escrito (transcripción de m-24789557) y las decisiones (i-b), (i-c) y (vi). BU-B10 espera la decisión (vi).
 
 ## 6. Decisiones del fundador antes de empezar historias concretas
@@ -900,7 +975,55 @@ Descartadas: A, cualquier respuesta del menú saca el chat de la lista (escondí
 persona); C, solo cuenta la respuesta del dueño (lista larga, el menú parece no servir).
 
 Ya no bloquea: m-25017843 y m-25017859 pueden empezar. Decisión de dos vías: es un predicado en una
-función, se cambia en un PR.
+función, se cambia en un PR. Construida en m-25017843 (PR #625); la regla vive en
+`packages/api/src/qualify_api/inbox/awaiting.py`.
+
+### (vii) Lista única: chats vencidos de Instagram, cerrar chats y textos — **DECIDIDAS**
+
+Decisiones del fundador tomadas durante m-25017859 y m-25026457, en sus palabras, con la fecha que
+registra el comentario del ticket. Todas son de dos vías (una constante o un predicado, se cambian
+en un PR).
+
+1. **2026-11-13, «Ventana + cerrar chat»** (m-25017859). Un chat de Instagram cuenta como «Por
+   responder» solo mientras su ventana de respuesta de 24 h está abierta; WhatsApp, sin límite. Y
+   «Cerrar chat» llega a Instagram: BU-A13 pasó a ticket, m-25026457. Construido en los PR #649 y
+   #653.
+2. **2026-11-13, «Abiertas y Cerradas»** (m-25026457). En la pantalla de mensajes de Instagram el
+   primer filtro pasó de «Todas» a «Abiertas» y el de cerrados a «Cerradas»; la marca de la cabecera
+   es «Cerrado». La lista única (m-25017859) quitó después esos filtros propios de Instagram: los
+   filtros de la lista son «Por responder · Todos · Cerrados · Pago por revisar» más «Sin responder a
+   tiempo · N».
+3. **2026-11-13, «Quedan N min»** (m-25017859). La etiqueta de tiempo de la fila dice «Quedan {N} min
+   para responder»; reemplaza a «Responde en N min» de la propuesta UX.
+4. **2026-11-13, «Sí, los de UX»** (m-25017859). Aviso de chats de Instagram que vencieron sin
+   respuesta: «{N} chats de Instagram ya no se pueden responder aquí · Ver». Explicación única del
+   cambio de números: «Ahora "Por responder" muestra solo a quien espera que una persona le
+   conteste. Los chats que ya resolvió tu menú no cuentan.», con el botón «Entendido».
+5. **2026-11-14, «Solo dos semanas»** (m-25017859). La explicación se muestra hasta el 27 de
+   noviembre inclusive (desde el 2026-11-28, hora de Bogotá, ya no) en vez de recordar en el
+   navegador que se descartó: una marca guardada en el navegador sobreviviría a la sesión del
+   negocio y choca con la regla de limpieza al cerrar sesión
+   (`docs/modelo-negocio-operador-multi-emprendimiento.md` §6.1); se descartó abrir una excepción.
+   «Entendido» la oculta por el resto de la sesión en ese negocio. El código de la explicación se
+   borra después de esa fecha (seguimiento sin ticket, §5).
+6. **2026-11-14, «Respóndele desde Instagram»** (m-25017859). Etiqueta y marca de cabecera de un
+   chat de Instagram vencido sin respuesta. Elegida sobre la de UX, «Respóndele desde la app de
+   Instagram», porque no se pudo comprobar que cupiera en una fila de 360 px.
+7. **2026-11-14, «Sí, Por responder»** (m-25017859). En WhatsApp › Chats el filtro «Sin leer» se
+   llama «Por responder» y lista por la regla.
+8. **2026-11-14, «Sí, ese nombre»** (m-25017859). El filtro de los chats de Instagram que vencieron
+   sin respuesta se llama «Sin responder a tiempo».
+9. **Prioridad de la etiqueta de la fila, como quedó construida:** «Pago por revisar» › («Quiere
+   comprar»: lugar vacío, todavía no hay señal del backend) › etiqueta de tiempo › «Esperando el
+   pago».
+
+**Sigue sin decidir por el fundador:** «Todas las redes» en vez del segundo «Todos» en el filtro de
+canal.
+
+**Tomadas por el agente líder, abiertas a que el fundador las cambie:** «Pago por revisar» incluye
+chats cerrados (igual que en la pantalla de WhatsApp); el aviso de chats vencidos cubre los últimos
+7 días; la entrada de WhatsApp del menú lateral abre «Por responder» solo mientras muestra su
+número.
 
 ### (iii) «Sugerir respuesta» en WhatsApp: tope de costo y lugar en el plan
 
@@ -1032,6 +1155,9 @@ Se crean sin el campo «Feature» y con «Relacionado con» hacia la épica.
 
 ### m-25017852 (BU-S4) · Conversaciones: la persona que escribe por Instagram aparece como «Persona sin nombre»
 
+> **Done — PR #622, fusionado el 2026-11-13.** El fundador confirmó que se ve el @usuario. Sin
+> nombre ni usuario, la fila dice «Cliente de Instagram» o «Cliente de WhatsApp» (m-25017844).
+
 - **Tipo:** Issue · `Bug` · **P1** (lo vio el fundador esta semana probando con un negocio real;
   nadie queda bloqueado, por eso no es P0) · **M** · dueño `backend` (+ `reflex-ui` para el texto)
 - **Qué pasa:** en PROD, en la lista y el chat de Conversaciones, una persona que escribe por
@@ -1102,20 +1228,23 @@ Se crean sin el campo «Feature» y con «Relacionado con» hacia la épica.
 7. **«Por responder» con el menú** (decisión ii) bloqueaba m-25017843; el fundador la tomó el
    2026-11-13 («Solo si pasó a persona»), así que el primer incremento ya puede empezar.
 
-## 9. Prompt para `/qualify-team-dev` (después de que el fundador apruebe y se creen los tickets)
+## 9. Prompt para `/qualify-team-dev` (actualizado 2026-11-14, con el primer incremento fusionado)
 
 ```
 /qualify-team-dev Épica «Bandeja única de chats y respuesta automática» — doc
-docs/epica-bandeja-unica.md (reemplazar BU-* por los m-<id> creados). Menú en Instagram: decidido
-el 2026-10-23 (m-24789557); el ADR 48 lo escribe principal-architect. Decidido 2026-11-13: (ii)
-«Por responder» = solo si pasó a persona o falló un envío. Pendientes del fundador: (i-a/b/c), (iii), (iv), (vi). Arrancar en paralelo:
+docs/epica-bandeja-unica.md. Ya fusionado: m-25017843 (PR #625), m-25017844 (PR #624),
+m-25017859 (PRs #649, #665), m-25026457 (BU-A13, PR #653), m-25017852 (PR #622). Regla de
+«Por responder» en packages/api/src/qualify_api/inbox/awaiting.py; decisiones (ii) y (vii) en §6.
+Menú en Instagram: decidido el 2026-10-23 (m-24789557); el ADR 48 lo escribe principal-architect.
+Pendientes del fundador: (i-a/b/c), (iii), (iv), (vi) y «Todas las redes». Siguiente:
+- Comprobar en producción, celular y escritorio, la lista única de m-25017859 y «Cerrar» de
+  m-25026457 (ninguna se vio en un navegador); con eso pasan de RESOLVED a Done.
 - backend-engineer (A): m-25017846 → m-25017866 → m-25017868 (mismos archivos, una sola persona; pruebas -m db).
-- backend-engineer (B): m-25017843 (servicio de bandeja + ChannelCapabilities + predicado único), luego BU-A6.
-- reflex-ui-engineer (único dueño de whatsapp_tab_chats.py y conversations_page.py): m-25017844 → m-25017859 →
-  m-25017861 → BU-A10; m-25017862, m-25017864 y m-25017865 entre medio si no tocan esos archivos.
+- backend-engineer (B): BU-A6 (crear el ticket); los seguimientos sin ticket de §5 si el fundador los prioriza.
+- reflex-ui-engineer (único dueño de whatsapp_tab_chats.py y conversations_page.py): m-25017861 → BU-A10;
+  m-25017862, m-25017864 y m-25017865 entre medio si no tocan esos archivos; BU-A5 cuando esté m-25017860.
 - ux-designer: m-25017860 (contraste del tinte, condición de D2) y la prueba «Responder yo» con Bianki (BU-B8).
 - data-scientist-fde: m-25017863 (medición de Sugerir respuesta, qualify-measure).
-- backend-engineer (fuera de la épica): m-25017852 (Instagram «Persona sin nombre», P1), m-25017850, m-25017849, m-25017848.
-Cada historia es un PR con su m-<id>; nada de BU-B5/B6/B9 sin el ADR 48 escrito y (i-b)/(i-c)/(vi) decididas;
-m-25017843 y m-25017859 aplican la regla decidida en (ii).
+- backend-engineer (fuera de la épica): m-25017850, m-25017849, m-25017848.
+Cada historia es un PR con su m-<id>; nada de BU-B5/B6/B9 sin el ADR 48 escrito y (i-b)/(i-c)/(vi) decididas.
 ```

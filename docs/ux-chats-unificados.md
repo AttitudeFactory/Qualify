@@ -1,6 +1,11 @@
 # Chats de WhatsApp e Instagram: una sola bandeja, ajustes aparte (m-24789459)
 
-`[PROPUESTA UX DECIDIDA por el fundador 2026-11-12 · m-24789459 · sin implementar]`
+`[PROPUESTA UX DECIDIDA por el fundador 2026-11-12 · m-24789459 · fila y lista única construidas (m-25017844, m-25017859), el resto sin implementar]`
+
+> **Cambios de texto posteriores (2026-11-13/14), decididos por el fundador:** «Responde en N min»
+> pasó a «Quedan {N} min para responder»; la lista suma el filtro «Sin responder a tiempo · N» para
+> los chats de Instagram vencidos sin respuesta. Detalle y resto de textos en
+> `docs/epica-bandeja-unica.md` §6 (vii).
 
 > Propuesta de experiencia (ux-designer, 2026-11-12). El fundador aceptó las cinco
 > recomendaciones (D1–D5) el 2026-11-12; «Enviar» en los dos canales ya estaba decidido y en
@@ -73,7 +78,9 @@ nombre anterior hasta que el fundador decida.
 
 - **Una fila** (la de Instagram): foto o inicial, glifo del canal en la esquina, punto que respira
   cuando el cliente espera, nombre, hora, vista previa con «Tú: », **una sola** píldora de atención
-  (la más urgente: Pago por revisar › Responde en N min › Quiere comprar) y, si hay equipo, las
+  (la más urgente: Pago por revisar › Quedan N min para responder › Quiere comprar; texto
+  cambiado por el fundador el 2026-11-13, antes «Responde en N min»; el orden construido es otro,
+  ver `epica-bandeja-unica.md` §6 (vii) 9) y, si hay equipo, las
   iniciales de quien atiende. «Cerrado» no hace falta en la fila: ya lo dice el filtro.
 - **Un chat**: arriba, volver con destino («‹ Por responder», N7), nombre, canal y hasta cuándo se
   le puede escribir; a la derecha, «⋯» con lo que se usa poco (Asignar, Cerrar chat, Ajustes de este

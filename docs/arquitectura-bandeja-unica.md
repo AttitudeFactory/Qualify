@@ -134,9 +134,17 @@ Propuesta `[PROPUESTO]`, igual para todos los canales:
 - El predicado vive **una vez** en SQL (función de Python que devuelve el fragmento) y lo usan la
   lista y `attention/counts.py`, para que el número del menú y la lista no puedan diferir.
 
-Cerrar un chat en Instagram no necesita migración: `threads.status` ya admite `closed`. Falta
-decidir si un mensaje entrante nuevo lo reabre (en WhatsApp: verificar en `chats.py` y
-`handler.py` antes del corte C9).
+Cerrar un chat en Instagram no necesita migración: `threads.status` ya admite `closed`.
+
+> **Decidido y construido después de esta nota (2026-11-13/14).** La regla quedó en
+> `packages/api/src/qualify_api/inbox/awaiting.py` y difiere de la propuesta de arriba en dos
+> puntos: una respuesta del menú automático no saca el chat si se entregó a una persona o falló un
+> envío automático (decisión (ii), «Solo si pasó a persona»), y un chat de Instagram cuenta solo
+> mientras su ventana de 24 h está abierta («Ventana + cerrar chat»). La lista única los usa
+> desde m-25017859 (PR #665), con el filtro adicional «Sin responder a tiempo». El corte C9 se
+> entregó en m-25026457 (PR #653): en Instagram solo un mensaje realmente nuevo reabre un chat
+> cerrado; WhatsApp sigue reabriendo con cualquier entrante, incluso repetido (seguimiento sin
+> ticket). Detalle: `docs/epica-bandeja-unica.md` §6 (ii) y (vii).
 
 ## 3. Respuesta automática (menú) también en Instagram Direct
 
