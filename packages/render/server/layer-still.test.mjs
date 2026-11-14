@@ -438,9 +438,15 @@ test('script faces: line height and the gap under the title come from the measur
   assert.ok(script.report.title_metrics.gap_after > plain.report.title_metrics.gap_after, JSON.stringify([plain.report.title_metrics, script.report.title_metrics]));
 });
 
+// The fixture is real `LayerSpec.model_dump_json()` output of the layer stage's schema
+// (feat/m-25017283-capa-de-texto; its sha is in `_source`). Regenerate it with
+// `server/fixtures/dump_sibling_layer_specs.py` (instructions in its docstring) whenever that
+// schema changes; once the branch is merged, import `qualify_creative.layer_spec` instead.
 test('the sibling LayerSpec v1 dumps (m-25017283) pass the boundary and render', () => {
   const fixture = JSON.parse(fs.readFileSync(path.join(here, 'fixtures', 'layer-spec-v1-sibling.json'), 'utf8'));
-  assert.ok(fixture.specs.length >= 7);
+  assert.ok(fixture.specs.length >= 8);
+  // brand_fill 1:1 takes a 45–60 char value in both catalogs (§1.5)
+  assert.ok(fixture.specs.some((s) => s.layout_id === 'brand_fill' && s.format === '1:1' && s.info_blocks[0].value.length > 44));
   for (const spec of fixture.specs) {
     const hasPhoto = !!spec.photo || spec.highlight_content?.kind === 'photo';
     assert.deepEqual(layerProblems(catalog, spec, {formats: [spec.format], hasPhoto}), [], spec.layout_id);
