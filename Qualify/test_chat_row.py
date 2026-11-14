@@ -368,7 +368,8 @@ def test_both_lists_render_the_shared_row() -> None:
     assert "inbox_list_state" in single and ROW_KEY_HANDLER._js_expr in single
     from . import conversations_page
 
-    assert conversations_page._tone_pill is whatsapp_tab_chats._tone_pill  # one helper
+    # m-25027371: one thread too — both chats draw their header pills with one helper.
+    assert conversations_page.state_pill is whatsapp_tab_chats.state_pill
 
 
 def test_the_rows_are_equally_tall_on_both_channels() -> None:
@@ -422,7 +423,7 @@ def test_the_row_paints_with_tokens() -> None:
 def test_the_dot_and_the_pulse_stop_under_reduced_motion() -> None:
     block = _css_block(".q-conv-row--fresh, .q-conv-unread")
     assert block.startswith("@media (prefers-reduced-motion: reduce)")
-    rule = block[block.index(".q-conv-msg, .q-conv-row--fresh, .q-conv-unread") :]
+    rule = block[block.index(".q-conv-row--fresh, .q-conv-unread") :]
     assert "animation: none" in rule[: rule.index("}")]
 
 

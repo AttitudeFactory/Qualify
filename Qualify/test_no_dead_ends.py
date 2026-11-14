@@ -14,12 +14,10 @@ _APP = Path(__file__).parent
 # state on the same screen, so a button inside it would duplicate it.
 #   - stock search: the search box above IS the action («Busca una imagen…»);
 #   - QR codes: the «Crear código» form sits directly above the empty list;
-#   - WhatsApp chats detail pane: «Elige una conversación» — the list is beside it;
 #   - the design guide (`styleguide_page.py`) and the primitive itself.
 _EXCEPTIONS: frozenset[tuple[str, str]] = frozenset(
     {
         ("whatsapp_page.py", "Aún no tienes códigos QR"),
-        ("whatsapp_tab_chats.py", "Elige una conversación"),
     }
 )
 _SKIP_FILES = frozenset({"styleguide_page.py"})

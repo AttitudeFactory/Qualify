@@ -140,5 +140,10 @@ def test_the_payment_pill_comes_first_in_the_row_and_the_header() -> None:
         "Pago por revisar"
     )
     source = inspect.getsource(whatsapp_tab_chats)
-    head = source.index("_tone_pill(S.payment.label, S.payment.tone)")
-    assert head < source.index("_tone_pill(thread.window_label, thread.window_tone)")
+    # m-25027371: the shared header draws the pills, in this order, before the window line.
+    head = source.index("state_pill(S.payment.label, S.payment.tone)")
+    assert head < source.index("state_pill(thread.mode_label, thread.mode_tone)")
+    from . import chat_thread
+
+    shared = inspect.getsource(chat_thread.thread_header)
+    assert shared.index("*pills,") < shared.index("*([window] if window is not None else [])")

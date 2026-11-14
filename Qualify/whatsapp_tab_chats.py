@@ -33,7 +33,33 @@ import reflex as rx
 
 from .chat_row import chat_row
 from .chat_row import tone_pill as _tone_pill
-from .chat_row_vm import INBOX_BACK_LABEL, ChatRowVM
+from .chat_row_vm import CHANNEL_WHATSAPP, ChatRowVM
+from .chat_thread import (
+    TAP_MIN,
+    back_button,
+    bubble_meta,
+    day_separator,
+    menu_item,
+    message_row,
+    more_menu,
+    no_chat_open,
+    order_strip,
+    state_pill,
+    thread_body,
+    thread_frame,
+    thread_header,
+    thread_scroll,
+    window_text,
+)
+from .chat_thread_vm import (
+    ASSIGN_LABEL,
+    BUBBLE_LINK_HIGH_CONTRAST,
+    CLOSE_LABEL,
+    REOPEN_LABEL,
+    SETTINGS_LABEL,
+    UNASSIGNED_LABEL,
+    WHATSAPP_SETTINGS_HREF,
+)
 from .r2_media import BACKEND_BASE
 from .ui import (
     OrbitItem,
@@ -50,7 +76,6 @@ from .ui import (
     orbit_menu,
     signal_pill,
     skeleton_rows,
-    tag,
     tone_badge,
 )
 from .ui import tokens as T
@@ -196,7 +221,9 @@ _TONES = ("ok", "warn", "error", "info", "neutral")
 #: Live chats refresh faster than /inbox's 45 s: 15 s, client-side, unmounted with the tab.
 _REFRESH_MS = 15_000
 #: N12: every tap target on this tab is at least 44 px tall.
-_TAP_MIN = "2.75rem"
+_TAP_MIN = TAP_MIN
+#: WhatsApp gives no profile picture: the header shows the initials or the person icon.
+_NO_PICTURE: rx.Var[str] = rx.Var.create("")
 
 
 # ======================================================================================
@@ -348,50 +375,93 @@ def _list_pane() -> rx.Component:
 
 
 def _back_button() -> rx.Component:
-    """Phone only (the list and the conversation share one pane there). N7: the
-    button names where it goes — «‹ Chats», never a bare arrow. m-25017859: a chat
-    opened from the single list of «Por responder» says «‹ Por responder» and goes back
-    there, on every size (on a desk this number's own list is not the way back)."""
+    """N7: the button names where it goes. m-25017859: a chat opened from the single
+    list of «Por responder» says «‹ Por responder» and goes back there, on every size
+    (on a desk this number's own list is not the way back); one opened from this
+    number's list says «‹ Chats», on the phone only (the list and the chat share one
+    pane there)."""
     return rx.cond(
         S.from_inbox,
-        rx.button(
-            rx.icon("chevron-left", size=T.ICON_MD),
-            INBOX_BACK_LABEL,
-            on_click=S.back_to_inbox,
-            variant="ghost",
-            size="2",
-            min_height="44px",
-            **T.tone_scheme("neutral"),
-        ),
-        rx.button(
-            rx.icon("chevron-left", size=T.ICON_MD),
-            "Chats",
-            on_click=S.back_to_list,
-            variant="ghost",
-            size="2",
-            min_height="44px",
-            class_name="q-wa-chats__back",
-            **T.tone_scheme("neutral"),
-        ),
+        back_button(S.back_to_inbox),
+        back_button(S.back_to_list, label="Chats", class_name="q-wa-chats__back"),
     )
 
 
-def _agent_item(agent: AgentVM) -> rx.Component:
-    return rx.select.item(agent.name, value=agent.user_id)
-
-
-def _assign_select() -> rx.Component:
-    thread = S.open_thread
-    return rx.select.root(
-        rx.select.trigger(placeholder="Asignar", min_width="10rem"),
-        rx.select.content(
-            rx.select.item("Sin asignar", value=UNASSIGNED),
-            rx.foreach(S.agents, _agent_item),
-        ),
-        value=rx.cond(thread.agent_id != "", thread.agent_id, UNASSIGNED),
-        on_change=S.assign_to,
+def _assign_item(agent: AgentVM) -> rx.Component:
+    current = S.open_thread.agent_id == agent.user_id
+    return menu_item(
+        agent.name,
+        rx.cond(current, rx.icon("check", size=T.ICON_SM), rx.icon("user-round", size=T.ICON_SM)),
+        on_click=S.assign_to(agent.user_id),
         disabled=S.acting != "",
-        size="2",
+        custom_attrs={"aria-current": rx.cond(current, "true", "false")},
+    )
+
+
+def _assign_menu() -> rx.Component:
+    """«Asignar» (m-25027371): only when the business has more than one person with
+    access (`chat_thread_vm.show_assign`); the person attending it is checked."""
+    unassigned = S.open_thread.agent_id == ""
+    return rx.cond(
+        S.show_assign,
+        rx.fragment(
+            rx.menu.sub(
+                rx.menu.sub_trigger(
+                    rx.hstack(
+                        rx.icon("user-round-plus", size=T.ICON_SM),
+                        rx.text(ASSIGN_LABEL),
+                        spacing="2",
+                        align="center",
+                    ),
+                    min_height=TAP_MIN,
+                ),
+                rx.menu.sub_content(
+                    menu_item(
+                        UNASSIGNED_LABEL,
+                        rx.cond(
+                            unassigned,
+                            rx.icon("check", size=T.ICON_SM),
+                            rx.icon("user-round-x", size=T.ICON_SM),
+                        ),
+                        on_click=S.assign_to(UNASSIGNED),
+                        disabled=S.acting != "",
+                    ),
+                    rx.foreach(S.agents, _assign_item),
+                ),
+            ),
+            rx.menu.separator(),
+        ),
+        rx.fragment(),
+    )
+
+
+def _more_menu() -> rx.Component:
+    """«⋯» (m-25027371): Asignar · Cerrar / Reabrir · Ajustes de este canal. The same
+    events as the header buttons it replaces (`_act` → the channel's services)."""
+    thread = S.open_thread
+    return more_menu(
+        _assign_menu(),
+        rx.cond(
+            thread.is_closed,
+            menu_item(
+                REOPEN_LABEL,
+                "rotate-ccw",
+                on_click=S.reopen_conversation,
+                disabled=S.acting != "",
+            ),
+            menu_item(
+                CLOSE_LABEL,
+                "archive",
+                on_click=S.close_conversation,
+                disabled=S.acting != "",
+            ),
+        ),
+        rx.menu.separator(),
+        menu_item(
+            SETTINGS_LABEL,
+            "settings",
+            on_click=rx.redirect(WHATSAPP_SETTINGS_HREF),
+        ),
     )
 
 
@@ -406,62 +476,42 @@ def _action_button(
         disabled=(S.acting != "") & (S.acting != action),
         variant="soft",
         size="2",
+        min_height=TAP_MIN,
         **T.tone_scheme("neutral"),
     )
 
 
 def _conversation_header() -> rx.Component:
+    """The shared header (`chat_thread.thread_header`): back, avatar + name + number,
+    «⋯»; WhatsApp · until when the owner can write · payment · who answers · «Cerrado».
+    «Tomar el control» / «Devolver al menú» stay in sight under it until the «quién
+    responde» strip (BU-B8) takes them."""
     thread = S.open_thread
-    return rx.vstack(
-        rx.hstack(
-            # Name, then number + state pills on one wrapping line: at 375 px the pills
-            # drop below the name instead of overlapping it.
-            rx.vstack(
-                rx.heading(
-                    thread.title, size="4", as_="h2", class_name="q-wa-ellipsis", width="100%"
-                ),
-                rx.hstack(
-                    rx.cond(thread.subtitle != "", mono(thread.subtitle, size="1"), rx.fragment()),
-                    rx.cond(
-                        S.payment.label != "",
-                        _tone_pill(S.payment.label, S.payment.tone),
-                        rx.fragment(),
-                    ),
-                    _tone_pill(thread.window_label, thread.window_tone),
-                    _tone_pill(thread.mode_label, thread.mode_tone),
-                    rx.cond(thread.is_closed, tag("Cerrado"), rx.fragment()),
-                    spacing="2",
-                    flex_wrap="wrap",
-                    align="center",
-                ),
-                spacing="1",
-                min_width="0",
-                flex="1",
-            ),
-            width="100%",
-            align="start",
-            spacing="3",
+    return thread_header(
+        channel=CHANNEL_WHATSAPP,
+        title=thread.title,
+        initials=thread.initials,
+        avatar_url=_NO_PICTURE,
+        subtitle=rx.cond(thread.subtitle != "", mono(thread.subtitle, size="1"), rx.fragment()),
+        window=window_text(thread.window_line, thread.window_line_tone),
+        pills=(
+            state_pill(S.payment.label, S.payment.tone),
+            state_pill(thread.mode_label, thread.mode_tone),
         ),
-        rx.hstack(
+        is_closed=thread.is_closed,
+        back=_back_button(),
+        actions=rx.hstack(
             rx.cond(
                 thread.automation_paused,
                 _action_button("Devolver al menú", "bot", S.resume_menu, "resume"),
                 _action_button("Tomar el control", "hand", S.take_over, "takeover"),
-            ),
-            _assign_select(),
-            rx.spacer(),
-            rx.cond(
-                thread.is_closed,
-                _action_button("Reabrir", "rotate-ccw", S.reopen_conversation, "reopen"),
-                _action_button("Cerrar", "archive", S.close_conversation, "close"),
             ),
             width="100%",
             align="center",
             spacing="2",
             flex_wrap="wrap",
         ),
-        spacing="3",
-        width="100%",
+        menu=_more_menu(),
     )
 
 
@@ -728,9 +778,18 @@ def _payment_confirm_dialog() -> rx.Component:
 
 
 def _order_card() -> rx.Component:
-    order = S.order
+    """m-25027371 (UX §4 point 9): the order folds into a strip «Pedido · 3 productos ·
+    COP 45.000 · Pago por revisar»; one tap opens today's card inside, unchanged."""
     return rx.cond(
-        order.present,
+        S.order.present,
+        order_strip(S.order_strip_label, _order_card_body()),
+        rx.cond(S.payment.present, card(_payment_block(), padding="1rem"), rx.fragment()),
+    )
+
+
+def _order_card_body() -> rx.Component:
+    order = S.order
+    return rx.fragment(
         card(
             rx.vstack(
                 rx.hstack(
@@ -812,7 +871,6 @@ def _order_card() -> rx.Component:
             ),
             padding="1rem",
         ),
-        rx.cond(S.payment.present, card(_payment_block(), padding="1rem"), rx.fragment()),
     )
 
 
@@ -821,42 +879,14 @@ def _order_card() -> rx.Component:
 # ======================================================================================
 
 
-def _tick(m: MessageVM) -> rx.Component:
-    muted = T.TEXT_MUTED
-    return rx.box(
-        rx.match(
-            m.tick,
-            ("sent", rx.icon("check", size=T.ICON_SM, color=muted)),
-            ("delivered", rx.icon("check-check", size=T.ICON_SM, color=muted)),
-            ("read", rx.icon("check-check", size=T.ICON_SM, color=T.tone_color("accent", 11))),
-            ("queued", rx.icon("clock", size=T.ICON_SM, color=muted)),
-            ("failed", rx.icon("circle-alert", size=T.ICON_SM, color=T.tone_color("error", 11))),
-            rx.fragment(),
-        ),
-        title=m.tick_label,
-        aria_label=m.tick_label,
-        display="inline-flex",
-    )
-
-
 def _bubble_meta(m: MessageVM) -> rx.Component:
-    return rx.vstack(
-        rx.hstack(
-            rx.text(m.time_label, size="1", color=T.TEXT_MUTED, class_name="q-nums"),
-            _tick(m),
-            spacing="1",
-            align="center",
-            justify="end",
-            width="100%",
-        ),
-        rx.cond(
-            m.error_label != "",
-            rx.text(m.error_label, size="1", color=T.tone_color("error", 11)),
-            rx.fragment(),
-        ),
-        spacing="1",
-        width="100%",
-        padding_top="0.35rem",
+    """Time + status mark (the shared `chat_thread.bubble_meta`: colours from the sheet,
+    the word as the mark's accessible name)."""
+    return bubble_meta(
+        time_label=m.time_label,
+        tick=m.tick,
+        tick_label=m.tick_label,
+        error_label=m.error_label,
     )
 
 
@@ -887,6 +917,8 @@ def _media_link(m: MessageVM, label: rx.Var[str] | str, icon: str) -> rx.Compone
         href=m.media_src,
         is_external=True,
         rel="noopener noreferrer",
+        high_contrast=BUBBLE_LINK_HIGH_CONTRAST,
+        underline="always",
     )
 
 
@@ -984,6 +1016,8 @@ def _bubble_body(m: MessageVM) -> rx.Component:
                     href=m.location_href,
                     is_external=True,
                     size="2",
+                    high_contrast=BUBBLE_LINK_HIGH_CONTRAST,
+                    underline="always",
                 ),
             ),
             spacing="1",
@@ -1097,65 +1131,44 @@ def _ad_origin(m: MessageVM) -> rx.Component:
 
 
 def _message(m: MessageVM) -> rx.Component:
-    """Outbound right, inbound left (`.q-wa-msg--*` aligns and turns the kit's tail);
-    `.q-wa-msg--glass` is WhatsApp's Liquid Glass look and the entrance — keyed by message
-    id, so only a new bubble plays it."""
-    return rx.cond(
-        m.is_outbound,
-        rx.box(
-            chat_bubble(_bubble_body(m), direction="out", meta=_bubble_meta(m)),
-            class_name="q-wa-msg q-wa-msg--out q-wa-msg--glass",
-            key=m.message_id,
+    """The shared message row (`chat_thread.message_row`): the business's on the right in
+    WhatsApp's soft tint, the customer's on the left with the ad it came from above; the
+    day separator over the first message of a day. Keyed by message id, so only a new
+    bubble plays the entrance."""
+    return rx.vstack(
+        day_separator(m.day_label),
+        message_row(
+            outbound=m.is_outbound,
+            body=_bubble_body(m),
+            meta=_bubble_meta(m),
+            before=(_ad_origin(m),),
+            has_before=m.ad_origin_label != "",
         ),
-        rx.box(
-            _ad_origin(m),
-            chat_bubble(_bubble_body(m), direction="in", meta=_bubble_meta(m)),
-            class_name="q-wa-msg q-wa-msg--in q-wa-msg--glass",
-            key=m.message_id,
-            flex_direction="column",
-            align_items="start",
-            gap="var(--space-1)",
-        ),
+        spacing="1",
+        width="100%",
+        key=m.message_id,
     )
 
 
 def _messages() -> rx.Component:
-    """`column-reverse` keeps the scroll anchored at the newest message with no JS."""
-    return rx.box(
-        rx.vstack(
-            rx.cond(
-                S.has_more,
-                rx.center(
-                    rx.button(
-                        rx.icon("chevrons-up", size=T.ICON_SM),
-                        "Cargar anteriores",
-                        on_click=S.load_older,
-                        loading=S.loading_older,
-                        variant="ghost",
-                        size="1",
-                        **T.tone_scheme("neutral"),
-                    ),
-                    width="100%",
-                ),
-                rx.fragment(),
+    top = rx.cond(
+        S.has_more,
+        rx.center(
+            rx.button(
+                rx.icon("chevrons-up", size=T.ICON_SM),
+                "Cargar anteriores",
+                on_click=S.load_older,
+                loading=S.loading_older,
+                variant="ghost",
+                size="1",
+                min_height=TAP_MIN,
+                **T.tone_scheme("neutral"),
             ),
-            rx.cond(
-                S.messages.length() > 0,
-                rx.foreach(S.messages, _message),
-                rx.text(
-                    "Aún no hay mensajes en esta conversación.",
-                    size="2",
-                    color=T.TEXT_MUTED,
-                    text_align="center",
-                    width="100%",
-                ),
-            ),
-            spacing="2",
             width="100%",
         ),
-        class_name="q-wa-scroll q-wa-scroll--messages q-wa-scroll--glass",
-        width="100%",
+        rx.fragment(),
     )
+    return thread_scroll(top, S.messages, _message)
 
 
 # ======================================================================================
@@ -2614,37 +2627,17 @@ def _live_composer() -> rx.Component:
 
 
 def _conversation() -> rx.Component:
-    return card(
-        rx.vstack(
-            _conversation_header(),
-            _banner(S.banner, S.banner_tone),
-            rx.cond(
-                S.conv_error != "",
-                rx.vstack(
-                    callout(S.conv_error, "error"),
-                    rx.button(
-                        rx.icon("refresh-cw", size=T.ICON_SM),
-                        "Reintentar",
-                        on_click=S.load_conversation,
-                        variant="soft",
-                        size="2",
-                        **T.tone_scheme("neutral"),
-                    ),
-                    width="100%",
-                    spacing="3",
-                ),
-                rx.cond(
-                    S.conv_ready,
-                    rx.vstack(_order_card(), _messages(), spacing="3", width="100%"),
-                    skeleton_rows(4, height="3rem"),
-                ),
-            ),
-            _composer(),
-            spacing="3",
-            width="100%",
+    return thread_frame(
+        CHANNEL_WHATSAPP,
+        _conversation_header(),
+        _banner(S.banner, S.banner_tone),
+        thread_body(
+            error=S.conv_error,
+            on_retry=S.load_conversation,
+            ready=S.conv_ready,
+            content=rx.vstack(_order_card(), _messages(), spacing="3", width="100%"),
         ),
-        padding="1rem",
-        class_name="q-card q-wa-card",
+        _composer(),
     )
 
 
@@ -2655,11 +2648,9 @@ def _conversation_pane() -> rx.Component:
             _conversation(),
             rx.vstack(
                 _banner(S.banner, S.banner_tone),
-                empty_state(
-                    "message-square-text",
-                    "Elige una conversación",
-                    "Ábrela para leerla, responder, tomar el control de la respuesta automática o "
-                    "marcar un pedido como listo.",
+                no_chat_open(
+                    "Ábrela para leerla, responder, tomar el control de la respuesta automática "
+                    "o marcar un pedido como listo."
                 ),
                 width="100%",
             ),

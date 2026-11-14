@@ -843,7 +843,7 @@ def test_the_bubble_draws_the_mention_inline_when_it_is_all_there_is() -> None:
     body = str(_bubble_body(m).render())
     assert "story_inline" in body and "story_label" in body
     bubble = str(page_message(m).render())
-    assert "story_inline" in bubble and "q-conv-msg--story" in bubble
+    assert "story_inline" in bubble and "q-chat-msg--context" in bubble
 
 
 # --- taps: ice breakers, quick replies, buttons, menu (m-24789472) ---------------------
@@ -907,7 +907,7 @@ def test_the_bubble_renders_the_tap_origin_only_when_there_is_one() -> None:
     assert "choice_label" in rendered and "LucidePointer" in rendered  # TAP_ICON
     # The bubble stacks it above the text, like a story reply.
     bubble = str(_message(m).render())
-    assert "choice_label" in bubble and "q-conv-msg--story" in bubble
+    assert "choice_label" in bubble and "q-chat-msg--context" in bubble
 
 
 # --- message templates (m-24789472) ----------------------------------------------------

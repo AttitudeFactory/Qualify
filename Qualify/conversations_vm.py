@@ -61,8 +61,9 @@ from .chat_row_vm import (
     minutes_left,
     unknown_contact,
 )
+from .chat_thread_vm import day_label, window_line
 from .connection_copy import DISCONNECTED, DISCONNECTED_NOTICE, NO_ACCESS, PERMISSION_MISSING_NOTICE
-from .whatsapp_chats_vm import format_day, message_time, relative_time
+from .whatsapp_chats_vm import message_time, relative_time
 
 # ======================================================================================
 # Copy and limits
@@ -653,6 +654,10 @@ class ThreadRowVM:
     # m-25026457: the person's last message as this row shows it (ISO 8601, "" when
     # none) — what «Cerrar» sends as «seen», and how a refresh tells a new message apart.
     last_inbound_iso: str = ""
+    # m-25027371: the shared header's window line («Puedes escribirle hasta las …» /
+    # «Quedan N min para responder»); "" once closed — the pill and the composer say it.
+    window_line: str = ""
+    window_line_tone: str = "neutral"
 
 
 EMPTY_THREAD = ThreadRowVM(
@@ -760,6 +765,9 @@ def build_thread_row(
         zone,
         has_inbound=getattr(thread, "last_inbound_at", None) is not None,
     )
+    line, line_tone = window_line(view.window.is_open, view.window.closes_at, now, zone)
+    if getattr(thread, "last_inbound_at", None) is None:
+        line, line_tone = "", "neutral"
     channel = CHANNEL_LABELS.get(thread.channel, thread.channel)
     subtitle = f"{account_label} · {channel}" if account_label else channel
     # Identity: the profile the sync fetched beats the handle of the latest message.
@@ -791,6 +799,8 @@ def build_thread_row(
         fresh=fresh,
         window_minutes=minutes_left(view.window.is_open, view.window.closes_at, now),
         last_inbound_iso=inbound_iso(getattr(thread, "last_inbound_at", None)),
+        window_line=line,
+        window_line_tone=line_tone,
     )
 
 
@@ -940,14 +950,8 @@ def failure_label(code: str | None) -> str:
 
 
 def _day_of(value: datetime, zone: tzinfo, now: datetime) -> str:
-    local = value.astimezone(zone) if value.tzinfo is not None else value
-    today = (now.astimezone(zone) if now.tzinfo is not None else now).date()
-    days = (today - local.date()).days
-    if days == 0:
-        return "Hoy"
-    if days == 1:
-        return "Ayer"
-    return format_day(value, zone, now)
+    """m-25027371: the shared thread's day separator (the same on WhatsApp)."""
+    return day_label(value, zone, now)
 
 
 def build_message_vm(

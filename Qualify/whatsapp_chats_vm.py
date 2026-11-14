@@ -39,7 +39,14 @@ from urllib.parse import urlencode
 
 from .ad_message_vm import ad_origin_href, ad_origin_label
 from .catalog_vm import CHATS_RETURN_PATH, RETURN_PARAM
-from .chat_row_vm import CHANNEL_WHATSAPP, ChatRowVM, build_chat_row, minutes_left
+from .chat_row_vm import (
+    CHANNEL_WHATSAPP,
+    ChatRowVM,
+    build_chat_row,
+    letter_initials,
+    minutes_left,
+)
+from .chat_thread_vm import mark_days, window_line
 from .planner_vm import time_label_12h
 from .seasonal_vm import CREATE_HREF as SEASONAL_LIBRARY_CREATE_HREF
 from .seasonal_vm import PRODUCT_RECIPES, PRODUCT_SEASON_KEY, product_message
@@ -339,6 +346,12 @@ def message_time(value: datetime | None, now: datetime, zone: tzinfo) -> str:
     return f"{format_day(value, zone, now)} {clock}"
 
 
+def bubble_clock(value: datetime | None, zone: tzinfo) -> str:
+    """A bubble's time: the clock alone — the day separator above says the day
+    (m-25027371, as Instagram's thread)."""
+    return format_clock(value, zone) if value is not None else ""
+
+
 def window_pill(
     is_open: bool, closes_at: datetime | None, now: datetime, zone: tzinfo
 ) -> tuple[str, str]:
@@ -454,6 +467,11 @@ class ThreadRowVM:
     #: m-25017859: the «Por responder» rule's verdict (`ThreadSummary.awaiting_reply`):
     #: the waiting dot and the «Por responder» chip.
     awaiting_reply: bool = False
+    #: m-25027371: the open chat's header — the person's initials ("" → the person
+    #: icon) and the shared window line («Puedes escribirle hasta las …»).
+    initials: str = ""
+    window_line: str = WINDOW_CLOSED_PILL
+    window_line_tone: str = "neutral"
 
 
 EMPTY_THREAD = ThreadRowVM(
@@ -493,6 +511,9 @@ def build_thread_row(
     elif thread.last_message_direction == "outbound":
         preview = OUTBOUND_PREFIX + preview
     window_label, window_tone = window_pill(thread.window.open, thread.window.closes_at, now, zone)
+    line, line_tone = window_line(
+        thread.window.open, thread.window.closes_at, now, zone, closed_text=WINDOW_CLOSED_PILL
+    )
     mode_label, mode_tone = mode_pill(thread.automation_paused)
     agent_id = str(thread.assigned_agent_id) if thread.assigned_agent_id else ""
     agent = (agents or {}).get(agent_id) if agent_id else None
@@ -517,6 +538,9 @@ def build_thread_row(
         is_closed=thread.status == "closed",
         window_minutes=minutes_left(thread.window.open, thread.window.closes_at, now),
         awaiting_reply=bool(getattr(thread, "awaiting_reply", False)),
+        initials=letter_initials(name),
+        window_line=line,
+        window_line_tone=line_tone,
     )
 
 
@@ -632,6 +656,9 @@ class MessageVM:
     location_href: str = ""
     #: m-25018684: an inbound catalog cart — drawn with the shopping-bag icon.
     is_order: bool = False
+    #: m-25027371: «Hoy» / «Ayer» / «12 oct» on the first message of each day (the same
+    #: separators as Instagram's thread); the bubble then says only the clock.
+    day_label: str = ""
 
 
 VIEW_ON_MAP = "Ver en el mapa"
@@ -804,7 +831,7 @@ def build_message_vm(
         is_outbound=outbound,
         text=text,
         is_media_placeholder=placeholder,
-        time_label=message_time(message.posted_at, now, zone),
+        time_label=bubble_clock(message.posted_at, zone),
         tick=tick,
         tick_label=_TICK_LABELS.get(tick, ""),
         error_label=failure_label(message.delivery_error_code) if tick == "failed" else "",
@@ -840,7 +867,7 @@ def build_unsent_vm(item: UnsentItem, *, now: datetime, zone: tzinfo) -> Message
         is_outbound=True,
         text=item.text or "[mensaje]",
         is_media_placeholder=False,
-        time_label=message_time(item.created_at, now, zone),
+        time_label=bubble_clock(item.created_at, zone),
         tick=tick,
         tick_label=_TICK_LABELS[tick],
         error_label=failure_label(item.error_code) if failed else "",
@@ -905,7 +932,13 @@ def build_conversation(
     for item in unsent:
         keyed.append((item.created_at, 1, build_unsent_vm(item, now=now, zone=zone)))
     keyed.sort(key=lambda entry: (entry[0], entry[1]))
-    return [vm for _instant, _order, vm in keyed]
+    # m-25027371: the day separators of the shared thread («Hoy», «Ayer», «12 oct»).
+    return mark_days(
+        [(instant, vm) for instant, _order, vm in keyed],
+        zone,
+        now,
+        lambda vm, label: replace(vm, day_label=label),
+    )
 
 
 def merge_pages(older: Sequence[Any], newest: Sequence[Any]) -> list[Any]:

@@ -79,6 +79,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState
 from .chat_row_vm import ChatRowVM
+from .chat_thread_vm import order_strip_label, show_assign
 from .nav_url import (
     FROM_INBOX,
     FROM_PARAM,
@@ -675,6 +676,17 @@ class WhatsAppChatsState(rx.State):
     @rx.var
     def conv_ready(self) -> bool:
         return self.open_thread_id != "" and self.conv_loaded_for == self.open_thread_id
+
+    @rx.var
+    def show_assign(self) -> bool:
+        """m-25027371: «Asignar» in «⋯» only with more than one person with access."""
+        return show_assign(len(self.agents))
+
+    @rx.var
+    def order_strip_label(self) -> str:
+        """m-25027371: the folded order — «Pedido · 3 productos · COP 45.000 · Pago por
+        revisar»."""
+        return order_strip_label(self.order.items_label, self.order.total_label, self.payment.label)
 
     @rx.var
     def can_compose(self) -> bool:
