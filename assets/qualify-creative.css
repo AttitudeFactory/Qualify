@@ -812,6 +812,106 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
   color: var(--gray-10);
 }
 
+/* ── «Arma tu video» (ED-01…ED-05): the Clip's first step as an editor ─────────────
+   The live preview on top (fixed while the tools scroll, ~36svh tall; ~20svh while a
+   field of the editor has the focus, so the keyboard leaves room), the card «Tu video»,
+   then the tools (`.q-edit-tools` on the `lq-segmented` of `.q-source-seg`). Preview and
+   tools sit side by side only when the STEP is wide enough (`.q-edit-host` is the size
+   container, never the window: a narrow desktop with the side panel stacks them).
+   `ui.edit_preview` + `assets/edit-preview.js`. */
+.q-edit-host { container: edit-host / inline-size; width: 100%; min-width: 0; }
+.q-edit { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-4); width: 100%; min-width: 0; }
+.q-edit__preview {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  padding-block: var(--space-2);
+  background: var(--color-panel-solid);
+}
+.q-edit__main {
+  container: edit-main / inline-size;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+@container edit-host (min-width: 46rem) {
+  .q-edit { grid-template-columns: minmax(15rem, 18rem) minmax(0, 1fr); align-items: start; }
+  .q-edit__preview { top: var(--space-3); background: transparent; padding-block: 0; }
+  .q-edit-preview__frame { height: auto; width: 100%; max-height: 70vh; }
+}
+/* a field of the editor with the focus (the keyboard is up on a phone): the frame
+   shrinks and the note hides, only while stacked */
+@container edit-host (max-width: 45.99rem) {
+  .q-edit:has(.q-edit__main input:focus, .q-edit__main textarea:focus) .q-edit-preview__frame {
+    height: 20svh;
+  }
+  .q-edit:has(.q-edit__main input:focus, .q-edit__main textarea:focus) .q-edit-preview__note {
+    display: none;
+  }
+}
+
+/* The tools: the chosen one's name and the others' icon (`.q-source-seg`) while the
+   tools' column is narrow (a phone; the 305 px column at 1280); every name from 30rem. */
+@container edit-main (min-width: 30rem) {
+  .radix-themes .q-edit-tools .rt-SegmentedControlItem[data-state="off"] .q-source-seg__text { display: inline; }
+}
+
+/* «Cortar»: Radix's two-handle slider, each handle a 44 px target around a 22 px dot. */
+/* Radix's PRIMITIVE slider ships no styles at all (Reflex's `add_style` does not reach
+   it here): the root, the track and the range get the layout Radix expects — a relative
+   flex row, a growing relative track, an absolute full-height range. Provisional: ED-03
+   retires it. */
+.q-edit-cut.q-edit-cut {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: 44px;
+  user-select: none;
+  touch-action: none;
+}
+.q-edit-cut .q-edit-cut__track {
+  position: relative;
+  flex-grow: 1;
+  height: 6px;
+  overflow: hidden;
+  border-radius: 9999px;
+  background-color: var(--gray-a6);
+}
+.q-edit-cut .q-edit-cut__range {
+  position: absolute;
+  height: 100%;
+  border-radius: 9999px;
+  background-color: var(--accent-9);
+}
+.q-edit-cut .q-edit-cut__thumb,
+.q-edit-cut .q-edit-cut__thumb:hover,
+.q-edit-cut .q-edit-cut__thumb:focus {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 999px;
+  background-color: transparent;
+  box-shadow: none;
+  cursor: grab;
+}
+.q-edit-cut .q-edit-cut__thumb::after {
+  content: "";
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  background: var(--accent-9);
+  box-shadow: 0 0 0 3px var(--color-panel-solid), 0 1px 4px var(--black-a6);
+}
+.q-edit-cut .q-edit-cut__thumb:focus-visible { outline: 2px solid var(--accent-8); outline-offset: -4px; }
+
+/* The live line of «Deshacer» (D-E6). */
+.q-edit-undo { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); width: 100%; min-height: 44px; }
+.q-edit__panel { display: flex; flex-direction: column; gap: var(--space-3); min-width: 0; }
+
 /* ── The live edit preview (ED-01, m-25026605): the video's stretch, turned and cropped to
    9:16, with the text and the effect over it — all in the browser, nothing decoded on the
    server. `ui.edit_preview` + `assets/edit-preview.js`. ───────────────────────────── */

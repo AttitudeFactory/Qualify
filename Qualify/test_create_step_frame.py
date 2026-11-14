@@ -28,12 +28,24 @@ def test_the_flow_opens_on_que_mostrar_and_its_first_step_has_no_back() -> None:
     state.gen_category, state.brief_kind = "clip", "clip"
     assert state.create_step_n == 1
     assert state.create_step_m == len(state._gen_steps())
-    assert state.create_step_title == "Qué mostrar"
+    assert state.create_step_title == "Qué mostrar"  # QUALIFY_CLIP_EDITOR off (default)
     assert not state.create_has_back
     assert state.create_back() is None
     assert state.create_step_n == 1
     assert state.brief_topic == "El almuerzo de hoy"
     assert state.selected_product_id == "catalog-product"
+
+
+def test_with_the_clip_editor_on_step_1_is_arma_tu_video(monkeypatch: pytest.MonkeyPatch) -> None:
+    """m-25026621: with `QUALIFY_CLIP_EDITOR` on, a Clip's step 1 is the editor."""
+    from . import clip_editor_vm
+
+    monkeypatch.setattr(clip_editor_vm, "CLIP_EDITOR_ON", True)
+    state = _chosen()
+    state.gen_category, state.brief_kind = "clip", "clip"
+    assert state.create_step_n == 1
+    assert state.create_step_title == "Arma tu video"
+    assert not state.create_has_back
 
 
 def test_without_a_product_siguiente_is_never_blocked() -> None:
