@@ -33,7 +33,7 @@ algo falla baja por una cadena de respaldo fija hasta **Franja de color**, que s
 | 7 | `highlight_circle` | Círculo para destacados | Fondo de color y un ícono, una palabra o una foto dentro del círculo central | solo 9:16 |
 
 Lo que ya está decidido y este catálogo respeta `[F]`: sin botones dibujados; sin pastilla de precio
-(el precio vuelve solo si el fundador lo aprueba, §4 y pregunta 1); composición solo en Remotion;
+(el precio vuelve como una línea de texto, aprobado por el fundador el 2026-11-14: §4 y §12); composición solo en Remotion;
 segunda mirada de Claude con una corrección; el dueño cambia el texto y se recompone gratis; logo una
 sola vez; asistido, nunca autónomo.
 
@@ -148,7 +148,7 @@ dirección más larga no la acorta Claude: la pantalla le pide al dueño una ver
 | `anchor` | `plate`: `top_left` · `top_right` · `bottom_left` · `bottom_right` · `top_center` · `bottom_center`; `scrim` y `band`: `top` · `bottom` | `plate`, `scrim`, `band` |
 | `container_color` | `surface` · `accent` | `plate`, `band`, `info_card`, `brand_fill`, `highlight_circle` |
 | `accent_word` | índice de **una** palabra del título, o `null` | todos los que tienen título, menos `scrim` |
-| `info_blocks[].kind` y su orden | los 5 de §1.5 | `info_card`, `brand_fill` (solo `contact` o `location`) |
+| `info_blocks[].kind` y su orden | los 5 de §1.5 | `info_card`, `brand_fill` (solo `contact`, `location` o `hours`) |
 | `price_ref` | `product_id` del catálogo o `null` | según §4 |
 | `highlight_content` | `icon` (+ `icon_id`) · `word` · `photo` | `highlight_circle` |
 
@@ -587,7 +587,7 @@ preferencia. «—» = esa combinación no existe.
 
 ## 4. Dónde van el precio y el logo (una vez cada uno)
 
-### Precio `[F]` hoy no se dibuja (decisión #10); esta es la propuesta para cuando vuelva
+### Precio `[F]` aprobado el 2026-11-14 (§12): vuelve como una línea de texto, nunca pastilla ni botón
 
 - **Solo por referencia** (`price_ref` → precio del catálogo al componer), formateado en la moneda y
   el formato del negocio; precios enteros o nada (`qualify-copy-es` §5). Si el producto no tiene
