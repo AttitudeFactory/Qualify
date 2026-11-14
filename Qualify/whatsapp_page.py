@@ -357,8 +357,23 @@ def _no_numbers_state() -> rx.Component:
     )
 
 
-def _whatsapp_body(*strips: rx.Component) -> rx.Component:
-    """Loading, error and no-number states, then the page's `strips` and the panel."""
+def _on_promotions_page() -> rx.Var[bool]:
+    """Whether the panel in the shared state is one of «Promociones por WhatsApp»."""
+    return WhatsAppState.active_section == SECTION_PROMOTIONS
+
+
+def _whatsapp_body(*strips: rx.Component, mine: rx.Var[bool]) -> rx.Component:
+    """Loading, error and no-number states, then the page's `strips` and the panel.
+
+    m-25017862: both pages read the one shared `active_tab`, which the arriving page's
+    `enter_page` sets a server round trip AFTER the client has switched page. Until then
+    `mine` is false and the page shows a skeleton — never the other page's panel under
+    its own header, and never that panel's `on_mount` load (the chat list's, say)."""
+    panel = rx.cond(
+        mine,
+        rx.fragment(*strips, tab_body()),
+        rx.vstack(skeleton_rows(1, height="2.25rem"), skeleton_card(5), width="100%"),
+    )
     return page_body(
         rx.cond(
             WhatsAppState.load_error != "",
@@ -384,8 +399,7 @@ def _whatsapp_body(*strips: rx.Component) -> rx.Component:
                             ),
                             rx.fragment(),
                         ),
-                        *strips,
-                        tab_body(),
+                        panel,
                         spacing="3",
                         width="100%",
                     ),
@@ -408,7 +422,10 @@ def whatsapp_index() -> rx.Component:
             & WhatsAppMenuState.has_menu
             & ~WhatsAppMenuState.advanced_open,
             menu_step_frame(),
-            rx.fragment(whatsapp_header(), _whatsapp_body(tab_strip(), sub_strip())),
+            rx.fragment(
+                whatsapp_header(),
+                _whatsapp_body(tab_strip(), sub_strip(), mine=~_on_promotions_page()),
+            ),
         ),
     )
 
@@ -425,7 +442,7 @@ def whatsapp_promotions_index() -> rx.Component:
         ),
         # The menu's own word (N1); `test_nav_one_name` reads it here, as a literal.
         page_header("Promociones por WhatsApp", PROMOTIONS_SUBTITLE, number_selector()),
-        _whatsapp_body(sub_strip()),
+        _whatsapp_body(sub_strip(), mine=_on_promotions_page()),
     )
 
 

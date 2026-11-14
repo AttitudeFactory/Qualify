@@ -12,9 +12,10 @@ from __future__ import annotations
 
 import os
 import re
+import uuid
 from pathlib import Path
 
-from .conftest import expect
+from .conftest import _E2E_PLATFORM_APP, expect
 
 _SHOTS = os.environ.get("QUALIFY_E2E_SHOTS", "")
 _ROUTE = "/whatsapp/promociones"
@@ -101,3 +102,101 @@ def test_on_a_phone_the_entry_is_in_the_more_drawer(
     expect(bar.locator('.q-bottom-cell[data-active="true"] .q-bottom-label')).to_have_text("Más")
     expect(page.get_by_role("heading", level=1, name=_TITLE)).to_be_visible()
     _shot(page, "promociones-whatsapp-celular")
+
+
+# --- with a number: the panels load (review of 2026-11-14) -------------------------------
+
+
+def _seed_whatsapp_number(tenant_id: uuid.UUID, user_id: uuid.UUID) -> None:
+    """A connected WhatsApp number as `whatsapp.connect` would leave it — WITHOUT a
+    credential: nothing here can call Meta. Written in-tenant through the sanctioned
+    door, on the platform app row `conftest` seeds for Instagram."""
+    from qualify_api.connections.models import PlatformApp, SocialConnection
+    from qualify_api.tenancy.models import Brand
+    from qualify_api.whatsapp.models import WhatsAppPhoneNumber
+    from qualify_shared.db.admin import admin_session
+    from qualify_shared.db.session import tenant_session
+    from sqlalchemy import select
+
+    with admin_session() as session:
+        if session.get(PlatformApp, _E2E_PLATFORM_APP) is None:
+            session.add(
+                PlatformApp(
+                    id=_E2E_PLATFORM_APP,
+                    app_id="e2e-test-app",
+                    secret_ref="env:E2E_TEST_APP_SECRET",
+                    api_version="v23.0",
+                )
+            )
+    connection_id = uuid.uuid4()
+    with tenant_session(tenant_id) as session:
+        brand_id = session.scalar(select(Brand.id).order_by(Brand.created_at))
+        session.add(
+            SocialConnection(
+                id=connection_id,
+                tenant_id=tenant_id,
+                brand_id=brand_id,
+                platform_app_id=_E2E_PLATFORM_APP,
+                platform="whatsapp",
+                account_type="business",
+                external_account_id=f"e2e-wa-{connection_id}",
+                external_username="+57 300 000 0000",
+                granted_scopes=[],
+                status="active",
+                access_posture="development",
+                current_credential_version=1,
+                connected_by_user_id=user_id,
+            )
+        )
+        session.flush()
+        session.add(
+            WhatsAppPhoneNumber(
+                tenant_id=tenant_id,
+                brand_id=brand_id,
+                connection_id=connection_id,
+                waba_id=f"e2e-waba-{connection_id}",
+                phone_number_id=f"e2e-phone-{connection_id}",
+                display_phone_number="+57 300 000 0000",
+                verified_name="E2E · Arepera Doña Carmen",
+            )
+        )
+
+
+# Records, from the click on, whether a page ever drew the OTHER page's panel under its
+# own header: the chat list under «Promociones por WhatsApp», or the promotions strip
+# under «WhatsApp». A MutationObserver sees every intermediate render.
+_WATCH_WRONG_PANEL = """() => {
+  window.__qWrongPanel = [];
+  const check = () => {
+    const h1 = document.querySelector('h1');
+    const title = h1 ? h1.textContent.trim() : '';
+    if (title === 'Promociones por WhatsApp' && document.querySelector('.q-wa-chats'))
+      window.__qWrongPanel.push('chats under Promociones');
+    if (title === 'WhatsApp' && document.body.innerText.includes('Clientes que aceptaron'))
+      window.__qWrongPanel.push('promotions under WhatsApp');
+  };
+  new MutationObserver(check).observe(document.body,
+    { subtree: true, childList: true, characterData: true });
+}"""
+
+
+def test_switching_pages_never_draws_the_other_pages_panel(
+    signed_up_page,  # noqa: ANN001 — a Playwright Page
+    app_server: str,
+) -> None:
+    page = signed_up_page
+    _seed_whatsapp_number(page._qualify_e2e_tenant_id, page._qualify_e2e_user_id)  # noqa: SLF001
+    page.set_viewport_size({"width": 1280, "height": 900})
+    page.goto(f"{app_server}/whatsapp?tab=chats")
+    expect(page.locator(".q-wa-chats")).to_be_visible(timeout=60_000)
+    page.evaluate(_WATCH_WRONG_PANEL)
+
+    _menu(page).locator(f'a[href="{_ROUTE}"]').click()
+    expect(page.get_by_role("heading", level=1, name=_TITLE)).to_be_visible()
+    expect(page.get_by_text("Clientes que aceptaron").first).to_be_visible(timeout=60_000)
+    _shot(page, "promociones-whatsapp-con-numero")
+
+    _menu(page).locator('a[href^="/whatsapp"]').first.click()
+    expect(page.get_by_role("heading", level=1, name="WhatsApp")).to_be_visible()
+    expect(page.locator(".q-wa-chats")).to_be_visible(timeout=60_000)
+    assert page.evaluate("window.__qWrongPanel") == []
