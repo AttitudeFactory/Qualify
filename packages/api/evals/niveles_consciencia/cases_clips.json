@@ -11,9 +11,19 @@
         "Abierto hasta las 11 p. m.",
         "Combo con el postre de la heladería de al lado"
       ],
-      "product": {"name": "Combo doble smash", "description": "Doble smash con papas y gaseosa", "price_label": "$32.900"},
+      "product": {
+        "name": "Combo doble smash",
+        "description": "Doble smash con papas y gaseosa",
+        "price_label": "$32.900"
+      },
       "sentence": "Quiero que la gente se antoje del combo doble smash y venga al local con sus amigos",
-      "parts_brand": {"name": "Brasa Norte", "sector": "Hamburguesería smash", "location": "Chapinero, Bogotá", "positioning": "Smash burgers a la plancha con carne madurada, en un local pequeño de Chapinero", "audience": "Jóvenes de 20 a 35 años en Bogotá que buscan hamburguesas para compartir después del trabajo"}
+      "parts_brand": {
+        "name": "Brasa Norte",
+        "sector": "Hamburguesería smash",
+        "location": "Chapinero, Bogotá",
+        "positioning": "Smash burgers a la plancha con carne madurada, en un local pequeño de Chapinero",
+        "audience": "Jóvenes de 20 a 35 años en Bogotá que buscan hamburguesas para compartir después del trabajo"
+      }
     },
     "inmobiliaria": {
       "sector": "inmobiliaria",
@@ -24,9 +34,19 @@
         "Te guiamos con el subsidio Mi Casa Ya",
         "Atendemos por WhatsApp"
       ],
-      "product": {"name": "Apartamentos de 2 alcobas en Bello", "description": "Apartamentos nuevos de 2 alcobas en Bello, proyecto de vivienda nueva", "price_label": "Desde $280 millones"},
+      "product": {
+        "name": "Apartamentos de 2 alcobas en Bello",
+        "description": "Apartamentos nuevos de 2 alcobas en Bello, proyecto de vivienda nueva",
+        "price_label": "Desde $280 millones"
+      },
       "sentence": "Mostrar los apartamentos de dos alcobas en Bello para familias que quieren su primera casa",
-      "parts_brand": {"name": "Asesoría de Vivienda Aburrá", "sector": "Asesoría inmobiliaria, vivienda nueva", "location": "Medellín y Valle de Aburrá", "positioning": "Asesoría para comprar vivienda nueva en el Valle de Aburrá, sin presiones y con acompañamiento legal", "audience": "Familias y profesionales de Medellín que compran su primera vivienda"}
+      "parts_brand": {
+        "name": "Asesoría de Vivienda Aburrá",
+        "sector": "Asesoría inmobiliaria, vivienda nueva",
+        "location": "Medellín y Valle de Aburrá",
+        "positioning": "Asesoría para comprar vivienda nueva en el Valle de Aburrá, sin presiones y con acompañamiento legal",
+        "audience": "Familias y profesionales de Medellín que compran su primera vivienda"
+      }
     },
     "viajes": {
       "sector": "viajes",
@@ -34,24 +54,69 @@
         "brand_id": "6b1d2c3e-0004-4a10-9a01-000000000004",
         "positioning": "Tours y paquetes a Cusco, Machu Picchu y la selva",
         "audience": "Viajeros que visitan Cusco y quieren conocer Machu Picchu y la selva",
-        "tone_axes": {"formal_casual": 70, "sober_enthusiastic": 70, "technical_plain": 80, "brief_elaborate": 35},
-        "do_examples": ["Machu Picchu al amanecer, sin correr", "Te recogemos en tu hotel y salimos temprano"],
-        "dont_examples": ["EL MEJOR TOUR DEL PERÚ!!!", "Precios increíbles garantizados"],
-        "banned_words": ["barato", "garantizado"],
-        "forbidden_claims": ["el mejor tour del perú", "cupos garantizados"],
-        "hashtag_policy": {"minimum": 2, "maximum": 5, "always": ["viajesandinos"], "never": []},
-        "length_targets": {"caption_min_chars": 60, "caption_max_chars": 500},
-        "cta_patterns": ["Escríbenos y armamos tu viaje", "Pregúntanos por WhatsApp"]
+        "tone_axes": {
+          "formal_casual": 70,
+          "sober_enthusiastic": 70,
+          "technical_plain": 80,
+          "brief_elaborate": 35
+        },
+        "do_examples": [
+          "Machu Picchu al amanecer, sin correr",
+          "Te recogemos en tu hotel y salimos temprano"
+        ],
+        "dont_examples": [
+          "EL MEJOR TOUR DEL PERÚ!!!",
+          "Precios increíbles garantizados"
+        ],
+        "banned_words": [
+          "barato",
+          "garantizado"
+        ],
+        "forbidden_claims": [
+          "el mejor tour del perú",
+          "cupos garantizados"
+        ],
+        "hashtag_policy": {
+          "minimum": 2,
+          "maximum": 5,
+          "always": [
+            "viajesandinos"
+          ],
+          "never": []
+        },
+        "length_targets": {
+          "caption_min_chars": 60,
+          "caption_max_chars": 500
+        },
+        "cta_patterns": [
+          "Escríbenos y armamos tu viaje",
+          "Pregúntanos por WhatsApp"
+        ]
       },
       "voice": {
         "brand_id": "6b1d2c3e-0004-4a10-9a01-000000000004",
         "version": 1,
         "status": "active",
-        "tone_axes": {"formal_casual": 70, "sober_enthusiastic": 70, "technical_plain": 80, "brief_elaborate": 35},
-        "lexicon": ["Cusco", "Machu Picchu", "amanecer", "ruta"],
-        "avoid_lexicon": ["paraíso", "inolvidable"],
+        "tone_axes": {
+          "formal_casual": 70,
+          "sober_enthusiastic": 70,
+          "technical_plain": 80,
+          "brief_elaborate": 35
+        },
+        "lexicon": [
+          "Cusco",
+          "Machu Picchu",
+          "amanecer",
+          "ruta"
+        ],
+        "avoid_lexicon": [
+          "paraíso",
+          "inolvidable"
+        ],
         "sentence_rhythm": "Frases claras y cálidas, con el lugar primero.",
-        "signature_moves": ["Nombra el lugar y la hora del día"]
+        "signature_moves": [
+          "Nombra el lugar y la hora del día"
+        ]
       },
       "perks": [
         "Recogida en tu hotel de Cusco",
@@ -59,13 +124,59 @@
         "Grupos pequeños",
         "Te armamos el paquete a tu medida"
       ],
-      "product": {"name": "Tour a Machu Picchu", "description": "Tour de un día a Machu Picchu saliendo desde Cusco", "price_label": "US$180"},
+      "product": {
+        "name": "Tour a Machu Picchu",
+        "description": "Tour de un día a Machu Picchu saliendo desde Cusco",
+        "price_label": "US$180"
+      },
       "sentence": "Que se animen a conocer Machu Picchu con nosotros saliendo desde Cusco",
-      "parts_brand": {"name": "Viajes Andinos", "sector": "Agencia de viajes: tours y paquetes", "location": "Cusco, Perú", "positioning": "Tours y paquetes a Cusco, Machu Picchu y la selva", "audience": "Viajeros que visitan Cusco y quieren conocer Machu Picchu y la selva"}
+      "parts_brand": {
+        "name": "Viajes Andinos",
+        "sector": "Agencia de viajes: tours y paquetes",
+        "location": "Cusco, Perú",
+        "positioning": "Tours y paquetes a Cusco, Machu Picchu y la selva",
+        "audience": "Viajeros que visitan Cusco y quieren conocer Machu Picchu y la selva"
+      }
     }
   },
   "leftover": [
-    {"id": "sobrante-bur", "brand": "hamburguesas", "sentence": "Que la gente venga por el combo doble smash a 32.900 y se quede con los amigos"},
-    {"id": "sobrante-inm", "brand": "inmobiliaria", "sentence": "Mostrar los apartamentos de dos alcobas en Bello desde 280 millones para familias jóvenes"}
-  ]
+    {
+      "id": "sobrante-bur",
+      "brand": "hamburguesas",
+      "sentence": "Que la gente venga por el combo doble smash a 32.900 y se quede con los amigos"
+    },
+    {
+      "id": "sobrante-inm",
+      "brand": "inmobiliaria",
+      "sentence": "Mostrar los apartamentos de dos alcobas en Bello desde 280 millones para familias jóvenes"
+    }
+  ],
+  "exceptions": [
+    {
+      "id": "excepcion-bur",
+      "brand": "hamburguesas",
+      "extra_perks": [
+        "Pedidos a domicilio por Rappi"
+      ],
+      "must_mention": "salsa de la casa",
+      "way_to_buy": "rappi"
+    },
+    {
+      "id": "excepcion-inm",
+      "brand": "inmobiliaria",
+      "extra_perks": [],
+      "must_mention": "subsidio Mi Casa Ya",
+      "way_to_buy": "whatsapp"
+    },
+    {
+      "id": "excepcion-via",
+      "brand": "viajes",
+      "extra_perks": [
+        "Reservas por WhatsApp"
+      ],
+      "must_mention": "salida desde Cusco",
+      "way_to_buy": "whatsapp"
+    }
+  ],
+  "_exceptions_doc": "NIVELES-006 (m-25027151): most_aware clips with a «Debe mencionar» entry and a perk that IS the way to buy (Rappi, the WhatsApp line). The copy must carry the must-mention and exactly one way to buy."
 }

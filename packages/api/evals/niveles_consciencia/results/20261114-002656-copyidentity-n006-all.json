@@ -1,0 +1,39 @@
+{
+ "ticket": "m-25026482",
+ "baseline_ref": "a6667370",
+ "split": "all",
+ "pricing_version": "v9",
+ "judge": "claude-haiku-5-5@low",
+ "judge_prompt_version": "juez-niveles-v3",
+ "judge_parts_version": "juez-niveles-v3+partes-v1",
+ "code_commit": "07ef32ca",
+ "arms": [],
+ "levels": [],
+ "repeat": 1,
+ "tracing": false,
+ "date": "2026-11-14T00:26:56",
+ "suites": {
+  "copyidentity": {
+   "ref": "07ef32ca~1",
+   "identical_by_level": {
+    "sin_nivel": 3,
+    "unaware": 5,
+    "problem_aware": 4,
+    "solution_aware": 4,
+    "product_aware": 5
+   },
+   "moved_by_level": {
+    "most_aware": [
+     "clip hamburguesas",
+     "clip inmobiliaria",
+     "clip viajes",
+     "pieza niv-bur-most"
+    ]
+   }
+  }
+ },
+ "spend_usd": {},
+ "spend_total_usd": 0.0,
+ "skipped_by_cap": [],
+ "ledger_calls": 0
+}
