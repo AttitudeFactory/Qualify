@@ -206,13 +206,17 @@ def test_a_generated_slide_prompt_reaches_image_assets(seeded_ab: tuple[UUID, UU
 
 
 def _asset(tenant_id: UUID, draft_id: UUID, version_id: UUID) -> UUID:
+    """A stored base photo (0165: `base_asset_id` points at `piece_base_photos`)."""
     asset_id = uuid4()
     with tenant_session(tenant_id) as session:
         session.execute(
             text(
-                "INSERT INTO image_assets (id, tenant_id, draft_id, version_id, media_url,"
-                " object_key, content_type, media_type)"
-                " VALUES (:id, :t, :d, :v, 'unused', :key, 'image/jpeg', 'image')"
+                "INSERT INTO piece_base_photos (id, tenant_id, brand_id, draft_id, version_id,"
+                " position, state, object_key, sha256, content_type, rendered_prompt, model_id,"
+                " provider, prompt_compiler_version, pipeline_version)"
+                " SELECT :id, :t, d.brand_id, :d, :v, 0, 'stored', :key, repeat('a', 64),"
+                " 'image/jpeg', 'p', 'm', 'seedream', 5, 'test'"
+                " FROM content_drafts d WHERE d.id = :d"
             ),
             {
                 "id": asset_id,
@@ -250,7 +254,7 @@ def test_a_layer_cannot_use_another_business_base_photo(seeded_ab: tuple[UUID, U
     try:
         with engine.begin() as conn:
             conn.execute(text("SELECT set_config('app.tenant_id', :t, true)"), {"t": str(tenant_a)})
-            conn.execute(text("DELETE FROM image_assets WHERE id = :a"), {"a": mine})
+            conn.execute(text("DELETE FROM piece_base_photos WHERE id = :a"), {"a": mine})
     finally:
         engine.dispose()
     with tenant_session(tenant_a) as session:

@@ -656,6 +656,29 @@ def test_the_catalog_photos_complete_the_briefs_own_upload() -> None:
     assert props.texts["price_line"] == "$5" and props.products[0].name == "Shawarma mixto"
 
 
+@pytest.mark.parametrize("price_line", ["", "$5"])
+def test_an_unaware_template_piece_prints_no_price_on_any_path(price_line: str) -> None:
+    """m-25026482: an `unaware` idea shows the place, not the price — neither the brief's
+    `price_line`, nor the template's fallback to the name-matched product, nor its
+    product card may print one. A brief without a level keeps the fallback (above)."""
+    from qualify_creative.enums import AwarenessLevel
+
+    store = MemoryStore({f"uploads/{TENANT_ID}/a.jpg": b"a", "cat/mixto-1.jpg": b"c"})
+    catalog = FakeCatalog(
+        (ProductFacts(name="Shawarma mixto", price_label="$5", photo_keys=("cat/mixto-1.jpg",)),)
+    )
+    remotion = FakeRemotion()
+    brief = _template_brief(
+        product_keys=(f"uploads/{TENANT_ID}/a.jpg",), price_line=price_line
+    ).model_copy(update={"awareness_level": AwarenessLevel.UNAWARE})
+    outcome = _produce(_template_producer(store, remotion, catalog=catalog), brief, uuid4())
+    assert outcome.failure is None and len(outcome.media) == 1
+    props = remotion.requests[0].params["props"]
+    assert "price_line" not in props.texts
+    assert all(not p.price for p in props.products)
+    assert props.products[0].name == "Shawarma mixto"
+
+
 def test_the_operator_may_pin_a_template_and_the_rule_is_then_none() -> None:
     store = MemoryStore({f"uploads/{TENANT_ID}/a.jpg": b"a", f"uploads/{TENANT_ID}/b.jpg": b"b"})
     outcome = _produce(

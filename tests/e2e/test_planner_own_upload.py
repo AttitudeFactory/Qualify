@@ -9,7 +9,9 @@ bucket.
 Walks, at phone width (380) and desktop: the «+» card is the grid's first card next to
 a real tile, and also there when nothing is ready; a refused file says why; a photo is
 picked, previewed, saved with its text, and lands selected on step 2. The keyboard path
-(card → view title → «Volver a elegir» → card) is checked on desktop.
+(card → view title → «Volver a elegir» → card) is checked on desktop. m-25026481: a video
+(the 65 s and 2 s fixture clips) shows the poster Qualify took at upload in the view and
+on its step-1 tile, and «Historia» warns with the length only when it is over 60 s.
 
 Screenshots go to `QUALIFY_E2E_SHOTS` when it is set.
 """
@@ -18,6 +20,7 @@ from __future__ import annotations
 
 import io
 import os
+import re
 import uuid
 from pathlib import Path
 
@@ -188,3 +191,127 @@ def test_the_card_is_there_when_nothing_is_ready(
     expect(page.get_by_text("No hay publicaciones para programar")).to_be_visible()
     expect(page.get_by_role("link").filter(has_text="Crear una publicación")).to_be_visible()
     _shot(page, f"b-empty-{width}")
+
+
+# --- m-25026481: a video's poster and length ----------------------------------------------
+
+_CLIPS = Path(__file__).resolve().parents[2] / "packages/creative/tests/fixtures"
+_LONG_STORY = "Este video dura 1 min 5 s"
+_GENERIC_STORY = "Si este video es más largo"
+
+
+def _skip_without_ffmpeg() -> None:
+    import shutil
+
+    if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
+        pytest.skip("the app needs ffmpeg/ffprobe on PATH to read a video")
+
+
+def _pick_video(page, clip: str, as_name: str, tmp_path: Path) -> None:  # noqa: ANN001
+    """From step 1: the «+» card, then the clip, until the preview shows its poster."""
+    page.locator(".q-drawer .q-tile-grid .q-tile").first.click()
+    expect(page.get_by_text("Sube tu foto o video")).to_be_visible()
+    video = tmp_path / as_name
+    video.write_bytes((_CLIPS / clip).read_bytes())
+    page.locator(".q-drawer input[type=file]").first.set_input_files(str(video))
+    expect(page.get_by_text("Cambiar archivo")).to_be_visible(timeout=60_000)
+    preview = page.locator(".q-own-upload-preview video")
+    expect(preview).to_be_visible()
+    # the frame Qualify took at upload, not an empty player
+    expect(preview).to_have_attribute("poster", re.compile(r"\.jpg"))
+
+
+def _loaded_width(page, selector: str, attr: str) -> int:  # noqa: ANN001
+    """The natural width of the picture an element points at (0 when it does not load)."""
+    return page.evaluate(
+        """([sel, attr]) => new Promise((done) => {
+            const el = document.querySelector(sel);
+            const url = el && el.getAttribute(attr);
+            if (!url) return done(0);
+            const img = new Image();
+            img.onload = () => done(img.naturalWidth);
+            img.onerror = () => done(0);
+            img.src = url;
+        })""",
+        [selector, attr],
+    )
+
+
+def _save_and_choose_story(page) -> None:  # noqa: ANN001
+    page.get_by_role("button", name="Guardar y continuar").click()
+    expect(page.get_by_text("Paso 2 de 3").first).to_be_visible(timeout=60_000)
+    # the piece's card on step 2 shows the poster too
+    expect(page.locator(".q-drawer .q-plan-thumb video[poster]").first).to_be_visible()
+    # «¿Dónde quieres publicarlo?» lives under «Más opciones» (closed by default)
+    page.locator(".q-drawer").get_by_role("button", name="Más opciones", exact=True).first.click()
+    page.locator(".q-drawer .q-dest-btn.q-dest-story").first.click()
+    expect(page.locator(".q-drawer .q-dest-btn--on.q-dest-story").first).to_be_visible()
+
+
+@pytest.mark.parametrize("width", [380, 1280])
+def test_a_video_shows_its_poster_and_a_long_story_warns_with_its_length(
+    pre_fase_c_page,  # noqa: ANN001 — a Playwright Page with an Instagram account
+    app_server: str,
+    width: int,
+    tmp_path: Path,
+) -> None:
+    _skip_without_fake_bucket()
+    _skip_without_ffmpeg()
+    page = pre_fase_c_page
+    page.set_viewport_size({"width": width, "height": 900})
+    tenant = page._qualify_e2e_tenant_id
+    folder = OBJECTS_DIR / f"t/{tenant}/uploads/planner"
+
+    # 1. the 65 s clip: poster in the view, saved, selected on step 2
+    _open_step_one(page, app_server)
+    _pick_video(page, "video-portrait-65s.mp4", "cachapa-larga.mp4", tmp_path)
+    assert _loaded_width(page, ".q-own-upload-preview video", "poster") > 0
+    _shot(page, f"g-video-picked-{width}")
+    assert len(list(folder.glob("*cachapa-larga.mp4"))) == 1
+    assert len(list(folder.glob("*cachapa-larga.jpg"))) == 1  # its poster, same folder
+
+    # 2. «Historia» warns BEFORE scheduling, naming the length
+    _save_and_choose_story(page)
+    warning = page.locator(".q-drawer").get_by_text(_LONG_STORY).first
+    expect(warning).to_be_visible()
+    expect(warning).to_contain_text("Instagram la rechazará")
+    # the «Historia» button is described by that warning, for screen readers
+    story = page.locator(".q-drawer .q-dest-btn--on.q-dest-story").first
+    described = story.get_attribute("aria-describedby") or ""
+    assert described.startswith("dest-warn-")
+    expect(page.locator(f"#{described}")).to_contain_text("1 min 5 s")
+    warning.scroll_into_view_if_needed()
+    _shot(page, f"h-long-story-{width}")
+
+    # 2b. «Confirmar» (only shown, never confirmed): the row is tagged and the note names
+    # the story by its hour
+    page.get_by_role("button", name="Continuar").click()
+    expect(page.get_by_text("Paso 3 de 3").first).to_be_visible(timeout=30_000)
+    drawer = page.locator(".q-drawer")
+    tag = drawer.get_by_text("Dura más de 1 minuto").first
+    expect(tag).to_be_visible()
+    note = drawer.get_by_text(re.compile(r"^La Historia de la.? .* dura 1 min 5 s")).first
+    expect(note).to_be_visible()
+    expect(note).to_contain_text("Instagram la rechazará")
+    expect(drawer.get_by_text("No pudimos leer cuánto duran")).to_have_count(0)
+    note.scroll_into_view_if_needed()
+    _shot(page, f"k-confirm-long-story-{width}")
+
+    # 3. step 1 again: the piece's tile shows the poster, not the placeholder
+    _open_step_one(page, app_server)
+    tiles = page.locator(".q-drawer .q-tile-grid .q-tile")
+    expect(tiles).to_have_count(2, timeout=60_000)
+    poster_tile = ".q-drawer .q-tile-grid .q-tile video[poster]"
+    expect(page.locator(poster_tile)).to_have_count(1)
+    expect(page.locator(".q-drawer .q-tile-grid .q-media-empty")).to_have_count(0)
+    assert _loaded_width(page, poster_tile, "poster") > 0
+    _shot(page, f"i-grid-poster-{width}")
+
+    # 4. the 2 s clip as «Historia»: no warning at all
+    _pick_video(page, "video-portrait-2s.mp4", "cachapa-corta.mp4", tmp_path)
+    _save_and_choose_story(page)
+    drawer = page.locator(".q-drawer")
+    expect(drawer).to_contain_text("Paso 2 de 3")
+    expect(drawer.get_by_text("Este video dura")).to_have_count(0)
+    expect(drawer.get_by_text(_GENERIC_STORY)).to_have_count(0)
+    _shot(page, f"j-short-story-{width}")

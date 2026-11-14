@@ -318,6 +318,7 @@ _NO_BUSINESS_ALLOWED = {
     "packages/api/src/qualify_api/referentes/reel_analysis_ai.py": "ADR 44: shared analysis",
     "packages/api/src/qualify_api/evals/brief_reading.py": "eval",
     "packages/api/src/qualify_api/evals/parts_proposal.py": "eval",
+    "packages/api/src/qualify_api/evals/awareness_levels.py": "eval (m-25026482)",
     "packages/api/src/qualify_api/evals/legibility_claude.py": "eval",
     "packages/api/src/qualify_api/intent/eval.py": "eval",
     "packages/api/evals/hashtag_ai/run_eval.py": "eval",

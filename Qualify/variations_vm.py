@@ -43,7 +43,9 @@ from qualify_creative.angles import AnglePreset, AngleProduct, AngleSetPlan, Unk
 from qualify_creative.creations import weight_for_request
 from qualify_creative.enums import DraftStatus
 
-from .creative_vm import failure_vm, status_label
+# the audience labels live with the generator's, so the ideas and «¿A quién le habla este
+# video?» say the same words (m-25026509)
+from .creative_vm import AUDIENCE_LABELS, audience_label, failure_vm, status_label
 
 # -- vocabularies ------------------------------------------------------------------------
 
@@ -211,6 +213,8 @@ class AngleVM:
     #: «Guardar para después»: aside from the review; `can_save` while it still may be.
     saved: bool = False
     can_save: bool = False
+    #: Who the idea talks to (`audience_label`); "" = no tag, as before the levels.
+    audience_label: str = ""
 
 
 def _failure_text(view: AngleView) -> str:
@@ -266,6 +270,7 @@ def build_angle_vm(view: AngleView, preview_url: Callable[[str], str]) -> AngleV
         in_flight=angle.status in _IN_FLIGHT_ANGLE and draft_status in _IN_FLIGHT_DRAFT,
         saved=view.saved,
         can_save=view.can_save,
+        audience_label=audience_label(angle.awareness_level),
     )
 
 
@@ -465,6 +470,7 @@ __all__ = [
     "DRAFT_TONES",
     "NO_PRICE_TEXT",
     "SET_LABELS",
+    "AUDIENCE_LABELS",
     "AngleVM",
     "OutcomeVM",
     "PlanVM",

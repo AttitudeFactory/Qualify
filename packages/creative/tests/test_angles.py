@@ -143,7 +143,15 @@ def test_the_tool_is_strict_and_asks_for_exactly_n_angles() -> None:
     assert "10" in tool["description"] and "maxItems: 10" in items["description"]
     row = items["items"]
     assert row["additionalProperties"] is False
-    assert set(row["required"]) == {"title", "scene", "composition", "hook", "cta", "rationale"}
+    assert set(row["required"]) == {
+        "title",
+        "scene",
+        "composition",
+        "hook",
+        "cta",
+        "rationale",
+        "awareness_level",
+    }
 
 
 def _unsupported(node: object, path: str = "") -> list[str]:

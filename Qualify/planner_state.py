@@ -23,6 +23,7 @@ from qualify_api.creative.fsm import InvalidTransition as CreativeInvalidTransit
 from qualify_api.creative.own_upload import OwnUpload, OwnUploadRefused
 from qualify_api.planner.service import PlannerError
 from qualify_api.publishing.client import IMAGE_MAX_BYTES
+from qualify_creative.video import VideoStill
 
 from .auth_state import AuthState
 from .campaign_provider import (
@@ -38,6 +39,7 @@ from .creative_provider import acting_user_id
 from .nav_url import (
     back_url_script,
     close_flow_script,
+    close_flow_then_go_script,
     flow_param,
     push_url_script,
     scalar_param,
@@ -132,18 +134,23 @@ from .planner_vm import (
     prune_open_groups,
     scheduled_message,
     split_time,
+    story_too_long_note,
+    story_unknown_note,
     timezone_options,
     tz_option,
     waiting_copy,
     week_href,
     week_return_query,
 )
+from .promotion_unpublished_provider import story_ad_ready
+from .promotion_vm import story_ad_href
 from .tenant import tenant_uuid
 from .ui.route_history import history_ack_value, route_history_ready
 from .ui.steps import step_settle_script
 from .upload_images import PhotoBusy, PhotoTooBig, PhotoUnreadable, normalize_photo_when_free
 from .upload_names import safe_upload_name
 from .upload_store import UploadNotKept, refusal_text, save_upload, save_upload_bytes
+from .upload_video_still import video_still_when_free
 
 logger = logging.getLogger(__name__)
 
@@ -422,6 +429,12 @@ class PlannerState(rx.State):
     form_open: bool = False
     flow_ready: bool = False
     form_mode: str = MODE_ASSIGN
+    #: m-25026350: the historia whose «Es un anuncio pagado…» notice is open ("" = none).
+    story_ad_post: str = ""
+    #: …and the pieces checked to be story ad sources (`story_ad_ready`).
+    story_ad_ready: list[str] = []
+    #: «Hacer anuncio pagado» re-reads readiness before leaving: disabled meanwhile.
+    story_ad_busy: bool = False
     form_event_id: str = ""
     form_tag_query: str = ""
     form_error: str = ""
@@ -474,6 +487,11 @@ class PlannerState(rx.State):
     _own_upload_width: int = 0
     _own_upload_height: int = 0
     _own_upload_size: int = 0
+    # m-25026481: a video's length and the key of its JPEG poster (under the same
+    # `uploads/planner/` folder); 0 / "" when unknown — sent as None, never 0 or "".
+    # The poster key is public (like `own_upload_key`): the view shows it on the video.
+    _own_upload_duration: float = 0.0
+    own_upload_poster_key: str = ""
 
     # -- the event panel --------------------------------------------------------
     detail_open: bool = False
@@ -826,10 +844,21 @@ class PlannerState(rx.State):
         return SUBMIT_ASSIGN if n <= 1 else f"{SUBMIT_ASSIGN} {n} publicaciones"
 
     @rx.var
-    def form_story_warnings(self) -> int:
-        """Pieces whose destination carries a limit we cannot check here (a video story's
-        60 s) — «Confirmar» says so once, before the operator confirms."""
-        return sum(1 for row in self.plan_rows if row.destination_warning)
+    def form_story_too_long_note(self) -> str:
+        """m-25026481: «Confirmar» names the video story KNOWN to last over 60 s by its hour
+        (with its day when the plan spans several), or counts several (their rows are
+        tagged)."""
+        rows = self.plan_rows
+        days = {row.date for row in rows if not row.now}
+        return story_too_long_note(
+            [row for row in rows if row.story_too_long], several_days=len(days) > 1
+        )
+
+    @rx.var
+    def form_story_unknown_note(self) -> str:
+        """The video stories whose length could NOT be read (`story_length_unknown`),
+        said once — never a known length (too long, or the 60.0–60.5 s caution)."""
+        return story_unknown_note(sum(1 for row in self.plan_rows if row.story_length_unknown))
 
     @rx.var
     def form_goal_count(self) -> int:
@@ -1470,6 +1499,8 @@ class PlannerState(rx.State):
         self.own_upload_view = False
         self.own_upload_error = ""
         self.own_upload_saving = False  # never a stale lock from an earlier visit
+        self.story_ad_post = ""  # never a notice left open from an earlier visit
+        self.story_ad_busy = False  # a restart mid-check never leaves the button disabled
 
     def _first_account(self) -> list[str]:
         """The first compatible account is preselected: one account is the common case."""
@@ -1610,6 +1641,7 @@ class PlannerState(rx.State):
     def close_form(self) -> rx.event.EventSpec:
         self.form_open = False
         self.form_error = ""
+        self.story_ad_post = ""
         self.flow_ready = False
         return rx.call_script(close_flow_script(self.form_flow_name))
 
@@ -1689,7 +1721,8 @@ class PlannerState(rx.State):
         """The picked file to R2 (`t/{tenant}/uploads/planner/…`). A photo is checked and
         converted to a JPEG of at most 8 MB (Meta's rule) through the serialized
         normaliser; a video is streamed from the upload's spooled file, never read into
-        memory. Every refusal is decided BEFORE any storage call. Foreground: Reflex
+        memory, after its optional still (size, length, JPEG poster — m-25026481,
+        `upload_video_still`). Every refusal is decided BEFORE any storage call. Foreground: Reflex
         refuses uploads in background handlers."""
         try:
             await self._store_own_upload(files)
@@ -1703,8 +1736,15 @@ class PlannerState(rx.State):
             # never replaces the one being saved
             self.own_upload_error = SAVING_WAIT_TEXT
             return
+        if not files:
+            # the picker refused the only file: react-dropzone still calls `on_drop` with
+            # nothing, and `own_upload_rejected` (same drop) says why — this upload, which
+            # may arrive after it, must not replace that sentence (m-25026481, E2E race)
+            if not self.own_upload_error:
+                self.own_upload_error = NO_FILE_TEXT
+            return
         if len(files) != 1:
-            self.own_upload_error = TOO_MANY_TEXT if files else NO_FILE_TEXT
+            self.own_upload_error = TOO_MANY_TEXT
             return
         upload = files[0]
         # the client's name reduced to a safe basename: it names the key's last segment
@@ -1727,6 +1767,13 @@ class PlannerState(rx.State):
             self.own_upload_error = _NO_TENANT
             return
         width = height = 0
+        duration = 0.0
+        poster_key = ""
+        # m-25026481: a video's still (size, length, poster) is read BEFORE anything is
+        # stored, so the slow, queued part — waiting for the heavy-media slot, copying,
+        # ffmpeg — leaves nothing in R2 if the owner leaves meanwhile; the two storage
+        # calls then run back to back. Optional: any failure leaves it unknown.
+        still = await self._video_still(upload, name) if kind != IMAGE else None
         try:
             if kind == IMAGE:
                 upload.file.seek(0)
@@ -1741,6 +1788,11 @@ class PlannerState(rx.State):
             else:
                 content_type = VIDEO_CONTENT_TYPES[_suffix(name)]
                 key = await save_upload(tenant_id, upload, name, folder=_OWN_UPLOAD_FOLDER)
+                if still is not None:
+                    width = still.facts.width or 0
+                    height = still.facts.height or 0
+                    duration = still.facts.duration_seconds or 0.0
+                    poster_key = await self._save_poster(tenant_id, still.poster_jpeg, name)
         except PhotoUnreadable:
             self.own_upload_error = PHOTO_UNREADABLE_TEXT
             return
@@ -1767,6 +1819,33 @@ class PlannerState(rx.State):
         self._own_upload_width = width
         self._own_upload_height = height
         self._own_upload_size = size
+        self._own_upload_duration = duration
+        self.own_upload_poster_key = poster_key
+
+    @staticmethod
+    async def _video_still(upload: Any, name: str) -> VideoStill | None:
+        """The picked video's still, or None — never raises (gate busy, ffmpeg missing or
+        failing, anything else): the video is kept without it."""
+        try:
+            return await video_still_when_free(upload.file, _suffix(name))
+        except Exception as exc:  # noqa: BLE001 — optional: the upload goes on without it
+            logger.warning("planner video still failed: %s", type(exc).__name__)
+            return None
+
+    @staticmethod
+    async def _save_poster(tenant_id: UUID, jpeg: bytes | None, video_name: str) -> str:
+        """The poster to `t/{tenant}/uploads/planner/…`, named after the video; "" when
+        there is none or it could not be kept (the piece is created without it)."""
+        if not jpeg:
+            return ""
+        stem = video_name.rsplit(".", 1)[0] or "video"
+        try:
+            return await save_upload_bytes(
+                tenant_id, jpeg, f"{stem}.jpg", folder=_OWN_UPLOAD_FOLDER
+            )
+        except Exception as exc:  # noqa: BLE001 — optional: the video is stored already
+            logger.warning("planner video poster not kept: %s", type(exc).__name__)
+            return ""
 
     def _clear_own_upload(self) -> None:
         self.own_upload_view = False
@@ -1781,6 +1860,8 @@ class PlannerState(rx.State):
         self._own_upload_width = 0
         self._own_upload_height = 0
         self._own_upload_size = 0
+        self._own_upload_duration = 0.0
+        self.own_upload_poster_key = ""
 
     def _own_upload_request(self) -> OwnUpload:
         return OwnUpload(
@@ -1792,6 +1873,8 @@ class PlannerState(rx.State):
             width=self._own_upload_width or None,
             height=self._own_upload_height or None,
             size_bytes=self._own_upload_size or None,
+            duration_seconds=self._own_upload_duration or None,
+            poster_object_key=self.own_upload_poster_key or None,
         )
 
     @rx.event(background=True)
@@ -1955,15 +2038,111 @@ class PlannerState(rx.State):
         self._update_item(post_id, output_port=port, destination=destination)
 
     @rx.event
-    def set_item_destination(self, post_id: str, destination: str) -> None:
+    def set_item_destination(self, post_id: str, destination: str) -> rx.event.EventSpec | None:
         """«¿Dónde quieres publicarlo?»: only an available destination is taken — a
         disabled button never changes the piece. A move keeps its destination."""
         if self.form_mode == MODE_RESCHEDULE:
-            return
+            return None
         row = next((r for r in self.plan_rows if r.post_id == post_id), None)
         if row is None or not any(d.key == destination and d.available for d in row.destinations):
-            return
+            return None
         self._update_item(post_id, destination=destination)
+        self.story_ad_post = ""
+        return PlannerState.check_story_ad if destination == "story" else None
+
+    @rx.var
+    def story_ad_offered(self) -> bool:
+        """m-25026350: «Agregar un botón con enlace» is offered on a lone historia being
+        planned (leaving for the ad would drop the other pieces of a bigger plan)."""
+        return self.form_mode != MODE_RESCHEDULE and len(self.plan_items) == 1
+
+    def _story_row_ok(self, post_id: str) -> bool:
+        row = next((r for r in self.plan_rows if r.post_id == post_id), None)
+        return self.story_ad_offered and row is not None and row.destination == "story"
+
+    @rx.event(background=True)
+    async def check_story_ad(self) -> None:
+        """On showing «Cuándo sale» (and on choosing Historia): is the lone historia a
+        story ad source at all (approved, unpublished, a 9:16 file, an ad account)? Only
+        then is the option drawn."""
+        async with self:
+            rows = [r.post_id for r in self.plan_rows if r.destination == "story"]
+            post_id = rows[0] if self.story_ad_offered and rows else ""
+        tenant_id, draft_id = await self._tenant(), tenant_uuid(post_id)
+        if tenant_id is None or draft_id is None:
+            return
+        try:
+            ready = await asyncio.to_thread(story_ad_ready, tenant_id, draft_id)
+        except Exception as exc:  # noqa: BLE001 — no option is better than a dead end
+            logger.warning("story ad readiness read failed: %s", type(exc).__name__)
+            ready = False
+        async with self:
+            self._mark_story_ad(post_id, ready)
+
+    def _mark_story_ad(self, post_id: str, ready: bool) -> None:
+        others = [p for p in self.story_ad_ready if p != post_id]
+        self.story_ad_ready = [*others, post_id] if ready else others
+        if not ready and self.story_ad_post == post_id:
+            self.story_ad_post = ""
+
+    @rx.event
+    def ask_story_ad(self, post_id: str) -> None:
+        """«Agregar un botón con enlace»: first the one-line notice that it is a paid ad,
+        never the wizard straight away."""
+        if self._story_row_ok(post_id) and post_id in self.story_ad_ready:
+            self.story_ad_post = post_id
+
+    @rx.event
+    def dismiss_story_ad(self) -> None:
+        """«Dejar la historia sin botón»: the historia stays planned as it was."""
+        self.story_ad_post = ""
+
+    @rx.event(background=True)
+    async def continue_story_ad(self):
+        """«Hacer anuncio pagado»: the readiness is read again first; only then the ad
+        REPLACES the historia (see `_leave_for_story_ad`)."""
+        async with self:
+            if self.story_ad_busy or self.saving:
+                return
+            post_id = self.story_ad_post
+            self.story_ad_busy = True  # «Hacer anuncio pagado» is disabled meanwhile
+        try:
+            tenant_id, draft_id = await self._tenant(), tenant_uuid(post_id)
+            ready = False
+            if tenant_id is not None and draft_id is not None:
+                try:
+                    ready = await asyncio.to_thread(story_ad_ready, tenant_id, draft_id)
+                except Exception as exc:  # noqa: BLE001 — never leave the plan on a doubt
+                    logger.warning("story ad readiness read failed: %s", type(exc).__name__)
+            async with self:
+                events = self._leave_for_story_ad(post_id, ready)
+        finally:
+            async with self:
+                self.story_ad_busy = False
+        for event in events:
+            yield event
+
+    def _leave_for_story_ad(self, post_id: str, ready: bool) -> list[rx.event.EventSpec]:
+        """The plan is closed without scheduling anything (no organic story goes out)
+        and the ad wizard opens on the piece's 9:16 file, which itself launches nothing
+        without preview and consent. Not ready (or not this notice): the plan stays.
+        Nor while «Programar» runs or after the drawer closed during the read: the
+        historia must never both be scheduled and replaced by the ad."""
+        if not self.form_open or self.saving:
+            return []
+        if not post_id or post_id != self.story_ad_post or not self._story_row_ok(post_id):
+            return []
+        if not ready:
+            self._mark_story_ad(post_id, False)
+            return []
+        flow = self.form_flow_name
+        self.story_ad_post = ""
+        self.form_open = False
+        self.flow_ready = False
+        self.plan_items = []
+        # Close the drawer's own history entries first, so «atrás» never reopens it empty.
+        href = story_ad_href(post_id, self.week_return_query)
+        return [rx.call_script(close_flow_then_go_script(flow, href))]
 
     @rx.event
     def toggle_item_connection(self, post_id: str, connection_id: str) -> None:

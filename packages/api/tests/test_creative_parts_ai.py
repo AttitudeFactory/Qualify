@@ -506,7 +506,7 @@ def test_the_call_never_returns_more_than_the_target() -> None:
 
 def test_v3_prompt_keeps_v2s_rules_in_everyday_words_and_no_business() -> None:
     prompt = propose_system_prompt()
-    assert PROPOSE_PARTS_PROMPT_VERSION == "proponer-partes-v3.2"
+    assert PROPOSE_PARTS_PROMPT_VERSION == "proponer-partes-v3.5"
     assert "nunca le agregues componentes" in prompt
     assert "Usarlo, probarlo o disfrutarlo no es el cierre" in prompt
     assert "da el siguiente paso, como el dueño lo pide: lo pide, lo recibe" in prompt
@@ -599,7 +599,7 @@ def test_film_words_send_the_plan_back_once() -> None:
     assert len(requests) == 2 and len(proposal.parts) == 3
     assert "palabras de cine" in requests[1]["messages"][-1]["content"][0]["content"]
     assert proposal.provenance.turns == 2
-    assert proposal.provenance.prompt_version == "proponer-partes-v3.2"
+    assert proposal.provenance.prompt_version == "proponer-partes-v3.5"
 
 
 def test_a_long_description_goes_back_once() -> None:
@@ -719,7 +719,7 @@ def test_sounds_ride_the_one_corrective_turn_with_the_other_problems() -> None:
     assert len(requests) == 2 and proposal.provenance.turns == 2
     correction = requests[1]["messages"][-1]["content"][0]["content"]
     assert "palabras de cine" in correction and correction.count("describe sonidos") == 2
-    assert proposal.provenance.prompt_version == "proponer-partes-v3.2"
+    assert proposal.provenance.prompt_version == "proponer-partes-v3.5"
 
 
 def test_sounds_twice_are_unavailable_within_the_meter() -> None:

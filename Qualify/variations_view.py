@@ -36,6 +36,7 @@ from .ui import (
     loading_spinner,
     media_thumb,
     skeleton_card,
+    tag,
     tone_badge,
 )
 from .ui import tokens as T
@@ -542,6 +543,8 @@ def _angle_card(angle: rx.Var) -> rx.Component:
                 align="center",
                 width="100%",
             ),
+            # who the idea talks to (0166); an idea from before the levels has no tag
+            rx.cond(angle.audience_label != "", tag(angle.audience_label)),
             # only once a piece exists: a discarded angle showed an empty frame
             rx.cond(angle.draft_id != "", _angle_preview(angle)),
             _angle_field("Escenario", angle.scene),

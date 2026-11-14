@@ -237,7 +237,7 @@ def test_a_piece_chat_or_call_button_refuses_website_and_lead_never_chat() -> No
     "changes,message",
     [
         ({"messaging": None}, "Elige a qué chat"),
-        ({"greeting": greeting(welcome_text="")}, "saludo de bienvenida"),
+        ({"greeting": greeting(welcome_text="")}, "mensaje de bienvenida"),
         ({"greeting": greeting(welcome_text="x" * 301)}, "300 caracteres"),
         ({"greeting": greeting(questions=())}, "entre 1 y 4"),
         ({"greeting": greeting(questions=tuple("abcde"))}, "entre 1 y 4"),
@@ -277,6 +277,28 @@ def test_welcome_read_back_normalizes_serialization_and_fails_closed(observed, s
     elif observed == "__other_text__":
         observed = greeting(welcome_text="Otro").page_welcome_message()
     assert _same_welcome(observed, expected) is same
+
+
+@pytest.mark.parametrize(
+    "rest,welcome,reason",
+    [
+        (True, True, ""),
+        (True, False, "GREETING"),
+        (False, True, "GENERAL"),
+        (False, False, "GENERAL"),
+    ],
+)
+def test_a_greeting_read_back_mismatch_gets_its_own_words(rest, welcome, reason) -> None:
+    from qualify_api.ads.live_wizard import (
+        GREETING_READ_BACK_MISMATCH,
+        READ_BACK_MISMATCH,
+        read_back_mismatch,
+    )
+
+    expected = {"": "", "GREETING": GREETING_READ_BACK_MISMATCH, "GENERAL": READ_BACK_MISMATCH}
+    assert read_back_mismatch(rest, welcome) == expected[reason]
+    assert "saludo del chat" in GREETING_READ_BACK_MISMATCH
+    assert "queda en pausa" in GREETING_READ_BACK_MISMATCH
 
 
 @pytest.mark.parametrize(

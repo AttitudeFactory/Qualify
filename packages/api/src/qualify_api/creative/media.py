@@ -110,6 +110,7 @@ from qualify_creative.compose import (
 from qualify_creative.enums import (
     AdImageMode,
     AvatarSource,
+    AwarenessLevel,
     ContentFormat,
     ContentKind,
     FailureReason,
@@ -310,6 +311,63 @@ class MediaWrite:
     #: slide, exactly as sent. None where no single prompt made the file (a closing slide,
     #: a reused piece, stock, the Galería, a video).
     rendered_prompt: str | None = None
+    #: m-25017279 (ADR 49 §2 item 1): the raw Seedream photograph this file was composed
+    #: over. `finish_generation` writes it to `piece_base_photos` (0165) at this file's
+    #: version and position — `stored`, or `missing` when R2 did not keep it. None when the
+    #: file had no base of its own (a closing slide, a reused piece, a video).
+    base: BasePhoto | None = None
+
+
+@dataclass(frozen=True)
+class BasePhoto:
+    """A base photograph as stage `base` paid for it (ADR 49 §2 item 1): where it was kept
+    (`key`; None, with `missing_reason`, when R2 did not keep it), the SHA-256 of its bytes,
+    its size from the image header, and how it was made — model and the exact compiled
+    prompt, and the prompt compiler. Seedream images are synchronous: no vendor task id."""
+
+    key: str | None
+    sha256: str
+    content_type: str
+    model_id: str
+    provider: str
+    rendered_prompt: str
+    prompt_compiler_version: int
+    width: int | None = None
+    height: int | None = None
+    missing_reason: str | None = None
+
+    @property
+    def stored(self) -> bool:
+        return self.key is not None
+
+    def as_json(self) -> dict[str, Any]:
+        return {
+            "key": self.key,
+            "sha256": self.sha256,
+            "content_type": self.content_type,
+            "model_id": self.model_id,
+            "provider": self.provider,
+            "rendered_prompt": self.rendered_prompt,
+            "prompt_compiler_version": self.prompt_compiler_version,
+            "width": self.width,
+            "height": self.height,
+            "missing_reason": self.missing_reason,
+        }
+
+    @classmethod
+    def from_json(cls, row: Mapping[str, Any]) -> BasePhoto:
+        return cls(
+            key=str(row["key"]) if row.get("key") else None,
+            sha256=str(row["sha256"]),
+            content_type=str(row["content_type"]),
+            model_id=str(row["model_id"]),
+            provider=str(row["provider"]),
+            rendered_prompt=str(row["rendered_prompt"]),
+            prompt_compiler_version=int(row["prompt_compiler_version"]),
+            width=row.get("width"),
+            height=row.get("height"),
+            missing_reason=row.get("missing_reason") or None,
+        )
 
 
 def ai_generated_media(media: tuple[MediaWrite, ...]) -> bool:
@@ -1371,6 +1429,14 @@ class _Saver:
         self._beat()
         return key
 
+    @property
+    def tenant_id(self) -> UUID:
+        return self._tenant_id
+
+    @property
+    def draft_id(self) -> UUID:
+        return self._draft_id
+
     def key_for(self, name: str) -> str:
         """The key `name` is kept under by this saver (before any content-named fallback)."""
         if getattr(self._store, "keep", None) is None:
@@ -1891,6 +1957,8 @@ def _media_write_json(write: MediaWrite, seedance_slots: int = 0) -> dict[str, A
         "seedance_slots": seedance_slots,
         # m-25017278: a resumed gallery keeps each kept slide's prompt provenance
         **({"rendered_prompt": write.rendered_prompt} if write.rendered_prompt else {}),
+        # m-25017279: and its stored base photo, so a resumed run never makes it again
+        **({"base": write.base.as_json()} if write.base is not None else {}),
     }
 
 
@@ -1909,6 +1977,7 @@ def _media_write_from_json(row: Mapping[str, Any]) -> MediaWrite:
         content_type=row.get("content_type"),
         ai_generated=bool(row.get("ai_generated")),
         rendered_prompt=row.get("rendered_prompt") or None,
+        base=BasePhoto.from_json(row["base"]) if row.get("base") else None,
     )
 
 
@@ -5729,6 +5798,12 @@ class MediaProducer:
             if self._catalog is not None
             else ()
         )
+        # m-25026482: an `unaware` piece shows the place, not the price — the template
+        # gets the name-matched products WITHOUT their price, so neither its own fallback
+        # (`build_props` → `_price_line`) nor a product card can print one
+        unaware = brief.awareness_level is AwarenessLevel.UNAWARE
+        if unaware:
+            products = tuple(replace(p, price_label="") for p in products)
         # ticket 24803289: the angle's scene, photographed by Seedream with the real product
         # as reference, becomes the template's FIRST photo. Everything that can refuse the
         # piece for free — the template, its output, its props, the render's budget — is
@@ -5751,7 +5826,7 @@ class MediaProducer:
         # the catalog's price the brief carries wins over the name-matched product's
         # (ticket 24803289) — whole or not at all: "" keeps the template from printing
         # any price (None would let it fall back to the name-matched product's)
-        price_line = _template_price(draft_id, manifest, brief, warnings)
+        price_line = "" if unaware else _template_price(draft_id, manifest, brief, warnings)
         brand_name = (
             self._brand_names(tenant_id=tenant_id, brand_id=brief.brand_id)
             if self._brand_names is not None
@@ -6917,7 +6992,12 @@ def _reworded(text: str) -> str:
 #: (`unroled_image_role`), a reel replica that replaces no product when there is none, and
 #: a part that describes each photo by its role (`PART_PROMPT_VERSION_V5`, 3 and 4). Every
 #: other line compiles as at 4; 0 to 4 stay byte for byte.
-PROMPT_COMPILER_VERSION = 5
+#: 6 (m-25017279, ADR 49 §2 item 1; m-25019811): compiler 5 plus, in those two Seedream
+#: scenes — the advertising image and every gallery slide, generated or animated (its first
+#: frame) — the base photograph only: no «Datos clave» and no typeface names
+#: (`image_pipeline.base_prompt.BASE_PHOTO_COMPILER`). Every other route compiles as at 5
+#: (the other videos' first frames: m-25019817); 0-5 stay byte for byte.
+PROMPT_COMPILER_VERSION = 6
 #: What a flexible text (the topic, a scene, a presenter) keeps before the next one in
 #: line is trimmed: the beginning of the operator's words always reaches the model.
 _FLEX_FLOOR = 200

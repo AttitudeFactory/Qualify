@@ -148,6 +148,46 @@ class BriefObjective(StrEnum):
     SALE = "sale"
 
 
+class AwarenessLevel(StrEnum):
+    """Eugene Schwartz's five levels of awareness: how much the reader already knows about
+    the need, the kind of solution and this business. Declaration order IS the funnel
+    order (an angle set spreads across them from `UNAWARE` on), and each level decides
+    what a piece says and leaves out (`objective` maps it onto `BriefObjective`)."""
+
+    UNAWARE = "unaware"
+    PROBLEM_AWARE = "problem_aware"
+    SOLUTION_AWARE = "solution_aware"
+    PRODUCT_AWARE = "product_aware"
+    MOST_AWARE = "most_aware"
+
+    @property
+    def objective(self) -> BriefObjective:
+        """The brief objective a piece at this level serves: the place before the price
+        (awareness), the dilemma and the better choice (consideration), the friction and
+        the shortest path to buying (sale)."""
+        return _AWARENESS_OBJECTIVE[self]
+
+
+def objective_for_level(level: str | None, default: str) -> str:
+    """m-25026509: the `BriefObjective` value a piece takes from the reader the owner
+    picked (`AwarenessLevel.objective`, the mapping `angles.angle_brief` uses); `default`
+    — the screen's own objective — when no level is picked («Sin preferencia»: "" or
+    None) or the value is not a level."""
+    try:
+        return AwarenessLevel(str(level or "").strip()).objective.value
+    except ValueError:
+        return default
+
+
+_AWARENESS_OBJECTIVE: dict[AwarenessLevel, BriefObjective] = {
+    AwarenessLevel.UNAWARE: BriefObjective.AWARENESS,
+    AwarenessLevel.PROBLEM_AWARE: BriefObjective.CONSIDERATION,
+    AwarenessLevel.SOLUTION_AWARE: BriefObjective.CONSIDERATION,
+    AwarenessLevel.PRODUCT_AWARE: BriefObjective.SALE,
+    AwarenessLevel.MOST_AWARE: BriefObjective.SALE,
+}
+
+
 class BriefIntent(StrEnum):
     ORGANIC = "organic"
     ADS = "ads"

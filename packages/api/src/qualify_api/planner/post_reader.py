@@ -57,9 +57,11 @@ class PostOutput:
     unpublishable_reason: str = ""
     # QUA-118 v2: the port's media as the publisher names it ("IMAGE" / "VIDEO") and the
     # first image's (width, height) when known — what `publishable.destination_options`
-    # reads to say where this output may go.
+    # reads to say where this output may go. `video_seconds` (m-25026481): the port's first
+    # video's stored length, None when unknown — lets Historia warn only a video over 60 s.
     media_types: tuple[str, ...] = ()
     image_size: tuple[int, int] | None = None
+    video_seconds: float | None = None
     can_schedule_pending_final: bool = False
 
 
@@ -129,8 +131,10 @@ class PostSummary:
     # QUA-118 v2: the POST's media as the publisher names it ("IMAGE" / "VIDEO", in
     # position order) and the first image's (width, height) when known — what
     # `publishable.destination_options` reads to say where it may be published.
+    # `video_seconds` (m-25026481): the first video's stored length, None when unknown.
     media_types: tuple[str, ...] = ()
     image_size: tuple[int, int] | None = None
+    video_seconds: float | None = None
     can_schedule_pending_final: bool = False
     # m-24828907: the piece's retention (`creative.retention.RetentionState` value, "" when
     # it has no R2 files) and, when it has one, the deadline (ISO-8601) and the whole days

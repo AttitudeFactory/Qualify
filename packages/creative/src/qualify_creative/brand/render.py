@@ -27,6 +27,7 @@ import json
 
 from qualify_creative.enums import (
     AvatarSource,
+    AwarenessLevel,
     ContentKind,
     ContentType,
     EmojiPolicy,
@@ -172,6 +173,80 @@ def _context_section(context: BrandContext | None) -> tuple[str, ...]:
     return ("\n".join(lines),)
 
 
+def _perks_section(kit: BrandKit) -> tuple[str, ...]:
+    """The owner's business perks as standing facts — none at all when the kit has none,
+    so the prefix of a brand without them is byte-identical to before they existed."""
+    if not kit.business_perks:
+        return ()
+    return (
+        "== What the business offers (facts the owner wrote) ==\n"
+        "These are the business's real facts beyond its products. Use the ones that fit the"
+        " piece, stated as written. When the assignment names an awareness level, the level"
+        " decides which of them the piece may use: a perk that does not fit it is left out,"
+        " even though it is true. Never invent a fact that is not here, in the product data"
+        " or in this briefing: no opening hours, prices, payment methods, addresses,"
+        " deliveries, discounts or promotions of your own. Repeat each perk with its own"
+        " meaning: never turn it into something free, a gift, included, a discount or a"
+        " promotion unless its text says so. Never offer a service (reservations, delivery,"
+        " setting one aside) that is not in these perks, the product data or this"
+        " briefing.\n" + _bullets(kit.business_perks),
+    )
+
+
+#: What a piece says, and leaves out, for each awareness level (Eugene Schwartz). Rides
+#: the volatile suffix next to the objective, only when the brief carries a level.
+AWARENESS_GUIDANCE: dict[AwarenessLevel, str] = {
+    AwarenessLevel.UNAWARE: (
+        "the reader is not thinking about the product yet. Show the place and the"
+        " experience (the atmosphere, the moment, who it is shared with). Use only the"
+        " perks about the experience (the place, the atmosphere, tables, pets, parking as a"
+        " comfort); opening hours, payment, prices and anything about cost belong to the"
+        " product_aware and most_aware levels: leave them out even though they are among"
+        " the business's facts. Do not mention the price or any offer."
+    ),
+    AwarenessLevel.PROBLEM_AWARE: (
+        "the reader already feels the need (e.g. «¿qué cenamos hoy?»). Name that dilemma"
+        " in the hook and present the product as the answer."
+    ),
+    AwarenessLevel.SOLUTION_AWARE: (
+        "the reader knows what kind of thing they want but not where to get it. Show what"
+        " sets this business apart with at least one concrete fact from the product data or"
+        " one perk from the list, stated as given. Restating what the product is, generic"
+        " claims (fresh, quality, experts, made for you) or attributes not in the data are"
+        " not enough; prices, payment and opening hours belong to product_aware."
+    ),
+    AwarenessLevel.PRODUCT_AWARE: (
+        "the reader knows the business but hesitates. Remove the friction: the price as"
+        " given, the hours, how to pay, where it is — only facts you were given."
+    ),
+    AwarenessLevel.MOST_AWARE: (
+        "the reader is ready to buy. Give the shortest path to the purchase: a hook of about"
+        " 6 words, a call to action of about 5 words with one way to buy, and a caption of"
+        " one or two sentences (about 25 words) holding the product, the price if there is"
+        " one, and how to buy — no more, though never below the caption minimum above."
+        " The call to action uses"
+        " only a way to buy that the business's facts, the product data or this briefing"
+        " give; if there is none, simply invite people to come or to write, without naming a"
+        " service (no reservations, takeaway, pickup or delivery)."
+    ),
+}
+
+
+def _awareness_lines(brief: ContentBrief) -> tuple[str, ...]:
+    """The level line of the assignment — nothing when the brief has no level, so the
+    suffix of every piece briefed before the levels renders exactly as it did."""
+    level = brief.awareness_level
+    if level is None:
+        return ()
+    return (
+        f"Awareness level (Eugene Schwartz): {level.value} — {AWARENESS_GUIDANCE[level]}"
+        " Never invent a fact to fit the level: use only the business's facts, the product"
+        " data and the operator's words. Never turn a perk into something free, a gift,"
+        " included, a discount or a promotion unless its text says so, and never offer a"
+        " service that is not in them.",
+    )
+
+
 def _account_line(account: BrandAccount) -> str:
     """`- @handle (network, kind): why. Operator's note: …. Their own words: «…»` — only
     the parts the discovery has, in a fixed order (the prefix is cached)."""
@@ -257,6 +332,7 @@ def _stable_prefix(
         f"Allowed image routes: {allowed_routes or _NONE}\n"
         f"Blocked image routes: {blocked_routes}",
         *_context_section(context),
+        *_perks_section(kit),
     )
     return "\n\n".join(sections) + "\n"
 
@@ -646,6 +722,7 @@ def _volatile_suffix(
         "== Assignment ==",
         f"Task: {task.value}",
         f"Objective: {brief.objective.value}",
+        *_awareness_lines(brief),
         _content_type_line(brief),
         # § 2026-10-06: the operator describes the whole piece in their own words, not
         # just a topic or a product name

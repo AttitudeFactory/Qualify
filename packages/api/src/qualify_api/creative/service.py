@@ -86,6 +86,7 @@ from sqlalchemy.exc import IntegrityError
 from qualify_api.claude_tools import cost_breakdown
 from qualify_api.creative import models as orm
 from qualify_api.creative import review, trace
+from qualify_api.creative.base_photos import alert_missing_bases, record_base_photos
 from qualify_api.creative.creations import (
     CreationsBalance,
     CreationsLedger,
@@ -864,6 +865,8 @@ def brief_from_row(row: orm.ContentBrief) -> ContentBrief:
             "variants_requested": row.variants_requested,
             "kind": row.kind,
             "media": row.media or {},
+            # 0166: the angle's awareness level; NULL on every brief written before it
+            "awareness_level": getattr(row, "awareness_level", None),
         },
         context={"preserve_stored_logo_mode": True},
     )
@@ -888,6 +891,7 @@ def _brief_row(tenant_id: UUID, user_id: UUID, brief: ContentBrief) -> orm.Conte
         constraints=brief.constraints.model_dump(mode="json"),
         kind=brief.kind.value,
         media=brief.media.model_dump(mode="json"),
+        awareness_level=brief.awareness_level.value if brief.awareness_level else None,
         created_by=user_id,
     )
 
@@ -1301,6 +1305,7 @@ class PostgresContentRepository:
 
         ``requires_ai_disclosure`` (PR #100 review): the label as recomputed from the media
         this generation actually made; ``None`` leaves the draft's value as it is."""
+        missing_bases: list[str] = []  # m-25017279: alerted only after the commit
         with tenant_session(tenant_id) as session:
             from qualify_api.creative.versions import snapshot_current
 
@@ -1446,6 +1451,18 @@ class PostgresContentRepository:
                         rendered_prompt=item.rendered_prompt,
                     )
                 )
+            # m-25017279: the base photos the stills were composed over, in their own table
+            # (0165) — no reader of the piece's outputs sees them. Never fails the piece
+            # (a savepoint); bases that end up missing get ONE alert, sent in the background
+            # after the commit, below
+            missing_bases = record_base_photos(
+                session,
+                tenant_id=tenant_id,
+                brand_id=brand_id,
+                draft_id=draft_id,
+                version_id=version.id,
+                media=media,
+            )
             if succeeded:
                 draft.active_version_id = version.id
                 draft.selected_variant_id = None
@@ -1487,6 +1504,9 @@ class PostgresContentRepository:
                 session.flush()
                 open_parent_join(session, draft_id)
                 parent_picture(session, draft_id)
+        # m-25017279: only once the transaction above committed (`tenant_session` commits
+        # on a clean exit): a commit that fails sends no alert, and its retry sends one
+        alert_missing_bases(tenant_id, draft_id, missing_bases)
 
     def update_status(
         self,

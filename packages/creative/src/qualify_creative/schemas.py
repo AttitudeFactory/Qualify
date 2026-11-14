@@ -12,6 +12,7 @@ so `render_prompt` can rely on byte-identical output for the cacheable prefix.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from decimal import Decimal
 from typing import Literal, get_args
@@ -27,6 +28,7 @@ from qualify_creative.ad_destination import (
 from qualify_creative.enums import (
     AdImageMode,
     AvatarSource,
+    AwarenessLevel,
     BriefIntent,
     BriefObjective,
     ContentFormat,
@@ -180,6 +182,35 @@ class ImagePolicy(BaseModel):
 #: The longest type face name a prompt carries — a family name is short (`BrandKit.typeface`).
 TYPEFACE_MAX = 60
 
+#: The owner's business perks (`BrandKit.business_perks`): how many facts a kit keeps and
+#: how long each one may be — short lines the owner types («Parqueadero gratis»).
+BUSINESS_PERKS_MAX = 12
+BUSINESS_PERK_MAX_CHARS = 80
+
+
+def normalize_business_perks(values: object) -> tuple[str, ...]:
+    """The owner's perks as the kit stores them: each one trimmed to one line and cut at
+    `BUSINESS_PERK_MAX_CHARS`, empties dropped, repeats (ignoring case) dropped keeping
+    the first, at most `BUSINESS_PERKS_MAX` kept in the owner's order. Lenient like the
+    kit's other lists — what does not fit is trimmed, never refused — and idempotent, so
+    a stored list rehydrates to the same bytes."""
+    if values is None:
+        return ()
+    if isinstance(values, str):
+        values = values.splitlines()
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values if isinstance(values, (list, tuple)) else ():
+        text = " ".join(str(value or "").split())[:BUSINESS_PERK_MAX_CHARS].strip()
+        key = text.casefold()
+        if not text or key in seen:
+            continue
+        seen.add(key)
+        out.append(text)
+        if len(out) == BUSINESS_PERKS_MAX:
+            break
+    return tuple(out)
+
 
 class BrandKit(BaseModel):
     """What the operator declares about their brand. One per tenant (D14)."""
@@ -210,6 +241,15 @@ class BrandKit(BaseModel):
     image_policy: ImagePolicy = ImagePolicy()
     #: Declared by the owner; a default for new ad pieces, never an LLM-generated URL.
     ads_destination_url: str | None = None
+    #: What the business offers beyond its products, typed by the owner («Parqueadero
+    #: gratis», «Abierto hasta las 11 p. m.»): the only venue facts generation may state.
+    #: Manual input (no provenance); normalized by `normalize_business_perks`.
+    business_perks: tuple[str, ...] = ()
+
+    @field_validator("business_perks", mode="before")
+    @classmethod
+    def _perks(cls, value: object) -> tuple[str, ...]:
+        return normalize_business_perks(value)
 
     @field_validator("ads_destination_url")
     @classmethod
@@ -1085,6 +1125,65 @@ class MediaInputs(BaseModel):
         return self
 
 
+#: The «Datos clave» name the price travels under (the screen's «Precio»,
+#: `angles.PRICE_HIGHLIGHT`), compared ignoring case and surrounding spaces.
+PRICE_FACT_NAME = "precio"
+
+
+#: An amount said in thousands or millions (COP and UYU are written that way): «18 lucas»
+#: always; «18 mil» / «2 millones» when a currency follows or nothing does (end of the text
+#: or punctuation) — «20 mil seguidores» counts something else and is not a price.
+_WORDED_AMOUNT = re.compile(
+    r"\b\d[\d.,]*\s*lucas\b"
+    r"|\b\d[\d.,]*\s*(?:mil|millones?)\s+(?:de\s+)?"
+    r"(?:pesos|d[oó]lares|bol[ií]vares|soles|euros)\b"
+    r"|\b\d[\d.,]*\s*(?:mil|millones?)\b(?!\s*(?:de\s+)?[^\W\d_])",
+    re.IGNORECASE,
+)
+
+
+#: A number that is a discount — about cost, so an unaware piece drops it too: «18 mil
+#: de descuento», «20% off», «15 % dto». «2x1» names no amount and stays.
+_DISCOUNT_AMOUNT = re.compile(
+    r"\b\d[\d.,]*\s*(?:%|mil\b|millones?\b)?\s*(?:de\s+)?(?:descuentos?\b|dto\b\.?|off(?![-\w]))",
+    re.IGNORECASE,
+)
+
+
+def quotes_money(text: str) -> bool:
+    """Whether `text` quotes an amount of money (`angles.price_mentions`, an amount said
+    in words, or a discount amount)."""
+    from qualify_creative.angles import price_mentions  # noqa: PLC0415 — angles imports us
+
+    return (
+        bool(price_mentions(text))
+        or bool(_WORDED_AMOUNT.search(text or ""))
+        or bool(_DISCOUNT_AMOUNT.search(text or ""))
+    )
+
+
+def is_price_fact(name: str, value: str) -> bool:
+    """Whether a «Datos clave» row is a price: named «precio», or quoting an amount of
+    money in its name or value («$18.000», «20 mil pesos»…)."""
+    return name.strip().casefold() == PRICE_FACT_NAME or quotes_money(name) or quotes_money(value)
+
+
+def strip_prices(
+    constraints: BriefConstraints, media: MediaInputs
+) -> tuple[BriefConstraints, MediaInputs]:
+    """`constraints` and `media` without any price (`is_price_fact` rows, «must mention»
+    entries that quote money, `price_line`); the same objects when there was none."""
+    highlights = tuple(row for row in constraints.highlights if not is_price_fact(*row))
+    must = tuple(item for item in constraints.must_mention if not quotes_money(item))
+    if highlights != constraints.highlights or must != constraints.must_mention:
+        constraints = constraints.model_copy(
+            update={"highlights": highlights, "must_mention": must}
+        )
+    if media.price_line:
+        media = media.model_copy(update={"price_line": ""})
+    return constraints, media
+
+
 class ContentBrief(BaseModel):
     """The operator's request. Short on purpose: the value sits in the brand substrate,
     not in making them fill twenty fields."""
@@ -1106,6 +1205,9 @@ class ContentBrief(BaseModel):
     variants_requested: int = Field(default=3, ge=1, le=5)
     kind: ContentKind = ContentKind.STATIC_FLYER
     media: MediaInputs = MediaInputs()
+    #: The reader's awareness level the piece speaks to (from its angle); None = not set,
+    #: and the copy prompt renders exactly as before the levels existed.
+    awareness_level: AwarenessLevel | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -1163,6 +1265,25 @@ class ContentBrief(BaseModel):
         if media is None:
             return {**value, "media": {"brand_logo_in_scene": False}}
         return value
+
+    @model_validator(mode="after")
+    def _unaware_carries_no_price(self) -> ContentBrief:
+        """m-25026509: a piece for a reader who is not thinking about the product yet shows
+        the place, not the price — on EVERY path (copy prompt, clip and part video
+        prompts, what a composition prints, every part a parent hands its brief to),
+        whatever the caller sent. Stripped here, once, so no consumer has to remember:
+        `price_line`; a «Datos clave» row named «precio» (the name the screen and
+        `angles.PRICE_HIGHLIGHT` give the price) or whose name or value quotes an amount
+        of money; a «must mention» entry that quotes one. Every other level, and a brief
+        with no level, is left exactly as sent."""
+        if self.awareness_level is not AwarenessLevel.UNAWARE:
+            return self
+        constraints, media = strip_prices(self.constraints, self.media)
+        if constraints is not self.constraints:
+            object.__setattr__(self, "constraints", constraints)
+        if media is not self.media:
+            object.__setattr__(self, "media", media)
+        return self
 
     @model_validator(mode="after")
     def _upload_routes_need_media(self) -> ContentBrief:
