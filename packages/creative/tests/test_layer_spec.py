@@ -332,14 +332,15 @@ def test_years_units_and_claims_are_not_prices(text: str) -> None:
 
 
 def test_brand_fill_square_info_value_follows_the_doc_limit() -> None:
-    """44 characters in 1:1, as `info_card` (catalog §2.5) and m-25017285's manifest."""
+    """60 characters in 1:1: the general value limit (catalog §1.5); 44 is `info_card`'s
+    alone (§2.5). Agreed with m-25017285's manifest."""
     fields = {
         "layout_id": "brand_fill",
         "format": "1:1",
         "title": "Te esperamos",
-        "info_blocks": [{"kind": "hours", "label": "Horario", "value": "x" * 44}],
+        "info_blocks": [{"kind": "hours", "label": "Horario", "value": "x" * 60}],
     }
     _spec(**fields)
-    fields["info_blocks"][0]["value"] = "x" * 45
+    fields["info_blocks"][0]["value"] = "x" * 61
     with pytest.raises(ValidationError):
         _spec(**fields)
