@@ -14,9 +14,11 @@ and the screens read:
   was on and made again after it went off fails `part_failed`, its vista previa given
   back);
 - what the vendor hands back (`QUALIFY_SEEDANCE_EXTEND_OUTPUT`): only the new stretch
-  (`segment`) or the input video followed by it (`whole`). Not measured yet: `auto`
-  (the default) reads it from the output's own length, and the join keeps ONLY the new
-  stretch either way (`extend_span`), so no frame of the previous part is shown twice;
+  (`segment`, the default: measured in EXT-001, 2026-11-14) or the input video followed
+  by it (`whole`). A `segment` output whose length reads as input + asked is logged
+  (`creative.extend.unexpected_whole`) and kept as `whole`; `auto` reads it from the
+  length alone. The join keeps ONLY the new stretch either way (`extend_span`), so no
+  frame of the previous part is shown twice;
 - which part is «the previous one» and whether it has a vista previa yet
   (`pick_previous`, pure; `DbPreviousParts`, as the owning tenant). Without one the
   part's preparation waits (`waiting_previous`: its job stays queued, the reaper spares
@@ -46,7 +48,8 @@ logger = logging.getLogger(__name__)
 #: `off` (default) or `draft`: whether «Sigue a la anterior» parts are made, as 480p
 #: drafts (the only way a part is made: vista previa first, its 1080p on approval).
 EXTEND_SWITCH = "QUALIFY_PARTS_EXTEND"
-#: `auto` (default), `segment` or `whole`: what an `extend` task returns.
+#: `segment` (default, measured in EXT-001), `auto` or `whole`: what an `extend` task
+#: returns.
 EXTEND_OUTPUT_SWITCH = "QUALIFY_SEEDANCE_EXTEND_OUTPUT"
 
 SEGMENT = "segment"
@@ -80,20 +83,37 @@ def extend_available() -> bool:
 
 def extend_output(*, output_s: float | None, input_s: float | None, asked_s: float) -> ExtendOutput:
     """What an `extend` task returned: `segment` (only the new stretch) or `whole` (the
-    input then the new stretch). `QUALIFY_SEEDANCE_EXTEND_OUTPUT` decides when set to one
-    of them; `auto` compares the output's measured length with both readings and takes
-    the closer one (a length that cannot be read is `segment`: the join then keeps the
-    first `asked_s` seconds, as for any part). Pure but for the switch."""
-    setting = os.environ.get(EXTEND_OUTPUT_SWITCH, "auto").strip().lower()
-    if setting in (SEGMENT, WHOLE):
-        return setting  # type: ignore[return-value]
-    if setting not in ("", "auto"):
-        logger.error("%s must be auto, segment or whole, not %r", EXTEND_OUTPUT_SWITCH, setting)
+    input then the new stretch). `QUALIFY_SEEDANCE_EXTEND_OUTPUT` decides:
+
+    - `segment` (the default; EXT-001 measured 5.000 s back for 5 s asked): `segment`,
+      unless the measured length sits closer to input + asked than to asked — then it is
+      logged as `creative.extend.unexpected_whole` and read as `whole`, so a vendor change
+      never shows the previous part twice;
+    - `auto`: whichever reading the measured length is closer to;
+    - `whole`: always `whole`.
+
+    A length that cannot be read is `segment` (the join then keeps the first `asked_s`
+    seconds, as for any part). An unknown value is logged and read as `segment`. Pure but
+    for the switch and the log."""
+    setting = os.environ.get(EXTEND_OUTPUT_SWITCH, SEGMENT).strip().lower()
+    if setting == WHOLE:
+        return WHOLE
+    if setting not in ("", SEGMENT, "auto"):
+        logger.error("%s must be segment, auto or whole, not %r", EXTEND_OUTPUT_SWITCH, setting)
+        setting = SEGMENT
     if output_s is None or input_s is None or input_s <= 0:
         return SEGMENT
-    as_whole = abs(output_s - (input_s + asked_s))
-    as_segment = abs(output_s - asked_s)
-    return WHOLE if as_whole < as_segment else SEGMENT
+    reads_whole = abs(output_s - (input_s + asked_s)) < abs(output_s - asked_s)
+    if not reads_whole:
+        return SEGMENT
+    if setting != "auto":
+        logger.warning(
+            "creative.extend.unexpected_whole output_s=%.3f input_s=%.3f asked_s=%.3f",
+            output_s,
+            input_s,
+            asked_s,
+        )
+    return WHOLE
 
 
 def _number(value: Any) -> float | None:

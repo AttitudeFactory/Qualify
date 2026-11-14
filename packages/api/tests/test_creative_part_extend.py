@@ -76,15 +76,39 @@ def test_extend_is_off_unless_switched_to_draft(
 def test_the_output_is_read_from_its_length_unless_the_switch_says(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv(EXTEND_OUTPUT_SWITCH, raising=False)
+    monkeypatch.delenv(EXTEND_OUTPUT_SWITCH, raising=False)  # default: segment (EXT-001)
+    assert extend_output(output_s=5.0, input_s=5.04, asked_s=5) == SEGMENT
+    assert extend_output(output_s=None, input_s=5.0, asked_s=5) == SEGMENT  # unreadable
+    assert extend_output(output_s=5.0, input_s=None, asked_s=5) == SEGMENT
+    monkeypatch.setenv(EXTEND_OUTPUT_SWITCH, "auto")
     assert extend_output(output_s=5.04, input_s=5.0, asked_s=5) == SEGMENT
     assert extend_output(output_s=10.04, input_s=5.0, asked_s=5) == WHOLE
     assert extend_output(output_s=9.0, input_s=5.0, asked_s=4) == WHOLE
-    assert extend_output(output_s=None, input_s=5.0, asked_s=5) == SEGMENT  # unreadable
     monkeypatch.setenv(EXTEND_OUTPUT_SWITCH, "whole")
     assert extend_output(output_s=5.0, input_s=5.0, asked_s=5) == WHOLE
+    assert extend_output(output_s=None, input_s=None, asked_s=5) == WHOLE
     monkeypatch.setenv(EXTEND_OUTPUT_SWITCH, "segment")
-    assert extend_output(output_s=10.0, input_s=5.0, asked_s=5) == SEGMENT
+    assert extend_output(output_s=5.0, input_s=5.04, asked_s=5) == SEGMENT
+    monkeypatch.setenv(EXTEND_OUTPUT_SWITCH, "nonsense")  # logged, read as segment
+    assert extend_output(output_s=5.0, input_s=5.04, asked_s=5) == SEGMENT
+
+
+@pytest.mark.parametrize("value", [None, "segment"])
+def test_a_segment_output_as_long_as_input_plus_asked_is_logged_and_kept_whole(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, value: str | None
+) -> None:
+    if value is None:
+        monkeypatch.delenv(EXTEND_OUTPUT_SWITCH, raising=False)
+    else:
+        monkeypatch.setenv(EXTEND_OUTPUT_SWITCH, value)
+    with caplog.at_level("WARNING", logger="qualify_api.creative.part_extend"):
+        assert extend_output(output_s=10.04, input_s=5.04, asked_s=5) == WHOLE
+    assert "creative.extend.unexpected_whole" in caplog.text
+    caplog.clear()
+    monkeypatch.setenv(EXTEND_OUTPUT_SWITCH, "auto")  # auto expects either: no warning
+    with caplog.at_level("WARNING", logger="qualify_api.creative.part_extend"):
+        assert extend_output(output_s=10.04, input_s=5.04, asked_s=5) == WHOLE
+    assert "unexpected_whole" not in caplog.text
 
 
 # ---------------------------------------------------------------------------
