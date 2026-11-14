@@ -375,3 +375,113 @@ def test_the_no_price_status_is_always_mounted_and_only_its_text_changes() -> No
     assert "audience_no_price" in children.split("?", 1)[0]
     assert _js(AUDIENCE_NO_PRICE) in children
     assert rendered.count('role:"status"') == 1
+
+
+# --- code review (m-25026509): «Sin preferencia» changes nothing; every new piece starts
+# clean; the parts card's answer stays on the clip -----------------------------------
+
+
+def _edited_price(state: CreativeState) -> None:
+    state.pick_catalog_product("p1")
+    index = next(i for i, row in enumerate(state.brief_highlights) if row.get("product"))
+    state.set_highlight(index, "value", "$15.000 hoy")
+
+
+@pytest.mark.parametrize("answer", ["", "most_aware"])
+def test_an_edited_price_survives_a_kind_change(answer: str) -> None:
+    """Regression: a kind change re-synced the catalog price and lost the owner's edit."""
+    state = _clip()
+    _edited_price(state)
+    state.set_brief_audience(answer)
+    assert [r["value"] for r in _price_rows(state)] == ["$15.000 hoy"]
+    state.choose_kind("static_flyer")
+    assert [r["value"] for r in _price_rows(state)] == ["$15.000 hoy"]
+    state.choose_kind("clip")
+    assert [r["value"] for r in _price_rows(state)] == ["$15.000 hoy"]
+
+
+def test_changing_between_answers_that_keep_the_price_leaves_the_edit() -> None:
+    state = _clip()
+    _edited_price(state)
+    for answer in ("problem_aware", "most_aware", "", "solution_aware"):
+        state.set_brief_audience(answer)
+        assert [r["value"] for r in _price_rows(state)] == ["$15.000 hoy"]
+
+
+def test_the_hidden_price_comes_back_as_the_owner_left_it() -> None:
+    state = _clip()
+    _edited_price(state)
+    state.set_brief_audience("unaware")
+    assert _price_rows(state) == []
+    state.set_brief_audience("product_aware")
+    assert [r["value"] for r in _price_rows(state)] == ["$15.000 hoy"]
+
+
+def test_unaware_then_another_kind_brings_the_price_back() -> None:
+    """The other kind never sends the answer, so its piece is not price-free."""
+    state = _clip()
+    _edited_price(state)
+    state.set_brief_audience("unaware")
+    state.choose_kind("static_flyer")
+    assert [r["value"] for r in _price_rows(state)] == ["$15.000 hoy"]
+    state.choose_kind("clip")  # back to the clip still for that reader: hidden again
+    assert _price_rows(state) == []
+
+
+def test_a_product_chosen_while_hidden_comes_back_with_its_own_price() -> None:
+    state = _clip()
+    _edited_price(state)
+    state.set_brief_audience("unaware")
+    state.pick_catalog_product("p2")
+    state.set_brief_audience("")
+    assert [r["value"] for r in _price_rows(state)] == ["$15.000"]
+
+
+def test_seguir_despues_keeps_the_answer() -> None:
+    """2a: «Seguir después» keeps the form in the session — the answer included."""
+    state = _clip()
+    state.set_brief_audience("most_aware")
+    state.save_for_later()
+    assert state.brief_audience == "most_aware"
+    assert state._generator_form()["awareness_level"] == "most_aware"
+
+
+def test_revisar_en_borradores_starts_the_next_piece_at_sin_preferencia() -> None:
+    """2b: «Revisar y aprobar en Borradores» starts the generator over."""
+    state = _clip()
+    state.set_brief_audience("problem_aware")
+    state.review_in_drafts()
+    assert state.brief_audience == "" and state.audience_editing is False
+
+
+def test_crear_otra_starts_at_sin_preferencia() -> None:
+    state = _clip()
+    state.set_brief_audience("problem_aware")
+    state.go_create_another()
+    assert state.brief_audience == ""
+
+
+def test_hacer_uno_parecido_starts_at_sin_preferencia_and_gives_the_price_back() -> None:
+    """2b: the reels entry opens a fresh clip (the product and its facts stay)."""
+    state = _clip()
+    _edited_price(state)
+    state.set_brief_audience("unaware")
+    state._apply_reel_reference(
+        {"url": "https://www.instagram.com/reel/abc/", "username": "otro"},
+        {"key": "t/reel.mp4", "name": "reel.mp4"},
+    )
+    assert state.brief_audience == "" and state.audience_select_value == AUDIENCE_NONE
+    assert [r["value"] for r in _price_rows(state)] == ["$15.000 hoy"]
+
+
+def test_the_parts_cards_answer_stays_on_the_clip_when_the_plan_goes() -> None:
+    """2c (decided): one answer for the clip. It stays when the plan from the card is
+    dropped; only the closed line goes, and the open question shows that same answer."""
+    state = _clip()
+    state.set_brief_audience("solution_aware")
+    state.parts_without_reel = True
+    assert state.audience_closed is True
+    state._set_reel_plan([])  # the last part removed: no plan, back to today's clip
+    assert state.parts_without_reel is False and state.audience_closed is False
+    assert state.brief_audience == "solution_aware"
+    assert state._generator_form()["awareness_level"] == "solution_aware"
