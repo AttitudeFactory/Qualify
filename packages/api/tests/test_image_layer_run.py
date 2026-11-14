@@ -5,6 +5,7 @@ the piece without a layer — never without the piece."""
 
 from __future__ import annotations
 
+import json
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
@@ -242,6 +243,17 @@ def _stage(writer: Writer, claims: list[dict[str, Any]], regenerate: Any, **over
     return layer_run.run_layer_stage(producer, **values)
 
 
+class JsonCheckpoints(Checkpoints):
+    """The steps as Postgres keeps them: a result goes through JSON (jsonb) and back."""
+
+    def save_step(self, run: Any, step: int, request: dict, job_id: Any) -> dict:
+        return super().save_step(run, step, json.loads(json.dumps(request)), job_id)
+
+    def complete_step(self, tenant_id: Any, *, identity: dict, result: Any, **kw: Any) -> None:
+        stored = json.loads(json.dumps(result)) if result is not None else None
+        super().complete_step(tenant_id, identity=identity, result=stored, **kw)
+
+
 def _pass(checkpoints: Checkpoints, monkeypatch: pytest.MonkeyPatch, *args: Any, **kw: Any):  # noqa: ANN202
     """One preparation pass (a fresh `Preparation`, as after a restart): the router
     already took two steps for the gallery's slides."""
@@ -283,11 +295,45 @@ def test_the_cap_holds_across_both_calls() -> None:
     outcome = _stage(writer, [], Regenerator())
     assert len(writer.requests) == 2
     assert writer.budgets[0].spent_usd == Decimal("0.15")  # the second charge was refused
-    assert outcome.layers == {}  # the stage failed safe: no layer, the piece goes on
+    assert set(outcome.layers) == {0}  # slide 1 (regenerated) has none; slide 0 keeps its
+    assert outcome.regenerated == (1,)
+
+
+def test_a_failed_second_call_gives_the_same_layers_on_a_replay(monkeypatch) -> None:  # noqa: ANN001
+    checkpoints = JsonCheckpoints()
+    writer = Writer(invented=(1,), spend=Decimal("0.15"))
+    first, _ = _pass(checkpoints, monkeypatch, writer, [], Regenerator())
+    assert checkpoints.rows[-101]["error"] == "layer failed: BudgetExhausted"
+    again, _ = _pass(checkpoints, monkeypatch, writer, [], Regenerator())
+    assert len(writer.requests) == 2  # the failed call is not made again
+    assert set(first.layers) == set(again.layers) == {0}
+
+
+class Crash(BaseException):
+    """The process dies (not an `Exception`: nothing in the stage catches it)."""
+
+
+def test_a_replay_charges_back_the_first_call(monkeypatch) -> None:  # noqa: ANN001
+    """A crash after step -100 is saved and before -101: the replay's meter starts from
+    what the first call spent, so the second call cannot get a fresh US$0.25."""
+    checkpoints = JsonCheckpoints()
+    writer = Writer(invented=(1,), spend=Decimal("0.15"))
+
+    def crash(position: int) -> BaseScene:
+        raise Crash()
+
+    with pytest.raises(Crash):
+        _pass(checkpoints, monkeypatch, writer, [], crash)
+    assert checkpoints.rows[-100]["result"]["spent_usd"] == "0.15"
+    assert -101 not in checkpoints.rows
+    outcome, _ = _pass(checkpoints, monkeypatch, writer, [], Regenerator(), claim=False)
+    assert len(writer.requests) == 2  # the first answer read back, the second asked
+    assert writer.budgets[1].spent_usd == Decimal("0.15")  # charged back; 0.15 more refused
+    assert set(outcome.layers) == {0}
 
 
 def test_a_replay_reuses_the_answer_and_the_regeneration(monkeypatch) -> None:  # noqa: ANN001
-    checkpoints, claims = Checkpoints(), []
+    checkpoints, claims = JsonCheckpoints(), []
     writer, regen = Writer(invented=(1,)), Regenerator()
     first, run = _pass(checkpoints, monkeypatch, writer, claims, regen)
     assert set(checkpoints.rows) == {-100, -101}
@@ -307,17 +353,17 @@ def test_the_step_numbers_do_not_depend_on_the_switch(monkeypatch) -> None:  # n
     """The layer's steps sit in fixed slots: with or without a regeneration, the router's
     numbering after the stage is the same as with the switch off."""
     for invented, router_steps in (((), 2), ((1,), 3)):
-        checkpoints = Checkpoints()
+        checkpoints = JsonCheckpoints()
         _, run = _pass(checkpoints, monkeypatch, Writer(invented=invented), [], Regenerator())
         assert run.step == router_steps
         assert all(step < 0 for step in checkpoints.rows)
-    checkpoints = Checkpoints()
+    checkpoints = JsonCheckpoints()
     _, run = _pass(checkpoints, monkeypatch, Writer(), [], Regenerator(), env={})
     assert run.step == 2 and checkpoints.rows == {}
 
 
 def test_a_call_left_in_flight_is_never_paid_again(monkeypatch) -> None:  # noqa: ANN001
-    checkpoints = Checkpoints()
+    checkpoints = JsonCheckpoints()
     checkpoints.rows[-100] = {"request": {}, "job_id": None, "result": None, "error": "in_flight"}
     writer = Writer()
     outcome, _ = _pass(checkpoints, monkeypatch, writer, [], Regenerator())
@@ -325,7 +371,7 @@ def test_a_call_left_in_flight_is_never_paid_again(monkeypatch) -> None:  # noqa
 
 
 def test_a_failed_call_is_recorded_and_not_repeated(monkeypatch) -> None:  # noqa: ANN001
-    checkpoints, writer = Checkpoints(), Writer(fail=True)
+    checkpoints, writer = JsonCheckpoints(), Writer(fail=True)
     _pass(checkpoints, monkeypatch, writer, [], Regenerator())
     assert checkpoints.rows[-100]["error"] == "layer failed: RuntimeError"
     _pass(checkpoints, monkeypatch, writer, [], Regenerator())
@@ -354,3 +400,47 @@ def test_a_gallery_with_a_pending_slide_waits_for_its_layer(monkeypatch) -> None
     outcome = _produce(producer, brief)
     assert outcome.pending and waited == [1]
     assert writer.requests == []  # slide 0 is made, but the layer waits for the next pass
+
+
+def test_no_router_call_follows_the_layer_stage(monkeypatch) -> None:  # noqa: ANN001
+    """A gallery run twice through `CheckpointRouter` (pass 2 = a restart): the layer is
+    asked once per call over both passes, pass 2 pays nothing, and the regeneration is the
+    LAST router step — a router call added after the layer stage would move this number
+    and break replays (see `layer_run`'s «Step numbers»)."""
+    from unittest.mock import patch
+
+    from qualify_api.creative.pipeline import CheckpointRouter
+
+    monkeypatch.setenv("QUALIFY_IMAGE_LAYER", "on")
+    producer, brief, vendor = gallery_setup(monkeypatch)
+    writer, claims = Writer(invented=(1,)), []
+    _wire(producer, writer, claims)
+    checkpoints, draft, router = JsonCheckpoints(), uuid4(), producer._router
+
+    def one_pass() -> tuple[Any, Any]:
+        producer._router = CheckpointRouter(router, checkpoints, producer._store)
+        run = pipeline.Preparation(TENANT_ID, draft, 1, "generation", uuid4(), 1)
+        with patch("qualify_api.creative.pipeline.PipelineStore", return_value=checkpoints):
+            with pipeline.preparing(run):
+                outcome = producer.produce(
+                    tenant_id=TENANT_ID,
+                    draft_id=draft,
+                    brief=brief,
+                    kit=_kit(),
+                    copy=COPY,
+                    budget=BUDGET,
+                    brand_references=BrandReferencesSet(block_version=9),
+                )
+        return outcome, run
+
+    first, run1 = one_pass()
+    assert first.failure is None and len(vendor.requests) == 3  # 2 slides + 1 regeneration
+    assert len(writer.requests) == 2 and len(claims) == 1
+    router_steps = sorted(s for s in checkpoints.rows if s >= 0)
+    assert router_steps == [0, 1, 2] and run1.step == 3  # the regeneration is the last one
+    second, run2 = one_pass()
+    assert second.failure is None
+    assert len(vendor.requests) == 3 and len(writer.requests) == 2 and len(claims) == 1
+    assert run2.step == 3
+    assert [w.layer.spec_sha256 for w in second.media] == [w.layer.spec_sha256 for w in first.media]
+    assert second.media[1].params["base_regenerated"] is True

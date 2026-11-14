@@ -14,8 +14,21 @@ AND the bases it claimed for regeneration are saved with the step, so a replay r
 back instead of calling Claude or the database again, and makes the same regeneration
 router calls in the same order — the router replays their saved Seedream results. A step
 left `in_flight` (a crash after a paid call) is never repeated: that pass has no layer.
-Every call of one piece draws on ONE `DollarMeter` (`LAYER_BUDGET_USD`), regeneration
-included.
+
+**Money.** Both Claude calls of one piece draw on ONE `DollarMeter` (`LAYER_BUDGET_USD`);
+what the first call spent is saved with its step and charged back to the meter on a
+replay, so a crash between the two calls never hands the second a fresh cap. The Seedream
+regeneration is not a layer cost: it goes through the router and bills the piece's
+`BudgetContext`, like any scene.
+
+**Step numbers.** A regeneration is one router call, so it moves `run.step` by one. That is
+safe only because no router call follows the layer stage in `produce()`: the flyer composes
+locally after it, the gallery's closing slide is drawn locally. Anything that adds a router
+call after this stage must move it before, or replays would read the wrong steps
+(`test_no_router_call_follows_the_layer_stage` pins it).
+
+A second call that fails (budget refused, model error) drops only the regenerated slides'
+layers: the other slides keep the first answer's, on the first pass and on a replay alike.
 
 Nothing here may cost the owner the piece: any failure (the switch on without a key, the
 model, the budget, the database) is logged and the piece goes on without a layer — the
@@ -28,6 +41,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
@@ -270,12 +284,20 @@ def run_layer_stage(
                     claimed.append(position)
                 else:
                     logger.info("draft %s slide %s: base already made again", draft_id, position)
-            # saved with the answer: a replay regenerates exactly these, claiming nothing
-            return {"layer": _result_json(result), "regenerate": claimed}
+            # saved with the answer: a replay regenerates exactly these, claiming nothing,
+            # and charges back what was spent (the cap spans both calls across a crash)
+            return {
+                "layer": _result_json(result),
+                "regenerate": claimed,
+                "spent_usd": str(budget.spent_usd),
+            }
 
         saved = _checkpointed(LAYER_STEPS[0], request, first)
         if saved is None:
             return LayerOutcome(scenes, {})
+        paid = Decimal(str(saved.get("spent_usd", "0")))
+        if budget.spent_usd == 0 and paid > 0:  # a replay: this meter has not seen it yet
+            budget.charge(paid, what="layer call saved in an earlier pass")
         result = _result_from_json(saved["layer"])
         regenerated: list[int] = []
         for position in saved["regenerate"]:
@@ -288,11 +310,22 @@ def run_layer_stage(
                 request,
                 slides=tuple(SlideInput(position=p, photo=scenes[p].image) for p in sorted(scenes)),
             )
-            again = _checkpointed(
-                LAYER_STEPS[1],
-                again_request,
-                lambda: {"layer": _result_json(writer(again_request, budget=budget))},
-            )
+            try:
+                again = _checkpointed(
+                    LAYER_STEPS[1],
+                    again_request,
+                    lambda: {"layer": _result_json(writer(again_request, budget=budget))},
+                )
+            except QUEUE_SIGNALS:
+                raise
+            except Exception:  # noqa: BLE001 - as a replay of the failed step: None
+                logger.warning(
+                    "draft %s: layer after regeneration failed, %s keep no layer",
+                    draft_id,
+                    regenerated,
+                    exc_info=True,
+                )
+                again = None
             fresh_specs = _result_from_json(again["layer"]).specs if again else {}
             for position in regenerated:
                 if position in fresh_specs:
