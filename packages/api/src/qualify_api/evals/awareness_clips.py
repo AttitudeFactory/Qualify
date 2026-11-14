@@ -41,12 +41,12 @@ DEFAULT_OBJECTIVE = "consideration"
 _PHOTO = "uploads/00000000-0000-0000-0000-000000000001/catalog/{product}/foto-1.jpg"
 
 #: NIVELES-004, written before judging clips: what the judge reads for a clip.
-JUDGE_CLIP_VERSION = "juez-niveles-v2+clip-v1"
+JUDGE_CLIP_VERSION = "juez-niveles-v3+clip-v2"
 JUDGE_CLIP_ADDENDUM = """
 Estas ideas son CLIPS cortos sin presentador ni voz: no hay guion hablado. Juzga el \
 gancho, el texto de la publicación (caption), la llamada a la acción y las TRES TOMAS (lo \
 que muestra la cámara). Las tomas no llevan texto en pantalla. Para el nivel cuenta todo \
-lo que el cliente ve o lee; en most_aware, el texto largo también cuenta contra el nivel.
+lo que el cliente ve o lee; most_aware se juzga con la medida de su regla.
 """
 
 
@@ -191,6 +191,23 @@ def caption_words(payload: Mapping[str, Any]) -> int:
     return len(re.findall(r"[^\W\d_]+", str(payload.get("caption", "") or "")))
 
 
+#: NIVELES-005: most_aware's measures with slack («about 6 / 5 / 25 words»).
+MOST_HOOK_WORDS, MOST_CTA_WORDS, MOST_CAPTION_WORDS = 8, 7, 35
+
+
+def most_aware_measure(payload: Mapping[str, Any]) -> bool:
+    """Hook ≤ 8 words, CTA ≤ 7 and caption ≤ 35: the most_aware measure, with slack."""
+
+    def count(key: str) -> int:
+        return len(re.findall(r"[^\W\d_]+", str(payload.get(key, "") or "")))
+
+    return (
+        count("hook") <= MOST_HOOK_WORDS
+        and count("cta") <= MOST_CTA_WORDS
+        and count("caption") <= MOST_CAPTION_WORDS
+    )
+
+
 def judge_ideas(payload: Mapping[str, Any], level: str | None) -> list[dict[str, str]]:
     """The clip as the judge reads it (one idea)."""
     shots = [str((s or {}).get("visual", "")) for s in payload.get("shots") or ()]
@@ -221,6 +238,7 @@ __all__ = [
     "judge_ideas",
     "levels_with_none",
     "load_clip_cases",
+    "most_aware_measure",
     "parts_inputs",
     "quotes_price",
     "shots_ok",

@@ -772,6 +772,7 @@ def run_clips(al: Any, args: Any, spend: Spend, api_key: str) -> dict[str, Any]:
                 "three_shots": three,
                 "filmable_shots": filmable,
                 "caption_words": ac.caption_words(payload),
+                "most_measure": ac.most_aware_measure(payload) if payload else None,
                 **judged,
             }
         )
@@ -911,6 +912,83 @@ def run_parts_level(al: Any, args: Any, spend: Spend, api_key: str) -> dict[str,
     return {}
 
 
+def run_rejudge(al: Any, args: Any, spend: Spend, api_key: str) -> dict[str, Any]:
+    """NIVELES-005: the informed judge only, with the CURRENT rubric, over saved clip and
+    flyer copies of `--levels` (so a before and an after are judged alike)."""
+    from qualify_api.evals import awareness_clips as ac
+
+    clip_cases = ac.load_clip_cases(CLIP_CASES, COPY_CASES)
+    base, levels = _copy_cases(al, args)
+    flyer = {c["id"]: c for c in levels["cases"]}
+    rows: list[dict[str, Any]] = []
+    args.partial["rejudge"] = {"items": rows, "scores": []}
+    for name in args.rejudge_files:
+        report = json.loads((HERE / "results" / name).read_text(encoding="utf-8"))
+        for suite in ("clips", "copy"):
+            for item in (report["suites"].get(suite) or {}).get("items", []):
+                level = item.get("level")
+                payload = (item.get("output") or {}).get("variants", [{}])[0].get("payload")
+                if not payload or not level or (args.level_set and level not in args.level_set):
+                    continue
+                if suite == "copy" and item.get("arm") != "nuevo":
+                    continue
+                if suite == "clips":
+                    brand = clip_cases["brands"][item["brand"]]
+                    ideas = ac.judge_ideas(payload, level)
+                    sources = _clip_sources(brand, item["sentence"])
+                    perks, medium = brand["perks"], "clip"
+                else:
+                    case = flyer[item["case"]]
+                    extra = levels["brands"][case["brand"]]
+                    kit = base["brands"][case["brand"]]["kit"]
+                    perks = extra["perks"]
+                    sources = "\n".join(
+                        [
+                            *perks,
+                            *(v for v in extra["product"].values() if isinstance(v, str)),
+                            kit.get("positioning", ""),
+                            kit.get("audience", ""),
+                            *kit.get("cta_patterns", []),
+                            *case["angle"].values(),
+                        ]
+                    )
+                    ideas = [
+                        {
+                            "gancho": payload.get("hook", ""),
+                            "texto": payload.get("caption", ""),
+                            "cta": payload.get("cta", ""),
+                            "nivel": level,
+                        }
+                    ]
+                    medium = "idea"
+                what = f"rejudge {name[:15]} {item['case']}"
+                if not spend.allow("judge", what):
+                    continue
+                try:
+                    found, stats = al.call_judge(
+                        ideas, sources, tuple(perks), blind=False, api_key=api_key, medium=medium
+                    )
+                    spend.add("rejudge", al.cost_usd(stats))
+                except Exception as exc:  # noqa: BLE001 — recorded, at its ceiling
+                    spend.add("rejudge", CEILING_USD["judge"])
+                    found = [{"error": type(exc).__name__}]
+                rows.append(
+                    {
+                        "file": name,
+                        "suite": suite,
+                        "case": item["case"],
+                        "level": level,
+                        "judge_fit": found[0].get("cumple_su_nivel"),
+                        "reason": str(found[0].get("motivo", ""))[:200],
+                        "measure": ac.most_aware_measure(payload),
+                        "gates": item.get("gates"),
+                    }
+                )
+                args.checkpoint()
+    print(f"  rejudge: {len(rows)} copias, acumulado US${spend.total}")
+    return {}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--env-file", default=str(ROOT / ".env"))
@@ -928,9 +1006,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--leftover", action="store_true", help="clips: the price-in-sentence cases"
     )
+    parser.add_argument("--rejudge-files", default="", help="rejudge: results, comma-separated")
     args = parser.parse_args(argv)
     args.arm_set = {a.strip() for a in args.arms.split(",") if a.strip()}
     args.level_set = {a.strip() for a in args.levels.split(",") if a.strip()}
+    args.rejudge_files = [f.strip() for f in args.rejudge_files.split(",") if f.strip()]
 
     _load_env(args.env_file)
     os.environ["LANGFUSE_TRACING_ENVIRONMENT"] = "eval"
@@ -1003,6 +1083,7 @@ def main(argv: list[str] | None = None) -> int:
             "parts": run_parts,
             "clips": run_clips,
             "partslevel": run_parts_level,
+            "rejudge": run_rejudge,
         }
         for suite in paid:
             print(f"== {suite} (tope US${args.cap_usd}, gastado US${spend.total})")

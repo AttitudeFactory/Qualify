@@ -64,7 +64,7 @@ PRICING_VERSION = "v9"
 JUDGE_CONFIG = ModelConfig("claude-haiku-5-5", "low")
 JUDGE_TOOL = "calificar_ideas"
 JUDGE_MAX_TOKENS = 6000
-JUDGE_PROMPT_VERSION = "juez-niveles-v2"
+JUDGE_PROMPT_VERSION = "juez-niveles-v3"
 LEVELS: tuple[str, ...] = tuple(level.value for level in AwarenessLevel)
 _NIL = UUID(int=0)
 
@@ -537,8 +537,11 @@ negocio lo resuelve mejor, con datos concretos del producto (porción, ingredien
 variedad) que estén en los datos dados.
 - product_aware: conoce el negocio pero duda. Regla: quita la fricción con datos dados \
 (precio claro, horario, cómo pagar, dónde queda).
-- most_aware: listo para comprar. Regla: el camino más corto a la compra; gancho y \
-llamada a la acción muy breves y directos.
+- most_aware: listo para comprar. Regla: el camino más corto a la compra: gancho de unas \
+6 palabras, llamada a la acción de unas 5 con una sola forma de comprar y, si hay texto, \
+una o dos frases (unas 25 palabras) con el producto, el precio si lo hay y cómo comprar. \
+Pasarse un poco cumple; sumar otras ventajas, historias o preguntas no cumple; un texto \
+que solo llega al mínimo de la marca cumple.
 
 Datos reales: solo cuentan los que aparecen en «Datos del negocio». Un dato inventado es \
 un horario, precio, forma de pago, dirección, domicilio, descuento o promoción que la \
@@ -557,7 +560,7 @@ anglicismos; 1 = no sirve para publicar.
 #: NIVELES-002: added for video plans only, written before judging them (README). The
 #: parts prompt forbids every figure (no price, hour or number on screen), so a plan
 #: cannot meet the product_aware rule above as written.
-JUDGE_PARTS_VERSION = "juez-niveles-v2+partes-v1"
+JUDGE_PARTS_VERSION = "juez-niveles-v3+partes-v1"
 JUDGE_PARTS_ADDENDUM = """
 Estas ideas son planes de VIDEO POR PARTES: por diseño ninguna parte muestra precios, \
 cifras, horarios escritos ni texto en pantalla, así que no los exijas. En un video, \

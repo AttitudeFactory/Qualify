@@ -65,3 +65,24 @@ def test_shots_ok_and_clip_text() -> None:
     assert ac.clip_text(payload).count("plancha") == 3
     assert ac.caption_words(payload) == 1
     assert ac.judge_ideas(payload, "unaware")[0]["tomas"].count("|") == 2
+
+
+def test_most_aware_measure_follows_the_prompt_with_slack() -> None:
+    short = {
+        "hook": "Tu doble te espera hoy",
+        "cta": "Pide por Rappi",
+        "caption": "Combo doble a $32.900.",
+    }
+    assert ac.most_aware_measure(short)
+    long_cta = {**short, "cta": "Escríbenos por WhatsApp y agenda tu asesoría sin costo"}
+    assert not ac.most_aware_measure(long_cta)
+    assert not ac.most_aware_measure({**short, "caption": "palabra " * 36})
+
+
+def test_the_judge_rubric_carries_the_most_aware_measures() -> None:
+    from qualify_api.evals import awareness_levels as al
+
+    assert "unas \\\n6 palabras" not in al.JUDGE_RUBRIC  # one line, no escaped break left
+    for words in ("6 palabras", "unas 5", "unas 25 palabras", "mínimo de la marca"):
+        assert words in al.JUDGE_RUBRIC
+    assert "texto largo" not in ac.JUDGE_CLIP_ADDENDUM
