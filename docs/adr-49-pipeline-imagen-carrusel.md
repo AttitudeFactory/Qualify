@@ -70,7 +70,7 @@ La crea la migración de m-25017278 (número tomado contra `origin/main` al abri
 | `model_id`, `prompt_version`, `pipeline_version` | Procedencia |
 | `UNIQUE (tenant_id, version_id, position)` | Idempotencia: un reintento no crea otra capa — **reemplazada por la Enmienda 2026-11-14, abajo** |
 
-**Recomponer** es una revisión nueva en `piece_versions` (`UNIQUE (tenant_id, draft_id, revision)` ya existe) que reusa la misma base, más una fila nueva en `piece_layers` con `parent_layer_id`. La acción lleva una clave de petición: el doble clic no crea otra versión.
+**Recomponer** es una revisión nueva en `piece_versions` (`UNIQUE (tenant_id, draft_id, revision)` ya existe) que reusa la misma base, más una fila nueva en `piece_layers` con `parent_layer_id`. La acción lleva una clave de petición: el doble clic no crea otra versión. *(Enmienda 2026-11-14, decisión del fundador: un cambio del dueño sobre la misma base **no** abre versión; esta regla queda solo para «rehacer», ver §2.3.)*
 
 **La edición de texto del dueño** cuenta como entrada manual (excepción del 2026-11-04, `docs/arquitectura.md` §1.6) **solo en los campos que él tecleó**: la fila lleva `source='owner_edit'` y `created_by`, y por `parent_layer_id` conserva la procedencia del modelo para los campos que no tocó. No se apoya solo en Langfuse, porque la capa alimenta una publicación y «Repetir este diseño» (m-25017310) la va a reusar.
 
@@ -88,7 +88,8 @@ La crea la migración de m-25017278 (número tomado contra `origin/main` al abri
 >
 > **Lo que el esquema no impone y tiene que cumplir quien escribe** (m-25017283, y m-25017287/m-25017288 cuando escriban):
 > - que el padre de una capa derivada sea del mismo borrador y la misma posición;
-> - qué cambio abre una versión nueva y cuál queda en la misma: ver la nota de §2.3.
+> - qué cambio abre una versión nueva y cuál queda en la misma: lo decidió el fundador el 2026-11-14, ver §2.3;
+> - que una capa nueva derive siempre de la **hoja** vigente de su versión y posición, nunca de una capa intermedia (§2.3).
 >
 > Además: `qualify_app` solo tiene `SELECT` e `INSERT` (una capa nunca se edita en su lugar); `source='model'` exige `model_id` y `prompt_version`; `source='owner_edit'` exige `created_by` y `parent_layer_id`; `position` va de 0 a 9. La tabla salió vacía, sin relleno de piezas anteriores (§8.5).
 >
@@ -117,14 +118,53 @@ Un carrusel de N diapositivas son **N trabajos de render**, cada uno con `jobId 
 | `compose` | `LayerSpec` + base | Fotos fijas en R2, filas en `image_assets` y `template_runs` | Partes de `_ad_image` y `_carousel`, y el camino viejo de carrusel de `STATIC_FLYER` |
 | `check` | Fotos compuestas | Aprobada o una capa corregida | — (nuevo) |
 
-> **Enmienda 2026-11-14 (ver §2.1).** La «capa corregida» de `check` es una fila nueva en la **misma** versión y posición, hija de la capa revisada (`uq_piece_layers_parent`), y vuelve a componer con un `jobId` nuevo (§2.2). Por §2.1 y §3.4, **recomponer abre una versión nueva** en `piece_versions`, porque anula la aprobación. **Queda abierto, a decidir con el fundador:** si un cambio de texto del dueño también abre una versión nueva (lo coherente con §3.4) o es una fila nueva en la misma versión, como lo describen hoy los docstrings del modelo `PieceLayer` y de la migración `0163`. El esquema permite las dos formas; m-25017283/m-25017288 no escriben capas hasta que se decida, y alinean los docstrings con lo decidido.
+> **Enmienda 2026-11-14 (ver §2.1) — decisión del fundador del mismo día sobre la edición del dueño.** Reemplaza la nota que dejaba esto abierto.
+>
+> **Lo que decidió** (en dos pasos, el segundo contra la recomendación del primero de abrir una versión):
+> 1. Un cambio de texto del dueño queda en la **misma versión**: una fila nueva de `piece_layers` en la misma versión y posición, hija de la capa que edita.
+> 2. **Pero anula la aprobación:** editar el texto de una publicación aprobada o programada la devuelve a «Por aprobar» y la saca de la programación; el dueño vuelve a aprobar mirando la imagen recompuesta. Nunca se publica algo distinto de lo aprobado.
+>
+> **Definiciones (rigen sobre §2.1 «Recomponer»):**
+> - **Editar** = cambiar la capa sobre la **misma foto base**, sea el dueño (textos o diseño, `layout_id`) o la revisión de lo compuesto: fila nueva en la **misma** versión y posición, hija de la hoja vigente, y se vuelve a componer con un `jobId` nuevo.
+> - **Rehacer** = todo lo que cambia la foto base o el juego de diapositivas (regenerar la base con Seedream, la regeneración única de §2 punto 1, elegir otra foto en «Usar mi foto», generar la pieza de nuevo, y quitar o agregar diapositivas en la Fase 2): **revisión nueva** en `piece_versions`. Coincide con el esquema: `piece_base_photos` admite una sola base por versión y posición (`0165`).
+>
+> Por eso, en §2.1, «recomponer = revisión nueva» deja de valer para el cambio de texto. Recomponer después de editar **no** abre versión; solo «rehacer» la abre.
+>
+> **Cadena de capas y cuál vale.** `uq_piece_layers_parent UNIQUE (tenant_id, parent_layer_id, version_id)` permite una sola hija por padre dentro de una versión, así que las ediciones sucesivas **encadenan**: la edición 2 es hija de la 1, y la corrección de la revisión de lo compuesto también es un eslabón. La capa vigente de una versión y posición es la **hoja**: la que no tiene hija en esa versión. Quien escribe siempre deriva de la hoja; si dos escrituras compiten (el dueño edita mientras la revisión todavía corrige), la segunda choca con la clave única y se reintenta sobre la hoja nueva. La pantalla no deja editar mientras la pieza está en `composing`/`compose_waiting`.
+>
+> **«Deshacer» e historial.** Como una capa nunca se edita en su lugar y la vigente es la hoja, «Deshacer» **no** vuelve a una capa anterior: crea una hija nueva de la hoja con el `spec` de la capa a la que se vuelve. La cadena completa queda como historial.
+>
+> **Lo que la clave prohíbe:** dos ramas dentro de una versión. No se puede derivar una segunda hija de la original después de deshacer. El producto no lo necesita, porque el «volver al original» se resuelve copiando, como arriba. Si algún día se quisiera un historial con ramas, haría falta otra migración.
+>
+> **Anular la aprobación dentro de una versión (ADR 32/41), en una sola transacción con la edición:**
+> - insertar la capa nueva;
+> - borrar la confirmación (`confirmed_sha256` y su clave de R2) y devolver la pieza a «Por aprobar»;
+> - sacar de la programación sus eventos `scheduled` (y los futuros de una recurrente), conservando la fecha elegida como sugerencia para cuando el dueño vuelva a aprobar;
+> - encolar la composición.
+>
+> Si un evento está en `publishing` en ese momento, la edición se rechaza («Se está publicando ahora; espera un momento»). El guardián de publicación (ADR 41 §3.4), que compara el sha256 del objeto con el confirmado, sigue siendo la última barrera aunque algo falle.
+>
+> **Idempotencia y claves:**
+> - la acción de editar lleva una clave de petición; un reintento con la misma hoja y el mismo `spec_sha256` devuelve la capa ya creada;
+> - el `jobId` del render ya incluye `spec_sha256` (§2.2), así que cada edición es un trabajo nuevo y «Deshacer» a un texto ya compuesto puede reusar el trabajo anterior;
+> - la clave de la composición en `creative_jobs` **ya no puede ser** `(tenant_id, draft_id, kind, revision, position)` (§2.4): dos ediciones en la misma revisión chocarían. Lleva el id de la capa (o su `spec_sha256`);
+> - la clave del objeto compuesto en R2 tampoco puede depender solo de la revisión, porque el bucket rechaza sobrescribir bajo `t/`. Lleva el id de la capa o su `spec_sha256`. Si ya existe un objeto con el mismo sha256, cuenta como guardado (la misma regla que la base). La fila de salida en `image_assets` de esa versión y posición pasa a apuntar al objeto nuevo.
+>
+> **Procedencia:** la edición del dueño cuenta como entrada manual (`docs/arquitectura.md` §1.6) solo en los campos que él tecleó (`source='owner_edit'`, `created_by`); el padre conserva la procedencia del modelo. Una corrección de la revisión es `source='model'`, con su modelo y versión de prompt.
+>
+> **Docstrings:** el del modelo `PieceLayer` ya describe la edición en la misma versión y coincide con esta decisión. El de la migración `0163` (la idea de que «una versión nueva vuelve a derivar de la misma capa vieja: el dueño edita, vuelve, edita de nuevo») queda superado para la edición del dueño: vale solo para «rehacer». Alinear el código es tarea de m-25017283/m-25017288.
+>
+> **Queda abierto para el fundador:**
+> - **(i)** Después de una edición del dueño, ¿la revisión automática de lo compuesto (§8.3) puede cambiar los textos que él tecleó, o solo el acomodo? Propuesta: no toca los campos del dueño; solo puede pedirle que revise.
+> - **(ii)** Al volver a aprobar, ¿la publicación vuelve sola a la fecha que tenía, o el dueño la programa de nuevo? Propuesta: se le ofrece la misma fecha con un toque.
+> - **(iii)** ¿Se puede editar una publicación **ya publicada**? Lo publicado en Meta no cambia. Propuesta: no se edita; se ofrece «Crear otra» a partir de ella.
 
 En `media.py` queda solo el despacho por `ContentKind`. La etapa `compose` habla con `RemotionRenderClient`; no reusa `_template` tal cual. Cada etapa se puede probar sin red con dobles de los clientes.
 
 ### 2.4 Composición en cola: estados y reintento
 
 - **Estados de la pieza:** `base_ready` → `composing` → `compose_waiting` (con `next_attempt_at` y espera creciente) → `ready` · `failed`.
-- **Trabajo en `creative_jobs`** (ADR 41) con `kind='compose'` y la clave natural `(tenant_id, draft_id, kind, revision, position)`. El `jobId` del render sale de §2.2. Seedream no se vuelve a llamar: la base está guardada con su `vendor_task_id`.
+- **Trabajo en `creative_jobs`** (ADR 41) con `kind='compose'` y la clave natural `(tenant_id, draft_id, kind, revision, position)` *(enmienda 2026-11-14: más el id de la capa, porque una revisión admite varias ediciones; ver §2.3)*. El `jobId` del render sale de §2.2. Seedream no se vuelve a llamar: la base está guardada con su `vendor_task_id`.
 - **Tope de 10 minutos** (§8.4). Se cuenta desde el primer intento fallido porque el render no respondía, es decir, desde que la pieza entra en `compose_waiting`, no desde que entró a la cola: una pieza que solo espera turno detrás de otras no falla por eso. Pasados los 10 minutos, la pieza queda `failed`, **sin descontar otra creación**, con un botón para reintentar que reusa la base y la capa.
 - **Lo que ve el dueño:** «La estamos terminando» mientras espera; si falla, «No pudimos terminar tu publicación. Inténtalo de nuevo; no se te descuenta otra creación.» El chequeo de salud del render con alerta lo hace m-25017289.
 - **Precondición:** la cola de ADR 41 activa para imagen y carrusel en producción, y el despachador `inline` retirado para esos tipos, **antes** de borrar Pillow. Los hilos de `InlineDispatcher` mueren al reiniciar y no dejan reintento durable.
@@ -189,7 +229,7 @@ Con varias publicaciones: «…la usan 3 de tus publicaciones: «{título 1}», 
 1. **m-25017293 pasa el camino viejo de carrusel de `STATIC_FLYER` a Remotion** antes de borrar `render_carousel_slide` (§8.1). m-25017299 queda para quitar código ya sin uso y deja de ser una dependencia para borrar Pillow.
 2. **Clave del render con contenido.** Ningún trabajo nuevo usa `_template_job_id`; la clave es la de §2.2.
 3. **Cola en producción.** m-25017293 no empieza hasta que m-25017277 confirme `QUALIFY_CREATIVE_DISPATCHER=queue` (o equivalente) para imagen y carrusel en producción.
-4. **Recomponer anula la aprobación y tiene fecha de vencimiento.** Recomponer invalida `confirmed_sha256` (ADR 32 doble aprobación, ADR 41 §3.3) y la pieza vuelve a «por aprobar». Después de la purga de ADR 39, o para piezas anteriores a este pipeline (no tienen base guardada), no hay recomposición: la pantalla ofrece solo «Crear otra» (§8.5).
+4. **Recomponer anula la aprobación y tiene fecha de vencimiento.** *(Enmienda 2026-11-14: vale igual para la edición del dueño dentro de la misma versión, que además saca la pieza de la programación; ver §2.3.)* Recomponer invalida `confirmed_sha256` (ADR 32 doble aprobación, ADR 41 §3.3) y la pieza vuelve a «por aprobar». Después de la purga de ADR 39, o para piezas anteriores a este pipeline (no tienen base guardada), no hay recomposición: la pantalla ofrece solo «Crear otra» (§8.5).
 5. **El candado de la Galería existe en la base de datos antes de que «Usar mi foto» salga** (m-25017286): disparador, FK `RESTRICT`, el mensaje para el dueño y tests `-m db` que prueben que la lápida se rechaza y que otro negocio no ve ni bloquea nada.
 
 ## 4. Opciones consideradas
@@ -222,7 +262,7 @@ Con varias publicaciones: «…la usan 3 de tus publicaciones: «{título 1}», 
 
 - **ADR 31:** ningún almacén nuevo; dos tablas más en el Postgres que ya corre.
 - **Sin runtime nuevo:** Remotion es el único runtime de Node del repo y ya está en producción.
-- **ADR 32:** la doble aprobación se mantiene; recomponer vuelve a pedir aprobación.
+- **ADR 32:** la doble aprobación se mantiene; recomponer, y desde la enmienda 2026-11-14 también editar dentro de la misma versión, vuelve a pedir aprobación.
 - **ADR 39:** la base de Seedream vive bajo `generated/{draft_id}/` y se purga con la pieza; «recomponer gratis» vale mientras exista. La purga libera las referencias a la Galería (§2.6).
 - **ADR 41:** la composición es un trabajo más de `creative_jobs`; el reintento no cobra dos veces.
 - **ADR 47:** la Galería no caduca; su «Quitar» gana un motivo de rechazo más, junto al del corte activo.
