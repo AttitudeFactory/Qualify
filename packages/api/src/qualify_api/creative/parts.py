@@ -43,6 +43,7 @@ from qualify_creative.scene_plan import unroled_image_role
 from qualify_creative.schemas import (
     CLIP_IMAGE_ROLES,
     CLIP_MAX_IMAGES,
+    CLIP_MODE_OF_PART,
     PART_DESCRIPTION_MAX,
     PART_GENERATION_MIN_SECONDS,
     PARTS_MAX,
@@ -111,6 +112,10 @@ PARTS_EXTEND_UNAVAILABLE_TEXT = (
     "Por ahora no podemos crear una parte que siga a la anterior. "
     "Ábrela y elige otra forma antes de crear el video."
 )
+PARTS_LOCAL_UNAVAILABLE_TEXT = (
+    "Todavía no podemos armar esta parte solo con tu grabación y sus efectos. "
+    "Elige otra forma de hacerla y luego crea el video."
+)
 PARTS_OVER_BUDGET_TEXT = (
     "No pudimos crear las partes: tu negocio llegó a su límite de este mes. "
     "Escríbenos y lo revisamos contigo."
@@ -143,6 +148,16 @@ class PartsExtendUnavailable(PartsUnavailable):
 
     def __init__(self) -> None:
         super().__init__(PARTS_EXTEND_UNAVAILABLE_TEXT)
+
+
+class PartsLocalUnavailable(PartsUnavailable):
+    """EF-02: a «Tu video, con efectos» part (`local`) is not produced until EF-05/EF-06
+    — refused before any child, charge or queue write, never made as a Seedance part."""
+
+    reason = "local_unavailable"
+
+    def __init__(self) -> None:
+        super().__init__(PARTS_LOCAL_UNAVAILABLE_TEXT)
 
 
 class PartsSourceInvalid(PartsUnavailable):
@@ -1238,6 +1253,8 @@ PART_MODE_IMAGE_ROLES: Mapping[str, frozenset[str]] = {
     "reference": frozenset(CLIP_IMAGE_ROLES),
     "extend": frozenset(CLIP_IMAGE_ROLES),
     "edit": frozenset(CLIP_IMAGE_ROLES),
+    # EF-02: «Tu video, con efectos» sends nothing to Seedance — it takes no photo
+    "local": frozenset(),
 }
 
 
@@ -1327,7 +1344,17 @@ def _child_brief(
         parts_request=None,  # the owner's ask (m-24921081), the parent's alone
         part=part,
         duration_seconds=part.generation_seconds,
-        clip_reference_mode={"reference": "motion", "edit": "edit", "extend": "extend"}[plan.mode],
+        clip_reference_mode=CLIP_MODE_OF_PART[plan.mode],
+        # EF-02: the child carries its part's recipe, never the parent's whole-video text
+        # (`video_pipeline.recipe_of` reads a child's from `part`); the effects pipeline
+        # version is the server's to stamp
+        effects=plan.effects,
+        text_layer=plan.text_layer,
+        segments=plan.segments,
+        mode_rule_version=plan.mode_rule_version,
+        mode_reason=plan.mode_reason,
+        mode_changed_by_owner=plan.mode_changed_by_owner,
+        effects_pipeline_version=0,
         clip_image_keys=photos,
         clip_image_roles=roles,
         clip_video_keys=video_keys,
@@ -1508,6 +1535,13 @@ class PartsService:
             for index, part in enumerate(plan, 1)
         ):
             raise PartsExtendUnavailable()
+        # EF-02: «Tu video, con efectos» is not produced yet (EF-05/EF-06): an active
+        # `local` part still to be made blocks new work — never made as a Seedance part
+        if any(
+            part.mode == "local" and index not in removed and index not in made_before
+            for index, part in enumerate(plan, 1)
+        ):
+            raise PartsLocalUnavailable()
         source_entries = (*plan, *brief.media.parts_removed)
         if analysis is None:
             check_split_parts_for_tenant(tenant_id=tenant_id, parts=source_entries)
@@ -1752,6 +1786,7 @@ __all__ = [
     "PartsService",
     "PartsUnavailable",
     "PartsExtendUnavailable",
+    "PartsLocalUnavailable",
     "PartsSourceInvalid",
     "check_split_parts",
     "check_split_parts_for_tenant",
