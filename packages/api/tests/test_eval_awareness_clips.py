@@ -104,3 +104,34 @@ def test_question_and_must_mention() -> None:
 def test_exception_cases_are_well_formed() -> None:
     assert {c["way_to_buy"] for c in CASES["exceptions"]} <= {"rappi", "whatsapp"}
     assert all(c["must_mention"] for c in CASES["exceptions"])
+
+
+PERKS = BRAND["perks"]
+SOURCES = "\n".join(
+    [*PERKS, "Combo doble smash", "$32.900", "Pide por Rappi", "Ven al local en la 57"]
+)
+
+
+def _most(caption: str, cta: str = "Pide por Rappi") -> dict:
+    payload = {"hook": "Tu doble te espera hoy", "cta": cta, "caption": caption}
+    return ac.most_checks(payload, PERKS, SOURCES, (), "$32.900")
+
+
+def test_most_checks_accept_hours_place_and_one_way_to_buy() -> None:
+    result = _most("Combo doble smash a $32.900, abierto hasta las 11 p. m. en la 57.")
+    assert result["ok"], result
+
+
+def test_most_checks_fail_on_another_perk_a_question_or_an_invented_hour() -> None:
+    assert _most("Combo doble smash a $32.900, con parqueadero gratis.")["extra_perks"]
+    assert _most("Combo doble smash a $32.900. ¿Te lo pides?")["question"]
+    assert _most("Combo doble smash a $32.900, abierto hasta las 2 a. m.")["invented_hours"]
+    assert not _most("Combo doble smash, rico.", cta="Ven ya")["price_present"]
+
+
+def test_most_checks_flag_an_invented_way_to_buy_and_must_mention() -> None:
+    payload = {"hook": "Tu doble", "cta": "Pídelo por WhatsApp", "caption": "Combo a $32.900."}
+    result = ac.most_checks(payload, PERKS, SOURCES, ("salsa de la casa",), "$32.900")
+    assert result["invented_ways"] == ["whatsapp"]
+    assert not result["must_mention_ok"]
+    assert ac.is_buy_perk("Atendemos por WhatsApp") and not ac.is_buy_perk("Parqueadero gratis")

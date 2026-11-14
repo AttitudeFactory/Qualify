@@ -164,3 +164,35 @@ en el texto. Con eso el número no compara contra la consigna. Cambia a:
 - **Chequeo determinista nuevo (`medida_most`):** gancho ≤ 8 palabras, CTA ≤ 7 y texto
   ≤ 35 palabras (las medidas «unas 6 / 5 / 25», con holgura). Aparte va la puerta del copy
   del mínimo de la marca (`reglas_ok`): se reporta cualquier copia rechazada por corta.
+
+## NIVELES-006 (2026-11-14, m-25027151) — rúbrica v4, escrita ANTES de juzgar
+
+La consigna final de most_aware (`78242f75`) acepta en el texto, como parte de «cómo
+comprar», la forma de pedir (una o dos que el negocio usa juntas, aunque estén entre sus
+ventajas) y, si los datos los dan, cuándo y dónde (horario, el lugar); los datos clave y lo
+que pide «Debe mencionar» siempre van. La v3 contaba un horario como falla, y el propio
+ejemplo del fundador para este público lo lleva («Abiertos hasta las 11:00 pm en Korner
+Club. Pide tu Combo… por la web o directo al WhatsApp…»). Cambia a:
+
+- **`juez-niveles-v4`, regla de most_aware:** gancho de unas 6 palabras, CTA de unas 5 y un
+  texto de una o dos frases (unas 25 palabras) con el producto, el precio si lo hay y cómo
+  comprar: la forma de pedir (una o dos) y, si los datos los dan, el horario y el lugar.
+  También van los datos clave y lo de «Debe mencionar». Pasarse un poco de largo cumple.
+  **No cumple:** otra ventaja (parqueadero, mascotas, ambiente, historia de la marca), una
+  pregunta, una forma de comprar o un horario inventados, o que falte cómo comprar. Los demás
+  niveles no cambian. El agregado de clips (`clip-v2`) y el de partes siguen igual, ahora
+  sobre la v4.
+- **El «Debe mencionar» llega al juez** como dato dado (antes no lo veía).
+- **Chequeos deterministas de most_aware** (`most_checks`), alineados con la v4:
+  - ventaja extra: una de la lista que no sea forma de pedir, horario o lugar, ni lo pedido;
+  - pregunta («?» o «¿»);
+  - formas de pedir: entre 1 y 2;
+  - horario inventado: uno que no está en los datos (un horario dado ya no es falla);
+  - forma de pedir inventada: un canal que los datos no nombran (p. ej. Rappi sin Rappi);
+  - el precio presente cuando el brief lo trae;
+  - todo lo de «Debe mencionar» presente;
+  - la medida 8/7/35 de NIVELES-005.
+- **«Antes» en la misma vara:** las salidas guardadas de most_aware de NIVELES-005 (clips y
+  piezas) se vuelven a juzgar con la v4.
+- **Excepciones** (`cases_clips.json` → `exceptions`, `--exceptions`): clips most_aware con un
+  «Debe mencionar» y una ventaja que es la forma de pedir (Rappi, la línea de WhatsApp).

@@ -41,7 +41,7 @@ DEFAULT_OBJECTIVE = "consideration"
 _PHOTO = "uploads/00000000-0000-0000-0000-000000000001/catalog/{product}/foto-1.jpg"
 
 #: NIVELES-004, written before judging clips: what the judge reads for a clip.
-JUDGE_CLIP_VERSION = "juez-niveles-v3+clip-v2"
+JUDGE_CLIP_VERSION = "juez-niveles-v4+clip-v2"
 JUDGE_CLIP_ADDENDUM = """
 Estas ideas son CLIPS cortos sin presentador ni voz: no hay guion hablado. Juzga el \
 gancho, el texto de la publicación (caption), la llamada a la acción y las TRES TOMAS (lo \
@@ -239,6 +239,63 @@ def mentions_all(text: str, must_mention: Sequence[str]) -> bool:
     return all(fold(item) in folded for item in must_mention if item.strip())
 
 
+#: A perk that is part of «how to buy» for most_aware (NIVELES-006): a way to order, an
+#: opening hour or the place — not «another perk».
+_BUY_PERK = re.compile(
+    r"whatsapp|rappi|domicilio|pedido|reserva|abiert|horario|hasta las|\d\s*[ap]\.?\s?m"
+    r"|\blocal en\b|\bcalle\b|\bcarrera\b|\ben la \d+",
+    re.I,
+)
+
+
+def is_buy_perk(perk: str) -> bool:
+    return bool(_BUY_PERK.search(perk or ""))
+
+
+def most_checks(
+    payload: Mapping[str, Any],
+    perks: Sequence[str],
+    sources: str,
+    must_mention: Sequence[str] = (),
+    price_label: str = "",
+) -> dict[str, Any]:
+    """The deterministic reading of a most_aware copy against rubric v4: what its caption
+    adds beyond product, price and how to buy, and what is missing. `ok` = all pass."""
+    from qualify_api.evals import awareness_levels as al  # noqa: PLC0415 — levels imports us
+
+    caption = str(payload.get("caption", "") or "")
+    said = "\n".join(str(payload.get(k, "") or "") for k in ("hook", "caption", "cta"))
+    asked = {i for i, p in enumerate(perks, 1) if al.perks_used(" ".join(must_mention), [p])}
+    extra = [
+        perks[i - 1]
+        for i in al.perks_used(caption, perks)
+        if not is_buy_perk(perks[i - 1]) and i not in asked
+    ]
+    ways = ways_to_buy(said)
+    invented_ways = [w for w in ways if w not in ("local",) and w not in ways_to_buy(sources)]
+    invented_hours = [m for k, m in al.invented_facts(said, sources) if k == "horario"]
+    result = {
+        "extra_perks": extra,
+        "question": asks_question(caption),
+        "ways": ways,
+        "invented_ways": invented_ways,
+        "invented_hours": invented_hours,
+        "price_present": quotes_price(said, price_label) if price_label else None,
+        "must_mention_ok": mentions_all(said, must_mention),
+        "measure": most_aware_measure(payload),
+    }
+    result["ok"] = (
+        not extra
+        and not result["question"]
+        and 1 <= len(ways) <= 2
+        and not invented_ways
+        and not invented_hours
+        and result["price_present"] is not False
+        and result["must_mention_ok"]
+    )
+    return result
+
+
 def judge_ideas(payload: Mapping[str, Any], level: str | None) -> list[dict[str, str]]:
     """The clip as the judge reads it (one idea)."""
     shots = [str((s or {}).get("visual", "")) for s in payload.get("shots") or ()]
@@ -272,7 +329,9 @@ __all__ = [
     "ways_to_buy",
     "levels_with_none",
     "load_clip_cases",
+    "is_buy_perk",
     "most_aware_measure",
+    "most_checks",
     "parts_inputs",
     "quotes_price",
     "shots_ok",

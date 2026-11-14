@@ -690,18 +690,28 @@ def run_clips(al: Any, args: Any, spend: Spend, api_key: str) -> dict[str, Any]:
     items: list[dict[str, Any]] = []
     scores: list[Any] = []
     args.partial["clips"] = {"items": items, "scores": scores}
-    if args.leftover:
+    exceptions = {c["id"]: c for c in cases.get("exceptions", [])}
+    if args.exceptions:
+        plan = [(c["brand"], "most_aware", None, c["id"]) for c in exceptions.values()]
+    elif args.leftover:
         plan = [(c["brand"], "unaware", c["sentence"], c["id"]) for c in cases["leftover"]]
     else:
         plan = [(key, lv, None, key) for key in cases["brands"] for lv in _clip_arms(args)]
     for brand_key, level, sentence, case_id in [p for p in plan for _ in range(args.repeat)]:
         brand = cases["brands"][brand_key]
+        exception = exceptions.get(case_id)
+        if exception is not None:
+            # NIVELES-006: a perk that IS the way to buy, and a «Debe mencionar»
+            perks = [*brand["perks"], *exception["extra_perks"]]
+            brand = {**brand, "perks": perks, "kit": {**brand["kit"], "business_perks": perks}}
         arm = level or "sin_nivel"
         what = f"clips {case_id} {arm}"
         if not spend.allow("copy", what):
             continue
         kit = BrandKit.model_validate(brand["kit"])
         form = ac.clip_form(brand, level, sentence=sentence)
+        if exception is not None:
+            form["must_mention"] = exception["must_mention"]
         brief = ac.clip_brief(kit.brand_id, **form)
         item = {
             "kit": brand["kit"],
@@ -715,7 +725,10 @@ def run_clips(al: Any, args: Any, spend: Spend, api_key: str) -> dict[str, Any]:
         payload = output["variants"][0].get("payload") or {}
         gates = {s.name: s.value for s in cq.gates(item, output, None, {})}
         text = ac.clip_text(payload)
+        must = list(brief.constraints.must_mention)
         sources = _clip_sources(brand, form["topic"])
+        if must:
+            sources += "\nDebe mencionar: " + ", ".join(must)
         three, filmable = ac.shots_ok(payload)
         score = al.score_idea(
             arm=arm,
@@ -773,6 +786,12 @@ def run_clips(al: Any, args: Any, spend: Spend, api_key: str) -> dict[str, Any]:
                 "filmable_shots": filmable,
                 "caption_words": ac.caption_words(payload),
                 "most_measure": ac.most_aware_measure(payload) if payload else None,
+                "most_checks": ac.most_checks(
+                    payload, brand["perks"], sources, must, brand["product"]["price_label"]
+                )
+                if payload and level == "most_aware"
+                else None,
+                "exception": exception,
                 **judged,
             }
         )
@@ -1080,6 +1099,9 @@ def main(argv: list[str] | None = None) -> int:
         "--leftover", action="store_true", help="clips: the price-in-sentence cases"
     )
     parser.add_argument("--rejudge-files", default="", help="rejudge: results, comma-separated")
+    parser.add_argument(
+        "--exceptions", action="store_true", help="clips: most_aware must-mention cases"
+    )
     args = parser.parse_args(argv)
     args.arm_set = {a.strip() for a in args.arms.split(",") if a.strip()}
     args.level_set = {a.strip() for a in args.levels.split(",") if a.strip()}
