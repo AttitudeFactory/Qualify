@@ -52,7 +52,9 @@ class ChannelCapabilities:
     - `menu_handoff`: an automatic menu answers and can hand the chat to a person;
     - `payments`: payment methods and «Pago por revisar» exist for the chat;
     - `suggest_reply`: Qualify can draft a reply with AI;
-    - `close_reopen`: the owner can close a chat and reopen it.
+    - `close_reopen`: the owner can close a chat and reopen it;
+    - `assign`: the owner can hand a chat to a member of the business (m-25027372: the
+      dispatcher `inbox.dispatch` refuses it, writing nothing, where this is False).
     """
 
     channel: str
@@ -67,6 +69,7 @@ class ChannelCapabilities:
     payments: bool
     suggest_reply: bool
     close_reopen: bool
+    assign: bool
 
 
 INSTAGRAM_DM: Final = ChannelCapabilities(
@@ -85,6 +88,8 @@ INSTAGRAM_DM: Final = ChannelCapabilities(
     suggest_reply=True,
     # «Cerrar» / «Reabrir» (m-25026457): `ConversationService.close` / `reopen`.
     close_reopen=True,
+    # Instagram threads have no assignee door (`ConversationService` has no `assign`).
+    assign=False,
 )
 
 WHATSAPP: Final = ChannelCapabilities(
@@ -101,6 +106,8 @@ WHATSAPP: Final = ChannelCapabilities(
     # Not built for WhatsApp (BU-A17/A18); it costs money and waits on a flag per business.
     suggest_reply=False,
     close_reopen=True,
+    # `whatsapp.chats.ChatService.assign` (WA-10).
+    assign=True,
 )
 
 CHANNEL_CAPABILITIES: Final[Mapping[str, ChannelCapabilities]] = MappingProxyType(
