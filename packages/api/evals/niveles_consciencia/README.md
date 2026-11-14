@@ -105,3 +105,62 @@ reales de clientes; si esta carpeta recibe alguna vez casos reales, `results/` p
   cuando los datos no lo dicen. La barra del nivel sigue siendo la del juez (≥ 0,80).
 - La identidad del prompt de partes se compara con el `merge-base` con `origin/main` (las
   partes ya no parten de la v3.1 de `a6667370`).
+
+## NIVELES-004 (2026-11-13, m-25026509) — clips y video por partes, escrito ANTES de correr
+
+```bash
+just eval-niveles --suite clipidentity                                    # gratis
+just eval-niveles --suite clips --repeat 2 --cap-usd 1.40                 # A
+just eval-niveles --suite clips --leftover --repeat 3 --cap-usd 0.35      # el sobrante
+just eval-niveles --suite partslevel --repeat 2 --cap-usd 0.45            # B
+just eval-niveles --suite clips --levels most_aware,product_aware --repeat 2 --cap-usd 0.55  # C
+```
+
+- **Casos** (`cases_clips.json`): comida, inmobiliaria y viajes. Cada caso es el formulario
+  que manda el flujo de Clip (`_generator_form`): la frase del dueño, un producto del
+  catálogo, su dato «Precio» como lo precarga la pantalla, tipo clip con los medios por
+  defecto (5 s, audio, una foto de referencia). Pasa por `awareness_clips.clip_brief`, un
+  espejo de `Qualify.creative_provider.build_brief` (un test los compara). El precio de
+  viajes (US$180) es **de prueba**: los casos de viajes no traen precio. Brazos: «Sin
+  preferencia» (base) y los cinco niveles.
+- **Base idéntica a main sin llamar:** `clipidentity` comprueba que las fuentes del prompt de
+  copy no difieren de `origin/main` y que un brief sin nivel conserva todo lo que mandó el
+  formulario.
+- **Chequeos deterministas por pieza:** las puertas del copy (`copy_quality.gates`); precio
+  en el copy (`quotes_price`: la etiqueta, su cifra o cualquier monto) en gancho, texto, CTA
+  y tomas; ofertas o servicios inventados (`invented_offers`); la regla del nivel
+  (`level_rule`, con texto y tomas como cuerpo); exactamente 3 tomas, y cuántas siguen
+  siendo filmables (`filmable_shot`: al menos 6 palabras, sin «¡!», «¿?», comillas ni texto
+  en pantalla); palabras del texto (para el largo de most_aware).
+- **El sobrante a propósito:** dos clips unaware con el precio dentro de la frase del dueño
+  («… a 32.900», «… desde 280 millones»). Se cuenta en cuántos el copy lo repite.
+- **Juez:** `juez-niveles-v2` más el agregado de clips (`JUDGE_CLIP_ADDENDUM`,
+  `juez-niveles-v2+clip-v1`): un clip no tiene guion hablado, se juzgan gancho, texto, CTA y
+  las 3 tomas; en most_aware el texto largo cuenta en contra. Partes: el agregado de
+  NIVELES-002 (`juez-niveles-v2+partes-v1`).
+- **Partes (B):** `PartsBrief.awareness_level`, el camino de la app, con el prompt
+  `proponer-partes-v3.4` sobre la v3.2 de main. Base = el mismo caso sin nivel. most_aware no
+  tiene línea en las partes: se compara con la base.
+- **Barra:** la de siempre. Juez ≥ 0,80 y datos inventados ≤ 5 % por nivel; un nivel con
+  n < 8 se reporta «no fiable» por tamaño.
+
+## NIVELES-005 (2026-11-13, m-25026509) — cambio de rúbrica escrito ANTES de juzgar
+
+Las guías de most_aware ya dan medidas (`5a295629`). La rúbrica del juez
+(`juez-niveles-v2`: «gancho y llamada a la acción muy breves») y el agregado de clips
+(«el texto largo cuenta en contra») no las daban: eran más flojas en el gancho y más duras
+en el texto. Con eso el número no compara contra la consigna. Cambia a:
+
+- **`juez-niveles-v3`, regla de most_aware:** el camino más corto a la compra. Gancho de unas
+  6 palabras, llamada a la acción de unas 5 con una sola forma de comprar, y un texto de una
+  o dos frases (unas 25 palabras) con el producto, el precio si lo hay y cómo comprar. Pasarse
+  un poco cumple; sumar otras ventajas, historias o preguntas no cumple; un texto que solo
+  llega al mínimo de la marca cumple. Los otros cuatro niveles no cambian.
+- **Agregado de clips `clip-v2`:** quita «en most_aware el texto largo cuenta en contra»;
+  most_aware se juzga con la medida de su regla.
+- **Comparación justa:** las salidas guardadas de most_aware de NIVELES-004 (clips) y
+  NIVELES-003 (piezas) se vuelven a juzgar con la v3 (`--rejudge`, solo el juez). El
+  «antes» y el «después» usan la misma vara.
+- **Chequeo determinista nuevo (`medida_most`):** gancho ≤ 8 palabras, CTA ≤ 7 y texto
+  ≤ 35 palabras (las medidas «unas 6 / 5 / 25», con holgura). Aparte va la puerta del copy
+  del mínimo de la marca (`reglas_ok`): se reporta cualquier copia rechazada por corta.

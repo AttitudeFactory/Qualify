@@ -73,6 +73,7 @@ from qualify_api.stock.keys import is_stock_key
 from qualify_api.tenancy.models import Brand
 from qualify_creative.ad_destination import AdCTA
 from qualify_creative.enums import (
+    AwarenessLevel,
     BriefIntent,
     BriefObjective,
     ContentFormat,
@@ -416,6 +417,7 @@ def build_brief(
     kind: str = "static_flyer",
     media: Mapping[str, object] | None = None,
     content_format: str = "",
+    awareness_level: str | None = None,
 ) -> ContentBrief:
     """The frozen `ContentBrief` of a form — shared by `submit_brief` and
     `preview_brief_prompt`, so the preview is the brief Generar sends.
@@ -458,6 +460,8 @@ def build_brief(
         media=inputs,
         # the format the operator picked, else the kind's default
         format=ContentFormat(content_format) if content_format else content_kind.default_format,
+        # m-25026509: «¿A quién le habla este video?»; None = «Sin preferencia»
+        awareness_level=AwarenessLevel(awareness_level) if awareness_level else None,
     )
 
 

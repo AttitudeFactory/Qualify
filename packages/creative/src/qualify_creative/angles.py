@@ -452,7 +452,7 @@ hook y presenta la propuesta como la respuesta.
 a este negocio con al menos un dato concreto de la descripción del producto o una ventaja \
 de la lista, dicho tal cual. No basta con repetir qué es el producto, ni con frases \
 genéricas (fresco, de calidad, expertos, pensado para ti), ni con atributos que no estén \
-en los datos; los precios y las formas de pago quedan para product_aware.
+en los datos; los precios, las formas de pago y los horarios quedan para product_aware.
 - product_aware: conoce el negocio pero duda. Quita la fricción: el precio claro si existe, \
 el horario, cómo pagar, dónde queda — solo con los datos que te dieron.
 - most_aware: está listo para comprar. El camino más corto a la compra: hook y cta muy \
@@ -596,9 +596,16 @@ def angles_user_prompt(
 
 # -- the price guard ---------------------------------------------------------------------
 
+#: m-25026509: the markers of the three markets as owners write them — Venezuela's
+#: «REF 7» / «7 REF» and «USDT», Uruguay's «$U 250» / «UYU 250» / «U$S» (the same markers
+#: `whatsapp.menus.import_ai._CURRENCY_MARKERS` reads currencies from). Longer markers come
+#: first so «$U 250» and «US$180» are never read as a bare «$». «REF» counts only in
+#: uppercase: «Ref 2045» / «ref 3» is a product reference code, not a price.
 _MONEY = re.compile(
-    r"(?:(?:USD|US\$|COP|MXN|EUR|ARS|CLP|PEN|VES|Bs\.?|S/\.?|\$|€)\s?\d[\d.,]*"
-    r"|\d[\d.,]*\s?(?:USD|COP|MXN|EUR|ARS|CLP|PEN|VES|Bs\.?|€|pesos|dólares|dolares|soles"
+    r"(?:(?:USDT|USD|US\$|U\$S|\$U|UYU|(?-i:REF)|COP|MXN|EUR|ARS|CLP|PEN|VES|Bs\.?|S/\.?|\$|€)"
+    r"\s?\d[\d.,]*"
+    r"|\d[\d.,]*\s?(?:USDT|USD|U\$S|UYU|(?-i:REF)|COP|MXN|EUR|ARS|CLP|PEN|VES|Bs\.?|€|pesos"
+    r"|dólares|dolares|soles"
     # a suffix ends the word: "6 copas" or "2 pendientes" are not prices
     r"|bolívares|bolivares)(?![^\W\d_]))",
     re.IGNORECASE,

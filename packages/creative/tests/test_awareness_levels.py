@@ -29,6 +29,7 @@ from qualify_creative.angles import (
     awareness_level_or_none,
     level_plan,
     parse_angles,
+    price_mentions,
 )
 from qualify_creative.brand import render_prompt
 from qualify_creative.enums import (
@@ -335,7 +336,7 @@ def test_perks_ride_the_cached_prefix_and_the_level_the_suffix() -> None:
     lines = leveled.volatile_suffix.splitlines()
     objective = lines.index("Objective: sale")
     assert lines[objective + 1].startswith("Awareness level (Eugene Schwartz): most_aware")
-    assert "no long text" in lines[objective + 1]
+    assert "a hook of about 6 words" in lines[objective + 1]
 
 
 # -- NIVELES-001 wording fixes -------------------------------------------------------------
@@ -423,3 +424,134 @@ def test_the_level_decides_which_perks_a_piece_may_use() -> None:
     )
     assert "the level decides which of them the piece may use" in rendered.stable_prefix
     assert "leave them out even though they are among" in rendered.volatile_suffix
+
+
+# -- NIVELES-004 wording fixes -------------------------------------------------------------
+
+
+def test_most_aware_copy_has_a_measured_length_that_yields_to_the_kit_minimum() -> None:
+    suffix = render_prompt(
+        kit=_kit(),
+        voice=_voice(),
+        brief=_brief(awareness_level=AwarenessLevel.MOST_AWARE),
+        task=GenerationTask.COPY,
+    ).volatile_suffix
+    assert "a hook of about 6 words" in suffix
+    assert "a call to action of about 5 words with one way to buy" in suffix
+    assert "one or two sentences (about 25 words)" in suffix
+    assert "never below the caption minimum above" in suffix
+
+
+def test_solution_aware_leaves_opening_hours_to_product_aware() -> None:
+    solution = _level_text(angles_system_prompt(), "solution_aware", "- product_aware:")
+    assert "los horarios quedan para product_aware" in solution
+    suffix = render_prompt(
+        kit=_kit(),
+        voice=_voice(),
+        brief=_brief(awareness_level=AwarenessLevel.SOLUTION_AWARE),
+        task=GenerationTask.COPY,
+    ).volatile_suffix
+    assert "prices, payment and opening hours belong to product_aware" in suffix
+
+
+# -- m-25026509: prices as the three markets write them --------------------------------
+
+PRICES = (
+    "$18.000",
+    "18.000 pesos",
+    "18 mil",
+    "18 lucas",
+    "COP 22.000",
+    "REF 7",
+    "7 REF",
+    "Bs 250",
+    "Bs. 250",
+    "250 bolívares",
+    "$7",
+    "7 USD",
+    "US$180",
+    "7 USDT",
+    "USDT 7",
+    "$U 250",
+    "UYU 250",
+    "250 pesos",
+    "2 millones de pesos",
+    "18 mil de descuento",
+    "20% de descuento",
+    "20% off",
+    "15 % dto",
+    "20 % OFF",
+)
+NOT_PRICES = (
+    "2x1",
+    "300 g",
+    "10 shawarmas",
+    "Calle 57 #18-20",
+    "Abierto hasta las 11",
+    "+58 414 1234567",
+    "3 cuotas",
+    "mil hojas",
+    "20 mil seguidores",
+    "Ref 2045",
+    "ref 3",
+    "Ref. 2045",
+    "referencia 12",
+    "Talla 2 off-white",
+    "2 off-white",
+    "offline 24",
+)
+
+
+def _unaware(highlights: tuple[tuple[str, str], ...], mention: tuple[str, ...]) -> ContentBrief:
+    return ContentBrief.model_validate(
+        {
+            **_brief().model_dump(),
+            "awareness_level": AwarenessLevel.UNAWARE,
+            "constraints": {"highlights": highlights, "must_mention": mention},
+        }
+    )
+
+
+@pytest.mark.parametrize("price", PRICES)
+def test_an_unaware_brief_strips_a_price_in_a_fact_name_value_or_mention(price: str) -> None:
+    by_value = _unaware((("Combo", price),), ())
+    by_name = _unaware(((f"Combo {price}", "doble"),), ())
+    by_mention = _unaware((), (f"Combo a {price}",))
+    assert by_value.constraints.highlights == () and by_name.constraints.highlights == ()
+    assert by_mention.constraints.must_mention == ()
+
+
+@pytest.mark.parametrize("text", NOT_PRICES)
+def test_an_unaware_brief_keeps_what_is_not_a_price(text: str) -> None:
+    brief = _unaware((("Dato", text),), (text,))
+    assert brief.constraints.highlights == (("Dato", text),)
+    assert brief.constraints.must_mention == (text,)
+
+
+def test_other_levels_keep_a_price_written_any_way() -> None:
+    for level in (None, AwarenessLevel.PRODUCT_AWARE):
+        brief = ContentBrief.model_validate(
+            {
+                **_brief().model_dump(),
+                "awareness_level": level,
+                "constraints": {"highlights": (("Combo", "REF 7"),), "must_mention": ("$U 250",)},
+            }
+        )
+        assert brief.constraints.highlights == (("Combo", "REF 7"),)
+        assert brief.constraints.must_mention == ("$U 250",)
+
+
+@pytest.mark.parametrize("code", ["Ref 2045", "ref 3", "Ref. 2045", "referencia 12"])
+def test_a_reference_code_is_not_a_price_for_the_idea_guard(code: str) -> None:
+    from qualify_creative.angles import price_problem
+
+    assert price_mentions(f"Llévate la {code}") == ()
+    assert price_problem((f"Llévate la {code}",), "$18.000") is None
+
+
+@pytest.mark.parametrize("price", ["REF 7", "7 REF"])
+def test_uppercase_ref_is_still_money_for_the_idea_guard(price: str) -> None:
+    from qualify_creative.angles import price_problem
+
+    assert price_mentions(f"Solo {price}") == (price,)
+    assert price_problem((f"Solo {price}",), "") is not None

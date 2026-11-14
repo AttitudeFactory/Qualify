@@ -22,6 +22,172 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
 
 ---
 
+<a id="niveles-005"></a>
+
+## NIVELES-005 — Medidas de most_aware, dilema de problem_aware en partes y horarios fuera de solution_aware (m-25026509) — 2026-11-13
+
+- **Qué se midió:** los commits `5a295629` y `6965678c`, más `ab4bdfd3` con la medición,
+  contra NIVELES-004 en los mismos casos. Cambios: (1) most_aware con medidas (gancho de unas
+  6 palabras, CTA de unas 5 con una forma de comprar, texto de 1 o 2 frases de unas 25
+  palabras, nunca bajo el mínimo de la marca); (2) problem_aware en partes: la primera parte
+  muestra a alguien viviendo el dilema, ahora `proponer-partes-v3.5`; (3) solution_aware deja
+  también los horarios a product_aware. Mismos modelos que NIVELES-004.
+- **Rúbrica alineada antes de juzgar** ([README](../../packages/api/evals/niveles_consciencia/README.md)):
+  `juez-niveles-v3` lleva las medidas de most_aware, y el agregado de clips ya no dice «el
+  texto largo cuenta en contra». Las salidas guardadas de NIVELES-004 (clips) y NIVELES-003
+  (piezas) se **volvieron a juzgar con la v3**: el «antes» y el «después» usan la misma
+  vara. Nuevo chequeo determinista `medida_most`: gancho ≤ 8, CTA ≤ 7, texto ≤ 35 palabras.
+- **Huellas de partes:** sin nivel y con los niveles que no cambiaron, el prompt es idéntico
+  a NIVELES-004. Solo cambia problem_aware: no hizo falta volver a correr los demás.
+- **Ediciones ajenas durante la medición:** otro agente modificó sin commitear
+  `angles.py`, `schemas.py` y `creative_state.py` entre las 20:49 y las 20:50; los cambios
+  son la detección de monedas y de montos para quitar precios. Las corridas de clips
+  most_aware y del nuevo juicio empezaron antes. Las demás importaron esos archivos, pero
+  con estos casos los prompts no cambian: el precio va en la fila «Precio», que se quita por
+  su nombre en cualquier caso.
+
+### Antes → después (juez v3 en ambos lados)
+
+| Qué | NIVELES-004 / 003 | NIVELES-005 |
+|---|---|---|
+| Clip most_aware, cumple (juez) | 0/12 | **3/11** (n 12, falta 1 lectura) |
+| Clip most_aware, medida determinista | 0/12 | **12/12** |
+| Clip most_aware, palabras gancho / CTA / texto | 7,6 / 9,4 / 52 | 6,0 / 4,8 / 27 |
+| Pieza most_aware, cumple (juez) | 0/7 | **5/8** |
+| Pieza most_aware, medida / palabras del texto | 7/8 · 33 | 8/8 · 22 |
+| Partes problem_aware, cumple (juez) | 3/6 | **8/10** (2 omitidas por el tope) |
+| Clip solution_aware, cumple (juez) | 3/5 | **7/7** (n 9, faltan 2 lecturas) |
+| Clip product_aware, cumple (juez) | 12/12 | 13/15 |
+| Clip unaware, cumple (juez) / precio en el copy | 4/5 · 0/6 | **6/9** · 0/9 |
+
+- **Puertas:** ninguna copia rechazada por corta. Clips most_aware 12/12, piezas 8/8,
+  solution_aware 9/9, unaware y product_aware 24/24. Ofertas inventadas en most_aware: 0/20.
+- **Partes válidas:** 10/10, 4–5 partes, 18–20 s, sin precios ni rechazos. Las 2 que fallan
+  (inmobiliaria, viajes) muestran la ilusión o la pregunta, pero no nombran el dilema.
+- **most_aware todavía falla por contenido, no por largo:** 8 de 11 clips suman ventajas
+  extra al texto (recogida en el hotel, acompañamiento legal, «abierto hasta las 11 p. m.»)
+  o una pregunta. Ejemplos: «Machu Picchu al amanecer, desde Cusco» / «Escríbenos por
+  WhatsApp y salimos» con recogida, grupo pequeño y guía bilingüe en el texto; «Tu primer
+  apartamento en Bello» / «Escríbenos ya por WhatsApp» con acompañamiento legal y subsidio;
+  en piezas, «Combo doble smash, listo ya» / «Cáele al local de la 57» con «abierto hasta las
+  11 p. m.». Redacción que probaría: «el texto dice solo el producto, el precio si lo hay y
+  cómo comprar: ninguna otra ventaja, ni horario, ni pregunta».
+- **Posibles regresiones, no concluyentes:**
+  - clip unaware baja a 6/9 (antes 4/5): el texto empuja el producto o las ventajas de
+    trámite; el precio sigue fuera en 9/9;
+  - clip product_aware 13/15 (antes 12/12): los 2 fallos son de viajes, que inventa un
+    horario («en la mañana», «de madrugada»); la calidad del juez baja de 3,67 a 3,07.
+  
+  Con estos tamaños ninguna diferencia es significativa.
+- **Sin medir:** nada de lo pedido. Faltaron 2 lecturas del juez en solution_aware y 1 en
+  most_aware (sin error registrado), y el tope omitió 2 de 12 propuestas de problem_aware.
+- **Gasto de la pasada: US$1,330** de US$1,75: nuevo juicio US$0,010, clips most_aware
+  US$0,227, piezas US$0,127, partes US$0,084, clips solution_aware US$0,285, unaware y
+  product_aware US$0,599. Ticket m-25026509: US$2,98 de US$3,40. Cero llamadas a BytePlus.
+- **Veredicto: se puede publicar con un arreglo.** problem_aware en partes y solution_aware
+  en clips pasan; product_aware se mantiene (0,87). **No fiable:** most_aware (clip 3/11,
+  pieza 5/8; el largo ya cumple, falta quitar las ventajas extra) y unaware de clip (6/9).
+
+---
+
+<a id="niveles-004"></a>
+
+## NIVELES-004 — El nivel en clips y en el video por partes (m-25026509) — 2026-11-13
+
+- **Qué se midió:** la rama `feat/m-25026509-nivel-en-clips` (PR #661 y main ya
+  integrados). El dueño responde «¿A quién le habla este video?» en el flujo de Clip y en el
+  video por partes. El brief del clip lleva `awareness_level` (objetivo según
+  `objective_for_level`), el copy recibe la línea del nivel, y `PartsBrief.awareness_level`
+  abre el bloque «== A quién le habla el video ==» en `proponer-partes-v3.4`. Un brief
+  unaware quita el precio al construirse.
+- **Cómo:** los briefs se arman como los arma la app (`awareness_clips.clip_brief`, espejo de
+  `build_brief`, comprobado por un test). Casos: comida, inmobiliaria y viajes
+  (`niveles_consciencia/cases_clips.json`); el precio de viajes es de prueba. Modelos: copy
+  `claude-opus-5-5` @ medium, partes `claude-sonnet-5` @ medium, juez `claude-haiku-5-5`
+  @ low (`juez-niveles-v2` + agregado de clips + agregado de partes, escritos antes de
+  correr: [README](../../packages/api/evals/niveles_consciencia/README.md)). Sin trazas
+  de Langfuse.
+- **Base idéntica a main, sin llamar:** las fuentes del prompt de copy no difieren de
+  `origin/main`, y un clip sin nivel conserva todo lo que manda el formulario.
+- **Las partes de NIVELES-001/002 quedan reemplazadas:** se tomaron sobre la v3.1 de main;
+  esta pasada mide `proponer-partes-v3.4` sobre la v3.2.
+
+### A. Copy del clip (2 por marca y nivel; product_aware y most_aware 4, sumando C)
+
+| Nivel (n) | Cumple (juez) | Precio en el copy | Oferta o servicio inventado | 3 tomas / tomas filmables | Palabras del texto | Barra |
+|---|---|---|---|---|---|---|
+| Sin preferencia (6) | — | 6/6 | 2/6 | 6/6 · 18/18 | 66 | base |
+| unaware (6) | 4/5 | **0/6** | 0/6 | 6/6 · 18/18 | 69 | no fiable por tamaño |
+| problem_aware (6) | 6/6 | 6/6 | 2/6 | 6/6 · 18/18 | 73 | no fiable por tamaño |
+| solution_aware (6) | 3/5 | 1/6 | 2/6 | 6/6 · 18/18 | 68 | no fiable |
+| product_aware (12) | **12/12** | 12/12 | 4/12 | 12/12 · 36/36 | 71 | fiable |
+| most_aware (12) | **0/12** | 12/12 | 0/12 | 12/12 · 36/36 | 52 | **no fiable** |
+
+- **El precio en unaware:** el brief se armó con el dato «Precio» y el copy no lo dice en
+  ninguno de los 6. La base lo dice en 6/6.
+- **El sobrante a propósito** (precio dentro de la frase del dueño, unaware, 3 de comida y 3
+  de inmobiliaria): el copy repitió el precio en **0/6**. El juez da 4/6 por nivel.
+- **Las tomas siguen siendo filmables** en todos los niveles: 3 tomas en 48/48 copias y 144/144
+  tomas sin consignas, exclamaciones ni texto en pantalla. Las puertas del copy pasan 48/48.
+  Calidad del juez: 3,67–3,83 (base 3,83).
+- **Ofertas inventadas:** son «separar» o «separación» del apartamento en inmobiliaria, y
+  salen igual sin nivel (2/6). Es un hábito del modelo en esa marca, no un efecto del nivel.
+- **most_aware falla 0/12.** El CTA tiene 9,4 palabras de media y el texto 52 (la base, 66).
+  Es más corto, pero no es «el camino más corto». Ejemplos:
+  1. «Cae con tu parche al local en la 57», con un texto de 45 palabras que suma horario,
+     ingredientes y una pregunta.
+  2. «Escríbenos por WhatsApp y agenda tu asesoría sin costo», con 64 palabras sobre el
+     subsidio y el estudio de títulos.
+  3. «Escríbenos por WhatsApp y cuadramos tu ruta a Machu Picchu», con 51 palabras sobre la
+     recogida, los guías y el precio.
+
+  Redacción que probaría (copy de clip y de pieza): «most_aware: gancho de 6 palabras o
+  menos; CTA de 5 palabras o menos con una sola forma de comprar; texto de 1 o 2 frases (25
+  palabras como máximo): el producto, el precio si lo hay y cómo comprar, nada más».
+- **solution_aware 3/5:** el texto se va a las ventajas de comodidad (parqueadero, horario),
+  y en viajes afirma un horario que no está en los datos.
+
+### B. Propuesta de partes con `PartsBrief.awareness_level` (2 por marca y nivel, n 6)
+
+| Nivel | Cumple (juez) | Partes | Segundos | Sin precios / usables | Rechazos |
+|---|---|---|---|---|---|
+| Sin preferencia | — | 4–5 | 20 | 6/6 · 6/6 | 0 |
+| unaware | 6/6 | 4–5 | 19–20 | 6/6 · 6/6 | 0 |
+| problem_aware | **3/6** | 4–5 | 17–20 | 6/6 · 6/6 | 0 |
+| solution_aware | 5/6 | 4–5 | 19–20 | 6/6 · 6/6 | 0 |
+| product_aware | 6/6 | 4–5 | 20 | 6/6 · 6/6 | 0 |
+| most_aware | 0/6 | 4–5 | 20 | 6/6 · 6/6 | 0 |
+
+- Todas las propuestas son válidas: 36/36, sin rechazos ni precios.
+- **most_aware se comporta como la base porque su prompt ES el de la base:** la misma huella
+  en los 3 casos. El 0/6 del juez dice que el video no sirve a ese nivel, como se diseñó.
+- **problem_aware 3/6:** ninguna parte muestra el dilema. Las partes van al grupo y al
+  combo («El gancho no nombra ningún dilema que el público ya sienta»). Redacción que
+  probaría en `_LEVEL_GUIDANCE`: «la primera parte muestra a alguien con ese dilema (dudando
+  qué comer, buscando dónde vivir) y las siguientes, el producto como la respuesta».
+- n = 6 por nivel: todos «no fiable por tamaño».
+
+### C. Lo que NIVELES-003 dejó bajo la barra, en clips
+
+- **most_aware del copy, en clips:** 0/12, ver arriba. Sigue sin pasar y aquí falla más que
+  en piezas (3/8).
+- **product_aware:** 12/12 en el copy de clip (n 12, fiable) y 6/6 en partes. El 0,77 de los
+  ángulos (NIVELES-003) no se reproduce en clips.
+
+### Costo, gasto y veredicto
+
+- **Costo:** copy de clip US$0,024 por pieza; propuesta de partes US$0,006–0,008.
+- **Gasto de la pasada: US$1,651** de US$3,40: partes US$0,280 (incluye US$0,014 de una
+  corrida cortada por un error de mi ejecutor, ya corregido), clips US$0,894, sobrante
+  US$0,172 y C US$0,305. Cero llamadas a BytePlus.
+- **Veredicto: se puede publicar con un arreglo.** El precio sale de unaware en todos los
+  casos medidos, el sobrante no se repite y las tomas siguen siendo filmables. **No
+  fiable:** most_aware del copy (0/12), problem_aware de partes (3/6) y solution_aware del
+  copy (3/5). unaware y problem_aware del copy pasan, pero con n 6. most_aware de partes no
+  tiene guía: es la base, por diseño.
+
+---
+
 <a id="niveles-003"></a>
 
 ## NIVELES-003 — Tercera pasada: most_aware, solution_aware y «el nivel decide las ventajas» (m-25026482) — 2026-11-13

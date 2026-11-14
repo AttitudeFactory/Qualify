@@ -168,6 +168,17 @@ class AwarenessLevel(StrEnum):
         return _AWARENESS_OBJECTIVE[self]
 
 
+def objective_for_level(level: str | None, default: str) -> str:
+    """m-25026509: the `BriefObjective` value a piece takes from the reader the owner
+    picked (`AwarenessLevel.objective`, the mapping `angles.angle_brief` uses); `default`
+    — the screen's own objective — when no level is picked («Sin preferencia»: "" or
+    None) or the value is not a level."""
+    try:
+        return AwarenessLevel(str(level or "").strip()).objective.value
+    except ValueError:
+        return default
+
+
 _AWARENESS_OBJECTIVE: dict[AwarenessLevel, BriefObjective] = {
     AwarenessLevel.UNAWARE: BriefObjective.AWARENESS,
     AwarenessLevel.PROBLEM_AWARE: BriefObjective.CONSIDERATION,

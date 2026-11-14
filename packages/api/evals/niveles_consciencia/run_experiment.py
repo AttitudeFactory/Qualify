@@ -11,6 +11,11 @@ Suites (`--suite`, default all four in this order):
   the production copy adapter (Opus 5.5 @ medium), new (level + perks) vs baseline.
 - `parts` — «Proponerme las partes» with the same five food angles, level + perks vs
   stripped.
+- `clipidentity` (free), `clips`, `partslevel` — m-25026509 (NIVELES-004): the clip's
+  «¿A quién le habla este video?» through the app's own brief (`awareness_clips`):
+  clip copy per level vs «Sin preferencia», and the parts proposal with
+  `PartsBrief.awareness_level`. `--levels none,unaware,...` picks arms; `--leftover`
+  runs the price-in-the-sentence clips.
 
 Every idea gets the deterministic checks and two readings by the judge (Haiku 5.5,
 `JUDGE_RUBRIC`, blind and informed). Spend is summed from every call and the run stops
@@ -602,6 +607,388 @@ def run_identity(al: Any, args: Any) -> dict[str, Any]:
     }
 
 
+CLIP_CASES = HERE / "cases_clips.json"
+COPY_CASES = HERE.parent / "copy_ai" / "cases.json"
+#: What the copy prompt of a clip is rendered from: unchanged against main means a clip
+#: with no level gets main's prompt byte for byte (the brief's own guard aside).
+COPY_PROMPT_SOURCES = (
+    "packages/creative/src/qualify_creative/brand/",
+    "packages/creative/src/qualify_creative/adapters/anthropic_copy.py",
+)
+
+
+def _clip_arms(args: Any) -> list[str | None]:
+    """The clip arms asked for: «none» is the baseline (no level)."""
+    from qualify_api.evals import awareness_clips as ac
+
+    wanted = args.level_set
+    return [lv for lv in ac.levels_with_none() if not wanted or (lv or "none") in wanted]
+
+
+def _clip_sources(brand: dict[str, Any], sentence: str) -> str:
+    kit = brand["kit"]
+    product = brand["product"]
+    return "\n".join(
+        [
+            *brand["perks"],
+            *product.values(),
+            kit.get("positioning", ""),
+            kit.get("audience", ""),
+            *kit.get("cta_patterns", []),
+            sentence,
+        ]
+    )
+
+
+def run_clip_identity(al: Any, args: Any) -> dict[str, Any]:
+    """Free: a clip with no level is main's prompt. (1) the copy prompt's sources do not
+    differ from origin/main's; (2) the no-level brief keeps every field the form sent
+    (the unaware guard did not fire); (3) the level line is absent."""
+    from qualify_creative.brand.render import render_prompt
+    from qualify_creative.enums import GenerationTask
+    from qualify_creative.schemas import BrandKit, BrandVoiceProfile
+
+    from qualify_api.evals import awareness_clips as ac
+
+    diff = subprocess.run(
+        ["git", "diff", "--stat", "origin/main", "--", *COPY_PROMPT_SOURCES],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    cases = ac.load_clip_cases(CLIP_CASES, COPY_CASES)
+    checked, problems = 0, []
+    for key, brand in cases["brands"].items():
+        kit = BrandKit.model_validate(brand["kit"])
+        voice = BrandVoiceProfile.model_validate(brand["voice"])
+        form = ac.clip_form(brand, None)
+        brief = ac.clip_brief(kit.brand_id, **form)
+        if brief.constraints.highlights != tuple(tuple(h) for h in form["highlights"]):
+            problems.append(f"{key}: highlights changed")
+        prompt = render_prompt(kit=kit, voice=voice, brief=brief, task=GenerationTask.COPY)
+        if "Awareness level" in prompt.stable_prefix + prompt.volatile_suffix:
+            problems.append(f"{key}: level line without a level")
+        checked += 1
+    return {
+        "copy_prompt_diff_vs_main": diff,
+        "briefs": checked,
+        "problems": problems,
+        "identical": not diff and not problems,
+    }
+
+
+def run_clips(al: Any, args: Any, spend: Spend, api_key: str) -> dict[str, Any]:
+    """A + C: clip copy for each brand and arm; `--leftover` runs the price-in-sentence
+    cases (unaware) instead."""
+    from qualify_creative.schemas import BrandKit
+
+    from qualify_api.evals import awareness_clips as ac
+    from qualify_api.evals import copy_quality as cq
+
+    cases = ac.load_clip_cases(CLIP_CASES, COPY_CASES)
+    config = cq.CONFIGS["opus-5.5@medium"]
+    items: list[dict[str, Any]] = []
+    scores: list[Any] = []
+    args.partial["clips"] = {"items": items, "scores": scores}
+    if args.leftover:
+        plan = [(c["brand"], "unaware", c["sentence"], c["id"]) for c in cases["leftover"]]
+    else:
+        plan = [(key, lv, None, key) for key in cases["brands"] for lv in _clip_arms(args)]
+    for brand_key, level, sentence, case_id in [p for p in plan for _ in range(args.repeat)]:
+        brand = cases["brands"][brand_key]
+        arm = level or "sin_nivel"
+        what = f"clips {case_id} {arm}"
+        if not spend.allow("copy", what):
+            continue
+        kit = BrandKit.model_validate(brand["kit"])
+        form = ac.clip_form(brand, level, sentence=sentence)
+        brief = ac.clip_brief(kit.brand_id, **form)
+        item = {
+            "kit": brand["kit"],
+            "voice": brand["voice"],
+            "brief": brief.model_dump(mode="json"),
+        }
+        output = cq.generate(item, config, api_key=api_key, variants=1)
+        usd = sum(x.get("cost_usd") or 0 for x in output["variants"])
+        usd += float(CEILING_USD["copy"]) * sum(1 for x in output["variants"] if "error" in x)
+        spend.add("clips", usd)
+        payload = output["variants"][0].get("payload") or {}
+        gates = {s.name: s.value for s in cq.gates(item, output, None, {})}
+        text = ac.clip_text(payload)
+        sources = _clip_sources(brand, form["topic"])
+        three, filmable = ac.shots_ok(payload)
+        score = al.score_idea(
+            arm=arm,
+            case=case_id,
+            split="test",
+            sector=brand["sector"],
+            with_perks=True,
+            level=level,
+            hook=str(payload.get("hook", "")),
+            cta=str(payload.get("cta", "")),
+            full_text=text,
+            sources=sources,
+            perks=brand["perks"],
+            facts_text=text,
+            body="\n".join(
+                [
+                    str(payload.get("caption", "")),
+                    *(str((s or {}).get("visual", "")) for s in payload.get("shots") or ()),
+                ]
+            ),
+            offers_text=text,
+        )
+        judged = {}
+        if payload and not args.no_judge:
+            judged = _judge(
+                al,
+                [score],
+                ac.judge_ideas(payload, level),
+                sources,
+                tuple(brand["perks"]),
+                informed=level is not None,
+                api_key=api_key,
+                spend=spend,
+                suite="clips",
+                what=what,
+                medium="clip",
+            )
+        scores.append(score)
+        items.append(
+            {
+                "case": case_id,
+                "brand": brand_key,
+                "arm": arm,
+                "level": level,
+                "leftover": bool(args.leftover),
+                "sentence": form["topic"],
+                "objective": brief.objective.value,
+                "highlights": [list(h) for h in brief.constraints.highlights],
+                "output": output,
+                "gates": gates,
+                "cost_usd": usd,
+                "price_in_copy": bool(payload)
+                and ac.quotes_price(text, brand["product"]["price_label"]),
+                "three_shots": three,
+                "filmable_shots": filmable,
+                "caption_words": ac.caption_words(payload),
+                "most_measure": ac.most_aware_measure(payload) if payload else None,
+                **judged,
+            }
+        )
+        args.checkpoint()
+        print(
+            f"  {what}: puertas {gates.get('puertas_ok')}, US${usd:.4f} "
+            f"(acumulado US${spend.total})"
+        )
+    return {}
+
+
+def run_parts_level(al: Any, args: Any, spend: Spend, api_key: str) -> dict[str, Any]:
+    """B: the parts proposal with `PartsBrief.awareness_level` (the app's path)."""
+    from qualify_creative.enums import AwarenessLevel
+
+    from qualify_api.creative.parts_ai import (
+        PROPOSE_PARTS_PROMPT_VERSION,
+        PartsBrief,
+        PartsProposalUnavailable,
+        propose_parts,
+    )
+    from qualify_api.evals import awareness_clips as ac
+    from qualify_api.evals import parts_proposal as pp
+
+    cases = ac.load_clip_cases(CLIP_CASES, COPY_CASES)
+    items: list[dict[str, Any]] = []
+    scores: list[Any] = []
+    args.partial["partslevel"] = {"items": items, "scores": scores}
+    plan = [(key, lv) for key in cases["brands"] for lv in _clip_arms(args)]
+    for brand_key, level in [p for p in plan for _ in range(args.repeat)]:
+        brand = cases["brands"][brand_key]
+        arm = level or "sin_nivel"
+        what = f"partslevel {brand_key} {arm}"
+        if not spend.allow("parts", what):
+            continue
+        angle_brand, product = ac.parts_inputs(brand)
+        brief = PartsBrief(
+            story=brand["sentence"],
+            brand=angle_brand,
+            product=product,
+            target_seconds=20,
+            awareness_level=AwarenessLevel(level) if level else None,
+        )
+        started = time.monotonic()
+        try:
+            proposal = propose_parts(
+                brief,
+                api_key=api_key,
+                attribution=al.eval_attribution(
+                    "eval-niveles-partes", prompt_version=PROPOSE_PARTS_PROMPT_VERSION
+                ),
+            )
+        except PartsProposalUnavailable as exc:
+            usd = exc.stats.cost_usd if exc.stats is not None else 0.0
+            spend.add("partslevel", usd)
+            items.append(
+                {
+                    "case": brand_key,
+                    "arm": arm,
+                    "level": level,
+                    "failed": str(exc)[:300],
+                    "cost_usd": usd,
+                }
+            )
+            args.checkpoint()
+            continue
+        except Exception as exc:  # noqa: BLE001 — timeout/network: charged at the ceiling
+            spend.add("partslevel", CEILING_USD["parts"])
+            items.append(
+                {"case": brand_key, "arm": arm, "level": level, "failed": type(exc).__name__}
+            )
+            args.checkpoint()
+            continue
+        usd = float(proposal.provenance.cost_usd)
+        spend.add("partslevel", usd)
+        texts = [x.description for x in proposal.parts]
+        output = {
+            "parts": [{"description": x.description, "seconds": x.seconds} for x in proposal.parts],
+            "provenance": proposal.provenance.model_dump(mode="json"),
+            "cost_usd": usd,
+            "latency_s": round(time.monotonic() - started, 2),
+        }
+        case_input = {
+            "story": brand["sentence"],
+            "target_seconds": 20,
+            "product": brand["product"],
+            "brand": brand["parts_brand"],
+        }
+        det = {s.name: s.value for s in pp.proposal_scores(case_input, output)}
+        joined = " ".join(texts)
+        sources = _clip_sources(brand, brand["sentence"])
+        score = al.score_idea(
+            arm=arm,
+            case=brand_key,
+            split="test",
+            sector=brand["sector"],
+            with_perks=True,
+            level=level,
+            hook="",
+            cta="",
+            full_text=joined,
+            sources=sources,
+            perks=brand["perks"],
+            facts_text=joined,
+            offers_text=joined,
+        )
+        score.rule_det = None
+        judged = {}
+        if not args.no_judge:
+            judged = _judge(
+                al,
+                [score],
+                [{"partes": " | ".join(texts), "nivel": level or ""}],
+                sources,
+                tuple(brand["perks"]),
+                informed=level is not None,
+                api_key=api_key,
+                spend=spend,
+                suite="partslevel",
+                what=what,
+                medium="video",
+            )
+        scores.append(score)
+        items.append(
+            {
+                "case": brand_key,
+                "arm": arm,
+                "level": level,
+                "prompt_version": PROPOSE_PARTS_PROMPT_VERSION,
+                "output": output,
+                "scores": det,
+                **judged,
+            }
+        )
+        args.checkpoint()
+        print(f"  {what}: {len(texts)} partes, US${usd:.4f} (acumulado US${spend.total})")
+    return {}
+
+
+def run_rejudge(al: Any, args: Any, spend: Spend, api_key: str) -> dict[str, Any]:
+    """NIVELES-005: the informed judge only, with the CURRENT rubric, over saved clip and
+    flyer copies of `--levels` (so a before and an after are judged alike)."""
+    from qualify_api.evals import awareness_clips as ac
+
+    clip_cases = ac.load_clip_cases(CLIP_CASES, COPY_CASES)
+    base, levels = _copy_cases(al, args)
+    flyer = {c["id"]: c for c in levels["cases"]}
+    rows: list[dict[str, Any]] = []
+    args.partial["rejudge"] = {"items": rows, "scores": []}
+    for name in args.rejudge_files:
+        report = json.loads((HERE / "results" / name).read_text(encoding="utf-8"))
+        for suite in ("clips", "copy"):
+            for item in (report["suites"].get(suite) or {}).get("items", []):
+                level = item.get("level")
+                payload = (item.get("output") or {}).get("variants", [{}])[0].get("payload")
+                if not payload or not level or (args.level_set and level not in args.level_set):
+                    continue
+                if suite == "copy" and item.get("arm") != "nuevo":
+                    continue
+                if suite == "clips":
+                    brand = clip_cases["brands"][item["brand"]]
+                    ideas = ac.judge_ideas(payload, level)
+                    sources = _clip_sources(brand, item["sentence"])
+                    perks, medium = brand["perks"], "clip"
+                else:
+                    case = flyer[item["case"]]
+                    extra = levels["brands"][case["brand"]]
+                    kit = base["brands"][case["brand"]]["kit"]
+                    perks = extra["perks"]
+                    sources = "\n".join(
+                        [
+                            *perks,
+                            *(v for v in extra["product"].values() if isinstance(v, str)),
+                            kit.get("positioning", ""),
+                            kit.get("audience", ""),
+                            *kit.get("cta_patterns", []),
+                            *case["angle"].values(),
+                        ]
+                    )
+                    ideas = [
+                        {
+                            "gancho": payload.get("hook", ""),
+                            "texto": payload.get("caption", ""),
+                            "cta": payload.get("cta", ""),
+                            "nivel": level,
+                        }
+                    ]
+                    medium = "idea"
+                what = f"rejudge {name[:15]} {item['case']}"
+                if not spend.allow("judge", what):
+                    continue
+                try:
+                    found, stats = al.call_judge(
+                        ideas, sources, tuple(perks), blind=False, api_key=api_key, medium=medium
+                    )
+                    spend.add("rejudge", al.cost_usd(stats))
+                except Exception as exc:  # noqa: BLE001 — recorded, at its ceiling
+                    spend.add("rejudge", CEILING_USD["judge"])
+                    found = [{"error": type(exc).__name__}]
+                rows.append(
+                    {
+                        "file": name,
+                        "suite": suite,
+                        "case": item["case"],
+                        "level": level,
+                        "judge_fit": found[0].get("cumple_su_nivel"),
+                        "reason": str(found[0].get("motivo", ""))[:200],
+                        "measure": ac.most_aware_measure(payload),
+                        "gates": item.get("gates"),
+                    }
+                )
+                args.checkpoint()
+    print(f"  rejudge: {len(rows)} copias, acumulado US${spend.total}")
+    return {}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--env-file", default=str(ROOT / ".env"))
@@ -616,9 +1003,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--levels", default="", help="copy/parts: only these levels")
     parser.add_argument("--repeat", type=int, default=1, help="runs per case and arm")
     parser.add_argument("--identity-ref", default="", help="identity: main's ref to compare")
+    parser.add_argument(
+        "--leftover", action="store_true", help="clips: the price-in-sentence cases"
+    )
+    parser.add_argument("--rejudge-files", default="", help="rejudge: results, comma-separated")
     args = parser.parse_args(argv)
     args.arm_set = {a.strip() for a in args.arms.split(",") if a.strip()}
     args.level_set = {a.strip() for a in args.levels.split(",") if a.strip()}
+    args.rejudge_files = [f.strip() for f in args.rejudge_files.split(",") if f.strip()]
 
     _load_env(args.env_file)
     os.environ["LANGFUSE_TRACING_ENVIRONMENT"] = "eval"
@@ -673,16 +1065,26 @@ def main(argv: list[str] | None = None) -> int:
         out.write_text(text, encoding="utf-8")
 
     args.checkpoint = save
+    if "clipidentity" in suites:
+        report["suites"]["clipidentity"] = run_clip_identity(al, args)
+        print(f"clipidentity: {report['suites']['clipidentity']}")
     if "identity" in suites:
         report["suites"]["identity"] = run_identity(al, args)
         print(f"identity: {report['suites']['identity']}")
-    paid = [s for s in suites if s != "identity"]
+    paid = [s for s in suites if s not in ("identity", "clipidentity")]
     if paid:
         api_key = os.environ.get("QUALIFY_ANTHROPIC_API_KEY", "").strip()
         if not api_key:
             print("QUALIFY_ANTHROPIC_API_KEY is not set", file=sys.stderr)
             return 2
-        runners = {"angles": run_angles, "copy": run_copy, "parts": run_parts}
+        runners = {
+            "angles": run_angles,
+            "copy": run_copy,
+            "parts": run_parts,
+            "clips": run_clips,
+            "partslevel": run_parts_level,
+            "rejudge": run_rejudge,
+        }
         for suite in paid:
             print(f"== {suite} (tope US${args.cap_usd}, gastado US${spend.total})")
             runners[suite](al, args, spend, api_key)

@@ -213,15 +213,18 @@ AWARENESS_GUIDANCE: dict[AwarenessLevel, str] = {
         " sets this business apart with at least one concrete fact from the product data or"
         " one perk from the list, stated as given. Restating what the product is, generic"
         " claims (fresh, quality, experts, made for you) or attributes not in the data are"
-        " not enough; prices and payment belong to product_aware."
+        " not enough; prices, payment and opening hours belong to product_aware."
     ),
     AwarenessLevel.PRODUCT_AWARE: (
         "the reader knows the business but hesitates. Remove the friction: the price as"
         " given, the hours, how to pay, where it is — only facts you were given."
     ),
     AwarenessLevel.MOST_AWARE: (
-        "the reader is ready to buy. Give the shortest path to the purchase: a short hook,"
-        " a direct call to action and a brief caption, no long text. The call to action uses"
+        "the reader is ready to buy. Give the shortest path to the purchase: a hook of about"
+        " 6 words, a call to action of about 5 words with one way to buy, and a caption of"
+        " one or two sentences (about 25 words) holding the product, the price if there is"
+        " one, and how to buy — no more, though never below the caption minimum above."
+        " The call to action uses"
         " only a way to buy that the business's facts, the product data or this briefing"
         " give; if there is none, simply invite people to come or to write, without naming a"
         " service (no reservations, takeaway, pickup or delivery)."

@@ -153,7 +153,7 @@ def test_the_parts_prompt_carries_perks_and_level_only_when_present() -> None:
         CreativeAngle(position=1, title="Mesa", scene="en la mesa"),
     )
     assert "Lo que ofrece el negocio" not in plain and "Nivel de consciencia" not in plain
-    assert PROPOSE_PARTS_PROMPT_VERSION == "proponer-partes-v3.4"
+    assert PROPOSE_PARTS_PROMPT_VERSION == "proponer-partes-v3.5"
 
 
 # -- migration 0166 ------------------------------------------------------------------------
