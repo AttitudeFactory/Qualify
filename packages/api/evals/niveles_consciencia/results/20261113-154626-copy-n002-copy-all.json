@@ -1,0 +1,1043 @@
+{
+ "ticket": "m-25026482",
+ "baseline_ref": "a6667370",
+ "split": "all",
+ "pricing_version": "v9",
+ "judge": "claude-haiku-5-5@low",
+ "judge_prompt_version": "juez-niveles-v2",
+ "judge_parts_version": "juez-niveles-v2+partes-v1",
+ "code_commit": "440eefa6",
+ "arms": [
+  "nuevo"
+ ],
+ "levels": [],
+ "repeat": 3,
+ "tracing": false,
+ "date": "2026-11-13T15:46:26",
+ "suites": {
+  "copy": {
+   "items": [
+    {
+     "case": "niv-bur-unaware",
+     "arm": "nuevo",
+     "level": "unaware",
+     "objective": "awareness",
+     "must_mention": [],
+     "output": {
+      "kind": "static_flyer",
+      "variants": [
+       {
+        "payload": {
+         "hook": "El parche suena a plancha",
+         "caption": "Sales del trabajo y el parche ya cogió mesa. Se oye la plancha: tsss 🔥 Llega la doble smash con costra dorada y salsa de la casa. Silencio total, todos comiendo. ¿El perro? Que venga, aquí también es del parche 🐶 ¿El carro? Tranqui, hay parqueadero. Cae al local en la 57 y armen el plan.",
+         "hashtags": [
+          "brasanorte",
+          "smashburger",
+          "chapinero",
+          "planconamigos"
+         ],
+         "cta": "Cae con el parche a la 57",
+         "script": "",
+         "shots": []
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 12.02,
+        "cost_usd": 0.033273
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.033273,
+     "juez_ciego_usd": 0.000568,
+     "juez_informado_usd": 0.000598
+    },
+    {
+     "case": "niv-bur-unaware",
+     "arm": "nuevo",
+     "level": "unaware",
+     "objective": "awareness",
+     "must_mention": [],
+     "output": {
+      "kind": "static_flyer",
+      "variants": [
+       {
+        "payload": {
+         "hook": "El parche se arma en la plancha",
+         "caption": "Salga del trabajo, escriba al grupo y caigan. La plancha suena a tope, la doble smash sale con costra y queso derretido, y la mesa se llena de manos. Hay mesas en el local, parqueadero gratis y el perro también entra 🐶. Chapinero, su gente y la salsa de la casa que nadie suelta. ¿Quién arma el parche hoy? 🍔",
+         "hashtags": [
+          "brasanorte",
+          "smashburger",
+          "chapinero",
+          "parchebogota"
+         ],
+         "cta": "Caigan al local de la 57",
+         "script": "",
+         "shots": []
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 9.56,
+        "cost_usd": 0.018182
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.018182,
+     "juez_ciego_usd": 0.000426,
+     "juez_informado_usd": 0.000488
+    },
+    {
+     "case": "niv-bur-unaware",
+     "arm": "nuevo",
+     "level": "unaware",
+     "objective": "awareness",
+     "must_mention": [],
+     "output": {
+      "kind": "static_flyer",
+      "variants": [
+       {
+        "payload": {
+         "hook": "El parche de los viernes suena a plancha",
+         "caption": "¿Oyen eso? Es la plancha sonando a tope. Junten la mesa, llamen al parche y caigan por una doble smash con costra dorada y salsa de la casa. Hay mesas en el local, parqueadero para no dar vueltas y el perro también se viene 🐶. Primero el plan, después la burger. ¿Y quién se le mide a terminarse la triple? 🍔",
+         "hashtags": [
+          "brasanorte",
+          "smashburger",
+          "chapinero",
+          "parchebogota"
+         ],
+         "cta": "Caigan al local de la 57",
+         "script": "",
+         "shots": []
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 9.43,
+        "cost_usd": 0.018942
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.018942,
+     "juez_ciego_usd": 0.000467,
+     "juez_informado_usd": 0.000559
+    },
+    {
+     "case": "niv-bur-problem",
+     "arm": "nuevo",
+     "level": "problem_aware",
+     "objective": "consideration",
+     "must_mention": [
+      "$32.900"
+     ],
+     "output": {
+      "kind": "static_flyer",
+      "variants": [
+       {
+        "payload": {
+         "hook": "¿Qué cenamos hoy? Fácil: doble smash",
+         "caption": "¿Qué cenamos hoy? Se acabó el debate. Combo doble smash a $32.900 🍔 Carne madurada aplastada en la plancha, costra dorada y salsa de la casa. Oye ese chasquido y ya sabes la respuesta. Abiertos hasta las 11 p. m. en Chapinero, con mesas en el local y parqueadero gratis. Caile con el parche o pídela por Rappi. 🔥",
+         "hashtags": [
+          "brasanorte",
+          "smashburger",
+          "chapinero",
+          "hamburguesasbogota"
+         ],
+         "cta": "Caile a la 57 o pide por Rappi",
+         "script": "",
+         "shots": []
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 9.37,
+        "cost_usd": 0.019854
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.019854,
+     "juez_ciego_usd": 0.000383,
+     "juez_informado_usd": 0.000331
+    },
+    {
+     "case": "niv-bur-problem",
+     "arm": "nuevo",
+     "level": "problem_aware",
+     "objective": "consideration",
+     "must_mention": [
+      "$32.900"
+     ],
+     "output": {
+      "kind": "static_flyer",
+      "variants": [
+       {
+        "payload": {
+         "hook": "¿Qué cenamos hoy? Doble smash y listo",
+         "caption": "¿Qué cenamos hoy? Fácil, parce: combo doble smash por $32.900. Dos carnes chillando en la plancha, costra dorada y salsa de la casa. ¿Escuchas ese tssss? 🔥 Mesas en el local, parqueadero gratis y tu perro también entra 🐶 Abierto hasta las 11 p. m. Pídela por Rappi o cae al local en la 57.",
+         "hashtags": [
+          "brasanorte",
+          "smashburger",
+          "hamburguesasbogota",
+          "chapinero"
+         ],
+         "cta": "Pídela por Rappi",
+         "script": "",
+         "shots": []
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 9.24,
+        "cost_usd": 0.018954
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.018954,
+     "juez_ciego_usd": 0.000383,
+     "juez_informado_usd": 0.000397
+    },
+    {
+     "case": "niv-bur-problem",
+     "arm": "nuevo",
+     "level": "problem_aware",
+     "objective": "consideration",
+     "must_mention": [
+      "$32.900"
+     ],
+     "output": {
+      "kind": "static_flyer",
+      "variants": [
+       {
+        "payload": {
+         "hook": "¿Qué cenamos hoy? Doble smash, parce",
+         "caption": "¿Qué cenamos hoy? Se acabó la discusión en el chat. Combo doble smash por $32.900. Escucha la plancha chillar, mira esa costra y listo, dilema resuelto. Cáele con el parche: hay mesas en el local, se admiten mascotas y abrimos hasta las 11 p. m. 🍔🔥",
+         "hashtags": [
+          "brasanorte",
+          "smashburger",
+          "chapinero",
+          "hamburguesasbogota"
+         ],
+         "cta": "Cáele al local en la 57",
+         "script": "",
+         "shots": []
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 9.09,
+        "cost_usd": 0.018454
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.018454,
+     "juez_ciego_usd": 0.000371,
+     "juez_informado_usd": 0.000371
+    },
+    {
+     "case": "niv-bur-solution",
+     "arm": "nuevo",
+     "level": "solution_aware",
+     "objective": "consideration",
+     "must_mention": [
+      "$32.900"
+     ],
+     "output": {
+      "kind": "static_flyer",
+      "variants": [
+       {
+        "payload": {
+         "hook": "Oye la plancha: así nace la costra",
+         "caption": "¿Oyes ese chirrido? Es la carne madurada aplastada a tope contra la plancha. De ahí sale esa costra dorada que hace distinta a esta smash, parce. Combo doble smash por $32.900. Doble carne, doble costra, puro sabor 🔥 Y si te quedas con hambre, ¿te le mides a la triple? Caéle al local: mesas para comer, parqueadero gratis y abiertos hasta las 11 p. m.",
+         "hashtags": [
+          "brasanorte",
+          "smashburger",
+          "chapinero",
+          "hamburguesasbogota"
+         ],
+         "cta": "Pídela ya por Rappi",
+         "script": "",
+         "shots": []
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 9.01,
+        "cost_usd": 0.018306
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.018306,
+     "juez_ciego_usd": 0.000484,
+     "juez_informado_usd": 0.000438
+    },
+    {
+     "case": "niv-bur-solution",
+     "arm": "nuevo",
+     "level": "solution_aware",
+     "objective": "consideration",
+     "must_mention": [
+      "$32.900"
+     ],
+     "output": {
+      "kind": "static_flyer",
+      "variants": [
+       {
+        "payload": {
+         "hook": "Escucha esa plancha: costra de verdad",
+         "caption": "¿Oyes ese chasquido? Es carne madurada aplastada a la plancha hasta soltar costra. Doble smash con salsa de la casa. Por eso esta smash es distinta, parce. Combo doble smash a $32.900. Mesas en el local, parqueadero gratis y abierto hasta las 11 p. m. Cáele a Chapinero o pídelo por Rappi 🔥",
+         "hashtags": [
+          "brasanorte",
+          "smashburger",
+          "chapinero",
+          "hamburguesasbogota"
+         ],
+         "cta": "Pídelo ya por Rappi",
+         "script": "",
+         "shots": []
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 8.18,
+        "cost_usd": 0.017426
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.017426,
+     "juez_ciego_usd": 0.000429,
+     "juez_informado_usd": 0.000441
+    },
+    {
+     "case": "niv-bur-solution",
+     "arm": "nuevo",
+     "level": "solution_aware",
+     "objective": "consideration",
+     "must_mention": [
+      "$32.900"
+     ],
+     "output": {
+      "kind": "static_flyer",
+      "variants": [
+       {
+        "payload": {
+         "hook": "Doble smash, doble costra",
+         "caption": "¿Oyes ese chasquido? Es la carne madurada aplastada a tope contra la plancha hasta sacar costra. Dos veces. 🔥 Así sale el combo doble smash: borde tostado, jugosa por dentro y con salsa de la casa. $32.900. Mesas en el local, parqueadero gratis y abiertos hasta las 11 p. m. Trae al parche, y al perro también. 🐶",
+         "hashtags": [
+          "brasanorte",
+          "smashburger",
+          "chapinero",
+          "hamburguesasbogota"
+         ],
+         "cta": "Caile a la 57 o pide por Rappi",
+         "script": "",
+         "shots": []
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 9.4,
+        "cost_usd": 0.019026
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.019026,
+     "juez_ciego_usd": 0.000383,
+     "juez_informado_usd": 0.000533
+    },
+    {
+     "case": "niv-bur-product",
+     "arm": "nuevo",
+     "level": "product_aware",
+     "objective": "sale",
+     "must_mention": [
+      "$32.900"
+     ],
+     "output": {
+      "kind": "static_flyer",
+      "variants": [
+       {
+        "payload": {
+         "hook": "Doble smash a $32.900. Sin vueltas.",
+         "caption": "Combo doble smash: $32.900. Doble carne madurada a la plancha, costra dorada y salsa de la casa. Oye ese tsss y decide. Estamos en Chapinero, en la 57: mesas para comer aquí, parqueadero gratis y se admiten mascotas. Abiertos hasta las 11 p. m. ¿Antojo de dulce? Pregunta por el combo con el postre de la heladería de al lado. Pide por Rappi o cáele al local, parce 🍔",
+         "hashtags": [
+          "brasanorte",
+          "smashburger",
+          "chapinero",
+          "hamburguesasbogota"
+         ],
+         "cta": "Cáele a la 57 o pide por Rappi",
+         "script": "",
+         "shots": []
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 10.71,
+        "cost_usd": 0.020758
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.020758,
+     "juez_ciego_usd": 0.000495,
+     "juez_informado_usd": 0.000414
+    },
+    {
+     "case": "niv-bur-product",
+     "arm": "nuevo",
+     "level": "product_aware",
+     "objective": "sale",
+     "must_mention": [
+      "$32.900"
+     ],
+     "output": {
+      "kind": "static_flyer",
+      "variants": [
+       {
+        "payload": {
+         "hook": "Combo doble smash a $32.900",
+         "caption": "Sin vueltas, parce: combo doble smash a $32.900. Doble carne madurada a la plancha, costra dorada y salsa de la casa. Ese chasquido en la plancha ya lo dice todo 🔥 Estamos en la 57, en Chapinero. Mesas para comértela ahí mismo, parqueadero gratis y las mascotas son bienvenidas. Abiertos hasta las 11 p. m. ¿Y si después te le mides a la triple?",
+         "hashtags": [
+          "brasanorte",
+          "smashburger",
+          "chapinero",
+          "hamburguesasbogota"
+         ],
+         "cta": "Caile a la 57 o pide por Rappi",
+         "script": "",
+         "shots": []
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 10.11,
+        "cost_usd": 0.021738
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.021738,
+     "juez_ciego_usd": 0.000441,
+     "juez_informado_usd": 0.00051
+    },
+    {
+     "case": "niv-bur-product",
+     "arm": "nuevo",
+     "level": "product_aware",
+     "objective": "sale",
+     "must_mention": [
+      "$32.900"
+     ],
+     "output": {
+      "kind": "static_flyer",
+      "variants": [
+       {
+        "payload": {
+         "hook": "Combo doble smash a $32.900. Sin vueltas.",
+         "caption": "¡Chsss! Así suena la plancha. Combo doble smash: doble carne madurada aplastada a la plancha, costra dorada y salsa de la casa. $32.900, sin vueltas. Estamos en Chapinero, en la 57. Mesas para comer acá, parqueadero gratis y tu mascota también entra 🐶. Abiertos hasta las 11 p. m. ¿Y la triple? Esa es pa' valientes 🔥",
+         "hashtags": [
+          "brasanorte",
+          "smashburger",
+          "chapinero",
+          "hamburguesasbogota"
+         ],
+         "cta": "Cáele al local en la 57",
+         "script": "",
+         "shots": []
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 12.8,
+        "cost_usd": 0.026018
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.026018,
+     "juez_ciego_usd": 0.000413,
+     "juez_informado_usd": 0.000413
+    },
+    {
+     "case": "niv-bur-most",
+     "arm": "nuevo",
+     "level": "most_aware",
+     "objective": "sale",
+     "must_mention": [
+      "$32.900"
+     ],
+     "output": {
+      "kind": "static_flyer",
+      "variants": [
+       {
+        "payload": {
+         "hook": "Combo doble smash: $32.900",
+         "caption": "¿Oyes eso? Es la plancha llamándote. Combo doble smash, costra crocante y salsa de la casa, por $32.900. Sin vueltas: pídelo por Rappi o cáele al local en la 57. Abierto hasta las 11 p. m. 🔥",
+         "hashtags": [
+          "brasanorte",
+          "smashburger",
+          "chapinero",
+          "hamburguesasbogota"
+         ],
+         "cta": "Pídelo ya por Rappi",
+         "script": "",
+         "shots": []
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 8.43,
+        "cost_usd": 0.015182
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.015182,
+     "juez_ciego_usd": 0.000406,
+     "juez_informado_usd": 0.000536
+    },
+    {
+     "case": "niv-bur-most",
+     "arm": "nuevo",
+     "level": "most_aware",
+     "objective": "sale",
+     "must_mention": [
+      "$32.900"
+     ],
+     "output": {
+      "kind": "static_flyer",
+      "variants": [
+       {
+        "payload": {
+         "hook": "Doble smash a $32.900. ¿Qué espera?",
+         "caption": "Escuche esa plancha. 🔥 Doble smash con costra, queso derretido y salsa de la casa. Combo listo por $32.900. Pídalo por Rappi o caiga al local en la 57, que hay mesas y parqueadero gratis. Abierto hasta las 11 p. m. Traiga al perro, que también es bienvenido. 🍔",
+         "hashtags": [
+          "brasanorte",
+          "smashburger",
+          "chapinero",
+          "hamburguesasbogota"
+         ],
+         "cta": "Pídalo ya por Rappi",
+         "script": "",
+         "shots": []
+        },
+        "model": "claude-opus-5-5",
+        "seconds": 3.57,
+        "cost_usd": 0.007662
+       }
+      ]
+     },
+     "gates": {
+      "esquema_ok": 1.0,
+      "reglas_ok": 1.0,
+      "largos_ok": 1.0,
+      "restricciones_ok": 1.0,
+      "caption_ajustada": 0.0,
+      "puertas_ok": 1.0
+     },
+     "cost_usd": 0.007662,
+     "juez_ciego_usd": 0.000428,
+     "juez_informado_usd": 0.000464
+    }
+   ],
+   "scores": [
+    {
+     "arm": "nuevo",
+     "case": "niv-bur-unaware",
+     "split": "test",
+     "sector": "hamburguesas",
+     "with_perks": true,
+     "level": "unaware",
+     "level_answered": null,
+     "rule_det": true,
+     "invented_det": [],
+     "perks_det": [],
+     "judge_level": "product_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      1,
+      2,
+      3
+     ],
+     "judge_fit": true,
+     "judge_reason": "Muestra sobre todo la experiencia y el lugar (la mesa con el parche, el sonido de la plancha, la 57) sin precio ni oferta; el parqueadero y las mascotas son datos reales del negocio, así que no hay da",
+     "offers_det": [],
+     "words_hook": 5,
+     "words_cta": 7
+    },
+    {
+     "arm": "nuevo",
+     "case": "niv-bur-unaware",
+     "split": "test",
+     "sector": "hamburguesas",
+     "with_perks": true,
+     "level": "unaware",
+     "level_answered": null,
+     "rule_det": false,
+     "invented_det": [],
+     "perks_det": [
+      1,
+      3
+     ],
+     "judge_level": "unaware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      1,
+      2,
+      3
+     ],
+     "judge_fit": true,
+     "judge_reason": "Construye la escena de la plancha, la mesa llena y el parche sin precio ni oferta; el parqueadero gratis y las mesas son comodidades, no una promoción, aunque se acerca a lo logístico para un público ",
+     "offers_det": [],
+     "words_hook": 7,
+     "words_cta": 6
+    },
+    {
+     "arm": "nuevo",
+     "case": "niv-bur-unaware",
+     "split": "test",
+     "sector": "hamburguesas",
+     "with_perks": true,
+     "level": "unaware",
+     "level_answered": null,
+     "rule_det": true,
+     "invented_det": [],
+     "perks_det": [
+      3
+     ],
+     "judge_level": "product_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      1,
+      2,
+      3
+     ],
+     "judge_fit": true,
+     "judge_reason": "Muestra el ambiente y la experiencia de juntar al parche con la plancha de fondo, sin precio ni oferta; aunque se carga de logística (parqueadero, mascota) y del producto, la regla de unaware se cumpl",
+     "offers_det": [],
+     "words_hook": 8,
+     "words_cta": 6
+    },
+    {
+     "arm": "nuevo",
+     "case": "niv-bur-problem",
+     "split": "test",
+     "sector": "hamburguesas",
+     "with_perks": true,
+     "level": "problem_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [
+      1,
+      3,
+      4
+     ],
+     "judge_level": "problem_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      1,
+      3,
+      4
+     ],
+     "judge_fit": true,
+     "judge_reason": "El gancho nombra el dilema («¿Qué cenamos hoy?») y presenta el doble smash como la respuesta, que es lo que pide problem_aware; los datos usados (precio, horario, mesas, parqueadero, Rappi, la 57) est",
+     "offers_det": [],
+     "words_hook": 6,
+     "words_cta": 8
+    },
+    {
+     "arm": "nuevo",
+     "case": "niv-bur-problem",
+     "split": "test",
+     "sector": "hamburguesas",
+     "with_perks": true,
+     "level": "problem_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [
+      1,
+      3,
+      4
+     ],
+     "judge_level": "product_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      1,
+      2,
+      3,
+      4
+     ],
+     "judge_fit": true,
+     "judge_reason": "El gancho «¿Qué cenamos hoy?» nombra el dilema y la idea presenta el combo doble smash como la respuesta; todos los datos usados (precio $32.900, parqueadero, mascotas, mesas, 11 p. m., Rappi, local e",
+     "offers_det": [],
+     "words_hook": 7,
+     "words_cta": 3
+    },
+    {
+     "arm": "nuevo",
+     "case": "niv-bur-problem",
+     "split": "test",
+     "sector": "hamburguesas",
+     "with_perks": true,
+     "level": "problem_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [
+      2,
+      3
+     ],
+     "judge_level": "problem_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      2,
+      3,
+      4
+     ],
+     "judge_fit": true,
+     "judge_reason": "El gancho nombra el dilema de la cena (¿Qué cenamos hoy?) y presenta el combo doble smash como la respuesta; todos los datos citados (precio $32.900, mesas, mascotas, horario hasta las 11 p. m., la 57",
+     "offers_det": [],
+     "words_hook": 6,
+     "words_cta": 6
+    },
+    {
+     "arm": "nuevo",
+     "case": "niv-bur-solution",
+     "split": "test",
+     "sector": "hamburguesas",
+     "with_perks": true,
+     "level": "solution_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [
+      1,
+      3,
+      4
+     ],
+     "judge_level": "most_aware",
+     "judge_quality": 3,
+     "judge_invented": [],
+     "judge_perks": [
+      1,
+      3,
+      4
+     ],
+     "judge_fit": true,
+     "judge_reason": "Explica por qué esta smash es distinta con datos reales del producto (carne madurada, costra a la plancha, doble carne, combo a $32.900) y no inventa horarios, precios, pagos ni promociones; el gancho",
+     "offers_det": [],
+     "words_hook": 7,
+     "words_cta": 4
+    },
+    {
+     "arm": "nuevo",
+     "case": "niv-bur-solution",
+     "split": "test",
+     "sector": "hamburguesas",
+     "with_perks": true,
+     "level": "solution_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [
+      1,
+      3,
+      4
+     ],
+     "judge_level": "most_aware",
+     "judge_quality": 3,
+     "judge_invented": [],
+     "judge_perks": [
+      1,
+      3,
+      4
+     ],
+     "judge_fit": true,
+     "judge_reason": "Muestra por qué esta smash es distinta con datos del producto (carne madurada, aplastada a la plancha hasta soltar costra, doble smash), sin inventar horario, precio, pago, dirección ni promoción; aun",
+     "offers_det": [],
+     "words_hook": 6,
+     "words_cta": 4
+    },
+    {
+     "arm": "nuevo",
+     "case": "niv-bur-solution",
+     "split": "test",
+     "sector": "hamburguesas",
+     "with_perks": true,
+     "level": "solution_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [
+      1,
+      3,
+      4
+     ],
+     "judge_level": "product_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      1,
+      2,
+      3,
+      4
+     ],
+     "judge_fit": true,
+     "judge_reason": "Usa datos reales del producto (carne madurada, costra a la plancha, doble smash, combo a $32.900) para mostrar por qué esta smash es distinta, aunque mezcla demasiada logística (parqueadero, horario, ",
+     "offers_det": [],
+     "words_hook": 4,
+     "words_cta": 8
+    },
+    {
+     "arm": "nuevo",
+     "case": "niv-bur-product",
+     "split": "test",
+     "sector": "hamburguesas",
+     "with_perks": true,
+     "level": "product_aware",
+     "level_answered": null,
+     "rule_det": true,
+     "invented_det": [],
+     "perks_det": [
+      1,
+      2,
+      3,
+      4,
+      5
+     ],
+     "judge_level": "product_aware",
+     "judge_quality": 3,
+     "judge_invented": [],
+     "judge_perks": [
+      1,
+      2,
+      3,
+      4,
+      5
+     ],
+     "judge_fit": true,
+     "judge_reason": "Da precio del combo ($32.900), dónde está (la 57, Chapinero), horario (hasta las 11 p. m.) y cómo pedir (Rappi o en el local), que son los datos que quitan la duda de un público que ya conoce el negoc",
+     "offers_det": [],
+     "words_hook": 7,
+     "words_cta": 8
+    },
+    {
+     "arm": "nuevo",
+     "case": "niv-bur-product",
+     "split": "test",
+     "sector": "hamburguesas",
+     "with_perks": true,
+     "level": "product_aware",
+     "level_answered": null,
+     "rule_det": true,
+     "invented_det": [],
+     "perks_det": [
+      1,
+      3,
+      4
+     ],
+     "judge_level": "product_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      1,
+      2,
+      3,
+      4
+     ],
+     "judge_fit": true,
+     "judge_reason": "Cumple la regla de product_aware: quita dudas con precio ($32.900), dirección (la 57, Chapinero), horario (hasta las 11 p. m.), parqueadero, mesas y Rappi como forma de pedir, todo con datos dados. Ca",
+     "offers_det": [],
+     "words_hook": 6,
+     "words_cta": 8
+    },
+    {
+     "arm": "nuevo",
+     "case": "niv-bur-product",
+     "split": "test",
+     "sector": "hamburguesas",
+     "with_perks": true,
+     "level": "product_aware",
+     "level_answered": null,
+     "rule_det": true,
+     "invented_det": [],
+     "perks_det": [
+      1,
+      3,
+      4
+     ],
+     "judge_level": "product_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      1,
+      2,
+      3,
+      4
+     ],
+     "judge_fit": true,
+     "judge_reason": "Quita fricción con datos reales (precio de $32.900, Chapinero en la 57, abierto hasta las 11 p. m., parqueadero gratis y mesas) sin inventar horario, precio, pago ni promoción; la mención de «la tripl",
+     "offers_det": [],
+     "words_hook": 8,
+     "words_cta": 6
+    },
+    {
+     "arm": "nuevo",
+     "case": "niv-bur-most",
+     "split": "test",
+     "sector": "hamburguesas",
+     "with_perks": true,
+     "level": "most_aware",
+     "level_answered": null,
+     "rule_det": true,
+     "invented_det": [],
+     "perks_det": [
+      4
+     ],
+     "judge_level": "product_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      4
+     ],
+     "judge_fit": true,
+     "judge_reason": "Es most_aware y va directo al precio ($32.900, en los datos), a los dos canales de compra (Rappi o el local en la 57, ambos en los datos) y termina con un CTA breve (\"Pídelo ya por Rappi\"); no inventa",
+     "offers_det": [],
+     "words_hook": 5,
+     "words_cta": 4
+    },
+    {
+     "arm": "nuevo",
+     "case": "niv-bur-most",
+     "split": "test",
+     "sector": "hamburguesas",
+     "with_perks": true,
+     "level": "most_aware",
+     "level_answered": null,
+     "rule_det": true,
+     "invented_det": [],
+     "perks_det": [
+      1,
+      3,
+      4
+     ],
+     "judge_level": "most_aware",
+     "judge_quality": 2,
+     "judge_invented": [],
+     "judge_perks": [
+      1,
+      2,
+      3,
+      4
+     ],
+     "judge_fit": false,
+     "judge_reason": "El gancho y la CTA son directos, pero el texto se alarga con parqueadero, mesas, mascotas y horario, que no llevan a la compra y diluyen el camino más corto; además mezcla el usted (\"Escuche\", \"caiga\"",
+     "offers_det": [],
+     "words_hook": 7,
+     "words_cta": 4
+    }
+   ],
+   "prefix_chars": {
+    "hamburguesas": {
+     "nuevo": 3484
+    }
+   }
+  }
+ },
+ "spend_usd": {
+  "copy": 0.286345
+ },
+ "spend_total_usd": 0.286345,
+ "skipped_by_cap": [
+  "copy niv-bur-most nuevo",
+  "copy niv-inm-unaware nuevo",
+  "copy niv-inm-unaware nuevo",
+  "copy niv-inm-unaware nuevo",
+  "copy niv-inm-product nuevo",
+  "copy niv-inm-product nuevo",
+  "copy niv-inm-product nuevo"
+ ],
+ "ledger_calls": 28
+}

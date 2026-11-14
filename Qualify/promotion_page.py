@@ -3,10 +3,18 @@
 from __future__ import annotations
 
 import reflex as rx
+from qualify_api.ads.messaging_greeting import MAX_QUESTION, MAX_WELCOME
 
 from .ad_health_ui import health_details
 from .promotion_audience_ui import promotion_audience
 from .promotion_state import PromotionState as S
+from .promotion_story_ui import (
+    story_audience,
+    story_empty,
+    story_link,
+    story_media,
+    story_review,
+)
 from .promotion_unpublished_ui import (
     unpublished_country,
     unpublished_feed_video,
@@ -16,8 +24,15 @@ from .promotion_unpublished_ui import (
     unpublished_vertical_video,
 )
 from .promotion_vm import (
+    CHAT_GOAL_DETAIL,
+    CHAT_GOAL_FROM_PIECE,
+    CONNECTIONS_RETURN_HINT,
     EMPTY_SOURCES,
+    GREETING_QUESTION_SLOTS,
     LEAD_CTA_LABELS,
+    STORY_EMPTY,
+    STORY_PLACEMENT,
+    STORY_PREVIEW_BUTTON,
     WEBSITE_CTA_LABELS,
     LeadFormChoiceVM,
     MessagingDestinationVM,
@@ -122,9 +137,17 @@ def _source_choice(source: rx.Var) -> rx.Component:
                 rx.text(source.account_label, weight="medium", overflow_wrap="anywhere"),
                 rx.text(
                     rx.cond(
-                        source.media_kind == "videos",
-                        "Con los dos videos",
-                        "Con las dos imágenes",
+                        source.story,
+                        rx.cond(
+                            source.media_kind == "videos",
+                            "Con el video vertical",
+                            "Con la imagen vertical",
+                        ),
+                        rx.cond(
+                            source.media_kind == "videos",
+                            "Con los dos videos",
+                            "Con las dos imágenes",
+                        ),
                     )
                     + " · "
                     + source.account_label,
@@ -138,9 +161,13 @@ def _source_choice(source: rx.Var) -> rx.Component:
                 rx.text("Publicada: " + source.published_label, size="1", color=T.TEXT_MUTED),
                 rx.text(
                     rx.cond(
-                        source.media_kind == "videos",
-                        "Dos videos de la pieza: para el perfil y vertical",
-                        "Dos imágenes de la pieza: para el perfil y vertical",
+                        source.story,
+                        "Solo en historias de Instagram",
+                        rx.cond(
+                            source.media_kind == "videos",
+                            "Dos videos de la pieza: para el perfil y vertical",
+                            "Dos imágenes de la pieza: para el perfil y vertical",
+                        ),
                     ),
                     size="1",
                     color=T.TEXT_MUTED,
@@ -163,6 +190,11 @@ def _source_choice(source: rx.Var) -> rx.Component:
             rx.cond(
                 source.unavailable_reason != "",
                 rx.text(source.unavailable_reason, size="2", color=T.TEXT_MUTED),
+            ),
+            # A chat ad never uses the piece's button, so that refusal leaves the chat goal.
+            rx.cond(
+                source.fix_in_piece & source.chat_goal,
+                rx.text(CHAT_GOAL_FROM_PIECE, size="2", weight="medium"),
             ),
             spacing="2",
             align="start",
@@ -200,10 +232,14 @@ def _publication() -> rx.Component:
                 spacing="2",
                 width="100%",
             ),
-            rx.text(
-                "Tu pieza todavía no está publicada. Puedes anunciarla sin que aparezca "
-                "en tu perfil: se verá bien en el inicio, en historias y en reels.",
-                color=T.TEXT_MUTED,
+            rx.cond(
+                S.sources[0].story,
+                rx.text(STORY_PLACEMENT, color=T.TEXT_MUTED),
+                rx.text(
+                    "Tu pieza todavía no está publicada. Puedes anunciarla sin que aparezca "
+                    "en tu perfil: se verá bien en el inicio, en historias y en reels.",
+                    color=T.TEXT_MUTED,
+                ),
             ),
         ),
         rx.vstack(
@@ -236,11 +272,197 @@ def _publication() -> rx.Component:
 
 
 def _messaging_destination(option: MessagingDestinationVM) -> rx.Component:
+    """One chat the ad may open; an unavailable one stays visible, with its status, the
+    reason and, by its `reason_code`, the way to fix it in Tus redes."""
     return rx.vstack(
-        rx.text(option.label, weight="medium"),
-        rx.text(option.notice, size="2", color=T.TEXT_MUTED, overflow_wrap="anywhere"),
-        spacing="1",
+        choice_card(
+            rx.vstack(
+                rx.hstack(
+                    rx.text(option.label, weight="medium"),
+                    rx.cond(option.status != "", signal_pill(option.status, "warn")),
+                    spacing="2",
+                    align="center",
+                    wrap="wrap",
+                ),
+                rx.text(option.notice, size="2", color=T.TEXT_MUTED, overflow_wrap="anywhere"),
+                spacing="1",
+                align="start",
+                width="100%",
+            ),
+            selected=S.form.channel == option.key,
+            on_select=S.choose_channel(option.key),
+            disabled=S.busy | ~option.available,
+            min_height="44px",
+            width="100%",
+            text_align="left",
+        ),
+        rx.cond(
+            option.action != "",
+            rx.link(
+                option.action + CONNECTIONS_RETURN_HINT,
+                href="/connections",
+                min_height="44px",
+                display="inline-flex",
+                align_items="center",
+            ),
+        ),
+        rx.cond(
+            # Only when the owner can fix it (an action) or we could not check it at all.
+            ~option.available & ((option.action != "") | (option.reason_code == "unknown")),
+            rx.button(
+                rx.cond(
+                    option.action != "",
+                    "Ya lo conecté, comprobar de nuevo",
+                    "Comprobar de nuevo",
+                ),
+                on_click=S.recheck_destinations,
+                disabled=S.busy | S.loading | S.destinations_working,
+                loading=S.destinations_working,
+                variant="outline",
+                min_height="44px",
+            ),
+        ),
+        spacing="2",
         align_items="start",
+        width="100%",
+    )
+
+
+def _channel() -> rx.Component:
+    return rx.vstack(
+        rx.vstack(
+            rx.foreach(S.selected_source.messaging_destinations, _messaging_destination),
+            role="radiogroup",
+            aria_label="Por dónde quieres que te escriban",
+            spacing="4",
+            width="100%",
+        ),
+        rx.cond(
+            S.destinations_notice != "",
+            rx.text(S.destinations_notice, size="2", color=T.TEXT_MUTED),
+        ),
+        spacing="3",
+        align_items="start",
+        width="100%",
+    )
+
+
+def _counter(value: rx.Var[str], limit: int) -> rx.Component:
+    return rx.text(value.length().to_string() + f" de {limit}", size="1", color=T.TEXT_MUTED)
+
+
+def _question_field(index: int) -> rx.Component:
+    field_id = f"promotion-question-{index}"
+    field = rx.vstack(
+        rx.el.label(
+            f"Botón {index + 1}" + ("" if index == 0 else " (opcional)"),
+            html_for=field_id,
+            font_weight="500",
+        ),
+        rx.input(
+            id=field_id,
+            value=S.form.questions[index],
+            on_change=lambda text: S.edit_question(index, text),
+            max_length=MAX_QUESTION,
+            disabled=S.busy,
+            placeholder="Ejemplo: ¿Hacen domicilios?" if index == 0 else "",
+            min_height="44px",
+            width="100%",
+        ),
+        _counter(S.form.questions[index], MAX_QUESTION),
+        spacing="1",
+        width="100%",
+    )
+    # Box 1 always shows; the others once they have text or «Agregar» opened them.
+    return field if index == 0 else rx.cond(S.questions_shown > index, field)
+
+
+def _chat_bubble(text: rx.Var[str], *, mine: bool = False) -> rx.Component:
+    return rx.box(
+        rx.text(text, size="2", white_space="pre-wrap", overflow_wrap="anywhere"),
+        background=T.tone_color("accent", 3) if mine else T.SURFACE_BG,
+        border=T.BORDER,
+        border_radius="14px",
+        padding="8px 12px",
+        max_width="85%",
+        align_self="end" if mine else "start",
+    )
+
+
+def _greeting_preview() -> rx.Component:
+    questions = S.form.questions
+    return rx.vstack(
+        rx.heading("Así lo ve quien toca tu anuncio", size="3", as_="h2"),
+        rx.vstack(
+            _chat_bubble(S.welcome_preview),
+            *[
+                rx.cond(
+                    questions[index].strip() != "",
+                    _chat_bubble(questions[index], mine=True),
+                )
+                for index in range(GREETING_QUESTION_SLOTS)
+            ],
+            spacing="2",
+            width="100%",
+            padding="12px",
+            border_radius="16px",
+            background=T.CARD_BG,
+        ),
+        spacing="2",
+        width="100%",
+        aria_label="Vista previa del chat",
+    )
+
+
+def _greeting() -> rx.Component:
+    return rx.vstack(
+        card(_greeting_preview(), width="100%"),
+        card(
+            rx.vstack(
+                rx.el.label(
+                    "Mensaje de bienvenida",
+                    html_for="promotion-welcome",
+                    font_weight="500",
+                ),
+                rx.text_area(
+                    id="promotion-welcome",
+                    value=S.form.welcome_text,
+                    on_change=S.edit_welcome,
+                    max_length=MAX_WELCOME,
+                    disabled=S.busy,
+                    placeholder="Ejemplo: ¡Hola! Gracias por escribirnos. ¿En qué te ayudamos?",
+                    rows="3",
+                    width="100%",
+                    aria_invalid=rx.cond(S.welcome_error != "", "true", "false"),
+                ),
+                _counter(S.form.welcome_text, MAX_WELCOME),
+                rx.cond(
+                    S.welcome_error != "",
+                    rx.text(S.welcome_error, size="2", color=T.tone_color("error", 11)),
+                ),
+                rx.heading("Botones para tu cliente", size="3", as_="h2"),
+                rx.text(
+                    "La persona toca uno y te escribe sin teclear. Pon al menos uno.",
+                    size="2",
+                    color=T.TEXT_MUTED,
+                ),
+                *[_question_field(index) for index in range(GREETING_QUESTION_SLOTS)],
+                rx.cond(
+                    S.questions_shown < GREETING_QUESTION_SLOTS,
+                    rx.button(
+                        "+ Agregar otra pregunta",
+                        on_click=S.add_question,
+                        disabled=S.busy,
+                        variant="ghost",
+                        min_height="44px",
+                    ),
+                ),
+                spacing="3",
+                width="100%",
+            ),
+            width="100%",
+        ),
+        spacing="4",
         width="100%",
     )
 
@@ -369,12 +591,26 @@ def _destination() -> rx.Component:
                 S.form.goal == "lead",
                 S.choose_goal("lead"),
             ),
+            rx.cond(
+                S.selected_source.chat_goal,
+                _option(
+                    "Que te escriban",
+                    CHAT_GOAL_DETAIL,
+                    S.form.goal == "chat",
+                    S.choose_goal("chat"),
+                ),
+            ),
             role="radiogroup",
             aria_label="Qué quieres que haga la gente",
             spacing="3",
             width="100%",
         ),
-        rx.cond(S.form.goal == "lead", _lead_destination(), _link_destination()),
+        rx.match(
+            S.form.goal,
+            ("lead", _lead_destination()),
+            ("chat", rx.fragment()),  # the chat and its greeting are the next two steps
+            _link_destination(),
+        ),
         spacing="4",
         width="100%",
     )
@@ -406,34 +642,16 @@ def _link_destination() -> rx.Component:
                 size="2",
                 color=T.TEXT_MUTED,
             ),
+            # QUALIFY_ADS_CHAT_GOAL off: the chats stay a diagnosis, never a choice.
             rx.cond(
-                S.selected_source.messaging_destinations.length() > 0,
+                ~S.selected_source.chat_goal
+                & (S.selected_source.messaging_destinations.length() > 0),
                 rx.vstack(
                     rx.text("Anuncios que abren un chat", weight="medium"),
-                    rx.text(
-                        "Estos destinos todavía no se pueden elegir aquí. "
-                        "Revisa qué falta para usar los chats de tu negocio.",
-                        size="2",
-                        color=T.TEXT_MUTED,
-                    ),
-                    rx.foreach(S.selected_source.messaging_destinations, _messaging_destination),
-                    rx.button(
-                        "Volver a comprobar destinos",
-                        on_click=S.recheck_destinations,
-                        disabled=S.busy | S.loading | S.destinations_working,
-                        loading=S.destinations_working,
-                        variant="outline",
-                        min_height="44px",
-                    ),
-                    rx.cond(
-                        S.destinations_notice != "",
-                        rx.text(S.destinations_notice, size="2", color=T.TEXT_MUTED),
-                    ),
-                    spacing="3",
-                    align_items="start",
+                    _channel(),
+                    spacing="2",
                     width="100%",
                 ),
-                rx.fragment(),
             ),
             spacing="4",
             width="100%",
@@ -456,6 +674,11 @@ def _budget() -> rx.Component:
                 "En pesos enteros, para todo el período, no por día.",
                 size="2",
                 color=T.TEXT_MUTED,
+            ),
+            # The amount as the owner reads money: «$25.000 COP» (m-25026350 UX review).
+            rx.cond(
+                S.budget_valid,
+                rx.text("Total: " + S.budget_label, size="2", weight="medium"),
             ),
             _field("Inicio", "start_local", S.form.start_local, type="datetime-local"),
             _field("Final", "end_local", S.form.end_local, type="datetime-local"),
@@ -503,9 +726,19 @@ def _review() -> rx.Component:
                     ),
                 ),
                 _fact("Botón", S.button_label),
-                rx.cond(
-                    S.form.goal == "lead",
-                    _fact("Formulario", S.lead_form_label),
+                rx.match(
+                    S.form.goal,
+                    ("lead", _fact("Formulario", S.lead_form_label)),
+                    (
+                        "chat",
+                        rx.vstack(
+                            _fact("Te escriben por", S.channel_label),
+                            _fact("Mensaje de bienvenida", S.form.welcome_text),
+                            _fact("Botones del chat", S.greeting_buttons_label),
+                            spacing="3",
+                            width="100%",
+                        ),
+                    ),
                     _fact("Página de destino", S.form.link_url),
                 ),
                 _fact("Lugar de las personas", S.audience_location_label),
@@ -693,15 +926,24 @@ def promotion_index() -> rx.Component:
                 rx.button(
                     "Volver a consultar", on_click=S.load, variant="outline", min_height="44px"
                 ),
-                callout(EMPTY_SOURCES, "info"),
+                callout(rx.cond(S.story_entry, STORY_EMPTY, EMPTY_SOURCES), "info"),
             ),
             rx.cond(
                 S.reviewed,
-                rx.cond(S.is_unpublished, unpublished_review(), _review()),
+                rx.cond(
+                    S.form.story,
+                    story_review(),
+                    rx.cond(S.is_unpublished, unpublished_review(), _review()),
+                ),
                 rx.match(
                     S.step_key,
+                    ("story_media", story_media()),
+                    ("story_link", story_link()),
+                    ("story_audience", story_audience()),
                     ("source", _publication()),
                     ("destination", _destination()),
+                    ("channel", _channel()),
+                    ("greeting", _greeting()),
                     ("audience", promotion_audience()),
                     ("images", unpublished_images()),
                     ("feed_video", unpublished_feed_video()),
@@ -731,7 +973,11 @@ def promotion_index() -> rx.Component:
                 primary_loading=S.busy,
             ),
             step_foot(
-                rx.cond(S.video_waiting, "Revisar ahora", "Crear en pausa y ver anuncio"),
+                rx.cond(
+                    S.video_waiting,
+                    "Revisar ahora",
+                    rx.cond(S.form.story, STORY_PREVIEW_BUTTON, "Crear en pausa y ver anuncio"),
+                ),
                 step=S.step,
                 on_primary=S.create_preview,
                 on_back=S.back_step,
@@ -754,62 +1000,70 @@ def promotion_index() -> rx.Component:
         rx.cond(
             S.preparation_blocked,
             _blocked_preparation(),
-            step_frame(
-                step_sync(S.step, S.direction),
-                rx.cond(S.error != "", callout(S.error, "error")),
-                rx.cond(S.success != "", callout(S.success, "ok")),
-                rx.cond(
-                    S.paid_operation_locked & (S.result.status != "active"),
-                    callout(S.result.message, "warn"),
-                ),
-                rx.cond(
-                    S.paid_operation_locked | ((S.error != "") & S.has_remote_review),
-                    rx.link(
-                        "Ver estado del anuncio",
-                        href=S.promotion_status_href,
-                        min_height="44px",
-                    ),
-                ),
-                _checks(),
-                rx.cond(
-                    (S.execution_reason != "") & ~S.reviewed,
-                    callout(S.execution_reason, "info"),
-                ),
-                rx.cond(
-                    (S.selected_source.currency != "") & (S.selected_source.currency != "COP"),
-                    callout(
-                        "Este asistente prepara presupuestos en pesos colombianos. "
-                        "Revisa la moneda de la cuenta elegida.",
-                        "warn",
-                    ),
-                ),
-                body,
-                head=step_head(
-                    S.title,
-                    step=S.display_step,
-                    total=S.display_total,
-                    back_label=S.back_label,
-                    back_href=S.back_href,
-                ),
-                foot=rx.cond(
-                    S.paid_operation_locked,
-                    rx.link(
-                        rx.button(
-                            rx.cond(
-                                S.back_label == "Tu semana",
-                                "Volver a Tu semana",
-                                rx.cond(S.is_unpublished, "Ver pieza", "Ver publicación"),
-                            ),
-                            min_height="44px",
-                            size="3",
-                        ),
-                        href=S.back_href,
-                    ),
-                    foot,
-                ),
-                step=S.step,
-                direction=S.direction,
-                on_pop=S.read_step,
+            rx.cond(
+                S.story_entry & ~S.loading & (S.sources.length() == 0),
+                story_empty(),
+                _wizard(body, foot),
             ),
         ),
+    )
+
+
+def _wizard(body: rx.Component, foot: rx.Component) -> rx.Component:
+    return step_frame(
+        step_sync(S.step, S.direction),
+        rx.cond(S.error != "", callout(S.error, "error")),
+        rx.cond(S.success != "", callout(S.success, "ok")),
+        rx.cond(
+            S.paid_operation_locked & (S.result.status != "active"),
+            callout(S.result.message, "warn"),
+        ),
+        rx.cond(
+            S.paid_operation_locked | ((S.error != "") & S.has_remote_review),
+            rx.link(
+                "Ver estado del anuncio",
+                href=S.promotion_status_href,
+                min_height="44px",
+            ),
+        ),
+        _checks(),
+        rx.cond(
+            (S.execution_reason != "") & ~S.reviewed,
+            callout(S.execution_reason, "info"),
+        ),
+        rx.cond(
+            (S.selected_source.currency != "") & (S.selected_source.currency != "COP"),
+            callout(
+                "Este asistente prepara presupuestos en pesos colombianos. "
+                "Revisa la moneda de la cuenta elegida.",
+                "warn",
+            ),
+        ),
+        body,
+        head=step_head(
+            S.title,
+            step=S.display_step,
+            total=S.display_total,
+            back_label=S.back_label,
+            back_href=S.back_href,
+        ),
+        foot=rx.cond(
+            S.paid_operation_locked,
+            rx.link(
+                rx.button(
+                    rx.cond(
+                        S.back_label == "Tu semana",
+                        "Volver a Tu semana",
+                        rx.cond(S.is_unpublished, "Ver pieza", "Ver publicación"),
+                    ),
+                    min_height="44px",
+                    size="3",
+                ),
+                href=S.back_href,
+            ),
+            foot,
+        ),
+        step=S.step,
+        direction=S.direction,
+        on_pop=S.read_step,
     )

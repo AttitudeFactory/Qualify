@@ -110,6 +110,7 @@ from qualify_creative.compose import (
 from qualify_creative.enums import (
     AdImageMode,
     AvatarSource,
+    AwarenessLevel,
     ContentFormat,
     ContentKind,
     FailureReason,
@@ -162,7 +163,9 @@ from qualify_creative.scene_plan import (
     carousel_scene_plans,
     flyer_scene_plans,
     product_photos,
+    unroled_image_role,
     validate_scene_capacity,
+    without_product,
 )
 from qualify_creative.schemas import (
     HOOK_MAX,
@@ -308,6 +311,63 @@ class MediaWrite:
     #: slide, exactly as sent. None where no single prompt made the file (a closing slide,
     #: a reused piece, stock, the Galería, a video).
     rendered_prompt: str | None = None
+    #: m-25017279 (ADR 49 §2 item 1): the raw Seedream photograph this file was composed
+    #: over. `finish_generation` writes it to `piece_base_photos` (0165) at this file's
+    #: version and position — `stored`, or `missing` when R2 did not keep it. None when the
+    #: file had no base of its own (a closing slide, a reused piece, a video).
+    base: BasePhoto | None = None
+
+
+@dataclass(frozen=True)
+class BasePhoto:
+    """A base photograph as stage `base` paid for it (ADR 49 §2 item 1): where it was kept
+    (`key`; None, with `missing_reason`, when R2 did not keep it), the SHA-256 of its bytes,
+    its size from the image header, and how it was made — model and the exact compiled
+    prompt, and the prompt compiler. Seedream images are synchronous: no vendor task id."""
+
+    key: str | None
+    sha256: str
+    content_type: str
+    model_id: str
+    provider: str
+    rendered_prompt: str
+    prompt_compiler_version: int
+    width: int | None = None
+    height: int | None = None
+    missing_reason: str | None = None
+
+    @property
+    def stored(self) -> bool:
+        return self.key is not None
+
+    def as_json(self) -> dict[str, Any]:
+        return {
+            "key": self.key,
+            "sha256": self.sha256,
+            "content_type": self.content_type,
+            "model_id": self.model_id,
+            "provider": self.provider,
+            "rendered_prompt": self.rendered_prompt,
+            "prompt_compiler_version": self.prompt_compiler_version,
+            "width": self.width,
+            "height": self.height,
+            "missing_reason": self.missing_reason,
+        }
+
+    @classmethod
+    def from_json(cls, row: Mapping[str, Any]) -> BasePhoto:
+        return cls(
+            key=str(row["key"]) if row.get("key") else None,
+            sha256=str(row["sha256"]),
+            content_type=str(row["content_type"]),
+            model_id=str(row["model_id"]),
+            provider=str(row["provider"]),
+            rendered_prompt=str(row["rendered_prompt"]),
+            prompt_compiler_version=int(row["prompt_compiler_version"]),
+            width=row.get("width"),
+            height=row.get("height"),
+            missing_reason=row.get("missing_reason") or None,
+        )
 
 
 def ai_generated_media(media: tuple[MediaWrite, ...]) -> bool:
@@ -1369,6 +1429,14 @@ class _Saver:
         self._beat()
         return key
 
+    @property
+    def tenant_id(self) -> UUID:
+        return self._tenant_id
+
+    @property
+    def draft_id(self) -> UUID:
+        return self._draft_id
+
     def key_for(self, name: str) -> str:
         """The key `name` is kept under by this saver (before any content-named fallback)."""
         if getattr(self._store, "keep", None) is None:
@@ -1784,11 +1852,34 @@ class PartWindows(Protocol):
 
 
 #: VE-09: the version of the part prompts (`part_reference_prompt`, `part_edit_prompt`),
-#: kept in every part's params next to the compiler's.
+#: kept in every part's params next to the compiler's: one number per combination of the
+#: compiler and the part's own media, chosen by `part_prompt_version`.
+#: 1: a part compiled at compiler 0-4.
 PART_PROMPT_VERSION = 1
-#: UI-4: the version of a `reference` part prompt that also carries the part's own
-#: reference videos or audio (`part_reference_prompt` with its media), kept likewise.
+#: 2 (UI-4): a `reference` part that also carries its own reference videos or audio
+#: (`part_reference_prompt` with its media), compiler 0-4.
 PART_REFERENCE_MEDIA_PROMPT_VERSION = 2
+#: 3 (m-24985141): compiler 5 — each photo described by its role and no product replaced
+#: when the piece has none.
+PART_PROMPT_VERSION_V5 = 3
+#: 4: compiler 5 and a `reference` part with its own reference videos or audio.
+PART_REFERENCE_MEDIA_PROMPT_VERSION_V5 = 4
+
+
+def part_prompt_version(brief: ContentBrief, part: PartRef | None = None) -> int:
+    """The part prompt version `brief`'s part (`part`, else `brief.media.part`) is
+    compiled with: the compiler (0-4 or 5 on) and whether a `reference` part carries
+    its own reference videos or audio (UI-4). The one place that decides it."""
+    part = part if part is not None else brief.media.part
+    with_media = (
+        part is not None
+        and part.mode == "reference"
+        and bool(part.clip_video_keys or part.clip_audio_keys)
+    )
+    if brief.media.prompt_compiler_version >= 5:
+        return PART_REFERENCE_MEDIA_PROMPT_VERSION_V5 if with_media else PART_PROMPT_VERSION_V5
+    return PART_REFERENCE_MEDIA_PROMPT_VERSION if with_media else PART_PROMPT_VERSION
+
 
 #: The `PartWindowRefused` codes the owner may answer by making the part new (each is a
 #: `FailureReason` of the same value); anything else is our bug (`PART_FAILED_TEXT`).
@@ -1866,6 +1957,8 @@ def _media_write_json(write: MediaWrite, seedance_slots: int = 0) -> dict[str, A
         "seedance_slots": seedance_slots,
         # m-25017278: a resumed gallery keeps each kept slide's prompt provenance
         **({"rendered_prompt": write.rendered_prompt} if write.rendered_prompt else {}),
+        # m-25017279: and its stored base photo, so a resumed run never makes it again
+        **({"base": write.base.as_json()} if write.base is not None else {}),
     }
 
 
@@ -1884,6 +1977,7 @@ def _media_write_from_json(row: Mapping[str, Any]) -> MediaWrite:
         content_type=row.get("content_type"),
         ai_generated=bool(row.get("ai_generated")),
         rendered_prompt=row.get("rendered_prompt") or None,
+        base=BasePhoto.from_json(row["base"]) if row.get("base") else None,
     )
 
 
@@ -3452,7 +3546,10 @@ class MediaProducer:
         earlier run of THIS revision chose and kept with its vendor task — a resumed run
         applies it as it was (the video was made from it) and never pays the selector
         again. One that no longer validates against the brief is ignored."""
-        from qualify_api.creative.resource_selection import SELECTION_VERSION
+        from qualify_api.creative.resource_selection import (
+            SELECTION_VERSION,
+            selection_prompt_revision,
+        )
 
         media = brief.media
         version = SELECTION_VERSION if selected.block_version >= 7 else 1
@@ -3528,6 +3625,8 @@ class MediaProducer:
                     "model_id": model_id,
                     "model_revision": model_revision,
                     "cost_usd": str(cost),
+                    # m-24985141: which wording of the selector's instructions chose it
+                    "prompt_revision": selection_prompt_revision(brief, version),
                 },
             }
         )
@@ -3986,7 +4085,9 @@ class MediaProducer:
                             uncapped=uncapped,
                         )
                         if slide.reference_video_key:
-                            _carousel_reference_motion(motion, strict=True, uncapped=uncapped)
+                            _carousel_reference_motion(
+                                motion, strict=True, uncapped=uncapped, brief=brief
+                            )
             elif brief.kind is ContentKind.CLIP:
                 frames = int(bool(media.clip_first_frame_key)) + int(
                     bool(media.clip_last_frame_key)
@@ -5080,6 +5181,7 @@ class MediaProducer:
                             raw_key=payload.get("checkpoint_media"),
                             clean_key=clean_key or video_key,
                             logo=_logo_provenance(logo_key, logo) if logo_laid else None,
+                            prompt_version=part_prompt_version(brief, part),
                         ),
                         "logo": logo_laid,
                         # the subtitles laid (founder, 2026-11-03): its final lays the same
@@ -5277,7 +5379,9 @@ class MediaProducer:
                     "El video de referencia necesita un modelo de video que lo acepte, y no "
                     "hay uno configurado.",
                 )
-            motion = _carousel_reference_motion(motion, strict=bool(refs), uncapped=uncapped)
+            motion = _carousel_reference_motion(
+                motion, strict=bool(refs), uncapped=uncapped, brief=brief
+            )
             request_params.update(
                 model=model,
                 reference_images=[_data_url(scene), *(_data_url(img) for img in brand_images)],
@@ -5694,6 +5798,12 @@ class MediaProducer:
             if self._catalog is not None
             else ()
         )
+        # m-25026482: an `unaware` piece shows the place, not the price — the template
+        # gets the name-matched products WITHOUT their price, so neither its own fallback
+        # (`build_props` → `_price_line`) nor a product card can print one
+        unaware = brief.awareness_level is AwarenessLevel.UNAWARE
+        if unaware:
+            products = tuple(replace(p, price_label="") for p in products)
         # ticket 24803289: the angle's scene, photographed by Seedream with the real product
         # as reference, becomes the template's FIRST photo. Everything that can refuse the
         # piece for free — the template, its output, its props, the render's budget — is
@@ -5716,7 +5826,7 @@ class MediaProducer:
         # the catalog's price the brief carries wins over the name-matched product's
         # (ticket 24803289) — whole or not at all: "" keeps the template from printing
         # any price (None would let it fall back to the name-matched product's)
-        price_line = _template_price(draft_id, manifest, brief, warnings)
+        price_line = "" if unaware else _template_price(draft_id, manifest, brief, warnings)
         brand_name = (
             self._brand_names(tenant_id=tenant_id, brand_id=brief.brand_id)
             if self._brand_names is not None
@@ -6656,12 +6766,195 @@ def _compiled_for(fn: Callable[..., str]) -> Callable[..., str]:
         brief = kwargs.get("brief", args[0] if args else None)
         refs = kwargs.get("brand_refs", args[1] if len(args) > 1 else ())
         token = _V0_COMPILE.set(_frozen_on_main(brief, refs or ()))
+        wording = _WORDING.set(_wording_for(brief))
         try:
             return fn(*args, **kwargs)
         finally:
+            _WORDING.reset(wording)
             _V0_COMPILE.reset(token)
 
     return compile_
+
+
+# -- prompt compiler 5 (m-24985141, 2026-11-12) ---------------------------------------------
+#
+# Qualify serves food businesses and every other kind (a realtor, a travel agency, a shop):
+# the words a prompt uses for real subjects are general, and a piece may have NO product —
+# the owner creates it without picking one from the catalog, its photos coming from the
+# Galería as the place or a style. Compiler 5 = compiler 4 plus two wording passes applied
+# to the FIXED lines of every prompt (`_budgeted`; never to the operator's own words, which
+# travel in `_Flex` texts): `_GENERAL_WORDING_V5` on every piece, and, on a piece without
+# a product (`shows_product` false), `_NO_PRODUCT_WORDING_V5` so no line names, shows,
+# replaces or features a product. The semantic changes sit in their routes: an image
+# without a role is a style reference when there is no product (`unroled_image_role`), and
+# a part describes each photo by its role (`part_reference_prompt`, `part_edit_prompt`).
+# Compilers 0-4 compile byte for byte as before.
+
+#: The wording pass of the prompt being compiled: "" (compilers 0-4: none), "general" (a
+#: compiler-5 piece with a product) or "no_product" (a compiler-5 piece without one).
+_WORDING: contextvars.ContextVar[str] = contextvars.ContextVar("_WORDING", default="")
+
+#: Compiler 5: food-specific wording made general without losing what it protects (the real
+#: subject keeps its colors and details, no logo painted on people or on the product).
+_GENERAL_WORDING_V5: tuple[tuple[str, str], ...] = (
+    ("photorealistic, appetizing and premium", "photorealistic, appealing and premium"),
+    ("photorealistic, appetizing, sharp focus", "photorealistic, appealing, sharp focus"),
+    ("(including floating/exploded ingredients)", "(including floating/exploded parts)"),
+    ("preserve its ingredients, colors, shape", "preserve its parts and details, colors, shape"),
+    ("with its shape, ingredients, colors,", "with its shape, parts and details, colors,"),
+    ("preserve ingredients, shape, colors", "preserve its parts and details, shape, colors"),
+    ("match its ingredients, layers, shape", "match its parts, layers, shape"),
+    ("real product identity/ingredients/labels", "real product identity/details/labels"),
+    ("(steam, light, a hand, the background)", "(light, a hand, the background)"),
+    (
+        "Keep the natural colors of the food and of the real product.",
+        "Keep the natural colors of real subjects, such as people, materials and the real product.",
+    ),
+    (
+        "preserve natural food/skin/product colors and geometry",
+        "preserve the natural colors and geometry of people, materials and the real product",
+    ),
+    (
+        "Do not recolor food, skin or the real product.",
+        "Do not recolor people, natural materials or the real product.",
+    ),
+    (
+        "Do not recolor natural food, skin or the real product.",
+        "Do not recolor people, natural materials or the real product.",
+    ),
+    ("never on food or bare skin", "never on people, bare skin or the product itself"),
+    (
+        "Never add logos to food/bare skin.",
+        "Never add logos to people, bare skin or the product itself.",
+    ),
+    (
+        "No newly painted logos on food/bare skin unless",
+        "No newly painted logos on people, bare skin or the product itself unless",
+    ),
+)
+
+#: Compiler 5, a piece without a product: every fixed line that names one, said without it
+#: (applied after `_GENERAL_WORDING_V5`, so its keys are the general wording).
+_NO_PRODUCT_WORDING_V5: tuple[tuple[str, str], ...] = (
+    (
+        "Keep the natural colors of real subjects, such as people, materials and the real product.",
+        "Keep the natural colors of real subjects, such as people and materials.",
+    ),
+    (
+        "preserve the natural colors and geometry of people, materials and the real product",
+        "preserve the natural colors and geometry of people and materials",
+    ),
+    (
+        "Do not recolor people, natural materials or the real product.",
+        "Do not recolor people or natural materials.",
+    ),
+    ("never on people, bare skin or the product itself", "never on people or bare skin"),
+    (
+        "Never add logos to people, bare skin or the product itself.",
+        "Never add logos to people or bare skin.",
+    ),
+    (
+        "No newly painted logos on people, bare skin or the product itself unless",
+        "No newly painted logos on people or bare skin unless",
+    ),
+    (
+        "such as the real product's own label, unchanged.",
+        "such as a real sign or label, unchanged.",
+    ),
+    (
+        "the supplied logo and the real product's own label, both unchanged.",
+        "the supplied logo and real signs or labels already on something shown, all unchanged.",
+    ),
+    (
+        "lettering allowed is the real product's own label, unchanged.",
+        "lettering allowed is a real sign or label already on something shown, unchanged.",
+    ),
+    (
+        "such as a logo or the product's own label, unchanged.",
+        "such as a logo or a real sign or label, unchanged.",
+    ),
+    (
+        "Keep natural product, authentic labels and supplied wordmark colors exact.",
+        "Keep natural colors, authentic labels and supplied wordmark colors exact.",
+    ),
+    (
+        " Preserve authentic product labels in their original typeface.",
+        " Preserve authentic labels in their original typeface.",
+    ),
+    ("Preserve authentic product/manufacturer labels", "Preserve authentic labels"),
+    ("Keep authentic product labels and", "Keep authentic labels and"),
+    ("keep natural product/label/wordmark colors.", "keep natural label/wordmark colors."),
+    ("and legitimate product labels.", "and legitimate labels."),
+    ("legitimate product labels", "legitimate labels"),
+    ("Preserve product and labels.", "Preserve existing labels."),
+    # a style photo alone («Estilo», a composition guide; Deivid 2026-11-13): the guide's
+    # protection said without a product
+    (
+        "not its product identity or foreign branding.",
+        "not the identity of what it shows or its foreign branding.",
+    ),
+    (
+        "No real product identity photo was supplied. Do not treat the guide's product or "
+        "foreign branding as the client's inventory or invent a replacement identity.",
+        "Do not treat what the guide shows or its foreign branding as the client's own, nor "
+        "invent a replacement identity.",
+    ),
+    (
+        "No real product identity photo was supplied; guides define composition only, not the "
+        "identity of an invented replacement product.",
+        "Guides define composition only, not the identity of what is shown.",
+    ),
+    # compiler 4's text rule (m-25017275, `image_text_rule_v4`)
+    (
+        "lettering that already exists on the real product or its packaging in the reference",
+        "lettering that already exists on something shown in the reference",
+    ),
+    (
+        "Bring this photograph to life as a short cinematic product shot:",
+        "Bring this photograph to life as a short cinematic shot:",
+    ),
+    ("The product keeps its exact look and label.", "Everything in it keeps its exact look."),
+    (
+        "preserve the presenter, products and place.",
+        "preserve the presenter and the place.",
+    ),
+    (
+        "compose the product and the setting from the scene described below",
+        "compose the subject and the setting from the scene described below",
+    ),
+    (
+        "compose the product and setting from the scene below.",
+        "compose the subject and setting from the scene below.",
+    ),
+    (
+        "let the gestures and the product shown match.",
+        "let the gestures match.",
+    ),
+    (
+        "Image 1 is the scene: keep its content, product and look.",
+        "Image 1 is the scene: keep its content and look.",
+    ),
+)
+
+
+def _wording_for(brief: object) -> str:
+    """The wording pass for `brief` (`_WORDING`): none before compiler 5."""
+    if not isinstance(brief, ContentBrief) or brief.media.prompt_compiler_version < 5:
+        return ""
+    return "no_product" if without_product(brief) else "general"
+
+
+def _reworded(text: str) -> str:
+    """A fixed prompt line through the compiler-5 wording passes (`_WORDING`)."""
+    wording = _WORDING.get()
+    if not wording or not text:
+        return text
+    for old, new in _GENERAL_WORDING_V5:
+        text = text.replace(old, new)
+    if wording == "no_product":
+        for old, new in _NO_PRODUCT_WORDING_V5:
+            text = text.replace(old, new)
+    return text
 
 
 #: m-24820842 (2026-11-02): the prompt compiler a NEW execution is stamped with
@@ -6693,7 +6986,18 @@ def _compiled_for(fn: Callable[..., str]) -> Callable[..., str]:
 #: (`CALM_TOP_V4`, `CALM_BOTTOM_V4`), the typefaces are a style cue with no «headlines»
 #: (`_image_typefaces_cue_v4`), the palette names no «text accents» (`_palette_line_v2`).
 #: Every other route compiles as at 3; 0-3 stay byte for byte.
-PROMPT_COMPILER_VERSION = 4
+#: 5 (m-24985141, 2026-11-12): general wording for every kind of business and pieces
+#: without a product — the wording passes of `_reworded` on every route, a clip photo
+#: without a role read as a style reference when no product was chosen
+#: (`unroled_image_role`), a reel replica that replaces no product when there is none, and
+#: a part that describes each photo by its role (`PART_PROMPT_VERSION_V5`, 3 and 4). Every
+#: other line compiles as at 4; 0 to 4 stay byte for byte.
+#: 6 (m-25017279, ADR 49 §2 item 1; m-25019811): compiler 5 plus, in those two Seedream
+#: scenes — the advertising image and every gallery slide, generated or animated (its first
+#: frame) — the base photograph only: no «Datos clave» and no typeface names
+#: (`image_pipeline.base_prompt.BASE_PHOTO_COMPILER`). Every other route compiles as at 5
+#: (the other videos' first frames: m-25019817); 0-5 stay byte for byte.
+PROMPT_COMPILER_VERSION = 6
 #: What a flexible text (the topic, a scene, a presenter) keeps before the next one in
 #: line is trimmed: the beginning of the operator's words always reaches the model.
 _FLEX_FLOOR = 200
@@ -6813,7 +7117,9 @@ def _budgeted_report(
         budget = _base_budget()
     if _V0_COMPILE.get():
         clean = False  # a compiler-0 brief compiles as on `main` (founder, 2026-11-03)
-    texts = [_quoted(line.text) if isinstance(line, _Flex) else line for line in lines]
+    # compiler 5 (m-24985141): the fixed lines in general words; the operator's own words
+    # (every `_Flex` text) are never reworded
+    texts = [_quoted(line.text) if isinstance(line, _Flex) else _reworded(line) for line in lines]
     if clean:
         texts = [visual_text(value) for value in texts]
     originals = list(texts)
@@ -7147,16 +7453,23 @@ def carousel_motion_prompt(
     )
 
 
-def _carousel_reference_motion(motion: str, *, strict: bool, uncapped: bool = False) -> str:
-    """Budget the complete motion identically in preflight and execution."""
-    return _budgeted(
-        [
-            motion,
-            _CAROUSEL_REFERENCE_SUFFIX,
-        ],
-        None if uncapped else MEDIA_PROMPT_BUDGET,
-        strict=strict,
-    )
+def _carousel_reference_motion(
+    motion: str, *, strict: bool, uncapped: bool = False, brief: ContentBrief | None = None
+) -> str:
+    """Budget the complete motion identically in preflight and execution. `brief` gives
+    the suffix its compiler-5 wording (m-24985141); without it, it compiles as before."""
+    wording = _WORDING.set(_wording_for(brief))
+    try:
+        return _budgeted(
+            [
+                motion,
+                _CAROUSEL_REFERENCE_SUFFIX,
+            ],
+            None if uncapped else MEDIA_PROMPT_BUDGET,
+            strict=strict,
+        )
+    finally:
+        _WORDING.reset(wording)
 
 
 def _cover_png(data: bytes, size: tuple[int, int]) -> bytes:
@@ -7779,6 +8092,27 @@ def _image_names(numbers: Sequence[int], prefix: str) -> str:
     return names[0] if len(names) == 1 else ", ".join(names[:-1]) + f" and {names[-1]}"
 
 
+def _clip_role_lines(
+    brief: ContentBrief, image_roles: Sequence[str], images: int, first: int
+) -> list[str]:
+    """What each reference photo of a clip (or of a part) is, by its role, numbered from
+    `first`. A photo without a known role takes `unroled_image_role` — the product until
+    compiler 4, a style reference from compiler 5 on when no product was chosen."""
+    fallback = unroled_image_role(brief)
+    roles = list(image_roles) if len(image_roles) == images else [fallback] * images
+    by_role: dict[str, list[int]] = {}
+    for offset, role in enumerate(roles):
+        by_role.setdefault(role if role in _CLIP_ROLE_LINES else fallback, []).append(
+            first + offset
+        )
+    return [
+        _background_line_v3(_numbered(numbers), plural=len(numbers) > 1, video=True)
+        if role == "place" and brief.media.prompt_compiler_version >= 3
+        else f"{_numbered(numbers)}: {_CLIP_ROLE_LINES[role]}."
+        for role, numbers in by_role.items()
+    ]
+
+
 def _clip_prompt_v2(
     *,
     brief: ContentBrief,
@@ -7834,24 +8168,14 @@ def _clip_prompt_v2(
                 "The video ends exactly on Image 1 (the closing frame); adapt the last shot to it."
             )
         if images:
-            roles = list(image_roles) if len(image_roles) == images else ["product"] * images
-            by_role: dict[str, list[int]] = {}
-            for offset, role in enumerate(roles):
-                by_role.setdefault(role if role in _CLIP_ROLE_LINES else "product", []).append(
-                    index + offset
-                )
-            lines.extend(
-                _background_line_v3(_numbered(numbers), plural=len(numbers) > 1, video=True)
-                if role == "place" and brief.media.prompt_compiler_version >= 3
-                else f"{_numbered(numbers)}: {_CLIP_ROLE_LINES[role]}."
-                for role, numbers in by_role.items()
-            )
+            lines.extend(_clip_role_lines(brief, image_roles, images, index))
         if videos:
             named = "Video 1" if videos == 1 else f"Videos 1 to {videos}"
             lines.append(
                 f"Follow the camera movement, motion and pacing of {named}; the shots above say "
-                "what is shown, with the client's product and scene. If it shows another "
-                "brand's name, logo or printed graphics, do not copy them."
+                "what is shown, with the client's "
+                + ("scene" if _WORDING.get() == "no_product" else "product and scene")
+                + ". If it shows another brand's name, logo or printed graphics, do not copy them."
             )
         if audios:
             named = "Audio 1" if audios == 1 else f"Audios 1 to {audios}"
@@ -7927,14 +8251,23 @@ def _reel_edit_lines_v2(
     known = known_replication_prose(directions) if directions and not separator else None
     product = _quoted(visual_text(brief.product_ref or known or ""))
     roles = brief.media.clip_image_roles
-    roles = roles if len(roles) == images else ("product",) * images
+    roles = roles if len(roles) == images else (unroled_image_role(brief),) * images
     by_role = _numbers_by_role(roles)
     wording = _replication_brand_wording(brief, kit)
     colors = ", ".join(kit.palette_rgb)
-    return [
+    # compiler 5 (m-24985141): a replica with no product keeps what the footage shows and
+    # changes only the brand — nothing is replaced by a product nobody chose
+    no_product = _WORDING.get() == "no_product" and not product
+    keep = (
         "Edit @Video1 in place, not a new video: keep its footage, shot count, shot order, cut "
         "timings, framing, camera angle and trajectory, gestures, hand positions, actions, "
-        "motion and pacing, and its duration and aspect ratio. Change only two things, plus "
+        "motion and pacing, and its duration and aspect ratio. "
+    )
+    return [
+        keep + "Change only one thing, plus anything the client's instructions below "
+        "explicitly ask for: the source brand becomes the client's brand."
+        if no_product
+        else keep + "Change only two things, plus "
         "anything the client's instructions below explicitly ask for: the product becomes the "
         "client's product, and the source brand becomes the client's brand.",
         f'The client\'s product is "{product}".' if product else "",
@@ -7950,10 +8283,13 @@ def _reel_edit_lines_v2(
             for role, numbers in by_role.items()
         ),
         ""
-        if "product" in by_role
+        if "product" in by_role or no_product
         else "No product photo is supplied: follow the client's instructions for the product; "
         "do not invent a reference product.",
-        "Replace the source product from its first appearance and through every action. "
+        "Keep what the footage shows, through every action. Do not cut to a still image or a "
+        "new final hero shot, and do not paste a photo into the video."
+        if no_product
+        else "Replace the source product from its first appearance and through every action. "
         "Preserve every stage of assembly: do not show the fully assembled product early. "
         "Replace packaging only where it exists in the original. Do not cut to a catalog still "
         "or a new final hero shot, and do not paste a product photo into the video.",
@@ -8909,17 +9245,14 @@ def _part_provenance(
     raw_key: str | None = None,
     clean_key: str | None = None,
     logo: Mapping[str, Any] | None = None,
+    prompt_version: int,
 ) -> dict[str, Any]:
     """Rule 6 / VE-09: what a part was made from — the analysis and its cuts, the
-    window of the original it edited, the part prompt's version and the worker's raw
-    file. Empty on any other clip."""
+    window of the original it edited, the part prompt's version (`part_prompt_version`,
+    chosen by the caller from the part's brief) and the worker's raw file. Empty on any
+    other clip."""
     if part is None:
         return {}
-    prompt_version = (
-        PART_REFERENCE_MEDIA_PROMPT_VERSION
-        if part.mode == "reference" and (part.clip_video_keys or part.clip_audio_keys)
-        else PART_PROMPT_VERSION
-    )
     if window is not None:
         cut: dict[str, Any] | None = {
             "key": window.key,
@@ -9006,7 +9339,15 @@ def part_reference_prompt(
         if shows
         else _Flex('It is about (in Spanish): "', brief.topic, protected=True),
     ]
-    if images:
+    roles = media.clip_image_roles
+    roles = roles if len(roles) == images else (unroled_image_role(brief),) * images
+    if images and _WORDING.get() and set(roles) != {"product"}:
+        # compiler 5 (m-24985141): each photo told its own role, as a clip's — a place or
+        # a style photo is never called the product (all products: the line as before)
+        if product:
+            lines.append("It shows the client's product, " + f'"{product}".')
+        lines.extend(_clip_role_lines(brief, roles, images, 1))
+    elif images:
         named = _image_names(range(1, images + 1), "Image")
         what = "the client's real product" + (f', "{product}",' if product else ",")
         lines.append(
@@ -9042,6 +9383,12 @@ def part_edit_prompt(
     seconds = media.duration_seconds
     shows = _part_shows(part) if part is not None else ""
     product = _part_product(brief)
+    if _WORDING.get():
+        return _budgeted(
+            _part_edit_lines_v5(brief, kit, model, images=images, shows=shows, product=product),
+            _video_budget(brief, model),
+            strict=False,
+        )
     names = (
         _image_names(range(1, images + 1), "@Image")
         if images
@@ -9068,6 +9415,75 @@ def part_edit_prompt(
     )
     lines.extend(_part_common_lines(brief, kit, model))
     return _budgeted(lines, _video_budget(brief, model), strict=False)
+
+
+#: Compiler 5: what an «Igual al original» part does with a photo that is not the product.
+_PART_EDIT_ROLE_LINES_V5 = {
+    "place": "the client's place: where the shot shows a setting, make it look like this place",
+    "style": "a style reference: borrow its look, light and mood, not its content",
+}
+_PART_EDIT_BRAND_V5 = (
+    "Replace any source-brand names, logos and printed graphics with plain surfaces; "
+    "do not add new ones."
+)
+
+
+def _part_edit_lines_v5(
+    brief: ContentBrief,
+    kit: BrandKit,
+    model: str | None,
+    *,
+    images: int,
+    shows: str,
+    product: str,
+) -> list[str | _Flex]:
+    """An «Igual al original» part at compiler 5 (m-24985141): each photo by its role. The
+    product is replaced only when the piece has one (a chosen product or a product photo);
+    without one the shot keeps what it shows and only the source brand goes."""
+    seconds = brief.media.duration_seconds
+    roles = brief.media.clip_image_roles
+    roles = roles if len(roles) == images else (unroled_image_role(brief),) * images
+    by_role = _numbers_by_role(roles)
+    products = by_role.get("product", [])
+    opening = (
+        f"Edit video @Video1 in place: it is one shot of {seconds} seconds of a longer video "
+        "joined afterwards."
+    )
+    lines: list[str | _Flex] = []
+    if products or product:
+        names = (
+            _image_names(products, "@Image")
+            if products
+            else "the product photos (none was supplied)"
+        )
+        lines.append(
+            f"{opening} Replace its product with the client's product shown in {names}"
+            + (f': "{product}".' if product else ".")
+        )
+    else:
+        lines.append(f"{opening} Keep what it shows; change only what is said below.")
+    lines.append(
+        "Keep the shot exactly as it is: framing, camera angle, camera movement, motion, "
+        "pacing and timing. Do not add cuts, an intro, an ending or a title card."
+    )
+    if shows:
+        lines.append(_Flex('What the shot shows (in Spanish, for context only): "', shows))
+    if products or product:
+        lines.append(
+            "The replacement product must match the supplied photos: shape, colors, "
+            "proportions and packaging, throughout the shot. The photos define the product "
+            "only, not their background, layout or pose. Replace packaging only where it "
+            "exists in the original."
+        )
+    for role, numbers in by_role.items():
+        if role in _PART_EDIT_ROLE_LINES_V5:
+            verb = "are" if len(numbers) > 1 else "is"
+            lines.append(
+                f"{_image_names(numbers, '@Image')} {verb} {_PART_EDIT_ROLE_LINES_V5[role]}."
+            )
+    lines.append(_PART_EDIT_BRAND_V5)
+    lines.extend(_part_common_lines(brief, kit, model))
+    return lines
 
 
 # ADR 49 §2.3 (m-25017278): the image and carousel pipeline lives in its own package and

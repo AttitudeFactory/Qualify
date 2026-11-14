@@ -1,5 +1,5 @@
 {
-  "_doc": "m-25017275: paired briefs (prompt compiler 3 vs 4) for a shawarma and salad restaurant. Photos are named by role; their local files come from --inputs (never committed). F1 and F2 reproduce the two Bianki stories with drawn buttons (2026-11-13).",
+  "_doc": "m-25017275: paired briefs (prompt compiler 3 vs 4) for a shawarma and salad restaurant. Photos are named by role; their local files come from --inputs (never committed). F1 and F2 reproduce the two Bianki stories with drawn buttons (2026-11-13). m-25017279: --versions 4 5 pairs compiler 4 with 5 (the base photo: no «Datos clave», no typeface names) on the same briefs; G3 is G2 (gallery hook slide, no logo) with «Datos clave».",
   "brand": "Bianki",
   "kit": {
     "positioning": "Shawarma y ensaladas hechos al momento, en un local pequeño de barrio.",
@@ -117,6 +117,20 @@
       "format": "feed_4_5",
       "cta_or_place": true,
       "topic": "Salchipapa doradita para picar. Estamos en el Korner, ven esta noche.",
+      "products": ["salchipapa", "papas"],
+      "logo": false,
+      "slides": [
+        {"text": "hook", "product_index": 0, "scene_prompt": "La salchipapa en su bandeja sobre una mesa del local, de noche."},
+        {"text": "cta", "product_index": 1, "scene_prompt": "Papas fritas en la barra, con la entrada del local al fondo."}
+      ]
+    },
+    {
+      "id": "G3-galeria-datos",
+      "kind": "carousel",
+      "format": "feed_4_5",
+      "cta_or_place": true,
+      "topic": "Salchipapa doradita para picar. Estamos en el Korner, ven esta noche.",
+      "highlights": [["Precio", "Combo a 25.000"], ["Promoción", "2x1 los martes"], ["Horario", "De 5 p. m. a 11 p. m."]],
       "products": ["salchipapa", "papas"],
       "logo": false,
       "slides": [

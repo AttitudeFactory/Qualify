@@ -52,6 +52,7 @@ from qualify_api.planner.publishable import (
     MediaCandidate,
     PostCandidate,
     evaluate,
+    video_seconds_of,
 )
 from qualify_api.planner.rules import EXECUTION_WINDOW
 
@@ -178,6 +179,20 @@ def media_shape(
     return types, size
 
 
+def first_video_seconds(images: Sequence[creative.ImageAsset]) -> float | None:
+    """m-25026481: the first video's stored length (`params.duration_seconds`, position
+    order) — what `publishable.destination_options(video_seconds=...)` reads to warn a
+    Historia that is really too long. Written for own uploads (`creative.own_media`) and by
+    the generators/renderers that record the length of what they made; None when the first
+    video has none, or when it is not a positive finite number. A draft preview's length
+    (`params.draft.duration_seconds`) is deliberately not read: a draft is not published."""
+    ordered = sorted(images, key=lambda image: image.position)
+    first_video = next((image for image in ordered if image.media_type == "video"), None)
+    if first_video is None or not isinstance(first_video.params, dict):
+        return None
+    return video_seconds_of(first_video.params.get("duration_seconds"))
+
+
 def output_ports_of(images: Sequence[creative.ImageAsset]) -> tuple[str, ...]:
     """The POST's template ports, distinct, in `position` order (`reel`, `feed`, `story`
     for a `promo_producto` run). Empty for a POST rendered before the template engine —
@@ -208,7 +223,8 @@ def _outputs(
             schedulable = evaluate(
                 _candidate(session, tenant_id, draft, images, output_port=port), for_scheduling=True
             )
-        types, size = media_shape([image for image in images if image.output_port == port])
+        port_images = [image for image in images if image.output_port == port]
+        types, size = media_shape(port_images)
         outputs.append(
             PostOutput(
                 port=port,
@@ -222,6 +238,7 @@ def _outputs(
                 unpublishable_reason="" if publishable else REASON_TEXT[verdict.reason],
                 media_types=types,
                 image_size=size,
+                video_seconds=first_video_seconds(port_images),
                 can_schedule_pending_final=isinstance(schedulable, PublishablePost),
             )
         )
@@ -571,6 +588,7 @@ class DraftPostReader:
             event_count=event_count,
             media_types=types,
             image_size=size,
+            video_seconds=first_video_seconds(images),
             retention_state=kept.state.value if kept is not None else "",
             purge_deadline=kept.deadline.isoformat() if kept and kept.deadline else None,
             purge_days_left=kept.days_left(self._clock()) if kept is not None else None,

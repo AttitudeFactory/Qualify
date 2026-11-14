@@ -18,7 +18,13 @@ from qualify_api.ads.enhancements import FEATURES
 from qualify_api.ads.errors import MarketingError
 from qualify_api.ads.promotions import Promotion, step_payload
 from qualify_api.ads.validation import payloads_for_validation, receipt, valid_receipt
-from qualify_api.ads.wizard import PromotionSource, WizardForm, WizardUnavailable
+from qualify_api.ads.wizard import (
+    CHAT_OF_ANOTHER_ACCOUNT,
+    PromotionSource,
+    WizardForm,
+    WizardUnavailable,
+    goal_reason,
+)
 from qualify_api.ads.wizard_workflow import VerifiedChecks
 from qualify_api.connections.ad_accounts import GraphAdAccountReader, _authenticated_client
 
@@ -51,11 +57,17 @@ class LiveWizardGateway:
         currency_offset: int | None = None,
         client_factory: Callable | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        messaging_check: Callable | None = None,
+        goal: str = "website",
     ) -> None:
         self.tenant_id, self.actor = tenant_id, actor
         self.sources, self.authorize, self.clock = sources, authorize, clock
         self.currency_offset = currency_offset
         self.client_factory = client_factory
+        self.messaging_check = messaging_check
+        # The goal being checked (website | lead | chat): a piece's chat button refuses
+        # website and lead ads, never a chat ad. Set by preflight and the promotion reads.
+        self.goal = goal
         self.diagnostics: list[dict[str, str]] = []
         self._validated: dict[str, tuple[str, datetime]] = {}
 
@@ -89,8 +101,11 @@ class LiveWizardGateway:
         self.authorize(self.tenant_id, self.actor)
         credential_guard(self.tenant_id, source)
         current = self.sources.get(self.tenant_id, source.publish_attempt_id)
-        if current.unavailable_reason:
-            self.fail("media", current.unavailable_reason)
+        reason = goal_reason(
+            current.unavailable_reason, chat=self.goal == "chat", lead=self.goal == "lead"
+        )
+        if reason:
+            self.fail("media", reason)
         keys = (
             "publish_attempt_id",
             "content_draft_id",
@@ -186,6 +201,8 @@ class LiveWizardGateway:
                 "validation",
                 "El formulario no corresponde a la cuenta de esta publicación. Elige otro.",
             )
+        if form.messaging is not None and not form.messaging.matches(source):
+            self.fail("validation", CHAT_OF_ANOTHER_ACCOUNT)
         if form.housing or form.advantage_audience:
             self.fail(
                 "validation",
@@ -215,9 +232,29 @@ class LiveWizardGateway:
                 "validation", "Esta comprobación admite lugares sin radio ni intereses añadidos."
             )
 
+    async def messaging_destination(self, source: PromotionSource, form: WizardForm) -> None:
+        """Re-run the live Page↔number check; the approved chat must still be exactly it."""
+        from qualify_api.connections.ad_accounts import AdAccountUnavailable
+
+        check = self.messaging_check
+        if check is None:
+            from qualify_api.ads.messaging_destinations import resolve_messaging_target
+
+            check = resolve_messaging_target
+        key = "whatsapp" if form.messaging.destination_type == "WHATSAPP" else "instagram_direct"
+        try:
+            current = await check(tenant_id=self.tenant_id, source=source, destination=key)
+        except (WizardUnavailable, AdAccountUnavailable) as error:
+            self.fail("validation", str(error))
+        if current != form.messaging:
+            self.fail("validation", "El chat del anuncio cambió. Vuelve a elegirlo.")
+
     async def preflight(self, source: PromotionSource, form: WizardForm) -> VerifiedChecks:
         self.diagnostics = []
+        self.goal = "chat" if form.messaging else "lead" if form.lead_form else "website"
         self.supported(source, form)
+        if form.messaging is not None:
+            await self.messaging_destination(source, form)
         try:
             async with self.client(source) as client:
                 await self.observations(source, client)
@@ -294,6 +331,7 @@ class LiveWizardGateway:
     async def validate_step(
         self, promotion: Promotion, resource: Resource, payload: dict[str, Any]
     ) -> None:
+        self.goal = request_goal(promotion.request)
         source = self.sources.get(self.tenant_id, UUID(promotion.request["publish_attempt_id"]))
         self.local_guard(source)
         async with self.client(source) as client:
@@ -337,6 +375,7 @@ class LiveWizardGateway:
     async def remote_guard(
         self, promotion: Promotion, *, active_resources: tuple[str, ...] = ()
     ) -> None:
+        self.goal = request_goal(promotion.request)
         source = self.sources.get(self.tenant_id, UUID(promotion.request["publish_attempt_id"]))
         self.local_guard(source)
         async with self.client(source) as client:
@@ -352,6 +391,9 @@ class LiveWizardGateway:
                 "instagram_user_id,call_to_action,link_url,degrees_of_freedom_spec",
                 "ads": "id,account_id,status,campaign_id,adset_id,creative",
             }
+            greeted = bool(promotion.request.get("greeting_snapshot"))
+            if greeted:  # Website and lead promotions read back exactly what they did.
+                fields["adcreatives"] += ",page_welcome_message"
             for resource in fields:
                 identifier = promotion.ids[resource]
                 records[resource] = await client.read_object(identifier, fields=fields[resource])
@@ -406,36 +448,45 @@ class LiveWizardGateway:
             )
             dates = all(_date_equal(adset.get(k), expected[k]) for k in ("start_time", "end_time"))
             targeting = adset.get("targeting") == request["targeting"]
-            options = all(adset.get(k) == v for k, v in request["adset_options"].items())
+            options = all(
+                _same_option(k, adset.get(k), v) for k, v in request["adset_options"].items()
+            )
             cta = creative.get("call_to_action")
+            # A chat CTA carries Meta's fixed chat link instead of the (empty) approved link.
+            approved_value = request["creative"]["call_to_action"].get("value") or {}
+            allowed_links = {request["link_url"], approved_value.get("link", request["link_url"])}
             creative_matches = (
                 creative.get("source_instagram_media_id") == source.source_media_id
                 and creative.get("object_id") == source.linked_page_id
                 and creative.get("instagram_user_id") == source.instagram_user_id
                 and cta == request["creative"]["call_to_action"]
-                and ("link_url" not in creative or creative["link_url"] == request["link_url"])
+                and ("link_url" not in creative or creative["link_url"] in allowed_links)
                 and creative.get("degrees_of_freedom_spec")
                 == request["creative"]["degrees_of_freedom_spec"]
                 and all(not value for value in request["enhancements_snapshot"]["values"].values())
                 and set(request["enhancements_snapshot"]["values"]) == set(FEATURES)
             )
-            if not all(
-                (
-                    statuses,
-                    chain,
-                    campaign_matches,
-                    budget,
-                    dates,
-                    targeting,
-                    options,
-                    creative_matches,
-                )
-            ):
-                self.fail(
-                    "remote",
-                    "El anuncio de Meta no coincide con el presupuesto, el público, "
-                    "las fechas o el enlace aprobados. No se activó.",
-                )
+            welcome_matches = not greeted or _same_welcome(
+                creative.get("page_welcome_message"),
+                request["creative"]["page_welcome_message"],
+            )
+            reason = read_back_mismatch(
+                all(
+                    (
+                        statuses,
+                        chain,
+                        campaign_matches,
+                        budget,
+                        dates,
+                        targeting,
+                        options,
+                        creative_matches,
+                    )
+                ),
+                welcome_matches,
+            )
+            if reason:
+                self.fail("remote", reason)
             self.check(
                 "remote",
                 "Los objetos de Meta coinciden con la aprobación y el anuncio está en pausa."
@@ -576,6 +627,64 @@ async def production_wizard(tenant_id: UUID, actor: UUID):
         )
     finally:
         await binding.aclose()
+
+
+READ_BACK_MISMATCH = (
+    "El anuncio de Meta no coincide con el presupuesto, el público, "
+    "las fechas o el enlace aprobados. No se activó."
+)
+GREETING_READ_BACK_MISMATCH = (
+    "Meta guardó el saludo del chat distinto al que aprobaste. No activamos el anuncio; "
+    "queda en pausa. Pide ayuda y lo revisamos."
+)
+
+
+def read_back_mismatch(rest_matches: bool, welcome_matches: bool) -> str:
+    """The owner's reason when Meta's objects differ from the approval ("" = they match).
+    Only the greeting differing gets its own words; anything else is the general one."""
+    if rest_matches and welcome_matches:
+        return ""
+    return GREETING_READ_BACK_MISMATCH if rest_matches else READ_BACK_MISMATCH
+
+
+def request_goal(request: dict[str, Any]) -> str:
+    if request.get("messaging_snapshot"):
+        return "chat"
+    return "lead" if request.get("lead_form_snapshot") else "website"
+
+
+def _same_welcome(actual: Any, expected: str) -> bool:
+    """The same JSON, however Meta serializes it (a string per the SDK, key order free).
+
+    shortcut: the real read-back shape is unmeasured, so the screen's chat goal stays behind
+    QUALIFY_ADS_CHAT_GOAL; enable in prod after m-24828971 measures the read-back. Any other
+    difference fails closed.
+    """
+    import json
+
+    try:
+        observed = json.loads(actual) if isinstance(actual, str) else actual
+        return isinstance(observed, dict) and observed == json.loads(expected)
+    except (TypeError, ValueError):
+        return False
+
+
+def _same_option(key: str, actual: Any, approved: Any) -> bool:
+    """Ad set options compare exactly, except the promoted WhatsApp number by its digits
+    (Meta may echo it as «+57 300…»)."""
+    if (
+        key == "promoted_object"
+        and isinstance(actual, dict)
+        and isinstance(approved, dict)
+        and "whatsapp_phone_number" in approved
+    ):
+        from qualify_api.ads.messaging_attribution import _digits
+
+        return {**actual, "whatsapp_phone_number": None} == {
+            **approved,
+            "whatsapp_phone_number": None,
+        } and _digits(actual.get("whatsapp_phone_number")) == approved["whatsapp_phone_number"]
+    return actual == approved
 
 
 def _date_equal(actual: Any, expected: str) -> bool:

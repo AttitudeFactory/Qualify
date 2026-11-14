@@ -34,7 +34,13 @@ from qualify_creative.queue_errors import (
     UNCERTAIN_VIDEO_TEXT,
     uncertain_error,
 )
-from qualify_creative.schemas import HASHTAG_HARD_LIMIT, CopyPayload, ImagePolicy
+from qualify_creative.schemas import (
+    BUSINESS_PERKS_MAX,
+    HASHTAG_HARD_LIMIT,
+    CopyPayload,
+    ImagePolicy,
+    normalize_business_perks,
+)
 
 from .ask_more_vm import balance_with_extras
 
@@ -406,6 +412,20 @@ class KitFormVM:
     has_logo: bool = False
     has_template: bool = False
     ads_destination_url: str = ""
+    #: «Lo que ofrece tu negocio» (`BrandKit.business_perks`), one per line.
+    business_perks: str = ""
+
+
+def perks_count_label(count: int) -> str:
+    """How many perks the owner wrote against what the kit keeps: «3 de 12»."""
+    return f"{count} de {BUSINESS_PERKS_MAX}"
+
+
+def perks_for_save(text: str) -> tuple[str, ...]:
+    """The editor's newline-joined perks as the kit stores them
+    (`normalize_business_perks`): what the owner sees is what is saved, since the editor
+    already holds each one to the kit's limits."""
+    return normalize_business_perks(text)
 
 
 # ---------------------------------------------------------------------------
@@ -1784,6 +1804,8 @@ __all__ = [
     "build_draft_summary_vm",
     "build_draft_vm",
     "build_readiness_vm",
+    "perks_count_label",
+    "perks_for_save",
     "build_recipe_options",
     "build_route_options",
     "build_variant_vm",

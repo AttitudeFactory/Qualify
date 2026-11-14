@@ -1,5 +1,7 @@
 # Plan — Stock de Pexels y Pixabay en el generador (`/create`)
 
+> **Desde m-24985141 el producto es opcional y se elige en «Tus productos» del selector; el banco se usa desde «Inspiración».**
+
 > **`[OBSOLETO]` HeyGen — decisión del fundador, 2026-10-16.** Los videos con avatar migran a la suite de ByteDance (BytePlus): **OmniHuman** (el avatar que habla), **Seedance** (el video), **Seedream** (la imagen y el primer fotograma) y **Seed Speech** (la voz clonada). Toda mención a HeyGen en este documento describe el estado anterior o una alternativa ya descartada: no la tomes como decisión vigente. **La migración aún no está hecha en el código** (medido el 2026-10-16): el detalle y lo que falta está en [Pendientes del generador §6](pendientes-generador-contenido.md).
 
 `[PLAN 2026-10-16 · revisado por el fundador el mismo día (Pixabay primero, producto desde stock) · STK-01/02/03/04b implementadas el 2026-10-16 (ver «Estado de la implementación») · 7 preguntas al fundador]` · autor: arquitectura · base: [investigación de proveedores](apis-imagenes-y-videos-de-stock.md) (2026-10-16)

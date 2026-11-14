@@ -872,3 +872,255 @@ async def test_budget_floor_read_shows_minimum_and_spent_without_writing(live, m
     # The decrease test above refuses 990_000 and accepts 1_000_000 for this same setup.
     assert floor.floor_minor == 1_000_000
     assert not [c for c in live["remote"].calls[start:] if c[0] == "POST"]
+
+
+# --- Ads that open a chat (m-24828980) ---
+
+
+def use_chat(live, monkeypatch, destination="WHATSAPP", *, greeting=True):
+    from qualify_api.ads import messaging_destinations
+    from qualify_api.ads.messaging import MessagingTarget
+    from qualify_api.ads.messaging_greeting import MessageGreeting
+
+    source = live["source"]
+    whatsapp = destination == "WHATSAPP"
+    target = MessagingTarget(
+        destination,
+        source.connection_id,
+        uuid4() if whatsapp else source.connection_id,
+        "77",
+        1,
+        1,
+        "555" if whatsapp else "",
+        "573001112233" if whatsapp else "",
+    )
+    current = [target]
+
+    async def check(*, tenant_id, source, destination):
+        if isinstance(current[0], Exception):
+            raise current[0]
+        return current[0]
+
+    monkeypatch.setattr(messaging_destinations, "resolve_messaging_target", check)
+    welcome = (
+        MessageGreeting(
+            uuid4(), source.brand_id, 1, "¡Hola! ¿En qué te ayudamos?", ("¿Hacen domicilios?",)
+        )
+        if greeting
+        else None
+    )
+    live["args"]["form"] = replace(
+        live["args"]["form"], link_url="", messaging=target, greeting=welcome
+    )
+    return current
+
+
+@pytest.mark.asyncio
+async def test_whatsapp_chat_campaign_validates_creates_paused_and_activates_on_consent(
+    live, monkeypatch
+):
+    use_chat(live, monkeypatch)
+    remote = live["remote"]
+    preview = await prepare(live)
+    validated = {
+        call[1].split("/")[-1]: call[2]
+        for call in remote.calls
+        if call[2].get("execution_options") == ["validate_only"]
+    }
+    assert validated["campaigns"]["objective"] == "OUTCOME_ENGAGEMENT"
+    creative = validated["adcreatives"]
+    assert creative["call_to_action"] == {
+        "type": "WHATSAPP_MESSAGE",
+        "value": {"link": "https://api.whatsapp.com/send", "app_destination": "WHATSAPP"},
+    }
+    assert creative["object_id"] == "77" and creative["source_instagram_media_id"] == "88"
+    welcome = creative["page_welcome_message"]  # The fake parses the JSON string.
+    assert welcome["text_format"]["customer_action_type"] == "ice_breakers"
+    assert welcome["text_format"]["message"] == {
+        "text": "¡Hola! ¿En qué te ayudamos?",
+        "ice_breakers": [{"title": "¿Hacen domicilios?"}],
+    }
+    assert len(remote.actual_creates) == 4 and not remote.activations
+    adset = next(row for row in remote.objects.values() if row["_resource"] == "adsets")
+    assert adset["destination_type"] == "WHATSAPP"
+    assert adset["optimization_goal"] == "CONVERSATIONS"
+    assert adset["billing_event"] == "IMPRESSIONS"
+    assert adset["promoted_object"] == {"page_id": "77", "whatsapp_phone_number": "573001112233"}
+    assert all(
+        row["status"] == "PAUSED"
+        for row in remote.objects.values()
+        if row["_resource"] != "adcreatives"
+    )
+    stored = live["repo"].get(live["args"]["tenant_id"], preview.promotion_id)
+    assert stored.request["greeting_snapshot"]["questions"] == ["¿Hacen domicilios?"]
+    result = await confirm(live, preview)
+    assert result.status == "active"
+    assert [call[1] for call in remote.activations] == ["103", "101", "100"]
+
+
+@pytest.mark.asyncio
+async def test_instagram_direct_without_greeting_sends_no_welcome_message(live, monkeypatch):
+    use_chat(live, monkeypatch, "INSTAGRAM_DIRECT", greeting=False)
+    preview = await prepare(live)
+    objects = live["remote"].objects.values()
+    creative = next(r for r in objects if r["_resource"] == "adcreatives")
+    assert creative["call_to_action"] == {
+        "type": "INSTAGRAM_MESSAGE",
+        "value": {"link": "https://www.instagram.com"},
+    }
+    assert "page_welcome_message" not in creative
+    adset = next(r for r in objects if r["_resource"] == "adsets")
+    assert adset["promoted_object"] == {"page_id": "77"}
+    assert adset["destination_type"] == "INSTAGRAM_DIRECT"
+    assert (await confirm(live, preview)).status == "active"
+
+
+@pytest.mark.asyncio
+async def test_unlinked_whatsapp_number_never_reaches_meta(live, monkeypatch):
+    from qualify_api.ads.messaging_destinations import LINK_GUIDE
+
+    current = use_chat(live, monkeypatch)
+    current[0] = WizardUnavailable(LINK_GUIDE)
+    with pytest.raises(WizardUnavailable, match="no está unido a tu página"):
+        await prepare(live)
+    assert not live["remote"].calls
+
+
+@pytest.mark.asyncio
+async def test_number_changed_after_approval_blocks_activation(live, monkeypatch):
+    current = use_chat(live, monkeypatch)
+    preview = await prepare(live)
+    current[0] = replace(current[0], whatsapp_phone_number="573009999999")
+    with pytest.raises(WizardUnavailable, match="chat del anuncio cambió"):
+        await confirm(live, preview)
+    assert not live["remote"].activations
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("goal", ["chat", "website", "lead"])
+async def test_a_piece_chat_button_only_refuses_goals_that_use_it(live, monkeypatch, goal):
+    from qualify_api.ads.wizard import PIECE_BUTTON_LEAD, PIECE_BUTTON_UNSUPPORTED
+
+    live["sources"][0] = replace(live["source"], unavailable_reason=PIECE_BUTTON_UNSUPPORTED)
+    if goal == "chat":
+        use_chat(live, monkeypatch)
+        preview = await prepare(live)
+        assert (await confirm(live, preview)).status == "active"
+        return
+    if goal == "lead":
+        use_lead_form(live)
+    expected = PIECE_BUTTON_LEAD if goal == "lead" else PIECE_BUTTON_UNSUPPORTED
+    with pytest.raises(WizardUnavailable) as error:
+        await prepare(live)
+    assert str(error.value) == expected and not live["remote"].calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["budget", "end_time", "resume"])
+async def test_editing_a_chat_promotion_whose_piece_has_a_whatsapp_button(
+    live, monkeypatch, action
+):
+    """The real management `_context` builds the gateway with the promotion's goal."""
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    from qualify_api.ads import live_management as management
+    from qualify_api.ads import live_wizard
+    from qualify_api.ads.edit_ledger import revision
+    from qualify_api.ads.wizard import PIECE_BUTTON_UNSUPPORTED
+
+    live["sources"][0] = replace(live["source"], unavailable_reason=PIECE_BUTTON_UNSUPPORTED)
+    use_chat(live, monkeypatch)
+    preview = await prepare(live)
+    await confirm(live, preview)
+    tenant, actor = live["args"]["tenant_id"], live["args"]["approved_by"]
+    promotion = replace(live["repo"].get(tenant, preview.promotion_id), status="active")
+    scope = SimpleNamespace(
+        tenant_id=tenant,
+        promotion_id=promotion.id,
+        connection=SimpleNamespace(connection_id=live["source"].connection_id, version=1),
+        account_id=live["source"].ad_account_id,
+    )
+    if action == "resume":
+        for resource in ("campaigns", "adsets", "ads"):
+            live["remote"].objects[promotion.ids[resource]]["status"] = "PAUSED"
+
+    @contextmanager
+    def session(*args, **kwargs):
+        yield SimpleNamespace(
+            scalar=lambda *args, **kwargs: True,  # The activation consent exists.
+            execute=lambda *args, **kwargs: SimpleNamespace(
+                mappings=lambda: SimpleNamespace(first=lambda: None)
+            ),
+        )
+
+    monkeypatch.setenv("QUALIFY_OAUTH_STATE_SECRET", "test-management-signing-secret-32-characters")
+    monkeypatch.setattr(management, "tenant_session", session)
+    monkeypatch.setattr(management, "_scope", lambda *args: scope)
+    monkeypatch.setattr(management, "_actor", lambda *args: actor)
+    monkeypatch.setattr(management, "current_acting_login", lambda: actor)
+    monkeypatch.setattr(
+        management,
+        "PostgresPromotionRepository",
+        lambda: SimpleNamespace(get=lambda *args: promotion),
+    )
+    monkeypatch.setattr(management, "effective", lambda tenant, original: (original, revision([])))
+    monkeypatch.setattr(management, "PersistedWizardSources", live_wizard.PersistedWizardSources)
+    monkeypatch.setattr(management, "authorize_actor", live_wizard.authorize_actor)
+    monkeypatch.setattr(management, "_load", lambda *args: None)
+    monkeypatch.setattr(
+        management, "_local", lambda scope, gateway, source, *rest: gateway.local_guard(source)
+    )
+    monkeypatch.setattr(management, "_claim_pause", lambda *args, **kwargs: (uuid4(), "claimed"))
+    monkeypatch.setattr(management, "_dispatch", lambda *args: None)
+    monkeypatch.setattr(management, "_finish_pause", lambda *args: None)
+    assert management._context(scope)[2].goal == "chat"
+    options = {
+        "budget": {"budget_minor": 2_000_000},
+        "end_time": {"end_time": live["args"]["form"].end_time + timedelta(days=1)},
+    }.get(action, {})
+    review = await management.prepare_promotion_edit(
+        tenant_id=tenant,
+        promotion_id=promotion.id,
+        request_key="chat-edit",
+        action=action,
+        **options,
+    )
+    result = await management.confirm_promotion_edit(
+        tenant_id=tenant,
+        promotion_id=promotion.id,
+        request_key="chat-edit",
+        approval_token=review.approval_token,
+        confirm_change=True,
+    )
+    assert result.status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_read_back_accepts_the_number_echoed_with_a_plus(live, monkeypatch):
+    use_chat(live, monkeypatch)
+    preview = await prepare(live)
+    live["remote"].objects["101"]["promoted_object"] = {
+        "page_id": "77",
+        "whatsapp_phone_number": "+57 300 111 2233",
+    }
+    assert (await confirm(live, preview)).status == "active"
+
+
+@pytest.mark.asyncio
+async def test_website_promotion_never_reads_or_compares_a_welcome_message(live):
+    preview = await prepare(live)
+    # Only a requested field comes back: a stray welcome on a website ad is never read.
+    live["remote"].objects["102"]["page_welcome_message"] = "{}"
+    assert (await confirm(live, preview)).status == "active"
+
+
+@pytest.mark.asyncio
+async def test_remote_greeting_edit_blocks_activation(live, monkeypatch):
+    use_chat(live, monkeypatch)
+    preview = await prepare(live)
+    creative = live["remote"].objects["102"]
+    creative["page_welcome_message"]["text_format"]["message"]["text"] = "Otro saludo"
+    with pytest.raises(WizardUnavailable, match="saludo del chat distinto"):
+        await confirm(live, preview)
+    assert not live["remote"].activations

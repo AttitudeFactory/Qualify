@@ -29,7 +29,12 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, available_timezones
 
-from qualify_api.planner.publishable import destination_options
+from qualify_api.planner.publishable import (
+    destination_options,
+    format_video_duration,
+    story_video_too_long,
+    video_seconds_of,
+)
 from qualify_api.planner.recurrence import (
     SERIES_CAP,
     InvalidRecurrence,
@@ -1051,8 +1056,12 @@ class EventCardVM:
     # m-25019217: the publication on Instagram («Ver en Instagram», new tab) — only for a
     # published event whose attempt recorded a permalink (`instagram_link`), "" otherwise.
     permalink: str = ""
-    # m-25026241: published events of one account in one minute share this key
-    # (`minute_group_key`); "" for an event that is never grouped (not published).
+    # m-25026486: the time in two whole tokens for the narrow calendar chip — «9:33» and
+    # «a. m.» (`time_label` split once); the chip drops the suffix, never cuts a token.
+    time_hm: str = ""
+    time_suffix: str = ""
+    # m-25026486: the published events of one batch share this key
+    # (`batch_group_keys`); "" for an event that is not in a batch of two or more.
     group_key: str = ""
 
 
@@ -1060,7 +1069,7 @@ class EventCardVM:
 class EventGroupVM:
     """m-25026241: one entry of a day (list view) or an hour cell (calendar) — a lone
     event (`is_group` False, `cards` = [it]) or the published events of one account in
-    one minute, shown folded as «2:12 a. m. · 9 publicaciones» (`group_entries`)."""
+    one batch (`batch_group_keys`), shown folded as «1:17 – 1:20 a. m. · 9 publicaciones»."""
 
     key: str
     is_group: bool
@@ -1089,7 +1098,7 @@ class DayColumnVM:
     is_past: bool
     count: int
     cards: list[EventCardVM] = field(default_factory=list)
-    #: m-25026241: `cards` with same-minute publications folded (`group_entries`).
+    #: m-25026241: `cards` with batches folded (`group_entries`).
     #: Not `entries`: a Reflex object var already has an `.entries()` method.
     groups: list[EventGroupVM] = field(default_factory=list)
 
@@ -1107,7 +1116,7 @@ class HourCellVM:
     more: list[EventCardVM] = field(default_factory=list)
     more_count: int = 0
     heading: str = ""  # «Mar 6 · 6 p. m.» — the subtitle of that list
-    #: m-25026241: the first `CELL_VISIBLE` entries (a same-minute group counts as one);
+    #: m-25026241: the first `CELL_VISIBLE` entries (a batch counts as one);
     #: the events of the entries after them are `more`.
     visible_entries: list[EventGroupVM] = field(default_factory=list)
 
@@ -1441,7 +1450,9 @@ def build_card(
     return EventCardVM(
         event_id=item.event_id,
         post_id=item.post_id,
-        time_label=time_label_12h(local),
+        time_label=(when := time_label_12h(local)),
+        time_hm=when.partition(" ")[0],
+        time_suffix=when.partition(" ")[2],
         title=item.post_title if item.post_title is not None else "Publicación no disponible",
         caption_excerpt=item.caption_excerpt,
         thumbnail_url=item.thumbnail_url or "",
@@ -1478,19 +1489,66 @@ def build_card(
 
 CELL_VISIBLE = 5
 
-# -- m-25026241: same-minute publications fold into one row -----------------------------
+# -- m-25026241 / m-25026486: a batch of publications folds into one row --------------
 
 #: How many thumbnails a folded row shows before «+N» (they fit at 375 px).
 GROUP_PREVIEW = 4
 
 
-def minute_group_key(scheduled_at: datetime, connection_id: str) -> str:
-    """THE rule for «went out together»: the same account, the same minute — 2:12:05 and
-    2:12:55 share a key, 2:12:59 and 2:13:01 do not. Keyed on the UTC minute (review
-    m-25026241): every zone's offset is whole minutes, so it is the minute the calendar
-    shows, and on a night the clocks go back the two «1:30 a. m.» stay apart. Callers
-    give it only published events."""
-    return f"{scheduled_at.astimezone(UTC):%Y-%m-%dT%H:%MZ}|{connection_id}"
+#: m-25026486: a batch lasts at most this long, counted from its FIRST publication (same
+#: account, same displayed day) — a mural staged over a few minutes is one batch, and a
+#: group never swallows a whole afternoon (UX review: a chain rule hid two hour rows).
+BATCH_SPAN = timedelta(minutes=15)
+
+
+@dataclass(frozen=True)
+class BatchInput:
+    """What the batch rule reads of one event."""
+
+    event_id: str
+    scheduled_at: datetime  # aware
+    connection_id: str
+    status: str
+
+
+def batch_group_keys(events: Iterable[BatchInput], zone: ZoneInfo) -> dict[str, str]:
+    """THE grouping rule (m-25026486): `published` events of one account on one
+    DISPLAYED day (`zone`, the calendar's) form a batch: the first opens it, every later
+    one that went out at most `BATCH_SPAN` after THAT first joins, the next opens a new
+    batch — so a batch never lasts more than 15 minutes. Returns event id → batch key,
+    only for batches of two or more; scheduled / publishing / failed events and lone
+    publications get none.
+
+    The key is the account plus the UTC second of the batch's FIRST event: stable across
+    reloads (`open_groups` keeps working); a publication that joins at the end keeps it,
+    one that lands before the first (or bridges two batches) starts a new key — that
+    group shows folded again. One sort per day and account, one walk."""
+    buckets: dict[tuple[date, str], list[BatchInput]] = {}
+    for event in events:
+        if event.status != "published":
+            continue
+        day = event.scheduled_at.astimezone(zone).date()
+        # in UTC: two datetimes sharing a zone subtract by wall time (a DST night lies)
+        utc = replace(event, scheduled_at=event.scheduled_at.astimezone(UTC))
+        buckets.setdefault((day, event.connection_id), []).append(utc)
+    keys: dict[str, str] = {}
+    for (_day, connection_id), members in buckets.items():
+        members.sort(key=lambda e: (e.scheduled_at, e.event_id))
+        batch: list[BatchInput] = []
+        for event in [*members, None]:
+            if (
+                event is not None
+                and batch
+                and event.scheduled_at - batch[0].scheduled_at <= BATCH_SPAN
+            ):
+                batch.append(event)
+                continue
+            if len(batch) > 1:
+                first = batch[0].scheduled_at.astimezone(UTC)
+                key = f"{first:%Y-%m-%dT%H:%M:%SZ}|{connection_id}"
+                keys.update((e.event_id, key) for e in batch)
+            batch = [event] if event is not None else []
+    return keys
 
 
 #: The id of an event card's «⋯» button (`planner_page._card_menu`).
@@ -1498,12 +1556,17 @@ MENU_ID_PREFIX = "q-ev-menu-"
 
 
 def menu_focus_script(event_id: str) -> str:
-    """Give the focus back to an event card's «⋯» once its panel closed (after Radix's
-    own focus return, hence the timeout). Nothing when the card is not on screen."""
+    """Give the focus back to an event card's «⋯» once its panel closed. Radix returns
+    the focus itself when the closing animation ends (to <body>, the menu that opened the
+    panel being gone), so this tries again after it — only while the focus is still
+    lost, never stealing it from where the owner already moved. Nothing when the card
+    is not on screen."""
     safe = "".join(ch for ch in event_id if ch.isalnum() or ch == "-")
     return (
-        "setTimeout(function () { var e = document.getElementById("
-        f"'{MENU_ID_PREFIX}{safe}'); if (e) {{ e.focus(); }} }}, 50);"
+        "[60, 250, 500, 900, 1500].forEach(function (ms) { setTimeout(function () { "
+        f"var e = document.getElementById('{MENU_ID_PREFIX}{safe}'); "
+        "var a = document.activeElement; "
+        "if (e && (!a || a === document.body)) { e.focus(); } }, ms); });"
     )
 
 
@@ -1533,8 +1596,20 @@ def prune_open_groups(
 
 
 def group_label(time_label: str, count: int) -> str:
-    """«2:12 a. m. · 9 publicaciones» — a group has two or more, never one."""
+    """«1:17 – 1:20 a. m. · 9 publicaciones» — a group has two or more, never one."""
     return f"{time_label} · {count} publicaciones"
+
+
+def time_range_label(first: str, last: str) -> str:
+    """A batch's time, from the cards' own labels: one time when every publication shares
+    the displayed minute, else a range — «1:17 – 1:20 a. m.», or with both halves of the
+    day «11:50 a. m. – 12:05 p. m.»."""
+    if first == last:
+        return first
+    first_hm, _, first_suffix = first.partition(" ")
+    if first_suffix and first_suffix == last.partition(" ")[2]:
+        return f"{first_hm} – {last}"
+    return f"{first} – {last}"
 
 
 def group_entries(cards: Sequence[EventCardVM]) -> list[EventGroupVM]:
@@ -1567,18 +1642,19 @@ def group_entries(cards: Sequence[EventCardVM]) -> list[EventGroupVM]:
             continue
         placed.add(card.group_key)
         count = len(group)
+        when = time_range_label(group[0].time_label, group[-1].time_label)
         entries.append(
             EventGroupVM(
                 key=card.group_key,
                 is_group=True,
                 count=count,
-                time_label=card.time_label,
-                label=group_label(card.time_label, count),
-                chip_label=f"{count} publicaciones · {card.time_label}",
+                time_label=when,
+                label=group_label(when, count),
+                chip_label=f"{count} publicaciones",
                 aria_label=(
-                    f"{group_label(card.time_label, count)} en {card.account_label}"
+                    f"{group_label(when, count)} en {card.account_label}"
                     if card.account_label
-                    else group_label(card.time_label, count)
+                    else group_label(when, count)
                 ),
                 cards=list(group),
                 preview=list(group[:GROUP_PREVIEW]),
@@ -1589,12 +1665,19 @@ def group_entries(cards: Sequence[EventCardVM]) -> list[EventGroupVM]:
 
 
 def _cell(
-    *, day_iso: str, hour: int, is_today: bool, is_past: bool, cards, heading: str = ""
+    *,
+    day_iso: str,
+    hour: int,
+    is_today: bool,
+    is_past: bool,
+    entries: Sequence[EventGroupVM],
+    heading: str = "",
 ) -> HourCellVM:
-    """A calendar cell: all its cards (in time order), and the split the grid draws —
-    the first `CELL_VISIBLE`, then the rest behind «+N más»."""
-    cards = list(cards)
-    entries = group_entries(cards)
+    """A calendar cell: its entries (the day's groups that START in this hour, m-25026486
+    — a batch running into the next hour is not drawn there again), and the split the
+    grid draws — the first `CELL_VISIBLE`, then the rest behind «+N más»."""
+    entries = list(entries)
+    cards = [card for entry in entries for card in entry.cards]
     shown = entries[:CELL_VISIBLE]
     more = [card for entry in entries[CELL_VISIBLE:] for card in entry.cards]
     return HourCellVM(
@@ -1622,22 +1705,31 @@ def build_week(
     (calendar view). Cards are chronological everywhere. An event outside the week is
     ignored (the service already filters)."""
     week_days = [monday + timedelta(days=i) for i in range(7)]
+    in_week = [item for item in items if item.scheduled_at.astimezone(zone).date() in week_days]
+    # m-25026486: the batches of what went out (`batch_group_keys`, the one rule)
+    batch_keys = batch_group_keys(
+        (BatchInput(i.event_id, i.scheduled_at, i.connection_id, i.status) for i in in_week),
+        zone,
+    )
     by_day: dict[date, list[tuple[datetime, EventCardVM]]] = {d: [] for d in week_days}
-    by_cell: dict[tuple[int, date], list[tuple[datetime, EventCardVM]]] = {}
-    for item in items:
+    row_of: dict[str, int] = {}
+    for item in in_week:
         local = item.scheduled_at.astimezone(zone)
-        if local.date() not in by_day:
-            continue
         card = build_card(item, zone=zone, connections=connections)
-        if item.status == "published":  # m-25026241: only what went out is grouped
-            card = replace(card, group_key=minute_group_key(item.scheduled_at, item.connection_id))
+        if item.event_id in batch_keys:
+            card = replace(card, group_key=batch_keys[item.event_id])
         by_day[local.date()].append((item.scheduled_at, card))
-        by_cell.setdefault((hour_row_for(local.hour), local.date()), []).append(
-            (item.scheduled_at, card)
-        )
+        row_of[item.event_id] = hour_row_for(local.hour)
 
     def ordered(pairs: list[tuple[datetime, EventCardVM]]) -> list[EventCardVM]:
         return [card for _, card in sorted(pairs, key=lambda pair: pair[0])]
+
+    day_groups = {d: group_entries(ordered(by_day[d])) for d in week_days}
+    # a group sits in the hour cell of its FIRST publication, once
+    by_cell: dict[tuple[int, date], list[EventGroupVM]] = {}
+    for d, groups in day_groups.items():
+        for entry in groups:
+            by_cell.setdefault((row_of[entry.cards[0].event_id], d), []).append(entry)
 
     days = [
         DayColumnVM(
@@ -1648,8 +1740,8 @@ def build_week(
             is_today=d == today,
             is_past=d < today,
             count=len(by_day[d]),
-            cards=(day_cards := ordered(by_day[d])),
-            groups=group_entries(day_cards),
+            cards=ordered(by_day[d]),
+            groups=day_groups[d],
         )
         for d in week_days
     ]
@@ -1663,7 +1755,7 @@ def build_week(
                     hour=key,
                     is_today=d == today,
                     is_past=d < today,
-                    cards=ordered(by_cell.get((key, d), [])),
+                    entries=by_cell.get((key, d), []),
                     heading=f"{_WEEKDAYS[d.weekday()]} {d.day} · {hour_row_label(key)}",
                 )
                 for d in week_days
@@ -1692,6 +1784,7 @@ def build_post_option(
     has_live_event: bool = False,
     media_types: tuple[str, ...] = (),
     image_size: tuple[int, int] | None = None,
+    video_seconds: float | None = None,
     preferred_destination: str | None = None,
     lifecycle_status: str = "",
     campaign_name: str = "",
@@ -1757,7 +1850,7 @@ def build_post_option(
         content_kind_label=KIND_LABELS.get(content_kind, ""),
         **_kind_fields(media_types, category or "", has_outputs=bool(chips)),
         **_temperature_fields(times_published),
-        destinations=(choices := destinations_for(media_types, image_size)),
+        destinations=(choices := destinations_for(media_types, image_size, video_seconds)),
         default_destination=default_destination(
             choices, preferred_destination or _CATEGORY_DESTINATION.get(category or "")
         ),
@@ -1940,6 +2033,7 @@ def build_output_chip(
     account_label: str = "",
     media_types: tuple[str, ...] = (),
     image_size: tuple[int, int] | None = None,
+    video_seconds: float | None = None,
     preferred_destination: str | None = None,
     can_schedule_pending_final: bool = False,
 ) -> OutputChipVM:
@@ -1964,7 +2058,7 @@ def build_output_chip(
         tone=tone,
         scheduled=event_status is not None,
         note=note,
-        destinations=(choices := destinations_for(media_types, image_size)),
+        destinations=(choices := destinations_for(media_types, image_size, video_seconds)),
         default_destination=default_destination(
             choices, preferred_destination or _PORT_DESTINATION.get(port)
         ),
@@ -2043,12 +2137,22 @@ class DestinationChoiceVM:
     label: str
     available: bool
     reason: str = ""  # why it is off, printed under the selector
-    warning: str = ""  # what Meta may still refuse that cannot be checked here
+    warning: str = ""  # what Meta may still refuse: a story video too long / of unknown length
+    # m-25026481: a «Historia» whose video is KNOWN to last over 60 s, and that length
+    too_long: bool = False
+    duration_label: str = ""
+    # a «Historia» of a video whose length could NOT be read (the generic caution); a
+    # 60.0–60.5 s video also gets that caution but its length is known: False there
+    length_unknown: bool = False
 
 
-def destination_choices(options) -> list[DestinationChoiceVM]:
+def destination_choices(options, video_seconds: float | None = None) -> list[DestinationChoiceVM]:
     """The offered options of `publishable.destination_options`, as the selector shows
-    them; a destination that is not offered (a video's «Publicación») is left out."""
+    them; a destination that is not offered (a video's «Publicación») is left out. The
+    «Historia» of a video known to be too long carries that (m-25026481)."""
+    too_long = story_video_too_long(video_seconds)
+    duration = format_video_duration(video_seconds) if too_long and video_seconds else ""
+    unread = video_seconds_of(video_seconds) is None
     return [
         DestinationChoiceVM(
             key=o.destination,
@@ -2056,6 +2160,10 @@ def destination_choices(options) -> list[DestinationChoiceVM]:
             available=o.available,
             reason=o.reason,
             warning=o.warning,
+            too_long=too_long and o.destination == "story",
+            duration_label=duration if o.destination == "story" else "",
+            # only a video's story carries a warning: with no length, it is the generic one
+            length_unknown=unread and o.destination == "story" and bool(o.warning),
         )
         for o in options
         if o.offered
@@ -2067,11 +2175,60 @@ _PORT_DESTINATION: dict[str, str] = {"reel": "reel", "story": "story", "feed": "
 
 
 def destinations_for(
-    media_types: tuple[str, ...], image_size: tuple[int, int] | None
+    media_types: tuple[str, ...],
+    image_size: tuple[int, int] | None,
+    video_seconds: float | None = None,
 ) -> list[DestinationChoiceVM]:
     """The selector's buttons for content of this shape (`publishable.destination_options`
-    — the same rule the service and the executor apply)."""
-    return destination_choices(destination_options(tuple(media_types), image_size))
+    — the same rule the service and the executor apply). `video_seconds` (m-25026481): a
+    video's known length, so a «Historia» longer than 60 s warns with that length."""
+    return destination_choices(
+        destination_options(tuple(media_types), image_size, video_seconds=video_seconds),
+        video_seconds,
+    )
+
+
+#: m-25026481: what «Confirmar» says about the plan's video stories — those whose length
+#: is KNOWN to be over 60 s (each row carries `STORY_TOO_LONG_TAG`; one alone is named
+#: by its hour) and those whose length could not be read.
+STORY_TOO_LONG_TAG = "Dura más de 1 minuto"
+STORY_TOO_LONG_NOTE_ONE = (
+    "La Historia {when} dura {duration}: Instagram la rechazará. Vuelve atrás y cámbiala a Reel."
+)
+STORY_TOO_LONG_NOTE_MANY = (
+    "{n} Historias de video de este plan duran más de 1 minuto: Instagram las rechazará. "
+    "Vuelve atrás y cámbialas a Reel."
+)
+STORY_UNKNOWN_NOTE = (
+    "No pudimos leer cuánto duran algunas Historias de video de este plan. Si alguna dura "
+    "más de 1 minuto, cámbiala a Reel: Instagram la rechazará."
+)
+
+
+def _at_hour(time_text: str) -> str:
+    """«a las 2:00 p. m.» / «a la 1:00 p. m.»."""
+    return ("a la " if time_text.startswith("1:") else "a las ") + time_text
+
+
+def story_too_long_note(rows: list[PlanRowVM], *, several_days: bool = False) -> str:
+    """The note for the plan's too-long video stories: one is named by its hour (and its
+    day when the plan spans several days); several are counted — their rows say which."""
+    if not rows:
+        return ""
+    if len(rows) > 1:
+        return STORY_TOO_LONG_NOTE_MANY.format(n=len(rows))
+    row = rows[0]
+    if row.now:
+        when = "de «Ahora»"
+    elif several_days and row.day_label:
+        when = f"del {row.day_label} {_at_hour(row.time_label)}"
+    else:
+        when = "de " + _at_hour(row.time_label).removeprefix("a ")
+    return STORY_TOO_LONG_NOTE_ONE.format(when=when, duration=row.video_duration)
+
+
+def story_unknown_note(count: int) -> str:
+    return STORY_UNKNOWN_NOTE if count > 0 else ""
 
 
 def default_destination(choices: list[DestinationChoiceVM], preferred: str | None) -> str:
@@ -2296,6 +2453,15 @@ class PlanRowVM:
     accounts_line: str = ""
     sale_line: str = ""
     needs_more: bool = False
+    # m-25026481: «Historia» chosen for a video KNOWN to last over 60 s, and that length
+    # («1 min 5 s»): it opens «Más opciones» (where the warning is) and tags the row on
+    # «Confirmar».
+    story_too_long: bool = False
+    video_duration: str = ""
+    # «Historia» chosen for a video whose length could not be read: counted by the
+    # plan's «No pudimos leer…» note. Both flags are False in a reschedule: there the
+    # destination cannot change, so only the row's own warning speaks.
+    story_length_unknown: bool = False
 
 
 CAMPAIGN_NONE = "none"  # the selector's «Sin campaña» (same value as the POST detail)
@@ -2490,6 +2656,8 @@ def build_plan_row(
         destinations = post.destinations
     dest = item.destination
     chosen = next((d for d in destinations if d.key == dest), None)
+    too_long = not reschedule and chosen is not None and chosen.too_long
+    unknown_length = not reschedule and chosen is not None and chosen.length_unknown
     mock = {"reel": "reel", "story": "story"}.get(dest, "carousel" if key == "carousel" else "post")
     aspect = {"reel": "9 / 16", "story": "9 / 16", "carousel": "1 / 1"}.get(mock, "4 / 5")
     hour, minute = split_time(item.time)
@@ -2580,7 +2748,10 @@ def build_plan_row(
             now=item.now,
             button=SUBMIT_RESCHEDULE if reschedule else SUBMIT_ASSIGN,
         ),
-        needs_more=error not in _WHEN_ERRORS,
+        needs_more=error not in _WHEN_ERRORS or too_long,
+        story_too_long=too_long,
+        story_length_unknown=unknown_length,
+        video_duration=chosen.duration_label if too_long and chosen is not None else "",
         **campaign_fields,
     )
 

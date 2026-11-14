@@ -38,6 +38,16 @@ def _no_payment_methods_read(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(whatsapp_menu_state, "_payment_options", lambda _t, _b: None)
 
 
+@pytest.fixture(autouse=True)
+def _generation_queue_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """m-24993023: a video by parts is only offered with the generation queue on
+    (`creative_provider.parts_queue_on`). Offline tests do not depend on this machine's
+    `QUALIFY_CREATIVE_DISPATCHER`: the queue is on, unless a test sets its own."""
+    from . import creative_provider
+
+    monkeypatch.setattr(creative_provider, "queue_enabled", lambda: True)
+
+
 @pytest.fixture
 def memory_r2():
     """CM-9 (m-24957283): the in-memory bucket every upload of a test lands in — with the
@@ -57,3 +67,21 @@ def _uploads_go_to_memory_r2(monkeypatch: pytest.MonkeyPatch, memory_r2) -> None
 
     gate = ObjectGate(memory_r2)
     monkeypatch.setattr(upload_store, "_gate", lambda: gate)
+
+
+@pytest.fixture(autouse=True)
+def _no_base_photo_alerts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """m-25017279: a missing base photo's alert never reaches the real team channel."""
+    from qualify_api.creative import base_photos
+
+    class _Recorder:  # the app never imports `qualify_api.plans` (test_plans.py)
+        def __init__(self) -> None:
+            self.sent: list[str] = []
+
+        def notify(self, text: str) -> bool:
+            self.sent.append(text)
+            return True
+
+    recorder = _Recorder()
+    monkeypatch.setattr(base_photos, "notifier_factory", lambda: recorder)
+    monkeypatch.setattr(base_photos, "alert_dispatch", lambda send: send())

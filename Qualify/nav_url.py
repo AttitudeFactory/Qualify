@@ -178,3 +178,26 @@ def close_flow_script(flow: str) -> str:
         " for (const key of ['flujo', 'paso', 'objeto', 'consulta']) u.searchParams.delete(key);"
         " window.history.replaceState(st, '', u.pathname + u.search + u.hash); })();"
     )
+
+
+def close_flow_then_go_script(flow: str, href: str) -> str:
+    """`close_flow_script`, then open `href` — only once the history has settled.
+    `history.go(-n)` is asynchronous: a redirect sent alongside it is undone by the late
+    pop, so the navigation waits for that `popstate` (m-25026350). Back from `href`
+    lands on the page that opened the form, never on the form again. If the pop never
+    comes (a depth that drifted after a reload or a deep link makes `go(-n)` a no-op),
+    a fallback timer still leaves; `done` makes the navigation happen exactly once."""
+    return (
+        "(() => { const u = new URL(window.location.href); let done = false;"
+        f" const go = () => {{ if (done) return; done = true;"
+        f" window.location.assign({json.dumps(href)}); }};"
+        f" if (u.searchParams.get('flujo') !== {json.dumps(flow)}) {{ go(); return; }}"
+        " const st = window.history.state || {};"
+        " if (st.qFlowRoot && st.qFlowDepth > 0) {"
+        " const late = setTimeout(go, 1500);"
+        " window.addEventListener('popstate', () => { clearTimeout(late); setTimeout(go, 0); },"
+        " { once: true });"
+        " window.history.go(-st.qFlowDepth); return; }"
+        " for (const key of ['flujo', 'paso', 'objeto', 'consulta']) u.searchParams.delete(key);"
+        " window.history.replaceState(st, '', u.pathname + u.search + u.hash); go(); })();"
+    )

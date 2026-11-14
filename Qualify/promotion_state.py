@@ -12,8 +12,14 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import reflex as rx
 from qualify_api.ads.audience import AudienceUnavailable
+from qualify_api.ads.messaging_greeting import (
+    CHANGED_WHILE_EDITING,
+    WELCOME_EMPTY,
+    WELCOME_TOO_LONG,
+    GreetingUnavailable,
+)
 from qualify_api.ads.unpublished import UnpublishedUnavailable
-from qualify_api.ads.wizard import WizardUnavailable
+from qualify_api.ads.wizard import WizardUnavailable, goal_reason
 from qualify_api.tenancy.acting import acting_login
 
 from .ad_custom_audiences_provider import read_custom_audiences, request_custom_audience
@@ -47,20 +53,29 @@ from .promotion_audience_vm import (
 )
 from .promotion_provider import (
     confirm_review,
+    latest_greeting,
     load_sources,
     prepare_preview,
     ready_lead_forms,
     recheck_enhancement_permissions,
     recheck_messaging_destinations,
+    store_greeting,
 )
 from .promotion_unpublished_provider import confirm_unpublished, prepare_unpublished
 from .promotion_vm import (
+    CHAT_BUTTON_LABELS,
     CONFIRM_FAILED,
     COUNTRY_LABELS,
+    GREETING_QUESTION_SLOTS,
+    GREETING_RELOAD,
+    GREETING_SAVE_FAILED,
     LEAD_CTA_LABELS,
     LOAD_FAILED,
     NO_SESSION,
     PREVIEW_FAILED,
+    STORY_AD_OPTION,
+    STORY_FORMAT,
+    STORY_REVIEW_TITLE,
     UNPUBLISHED_SOURCE_TITLE,
     WEBSITE_CTA_LABELS,
     AdMediaVM,
@@ -70,12 +85,19 @@ from .promotion_vm import (
     PromotionReviewVM,
     PromotionSourceVM,
     cop_label,
+    cop_minor,
     first_problem,
+    greeting_buttons_label,
+    greeting_from_saved,
+    greeting_problem,
+    preselect_channel,
     promotion_checks,
     promotion_result,
+    questions_shown,
     readable_date,
     step_count,
     step_counter,
+    step_key_at,
     step_keys,
     step_problem,
     step_title,
@@ -111,6 +133,9 @@ class PromotionState(rx.State):
     covers_open: bool = False
     entry_available: bool = False
     entry_unpublished: bool = False
+    # m-25026350: opened as «Agregar un botón con enlace» (`?formato=historia`).
+    story_entry: bool = False
+    story_cta_open: bool = False
     back_href: str = "/drafts"
     back_label: str = "Por aprobar"
     _loaded_context: tuple[str, str, str] = ("", "", "")
@@ -136,6 +161,8 @@ class PromotionState(rx.State):
     forms_working: bool = False
     destinations_notice: str = ""
     _destination_operation: str = ""
+    # «+ Agregar otra pregunta»: boxes the owner opened beyond those with text.
+    question_boxes: int = 1
     enhancements_working: bool = False
     enhancements_notice: str = ""
     _enhancements_operation: str = ""
@@ -509,7 +536,12 @@ class PromotionState(rx.State):
                         else row
                         for row in self.sources
                     ]
-                    self.destinations_notice = "Comprobación terminada. Revisa cada destino."
+                    if self.form.goal == "chat":
+                        chosen = preselect_channel(self.form, options)
+                        if chosen != self.form:
+                            self.form = chosen
+                            self._invalidate_review()
+                    self.destinations_notice = "Comprobación terminada. Revisa cada chat."
         finally:
             async with self:
                 if await self._destination_current(
@@ -827,9 +859,17 @@ class PromotionState(rx.State):
     def title(self) -> str:
         if self.preparation_blocked:
             return "Revisa tu cuenta antes de promocionar"
+        if self.story_entry and not self.sources:
+            return STORY_AD_OPTION  # its empty state names the problem underneath
         if self.reviewed:
+            if self.form.story:
+                return STORY_REVIEW_TITLE
             return "Revisa tu anuncio antes de autorizarlo"
-        if self.step <= 1 and any(row.media_kind for row in self.sources):
+        if (
+            self.step <= 1
+            and any(row.media_kind for row in self.sources)
+            and step_keys(self.form)[0] == "source"
+        ):
             return UNPUBLISHED_SOURCE_TITLE
         return step_title(self.form, self.step)
 
@@ -848,7 +888,9 @@ class PromotionState(rx.State):
     def _offered(self) -> PromotionDraftVM:
         if not self.sources:
             return self.form
-        return replace(PromotionDraftVM(), **_unpublished_defaults(self.sources[0]))
+        return replace(
+            PromotionDraftVM(), **_unpublished_defaults(self.sources[0], len(self.sources) == 1)
+        )
 
     def _media(self, rows: list[AdMediaVM], asset_id: str) -> AdMediaVM:
         return next((row for row in rows if row.id == asset_id), AdMediaVM(id=""))
@@ -880,8 +922,7 @@ class PromotionState(rx.State):
 
     @rx.var
     def step_key(self) -> str:
-        keys = step_keys(self.form)
-        return keys[min(max(self.step, 1), len(keys)) - 1]
+        return step_key_at(self.form, self.step)
 
     @rx.var
     def is_unpublished(self) -> bool:
@@ -900,8 +941,14 @@ class PromotionState(rx.State):
 
     @rx.var
     def execution_reason(self) -> str:
-        if self.selected_source.unavailable_reason:
-            return self.selected_source.unavailable_reason
+        # The backend's per-goal refusal: a chat ad never uses the piece's own button.
+        reason = goal_reason(
+            self.selected_source.unavailable_reason,
+            chat=self.form.goal == "chat",
+            lead=self.form.goal == "lead",
+        )
+        if reason:
+            return reason
         if self.form.source_id and not self.form.enhancements.loaded:
             return "Vuelve a consultar los permisos de esta marca antes de preparar el anuncio."
         return ""
@@ -925,6 +972,15 @@ class PromotionState(rx.State):
     @rx.var
     def budget_label(self) -> str:
         return cop_label(self.form.budget)
+
+    @rx.var
+    def budget_valid(self) -> bool:
+        """The «Total: $25.000 COP» line shows only for an amount that parses."""
+        try:
+            cop_minor(self.form.budget)
+        except ValueError:
+            return False
+        return True
 
     @rx.var
     def charge_button(self) -> str:
@@ -1024,11 +1080,134 @@ class PromotionState(rx.State):
 
     @rx.event
     def choose_goal(self, goal: str) -> None:
-        if self.busy or goal not in {"visit", "lead"} or goal == self.form.goal:
+        if self.busy or goal not in {"visit", "lead", "chat"} or goal == self.form.goal:
+            return
+        # The chat goal rides a published post only (never a story or an unpublished
+        # piece), and only while QUALIFY_ADS_CHAT_GOAL offers it.
+        if goal == "chat" and (
+            self.form.story or self.form.media_kind or not self.selected_source.chat_goal
+        ):
             return
         self.form = replace(self.form, goal=goal)
+        if goal == "chat":
+            self.form = preselect_channel(self.form, self.selected_source.messaging_destinations)
         self.error = ""
         self._invalidate_review()
+
+    @rx.event
+    def choose_channel(self, key: str) -> None:
+        options = self.selected_source.messaging_destinations
+        if self.busy or not any(row.key == key and row.available for row in options):
+            return
+        self.form = replace(self.form, channel=key)
+        self.error = ""
+        self._invalidate_review()
+
+    @rx.event
+    def edit_welcome(self, value: str) -> None:
+        if self.busy or value == self.form.welcome_text:
+            return
+        self.form = replace(self.form, welcome_text=value, greeting_id="")
+        self.error = ""
+        self._invalidate_review()
+
+    @rx.event
+    def edit_question(self, index: int, value: str) -> None:
+        if self.busy or not 0 <= index < GREETING_QUESTION_SLOTS:
+            return
+        if self.form.questions[index] == value:
+            return
+        questions = list(self.form.questions)
+        questions[index] = value
+        self.form = replace(self.form, questions=questions, greeting_id="")
+        self.error = ""
+        self._invalidate_review()
+
+    @rx.var
+    def channel_label(self) -> str:
+        return next(
+            (
+                row.label
+                for row in self.selected_source.messaging_destinations
+                if row.key == self.form.channel
+            ),
+            "Por elegir",
+        )
+
+    @rx.var
+    def welcome_preview(self) -> str:
+        return self.form.welcome_text.strip() or "Aquí va tu saludo."
+
+    @rx.var
+    def welcome_error(self) -> str:
+        """The banner's welcome problem, repeated under its field."""
+        return self.error if self.error in {WELCOME_EMPTY, WELCOME_TOO_LONG} else ""
+
+    @rx.var
+    def greeting_buttons_label(self) -> str:
+        return greeting_buttons_label(self.form)
+
+    @rx.var
+    def questions_shown(self) -> int:
+        return questions_shown(self.form, self.question_boxes)
+
+    @rx.event
+    def add_question(self) -> None:
+        if not self.busy:
+            self.question_boxes = questions_shown(self.form, self.question_boxes) + 1
+
+    @rx.event(background=True)
+    async def save_greeting(self) -> AsyncIterator[rx.event.EventSpec]:
+        """The greeting step's «Siguiente»: the backend's versioned save, then the next step.
+        A conflict shows its message and the latest saved greeting to review."""
+        async with self:
+            context = await self._session()
+            if self.busy or self.loading or step_key_at(self.form, self.step) != "greeting":
+                return
+            if context != self._loaded_context or not all(tenant_uuid(v) for v in context):
+                self.error = NO_SESSION
+                return
+            brand = tenant_uuid(self.selected_source.brand_id)
+            if brand is None:
+                self.error = GREETING_SAVE_FAILED
+                return
+            self.busy = True
+            self.error = ""
+            form = self.form
+        saved = latest = None
+        problem = ""
+        try:
+            with acting_login(UUID(context[1])):
+                saved = await asyncio.to_thread(store_greeting, UUID(context[0]), brand, form)
+        except Exception as exc:
+            logger.warning("promotion greeting save failed: %s", type(exc).__name__)
+            problem = str(exc) if isinstance(exc, GreetingUnavailable) else GREETING_SAVE_FAILED
+            if problem == CHANGED_WHILE_EDITING:
+                try:
+                    with acting_login(UUID(context[1])):
+                        latest = await asyncio.to_thread(latest_greeting, UUID(context[0]), brand)
+                except Exception as read_exc:
+                    logger.warning("promotion greeting read failed: %s", type(read_exc).__name__)
+                    # Without the newer version every retry would conflict again.
+                    problem = GREETING_RELOAD
+        advance = False
+        async with self:
+            self.busy = False
+            # Typing, another publication or another session meanwhile wins over this save.
+            if context != await self._session() or self.form != form:
+                return
+            fresh = saved or latest
+            if fresh is not None:
+                self.form = greeting_from_saved(self.form, fresh)
+                self.sources = [
+                    replace(row, greeting=fresh) if row.brand_id == str(brand) else row
+                    for row in self.sources
+                ]
+                self._invalidate_review()
+            self.error = problem
+            advance = saved is not None
+        if advance:
+            yield PromotionState.next_step()
 
     @rx.event
     def choose_lead_form(self, form_id: str) -> None:
@@ -1093,6 +1272,18 @@ class PromotionState(rx.State):
         self.error = ""
         self._invalidate_review()
 
+    @rx.event
+    def toggle_story_cta(self) -> None:
+        """Story step 1: the saved button is one line; «Cambiar» opens the list."""
+        if not self.busy:
+            self.story_cta_open = not self.story_cta_open
+
+    @rx.event
+    def choose_story_cta(self, code: str) -> None:
+        PromotionState.choose_cta.fn(self, code)
+        if self.form.cta_type == code:
+            self.story_cta_open = False
+
     @rx.var
     def lead_form_label(self) -> str:
         return next(
@@ -1106,6 +1297,8 @@ class PromotionState(rx.State):
 
     @rx.var
     def button_label(self) -> str:
+        if self.form.goal == "chat":
+            return CHAT_BUTTON_LABELS.get(self.form.channel, "Por elegir")
         if self.form.goal == "lead":
             return LEAD_CTA_LABELS.get(self.form.lead_cta, "Por elegir")
         return WEBSITE_CTA_LABELS.get(self.form.cta_type, "Por elegir")
@@ -1135,10 +1328,13 @@ class PromotionState(rx.State):
         zone = source.timezone_name or self._tenant_timezone
         changed_zone = zone != self.timezone_name
         self.form = replace(
-            PromotionDraftVM(
-                budget=self.form.budget,
-                start_local=self.form.start_local,
-                end_local=self.form.end_local,
+            greeting_from_saved(
+                PromotionDraftVM(
+                    budget=self.form.budget,
+                    start_local=self.form.start_local,
+                    end_local=self.form.end_local,
+                ),
+                source.greeting,
             ),
             source_id=source.id,
             link_url=source.default_link_url,
@@ -1146,10 +1342,11 @@ class PromotionState(rx.State):
             lead_form_id=source.lead_forms[0].id if source.lead_forms else "",
             enhancements=source.enhancements,
             **({"start_local": "", "end_local": ""} if changed_zone else {}),
-            **_unpublished_defaults(source),
+            **_unpublished_defaults(source, len(self.sources) == 1),
         )
         self.timezone_name = zone
         self.error = ""
+        self.question_boxes = 1
         self._audience_version = 0
         self.place_query = ""
         self.interest_query = ""
@@ -1240,6 +1437,12 @@ class PromotionState(rx.State):
     def next_step(self) -> rx.event.EventSpec | None:
         if self.busy or self.loading or not self.sources or self.preparation_blocked:
             return None
+        if (
+            step_key_at(self.form, self.step) == "greeting"
+            and not self.form.greeting_id
+            and not greeting_problem(self.form)
+        ):
+            return PromotionState.save_greeting()  # it moves on once the backend saved it
         problem = step_problem(self.form, self.step, self.timezone_name)
         if problem:
             self.error = problem
@@ -1310,6 +1513,8 @@ class PromotionState(rx.State):
             context = await self._session()
             piece = tenant_uuid(str(getattr(self, "draft_id", "")))
             params = dict(self.router.url.query_parameters)
+            # m-25026350: «Agregar un botón con enlace» from Tu semana's historia.
+            story = params.get("formato") == STORY_FORMAT
             if piece is None or not all(tenant_uuid(value) for value in context):
                 self.loading = False
                 self.error = NO_SESSION if piece else LOAD_FAILED
@@ -1318,6 +1523,7 @@ class PromotionState(rx.State):
                 self._loaded_context == context
                 and self._piece_id == str(piece)
                 and self.sources
+                and self.sources[0].story == story
                 and params.get("paso")
             ):
                 self.read_step()
@@ -1345,17 +1551,21 @@ class PromotionState(rx.State):
             self._operation = operation = str(uuid4())
             self._return_params = {
                 key: str(params[key])
-                for key in ("desde", "semana", "vista", "evento")
+                for key in ("desde", "semana", "vista", "evento", "formato")
                 if params.get(key)
             }
             week = back_to_week_href(params)
+            self.story_entry = story
+            self.story_cta_open = False
             self.back_href = week or f"/drafts/{piece}"
-            self.back_label = "Tu semana" if week else "Revisar publicación"
+            self.back_label = (
+                "Tu semana" if week else "Revisar pieza" if story else "Revisar publicación"
+            )
             event_id = tenant_uuid(str(params.get("evento", "")))
         try:
             with acting_login(UUID(context[1])):
                 rows, zone = await asyncio.to_thread(
-                    load_sources, UUID(context[0]), piece, event_id, True
+                    load_sources, UUID(context[0]), piece, event_id, True, story=story
                 )
         except Exception as exc:
             logger.warning("promotion sources read failed: %s", type(exc).__name__)
@@ -1472,6 +1682,7 @@ class PromotionState(rx.State):
                         form,
                         zone,
                         request_key,
+                        source.connection_id if source else "",
                     )
         except Exception as exc:
             logger.warning("promotion command failed: %s", type(exc).__name__)
@@ -1530,9 +1741,12 @@ class PromotionState(rx.State):
                     self.busy = False
 
 
-def _unpublished_defaults(source: PromotionSourceVM) -> dict[str, str | bool]:
+def _unpublished_defaults(
+    source: PromotionSourceVM, single_source: bool = False
+) -> dict[str, str | bool]:
     """Prefill a piece's own pair: its first 4:5 and 9:16 files and, for videos, the
-    first image of each format as the cover. Everything stays visible and changeable."""
+    first image of each format as the cover. Everything stays visible and changeable.
+    A story ad (m-25026350) uses only the 9:16 file; a single source is not a step."""
     if not source.media_kind:
         return {}
 
@@ -1550,4 +1764,6 @@ def _unpublished_defaults(source: PromotionSourceVM) -> dict[str, str | bool]:
         "message": source.default_message,
         "headline": source.default_headline,
         "country": source.default_country,
+        "story": source.story,
+        "single_source": single_source and source.story,
     }

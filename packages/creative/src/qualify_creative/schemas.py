@@ -27,6 +27,7 @@ from qualify_creative.ad_destination import (
 from qualify_creative.enums import (
     AdImageMode,
     AvatarSource,
+    AwarenessLevel,
     BriefIntent,
     BriefObjective,
     ContentFormat,
@@ -180,6 +181,35 @@ class ImagePolicy(BaseModel):
 #: The longest type face name a prompt carries — a family name is short (`BrandKit.typeface`).
 TYPEFACE_MAX = 60
 
+#: The owner's business perks (`BrandKit.business_perks`): how many facts a kit keeps and
+#: how long each one may be — short lines the owner types («Parqueadero gratis»).
+BUSINESS_PERKS_MAX = 12
+BUSINESS_PERK_MAX_CHARS = 80
+
+
+def normalize_business_perks(values: object) -> tuple[str, ...]:
+    """The owner's perks as the kit stores them: each one trimmed to one line and cut at
+    `BUSINESS_PERK_MAX_CHARS`, empties dropped, repeats (ignoring case) dropped keeping
+    the first, at most `BUSINESS_PERKS_MAX` kept in the owner's order. Lenient like the
+    kit's other lists — what does not fit is trimmed, never refused — and idempotent, so
+    a stored list rehydrates to the same bytes."""
+    if values is None:
+        return ()
+    if isinstance(values, str):
+        values = values.splitlines()
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values if isinstance(values, (list, tuple)) else ():
+        text = " ".join(str(value or "").split())[:BUSINESS_PERK_MAX_CHARS].strip()
+        key = text.casefold()
+        if not text or key in seen:
+            continue
+        seen.add(key)
+        out.append(text)
+        if len(out) == BUSINESS_PERKS_MAX:
+            break
+    return tuple(out)
+
 
 class BrandKit(BaseModel):
     """What the operator declares about their brand. One per tenant (D14)."""
@@ -210,6 +240,15 @@ class BrandKit(BaseModel):
     image_policy: ImagePolicy = ImagePolicy()
     #: Declared by the owner; a default for new ad pieces, never an LLM-generated URL.
     ads_destination_url: str | None = None
+    #: What the business offers beyond its products, typed by the owner («Parqueadero
+    #: gratis», «Abierto hasta las 11 p. m.»): the only venue facts generation may state.
+    #: Manual input (no provenance); normalized by `normalize_business_perks`.
+    business_perks: tuple[str, ...] = ()
+
+    @field_validator("business_perks", mode="before")
+    @classmethod
+    def _perks(cls, value: object) -> tuple[str, ...]:
+        return normalize_business_perks(value)
 
     @field_validator("ads_destination_url")
     @classmethod
@@ -462,6 +501,12 @@ class CarouselSlide(BaseModel):
     #: among the gallery's product photos. None (every brief before it): the guide
     #: pairs with the only product photo, and with several it is refused, as before.
     guide_product_index: int | None = Field(default=None, ge=0, lt=MAX_PRODUCT_IMAGES)
+    #: m-24985141 (Deivid, 2026-11-13): the slide is made from its GUIDE alone — the
+    #: owner's «Estilo» with no «Producto» — whatever product photos the piece has: no
+    #: product joins it (`scene_plan._target_photos`). `product_index` must point at a
+    #: composition guide and `guide_product_index` stays None. False (every brief before
+    #: it): the guide pairs with a product as before.
+    guide_alone: bool = False
     use_background: bool = True
     text: SlideText = SlideText.NONE
     seconds: int = 5
@@ -491,6 +536,15 @@ class CarouselSlide(BaseModel):
     def _source_has_its_inputs(self) -> CarouselSlide:
         if self.guide_product_index is not None and self.product_index is None:
             raise ValueError("a guide's product photo goes with the slide's guide photo")
+        if self.guide_alone and (
+            self.product_index is None
+            or self.guide_product_index is not None
+            or self.source not in (SlideSource.GENERATED, SlideSource.ANIMATED)
+        ):
+            raise ValueError(
+                "a guide-alone slide is a generated or animated slide with its guide photo"
+                " and no product photo"
+            )
         if self.reference_video_key and self.source is not SlideSource.ANIMATED:
             raise ValueError("only an animated slide takes a reference video")
         if self.audio and self.source not in (SlideSource.ANIMATED, SlideSource.GALLERY):
@@ -780,7 +834,9 @@ class PartsRequest(BaseModel):
     of the last attempt: `refused` None = nothing refused (pending while no part exists,
     done once they do); a code = why nothing was made, `part` the part it is about and
     `missing` the vistas previas short. `attempted_parts` = the parts that attempt asked
-    for (empty = every part not created yet)."""
+    for, always spelled out (m-24993031): scope `all` keeps every part of the plan not
+    removed, as `create_parts` reads «all». Empty only before any attempt — or on an
+    outcome kept before m-24993031, where empty meant «every part not created yet»."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -829,6 +885,9 @@ class MediaInputs(BaseModel):
     #: (2026-11-03, audit `auditoria-prompts-clip-20261103.md` §7) = the Seedance 2.x clip
     #: routes (motion clip, reel replica, animated gallery slide) in plain full sentences,
     #: no written text on screen, no per-field caps. 0 and 1 stay byte for byte as they were.
+    #: 3 = a gallery slide's scene in plain sentences; 4 (m-25017275) = Seedream scenes with
+    #: no new text or overlays; 5 (m-24985141) = general wording for any business and pieces
+    #: without a product (`media.PROMPT_COMPILER_VERSION`).
     prompt_compiler_version: int = 0
     #: Server-owned (m-24820842): the words a GENERATED script may have on a Seedance 2.x
     #: talking video (`MediaProducer.talking_script_word_budget`), set for the copy call
@@ -1086,6 +1145,9 @@ class ContentBrief(BaseModel):
     variants_requested: int = Field(default=3, ge=1, le=5)
     kind: ContentKind = ContentKind.STATIC_FLYER
     media: MediaInputs = MediaInputs()
+    #: The reader's awareness level the piece speaks to (from its angle); None = not set,
+    #: and the copy prompt renders exactly as before the levels existed.
+    awareness_level: AwarenessLevel | None = None
 
     @model_validator(mode="before")
     @classmethod

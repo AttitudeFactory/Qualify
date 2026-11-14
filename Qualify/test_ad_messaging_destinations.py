@@ -9,7 +9,8 @@ from uuid import UUID, uuid4
 import pytest
 from qualify_api.ads.messaging_destinations import (
     LINK_GUIDE,
-    PENDING,
+    NO_NUMBER,
+    READY,
     UNKNOWN,
     MessagingDestination,
 )
@@ -19,22 +20,43 @@ from . import promotion_provider as provider
 from .promotion_vm import PromotionSourceVM
 
 
-@pytest.mark.parametrize("linked, reason", [(True, PENDING), (False, LINK_GUIDE), (None, UNKNOWN)])
-def test_unknown_link_is_not_shown_as_an_explicitly_unlinked_number(
-    monkeypatch: pytest.MonkeyPatch, linked: bool | None, reason: str
+@pytest.mark.parametrize(
+    "available, code, reason, notice, action",
+    [
+        (True, "ready", READY, "Te escriben a tu WhatsApp.", ""),
+        (False, "unlinked", LINK_GUIDE, LINK_GUIDE, "Unir mi WhatsApp"),
+        (
+            False,
+            "no_number",
+            NO_NUMBER,
+            "Para recibir mensajes por WhatsApp, primero conéctalo.",
+            "Conectar mi WhatsApp",
+        ),
+        (False, "unknown", UNKNOWN, UNKNOWN, ""),
+    ],
+)
+def test_whatsapp_card_shows_the_backend_reason_and_its_action_by_reason_code(
+    monkeypatch: pytest.MonkeyPatch,
+    available: bool,
+    code: str,
+    reason: str,
+    notice: str,
+    action: str,
 ) -> None:
-    row = MessagingDestination("whatsapp", "WhatsApp", False, reason, uuid4(), linked)
+    row = MessagingDestination(
+        "whatsapp", "WhatsApp", available, reason, uuid4(), available, reason_code=code
+    )
     monkeypatch.setattr(provider, "load_messaging_destinations", lambda **kwargs: (row,))
-    options = provider.messaging_destinations(uuid4(), uuid4())
-    assert reason in options[0].notice
-    if linked is True:
-        assert options[0].notice.startswith("Tu número de WhatsApp está vinculado a esta página.")
-    elif linked is False:
-        assert "no está vinculado a esta página" in options[0].notice
-    else:
-        assert options[0].notice == UNKNOWN
-    assert options[0].label == "WhatsApp"
-    assert not hasattr(options[0], "connection_id")
+    [option] = provider.messaging_destinations(uuid4(), uuid4())
+    assert (option.available, option.reason_code, option.notice, option.action) == (
+        available,
+        code,
+        notice,
+        action,
+    )
+    assert option.label == "WhatsApp"
+    assert not hasattr(option, "connection_id")
+    assert "57300" not in str(option)  # never the number
 
 
 def test_diagnosis_failure_does_not_expose_remote_errors_or_block_the_website_form(
@@ -45,9 +67,10 @@ def test_diagnosis_failure_does_not_expose_remote_errors_or_block_the_website_fo
 
     monkeypatch.setattr(provider, "load_messaging_destinations", failed)
     options = provider.messaging_destinations(uuid4(), uuid4())
-    assert [row.key for row in options] == ["instagram_direct", "whatsapp"]
-    assert "No pudimos comprobar" in options[1].notice
-    assert "Tus redes" in options[1].notice
+    assert [row.key for row in options] == ["whatsapp", "instagram_direct"]
+    assert not any(row.available for row in options)
+    assert all("No pudimos comprobar" in row.notice for row in options)
+    assert all(row.reason_code == "unknown" and not row.action for row in options)
     assert "private" not in str(options)
     assert "access_token" not in str(options)
 
@@ -79,21 +102,19 @@ def test_page_entry_does_not_query_meta_and_full_form_deduplicates_destination_r
     assert [row.messaging_destinations[0].notice for row in rows] == [UNKNOWN, UNKNOWN]
 
 
-def test_messaging_diagnosis_has_no_selector_or_change_to_the_existing_website_form() -> None:
-    from .promotion_page import _destination, _messaging_destination
-    from .promotion_vm import MessagingDestinationVM
+def test_chat_cards_live_in_their_own_step_not_in_the_website_form() -> None:
+    from .promotion_page import _channel, _destination, _link_destination
 
-    rendered = str(
-        _messaging_destination(MessagingDestinationVM("whatsapp", "WhatsApp", LINK_GUIDE)).render()
-    )
-    assert "WhatsApp" in rendered
-    assert "Meta Business Suite" in rendered
-    assert "on_click" not in rendered
-    assert "dangerouslySetInnerHTML" not in rendered
-    full = str(_destination().render())
-    assert "link_url" in full
-    assert "messaging_destinations" in full
-    assert "recheck_destinations" in full
+    channel = str(_channel())  # the foreach body, as compiled
+    assert "messaging_destinations" in channel
+    assert "recheck_destinations" in channel
+    assert "/connections" in channel
+    assert "dangerouslySetInnerHTML" not in channel
+    website = str(_link_destination().render())
+    assert "link_url" in website
+    # Only with QUALIFY_ADS_CHAT_GOAL off does the website form list the chats.
+    assert "chat_goal" in website
+    assert "todavía no" not in str(_destination().render())
 
 
 def test_recheck_refuses_a_connection_outside_the_selected_published_source(

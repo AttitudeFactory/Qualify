@@ -94,15 +94,12 @@ def _pick(rows: list[dict], kind: str, ratio: tuple[int, int]) -> list[dict]:
     ]
 
 
-def unpublished_sources(
-    tenant_id: UUID, draft_id: UUID, *, check_health: bool = False
-) -> list[PromotionSourceVM]:
-    """One source per selected ad account and kind (two images, or two videos with
-    their covers) of the active approved version; [] when the piece does not qualify."""
+def _read(tenant_id: UUID, draft_id: UUID) -> tuple[dict | None, list[dict], list[dict]]:
+    """The approved, unpublished piece, its brand's selected ad accounts and its files."""
     with tenant_session(tenant_id) as session:
         piece = session.execute(_PIECE, {"draft": draft_id}).mappings().first()
         if piece is None:
-            return []
+            return None, [], []
         accounts = [
             dict(row) for row in session.execute(_ACCOUNTS, {"brand": piece["brand_id"]}).mappings()
         ]
@@ -112,13 +109,44 @@ def unpublished_sources(
                 _ASSETS, {"draft": draft_id, "version": piece["active_version_id"]}
             ).mappings()
         ]
+    return dict(piece), accounts, assets
+
+
+def story_kinds(assets: list[dict]) -> list[str]:
+    """A story ad's kinds: its 9:16 images; a 9:16 video only with a 9:16 image as cover."""
+    vertical_images = _pick(assets, "image", VERTICAL)
+    if not vertical_images:
+        return []
+    return ["videos", "images"] if _pick(assets, "video", VERTICAL) else ["images"]
+
+
+def story_ad_ready(tenant_id: UUID, draft_id: UUID) -> bool:
+    """«Agregar un botón con enlace» is offered only when the wizard will have a source:
+    approved, unpublished, a 9:16 file (with its cover for a video), an ad account."""
+    piece, accounts, assets = _read(tenant_id, draft_id)
+    return piece is not None and bool(accounts) and bool(story_kinds(assets))
+
+
+def unpublished_sources(
+    tenant_id: UUID, draft_id: UUID, *, check_health: bool = False, story: bool = False
+) -> list[PromotionSourceVM]:
+    """One source per selected ad account and kind (two images, or two videos with
+    their covers) of the active approved version; [] when the piece does not qualify.
+    `story` (m-25026350): only the 9:16 file (and its cover) — a story-only ad."""
+    piece, accounts, assets = _read(tenant_id, draft_id)
+    if piece is None:
+        return []
     feed_images, vertical_images = _pick(assets, "image", FEED), _pick(assets, "image", VERTICAL)
     feed_videos, vertical_videos = _pick(assets, "video", FEED), _pick(assets, "video", VERTICAL)
-    kinds = []
-    if feed_videos and vertical_videos and feed_images and vertical_images:
-        kinds.append("videos")
-    if feed_images and vertical_images:
-        kinds.append("images")
+    if story:  # one 9:16 file, never a 4:5 one
+        feed_images, feed_videos = [], []
+        kinds = story_kinds(assets)
+    else:
+        kinds = []
+        if feed_videos and vertical_videos and feed_images and vertical_images:
+            kinds.append("videos")
+        if feed_images and vertical_images:
+            kinds.append("images")
     if not kinds or not accounts:
         return []
     copy = piece["ad_copy"] if isinstance(piece["ad_copy"], dict) else {}
@@ -147,7 +175,7 @@ def unpublished_sources(
             sources.append(
                 PromotionSourceVM(
                     # Stable and distinct per account and kind; never a publish attempt.
-                    id=str(uuid.uuid5(account["id"], kind)),
+                    id=str(uuid.uuid5(account["id"], "story-" + kind if story else kind)),
                     account_label=account["account_label"],
                     caption=message,
                     account_name=account["name"],
@@ -168,6 +196,7 @@ def unpublished_sources(
                     vertical_covers=media(vertical_images, "Portada") if video else [],
                     default_message=message[:2200],
                     default_headline=headline,
+                    story=story,
                 )
             )
     return sources
@@ -195,8 +224,9 @@ def prepare_unpublished(
     timezone_name: str,
     request_key: str,
 ) -> PromotionReviewVM:
-    """Creates the ad paused and returns its two previews. While Meta processes a video
-    this raises; the caller repeats it with the SAME `request_key` (never a re-upload)."""
+    """Creates the ad paused and returns its two previews (one, 9:16, for a story ad).
+    While Meta processes a video this raises; the caller repeats it with the SAME
+    `request_key` (never a re-upload)."""
     from .promotion_provider import safe_preview_url  # noqa: PLC0415
 
     video = form.media_kind == "videos"
@@ -205,9 +235,9 @@ def prepare_unpublished(
             tenant_id=tenant_id,
             draft_id=draft_id,
             ad_account_id=UUID(source.ad_account_id),
-            feed_asset_id=UUID(form.feed_asset_id),
+            feed_asset_id=None if form.story else UUID(form.feed_asset_id),
             vertical_asset_id=UUID(form.vertical_asset_id),
-            feed_thumbnail_asset_id=_id(form.feed_cover_id) if video else None,
+            feed_thumbnail_asset_id=_id(form.feed_cover_id) if video and not form.story else None,
             vertical_thumbnail_asset_id=_id(form.vertical_cover_id) if video else None,
             form=ImageAdForm(
                 message=form.message,
@@ -224,7 +254,9 @@ def prepare_unpublished(
             confirm_preparation=True,
         )
     )
-    feed, vertical = safe_preview_url(preview.feed_html), safe_preview_url(preview.vertical_html)
+    vertical = safe_preview_url(preview.vertical_html)
+    # A story ad has a single 9:16 preview; it also stands in as the main one.
+    feed = vertical if form.story else safe_preview_url(preview.feed_html)
     if not feed or not vertical:
         raise ValueError("unsafe or unavailable unpublished preview")
     expires: datetime = preview.expires_at

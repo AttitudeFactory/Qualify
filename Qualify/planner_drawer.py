@@ -85,6 +85,7 @@ from .planner_vm import (
     STEP_POST,
     STEP_PREVIEW,
     STEP_WHEN,
+    STORY_TOO_LONG_TAG,
     TAG_COLORS,
     VIEW_ON_INSTAGRAM,
     WEEKDAY_INITIALS,
@@ -102,8 +103,25 @@ from .post_card import (
     viewable_src,
 )
 from .promotion_entry import promotion_event_query, promotion_link
+from .promotion_vm import (
+    STORY_AD_CONTINUE,
+    STORY_AD_DECLINE,
+    STORY_AD_HINT,
+    STORY_AD_NOTICE,
+    STORY_AD_ONLY,
+    STORY_AD_OPTION,
+)
 from .r2_media import BACKEND_BASE
-from .ui import callout, drawer, dropzone, loading_spinner, media_thumb, skeleton_card, stepper
+from .ui import (
+    callout,
+    drawer,
+    dropzone,
+    loading_spinner,
+    media_thumb,
+    skeleton_card,
+    stepper,
+    tone_badge,
+)
 from .ui import tokens as T
 from .ui.flow_history import flow_sync
 from .ui.steps import step_progress
@@ -494,6 +512,12 @@ def _own_upload_preview() -> rx.Component:
                     src=src,
                     controls=True,
                     preload="metadata",
+                    # m-25026481: the frame Qualify took, while the video itself loads
+                    poster=rx.cond(
+                        PlannerState.own_upload_poster_key != "",
+                        rx.get_upload_url(PlannerState.own_upload_poster_key),
+                        "",
+                    ),
                     plays_inline=True,
                     aria_label="Tu video: " + PlannerState.own_upload_name,
                     width="100%",
@@ -864,6 +888,10 @@ def _repeat(row) -> rx.Component:
     )
 
 
+def _dest_warning_id(row) -> rx.Var:
+    return "dest-warn-" + row.post_id
+
+
 def _destination_button(row, d) -> rx.Component:
     on = row.destination == d.key
     return rx.el.button(
@@ -874,6 +902,9 @@ def _destination_button(row, d) -> rx.Component:
         role="radio",
         aria_checked=on,
         disabled=~d.available,
+        # m-25026481: the chosen button is described by its warning (a video story too
+        # long / of unknown length), which is only drawn while it is chosen
+        aria_describedby=rx.cond(on & (row.destination_warning != ""), _dest_warning_id(row), ""),
         title=rx.cond(d.available, d.label, d.label + ": " + d.reason),
         class_name=rx.cond(
             on, "q-dest-btn q-dest-btn--on q-dest-" + d.key, "q-dest-btn q-dest-" + d.key
@@ -938,6 +969,7 @@ def _destination_selector(row) -> rx.Component:
                 rx.hstack(
                     rx.icon("triangle-alert", size=13, flex_shrink="0"),
                     rx.text(row.destination_warning, size="1"),
+                    id=_dest_warning_id(row),
                     class_name="q-plan-status q-plan-status--todo",
                     margin_top="0.45rem",
                     align="start",
@@ -1222,6 +1254,74 @@ def _more_options(row) -> rx.Component:
     )
 
 
+def _story_ad_offer(row) -> rx.Component:
+    """m-25026350: a historia cannot carry a link unless it is paid. The option first
+    says so in one line and asks; only «Hacer anuncio pagado» leaves for the wizard, and then
+    the historia is NOT scheduled (the ad replaces it)."""
+    asking = PlannerState.story_ad_post == row.post_id
+    # Drawn only once the piece is checked to be a story ad source (`check_story_ad`,
+    # run when «Cuándo sale» mounts and when Historia is chosen).
+    return rx.cond(
+        PlannerState.story_ad_ready.contains(row.post_id),
+        _story_ad_choice(row, asking),
+    )
+
+
+def _story_ad_choice(row, asking) -> rx.Component:
+    return rx.box(
+        rx.cond(
+            asking,
+            rx.vstack(
+                rx.hstack(
+                    rx.icon("megaphone", size=16, flex_shrink="0", margin_top="2px"),
+                    rx.text(STORY_AD_NOTICE, size="2", weight="medium"),
+                    align="start",
+                    spacing="2",
+                ),
+                rx.text(STORY_AD_ONLY, size="2", color=T.TEXT_MUTED),
+                rx.hstack(
+                    rx.button(
+                        STORY_AD_CONTINUE,
+                        on_click=PlannerState.continue_story_ad,
+                        disabled=PlannerState.story_ad_busy | PlannerState.saving,
+                        loading=PlannerState.story_ad_busy,
+                        size="2",
+                        min_height="44px",
+                    ),
+                    rx.button(
+                        STORY_AD_DECLINE,
+                        on_click=PlannerState.dismiss_story_ad,
+                        variant="outline",
+                        size="2",
+                        min_height="44px",
+                    ),
+                    spacing="2",
+                    wrap="wrap",
+                ),
+                spacing="2",
+                width="100%",
+                role="group",
+                aria_label=STORY_AD_OPTION,
+            ),
+            rx.vstack(
+                rx.button(
+                    rx.icon("link", size=16),
+                    STORY_AD_OPTION,
+                    on_click=PlannerState.ask_story_ad(row.post_id),
+                    variant="soft",
+                    size="2",
+                    min_height="44px",
+                ),
+                rx.text(STORY_AD_HINT, size="1", color=T.TEXT_MUTED),
+                spacing="1",
+                align_items="start",
+            ),
+        ),
+        class_name="q-soft-box",
+        width="100%",
+    )
+
+
 def _plan_card(row) -> rx.Component:
     return rx.box(
         rx.box(
@@ -1262,6 +1362,10 @@ def _plan_card(row) -> rx.Component:
         ),
         _when_fields(row),
         _where_line(row),
+        rx.cond(
+            (row.destination == "story") & PlannerState.story_ad_offered,
+            _story_ad_offer(row),
+        ),
         rx.hstack(
             rx.cond(
                 row.error != "",
@@ -1346,6 +1450,8 @@ def _step_schedule() -> rx.Component:
         rx.foreach(PlannerState.plan_rows, _plan_card),
         spacing="4",
         width="100%",
+        # m-25026350: is the lone historia a story ad source? (draws its option)
+        on_mount=PlannerState.check_story_ad,
     )
 
 
@@ -1518,6 +1624,12 @@ def _timeline_item(row) -> rx.Component:
                     width="100%",
                 ),
                 rx.text(row.title, size="2", weight="bold", style=_CLAMP_2),
+                # m-25026481: which story is too long (the plan note counts several); on its
+                # own line, so the badge row above never overflows
+                rx.cond(
+                    row.story_too_long,
+                    rx.box(tone_badge(STORY_TOO_LONG_TAG, "warn", icon="clock-alert")),
+                ),
                 rx.cond(row.sale_line != "", rx.text(row.sale_line, size="2")),
                 rx.flex(
                     rx.foreach(
@@ -1653,12 +1765,12 @@ def _step_confirm() -> rx.Component:
             ),
         ),
         rx.cond(
-            PlannerState.form_story_warnings > 0,
-            callout(
-                "Tienes historias de video en este plan. Instagram rechaza una Historia de "
-                "video de más de 60 segundos; revisa su duración antes de confirmar.",
-                "warn",
-            ),
+            PlannerState.form_story_too_long_note != "",
+            callout(PlannerState.form_story_too_long_note, "warn"),
+        ),
+        rx.cond(
+            PlannerState.form_story_unknown_note != "",
+            callout(PlannerState.form_story_unknown_note, "warn"),
         ),
         rx.cond(PlannerState.form_error != "", callout(PlannerState.form_error, "error")),
         spacing="5",

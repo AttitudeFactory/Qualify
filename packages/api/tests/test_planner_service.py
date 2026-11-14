@@ -825,6 +825,14 @@ def test_the_same_video_can_go_out_as_a_reel_and_as_a_historia() -> None:
         _schedule(svc, video, hours=24, destination="story")
 
 
+def test_a_video_over_60_seconds_may_still_be_scheduled_as_a_historia() -> None:
+    # m-25026481: the length only WARNS in the selector; the service never refuses it.
+    video = _post(
+        category="reel", media_product_type="REELS", media_types=("VIDEO",), video_seconds=85.0
+    )
+    assert _schedule(_service(video), video, destination="story").destination == "story"
+
+
 @pytest.mark.parametrize(
     ("media", "size", "destination", "reason_part"),
     [

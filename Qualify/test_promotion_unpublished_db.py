@@ -49,3 +49,15 @@ def test_a_published_or_unselected_source_is_not_offered(unpublished_world):
         )
     with acting_login(login):
         assert unpublished_sources(source.tenant_id, source.draft_id) == []
+
+
+def test_story_source_offers_only_the_vertical_file(unpublished_world):
+    """m-25026350: a story with a link button never uses the 4:5 file."""
+    source, _, login, _ = unpublished_world
+    with acting_login(login):
+        (row,) = unpublished_sources(source.tenant_id, source.draft_id, story=True)
+    assert row.story and row.media_kind == "images" and not row.feed_media
+    assert [m.id for m in row.vertical_media] == [str(source.vertical.asset_id)]
+    with acting_login(login):
+        (pair,) = unpublished_sources(source.tenant_id, source.draft_id)
+    assert row.id != pair.id and not pair.story  # distinct, stable per kind

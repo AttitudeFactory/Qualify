@@ -315,12 +315,21 @@ class PlannerService:
         if output_port is not None:
             output = next(o for o in post.outputs if o.port == output_port)
             types, size, product = output.media_types, output.image_size, output.media_product_type
+            seconds = output.video_seconds
         else:
             types, size, product = post.media_types, post.image_size, post.media_product_type
+            seconds = post.video_seconds
         if destination is None:
             return destination_for_product_type(product)
+        # A long video story only WARNS (m-25026481): `available` does not depend on the
+        # length, so passing it changes nothing here but keeps the rule's inputs whole.
         option = next(
-            (o for o in destination_options(types, size) if o.destination == destination), None
+            (
+                o
+                for o in destination_options(types, size, video_seconds=seconds)
+                if o.destination == destination
+            ),
+            None,
         )
         if option is None or not (option.offered and option.available):
             raise UnsupportedDestination(

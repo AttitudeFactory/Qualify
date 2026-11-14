@@ -203,9 +203,10 @@ def test_subir_opens_the_picker_on_the_first_tap() -> None:
 
 
 def test_the_upload_zone_is_mounted_whatever_tab_is_open() -> None:
-    from .content_generator import _background_upload
+    # m-24985141: the slot's selector lives in the media drawer
+    from .content_generator import _slot_drawer_body
 
-    rendered = str(_background_upload("Fondo", "Toca para subir"))
+    rendered = str(_slot_drawer_body("background"))
     assert "picker-upload-background" in rendered
     assert "data-picker-tab" in rendered
 

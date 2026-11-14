@@ -22,6 +22,550 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
 
 ---
 
+<a id="niveles-003"></a>
+
+## NIVELES-003 — Tercera pasada: most_aware, solution_aware y «el nivel decide las ventajas» (m-25026482) — 2026-11-13
+
+- **Qué se midió:** el commit `fcd2e8c0`, más `fe3cc8f5` con la medición, contra los números
+  de [NIVELES-002](#niveles-002) en los mismos casos y la misma partición. El commit cambia
+  tres cosas: el CTA de most_aware solo usa una forma de comprar que esté en los datos;
+  solution_aware pide un dato concreto, ni repetir el producto ni frases genéricas; el nivel
+  decide qué ventajas usa la pieza. Presupuesto nuevo autorizado por el fundador:
+  US$2,00, aparte de los US$2,86 anteriores.
+- **Modelos y ajustes:** los de NIVELES-001/002: ángulos `claude-sonnet-5` @ medium, copy
+  `claude-opus-5-5` @ medium, juez `claude-haiku-5-5` @ low (`juez-niveles-v2`, sin
+  cambios). Sin trazas de Langfuse.
+- **Chequeos nuevos, escritos antes de correr** ([README](../../packages/api/evals/niveles_consciencia/README.md)):
+  - en solution_aware, `concrete_fact` (usa un dato de la descripción o una ventaja, no solo
+    el nombre del producto) y `generic_claims` («fresco», «de calidad», «expertos»,
+    «pensado para ti»… cuando los datos no lo dicen);
+  - el horario ya no confunde «de la 57» (una calle) con una hora.
+- **El «2/6 nombra el horario» de NIVELES-002 fue un error del chequeo determinista, no del
+  juez.** En `results/20261113-154626-copy-n002-copy-all.json`, dos copias de
+  `niv-bur-unaware` decían «… de la 57» y la expresión regular las leyó como hora. Con la
+  corrección, NIVELES-002 tenía 0 de 5 copias unaware con horario.
+
+### Antes → después (con ventajas; test salvo que se diga)
+
+| Qué | NIVELES-002 | NIVELES-003 |
+|---|---|---|
+| Ángulos solution_aware, cumple (juez) | 0,70 (n 10) | **0,83 (n 30), fiable**; dev 0,75 → 0,94 (n 16) |
+| … con dato concreto / con frase genérica (det) | 0,60 / 0,20 | **0,87 / 0,03** |
+| Ángulos most_aware, oferta o servicio inventado (det) | 0,30 (n 10) | **0,10 (n 30)**; dev 0,31 → 0,19 |
+| most_aware, dato inventado (juez) / cumple (juez) | 0,10 / 0,90 | 0,00 / 1,00 |
+| Ángulos, oferta o servicio inventado en total | 0,08 (n 50) | **0,047 (n 150)**; dev 0,087 → 0,05 |
+| Copy unaware, cumple (juez) | 4/5 (comida) | **6/6** (comida 3/3, inmobiliaria 3/3) |
+| Copy unaware con horario | 0/5 (corregido) | 0/6 |
+| Copy, oferta o servicio inventado | 0/17 (sin inmobiliaria) | 3/35: «separación» y «separar» del apartamento, todas en inmobiliaria |
+
+- **Lo que no empeoró (test):** unaware 1,00 → 1,00 (n 30), problem_aware 0,90 → 0,93,
+  reparto exacto 15/15 con 0 etiquetas inválidas, calidad del juez 3,62 → 3,55 (barra:
+  −0,25).
+- **Regresión:** **product_aware de ángulos baja de 0,90 (n 10) a 0,77 (n 30)**, bajo la
+  barra; en dev queda igual (0,81). Con esos tamaños la diferencia no es concluyente, pero
+  con n 30 el nivel ya no pasa. Las fallas: ganchos vagos en inmobiliaria («Tu casa propia
+  está más cerca de lo que crees»); en viajes usa «el paquete a tu medida», que es un
+  diferenciador y no quita una duda; una idea dice que el combo de almuerzo (de 12 m a
+  3 p. m.) se pide «hasta las 11 p. m.».
+- **Copy most_aware: 3/8, «no fiable».** El CTA ya solo usa Rappi, que está en los datos:
+  ningún servicio inventado. Falla por largo: el texto describe la plancha y la salsa antes
+  de la compra. El ajuste de esta vuelta no apuntaba a eso.
+- **Copy, el resto:** solution_aware 9/9 (dato concreto 9/9) y product_aware 9/9; puertas
+  35/35.
+- **Muestras ampliadas** con lo que sobró: ángulos test ×5 por producto (n 30 por nivel) y
+  copy most_aware y product_aware hasta n 8–9. Sin medir: nada de lo pedido. Las partes no
+  entran en esta pasada.
+- **Partes:** los números de partes de NIVELES-001/002 se tomaron sobre la base v3.1 de main
+  (`a6667370`) y ya **no describen el prompt de partes publicado** (`proponer-partes-v3.4`
+  sobre la v3.2 de main). Se medirán con el trabajo de clips. La identidad sin ventajas ni
+  nivel se comprueba ahora contra el `merge-base` con `origin/main`: v3.2 = v3.4, 12 pares.
+- **Costo:** juego de ángulos US$0,0309 (NIVELES-002: US$0,0311).
+- **Gasto de esta pasada: US$1,600** de los US$2,00 autorizados. Total de la tarea con los
+  dos presupuestos: US$4,46. Cero llamadas a BytePlus.
+- **Veredicto: se puede publicar con un arreglo.** Quedan «no fiable» product_aware de
+  ángulos (0,77) y most_aware del copy (3/8, por largo). Hace falta además una regla para
+  inmobiliaria: no ofrecer «separación» del apartamento si no está en los datos. solution_aware
+  y most_aware de ángulos ya pasan la barra; most_aware todavía inventa un servicio en el
+  10 % («para llevar», «reserva»).
+
+---
+
+<a id="niveles-002"></a>
+
+## NIVELES-002 — Segunda pasada: los arreglos del dueño del prompt contra NIVELES-001 (m-25026482) — 2026-11-13
+
+- **Qué se midió:** solo lo que tocan los commits `5b9eb00f` (unaware solo con ventajas de
+  experiencia; solution_aware sin sesgo de comida; una ventaja no se vuelve gratis, regalo,
+  incluido, descuento ni promoción; ningún servicio que no esté en los datos) y `1a5352ba`
+  (partes sin guía de most_aware, `proponer-partes-v3.3`), contra los números de
+  [NIVELES-001](#niveles-001) en los mismos casos. Código medido: `440eefa6` (rama
+  `feat/m-25026482-niveles-consciencia`).
+- **Modelos y ajustes:** los mismos de NIVELES-001 (`claude-sonnet-5` @ medium para
+  ángulos y partes, `claude-opus-5-5` @ medium para copy, juez `claude-haiku-5-5` @ low con
+  `juez-niveles-v2`; para partes `juez-niveles-v2+partes-v1`). Sin trazas de Langfuse.
+- **Cambios en la medición, escritos antes de juzgar** ([README](../../packages/api/evals/niveles_consciencia/README.md)):
+  nuevo chequeo determinista de ofertas y servicios inventados (`invented_offers`, aplicado
+  también hacia atrás a las salidas guardadas de NIVELES-001) y un agregado a la rúbrica
+  del juez solo para partes (sin cifras por diseño; el ángulo pasa como dato dado).
+- **Corridas:** ángulos con ventajas ×2 en los 7 productos (13 de 14 juegos: el tope cortó
+  uno), sin ventajas ×1 en test (2 de 3); copy ×3 en los casos de comida y unaware de
+  comida ×3 más; partes product_aware ×3 en los dos brazos.
+
+### Antes → después
+
+| Qué | NIVELES-001 | NIVELES-002 |
+|---|---|---|
+| Ángulos solution_aware con ventajas, cumple (juez), test | 0,50 (n 6) | **0,70** (n 10), no fiable |
+| ídem en dev | 0,875 (n 8) | 0,75 (n 16) |
+| Ángulos most_aware con ventajas: oferta o servicio inventado (det), test | 0,67 | **0,30** |
+| most_aware: dato inventado (juez), test | 0,17 | 0,10, sigue no fiable |
+| Ángulos con ventajas, cualquier oferta o servicio inventado (det), test / dev | 0,20 / 0,075 | **0,08** / 0,087 |
+| «De regalo», «incluido» en ideas con ventajas | 1 de 70 ideas | 1 de 130 («incluido», en solution_aware) |
+| Copy unaware de comida: cumple (juez) | 0/3 | **4/5** (uno sin juez por el tope) |
+| Copy unaware de comida: regla determinista / menciona horario | 0/3 · 3/3 | 3/6 · 2/6 |
+| Copy (comida), oferta o servicio inventado | 5 de 21 piezas | **0 de 17** |
+| Partes product_aware con la rúbrica corregida | 0/3 · 0/3 | **3/3 base · 3/3 nuevo** |
+| Partes v3.3 sin ventajas ni nivel = v3.1 | (v3.2: sí) | **sí, 12 pares byte a byte** |
+
+- **Lo que queda:** solution_aware sigue bajo la barra (0,70). En inmobiliaria repite el
+  producto («Dos alcobas pensadas para tu familia») sin decir qué distingue al negocio. Los
+  servicios inventados en most_aware siguen: «Reserva tu cupo» en viajes y «para llevar» en
+  comida (9 de 130 ideas). El copy unaware todavía nombra el horario en 2 de 6.
+- **Sin regresiones en test:** unaware 1,00 → 1,00, problem_aware 0,83 → 0,90,
+  product_aware 0,83 → 0,90, calidad 3,57 → 3,62, reparto exacto 15/15 y 0 etiquetas
+  inválidas, puertas del copy 17/17. En dev, problem_aware y product_aware bajan de 0,875 a
+  0,81 (una idea de 16: ruido). Sin ventajas en test hay solo n = 4 por nivel: no alcanza
+  para hablar de regresión.
+- **Sin medir:** copy unaware de inmobiliaria. Su única llamada dio `APITimeoutError` y se
+  contó a su techo (US$0,12). Lo que quedaba (US$0,137) daba para n = 1, que no dice nada.
+  El copy product_aware y most_aware de inmobiliaria tampoco se repitieron.
+- **Costo:** juego de ángulos US$0,0311 (NIVELES-001: US$0,0287), el mismo orden.
+- **Gasto:** esta pasada US$1,033 (incluye US$0,12 de la llamada perdida); **total de la
+  tarea US$2,86** de US$3. Cero llamadas a BytePlus.
+- **Veredicto: se puede publicar con un arreglo.** Las ofertas inventadas bajan a menos de
+  la mitad, el copy unaware de comida pasa de 0/3 a 4/5 y nada que pasaba se rompió.
+  solution_aware y most_aware siguen «no fiable». Hay que mostrarlos como tales o hacer una
+  vuelta más de redacción: para solution_aware, «nombra una ventaja de la lista o un dato
+  que la competencia no tenga»; para most_aware, prohibir con nombre «reserva», «aparta» y
+  «para llevar» si no están en los datos.
+
+---
+
+<a id="niveles-001"></a>
+
+## NIVELES-001 — Niveles de consciencia (Schwartz) y ventajas del negocio en ángulos, copy y video por partes (m-25026482) — 2026-11-13
+
+- **Qué se midió:** la rama `feat/m-25026482-niveles-consciencia` (5 commits sobre
+  `a6667370`) contra `a6667370` (main antes del cambio), con los mismos casos. Solo se
+  mide; ningún prompt se tocó.
+- **Modelos y ajustes (los de producción):** ángulos `claude-sonnet-5` @ medium,
+  `max_tokens` 6.000 (`angles_ai`); copy `claude-opus-5-5` @ medium
+  (`AnthropicCopyAdapter`, 1 variante por caso); partes `claude-sonnet-5` @ medium,
+  `proponer-partes-v3.2` frente al mismo brief sin ventajas ni nivel. Juez
+  `claude-haiku-5-5` @ low, rúbrica `juez-niveles-v2` escrita antes de juzgar
+  ([README](../../packages/api/evals/niveles_consciencia/README.md)). Revisión servida:
+  la que trae cada fila de `results/` (`revision`).
+- **Entradas:** casos anonimizados que ya estaban en el repo, nada nuevo de la base de
+  datos: 7 productos para ángulos (comida 3, inmobiliaria 2, viajes 2; 4 dev, 3 test), cada
+  uno con y sin ventajas; las ventajas de comida son el ejemplo del fundador
+  (parqueadero gratis, mascotas, mesas, abierto hasta las 11 p. m., combo con el postre de
+  la heladería de al lado). 7 ángulos a mano para copy (los 5 niveles en comida, 2 en
+  inmobiliaria) y los 5 de comida para partes; copy y partes se corrieron 3 veces.
+  La marca de viajes es la de Cusco (Perú) de `reels_ai`: no hay otra en los casos.
+- **Cómo reproducirlo:** `just eval-niveles --suite identity,angles,copy,parts --split all
+  --cap-usd 2.40` y `summarize.py <resultados…> --split test`. Sin claves `LANGFUSE_*`
+  en el `.env`: corrió **sin trazas**.
+
+### C. Video por partes: identidad v3.1 = v3.2
+
+Sin ventajas y sin nivel, el prompt de sistema, la herramienta y el prompt de usuario de
+v3.2 son **idénticos byte a byte** a v3.1 (12 combinaciones brief × ángulo, test
+`test_parts_prompt_identical_without_perks_or_level`). Los casos de `eval-partes` no se
+repitieron: solo cambia el número de versión.
+
+### A. «10 variaciones» — test (3 productos × 2 = 6 juegos nuevos por brazo)
+
+Regla del nivel según el juez (informado); entre paréntesis, sin ventajas. La base no tiene
+etiquetas: su reparto es el que infiere el juez.
+
+| Nivel | Base: ideas que el juez ubica ahí (de 29) | Cumple su regla, con ventajas | Inventa (det / juez) | Usa una ventaja (juez) | Barra |
+|---|---|---|---|---|---|
+| unaware | 13 | 1,00 (0,83) | 0 / 0 | 0,33 | fiable |
+| problem_aware | 3 | 0,83 (0,67) | 0 / 0 | 0,33 | fiable |
+| solution_aware | 9 | **0,50** (0,67) | 0 / 0 | 0,50 | **no fiable** |
+| product_aware | 2 | 0,83 (0,83) | 0 / 0 | 0,83 | fiable |
+| most_aware | 2 | 1,00 (1,00) | 0 / **0,17** | 0,33 | **no fiable** |
+
+- **Reparto:** 7/7 juegos con ventajas y 7/7 sin ventajas salen con 2 por nivel exactos;
+  **0 etiquetas faltantes o inválidas** (70 + 70 ideas). La base, sin niveles, se amontona
+  en unaware y solution_aware (22 de 29 en test).
+- **Calidad (juez 1–5):** test base 3,52 → 3,57 con ventajas / 3,50 sin; dev 3,48 → 3,70 /
+  3,58. **No empeora** (barra: −0,25).
+- **Datos inventados:** 0 por la extracción determinista en las 140 ideas nuevas. El juez
+  marca 1/6 en most_aware de test («Separa el tuyo hoy»: una reserva que nadie ofreció) y
+  dio motivo de promoción inventada a «Postre de regalo al lado» / «Almuerzo con final feliz
+  incluido» (la ventaja dice «combo con el postre», no «de regalo»). En dev, sin ventajas,
+  product_aware cumple solo 0,50: sin ventajas no hay con qué quitar la fricción.
+- **Por qué solution_aware falla:** en inmobiliaria repite el producto («2 alcobas pensadas
+  para tu familia») sin decir qué hace mejor a este negocio; la guía pide «porción,
+  ingredientes, variedad», que es de comida.
+- **Costo por juego (tabla `v9`, = página de precios leída el 2026-11-13):** base
+  US$0,0250 → US$0,0287 con ventajas / US$0,0290 sin (+15 %); entrada 1.842 → 2.722 tokens
+  (prompt de sistema más largo, en gran parte en caché), salida 2.321 → 2.622–2.727.
+
+### B. Copy (Opus 5.5) — 7 casos × 3 corridas = 21 piezas por brazo
+
+| Nivel (n) | Precio en unaware | Cumple su regla (juez), base → nuevo | Inventa (det / juez), nuevo | Usa ventaja, nuevo |
+|---|---|---|---|---|
+| unaware (6) | **6/6 → 0/6** | **0,00 → 0,00** | 0 / 0 | 1,00 |
+| problem_aware (3) | — | 1,00 → 1,00 | 0 / 0 | 1,00 |
+| solution_aware (3) | — | 1,00 → 1,00 | 0 / 0 | 1,00 |
+| product_aware (6) | — | 1,00 → 0,83 | 0 / 0,17 | 1,00 |
+| most_aware (3) | — | 0,33 → 1,00 | 0 / 0 | 1,00 |
+
+- Puertas del copy (`copy_quality.gates`) 21/21 en ambos brazos. Calidad 3,43 → 3,38.
+- **unaware no cumple:** el precio desaparece (6/6 → 0/6), pero el texto lista las
+  ventajas de fricción («Abierto hasta las 11 p. m.», «parqueadero gratis», «asesoría sin
+  costo») en 5/6, que el juez lee como oferta. La guía de unaware dice «aquí brillan las
+  ventajas del negocio» y no distingue las de experiencia de las de fricción.
+- **Costo por pieza:** US$0,0135 → US$0,0152 (+13 %). El prefijo estable (en caché) crece
+  ~500 caracteres (2.713 → 3.212 en comida, 2.773 → 3.250 en inmobiliaria); solo cuando la
+  marca tiene ventajas. n por nivel = 3–6: **todos los niveles del copy quedan «no fiable»
+  por tamaño**, aunque los números apunten bien.
+
+### C. Partes — 5 casos × 3 corridas (14 base usables de 15, 15 nuevos)
+
+| Nivel | Cumple (juez), base → nuevo | Partes, base → nuevo |
+|---|---|---|
+| unaware | 1,00 → 0,67 | 5 → 5 |
+| problem_aware | 0,50 → 0,67 | 5 → 4 |
+| solution_aware | 0,67 → 1,00 | 4 → 4–5 |
+| product_aware | 0,00 → 0,00 | 4–5 → 4–5 |
+| most_aware | 0,00 → 0,00 | 4 → 4 |
+
+- Usa una ventaja (juez) 0,87; sin precios ni texto en pantalla en todas. Un fallo en la
+  base (parte de 26 palabras, el tope del código).
+- **most_aware no cambia nada:** «pocas partes, cortas» sigue dando 4 partes en ambos
+  brazos. **product_aware** falla porque la rúbrica del juez pide cifras que el prompt de
+  partes prohíbe por diseño: es un desajuste de la rúbrica, no un resultado del prompt. El
+  «domicilio inventado» de most_aware es un falso positivo del juez (Rappi venía en el CTA
+  del ángulo, que no le pasé como dato).
+- Costo por propuesta US$0,0077 → US$0,0061 (ruido de la caché).
+
+### Costo para un cliente real y gasto de la medición
+
+- Cliente típico, 15 publicaciones al mes (`creaciones-del-mes-medicion.md`), en el peor
+  caso un juego de ángulos por publicación: ángulos US$0,38 → US$0,43 y copy US$0,20 →
+  US$0,23 al mes: **+US$0,09 al mes** por negocio.
+- **Gasto total de la tarea: US$1,83** (tope US$3): piloto US$0,150; una corrida cortada
+  por un `APITimeoutError` del juez, US$0,111 registrados + US$0,079 contados a su techo;
+  corrida completa US$0,921; dos repeticiones de copy y partes US$0,296 + US$0,275. Cero
+  llamadas a BytePlus.
+
+### Veredicto
+
+**Se puede publicar con arreglos.** Reparto perfecto, cero datos inventados por la
+extracción, calidad igual y +US$0,09 al mes. Antes de activarlo (al dueño del módulo):
+1. Copy unaware: separar las ventajas de experiencia (mesas, mascotas, parqueadero) de las
+   de fricción (horario, «gratis», «sin costo»), y dejar las de fricción para product_aware.
+2. Ángulos solution_aware: guía que no sea solo de comida («lo que distingue a este negocio:
+   datos del producto o ventajas de la lista»).
+3. Una ventaja no se vuelve regalo: no decir «gratis», «de regalo» ni «incluido» si la
+   ventaja no lo dice.
+4. Partes most_aware: la guía no cambia el plan; o se quita o se pide un número de partes.
+Pendiente para la eval: pasar el ángulo al juez de partes y una rúbrica de product_aware
+para partes sin cifras.
+
+---
+
+<a id="foto-base-002"></a>
+
+## FOTO-BASE-002 — La foto base sobre la redacción nueva: compilador 5 de `main` frente a 6 (m-25017279) — 2026-11-13
+
+- **Por qué:** **FOTO-BASE-001 midió la redacción vieja.** Allí, «5» era el compilador 4 sin
+  dos frases. Después, `main` integró el PR #662, que trae su propio **compilador 5**: reescribe
+  las frases fijas para negocios que no son de comida («appetizing» → «appealing», «the food» →
+  «real subjects, such as people, materials and the real product», «ingredients» → «parts and
+  details», «Never add logos to people, bare skin or the product itself»). La foto base se
+  renumeró a **compilador 6**: el 5 de `main` menos exactamente la frase de «Datos clave» y la
+  de la letra. Comprobado en los prompts: 5 frente a 6 difieren solo en esas dos frases. Esta
+  prueba mide lo que se publica. El fundador autorizó un tope de **US$1** el 2026-11-13.
+- **Modelo y entradas:** los de FOTO-BASE-001: `dola-seedream-5-0-pro-260628`, fotos de Bianki
+  y su isotipo, Brand Kit de prueba. Solo lectura en R2. **Nada se escribió ni se borró en R2
+  ni en la base.**
+- **Diseño mínimo:** F1, F3, F4, F7, G2 y G3, con 1 repetición = 8 pares. Se agregó **una
+  segunda repetición de G2** (2 pares más) con lo que quedaba del tope. G3 no cabía. En total
+  son **10 pares y 20 imágenes**, con `--versions 5 6` en la rama
+  `feat/m-25017279-foto-base` (cabeza `76cb1b5d`).
+- **Puntuación:** los criterios (a)–(e) y la regla de (a) de FOTO-BASE-001. Las 20 imágenes las
+  miró una persona (este agente). Aparte se anotó si el logo salió alterado (otro color o
+  deformado).
+
+### Resultados
+
+| Criterio | 5 imagen (4) | 6 imagen (4) | 5 galería (6) | 6 galería (6) | 5 total (10) | 6 total (10) |
+|---|---|---|---|---|---|---|
+| (a) Texto inventado | 0 | 0 | 2 | 1 (menor) | 2 | 1 |
+| (b) Botón, insignia o elemento gráfico | 0 | 0 | 1 | 0 | 1 | 0 |
+| (c) Letras reales de las botellas (F4) | 1/1 | 1/1 | — | — | 1/1 | 1/1 |
+| (d) Arriba y abajo tranquilos | 4 | 4 | 5 | 6 | 9 | 10 |
+| (e) Calidad media (1–5) | 4,00 | 3,75 | 3,67 | 4,00 | 3,80 | 3,90 |
+| Logo alterado | 1 | 2 | 0 | 0 | 1 | 2 |
+
+- **En pares:** en 2 pares falla solo el 5; en 1 falla solo el 6 (menor); en 7 no falla
+  ninguno. No hay muestra para una prueba.
+
+**1 — ¿Quitar las dos frases tiene el mismo efecto con la redacción nueva?** Sí, en la misma
+dirección.
+
+- **G2 gancho, rep. 2, compilador 5:** titular «SALKHPAAD» en los colores de la marca, con un
+  subtítulo «Salontgand» (otra vez algo parecido al nombre de la letra) y un logo inventado
+  abajo.
+- **G2 llamada, rep. 2, compilador 5:** letrero de McDonald's con «Mbolen».
+- Con el 6: G2 limpio en 3 de 4. El cuarto tiene letras cursivas desenfocadas e ilegibles en
+  un toldo (menor).
+- El nombre de la letra no apareció con el 6.
+- Zonas tranquilas y calidad: iguales o un poco mejores con el 6.
+
+**2 — Redacción de `main` (compilador 5) frente a las imágenes del compilador 4 de
+FOTO-BASE-001, mismos casos.** Es una **observación entre corridas distintas, no una medición en
+pares**.
+
+- En la comida no se nota cambio de apetito, encuadre ni luz. El shawarma, la salchipapa, las
+  papas y el combo salen con el mismo estilo, y las botellas conservan sus letras.
+- Lo que sí se vio: en F1, con el 5 y con el 6, el isotipo salió **con otros colores** (disco
+  rojo, aro verde azulado). El 4 lo dejó negro en esta corrida.
+- Pero el recoloreado del isotipo en F1 ya había salido 1 vez con el «5» viejo en
+  FOTO-BASE-001. Con esta muestra no se puede atribuir a la redacción nueva.
+
+**3 — Fallos del compilador 6:**
+
+- letras cursivas desenfocadas en un toldo (G2 llamada, rep. 1, menor);
+- isotipo con otros colores en F1;
+- isotipo estirado en óvalo en F4;
+- juguetes y objetos de plástico en los colores de la marca de fondo en F3 (calidad 3).
+- Sin titulares, sin botones y sin marcas de terceros.
+
+**Gasto:** **US$0,912** de un tope de US$1, en 20 llamadas sin fallos. Mediana de unos 40 s por
+imagen. El costo por pieza no cambia.
+
+**Veredicto: publicar el compilador 6.** Con la redacción nueva, quitar las dos frases vuelve a
+eliminar los titulares y el letrero de un tercero que sí aparecieron con el 5. No se vio ninguna
+regresión de texto.
+
+**Límites:**
+
+- 10 pares, una marca y una sola repetición, salvo G2.
+- G3 solo 1 vez.
+- La comparación con el compilador 4 es entre corridas.
+- La alteración del logo (con 5 y 6) queda como observación abierta. Pide una medición propia
+  si se repite en piezas reales.
+
+---
+
+<a id="foto-base-001"></a>
+
+## FOTO-BASE-001 — La foto base de Seedream: compilador de prompts 4 frente a 5, en pares (m-25017279) — 2026-11-13
+
+- **Por qué:** con el compilador 5, la escena de Seedream es solo la foto base (ADR 49 §2).
+  Comparado con el 4, el prompt pierde exactamente dos frases:
+  - el bloque «Key facts … (as JSON) … Context only» («Datos clave»);
+  - «The brand's typeface is "Unbounded"…».
+  - En ESCENA-SIN-LETRAS-001, la diapositiva de gancho sin logo dibujó el nombre de la letra
+    como titular («UNUBND», 2 de 2).
+  - El fundador autorizó el 2026-11-13 el diseño completo, con un tope de **US$3**. Las salidas
+    quedan solo en el disco local.
+- **Modelo y tamaños:** `dola-seedream-5-0-pro-260628` (`DEFAULT_SEEDREAM_MODEL`), 1080×1920 y
+  1280×1600, `watermark: false`, sin semilla.
+- **Entradas:** las mismas fotos del catálogo de Bianki, el mismo isotipo y el mismo Brand Kit
+  de prueba que ESCENA-SIN-LETRAS-001. Se leyeron de R2 solo para lectura. **Nada se escribió ni
+  se borró en R2 ni en la base.**
+- **Diseño:** 11 encargos, cada uno 2 veces = **28 pares, 56 imágenes**.
+  - Las 8 imágenes publicitarias son las de ESCENA-SIN-LETRAS-001.
+  - Las galerías son G1 (con logo), G2 (sin logo) y **G3**, que es G2 más «Datos clave»:
+    precio, 2x1 y horario.
+  - Arnés: `packages/api/evals/scene_text_v4/run.py --versions 4 5 --reps 2`, rama
+    `feat/m-25017279-foto-base`.
+  - Los 56 prompts se recompilaron después del rebase de la rama (cabeza `959e7cd7`) y salieron
+    idénticos byte a byte a los que se pagaron.
+  - Los dos prompts de cada par solo difieren en esas dos frases. Ningún tema se recortaba con
+    el 4, así que el presupuesto liberado no deja pasar más texto en estos encargos.
+- **Puntuación:** criterios (a)–(e) de ESCENA-SIN-LETRAS-001. Las 56 imágenes las miró una
+  persona (este agente), sin juez automático.
+  - Regla de (a): cuenta solo si se ven formas de letra. Una mancha de neón sin formas no cuenta.
+  - Aparte se anotó si un 2x1 muestra dos unidades.
+
+### Resultados
+
+| Criterio | 4 imagen (16) | 5 imagen (16) | 4 galería (12) | 5 galería (12) | 4 total (28) | 5 total (28) |
+|---|---|---|---|---|---|---|
+| (a) Texto inventado | 1 | **0** | 4 | 1 | 5 | **1** |
+| (b) Botón, píldora o cinta | 0 | 0 | 0 | 0 | 0 | 0 |
+| (c) Letras reales de las botellas | 2/2 | 2/2 | 2/2 | 2/2 | 4/4 | 4/4 |
+| (d) Arriba y abajo tranquilos | 15 | 12 | 10 | 11 | 25 | 23 |
+| (e) Calidad media (1–5) | 3,88 | 3,81 | 3,92 | 3,92 | 3,89 | 3,86 |
+| Logo como disco flotante | 2 | 2 | 0 | 0 | 2 | 2 |
+
+- **En pares (a/b):** en 5 pares falla solo el 4; en **1 par falla solo el 5**; en 0 fallan los
+  dos; en 22 no falla ninguno. Prueba de signos: p ≈ 0,22. **No es significativo.**
+- (e): 21 pares iguales, 3 mejores con el 5 y 4 peores.
+- (d): en 4 pares el 5 queda peor y en 2 mejor. En F1, las 2 veces, el shawarma del 5 sube al
+  cuarto de arriba.
+
+**Pregunta 1 — el nombre de la letra:** con el 5 no apareció ninguna vez, en 0 de 28.
+
+- Con el 4 se dibujó una vez claro, en **G2 llamada a la acción rep. 1: un letrero «UNBOUND»
+  sobre la puerta**. Además hubo fragmentos nítidos con forma de letra, en los colores de la
+  marca, sobre la franja de arriba en G2 gancho rep. 2.
+- **G2:** el 4 falla en 2 de 4 imágenes (gancho 1/2, llamada 1/2); el 5 en **0 de 4**.
+- **G3:** el 4 falla en 1 de 4 (gancho rep. 2: neón rojo desenfocado con forma de letras
+  cursivas, menor); el 5 en 1 de 4 (llamada rep. 1: letrero de McDonald's, ver abajo).
+- En el gancho de G2, el 4 no repitió el «UNUBND» 2 de 2 de ESCENA-SIN-LETRAS-001 (aquí 1/2,
+  menor). La muestra es pequeña.
+
+**Pregunta 2 — quitar «Datos clave»:**
+
+- Imagen publicitaria: texto inventado 1/16 → 0/16.
+  - El único caso del 4 es F1 rep. 1: un letrero «Konk Exi» detrás del caballete.
+  - Es probable que venga de la dirección «Centro comercial Korner» que solo el 4 le pasaba a
+    Seedream.
+- **El 2x1 no se pierde, porque el 4 tampoco lo mostraba.** F7 enseña un solo shawarma en 2 de 2
+  con el 4 y en 2 de 2 con el 5. G3 enseña una sola bandeja en 2 de 2 con cada compilador.
+- La escena sigue el encargo igual con los dos.
+- Calidad, sin cambio que se pueda medir.
+- Fidelidad: el 5 puso **una hamburguesa** junto a la bolsa en F6 rep. 1. Bianki no vende
+  hamburguesas; con el 4 no pasó.
+- Con los dos compiladores siguen los recortes de colores de la marca como utilería (F4, F5,
+  F6, F8). Con el 5 aparecen un poco más.
+
+**Pregunta 3 — regresiones:** 1 par.
+
+- **G3, llamada a la acción, rep. 1: un letrero de McDonald's iluminado y nítido sobre la
+  puerta.** Es una marca de un tercero en un anuncio del cliente.
+- El mismo fallo salió con el compilador 4 en ESCENA-SIN-LETRAS-001, con la misma escena del
+  operador («Papas fritas en la barra, con la entrada del local al fondo»). Viene de la escena,
+  no del compilador, pero sigue abierto.
+- Otras regresiones de calidad del 5, sin texto:
+  - la hamburguesa de F6;
+  - cinco manos y recortes de colores en F8 rep. 1;
+  - el aro del isotipo pintado de verde azulado en F1 rep. 1.
+
+**Pregunta 4 — gancho con logo (G1):** ninguna llamada a la acción dibujada con el 4 ni con el 5
+(0/2 cada uno). Aquí el tema no se recortaba con el 4, así que esta muestra **no prueba** el riesgo
+que señaló la revisión: un tema largo que con el 5 entra entero. Hace falta un caso con un tema
+largo.
+
+### Costo
+
+- **Gasto: US$2,637** de un tope de US$3, según la bitácora de `LedgerTransport`.
+  - 56 imágenes buenas a US$0,045 cada una, más US$0,003 por la segunda referencia en los casos
+    con logo.
+  - US$0,045 por un corte de conexión en F5 rep. 2 compilador 4, anotado al peor caso; se
+    repitió y salió.
+- Mediana: 35 s por imagen.
+- Costo por pieza: **sin cambio**. El 5 manda el mismo número de imágenes y un prompt más corto.
+
+### Veredicto
+
+**Publicar (ship).**
+
+- El 5 elimina lo que se buscaba: el nombre de la letra no aparece (0/28, frente a 1 claro más
+  1 fragmento con el 4).
+- El texto inventado baja de 5/28 a 1/28. La diferencia no es significativa (p ≈ 0,22).
+- No hay botones con ninguno de los dos.
+- Las letras reales se conservan igual.
+- La calidad y la fidelidad quedan iguales salvo un caso: la hamburguesa.
+- El 2x1 no se pierde porque el 4 tampoco lo mostraba.
+
+### Lo que queda abierto
+
+- Un letrero de una marca de un tercero cuando la escena pide «la entrada del local». Pasó 1
+  vez en 4 imágenes de esa escena entre los dos bancos, con el 4 y con el 5.
+- Propuesta: nombrar en la regla de texto «no logos or signs of other brands», y medirlo con
+  G2/G3-s2.
+- La muestra es pequeña: una marca, 2 repeticiones, sin semilla. Una regresión del 5 que
+  aparezca menos de 1 vez en 10 no se vería.
+- No se midió:
+  - un tema largo con logo (pregunta 4);
+  - los formatos 1:1 y reel, y el primer cuadro de video de una diapositiva animada;
+  - la pieza compuesta con la capa de texto.
+
+---
+
+<a id="partes-sin-letras-001"></a>
+
+## PARTES-SIN-LETRAS-001 — El prompt de una parte de Seedance sin trazos con forma de letras: v1 frente a v2, piloto a ciegas (m-24993031) — 2026-11-13
+
+**Resultado: el v2 no mejora. El prompt de partes se queda en v1** (`PART_PROMPT_VERSION = 1`, `PART_REFERENCE_MEDIA_PROMPT_VERSION = 2`). El v2 se revirtió antes del PR y no llegó a `main`.
+
+- **Por qué:** en la prueba de punta a punta del video por partes, una parte salió con trazos rojos con forma de letras, aunque su prompt prohíbe el texto. La hipótesis fue que la línea de tipografías (`_typefaces_cue_v2`, «"Baloo 2" for headlines…») y la paleta «as accents» empujan a Seedance a dibujar letras. También que la regla en negativo, que nombra «logo», «brand name» y «sign lettering», hace lo mismo.
+- **Variantes** (solo cambian las líneas finales de `_part_common_lines`; el resto del prompt es idéntico):
+  - **v1** (el de `main`): la paleta «as accents… props, light or the background», la pista de tipografías y `_TEXT_RULE_V2_NO_LOGO`.
+  - **v2**:
+    - sin tipografías;
+    - la paleta «only into the light, the props and the set, never as painted marks, strokes or shapes over the image»;
+    - la regla en positivo: «Every surface stays clean and unprinted; the only lettering is the real product's own label, unchanged.»;
+    - «No on-screen text.» al final.
+  - Los prompts de clip no cambiaban.
+- **Modelo:** `dreamina-seedance-2-5-260628`, en modo borrador a **480p** y 9:16. Lleva audio porque las partes lo traen, y va sin semilla: el adaptador no envía `seed` en 2.x. Se guardó la semilla que devuelve ModelArk.
+- **Entradas:** 2 partes `reference` reales de la base local, de la misma marca, cuya paleta trae el rojo `#da2220`:
+  - **E1**: parte 1 de `7e24863f`, 6 s;
+  - **E2**: parte 2 de `df00f0a1`, 5 s.
+  - En local no hay ninguna parte `edit` real, así que **el modo `edit` no se probó**.
+  - La foto del catálogo solo se leyó; no se escribió nada en la base, en R2 ni en la carpeta de subidas.
+- **Diseño:** 3 tiradas por variante y entrada, 12 tareas, 3 a la vez como máximo. El tope de gasto era de 9 USD.
+  - El arnés y los datos quedaron fuera de git, en la carpeta de notas de la sesión: `piloto.py`, `prompts.json`, `llamadas.jsonl` y `clave.json`.
+  - `piloto.py plan` comprobó que el v1 del arnés era el mismo prompt que el código de `fd472313`.
+- **Autorización y desvíos:**
+  - Deivid autorizó el 2026-11-13 10 videos a 480p por unos 5,70 USD.
+  - Se corrió hacia las 21:15 de Bogotá, fuera del horario de evaluaciones con video ([§ llave y horario](#byteplus-llave-y-horario)).
+  - Usó la llave de la app (`QUALIFY_BYTEPLUS_ARK_API_KEY`), no la de evaluación.
+- **Etiquetado:** una sola etiqueta binaria, «marca o letras no pedidas», con una regla escrita antes de generar.
+  - La regla cuenta trazos con forma de letra, texto sobreimpreso, logos o rótulos ajenos y la etiqueta real alterada. No cuenta texturas, salsas, humo ni colores de la marca sin forma de letra. Lo dudoso cuenta como SÍ y se marca aparte.
+  - Etiquetó otra sesión, a ciegas: no conocía ni la entrada ni la variante ni la semilla. La correspondencia se cruzó después con `clave.json`.
+
+### Resultados (10 videos)
+
+| | E1 | E2 | Total |
+|---|---|---|---|
+| v1 | 1 dudoso (pared con trazos rojos, como un rótulo borrado) · 1 limpio | 1 dudoso (parche rojo con un emblema en el delantal) · 1 limpio | **0 claros + 2 dudosos / 4** |
+| v2 | 2 claros (camiseta con un logo y dos líneas de texto rojas; lata roja con una «A») · 1 limpio | 3 limpios | **2 claros / 6** |
+
+- **Lectura:**
+  - El v2 no reduce las marcas y en E1 las empeora.
+  - El tipo de fallo cambia: el v1 da trazos ambiguos sobre superficies, y el v2 da **objetos rojos con marcas ajenas**, una camiseta y una lata.
+  - Al quitar la negación explícita de logos y rótulos, la frase «into the light, the props and the set» parece invitar a meter props del color de la marca, y Seedance los llena de logos.
+  - **La hipótesis de la línea de tipografías no se confirma.**
+- **Costo:**
+  - **5,696790 USD**, con 10 videos facturados según `usage.completion_tokens` y la tabla `v8` (los precios de Seedance 2.5 a 480p son iguales en la `v9` vigente): E1 0,621082 y E2 0,518276 por video.
+  - En el peor caso, 6,827599 USD, si también se cobraran los 2 rechazos (ModelArk dice que no; no se comprobó en la consola).
+- **Rechazos de moderación:** 2 de 12, los dos del v1 (E2 tirada 1 y E1 tirada 2). El código fue `OutputAudioSensitiveContentDetected.PolicyViolation`: el audio generado «may be related to copyright restrictions». No se reintentaron, porque habría sido una tarea 13, fuera del límite. Por eso el v1 tiene 2 tiradas por celda y el v2 tiene 3.
+- **Límites:**
+  - La muestra es pequeña (n = 10).
+  - Sin semilla fija, así que **no hay pares emparejados**.
+  - Hubo 2 o 3 tiradas por celda, una sola marca y solo el modo `reference`.
+  - El etiquetado miró **3 fotogramas por video** (inicio, mitad y final), no el video entero. Un trazo breve entre fotogramas no se habría visto.
+  - Es una señal piloto, no una medida con significancia.
+- **Hallazgo aparte:** el brief guardado de las dos partes repite la descripción del plano, 4 veces en E1 y 2 en E2. Además, E1 describe «sliders de pescado» con el producto «super smash», una hamburguesa. Puede ser la misma repetición que #645 arregló en pantalla. Queda para el ticket aparte **m-25026484**, junto con una prueba de un negativo explícito sobre «props con marcas o logos».
+
+---
+
+<a id="decision-texto-padre-opus"></a>
+
+## DECISIÓN — El texto del padre del video por partes se queda en Claude Opus 5.5 (m-24993031) — 2026-11-13
+
+**Es una decisión, no una prueba:** no hubo llamada al modelo ni gasto.
+
+| Campo | Valor |
+|---|---|
+| Quién decide | El fundador, 2026-11-13 |
+| Qué | El texto (copy) del padre de un video por partes lo sigue escribiendo **`claude-opus-5-5`, esfuerzo `medium`**, con el respaldo ante rechazos de siempre. Es el mismo modelo del copy de todo el generador (migración a Opus 5.5 del 2026-10-13, [`plan-observabilidad-langfuse.md`](../plan-observabilidad-langfuse.md)) |
+| De dónde sale en el código | `packages/creative/src/qualify_creative/adapters/anthropic_copy.py:54` (`DEFAULT_MODEL_ID`) y `:58` (`DEFAULT_EFFORT`). No hay cambio por variable de entorno ni por ruta: `packages/api/src/qualify_api/creative/composition.py:391` crea `AnthropicCopyAdapter()` sin argumentos y la cadena de copy es `COPY_CHAIN = ("anthropic",)` (`creative/service.py:167`). Solo la evaluación `evals/copy_quality.py` elige otro modelo |
+| Por qué el ticket suponía Sonnet | Sonnet está en otras piezas del mismo flujo, no en el texto del padre: «Proponerme las partes» (`creative/parts_ai.py:79`, `claude-sonnet-5`, [PARTES-001](#partes-001)) y «Mejorar mi texto» (`claude-sonnet-5-5`, [MEJORAR-TEXTO-001](#mejorar-texto-001)). La descripción de los planos del reel usa Haiku |
+| Pendiente | Medir Opus 5.5 frente a Sonnet 5.5 para este texto (calidad y costo, según `qualify-measure`) queda en un ticket aparte. Hasta entonces no se cambia el modelo |
+
+---
+
 <a id="escena-sin-letras-001"></a>
 
 ## ESCENA-SIN-LETRAS-001 — La escena de Seedream sin letras ni botones: compilador de prompts 3 frente a 4, en pares (m-25017275) — 2026-11-13
@@ -1285,3 +1829,40 @@ Un reintento suma unos US$0,024 por Alta con el perfil en caché. Una cuenta vac
 - La foto de perfil no se copió a R2 (no hay R2 en el stack local); no afecta al costo ni al resultado.
 
 **Gasto de esta prueba:** US$0,062 (las tres corridas) + US$0,019 (diagnóstico) ≈ **US$0,08** en total (Claude + 4 créditos de ScrapeCreators), dentro de la guarda de US$0,30.
+
+<a id="sinprod-001"></a>
+
+## SINPROD-001 — Prompts sin producto y en palabras generales, compilador 5 (m-24985141) — 2026-11-12
+
+**Qué cambió.** Desde ahora se puede crear sin elegir un producto del catálogo. El compilador de prompts sube de 4 a **5** (`PROMPT_COMPILER_VERSION`; el 4 es m-25017275, que ya estaba en main). Los briefs congelados con 0–4 siguen compilando igual que en main, byte por byte: se compararon 270 prompts y no hubo diferencias. Con el compilador 5:
+- Las frases fijas quedan en palabras generales, sin un rubro concreto: «appetizing» pasa a «appealing», «ingredients» a «parts/details», «food» a «people, natural materials».
+- Sin producto, ninguna instrucción nombra uno ni pide reemplazarlo.
+- Sin producto elegido, una foto sin rol se trata como «style»; con producto, sigue siendo «product».
+
+Las partes suman las versiones de prompt 3 (`PART_PROMPT_VERSION_V5`) y 4 (`PART_REFERENCE_MEDIA_PROMPT_VERSION_V5`) para el compilador 5; la 1 y la 2 de UI-4 no cambian. La propuesta de partes sube de v3.1 a v3.2, y el seleccionador pasa a `selection-v2.1` solo con el compilador 5.
+
+**Autorización:** Deivid, 2026-11-12 (opción A, «corrida chica pagada», unos pocos dólares, sin video largo).
+
+**Corrida:** `packages/api/evals/sin_producto/run_experiment.py --i-have-spend-authorization --max-usd 2`
+- 12 casos: 2 marcas ficticias de `evals/copy_ai/cases.json` («hamburguesas» e «inmobiliaria») × Clip, carrusel y avatar × con y sin producto.
+- Texto con `claude-opus-5-5`. Primer cuadro del carrusel y cuadro inicial del avatar con Seedream 5.0 pro a 1k.
+- Del Clip solo se compila el prompt de Seedance, sin generar video.
+- Resultados en `packages/api/evals/sin_producto/results/20261112-205051/`, que no se versiona.
+
+**Resultado**
+- **Prompts:** ningún prompt de un caso sin producto nombra un producto. Lo comprobó la corrida y también las pruebas offline en `test_prompts_without_product.py`.
+- **Textos (12/12 ok):** sin producto, el texto no inventa un producto.
+  - En «hamburguesas» menciona «la doble», «la triple» y «smash». Salen del Brand Kit, que es la oferta real de la marca, y no son un producto inventado.
+  - En «inmobiliaria», con y sin producto, el texto habla del servicio: acompañamiento, cuota inicial, estudio de títulos.
+- **Imágenes (6/8 ok):**
+  - 2 fallaron porque Seedream cortó la conexión («Server disconnected»), igual que en [seedream-corte-conexion-20261103](seedream-corte-conexion-20261103.md). No tiene que ver con el prompt.
+  - Sin producto salen escenas que encajan con el pedido: vecinos celebrando el aniversario, la fachada de una vivienda.
+  - **Hallazgo previo, no causado por este cambio:** en el carrusel, Seedream escribe letras deformes en el cuarto superior reservado al titular, con producto y sin producto por igual, a pesar de «Do not write any text in the image». Queda para un ticket aparte.
+- **Límite:** los casos «con producto» no llevan foto real, porque no hay fotos de muestra. Que no cambie nada con producto lo garantizan las pruebas offline que comparan con el compilador 4.
+
+**Gasto:** **US$0,56** (tope estimado US$1,40, guarda US$2).
+
+**Agregado después de la corrida (2026-11-13), cubierto solo por pruebas offline:**
+- **Fotos de Estilo:** con el compilador 5, `shows_product` no cuenta las fotos «Estilo» (rol `composition`). Si una pieza (avatar, imagen o carrusel) solo tiene fotos de estilo, recibe la redacción sin producto. Se agregaron 3 entradas a `_NO_PRODUCT_WORDING_V5` para que las líneas que protegen la guía no digan «product».
+- **Carrusel:** una diapositiva solo con estilo, sin foto de producto, usa el campo nuevo `CarouselSlide.guide_alone` (por defecto `False`). No cambia el prompt, el compilador ni la base.
+- **Medición:** la corrida pagada fue anterior a estos dos cambios. Estas rutas no se midieron con generación real.

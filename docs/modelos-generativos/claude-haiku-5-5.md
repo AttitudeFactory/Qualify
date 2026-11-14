@@ -105,3 +105,27 @@
 ## Uso REELSHEET-001 — ficha por planos de reels de Referentes (m-24955652) — 2026-11-05
 
 `referentes/reel_analysis_ai.py` (`ANALYSIS_VERSION = 8`, prompt `reel-sheet-prompt-9`, esquema `reel-sheet-schema-5`): una llamada por reel, ≤ 12 grupos de planos y un tope de salida que crece con los fotogramas, de 9.000 a 16.000 tokens (antes 9.000 fijo; m-24993025, [analisis-reel-tope-salida-20261112.md](analisis-reel-tope-salida-20261112.md)); una respuesta cortada por ese tope falla como `model_output_cut` y no se reintenta. Personas y rostros se contestan por fotograma y se deciden por plano con la regla de cobertura de 0,5 s (`presence-frames-gap0.5-3`). Peor pedido: USD 0,015045 (antes 0,011545). En vivo (2026-11-06): 19/19 `ok` con video disponible, USD 0,0041 de media por reel; ninguna persona ni cara perdida en 195 planos anotados. Detalle: [pruebas.md#reelsheet-001](pruebas.md#reelsheet-001).
+
+## Uso NIVELES-001 — juez de los niveles de consciencia (m-25026482) — 2026-11-13
+
+Detalle en la [bitácora, NIVELES-001](pruebas.md#niveles-001). `claude-haiku-5-5` @ `low`, rúbrica `juez-niveles-v2` (`qualify_api.evals.awareness_levels.JUDGE_RUBRIC`), dos lecturas por juego: a ciegas (nivel inferido, calidad 1–5, datos inventados, ventajas usadas) e informada (¿cumple su nivel declarado?).
+
+- **Costo:** US$0,001–0,0015 por lectura de un juego de 10 ideas.
+- **Lo que se ajustó en dev:** la v1 contaba atributos del producto («dos sabores») como datos inventados; la v2 limita el conteo a las siete clases de dato.
+- **Límites conocidos:** no está validado contra etiquetas humanas. En partes pide cifras para product_aware, que el prompt de partes prohíbe (desajuste de la rúbrica). Además dio un falso positivo de domicilio porque no recibió el CTA del ángulo. Un `APITimeoutError` cortó una corrida: el ejecutor ahora registra el error y cuenta la llamada a su techo.
+
+## Uso NIVELES-002 — juez, segunda pasada (m-25026482) — 2026-11-13
+
+Detalle en la [bitácora, NIVELES-002](pruebas.md#niveles-002).
+
+- Rúbrica de ángulos y copy sin cambios (`juez-niveles-v2`), para comparar con NIVELES-001.
+- Para planes de video, el agregado `juez-niveles-v2+partes-v1` (sin cifras por diseño; el ángulo pasa como dato dado). Con él, product_aware en partes pasa de 0/6 a 6/6.
+- Las ofertas inventadas ya no dependen solo del juez: `invented_offers` (determinista) cuenta gratis, regalo, incluido, descuento, promoción y servicios como reservas, apartar, domicilio o «para llevar».
+- Otro `APITimeoutError`, esta vez del copy, quedó registrado y contado a su techo.
+
+## Uso NIVELES-003 — juez, tercera pasada (m-25026482) — 2026-11-13
+
+Detalle en la [bitácora, NIVELES-003](pruebas.md#niveles-003). Rúbrica sin cambios (`juez-niveles-v2`).
+
+- El «2/6 nombra el horario» de NIVELES-002 no fue del juez: lo dio la expresión regular determinista, que leyó la calle «de la 57» como hora. Está corregida.
+- Junto al juez van ahora dos chequeos deterministas en solution_aware: `concrete_fact` y `generic_claims`.

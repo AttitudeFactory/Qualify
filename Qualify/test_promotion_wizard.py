@@ -556,7 +556,7 @@ async def test_multiple_sources_are_not_silently_selected_and_missing_ads_keeps_
         PromotionSourceVM(str(USER), "@segunda", "Segunda publicación"),
     ]
 
-    def load(*args: object) -> tuple[list[PromotionSourceVM], str]:
+    def load(*args: object, **_: object) -> tuple[list[PromotionSourceVM], str]:
         assert current_acting_login() == LOGIN
         return sources, ZONE
 

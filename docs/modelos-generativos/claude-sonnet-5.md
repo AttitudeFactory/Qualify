@@ -31,3 +31,26 @@ Detalle completo en la [bitácora, PARTES-001](pruebas.md#partes-001).
 - **v3 (`proponer-partes-v3`, m-24973463), mismos 20 casos:** reemplaza a v2 (aprobado por el fundador el 2026-11-06). Describe las partes con palabras de todos los días y, si aparece vocabulario de cine, el código la devuelve en el único turno de corrección (`film_words`). Propuestas con palabras de cine: de 20/20 a 1/20. Usables 20/20. Usó el turno de corrección en 4 de 20. US$0,0087 por propuesta. El cierre empeora: 4 de 20 piden o reciben (v2: 7). Gasto de la corrida: US$0,1742.
 - **v3.1 (`proponer-partes-v3.1`, 2026-11-07), mismos 20 casos:** el cierre muestra cómo el cliente consigue el producto (15 de 20 piden, reciben o se lo llevan, leído a mano; v3: 4), cada descripción es una frase de 25 palabras como máximo (el largo lo revisa el código; mediana 110 caracteres) y no describe sonidos (quedan 4 de 20 con «chisporroteo»). Sin palabras de cine. US$0,0069 por propuesta; gasto de la corrida US$0,1371.
 - Gasto total de la prueba: US$0,7260 (cinco corridas).
+
+## Uso NIVELES-001: niveles de consciencia y ventajas del negocio en «10 variaciones» y en las partes (m-25026482), 2026-11-13
+
+Detalle completo en la [bitácora, NIVELES-001](pruebas.md#niveles-001). Ajustes de producción: esfuerzo `medium`; ángulos `max_tokens` 6.000, partes `proponer-partes-v3.2`. Línea base: `a6667370`.
+
+- **Ángulos:** 14/14 juegos con 2 ángulos por nivel exactos, 0 etiquetas inválidas; 0 datos inventados por la extracción determinista (140 ideas). Calidad del juez sin cambio (test 3,52 → 3,57). En test, solution_aware cumple su nivel solo 0,50 y most_aware inventa una reserva en 1/6: quedan «no fiable». US$0,0250 → US$0,029 por juego (+15 %).
+- **Partes:** v3.2 sin ventajas ni nivel es idéntico byte a byte a v3.1. Con nivel y ventajas usa una ventaja en 0,87 de los planes, pero most_aware no acorta el plan (4 partes en ambos brazos). US$0,006–0,008 por propuesta.
+- Gasto de la medición completa: US$1,83, en la bitácora.
+
+## Uso NIVELES-002: arreglos de los niveles, segunda pasada (m-25026482), 2026-11-13
+
+Detalle en la [bitácora, NIVELES-002](pruebas.md#niveles-002). Mismos ajustes; prompt de partes `proponer-partes-v3.3`.
+
+- **Ángulos con ventajas (test):** solution_aware 0,50 → 0,70, todavía «no fiable». Ofertas o servicios inventados (determinista) 0,20 → 0,08; en most_aware 0,67 → 0,30, por «reserva» y «para llevar». Sin regresiones en test; reparto exacto 15/15. US$0,031 por juego.
+- **Partes:** v3.3 sin ventajas ni nivel es idéntica byte a byte a v3.1. product_aware pasa 6/6 con la rúbrica corregida.
+
+## Uso NIVELES-003: tercera vuelta de redacción de los niveles (m-25026482), 2026-11-13
+
+Detalle en la [bitácora, NIVELES-003](pruebas.md#niveles-003). Prompt de ángulos de `fcd2e8c0`, mismos ajustes.
+
+- **Ángulos con ventajas (test, n 30 por nivel):** solution_aware pasa de 0,70 a 0,83 (fiable). Ofertas o servicios inventados en most_aware bajan de 0,30 a 0,10, y en total de 0,08 a 0,047.
+- **Regresión:** product_aware baja de 0,90 (n 10) a 0,77, «no fiable». US$0,031 por juego.
+- **Partes:** los números de NIVELES-001/002 se tomaron sobre la v3.1 de main y ya no describen `proponer-partes-v3.4`.

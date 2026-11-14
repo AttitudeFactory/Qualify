@@ -1,0 +1,548 @@
+{
+ "ticket": "m-25026482",
+ "baseline_ref": "a6667370",
+ "split": "all",
+ "pricing_version": "v9",
+ "judge": "claude-haiku-5-5@low",
+ "judge_prompt_version": "juez-niveles-v2",
+ "judge_parts_version": "juez-niveles-v2+partes-v1",
+ "code_commit": "440eefa6",
+ "arms": [],
+ "levels": [
+  "product_aware"
+ ],
+ "repeat": 3,
+ "tracing": false,
+ "date": "2026-11-13T16:04:12",
+ "suites": {
+  "parts": {
+   "items": [
+    {
+     "case": "niv-bur-product",
+     "arm": "base",
+     "level": "product_aware",
+     "prompt_version": "proponer-partes-v3.3",
+     "output": {
+      "parts": [
+       {
+        "description": "Sobre el mostrador de madera, una bandeja con la doble smash, papas y gaseosa se ve de cerca y completa de un solo vistazo.",
+        "seconds": 4
+       },
+       {
+        "description": "Unas manos acercan la bandeja despacio hacia la cámara mientras el vapor de la carne recién hecha sube desde el pan.",
+        "seconds": 4
+       },
+       {
+        "description": "Desde arriba se ve la bandeja entera: la hamburguesa partida a la mitad con sus capas, las papas y el vaso de gaseosa.",
+        "seconds": 4
+       },
+       {
+        "description": "Unas manos levantan la hamburguesa doble y la muerden mientras otras manos toman papas de la misma bandeja, compartiendo en la mesa.",
+        "seconds": 4
+       },
+       {
+        "description": "En el mostrador del local en la 57, una persona recibe la bandeja de manos de otra y la lleva hacia una mesa con amigos esperando.",
+        "seconds": 4
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.3",
+       "prompt_fingerprint": "ce9c0cfb7258e0ea",
+       "pricing_version": "v8",
+       "cost_usd": "0.015315",
+       "input_tokens": 1498,
+       "output_tokens": 771,
+       "turns": 2
+      },
+      "cost_usd": 0.015315,
+      "latency_s": 11.86
+     },
+     "scores": {
+      "costo_usd": 0.015315,
+      "latencia_s": 11.86,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": true,
+      "partes_en_rango": true,
+      "segundos_totales": 20.0,
+      "desvio_duracion": 0.0,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": true,
+      "cierre_consigue": true,
+      "cierre_usa": false,
+      "palabras_max": 25.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.000535,
+     "juez_informado_usd": 0.000559
+    },
+    {
+     "case": "niv-bur-product",
+     "arm": "nuevo",
+     "level": "product_aware",
+     "prompt_version": "proponer-partes-v3.3",
+     "output": {
+      "parts": [
+       {
+        "description": "Sobre el mostrador de madera, una bandeja con la doble smash, las papas y la gaseosa, vista de cerca y desde arriba.",
+        "seconds": 5
+       },
+       {
+        "description": "Unas manos levantan la doble smash de la bandeja y se ven las capas de carne jugosa y queso derretido desde el lado.",
+        "seconds": 5
+       },
+       {
+        "description": "La bandeja completa sobre la mesa, con amigos alrededor tomando papas con las manos, se ve toda la mesa.",
+        "seconds": 5
+       },
+       {
+        "description": "Unas manos entregan la bandeja con el combo a otra persona en el mostrador del local, mirado de frente.",
+        "seconds": 5
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.3",
+       "prompt_fingerprint": "9fb8513e4b91870a",
+       "pricing_version": "v8",
+       "cost_usd": "0.004515",
+       "input_tokens": 702,
+       "output_tokens": 277,
+       "turns": 1
+      },
+      "cost_usd": 0.004515,
+      "latency_s": 4.03
+     },
+     "scores": {
+      "costo_usd": 0.004515,
+      "latencia_s": 4.03,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": false,
+      "partes_en_rango": true,
+      "segundos_totales": 20.0,
+      "desvio_duracion": 0.0,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": true,
+      "cierre_consigue": true,
+      "cierre_usa": false,
+      "palabras_max": 23.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.000433,
+     "juez_informado_usd": 0.000477
+    },
+    {
+     "case": "niv-bur-product",
+     "arm": "base",
+     "level": "product_aware",
+     "prompt_version": "proponer-partes-v3.3",
+     "output": {
+      "parts": [
+       {
+        "description": "Sobre el mostrador de madera aparece una bandeja con la doble smash, papas y gaseosa, vista de cerca.",
+        "seconds": 5
+       },
+       {
+        "description": "Unas manos acercan la bandeja hacia la cámara mientras se ve el vapor subir de la carne recién hecha, desde arriba.",
+        "seconds": 5
+       },
+       {
+        "description": "Unas manos levantan la doble smash y se ven las capas de carne, queso derretido y pan, de lado.",
+        "seconds": 5
+       },
+       {
+        "description": "Se ve todo el local pequeño de Chapinero con gente en las mesas y la bandeja lista sobre el mostrador.",
+        "seconds": 5
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.3",
+       "prompt_fingerprint": "ce9c0cfb7258e0ea",
+       "pricing_version": "v8",
+       "cost_usd": "0.004221",
+       "input_tokens": 520,
+       "output_tokens": 284,
+       "turns": 1
+      },
+      "cost_usd": 0.004221,
+      "latency_s": 3.56
+     },
+     "scores": {
+      "costo_usd": 0.004221,
+      "latencia_s": 3.56,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": false,
+      "partes_en_rango": true,
+      "segundos_totales": 20.0,
+      "desvio_duracion": 0.0,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": true,
+      "cierre_consigue": true,
+      "cierre_usa": false,
+      "palabras_max": 21.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.000418,
+     "juez_informado_usd": 0.000491
+    },
+    {
+     "case": "niv-bur-product",
+     "arm": "nuevo",
+     "level": "product_aware",
+     "prompt_version": "proponer-partes-v3.3",
+     "output": {
+      "parts": [
+       {
+        "description": "De cerca, unas manos ponen sobre el mostrador una bandeja con la doble smash, las papas y la gaseosa.",
+        "seconds": 4
+       },
+       {
+        "description": "De lado, se ve la doble smash con sus dos capas de carne jugosa y el queso derretido brillando en la bandeja.",
+        "seconds": 4
+       },
+       {
+        "description": "Desde arriba, se ve toda la bandeja completa: la hamburguesa, las papas doradas y el vaso con gaseosa, lista para compartir.",
+        "seconds": 4
+       },
+       {
+        "description": "Se ve todo el local pequeño de Chapinero, con mesas disponibles y la puerta abierta hacia la calle 57.",
+        "seconds": 4
+       },
+       {
+        "description": "Desde la entrada, unas manos reciben la bandeja con el combo que una persona del local les entrega sobre el mostrador.",
+        "seconds": 4
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.3",
+       "prompt_fingerprint": "9fb8513e4b91870a",
+       "pricing_version": "v8",
+       "cost_usd": "0.005145",
+       "input_tokens": 702,
+       "output_tokens": 340,
+       "turns": 1
+      },
+      "cost_usd": 0.005145,
+      "latency_s": 3.93
+     },
+     "scores": {
+      "costo_usd": 0.005145,
+      "latencia_s": 3.93,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": false,
+      "partes_en_rango": true,
+      "segundos_totales": 20.0,
+      "desvio_duracion": 0.0,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": true,
+      "cierre_consigue": true,
+      "cierre_usa": false,
+      "palabras_max": 22.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.000357,
+     "juez_informado_usd": 0.00031
+    },
+    {
+     "case": "niv-bur-product",
+     "arm": "base",
+     "level": "product_aware",
+     "prompt_version": "proponer-partes-v3.3",
+     "output": {
+      "parts": [
+       {
+        "description": "Sobre el mostrador de madera aparece una bandeja con la doble smash, las papas y la gaseosa, se ve todo de cerca.",
+        "seconds": 4
+       },
+       {
+        "description": "Unas manos levantan la doble smash de la bandeja y se ven las capas jugosas de carne derritiendo el queso, mirado de lado.",
+        "seconds": 4
+       },
+       {
+        "description": "La imagen se acerca despacio a las papas doradas y crujientes amontonadas junto al vaso de gaseosa con hielo.",
+        "seconds": 4
+       },
+       {
+        "description": "Dos personas sentadas frente a frente chocan sus hamburguesas por encima de la mesa antes de comer, se ve toda la mesa.",
+        "seconds": 4
+       },
+       {
+        "description": "Unas manos entregan la bandeja completa con el combo a otra persona en el mostrador del local en la 57, visto de frente.",
+        "seconds": 4
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.3",
+       "prompt_fingerprint": "ce9c0cfb7258e0ea",
+       "pricing_version": "v8",
+       "cost_usd": "0.004861",
+       "input_tokens": 520,
+       "output_tokens": 348,
+       "turns": 1
+      },
+      "cost_usd": 0.004861,
+      "latency_s": 4.49
+     },
+     "scores": {
+      "costo_usd": 0.004861,
+      "latencia_s": 4.49,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": false,
+      "partes_en_rango": true,
+      "segundos_totales": 20.0,
+      "desvio_duracion": 0.0,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": true,
+      "cierre_consigue": true,
+      "cierre_usa": false,
+      "palabras_max": 23.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.000461,
+     "juez_informado_usd": 0.000348
+    },
+    {
+     "case": "niv-bur-product",
+     "arm": "nuevo",
+     "level": "product_aware",
+     "prompt_version": "proponer-partes-v3.3",
+     "output": {
+      "parts": [
+       {
+        "description": "Sobre el mostrador de madera, una bandeja con el combo doble smash: la doble hamburguesa, las papas y la gaseosa, de cerca.",
+        "seconds": 4
+       },
+       {
+        "description": "Unas manos levantan la doble smash de la bandeja y se ve el queso derretido entre las dos carnes, desde cerca.",
+        "seconds": 4
+       },
+       {
+        "description": "La bandeja completa se ve desde arriba, con la hamburguesa, las papas y el vaso de gaseosa bien acomodados.",
+        "seconds": 4
+       },
+       {
+        "description": "Dos personas sentadas en una mesa del local chocan sus hamburguesas como si brindaran, mirado de lado.",
+        "seconds": 4
+       },
+       {
+        "description": "Una persona recibe la bandeja con el combo de manos de alguien detrás del mostrador en el local de Chapinero.",
+        "seconds": 4
+       }
+      ],
+      "provenance": {
+       "model_id": "claude-sonnet-5",
+       "model_revision": "claude-sonnet-5",
+       "prompt_version": "proponer-partes-v3.3",
+       "prompt_fingerprint": "9fb8513e4b91870a",
+       "pricing_version": "v8",
+       "cost_usd": "0.005135",
+       "input_tokens": 702,
+       "output_tokens": 339,
+       "turns": 1
+      },
+      "cost_usd": 0.005135,
+      "latency_s": 4.23
+     },
+     "scores": {
+      "costo_usd": 0.005135,
+      "latencia_s": 4.23,
+      "fallo": false,
+      "sin_palabras_de_cine": true,
+      "palabras_de_cine": 0.0,
+      "turno_de_correccion": false,
+      "partes_en_rango": true,
+      "segundos_totales": 20.0,
+      "desvio_duracion": 0.0,
+      "sin_precios": true,
+      "sin_texto_en_pantalla": true,
+      "partes_distintas": true,
+      "cierre_invita": true,
+      "cierre_consigue": true,
+      "cierre_usa": false,
+      "palabras_max": 22.0,
+      "descripciones_cortas": true,
+      "sin_sonidos": true
+     },
+     "juez_ciego_usd": 0.000366,
+     "juez_informado_usd": 0.000421
+    }
+   ],
+   "scores": [
+    {
+     "arm": "base",
+     "case": "niv-bur-product",
+     "split": "test",
+     "sector": "comida",
+     "with_perks": false,
+     "level": "product_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [],
+     "judge_level": "product_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [],
+     "judge_fit": true,
+     "judge_reason": "Muestra el mostrador del local en la 57 y cómo se atiende al cliente, con mesas para comer en el local, sin cifras ni datos inventados, así que quita la fricción de saber dónde ir y qué pedir.",
+     "offers_det": [],
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "nuevo",
+     "case": "niv-bur-product",
+     "split": "test",
+     "sector": "comida",
+     "with_perks": true,
+     "level": "product_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [],
+     "judge_level": "product_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      3
+     ],
+     "judge_fit": true,
+     "judge_reason": "Muestra el mostrador, la bandeja y cómo se entrega el combo en el local, lo que hace fácil imaginar cómo pedir, sin inventar precios, horarios ni promociones; sin embargo, no presenta la dirección de ",
+     "offers_det": [],
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "base",
+     "case": "niv-bur-product",
+     "split": "test",
+     "sector": "comida",
+     "with_perks": false,
+     "level": "product_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [],
+     "judge_level": "solution_aware",
+     "judge_quality": 3,
+     "judge_invented": [],
+     "judge_perks": [],
+     "judge_fit": true,
+     "judge_reason": "Muestra el local pequeño de Chapinero, el mostrador con la bandeja lista y las mesas ocupadas, así que el público ve dónde queda y cómo es pedir sin cifras ni datos inventados; pero no muestra la ubic",
+     "offers_det": [],
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "nuevo",
+     "case": "niv-bur-product",
+     "split": "test",
+     "sector": "comida",
+     "with_perks": true,
+     "level": "product_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [
+      3,
+      4
+     ],
+     "judge_level": "product_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      3
+     ],
+     "judge_fit": true,
+     "judge_reason": "Para product_aware en video, muestra lo fácil que es venir y pedir: el mostrador donde se entrega el combo, la atención del local, las mesas disponibles y la entrada por la calle 57, todo con datos da",
+     "offers_det": [],
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "base",
+     "case": "niv-bur-product",
+     "split": "test",
+     "sector": "comida",
+     "with_perks": false,
+     "level": "product_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [],
+     "judge_level": "product_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [],
+     "judge_fit": true,
+     "judge_reason": "La quinta parte muestra cómo se atiende en el mostrador del local de la 57, con el combo entregado en mano, que es la facilidad de pedir que exige product_aware en video; no inventa precios, horarios ",
+     "offers_det": [],
+     "words_hook": 0,
+     "words_cta": 0
+    },
+    {
+     "arm": "nuevo",
+     "case": "niv-bur-product",
+     "split": "test",
+     "sector": "comida",
+     "with_perks": true,
+     "level": "product_aware",
+     "level_answered": null,
+     "rule_det": null,
+     "invented_det": [],
+     "perks_det": [],
+     "judge_level": "product_aware",
+     "judge_quality": 4,
+     "judge_invented": [],
+     "judge_perks": [
+      3
+     ],
+     "judge_fit": true,
+     "judge_reason": "Muestra el mostrador donde se pide, la atención en el local, las mesas para comer dentro y el combo completo, todo con datos dados y sin precios, horarios ni inventos; aunque no muestra la entrada ni ",
+     "offers_det": [],
+     "words_hook": 0,
+     "words_cta": 0
+    }
+   ]
+  }
+ },
+ "spend_usd": {
+  "parts": 0.044368
+ },
+ "spend_total_usd": 0.044368,
+ "skipped_by_cap": [],
+ "ledger_calls": 19
+}

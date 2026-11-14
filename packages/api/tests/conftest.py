@@ -200,3 +200,16 @@ class MeegleEvents:
 @pytest.fixture
 def meegle_events() -> MeegleEvents:
     return MeegleEvents()
+
+
+@pytest.fixture(autouse=True)
+def base_photo_alerts(monkeypatch: pytest.MonkeyPatch):  # noqa: ANN201
+    """m-25017279: no test ever reaches the real team channel (Lark) for a missing base
+    photo, nor starts its background thread: alerts go to a recorder, synchronously."""
+    from qualify_api.creative import base_photos
+    from qualify_api.plans.notify import RecordingTeamNotifier
+
+    recorder = RecordingTeamNotifier()
+    monkeypatch.setattr(base_photos, "notifier_factory", lambda: recorder)
+    monkeypatch.setattr(base_photos, "alert_dispatch", lambda send: send())
+    return recorder

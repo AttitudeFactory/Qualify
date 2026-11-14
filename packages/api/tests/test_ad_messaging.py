@@ -69,23 +69,8 @@ def _request(target: MessagingTarget | None = None) -> PromotionRequest:
             cta_type=target.cta_type,
             link_url="",
             messaging_snapshot=target.snapshot(),
-            creative={
-                "source_instagram_media_id": "777",
-                "instagram_user_id": "42",
-                "call_to_action": {"type": target.cta_type},
-            },
-            adset_options={
-                "destination_type": target.destination_type,
-                "optimization_goal": "CONVERSATIONS",
-                "promoted_object": {
-                    "page_id": target.page_id,
-                    **(
-                        {"whatsapp_phone_number": target.whatsapp_phone_number}
-                        if target.destination_type == "WHATSAPP"
-                        else {}
-                    ),
-                },
-            },
+            creative=target.creative(source_media_id="777", instagram_user_id="42"),
+            adset_options=target.adset_options(),
         )
     )
 

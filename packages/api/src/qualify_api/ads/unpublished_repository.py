@@ -33,11 +33,12 @@ def load_image_source(
     tenant: UUID,
     draft: UUID,
     account: UUID,
-    feed_asset: UUID,
+    feed_asset: UUID | None,
     vertical_asset: UUID,
     thumbnails: tuple[UUID | None, UUID | None] = (None, None),
 ) -> ImageSource:
-    """Two images, or two MP4 videos each with the explicit cover image the owner chose."""
+    """Two images, or two MP4 videos each with the explicit cover image the owner chose.
+    `feed_asset=None` loads a story ad (m-25026350): only the 9:16 asset and its cover."""
     require_acting_member(tenant)
     with tenant_session(tenant, independent=True) as session:
         row = (
@@ -98,8 +99,16 @@ def load_image_source(
                 found["height"],
             )
 
-        selections: list[ImageSelection | VideoSelection] = []
+        selections: list[ImageSelection | VideoSelection | None] = []
         for asset_id, cover in zip((feed_asset, vertical_asset), thumbnails, strict=True):
+            if asset_id is None:
+                if cover is not None:
+                    raise UnpublishedUnavailable(
+                        "Esta historia lleva un solo archivo; quita la portada del formato que "
+                        "no usas."
+                    )
+                selections.append(None)
+                continue
             kind = session.scalar(
                 text("SELECT media_type FROM image_assets WHERE id=:id AND draft_id=:draft"),
                 {"id": asset_id, "draft": draft},
@@ -157,7 +166,7 @@ def thumbnails(source: ImageSource | dict) -> tuple[UUID | None, UUID | None]:
         )
         return feed, vertical
     feed, vertical = (
-        UUID(source[key]["thumbnail"]["asset_id"]) if source[key].get("thumbnail") else None
+        UUID(source[key]["thumbnail"]["asset_id"]) if (source[key] or {}).get("thumbnail") else None
         for key in ("feed", "vertical")
     )
     return feed, vertical
@@ -168,7 +177,7 @@ def guard_source(source: ImageSource) -> None:
         source.tenant_id,
         source.draft_id,
         source.account_id,
-        source.feed.asset_id,
+        source.feed and source.feed.asset_id,
         source.vertical.asset_id,
         thumbnails(source),
     )

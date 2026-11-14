@@ -39,6 +39,7 @@ from uuid import UUID, uuid4
 
 from qualify_creative.creations import CreationWeights, load_weights, weight_for
 from qualify_creative.enums import ContentFormat, ContentKind
+from qualify_creative.scene_plan import unroled_image_role
 from qualify_creative.schemas import (
     CLIP_IMAGE_ROLES,
     CLIP_MAX_IMAGES,
@@ -1236,24 +1237,27 @@ PART_MODE_IMAGE_ROLES: Mapping[str, frozenset[str]] = {
 }
 
 
-def parent_images(media: MediaInputs) -> tuple[tuple[str, str], ...]:
+def parent_images(media: MediaInputs, unroled: str = "product") -> tuple[tuple[str, str], ...]:
     """The parent's images as `(key, role)`, in the owner's order: its `clip_image_keys`
-    with `clip_image_roles` (no roles = every one the product), else — a parent from
-    before m-24984421 — its `product_keys` as products."""
+    with `clip_image_roles` (no roles = every one `unroled`: the product, or — m-24985141,
+    a parent without a product at compiler 5 — a style reference, `unroled_image_role`),
+    else — a parent from before m-24984421 — its `product_keys` as products."""
     if media.clip_image_keys:
         keys = media.clip_image_keys
         roles = media.clip_image_roles
         if len(roles) != len(keys):
-            roles = ("product",) * len(keys)
+            roles = (unroled,) * len(keys)
         return tuple(zip(keys, roles, strict=True))
     return tuple((key, "product") for key in media.product_keys)
 
 
-def part_images(media: MediaInputs, mode: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+def part_images(
+    media: MediaInputs, mode: str, unroled: str = "product"
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """The images a part in `mode` takes from its parent, `(keys, roles)`: the roles its
     mode admits (`PART_MODE_IMAGE_ROLES`), each key once, at most `CLIP_MAX_IMAGES`."""
     admitted = PART_MODE_IMAGE_ROLES[mode]
-    pairs = [(key, role) for key, role in parent_images(media) if role in admitted]
+    pairs = [(key, role) for key, role in parent_images(media, unroled) if role in admitted]
     unique = list(dict(pairs).items())[:CLIP_MAX_IMAGES]
     return tuple(k for k, _ in unique), tuple(r for _, r in unique)
 
@@ -1262,7 +1266,8 @@ def part_brief_with(parent: ContentBrief, old: ContentBrief, changes: PartChange
     """A part's brief with `changes` applied — its description and its photos, never its
     mode: what «Crear otra versión» writes, and (m-24921082) «Cambiar» of a part that did
     not come out. A photo keeps the role the part (else its parent) gave it; a new one is
-    the product. Pure."""
+    the product — or, without a product at compiler 5, a style reference
+    (`unroled_image_role`, m-24985141). Pure."""
     part = old.media.part
     if part is None:
         raise ValueError("not the brief of a part")
@@ -1274,12 +1279,13 @@ def part_brief_with(parent: ContentBrief, old: ContentBrief, changes: PartChange
     }
     if changes.photo_keys is not None:
         photos = tuple(dict.fromkeys(changes.photo_keys))[:CLIP_MAX_IMAGES]
+        unroled = unroled_image_role(parent)
         had = {
-            **dict(parent_images(parent.media)),
+            **dict(parent_images(parent.media, unroled)),
             **dict(zip(old.media.clip_image_keys, old.media.clip_image_roles, strict=False)),
         }
         media_update["clip_image_keys"] = photos
-        media_update["clip_image_roles"] = tuple(had.get(key, "product") for key in photos)
+        media_update["clip_image_roles"] = tuple(had.get(key, unroled) for key in photos)
     return ContentBrief.model_validate(
         {**old.model_dump(), "media": {**old.media.model_dump(), **media_update}}
     )
@@ -1298,10 +1304,13 @@ def _child_brief(
     part's draft id), so none is needed here; a `window` cut beforehand is kept (it is
     a key of the piece like any other, checked by `_key_problems` before any read)."""
     media = parent.media
-    photos, roles = part_images(media, plan.mode)
+    # m-24985141: a photo without a role is the product, or — no product chosen, compiler
+    # 5 — a style reference (`unroled_image_role`); a brief before compiler 5 is unchanged
+    unroled = unroled_image_role(parent)
+    photos, roles = part_images(media, plan.mode, unroled)
     if plan.clip_image_keys is not None:
         photos = plan.clip_image_keys
-        roles = plan.clip_image_roles or ("product",) * len(photos)
+        roles = plan.clip_image_roles or (unroled,) * len(photos)
     part = PartRef(index=index, **plan.model_dump())
     video_keys = plan.clip_video_keys
     if plan.mode == "edit" and not video_keys and window:

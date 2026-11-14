@@ -25,7 +25,7 @@ from sqlalchemy import text
 
 from qualify_api.creative.composition import DbBrandKitReader, DbVoiceProfileReader
 from qualify_api.creative.creations import PostgresCreationsLedger
-from qualify_api.creative.media import PartWindowRefused
+from qualify_api.creative.media import PART_PROMPT_VERSION_V5, PartWindowRefused
 from qualify_api.creative.part_windows import SourcePartWindows
 from qualify_api.creative.parts import PartsService
 from qualify_api.creative.queue_dispatch import QueueDispatcher
@@ -179,7 +179,8 @@ def test_criterion_3_a_made_part_keeps_its_provenance_and_cost_db(monkeypatch) -
         ).all()
     part = params["part"]
     assert part["analysis_id"] == str(ANALYSIS_ID) and part["shot_indexes"] == [0]
-    assert part["prompt_version"] == params["part_prompt_version"] == 1
+    # a new piece is sealed with the current compiler (5): its edit part is version 3
+    assert part["prompt_version"] == params["part_prompt_version"] == PART_PROMPT_VERSION_V5
     assert part["window"]["key"].startswith(f"reel-windows/{tenant}/{child}/")
     assert params["draft"]["reference_mode"] == "edit"
     ((provider, model_id, cost, version),) = usage

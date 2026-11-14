@@ -66,6 +66,10 @@ def _apply_kit(row: BrandKitRow, kit: BrandKit) -> None:
     # not clear a destination saved by another editor; explicit None clears it.
     if "ads_destination_url" in kit.model_fields_set:
         row.ads_destination_url = kit.ads_destination_url
+    # Same rule for the owner's perks: a kit built by a caller that does not know them
+    # (an older screen, the prefill review) must not wipe the list; `()` clears it.
+    if "business_perks" in kit.model_fields_set or getattr(row, "business_perks", None) is None:
+        row.business_perks = list(kit.business_perks)
 
 
 def kit_from_row(row: BrandKitRow) -> BrandKit:
@@ -94,6 +98,7 @@ def kit_from_row(row: BrandKitRow) -> BrandKit:
         "template_asset_key": row.template_asset_key,
         "reference_image_keys": tuple(row.reference_image_keys or ()),
         "ads_destination_url": getattr(row, "ads_destination_url", None),
+        "business_perks": getattr(row, "business_perks", None) or (),
     }
     # Optional-with-default fields: omit when NULL so the pydantic default applies
     # instead of feeding None into a non-optional field.
