@@ -9,6 +9,7 @@ what makes "template v2 outperforms v1" a query instead of an anecdote (design D
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -22,6 +23,11 @@ class PortType(StrEnum):
     VIDEO = "video"
     BRAND_KIT = "brand_kit"
     PRODUCT_LIST = "product[]"
+    #: `layer_still` (m-25017285): the LayerSpec of ADR 49, checked by the service against
+    #: the manifest's `layer_catalog` for the format of each requested port.
+    LAYER_SPEC = "layer_spec"
+    #: `layer_still`: the carousel slide `{index, total, role}` (checked with the layer).
+    SLIDE = "slide"
 
 
 class OutputKind(StrEnum):
@@ -63,6 +69,8 @@ class OutputPort(BaseModel):
     #: The Remotion composition id, `<template-id>-v<version>--<port>` (CONTRACT §3; Remotion
     #: only allows letters, digits and hyphens in an id, so underscores become hyphens).
     composition: str
+    #: `layer_still`: the catalog format this port renders (`4:5`, `1:1`, `9:16`).
+    format: str | None = None
 
     @property
     def aspect_ratio(self) -> str:
@@ -148,6 +156,10 @@ class TemplateManifest(BaseModel):
     cost_model: CostModel = CostModel()
     sheet: SheetSpec | None = None
     render: RenderSpec | None = None
+    #: `layer_still`: the closed layout catalog (docs/catalogo-disenos-imagen-carrusel.md) —
+    #: formats, safe zones, font sizes, per-layout slot limits. The service reads it to
+    #: validate a layer; it is the one copy of those numbers.
+    layer_catalog: dict[str, Any] | None = None
 
     @model_validator(mode="after")
     def _well_formed(self) -> TemplateManifest:

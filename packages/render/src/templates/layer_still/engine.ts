@@ -322,16 +322,27 @@ const fitStack = (
     keep = {...keep, call_phrase: false};
     dropped.push('call_phrase');
   }
-  const build = (): {pieces: Piece[]; failed: SlotName | null} => {
+  // `step` lowers every slot's starting size by 4 px per step (never below its minimum):
+  // a stack that is too tall first gets smaller, then loses slots
+  let forcedNote: string | null = null;
+  const cap = ([max, min]: SizePair, step: number): SizePair => [Math.max(max - 4 * step, min), min];
+  const build = (step: number): {pieces: Piece[]; failed: SlotName | null; atMin: boolean} => {
     const pieces: Piece[] = [];
+    let atMin = true;
+    const capped = (pair: SizePair): SizePair => {
+      const c = cap(pair, step);
+      if (c[0] > c[1]) atMin = false;
+      return c;
+    };
+    forcedNote = null;
     if (title) {
       const sizes = titleSizes(ctx, titleKey);
-      let fit = fitText(title, sizes, limit('title'), titleWidth, measure, 'heading', 700);
+      let fit = fitText(title, capped(sizes), limit('title'), titleWidth, measure, 'heading', 700);
       if (!fit && forceTitle) {
         fit = forceAtMin(title, sizes[1], titleWidth, measure, 'heading', 700);
-        forceTitle.push(`title needs ${fit.lines.length} lines at ${sizes[1]} px (limit ${limit('title')})`);
+        forcedNote = `title needs ${fit.lines.length} lines at ${sizes[1]} px (limit ${limit('title')})`;
       }
-      if (!fit) return {pieces, failed: 'title'};
+      if (!fit) return {pieces, failed: 'title', atMin};
       pieces.push({slot: 'title', text: title, fit, role: 'heading', weight: 700, lh: LINE_HEIGHT.title, gapBefore: 0});
       if (priceOn) {
         // §4: a text line in the title's face at 70 % of its size, same container
@@ -342,32 +353,41 @@ const fitStack = (
     }
     if (keep.subtitle) {
       const sizes = ctx.catalog.font_sizes.subtitle?.[format] ?? [40, 40];
-      const fit = fitText((layer.subtitle ?? '').trim(), sizes, limit('subtitle'), width, measure, 'body', 400);
-      if (!fit) return {pieces, failed: 'subtitle'};
+      const fit = fitText((layer.subtitle ?? '').trim(), capped(sizes), limit('subtitle'), width, measure, 'body', 400);
+      if (!fit) return {pieces, failed: 'subtitle', atMin};
       pieces.push({slot: 'subtitle', text: (layer.subtitle ?? '').trim(), fit, role: 'body', weight: 400, lh: LINE_HEIGHT.other, gapBefore: GAP.subtitle});
     }
     if (keep.call_phrase) {
       const sizes = ctx.catalog.font_sizes.call_phrase?.[format] ?? [40, 40];
-      const fit = fitText((layer.call_phrase ?? '').trim(), sizes, 1, width, measure, 'body', 600);
-      if (!fit) return {pieces, failed: 'call_phrase'};
+      const fit = fitText((layer.call_phrase ?? '').trim(), capped(sizes), 1, width, measure, 'body', 600);
+      if (!fit) return {pieces, failed: 'call_phrase', atMin};
       pieces.push({slot: 'call_phrase', text: (layer.call_phrase ?? '').trim(), fit, role: 'body', weight: 600, lh: LINE_HEIGHT.other, gapBefore: GAP.call_phrase});
     }
-    return {pieces, failed: null};
+    return {pieces, failed: null, atMin};
   };
+  let step = 0;
   for (;;) {
-    const {pieces, failed} = build();
+    const {pieces, failed, atMin} = build(step);
     const tooTall = failed === null && stackHeight(pieces) > maxHeight;
     if (failed === null && !tooTall) {
+      if (forcedNote && forceTitle) forceTitle.push(forcedNote);
       const w = Math.max(0, ...pieces.map((p) => Math.max(...p.fit.widths)));
       return {pieces, width: w, height: stackHeight(pieces)};
     }
     if (failed === 'title') return null;
-    // a slot that does not fit its own lines goes first; a stack that is too tall loses
-    // the call phrase, then the subtitle (§1.7 check 3)
     if (failed === 'subtitle' || failed === 'call_phrase') {
+      // a slot that does not fit its own lines even at its minimum goes first
       keep = {...keep, [failed]: false};
       dropped.push(failed);
-    } else if (keep.call_phrase) {
+      continue;
+    }
+    if (!atMin) {
+      step += 1;
+      continue;
+    }
+    // too tall with every slot at its minimum: the call phrase, then the subtitle (§1.7 check 3)
+    step = 0;
+    if (keep.call_phrase) {
       keep = {...keep, call_phrase: false};
       dropped.push('call_phrase');
     } else if (keep.subtitle) {
@@ -520,11 +540,17 @@ const tryPlate = (ctx: Ctx, anchor: string, fallbacks: string[], dropped: string
   const maxX = Math.min(sx1, zone[1] + pad);
   const maxW = Math.min((def.max_width?.[ctx.format] ?? 0.72) * fmt.width, maxX - minX);
   const counter = counterOf(ctx);
-  const stack = fitStack(ctx, maxW - 2 * pad, sy1 - sy0 - 2 * pad, dropped);
-  if (!stack) return {ok: false, reason: 'title_does_not_fit'};
+  const [v, hpos] = anchor.split('_') as ['top' | 'bottom', 'left' | 'right' | 'center'];
+  // the room between the anchor's edge and the subject: the plate shrinks its text to fit
+  // there before it gives up on this anchor
+  const {subject: subj0} = photoFull(ctx);
+  let room = sy1 - sy0;
+  if (subj0) room = v === 'top' ? subj0.y - SUBJECT_TOLERANCE - sy0 : sy1 - (subj0.y + subj0.h + SUBJECT_TOLERANCE);
+  if (room < 2 * pad + 60) return {ok: false, reason: 'covers_subject'};
+  const stack = fitStack(ctx, maxW - 2 * pad, room - 2 * pad, dropped);
+  if (!stack) return {ok: false, reason: subj0 ? 'no_room_beside_subject' : 'title_does_not_fit'};
   const w = Math.ceil(stack.width + 2 * pad);
   const h = Math.ceil(stack.height + 2 * pad);
-  const [v, hpos] = anchor.split('_') as ['top' | 'bottom', 'left' | 'right' | 'center'];
   const x = hpos === 'left' ? minX : hpos === 'right' ? maxX - w : Math.round((fmt.width - w) / 2);
   const y = v === 'top' ? sy0 : sy1 - h;
   const rect: Rect = {x, y, w, h};

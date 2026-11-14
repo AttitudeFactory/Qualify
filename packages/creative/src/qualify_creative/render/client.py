@@ -86,6 +86,9 @@ class OutputState:
     duration_sec: float | None = None
     failure_reason: str | None = None
     error_message: str | None = None
+    #: `layer_still`: what the compositor decided (effective layout, fallbacks, sizes,
+    #: contrast) — set once the composition's checks ran.
+    report: Mapping[str, Any] | None = None
 
     @property
     def done(self) -> bool:
@@ -122,6 +125,7 @@ class RenderJob:
                 duration_sec=o.get("durationSec"),
                 failure_reason=o.get("failureReason"),
                 error_message=o.get("errorMessage"),
+                report=o.get("report"),
             )
         return cls(
             job_id=str(data["jobId"]),

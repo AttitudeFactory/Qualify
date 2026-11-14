@@ -142,7 +142,7 @@ test('plate: a subject that fills the frame ends on band, recorded step by step'
 test('plate: a word too long for the plate at the minimum size goes to band', () => {
   const r = run({layout_id: 'plate', title: 'Supercalifragilístico', anchor: 'top_left', subject_box: [0.5, 0.6, 0.9, 0.95]});
   assert.equal(r.report.layout_rendered, 'band');
-  assert.ok(r.report.fallbacks.some((f) => /title_does_not_fit/.test(f)));
+  assert.ok(r.report.fallbacks.some((f) => /title_does_not_fit|no_room_beside_subject/.test(f)));
 });
 
 test('scrim: subject reaching the text edge falls to band; text sits where the shadow is ≥ 60 %', () => {
