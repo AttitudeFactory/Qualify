@@ -86,7 +86,8 @@ def test_a_new_one_that_does_not_fit_is_kept_in_the_input_never_dropping_another
         "ensaladas",
         "comidaarabe",
     ]
-    assert left == "falafel" and "Caben 5 etiquetas" in note
+    assert left == "falafel"
+    assert note == "Pusimos #tachira primero. #falafel no cabe: quita una para agregarla."
     assert set(_tags(out)) == set(STORED)  # nothing removed without the owner's ✕
 
 
@@ -198,12 +199,14 @@ def test_typing_all_five_again_reorders_in_the_section(monkeypatch: pytest.Monke
 
 def test_the_order_is_numbered_open_and_closed_and_says_why() -> None:
     closed = str(editor_module._rubro_summary())
-    assert '". #"' in closed and "i_rx_state_ + 1" in closed
+    # the number is its own text before the capsule, never part of the tag's label
+    assert '". #"' not in closed and '"#"+' in closed.replace(" ", "")
+    assert "to_string" not in closed and "rubro_hashtags" in closed
     assert json.dumps(vm.ORDER_HELP)[1:-1] in closed
     opened = " ".join(str(part) for part in editor_module._rubro_editor())
     assert "tag_rows" in opened and "number" in opened
     assert json.dumps(editor_module.RUBRO_ORDER_HINT)[1:-1] in opened
-    for words in ("Subir", "Bajar", "Mover al principio", "Quitar"):
+    for words in ("Subir", "Bajar", "Mover al final", "Mover al principio", "Quitar"):
         assert words in opened
     assert "rubro-tags" in opened and "q-sort-handle" in opened
     assert "hashtag" not in (vm.ORDER_HELP + editor_module.RUBRO_ORDER_HINT).lower()
@@ -284,3 +287,81 @@ def test_input_to_state_to_save_to_reload_keeps_one_order(
     _rubro, reloaded = brand_finish.load_rubro(TENANT, BRAND)  # the next visit
     assert _tags(reloaded) == shown
     assert _tags(vm.stored_pills(reloaded)) == shown and _tags(vm.pills_for_save(reloaded)) == shown
+
+
+# -- review round: the retype rule, its notes, nothing lost --------------------------------
+
+
+def test_one_typed_tag_already_there_moves_nothing_and_says_where() -> None:
+    out, note, left = vm.add_typed_parts(_pills(STORED), "#Tachira")
+    assert _tags(out) == STORED and left == ""
+    assert note == "#tachira ya está en tu lista, en el lugar 3."
+
+
+def test_some_typed_says_the_others_follow() -> None:
+    _out, note, _left = vm.add_typed_parts(_pills(STORED), "ensaladas, shawarma")
+    assert note == vm.NOTE_TYPED_FIRST
+
+
+def test_all_typed_says_ordered_as_written() -> None:
+    _out, note, _left = vm.add_typed_parts(_pills(STORED), ", ".join(WANTED))
+    assert note == vm.NOTE_REORDERED
+
+
+def test_two_new_left_out_after_a_reorder_get_one_plural_note() -> None:
+    out, note, left = vm.add_typed_parts(_pills(STORED), "falafel, tachira, kebab")
+    assert _tags(out)[0] == "tachira" and left == "falafel, kebab"
+    assert note == (
+        "Pusimos #tachira primero. #falafel y #kebab no caben: quita alguna para agregarlas."
+    )
+
+
+def test_pills_that_fold_alike_are_never_lost() -> None:
+    out, _note, _left = vm.add_typed_parts(_pills(["c++", "ok", "c#"]), "c")
+    assert _tags(out) == ["c++", "ok", "c#", "c"]
+    out, _note, _left = vm.add_typed_parts(_pills(["café", "cafe", "x"]), "x, cafe")
+    assert _tags(out) == ["x", "café", "cafe"]
+
+
+def test_a_marked_invalid_tag_never_counts_as_already_there() -> None:
+    stored = _pills(["comida-arabe", "pizza"])
+    out, note, left = vm.add_typed_parts(stored, "comidaarabe")
+    assert _tags(out) == ["comida-arabe", "pizza", "comidaarabe"] and left == ""
+    assert note == "" and vm.invalid_tags(out) == ["comida-arabe"]
+    out, note, _left = vm.add_typed_parts(stored, "comidaarabe, pizza")
+    assert _tags(out) == ["comidaarabe", "pizza", "comida-arabe"]  # the marked one stays
+    assert vm.NOTE_REORDERED not in note
+
+
+def test_escape_after_a_removal_puts_it_back_truthfully(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    editor, _ = _open(monkeypatch)
+    BrandEditState.tag_key.fn(editor, "ensaladas", " ")  # at 4 of 5
+    BrandEditState.tag_key.fn(editor, "ensaladas", "ArrowUp")
+    BrandEditState.tag_key.fn(editor, "ensaladas", "ArrowUp")
+    BrandEditState.remove_tag.fn(editor, "shawarma")
+    BrandEditState.tag_key.fn(editor, "ensaladas", "Escape")
+    assert _tags(editor.tags_draft) == [
+        "sancristobaltachira",
+        "tachira",
+        "ensaladas",
+        "comidaarabe",
+    ]
+    assert "volvió a su lugar" in editor.tag_announce
+
+
+def test_the_menu_moves_to_the_end(monkeypatch: pytest.MonkeyPatch) -> None:
+    editor, _ = _open(monkeypatch)
+    row = vm.tag_rows(editor.tags_draft, [])[0]
+    BrandEditState.move_tag.fn(editor, row["tag"], row["last"])
+    assert _tags(editor.tags_draft)[-1] == "shawarma"
+    assert vm.tag_rows(editor.tags_draft, [])[-1]["can_down"] == ""
+
+
+def test_the_help_lines_make_no_promise_about_the_first_ones() -> None:
+    assert vm.ORDER_HELP == "Pon primero las que mejor describen tu negocio."
+    assert editor_module.RUBRO_ORDER_HINT == (
+        "Pon primero las que mejor describen tu negocio. Para cambiar el orden, "
+        "arrástralas o toca «⋯»."
+    )

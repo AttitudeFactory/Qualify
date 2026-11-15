@@ -147,10 +147,9 @@ RUBRO_TAGS_EMPTY = (
 )
 RUBRO_ADD_TAG = "Agregar etiqueta"
 #: The open list's line on the order (m-25029206): why, and the three ways to change it.
-RUBRO_ORDER_HINT = (
-    f"{rubro_vm.ORDER_HELP} Arrástralas, usa «⋯» o escríbelas de nuevo en el orden que "
-    "quieras, separadas por comas."
-)
+RUBRO_ORDER_HINT = f"{rubro_vm.ORDER_HELP} Para cambiar el orden, arrástralas o toca «⋯»."
+#: «⋯»'s move to the end — the WhatsApp menu has only «Mover al principio».
+MOVE_TO_END = "Mover al final"
 _RANK_DRAG_JS = asset_script("rank-drag.js")
 RUBRO_SAVE_FAILED = "No pudimos guardar tu rubro. Inténtalo de nuevo en un momento."
 RUBRO_NO_SESSION = "Tu sesión se cerró. Vuelve a entrar para seguir."
@@ -481,8 +480,11 @@ class BrandEditState(rx.State):
         if self.tag_lifted != tag:
             return None
         if key == "Escape":
-            if tag in self._lift_tags:
-                self._move(tag, self._lift_tags.index(tag))
+            # back to its place among the ones still there (others may have been removed
+            # while it was lifted), so the announcement is true
+            start = [t for t in self._lift_tags if t in tags]
+            if tag in start:
+                self._move(tag, start.index(tag))
             self.tag_lifted = ""
             self._lift_tags = []
             self.tag_announce = f"Listo, no cambiamos nada: «#{tag}» volvió a su lugar."
@@ -596,10 +598,14 @@ class BrandEditState(rx.State):
 def _focus_tag_handle_script(tag: str) -> str:
     """The row re-renders in its new place and the browser drops the focus: give it back
     to that etiqueta's handle (`ui.sort_handle`, `data-sort-key`) — as the WhatsApp menu
-    answers do."""
+    answers do. Only when the focus was really lost (on the page body) or is on another
+    handle: a tap elsewhere in between — e.g. «Agregar etiqueta», whose input takes the
+    focus — is never undone."""
     return (
         "window.setTimeout(function () { var k = " + json.dumps("tag-" + tag) + ";"
-        " var b = Array.prototype.find.call(document.querySelectorAll('[data-sort-key]'),"
+        " var a = document.activeElement;"
+        " if (a && a !== document.body && !a.getAttribute('data-sort-key')) return;"
+        " var b =Array.prototype.find.call(document.querySelectorAll('[data-sort-key]'),"
         " function (el) { return el.getAttribute('data-sort-key') === k; });"
         " if (b) b.focus(); }, 80)"
     )
@@ -732,8 +738,19 @@ def _rubro_summary() -> rx.Component:
                 rx.flex(
                     rx.foreach(
                         BrandConnectState.rubro_hashtags,
-                        lambda pill, i: tag(
-                            (i + 1).to_string() + ". #" + pill["tag"].to(str), size="2"
+                        # the number sits outside the capsule: «1» never reads as the tag
+                        lambda pill, i: rx.hstack(
+                            rx.text(
+                                (i + 1).to_string(),
+                                size="1",
+                                color=T.TEXT_MUTED,
+                                class_name="q-nums",
+                                aria_hidden="true",
+                            ),
+                            tag("#" + pill["tag"].to(str), size="2"),
+                            spacing="1",
+                            align="center",
+                            role="listitem",
                         ),
                     ),
                     wrap="wrap",
@@ -780,6 +797,11 @@ def _rubro_tag_menu(row: rx.Var[dict[str, str]]) -> rx.Component:
             rx.menu.item(
                 MOVE_DOWN,
                 on_click=BrandEditState.move_tag(row["tag"], row["down"]),
+                disabled=row["can_down"] == "",
+            ),
+            rx.menu.item(
+                MOVE_TO_END,
+                on_click=BrandEditState.move_tag(row["tag"], row["last"]),
                 disabled=row["can_down"] == "",
             ),
             rx.menu.item(

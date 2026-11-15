@@ -77,7 +77,8 @@ def test_duplicates_collapse_and_the_cap_is_five() -> None:
     assert pills == [{"tag": "arepas", "origin": "manual", "reason": "", "model": ""}]
     assert taken and note == ""
     again, note, taken = vm.add_typed(pills, "#arepás")  # accents and case folded
-    assert again == pills and note == "" and taken  # already first: nothing moves
+    assert again == pills and taken  # one typed, already there: nothing moves
+    assert note == "#arepas ya está en tu lista, en el lugar 1."
     for word in ("uno", "dos", "tres", "cuatro"):
         pills, _note, _taken = vm.add_typed(pills, word)
     assert len(pills) == 5 and not vm.can_add(pills)

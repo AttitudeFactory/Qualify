@@ -32,10 +32,12 @@ NOTE_TOO_LONG = (
 )
 #: Typed etiquetas that were already there moved to the typed order: said, once.
 NOTE_REORDERED = "Las ordenamos como las escribiste."
+#: …when only some of the list were typed: where the others went.
+NOTE_TYPED_FIRST = "Pusimos primero las que escribiste; las demás siguen detrás."
 #: The wizard's own words for a full list (`add_pills`).
 _FULL_NOTE = f"Caben {CHOSEN_HASHTAGS} etiquetas: quita alguna para agregar otra."
 #: Why the order matters, in words true for every business.
-ORDER_HELP = "Pon primero las más importantes."
+ORDER_HELP = "Pon primero las que mejor describen tu negocio."
 #: Words typed apart became one etiqueta: said, so three typed as one is not missed.
 NOTE_JOINED = "La unimos en una sola: #{tag}. Si eran varias, sepáralas con comas."
 #: What separates etiquetas typed at once.
@@ -90,26 +92,49 @@ def typed_tag(raw: str) -> tuple[str, str]:
     return tag, ""
 
 
-def add_typed_parts(pills: list[dict[str, str]], raw: str) -> tuple[list[dict[str, str]], str, str]:
-    """`pills` with what was typed — THE TYPED ORDER WINS (m-25029206, founder's report of
-    2026-11-15). A comma or a semicolon separates etiquetas («pizza, pasta, vino» is
-    three), each checked on its own. Typing only new etiquetas adds them at the end, in
-    the typed order. As soon as the text names one already in the list, the list becomes
-    the typed etiquetas in the order typed — the ones already there MOVE to their typed
-    place, never refused as a repeat — followed by the ones not typed, in their order.
+def _tag_list(tags: list[str]) -> str:
+    """«#a», «#a y #b», «#a, #b y #c»."""
+    marked = [f"#{t}" for t in tags]
+    return marked[0] if len(marked) == 1 else ", ".join(marked[:-1]) + " y " + marked[-1]
 
-    Nothing is ever removed without the owner's ✕: moving never changes the count, and a
-    NEW etiqueta that does not fit under `CHOSEN_HASHTAGS` stays in the input with
-    «Caben 5 etiquetas…». Returns the pills, the note to show ("" when all went well)
-    and what stays in the input: the parts refused or with no room left ("" closes it)."""
+
+def _full_after_reorder(first: list[str], skipped: list[str]) -> str:
+    """ONE note for a retype that reordered AND left new etiquetas out for lack of room."""
+    put = f"Pusimos {_tag_list(first)} primero." if first else ""
+    if len(skipped) == 1:
+        out = f"{_tag_list(skipped)} no cabe: quita una para agregarla."
+    else:
+        out = f"{_tag_list(skipped)} no caben: quita alguna para agregarlas."
+    return f"{put} {out}".strip()
+
+
+def add_typed_parts(pills: list[dict[str, str]], raw: str) -> tuple[list[dict[str, str]], str, str]:
+    """`pills` with what was typed (m-25029206, founder's report of 2026-11-15). A comma
+    or a semicolon separates etiquetas («pizza, pasta, vino» is three), each checked on
+    its own.
+
+    - Typing new etiquetas adds them at the end, in the typed order.
+    - ONE typed etiqueta that is already in the list moves nothing: the note says where it
+      is («#shawarma ya está en tu lista, en el lugar 3.»).
+    - Two or more typed, at least one already in the list: THE TYPED ORDER WINS — the
+      typed etiquetas first, in typed order (the ones already there MOVE), then the rest,
+      in their order.
+
+    A stored etiqueta the catalog refuses (marked) never counts as «already there»: what
+    is typed is handled as new, the marked one stays where it is. Nothing is ever removed
+    without the owner's ✕ — the rest is kept by position, so two pills that fold alike
+    both stay. A NEW etiqueta that does not fit under `CHOSEN_HASHTAGS` stays in the input.
+    Returns the pills, the note ("" when all went well) and what stays in the input."""
     current = stored_pills(pills)  # a pill without a tag would break `add_pills`
-    by_fold = {fold(p["tag"]): p for p in current}
-    typed: list[dict[str, str]] = []
-    typed_folds: set[str] = set()
-    room = CHOSEN_HASHTAGS - len(current)
+    refused = set(invalid_tags(current))
+    index_of: dict[str, int] = {}
+    for i, p in enumerate(current):
+        if p["tag"] not in refused:
+            index_of.setdefault(fold(p["tag"]), i)
     notes: list[str] = []
     left: list[str] = []
-    moved = False
+    typed: list[tuple[str, str]] = []  # (tag, the part as typed), once per fold
+    seen: set[str] = set()
     for part in (p.strip() for p in _SEPARATORS.split(str(raw or ""))):
         tag, note = typed_tag(part)
         if not tag:  # refused (a note) — or nothing but «#», which adds nothing
@@ -117,37 +142,51 @@ def add_typed_parts(pills: list[dict[str, str]], raw: str) -> tuple[list[dict[st
                 notes.append(note)
                 left.append(part)
             continue
-        key = fold(tag)
-        if key in typed_folds:  # typed twice in one go: the first place counts
+        if fold(tag) in seen:  # typed twice in one go: the first place counts
             continue
-        if key in by_fold:
-            typed.append(dict(by_fold[key]))
-            typed_folds.add(key)
-            moved = True
+        seen.add(fold(tag))
+        typed.append((tag, part))
+    reorder = len(typed) >= 2 and any(fold(t) in index_of for t, _ in typed)
+    room = CHOSEN_HASHTAGS - len(current)
+    first: list[dict[str, str]] = []  # reorder: the typed ones, in typed order
+    added: list[dict[str, str]] = []  # plain add: the new ones, at the end
+    moved: set[int] = set()
+    skipped: list[str] = []
+    for tag, part in typed:
+        at = index_of.get(fold(tag))
+        if at is not None:
+            if reorder:
+                first.append(dict(current[at]))
+                moved.add(at)
+            else:
+                notes.append(f"#{current[at]['tag']} ya está en tu lista, en el lugar {at + 1}.")
             continue
         if room <= 0:
-            notes.append(_FULL_NOTE)
+            skipped.append(tag)
             left.append(part)
             continue
         new, _ = add_pills([], [{"tag": tag, "origin": "manual"}])
-        typed.extend(new)
-        typed_folds.add(key)
+        (first if reorder else added).extend(new)
         room -= 1
         if len(part.lstrip("#").split()) > 1:
             notes.append(NOTE_JOINED.format(tag=tag))
-    rest = [dict(p) for p in current if fold(p["tag"]) not in typed_folds]
-    # only new ones typed: an ordinary add, at the end; naming one already there means
-    # «this is my order» — the typed ones first, the rest after them
-    out = typed + rest if moved else rest + typed
-    if moved and [p["tag"] for p in out] != [p["tag"] for p in current]:
-        notes.append(NOTE_REORDERED)
+    rest = [dict(p) for i, p in enumerate(current) if i not in moved]
+    if not reorder:
+        if skipped:
+            notes.append(_FULL_NOTE)
+        return rest + added, " ".join(dict.fromkeys(notes)), ", ".join(left)
+    out = first + rest
+    if skipped:
+        notes.append(_full_after_reorder([p["tag"] for p in first], skipped))
+    elif [p["tag"] for p in out] != [p["tag"] for p in current]:
+        notes.append(NOTE_REORDERED if not rest else NOTE_TYPED_FIRST)
     return out, " ".join(dict.fromkeys(notes)), ", ".join(left)
 
 
 def move_tag(pills: list[dict[str, str]], tag: str, to: int) -> list[dict[str, str]]:
     """`tag` moved to place `to` (remove, then insert) — «Subir», «Bajar», «Mover al
-    principio», the handle's arrows and a drag all go through here. An unknown tag or a
-    place out of range leaves the list as it was."""
+    principio», «Mover al final», the handle's arrows and a drag all go through here. An
+    unknown tag or a place out of range leaves the list as it was."""
     out = [dict(p) for p in pills]
     tags = [p.get("tag") for p in out]
     if tag not in tags or not 0 <= to < len(out):
@@ -167,6 +206,7 @@ def tag_rows(pills: list[dict[str, str]], invalid: list[str]) -> list[dict[str, 
             "index": str(i),
             "up": str(i - 1),
             "down": str(i + 1),
+            "last": str(count - 1),
             "can_up": "1" if i > 0 else "",
             "can_down": "1" if i < count - 1 else "",
             "invalid": "1" if p["tag"] in invalid else "",
