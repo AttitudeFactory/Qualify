@@ -26,6 +26,7 @@ from .chat_row_vm import (
     minutes_left,
     reply_soon_pill,
 )
+from .chat_settings_vm import ACCOUNT_PARAM, SETTINGS_INSTAGRAM_ROUTE
 from .ui.tokens import platform_scale
 from .whatsapp_vm import TAB_MENU, tab_url
 
@@ -75,11 +76,12 @@ _MONTHS: Final = (
 #: `--accent-a11`, which measured under 4.5:1 on the tinted bubble. One line to flip.
 BUBBLE_LINK_HIGH_CONTRAST: Final = True
 
-#: Where «Ajustes de este canal» goes until «Ajustes de chats» exists (m-25017861). On
-#: WhatsApp, the automatic reply — what the owner wants to fix when the menu answered
-#: wrong (D1's reason). Instagram's own setting today is «Preguntas iniciales», which the
-#: page opens in its drawer (no route).
+#: Where «Ajustes de este canal» goes: «Ajustes de chats» (m-25017861, D1). On WhatsApp,
+#: «Tu menú de bienvenida» — what the owner wants to fix when the menu answered wrong
+#: (D1's reason). On Instagram, the hub with that account's «Preguntas iniciales» open
+#: (`chat_settings_vm.instagram_settings_href`; the account id is appended by the page).
 WHATSAPP_SETTINGS_HREF: Final = tab_url(TAB_MENU)
+INSTAGRAM_SETTINGS_PREFIX: Final = f"{SETTINGS_INSTAGRAM_ROUTE}?{ACCOUNT_PARAM}="
 
 
 # ======================================================================================

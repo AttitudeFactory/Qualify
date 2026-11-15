@@ -293,7 +293,7 @@ def test_whatsapp_row_drops_mode_and_closed_and_keeps_one_pill() -> None:
     assert (calm.pill_label, calm.pill_tone) == ("Esperando el pago", "neutral")
     review = wa_chat_row(dataclasses.replace(vm, payment_review=True, payment_awaiting=True))
     assert review.pill_label == PAYMENT_REVIEW_PILL
-    for gone in ("Cerrado", "Responde el menú", "Respondes tú"):
+    for gone in ("Cerrado", "Usando tu menú", "Respondes tú"):
         assert gone not in (row.pill_label, row.aria_label)
     assert row.aria_label.endswith(", cerrado, Quedan 30 min para responder")
 

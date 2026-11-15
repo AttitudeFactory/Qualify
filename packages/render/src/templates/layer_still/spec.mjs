@@ -48,10 +48,17 @@ const unknownKeys = (obj, allowed, where, problems) => {
 /**
  * @param {object} catalog  manifest.layer_catalog
  * @param {unknown} layer   props.layer (LayerSpec v1)
- * @param {{formats: string[], hasPhoto: boolean}} ctx  the formats of the requested ports
+ * @param {{formats: string[], hasPhoto: boolean, headingFamily?: string}} ctx  the formats of
+ *   the requested ports; `headingFamily` (the brand's title family) applies a layout's
+ *   `script_title` limit when it is one of `catalog.script_families` (2026-11-15)
  * @returns {string[]} problems, empty when valid
  */
-export const layerProblems = (catalog, layer, {formats, hasPhoto}) => {
+export const isScriptFamily = (catalog, family) =>
+  typeof family === 'string' &&
+  family.trim() !== '' &&
+  (catalog.script_families ?? []).some((f) => f.toLowerCase() === family.trim().toLowerCase());
+
+export const layerProblems = (catalog, layer, {formats, hasPhoto, headingFamily}) => {
   const problems = [];
   if (!isObj(layer)) return ['layer: expected an object (LayerSpec)'];
   unknownKeys(layer, LAYER_KEYS, 'layer', problems);
@@ -85,14 +92,18 @@ export const layerProblems = (catalog, layer, {formats, hasPhoto}) => {
       problems.push(`layer.${slot}: expected a string`);
       continue;
     }
+    const script = slot === 'title' && layout.script_title && isScriptFamily(catalog, headingFamily);
     for (const f of formats) {
-      const lim = layout.slots[slot]?.[f];
+      const lim = script ? layout.script_title[f] : layout.slots[slot]?.[f];
       if (!lim) {
         problems.push(`layer.${slot}: '${layoutId}' has no ${slot} in ${f}`);
         continue;
       }
       const n = charCount(v.trim());
-      if (n > lim[0]) problems.push(`layer.${slot}: ${n} chars exceeds ${lim[0]} for '${layoutId}' in ${f}`);
+      if (n > lim[0]) {
+        const why = script ? ' with a script title font' : '';
+        problems.push(`layer.${slot}: ${n} chars exceeds ${lim[0]} for '${layoutId}' in ${f}${why}`);
+      }
     }
   }
   if (layoutId === 'brand_fill' && isBlank(layer.title)) problems.push("layer.title: required in 'brand_fill'");

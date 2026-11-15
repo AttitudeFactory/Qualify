@@ -189,6 +189,26 @@ def test_the_flyer_gets_its_layer_before_its_composition(monkeypatch: pytest.Mon
     assert all(w.layer is not None for w in outcome.media)
 
 
+def test_the_layer_gets_the_title_face_the_render_draws(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`BrandKit.typeface`: the heading face, else the body one — a kit with only a body
+    face draws its titles in it, so a script body face lowers the plate title too."""
+    monkeypatch.setenv("QUALIFY_IMAGE_LAYER", "on")
+    producer, brief, _ = gallery_setup(monkeypatch)
+    writer = Writer()
+    _wire(producer, writer, [])
+    kit = _kit().model_copy(update={"font_heading": "", "font_body": "Pacifico"})
+    producer.produce(
+        tenant_id=TENANT_ID,
+        draft_id=uuid4(),
+        brief=brief,
+        kit=kit,
+        copy=COPY,
+        budget=BUDGET,
+        brand_references=BrandReferencesSet(block_version=9),
+    )
+    assert writer.requests[0].title_font == "Pacifico" == kit.typeface
+
+
 def test_a_failing_layer_never_costs_the_piece(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("QUALIFY_IMAGE_LAYER", "on")
     producer, brief, _ = gallery_setup(monkeypatch)

@@ -48,7 +48,7 @@ def test_the_catalog_has_the_seven_layouts() -> None:
         "brand_fill",
         "highlight_circle",
     }
-    assert LAYOUT_VERSION == 1
+    assert LAYOUT_VERSION == 2  # 2026-11-15: three titles lowered
 
 
 @pytest.mark.parametrize(
@@ -367,3 +367,37 @@ def test_brand_fill_square_info_value_follows_the_doc_limit() -> None:
     fields["info_blocks"][0]["value"] = "x" * 61
     with pytest.raises(ValidationError):
         _spec(**fields)
+
+
+# -- 2026-11-15: limits lowered after real renders refused in-limit texts --------------------
+
+
+@pytest.mark.parametrize(
+    ("fields", "fits"),
+    [
+        ({"layout_id": "brand_fill", "format": "4:5"}, 45),
+        (
+            {
+                "layout_id": "info_card",
+                "format": "1:1",
+                "info_blocks": [{"kind": "hours", "label": "Horario", "value": "De 8 a 20"}],
+            },
+            18,
+        ),
+    ],
+)
+def test_titles_lowered_on_2026_11_15(fields: dict, fits: int) -> None:  # type: ignore[type-arg]
+    _spec(**fields, title="x" * fits)
+    with pytest.raises(ValidationError, match=f"at most {fits}"):
+        _spec(**fields, title="x" * (fits + 1))
+
+
+def test_a_script_title_face_lowers_the_plate_title_only() -> None:
+    from qualify_creative.layer_spec import is_script_family, title_limit
+
+    assert is_script_family("Pacifico") and is_script_family(" dancing script ")
+    assert not is_script_family("Poppins") and not is_script_family("")
+    assert title_limit("plate", "4:5", "Pacifico") == [24, 2]
+    assert title_limit("plate", "4:5", "Poppins") == [28, 2]
+    assert title_limit("band", "4:5", "Pacifico") == [36, 2]  # only plate has a script row
+    assert LAYOUT_VERSION == 2

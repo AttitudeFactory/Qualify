@@ -275,9 +275,15 @@ corchetes, `[dirección guardada]`, sale de los datos del negocio.
   | Espacio | 4:5 | 1:1 | 9:16 |
   |---|---|---|---|
   | `title` | ≤ 28 car., ≤ 2 líneas | ≤ 24 car., ≤ 2 líneas | ≤ 28 car., ≤ 2 líneas |
+  | `title` con tipografía de títulos manuscrita (2026-11-15) | ≤ 24 car., ≤ 2 líneas | ≤ 24 car., ≤ 2 líneas | ≤ 24 car., ≤ 2 líneas |
   | `subtitle` | ≤ 60 car., ≤ 2 líneas | ≤ 44 car., ≤ 2 líneas | ≤ 60 car., ≤ 2 líneas |
   | `call_phrase` | ≤ 26 car., 1 línea | ≤ 24 car., 1 línea | ≤ 26 car., 1 línea |
   | `price_ref` | 1 línea bajo el título, si §4 lo permite | igual | igual |
+
+  La tipografía manuscrita es la de la lista corta de familias del catálogo
+  (`script_families`, la misma con la que el compositor sube el mínimo del título, §1.4): la
+  etapa de la capa conoce la tipografía de títulos de la marca y le da a Claude el límite que
+  aplica; el compositor lo vuelve a comprobar.
 
   Ancho máximo del recuadro: 72 % del lienzo (4:5 y 9:16), 76 % (1:1). Relleno interior 48 px,
   esquinas de 32 px. Palabra más larga del título: ≤ 13 caracteres (si es más larga, el compositor
@@ -455,7 +461,7 @@ Con **un solo bloque** (carrusel de «Información de tu negocio», un dato por 
 
   | Espacio | 4:5 | 1:1 | 9:16 |
   |---|---|---|---|
-  | `title` | ≤ 30 car., ≤ 2 líneas | ≤ 24 car., 1 línea | ≤ 30 car., ≤ 2 líneas |
+  | `title` | ≤ 30 car., ≤ 2 líneas | ≤ 18 car., 1 línea (era 24; 2026-11-15) | ≤ 30 car., ≤ 2 líneas |
   | `subtitle` | no | no | ≤ 50 car., 1 línea |
   | `info_blocks` | 1–4 (3 con tira de foto) | 1–3 (2 con tira de foto) | 1–4 |
   | `label` | fija (§1.5) | fija | fija |
@@ -508,7 +514,7 @@ Con **un solo bloque** (carrusel de «Información de tu negocio», un dato por 
 
   | Espacio | 4:5 | 1:1 | 9:16 |
   |---|---|---|---|
-  | `title` | ≤ 60 car., ≤ 3 líneas | ≤ 48 car., ≤ 3 líneas | ≤ 60 car., ≤ 4 líneas |
+  | `title` | ≤ 45 car., ≤ 3 líneas (era 60; 2026-11-15) | ≤ 48 car., ≤ 3 líneas | ≤ 60 car., ≤ 4 líneas |
   | `subtitle` | ≤ 110 car., ≤ 3 líneas | ≤ 80 car., ≤ 2 líneas | ≤ 110 car., ≤ 3 líneas |
   | `call_phrase` | ≤ 28 car., 1 línea | ≤ 28 car., 1 línea | ≤ 28 car., 1 línea |
   | `info_blocks` | 0–1 (`contact`, `location` o `hours`) | 0–1 | 0–2 |
@@ -848,3 +854,5 @@ El fundador aprobó el catálogo de siete diseños y respondió las cinco pregun
 | 5 | Contador del carrusel | En todas las diapositivas, abajo a la derecha, portada incluida |
 
 Siguen siendo hipótesis, a validar con composiciones reales (m-25017292) y con dueños: los límites de caracteres, los tamaños de letra y las zonas seguras de cada formato.
+
+**2026-11-15 — límites bajados** (fundador: «Sí, bájalos»). Las composiciones reales de la hoja de contacto de m-25017285 rechazaron textos que estaban dentro del límite, así que se bajan tres títulos: `brand_fill` en 4:5 de 60 a 45 caracteres; `info_card` en 1:1 de 24 a 18 (sigue en 1 línea); y `plate` con una tipografía de títulos manuscrita, 24 caracteres en 2 líneas en todos los formatos. La versión del catálogo pasa a `layout_version` 2. Siguen siendo hipótesis hasta medirlos con marcas reales.

@@ -1,7 +1,7 @@
 """The `LayerSpec` contract (m-25017283, ADR 49 §2 item 2): `schema.py` (pydantic),
-`catalog_v1.json` (the closed catalog's numbers; `packages/render` keeps its own copy, a
-comparison test lands with whichever branch merges second) and `layer_spec_v1.schema.json`
-(the committed JSON Schema for `packages/render`)."""
+`catalog_v1.json` (the closed catalog's numbers; `packages/render` keeps its own copy in
+`manifest.layer_catalog`, and `test_layer_catalog_drift.py` keeps the two equal) and
+`layer_spec_v1.schema.json` (the committed JSON Schema for `packages/render`)."""
 
 from qualify_creative.layer_spec.schema import (
     LAYOUT_VERSION,
@@ -21,7 +21,9 @@ from qualify_creative.layer_spec.schema import (
     catalog,
     export_json_schema,
     free_text_problems,
+    is_script_family,
     json_schema,
+    title_limit,
 )
 
 __all__ = [
@@ -42,5 +44,7 @@ __all__ = [
     "catalog",
     "export_json_schema",
     "free_text_problems",
+    "is_script_family",
     "json_schema",
+    "title_limit",
 ]

@@ -7,7 +7,7 @@ every state is a TONE (`ok`/`warn`/`error`/`info`/`neutral`) through `signal_pil
 `platform_badge("whatsapp")`.
 
 **The shell** (m-24842998). Header + number selector (only when the tenant has more than
-one number) + three task tabs (Chats · Respuesta automática · Tu número) + a second,
+one number) + two task tabs (Chats · Tu número) + a second,
 smaller strip for «Tu número»'s panels + the active panel's body. From `md` up the strips
 are segmented controls; on a phone they are a grid of 44 px buttons, so they fit at
 360 px without sliding sideways (N12).
@@ -58,6 +58,8 @@ from .whatsapp_tab_menu import back_to_guided, menu_step_frame, menu_tab
 from .whatsapp_tab_payments import payments_tab
 from .whatsapp_tab_templates import templates_tab
 from .whatsapp_vm import (
+    CHAT_SETTINGS_ROUTE,
+    CHAT_SETTINGS_TITLE,
     DETAILS_TOGGLE,
     MAX_ABOUT_CHARS,
     MAX_ADDRESS_CHARS,
@@ -65,6 +67,8 @@ from .whatsapp_vm import (
     MAX_EMAIL_CHARS,
     MAX_QR_MESSAGE_CHARS,
     MAX_WEBSITE_CHARS,
+    MENU_SUBTITLE,
+    MENU_TITLE,
     NO_NUMBER_ACTION,
     NO_NUMBER_GAINS,
     NO_NUMBER_NEXT,
@@ -173,10 +177,6 @@ def whatsapp_header() -> rx.Component:
         kicker=rx.cond(
             (WhatsAppState.active_tab == TAB_CHATS) & WhatsAppChatsState.has_open_thread,
             chats_back_button(),
-            rx.cond(
-                (WhatsAppState.active_tab == TAB_MENU) & WhatsAppMenuState.advanced_open,
-                back_to_guided(),
-            ),
         ),
     )
 
@@ -237,14 +237,14 @@ def _choice_strip(
 
 
 def tab_strip() -> rx.Component:
-    """The three tasks (m-24842998, m-25017862): Chats · Respuesta automática · Tu
-    número. «Tu número» opens a second, smaller strip (`sub_strip`)."""
+    """The two tasks (m-24842998, m-25017862, m-25017861): Chats · Tu número. «Tu número»
+    opens a second, smaller strip (`sub_strip`). The menu left for «Ajustes de chats»."""
     return _choice_strip(
         SECTIONS,
         WhatsAppState.active_section,
         WhatsAppState.select_section,
         label="Secciones de WhatsApp",
-        phone_columns="3",
+        phone_columns="2",
         solid=True,
         size="3",
     )
@@ -416,15 +416,68 @@ def whatsapp_index() -> rx.Component:
             ack=WhatsAppState.history_ack,
             on_leave=WhatsAppState.leave_page_flows,
         ),
+        whatsapp_header(),
+        _whatsapp_body(tab_strip(), sub_strip(), mine=_on_whatsapp_page()),
+    )
+
+
+def _on_settings_page() -> rx.Var[bool]:
+    """Whether the panel in the shared state is the menu (m-25017861)."""
+    return WhatsAppState.active_tab == TAB_MENU
+
+
+def _on_whatsapp_page() -> rx.Var[bool]:
+    """Whether the panel in the shared state is one `/whatsapp` draws."""
+    return ~_on_promotions_page() & ~_on_settings_page()
+
+
+def back_to_chat_settings() -> rx.Component:
+    """«‹ Ajustes de chats» (N7): the way back to the hub this page hangs from."""
+    return rx.link(
+        rx.hstack(
+            rx.icon("chevron-left", size=T.ICON_SM),
+            rx.text(CHAT_SETTINGS_TITLE, size="2"),
+            spacing="1",
+            align="center",
+        ),
+        href=CHAT_SETTINGS_ROUTE,
+        underline="none",
+        color=T.TEXT_MUTED,
+        display="inline-flex",
+        align_items="center",
+        min_height="44px",  # N12, as `back_to_guided` (`whatsapp_tab_menu.TARGET_MIN`)
+    )
+
+
+def whatsapp_settings_index() -> rx.Component:
+    """`/chats/ajustes/whatsapp` (m-25017861, decision D1): «Tu menú de bienvenida», out
+    of the WhatsApp messages screen and into «Ajustes de chats». The same panel, state
+    and number selector as before; with a menu, its four guided steps take the page.
+    An old `/whatsapp?tab=respuesta` lands here (`legacy_settings_target`)."""
+    return app_shell(
+        route_history(
+            WhatsAppState.enter_history,
+            ack=WhatsAppState.history_ack,
+            on_leave=WhatsAppState.leave_page_flows,
+        ),
         rx.cond(
-            (WhatsAppState.active_tab == TAB_MENU)
+            _on_settings_page()
             & (WhatsAppMenuState.loaded_for == WhatsAppState.selected_connection_id)
             & WhatsAppMenuState.has_menu
             & ~WhatsAppMenuState.advanced_open,
             menu_step_frame(),
             rx.fragment(
-                whatsapp_header(),
-                _whatsapp_body(tab_strip(), sub_strip(), mine=~_on_promotions_page()),
+                page_header(
+                    MENU_TITLE,
+                    MENU_SUBTITLE,
+                    number_selector(),
+                    kicker=rx.cond(
+                        WhatsAppMenuState.advanced_open,
+                        back_to_guided(),
+                        back_to_chat_settings(),
+                    ),
+                ),
+                _whatsapp_body(mine=_on_settings_page()),
             ),
         ),
     )

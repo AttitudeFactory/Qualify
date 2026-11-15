@@ -43,7 +43,7 @@ from qualify_creative.render.client import (
 TEMPLATE_ID = "layer_still"
 TEMPLATE_VERSION = 1
 #: The catalog version this template draws (manifest ``layer_catalog.layout_version``).
-LAYOUT_VERSION = 1
+LAYOUT_VERSION = 2
 
 
 @cache
@@ -247,7 +247,13 @@ def compose_layer(
     ``RenderServiceError`` with the service's typed reason — ``LayerRefused`` (a subclass) when
     no layout could draw the layer, with the slot to rewrite. Nothing is stored then, nor when a
     report shows any overflow, so a failed re-compose never destroys what the owner already
-    had and no still with text past its lines or its safe zone is ever kept."""
+    had and no still with text past its lines or its safe zone is ever kept.
+
+    Caller contract (2026-11-15): ``request.brand["fonts"]["heading"]`` must be the SAME
+    resolved title face the layer stage was given (``BrandKit.typeface``: the heading face,
+    else the body one). The render applies the catalog's ``script_title`` limit by that
+    family; send another one and Python accepts a script ``plate`` title the render refuses
+    (or the other way round)."""
     photo_ref = _upload(client, request.base_key, read_media) if request.base_key else None
     logo_ref = _upload(client, request.logo_key, read_media) if request.logo_key else None
     job_id = request.job_id()

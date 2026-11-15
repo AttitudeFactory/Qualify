@@ -87,6 +87,47 @@ def test_the_owner_sees_and_changes_the_rubro_and_its_tags(
     section.get_by_label("Nueva etiqueta").fill("pizzeria, ropadeportiva")
     section.get_by_label("Nueva etiqueta").press("Enter")
     expect(section.get_by_text("#ropadeportiva", exact=True)).to_be_visible()
+    section.get_by_role("button", name="Agregar etiqueta").click()
+    section.get_by_label("Nueva etiqueta").fill("tachira")
+    section.get_by_label("Nueva etiqueta").press("Enter")
+    expect(section.get_by_text("#tachira", exact=True)).to_be_visible()
+
+    # m-25029206: the order — «⋯» in words, the handle's keyboard, and typing again
+    section.get_by_role("button", name="Más opciones para «#ropadeportiva»").click()
+    page.get_by_role("menuitem", name="Mover al principio").click()
+    expect(
+        section.get_by_role("button", name="Mover «#ropadeportiva», posición 1 de 5")
+    ).to_be_visible()
+    handle = section.get_by_role("button", name="Mover «#tachira», posición 5 de 5")
+    handle.focus()
+    handle.press("Space")
+    handle.press("ArrowUp")
+    dropped = section.get_by_role("button", name="Mover «#tachira», posición 4 de 5")
+    dropped.press("Space")
+    expect(dropped).to_have_attribute("aria-pressed", "false")
+    # «Mover al final» and back up with «Subir»
+    section.get_by_role("button", name="Más opciones para «#arepas»").click()
+    page.get_by_role("menuitem", name="Mover al final").click()
+    expect(section.get_by_role("button", name="Mover «#arepas», posición 5 de 5")).to_be_visible()
+    # one typed etiqueta already there moves nothing and says where it is
+    section.get_by_role("button", name="Agregar etiqueta").click()  # also with 5
+    # the handle's late refocus never steals the focus from the input just opened
+    expect(section.get_by_label("Nueva etiqueta")).to_be_focused()
+    section.get_by_label("Nueva etiqueta").fill("pizzeria")
+    section.get_by_label("Nueva etiqueta").press("Enter")
+    expect(
+        section.get_by_text("#pizzeria ya está en tu lista, en el lugar 4.", exact=True)
+    ).to_be_visible()
+    section.get_by_role("button", name="Agregar etiqueta").click()
+    expect(section.get_by_label("Nueva etiqueta")).to_be_focused()
+    section.get_by_label("Nueva etiqueta").fill("comidacasera, arepas")
+    section.get_by_label("Nueva etiqueta").press("Enter")
+    expect(
+        section.get_by_text("Pusimos primero las que escribiste; las demás siguen detrás.")
+    ).to_be_visible()
+    expect(
+        section.get_by_role("button", name="Mover «#comidacasera», posición 1 de 5")
+    ).to_be_visible()
     section.scroll_into_view_if_needed()
     _shot(page, f"rubro-editando-{width}")
     # nothing on the page is wider than the phone
@@ -94,18 +135,54 @@ def test_the_owner_sees_and_changes_the_rubro_and_its_tags(
 
     section.get_by_role("button", name="Guardar", exact=True).click()
     expect(page.get_by_text("Sección guardada.")).to_be_visible(timeout=30_000)
-    expect(section.get_by_text("#arepas", exact=True)).to_be_visible()
+    # closed: numbered in the saved order, the number outside the capsule
+    closed = section.get_by_role("list", name="Tus etiquetas, en orden")
+    expect(closed.get_by_role("listitem")).to_have_text(
+        ["1#comidacasera", "2#arepas", "3#ropadeportiva", "4#tachira", "5#pizzeria"]
+    )
     section.scroll_into_view_if_needed()
     _shot(page, f"rubro-guardado-{width}")
 
     after = _connect(page)
     assert after["rubro_text"] == "arepera de barrio"
     assert [pill["tag"] for pill in after["hashtags"]] == [
-        "arepas",
         "comidacasera",
-        "pizzeria",
+        "arepas",
         "ropadeportiva",
+        "tachira",
+        "pizzeria",
     ]
     assert all(set(pill) == {"tag", "origin", "reason", "model"} for pill in after["hashtags"])
     rest = {k: v for k, v in after.items() if k not in ("rubro_text", "hashtags")}
     assert rest == {k: v for k, v in before.items() if k not in ("rubro_text", "hashtags")}
+
+
+def test_a_fifty_letter_tag_fits_a_phone(signed_up_page, app_server: str) -> None:  # noqa: ANN001
+    """At 360 px the longest tag the catalog accepts truncates with «…»: its ✕ and «⋯»
+    stay on screen and on one line."""
+    page = signed_up_page
+    page.set_viewport_size({"width": 360, "height": 800})
+    page.goto(f"{app_server}/brand/kit")
+    section = page.locator("#seccion-rubro")
+    expect(section).to_be_visible(timeout=60_000)
+    section.get_by_role("button", name="Cambiar", exact=True).click()
+    section.locator("#brand-rubro-text").fill("arepera")
+    long_tag = ("comidatipicavenezolanayarepasrellenas" + "x" * 50)[:50]
+    section.get_by_role("button", name="Agregar etiqueta").click()
+    section.get_by_label("Nueva etiqueta").fill(f"{long_tag}, arepas")
+    section.get_by_label("Nueva etiqueta").press("Enter")
+    remove = section.get_by_role("button", name="Quitar esta etiqueta").first
+    more = section.get_by_role("button", name=f"Más opciones para «#{long_tag}»")
+    expect(more).to_be_visible()
+    width = page.viewport_size["width"]
+    boxes = [remove.bounding_box(), more.bounding_box()]
+    for box in boxes:
+        assert box is not None and box["x"] >= 0 and box["x"] + box["width"] <= width
+    assert abs(boxes[0]["y"] + boxes[0]["height"] / 2 - boxes[1]["y"] - boxes[1]["height"] / 2) < 8
+    clipped = section.get_by_text(long_tag).first.evaluate(
+        "el => el.scrollWidth > el.clientWidth ? getComputedStyle(el).textOverflow : 'fits'"
+    )
+    assert clipped == "ellipsis"
+    assert page.evaluate("document.documentElement.scrollWidth") <= width + 1
+    section.scroll_into_view_if_needed()
+    _shot(page, "rubro-larga-360")

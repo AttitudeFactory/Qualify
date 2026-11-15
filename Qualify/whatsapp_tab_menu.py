@@ -210,7 +210,12 @@ from .whatsapp_menu_vm import (
     SuggestVM,
 )
 from .whatsapp_state import WhatsAppState
-from .whatsapp_vm import TAB_QR
+from .whatsapp_vm import (
+    CHAT_SETTINGS_TITLE,
+    STARTER_QUESTIONS_LINE,
+    STARTER_QUESTIONS_TITLE,
+    TAB_QR,
+)
 
 _TONES = ("ok", "warn", "error", "info", "neutral")
 PREVIEW_ELEMENT_ID = "whatsapp-menu-preview"
@@ -362,8 +367,8 @@ def _new_menu_dialog() -> rx.Component:
         rx.dialog.content(
             rx.dialog.title("Nuevo menú"),
             rx.dialog.description(
-                "Un número responde con un solo menú publicado a la vez. Puedes tener "
-                "varios guardados y publicar el que toque.",
+                "Un número tiene un solo menú activo a la vez. Puedes tener varios "
+                "guardados y publicar el que toque.",
                 size="2",
                 color=T.TEXT_MUTED,
             ),
@@ -755,13 +760,14 @@ def _menus_card() -> rx.Component:
     return card(
         rx.vstack(
             _section_title(
-                "Menús de este número",
+                "Tus menús de bienvenida",
                 _new_menu_dialog(),
                 heading_id=MENUS_HEADING_ID,
             ),
             rx.text(
-                "Tu WhatsApp responde con el menú que tú escribiste: saluda, muestra "
-                "atajos, toma el pedido desde tu catálogo y te pasa el chat para cerrarlo.",
+                "Tu menú de bienvenida le muestra al cliente lo que tú escribiste: tu saludo, "
+                "tus preguntas iniciales y tu catálogo para pedir. Para cerrar la venta, el "
+                "chat te llega a ti.",
                 size="2",
                 color=T.TEXT_MUTED,
             ),
@@ -783,13 +789,13 @@ def _menus_card() -> rx.Component:
                 ),
                 empty_state(
                     "list-tree",
-                    "Este número aún no tiene menú",
+                    "Todavía no tienes un menú de bienvenida",
                     "Créalo con lo que ya sabemos de tu negocio y completa lo que falte, o "
                     "empieza desde cero.",
                     # N8 (m-24842961): opens the same «Crear menú» dialog.
                     action=rx.button(
                         rx.icon("plus", size=16),
-                        "Crear menú",
+                        "Crear tu menú de bienvenida",
                         on_click=S.set_new_open(True),
                         variant="soft",
                         size="3",
@@ -919,7 +925,11 @@ def _next_step() -> rx.Component:
     return rx.vstack(
         rx.hstack(
             rx.icon("circle-check", size=T.ICON_MD, color=T.tone_color("ok", 11)),
-            rx.text("Listo: tu WhatsApp ya responde con este menú.", size="2", weight="medium"),
+            rx.text(
+                "Listo: tu menú de bienvenida ya está activo en WhatsApp.",
+                size="2",
+                weight="medium",
+            ),
             spacing="2",
             align="center",
         ),
@@ -1043,8 +1053,7 @@ def _pause_row() -> rx.Component:
             rx.text(
                 rx.cond(
                     S.menu.is_published,
-                    "En pausa, tu WhatsApp no responde con el menú; los mensajes "
-                    "llegan a Chats como siempre.",
+                    "En pausa, tu menú no está activo; los mensajes llegan a Chats como siempre.",
                     "Se puede pausar una vez publicado.",
                 ),
                 size="1",
@@ -1101,7 +1110,7 @@ def _ice_breaker_row(row: IceBreakerForm, index: rx.Var[int]) -> rx.Component:
                 _node_select(row.node, lambda v: S.set_entry_row("ice_breakers", index, "node", v)),
                 width="100%",
             ),
-            _icon_button("trash-2", "Quitar atajo", S.remove_entry_row("ice_breakers", index)),
+            _icon_button("trash-2", "Quitar pregunta", S.remove_entry_row("ice_breakers", index)),
             spacing="2",
             width="100%",
             align="center",
@@ -1172,8 +1181,8 @@ def _entry_card() -> rx.Component:
         rx.vstack(
             _section_title("Entrada"),
             rx.text(
-                "Cómo empieza la conversación. Los atajos y comandos también se publican "
-                "en WhatsApp: el cliente los ve al abrir el chat.",
+                "Cómo empieza la conversación. Las preguntas iniciales y los comandos también "
+                "se publican en WhatsApp: el cliente los ve al abrir el chat.",
                 size="2",
                 color=T.TEXT_MUTED,
             ),
@@ -1230,14 +1239,12 @@ def _entry_card() -> rx.Component:
             _err(S.entry_errors, "keywords"),
             rx.divider(),
             _section_title(
-                "Atajos",
+                # m-25017861 (D5): one name in both channels, with the same line.
+                STARTER_QUESTIONS_TITLE,
                 rx.text(S.ice_breaker_count, size="1", color=T.TEXT_FAINT, class_name="q-nums"),
-                _add_row_button("Agregar atajo", "ice_breakers", S.ice_breakers_full),
+                _add_row_button("Agregar pregunta", "ice_breakers", S.ice_breakers_full),
             ),
-            _hint(
-                "Hasta 4, de máximo 80 caracteres y sin emojis. WhatsApp los muestra al "
-                "abrir el chat."
-            ),
+            _hint(f"{STARTER_QUESTIONS_LINE}. Hasta 4, de máximo 80 caracteres y sin emojis."),
             rx.foreach(S.ice_breakers, _ice_breaker_row),
             _err(S.entry_errors, "ice_breakers"),
             rx.divider(),
@@ -3855,7 +3862,7 @@ def menu_step_frame() -> rx.Component:
             S.guided_title,
             step=S.guided_step,
             total=4,
-            back_label="WhatsApp",
+            back_label=CHAT_SETTINGS_TITLE,
             on_exit=S.leave_guided,
         ),
         foot=step_foot(

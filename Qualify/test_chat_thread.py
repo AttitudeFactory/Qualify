@@ -71,13 +71,21 @@ def test_the_menu_keeps_todays_words() -> None:
         assert SETTINGS_LABEL in rendered
 
 
-def test_whatsapp_settings_go_to_the_automatic_reply() -> None:
-    """Until «Ajustes de chats» exists (m-25017861): WhatsApp's own automatic reply."""
-    from .chat_thread_vm import WHATSAPP_SETTINGS_HREF
-    from .whatsapp_vm import TAB_MENU, resolve_panel
+def test_channel_settings_go_to_ajustes_de_chats() -> None:
+    """m-25017861 (D1): «⋯» › «Ajustes de este canal» opens «Ajustes de chats» — on
+    WhatsApp «Tu menú de bienvenida», on Instagram the hub with that account's
+    «Preguntas iniciales» open (the page appends the account id)."""
+    from .chat_settings_vm import instagram_settings_href
+    from .chat_thread_vm import INSTAGRAM_SETTINGS_PREFIX, WHATSAPP_SETTINGS_HREF
 
-    assert WHATSAPP_SETTINGS_HREF == "/whatsapp?tab=respuesta"
-    assert resolve_panel("respuesta") == TAB_MENU
+    assert WHATSAPP_SETTINGS_HREF == "/chats/ajustes/whatsapp"
+    assert INSTAGRAM_SETTINGS_PREFIX == "/chats/ajustes/instagram?cuenta="
+    account = "00000000-0000-4000-8000-0000000000aa"
+    assert instagram_settings_href(account) == INSTAGRAM_SETTINGS_PREFIX + account
+    page = (Path(__file__).parent / "conversations_page.py").read_text(encoding="utf-8")
+    assert 'rx.redirect(f"{INSTAGRAM_SETTINGS_PREFIX}{S.selected_connection_id}")' in page
+    chats = (Path(__file__).parent / "whatsapp_tab_chats.py").read_text(encoding="utf-8")
+    assert "rx.redirect(WHATSAPP_SETTINGS_HREF)" in chats
 
 
 # --- the header's window line ---------------------------------------------------------------

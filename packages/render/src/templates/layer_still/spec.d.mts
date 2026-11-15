@@ -9,6 +9,7 @@ export declare const wordsOf: (s: unknown) => string[];
 export declare const layerProblems: (
   catalog: unknown,
   layer: unknown,
-  ctx: {formats: string[]; hasPhoto: boolean},
+  ctx: {formats: string[]; hasPhoto: boolean; headingFamily?: string},
 ) => string[];
+export declare const isScriptFamily: (catalog: unknown, family: unknown) => boolean;
 export declare const carouselProblems: (carousel: unknown, formats: string[]) => string[];

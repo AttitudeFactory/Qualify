@@ -56,7 +56,11 @@ export const layerStillMetadata: CalculateMetadataFunction<LayerStillProps> = as
   const base = normalizeProps(props);
   const format = formatOf(base.meta?.port);
   const photoSrc = base.photos[0] ?? '';
-  const problems = layerProblems(CATALOG, props.layer, {formats: [format], hasPhoto: !!photoSrc});
+  const problems = layerProblems(CATALOG, props.layer, {
+    formats: [format],
+    hasPhoto: !!photoSrc,
+    headingFamily: base.brand.fonts.heading,
+  });
   if (problems.length > 0) throw new Error(`invalid_parameters: ${problems.join('; ')}`);
 
   // the same families (and the same timeout → fallback rule) the component draws with

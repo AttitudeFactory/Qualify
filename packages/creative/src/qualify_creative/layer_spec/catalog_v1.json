@@ -1,7 +1,9 @@
 {
-  "_doc": "The closed catalog of image and carousel layouts, version 1 (docs/catalogo-disenos-imagen-carrusel.md, approved 2026-11-14; ADR 49 §2 item 2). ONE data file read by the Python LayerSpec (qualify_creative.layer_spec) and by the Remotion composition (packages/render, m-25017285): never two copies. Character limits are [H] until m-25017292 measures them; a change here is a new layout_version. Slots: [max_chars, max_lines]; null = the slot does not exist in that layout and format.",
-  "layout_version": 1,
+  "_doc": "The closed catalog of image and carousel layouts, version 1 (docs/catalogo-disenos-imagen-carrusel.md, approved 2026-11-14; ADR 49 §2 item 2). Read by the Python LayerSpec (qualify_creative.layer_spec); packages/render keeps the same numbers in manifest.layer_catalog and test_layer_catalog_drift.py keeps the two equal. Character limits are [H] until m-25017292 measures them; a change here is a new layout_version. Slots: [max_chars, max_lines]; null = the slot does not exist in that layout and format.",
+  "layout_version": 2,
   "formats": ["4:5", "1:1", "9:16"],
+  "_script_families_doc": "Heading families drawn as script/handwriting (the render's list): with one of them a plate title takes script_title (2026-11-15).",
+  "script_families": ["Pacifico", "Dancing Script", "Lobster", "Great Vibes", "Caveat", "Satisfy", "Sacramento", "Kaushan Script", "Courgette", "Parisienne", "Allura", "Cookie", "Yellowtail", "Amatic SC", "Shadows Into Light", "Indie Flower", "Permanent Marker", "Homemade Apple", "Lobster Two", "Marck Script"],
   "layouts": {
     "photo_only": {
       "formats": ["4:5", "1:1", "9:16"],
@@ -23,7 +25,8 @@
         "title": {"4:5": [28, 2], "1:1": [24, 2], "9:16": [28, 2]},
         "subtitle": {"4:5": [60, 2], "1:1": [44, 2], "9:16": [60, 2]},
         "call_phrase": {"4:5": [26, 1], "1:1": [24, 1], "9:16": [26, 1]}
-      }
+      },
+      "script_title": {"4:5": [24, 2], "1:1": [24, 2], "9:16": [24, 2]}
     },
     "scrim": {
       "formats": ["4:5", "1:1", "9:16"],
@@ -66,7 +69,7 @@
       },
       "info_value": {"4:5": [60, 2], "1:1": [44, 2], "9:16": [60, 3]},
       "slots": {
-        "title": {"4:5": [30, 2], "1:1": [24, 1], "9:16": [30, 2]},
+        "title": {"4:5": [30, 2], "1:1": [18, 1], "9:16": [30, 2]},
         "subtitle": {"4:5": null, "1:1": null, "9:16": [50, 1]},
         "call_phrase": {"4:5": null, "1:1": null, "9:16": [28, 1]}
       },
@@ -86,7 +89,7 @@
       },
       "info_value": {"4:5": [60, 2], "1:1": [60, 2], "9:16": [60, 3]},
       "slots": {
-        "title": {"4:5": [60, 3], "1:1": [48, 3], "9:16": [60, 4]},
+        "title": {"4:5": [45, 3], "1:1": [48, 3], "9:16": [60, 4]},
         "subtitle": {"4:5": [110, 3], "1:1": [80, 2], "9:16": [110, 3]},
         "call_phrase": {"4:5": [28, 1], "1:1": [28, 1], "9:16": [28, 1]}
       }

@@ -53,7 +53,7 @@ EXPLANATION: Final = (
     "En la computadora no aparecen."
 )
 ANSWER_NOTE: Final = (
-    "Lo que la persona toque te llega aquí, en Conversaciones, y tú le respondes. "
+    "Lo que la persona toque te llega a tus chats, en Por responder, y tú le respondes. "
     "Nada se contesta solo."
 )
 UNAVAILABLE_NOTE: Final = (

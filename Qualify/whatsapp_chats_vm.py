@@ -364,7 +364,10 @@ def window_pill(
 
 
 #: m-24842994: the chat's badge says who answers, in the owner's words.
-MODE_MENU = "Responde el menú"
+#: m-25017861: never «Responde el menú» (decision vi: no text may say or suggest that
+#: Qualify answers by itself). NEW TEXT, NOT DECIDED BY THE FOUNDER: «Usando tu menú»,
+#: the short form of the decided strip «Este cliente está usando tu menú».
+MODE_MENU = "Usando tu menú"
 MODE_PERSON = "Respondes tú"
 
 
@@ -533,7 +536,7 @@ def build_thread_row(
 def as_chat_row(row: ThreadRowVM) -> ChatRowVM:
     """m-25017844: this channel's row in the shared shape (`chat_row_vm`). The «Por
     responder» rule (m-25017859) is the waiting dot; a closed chat is muted wherever a
-    chip mixes open and closed ones («Pago por revisar»); «Responde el menú» /
+    chip mixes open and closed ones («Pago por revisar»); «Usando tu menú» /
     «Respondes tú» and «Cerrado» leave the row (the chat and the filter say them); the
     payment to check and the window about to close fold into the one pill («Esperando
     el pago» too). No second line (UX doc §2): the title is the profile name, else the
@@ -1605,15 +1608,18 @@ MENU_EMPTY = "Tu menú está vacío: agrega productos para poder enviarlo."
 #: `AttachmentRefused("no_menu")` (founder decision 2026-11-04: «Tu menú» hands the chat
 #: back to the automation, so it needs a live one with a products step) — the backend's
 #: own `REFUSAL_TEXT`, verbatim.
+#: m-25017861: the menu's decided name (decision vi) and its new place; the backend's
+#: `REFUSAL_TEXT` still says «Respuesta automática» (packages/api, backend-engineer).
 MENU_NOT_ACTIVE = (
-    "Todavía no tienes una respuesta automática con tus productos activa. "
-    "Créala en Respuesta automática para poder enviar tu menú."
+    "Todavía no tienes un menú de bienvenida activo con tus productos. "
+    "Créalo en Ajustes de chats para poder enviarlo."
 )
-MENU_SETUP_LABEL = "Ir a Respuesta automática"
-MENU_SETUP_ROUTE = "/whatsapp?tab=menu"
+MENU_SETUP_LABEL = "Ir a tu menú de bienvenida"
+#: «Ajustes de chats › WhatsApp» (m-25017861; `whatsapp_vm.tab_url(TAB_MENU)`, pinned).
+MENU_SETUP_ROUTE = "/chats/ajustes/whatsapp"
 #: After «Enviar el menú» the chat is the automation's again: the customer's pick goes on
 #: with the order by itself.
-MENU_RESUMES_NOTE = "Al enviarlo, la respuesta automática vuelve a atender este chat."
+MENU_RESUMES_NOTE = "Al enviarlo, este cliente vuelve a usar tu menú."
 
 PRODUCTS_ROUTE = "/catalog"
 #: WhatsApp → Tu número → Formas de pago (m-24955648).

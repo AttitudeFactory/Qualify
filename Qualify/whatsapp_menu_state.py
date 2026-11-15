@@ -267,6 +267,7 @@ from .whatsapp_menu_vm import (
 )
 from .whatsapp_provider import UnknownWhatsAppNumber
 from .whatsapp_state import WhatsAppState
+from .whatsapp_vm import CHAT_SETTINGS_ROUTE, SETTINGS_WHATSAPP_ROUTE
 
 logger = logging.getLogger(__name__)
 
@@ -1538,9 +1539,9 @@ class WhatsAppMenuState(rx.State):
 
     @rx.var
     def resume_href(self) -> str:
+        # m-25017861: the menu lives in «Ajustes de chats › WhatsApp».
         return with_query(
-            "/whatsapp",
-            tab="menu",
+            SETTINGS_WHATSAPP_ROUTE,
             cuenta=self.loaded_for,
             flujo="menu",
             paso=str(self.guided_step),
@@ -1611,7 +1612,8 @@ class WhatsAppMenuState(rx.State):
             return None
         self.flow_ready = False
         self.publish_confirm_open = False
-        return rx.redirect("/whatsapp?tab=chats")
+        # m-25017861: the guided steps hang from «Ajustes de chats» now.
+        return rx.redirect(CHAT_SETTINGS_ROUTE)
 
     @rx.event
     def set_advanced(self, value: bool) -> None:

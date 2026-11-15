@@ -200,9 +200,12 @@ class PreviewTextDesign:
     title_max_chars: int
 
 
-#: #674's catalog values for the `scrim` layout in 9:16 (layout_version 1).
+#: #674's catalog values for the `scrim` layout in 9:16. ADR 50 D1: a video's text is drawn
+#: with the IMAGE catalog's closed designs (`qualify_creative.layer_spec`, catalog_v1.json),
+#: so this is that catalog's `layout_version` — 2 since the limits of 2026-11-15. Copied (this
+#: module imports no `qualify_creative`); `test_editor_preview_contract.py` keeps it equal.
 TEXT_LAYOUT_ID = "scrim"
-TEXT_LAYOUT_VERSION = 1
+TEXT_LAYOUT_VERSION = 2
 CANVAS_W, CANVAS_H = 1080, 1920
 SAFE_TOP_PX, SAFE_BOTTOM_PX, SAFE_SIDE_PX = 270, 384, 64
 TITLE_PX_MAX, TITLE_PX_MIN, TITLE_MAX_CHARS = 112, 76, 32

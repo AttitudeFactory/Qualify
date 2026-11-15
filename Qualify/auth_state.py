@@ -290,6 +290,7 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
     from .catalog_order_state import CatalogOrderState
     from .catalog_state import CatalogState
     from .catalog_whatsapp_state import CatalogWhatsAppState
+    from .chat_settings_state import ChatSettingsState
     from .clarity_state import ClarityState
     from .connections_state import ConnectionsState
     from .conversations_state import ConversationsState
@@ -450,6 +451,9 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
         # m-24789472: «Preguntas iniciales» — the account's draft questions, its status
         # and the acting user's id
         IceBreakersState,
+        # m-25017861: «Ajustes de chats» — whether there is a number, the Instagram
+        # accounts and the business's time zone
+        ChatSettingsState,
         # WA-16: the number's menus, the open editor draft and the preview chat
         WhatsAppMenuState,
         # WA-18: templates, opt-ins, campaigns and the Conexión metrics block

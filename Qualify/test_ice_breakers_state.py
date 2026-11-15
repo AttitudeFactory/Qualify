@@ -345,21 +345,24 @@ def test_the_panel_uses_the_design_system_and_talks_to_the_state_only() -> None:
     imported = {node.module or "" for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)}
     assert not any("provider" in name or name.startswith("qualify_api") for name in imported)
     assert "rx.color(" not in source and "color_scheme=" not in source
-    page = (_HERE / "conversations_page.py").read_text(encoding="utf-8")
-    assert "ice_breakers_panel()" in page and "ice_breakers_button(" in page
+    # m-25017861 (D1): the drawer lives in «Ajustes de chats», not in the messages.
+    page = (_HERE / "chat_settings_page.py").read_text(encoding="utf-8")
+    assert "ice_breakers_panel()" in page and "IceBreakersState.open_panel(" in page
+    messages = (_HERE / "conversations_page.py").read_text(encoding="utf-8")
+    assert "ice_breakers" not in messages.replace("m-24789472", "")
 
 
 def test_the_page_renders_the_panel() -> None:
-    from .conversations_page import messages_tab
+    from .chat_settings_page import chat_settings_index
 
-    rendered = str(messages_tab().render())
+    rendered = str(chat_settings_index().render())
 
     def present(text: str) -> bool:
         escaped = json.dumps(text)[1:-1].replace("\\", "\\\\")
         return text in rendered or escaped in rendered
 
     for text in (
-        "Preguntas iniciales",
+        "Lo que tu cliente puede tocar al abrir el chat",
         "Publicar en Instagram",
         "Ver qué muestra Instagram ahora",
         "Quitar de Instagram",
@@ -372,3 +375,68 @@ def test_the_page_renders_the_panel() -> None:
         assert present(text), text
     for hidden in ("QUALIFY_ICE_BREAKERS", "R6", "Publicar y quitar todavía"):
         assert not present(hidden), hidden
+
+
+async def test_a_load_overtaken_by_another_account_frees_loading_and_reloads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """m-25017861 review: the stale load used to return with `loading` still True, so
+    the newer account's own load had bailed out and nothing ever loaded it."""
+    world = _world()
+    state = await _opened(world)
+    real = provider.get_config
+
+    def switched(tenant_id: UUID, connection_id: UUID) -> Any:
+        state.connection_id = str(UNKNOWN)  # the owner opened another account meanwhile
+        return real(tenant_id, connection_id)
+
+    monkeypatch.setattr(provider, "get_config", switched)
+    events = await _drain(IceBreakersState.load.fn(state))
+    assert state.loading is False
+    assert len(events) == 1  # the load again, for the account now open
+
+
+async def test_a_read_finishing_after_another_account_opens_never_fills_its_drawer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """m-25017861 re-check: A's read finishes AFTER `open_panel(B)`. The check and the
+    apply share one lock, so A's questions never land in B's drawer (where «Guardar» and
+    «Publicar» would send them to B); B's own load then shows B's."""
+    import asyncio
+
+    world = _world()
+    other = UUID("c0000000-0000-4000-8000-0000000000c2")
+    world.repo._connections[other] = TENANT  # noqa: SLF001 — a second account of the tenant
+
+    async def account(self: IceBreakersState, connection_id: str) -> tuple[str, str] | None:
+        labels = {str(CONN): "@bianki", str(other): "@polette"}
+        return (labels[connection_id], "America/Bogota") if connection_id in labels else None
+
+    monkeypatch.setattr(IceBreakersState, "_account_context", account)
+    provider.save_draft(TENANT, CONN, [{"question": "¿Pregunta solo de A?", "payload": ""}], USER)
+
+    state = IceBreakersState()
+    await _drain(IceBreakersState.open_panel.fn(state, str(CONN)))
+    real_to_thread = asyncio.to_thread
+
+    async def to_thread(func: Any, *args: Any, **kwargs: Any) -> Any:
+        result = await real_to_thread(func, *args, **kwargs)
+        if func is provider.get_config and args[1] == CONN:
+            # the owner opens @polette while @bianki's read is in flight; its own load
+            # bails out because @bianki's still holds `loading`
+            await _drain(IceBreakersState.open_panel.fn(state, str(other)))
+            assert await _drain(IceBreakersState.load.fn(state)) == []
+        return result
+
+    monkeypatch.setattr(asyncio, "to_thread", to_thread)
+    events = await _drain(IceBreakersState.load.fn(state))
+    monkeypatch.setattr(asyncio, "to_thread", real_to_thread)
+
+    assert state.connection_id == str(other)
+    assert state.panel_title == "Preguntas iniciales de @polette"
+    assert "¿Pregunta solo de A?" not in [r.question for r in state.rows]
+    assert not state.loaded and not state.loading
+    assert len(events) == 1  # the load again, for @polette
+    await _drain(IceBreakersState.load.fn(state))
+    assert state.loaded
+    assert [r.question for r in state.rows] == [i.question for i in DEFAULT_ITEMS]

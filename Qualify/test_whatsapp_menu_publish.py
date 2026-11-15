@@ -305,15 +305,17 @@ def test_the_copy_says_the_owner_wrote_the_menu_and_takes_the_chat() -> None:
     assert PUBLISH_BUTTON == "Publicar en mi WhatsApp"
     assert SAVE_ONLY_BUTTON == "Guardar sin publicar"
     assert PUBLISH_CONFIRM == (
-        "Al publicar, tu WhatsApp responde con los mensajes que tú escribiste en este menú, "
-        "nada más. Puedes tomar el control de cualquier chat desde Chats."
+        "Al publicar, tu menú de bienvenida queda activo en WhatsApp con los mensajes que tú "
+        "escribiste, nada más. Puedes atender tú cualquier chat desde Chats."
     )
     assert NEXT_STEP_QR == "Haz que te escriban: crea tu código QR para tu local o tus redes"
     source = (Path(__file__).parent / "whatsapp_tab_menu.py").read_text()
     state_source = (Path(__file__).parent / "whatsapp_menu_state.py").read_text()
-    assert "Tu WhatsApp responde con el menú que tú escribiste" in source
+    # m-25017861 (decision vi): nothing says the menu or WhatsApp answers by itself.
+    assert "le muestra al cliente lo que tú escribiste" in source
     for text in (source, state_source):
         assert "responde solo" not in text and "Qualify responde" not in text
+        assert "Tu WhatsApp responde" not in text and "ya responde" not in text
     # The editor has one publish path; «Publicar esta versión» lives only on a menu's
     # card, for a version already published (m-24955645).
     assert "Publicar esta versión" not in source
@@ -351,24 +353,24 @@ def test_confirm_lines_when_there_are_changes() -> None:
 def test_confirm_lines_for_an_older_version_and_for_the_live_one() -> None:
     older = MenuVersionVM(V1, "Versión 1", "ayer", "ayer", is_live=False)
     assert publish_confirm_lines(dirty=False, version=older, other_published_menu="") == [
-        "Tu WhatsApp vuelve a responder con la versión 1."
+        "Vuelve a estar activa la versión 1 de tu menú."
     ]
     never = _version(V2, 4)
     assert publish_confirm_lines(dirty=False, version=never, other_published_menu="") == [
-        "Tu WhatsApp empieza a responder con la versión 4."
+        "Queda activa la versión 4 de tu menú."
     ]
     live = _version(V2, 2, live=True)
     assert publish_confirm_lines(dirty=False, version=live, other_published_menu="") == [
-        "Este menú ya está respondiendo. Volvemos a enviar a WhatsApp la bienvenida, los "
-        "atajos y los comandos."
+        "Este menú ya está activo. Volvemos a enviar a WhatsApp la bienvenida, las "
+        "preguntas iniciales y los comandos."
     ]
 
 
 def test_confirm_lines_name_the_menu_it_replaces_only_when_there_is_one() -> None:
     lines = publish_confirm_lines(dirty=True, version=None, other_published_menu="Almuerzos")
-    assert lines[-1] == "Tu menú «Almuerzos» deja de responder y este toma su lugar."
+    assert lines[-1] == "Tu menú «Almuerzos» deja de estar activo y este toma su lugar."
     assert all(
-        "deja de responder" not in line
+        "deja de estar activo" not in line
         for line in publish_confirm_lines(dirty=True, version=None, other_published_menu="")
     )
 
@@ -389,8 +391,8 @@ def test_the_state_feeds_the_confirmation_from_the_number_s_menus(
     )
     state.menus = [*state.menus, other]
     assert state.publish_confirm_lines == [
-        "Tu WhatsApp empieza a responder con la versión 1.",
-        "Tu menú «Almuerzos» deja de responder y este toma su lugar.",
+        "Queda activa la versión 1 de tu menú.",
+        "Tu menú «Almuerzos» deja de estar activo y este toma su lugar.",
     ]
 
 
@@ -443,13 +445,13 @@ async def test_publishing_a_paused_menu_offers_to_resume_instead_of_listo(
 
 def test_the_confirmation_warns_when_the_menu_is_paused(monkeypatch: pytest.MonkeyPatch) -> None:
     paused_line = (
-        "Tu menú está en pausa: después de publicar, tócalo en «Reanudar el menú» para que "
-        "responda."
+        "Tu menú está en pausa: después de publicar, toca «Reanudar el menú» para que vuelva "
+        "a estar activo."
     )
     live = _version(V1, 1, live=True)
     assert publish_confirm_lines(
         dirty=False, version=live, other_published_menu="", paused=True
-    ) == [paused_line]  # never «ya está respondiendo» for a paused menu
+    ) == [paused_line]  # never «ya está activo» for a paused menu
     assert paused_line not in publish_confirm_lines(
         dirty=False, version=live, other_published_menu=""
     )
@@ -466,5 +468,5 @@ def test_the_paused_box_and_its_resume_button_render() -> None:
         escaped = json.dumps(text)[1:-1].replace("\\", "\\\\")
         assert text in rendered or escaped in rendered, text
     assert PUBLISHED_BUT_PAUSED == (
-        "Publicamos el menú, pero está en pausa: no responde hasta que lo reanudes."
+        "Publicamos el menú, pero está en pausa: no estará activo hasta que lo reanudes."
     )

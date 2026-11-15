@@ -18,7 +18,7 @@
   },
   "cost_model": {"seconds_per_still": 3.0},
   "layer_catalog": {
-    "layout_version": 1,
+    "layout_version": 2,
     "engine_revision": 2,
     "engine_revision_doc": "Bump with ANY change to engine.ts, LayerStill.tsx, icons.tsx or the font loading that can move a pixel of a layer_still; it is part of the compose job id and object key (CONTRACT.md). 1 = first build; 2 = review round 2 (logo/counter collisions, price drop reported, strict fonts).",
     "source": "docs/catalogo-disenos-imagen-carrusel.md (approved 2026-11-14); limits are [H] until m-25017292 measures them",
@@ -64,7 +64,8 @@
           "title":       {"4:5": [28, 2], "1:1": [24, 2], "9:16": [28, 2]},
           "subtitle":    {"4:5": [60, 2], "1:1": [44, 2], "9:16": [60, 2]},
           "call_phrase": {"4:5": [26, 1], "1:1": [24, 1], "9:16": [26, 1]}
-        }
+        },
+        "script_title": {"4:5": [24, 2], "1:1": [24, 2], "9:16": [24, 2]}
       },
       "scrim": {
         "formats": ["4:5", "1:1", "9:16"],
@@ -98,7 +99,7 @@
         "kinds": ["location", "hours", "payment", "products", "contact"],
         "value": {"4:5": [60, 2], "1:1": [44, 2], "9:16": [60, 3]},
         "slots": {
-          "title":       {"4:5": [30, 2], "1:1": [24, 1], "9:16": [30, 2]},
+          "title":       {"4:5": [30, 2], "1:1": [18, 1], "9:16": [30, 2]},
           "subtitle":    {"9:16": [50, 1]},
           "call_phrase": {"9:16": [28, 1]}
         }
@@ -111,7 +112,7 @@
         "kinds": ["contact", "location", "hours"],
         "value": {"4:5": [60, 2], "1:1": [60, 2], "9:16": [60, 3]},
         "slots": {
-          "title":       {"4:5": [60, 3], "1:1": [48, 3], "9:16": [60, 4]},
+          "title":       {"4:5": [45, 3], "1:1": [48, 3], "9:16": [60, 4]},
           "subtitle":    {"4:5": [110, 3], "1:1": [80, 2], "9:16": [110, 3]},
           "call_phrase": {"4:5": [28, 1], "1:1": [28, 1], "9:16": [28, 1]}
         }

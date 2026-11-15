@@ -32,6 +32,8 @@ from .canva_pages import canva_callback_index, canva_return_index
 from .canva_state import CanvaState
 from .catalog_page import catalog_index
 from .catalog_state import CatalogState
+from .chat_settings_page import chat_settings_index
+from .chat_settings_state import ChatSettingsState
 from .connections_page import connections_index
 from .connections_state import ConnectionsState
 from .create_gallery_state import CreateGalleryState
@@ -82,7 +84,11 @@ from .tiktok_state import TikTokConnectionsState, TikTokDraftState
 from .upload_route import upload_fallback
 from .variations_state import VariationsState
 from .voice_lab import VoiceLabState
-from .whatsapp_page import whatsapp_index, whatsapp_promotions_index
+from .whatsapp_page import (
+    whatsapp_index,
+    whatsapp_promotions_index,
+    whatsapp_settings_index,
+)
 from .whatsapp_state import WhatsAppState
 
 # QUA-99 latency follow-up: this app never configured Python's logging at all before
@@ -344,6 +350,28 @@ app.add_page(
     route="/whatsapp/promociones",
     on_load=[AuthState.require_login, WhatsAppState.enter_page],
     title="Qualify · Promociones por WhatsApp",
+)
+# m-25017861 (decision D1): «Ajustes de chats», what the owner prepares once, apart from
+# the messages. The hub, the same hub with an Instagram account's «Preguntas iniciales»
+# open (`?cuenta=`), and «Tu menú de bienvenida» — served by `WhatsAppState`, which on
+# `/whatsapp` redirects an old `?tab=respuesta` / `?tab=menu` address here.
+app.add_page(
+    chat_settings_index,
+    route="/chats/ajustes",
+    on_load=[AuthState.require_login, ChatSettingsState.enter_page],
+    title="Qualify · Ajustes de chats",
+)
+app.add_page(
+    chat_settings_index,
+    route="/chats/ajustes/instagram",
+    on_load=[AuthState.require_login, ChatSettingsState.enter_page],
+    title="Qualify · Ajustes de chats",
+)
+app.add_page(
+    whatsapp_settings_index,
+    route="/chats/ajustes/whatsapp",
+    on_load=[AuthState.require_login, WhatsAppState.enter_page],
+    title="Qualify · Tu menú de bienvenida",
 )
 app.add_page(
     publish_index,
