@@ -122,17 +122,17 @@ Detalle, tabla completa y lo que queda sin medir: [`pruebas.md` § MEJORAR-TEXTO
 
 Detalle: [`pruebas.md` § MEJORAR-TEXTO-002](pruebas.md#mejorar-texto-002).
 
-## Uso CAPA-001 y CAPA-002: la capa de texto de imagen y carrusel (m-25017283, m-25017292), 2026-11-14
+## Uso CAPA-001, CAPA-002 y CAPA-003: la capa de texto de imagen y carrusel (m-25017283, m-25017292), 2026-11-14/15
 
 | Campo | Valor |
 |---|---|
 | Código | `qualify_api.creative.image_pipeline.layer.write_layers`, función de consumo `capa-de-texto` |
-| Versión de prompt | `capa-v2` (trato de tú, nada de días, horarios, descuentos, «gratis», domicilios ni promociones fuera del encargo, dos tercios de cada límite): medido en CAPA-002; `capa-v1` en CAPA-001 |
+| Versión de prompt | `capa-v4` en el código (revisión de redacción de `capa-v3`: sin el ejemplo «nuevo horario», «escribe corto», máximo de bloques de `info_card` según la foto): **sin medir**. `capa-v3` (tabla por pieza con solo sus diseños, largo ideal y máximo de cada texto; sin bloques de datos donde ningún diseño los lleva; `price_product_id` cerrado a los productos con precio; `info_card` para «Información de tu negocio»): medido en CAPA-003. `capa-v2` en CAPA-002, `capa-v1` en CAPA-001 |
 | Configuración | `claude-sonnet-5-5`, esfuerzo `low`, herramienta estricta `escribir_capa` (una entrada por imagen), `max_tokens` 4.000, tope de US$0,25 por pieza para todas sus llamadas (regeneración incluida); la foto va en base64 y se enmascara en Langfuse; el tope previo de cada turno cuenta las fotos con la regla de visión de Anthropic (≈ ancho × alto / 750 tras reducir a ≤ 1.568 px y ≈ 1,15 MP: ~1.530 tokens por base de Seedream) |
 | Reintentos | en la cola, cada llamada es un paso guardado: un reintento lee la respuesta y no vuelve a pagarla |
 | Interruptor | `QUALIFY_IMAGE_LAYER=on`; apagado por defecto (nada consume la capa hasta m-25017285) |
-| Costo medido | `capa-v2` (CAPA-002): media US$0,013 por foto (US$0,010 sin reparación, US$0,022 con ella); carrusel entero en una llamada US$0,053 (6 diap.), US$0,080 (5) y US$0,131 (8). `capa-v1` (CAPA-001): media US$0,016 por foto |
-| Latencia medida | `capa-v2`: mediana 3,2 s y p95 6,3 s por foto; carrusel 14,0 s (6 diap.), 17,2 s (5) y 30,7 s (8) |
-| Calidad medida | `capa-v2`: 30/30 fotos y 19/19 diapositivas con capa válida, ninguna perdida; reparación en 27 % de las fotos (parámetros de `band`) y en 2 de 3 carruseles (`price_ref` a un producto sin precio); ningún precio inventado; `unsupported_claims` 0 marcas y 2 fugas pequeñas; 60 de 127 textos pasan de dos tercios del límite; `base_has_invented_text` 42/45 con la etiqueta humana. `capa-v1`: 10/10 válidas, 9/10 |
+| Costo medido | `capa-v3` (CAPA-003): media US$0,015 por foto, ninguna con reparación; carrusel de 6 diap. US$0,101 (con reparación). `capa-v2` (CAPA-002): media US$0,013 por foto (US$0,010 sin reparación, US$0,022 con ella); carrusel entero en una llamada US$0,053 (6 diap.), US$0,080 (5) y US$0,131 (8). `capa-v1` (CAPA-001): media US$0,016 por foto |
+| Latencia medida | `capa-v3`: mediana 4,2 s por foto (máx. 7,4 s); carrusel de 6 diap. 25,2 s; render `layer_still` local 2,1 s por imagen. `capa-v2`: mediana 3,2 s y p95 6,3 s por foto; carrusel 14,0 s (6 diap.), 17,2 s (5) y 30,7 s (8) |
+| Calidad medida | `capa-v3`: 10/10 fotos y 6/6 diapositivas válidas; 0/10 fotos reparadas (las tres causas de CAPA-002 desaparecieron), el carrusel 1 vez (otras causas); `info_card` en las dos piezas de datos; 12 de 40 textos sobre dos tercios del límite; el render dibujó 16/16 sin rechazos ni deriva de catálogo (2 cambios de diseño, 1 texto quitado); `base_has_invented_text` 11/14. `capa-v2`: 30/30 fotos y 19/19 diapositivas con capa válida, ninguna perdida; reparación en 27 % de las fotos (parámetros de `band`) y en 2 de 3 carruseles (`price_ref` a un producto sin precio); ningún precio inventado; `unsupported_claims` 0 marcas y 2 fugas pequeñas; 60 de 127 textos pasan de dos tercios del límite; `base_has_invented_text` 42/45 con la etiqueta humana. `capa-v1`: 10/10 válidas, 9/10 |
 
-Detalle: [`pruebas.md` § CAPA-002](pruebas.md#capa-002) y [§ CAPA-001](pruebas.md#capa-001).
+Detalle: [`pruebas.md` § CAPA-003](pruebas.md#capa-003), [§ CAPA-002](pruebas.md#capa-002) y [§ CAPA-001](pruebas.md#capa-001).

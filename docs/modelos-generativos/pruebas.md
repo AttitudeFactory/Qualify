@@ -22,6 +22,79 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
 
 ---
 
+<a id="capa-003"></a>
+
+## CAPA-003 — `capa-v3` y la primera corrida capa → render de punta a punta (m-25017292) — 2026-11-15
+
+- **Qué se probó:** el prompt `capa-v3` (rama `feat/m-25017292-capa-v3`) y, por primera vez, cada `LayerSpec` compuesta sobre su foto base por `layer_still` v1 (#675) con el cliente de producción (`qualify_creative.render.layer_compose.compose_layer`). `capa-v3` ataca las tres causas de reparación de CAPA-002 con estructura, no con más texto: (1) una pieza cuyos diseños no llevan bloques de datos (una promoción de producto) no recibe ninguno en la herramienta; (2) una tabla por pieza con solo sus diseños, cada texto con su largo ideal (dos tercios) y su máximo, «vacío» donde el diseño no lleva, y en `band` 1:1 «subtitle O call_phrase, nunca los dos»; (3) `price_product_id` es una lista cerrada de los productos con precio guardado, y un producto sin precio aparece sin id. Además, un tipo de pieza `business_info` («Información de tu negocio», solo `info_card`) y la regla explícita de `info_card`/`brand_fill` para «Otra idea» con datos guardados. Las reglas de texto libre (precios, `unsupported_claims`) no se tocaron.
+- **Modelo:** `claude-sonnet-5-5`, esfuerzo `low`, una llamada por pieza (el carrusel entero en una), tope de US$0,25 por pieza. Autorizado por el fundador con un tope total de **US$0,33**, aplicado en el arnés antes de cada llamada.
+- **Entradas:** 11 fotos sueltas y un carrusel de 6 diapositivas, todas bases de Seedream de FOTO-BASE-001 (m-25017279), fuera del repositorio; tres recortadas al centro a 1:1. Mezcla: promoción con precio (F4 4:5, F2 9:16, F1 9:16 con datos guardados, F7 y G1 en 1:1), sin precio (F8 9:16), «Información de tu negocio» (F3 9:16, horario y pagos), «Otra idea» con datos (F1-r2, F6, 9:16) y sin datos (F5, 4:5 y 1:1), y el carrusel G2 de salchipapa con productos sin precio. Encargos de `scene_text_v4/cases.json`, como en CAPA-002.
+- **Render:** el servicio de `packages/render` corrido **directamente con node** fuera del repositorio, en una carpeta local (`npm ci`, `remotion browser ensure`, `remotion bundle`, `PORT=3290 node server.mjs`), sin Docker. El `bundle` nativo funcionó **sin** `NODE_OPTIONS` (memoria residente máxima ~2,7 GB); la caída de CAPA-002 es del contenedor de Docker (8 GB para la máquina virtual, el montón por defecto de Node dentro del contenedor), no del código. El `Dockerfile` no se tocó. Marca: la de prueba del render (paleta `#B5532A` / `#FFFFFF` / `#FFF4E6`, Poppins e Inter, **sin logo**), porque la identidad de marca de Bianki no se puede leer localmente; los precios son de prueba («$ 35.000», «$ 18.000», «$ 16.000»), escritos enteros como los formatea Python.
+- **Arnés:** `packages/api/evals/capa_texto/capa_003.py` (guarda la `LayerSpec` completa y el resultado del render de cada imagen); `capa_002_score.py --run … --base-labels …` para el largo, el trato, las reglas y la comprobación de texto inventado. Salidas en `<salidas locales>/m-25017292/e2e/`, fuera del repositorio (fotos compuestas en `stills/`, hoja de contacto `hoja-de-contacto.jpg`).
+- **Gasto: US$0,253** (12 llamadas; 67.498 tokens de entrada y 4.856 de salida, a precio de lista). **El tope cortó la última pieza** (F5 en 1:1, «Otra idea»): quedaban US$0,077 y el peor turno se reserva en US$0,08. Se midieron 11 de 12 piezas, 16 imágenes.
+
+**Capa (`capa-v3` frente a `capa-v2`)**
+
+| Medida | `capa-v3` (CAPA-003) | `capa-v2` (CAPA-002) |
+|---|---|---|
+| Capa válida | 10/10 fotos y 6/6 diapositivas | 30/30 y 19/19 |
+| Fotos sueltas que pidieron reparación | **0/10** | 8/30 (27 %) |
+| Carruseles que pidieron reparación | 1/1 | 2/3 |
+| Causas | G2: `accent_word` que no es una palabra del título (portada) y un `subject_box` mal formado (cierre). Ninguna de las tres de CAPA-002 | 6 × bloques de datos en `band`, 2 × `band` 1:1 con subtítulo e invitación, 2 × `price_ref` a un producto sin precio |
+| Capas perdidas tras la reparación | 0 | 0 |
+| Datos del negocio | `info_card` en las dos piezas que tratan de datos (F3 «Información de tu negocio» con horario y pagos; F1-r2 «Otra idea» con la ubicación); F6 (domicilio) eligió `band` | ninguna `info_card` ni `brand_fill` en fotos sueltas |
+| Textos sobre dos tercios del límite | **12 de 40 (30 %)** | 60 de 127 (47 %) |
+| Latencia por foto | mediana 4,2 s (máx. 7,4 s), todas sin reparación | mediana 3,2 s (3,0 sin reparación) |
+| Costo por foto | US$0,015 de media (US$0,0096–0,0172) | US$0,013 |
+| Carrusel entero | G2, 6 diapositivas: 25,2 s, US$0,101 (con reparación) | 5–8 diapositivas: 14–31 s, US$0,05–0,13 |
+
+- El prompt es más largo (la tabla por pieza): sube el costo y la latencia de una foto sin reparación (US$0,010 → US$0,015; 3,0 → 4,2 s), pero desaparece la reparación, que en v2 costaba US$0,022 y 5,8 s.
+- Reglas de texto libre: ninguna marca. Un dato inventado se coló otra vez: «Tu salchipapa te espera cada noche» (F3, subtítulo; el horario guardado dice de martes a domingo, y el bloque de horario lo muestra justo debajo). Recuento a mano, sin archivo de etiquetas para esta corrida: 1 positivo humano, 0 marcas.
+- `base_has_invented_text`: 11/14 con la etiqueta humana. No vio el letrero inventado «Konk…» de F1-r1-v4 (CAPA-001 y CAPA-002 sí lo vieron; en la hoja de contacto se ve) ni el texto de dos bases de G2.
+- Trato de tú en todo, ninguna palabra en inglés, ningún título con el nombre del negocio.
+
+**Render (`layer_still` v1, local)**
+
+| Medida | Valor |
+|---|---|
+| Imágenes compuestas | **16/16** |
+| Rechazadas (`invalid_parameters`, con o sin `refusal`) | **0** |
+| `LayerSpec` que acepta Python y rechaza `spec.mjs` (deriva del catálogo) | **0** |
+| Cambio de diseño (pedido → dibujado) | 2: F4 `plate` → `band` (ninguna esquina sin tapar el combo); F7 1:1 `plate` → `band` (todas las esquinas tapan o no caben) |
+| Textos quitados por el render | 1: F7 1:1, la invitación «Te esperamos hoy» no cabía en la franja |
+| Otros avisos del informe | foto reducida para que el sujeto quepa en la franja (F1, F8, F7); acento por debajo de 3:1 dibujado en el color del texto (F8, F7, F6); el contador 5/6 cruza el sujeto en un `photo_only` |
+| Tiempo por imagen | 2,1 s (todas, con el servicio ya caliente; la primera, en frío, 8,3 s) |
+
+- **Prueba de deriva del catálogo:** `packages/creative/tests/test_layer_catalog_drift.py` compara `layer_spec/catalog_v1.json` con `manifest.layer_catalog` del render (diseños, formatos, anclas, parámetros, límites de cada texto, bloques de datos y sus etiquetas, íconos, versión). Pasa: hoy los dos dicen lo mismo.
+- **Límites de esta prueba:** una sola marca de prueba y sin logo (la regla del logo una sola vez no se ejercitó); precios de prueba; 11 piezas y un carrusel, todas de un negocio de comida; las etiquetas de los textos las puso el ingeniero de creación; la pieza F5 en 1:1 quedó fuera por el tope.
+
+**Textos por pieza** (diseño pedido → dibujado cuando cambió; «—» = sin ese texto):
+
+| Pieza | Formato | Tipo | Diseño | Título | Subtítulo | Invitación |
+|---|---|---|---|---|---|---|
+| G2-salchipapa-galeria-carrusel-6 #1 | 4:5 | carousel | `band` | «Salchipapa doradita» | «Para picar esta noche» | — |
+| G2-salchipapa-galeria-carrusel-6 #2 | 4:5 | carousel | `band` | «Papas para compartir» | «Crujientes y listas para picar» | — |
+| G2-salchipapa-galeria-carrusel-6 #3 | 4:5 | carousel | `band` | «Doradita y bien llena» | «Salchicha y papa en cada bocado» | — |
+| G2-salchipapa-galeria-carrusel-6 #4 | 4:5 | carousel | `band` | «Papas para antojos» | «Crocantes por fuera, suaves por dentro» | — |
+| G2-salchipapa-galeria-carrusel-6 #5 | 4:5 | carousel | `photo_only` | — | — | — |
+| G2-salchipapa-galeria-carrusel-6 #6 | 4:5 | carousel | `brand_fill` | «Te esperamos en el Korner esta noche» | «Ven a disfrutar tu salchipapa doradita» | «Ven esta noche» |
+| F4-combo-r1-v5 | 4:5 | product_promotion | `plate` → `band` + precio | «Tu combo completo» | «Shawarma de carne, papas y gaseosa» | «Pídelo por WhatsApp» |
+| F2-te-espera-r1-v4 | 9:16 | product_promotion | `band` + precio | «Tu shawarma de carne» | «Carne dorada, salsa cremosa y pan tostado» | «Pídelo hoy mismo» |
+| F1-ubicacion-r1-v4 | 9:16 | product_promotion | `band` + precio | «Tu shawarma te espera en el Korner» | «Pasa por el caballete y pruébalo» | «Te esperamos hoy» |
+| F8-papas-compartir-r1-v5 | 9:16 | product_promotion | `band` | «Papas para compartir» | «Una porción grande al centro de la mesa» | «Pídelas con tus amigos» |
+| F7-pollo-2x1-r2-v4-1x1 | 1:1 | product_promotion | `plate` → `band` + precio | «Martes de shawarma» | «Dos por uno en pollo recién hecho» | «Te esperamos hoy» |
+| G1-combo-galeria-s1-r2-v4-1x1 | 1:1 | product_promotion | `band` + precio | «Tu combo del día, listo» | — | «Pídelo por WhatsApp» |
+| F3-horario-r1-v5 | 9:16 | business_info | `info_card` + hours,payment | «Nuevo horario para ti» | «Tu salchipapa te espera cada noche» | «Te esperamos esta noche» |
+| F1-ubicacion-r2-v5 | 9:16 | free_idea | `info_card` + location | «Encuéntranos en el Korner» | «Tu shawarma te espera» | «Te esperamos hoy» |
+| F6-domicilio-logo-r1-v5 | 9:16 | free_idea | `band` | «Tu pedido llega a casa» | «Lo preparamos y te lo llevamos listo» | «Pídelo hoy» |
+| F5-ensalada-escena-r1-v5 | 4:5 | free_idea | `plate` | «Fresca como la mañana» | «Lechuga, tomate, pepino y garbanzos» | «Pídela hoy» |
+
+- **`capa-v4` (sin medir):** tras la revisión del 2026-11-15 el prompt cambió en tres puntos, y se subió la versión porque lo medido aquí es `capa-v3`: (1) el ejemplo de `info_card` ya no dice «nuevo horario» (el modelo lo copió: «Nuevo horario para ti» en una pieza donde nada era nuevo) sino «dónde estamos, el horario, cómo pagar, cómo pedir»; (2) «Escribe al largo ideal» pasó a «Escribe corto. El largo ideal es un tope cómodo y el máximo es el límite; si lo dices en menos palabras, mejor.»; (3) la tabla da el máximo de bloques de `info_card` que aplica a la imagen (con foto, 3 en 4:5 y 2 en 1:1; sin foto, 4 y 3), como lo exige el esquema. Además, una pieza «Información de tu negocio» sin datos guardados se escribe como «Otra idea» (nunca podía ser válida). `capa-v4` se medirá con el próximo tope que apruebe el fundador.
+- **Abierto (no se construye en esta rama):** la palabra de acento cae en artículos o preposiciones («la», «a»); «cada noche» o «siempre» contra el horario guardado; precio junto a un 2x1, y precio sobre una foto que no muestra el producto; una base marcada con `base_has_invented_text` se compone igual; el carrusel repite fotos y palabras; `info_card` usa un solo dato cuando hay más guardados; frases de invitación repetidas, copiadas de los ejemplos del prompt; predominio de `band` y fotos reducidas (render y catálogo).
+- **Veredicto:** `capa-v3` quita las tres causas de reparación de CAPA-002 (0 de 10 fotos reparadas) y por fin usa `info_card` cuando la pieza trata de datos; el render dibujó las 16 capas, sin un solo rechazo ni deriva de catálogo, con 2 cambios de diseño y 1 texto quitado que el informe explica. Lo que falta antes de encender: probar con la identidad real de una marca y su logo (el logo una sola vez no se probó), decidir qué hacer con «cada noche» (las reglas de texto libre siguen sin atraparlo) y con el texto inventado que la capa no ve en algunas bases, y arreglar la memoria del `bundle` en Docker (o construir la imagen en CI, donde ya pasa) para que el servicio de producción tenga `layer_still`.
+
+---
+
 <a id="capa-002"></a>
 
 ## CAPA-002 — La capa de texto `capa-v2` medida: 30 fotos sueltas y 3 carruseles completos (m-25017292) — 2026-11-14
