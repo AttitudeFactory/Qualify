@@ -384,11 +384,26 @@
   display: flex;
   flex-direction: column;
 }
-/* The header: the channel's wash lives here, and only here. */
+/* The header: the channel's wash lives here, and only here. m-25027374: two blocks in a
+   `display: contents` wrapper — the top (back · avatar · name · «⋯») and the rest (the
+   channel's word, the window line, the pills, the channel's actions) — so on a phone the
+   top one can stay pinned over the whole chat; on a wide screen they read as one. */
 .q-chat-head {
-  padding: 0.5rem 0.75rem 0.75rem;
-  border-radius: var(--q-radius-control);
+  display: contents;
+}
+.q-chat-head__top,
+.q-chat-head__rest {
   background: var(--q-chat-tint-3);
+}
+.q-chat-head__top {
+  padding: 0.5rem 0.75rem 0.25rem;
+  border-radius: var(--q-radius-control) var(--q-radius-control) 0 0;
+}
+.q-chat-head__rest {
+  /* the thread column's 12 px gap would split the header in two: closed here */
+  margin-top: calc(-1 * var(--space-3)) !important;
+  padding: 0.25rem 0.75rem 0.75rem;
+  border-radius: 0 0 var(--q-radius-control) var(--q-radius-control);
   box-shadow: inset 0 -1px 0 var(--gray-a5);
 }
 .q-chat-channel-word {
@@ -520,15 +535,88 @@
   .q-chat-msg--bare .q-bubble--out {
     box-shadow: none;
   }
-  /* m-24984052 kept, WhatsApp only (as before): the composer clears the iPhone's home
-     bar; its buttons and «Cargar anteriores» are ≥ 44 px targets. Instagram's reply box
-     is the composer story's (m-25027374) and keeps its look here. */
-  .q-chat-thread--whatsapp .q-wa-composer {
+  /* m-24984052, both channels since m-25027374: the reply box clears the iPhone's home
+     bar; «Cargar anteriores» is a ≥ 44 px target. */
+  .q-chat-thread .q-wa-composer {
     padding-bottom: max(0.25rem, env(safe-area-inset-bottom));
   }
-  .q-chat-thread--whatsapp .q-wa-composer .rt-Button,
-  .q-chat-thread--whatsapp .q-chat-scroll .rt-Button {
+  .q-chat-thread .q-chat-scroll .rt-Button {
     min-height: 44px;
+  }
+}
+
+/* ── The one reply box (m-25027374, BU-A7, `Qualify/reply_box.py`) ────────────────────
+   Same on every channel: tools (icon AND name) · «+» · the text · «Enviar». Every
+   control ≥ 44 px (N12). The text grows with what is written, up to a few lines. */
+.q-reply-box .rt-BaseButton,
+.q-reply-box .rt-TextFieldRoot,
+.q-reply-box .rt-SelectTrigger {
+  min-height: 44px;
+}
+.q-reply-tools {
+  flex-wrap: wrap;
+  width: 100%;
+}
+.q-reply-tool {
+  flex-shrink: 0;
+}
+.q-reply-row .rt-TextAreaRoot {
+  min-height: 44px;
+}
+.q-reply-field textarea,
+textarea.q-reply-field,
+.q-reply-field .rt-TextAreaInput {
+  field-sizing: content;
+  min-height: 44px;
+  max-height: 9.5rem;
+  overflow-y: auto;
+  resize: none;
+}
+.q-reply-hidden-upload {
+  display: none !important;
+}
+.q-reply-send {
+  flex-shrink: 0;
+}
+
+/* ── The open chat on a phone (m-25027374) ─────────────────────────────────────────────
+   The conversation gets the screen: while a chat is open under 768 px, the page's own
+   header (business chip, title, subtitle) steps aside — the chat's header already says
+   «‹ Por responder» — and only the chat header's top line stays pinned. Keyed on the
+   open chat (`.q-wa-chats--open` + `.q-chat-thread`), never on a page, so the same rules
+   hold wherever the chat is mounted. The tools row scrolls sideways instead of wrapping,
+   and the messages take what is left above the reply box and the bottom bar. */
+@media (max-width: 767px) {
+  .q-panel:has(.q-wa-chats--open .q-chat-thread) .q-page-header {
+    display: none;
+  }
+  .q-wa-chats--open .q-chat-head__top {
+    position: sticky;
+    top: 0;
+    z-index: 3;
+    background:
+      linear-gradient(var(--q-chat-tint-3), var(--q-chat-tint-3)),
+      var(--color-panel-solid);
+    box-shadow: 0 1px 0 var(--gray-a4);
+  }
+  .q-wa-chats--open .q-chat-scroll.q-wa-scroll--messages {
+    /* the viewport less the pinned top line, the reply box and the bottom bar */
+    max-height: calc(100vh - var(--q-chat-chrome, 19rem));
+    max-height: calc(100dvh - var(--q-chat-chrome, 19rem));
+  }
+  .q-reply-tools {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+    padding-bottom: 2px;
+  }
+  .q-reply-tools::-webkit-scrollbar {
+    display: none;
+  }
+  .q-reply-field textarea,
+  textarea.q-reply-field,
+  .q-reply-field .rt-TextAreaInput {
+    max-height: 7.5rem;
   }
 }
 /* m-24984052 kept: no entrance and no breathing under «reducir movimiento». */

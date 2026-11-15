@@ -224,7 +224,12 @@ def thread_header(
         align="center",
         width="100%",
     )
-    return rx.vstack(
+    # m-25027374: two blocks inside a `display: contents` wrapper, so both lay out as
+    # children of the thread's column and the top one (back · avatar · name · «⋯») can
+    # stay pinned on a phone over the whole chat while the rest scrolls away
+    # (`.q-chat-head__top`, assets/qualify-inbox.css). On a wide screen they read as one
+    # header; `.q-chat-head` still names the whole header for tests and the a11y tree.
+    top = rx.vstack(
         *([back] if back is not None else []),
         rx.hstack(
             chat_avatar(initials, avatar_url, channel, large=True),
@@ -240,12 +245,18 @@ def thread_header(
             align="center",
             spacing="3",
         ),
+        spacing="2",
+        width="100%",
+        class_name="q-chat-head__top",
+    )
+    rest = rx.vstack(
         meta_line,
         *([actions] if actions is not None else []),
         spacing="2",
         width="100%",
-        class_name="q-chat-head",
+        class_name="q-chat-head__rest",
     )
+    return rx.box(top, rest, class_name="q-chat-head")
 
 
 def state_pill(label: rx.Var[str], tone: rx.Var[str]) -> rx.Component:
