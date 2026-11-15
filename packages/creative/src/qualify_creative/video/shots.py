@@ -35,6 +35,7 @@ from qualify_creative.video._source import (
     open_video,
     probe,
 )
+from qualify_creative.video.upright import upright_image
 
 #: Bump with any change to the scoring or the thresholds below.
 DETECTOR_VERSION = "luma-diff-hist-1"
@@ -361,9 +362,8 @@ def _still(
     upright = (frame.height, frame.width) if rotation in (90, 270) else (frame.width, frame.height)
     width, height = _fit_box(*upright, plan.box)
     stored = (height, width) if rotation in (90, 270) else (width, height)
-    image = frame.reformat(width=stored[0], height=stored[1], format="rgb24").to_image()
-    if rotation:
-        image = image.rotate(rotation, expand=True)
+    scaled = frame.reformat(width=stored[0], height=stored[1], format="rgb24")
+    image = upright_image(scaled, rotation=rotation)  # the shared turn (EF-01)
     buffer = io.BytesIO()
     image.save(buffer, format="JPEG", quality=plan.jpeg_quality)
     target_s, role, shot = target

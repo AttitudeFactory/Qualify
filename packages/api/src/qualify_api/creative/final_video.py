@@ -57,6 +57,7 @@ from sqlalchemy import text
 from qualify_api.creative.creations import CreationsBalance, PreviewCharge, summed_price
 from qualify_api.creative.draft_mode import draft_expired, draft_expires_at, draft_state
 from qualify_api.creative.fsm import APPROVED, DRAFTING, FAILED, GENERATED
+from qualify_api.creative.part_extend import continued_key, extend_is_stale, source_key
 from qualify_api.creative.part_final import approval_problem, preview_fingerprint
 from qualify_api.creative.part_join import (
     _KEPT_JOIN,
@@ -271,18 +272,19 @@ def extend_needs_redo(
     part: PartPreview, previous: PartPreview | None, *, part_ok: bool, previous_ok: bool
 ) -> bool:
     """«Hay que rehacerla»: an `extend` part («Sigue a la anterior») whose previous part
-    got a newer vista previa than its own — both live (`part_ok`, `previous_ok`) and the
-    previous one's draft `created_at` later than this one's. Pure.
-
-    TODO(m-24921082): PR #567 adds the same rule as `part_progress.derive_state`; unify
-    them (one function, imported here) once it is on main."""
+    no longer shows the file it continued — both live (`part_ok`, `previous_ok`). The one
+    rule `part_progress.derive_state` follows too (`part_extend.extend_is_stale`). Pure."""
     meta = part.params.get("part")
     if not isinstance(meta, Mapping) or meta.get("mode") != "extend":
         return False
     if previous is None or not (part_ok and previous_ok):
         return False
-    own, theirs = _created_at(part), _created_at(previous)
-    return own is not None and theirs is not None and theirs > own
+    return extend_is_stale(
+        continued=continued_key(part.params),
+        previous_source=source_key(previous.params),
+        own_made_at=_created_at(part),
+        previous_made_at=_created_at(previous),
+    )
 
 
 def _has_preview(part: PartPreview, tenant_id: UUID, now: float) -> bool:

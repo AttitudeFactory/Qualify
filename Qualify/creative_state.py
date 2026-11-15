@@ -26,6 +26,7 @@ import re
 import time
 import urllib.parse
 from collections.abc import AsyncIterator, Callable, Sequence
+from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -94,6 +95,7 @@ from qualify_creative.schemas import (
 from sqlalchemy.exc import SQLAlchemyError
 
 from . import (
+    clip_editor_vm,
     clip_gallery_vm,
     part_editor_provider,
     part_editor_vm,
@@ -103,6 +105,7 @@ from . import (
     reel_wait_provider,
     reel_wait_vm,
 )
+from . import editor_preview_contract as editor_contract
 from .ask_more_vm import PREVIEWS as EXHAUSTED_PREVIEWS
 from .ask_more_vm import VIDEOS as EXHAUSTED_VIDEOS
 from .ask_more_vm import exhausted_kind, exhausted_text
@@ -272,7 +275,7 @@ from .pending_state import PendingState
 from .pinterest_vm import selected_sources
 from .planner_provider import load_gallery, times_published
 from .planner_vm import history_help, history_word
-from .r2_media import VIEW_TTL_SECONDS
+from .r2_media import VIEW_TTL_SECONDS, is_r2_key, issue_view_path
 from .reel_replication import (
     REPLICA_TEXT_OFF,
     REPLICA_TEXT_ON,
@@ -996,6 +999,8 @@ def generator_views(category: str, kind: str) -> list[str]:
 #: ③ Cómo la quieres ④ Revisa y crea. Each view (section) belongs to one step; what a
 #: kind cannot do without is always in step 1, never behind «Más opciones».
 GENERATOR_STEPS = ("show", "say", "how", "review")
+#: ED-01: where the effects' preview loops live (`assets/effects/<id>/v<n>/`).
+_ASSETS_ROOT = Path(__file__).resolve().parent.parent / "assets"
 GENERATOR_STEP_LABELS = {
     "show": "Qué mostrar",
     "say": "Qué decir",
@@ -1792,6 +1797,51 @@ class CreativeState(rx.State):
     _pinterest_context_epoch: int = 0
     clip_videos: list[dict[str, str]] = []
     clip_audios: list[dict[str, str]] = []
+    #: ED-02 m-25026621 · ED-03 m-25026623 · ED-05 m-25026630 «Arma tu video»
+    #: (`clip_editor_vm`): the normal Clip's editor. The tool
+    #: open, the stretch of the owner's video (seconds of the source; `clip_cut_end` 0 =
+    #: not proposed yet), its turn, the text over the video and where, the effects
+    #: chosen, «Cámara rápida»'s speed, the length the browser measured (and for which
+    #: key) — kept at once, with «Deshacer» (D-E6). In the session only, and in the
+    #: brief as `media.edit_recipe` (EF-02's shape; the backend ignores it until EF-02).
+    clip_edit_tool: str = clip_editor_vm.TOOL_MEDIA
+    clip_cut_start: float = 0.0
+    clip_cut_end: float = 0.0
+    clip_rotate: int = 0
+    clip_overlay_text: str = ""
+    clip_text_place: str = "bottom"
+    clip_effect_ids: list[str] = []
+    clip_speed: int = editor_contract.FAST_MOTION_DEFAULT
+    clip_source_seconds: float = 0.0
+    clip_source_key: str = ""
+    #: The video's upright size as the browser reports it (0 = not known): EF-03's
+    #: `plan_prepare` needs it for the low-resolution warning (ED-03 m-25026623).
+    clip_source_width: int = 0
+    clip_source_height: int = 0
+    #: The browser could not play `clip_source_key` (an error, or no length in ~15 s).
+    clip_source_broken: bool = False
+    #: ED-01: the `/r2media/<token>` the preview plays an R2 video from (Galería,
+    #: Publicaciones, Inspiración), minted server-side for `clip_preview_for` with the
+    #: session's own tenant ("" = could not be minted: not playable here).
+    clip_preview_url: str = ""
+    clip_preview_for: str = ""
+    #: The R2 video whose dead path was renewed once already (a second failure breaks it).
+    _clip_preview_renewed: str = ""
+    #: «Cortar»: which handle moves («start»/«end») and a counter that changes when one
+    #: is released (the preview plays the stretch).
+    clip_cut_focus: str = ""
+    clip_cut_play: int = 0
+    clip_cut_error: str = ""
+    #: The live line of the last change («Cambiaste el pedazo de tu video.»), "" = none.
+    clip_edit_notice: str = ""
+    _clip_edit_undo: list[dict[str, object]] = []
+    #: The stretch before «Cámara rápida» proposed the whole video: unmarking it puts it
+    #: back ({} = none kept: the stretch is trimmed to the usual 15 s).
+    _clip_fast_before: dict[str, float] = {}
+    #: The text as last kept (typing changes `clip_overlay_text`; leaving the field keeps
+    #: it), and the state before a drag of «Cortar» began (kept on release).
+    _clip_text_committed: str = ""
+    _clip_cut_before: dict[str, object] = {}
     #: "result" once Generar created a piece: it shows below the form, on the same page
     #: (§ request 2026-10-08); "form" = nothing generated yet, or «Crear otro».
     generator_view: str = "form"
@@ -2664,11 +2714,16 @@ class CreativeState(rx.State):
     def gen_view_steps(self) -> list[dict[str, str]]:
         """The step bar: each step's index, label and whether it is done or current."""
         current = self._view_index()
+        editor = self.clip_editor_shown
         return [
             {
                 "index": str(index),
                 "number": str(index + 1),
-                "label": GENERATOR_STEP_LABELS[step],
+                "label": (
+                    clip_editor_vm.STEP_TITLE
+                    if step == "show" and editor
+                    else GENERATOR_STEP_LABELS[step]
+                ),
                 "done": "true" if index < current else "",
                 "current": "true" if index == current else "",
             }
@@ -2727,6 +2782,8 @@ class CreativeState(rx.State):
         """The step's name as the page's one ``h1`` (§4.5)."""
         if self.generator_view == "result":
             return "Tu publicación"
+        if self.gen_step_key == "show" and self.clip_editor_shown:
+            return clip_editor_vm.STEP_TITLE  # ED-02 «Arma tu video»
         return GENERATOR_STEP_LABELS.get(self.gen_step_key, "Crear publicación")
 
     @rx.var
@@ -6160,6 +6217,750 @@ class CreativeState(rx.State):
         """What the clip's draggable strip shows: `{key, name, kind, role, …}`."""
         return self._clip_strip()
 
+    # -- ED-02 m-25026621 · ED-03 m-25026623 · ED-05 m-25026630 «Arma tu video» ----------
+
+    @rx.var
+    def clip_editor_shown(self) -> bool:
+        """«Arma tu video» replaces «Qué mostrar» on a normal Clip (never a video by parts,
+        «Hacer uno parecido» or a reel's replica). Explicit fields: it recomputes."""
+        return clip_editor_vm.editor_shown(
+            category=self.gen_category,
+            kind=self.brief_kind,
+            from_reel=self.from_reel_ideas,
+            has_plan=self._reel_plan_open(),
+            reel_video=has_reel_video(self.clip_videos),
+        )
+
+    @rx.var
+    def clip_edit_video_key(self) -> str:
+        """The owner's own video the editor works on ("" = only photos)."""
+        return clip_editor_vm.own_video(self.clip_videos).get("key", "")
+
+    def _clip_playable(self) -> bool:
+        """Whether the browser can play the editor's video: a local key (an upload, or a
+        publication's `generated/<tenant>/…` in the upload store) always; an R2 key
+        (`t/`, `gallery/`, `reel-windows/`) once `resolve_clip_preview` minted its
+        `/r2media/` path. With ED-09 the preview plays the 480p copy instead (D-E2);
+        today the phone downloads the original."""
+        key = clip_editor_vm.own_video(self.clip_videos).get("key", "")
+        if not key:
+            return False
+        if not is_r2_key(key):
+            return True
+        return self.clip_preview_for == key and bool(self.clip_preview_url)
+
+    @rx.var
+    def clip_edit_video_playable(self) -> bool:
+        return self._clip_playable()
+
+    @rx.var
+    def clip_strip_motion_keys(self) -> list[str]:
+        """On «Arma tu video»: the videos of «Orden de tu video» after the one the editor
+        plays — they only guide the movement (a note says so under each)."""
+        if not self.clip_editor_shown:
+            return []
+        own = clip_editor_vm.own_video(self.clip_videos).get("key", "")
+        return [
+            item["key"]
+            for item in self.clip_videos
+            if item.get("key") and item["key"] != own and item.get("source") != "reel"
+        ]
+
+    @rx.var
+    def clip_edit_r2_pending(self) -> bool:
+        """The editor's video is in R2 and has no `/r2media/` path yet: the preview asks
+        for one (`resolve_clip_preview`, through its hidden button)."""
+        key = clip_editor_vm.own_video(self.clip_videos).get("key", "")
+        return bool(key) and is_r2_key(key) and self.clip_preview_for != key
+
+    @rx.var
+    def clip_edit_video_r2(self) -> bool:
+        """The editor's video lives in R2: the preview plays `clip_preview_url`."""
+        return is_r2_key(clip_editor_vm.own_video(self.clip_videos).get("key", ""))
+
+    @rx.var
+    def clip_edit_remote(self) -> bool:
+        """The Clip has a video this preview really cannot play — no usable key, or an R2
+        path that could not be minted (Pinterest is pictures): it is said plainly and
+        «Cortar» is not offered. An R2 video still being minted is not «remote» yet."""
+        key = clip_editor_vm.own_video(self.clip_videos).get("key", "")
+        videos = [v for v in self.clip_videos if v.get("source") != "reel"]
+        if not videos:
+            return False
+        if not key:
+            return True
+        if not is_r2_key(key):
+            return False
+        return self.clip_preview_for == key and not self.clip_preview_url
+
+    @rx.var
+    def clip_edit_poster_key(self) -> str:
+        """Without a playable video: the first photo, else the first video's thumbnail
+        (a stock or a publication's video) — under the text."""
+        if self.clip_images:
+            return self.clip_images[0]["key"]
+        views = self.piece_views
+        for video in self.clip_videos:
+            if video.get("source") != "reel" and views.get(video.get("key", "")):
+                return str(video["key"])
+        return ""
+
+    def _clip_edit_key(self) -> str:
+        return clip_editor_vm.own_video(self.clip_videos).get("key", "")
+
+    def _clip_cut_known(self) -> bool:
+        """The stretch belongs to the video on screen and its length is known."""
+        key = self._clip_edit_key()
+        return bool(key) and key == self.clip_source_key and self.clip_source_seconds > 0
+
+    def _clip_tools(self) -> list[str]:
+        """«Cortar» only with an own video the browser plays here and did not fail on."""
+        key = clip_editor_vm.own_video(self.clip_videos).get("key", "")
+        ok = self._clip_playable() and not (self.clip_source_broken and self.clip_source_key == key)
+        return clip_editor_vm.tools_shown(has_own_video=ok)
+
+    @rx.var
+    def clip_edit_tools(self) -> list[str]:
+        """The tools on offer: «Cortar» only with an own video playable here."""
+        return self._clip_tools()
+
+    @rx.var
+    def clip_edit_tool_open(self) -> str:
+        """The tool open (one at a time); «Cortar» falls back to «Fotos y videos» when
+        the video is gone or cannot play here."""
+        tools = self._clip_tools()
+        return self.clip_edit_tool if self.clip_edit_tool in tools else tools[0]
+
+    @rx.var
+    def clip_edit_question(self) -> str:
+        tools = self._clip_tools()
+        tool = self.clip_edit_tool if self.clip_edit_tool in tools else tools[0]
+        return clip_editor_vm.TOOL_QUESTIONS[tool]
+
+    @rx.var
+    def clip_fast_on(self) -> bool:
+        return editor_contract.FAST_MOTION in self.clip_effect_ids and bool(
+            clip_editor_vm.own_video(self.clip_videos)
+        )
+
+    @rx.var
+    def clip_edit_speed_real(self) -> float:
+        """The speed the final video plays the stretch at (1 without «Cámara rápida»)."""
+        fast = editor_contract.FAST_MOTION in self.clip_effect_ids and bool(
+            clip_editor_vm.own_video(self.clip_videos)
+        )
+        return float(self.clip_speed) if fast else 1.0
+
+    @rx.var
+    def clip_edit_rate(self) -> float:
+        fast = editor_contract.FAST_MOTION in self.clip_effect_ids
+        return editor_contract.preview_rate(float(self.clip_speed) if fast else 1.0)
+
+    @rx.var
+    def clip_edit_slower(self) -> bool:
+        fast = editor_contract.FAST_MOTION in self.clip_effect_ids
+        return fast and editor_contract.preview_is_slower(float(self.clip_speed))
+
+    @rx.var
+    def clip_edit_effect_srcs(self) -> list[str]:
+        """The loops of the chosen layer effects that really exist (none today: the
+        `.webm` files are not made yet, so no layer is drawn and nothing 404s)."""
+        srcs: list[str] = []
+        for effect_id in self.clip_effect_ids:
+            effect = editor_contract.effect_of(effect_id)
+            if effect is not None and effect.preview_asset:
+                url = editor_contract.preview_effect_url(effect, _ASSETS_ROOT)
+                if url:
+                    srcs.append(url)
+        return srcs
+
+    @rx.var
+    def clip_edit_effect_rows(self) -> list[dict[str, str]]:
+        """«Efectos»'s list: `{id, label, on}` — a layer (Vapor, Humo, Brasas) only once
+        its loop exists (none today), and no «Cámara rápida» with photos only."""
+        own = bool(clip_editor_vm.own_video(self.clip_videos))
+        rows = []
+        for effect in editor_contract.effects_offered(has_own_video=own):
+            if not editor_contract.effect_available(effect, _ASSETS_ROOT):
+                continue
+            on = effect.effect_id in self.clip_effect_ids
+            # «Cámara rápida» needs a video of 15 s or more (measured); a marked one can
+            # always be unmarked
+            off = (
+                effect.effect_id == editor_contract.FAST_MOTION
+                and not on
+                and not self._clip_fast_allowed()
+            )
+            rows.append(
+                {
+                    "id": effect.effect_id,
+                    "label": effect.label,
+                    "on": "true" if on else "",
+                    "off": "true" if off else "",
+                    "reason": clip_editor_vm.FAST_NEEDS_LONGER if off else "",
+                }
+            )
+        return rows
+
+    def _clip_fast_allowed(self) -> bool:
+        """«Cámara rápida» is offered on a measured video of at least 15 s."""
+        return (
+            self._clip_cut_known()
+            and self.clip_source_seconds >= clip_editor_vm.FAST_MIN_SOURCE_SECONDS
+        )
+
+    def _clip_fast_impossible(self) -> float:
+        """With «Cámara rápida» marked: how long even the WHOLE video lasts at ×5 when that
+        is still under 3 s (0.0 otherwise) — nothing a cut can fix; it stays out of the
+        recipe while this is on screen."""
+        key = self._clip_edit_key()
+        if (
+            editor_contract.FAST_MOTION not in self.clip_effect_ids
+            or not key
+            or key != self.clip_source_key
+            or self.clip_source_seconds <= 0
+        ):
+            return 0.0
+        slowest = min(editor_contract.FAST_MOTION_SPEEDS)
+        seconds, _warning = clip_editor_vm.fast_check(
+            key=key, start=0.0, end=self.clip_source_seconds, speed=slowest
+        )
+        return seconds if 0 < seconds < clip_editor_vm.FAST_MIN_SECONDS else 0.0
+
+    @rx.var
+    def clip_cut_ready(self) -> bool:
+        key = clip_editor_vm.own_video(self.clip_videos).get("key", "")
+        return bool(key) and key == self.clip_source_key and self.clip_source_seconds > 0
+
+    @rx.var
+    def clip_cut_check(self) -> list[str]:
+        """ED-03 (m-25026623): «Cortar» judged by EF-03's own `plan_prepare` (pure) —
+        `[refusal, warning]` in the owner's words ("" each when none)."""
+        key = clip_editor_vm.own_video(self.clip_videos).get("key", "")
+        if not key or key != self.clip_source_key:
+            return ["", ""]
+        refusal, warning = clip_editor_vm.prepare_check(
+            key=key,
+            start=self.clip_cut_start,
+            end=self.clip_cut_end,
+            rotate=self.clip_rotate,
+            speed=1.0,
+            width=self.clip_source_width,
+            height=self.clip_source_height,
+            duration=self.clip_source_seconds,
+        )
+        # a publication Qualify made (720p) did not come from the phone: the advice to
+        # upload the original from it does not apply (QA 2026-11-14)
+        if clip_editor_vm.video_source(self.clip_videos, key) in clip_editor_vm.MADE_HERE:
+            warning = ""
+        return [refusal, warning]
+
+    @rx.var
+    def clip_cut_units(self) -> list[int]:
+        """The slider's two values, in half seconds (Radix's slider takes integers)."""
+        return [int(round(self.clip_cut_start * 2)), int(round(self.clip_cut_end * 2))]
+
+    @rx.var
+    def clip_cut_max_units(self) -> int:
+        """The slider's end, in half seconds, rounded UP (a 7.33 s video reaches 7.5)."""
+        return editor_contract.max_units(self.clip_source_seconds)
+
+    @rx.var
+    def clip_cut_whole_label(self) -> str:
+        """«Usar el video entero», or «Usar los primeros 15 s» past 15 s."""
+        return clip_editor_vm.whole_label(self.clip_source_seconds)
+
+    @rx.var
+    def clip_cut_start_clock(self) -> str:
+        """The «Desde» handle's `aria-valuetext` («0:04»)."""
+        return editor_contract.clock_text(self.clip_cut_start)
+
+    @rx.var
+    def clip_cut_end_clock(self) -> str:
+        """The «Hasta» handle's `aria-valuetext` — the real end, never past the video."""
+        return editor_contract.clock_text(self._clip_end_real())
+
+    def _clip_end_real(self) -> float:
+        """Where the stretch really ends: the slider's end sits on the half-second grid,
+        rounded UP so the video's last frames stay reachable (a 12.04 s video ends at
+        12.5), but what the owner reads and what lasts is never past the video's length:
+        min(end, length)."""
+        if self.clip_source_seconds > 0:
+            return min(self.clip_cut_end, self.clip_source_seconds)
+        return self.clip_cut_end
+
+    @rx.var
+    def clip_cut_end_shown(self) -> float:
+        """The preview's stretch end (the real one: `_clip_end_real`)."""
+        return self._clip_end_real()
+
+    @rx.var
+    def clip_fast_warning(self) -> str:
+        """«Cámara rápida» outside a reel's 3–60 s, by EF-04's `plan_speed`: a warning
+        ("" otherwise)."""
+        key = clip_editor_vm.own_video(self.clip_videos).get("key", "")
+        fast = editor_contract.FAST_MOTION in self.clip_effect_ids
+        if not fast or not key or key != self.clip_source_key:
+            return ""
+        if self.clip_cut_end <= self.clip_cut_start:
+            return ""
+        impossible = self._clip_fast_impossible()
+        if impossible:
+            return clip_editor_vm.fast_impossible_line(impossible)
+        _seconds, warning = clip_editor_vm.fast_check(
+            key=key, start=self.clip_cut_start, end=self._clip_end_real(), speed=self.clip_speed
+        )
+        return warning
+
+    @rx.var
+    def clip_cut_range_text(self) -> str:
+        return clip_editor_vm.range_line(self.clip_cut_start, self._clip_end_real())
+
+    @rx.var
+    def clip_cut_usage_text(self) -> str:
+        return clip_editor_vm.usage_line(max(self._clip_end_real() - self.clip_cut_start, 0.0))
+
+    @rx.var
+    def clip_cut_start_text(self) -> str:
+        return editor_contract.clock_text(0.0)
+
+    @rx.var
+    def clip_cut_total_text(self) -> str:
+        return editor_contract.clock_text(self.clip_source_seconds)
+
+    @rx.var
+    def clip_edit_output_seconds(self) -> float:
+        """How long the video lasts: the stretch at its speed (0 = not known yet)."""
+        key = clip_editor_vm.own_video(self.clip_videos).get("key", "")
+        if not key or key != self.clip_source_key or self.clip_cut_end <= self.clip_cut_start:
+            return 0.0
+        return round(self._clip_lasts(key), 2)
+
+    def _clip_lasts(self, key: str) -> float:
+        """The stretch's length in the video: as cut, or — with «Cámara rápida» — EF-04's
+        `plan_speed` length to the frame, the same number «Velocidad» shows."""
+        end = self._clip_end_real()
+        stretch = end - self.clip_cut_start
+        if editor_contract.FAST_MOTION not in self.clip_effect_ids:
+            return stretch
+        seconds, _warning = clip_editor_vm.fast_check(
+            key=key, start=self.clip_cut_start, end=end, speed=self.clip_speed
+        )
+        return seconds if seconds > 0 else stretch / float(self.clip_speed or 1)
+
+    @rx.var
+    def clip_speed_line(self) -> str:
+        """«Tu video durará {s} s.» under «Velocidad» — EF-04's `plan_speed` length, to
+        the frame ("" until the length is known, or when it is refused: the warning
+        says it then)."""
+        key = clip_editor_vm.own_video(self.clip_videos).get("key", "")
+        if not key or key != self.clip_source_key or self.clip_cut_end <= self.clip_cut_start:
+            return ""
+        seconds, warning = clip_editor_vm.fast_check(
+            key=key, start=self.clip_cut_start, end=self._clip_end_real(), speed=self.clip_speed
+        )
+        return "" if warning else clip_editor_vm.duration_line(seconds)
+
+    @rx.var
+    def clip_card_title(self) -> str:
+        """«Tu video · {s} s» — or «Tu video» while the length is not known."""
+        key = clip_editor_vm.own_video(self.clip_videos).get("key", "")
+        if not key or key != self.clip_source_key or self.clip_cut_end <= self.clip_cut_start:
+            return "Tu video"
+        return clip_editor_vm.card_title(self._clip_lasts(key))
+
+    @rx.var
+    def clip_card_line(self) -> str:
+        return clip_editor_vm.card_line(self.clip_effect_ids, self._clip_text_committed)
+
+    @rx.var
+    def clip_edit_text_shown(self) -> str:
+        """The text the preview draws (as typed: the preview follows the keys)."""
+        return self.clip_overlay_text.strip()
+
+    @rx.var
+    def clip_edit_text_long(self) -> bool:
+        """Past #674's `scrim` title limit the preview draws the text at its minimum."""
+        return editor_contract.text_is_long(self.clip_overlay_text)
+
+    @rx.var
+    def clip_editor_on_screen(self) -> bool:
+        """«Arma tu video» is the step in front: the side panel's «Producto» row moves
+        into «Fotos y videos» (ED-05 m-25026630) while it is."""
+        return (
+            self.generator_view == "form" and self.gen_step_key == "show" and self.clip_editor_shown
+        )
+
+    def _clip_edit_snapshot(self) -> dict[str, object]:
+        return clip_editor_vm.snapshot(
+            start=self.clip_cut_start,
+            end=self.clip_cut_end,
+            rotate=self.clip_rotate,
+            effects=self.clip_effect_ids,
+            speed=self.clip_speed,
+            text=self._clip_text_committed,
+            place=self.clip_text_place,
+        )
+
+    def _clip_edit_restore(self, snap: dict[str, object]) -> None:
+        self.clip_cut_start = float(snap["start"])  # type: ignore[arg-type]
+        self.clip_cut_end = float(snap["end"])  # type: ignore[arg-type]
+        self.clip_rotate = int(snap["rotate"])  # type: ignore[call-overload]
+        self.clip_effect_ids = [str(e) for e in snap["effects"]]  # type: ignore[union-attr]
+        self.clip_speed = int(snap["speed"])  # type: ignore[call-overload]
+        self._clip_text_committed = str(snap["text"])
+        self.clip_overlay_text = str(snap["text"])
+        self.clip_text_place = str(snap["place"])
+
+    def _clip_edit_changed(self, before: dict[str, object]) -> None:
+        """D-E6: a change is kept at once; the line says what changed, with «Deshacer»
+        until the next change or until the owner leaves the step — no timer (WCAG
+        2.2.1)."""
+        after = self._clip_edit_snapshot()
+        line = clip_editor_vm.change_message(before, after)
+        if not line:
+            return
+        self._clip_edit_undo = clip_editor_vm.push_undo(self._clip_edit_undo, before)
+        self.clip_edit_notice = line
+
+    def _reset_clip_editor(self) -> None:
+        self.clip_edit_tool = clip_editor_vm.TOOL_MEDIA
+        self.clip_cut_start = 0.0
+        self.clip_cut_end = 0.0
+        self.clip_rotate = 0
+        self.clip_overlay_text = ""
+        self._clip_text_committed = ""
+        self.clip_text_place = "bottom"
+        self.clip_effect_ids = []
+        self.clip_speed = editor_contract.FAST_MOTION_DEFAULT
+        self.clip_source_seconds = 0.0
+        self.clip_source_key = ""
+        self.clip_source_width = 0
+        self.clip_source_height = 0
+        self.clip_source_broken = False
+        self.clip_preview_url = ""
+        self.clip_preview_for = ""
+        self._clip_preview_renewed = ""
+        self.clip_cut_focus = ""
+        self.clip_cut_error = ""
+        self.clip_edit_notice = ""
+        self._clip_edit_undo = []
+        self._clip_cut_before = {}
+        self._clip_fast_before = {}
+
+    def _clip_edit_media(self) -> dict[str, object]:
+        """The editor's recipe for the brief (`media.edit_recipe`, EF-02's shape), only
+        on «Arma tu video» and when it says something. The backend's `MediaInputs` drops
+        it until EF-02 adds `effects` / `text_layer` / `segments`."""
+        if not self.clip_editor_shown:
+            return {}
+        key = self._clip_edit_key() if self._clip_cut_known() else ""
+        effects = self.clip_effect_ids
+        if self._clip_fast_impossible():
+            effects = [e for e in effects if e != editor_contract.FAST_MOTION]
+        recipe = clip_editor_vm.recipe_of(
+            video_key=key,
+            start=self.clip_cut_start,
+            end=self._clip_end_real(),
+            rotate=self.clip_rotate,
+            effects=effects,
+            speed=self.clip_speed,
+            text=self._clip_text_committed,
+            place=self.clip_text_place,
+        )
+        if not (recipe.segments or recipe.effects or recipe.text_layer):
+            return {}
+        return {"edit_recipe": editor_contract.to_dict(recipe)}
+
+    @rx.event
+    def set_clip_edit_tool(self, tool: str | list[str]) -> rx.event.EventSpec | None:
+        """One tool open at a time; the address says which (`?herramienta=`, N3) — the
+        same history entry (`replaceState`): the step's «atrás» is unchanged."""
+        if not isinstance(tool, str) or tool not in clip_editor_vm.TOOLS:
+            return None
+        self.clip_edit_tool = tool
+        slug = json.dumps(clip_editor_vm.TOOL_SLUGS[tool])
+        param = json.dumps(clip_editor_vm.TOOL_PARAM)
+        return rx.call_script(
+            "(() => { const u = new URL(window.location.href);"
+            f" u.searchParams.set({param}, {slug});"
+            " window.history.replaceState(window.history.state, '',"
+            " u.pathname + u.search + u.hash); })()"
+        )
+
+    async def _clip_preview_tenant(self) -> UUID | None:
+        """The session's own business — never one the browser names."""
+        auth = await self.get_state(AuthState)
+        return tenant_uuid(auth.session_tenant_id)
+
+    @rx.event
+    async def resolve_clip_preview(self) -> None:
+        """ED-01: the `/r2media/<token>` path of the editor's R2 video (`issue_view_path`,
+        1 h, Range/206, the business's own prefix only), minted here — server-side, with
+        the session's tenant. The preview asks for it (its hidden resolve button) when it
+        shows an R2 video with no path yet (`clip_edit_r2_pending`): on its first sight
+        of the video, after a pick from Publicaciones or Galería, and after a reload —
+        a token each time. A local video needs none. A path that cannot be minted
+        leaves "" (not playable); whatever fails on the way (the session included), the
+        video is never left «pending» — the script asks only once.
+
+        The state outlives a reload, and a token lives 1 h: an old path can die while the
+        page shows it. The browser then reports the video broken (`report_clip_source`)
+        and, for an R2 video, the editor clears `clip_preview_for` ONCE so the script asks
+        again; this mints a new path. If that renewal gives the same path back (the token
+        was still alive: the file itself failed) or the new one fails too, the video stays
+        broken."""
+        key = self._clip_edit_key()
+        if not key or not is_r2_key(key) or not self.clip_editor_shown:
+            return
+        url = ""
+        old_url = self.clip_preview_url
+        try:
+            tenant_id = await self._clip_preview_tenant()
+            if tenant_id is not None:
+                url = await asyncio.to_thread(issue_view_path, tenant_id, key, "video")
+        except Exception as exc:  # noqa: BLE001 — a preview is not worth failing the step
+            logger.warning("clip preview token not issued: %s", type(exc).__name__)
+            url = ""
+        finally:
+            if key == self._clip_edit_key():
+                self.clip_preview_for, self.clip_preview_url = key, url
+                if self._clip_preview_renewed == key and url and url == old_url:
+                    # renewed and nothing changed: the file itself does not play here —
+                    # broken as the browser's own report leaves it (no «Cortar», no wait)
+                    self.clip_source_broken = True
+                    self.clip_source_key = key
+                    self.clip_source_seconds = 0.0
+
+    @rx.event
+    def report_clip_source(self, key: str, seconds: float, width: int = 0, height: int = 0) -> None:
+        """The browser measured the owner's video (`edit_preview`'s hidden button): its
+        length and its upright size (`videoWidth`/`videoHeight`). A new video gets the
+        proposed stretch — the whole of it, up to 15 s (E3) — without a «Deshacer» line:
+        the owner changed nothing. A negative length = the browser could not play it (an
+        error, or no length after ~15 s): «Cortar» stops waiting and is not offered."""
+        try:
+            seconds = float(seconds)
+            width, height = int(width or 0), int(height or 0)
+        except (TypeError, ValueError):
+            return
+        if key != self._clip_edit_key():
+            return
+        if seconds < 0:
+            if is_r2_key(key) and self._clip_preview_renewed != key:
+                # an R2 path that died (its 1 h token, after a reload): ask for a new one,
+                # once — the preview goes «pending» and its script calls
+                # `resolve_clip_preview` again
+                self._clip_preview_renewed = key
+                self.clip_preview_for = ""
+                return
+            self.clip_source_key = key
+            self.clip_source_broken = True
+            self.clip_source_seconds = 0.0
+            return
+        if seconds == 0:
+            return
+        fresh = key != self.clip_source_key or self.clip_cut_end <= 0
+        self.clip_source_broken = False
+        self._clip_preview_renewed = ""  # it plays: a later expiry may renew again
+        self.clip_source_key = key
+        self.clip_source_seconds = round(seconds, 2)
+        self.clip_source_width, self.clip_source_height = max(width, 0), max(height, 0)
+        if fresh:
+            whole = editor_contract.whole_video(key, seconds)
+            self.clip_cut_start, self.clip_cut_end = whole.start_s, whole.end_s
+            self.clip_rotate = 0
+            self._clip_edit_undo = []
+            self.clip_edit_notice = ""
+            # a stretch kept from another video never comes back on this one
+            self._clip_fast_before = {}
+        else:
+            self.clip_cut_start, self.clip_cut_end = editor_contract.clamp_stretch(
+                self.clip_cut_start, self.clip_cut_end, seconds
+            )
+
+    @rx.event
+    def slide_clip_cut(self, values: list[float]) -> None:
+        """A handle moving (`on_value_change`, half seconds): the preview jumps to it.
+        Kept on release (`commit_clip_cut`)."""
+        if len(values) != 2 or not self._clip_cut_known():
+            return
+        if not self._clip_cut_before:
+            self._clip_cut_before = self._clip_edit_snapshot()
+        start, end = float(values[0]) / 2, float(values[1]) / 2
+        self.clip_cut_focus = "end" if start == self.clip_cut_start else "start"
+        self.clip_cut_start, self.clip_cut_end = start, end
+        self.clip_cut_error = ""
+
+    @rx.event
+    def commit_clip_cut(self, values: list[float]) -> rx.event.EventSpec | None:
+        """A handle released: the stretch is kept and the preview plays it."""
+        if len(values) != 2 or not self._clip_cut_known():
+            return None
+        before = self._clip_cut_before or self._clip_edit_snapshot()
+        self._clip_cut_before = {}
+        start, end = editor_contract.clamp_stretch(
+            float(values[0]) / 2, float(values[1]) / 2, self.clip_source_seconds
+        )
+        self.clip_cut_start, self.clip_cut_end = start, end
+        self.clip_cut_play += 1
+        return self._clip_edit_changed(before)
+
+    @rx.event
+    def nudge_clip_cut(self, handle: str, delta: float) -> rx.event.EventSpec | None:
+        """«− ½ s» / «+ ½ s» on one handle. A stretch under 1 s is refused and said."""
+        if handle not in ("start", "end") or not self._clip_cut_known():
+            return None
+        before = self._clip_edit_snapshot()
+        start, end = editor_contract.nudge(
+            self.clip_cut_start,
+            self.clip_cut_end,
+            handle=handle,
+            delta=float(delta),
+            source_duration_s=self.clip_source_seconds,
+        )
+        moved_start = self.clip_cut_start + (float(delta) if handle == "start" else 0)
+        moved_end = self.clip_cut_end + (float(delta) if handle == "end" else 0)
+        too_short = moved_end - moved_start < editor_contract.SEGMENT_MIN_SECONDS
+        self.clip_cut_error = clip_editor_vm.TOO_SHORT if too_short else ""
+        self.clip_cut_focus = handle
+        self.clip_cut_start, self.clip_cut_end = start, end
+        return self._clip_edit_changed(before)
+
+    @rx.event
+    def use_whole_clip_video(self) -> rx.event.EventSpec | None:
+        """«Usar el video entero»: the stretch from 0 to the end (up to 15 s)."""
+        if not self._clip_cut_known():
+            return None
+        before = self._clip_edit_snapshot()
+        whole = editor_contract.whole_video(self.clip_source_key, self.clip_source_seconds)
+        self.clip_cut_start, self.clip_cut_end = whole.start_s, whole.end_s
+        self.clip_cut_error = ""
+        self.clip_cut_focus = "start"
+        self.clip_cut_play += 1
+        return self._clip_edit_changed(before)
+
+    @rx.event
+    def rotate_clip_video(self) -> rx.event.EventSpec | None:
+        """«Girar»: a quarter turn clockwise per tap, seen at once."""
+        if not self._clip_edit_key():
+            return None
+        before = self._clip_edit_snapshot()
+        self.clip_rotate = editor_contract.rotate_quarter(self.clip_rotate)
+        return self._clip_edit_changed(before)
+
+    @rx.event
+    def set_clip_overlay_text(self, value: str) -> None:
+        """Typing: the preview follows the keys; kept when the field is left."""
+        self.clip_overlay_text = str(value)[: editor_contract.VIDEO_TEXT_MAX]
+
+    @rx.event
+    def commit_clip_overlay_text(self, _value: str = "") -> rx.event.EventSpec | None:
+        before = self._clip_edit_snapshot()
+        self._clip_text_committed = self.clip_overlay_text.strip()
+        return self._clip_edit_changed(before)
+
+    @rx.event
+    def set_clip_text_place(self, place: str | list[str]) -> rx.event.EventSpec | None:
+        if not isinstance(place, str) or place not in editor_contract.VIDEO_TEXT_PLACES:
+            return None
+        before = self._clip_edit_snapshot()
+        # a place chosen while typing keeps the text too (one line for both is enough)
+        self._clip_text_committed = self.clip_overlay_text.strip()
+        self.clip_text_place = place
+        return self._clip_edit_changed(before)
+
+    @rx.event
+    def toggle_clip_effect(self, effect_id: str) -> rx.event.EventSpec | None:
+        """Mark or unmark an effect of the list (several may go together)."""
+        effect = editor_contract.effect_of(effect_id)
+        if effect is None:
+            return None
+        if effect.needs_own_video and not self._clip_edit_key():
+            return None
+        if not editor_contract.effect_available(effect, _ASSETS_ROOT):
+            return None  # a layer whose loop does not exist yet is never offered
+        marking = effect_id not in self.clip_effect_ids
+        if marking and effect_id == editor_contract.FAST_MOTION and not self._clip_fast_allowed():
+            return None  # shown off, with its reason: a video under 15 s
+        before = self._clip_edit_snapshot()
+        if effect_id in self.clip_effect_ids:
+            self.clip_effect_ids = [e for e in self.clip_effect_ids if e != effect_id]
+            if effect_id == editor_contract.FAST_MOTION and self._clip_cut_known():
+                # back to the stretch from before «Cámara rápida»; without one, the
+                # whole video at normal speed is trimmed to the usual 15 s (E3)
+                kept = self._clip_fast_before
+                if kept:
+                    start, end = editor_contract.clamp_stretch(
+                        kept["start"], kept["end"], self.clip_source_seconds
+                    )
+                elif self.clip_cut_end - self.clip_cut_start > (
+                    editor_contract.DEFAULT_STRETCH_SECONDS
+                ):
+                    whole = editor_contract.whole_video(
+                        self.clip_source_key, self.clip_source_seconds
+                    )
+                    start, end = whole.start_s, whole.end_s
+                else:
+                    start, end = self.clip_cut_start, self.clip_cut_end
+                self.clip_cut_start, self.clip_cut_end = start, end
+                self._clip_fast_before = {}
+                self.clip_cut_focus = "start"
+                self.clip_cut_play += 1
+        else:
+            self.clip_effect_ids = [*self.clip_effect_ids, effect_id]
+            if effect_id == editor_contract.FAST_MOTION and self._clip_cut_known():
+                # sped up, the whole video fits: propose all of it (no 15 s cap) and the
+                # speed whose result is closest to 5 s — one change, one «Deshacer»
+                self._clip_fast_before = {
+                    "start": self.clip_cut_start,
+                    "end": self.clip_cut_end,
+                }
+                whole = editor_contract.whole_video(self.clip_source_key, self.clip_source_seconds)
+                had_cut = (self.clip_cut_start, self.clip_cut_end) != (
+                    whole.start_s,
+                    whole.end_s,
+                )
+                start, end, speed = clip_editor_vm.fast_proposal(self.clip_source_seconds)
+                self.clip_cut_start, self.clip_cut_end, self.clip_speed = start, end, speed
+                self.clip_cut_focus = "start"
+                self.clip_cut_play += 1
+                self._clip_edit_changed(before)
+                # the live line says what it did to the stretch
+                self.clip_edit_notice = clip_editor_vm.fast_on_line(speed, had_cut=had_cut)
+                return None
+        return self._clip_edit_changed(before)
+
+    @rx.event
+    def set_clip_speed(self, value: str | list[str]) -> rx.event.EventSpec | None:
+        """«Velocidad»: ×5 · ×10 · ×20."""
+        try:
+            speed = int(str(value).lstrip("×x"))
+        except ValueError:
+            return None
+        if speed not in editor_contract.FAST_MOTION_SPEEDS:
+            return None
+        before = self._clip_edit_snapshot()
+        self.clip_speed = speed
+        return self._clip_edit_changed(before)
+
+    @rx.event
+    def undo_clip_edit(self) -> None:
+        """«Deshacer»: back to the exact state before the last change."""
+        previous, self._clip_edit_undo = clip_editor_vm.pop_undo(self._clip_edit_undo)
+        if previous is None:
+            return
+        cut_moved = (previous["start"], previous["end"]) != (
+            self.clip_cut_start,
+            self.clip_cut_end,
+        )
+        self._clip_edit_restore(previous)
+        self.clip_cut_error = ""
+        if cut_moved:
+            self.clip_cut_focus = "start"
+            self.clip_cut_play += 1
+        self.clip_edit_notice = ""
+
     def _sync_clip_frames(self) -> None:
         """The frames follow the strip's order (§ requests 2026-10-14/19: «según el
         orden sea el clip inicial/final», videos included): the first file opens the
@@ -6473,6 +7274,7 @@ class CreativeState(rx.State):
             **self._logo_placement_media(),
             "brand_logo_reference_keys": list(self.brand_logo_reference_keys),
             "brand_element_keys": list(self.brand_element_keys),
+            **self._clip_edit_media(),
         }
 
     @rx.event
@@ -6491,6 +7293,7 @@ class CreativeState(rx.State):
         self.gen_step = self._view_index()
         self.gen_direction = DIR_NEXT if self._view_index() >= old else DIR_BACK
         self.create_error = ""
+        self.clip_edit_notice = ""  # «Deshacer» lasts until the owner leaves the step
         return go_to_step("/create", self.create_step_n, back=self._view_index() < old)
 
     @rx.event
@@ -6503,6 +7306,7 @@ class CreativeState(rx.State):
         self.gen_step = max(self._view_index() - 1, 0)
         self.gen_direction = DIR_BACK
         self.create_error = ""
+        self.clip_edit_notice = ""  # «Deshacer» lasts until the owner leaves the step
         return go_to_step("/create", self.create_step_n, back=True)
 
     @rx.event
@@ -6521,6 +7325,7 @@ class CreativeState(rx.State):
         self.gen_step = self._view_index()
         self.gen_direction = DIR_BACK if self._view_index() < old else DIR_NEXT
         self.create_error = ""
+        self.clip_edit_notice = ""  # «Deshacer» lasts until the owner leaves the step
         return go_to_step("/create", self.create_step_n, back=self._view_index() < old)
 
     @rx.event
@@ -6542,6 +7347,7 @@ class CreativeState(rx.State):
         elif more:
             self.show_more_open = True
         self.create_error = ""
+        self.clip_edit_notice = ""  # «Deshacer» lasts until the owner leaves the step
         return go_to_step(self._CREATE_ROUTE, self.create_step_n, back=index < old)
 
     # -- PASOS-5 (m-24852244): the step frame's address and settle -----------------------
@@ -6617,6 +7423,12 @@ class CreativeState(rx.State):
         old = self.create_step_n
         if step != old or "parte" in params:
             self.media_drawer_open = False  # never two drawers
+        # ED-02 (N3): `?herramienta=cortar` opens that tool of «Arma tu video»
+        tool = clip_editor_vm.tool_from_slug(params.get(clip_editor_vm.TOOL_PARAM, [""])[0])
+        if tool:
+            self.clip_edit_tool = tool
+        # a step reached through the history: «Deshacer» does not come back with it
+        self.clip_edit_notice = ""
         if self.gen_mode not in ("discover", "variations"):
             self._show_create_step(step)
         events = []
@@ -9788,6 +10600,7 @@ class CreativeState(rx.State):
         self.clip_audio = True
         self.clip_subtitles = False
         self.clip_duration = "5"
+        self._reset_clip_editor()
 
     @rx.event
     def select_route(self, key: str) -> None:

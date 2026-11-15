@@ -29,6 +29,8 @@ from qualify_api.creative.parts import (
     plan_from_analysis,
 )
 from qualify_api.creative.parts_plan import (
+    MERGED_PARTS_REASON,
+    PLAN_EDIT_UNAVAILABLE,
     PLAN_EMPTY,
     PLAN_EXTEND_ORDER,
     PLAN_OTHER_REEL,
@@ -38,8 +40,11 @@ from qualify_api.creative.parts_plan import (
     PartsPlanRefused,
     _same_entries,
     check_edited_plan,
+    mark_owner_mode_changes,
+    merge_short_part,
     save_parts_plan,
 )
+from qualify_api.referentes.reel_analysis_types import NOT_OBSERVED, OBSERVED, UNKNOWN
 
 from .test_content_service import TENANT_ID, USER_ID
 from .test_creative_parts import ANALYSIS_ID, _children, analysis, shot, world
@@ -111,9 +116,12 @@ def test_an_extend_right_after_its_part_on_a_long_cut_passes() -> None:
 # check_edited_plan (pure)
 
 
-def test_the_analysis_plan_reordered_with_a_part_taken_out_passes() -> None:
-    plan = plan_from_analysis(REEL)
-    assert [p.mode for p in plan][-1] == "extend"  # the 14 s cut is split
+@pytest.mark.parametrize("extend_on", [True, False])
+def test_the_analysis_plan_reordered_with_a_part_taken_out_passes(extend_on: bool) -> None:
+    plan = plan_from_analysis(REEL, extend_on=extend_on)
+    # the 14 s cut is split: its tail is born `extend`, made `extend` only with the switch
+    assert plan[-1].original_mode == "extend"
+    assert plan[-1].mode == ("extend" if extend_on else "reference")
     kept = (plan[2], plan[0], plan[3], plan[4])
     check_edited_plan(kept, (plan[1],), REEL)
 
@@ -335,9 +343,13 @@ def test_an_edit_part_keeps_a_place_or_style_photo_in_another_version() -> None:
 
 
 def test_the_analysis_plan_records_each_entrys_original_mode() -> None:
-    plan = plan_from_analysis(REEL)
+    plan = plan_from_analysis(REEL, extend_on=True)
     assert [p.original_mode for p in plan] == [p.mode for p in plan]
     assert plan[-1].original_mode == "extend"
+    # EF-09: switched off, only the split tail differs — born `extend`, made `reference`
+    off = plan_from_analysis(REEL, extend_on=False)
+    assert [p.original_mode for p in off] == [p.original_mode for p in plan]
+    assert [p.mode for p in off] == [*(p.mode for p in plan[:-1]), "reference"]
     assert VideoPartPlan(seconds=5).original_mode is None  # stored before, or no reel
 
 
@@ -405,3 +417,187 @@ def test_a_plan_saved_on_every_attempt_is_plan_busy_not_a_queue_off() -> None:
     assert busy.value.reason == "plan_busy"
     assert not isinstance(busy.value, PartsUnavailable)
     assert _children(repo, parent) == [] and ledger.rows == rows and dispatcher.calls == []
+
+
+# ---------------------------------------------------------------------------
+# EF-09: the owner changes the mode the rule proposed (`mode_changed_by_owner`)
+
+OWN_VIDEO = f"uploads/{TENANT_ID}/own.mp4"
+
+
+def test_the_owner_changing_the_rules_mode_is_marked_and_going_back_clears_it() -> None:
+    plan = plan_from_analysis(REEL, extend_on=False)
+    clean = plan[0]
+    assert (clean.mode, clean.mode_reason, clean.mode_rule_version) == (
+        "edit",
+        "reel_no_people",
+        1,
+    )
+    made_new = clean.model_copy(update={"mode": "reference"})
+    check_edited_plan((made_new, *plan[1:]), (), REEL)
+    (marked,) = mark_owner_mode_changes((made_new,))
+    assert marked.mode_changed_by_owner is True
+    # the proposal's provenance is kept as it was
+    assert (marked.mode_reason, marked.mode_rule_version) == ("reel_no_people", 1)
+    # back to what the rule proposed: not an owner's change any more
+    (back,) = mark_owner_mode_changes((marked.model_copy(update={"mode": "edit"}),))
+    assert back.mode_changed_by_owner is False
+    assert back == clean
+
+
+def test_a_clean_part_the_rule_made_new_turned_into_edit_is_marked() -> None:
+    """reference → edit on a clean part: the split tail the rule made `reference` while
+    «Sigue a la anterior» is off (`extend_unavailable`), turned «Igual al original» with
+    the owner's own video (a converted tail cannot edit the public source)."""
+    plan = plan_from_analysis(REEL, extend_on=False)
+    tail = plan[-1]
+    assert (tail.mode, tail.original_mode, tail.mode_reason) == (
+        "reference",
+        "extend",
+        "extend_unavailable",
+    )
+    edited = tail.model_copy(update={"mode": "edit", "clip_video_keys": (OWN_VIDEO,)})
+    check_edited_plan((*plan[:-1], edited), (), REEL)
+    (marked,) = mark_owner_mode_changes((edited,))
+    assert marked.mode_changed_by_owner is True
+    assert (marked.mode_reason, marked.mode_rule_version) == ("extend_unavailable", 1)
+    # the tail put back to «Sigue a la anterior» (born `extend`) is the owner's too
+    (extended,) = mark_owner_mode_changes((tail.model_copy(update={"mode": "extend"}),))
+    assert extended.mode_changed_by_owner is True
+
+
+def test_the_mark_is_the_servers_never_the_entrys() -> None:
+    plan = plan_from_analysis(REEL, extend_on=False)
+    forged = plan[0].model_copy(update={"mode_changed_by_owner": True})
+    assert mark_owner_mode_changes((forged,)) == (plan[0],)
+    # no proposal (before the rule, added by hand): never marked
+    legacy = VideoPartPlan(mode="edit", seconds=5, clip_video_keys=(OWN_VIDEO,))
+    flagged = legacy.model_copy(update={"mode_changed_by_owner": True})
+    assert mark_owner_mode_changes((flagged,)) == (legacy,)
+
+
+@pytest.mark.parametrize(
+    ("people", "faces"), [(OBSERVED, OBSERVED), (OBSERVED, NOT_OBSERVED), (UNKNOWN, UNKNOWN)]
+)
+def test_edit_where_someone_is_or_may_be_seen_is_still_refused(people: str, faces: str) -> None:
+    reel = analysis(shot(0, 0.0, 5.0, people=people, faces=faces), shot(1, 5.0, 10.0))
+    plan = plan_from_analysis(reel, extend_on=False)
+    assert plan[0].mode == "reference"
+    assert plan[0].mode_reason in ("reel_people", "people_unclear")
+    values = {**plan[0].model_dump(), "mode": "edit"}
+    if "people_unclear" in plan[0].notices:
+        # the schema itself refuses it (`save_parts_plan` answers `invalid`)
+        with pytest.raises(ValidationError):
+            VideoPartPlan.model_validate(values)
+        values["notices"] = ()
+    with pytest.raises(PartsPlanRefused) as refused:
+        check_edited_plan((VideoPartPlan.model_validate(values), *plan[1:]), (), reel)
+    assert refused.value.reason == PLAN_EDIT_UNAVAILABLE
+
+
+@pytest.mark.parametrize("extend_on", [True, False])
+def test_reordering_or_removing_never_marks(extend_on: bool) -> None:
+    plan = plan_from_analysis(REEL, extend_on=extend_on)
+    kept, removed = (plan[2], plan[0], plan[3], plan[4]), (plan[1],)
+    check_edited_plan(kept, removed, REEL)
+    assert mark_owner_mode_changes(kept) == kept
+    assert mark_owner_mode_changes(removed) == removed
+
+
+def test_joining_two_parts_is_not_an_owners_change_of_mode() -> None:
+    """«Juntar con la siguiente» forces `edit` with `merged_parts` and no rule version
+    (EF-02): never marked, even when the owner had changed one of the two."""
+    reel = analysis(shot(0, 0.0, 2.0), shot(1, 2.0, 5.0))
+    common = {"analysis_id": reel.id, "mode_rule_version": 1, "mode_reason": "reel_no_people"}
+    first = VideoPartPlan(mode="reference", seconds=2, shot_indexes=(0,), **common)
+    second = VideoPartPlan(mode="edit", seconds=3, shot_indexes=(1,), **common)
+    first, second = mark_owner_mode_changes((first, second))
+    assert first.mode_changed_by_owner and not second.mode_changed_by_owner
+    merged = merge_short_part(first, second, reel)
+    assert (merged.mode, merged.mode_reason, merged.mode_rule_version) == (
+        "edit",
+        MERGED_PARTS_REASON,
+        0,
+    )
+    assert mark_owner_mode_changes((merged,)) == (merged,)
+    assert merged.mode_changed_by_owner is False
+
+
+def test_a_tail_the_screen_orphaned_is_not_the_owners_change() -> None:
+    """With «Sigue a la anterior» on, taking out the head of a long cut makes the screen
+    turn its tail «Nueva, inspirada en el original» (`reel_parts_vm._settle`): the owner
+    did not choose that mode, so it is not marked — as the same removal is not with the
+    switch off. A tail still right after its head turned `reference` by hand is."""
+    plan = plan_from_analysis(REEL, extend_on=True)
+    head, tail = plan[-2], plan[-1]
+    assert (tail.mode, tail.mode_reason) == ("extend", "split_cut_continues")
+    orphan = tail.model_copy(update={"mode": "reference"})
+    kept, removed = (*plan[:-2], orphan), (head,)
+    check_edited_plan(kept, removed, REEL)
+    assert mark_owner_mode_changes(kept) == kept
+    assert mark_owner_mode_changes(removed, removed=True) == removed
+    # moved away from its head (another part in between): the screen's too
+    moved = (head, plan[0], orphan, *plan[1:-2])
+    assert mark_owner_mode_changes(moved)[2].mode_changed_by_owner is False
+    # the orphan later taken out as well: never marked among the removed
+    assert mark_owner_mode_changes((head, orphan), removed=True) == (head, orphan)
+    # still attached to its head and made new by hand: the owner's change
+    attached = (*plan[:-1], orphan)
+    check_edited_plan(attached, (), REEL)
+    *_, marked = mark_owner_mode_changes(attached)
+    assert marked.mode_changed_by_owner is True
+    assert (marked.mode_reason, marked.mode_rule_version) == ("split_cut_continues", 1)
+
+
+# EF-09: the mode rule's provenance is the server's — a save that rewrites it is
+# `not_in_plan` (`_same_entries` false → `PLAN_NOT_SAVED` in `save_parts_plan`)
+
+
+@pytest.mark.parametrize(
+    "forged",
+    [
+        {"mode_reason": "reel_people"},  # another known reason: decides the mark
+        {"mode_reason": "extend_unavailable", "mode": "edit"},
+        {"mode_rule_version": 0},  # «before the rule»: never marked
+        {"mode_rule_version": 2},
+    ],
+)
+def test_a_forged_mode_provenance_is_not_the_saved_plan(forged: dict[str, object]) -> None:
+    saved = plan_from_analysis(REEL, extend_on=False)
+    assert saved[0].mode_rule_version == 1 and saved[0].mode_reason == "reel_no_people"
+    entry = saved[0].model_copy(update=forged)
+    assert not _same_entries((entry, *saved[1:]), saved, REEL, active_count=len(saved))
+    # changing only the mode, the provenance as saved, still matches
+    made_new = saved[0].model_copy(update={"mode": "reference"})
+    assert _same_entries((made_new, *saved[1:]), saved, REEL, active_count=len(saved))
+
+
+@pytest.mark.parametrize(
+    "provenance",
+    [
+        {"mode_rule_version": 1, "mode_reason": "reel_no_people"},
+        {"mode_rule_version": 1},
+        {"mode_reason": "no_source"},
+    ],
+)
+def test_a_part_added_by_hand_cannot_claim_the_rule_proposed_it(
+    provenance: dict[str, object],
+) -> None:
+    added = VideoPartPlan(mode="reference", seconds=5, notices=("describe_it",))
+    assert _same_entries((added,), ())
+    forged = added.model_copy(update=provenance)
+    assert not _same_entries((forged,), ())
+
+
+def test_joining_still_matches_its_candidate_and_its_provenance_is_held() -> None:
+    reel = analysis(shot(0, 0.0, 2.0), shot(1, 2.0, 5.0))
+    common = {"analysis_id": reel.id, "mode_rule_version": 1, "mode_reason": "reel_no_people"}
+    saved = (
+        VideoPartPlan(mode="edit", seconds=2, shot_indexes=(0,), **common),
+        VideoPartPlan(mode="edit", seconds=3, shot_indexes=(1,), **common),
+    )
+    merged = merge_short_part(*saved, reel)
+    kw = {"merge_sources": saved, "active_count": 1}
+    assert _same_entries((merged,), saved, reel, **kw)
+    for forged in ({"mode_reason": "reel_no_people"}, {"mode_rule_version": 1}):
+        assert not _same_entries((merged.model_copy(update=forged),), saved, reel, **kw)

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from typing import Any
 from uuid import UUID
@@ -11,12 +13,14 @@ from qualify_shared.db.session import tenant_session
 from sqlalchemy import text
 
 from qualify_api.ads.audience import (
+    CITY_RADIUS_KM,
     AudienceDraft,
     AudienceUnavailable,
     InterestOption,
     LocationOption,
     ReachEstimate,
     SavedAudience,
+    interest_statuses,
 )
 from qualify_api.ads.client import MarketingAPI, MarketingClient
 from qualify_api.ads.errors import MarketingError
@@ -111,18 +115,33 @@ def _query(value: str) -> str:
     return value.strip()
 
 
+@asynccontextmanager
+async def _api(scope: AudienceScope) -> AsyncIterator[MarketingAPI]:
+    """One authenticated client for one or more reads; closed afterwards."""
+    try:
+        client = await _authenticated_client(
+            scope.tenant_id,
+            scope.connection.connection_id,
+            expected_version=scope.connection.version,
+        )
+    except AdAccountUnavailable:
+        raise AudienceUnavailable(
+            "No pudimos consultar el público en Meta. Vuelve a intentarlo."
+        ) from None
+    try:
+        yield MarketingClient(client=client, account_id=scope.meta_account_id)
+    finally:
+        if hasattr(client, "aclose"):
+            await client.aclose()
+
+
 async def _read(
     scope: AudienceScope, operation: str, params: dict[str, Any], *, api: MarketingAPI | None = None
 ) -> tuple[dict[str, Any], ...]:
-    client = None
+    if api is None:
+        async with _api(scope) as shared:
+            return await _read(scope, operation, params, api=shared)
     try:
-        if api is None:
-            client = await _authenticated_client(
-                scope.tenant_id,
-                scope.connection.connection_id,
-                expected_version=scope.connection.version,
-            )
-            api = MarketingClient(client=client, account_id=scope.meta_account_id)
         _same(scope)
         if operation == "reach":
             page = await api.reachestimate(targeting_spec=params)
@@ -136,9 +155,6 @@ async def _read(
         raise AudienceUnavailable(
             "No pudimos consultar el público en Meta. Vuelve a intentarlo."
         ) from None
-    finally:
-        if client is not None and hasattr(client, "aclose"):
-            await client.aclose()
 
 
 def _locations(rows: tuple[dict[str, Any], ...], kind: str) -> tuple[LocationOption, ...]:
@@ -178,27 +194,25 @@ async def _interest_status(
 ) -> tuple[InterestOption, ...]:
     if not options:
         return ()
+    ids = [option.id for option in options]
     try:
-        rows = await _read(scope, "validate", {"ids": [option.id for option in options]})
+        async with _api(scope) as api:
+            valid = await _read(scope, "validate", {"ids": ids}, api=api)
+            try:
+                current = await _read(
+                    scope,
+                    "search",
+                    {"type": "targetingoptionstatus", "targeting_option_list": ids},
+                    api=api,
+                )
+            except AudienceUnavailable:
+                current = ()  # A valid=false answer stays "unavailable"; the rest unknown.
     except AudienceUnavailable:
         # This is not evidence that an interest is available or retiring.
         _same(scope)
         return options
-    statuses: dict[str, bool] = {}
-    for row in rows:
-        if isinstance(row.get("id"), str) and type(row.get("valid")) is bool:
-            statuses[row["id"]] = row["valid"]
-    return tuple(
-        replace(
-            option,
-            status="active"
-            if statuses.get(option.id) is True
-            else "unavailable"
-            if statuses.get(option.id) is False
-            else "unknown",
-        )
-        for option in options
-    )
+    statuses = interest_statuses(valid, current)
+    return tuple(replace(option, status=statuses.get(option.id, "unknown")) for option in options)
 
 
 async def search_audience_locations(
@@ -305,8 +319,13 @@ async def estimate_audience(
         ad_account_id=ad_account_id,
     )
     targeting = audience.targeting()
-    # Radius and special-category policy cannot be inferred from an SDK schema.
-    if audience.radius_km is not None or audience.housing or audience.custom_audiences:
+    if audience.point is None and (audience.radius_km or CITY_RADIUS_KM[0]) < CITY_RADIUS_KM[0]:
+        return ReachEstimate(
+            message="Meta pide un radio de al menos 17 km alrededor de una ciudad.",
+            audience_hash=audience.fingerprint,
+        )
+    # Special-category policy cannot be inferred from an SDK schema.
+    if audience.housing or audience.custom_audiences:
         return ReachEstimate(
             message="Falta comprobar con Meta las reglas de este público.",
             audience_hash=audience.fingerprint,

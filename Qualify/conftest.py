@@ -85,3 +85,13 @@ def _no_base_photo_alerts(monkeypatch: pytest.MonkeyPatch) -> None:
     recorder = _Recorder()
     monkeypatch.setattr(base_photos, "notifier_factory", lambda: recorder)
     monkeypatch.setattr(base_photos, "alert_dispatch", lambda send: send())
+
+
+@pytest.fixture(autouse=True)
+def _parts_extend_switch_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """EF-09: the mode rule reads «Sigue a la anterior» (`QUALIFY_PARTS_EXTEND`) when a
+    plan is made without `extend_on`. Offline tests do not depend on this machine's
+    environment: the switch is off, as in production, unless a test sets its own."""
+    from qualify_api.creative.part_extend import EXTEND_SWITCH
+
+    monkeypatch.delenv(EXTEND_SWITCH, raising=False)

@@ -501,6 +501,25 @@ UNPUBLISHED_PROBLEMS = {
 }
 
 
+def radius_problem(value: str) -> str:
+    """Meta's city radius is 17 to 80 km (qualify_api.ads.audience.CITY_RADIUS_KM)."""
+    if not value:
+        return ""
+    try:
+        km = int(value)
+    except ValueError:
+        km = 0
+    if 17 <= km <= 80:
+        return ""
+    if 0 < km < 17:
+        return (
+            f"Tu borrador tiene {km} km alrededor de la ciudad y ahora el mínimo es 17 km. "
+            "Abre «Añadir distancia alrededor» y escribe 17 o más, o bórrala para usar "
+            "toda la ciudad."
+        )
+    return "Escribe entre 17 y 80 km, o borra la distancia para usar toda la ciudad."
+
+
 def text_problem(draft: PromotionDraftVM) -> str:
     if not draft.message.strip():
         return "Escribe el texto del anuncio."
@@ -553,18 +572,21 @@ def step_problem(draft: PromotionDraftVM, step: int, timezone_name: str = "") ->
         try:
             low, high = int(draft.age_min), int(draft.age_max)
             valid = draft.housing or 18 <= low <= high <= 65
-            if draft.radius_km:
-                valid = valid and draft.location_kind == "city" and 1 <= int(draft.radius_km) <= 80
         except ValueError:
             valid = False
         if not valid:
-            return "Revisa la distancia y las edades antes de continuar."
+            return "Revisa las edades: entre 18 y 65."
+        if draft.radius_km and draft.location_kind != "city":
+            return "La distancia solo se usa alrededor de una ciudad. Bórrala para continuar."
+        problem = radius_problem(draft.radius_km)
+        if problem:
+            return problem
         if draft.placement_mode == "manual" and not draft.placements:
             return "Elige al menos un lugar donde mostrar el anuncio."
         if not draft.housing and any(
             row.notice in {"retiring", "unavailable"} for row in draft.interests
         ):
-            return "Quita los intereses que Meta va a retirar o ya no permite usar."
+            return "Quita los intereses marcados con aviso y elige otros antes de continuar."
         return ""
     if key == "budget":
         try:

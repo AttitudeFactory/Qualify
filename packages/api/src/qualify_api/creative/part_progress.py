@@ -26,14 +26,17 @@ Every state is DERIVED from what is already stored — no column of its own:
   (`edit`) part for a reason that lets it be made new (`can_make_part_new`:
   `refused_face`, `source_purged`, `not_edit_eligible`, `analysis_not_ready`,
   `window_unavailable`).
-- `redo` «Hay que rehacerla»: an `extend` part whose live vista previa was made BEFORE
-  its previous part's current one (the part it continues changed).
+- `redo` «Hay que rehacerla»: an `extend` part whose live vista previa continued a file
+  its previous part no longer shows (the part it continues changed).
 - `expired` «Venció»: its vista previa passed its 7 days (`draft_expired`), or the
   retention purge removed the files of the part or of its video (`media_purged_at`).
 
-«Sigue a la anterior» waiting and «Hay que rehacerla» are read from the parts' own
-vistas previas because VE-13 (the `extend` wiring and its `waiting_previous`) is not
-built yet: the day it is, it can set what this module reads without the screen changing.
+«Sigue a la anterior» waiting (VE-13 `waiting_previous`: the part's job stays queued
+until the previous part has a vista previa, `part_extend`) and «Hay que rehacerla» are
+read from the parts' own vistas previas: «Hay que rehacerla» compares the previous
+part's file the `extend` part continued with the one that part shows now
+(`part_extend.extend_is_stale`; the newer vista previa decides for parts made before it
+was recorded).
 
 `read_part_progress` reads under `tenant_session` (RLS): another business's video
 reads as missing (None). `derive_progress` is pure.
@@ -56,6 +59,7 @@ from sqlalchemy import text
 
 from qualify_api.creative.draft_mode import draft_expired, draft_state
 from qualify_api.creative.fsm import APPROVED, DRAFTING, FAILED, GENERATED, REJECTED
+from qualify_api.creative.part_extend import continued_key, extend_is_stale, source_key
 
 #: A part of the plan that has no child draft yet (as `parts.PLANNED`).
 PLANNED = "planned"
@@ -159,6 +163,11 @@ class PartFacts:
     #: `shot_indexes`, from the child's `media->'part'`) — what «Original» plays
     analysis_id: UUID | None = None
     shot_indexes: tuple[int, ...] = ()
+    #: VE-13: the file a «Sigue a la anterior» part after this one would continue
+    #: (`part_extend.source_key` of its active video), and — for an `extend` part — the
+    #: previous part's file its active video continued (`part_extend.continued_key`)
+    source_key: str | None = None
+    continued_key: str | None = None
 
 
 @dataclass(frozen=True)
@@ -342,8 +351,12 @@ def derive_state(
             and _live_preview(facts, moment)
             and _live_preview(previous, moment)
         ):
-            mine, theirs = _made_at(facts), _made_at(previous)
-            if mine is not None and theirs is not None and theirs > mine:
+            if extend_is_stale(
+                continued=facts.continued_key,
+                previous_source=previous.source_key,
+                own_made_at=_made_at(facts),
+                previous_made_at=_made_at(previous),
+            ):
                 return PartProgressRow(
                     **row,
                     state=PartState.REDO,
@@ -500,7 +513,7 @@ def read_part_progress(
                 SELECT c.id, c.part_index, c.status, c.failure_reason, c.failure_detail,
                        c.media_purged_at IS NOT NULL AS purged, cb.media->'part' AS part,
                        c.part_removed_at IS NOT NULL AS removed,
-                       a.object_key, a.params->'draft' AS block,
+                       a.object_key, a.params->'draft' AS block, a.params->'part' AS made,
                        a.params->>'thumbnail_key' AS thumbnail_key,
                        c.preview_key,
                        COALESCE(a.params->'draft'->>'duration_seconds',
@@ -562,6 +575,8 @@ def read_part_progress(
                 poster_key=poster_key(child["thumbnail_key"], child["preview_key"]),
                 video_seconds=_seconds(child["video_seconds"]),
                 liked=liked_mark(block),
+                source_key=source_key({"part": child["made"]}),
+                continued_key=continued_key({"part": child["made"]}),
                 **part_source(own),
             )
         )

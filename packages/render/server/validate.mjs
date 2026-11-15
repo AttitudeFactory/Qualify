@@ -8,7 +8,10 @@
 //   video                      → props.video
 //   brand_kit                  → props.brand
 //   product[]                  → props.products
+//   layer_spec                 → props.layer   (layer_still: checked against manifest.layer_catalog
+//                                               for the formats of the requested ports)
 import {HttpError} from './http.mjs';
+import {layerProblems} from '../src/templates/layer_still/spec.mjs';
 
 export const ASSET_SCHEME = 'asset://';
 
@@ -27,7 +30,7 @@ const assetRefProblems = (value, where, problems) => {
 /**
  * @returns {string[]} problems (empty = valid)
  */
-export const validateProps = (manifest, props) => {
+export const validateProps = (manifest, props, ports = undefined) => {
   const problems = [];
   if (!isObj(props)) return ['props must be a JSON object'];
   const texts = isObj(props.texts) ? props.texts : {};
@@ -133,6 +136,17 @@ export const validateProps = (manifest, props) => {
         });
         break;
       }
+      case 'layer_spec': {
+        if (!manifest.layer_catalog) {
+          problems.push(`manifest port '${name}' needs a layer_catalog block`);
+          break;
+        }
+        const wanted = ports ?? Object.keys(manifest.outputs ?? {});
+        const formats = [...new Set(wanted.map((p) => manifest.outputs?.[p]?.format).filter(Boolean))];
+        const hasPhoto = Array.isArray(props.photos) && props.photos.length > 0;
+        problems.push(...layerProblems(manifest.layer_catalog, props.layer, {formats, hasPhoto}));
+        break;
+      }
       default:
         problems.push(`manifest port '${name}' has unknown type '${port.type}'`);
     }
@@ -140,8 +154,8 @@ export const validateProps = (manifest, props) => {
   return problems;
 };
 
-export const assertValid = (manifest, props) => {
-  const problems = validateProps(manifest, props);
+export const assertValid = (manifest, props, ports = undefined) => {
+  const problems = validateProps(manifest, props, ports);
   if (problems.length > 0) {
     throw new HttpError(422, 'invalid_parameters', problems.join('; '), {problems});
   }

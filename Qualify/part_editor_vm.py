@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from qualify_api.creative.part_extend import extend_available
 from qualify_creative.schemas import PART_DESCRIPTION_MAX, PARTS_REMOVED_MAX, VideoPartPlan
 
 from . import reel_parts_vm as parts
@@ -22,8 +23,14 @@ QUESTION = "¿Cómo la hacemos?"
 DESCRIPTION_LABEL = "¿Qué pasa en esta parte?"
 DESCRIPTION_EXAMPLE = "Ej.: «Una mano acerca el vaso»."
 DESCRIBE_ACTION = "Escribir qué pasa"
-EXTEND_REASON = "Por ahora no está disponible. Hazla nueva."
+EXTEND_REASON = "Por ahora no está disponible. Elige otra forma."
 EXTEND_FIRST_REASON = "La primera parte no tiene una anterior."
+#: VE-13: only a part the plan split from one long take of the original continues the
+#: part before it (`parts_plan._editable_match`: a part born another way never may).
+EXTEND_SPLIT_ONLY_REASON = (
+    "Solo se puede cuando esta parte y la anterior eran un mismo momento del video "
+    "original. Elige otra forma."
+)
 MORE_LABEL = "Video o audio tuyo"
 SHEET_HELP = "Cambia solo esta parte; las demás quedan igual."
 DESCRIPTION_REQUIRED = "Cuéntanos qué muestra esta parte para guardarla."
@@ -116,7 +123,10 @@ def options(
     audios: Sequence[Mapping[str, str]],
     durations: Mapping[str, float | None],
     has_product: bool = True,
+    extend_on: bool | None = None,
 ) -> list[dict[str, str]]:
+    """«¿Cómo la hacemos?»: the three ways and why each is off ("" = it can be chosen).
+    `extend_on` None reads the switch (`part_extend.extend_available`)."""
     original = bool(entry["plan"].get("analysis_id"))
     return [
         {
@@ -142,10 +152,23 @@ def options(
             "mode": "extend",
             "label": parts.FORM_EXTEND,
             "help": EXTEND_HELP,
-            # VE-13 is not built yet: «Continuar la anterior» stays off for every part.
-            "reason": EXTEND_FIRST_REASON if index == 1 else EXTEND_REASON,
+            "reason": extend_reason(entry, index, extend_on),
         },
     ]
+
+
+def extend_reason(entry: Mapping[str, Any], index: int, extend_on: bool | None = None) -> str:
+    """Why «Sigue a la anterior» cannot be chosen for the part at `index` (1-based), or
+    "" when it can (VE-13): never the first part; never while it is switched off; and
+    only for a part the plan split from one long take (the backend refuses any other)."""
+    if index == 1:
+        return EXTEND_FIRST_REASON
+    if not (extend_available() if extend_on is None else extend_on):
+        return EXTEND_REASON
+    plan = entry.get("plan") or {}
+    if "extend" not in (plan.get("mode"), plan.get("original_mode")):
+        return EXTEND_SPLIT_ONLY_REASON
+    return ""
 
 
 def describe_action(blocked: Sequence[int]) -> str:

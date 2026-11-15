@@ -29,7 +29,9 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from qualify_api.creative.part_extend import extend_available
 from qualify_api.creative.parts import NOTICE_TEXTS, PartsExtendUnavailable, is_vertical
+from qualify_api.creative.video_pipeline.mode_choice import MODE_REASON_TEXTS, proposed_mode
 from qualify_api.referentes.reel_analysis_types import OBSERVED, ReelAnalysis
 from qualify_creative.schemas import (
     PART_GENERATION_MIN_SECONDS,
@@ -167,6 +169,29 @@ def _reason(plan: VideoPartPlan, analysis: ReelAnalysis, person: bool) -> str:
     if not _is_vertical(analysis):
         return REASON_NOT_VERTICAL
     return REASON_NO_SOURCE
+
+
+#: The rule reasons whose own words replace today's why line. Deivid 2026-11-14 (EF-09):
+#: only the new reasons; the rest are reviewed in the editor. `split_cut_continues` keeps
+#: «Va pegada a la parte n»: its own words wait for the new editor (ED-07, m-25026638;
+#: Deivid, 2026-11-14).
+_RULE_TEXT_REASONS = frozenset({"extend_unavailable", "own_video_local", "own_video_ai_effect"})
+
+
+def _rule_text(plan: Mapping[str, Any]) -> str:
+    """EF-09: the mode rule's own words for the part (`MODE_REASON_TEXTS[mode_reason]`),
+    or "" when they do not describe it: no stored reason or an unknown one (a plan from
+    before the rule, `merged_parts`, a part added by hand), or a part the owner changed
+    (`mode_changed_by_owner`, or a mode other than the one the reason proposed: the
+    sheet changes the mode before the save recomputes the flag)."""
+    if plan.get("mode_changed_by_owner"):
+        return ""
+    reason = str(plan.get("mode_reason") or "")
+    if reason not in _RULE_TEXT_REASONS or reason not in MODE_REASON_TEXTS:
+        return ""
+    if proposed_mode(int(plan.get("mode_rule_version") or 0), reason) != plan.get("mode"):
+        return ""
+    return MODE_REASON_TEXTS[reason]
 
 
 def entries_from_plan(
@@ -338,7 +363,13 @@ def part_rows(
             unit += 1
             head = at
         form = FORM_EXTEND_OF if stuck else form_label(plan, has_product=has_product)
-        why = REASON_TEXTS.get(str(entry.get("reason") or ""), "")
+        code = str(entry.get("reason") or "")
+        why = REASON_TEXTS.get(code, "")
+        # EF-09: where a why line is shown, the rule's own words replace it while they
+        # still describe the part; never a line where there was none («Igual al
+        # original», a part made without a reel), never over «orphan» or «extend»
+        if why and code not in (REASON_ORPHAN, REASON_EXTEND):
+            why = _rule_text(plan) or why
         if stuck:
             why = REASON_TEXTS[REASON_EXTEND].format(n=head)
         person = bool(entry.get("person"))
@@ -628,8 +659,14 @@ def blocked_parts(entries: Sequence[dict[str, Any]]) -> list[int]:
     ]
 
 
-def unsupported_parts(entries: Sequence[dict[str, Any]]) -> list[int]:
-    """Preserve stored extends, but never charge/create a plan VE-13 cannot produce."""
+def unsupported_parts(
+    entries: Sequence[dict[str, Any]], *, extend_on: bool | None = None
+) -> list[int]:
+    """The parts that cannot be created now: «Sigue a la anterior» while it is switched
+    off (`part_extend.extend_available`; stored extends are preserved, never charged).
+    `extend_on` None reads the switch."""
+    if extend_available() if extend_on is None else extend_on:
+        return []
     return [at for at, entry in enumerate(entries, 1) if entry["plan"].get("mode") == "extend"]
 
 

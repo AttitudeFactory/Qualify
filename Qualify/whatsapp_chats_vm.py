@@ -39,8 +39,14 @@ from urllib.parse import urlencode
 
 from .ad_message_vm import ad_origin_href, ad_origin_label
 from .catalog_vm import CHATS_RETURN_PATH, RETURN_PARAM
-from .chat_row_vm import CHANNEL_WHATSAPP, ChatRowVM, build_chat_row, minutes_left
-from .planner_vm import time_label_12h
+from .chat_row_vm import (
+    CHANNEL_WHATSAPP,
+    ChatRowVM,
+    build_chat_row,
+    letter_initials,
+    minutes_left,
+)
+from .chat_thread_vm import mark_days, window_line
 from .seasonal_vm import CREATE_HREF as SEASONAL_LIBRARY_CREATE_HREF
 from .seasonal_vm import PRODUCT_RECIPES, PRODUCT_SEASON_KEY, product_message
 
@@ -138,6 +144,9 @@ WINDOW_CLOSED_NOTICE = (
     "WhatsApp solo deja escribirle con un mensaje aprobado."
 )
 WINDOW_CLOSED_PILL = "Solo con mensaje aprobado"
+#: m-25027371: the open chat's header line once the 24 h have passed — says approved by
+#: whom (new text, awaiting the founder; the row and the panels keep the pill above).
+WINDOW_CLOSED_LINE = "Pasaron 24 h: solo puedes enviarle un mensaje ya aprobado por WhatsApp"
 NO_MESSAGES_YET = "Sin mensajes todavía"
 OUTBOUND_PREFIX = "Tú: "
 
@@ -192,8 +201,6 @@ COMPOSE_MODES: tuple[tuple[str, str], ...] = (
 )
 COMPOSE_KEYS = frozenset(key for key, _label in COMPOSE_MODES)
 
-#: A window that closes within this is a `warn`, worded «cierra en 42 min».
-WINDOW_WARN_WITHIN = timedelta(hours=1)
 
 _MONTHS = ("ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic")
 _WEEKDAYS = ("lun", "mar", "mié", "jue", "vie", "sáb", "dom")
@@ -339,31 +346,24 @@ def message_time(value: datetime | None, now: datetime, zone: tzinfo) -> str:
     return f"{format_day(value, zone, now)} {clock}"
 
 
+def bubble_clock(value: datetime | None, zone: tzinfo) -> str:
+    """A bubble's time: the clock alone — the day separator above says the day
+    (m-25027371, as Instagram's thread)."""
+    return format_clock(value, zone) if value is not None else ""
+
+
 def window_pill(
     is_open: bool, closes_at: datetime | None, now: datetime, zone: tzinfo
 ) -> tuple[str, str]:
-    """(label, tone) of the 24 h window: `ok` open, `warn` closing within the hour
-    («Responde en los próximos 42 min»), `neutral` closed («Solo con mensaje aprobado»).
-    Worded by what the owner can do, never «ventana»."""
-    if not is_open or closes_at is None:
+    """(label, tone) of the 24 h window: `ok` open (the header's «Puedes escribirle hasta
+    las 17:47»), `warn` closing within the hour (the founder's «Quedan 42 min para
+    responder», m-25027371: the row, the header and the send panel say the same),
+    `neutral` closed («Solo con mensaje aprobado»). Worded by what the owner can do,
+    never «ventana»."""
+    if not is_open or closes_at is None or closes_at - now <= timedelta(0):
         return WINDOW_CLOSED_PILL, "neutral"
-    remaining = closes_at - now
-    if remaining <= timedelta(0):
-        return WINDOW_CLOSED_PILL, "neutral"
-    if remaining < WINDOW_WARN_WITHIN:
-        # m-25017844: the same count as the row's pill (`chat_row_vm.minutes_left`).
-        minutes = minutes_left(is_open, closes_at, now)
-        if minutes == 1:
-            return "Responde en el próximo minuto", "warn"
-        return f"Responde en los próximos {minutes} min", "warn"
-    return deadline_label(_local(closes_at, zone)), "ok"
-
-
-def deadline_label(local_close: datetime) -> str:
-    """«Puedes escribirle hasta las 5:00 p. m.» — «la» for one o'clock (m-24842994)."""
-    clock = time_label_12h(local_close)
-    article = "la" if clock.startswith("1:") else "las"
-    return f"Puedes escribirle hasta {article} {clock}"
+    text, tone = window_line(is_open, closes_at, now, zone)
+    return text, tone
 
 
 #: m-24842994: the chat's badge says who answers, in the owner's words.
@@ -454,6 +454,13 @@ class ThreadRowVM:
     #: m-25017859: the «Por responder» rule's verdict (`ThreadSummary.awaiting_reply`):
     #: the waiting dot and the «Por responder» chip.
     awaiting_reply: bool = False
+    #: m-25027371: the open chat's header — the person's initials ("" → the person
+    #: icon) and the shared window line («Puedes escribirle hasta las …»).
+    initials: str = ""
+    #: "" until the row builder says it (a chat drawn before its row arrives, or one
+    #: outside the newest page, states nothing rather than a closed window).
+    window_line: str = ""
+    window_line_tone: str = "neutral"
 
 
 EMPTY_THREAD = ThreadRowVM(
@@ -493,6 +500,9 @@ def build_thread_row(
     elif thread.last_message_direction == "outbound":
         preview = OUTBOUND_PREFIX + preview
     window_label, window_tone = window_pill(thread.window.open, thread.window.closes_at, now, zone)
+    line, line_tone = window_line(
+        thread.window.open, thread.window.closes_at, now, zone, closed_text=WINDOW_CLOSED_LINE
+    )
     mode_label, mode_tone = mode_pill(thread.automation_paused)
     agent_id = str(thread.assigned_agent_id) if thread.assigned_agent_id else ""
     agent = (agents or {}).get(agent_id) if agent_id else None
@@ -517,6 +527,9 @@ def build_thread_row(
         is_closed=thread.status == "closed",
         window_minutes=minutes_left(thread.window.open, thread.window.closes_at, now),
         awaiting_reply=bool(getattr(thread, "awaiting_reply", False)),
+        initials=letter_initials(name),
+        window_line=line,
+        window_line_tone=line_tone,
     )
 
 
@@ -632,6 +645,9 @@ class MessageVM:
     location_href: str = ""
     #: m-25018684: an inbound catalog cart — drawn with the shopping-bag icon.
     is_order: bool = False
+    #: m-25027371: «Hoy» / «Ayer» / «12 oct» on the first message of each day (the same
+    #: separators as Instagram's thread); the bubble then says only the clock.
+    day_label: str = ""
 
 
 VIEW_ON_MAP = "Ver en el mapa"
@@ -804,7 +820,7 @@ def build_message_vm(
         is_outbound=outbound,
         text=text,
         is_media_placeholder=placeholder,
-        time_label=message_time(message.posted_at, now, zone),
+        time_label=bubble_clock(message.posted_at, zone),
         tick=tick,
         tick_label=_TICK_LABELS.get(tick, ""),
         error_label=failure_label(message.delivery_error_code) if tick == "failed" else "",
@@ -840,7 +856,7 @@ def build_unsent_vm(item: UnsentItem, *, now: datetime, zone: tzinfo) -> Message
         is_outbound=True,
         text=item.text or "[mensaje]",
         is_media_placeholder=False,
-        time_label=message_time(item.created_at, now, zone),
+        time_label=bubble_clock(item.created_at, zone),
         tick=tick,
         tick_label=_TICK_LABELS[tick],
         error_label=failure_label(item.error_code) if failed else "",
@@ -905,7 +921,13 @@ def build_conversation(
     for item in unsent:
         keyed.append((item.created_at, 1, build_unsent_vm(item, now=now, zone=zone)))
     keyed.sort(key=lambda entry: (entry[0], entry[1]))
-    return [vm for _instant, _order, vm in keyed]
+    # m-25027371: the day separators of the shared thread («Hoy», «Ayer», «12 oct»).
+    return mark_days(
+        [(instant, vm) for instant, _order, vm in keyed],
+        zone,
+        now,
+        lambda vm, label: replace(vm, day_label=label),
+    )
 
 
 def merge_pages(older: Sequence[Any], newest: Sequence[Any]) -> list[Any]:
@@ -2327,6 +2349,18 @@ class PaymentVM:
 
 
 EMPTY_PAYMENT = PaymentVM()
+
+
+def strip_payment_part(payment: PaymentVM) -> str:
+    """What the folded order strip says about the payment (review of m-25027371): only
+    when the header shows no payment pill AND something waits behind the fold — the
+    owner can still tap «Pago recibido» / «No lo encuentro» (no status yet: the customer
+    chose another way or none). Then the card's own line («Forma de pago: quiere otra»,
+    «Paga con: …»). A pill in the header (to review, awaiting, on delivery, received
+    today) is not repeated; a payment received on an earlier day is information only."""
+    if not payment.present or payment.label or not payment.can_confirm:
+        return ""
+    return payment.method_line
 
 
 def payment_pill(

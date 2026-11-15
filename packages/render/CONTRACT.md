@@ -73,6 +73,49 @@ one tab. A video composition may also take its **size** from the props through
 manifest's `width`/`height` are then the largest frame, and the job reports the size it
 actually rendered.
 
+`layer_still` **v1** (m-25017285, ADR 49 §2, catalog `docs/catalogo-disenos-imagen-carrusel.md`)
+renders ONE still per job from a `LayerSpec`: ports `feed` (4:5), `square` (1:1), `story`
+(9:16), each output carrying its catalog `format`. One port type exists only for it:
+`layer_spec` (`props.layer`), the `LayerSpec` v1 of m-25017283 as its pydantic model dumps
+it — `format` (must equal the port's), `photo {subject_box, logo_in_photo,
+base_has_invented_text}`, `price_ref {product_id}`, `highlight_content {kind, icon_id, word}`,
+`info_blocks [{kind, label, value}]` (fixed labels), `photo_strip`, and the carousel place
+`carousel {role, index, count}` with a **0-based** `index` below `count` (2–10), the role
+following the index (0 = `cover`, last = `closing`), no carousel in 9:16. The counter
+`index+1/count` and the logo on the first and last slide come from it. `layer_id` (optional)
+is echoed in the report. The manifest's `layer_catalog` block is what the render enforces
+(safe zones, font sizes, slot limits per layout and format, info kinds, icon set); the layer
+stage keeps its own `qualify_creative/layer_spec/catalog_v1.json` — a test comparing the two
+lands with whichever branch merges second. `src/templates/layer_still/spec.mjs` checks a
+layer against `layer_catalog` — the server answers `422 invalid_parameters` per requested
+port (unknown `layout_id`, unknown field, slot over its character limit, a parameter the
+layout does not take, a format other than the port's) and the composition re-checks. Brand
+colours are drawn opaque (an `#RRGGBBAA` alpha is dropped). `texts.price_text` (the catalog
+price, formatted whole by Python) and `texts.is_food` are the only texts. The checks of
+catalog §1.7 (subject box, safe zones, fit at the minimum size, contrast, logo once) and the
+fixed fallback chain to `band` run in the composition's `calculateMetadata` (the brand's
+fonts — or the fallback after FONT_TIMEOUT, the same face the still is then drawn with —
+and canvas measurement; `engine.ts`); the decision is returned on the job output as
+`report` (§4.1). A layout whose text does not fit its lines or crosses the safe zone counts
+as failed and the chain moves on; when every layout of the chain fails, the output fails
+with `invalid_parameters` and a machine-readable `refusal` (§4.1) — never an image with
+overflowing text. A carousel is N jobs (ADR 49 §2.2).
+
+**Engine revision** (`layer_catalog.engine_revision`, today 2). The template version pins the
+props contract; the engine revision pins the pixels. It is bumped with ANY change to
+`engine.ts`, `LayerStill.tsx`, `icons.tsx` or the font loading that can move a pixel, it is
+echoed as `report.engine_revision`, and Python puts it in the compose job id (and therefore in
+the object key, which carries the job id): a recompose after an engine change is a new job and a
+new object, never «same key, different pixels». Fonts follow the same rule: a brand family the
+Google Fonts catalogue knows is measured AND drawn with that face or the job fails (`timeout` /
+`dependency_failed`) — it never silently falls back to Noto Sans under the same key; only an
+unknown family uses the fallback, deterministically, with a `warnings` entry.
+
+Order of the 422 checks (changed with m-25017285): `POST /estimate` and `/render` now check
+that every `asset://` exists **before** validating the props against the manifest, because a
+layer's limits depend on the requested ports. A request with both problems answers the
+unknown-asset 422 first; both are `invalid_parameters`.
+
 `cost_model` is **render time**, not money: the service runs on our own machine (cost 0
 beyond the server). Python turns ETA into money only if a paid runtime (Lambda, license)
 is configured.
@@ -150,7 +193,19 @@ same id is idempotent and returns the existing job.
 }
 ```
 
-A failed output adds `"failureReason"` and `"errorMessage"`. Rollup rule (ElevenCreative):
+A failed output adds `"failureReason"` and `"errorMessage"`. A `layer_still` output adds
+`"report"` once its composition was selected: `{layer_id, layout_requested, layout_rendered,
+anchor, format, fallbacks[], dropped_slots[], sizes{}, contrast{}, logo, counter, overflow[],
+fonts{heading, body}, title_metrics{line_height, gap_after}}` — `overflow` is always empty on
+a completed output; `fonts` are the families measured and drawn. Python records
+`layout_rendered` and `fallbacks` with the piece. A layer the composition refuses fails the
+output with `invalid_parameters`; when no layout of the chain could draw it the output also
+carries `"refusal": {code: "layer_unrenderable", slot, reason, detail, format,
+layout_requested, attempts[]}` — `slot` names what to rewrite (`title`,
+`info_blocks[1].value`, `highlight_content.word`…), `reason` is `word_too_wide` ·
+`too_many_lines` · `title_does_not_fit` · `no_room_beside_subject` · `too_tall` ·
+`outside_safe_zone`. The jobId is deterministic, so a retry returns the same failed job: the
+fix is a new layer (new text → new spec → new jobId). Rollup rule (ElevenCreative):
 `pending` until an output starts; `generating` while any output is unfinished; `completed`
 once every output completed; `failed` once every output finished and at least one failed;
 `cancelled` if cancelled before completion.

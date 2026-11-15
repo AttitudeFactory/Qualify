@@ -13,10 +13,19 @@ from qualify_shared.db.config import app_dsn
 from sqlalchemy import create_engine, select
 from sqlalchemy.engine import Engine
 
+from qualify_api.creative.part_extend import EXTEND_SWITCH
 from qualify_api.tenancy.models import Brand, Tenant
 
 TENANT_A = UUID("c0000000-0000-4000-8000-00000000000a")
 TENANT_B = UUID("d0000000-0000-4000-8000-00000000000b")
+
+
+@pytest.fixture(autouse=True)
+def _no_parts_extend_switch(monkeypatch: pytest.MonkeyPatch) -> None:
+    """«Sigue a la anterior» (`QUALIFY_PARTS_EXTEND`) starts off in every test, whatever the
+    shell exports: `plan_from_analysis(extend_on=None)` reads it. Tests that want it on
+    set it themselves (`monkeypatch.setenv`), which runs after this."""
+    monkeypatch.delenv(EXTEND_SWITCH, raising=False)
 
 
 @pytest.fixture

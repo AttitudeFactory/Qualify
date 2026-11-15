@@ -22,6 +22,81 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
 
 ---
 
+<a id="ext-001"></a>
+
+## EXT-001 — Seedance 2.5 `extend` («Sigue a la anterior») en borrador: primera prueba en vivo (m-24880328) — 2026-11-14
+
+**Resultado: `extend` acepta `draft: true` y devuelve solo el tramo nuevo.** `QUALIFY_SEEDANCE_EXTEND_OUTPUT` pasa a `segment` por omisión; una salida que mida como entrada + pedido se registra como `creative.extend.unexpected_whole` y se trata como `whole`. El interruptor `QUALIFY_PARTS_EXTEND` sigue en `off` hasta que se decida encenderlo.
+
+- **Qué se probó:** las tres preguntas abiertas de `extend` en [seedance-2-5.md](seedance-2-5.md) (§`extend`) — si acepta borrador, si devuelve el tramo nuevo o el video entero, y qué significa `duration`.
+- **Modelo:** `dreamina-seedance-2-5-260628`, endpoint personalizado de ModelArk (no los preajustes que ceden datos). Borradores a **480p**, 5 s, con audio, `return_last_frame`.
+- **Entradas:** la foto del producto «Super Smash» de Nibbles como `reference_images`.
+  - **Parte 1 «Nueva»:** `omni_reference_task_type: reference`, `ratio: 9:16`, sin video de entrada.
+  - **Parte 2 `extend`:** `omni_reference_task_type: extend`, `ratio: adaptive`, `duration: 5`, y como `reference_video` el MP4 de la parte 1 tal como salió (5,042 s). El prompt empieza por «Extend video @Video1: continue it seamlessly from its last frame…» y pide que una mano levante la hamburguesa.
+- **Arnés:** script fuera del repositorio (`extend-test-scripts/ext_run.py`, carpeta temporal de la sesión): una tarea a la vez, sin repeticiones (se niega a mandar dos veces el mismo paso), tope de **US$1,50** comprobado con la estimación del peor caso antes de cada tarea. Usó la llave de la app (`QUALIFY_BYTEPLUS_ARK_API_KEY`), no la de evaluación, y corrió de día (12:52–13:03, hora de Bogotá), fuera del [horario de evaluaciones con video](#byteplus-llave-y-horario). Nada se escribió en la base, en R2 ni en la carpeta de subidas.
+
+| Tarea | Paso | Tokens (`completion_tokens`) | Tarifa | Costo | Salida | Render |
+|---|---|---|---|---|---|---|
+| `cgt-20261114205252-35pwm` | Parte 1 «Nueva» | 48.437 | 10,70/M (sin video de entrada) | US$0,518276 | 5,042 s | 55 s (`created_at` → `updated_at`); el arnés midió 57 s |
+| `cgt-20261114210137-3ugjk` | Parte 2 `extend` | 96.075 | 6,40/M (con video de entrada) | US$0,614880 | **5,000 s** | 58 s (`created_at` → `updated_at`); el arnés midió 67 s |
+| | **Total** | | | **US$1,133156** | | |
+
+- **`draft: true`:** aceptado. La tarea responde `draft: true`, `resolution: 480p` y `framespersecond: 24`.
+- **Tramo nuevo o video entero:** **solo el tramo nuevo** (`segment`). Se pidieron 5 s y llegaron 5,000 s; `duration` es la duración del tramo nuevo, no la total.
+- **Tokens:** cuadran con la fórmula de SD25-001 sumando la entrada: (5,04 s de entrada + 5 s de salida) × ~9.607 tokens/s ≈ 96.475 estimados frente a 96.075 cobrados. La estimación previa al gasto (`estimate_video_tokens` con `input_video_seconds`) ya calcula así.
+- **`ratio`:** la parte 2 vuelve con `ratio: 240:427`, el del video de entrada (480×854), no `adaptive` ni `9:16`. El código guarda el `ratio` del encargo, así que no rompe nada; queda anotado.
+- **La unión:** el cuadro 0 de la parte 2 se diferencia del último de la parte 1 lo mismo que dos cuadros seguidos (3,0 frente a 3,1 de diferencia media por píxel): no repite ni salta. Las dos partes traen audio, con nivel parecido en la unión (RMS 0,014 → 0,012).
+- **Fidelidad del producto:** ya en la parte 1 el queso se vuelve salsa chorreante, faltan los pepinillos y la cebolla, y al fondo aparece el logo redondo de **otra cadena**. La parte 2 conserva todo eso (lo hereda del video de entrada); el pan crece y aparece la mano que pide el prompt.
+- **Descargas:** ModelArk pidió el MP4 de entrada **dos veces** a la URL pública temporal. La URL de `/public/media/{token}` tiene que aguantar más de una lectura.
+- **Riesgos y lo que no se midió:**
+  - **n = 1.** Una sola pareja de tareas, un producto, una marca.
+  - **El final 1080p de una parte `extend` no se midió.** No se sabe si vuelve a cobrar el video de entrada ni si el contrato (tramo nuevo, `duration`) se mantiene (R10/VE-16). La estimación supone que sí cobra la entrada, para no quedarse corta.
+  - **La fidelidad del producto se degrada desde la parte 1 y `extend` la arrastra:** continuar una parte con el producto alterado propaga el error a la siguiente. Una parte `extend` hereda los defectos de su anterior; rehacer la anterior la deja «Hay que rehacerla».
+  - **Logo de otra cadena al fondo:** el control de marca debería verlo antes de que la pieza llegue al dueño.
+- **Archivos (fuera del repositorio, carpeta temporal de la sesión):** `extend-test/part1.mp4`, `part2.mp4`, `seam-strip.png`, `p1-strip.png`, `p1-task.json`, `p2-task.json`, `ledger.json`.
+
+---
+
+<a id="capa-001"></a>
+
+## CAPA-001 — Claude escribe la capa de texto viendo la foto base: prueba de humo (m-25017283) — 2026-11-14
+
+- **Qué se probó:** la etapa `layer` de ADR 49 (`qualify_api.creative.image_pipeline.layer.write_layers`), con el prompt `capa-v1` y la herramienta estricta `escribir_capa`: Claude mira la foto, informa `subject_box`, `logo_in_photo` y `base_has_invented_text`, elige uno de los siete diseños del catálogo (`docs/catalogo-disenos-imagen-carrusel.md`) y escribe título, subtítulo y frase de invitación. La respuesta se valida con `LayerSpec` (límites del catálogo, reglas de §1.8); una diapositiva que no pasa recibe un turno de reparación.
+- **Modelo:** `claude-sonnet-5-5`, esfuerzo `low`, `tool_choice: auto` (piensa) con obligación de llamar la herramienta; sin parámetros de muestreo.
+- **Entradas:** 10 fotos base de Seedream de FOTO-BASE-001 (compiladores 4 y 5, fuera del repositorio), con los encargos de `packages/api/evals/scene_text_v4/cases.json`; los «Datos clave» del caso pasan como datos guardados del negocio (dirección, horario, pedidos). Una llamada por foto (las diapositivas de galería, sueltas). Sin Seedream, nada en R2 ni en la base.
+- **Arnés:** `packages/api/evals/capa_texto/run.py --images <dir> --scores <scores.csv de FOTO-BASE-001> --max-usd 0.5`.
+- **Resultado (10 fotos):**
+
+| Medida | Valor |
+|---|---|
+| Capa válida según el esquema | **10/10** (4 necesitaron el turno de reparación) |
+| Diseño contra la regla «elegirlo cuando» del catálogo | 0 incumplimientos (8 `band`, 2 `plate`; ningún `scrim`) |
+| Precio alterado | 0 (ningún `price_ref` fuera del producto del caso) |
+| Números en el texto libre | 1, el «2x1» de F7 (permitido) |
+| `base_has_invented_text` contra la etiqueta humana de FOTO-BASE-001 | **9/10** de acuerdo: detectó el letrero inventado de F1 (compilador 4); un falso positivo en F3 (compilador 5) |
+| Gasto | **US$0,163** por 14 llamadas (10 + 4 reparaciones): **US$0,009–0,027 por foto**, US$0,016 de media |
+
+- **Lectura:** el esquema y la reparación se sostienen; la mitad de las fotos pidieron reparar (subtítulos largos o una frase fuera de regla) y todas salieron válidas. Claude prefiere `band` (la opción segura) sobre `plate` con fotos de Seedream que llenan el cuadro; nadie eligió `scrim`. El falso positivo de F3 regeneraría una base sin necesidad (a lo sumo una vez, por la clave única). F3 escribió «Abrimos de martes a domingo…» en el subtítulo: sin cifras pasa la regla de §1.8, pero es un dato del horario en texto libre — una regla a endurecer.
+- **Textos que escribió, por foto** (los guardados de esta corrida; no se volvió a llamar a Claude):
+
+| Foto | Diseño | Título | Subtítulo | Invitación |
+|---|---|---|---|---|
+| F1-ubicacion-r1-v4 | `band` | «Tu shawarma te espera en el Korner» | «Pasa por la acera de enfrente y pruébalo recién hecho» | «Te esperamos hoy» |
+| F1-ubicacion-r1-v5 | `band` | «Tu shawarma te espera en el Korner» | «Pasa por el caballete de la acera y pídelo recién hecho.» | «Te esperamos hoy» |
+| F2-te-espera-r1-v4 | `band` | «Tu shawarma de carne, aquí» | «Pan tostado, carne jugosa y salsa cremosa» | «Pídelo hoy mismo» |
+| F3-horario-r1-v5 | `band` | «Tu salchipapa, ahora de noche» | «Abrimos de martes a domingo para antojos nocturnos.» | «Te esperamos esta noche» |
+| F4-combo-r1-v5 | `band` | «Tu combo de shawarma completo» | «Carne jugosa, papas doradas y gaseosa bien fría.» | «Pídelo por WhatsApp» |
+| F5-ensalada-escena-r1-v5 | `plate` | «Tu ensalada, fresca» | «Lechuga, tomate, pepino y garbanzos para empezar el día.» | «Pídela hoy» |
+| F7-pollo-2x1-r1-v5 | `plate` | «Martes de shawarma 2x1» | «Pollo recién hecho, para compartir.» | «Ven este martes» |
+| F8-papas-compartir-r1-v5 | `band` | «Papas para compartir» | «Una porción grande al centro de la mesa y todos a picar.» | «Pídelas para tu grupo» |
+| G1-combo-galeria-s2-r1-v5 | `band` | «Tu combo del día, completo» | «Shawarma de carne, papas y gaseosa» | «Pídelo por WhatsApp» |
+| G2-salchipapa-galeria-s1-r1-v4 | `band` | «Salchipapa doradita» | «Crocante, jugosa y perfecta para picar entre amigos.» | «Ven esta noche al Korner» |
+
+- **Revisión de UX sobre estos textos → `capa-v2` (sin medir):** «Abrimos de martes a domingo» (F3) y una promoción o un día que el encargo no traiga son datos inventados; F1 y G2 repiten el nombre del negocio, que ya va en el logo. `capa-v2` pide no escribir días, horarios, descuentos, «gratis», domicilios ni promociones que no estén en «De qué trata la publicación» o en los datos guardados (y la validación pide reparar si aparecen; «100% natural» o «500 g» no cuentan), trato de tú y apuntar a dos tercios de cada límite. El «2x1» y el martes de F7 vienen del encargo, así que siguen permitidos. `capa-v2` **no se ha medido**: se medirá con el tope que apruebe el fundador.
+- **Pendiente:** medir con más fotos y galerías completas en una sola llamada (m-25017292), con la composición real (m-25017285), y la latencia (no se midió).
+
+---
+
 <a id="niveles-006"></a>
 
 ## NIVELES-006 — most_aware: solo producto, precio y cómo comprar (con cuándo y dónde) (m-25027151) — 2026-11-14

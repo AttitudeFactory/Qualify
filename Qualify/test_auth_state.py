@@ -367,6 +367,7 @@ _STATES_WITHOUT_BUSINESS_DATA = {
     # the living style guide's demos (/design), no session
     "DrawerDemoState",
     "StepsDemoState",
+    "TimelineDemoState",  # ED-00b m-25029104: fixed sample timeline, no tenant
 }
 
 

@@ -54,9 +54,28 @@ from __future__ import annotations
 
 import reflex as rx
 
-from .chat_row import instagram_glyph
-from .chat_row import tone_pill as _tone_pill
-from .chat_row_vm import INBOX_BACK_LABEL
+from .chat_row_vm import CHANNEL_INSTAGRAM
+from .chat_thread import (
+    back_button,
+    bubble_meta,
+    day_separator,
+    menu_item,
+    message_row,
+    more_menu,
+    no_chat_open,
+    state_pill,
+    thread_body,
+    thread_frame,
+    thread_header,
+    thread_scroll,
+    window_text,
+)
+from .chat_thread_vm import (
+    BUBBLE_LINK_HIGH_CONTRAST,
+    CLOSE_LABEL,
+    REOPEN_LABEL,
+    SETTINGS_LABEL,
+)
 from .conversations_state import ConversationsState
 from .conversations_vm import (
     BUTTON_KINDS,
@@ -90,23 +109,21 @@ from .conversations_vm import (
     ButtonVM,
     MessageVM,
     TemplateVM,
-    ThreadRowVM,
 )
 from .ice_breakers_panel import ice_breakers_panel
 from .ice_breakers_panel import open_button as ice_breakers_button
+from .ice_breakers_state import IceBreakersState
 from .inbox_list_page import inbox_list_pane
 from .reconnect_panel import reconnect_button, reconnect_result_panel
 from .ui import (
     callout,
     card,
-    chat_bubble,
     drawer,
     dropzone,
     empty_state,
     platform_badge,
     removable_pill,
     skeleton_rows,
-    tag,
     tone_badge,
 )
 from .ui import tokens as T
@@ -149,33 +166,6 @@ def _retry_button(label: str, on_click: rx.event.EventHandler) -> rx.Component:
         variant="soft",
         size="2",
         **T.tone_scheme("neutral"),
-    )
-
-
-def _avatar(row: ThreadRowVM, size: str = "md") -> rx.Component:
-    """The counterpart's mark: their Instagram picture when the sync fetched one, else
-    initials over a hue the stylesheet turns into the kit's gradient (`--q-conv-hue` is a
-    number, never a colour literal). The channel's glyph sits on the corner."""
-    radix_size = "4" if size == "md" else "5"
-    return rx.box(
-        rx.avatar(
-            src=row.avatar_url,
-            fallback=row.initials,
-            radius="full",
-            size=radix_size,
-            class_name="q-conv-avatar",
-            custom_attrs={"referrerpolicy": "no-referrer"},
-        ),
-        rx.box(
-            instagram_glyph(color="white"),
-            class_name="q-conv-channel",
-            aria_label="Instagram",
-        ),
-        class_name=f"q-conv-avatar-wrap q-conv-avatar-wrap--{size}",
-        style={"--q-conv-hue": row.hue},
-        aria_hidden="true",
-        position="relative",
-        flex_shrink="0",
     )
 
 
@@ -282,129 +272,65 @@ def access_banner() -> rx.Component:
 
 
 def _back_button() -> rx.Component:
-    """Phone only (the list and the conversation share one pane there). N7: the
-    button names where it goes — «‹ Por responder» (m-25017859: the single list),
-    never a bare arrow."""
-    return rx.button(
-        rx.icon("chevron-left", size=T.ICON_MD),
-        INBOX_BACK_LABEL,
-        on_click=S.close_conversation,
-        variant="ghost",
-        size="2",
-        min_height="44px",
-        class_name="q-wa-chats__back",
-        **T.tone_scheme("neutral"),
-    )
+    """N7: «‹ Por responder» (m-25017859: the single list), on every size — the same
+    button WhatsApp's chat shows when it was opened from that list (m-25027371). It only
+    hides the pane; «Cerrar» (the chat) lives in «⋯»."""
+    return back_button(S.close_conversation)
 
 
-def _close_button() -> rx.Component:
-    return rx.icon_button(
-        rx.icon("x", size=T.ICON_MD),
-        on_click=S.close_conversation,
-        variant="ghost",
-        size="2",
-        # m-25026457: it only hides the pane — «Cerrar» (the chat) is the other button.
-        aria_label="Volver a la lista",
-        title="Volver a la lista",
-        class_name="q-conv-close",
-        **T.tone_scheme("neutral"),
-    )
-
-
-def _chat_status_button() -> rx.Component:
-    """m-25026457: «Cerrar» / «Reabrir», WhatsApp's words, icons and place (the right end
-    of the row under the name). ONE button whose label flips, so the keyboard focus stays
-    on it after the click instead of falling back to the page."""
+def _chat_status_item() -> rx.Component:
+    """m-25026457: «Cerrar» / «Reabrir», WhatsApp's words — now in «⋯» on both channels
+    (m-25027371). What the SCREEN shows goes with the tap: the backend refuses a close if
+    the person wrote after it (compare-and-set, m-25026457)."""
     thread = S.open_thread
     action = rx.cond(thread.is_closed, "reopen", "close")
-    return rx.button(
+    return menu_item(
+        rx.cond(thread.is_closed, REOPEN_LABEL, CLOSE_LABEL),
         rx.cond(
             thread.is_closed,
             rx.icon("rotate-ccw", size=T.ICON_SM),
             rx.icon("archive", size=T.ICON_SM),
         ),
-        rx.cond(thread.is_closed, "Reabrir", "Cerrar"),
-        # What the SCREEN shows goes with the tap: the backend refuses a close if the
-        # person wrote after it (m-25026457).
         on_click=S.change_chat_status(action, thread.thread_id, thread.last_inbound_iso),
-        loading=S.chat_status_busy != "",
-        variant="soft",
-        size="2",
-        min_height="44px",
-        type="button",
+        disabled=S.chat_status_busy != "",
         class_name="q-conv-status",
-        **T.tone_scheme("neutral"),
+    )
+
+
+def _more_menu() -> rx.Component:
+    """«⋯» (m-25027371): Cerrar / Reabrir · Ajustes de este canal. No «Asignar»:
+    Instagram chats cannot be assigned yet."""
+    return more_menu(
+        _chat_status_item(),
+        rx.menu.separator(),
+        menu_item(
+            SETTINGS_LABEL,
+            "settings",
+            on_click=IceBreakersState.open_panel(S.selected_connection_id),
+        ),
     )
 
 
 def _conversation_header() -> rx.Component:
-    return rx.vstack(
-        _conversation_identity(),
-        rx.hstack(
-            rx.spacer(),
-            _chat_status_button(),
-            width="100%",
-            align="center",
-            spacing="2",
-        ),
-        spacing="3",
-        width="100%",
-        class_name="q-conv-head",
-    )
-
-
-def _conversation_identity() -> rx.Component:
+    """The shared header (`chat_thread.thread_header`): back, picture + name + @handle,
+    «⋯»; Instagram · until when the owner can write · the «Por responder» pill ·
+    «Cerrado»."""
     thread = S.open_thread
-    return rx.hstack(
-        _avatar(thread, size="lg"),
-        rx.vstack(
-            rx.hstack(
-                rx.heading(thread.title, size="4", as_="h2", class_name="q-wa-ellipsis"),
-                rx.cond(
-                    thread.handle != "",
-                    rx.text(thread.handle, size="2", color=T.TEXT_MUTED),
-                    rx.fragment(),
-                ),
-                spacing="2",
-                align="baseline",
-                min_width="0",
-                flex_wrap="wrap",
-            ),
-            rx.hstack(
-                rx.text(thread.subtitle, size="1", color=T.TEXT_MUTED),
-                _tone_pill(thread.attention_label, thread.attention_tone),
-                # m-25026457: WhatsApp's header mark for a closed chat (the row has none).
-                rx.cond(thread.is_closed, tag("Cerrado"), rx.fragment()),
-                spacing="2",
-                flex_wrap="wrap",
-                align="center",
-            ),
-            spacing="1",
-            min_width="0",
-            flex="1",
-        ),
-        _close_button(),
-        width="100%",
-        align="center",
-        spacing="3",
-    )
-
-
-def _tick(m: MessageVM) -> rx.Component:
-    muted = T.TEXT_MUTED
-    return rx.box(
-        rx.match(
-            m.tick,
-            ("sent", rx.icon("check", size=T.ICON_SM, color=muted)),
-            ("read", rx.icon("check-check", size=T.ICON_SM, color=T.tone_color("accent", 11))),
-            ("queued", rx.icon("clock", size=T.ICON_SM, color=muted)),
-            ("failed", rx.icon("circle-alert", size=T.ICON_SM, color=T.tone_color("error", 11))),
+    return thread_header(
+        channel=CHANNEL_INSTAGRAM,
+        title=thread.title,
+        initials=thread.initials,
+        avatar_url=thread.avatar_url,
+        subtitle=rx.cond(
+            thread.handle != "",
+            rx.text(thread.handle, size="2", color=T.TEXT_MUTED, class_name="q-wa-ellipsis"),
             rx.fragment(),
         ),
-        title=m.tick_label,
-        aria_label=m.tick_label,
-        display="inline-flex",
-        align_items="center",
+        window=window_text(thread.window_line, thread.window_line_tone),
+        pills=(state_pill(thread.attention_label, thread.attention_tone),),
+        is_closed=thread.is_closed,
+        back=_back_button(),
+        menu=_more_menu(),
     )
 
 
@@ -431,24 +357,14 @@ def _hide_button(m: MessageVM) -> rx.Component:
 
 
 def _bubble_meta(m: MessageVM) -> rx.Component:
-    return rx.vstack(
-        rx.hstack(
-            _hide_button(m),
-            rx.text(m.time_label, size="1", class_name="q-nums q-conv-meta"),
-            _tick(m),
-            spacing="1",
-            align="center",
-            justify="end",
-            width="100%",
-        ),
-        rx.cond(
-            m.error_label != "",
-            rx.text(m.error_label, size="1", color=T.tone_color("error", 11)),
-            rx.fragment(),
-        ),
-        spacing="1",
-        width="100%",
-        padding_top="0.35rem",
+    """The shared time + status mark (`chat_thread.bubble_meta`), with «Eliminar para
+    mí» before the time."""
+    return bubble_meta(
+        time_label=m.time_label,
+        tick=m.tick,
+        tick_label=m.tick_label,
+        error_label=m.error_label,
+        leading=_hide_button(m),
     )
 
 
@@ -512,7 +428,7 @@ def _media_view(m: MessageVM) -> rx.Component:
                         rx.icon("file-text", size=T.ICON_MD),
                         rx.vstack(
                             rx.text(m.media_label, size="2", weight="medium"),
-                            rx.text("Abrir", size="1", color=T.TEXT_MUTED),
+                            rx.text("Abrir", size="1"),
                             spacing="0",
                         ),
                         spacing="2",
@@ -522,6 +438,7 @@ def _media_view(m: MessageVM) -> rx.Component:
                     href=m.media_src,
                     is_external=True,
                     rel="noopener noreferrer",
+                    high_contrast=BUBBLE_LINK_HIGH_CONTRAST,
                 ),
             ),
             unavailable,
@@ -562,14 +479,6 @@ def _bubble_body(m: MessageVM) -> rx.Component:
     return rx.fragment(body, note)
 
 
-def _day_chip(label: rx.Var[str]) -> rx.Component:
-    return rx.cond(
-        label != "",
-        rx.center(rx.box(rx.text(label, size="1"), class_name="q-conv-day"), width="100%"),
-        rx.fragment(),
-    )
-
-
 def _seen_footer(m: MessageVM) -> rx.Component:
     return rx.cond(
         m.seen_footer != "",
@@ -604,6 +513,8 @@ def _story_line(m: MessageVM, size: str) -> rx.Component:
                 is_external=True,
                 size=size,
                 aria_label=m.story_link_label,
+                high_contrast=BUBBLE_LINK_HIGH_CONTRAST,
+                underline="always",
                 min_height="44px",
                 display="inline-flex",
                 align_items="center",
@@ -658,35 +569,22 @@ def _ad_origin(m: MessageVM) -> rx.Component:
 
 
 def _message(m: MessageVM) -> rx.Component:
-    """Outbound right, inbound left (`.q-wa-msg--*` aligns and turns the kit's tail);
-    `.q-conv-msg` is the entrance — keyed by message id, so only a new bubble plays it.
-    An outbound bubble wears the channel's gradient (`.q-conv-bubble--out`)."""
+    """The shared message row (`chat_thread.message_row`): the business's on the right
+    in Instagram's soft tint (no more gradient, m-25027371), the customer's on the left
+    with its context line (an ad, a story, a tap) above; the day separator over the
+    first message of a day; «Visto» under the newest read reply. A sticker heart has no
+    bubble fill (`bare`). Keyed by message id: only a new bubble plays the entrance."""
     return rx.vstack(
-        _day_chip(m.day_label),
-        rx.cond(
-            m.is_outbound,
-            rx.box(
-                chat_bubble(_bubble_body(m), direction="out", meta=_bubble_meta(m)),
-                class_name=rx.cond(
-                    m.media_control == MEDIA_STICKER,
-                    "q-wa-msg q-wa-msg--out q-conv-msg q-conv-msg--sticker",
-                    "q-wa-msg q-wa-msg--out q-conv-msg",
-                ),
-            ),
-            rx.box(
-                _ad_origin(m),
-                _story_reply(m),
-                _choice_origin(m),
-                chat_bubble(_bubble_body(m), direction="in", meta=_bubble_meta(m)),
-                # `--story` stacks a context line above the bubble (story reply or tap).
-                class_name=rx.cond(
-                    ((m.story_label != "") & ~m.story_inline)
-                    | (m.choice_label != "")
-                    | (m.ad_origin_label != ""),
-                    "q-wa-msg q-wa-msg--in q-conv-msg q-conv-msg--story",
-                    "q-wa-msg q-wa-msg--in q-conv-msg",
-                ),
-            ),
+        day_separator(m.day_label),
+        message_row(
+            outbound=m.is_outbound,
+            body=_bubble_body(m),
+            meta=_bubble_meta(m),
+            before=(_ad_origin(m), _story_reply(m), _choice_origin(m)),
+            has_before=((m.story_label != "") & ~m.story_inline)
+            | (m.choice_label != "")
+            | (m.ad_origin_label != ""),
+            bare=m.media_control == MEDIA_STICKER,
         ),
         _seen_footer(m),
         spacing="1",
@@ -696,37 +594,18 @@ def _message(m: MessageVM) -> rx.Component:
 
 
 def _messages() -> rx.Component:
-    """`column-reverse` keeps the scroll anchored at the newest message with no JS."""
-    return rx.box(
-        rx.vstack(
-            rx.cond(
-                S.messages.length() >= MESSAGES_PAGE,
-                rx.text(
-                    f"Se muestran los últimos {MESSAGES_PAGE} mensajes.",
-                    size="1",
-                    color=T.TEXT_MUTED,
-                    text_align="center",
-                    width="100%",
-                ),
-                rx.fragment(),
-            ),
-            rx.cond(
-                S.messages.length() > 0,
-                rx.foreach(S.messages, _message),
-                rx.text(
-                    "Aún no hay mensajes en esta conversación.",
-                    size="2",
-                    color=T.TEXT_MUTED,
-                    text_align="center",
-                    width="100%",
-                ),
-            ),
-            spacing="2",
+    top = rx.cond(
+        S.messages.length() >= MESSAGES_PAGE,
+        rx.text(
+            f"Se muestran los últimos {MESSAGES_PAGE} mensajes.",
+            size="1",
+            color=T.TEXT_MUTED,
+            text_align="center",
             width="100%",
         ),
-        class_name="q-wa-scroll q-wa-scroll--messages q-conv-scroll",
-        width="100%",
+        rx.fragment(),
     )
+    return thread_scroll(top, S.messages, _message)
 
 
 # --- composer -----------------------------------------------------------------------
@@ -1722,48 +1601,17 @@ def _composer() -> rx.Component:
 
 
 def _conversation() -> rx.Component:
-    return card(
-        rx.vstack(
-            _conversation_header(),
-            _banner(S.banner, S.banner_tone),
-            rx.cond(
-                S.conv_error != "",
-                rx.vstack(
-                    callout(S.conv_error, "error"),
-                    _retry_button("Reintentar", S.load_conversation),
-                    width="100%",
-                    spacing="3",
-                ),
-                rx.cond(S.conv_ready, _messages(), skeleton_rows(4, height="3rem")),
-            ),
-            _composer(),
-            spacing="3",
-            width="100%",
+    return thread_frame(
+        CHANNEL_INSTAGRAM,
+        _conversation_header(),
+        _banner(S.banner, S.banner_tone),
+        thread_body(
+            error=S.conv_error,
+            on_retry=S.load_conversation,
+            ready=S.conv_ready,
+            content=_messages(),
         ),
-        padding="1rem",
-        class_name="q-card q-conv-card",
-        width="100%",
-    )
-
-
-def _placeholder() -> rx.Component:
-    """The right pane without a conversation: a quiet hint, not a full empty state."""
-    return rx.center(
-        rx.vstack(
-            rx.box(rx.icon("message-square-text", size=22), class_name="q-conv-placeholder-glyph"),
-            rx.text("Elige una conversación", size="2", weight="medium"),
-            rx.text(
-                "Ábrela para leer el historial y responder desde la cuenta correcta.",
-                size="1",
-                color=T.TEXT_MUTED,
-                text_align="center",
-            ),
-            spacing="1",
-            align="center",
-            max_width="20rem",
-        ),
-        class_name="q-conv-placeholder",
-        width="100%",
+        _composer(),
     )
 
 
@@ -1772,7 +1620,11 @@ def _conversation_pane() -> rx.Component:
         rx.cond(
             S.has_open_thread,
             _conversation(),
-            rx.vstack(_banner(S.banner, S.banner_tone), _placeholder(), width="100%"),
+            rx.vstack(
+                _banner(S.banner, S.banner_tone),
+                no_chat_open("Ábrela para leer el historial y responder desde la cuenta correcta."),
+                width="100%",
+            ),
         ),
         class_name="q-wa-chats__conv",
         width="100%",

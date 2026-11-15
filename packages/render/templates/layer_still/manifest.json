@@ -1,0 +1,127 @@
+{
+  "id": "layer_still",
+  "version": 1,
+  "name": "Imagen con capa de texto",
+  "niche": [],
+  "serves_angles": ["layer_compose"],
+  "inputs": {
+    "layer":      {"type": "layer_spec"},
+    "photos":     {"type": "image[]", "min": 0, "max": 1, "optional": true},
+    "price_text": {"type": "string", "max": 24, "optional": true},
+    "is_food":    {"type": "boolean", "optional": true},
+    "brand":      {"type": "brand_kit"}
+  },
+  "outputs": {
+    "feed":   {"kind": "still", "width": 1080, "height": 1350, "composition": "layer-still-v1--feed", "format": "4:5"},
+    "square": {"kind": "still", "width": 1080, "height": 1080, "composition": "layer-still-v1--square", "format": "1:1"},
+    "story":  {"kind": "still", "width": 1080, "height": 1920, "composition": "layer-still-v1--story", "format": "9:16"}
+  },
+  "cost_model": {"seconds_per_still": 3.0},
+  "layer_catalog": {
+    "layout_version": 1,
+    "engine_revision": 2,
+    "engine_revision_doc": "Bump with ANY change to engine.ts, LayerStill.tsx, icons.tsx or the font loading that can move a pixel of a layer_still; it is part of the compose job id and object key (CONTRACT.md). 1 = first build; 2 = review round 2 (logo/counter collisions, price drop reported, strict fonts).",
+    "source": "docs/catalogo-disenos-imagen-carrusel.md (approved 2026-11-14); limits are [H] until m-25017292 measures them",
+    "formats": {
+      "4:5":  {"width": 1080, "height": 1350, "margin": 64, "safe": [64, 64, 1016, 1286], "title_zone_x": [64, 1016]},
+      "1:1":  {"width": 1080, "height": 1080, "margin": 64, "safe": [64, 64, 1016, 1016], "title_zone_x": [135, 945]},
+      "9:16": {"width": 1080, "height": 1920, "margin": 64, "safe": [64, 270, 1016, 1536], "title_zone_x": [64, 1016]}
+    },
+    "font_sizes": {
+      "title":            {"4:5": [104, 72], "1:1": [96, 72], "9:16": [112, 76]},
+      "title_brand_fill": {"4:5": [120, 80], "1:1": [112, 76], "9:16": [128, 84]},
+      "subtitle":         {"4:5": [52, 40], "1:1": [48, 40], "9:16": [56, 44]},
+      "call_phrase":      {"4:5": [44, 40], "1:1": [44, 40], "9:16": [48, 44]},
+      "info_label":       {"4:5": [34, 32], "1:1": [34, 32], "9:16": [36, 34]},
+      "info_value":       {"4:5": [46, 40], "1:1": [44, 40], "9:16": [50, 44]},
+      "info_value_single":{"4:5": [72, 56], "1:1": [68, 52], "9:16": [80, 60]},
+      "highlight_word":   {"9:16": [140, 96]},
+      "counter":          {"4:5": [32, 32], "1:1": [32, 32]}
+    },
+    "script_title_min": 84,
+    "script_families": ["Pacifico", "Dancing Script", "Lobster", "Great Vibes", "Caveat", "Satisfy", "Sacramento", "Kaushan Script", "Courgette", "Parisienne", "Allura", "Cookie", "Yellowtail", "Amatic SC", "Shadows Into Light", "Indie Flower", "Permanent Marker", "Homemade Apple", "Lobster Two", "Marck Script"],
+    "info_kinds": {
+      "location": {"label": "Dónde estamos", "icon": "map-pin"},
+      "hours":    {"label": "Horario", "icon": "clock"},
+      "payment":  {"label": "Formas de pago", "icon": "wallet"},
+      "products": {"label": "Lo más pedido", "icon": "utensils", "icon_not_food": "shopping-bag"},
+      "contact":  {"label": "Pedidos", "icon": "message-circle"}
+    },
+    "highlight_icons": ["utensils", "ice-cream-cone", "map-pin", "clock", "wallet", "star", "message-circle", "shopping-bag", "home", "plane", "gift", "heart"],
+    "layouts": {
+      "photo_only": {
+        "formats": ["4:5", "1:1", "9:16"],
+        "anchors": [], "container_color": false, "accent_word": false, "price": false,
+        "slots": {}
+      },
+      "plate": {
+        "formats": ["4:5", "1:1", "9:16"],
+        "anchors": ["top_left", "top_right", "bottom_left", "bottom_right", "top_center", "bottom_center"],
+        "default_anchor": "bottom_left",
+        "container_color": true, "accent_word": true, "price": true,
+        "max_width": {"4:5": 0.72, "1:1": 0.76, "9:16": 0.72}, "padding": 48, "radius": 32,
+        "slots": {
+          "title":       {"4:5": [28, 2], "1:1": [24, 2], "9:16": [28, 2]},
+          "subtitle":    {"4:5": [60, 2], "1:1": [44, 2], "9:16": [60, 2]},
+          "call_phrase": {"4:5": [26, 1], "1:1": [24, 1], "9:16": [26, 1]}
+        }
+      },
+      "scrim": {
+        "formats": ["4:5", "1:1", "9:16"],
+        "anchors": ["bottom", "top"], "default_anchor": "bottom",
+        "container_color": false, "accent_word": false, "price": false,
+        "cover": 0.45, "max_alpha": 0.75, "text_alpha": 0.6,
+        "slots": {
+          "title":       {"4:5": [32, 2], "1:1": [26, 2], "9:16": [32, 2]},
+          "subtitle":    {"4:5": [56, 2], "1:1": [44, 1], "9:16": [56, 2]},
+          "call_phrase": {"4:5": [26, 1], "9:16": [26, 1]}
+        }
+      },
+      "band": {
+        "formats": ["4:5", "1:1", "9:16"],
+        "anchors": ["bottom", "top"], "default_anchor": "bottom",
+        "container_color": true, "accent_word": true, "price": true,
+        "height": {"4:5": [0.32, 0.40], "1:1": [0.34, 0.42], "9:16": [0.40, 0.40]},
+        "story_band_top": 1150,
+        "padding": 48,
+        "slots": {
+          "title":       {"4:5": [36, 2], "1:1": [30, 2], "9:16": [36, 2]},
+          "subtitle":    {"4:5": [70, 2], "1:1": [50, 1], "9:16": [70, 2]},
+          "call_phrase": {"4:5": [28, 1], "1:1": [28, 1], "9:16": [28, 1]}
+        }
+      },
+      "info_card": {
+        "formats": ["4:5", "1:1", "9:16"],
+        "anchors": [], "container_color": true, "default_container": "surface", "accent_word": true, "price": false,
+        "photo_strip": {"4:5": 0.32, "1:1": 0.25, "9:16": 0.25},
+        "blocks": {"4:5": [1, 4, 3], "1:1": [1, 3, 2], "9:16": [1, 4, 4]},
+        "kinds": ["location", "hours", "payment", "products", "contact"],
+        "value": {"4:5": [60, 2], "1:1": [44, 2], "9:16": [60, 3]},
+        "slots": {
+          "title":       {"4:5": [30, 2], "1:1": [24, 1], "9:16": [30, 2]},
+          "subtitle":    {"9:16": [50, 1]},
+          "call_phrase": {"9:16": [28, 1]}
+        }
+      },
+      "brand_fill": {
+        "formats": ["4:5", "1:1", "9:16"],
+        "anchors": [], "container_color": true, "default_container": "accent", "accent_word": true, "price": false,
+        "logo_size": 200,
+        "blocks": {"4:5": [0, 1, 1], "1:1": [0, 1, 1], "9:16": [0, 2, 2]},
+        "kinds": ["contact", "location", "hours"],
+        "value": {"4:5": [60, 2], "1:1": [60, 2], "9:16": [60, 3]},
+        "slots": {
+          "title":       {"4:5": [60, 3], "1:1": [48, 3], "9:16": [60, 4]},
+          "subtitle":    {"4:5": [110, 3], "1:1": [80, 2], "9:16": [110, 3]},
+          "call_phrase": {"4:5": [28, 1], "1:1": [28, 1], "9:16": [28, 1]}
+        }
+      },
+      "highlight_circle": {
+        "formats": ["9:16"],
+        "anchors": [], "container_color": true, "default_container": "accent", "accent_word": false, "price": false,
+        "circle": {"cx": 540, "cy": 960, "d": 600}, "icon_size": 320, "word_max": 9,
+        "slots": {}
+      }
+    }
+  }
+}

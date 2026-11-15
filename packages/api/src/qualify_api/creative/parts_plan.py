@@ -40,13 +40,16 @@ from itertools import permutations
 from uuid import UUID
 
 from pydantic import ValidationError
+from qualify_creative.effects import RecipeProblem
 from qualify_creative.enums import ContentKind
 from qualify_creative.schemas import (
     PART_DESCRIPTION_MAX,
     PARTS_MAX,
     PARTS_REMOVED_MAX,
     ContentBrief,
+    EffectUse,
     VideoPartPlan,
+    VideoTextLayer,
 )
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import select
@@ -58,7 +61,6 @@ from qualify_api.creative.parts import (
     PART_MAX_SECONDS,
     ExtendOutOfOrder,
     PartsSourceInvalid,
-    _edit_allowed,
     _split,
     check_extend_parts,
     check_split_parts,
@@ -68,6 +70,8 @@ from qualify_api.creative.parts import (
     refuse_if_parent_purged,
 )
 from qualify_api.creative.service import UnknownDraft, brief_from_row
+from qualify_api.creative.video_pipeline.mode_choice import edit_allowed, proposed_mode
+from qualify_api.creative.video_pipeline.recipe import recipe_of_parts, validate_recipe
 from qualify_api.referentes.reel_analysis_types import ReelAnalysis
 
 #: Why an edited plan was refused (`PartsPlanRefused.reason`). Codes, not client text:
@@ -89,6 +93,15 @@ PLAN_MERGE_DESCRIPTION = "merge_description"
 #: «Juntar con la siguiente»: the two parts do not use the same photos (one chose its
 #: own, the other inherits the video's, or the selections or roles differ).
 PLAN_MERGE_PHOTOS = "merge_photos"
+#: EF-02: «Juntar con la siguiente» would leave the joined part with two different texts
+#: over the video, or with effects the library refuses together (two «Con IA» effects).
+PLAN_MERGE_TEXT = "merge_text"
+PLAN_MERGE_EFFECTS = "merge_effects"
+#: EF-02: a part's effects, transition or stretches are refused by the effects library
+#: (`video_pipeline.validate_recipe`; the codes are in `PartsPlanRefused.problems`).
+PLAN_EFFECTS = "effects"
+#: EF-02: the `mode_reason` of a part joined by «Juntar con la siguiente» (forced `edit`).
+MERGED_PARTS_REASON = "merged_parts"
 
 
 class PartsPlanRefused(ValueError):
@@ -96,9 +109,13 @@ class PartsPlanRefused(ValueError):
     Nothing was written. Callers branch on `reason`; `str(exc)` is an English message
     for logs, never shown to the owner."""
 
-    def __init__(self, reason: str, detail: str = "") -> None:
+    def __init__(
+        self, reason: str, detail: str = "", problems: Sequence[RecipeProblem] = ()
+    ) -> None:
         super().__init__(f"{reason}: {detail}" if detail else reason)
         self.reason = reason
+        #: EF-02 (`PLAN_EFFECTS`): every problem of the recipe, with its code and part.
+        self.problems = tuple(problems)
 
 
 @dataclass(frozen=True)
@@ -175,7 +192,7 @@ def _can_edit_source(part: VideoPartPlan, analysis: ReelAnalysis | None) -> bool
     ):
         return False
     shots = [s for s in analysis.shots if s.shot_index in part.shot_indexes]
-    if len(shots) != len(part.shot_indexes) or not all(_edit_allowed(s) for s in shots):
+    if len(shots) != len(part.shot_indexes) or not all(edit_allowed(s) for s in shots):
         return False
     try:
         part_window(part, analysis.shots, source_seconds=analysis.source_seconds)
@@ -187,7 +204,9 @@ def _can_edit_source(part: VideoPartPlan, analysis: ReelAnalysis | None) -> bool
 def merge_short_part(
     current: VideoPartPlan, following: VideoPartPlan, analysis: ReelAnalysis | None
 ) -> VideoPartPlan:
-    """Join a short public cut with its next cut, without losing words or selections."""
+    """Join a short public cut with its next cut, without losing words or selections
+    — and, EF-02, their recipes (`merged_recipe`: times are seconds of each part's own
+    output, so the join does not depend on where the parts sit in the plan)."""
     if (
         current.seconds >= 4
         or current.analysis_id is None
@@ -201,6 +220,7 @@ def merge_short_part(
             or p.trim_end_s is not None
             or p.clip_video_keys
             or p.clip_audio_keys
+            or p.segments  # EF-02: own video is not a reel cut to join
             for p in (current, following)
         )
         or analysis is None
@@ -223,6 +243,8 @@ def merge_short_part(
     notices = tuple(dict.fromkeys((*current.notices, *following.notices)))
     if description:
         notices = tuple(n for n in notices if n != "describe_it")
+    # the joined length first: every span of the recipe is cut at it (`merged_recipe`)
+    effects, text_layer = merged_recipe(current, following, seconds)
     values = {
         **current.model_dump(),
         "mode": "edit",
@@ -232,13 +254,24 @@ def merge_short_part(
         "description": description,
         "notices": notices,
         "talks_to_camera": current.talks_to_camera or following.talks_to_camera,
+        # EF-02: the joined part keeps both parts' effects and text (`merged_recipe`) and
+        # the first part's transition — the one between them is now inside one part
+        "effects": effects,
+        "text_layer": text_layer,
+        "transition_in": current.transition_in,
+        # EF-02: the joined part is `edit` because the join forces it, not because the
+        # mode rule proposed it nor the owner chose it: its provenance says so — the
+        # reason `merged_parts`, no rule version, not an owner's change of mode
+        "mode_reason": MERGED_PARTS_REASON,
+        "mode_rule_version": 0,
+        "mode_changed_by_owner": False,
     }
     # Check the authoritative source, rather than trusting client-supplied notices.
     if (
         not analysis.edit_eligible
         or not analysis.source_available
         or not is_vertical(analysis.width, analysis.height)
-        or not all(_edit_allowed(s) for s in shots)
+        or not all(edit_allowed(s) for s in shots)
     ):
         raise PartsPlanRefused(PLAN_MERGE_UNAVAILABLE)
     try:
@@ -248,21 +281,137 @@ def merge_short_part(
         raise PartsPlanRefused(PLAN_MERGE_UNAVAILABLE) from exc
     if not _can_edit_source(merged, analysis):
         raise PartsPlanRefused(PLAN_MERGE_UNAVAILABLE)
+    problems = validate_recipe(recipe_of_parts((merged,)), video_by_parts=True)
+    if problems:
+        # e.g. two «Con IA» effects, now in one part: never a silent drop of either
+        raise PartsPlanRefused(PLAN_MERGE_EFFECTS, problems=problems)
     return merged
 
 
+def _place(
+    start: float | None, end: float | None, part_start: float, part_end: float, total: float
+) -> tuple[float, float] | None:
+    """A span of one part, in the joined part: «the whole part» (None) is the part's own
+    `[part_start, part_end]`, an explicit one is moved `part_start` later; the end is cut
+    at the joined length `total`. None when it would START at or after `total` (nothing of
+    it is left to show: refused, never dropped in silence)."""
+    if start is None or end is None:
+        start, end = 0.0, part_end - part_start
+    placed = (start + part_start, min(end + part_start, total))
+    return None if placed[0] >= total else placed
+
+
+def _touch(first_end: float | None, second_start: float | None, c: float) -> bool:
+    """Two uses of the same thing meet at the join: the first's ends at its part's end
+    (or covers the whole part) and the second's starts at its part's start (or covers it)."""
+    ends = first_end is None or abs(first_end - c) < 1e-6
+    starts = second_start is None or abs(second_start) < 1e-6
+    return ends and starts
+
+
+def _same_text(a: VideoTextLayer, b: VideoTextLayer) -> bool:
+    """The same text over the video, whatever its times: words, place and design."""
+    keep = {"text", "place", "layout_id", "layout_version"}
+    return a.model_dump(include=keep) == b.model_dump(include=keep)
+
+
+def merged_recipe(
+    current: VideoPartPlan, following: VideoPartPlan, total: float | None = None
+) -> tuple[tuple[EffectUse, ...], VideoTextLayer | None]:
+    """EF-02, «Juntar con la siguiente»: the effects and the text the joined part keeps
+    (pure). `c` = `current.seconds`, `f` = `following.seconds`, `total` = the joined part's
+    own length (`merge_short_part` passes `round(sum of its cuts)`, which may differ from
+    `c + f` by the rounding of each part; default `c + f`). The rule:
+
+    - every span becomes explicit in the joined part: «the whole part» (None) is `[0, c]`
+      for `current`'s and `[c, c + f]` for `following`'s; an explicit span of
+      `following`'s moves `c` seconds later. Every END is cut at `total`; a span that
+      would START at or after `total` → refused (`PLAN_MERGE_EFFECTS` / `PLAN_MERGE_TEXT`):
+      nothing of it would show, and a choice is never dropped in silence;
+    - effects: `current`'s, then `following`'s. The same effect id in both, with the same
+      parameters and spans that MEET at the join (`_touch`: the first ends at `c` or is
+      the whole part, the second starts at 0 or is the whole part) → ONE use from the
+      first's start to the second's end. Different parameters, or spans that do not meet
+      (joining them would put the effect where the owner did not) → refused
+      (`PLAN_MERGE_EFFECTS`): `max_per_part` = 1 leaves no room for two uses;
+    - text over the video: the one either part has, with explicit times. Both with the
+      same words, place and design (times aside) whose times meet at the join → one;
+      differing in any of those, or not meeting → refused (`PLAN_MERGE_TEXT`);
+    - the transition: the first part's (`merge_short_part`), with the part before it.
+
+    What the library refuses of the result (a parameter out of range, two «Con IA»
+    effects in one part) is `PLAN_MERGE_EFFECTS` in `merge_short_part`."""
+    c, f = float(current.seconds), float(following.seconds)
+    total = c + f if total is None else float(total)
+
+    def placed(use: EffectUse, part_start: float, part_end: float) -> EffectUse:
+        span = _place(use.start_s, use.end_s, part_start, part_end, total)
+        if span is None:
+            raise PartsPlanRefused(PLAN_MERGE_EFFECTS, use.effect_id)
+        return use.model_copy(update={"start_s": span[0], "end_s": span[1]})
+
+    firsts = {use.effect_id: use for use in current.effects}
+    effects = [placed(use, 0.0, c) for use in current.effects]
+    for use in following.effects:
+        twin = firsts.get(use.effect_id)
+        if twin is None:
+            effects.append(placed(use, c, c + f))
+            continue
+        if twin.params != use.params or not _touch(twin.end_s, use.start_s, c):
+            raise PartsPlanRefused(PLAN_MERGE_EFFECTS, use.effect_id)
+        at = next(i for i, e in enumerate(effects) if e.effect_id == use.effect_id)
+        effects[at] = effects[at].model_copy(update={"end_s": placed(use, c, c + f).end_s})
+    first, second = current.text_layer, following.text_layer
+    if (
+        first is not None
+        and second is not None
+        and (not _same_text(first, second) or not _touch(first.end_s, second.start_s, c))
+    ):
+        raise PartsPlanRefused(PLAN_MERGE_TEXT)
+    text: VideoTextLayer | None = None
+    for layer, part_start, part_end in ((first, 0.0, c), (second, c, c + f)):
+        if layer is None:
+            continue
+        # a text's `end_s` None is «until its part's end»
+        end = part_end - part_start if layer.end_s is None else layer.end_s
+        span = _place(layer.start_s, end, part_start, part_end, total)
+        if span is None:
+            raise PartsPlanRefused(PLAN_MERGE_TEXT)
+        if text is None:
+            text = layer.model_copy(update={"start_s": span[0], "end_s": span[1]})
+        else:
+            text = text.model_copy(update={"end_s": span[1]})
+    return tuple(effects), text
+
+
+#: What the owner may change of a saved part without it becoming another part: the
+#: editor's fields (UI-4) and, EF-02, its recipe — effects, text over the video,
+#: stretches of own video (owned keys, `check_parts_media_owned`) and its transition.
+#: EF-09: the mode rule's provenance (`mode_rule_version`, `mode_reason`) is NOT here: it
+#: is what the server proposed, so `_signature` holds it to the saved part (or to the
+#: `merged_parts` candidate of «Juntar con la siguiente») — a browser that rewrote it would
+#: decide `mode_changed_by_owner` itself. That flag stays editable because the save
+#: recomputes it (`mark_owner_mode_changes`) and ignores what the entry says.
+_EDITOR_FIELDS = frozenset(
+    {
+        "mode",
+        "description",
+        "notices",
+        "clip_image_keys",
+        "clip_image_roles",
+        "clip_video_keys",
+        "clip_audio_keys",
+        "effects",
+        "text_layer",
+        "segments",
+        "transition_in",
+        "mode_changed_by_owner",
+    }
+)
+
+
 def _signature(part: VideoPartPlan) -> dict:
-    return part.model_dump(
-        exclude={
-            "mode",
-            "description",
-            "notices",
-            "clip_image_keys",
-            "clip_image_roles",
-            "clip_video_keys",
-            "clip_audio_keys",
-        }
-    )
+    return part.model_dump(exclude=set(_EDITOR_FIELDS))
 
 
 def _editable_match(entry: VideoPartPlan, saved: VideoPartPlan) -> bool:
@@ -277,6 +426,10 @@ def _editable_match(entry: VideoPartPlan, saved: VideoPartPlan) -> bool:
 
 
 def _manual_addition(entry: VideoPartPlan) -> bool:
+    # TODO(EF-05/EF-06): once `choose_part_mode(source="own_video")` is wired to the parts
+    # added by hand, the server stamps them (`mode_rule_version` >= 1, `mode_reason`
+    # `own_video_local`); the empty-provenance requirement below must then accept that
+    # server-issued proposal instead of refusing it.
     return (
         (
             entry.mode == "reference"
@@ -285,6 +438,9 @@ def _manual_addition(entry: VideoPartPlan) -> bool:
                 and len(entry.clip_video_keys) == 1
                 and not entry.clip_audio_keys
             )
+            # EF-02: «Tu video, con efectos» added by hand — its own video's stretches
+            # (the schema refuses `local` without them); made only once EF-05/EF-06 exist
+            or (entry.mode == "local" and bool(entry.segments))
         )
         and entry.original_mode is None
         and entry.analysis_id is None
@@ -294,6 +450,9 @@ def _manual_addition(entry: VideoPartPlan) -> bool:
         and not entry.talks_to_camera
         and "people_unclear" not in entry.notices
         and (bool(entry.description.strip()) or "describe_it" in entry.notices)
+        # EF-09: a part added by hand was never proposed by the mode rule
+        and entry.mode_rule_version == 0
+        and entry.mode_reason == ""
     )
 
 
@@ -339,17 +498,22 @@ def _same_entries(
                 continue  # restore then merge is active; never invent merged tombstones
             if first not in left or second not in left:
                 continue
-            if entry.clip_video_keys or entry.clip_audio_keys:
+            if entry.clip_video_keys or entry.clip_audio_keys or entry.segments:
                 continue
             # A local reorder or editor change need not have been persisted first.
             # Recompute ONLY the immutable union from canonical origins; the final
-            # selected photos and explicit clearing of own media are editable fields.
+            # selected photos and explicit clearing of own media are editable fields,
+            # and so is the recipe (EF-02): the joined entry carries what the owner kept.
             mutable = {
                 "description": "",
                 "clip_image_keys": entry.clip_image_keys,
                 "clip_image_roles": entry.clip_image_roles,
                 "clip_video_keys": (),
                 "clip_audio_keys": (),
+                "effects": (),
+                "text_layer": None,
+                "segments": (),
+                "transition_in": None,
             }
             try:
                 candidate = merge_short_part(
@@ -368,13 +532,71 @@ def _same_entries(
     return not left
 
 
+def _continues_previous(previous: VideoPartPlan | None, part: VideoPartPlan) -> bool:
+    """Whether `part` still sits right after the part it continues: the test
+    `check_extend_parts` applies to an `extend` (its first cut is the last cut of the
+    part before it, from the same analysis)."""
+    if previous is None:
+        return False
+    if not part.shot_indexes:
+        return True
+    return (
+        bool(previous.shot_indexes)
+        and previous.analysis_id == part.analysis_id
+        and part.shot_indexes[0] == previous.shot_indexes[-1]
+    )
+
+
+def mark_owner_mode_changes(
+    parts: Sequence[VideoPartPlan], *, removed: bool = False
+) -> tuple[VideoPartPlan, ...]:
+    """EF-09: `mode_changed_by_owner` of each entry, recomputed (pure): True exactly when
+    the rule proposed a mode for it (`mode_rule_version` ≥ 1 and a known `mode_reason`)
+    and the entry's `mode` is not that one. The proposal is read from the reason, never
+    from `original_mode` (a split tail made `reference` while «Sigue a la anterior» is off
+    is born `extend` but proposed `reference`) nor from the saved `mode` (after a first
+    change it is the owner's, and going back to the proposal must clear the flag). The
+    rule's version and reason are kept as they are; a part without a proposal (before
+    the rule, joined with `merged_parts`, added by hand) is never marked.
+
+    A tail the rule proposed `extend` that is now `reference` while its head no longer
+    sits right before it (removed or moved away) is not the owner's change either: the
+    screen made it new because an orphan `extend` is not a valid plan
+    (`reel_parts_vm._settle`). `removed=True` reads the removed entries, which follow no
+    part, so such a tail among them is never marked."""
+    marked: list[VideoPartPlan] = []
+    previous: VideoPartPlan | None = None
+    for part in parts:
+        proposal = proposed_mode(part.mode_rule_version, part.mode_reason)
+        changed = proposal is not None and part.mode != proposal
+        if (
+            changed
+            and proposal == "extend"
+            and part.mode == "reference"
+            and (removed or not _continues_previous(previous, part))
+        ):
+            changed = False  # orphaned by the screen, not chosen by the owner
+        marked.append(
+            part
+            if part.mode_changed_by_owner is changed
+            else part.model_copy(update={"mode_changed_by_owner": changed})
+        )
+        previous = part
+    return tuple(marked)
+
+
 def check_parts_media_owned(tenant_id: UUID, parts: Sequence[VideoPartPlan]) -> None:
     """Every file a part names — its photos, own videos and audios, active or removed —
     is this business's (`owned_by`); otherwise `PartsPlanRefused(PLAN_MEDIA_KEY)`. Pure.
     Part keys come from the browser: `save_parts_plan` and the screen's
     `submit_parts_brief` both check them here before anything is read or written."""
     for part in parts:
-        keys = (*(part.clip_image_keys or ()), *part.clip_video_keys, *part.clip_audio_keys)
+        keys = (
+            *(part.clip_image_keys or ()),
+            *part.clip_video_keys,
+            *part.clip_audio_keys,
+            *(segment.key for segment in part.segments),  # EF-02: stretches of own video
+        )
         if any(not owned_by(tenant_id, key) for key in keys):
             raise PartsPlanRefused(PLAN_MEDIA_KEY)
 
@@ -446,12 +668,22 @@ def save_parts_plan(
         ):
             raise PartsPlanRefused(PLAN_NOT_SAVED)
         check_parts_media_owned(tenant_id, (*parts, *removed))
+        # EF-02: the kept parts' recipes against the effects library, every problem with
+        # its code (pure). Times are seconds of each part's own output: reordering moves
+        # nothing, each part keeps its effects and text as they are
+        problems = validate_recipe(recipe_of_parts(parts), video_by_parts=True)
+        if problems:
+            raise PartsPlanRefused(PLAN_EFFECTS, problems[0].code, problems=problems)
         for position, entry in enumerate((*parts, *removed)):
             photos = entry.clip_image_keys
             if photos is None:
                 photos = current.media.clip_image_keys or current.media.product_keys
             if position < len(parts) and entry.mode == "edit" and not photos:
                 raise PartsPlanRefused(PLAN_EDIT_UNAVAILABLE)
+        # EF-09: whether the owner changed the rule's mode is the server's to say — the
+        # entries' own flag is ignored (`mark_owner_mode_changes`)
+        parts = mark_owner_mode_changes(parts)
+        removed = mark_owner_mode_changes(removed, removed=True)
         try:
             edited = ContentBrief.model_validate(
                 {
@@ -489,7 +721,11 @@ __all__ = [
     "PLAN_MODE_FORBIDDEN",
     "PLAN_MERGE_UNAVAILABLE",
     "PLAN_MERGE_DESCRIPTION",
+    "MERGED_PARTS_REASON",
+    "PLAN_EFFECTS",
+    "PLAN_MERGE_EFFECTS",
     "PLAN_MERGE_PHOTOS",
+    "PLAN_MERGE_TEXT",
     "PLAN_NOT_SAVED",
     "PLAN_OTHER_REEL",
     "PLAN_PARTS_EXIST",
@@ -500,6 +736,8 @@ __all__ = [
     "SavedPartsPlan",
     "check_edited_plan",
     "merge_short_part",
+    "mark_owner_mode_changes",
+    "merged_recipe",
     "read_parts_plan",
     "save_parts_plan",
 ]

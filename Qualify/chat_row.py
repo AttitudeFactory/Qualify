@@ -95,48 +95,66 @@ def _channel_mark(channel: rx.Var[str]) -> rx.Component:
     )
 
 
-def _person_icon() -> rx.Component:
+def _person_icon(size: str = _AVATAR_SIZE) -> rx.Component:
     """The person icon in the avatar's frame (`media_thumb` with no picture)."""
-    return media_thumb("", size=_AVATAR_SIZE, round=True, icon="user-round", icon_size=18)
+    return media_thumb("", size=size, round=True, icon="user-round", icon_size=18)
 
 
-def _picture(row: ChatRowVM, fallback: rx.Var[str] | str) -> rx.Component:
+def _picture(
+    avatar_url: rx.Var[str], fallback: rx.Var[str] | str, radix_size: str = "4"
+) -> rx.Component:
     """The Radix avatar: the picture, and `fallback` when it fails (an expired URL)."""
     return rx.avatar(
-        src=row.avatar_url,
+        src=avatar_url,
         fallback=fallback,
         radius="full",
-        size="4",
+        size=radix_size,
         custom_attrs={"referrerpolicy": "no-referrer"},
     )
 
 
-def _avatar(row: ChatRowVM) -> rx.Component:
-    """The picture, else the initials, else (no letter to show) the person icon. With a
-    picture but no letters, the Radix avatar sits over the icon with an empty, clear
-    fallback (`.q-chat-avatar__over`): a picture that fails to load reveals the icon,
-    never a broken image."""
+def chat_avatar(
+    initials: rx.Var[str],
+    avatar_url: rx.Var[str],
+    channel: rx.Var[str] | str,
+    *,
+    waiting: rx.Var[bool] | None = None,
+    large: bool = False,
+) -> rx.Component:
+    """The picture, else the initials, else (no letter to show) the person icon, with
+    the channel's glyph on its corner: the list row's avatar and, ``large``, the open
+    chat's header (m-25027371). With a picture but no letters, the Radix avatar sits over
+    the icon with an empty, clear fallback (`.q-chat-avatar__over`): a picture that fails
+    to load reveals the icon, never a broken image."""
+    radix_size, frame, size = ("5", "3rem", "lg") if large else ("4", _AVATAR_SIZE, "md")
+    channel_var = channel if isinstance(channel, Var) else Var.create(channel)
     return rx.box(
         rx.cond(
-            row.initials != "",
-            _picture(row, row.initials),
+            initials != "",
+            _picture(avatar_url, initials, radix_size),
             rx.cond(
-                row.avatar_url != "",
+                avatar_url != "",
                 rx.box(
-                    _person_icon(),
-                    rx.box(_picture(row, ""), class_name="q-chat-avatar__over"),
+                    _person_icon(frame),
+                    rx.box(_picture(avatar_url, "", radix_size), class_name="q-chat-avatar__over"),
                     position="relative",
                 ),
-                _person_icon(),
+                _person_icon(frame),
             ),
         ),
-        _channel_mark(row.channel),
-        rx.cond(row.waiting, rx.box(class_name="q-conv-unread"), rx.fragment()),
-        class_name="q-conv-avatar-wrap q-conv-avatar-wrap--md q-chat-avatar",
+        _channel_mark(channel_var),
+        rx.cond(waiting, rx.box(class_name="q-conv-unread"), rx.fragment())
+        if waiting is not None
+        else rx.fragment(),
+        class_name=f"q-conv-avatar-wrap q-conv-avatar-wrap--{size} q-chat-avatar",
         aria_hidden="true",
         position="relative",
         flex_shrink="0",
     )
+
+
+def _avatar(row: ChatRowVM) -> rx.Component:
+    return chat_avatar(row.initials, row.avatar_url, row.channel, waiting=row.waiting)
 
 
 def _pill(row: ChatRowVM) -> rx.Component:

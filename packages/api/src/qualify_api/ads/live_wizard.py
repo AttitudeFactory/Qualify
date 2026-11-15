@@ -13,6 +13,7 @@ from typing import Any
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from qualify_api.ads.audience import CITY_RADIUS_KM, InterestOption, interest_statuses
 from qualify_api.ads.client import MarketingClient, Resource
 from qualify_api.ads.enhancements import FEATURES
 from qualify_api.ads.errors import MarketingError
@@ -225,12 +226,42 @@ class LiveWizardGateway:
                 "Puedes preparar este público, pero falta comprobar su uso en promociones reales. "
                 "No se creará ni activará el anuncio.",
             )
-        if form.audience is not None and (
-            form.audience.interests or form.audience.radius_km is not None
+        audience = form.audience
+        if (
+            audience is not None
+            and audience.point is None
+            and audience.radius_km is not None
+            and audience.radius_km < CITY_RADIUS_KM[0]
         ):
             self.fail(
-                "validation", "Esta comprobación admite lugares sin radio ni intereses añadidos."
+                "validation",
+                "Alrededor de una ciudad, la distancia mínima es 17 km. Cámbiala a 17 km o "
+                "más, o déjala vacía para mostrar el anuncio en toda la ciudad.",
             )
+        retired = tuple(
+            item
+            for item in (audience.interests if audience is not None else ())
+            if item.status in {"retiring", "unavailable"}
+        )
+        if retired:
+            self.fail("validation", _blocked_interests(retired))
+
+    async def interest_guard(self, client: MarketingClient, form: WizardForm) -> None:
+        """Re-ask Meta right before validating or creating: an interest saved as active may
+        have been retired since. Only valid + NORMAL passes; any other answer blocks."""
+        interests = form.audience.interests if form.audience is not None else ()
+        if not interests:
+            return
+        ids = tuple(item.id for item in interests)
+        valid = await client.audience_validation(interest_ids=ids)
+        current = await client.audience_search(
+            params={"type": "targetingoptionstatus", "targeting_option_list": list(ids)}
+        )
+        statuses = interest_statuses(valid.data, current.data)
+        blocked = tuple(item for item in interests if statuses.get(item.id) != "active")
+        if blocked:
+            self.fail("validation", _blocked_interests(blocked))
+        self.check("validation", "Meta confirmó que los intereses elegidos siguen disponibles.")
 
     async def messaging_destination(self, source: PromotionSource, form: WizardForm) -> None:
         """Re-run the live Page↔number check; the approved chat must still be exactly it."""
@@ -258,6 +289,7 @@ class LiveWizardGateway:
         try:
             async with self.client(source) as client:
                 await self.observations(source, client)
+                await self.interest_guard(client, form)
                 offset = self.currency_offset
                 if offset is None:
                     offset = production_currency_offset(form.currency)
@@ -324,7 +356,7 @@ class LiveWizardGateway:
             self.fail(
                 "validation",
                 "Meta no confirmó esta configuración. Revisa el presupuesto, las fechas, "
-                "el enlace y las ubicaciones.",
+                "el enlace, el público y dónde aparece el anuncio.",
                 unavailable=True,
             )
 
@@ -356,6 +388,7 @@ class LiveWizardGateway:
             self.fail("validation", "La comprobación venció. Vuelve a revisar la promoción.")
         async with self.client(source) as client:
             await self.observations(source, client)
+            await self.interest_guard(client, form)
         if not valid_receipt(checks.exact_validation, source, form, self.clock(), self.actor):
             self.fail(
                 "validation",
@@ -447,7 +480,7 @@ class LiveWizardGateway:
                 and str(adset.get("daily_budget", "0")) == "0"
             )
             dates = all(_date_equal(adset.get(k), expected[k]) for k in ("start_time", "end_time"))
-            targeting = adset.get("targeting") == request["targeting"]
+            targeting = same_targeting(adset.get("targeting"), request["targeting"])
             options = all(
                 _same_option(k, adset.get(k), v) for k, v in request["adset_options"].items()
             )
@@ -693,3 +726,70 @@ def _date_equal(actual: Any, expected: str) -> bool:
         return observed.utcoffset() is not None and observed == approved
     except (TypeError, ValueError):
         return False
+
+
+def _blocked_interests(interests: tuple[InterestOption, ...]) -> str:
+    names = ", ".join(item.name for item in interests)
+    return (
+        f"Meta ya no permite usar estos intereses: {names}. "
+        "Vuelve a «¿A quién quieres llegar?», quítalos y elige otros."
+    )
+
+
+# Ad set targeting read-back (m-24828977). Every approved key must come back equal and
+# nothing else may appear, except these normalizations; any other extra key fails closed:
+# - geo_locations.location_types == ["home", "recent"], the documented default when it is
+#   omitted (basic-targeting reference, retrieved 2026-11-14);
+# - descriptive labels beside an approved id or point (`_LABELS`; an interest may carry only
+#   `name`, checked in `_same_node`).
+# Interests compare as a set of ids (names and order are Meta's). Coordinates allow 5e-7
+# degrees, half the 6-decimal step we approve at: Meta documents no rounding, so this only
+# absorbs a float serialization and can never accept a different approved point. Another
+# radius or another unit is another location.
+_LABELS = {
+    "cities": {"name", "region", "region_id", "country"},
+    "regions": {"name", "country"},
+    "custom_locations": {"name", "country", "primary_city_id", "region_id"},
+}
+
+
+def same_targeting(actual: Any, approved: dict[str, Any]) -> bool:
+    return _same_node(actual, approved, "")
+
+
+def _same_node(actual: Any, approved: Any, key: str) -> bool:
+    if isinstance(approved, dict):
+        if not isinstance(actual, dict) or any(
+            not _allowed_extra(key, extra, actual[extra]) for extra in actual.keys() - approved
+        ):
+            return False
+        return all(k in actual and _same_node(actual[k], v, k) for k, v in approved.items())
+    if isinstance(approved, list):
+        if not isinstance(actual, list) or len(actual) != len(approved):
+            return False
+        if key == "interests":
+            return all(
+                isinstance(row, dict) and "id" in row and row.keys() <= {"id", "name"}
+                for row in actual
+            ) and sorted(str(row["id"]) for row in actual) == sorted(row["id"] for row in approved)
+        return all(_same_node(a, b, key) for a, b in zip(actual, approved, strict=True))
+    if key in {"latitude", "longitude", "radius"}:
+        observed = _number(actual)
+        tolerance = 0 if key == "radius" else 5e-7
+        return observed is not None and abs(observed - approved) <= tolerance
+    return actual == approved
+
+
+def _allowed_extra(parent: str, key: str, value: Any) -> bool:
+    if parent == "geo_locations" and key == "location_types":
+        return isinstance(value, list) and sorted(value) == ["home", "recent"]
+    return key in _LABELS.get(parent, ())
+
+
+def _number(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        return float(value) if isinstance(value, int | float | str) else None
+    except ValueError:
+        return None

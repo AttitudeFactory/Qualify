@@ -147,3 +147,95 @@ despliegue y corra una semana; se anotan aquí como SD25-003 (borrador y final d
   para 2.x, así que un POST de 1.x que vence sube su error como antes (sin duplicar).
 - **Pendiente.** Medir en vivo el tiempo del POST con referencias ligeras (próxima prueba
   SD25-003 o en uso real).
+
+## `extend` («Sigue a la anterior») — construido 2026-11-13, medido en vivo 2026-11-14 (EXT-001)
+
+- **Tickets:** m-24880328 (modo `extend` en adaptador, esquema y servicio) y m-24921070
+  (VE-13, el cableado por parte). Primera prueba en vivo: EXT-001, abajo (US$1,13). Las
+  preguntas [H] de la lista siguiente quedan respondidas allí; se dejan como se escribieron
+  antes de medir.
+- **Qué se manda.** Una tarea omni de 2.5 con `omni_reference_task_type: extend`,
+  `ratio: adaptive`, `duration` = los segundos de la parte (4–10), `draft: true` (480p),
+  `generate_audio` como cualquier parte, las fotos del producto como `reference_images` y
+  **un** `reference_video`: el archivo de la parte anterior tal como salió de Seedance (la
+  copia byte a byte que guarda la cola, `queue-{job}.bin`, copiada sin recodificar a
+  `extend-source-{asset}.mp4` en la carpeta de la parte). Sin recodificar porque BytePlus
+  acepta rostros solo en salidas propias sin editar. El precio se estima con
+  `reference_video_seconds` = lo que dura ese archivo (tarifa «con video de entrada»).
+  Prompt: `part_extend_prompt` (versión de prompt de parte 5), empieza por «Extend video
+  @Video1: continue it seamlessly from its last frame…»; el modelo clasifica la tarea por el
+  prompt (`TaskTypeMismatch` si no la pide).
+- **Lo que no se sabe [H] y cómo lo cubre el código:**
+  1. *¿`extend` acepta `draft: true`?* Interruptor `QUALIFY_PARTS_EXTEND` (`off` por
+     omisión, `draft` para activarlo). Apagado, nada crea ni manda una parte `extend`: el
+     plan la rechaza con «Por ahora no podemos crear una parte que siga a la anterior» y la
+     pantalla muestra la opción desactivada. Si la prueba muestra que no acepta borrador,
+     se queda apagado (nunca se pasa a un final sin vista previa).
+  2. *¿Devuelve solo el tramo nuevo o el video entero?* `QUALIFY_SEEDANCE_EXTEND_OUTPUT`
+     (`auto` por omisión, `segment`, `whole`). En `auto` se mide la salida y se compara con
+     las dos lecturas (segundos pedidos frente a entrada + pedidos). La pieza guarda
+     `params.part.extend.output`, `input_seconds` y `output_seconds`; la unión se queda solo
+     con el tramo nuevo en los dos casos (`part_join.part_span`), así que ningún cuadro de la
+     parte anterior sale dos veces (prueba sintética con PyAV en
+     `test_creative_part_extend.py`).
+  3. *¿Cómo se interpreta `duration`?* Se manda la duración del tramo nuevo. Si la prueba
+     muestra que es la duración total, se corrige aquí y en `_clip`.
+- **Prueba en vivo propuesta (pendiente del OK de Deivid):** con un producto de Nibbles,
+  parte 1 «Nueva» (borrador 5 s, sin video de entrada, ≈ US$0,53) y parte 2 `extend` sobre
+  ella (borrador 5 s con 5 s de entrada: ≈ 95.000 tokens a 6,40/M ≈ US$0,61; si devuelve el
+  video entero y se cobra por la salida de 10 s, ≈ US$0,93). Total ≈ **US$1,15–1,50**. Con
+  el final 1080p de la parte 2 para ver si el contrato se mantiene (R10/VE-16), ≈ US$1,70–4,20
+  más. Registrar ids de tarea, tokens, duración de salida y si la unión empalma.
+  Se corrió sin el final 1080p: EXT-001, abajo.
+
+### Prueba EXT-001 — `extend` en borrador sobre una parte «Nueva» — 2026-11-14 (m-24880328)
+
+- **Montaje:** script fuera del repositorio, una tarea a la vez, sin repeticiones, tope de
+  US$1,50. Llave de la app (`QUALIFY_BYTEPLUS_ARK_API_KEY`), de día (12:52–13:03, hora de
+  Bogotá). Endpoint personalizado. Producto «Super Smash» de Nibbles como
+  `reference_images` en las dos tareas; nada escrito en la base ni en R2. Detalle completo en
+  [pruebas.md](pruebas.md#ext-001).
+- **Ajustes:** borrador (`draft: true`) a 480p, 5 s, con audio. Parte 1:
+  `omni_reference_task_type: reference`, `ratio: 9:16`. Parte 2: `extend`, `ratio: adaptive`,
+  `duration: 5`, `reference_video` = el MP4 de la parte 1 sin recodificar (5,042 s).
+
+| Tarea | Paso | Tokens | Tarifa | Costo | Salida |
+|---|---|---|---|---|---|
+| `cgt-20261114205252-35pwm` | Parte 1 «Nueva» | 48.437 | 10,70/M | US$0,518276 | 5,042 s |
+| `cgt-20261114210137-3ugjk` | Parte 2 `extend` | 96.075 | 6,40/M | US$0,614880 | 5,000 s |
+| | **Total** | | | **US$1,133156** | |
+
+**Respuestas a las tres preguntas [H]:**
+
+1. **`extend` acepta borrador.** La tarea vuelve con `draft: true`, 480p y 24 fps.
+2. **Devuelve solo el tramo nuevo.** Se pidieron 5 s y llegaron 5,000 s. Desde este cambio
+   `QUALIFY_SEEDANCE_EXTEND_OUTPUT` vale `segment` por omisión; si una salida mide más cerca
+   de entrada + pedido que de lo pedido, se registra `creative.extend.unexpected_whole` y se
+   trata como `whole` (la unión sigue sin repetir cuadros). `auto` y `whole` quedan como
+   valores explícitos.
+3. **`duration` es la duración del tramo nuevo**, como ya mandaba `_clip`. Sin cambios.
+
+**Otros hallazgos:**
+
+- **Tokens:** (5,04 s de entrada + 5 s de salida) × ~9.607 tokens/s ≈ 96.475 estimados frente
+  a 96.075 cobrados: la fórmula de SD25-001 vale también para `extend`.
+- **`ratio`:** la parte 2 responde `240:427` (el del video de entrada, 480×854). El código
+  guarda el `ratio` del encargo; no rompe nada.
+- **Unión:** el cuadro 0 de la parte 2 difiere del último de la parte 1 lo mismo que dos
+  cuadros seguidos (3,0 frente a 3,1 de diferencia media por píxel). Audio en las dos partes,
+  con nivel parecido en la unión (RMS 0,014 → 0,012).
+- **Descargas:** ModelArk pidió el MP4 de entrada dos veces a la URL pública temporal.
+- **Fidelidad del producto:** en la parte 1 el queso ya pasa a salsa chorreante, faltan
+  pepinillos y cebolla, y al fondo aparece el logo redondo de otra cadena. La parte 2 lo
+  conserva; el pan crece y aparece la mano que pide el prompt.
+
+**Riesgos y pendiente:**
+
+- **n = 1**: una pareja de tareas, un producto.
+- **El final 1080p de una parte `extend` no se midió:** no se sabe si vuelve a cobrar el video
+  de entrada (la estimación supone que sí) ni si el contrato se mantiene (R10/VE-16).
+- **`extend` arrastra los defectos de la parte anterior:** la fidelidad del producto se
+  degrada desde la parte 1 y la continuación la hereda.
+- **Logo de otra cadena al fondo:** lo tiene que ver el control de marca antes de que la pieza
+  llegue al dueño.
+- `QUALIFY_PARTS_EXTEND` sigue en `off`; encenderlo (`draft`) es una decisión aparte.

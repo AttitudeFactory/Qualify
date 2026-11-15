@@ -41,6 +41,19 @@ from qualify_creative.video.shots import (
     detect_shots,
     sample_frames,
 )
+from qualify_creative.video.speed import (
+    SPEED_EFFECT_ID,
+    SPEED_VERSION,
+    PlannedSegment,
+    SpeedDurationOutOfRange,
+    SpeedError,
+    SpeedPlan,
+    SpeedResult,
+    SpeedSegment,
+    plan_speed,
+    render_speed,
+    resolve_segment,
+)
 from qualify_creative.video.still import (
     POSTER_TIMEOUT_SECONDS,
     VideoFacts,
@@ -49,6 +62,13 @@ from qualify_creative.video.still import (
     poster_from_video_file,
     probe_video_file,
     video_still,
+)
+from qualify_creative.video.upright import (
+    turn_pixels,
+    upright_filters,
+    upright_frame,
+    upright_image,
+    upright_size,
 )
 
 __all__ = [
@@ -69,11 +89,21 @@ __all__ = [
     "SampledFrame",
     "SamplingPlan",
     "ShotSpan",
+    "SPEED_EFFECT_ID",
+    "SPEED_VERSION",
+    "SpeedDurationOutOfRange",
+    "SpeedError",
+    "SpeedPlan",
+    "SpeedResult",
+    "SpeedSegment",
     "VideoSourceError",
     "WindowUnavailable",
     "cut_window",
     "detect_shots",
+    "plan_speed",
     "plan_window",
+    "render_speed",
+    "resolve_segment",
     "sample_frames",
     "FfmpegVideoNormalizer",
     "FittedVideo",
@@ -81,6 +111,7 @@ __all__ = [
     "JoinError",
     "JoinedVideo",
     "NormalizedVideo",
+    "PlannedSegment",
     "PyAvVideoFitter",
     "SubtitleLayer",
     "VideoFitter",
@@ -94,5 +125,10 @@ __all__ = [
     "VideoStillError",
     "poster_from_video_file",
     "probe_video_file",
+    "turn_pixels",
+    "upright_filters",
+    "upright_frame",
+    "upright_image",
+    "upright_size",
     "video_still",
 ]

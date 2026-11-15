@@ -88,7 +88,11 @@ def analysis(
 
 
 def entries_of(reel: ReelAnalysis) -> list[dict[str, Any]]:
-    return vm.entries_from_plan(reel, plan_from_analysis(reel, products=("smash doble",)))
+    # EF-09: with «Sigue a la anterior» off the mode rule makes a split tail new
+    # (`reference`, born `extend`); these screens are tested on the `extend` tails a plan
+    # has with it on (or stored before the rule), whatever the switch says where they run
+    plan = plan_from_analysis(reel, products=("smash doble",), extend_on=True)
+    return vm.entries_from_plan(reel, plan)
 
 
 #: The mockup's reel (§3b): product, a person, a long cut split in two.
@@ -151,6 +155,106 @@ def test_a_reel_that_is_not_vertical_makes_every_part_new_and_says_why() -> None
 def test_a_reel_whose_video_cannot_be_edited_says_so() -> None:
     rows = vm.part_rows(entries_of(analysis(shot(0, 0, 5), editable=False)))
     assert rows[0]["why"].startswith("No podemos usar el video original en esta parte")
+
+
+# -- EF-09: the mode rule's reason (`mode_reason`) on the why line ----------------------
+
+TODAY_NO_SOURCE = vm.REASON_TEXTS[vm.REASON_NO_SOURCE]
+
+
+def _with_plan(entry: dict[str, Any], **plan: Any) -> dict[str, Any]:
+    return {**entry, "plan": {**entry["plan"], **plan}}
+
+
+def test_a_split_tail_without_sigue_a_la_anterior_says_it_is_not_available_yet() -> None:
+    """Production's default (`extend_on=False`): the tail of a clean long cut is made
+    new, and its row says why in the rule's words, not «No podemos usar el video…»."""
+    reel = analysis(shot(0, 0, 18))  # one long cut, nobody seen, vertical, editable
+    plan = plan_from_analysis(reel, products=("smash doble",), extend_on=False)
+    rows = vm.part_rows(vm.entries_from_plan(reel, plan))
+    assert plan[1].mode == "reference" and plan[1].mode_reason == "extend_unavailable"
+    assert rows[1]["why"] == '"Sigue a la anterior" todavía no está disponible. La hacemos nueva.'
+    assert not rows[1]["why"].startswith("No podemos usar el video original")
+    assert rows[0]["why"] == ""  # «Igual al original»: still no line
+
+
+def test_a_stuck_tail_keeps_va_pegada_never_the_rules_words() -> None:
+    """Deivid 2026-11-14: `split_cut_continues` keeps «Va pegada a la parte n» until the
+    new editor (ED-07, m-25026638)."""
+    reel = analysis(shot(0, 0, 18))  # one long cut → a part and its tail
+    plan = plan_from_analysis(reel, products=("smash doble",), extend_on=True)
+    assert plan[1].mode == "extend" and plan[1].mode_reason == "split_cut_continues"
+    rows = vm.part_rows(vm.entries_from_plan(reel, plan))
+    assert rows[1]["why"] == "Va pegada a la parte 1: se mueve con ella."
+    assert all(
+        "Sigue a la anterior: continúa la misma toma del original." not in row["why"]
+        for row in rows
+    )
+
+
+def test_an_own_video_part_says_the_rules_words() -> None:
+    entry = _with_plan(
+        entries_of(analysis(shot(0, 0, 5), editable=False))[0],
+        mode="local",
+        mode_reason="own_video_local",
+        mode_rule_version=1,
+    )
+    assert vm.part_rows([entry])[0]["why"] == (
+        "Usamos tu video tal cual, con los efectos que elegiste. No gasta segundos de video."
+    )
+
+
+def test_the_older_reasons_keep_todays_words() -> None:
+    """Deivid 2026-11-14 (EF-09): only the new reasons say the rule's words; person,
+    doubt, not vertical, not editable, no source and purged keep today's line."""
+    person = vm.part_rows(entries_of(MOCKUP))[1]
+    assert entries_of(MOCKUP)[1]["plan"]["mode_reason"] == "reel_people"
+    assert person["why"] == vm.REASON_TEXTS[vm.REASON_PERSON]
+    unclear_reel = analysis(shot(0, 0, 5, people=UNKNOWN, faces=UNKNOWN))
+    unclear = entries_of(unclear_reel)[0]
+    assert unclear["plan"]["mode_reason"] == "people_unclear"
+    assert vm.part_rows([unclear])[0]["why"] == vm.REASON_TEXTS[vm.REASON_UNCLEAR]
+    wide = entries_of(analysis(shot(0, 0, 5), width=1920, height=1080))[0]
+    assert wide["plan"]["mode_reason"] == "not_vertical"
+    assert vm.part_rows([wide])[0]["why"] == vm.REASON_TEXTS[vm.REASON_NOT_VERTICAL]
+    locked = entries_of(analysis(shot(0, 0, 5), editable=False))[0]
+    assert locked["plan"]["mode_reason"] == "not_editable"
+    for reason in ("not_editable", "no_source", "purged"):
+        entry = _with_plan(locked, mode_reason=reason, mode_rule_version=1)
+        assert vm.part_rows([entry])[0]["why"] == TODAY_NO_SOURCE
+
+
+@pytest.mark.parametrize("reason", ["", "merged_parts", "something_new"])
+def test_an_empty_or_unknown_reason_keeps_todays_words(reason: str) -> None:
+    entry = _with_plan(
+        entries_of(analysis(shot(0, 0, 5), editable=False))[0],
+        mode_reason=reason,
+        mode_rule_version=0 if reason == "merged_parts" else 1,
+    )
+    assert vm.part_rows([entry])[0]["why"] == TODAY_NO_SOURCE
+
+
+def test_a_part_the_owner_changed_keeps_todays_words() -> None:
+    reel = analysis(shot(0, 0, 18))  # its tail is `extend_unavailable`
+    plan = plan_from_analysis(reel, products=("smash doble",), extend_on=False)
+    entry = vm.entries_from_plan(reel, plan)[1]
+    assert entry["plan"]["mode_reason"] == "extend_unavailable"
+    changed = _with_plan(entry, mode_changed_by_owner=True)
+    assert vm.part_rows([changed])[0]["why"] == TODAY_NO_SOURCE
+    # changed on the sheet, not saved yet: the flag is still False but the mode is not
+    # the one the reason proposed
+    local = _with_plan(entry, mode="local")
+    assert vm.part_rows([local])[0]["why"] == TODAY_NO_SOURCE
+
+
+def test_the_rule_never_adds_a_line_where_there_was_none() -> None:
+    entries = entries_of(MOCKUP)
+    assert entries[0]["plan"]["mode_reason"] == "reel_no_people"
+    assert vm.part_rows(entries)[0]["why"] == ""
+    # a part made without a reel has no why line, whatever its stored reason
+    plan = plan_from_analysis(MOCKUP, products=("smash doble",), extend_on=False)
+    bare = vm.entries_from_plan(None, plan)
+    assert all(row["why"] == "" for row in vm.part_rows(bare))
 
 
 def test_a_part_with_nothing_seen_says_only_the_fact() -> None:

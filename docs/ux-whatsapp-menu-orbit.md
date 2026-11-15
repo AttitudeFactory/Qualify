@@ -132,7 +132,9 @@ documenta en `docs/design-system.md` §5.9.
 - `label` es el nombre accesible del botón. `key` sirve para las pruebas y para `data-orbit-key`.
 - Construida sobre `rx.menu` (Radix DropdownMenu): `side="top"`, `align="start"`, sin dar vuelta
   hacia abajo, para que nunca tape lo que está debajo del botón.
-- **Reglas de uso:** (1) **solo en el cuadro de respuesta de Chats de WhatsApp**; otra pantalla
+- **Reglas de uso:** (1) **en el cuadro de respuesta de Chats de WhatsApp y en «Agregar» de la
+  línea de tiempo del editor «Arma tu video»** (Deivid, 2026-11-14, al revisar ED-00b m-25029104:
+  «A: el de WhatsApp (Recomendado)»; ver `docs/design-system.md` §5.10); otra pantalla
   necesita el visto bueno del fundador; (2) entre 2 y 6 opciones; (3) icono **y** texto de 16
   caracteres como máximo, nunca solo icono; (4) una opción **abre un flujo, nunca envía ni
   publica** (N13); (5) fuera de sus condiciones (ventana cerrada) no se dibuja, en vez de
