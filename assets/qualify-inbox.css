@@ -605,32 +605,39 @@ textarea.q-reply-field::placeholder,
    list's rows and its chips come before the chat). Same rules for both channels — the
    header is the shared `chat_thread.thread_header`. Nothing here applies on a phone. */
 @media (min-width: 1024px) {
+  /* the pane's top (panel edge 10px + page header + tabs + gaps = 197px measured) plus
+     what is left under it (the page body's bottom padding, trimmed below, and the
+     panel's edge): 13.75rem. A MIN height, not a height: when the window is too short
+     for header + 14rem of messages + reply box the chat grows and the page scrolls —
+     nothing is squeezed or spills out of the card. */
+  .q-page-body:has(.q-wa-chats--open .q-chat-thread) {
+    padding-bottom: 0.75rem;
+  }
   .q-wa-chats--open .q-chat-thread {
-    --q-chat-pane-top: 13.25rem;
+    --q-chat-pane-top: 13.75rem;
     display: flex;
     flex-direction: column;
-    height: calc(100vh - var(--q-chat-pane-top));
-    height: calc(100dvh - var(--q-chat-pane-top));
-    min-height: min-content;
+    min-height: calc(100vh - var(--q-chat-pane-top));
+    min-height: calc(100dvh - var(--q-chat-pane-top));
   }
   .q-wa-chats--open .q-chat-thread > .rx-Stack {
     flex: 1 1 auto;
-    min-height: 0;
   }
   .q-wa-chats--open .q-chat-thread > .rx-Stack > * {
     flex: none;
   }
-  /* the messages (Instagram: the scroll itself; WhatsApp: the order + the scroll) */
+  /* the messages (Instagram: the scroll itself; WhatsApp: the order + the scroll) take
+     the free room from a zero basis, never less than 14rem */
   .q-wa-chats--open .q-chat-thread > .rx-Stack > .q-chat-scroll,
   .q-wa-chats--open .q-chat-thread > .rx-Stack > :has(> .q-chat-scroll) {
-    flex: 1 1 auto;
-    min-height: 0;
+    flex: 1 1 0;
+    min-height: min-content;
   }
   .q-wa-chats--open .q-chat-thread > .rx-Stack > :has(> .q-chat-scroll) > :not(.q-chat-scroll) {
     flex: none;
   }
   .q-wa-chats--open .q-chat-thread .q-chat-scroll.q-wa-scroll--messages {
-    flex: 1 1 auto;
+    flex: 1 1 0;
     min-height: 14rem;
     max-height: none;
   }

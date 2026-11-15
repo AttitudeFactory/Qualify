@@ -201,11 +201,12 @@ def test_the_wide_open_chat_gives_the_messages_the_room(chats_page) -> None:  # 
             room = page.evaluate(_ROOM)
             where = page.evaluate(_WHERE)
             assert where["backs"] == 0, (width, height, name, where)
-            assert room["header"] <= 7.5 * 16, (width, height, name, room)
+            if width >= 1280:  # at 1024 the line under the name wraps
+                assert room["header"] <= 7.5 * 16, (width, height, name, room)
             assert room["messages"] >= 14 * 16 - 2, (width, height, name, room)
-            # where the page does not scroll, the box is in the window; at 1280×800 and
-            # 1024×768 the window is tall enough for that
-            if not room["pageScrolls"] or height >= 768:
+            # where the page does not scroll, the box is in the window; the window is tall
+            # enough for that at 1280×800 (1512×664 and 1024×768 scroll the page)
+            if not room["pageScrolls"] or height >= 800:
                 assert room["boxVisible"] and not room["pageScrolls"], (width, height, name, room)
             print("ROOM", width, height, name, room)
         expect(page.get_by_text("Quién te espera")).to_have_count(0)
