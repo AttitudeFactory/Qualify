@@ -456,7 +456,9 @@ def empty_for(filter_key: str, connected: Sequence[str], channel: str = ALL_CHAN
     the way out is a QR code — how customers start writing on WhatsApp — as WhatsApp's
     own list offered, instead of the next publication."""
     words = channels_words(connected)
-    first = EMPTY_QR_ACTION if channel == CHANNEL_WHATSAPP else "create"
+    # The WhatsApp view, or a business whose only chat channel is WhatsApp.
+    whatsapp = channel == CHANNEL_WHATSAPP or list(connected) == [CHANNEL_WHATSAPP]
+    first = EMPTY_QR_ACTION if whatsapp else "create"
     if filter_key == FILTER_AWAITING:
         return EmptyVM(EMPTY_AWAITING_TITLE, EMPTY_AWAITING_BODY.format(channels=words), first)
     if filter_key == FILTER_ALL:

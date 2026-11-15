@@ -320,7 +320,11 @@ def test_an_empty_whatsapp_list_offers_a_qr_code(signed_up_page) -> None:  # noq
 
 
 def test_whatsapp_says_where_the_chats_went(chats_page) -> None:  # noqa: ANN001
+    from .chat_fixtures import seed_second_number
+
     page = chats_page
+    # Two numbers, so the header's number select is drawn (U4).
+    seed_second_number(page._qualify_e2e_tenant_id, page._qualify_e2e_user_id)  # noqa: SLF001
     page.set_viewport_size(PHONE)
     page.goto(_origin(page) + "/whatsapp")
     expect(page.get_by_text("Tus chats de WhatsApp se responden en Por responder.")).to_be_visible(

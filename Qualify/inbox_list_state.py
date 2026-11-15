@@ -172,6 +172,8 @@ class InboxListState(rx.State):
     context_loaded: bool = False
     #: m-25029799 review (C2): `numbers` were read since the last entry.
     _numbers_fresh: bool = False
+    #: The channel the address or a chip asked for (the view may show every channel).
+    _asked_channel: str = ""
     #: The one-time explanation (`inbox_list_vm.EXPLAINER_*`): on screen now, and
     #: dismissed in this session of this business (reset on logout and on a switch).
     explainer_open: bool = False
@@ -263,7 +265,10 @@ class InboxListState(rx.State):
 
     @rx.var
     def empty(self) -> EmptyVM:
-        return empty_for(self.filter_key, self.connected, self.channel)
+        # The channel the owner asked for: with no chat anywhere the channel filter is
+        # hidden and the list shows every channel, but an empty WhatsApp view still
+        # offers its own way out (a QR code).
+        return empty_for(self.filter_key, self.connected, self._asked_channel or self.channel)
 
     @rx.var
     def show_skeleton(self) -> bool:
@@ -347,6 +352,7 @@ class InboxListState(rx.State):
         number = number_from_params(params)
         self._numbers_fresh = False  # m-25029799 review (C2): `load` reads them again
         channel = CHANNEL_WHATSAPP if number else (channel_from_params(params) or ALL_CHANNELS)
+        self._asked_channel = channel
         if requested != self.filter_key or channel != self.channel or number != self.number:
             self.filter_key, self.channel, self.number = requested, channel, number
             self._clear_list()
@@ -367,7 +373,7 @@ class InboxListState(rx.State):
             return None
         if channel not in CHANNELS and channel != ALL_CHANNELS:
             return None
-        self.channel = channel
+        self.channel = self._asked_channel = channel
         if channel != CHANNEL_WHATSAPP:
             self.number = ALL_NUMBERS  # a number lists only WhatsApp chats
         return self._relist()

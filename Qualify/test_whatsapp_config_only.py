@@ -320,7 +320,11 @@ def test_an_empty_whatsapp_view_offers_a_qr_code() -> None:
     connected = [CHANNEL_WHATSAPP]
     assert empty_for(FILTER_AWAITING, connected, CHANNEL_WHATSAPP).action == EMPTY_QR_ACTION
     assert empty_for(FILTER_ALL, connected, CHANNEL_WHATSAPP).action == EMPTY_QR_ACTION
-    assert empty_for(FILTER_ALL, connected, ALL_CHANNELS).action == "create"
+    # Only WhatsApp connected: a QR code is the way out on every view.
+    assert empty_for(FILTER_ALL, connected, ALL_CHANNELS).action == EMPTY_QR_ACTION
+    both = [CHANNEL_WHATSAPP, CHANNEL_INSTAGRAM]
+    assert empty_for(FILTER_ALL, both, ALL_CHANNELS).action == "create"
+    assert empty_for(FILTER_ALL, both, CHANNEL_WHATSAPP).action == EMPTY_QR_ACTION
     assert empty_for(FILTER_CLOSED, connected, CHANNEL_WHATSAPP).action == "awaiting"
     assert (EMPTY_QR_LABEL, EMPTY_QR_HREF) == (
         "Crear un código QR",
