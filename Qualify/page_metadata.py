@@ -42,6 +42,7 @@ PAGE_DESCRIPTIONS: dict[str, str] = {
     "/conversations": "Revisa las conversaciones y las consultas de tu negocio en Qualify.",
     "/leads": "Revisa las consultas de personas interesadas en comprar a tu negocio.",
     "/whatsapp": "Gestiona los números y las conversaciones de WhatsApp de tu negocio en Qualify.",
+    "/whatsapp/promociones": "Envía promociones por WhatsApp a quienes aceptaron recibirlas.",
     "/catalog": "Organiza los productos, las fotos y los videos de tu negocio en Qualify.",
     "/create": "Prepara una publicación con la identidad y los productos de tu negocio en Qualify.",
     "/drafts": "Revisa las publicaciones de tu negocio pendientes de aprobación en Qualify.",

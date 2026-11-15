@@ -23,6 +23,7 @@ _PAGE_SOURCE: dict[str, str] = {
     "/resultados": "results_page.py",
     "/connections": "connections_page.py",
     "/whatsapp": "whatsapp_page.py",
+    "/whatsapp/promociones": "whatsapp_page.py",  # m-25017862
     "/inbox": "inbox_page.py",
     "/conversations": "conversations_page.py",
     "/responder": "responder_page.py",
@@ -49,9 +50,15 @@ _PAGE_SOURCE: dict[str, str] = {
 # landed and left the table.
 _PENDING_HUBS: dict[str, tuple[str, str, str]] = {}
 
-# The one sanctioned short form (ticket m-24842958): the page is «Clientes interesados»,
-# the rail has room for «Interesados».
-_MENU_SHORT_FORM: dict[str, str] = {"/leads": "Interesados"}
+# The sanctioned short forms, each decided on its own — never a general licence:
+# * m-24842958: the page is «Clientes interesados», the rail has room for «Interesados».
+# * m-25017862 (founder, 2026-11-14, «Solo «Promociones»»): the page is «Promociones por
+#   WhatsApp», the menu says «Promociones»; the full name stays the entry's spoken name
+#   and its collapsed-rail label (`ui/layout.NAV_FULL_NAMES`).
+_MENU_SHORT_FORM: dict[str, str] = {
+    "/leads": "Interesados",
+    "/whatsapp/promociones": "Promociones",
+}
 
 _OLD_NAMES = (
     "Brand Kit",
