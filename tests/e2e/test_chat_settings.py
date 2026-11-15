@@ -65,7 +65,13 @@ def test_the_hub_has_three_cards_on_phone_and_desktop(chats_page) -> None:  # no
     main = page.locator("main")
     for row in ("Mensajes guardados", "Formas de pago", "Cómo llegar", "Tu menú de bienvenida"):
         expect(main.get_by_role("link", name=re.compile(row))).to_be_visible()
-    expect(main.get_by_role("button", name=re.compile("Preguntas iniciales"))).to_be_visible()
+    # One WhatsApp row (UX U3); «Preguntas iniciales» is Instagram's only.
+    expect(main.get_by_role("button", name=re.compile("Preguntas iniciales"))).to_have_count(1)
+    expect(main.get_by_role("link", name=re.compile("Preguntas iniciales"))).to_have_count(0)
+    expect(main.get_by_role("link", name="Ir a Tus redes")).to_be_visible()
+    for link in ("Ir a tus chats", "Ir a Tus redes"):  # N12: 44 px targets
+        box = main.get_by_role("link", name=re.compile(link)).first.bounding_box()
+        assert box and box["height"] >= 44, (link, box)
     expect(main.get_by_role("link", name=re.compile("Ir a tus chats"))).to_have_attribute(
         "href", "/responder"
     )
@@ -73,7 +79,7 @@ def test_the_hub_has_three_cards_on_phone_and_desktop(chats_page) -> None:  # no
     page.mouse.move(900, 450)
     for mode in ("dark", "light"):
         _theme(page, mode)
-        _shot(page, f"hub-1280-{mode}")
+        _shot(page, f"hub-1280-{mode}-v2")
 
     page.set_viewport_size({"width": 360, "height": 780})
     page.reload()
@@ -81,7 +87,7 @@ def test_the_hub_has_three_cards_on_phone_and_desktop(chats_page) -> None:  # no
     _no_sideways_scroll(page)
     for mode in ("dark", "light"):
         _theme(page, mode)
-        _shot(page, f"hub-360-{mode}")
+        _shot(page, f"hub-360-{mode}-v2")
 
 
 def test_an_instagram_row_opens_its_starter_questions_here(chats_page) -> None:  # noqa: ANN001
@@ -89,15 +95,23 @@ def test_an_instagram_row_opens_its_starter_questions_here(chats_page) -> None: 
     base = re.match(r"https?://[^/]+", page.url)[0]
     page.set_viewport_size({"width": 360, "height": 780})
     page.goto(f"{base}{_HUB}")
-    page.locator("main").get_by_role("button", name=re.compile("Preguntas iniciales")).click(
-        timeout=60_000
-    )
+    row = page.locator("main").get_by_role("button", name=re.compile("Preguntas iniciales"))
+    expect(row).to_be_visible(timeout=60_000)
     drawer = page.get_by_role("dialog")
-    expect(drawer).to_be_visible()
-    expect(drawer.get_by_text(_LINE)).to_be_visible()
-    _shot(page, "instagram-preguntas-360")
-    page.keyboard.press("Escape")
-    expect(drawer).to_have_count(0)
+    for mode in ("dark", "light"):
+        _theme(page, mode)  # before opening: the drawer's overlay covers the toggle
+        row.click()
+        expect(drawer).to_be_visible()
+        expect(drawer.get_by_text(_LINE)).to_be_visible()
+        page.wait_for_timeout(800)  # the slide-in ends (UX U1 looked mid-animation)
+        box = drawer.bounding_box()
+        assert box and box["x"] == 0 and box["width"] == 360, box  # the whole phone width
+        for name in ("Agregar pregunta", "Publicar en Instagram", "Guardar"):
+            target = drawer.get_by_role("button", name=name).bounding_box()
+            assert target and target["x"] + target["width"] <= 360, (name, target)
+        _shot(page, f"instagram-preguntas-360-{mode}-v2")
+        page.keyboard.press("Escape")
+        expect(drawer).to_have_count(0)
     expect(page).to_have_url(f"{base}{_HUB}")
 
 
@@ -129,7 +143,7 @@ def test_the_instagram_chats_settings_link_lands_there(chats_page) -> None:  # n
         lit = _menu(page).locator('[aria-current="page"]')
         expect(lit).to_contain_text("Ajustes de chats")
         page.wait_for_timeout(500)
-        _shot(page, f"instagram-ajustes-de-este-canal-1280-{mode}")
+        _shot(page, f"instagram-ajustes-de-este-canal-1280-{mode}-v2")
 
 
 def test_the_menus_old_address_lands_in_ajustes(chats_page) -> None:  # noqa: ANN001
@@ -153,18 +167,18 @@ def test_the_menus_old_address_lands_in_ajustes(chats_page) -> None:  # noqa: AN
     for mode in ("dark", "light"):
         if page.locator(".q-page-header").count():  # the guided frame has no toggle
             _theme(page, mode)
-        _shot(page, f"whatsapp-menu-1280-{mode}")
+        _shot(page, f"whatsapp-menu-1280-{mode}-v2")
     page.set_viewport_size({"width": 360, "height": 780})
     page.reload()
     expect(page.locator("main").first).to_be_visible(timeout=60_000)
     _no_sideways_scroll(page)
-    _shot(page, "whatsapp-menu-360")
+    _shot(page, "whatsapp-menu-360-v2")
 
     # The messages screen keeps only Chats · Tu número.
     page.goto(f"{base}/whatsapp?tab=numero&sub=estado")
     strip = page.get_by_role("group", name="Secciones de WhatsApp")
     expect(strip.get_by_role("button")).to_have_text(["Chats", "Tu número"], timeout=60_000)
-    _shot(page, "whatsapp-mensajes-360-despues")
+    _shot(page, "whatsapp-mensajes-360-despues-v2")
 
 
 def test_without_accounts_the_hub_says_what_to_connect(signed_up_page, app_server: str) -> None:  # noqa: ANN001
@@ -178,7 +192,11 @@ def test_without_accounts_the_hub_says_what_to_connect(signed_up_page, app_serve
     expect(page.get_by_role("link", name="Conectar en Tus redes")).to_have_attribute(
         "href", "/connections"
     )
+    # UX U2: without a number, the two rows kept with it are not offered.
+    expect(page.get_by_role("link", name=re.compile("Mensajes guardados"))).to_be_visible()
+    for gone in ("Formas de pago", "Cómo llegar"):
+        expect(page.get_by_role("link", name=re.compile(gone))).to_have_count(0)
     _no_sideways_scroll(page)
     for mode in ("dark", "light"):
         _theme(page, mode)
-        _shot(page, f"hub-vacio-360-{mode}")
+        _shot(page, f"hub-vacio-360-{mode}-v2")
