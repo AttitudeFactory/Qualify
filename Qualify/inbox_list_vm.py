@@ -9,7 +9,7 @@ Tree (docs/ux-chats-unificados.md §2):
 
     Por responder › Mensajes
       [Todos] [Instagram] [WhatsApp]          only with chats on 2+ channels; no TikTok
-      [Todos los números] [+57 300 …] [+57 311 …]   only with 2+ WhatsApp numbers
+      [Todos los números ▾]                   one select, only with 2+ WhatsApp numbers
       [Por responder · N] [Todos · N] [Cerrados · N] (+ [Pago por revisar · N] if N ≥ 1)
       «N chats de Instagram ya no se pueden responder aquí · Ver»   (in «Por responder»)
       the rows · «Ver más»
@@ -204,6 +204,11 @@ EMPTY_EXPIRED: Final = (
     "Ningún chat de Instagram se quedó sin responder a tiempo en la última semana."
 )
 EMPTY_BACK: Final = "Ver por responder"
+#: m-25029799 (UX review): the WhatsApp view's way out — WhatsApp's own empty list's
+#: words («Crear un código QR», unchanged) and «Tu número › Códigos QR».
+EMPTY_QR_ACTION: Final = "qr"
+EMPTY_QR_LABEL: Final = "Crear un código QR"
+EMPTY_QR_HREF: Final = "/whatsapp?tab=numero&sub=qr"
 
 NOTHING_CONNECTED_TITLE: Final = "Aún no tienes WhatsApp ni Instagram conectados"
 NOTHING_CONNECTED_BODY: Final = (
@@ -381,12 +386,19 @@ def show_number_filter(numbers: Sequence[NumberVM], channel: str) -> bool:
     return len(numbers) >= 2 and channel != CHANNEL_INSTAGRAM
 
 
-def number_chips(numbers: Sequence[NumberVM], active: str) -> list[ChipVM]:
-    """[Todos los números] then each number, in the business's own order."""
-    return [ChipVM(key=ALL_NUMBERS, label=ALL_NUMBERS_LABEL, pressed=active == ALL_NUMBERS)] + [
-        ChipVM(key=n.connection_id, label=n.label, pressed=active == n.connection_id)
-        for n in numbers
-    ]
+#: The select's value for «Todos los números» (a Radix select item cannot be "").
+ALL_NUMBERS_KEY: Final = "todos"
+
+
+def number_options(numbers: Sequence[NumberVM]) -> list[NumberVM]:
+    """The one-line select (UX review of m-25029799, as `/whatsapp`'s own number
+    picker): «Todos los números», then each number in the business's own order."""
+    return [NumberVM(connection_id=ALL_NUMBERS_KEY, label=ALL_NUMBERS_LABEL), *numbers]
+
+
+def number_select_value(number: str) -> str:
+    """The select's value for the number on screen ("" = every number)."""
+    return number or ALL_NUMBERS_KEY
 
 
 # ======================================================================================
@@ -434,17 +446,21 @@ def channels_words(connected: Sequence[str]) -> str:
 class EmptyVM:
     title: str
     body: str
-    #: The way out: "" (none), "create" (the next publication) or "awaiting" (back to
-    #: «Por responder»).
+    #: The way out: "" (none), "create" (the next publication), "qr" (a WhatsApp QR
+    #: code, on the WhatsApp view) or "awaiting" (back to «Por responder»).
     action: str
 
 
-def empty_for(filter_key: str, connected: Sequence[str]) -> EmptyVM:
+def empty_for(filter_key: str, connected: Sequence[str], channel: str = ALL_CHANNELS) -> EmptyVM:
+    """The empty list's words and way out. On the WhatsApp view (m-25029799, UX review)
+    the way out is a QR code — how customers start writing on WhatsApp — as WhatsApp's
+    own list offered, instead of the next publication."""
     words = channels_words(connected)
+    first = EMPTY_QR_ACTION if channel == CHANNEL_WHATSAPP else "create"
     if filter_key == FILTER_AWAITING:
-        return EmptyVM(EMPTY_AWAITING_TITLE, EMPTY_AWAITING_BODY.format(channels=words), "create")
+        return EmptyVM(EMPTY_AWAITING_TITLE, EMPTY_AWAITING_BODY.format(channels=words), first)
     if filter_key == FILTER_ALL:
-        return EmptyVM("", EMPTY_ALL.format(channels=words), "create")
+        return EmptyVM("", EMPTY_ALL.format(channels=words), first)
     if filter_key == FILTER_CLOSED:
         return EmptyVM("", EMPTY_CLOSED, "awaiting")
     if filter_key == FILTER_PAYMENT:

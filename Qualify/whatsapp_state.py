@@ -223,6 +223,11 @@ class WhatsAppState(rx.State):
         return panel_sub(self.active_tab)
 
     @rx.var
+    def chats_href(self) -> str:
+        """m-25029799: this number's chats in «Por responder» (`/whatsapp`'s notice)."""
+        return whatsapp_chats_href(self.selected_connection_id)
+
+    @rx.var
     def selected_number(self) -> WhatsAppNumberVM:
         for number in self.numbers:
             if number.connection_id == self.selected_connection_id:

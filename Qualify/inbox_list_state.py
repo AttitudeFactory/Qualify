@@ -50,6 +50,7 @@ from .inbox_list_provider import context, counts, numbers, page
 from .inbox_list_vm import (
     ALL_CHANNELS,
     ALL_NUMBERS,
+    ALL_NUMBERS_KEY,
     CHANNELS,
     DEFAULT_FILTER,
     FILTER_AWAITING,
@@ -74,8 +75,9 @@ from .inbox_list_vm import (
     list_href,
     merge_refreshed,
     notice_text,
-    number_chips,
     number_from_params,
+    number_options,
+    number_select_value,
     remembered_dismissal,
     show_channel_filter,
     show_notice,
@@ -222,8 +224,13 @@ class InboxListState(rx.State):
         return show_number_filter(self.numbers, self.channel)
 
     @rx.var
-    def number_options(self) -> list[ChipVM]:
-        return number_chips(self.numbers, self.number)
+    def number_choices(self) -> list[NumberVM]:
+        """«Todos los números», then each number (the select's options)."""
+        return number_options(self.numbers)
+
+    @rx.var
+    def number_value(self) -> str:
+        return number_select_value(self.number)
 
     @rx.var
     def expired_count(self) -> int:
@@ -256,7 +263,7 @@ class InboxListState(rx.State):
 
     @rx.var
     def empty(self) -> EmptyVM:
-        return empty_for(self.filter_key, self.connected)
+        return empty_for(self.filter_key, self.connected, self.channel)
 
     @rx.var
     def show_skeleton(self) -> bool:
@@ -370,7 +377,11 @@ class InboxListState(rx.State):
         """m-25029799: one WhatsApp number of the business, or every one (""). Only ids
         the business owns (`numbers`, read under its tenant); a number narrows the list
         to WhatsApp."""
-        if not isinstance(number, str) or number == self.number:
+        if not isinstance(number, str):
+            return None
+        if number == ALL_NUMBERS_KEY:
+            number = ALL_NUMBERS  # the select's «Todos los números»
+        if number == self.number:
             return None
         if number != ALL_NUMBERS and known_number(number, self.numbers) != number:
             return None  # arrived over the wire: never another business's number

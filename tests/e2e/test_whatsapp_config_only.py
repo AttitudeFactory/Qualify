@@ -176,14 +176,18 @@ def test_the_number_choice_narrows_and_survives_a_chat(chats_page) -> None:  # n
     second = seed_second_number(page._qualify_e2e_tenant_id, page._qualify_e2e_user_id)  # noqa: SLF001
     page.set_viewport_size(DESKTOP)
     page.goto(_origin(page) + "/responder?tab=mensajes&filtro=todos&canal=whatsapp")
-    numbers = page.get_by_role("group", name="De qué número de WhatsApp")
+    # UX review: one line, a select (the one `/whatsapp`'s header uses).
+    numbers = page.get_by_role("combobox", name="De qué número de WhatsApp")
     expect(numbers).to_be_visible(timeout=60_000)
-    expect(numbers.get_by_role("button")).to_have_text(
-        ["Todos los números", re.compile(r"\+57 311"), re.compile(r"\+57 300")]
-    )
+    expect(numbers).to_contain_text("Todos los números")
+    assert numbers.bounding_box()["height"] >= 44
     expect(_row(page, "Laura Gómez")).to_be_visible()
     expect(_row(page, "Sofía Ruiz")).to_be_visible()
-    numbers.get_by_role("button", name=re.compile(r"\+57 311")).click()
+    numbers.click()
+    expect(page.get_by_role("option")).to_have_text(
+        ["Todos los números", re.compile(r"\+57 311"), re.compile(r"\+57 300")]
+    )
+    page.get_by_role("option", name=re.compile(r"\+57 311")).click()
     expect(page).to_have_url(re.compile(rf"numero={second['connection']}"), timeout=30_000)
     expect(_row(page, "Laura Gómez")).to_have_count(0, timeout=30_000)
     expect(_row(page, "Sofía Ruiz")).to_be_visible()
@@ -224,7 +228,7 @@ def test_one_number_draws_no_choice(chats_page) -> None:  # noqa: ANN001
     page.set_viewport_size(PHONE)
     page.goto(_origin(page) + "/responder?tab=mensajes&filtro=todos&canal=whatsapp")
     expect(page.locator(".q-conv-list .q-conv-row").first).to_be_visible(timeout=60_000)
-    expect(page.get_by_role("group", name="De qué número de WhatsApp")).to_have_count(0)
+    expect(page.get_by_role("combobox", name="De qué número de WhatsApp")).to_have_count(0)
 
 
 def test_menu_and_inicio_reach_whatsapp_chats_in_por_responder(chats_page) -> None:  # noqa: ANN001
@@ -260,3 +264,75 @@ def test_menu_and_inicio_reach_whatsapp_chats_in_por_responder(chats_page) -> No
     ).click()
     expect(_row(page, "Laura Gómez")).to_be_visible(timeout=60_000)
     expect(page.locator('nav [aria-current="page"]').first).to_contain_text("Por responder")
+
+
+@pytest.mark.skipif(not os.environ.get("QUALIFY_E2E_SHOTS"), reason="QUALIFY_E2E_SHOTS not set")
+def test_capture_review_round(chats_page, signed_up_page) -> None:  # noqa: ANN001
+    """UX review captures (360 and 1280, light): «Por responder» with two numbers (the
+    select closed), `/whatsapp` with its notice, and an empty WhatsApp list."""
+    from .chat_fixtures import seed_second_number
+    from .test_whatsapp_promotions_entry import _seed_whatsapp_number
+
+    page = chats_page
+    seed_second_number(page._qualify_e2e_tenant_id, page._qualify_e2e_user_id)  # noqa: SLF001
+    empty = signed_up_page
+    _seed_whatsapp_number(empty._qualify_e2e_tenant_id, empty._qualify_e2e_user_id)  # noqa: SLF001
+    out = Path(os.environ["QUALIFY_E2E_SHOTS"])
+    label = os.environ.get("QUALIFY_E2E_SHOTS_LABEL", "despues2")
+    report: dict[str, object] = {}
+    for p in (page, empty):
+        p.emulate_media(color_scheme="light")
+        p.evaluate("localStorage.setItem('theme', 'light')")
+    views = (
+        (page, "dos-numeros", "/responder?tab=mensajes&canal=whatsapp&filtro=todos"),
+        (page, "whatsapp", "/whatsapp"),
+        (empty, "lista-vacia", "/responder?tab=mensajes&canal=whatsapp"),
+    )
+    for size_name, size in (("360", PHONE), ("1280", DESKTOP)):
+        for p, name, address in views:
+            p.set_viewport_size(size)
+            p.goto(_origin(p) + address)
+            _settle(p)
+            p.evaluate(
+                "() => document.querySelector('.q-wa-chats__list')"
+                "?.scrollIntoView({block: 'start'})"
+            )
+            p.wait_for_timeout(300)
+            key = f"{label}-{name}-{size_name}-light"
+            p.screenshot(path=str(out / f"{key}.png"))
+            report[key] = p.evaluate(_WHERE)
+    (out / f"{label}-where.json").write_text(
+        json.dumps(report, indent=1, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+def test_an_empty_whatsapp_list_offers_a_qr_code(signed_up_page) -> None:  # noqa: ANN001
+    from .test_whatsapp_promotions_entry import _seed_whatsapp_number
+
+    page = signed_up_page
+    _seed_whatsapp_number(page._qualify_e2e_tenant_id, page._qualify_e2e_user_id)  # noqa: SLF001
+    page.set_viewport_size(PHONE)
+    page.goto(_origin(page) + "/responder?tab=mensajes&canal=whatsapp")
+    link = page.get_by_role("link", name="Crear un código QR")
+    expect(link).to_be_visible(timeout=60_000)
+    link.click()
+    expect(page).to_have_url(re.compile(r"/whatsapp\?tab=numero&sub=qr"), timeout=60_000)
+
+
+def test_whatsapp_says_where_the_chats_went(chats_page) -> None:  # noqa: ANN001
+    page = chats_page
+    page.set_viewport_size(PHONE)
+    page.goto(_origin(page) + "/whatsapp")
+    expect(page.get_by_text("Tus chats de WhatsApp se responden en Por responder.")).to_be_visible(
+        timeout=60_000
+    )
+    page.get_by_role("link", name="Ir a Por responder").click()
+    expect(page).to_have_url(re.compile(r"/responder\?tab=mensajes&canal=whatsapp"), timeout=60_000)
+    # U4: the header's number select and the theme button share one row at 360 px.
+    page.goto(_origin(page) + "/whatsapp")
+    trigger = page.locator(".q-page-header [role=combobox]").first
+    toggle = page.locator(".q-page-header button").last
+    expect(trigger).to_be_visible(timeout=60_000)
+    a, b = trigger.bounding_box(), toggle.bounding_box()
+    assert abs((a["y"] + a["height"] / 2) - (b["y"] + b["height"] / 2)) < 8, (a, b)
+    assert not page.evaluate("document.documentElement.scrollWidth > window.innerWidth")

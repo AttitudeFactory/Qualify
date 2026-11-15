@@ -115,7 +115,8 @@ def test_screens_use_the_proposed_labels() -> None:
     # «tu menú de bienvenida»: the founder's name (2026-11-14); the tab keeps its own.
     # m-25029799: the screen keeps «Tu número»; its chats are attended in «Por responder».
     assert WHATSAPP_SUBTITLE == (
-        "Tu número de WhatsApp: cómo está, tu perfil, tus formas de pago y tus códigos QR."
+        "Revisa que tu WhatsApp funcione y deja listos tu perfil, tus formas de pago y tus "
+        "códigos QR."
     )
     assert "WHATSAPP_SUBTITLE" in inspect.getsource(whatsapp_page.whatsapp_header)
     assert PROMOTIONS_SUBTITLE == (

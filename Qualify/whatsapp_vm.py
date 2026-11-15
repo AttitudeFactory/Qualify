@@ -120,10 +120,15 @@ PROMOTIONS_SUBTITLE: Final = (
 )
 #: `/whatsapp`'s header line: what is left there once «Promociones» (m-25017862), the
 #: menu (m-25017861) and the chats (m-25029799, now in «Por responder») moved out.
-#: m-25029799 — NEW TEXT, NOT DECIDED BY THE FOUNDER (the old line promised chats here).
+#: m-25029799 — NEW TEXT, NOT DECIDED BY THE FOUNDER (UX review; the old line promised
+#: chats here).
 WHATSAPP_SUBTITLE: Final = (
-    "Tu número de WhatsApp: cómo está, tu perfil, tus formas de pago y tus códigos QR."
+    "Revisa que tu WhatsApp funcione y deja listos tu perfil, tus formas de pago y tus códigos QR."
 )
+#: m-25029799 (UX review) — NEW TEXTS, NOT DECIDED BY THE FOUNDER: one line above «Tu
+#: número» that says where the chats went, with the way there.
+CHATS_MOVED_NOTICE: Final = "Tus chats de WhatsApp se responden en Por responder."
+CHATS_MOVED_ACTION: Final = "Ir a Por responder"
 
 # section → ((panel, sub slug, label), …); the first one is the section's default. A
 # section with a single panel has no sub-tab strip and no `?sub=`.

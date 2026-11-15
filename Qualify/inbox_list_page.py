@@ -21,6 +21,9 @@ from .inbox_list_state import LIST_DOM_ID, InboxListState
 from .inbox_list_vm import (
     CHANNELS_ARIA,
     EMPTY_BACK,
+    EMPTY_QR_ACTION,
+    EMPTY_QR_HREF,
+    EMPTY_QR_LABEL,
     EXPLAINER_ACTION,
     EXPLAINER_TEXT,
     FILTERS_ARIA,
@@ -33,6 +36,7 @@ from .inbox_list_vm import (
     NOTICE_DISMISS,
     NUMBERS_ARIA,
     ChipVM,
+    NumberVM,
 )
 from .next_steps_vm import CREATE_LABEL, CREATE_ROUTE
 from .ui import callout, card, empty_state, skeleton_rows
@@ -85,20 +89,24 @@ def _channel_filter() -> rx.Component:
     )
 
 
+def _number_option(number: NumberVM) -> rx.Component:
+    return rx.select.item(number.label, value=number.connection_id)
+
+
 def _number_filter() -> rx.Component:
-    """m-25029799: [Todos los números] [+57 300 …] [+57 311 …] — WhatsApp's «Elige un
-    número», only for a business with two or more numbers and not on the Instagram view.
-    Chips like the channel filter's: they wrap at 360 px, 44 px tall."""
+    """m-25029799: WhatsApp's «Elige un número», only for a business with two or more
+    numbers and not on the Instagram view. One line — the same select `/whatsapp`'s
+    header uses (UX review: chips pushed the chats off a phone's screen) — the column's
+    width, 44 px tall; «Todos los números» first."""
     return rx.cond(
         L.show_numbers,
-        rx.flex(
-            rx.foreach(L.number_options, lambda c: _chip(c, L.set_number)),
-            wrap="wrap",
-            gap="0.4rem",
-            width="100%",
-            class_name="q-conv-filters",
-            role="group",
-            aria_label=NUMBERS_ARIA,
+        rx.select.root(
+            rx.select.trigger(
+                width="100%", min_height=_TARGET, aria_label=NUMBERS_ARIA, title=NUMBERS_ARIA
+            ),
+            rx.select.content(rx.foreach(L.number_choices, _number_option)),
+            value=L.number_value,
+            on_change=L.set_number,
         ),
         rx.fragment(),
     )
@@ -218,11 +226,21 @@ def _create_link() -> rx.Component:
     )
 
 
+def _qr_link() -> rx.Component:
+    """m-25029799 (UX review): an empty WhatsApp view — a QR code is how customers start
+    writing (`/whatsapp` › Tu número › Códigos QR)."""
+    return rx.link(
+        rx.button(rx.icon("qr-code", size=T.ICON_SM), EMPTY_QR_LABEL, size="3"),
+        href=EMPTY_QR_HREF,
+    )
+
+
 def _empty() -> rx.Component:
     empty = L.empty
-    return rx.cond(
-        empty.action == "create",
-        empty_state("circle-check", empty.title, empty.body, action=_create_link()),
+    return rx.match(
+        empty.action,
+        ("create", empty_state("circle-check", empty.title, empty.body, action=_create_link())),
+        (EMPTY_QR_ACTION, empty_state("circle-check", empty.title, empty.body, action=_qr_link())),
         rx.vstack(
             rx.text(empty.body, size="2", color=T.TEXT_MUTED),
             rx.button(

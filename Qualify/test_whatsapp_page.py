@@ -29,6 +29,8 @@ from .connections_vm import WHATSAPP_RECONNECT_HINT
 from .ui.layout import NAV_ITEMS, NAV_ZONES
 from .whatsapp_state import WhatsAppState
 from .whatsapp_vm import (
+    CHATS_MOVED_ACTION,
+    CHATS_MOVED_NOTICE,
     DEFAULT_TAB,
     EMPTY_NUMBER,
     EMPTY_PROFILE,
@@ -769,9 +771,12 @@ def test_the_page_renders_every_tab() -> None:
     for _key, label in (*PROMOTION_SUBS, *NUMBER_SUBS):
         assert present(label), label
     assert present(WHATSAPP_SUBTITLE)
-    # m-25029799: no chats on this screen — no «Chats» tab, no list, no filters.
-    for gone in ("Secciones de WhatsApp", "Filtrar chats", "Abiertos", "Ir a Por responder"):
+    # m-25029799: no chats on this screen — no «Chats» tab, no list, no filters; one
+    # line says where they went, with the way there (UX review).
+    for gone in ("Secciones de WhatsApp", "Filtrar chats", "Abiertos"):
         assert not present(gone), gone
+    assert present(CHATS_MOVED_NOTICE) and present(CHATS_MOVED_ACTION)
+    assert "chats_href" in rendered
     # m-25017861: no setting tab of the menu on the messages screen.
     assert not present("Respuesta automática")
     for text in (

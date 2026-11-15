@@ -24,6 +24,7 @@ from .inbox_list_state import InboxListState
 from .inbox_list_vm import (
     ALL_CHANNELS,
     ALL_NUMBERS,
+    ALL_NUMBERS_KEY,
     ALL_NUMBERS_LABEL,
     FILTER_ALL,
     FILTER_AWAITING,
@@ -35,8 +36,9 @@ from .inbox_list_vm import (
     filter_from_params,
     known_number,
     list_href,
-    number_chips,
     number_from_params,
+    number_options,
+    number_select_value,
     show_number_filter,
 )
 from .nav_url import inbox_chat_href, list_view, whatsapp_chats_href
@@ -85,11 +87,13 @@ def test_the_number_choice_needs_two_numbers_and_not_instagram() -> None:
     assert not show_number_filter(TWO, CHANNEL_INSTAGRAM)
 
 
-def test_the_number_chips_start_with_every_number() -> None:
-    chips = number_chips(TWO, SECOND)
-    assert [c.label for c in chips] == [ALL_NUMBERS_LABEL, TWO[0].label, TWO[1].label]
-    assert [c.pressed for c in chips] == [False, False, True]
-    assert number_chips(TWO, ALL_NUMBERS)[0].pressed
+def test_the_number_select_starts_with_every_number() -> None:
+    """UX review: one line, the select `/whatsapp` uses — «Todos los números» first."""
+    options = number_options(TWO)
+    assert [o.label for o in options] == [ALL_NUMBERS_LABEL, TWO[0].label, TWO[1].label]
+    assert options[0].connection_id == ALL_NUMBERS_KEY != ALL_NUMBERS
+    assert number_select_value(SECOND) == SECOND
+    assert number_select_value(ALL_NUMBERS) == ALL_NUMBERS_KEY
 
 
 def test_only_the_business_s_own_number_narrows() -> None:
@@ -149,7 +153,8 @@ async def test_picking_a_number_narrows_the_list_and_its_chips(fake: _Fake) -> N
     state = InboxListState()
     state._tenant_key = "tenant-a"
     await _drain(InboxListState.load.fn(state))  # type: ignore[attr-defined]
-    assert state.show_numbers and [c.label for c in state.number_options][0] == "Todos los números"
+    assert state.show_numbers and state.number_choices[0].label == "Todos los números"
+    assert state.number_value == ALL_NUMBERS_KEY
     assert len(state.rows) == 3 and fake.asked_numbers[-1] == ""
     events = InboxListState.set_number.fn(state, SECOND)  # type: ignore[attr-defined]
     assert f"numero={SECOND}" in str(events) and "canal=whatsapp" in str(events)
@@ -159,8 +164,9 @@ async def test_picking_a_number_narrows_the_list_and_its_chips(fake: _Fake) -> N
     assert sorted(r.title.split(":")[1] for r in state.rows) == ["Beto", "Caro"]
     awaiting = next(c for c in state.chips if c.key == FILTER_AWAITING)
     assert awaiting.label == "Por responder · 2"  # that number's count, not the channel's
-    # Every number again, and the Instagram view drops the number.
-    assert InboxListState.set_number.fn(state, ALL_NUMBERS) is not None  # type: ignore[attr-defined]
+    assert state.number_value == SECOND
+    # Every number again (the select's «Todos los números»), and Instagram drops it.
+    assert InboxListState.set_number.fn(state, ALL_NUMBERS_KEY) is not None  # type: ignore[attr-defined]
     assert state.number == ""
     InboxListState.set_number.fn(state, FIRST)  # type: ignore[attr-defined]
     InboxListState.set_channel.fn(state, CHANNEL_INSTAGRAM)  # type: ignore[attr-defined]
@@ -211,6 +217,7 @@ async def test_the_address_decides_the_number(fake: _Fake, query: str) -> None: 
 def test_the_number_choice_is_drawn_like_the_channel_filter() -> None:
     rendered = str(inbox_list_page.inbox_list_pane())
     assert "show_numbers" in rendered and "set_number" in rendered
+    assert "RadixThemesSelect" in rendered and "number_value" in rendered  # one line
     assert NUMBERS_ARIA in rendered or json.dumps(NUMBERS_ARIA)[1:-1] in rendered
     assert "44px" in rendered  # every chip a thumb hits
     # It sits between the channel filter and the chips, inside the first paint.
@@ -283,3 +290,44 @@ async def test_a_dropped_number_tidies_the_address(fake: _Fake) -> None:  # noqa
     state.router = RouterData(url=ReflexURL(f"http://localhost/responder?numero={SECOND}"))
     await InboxListState.enter.fn(state)  # type: ignore[attr-defined]
     assert await _drain(InboxListState.load.fn(state)) == []  # type: ignore[attr-defined]
+
+
+# --- UX review ------------------------------------------------------------------------------
+
+
+def test_whatsapp_says_where_the_chats_went_with_this_numbers_way_there() -> None:
+    from .whatsapp_state import WhatsAppState
+    from .whatsapp_vm import CHATS_MOVED_ACTION, CHATS_MOVED_NOTICE, WHATSAPP_SUBTITLE
+
+    assert CHATS_MOVED_NOTICE == "Tus chats de WhatsApp se responden en Por responder."
+    assert CHATS_MOVED_ACTION == "Ir a Por responder"
+    assert WHATSAPP_SUBTITLE.startswith("Revisa que tu WhatsApp funcione")
+    state = WhatsAppState()
+    state.selected_connection_id = FIRST
+    assert state.chats_href == f"/responder?tab=mensajes&canal=whatsapp&numero={FIRST}"
+
+
+def test_the_header_number_select_fits_a_phone_row_with_the_theme_button() -> None:
+    from . import whatsapp_page
+
+    rendered = str(whatsapp_page.number_selector())
+    assert "calc(100% - 4.5rem)" in rendered and "280px" in rendered and "44px" in rendered
+
+
+def test_an_empty_whatsapp_view_offers_a_qr_code() -> None:
+    from .inbox_list_vm import EMPTY_QR_ACTION, EMPTY_QR_HREF, EMPTY_QR_LABEL, empty_for
+
+    connected = [CHANNEL_WHATSAPP]
+    assert empty_for(FILTER_AWAITING, connected, CHANNEL_WHATSAPP).action == EMPTY_QR_ACTION
+    assert empty_for(FILTER_ALL, connected, CHANNEL_WHATSAPP).action == EMPTY_QR_ACTION
+    assert empty_for(FILTER_ALL, connected, ALL_CHANNELS).action == "create"
+    assert empty_for(FILTER_CLOSED, connected, CHANNEL_WHATSAPP).action == "awaiting"
+    assert (EMPTY_QR_LABEL, EMPTY_QR_HREF) == (
+        "Crear un código QR",
+        "/whatsapp?tab=numero&sub=qr",
+    )
+    from .whatsapp_vm import TAB_QR, tab_url
+
+    assert EMPTY_QR_HREF == tab_url(TAB_QR)  # the real address of «Códigos QR»
+    rendered = str(inbox_list_page.inbox_list_pane())
+    assert EMPTY_QR_HREF in rendered

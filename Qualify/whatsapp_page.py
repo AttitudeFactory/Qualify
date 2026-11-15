@@ -61,6 +61,8 @@ from .whatsapp_tab_templates import templates_tab
 from .whatsapp_vm import (
     CHAT_SETTINGS_ROUTE,
     CHAT_SETTINGS_TITLE,
+    CHATS_MOVED_ACTION,
+    CHATS_MOVED_NOTICE,
     DETAILS_TOGGLE,
     MAX_ABOUT_CHARS,
     MAX_ADDRESS_CHARS,
@@ -160,7 +162,13 @@ def number_selector() -> rx.Component:
     return rx.cond(
         WhatsAppState.has_many_numbers,
         rx.select.root(
-            rx.select.trigger(placeholder="Elige un número", width="280px"),
+            # m-25029799 (UX review): on a phone the column's width, leaving room for
+            # the theme button on the same row; 280 px from `sm` up. 44 px tall (N12).
+            rx.select.trigger(
+                placeholder="Elige un número",
+                width=rx.breakpoints(initial="calc(100% - 4.5rem)", sm="280px"),
+                min_height="44px",
+            ),
             rx.select.content(rx.foreach(WhatsAppState.numbers, _number_item)),
             value=WhatsAppState.selected_connection_id,
             on_change=WhatsAppState.select_connection,
@@ -258,6 +266,33 @@ def sub_strip() -> rx.Component:
             ),
         ),
         rx.fragment(),
+    )
+
+
+def chats_moved_notice() -> rx.Component:
+    """m-25029799 (UX review): where the chats went — one line above «Tu número», the
+    design system's info callout, with «Ir a Por responder» (this number's chats)."""
+    return callout(
+        rx.flex(
+            rx.text(CHATS_MOVED_NOTICE, size="2", flex="1", min_width="12rem"),
+            rx.link(
+                rx.button(
+                    CHATS_MOVED_ACTION,
+                    variant="soft",
+                    size="2",
+                    type="button",
+                    **_TAP,
+                    **T.tone_scheme("info"),
+                ),
+                href=WhatsAppState.chats_href,
+            ),
+            align="center",
+            wrap="wrap",
+            gap="0.5rem",
+            width="100%",
+        ),
+        "info",
+        size="1",
     )
 
 
@@ -393,7 +428,7 @@ def whatsapp_index() -> rx.Component:
             on_leave=WhatsAppState.leave_page_flows,
         ),
         whatsapp_header(),
-        _whatsapp_body(sub_strip(), mine=_on_whatsapp_page()),
+        _whatsapp_body(chats_moved_notice(), sub_strip(), mine=_on_whatsapp_page()),
     )
 
 
