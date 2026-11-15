@@ -55,6 +55,34 @@ _WHERE = """
 """
 
 
+#: U4: what must fit in a 1280×800 window with a chat open (each fully inside it).
+_FIT = """
+() => {
+  const inside = (el) => {
+    if (!el) return false;
+    const r = el.getBoundingClientRect();
+    return r.height > 0 && r.top >= 0 && r.bottom <= window.innerHeight;
+  };
+  const byText = (sel, text) => [...document.querySelectorAll(sel)]
+    .find((el) => el.textContent.trim().startsWith(text));
+  return {
+    strip: inside(byText('.q-chat-thread button', 'Pedido')),
+    takeOver: inside(byText('.q-chat-thread button', 'Tomar el control')),
+    box: inside(document.querySelector('.q-chat-thread .q-wa-composer')),
+  };
+}
+"""
+#: U2: the gap between the page header and the chat's pinned top line, scrolled.
+_PIN = """
+() => {
+  const h = document.querySelector('.q-page-header').getBoundingClientRect();
+  const t = document.querySelector('.q-wa-chats--open .q-chat-head__top')
+    .getBoundingClientRect();
+  return {headerBottom: h.bottom, headTop: t.top, gap: t.top - h.bottom};
+}
+"""
+
+
 def _origin(page) -> str:  # noqa: ANN001
     match = re.match(r"https?://[^/]+", page.url)
     assert match is not None
@@ -119,10 +147,48 @@ def test_capture_whatsapp_in_inbox(chats_page) -> None:  # noqa: ANN001
             report[key] = page.evaluate(_WHERE)
             _row(page, "Laura Gómez").click()
             _thread_ready(page)
+            page.evaluate("() => { document.querySelector('main.q-panel').scrollTop = 0; }")
+            page.wait_for_timeout(300)
             key = f"{label}-whatsapp-open-{size_name}-{scheme}"
             page.screenshot(path=str(out / f"{key}.png"))
-            report[key] = page.evaluate(_WHERE)
+            report[key] = {**page.evaluate(_WHERE), "fit": page.evaluate(_FIT)}
+            if size_name == "1280":
+                page.evaluate("() => { document.querySelector('main.q-panel').scrollTop = 400; }")
+                page.wait_for_timeout(400)
+                key = f"{label}-whatsapp-scrolled-{size_name}-{scheme}"
+                page.screenshot(path=str(out / f"{key}.png"))
+                report[key] = {"pin": page.evaluate(_PIN)}
+            page.goto(_origin(page) + "/whatsapp?tab=chats&filtro=todos")
+            expect(page.get_by_role("button", name="Ir a Por responder")).to_be_visible(
+                timeout=60_000
+            )
+            page.wait_for_timeout(600)
+            page.screenshot(path=str(out / f"{label}-whatsapp-tab-{size_name}-{scheme}.png"))
     (out / f"{label}-where.json").write_text(json.dumps(report, indent=1), encoding="utf-8")
+
+
+def test_a_wide_open_chat_fits_and_pins_under_the_page_header(chats_page) -> None:  # noqa: ANN001
+    """U4: at 1280×800, with a chat open, the order strip, «Tomar el control» and the
+    reply box fit without scrolling. U2: scrolled, the chat's top line pins right under
+    the page header (no gap) at 1280 and 1024."""
+    page = chats_page
+    page.set_viewport_size(DESKTOP)
+    _list(page, "&filtro=todos")
+    _row(page, "Laura Gómez").click()
+    _thread_ready(page)
+    page.evaluate("() => { document.querySelector('main.q-panel').scrollTop = 0; }")
+    page.wait_for_timeout(300)
+    fit = page.evaluate(_FIT)
+    assert fit["strip"] and fit["takeOver"] and fit["box"], fit
+    expect(page.get_by_text("Quién te espera")).to_have_count(0)
+    for width in (1280, 1024):
+        page.set_viewport_size({"width": width, "height": 800})
+        page.evaluate("() => { document.querySelector('main.q-panel').scrollTop = 500; }")
+        page.wait_for_timeout(400)
+        pin = page.evaluate(_PIN)
+        assert abs(pin["gap"]) <= 2, (width, pin)
+    page.get_by_role("button", name=BACK).click()
+    expect(page.get_by_text("Quién te espera")).to_be_visible()  # back with the chat closed
 
 
 def test_a_whatsapp_row_opens_beside_the_list(chats_page) -> None:  # noqa: ANN001

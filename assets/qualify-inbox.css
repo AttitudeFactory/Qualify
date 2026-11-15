@@ -588,13 +588,14 @@ textarea.q-reply-field::placeholder,
 }
 
 /* U5 (UX review 2026-11-15): on a wide screen too, the chat header's top line stays in
-   view while the owner types, pinned under the page's own sticky header (whose height
-   at ≥ 1024 px, with its back link, title and subtitle, ends 8.85rem below the panel's
-   scroll edge — measured at 1280 in both chats). */
+   view while the owner types, pinned under the page's own sticky header. m-25029798:
+   that header lost its back link (the chat's own «‹ Por responder» is the only one), so
+   at ≥ 1024 px its title and subtitle end 5.875rem below the panel's scroll edge —
+   measured in the browser at 1280 and at 1024, both chats, mid-scroll: no gap. */
 @media (min-width: 1024px) {
   .q-wa-chats--open .q-chat-head__top {
     position: sticky;
-    top: 8.85rem;
+    top: 5.875rem;
     z-index: 3;
     background:
       linear-gradient(var(--q-chat-tint-3), var(--q-chat-tint-3)),

@@ -111,3 +111,19 @@ def test_phone_back_buttons_name_the_list_and_live_in_existing_sticky_headers() 
     assert "q-page-header" in detail
     assert _shown(detail, "Por aprobar")
     assert "44px" in detail
+
+
+def test_the_wide_chat_header_pins_right_under_the_page_header() -> None:
+    """m-25029798 (U2): the page header lost its back link, so the open chat's top line
+    pins at 5.875rem on a wide screen — measured at 1280 and 1024 with no gap."""
+    import re
+    from pathlib import Path
+
+    css = (Path(__file__).resolve().parents[1] / "assets" / "qualify-inbox.css").read_text()
+    block = re.search(
+        r"@media \(min-width: 1024px\) \{\s*\.q-wa-chats--open \.q-chat-head__top \{[^}]*\}",
+        css,
+    )
+    assert block is not None
+    assert "top: 5.875rem;" in block.group(0)
+    assert "8.85rem" not in css
