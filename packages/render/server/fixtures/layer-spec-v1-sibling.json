@@ -1,10 +1,10 @@
 {
-  "_source": "LayerSpec.model_dump_json() of qualify_creative.layer_spec.schema on origin/feat/m-25017283-capa-de-texto @ branch feat/m-25017292-limites-catalogo (layout_version 2). Regenerate with server/fixtures/dump_sibling_layer_specs.py when that schema changes.",
+  "_source": "LayerSpec.model_dump_json() of qualify_creative.layer_spec.schema on origin/feat/m-25017283-capa-de-texto @ branch feat/m-25017292-plate-cursiva-franja (layout_version 3). Regenerate with server/fixtures/dump_sibling_layer_specs.py when that schema changes.",
   "specs": [
     {
       "spec_version": 1,
       "layout_id": "plate",
-      "layout_version": 2,
+      "layout_version": 3,
       "format": "4:5",
       "photo": {
         "subject_box": [
@@ -34,7 +34,7 @@
     {
       "spec_version": 1,
       "layout_id": "scrim",
-      "layout_version": 2,
+      "layout_version": 3,
       "format": "1:1",
       "photo": {
         "subject_box": [
@@ -62,7 +62,7 @@
     {
       "spec_version": 1,
       "layout_id": "band",
-      "layout_version": 2,
+      "layout_version": 3,
       "format": "4:5",
       "photo": {
         "subject_box": [
@@ -94,7 +94,7 @@
     {
       "spec_version": 1,
       "layout_id": "info_card",
-      "layout_version": 2,
+      "layout_version": 3,
       "format": "4:5",
       "photo": null,
       "anchor": null,
@@ -124,7 +124,7 @@
     {
       "spec_version": 1,
       "layout_id": "brand_fill",
-      "layout_version": 2,
+      "layout_version": 3,
       "format": "4:5",
       "photo": null,
       "anchor": null,
@@ -153,7 +153,7 @@
     {
       "spec_version": 1,
       "layout_id": "brand_fill",
-      "layout_version": 2,
+      "layout_version": 3,
       "format": "1:1",
       "photo": null,
       "anchor": null,
@@ -178,7 +178,7 @@
     {
       "spec_version": 1,
       "layout_id": "highlight_circle",
-      "layout_version": 2,
+      "layout_version": 3,
       "format": "9:16",
       "photo": null,
       "anchor": null,
@@ -201,7 +201,7 @@
     {
       "spec_version": 1,
       "layout_id": "photo_only",
-      "layout_version": 2,
+      "layout_version": 3,
       "format": "9:16",
       "photo": {
         "subject_box": [

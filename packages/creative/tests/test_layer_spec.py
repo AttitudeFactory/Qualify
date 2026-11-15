@@ -48,7 +48,7 @@ def test_the_catalog_has_the_seven_layouts() -> None:
         "brand_fill",
         "highlight_circle",
     }
-    assert LAYOUT_VERSION == 2  # 2026-11-15: three titles lowered
+    assert LAYOUT_VERSION == 3  # 2026-11-15: titles lowered (2), band 1:1 43 % (3)
 
 
 @pytest.mark.parametrize(
@@ -400,4 +400,4 @@ def test_a_script_title_face_lowers_the_plate_title_only() -> None:
     assert title_limit("plate", "4:5", "Pacifico") == [24, 2]
     assert title_limit("plate", "4:5", "Poppins") == [28, 2]
     assert title_limit("band", "4:5", "Pacifico") == [36, 2]  # only plate has a script row
-    assert LAYOUT_VERSION == 2
+    assert LAYOUT_VERSION == 3

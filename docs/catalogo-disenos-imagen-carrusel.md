@@ -169,7 +169,8 @@ botones, posición y tamaño del logo, contador, recorte de la foto.
 borde más lejano del sujeto → `band` con la foto entera reducida (el fondo desenfocado que ya hace
 `CoverPhoto`). Si falla 3: quitar `call_phrase`, luego `subtitle`; el título nunca se quita. Cada
 caída queda escrita en la capa (`fallbacks: [...]`) para que la segunda mirada (m-25017287) y la
-medición la vean.
+medición la vean. Un `plate` con tipografía de títulos manuscrita que no cabe en 1:1 cae así a
+`band` y conserva su precio (2026-11-15, §12). La cadena nunca quita el precio por falta de alto; un precio más ancho que su caja (el ancho del título) sí se quita y queda en `dropped_slots`. Si eso debería rechazar la pieza es una decisión pendiente del fundador.
 
 ### 1.8 Reglas de redacción para el prompt de la capa
 
@@ -381,7 +382,7 @@ corchetes, `[dirección guardada]`, sale de los datos del negocio.
 - **No elegirlo cuando:** la foto pierde lo que la hace buena al recortarse (un plano muy vertical en
   4:5 con el sujeto de arriba a abajo); en ese caso la franja usa la foto entera reducida (respaldo
   del §1.7) o se elige `scrim`.
-- **Geometría:** la franja ocupa entre el 32 y el 40 % del alto (4:5), 34–42 % (1:1); en 9:16 va
+- **Geometría:** la franja ocupa entre el 32 y el 40 % del alto (4:5), 34–43 % (1:1; era 42 %, 2026-11-15); en 9:16 va
   desde ~y 1150 hasta el borde, y el texto termina en y 1536 (el resto de la franja queda de color,
   bajo la interfaz). La foto llena el resto con recorte centrado en el centro de `subject_box`; si el
   sujeto no entra entero en esa ventana, la foto se reduce sin recortar.
@@ -856,3 +857,5 @@ El fundador aprobó el catálogo de siete diseños y respondió las cinco pregun
 Siguen siendo hipótesis, a validar con composiciones reales (m-25017292) y con dueños: los límites de caracteres, los tamaños de letra y las zonas seguras de cada formato.
 
 **2026-11-15 — límites bajados** (fundador: «Sí, bájalos»). Las composiciones reales de la hoja de contacto de m-25017285 rechazaron textos que estaban dentro del límite, así que se bajan tres títulos: `brand_fill` en 4:5 de 60 a 45 caracteres; `info_card` en 1:1 de 24 a 18 (sigue en 1 línea); y `plate` con una tipografía de títulos manuscrita, 24 caracteres en 2 líneas en todos los formatos. La versión del catálogo pasa a `layout_version` 2. Siguen siendo hipótesis hasta medirlos con marcas reales.
+
+**2026-11-15 — la franja 1:1 sube del 42 al 43 % del alto** (fundador: «Sí, súbelo a 43 %»). Un `plate` en 1:1 con tipografía de títulos manuscrita que no cabe cae a `band`, y ahí un título en Pacifico a su tamaño mínimo (84 px, 2 líneas) más el precio necesitaban 346,7 px de los 341,6 que dejaba el 42 %: con el 43 % (352,4 px) caben sin quitar el precio. La versión del catálogo pasa a `layout_version` 3 y el compositor a `engine_revision` 3. Medido en un solo caso (la imagen 36 de la vista previa); sigue siendo una hipótesis.

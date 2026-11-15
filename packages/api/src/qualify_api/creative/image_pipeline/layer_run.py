@@ -30,8 +30,8 @@ call after this stage must move it before, or replays would read the wrong steps
 A second call that fails (budget refused, model error) drops only the regenerated slides'
 layers: the other slides keep the first answer's, on the first pass and on a replay alike.
 
-Follow-up (2026-11-15, catalog `layout_version` 2): a step saved under an older catalog no
-longer validates, so its replay falls to «no layer» before the regeneration loop — the
+Follow-up (2026-11-15, catalog `layout_version` 2, then 3): a step saved under an older catalog
+no longer validates, so its replay falls to «no layer» before the regeneration loop — the
 claimed regenerations are not made again on that pass. None exist (the switch is off).
 
 Nothing here may cost the owner the piece: any failure (the switch on without a key, the

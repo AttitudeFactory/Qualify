@@ -4,6 +4,8 @@ with the content, the effective layout handed back — against an in-memory rend
 from __future__ import annotations
 
 import json
+import re
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -301,7 +303,10 @@ def test_a_base_photo_needs_its_fingerprint() -> None:
 def test_the_engine_revision_is_in_the_job_key_and_the_object_key() -> None:
     from qualify_creative.render.layer_compose import engine_revision
 
-    assert engine_revision() >= 2  # read from the published manifest
+    # pinned to the revision CONTRACT.md publishes («today N»), read, never hard-coded
+    contract = (Path(__file__).resolve().parents[2] / "render" / "CONTRACT.md").read_text("utf-8")
+    today = re.search(r"engine_revision`, today (\d+)\)", contract)
+    assert today is not None and engine_revision() == int(today.group(1))
     a, b = _request(engine_rev=2), _request(engine_rev=3)
     assert a.job_id() != b.job_id()
     assert a.object_key() != b.object_key()  # the key carries the job id
@@ -338,7 +343,7 @@ def test_the_manifest_parses_and_never_serves_a_post_recipe() -> None:
         "square": "1:1",
         "story": "9:16",
     }
-    assert m.layer_catalog is not None and m.layer_catalog["layout_version"] == LAYOUT_VERSION == 2
+    assert m.layer_catalog is not None and m.layer_catalog["layout_version"] == LAYOUT_VERSION == 3
     assert set(m.layer_catalog["layouts"]) == {
         "photo_only",
         "plate",

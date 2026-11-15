@@ -134,7 +134,7 @@ const push = (c) => {
 for (const [key, b] of Object.entries(BRANDS)) {
   if (brandArg !== 'all' && brandArg !== key) continue;
   for (const format of ['4:5', '1:1', '9:16']) {
-    const base = {layout_version: 2, subject_box: SUBJECT, logo_in_photo: false};
+    const base = {layout_version: 3, subject_box: SUBJECT, logo_in_photo: false};
     push({brand: key, format, name: 'photo_only', photo: true, layer: {...base, layout_id: 'photo_only'}});
     push({brand: key, format, name: 'plate top_left (price)', photo: true, layer: {...base, layout_id: 'plate', anchor: 'top_left', container_color: 'surface', accent_word: 1, price_ref: 'p-1', ...maxText('plate', format, key)}});
     push({brand: key, format, name: 'scrim top', photo: true, layer: {...base, layout_id: 'scrim', anchor: 'top', subject_box: [0.25, 0.5, 0.75, 0.9], ...maxText('scrim', format, key)}});
@@ -148,9 +148,9 @@ for (const [key, b] of Object.entries(BRANDS)) {
     const bfMax = catalog.layouts.brand_fill.blocks[format][1];
     push({brand: key, format, name: 'brand_fill', photo: false, layer: {...base, subject_box: null, layout_id: 'brand_fill', container_color: 'accent', accent_word: 2, ...maxText('brand_fill', format, key), info_blocks: ['contact', 'hours'].slice(0, bfMax).map((k) => ({kind: k, value: VALUE(k, catalog.layouts.brand_fill.value[format][0])}))}});
     if (format === '9:16') {
-      push({brand: key, format, name: 'highlight icon', photo: false, layer: {layout_id: 'highlight_circle', layout_version: 2, container_color: 'accent', highlight_content: {type: 'icon', icon_id: 'utensils'}}});
-      push({brand: key, format, name: 'highlight word', photo: false, layer: {layout_id: 'highlight_circle', layout_version: 2, container_color: 'accent', highlight_content: {type: 'word', word: 'Domicilio'}}});
-      push({brand: key, format, name: 'highlight photo', photo: true, layer: {layout_id: 'highlight_circle', layout_version: 2, container_color: 'surface', highlight_content: {type: 'photo'}, subject_box: SUBJECT}});
+      push({brand: key, format, name: 'highlight icon', photo: false, layer: {layout_id: 'highlight_circle', layout_version: 3, container_color: 'accent', highlight_content: {type: 'icon', icon_id: 'utensils'}}});
+      push({brand: key, format, name: 'highlight word', photo: false, layer: {layout_id: 'highlight_circle', layout_version: 3, container_color: 'accent', highlight_content: {type: 'word', word: 'Domicilio'}}});
+      push({brand: key, format, name: 'highlight photo', photo: true, layer: {layout_id: 'highlight_circle', layout_version: 3, container_color: 'surface', highlight_content: {type: 'photo'}, subject_box: SUBJECT}});
     }
   }
   // a 3-slide carousel (4:5): cover, body, closing — counter on all, logo on first and last
@@ -166,7 +166,7 @@ for (const [key, b] of Object.entries(BRANDS)) {
       name: `carousel ${i + 1}/3 ${s.role}`,
       photo: s.role !== 'closing',
       slide: {index: i + 1, total: 3, role: s.role},
-      layer: {layout_version: 2, subject_box: s.role === 'closing' ? null : SUBJECT, ...s.layer},
+      layer: {layout_version: 3, subject_box: s.role === 'closing' ? null : SUBJECT, ...s.layer},
     }),
   );
 }
