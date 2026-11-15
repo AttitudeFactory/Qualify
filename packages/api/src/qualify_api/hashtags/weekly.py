@@ -174,8 +174,9 @@ REREAD_AFTER = timedelta(days=7)
 #: pass that died mid-call) inside this window is not attempted again.
 RETRY_AFTER = timedelta(hours=24)
 #: HTTP statuses the vendor was MEASURED not to bill (503: 2026-11-14, 7 of 14 manual
-#: reads answered 503, none billed; 2026-11-15 in production). This set only grows with
-#: a measured vendor test documented in `docs/epica-etiquetas-publicaciones.md` (D3).
+#: reads answered 503, none billed). Production saw 503 again on 2026-11-15 (2 of 3 calls
+#: failed, one a confirmed 503) — how often, not whether it is billed. This set only grows
+#: with a measured vendor test documented in `docs/epica-etiquetas-publicaciones.md` (D3).
 UNBILLED_STATUSES = frozenset({503})
 #: Request errors where the request was never sent, so nothing could be billed.
 _NEVER_SENT = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)

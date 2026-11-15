@@ -228,6 +228,8 @@ def test_a_503_and_a_request_never_sent_are_unbilled(
         httpx.WriteTimeout("slow"),
         httpx.WriteError("broken"),
         httpx.RemoteProtocolError("disconnected"),
+        httpx.CloseError("close"),
+        httpx.ProxyError("proxy"),
     ],
     ids=[
         "500",
@@ -239,6 +241,8 @@ def test_a_503_and_a_request_never_sent_are_unbilled(
         "write-timeout",
         "write-error",
         "remote-protocol",
+        "close-error",
+        "proxy-error",
     ],
 )
 def test_a_failure_the_vendor_may_have_billed_counts_and_holds_the_day(

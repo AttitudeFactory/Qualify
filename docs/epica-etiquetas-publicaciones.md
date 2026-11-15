@@ -43,7 +43,9 @@ semana y congeló al negocio 24 horas, aunque el proveedor no cobra los 503 (el 
 (`qualify_api.hashtags.weekly`):
 
 - Solo es «no cobrado» lo que se midió como no cobrado o lo que nunca salió: la respuesta HTTP
-  503 (medida el 2026-11-14 y el 2026-11-15) y una llamada que no llegó a enviarse (no se pudo
+  503 (medida el 2026-11-14: 7 de 14 lecturas respondieron 503 y ninguna se cobró; el
+  2026-11-15 volvió a aparecer en producción —2 de 3 llamadas fallaron, una con 503
+  confirmado—, lo que dice cuán seguido pasa, no si se cobra) y una llamada que no llegó a enviarse (no se pudo
   conectar o no hubo conexión libre). Esa llamada no cuenta para las 5 lecturas de la semana y
   no congela el día. El negocio se vuelve a intentar en la siguiente revisión, con dos frenos
   para que los reinicios por despliegue no insistan: al menos 3 horas después del último fallo
