@@ -97,9 +97,12 @@ def _shown(rendered: str, text: str) -> bool:
 
 def test_phone_back_buttons_name_the_list_and_live_in_existing_sticky_headers() -> None:
     assert _shown(str(messages_back()), "Por responder")
-    assert _shown(str(chats_back()), "Chats")
+    # m-25029798: a WhatsApp chat opens only in «Por responder»: its back says so, and
+    # the WhatsApp screen's header has no back of its own.
+    assert _shown(str(chats_back()), "Por responder")
     assert _shown(str(responder_header()), "Por responder")
-    assert _shown(str(whatsapp_header()), "Chats")
+    assert not _shown(str(whatsapp_header()), "Por responder")
+    assert not _shown(str(whatsapp_header()), "Chats")
     # m-25017861: the menu's long editor lives on «Ajustes de chats › WhatsApp».
     settings = str(whatsapp_settings_index())
     assert _shown(settings, "Volver a los 4 pasos") and _shown(settings, "Ajustes de chats")
@@ -108,3 +111,24 @@ def test_phone_back_buttons_name_the_list_and_live_in_existing_sticky_headers() 
     assert "q-page-header" in detail
     assert _shown(detail, "Por aprobar")
     assert "44px" in detail
+
+
+def test_the_wide_open_chat_fills_the_pane_instead_of_pinning() -> None:
+    """m-25029798: on a wide screen the open chat is a column that fills the window
+    below the tabs (the messages take the rest, never under 14rem; the reply box at the
+    pane's foot), so the page does not scroll and nothing pins under its header any more;
+    the header is one compact grid whose «‹ Por responder» row hides (the list is beside
+    it). Phones keep their own rules."""
+    import re
+    from pathlib import Path
+
+    css = (Path(__file__).resolve().parents[1] / "assets" / "qualify-inbox.css").read_text()
+    wide = css[
+        css.index("── The open chat on a wide screen") : css.index("── The open chat on a phone")
+    ]
+    assert "@media (min-width: 1024px)" in wide
+    assert re.search(r"height: calc\(100dvh - var\(--q-chat-pane-top\)\)", wide)
+    assert "min-height: 14rem;" in wide and "max-height: none;" in wide
+    assert ".q-chat-head__back {\n    display: none;" in wide
+    assert "position: sticky" not in wide  # no pin under the page header any more
+    assert "42.5rem" not in css and "5.875rem" not in css and "8.85rem" not in css

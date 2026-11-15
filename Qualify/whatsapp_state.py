@@ -557,14 +557,9 @@ class WhatsAppState(rx.State):
                 self.selected_connection_id = data[0].connection_id if data else ""
                 self._reset_number_scoped()
 
-        if self.active_tab == "chats":
-            from .whatsapp_chats_state import WhatsAppChatsState
-
-            yield WhatsAppChatsState.restore_address
-            if flow_param(self.router.url.query_parameters, "mensaje-chat", 2):
-                yield WhatsAppChatsState.restore_flow
-            yield WhatsAppChatsState.restore_picker  # the send panel (m-24955785)
-        elif self.active_tab == "menu":
+        # m-25029798: Chats is only the number's list here; a chat (and its drawers)
+        # opens in «Por responder» — an old chat address was redirected there already.
+        if self.active_tab == "menu":
             from .whatsapp_menu_state import WhatsAppMenuState
 
             yield WhatsAppMenuState.restore_flow

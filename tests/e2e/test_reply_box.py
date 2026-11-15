@@ -283,9 +283,10 @@ def test_on_a_wide_screen_the_page_header_stays(chats_page) -> None:  # noqa: AN
         expect(page.locator(".q-page-header")).to_be_visible()
         _only_send_is_solid(page)
         assert page.evaluate(_SMALL_CONTROLS, _CONTROLS) == []
-        # U5: while typing, the chat's top line stays in view under the page header.
+        # U5 / m-25029798: while typing, the chat header stays in view under the page header
+        # (on a desk the chat fills the pane, so the page does not scroll it away).
         _box_in_view(page)
-        top = page.locator(".q-chat-head__top").bounding_box()
+        top = page.locator(".q-chat-head").first.bounding_box()
         header = page.locator(".q-page-header").bounding_box()
         assert top is not None and header is not None
         assert top["y"] >= header["y"] + header["height"] - 1

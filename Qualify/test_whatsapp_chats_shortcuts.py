@@ -202,8 +202,8 @@ async def test_no_address_opens_the_empty_state_with_the_way_back(gw: FakeGatewa
     await state._load_pick(PICK_DIRECTIONS)
     assert state.pick_directions.empty and state.pick_can_send is False
     href = state.pick_profile_href
-    assert href.startswith("/whatsapp?tab=numero&sub=perfil&volver=")
-    assert "tab%3Dchats" in href
+    assert href.startswith("/whatsapp?tab=numero&sub=perfil&cuenta=") and "&volver=" in href
+    assert "%2Fresponder%3Ftab%3Dmensajes" in href and "chat%3D" in href  # m-25029798
     plan = PickSend(
         session=1, source=PICK_DIRECTIONS, thread_id="t", connection_id="c", request_key="k"
     )
@@ -261,9 +261,8 @@ def test_size_words() -> None:
 
 
 def test_the_tab_draws_the_shortcuts_and_never_autoplays() -> None:
-    from .whatsapp_tab_chats import chats_tab
 
-    rendered = str(chats_tab().render())
+    rendered = str(_chat_views().render())
 
     def present(text: str) -> bool:
         escaped = json.dumps(text)[1:-1].replace("\\", "\\\\")
@@ -336,3 +335,13 @@ def test_a_pin_row_without_coordinates_has_no_map_link() -> None:
     assert pin.is_location and pin.location_href == ""
     body = inspect.getsource(whatsapp_tab_chats._bubble_body)
     assert 'm.location_href != ""' in body  # the link is drawn only with a href
+
+
+def _chat_views() -> object:
+    """m-25029798: `/whatsapp`'s number list plus the open chat, which is mounted beside
+    the single list of «Por responder» (`whatsapp_chat_pane` + `whatsapp_chat_layers`)."""
+    import reflex as rx
+
+    from .whatsapp_tab_chats import chats_tab, whatsapp_chat_layers, whatsapp_chat_pane
+
+    return rx.fragment(chats_tab(), whatsapp_chat_pane(), whatsapp_chat_layers())

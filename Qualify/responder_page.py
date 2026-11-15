@@ -11,9 +11,9 @@ Layout (docs/design-system.md §9.1): `app_shell(page_header(...), page_body(...
    (N5). From the `md` breakpoint up a segmented control; on a phone a select — the
    segments do not fit 360 px and N12 allows no sideways scroll for tabs.
 3. **The open tab's list** — only that tab is in the tree, so only its state loads.
-   «Mensajes» is the single list of every chat channel with the Instagram chat beside it
-   (`conversations_page.messages_tab`, m-25017859; a WhatsApp row opens today's WhatsApp
-   chat, whose «‹ Por responder» comes back); the others are their screens' own content
+   «Mensajes» is the single list of every chat channel with the open chat of either
+   channel beside it (`conversations_page.messages_tab`, m-25017859, m-25029798); the
+   others are their screens' own content
    (`followups_page.followups_panel`, `inbox_page.comments_tab`, `leads_page.leads_tab`).
    The «WhatsApp» tab left: `?tab=whatsapp` redirects to «Mensajes» narrowed to WhatsApp.
 
@@ -25,9 +25,7 @@ from __future__ import annotations
 
 import reflex as rx
 
-from .conversations_page import _back_button as messages_back_button
-from .conversations_page import messages_tab
-from .conversations_state import ConversationsState
+from .conversations_page import chat_is_open, messages_tab
 from .followups_page import followups_panel
 from .inbox_page import comments_tab
 from .leads_page import leads_tab
@@ -245,24 +243,29 @@ def _tab_body() -> rx.Component:
 
 
 def responder_header() -> rx.Component:
+    """No back button of its own (m-25029798): the open chat's header carries the one
+    «‹ Por responder», on every size and for both channels (it used to repeat here on a
+    desk; on a phone the open chat already hid it)."""
     return page_header(
         "Por responder",
         "Las personas que te escribieron o comentaron y todavía esperan tu respuesta.",
-        kicker=rx.cond(
-            (R.active_tab == TAB_MESSAGES) & ConversationsState.has_open_thread,
-            messages_back_button(),
-        ),
     )
 
 
 def _who_is_waiting() -> rx.Component:
     """On a phone, «Quién te espera» shows only on the way in (`/responder` with no
     `?tab=`): after a «Ver» the owner lands on the list, not on the figures again. The
-    figures still travel in the tab labels. From md up it always shows."""
+    figures still travel in the tab labels. From md up it always shows — except while a
+    chat is open in «Mensajes» (U4, UX review of m-25029798): then the tabs, the list
+    and the chat move up; the figures come back when it closes."""
     return rx.cond(
-        R.has_tab_param,
-        rx.box(section("Quién te espera", _counts()), display=["none", "none", "block"]),
-        section("Quién te espera", _counts()),
+        (R.active_tab == TAB_MESSAGES) & chat_is_open(),
+        rx.fragment(),
+        rx.cond(
+            R.has_tab_param,
+            rx.box(section("Quién te espera", _counts()), display=["none", "none", "block"]),
+            section("Quién te espera", _counts()),
+        ),
     )
 
 

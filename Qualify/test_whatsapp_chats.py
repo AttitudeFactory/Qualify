@@ -647,16 +647,14 @@ def test_the_tab_talks_to_the_state_only() -> None:
 def test_the_tab_renders_list_conversation_and_composer() -> None:
     import json
 
-    from .whatsapp_tab_chats import chats_tab
-
-    rendered = str(chats_tab().render())
+    rendered = str(_chat_views().render())
 
     def present(text: str) -> bool:
         escaped = json.dumps(text)[1:-1].replace("\\", "\\\\")
         return text in rendered or escaped in rendered
 
     for text in (
-        "Elige una conversación",
+        "Ir a Por responder",  # m-25029798 (U3): no empty pane here any more
         "Tomar el control",
         "Devolver al menú",
         "Cerrar",
@@ -677,9 +675,8 @@ def test_the_tab_renders_list_conversation_and_composer() -> None:
 def test_the_tab_wires_media_through_the_state() -> None:
     """The media button, the thumbnail and the lightbox all go through state events —
     the lightbox URL is the state's, never one the browser passes in."""
-    from .whatsapp_tab_chats import chats_tab
 
-    rendered = str(chats_tab().render())
+    rendered = str(_chat_views().render())
     for handler in ("request_media", "open_lightbox", "set_lightbox_open", "lightbox_url"):
         assert handler in rendered, handler
     assert "<audio" in rendered or '"audio"' in rendered
@@ -798,3 +795,13 @@ def test_template_choice_and_fields_vm() -> None:
     assert gaps == {"body:nombre": "Ana", "body:2": "[Dato 2 del mensaje]"}
     assert not template_fields_complete(fields)
     assert template_fields_complete([])
+
+
+def _chat_views() -> object:
+    """m-25029798: `/whatsapp`'s number list plus the open chat, which is mounted beside
+    the single list of «Por responder» (`whatsapp_chat_pane` + `whatsapp_chat_layers`)."""
+    import reflex as rx
+
+    from .whatsapp_tab_chats import chats_tab, whatsapp_chat_layers, whatsapp_chat_pane
+
+    return rx.fragment(chats_tab(), whatsapp_chat_pane(), whatsapp_chat_layers())

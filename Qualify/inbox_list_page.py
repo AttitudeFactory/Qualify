@@ -1,11 +1,11 @@
 """The single chat list of «Por responder» › «Mensajes» (m-25017859, BU-A3).
 
-The left pane of the tab (`conversations_page.messages_tab` puts the Instagram chat
-pane at its right): the channel filter (only with chats on two or more channels), the
-chips, the «… ya no se pueden responder aquí» notice, the shared rows (`chat_row.chat_row`) and «Ver
-más». Design-system pieces only (buttons as chips like the screens before it, `callout`,
-`empty_state`, `skeleton_rows`); every count and word comes from `inbox_list_vm` through
-`InboxListState`.
+The left pane of the tab (`conversations_page.messages_tab` puts the open chat of
+either channel at its right, m-25029798): the channel filter (only with chats on two or
+more channels), the chips, the «… ya no se pueden responder aquí» notice, the shared rows
+(`chat_row.chat_row`) and «Ver más». Design-system pieces only (buttons as chips like the
+screens before it, `callout`, `empty_state`, `skeleton_rows`); every count and word comes
+from `inbox_list_vm` through `InboxListState`.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from __future__ import annotations
 import reflex as rx
 
 from .chat_row import chat_row
-from .chat_row_vm import CHANNEL_INSTAGRAM, ChatRowVM
+from .chat_row_vm import CHANNEL_INSTAGRAM, CHANNEL_WHATSAPP, ChatRowVM
 from .conversations_state import ConversationsState
 from .inbox_list_state import LIST_DOM_ID, InboxListState
 from .inbox_list_vm import (
@@ -34,6 +34,7 @@ from .inbox_list_vm import (
 from .next_steps_vm import CREATE_LABEL, CREATE_ROUTE
 from .ui import callout, card, empty_state, skeleton_rows
 from .ui import tokens as T
+from .whatsapp_chats_state import WhatsAppChatsState
 
 L = InboxListState
 
@@ -167,11 +168,23 @@ def _notice() -> rx.Component:
     )
 
 
+def _chat_open() -> rx.Var[bool]:
+    """A chat of either channel is open beside this list."""
+    return ConversationsState.has_open_thread | WhatsAppChatsState.has_open_thread
+
+
 def _row(row: ChatRowVM) -> rx.Component:
+    """m-25029798: a row of either channel opens its chat beside this list; the open
+    one is marked whatever its channel."""
     return chat_row(
         row,
-        is_open=(row.channel == CHANNEL_INSTAGRAM)
-        & (row.thread_id == ConversationsState.open_thread_id),
+        is_open=(
+            (row.channel == CHANNEL_INSTAGRAM)
+            & (row.thread_id == ConversationsState.open_thread_id)
+        )
+        | (
+            (row.channel == CHANNEL_WHATSAPP) & (row.thread_id == WhatsAppChatsState.open_thread_id)
+        ),
         on_open=L.open_row(row.thread_id),
     )
 
@@ -291,7 +304,9 @@ def inbox_list_pane() -> rx.Component:
     a phone the first chat is not pushed under the fold (UX review of m-25017859)."""
     return rx.vstack(
         heartbeat(),
-        _explainer(),
+        # U4 (UX review of m-25029798): with a chat open, the explanation steps aside
+        # so the list and the chat move up; it comes back when the chat closes.
+        rx.cond(_chat_open(), rx.fragment(), _explainer()),
         # The chips paint with the first loaded list, together with the explanation
         # above them, so neither pushes the other once it appears.
         rx.cond(

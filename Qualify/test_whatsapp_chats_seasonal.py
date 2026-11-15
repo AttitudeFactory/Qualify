@@ -259,9 +259,8 @@ async def test_a_failed_approved_list_is_a_failure_too(chat: Any) -> None:
 
 def test_the_empty_step_links_and_its_words() -> None:
     from .whatsapp_chats_vm import SEASONAL_CREATE_HREF, SEASONAL_PENDING_HREF
-    from .whatsapp_tab_chats import chats_tab
 
-    rendered = str(chats_tab().render())
+    rendered = str(_chat_views().render())
     for text in (
         "Apruébalos y quedan listos para mandar desde aquí.",
         "Revisarlos en Por aprobar",
@@ -339,9 +338,8 @@ async def test_a_late_list_is_dropped(chat: Any) -> None:
 
 
 def test_the_tab_draws_it_and_never_autoplays() -> None:
-    from .whatsapp_tab_chats import chats_tab
 
-    rendered = str(chats_tab().render())
+    rendered = str(_chat_views().render())
     for text in (
         "De otras temporadas",
         "Los stickers llegan solos, sin texto.",
@@ -411,3 +409,13 @@ def test_the_create_link_s_way_back_is_safe_and_says_chats() -> None:
     assert return_path_from_query({"volver": "https://example.com/whatsapp"}) == ""
     assert "en Tu marca" in SEASONAL_EMPTY_TEXT
     assert "sigue respondiendo" not in SEASONAL_EMPTY_TEXT
+
+
+def _chat_views() -> object:
+    """m-25029798: `/whatsapp`'s number list plus the open chat, which is mounted beside
+    the single list of «Por responder» (`whatsapp_chat_pane` + `whatsapp_chat_layers`)."""
+    import reflex as rx
+
+    from .whatsapp_tab_chats import chats_tab, whatsapp_chat_layers, whatsapp_chat_pane
+
+    return rx.fragment(chats_tab(), whatsapp_chat_pane(), whatsapp_chat_layers())

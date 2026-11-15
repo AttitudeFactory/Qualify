@@ -587,18 +587,135 @@ textarea.q-reply-field::placeholder,
   flex-shrink: 0;
 }
 
-/* U5 (UX review 2026-11-15): on a wide screen too, the chat header's top line stays in
-   view while the owner types, pinned under the page's own sticky header (whose height
-   at ≥ 1024 px, with its back link, title and subtitle, ends 8.85rem below the panel's
-   scroll edge — measured at 1280 in both chats). */
+/* m-25029798: the header's «✕» exists only on a desk (below, the back row does it). */
+.q-chat-head .q-chat-close {
+  display: none;
+}
+
+/* ── The open chat on a wide screen (m-25029798, ≥ 1024 px) ──────────────────────────
+   The conversation is the biggest thing in the pane. The chat is a column that fills
+   the window below the tabs: the header and the order strip keep their size, the
+   messages scroll in the middle and take what is left, the reply box rests at the
+   bottom of the pane — visible without scrolling the page on any window tall enough
+   for header + 14rem of messages + reply box; a shorter one scrolls the page (the
+   messages never go under 14rem). `--q-chat-pane-top` is where the pane starts:
+   panel edge, page header, tabs and their gaps, measured at 1024, 1280 and 1512 in
+   «Por responder» with a chat open (the list's extras step aside then). The page no
+   longer scrolls with a chat open, so nothing pins under the page header any more.
+
+   The header is one compact grid: avatar (the list rows' size) · name over number /
+   handle · the channel's own action («Tomar el control» / «Devolver al menú») · «⋯»;
+   the channel word, the state pills and the window line on the line under the name.
+   Its «‹ Por responder» row hides: the list is right beside the chat (keyboard: the
+   list's rows and its chips come before the chat). Same rules for both channels — the
+   header is the shared `chat_thread.thread_header`. Nothing here applies on a phone. */
 @media (min-width: 1024px) {
-  .q-wa-chats--open .q-chat-head__top {
-    position: sticky;
-    top: 8.85rem;
-    z-index: 3;
-    background:
-      linear-gradient(var(--q-chat-tint-3), var(--q-chat-tint-3)),
-      var(--color-panel-solid);
+  /* the pane's top (panel edge 10px + page header + tabs + gaps = 197px measured) plus
+     what is left under it (the page body's bottom padding, trimmed below, and the
+     panel's edge): 13.75rem. A MIN height, not a height: when the window is too short
+     for header + 14rem of messages + reply box the chat grows and the page scrolls —
+     nothing is squeezed or spills out of the card. */
+  .q-page-body:has(.q-wa-chats--open .q-chat-thread) {
+    padding-bottom: 0.75rem;
+  }
+  .q-wa-chats--open .q-chat-thread {
+    --q-chat-pane-top: 13.75rem;
+    display: flex;
+    flex-direction: column;
+    min-height: calc(100vh - var(--q-chat-pane-top));
+    min-height: calc(100dvh - var(--q-chat-pane-top));
+  }
+  .q-wa-chats--open .q-chat-thread > .rx-Stack {
+    flex: 1 1 auto;
+  }
+  .q-wa-chats--open .q-chat-thread > .rx-Stack > * {
+    flex: none;
+  }
+  /* the messages (Instagram: the scroll itself; WhatsApp: the order + the scroll) take
+     the free room from a zero basis, never less than 14rem */
+  .q-wa-chats--open .q-chat-thread > .rx-Stack > .q-chat-scroll,
+  .q-wa-chats--open .q-chat-thread > .rx-Stack > :has(> .q-chat-scroll) {
+    flex: 1 1 0;
+    min-height: min-content;
+  }
+  .q-wa-chats--open .q-chat-thread > .rx-Stack > :has(> .q-chat-scroll) > :not(.q-chat-scroll) {
+    flex: none;
+  }
+  .q-wa-chats--open .q-chat-thread .q-chat-scroll.q-wa-scroll--messages {
+    flex: 1 1 0;
+    min-height: 14rem;
+    max-height: none;
+  }
+
+  /* the compact header */
+  .q-wa-chats--open .q-chat-head {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto auto auto;
+    align-self: stretch;
+    width: 100%;
+    column-gap: 0.75rem;
+    row-gap: 0.125rem;
+    align-items: center;
+    padding: 0.5rem 0.75rem;
+    background: var(--q-chat-tint-3);
+    border-radius: var(--q-radius-control);
+    box-shadow: inset 0 -1px 0 var(--gray-a5);
+  }
+  .q-wa-chats--open .q-chat-head .q-chat-head__top,
+  .q-wa-chats--open .q-chat-head .q-chat-head__rest,
+  .q-wa-chats--open .q-chat-head .q-chat-head__id {
+    display: contents;
+  }
+  /* «✕» (Volver a la lista): the desk's way back to the plain list, after «⋯» */
+  .q-wa-chats--open .q-chat-head .q-chat-head__id > .q-chat-close {
+    display: inline-flex;
+    grid-column: 5;
+    grid-row: 1;
+  }
+  .q-wa-chats--open .q-chat-head .q-chat-head__back {
+    display: none;
+  }
+  .q-wa-chats--open .q-chat-head .q-chat-head__id > .q-chat-avatar {
+    grid-column: 1;
+    grid-row: 1 / span 2;
+  }
+  /* the list rows' avatar size (Radix size 4), letters included */
+  .q-wa-chats--open .q-chat-head .q-chat-avatar .rt-AvatarRoot {
+    --avatar-size: var(--space-8);
+    --avatar-fallback-one-letter-font-size: var(--font-size-5);
+    --avatar-fallback-two-letters-font-size: var(--font-size-3);
+    width: var(--space-8);
+    height: var(--space-8);
+  }
+  .q-wa-chats--open .q-chat-head .q-chat-head__id > :not(.q-chat-avatar):not(.q-chat-more):not(.q-chat-close) {
+    grid-column: 2;
+    grid-row: 1;
+  }
+  .q-wa-chats--open .q-chat-head .q-chat-head__id > .q-chat-more {
+    grid-column: 4;
+    grid-row: 1;
+  }
+  .q-wa-chats--open .q-chat-head .q-chat-head__actions {
+    grid-column: 3;
+    grid-row: 1;
+  }
+  .q-wa-chats--open .q-chat-head .q-chat-head__actions > * {
+    width: auto;
+  }
+  .q-wa-chats--open .q-chat-head .q-chat-head__meta {
+    grid-column: 2 / 6;
+    grid-row: 2;
+    row-gap: 0.125rem;
+  }
+}
+/* Between 1024 and 1279 px the pane is too narrow for the name and «Tomar el control»
+   on one row (seen at 1024: the name cut to its first letter): the action goes under
+   the line of pills, still in the header, the name keeps the row. */
+@media (min-width: 1024px) and (max-width: 1279px) {
+  .q-wa-chats--open .q-chat-head .q-chat-head__actions {
+    grid-column: 2 / 6;
+    grid-row: 3;
+    justify-self: start;
   }
 }
 

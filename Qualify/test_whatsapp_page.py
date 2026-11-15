@@ -750,7 +750,8 @@ def test_tabs_exist_behind_the_agreed_hooks() -> None:
     rendered = str(whatsapp_tab_chats.chats_tab().render())
     # WA-11 replaced the Chats placeholder; its root loads on mount.
     assert "Los chats llegan con la siguiente entrega" not in rendered
-    assert "Elige una conversaci" in rendered
+    # m-25029798 (U3): nothing opens here; the list says where its chats open now.
+    assert "Elige una conversaci" not in rendered and "Ir a Por responder" in rendered
 
 
 def test_the_page_renders_every_tab() -> None:

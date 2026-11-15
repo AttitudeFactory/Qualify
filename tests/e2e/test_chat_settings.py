@@ -158,7 +158,7 @@ def test_the_menus_old_address_lands_in_ajustes(chats_page) -> None:  # noqa: AN
     lit = _menu(page).locator('[aria-current="page"]')
     expect(lit).to_have_count(1)
     expect(lit).to_contain_text("Ajustes de chats")
-    expect(page.locator(".q-wa-chats")).to_have_count(0)
+    expect(page.locator(".q-wa-chats__list")).to_have_count(0)
     expect(page.get_by_role("group", name="Secciones de WhatsApp")).to_have_count(0)
     # The page's name, or the menu's guided steps (they name the way back).
     expect(

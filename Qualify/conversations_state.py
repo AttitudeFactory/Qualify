@@ -168,8 +168,8 @@ from .conversations_vm import (
     voice_note_name,
 )
 from .nav_url import (
-    back_url_script,
     conversation_href,
+    inbox_back_script,
     list_view,
     push_url_script,
     replace_url_script,
@@ -247,6 +247,13 @@ class _ReplyPlan:
 
 class _NoSession(Exception):
     """No tenant or ids to act on (never a subclass of a backend refusal)."""
+
+
+def _inbox_list_restore_scroll() -> rx.event.EventHandler:
+    """m-25029798: the open chat closed — the single list goes back to its scroll."""
+    from .inbox_list_state import InboxListState
+
+    return InboxListState.restore_scroll
 
 
 def _inbox_list_refresh() -> rx.event.EventHandler:
@@ -401,6 +408,9 @@ class ConversationsState(rx.State):
     _voice_seconds: int = 0
     #: m-25017859: the thread a row of the single list asked for, opened once this
     #: account's list holds it.
+    #: m-25029798: the next chat's address replaces the current one (a chat of the
+    #: other channel was open beside the list), as one Instagram chat replaces another.
+    _replace_url: bool = False
     _pending_open: str = ""
     #: The chat opened by id (not in this account's newest), kept while it is open.
     _pinned_thread: str = ""
@@ -987,15 +997,22 @@ class ConversationsState(rx.State):
     # ==================================================================================
 
     @rx.event
-    def restore_address(self) -> rx.event.EventSpec | None:
-        """Deep-link reads are scoped by the selected tenant-owned account/provider."""
+    def restore_address(
+        self,
+    ) -> rx.event.EventSpec | rx.event.EventHandler | None:
+        """Deep-link reads are scoped by the selected tenant-owned account/provider. An
+        address of another account (a WhatsApp chat's, m-25029798) opens nothing here.
+        A chat closed by the address («atrás») gives the list back its scroll."""
         params = self.router.url.query_parameters
         thread = thread_param(params, self.selected_connection_id)
         if thread == self.open_thread_id:
             return None
+        was_open = self.open_thread_id != ""
         self.open_thread_id = thread
         self._reset_conversation()
-        return ConversationsState.load_conversation if thread else None
+        if thread:
+            return ConversationsState.load_conversation
+        return _inbox_list_restore_scroll() if was_open else None
 
     @rx.event
     def open_conversation(
@@ -1005,16 +1022,18 @@ class ConversationsState(rx.State):
 
     @rx.event
     def open_from_inbox(
-        self, connection_id: str, thread_id: str
+        self, connection_id: str, thread_id: str, replace: bool = False
     ) -> list[rx.event.EventSpec | rx.event.EventHandler] | None:
         """m-25017859: a row of the single list of «Por responder». The chat may belong
         to another of the business's Instagram accounts, or be newer than this account's
         last read: switch / re-read first, then open it (`_pending_open`). Only an
-        account of this tenant (`accounts`) and a thread its own list holds are opened."""
+        account of this tenant (`accounts`) and a thread its own list holds are opened.
+        `replace` (m-25029798): a WhatsApp chat was open — its address is replaced."""
         if not isinstance(connection_id, str) or not isinstance(thread_id, str):
             return None
         if connection_id not in {a.connection_id for a in self.accounts}:
             return None
+        self._replace_url = replace is True
         if connection_id != self.selected_connection_id:
             self.selected_connection_id = connection_id
             self._reset_list()
@@ -1059,20 +1078,26 @@ class ConversationsState(rx.State):
             item = await asyncio.to_thread(gateway().thread_listing, tenant_id, connection, thread)
         except ThreadNotFound:
             async with self:
-                if self._pending_open == thread_id:
+                ours = self._pending_open == thread_id
+                if ours:
                     self._pending_open = ""
                     # Over another open chat the banner would read as about that one:
                     # then the toast alone says it.
                     if not self.open_thread_id:
                         self._set_banner(_THREAD_GONE, "warn")
+            if not ours:
+                return  # another chat (of either channel) was asked for meanwhile
             yield rx.toast.warning(_THREAD_GONE, duration=_TOAST_MS)
             yield _inbox_list_refresh()
             return
         except _DB_ERRORS as exc:
             logger.error("conversations open by id failed: %s", type(exc).__name__)
             async with self:
-                if self._pending_open == thread_id:
+                ours = self._pending_open == thread_id
+                if ours:
                     self._pending_open = ""
+            if not ours:
+                return  # another chat (of either channel) was asked for meanwhile
             yield rx.toast.error(_CONV_FAILED, duration=_TOAST_MS)
             return
         async with self:
@@ -1097,7 +1122,9 @@ class ConversationsState(rx.State):
             return None
         if thread_id not in {r.thread_id for r in self.rows}:
             return None  # arrived over the wire; refuse an id the list does not hold
-        writer = replace_url_script if self.open_thread_id else push_url_script
+        replace = bool(self.open_thread_id) or self._replace_url
+        writer = replace_url_script if replace else push_url_script
+        self._replace_url = False
         self.open_thread_id = thread_id
         self._reset_conversation()
         return [
@@ -1112,22 +1139,39 @@ class ConversationsState(rx.State):
         ]
 
     @rx.event
-    def close_conversation(self) -> list[rx.event.EventSpec]:
-        """Leave the conversation pane (✕ on desktop, ← on a phone). A recording in
-        progress is dropped."""
+    def close_conversation(self) -> list[rx.event.EventSpec | rx.event.EventHandler]:
+        """«‹ Por responder»: leave the conversation pane, back to the single list as it
+        was — its address (the history step when it is the one before) and its scroll
+        (m-25029798). A recording in progress is dropped."""
         was_recording = self.recording
         self.open_thread_id = ""
         self._reset_conversation()
-        events = [
+        events: list[rx.event.EventSpec | rx.event.EventHandler] = [
             rx.call_script(
-                back_url_script(
+                inbox_back_script(
                     conversation_href("instagram", self.selected_connection_id, view=self._view())
                 )
-            )
+            ),
+            _inbox_list_restore_scroll(),
         ]
         if was_recording:
             events.append(rx.call_script(_JS_VOICE_CANCEL))
         return events
+
+    @rx.event
+    def leave_for_other_chat(self) -> list[rx.event.EventSpec] | None:
+        """m-25029798: a WhatsApp row was tapped while this pane held a chat — it gives
+        way without writing an address (the WhatsApp chat's replaces it). An Instagram
+        chat still being fetched (`_pending_open`: its account's list or the chat by id)
+        is dropped too, so it never opens behind the WhatsApp one."""
+        self._replace_url = False
+        self._pending_open = ""
+        if not self.open_thread_id:
+            return None
+        was_recording = self.recording
+        self.open_thread_id = ""
+        self._reset_conversation()
+        return [rx.call_script(_JS_VOICE_CANCEL)] if was_recording else None
 
     @rx.event
     def back_to_list(self) -> list[rx.event.EventSpec]:

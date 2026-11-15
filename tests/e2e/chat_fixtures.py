@@ -19,6 +19,12 @@ What the screen gets:
   failed (outbox `dead`), window open;
 - Instagram «@tienda.nube»: closed chat, window closed.
 - A second person with access, so «Asignar» shows in «⋯».
+
+**The business's day (m-25029798).** Everything seeded as «today» lands on the
+business's own local day (its time zone, as the screen reads it), whatever the hour the
+test runs: right after the business's midnight, the offsets of the day are squeezed into
+the minutes since that midnight (`_on_local_day`), so «Hoy» and «Ayer» never move — the
+flake of `test_chat_thread.py` in the first two hours after Bogotá's midnight.
 """
 
 from __future__ import annotations
@@ -27,6 +33,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
+from zoneinfo import ZoneInfo
 
 E2E_PLATFORM_APP = uuid.UUID("e2e00000-0000-4000-8000-000000000001")
 INSTAGRAM_SCOPES = [
@@ -59,6 +66,38 @@ def _platform_app() -> None:
                     api_version="v23.0",
                 )
             )
+
+
+#: The longest «today» offset the seed uses (Laura's image, 2 h + 1 min before now).
+_DAY_SPAN = timedelta(hours=2, minutes=5)
+
+
+def _tenant_zone(tenant_id: uuid.UUID) -> ZoneInfo:
+    from qualify_api.tenancy.models import Tenant
+    from qualify_shared.db.session import tenant_session
+    from sqlalchemy import select
+
+    with tenant_session(tenant_id) as session:
+        name = session.scalar(select(Tenant.timezone).where(Tenant.id == tenant_id))
+    try:
+        return ZoneInfo(name or "America/Bogota")
+    except (ValueError, KeyError):
+        return ZoneInfo("America/Bogota")
+
+
+def _on_local_day(now: datetime, zone: ZoneInfo) -> Any:
+    """`ago(delta)` = `now - delta`, kept on the business's local day of `now`: when
+    fewer than `_DAY_SPAN` passed since that midnight, the offsets shrink in proportion
+    (order kept, never in the future, never before the midnight)."""
+    local = now.astimezone(zone)
+    midnight = local.replace(hour=0, minute=0, second=0, microsecond=0)
+    room = (local - midnight) - timedelta(seconds=1)
+    scale = min(1.0, max(room, timedelta(0)) / _DAY_SPAN)
+
+    def ago(delta: timedelta) -> datetime:
+        return now - delta * scale
+
+    return ago
 
 
 def _message(
@@ -114,6 +153,7 @@ def seed_chats(
     from sqlalchemy import select
 
     now = now or datetime.now(UTC)
+    ago = _on_local_day(now, _tenant_zone(tenant_id))
     _platform_app()
     ids: dict[str, str] = {}
     with tenant_session(tenant_id) as session:
@@ -187,13 +227,13 @@ def seed_chats(
 
         yesterday = now - timedelta(days=1)
         # --- WhatsApp: open chat, every bubble state, an order with a payment to check
-        laura_in = now - timedelta(hours=2)
+        laura_in = ago(timedelta(hours=2))
         laura = thread(
             wa_conn,
             "whatsapp",
             "573001234567",
             status="open",
-            last_message_at=now - timedelta(minutes=5),
+            last_message_at=ago(timedelta(minutes=5)),
             last_inbound_at=laura_in,
             counterpart_name="Laura Gómez",
         )
@@ -215,7 +255,7 @@ def seed_chats(
                 _message(
                     laura,
                     direction="inbound",
-                    at=laura_in - timedelta(minutes=1),
+                    at=ago(timedelta(hours=2, minutes=1)),
                     text=None,
                     media_type="image",
                     media_id="e2e-media-1",
@@ -226,21 +266,21 @@ def seed_chats(
                 _message(
                     laura,
                     direction="outbound",
-                    at=now - timedelta(minutes=50),
+                    at=ago(timedelta(minutes=50)),
                     text="Perfecto, te lo preparo.",
                     status="delivered",
                 ),
                 _message(
                     laura,
                     direction="outbound",
-                    at=now - timedelta(minutes=40),
+                    at=ago(timedelta(minutes=40)),
                     text="¿Algo más para tu pedido?",
                     status="sent",
                 ),
                 _message(
                     laura,
                     direction="outbound",
-                    at=now - timedelta(minutes=30),
+                    at=ago(timedelta(minutes=30)),
                     text="Te mando la ubicación del local.",
                     status="failed",
                     error="131026",
@@ -258,7 +298,7 @@ def seed_chats(
                 status="pending",
                 # never due: no worker runs here, and none would pick it before then
                 next_attempt_at=now + timedelta(days=3650),
-                created_at=now - timedelta(minutes=5),
+                created_at=ago(timedelta(minutes=5)),
                 preview_text="Te aviso cuando salga.",
             )
         )
@@ -286,7 +326,7 @@ def seed_chats(
                         ],
                         "total": str(Decimal("41000")),
                         "currency": "COP",
-                        "confirmed_at": (now - timedelta(minutes=55)).isoformat(),
+                        "confirmed_at": (ago(timedelta(minutes=55))).isoformat(),
                         "source": "menu",
                     },
                     "_payment": {
@@ -323,13 +363,13 @@ def seed_chats(
         )
         ids["whatsapp_closed"] = str(pedro.id)
         # --- Instagram: open chat
-        cami_in = now - timedelta(minutes=20)
+        cami_in = ago(timedelta(minutes=20))
         cami = thread(
             ig_conn,
             "dm",
             f"e2e-ig-{uuid.uuid4().hex[:8]}",
             status="open",
-            last_message_at=now - timedelta(minutes=10),
+            last_message_at=ago(timedelta(minutes=10)),
             last_inbound_at=cami_in,
             counterpart_name="Camila Ríos",
             counterpart_username="camirios",
@@ -353,7 +393,7 @@ def seed_chats(
                 _message(
                     cami,
                     direction="outbound",
-                    at=now - timedelta(minutes=12),
+                    at=ago(timedelta(minutes=12)),
                     text="Listo, ¿a qué dirección?",
                     status="sent",
                 ),
@@ -371,8 +411,8 @@ def seed_chats(
                 status="dead",
                 error_code="window_closed",
                 approved_by_user_id=user_id,
-                approved_at=now - timedelta(minutes=10),
-                created_at=now - timedelta(minutes=10),
+                approved_at=ago(timedelta(minutes=10)),
+                created_at=ago(timedelta(minutes=10)),
                 next_attempt_at=now + timedelta(days=3650),
             )
         )
@@ -393,4 +433,38 @@ def seed_chats(
         ids["instagram_closed"] = str(nube.id)
         ids["whatsapp_connection"] = str(wa_conn.id)
         ids["instagram_connection"] = str(ig_conn.id)
+    return ids
+
+
+def seed_more_whatsapp_chats(
+    tenant_id: uuid.UUID, connection_id: str, count: int, *, now: datetime | None = None
+) -> list[str]:
+    """`count` more WhatsApp chats waiting for an answer on the seeded number, each one
+    older than the last («Cliente 01», «Cliente 02», …), so the single list is long enough
+    to scroll (m-25029798). Returns their thread ids, newest first."""
+    from qualify_api.inbox.models import Thread
+    from qualify_shared.db.session import tenant_session
+
+    now = now or datetime.now(UTC)
+    ids: list[str] = []
+    with tenant_session(tenant_id) as session:
+        for i in range(1, count + 1):
+            at = now - timedelta(hours=3, minutes=i)
+            row = Thread(
+                id=uuid.uuid4(),
+                tenant_id=tenant_id,
+                connection_id=uuid.UUID(connection_id),
+                channel="whatsapp",
+                external_thread_id=f"5730055{i:05d}",
+                status="open",
+                last_message_at=at,
+                last_inbound_at=at,
+                counterpart_name=f"Cliente {i:02d}",
+            )
+            session.add(row)
+            session.flush()
+            session.add(
+                _message(row, direction="inbound", at=at, text=f"Hola, soy el cliente {i:02d}.")
+            )
+            ids.append(str(row.id))
     return ids

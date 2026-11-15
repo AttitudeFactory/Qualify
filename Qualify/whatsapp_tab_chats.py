@@ -1,13 +1,14 @@
 """`/whatsapp` → Chats tab (WA-11, QUA-210): where a person attends the number's
 WhatsApp conversations — read, answer, take over from the menu, assign, close.
 
-Plugs into the WA-12 shell (`whatsapp_page.py`): `chats_tab()` is rendered only while the
-tab is active, inside a box keyed by the selected number, so its root `on_mount`
-(`WhatsAppChatsState.enter`) fires on entry and on every number switch.
-
-Layout (docs/design-system.md §9.1): two panes on desktop — the thread list left, the
-conversation right; under 768 px one pane at a time with a back button (`.q-wa-chats` in
-`assets/qualify-inbox.css` switches them on `--open`). States are TONES through
+**Two places (m-25029798).** The open chat is ONE piece — `whatsapp_chat_pane()` plus
+`whatsapp_chat_layers()` — mounted only beside the single list of «Por responder»
+(`conversations_page.messages_tab`), where an Instagram chat opens too: two panes on
+desktop, one at a time under 768 px with «‹ Por responder» (`.q-wa-chats--open` in
+`assets/qualify-inbox.css`). `chats_tab()` is `/whatsapp`'s number list (until m-25029799
+retires it), rendered inside a box keyed by the selected number so its `on_mount`
+(`WhatsAppChatsState.enter`) fires on entry and on every number switch; its rows open the
+chat in «Por responder». States are TONES through
 `signal_pill` / `tone_badge` / `callout`; content loading is a skeleton, work in progress
 (sending) is the button's own `loading`.
 
@@ -38,11 +39,11 @@ from .chat_thread import (
     TAP_MIN,
     back_button,
     bubble_meta,
+    close_button,
     day_separator,
     menu_item,
     message_row,
     more_menu,
-    no_chat_open,
     order_strip,
     state_pill,
     thread_body,
@@ -235,6 +236,10 @@ _REFRESH_MS = 15_000
 _TAP_MIN = TAP_MIN
 #: WhatsApp gives no profile picture: the header shows the initials or the person icon.
 _NO_PICTURE: rx.Var[str] = rx.Var.create("")
+#: U3 (UX review of m-25029798; new texts, awaiting the founder).
+MOVED_NOTICE = "Tus chats de WhatsApp ahora se abren en «Por responder», junto a los de Instagram."
+MOVED_ACTION = "Ir a Por responder"
+MOVED_HREF = "/responder?tab=mensajes&canal=whatsapp"
 
 
 # ======================================================================================
@@ -255,7 +260,8 @@ def _banner(message: rx.Var[str], tone: rx.Var[str]) -> rx.Component:
 
 
 def _heartbeat() -> rx.Component:
-    """The 15 s refresh — `react-moment`'s own interval, hidden, gone with the tab."""
+    """The 15 s refresh — `react-moment`'s own interval, hidden, gone with what mounts
+    it (this number's list, or the open chat in «Por responder»)."""
     return rx.moment(interval=_REFRESH_MS, on_change=lambda _tick: S.refresh, display="none")
 
 
@@ -386,16 +392,9 @@ def _list_pane() -> rx.Component:
 
 
 def _back_button() -> rx.Component:
-    """N7: the button names where it goes. m-25017859: a chat opened from the single
-    list of «Por responder» says «‹ Por responder» and goes back there, on every size
-    (on a desk this number's own list is not the way back); one opened from this
-    number's list says «‹ Chats», on the phone only (the list and the chat share one
-    pane there)."""
-    return rx.cond(
-        S.from_inbox,
-        back_button(S.back_to_inbox),
-        back_button(S.back_to_list, label="Chats", class_name="q-wa-chats__back"),
-    )
+    """N7: «‹ Por responder», on every size, as Instagram's (m-25029798: the chat opens
+    only beside the single list of «Por responder»)."""
+    return back_button(S.back_to_inbox)
 
 
 def _assign_item(agent: AgentVM) -> rx.Component:
@@ -511,6 +510,7 @@ def _conversation_header() -> rx.Component:
         ),
         is_closed=thread.is_closed,
         back=_back_button(),
+        close=close_button(S.back_to_inbox),
         actions=rx.hstack(
             rx.cond(
                 thread.automation_paused,
@@ -2621,33 +2621,72 @@ def _conversation() -> rx.Component:
     )
 
 
-def _conversation_pane() -> rx.Component:
-    return rx.box(
-        rx.cond(
-            S.has_open_thread,
-            _conversation(),
-            rx.vstack(
-                _banner(S.banner, S.banner_tone),
-                no_chat_open("Ábrela para leerla, responderle tú o marcar un pedido como listo."),
-                width="100%",
+def _moved_notice() -> rx.Component:
+    """U3 (UX review of m-25029798; new text, awaiting the founder): a row of this list
+    now opens its chat in «Por responder» — said once, above the list, with the way
+    there."""
+    return callout(
+        rx.flex(
+            rx.text(MOVED_NOTICE, size="2", flex="1", min_width="12rem"),
+            rx.link(
+                rx.button(
+                    MOVED_ACTION,
+                    variant="soft",
+                    size="2",
+                    min_height=_TAP_MIN,
+                    type="button",
+                    **T.tone_scheme("info"),
+                ),
+                href=MOVED_HREF,
             ),
+            align="center",
+            wrap="wrap",
+            gap="0.5rem",
+            width="100%",
         ),
-        class_name="q-wa-chats__conv",
-        width="100%",
+        "info",
+        size="1",
     )
 
 
-def chats_tab() -> rx.Component:
-    return rx.box(
+def whatsapp_chat_pane() -> rx.Component:
+    """m-25029798: the open WhatsApp chat — header, order, thread and reply box — as one
+    piece, mounted in the pane beside the single list of «Por responder»
+    (`conversations_page.messages_tab`), where an Instagram chat opens too."""
+    return rx.box(_conversation(), class_name="q-wa-chats__conv", width="100%")
+
+
+def whatsapp_chat_banner() -> rx.Component:
+    """What the last action on a WhatsApp chat said, once no chat is open (the chat
+    «ya no está disponible»)."""
+    return _banner(S.banner, S.banner_tone)
+
+
+def whatsapp_chat_layers() -> rx.Component:
+    """The open chat's own layers — its 15 s refresh, the image viewer, «Enviar un
+    mensaje aprobado», the «+» panel and «¿Ya te llegó el pago?» — mounted with it and
+    only while it is open, so a page without a WhatsApp chat loads nothing for them."""
+    return rx.fragment(
         _heartbeat(),
         _lightbox(),
         _templates_drawer(),
         _picker_drawer(),
         _payment_confirm_dialog(),
-        rx.box(
+    )
+
+
+def chats_tab() -> rx.Component:
+    """`/whatsapp` › Chats: this number's list (until m-25029799 moves it into «Por
+    responder»); a row opens its chat in «Por responder» (`open_conversation`). The
+    15 s heartbeat refreshes the list."""
+    return rx.box(
+        _heartbeat(),
+        rx.vstack(
+            _moved_notice(),
+            _banner(S.banner, S.banner_tone),
             _list_pane(),
-            _conversation_pane(),
-            class_name=rx.cond(S.has_open_thread, "q-wa-chats q-wa-chats--open", "q-wa-chats"),
+            spacing="3",
+            width="100%",
         ),
         on_mount=S.enter,
         width="100%",

@@ -61,9 +61,8 @@ from .inbox_list_vm import (
     remembered_dismissal,
     show_channel_filter,
     show_notice,
-    whatsapp_chat_href,
 )
-from .nav_url import thread_param
+from .nav_url import conversation_href, inbox_chat_href, thread_param
 from .whatsapp_chats_vm import AgentVM
 
 NOW = datetime(2026, 11, 13, 17, 0, tzinfo=UTC)
@@ -337,20 +336,25 @@ def test_list_href_round_trips() -> None:
     assert list_href() == "/responder?tab=mensajes&filtro=por-responder"
 
 
-def test_a_whatsapp_row_opens_todays_chat_marked_from_the_list() -> None:
+def test_a_chat_of_either_channel_has_one_address_in_por_responder() -> None:
+    """m-25029798: the open chat's address is the list's own view plus `cuenta` + `chat`,
+    whatever its channel; only canonical ids travel."""
     thread = str(uuid4())
-    href = whatsapp_chat_href(str(CONNECTION), thread)
-    # The chat opens beside WhatsApp's own «Por responder» chip, marked from the list.
+    view = {"filtro": "todos", "canal": CHANNEL_WHATSAPP}
+    href = inbox_chat_href(str(CONNECTION), thread, view=view)
     assert href == (
-        f"/whatsapp?tab=chats&cuenta={CONNECTION}&chat={thread}"
-        "&filtro=por-responder&desde=por-responder"
+        f"/responder?tab=mensajes&filtro=todos&canal=whatsapp&cuenta={CONNECTION}&chat={thread}"
     )
-    # The WhatsApp screen's own deep-link reader still finds the chat.
     params = dict(p.split("=", 1) for p in href.split("?", 1)[1].split("&"))
     assert thread_param(params, str(CONNECTION)) == thread
-    # Never a marker without a chat, never anything but ids.
-    assert "desde" not in whatsapp_chat_href(str(CONNECTION), "")
-    assert whatsapp_chat_href("x", "<script>") == "/whatsapp?tab=chats"
+    assert inbox_chat_href("x", "<script>") == "/responder?tab=mensajes"
+    # WhatsApp's own addresses of a chat now land in «Por responder» too.
+    assert conversation_href("whatsapp", str(CONNECTION), thread) == (
+        f"/responder?tab=mensajes&cuenta={CONNECTION}&chat={thread}"
+    )
+    assert conversation_href("whatsapp", str(CONNECTION), chip="cerrados") == (
+        f"/whatsapp?tab=chats&cuenta={CONNECTION}&filtro=cerrados"
+    )
 
 
 # --- the expired notice ---------------------------------------------------------------------
@@ -527,32 +531,78 @@ async def test_the_heartbeat_rereads_the_pages_on_screen_in_place(fake: _Fake) -
     assert state.loaded and state.error == ""
 
 
-async def test_a_whatsapp_row_records_the_scroll_then_goes_to_its_chat(fake: _Fake) -> None:
+def _two_panes(fake: _Fake, monkeypatch: pytest.MonkeyPatch) -> tuple[Any, Any]:
+    """The two chat states the list hands a row to, as `get_state` returns them."""
+    from .responder_state import ResponderState
+    from .whatsapp_chats_state import WhatsAppChatsState
+
+    conv, wa = ConversationsState(), WhatsAppChatsState()
+
+    async def get_state(self: Any, cls: Any) -> Any:
+        return {ConversationsState: conv, WhatsAppChatsState: wa, ResponderState: fake.responder}[
+            cls
+        ]
+
+    monkeypatch.setattr(InboxListState, "get_state", get_state)
+    return conv, wa
+
+
+async def test_a_whatsapp_row_records_the_scroll_then_opens_beside_the_list(
+    fake: _Fake, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """m-25029798: no navigation to `/whatsapp` — the WhatsApp chat opens in this page's
+    pane, the Instagram one gives way; the scroll is the PANEL's (the page's scroll
+    container), put back once when the chat closes."""
     state = InboxListState()
     state._tenant_key = "tenant-a"
     await _drain(InboxListState.load.fn(state))  # type: ignore[attr-defined]
     row = state.rows[0]
     spec = InboxListState.open_row.fn(state, row.thread_id)  # type: ignore[attr-defined]
-    assert "scrollY" in str(spec)
+    assert "main.q-panel" in str(spec) and "scrollY" not in str(spec)
     assert InboxListState.open_row.fn(state, str(uuid4())) is None  # type: ignore[attr-defined]
-    go = InboxListState.leave_for_whatsapp.fn(state, [640, 120])  # type: ignore[attr-defined]
-    assert f"chat={row.thread_id}" in str(go) and "desde=por-responder" in str(go)
+    conv, wa = _two_panes(fake, monkeypatch)
+    events = await InboxListState.open_at.fn(state, [640, 120])  # type: ignore[attr-defined]
     assert state._scroll == [640, 120]
-    # Back from the chat: the same list, filter and channel, then the recorded scroll.
-    assert state.inbox_return_href == "/responder?tab=mensajes&filtro=por-responder"
-    events = await _drain(InboxListState.load.fn(state))  # type: ignore[attr-defined]
-    assert any("scrollTo(0, 640)" in str(e) and "scrollTop = 120" in str(e) for e in events)
-    assert state._scroll == []
+    text = str(events)
+    assert "leave_for_other_chat" in text and "open_from_inbox" in text
+    assert "/whatsapp" not in text and "redirect" not in text
+    # A refresh of the list does not spend the scroll; the chat's closing does, once.
+    await _drain(InboxListState.load.fn(state))  # type: ignore[attr-defined]
+    assert state._scroll == [640, 120]
+    restore = InboxListState.restore_scroll.fn(state)  # type: ignore[attr-defined]
+    assert "scrollTop = 640" in str(restore) and "scrollTop = 120" in str(restore)
+    assert "main.q-panel" in str(restore)
+    assert InboxListState.restore_scroll.fn(state) is None  # type: ignore[attr-defined]
 
 
-async def test_an_instagram_row_opens_the_thread_pane_of_this_page(fake: _Fake) -> None:
+async def test_a_second_chat_replaces_the_first_ones_address(
+    fake: _Fake, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = InboxListState()
+    state._tenant_key = "tenant-a"
+    await _drain(InboxListState.load.fn(state))  # type: ignore[attr-defined]
+    conv, wa = _two_panes(fake, monkeypatch)
+    conv.open_thread_id = str(uuid4())  # an Instagram chat is open
+    InboxListState.open_row.fn(state, state.rows[0].thread_id)  # type: ignore[attr-defined]
+    events = await InboxListState.open_at.fn(state, [0, 0])  # type: ignore[attr-defined]
+    assert "True" in str(events[-1])  # open_from_inbox(..., replace=True)
+
+
+async def test_an_instagram_row_opens_the_thread_pane_of_this_page(
+    fake: _Fake, monkeypatch: pytest.MonkeyPatch
+) -> None:
     state = InboxListState()
     state._tenant_key = "tenant-a"
     fake.rows[0] = ig_row(last_message_at=NOW)
     await _drain(InboxListState.load.fn(state))  # type: ignore[attr-defined]
     row = state.rows[0]
-    spec = InboxListState.open_row.fn(state, row.thread_id)  # type: ignore[attr-defined]
-    assert "open_from_inbox" in str(spec)
+    InboxListState.open_row.fn(state, row.thread_id)  # type: ignore[attr-defined]
+    _two_panes(fake, monkeypatch)
+    events = await InboxListState.open_at.fn(state, [0, 0])  # type: ignore[attr-defined]
+    assert events is not None
+    leave, opened = events
+    assert leave.fn.__qualname__ == "WhatsAppChatsState.leave_for_other_chat"  # gives way
+    assert opened.handler.fn.__qualname__ == "ConversationsState.open_from_inbox"
 
 
 def test_open_from_inbox_switches_account_then_opens() -> None:
@@ -575,36 +625,27 @@ def test_open_from_inbox_switches_account_then_opens() -> None:
     assert ConversationsState.open_from_inbox.fn(conv, str(uuid4()), thread) is None  # type: ignore[attr-defined]
 
 
-def test_the_whatsapp_chat_from_the_list_goes_back_to_it() -> None:
+def _inbox_at(wa: Any, query: str) -> None:
+    from reflex.istate.data import ReflexURL, RouterData
+
+    wa.router = RouterData(url=ReflexURL(f"http://localhost/responder?{query}"))
+
+
+def test_back_to_inbox_closes_in_place_and_gives_the_scroll_back() -> None:
+    """m-25029798: «‹ Por responder» closes the WhatsApp chat beside the list (no
+    navigation): the list's step of the history when it is the one before, else its
+    address in place; then the list's scroll."""
     from .whatsapp_chats_state import WhatsAppChatsState
 
     wa = WhatsAppChatsState()
-    wa.from_inbox = True
+    _inbox_at(wa, f"tab=mensajes&filtro=todos&canal=whatsapp&cuenta={CONNECTION}&chat={uuid4()}")
     wa.open_thread_id = str(uuid4())
-    assert WhatsAppChatsState.back_to_list.fn(wa) is WhatsAppChatsState.back_to_inbox  # type: ignore[attr-defined]
-    wa.from_inbox = False
-    wa.open_thread_id = str(uuid4())
-    own = WhatsAppChatsState.back_to_list.fn(wa)  # type: ignore[attr-defined]
-    assert own is not WhatsAppChatsState.back_to_inbox and wa.open_thread_id == ""
-
-
-async def test_back_to_inbox_lands_on_the_list_as_it_was(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from .whatsapp_chats_state import WhatsAppChatsState
-
-    wa = WhatsAppChatsState()
-    inbox = InboxListState()
-    inbox.filter_key, inbox.channel = FILTER_ALL, CHANNEL_WHATSAPP
-
-    async def get_state(self: Any, cls: Any) -> Any:
-        return inbox
-
-    monkeypatch.setattr(WhatsAppChatsState, "get_state", get_state)
-    wa.from_inbox, wa.open_thread_id = True, str(uuid4())
-    spec = await WhatsAppChatsState.back_to_inbox.fn(wa)  # type: ignore[attr-defined]
-    assert "/responder?tab=mensajes&filtro=todos&canal=whatsapp" in str(spec)
-    assert not wa.from_inbox and wa.open_thread_id == ""
+    events = WhatsAppChatsState.back_to_inbox.fn(wa)  # type: ignore[attr-defined]
+    text = str(events)
+    assert wa.open_thread_id == ""
+    assert "history.back()" in text and "qPrevHref" in text
+    assert "/responder?tab=mensajes&filtro=todos&canal=whatsapp" in text
+    assert "restore_scroll" in text and "redirect" not in text
 
 
 def test_both_back_buttons_say_por_responder_and_go_to_the_single_list() -> None:
@@ -614,24 +655,16 @@ def test_both_back_buttons_say_por_responder_and_go_to_the_single_list() -> None
     instagram = str(instagram_back())
     assert '"Por responder"' in instagram and "close_conversation" in instagram
     whatsapp = str(whatsapp_back())
-    # From the single list: «‹ Por responder» → back_to_inbox; else «‹ Chats».
     assert '"Por responder"' in whatsapp and "back_to_inbox" in whatsapp
-    assert '"Chats"' in whatsapp and "back_to_list" in whatsapp
+    assert '"Chats"' not in whatsapp  # m-25029798: the chat opens only in «Por responder»
 
 
-async def test_back_to_inbox_replaces_the_history_step(monkeypatch: pytest.MonkeyPatch) -> None:
-    from .whatsapp_chats_state import WhatsAppChatsState
-
-    inbox = InboxListState()
-
-    async def get_state(self: Any, cls: Any) -> Any:
-        return inbox
-
-    monkeypatch.setattr(WhatsAppChatsState, "get_state", get_state)
-    wa = WhatsAppChatsState()
-    wa.from_inbox, wa.open_thread_id = True, str(uuid4())
-    spec = await WhatsAppChatsState.back_to_inbox.fn(wa)  # type: ignore[attr-defined]
-    assert "replace" in str(spec) and "true" in str(spec).lower()
+def test_instagram_close_goes_back_to_the_list_and_its_scroll() -> None:
+    conv = ConversationsState()
+    conv.open_thread_id = str(uuid4())
+    events = ConversationsState.close_conversation.fn(conv)  # type: ignore[attr-defined]
+    text = str(events)
+    assert conv.open_thread_id == "" and "history.back()" in text and "restore_scroll" in text
 
 
 # --- the address is the truth (sticky filter / channel) -------------------------------------
@@ -1075,16 +1108,12 @@ async def test_the_whatsapp_chip_survives_a_reload_after_a_chat_or_a_tab_round_t
     shell = _SHELL[0]
     assert "filtro=cerrados" in shell._panel_address("chats")  # a tab and back
     assert "filtro" not in shell._panel_address("menu")
-    wa._connection_id = str(CONNECTION)
-    back = WhatsAppChatsState.back_to_list.fn(wa)  # type: ignore[attr-defined]
-    assert "filtro=cerrados" in str(back)
     await WhatsAppChatsState.set_filter.fn(wa, FILTER_OPEN)  # type: ignore[attr-defined]
     assert "filtro" not in shell._panel_address("chats")  # the default needs none
-    from .nav_url import conversation_href
-
-    chat = conversation_href("whatsapp", str(CONNECTION), str(uuid4()), chip="cerrados")
-    assert chat.endswith("&filtro=cerrados")
-    assert "filtro" not in conversation_href("whatsapp", str(CONNECTION), str(uuid4()))
+    assert conversation_href("whatsapp", str(CONNECTION), chip="cerrados").endswith(
+        "&filtro=cerrados"
+    )
+    assert "filtro" not in conversation_href("whatsapp", str(CONNECTION))
 
 
 async def test_whatsapp_navigation_with_filtro_applies_it_and_without_it_is_abiertos(

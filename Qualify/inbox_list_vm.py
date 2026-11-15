@@ -33,7 +33,7 @@ from .chat_row_vm import (
     unknown_contact,
 )
 from .conversations_vm import NO_MESSAGES_YET, OUTBOUND_PREFIX, UNSUPPORTED_PREVIEW, media_label
-from .nav_url import conversation_href, scalar_param, with_query
+from .nav_url import scalar_param, with_query
 from .whatsapp_chats_vm import FILTER_PAYMENT_EMPTY, phone_label, relative_time
 
 ROUTE: Final = "/responder"
@@ -230,12 +230,6 @@ def list_href(filter_key: str = DEFAULT_FILTER, channel: str = ALL_CHANNELS) -> 
     slug = _KEY_TO_SLUG.get(filter_key, _KEY_TO_SLUG[DEFAULT_FILTER])
     canal = channel if channel in CHANNELS else ""
     return with_query(ROUTE, tab=TAB, **{FILTER_PARAM: slug, CHANNEL_PARAM: canal})
-
-
-def whatsapp_chat_href(connection_id: str, thread_id: str) -> str:
-    """Today's WhatsApp chat (`/whatsapp?tab=chats&cuenta=…&chat=…`), marked as opened
-    from this list so its «‹ Por responder» comes back here."""
-    return conversation_href("whatsapp", connection_id, thread_id, from_inbox=True)
 
 
 # ======================================================================================

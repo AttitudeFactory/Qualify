@@ -588,9 +588,8 @@ def test_back_keeps_the_choice_and_step_one_closes() -> None:
 
 
 def test_the_tab_renders_the_picker_and_no_link_field() -> None:
-    from .whatsapp_tab_chats import chats_tab
 
-    rendered = str(chats_tab().render())
+    rendered = str(_chat_views().render())
 
     def present(text: str) -> bool:
         escaped = json.dumps(text)[1:-1].replace("\\", "\\\\")
@@ -672,3 +671,13 @@ async def test_closing_while_a_photo_sends_keeps_the_file_until_it_lands(
     assert staged.exists()  # the worker can still read it
     assert state._finish_pick_send(plan, "") is False
     assert not staged.exists()  # gone once the send landed
+
+
+def _chat_views() -> object:
+    """m-25029798: `/whatsapp`'s number list plus the open chat, which is mounted beside
+    the single list of «Por responder» (`whatsapp_chat_pane` + `whatsapp_chat_layers`)."""
+    import reflex as rx
+
+    from .whatsapp_tab_chats import chats_tab, whatsapp_chat_layers, whatsapp_chat_pane
+
+    return rx.fragment(chats_tab(), whatsapp_chat_pane(), whatsapp_chat_layers())
