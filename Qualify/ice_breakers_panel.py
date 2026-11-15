@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import reflex as rx
 
+from .chat_settings_vm import STARTER_QUESTIONS_LINE
 from .ice_breakers_state import IceBreakersState
 from .ice_breakers_vm import (
     ANSWER_NOTE,
@@ -414,7 +415,8 @@ def ice_breakers_panel() -> rx.Component:
         on_open_change=S.set_panel_open,
         title=S.panel_title,
         icon="message-circle-question",
-        description="Preguntas listas para que te escriban con un toque.",
+        # m-25017861 (D5): the same line as WhatsApp's «Preguntas iniciales».
+        description=f"{STARTER_QUESTIONS_LINE}.",
         footer=rx.match(
             S.confirming,
             ("", _actions()),

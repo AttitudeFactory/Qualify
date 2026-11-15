@@ -7,7 +7,7 @@ same list Conversaciones shows). Nothing here writes: every row opens a screen t
 already exists, and an Instagram account's «Preguntas iniciales» opens their drawer
 (`IceBreakersState`), which asks this state for the account's name and time zone.
 
-`/chats/ajustes/instagram?cuenta=<id>` (the Instagram chat's «Ajustes de este canal")
+`/chats/ajustes/instagram?cuenta=<id>` (the Instagram chat's «Ajustes de este canal»)
 opens that account's drawer once the accounts are loaded.
 
 Logout resets this state (`AuthState.logout`). Nothing is kept in the browser.
@@ -58,7 +58,7 @@ class ChatSettingsState(rx.State):
     def has_instagram(self) -> bool:
         return len(self.instagram) > 0
 
-    def account_context(self, connection_id: str) -> tuple[str, str] | None:
+    def _account_context(self, connection_id: str) -> tuple[str, str] | None:
         """(label, time zone) of one of this business's Instagram accounts, else None."""
         for account_id, label in self._accounts:
             if account_id == connection_id:

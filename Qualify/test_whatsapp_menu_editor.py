@@ -291,7 +291,7 @@ def test_ice_breaker_limits() -> None:
 
     five = [*form.ice_breakers, IceBreakerForm(text="Promos", node="productos")]
     result = validate_form(replace(form, ice_breakers=five))
-    assert result.form.entry_errors["ice_breakers"] == "Máximo 4 atajos."
+    assert result.form.entry_errors["ice_breakers"] == "Máximo 4 preguntas iniciales."
 
 
 def test_command_limits() -> None:
@@ -498,7 +498,7 @@ def test_preview_handoff_from_a_keyword() -> None:
 
 def test_publish_notice_copy() -> None:
     assert publish_notice(graph_ok=True)[1] == "ok"
-    prefix = "Tu WhatsApp ya responde con este menú, pero no tomó los atajos de inicio."
+    prefix = "Tu WhatsApp ya responde con este menú, pero no tomó las preguntas iniciales."
     message, tone = publish_notice(graph_ok=False)
     assert message == f"{prefix} Vuelve a tocar «Publicar en mi WhatsApp» en un momento."
     assert tone == "warn"
@@ -506,7 +506,9 @@ def test_publish_notice_copy() -> None:
     assert message.startswith(prefix) and "Qualify" in message  # the reconnect instruction
     assert tone == "error"
     message, tone = publish_notice(graph_ok=False, rejected_locally=True)
-    assert message == (f"{prefix} Quita los emojis o símbolos de los atajos y vuelve a publicar.")
+    assert message == (
+        f"{prefix} Quita los emojis o símbolos de las preguntas iniciales y vuelve a publicar."
+    )
     for text in (message, publish_notice(graph_ok=False)[0]):
         assert "en Qualify" not in text and "código" not in text
 
@@ -558,7 +560,8 @@ def test_the_menu_tab_renders_its_sections() -> None:
         "Sí, publicar",
         "Responder al primer mensaje",
         "Palabras clave",
-        "Atajos",
+        "Preguntas iniciales",
+        "Lo que tu cliente puede tocar al abrir el chat",
         "Comandos",
         "Pasos",
         # m-24955645: one card per menu replaces the separate versions list.

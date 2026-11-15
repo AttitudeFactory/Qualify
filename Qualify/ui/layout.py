@@ -84,9 +84,15 @@ NAV_ZONES: list[tuple[str, str, list[Item]]] = [
             # One place to answer (founder decision 3): messages, buyers, comments,
             # WhatsApp chats and interested people are tabs of «Por responder».
             ("Por responder", "messages-square", RESPOND_ROUTE, True),
-            # WA-12: the WhatsApp module keeps the auto-reply menu and the number; its
-            # promotions have their own entry in «Publica» (m-25017862).
+            # WA-12: the WhatsApp module keeps its chats and the number; its promotions
+            # have their own entry in «Publica» (m-25017862), its menu is in «Ajustes de
+            # chats» (m-25017861). It leaves the menu when its chats move into «Por
+            # responder» (BU-A11) and «Tu número» into «Tus redes» (BU-A10).
             ("WhatsApp", "message-circle", "/whatsapp", True),
+            # m-25017861 (D1, founder 2026-11-12): what the owner prepares once (the
+            # menu, the starter questions…) lives apart from the messages, last in the
+            # zone: answering comes first.
+            ("Ajustes de chats", "sliders-horizontal", "/chats/ajustes", True),
         ],
     ),
     (

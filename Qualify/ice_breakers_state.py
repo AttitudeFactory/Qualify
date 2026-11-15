@@ -171,8 +171,13 @@ class IceBreakersState(rx.State):
         return tenant_uuid(auth.session_tenant_id) if auth.session_tenant_id else None
 
     async def _account_context(self, connection_id: str) -> tuple[str, str] | None:
-        """(label, timezone) of an account Conversaciones already lists; else None.
-        Call under `async with self`."""
+        """(label, timezone) of an account «Ajustes de chats» (m-25017861) or
+        Conversaciones already lists; else None. Call under `async with self`."""
+        from .chat_settings_state import ChatSettingsState
+
+        found = (await self.get_state(ChatSettingsState))._account_context(connection_id)
+        if found is not None:
+            return found
         conversations = await self.get_state(ConversationsState)
         for account in conversations.accounts:
             if account.connection_id == connection_id:
@@ -224,7 +229,7 @@ class IceBreakersState(rx.State):
 
     @rx.event(background=True)
     async def open_panel(self, connection_id: str) -> AsyncIterator[rx.event.EventSpec]:
-        """«Preguntas iniciales» in Conversaciones' header, for the selected account."""
+        """«Preguntas iniciales» of one account, from «Ajustes de chats» (m-25017861)."""
         if not isinstance(connection_id, str):
             return
         async with self:

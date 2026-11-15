@@ -85,6 +85,10 @@ _SIDEBAR_EXPECTED: dict[str, str | None] = {
     "/promotions/[promotion_id]": "Anuncios",
     # m-25017862: under /whatsapp, yet it lights its own entry, never «WhatsApp».
     "/whatsapp/promociones": "Promociones",
+    # m-25017861: «Ajustes de chats» and its two addresses light the one entry.
+    "/chats/ajustes": "Ajustes de chats",
+    "/chats/ajustes/instagram": "Ajustes de chats",
+    "/chats/ajustes/whatsapp": "Ajustes de chats",
     "/publish": "Publicar ahora",
     "/stories": "Publicar ahora",  # only redirects into Publicar ahora
     "/resultados": "Resultados",

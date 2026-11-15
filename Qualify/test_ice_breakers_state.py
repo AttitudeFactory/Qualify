@@ -345,14 +345,17 @@ def test_the_panel_uses_the_design_system_and_talks_to_the_state_only() -> None:
     imported = {node.module or "" for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)}
     assert not any("provider" in name or name.startswith("qualify_api") for name in imported)
     assert "rx.color(" not in source and "color_scheme=" not in source
-    page = (_HERE / "conversations_page.py").read_text(encoding="utf-8")
-    assert "ice_breakers_panel()" in page and "ice_breakers_button(" in page
+    # m-25017861 (D1): the drawer lives in «Ajustes de chats», not in the messages.
+    page = (_HERE / "chat_settings_page.py").read_text(encoding="utf-8")
+    assert "ice_breakers_panel()" in page and "IceBreakersState.open_panel(" in page
+    messages = (_HERE / "conversations_page.py").read_text(encoding="utf-8")
+    assert "ice_breakers" not in messages.replace("m-24789472", "")
 
 
 def test_the_page_renders_the_panel() -> None:
-    from .conversations_page import messages_tab
+    from .chat_settings_page import chat_settings_index
 
-    rendered = str(messages_tab().render())
+    rendered = str(chat_settings_index().render())
 
     def present(text: str) -> bool:
         escaped = json.dumps(text)[1:-1].replace("\\", "\\\\")

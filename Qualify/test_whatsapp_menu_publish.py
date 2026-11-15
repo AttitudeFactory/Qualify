@@ -359,8 +359,8 @@ def test_confirm_lines_for_an_older_version_and_for_the_live_one() -> None:
     ]
     live = _version(V2, 2, live=True)
     assert publish_confirm_lines(dirty=False, version=live, other_published_menu="") == [
-        "Este menú ya está respondiendo. Volvemos a enviar a WhatsApp la bienvenida, los "
-        "atajos y los comandos."
+        "Este menú ya está respondiendo. Volvemos a enviar a WhatsApp la bienvenida, las "
+        "preguntas iniciales y los comandos."
     ]
 
 

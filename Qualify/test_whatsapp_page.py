@@ -316,14 +316,13 @@ def test_graph_error_hides_internal_codes_and_provider_jargon() -> None:
 # --- 5. shell, placeholders, route, nav ------------------------------------------------
 
 
-def test_three_tabs_named_as_tasks() -> None:
+def test_two_tabs_named_as_tasks() -> None:
     """m-24842998: the top tabs (guide §3), the secondary ones grouped inside.
-    m-25017862 (D3): «Promociones» left the strip for its own menu entry."""
-    assert [label for _, label in SECTIONS] == [
-        "Chats",
-        "Respuesta automática",
-        "Tu número",
-    ]
+    m-25017862 (D3): «Promociones» left the strip for its own menu entry.
+    m-25017861 (D1): the menu left it for «Ajustes de chats»; no setting tab is left on
+    the messages screen but «Tu número», which moves to «Tus redes» in BU-A10."""
+    assert [label for _, label in SECTIONS] == ["Chats", "Tu número"]
+    assert "respuesta" in SECTION_KEYS and "respuesta" not in dict(SECTIONS)
     # Its panels are still a section an old address can name (it then redirects).
     assert "promociones" in SECTION_KEYS and "promociones" not in dict(SECTIONS)
     assert [label for _, label in PROMOTION_SUBS] == [
@@ -396,8 +395,10 @@ def test_the_address_names_the_panel(tab: str, sub: str, panel: str) -> None:
 def test_every_panel_has_an_address_that_reads_back(panel: str) -> None:
     """N5: what `select_*` writes is what `enter_page` reads on reload or «atrás»."""
     url = tab_url(panel)
-    query = dict(part.split("=") for part in url.split("?", 1)[1].split("&"))
-    if is_promotions_panel(panel):  # m-25017862: its own page, only the sub-tab
+    query = dict(part.split("=") for part in url.partition("?")[2].split("&") if part)
+    if panel == TAB_MENU:  # m-25017861: «Ajustes de chats › WhatsApp», nothing to read
+        assert url == panel_route(panel) == "/chats/ajustes/whatsapp"
+    elif is_promotions_panel(panel):  # m-25017862: its own page, only the sub-tab
         assert url.startswith(f"{PROMOTIONS_ROUTE}?sub=")
         assert panel_route(panel) == PROMOTIONS_ROUTE
         assert promotions_panel(query["sub"]) == panel
@@ -514,6 +515,7 @@ def _mounts(component: rx.Component, gates: tuple[tuple[str, bool], ...] = ()) -
     [
         (whatsapp_page.whatsapp_promotions_index, "promotions"),
         (whatsapp_page.whatsapp_index, "whatsapp"),
+        (whatsapp_page.whatsapp_settings_index, "settings"),
     ],
 )
 def test_no_panel_mounts_outside_its_pages_section(page: typing.Any, mine: str) -> None:
@@ -521,16 +523,23 @@ def test_no_panel_mounts_outside_its_pages_section(page: typing.Any, mine: str) 
     after the client switched page. Every panel — everything with an `on_mount` below
     the shell — sits in the TRUE branch of this page's section condition, so the other
     page's panel never mounts (nor loads) here. The menu's guided frame on `/whatsapp`
-    has its own condition, `active_tab == "menu"`, which no promotions panel meets."""
-    on_promotions = str(whatsapp_page._on_promotions_page())  # noqa: SLF001
-    gate = on_promotions if mine == "promotions" else str(~whatsapp_page._on_promotions_page())  # noqa: SLF001
+    has its own condition, `active_tab == "menu"`, which no promotions panel meets.
+    m-25017861: the same for «Ajustes de chats › WhatsApp», which draws the menu only."""
+    gate = str(
+        {
+            "promotions": whatsapp_page._on_promotions_page,  # noqa: SLF001
+            "whatsapp": whatsapp_page._on_whatsapp_page,  # noqa: SLF001
+            "settings": whatsapp_page._on_settings_page,  # noqa: SLF001
+        }[mine]()
+    )
     panels = [
         (component, gates)
         for component, gates in _mounts(page())
         # The shell's own: the menu (`nav`) and the route's history button.
         if component.tag != "nav" and "q-route-pop" not in str(component.class_name)
     ]
-    assert len(panels) >= 5  # the gate is not vacuous: the panels are really in the tree
+    # the gate is not vacuous: the panels are really in the tree
+    assert len(panels) >= (1 if mine == "settings" else 5)
     for component, gates in panels:
         menu_frame = any('"menu"' in cond and "active_tab" in cond and ok for cond, ok in gates)
         assert (gate, True) in gates or menu_frame, (type(component).__name__, gates)
@@ -539,7 +548,7 @@ def test_no_panel_mounts_outside_its_pages_section(page: typing.Any, mine: str) 
 
 def test_promotions_route_is_registered_behind_login() -> None:
     source = (_HERE / "Qualify.py").read_text()
-    start = source.index("    whatsapp_promotions_index,\n")
+    start = source.index("    whatsapp_promotions_index,\n    route=")
     block = source[start : source.index(")", source.index("on_load", start)) + 1]
     assert 'route="/whatsapp/promociones"' in block
     assert "AuthState.require_login" in block and "WhatsAppState.enter_page" in block
@@ -560,7 +569,7 @@ def test_addresses_are_the_owner_words() -> None:
     assert tab_url(TAB_CONTACTS) == "/whatsapp/promociones?sub=clientes"
     assert tab_url(TAB_QR) == "/whatsapp?tab=numero&sub=qr"
     assert tab_url(TAB_CHATS) == "/whatsapp?tab=chats"  # no sub without sub-tabs
-    assert tab_url(TAB_MENU) == "/whatsapp?tab=respuesta"
+    assert tab_url(TAB_MENU) == "/chats/ajustes/whatsapp"  # m-25017861
     assert tab_url("<script>") == "/whatsapp?tab=chats"
 
 
@@ -676,7 +685,8 @@ def _signed_in(monkeypatch: pytest.MonkeyPatch, tenant: str) -> None:
     ("path", "panel"),
     [
         ("/whatsapp", TAB_CHATS),
-        ("/whatsapp?tab=respuesta", TAB_MENU),
+        ("/chats/ajustes/whatsapp", TAB_MENU),
+        ("/chats/ajustes/whatsapp/?tab=numero", TAB_MENU),  # only the menu here
         ("/whatsapp?tab=numero&sub=qr", TAB_QR),
         ("/whatsapp/promociones", TAB_CAMPAIGNS),
         ("/whatsapp/promociones?sub=aprobados", TAB_TEMPLATES),
@@ -696,6 +706,17 @@ _OLD = [
     ("/whatsapp?tab=plantillas", "/whatsapp/promociones?sub=aprobados"),
     ("/whatsapp?tab=campanas&flujo=promocion&paso=2", None),
     ("/whatsapp?tab=contactos&path=x&tab2=y", "/whatsapp/promociones?sub=clientes"),
+    # m-25017861: the menu's old addresses land in «Ajustes de chats › WhatsApp», with
+    # its form (`flujo=menu`, step, the menu's id) and the number — nothing else.
+    ("/whatsapp?tab=respuesta", "/chats/ajustes/whatsapp"),
+    ("/whatsapp?tab=menu", "/chats/ajustes/whatsapp"),
+    (
+        "/whatsapp?tab=menu&cuenta=00000000-0000-4000-8000-0000000000aa&flujo=menu&paso=3"
+        "&objeto=00000000-0000-4000-8000-0000000000bb&x=<script>",
+        "/chats/ajustes/whatsapp?cuenta=00000000-0000-4000-8000-0000000000aa&flujo=menu"
+        "&paso=3&objeto=00000000-0000-4000-8000-0000000000bb",
+    ),
+    ("/whatsapp?tab=respuesta&flujo=promocion&paso=2&objeto=junk", "/chats/ajustes/whatsapp"),
 ]
 
 
@@ -741,8 +762,10 @@ def test_the_page_renders_every_tab() -> None:
         escaped = json.dumps(text)[1:-1].replace("\\", "\\\\")
         return text in rendered or escaped in rendered
 
-    for _key, label in (*SECTIONS, *PROMOTION_SUBS, *NUMBER_SUBS):
+    for _key, label in (*SECTIONS, *NUMBER_SUBS):
         assert present(label), label
+    # m-25017861: no setting tab of the menu on the messages screen.
+    assert not present("Respuesta automática") and not present("Tu menú de bienvenida")
     for text in (
         "Verificar ahora",
         "Ver detalles",
@@ -764,7 +787,7 @@ def test_the_page_never_imports_the_provider() -> None:
 
 def test_route_is_registered_behind_login() -> None:
     source = (_HERE / "Qualify.py").read_text()
-    start = source.index("    whatsapp_index,\n")  # the add_page call, not the import
+    start = source.index("    whatsapp_index,\n    route=")  # the add_page call
     block = source[start : source.index(")", source.index("on_load", start)) + 1]
     assert 'route="/whatsapp"' in block
     assert "AuthState.require_login" in block

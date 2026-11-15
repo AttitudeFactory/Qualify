@@ -38,9 +38,8 @@ What the page says that the service decides elsewhere:
   being written, sent with it once approved; a template **with buttons** shows them
   read-only under the box and goes out as one message with buttons. Either one says
   plainly when this deployment cannot send it yet (a notice, never the state badge);
-- **«Preguntas iniciales»** (m-24789472), in the header next to the account, opens the
-  account's Instagram Ice Breakers drawer (`ice_breakers_panel.py`): edit, save, and —
-  after a confirmation — publish to or remove from Instagram;
+- **«Preguntas iniciales»** (m-24789472) live in «Ajustes de chats» since m-25017861
+  (`chat_settings_page.py`, D1); the chat's «⋯» › «Ajustes de este canal» opens them there;
 - every real bubble has **«Eliminar para mí»** on hover: Instagram's API offers a
   business neither unsend nor edit, so «para todos» and «editar» do not exist here;
 - the conversation shows its **newest 50 messages** (`MESSAGES_PAGE`); older history is a
@@ -73,6 +72,7 @@ from .chat_thread import (
 from .chat_thread_vm import (
     BUBBLE_LINK_HIGH_CONTRAST,
     CLOSE_LABEL,
+    INSTAGRAM_SETTINGS_PREFIX,
     REOPEN_LABEL,
     SETTINGS_LABEL,
 )
@@ -110,9 +110,6 @@ from .conversations_vm import (
     MessageVM,
     TemplateVM,
 )
-from .ice_breakers_panel import ice_breakers_panel
-from .ice_breakers_panel import open_button as ice_breakers_button
-from .ice_breakers_state import IceBreakersState
 from .inbox_list_page import inbox_list_pane
 from .reconnect_panel import reconnect_button, reconnect_result_panel
 from .ui import (
@@ -200,12 +197,6 @@ def account_selector() -> rx.Component:
             rx.fragment(),
         ),
     )
-
-
-def _ice_breakers_door() -> rx.Component:
-    """«Preguntas iniciales» (m-24789472) of the selected account: here, because their
-    taps arrive in this inbox and the account is already chosen in this header."""
-    return rx.cond(S.has_accounts, ice_breakers_button(S.selected_connection_id), rx.fragment())
 
 
 # ======================================================================================
@@ -303,10 +294,12 @@ def _more_menu() -> rx.Component:
     return more_menu(
         _chat_status_item(),
         rx.menu.separator(),
+        # m-25017861 (D1): the account's settings live in «Ajustes de chats»; this
+        # opens its «Preguntas iniciales» there (`chat_settings_vm`).
         menu_item(
             SETTINGS_LABEL,
             "settings",
-            on_click=IceBreakersState.open_panel(S.selected_connection_id),
+            on_click=rx.redirect(f"{INSTAGRAM_SETTINGS_PREFIX}{S.selected_connection_id}"),
         ),
     )
 
@@ -1653,13 +1646,13 @@ def _accounts_error() -> rx.Component:
 
 def _instagram_tools() -> rx.Component:
     """The Instagram account's own doors, over the list: which account (only with more
-    than one), its «Preguntas iniciales» and the access banner (§6.3)."""
+    than one) and the access banner (§6.3). Its «Preguntas iniciales» left for «Ajustes
+    de chats» (m-25017861, D1: settings apart from the messages)."""
     return rx.cond(
         S.has_accounts,
         rx.vstack(
             rx.hstack(
                 rx.cond(S.has_many_accounts, account_selector(), rx.fragment()),
-                _ice_breakers_door(),
                 spacing="3",
                 align="center",
                 wrap="wrap",
@@ -1682,7 +1675,6 @@ def messages_tab() -> rx.Component:
         reconnect_result_panel(),
         _heartbeat(),
         rx.script(src="/qualify-voice.js"),
-        ice_breakers_panel(),
         _accounts_error(),
         _instagram_tools(),
         rx.box(

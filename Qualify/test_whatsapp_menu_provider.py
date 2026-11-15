@@ -287,7 +287,7 @@ async def test_publish_with_a_graph_error_keeps_the_db_publish() -> None:
 
     assert not outcome.graph_ok and not outcome.auth_error
     assert outcome.notice.startswith(
-        "Tu WhatsApp ya responde con este menú, pero no tomó los atajos de inicio."
+        "Tu WhatsApp ya responde con este menú, pero no tomó las preguntas iniciales."
     )
     assert "100" not in outcome.notice and "código" not in outcome.notice
     assert outcome.tone == "warn"
@@ -304,7 +304,7 @@ async def test_publish_with_an_auth_error_degrades_the_connection() -> None:
     assert outcome.auth_error and outcome.tone == "error"
     assert (
         outcome.notice.startswith(
-            "Tu WhatsApp ya responde con este menú, pero no tomó los atajos de inicio."
+            "Tu WhatsApp ya responde con este menú, pero no tomó las preguntas iniciales."
         )
         and "190" not in outcome.notice
     )
@@ -321,7 +321,7 @@ async def test_publish_with_an_infrastructure_error_never_leaks_its_text() -> No
     assert not outcome.graph_ok
     assert "secret-host" not in outcome.notice
     assert outcome.notice.startswith(
-        "Tu WhatsApp ya responde con este menú, pero no tomó los atajos de inicio."
+        "Tu WhatsApp ya responde con este menú, pero no tomó las preguntas iniciales."
     )
     assert "Vuelve a tocar «Publicar en mi WhatsApp»" in outcome.notice
 
