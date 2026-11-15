@@ -592,6 +592,18 @@ textarea.q-reply-field::placeholder,
    that header lost its back link (the chat's own «‹ Por responder» is the only one), so
    at ≥ 1024 px its title and subtitle end 5.875rem below the panel's scroll edge —
    measured in the browser at 1280 and at 1024, both chats, mid-scroll: no gap. */
+/* U4 (UX review of m-25029798): with a chat open on a wide screen, the reply box rests
+   inside the window at the first look (no scroll to reach it): the messages take the
+   window less what sits above and below them in «Por responder» — page header, tabs,
+   the chat header with «Tomar el control», the order strip (~33rem) and the reply box
+   (~9.5rem) — never less than 7.5rem. Measured at 1280×800: the box ends inside the
+   window; a taller window gives the messages the rest. */
+@media (min-width: 1024px) {
+  .q-wa-chats--open .q-chat-scroll.q-wa-scroll--messages {
+    min-height: 7.5rem;
+    max-height: max(7.5rem, calc(100dvh - 42.5rem));
+  }
+}
 @media (min-width: 1024px) {
   .q-wa-chats--open .q-chat-head__top {
     position: sticky;
