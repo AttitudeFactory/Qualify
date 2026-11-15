@@ -207,13 +207,18 @@ def test_the_new_filters_read_only_the_thread_and_correlated_subqueries() -> Non
 def test_counts_are_one_statement_with_every_filter_verbatim() -> None:
     sql = _counts_sql()
     assert sql.count("UNION ALL") == len(INBOX_FILTERS) - 1
-    assert sql.count("GROUP BY t.channel") == len(INBOX_FILTERS)
+    # m-25029799: per channel AND account, so one number's chips come from the same read.
+    assert sql.count("GROUP BY t.channel, t.connection_id") == len(INBOX_FILTERS)
     for f in INBOX_FILTERS:
         # Each branch is `count_inbox`'s own WHERE, so both are planned alike.
-        branch = f"SELECT '{f}' AS filter, t.channel, count(*) AS n FROM threads t"
+        branch = f"SELECT '{f}' AS filter, t.channel, t.connection_id, count(*) AS n FROM threads t"
         assert branch in " ".join(sql.split())
         assert f"t.channel = ANY(:channels) AND {_filter_sql(f)}" in sql
         assert _filter_sql(f) in _count_sql(f)
+        # One account: the same filter, plus the bound account (never interpolated).
+        one = _count_sql(f, account=True)
+        assert _filter_sql(f) in one and "t.connection_id = :connection_id" in one
+        assert ":connection_id" not in _count_sql(f)
     for verb in ("INSERT", "UPDATE", "DELETE"):
         assert not re.search(rf"\b{verb}\b", sql.upper()), verb
 
@@ -293,3 +298,66 @@ def test_filters_and_cursor_shape_the_page() -> None:
     count = " ".join(_count_sql("por_responder").split())
     assert count.startswith("SELECT count(*) FROM threads t WHERE t.channel = ANY(:channels)")
     assert " ".join(awaiting_reply_sql("t", now_param="now").split()) in count
+
+
+# --------------------------------------------------------------------------------------
+# m-25029799: one account (the number of a business with several WhatsApp numbers)
+# --------------------------------------------------------------------------------------
+
+
+class _AccountReader(_FakeReader):
+    """A reader that takes the account keyword (the Postgres one does)."""
+
+    def list_page(self, tenant_id: UUID, **kwargs: object) -> InboxPage:  # type: ignore[override]
+        self.calls.append({"tenant": tenant_id, **kwargs})
+        return InboxPage(rows=(), next_cursor=None)
+
+    def count(self, tenant_id: UUID, **kwargs: object) -> int:  # type: ignore[override]
+        self.calls.append({"tenant": tenant_id, **kwargs})
+        return 4
+
+
+def test_an_account_reaches_the_reader_only_when_asked() -> None:
+    number = uuid4()
+    reader = _AccountReader()
+    list_inbox(uuid4(), filter="todos", channel="whatsapp", connection_id=number, reader=reader)
+    assert reader.calls[-1]["connection_id"] == number
+    assert count_inbox(uuid4(), connection_id=number, reader=reader, now=NOW) == 4
+    assert reader.calls[-1]["connection_id"] == number
+    # Without one, the keyword is not passed: a reader built before the story still works.
+    old = _FakeReader()
+    list_inbox(uuid4(), reader=old, now=NOW)
+    count_inbox(uuid4(), reader=old, now=NOW)
+    assert len(old.calls) == 2
+    for bad in ("not-a-uuid", str(number)):
+        with pytest.raises(ValueError):
+            list_inbox(uuid4(), connection_id=bad, reader=reader)  # type: ignore[arg-type]
+
+
+def test_the_account_is_bound_in_every_branch_of_the_page() -> None:
+    page = " ".join(_list_sql("todos", None, account=True).split())
+    assert page.count("AND t.connection_id = :connection_id") == 2  # dated + undated
+    undated = " ".join(_list_sql("todos", InboxCursor(None, uuid4()), account=True).split())
+    assert undated.count("AND t.connection_id = :connection_id") == 1
+    assert "connection_id = :connection_id" not in _list_sql("todos", None)
+
+
+def test_counts_per_account_and_channel() -> None:
+    first, second, ig = uuid4(), uuid4(), uuid4()
+    counts = InboxCounts(
+        by_channel={"dm": {f: 1 for f in INBOX_FILTERS}, "whatsapp": {f: 5 for f in INBOX_FILTERS}},
+        by_connection={
+            str(first): {f: 2 for f in INBOX_FILTERS},
+            str(second): {f: 3 for f in INBOX_FILTERS},
+            str(ig): {f: 1 for f in INBOX_FILTERS},
+        },
+        connection_channels={str(first): "whatsapp", str(second): "whatsapp", str(ig): "dm"},
+    )
+    assert counts.count("todos", connection_id=first) == 2
+    assert counts.count("todos", "whatsapp", connection_id=str(second)) == 3
+    assert counts.count("todos", "dm", connection_id=first) == 0  # a number is no IG account
+    assert counts.count("todos", connection_id=uuid4()) == 0  # unknown: nothing
+    assert counts.count("todos", "whatsapp") == 5
+    # A tally built by hand without accounts still answers per channel.
+    plain = InboxCounts(by_channel={"dm": {f: 1 for f in INBOX_FILTERS}})
+    assert plain.count("todos") == 1 and plain.count("todos", connection_id=first) == 0

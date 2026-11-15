@@ -23,6 +23,14 @@ person, the window having closed within the last
 `inbox.awaiting.expired_unanswered_sql`).
 An optional channel narrows to one allow-listed channel (`UnknownChannel` otherwise).
 
+**One account** (m-25029799). An optional `connection_id` narrows any filter to the chats
+of one connected account — the number of a business with several WhatsApp numbers,
+which WhatsApp's own list (retired by that story) showed one at a time. It is bound as a
+parameter and RLS still scopes the read: another business's account lists nothing.
+`inbox_counts` groups every filter by channel AND account in its one statement
+(`InboxCounts.by_connection`), so a chip counted for one number is the length of that
+number's list.
+
 **For the screens** (the Reflex providers call these in-process, off the event loop):
 `list_inbox` (one page), `count_inbox` (one filter), `inbox_counts` (every filter per
 channel in ONE statement — the chips, the channel filter, the expired notice),
@@ -232,13 +240,33 @@ class InboxPage:
 class InboxCounts:
     """How many chats each filter lists, per channel (`by_channel[channel][filter]`);
     every allow-listed channel and filter is present, 0 when empty. `count(filter)` is
-    the total over channels — exactly what `count_inbox(filter=…)` returns."""
+    the total over channels — exactly what `count_inbox(filter=…)` returns.
+
+    m-25029799: `by_connection[str(connection_id)][filter]` is the same per account, and
+    `connection_channels[str(connection_id)]` that account's channel (only accounts
+    holding a chat appear). `count(filter, channel, connection_id)` equals
+    `count_inbox(filter=…, channel=…, connection_id=…)`. Both are empty on a tally built
+    by hand without them."""
 
     by_channel: Mapping[str, Mapping[str, int]]
+    by_connection: Mapping[str, Mapping[str, int]] = MappingProxyType({})
+    connection_channels: Mapping[str, str] = MappingProxyType({})
 
-    def count(self, filter: InboxFilter, channel: str | None = None) -> int:
+    def count(
+        self,
+        filter: InboxFilter,
+        channel: str | None = None,
+        connection_id: UUID | str | None = None,
+    ) -> int:
         _filter_sql(filter)
         channels = resolve_channels(channel)
+        if connection_id is not None:
+            # An account has one channel: narrowed to another channel it lists nothing,
+            # exactly as `count_inbox` with both narrowings.
+            account = str(connection_id)
+            if self.connection_channels.get(account) not in channels:
+                return 0
+            return self.by_connection.get(account, {}).get(filter, 0)
         return sum(self.by_channel.get(c, {}).get(filter, 0) for c in channels)
 
     @property
@@ -256,7 +284,8 @@ class InboxCounts:
 
 class InboxReader(Protocol):
     """The read seam (Postgres in production, a fake in offline tests). `expired_since`
-    is the lower bound of `ventana_vencida` (`now - expired_within - WINDOW`)."""
+    is the lower bound of `ventana_vencida` (`now - expired_within - WINDOW`);
+    `connection_id` narrows to one account (m-25029799)."""
 
     def list_page(
         self,
@@ -268,6 +297,7 @@ class InboxReader(Protocol):
         limit: int,
         now: datetime,
         expired_since: datetime,
+        connection_id: UUID | None = None,
     ) -> InboxPage: ...
 
     def count(
@@ -278,6 +308,7 @@ class InboxReader(Protocol):
         channels: Sequence[str],
         now: datetime,
         expired_since: datetime,
+        connection_id: UUID | None = None,
     ) -> int: ...
 
     def counts(
@@ -305,7 +336,7 @@ _PAGE_COLUMNS: Final = """t.id, t.channel, t.connection_id, t.status, t.last_mes
 _PAGE_DATED: Final = f"""
   (SELECT {_PAGE_COLUMNS}
      FROM threads t
-    WHERE t.channel = ANY(:channels) AND t.last_message_at IS NOT NULL
+    WHERE t.channel = ANY(:channels) AND t.last_message_at IS NOT NULL {{account}}
       AND {{filter}} {{after}}
     ORDER BY t.last_message_at DESC, t.id DESC
     LIMIT :limit)"""
@@ -313,7 +344,7 @@ _PAGE_DATED: Final = f"""
 _PAGE_UNDATED: Final = f"""
   (SELECT {_PAGE_COLUMNS}
      FROM threads t
-    WHERE t.channel = ANY(:channels) AND t.last_message_at IS NULL
+    WHERE t.channel = ANY(:channels) AND t.last_message_at IS NULL {{account}}
       AND {{filter}} {{after}}
     ORDER BY t.id DESC
     LIMIT :limit)"""
@@ -363,8 +394,13 @@ SELECT t.id, t.channel, t.connection_id, t.status, t.last_message_at, t.last_inb
 _COUNT: Final = """
 SELECT count(*)
   FROM threads t
- WHERE t.channel = ANY(:channels) AND {filter}
+ WHERE t.channel = ANY(:channels) {account} AND {filter}
 """
+
+#: m-25029799: one account's chats (bound, never interpolated). The page still walks the
+#: tenant's `(tenant_id, last_message_at)` index; the account is a per-row check on the
+#: rows it walks (a business has a handful of accounts).
+_ACCOUNT_SQL: Final = "AND t.connection_id = :connection_id"
 
 # Every filter's count per channel in ONE statement: one `_COUNT` branch per filter,
 # grouped by channel, glued with UNION ALL. Each branch is the filter's own text in a
@@ -378,10 +414,10 @@ NO_JIT_SQL: Final = "SET LOCAL jit = off"
 _NO_JIT: Final = text(NO_JIT_SQL)
 
 _COUNTS_BRANCH: Final = """
-SELECT '{name}' AS filter, t.channel, count(*) AS n
+SELECT '{name}' AS filter, t.channel, t.connection_id, count(*) AS n
   FROM threads t
  WHERE t.channel = ANY(:channels) AND {filter}
- GROUP BY t.channel"""
+ GROUP BY t.channel, t.connection_id"""
 
 # Strictly after the cursor in `last_message_at DESC NULLS LAST, id DESC`: inside the
 # dated branch for a dated cursor; inside the undated branch for an undated one (every
@@ -397,24 +433,29 @@ def _filter_sql(filter: str) -> str:
         raise ValueError(f"filter must be one of {INBOX_FILTERS}, not {filter!r}") from None
 
 
-def _page_sql(filter: str, cursor: InboxCursor | None) -> str:
+def _page_sql(filter: str, cursor: InboxCursor | None, *, account: bool = False) -> str:
     where = _filter_sql(filter)
+    one = _ACCOUNT_SQL if account else ""
     undated_cursor = cursor is not None and cursor.last_message_at is None
-    undated = _PAGE_UNDATED.format(filter=where, after=_AFTER_UNDATED if undated_cursor else "")
+    undated = _PAGE_UNDATED.format(
+        filter=where, after=_AFTER_UNDATED if undated_cursor else "", account=one
+    )
     if undated_cursor:
         return undated
-    dated = _PAGE_DATED.format(filter=where, after=_AFTER_DATED if cursor is not None else "")
+    dated = _PAGE_DATED.format(
+        filter=where, after=_AFTER_DATED if cursor is not None else "", account=one
+    )
     return f"{dated}\n  UNION ALL{undated}"
 
 
-def _list_sql(filter: str, cursor: InboxCursor | None) -> str:
+def _list_sql(filter: str, cursor: InboxCursor | None, *, account: bool = False) -> str:
     # A filter that already decides a verdict does not evaluate it again per row: under
     # `por_responder` every row waits and none is expired (the window is open); under
     # `ventana_vencida` every row is expired and none waits.
     awaiting = {"por_responder": "TRUE", "ventana_vencida": "FALSE"}.get(filter, _AWAITING_SQL)
     expired = {"por_responder": "FALSE", "ventana_vencida": "TRUE"}.get(filter, _EXPIRED_SQL)
     return _SELECT.format(
-        page=_page_sql(filter, cursor),
+        page=_page_sql(filter, cursor, account=account),
         whatsapp=CHANNEL_WHATSAPP,
         dm=CHANNEL_INSTAGRAM_DM,
         n_instant=_INSTANT.format(m="n"),
@@ -424,8 +465,8 @@ def _list_sql(filter: str, cursor: InboxCursor | None) -> str:
     )
 
 
-def _count_sql(filter: str) -> str:
-    return _COUNT.format(filter=_filter_sql(filter))
+def _count_sql(filter: str, *, account: bool = False) -> str:
+    return _COUNT.format(filter=_filter_sql(filter), account=_ACCOUNT_SQL if account else "")
 
 
 def _counts_sql() -> str:
@@ -482,6 +523,7 @@ class PostgresInboxReader:
         limit: int,
         now: datetime,
         expired_since: datetime,
+        connection_id: UUID | None = None,
     ) -> InboxPage:
         params: dict[str, Any] = {
             "channels": list(channels),
@@ -493,7 +535,9 @@ class PostgresInboxReader:
             params["id"] = cursor.thread_id
             if cursor.last_message_at is not None:
                 params["at"] = cursor.last_message_at
-        sql = text(_list_sql(filter, cursor))
+        if connection_id is not None:
+            params["connection_id"] = connection_id
+        sql = text(_list_sql(filter, cursor, account=connection_id is not None))
         with tenant_session(tenant_id) as session:
             records = session.execute(sql, params).all()
         rows = tuple(_row(r, now) for r in records[:limit])
@@ -508,10 +552,18 @@ class PostgresInboxReader:
         channels: Sequence[str],
         now: datetime,
         expired_since: datetime,
+        connection_id: UUID | None = None,
     ) -> int:
-        params = {"channels": list(channels), "now": now, "expired_since": expired_since}
+        params: dict[str, Any] = {
+            "channels": list(channels),
+            "now": now,
+            "expired_since": expired_since,
+        }
+        if connection_id is not None:
+            params["connection_id"] = connection_id
+        sql = text(_count_sql(filter, account=connection_id is not None))
         with tenant_session(tenant_id) as session:
-            value = session.execute(text(_count_sql(filter)), params)
+            value = session.execute(sql, params)
             return int(value.scalar_one() or 0)
 
     def counts(
@@ -524,14 +576,25 @@ class PostgresInboxReader:
             # this transaction only.
             session.execute(_NO_JIT)
             records = session.execute(text(_counts_sql()), params).all()
-        found = {(r.filter, r.channel): int(r.n or 0) for r in records}
+        found: dict[tuple[str, str], int] = {}
+        by_account: dict[str, dict[str, int]] = {}
+        account_channel: dict[str, str] = {}
+        for r in records:
+            n = int(r.n or 0)
+            found[(r.filter, r.channel)] = found.get((r.filter, r.channel), 0) + n
+            account = str(r.connection_id)
+            account_channel[account] = r.channel
+            per = by_account.setdefault(account, dict.fromkeys(INBOX_FILTERS, 0))
+            per[r.filter] += n
         return InboxCounts(
             by_channel=MappingProxyType(
                 {
                     c: MappingProxyType({f: found.get((f, c), 0) for f in INBOX_FILTERS})
                     for c in channels
                 }
-            )
+            ),
+            by_connection=MappingProxyType({a: MappingProxyType(v) for a, v in by_account.items()}),
+            connection_channels=MappingProxyType(account_channel),
         )
 
 
@@ -548,6 +611,16 @@ def _aware_now(now: datetime | None) -> datetime:
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError("now must be timezone-aware")
     return now
+
+
+def _account(connection_id: UUID | None) -> dict[str, UUID]:
+    """The reader's `connection_id` keyword, only when one is asked for (a reader built
+    before m-25029799 keeps working for every other call)."""
+    if connection_id is None:
+        return {}
+    if not isinstance(connection_id, UUID):
+        raise ValueError("connection_id must be a UUID")
+    return {"connection_id": connection_id}
 
 
 def _expired_since(now: datetime, within: timedelta) -> datetime:
@@ -568,13 +641,14 @@ def list_inbox(
     now: datetime | None = None,
     expired_within: timedelta = EXPIRED_UNANSWERED_WITHIN,
     reader: InboxReader | None = None,
+    connection_id: UUID | None = None,
 ) -> InboxPage:
     """One page of the tenant's chats across channels, newest activity first.
 
-    `channel` narrows to one allow-listed channel (`UnknownChannel` otherwise); `cursor`
-    is the previous page's `next_cursor` (or its `encode()`d token); `expired_within`
-    bounds `ventana_vencida` only. Blocking (one DB round trip): call it off the event
-    loop (`asyncio.to_thread`)."""
+    `channel` narrows to one allow-listed channel (`UnknownChannel` otherwise);
+    `connection_id` to one account (m-25029799); `cursor` is the previous page's
+    `next_cursor` (or its `encode()`d token); `expired_within` bounds `ventana_vencida`
+    only. Blocking (one DB round trip): call it off the event loop (`asyncio.to_thread`)."""
     _filter_sql(filter)
     if not 1 <= limit <= MAX_PAGE_SIZE:
         raise ValueError(f"limit must be between 1 and {MAX_PAGE_SIZE}")
@@ -590,6 +664,7 @@ def list_inbox(
         limit=limit,
         now=moment,
         expired_since=_expired_since(moment, expired_within),
+        **_account(connection_id),
     )
 
 
@@ -601,9 +676,11 @@ def count_inbox(
     now: datetime | None = None,
     expired_within: timedelta = EXPIRED_UNANSWERED_WITHIN,
     reader: InboxReader | None = None,
+    connection_id: UUID | None = None,
 ) -> int:
     """How many chats the same filter lists (all pages), judged at `now` (default: the
-    wall clock) like `list_inbox`. Blocking: one DB round trip."""
+    wall clock) like `list_inbox`; on one account with `connection_id`. Blocking: one
+    DB round trip."""
     _filter_sql(filter)
     channels = resolve_channels(channel)
     moment = _aware_now(now)
@@ -613,6 +690,7 @@ def count_inbox(
         channels=channels,
         now=moment,
         expired_since=_expired_since(moment, expired_within),
+        **_account(connection_id),
     )
 
 
