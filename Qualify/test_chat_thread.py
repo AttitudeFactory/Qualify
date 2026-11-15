@@ -251,7 +251,8 @@ def test_the_business_bubble_is_the_measured_tint() -> None:
 
 def test_the_wash_lives_in_the_header_and_the_ux_proposals_flip_in_one_line() -> None:
     css = _CSS.read_text()
-    head = css[css.index(".q-chat-head {") :]
+    # m-25027374: the header is two blocks (the top one pins on a phone); both wear it.
+    head = css[css.index(".q-chat-head__top,\n.q-chat-head__rest {") :]
     assert "var(--q-chat-tint-3)" in head[: head.index("}")]
     thread = css[css.index(".q-chat-thread {") :]
     thread = thread[: thread.index("}")]
@@ -268,7 +269,9 @@ def test_the_wash_lives_in_the_header_and_the_ux_proposals_flip_in_one_line() ->
 def test_the_phone_fixes_of_m24984052_still_hold() -> None:
     css = _CSS.read_text()
     assert "padding-bottom: max(0.25rem, env(safe-area-inset-bottom))" in css
-    assert ".q-chat-thread--whatsapp .q-wa-composer .rt-Button" in css
+    # m-25027374: both channels' reply box; its controls are ≥ 44 px by `.q-reply-box`
+    assert ".q-chat-thread .q-chat-scroll .rt-Button" in css
+    assert ".q-reply-box .rt-BaseButton" in css
     wrap = css[css.index(".q-chat-msg .q-bubble {") :]
     assert "overflow-wrap: anywhere" in wrap[: wrap.index("}")]
     motion = css[css.rindex("@media (prefers-reduced-motion: reduce)") :]

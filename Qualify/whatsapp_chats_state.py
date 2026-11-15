@@ -47,6 +47,13 @@ from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import reflex as rx
+from qualify_api.assisted.approval import ApprovalRequired
+from qualify_api.auth.business import NotAMember
+from qualify_api.inbox.channels import UnknownChannel as NotAnInboxChannel
+from qualify_api.inbox.dispatch import ActionNotSupported, DraftNotSupported
+from qualify_api.inbox.dispatch import ThreadNotFound as DispatchThreadNotFound
+from qualify_api.inbox.dispatch import WindowClosed as DispatchWindowClosed
+from qualify_api.tenancy.acting import acting_login
 from qualify_api.whatsapp.attachments import (
     AttachmentRefused,
     PieceNotFound,
@@ -267,11 +274,23 @@ _TEMPLATES_FAILED = (
     "No se pudieron cargar tus mensajes aprobados. Vuelve a intentarlo en un momento."
 )
 _TEMPLATE_GONE = "Ese mensaje ya no está aprobado. Elige otro."
+_NEEDS_APPROVAL = "El mensaje no salió: falta que lo apruebes. Vuelve a tocar «Enviar»."
 _TOAST_MS = 4000
 #: The «Sin asignar» item of the «Asignar» select.
 UNASSIGNED = "__none__"
 
 _DB_ERRORS = (SQLAlchemyError,)
+
+
+class _NoSession(Exception):
+    """No business, login or ids to act on. Never a `PermissionError`: two backend
+    refusals are (`ApprovalRequired`, `CapabilityUnavailable`) and must not read as «no
+    session» (m-25027374)."""
+
+
+#: m-25027374: refusals of the chat dispatcher (`inbox.dispatch`) that are not about the
+#: session — caught before the generic `ValueError` («texto rechazado»).
+_DISPATCH_REFUSALS = (NotAnInboxChannel, ActionNotSupported, DraftNotSupported)
 
 
 def _zone(name: str) -> ZoneInfo:
@@ -753,6 +772,13 @@ class WhatsAppChatsState(rx.State):
     async def _tenant(self) -> UUID | None:
         auth = await self.get_state(AuthState)
         return tenant_uuid(auth.session_tenant_id) if auth.session_tenant_id else None
+
+    async def _login(self) -> UUID | None:
+        """The session's login (server-side, `AuthState._auth_user_id`), for
+        `acting_login`: the send services then check, fresh, that this login is still a
+        member of the business (ADR 43 S5) — as ads and connections do (m-25027374)."""
+        auth = await self.get_state(AuthState)
+        return _uuid(auth._auth_user_id) if auth._auth_user_id else None
 
     def _now(self) -> datetime:
         return datetime.now(UTC)
@@ -1365,35 +1391,54 @@ class WhatsAppChatsState(rx.State):
             self.banner = ""
             thread_id, connection_id = self.open_thread_id, self._connection_id
             tenant_id = await self._tenant()
+            login = await self._login()
         thread, connection = _uuid(thread_id), _uuid(connection_id)
         try:
             if tenant_id is None or thread is None or connection is None:
-                raise PermissionError
+                raise _NoSession
             user = await self._acting_user(tenant_id)
             if user is None:
                 async with self:
                     self.sending = False
                     self._set_banner(_NO_USER, "error")
                 return
-            await asyncio.to_thread(call, tenant_id, connection, thread, user)
-        except PermissionError:
+            with acting_login(login):
+                await asyncio.to_thread(call, tenant_id, connection, thread, user)
+        except _NoSession:
             async with self:
                 self.sending = False
                 self._set_banner(_NO_SESSION, "error")
             return
-        except WindowClosed:
+        except NotAMember as gone:
+            async with self:
+                self.sending = False
+                self._set_banner(gone.message, "error")
+            return
+        except ApprovalRequired:
+            # Unreachable from here (the provider always builds the approval); worded so
+            # a regression shows, and never as «no session» (it is a PermissionError).
+            async with self:
+                self.sending = False
+                self._set_banner(_NEEDS_APPROVAL, "error")
+            return
+        except (WindowClosed, DispatchWindowClosed):
             async with self:
                 self.sending = False
                 self._set_banner(WINDOW_CLOSED_NOTICE, "warn")
             yield WhatsAppChatsState.refresh
             return
-        except (ThreadNotFound, NoOrder) as exc:
+        except (ThreadNotFound, DispatchThreadNotFound, NoOrder) as exc:
             async with self:
                 self.sending = False
-                self._set_banner(
-                    _THREAD_GONE if isinstance(exc, ThreadNotFound) else _NO_ORDER, "warn"
-                )
+                self._set_banner(_NO_ORDER if isinstance(exc, NoOrder) else _THREAD_GONE, "warn")
             yield WhatsAppChatsState.refresh
+            return
+        except _DISPATCH_REFUSALS as exc:
+            # Before `ValueError`: an unknown channel is one, and it is not a bad text.
+            logger.error("whatsapp chats send refused: %s", type(exc).__name__)
+            async with self:
+                self.sending = False
+                self._set_banner(_ACTION_FAILED, "error")
             return
         except ValueError:
             # Meta's limits (client builders) or Pydantic's shape — never echo their text.
@@ -1572,27 +1617,31 @@ class WhatsAppChatsState(rx.State):
             self.tpl_error = ""
             thread_id, connection_id = self.open_thread_id, self._connection_id
             tenant_id = await self._tenant()
+            login = await self._login()
         thread, connection = _uuid(thread_id), _uuid(connection_id)
         error = ""
         try:
             if tenant_id is None or thread is None or connection is None:
-                raise PermissionError
+                raise _NoSession
             user = await self._acting_user(tenant_id)
             if user is None:
                 error = _NO_USER
             else:
-                await asyncio.to_thread(
-                    gateway().send_template,
-                    tenant_id,
-                    connection,
-                    thread,
-                    user,
-                    template_id,
-                    values,
-                    request_key,
-                )
-        except PermissionError:
+                with acting_login(login):
+                    await asyncio.to_thread(
+                        gateway().send_template,
+                        tenant_id,
+                        connection,
+                        thread,
+                        user,
+                        template_id,
+                        values,
+                        request_key,
+                    )
+        except _NoSession:
             error = _NO_SESSION
+        except NotAMember as gone:
+            error = gone.message
         except ThreadNotFound:
             error = _THREAD_GONE
         except PromotionNeedsConsent:
@@ -2523,20 +2572,24 @@ class WhatsAppChatsState(rx.State):
             if plan is None:
                 return
             tenant_id = await self._tenant()
+            login = await self._login()
         thread, connection = _uuid(plan.thread_id), _uuid(plan.connection_id)
         error = ""
         try:
             if tenant_id is None or thread is None or connection is None:
-                raise PermissionError
+                raise _NoSession
             user = await self._acting_user(tenant_id)
             if user is None:
                 error = _NO_USER
             else:
-                await asyncio.to_thread(
-                    call_pick, gateway(), plan, tenant_id, connection, thread, user
-                )
-        except PermissionError:
+                with acting_login(login):
+                    await asyncio.to_thread(
+                        call_pick, gateway(), plan, tenant_id, connection, thread, user
+                    )
+        except _NoSession:
             error = _NO_SESSION
+        except NotAMember as gone:
+            error = gone.message
         except Exception as exc:  # noqa: BLE001 — every refusal is worded by `pick_send_error`
             if not isinstance(exc, (WindowClosed, AttachmentRefused, LookupError)):
                 logger.error("whatsapp chats picker send failed: %s", type(exc).__name__)
@@ -2633,30 +2686,35 @@ class WhatsAppChatsState(rx.State):
             thread_id, connection_id = self._pay_thread, self._connection_id
             request_key = self._pay_request_key
             tenant_id = await self._tenant()
+            login = await self._login()
         thread, connection = _uuid(thread_id), _uuid(connection_id)
         error, closed = "", False
         try:
             if tenant_id is None or thread is None or connection is None:
-                raise PermissionError
+                raise _NoSession
             user = await self._acting_user(tenant_id)
             if user is None:
                 error = _NO_USER
             elif silent:
-                await asyncio.to_thread(
-                    gateway().mark_paid_without_message, tenant_id, connection, thread, user
-                )
+                with acting_login(login):
+                    await asyncio.to_thread(
+                        gateway().mark_paid_without_message, tenant_id, connection, thread, user
+                    )
             else:
-                await asyncio.to_thread(
-                    gateway().confirm_payment,
-                    tenant_id,
-                    connection,
-                    thread,
-                    user,
-                    message,
-                    request_key,
-                )
-        except PermissionError:
+                with acting_login(login):
+                    await asyncio.to_thread(
+                        gateway().confirm_payment,
+                        tenant_id,
+                        connection,
+                        thread,
+                        user,
+                        message,
+                        request_key,
+                    )
+        except _NoSession:
             error = _NO_SESSION
+        except NotAMember as gone:
+            error = gone.message
         except WindowClosed:
             error, closed = PAYMENT_WINDOW_CLOSED, True
         except NoPendingPayment:
@@ -2727,11 +2785,13 @@ class WhatsAppChatsState(rx.State):
             self.banner = ""
             thread_id, connection_id = self.open_thread_id, self._connection_id
             tenant_id = await self._tenant()
+            login = await self._login()
         thread, connection = _uuid(thread_id), _uuid(connection_id)
         gw = gateway()
         try:
             if tenant_id is None or thread is None or connection is None:
-                raise PermissionError
+                raise _NoSession
+            user = None
             if action == "takeover":
                 user = await self._acting_user(tenant_id)
                 if user is None:
@@ -2739,23 +2799,31 @@ class WhatsAppChatsState(rx.State):
                         self.acting = ""
                         self._set_banner(_NO_USER, "error")
                     return
-                await asyncio.to_thread(gw.takeover, tenant_id, connection, thread, user)
-            elif action == "resume":
-                await asyncio.to_thread(gw.resume, tenant_id, connection, thread)
-            elif action == "close":
-                await asyncio.to_thread(gw.close, tenant_id, connection, thread)
-            elif action == "reopen":
-                await asyncio.to_thread(gw.reopen, tenant_id, connection, thread)
-            elif action == "assign":
-                await asyncio.to_thread(
-                    gw.assign, tenant_id, connection, thread, _uuid(agent_id) if agent_id else None
-                )
-        except PermissionError:
+            # m-25027374: the login acts; the membership check runs where a service makes
+            # it (today the sends: close/reopen/assign have none in either channel).
+            with acting_login(login):
+                if action == "takeover":
+                    await asyncio.to_thread(gw.takeover, tenant_id, connection, thread, user)
+                elif action == "resume":
+                    await asyncio.to_thread(gw.resume, tenant_id, connection, thread)
+                elif action == "close":
+                    await asyncio.to_thread(gw.close, tenant_id, connection, thread)
+                elif action == "reopen":
+                    await asyncio.to_thread(gw.reopen, tenant_id, connection, thread)
+                elif action == "assign":
+                    agent = _uuid(agent_id) if agent_id else None
+                    await asyncio.to_thread(gw.assign, tenant_id, connection, thread, agent)
+        except _NoSession:
             async with self:
                 self.acting = ""
                 self._set_banner(_NO_SESSION, "error")
             return
-        except ThreadNotFound:
+        except NotAMember as gone:
+            async with self:
+                self.acting = ""
+                self._set_banner(gone.message, "error")
+            return
+        except (ThreadNotFound, DispatchThreadNotFound):
             async with self:
                 self.acting = ""
                 self._set_banner(_THREAD_GONE, "warn")
@@ -2765,6 +2833,12 @@ class WhatsAppChatsState(rx.State):
             async with self:
                 self.acting = ""
                 self._set_banner(_UNKNOWN_AGENT, "warn")
+            return
+        except (*_DISPATCH_REFUSALS, ApprovalRequired) as exc:
+            logger.error("whatsapp chats %s refused: %s", action, type(exc).__name__)
+            async with self:
+                self.acting = ""
+                self._set_banner(_ACTION_FAILED, "error")
             return
         except _DB_ERRORS as exc:
             logger.error("whatsapp chats %s failed: %s", action, type(exc).__name__)

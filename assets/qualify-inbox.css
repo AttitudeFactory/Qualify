@@ -600,9 +600,13 @@ textarea.q-reply-field,
     box-shadow: 0 1px 0 var(--gray-a4);
   }
   .q-wa-chats--open .q-chat-scroll.q-wa-scroll--messages {
-    /* the viewport less the pinned top line, the reply box and the bottom bar */
-    max-height: calc(100vh - var(--q-chat-chrome, 19rem));
-    max-height: calc(100dvh - var(--q-chat-chrome, 19rem));
+    /* the viewport less the bottom bar, the pinned top line (~7.5rem), the reply box
+     (~9rem with its tools row) and the card's padding: the reply box rests right above
+     the bottom bar with the newest message over it */
+    --q-chat-chrome: calc(var(--q-bottom-bar-h, 64px) + 2 * var(--q-gap, 0.75rem) + 19rem);
+    max-height: calc(100vh - var(--q-chat-chrome));
+    max-height: calc(100dvh - var(--q-chat-chrome));
+    min-height: 12rem;
   }
   .q-reply-tools {
     flex-wrap: nowrap;

@@ -38,6 +38,10 @@ from .test_conversations_provider import (
 )
 
 
+async def _no_login(self: object) -> None:
+    return None
+
+
 async def _drain(events: Any) -> list[Any]:
     """Run a handler that is an async generator (or a plain coroutine)."""
     if hasattr(events, "__aiter__"):
@@ -61,6 +65,9 @@ def _install(monkeypatch: pytest.MonkeyPatch, world: World) -> World:
         return USER
 
     monkeypatch.setattr(ConversationsState, "_tenant", tenant)
+    # m-25027374: no login acts in offline tests (the membership check would read
+    # Postgres); `test_reply_box_guards.py` holds that the login does act.
+    monkeypatch.setattr(ConversationsState, "_login", _no_login)
     monkeypatch.setattr(ConversationsState, "_acting_user", acting_user)
     monkeypatch.setattr(state_module, "gateway", lambda: world.gateway)
     return world

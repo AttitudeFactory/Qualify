@@ -44,6 +44,10 @@ VIDEO = UUID("30000000-0000-4000-8000-000000000002")
 OLD = UUID("30000000-0000-4000-8000-000000000003")
 
 
+async def _no_login(self: object) -> None:
+    return None
+
+
 def _row(media: UUID, kind: str, label: str, key: str) -> Any:
     ext = "mp4" if kind == "video" else "webp"
     return SimpleNamespace(
@@ -123,6 +127,9 @@ def chat(world: World, monkeypatch: pytest.MonkeyPatch) -> tuple[WhatsAppChatsSt
         return USER
 
     monkeypatch.setattr(WhatsAppChatsState, "_tenant", tenant)
+    # m-25027374: no login acts in offline tests (the membership check would read
+    # Postgres); `test_reply_box_guards.py` holds that the login does act.
+    monkeypatch.setattr(WhatsAppChatsState, "_login", _no_login)
     monkeypatch.setattr(WhatsAppChatsState, "_acting_user", acting)
     thread = str(world.thread(inbound_ago=timedelta(minutes=5)))
     state = WhatsAppChatsState()

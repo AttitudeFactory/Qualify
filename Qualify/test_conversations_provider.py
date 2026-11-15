@@ -33,7 +33,6 @@ from qualify_api.conversations.contracts import (
     RemoteConversation,
     RemoteMessage,
     SourceConnection,
-    UnknownChannel,
 )
 from qualify_api.conversations.drafts import DraftStatus, MemoryDraftRepository
 from qualify_api.conversations.memory_source import (
@@ -47,7 +46,6 @@ from qualify_api.conversations.service import (
     AttentionState,
     ConversationService,
     ThreadNotFound,
-    WindowClosed,
 )
 from qualify_api.conversations.suggest import (
     ConversationDraftService,
@@ -63,6 +61,8 @@ from qualify_api.conversations.templates import (
     ReplyTemplateNotFound,
     ReplyTemplateService,
 )
+from qualify_api.inbox import dispatch
+from qualify_api.inbox.channels import UnknownChannel as NotAnInboxChannel
 
 from . import conversations_provider
 from .conversations_provider import ConversationsGateway
@@ -151,6 +151,20 @@ class StubGenerator:
         return Proposal("¡Hola! Sí, tenemos talla M.", used_only_given_facts=True)
 
 
+class ServiceChannels:
+    """m-25027374: the dispatcher's channel read, answered by the memory service (the
+    production one reads `threads.channel` under RLS)."""
+
+    def __init__(self, service: ConversationService) -> None:
+        self._service = service
+
+    def channel_of(self, *, tenant_id: UUID, thread_id: UUID) -> str | None:
+        try:
+            return self._service.get_thread(tenant_id=tenant_id, thread_id=thread_id).thread.channel
+        except ThreadNotFound:
+            return None
+
+
 class World:
     def __init__(self, *, with_sender: bool = True, switched_on: frozenset = frozenset()) -> None:
         """`switched_on`: the deployment's capabilities (m-24789472: quick replies,
@@ -206,6 +220,11 @@ class World:
             drafts=self.drafts,
             clock=self.clock,
             templates=self.templates,
+            dispatcher=dispatch.ChatDispatcher(
+                channels=ServiceChannels(self.service),
+                instagram_service=self.service,
+                whatsapp_service=None,  # type: ignore[arg-type] — no WhatsApp thread here
+            ),
         )
 
     def inbound(
@@ -320,7 +339,9 @@ def test_a_reply_lands_in_the_outbox_with_this_users_approval(world: World) -> N
 
 def test_a_closed_window_refuses_before_anything_is_written(world: World) -> None:
     thread = world.inbound(at=NOW - timedelta(hours=25))
-    with pytest.raises(WindowClosed):
+    # m-25027374: a text goes by the dispatcher, which names the closed window once for
+    # every channel.
+    with pytest.raises(dispatch.WindowClosed):
         world.gateway.reply(TENANT, CONNECTION, thread, USER, "tarde")
     assert world.outbox.rows == {}
 
@@ -357,7 +378,7 @@ def test_a_heart_is_a_sticker_row_without_an_object(world: World) -> None:
 def test_a_channel_without_sender_is_refused_before_anything_is_written() -> None:
     world = World(with_sender=False)
     thread = world.inbound()
-    with pytest.raises(UnknownChannel):
+    with pytest.raises(NotAnInboxChannel):
         world.gateway.reply(TENANT, CONNECTION, thread, USER, "hola")
     assert world.outbox.rows == {}
 

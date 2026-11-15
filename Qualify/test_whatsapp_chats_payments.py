@@ -62,6 +62,10 @@ UTC_ZONE = ZoneInfo("UTC")
 NOW = datetime(2026, 11, 6, 15, 0, tzinfo=UTC)
 
 
+async def _no_login(self: object) -> None:
+    return None
+
+
 def _status(status: str | None, **kw: Any) -> PaymentStatus:
     base: dict[str, Any] = {
         "status": status,
@@ -139,6 +143,9 @@ def gw(monkeypatch: pytest.MonkeyPatch) -> FakeGateway:
         return USER
 
     monkeypatch.setattr(WhatsAppChatsState, "_tenant", tenant)
+    # m-25027374: no login acts in offline tests (the membership check would read
+    # Postgres); `test_reply_box_guards.py` holds that the login does act.
+    monkeypatch.setattr(WhatsAppChatsState, "_login", _no_login)
     monkeypatch.setattr(WhatsAppChatsState, "_acting_user", acting)
     return fake
 

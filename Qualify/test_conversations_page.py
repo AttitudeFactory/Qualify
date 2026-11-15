@@ -68,10 +68,13 @@ def test_the_page_renders_list_conversation_composer_and_access_states() -> None
         "Ir a Tus redes",
         "Se muestran los últimos 50 mensajes",
         "Escribe una respuesta",
-        "Enviar una foto o un video",
-        "Enviar un archivo (PDF)",
-        "Grabar una nota de voz",
+        # m-25027374: photo, file and voice note are rows of the «+»
+        "Fotos y videos",
+        "Archivo",
+        "Nota de voz",
         "Enviar un corazón",
+        "Mensajes guardados",
+        "Botones",
         "Eliminar para mí",
         "Sugerir respuesta",
         "Descartar",
@@ -80,7 +83,7 @@ def test_the_page_renders_list_conversation_composer_and_access_states() -> None
         "Quitar el adjunto",
         "q-chat-avatar",
         "q-conv-channel",
-        "clock",
+        "q-chat-window",  # m-25027374: the 24 h line lives in the header only
         "q-conv-day",
         "q-conv-filters",
         "qualify-voice.js",
@@ -244,10 +247,10 @@ def test_the_composer_offers_quick_replies_and_template_buttons() -> None:
         return text in rendered or escaped in rendered
 
     for text in (
-        "Respuestas rápidas",
+        "Botones",  # D5: Instagram's quick replies (m-25027374)
         "Nueva respuesta rápida",
         "Agregar",
-        "Cerrar las respuestas rápidas",
+        "Cerrar los botones",  # D5 (m-25027374)
         "Quitar esta respuesta rápida",
         "Botones que van con este mensaje",
         "Enviar sin botones",
@@ -320,5 +323,9 @@ def test_the_dm_send_button_says_enviar_like_whatsapp() -> None:
 
     assert SEND_LABEL == "Enviar" == WHATSAPP_SEND_LABEL
     source = inspect.getsource(conversations_page._composer)
-    assert "SEND_LABEL" in source and '"Responder"' not in source
-    assert "Sugerir respuesta" in source
+    # m-25027374: «Enviar» is the shared reply box's `send_button` (`reply_box_vm`).
+    from .reply_box_vm import SEND_LABEL as BOX_SEND_LABEL
+
+    assert BOX_SEND_LABEL == "Enviar"
+    assert "send_button(" in source and '"Responder"' not in source
+    assert "SUGGEST_LABEL" in source
