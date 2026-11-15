@@ -13743,6 +13743,808 @@
    "note": "",
    "split": "revision",
    "id": 681
+  },
+  {
+   "text": "Arepa con queso a 6 mil",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": true,
+   "claim": null,
+   "source": "heldout",
+   "note": "",
+   "split": "heldout",
+   "id": 682
+  },
+  {
+   "text": "Todo el combo por 32 lucas",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": true,
+   "claim": null,
+   "source": "heldout",
+   "note": "",
+   "split": "heldout",
+   "id": 683
+  },
+  {
+   "text": "Mensualidad de 2 millones",
+   "slot": "title",
+   "context": {
+    "topic": "Apartamento en venta en Cúcuta, 3 habitaciones y 2 baños",
+    "scene": "Apartamento en venta en Cúcuta, 3 habitaciones y 2 baños",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": []
+   },
+   "price": true,
+   "claim": null,
+   "source": "heldout",
+   "note": "",
+   "split": "heldout",
+   "id": 684
+  },
+  {
+   "text": "Precio final 89.000",
+   "slot": "title",
+   "context": {
+    "topic": "Nueva colección de vestidos de temporada",
+    "scene": "Nueva colección de vestidos de temporada",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": []
+   },
+   "price": true,
+   "claim": null,
+   "source": "heldout",
+   "note": "",
+   "split": "heldout",
+   "id": 685
+  },
+  {
+   "text": "Pollo entero en 38",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": true,
+   "claim": null,
+   "source": "heldout",
+   "note": "",
+   "split": "heldout",
+   "id": 686
+  },
+  {
+   "text": "Quesillo a 3 dólares",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": true,
+   "claim": null,
+   "source": "heldout",
+   "note": "",
+   "split": "heldout",
+   "id": 687
+  },
+  {
+   "text": "Hamburguesa doble, 7 USD",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": true,
+   "claim": null,
+   "source": "heldout",
+   "note": "",
+   "split": "heldout",
+   "id": 688
+  },
+  {
+   "text": "Chivito canadiense $ 520",
+   "slot": "title",
+   "context": {
+    "topic": "Chivitos al pan en Montevideo",
+    "scene": "Chivitos al pan en Montevideo",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": []
+   },
+   "price": true,
+   "claim": null,
+   "source": "heldout",
+   "note": "",
+   "split": "heldout",
+   "id": 689
+  },
+  {
+   "text": "Noche en cabaña desde 180 mil",
+   "slot": "title",
+   "context": {
+    "topic": "Plan a Cartagena, 4 días y 3 noches con hotel",
+    "scene": "Plan a Cartagena, 4 días y 3 noches con hotel",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": []
+   },
+   "price": true,
+   "claim": null,
+   "source": "heldout",
+   "note": "",
+   "split": "heldout",
+   "id": 690
+  },
+  {
+   "text": "Jeans a 2 por 100",
+   "slot": "title",
+   "context": {
+    "topic": "Nueva colección de vestidos de temporada",
+    "scene": "Nueva colección de vestidos de temporada",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": []
+   },
+   "price": true,
+   "claim": null,
+   "source": "heldout",
+   "note": "",
+   "split": "heldout",
+   "id": 691
+  },
+  {
+   "text": "Pizza de 30 cm",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": false,
+   "claim": null,
+   "source": "heldout",
+   "note": "",
+   "split": "heldout",
+   "id": 692
+  },
+  {
+   "text": "Abrimos hace 12 años",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": false,
+   "claim": null,
+   "source": "heldout",
+   "note": "",
+   "split": "heldout",
+   "id": 693
+  },
+  {
+   "text": "Apartamento en el piso 14",
+   "slot": "title",
+   "context": {
+    "topic": "Apartamento en venta en Cúcuta, 3 habitaciones y 2 baños",
+    "scene": "Apartamento en venta en Cúcuta, 3 habitaciones y 2 baños",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": []
+   },
+   "price": false,
+   "claim": null,
+   "source": "heldout",
+   "note": "",
+   "split": "heldout",
+   "id": 694
+  },
+  {
+   "text": "Viaje de 6 días",
+   "slot": "title",
+   "context": {
+    "topic": "Plan a Cartagena, 4 días y 3 noches con hotel",
+    "scene": "Plan a Cartagena, 4 días y 3 noches con hotel",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": []
+   },
+   "price": false,
+   "claim": null,
+   "source": "heldout",
+   "note": "",
+   "split": "heldout",
+   "id": 695
+  },
+  {
+   "text": "Vestido talla 12",
+   "slot": "title",
+   "context": {
+    "topic": "Nueva colección de vestidos de temporada",
+    "scene": "Nueva colección de vestidos de temporada",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": []
+   },
+   "price": false,
+   "claim": null,
+   "source": "heldout",
+   "note": "",
+   "split": "heldout",
+   "id": 696
+  },
+  {
+   "text": "Torta de 3 pisos",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": false,
+   "claim": null,
+   "source": "heldout",
+   "note": "",
+   "split": "heldout",
+   "id": 697
+  },
+  {
+   "text": "Uno de los 5 mejores del barrio",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": false,
+   "claim": null,
+   "source": "heldout",
+   "note": "",
+   "split": "heldout",
+   "id": 698
+  },
+  {
+   "text": "Ruta 9, kilómetro 40",
+   "slot": "title",
+   "context": {
+    "topic": "Plan a Cartagena, 4 días y 3 noches con hotel",
+    "scene": "Plan a Cartagena, 4 días y 3 noches con hotel",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": []
+   },
+   "price": false,
+   "claim": null,
+   "source": "heldout",
+   "note": "",
+   "split": "heldout",
+   "id": 699
+  },
+  {
+   "text": "Lote 25 de la urbanización",
+   "slot": "title",
+   "context": {
+    "topic": "Apartamento en venta en Cúcuta, 3 habitaciones y 2 baños",
+    "scene": "Apartamento en venta en Cúcuta, 3 habitaciones y 2 baños",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": []
+   },
+   "price": false,
+   "claim": null,
+   "source": "heldout",
+   "note": "",
+   "split": "heldout",
+   "id": 700
+  },
+  {
+   "text": "Abierto desde 1975",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": false,
+   "claim": null,
+   "source": "heldout",
+   "note": "since 1975: no hours promise",
+   "split": "heldout",
+   "id": 701
+  },
+  {
+   "text": "Atendemos los domingos",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": false,
+   "claim": "day",
+   "source": "heldout",
+   "note": "",
+   "split": "heldout",
+   "id": 702
+  },
+  {
+   "text": "Abrimos el feriado",
+   "slot": "title",
+   "context": {
+    "topic": "Chivitos al pan en Montevideo",
+    "scene": "Chivitos al pan en Montevideo",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": []
+   },
+   "price": false,
+   "claim": "day",
+   "source": "heldout",
+   "note": "",
+   "split": "heldout",
+   "id": 703
+  },
+  {
+   "text": "Despacho a todo Uruguay",
+   "slot": "title",
+   "context": {
+    "topic": "Chivitos al pan en Montevideo",
+    "scene": "Chivitos al pan en Montevideo",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": []
+   },
+   "price": false,
+   "claim": "delivery",
+   "source": "heldout",
+   "note": "",
+   "split": "heldout",
+   "id": 704
+  },
+  {
+   "text": "Llévate el segundo a mitad de precio",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": false,
+   "claim": "discount",
+   "source": "heldout",
+   "note": "",
+   "split": "heldout",
+   "id": 705
+  },
+  {
+   "text": "Hoy, 2x1 en helados",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": false,
+   "claim": "promotion",
+   "source": "heldout",
+   "note": "",
+   "split": "heldout",
+   "id": 706
+  },
+  {
+   "text": "Gaseosa de cortesía",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": false,
+   "claim": "free",
+   "source": "heldout",
+   "note": "",
+   "split": "heldout",
+   "id": 707
+  },
+  {
+   "text": "Nueva sucursal en Barquisimeto",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": false,
+   "claim": "novelty",
+   "source": "heldout",
+   "note": "",
+   "split": "heldout",
+   "id": 708
+  },
+  {
+   "text": "Horario de 24 horas",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": false,
+   "claim": "every_day",
+   "source": "heldout",
+   "note": "",
+   "split": "heldout",
+   "id": 709
+  },
+  {
+   "text": "Cerrado el 1 de enero",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": false,
+   "claim": "closure",
+   "source": "heldout",
+   "note": "",
+   "split": "heldout",
+   "id": 710
+  },
+  {
+   "text": "Te lo enviamos hoy mismo",
+   "slot": "title",
+   "context": {
+    "topic": "Nueva colección de vestidos de temporada",
+    "scene": "Nueva colección de vestidos de temporada",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": []
+   },
+   "price": false,
+   "claim": "delivery",
+   "source": "heldout",
+   "note": "",
+   "split": "heldout",
+   "id": 711
+  },
+  {
+   "text": "Descuento por pago en efectivo",
+   "slot": "title",
+   "context": {
+    "topic": "Nueva colección de vestidos de temporada",
+    "scene": "Nueva colección de vestidos de temporada",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": []
+   },
+   "price": false,
+   "claim": "discount",
+   "source": "heldout",
+   "note": "",
+   "split": "heldout",
+   "id": 712
+  },
+  {
+   "text": "Pide tu desayuno todos los días",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": false,
+   "claim": "every_day",
+   "source": "heldout",
+   "note": "",
+   "split": "heldout",
+   "id": 713
+  },
+  {
+   "text": "Atendemos los domingos",
+   "slot": "title",
+   "context": {
+    "topic": "Cafetería",
+    "scene": "Cafetería",
+    "hook": "",
+    "cta": "",
+    "facts": {
+     "hours": "Mar a Dom 8 a 18"
+    },
+    "products": []
+   },
+   "price": false,
+   "claim": null,
+   "source": "heldout",
+   "note": "",
+   "split": "heldout",
+   "id": 714
+  },
+  {
+   "text": "Despacho a todo Uruguay",
+   "slot": "title",
+   "context": {
+    "topic": "Enviamos a todo el país",
+    "scene": "Enviamos a todo el país",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": []
+   },
+   "price": false,
+   "claim": null,
+   "source": "heldout",
+   "note": "",
+   "split": "heldout",
+   "id": 715
+  },
+  {
+   "text": "Hoy, 2x1 en helados",
+   "slot": "title",
+   "context": {
+    "topic": "Helados de yogur",
+    "scene": "Helados de yogur",
+    "hook": "2x1 en helados solo hoy",
+    "cta": "",
+    "facts": {},
+    "products": []
+   },
+   "price": false,
+   "claim": null,
+   "source": "heldout",
+   "note": "",
+   "split": "heldout",
+   "id": 716
+  },
+  {
+   "text": "Nueva sucursal en Barquisimeto",
+   "slot": "title",
+   "context": {
+    "topic": "Abrimos nueva sucursal en Barquisimeto",
+    "scene": "Abrimos nueva sucursal en Barquisimeto",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": []
+   },
+   "price": false,
+   "claim": null,
+   "source": "heldout",
+   "note": "",
+   "split": "heldout",
+   "id": 717
+  },
+  {
+   "text": "Te esperamos el viernes",
+   "slot": "title",
+   "context": {
+    "topic": "Panadería",
+    "scene": "Panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {
+     "hours": "Lun a Vie 6 a 19"
+    },
+    "products": []
+   },
+   "price": false,
+   "claim": null,
+   "source": "heldout",
+   "note": "",
+   "split": "heldout",
+   "id": 718
+  },
+  {
+   "text": "Domingo de ramos en familia",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": false,
+   "claim": null,
+   "source": "heldout",
+   "note": "a date, no promise",
+   "split": "heldout",
+   "id": 719
+  },
+  {
+   "text": "Nuestro horario favorito: la merienda",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": false,
+   "claim": null,
+   "source": "heldout",
+   "note": "",
+   "split": "heldout",
+   "id": 720
+  },
+  {
+   "text": "Envío de flores no incluido",
+   "slot": "title",
+   "context": {
+    "topic": "Nueva colección de vestidos de temporada",
+    "scene": "Nueva colección de vestidos de temporada",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": []
+   },
+   "price": false,
+   "claim": null,
+   "source": "heldout",
+   "note": "denied in the text",
+   "split": "heldout",
+   "id": 721
+  },
+  {
+   "text": "Regalo perfecto para mamá",
+   "slot": "title",
+   "context": {
+    "topic": "Nueva colección de vestidos de temporada",
+    "scene": "Nueva colección de vestidos de temporada",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": []
+   },
+   "price": false,
+   "claim": null,
+   "source": "heldout",
+   "note": "",
+   "split": "heldout",
+   "id": 722
+  },
+  {
+   "text": "Abierta la convocatoria",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": false,
+   "claim": null,
+   "source": "heldout",
+   "note": "",
+   "split": "heldout",
+   "id": 723
   }
  ]
 }

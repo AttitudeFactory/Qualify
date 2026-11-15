@@ -681,12 +681,69 @@ def build(capa: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for r in REVISION:
         r["split"] = "revision"
         unique.append(r)
+    # written and committed AFTER the rule fixes of the review were pushed (1ab66f88), before
+    # any measurement on them; never tuned on
+    for r in HELDOUT:
+        r["split"] = "heldout"
+        unique.append(r)
     for i, r in enumerate(unique):
         r["id"] = i
     return unique
 
 
 UY = ctx("Chivitos al pan en Montevideo")
+HELDOUT = [
+    row("Arepa con queso a 6 mil", PLAIN, price=True, source="heldout"),
+    row("Todo el combo por 32 lucas", PLAIN, price=True, source="heldout"),
+    row("Mensualidad de 2 millones", REALTY, price=True, source="heldout"),
+    row("Precio final 89.000", FASHION, price=True, source="heldout"),
+    row("Pollo entero en 38", PLAIN, price=True, source="heldout"),
+    row("Quesillo a 3 dólares", PLAIN, price=True, source="heldout"),
+    row("Hamburguesa doble, 7 USD", PLAIN, price=True, source="heldout"),
+    row("Chivito canadiense $ 520", UY, price=True, source="heldout"),
+    row("Noche en cabaña desde 180 mil", TRAVEL, price=True, source="heldout"),
+    row("Jeans a 2 por 100", FASHION, price=True, source="heldout"),
+    row("Pizza de 30 cm", PLAIN, source="heldout"),
+    row("Abrimos hace 12 años", PLAIN, source="heldout"),
+    row("Apartamento en el piso 14", REALTY, source="heldout"),
+    row("Viaje de 6 días", TRAVEL, source="heldout"),
+    row("Vestido talla 12", FASHION, source="heldout"),
+    row("Torta de 3 pisos", PLAIN, source="heldout"),
+    row("Uno de los 5 mejores del barrio", PLAIN, source="heldout"),
+    row("Ruta 9, kilómetro 40", TRAVEL, source="heldout"),
+    row("Lote 25 de la urbanización", REALTY, source="heldout"),
+    row("Abierto desde 1975", PLAIN, source="heldout", note="since 1975: no hours promise"),
+    row("Atendemos los domingos", PLAIN, claim="day", source="heldout"),
+    row("Abrimos el feriado", UY, claim="day", source="heldout"),
+    row("Despacho a todo Uruguay", UY, claim="delivery", source="heldout"),
+    row("Llévate el segundo a mitad de precio", PLAIN, claim="discount", source="heldout"),
+    row("Hoy, 2x1 en helados", PLAIN, claim="promotion", source="heldout"),
+    row("Gaseosa de cortesía", PLAIN, claim="free", source="heldout"),
+    row("Nueva sucursal en Barquisimeto", PLAIN, claim="novelty", source="heldout"),
+    row("Horario de 24 horas", PLAIN, claim="every_day", source="heldout"),
+    row("Cerrado el 1 de enero", PLAIN, claim="closure", source="heldout"),
+    row("Te lo enviamos hoy mismo", FASHION, claim="delivery", source="heldout"),
+    row("Descuento por pago en efectivo", FASHION, claim="discount", source="heldout"),
+    row("Pide tu desayuno todos los días", PLAIN, claim="every_day", source="heldout"),
+    row("Atendemos los domingos", ctx("Cafetería", hours="Mar a Dom 8 a 18"), source="heldout"),
+    row("Despacho a todo Uruguay", ctx("Enviamos a todo el país"), source="heldout"),
+    row(
+        "Hoy, 2x1 en helados",
+        ctx("Helados de yogur", hook="2x1 en helados solo hoy"),
+        source="heldout",
+    ),
+    row(
+        "Nueva sucursal en Barquisimeto",
+        ctx("Abrimos nueva sucursal en Barquisimeto"),
+        source="heldout",
+    ),
+    row("Te esperamos el viernes", ctx("Panadería", hours="Lun a Vie 6 a 19"), source="heldout"),
+    row("Domingo de ramos en familia", PLAIN, source="heldout", note="a date, no promise"),
+    row("Nuestro horario favorito: la merienda", PLAIN, source="heldout"),
+    row("Envío de flores no incluido", FASHION, source="heldout", note="denied in the text"),
+    row("Regalo perfecto para mamá", FASHION, source="heldout"),
+    row("Abierta la convocatoria", PLAIN, source="heldout"),
+]
 REVISION = [
     # the independent reviewer's misses (2026-11-15)
     row("Receta de la abuela desde 1985", PLAIN, source="revision"),
