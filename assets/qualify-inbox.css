@@ -646,6 +646,8 @@ textarea.q-reply-field::placeholder,
   .q-wa-chats--open .q-chat-head {
     display: grid;
     grid-template-columns: auto minmax(0, 1fr) auto auto;
+    align-self: stretch;
+    width: 100%;
     column-gap: 0.75rem;
     row-gap: 0.125rem;
     align-items: center;
@@ -666,10 +668,13 @@ textarea.q-reply-field::placeholder,
     grid-column: 1;
     grid-row: 1 / span 2;
   }
+  /* the list rows' avatar size (Radix size 4), letters included */
   .q-wa-chats--open .q-chat-head .q-chat-avatar .rt-AvatarRoot {
-    width: 2.5rem;
-    height: 2.5rem;
-    font-size: var(--font-size-3);
+    --avatar-size: var(--space-8);
+    --avatar-fallback-one-letter-font-size: var(--font-size-5);
+    --avatar-fallback-two-letters-font-size: var(--font-size-3);
+    width: var(--space-8);
+    height: var(--space-8);
   }
   .q-wa-chats--open .q-chat-head .q-chat-head__id > :not(.q-chat-avatar):not(.q-chat-more) {
     grid-column: 2;

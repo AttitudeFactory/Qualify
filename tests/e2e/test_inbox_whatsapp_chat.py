@@ -162,6 +162,7 @@ def test_capture_whatsapp_in_inbox(chats_page) -> None:  # noqa: ANN001
             page.screenshot(path=str(out / f"{key}.png"))
             report[key] = page.evaluate(_WHERE)
             for chat, name in (("whatsapp", "Laura Gómez"), ("instagram", "Camila Ríos")):
+                _list(page, "&filtro=todos")  # a phone hides the list behind an open chat
                 _row(page, name).click()
                 _thread_ready(page)
                 page.evaluate("() => { document.querySelector('main.q-panel').scrollTop = 0; }")
@@ -210,14 +211,20 @@ def test_the_wide_open_chat_gives_the_messages_the_room(chats_page) -> None:  # 
                 assert room["boxVisible"] and not room["pageScrolls"], (width, height, name, room)
             print("ROOM", width, height, name, room)
         expect(page.get_by_text("Quién te espera")).to_have_count(0)
-    # The order card unfolds inside the pane: the box stays in the window.
+    # The order card unfolded is taller than the window allows: the chat grows (the page
+    # scrolls) and the reply box stays inside the chat's card, never spilling out of it.
     page.set_viewport_size(DESKTOP)
     _row(page, "Laura Gómez").click()
     _thread_ready(page)
     page.get_by_role("button", name=re.compile(r"^Pedido · 3 productos")).click()
     expect(page.get_by_role("button", name="Pedido listo")).to_be_visible()
     page.wait_for_timeout(300)
-    assert page.evaluate(_ROOM)["boxVisible"]
+    inside = page.evaluate(
+        "() => { const t = document.querySelector('.q-chat-thread').getBoundingClientRect();"
+        " const b = document.querySelector('.q-chat-thread .q-wa-composer')"
+        ".getBoundingClientRect(); return b.bottom <= t.bottom + 1; }"
+    )
+    assert inside
     # Back to the list (the browser's «atrás» on a desk): the figures come back.
     page.go_back()
     expect(page.get_by_text("Quién te espera")).to_be_visible()
