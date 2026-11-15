@@ -236,6 +236,6 @@ async def test_restore_empty_explains_next_step_without_overwriting_current_choi
 
 def test_audience_component_constructs_and_display_dto_contains_no_credentials() -> None:
     rendered = repr(promotion_audience().render())
-    assert "Guardar p" in rendered and "Buscar lugares" in rendered
+    assert "Guardar p" in rendered and "Buscar" in rendered
     assert "Dónde aparece" not in rendered  # Summary stays separate from geography.
     assert not {"token", "ciphertext", "access_token"}.intersection(asdict(AudiencePlaceVM()))

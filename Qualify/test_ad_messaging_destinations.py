@@ -84,7 +84,9 @@ def test_page_entry_does_not_query_meta_and_full_form_deduplicates_destination_r
     other = replace(source, publish_attempt_id=uuid4())
     monkeypatch.setattr(provider, "list_promotion_sources", lambda **kwargs: [source, other])
     monkeypatch.setattr(
-        provider, "read_business_locale", lambda tenant: SimpleNamespace(timezone="America/Bogota")
+        provider,
+        "read_business_locale",
+        lambda tenant: SimpleNamespace(timezone="America/Bogota", country="CO"),
     )
     calls = []
 
