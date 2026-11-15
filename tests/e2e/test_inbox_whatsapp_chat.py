@@ -72,19 +72,30 @@ _FIT = """
   };
 }
 """
-#: U2: the gap between the page header and the chat's pinned top line, scrolled.
-_PIN = """
+#: m-25029798: the wide open chat — header and messages heights, the messages' share of
+#: the window, whether the reply box is fully inside it and whether the page scrolls.
+_ROOM = """
 () => {
-  const h = document.querySelector('.q-page-header').getBoundingClientRect();
-  const t = document.querySelector('.q-wa-chats--open .q-chat-head__top')
-    .getBoundingClientRect();
-  const scrolled = document.querySelector('main.q-panel').scrollTop;
-  return {headerBottom: h.bottom, headTop: t.top, gap: t.top - h.bottom, scrolled};
+  const r = (sel) => {
+    const el = document.querySelector(sel);
+    return el ? el.getBoundingClientRect() : null;
+  };
+  const head = r('.q-chat-thread .q-chat-head');
+  const msgs = r('.q-chat-thread .q-chat-scroll');
+  const box = r('.q-chat-thread .q-wa-composer');
+  const panel = document.querySelector('main.q-panel');
+  const vh = window.innerHeight;
+  return {
+    vh,
+    header: head ? Math.round(head.height) : null,
+    messages: msgs ? Math.round(msgs.height) : null,
+    share: msgs ? Math.round((msgs.height / vh) * 100) : null,
+    boxVisible: !!box && box.top >= 0 && box.bottom <= vh,
+    pageScrolls: panel.scrollHeight > panel.clientHeight + 2,
+  };
 }
 """
-_SCROLL_TO_FOOT = (
-    "() => { const p = document.querySelector('main.q-panel'); p.scrollTop = p.scrollHeight; }"
-)
+WIDE = [(1280, 800), (1512, 664), (1024, 768)]
 
 
 def _origin(page) -> str:  # noqa: ANN001
@@ -142,28 +153,26 @@ def test_capture_whatsapp_in_inbox(chats_page) -> None:  # noqa: ANN001
     for scheme in ("light", "dark"):
         page.emulate_media(color_scheme=scheme)
         page.evaluate(f"localStorage.setItem('theme', '{scheme}')")
-        for size_name, size in (("360", PHONE), ("1280", DESKTOP)):
+        sizes = [("360", PHONE)] + [(f"{w}x{h}", {"width": w, "height": h}) for w, h in WIDE]
+        for size_name, size in sizes:
             page.set_viewport_size(size)
             _list(page, "&filtro=todos")
             page.wait_for_timeout(600)
             key = f"{label}-list-{size_name}-{scheme}"
             page.screenshot(path=str(out / f"{key}.png"))
             report[key] = page.evaluate(_WHERE)
-            _row(page, "Laura Gómez").click()
-            _thread_ready(page)
-            page.evaluate("() => { document.querySelector('main.q-panel').scrollTop = 0; }")
-            page.wait_for_timeout(300)
-            key = f"{label}-whatsapp-open-{size_name}-{scheme}"
-            page.screenshot(path=str(out / f"{key}.png"))
-            report[key] = {**page.evaluate(_WHERE), "fit": page.evaluate(_FIT)}
-            if size_name == "1280":
-                page.get_by_role("button", name=re.compile(r"^Pedido · 3 productos")).click()
-                page.wait_for_timeout(400)
-                page.evaluate(_SCROLL_TO_FOOT)
-                page.wait_for_timeout(400)
-                key = f"{label}-whatsapp-scrolled-{size_name}-{scheme}"
+            for chat, name in (("whatsapp", "Laura Gómez"), ("instagram", "Camila Ríos")):
+                _row(page, name).click()
+                _thread_ready(page)
+                page.evaluate("() => { document.querySelector('main.q-panel').scrollTop = 0; }")
+                page.wait_for_timeout(300)
+                key = f"{label}-{chat}-open-{size_name}-{scheme}"
                 page.screenshot(path=str(out / f"{key}.png"))
-                report[key] = {"pin": page.evaluate(_PIN)}
+                report[key] = {
+                    **page.evaluate(_WHERE),
+                    "fit": page.evaluate(_FIT),
+                    "room": page.evaluate(_ROOM),
+                }
             page.goto(_origin(page) + "/whatsapp?tab=chats&filtro=todos")
             expect(page.get_by_role("button", name="Ir a Por responder")).to_be_visible(
                 timeout=60_000
@@ -173,33 +182,44 @@ def test_capture_whatsapp_in_inbox(chats_page) -> None:  # noqa: ANN001
     (out / f"{label}-where.json").write_text(json.dumps(report, indent=1), encoding="utf-8")
 
 
-def test_a_wide_open_chat_fits_and_pins_under_the_page_header(chats_page) -> None:  # noqa: ANN001
-    """U4: at 1280×800, with a chat open, the order strip, «Tomar el control» and the
-    reply box fit without scrolling. U2: scrolled, the chat's top line pins right under
-    the page header (no gap) at 1280 and 1024."""
+def test_the_wide_open_chat_gives_the_messages_the_room(chats_page) -> None:  # noqa: ANN001
+    """m-25029798: on a wide screen the open chat (either channel) fills the window below
+    the tabs: a compact header (≤ about 7rem, no back row: the list is beside it), the
+    messages take what is left (never under 14rem) and the reply box rests inside the
+    window without scrolling the page — when the window is tall enough for header +
+    14rem + box; a shorter one scrolls the page. Nothing pins under the page header any
+    more: the page does not scroll."""
     page = chats_page
+    for width, height in WIDE:
+        page.set_viewport_size({"width": width, "height": height})
+        _list(page, "&filtro=todos")
+        for name in ("Laura Gómez", "Camila Ríos"):
+            _row(page, name).click()
+            _thread_ready(page)
+            page.evaluate("() => { document.querySelector('main.q-panel').scrollTop = 0; }")
+            page.wait_for_timeout(300)
+            room = page.evaluate(_ROOM)
+            where = page.evaluate(_WHERE)
+            assert where["backs"] == 0, (width, height, name, where)
+            assert room["header"] <= 7.5 * 16, (width, height, name, room)
+            assert room["messages"] >= 14 * 16 - 2, (width, height, name, room)
+            # where the page does not scroll, the box is in the window; at 1280×800 and
+            # 1024×768 the window is tall enough for that
+            if not room["pageScrolls"] or height >= 768:
+                assert room["boxVisible"] and not room["pageScrolls"], (width, height, name, room)
+            print("ROOM", width, height, name, room)
+        expect(page.get_by_text("Quién te espera")).to_have_count(0)
+    # The order card unfolds inside the pane: the box stays in the window.
     page.set_viewport_size(DESKTOP)
-    _list(page, "&filtro=todos")
     _row(page, "Laura Gómez").click()
     _thread_ready(page)
-    page.evaluate("() => { document.querySelector('main.q-panel').scrollTop = 0; }")
-    page.wait_for_timeout(300)
-    fit = page.evaluate(_FIT)
-    assert fit["strip"] and fit["takeOver"] and fit["box"], fit
-    expect(page.get_by_text("Quién te espera")).to_have_count(0)
-    # The order card unfolded makes the page scroll; scrolled to its foot, the chat's top
-    # line is pinned and must touch the page header.
     page.get_by_role("button", name=re.compile(r"^Pedido · 3 productos")).click()
     expect(page.get_by_role("button", name="Pedido listo")).to_be_visible()
-    for width in (1280, 1024):
-        page.set_viewport_size({"width": width, "height": 600})  # short: the page scrolls
-        page.evaluate(_SCROLL_TO_FOOT)
-        page.wait_for_timeout(400)
-        pin = page.evaluate(_PIN)
-        assert pin["scrolled"] > 150, (width, pin)  # it did scroll past the header
-        assert abs(pin["gap"]) <= 2, (width, pin)
-    page.locator(".q-chat-head").first.get_by_role("button", name=BACK).click()
-    expect(page.get_by_text("Quién te espera")).to_be_visible()  # back with the chat closed
+    page.wait_for_timeout(300)
+    assert page.evaluate(_ROOM)["boxVisible"]
+    # Back to the list (the browser's «atrás» on a desk): the figures come back.
+    page.go_back()
+    expect(page.get_by_text("Quién te espera")).to_be_visible()
 
 
 def test_a_whatsapp_row_opens_beside_the_list(chats_page) -> None:  # noqa: ANN001
@@ -219,7 +239,7 @@ def test_a_whatsapp_row_opens_beside_the_list(chats_page) -> None:  # noqa: ANN0
         )
     )
     where = page.evaluate(_WHERE)
-    assert where["backs"] == 1, where
+    assert where["backs"] == 0, where  # the list beside it is the way back on a desk
     assert "Por responder" in where["lit"], where
     assert where["title"] == "Por responder", where
     assert not where["whatsappFilters"], where

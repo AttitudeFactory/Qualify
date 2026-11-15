@@ -223,14 +223,18 @@ def thread_header(
         flex_wrap="wrap",
         align="center",
         width="100%",
+        class_name="q-chat-head__meta",
     )
     # m-25027374: two blocks inside a `display: contents` wrapper, so both lay out as
     # children of the thread's column and the top one (back · avatar · name · «⋯») can
     # stay pinned on a phone over the whole chat while the rest scrolls away
     # (`.q-chat-head__top`, assets/qualify-inbox.css). On a wide screen they read as one
     # header; `.q-chat-head` still names the whole header for tests and the a11y tree.
+    # m-25029798: on a wide screen the header is one compact grid (assets/qualify-
+    # inbox.css): the back row hides (the list is beside the chat), the channel's actions
+    # sit next to «⋯» — the hooks below name each piece; nothing moves on a phone.
     top = rx.vstack(
-        *([back] if back is not None else []),
+        *([rx.box(back, class_name="q-chat-head__back")] if back is not None else []),
         rx.hstack(
             chat_avatar(initials, avatar_url, channel, large=True),
             rx.vstack(
@@ -244,6 +248,7 @@ def thread_header(
             width="100%",
             align="center",
             spacing="3",
+            class_name="q-chat-head__id",
         ),
         spacing="2",
         width="100%",
@@ -251,7 +256,7 @@ def thread_header(
     )
     rest = rx.vstack(
         meta_line,
-        *([actions] if actions is not None else []),
+        *([rx.box(actions, class_name="q-chat-head__actions")] if actions is not None else []),
         spacing="2",
         width="100%",
         class_name="q-chat-head__rest",
