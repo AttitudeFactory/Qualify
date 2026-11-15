@@ -2648,10 +2648,7 @@ def _conversation_pane() -> rx.Component:
             _conversation(),
             rx.vstack(
                 _banner(S.banner, S.banner_tone),
-                no_chat_open(
-                    "Ábrela para leerla, responder, tomar el control de la respuesta automática "
-                    "o marcar un pedido como listo."
-                ),
+                no_chat_open("Ábrela para leerla, responderle tú o marcar un pedido como listo."),
                 width="100%",
             ),
         ),

@@ -291,7 +291,7 @@ def _unfinished_whatsapp_menu() -> rx.Component:
     return rx.cond(
         AuthState.is_authenticated & WhatsAppMenuState.resume_pending,
         section(
-            "Tu respuesta automática quedó a medias",
+            "Tu menú de bienvenida quedó a medias",
             card(
                 rx.vstack(
                     rx.text("Conservamos lo que escribiste en esta sesión.", size="2"),

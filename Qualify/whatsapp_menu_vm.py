@@ -681,7 +681,7 @@ _LIST_WHAT: dict[str, str] = {
     "options": "botones",
     "sections": "secciones",
     "rows": "filas",
-    "ice_breakers": "atajos",
+    "ice_breakers": "preguntas iniciales",
     "commands": "comandos",
 }
 
@@ -705,7 +705,7 @@ def _value_error_text(message: str) -> str:
     if "duplicate keyword" in message:
         return "Hay palabras clave repetidas (sin contar tildes ni mayúsculas)."
     if "duplicate ice breaker" in message:
-        return "Hay atajos repetidos."
+        return "Hay preguntas iniciales repetidas."
     if "duplicate command" in message:
         return "Hay comandos repetidos."
     if "duplicate" in message and "id" in message:
@@ -872,7 +872,7 @@ def _precheck(form: MenuForm, errors: _Errors) -> None:
                     f"Una lista admite máximo {MAX_LIST_ROWS} filas (tiene {len(node.options)}).",
                 )
     if len(form.ice_breakers) > MAX_ICE_BREAKERS:
-        errors.entry_field("ice_breakers", f"Máximo {MAX_ICE_BREAKERS} atajos.")
+        errors.entry_field("ice_breakers", f"Máximo {MAX_ICE_BREAKERS} preguntas iniciales.")
     if len(form.commands) > MAX_COMMANDS:
         errors.entry_field("commands", f"Máximo {MAX_COMMANDS} comandos.")
 
@@ -1895,7 +1895,7 @@ GAPS_ELSEWHERE: Final = "Hay datos por completar en partes del menú que no est�
 # m-24945866: the name a gap's place takes in «Domicilio: minutos · Saludo: …».
 # Not «Saludo»: that is also the title of the start step (the buttons under the welcome).
 GREETING_GAP_PLACE: Final = "Mensaje de bienvenida"
-SHORTCUTS_GAP_PLACE: Final = "Atajos y comandos"
+SHORTCUTS_GAP_PLACE: Final = "Preguntas iniciales y comandos"
 UNNAMED_PLACE: Final = "Sin nombre"
 PUBLISH_NEEDS_ANSWERS: Final = (
     "Antes de publicar, completa o quita las respuestas con datos por completar."
@@ -2757,7 +2757,8 @@ def validate_menu_name(name: str, existing: Sequence[str]) -> str:
 # --------------------------------------------------------------------------------------
 
 PUBLISH_OK = (
-    "Listo: tu WhatsApp ya responde con este menú y muestra su bienvenida, atajos y comandos."
+    "Listo: tu WhatsApp ya responde con este menú y muestra su bienvenida, sus preguntas "
+    "iniciales y sus comandos."
 )
 
 # m-24842995: one main action. «Publicar en mi WhatsApp» saves the editor (when it has
@@ -2775,8 +2776,8 @@ PUBLISH_CONFIRM_SAVES = "Primero guardamos tus cambios como una versión nueva."
 PUBLISH_CONFIRM_BACK_TO = "Tu WhatsApp vuelve a responder con la versión {n}."
 PUBLISH_CONFIRM_STARTS_WITH = "Tu WhatsApp empieza a responder con la versión {n}."
 PUBLISH_CONFIRM_RESEND = (
-    "Este menú ya está respondiendo. Volvemos a enviar a WhatsApp la bienvenida, los "
-    "atajos y los comandos."
+    "Este menú ya está respondiendo. Volvemos a enviar a WhatsApp la bienvenida, las "
+    "preguntas iniciales y los comandos."
 )
 PUBLISH_CONFIRM_REPLACES = "Tu menú «{name}» deja de responder y este toma su lugar."
 PUBLISH_CONFIRM_PAUSED = (
@@ -2831,7 +2832,7 @@ def can_publish(
     return dirty or bool(editing_version_id)
 
 
-PUBLISH_PARTIAL = "Tu WhatsApp ya responde con este menú, pero no tomó los atajos de inicio."
+PUBLISH_PARTIAL = "Tu WhatsApp ya responde con este menú, pero no tomó las preguntas iniciales."
 
 
 def publish_notice(
@@ -2848,7 +2849,8 @@ def publish_notice(
         return PUBLISH_OK, "ok"
     if rejected_locally:
         return (
-            f"{PUBLISH_PARTIAL} Quita los emojis o símbolos de los atajos y vuelve a publicar.",
+            f"{PUBLISH_PARTIAL} Quita los emojis o símbolos de las preguntas iniciales "
+            "y vuelve a publicar.",
             "warn",
         )
     if is_auth_error:
@@ -3992,8 +3994,8 @@ DELETE_BLOCKED = "Para eliminarlo, primero páusalo."
 #: with no published menu is a plain message: the handler stores it in Chats and answers
 #: nothing (`whatsapp.handler`: `menu is None` → return; a paused menu is not loaded).
 DELETE_PAUSED = (
-    "Tus clientes ya no lo reciben. Los atajos de inicio pueden seguir apareciendo en tu "
-    "WhatsApp hasta que publiques otro menú; si alguien los toca, el mensaje te llega a "
+    "Tus clientes ya no lo reciben. Las preguntas iniciales pueden seguir apareciendo en "
+    "tu WhatsApp hasta que publiques otro menú; si alguien las toca, el mensaje te llega a "
     "tus Chats para que le respondas tú."
 )
 DELETE_NEVER_SENT = "Nunca les llegó a tus clientes."

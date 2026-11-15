@@ -25,6 +25,24 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Final
 
+from .chat_settings_vm import (
+    CHAT_SETTINGS_ROUTE as CHAT_SETTINGS_ROUTE,
+)
+from .chat_settings_vm import (
+    CHAT_SETTINGS_TITLE as CHAT_SETTINGS_TITLE,
+)
+from .chat_settings_vm import (
+    MENU_TITLE as MENU_TITLE,
+)
+from .chat_settings_vm import (
+    SETTINGS_WHATSAPP_ROUTE as SETTINGS_WHATSAPP_ROUTE,
+)
+from .chat_settings_vm import (
+    STARTER_QUESTIONS_LINE as STARTER_QUESTIONS_LINE,
+)
+from .chat_settings_vm import (
+    STARTER_QUESTIONS_TITLE as STARTER_QUESTIONS_TITLE,
+)
 from .connection_copy import (
     WHATSAPP_RECONNECT_HINT,
     WHATSAPP_SUPPORT_ACTION,
@@ -84,9 +102,11 @@ SECTION_NUMBER = "numero"
 
 # (section key, label) of the `/whatsapp` strip: the order is the strip's order.
 # «Promociones» is not in it any more (m-25017862): its panels live on `PROMOTIONS_ROUTE`.
+# The menu is not in it any more either (m-25017861, D1): it is a setting, so it lives in
+# «Ajustes de chats › WhatsApp» (`SETTINGS_WHATSAPP_ROUTE`). «Tu número» stays until it
+# moves to «Tus redes» (BU-A10, another ticket).
 SECTIONS: tuple[tuple[str, str], ...] = (
     (SECTION_CHATS, "Chats"),
-    (SECTION_AUTO_REPLY, "Respuesta automática"),
     (SECTION_NUMBER, "Tu número"),
 )
 #: The menu entry and page title of the promotions panels (D3's name).
@@ -94,17 +114,18 @@ PROMOTIONS_TITLE: Final = "Promociones por WhatsApp"
 PROMOTIONS_SUBTITLE: Final = (
     "Envía promociones a los clientes que aceptaron recibirlas y mira cuántos las leyeron."
 )
-#: `/whatsapp`'s header line: what is left there once «Promociones» moved out.
-#: «tu menú de bienvenida»: the founder's name of 2026-11-14 (the tab keeps its own
-#: name until m-25017861).
-WHATSAPP_SUBTITLE: Final = "Atiende por WhatsApp: tus chats, tu menú de bienvenida y tu número."
+#: `/whatsapp`'s header line: what is left there once «Promociones» (m-25017862) and the
+#: menu (m-25017861, now in «Ajustes de chats») moved out.
+WHATSAPP_SUBTITLE: Final = "Atiende por WhatsApp: tus chats y tu número."
 
 # section → ((panel, sub slug, label), …); the first one is the section's default. A
 # section with a single panel has no sub-tab strip and no `?sub=`.
 SUBTABS: dict[str, tuple[tuple[str, str, str], ...]] = {
     # «Chats» keeps an empty slug: `/whatsapp?tab=chats` (every chat link) stays as is.
     SECTION_CHATS: ((TAB_CHATS, "", "Chats"),),
-    SECTION_AUTO_REPLY: ((TAB_MENU, "", "Respuesta automática"),),
+    # Drawn on `SETTINGS_WHATSAPP_ROUTE` (m-25017861); kept here so `?tab=respuesta` and
+    # `?tab=menu` still resolve, and then redirect.
+    SECTION_AUTO_REPLY: ((TAB_MENU, "", MENU_TITLE),),
     SECTION_PROMOTIONS: (
         (TAB_CAMPAIGNS, "enviadas", "Enviadas"),
         (TAB_TEMPLATES, "aprobados", "Mensajes aprobados"),
@@ -154,6 +175,17 @@ STEP_PARAM: Final = "paso"
 #: The `?flujo=` of the promotions panels' forms (`ui/flow_history.py`): the new
 #: promotion and the new approved message.
 PROMOTION_FLOWS: frozenset[str] = frozenset({"promocion", "mensaje-aprobado"})
+#: m-25017861 (decision D1, founder 2026-11-12): what the owner prepares once lives in
+#: «Ajustes de chats», apart from the messages. Its WhatsApp page draws the menu panel
+#: («Tu menú de bienvenida», decision vi of 2026-11-14) — same `WhatsAppState`, like
+#: `PROMOTIONS_ROUTE`. An old `/whatsapp?tab=respuesta` redirects there.
+OBJECT_PARAM: Final = "objeto"
+#: The `?flujo=` of the menu's guided editor (`ui/flow_history.py`).
+MENU_FLOW: Final = "menu"
+MENU_SUBTITLE: Final = (
+    "Lo que tu cliente ve al escribirte: tu bienvenida, tus productos y las preguntas de "
+    "siempre. Tú sigues atendiendo en tus chats."
+)
 
 
 def resolve_tab(requested: str) -> str:
@@ -195,9 +227,17 @@ def is_promotions_panel(panel: str) -> bool:
     return panel in TAB_KEYS and panel_section(panel) == SECTION_PROMOTIONS
 
 
+def is_settings_panel(panel: str) -> bool:
+    """Whether a panel lives in «Ajustes de chats › WhatsApp» (m-25017861): the menu."""
+    return panel in TAB_KEYS and panel_section(panel) == SECTION_AUTO_REPLY
+
+
 def panel_route(panel: str) -> str:
-    """The page a panel is drawn on: `PROMOTIONS_ROUTE` or `/whatsapp`."""
-    return PROMOTIONS_ROUTE if is_promotions_panel(panel) else WHATSAPP_ROUTE
+    """The page a panel is drawn on: `PROMOTIONS_ROUTE`, `SETTINGS_WHATSAPP_ROUTE` or
+    `/whatsapp`."""
+    if is_promotions_panel(panel):
+        return PROMOTIONS_ROUTE
+    return SETTINGS_WHATSAPP_ROUTE if is_settings_panel(panel) else WHATSAPP_ROUTE
 
 
 def promotions_panel(sub: str) -> str:
@@ -213,6 +253,8 @@ def tab_url(panel: str) -> str:
     known = resolve_tab(panel)
     if is_promotions_panel(known):
         return with_query(PROMOTIONS_ROUTE, **{SUB_PARAM: panel_sub(known)})
+    if is_settings_panel(known):
+        return SETTINGS_WHATSAPP_ROUTE
     return with_query(
         WHATSAPP_ROUTE, **{TAB_PARAM: panel_section(known), SUB_PARAM: panel_sub(known)}
     )
@@ -239,6 +281,33 @@ def legacy_promotions_target(params: Mapping[str, object]) -> str | None:
         else "",
     }
     return with_query(PROMOTIONS_ROUTE, **{SUB_PARAM: panel_sub(panel)}, **kept)
+
+
+def legacy_settings_target(params: Mapping[str, object]) -> str | None:
+    """m-25017861: where an old `/whatsapp` address of the menu lands now —
+    `/whatsapp?tab=respuesta` or `/whatsapp?tab=menu&cuenta=…&flujo=menu&paso=2&objeto=…`
+    → `/chats/ajustes/whatsapp?cuenta=…&flujo=menu&paso=2&objeto=…` — or None when the
+    address is not one. Same whitelist rule as `legacy_promotions_target`: the number
+    (`cuenta`), the menu's form (`flujo=menu`, `paso` a step number, `objeto` the menu,
+    a canonical UUID); anything else is dropped, never echoed."""
+    panel = resolve_panel(_text(params.get(TAB_PARAM)), _text(params.get(SUB_PARAM)))
+    if not is_settings_panel(panel):
+        return None
+    flow = _text(params.get(FLOW_PARAM))
+    step = _text(params.get(STEP_PARAM))
+    in_flow = flow == MENU_FLOW
+    kept = {
+        ACCOUNT_PARAM: uuid_param(params, ACCOUNT_PARAM),
+        FLOW_PARAM: MENU_FLOW if in_flow else "",
+        STEP_PARAM: step if in_flow and step.isascii() and step.isdigit() and len(step) < 3 else "",
+        OBJECT_PARAM: uuid_param(params, OBJECT_PARAM) if in_flow else "",
+    }
+    return with_query(SETTINGS_WHATSAPP_ROUTE, **kept)
+
+
+def legacy_panel_target(params: Mapping[str, object]) -> str | None:
+    """An old `/whatsapp` address of a panel that moved to another page, or None."""
+    return legacy_promotions_target(params) or legacy_settings_target(params)
 
 
 def _text(value: object) -> str:
@@ -403,8 +472,7 @@ def needs_help(health_label: str) -> bool:
 NO_NUMBER_TITLE = "Conecta tu WhatsApp para atender y vender desde aquí"
 NO_NUMBER_GAINS: tuple[str, ...] = (
     "Responde los chats de tus clientes desde Qualify, en el celular o en el computador.",
-    "Deja un menú de respuesta automática para las preguntas de siempre: horario, "
-    "precios, domicilios.",
+    "Deja un menú de bienvenida para las preguntas de siempre: horario, precios, domicilios.",
     "Envía promociones a los clientes que aceptaron recibirlas y mira cuántos las leyeron.",
 )
 NO_NUMBER_NEXT = (

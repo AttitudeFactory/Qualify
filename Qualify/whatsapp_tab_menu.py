@@ -210,7 +210,12 @@ from .whatsapp_menu_vm import (
     SuggestVM,
 )
 from .whatsapp_state import WhatsAppState
-from .whatsapp_vm import TAB_QR
+from .whatsapp_vm import (
+    CHAT_SETTINGS_TITLE,
+    STARTER_QUESTIONS_LINE,
+    STARTER_QUESTIONS_TITLE,
+    TAB_QR,
+)
 
 _TONES = ("ok", "warn", "error", "info", "neutral")
 PREVIEW_ELEMENT_ID = "whatsapp-menu-preview"
@@ -761,7 +766,8 @@ def _menus_card() -> rx.Component:
             ),
             rx.text(
                 "Tu WhatsApp responde con el menú que tú escribiste: saluda, muestra "
-                "atajos, toma el pedido desde tu catálogo y te pasa el chat para cerrarlo.",
+                "preguntas iniciales, toma el pedido desde tu catálogo y te pasa el chat para "
+                "cerrarlo.",
                 size="2",
                 color=T.TEXT_MUTED,
             ),
@@ -1101,7 +1107,7 @@ def _ice_breaker_row(row: IceBreakerForm, index: rx.Var[int]) -> rx.Component:
                 _node_select(row.node, lambda v: S.set_entry_row("ice_breakers", index, "node", v)),
                 width="100%",
             ),
-            _icon_button("trash-2", "Quitar atajo", S.remove_entry_row("ice_breakers", index)),
+            _icon_button("trash-2", "Quitar pregunta", S.remove_entry_row("ice_breakers", index)),
             spacing="2",
             width="100%",
             align="center",
@@ -1172,8 +1178,8 @@ def _entry_card() -> rx.Component:
         rx.vstack(
             _section_title("Entrada"),
             rx.text(
-                "Cómo empieza la conversación. Los atajos y comandos también se publican "
-                "en WhatsApp: el cliente los ve al abrir el chat.",
+                "Cómo empieza la conversación. Las preguntas iniciales y los comandos también "
+                "se publican en WhatsApp: el cliente los ve al abrir el chat.",
                 size="2",
                 color=T.TEXT_MUTED,
             ),
@@ -1230,14 +1236,12 @@ def _entry_card() -> rx.Component:
             _err(S.entry_errors, "keywords"),
             rx.divider(),
             _section_title(
-                "Atajos",
+                # m-25017861 (D5): one name in both channels, with the same line.
+                STARTER_QUESTIONS_TITLE,
                 rx.text(S.ice_breaker_count, size="1", color=T.TEXT_FAINT, class_name="q-nums"),
-                _add_row_button("Agregar atajo", "ice_breakers", S.ice_breakers_full),
+                _add_row_button("Agregar pregunta", "ice_breakers", S.ice_breakers_full),
             ),
-            _hint(
-                "Hasta 4, de máximo 80 caracteres y sin emojis. WhatsApp los muestra al "
-                "abrir el chat."
-            ),
+            _hint(f"{STARTER_QUESTIONS_LINE}. Hasta 4, de máximo 80 caracteres y sin emojis."),
             rx.foreach(S.ice_breakers, _ice_breaker_row),
             _err(S.entry_errors, "ice_breakers"),
             rx.divider(),
@@ -3855,7 +3859,7 @@ def menu_step_frame() -> rx.Component:
             S.guided_title,
             step=S.guided_step,
             total=4,
-            back_label="WhatsApp",
+            back_label=CHAT_SETTINGS_TITLE,
             on_exit=S.leave_guided,
         ),
         foot=step_foot(
