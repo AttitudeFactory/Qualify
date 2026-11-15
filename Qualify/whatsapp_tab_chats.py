@@ -43,7 +43,6 @@ from .chat_thread import (
     menu_item,
     message_row,
     more_menu,
-    no_chat_open,
     order_strip,
     state_pill,
     thread_body,
@@ -236,6 +235,10 @@ _REFRESH_MS = 15_000
 _TAP_MIN = TAP_MIN
 #: WhatsApp gives no profile picture: the header shows the initials or the person icon.
 _NO_PICTURE: rx.Var[str] = rx.Var.create("")
+#: U3 (UX review of m-25029798; new texts, awaiting the founder).
+MOVED_NOTICE = "Tus chats de WhatsApp ahora se abren en «Por responder», junto a los de Instagram."
+MOVED_ACTION = "Ir a Por responder"
+MOVED_HREF = "/responder?tab=mensajes&canal=whatsapp"
 
 
 # ======================================================================================
@@ -2616,17 +2619,31 @@ def _conversation() -> rx.Component:
     )
 
 
-def _no_chat_pane() -> rx.Component:
-    """The right column of this number's own list: no chat opens here (m-25029798, a
-    row opens it in «Por responder»)."""
-    return rx.box(
-        rx.vstack(
-            _banner(S.banner, S.banner_tone),
-            no_chat_open("Ábrela para leerla, responderle tú o marcar un pedido como listo."),
+def _moved_notice() -> rx.Component:
+    """U3 (UX review of m-25029798; new text, awaiting the founder): a row of this list
+    now opens its chat in «Por responder» — said once, above the list, with the way
+    there."""
+    return callout(
+        rx.flex(
+            rx.text(MOVED_NOTICE, size="2", flex="1", min_width="12rem"),
+            rx.link(
+                rx.button(
+                    MOVED_ACTION,
+                    variant="soft",
+                    size="2",
+                    min_height=_TAP_MIN,
+                    type="button",
+                    **T.tone_scheme("info"),
+                ),
+                href=MOVED_HREF,
+            ),
+            align="center",
+            wrap="wrap",
+            gap="0.5rem",
             width="100%",
         ),
-        class_name="q-wa-chats__conv",
-        width="100%",
+        "info",
+        size="1",
     )
 
 
@@ -2662,7 +2679,13 @@ def chats_tab() -> rx.Component:
     15 s heartbeat refreshes the list."""
     return rx.box(
         _heartbeat(),
-        rx.box(_list_pane(), _no_chat_pane(), class_name="q-wa-chats"),
+        rx.vstack(
+            _moved_notice(),
+            _banner(S.banner, S.banner_tone),
+            _list_pane(),
+            spacing="3",
+            width="100%",
+        ),
         on_mount=S.enter,
         width="100%",
     )

@@ -1636,9 +1636,7 @@ def _conversation_pane() -> rx.Component:
                 rx.vstack(
                     _banner(S.banner, S.banner_tone),
                     whatsapp_chat_banner(),
-                    no_chat_open(
-                        "Ábrela para leer el historial y responder desde la cuenta correcta."
-                    ),
+                    no_chat_open(EMPTY_PANE_TEXT),
                     width="100%",
                 ),
             ),
@@ -1646,6 +1644,13 @@ def _conversation_pane() -> rx.Component:
             width="100%",
         ),
     )
+
+
+#: U5 (UX review of m-25029798; new text, awaiting the founder): the pane beside the
+#: single list holds a chat of either channel.
+EMPTY_PANE_TEXT = (
+    "Elige un chat de la lista para leerlo y responder, sea de Instagram o de WhatsApp."
+)
 
 
 def chat_is_open() -> rx.Var[bool]:
@@ -1706,7 +1711,9 @@ def messages_tab() -> rx.Component:
         _heartbeat(),
         rx.script(src="/qualify-voice.js"),
         _accounts_error(),
-        _instagram_tools(),
+        # U1 (UX review of m-25029798): the Instagram account's doors are about the
+        # list, never over an open chat of either channel, at every width.
+        rx.cond(chat_is_open(), rx.fragment(), _instagram_tools()),
         rx.box(
             inbox_list_pane(),
             _conversation_pane(),

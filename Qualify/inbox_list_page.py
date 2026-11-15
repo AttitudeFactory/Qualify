@@ -168,6 +168,11 @@ def _notice() -> rx.Component:
     )
 
 
+def _chat_open() -> rx.Var[bool]:
+    """A chat of either channel is open beside this list."""
+    return ConversationsState.has_open_thread | WhatsAppChatsState.has_open_thread
+
+
 def _row(row: ChatRowVM) -> rx.Component:
     """m-25029798: a row of either channel opens its chat beside this list; the open
     one is marked whatever its channel."""
@@ -299,7 +304,9 @@ def inbox_list_pane() -> rx.Component:
     a phone the first chat is not pushed under the fold (UX review of m-25017859)."""
     return rx.vstack(
         heartbeat(),
-        _explainer(),
+        # U4 (UX review of m-25029798): with a chat open, the explanation steps aside
+        # so the list and the chat move up; it comes back when the chat closes.
+        rx.cond(_chat_open(), rx.fragment(), _explainer()),
         # The chips paint with the first loaded list, together with the explanation
         # above them, so neither pushes the other once it appears.
         rx.cond(

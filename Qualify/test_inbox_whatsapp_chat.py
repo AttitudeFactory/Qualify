@@ -524,3 +524,28 @@ async def test_leaving_por_responder_forgets_the_saved_scroll() -> None:
         mp.setattr(ResponderState, "get_state", get_state)
         await ResponderState.leave_page_flows.fn(cast(Any, responder))  # type: ignore[attr-defined]
     assert inbox._scroll == []
+
+
+# --- UX review (U1, U3, U4, U5) ---------------------------------------------------------
+
+
+def test_with_a_chat_open_the_list_extras_step_aside() -> None:
+    """U1/U4: the Instagram account banner, the one-time explanation and «Quién te
+    espera» are drawn only while no chat (either channel) is open."""
+    from .conversations_page import EMPTY_PANE_TEXT, messages_tab
+    from .inbox_list_page import inbox_list_pane
+    from .responder_page import _who_is_waiting
+
+    for rendered in (str(messages_tab()), str(inbox_list_pane()), str(_who_is_waiting())):
+        assert "has_open_thread" in rendered
+    assert EMPTY_PANE_TEXT in str(messages_tab())
+    assert "sea de Instagram o de WhatsApp" in EMPTY_PANE_TEXT
+
+
+def test_whatsapps_own_list_says_where_its_chats_open() -> None:
+    from .whatsapp_tab_chats import MOVED_ACTION, MOVED_HREF, MOVED_NOTICE, chats_tab
+
+    rendered = str(chats_tab())
+    assert "Por responder" in MOVED_NOTICE and MOVED_ACTION == "Ir a Por responder"
+    assert MOVED_HREF.startswith("/responder?tab=mensajes")
+    assert "Elige una conversación" not in rendered and "q-wa-chats__conv" not in rendered

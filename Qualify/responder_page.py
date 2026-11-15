@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import reflex as rx
 
-from .conversations_page import messages_tab
+from .conversations_page import chat_is_open, messages_tab
 from .followups_page import followups_panel
 from .inbox_page import comments_tab
 from .leads_page import leads_tab
@@ -255,11 +255,17 @@ def responder_header() -> rx.Component:
 def _who_is_waiting() -> rx.Component:
     """On a phone, «Quién te espera» shows only on the way in (`/responder` with no
     `?tab=`): after a «Ver» the owner lands on the list, not on the figures again. The
-    figures still travel in the tab labels. From md up it always shows."""
+    figures still travel in the tab labels. From md up it always shows — except while a
+    chat is open in «Mensajes» (U4, UX review of m-25029798): then the tabs, the list
+    and the chat move up; the figures come back when it closes."""
     return rx.cond(
-        R.has_tab_param,
-        rx.box(section("Quién te espera", _counts()), display=["none", "none", "block"]),
-        section("Quién te espera", _counts()),
+        (R.active_tab == TAB_MESSAGES) & chat_is_open(),
+        rx.fragment(),
+        rx.cond(
+            R.has_tab_param,
+            rx.box(section("Quién te espera", _counts()), display=["none", "none", "block"]),
+            section("Quién te espera", _counts()),
+        ),
     )
 
 

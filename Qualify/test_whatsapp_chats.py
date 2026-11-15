@@ -654,7 +654,7 @@ def test_the_tab_renders_list_conversation_and_composer() -> None:
         return text in rendered or escaped in rendered
 
     for text in (
-        "Elige una conversación",
+        "Ir a Por responder",  # m-25029798 (U3): no empty pane here any more
         "Tomar el control",
         "Devolver al menú",
         "Cerrar",
