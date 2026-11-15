@@ -9,8 +9,9 @@
 > PR #678, despachador por canal, sin pantalla que lo use) y m-25027371 (BU-A5, PR #688, hilo
 > único del chat), los tres en RESOLVED. El hilo único se vio en producción en escritorio con la
 > sesión del dueño, en los dos canales; no se vio a ancho de celular. m-25017862 (BU-A12,
-> «Promociones») tiene el PR #693 abierto. Siguen sin empezar m-25017861 («Ajustes de chats»,
-> desbloqueada por la decisión (vi)), m-25027373 (BU-A10) y m-25027374 (BU-A7). Fuera de las
+> «Promociones») tiene el PR #693 abierto. En curso desde la noche del 2026-11-14: m-25017861 («Ajustes de chats»,
+> desbloqueada por la decisión (vi), sobre la rama de m-25017862) y m-25017846 (menú de WhatsApp:
+> paso y respuesta juntos). Siguen sin empezar m-25027373 (BU-A10) y m-25027374 (BU-A7). Fuera de las
 > historias, el error m-25027369 (controles de celular y escritorio a la vez) se arregló con el
 > PR #676. Detalle por historia en §3 y §7; decisiones en §6 (vi), (vii) y (viii); seguimientos
 > sin ticket en §5.
@@ -455,8 +456,8 @@ canal, con dos outboxes y dos workers `[arq §1.2, §1.3]`. Cortes de origen C1�
 
 ### m-25017861 (BU-A9) · Chats: «Ajustes de chats» aparte de los mensajes
 
-> **Sin empezar (Backlog); desbloqueada el 2026-11-14 por la decisión (vi).** Empieza después de
-> m-25017862 (PR #693), que toca los mismos archivos. Al terminar saca «WhatsApp» de «Atiende» y el
+> **En curso (In Progress) desde la noche del 2026-11-14; desbloqueada ese día por la decisión
+> (vi).** Se construye sobre la rama de m-25017862 (PR #693), que toca los mismos archivos. Al terminar saca «WhatsApp» de «Atiende» y el
 > menú lateral vuelve a su número de entradas (ver m-25017862).
 
 - **Tipo:** Issue · `Improvement`, `UI` · **P2** · **L** · dueño `reflex-ui`
@@ -1417,7 +1418,7 @@ Decisiones en §6: (ii), (vi) nombres del menú, (vii) lista única, (viii) qué
 Los chats se ven en local con tests/e2e/chat_fixtures.py (test_chat_thread.py).
 Siguiente (lo que pidió el fundador: igualar la pantalla del chat y separar los ajustes):
 - m-25017862 (PR #693): aprobado por el fundador el 2026-11-14 para fusionar cuando el CI esté en
-  verde («Sí, cuando esté verde»); sin fusionar al escribir esto. m-25017861 empieza después.
+  verde («Sí, cuando esté verde»); sin fusionar al escribir esto. m-25017861 ya está en curso sobre esa rama.
 - reflex-ui-engineer (único dueño de whatsapp_tab_chats.py, conversations_page.py y el menú
   lateral, en serie): m-25017861 «Ajustes de chats» con los nombres de (vi) («Tu menú de
   bienvenida», «Usar en WhatsApp» / «Usar en Instagram»); saca «WhatsApp» de «Atiende» y el menú
@@ -1429,7 +1430,7 @@ Siguiente (lo que pidió el fundador: igualar la pantalla del chat y separar los
   acting_login; arreglar a la vez el poco espacio del chat en el celular (partes B y C de la
   maqueta). Si coincide con m-25017861 en archivos, en serie.
 - Comprobar en el celular del fundador m-25027371, m-25027369 y la lista única antes de pasarlas a Done.
-- backend-engineer (A): m-25017846 → m-25017866 (píldora «Tu menú no le llegó: respóndele tú») →
+- backend-engineer (A): m-25017846 (en curso desde la noche del 2026-11-14) → m-25017866 (píldora «Tu menú no le llegó: respóndele tú») →
   m-25017868 (mismos archivos, una sola persona; pruebas -m db).
 - ux-designer: la prueba «Responder yo» con Bianki (BU-B8).
 - data-scientist-fde: m-25017863 (medición de Sugerir respuesta, qualify-measure).
