@@ -51,7 +51,7 @@ from .connection_copy import (
     connection_status_display as connection_status_display,
 )
 from .connections_vm import whatsapp_label
-from .nav_url import inbox_chat_href, uuid_param, with_query
+from .nav_url import INBOX_ROUTE, INBOX_TAB, uuid_param, with_query
 
 # --------------------------------------------------------------------------------------
 # Tabs (m-24842998 WHATSAPP-7). Two tasks on top, one of them with sub-tabs:
@@ -337,7 +337,7 @@ def legacy_chat_target(params: Mapping[str, object]) -> str | None:
         STEP_PARAM: step if in_flow and step.isascii() and step.isdigit() and len(step) < 3 else "",
         OBJECT_PARAM: uuid_param(params, OBJECT_PARAM) if in_flow else "",
     }
-    return with_query(inbox_chat_href(account, chat), **kept)
+    return with_query(INBOX_ROUTE, tab=INBOX_TAB, cuenta=account, chat=chat, **kept)
 
 
 def legacy_panel_target(params: Mapping[str, object]) -> str | None:
