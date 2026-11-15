@@ -57,6 +57,7 @@ from .chat_row_vm import CHANNEL_INSTAGRAM
 from .chat_thread import (
     back_button,
     bubble_meta,
+    close_button,
     day_separator,
     menu_item,
     message_row,
@@ -356,6 +357,7 @@ def _conversation_header() -> rx.Component:
         pills=(state_pill(thread.attention_label, thread.attention_tone),),
         is_closed=thread.is_closed,
         back=_back_button(),
+        close=close_button(S.close_conversation),
         menu=_more_menu(),
     )
 

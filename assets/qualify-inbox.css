@@ -587,6 +587,11 @@ textarea.q-reply-field::placeholder,
   flex-shrink: 0;
 }
 
+/* m-25029798: the header's «✕» exists only on a desk (below, the back row does it). */
+.q-chat-head .q-chat-close {
+  display: none;
+}
+
 /* ── The open chat on a wide screen (m-25029798, ≥ 1024 px) ──────────────────────────
    The conversation is the biggest thing in the pane. The chat is a column that fills
    the window below the tabs: the header and the order strip keep their size, the
@@ -645,7 +650,7 @@ textarea.q-reply-field::placeholder,
   /* the compact header */
   .q-wa-chats--open .q-chat-head {
     display: grid;
-    grid-template-columns: auto minmax(0, 1fr) auto auto;
+    grid-template-columns: auto minmax(0, 1fr) auto auto auto;
     align-self: stretch;
     width: 100%;
     column-gap: 0.75rem;
@@ -660,6 +665,12 @@ textarea.q-reply-field::placeholder,
   .q-wa-chats--open .q-chat-head .q-chat-head__rest,
   .q-wa-chats--open .q-chat-head .q-chat-head__id {
     display: contents;
+  }
+  /* «✕» (Volver a la lista): the desk's way back to the plain list, after «⋯» */
+  .q-wa-chats--open .q-chat-head .q-chat-head__id > .q-chat-close {
+    display: inline-flex;
+    grid-column: 5;
+    grid-row: 1;
   }
   .q-wa-chats--open .q-chat-head .q-chat-head__back {
     display: none;
@@ -676,7 +687,7 @@ textarea.q-reply-field::placeholder,
     width: var(--space-8);
     height: var(--space-8);
   }
-  .q-wa-chats--open .q-chat-head .q-chat-head__id > :not(.q-chat-avatar):not(.q-chat-more) {
+  .q-wa-chats--open .q-chat-head .q-chat-head__id > :not(.q-chat-avatar):not(.q-chat-more):not(.q-chat-close) {
     grid-column: 2;
     grid-row: 1;
   }
@@ -692,7 +703,7 @@ textarea.q-reply-field::placeholder,
     width: auto;
   }
   .q-wa-chats--open .q-chat-head .q-chat-head__meta {
-    grid-column: 2 / 5;
+    grid-column: 2 / 6;
     grid-row: 2;
     row-gap: 0.125rem;
   }
@@ -702,7 +713,7 @@ textarea.q-reply-field::placeholder,
    the line of pills, still in the header, the name keeps the row. */
 @media (min-width: 1024px) and (max-width: 1279px) {
   .q-wa-chats--open .q-chat-head .q-chat-head__actions {
-    grid-column: 2 / 5;
+    grid-column: 2 / 6;
     grid-row: 3;
     justify-self: start;
   }

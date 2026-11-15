@@ -460,6 +460,46 @@ async def test_instagram_then_whatsapp_before_instagram_loads_opens_only_whatsap
     assert conv.open_thread_id == ""
 
 
+@pytest.mark.parametrize("outcome", ["found", "not_found", "db_error"])
+async def test_a_late_instagram_read_by_id_after_the_switch_opens_and_says_nothing(
+    outcome: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Instagram chat read by id is still in flight when a WhatsApp row takes the
+    pane: whatever it brings back (the chat, «ya no está», a database error), nothing
+    opens, no banner and no toast."""
+    from qualify_api.conversations.service import ThreadNotFound as DmThreadNotFound
+    from sqlalchemy.exc import OperationalError
+
+    from . import conversations_state as conv_module
+    from .conversations_state import ConversationsState
+    from .test_conversations_provider import OTHER_CONNECTION, _account
+
+    conv = ConversationsState()
+    conv.accounts = [_account(OTHER_CONNECTION, label="@otra")]
+    conv.selected_connection_id = str(OTHER_CONNECTION)
+    pending = str(uuid4())
+
+    class _Gw:
+        def thread_listing(self, tenant: UUID, connection: UUID, thread: UUID) -> object:
+            # the WhatsApp tap lands while this read is on the wire
+            ConversationsState.leave_for_other_chat.fn(conv)  # type: ignore[attr-defined]
+            if outcome == "not_found":
+                raise DmThreadNotFound(str(thread))
+            if outcome == "db_error":
+                raise OperationalError("select", {}, Exception("down"))
+            return object()
+
+    async def tenant(self: ConversationsState) -> UUID:
+        return TENANT
+
+    monkeypatch.setattr(conv_module, "gateway", lambda: _Gw())
+    monkeypatch.setattr(ConversationsState, "_tenant", tenant)
+    events = ConversationsState.open_from_inbox.fn(conv, str(OTHER_CONNECTION), pending)  # type: ignore[attr-defined]
+    assert events == [ConversationsState.open_by_id]
+    late = await _drain(ConversationsState.open_by_id.fn(conv))  # type: ignore[attr-defined]
+    assert late == [] and conv.open_thread_id == "" and conv.banner == ""
+
+
 async def test_an_action_after_a_channel_switch_acts_on_no_hidden_chat(
     numbers: list[UUID], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -549,3 +589,22 @@ def test_whatsapps_own_list_says_where_its_chats_open() -> None:
     assert "Por responder" in MOVED_NOTICE and MOVED_ACTION == "Ir a Por responder"
     assert MOVED_HREF.startswith("/responder?tab=mensajes")
     assert "Elige una conversación" not in rendered and "q-wa-chats__conv" not in rendered
+
+
+def test_a_desk_closes_the_chat_with_its_own_x() -> None:
+    """At >= 1024 px the back row hides: «✕» (Volver a la lista) closes the chat with
+    the same handler on both channels; a 44 px target, hidden below 1024 px."""
+    from pathlib import Path
+
+    from .conversations_page import _conversation_header as instagram_header
+    from .whatsapp_tab_chats import _conversation_header as whatsapp_header
+
+    for rendered, handler in (
+        (str(instagram_header()), "close_conversation"),
+        (str(whatsapp_header()), "back_to_inbox"),
+    ):
+        assert "Volver a la lista" in rendered and "q-chat-close" in rendered
+        assert handler in rendered and "44px" in rendered
+    css = (Path(__file__).resolve().parents[1] / "assets" / "qualify-inbox.css").read_text()
+    assert ".q-chat-head .q-chat-close {\n  display: none;" in css
+    assert ".q-chat-head__id > .q-chat-close {\n    display: inline-flex;" in css

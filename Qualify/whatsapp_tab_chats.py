@@ -39,6 +39,7 @@ from .chat_thread import (
     TAP_MIN,
     back_button,
     bubble_meta,
+    close_button,
     day_separator,
     menu_item,
     message_row,
@@ -509,6 +510,7 @@ def _conversation_header() -> rx.Component:
         ),
         is_closed=thread.is_closed,
         back=_back_button(),
+        close=close_button(S.back_to_inbox),
         actions=rx.hstack(
             rx.cond(
                 thread.automation_paused,

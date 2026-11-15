@@ -36,6 +36,9 @@ from .whatsapp_vm import TAB_MENU, tab_url
 
 #: The «⋯» button's accessible name (it has no visible text).
 MORE_ACTIONS_LABEL: Final = "Más acciones de este chat"
+#: m-25029798: the desk's «✕» of an open chat (the back row hides there; new text,
+#: awaiting the founder).
+CLOSE_CHAT_LABEL: Final = "Volver a la lista"
 #: The menu's group of people the chat can be given to (ticket «Asignar»).
 ASSIGN_LABEL: Final = "Asignar"
 UNASSIGNED_LABEL: Final = "Sin asignar"

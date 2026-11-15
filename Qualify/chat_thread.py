@@ -35,7 +35,13 @@ import reflex as rx
 from .chat_row import chat_avatar, instagram_glyph
 from .chat_row import tone_pill as _tone_pill
 from .chat_row_vm import CHANNEL_INSTAGRAM, CHANNEL_WHATSAPP, INBOX_BACK_LABEL
-from .chat_thread_vm import MORE_ACTIONS_LABEL, NO_MESSAGES, channel_name, thread_style
+from .chat_thread_vm import (
+    CLOSE_CHAT_LABEL,
+    MORE_ACTIONS_LABEL,
+    NO_MESSAGES,
+    channel_name,
+    thread_style,
+)
 from .ui import callout, card, chat_bubble, skeleton_rows, tag
 from .ui import tokens as T
 
@@ -179,6 +185,25 @@ def more_menu(*items: rx.Component) -> rx.Component:
     )
 
 
+def close_button(on_click: Any) -> rx.Component:
+    """m-25029798: «✕» at the far right of the header on a desk (≥ 1024 px, where the
+    «‹ Por responder» row hides): the same handler as that row, so the list keeps its
+    filter, channel and scroll. A 44 px ghost icon button with its name and tooltip."""
+    return rx.icon_button(
+        rx.icon("x", size=T.ICON_MD),
+        on_click=on_click,
+        variant="ghost",
+        size="3",
+        type="button",
+        aria_label=CLOSE_CHAT_LABEL,
+        title=CLOSE_CHAT_LABEL,
+        min_width=TAP_MIN,
+        min_height=TAP_MIN,
+        class_name="q-chat-close",
+        **T.tone_scheme("neutral"),
+    )
+
+
 def menu_item(label: rx.Var[str] | str, icon: str | rx.Component, **props: Any) -> rx.Component:
     """One «⋯» entry, at least 44 px tall (N12)."""
     glyph = rx.icon(icon, size=T.ICON_SM) if isinstance(icon, str) else icon
@@ -202,6 +227,7 @@ def thread_header(
     back: rx.Component | None = None,
     actions: rx.Component | None = None,
     menu: rx.Component | None = None,
+    close: rx.Component | None = None,
 ) -> rx.Component:
     """Back · avatar + name (+ subtitle) · «⋯» on top; then the channel's word, the
     window line, the state pills and «Cerrado» on one wrapping line (at 360 px they
@@ -245,6 +271,7 @@ def thread_header(
                 flex="1",
             ),
             *([menu] if menu is not None else []),
+            *([close] if close is not None else []),
             width="100%",
             align="center",
             spacing="3",

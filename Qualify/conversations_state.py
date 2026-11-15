@@ -1093,8 +1093,11 @@ class ConversationsState(rx.State):
         except _DB_ERRORS as exc:
             logger.error("conversations open by id failed: %s", type(exc).__name__)
             async with self:
-                if self._pending_open == thread_id:
+                ours = self._pending_open == thread_id
+                if ours:
                     self._pending_open = ""
+            if not ours:
+                return  # another chat (of either channel) was asked for meanwhile
             yield rx.toast.error(_CONV_FAILED, duration=_TOAST_MS)
             return
         async with self:

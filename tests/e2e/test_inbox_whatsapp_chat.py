@@ -225,8 +225,13 @@ def test_the_wide_open_chat_gives_the_messages_the_room(chats_page) -> None:  # 
         ".getBoundingClientRect(); return b.bottom <= t.bottom + 1; }"
     )
     assert inside
-    # Back to the list (the browser's «atrás» on a desk): the figures come back.
-    page.go_back()
+    # «✕ Volver a la lista» (the desk's way back): the list as it was, the figures again.
+    close = page.locator(".q-chat-head").first.get_by_role("button", name="Volver a la lista")
+    expect(close).to_be_visible()
+    box = close.bounding_box()
+    assert box is not None and box["height"] >= 44 and box["width"] >= 44, box
+    close.click()
+    expect(page.locator(".q-chat-thread")).to_have_count(0)
     expect(page.get_by_text("Quién te espera")).to_be_visible()
 
 
