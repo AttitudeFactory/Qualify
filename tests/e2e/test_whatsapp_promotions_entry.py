@@ -237,3 +237,36 @@ def test_switching_pages_never_draws_the_other_pages_panel(
     expect(strip).to_be_visible(timeout=60_000)
     expect(strip.get_by_role("button")).to_have_text(["Chats", "Respuesta automática", "Tu número"])
     _shot(page, "whatsapp-tres-secciones-360")
+
+
+def test_a_chats_links_land_on_the_right_page(chats_page) -> None:  # noqa: ANN001
+    """With the shared chat thread (m-25027371): «⋯» › «Ajustes de este canal» opens
+    WhatsApp's «Respuesta automática»; «Crear un mensaje aprobado», from a chat whose
+    window closed, opens «Promociones por WhatsApp» › «Mensajes aprobados»."""
+    page = chats_page
+    ids = page._qualify_e2e_chats  # noqa: SLF001
+    base = re.match(r"https?://[^/]+", page.url)[0]
+    page.set_viewport_size({"width": 1280, "height": 900})
+    chat = f"/whatsapp?tab=chats&cuenta={ids['whatsapp_connection']}"
+
+    page.goto(f"{base}{chat}&chat={ids['whatsapp_open']}")
+    head = page.locator(".q-chat-head").first
+    expect(head).to_be_visible(timeout=60_000)
+    head.get_by_role("button", name="Más acciones de este chat").click()
+    page.get_by_role("menuitem", name="Ajustes de este canal").click()
+    expect(page).to_have_url(re.compile(r"/whatsapp\?tab=respuesta"), timeout=60_000)
+    lit = _menu(page).locator('[aria-current="page"]')
+    expect(lit).to_have_count(1)
+    expect(lit).to_contain_text("WhatsApp")
+    # The seeded number has a menu, so the tab opens on its guided frame; the chat list
+    # is gone either way.
+    expect(page.locator("main h1").first).to_be_visible(timeout=60_000)
+    expect(page.locator(".q-wa-chats")).to_have_count(0)
+    _shot(page, "ajustes-de-este-canal")
+
+    page.goto(f"{base}{chat}&chat={ids['whatsapp_closed']}")
+    page.get_by_role("button", name="Enviar un mensaje aprobado").click(timeout=60_000)
+    page.get_by_role("link", name="Crear un mensaje aprobado").click(timeout=60_000)
+    expect(page).to_have_url(f"{base}{_ROUTE}?sub=aprobados", timeout=60_000)
+    _expect_lit(page, _ROUTE)
+    expect(page.get_by_role("heading", level=1, name=_TITLE)).to_be_visible()
