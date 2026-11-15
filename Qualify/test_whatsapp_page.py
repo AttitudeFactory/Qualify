@@ -18,13 +18,16 @@ import json
 import pathlib
 import typing
 from datetime import datetime
+from types import SimpleNamespace
 
 import pytest
 import reflex as rx
+from reflex.istate.data import ReflexURL, RouterData
 
 from . import whatsapp_page, whatsapp_tab_chats, whatsapp_tab_menu
 from .connections_vm import WHATSAPP_RECONNECT_HINT
 from .ui.layout import NAV_ITEMS, NAV_ZONES
+from .whatsapp_state import WhatsAppState
 from .whatsapp_vm import (
     DEFAULT_TAB,
     EMPTY_NUMBER,
@@ -36,8 +39,12 @@ from .whatsapp_vm import (
     NO_NUMBER_TITLE,
     NUMBER_SUBS,
     PROMOTION_SUBS,
+    PROMOTIONS_ROUTE,
+    PROMOTIONS_SUBTITLE,
+    PROMOTIONS_TITLE,
     QR_CHANNELS,
     REVIEW_ACTION,
+    SECTION_KEYS,
     SECTIONS,
     SUBTABS,
     TAB_ACTIVITY,
@@ -62,11 +69,15 @@ from .whatsapp_vm import (
     compose_qr_message,
     graph_error_notice,
     health_display,
+    is_promotions_panel,
+    legacy_promotions_target,
     name_status_display,
     needs_help,
+    panel_route,
     panel_section,
     panel_sub,
     platform_status_display,
+    promotions_panel,
     qr_channel_label,
     quality_display,
     resolve_panel,
@@ -78,6 +89,7 @@ from .whatsapp_vm import (
 )
 
 _HERE = pathlib.Path(__file__).parent
+_UUID = "00000000-0000-4000-8000-0000000000aa"
 _FORBIDDEN_FIELD_FRAGMENTS = (
     "token",
     "credential",
@@ -304,14 +316,16 @@ def test_graph_error_hides_internal_codes_and_provider_jargon() -> None:
 # --- 5. shell, placeholders, route, nav ------------------------------------------------
 
 
-def test_four_tabs_named_as_tasks() -> None:
-    """m-24842998: four top tabs (guide §3), the secondary ones grouped inside."""
+def test_three_tabs_named_as_tasks() -> None:
+    """m-24842998: the top tabs (guide §3), the secondary ones grouped inside.
+    m-25017862 (D3): «Promociones» left the strip for its own menu entry."""
     assert [label for _, label in SECTIONS] == [
         "Chats",
         "Respuesta automática",
-        "Promociones",
         "Tu número",
     ]
+    # Its panels are still a section an old address can name (it then redirects).
+    assert "promociones" in SECTION_KEYS and "promociones" not in dict(SECTIONS)
     assert [label for _, label in PROMOTION_SUBS] == [
         "Enviadas",
         "Mensajes aprobados",
@@ -382,13 +396,168 @@ def test_the_address_names_the_panel(tab: str, sub: str, panel: str) -> None:
 def test_every_panel_has_an_address_that_reads_back(panel: str) -> None:
     """N5: what `select_*` writes is what `enter_page` reads on reload or «atrás»."""
     url = tab_url(panel)
-    assert url.startswith("/whatsapp?tab=")
     query = dict(part.split("=") for part in url.split("?", 1)[1].split("&"))
-    assert resolve_panel(query["tab"], query.get("sub", "")) == panel
+    if is_promotions_panel(panel):  # m-25017862: its own page, only the sub-tab
+        assert url.startswith(f"{PROMOTIONS_ROUTE}?sub=")
+        assert panel_route(panel) == PROMOTIONS_ROUTE
+        assert promotions_panel(query["sub"]) == panel
+    else:
+        assert url.startswith("/whatsapp?tab=")
+        assert panel_route(panel) == "/whatsapp"
+        assert resolve_panel(query["tab"], query.get("sub", "")) == panel
+
+
+@pytest.mark.parametrize(
+    ("query", "target"),
+    [
+        # Every old address of a promotions panel lands on the same panel, new page.
+        ({"tab": "promociones"}, "/whatsapp/promociones?sub=enviadas"),
+        ({"tab": "promociones", "sub": "enviadas"}, "/whatsapp/promociones?sub=enviadas"),
+        ({"tab": "promociones", "sub": "aprobados"}, "/whatsapp/promociones?sub=aprobados"),
+        ({"tab": "promociones", "sub": "clientes"}, "/whatsapp/promociones?sub=clientes"),
+        ({"tab": "promociones", "sub": "<script>"}, "/whatsapp/promociones?sub=enviadas"),
+        ({"tab": "plantillas"}, "/whatsapp/promociones?sub=aprobados"),
+        ({"tab": "campanas"}, "/whatsapp/promociones?sub=enviadas"),
+        ({"tab": "contactos"}, "/whatsapp/promociones?sub=clientes"),
+        # The number and a half-filled form ride along, each in its own shape.
+        (
+            {"tab": "promociones", "cuenta": _UUID, "flujo": "promocion", "paso": "2"},
+            f"/whatsapp/promociones?sub=enviadas&cuenta={_UUID}&flujo=promocion&paso=2",
+        ),
+        (
+            {"tab": "plantillas", "flujo": "mensaje-aprobado", "paso": "3"},
+            "/whatsapp/promociones?sub=aprobados&flujo=mensaje-aprobado&paso=3",
+        ),
+        # Junk is dropped, never echoed: a key that collides with `with_query`'s own
+        # argument (`path`), unknown keys, a non-UUID number, another form, a bad step,
+        # a repeated value.
+        (
+            {"tab": "plantillas", "path": "x", "chat": _UUID, "otro": "<script>"},
+            "/whatsapp/promociones?sub=aprobados",
+        ),
+        (
+            {"tab": "campanas", "cuenta": "abc", "flujo": "menu", "paso": "2"},
+            "/whatsapp/promociones?sub=enviadas",
+        ),
+        (
+            {"tab": "campanas", "flujo": "promocion", "paso": "-1"},
+            "/whatsapp/promociones?sub=enviadas&flujo=promocion",
+        ),
+        # `str.isdigit` alone takes «²» or Arabic-Indic digits; only ASCII ones pass.
+        (
+            {"tab": "campanas", "flujo": "promocion", "paso": "٣"},
+            "/whatsapp/promociones?sub=enviadas&flujo=promocion",
+        ),
+        (
+            {"tab": "campanas", "flujo": "promocion", "paso": "²"},
+            "/whatsapp/promociones?sub=enviadas&flujo=promocion",
+        ),
+        ({"tab": "plantillas", "paso": ["1", "2"]}, "/whatsapp/promociones?sub=aprobados"),
+    ],
+)
+def test_an_old_promotions_address_redirects_to_its_page(
+    query: dict[str, object], target: str
+) -> None:
+    """m-25017862: a bookmark to the old «Promociones» tab still opens the same panel."""
+    assert legacy_promotions_target(query) == target
+    sub = target.split("sub=", 1)[1].split("&", 1)[0]
+    assert promotions_panel(sub) == resolve_panel(str(query["tab"]), str(query.get("sub", "")))
+
+
+@pytest.mark.parametrize(
+    "query",
+    [{}, {"tab": "chats"}, {"tab": "respuesta"}, {"tab": "numero", "sub": "qr"}, {"tab": "x"}],
+)
+def test_any_other_whatsapp_address_stays(query: dict[str, object]) -> None:
+    assert legacy_promotions_target(query) is None
+
+
+def test_promotions_page_reads_only_its_sub_tab() -> None:
+    assert promotions_panel("") == TAB_CAMPAIGNS
+    assert promotions_panel("aprobados") == TAB_TEMPLATES
+    assert promotions_panel("clientes") == TAB_CONTACTS
+    assert promotions_panel("qr") == TAB_CAMPAIGNS  # another section's sub is junk here
+    assert promotions_panel("<script>") == TAB_CAMPAIGNS
+
+
+def test_the_promotions_page_has_its_own_header_and_strip() -> None:
+    """m-25017862: «Promociones por WhatsApp» (D3's name) heads the page, with the three
+    sub-tabs and nothing of the WhatsApp strip; `/whatsapp` keeps the other three."""
+    assert PROMOTIONS_TITLE == "Promociones por WhatsApp"
+    rendered = str(whatsapp_page.whatsapp_promotions_index().render())
+
+    def present(text: str) -> bool:
+        escaped = json.dumps(text)[1:-1].replace("\\", "\\\\")
+        return text in rendered or escaped in rendered
+
+    for _key, label in PROMOTION_SUBS:
+        assert present(label), label
+    assert present(PROMOTIONS_TITLE) and present(PROMOTIONS_SUBTITLE)
+    assert not present("Secciones de WhatsApp")  # the /whatsapp strip is not here
+
+
+def _mounts(component: rx.Component, gates: tuple[tuple[str, bool], ...] = ()) -> list:
+    """Every component with an `on_mount`, with the `rx.cond`s above it as (condition,
+    in its true branch)."""
+    found = []
+    if "on_mount" in (component.event_triggers or {}):
+        found.append((component, gates))
+    cond = getattr(component, "cond", None)  # an `rx.cond`: children = (true, false)
+    for index, child in enumerate(component.children):
+        here = gates if cond is None else (*gates, (str(cond), index == 0))
+        found.extend(_mounts(child, here))
+    return found
+
+
+@pytest.mark.parametrize(
+    ("page", "mine"),
+    [
+        (whatsapp_page.whatsapp_promotions_index, "promotions"),
+        (whatsapp_page.whatsapp_index, "whatsapp"),
+    ],
+)
+def test_no_panel_mounts_outside_its_pages_section(page: typing.Any, mine: str) -> None:
+    """m-25017862 (review 2026-11-14): both pages share `active_tab`, set a round trip
+    after the client switched page. Every panel — everything with an `on_mount` below
+    the shell — sits in the TRUE branch of this page's section condition, so the other
+    page's panel never mounts (nor loads) here. The menu's guided frame on `/whatsapp`
+    has its own condition, `active_tab == "menu"`, which no promotions panel meets."""
+    on_promotions = str(whatsapp_page._on_promotions_page())  # noqa: SLF001
+    gate = on_promotions if mine == "promotions" else str(~whatsapp_page._on_promotions_page())  # noqa: SLF001
+    panels = [
+        (component, gates)
+        for component, gates in _mounts(page())
+        # The shell's own: the menu (`nav`) and the route's history button.
+        if component.tag != "nav" and "q-route-pop" not in str(component.class_name)
+    ]
+    assert len(panels) >= 5  # the gate is not vacuous: the panels are really in the tree
+    for component, gates in panels:
+        menu_frame = any('"menu"' in cond and "active_tab" in cond and ok for cond, ok in gates)
+        assert (gate, True) in gates or menu_frame, (type(component).__name__, gates)
+        assert (gate, False) not in gates
+
+
+def test_promotions_route_is_registered_behind_login() -> None:
+    source = (_HERE / "Qualify.py").read_text()
+    start = source.index("    whatsapp_promotions_index,\n")
+    block = source[start : source.index(")", source.index("on_load", start)) + 1]
+    assert 'route="/whatsapp/promociones"' in block
+    assert "AuthState.require_login" in block and "WhatsAppState.enter_page" in block
+
+
+def test_promotions_entry_sits_in_publica_after_anuncios() -> None:
+    """m-25017862 (D3): the entry right after «Anuncios», in «Publica». Its menu word is
+    «Promociones» (founder, 2026-11-14); the page keeps «Promociones por WhatsApp»."""
+    entry = ("Promociones", "badge-percent", PROMOTIONS_ROUTE, True)
+    assert entry in NAV_ITEMS
+    labels = {zone: [label for label, *_ in items] for zone, _t, items in NAV_ZONES}["publish"]
+    assert labels.index("Promociones") == labels.index("Anuncios") + 1
 
 
 def test_addresses_are_the_owner_words() -> None:
-    assert tab_url(TAB_TEMPLATES) == "/whatsapp?tab=promociones&sub=aprobados"
+    assert tab_url(TAB_TEMPLATES) == "/whatsapp/promociones?sub=aprobados"
+    assert tab_url(TAB_CAMPAIGNS) == "/whatsapp/promociones?sub=enviadas"
+    assert tab_url(TAB_CONTACTS) == "/whatsapp/promociones?sub=clientes"
     assert tab_url(TAB_QR) == "/whatsapp?tab=numero&sub=qr"
     assert tab_url(TAB_CHATS) == "/whatsapp?tab=chats"  # no sub without sub-tabs
     assert tab_url(TAB_MENU) == "/whatsapp?tab=respuesta"
@@ -487,14 +656,71 @@ def test_every_table_has_phone_cards(module: str) -> None:
     assert source.count("rx.table.root(") == source.count("table_or_cards(")
 
 
-def test_selecting_a_tab_writes_the_address() -> None:
-    source = (_HERE / "whatsapp_state.py").read_text()
-    start = source.index("def _show_panel(")
-    block = source[start : source.index("@rx.event", start)]
-    assert "push_url_script(self._panel_address(panel))" in block
-    start = source.index("def enter_page(")
-    block = source[start : source.index("def _show_panel(", start)]
-    assert "resolve_panel(" in block and "SUB_PARAM" in block
+def _visit(path: str) -> WhatsAppState:
+    """A `WhatsAppState` whose router is at `path` (as on_load sees it)."""
+    state = WhatsAppState()
+    state.router = RouterData(url=ReflexURL(f"http://localhost:3000{path}"))
+    return state
+
+
+def _signed_in(monkeypatch: pytest.MonkeyPatch, tenant: str) -> None:
+    """`get_state(AuthState)` on a bare state: a session for `tenant` ("" = none)."""
+
+    async def get_state(self: WhatsAppState, cls: type) -> object:
+        return SimpleNamespace(session_tenant_id=tenant)
+
+    monkeypatch.setattr(WhatsAppState, "get_state", get_state)
+
+
+@pytest.mark.parametrize(
+    ("path", "panel"),
+    [
+        ("/whatsapp", TAB_CHATS),
+        ("/whatsapp?tab=respuesta", TAB_MENU),
+        ("/whatsapp?tab=numero&sub=qr", TAB_QR),
+        ("/whatsapp/promociones", TAB_CAMPAIGNS),
+        ("/whatsapp/promociones?sub=aprobados", TAB_TEMPLATES),
+        ("/whatsapp/promociones/?sub=clientes", TAB_CONTACTS),
+        ("/whatsapp/promociones?sub=qr", TAB_CAMPAIGNS),  # another page's sub is junk
+    ],
+)
+def test_entering_a_page_shows_the_panel_of_its_address(path: str, panel: str) -> None:
+    state = _visit(path)
+    events = WhatsAppState.enter_page.fn(state)  # type: ignore[attr-defined]
+    assert state.active_tab == panel
+    assert len(events) == 3  # the chip, the stale forms, then the numbers
+
+
+_OLD = [
+    ("/whatsapp?tab=promociones&sub=aprobados", "/whatsapp/promociones?sub=aprobados"),
+    ("/whatsapp?tab=plantillas", "/whatsapp/promociones?sub=aprobados"),
+    ("/whatsapp?tab=campanas&flujo=promocion&paso=2", None),
+    ("/whatsapp?tab=contactos&path=x&tab2=y", "/whatsapp/promociones?sub=clientes"),
+]
+
+
+@pytest.mark.parametrize(("path", "target"), _OLD)
+async def test_an_old_address_is_redirected_once_and_only_when_signed_in(
+    monkeypatch: pytest.MonkeyPatch, path: str, target: str | None
+) -> None:
+    """m-25017862: the loader leaves an old «Promociones» address alone (nothing set,
+    nothing loaded); the page's history handler — its mount and every «atrás» — sends
+    it to the new page, with `replace`, and only with a session. A visitor without one
+    is `require_login`'s: it sends them to log in, and does not bring them back here."""
+    expected = target or "/whatsapp/promociones?sub=enviadas&flujo=promocion&paso=2"
+    state = _visit(path)
+    assert WhatsAppState.enter_page.fn(state) == []  # type: ignore[attr-defined]
+    assert state.active_tab == DEFAULT_TAB
+
+    _signed_in(monkeypatch, "")
+    assert await WhatsAppState.enter_history.fn(_visit(path), {"visit": "v"}) == []  # type: ignore[attr-defined]
+
+    _signed_in(monkeypatch, "00000000-0000-4000-8000-000000000001")
+    events = await WhatsAppState.enter_history.fn(_visit(path), {"visit": "v"})  # type: ignore[attr-defined]
+    assert len(events) == 1
+    # The same redirect `rx.redirect` builds — address AND `replace` (never a new step).
+    assert str(events[0].args) == str(rx.redirect(expected, replace=True).args)
+    assert str(events[0].args) != str(rx.redirect(expected).args)
 
 
 def test_tabs_exist_behind_the_agreed_hooks() -> None:
@@ -538,7 +764,7 @@ def test_the_page_never_imports_the_provider() -> None:
 
 def test_route_is_registered_behind_login() -> None:
     source = (_HERE / "Qualify.py").read_text()
-    start = source.index("whatsapp_index,")
+    start = source.index("    whatsapp_index,\n")  # the add_page call, not the import
     block = source[start : source.index(")", source.index("on_load", start)) + 1]
     assert 'route="/whatsapp"' in block
     assert "AuthState.require_login" in block
