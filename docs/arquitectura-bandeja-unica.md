@@ -86,6 +86,12 @@ Dos partes, porque una es del canal y otra del chat:
   `saved_messages`, `window` (`hours=24`, `after_window = approved_template | none`),
   `menu_handoff`, `payments`, `suggest_reply`, `close_reopen`, `read_receipts`. El VM traduce
   esto a los `can_*` que pide la UX (`ux-chats-unificados.md` §5).
+  **Como quedó construido** (m-25017843, PR #625; `assign` llegó con m-25027372, PR #678): los
+  campos de `ChannelCapabilities` en `inbox/channels.py` son `channel`, `attachments`,
+  `max_buttons`, `button_style`, `stickers`, `saved_messages`, `window_hours`, `after_window`,
+  `menu_handoff`, `payments`, `suggest_reply`, `close_reopen` y `assign` (WhatsApp sí, Instagram
+  no). No hay `voice_note` ni `read_receipts`, y la ventana son dos campos (`window_hours`,
+  `after_window`) en vez de `window`.
 - **Dinámica, del chat** — viene en cada fila de la consulta: `window_closes_at`,
   `automation` (`menu` / `owner` / `none`), `payment_status`, `status`, `pending`.
 
@@ -109,7 +115,12 @@ porque cuesta.
   no `before` solo como hoy (`chats.py:351`), para no perder hilos con el mismo instante.
 - Las acciones sobre un hilo (`enviar`, `cerrar`, `asignar`) reciben sólo `thread_id`; el
   despachador lee `channel` de la fila **bajo RLS** y llama al servicio del canal. El canal nunca
-  viene del cliente.
+  viene del cliente. **Construido** en m-25027372 (PR #678, fusionado el 2026-11-14):
+  `inbox/dispatch.py` (`ChatDispatcher`) con enviar texto, cerrar, reabrir y asignar; ninguna
+  pantalla lo usa todavía (lo usará el cuadro de respuesta único, m-25027374). Límites: solo
+  texto; comprobar la cuenta conectada y su estado sigue siendo trabajo de quien llama; sin clave
+  de idempotencia en los envíos de texto (como antes); cerrar en WhatsApp sin la comprobación de
+  pantalla vieja que tiene Instagram.
 - Costo: dos subconsultas correlacionadas por fila (pendiente y nombre) × 50 filas. Con el volumen
   de hoy (cientos de hilos por negocio) es trivial. Si el p95 de la página pasa de 300 ms, la
   salida es desnormalizar `last_outbound_at` en `threads` (migración pequeña), no otro almacén.

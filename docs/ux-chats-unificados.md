@@ -1,6 +1,12 @@
 # Chats de WhatsApp e Instagram: una sola bandeja, ajustes aparte (m-24789459)
 
-`[PROPUESTA UX DECIDIDA por el fundador 2026-11-12 · m-24789459 · fila y lista única construidas (m-25017844, m-25017859), el resto sin implementar]`
+`[PROPUESTA UX DECIDIDA por el fundador 2026-11-12 · m-24789459 · construidos la fila, la lista única y el hilo del chat (m-25017844, m-25017859, m-25027371); cuadro de respuesta, «Ajustes de chats» y «Tus redes» sin implementar]`
+
+> **Estado al 2026-11-14 (hora de Colombia).** El hilo del chat igual en los dos canales (partes B
+> y C de la maqueta, sin el cuadro de respuesta) está fusionado (m-25027371, PR #688) y se vio en
+> producción en escritorio; el contraste de D2 quedó medido (m-25017860, «D2 medido»). Decididos
+> el 2026-11-14: los nombres del menú (nota en D5) y la entrada «Promociones» (nota en D3).
+> Detalle en `docs/epica-bandeja-unica.md` §6 (vi) y (viii).
 
 > **Cambios de texto posteriores (2026-11-13), decididos por el fundador:** «Responde en N min»
 > pasó a «Quedan {N} min para responder»; la lista suma el filtro «Sin responder a tiempo · N» para
@@ -257,6 +263,13 @@ igual.
 Descartada: dentro de «Ajustes de chats › WhatsApp» como primera tarjeta (no suma entrada, pero
 esconde algo que vende entre ajustes).
 
+**Nota (fundador, 2026-11-14): «Solo «Promociones»».** La entrada del menú lateral (y de «Más» en
+el celular) dice solo «Promociones»; la página conserva el título «Promociones por WhatsApp». La
+eligió sobre la propuesta de UX en dos renglones; el nombre completo salía cortado. Es una
+excepción anotada a D5 (la entrada y el título dicen cosas distintas). Construido en m-25017862
+(PR #693 abierto): hasta que «Ajustes de chats» (m-25017861) saque «WhatsApp» de Atiende, el menú
+lateral tiene una entrada más (17), el costo que D3 ya aceptaba.
+
 ### D4 · Qué se vuelve igual en los dos canales — **Decidido por el fundador (2026-11-12)**
 
 **Elegido: «Sugerir respuesta» llega a WhatsApp primero**, porque Bianki recibe pedidos por
@@ -285,6 +298,14 @@ decidido el 2026-11-12, m-25017173, PR #606).
 | «Plantillas» (Instagram) | **Mensajes guardados** | Evita confundirlo con el mensaje aprobado de WhatsApp |
 | «Mensaje aprobado» (WhatsApp, chat cerrado) | se queda | Ya dice por qué es distinto |
 | «Responder» (Instagram) / «Enviar» (WhatsApp) | **Enviar** en los dos | Ya es la palabra de WhatsApp; un solo verbo en la barra |
+
+**Nota (fundador, 2026-11-14): nombres del menú automático, «Sí, los de UX»** (condición 3 de
+m-24789557). El menú se llama **«Tu menú de bienvenida»** (antes «Respuesta automática»); el
+interruptor por canal, **«Usar en WhatsApp» / «Usar en Instagram»**; la franja del chat, **«Este
+cliente está usando tu menú · Responder yo»**; la píldora de envío fallido, **«Tu menú no le
+llegó: respóndele tú»**. No decidido: el aviso al cliente final (depende de la decisión (i-b) de la
+épica). Donde este documento dice «Respuesta automática» o «Está respondiendo tu menú automático»
+(§2), valen los nombres nuevos.
 
 ## 4. Qué cambié respecto de la dirección propuesta, y por qué
 
@@ -353,11 +374,8 @@ D1–D5 están decididas (§3). Lo que sigue abierto:
    para usar el `orbit_menu` fuera de WhatsApp (`docs/design-system.md` §5.9).
 4. ¿TikTok permite recibir y contestar mensajes de negocio con su API para los clientes de la
    región? Lo responde `principal-architect`; la pantalla solo deja el lugar.
-5. **Nombres del menú automático** (condición 3 de m-24789557: ningún texto dice ni sugiere que
-   Qualify responde solo). Decide el fundador; la tabla de textos que chocan está en
-   `docs/arquitectura-bandeja-unica.md` §3.3. Afecta «Respuesta automática» (§2, árbol) y la franja
-   «Está respondiendo tu menú automático» (§2); alternativas propuestas: «Tu menú de bienvenida» y
-   «Este cliente está usando tu menú · Responder yo».
+5. ~~Nombres del menú automático~~ (condición 3 de m-24789557). Decidido el 2026-11-14, «Sí, los
+   de UX»: ver la nota bajo D5. Sigue abierto el aviso al cliente final.
 6. ~~Condición de D2: medir el contraste del tinte en claro y oscuro.~~ Hecho el 2026-11-14
    (m-25017860, «D2 medido»): lo aceptado en D2 (`{canal}-a4` con texto `gray-12`) pasa.
 7. **Para el fundador — letra secundaria del chat (propuestas 5 a 9 de «D2 medido»).** «En los
@@ -370,3 +388,9 @@ D1–D5 están decididas (§3). Lo que sigue abierto:
    la franja de arriba del chat. Verías los chats un poco más sobrios y todo se leería mejor. ¿Lo
    hacemos así, o prefieres conservar ese color de fondo?» Si dice que lo conserve, la 9 se cae y
    la hora del cliente y el error van en `gray-12` en los dos temas (ver la nota bajo la tabla).
+   Al 2026-11-14 sigue sin respuesta; el hilo único (m-25027371) salió con estas propuestas por
+   defecto y cada una se revierte por separado.
+8. **Para el fundador — formato de la hora en el chat.** El hilo único salió con reloj de 24 h en
+   la cabecera y en las burbujas; la cabecera de WhatsApp decía antes «5:00 p. m.» y otras
+   pantallas siguen en 12 h. También espera su visto bueno el texto nuevo «Pasaron 24 h: solo
+   puedes enviarle un mensaje ya aprobado por WhatsApp».
