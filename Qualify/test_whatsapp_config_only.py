@@ -284,8 +284,8 @@ async def test_a_dropped_number_tidies_the_address(fake: _Fake) -> None:  # noqa
     events = await _drain(InboxListState.load.fn(state))  # type: ignore[attr-defined]
     assert state.number == ""
     text = str(events)
-    assert "replaceState" in text and FOREIGN not in text
-    assert "/responder?tab=mensajes&filtro=todos" in text  # the list as it now shows
+    assert "replaceState" in text and "searchParams.delete" in text and "numero" in text
+    assert "pushState" not in text
     # A kept number writes nothing.
     state.router = RouterData(url=ReflexURL(f"http://localhost/responder?numero={SECOND}"))
     await InboxListState.enter.fn(state)  # type: ignore[attr-defined]
@@ -335,3 +335,35 @@ def test_an_empty_whatsapp_view_offers_a_qr_code() -> None:
     assert EMPTY_QR_HREF == tab_url(TAB_QR)  # the real address of «Códigos QR»
     rendered = str(inbox_list_page.inbox_list_pane())
     assert EMPTY_QR_HREF in rendered
+
+
+def test_dropping_the_number_keeps_an_open_chat_in_the_address() -> None:
+    """Re-check of C3: an open chat's address reloaded after its number stopped being
+    valid loses only `numero` — `cuenta` and `chat` stay, so «atrás» and a reload keep
+    the chat."""
+    import shutil
+    import subprocess
+
+    from .nav_url import drop_param_script
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node is required to run the history script")
+    href = (
+        f"/responder?tab=mensajes&canal=whatsapp&numero={FOREIGN}"
+        f"&cuenta={FIRST}&chat=00000000-0000-4000-8000-0000000000c1"
+    )
+    script = f"""
+const out = [];
+const window = {{location: {{href: 'http://x{href}'}},
+  history: {{state: {{k: 1}}, replaceState(s, _, u) {{ out.push(u); }} }}}};
+{drop_param_script("numero")}
+console.log(JSON.stringify(out));
+"""
+    result = json.loads(
+        subprocess.run([node, "-e", script], check=True, capture_output=True, text=True).stdout
+    )
+    assert result == [
+        f"/responder?tab=mensajes&canal=whatsapp&cuenta={FIRST}"
+        "&chat=00000000-0000-4000-8000-0000000000c1"
+    ]

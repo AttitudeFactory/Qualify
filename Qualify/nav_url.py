@@ -189,6 +189,20 @@ def thread_param(params: Mapping[str, object], connection_id: str) -> str:
     return uuid_param(params, "chat")
 
 
+def drop_param_script(key: str) -> str:
+    """JS that removes one parameter (`key`, one of the app's own) from the current
+    address in place — no new history step — and keeps every other one, an open chat's
+    `cuenta`/`chat` included (m-25029799 review)."""
+    name = json.dumps(_slug(key))
+    return (
+        "(() => { const u = new URL(window.location.href);"
+        f" if (!u.searchParams.has({name})) return;"
+        f" u.searchParams.delete({name});"
+        " window.history.replaceState(window.history.state, '', u.pathname + u.search + u.hash);"
+        " })();"
+    )
+
+
 def flow_param(params: Mapping[str, object], flow: str, total: int) -> int:
     """The active flow's clamped step, or 0 when this form is not in the address."""
     if scalar_param(params, "flujo") != flow:

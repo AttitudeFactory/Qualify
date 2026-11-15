@@ -58,6 +58,7 @@ from .inbox_list_vm import (
     FILTER_KEYS,
     LIST_FAILED,
     MORE_FAILED,
+    NUMBER_PARAM,
     REFRESH_PAGES,
     ChipVM,
     EmptyVM,
@@ -83,7 +84,7 @@ from .inbox_list_vm import (
     show_notice,
     show_number_filter,
 )
-from .nav_url import push_url_script, replace_url_script
+from .nav_url import drop_param_script, push_url_script
 from .tenant import tenant_uuid
 from .whatsapp_chats_vm import AgentVM
 
@@ -471,7 +472,7 @@ class InboxListState(rx.State):
             need_context = not self.context_loaded
             need_numbers = not need_context and not self._numbers_fresh
             pages = max(1, self._pages) if self.loaded else 1
-        tidy = ""
+        tidy = False
         try:
             if tenant_id is None:
                 async with self:
@@ -489,9 +490,9 @@ class InboxListState(rx.State):
                     dropped = self._take_numbers(ctx, fresh)
                     filter_key, number = self.filter_key, self.number
                     channel = self._effective_channel(tally)
-                    if dropped:
-                        # C3: the address said a number this business does not show.
-                        tidy = list_href(filter_key, channel, number)
+                    # C3: the address said a number this business does not show — only
+                    # that parameter goes (an open chat's `cuenta`/`chat` stay).
+                    tidy = dropped
                 records, cursor, lens = await self._read_pages(
                     tenant_id, filter_key, channel, pages, now, number
                 )
@@ -517,7 +518,7 @@ class InboxListState(rx.State):
                 self._pages = pages
                 self.loaded = True
             if tidy:
-                return rx.call_script(replace_url_script(tidy))
+                return rx.call_script(drop_param_script(NUMBER_PARAM))
         finally:
             async with self:
                 if self._loading_for == generation:

@@ -1049,11 +1049,9 @@ class WhatsAppChatsState(rx.State):
             # The zone and the members, read together — again for another business
             # (a switch in the same session keeps this state): never A's members or
             # clock on B's chat.
-            need_context = (
-                not self._zone_name
-                or not self.agents
-                or self._context_tenant != str(tenant_id or "")
-            )
+            # Read once per business (`_context_tenant`): a business with no member
+            # at all is not read again on every 15 s refresh.
+            need_context = not self._zone_name or self._context_tenant != str(tenant_id or "")
         thread, connection = _uuid(thread_id), _uuid(connection_id)
         if tenant_id is None or thread is None or connection is None:
             async with self:

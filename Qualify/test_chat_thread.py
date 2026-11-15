@@ -462,3 +462,42 @@ async def test_another_business_in_the_same_session_reads_its_own_zone_and_membe
     await state._read_conversation(silent=False)
     assert [a.name for a in state.agents] == ["Beto (B)"]
     assert state._zone_name == "America/Caracas"
+
+
+async def test_a_business_with_no_members_is_not_read_on_every_refresh(
+    gw,  # noqa: ANN001, F811
+    monkeypatch,  # noqa: ANN001
+) -> None:
+    """Re-check of C1: the read is remembered per business, so an empty members list is
+    not re-read on every 15 s refresh."""
+    from types import SimpleNamespace
+
+    from .test_whatsapp_chats import _message, _thread
+    from .test_whatsapp_chats_payments import CONN, THREAD
+
+    reads: list[str] = []
+
+    def zone(_tenant: object) -> str:
+        reads.append("zone")
+        return "America/Bogota"
+
+    conv = SimpleNamespace(
+        summary=_thread(id=UUID(THREAD)),
+        messages=[_message()],
+        has_more=False,
+        unsent=[],
+        order=None,
+        previous_orders=(),
+        cart_ids=frozenset(),
+    )
+    monkeypatch.setattr(gw, "timezone", zone, raising=False)
+    monkeypatch.setattr(gw, "agents", lambda t: [], raising=False)
+    monkeypatch.setattr(gw, "conversation", lambda t, c, th: conv, raising=False)
+    monkeypatch.setattr(gw, "payment_status", lambda t, c, th: None, raising=False)
+    state = WhatsAppChatsState()
+    state._connection_id = CONN
+    state.open_thread_id = THREAD
+    await state._read_conversation(silent=False)
+    for _ in range(3):
+        await state._read_conversation(silent=True)  # the heartbeat
+    assert reads == ["zone"] and state.agents == []
