@@ -338,7 +338,7 @@ def test_the_manifest_parses_and_never_serves_a_post_recipe() -> None:
         "square": "1:1",
         "story": "9:16",
     }
-    assert m.layer_catalog is not None and m.layer_catalog["layout_version"] == LAYOUT_VERSION == 2
+    assert m.layer_catalog is not None and m.layer_catalog["layout_version"] == LAYOUT_VERSION == 3
     assert set(m.layer_catalog["layouts"]) == {
         "photo_only",
         "plate",

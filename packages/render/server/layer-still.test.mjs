@@ -29,7 +29,7 @@ const PHOTO = {width: 1080, height: 1350};
  */
 const toSpec = (layer, slide) => {
   const {subject_box, logo_in_photo, ...rest} = layer;
-  const spec = {layout_version: 2, ...rest};
+  const spec = {layout_version: 3, ...rest};
   if (subject_box || logo_in_photo) {
     spec.photo = {subject_box: subject_box ?? [0.45, 0.45, 0.55, 0.55], logo_in_photo: !!logo_in_photo, base_has_invented_text: false};
   }
@@ -62,24 +62,24 @@ const overlap = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h 
 // ------------------------------------------------------------------ boundary
 
 test('a valid plate layer passes the boundary in every format', () => {
-  const layer = {layout_id: 'plate', layout_version: 2, title: 'Tu pan, recién horneado', subtitle: 'Masa madre', anchor: 'top_left', container_color: 'surface', accent_word: 1};
+  const layer = {layout_id: 'plate', layout_version: 3, title: 'Tu pan, recién horneado', subtitle: 'Masa madre', anchor: 'top_left', container_color: 'surface', accent_word: 1};
   assert.deepEqual(layerProblems(catalog, layer, {formats: FORMATS, hasPhoto: true}), []);
 });
 
 test('unknown layout ids, unknown fields and over-limit slots are refused loudly', () => {
-  const p1 = layerProblems(catalog, {layout_id: 'poster', layout_version: 2}, {formats: ['4:5'], hasPhoto: true});
+  const p1 = layerProblems(catalog, {layout_id: 'poster', layout_version: 3}, {formats: ['4:5'], hasPhoto: true});
   assert.match(p1.join(), /unknown layout 'poster'/);
-  const p2 = layerProblems(catalog, {layout_id: 'plate', layout_version: 2, title: 'x'.repeat(29), headline: 'y'}, {formats: ['4:5'], hasPhoto: true});
+  const p2 = layerProblems(catalog, {layout_id: 'plate', layout_version: 3, title: 'x'.repeat(29), headline: 'y'}, {formats: ['4:5'], hasPhoto: true});
   assert.match(p2.join(), /29 chars exceeds 28/);
   assert.match(p2.join(), /layer\.headline: unknown field/);
   // 1:1 is stricter than 4:5 for the same layout
-  const p3 = layerProblems(catalog, {layout_id: 'plate', layout_version: 2, title: 'x'.repeat(25)}, {formats: ['4:5', '1:1'], hasPhoto: true});
+  const p3 = layerProblems(catalog, {layout_id: 'plate', layout_version: 3, title: 'x'.repeat(25)}, {formats: ['4:5', '1:1'], hasPhoto: true});
   assert.equal(p3.length, 1);
   assert.match(p3[0], /in 1:1/);
 });
 
 test('parameters a layout does not take are refused', () => {
-  const p = layerProblems(catalog, {layout_id: 'scrim', layout_version: 2, title: 'Hola', container_color: 'accent', accent_word: 0, anchor: 'top_left', call_phrase: 'Ven hoy'}, {formats: ['1:1'], hasPhoto: true});
+  const p = layerProblems(catalog, {layout_id: 'scrim', layout_version: 3, title: 'Hola', container_color: 'accent', accent_word: 0, anchor: 'top_left', call_phrase: 'Ven hoy'}, {formats: ['1:1'], hasPhoto: true});
   const all = p.join(' | ');
   assert.match(all, /container_color: 'scrim' takes none/);
   assert.match(all, /accent_word: 'scrim' takes none/);
@@ -88,15 +88,15 @@ test('parameters a layout does not take are refused', () => {
 });
 
 test('brand_fill takes contact, location or hours (catalog §1.6 = §2.6 since PR #670)', () => {
-  const base = {layout_id: 'brand_fill', layout_version: 2, title: 'Abrimos el festivo'};
+  const base = {layout_id: 'brand_fill', layout_version: 3, title: 'Abrimos el festivo'};
   assert.deepEqual(layerProblems(catalog, {...base, info_blocks: [{kind: 'hours', value: 'De 8 a 20'}]}, {formats: ['4:5'], hasPhoto: false}), []);
   assert.match(layerProblems(catalog, {...base, info_blocks: [{kind: 'payment', value: 'Efectivo'}]}, {formats: ['4:5'], hasPhoto: false}).join(), /'payment' not allowed/);
-  assert.match(layerProblems(catalog, {layout_id: 'brand_fill', layout_version: 2}, {formats: ['4:5'], hasPhoto: false}).join(), /title: required/);
+  assert.match(layerProblems(catalog, {layout_id: 'brand_fill', layout_version: 3}, {formats: ['4:5'], hasPhoto: false}).join(), /title: required/);
 });
 
 test('info blocks need their saved value and respect the count with a photo strip', () => {
   const blocks = ['location', 'hours', 'payment', 'contact'].map((kind) => ({kind, value: 'Dato guardado'}));
-  const layer = {layout_id: 'info_card', layout_version: 2, title: 'Te esperamos', info_blocks: blocks};
+  const layer = {layout_id: 'info_card', layout_version: 3, title: 'Te esperamos', info_blocks: blocks};
   assert.deepEqual(layerProblems(catalog, layer, {formats: ['4:5'], hasPhoto: false}), []);
   assert.match(layerProblems(catalog, {...layer, photo_strip: true}, {formats: ['4:5'], hasPhoto: true}).join(), /takes 1–3 with a photo strip/);
   const missing = {...layer, info_blocks: [{kind: 'location', value: ''}]};
@@ -104,20 +104,20 @@ test('info blocks need their saved value and respect the count with a photo stri
 });
 
 test('highlight_circle is 9:16 only; a carousel has no 9:16 slide', () => {
-  const hc = {layout_id: 'highlight_circle', layout_version: 2, highlight_content: {kind: 'word', word: 'Menú'}};
+  const hc = {layout_id: 'highlight_circle', layout_version: 3, highlight_content: {kind: 'word', word: 'Menú'}};
   assert.deepEqual(layerProblems(catalog, hc, {formats: ['9:16'], hasPhoto: false}), []);
   assert.match(layerProblems(catalog, hc, {formats: ['4:5'], hasPhoto: false}).join(), /does not exist in 4:5/);
   assert.match(layerProblems(catalog, {...hc, highlight_content: {kind: 'word', word: 'Promociones'}}, {formats: ['9:16'], hasPhoto: false}).join(), /exceeds 9/);
   const carousel = {index: 0, count: 5, role: 'cover'};
-  assert.match(layerProblems(catalog, {layout_id: 'band', layout_version: 2, title: 'Hola', carousel}, {formats: ['9:16'], hasPhoto: true}).join(), /no 9:16 slide/);
-  assert.match(layerProblems(catalog, {layout_id: 'band', layout_version: 2, title: 'Hola', carousel: {index: 1, count: 5, role: 'cover'}}, {formats: ['4:5'], hasPhoto: true}).join(), /slide 2 of 5 is the body/);
+  assert.match(layerProblems(catalog, {layout_id: 'band', layout_version: 3, title: 'Hola', carousel}, {formats: ['9:16'], hasPhoto: true}).join(), /no 9:16 slide/);
+  assert.match(layerProblems(catalog, {layout_id: 'band', layout_version: 3, title: 'Hola', carousel: {index: 1, count: 5, role: 'cover'}}, {formats: ['4:5'], hasPhoto: true}).join(), /slide 2 of 5 is the body/);
 });
 
 test('the m-25017283 shape: photo reading, price_ref object, fixed labels, format per port', () => {
   const spec = {
     spec_version: 1,
     layout_id: 'plate',
-    layout_version: 2,
+    layout_version: 3,
     format: '4:5',
     photo: {subject_box: [0.2, 0.5, 0.8, 0.9], logo_in_photo: false, base_has_invented_text: false},
     title: 'Tu pan de hoy',
@@ -128,26 +128,54 @@ test('the m-25017283 shape: photo reading, price_ref object, fixed labels, forma
   assert.match(layerProblems(catalog, spec, {formats: ['1:1'], hasPhoto: true}).join(), /the spec is for 4:5, the port renders 1:1/);
   assert.match(layerProblems(catalog, {...spec, price_ref: 'p-1'}, {formats: ['4:5'], hasPhoto: true}).join(), /expected \{product_id\}/);
   assert.match(layerProblems(catalog, {...spec, photo: {subject_box: [0.2, 0.5, 0.8, 0.9]}}, {formats: ['4:5'], hasPhoto: true}).join(), /logo_in_photo: expected a boolean/);
-  const info = {layout_id: 'info_card', layout_version: 2, title: 'Te esperamos', info_blocks: [{kind: 'location', label: 'Ubicación', value: 'Calle 10'}]};
+  const info = {layout_id: 'info_card', layout_version: 3, title: 'Te esperamos', info_blocks: [{kind: 'location', label: 'Ubicación', value: 'Calle 10'}]};
   assert.match(layerProblems(catalog, info, {formats: ['4:5'], hasPhoto: false}).join(), /the label of a location block is «Dónde estamos»/);
   assert.match(layerProblems(catalog, {...info, photo_strip: true}, {formats: ['4:5'], hasPhoto: false}).join(), /photo_strip: needs the photo/);
 });
 
 test('the server validator answers per requested port (422 before a job exists)', () => {
-  const props = {brand: {}, photos: ['asset://a'], layer: {layout_id: 'plate', layout_version: 2, title: 'x'.repeat(26)}};
+  const props = {brand: {}, photos: ['asset://a'], layer: {layout_id: 'plate', layout_version: 3, title: 'x'.repeat(26)}};
   assert.deepEqual(validateProps(manifest, props, ['feed']), []);
   assert.match(validateProps(manifest, props, ['square']).join(), /26 chars exceeds 24/);
   assert.match(validateProps(manifest, {...props, layer: undefined}, ['feed']).join(), /expected an object/);
 });
 
+test('2026-11-15: a script plate in 1:1 that does not fit falls to band and keeps its price (band 1:1 up to 43 %)', () => {
+  // Pacifico as the browser measured it in layer-preview still 36: at its 84 px minimum the
+  // title's ink needs a line height of ~1.476 and 35 px under its last line
+  const ink = (text, {size}) => ({ascent: 0.83 * size, descent: 0.6 * size, fontAscent: 0.9 * size, fontDescent: 0.3 * size});
+  const layer = {
+    layout_id: 'plate',
+    title: 'Tu pan de masa madre hoy',
+    subtitle: 'Masa crujiente, relleno jugoso y buena salsa',
+    call_phrase: 'Pídelo hoy por WhatsApp',
+    anchor: 'top_left',
+    container_color: 'surface',
+    price_ref: {product_id: 'p-1'},
+    subject_box: [0.1, 0.15, 0.9, 0.85],
+  };
+  const r = run(layer, {format: '1:1', headingFamily: 'Pacifico', priceText: '$ 9.500', ink});
+  assert.equal(r.report.layout_requested, 'plate');
+  assert.equal(r.report.layout_rendered, 'band');
+  assert.ok(r.report.fallbacks.some((f) => /^plate\/[a-z_]+: /.test(f)), r.report.fallbacks.join(' | '));
+  const slots = r.texts.map((t) => t.slot);
+  assert.ok(slots.includes('title') && slots.includes('price'), slots.join());
+  assert.ok(!r.report.dropped_slots.includes('price'));
+  assert.deepEqual(r.report.overflow, []);
+  assert.equal(r.report.sizes.title, 84);
+  const band = r.containers[0].rect;
+  assert.ok(band.h <= Math.round(0.43 * 1080) && band.h > Math.round(0.42 * 1080), `band ${band.h}`);
+  for (const rect of lineRects(r)) assert.ok(within(rect, catalog.formats['1:1'].safe));
+});
+
 test('2026-11-15 limits: brand_fill 4:5 title 45, info_card 1:1 title 18, plate script title 24', () => {
-  const fill = {layout_id: 'brand_fill', layout_version: 2};
+  const fill = {layout_id: 'brand_fill', layout_version: 3};
   assert.deepEqual(layerProblems(catalog, {...fill, title: 'x'.repeat(45)}, {formats: ['4:5'], hasPhoto: false}), []);
   assert.match(layerProblems(catalog, {...fill, title: 'x'.repeat(46)}, {formats: ['4:5'], hasPhoto: false}).join(), /46 chars exceeds 45/);
-  const card = {layout_id: 'info_card', layout_version: 2, info_blocks: [{kind: 'hours', label: 'Horario', value: 'De 8 a 20'}]};
+  const card = {layout_id: 'info_card', layout_version: 3, info_blocks: [{kind: 'hours', label: 'Horario', value: 'De 8 a 20'}]};
   assert.deepEqual(layerProblems(catalog, {...card, title: 'x'.repeat(18)}, {formats: ['1:1'], hasPhoto: false}), []);
   assert.match(layerProblems(catalog, {...card, title: 'x'.repeat(19)}, {formats: ['1:1'], hasPhoto: false}).join(), /19 chars exceeds 18/);
-  const plate = {layout_id: 'plate', layout_version: 2, title: 'x'.repeat(25)};
+  const plate = {layout_id: 'plate', layout_version: 3, title: 'x'.repeat(25)};
   // 25 characters: fine with Poppins (limit 28), refused with a script title face (24)
   assert.deepEqual(layerProblems(catalog, plate, {formats: ['4:5'], hasPhoto: true, headingFamily: 'Poppins'}), []);
   assert.match(
@@ -161,7 +189,7 @@ test('the server checks a plate title against the brand font of the props', () =
   const props = {
     brand: {fonts: {heading: 'Dancing Script', body: 'Inter'}},
     photos: ['asset://a'],
-    layer: {layout_id: 'plate', layout_version: 2, title: 'x'.repeat(26)},
+    layer: {layout_id: 'plate', layout_version: 3, title: 'x'.repeat(26)},
   };
   assert.match(validateProps(manifest, props, ['feed']).join(), /with a script title font/);
 });
