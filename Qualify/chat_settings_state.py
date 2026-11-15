@@ -79,7 +79,9 @@ class ChatSettingsState(rx.State):
     @rx.event(background=True)
     async def load(self) -> AsyncIterator[rx.event.EventSpec]:
         """Read the two lists. Every outcome clears `loading`; only the latest of
-        overlapping loads writes (`_visit`)."""
+        overlapping loads of the SAME business writes (`_visit` and the session's tenant
+        at write time — `reset()` on a business switch or logout sets `_visit` back to 0,
+        so the counter alone could match another business's load)."""
         async with self:
             self._visit += 1
             visit = self._visit
@@ -94,7 +96,7 @@ class ChatSettingsState(rx.State):
                 raise _NoSession
             numbers, zone_name, pairs = await self._read(tenant_id)
             async with self:
-                if visit != self._visit:
+                if not await self._current(visit, tenant_id):
                     return
                 self.has_whatsapp = bool(numbers)
                 self._accounts = pairs
@@ -108,17 +110,22 @@ class ChatSettingsState(rx.State):
         except Exception as exc:  # noqa: BLE001 — any failure shows the retry, never a stuck skeleton
             logger.error("chat settings load failed: %s", type(exc).__name__)
             async with self:
-                if visit == self._visit:
+                if await self._current(visit, tenant_id):
                     self.load_error = LOAD_FAILED
         finally:
             async with self:
-                if visit == self._visit:
+                if await self._current(visit, tenant_id):
                     self.loading = False
                     self.loaded = True
         if target:
             from .ice_breakers_state import IceBreakersState
 
             yield IceBreakersState.open_panel(target)
+
+    async def _current(self, visit: int, tenant_id: UUID | None) -> bool:
+        """Whether a load may still write: it is the latest one and the session is
+        still the business it read for. Under `async with self`."""
+        return visit == self._visit and await self._tenant() == tenant_id
 
     async def _read(self, tenant_id: UUID) -> tuple[list, str, list[tuple[str, str]]]:
         """(numbers, time zone, Instagram (id, «@cuenta»)), off the event loop."""

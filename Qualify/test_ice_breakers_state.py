@@ -394,3 +394,49 @@ async def test_a_load_overtaken_by_another_account_frees_loading_and_reloads(
     events = await _drain(IceBreakersState.load.fn(state))
     assert state.loading is False
     assert len(events) == 1  # the load again, for the account now open
+
+
+async def test_a_read_finishing_after_another_account_opens_never_fills_its_drawer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """m-25017861 re-check: A's read finishes AFTER `open_panel(B)`. The check and the
+    apply share one lock, so A's questions never land in B's drawer (where «Guardar» and
+    «Publicar» would send them to B); B's own load then shows B's."""
+    import asyncio
+
+    world = _world()
+    other = UUID("c0000000-0000-4000-8000-0000000000c2")
+    world.repo._connections[other] = TENANT  # noqa: SLF001 — a second account of the tenant
+
+    async def account(self: IceBreakersState, connection_id: str) -> tuple[str, str] | None:
+        labels = {str(CONN): "@bianki", str(other): "@polette"}
+        return (labels[connection_id], "America/Bogota") if connection_id in labels else None
+
+    monkeypatch.setattr(IceBreakersState, "_account_context", account)
+    provider.save_draft(TENANT, CONN, [{"question": "¿Pregunta solo de A?", "payload": ""}], USER)
+
+    state = IceBreakersState()
+    await _drain(IceBreakersState.open_panel.fn(state, str(CONN)))
+    real_to_thread = asyncio.to_thread
+
+    async def to_thread(func: Any, *args: Any, **kwargs: Any) -> Any:
+        result = await real_to_thread(func, *args, **kwargs)
+        if func is provider.get_config and args[1] == CONN:
+            # the owner opens @polette while @bianki's read is in flight; its own load
+            # bails out because @bianki's still holds `loading`
+            await _drain(IceBreakersState.open_panel.fn(state, str(other)))
+            assert await _drain(IceBreakersState.load.fn(state)) == []
+        return result
+
+    monkeypatch.setattr(asyncio, "to_thread", to_thread)
+    events = await _drain(IceBreakersState.load.fn(state))
+    monkeypatch.setattr(asyncio, "to_thread", real_to_thread)
+
+    assert state.connection_id == str(other)
+    assert state.panel_title == "Preguntas iniciales de @polette"
+    assert "¿Pregunta solo de A?" not in [r.question for r in state.rows]
+    assert not state.loaded and not state.loading
+    assert len(events) == 1  # the load again, for @polette
+    await _drain(IceBreakersState.load.fn(state))
+    assert state.loaded
+    assert [r.question for r in state.rows] == [i.question for i in DEFAULT_ITEMS]

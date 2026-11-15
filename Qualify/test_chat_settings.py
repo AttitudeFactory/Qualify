@@ -291,3 +291,29 @@ async def test_without_a_session_the_hub_says_so(monkeypatch: pytest.MonkeyPatch
     state = _hub("/chats/ajustes")
     assert await _drain(ChatSettingsState.load.fn(state)) == []
     assert state.loading is False and "sesión" in state.load_error
+
+
+async def test_a_read_finishing_after_a_business_switch_writes_nothing(
+    monkeypatch: pytest.MonkeyPatch, drawer: SimpleNamespace
+) -> None:
+    """m-25017861 re-check: `reset()` on a switch sets `_visit` back to 0, so business
+    B's first load has the same number as A's in flight; the tenant is compared too."""
+    session = {"tenant": UUID(_A)}
+
+    async def tenant(self: ChatSettingsState) -> UUID:
+        return session["tenant"]
+
+    async def read(self: ChatSettingsState, tenant_id: UUID) -> Any:
+        # the owner switches to business B while A's read is in flight: `reset()`, then
+        # B's own load takes visit 1 again
+        session["tenant"] = UUID(_B)
+        self._visit = 1
+        self.loading = True
+        return _TWO
+
+    monkeypatch.setattr(ChatSettingsState, "_tenant", tenant)
+    monkeypatch.setattr(ChatSettingsState, "_read", read)
+    state = _hub(f"/chats/ajustes/instagram?cuenta={_A}")
+    assert await _drain(ChatSettingsState.load.fn(state)) == []  # no drawer of A either
+    assert state.instagram == [] and state.has_whatsapp is False
+    assert state.loading is True  # B's load owns the skeleton, not A's

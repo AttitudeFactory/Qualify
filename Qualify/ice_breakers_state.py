@@ -291,25 +291,24 @@ class IceBreakersState(rx.State):
                 self.loading = False
                 self.load_error = _LOAD_FAILED
             return
+        # The check and the apply hold the SAME lock: a config is only ever written into
+        # the drawer of the account it was read for (m-25017861 re-check).
         async with self:
-            if self.connection_id != str(connection):
+            stale = self.connection_id != str(connection)
+            if stale:
                 # Another account was opened meanwhile: its own load bailed out while
                 # this one held `loading`, so free it and read that account now.
                 self.loading = False
-                stale = True
             else:
-                stale = False
+                self._apply(config)
+                self.available = bool(availability.enabled)
+                self._unavailable_reason = availability.reason if not availability.enabled else ""
+                if not availability.enabled:
+                    logger.info("ice breakers publishing off: %s", availability.reason)
+                self.loading = False
+                self.loaded = True
         if stale:
             yield IceBreakersState.load
-            return
-        async with self:
-            self._apply(config)
-            self.available = bool(availability.enabled)
-            self._unavailable_reason = availability.reason if not availability.enabled else ""
-            if not availability.enabled:
-                logger.info("ice breakers publishing off: %s", availability.reason)
-            self.loading = False
-            self.loaded = True
 
     # ==================================================================================
     # Editing (local)
