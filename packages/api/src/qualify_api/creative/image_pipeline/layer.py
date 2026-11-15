@@ -51,7 +51,7 @@ import os
 import re
 import unicodedata
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
@@ -89,7 +89,9 @@ logger = logging.getLogger(__name__)
 LAYER_SWITCH_ENV = "QUALIFY_IMAGE_LAYER"
 LAYER_MODEL = ModelConfig("claude-sonnet-5-5", effort="low")
 #: Prompt provenance (`piece_layers.prompt_version`, the ledger's prompt version).
-LAYER_PROMPT_VERSION = "capa-v3"  # v1: CAPA-001; v2: CAPA-002; v3: per-piece slot table
+#: v1: CAPA-001; v2: CAPA-002; v3: per-piece slot table (CAPA-003); v4: review wording
+#: (no «nuevo horario» example, «escribe corto», blocks per photo) — not measured yet
+LAYER_PROMPT_VERSION = "capa-v4"
 #: The pipeline that writes `piece_layers` rows (`piece_layers.pipeline_version`).
 LAYER_PIPELINE_VERSION = "image-pipeline-layer-v1"
 LAYER_TOOL = "escribir_capa"
@@ -200,7 +202,7 @@ class LayerRequest:
     tenant_id: UUID
     brand_id: UUID
     format: str  # "4:5" | "1:1" | "9:16"
-    piece_type: str  # PRODUCT_PROMOTION | FREE_IDEA | CAROUSEL
+    piece_type: str  # PRODUCT_PROMOTION | FREE_IDEA | BUSINESS_INFO | CAROUSEL
     slides: tuple[SlideInput, ...]
     brand_name: str = ""
     topic: str = ""
@@ -352,9 +354,9 @@ opción segura.
 - brand_fill (fondo de color, sin foto): un aviso o una frase sin producto que mostrar; \
 el cierre de un carrusel.
 - info_card (datos del negocio): la pieza es para mostrar datos guardados (dónde, horario, \
-formas de pago, lo más pedido, pedidos). Si la publicación trata de esos datos («dónde \
-estamos», «nuevo horario», «cómo pagar», «cómo pedir») y el negocio los guardó, elige \
-info_card con esos bloques, aunque la foto permita otro diseño.
+formas de pago, lo más pedido, pedidos). Si la publicación trata de esos datos (dónde \
+estamos, el horario, cómo pagar, cómo pedir) y el negocio los guardó, elige info_card con \
+esos bloques, aunque la foto permita otro diseño.
 - photo_only (solo la foto): solo en una diapositiva de desarrollo de carrusel donde la \
 foto cuenta todo.
 - highlight_circle: solo portadas e íconos de historias destacadas.
@@ -381,8 +383,18 @@ hoy»), no la etiqueta de un botón. Vacío si no aporta.
 - No repitas el nombre del negocio: el logo ya va en la pieza.
 - La tabla de diseños de abajo dice, para esta pieza, qué textos lleva cada diseño, su \
 largo ideal y su máximo, si lleva bloques de datos y si lleva precio. Lo que la tabla no \
-da, va vacío. Escribe al largo ideal: el máximo es un tope, no una meta; en el teléfono \
-se lee mejor corto."""
+da, va vacío. Escribe corto. El largo ideal es un tope cómodo y el máximo es el límite; \
+si lo dices en menos palabras, mejor."""
+
+
+def effective_request(request: LayerRequest) -> LayerRequest:
+    """A «Información de tu negocio» piece with no saved data could never be valid
+    (`info_card` needs at least one block, and none could be offered): it is written as
+    «Otra idea» instead, and logged."""
+    if request.piece_type == BUSINESS_INFO and not request.facts.available():
+        logger.info("business_info without saved data: written as free_idea")
+        return replace(request, piece_type=FREE_IDEA)
+    return request
 
 
 def _allowed_layouts(request: LayerRequest) -> list[str]:
@@ -397,6 +409,19 @@ def _allowed_layouts(request: LayerRequest) -> list[str]:
 def _ideal(limit: int) -> int:
     """The length to write to: two thirds of the slot's maximum."""
     return max(8, (limit * 2) // 3)
+
+
+def _blocks_max(request: LayerRequest, layout_id: str, bounds: dict[str, int]) -> str:
+    """The most data blocks that apply: an `info_card` drawn over a photo keeps a photo
+    strip and takes fewer (`max_with_photo`, the schema's rule); mixed slides show both."""
+    if layout_id != "info_card":
+        return str(bounds["max"])
+    photos = {slide.photo is not None for slide in request.slides}
+    if photos == {True}:
+        return str(bounds["max_with_photo"])
+    if photos == {False}:
+        return str(bounds["max"])
+    return f"{bounds['max_with_photo']} con foto, {bounds['max']} sin foto"
 
 
 def _limits_text(request: LayerRequest) -> str:
@@ -420,7 +445,10 @@ def _limits_text(request: LayerRequest) -> str:
         offered = [k for k in layout.get("info_kinds") or [] if k in kinds]
         if layout.get("info_blocks") and offered:
             bounds = layout["info_blocks"][fmt]
-            parts.append(f"info_blocks {bounds['min']}-{bounds['max']} ({', '.join(offered)})")
+            parts.append(
+                f"info_blocks {bounds['min']}-{_blocks_max(request, layout_id, bounds)} "
+                f"({', '.join(offered)})"
+            )
         else:
             parts.append("info_blocks vacío")
         parts.append("precio sí" if layout["price"] and priced else "price_product_id vacío")
@@ -737,6 +765,7 @@ def write_layers(
 ) -> LayerResult:
     """One call for the piece's images → a `LayerSpec` per position (see the module
     docstring). Raises `LayerError` when there is no answer at all."""
+    request = effective_request(request)
     for slide in request.slides:
         if slide.photo is not None and len(slide.photo) > MAX_IMAGE_BYTES:
             raise LayerError(f"the photo of position {slide.position} is over 5 MB")

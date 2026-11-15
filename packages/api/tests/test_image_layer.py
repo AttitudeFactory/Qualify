@@ -360,6 +360,24 @@ def test_band_in_1x1_says_subtitle_or_call_phrase() -> None:
     assert "title ideal 20, máx. 30" in text  # band 1:1 title: two thirds of 30
 
 
+def test_info_card_shows_the_block_limit_that_applies_to_the_slide() -> None:
+    """Over a photo an info_card keeps a photo strip: 4:5 takes 3 blocks, not 4 (schema)."""
+    _, with_photo = _tool_and_text(_request(piece_type=layer.BUSINESS_INFO))
+    assert "- info_card:" in with_photo and "info_blocks 1-3 (" in with_photo
+    no_photo = _request(piece_type=layer.BUSINESS_INFO, slides=(SlideInput(0, None),))
+    _, text = _tool_and_text(no_photo)
+    assert "info_blocks 1-4 (" in text
+
+
+def test_business_info_without_saved_data_is_written_as_a_free_idea() -> None:
+    request = _request(piece_type=layer.BUSINESS_INFO, facts=BusinessFacts())
+    assert layer.effective_request(request).piece_type == layer.FREE_IDEA
+    _, text = _tool_and_text(request)
+    assert "«Información de tu negocio»" not in text and "- plate:" in text
+    kept = _request(piece_type=layer.BUSINESS_INFO)
+    assert layer.effective_request(kept) is kept
+
+
 def test_business_info_takes_info_card_only() -> None:
     request = _request(piece_type=layer.BUSINESS_INFO)
     _, text = _tool_and_text(request)

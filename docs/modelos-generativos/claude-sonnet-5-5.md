@@ -127,7 +127,7 @@ Detalle: [`pruebas.md` § MEJORAR-TEXTO-002](pruebas.md#mejorar-texto-002).
 | Campo | Valor |
 |---|---|
 | Código | `qualify_api.creative.image_pipeline.layer.write_layers`, función de consumo `capa-de-texto` |
-| Versión de prompt | `capa-v3` (tabla por pieza con solo sus diseños, largo ideal y máximo de cada texto; sin bloques de datos donde ningún diseño los lleva; `price_product_id` cerrado a los productos con precio; `info_card` para «Información de tu negocio»): medido en CAPA-003. `capa-v2` en CAPA-002, `capa-v1` en CAPA-001 |
+| Versión de prompt | `capa-v4` en el código (revisión de redacción de `capa-v3`: sin el ejemplo «nuevo horario», «escribe corto», máximo de bloques de `info_card` según la foto): **sin medir**. `capa-v3` (tabla por pieza con solo sus diseños, largo ideal y máximo de cada texto; sin bloques de datos donde ningún diseño los lleva; `price_product_id` cerrado a los productos con precio; `info_card` para «Información de tu negocio»): medido en CAPA-003. `capa-v2` en CAPA-002, `capa-v1` en CAPA-001 |
 | Configuración | `claude-sonnet-5-5`, esfuerzo `low`, herramienta estricta `escribir_capa` (una entrada por imagen), `max_tokens` 4.000, tope de US$0,25 por pieza para todas sus llamadas (regeneración incluida); la foto va en base64 y se enmascara en Langfuse; el tope previo de cada turno cuenta las fotos con la regla de visión de Anthropic (≈ ancho × alto / 750 tras reducir a ≤ 1.568 px y ≈ 1,15 MP: ~1.530 tokens por base de Seedream) |
 | Reintentos | en la cola, cada llamada es un paso guardado: un reintento lee la respuesta y no vuelve a pagarla |
 | Interruptor | `QUALIFY_IMAGE_LAYER=on`; apagado por defecto (nada consume la capa hasta m-25017285) |
