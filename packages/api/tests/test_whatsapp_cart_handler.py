@@ -390,7 +390,9 @@ async def test_a_lookup_failure_after_the_insert_is_repaired_by_the_replay() -> 
 
     with pytest.raises(ConnectionError):
         await world.handle(_event(value))
-    assert (CONN, WAMID) in world.repo.messages  # the row landed, the state did not
+    # m-25017846: the message and the state are one transaction — nothing landed, so
+    # the retry is a first delivery (before, the row landed and the replay repaired).
+    assert (CONN, WAMID) not in world.repo.messages
     assert world.repo.states == {}
 
     outcome = await world.handle(_event(value))  # Meta retries
