@@ -240,6 +240,7 @@ def run_layer_stage(
     regenerate: Callable[[int], BaseScene | None],
     gallery: bool,
     slide_count: int | None = None,
+    title_font: str = "",
     env: Mapping[str, str] | None = None,
 ) -> LayerOutcome:
     """The layers of `scenes` (position → base), regenerating a base once when Claude saw
@@ -265,6 +266,7 @@ def run_layer_stage(
             cta=copy.cta,
             facts=facts,
             products=products,
+            title_font=title_font,
         )
 
         def first() -> dict[str, Any]:

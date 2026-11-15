@@ -11,6 +11,7 @@ import pytest
 from qualify_creative.render.adapter import RemotionTemplateAdapter
 from qualify_creative.render.client import RemotionRenderClient, RenderServiceError
 from qualify_creative.render.layer_compose import (
+    LAYOUT_VERSION,
     LayerComposeRequest,
     LayerRefused,
     build_layer_props,
@@ -337,7 +338,7 @@ def test_the_manifest_parses_and_never_serves_a_post_recipe() -> None:
         "square": "1:1",
         "story": "9:16",
     }
-    assert m.layer_catalog is not None and m.layer_catalog["layout_version"] == 1
+    assert m.layer_catalog is not None and m.layer_catalog["layout_version"] == LAYOUT_VERSION == 2
     assert set(m.layer_catalog["layouts"]) == {
         "photo_only",
         "plate",

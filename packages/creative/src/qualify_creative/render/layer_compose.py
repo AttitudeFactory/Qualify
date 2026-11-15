@@ -43,7 +43,7 @@ from qualify_creative.render.client import (
 TEMPLATE_ID = "layer_still"
 TEMPLATE_VERSION = 1
 #: The catalog version this template draws (manifest ``layer_catalog.layout_version``).
-LAYOUT_VERSION = 1
+LAYOUT_VERSION = 2
 
 
 @cache

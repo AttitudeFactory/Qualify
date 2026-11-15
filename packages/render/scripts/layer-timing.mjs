@@ -31,7 +31,7 @@ const BRANDS = {
 const layer = {
   spec_version: 1,
   layout_id: 'band',
-  layout_version: 1,
+  layout_version: 2,
   format: '4:5',
   photo: {subject_box: [0.25, 0.4, 0.75, 0.8], logo_in_photo: false, base_has_invented_text: false},
   anchor: 'bottom',

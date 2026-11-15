@@ -162,6 +162,7 @@ def ad_image(
         regenerate=lambda index: flyer_scenes(producer, **scene_args, only=index)[0],
         gallery=media.carousel,
         slide_count=len(based) + 1 if media.carousel else None,
+        title_font=kit.font_heading,
     )
     based = [outcome.scenes[index] for index in range(len(based))]
     layers = outcome.layers
@@ -604,6 +605,7 @@ def _gallery_layers(
         regenerate=lambda position: carousel_slide_scene(producer, **generated[position][1]),
         gallery=True,
         slide_count=total,
+        title_font=kit.font_heading,
     )
     for position, (_based, args, index) in generated.items():
         write = out[index]

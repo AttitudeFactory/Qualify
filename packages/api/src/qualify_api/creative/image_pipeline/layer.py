@@ -65,6 +65,8 @@ from qualify_creative.layer_spec import (
     LayerSpec,
     LayoutId,
     catalog,
+    is_script_family,
+    title_limit,
 )
 from qualify_shared import observability
 
@@ -210,6 +212,9 @@ class LayerRequest:
     hook: str = ""
     cta: str = ""
     tone: str = ""
+    #: the brand kit's title family (`BrandKit.font_heading`): a script face lowers the
+    #: `plate` title limit (catalog `script_title`, 2026-11-15)
+    title_font: str = ""
     facts: BusinessFacts = field(default_factory=BusinessFacts)
     products: tuple[CatalogProduct, ...] = ()
     #: A gallery's number of slides when only some are sent (its generated ones): the
@@ -438,7 +443,11 @@ def _limits_text(request: LayerRequest) -> str:
             continue
         parts = []
         for slot in ("title", "subtitle", "call_phrase"):
-            limit = (layout["slots"].get(slot) or {}).get(fmt)
+            limit = (
+                title_limit(layout_id, fmt, request.title_font)
+                if slot == "title"
+                else (layout["slots"].get(slot) or {}).get(fmt)
+            )
             parts.append(
                 f"{slot} ideal {_ideal(limit[0])}, máx. {limit[0]}" if limit else f"{slot} vacío"
             )
@@ -693,6 +702,16 @@ def spec_from_answer(raw: dict[str, Any], request: LayerRequest, slide: SlideInp
         text = _text(raw.get(slot))
         if text:
             problems.extend(f"{slot}: {p}" for p in unsupported_claims(text, request))
+    title = _text(raw.get("title"))
+    if title and is_script_family(request.title_font) and layout in catalog()["layouts"]:
+        # 2026-11-15: a script title face fits fewer characters (the render refuses more);
+        # the spec cannot see the brand's font, so the stage checks it here
+        limit = title_limit(layout, request.format, request.title_font)
+        if limit and len(title) > limit[0]:
+            problems.append(
+                f"title: {len(title)} characters, at most {limit[0]} with the brand's "
+                f"script title font"
+            )
     fields: dict[str, Any] = {
         "spec_version": SPEC_VERSION,
         "layout_id": layout,
