@@ -7,9 +7,10 @@ separators and status marks. This module words what both share; `chat_thread.py`
 it. Each channel's VM still decides what only it knows (the 24 h window's closing time,
 its own state words) and hands the result here.
 
-Words fixed elsewhere and NOT changed here: «Cerrar» / «Reabrir» and the «Cerrado» tag
-(m-25026457), «Quedan {N} min para responder» (`chat_row_vm`, founder 2026-11-13),
-«Puedes escribirle hasta las {hora}» (WhatsApp's header since m-24842994).
+Words fixed elsewhere and kept: «Cerrar» / «Reabrir» and the «Cerrado» tag
+(m-25026457), «Quedan {N} min para responder» (`chat_row_vm`, founder 2026-11-13).
+«Puedes escribirle hasta las {hora}» (WhatsApp's header since m-24842994) now says the
+hour in the bubbles' 24 h clock («17:47») instead of «5:47 p. m.» (review of m-25027371).
 """
 
 from __future__ import annotations
@@ -170,19 +171,12 @@ def mark_days[T](
 # ======================================================================================
 
 
-def order_strip_label(
-    items_label: str,
-    total_label: str,
-    payment_label: str = "",
-    *,
-    payment_in_header: bool = False,
-) -> str:
-    """«Pedido · 3 productos · COP 45.000 · Pago por revisar» — the folded order. Empty
-    parts are left out (an order with no payment yet has no payment part), and so is the
-    payment when the header right above already shows it as a pill (review of
-    m-25027371: said twice in a row, and two lines at 360 px)."""
-    payment = "" if payment_in_header else payment_label
-    parts = [ORDER_STRIP_WORD, items_label, total_label, payment]
+def order_strip_label(items_label: str, total_label: str, payment_part: str = "") -> str:
+    """«Pedido · 3 productos · COP 45.000» (+ «· Forma de pago: quiere otra») — the
+    folded order. `payment_part` is the channel's decision of what the strip must say
+    about the payment (WhatsApp: `whatsapp_chats_vm.strip_payment_part`); empty parts
+    are left out."""
+    parts = [ORDER_STRIP_WORD, items_label, total_label, payment_part]
     return " · ".join(p.strip() for p in parts if p and p.strip())
 
 

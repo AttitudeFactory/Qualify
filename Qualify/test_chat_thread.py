@@ -34,7 +34,6 @@ from .whatsapp_chats_vm import (
     WINDOW_CLOSED_LINE,
     AgentVM,
     OrderCardVM,
-    PaymentVM,
     UnsentItem,
     build_conversation,
 )
@@ -167,25 +166,54 @@ def test_whatsapp_gets_day_separators_and_clock_only_bubbles() -> None:
 # --- the order strip -----------------------------------------------------------------------
 
 
-def test_order_strip_label_reads_items_total_and_payment() -> None:
-    assert (
-        order_strip_label("3 productos", "COP 45.000", "Pago por revisar")
-        == "Pedido · 3 productos · COP 45.000 · Pago por revisar"
-    )
+def test_order_strip_label_reads_items_total_and_what_the_channel_adds() -> None:
     assert order_strip_label("1 producto", "COP 9.000") == "Pedido · 1 producto · COP 9.000"
     assert (
-        order_strip_label("3 productos", "COP 45.000", "Pago por revisar", payment_in_header=True)
-        == "Pedido · 3 productos · COP 45.000"
+        order_strip_label("2 productos", "COP 20.000", "Forma de pago: quiere otra")
+        == "Pedido · 2 productos · COP 20.000 · Forma de pago: quiere otra"
     )
 
 
-def test_the_state_folds_the_order_and_leaves_the_payment_to_the_header() -> None:
+_EARLIER = NOW - timedelta(days=2)
+_NO_METHOD = {"method_id": None, "method_name": None}
+
+
+@pytest.mark.parametrize(
+    ("status", "kw", "header", "strip"),
+    [
+        # a pill in the header right above: the strip does not repeat it
+        ("review", {}, "Pago por revisar", ""),
+        ("awaiting", {}, "Esperando el pago", ""),
+        ("on_delivery", {"pay_on_delivery": True}, "Paga al recibir", ""),
+        ("received", {"confirmed_at": NOW - timedelta(hours=1)}, "Pago recibido", ""),
+        # received on an earlier day: information only, nothing waits behind the fold
+        ("received", {"confirmed_at": _EARLIER}, "", ""),
+        # no status yet: «Pago recibido» / «No lo encuentro» wait behind the fold and
+        # the header has no pill, so the strip says the card's own line
+        (None, {"choice": "other", **_NO_METHOD}, "", "Forma de pago: quiere otra"),
+        (None, {"choice": "none", **_NO_METHOD}, "", "Forma de pago: no eligió"),
+    ],
+)
+def test_the_strip_names_the_payment_only_when_the_header_does_not(
+    status: str | None, kw: dict, header: str, strip: str
+) -> None:
+    from .test_whatsapp_chats_payments import _status
+    from .whatsapp_chats_vm import build_payment, strip_payment_part
+
+    payment = build_payment(_status(status, **kw), now=NOW, zone=ZONE)
+    assert payment.label == header
+    assert strip_payment_part(payment) == strip
     state = WhatsAppChatsState()
     state.order = OrderCardVM(present=True, items_label="2 productos", total_label="COP 20.000")
-    assert state.order_strip_label == "Pedido · 2 productos · COP 20.000"  # no payment yet
-    state.payment = PaymentVM(present=True, label="Pago recibido", tone="ok")
-    # the header shows «Pago recibido» as a pill right above: not said twice
-    assert state.order_strip_label == "Pedido · 2 productos · COP 20.000"
+    state.payment = payment
+    expected = "Pedido · 2 productos · COP 20.000" + (f" · {strip}" if strip else "")
+    assert state.order_strip_label == expected
+
+
+def test_no_payment_no_payment_part() -> None:
+    from .whatsapp_chats_vm import EMPTY_PAYMENT, strip_payment_part
+
+    assert strip_payment_part(EMPTY_PAYMENT) == ""
 
 
 def test_the_order_card_opens_inside_the_strip_unchanged() -> None:
@@ -273,9 +301,10 @@ def test_the_status_mark_has_its_word_and_no_inline_colour() -> None:
     assert MORE_ACTIONS_LABEL == "Más acciones de este chat"
 
 
-def test_a_closed_window_is_said_once_per_channel() -> None:
-    """WhatsApp's header says what is left (an approved message, by WhatsApp);
-    Instagram's says nothing — its pill and its composer already do."""
+def test_the_header_window_line_once_closed() -> None:
+    """WhatsApp's header says what is left (an approved message, by WhatsApp) — its
+    composer callout says it too, until the composer story removes that duplicate;
+    Instagram's header line says nothing — its pill and its composer already do."""
     from .conversations_vm import build_thread_row as ig_build
     from .test_conversations_vm import NOW as IG_NOW
     from .test_conversations_vm import ZONE as IG_ZONE
@@ -333,3 +362,16 @@ async def test_a_chat_loaded_before_the_zone_is_redrawn_in_it(gw, monkeypatch) -
     assert state.messages[0].time_label == "22:30" and state.messages[0].day_label == "Ayer"
     assert "22:30" in state.order.confirmed_label
     assert "22:40" in state.payment.confirmed_line
+
+
+def test_a_chat_drawn_before_its_row_states_no_window() -> None:
+    """A chat opened by its address draws its header before the list read brings its
+    row (or is outside the newest page): no window line, never a false «Pasaron 24 h»."""
+    from .conversations_state import ConversationsState
+
+    wa = WhatsAppChatsState()
+    wa.open_thread_id = "not-in-rows"
+    assert wa.open_thread.window_line == ""
+    ig = ConversationsState()
+    ig.open_thread_id = "not-in-rows"
+    assert ig.open_thread.window_line == ""

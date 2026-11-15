@@ -640,7 +640,7 @@ class ThreadRowVM:
     # Set for ONE render after a refresh found a newer inbound: the row pulses.
     fresh: bool = False
     # m-25017844: minutes until the window closes when under an hour, else 0 — the
-    # shared row's «Responde en N min».
+    # shared row's «Quedan N min para responder».
     window_minutes: int = 0
     # m-25026457: the person's last message as this row shows it (ISO 8601, "" when
     # none) — what «Cerrar» sends as «seen», and how a refresh tells a new message apart.

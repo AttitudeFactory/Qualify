@@ -201,8 +201,6 @@ COMPOSE_MODES: tuple[tuple[str, str], ...] = (
 )
 COMPOSE_KEYS = frozenset(key for key, _label in COMPOSE_MODES)
 
-#: A window that closes within this is a `warn`, worded «cierra en 42 min».
-WINDOW_WARN_WITHIN = timedelta(hours=1)
 
 _MONTHS = ("ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic")
 _WEEKDAYS = ("lun", "mar", "mié", "jue", "vie", "sáb", "dom")
@@ -459,7 +457,9 @@ class ThreadRowVM:
     #: m-25027371: the open chat's header — the person's initials ("" → the person
     #: icon) and the shared window line («Puedes escribirle hasta las …»).
     initials: str = ""
-    window_line: str = WINDOW_CLOSED_LINE
+    #: "" until the row builder says it (a chat drawn before its row arrives, or one
+    #: outside the newest page, states nothing rather than a closed window).
+    window_line: str = ""
     window_line_tone: str = "neutral"
 
 
@@ -2348,6 +2348,18 @@ class PaymentVM:
 
 
 EMPTY_PAYMENT = PaymentVM()
+
+
+def strip_payment_part(payment: PaymentVM) -> str:
+    """What the folded order strip says about the payment (review of m-25027371): only
+    when the header shows no payment pill AND something waits behind the fold — the
+    owner can still tap «Pago recibido» / «No lo encuentro» (no status yet: the customer
+    chose another way or none). Then the card's own line («Forma de pago: quiere otra»,
+    «Paga con: …»). A pill in the header (to review, awaiting, on delivery, received
+    today) is not repeated; a payment received on an earlier day is information only."""
+    if not payment.present or payment.label or not payment.can_confirm:
+        return ""
+    return payment.method_line
 
 
 def payment_pill(

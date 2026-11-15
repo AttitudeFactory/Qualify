@@ -239,6 +239,7 @@ from .whatsapp_chats_vm import (
     seasonal_card_title,
     seasonal_pending_title,
     send_failed_message,
+    strip_payment_part,
     template_fields_complete,
     validate_compose,
     with_payment_pills,
@@ -685,14 +686,10 @@ class WhatsAppChatsState(rx.State):
 
     @rx.var
     def order_strip_label(self) -> str:
-        """m-25027371: the folded order — «Pedido · 3 productos · COP 45.000 · Pago por
-        revisar»."""
-        # the header shows the payment pill whenever there is a label
+        """m-25027371: the folded order — «Pedido · 3 productos · COP 45.000», plus the
+        payment only when the header shows none and something waits behind the fold."""
         return order_strip_label(
-            self.order.items_label,
-            self.order.total_label,
-            self.payment.label,
-            payment_in_header=self.payment.label != "",
+            self.order.items_label, self.order.total_label, strip_payment_part(self.payment)
         )
 
     @rx.var
