@@ -111,7 +111,9 @@ NAV_ZONES: list[tuple[str, str, list[Item]]] = [
             ("Anuncios", "megaphone", "/promotions", True),
             # m-25017862 (D3, founder 2026-11-12): WhatsApp's promotions sit next to
             # «Anuncios» — both reach people who are not writing to you today.
-            ("Promociones por WhatsApp", "badge-percent", "/whatsapp/promociones", True),
+            # Founder, 2026-11-14: the menu says «Promociones»; the page is «Promociones
+            # por WhatsApp», which stays the entry's spoken name (`NAV_FULL_NAMES`).
+            ("Promociones", "badge-percent", "/whatsapp/promociones", True),
         ],
     ),
 ]
@@ -156,6 +158,11 @@ NAV_COUNTERS: dict[str, tuple[rx.Var, str, rx.Var]] = {
 # ring takes the icon's slot, so the row keeps its geometry — also collapsed (zen) and
 # on the phone's bottom bar, which reads this same map.
 NAV_BUSY: dict[str, rx.Var] = {"Crear publicación": GenerationState.busy}
+
+#: m-25017862: an entry whose menu word is a short form of its page's name. The full
+#: name is the link's accessible name and the collapsed rail's label (`data-label`), so
+#: «Promociones» is still told apart from «Anuncios» by a screen reader and in zen.
+NAV_FULL_NAMES: dict[str, str] = {"Promociones": "Promociones por WhatsApp"}
 
 #: m-25017859: where an entry's link lands when it is not the bare route. The WhatsApp
 #: badge counts the «Por responder» rule, so WITH a badge its entry opens the chats on
@@ -501,7 +508,11 @@ def _nav_item(
             active=active,
             trailing=count,
             below=soon,
-            tooltip=busy_label(label, busy) if enabled else f"{label} · Pronto",
+            tooltip=(
+                NAV_FULL_NAMES.get(label) or busy_label(label, busy)
+                if enabled
+                else f"{label} · Pronto"
+            ),
             busy=busy,
         ),
         href=NAV_HREFS.get(route, route),
@@ -511,6 +522,8 @@ def _nav_item(
         # N10: the count is announced with what it counts («Por aprobar: 3
         # publicaciones esperan tu aprobación»); only on counted entries.
         **({"aria_label": NAV_COUNTERS[label][2]} if enabled and label in NAV_COUNTERS else {}),
+        # m-25017862: a short menu word is announced by its page's full name.
+        **({"aria_label": NAV_FULL_NAMES[label]} if label in NAV_FULL_NAMES else {}),
         # m-24973458: «Crear publicación» while a publication is being made.
         **busy_attrs(label, busy),
         # No-op on desktop (the drawer is never open there); on a phone viewport

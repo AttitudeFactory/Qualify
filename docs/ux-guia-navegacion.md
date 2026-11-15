@@ -48,10 +48,21 @@ PUBLICA  (tinte «publish», el de hoy)
   Tu semana            (1)       /planner
   Publicar ahora                 /publish
   Anuncios                       /promotions
-  Promociones por WhatsApp       /whatsapp/promociones ← m-25017862 (D3 de ux-chats-unificados):
-                                                       Enviadas · Mensajes aprobados · Clientes
-                                                       que aceptaron; los enlaces viejos
+  Promociones                    /whatsapp/promociones ← m-25017862 (D3 de ux-chats-unificados):
+                                                       la página se llama «Promociones por
+                                                       WhatsApp»; Enviadas · Mensajes aprobados ·
+                                                       Clientes que aceptaron; los enlaces viejos
                                                        /whatsapp?tab=promociones redirigen aquí
+```
+
+**Excepción a «un solo nombre» (fundador, 2026-11-14, «Solo «Promociones»»).** En el menú la
+entrada dice «Promociones» porque «Promociones por WhatsApp» no cabe y quedaba cortada en
+«Promociones por …». La página conserva el nombre completo (título, pestaña del navegador,
+descripción), y el enlace del menú se anuncia con el nombre completo (lector de pantalla y
+etiqueta del menú contraído), para no confundirlo con «Anuncios». Es la segunda forma corta
+autorizada, junto a «Interesados»; no es una regla general.
+
+```
 
   Resultados                     /resultados           pestañas: Redes · WhatsApp · Tu página web ·
                                                        Quién habla de ti (hoy Menciones)

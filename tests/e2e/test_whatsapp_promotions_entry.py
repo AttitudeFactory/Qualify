@@ -19,7 +19,8 @@ from .conftest import _E2E_PLATFORM_APP, expect
 
 _SHOTS = os.environ.get("QUALIFY_E2E_SHOTS", "")
 _ROUTE = "/whatsapp/promociones"
-_TITLE = "Promociones por WhatsApp"
+_TITLE = "Promociones por WhatsApp"  # the page's name (h1, tab title)
+_MENU_WORD = "Promociones"  # the menu's word for it (founder, 2026-11-14)
 
 
 def _shot(page, name: str) -> None:  # noqa: ANN001 — a Playwright Page
@@ -36,6 +37,16 @@ def _expect_lit(page, route: str) -> None:  # noqa: ANN001
     menu = _menu(page)
     expect(menu.locator(f'a[href="{route}"]')).to_have_attribute("aria-current", "page")
     expect(menu.locator('[aria-current="page"]')).to_have_count(1)
+
+
+def _expect_menu_word(entry) -> None:  # noqa: ANN001 — a Playwright Locator
+    """Founder, 2026-11-14: the menu reads «Promociones», whole (no «…»); the link is
+    announced, and labelled in the collapsed rail, by the page's full name."""
+    word = entry.locator(".q-label")
+    expect(word).to_have_text(_MENU_WORD)
+    assert word.evaluate("el => el.scrollWidth <= el.clientWidth"), "the menu word is cut"
+    expect(entry).to_have_attribute("aria-label", _TITLE)
+    expect(entry.locator(".q-nav-item")).to_have_attribute("data-label", _TITLE)
 
 
 def test_the_entry_follows_anuncios_and_opens_its_own_page(
@@ -59,7 +70,10 @@ def test_the_entry_follows_anuncios_and_opens_its_own_page(
     expect(page.get_by_text("Conecta tu WhatsApp para atender y vender desde aquí")).to_be_visible(
         timeout=60_000
     )
-    _shot(page, "promociones-whatsapp-escritorio")
+    _expect_menu_word(_menu(page).locator(f'a[href="{_ROUTE}"]'))
+    page.mouse.move(900, 450)  # off the menu, so the capsule rests on the lit entry
+    page.wait_for_timeout(600)
+    _shot(page, "promociones-escritorio-final")
 
     # «WhatsApp» lights only itself, and its strip no longer offers «Promociones».
     _menu(page).locator('a[href^="/whatsapp"]').first.click()
@@ -97,7 +111,7 @@ def test_on_a_phone_the_entry_is_in_the_more_drawer(
     entry = page.locator("#q-sidebar").locator(f'a[href="{_ROUTE}"]')
     entry.scroll_into_view_if_needed()
     expect(entry).to_be_visible()
-    expect(entry).to_contain_text(_TITLE)
+    _expect_menu_word(entry)
     _shot(page, "promociones-whatsapp-cajon-celular")
     entry.click()
     expect(page).to_have_url(re.compile(re.escape(app_server + _ROUTE) + r"(\?.*)?$"))
@@ -108,14 +122,15 @@ def test_on_a_phone_the_entry_is_in_the_more_drawer(
     expect(page.get_by_text("Conecta tu WhatsApp para atender y vender desde aquí")).to_be_visible(
         timeout=60_000
     )
-    _shot(page, "promociones-whatsapp-celular")
+    _shot(page, "promociones-celular-final")
     # The drawer, opened on this page, marks the entry it came from.
     page.locator(".q-bottom-more").click()
     expect(page.locator("#q-sidebar")).to_have_class(re.compile(r"q-mobile-open"))
     expect(entry).to_have_attribute("aria-current", "page")
     entry.scroll_into_view_if_needed()
     page.wait_for_timeout(800)  # the drawer's slide, for the picture only
-    _shot(page, "promociones-whatsapp-cajon-encendida")
+    _expect_menu_word(entry)
+    _shot(page, "promociones-cajon-encendida-final")
 
 
 # --- with a number: the panels load (review of 2026-11-14) -------------------------------

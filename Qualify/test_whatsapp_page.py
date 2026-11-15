@@ -496,11 +496,12 @@ def test_promotions_route_is_registered_behind_login() -> None:
 
 
 def test_promotions_entry_sits_in_publica_after_anuncios() -> None:
-    """m-25017862 (D3): «Promociones por WhatsApp» right after «Anuncios», in «Publica»."""
-    entry = ("Promociones por WhatsApp", "badge-percent", PROMOTIONS_ROUTE, True)
+    """m-25017862 (D3): the entry right after «Anuncios», in «Publica». Its menu word is
+    «Promociones» (founder, 2026-11-14); the page keeps «Promociones por WhatsApp»."""
+    entry = ("Promociones", "badge-percent", PROMOTIONS_ROUTE, True)
     assert entry in NAV_ITEMS
     labels = {zone: [label for label, *_ in items] for zone, _t, items in NAV_ZONES}["publish"]
-    assert labels.index("Promociones por WhatsApp") == labels.index("Anuncios") + 1
+    assert labels.index("Promociones") == labels.index("Anuncios") + 1
 
 
 def test_addresses_are_the_owner_words() -> None:
