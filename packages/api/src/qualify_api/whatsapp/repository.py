@@ -34,10 +34,14 @@ create) updates nothing and returns `False`.
 so a person who took the thread over between the handler's read and its write keeps it.
 `paused_by_user_id` is never written here — it is the UI's column (WA-10).
 
-One transaction per call, as `WebhookQueue` does. The handler therefore persists the
-inbound message BEFORE it steps the menu, so a crash in between loses at most one
-automated reply, never a message — and the replay is harmless because the duplicate
-insert short-circuits the step (see `handler.py`).
+**One transaction per inbound message (m-25017846).** Each method is its own
+transaction when called on the repository itself; `transaction()` yields a repository
+bound to ONE session, so everything called on it commits together or not at all. The
+handler runs a whole message through it — thread upsert, `lock_thread`, message insert,
+state read, payment review, state save, outbox rows — so a crash anywhere leaves
+nothing, and the retry is a first delivery: the duplicate-insert short-circuit only
+ever sees a message whose state and reply rows committed with it. `lock_thread` takes
+the thread row's `FOR NO KEY UPDATE` lock: one conversation at a time, never another.
 
 `MemoryWhatsAppInboxRepository` mirrors every rule above for offline tests.
 """
@@ -46,8 +50,8 @@ from __future__ import annotations
 
 import copy
 import json
-from collections.abc import Callable
-from contextlib import AbstractContextManager
+from collections.abc import Callable, Iterator
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Protocol
@@ -91,6 +95,17 @@ class StoredThreadState:
 
 
 class WhatsAppInboxRepository(Protocol):
+    def transaction(self) -> AbstractContextManager[WhatsAppInboxRepository]:
+        """A repository whose every call runs in ONE transaction, committed when the
+        block exits cleanly and rolled back when it raises (m-25017846)."""
+        ...
+
+    def lock_thread(self, thread_id: UUID) -> None:
+        """Hold this conversation until the transaction ends: a second message of the
+        same thread, handled by another worker, waits here (m-25017846). Only
+        meaningful inside `transaction()`."""
+        ...
+
     def upsert_thread(
         self, *, tenant_id: UUID, connection_id: UUID, wa_id: str, inbound_at: datetime
     ) -> ThreadUpsert: ...
@@ -275,6 +290,16 @@ _SAVE_STATE = text(
     """
 )
 
+# m-25017846: the conversation's own row is the lock — one row per (number, wa_id), so it
+# can never block or reveal another conversation, let alone another tenant's. `NO KEY`
+# so the FK checks of other writers (`messages`, `whatsapp_outbox` rows of this thread)
+# are not blocked; two handlers of the same thread still exclude each other.
+_LOCK_THREAD = text(
+    """
+    SELECT id FROM threads WHERE id = :thread_id FOR NO KEY UPDATE
+    """
+)
+
 _ENQUEUE_OUTBOX = text(
     """
     INSERT INTO whatsapp_outbox (id, tenant_id, connection_id, thread_id, kind, payload,
@@ -308,6 +333,17 @@ class PostgresWhatsAppInboxRepository:
 
     def __init__(self, session_factory: SessionFactory = webhook_worker_session) -> None:
         self._session = session_factory
+
+    @contextmanager
+    def transaction(self) -> Iterator[PostgresWhatsAppInboxRepository]:
+        with self._session() as session:
+            # The same repository on this one open session: its calls neither commit
+            # nor close it; the door commits (or rolls back) when the block ends.
+            yield PostgresWhatsAppInboxRepository(lambda: nullcontext(session))
+
+    def lock_thread(self, thread_id: UUID) -> None:
+        with self._session() as session:
+            session.execute(_LOCK_THREAD, {"thread_id": thread_id}).one()
 
     def upsert_thread(
         self, *, tenant_id: UUID, connection_id: UUID, wa_id: str, inbound_at: datetime
@@ -495,6 +531,21 @@ class MemoryWhatsAppInboxRepository:
         self.messages: dict[tuple[UUID, str], dict[str, Any]] = {}
         self.states: dict[UUID, tuple[UUID, StoredThreadState]] = {}
         self.outbox: list[dict[str, Any]] = []
+        self.locked_threads: list[UUID] = []
+
+    @contextmanager
+    def transaction(self) -> Iterator[MemoryWhatsAppInboxRepository]:
+        """All-or-nothing like the Postgres one: a block that raises restores every
+        table as it stood when the block started."""
+        snapshot = copy.deepcopy((self.threads, self.messages, self.states, self.outbox))
+        try:
+            yield self
+        except BaseException:
+            self.threads, self.messages, self.states, self.outbox = snapshot
+            raise
+
+    def lock_thread(self, thread_id: UUID) -> None:
+        self.locked_threads.append(thread_id)
 
     def upsert_thread(
         self, *, tenant_id: UUID, connection_id: UUID, wa_id: str, inbound_at: datetime

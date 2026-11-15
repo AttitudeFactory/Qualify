@@ -15,11 +15,12 @@ What one change does, in order (plan §6.2):
    connected can never become a row of any tenant.
 3. For each inbound message: upsert the thread (`channel = 'whatsapp'`,
    `external_thread_id = wa_id`), insert the message by `wamid`. A duplicate insert (a
-   replayed delivery, a reclaimed change) **skips the menu step** — the reply was already
-   enqueued the first time. Otherwise, if the thread is not paused and `menu_loader`
-   returns a published menu, run `menus.engine.step` and persist what it returns: the
-   state to `whatsapp_thread_state`, the sends to `whatsapp_outbox` as already-built
-   `POST /messages` bodies (`client.build_*_body`, `to = wa_id`, `kind = 'automation'`).
+   replayed delivery, a reclaimed change) **skips the menu step** — the reply committed
+   with the message the first time (m-25017846, below). Otherwise, if the thread is
+   not paused and `menu_loader` returns a published menu, run `menus.engine.step` and
+   persist what it returns: the state to `whatsapp_thread_state`, the sends to
+   `whatsapp_outbox` as already-built `POST /messages` bodies (`client.build_*_body`,
+   `to = wa_id`, `kind = 'automation'`).
 4. For each status: `apply_status` on the outbound row with that `wamid` (created by
    WA-08). A `wamid` with no row, or a status older than the stored one, is logged at
    debug and ignored — it is not an error of this change.
@@ -63,10 +64,18 @@ around `examples.BIANKI_DEMO_MENU` with no version row.
 `node_id` is reset (the conversation re-enters the new menu at its start on the next
 unrecognized input) and `context` — the order being built — is kept.
 
-**Ordering and crashes.** Each repository call is its own transaction. The message lands
-before the menu runs; the state is saved before the outbox rows are inserted. A crash
-between any two leaves the message persisted and the replay idempotent (duplicate →
-skip), at the cost of at most one automated reply.
+**Ordering, crashes and concurrency (m-25017846).** Each inbound message is ONE
+transaction (`repo.transaction()`): thread upsert, the conversation's lock
+(`repo.lock_thread`, the thread row `FOR NO KEY UPDATE`), the message insert, the state
+read, the payment review, the state save and the outbox rows commit together or not at
+all. A crash anywhere before the commit leaves nothing — not even the message — so the
+webhook's retry is a first delivery and replies exactly once; a retry after the commit
+finds the message (duplicate → skip) and writes nothing. A second message of the same
+conversation, handled meanwhile by another worker, waits at the lock and then steps on
+the state the first one saved. The ad attribution (`attribute_ad`) runs after the
+commit: it reads the stored message through another door and is idempotent on a replay.
+The opt-out revoke (another door) runs before the commit and is idempotent too
+(`revoked_at IS NULL` guard).
 
 **The payment step (m-24955648).** `payment_loader(phone_row_id)` gives the business's
 active payment methods (`whatsapp.payments.load_payment_options_for_phone`, read as this
@@ -95,8 +104,9 @@ the receiving brand's Galería products by `cart_product_loader(phone_row_id, id
 is handed to a person exactly as a confirmed menu order is: `_handoff` (reason
 `CART_HANDOFF_REASON`), automation paused, the engine's working order and payment keys
 cleared. A cart with no readable line still goes to a person (no order is recorded;
-`_handoff.summary.order_recorded` is false). The message insert and the state save are
-two transactions, so a replayed cart (the message row already stored) is a REPAIR only
+`_handoff.summary.order_recorded` is false). The message insert and the state save were
+two transactions before m-25017846 (one now), and a cart stored by such a run may still
+be replayed, so a replayed cart (the message row already stored) is a REPAIR only
 when `orders.cart_needs_repair` holds — at least one readable line, its `wamid` in
 neither `_order` nor `_orders_previous`, and its timestamp after the current order's
 `confirmed_at` (or no current order): then the first run died before its save (a
@@ -535,8 +545,17 @@ def whatsapp_messages_handler(
     offered to it, keyed by `wamid` — campaign sends have no `messages` row, so
     `apply_status` alone never sees them. Both default to off (production wires both)."""
 
-    def _automate(ctx: _ChangeContext, *, thread_id: UUID, message: WAMessage, first: bool) -> None:
-        stored = repo.get_thread_state(thread_id)
+    def _automate(
+        tx: WhatsAppInboxRepository,
+        ctx: _ChangeContext,
+        *,
+        thread_id: UUID,
+        message: WAMessage,
+        first: bool,
+    ) -> None:
+        """One menu step, every write on `tx` — the message's own transaction, with the
+        conversation locked (m-25017846)."""
+        stored = tx.get_thread_state(thread_id)
         if stored is not None:
             record = stored.context.get(CTX_PAYMENT_RECORD)
             if (
@@ -548,7 +567,7 @@ def whatsapp_messages_handler(
                 # receipt, a reference, a question) is for a person: «Pago por revisar».
                 # A tap or a menu keyword is not (the review would have nothing in it).
                 at = clock()
-                moved = repo.mark_payment_review(
+                moved = tx.mark_payment_review(
                     tenant_id=ctx.tenant_id, thread_id=thread_id, message_id=message.id, at=at
                 )
                 if moved:  # the engine below steps on what is now stored
@@ -624,7 +643,7 @@ def whatsapp_messages_handler(
         if archived and not new_payment_record:
             # The previous order's payment is archived with it, never carried over.
             context.pop(CTX_PAYMENT_RECORD, None)
-        repo.save_thread_state(
+        tx.save_thread_state(
             thread_id=thread_id,
             tenant_id=ctx.tenant_id,
             state=StoredThreadState(
@@ -641,7 +660,7 @@ def whatsapp_messages_handler(
             archive_payment=archived,
         )
         for payload, attachment in payloads:
-            repo.enqueue_outbox(
+            tx.enqueue_outbox(
                 tenant_id=ctx.tenant_id,
                 connection_id=ctx.connection_id,
                 thread_id=thread_id,
@@ -661,13 +680,18 @@ def whatsapp_messages_handler(
         )
 
     def _cart(
-        ctx: _ChangeContext, *, thread_id: UUID, message: WAMessage, replay: bool = False
+        tx: WhatsAppInboxRepository,
+        ctx: _ChangeContext,
+        *,
+        thread_id: UUID,
+        message: WAMessage,
+        replay: bool = False,
     ) -> None:
         """m-25018684: the catalog cart becomes the current order and the thread goes
         to a person. Never a menu step, never an outbox row (see the module docs)."""
         order = message.order
         items = [item.model_dump() for item in order.product_items] if order else []
-        stored = repo.get_thread_state(thread_id)
+        stored = tx.get_thread_state(thread_id)
         context = dict(stored.context) if stored is not None else {}
         if replay and not cart_needs_repair(
             context,
@@ -720,7 +744,7 @@ def whatsapp_messages_handler(
         }
         for key in (CTX_ORDER, CTX_ORDER_CONFIRMED, CTX_PAYMENT, CTX_PAYMENT_HANDOFF, CTX_ATTEMPTS):
             context.pop(key, None)
-        repo.save_thread_state(
+        tx.save_thread_state(
             thread_id=thread_id,
             tenant_id=ctx.tenant_id,
             state=StoredThreadState(
@@ -798,57 +822,74 @@ def whatsapp_messages_handler(
             if c.profile is not None and c.profile.name
         }
         for message in value.messages:
-            posted_at = epoch_to_datetime(message.timestamp)
-            media = message_media(message)
-            upsert = repo.upsert_thread(
-                tenant_id=ctx.tenant_id,
-                connection_id=ctx.connection_id,
-                wa_id=message.from_,
-                inbound_at=posted_at or clock(),
-            )
-            inserted = repo.insert_inbound_message(
-                tenant_id=ctx.tenant_id,
-                thread_id=upsert.thread_id,
-                connection_id=ctx.connection_id,
-                external_message_id=message.id,
-                author_external_id=message.from_,
-                author_username=names.get(message.from_),
-                text=message_text(message),
-                posted_at=posted_at,
-                shape_version=SHAPE_VERSION,
-                media_type=media.media_type,
-                media_id=media.media_id,
-                media_mime=media.media_mime,
-            )
+            # m-25017846: one transaction per message — the message, the conversation's
+            # lock, the menu state and its reply rows commit together or not at all.
+            with repo.transaction() as tx:
+                thread_id = _one_message(tx, ctx, message, names)
             if attribute_ad is not None:
+                # After the commit: the attribution reads the message through another
+                # door (it must be visible) and is idempotent on a replay.
                 from qualify_api.ads.messaging_attribution import raw_whatsapp_referral
 
                 attribute_ad(
                     event=event,
                     tenant_id=ctx.tenant_id,
                     connection_id=ctx.connection_id,
-                    thread_id=upsert.thread_id,
+                    thread_id=thread_id,
                     external_message_id=message.id,
                     channel="whatsapp",
                     referral=raw_whatsapp_referral(event, message.id, message.from_),
                 )
-            if message.type == ORDER_MESSAGE_TYPE:
-                # m-25018684: a cart is never menu input. A replay only repairs a first
-                # run that died before its save (`orders.cart_needs_repair`).
-                _cart(ctx, thread_id=upsert.thread_id, message=message, replay=not inserted)
-                continue
-            if not inserted:
-                logger.debug(
-                    "whatsapp webhook: tenant=%s thread=%s wamid=%s already stored — menu skipped",
-                    ctx.tenant_id,
-                    upsert.thread_id,
-                    message.id,
-                )
-                continue
-            if opt_outs is not None and _is_opt_out(message):
-                _revoke(ctx, message)
-                continue
-            _automate(ctx, thread_id=upsert.thread_id, message=message, first=upsert.created)
+
+    def _one_message(
+        tx: WhatsAppInboxRepository,
+        ctx: _ChangeContext,
+        message: WAMessage,
+        names: Mapping[str, str],
+    ) -> UUID:
+        posted_at = epoch_to_datetime(message.timestamp)
+        media = message_media(message)
+        upsert = tx.upsert_thread(
+            tenant_id=ctx.tenant_id,
+            connection_id=ctx.connection_id,
+            wa_id=message.from_,
+            inbound_at=posted_at or clock(),
+        )
+        # Held until the commit: a second message of this conversation, handled by
+        # another worker, waits here and then steps on the state this one saved.
+        tx.lock_thread(upsert.thread_id)
+        inserted = tx.insert_inbound_message(
+            tenant_id=ctx.tenant_id,
+            thread_id=upsert.thread_id,
+            connection_id=ctx.connection_id,
+            external_message_id=message.id,
+            author_external_id=message.from_,
+            author_username=names.get(message.from_),
+            text=message_text(message),
+            posted_at=posted_at,
+            shape_version=SHAPE_VERSION,
+            media_type=media.media_type,
+            media_id=media.media_id,
+            media_mime=media.media_mime,
+        )
+        if message.type == ORDER_MESSAGE_TYPE:
+            # m-25018684: a cart is never menu input. A replay only repairs a first
+            # run that died before its save (`orders.cart_needs_repair`).
+            _cart(tx, ctx, thread_id=upsert.thread_id, message=message, replay=not inserted)
+            return upsert.thread_id
+        if not inserted:
+            logger.debug(
+                "whatsapp webhook: tenant=%s thread=%s wamid=%s already stored — menu skipped",
+                ctx.tenant_id,
+                upsert.thread_id,
+                message.id,
+            )
+            return upsert.thread_id
+        if opt_outs is not None and _is_opt_out(message):
+            _revoke(ctx, message)
+            return upsert.thread_id
+        _automate(tx, ctx, thread_id=upsert.thread_id, message=message, first=upsert.created)
+        return upsert.thread_id
 
     def _receipts(ctx: _ChangeContext, statuses: Sequence[WAStatus]) -> None:
         for status in statuses:
