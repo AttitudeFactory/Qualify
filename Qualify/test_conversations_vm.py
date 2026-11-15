@@ -54,7 +54,6 @@ from .conversations_vm import (
     ThreadExtra,
     ThreadRowVM,
     UnsentItem,
-    avatar_hue,
     build_access_vm,
     build_account_vm,
     build_conversation,
@@ -226,15 +225,12 @@ def test_account_label_never_doubles_the_at_and_names_the_channel() -> None:
 # --- identity -----------------------------------------------------------------------------
 
 
-def test_initials_and_hue_are_stable_data() -> None:
+def test_initials_are_stable_data() -> None:
     assert initials_of("@alice.compras") == "AC"
     assert initials_of("@yesii_roa") == "YR"
     assert initials_of("@maria") == "M"
     assert initials_of("", "igsid-98765") == "5"
     assert initials_of("", "") == "?"
-    assert 0 <= avatar_hue("igsid-123456") < 360
-    assert avatar_hue("igsid-123456") == avatar_hue("igsid-123456")
-    assert avatar_hue("a") != avatar_hue("b")
 
 
 # --- access banner ------------------------------------------------------------------------
@@ -366,7 +362,7 @@ def test_window_words_are_plain_spanish() -> None:
     sentence, tone = window_words(True, tomorrow, NOW, ZONE)
     assert sentence.endswith("hasta mañana a las 01:00.") and tone == "ok"
     sentence, tone = window_words(True, NOW + timedelta(minutes=42), NOW, ZONE)
-    assert sentence.startswith("Te quedan 42 min para responder: Instagram")
+    assert sentence.startswith("Quedan 42 min para responder: Instagram")
     assert tone == "warn"  # m-25017844: the row's short pill lives in chat_row_vm
     assert window_words(False, None, NOW, ZONE) == (WINDOW_CLOSED_NOTICE, "neutral")
 
@@ -384,7 +380,7 @@ def test_row_words_attention_window_preview_and_identity() -> None:
         account_label="@qualifymkt.co",
     )
     assert row.title == "@alice" and row.handle == "" and row.initials == "A"
-    assert row.hue == avatar_hue("igsid-123456") and row.avatar_url == ""
+    assert row.avatar_url == ""
     assert row.subtitle == "@qualifymkt.co · Instagram Direct"
     assert row.preview == "¿tienen talla M?" and row.preview_icon == ""
     assert (row.attention, row.attention_label, row.attention_tone) == (
@@ -843,7 +839,7 @@ def test_the_bubble_draws_the_mention_inline_when_it_is_all_there_is() -> None:
     body = str(_bubble_body(m).render())
     assert "story_inline" in body and "story_label" in body
     bubble = str(page_message(m).render())
-    assert "story_inline" in bubble and "q-conv-msg--story" in bubble
+    assert "story_inline" in bubble and "q-chat-msg--context" in bubble
 
 
 # --- taps: ice breakers, quick replies, buttons, menu (m-24789472) ---------------------
@@ -907,7 +903,7 @@ def test_the_bubble_renders_the_tap_origin_only_when_there_is_one() -> None:
     assert "choice_label" in rendered and "LucidePointer" in rendered  # TAP_ICON
     # The bubble stacks it above the text, like a story reply.
     bubble = str(_message(m).render())
-    assert "choice_label" in bubble and "q-conv-msg--story" in bubble
+    assert "choice_label" in bubble and "q-chat-msg--context" in bubble
 
 
 # --- message templates (m-24789472) ----------------------------------------------------

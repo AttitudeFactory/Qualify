@@ -44,7 +44,13 @@ from .test_whatsapp_chats import NOW as WA_NOW
 from .test_whatsapp_chats import ZONE as WA_ZONE
 from .test_whatsapp_chats import _thread as wa_thread
 from .whatsapp_chats_state import WhatsAppChatsState
-from .whatsapp_chats_vm import AWAITING_FILTER_LABEL, FILTER_UNREAD, OUTBOUND_PREFIX, window_pill
+from .whatsapp_chats_vm import (
+    AWAITING_FILTER_LABEL,
+    FILTER_UNREAD,
+    OUTBOUND_PREFIX,
+    WINDOW_CLOSED_LINE,
+    window_pill,
+)
 from .whatsapp_chats_vm import FILTERS as WA_FILTERS
 from .whatsapp_chats_vm import as_chat_row as wa_chat_row
 from .whatsapp_chats_vm import build_thread_row as wa_build
@@ -167,7 +173,7 @@ def test_row_and_chat_header_say_the_same_minutes() -> None:
         assert ig is not None
         header, _tone = window_words(True, IG_NOW + left, IG_NOW, IG_ZONE)
         assert ig.pill_label == f"Quedan {said} min para responder"
-        assert header.startswith(f"Te quedan {said} min para responder")
+        assert header.startswith(f"Quedan {said} min para responder: ")
         wa_row = wa_chat_row(
             wa_build(
                 wa_thread(window=WindowView(open=True, closes_at=WA_NOW + left)),
@@ -177,10 +183,8 @@ def test_row_and_chat_header_say_the_same_minutes() -> None:
         )
         wa_header, _ = window_pill(True, WA_NOW + left, WA_NOW, WA_ZONE)
         assert wa_row.pill_label == f"Quedan {said} min para responder"
-        expected = (
-            "Responde en el próximo minuto" if said == 1 else f"Responde en los próximos {said} min"
-        )
-        assert wa_header == expected
+        # m-25027371: the header and the send panel use the row's words too
+        assert wa_header == f"Quedan {said} min para responder"
 
 
 # --- names and initials ---------------------------------------------------------------------
@@ -347,6 +351,7 @@ def test_whatsapp_window_closed_while_choosing_clears_the_minutes() -> None:
     )
     state.rows = [closing]
     assert state.visible_chat_rows[0].pill_label == "Quedan 5 min para responder"
+    assert closing.window_line == "Quedan 5 min para responder"
     state._mark_window_closed(closing.thread_id)
     marked = state.rows[0]
     assert (marked.window_open, marked.window_tone, marked.window_minutes) == (
@@ -355,6 +360,21 @@ def test_whatsapp_window_closed_while_choosing_clears_the_minutes() -> None:
         0,
     )
     assert state.visible_chat_rows[0].pill_label == ""
+    # m-25027371: the open chat's header line closes with it (never «Quedan 5 min»)
+    assert (marked.window_line, marked.window_line_tone) == (WINDOW_CLOSED_LINE, "neutral")
+    state.open_thread_id = closing.thread_id
+    assert state.open_thread.window_line == WINDOW_CLOSED_LINE
+
+
+def test_whatsapp_window_fields_change_together() -> None:
+    """Every place that rewrites a row's window writes the header's line too (the state
+    has one, `_mark_window_closed`; the VM builds them in one call)."""
+    import inspect
+
+    from . import whatsapp_chats_state
+
+    source = inspect.getsource(whatsapp_chats_state)
+    assert source.count("window_label=") == source.count("window_line=")
 
 
 # --- the rendered row -----------------------------------------------------------------------
@@ -368,7 +388,8 @@ def test_both_lists_render_the_shared_row() -> None:
     assert "inbox_list_state" in single and ROW_KEY_HANDLER._js_expr in single
     from . import conversations_page
 
-    assert conversations_page._tone_pill is whatsapp_tab_chats._tone_pill  # one helper
+    # m-25027371: one thread too — both chats draw their header pills with one helper.
+    assert conversations_page.state_pill is whatsapp_tab_chats.state_pill
 
 
 def test_the_rows_are_equally_tall_on_both_channels() -> None:
@@ -422,7 +443,7 @@ def test_the_row_paints_with_tokens() -> None:
 def test_the_dot_and_the_pulse_stop_under_reduced_motion() -> None:
     block = _css_block(".q-conv-row--fresh, .q-conv-unread")
     assert block.startswith("@media (prefers-reduced-motion: reduce)")
-    rule = block[block.index(".q-conv-msg, .q-conv-row--fresh, .q-conv-unread") :]
+    rule = block[block.index(".q-conv-row--fresh, .q-conv-unread") :]
     assert "animation: none" in rule[: rule.index("}")]
 
 

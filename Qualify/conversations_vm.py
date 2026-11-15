@@ -17,7 +17,7 @@ What this module words, and never re-derives:
 - the **attention state** («pendiente / leída / respondida») is `service.attention_state`,
   computed from the thread's instants; here it only gets a label and a tone;
 - the **24 h window** is `window.window_state`; here it becomes plain words («Puedes
-  responder hasta las 17:47», «Te quedan 12 min», «Ya no puedes responder»);
+  responder hasta las 17:47», «Quedan 12 min para responder», «Ya no puedes responder»);
 - the **access verdict** (`conversation_sync_state.access_status`) is the sync's; here it
   becomes the banner the person sees — and `unknown` is NEVER rendered as «no hay
   mensajes»: it is a «por verificar» state with its own words (§6.4). A failed sync is
@@ -27,7 +27,7 @@ What this module words, and never re-derives:
   «Visto». Instagram exposes no «delivered», so there is none to word;
 - the **counterpart's identity** is the thread's profile (name, handle, picture — the
   User Profile API, refreshed by the sync); without one, the handle of their latest
-  message, then initials over a stable hue.
+  message, then its initials.
 
 **Media.** An inbound attachment renders from the channel's CDN URL (`media_url`); an
 outbound one from the R2 object Qualify sent, through the `/r2media/<token>` path the
@@ -59,10 +59,12 @@ from .chat_row_vm import (
     CHANNEL_INSTAGRAM,
     EXPIRED_PILL,
     minutes_left,
+    reply_soon_pill,
     unknown_contact,
 )
+from .chat_thread_vm import day_label, window_line
 from .connection_copy import DISCONNECTED, DISCONNECTED_NOTICE, NO_ACCESS, PERMISSION_MISSING_NOTICE
-from .whatsapp_chats_vm import format_day, message_time, relative_time
+from .whatsapp_chats_vm import bubble_clock, message_time, relative_time
 
 # ======================================================================================
 # Copy and limits
@@ -325,15 +327,6 @@ def initials_of(handle: str, fallback_id: str = "") -> str:
     if len(words) == 1:
         return words[0][:1].upper()
     return (words[0][0] + words[-1][0]).upper()
-
-
-def avatar_hue(seed: str) -> int:
-    """A stable hue (0-359) for an avatar's gradient — data, not a colour literal: the
-    page hands it to the stylesheet as a CSS variable and the kit's own palette paints."""
-    total = 0
-    for i, ch in enumerate(seed or "?"):
-        total = (total * 31 + ord(ch) * (i + 7)) % 100003
-    return total % 360
 
 
 # ======================================================================================
@@ -599,7 +592,7 @@ def window_words(
     *,
     has_inbound: bool = True,
 ) -> tuple[str, str]:
-    """(sentence for the header, tone). «Puedes responder hasta las 17:47» / «Te quedan
+    """(sentence for the header, tone). «Puedes responder hasta las 17:47» / «Quedan
     12 min para responder» / «Ya no puedes responder…». `has_inbound=False` (no message
     of the person is left, m-25018661) says that instead of the 24 h. The row says the
     window through the shared pill (`chat_row_vm`), with the same minute count."""
@@ -610,7 +603,7 @@ def window_words(
     remaining = closes_at - now
     if remaining < timedelta(hours=1):
         minutes = max(1, minutes_left(is_open, closes_at, now))
-        return f"Te quedan {minutes} min para responder: {WINDOW_RULE}", "warn"
+        return f"{reply_soon_pill(minutes)}: {WINDOW_RULE}", "warn"
     local_close, local_now = _local(closes_at, zone), _local(now, zone)
     clock = local_close.strftime("%H:%M")
     when = (
@@ -643,16 +636,19 @@ class ThreadRowVM:
     window_open: bool
     is_closed: bool
     initials: str
-    hue: int
     avatar_url: str = ""
     # Set for ONE render after a refresh found a newer inbound: the row pulses.
     fresh: bool = False
     # m-25017844: minutes until the window closes when under an hour, else 0 — the
-    # shared row's «Responde en N min».
+    # shared row's «Quedan N min para responder».
     window_minutes: int = 0
     # m-25026457: the person's last message as this row shows it (ISO 8601, "" when
     # none) — what «Cerrar» sends as «seen», and how a refresh tells a new message apart.
     last_inbound_iso: str = ""
+    # m-25027371: the shared header's window line («Puedes escribirle hasta las …» /
+    # «Quedan N min para responder»); "" once closed — the pill and the composer say it.
+    window_line: str = ""
+    window_line_tone: str = "neutral"
 
 
 EMPTY_THREAD = ThreadRowVM(
@@ -671,7 +667,6 @@ EMPTY_THREAD = ThreadRowVM(
     window_open=False,
     is_closed=False,
     initials="?",
-    hue=0,
 )
 
 
@@ -760,6 +755,9 @@ def build_thread_row(
         zone,
         has_inbound=getattr(thread, "last_inbound_at", None) is not None,
     )
+    line, line_tone = window_line(view.window.is_open, view.window.closes_at, now, zone)
+    if getattr(thread, "last_inbound_at", None) is None:
+        line, line_tone = "", "neutral"
     channel = CHANNEL_LABELS.get(thread.channel, thread.channel)
     subtitle = f"{account_label} · {channel}" if account_label else channel
     # Identity: the profile the sync fetched beats the handle of the latest message.
@@ -786,11 +784,12 @@ def build_thread_row(
         window_open=view.window.is_open,
         is_closed=thread.status == "closed",
         initials=initials_of(name or username, thread.counterpart_external_id),
-        hue=avatar_hue(thread.counterpart_external_id),
         avatar_url=avatar_url,
         fresh=fresh,
         window_minutes=minutes_left(view.window.is_open, view.window.closes_at, now),
         last_inbound_iso=inbound_iso(getattr(thread, "last_inbound_at", None)),
+        window_line=line,
+        window_line_tone=line_tone,
     )
 
 
@@ -940,14 +939,8 @@ def failure_label(code: str | None) -> str:
 
 
 def _day_of(value: datetime, zone: tzinfo, now: datetime) -> str:
-    local = value.astimezone(zone) if value.tzinfo is not None else value
-    today = (now.astimezone(zone) if now.tzinfo is not None else now).date()
-    days = (today - local.date()).days
-    if days == 0:
-        return "Hoy"
-    if days == 1:
-        return "Ayer"
-    return format_day(value, zone, now)
+    """m-25027371: the shared thread's day separator (the same on WhatsApp)."""
+    return day_label(value, zone, now)
 
 
 def build_message_vm(
@@ -999,7 +992,7 @@ def build_message_vm(
         message_id=str(message.id),
         is_outbound=outbound,
         text=text,
-        time_label=message_time(message.posted_at or message.ingested_at, now, zone),
+        time_label=bubble_clock(message.posted_at or message.ingested_at, zone),
         tick=tick,
         tick_label=_TICK_LABELS.get(tick, ""),
         error_label="",
@@ -1039,7 +1032,7 @@ def build_unsent_vm(item: UnsentItem, *, now: datetime, zone: tzinfo) -> Message
         message_id=f"outbox-{item.id}",
         is_outbound=True,
         text=item.text or ("" if control else "Mensaje"),
-        time_label=message_time(item.created_at, now, zone),
+        time_label=bubble_clock(item.created_at, zone),
         tick=tick,
         tick_label=_TICK_LABELS[tick],
         error_label=failure_label(item.error_code) if failed else "",

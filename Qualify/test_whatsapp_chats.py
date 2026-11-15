@@ -142,15 +142,16 @@ def test_vms_are_frozen_and_carry_no_raw_datetimes() -> None:
 
 def test_window_pill_open_is_ok_with_the_local_closing_time() -> None:
     label, tone = window_pill(True, NOW + timedelta(hours=5), NOW, ZONE)
-    assert (label, tone) == ("Puedes escribirle hasta las 5:00 p. m.", "ok")
+    assert (label, tone) == ("Puedes escribirle hasta las 17:00", "ok")
 
 
 def test_window_pill_closing_within_the_hour_is_warn_in_minutes() -> None:
     label, tone = window_pill(True, NOW + timedelta(minutes=41, seconds=10), NOW, ZONE)
     # m-25017844: one count for row and header, rounded down (41:10 → 41).
-    assert (label, tone) == ("Responde en los próximos 41 min", "warn")
+    # m-25027371: the founder's words (row, header and send panel alike)
+    assert (label, tone) == ("Quedan 41 min para responder", "warn")
     assert window_pill(True, NOW + timedelta(seconds=5), NOW, ZONE) == (
-        "Responde en el próximo minuto",
+        "Quedan 1 min para responder",
         "warn",
     )
 

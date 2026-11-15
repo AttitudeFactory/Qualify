@@ -79,6 +79,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState
 from .chat_row_vm import ChatRowVM
+from .chat_thread_vm import order_strip_label, show_assign
 from .nav_url import (
     FROM_INBOX,
     FROM_PARAM,
@@ -178,6 +179,7 @@ from .whatsapp_chats_vm import (
     SENDING_LABEL,
     TEMPLATE_FILL_HINT,
     TEMPLATE_PICK_HINT,
+    WINDOW_CLOSED_LINE,
     WINDOW_CLOSED_NOTICE,
     WINDOW_CLOSED_PILL,
     AgentVM,
@@ -237,6 +239,7 @@ from .whatsapp_chats_vm import (
     seasonal_card_title,
     seasonal_pending_title,
     send_failed_message,
+    strip_payment_part,
     template_fields_complete,
     validate_compose,
     with_payment_pills,
@@ -677,6 +680,19 @@ class WhatsAppChatsState(rx.State):
         return self.open_thread_id != "" and self.conv_loaded_for == self.open_thread_id
 
     @rx.var
+    def show_assign(self) -> bool:
+        """m-25027371: «Asignar» in «⋯» only with more than one person with access."""
+        return show_assign(len(self.agents))
+
+    @rx.var
+    def order_strip_label(self) -> str:
+        """m-25027371: the folded order — «Pedido · 3 productos · COP 45.000», plus the
+        payment only when the header shows none and something waits behind the fold."""
+        return order_strip_label(
+            self.order.items_label, self.order.total_label, strip_payment_part(self.payment)
+        )
+
+    @rx.var
     def can_compose(self) -> bool:
         return composer_enabled(self.open_thread.window_open, self.open_thread_id != "")
 
@@ -958,6 +974,12 @@ class WhatsAppChatsState(rx.State):
             if need_context:
                 self._zone_name = zone_name
                 self.agents = agents
+                # m-25027371 (seen in the browser): a chat opened by its address (from
+                # «Por responder») can load before this first list read knows the
+                # business's zone, and its bubbles said the UTC clock until the next
+                # 15 s refresh. Redraw it in the right zone now.
+                if self.conv_loaded_for and self.conv_loaded_for == self.open_thread_id:
+                    self._render_conversation()
             by_id = {a.user_id: a for a in self.agents}
             zone = _zone(self._zone_name)
             now = self._now()
@@ -2215,6 +2237,9 @@ class WhatsAppChatsState(rx.State):
                 window_label=WINDOW_CLOSED_PILL,
                 window_tone="neutral",
                 window_minutes=0,
+                # m-25027371: the header reads these — never «Quedan 5 min» on a closed chat
+                window_line=WINDOW_CLOSED_LINE,
+                window_line_tone="neutral",
             )
             if r.thread_id == thread_id
             else r
