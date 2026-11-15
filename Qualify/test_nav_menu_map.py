@@ -96,6 +96,12 @@ def test_the_blocks_are_inicio_atiende_publica_resultados_tu_negocio() -> None:
         "Anuncios",
         "Promociones",
     ]
+    assert BUSINESS_ZONE_LABEL == "Tu negocio"
+    assert [label for label, *_ in NAV_BUSINESS] == [
+        "Tu marca",
+        "Tus redes",
+        "Configuración",
+    ]
 
 
 def test_promociones_is_the_menu_word_and_the_full_name_is_still_spoken() -> None:
@@ -108,12 +114,6 @@ def test_promociones_is_the_menu_word_and_the_full_name_is_still_spoken() -> Non
     assert "Promociones por WhatsApp" not in str(
         _nav_item("Anuncios", "megaphone", "/promotions", True)
     )
-    assert BUSINESS_ZONE_LABEL == "Tu negocio"
-    assert [label for label, *_ in NAV_BUSINESS] == [
-        "Tu marca",
-        "Tus redes",
-        "Configuración",
-    ]
 
 
 def test_no_demo_or_team_tool_is_in_the_menu() -> None:
