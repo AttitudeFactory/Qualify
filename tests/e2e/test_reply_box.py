@@ -244,7 +244,7 @@ def test_closed_windows_keep_only_what_the_owner_can_do(chats_page) -> None:  # 
     box = _box(page)
     # The header says nothing once Instagram's window closed: the box says why it is off.
     expect(page.locator(".q-chat-head__rest .q-chat-window")).to_have_count(0)
-    expect(box.get_by_text("Instagram solo permite responder")).to_have_count(1)
+    expect(box.get_by_text("Ya no puedes responder")).to_have_count(1)
     expect(box.get_by_role("button", name="Enviar", exact=True)).to_be_disabled()
 
 
