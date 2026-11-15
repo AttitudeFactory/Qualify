@@ -593,12 +593,154 @@ Cuatro recetas que los lotes de la migración Liquid Glass repetían en dos o m�
 | `media_thumb(src, size="72px", width=, height=, round=False, icon="image", icon_size=, alt="", fit="cover", has=…)` | la foto de un Reel, un producto, un video trending, un referente; el avatar de una cuenta | la imagen en el marco del sistema (`.q-thumb`: material control, hairline, radio control) o, si no hay, el mismo marco con `icon` — una lista nunca muestra un hueco ni el glifo de imagen rota. `round=True` es el avatar (`lq-avatar`). `size` cuadra; `width`/`height` lo sobreescriben (`height` solo + `width="100%"` = la foto arriba de una tarjeta). `has` sustituye la prueba `src != ""` cuando el VM ya lo sabe. `alt=""` por defecto (decorativa junto a su propio título) |
 | `chat_bubble(*children, direction="out"\|"in", meta=None)` | un mensaje de una conversación: el borrador de respuesta del inbox hoy; los DMs de 4-B mañana | la burbuja del kit: `out` = lo que decimos (lavado del acento, cola abajo a la izquierda), `in` = lo que dijeron (material control, cola abajo a la derecha); `meta` (hora, estado) va dentro, debajo del texto |
 | `sort_handle(label, on_key, *, key=, lifted=False)` (+ `DragCard`) — fundador 2026-11-06 | el asa de una fila que el dueño ordena: categorías y productos en «Ordenar tu menú» (m-24955643), las respuestas del menú de WhatsApp (m-24955644) | la fila es un `DragCard` (`class_name="q-rank-card"`, `data-rank-key`, `data-rank-group` = lo que intercambia lugares) movido por `assets/rank-drag.js`; el asa (`.q-sort-handle`, `grip-vertical` 44 × 44, `SortHandle`: un `<button>` con `on_key_down`) levanta la fila al instante con el dedo o el ratón, y desde el teclado: **Espacio** levanta y suelta, **↑/↓** mueven, **Escape** la deja donde estaba (`aria-pressed` mientras está levantada; un `aria-live` dice la posición). `label` = «Mover «Shawarmas», posición 3 de 5»; `key` (`data-sort-key`) devuelve el foco al asa tras cada movimiento. **Nunca solo el asa:** la fila lleva también el «⋯» con «Primero · Subir uno · Bajar uno · Último · Mover a la posición…» (§8) |
-| `orbit_menu(label, items, *, disabled=False, icon="plus")` con `OrbitItem(key, icon, text, on_select)` — fundador 2026-11-06 (m-24955785) | el «+» del cuadro de respuesta de Chats de WhatsApp: «Enviar algo al cliente» → Tus productos · Tu menú · Formas de pago · Tus piezas · Foto del celular | el gesto Orbit del kit **redibujado** sobre nuestros tokens (`liquidos.css` no se carga): botón redondo de 44 px cuyo «+» gira 45° a «×» (`T.SPRING`, `--q-dur`; pulsado `scale(0.92)`) y una **columna** de píldoras (círculo de icono de 44 px + texto, 8 px de separación) con el material flotante, que suben 12 px una tras otra cada 30 ms. `rx.menu` (Radix DropdownMenu): `side="top"`, `align="start"`, sin dar vuelta, a 8 px del botón — nunca tapa lo de abajo; teclado y `aria-*` de Radix. `prefers-reduced-motion`: el «×» sin giro y las píldoras solo aparecen. **Reglas:** (1) solo en el cuadro de respuesta de Chats de WhatsApp (otra pantalla, visto bueno del fundador); (2) 2 a 6 opciones; (3) icono **y** texto de 16 caracteres como máximo (la primitiva lo exige); (4) una opción abre un flujo, nunca envía ni publica; (5) fuera de sus condiciones no se dibuja (no se deshabilita). `data-orbit-key` en cada opción; al cerrar el flujo, el foco vuelve al «+» (`ORBIT_FOCUS_SCRIPT`) |
+| `orbit_menu(label, items, *, disabled=False, icon="plus")` con `OrbitItem(key, icon, text, on_select)` — fundador 2026-11-06 (m-24955785) | el «+» del cuadro de respuesta de Chats de WhatsApp: «Enviar algo al cliente» → Tus productos · Tu menú · Formas de pago · Tus piezas · Foto del celular | el gesto Orbit del kit **redibujado** sobre nuestros tokens (`liquidos.css` no se carga): botón redondo de 44 px cuyo «+» gira 45° a «×» (`T.SPRING`, `--q-dur`; pulsado `scale(0.92)`) y una **columna** de píldoras (círculo de icono de 44 px + texto, 8 px de separación) con el material flotante, que suben 12 px una tras otra cada 30 ms. `rx.menu` (Radix DropdownMenu): `side="top"`, `align="start"`, sin dar vuelta, a 8 px del botón — nunca tapa lo de abajo; teclado y `aria-*` de Radix. `prefers-reduced-motion`: el «×» sin giro y las píldoras solo aparecen. **Reglas:** (1) en el cuadro de respuesta de Chats de WhatsApp y en «Agregar» de la línea de tiempo del editor (Deivid, 2026-11-14, ED-00b; otra pantalla, visto bueno del fundador); (2) 2 a 6 opciones; (3) icono **y** texto de 16 caracteres como máximo (la primitiva lo exige); (4) una opción abre un flujo, nunca envía ni publica; (5) fuera de sus condiciones no se dibuja (no se deshabilita). `data-orbit-key` en cada opción; al cerrar el flujo, el foco vuelve al «+» (`ORBIT_FOCUS_SCRIPT`) |
 | `expandable_text(text, *, expanded, on_toggle, lines=2, min_chars=60, id=None, size="1", color=T.TEXT_STRONG)` — Deivid 2026-11-10 (m-24921079) | un texto que se corta a `lines` líneas y el dueño despliega cuando quiere: la descripción de cada parte en «Orden del clip» | `Qualify/ui/expandable_text.py`; recorte CSS `.q-expandable--cut`; «Ver más»/«Ver menos» es un `<button>` de ≥ 44 px con `aria-expanded` (+ `aria-controls` con `id`), sin hover ni `title`, y su toque no inicia un arrastre; el botón solo aparece si el texto pasa de `min_chars` caracteres (Reflex no mide el recorte); el estado lo guarda quien lo usa, por una clave estable del ítem, nunca su posición |
 | `clip_player(poster, *, src=, label=, pause_label=, start="", end="", broken_text="", key=None, framed=False, small=False, renew=False)` + `clip_player_script()`, `clip_player_notice()`, `clip_player_renew(evento)` (`Qualify/ui/clip_player.py`, `assets/clip-player.js`) — m-24992893 / m-24992894, 2026-11-10 | ver un pedazo de video **en el mismo cuadro** de su imagen, sin salir del paso: la escena de cada parte del reel en «Orden del clip» (paso 2) y la vista previa de las partes «Para revisar» / «Lista» en «Creando tus partes» | la imagen (componente o URL; sin URL, el glifo de película) con un ▶ redondo al centro (3rem; `small` = 2rem con blanco de 44 px). Tocar ▶ reproduce **mudo** en el mismo marco, que nunca crece ni se mueve; mientras carga, la imagen sigue y el ▶ se atenúa y late (otro toque cancela): el video solo la tapa cuando de verdad reproduce. Video e imagen llenan el marco igual (`object-fit: cover`), así el video aparece donde estaba la escena; la marca de pausa se ve el primer segundo (en el teléfono no hay puntero); abajo a la derecha, el sonido (`aria-pressed`, «Activar sonido»); tocar el video lo pausa y vuelve la imagen con ▶. Con `start`/`end` (y `#t=start,end` en `src`) reproduce solo ese tramo y se detiene al final, sin bucle: **un solo archivo**, saltos por tramo. El `<video>` no descarga nada hasta ▶ (`preload="none"`, la dirección viaja en `data-clip-src`): un sondeo del servidor que vuelve a pintar la fila no reinicia lo que se ve; `key` = el id estable de la fila. Un solo video sonando en la página (también «Tu video completo»); se detiene si su imagen se oculta (filas plegadas) o empieza un arrastre (`slide-drag.js` nunca levanta una tarjeta desde un botón); ←/→ sobre sus botones no mueven la tarjeta. Si el archivo ya no está: vuelve la imagen **sin** ▶ en todos los cuadros de ese archivo y, con `broken_text`, se escribe una vez por archivo en el `clip_player_notice()` más cercano (texto visible bajo la lista, `role="status"`); sin aviso en la pantalla, solo lo oye el lector de pantalla. Con `renew` (rutas `/r2media` de vida corta) el primer error no rompe: pulsa el `clip_player_renew(evento)` más cercano, la pantalla relee sus rutas y el clip vuelve a reproducir cuando cambia su `data-clip-src`; un segundo error sí lo rompe. Nada solo-hover: ▶ y el sonido siempre visibles cuando aplican; la marca de pausa aparece con el puntero o el foco. Monta `clip_player_script()` una vez por pantalla. `framed` = el marco `.q-thumb`. **Demo en `/design`: pendiente** (necesita un video de muestra servido por la app) |
-| `edit_preview(*, src, video_key, poster, start, end, speed, rate, rotate, text, place, text_long, text_layout, effect_srcs, focus, play_nonce, known, remote, pending, on_duration, on_resolve, undo, undo_on, …)` + `edit_preview_script()` (`Qualify/ui/edit_preview.py`, `assets/edit-preview.js`) — ED-01 m-25026605, 2026-11-14. **Patrón nuevo, pendiente de firma (ED-00)** | la vista previa en vivo y gratis del editor «Arma tu video» (paso 1 del Clip): cómo va quedando el video antes de crear | un cuadro 9:16 con el `<video>` del dueño que repite **solo su tramo** (vuelve al inicio, en bucle), girado con `rotate()` (a 90/270 el video se acomoda con los lados cambiados para seguir llenando el 9:16), recortado con `object-fit: cover` centrado y a `playbackRate` = velocidad (tope ×16; más arriba la pantalla dice que se ve más lento). Encima, el texto del dueño con el diseño `scrim` del catálogo de #674 (`layer_spec/catalog_v1.json`: blanco, sin contorno ni sombra de letra, sobre degradado negro, dentro de la zona segura 9:16 y 270–1536) y los efectos como `<video>` mudos en bucle con `mix-blend-mode: screen` (solo si su archivo existe). Un solo sonido; ▶/❚❚ y el sonido (`aria-pressed`) del kit del `clip_player`. Debajo, en la zona fija, «{t} de {total} · Así va quedando» (el tiempo lo escribe el script) o, mientras hay un cambio, la línea con «Deshacer» (sin temporizador, WCAG 2.2.1); un video de R2 se reproduce por `/r2media/{token}`, que la pantalla emite cuando el script pulsa un botón oculto (`pending` → `on_resolve`); si no se puede, lo dice con su texto, y «No pudimos mostrar…» queda solo para un error real (`role="status"`). El script informa largo y tamaño en cada `loadedmetadata` por un botón oculto, y un error (o 15 s sin largo) como largo negativo: es lo único que el servidor sabe del navegador. Nada se decodifica en Reflex ni en el servidor. Dónde va en la pantalla lo decide quien lo monta («Arma tu video», ED-02, detrás de `QUALIFY_CLIP_EDITOR`). **Demo en `/design`: pendiente** |
+| `edit_preview(*, src, video_key, poster, start, end, speed, rate, rotate, text, place, text_long, text_layout, effect_srcs, focus, play_nonce, known, remote, pending, on_duration, on_resolve, undo, undo_on, …)` + `edit_preview_script()` (`Qualify/ui/edit_preview.py`, `assets/edit-preview.js`) — ED-01 m-25026605, 2026-11-14. **Patrón nuevo, pendiente de firma (ED-00)**; la línea de tiempo que va debajo y comparte su reloj: §5.10 (ED-00b), y la secuencia de varios tramos y fotos: ED-01b | la vista previa en vivo y gratis del editor «Arma tu video» (paso 1 del Clip): cómo va quedando el video antes de crear | un cuadro 9:16 con el `<video>` del dueño que repite **solo su tramo** (vuelve al inicio, en bucle), girado con `rotate()` (a 90/270 el video se acomoda con los lados cambiados para seguir llenando el 9:16), recortado con `object-fit: cover` centrado y a `playbackRate` = velocidad (tope ×16; más arriba la pantalla dice que se ve más lento). Encima, el texto del dueño con el diseño `scrim` del catálogo de #674 (`layer_spec/catalog_v1.json`: blanco, sin contorno ni sombra de letra, sobre degradado negro, dentro de la zona segura 9:16 y 270–1536) y los efectos como `<video>` mudos en bucle con `mix-blend-mode: screen` (solo si su archivo existe). Un solo sonido; ▶/❚❚ y el sonido (`aria-pressed`) del kit del `clip_player`. Debajo, en la zona fija, «{t} de {total} · Así va quedando» (el tiempo lo escribe el script) o, mientras hay un cambio, la línea con «Deshacer» (sin temporizador, WCAG 2.2.1); un video de R2 se reproduce por `/r2media/{token}`, que la pantalla emite cuando el script pulsa un botón oculto (`pending` → `on_resolve`); si no se puede, lo dice con su texto, y «No pudimos mostrar…» queda solo para un error real (`role="status"`). El script informa largo y tamaño en cada `loadedmetadata` por un botón oculto, y un error (o 15 s sin largo) como largo negativo: es lo único que el servidor sabe del navegador. Nada se decodifica en Reflex ni en el servidor. Dónde va en la pantalla lo decide quien lo monta («Arma tu video», ED-02, detrás de `QUALIFY_CLIP_EDITOR`). **Demo en `/design`: pendiente** |
 
 Demo en vivo: `/design` → «Elegir, subir, mostrar, conversar».
+
+### 5.10 Línea de tiempo (ED-00b, patrón nuevo, pendiente de firma)
+
+> **Estado:** propuesto por ux-designer el 2026-11-14 a pedido de Deivid («ok pero si quiero
+> timeline donde pueda reproducir el video hacer los cortes desde la timeline , arrastar la media
+> dentro etc poner los efectos , etc»; dónde: «Escritorio y celular adaptado (Recomendado)»).
+> D-T1…D-T6 están decididas; la sección espera el «sí» de Deivid en m-25029104. Reemplaza D-E3
+> («solo en escritorio y solo para mirar»). Se construye en ED-10 y la usan ED-03, ED-04, ED-07,
+> ED-12, ED-13 y ED-14. Fuente: `.claude/epica-efectos-propuesta-linea-de-tiempo.md` §1 y §3.
+
+**Para qué.** Que el dueño arme su video **tocando el video mismo**: ve las partes en orden, toca
+una y la cambia ahí, sin elegir herramientas. Va debajo de `edit_preview` (§5.9), dentro del paso
+1 del Clip, en el marco de §4.5.
+
+**Anatomía** (de arriba abajo):
+
+```
+ 0:03   0:04   0:05 │ 0:06   0:07      ← regla de segundos
+ ▣▣ Video 1 ▣▣▣◀▌╔══│══ Video 2 ══╗▐▶  ← «Fotos y videos» (56 px); elegido: borde + 2 tiradores
+ Aa «2×1 hoy» ══════│═════╗            ← «Textos» (44 px)
+ ░░░░ Vapor ░░░░░░░░│░░░░░░░░░░░░     ← «Efectos» (44 px; una fila más si dos se pisan)
+                    ▲ cabezal
+[✂ Cortar aquí][Velocidad][⟳ Girar][Quitar]  ← barra de acciones (cambia con lo elegido)
+ Video 2 · usas 0:02 a 0:09 · 7 s   [Listo]  ← panel del bloque elegido
+```
+
+1. **Regla de segundos** arriba, con la hora en texto.
+2. **Tres pistas**, siempre visibles y en este orden: «Fotos y videos», «Textos», «Efectos». Una
+   pista vacía no desaparece: muestra una línea punteada y «Toca + y elige Texto» /
+   «Toca + y elige Efecto» (escritorio: «Haz clic en + y elige…»).
+3. **Bloques:** cada foto, video, texto o efecto es un bloque con ícono **y** nombre (nunca solo
+   color, P1). Los de video llevan su cuadro (ED-11a). La pista de video **nunca tiene huecos**:
+   recortar, quitar o mover corre los bloques de después; textos y efectos se quedan en su hora.
+4. **Cabezal:** una línea vertical de acento que marca el momento que muestra la vista previa. Es
+   el mismo reloj que `edit_preview`.
+5. **Tiradores:** solo en el bloque elegido, uno al inicio y otro al final, **por fuera** del
+   bloque para que el dedo no tape lo que recorta.
+6. **Barra de acciones:** hasta 4 botones de vidrio (`variant="surface"`) con ícono y nombre, en la
+   cápsula flotante `.q-island`. Sin nada elegido: un solo **«Agregar»**, el `orbit_menu` de §5.9 (el «+»
+   gira a «×» y abre la columna «Foto o video · Texto · Efecto · Idea»; Deivid, 2026-11-14). El bloque
+   elegido lleva debajo la lente líquida `.q-glass-blob` del menú. Con un bloque elegido, sus acciones (video: «Cortar aquí ·
+   Velocidad · Girar · Quitar»; foto: «Duración · Girar · Quitar»; texto: «Editar texto ·
+   Quitar»; efecto: «Cambiar efecto · Quitar»). Reemplaza al selector de 4 herramientas.
+7. **Panel del bloque:** debajo de la barra; habla de **un solo bloque a la vez** y siempre tiene
+   «Listo», que quita la selección.
+
+**Tamaños y reglas fijas.**
+
+- **1 s = 44 px en el celular**, así el bloque más corto (1 s) ya mide 44 px de toque.
+- **Toques de 44 px como mínimo:** botones de la barra 44 px de alto; tiradores de **44 × 56 px**;
+  8 px de margen entre la pista y la barra.
+- **Imán de ½ s siempre** (la rejilla de `NUDGE_SECONDS`); además, un borde se pega al cabezal o
+  al borde de otro bloque a menos de ¼ s. Mientras se arrastra, un globo dice la hora («0:04,5»).
+- **Sin zoom** (D-T5): ni botones ni pellizco.
+- **Todo viene armado** (E3): al entrar, la pista ya tiene lo elegido en su orden (videos enteros
+  hasta 15 s, fotos de 2 s, el texto del gancho de 0:00 al final si existe, sin efectos).
+  «Siguiente» funciona sin tocar nada.
+- **Límites dichos antes del choque:** 8 fotos o videos, 1 s por tramo como mínimo, 3 textos y 8
+  efectos. Al llegar al límite, el botón queda no disponible (`q-button-off`, §5.5) con su motivo.
+
+**En el celular** (y en escritorio cuando el contenedor `.q-edit-host` mide menos de 900 px):
+
+- El cabezal queda **fijo al centro** y la pista se desliza debajo. Deslizar la pista pausa y lleva
+  la vista previa a ese momento; con ▶ la pista corre sola. Solo la pista se desliza en
+  horizontal: la página nunca.
+- Nombres de pista en `aria-label`, no visibles.
+- **Mover:** se mantiene apretado el bloque **½ s**, se levanta y se arrastra; los demás hacen
+  lugar (como `slide-drag.js`). Al levantarlo, la línea viva dice «Suelta donde quieras ponerlo.».
+  No hay botones para mover (D-T6).
+- «Agregar» → «Foto o video» abre el cajón de hoy; lo elegido entra **después del bloque bajo el cabezal**.
+  «Agregar» → «Texto» y «Efecto» crean un bloque **desde el cabezal hasta el final**.
+- El «atrás» del teléfono primero quita la selección y después vuelve al paso anterior (N5). La
+  dirección guarda el bloque elegido (`?bloque=video-2`, N5; el «atrás» por pasos es N6b).
+
+**En escritorio** (contenedor de 900 px o más):
+
+- La pista ocupa todo el ancho y **se ajusta al largo del video**; si pasa de unos 40 s, aparece el
+  desplazamiento horizontal dentro de la pista. Nombres de pista visibles a la izquierda.
+- El cabezal se mueve con un clic en la regla o arrastrándolo.
+- Al lado de la vista previa, el panel «Tus fotos y videos»: desde ahí se arrastran medios a la
+  pista (una línea muestra dónde caen), y también se sueltan archivos de la computadora, que se
+  suben con el flujo de «Subir».
+- Tiradores, imán, arrastre y panel funcionan igual que en el celular.
+
+**Accesibilidad** (§8):
+
+- La línea es un grupo con `aria-label` «Línea de tiempo de tu video» y tres listas: «Fotos y
+  videos», «Textos» y «Efectos». Cada bloque es un `<button>` alcanzable con Tab, con nombre
+  completo («Video 2 de 3, usas de 0:02 a 0:09, dura 7 s» · «Vapor, de 0:02 a 0:09») y
+  `aria-pressed` cuando está elegido.
+- **Enter** elige el bloque y lleva el foco a su panel; **Escape** cierra el panel y vuelve al
+  bloque.
+- **←/→ sobre un bloque de video o foto lo cambian de lugar** (como la tira de UI-3), con la ayuda
+  «Usa las flechas para cambiarlo de lugar.» en `aria-description`. Sobre un texto o un efecto, lo
+  corren ½ s.
+- **El cabezal es un `slider`** («Momento del video», `aria-valuetext` «0:05 de 0:12»): ←/→ lo
+  mueven ½ s; Inicio y Fin van a los extremos. **Los tiradores también son `slider`** («Inicio de
+  {bloque}» · «Final de {bloque}»), con el mismo paso de ½ s.
+- El panel repite con botones lo que hacen los tiradores: «− ½ s / + ½ s», «Cortar aquí»,
+  «Quitar». Mover no tiene botón (D-T6).
+- Cada cambio se anuncia **una vez** en la línea `role="status"` de `edit_preview` («Cortaste el
+  video 2 en dos.», «Moviste la foto 1.»…), junto a «Deshacer» (sin temporizador, 10 pasos).
+- `prefers-reduced-motion`: los bloques cambian de lugar sin deslizarse y la pista no corre
+  animada al buscar.
+
+**Lo que NO hace.** No es un editor de video completo: **sin zoom, sin capas libres, sin
+fotogramas sueltos, sin transiciones, sin pistas de audio aparte, sin huecos ni bloques
+superpuestos en la pista de video.** No genera nada: todo lo que está en la pista se ve gratis en
+la vista previa antes de crear (E5); lo que cuesta pasa al tocar «Crear». En la pantalla nunca se
+escriben «timeline», «track», «clip», «capa», «frame», «render», «split» ni «trim»; «Cortar aquí»
+es la palabra del dueño.
+
+**Decisiones de Deivid (2026-11-14), textuales.**
+
+| Decisión | Respuesta de Deivid | Qué fija |
+|---|---|---|
+| D-T1 · ¿Qué es una foto en la línea? | «Foto quieta de N s (Recomendado)» | Una foto es un bloque quieto de 1 a 5 s (2 s por defecto), gratis y visible en la vista previa. «Darle movimiento con IA» queda fuera (ED-14). |
+| D-T2 · ¿Varios textos y el mismo efecto dos veces? | «Sí, hasta 3 textos (Recomendado)». El mismo efecto se puede repetir, cada uno con su inicio y su fin. | Hasta 3 textos con inicio y fin; un efecto puede repetirse sin pisarse a sí mismo (contrato v2, ED-15). |
+| D-T3 · ¿Dónde va «Cámara rápida»? | «Velocidad del bloque (Recomendado)» | «Velocidad» (Normal · ×5 · ×10 · ×20) es una acción del bloque de video, no un efecto. |
+| D-T4 · Miniaturas en la pista de video | «Un cuadro ya, tira después (Recomendado)» | Un cuadro por bloque ya (ED-11a); la tira de cuadros del servidor después (ED-11b). |
+| D-T5 · ¿Zoom? | «Sin zoom (Recomendado)» | 1 s = 44 px en el celular; ajustada al ancho en escritorio. |
+| D-T6 · ¿Cómo se ordena en el celular? | «Solo arrastrar» | En el celular solo se mantiene y arrastra, sin botones; en escritorio, ←/→ con el teclado, sin botones visibles (como UI-3). ux-designer recomendaba sumar «‹ Antes / Después ›». |
+
+**Riesgo aceptado (D-T6):** en el celular, quien no puede arrastrar no puede reordenar (WCAG 2.5.7).
+
+**Tokens y primitivas que usa** (ningún color nuevo):
+
+| Parte | Con qué se dibuja |
+|---|---|
+| Bloque | material control (`--q-control-edge`, `--q-control-hi`), `T.RADIUS_CONTROL`; ícono lucide `T.ICON_SM`; nombre en `rx.text size=1`; cuadro del video con `media_thumb` (§5.9) |
+| Bloque elegido | anillo de 2 px del acento y lavado, el mismo de `choice_card` (`.q-choice-card--on`); `aria-pressed` |
+| Pista vacía | borde punteado del `dropzone` (`.q-dropzone`), texto en `T.TEXT_MUTED` |
+| Regla y horas | `rx.text size=1`, `T.TEXT_MUTED`, `.q-nums` |
+| Cabezal y tiradores | `accent-9` (sólido del acento, §3.1); foco `accent-8` |
+| Globo con la hora | el vidrio oscuro del `rx.tooltip` (`--q-tooltip-fill`) |
+| Barra de acciones | `rx.button` `soft` size 2 con ícono `T.ICON_MD`; no disponible = `q-button-off` |
+| Panel del bloque | `card` (§5.1); «Listo» = `rx.button` `soft` |
+| Línea viva y «Deshacer» | la zona fija `role="status"` de `edit_preview` (§5.9) |
+| Movimiento | `T.SPRING` al hacer lugar, `T.DUR_FAST` al elegir; nada con `prefers-reduced-motion` |
+| Arrastre | el patrón `DragCard` + `slide-drag.js` de la tira de hoy |
+
+Demo en `/design`: sección "Línea de tiempo".
 
 ---
 

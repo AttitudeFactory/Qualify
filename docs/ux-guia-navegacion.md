@@ -104,6 +104,7 @@ URL y restaura el estado de forma idempotente. No envía, publica ni crea borrad
 | `ficha` | UUID de la publicación de Tu semana abierta como detalle; `evento` conserva su significado en la revisión de videos. |
 | `flujo`, `paso` | Asistente o cajón activo y su paso visible, contado desde 1. |
 | `objeto`, `consulta` | UUID interno del menú/evento/mensaje o de la consulta que necesita el flujo. |
+| `bloque` | Bloque elegido en la línea de tiempo de «Arma tu video» (`/create?paso=1&bloque=video-2`). Reemplaza a `herramienta` de ED-02 (ED-00b, m-25029104). |
 
 Valores de `flujo`: `producto`, `programar`, `reprogramar`, `menu`, `consulta`,
 `promocion`, `mensaje-aprobado` y `mensaje-chat`. `ui.flow_history.flow_sync` escribe
@@ -116,6 +117,10 @@ restaura la dirección que lo abrió; no agrega una lista nueva encima de los pa
 Las guardias abren el primer paso pendiente si faltan datos. Las respuestas y archivos
 conservados en la sesión se reutilizan; una sesión nueva empieza por lo que falte y nunca
 simula un guardado ni un envío. La URL no incluye nombres, teléfonos ni textos del cliente.
+
+**Línea de tiempo (N5, N6b).** En «Arma tu video», el «atrás» del celular o del navegador
+primero quita la selección del bloque (`bloque` sale de la dirección), después vuelve al paso
+anterior y nunca saca de Crear. El patrón está en `docs/design-system.md` §5.10.
 
 ## 5. El recorrido principal (cómo se encadenan los módulos)
 

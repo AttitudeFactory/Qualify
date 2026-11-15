@@ -1051,3 +1051,250 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
 .q-edit-preview__time:empty { display: none; }
 .q-edit-preview__broken { display: none; margin: 0; font-size: var(--font-size-1); color: var(--gray-11); text-align: center; }
 .q-edit-preview[data-edit-state="broken"] .q-edit-preview__broken { display: block; }
+
+/* ── The timeline of «Arma tu video» (ED-00b m-25029104; ED-10 takes it): ruler, three
+   tracks and the playhead. `ui.timeline` + `assets/timeline.js`. Phone by default: 1 s
+   = `--tl-px` (44 px), the tracks slide INSIDE `.q-tl__scroller` under a playhead fixed
+   at the centre (the canvas has half the box of padding on each side, so 0:00 and the
+   end can reach it). From 52rem (832 px) of its OWN width — the step's 900 px of the
+   proposal §1.4 minus the step's padding — the tracks fill the width and the names show.
+   Blocks are placed by their `--b-start` / `--b-len` (seconds); the desktop playhead by
+   `--tl-t` (the script). */
+.q-tl { container: q-tl / inline-size; display: flex; flex-direction: column; gap: var(--space-1); width: 100%; min-width: 0; }
+.q-tl__top { display: flex; justify-content: center; min-height: 1.25rem; }
+.q-tl__clock { font-size: var(--font-size-1); font-weight: 600; font-variant-numeric: tabular-nums; color: var(--gray-12); }
+.q-tl__frame { --tl-mode: phone; position: relative; min-width: 0; }
+.q-tl__names { display: none; }
+.q-tl__scroller {
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+  min-width: 0;
+}
+.q-tl__scroller::-webkit-scrollbar { display: none; }
+.q-tl__canvas {
+  position: relative;
+  box-sizing: content-box;
+  width: calc(var(--tl-total) * var(--tl-px));
+  padding-inline: 50cqw;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.q-tl__ruler { position: relative; height: 24px; }
+.q-tl__tick {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--b-start) * var(--tl-px));
+  padding-left: 4px;
+  border-left: 1px solid var(--gray-a6);
+  font-size: var(--font-size-1);
+  line-height: 24px;
+  font-variant-numeric: tabular-nums;
+  color: var(--gray-11);
+  white-space: nowrap;
+}
+/* The playhead's slider: over the ruler, invisible (the line is the picture). On a phone
+   the finger slides the tracks instead, so only the keyboard reaches it. */
+.q-tl__scrub {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 3;
+  width: 100%;
+  height: 24px;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+  pointer-events: none;
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+}
+.q-tl__scrub::-webkit-slider-thumb { -webkit-appearance: none; width: 2px; height: 24px; }
+.q-tl__scrub::-moz-range-thumb { width: 2px; height: 24px; border: 0; }
+.q-tl__lane { position: relative; height: 44px; border-radius: var(--q-radius-control); background: var(--gray-a2); }
+.q-tl__lane--media { height: 56px; }
+.q-tl__item {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--b-start) * var(--tl-px));
+  width: calc(var(--b-len) * var(--tl-px));
+  padding-inline: 1px;
+  box-sizing: border-box;
+}
+.q-tl__item { z-index: 2; }
+.q-tl__item[data-tl-chosen="true"] { z-index: 3; }
+.q-tl__block {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  padding: 0 var(--space-2);
+  overflow: hidden;
+  border: 1px solid var(--accent-a6);
+  border-radius: var(--q-radius-control);
+  background: var(--accent-a4);
+  color: var(--accent-12);
+  font: inherit;
+  font-size: var(--font-size-1);
+  font-weight: 600;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.q-tl__block[data-tl-block="photo"] { border-color: var(--gray-a6); background: var(--gray-a4); color: var(--gray-12); }
+.q-tl__block[data-tl-block="text"] { border-color: var(--gray-a7); background: var(--gray-a3); color: var(--gray-12); }
+.q-tl__block[data-tl-block="effect"] { border-style: dashed; border-color: var(--accent-a7); background: var(--accent-a3); }
+.q-tl__block[aria-pressed="true"] { border: 2px solid var(--accent-9); }
+.q-tl__block:focus-visible { outline: 2px solid var(--accent-8); outline-offset: -4px; }
+.q-tl__icon { display: inline-flex; flex: none; }
+.q-tl__aa { font-weight: 700; }
+.q-tl__label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* The chosen block's handles: 44 px wide and as tall as the track, OUTSIDE the block so
+   the finger never covers what it trims (§3.8). */
+.q-tl__handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  width: 44px;
+  cursor: ew-resize;
+  touch-action: none;
+}
+.q-tl__handle--start { right: 100%; justify-content: flex-end; }
+.q-tl__handle--end { left: 100%; justify-content: flex-start; }
+.q-tl__grip {
+  width: 12px;
+  height: 70%;
+  border-radius: 4px;
+  background: var(--accent-9);
+  box-shadow: 0 0 0 2px var(--color-panel-solid);
+}
+.q-tl__handle:focus-visible { outline: 2px solid var(--accent-8); outline-offset: -2px; border-radius: var(--q-radius-control); }
+.q-tl__empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  padding: 0 var(--space-2);
+  border: 1px dashed var(--gray-a7);
+  border-radius: var(--q-radius-control);
+  font-size: var(--font-size-1);
+  color: var(--gray-11);
+  white-space: nowrap;
+}
+.q-tl__hint-desk { display: none; }
+.q-tl__head {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 4;
+  width: 2px;
+  transform: translateX(-1px);
+  background: var(--accent-9);
+  pointer-events: none;
+}
+.q-tl__head::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  transform: translateX(-50%);
+  background: var(--accent-9);
+}
+.q-tl__head--fixed { left: 50%; }
+.q-tl__head--move { display: none; left: calc(var(--tl-t, 0) / var(--tl-total) * 100%); }
+.q-tl:has(.q-tl__scrub:focus-visible) .q-tl__head { outline: 2px solid var(--accent-8); outline-offset: 2px; }
+.q-tl:has(.q-tl__scrub:focus-visible) .q-tl__clock { text-decoration: underline; }
+.q-tl__status { min-height: 1.25rem; margin: 0; font-size: var(--font-size-1); color: var(--gray-11); }
+
+@container q-tl (min-width: 52rem) {
+  .q-tl__top { justify-content: flex-end; }
+  .q-tl__frame { --tl-mode: desk; display: grid; grid-template-columns: 7rem minmax(0, 1fr); }
+  .q-tl__names { display: flex; flex-direction: column; gap: 4px; }
+  .q-tl__name { display: flex; align-items: center; height: 44px; font-size: var(--font-size-1); font-weight: 600; color: var(--gray-11); }
+  .q-tl__name--ruler { height: 24px; }
+  .q-tl__name--media { height: 56px; }
+  .q-tl__scroller { overflow: visible; padding-inline: 2.75rem; }
+  .q-tl__canvas { width: auto; padding-inline: 0; }
+  .q-tl__tick { left: calc(var(--b-start) / var(--tl-total) * 100%); }
+  .q-tl__item { left: calc(var(--b-start) / var(--tl-total) * 100%); width: calc(var(--b-len) / var(--tl-total) * 100%); }
+  .q-tl__scrub { pointer-events: auto; }
+  .q-tl__head--fixed { display: none; }
+  .q-tl__head--move { display: block; }
+  .q-tl__hint-phone { display: none; }
+  .q-tl__hint-desk { display: inline; }
+}
+
+/* The action bar and the chosen block's panel: every target ≥ 44 px, 8 px from the
+   tracks (§3.8). */
+.q-tl-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr));
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  width: 100%;
+}
+.q-tl-actions .rt-Button,
+.q-tl-panel .rt-Button { min-height: 44px; height: auto; white-space: normal; }
+.q-tl-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-3);
+  border: 1px solid var(--gray-a5);
+  border-radius: var(--q-radius-card);
+  background: var(--gray-a2);
+}
+.q-tl-panel__row { display: flex; align-items: center; gap: var(--space-2); }
+.q-tl-panel__label { min-width: 5.5rem; }
+.q-tl-panel__done { display: flex; justify-content: flex-end; }
+
+/* Round 2 (Deivid, 2026-11-14): the kit's own pieces on the timeline.
+   - The menu's liquid lens (`.q-glass-blob`, assets/qualify.css «Liquid glass menu»)
+     rests UNDER the chosen block and glides to the next one; `assets/timeline.js`
+     places it inside the canvas (blocks z 2, the lens z 1, the tracks below).
+   - The chosen block's bar floats in a glass island (`.q-island`), in the flow: above
+     the tracks on a phone, under them on a desktop (`.q-tl-stack`), never over them.
+   - A video or photo block shows its picture (`media_thumb`), a sped-up video «×10». */
+.q-tl__canvas > .q-glass-blob { z-index: 1; }
+@media (prefers-reduced-motion: reduce) {
+  .q-tl__canvas > .q-glass-blob,
+  .q-tl__canvas > .q-glass-blob .q-glass-blob__surface { transition: none; animation: none; }
+}
+.q-tl__block .q-thumb { flex: none; }
+.q-tl__speed {
+  flex: none;
+  margin-left: auto;
+  padding: 0 var(--space-1);
+  border-radius: var(--q-radius-control);
+  background: var(--accent-a5);
+  font-variant-numeric: tabular-nums;
+}
+.q-tl-stack { container: q-tl-stack / inline-size; display: flex; flex-direction: column; gap: var(--space-3); width: 100%; min-width: 0; }
+.q-tl-stack__actions,
+.q-tl-stack__track,
+.q-tl-stack__panel { min-width: 0; }
+.q-tl-stack .q-tl-actions { margin-top: 0; }
+@container q-tl-stack (min-width: 52rem) {
+  .q-tl-stack__track { order: 1; }
+  .q-tl-stack__actions { order: 2; }
+  .q-tl-stack__panel { order: 3; }
+}
+.q-tl-island { padding: var(--space-2); }
+/* The island's depth layer (`::before`, z 0) is positioned: the buttons go above it. */
+.q-tl-island > * { position: relative; z-index: 1; }
+.q-tl-add { display: flex; align-items: center; min-height: 44px; }
+.q-tl-panel__field { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
