@@ -1287,6 +1287,13 @@ class WhatsAppChatsState(rx.State):
             self.compose_mode = mode
 
     @rx.event
+    def toggle_buttons(self) -> None:
+        """«Botones» in the reply box (m-25027374): the three titles ride with the text,
+        or the box goes back to text only. What was typed in each stays."""
+        buttons = self.compose_mode == COMPOSE_BUTTONS
+        self.compose_mode = COMPOSE_TEXT if buttons else COMPOSE_BUTTONS
+
+    @rx.event
     def set_draft_text(self, value: str) -> None:
         self.draft_text = value if isinstance(value, str) else ""
 
