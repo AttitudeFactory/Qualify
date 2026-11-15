@@ -75,6 +75,27 @@ def _thread_ready(page) -> None:  # noqa: ANN001
     page.wait_for_timeout(400)
 
 
+def _menu_pick(page, head, name: str, *, click: bool = True) -> None:  # noqa: ANN001
+    """Open «⋯» until it offers `name` (the act and the refreshes after it redraw the
+    header meanwhile), then tap it."""
+    for _ in range(10):
+        if page.get_by_role("menu").count() == 0:
+            head.get_by_role("button", name=MORE).click()
+        item = page.get_by_role("menuitem", name=name, exact=True)
+        try:
+            expect(item).to_be_enabled(timeout=2_000)
+            if click:
+                item.click(timeout=2_000)
+            return
+        except AssertionError:
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(700)
+        except Exception:  # noqa: BLE001 — a redraw detached it: try again
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(700)
+    raise AssertionError(f"«⋯» never offered {name}")
+
+
 def _panel_scroll(page) -> int:  # noqa: ANN001
     return int(page.evaluate("() => document.querySelector('main.q-panel')?.scrollTop || 0"))
 
@@ -153,11 +174,8 @@ def test_a_whatsapp_row_opens_beside_the_list(chats_page) -> None:  # noqa: ANN0
         ["Asignar", "Cerrar", "Ajustes de este canal"]
     )
     page.get_by_role("menuitem", name="Cerrar").click()
-    head.get_by_role("button", name=MORE).click()
-    expect(page.get_by_role("menuitem", name="Reabrir")).to_be_visible(timeout=20_000)
-    page.get_by_role("menuitem", name="Reabrir").click()
-    head.get_by_role("button", name=MORE).click()
-    expect(page.get_by_role("menuitem", name="Cerrar")).to_be_visible(timeout=20_000)
+    _menu_pick(page, head, "Reabrir")  # closed: «⋯» now offers «Reabrir»
+    _menu_pick(page, head, "Cerrar", click=False)  # reopened
     page.keyboard.press("Escape")
 
     # «Botones» and the «+» rows open their panels (choosing never sends)
@@ -242,15 +260,17 @@ def test_phone_full_screen_back_keeps_filter_channel_and_scroll(chats_page) -> N
     # Instagram keeps the scroll too (its row is on the «Todos» list of every channel).
     _list(page, "&filtro=todos")
     cami = _row(page, "Camila Ríos")
-    page.evaluate("() => { const p = document.querySelector('main.q-panel'); p.scrollTop = 120; }")
+    cami.scroll_into_view_if_needed()
     page.wait_for_timeout(300)
-    before = _panel_scroll(page)
+    before, row_y = _panel_scroll(page), cami.bounding_box()["y"]
+    assert before > 100, before
     cami.click()
     _thread_ready(page)
     page.get_by_role("button", name=BACK).click()
     expect(page.locator(".q-conv-list")).to_be_visible()
     page.wait_for_timeout(600)
     assert abs(_panel_scroll(page) - before) <= 4, (_panel_scroll(page), before)
+    assert abs(cami.bounding_box()["y"] - row_y) <= 4  # the same row, at the same place
 
 
 def test_old_whatsapp_chat_addresses_land_in_por_responder(chats_page) -> None:  # noqa: ANN001
@@ -307,7 +327,15 @@ def test_a_chat_of_another_business_never_opens(chats_page, app_server, context)
     ]
     for address in cases:
         page.goto(_origin(page) + address)
-        expect(page.locator(".q-conv-list .q-conv-row").first).to_be_visible(timeout=60_000)
+        expect(page).to_have_url(re.compile(r"/responder/?\?tab=mensajes"), timeout=60_000)
+        expect(page.locator(".q-wa-chats__list")).to_be_visible(timeout=60_000)
         page.wait_for_timeout(2_500)
         expect(page.locator(".q-chat-thread")).to_have_count(0)
-        expect(page.get_by_text("Laura Gómez", exact=True)).to_have_count(1)  # my row only
+        expect(page.locator(".q-chat-head")).to_have_count(0)
+    # My own chat still opens by its address (the check is not a blanket refusal).
+    page.goto(
+        _origin(page) + f"/responder?tab=mensajes&cuenta={mine['whatsapp_connection']}"
+        f"&chat={mine['whatsapp_open']}"
+    )
+    _thread_ready(page)
+    expect(page.locator(".q-chat-head").first.get_by_role("heading")).to_have_text("Laura Gómez")
