@@ -198,7 +198,7 @@ def test_a_missing_preview_loop_gives_no_address(tmp_path: Path) -> None:
 
 def test_text_design_is_674s_scrim() -> None:
     top = c.text_design("top")
-    assert (top.layout_id, top.layout_version, top.anchor) == ("scrim", 1, "top")
+    assert (top.layout_id, top.layout_version, top.anchor) == ("scrim", 2, "top")
     assert top.top == round(270 / 1920, 4) and top.bottom == 0.2
     assert (top.font_px_max, top.font_px_min) == (112, 76)
     assert c.text_design("middle").anchor == "middle"
@@ -247,3 +247,20 @@ def test_a_text_design_is_both_or_neither() -> None:
     assert "bad_text_layout" in problems(bad_version)
     assert problems(c.VideoTextLayer("Hoy", layout_id="scrim", layout_version=1)) == []
     assert problems(c.VideoTextLayer("Hoy")) == []
+
+
+def test_the_text_design_is_the_image_catalog_s_current_one() -> None:
+    """ADR 50 D1: the video text uses the image catalog's designs. Its copied version and
+    title limit must be the catalog's, or the backend flags every edited text
+    `unknown_layout` (2026-11-15: the catalog went to layout_version 2, this stayed at 1)."""
+    from qualify_creative.effects import text_layer_problems
+    from qualify_creative.layer_spec import LAYOUT_VERSION, catalog
+    from qualify_creative.schemas import VideoTextLayer
+
+    assert c.TEXT_LAYOUT_VERSION == LAYOUT_VERSION
+    scrim = catalog()["layouts"][c.TEXT_LAYOUT_ID]
+    assert scrim["slots"]["title"]["9:16"][0] == c.TITLE_MAX_CHARS
+    layer = VideoTextLayer(
+        text="Hoy", layout_id=c.TEXT_LAYOUT_ID, layout_version=c.TEXT_LAYOUT_VERSION
+    )
+    assert text_layer_problems(layer, part=None) == ()

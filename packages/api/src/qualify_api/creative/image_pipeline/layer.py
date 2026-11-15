@@ -212,8 +212,9 @@ class LayerRequest:
     hook: str = ""
     cta: str = ""
     tone: str = ""
-    #: the brand kit's title family (`BrandKit.font_heading`): a script face lowers the
-    #: `plate` title limit (catalog `script_title`, 2026-11-15)
+    #: the brand kit's resolved title family (`BrandKit.typeface`: the heading face, else the
+    #: body one — what the render must receive as `brand.fonts.heading`): a script face
+    #: lowers the `plate` title limit (catalog `script_title`, 2026-11-15)
     title_font: str = ""
     facts: BusinessFacts = field(default_factory=BusinessFacts)
     products: tuple[CatalogProduct, ...] = ()

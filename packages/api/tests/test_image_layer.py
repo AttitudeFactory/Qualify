@@ -391,6 +391,15 @@ def test_a_script_title_font_lowers_the_plate_title_in_the_table_and_the_check()
     assert layer.spec_from_answer(_slide(title=title), _request(), _request().slides[0])
 
 
+def test_a_script_plate_title_takes_24_characters_not_25() -> None:
+    script = _request(title_font="Dancing Script")
+    fits = "Tu shawarma de la semana"  # exactly 24
+    assert len(fits) == 24
+    assert layer.spec_from_answer(_slide(title=fits), script, script.slides[0]).title == fits
+    with pytest.raises(ValueError, match="25 characters, at most 24"):
+        layer.spec_from_answer(_slide(title=fits + "s"), script, script.slides[0])
+
+
 def test_business_info_takes_info_card_only() -> None:
     request = _request(piece_type=layer.BUSINESS_INFO)
     _, text = _tool_and_text(request)
