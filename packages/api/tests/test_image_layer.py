@@ -378,6 +378,28 @@ def test_business_info_without_saved_data_is_written_as_a_free_idea() -> None:
     assert layer.effective_request(kept) is kept
 
 
+def test_a_script_title_font_lowers_the_plate_title_in_the_table_and_the_check() -> None:
+    """2026-11-15: with a script brand face a plate title fits 24 characters, not 28."""
+    script = _request(title_font="Pacifico")
+    _, text = _tool_and_text(script)
+    assert "- plate: title ideal 16, máx. 24" in text
+    _, plain = _tool_and_text(_request(title_font="Poppins"))
+    assert "- plate: title ideal 18, máx. 28" in plain
+    title = "Tu shawarma, bien caliente"  # 26 characters: fine in Poppins, too long in script
+    with pytest.raises(ValueError, match="at most 24 with the brand's script title font"):
+        layer.spec_from_answer(_slide(title=title), script, script.slides[0])
+    assert layer.spec_from_answer(_slide(title=title), _request(), _request().slides[0])
+
+
+def test_a_script_plate_title_takes_24_characters_not_25() -> None:
+    script = _request(title_font="Dancing Script")
+    fits = "Tu shawarma de la semana"  # exactly 24
+    assert len(fits) == 24
+    assert layer.spec_from_answer(_slide(title=fits), script, script.slides[0]).title == fits
+    with pytest.raises(ValueError, match="25 characters, at most 24"):
+        layer.spec_from_answer(_slide(title=fits + "s"), script, script.slides[0])
+
+
 def test_business_info_takes_info_card_only() -> None:
     request = _request(piece_type=layer.BUSINESS_INFO)
     _, text = _tool_and_text(request)

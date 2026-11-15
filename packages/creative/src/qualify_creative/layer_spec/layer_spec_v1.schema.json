@@ -314,7 +314,7 @@
       "$ref": "#/$defs/LayoutId"
     },
     "layout_version": {
-      "default": 1,
+      "default": 2,
       "title": "Layout Version",
       "type": "integer"
     },

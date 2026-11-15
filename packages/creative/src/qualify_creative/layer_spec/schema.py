@@ -57,6 +57,23 @@ def catalog() -> dict[str, Any]:
 LAYOUT_VERSION: int = catalog()["layout_version"]
 
 
+def is_script_family(family: str | None) -> bool:
+    """Whether a brand's title family is drawn as script or handwriting (the catalog's list,
+    the same one the render measures by ink): its titles fit fewer characters."""
+    wanted = (family or "").strip().lower()
+    return bool(wanted) and wanted in {f.lower() for f in catalog()["script_families"]}
+
+
+def title_limit(layout_id: str, fmt: str, title_family: str | None = None) -> list[int] | None:
+    """[max chars, max lines] of a layout's title in a format, for the brand's title family:
+    a layout with a `script_title` row uses it when the family is script (2026-11-15:
+    `plate` titles with a script face are refused by the render past 24 characters)."""
+    layout = catalog()["layouts"][layout_id]
+    if is_script_family(title_family) and layout.get("script_title"):
+        return layout["script_title"].get(fmt)
+    return (layout["slots"].get("title") or {}).get(fmt)
+
+
 class LayoutId(StrEnum):
     PHOTO_ONLY = "photo_only"
     PLATE = "plate"

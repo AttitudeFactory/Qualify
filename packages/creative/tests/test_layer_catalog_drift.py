@@ -54,7 +54,14 @@ def test_same_layouts_formats_and_parameters(render: dict[str, Any]) -> None:
 
 def test_same_text_limits(render: dict[str, Any]) -> None:
     for layout_id, layout in catalog()["layouts"].items():
-        assert _slots(layout["slots"]) == _slots(render["layouts"][layout_id]["slots"]), layout_id
+        other = render["layouts"][layout_id]
+        assert _slots(layout["slots"]) == _slots(other["slots"]), layout_id
+        # a script title face (2026-11-15): both sides lower the same titles the same way
+        assert layout.get("script_title") == other.get("script_title"), layout_id
+
+
+def test_same_script_families(render: dict[str, Any]) -> None:
+    assert catalog()["script_families"] == render["script_families"]
 
 
 def test_same_data_blocks(render: dict[str, Any]) -> None:

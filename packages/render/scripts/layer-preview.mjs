@@ -57,6 +57,7 @@ const BRANDS = {
 // look broken): for each slot, the longest phrase of its pool within the slot's limit.
 const PHRASES = {
   title: [
+    'Empanadas caseras',
     'Pan recién horneado',
     'Empanadas de la abuela',
     'Tu pan de masa madre hoy',
@@ -109,12 +110,16 @@ const VALUE = (kind, n) => phraseFor(kind, n);
 const SUBJECT = [0.25, 0.4, 0.75, 0.8];
 const PORT_OF = {'4:5': 'feed', '1:1': 'square', '9:16': 'story'};
 
-/** Every slot the layout has in this format, filled to its maximum length. */
-const maxText = (layoutId, format) => {
+const isScript = (family) => catalog.script_families.some((f) => f.toLowerCase() === family.toLowerCase());
+
+/** Every slot the layout has in this format, filled to its maximum length — the title to the
+ * brand's own limit (a script face takes the layout's `script_title`, 2026-11-15). */
+const maxText = (layoutId, format, brandKey) => {
   const def = catalog.layouts[layoutId];
+  const script = def.script_title && isScript(BRANDS[brandKey].brand.fonts.heading);
   const out = {};
   for (const slot of ['title', 'subtitle', 'call_phrase']) {
-    const lim = def.slots[slot]?.[format];
+    const lim = slot === 'title' && script ? def.script_title[format] : def.slots[slot]?.[format];
     if (lim) out[slot] = phraseFor(slot, lim[0]);
   }
   if (layoutId === 'band' && format === '1:1') delete out.call_phrase; // only without subtitle
@@ -129,23 +134,23 @@ const push = (c) => {
 for (const [key, b] of Object.entries(BRANDS)) {
   if (brandArg !== 'all' && brandArg !== key) continue;
   for (const format of ['4:5', '1:1', '9:16']) {
-    const base = {layout_version: 1, subject_box: SUBJECT, logo_in_photo: false};
+    const base = {layout_version: 2, subject_box: SUBJECT, logo_in_photo: false};
     push({brand: key, format, name: 'photo_only', photo: true, layer: {...base, layout_id: 'photo_only'}});
-    push({brand: key, format, name: 'plate top_left (price)', photo: true, layer: {...base, layout_id: 'plate', anchor: 'top_left', container_color: 'surface', accent_word: 1, price_ref: 'p-1', ...maxText('plate', format)}});
-    push({brand: key, format, name: 'scrim top', photo: true, layer: {...base, layout_id: 'scrim', anchor: 'top', subject_box: [0.25, 0.5, 0.75, 0.9], ...maxText('scrim', format)}});
-    push({brand: key, format, name: 'band bottom (price)', photo: true, layer: {...base, layout_id: 'band', anchor: 'bottom', container_color: 'accent', accent_word: 0, price_ref: 'p-1', ...maxText('band', format)}});
+    push({brand: key, format, name: 'plate top_left (price)', photo: true, layer: {...base, layout_id: 'plate', anchor: 'top_left', container_color: 'surface', accent_word: 1, price_ref: 'p-1', ...maxText('plate', format, key)}});
+    push({brand: key, format, name: 'scrim top', photo: true, layer: {...base, layout_id: 'scrim', anchor: 'top', subject_box: [0.25, 0.5, 0.75, 0.9], ...maxText('scrim', format, key)}});
+    push({brand: key, format, name: 'band bottom (price)', photo: true, layer: {...base, layout_id: 'band', anchor: 'bottom', container_color: 'accent', accent_word: 0, price_ref: 'p-1', ...maxText('band', format, key)}});
     const range = catalog.layouts.info_card.blocks[format];
     const lim = catalog.layouts.info_card.value[format][0];
     const kinds = ['location', 'hours', 'payment', 'products'].slice(0, range[1]);
-    const info = {...base, subject_box: null, layout_id: 'info_card', container_color: 'surface', accent_word: 0, ...maxText('info_card', format)};
+    const info = {...base, subject_box: null, layout_id: 'info_card', container_color: 'surface', accent_word: 0, ...maxText('info_card', format, key)};
     push({brand: key, format, name: `info_card ${kinds.length} blocks`, photo: false, layer: {...info, info_blocks: kinds.map((k) => ({kind: k, value: VALUE(k, lim)}))}});
     push({brand: key, format, name: 'info_card 1 block + photo strip', photo: true, layer: {...info, subject_box: SUBJECT, info_blocks: [{kind: 'location', value: VALUE('location', lim)}]}});
     const bfMax = catalog.layouts.brand_fill.blocks[format][1];
-    push({brand: key, format, name: 'brand_fill', photo: false, layer: {...base, subject_box: null, layout_id: 'brand_fill', container_color: 'accent', accent_word: 2, ...maxText('brand_fill', format), info_blocks: ['contact', 'hours'].slice(0, bfMax).map((k) => ({kind: k, value: VALUE(k, catalog.layouts.brand_fill.value[format][0])}))}});
+    push({brand: key, format, name: 'brand_fill', photo: false, layer: {...base, subject_box: null, layout_id: 'brand_fill', container_color: 'accent', accent_word: 2, ...maxText('brand_fill', format, key), info_blocks: ['contact', 'hours'].slice(0, bfMax).map((k) => ({kind: k, value: VALUE(k, catalog.layouts.brand_fill.value[format][0])}))}});
     if (format === '9:16') {
-      push({brand: key, format, name: 'highlight icon', photo: false, layer: {layout_id: 'highlight_circle', layout_version: 1, container_color: 'accent', highlight_content: {type: 'icon', icon_id: 'utensils'}}});
-      push({brand: key, format, name: 'highlight word', photo: false, layer: {layout_id: 'highlight_circle', layout_version: 1, container_color: 'accent', highlight_content: {type: 'word', word: 'Domicilio'}}});
-      push({brand: key, format, name: 'highlight photo', photo: true, layer: {layout_id: 'highlight_circle', layout_version: 1, container_color: 'surface', highlight_content: {type: 'photo'}, subject_box: SUBJECT}});
+      push({brand: key, format, name: 'highlight icon', photo: false, layer: {layout_id: 'highlight_circle', layout_version: 2, container_color: 'accent', highlight_content: {type: 'icon', icon_id: 'utensils'}}});
+      push({brand: key, format, name: 'highlight word', photo: false, layer: {layout_id: 'highlight_circle', layout_version: 2, container_color: 'accent', highlight_content: {type: 'word', word: 'Domicilio'}}});
+      push({brand: key, format, name: 'highlight photo', photo: true, layer: {layout_id: 'highlight_circle', layout_version: 2, container_color: 'surface', highlight_content: {type: 'photo'}, subject_box: SUBJECT}});
     }
   }
   // a 3-slide carousel (4:5): cover, body, closing — counter on all, logo on first and last
@@ -161,7 +166,7 @@ for (const [key, b] of Object.entries(BRANDS)) {
       name: `carousel ${i + 1}/3 ${s.role}`,
       photo: s.role !== 'closing',
       slide: {index: i + 1, total: 3, role: s.role},
-      layer: {layout_version: 1, subject_box: s.role === 'closing' ? null : SUBJECT, ...s.layer},
+      layer: {layout_version: 2, subject_box: s.role === 'closing' ? null : SUBJECT, ...s.layer},
     }),
   );
 }

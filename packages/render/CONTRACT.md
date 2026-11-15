@@ -101,6 +101,13 @@ as failed and the chain moves on; when every layout of the chain fails, the outp
 with `invalid_parameters` and a machine-readable `refusal` (§4.1) — never an image with
 overflowing text. A carousel is N jobs (ADR 49 §2.2).
 
+**Script title faces** (2026-11-15, catalog `layout_version` 2). A layout with a
+`script_title` row (today `plate`, 24 characters) uses it instead of its `title` limit when
+`props.brand.fonts.heading` is one of `layer_catalog.script_families`; the 422 check and the
+composition both apply it. The caller must send the SAME resolved title face the layer stage
+was given (`BrandKit.typeface`: the heading face, else the body one), or Python accepts a
+script title the render refuses.
+
 **Engine revision** (`layer_catalog.engine_revision`, today 2). The template version pins the
 props contract; the engine revision pins the pixels. It is bumped with ANY change to
 `engine.ts`, `LayerStill.tsx`, `icons.tsx` or the font loading that can move a pixel, it is

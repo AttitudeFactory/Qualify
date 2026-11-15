@@ -144,7 +144,8 @@ export const validateProps = (manifest, props, ports = undefined) => {
         const wanted = ports ?? Object.keys(manifest.outputs ?? {});
         const formats = [...new Set(wanted.map((p) => manifest.outputs?.[p]?.format).filter(Boolean))];
         const hasPhoto = Array.isArray(props.photos) && props.photos.length > 0;
-        problems.push(...layerProblems(manifest.layer_catalog, props.layer, {formats, hasPhoto}));
+        const headingFamily = props.brand?.fonts?.heading;
+        problems.push(...layerProblems(manifest.layer_catalog, props.layer, {formats, hasPhoto, headingFamily}));
         break;
       }
       default:
