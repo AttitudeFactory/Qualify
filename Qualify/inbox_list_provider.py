@@ -61,17 +61,26 @@ def counts(tenant_id: UUID, *, now: datetime) -> InboxCounts:
     return inbox_counts(tenant_id, now=now)
 
 
+def numbers(tenant_id: UUID) -> tuple[NumberVM, ...]:
+    """The business's WhatsApp numbers, newest first (one RLS-scoped read): re-read on
+    every entry of the list (m-25029799 review), so a number connected meanwhile is
+    offered without closing the tab."""
+    return tuple(
+        NumberVM(connection_id=n.connection_id, label=n.label) for n in numbers_for(tenant_id)
+    )
+
+
 def context(tenant_id: UUID) -> InboxContext:
     wa = whatsapp_gateway()
     connected: list[str] = []
     if conversations_gateway().accounts(tenant_id):
         connected.append(CHANNEL_INSTAGRAM)
-    numbers = numbers_for(tenant_id)
-    if numbers:
+    found = numbers(tenant_id)
+    if found:
         connected.append(CHANNEL_WHATSAPP)
     return InboxContext(
         zone_name=wa.timezone(tenant_id),
         agents=tuple(wa.agents(tenant_id)),
         connected=tuple(connected),
-        numbers=tuple(NumberVM(connection_id=n.connection_id, label=n.label) for n in numbers),
+        numbers=found,
     )

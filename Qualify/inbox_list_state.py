@@ -46,7 +46,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from .auth_state import AuthState
 from .chat_row_vm import CHANNEL_INSTAGRAM, CHANNEL_WHATSAPP, ChatRowVM
 from .conversations_state import ConversationsState
-from .inbox_list_provider import context, counts, page
+from .inbox_list_provider import context, counts, numbers, page
 from .inbox_list_vm import (
     ALL_CHANNELS,
     ALL_NUMBERS,
@@ -81,7 +81,7 @@ from .inbox_list_vm import (
     show_notice,
     show_number_filter,
 )
-from .nav_url import push_url_script
+from .nav_url import push_url_script, replace_url_script
 from .tenant import tenant_uuid
 from .whatsapp_chats_vm import AgentVM
 
@@ -168,6 +168,8 @@ class InboxListState(rx.State):
     #: The UI channels with a connected account; None-equivalent until read.
     connected: list[str] = []
     context_loaded: bool = False
+    #: m-25029799 review (C2): `numbers` were read since the last entry.
+    _numbers_fresh: bool = False
     #: The one-time explanation (`inbox_list_vm.EXPLAINER_*`): on screen now, and
     #: dismissed in this session of this business (reset on logout and on a switch).
     explainer_open: bool = False
@@ -326,8 +328,9 @@ class InboxListState(rx.State):
         """`ResponderState.enter_page` on the «Mensajes» tab. The address is the truth
         (N5): no `?filtro=` is «Por responder», no `?canal=` is every channel, no
         `?numero=` every number — nothing sticks from an earlier visit. A number is
-        checked against the business's own once they are read (`load`). A different
-        business starts from scratch."""
+        checked against the business's numbers, re-read on every entry (`load`: a number
+        connected since the last visit is offered at once). A different business starts
+        from scratch."""
         key, _tenant = await self._session()
         if key != self._tenant_key:
             self._tenant_key = key
@@ -335,8 +338,7 @@ class InboxListState(rx.State):
         params = self.router.url.query_parameters
         requested = filter_from_params(params) or DEFAULT_FILTER
         number = number_from_params(params)
-        if self.context_loaded:
-            number = known_number(number, self.numbers)
+        self._numbers_fresh = False  # m-25029799 review (C2): `load` reads them again
         channel = CHANNEL_WHATSAPP if number else (channel_from_params(params) or ALL_CHANNELS)
         if requested != self.filter_key or channel != self.channel or number != self.number:
             self.filter_key, self.channel, self.number = requested, channel, number
@@ -420,13 +422,20 @@ class InboxListState(rx.State):
             self.channel = ALL_CHANNELS
         return self.channel
 
-    def _take_numbers(self, ctx: Any) -> None:
-        """The business's numbers from the context read (`ctx`, None when they were
-        read before), and the number on screen kept only if it is one of them — every
-        read checks it, whatever set it (the address, the browser)."""
+    def _take_numbers(self, ctx: Any, fresh: Any = None) -> bool:
+        """The business's numbers — from the context read (`ctx`) or the entry's own
+        re-read (`fresh`), else the ones already known — and the number on screen kept
+        only if it is one of them, whatever set it (the address, the browser). True
+        when the address named a number that is not kept (it is then tidied)."""
         if ctx is not None:
             self.numbers = list(ctx.numbers)
-        self.number = known_number(self.number, self.numbers)
+        elif fresh is not None:
+            self.numbers = list(fresh)
+        if ctx is not None or fresh is not None:
+            self._numbers_fresh = True
+        asked = self.number
+        self.number = known_number(asked, self.numbers)
+        return asked != "" and self.number == ""
 
     @rx.event(background=True)
     async def load(self) -> Any:
@@ -443,7 +452,9 @@ class InboxListState(rx.State):
             self.error = ""
             key, tenant_id = await self._session()
             need_context = not self.context_loaded
+            need_numbers = not need_context and not self._numbers_fresh
             pages = max(1, self._pages) if self.loaded else 1
+        tidy = ""
         try:
             if tenant_id is None:
                 async with self:
@@ -453,13 +464,17 @@ class InboxListState(rx.State):
             now = self._now()
             try:
                 ctx = await asyncio.to_thread(context, tenant_id) if need_context else None
+                fresh = await asyncio.to_thread(numbers, tenant_id) if need_numbers else None
                 tally = await asyncio.to_thread(counts, tenant_id, now=now)
                 async with self:
                     if generation != self._generation:
                         return
-                    self._take_numbers(ctx)
+                    dropped = self._take_numbers(ctx, fresh)
                     filter_key, number = self.filter_key, self.number
                     channel = self._effective_channel(tally)
+                    if dropped:
+                        # C3: the address said a number this business does not show.
+                        tidy = list_href(filter_key, channel, number)
                 records, cursor, lens = await self._read_pages(
                     tenant_id, filter_key, channel, pages, now, number
                 )
@@ -484,6 +499,8 @@ class InboxListState(rx.State):
                 self.next_cursor = cursor
                 self._pages = pages
                 self.loaded = True
+            if tidy:
+                return rx.call_script(replace_url_script(tidy))
         finally:
             async with self:
                 if self._loading_for == generation:

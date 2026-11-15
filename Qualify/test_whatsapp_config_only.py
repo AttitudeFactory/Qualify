@@ -204,7 +204,8 @@ async def test_the_address_decides_the_number(fake: _Fake, query: str) -> None: 
     assert (state.number, state.channel) == (SECOND, CHANNEL_WHATSAPP)
     state.router = RouterData(url=ReflexURL(f"http://localhost/responder?numero={FOREIGN}"))
     await InboxListState.enter.fn(state)  # type: ignore[attr-defined]
-    assert state.number == ""
+    await _drain(InboxListState.load.fn(state))  # type: ignore[attr-defined]
+    assert state.number == ""  # checked against the numbers the entry re-reads
 
 
 def test_the_number_choice_is_drawn_like_the_channel_filter() -> None:
@@ -234,3 +235,51 @@ def test_the_provider_passes_the_number_as_an_account(monkeypatch: pytest.Monkey
     inbox_list_provider.page(UUID(int=1), filter_key="todos", channel="", cursor=None, now=NOW)
     assert seen["connection_id"] is None
     assert state_module.page is inbox_list_provider.page
+
+
+async def test_a_number_connected_meanwhile_is_offered_on_the_next_entry(
+    fake: _Fake,  # noqa: F811
+) -> None:
+    """Review C2: the numbers are re-read on every entry of the list, so a second
+    number connected after the first visit gets its choice (and its `?numero=`) without
+    closing the tab."""
+    from reflex.istate.data import ReflexURL, RouterData
+
+    fake.numbers = TWO[:1]
+    state = InboxListState()
+    state._tenant_key = "tenant-a"
+    state.router = RouterData(url=ReflexURL("http://localhost/responder?tab=mensajes"))
+    await InboxListState.enter.fn(state)  # type: ignore[attr-defined]
+    await _drain(InboxListState.load.fn(state))  # type: ignore[attr-defined]
+    assert not state.show_numbers
+    fake.numbers = list(TWO)  # the owner connects a second number
+    state.router = RouterData(
+        url=ReflexURL(f"http://localhost/responder?tab=mensajes&numero={SECOND}")
+    )
+    await InboxListState.enter.fn(state)  # type: ignore[attr-defined]
+    await _drain(InboxListState.load.fn(state))  # type: ignore[attr-defined]
+    assert state.show_numbers and state.number == SECOND
+    assert fake.numbers_reads == 1  # the entry's own read (the first came with the context)
+
+
+async def test_a_dropped_number_tidies_the_address(fake: _Fake) -> None:  # noqa: F811
+    """Review C3: an address naming a number this business does not show is replaced
+    by the list's own address (no new history step)."""
+    from reflex.istate.data import ReflexURL, RouterData
+
+    _two_numbers(fake)
+    state = InboxListState()
+    state._tenant_key = "tenant-a"
+    state.router = RouterData(
+        url=ReflexURL(f"http://localhost/responder?tab=mensajes&filtro=todos&numero={FOREIGN}")
+    )
+    await InboxListState.enter.fn(state)  # type: ignore[attr-defined]
+    events = await _drain(InboxListState.load.fn(state))  # type: ignore[attr-defined]
+    assert state.number == ""
+    text = str(events)
+    assert "replaceState" in text and FOREIGN not in text
+    assert "/responder?tab=mensajes&filtro=todos" in text  # the list as it now shows
+    # A kept number writes nothing.
+    state.router = RouterData(url=ReflexURL(f"http://localhost/responder?numero={SECOND}"))
+    await InboxListState.enter.fn(state)  # type: ignore[attr-defined]
+    assert await _drain(InboxListState.load.fn(state)) == []  # type: ignore[attr-defined]

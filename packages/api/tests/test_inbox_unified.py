@@ -361,3 +361,32 @@ def test_counts_per_account_and_channel() -> None:
     # A tally built by hand without accounts still answers per channel.
     plain = InboxCounts(by_channel={"dm": {f: 1 for f in INBOX_FILTERS}})
     assert plain.count("todos") == 1 and plain.count("todos", connection_id=first) == 0
+
+
+def test_a_chat_with_no_account_counts_for_its_channel_only(monkeypatch) -> None:  # noqa: ANN001
+    """Review C4: a `threads` row with no `connection_id` is never grouped under a
+    «None» account."""
+    from types import SimpleNamespace
+
+    from qualify_api.inbox import unified
+
+    rows = [
+        SimpleNamespace(filter="todos", channel="whatsapp", connection_id=None, n=2),
+        SimpleNamespace(filter="todos", channel="whatsapp", connection_id=uuid4(), n=3),
+    ]
+
+    class _Session:
+        def execute(self, *args: object, **kwargs: object) -> object:
+            return SimpleNamespace(all=lambda: rows)
+
+    class _Ctx:
+        def __enter__(self) -> _Session:
+            return _Session()
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    monkeypatch.setattr(unified, "tenant_session", lambda tenant: _Ctx())
+    counts = unified.inbox_counts(uuid4(), now=NOW)
+    assert counts.count("todos", "whatsapp") == 5
+    assert "None" not in counts.by_connection and len(counts.by_connection) == 1

@@ -435,6 +435,7 @@ class _Fake:
         #: m-25029799: the number each page was read for, and the business's numbers.
         self.asked_numbers: list[str] = []
         self.numbers: list[Any] = []
+        self.numbers_reads = 0
         #: Set to hold the NEXT page read until `release` is set (a read in flight).
         self.hold_next = False
         self.entered = threading.Event()
@@ -487,6 +488,10 @@ class _Fake:
             connection_channels={a: "whatsapp" for a in per},
         )
 
+    def read_numbers(self, tenant_id: UUID) -> tuple[Any, ...]:
+        self.numbers_reads += 1
+        return tuple(self.numbers)
+
     def context(self, tenant_id: UUID) -> InboxContext:
         return InboxContext(
             zone_name="America/Bogota",
@@ -506,6 +511,7 @@ def fake(monkeypatch: pytest.MonkeyPatch) -> _Fake:
     monkeypatch.setattr(state_module, "page", fake.page)
     monkeypatch.setattr(state_module, "counts", fake.counts)
     monkeypatch.setattr(state_module, "context", fake.context)
+    monkeypatch.setattr(state_module, "numbers", fake.read_numbers)
 
     async def session(self: InboxListState) -> tuple[str, UUID]:
         return "tenant-a", UUID(int=1)

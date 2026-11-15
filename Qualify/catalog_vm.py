@@ -519,6 +519,8 @@ IDEAS_RETURN_LABEL = "Ideas de videos"
 #: with this way back; it says where it leads (N7). m-25029799: the chats are attended in
 #: «Por responder», narrowed to WhatsApp (WhatsApp's own list is gone).
 CHATS_RETURN_PATH = WHATSAPP_CHATS_HREF
+#: The retired list's path (`/whatsapp?tab=chats`), which redirects to `CHATS_RETURN_PATH`.
+_OLD_CHATS_PATH = "/whatsapp"
 CHATS_RETURN_LABEL = "Volver a tus chats"
 #: The brand page's `?seccion=` value that opens «Negocios parecidos al tuyo»: where the
 #: owner chooses the accounts that inspire them and runs the search that tells Qualify
@@ -628,6 +630,8 @@ def return_label_for(return_to: str) -> str:
     tabs = [v for k, v in parse_qsl(parts.query) if k == "tab"]
     if parts.path == chats.path and tabs == [v for k, v in parse_qsl(chats.query) if k == "tab"]:
         return CHATS_RETURN_LABEL
+    if parts.path == _OLD_CHATS_PATH and tabs == ["chats"]:
+        return CHATS_RETURN_LABEL  # an old `?volver=` to WhatsApp's list: it redirects there
     modes = [v for k, v in parse_qsl(parts.query) if k == CREATE_MODE_PARAM]
     if parts.path == CREATE_RETURN_PATH and modes == [IDEAS_MODE]:
         return IDEAS_RETURN_LABEL

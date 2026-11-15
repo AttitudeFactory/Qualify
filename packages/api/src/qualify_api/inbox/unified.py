@@ -582,6 +582,8 @@ class PostgresInboxReader:
         for r in records:
             n = int(r.n or 0)
             found[(r.filter, r.channel)] = found.get((r.filter, r.channel), 0) + n
+            if r.connection_id is None:
+                continue  # no account to pick: it counts for its channel only
             account = str(r.connection_id)
             account_channel[account] = r.channel
             per = by_account.setdefault(account, dict.fromkeys(INBOX_FILTERS, 0))
