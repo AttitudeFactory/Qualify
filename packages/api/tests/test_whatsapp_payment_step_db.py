@@ -396,7 +396,7 @@ def test_an_archiving_save_that_archived_nothing_leaves_old_entries_alone(seeded
     assert context["_orders_previous"] == [older]
 
 
-async def test_a_cart_whose_first_run_died_is_repaired_by_metas_retry(seeded) -> None:
+async def test_a_cart_whose_first_run_died_leaves_nothing_and_the_retry_records_it(seeded) -> None:
     """m-25018684: a lookup failing after the cart's insert makes Meta retry; the retry
     records the order and the handoff (one transaction since m-25017846)."""
     from sqlalchemy import func, select

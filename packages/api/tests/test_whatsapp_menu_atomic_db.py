@@ -256,12 +256,9 @@ async def test_a_crash_between_the_step_and_the_outbox_leaves_the_cursor_and_rep
         await handle(event)
 
     # Nothing of the failed run is visible: no cursor, no half-written reply, and the
-    # message itself is not stored either — so the retry is a first delivery.
-    thread_id = _thread_id(business, wa_id)
-    if thread_id is not None:
-        assert _state(business, thread_id) is None
-        assert _outbox(business, thread_id) == []
-        assert _messages(business, thread_id) == []
+    # message itself is not stored either (not even the thread, upserted in the same
+    # transaction) — so the retry is a first delivery.
+    assert _thread_id(business, wa_id) is None
 
     # The processor retries the same change (`Processor.run_once` → `fail` → reclaim).
     outcome = await handle(event)
