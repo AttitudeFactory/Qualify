@@ -604,10 +604,10 @@ def unsupported_claims(text: str, request: LayerRequest) -> list[str]:
         ],
         saved_hours=facts.value(InfoKind.HOURS),
     )
+    # quote the words that make the claim, not the whole text (the repair turn rewrites them)
     return [
-        f"«{text}» ({_CLAIM_NAMES.get(kind.split(' ')[0], kind)}"
-        f"{kind[len(kind.split(' ')[0]) :]}) is not in the brief or the saved data"
-        for kind in support.unsupported(claims)
+        f"«{words}» ({_CLAIM_NAMES.get(kind, kind)}) is not in the brief or the saved data"
+        for kind, words in support.unsupported(claims)
     ]
 
 

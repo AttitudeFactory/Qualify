@@ -676,12 +676,74 @@ def build(capa: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for r in FRESH:
         r["split"] = "fresh"
         unique.append(r)
+    # the reviewer's misses and the bugs of the 2026-11-15 review: tuned on from then on,
+    # so a dev-like split, reported apart
+    for r in REVISION:
+        r["split"] = "revision"
+        unique.append(r)
     for i, r in enumerate(unique):
         r["id"] = i
     return unique
 
 
 UY = ctx("Chivitos al pan en Montevideo")
+REVISION = [
+    # the independent reviewer's misses (2026-11-15)
+    row("Receta de la abuela desde 1985", PLAIN, source="revision"),
+    row("Colección otoño 2026", FASHION, source="revision"),
+    row("Vista abierta a los cerros", REALTY, source="revision"),
+    row(
+        "Cada noche, un atardecer distinto",
+        TRAVEL,
+        source="revision",
+        note="description, not an availability promise: known hard case",
+    ),
+    row("Tu look de viernes, listo", FASHION, source="revision"),
+    row("Ya abrimos en Pocitos", UY, claim="hours", source="revision"),
+    row("Happy hour de 6 a 8", PLAIN, claim="promotion", source="revision"),
+    row("Tours diarios a Isla Margarita", TRAVEL, claim="every_day", source="revision"),
+    row(
+        "Separa tu apartamento sin cuota inicial",
+        REALTY,
+        claim="financing",
+        source="revision",
+        note="financing promise: outside the nine types, left out by design",
+    ),
+    # the review's bugs, as rows
+    row("Por 20 años contigo", PLAIN, source="revision"),
+    row("Celebra el año 2026 con nosotros", PLAIN, source="revision"),
+    row("Abierto mañana", PLAIN, claim="hours", source="revision"),
+    row("Te esperamos el sábado", ctx("Abrimos de viernes a lunes"), source="revision"),
+    row(
+        "Te esperamos el miércoles",
+        ctx("Abrimos de viernes a lunes"),
+        claim="day",
+        source="revision",
+    ),
+    row(
+        "Domicilio gratis",
+        ctx(
+            "Pizzas al horno",
+            hours="Martes a domingo",
+            contact="No hacemos domicilios ni nada gratis",
+        ),
+        claim="delivery",
+        source="revision",
+    ),
+    row(
+        "Envío Gratis en toda la ciudad",
+        ctx("Ropa de temporada", products=("Envío Gratis",)),
+        claim="delivery",
+        source="revision",
+    ),
+    row("Te esperamos el domingo", ctx("Pan de bono", hours="Lun-Dom 7 a 20"), source="revision"),
+    row("Ven el sábado", ctx("Pan de bono", hours="L a V 7 a 20"), claim="day", source="revision"),
+    row(
+        "Este finde, música en vivo",
+        ctx("Bar", hours="Findes de 6 p. m. a 2 a. m."),
+        source="revision",
+    ),
+]
 FRESH = [
     row("Abrimos todos los festivos", PLAIN, claim="day", source="fresh"),
     row("Atención de corrido toda la semana", PLAIN, claim="every_day", source="fresh"),

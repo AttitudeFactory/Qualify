@@ -21,14 +21,16 @@ from dataclasses import dataclass, field
 
 # -- normalisation and tokens ----------------------------------------------------------------
 
-_TOKEN = re.compile(r"\d+(?:[.,]\d+)*|[a-zñ]+|[^\sa-zñ\d]")
+_TOKEN = re.compile(r"\d+(?:[.,]\d+)*|[a-z]+|[^\sa-z\d]")
 
 
 def normalise(text: str) -> str:
-    """Compatibility form, no accents (ñ kept), lower case, one space between words."""
-    plain = unicodedata.normalize("NFKC", text).replace(" ", " ").lower()
-    decomposed = unicodedata.normalize("NFD", plain.replace("ñ", "\x00"))
-    stripped = "".join(c for c in decomposed if not unicodedata.combining(c)).replace("\x00", "ñ")
+    """Compatibility form, lower case, no accents — «ñ» folds to «n» like every other mark
+    («año» → «ano», «mañana» → «manana») —, one space between words. Every table below is
+    written in this form (a test checks it)."""
+    plain = unicodedata.normalize("NFKC", text).replace("\u00a0", " ").lower()
+    decomposed = unicodedata.normalize("NFD", plain)
+    stripped = "".join(c for c in decomposed if not unicodedata.combining(c))
     return " ".join(stripped.split())
 
 
@@ -184,7 +186,6 @@ UNITS = frozenset(
         "cm",
         "m",
         "m2",
-        "²",
         "metro",
         "metros",
         "km",
@@ -355,7 +356,12 @@ def _is_year(toks: Sequence[str], i: int) -> bool:
     if before == "en":
         return True
     if before == "desde":
-        return bool(after) and after.isalpha() and after not in _ARTICLES
+        if not after:
+            # nothing after: a round figure reads as a price («Desde 2000»), a year that is
+            # not round, up to this decade, as a year («… desde 1985»)
+            year = int(value)
+            return year <= 2029 and year % 50 != 0
+        return after.isalpha() and after not in _ARTICLES
     return before == "" and bool(after) and after in (",", "contigo")
 
 
@@ -406,19 +412,37 @@ def price_problem(text: str) -> str | None:
 
 # -- 2. claims ------------------------------------------------------------------------------
 
-DAYS = (
-    "lunes",
-    "martes",
-    "miercoles",
-    "jueves",
-    "viernes",
-    "sabado",
-    "domingo",
-)
+DAYS = ("lunes", "martes", "miercoles", "jueves", "viernes", "sabado", "domingo")
+#: day names as free text writes them (plural «los domingos» included)
 _DAY_OF = {d: d for d in DAYS} | {d + "s": d for d in DAYS if not d.endswith("s")}
-#: before a day name: it is plain language, not a schedule («Tu sábado», «Un domingo cualquiera»)
+#: abbreviations, read ONLY in the saved hours («Lun-Dom», «L a V», «sáb»): in free text
+#: «mar» is the sea and «sol» the sun
+_DAY_ABBREVIATIONS = {
+    "lun": "lunes",
+    "mar": "martes",
+    "mie": "miercoles",
+    "mier": "miercoles",
+    "jue": "jueves",
+    "vie": "viernes",
+    "sab": "sabado",
+    "dom": "domingo",
+    "l": "lunes",
+    "m": "martes",
+    "x": "miercoles",
+    "j": "jueves",
+    "v": "viernes",
+    "s": "sabado",
+    "d": "domingo",
+}
+#: one-letter abbreviations count only inside a range («L a V», «L-D»)
+_ONE_LETTER = frozenset({"l", "m", "x", "j", "v", "s", "d"})
+_HOLIDAY = frozenset({"festivo", "festivos", "feriado", "feriados"})
+_WEEKEND = frozenset({"finde", "findes"})
+#: before a day name, within the same clause: plain language, not a schedule («Tu sábado»,
+#: «Un domingo cualquiera», «Tu look de viernes»)
 _POSSESSIVE = frozenset({"tu", "tus", "su", "sus", "mi", "mis", "nuestro", "nuestros", "un", "una"})
-#: words around «abierto»/«abrimos» that make it an availability promise
+#: words around «abierto» that make it an availability promise («abierto hoy», «estamos
+#: abiertos», «abierto 24 horas»)
 AVAILABILITY = frozenset(
     {
         "hoy",
@@ -440,16 +464,22 @@ AVAILABILITY = frozenset(
         "ahora",
         "festivo",
         "festivos",
-        "de",
-        "del",
-        "los",
-        "las",
+        "feriado",
+        "feriados",
         "medianoche",
     }
 )
+#: words that lead into a schedule after «abrimos»/«cerrado» only when a day, an hour or a
+#: time word follows them («abrimos de martes…», «cerrado los lunes», «abrimos el domingo»)
+_LEAD_INS = frozenset({"de", "del", "los", "las", "el"})
+_TIME_WORDS = frozenset({"manana", "noche", "tarde", "festivo", "feriado", "fin", "finde"})
 _OPEN_WORDS = frozenset({"abierto", "abierta", "abiertos", "abiertas"})
 _OPEN_VERBS = frozenset({"abrimos", "abre", "abren", "atendemos", "atiende", "atienden"})
-_CLOSED_WORDS = frozenset({"cerrado", "cerrada", "cerrados", "cerradas", "cerramos", "cierra"})
+_CLOSED_WORDS = frozenset({"cerrado", "cerrada", "cerrados", "cerradas", "cerramos"})
+#: before a mention in the CONTEXT, in the same clause: it is denied, so it supports nothing
+#: («No hacemos domicilios ni nada gratis»)
+NEGATIONS = frozenset({"no", "sin", "nunca", "ni", "tampoco", "jamas"})
+_CLAUSE_END = frozenset({".", ",", ";", ":", "!", "?", "¡", "¿"})
 #: phrases by claim type, matched on whole normalised words
 PHRASES: dict[str, tuple[str, ...]] = {
     "every_day": (
@@ -464,13 +494,18 @@ PHRASES: dict[str, tuple[str, ...]] = {
         "los 7 dias",
         "sin dias de descanso",
         "sin descanso",
-        "lunes a domingo",
         "siempre abierto",
         "siempre abiertos",
         "abiertos siempre",
         "abierto siempre",
         "siempre listos",
         "siempre disponibles",
+        "diario",
+        "diarios",
+        "diaria",
+        "diarias",
+        "diariamente",
+        "a diario",
     ),
     "hours": ("horario extendido", "nuevo horario", "horario especial", "hasta tarde"),
     "closure": ("no abrimos", "cerrado por", "cerrados por"),
@@ -543,6 +578,7 @@ PHRASES: dict[str, tuple[str, ...]] = {
         "promocion",
         "segunda unidad",
         "noche extra",
+        "happy hour",
     ),
     "novelty": (
         "inauguracion",
@@ -567,156 +603,260 @@ PHRASES: dict[str, tuple[str, ...]] = {
         "nuestra nueva sede",
     ),
 }
+#: every word the claim tables use: a product name made only of these is itself a claim
+#: phrase («Envío Gratis») and is never masked
+CLAIM_WORDS = frozenset(
+    {w for phrases in PHRASES.values() for p in phrases for w in p.split() if w.isalpha()}
+    | set(_DAY_OF)
+    | _OPEN_WORDS
+    | _OPEN_VERBS
+    | _CLOSED_WORDS
+    | _HOLIDAY
+    | _WEEKEND
+)
 
 
-def _has_phrase(words: Sequence[str], phrase: str) -> bool:
+def _negated(words: Sequence[str], start: int) -> bool:
+    """A negation before `start` in the same clause (at most 4 words back)."""
+    j = start - 1
+    while j >= 0 and start - j <= 4 and words[j] not in _CLAUSE_END:
+        if words[j] in NEGATIONS:
+            return True
+        j -= 1
+    return False
+
+
+def _find(words: Sequence[str], phrase: str) -> list[int]:
     target = phrase.split()
     n = len(target)
-    return any(list(words[i : i + n]) == target for i in range(len(words) - n + 1))
+    return [i for i in range(len(words) - n + 1) if list(words[i : i + n]) == target]
 
 
-def _days(words: Sequence[str]) -> set[str]:
-    """Day names claimed, ranges expanded («de martes a domingo»), «fin de semana» as
-    Saturday and Sunday, «festivo» as itself; a day after a possessive is plain language."""
-    found: set[str] = set()
+def _day_at(word: str, abbreviations: bool) -> str | None:
+    if word in _DAY_OF:
+        return _DAY_OF[word]
+    if abbreviations and word in _DAY_ABBREVIATIONS and word not in _ONE_LETTER:
+        return _DAY_ABBREVIATIONS[word]
+    return None
+
+
+def _range(a: str, b: str) -> list[str]:
+    """Days from `a` to `b`, wrapping the week («viernes a lunes»); «lunes a lunes» = all."""
+    i, j = DAYS.index(a), DAYS.index(b)
+    if i == j:
+        return list(DAYS)
+    return [DAYS[k % 7] for k in range(i, i + ((j - i) % 7) + 1)]
+
+
+def _days(
+    words: Sequence[str], *, abbreviations: bool = False, negation: bool = False
+) -> list[tuple[int, list[str], str]]:
+    """Each day mention: (position, days, the words). Ranges expanded and wrapped; «fin de
+    semana»/«finde» = Saturday and Sunday; «festivo»/«feriado» = «festivo». A day with a
+    possessive before it in its clause is plain language. With `abbreviations` (saved hours
+    only) «Lun-Dom», «L a V», «sáb» count."""
+    found: list[tuple[int, list[str], str]] = []
+
+    def plain(i: int) -> bool:
+        j = i - 1
+        while j >= 0 and i - j <= 3 and words[j] not in _CLAUSE_END:
+            if words[j] in _POSSESSIVE:
+                return True
+            j -= 1
+        return negation and _negated(words, i)
+
     i = 0
     while i < len(words):
         w = words[i]
-        day = _DAY_OF.get(w)
-        if day and (i == 0 or words[i - 1] not in _POSSESSIVE):
-            if i + 2 < len(words) and words[i + 1] == "a" and words[i + 2] in _DAY_OF:
-                a, b = DAYS.index(day), DAYS.index(_DAY_OF[words[i + 2]])
-                found.update(DAYS[k] for k in range(a, b + 1) if a <= b)
-                i += 3
-                continue
-            found.add(day)
-        if w in ("festivo", "festivos") and (i == 0 or words[i - 1] not in _POSSESSIVE):
-            found.add("festivo")
-        if w in ("fin", "fines") and words[i + 1 : i + 3] == ["de", "semana"]:
-            if i == 0 or words[i - 1] not in _POSSESSIVE:
-                found.update({"sabado", "domingo"})
+        first = _day_at(w, abbreviations)
+        if first is None and abbreviations and w in _ONE_LETTER:
+            # a one-letter day only inside a range: «L a V», «L-D»
+            if i + 2 < len(words) and words[i + 1] in ("a", "-") and words[i + 2] in _ONE_LETTER:
+                first = _DAY_ABBREVIATIONS[w]
+        if first is not None and not plain(i):
+            if i + 2 < len(words) and words[i + 1] in ("a", "-", "al"):
+                end = _day_at(words[i + 2], abbreviations) or (
+                    _DAY_ABBREVIATIONS.get(words[i + 2]) if abbreviations else None
+                )
+                if end is not None:
+                    found.append((i, _range(first, end), " ".join(words[i : i + 3])))
+                    i += 3
+                    continue
+            found.append((i, [first], w))
+        elif w in _HOLIDAY and not plain(i):
+            found.append((i, ["festivo"], w))
+        elif (w in ("fin", "fines") and list(words[i + 1 : i + 3]) == ["de", "semana"]) or (
+            w in _WEEKEND
+        ):
+            if not plain(i):
+                found.append((i, ["sabado", "domingo"], w if w in _WEEKEND else "fin de semana"))
         i += 1
     return found
 
 
-def _promo_count(words: Sequence[str]) -> bool:
-    """«2x1», «3x2», «2 x 1», «2 x 1 en …»: a multi-buy promotion (small numbers)."""
+def _promo_count(words: Sequence[str]) -> str | None:
+    """«2x1», «3x2», «2 x 1»: a multi-buy promotion (small numbers)."""
     for i, w in enumerate(words):
         if w == "x" and 0 < i < len(words) - 1:
             a, b = words[i - 1], words[i + 1]
             if a.isdigit() and b.isdigit() and _below_ten(a) and _below_ten(b):
-                return True
+                return f"{a}x{b}"
+    return None
+
+
+def _leads_into_schedule(nxt: Sequence[str]) -> bool:
+    if not nxt:
+        return True
+    head = nxt[0]
+    if head in AVAILABILITY or head in _DAY_OF or head in _HOLIDAY:
+        return True
+    if head in _LEAD_INS and len(nxt) > 1:
+        follow = nxt[1]
+        return follow in _DAY_OF or follow in _HOLIDAY or follow in _TIME_WORDS or follow.isdigit()
     return False
 
 
-def _opening(words: Sequence[str]) -> bool:
-    """«abierto hoy», «estamos abiertos», «abrimos de martes…», «atendemos hasta tarde»."""
+def _opening(words: Sequence[str]) -> tuple[int, str] | None:
+    """«abierto hoy», «estamos abiertos», «abrimos de martes…», «ya abrimos»."""
     for i, w in enumerate(words):
-        near = set(words[max(0, i - 2) : i] + words[i + 1 : i + 3])
-        if w in _OPEN_WORDS and near & AVAILABILITY:
-            return True
+        if w in _OPEN_WORDS:
+            near = set(words[max(0, i - 2) : i]) | set(words[i + 1 : i + 3])
+            if near & AVAILABILITY:
+                return i, w
         if w in _OPEN_VERBS:
-            nxt = words[i + 1 : i + 3]
-            if not nxt:
-                return True
-            if nxt[0] in AVAILABILITY or nxt[0] in _DAY_OF:
-                return True
-            if nxt[0] == "el" and len(nxt) > 1 and (nxt[1] in _DAY_OF or nxt[1] == "festivo"):
-                return True
-    return False
+            if _leads_into_schedule(words[i + 1 : i + 3]):
+                return i, w
+            if i > 0 and words[i - 1] in ("ya", "hoy", "ahora"):
+                return i, f"{words[i - 1]} {w}"
+    return None
 
 
-def _closing(words: Sequence[str]) -> bool:
+def _closing(words: Sequence[str]) -> tuple[int, str] | None:
     for i, w in enumerate(words):
-        if w in _CLOSED_WORDS and w != "cierra":
+        if w in _CLOSED_WORDS:
             nxt = words[i + 1 : i + 3]
-            if not nxt or nxt[0] in AVAILABILITY or nxt[0] in _DAY_OF or nxt[0] == "por":
-                return True
-            if words[max(0, i - 1) : i] in (["estamos"], ["hoy"]):
-                return True
-            if nxt[0] == "el" and len(nxt) > 1:
-                return True
-    return False
+            if _leads_into_schedule(nxt) or (nxt and nxt[0] == "por"):
+                return i, w
+            if i > 0 and words[i - 1] in ("estamos", "hoy"):
+                return i, w
+    return None
 
 
 def _mask(normalised: str, names: Iterable[str]) -> str:
-    """The text without the catalog's product names: «Combo Domingo» is not a schedule."""
+    """The text without the catalog's product names: «Combo Domingo» is not a schedule. A
+    name made only of claim words («Envío Gratis») is a claim phrase itself: never masked."""
     out = f" {normalised} "
     for name in names:
         n = normalise(name)
-        if n:
-            out = out.replace(f" {n} ", " ")
+        words = _TOKEN.findall(n)
+        if not n or all(w in CLAIM_WORDS for w in words if w.isalpha()):
+            continue
+        out = out.replace(f" {n} ", " ")
     return out.strip()
 
 
 @dataclass(frozen=True)
 class Claims:
-    """What a text promises: claim types, and the days it names."""
+    """What a text promises: claim types, the days it names, and for each type the words
+    that make the claim (to quote in a repair)."""
 
     types: frozenset[str] = frozenset()
     days: frozenset[str] = frozenset()
+    evidence: tuple[tuple[str, str], ...] = ()
+
+    def words_for(self, kind: str) -> str:
+        return next((w for k, w in self.evidence if k == kind), kind)
 
 
-def claims_in(text: str, *, product_names: Iterable[str] = ()) -> Claims:
+def claims_in(
+    text: str,
+    *,
+    product_names: Iterable[str] = (),
+    abbreviations: bool = False,
+    negation: bool = False,
+) -> Claims:
+    """The claims of `text`. `negation` (the context's view): a mention denied in its
+    clause states nothing. `abbreviations` (saved hours): «Lun-Dom», «L a V» count."""
     words = _TOKEN.findall(_mask(normalise(text), product_names))
-    found: set[str] = set()
-    joined = " ".join(words)
+    evidence: list[tuple[str, str]] = []
     for kind, phrases in PHRASES.items():
-        if any(_has_phrase(words, p) for p in phrases):
-            found.add(kind)
-    if _promo_count(words):
-        found.add("promotion")
-    if re.search(r"(?:^| )- ?\d+ ?%", joined):
-        found.add("discount")
-    if _opening(words):
-        found.add("hours")
-    if _closing(words):
-        found.add("closure")
-    days = _days(words)
+        for phrase in phrases:
+            hits = [i for i in _find(words, phrase) if not (negation and _negated(words, i))]
+            if hits:
+                evidence.append((kind, phrase))
+                break
+    promo = _promo_count(words)
+    if promo and not (negation and _negated(words, words.index("x") - 1)):
+        evidence.append(("promotion", promo))
+    joined = " ".join(words)
+    minus = re.search(r"(?:^| )(- ?\d+ ?%)", joined)
+    if minus:
+        evidence.append(("discount", minus.group(1)))
+    opening = _opening(words)
+    if opening and not (negation and _negated(words, opening[0])):
+        evidence.append(("hours", opening[1]))
+    closing = _closing(words)
+    if closing and not (negation and _negated(words, closing[0])):
+        evidence.append(("closure", closing[1]))
+    days: set[str] = set()
+    day_words: list[str] = []
+    for _, named, said in _days(words, abbreviations=abbreviations, negation=negation):
+        days.update(named)
+        day_words.append(said)
     if days:
-        found.add("day")
+        evidence.append(("day", ", ".join(day_words)))
     if len(days - {"festivo"}) == 7:
-        found.add("every_day")
-    return Claims(frozenset(found), frozenset(days))
+        evidence.append(("every_day", ", ".join(day_words)))
+    return Claims(frozenset(k for k, _ in evidence), frozenset(days), tuple(evidence))
 
 
 @dataclass(frozen=True)
 class ContextSupport:
     """What the piece's context states (brief, approved hook and invitation, saved data —
-    never product names): the claim types it supports, the days it names, and whether the
-    business saved its hours."""
+    never product names, never what it denies): the claim types it supports, the days it
+    names, and whether the business saved its hours."""
 
     claims: Claims = field(default_factory=Claims)
     has_hours: bool = False
 
     @classmethod
     def of(cls, texts: Iterable[str], *, saved_hours: str | None = None) -> ContextSupport:
-        merged = Claims()
-        for text in [*texts, saved_hours or ""]:
+        types: set[str] = set()
+        days: set[str] = set()
+        for text in texts:
             if text and text.strip():
-                c = claims_in(text)
-                merged = Claims(merged.types | c.types, merged.days | c.days)
-        if "every_day" in merged.types:
-            merged = Claims(merged.types, merged.days | frozenset(DAYS))
-        return cls(merged, bool(saved_hours and saved_hours.strip()))
+                c = claims_in(text, negation=True)
+                types |= c.types
+                days |= c.days
+        if saved_hours and saved_hours.strip():
+            c = claims_in(saved_hours, negation=True, abbreviations=True)
+            types |= c.types
+            days |= c.days
+        if "every_day" in types:
+            days |= set(DAYS)
+        return cls(
+            Claims(frozenset(types), frozenset(days)), bool(saved_hours and saved_hours.strip())
+        )
 
-    def unsupported(self, claims: Claims) -> list[str]:
-        """Each claim of `claims` the context does not state, by type (days: by day)."""
+    def unsupported(self, claims: Claims) -> list[tuple[str, str]]:
+        """Each claim of `claims` the context does not state: (type, the words that make it).
+        Days are checked day by day."""
         missing = []
         for kind in sorted(claims.types):
             if kind == "day":
                 extra = claims.days - self.claims.days
                 if extra:
-                    missing.append(f"day ({', '.join(sorted(extra))})")
+                    missing.append(("day", claims.words_for("day")))
                 continue
             if kind == "hours" and (self.has_hours or {"hours", "every_day"} & self.claims.types):
                 continue
             if kind not in self.claims.types:
-                missing.append(kind)
+                missing.append((kind, claims.words_for(kind)))
         return missing
 
 
 __all__ = [
+    "CLAIM_WORDS",
     "Claims",
     "ContextSupport",
     "claims_in",

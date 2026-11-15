@@ -13380,6 +13380,369 @@
    "note": "",
    "split": "fresh",
    "id": 662
+  },
+  {
+   "text": "Receta de la abuela desde 1985",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": false,
+   "claim": null,
+   "source": "revision",
+   "note": "",
+   "split": "revision",
+   "id": 663
+  },
+  {
+   "text": "Colección otoño 2026",
+   "slot": "title",
+   "context": {
+    "topic": "Nueva colección de vestidos de temporada",
+    "scene": "Nueva colección de vestidos de temporada",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": []
+   },
+   "price": false,
+   "claim": null,
+   "source": "revision",
+   "note": "",
+   "split": "revision",
+   "id": 664
+  },
+  {
+   "text": "Vista abierta a los cerros",
+   "slot": "title",
+   "context": {
+    "topic": "Apartamento en venta en Cúcuta, 3 habitaciones y 2 baños",
+    "scene": "Apartamento en venta en Cúcuta, 3 habitaciones y 2 baños",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": []
+   },
+   "price": false,
+   "claim": null,
+   "source": "revision",
+   "note": "",
+   "split": "revision",
+   "id": 665
+  },
+  {
+   "text": "Cada noche, un atardecer distinto",
+   "slot": "title",
+   "context": {
+    "topic": "Plan a Cartagena, 4 días y 3 noches con hotel",
+    "scene": "Plan a Cartagena, 4 días y 3 noches con hotel",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": []
+   },
+   "price": false,
+   "claim": null,
+   "source": "revision",
+   "note": "description, not an availability promise: known hard case",
+   "split": "revision",
+   "id": 666
+  },
+  {
+   "text": "Tu look de viernes, listo",
+   "slot": "title",
+   "context": {
+    "topic": "Nueva colección de vestidos de temporada",
+    "scene": "Nueva colección de vestidos de temporada",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": []
+   },
+   "price": false,
+   "claim": null,
+   "source": "revision",
+   "note": "",
+   "split": "revision",
+   "id": 667
+  },
+  {
+   "text": "Ya abrimos en Pocitos",
+   "slot": "title",
+   "context": {
+    "topic": "Chivitos al pan en Montevideo",
+    "scene": "Chivitos al pan en Montevideo",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": []
+   },
+   "price": false,
+   "claim": "hours",
+   "source": "revision",
+   "note": "",
+   "split": "revision",
+   "id": 668
+  },
+  {
+   "text": "Happy hour de 6 a 8",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": false,
+   "claim": "promotion",
+   "source": "revision",
+   "note": "",
+   "split": "revision",
+   "id": 669
+  },
+  {
+   "text": "Tours diarios a Isla Margarita",
+   "slot": "title",
+   "context": {
+    "topic": "Plan a Cartagena, 4 días y 3 noches con hotel",
+    "scene": "Plan a Cartagena, 4 días y 3 noches con hotel",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": []
+   },
+   "price": false,
+   "claim": "every_day",
+   "source": "revision",
+   "note": "",
+   "split": "revision",
+   "id": 670
+  },
+  {
+   "text": "Separa tu apartamento sin cuota inicial",
+   "slot": "title",
+   "context": {
+    "topic": "Apartamento en venta en Cúcuta, 3 habitaciones y 2 baños",
+    "scene": "Apartamento en venta en Cúcuta, 3 habitaciones y 2 baños",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": []
+   },
+   "price": false,
+   "claim": "financing",
+   "source": "revision",
+   "note": "financing promise: outside the nine types, left out by design",
+   "split": "revision",
+   "id": 671
+  },
+  {
+   "text": "Por 20 años contigo",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": false,
+   "claim": null,
+   "source": "revision",
+   "note": "",
+   "split": "revision",
+   "id": 672
+  },
+  {
+   "text": "Celebra el año 2026 con nosotros",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": false,
+   "claim": null,
+   "source": "revision",
+   "note": "",
+   "split": "revision",
+   "id": 673
+  },
+  {
+   "text": "Abierto mañana",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": false,
+   "claim": "hours",
+   "source": "revision",
+   "note": "",
+   "split": "revision",
+   "id": 674
+  },
+  {
+   "text": "Te esperamos el sábado",
+   "slot": "title",
+   "context": {
+    "topic": "Abrimos de viernes a lunes",
+    "scene": "Abrimos de viernes a lunes",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": []
+   },
+   "price": false,
+   "claim": null,
+   "source": "revision",
+   "note": "",
+   "split": "revision",
+   "id": 675
+  },
+  {
+   "text": "Te esperamos el miércoles",
+   "slot": "title",
+   "context": {
+    "topic": "Abrimos de viernes a lunes",
+    "scene": "Abrimos de viernes a lunes",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": []
+   },
+   "price": false,
+   "claim": "day",
+   "source": "revision",
+   "note": "",
+   "split": "revision",
+   "id": 676
+  },
+  {
+   "text": "Domicilio gratis",
+   "slot": "title",
+   "context": {
+    "topic": "Pizzas al horno",
+    "scene": "Pizzas al horno",
+    "hook": "",
+    "cta": "",
+    "facts": {
+     "hours": "Martes a domingo",
+     "contact": "No hacemos domicilios ni nada gratis"
+    },
+    "products": []
+   },
+   "price": false,
+   "claim": "delivery",
+   "source": "revision",
+   "note": "",
+   "split": "revision",
+   "id": 677
+  },
+  {
+   "text": "Envío Gratis en toda la ciudad",
+   "slot": "title",
+   "context": {
+    "topic": "Ropa de temporada",
+    "scene": "Ropa de temporada",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Envío Gratis"
+    ]
+   },
+   "price": false,
+   "claim": "delivery",
+   "source": "revision",
+   "note": "",
+   "split": "revision",
+   "id": 678
+  },
+  {
+   "text": "Te esperamos el domingo",
+   "slot": "title",
+   "context": {
+    "topic": "Pan de bono",
+    "scene": "Pan de bono",
+    "hook": "",
+    "cta": "",
+    "facts": {
+     "hours": "Lun-Dom 7 a 20"
+    },
+    "products": []
+   },
+   "price": false,
+   "claim": null,
+   "source": "revision",
+   "note": "",
+   "split": "revision",
+   "id": 679
+  },
+  {
+   "text": "Ven el sábado",
+   "slot": "title",
+   "context": {
+    "topic": "Pan de bono",
+    "scene": "Pan de bono",
+    "hook": "",
+    "cta": "",
+    "facts": {
+     "hours": "L a V 7 a 20"
+    },
+    "products": []
+   },
+   "price": false,
+   "claim": "day",
+   "source": "revision",
+   "note": "",
+   "split": "revision",
+   "id": 680
+  },
+  {
+   "text": "Este finde, música en vivo",
+   "slot": "title",
+   "context": {
+    "topic": "Bar",
+    "scene": "Bar",
+    "hook": "",
+    "cta": "",
+    "facts": {
+     "hours": "Findes de 6 p. m. a 2 a. m."
+    },
+    "products": []
+   },
+   "price": false,
+   "claim": null,
+   "source": "revision",
+   "note": "",
+   "split": "revision",
+   "id": 681
   }
  ]
 }
