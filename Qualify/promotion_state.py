@@ -47,13 +47,13 @@ from .promotion_audience_vm import (
     COUNTRY_UNKNOWN,
     DEFAULT_POINT_DISTANCE,
     GENDER_LABELS,
-    LOCATION_FAILED,
+    NEAR_PLACE_LABEL,
     PLACEMENT_LABELS,
-    POINT_LABEL,
     AudienceInterestVM,
     AudiencePlaceVM,
     AudienceReachVM,
     captured_point,
+    location_problem,
     placements_label,
     point_distance_hint,
     point_distance_label,
@@ -127,9 +127,13 @@ LOCATE_SCRIPT = """new Promise((resolve) => {
     return;
   }
   navigator.geolocation.getCurrentPosition(
-    (p) => resolve({latitude: p.coords.latitude, longitude: p.coords.longitude}),
+    (p) => resolve({
+      latitude: p.coords.latitude,
+      longitude: p.coords.longitude,
+      accuracy: p.coords.accuracy,
+    }),
     (e) => resolve({error: String(e && e.code)}),
-    {enableHighAccuracy: true, timeout: 15000, maximumAge: 60000}
+    {enableHighAccuracy: true, timeout: 15000, maximumAge: 0}
   );
 })"""
 
@@ -582,7 +586,7 @@ class PromotionState(rx.State):
     @rx.var
     def audience_location_label(self) -> str:
         if self.form.near:
-            return POINT_LABEL
+            return NEAR_PLACE_LABEL
         return " · ".join(
             value
             for value in (
@@ -611,17 +615,25 @@ class PromotionState(rx.State):
 
         Any change clears the place and the point, so nothing of the other choice leaks."""
         current = "near" if self.form.near else self.form.location_kind
-        if self.busy or area not in {"near", "city", "country"} or area == current:
+        current = "city" if current == "region" else current  # «En una ciudad o región»
+        if (
+            self.busy
+            or area not in {"near", "city", "country"}
+            or area == current
+            or (area == "near" and self.form.housing)
+        ):
             return None
+        # «En todo un país» starts on the business's own country: nothing to search.
+        country = self._business_country() if area == "country" else ""
         self.form = replace(
             self.form,
             near=area == "near",
             point_latitude="",
             point_longitude="",
             location_kind="country" if area == "near" else area,
-            location_key="",
-            city_name="",
-            location_country="",
+            location_key=country,
+            city_name=COUNTRY_LABELS.get(country, ""),
+            location_country=country,
             location_region="",
             radius_km=DEFAULT_POINT_DISTANCE if area == "near" else "",
         )
@@ -633,12 +645,16 @@ class PromotionState(rx.State):
         self._invalidate_audience()
         return None if area == "near" else PromotionState.refresh_reach()
 
+    def _business_country(self) -> str:
+        source = next((row for row in self.sources if row.id == self.form.source_id), None)
+        country = source.default_country if source is not None else ""
+        return country if country in COUNTRY_LABELS else ""
+
     @rx.event
     def locate(self) -> rx.event.EventSpec | None:
-        if self.busy or not self.form.near:
+        if self.busy or not self.form.near or self.form.housing:
             return None
-        source = next((row for row in self.sources if row.id == self.form.source_id), None)
-        if source is None or source.default_country not in COUNTRY_LABELS:
+        if not self._business_country():
             self.location_error = COUNTRY_UNKNOWN
             return None
         self.location_error = ""
@@ -651,13 +667,13 @@ class PromotionState(rx.State):
         waiting, self.locating = self.locating, False
         if not waiting or self.busy or not self.form.near:
             return None
+        problem = location_problem(result)
         point = captured_point(result)
-        if point is None:
-            self.location_error = LOCATION_FAILED
+        if problem or point is None:
+            self.location_error = problem
             return None
-        source = next((row for row in self.sources if row.id == self.form.source_id), None)
-        country = source.default_country if source is not None else ""
-        if country not in COUNTRY_LABELS:
+        country = self._business_country()
+        if not country:
             self.location_error = COUNTRY_UNKNOWN
             return None
         self.form = replace(
@@ -1177,13 +1193,30 @@ class PromotionState(rx.State):
                 age_max="65",
                 gender="all",
                 interests=[],
-                # Near the business the distance is the area itself, not an extra.
-                radius_km=self.form.radius_km if self.form.near else "",
+                radius_km="",
+                # Meta asks special categories for wide areas and the backend refuses a
+                # point with housing: «Cerca de mi negocio» goes back to a city or region.
+                **(
+                    {
+                        "near": False,
+                        "point_latitude": "",
+                        "point_longitude": "",
+                        "location_kind": "city",
+                        "location_key": "",
+                        "city_name": "",
+                        "location_country": "",
+                        "location_region": "",
+                    }
+                    if self.form.near
+                    else {}
+                ),
                 custom_audiences=[
                     row for row in self.form.custom_audiences if row.kind != "lookalike"
                 ],
             )
             self.interest_results = []
+            self.locating = False
+            self.location_error = ""
             if getattr(self, "custom_kind", "engagement") == "lookalike":
                 self.custom_kind = "engagement"
                 self.custom_seed = ""
@@ -1656,6 +1689,8 @@ class PromotionState(rx.State):
             self.place_results = []
             self.interest_results = []
             self.audience_working = ""
+            self.locating = False
+            self.location_error = ""
             self._audience_version = 0
             self._invalidate_audience()
             self._invalidate_review()

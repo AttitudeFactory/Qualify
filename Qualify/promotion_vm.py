@@ -13,7 +13,12 @@ from qualify_creative.ad_destination import AD_CTA_LABELS, AdCTA
 from .ad_custom_audiences_vm import CustomAudienceVM
 from .ad_enhancements_vm import BrandEnhancementsVM
 from .ad_health_vm import AccountHealthVM
-from .promotion_audience_vm import COUNTRY_UNKNOWN, AudienceInterestVM, point_distance_problem
+from .promotion_audience_vm import (
+    COUNTRY_UNKNOWN,
+    NEAR_HOUSING_PROBLEM,
+    AudienceInterestVM,
+    point_distance_problem,
+)
 
 STEP_TITLES = (
     "¿Qué publicación quieres promocionar?",
@@ -573,6 +578,8 @@ def step_problem(draft: PromotionDraftVM, step: int, timezone_name: str = "") ->
         if any(not row.available for row in draft.custom_audiences):
             return "Vuelve a consultar el público de Instagram o quítalo antes de continuar."
         if draft.near:
+            if draft.housing:
+                return NEAR_HOUSING_PROBLEM
             if not draft.point_latitude or not draft.point_longitude:
                 return "Toca «Estoy en el negocio: usar mi ubicación» para marcar tu negocio."
             if not draft.location_key:

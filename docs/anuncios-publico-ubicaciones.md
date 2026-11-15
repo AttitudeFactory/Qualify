@@ -37,7 +37,13 @@ No verificado con Meta real. Lo primero que hay que confirmar, con una sola llam
 
 ### «Cerca de mi negocio» en la pantalla (14 de noviembre de 2026)
 
-El paso «¿A quién quieres llegar?» empieza con «¿Dónde están tus clientes?»: «Cerca de mi negocio», «En una ciudad» o «En todo un país» (estas dos son la búsqueda de siempre; la opción «Región» ya no se ofrece para elegir de nuevo, aunque un borrador guardado con una región se sigue mostrando). «Cerca de mi negocio» toma la ubicación del teléfono con la función del navegador (`navigator.geolocation`, solo en páginas seguras; `localhost` cuenta), la redondea a seis decimales y la guarda como `point` con la etiqueta «Punto en el mapa». No hay campo de dirección, mapa ni servicio de geocodificación: necesitan decisión del fundador. El país (`location`) es el del negocio (`tenants.country`, el mismo que ya usa el anuncio de una pieza sin publicar); si falta, la pantalla pide elegir «En una ciudad». La distancia va de 1 a 80 km (atajos 1, 3, 5 y 10; 5 por omisión). Cambiar a ciudad o país borra el punto, y un punto nuevo invalida la revisión aprobada.
+El paso «¿A quién quieres llegar?» empieza con «¿Dónde están tus clientes?»: «Cerca de mi negocio», «En una ciudad o región» o «En todo un país».
+
+- «En una ciudad o región» busca ciudades y regiones a la vez (dos consultas `adgeolocation`, una por tipo) y marca cada resultado «(ciudad)» o «(región)»: Meta no distingue estado de departamento. La distancia de 17 a 80 km solo existe para una ciudad. Los borradores guardados con una región siguen funcionando.
+- «En todo un país» empieza con el país del negocio ya elegido (`tenants.country`), sin buscar.
+- «Cerca de mi negocio» toma la ubicación del teléfono con la función del navegador (`navigator.geolocation`, solo en páginas seguras; `localhost` cuenta, `maximumAge: 0`). Rechaza una lectura con precisión peor que 500 m, o sin precisión; la precisión solo se comprueba, no se guarda ni se envía. Redondea a seis decimales y guarda `point` con el nombre interno «Tu negocio» (Meta no lo recibe). La pantalla dice «Listo: usamos la ubicación de tu negocio» y el resumen «Cerca de tu negocio». El país (`location`) es el del negocio; si falta, la pantalla pide elegir una ciudad o región. La distancia va de 1 a 80 km (atajos 1, 3, 5 y 10; 5 por omisión). No hay campo de dirección, mapa ni servicio de geocodificación: necesitan decisión del fundador.
+- No se ofrece con la categoría Vivienda: Meta pide zonas amplias para categorías especiales y el servidor la rechaza.
+- Cambiar a ciudad, región o país borra el punto, y un punto nuevo invalida la revisión aprobada.
 
 ## Consultas y estimación
 

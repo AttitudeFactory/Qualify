@@ -18,10 +18,11 @@ from qualify_api.ads.custom_audiences import CustomAudienceSelection
 
 from .ad_custom_audiences_vm import CustomAudienceVM
 from .promotion_audience_vm import (
-    POINT_LABEL,
+    POINT_NAME,
     AudienceInterestVM,
     AudiencePlaceVM,
     AudienceReachVM,
+    place_kind_label,
     reach_label,
 )
 from .promotion_vm import PromotionDraftVM
@@ -42,7 +43,7 @@ def audience_from_form(form: PromotionDraftVM) -> AudienceDraft:
         ),
         radius_km=int(form.radius_km) if form.radius_km else None,
         point=(
-            MapPoint(float(form.point_latitude), float(form.point_longitude), POINT_LABEL)
+            MapPoint(float(form.point_latitude), float(form.point_longitude), POINT_NAME)
             if form.near and form.point_latitude and form.point_longitude
             else None
         ),
@@ -111,9 +112,26 @@ def audience_scope(tenant: str, piece: str, source: str, account: str) -> dict[s
 
 
 def find_places(scope: dict[str, UUID], query: str, kind: str) -> list[AudiencePlaceVM]:
-    rows = asyncio.run(search_audience_locations(**scope, query=query, location_type=kind))
+    """«En una ciudad o región» searches both kinds (Meta's search takes one type per call);
+    cities come first."""
+    kinds = ("country",) if kind == "country" else ("city", "region")
+
+    async def search() -> list:
+        found = await asyncio.gather(
+            *(search_audience_locations(**scope, query=query, location_type=k) for k in kinds)
+        )
+        return [row for rows in found for row in rows]
+
     return [
-        AudiencePlaceVM(row.key, row.type, row.country_code, row.name, row.region) for row in rows
+        AudiencePlaceVM(
+            row.key,
+            row.type,
+            row.country_code,
+            row.name,
+            row.region,
+            place_kind_label(row.type) if kind != "country" else "",
+        )
+        for row in asyncio.run(search())
     ]
 
 

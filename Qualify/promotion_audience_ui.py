@@ -5,7 +5,13 @@ from __future__ import annotations
 import reflex as rx
 
 from .ad_custom_audiences_ui import custom_audiences
-from .promotion_audience_vm import GENDER_LABELS, PLACEMENT_LABELS, POINT_DISTANCES, POINT_LABEL
+from .promotion_audience_vm import (
+    GENDER_LABELS,
+    NEAR_HOUSING,
+    PLACEMENT_LABELS,
+    POINT_CAPTURED,
+    POINT_DISTANCES,
+)
 from .promotion_state import PromotionState as S
 from .ui import callout, card, choice_card, choice_card_check, loading_spinner
 from .ui import tokens as T
@@ -52,7 +58,15 @@ def _number(label: str, name: str, value: rx.Var[str]) -> rx.Component:
 def _place(place: rx.Var) -> rx.Component:
     return rx.button(
         rx.vstack(
-            rx.text(place.label, weight="medium", overflow_wrap="anywhere"),
+            rx.text(
+                place.label,
+                rx.cond(
+                    place.kind_label != "",
+                    rx.el.span(" " + place.kind_label, color=T.TEXT_MUTED, font_weight="400"),
+                ),
+                weight="medium",
+                overflow_wrap="anywhere",
+            ),
             rx.text(place.region + " · " + place.country, size="1", color=T.TEXT_MUTED),
             spacing="1",
             align_items="start",
@@ -234,7 +248,13 @@ def _placements() -> rx.Component:
     )
 
 
-def _area(title: str, detail: str, area: str, selected: rx.Var[bool]) -> rx.Component:
+def _area(
+    title: str,
+    detail: str | rx.Var[str],
+    area: str,
+    selected: rx.Var[bool],
+    disabled: rx.Var[bool] | bool = False,
+) -> rx.Component:
     return choice_card(
         rx.flex(
             rx.vstack(
@@ -251,7 +271,7 @@ def _area(title: str, detail: str, area: str, selected: rx.Var[bool]) -> rx.Comp
         ),
         selected=selected,
         on_select=S.choose_area(area),
-        disabled=S.busy,
+        disabled=S.busy | disabled,
         min_height="44px",
         width="100%",
         text_align="left",
@@ -264,13 +284,16 @@ def _areas() -> rx.Component:
         rx.vstack(
             _area(
                 "Cerca de mi negocio",
-                "Personas que viven o pasan cerca de tu local.",
+                rx.cond(
+                    S.form.housing, NEAR_HOUSING, "Personas que viven o pasan cerca de tu local."
+                ),
                 "near",
                 S.form.near,
+                disabled=S.form.housing,
             ),
             _area(
-                "En una ciudad",
-                "Busca la ciudad donde están tus clientes.",
+                "En una ciudad o región",
+                "Busca tu ciudad, estado o departamento.",
                 "city",
                 ~S.form.near & (S.form.location_kind != "country"),
             ),
@@ -313,7 +336,7 @@ def _near_business() -> rx.Component:
             rx.flex(
                 rx.flex(
                     rx.icon("map-pin", size=18, color=T.tone_color("ok", 11)),
-                    rx.text(POINT_LABEL, weight="medium"),
+                    rx.text(POINT_CAPTURED, weight="medium"),
                     align="center",
                     gap="2",
                 ),
@@ -344,16 +367,27 @@ def _near_business() -> rx.Component:
                 width="100%",
             ),
         ),
+        rx.text(
+            "Tócalo cuando estés en tu local. ¿No estás allí ahora? Elige «En una ciudad o "
+            "región» o vuelve cuando estés.",
+            size="2",
+            color=T.TEXT_MUTED,
+        ),
         rx.cond(
-            S.locating,
+            ~has_point & (S.location_error == ""),
             rx.text(
-                "Tu teléfono puede preguntarte si permites usar tu ubicación.",
+                "Tu teléfono te va a preguntar si permites usar tu ubicación: toca «Permitir».",
                 size="2",
                 color=T.TEXT_MUTED,
                 role="status",
             ),
         ),
         rx.cond(S.location_error != "", callout(S.location_error, "error")),
+        # «Siguiente» before the location: say it here too, not only in the top banner.
+        rx.cond(
+            ~has_point & (S.location_error == "") & (S.error != ""),
+            callout(S.error, "error"),
+        ),
         rx.cond(
             has_point,
             rx.vstack(
@@ -399,21 +433,25 @@ def _near_business() -> rx.Component:
 
 
 def _place_search() -> rx.Component:
-    """«En una ciudad» / «En todo un país»: the search exactly as it was before."""
+    """«En una ciudad o región» (both kinds in one search) / «En todo un país»."""
+    country = S.form.location_kind == "country"
     return rx.vstack(
-        rx.el.label("¿Dónde están las personas?", html_for="audience-place-query"),
+        rx.el.label(
+            rx.cond(country, "¿En qué país?", "¿En qué ciudad o región?"),
+            html_for="audience-place-query",
+        ),
         rx.input(
             id="audience-place-query",
             value=S.place_query,
             on_change=lambda value: S.audience_edit("place_query", value),
-            placeholder="Ejemplo: Cúcuta o Colombia",
+            placeholder=rx.cond(country, "Ejemplo: Colombia", "Ejemplo: Cúcuta o Táchira"),
             disabled=S.busy,
             min_height="44px",
             width="100%",
             size="3",
         ),
         rx.button(
-            "Buscar lugares",
+            "Buscar",
             on_click=S.search_places,
             disabled=S.busy | (S.place_query.length() < 2),
             variant="outline",
@@ -434,8 +472,9 @@ def _place_search() -> rx.Component:
                     S.form.radius_km,
                 ),
                 rx.text(
-                    "Escribe entre 17 y 80 km. Si lo dejas vacío, el anuncio se muestra "
-                    "en toda la ciudad.",
+                    "Para una ciudad, la distancia mínima es 17 km. Si quieres llegar más "
+                    "cerca, elige «Cerca de mi negocio». Si la dejas vacía, el anuncio se "
+                    "muestra en toda la ciudad.",
                     size="2",
                     color=rx.cond(
                         S.radius_out_of_range,

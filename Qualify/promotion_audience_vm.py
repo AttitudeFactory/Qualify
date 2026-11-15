@@ -13,6 +13,7 @@ class AudiencePlaceVM:
     country: str = ""
     label: str = ""
     region: str = ""
+    kind_label: str = ""  # «(ciudad)» / «(región)» next to the name in the results
 
 
 @dataclass(frozen=True)
@@ -55,14 +56,66 @@ def reach_label(lower: int, upper: int) -> str:
 
 
 # «Cerca de mi negocio» (m-24828977): a distance around the phone's location at the business.
-POINT_LABEL = "Punto en el mapa"
+POINT_NAME = "Tu negocio"  # MapPoint.name: internal, Meta never receives it
+POINT_CAPTURED = "Listo: usamos la ubicación de tu negocio"
+NEAR_PLACE_LABEL = "Cerca de tu negocio"
+NEAR_HOUSING = "No disponible para anuncios de vivienda."
 POINT_DISTANCES = ("1", "3", "5", "10")
 DEFAULT_POINT_DISTANCE = "5"
+# A reading less precise than this could place the business in another neighborhood.
+MAX_ACCURACY_M = 500
 LOCATION_FAILED = (
     "No pudimos usar tu ubicación. Ábrela desde tu negocio y vuelve a intentarlo, "
-    "o elige «En una ciudad»."
+    "o elige «En una ciudad o región»."
 )
-COUNTRY_UNKNOWN = "No sabemos en qué país está tu negocio. Elige «En una ciudad»."
+LOCATION_DENIED = (
+    "Tu teléfono no nos dejó ver tu ubicación. Si estás en el negocio, permite la ubicación "
+    "para esta página (en el candado junto a la dirección) y vuelve a tocar el botón. "
+    "Si no estás allí, elige «En una ciudad o región»."
+)
+LOCATION_NOT_FOUND = (
+    "No pudimos encontrar tu ubicación. Revisa que la ubicación del teléfono esté encendida "
+    "y vuelve a intentarlo."
+)
+LOCATION_UNSUPPORTED = (
+    "Este navegador no nos deja usar tu ubicación. Abre Qualify en el navegador de tu "
+    "teléfono, como Chrome o Safari, y vuelve a intentarlo, o elige «En una ciudad o región»."
+)
+LOCATION_IMPRECISE = (
+    "No pudimos ubicar bien tu negocio. Sal a un lugar abierto o activa la ubicación precisa "
+    "del teléfono y vuelve a intentarlo, o elige «En una ciudad o región»."
+)
+COUNTRY_UNKNOWN = "No sabemos en qué país está tu negocio. Elige «En una ciudad o región»."
+NEAR_HOUSING_PROBLEM = (
+    "«Cerca de mi negocio» no está disponible para anuncios de vivienda. "
+    "Elige «En una ciudad o región»."
+)
+_LOCATION_ERRORS = {"1": LOCATION_DENIED, "2": LOCATION_NOT_FOUND, "3": LOCATION_NOT_FOUND}
+
+
+def location_problem(value: object) -> str:
+    """Why the browser's answer cannot be used ("" when it can). The accuracy is only
+    checked here, never stored or sent."""
+    if not isinstance(value, dict):
+        return LOCATION_FAILED
+    if "error" in value:
+        return _LOCATION_ERRORS.get(str(value["error"]), LOCATION_UNSUPPORTED)
+    if captured_point(value) is None:
+        return LOCATION_FAILED
+    accuracy = value.get("accuracy")
+    if (
+        isinstance(accuracy, bool)
+        or not isinstance(accuracy, int | float)
+        or not math.isfinite(accuracy)
+        or not 0 <= accuracy <= MAX_ACCURACY_M
+    ):
+        return LOCATION_IMPRECISE
+    return ""
+
+
+def place_kind_label(kind: str) -> str:
+    """The search result's tag: Meta does not tell a state from a department, so «región»."""
+    return f"({PLACE_KIND_LABELS[kind].lower()})" if kind in PLACE_KIND_LABELS else ""
 
 
 def captured_point(value: object) -> tuple[str, str] | None:
