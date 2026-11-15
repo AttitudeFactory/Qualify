@@ -89,7 +89,7 @@ logger = logging.getLogger(__name__)
 LAYER_SWITCH_ENV = "QUALIFY_IMAGE_LAYER"
 LAYER_MODEL = ModelConfig("claude-sonnet-5-5", effort="low")
 #: Prompt provenance (`piece_layers.prompt_version`, the ledger's prompt version).
-LAYER_PROMPT_VERSION = "capa-v2"  # capa-v1: CAPA-001; v2 (review): tú, claims, 2/3 of limits
+LAYER_PROMPT_VERSION = "capa-v3"  # v1: CAPA-001; v2: CAPA-002; v3: per-piece slot table
 #: The pipeline that writes `piece_layers` rows (`piece_layers.pipeline_version`).
 LAYER_PIPELINE_VERSION = "image-pipeline-layer-v1"
 LAYER_TOOL = "escribir_capa"
@@ -181,12 +181,15 @@ class SlideInput:
 #: The piece types of the catalog's coverage table (§3) this stage serves today.
 PRODUCT_PROMOTION = "product_promotion"
 FREE_IDEA = "free_idea"
+#: «Información de tu negocio» (imagen): the piece IS the saved data (catalog §3)
+BUSINESS_INFO = "business_info"
 CAROUSEL = "carousel"
 
 #: catalog §3: which layouts a piece type may take (carousel slides: by role, §6).
 _COVERAGE: dict[str, tuple[str, ...]] = {
     PRODUCT_PROMOTION: ("plate", "band", "scrim"),
     FREE_IDEA: ("plate", "band", "scrim", "brand_fill", "info_card"),
+    BUSINESS_INFO: ("info_card",),
 }
 
 
@@ -250,7 +253,7 @@ _ANCHORS = [
 ]
 
 
-def _slide_properties(info_kinds: Sequence[str]) -> dict[str, Any]:
+def _slide_properties(info_kinds: Sequence[str], priced_ids: Sequence[str] = ()) -> dict[str, Any]:
     icon_ids = ["none", *catalog()["layouts"]["highlight_circle"]["icon_ids"]]
     return {
         "position": {"type": "integer", "description": "La posición de la imagen (0, 1…)."},
@@ -283,11 +286,18 @@ def _slide_properties(info_kinds: Sequence[str]) -> dict[str, Any]:
         "info_blocks": {
             "type": "array",
             "items": {"type": "string", "enum": list(info_kinds) or ["none"]},
-            "description": "Solo tipos de la lista de datos guardados, en orden.",
+            "description": "Solo en info_card o brand_fill: tipos de la lista de datos "
+            "guardados, en orden. En cualquier otro diseño, lista vacía."
+            if info_kinds
+            else "Esta pieza no lleva bloques de datos: lista vacía.",
         },
         "price_product_id": {
             "type": "string",
-            "description": "El id de un producto con precio de la lista, o vacío.",
+            # capa-v3: only the products WITH a stored price can be chosen at all
+            "enum": ["", *priced_ids],
+            "description": "El id de un producto con precio (solo en plate o band), o vacío."
+            if priced_ids
+            else "Ningún producto tiene precio guardado: vacío.",
         },
         "highlight_kind": {"type": "string", "enum": ["none", "icon", "word", "photo"]},
         "highlight_icon_id": {"type": "string", "enum": icon_ids},
@@ -295,10 +305,10 @@ def _slide_properties(info_kinds: Sequence[str]) -> dict[str, Any]:
     }
 
 
-def layer_tool(info_kinds: Sequence[str]) -> dict[str, Any]:
+def layer_tool(info_kinds: Sequence[str], priced_ids: Sequence[str] = ()) -> dict[str, Any]:
     slide = {
         "type": "object",
-        "properties": _slide_properties(info_kinds),
+        "properties": _slide_properties(info_kinds, priced_ids),
         "additionalProperties": False,
     }
     slide["required"] = list(slide["properties"])
@@ -342,7 +352,9 @@ opción segura.
 - brand_fill (fondo de color, sin foto): un aviso o una frase sin producto que mostrar; \
 el cierre de un carrusel.
 - info_card (datos del negocio): la pieza es para mostrar datos guardados (dónde, horario, \
-formas de pago, lo más pedido, pedidos).
+formas de pago, lo más pedido, pedidos). Si la publicación trata de esos datos («dónde \
+estamos», «nuevo horario», «cómo pagar», «cómo pedir») y el negocio los guardó, elige \
+info_card con esos bloques, aunque la foto permita otro diseño.
 - photo_only (solo la foto): solo en una diapositiva de desarrollo de carrusel donde la \
 foto cuenta todo.
 - highlight_circle: solo portadas e íconos de historias destacadas.
@@ -367,28 +379,54 @@ si no aparecen en «De qué trata la publicación». Si el negocio no los guard�
 - call_phrase es una invitación en forma de frase («Pídelo por WhatsApp», «Te esperamos \
 hoy»), no la etiqueta de un botón. Vacío si no aporta.
 - No repitas el nombre del negocio: el logo ya va en la pieza.
-- Respeta los límites de caracteres del diseño y el formato que elijas (te los damos). \
-Apunta a dos tercios del límite: en el teléfono se lee mejor corto."""
+- La tabla de diseños de abajo dice, para esta pieza, qué textos lleva cada diseño, su \
+largo ideal y su máximo, si lleva bloques de datos y si lleva precio. Lo que la tabla no \
+da, va vacío. Escribe al largo ideal: el máximo es un tope, no una meta; en el teléfono \
+se lee mejor corto."""
 
 
-def _limits_text(fmt: str) -> str:
+def _allowed_layouts(request: LayerRequest) -> list[str]:
+    """The layouts this piece may take, in the catalog's order (carousel: every role's)."""
+    if request.is_carousel:
+        wanted = {layout for role in catalog()["carousel_roles"].values() for layout in role}
+    else:
+        wanted = set(_COVERAGE.get(request.piece_type, _COVERAGE[FREE_IDEA]))
+    return [layout for layout in catalog()["layouts"] if layout in wanted]
+
+
+def _ideal(limit: int) -> int:
+    """The length to write to: two thirds of the slot's maximum."""
+    return max(8, (limit * 2) // 3)
+
+
+def _limits_text(request: LayerRequest) -> str:
+    """capa-v3: the per-piece slot table — for each layout this piece may take, which texts
+    it has (ideal length and maximum), whether it takes data blocks and a price, and its own
+    rule, so a field a layout does not take reads «vacío» (CAPA-002's repairs)."""
+    fmt = request.format
+    kinds = {k.value for k in request.facts.available()}
+    priced = any(p.has_price for p in request.products)
     lines = []
-    for layout_id, layout in catalog()["layouts"].items():
+    for layout_id in _allowed_layouts(request):
+        layout = catalog()["layouts"][layout_id]
         if fmt not in layout["formats"]:
             continue
         parts = []
         for slot in ("title", "subtitle", "call_phrase"):
             limit = (layout["slots"].get(slot) or {}).get(fmt)
-            if limit:
-                parts.append(f"{slot} ≤ {limit[0]}")
-        if layout["price"]:
-            parts.append("precio sí")
-        if layout.get("info_blocks"):
-            bounds = layout["info_blocks"][fmt]
             parts.append(
-                f"info_blocks {bounds['min']}-{bounds['max']} ({', '.join(layout['info_kinds'])})"
+                f"{slot} ideal {_ideal(limit[0])}, máx. {limit[0]}" if limit else f"{slot} vacío"
             )
-        lines.append(f"- {layout_id}: {', '.join(parts) or 'sin texto'}")
+        offered = [k for k in layout.get("info_kinds") or [] if k in kinds]
+        if layout.get("info_blocks") and offered:
+            bounds = layout["info_blocks"][fmt]
+            parts.append(f"info_blocks {bounds['min']}-{bounds['max']} ({', '.join(offered)})")
+        else:
+            parts.append("info_blocks vacío")
+        parts.append("precio sí" if layout["price"] and priced else "price_product_id vacío")
+        if layout_id == "band" and fmt == "1:1":
+            parts.append("en 1:1 subtitle O call_phrase, nunca los dos")
+        lines.append(f"- {layout_id}: {'; '.join(parts)}")
     return "\n".join(lines)
 
 
@@ -407,7 +445,15 @@ def _coverage_text(request: LayerRequest) -> str:
             closing=", ".join(roles["closing"]),
         )
     allowed = _COVERAGE.get(request.piece_type, _COVERAGE[FREE_IDEA])
-    return f"Es una sola imagen. Diseños posibles, del preferido al último: {', '.join(allowed)}."
+    text = f"Es una sola imagen. Diseños posibles, del preferido al último: {', '.join(allowed)}."
+    if request.piece_type == BUSINESS_INFO:
+        text += " Es «Información de tu negocio»: info_card con los datos guardados."
+    elif request.piece_type == FREE_IDEA and request.facts.available():
+        text += (
+            " Si la publicación trata de los datos guardados del negocio, info_card; si es un "
+            "aviso sin producto que mostrar, brand_fill."
+        )
+    return text
 
 
 def _facts_text(request: LayerRequest) -> str:
@@ -418,9 +464,12 @@ def _facts_text(request: LayerRequest) -> str:
         if kinds
         else "- (el negocio no tiene datos guardados: no uses info_blocks)"
     )
+    # capa-v3: a product without a stored price has no id here — it cannot be a price ref
     products = (
         "\n".join(
-            f"- {p.product_id}: {p.name}{' (tiene precio)' if p.has_price else ' (sin precio)'}"
+            f"- {p.product_id}: {p.name} (tiene precio)"
+            if p.has_price
+            else f"- {p.name} (sin precio guardado: no se puede poner precio)"
             for p in request.products
         )
         if request.products
@@ -449,8 +498,8 @@ def _instructions(request: LayerRequest) -> str:
     )
     return (
         f"Formato: {request.format}. Imágenes, en el orden de arriba: {positions}.\n\n"
-        f"{_coverage_text(request)}\n\nLímites por diseño en {request.format}:\n"
-        f"{_limits_text(request.format)}\n\n{_facts_text(request)}\n\n"
+        f"{_coverage_text(request)}\n\nDiseños de esta pieza en {request.format}:\n"
+        f"{_limits_text(request)}\n\n{_facts_text(request)}\n\n"
         f"La publicación:\n{_brief_text(request)}\n\nEntrega la capa con {LAYER_TOOL}."
     )
 
@@ -701,8 +750,14 @@ def write_layers(
         feature=FEATURE,
         prompt_version=LAYER_PROMPT_VERSION,
     )
-    kinds = [k.value for k in request.facts.available()]
-    tool = layer_tool(kinds)
+    # capa-v3: a piece whose layouts take no data blocks is offered none; only products
+    # with a stored price can be a price reference
+    takes_blocks = any(
+        catalog()["layouts"][layout].get("info_blocks") for layout in _allowed_layouts(request)
+    )
+    kinds = [k.value for k in request.facts.available()] if takes_blocks else []
+    priced = [str(p.product_id) for p in request.products if p.has_price]
+    tool = layer_tool(kinds, priced)
     content: list[dict[str, Any]] = []
     for slide in request.slides:
         if slide.photo is not None:
@@ -834,6 +889,7 @@ def write_layers(
 
 
 __all__ = [
+    "BUSINESS_INFO",
     "CAROUSEL",
     "FEATURE",
     "FREE_IDEA",
