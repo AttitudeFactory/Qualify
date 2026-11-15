@@ -87,6 +87,34 @@ def test_the_owner_sees_and_changes_the_rubro_and_its_tags(
     section.get_by_label("Nueva etiqueta").fill("pizzeria, ropadeportiva")
     section.get_by_label("Nueva etiqueta").press("Enter")
     expect(section.get_by_text("#ropadeportiva", exact=True)).to_be_visible()
+    section.get_by_role("button", name="Agregar etiqueta").click()
+    section.get_by_label("Nueva etiqueta").fill("tachira")
+    section.get_by_label("Nueva etiqueta").press("Enter")
+    expect(section.get_by_text("#tachira", exact=True)).to_be_visible()
+
+    # m-25029206: the order — «⋯» in words, the handle's keyboard, and typing again
+    section.get_by_role("button", name="Más opciones para «#ropadeportiva»").click()
+    page.get_by_role("menuitem", name="Mover al principio").click()
+    expect(
+        section.get_by_role("button", name="Mover «#ropadeportiva», posición 1 de 5")
+    ).to_be_visible()
+    handle = section.get_by_role("button", name="Mover «#tachira», posición 5 de 5")
+    handle.focus()
+    handle.press("Space")
+    handle.press("ArrowUp")
+    section.get_by_role("button", name="Mover «#tachira», posición 4 de 5").press("Space")
+    dropped = section.get_by_role("button", name="Mover «#tachira», posición 4 de 5")
+    # the handle gets the focus back after the drop (as in the WhatsApp menu): wait for
+    # it, or that late focus would close the input opened right after
+    expect(dropped).to_be_focused()
+    page.wait_for_timeout(200)
+    section.get_by_role("button", name="Agregar etiqueta").click()  # also with 5
+    section.get_by_label("Nueva etiqueta").fill("comidacasera, arepas")
+    section.get_by_label("Nueva etiqueta").press("Enter")
+    expect(section.get_by_text("Las ordenamos como las escribiste.")).to_be_visible()
+    expect(
+        section.get_by_role("button", name="Mover «#comidacasera», posición 1 de 5")
+    ).to_be_visible()
     section.scroll_into_view_if_needed()
     _shot(page, f"rubro-editando-{width}")
     # nothing on the page is wider than the phone
@@ -94,17 +122,19 @@ def test_the_owner_sees_and_changes_the_rubro_and_its_tags(
 
     section.get_by_role("button", name="Guardar", exact=True).click()
     expect(page.get_by_text("Sección guardada.")).to_be_visible(timeout=30_000)
-    expect(section.get_by_text("#arepas", exact=True)).to_be_visible()
+    expect(section.get_by_text("1. #comidacasera", exact=True)).to_be_visible()
+    expect(section.get_by_text("5. #pizzeria", exact=True)).to_be_visible()
     section.scroll_into_view_if_needed()
     _shot(page, f"rubro-guardado-{width}")
 
     after = _connect(page)
     assert after["rubro_text"] == "arepera de barrio"
     assert [pill["tag"] for pill in after["hashtags"]] == [
-        "arepas",
         "comidacasera",
-        "pizzeria",
+        "arepas",
         "ropadeportiva",
+        "tachira",
+        "pizzeria",
     ]
     assert all(set(pill) == {"tag", "origin", "reason", "model"} for pill in after["hashtags"])
     rest = {k: v for k, v in after.items() if k not in ("rubro_text", "hashtags")}
