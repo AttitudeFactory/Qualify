@@ -42,6 +42,8 @@ state read, payment review, state save, outbox rows — so a crash anywhere leav
 nothing, and the retry is a first delivery: the duplicate-insert short-circuit only
 ever sees a message whose state and reply rows committed with it. `lock_thread` takes
 the thread row's `FOR NO KEY UPDATE` lock: one conversation at a time, never another.
+Every `transaction()` starts with `SET LOCAL lock_timeout` (`LOCK_TIMEOUT_MS`), so a
+waiter fails into the webhook's retry instead of waiting forever.
 
 `MemoryWhatsAppInboxRepository` mirrors every rule above for offline tests.
 """
@@ -290,6 +292,10 @@ _SAVE_STATE = text(
     """
 )
 
+#: m-25017846: how long a message's transaction waits for any lock (the conversation's,
+#: a state row) before it fails into the webhook's retry (`SET LOCAL lock_timeout`).
+LOCK_TIMEOUT_MS = 5_000
+
 # m-25017846: the conversation's own row is the lock — one row per (number, wa_id), so it
 # can never block or reveal another conversation, let alone another tenant's. `NO KEY`
 # so the FK checks of other writers (`messages`, `whatsapp_outbox` rows of this thread)
@@ -331,15 +337,27 @@ class PostgresWhatsAppInboxRepository:
     """The real thing. `session_factory` defaults to the `qualify_webhook_worker` door;
     tests may pass it explicitly."""
 
-    def __init__(self, session_factory: SessionFactory = webhook_worker_session) -> None:
+    def __init__(
+        self,
+        session_factory: SessionFactory = webhook_worker_session,
+        *,
+        lock_timeout_ms: int = LOCK_TIMEOUT_MS,
+    ) -> None:
         self._session = session_factory
+        self._lock_timeout_ms = int(lock_timeout_ms)
 
     @contextmanager
     def transaction(self) -> Iterator[PostgresWhatsAppInboxRepository]:
         with self._session() as session:
+            # A waiter on a held conversation fails (LockNotAvailable) into the
+            # webhook's normal retry instead of blocking the worker forever. `SET LOCAL`
+            # takes no bind parameter: the value is an int built here.
+            session.execute(text(f"SET LOCAL lock_timeout = {self._lock_timeout_ms}"))
             # The same repository on this one open session: its calls neither commit
             # nor close it; the door commits (or rolls back) when the block ends.
-            yield PostgresWhatsAppInboxRepository(lambda: nullcontext(session))
+            yield PostgresWhatsAppInboxRepository(
+                lambda: nullcontext(session), lock_timeout_ms=self._lock_timeout_ms
+            )
 
     def lock_thread(self, thread_id: UUID) -> None:
         with self._session() as session:
@@ -752,6 +770,7 @@ class MemoryWhatsAppInboxRepository:
 
 __all__ = [
     "CHANNEL_WHATSAPP",
+    "LOCK_TIMEOUT_MS",
     "DIRECTION_INBOUND",
     "OUTBOX_KIND_AUTOMATION",
     "MemoryWhatsAppInboxRepository",

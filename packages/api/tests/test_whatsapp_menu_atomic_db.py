@@ -13,6 +13,12 @@ one conversation at a time — against a real Postgres, through the real
   of the same business) goes through meanwhile.
 - **Retry after success.** Replaying a change that committed sends nothing twice and
   never advances the menu twice.
+- **The last attempt never loses the message.** A step that always fails stores the
+  message on the change's last attempt, hands the chat to a person («Por responder»
+  under the real `inbox.awaiting` rule) and writes no outbox row; an error that goes
+  away on a retry still gets the full reply once.
+- **A waiter never hangs.** `SET LOCAL lock_timeout`: a second worker on a held
+  conversation fails into the retry.
 
 Seeding mirrors `test_whatsapp_inbox_repository_db.py` (tenant/user/app via
 `admin_session`, connection and phone row via `tenant_session`). The menu is
@@ -25,19 +31,28 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+from dataclasses import replace
 from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
+from psycopg.errors import LockNotAvailable
 from qualify_shared.db.admin import admin_session
 from qualify_shared.db.session import tenant_session
-from sqlalchemy import select
+from sqlalchemy import select, text
+from sqlalchemy.exc import OperationalError
 
 from qualify_api.connections.models import PlatformApp, SocialConnection
+from qualify_api.inbox.awaiting import awaiting_reply_sql
 from qualify_api.inbox.models import Message, Thread
 from qualify_api.tenancy.models import Tenant, User
-from qualify_api.webhooks.repository import ClaimedEvent
-from qualify_api.whatsapp.handler import PublishedMenu, whatsapp_messages_handler
+from qualify_api.webhooks.repository import MAX_ATTEMPTS, ClaimedEvent
+from qualify_api.whatsapp.handler import (
+    AUTOMATION_ERROR_REASON,
+    CTX_HANDOFF,
+    PublishedMenu,
+    whatsapp_messages_handler,
+)
 from qualify_api.whatsapp.menus.examples import BIANKI_DEMO_MENU
 from qualify_api.whatsapp.models import (
     WhatsAppOutboxItem,
@@ -396,3 +411,112 @@ async def test_a_retry_after_a_committed_message_sends_nothing_and_never_steps_t
         state.context,
     )
     assert len(calls) == 1  # the menu was never stepped again
+
+
+def _with_attempts(event: ClaimedEvent, attempts: int) -> ClaimedEvent:
+    return replace(event, attempts=attempts)
+
+
+def _awaits_reply(business: dict[str, Any], thread_id: UUID) -> bool:
+    with tenant_session(business["tenant"]) as session:
+        return bool(
+            session.execute(
+                text(f"SELECT {awaiting_reply_sql('t')} FROM threads t WHERE t.id = :id"),
+                {"id": thread_id},
+            ).scalar_one()
+        )
+
+
+async def test_a_step_that_always_fails_is_stored_and_handed_to_a_person_on_the_last_try(
+    business,
+) -> None:
+    def broken_menu(phone_row_id: UUID) -> PublishedMenu:
+        raise ValueError("a published menu the Cloud API rejects")
+
+    handle = _handler(PostgresWhatsAppInboxRepository(), menu_loader=broken_menu)
+    wa_id = _wa_id()
+    event = _event(business, wa_id, "Hola")
+
+    for attempts in range(1, MAX_ATTEMPTS):
+        with pytest.raises(ValueError):
+            await handle(_with_attempts(event, attempts))
+        assert _thread_id(business, wa_id) is None  # retries left: all-or-nothing
+
+    outcome = await handle(_with_attempts(event, MAX_ATTEMPTS))
+
+    assert outcome.status == "processed"  # settled, never `dead`, never looping
+    thread_id = _thread_id(business, wa_id)
+    assert thread_id is not None
+    assert _messages(business, thread_id) == [event.value["messages"][0]["id"]]
+    state = _state(business, thread_id)
+    assert state is not None and state.automation_paused_at is not None
+    assert state.context[CTX_HANDOFF]["reason"] == AUTOMATION_ERROR_REASON
+    assert _outbox(business, thread_id) == []
+    assert _awaits_reply(business, thread_id)  # the owner sees the customer
+
+    assert (await handle(_with_attempts(event, MAX_ATTEMPTS))).status == "processed"
+    assert _outbox(business, thread_id) == []
+    assert len(_messages(business, thread_id)) == 1
+
+
+async def test_an_error_that_goes_away_on_a_retry_still_replies_once(business) -> None:
+    clean_wa = _wa_id()
+    await _handler(PostgresWhatsAppInboxRepository())(_event(business, clean_wa, "Hola"))
+    expected = _outbox(business, _thread_id(business, clean_wa))  # type: ignore[arg-type]
+
+    failures = {"left": 2}
+
+    def flaky_menu(phone_row_id: UUID) -> PublishedMenu:
+        if failures["left"]:
+            failures["left"] -= 1
+            raise ConnectionError("transient")
+        return MENU
+
+    handle = _handler(PostgresWhatsAppInboxRepository(), menu_loader=flaky_menu)
+    wa_id = _wa_id()
+    event = _event(business, wa_id, "Hola")
+    for attempts in (1, 2):
+        with pytest.raises(ConnectionError):
+            await handle(_with_attempts(event, attempts))
+    assert (await handle(_with_attempts(event, 3))).status == "processed"
+
+    thread_id = _thread_id(business, wa_id)
+    assert thread_id is not None
+    assert [p.get("type") for p in _outbox(business, thread_id)] == [
+        p.get("type") for p in expected
+    ]
+    state = _state(business, thread_id)
+    assert state is not None and state.automation_paused_at is None
+    assert CTX_HANDOFF not in state.context
+
+
+async def test_a_waiter_on_a_held_conversation_times_out_into_the_retry(business) -> None:
+    repo = PostgresWhatsAppInboxRepository()
+    wa_id = _wa_id()
+    await _handler(repo)(_event(business, wa_id, "Hola"))
+    thread_id = _thread_id(business, wa_id)
+    assert thread_id is not None
+
+    locked, release = threading.Event(), threading.Event()
+
+    def hold() -> None:
+        with repo.transaction() as tx:
+            tx.lock_thread(thread_id)
+            locked.set()
+            release.wait(15)
+
+    holder = threading.Thread(target=hold)
+    holder.start()
+    try:
+        assert locked.wait(5)
+        impatient = _handler(PostgresWhatsAppInboxRepository(lock_timeout_ms=300))
+        started = time.monotonic()
+        with pytest.raises(OperationalError) as caught:
+            await asyncio.wait_for(impatient(_event(business, wa_id, "zzz")), 10)
+        assert isinstance(caught.value.orig, LockNotAvailable)
+        assert time.monotonic() - started < 5
+    finally:
+        release.set()
+        holder.join(10)
+    state = _state(business, thread_id)
+    assert state is not None and state.attempts == 0  # the timed-out step left nothing
