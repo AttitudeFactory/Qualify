@@ -2713,7 +2713,11 @@ class MediaProducer:
                 detail=exc.detail,
             )
         except (OSError, ValueError) as exc:
-            logger.warning("creative resource planning failed: %s", type(exc).__name__)
+            logger.warning(
+                "creative resource planning for draft %s failed: %s",
+                draft_id,
+                type(exc).__name__,
+            )
             return MediaOutcome(
                 usage=tuple(usage),
                 failure=FailureReason.INVALID_PARAMETERS.value,
@@ -3561,10 +3565,18 @@ class MediaProducer:
         images.extend(
             preview(i.image) for i in read_brand_reference_images(self._store.read, candidates)
         )
-        scene_keys = [k for k in (media.background_key, media.clip_first_frame_key) if k]
-        images.extend(preview(self._store.read(k)) for k in scene_keys)
-        scene_count = len(scene_keys)
-        if media.clip_video_keys:
+        scene_count = 0
+        if media.background_key:
+            images.append(preview(self._store.read(media.background_key)))
+            scene_count += 1
+        # draft 703b4d55 (2026-11-15): a clip may open on a video — it lends its first
+        # frame (`_clip_frame`); its raw bytes are no image for the preview
+        opening = self._clip_frame(media.clip_first_frame_key, last=False)
+        if opening is not None:
+            images.append(preview(opening))
+            scene_count += 1
+        # the first reference video's opening frame, unless it already opens the clip
+        if media.clip_video_keys and media.clip_video_keys[0] != media.clip_first_frame_key:
             frame = self._clip_frame(media.clip_video_keys[0], last=False)
             if frame is not None:
                 images.append(preview(frame))
