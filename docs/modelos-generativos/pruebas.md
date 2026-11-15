@@ -22,6 +22,129 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
 
 ---
 
+<a id="capa-002"></a>
+
+## CAPA-002 — La capa de texto `capa-v2` medida: 30 fotos sueltas y 3 carruseles completos (m-25017292) — 2026-11-14
+
+- **Qué se midió:** la etapa `layer` con el prompt `capa-v2` (trato de tú; nada de días, horarios, descuentos, «gratis», domicilios ni promociones que no estén en el encargo, la invitación, los productos o los datos guardados; dos tercios de cada límite) y las reglas de la rama de `main` tras #674: la de precios (número después de «a/por/solo/desde/precio/en», año solo donde cabe un año) y `unsupported_claims`. Autorizado por el fundador el 2026-11-14 con un tope de **US$1,00** en llamadas a Claude.
+- **Modelo:** `claude-sonnet-5-5`, esfuerzo `low`, una llamada por pieza (el carrusel entero en una sola llamada), tope de US$0,25 por pieza.
+- **Entradas (de dónde sale cada foto):** las 10 fotos de CAPA-001 y 16 bases más de la misma corrida de FOTO-BASE-001 (m-25017279: segunda repetición, el otro compilador y F6, que no estaba), todas de Seedream y fuera del repositorio; 4 bases 4:5 recortadas al centro en cuadrado para el formato 1:1 (no hay bases 1:1 guardadas); y 3 carruseles armados con las diapositivas G1 (6), G2 (5) y G3 (8) de esa corrida. Encargos de `packages/api/evals/scene_text_v4/cases.json`: sus «Datos clave» pasan como datos guardados del negocio, la invitación del caso como invitación aprobada y sus productos como catálogo (con precio: los shawarmas y el combo; sin precio: salchipapa y papas). Tres piezas sueltas (F1, F3, F6) se pidieron como «Otra idea» con datos y formas de pago, para que `info_card`/`brand_fill` pudieran salir. Formatos: 15 en 9:16, 11 en 4:5, 4 en 1:1; 21 promociones de producto, 9 «Otra idea», 3 carruseles. Sin llamadas a Seedream, nada en R2 ni en la base.
+- **Sin logo:** la capa no recibe el logo (no hay campo en `LayerRequest`); solo el render lo dibuja, así que el caso «sin logo» no se puede variar aquí. Queda para la prueba de capa → render.
+- **Arnés:** `packages/api/evals/capa_texto/capa_002.py` (tope total en el propio arnés: cada pieza recibe un `DollarMeter` de lo menor entre US$0,25 y lo que queda del total; se detiene antes de la llamada que lo pasaría) y `capa_002_score.py` (sin llamadas: reglas contra las etiquetas humanas de `labels_002.json`, sondas y lectura del texto). Salidas en disco local, fuera del repositorio.
+- **Gasto: US$0,668** (43 llamadas; 218.650 tokens de entrada y 16.374 de salida, a precio de lista). Las 33 piezas entraron; el tope no cortó nada.
+
+**Resultados**
+
+| Medida | Fotos sueltas (30) | Carruseles (3, una llamada cada uno) |
+|---|---|---|
+| Capa válida | **30/30** | **19/19 diapositivas** |
+| Necesitó reparación | 8 (27 %) | 2 de 3 |
+| Qué pidió la reparación | 6 × `band` con bloques de datos (`band` no lleva bloques; F1, F2, F3 con datos guardados) · 2 × `band` 1:1 con subtítulo y frase de invitación | 2 × `price_ref` a un producto sin precio (salchipapa, papas) |
+| Capas perdidas tras la reparación | 0 | 0 |
+| Latencia | mediana 3,2 s, p95 6,3 s (sin reparación 3,0 s; con reparación 5,8 s) | G1 6 diap. 14,0 s · G2 5 diap. 17,2 s · G3 8 diap. 30,7 s |
+| Costo | media US$0,013 por foto (US$0,010 sin reparación, US$0,022 con ella); total US$0,404 | G1 US$0,053 · G2 US$0,080 · G3 US$0,131 (con reparación) |
+| Tokens | 126.099 entrada / 9.984 salida | G1 16.840/1.225 · G2 29.508/2.038 · G3 46.203/3.127 |
+| Diseños | `band` 16, `plate` 12, `scrim` 2; ninguna `info_card` ni `brand_fill` en sueltas, ni en las tres pedidas con datos | portadas `scrim`, desarrollo `band` (más una `info_card` de formas de pago en G1), cierres `brand_fill` (G1, G3 con horario) y `band` (G2) |
+| `base_has_invented_text` contra la etiqueta humana de FOTO-BASE-001 | **42/45** de acuerdo: no vio el texto inventado de G1-s2-r1-v4 ni de G3-s1-r2-v4; el falso positivo de F3-r1-v5 se repite (ya estaba en CAPA-001) | (incluido) |
+
+- **Ninguna reparación vino de las dos reglas de texto libre**: en todas las respuestas (primer turno y reparación) la regla de precios y `unsupported_claims` no saltaron nunca. Las reparaciones fueron de parámetros del diseño y de precios por referencia, y todas se corrigieron en un turno.
+
+**Las dos reglas contra etiquetas humanas** (127 textos: títulos, subtítulos y frases; etiquetó el ingeniero de creación, regla de etiquetado en `labels_002.json`)
+
+| Regla | Marcó | Positivos humanos | Precisión | Exhaustividad | Fallos |
+|---|---|---|---|---|---|
+| Precios en texto libre (`price figure`, `currency`) | 0 | 0 | — | — | Ninguno: Claude no escribió ninguna cifra |
+| `unsupported_claims` | 0 | 2 | — | **0/2** | Falsos negativos: «Tu salchipapa, cada noche» (F3-horario-r1-v4, título: el encargo dice de martes a domingo) y «Papas que no se acaban» (carrusel G2, diap. 4, subtítulo: promesa de papas sin fin; dudoso). Falsos positivos: ninguno |
+
+Con 0 marcas, la precisión no se puede calcular: en esta muestra las reglas no estorbaron, pero tampoco atraparon lo poco que se coló.
+
+**Sondas sin llamada** (la lista «Antes de encender» de #674 y lo visto aquí; `capa_002_score.py`): acierta 3 de 14.
+
+| Texto | Qué prueba | Debería rechazar | Rechaza |
+|---|---|---|---|
+| «Listo en 1 hora» | unidad en singular | no | **sí** (falso rechazo) |
+| «Empanadas de 2000» | «de» + número con forma de año | sí | **no** |
+| «Desde 2000» | «desde» + 1900–2099 se lee como año | sí | **no** |
+| «Precio: 18» | dos puntos tras «precio» | sí | **no** |
+| «Llévate 3 x 2000» | «N x precio» | sí | sí |
+| «Abierto toda la noche» | horario con «toda» | sí | **no** |
+| «Cerrado por vacaciones» | «cerrado por» | sí | **no** |
+| «Este domingo te esperamos» (producto «Combo Domingo») | un nombre de producto deja pasar un día | sí | **no** |
+| «Martes de sabor» | día como lenguaje llano | no | **sí** (falso rechazo) |
+| «Abrimos el horno a las brasas» | «abrimos» que no es horario | no | **sí** (falso rechazo) |
+| «Tu sábado sabe mejor» | día con posesivo | no | no |
+| «Cielo abierto» | «abierto» llano | no | no |
+| «Tu salchipapa, cada noche» | «cada noche» (visto aquí) | sí | **no** |
+| «Papas que no se acaban» | promesa sin fin (visto aquí) | sí | **no** |
+
+**Lectura rápida del texto**
+
+- Nombre del negocio en el título: **0** (en CAPA-001, dos títulos con «Korner»; aquí «Korner» aparece en dos títulos de cierre, «Ven esta noche al Korner», pero es el centro comercial que da el encargo, no la marca).
+- Trato: todo de tú; ninguna forma de usted ni de vos. Palabras en inglés: ninguna.
+- **Dos tercios del límite: no se cumple en la mitad.** 61 de 127 textos pasan de dos tercios de su límite (las frases «Pídelo por WhatsApp», 19 de 28, y «Te esperamos este martes», 24 de 26, se repiten mucho). La instrucción del prompt no basta; si importa, tiene que ser regla.
+- Repetición entre piezas: «Fresca como la mañana» en las 4 ensaladas, «Tu shawarma te espera» en 3 de F1. Es esperable con el mismo encargo, pero el fundador lo verá en una galería.
+
+**Capa → render (hoja de contacto): no se hizo.** La imagen local de `packages/render` (`docker build`, para `layer_still` de #675) no se pudo construir en este equipo: `remotion bundle` se queda sin memoria de Node («JavaScript heap out of memory», código 134) con la máquina de Docker de 8 GB, dos veces. Arreglarlo pide tocar el `Dockerfile` (`NODE_OPTIONS=--max-old-space-size`), fuera de esta medición; el contenedor que ya corre en el equipo es de hace 5 semanas y no trae `layer_still`. Además, esta corrida no guardó la especificación completa de cada capa (solo los textos), así que la hoja necesitaría otra pasada pagada (unos US$0,15, dentro del tope); el arnés ya la guarda (`spec` en `results.jsonl`) para la próxima vez.
+
+**Textos por pieza** (diseño elegido; «—» = sin ese texto):
+
+| Pieza | Formato | Diseño | Título | Subtítulo | Invitación |
+|---|---|---|---|---|---|
+| G1-combo-galeria-carrusel-6 #1 | 4:5 | `scrim` | «Tu combo del día llegó» | «Shawarma, papas y gaseosa» | — |
+| G1-combo-galeria-carrusel-6 #2 | 4:5 | `band` | «Todo en un solo combo» | «Shawarma de carne, papas y tu gaseosa favorita» | — |
+| G1-combo-galeria-carrusel-6 #3 | 4:5 | `band` | «Carne jugosa y pan dorado» | «Con salsa cremosa, tomate y perejil fresco» | — |
+| G1-combo-galeria-carrusel-6 #4 | 4:5 | `band` | «Papas crujientes al lado» | «Y una gaseosa bien fría para acompañar» | — |
+| G1-combo-galeria-carrusel-6 #5 | 4:5 | `info_card` + payment | «Paga como prefieras» | — | — |
+| G1-combo-galeria-carrusel-6 #6 | 4:5 | `brand_fill` | «Pide tu combo del día» | «Shawarma de carne, papas y gaseosa, listos para ti» | «Pídelo por WhatsApp» |
+| G2-salchipapa-galeria-carrusel-5 #1 | 4:5 | `scrim` | «Salchipapa para picar» | «Doradita y lista para compartir» | — |
+| G2-salchipapa-galeria-carrusel-5 #2 | 4:5 | `band` | «Papas para compartir» | «Crocantes, para picar entre todos» | — |
+| G2-salchipapa-galeria-carrusel-5 #3 | 4:5 | `band` | «Tu salchipapa, doradita» | «Salchicha jugosa con papas recién fritas» | — |
+| G2-salchipapa-galeria-carrusel-5 #4 | 4:5 | `scrim` | «Crocantes por fuera» | «Papas que no se acaban» | — |
+| G2-salchipapa-galeria-carrusel-5 #5 | 4:5 | `band` | «Ven esta noche al Korner» | «Te esperamos con tu salchipapa lista para picar» | «Te esperamos esta noche» |
+| G3-galeria-datos-carrusel-8 #1 | 4:5 | `scrim` | «Salchipapa para picar» | «Doradita y lista para compartir» | — |
+| G3-galeria-datos-carrusel-8 #2 | 4:5 | `band` | «Papas para compartir» | «Crocantes por fuera, suaves por dentro» | — |
+| G3-galeria-datos-carrusel-8 #3 | 4:5 | `band` | «Salchicha dorada y papas» | «La mezcla perfecta para picar» | — |
+| G3-galeria-datos-carrusel-8 #4 | 4:5 | `band` | «Papas doraditas al momento» | «Perfectas para acompañar la noche» | — |
+| G3-galeria-datos-carrusel-8 #5 | 4:5 | `band` | «Un plan para esta noche» | «Salchipapa con amigos en el Korner» | — |
+| G3-galeria-datos-carrusel-8 #6 | 4:5 | `band` | «Antojo de papas» | «Pide una porción y compártela» | — |
+| G3-galeria-datos-carrusel-8 #7 | 4:5 | `band` | «Salchipapa que se disfruta» | «Bien servida y calientita» | — |
+| G3-galeria-datos-carrusel-8 #8 | 4:5 | `brand_fill` + hours | «Ven esta noche al Korner» | «Te esperamos con salchipapa doradita para picar.» | «Te esperamos esta noche» |
+| F1-ubicacion-r1-v4 | 9:16 | `band` | «Tu shawarma te espera» | «Pasa por el Korner y pruébalo recién hecho» | «Te esperamos hoy» |
+| F1-ubicacion-r1-v5 | 9:16 | `band` | «Tu shawarma te espera» | «Estamos en el Korner, frente a ti» | «Te esperamos hoy» |
+| F2-te-espera-r1-v4 | 9:16 | `band` | «Tu shawarma de carne te espera» | «Jugoso, recién armado y con salsa cremosa.» | «Pídelo hoy mismo» |
+| F3-horario-r1-v5 | 9:16 | `band` | «Tu salchipapa, de noche» | «Estrenamos nuevo horario para que no te quedes con las ganas» | «Te esperamos en la barra» |
+| F4-combo-r1-v5 | 4:5 | `band` | «Tu combo de shawarma» | «Carne, papas y gaseosa en un solo pedido» | «Pídelo por WhatsApp» |
+| F5-ensalada-escena-r1-v5 | 4:5 | `plate` | «Fresca como la mañana» | «Lechuga, tomate, pepino y garbanzos en un solo bol.» | «Te esperamos hoy» |
+| F7-pollo-2x1-r1-v5 | 4:5 | `band` | «Martes de shawarma: dos por uno» | «Shawarma de pollo recién hecho, listo para ti» | «Te esperamos este martes» |
+| F8-papas-compartir-r1-v5 | 9:16 | `band` | «Papas para compartir» | «Una porción grande al centro de la mesa» | «Pídelas para tu grupo» |
+| G1-combo-galeria-s2-r1-v5 | 4:5 | `band` | «Tu combo del día, completo» | «Shawarma de carne, papas y gaseosa» | «Pídelo por WhatsApp» |
+| G2-salchipapa-galeria-s1-r1-v4 | 4:5 | `scrim` | «Salchipapa doradita para picar» | «Estamos en el Korner, ven esta noche» | «Te esperamos esta noche» |
+| F1-ubicacion-r2-v5 | 9:16 | `band` | «Tu shawarma te espera» | «Estamos en el Korner, frente a ti.» | «Ven por el tuyo hoy» |
+| F2-te-espera-r2-v5 | 9:16 | `plate` | «Tu shawarma de carne» | «Jugoso, recién armado y con salsa cremosa» | «Pídelo hoy» |
+| F3-horario-r2-v5 | 9:16 | `band` | «Tu salchipapa, por la noche» | «Nuevo horario: te esperamos de martes a domingo» | «Te esperamos en la barra» |
+| F4-combo-r2-v5 | 4:5 | `band` | «Tu combo de shawarma» | «Carne jugosa, papas doradas y gaseosa fría» | «Pídelo por WhatsApp» |
+| F5-ensalada-escena-r2-v5 | 4:5 | `plate` | «Fresca como la mañana» | «Lechuga, tomate, pepino y garbanzos en un bol.» | «Pídela hoy» |
+| F6-domicilio-logo-r1-v5 | 9:16 | `plate` | «Tu pedido, en tu puerta» | «Llevamos tu pedido a domicilio, bien empacado.» | «Pídelo hoy» |
+| F6-domicilio-logo-r2-v5 | 9:16 | `plate` | «Tu pedido, a tu puerta» | «Lo llevamos listo y bien empacado.» | «Pídelo hoy» |
+| F7-pollo-2x1-r2-v5 | 4:5 | `band` | «Martes de shawarma, dos por uno» | «Tu shawarma de pollo recién hecho, listo para disfrutar» | «Te esperamos este martes» |
+| F8-papas-compartir-r2-v5 | 9:16 | `plate` | «Papas para compartir» | «Una porción grande para la mesa y los amigos» | «Pídelas y comparte» |
+| F2-te-espera-r1-v5 | 9:16 | `band` | «Tu shawarma de carne, aquí» | «Pan caliente, carne jugosa y salsa cremosa.» | «Te esperamos hoy» |
+| F3-horario-r1-v4 | 9:16 | `band` | «Tu salchipapa, cada noche» | «Ven a disfrutarla en la barra con nuestro nuevo horario» | «Te esperamos esta noche» |
+| F4-combo-r1-v4 | 4:5 | `plate` | «Tu combo completo» | «Shawarma de carne, papas y gaseosa» | «Pídelo por WhatsApp» |
+| F5-ensalada-escena-r1-v4 | 4:5 | `plate` | «Fresca como la mañana» | «Lechuga, tomate, pepino y garbanzos en cada bol.» | «Pruébala hoy» |
+| F6-domicilio-logo-r1-v4 | 9:16 | `scrim` | «Tu pedido llega a tu puerta» | — | «Pídelo hoy» |
+| F7-pollo-2x1-r1-v4 | 4:5 | `plate` | «Martes de shawarma» | «Dos por uno en shawarma de pollo, recién hecho» | «Te esperamos este martes» |
+| F8-papas-compartir-r1-v4 | 9:16 | `plate` | «Papas para compartir» | «Una porción grande para el centro de la mesa» | «Pídelas para tu grupo» |
+| F4-combo-r2-v4-1x1 | 1:1 | `band` | «Tu combo de shawarma» | — | «Pídelo por WhatsApp» |
+| F5-ensalada-escena-r2-v4-1x1 | 1:1 | `plate` | «Fresca como la mañana» | «Lechuga, tomate, pepino y garbanzos» | «Pruébala hoy» |
+| F7-pollo-2x1-r2-v4-1x1 | 1:1 | `plate` | «Martes de dos por uno» | «Shawarma de pollo recién hecho» | «Te esperamos el martes» |
+| G1-combo-galeria-s1-r2-v4-1x1 | 1:1 | `band` | «Tu combo del día, completo» | — | «Pídelo por WhatsApp» |
+
+- **Veredicto:** la capa es fiable en forma (49 de 49 capas válidas, ninguna perdida, reparación en un turno, US$0,013 por foto y US$0,05–0,13 por carrusel entero, 3 s por foto y 14–31 s por carrusel) y no inventó precios. Las dos reglas de texto libre no se ganaron su lugar en esta muestra: 0 marcas, 2 fugas pequeñas, y las sondas muestran 11 fallos conocidos. Antes de encender `QUALIFY_IMAGE_LAYER`: (1) que el prompt o el esquema impidan bloques de datos en `band` y el par subtítulo + invitación en `band` 1:1, que causan casi todas las reparaciones; (2) probar capa → render de punta a punta (la hoja de contacto), que no se pudo hacer; (3) decidir si los fallos de las sondas se aceptan o se corrigen, sobre todo «Precio: 18», «Desde 2000», «Abierto toda la noche» y «cada noche».
+- **Pendiente:** hoja de contacto capa → render (arreglar la memoria del `bundle` en Docker local); casos sin logo en el render; una muestra con más negocios que Bianki (todas las fotos son de un solo negocio de comida).
+
+---
+
 <a id="ext-001"></a>
 
 ## EXT-001 — Seedance 2.5 `extend` («Sigue a la anterior») en borrador: primera prueba en vivo (m-24880328) — 2026-11-14

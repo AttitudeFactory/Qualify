@@ -231,8 +231,10 @@ def rule_of(message: str) -> str:
     text = message.lower()
     if "malformed" in text:
         return "malformed"
-    if "price figure" in text or "currency" in text or "with a price" in text:
-        return "price"
+    if "price figure" in text or "currency" in text:
+        return "price in free text"
+    if "with a price" in text:
+        return "price_ref to an unpriced product"
     if "is not in the brief" in text:
         return "unsupported claim"
     if "is a label" in text:
@@ -241,8 +243,10 @@ def rule_of(message: str) -> str:
         return "length"
     if "no layer for this image" in text:
         return "missing slide"
-    if "is not one of" in text or "takes no" in text or "closing slide" in text:
-        return "layout/role"
+    if "is not one of" in text or "closing slide" in text:
+        return "layout not allowed for the piece/role"
+    if "takes no" in text or "only without" in text:
+        return "layout parameter"
     if "no saved" in text:
         return "info block without data"
     return "other"
@@ -297,6 +301,7 @@ def _texts(spec: Any) -> dict[str, Any]:
         "price_ref": bool(spec.price_ref),
         "role": spec.carousel.role.value if spec.carousel else None,
         "invented_text": spec.photo.base_has_invented_text if spec.photo else None,
+        "spec": spec.model_dump(mode="json"),  # what the render composes (contact sheet)
     }
 
 
@@ -307,11 +312,14 @@ def main() -> int:
     parser.add_argument("--max-usd", default="1.00")
     parser.add_argument("--env-file", default=str(Path.cwd() / ".env"))
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--only", nargs="*", help="piece ids to run (default: all)")
     args = parser.parse_args()
 
     cases = {c["id"]: c for c in json.loads(CASES.read_text(encoding="utf-8"))["cases"]}
     out = Path(args.out)
     pieces = plan(Path(args.images), out, cases)
+    if args.only:
+        pieces = [p for p in pieces if p["id"] in args.only]
     slides = sum(len(p["photos"]) for p in pieces)
     print(f"{len(pieces)} pieces, {slides} photos; total ceiling US${args.max_usd}")
     if args.dry_run:
