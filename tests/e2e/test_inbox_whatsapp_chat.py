@@ -176,7 +176,7 @@ def test_capture_whatsapp_in_inbox(chats_page) -> None:  # noqa: ANN001
                 }
             # m-25029799: `/whatsapp` keeps «Tu número» only.
             page.goto(_origin(page) + "/whatsapp")
-            expect(page.get_by_role("group", name="Tu número").first).to_be_attached(timeout=60_000)
+            expect(page.get_by_text("Ver detalles").first).to_be_visible(timeout=60_000)
             page.wait_for_timeout(600)
             page.screenshot(path=str(out / f"{label}-whatsapp-tab-{size_name}-{scheme}.png"))
     (out / f"{label}-where.json").write_text(json.dumps(report, indent=1), encoding="utf-8")

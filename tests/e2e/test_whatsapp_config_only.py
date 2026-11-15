@@ -94,6 +94,12 @@ def test_capture_whatsapp_config_only(chats_page) -> None:  # noqa: ANN001
             for name, address in views:
                 page.goto(_origin(page) + address)
                 _settle(page)
+                # On «Por responder» the list sits under «Quién te espera»: show it.
+                page.evaluate(
+                    "() => document.querySelector('.q-wa-chats__list')"
+                    "?.scrollIntoView({block: 'start'})"
+                )
+                page.wait_for_timeout(300)
                 key = f"{label}-{name}-{size_name}-{scheme}"
                 page.screenshot(path=str(out / f"{key}.png"))
                 report[key] = page.evaluate(_WHERE)
