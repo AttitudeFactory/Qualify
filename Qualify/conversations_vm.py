@@ -62,7 +62,7 @@ from .chat_row_vm import (
     reply_soon_pill,
     unknown_contact,
 )
-from .chat_thread_vm import day_label, window_line
+from .chat_thread_vm import INSTAGRAM_WINDOW_CLOSED_LINE, day_label, window_line
 from .connection_copy import DISCONNECTED, DISCONNECTED_NOTICE, NO_ACCESS, PERMISSION_MISSING_NOTICE
 from .whatsapp_chats_vm import bubble_clock, message_time, relative_time
 
@@ -755,7 +755,13 @@ def build_thread_row(
         zone,
         has_inbound=getattr(thread, "last_inbound_at", None) is not None,
     )
-    line, line_tone = window_line(view.window.is_open, view.window.closes_at, now, zone)
+    line, line_tone = window_line(
+        view.window.is_open,
+        view.window.closes_at,
+        now,
+        zone,
+        closed_text=INSTAGRAM_WINDOW_CLOSED_LINE,  # m-25027374: the box says nothing then
+    )
     if getattr(thread, "last_inbound_at", None) is None:
         line, line_tone = "", "neutral"
     channel = CHANNEL_LABELS.get(thread.channel, thread.channel)
@@ -1156,7 +1162,8 @@ def composer_enabled(window_open: bool, has_thread: bool, account_ok: bool) -> b
 def reply_as_label(account: AccountVM) -> str:
     if not account.connection_id:
         return ""
-    return f"Respondes como {account.label} · {account.channel_label}"
+    # m-25027374 (U3): plain words, no product name («Instagram Direct»).
+    return f"Respondes como {account.label} en Instagram"
 
 
 @dataclass(frozen=True)

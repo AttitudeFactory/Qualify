@@ -50,6 +50,9 @@ SETTINGS_LABEL: Final = "Ajustes de este canal"
 ORDER_STRIP_WORD: Final = "Pedido"
 #: The thread with no message yet (both channels already said this).
 NO_MESSAGES: Final = "Aún no hay mensajes en esta conversación."
+#: m-25027374 (UX review 2026-11-15): Instagram's closed window, in the header's window
+#: line (WhatsApp's is `whatsapp_chats_vm.WINDOW_CLOSED_LINE`). Awaiting the founder.
+INSTAGRAM_WINDOW_CLOSED_LINE: Final = "Pasaron 24 h: Instagram no deja responder desde aquí"
 #: The day separators.
 TODAY: Final = "Hoy"
 YESTERDAY: Final = "Ayer"

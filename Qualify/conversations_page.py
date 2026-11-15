@@ -100,7 +100,6 @@ from .conversations_vm import (
     MESSAGES_PAGE,
     QUICK_REPLIES_HINT,
     QUICK_REPLIES_WITH_BUTTONS,
-    SEND_LABEL,
     STORY_MENTION_ICON,
     STORY_REPLY_ICON,
     TAP_ICON,
@@ -112,6 +111,34 @@ from .conversations_vm import (
 )
 from .inbox_list_page import inbox_list_pane
 from .reconnect_panel import reconnect_button, reconnect_result_panel
+from .reply_box import (
+    plus_menu,
+    reply_box,
+    reply_box_shell,
+    reply_field,
+    reply_icon_tool,
+    reply_tool,
+    send_button,
+)
+from .reply_box_vm import (
+    BUTTONS_LABEL,
+    FILE_LABEL,
+    HEART_LABEL,
+    INSTAGRAM_BOX,
+    PHOTO_LABEL,
+    REPLY_LATER_LINE,
+    SAVED_LABEL,
+    SUGGEST_LABEL,
+    TOOL_BUTTONS,
+    TOOL_FILE,
+    TOOL_HEART,
+    TOOL_PHOTO,
+    TOOL_SAVED,
+    TOOL_SUGGEST,
+    TOOL_VOICE,
+    VOICE_LABEL,
+    draws,
+)
 from .ui import (
     callout,
     card,
@@ -604,27 +631,15 @@ def _messages() -> rx.Component:
 # --- composer -----------------------------------------------------------------------
 
 
-def _tool(icon: str, tip: str, **props) -> rx.Component:
-    """An icon-only composer tool; the tooltip says what it sends."""
-    return rx.tooltip(
-        rx.icon_button(
-            rx.icon(icon, size=T.ICON_MD),
-            variant="soft",
-            size="2",
-            type="button",
-            aria_label=tip,
-            **props,
-        ),
-        content=tip,
-    )
-
-
-def _attach_button(
-    upload_id: str, icon: str, tip: str, accept: dict, max_size: int
+def _attach_tool(
+    upload_id: str, icon: str, label: str, accept: dict, max_size: int
 ) -> rx.Component:
+    """«Foto o video» / «Archivo»: the tool IS the file input's dropzone, so the picker
+    opens on the owner's own tap — no scripted `input.click()`, which iOS Safari may drop
+    (2026-11-15). The tool keeps its icon and name (m-25027374)."""
     off = ~S.can_compose | S.busy | S.has_attachment | S.recording
     return dropzone(
-        _tool(icon, tip, disabled=off, **T.tone_scheme("neutral")),
+        reply_tool(icon, label, disabled=off),
         upload_id=upload_id,
         on_drop=S.handle_attachment(rx.upload_files(upload_id=upload_id)),
         accept=accept,
@@ -635,51 +650,70 @@ def _attach_button(
     )
 
 
-def _heart_button() -> rx.Component:
-    return _tool(
-        "heart",
-        "Enviar un corazón",
-        on_click=S.send_heart,
-        disabled=~S.can_compose | S.busy | S.recording,
-        **T.tone_scheme("error"),
+def _voice_tool() -> rx.Component:
+    """«Nota de voz»: starts the recorder; while it records, the dot, the timer,
+    «Cancelar» and «Listo» ride above the text (`_recording`)."""
+    return rx.cond(
+        S.recording | S.receiving_voice,
+        rx.fragment(),
+        reply_tool(
+            "mic",
+            VOICE_LABEL,
+            on_click=S.start_recording,
+            disabled=~S.can_compose | S.busy | S.has_attachment,
+        ),
     )
 
 
-def _voice_controls() -> rx.Component:
-    """«Grabar» → a red dot, the timer, «Cancelar» and «Listo» → the chip."""
+def _no_plus_row(key: str) -> rx.event.EventSpec:
+    """Instagram's «+» has no rows today (`reply_box_vm.plus_rows`): never called."""
+    raise ValueError(f"Instagram has no «+» row {key!r}")
+
+
+def _heart_button() -> rx.Component:
+    return reply_icon_tool(
+        "heart",
+        HEART_LABEL,
+        on_click=S.send_heart,
+        disabled=~S.can_compose | S.busy | S.recording,
+        tone="error",
+    )
+
+
+def _recording() -> rx.Component:
+    """While a voice note records: the red dot, the timer, «Cancelar» and «Listo»."""
     return rx.cond(
-        S.recording,
+        S.recording | S.receiving_voice,
         rx.hstack(
             rx.box(class_name="q-conv-rec"),
             rx.el.span("00:00", id="q-voice-timer", class_name="q-nums q-conv-timer"),
+            rx.spacer(),
             rx.button(
                 rx.icon("x", size=T.ICON_SM),
                 "Cancelar",
                 on_click=S.cancel_recording,
                 variant="soft",
-                size="1",
+                size="2",
                 type="button",
+                min_height="2.75rem",
                 **T.tone_scheme("neutral"),
             ),
             rx.button(
                 rx.icon("check", size=T.ICON_SM),
                 "Listo",
                 on_click=S.stop_recording,
-                size="1",
+                loading=S.receiving_voice,
+                variant="soft",
+                size="2",
                 type="button",
+                min_height="2.75rem",
             ),
             spacing="2",
             align="center",
+            width="100%",
             class_name="q-conv-recording",
         ),
-        _tool(
-            "mic",
-            "Grabar una nota de voz",
-            on_click=S.start_recording,
-            disabled=~S.can_compose | S.busy | S.has_attachment,
-            loading=S.receiving_voice,
-            **T.tone_scheme("neutral"),
-        ),
+        rx.fragment(),
     )
 
 
@@ -861,24 +895,21 @@ def _templates_menu_list() -> rx.Component:
 
 
 def _templates_picker() -> rx.Component:
-    """«Plantillas» beside «Sugerir respuesta»: a popover with the account's library and
-    the door to manage it."""
+    """«Mensajes guardados» (D5; the library is still Instagram's «plantillas» until
+    BU-A8 joins the channels): a popover with the account's library and the door to
+    manage it."""
     return rx.popover.root(
         rx.popover.trigger(
-            rx.button(
-                rx.icon("message-square-quote", size=T.ICON_SM),
-                "Plantillas",
-                variant="soft",
-                size="2",
-                type="button",
+            reply_tool(
+                "message-square-quote",
+                SAVED_LABEL,
                 disabled=~S.can_open_templates,
-                **T.tone_scheme("neutral"),
             ),
         ),
         rx.popover.content(
             rx.vstack(
                 rx.hstack(
-                    rx.text("Plantillas", size="2", weight="bold"),
+                    rx.text(SAVED_LABEL, size="2", weight="bold"),
                     rx.spacer(),
                     rx.cond(
                         S.templates_ready,
@@ -1305,7 +1336,7 @@ def templates_manager() -> rx.Component:
         title=S.templates_account_label,
         icon="library",
         description=(
-            "Mensajes guardados para empezar una respuesta. Los eliges en «Plantillas» y "
+            "Mensajes guardados para empezar una respuesta. Los eliges en «Mensajes guardados» y "
             "siempre puedes cambiarlos antes de enviar."
         ),
     )
@@ -1364,29 +1395,22 @@ def _applied_buttons() -> rx.Component:
 
 
 def _quick_replies_toggle() -> rx.Component:
-    """«Respuestas rápidas» among the tools, with how many are set."""
-    return rx.button(
-        rx.icon("list-plus", size=T.ICON_SM),
-        "Respuestas rápidas",
+    """«Botones» (D5, Instagram's quick replies) among the tools, with how many are set."""
+    return reply_tool(
+        "list-plus",
         rx.cond(
             S.quick_replies.length() > 0,
-            rx.text(S.quick_replies_count_label, size="1", class_name="q-nums"),
-            rx.fragment(),
+            BUTTONS_LABEL + " · " + S.quick_replies.length().to_string(),
+            BUTTONS_LABEL,
         ),
         on_click=S.toggle_quick_replies,
         disabled=~S.can_compose | S.busy | S.recording,
-        variant="soft",
-        size="2",
-        type="button",
         aria_expanded=S.quick_replies_open,
-        **T.tone_scheme("neutral"),
     )
 
 
 def _quick_reply_chip(title: rx.Var[str], i: rx.Var[int]) -> rx.Component:
-    return removable_pill(
-        title, S.remove_quick_reply(i), remove_label="Quitar esta respuesta rápida"
-    )
+    return removable_pill(title, S.remove_quick_reply(i), remove_label="Quitar este botón")
 
 
 def _quick_replies_editor() -> rx.Component:
@@ -1408,7 +1432,7 @@ def _quick_replies_editor() -> rx.Component:
                     on_change=S.set_quick_reply_input,
                     placeholder="Ej.: Quiero pedir",
                     max_length=MAX_QUICK_REPLY_TITLE_CHARS,
-                    aria_label="Nueva respuesta rápida",
+                    aria_label="Nuevo botón",
                     flex="1",
                     min_width="0",
                 ),
@@ -1453,7 +1477,7 @@ def _quick_replies_panel() -> rx.Component:
         card(
             rx.vstack(
                 rx.hstack(
-                    rx.text("Respuestas rápidas", size="2", weight="bold"),
+                    rx.text(BUTTONS_LABEL, size="2", weight="bold"),
                     rx.text(
                         S.quick_replies_count_label,
                         size="1",
@@ -1467,7 +1491,7 @@ def _quick_replies_panel() -> rx.Component:
                         variant="ghost",
                         size="1",
                         type="button",
-                        aria_label="Cerrar las respuestas rápidas",
+                        aria_label="Cerrar los botones",
                         **T.tone_scheme("neutral"),
                     ),
                     width="100%",
@@ -1494,102 +1518,88 @@ def _quick_replies_panel() -> rx.Component:
 
 
 def _composer() -> rx.Component:
-    return rx.vstack(
+    """The one reply box (`reply_box.py`, m-25027374) with what Instagram can send.
+
+    The 24 h line lives in the chat's header, open or closed (said once per screen).
+    With the window closed there is NO box — nothing to type into, nothing that looks
+    tappable — only the line «Cuando vuelva a escribir, podrás responderle aquí.»
+    (WhatsApp's pattern, UX review 2026-11-15). What the owner must fix to answer (a
+    disconnected account, a missing permission) stays above the box."""
+    return rx.cond(S.window_closed_notice != "", _closed_composer(), _live_composer())
+
+
+def _closed_composer() -> rx.Component:
+    return reply_box_shell(
+        INSTAGRAM_BOX,
         rx.cond(S.account_blocked_notice != "", callout(S.account_blocked_notice, "warn")),
-        rx.cond(
-            S.window_notice != "",
-            rx.hstack(
-                rx.icon(
-                    rx.cond(S.open_thread.window_open, "clock", "clock-alert"),
-                    size=T.ICON_SM,
-                    color=T.TEXT_MUTED,
-                ),
-                rx.text(S.window_notice, size="1", color=T.TEXT_MUTED),
-                spacing="2",
-                align="center",
-                class_name="q-conv-window",
-            ),
-            rx.fragment(),
-        ),
-        _suggestion_chip(),
-        _template_fill_notice(),
-        _attachment_chip(),
-        rx.text_area(
-            value=S.draft_text,
-            on_change=S.set_draft_text,
-            placeholder="Escribe una respuesta…",
-            disabled=~S.can_compose | S.recording,
-            rows="3",
-            resize="vertical",
-            width="100%",
-            class_name="q-conv-input",
-        ),
-        _applied_buttons(),
-        _quick_replies_panel(),
-        rx.hstack(
-            rx.flex(
-                _attach_button(
-                    _MEDIA_UPLOAD_ID,
-                    "image",
-                    "Enviar una foto o un video",
-                    MEDIA_ACCEPT,
-                    MAX_MEDIA_BYTES,
-                ),
-                _attach_button(
-                    _FILE_UPLOAD_ID,
-                    "paperclip",
-                    "Enviar un archivo (PDF)",
-                    DOCUMENT_ACCEPT,
-                    MAX_DOCUMENT_BYTES,
-                ),
-                _voice_controls(),
-                _heart_button(),
-                _quick_replies_toggle(),
-                rx.cond(
-                    S.attaching,
-                    rx.text("Guardando el adjunto…", size="1", color=T.TEXT_MUTED),
-                    rx.fragment(),
-                ),
-                wrap="wrap",
-                gap="0.4rem",
-                align="center",
-                class_name="q-conv-tools",
-            ),
-            rx.spacer(),
-            _templates_picker(),
-            rx.button(
-                rx.icon("sparkles", size=T.ICON_SM),
-                "Sugerir respuesta",
+        rx.text(REPLY_LATER_LINE, size="2", color=T.TEXT_MUTED),
+    )
+
+
+def _live_composer() -> rx.Component:
+    box = INSTAGRAM_BOX
+    # U1 (UX review): what is used most first — «Sugerir respuesta» must not hide past
+    # the edge of a phone; the row scrolls sideways and fades where it continues.
+    tools: list[rx.Component] = []
+    if draws(box, TOOL_SUGGEST):
+        tools.append(
+            reply_tool(
+                "sparkles",
+                SUGGEST_LABEL,
                 on_click=S.suggest_reply,
                 loading=S.suggesting,
                 disabled=~S.can_suggest,
-                variant="soft",
-                size="2",
-                type="button",
-                **T.tone_scheme("accent"),
+                tone="accent",
+            )
+        )
+    if draws(box, TOOL_BUTTONS):
+        tools.append(_quick_replies_toggle())
+    if draws(box, TOOL_SAVED):
+        tools.append(_templates_picker())
+    if draws(box, TOOL_PHOTO):
+        tools.append(
+            _attach_tool(_MEDIA_UPLOAD_ID, "image", PHOTO_LABEL, MEDIA_ACCEPT, MAX_MEDIA_BYTES)
+        )
+    if draws(box, TOOL_FILE):
+        tools.append(
+            _attach_tool(
+                _FILE_UPLOAD_ID, "paperclip", FILE_LABEL, DOCUMENT_ACCEPT, MAX_DOCUMENT_BYTES
+            )
+        )
+    if draws(box, TOOL_VOICE):
+        tools.append(_voice_tool())
+    if draws(box, TOOL_HEART):
+        tools.append(_heart_button())
+    return reply_box(
+        box,
+        above=(
+            rx.cond(S.account_blocked_notice != "", callout(S.account_blocked_notice, "warn")),
+            _suggestion_chip(),
+            _template_fill_notice(),
+            _attachment_chip(),
+            rx.cond(
+                S.attaching,
+                rx.text("Guardando el adjunto…", size="1", color=T.TEXT_MUTED, role="status"),
+                rx.fragment(),
             ),
-            rx.button(
-                rx.icon("send", size=T.ICON_SM),
-                SEND_LABEL,
-                on_click=S.send_reply,
-                loading=S.sending,
-                disabled=~S.can_send,
-                size="2",
-            ),
-            width="100%",
-            align="center",
-            spacing="2",
-            flex_wrap="wrap",
+            _recording(),
+            _applied_buttons(),
+            _quick_replies_panel(),
         ),
-        rx.cond(
+        tools=tuple(tools),
+        plus=plus_menu(box, _no_plus_row, disabled=~S.can_compose | S.busy),
+        field=reply_field(
+            S.draft_text,
+            S.set_draft_text,
+            disabled=~S.can_compose | S.recording,
+            field_id="ig-reply-field",
+        ),
+        send=send_button(S.send_reply, loading=S.sending, disabled=~S.can_send),
+        note=rx.cond(
             S.compose_hint != "",
-            rx.text(S.compose_hint, size="1", color=T.tone_color("warn", 11)),
+            rx.text(S.compose_hint, size="1", color=T.tone_color("warn", 11), role="status"),
             rx.text(S.reply_as, size="1", color=T.TEXT_MUTED),
         ),
-        spacing="2",
-        width="100%",
-        padding_top="0.5rem",
-        class_name="q-wa-composer",
     )
 
 

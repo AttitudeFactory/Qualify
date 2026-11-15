@@ -101,6 +101,7 @@ from qualify_api.conversations.templates import (
     ReplyTemplateNotFound,
     ReplyTemplateService,
 )
+from qualify_api.inbox.dispatch import ChatDispatcher
 from qualify_api.inbox.models import Message
 from qualify_api.tenancy.models import Tenant, User
 from qualify_shared.db.session import tenant_session
@@ -309,7 +310,9 @@ class ConversationsGateway:
         drafts: ConversationDraftService | None = None,
         clock: Callable[[], datetime] = _utcnow,
         templates: ReplyTemplateService | None = None,
+        dispatcher: ChatDispatcher | None = None,
     ) -> None:
+        self._dispatcher = dispatcher
         self._service = service
         self._repository = repository
         self._outbox = outbox
@@ -333,6 +336,21 @@ class ConversationsGateway:
 
             self._service = production_conversation_service()
         return self._service
+
+    @property
+    def dispatcher(self) -> ChatDispatcher:
+        """m-25027374 (BU-A6's dispatcher): text sends, «Cerrar» and «Reabrir» go by the
+        thread's STORED channel; this screen still checks the account first (`_owned`)."""
+        if self._dispatcher is None:
+            from qualify_api.inbox.dispatch import PostgresThreadChannels  # noqa: PLC0415
+            from qualify_api.whatsapp.chats import production_chat_service  # noqa: PLC0415
+
+            self._dispatcher = ChatDispatcher(
+                channels=PostgresThreadChannels(),
+                instagram_service=self.service,
+                whatsapp_service=production_chat_service(),
+            )
+        return self._dispatcher
 
     @property
     def repository(self) -> ConversationRepository:
@@ -500,14 +518,16 @@ class ConversationsGateway:
         as the owner's SCREEN showed it (never a fresh read): a newer one refuses with
         `ThreadChangedSinceSeen`. Another account's thread is `ThreadNotFound`."""
         self._owned(tenant_id, connection_id, thread_id)
-        return self.service.close(
+        self.dispatcher.close(
             tenant_id=tenant_id, thread_id=thread_id, seen_last_inbound_at=seen_last_inbound_at
         )
+        return self.service.get_thread(tenant_id=tenant_id, thread_id=thread_id)
 
     def reopen(self, tenant_id: UUID, connection_id: UUID, thread_id: UUID) -> ThreadView:
         """«Reabrir»: the inverse of `close`, same guarantees."""
         self._owned(tenant_id, connection_id, thread_id)
-        return self.service.reopen(tenant_id=tenant_id, thread_id=thread_id)
+        self.dispatcher.reopen(tenant_id=tenant_id, thread_id=thread_id)
+        return self.service.get_thread(tenant_id=tenant_id, thread_id=thread_id)
 
     def hide_message(
         self, tenant_id: UUID, connection_id: UUID, thread_id: UUID, message_id: UUID
@@ -534,8 +554,19 @@ class ConversationsGateway:
         """Queue a human-approved reply — one outbox row per ≤ 1000-char part. The
         approval is THIS user, NOW, carrying the draft it came from when it did.
         `quick_replies` (m-24789472) are titles; the service hangs them under the last
-        part, after checking their capability and limits."""
+        part, after checking their capability and limits.
+
+        m-25027374: a plain text goes through the dispatcher (`inbox.dispatch`, same
+        `reply_text` behind it, same approval); one with quick replies keeps the
+        service's own door — the dispatcher routes text only."""
         self._owned(tenant_id, connection_id, thread_id)
+        if not quick_replies:
+            return self.dispatcher.send_text(
+                tenant_id=tenant_id,
+                thread_id=thread_id,
+                text=text,
+                approval=self._approval(user_id, draft_id),
+            )
         return self.service.reply_text(
             tenant_id=tenant_id,
             thread_id=thread_id,

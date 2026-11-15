@@ -101,10 +101,9 @@ def test_the_menu_is_only_drawn_in_the_live_composer() -> None:
 
     live = inspect.getsource(whatsapp_tab_chats._live_composer)
     expired = inspect.getsource(whatsapp_tab_chats._expired_composer)
-    assert "_pick_menu_button()" in live and "_pick_menu_button" not in expired
-    assert "_pick_menu_button" not in inspect.getsource(whatsapp_tab_chats._composer).replace(
-        "_live_composer", ""
-    )
+    # m-25027374: the «+» is the shared reply box's `plus_menu`
+    assert "plus_menu(" in live and "plus_menu" not in expired
+    assert "plus_menu" not in inspect.getsource(whatsapp_tab_chats._composer)
 
 
 def test_choosing_an_option_opens_never_sends() -> None:

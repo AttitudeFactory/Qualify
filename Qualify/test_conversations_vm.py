@@ -218,7 +218,7 @@ def test_account_label_never_doubles_the_at_and_names_the_channel() -> None:
     account = build_account_vm(_connection(username="@ya.con.arroba"))
     assert account.label == "@ya.con.arroba"
     assert account.channel_label == "Instagram Direct"
-    assert reply_as_label(account) == "Respondes como @ya.con.arroba · Instagram Direct"
+    assert reply_as_label(account) == "Respondes como @ya.con.arroba en Instagram"
     assert reply_as_label(dataclasses.replace(account, connection_id="")) == ""
 
 

@@ -72,6 +72,8 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 from uuid import UUID
 
+from qualify_api.assisted.approval import HumanApproval
+from qualify_api.inbox.dispatch import ChatDispatcher
 from qualify_api.tenancy.models import Tenant, User
 from qualify_api.whatsapp.attachments import (
     ChatAttachmentService,
@@ -301,7 +303,9 @@ class ChatsGateway:
         directions: Any = None,
         seasonal: Any = None,
         seasonal_library: Any = None,
+        dispatcher: ChatDispatcher | None = None,
     ) -> None:
+        self._dispatcher = dispatcher
         self._seasonal = seasonal
         self._seasonal_library = seasonal_library
         self._attachments = attachments
@@ -331,6 +335,24 @@ class ChatsGateway:
 
             self._service = production_chat_service()
         return self._service
+
+    @property
+    def dispatcher(self) -> ChatDispatcher:
+        """m-25027374 (BU-A6's dispatcher): text sends, «Cerrar», «Reabrir» and «Asignar»
+        go by the thread's STORED channel; this screen still checks the number first
+        (`_owned`). Photos, buttons, products and the rest keep their own doors."""
+        if self._dispatcher is None:
+            from qualify_api.conversations.composition import (  # noqa: PLC0415
+                production_conversation_service,
+            )
+            from qualify_api.inbox.dispatch import PostgresThreadChannels  # noqa: PLC0415
+
+            self._dispatcher = ChatDispatcher(
+                channels=PostgresThreadChannels(),
+                instagram_service=production_conversation_service(),
+                whatsapp_service=self.service,
+            )
+        return self._dispatcher
 
     @property
     def attachments(self) -> ChatAttachmentService:
@@ -448,7 +470,15 @@ class ChatsGateway:
         self, tenant_id: UUID, connection_id: UUID, thread_id: UUID, user_id: UUID, text: str
     ) -> UUID:
         self._owned(tenant_id, connection_id, thread_id)
-        return self.service.send(tenant_id, thread_id, user_id, TextSend(text=text.strip()))
+        # The dispatcher calls the same `ChatService.send(TextSend)` (which pauses the
+        # menu, WA-10) with only the approver's id, as WhatsApp's outbox stores it.
+        (item_id,) = self.dispatcher.send_text(
+            tenant_id=tenant_id,
+            thread_id=thread_id,
+            text=text,
+            approval=HumanApproval(user_id=user_id, approved_at=self._clock()),
+        )
+        return item_id
 
     def send_buttons(
         self,
@@ -791,15 +821,15 @@ class ChatsGateway:
         self, tenant_id: UUID, connection_id: UUID, thread_id: UUID, agent_id: UUID | None
     ) -> None:
         self._owned(tenant_id, connection_id, thread_id)
-        self.service.assign(tenant_id, thread_id, agent_id)
+        self.dispatcher.assign(tenant_id=tenant_id, thread_id=thread_id, agent_user_id=agent_id)
 
     def close(self, tenant_id: UUID, connection_id: UUID, thread_id: UUID) -> None:
         self._owned(tenant_id, connection_id, thread_id)
-        self.service.close(tenant_id, thread_id)
+        self.dispatcher.close(tenant_id=tenant_id, thread_id=thread_id, seen_last_inbound_at=None)
 
     def reopen(self, tenant_id: UUID, connection_id: UUID, thread_id: UUID) -> None:
         self._owned(tenant_id, connection_id, thread_id)
-        self.service.reopen(tenant_id, thread_id)
+        self.dispatcher.reopen(tenant_id=tenant_id, thread_id=thread_id)
 
     def takeover(
         self, tenant_id: UUID, connection_id: UUID, thread_id: UUID, user_id: UUID

@@ -20,7 +20,6 @@ from qualify_api.whatsapp.menus.engine import format_money as engine_format_mone
 from qualify_api.whatsapp.orders import read_order
 
 from .whatsapp_chats_vm import (
-    COMPOSE_MODES,
     FILTER_CLOSED,
     FILTER_OPEN,
     FILTER_UNREAD,
@@ -608,7 +607,9 @@ def test_buttons_validation() -> None:
 
 def test_image_by_link_left_the_composer() -> None:
     """m-24945888: a photo goes through the composer's «+» (m-24955785), never a pasted address."""
-    assert [key for key, _label in COMPOSE_MODES] == ["text", "buttons"]
+    from .whatsapp_chats_vm import COMPOSE_BUTTONS, COMPOSE_TEXT
+
+    assert (COMPOSE_TEXT, COMPOSE_BUTTONS) == ("text", "buttons")
 
 
 def test_validate_compose_dispatches_by_mode() -> None:

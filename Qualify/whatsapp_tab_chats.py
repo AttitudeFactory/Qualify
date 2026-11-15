@@ -61,8 +61,23 @@ from .chat_thread_vm import (
     WHATSAPP_SETTINGS_HREF,
 )
 from .r2_media import BACKEND_BASE
+from .reply_box import (
+    plus_menu,
+    reply_box,
+    reply_box_shell,
+    reply_field,
+    reply_tool,
+    send_button,
+)
+from .reply_box_vm import (
+    BUTTONS_LABEL,
+    FIELD_PLACEHOLDER,
+    MENU_PAUSE_NOTE,
+    TOOL_BUTTONS,
+    WHATSAPP_BOX,
+    draws,
+)
 from .ui import (
-    OrbitItem,
     callout,
     card,
     chat_bubble,
@@ -73,7 +88,6 @@ from .ui import (
     empty_state,
     media_thumb,
     mono,
-    orbit_menu,
     signal_pill,
     skeleton_rows,
     tone_badge,
@@ -91,7 +105,6 @@ from .whatsapp_chats_vm import (
     CAPTION_LABEL,
     CAPTION_SHORTENED,
     COMPOSE_BUTTONS,
-    COMPOSE_MODES,
     CREATE_AGAIN_LABEL,
     CREATE_APPROVED_LABEL,
     CREATE_APPROVED_ROUTE,
@@ -154,14 +167,12 @@ from .whatsapp_chats_vm import (
     PICK_FLOW,
     PICK_MEDIA,
     PICK_MENU,
-    PICK_MENU_LABEL,
     PICK_OFFER,
     PICK_PAYMENTS,
     PICK_PHOTO,
     PICK_PIECES,
     PICK_PRODUCTS,
     PICK_SEASONAL,
-    PICK_SOURCE_CARDS,
     PIECE_TABS,
     PIECES_APPROVED,
     PRICE_MISMATCH_HREF,
@@ -1183,9 +1194,10 @@ def _button_input(index: int) -> rx.Component:
             value=value,
             on_change=lambda v: S.set_button(index, v),
             placeholder=f"Botón {index}",
+            aria_label=f"Botón {index}",
             max_length=MAX_BUTTON_TITLE_CHARS,
             disabled=~S.can_compose,
-            size="2",
+            size="3",
             flex="1",
         ),
         rx.text(S.button_counts[index - 1], size="1", color=T.TEXT_MUTED, class_name="q-nums"),
@@ -1195,45 +1207,28 @@ def _button_input(index: int) -> rx.Component:
     )
 
 
-def _text_area(placeholder: str) -> rx.Component:
-    return rx.text_area(
-        value=S.draft_text,
-        on_change=S.set_draft_text,
-        placeholder=placeholder,
-        disabled=~S.can_compose,
-        rows="3",
-        resize="vertical",
-        width="100%",
-    )
-
-
-def _compose_fields() -> rx.Component:
-    return rx.match(
-        S.compose_mode,
-        (
-            COMPOSE_BUTTONS,
-            rx.vstack(
-                _text_area("Texto que acompaña a los botones"),
-                rx.grid(
-                    _button_input(1),
-                    _button_input(2),
-                    _button_input(3),
-                    columns=rx.breakpoints(initial="1", sm="3"),
-                    spacing="2",
-                    width="100%",
-                ),
-                spacing="2",
-                width="100%",
-            ),
+def _button_fields() -> rx.Component:
+    """«Botones» on: the three titles ride above the text (m-25027374: the same «Botones»
+    tool as Instagram's, D5)."""
+    return rx.cond(
+        S.compose_mode == COMPOSE_BUTTONS,
+        rx.grid(
+            _button_input(1),
+            _button_input(2),
+            _button_input(3),
+            columns=rx.breakpoints(initial="1", sm="3"),
+            spacing="2",
+            width="100%",
         ),
-        _text_area("Escribe una respuesta…"),
+        rx.fragment(),
     )
 
 
 def _expired_composer() -> rx.Component:
-    """m-24848535: the expired chat's way out, in place of a switched-off composer."""
-    return rx.vstack(
-        callout(S.window_closed_notice, "warn"),
+    """m-24848535: the expired chat's way out, in place of the reply box. The header
+    already says why (`window_line`, m-25027374: said once per screen)."""
+    return reply_box_shell(
+        WHATSAPP_BOX,
         rx.button(
             rx.icon("message-square-text", size=T.ICON_SM),
             SEND_APPROVED_LABEL,
@@ -1242,10 +1237,6 @@ def _expired_composer() -> rx.Component:
             min_height=_TAP_MIN,
             width=rx.breakpoints(initial="100%", sm="auto"),
         ),
-        spacing="2",
-        width="100%",
-        padding_top="0.5rem",
-        class_name="q-wa-composer",
     )
 
 
@@ -1500,20 +1491,6 @@ def _link_button(label: str, icon: str, href: str | rx.Var[str]) -> rx.Component
         ),
         href=href,
         width=rx.breakpoints(initial="100%", sm="auto"),
-    )
-
-
-def _pick_menu_button() -> rx.Component:
-    """The composer's «+» (m-24955785, `ui.orbit_menu`): each option opens the panel at
-    its own first step; choosing never sends. Drawn only inside `_live_composer`, so
-    outside the 24 hours (the whole composer replaced) it does not exist."""
-    return orbit_menu(
-        PICK_MENU_LABEL,
-        [
-            OrbitItem(key=key, icon=icon, text=text, on_select=S.open_pick(key))
-            for key, icon, text in PICK_SOURCE_CARDS
-        ],
-        disabled=~S.can_compose | S.sending,
     )
 
 
@@ -2576,48 +2553,51 @@ def _composer() -> rx.Component:
 
 
 def _live_composer() -> rx.Component:
-    return rx.vstack(
-        # m-24955785: the «+» opens the send options above, next to «Texto · Botones»
-        rx.hstack(
-            _pick_menu_button(),
-            rx.segmented_control.root(
-                *[rx.segmented_control.item(label, value=key) for key, label in COMPOSE_MODES],
-                value=S.compose_mode,
-                on_change=S.set_compose_mode,
-                size="1",
-            ),
-            align="center",
-            spacing="2",
+    """The one reply box (`reply_box.py`, m-25027374) with what WhatsApp can send: the
+    «+» (m-24955785: each row opens the send panel at its first step; choosing never
+    sends), «Botones», the text and «Enviar». Drawn only inside the 24 hours: outside
+    them the whole box is replaced by «Enviar un mensaje aprobado»."""
+    box = WHATSAPP_BOX
+    return reply_box(
+        box,
+        above=(_button_fields(),),
+        tools=tuple(
+            [
+                reply_tool(
+                    "list-plus",
+                    BUTTONS_LABEL,
+                    pressed=S.compose_mode == COMPOSE_BUTTONS,
+                    on_click=S.toggle_buttons,
+                    disabled=~S.can_compose | S.sending,
+                )
+            ]
+            if draws(box, TOOL_BUTTONS)
+            else []
         ),
-        _compose_fields(),
-        rx.cond(
+        plus=plus_menu(box, S.open_pick, disabled=~S.can_compose | S.sending),
+        field=reply_field(
+            S.draft_text,
+            S.set_draft_text,
+            disabled=~S.can_compose,
+            placeholder=rx.cond(
+                S.compose_mode == COMPOSE_BUTTONS,
+                "Texto que acompaña a los botones",
+                FIELD_PLACEHOLDER,
+            ),
+            field_id="wa-reply-field",
+        ),
+        send=send_button(
+            S.send_message,
+            loading=S.sending,
+            disabled=~S.can_compose | (S.compose_error != ""),
+        ),
+        note=rx.cond(
             S.compose_hint != "",
-            rx.text(S.compose_hint, size="1", color=T.tone_color("warn", 11)),
-            rx.text(
-                "Al responder, la respuesta automática se pausa en esta conversación.",
-                size="1",
-                color=T.TEXT_MUTED,
-            ),
+            rx.text(S.compose_hint, size="1", color=T.tone_color("warn", 11), role="status"),
+            rx.text(MENU_PAUSE_NOTE, size="1", color=T.TEXT_MUTED)
+            if box.has_menu_handoff
+            else rx.fragment(),
         ),
-        rx.hstack(
-            rx.spacer(),
-            rx.button(
-                rx.icon("send", size=T.ICON_SM),
-                "Enviar",
-                on_click=S.send_message,
-                loading=S.sending,
-                disabled=~S.can_compose | (S.compose_error != ""),
-                size="2",
-                min_height=_TAP_MIN,
-            ),
-            width="100%",
-            align="center",
-            spacing="3",
-        ),
-        spacing="2",
-        width="100%",
-        padding_top="0.5rem",
-        class_name="q-wa-composer",
     )
 
 

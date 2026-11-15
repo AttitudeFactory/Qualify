@@ -21,6 +21,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from PIL import Image
+from qualify_api.inbox import dispatch
 from qualify_api.whatsapp.attachments import (
     ChatAttachmentService,
     MemoryAttachmentReads,
@@ -34,7 +35,6 @@ from qualify_api.whatsapp.chats import (
     MemoryChatRepository,
     ThreadNotFound,
     UnknownAgent,
-    WindowClosed,
 )
 from qualify_api.whatsapp.orders import order_ready_text, read_order
 from qualify_api.whatsapp.outbox import MemoryOutboxRepository
@@ -85,13 +85,36 @@ class FakeStore:
         return "America/Bogota"
 
 
+class ServiceChannels:
+    """m-25027374: the dispatcher's channel read, answered by the memory service."""
+
+    def __init__(self, service: ChatService) -> None:
+        self._service = service
+
+    def channel_of(self, *, tenant_id: UUID, thread_id: UUID) -> str | None:
+        try:
+            self._service.get_thread_summary(tenant_id, thread_id)
+        except ThreadNotFound:
+            return None
+        return "whatsapp"
+
+
 class World:
     def __init__(self) -> None:
         self.repo = MemoryChatRepository()
         self.outbox = MemoryOutboxRepository(clock=lambda: NOW)
         self.store = FakeStore()
         self.service = ChatService(self.repo, self.outbox, clock=lambda: NOW)
-        self.gateway = ChatsGateway(service=self.service, store=self.store, clock=lambda: NOW)
+        self.gateway = ChatsGateway(
+            service=self.service,
+            store=self.store,
+            clock=lambda: NOW,
+            dispatcher=dispatch.ChatDispatcher(
+                channels=ServiceChannels(self.service),
+                instagram_service=None,  # type: ignore[arg-type] — no Instagram thread here
+                whatsapp_service=self.service,
+            ),
+        )
         self.repo.add_user(tenant_id=TENANT, user_id=USER)
 
     def thread(
@@ -233,7 +256,7 @@ def test_meta_limits_surface_as_value_error(world: World) -> None:
 
 def test_closed_window_refuses_before_writing(world: World) -> None:
     thread_id = world.thread(inbound_ago=timedelta(hours=25))
-    with pytest.raises(WindowClosed):
+    with pytest.raises(dispatch.WindowClosed):  # m-25027374: the dispatcher's, one per channel
         world.gateway.send_text(TENANT, NUMBER, thread_id, USER, "hola")
     assert world.outbox.rows == {}
     assert world.gateway.threads(TENANT, NUMBER)[0].automation_paused is False

@@ -70,6 +70,10 @@ PIECE_OK = "20000000-0000-4000-8000-000000000001"
 PIECE_NEW = "20000000-0000-4000-8000-000000000002"
 
 
+async def _no_login(self: object) -> None:
+    return None
+
+
 @dataclass(frozen=True)
 class _Product:
     id: str
@@ -234,6 +238,9 @@ def gw(monkeypatch: pytest.MonkeyPatch) -> FakeGateway:
         return USER
 
     monkeypatch.setattr(WhatsAppChatsState, "_tenant", tenant)
+    # m-25027374: no login acts in offline tests (the membership check would read
+    # Postgres); `test_reply_box_guards.py` holds that the login does act.
+    monkeypatch.setattr(WhatsAppChatsState, "_login", _no_login)
     monkeypatch.setattr(WhatsAppChatsState, "_acting_user", acting)
     return fake
 
@@ -606,7 +613,8 @@ def test_the_tab_renders_the_picker_and_no_link_field() -> None:
         "Todavía no aprobaste esta pieza: al enviarla, la apruebas solo para este chat.",
         "Buscar en tus productos",
         "Ver todos",
-        "Al responder, la respuesta automática se pausa en esta conversación.",
+        # m-25027374, decision (vi): the menu's name, awaiting the founder's nod
+        "Al responder, tu menú de bienvenida se pausa en esta conversación.",
         "Elegir una foto",
         "Volver al chat",
     ):

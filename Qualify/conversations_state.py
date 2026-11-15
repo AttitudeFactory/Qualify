@@ -72,6 +72,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import reflex as rx
+from qualify_api.auth.business import NotAMember
 from qualify_api.claude_tools import ClaudeToolError, MissingAPIKey
 from qualify_api.conversations.contracts import (
     ACTION_MARK_SEEN,
@@ -96,6 +97,11 @@ from qualify_api.conversations.templates import (
     ReplyTemplateError,
     ReplyTemplateNotFound,
 )
+from qualify_api.inbox.channels import UnknownChannel as NotAnInboxChannel
+from qualify_api.inbox.dispatch import ActionNotSupported, DraftNotSupported
+from qualify_api.inbox.dispatch import ThreadNotFound as DispatchThreadNotFound
+from qualify_api.inbox.dispatch import WindowClosed as DispatchWindowClosed
+from qualify_api.tenancy.acting import acting_login, require_acting_member
 from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState
@@ -171,6 +177,7 @@ from .nav_url import (
     uuid_param,
 )
 from .pending_state import PendingState
+from .reply_box_vm import SEND_FAILED_RETRY
 from .tenant import tenant_uuid
 
 logger = logging.getLogger(__name__)
@@ -199,7 +206,7 @@ _NO_SENDER = (
 )
 _REJECTED = "Instagram no acepta esa respuesta tal como está."
 _ACTION_FAILED = "No se pudo completar la acción. Vuelve a intentarlo en un momento."
-_NEEDS_APPROVAL = "La respuesta no salió: falta que la apruebes."
+_NEEDS_APPROVAL = SEND_FAILED_RETRY  # U3: one wording on both channels
 _ATTACH_FAILED = "No se pudo guardar el adjunto. Vuelve a intentarlo en un momento."
 _ATTACH_UNREADABLE = "No se pudo leer el archivo."
 _HIDDEN = "Mensaje eliminado para ti. La otra persona sigue viéndolo en Instagram."
@@ -223,6 +230,19 @@ _TEMPLATE_DELETED = "Plantilla borrada."
 _TOAST_MS = 4000
 #: m-25026457: what the header's one status button may ask for.
 CHAT_STATUS_ACTIONS = frozenset({"close", "reopen"})
+
+
+@dataclasses.dataclass(frozen=True)
+class _ReplyPlan:
+    """What one «Enviar» froze under the lock (m-25027374)."""
+
+    text: str
+    attachment: AttachmentVM
+    suggestion: DraftVM
+    buttons: list[ButtonVM]
+    quick_replies: list[str]
+    thread_id: str
+    connection_id: str
 
 
 class _NoSession(Exception):
@@ -640,6 +660,14 @@ class ConversationsState(rx.State):
     async def _tenant(self) -> UUID | None:
         auth = await self.get_state(AuthState)
         return tenant_uuid(auth.session_tenant_id) if auth.session_tenant_id else None
+
+    async def _login(self) -> UUID | None:
+        """The session's login (server-side, `AuthState._auth_user_id`), for
+        `acting_login`: the send services then check, fresh, that this login is still a
+        member of the business (ADR 43 S5) — as ads and connections do (m-25027374).
+        Call it under `async with self`."""
+        auth = await self.get_state(AuthState)
+        return _uuid(auth._auth_user_id) if auth._auth_user_id else None
 
     def _now(self) -> datetime:
         return datetime.now(UTC)
@@ -1209,9 +1237,10 @@ class ConversationsState(rx.State):
             connection_id = self.selected_connection_id
             account_label = self.selected_account.label
             tenant_id = await self._tenant()
+            login = await self._login()
         try:
             async for event in self._change_chat_status(
-                action, thread_id, connection_id, tenant_id, seen, account_label
+                action, thread_id, connection_id, tenant_id, seen, account_label, login
             ):
                 yield event
         finally:
@@ -1226,6 +1255,7 @@ class ConversationsState(rx.State):
         tenant_id: UUID | None,
         seen: datetime | None,
         account_label: str,
+        login: UUID | None = None,
     ) -> AsyncIterator[rx.event.EventSpec]:
         thread, connection = _uuid(thread_id), _uuid(connection_id)
         if tenant_id is None or thread is None or connection is None:
@@ -1234,10 +1264,15 @@ class ConversationsState(rx.State):
             return
         gw = gateway()
         try:
-            if action == "close":
-                await asyncio.to_thread(gw.close, tenant_id, connection, thread, seen)
-            else:
-                await asyncio.to_thread(gw.reopen, tenant_id, connection, thread)
+            with acting_login(login):
+                if action == "close":
+                    await asyncio.to_thread(gw.close, tenant_id, connection, thread, seen)
+                else:
+                    await asyncio.to_thread(gw.reopen, tenant_id, connection, thread)
+        except NotAMember as gone:
+            async with self:
+                self._set_banner(gone.message, "error")
+            return
         except ThreadChangedSinceSeen as changed:
             extra = None
             try:
@@ -1251,12 +1286,17 @@ class ConversationsState(rx.State):
             yield PendingState.refresh_now
             yield ConversationsState.refresh
             return
-        except ThreadNotFound:
+        except (ThreadNotFound, DispatchThreadNotFound):
             async with self:
                 self._set_banner(_THREAD_GONE, "warn")
             yield ConversationsState.refresh
             return
-        except _DB_ERRORS as exc:
+        except (NotAnInboxChannel, ActionNotSupported) as exc:
+            logger.error("conversations %s refused: %s", action, type(exc).__name__)
+            async with self:
+                self._set_banner(_ACTION_FAILED, "error")
+            return
+        except Exception as exc:  # noqa: BLE001 — C1: the `finally` above clears the button
             logger.error("conversations %s failed: %s", action, type(exc).__name__)
             async with self:
                 self._set_banner(_ACTION_FAILED, "error")
@@ -1670,7 +1710,7 @@ class ConversationsState(rx.State):
             return WINDOW_CLOSED_NEUTRAL
         try:
             conv = await asyncio.to_thread(gateway().conversation, tenant_id, connection, thread)
-        except (ThreadNotFound, *_DB_ERRORS) as exc:
+        except (ThreadNotFound, DispatchThreadNotFound, *_DB_ERRORS) as exc:
             logger.info("conversations window re-read failed: %s", type(exc).__name__)
             return WINDOW_CLOSED_NEUTRAL
         if conv.view.thread.last_inbound_at is None:
@@ -1703,6 +1743,18 @@ class ConversationsState(rx.State):
             self.banner = ""
             thread_id, connection_id = self.open_thread_id, self.selected_connection_id
             tenant_id = await self._tenant()
+            login = await self._login()
+        try:
+            async for event in self._heart_once(tenant_id, thread_id, connection_id, login):
+                yield event
+        finally:
+            # m-25027374 (C1): whatever happened, «Enviar» and ❤ never stay busy.
+            async with self:
+                self.sending = False
+
+    async def _heart_once(
+        self, tenant_id: UUID | None, thread_id: str, connection_id: str, login: UUID | None
+    ) -> AsyncIterator[rx.event.EventSpec]:
         thread, connection = _uuid(thread_id), _uuid(connection_id)
         try:
             if tenant_id is None or thread is None or connection is None:
@@ -1713,22 +1765,43 @@ class ConversationsState(rx.State):
                     self.sending = False
                     self._set_banner(_NO_USER, "error")
                 return
-            await asyncio.to_thread(
-                gateway().reply, tenant_id, connection, thread, user, HEART_TEXT
-            )
+            with acting_login(login):
+                await asyncio.to_thread(
+                    gateway().reply, tenant_id, connection, thread, user, HEART_TEXT
+                )
         except _NoSession:
             async with self:
                 self.sending = False
                 self._set_banner(_NO_SESSION, "error")
             return
-        except WindowClosed:
+        except NotAMember as gone:
+            async with self:
+                self.sending = False
+                self._set_banner(gone.message, "error")
+            return
+        except (WindowClosed, DispatchWindowClosed):
             notice = await self._window_closed_cause(tenant_id, connection, thread)
             async with self:
                 self.sending = False
                 self._set_banner(notice, "warn")
             yield ConversationsState.refresh
             return
-        except (ThreadNotFound, UnknownChannel, ApprovalRequired, ValueError, *_DB_ERRORS) as exc:
+        except (
+            ThreadNotFound,
+            DispatchThreadNotFound,
+            UnknownChannel,
+            ActionNotSupported,
+            DraftNotSupported,
+            ApprovalRequired,
+            ValueError,
+            *_DB_ERRORS,
+        ) as exc:
+            logger.error("conversations heart failed: %s", type(exc).__name__)
+            async with self:
+                self.sending = False
+                self._set_banner(_ACTION_FAILED, "error")
+            return
+        except Exception as exc:  # noqa: BLE001 — C1: worded, never a stuck button
             logger.error("conversations heart failed: %s", type(exc).__name__)
             async with self:
                 self.sending = False
@@ -1755,7 +1828,31 @@ class ConversationsState(rx.State):
             quick_replies = list(self.quick_replies_to_send)
             thread_id, connection_id = self.open_thread_id, self.selected_connection_id
             tenant_id = await self._tenant()
-        thread, connection = _uuid(thread_id), _uuid(connection_id)
+            login = await self._login()
+        plan = _ReplyPlan(
+            text=text,
+            attachment=attachment,
+            suggestion=suggestion,
+            buttons=buttons,
+            quick_replies=quick_replies,
+            thread_id=thread_id,
+            connection_id=connection_id,
+        )
+        try:
+            async for event in self._reply_once(plan, tenant_id, login):
+                yield event
+        finally:
+            # m-25027374 (C1): whatever happened, «Enviar» never stays busy.
+            async with self:
+                self.sending = False
+
+    async def _reply_once(
+        self, plan: _ReplyPlan, tenant_id: UUID | None, login: UUID | None
+    ) -> AsyncIterator[rx.event.EventSpec | rx.event.EventHandler]:
+        text, attachment, suggestion = plan.text, plan.attachment, plan.suggestion
+        buttons, quick_replies = plan.buttons, plan.quick_replies
+        thread_id = plan.thread_id
+        thread, connection = _uuid(thread_id), _uuid(plan.connection_id)
         gw = gateway()
         try:
             if tenant_id is None or thread is None or connection is None:
@@ -1766,50 +1863,66 @@ class ConversationsState(rx.State):
                     self.sending = False
                     self._set_banner(_NO_USER, "error")
                 return
-            draft_id: UUID | None = None
-            if text and suggestion.draft_id:
-                draft_id = await self._decide_sent_draft(tenant_id, user, suggestion, text)
-            if attachment.object_key:
-                await asyncio.to_thread(
-                    gw.reply_media, tenant_id, connection, thread, user, attachment
-                )
-            if text and buttons:
-                await asyncio.to_thread(
-                    gw.reply_buttons, tenant_id, connection, thread, user, text, buttons
-                )
-            elif text:
-                await asyncio.to_thread(
-                    gw.reply,
-                    tenant_id,
-                    connection,
-                    thread,
-                    user,
-                    text,
-                    draft_id,
-                    quick_replies=quick_replies,
-                )
+            with acting_login(login):
+                draft_id: UUID | None = None
+                if text and suggestion.draft_id:
+                    # C3: a login that lost the business records no verdict on the draft:
+                    # the membership is checked BEFORE the suggestion is decided.
+                    await asyncio.to_thread(require_acting_member, tenant_id)
+                    draft_id = await self._decide_sent_draft(tenant_id, user, suggestion, text)
+                if attachment.object_key:
+                    await asyncio.to_thread(
+                        gw.reply_media, tenant_id, connection, thread, user, attachment
+                    )
+                if text and buttons:
+                    await asyncio.to_thread(
+                        gw.reply_buttons, tenant_id, connection, thread, user, text, buttons
+                    )
+                elif text:
+                    await asyncio.to_thread(
+                        gw.reply,
+                        tenant_id,
+                        connection,
+                        thread,
+                        user,
+                        text,
+                        draft_id,
+                        quick_replies=quick_replies,
+                    )
         except _NoSession:
             async with self:
                 self.sending = False
                 self._set_banner(_NO_SESSION, "error")
             return
-        except WindowClosed:
+        except NotAMember as gone:
+            async with self:
+                self.sending = False
+                self._set_banner(gone.message, "error")
+            return
+        except (WindowClosed, DispatchWindowClosed):
             notice = await self._window_closed_cause(tenant_id, connection, thread)
             async with self:
                 self.sending = False
                 self._set_banner(notice, "warn")
             yield ConversationsState.refresh
             return
-        except ThreadNotFound:
+        except (ThreadNotFound, DispatchThreadNotFound):
             async with self:
                 self.sending = False
                 self._set_banner(_THREAD_GONE, "warn")
             yield ConversationsState.refresh
             return
-        except UnknownChannel:
+        except (UnknownChannel, NotAnInboxChannel):
+            # The dispatcher's is a ValueError: caught here, before «texto rechazado».
             async with self:
                 self.sending = False
                 self._set_banner(_NO_SENDER, "warn")
+            return
+        except (ActionNotSupported, DraftNotSupported) as exc:
+            logger.error("conversations reply refused: %s", type(exc).__name__)
+            async with self:
+                self.sending = False
+                self._set_banner(_ACTION_FAILED, "error")
             return
         except CapabilityUnavailable as off:
             # The deployment switched the feature off after the screen loaded.
@@ -1835,7 +1948,7 @@ class ConversationsState(rx.State):
                 self.sending = False
                 self._set_banner(_REJECTED, "error")
             return
-        except _DB_ERRORS as exc:
+        except Exception as exc:  # noqa: BLE001 — C1: worded, never a spinning «Enviar»
             logger.error("conversations reply failed: %s", type(exc).__name__)
             async with self:
                 self.sending = False

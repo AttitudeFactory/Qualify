@@ -47,6 +47,7 @@ from .chat_row_vm import (
     minutes_left,
 )
 from .chat_thread_vm import mark_days, window_line
+from .reply_box_vm import PLUS_LABEL, WHATSAPP_BOX, plus_rows
 from .seasonal_vm import CREATE_HREF as SEASONAL_LIBRARY_CREATE_HREF
 from .seasonal_vm import PRODUCT_RECIPES, PRODUCT_SEASON_KEY, product_message
 
@@ -193,13 +194,9 @@ DEFAULT_FILTER = FILTER_OPEN
 
 COMPOSE_TEXT = "text"
 COMPOSE_BUTTONS = "buttons"
-#: m-24945888: «Imagen por enlace» left the selector; a photo or the menu goes through
-#: the composer's «+» (the send panel below), never through a pasted address.
-COMPOSE_MODES: tuple[tuple[str, str], ...] = (
-    (COMPOSE_TEXT, "Texto"),
-    (COMPOSE_BUTTONS, "Botones"),
-)
-COMPOSE_KEYS = frozenset(key for key, _label in COMPOSE_MODES)
+#: m-24945888: «Imagen por enlace» left the box; a photo or the menu goes through the
+#: «+» (the send panel below), never through a pasted address. Since m-25027374
+#: «Botones» is a tool of the shared reply box (`toggle_buttons`), not a switch.
 
 
 _MONTHS = ("ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic")
@@ -1469,7 +1466,7 @@ def template_fields_complete(fields: Sequence[TemplateFieldVM]) -> bool:
 # caption length, provenance); this section only words it and shapes the picks.
 
 #: The composer's «+» (m-24955785, `ui.orbit_menu`): its accessible name.
-PICK_MENU_LABEL = "Enviar algo al cliente"
+PICK_MENU_LABEL = PLUS_LABEL  # m-25027374: the shared box's «+»
 
 #: The drawer's address (`?flujo=enviar&paso=N`, `ui/flow_history.py`): the phone's
 #: «atrás» goes one step back; on step 1 it closes the drawer (N5).
@@ -1544,13 +1541,10 @@ PICK_BACK = "Atrás"
 #: The «+»'s six rows (key, icon, text ≤ 16), top to bottom: what sells first (product,
 #: offer, menu), then getting paid and getting there, the loose things last
 #: (m-24945889 §1, approved by the founder 2026-11-08).
-PICK_SOURCE_CARDS: tuple[tuple[str, str, str], ...] = (
-    (PICK_PRODUCTS, "package", "Tus productos"),
-    (PICK_OFFER, "tag", "Tu oferta"),
-    (PICK_MENU, "list", "Tu menú"),
-    (PICK_PAYMENTS, "wallet", "Formas de pago"),
-    (PICK_DIRECTIONS, "map-pin", "Cómo llegar"),
-    (PICK_MEDIA, "images", "Fotos y videos"),
+#: m-25027374: the rows and their texts live once, in the shared reply box's catalogue
+#: (`reply_box_vm.PLUS_CATALOGUE`); this is WhatsApp's cut of it.
+PICK_SOURCE_CARDS: tuple[tuple[str, str, str], ...] = tuple(
+    (row.key, row.icon, row.text) for row in plus_rows(WHATSAPP_BOX)
 )
 
 #: «Fotos y videos» › «¿De dónde?» (key, icon, title, line).
