@@ -78,9 +78,13 @@ _PIN = """
   const h = document.querySelector('.q-page-header').getBoundingClientRect();
   const t = document.querySelector('.q-wa-chats--open .q-chat-head__top')
     .getBoundingClientRect();
-  return {headerBottom: h.bottom, headTop: t.top, gap: t.top - h.bottom};
+  const scrolled = document.querySelector('main.q-panel').scrollTop;
+  return {headerBottom: h.bottom, headTop: t.top, gap: t.top - h.bottom, scrolled};
 }
 """
+_SCROLL_TO_FOOT = (
+    "() => { const p = document.querySelector('main.q-panel'); p.scrollTop = p.scrollHeight; }"
+)
 
 
 def _origin(page) -> str:  # noqa: ANN001
@@ -153,7 +157,9 @@ def test_capture_whatsapp_in_inbox(chats_page) -> None:  # noqa: ANN001
             page.screenshot(path=str(out / f"{key}.png"))
             report[key] = {**page.evaluate(_WHERE), "fit": page.evaluate(_FIT)}
             if size_name == "1280":
-                page.evaluate("() => { document.querySelector('main.q-panel').scrollTop = 400; }")
+                page.get_by_role("button", name=re.compile(r"^Pedido · 3 productos")).click()
+                page.wait_for_timeout(400)
+                page.evaluate(_SCROLL_TO_FOOT)
                 page.wait_for_timeout(400)
                 key = f"{label}-whatsapp-scrolled-{size_name}-{scheme}"
                 page.screenshot(path=str(out / f"{key}.png"))
@@ -181,13 +187,18 @@ def test_a_wide_open_chat_fits_and_pins_under_the_page_header(chats_page) -> Non
     fit = page.evaluate(_FIT)
     assert fit["strip"] and fit["takeOver"] and fit["box"], fit
     expect(page.get_by_text("Quién te espera")).to_have_count(0)
+    # The order card unfolded makes the page scroll; scrolled to its foot, the chat's top
+    # line is pinned and must touch the page header.
+    page.get_by_role("button", name=re.compile(r"^Pedido · 3 productos")).click()
+    expect(page.get_by_role("button", name="Pedido listo")).to_be_visible()
     for width in (1280, 1024):
-        page.set_viewport_size({"width": width, "height": 800})
-        page.evaluate("() => { document.querySelector('main.q-panel').scrollTop = 500; }")
+        page.set_viewport_size({"width": width, "height": 600})  # short: the page scrolls
+        page.evaluate(_SCROLL_TO_FOOT)
         page.wait_for_timeout(400)
         pin = page.evaluate(_PIN)
+        assert pin["scrolled"] > 150, (width, pin)  # it did scroll past the header
         assert abs(pin["gap"]) <= 2, (width, pin)
-    page.get_by_role("button", name=BACK).click()
+    page.locator(".q-chat-head").first.get_by_role("button", name=BACK).click()
     expect(page.get_by_text("Quién te espera")).to_be_visible()  # back with the chat closed
 
 
@@ -304,7 +315,7 @@ def test_phone_full_screen_back_keeps_filter_channel_and_scroll(chats_page) -> N
     assert "Por responder" in where["lit"], where
     expect(page.locator(".q-conv-list")).to_be_hidden()
 
-    page.get_by_role("button", name=BACK).click()
+    page.locator(".q-chat-head").first.get_by_role("button", name=BACK).click()
     expect(page.locator(".q-conv-list")).to_be_visible()
     expect(page).to_have_url(re.compile(r"filtro=todos&canal=whatsapp$"))
     page.wait_for_timeout(600)
@@ -332,7 +343,7 @@ def test_phone_full_screen_back_keeps_filter_channel_and_scroll(chats_page) -> N
     assert before > 100, before
     cami.click()
     _thread_ready(page)
-    page.get_by_role("button", name=BACK).click()
+    page.locator(".q-chat-head").first.get_by_role("button", name=BACK).click()
     expect(page.locator(".q-conv-list")).to_be_visible()
     page.wait_for_timeout(600)
     assert abs(_panel_scroll(page) - before) <= 4, (_panel_scroll(page), before)
