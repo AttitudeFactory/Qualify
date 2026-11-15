@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Any
@@ -78,6 +79,81 @@ class InterestOption:
             raise AudienceUnavailable("Vuelve a elegir los intereses de la búsqueda.")
 
 
+def _coordinate(value: Any, limit: int) -> bool:
+    return (
+        isinstance(value, int | float)
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        and -limit <= value <= limit
+        and round(value, 6) == value  # ~0.1 m; more digits would be false precision
+    )
+
+
+@dataclass(frozen=True)
+class MapPoint:
+    """The centre of a radius: a map pin or the business address, as coordinates.
+
+    `name` is only the owner's label (the address or «Punto en el mapa»); Meta never
+    receives it, so the approval and the read-back compare the coordinates alone.
+    """
+
+    latitude: float
+    longitude: float
+    name: str
+
+    def validate(self) -> None:
+        if (
+            not _coordinate(self.latitude, 90)
+            or not _coordinate(self.longitude, 180)
+            or not _label(self.name)
+        ):
+            raise AudienceUnavailable(
+                "Vuelve a elegir el punto alrededor del cual mostrar el anuncio."
+            )
+
+
+# Meta targeting reference, «Custom locations» and «Cities», retrieved 2026-11-14:
+# https://developers.facebook.com/docs/marketing-api/audiences/reference/basic-targeting
+# custom_locations radius «from 0.63 to 50 miles, or 1 to 80 kilometers»; a city radius
+# «from 10 to 50 miles or 17 to 80 kilometers».
+POINT_RADIUS_KM = (1, 80)
+CITY_RADIUS_KM = (17, 80)
+
+
+def interest_statuses(
+    validation: tuple[dict[str, Any], ...], option_status: tuple[dict[str, Any], ...]
+) -> dict[str, str]:
+    """Each interest id → active | retiring | unavailable | unknown, from Meta's rows.
+
+    `validation` is act_<id>/targetingvalidation (`valid`); `option_status` is
+    search?type=targetingoptionstatus (`current_status`). Meta's targeting search reference
+    (retrieved 2026-11-14): DEPRECATING «can't be used to create new or update ad sets»,
+    NON-DELIVERABLE «does not deliver». Only valid + NORMAL counts as active. Only exact
+    types count (a string id, a boolean `valid`, a string status); anything else is unknown.
+    """
+    valid = {
+        row["id"]: row["valid"]
+        for row in validation
+        if isinstance(row.get("id"), str) and type(row.get("valid")) is bool
+    }
+    current = {
+        row["id"]: row["current_status"]
+        for row in option_status
+        if isinstance(row.get("id"), str) and isinstance(row.get("current_status"), str)
+    }
+    result = {}
+    for key in valid.keys() | current.keys():
+        if valid.get(key) is False or current.get(key) == "NON-DELIVERABLE":
+            result[key] = "unavailable"
+        elif current.get(key) == "DEPRECATING":
+            result[key] = "retiring"
+        elif valid.get(key) is True and current.get(key) == "NORMAL":
+            result[key] = "active"
+        else:
+            result[key] = "unknown"
+    return result
+
+
 @dataclass(frozen=True)
 class AudienceDraft:
     location: LocationOption | None = None
@@ -90,6 +166,8 @@ class AudienceDraft:
     housing: bool = False
     placements: tuple[str, ...] = ()
     custom_audiences: tuple[CustomAudienceSelection, ...] = ()
+    # A radius around a point; `location` is then the point's country (m-24828977).
+    point: MapPoint | None = None
 
     def validate(self) -> None:
         from qualify_api.ads.custom_audiences import CustomAudienceSelection
@@ -107,7 +185,21 @@ class AudienceDraft:
         if not isinstance(self.location, LocationOption):
             raise AudienceUnavailable("Busca y elige el lugar donde quieres mostrar el anuncio.")
         self.location.validate()
-        if self.radius_km is not None and (
+        if self.point is not None:
+            if not isinstance(self.point, MapPoint):
+                raise AudienceUnavailable(
+                    "Vuelve a elegir el punto alrededor del cual mostrar el anuncio."
+                )
+            self.point.validate()
+            if (
+                self.location.type != "country"
+                or type(self.radius_km) is not int
+                or not POINT_RADIUS_KM[0] <= self.radius_km <= POINT_RADIUS_KM[1]
+            ):
+                raise AudienceUnavailable(
+                    "Elige el país y un radio entre 1 y 80 km alrededor del punto."
+                )
+        elif self.radius_km is not None and (
             type(self.radius_km) is not int
             or not 1 <= self.radius_km <= 80
             or self.location.type != "city"
@@ -142,9 +234,12 @@ class AudienceDraft:
     def snapshot(self) -> dict[str, Any]:
         self.validate()
         result = json.loads(json.dumps(asdict(self)))
+        # Absent options stay out: every pre-existing approval hash and idempotency key
+        # stays byte-identical.
         if not self.custom_audiences:
-            # Keep every pre-existing approval hash and idempotency key unchanged.
             result.pop("custom_audiences")
+        if self.point is None:
+            result.pop("point")
         return result
 
     @classmethod
@@ -152,11 +247,9 @@ class AudienceDraft:
         from qualify_api.ads.custom_audiences import CustomAudienceSelection
 
         try:
-            required = set(cls.__dataclass_fields__) - {"custom_audiences"}
-            if not isinstance(value, dict) or set(value) not in (
-                required,
-                required | {"custom_audiences"},
-            ):
+            optional = {"custom_audiences", "point"}
+            required = set(cls.__dataclass_fields__) - optional
+            if not isinstance(value, dict) or not required <= set(value) <= required | optional:
                 raise ValueError
             result = cls(
                 **{
@@ -168,6 +261,7 @@ class AudienceDraft:
                         CustomAudienceSelection(**item)
                         for item in value.get("custom_audiences", [])
                     ),
+                    "point": MapPoint(**value["point"]) if "point" in value else None,
                 }
             )
             result.validate()
@@ -181,7 +275,23 @@ class AudienceDraft:
         self.validate()
         assert self.location is not None
         location = self.location
-        if location.type == "country":
+        geo: dict[str, Any]
+        if self.point is not None:
+            # Only the point: adding its country would widen the area to the whole country.
+            # Open question: the basic-targeting page says a country is required unless a
+            # Custom Audience is used. Confirm point-only with one validate_only call
+            # (m-24828971) before relying on it; Meta's validate_only blocks it otherwise.
+            geo = {
+                "custom_locations": [
+                    {
+                        "latitude": self.point.latitude,
+                        "longitude": self.point.longitude,
+                        "radius": self.radius_km,
+                        "distance_unit": "kilometer",
+                    }
+                ]
+            }
+        elif location.type == "country":
             geo = {"countries": [location.key]}
         else:
             item: dict[str, Any] = {"key": location.key}

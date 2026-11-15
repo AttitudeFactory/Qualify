@@ -527,8 +527,9 @@ def orbit_menu(
     `assets/qualify.css`, with `prefers-reduced-motion`); each option a pill: a 44 px icon
     circle and its text, on the floating material.
 
-    Rules (`docs/design-system.md` §5.9): only in WhatsApp's chat composer (another
-    screen needs the founder); 2 to 6 options; icon AND text of 16 characters at most;
+    Rules (`docs/design-system.md` §5.9): only in WhatsApp's chat composer and in «Arma
+    tu video»'s «Agregar» (`ui.timeline.timeline_add`, approved by Deivid 2026-11-14;
+    another screen needs the founder); 2 to 6 options; icon AND text of 16 characters at most;
     an option opens a flow, never sends; outside its conditions it is not drawn rather
     than disabled."""
     if not ORBIT_MIN_ITEMS <= len(items) <= ORBIT_MAX_ITEMS:

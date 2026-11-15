@@ -1,0 +1,313 @@
+"""ED-00b (m-25029104): the «Arma tu video» timeline pattern and its `/design` sample.
+
+Offline: the view model's copy (§4 of the proposal), the half-second magnet, the
+no-gap media track and the keyboard edits; the component renders the group, the three
+tracks, the playhead slider, the handles as sliders and a live status line; the CSS keeps
+1 s = 44 px and 44 px handles, slides the tracks inside their own box and switches to the
+desktop layout on the component's container; and the `/design` section renders.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from pathlib import Path
+
+import reflex as rx
+
+from Qualify.ui import timeline as tl
+from Qualify.ui import timeline_vm as vm
+
+_ASSETS = Path(__file__).parent.parent / "assets"
+_CSS = (_ASSETS / "qualify-creative.css").read_text(encoding="utf-8")
+
+_MEDIA = [
+    {"id": "v1", "kind": "video", "src_start": 0.0, "src_end": 4.0, "src_len": 15.0},
+    {"id": "v2", "kind": "video", "src_start": 4.0, "src_end": 9.0, "src_len": 15.0},
+    {"id": "p3", "kind": "photo", "dur": 2.0},
+]
+_OVERLAYS = [
+    {"id": "t1", "kind": "text", "label": "2×1 hoy", "start": 0.0, "end": 6.0},
+    {"id": "e1", "kind": "effect", "label": "Vapor", "start": 2.0, "end": 9.0},
+]
+
+
+def _has(rendered: str, text: str) -> bool:
+    escaped = json.dumps(text)[1:-1]
+    return any(form in rendered for form in (text, escaped, escaped.replace("\\", "\\\\")))
+
+
+# ---------------------------------------------------------------------------------------
+# View model
+# ---------------------------------------------------------------------------------------
+
+
+def test_clock_and_amount_speak_spanish() -> None:
+    assert vm.clock(0) == "0:00"
+    assert vm.clock(4.5) == "0:04,5"
+    assert vm.clock(62) == "1:02"
+    assert vm.clock(4.3) == "0:04,5"  # the magnet
+    assert vm.amount(5) == "5" and vm.amount(4.5) == "4,5"
+    assert vm.playhead_text(5, 12) == "0:05 de 0:12"
+
+
+def test_media_track_has_no_gaps_and_full_names() -> None:
+    rows = vm.media_blocks(_MEDIA)
+    assert [(r["start"], r["length"]) for r in rows] == [("0", "4"), ("4", "5"), ("9", "2")]
+    assert vm.total_seconds(_MEDIA) == 11
+    assert rows[1]["name"] == "Video 2 de 3, usas de 0:04 a 0:09, dura 5 s"
+    assert rows[1]["panel"] == "Video 2 · usas 0:04 a 0:09 · 5 s"
+    assert rows[2]["name"] == "Foto 3 de 3, se ve 2 s"
+    assert rows[2]["panel"] == "Foto 3 · 2 s"
+    assert rows[1]["start_handle"] == "Inicio de Video 2"
+    assert rows[1]["end_handle"] == "Final de Video 2"
+    assert rows[1]["help"] == "Usa las flechas para cambiarlo de lugar."
+    # A photo has only its end handle («Duración», 1–5 s).
+    assert rows[2]["has_start"] == "" and rows[2]["end_label"] == "Duración"
+    assert rows[2]["end_text"] == "Se ve 2 s"
+
+
+def test_overlay_names() -> None:
+    texts = vm.overlay_blocks(_OVERLAYS, "text", 11)
+    effects = vm.overlay_blocks(_OVERLAYS, "effect", 11)
+    assert texts[0]["name"] == "Texto «2×1 hoy», de 0:00 a 0:06"
+    assert effects[0]["name"] == "Vapor, de 0:02 a 0:09"
+    assert effects[0]["panel"] == "Vapor · de 0:02 a 0:09"
+    assert effects[0]["start_label"] == "Empieza" and effects[0]["end_label"] == "Termina"
+
+
+def test_rows_are_serialisable_strings() -> None:
+    rows = vm.media_blocks(_MEDIA) + vm.overlay_blocks(_OVERLAYS, "effect", 11)
+    assert all(isinstance(v, str) for row in rows for v in row.values())
+    json.dumps(rows)
+
+
+def test_nudge_snaps_clamps_and_closes_the_gap() -> None:
+    media, overlays = vm.nudge(_MEDIA, _OVERLAYS, "v1", "end", -0.5)
+    assert media[0]["src_end"] == 3.5
+    assert [r["start"] for r in vm.media_blocks(media)] == ["0", "3.5", "8.5"]
+    # Never shorter than 1 s, never past the source.
+    media, _ = vm.nudge(_MEDIA, _OVERLAYS, "v1", "start", 10)
+    assert media[0]["src_start"] == 3.0
+    media, _ = vm.nudge(_MEDIA, _OVERLAYS, "v2", "end", 30)
+    assert media[1]["src_end"] == 15.0
+    # A photo lasts 1–5 s and only its end moves.
+    media, _ = vm.nudge(_MEDIA, _OVERLAYS, "p3", "end", 9)
+    assert media[2]["dur"] == 5.0
+    media, _ = vm.nudge(_MEDIA, _OVERLAYS, "p3", "start", 1)
+    assert media[2]["dur"] == 2.0
+    # The input is never mutated.
+    assert _MEDIA[0]["src_end"] == 4.0
+
+
+def test_shorter_video_cuts_overlays_to_the_new_end() -> None:
+    overlays = [{"id": "e", "kind": "effect", "label": "Vapor", "start": 2.0, "end": 11.0}]
+    media, overlays = vm.nudge(_MEDIA, overlays, "v2", "end", -2)
+    assert vm.total_seconds(media) == 9
+    assert overlays[0]["end"] == 9
+
+
+def test_keyboard_move_and_shift() -> None:
+    moved = vm.move(_MEDIA, "v2", -1)
+    assert [m["id"] for m in moved] == ["v2", "v1", "p3"]
+    assert vm.moved_text(moved, "v2") == "Moviste el video 1."
+    assert vm.moved_text(vm.move(_MEDIA, "p3", -1), "p3") == "Moviste la foto 2."
+    assert [m["id"] for m in vm.move(_MEDIA, "v1", -1)] == ["v1", "v2", "p3"]
+    shifted = vm.shift(_OVERLAYS, "e1", 0.5, 11)
+    assert (shifted[1]["start"], shifted[1]["end"]) == (2.5, 9.5)
+    assert vm.shift(_OVERLAYS, "e1", 10, 11)[1]["end"] == 11
+    assert vm.timed_text(_OVERLAYS, "e1") == "Cambiaste cuándo sale Vapor."
+    assert vm.timed_text(_OVERLAYS, "t1") == "Cambiaste cuándo sale el texto."
+
+
+def test_actions_follow_the_proposal() -> None:
+    labels = {key: [label for label, _ in items] for key, items in vm.ACTIONS.items()}
+    assert [text for _, _, text in vm.ADD_OPTIONS] == ["Foto o video", "Texto", "Efecto", "Idea"]
+    assert [icon for _, icon, _ in vm.ADD_OPTIONS] == [
+        "image-plus",
+        "type",
+        "sparkles",
+        "lightbulb",
+    ]
+    assert labels["video"] == ["Cortar aquí", "Velocidad", "Girar", "Quitar"]
+    assert labels["photo"] == ["Duración", "Girar", "Quitar"]
+    assert labels["text"] == ["Editar texto", "Quitar"]
+    assert labels["effect"] == ["Cambiar efecto", "Quitar"]
+    assert all(len(items) <= 4 for items in vm.ACTIONS.values())
+
+
+# ---------------------------------------------------------------------------------------
+# Component
+# ---------------------------------------------------------------------------------------
+
+
+class _State(rx.State):
+    media: list[dict[str, str]] = vm.media_blocks(_MEDIA)
+    texts: list[dict[str, str]] = []
+    effects: list[dict[str, str]] = vm.overlay_blocks(_OVERLAYS, "effect", 11)
+    ticks: list[dict[str, str]] = vm.ticks(11)
+    selected: str = "v2"
+    status: str = ""
+
+    @rx.event
+    def pick(self, block_id: str) -> None:
+        self.selected = block_id
+
+    @rx.event
+    def key(self, block_id: str, edge: str, key: str) -> None:
+        pass
+
+
+def _rendered() -> str:
+    return str(
+        tl.timeline(
+            media=_State.media,
+            texts=_State.texts,
+            effects=_State.effects,
+            ticks=_State.ticks,
+            total="11",
+            selected=_State.selected,
+            on_select=_State.pick,
+            status=_State.status,
+            on_key=_State.key,
+        ).render()
+    )
+
+
+def test_component_renders_the_accessible_anatomy() -> None:
+    rendered = _rendered()
+    assert _has(rendered, "Línea de tiempo de tu video") and '"group"' in rendered
+    for name in ("Fotos y videos", "Textos", "Efectos"):
+        assert _has(rendered, name)
+    assert '"list"' in rendered and '"listitem"' in rendered
+    assert "q-tl__scrub" in rendered and '"range"' in rendered
+    assert _has(rendered, "Momento del video")
+    assert '"slider"' in rendered and "aria-valuetext" in rendered
+    assert '"status"' in rendered
+    assert "aria-pressed" in rendered or "ariaPressed" in rendered
+    # An empty «Textos» track says how to add one, phone and desktop wording.
+    assert _has(rendered, "Toca + y elige Texto")
+    assert _has(rendered, "Haz clic en + y elige Texto")
+    assert "data-q-timeline" in rendered and "--tl-total" in rendered
+
+
+def test_action_bar_and_panel_render() -> None:
+    actions = str(
+        tl.timeline_actions(_State.selected, on_add=lambda key: rx.console_log(key)).render()
+    )
+    for label in ("Cortar aquí", "Duración", "Editar texto", "Cambiar efecto"):
+        assert _has(actions, label)
+    # The chosen block's buttons are the kit's glass (`surface`), in a glass island.
+    assert '"surface"' in actions and '"soft"' not in actions.split("q-orbit")[0]
+    assert "q-island" in actions and "q-tl-island" in actions
+    row = rx.Var.create(vm.media_blocks(_MEDIA)[1])
+    panel = str(
+        tl.timeline_panel(
+            row,
+            on_nudge=lambda *a: rx.console_log("n"),
+            on_done=_State.pick(""),
+            on_speed=lambda *a: rx.console_log("s"),
+            on_place=lambda *a: rx.console_log("p"),
+        ).render()
+    )
+    assert _has(panel, "− ½ s") and _has(panel, "+ ½ s") and _has(panel, "Listo")
+    assert "q-source-seg" in panel
+    for name in ("Velocidad normal", "5 veces más rápido", "10 veces más rápido"):
+        assert _has(panel, name)
+    for place in ("Arriba", "En el medio", "Abajo"):
+        assert _has(panel, place)
+
+
+def test_add_is_the_orbit_with_four_options() -> None:
+    rendered = str(tl.timeline_add(lambda key: rx.console_log(key)).render())
+    assert "q-orbit-trigger" in rendered and _has(rendered, "Agregar")
+    for key, _, text in vm.ADD_OPTIONS:
+        assert f'"data-orbit-key":"{key}"' in rendered.replace(" ", "") or key in rendered
+        assert _has(rendered, text)
+    assert rendered.count("q-orbit-pill") == 4
+    # Nothing chosen: the orbit; a block chosen: its bar.
+    assert "q-orbit-trigger" in str(
+        tl.timeline_actions(_State.selected, on_add=lambda key: rx.console_log(key)).render()
+    )
+
+
+def test_speed_and_place_in_the_view_model() -> None:
+    media = vm.set_speed(_MEDIA, "v2", "10")
+    rows = vm.media_blocks(media)
+    assert rows[1]["speed"] == "10" and rows[1]["speed_tag"] == "×10"
+    assert rows[1]["length"] == "0.5"  # 5 s of source at ×10
+    assert vm.set_speed(_MEDIA, "v2", "7")[1].get("speed", 1) == 1  # only offered speeds
+    assert vm.set_speed(_MEDIA, "p3", "5")[2].get("speed") is None  # a photo has none
+    texts = vm.overlay_blocks(vm.set_place(_OVERLAYS, "t1", "bottom"), "text", 11)
+    assert texts[0]["place"] == "bottom"
+    assert [label for _, label, _ in vm.SPEEDS] == ["Normal", "×5", "×10", "×20"]
+
+
+def test_lens_and_island_exist() -> None:
+    script = (_ASSETS / tl.SCRIPT).read_text(encoding="utf-8")
+    assert "q-glass-blob" in script and "q-glass-blob__surface" in script
+    assert "prefers-reduced-motion" in script
+    assert ".q-tl__canvas > .q-glass-blob { z-index: 1; }" in _CSS
+    assert ".q-tl-island" in _CSS and "@container q-tl-stack (min-width: 52rem)" in _CSS
+    # The lens and the island reuse the menu's classes: no copy of their material here.
+    block = _CSS[_CSS.index("Round 2 (Deivid, 2026-11-14)") :]
+    assert "backdrop-filter" not in block
+    stack = str(tl.timeline_layout(rx.text("t"), rx.text("a"), rx.text("p")).render())
+    assert "q-tl-stack__actions" in stack and "q-tl-stack__panel" in stack
+
+
+def test_blocks_show_a_thumb() -> None:
+    rendered = _rendered()
+    assert "q-thumb" in rendered
+
+
+def test_script_exists_and_owns_the_playhead() -> None:
+    script = (_ASSETS / tl.SCRIPT).read_text(encoding="utf-8")
+    assert "window.__qTimeline" in script
+    assert "aria-valuetext" in script and "--tl-t" in script and "scrollLeft" in script
+
+
+def test_css_phone_scale_handles_and_desktop_switch() -> None:
+    assert "container: q-tl / inline-size" in _CSS
+    assert "@container q-tl (min-width: 52rem)" in _CSS
+    assert "padding-inline: 50cqw" in _CSS  # the playhead can sit on 0:00 and the end
+    assert ".q-tl__scroller {\n  overflow-x: auto;" in _CSS
+    handle = _CSS[_CSS.index(".q-tl__handle {") :]
+    assert "width: 44px;" in handle[: handle.index("}")]
+    assert ".q-tl__lane--media { height: 56px; }" in _CSS
+    assert vm.PX_PER_SECOND == 44
+    # Only theme variables: no hex colour in the timeline's rules.
+    block = _CSS[_CSS.index("── The timeline of «Arma tu video»") :]
+    assert not re.search(r"#[0-9a-fA-F]{3,8}\b", block)
+
+
+# ---------------------------------------------------------------------------------------
+# /design
+# ---------------------------------------------------------------------------------------
+
+
+def test_design_section_renders() -> None:
+    from Qualify import styleguide_page as page
+
+    rendered = str(page._timeline_section().render())
+    assert page.TIMELINE_ANCHOR in rendered
+    assert _has(rendered, "Línea de tiempo") and "q-tl" in rendered
+    assert "q-tl-actions" in rendered
+
+
+def test_design_sample_data_matches_the_brief() -> None:
+    from Qualify import styleguide_page as page
+
+    rows = vm.media_blocks(page._TL_MEDIA)
+    assert [r["kind"] for r in rows] == ["video", "video", "photo"]
+    assert rows[1]["name"] == "Video 2 de 3, usas de 0:04 a 0:09, dura 5 s"
+    kinds = {item["kind"] for item in page._TL_OVERLAYS}
+    assert kinds == {"text", "effect"}
+
+
+def test_keys_reach_the_screen_through_one_hidden_button() -> None:
+    rendered = _rendered()
+    assert "data-tl-key-trigger" in rendered and tl.KEY_GLOBAL in rendered
+    script = (_ASSETS / tl.SCRIPT).read_text(encoding="utf-8")
+    assert "data-tl-key-trigger" in script and "__qTimelineKey" in script
+    assert "ArrowLeft" in script and "Escape" in script and "preventDefault" in script

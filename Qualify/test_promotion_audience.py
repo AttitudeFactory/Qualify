@@ -60,6 +60,25 @@ def test_manual_empty_is_not_silently_converted_to_automatic() -> None:
     assert "al menos" in step_problem(form, 3)
 
 
+@pytest.mark.parametrize(
+    "radius,message",
+    [
+        ("", ""),
+        ("17", ""),
+        ("80", ""),
+        ("10", "Tu borrador tiene 10 km alrededor de la ciudad y ahora el mínimo es 17 km"),
+        ("81", "Escribe entre 17 y 80 km"),
+        ("abc", "Escribe entre 17 y 80 km"),
+    ],
+)
+def test_city_distance_follows_the_17_to_80_km_rule(radius: str, message: str) -> None:
+    form = replace(valid_form(), location_kind="city", radius_km=radius)
+    problem = step_problem(form, 3)
+    assert (message in problem) if message else problem == ""
+    aged = replace(form, radius_km="", age_min="70")
+    assert step_problem(aged, 3) == "Revisa las edades: entre 18 y 65."
+
+
 def test_placements_invalidate_old_estimate_and_remote_consent() -> None:
     context = AudienceContext()
     context.form = replace(context.form, placement_mode="manual")

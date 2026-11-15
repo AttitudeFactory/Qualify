@@ -523,11 +523,43 @@ async def test_old_probe_cannot_apply_after_same_key_reopens_for_another_product
 def test_extend_reason_says_only_what_applies_to_the_part() -> None:
     entry = vm.new_entry()
     first, later = (
-        vm.options(entry, at, images=[PHOTO], videos=[], audios=[], durations={})[2]["reason"]
+        vm.options(entry, at, images=[PHOTO], videos=[], audios=[], durations={}, extend_on=False)[
+            2
+        ]["reason"]
         for at in (1, 2)
     )
     assert first == "La primera parte no tiene una anterior."
-    assert later == "Por ahora no está disponible. Hazla nueva."
+    assert later == "Por ahora no está disponible. Elige otra forma."
+
+
+def _split_tail(**plan: Any) -> dict[str, Any]:
+    entry = vm.new_entry()
+    entry["plan"] = {**entry["plan"], "mode": "extend", "original_mode": "extend", **plan}
+    return entry
+
+
+def test_extend_is_offered_only_to_a_split_part_after_the_first_when_switched_on() -> None:
+    """VE-13 (m-24921070): «Sigue a la anterior» only where the backend makes it."""
+
+    def reason(entry: dict[str, Any], at: int, on: bool) -> str:
+        return vm.options(
+            entry, at, images=[PHOTO], videos=[], audios=[], durations={}, extend_on=on
+        )[2]["reason"]
+
+    tail = _split_tail()
+    assert reason(tail, 2, True) == ""
+    assert reason(tail, 1, True) == vm.EXTEND_FIRST_REASON  # never the first part
+    assert reason(tail, 2, False) == vm.EXTEND_REASON  # switched off: not yet
+    assert reason(_split_tail(mode="reference"), 3, True) == ""  # born extend, made new
+    assert reason(vm.new_entry(), 2, True) == vm.EXTEND_SPLIT_ONLY_REASON
+
+
+def test_a_plan_with_extend_parts_is_creatable_only_when_switched_on() -> None:
+    from . import reel_parts_vm as parts
+
+    entries = [vm.new_entry(), _split_tail()]
+    assert parts.unsupported_parts(entries, extend_on=False) == [2]
+    assert parts.unsupported_parts(entries, extend_on=True) == []
 
 
 def test_own_media_section_opens_by_itself_only_without_an_original_video() -> None:

@@ -48,6 +48,7 @@ from qualify_api.creative.draft_mode import (
 )
 from qualify_api.creative.final_video import PreviewUse
 from qualify_api.creative.media import LocalMediaStore, R2ReadingMediaStore
+from qualify_api.creative.part_extend import extend_available
 from qualify_api.creative.part_request import parts_preview_use
 from qualify_api.creative.parts import (
     PartsExtendUnavailable,
@@ -539,7 +540,7 @@ def submit_parts_brief(
         raise PartsUnavailable(QUEUE_OFF_TEXT)
     plans = tuple(parts)
     removed = tuple(removed_parts)
-    if any(part.mode == "extend" for part in plans):
+    if not extend_available() and any(part.mode == "extend" for part in plans):
         raise PartsExtendUnavailable()
     check_split_parts_for_tenant(tenant_id=tenant_id, parts=(*plans, *removed))
     check_parts_media_owned(tenant_id, (*plans, *removed))

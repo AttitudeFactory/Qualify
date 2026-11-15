@@ -20,6 +20,12 @@ And it burns a talking video's subtitles in (`subtitle`, m-24828920): the same g
 the video's own size, each subtitle a small layer shown only between its two times, the
 soundtrack copied as it is.
 
+Every one of them shows a phone video upright (EF-01): a clip whose container carries a
+display matrix (an iPhone `.mov`: 1920×1080 stored, turned 90°) is turned in its pixels
+inside the filter graph (`upright.upright_filters`: FFmpeg's `transpose`, in YUV) before
+the crop, and every size is the one shown, not the one stored. A turn that is not a
+right angle is refused as `VideoSourceError("rotation_unsupported")`.
+
 Behind a Protocol so the media producer's tests never encode a video.
 """
 
@@ -33,6 +39,9 @@ from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
 from typing import Any, Protocol
+
+from qualify_creative.video._source import frame_rotation
+from qualify_creative.video.upright import upright_filters, upright_size
 
 #: Instagram plays a carousel video of up to 60 s.
 MAX_SLIDE_SECONDS = 60.0
@@ -231,14 +240,17 @@ class PyAvVideoFitter:
     ) -> FittedVideo:
         """A clip's reference video made light for ModelArk to fetch: its own aspect at
         `short_side` (never upscaled), at most `max_fps`, H.264 crf 23, no audio, cut at
-        `max_seconds` (None: its whole length — a reel replica keeps its duration)."""
+        `max_seconds` (None: its whole length — a reel replica keeps its duration).
+        Upright: a phone's display rotation is applied, so the aspect is the one shown."""
         import av  # noqa: PLC0415 — lazy, like every other encode here
 
+        rotation = _source_rotation(data)
         with av.open(io.BytesIO(data)) as source:
             if not source.streams.video:
                 raise ValueError("the file has no video stream")
             context = source.streams.video[0].codec_context
-            size = reference_size(context.width, context.height, short_side)
+            shown = upright_size(context.width, context.height, rotation)
+            size = reference_size(*shown, short_side)
         with tempfile.TemporaryDirectory(prefix="qualify-reference-") as tmp:
             out = Path(tmp) / "reference.mp4"
             frames, rate, poster, size = _encode(
@@ -249,6 +261,7 @@ class PyAvVideoFitter:
                 math.inf if max_seconds is None else max_seconds,
                 x264=REFERENCE_X264,
                 max_fps=max_fps,
+                rotation=rotation,
             )
             encoded = out.read_bytes()
         if not frames:
@@ -302,6 +315,20 @@ def _encode_still(
     return total, poster.getvalue()
 
 
+def _source_rotation(data: bytes) -> int:
+    """The display rotation of `data`'s first decoded frame (`frame_rotation`: 0/90/180/
+    270, anything else refused); 0 when the file has no video frame — the encode then
+    fails on that as before."""
+    import av  # noqa: PLC0415
+
+    with av.open(io.BytesIO(data)) as source:
+        if not source.streams.video:
+            return 0
+        for frame in source.decode(source.streams.video[0]):
+            return frame_rotation(frame)
+    return 0
+
+
 def _frame_rate(stream: Any) -> Fraction:
     """The source's frame rate, if it is a plausible one (1-120 fps); else the fallback.
     The average rate of a file whose frames all carry time 0 is its frame count per
@@ -348,6 +375,7 @@ def _encode(
     max_fps: int | None = None,
     min_fps: int | None = None,
     raw_rate_cap: bool = False,
+    rotation: int | None = None,
 ) -> tuple[int, float, bytes | None, tuple[int, int]]:
     """Encode `data` at `size` (`None`: its own, made even) — the frame count, the rate,
     the first frame as JPEG and the size it was encoded at. `max_fps`: a faster source
@@ -355,17 +383,26 @@ def _encode(
     (the same filter repeats frames); otherwise the source keeps its own rate.
     `raw_rate_cap`: `max_fps` also applies to the stream's declared rate when
     `_frame_rate` discards it as implausible (> 120 fps) — the `fps` filter retimes by
-    the frames' own timestamps, so a real 240 fps clip keeps its length."""
+    the frames' own timestamps, so a real 240 fps clip keeps its length.
+    `rotation`: the source's display rotation when the caller already read it (None:
+    read here); a turned source is turned by the graph's first filters
+    (`upright_filters`, after the `fps` resample so dropped frames are never turned),
+    before the crop and the scale, which are worked out on the turned size."""
     import av  # noqa: PLC0415 — lazy: only a carousel's video slides need it
 
+    if rotation is None:
+        rotation = _source_rotation(data)
+    # validated here, before anything is opened: `rotation_unsupported` for a bad turn
+    turn_filters = upright_filters(rotation)
     frames = 0
     poster: list[bytes] = []
     with av.open(io.BytesIO(data)) as source:
         if not source.streams.video:
             raise ValueError("the file has no video stream")
         stream = source.streams.video[0]
+        stored = (stream.codec_context.width, stream.codec_context.height)
         if size is None:
-            own_w, own_h = stream.codec_context.width, stream.codec_context.height
+            own_w, own_h = upright_size(*stored, rotation)
             size = (own_w - own_w % 2, own_h - own_h % 2)
         width, height = size
         rate = _frame_rate(stream)
@@ -400,12 +437,18 @@ def _encode(
             scale = graph.add("scale", f"{width}:{height}")
             to_yuv = graph.add("format", "yuv420p")
             frames_out = graph.add("buffersink")
+            head = video_in
             if resample:
                 fps = graph.add("fps", str(target))
-                video_in.link_to(fps)
-                fps.link_to(crop)
-            else:
-                video_in.link_to(crop)
+                head.link_to(fps)
+                head = fps
+            # EF-01: the display rotation, in YUV, on the frames the `fps` filter kept
+            for spec in turn_filters:
+                name, _, args = spec.partition("=")
+                turn = graph.add(name, args or None)
+                head.link_to(turn)
+                head = turn
+            head.link_to(crop)
             crop.link_to(scale)
             layer_in = None
             last = scale

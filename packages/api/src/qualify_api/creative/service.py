@@ -149,6 +149,7 @@ from qualify_api.creative.vendor_tasks import (
     snapshot,
 )
 from qualify_api.creative.versions import visible_version
+from qualify_api.creative.video_pipeline.recipe import refuse_unbuilt_recipe
 from qualify_api.plans.packs import legacy_seconds_per_video
 
 logger = logging.getLogger(__name__)
@@ -831,6 +832,15 @@ def _draft_record(row: orm.ContentDraft) -> DraftRecord:
     )
 
 
+def _without_server_effects_version(brief: ContentBrief) -> ContentBrief:
+    """EF-02: `effects_pipeline_version` is the server's (like `prompt_compiler_version`):
+    whatever a caller sent, a new execution starts at 0 until EF-06 stamps it."""
+    if brief.media.effects_pipeline_version == 0:
+        return brief
+    media = brief.media.model_copy(update={"effects_pipeline_version": 0})
+    return brief.model_copy(update={"media": media})
+
+
 def check_part_link(
     brief: ContentBrief, parent_draft_id: UUID | None, part_index: int | None
 ) -> None:
@@ -1456,6 +1466,18 @@ class PostgresContentRepository:
             # (a savepoint); bases that end up missing get ONE alert, sent in the background
             # after the commit, below
             missing_bases = record_base_photos(
+                session,
+                tenant_id=tenant_id,
+                brand_id=brand_id,
+                draft_id=draft_id,
+                version_id=version.id,
+                media=media,
+            )
+            # m-25017283: the ROOT text layer of each still that carries one (none while
+            # QUALIFY_IMAGE_LAYER is off), pointing at the base row above; never fails it
+            from qualify_api.creative.layer_store import record_layers
+
+            record_layers(
                 session,
                 tenant_id=tenant_id,
                 brand_id=brand_id,
@@ -2248,6 +2270,10 @@ class ContentService:
         blocked = check_route_allowed(route=brief.image_route, policy=kit.image_policy)
         if blocked is not None:
             raise RouteBlockedByPolicy(blocked.detail)
+        # EF-02: a part's recipe (effects, stretches, `local`) checked before its row,
+        # charge or vendor call; the effects pipeline version is the server's to stamp
+        refuse_unbuilt_recipe(brief, tenant_id=tenant_id)
+        brief = _without_server_effects_version(brief)
         prepare_new = getattr(self._media, "prepare_new_brief", None)
         if callable(prepare_new):
             brief = prepare_new(brief, kit)
@@ -2311,6 +2337,10 @@ class ContentService:
             # call the platform pays too — the same daily cap per business as «Pedir otra
             # versión», before any row exists (a retry with the same key returned above)
             check_parent_text_cap(self._repo, tenant_id=tenant_id)
+        # EF-02: the recipe (effects, video text, stretches of own video, `local`) is
+        # checked against the effects library before any row, charge or vendor call —
+        # `local` fails closed until EF-05/EF-06 (`RecipeRefused`, codes in `problems`)
+        refuse_unbuilt_recipe(brief, tenant_id=tenant_id)
         received_middle = len(brief.media.clip_image_keys)
         # Caller cannot select an internal compiler version through MediaInputs.
         brief = brief.model_copy(
@@ -2321,6 +2351,8 @@ class ContentService:
                         "prompt_compiler_version": 0,
                         "script_word_budget": None,
                         "script_rewrites": 0,
+                        # EF-02: server-owned, like the prompt compiler's
+                        "effects_pipeline_version": 0,
                         # m-24820842: the Brand Kit wording option belongs to reel replicas only
                         "replication_brand_text": brief.media.replication_brand_text
                         and brief.kind is ContentKind.CLIP

@@ -1,0 +1,125 @@
+{
+  "_doc": "The closed catalog of image and carousel layouts, version 1 (docs/catalogo-disenos-imagen-carrusel.md, approved 2026-11-14; ADR 49 §2 item 2). ONE data file read by the Python LayerSpec (qualify_creative.layer_spec) and by the Remotion composition (packages/render, m-25017285): never two copies. Character limits are [H] until m-25017292 measures them; a change here is a new layout_version. Slots: [max_chars, max_lines]; null = the slot does not exist in that layout and format.",
+  "layout_version": 1,
+  "formats": ["4:5", "1:1", "9:16"],
+  "layouts": {
+    "photo_only": {
+      "formats": ["4:5", "1:1", "9:16"],
+      "anchors": [],
+      "container_color": false,
+      "accent_word": false,
+      "price": false,
+      "info_kinds": [],
+      "slots": {}
+    },
+    "plate": {
+      "formats": ["4:5", "1:1", "9:16"],
+      "anchors": ["top_left", "top_right", "bottom_left", "bottom_right", "top_center", "bottom_center"],
+      "container_color": true,
+      "accent_word": true,
+      "price": true,
+      "info_kinds": [],
+      "slots": {
+        "title": {"4:5": [28, 2], "1:1": [24, 2], "9:16": [28, 2]},
+        "subtitle": {"4:5": [60, 2], "1:1": [44, 2], "9:16": [60, 2]},
+        "call_phrase": {"4:5": [26, 1], "1:1": [24, 1], "9:16": [26, 1]}
+      }
+    },
+    "scrim": {
+      "formats": ["4:5", "1:1", "9:16"],
+      "anchors": ["top", "bottom"],
+      "container_color": false,
+      "accent_word": false,
+      "price": false,
+      "info_kinds": [],
+      "slots": {
+        "title": {"4:5": [32, 2], "1:1": [26, 2], "9:16": [32, 2]},
+        "subtitle": {"4:5": [56, 2], "1:1": [44, 1], "9:16": [56, 2]},
+        "call_phrase": {"4:5": [26, 1], "1:1": null, "9:16": [26, 1]}
+      }
+    },
+    "band": {
+      "formats": ["4:5", "1:1", "9:16"],
+      "anchors": ["top", "bottom"],
+      "container_color": true,
+      "accent_word": true,
+      "price": true,
+      "info_kinds": [],
+      "slots": {
+        "title": {"4:5": [36, 2], "1:1": [30, 2], "9:16": [36, 2]},
+        "subtitle": {"4:5": [70, 2], "1:1": [50, 1], "9:16": [70, 2]},
+        "call_phrase": {"4:5": [28, 1], "1:1": [28, 1], "9:16": [28, 1]}
+      },
+      "rules": ["1:1: call_phrase only when there is no subtitle"]
+    },
+    "info_card": {
+      "formats": ["4:5", "1:1", "9:16"],
+      "anchors": [],
+      "container_color": true,
+      "accent_word": true,
+      "price": false,
+      "info_kinds": ["location", "hours", "payment", "products", "contact"],
+      "info_blocks": {
+        "4:5": {"min": 1, "max": 4, "max_with_photo": 3},
+        "1:1": {"min": 1, "max": 3, "max_with_photo": 2},
+        "9:16": {"min": 1, "max": 4, "max_with_photo": 4}
+      },
+      "info_value": {"4:5": [60, 2], "1:1": [44, 2], "9:16": [60, 3]},
+      "slots": {
+        "title": {"4:5": [30, 2], "1:1": [24, 1], "9:16": [30, 2]},
+        "subtitle": {"4:5": null, "1:1": null, "9:16": [50, 1]},
+        "call_phrase": {"4:5": null, "1:1": null, "9:16": [28, 1]}
+      },
+      "rules": ["title optional with a single block", "price only inside the products block, up to 3"]
+    },
+    "brand_fill": {
+      "formats": ["4:5", "1:1", "9:16"],
+      "anchors": [],
+      "container_color": true,
+      "accent_word": true,
+      "price": false,
+      "info_kinds": ["contact", "location", "hours"],
+      "info_blocks": {
+        "4:5": {"min": 0, "max": 1, "max_with_photo": 1},
+        "1:1": {"min": 0, "max": 1, "max_with_photo": 1},
+        "9:16": {"min": 0, "max": 2, "max_with_photo": 2}
+      },
+      "info_value": {"4:5": [60, 2], "1:1": [60, 2], "9:16": [60, 3]},
+      "slots": {
+        "title": {"4:5": [60, 3], "1:1": [48, 3], "9:16": [60, 4]},
+        "subtitle": {"4:5": [110, 3], "1:1": [80, 2], "9:16": [110, 3]},
+        "call_phrase": {"4:5": [28, 1], "1:1": [28, 1], "9:16": [28, 1]}
+      }
+    },
+    "highlight_circle": {
+      "formats": ["9:16"],
+      "anchors": [],
+      "container_color": true,
+      "accent_word": false,
+      "price": false,
+      "info_kinds": [],
+      "slots": {},
+      "highlight_word": [9, 1],
+      "icon_ids": [
+        "utensils", "ice-cream-cone", "map-pin", "clock", "wallet", "star",
+        "message-circle", "shopping-bag", "home", "plane", "gift", "heart"
+      ]
+    }
+  },
+  "info_blocks": {
+    "location": {"label": "Dónde estamos", "icon": "map-pin"},
+    "hours": {"label": "Horario", "icon": "clock"},
+    "payment": {"label": "Formas de pago", "icon": "wallet"},
+    "products": {"label": "Lo más pedido", "icon": "utensils", "icon_other": "shopping-bag"},
+    "contact": {"label": "Pedidos", "icon": "message-circle"}
+  },
+  "carousel_roles": {
+    "cover": ["plate", "band", "scrim", "brand_fill"],
+    "body": ["plate", "band", "scrim", "photo_only", "info_card"],
+    "closing": ["brand_fill", "band"]
+  },
+  "forbidden_titles": [
+    "ubicación", "horario", "horarios", "métodos de pago", "productos", "promoción",
+    "información", "menú"
+  ]
+}

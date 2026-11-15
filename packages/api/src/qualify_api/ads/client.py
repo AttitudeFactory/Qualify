@@ -534,7 +534,12 @@ class MarketingClient:
         return _page(await self._request("GET", f"{self._account}/targetingsearch", params))
 
     async def audience_search(self, *, params: Payload) -> MarketingPage:
-        if params.get("type") not in {"adgeolocation", "adinterest", "adinterestsuggestion"}:
+        if params.get("type") not in {
+            "adgeolocation",
+            "adinterest",
+            "adinterestsuggestion",
+            "targetingoptionstatus",
+        }:
             raise ValueError("unsupported audience search")
         return _page(await self._request("GET", "search", params))
 

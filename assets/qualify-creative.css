@@ -811,3 +811,490 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
   box-shadow: inset 0 0 0 1px var(--gray-a6);
   color: var(--gray-10);
 }
+
+/* ── «Arma tu video» (ED-01…ED-05): the Clip's first step as an editor ─────────────
+   The live preview on top (fixed while the tools scroll, ~36svh tall; ~20svh while a
+   field of the editor has the focus, so the keyboard leaves room), the card «Tu video»,
+   then the tools (`.q-edit-tools` on the `lq-segmented` of `.q-source-seg`). Preview and
+   tools sit side by side only when the STEP is wide enough (`.q-edit-host` is the size
+   container, never the window: a narrow desktop with the side panel stacks them).
+   `ui.edit_preview` + `assets/edit-preview.js`. */
+.q-edit-host { container: edit-host / inline-size; width: 100%; min-width: 0; }
+.q-edit { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-4); width: 100%; min-width: 0; }
+.q-edit__preview {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  padding-block: var(--space-2);
+  background: var(--color-panel-solid);
+}
+.q-edit__main {
+  container: edit-main / inline-size;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+@container edit-host (min-width: 46rem) {
+  .q-edit { grid-template-columns: minmax(15rem, 18rem) minmax(0, 1fr); align-items: start; }
+  .q-edit__preview { top: var(--space-3); background: transparent; padding-block: 0; }
+  .q-edit-preview__frame { height: auto; width: 100%; max-height: 70vh; }
+}
+/* a field of the editor with the focus (the keyboard is up on a phone): the frame
+   shrinks and the note hides, only while stacked */
+@container edit-host (max-width: 45.99rem) {
+  .q-edit:has(.q-edit__main input:focus, .q-edit__main textarea:focus) .q-edit-preview__frame {
+    height: 20svh;
+  }
+  .q-edit:has(.q-edit__main input:focus, .q-edit__main textarea:focus) .q-edit-preview__note {
+    display: none;
+  }
+}
+
+/* The tools: the chosen one's name and the others' icon (`.q-source-seg`) while the
+   tools' column is narrow (a phone; the 305 px column at 1280); every name from 30rem. */
+@container edit-main (min-width: 30rem) {
+  .radix-themes .q-edit-tools .rt-SegmentedControlItem[data-state="off"] .q-source-seg__text { display: inline; }
+}
+
+/* «Cortar»: Radix's two-handle slider, each handle a 44 px target around a 22 px dot. */
+/* Radix's PRIMITIVE slider ships no styles at all (Reflex's `add_style` does not reach
+   it here): the root, the track and the range get the layout Radix expects — a relative
+   flex row, a growing relative track, an absolute full-height range. Provisional: ED-03
+   retires it. */
+.q-edit-cut.q-edit-cut {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: 44px;
+  user-select: none;
+  touch-action: none;
+}
+.q-edit-cut .q-edit-cut__track {
+  position: relative;
+  flex-grow: 1;
+  height: 6px;
+  overflow: hidden;
+  border-radius: 9999px;
+  background-color: var(--gray-a6);
+}
+.q-edit-cut .q-edit-cut__range {
+  position: absolute;
+  height: 100%;
+  border-radius: 9999px;
+  background-color: var(--accent-9);
+}
+.q-edit-cut .q-edit-cut__thumb,
+.q-edit-cut .q-edit-cut__thumb:hover,
+.q-edit-cut .q-edit-cut__thumb:focus {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 999px;
+  background-color: transparent;
+  box-shadow: none;
+  cursor: grab;
+}
+.q-edit-cut .q-edit-cut__thumb::after {
+  content: "";
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  background: var(--accent-9);
+  box-shadow: 0 0 0 3px var(--color-panel-solid), 0 1px 4px var(--black-a6);
+}
+.q-edit-cut .q-edit-cut__thumb:focus-visible { outline: 2px solid var(--accent-8); outline-offset: -4px; }
+
+/* The live line of «Deshacer» (D-E6). */
+.q-edit-undo { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); width: 100%; min-height: 44px; }
+.q-edit__panel { display: flex; flex-direction: column; gap: var(--space-3); min-width: 0; }
+
+/* ── The live edit preview (ED-01, m-25026605): the video's stretch, turned and cropped to
+   9:16, with the text and the effect over it — all in the browser, nothing decoded on the
+   server. `ui.edit_preview` + `assets/edit-preview.js`. ───────────────────────────── */
+.q-edit-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.q-edit-preview { display: flex; flex-direction: column; align-items: center; gap: var(--space-2); width: 100%; }
+.q-edit-preview__frame {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  container-type: inline-size;
+  aspect-ratio: 9 / 16;
+  height: 36svh;
+  max-width: 100%;
+  border-radius: var(--q-radius-control);
+  background: black;
+  box-shadow: inset 0 0 0 1px var(--q-card-edge);
+}
+.q-edit-preview__poster,
+.q-edit-preview__video {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform: translate(-50%, -50%);
+}
+.q-edit-preview__video { z-index: 1; background: black; }
+/* A quarter turn: the video is laid out with its sides swapped (16/9 of the frame's
+   width, 9/16 of its height) and turned, so it still fills the 9:16 frame. */
+.q-edit-preview__frame[data-rotate="90"] .q-edit-preview__video,
+.q-edit-preview__frame[data-rotate="270"] .q-edit-preview__video {
+  width: 177.7778%;
+  height: 56.25%;
+}
+.q-edit-preview__frame[data-rotate="90"] .q-edit-preview__video { transform: translate(-50%, -50%) rotate(90deg); }
+.q-edit-preview__frame[data-rotate="180"] .q-edit-preview__video { transform: translate(-50%, -50%) rotate(180deg); }
+.q-edit-preview__frame[data-rotate="270"] .q-edit-preview__video { transform: translate(-50%, -50%) rotate(270deg); }
+.q-edit-preview__effect {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  mix-blend-mode: screen;
+  pointer-events: none;
+}
+.q-edit-preview__effect[data-edit-effect-off] { display: none; }
+.q-edit-preview__empty {
+  position: absolute;
+  inset: 0;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  color: var(--gray-11);
+  background: var(--q-field-fill);
+}
+/* The owner's text: #674's `scrim` layout (m-25017283, `layer_spec/catalog_v1.json`,
+   docs/catalogo-disenos-imagen-carrusel.md §1.1, §1.3, §1.4, §2.3) scaled to the frame —
+   white text, no outline nor text shadow, over a black gradient 0 → 75 % across 45 % of
+   the height of its side; inside the 9:16 safe zone (x 64–1016, y 270–1536 of
+   1080×1920: 5.93 %, 14.06 % and 20 %); bold, 112 px → 76 px of 1080 (10.37 → 7.04 cqw).
+   The catalog has no middle for `scrim`: «En el medio» centres the same gradient. */
+.q-edit-preview__text {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 3;
+  display: flex;
+  justify-content: center;
+  padding-inline: 5.93%;
+  pointer-events: none;
+}
+.q-edit-preview__text[data-place="top"] {
+  top: 0;
+  height: 45%;
+  align-items: flex-start;
+  padding-top: 14.06%;
+  background: linear-gradient(to bottom, rgba(0, 0, 0, 0.75), rgba(0, 0, 0, 0.6) 60%, transparent);
+}
+.q-edit-preview__text[data-place="middle"] {
+  top: 27.5%;
+  height: 45%;
+  align-items: center;
+  background: linear-gradient(to bottom, transparent, rgba(0, 0, 0, 0.6) 30%, rgba(0, 0, 0, 0.75) 50%, rgba(0, 0, 0, 0.6) 70%, transparent);
+}
+.q-edit-preview__text[data-place="bottom"] {
+  bottom: 0;
+  height: 45%;
+  align-items: flex-end;
+  padding-bottom: 20%;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.75), rgba(0, 0, 0, 0.6) 60%, transparent);
+}
+.q-edit-preview__text-line {
+  margin: 0;
+  max-width: 100%;
+  font-family: var(--heading-font-family, inherit);
+  font-size: 10.37cqw;
+  font-weight: 700;
+  line-height: 1.15;
+  text-align: center;
+  color: white;
+  overflow-wrap: break-word;
+}
+.q-edit-preview__text[data-long="true"] .q-edit-preview__text-line { font-size: 7.04cqw; }
+.q-edit-preview__play {
+  z-index: 4;
+  top: 50%;
+  left: 50%;
+  width: 3rem;
+  height: 3rem;
+  transform: translate(-50%, -50%);
+}
+.q-edit-preview__play::after { content: ""; position: absolute; inset: -0.25rem; }
+.q-edit-preview__glyph-pause { display: none; }
+.q-edit-preview[data-edit-state="playing"] .q-edit-preview__glyph-play { display: none; }
+.q-edit-preview[data-edit-state="playing"] .q-edit-preview__glyph-pause { display: block; }
+.q-edit-preview[data-edit-state="playing"] .q-edit-preview__play { opacity: 0.55; }
+.q-edit-preview .q-edit-preview__sound { display: flex; z-index: 4; }
+.q-edit-preview[data-edit-state="broken"] .q-edit-preview__video,
+.q-edit-preview[data-edit-state="broken"] .q-edit-preview__play,
+.q-edit-preview[data-edit-state="broken"] .q-edit-preview__sound,
+.q-edit-preview[data-edit-state="broken"] .q-edit-preview__time { display: none; }
+.q-edit-preview__time { font-size: var(--font-size-1); font-weight: 600; }
+.q-edit-preview__time:empty { display: none; }
+.q-edit-preview__broken { display: none; margin: 0; font-size: var(--font-size-1); color: var(--gray-11); text-align: center; }
+.q-edit-preview[data-edit-state="broken"] .q-edit-preview__broken { display: block; }
+
+/* ── The timeline of «Arma tu video» (ED-00b m-25029104; ED-10 takes it): ruler, three
+   tracks and the playhead. `ui.timeline` + `assets/timeline.js`. Phone by default: 1 s
+   = `--tl-px` (44 px), the tracks slide INSIDE `.q-tl__scroller` under a playhead fixed
+   at the centre (the canvas has half the box of padding on each side, so 0:00 and the
+   end can reach it). From 52rem (832 px) of its OWN width — the step's 900 px of the
+   proposal §1.4 minus the step's padding — the tracks fill the width and the names show.
+   Blocks are placed by their `--b-start` / `--b-len` (seconds); the desktop playhead by
+   `--tl-t` (the script). */
+.q-tl { container: q-tl / inline-size; display: flex; flex-direction: column; gap: var(--space-1); width: 100%; min-width: 0; }
+.q-tl__top { display: flex; justify-content: center; min-height: 1.25rem; }
+.q-tl__clock { font-size: var(--font-size-1); font-weight: 600; font-variant-numeric: tabular-nums; color: var(--gray-12); }
+.q-tl__frame { --tl-mode: phone; position: relative; min-width: 0; }
+.q-tl__names { display: none; }
+.q-tl__scroller {
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+  min-width: 0;
+}
+.q-tl__scroller::-webkit-scrollbar { display: none; }
+.q-tl__canvas {
+  position: relative;
+  box-sizing: content-box;
+  width: calc(var(--tl-total) * var(--tl-px));
+  padding-inline: 50cqw;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.q-tl__ruler { position: relative; height: 24px; }
+.q-tl__tick {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--b-start) * var(--tl-px));
+  padding-left: 4px;
+  border-left: 1px solid var(--gray-a6);
+  font-size: var(--font-size-1);
+  line-height: 24px;
+  font-variant-numeric: tabular-nums;
+  color: var(--gray-11);
+  white-space: nowrap;
+}
+/* The playhead's slider: over the ruler, invisible (the line is the picture). On a phone
+   the finger slides the tracks instead, so only the keyboard reaches it. */
+.q-tl__scrub {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 3;
+  width: 100%;
+  height: 24px;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+  pointer-events: none;
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+}
+.q-tl__scrub::-webkit-slider-thumb { -webkit-appearance: none; width: 2px; height: 24px; }
+.q-tl__scrub::-moz-range-thumb { width: 2px; height: 24px; border: 0; }
+.q-tl__lane { position: relative; height: 44px; border-radius: var(--q-radius-control); background: var(--gray-a2); }
+.q-tl__lane--media { height: 56px; }
+.q-tl__item {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--b-start) * var(--tl-px));
+  width: calc(var(--b-len) * var(--tl-px));
+  padding-inline: 1px;
+  box-sizing: border-box;
+}
+.q-tl__item { z-index: 2; }
+.q-tl__item[data-tl-chosen="true"] { z-index: 3; }
+.q-tl__block {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  padding: 0 var(--space-2);
+  overflow: hidden;
+  border: 1px solid var(--accent-a6);
+  border-radius: var(--q-radius-control);
+  background: var(--accent-a4);
+  color: var(--accent-12);
+  font: inherit;
+  font-size: var(--font-size-1);
+  font-weight: 600;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.q-tl__block[data-tl-block="photo"] { border-color: var(--gray-a6); background: var(--gray-a4); color: var(--gray-12); }
+.q-tl__block[data-tl-block="text"] { border-color: var(--gray-a7); background: var(--gray-a3); color: var(--gray-12); }
+.q-tl__block[data-tl-block="effect"] { border-style: dashed; border-color: var(--accent-a7); background: var(--accent-a3); }
+.q-tl__block[aria-pressed="true"] { border: 2px solid var(--accent-9); }
+.q-tl__block:focus-visible { outline: 2px solid var(--accent-8); outline-offset: -4px; }
+.q-tl__icon { display: inline-flex; flex: none; }
+.q-tl__aa { font-weight: 700; }
+.q-tl__label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* The chosen block's handles: 44 px wide and as tall as the track, OUTSIDE the block so
+   the finger never covers what it trims (§3.8). */
+.q-tl__handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  width: 44px;
+  cursor: ew-resize;
+  touch-action: none;
+}
+.q-tl__handle--start { right: 100%; justify-content: flex-end; }
+.q-tl__handle--end { left: 100%; justify-content: flex-start; }
+.q-tl__grip {
+  width: 12px;
+  height: 70%;
+  border-radius: 4px;
+  background: var(--accent-9);
+  box-shadow: 0 0 0 2px var(--color-panel-solid);
+}
+.q-tl__handle:focus-visible { outline: 2px solid var(--accent-8); outline-offset: -2px; border-radius: var(--q-radius-control); }
+.q-tl__empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  padding: 0 var(--space-2);
+  border: 1px dashed var(--gray-a7);
+  border-radius: var(--q-radius-control);
+  font-size: var(--font-size-1);
+  color: var(--gray-11);
+  white-space: nowrap;
+}
+.q-tl__hint-desk { display: none; }
+.q-tl__head {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 4;
+  width: 2px;
+  transform: translateX(-1px);
+  background: var(--accent-9);
+  pointer-events: none;
+}
+.q-tl__head::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  transform: translateX(-50%);
+  background: var(--accent-9);
+}
+.q-tl__head--fixed { left: 50%; }
+.q-tl__head--move { display: none; left: calc(var(--tl-t, 0) / var(--tl-total) * 100%); }
+.q-tl:has(.q-tl__scrub:focus-visible) .q-tl__head { outline: 2px solid var(--accent-8); outline-offset: 2px; }
+.q-tl:has(.q-tl__scrub:focus-visible) .q-tl__clock { text-decoration: underline; }
+.q-tl__status { min-height: 1.25rem; margin: 0; font-size: var(--font-size-1); color: var(--gray-11); }
+
+@container q-tl (min-width: 52rem) {
+  .q-tl__top { justify-content: flex-end; }
+  .q-tl__frame { --tl-mode: desk; display: grid; grid-template-columns: 7rem minmax(0, 1fr); }
+  .q-tl__names { display: flex; flex-direction: column; gap: 4px; }
+  .q-tl__name { display: flex; align-items: center; height: 44px; font-size: var(--font-size-1); font-weight: 600; color: var(--gray-11); }
+  .q-tl__name--ruler { height: 24px; }
+  .q-tl__name--media { height: 56px; }
+  .q-tl__scroller { overflow: visible; padding-inline: 2.75rem; }
+  .q-tl__canvas { width: auto; padding-inline: 0; }
+  .q-tl__tick { left: calc(var(--b-start) / var(--tl-total) * 100%); }
+  .q-tl__item { left: calc(var(--b-start) / var(--tl-total) * 100%); width: calc(var(--b-len) / var(--tl-total) * 100%); }
+  .q-tl__scrub { pointer-events: auto; }
+  .q-tl__head--fixed { display: none; }
+  .q-tl__head--move { display: block; }
+  .q-tl__hint-phone { display: none; }
+  .q-tl__hint-desk { display: inline; }
+}
+
+/* The action bar and the chosen block's panel: every target ≥ 44 px, 8 px from the
+   tracks (§3.8). */
+.q-tl-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr));
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  width: 100%;
+}
+.q-tl-actions .rt-Button,
+.q-tl-panel .rt-Button { min-height: 44px; height: auto; white-space: normal; }
+.q-tl-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-3);
+  border: 1px solid var(--gray-a5);
+  border-radius: var(--q-radius-card);
+  background: var(--gray-a2);
+}
+.q-tl-panel__row { display: flex; align-items: center; gap: var(--space-2); }
+.q-tl-panel__label { min-width: 5.5rem; }
+.q-tl-panel__done { display: flex; justify-content: flex-end; }
+
+/* Round 2 (Deivid, 2026-11-14): the kit's own pieces on the timeline.
+   - The menu's liquid lens (`.q-glass-blob`, assets/qualify.css «Liquid glass menu»)
+     rests UNDER the chosen block and glides to the next one; `assets/timeline.js`
+     places it inside the canvas (blocks z 2, the lens z 1, the tracks below).
+   - The chosen block's bar floats in a glass island (`.q-island`), in the flow: above
+     the tracks on a phone, under them on a desktop (`.q-tl-stack`), never over them.
+   - A video or photo block shows its picture (`media_thumb`), a sped-up video «×10». */
+.q-tl__canvas > .q-glass-blob { z-index: 1; }
+@media (prefers-reduced-motion: reduce) {
+  .q-tl__canvas > .q-glass-blob,
+  .q-tl__canvas > .q-glass-blob .q-glass-blob__surface { transition: none; animation: none; }
+}
+.q-tl__block .q-thumb { flex: none; }
+.q-tl__speed {
+  flex: none;
+  margin-left: auto;
+  padding: 0 var(--space-1);
+  border-radius: var(--q-radius-control);
+  background: var(--accent-a5);
+  font-variant-numeric: tabular-nums;
+}
+.q-tl-stack { container: q-tl-stack / inline-size; display: flex; flex-direction: column; gap: var(--space-3); width: 100%; min-width: 0; }
+.q-tl-stack__actions,
+.q-tl-stack__track,
+.q-tl-stack__panel { min-width: 0; }
+.q-tl-stack .q-tl-actions { margin-top: 0; }
+@container q-tl-stack (min-width: 52rem) {
+  .q-tl-stack__track { order: 1; }
+  .q-tl-stack__actions { order: 2; }
+  .q-tl-stack__panel { order: 3; }
+}
+.q-tl-island { padding: var(--space-2); }
+/* The island's depth layer (`::before`, z 0) is positioned: the buttons go above it. */
+.q-tl-island > * { position: relative; z-index: 1; }
+.q-tl-add { display: flex; align-items: center; min-height: 44px; }
+.q-tl-panel__field { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }

@@ -9,6 +9,8 @@ proof they render.
 
 from __future__ import annotations
 
+from typing import Any
+
 import reflex as rx
 
 from .ui import (
@@ -48,6 +50,7 @@ from .ui import (
     tag,
     tone_badge,
 )
+from .ui import timeline_vm as tl_vm
 from .ui import tokens as T
 from .ui.layout import (
     NAV_BOTTOM,
@@ -65,6 +68,13 @@ from .ui.steps_vm import (
     step_direction,
     step_position,
     visible_steps,
+)
+from .ui.timeline import (
+    timeline,
+    timeline_actions,
+    timeline_layout,
+    timeline_panel,
+    timeline_script,
 )
 
 STEPS_DEMO_ROUTE = "/design/pasos"
@@ -206,6 +216,140 @@ class StepsDemoState(rx.State):
         return rx.redirect("/design")
 
 
+# The timeline's sample (ED-00b m-25029104): fixed data, no files, no network. Two
+# stretches of one source cut in two («Cortar aquí»), a still photo of 2 s (D-T1 = A),
+# two texts and one effect.
+_TL_MEDIA: list[dict[str, Any]] = [
+    {"id": "video-1", "kind": "video", "src_start": 0.0, "src_end": 4.0, "src_len": 15.0},
+    {"id": "video-2", "kind": "video", "src_start": 4.0, "src_end": 9.0, "src_len": 15.0},
+    {"id": "foto-3", "kind": "photo", "dur": 2.0},
+]
+_TL_OVERLAYS: list[dict[str, Any]] = [
+    {"id": "texto-1", "kind": "text", "label": "2×1 hoy", "start": 0.0, "end": 6.0, "place": "top"},
+    {
+        "id": "texto-2",
+        "kind": "text",
+        "label": "Solo en el local",
+        "start": 7.0,
+        "end": 11.0,
+        "place": "bottom",
+    },
+    {"id": "vapor-1", "kind": "effect", "label": "Vapor", "start": 2.0, "end": 9.0},
+]
+# What «Agregar» would open (the sample adds nothing: it says it in the live line).
+_TL_ADD_SAYS = {
+    "media": "Aquí se abriría el cajón de fotos y videos.",
+    "text": "Aquí se abriría el campo para escribir tu texto.",
+    "effect": "Aquí se abriría la lista de efectos.",
+    "idea": "Aquí se abrirían las ideas para tu video.",
+}
+
+
+class TimelineDemoState(rx.State):
+    """The `/design` timeline sample. Nothing tenant-bound, nothing persisted: the
+    chosen block and the keyboard/panel edits of the sample data."""
+
+    media: list[dict[str, Any]] = [dict(item) for item in _TL_MEDIA]
+    overlays: list[dict[str, Any]] = [dict(item) for item in _TL_OVERLAYS]
+    selected: str = ""
+    status: str = ""
+
+    @rx.var
+    def total(self) -> str:
+        return tl_vm.num(tl_vm.total_seconds(self.media))
+
+    @rx.var
+    def media_rows(self) -> list[dict[str, str]]:
+        return tl_vm.media_blocks(self.media)
+
+    @rx.var
+    def text_rows(self) -> list[dict[str, str]]:
+        return tl_vm.overlay_blocks(self.overlays, "text", tl_vm.total_seconds(self.media))
+
+    @rx.var
+    def effect_rows(self) -> list[dict[str, str]]:
+        return tl_vm.overlay_blocks(self.overlays, "effect", tl_vm.total_seconds(self.media))
+
+    @rx.var
+    def tick_rows(self) -> list[dict[str, str]]:
+        return tl_vm.ticks(tl_vm.total_seconds(self.media))
+
+    @rx.var
+    def chosen(self) -> dict[str, str]:
+        total = tl_vm.total_seconds(self.media)
+        rows = (
+            tl_vm.media_blocks(self.media)
+            + tl_vm.overlay_blocks(self.overlays, "text", total)
+            + tl_vm.overlay_blocks(self.overlays, "effect", total)
+        )
+        return tl_vm.find_block(rows, self.selected)
+
+    @rx.var
+    def chosen_kind(self) -> str:
+        return self.chosen.get("kind", "")
+
+    def _is_media(self, block_id: str) -> bool:
+        return any(item["id"] == block_id for item in self.media)
+
+    @rx.event
+    def select(self, block_id: str) -> None:
+        self.selected = "" if self.selected == block_id else block_id
+
+    @rx.event
+    def done(self) -> None:
+        self.selected = ""
+
+    def _nudge(self, block_id: str, edge: str, delta: float) -> None:
+        self.media, self.overlays = tl_vm.nudge(
+            self.media, self.overlays, block_id, edge, float(delta)
+        )
+        self.status = "" if self._is_media(block_id) else tl_vm.timed_text(self.overlays, block_id)
+
+    @rx.event
+    def nudge(self, block_id: str, edge: str, delta: float) -> None:
+        self._nudge(block_id, edge, delta)
+
+    @rx.event
+    def key(self, block_id: str, edge: str, key: str) -> None:
+        """On a block (``edge`` ""): ←/→ move a video or photo one place, or a text or
+        effect ½ s. On a handle: ←/→ move that edge ½ s. Escape lets the block go."""
+        if key == "Escape":
+            self.selected = ""
+            return
+        if key not in ("ArrowLeft", "ArrowRight") or not block_id:
+            return
+        step = -1 if key == "ArrowLeft" else 1
+        if edge in ("start", "end"):
+            self._nudge(block_id, edge, step * tl_vm.STEP_S)
+        elif self._is_media(block_id):
+            self.media = tl_vm.move(self.media, block_id, step)
+            self.status = tl_vm.moved_text(self.media, block_id)
+        else:
+            total = tl_vm.total_seconds(self.media)
+            self.overlays = tl_vm.shift(self.overlays, block_id, step * tl_vm.STEP_S, total)
+            self.status = tl_vm.timed_text(self.overlays, block_id)
+
+    @rx.event
+    def set_speed(self, block_id: str, value: str) -> None:
+        self.media = tl_vm.set_speed(self.media, block_id, str(value))
+
+    @rx.event
+    def set_place(self, block_id: str, value: str) -> None:
+        self.overlays = tl_vm.set_place(self.overlays, block_id, str(value))
+
+    @rx.event
+    def add(self, key: str) -> None:
+        """«Agregar» opens a flow; the sample only says which one."""
+        self.status = _TL_ADD_SAYS.get(key, "")
+
+    @rx.event
+    def restart(self) -> None:
+        self.media = [dict(item) for item in _TL_MEDIA]
+        self.overlays = [dict(item) for item in _TL_OVERLAYS]
+        self.selected = ""
+        self.status = ""
+
+
 _TONES = ["accent", "ok", "warn", "error", "info", "neutral"]
 _TONE_MEANING = {
     "accent": "acción principal, marca",
@@ -279,6 +423,9 @@ def _tone_row(tone: str) -> rx.Component:
         align="center",
         spacing="3",
         width="100%",
+        # 375 px: the badges wrap to a second line instead of pushing <main> sideways
+        flex_wrap="wrap",
+        min_width="0",
     )
 
 
@@ -569,6 +716,8 @@ def _motion_row(name: str, value: str, use: str) -> rx.Component:
         align="center",
         spacing="3",
         width="100%",
+        flex_wrap="wrap",
+        min_width="0",
     )
 
 
@@ -836,6 +985,9 @@ def _table() -> rx.Component:
         ),
         overflow_x="auto",
         width="100%",
+        # a flex child: without min_width 0 the box grows to the table's 605 px
+        min_width="0",
+        max_width="100%",
     )
 
 
@@ -1524,6 +1676,87 @@ def _components_section() -> rx.Component:
     )
 
 
+TIMELINE_ANCHOR = "linea-de-tiempo"
+
+
+def _timeline_section() -> rx.Component:
+    """The «Arma tu video» timeline (ED-00b m-25029104), with fixed sample data: tap a
+    block to choose it (handles, action bar and panel appear), move the playhead (the
+    ruler on desktop, sliding the tracks on a phone, ←/→ on its slider), ←/→ on a block
+    or a handle, «− ½ s / + ½ s» in the panel. Nothing is cut or rendered for real."""
+    s = TimelineDemoState
+    return rx.el.div(
+        section(
+            "Línea de tiempo",
+            rx.text(
+                "Patrón de «Arma tu video» (ED-00b; lo usa ED-10). Datos de ejemplo, sin "
+                "video: dos tramos de un mismo video («Cortar aquí»), una foto quieta de "
+                "2 s (D-T1), dos textos y un efecto. En el celular (menos de 832 px del "
+                "componente) 1 s = 44 px, la pista se desliza bajo el cabezal fijo al "
+                "centro y la página no se mueve de lado; en escritorio la pista ocupa todo "
+                "el ancho y un clic en la regla mueve el cabezal. Toca un bloque: aparecen "
+                "sus tiradores (44 px, por fuera del bloque), su barra y su panel. Con "
+                "teclado: Tab a cada bloque, ←/→ mueve un video o una foto de lugar y corre "
+                "½ s un texto o un efecto; ←/→ en un tirador o en el cabezal = ½ s; Escape "
+                "suelta el bloque. Sin nada elegido, «Agregar» abre sus opciones (en la "
+                "demo solo lo anuncia). La lente de vidrio del menú va debajo del bloque "
+                "elegido y su barra flota en una isla: arriba de la pista en el celular, "
+                "debajo en escritorio. En el panel: «Velocidad» de un video y el lugar de "
+                "un texto. Lo que no hace la demo: arrastrar, cortar de verdad y los "
+                "botones de la barra (sin acción).",
+                size="2",
+                color=T.TEXT_MUTED,
+            ),
+            card(
+                rx.vstack(
+                    timeline_script(),
+                    timeline_layout(
+                        timeline(
+                            media=s.media_rows,
+                            texts=s.text_rows,
+                            effects=s.effect_rows,
+                            ticks=s.tick_rows,
+                            total=s.total,
+                            selected=s.selected,
+                            on_select=s.select,
+                            status=s.status,
+                            on_key=s.key,
+                        ),
+                        timeline_actions(s.chosen_kind, on_add=s.add),
+                        rx.cond(
+                            s.selected != "",
+                            timeline_panel(
+                                s.chosen,
+                                on_nudge=s.nudge,
+                                on_done=s.done,
+                                on_speed=s.set_speed,
+                                on_place=s.set_place,
+                            ),
+                        ),
+                    ),
+                    rx.button(
+                        rx.icon("rotate-ccw", size=T.ICON_SM),
+                        "Volver al ejemplo",
+                        variant="ghost",
+                        color_scheme="gray",
+                        size="1",
+                        on_click=s.restart,
+                    ),
+                    spacing="3",
+                    width="100%",
+                    align_items="stretch",
+                ),
+            ),
+            description="Regla, cabezal, tres pistas, bloque elegido con tiradores, barra "
+            "de acciones y panel (propuesta §1, §3 y §4; D-T1…D-T6).",
+            spacing="3",
+        ),
+        id=TIMELINE_ANCHOR,
+        width="100%",
+        min_width="0",
+    )
+
+
 def styleguide_index() -> rx.Component:
     return app_shell(
         page_header(
@@ -1539,6 +1772,7 @@ def styleguide_index() -> rx.Component:
             _material_section(),
             _motion_section(),
             _components_section(),
+            _timeline_section(),
             spacing="6",
         ),
     )

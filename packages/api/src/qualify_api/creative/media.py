@@ -184,6 +184,7 @@ from qualify_creative.text_colors import text_colors
 from qualify_creative.video import SubtitleLayer, VideoFitter
 from qualify_creative.video.fit import DETAIL_X264
 from qualify_creative.video.speech import voice_spans
+from qualify_creative.video.upright import upright_image
 from qualify_shared.objects.keys import (
     is_object_store_key,
     reel_windows_root,
@@ -202,6 +203,14 @@ from qualify_api.creative.brand_references import (
     read_brand_reference_images,
     resolve_brand_references,
     snapshot_brand_references,
+)
+from qualify_api.creative.part_extend import (
+    EXTEND_MANIFEST,
+    EXTEND_SOURCE_MAX_S,
+    EXTEND_SOURCE_MIN_S,
+    PreviousLookup,
+    extend_available,
+    extend_output,
 )
 from qualify_api.creative.pipeline import current_preparation, frozen_brand_references
 from qualify_api.creative.queue_dispatch import CheckpointError, GenerationDeferred
@@ -316,6 +325,44 @@ class MediaWrite:
     #: version and position — `stored`, or `missing` when R2 did not keep it. None when the
     #: file had no base of its own (a closing slide, a reused piece, a video).
     base: BasePhoto | None = None
+    #: m-25017283 (ADR 49 §2 item 2): the text layer Claude wrote for this file, written by
+    #: `finish_generation` as the ROOT `piece_layers` row of its version and position. None
+    #: while the layer stage is off (`QUALIFY_IMAGE_LAYER`) or when no valid layer came.
+    layer: LayerWrite | None = None
+
+
+@dataclass(frozen=True)
+class LayerWrite:
+    """A `LayerSpec` as the layer stage wrote it, kept as its JSON (`spec`) so this module
+    need not know the schema, with the provenance `piece_layers` stores."""
+
+    spec: dict[str, Any]
+    spec_sha256: str
+    layout_id: str
+    layout_version: int
+    model_id: str
+    prompt_version: str
+
+    def as_json(self) -> dict[str, Any]:
+        return {
+            "spec": self.spec,
+            "spec_sha256": self.spec_sha256,
+            "layout_id": self.layout_id,
+            "layout_version": self.layout_version,
+            "model_id": self.model_id,
+            "prompt_version": self.prompt_version,
+        }
+
+    @classmethod
+    def from_json(cls, row: Mapping[str, Any]) -> LayerWrite:
+        return cls(
+            spec=dict(row["spec"]),
+            spec_sha256=str(row["spec_sha256"]),
+            layout_id=str(row["layout_id"]),
+            layout_version=int(row["layout_version"]),
+            model_id=str(row["model_id"]),
+            prompt_version=str(row["prompt_version"]),
+        )
 
 
 @dataclass(frozen=True)
@@ -626,6 +673,11 @@ def _same_segments(found: tuple[str, ...], wanted: tuple[str, ...]) -> bool:
 _TENANT_ROOTS = ("t", "gallery", "reel-windows", "uploads", "generated")
 _FOREIGN_FILE = "Uno de los archivos de la pieza no es de tu marca."
 _BAD_KEY = "Uno de los archivos de la pieza tiene una ruta que no es válida. Vuelve a elegirlo."
+#: EF-02: a Clip made only from the owner's video with effects (`local`) — not built yet.
+LOCAL_CLIP_UNAVAILABLE = (
+    "Todavía no podemos armar un video solo con tu grabación y sus efectos. "
+    "Elige otra forma de hacerlo."
+)
 _MISSING_PIECE = "La pieza de la diapositiva {n} ya no está disponible. Elige otra."
 _MISSING_STOCK = "El video de stock de la diapositiva {n} ya no está disponible. Elige otro."
 #: CM-6: a Galería medium removed (or its product deactivated, or its video being cut)
@@ -708,6 +760,15 @@ def _key_problems(
             key
             for plan in (*media.parts, *media.parts_removed)
             for key in (*(plan.clip_image_keys or ()), *plan.clip_video_keys, *plan.clip_audio_keys)
+        ),
+        # EF-02: the stretches of the owner's own video a Clip, a child's part or a
+        # parent's plan entry (kept or removed) is made from
+        *(segment.key for segment in media.segments),
+        *(segment.key for segment in (media.part.segments if media.part else ())),
+        *(
+            segment.key
+            for plan in (*media.parts, *media.parts_removed)
+            for segment in plan.segments
         ),
     ]
     present = [key for key in keys if key]
@@ -1303,14 +1364,16 @@ def _video_frame(data: bytes, *, last: bool) -> bytes:
     """A video's first frame — or its last — as a JPEG. Raises when the file has no
     video frame. For the last one it seeks to the keyframe before the final second and
     decodes from there, not the whole file (review 2026-10-19); a container that cannot
-    seek is decoded from the start, as before."""
+    seek is decoded from the start, as before. Upright (EF-01): a phone's display
+    rotation is applied (`upright_image`); one that is not a right angle raises
+    `VideoSourceError("rotation_unsupported")`."""
     frame = _decode_frame(data, last=last, seek=last)
     if frame is None and last:
         frame = _decode_frame(data, last=True, seek=False)
     if frame is None:
         raise ValueError("the video has no frame")
     out = io.BytesIO()
-    frame.to_image().convert("RGB").save(out, format="JPEG", quality=92)
+    upright_image(frame).save(out, format="JPEG", quality=92)
     return out.getvalue()
 
 
@@ -1436,6 +1499,10 @@ class _Saver:
     @property
     def draft_id(self) -> UUID:
         return self._draft_id
+
+    @property
+    def revision(self) -> int:
+        return self._revision
 
     def key_for(self, name: str) -> str:
         """The key `name` is kept under by this saver (before any content-named fallback)."""
@@ -1851,6 +1918,13 @@ class PartWindows(Protocol):
     def __call__(self, *, tenant_id: UUID, draft_id: UUID, part: PartRef) -> PartWindow: ...
 
 
+class PreviousParts(Protocol):
+    """VE-13: the previous part's file a «Sigue a la anterior» part continues, and whether
+    it is there yet (`part_extend.DbPreviousParts`, the creative worker)."""
+
+    def __call__(self, *, tenant_id: UUID, draft_id: UUID) -> PreviousLookup: ...
+
+
 #: VE-09: the version of the part prompts (`part_reference_prompt`, `part_edit_prompt`),
 #: kept in every part's params next to the compiler's: one number per combination of the
 #: compiler and the part's own media, chosen by `part_prompt_version`.
@@ -1864,13 +1938,18 @@ PART_REFERENCE_MEDIA_PROMPT_VERSION = 2
 PART_PROMPT_VERSION_V5 = 3
 #: 4: compiler 5 and a `reference` part with its own reference videos or audio.
 PART_REFERENCE_MEDIA_PROMPT_VERSION_V5 = 4
+#: 5 (VE-13): a «Sigue a la anterior» part (`part_extend_prompt`), any compiler.
+PART_EXTEND_PROMPT_VERSION = 5
 
 
 def part_prompt_version(brief: ContentBrief, part: PartRef | None = None) -> int:
     """The part prompt version `brief`'s part (`part`, else `brief.media.part`) is
     compiled with: the compiler (0-4 or 5 on) and whether a `reference` part carries
-    its own reference videos or audio (UI-4). The one place that decides it."""
+    its own reference videos or audio (UI-4); an `extend` part has its own (VE-13). The
+    one place that decides it."""
     part = part if part is not None else brief.media.part
+    if part is not None and part.mode == "extend":
+        return PART_EXTEND_PROMPT_VERSION
     with_media = (
         part is not None
         and part.mode == "reference"
@@ -1959,6 +2038,8 @@ def _media_write_json(write: MediaWrite, seedance_slots: int = 0) -> dict[str, A
         **({"rendered_prompt": write.rendered_prompt} if write.rendered_prompt else {}),
         # m-25017279: and its stored base photo, so a resumed run never makes it again
         **({"base": write.base.as_json()} if write.base is not None else {}),
+        # m-25017283: and its layer, so a resumed run never pays the layer call again
+        **({"layer": write.layer.as_json()} if write.layer is not None else {}),
     }
 
 
@@ -1978,6 +2059,7 @@ def _media_write_from_json(row: Mapping[str, Any]) -> MediaWrite:
         ai_generated=bool(row.get("ai_generated")),
         rendered_prompt=row.get("rendered_prompt") or None,
         base=BasePhoto.from_json(row["base"]) if row.get("base") else None,
+        layer=LayerWrite.from_json(row["layer"]) if row.get("layer") else None,
     )
 
 
@@ -2248,10 +2330,15 @@ class MediaProducer:
         #: VE-10a: reads a video by parts' children and saves its joined preview
         #: (`part_join.DbPartJoins`, the creative worker). None = nothing is joined.
         part_joins: PartJoinStore | None = None,
+        #: VE-13: finds the previous part's vista previa a «Sigue a la anterior» part
+        #: continues (`part_extend.DbPreviousParts`). None = such a part fails before
+        #: any spend.
+        previous_parts: PreviousParts | None = None,
     ) -> None:
         self._store = store
         self._part_windows = part_windows
         self._part_joins = part_joins
+        self._previous_parts = previous_parts
         self._reference_compiler_version = reference_compiler_version
         self._router = router
         self._credentials = credentials
@@ -2538,6 +2625,14 @@ class MediaProducer:
             # ADR 44: the parent of a video by parts makes no video of its own — its parts
             # (child clips) do, and the join is local. Nothing read, selected nor paid.
             return MediaOutcome()
+        if brief.kind is ContentKind.CLIP and brief.media.clip_reference_mode == "local":
+            # EF-02: «Tu video, con efectos» is not produced until EF-05/EF-06 — refused
+            # before any read, spend or vendor call, never made as a Seedance clip. The
+            # service's gate (`video_pipeline.refuse_unbuilt_recipe`) refuses it first.
+            logger.warning("creative media for draft %s refused: local clip not built", draft_id)
+            return MediaOutcome(
+                failure=FailureReason.INVALID_PARAMETERS.value, detail=LOCAL_CLIP_UNAVAILABLE
+            )
         # m-24820842: the chosen Brand Kit resources (mascot, elementos) are resolved and
         # revalidated against the LIVE Brand Kit on a NEW generation (a substituted or
         # deleted resource is rejected before any R2 read or paid call), then frozen per
@@ -4747,13 +4842,20 @@ class MediaProducer:
         references; its own prompts (`part_reference_prompt`, `part_edit_prompt`)."""
         part = brief.media.part
         window: PartWindow | None = None
+        extend_source: dict[str, Any] | None = None
         if part is not None:
             brand_refs = BrandReferencesSet()
-            brief, window = self._part_brief(tenant_id, draft_id, brief)
+            brief, window, extend_source = self._part_brief(tenant_id, draft_id, brief, save)
         media = brief.media
         ratio = SEEDANCE_RATIOS[brief.format]
         brand_images = self._brand_reference_images(brand_refs)
         editing = media.clip_reference_mode == "edit"
+        # VE-13: «Sigue a la anterior» — only a part, with the source `_part_brief` copied
+        extending = media.clip_reference_mode == "extend"
+        if extending and (part is None or extend_source is None):
+            raise _MediaFailed(
+                FailureReason.PART_FAILED.value, PART_FAILED_TEXT, raw="extend without a source"
+            )
         if editing:
             if (
                 not self._seedance_reference_model
@@ -4875,8 +4977,13 @@ class MediaProducer:
                         }
                     )
                 # m-24820842: the references as ModelArk should fetch them (720p, 30 fps,
-                # cut to the clip) — prepared before the copy was paid, reused here
-                sent_videos, sent_seconds = self._fitted_references(tenant_id, media, save)
+                # cut to the clip) — prepared before the copy was paid, reused here.
+                # VE-13: the previous part's file goes as it came, never re-encoded
+                sent_videos, sent_seconds = (
+                    (media.clip_video_keys, _number_or_none(extend_source, "input_seconds"))
+                    if extending
+                    else self._fitted_references(tenant_id, media, save)
+                )
                 if part is None or sent_videos:
                     # VE-09: a «Nueva» part sends no video at all — not even an empty list
                     params["reference_videos"] = self._reference_urls(tenant_id, sent_videos)
@@ -4898,6 +5005,10 @@ class MediaProducer:
                     params.update(
                         omni_reference_task_type="edit", ratio="adaptive", duration_seconds=-1
                     )
+                elif extending:
+                    # VE-13: ModelArk continues the source; it keeps its canvas
+                    # (`adaptive`) and is asked for the part's own seconds
+                    params.update(omni_reference_task_type="extend", ratio="adaptive")
             else:
                 # 2.5 keeps the opening frame's own aspect (`ratio: adaptive`): an
                 # operator's frame is cropped to the piece's ratio, so the clip is too
@@ -5066,9 +5177,24 @@ class MediaProducer:
         tokens = int(result.usage.output_tokens)
         cost = self._seedance_usage(result, out_resolution, usage)
         video = self._download(str(result.media_url))
-        width, height = (_video_dimensions(video) if editing else None) or output_dimensions(
-            result.model_id, out_resolution, ratio
-        )
+        width, height = (
+            _video_dimensions(video) if editing or extending else None
+        ) or output_dimensions(result.model_id, out_resolution, ratio)
+        if extend_source is not None:
+            # VE-13: what the vendor handed back — the new stretch or the whole video —
+            # read from the file itself (`part_extend.extend_output`); the join keeps
+            # only the new stretch either way
+            output_seconds = _media_seconds(video)
+            extend_source = {
+                **extend_source,
+                "output_seconds": round(output_seconds, 3) if output_seconds else None,
+                "output": extend_output(
+                    output_s=output_seconds,
+                    input_s=_number_or_none(extend_source, "input_seconds"),
+                    asked_s=float(media.duration_seconds),
+                ),
+                "draft": bool(params.get("draft")),
+            }
         thumbnail = first
         logo_laid = False
         clean_key: str | None = None
@@ -5182,6 +5308,7 @@ class MediaProducer:
                             clean_key=clean_key or video_key,
                             logo=_logo_provenance(logo_key, logo) if logo_laid else None,
                             prompt_version=part_prompt_version(brief, part),
+                            extend=extend_source,
                         ),
                         "logo": logo_laid,
                         # the subtitles laid (founder, 2026-11-03): its final lays the same
@@ -5205,8 +5332,12 @@ class MediaProducer:
         ]
 
     def _part_brief(
-        self, tenant_id: UUID, draft_id: UUID, brief: ContentBrief
-    ) -> tuple[ContentBrief, PartWindow | None]:
+        self,
+        tenant_id: UUID,
+        draft_id: UUID,
+        brief: ContentBrief,
+        save: _Saver | None = None,
+    ) -> tuple[ContentBrief, PartWindow | None, dict[str, Any] | None]:
         """VE-09: the part's brief as it is sent. An «Igual al original» part without a
         window gets the one the creative worker cuts into ITS folder (idempotent: a
         re-run gets the same key), checked to be this piece's before it is read; the
@@ -5214,15 +5345,22 @@ class MediaProducer:
         fails the part (`_part_window_failure`), never makes it new."""
         media = brief.media
         part = media.part
+        if part is not None and part.mode == "extend":
+            if save is None:
+                raise _MediaFailed(
+                    FailureReason.PART_FAILED.value, PART_FAILED_TEXT, raw="extend without a saver"
+                )
+            brief, extend = self._extend_brief(tenant_id, draft_id, brief, save)
+            return brief, None, extend
         if part is None or part.mode != "edit":
-            return brief, None
+            return brief, None, None
         if media.clip_video_keys:
             # a pre-cut window is a key of the brief: `_key_problems` checked it. VE-12
             # (m-24921060): a saved cut is deleted 30 days after it was written, so one
             # gone from R2 is `source_purged` (the part falls back to `reference`), never
             # a failed read further down.
             self._require_saved_cut(tenant_id, media.clip_video_keys)
-            return brief, None
+            return brief, None, None
         model = self._seedance_reference_model
         if not model or not seedance_family(model).omni_task_types:
             # our configuration, not the owner's to fix: said plainly, logged
@@ -5247,7 +5385,145 @@ class MediaProducer:
         if not owned_by(tenant_id, window.key) or not window.key.startswith(folder):
             raise _part_window_failure("foreign_draft")
         sent = media.model_copy(update={"clip_video_keys": (window.key,)})
-        return brief.model_copy(update={"media": sent}), window
+        return brief.model_copy(update={"media": sent}), window, None
+
+    def _extend_brief(
+        self, tenant_id: UUID, draft_id: UUID, brief: ContentBrief, save: _Saver
+    ) -> tuple[ContentBrief, dict[str, Any]]:
+        """VE-13 «Sigue a la anterior»: the part's brief with ONE reference video — the
+        previous part's own vendor file, copied byte for byte (never re-encoded: BytePlus
+        accepts a face only in its own unedited outputs) to a `.mp4` key in THIS part's
+        revision folder, so `_reference_urls` takes it and the retention purge removes it
+        with the part. Also returns what it continued, for the part's provenance.
+
+        Sticky per revision: the first run records what it continued in
+        `EXTEND_MANIFEST` before the vendor request is captured, and every later run of
+        the same revision reads it back — so the request, the file and the provenance
+        never disagree, even when the previous part changes meanwhile (this part is then
+        «Hay que rehacerla», never made again by itself).
+
+        Without a vista previa of the previous part yet the part WAITS
+        (`waiting_previous`): `GenerationDeferred` before anything is captured or paid —
+        the draft stays `drafting`, its job stays queued (the reaper spares it) and
+        `part_extend.release_next_extend` runs it again when the previous part settles.
+        Refused before any spend (`part_failed`): the switch off, no model with omni
+        tasks, no public links, no previous part, a file of another business or of
+        another part, or a length outside ModelArk's 2-30 s."""
+        if not extend_available():
+            raise _MediaFailed(
+                FailureReason.PART_FAILED.value, PART_FAILED_TEXT, raw="extend switched off"
+            )
+        model = self._seedance_reference_model
+        if not model or not seedance_family(model).omni_task_types:
+            logger.error(
+                "part %s: «Sigue a la anterior» without an omni model: %s", draft_id, model
+            )
+            raise _MediaFailed(
+                FailureReason.PART_FAILED.value, PART_FAILED_TEXT, raw="no extend model"
+            )
+        if not _links_ready(self._reference_links):
+            raise _MediaFailed(FailureReason.INVALID_PARAMETERS.value, CLIP_NO_PUBLIC_URL)
+        manifest_key = save.key_for(EXTEND_MANIFEST)
+        manifest = self._extend_manifest(manifest_key)
+        if manifest is None:
+            manifest = self._new_extend_source(tenant_id, draft_id, save)
+            written = save(
+                EXTEND_MANIFEST,
+                json.dumps(manifest, sort_keys=True).encode("utf-8"),
+                "application/json",
+            )
+            if written != manifest_key:
+                # another run of this revision recorded its source first (the key was
+                # taken, `_Saver` kept ours aside): that one is what the request carries
+                manifest = self._extend_manifest(manifest_key) or manifest
+        sent_key = str(manifest["sent_key"])
+        if not owned_by(tenant_id, sent_key) or f"/{draft_id}/" not in sent_key:
+            raise _MediaFailed(
+                FailureReason.PART_FAILED.value, PART_FAILED_TEXT, raw="foreign extend source"
+            )
+        extend = {
+            key: manifest.get(key)
+            for key in (
+                "source_draft_id",
+                "source_index",
+                "source_asset_id",
+                "source_key",
+                "sent_key",
+                "input_seconds",
+            )
+        }
+        sent = brief.media.model_copy(update={"clip_video_keys": (sent_key,)})
+        return brief.model_copy(update={"media": sent}), extend
+
+    def _extend_manifest(self, key: str) -> dict[str, Any] | None:
+        """The source this revision of the part already continued, or None (first run).
+        Only a file that is not there means «first run»: any other read failure (R2 down)
+        is a `CheckpointError` the queue retries — choosing again could disagree with the
+        request already captured."""
+        from qualify_shared.objects.gate import ObjectNotFound  # noqa: PLC0415
+
+        try:
+            data = self._store.read(key)
+        except (FileNotFoundError, ObjectNotFound):
+            return None
+        except Exception as exc:  # noqa: BLE001 — unknown: never guessed as a first run
+            raise CheckpointError(f"extend manifest unreadable: {type(exc).__name__}") from exc
+        try:
+            manifest = json.loads(data)
+        except ValueError:
+            return None
+        return manifest if isinstance(manifest, dict) and manifest.get("sent_key") else None
+
+    def _new_extend_source(self, tenant_id: UUID, draft_id: UUID, save: _Saver) -> dict[str, Any]:
+        """The previous part's file, checked and copied into this part's folder."""
+        if self._previous_parts is None:
+            logger.error("part %s: «Sigue a la anterior» without previous parts wired", draft_id)
+            raise _MediaFailed(
+                FailureReason.PART_FAILED.value, PART_FAILED_TEXT, raw="no previous parts"
+            )
+        lookup = self._previous_parts(tenant_id=tenant_id, draft_id=draft_id)
+        if lookup.state == "waiting":
+            logger.info("part %s waits for the vista previa of the part before it", draft_id)
+            raise GenerationDeferred("waiting_previous")
+        source = lookup.source
+        if lookup.state != "ready" or source is None:
+            logger.error("part %s: «Sigue a la anterior» has no part before it", draft_id)
+            raise _MediaFailed(
+                FailureReason.PART_FAILED.value, PART_FAILED_TEXT, raw="no previous part"
+            )
+        if not owned_by(tenant_id, source.key) or f"/{source.draft_id}/" not in source.key:
+            logger.error("part %s: the previous part's file is not its own", draft_id)
+            raise _MediaFailed(
+                FailureReason.PART_FAILED.value, PART_FAILED_TEXT, raw="foreign previous file"
+            )
+        try:
+            data = self._store.read(source.key)
+        except Exception as exc:  # noqa: BLE001 — R2 down or the file gone
+            raise _MediaFailed(
+                FailureReason.PART_FAILED.value,
+                PART_FAILED_TEXT,
+                raw=f"previous file unreadable: {type(exc).__name__}",
+            ) from exc
+        seconds = _media_seconds(data)
+        if seconds is None or not EXTEND_SOURCE_MIN_S <= seconds <= EXTEND_SOURCE_MAX_S:
+            raise _MediaFailed(
+                FailureReason.PART_FAILED.value,
+                PART_FAILED_TEXT,
+                raw=f"previous file of {seconds} s outside "
+                f"{EXTEND_SOURCE_MIN_S:g}-{EXTEND_SOURCE_MAX_S:g} s",
+            )
+        name = f"extend-source-{source.asset_id or source.draft_id}.mp4"
+        sent_key = save(name, data, MP4)  # the same bytes: never re-encoded
+        return {
+            "source_draft_id": str(source.draft_id),
+            "source_index": source.index,
+            "source_asset_id": str(source.asset_id) if source.asset_id else None,
+            "source_key": source.key,
+            "source_made_at": source.made_at,
+            "sent_key": sent_key,
+            "input_seconds": round(seconds, 3),
+            "sha256": hashlib.sha256(data).hexdigest(),
+        }
 
     def _require_saved_cut(self, tenant_id: UUID, keys: tuple[str, ...]) -> None:
         """Raise `source_purged` when a saved reel cut (`reel-windows/{tenant}/…`) of the
@@ -9229,6 +9505,14 @@ _PART_NEW_PEOPLE = (
 )
 
 
+def _number_or_none(values: Mapping[str, Any] | None, key: str) -> float | None:
+    """`values[key]` as a float when it is a JSON number, else None."""
+    value = (values or {}).get(key)
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    return float(value)
+
+
 def _logo_provenance(key: str | None, logo: bytes | None) -> dict[str, Any] | None:
     """VE-10a: which logo was laid — its key and a digest of its bytes (a new file under
     the same key is another logo)."""
@@ -9246,6 +9530,7 @@ def _part_provenance(
     clean_key: str | None = None,
     logo: Mapping[str, Any] | None = None,
     prompt_version: int,
+    extend: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Rule 6 / VE-09: what a part was made from — the analysis and its cuts, the
     window of the original it edited, the part prompt's version (`part_prompt_version`,
@@ -9282,6 +9567,9 @@ def _part_provenance(
             # the logo laid on the preview the owner sees («sin logo» when none)
             "clean_key": clean_key,
             "logo": dict(logo) if logo else "sin logo",
+            # VE-13: the previous part's file a «Sigue a la anterior» part continued,
+            # what was sent, and what came back (`segment` / `whole`, its lengths)
+            **({"extend": dict(extend)} if extend else {}),
         },
         "part_prompt_version": prompt_version,
     }
@@ -9305,6 +9593,8 @@ def _part_prompt(*, brief: ContentBrief, kit: BrandKit, images: int, model: str 
     part = brief.media.part
     if part is not None and part.mode == "edit":
         return part_edit_prompt(brief=brief, kit=kit, images=images, model=model)
+    if part is not None and part.mode == "extend":
+        return part_extend_prompt(brief=brief, kit=kit, images=images, model=model)
     return part_reference_prompt(brief=brief, kit=kit, images=images, model=model)
 
 
@@ -9484,6 +9774,44 @@ def _part_edit_lines_v5(
     lines.append(_PART_EDIT_BRAND_V5)
     lines.extend(_part_common_lines(brief, kit, model))
     return lines
+
+
+@_compiled_for
+def part_extend_prompt(
+    *, brief: ContentBrief, kit: BrandKit, images: int, model: str | None = None
+) -> str:
+    """VE-13 «Sigue a la anterior»: continue @Video1 — the previous part as it came out
+    of Seedance — from its last frame, with the same scene, light, camera and product,
+    for the part's seconds, as ONE shot. An explicit extension (ModelArk classifies the
+    task from the prompt: one that does not ask for it fails as `TaskTypeMismatch`).
+    Palette, typefaces and no text on screen as a clip's; no logo; nobody new."""
+    media = brief.media
+    part = media.part
+    seconds = media.duration_seconds
+    shows = _part_shows(part) if part is not None else ""
+    product = _part_product(brief)
+    lines: list[str | _Flex] = [
+        f"Extend video @Video1: continue it seamlessly from its last frame for {seconds} "
+        "more seconds, as one single continuous shot with no cut, no intro, no ending and "
+        "no title card.",
+        "Keep the same scene, lighting, colors, camera style and pacing, and keep every "
+        "person and object exactly as they look in @Video1.",
+        _Flex('What happens next (in Spanish): "', shows, protected=True)
+        if shows
+        else _Flex('It is about (in Spanish): "', brief.topic, protected=True),
+    ]
+    if images:
+        named = _image_names(range(1, images + 1), "@Image")
+        what = "the client's real product" + (f', "{product}",' if product else ",")
+        lines.append(
+            f"{named}: {what} as it must keep looking wherever it appears — shape, colors, "
+            "label and packaging exactly as in the photos."
+        )
+    elif product:
+        lines.append("It shows the client's product, " + f'"{product}".')
+    lines.append("Do not add new people; nobody speaks to the camera.")
+    lines.extend(_part_common_lines(brief, kit, model))
+    return _budgeted(lines, _video_budget(brief, model), strict=False)
 
 
 # ADR 49 §2.3 (m-25017278): the image and carousel pipeline lives in its own package and

@@ -1,10 +1,12 @@
 """A video by parts (ADR 44, VE-08 m-24921065): its plan from a reel's analysis, its parts
 as child drafts, and «Crear otra versión» of one part.
 
-- `plan_from_analysis` is PURE: the analysed cuts (`ReelAnalysis`, VE-04c) become 1 to
-  `PARTS_MAX` parts of 1-10 s — the mode by who is seen (F6), short cuts joined (P2), a cut
-  longer than 10 s split with `extend` (design §3), a source that is not 9:16 always made
-  new (N5) — with what the owner should read about each part (`PartNotice`).
+- `plan_from_analysis` is pure given `extend_on` (with `extend_on=None` it reads the
+  «Sigue a la anterior» switch, `QUALIFY_PARTS_EXTEND`): the analysed cuts (`ReelAnalysis`,
+  VE-04c) become 1 to `PARTS_MAX` parts of 1-10 s — the mode by who is seen (F6), short
+  cuts joined (P2), a cut longer than 10 s split with `extend` (design §3), a source that
+  is not 9:16 always made new (N5) — with what the owner should read about each part
+  (`PartNotice`).
 - `PartsService.create_parts` makes the children of a parent not made yet — every one, or
   those of `part_indexes` (m-24921081: the first, one, the ones left) — at once: briefs
   and drafts, their vistas previas charged all or nothing (`charge_many`, D7) and one
@@ -43,6 +45,7 @@ from qualify_creative.scene_plan import unroled_image_role
 from qualify_creative.schemas import (
     CLIP_IMAGE_ROLES,
     CLIP_MAX_IMAGES,
+    CLIP_MODE_OF_PART,
     PART_DESCRIPTION_MAX,
     PART_GENERATION_MIN_SECONDS,
     PARTS_MAX,
@@ -68,6 +71,7 @@ from qualify_api.creative.fsm import (
     apply_transition,
 )
 from qualify_api.creative.media import PartWindowRefused
+from qualify_api.creative.part_extend import extend_available, release_next_extend
 from qualify_api.creative.part_join import PART_FINAL
 from qualify_api.creative.queue_dispatch import queue_enabled
 from qualify_api.creative.service import (
@@ -76,10 +80,15 @@ from qualify_api.creative.service import (
     PostgresContentRepository,
     UnknownDraft,
 )
+from qualify_api.creative.video_pipeline.mode_choice import (
+    ModeContext,
+    ModePart,
+    choose_part_mode,
+    edit_allowed,
+    people_unclear,
+)
 from qualify_api.referentes.reel_analysis_types import (
-    NOT_OBSERVED,
     OBSERVED,
-    UNKNOWN,
     ReelAnalysis,
     ShotAnalysis,
 )
@@ -107,8 +116,12 @@ PARENT_TEXT_CAP_TEXT = (
 PARTS_NEED_TEXT_TEXT = "Espera a que esté listo el texto de tu video para crear sus partes."
 PARTS_UNAVAILABLE_TEXT = "Por ahora no podemos crear las partes de tu video. Inténtalo más tarde."
 PARTS_EXTEND_UNAVAILABLE_TEXT = (
-    "Todavía no podemos crear una parte que siga a la anterior. "
-    "Hazla nueva antes de crear el video."
+    "Por ahora no podemos crear una parte que siga a la anterior. "
+    "Ábrela y elige otra forma antes de crear el video."
+)
+PARTS_LOCAL_UNAVAILABLE_TEXT = (
+    "Todavía no podemos armar esta parte solo con tu grabación y sus efectos. "
+    "Elige otra forma de hacerla y luego crea el video."
 )
 PARTS_OVER_BUDGET_TEXT = (
     "No pudimos crear las partes: tu negocio llegó a su límite de este mes. "
@@ -135,12 +148,23 @@ class PartsUnavailable(Exception):
 
 
 class PartsExtendUnavailable(PartsUnavailable):
-    """VE-13 continuity is not implemented: no active extend may start new work."""
+    """«Sigue a la anterior» is switched off (`part_extend.extend_available`): no active
+    extend may start new work."""
 
     reason = "extend_unavailable"
 
     def __init__(self) -> None:
         super().__init__(PARTS_EXTEND_UNAVAILABLE_TEXT)
+
+
+class PartsLocalUnavailable(PartsUnavailable):
+    """EF-02: a «Tu video, con efectos» part (`local`) is not produced until EF-05/EF-06
+    — refused before any child, charge or queue write, never made as a Seedance part."""
+
+    reason = "local_unavailable"
+
+    def __init__(self) -> None:
+        super().__init__(PARTS_LOCAL_UNAVAILABLE_TEXT)
 
 
 class PartsSourceInvalid(PartsUnavailable):
@@ -602,18 +626,6 @@ def clip_description(text_: str, limit: int = PART_DESCRIPTION_MAX) -> str:
     return head[:space].rstrip(" ,;:") if space > 0 else text_[:limit]
 
 
-def _edit_allowed(shot: ShotAnalysis) -> bool:
-    """F6: «Igual al original» only when no person and no face was seen."""
-    return shot.people_presence == NOT_OBSERVED and shot.visible_faces == NOT_OBSERVED
-
-
-def _people_unclear(shot: ShotAnalysis) -> bool:
-    """The analysis could not tell whether someone is in the cut."""
-    return shot.people_presence == UNKNOWN or (
-        shot.people_presence == NOT_OBSERVED and shot.visible_faces == UNKNOWN
-    )
-
-
 def _talks(shot: ShotAnalysis) -> bool:
     """Someone seems to talk to the camera: speech falls in the cut and a face is seen."""
     return bool(shot.spoken_text.strip()) and shot.visible_faces == OBSERVED
@@ -651,7 +663,7 @@ def _same_mode(a: Sequence[ShotAnalysis], b: Sequence[ShotAnalysis], editable: b
     part — joining across that line would make it new and lose the original's look."""
     if not editable:
         return True
-    return all(_edit_allowed(s) for s in a) == all(_edit_allowed(s) for s in b)
+    return all(edit_allowed(s) for s in a) == all(edit_allowed(s) for s in b)
 
 
 def _groups(shots: Sequence[ShotAnalysis], editable: bool) -> list[list[ShotAnalysis]]:
@@ -705,9 +717,9 @@ def _split(seconds: float) -> list[int]:
 
 
 def plan_from_analysis(
-    analysis: ReelAnalysis, *, products: Sequence[str] = ()
+    analysis: ReelAnalysis, *, products: Sequence[str] = (), extend_on: bool | None = None
 ) -> tuple[VideoPartPlan, ...]:
-    """The parts a reel's analysis proposes, in order (pure; no I/O, no model call).
+    """The parts a reel's analysis proposes, in order (no I/O but the switch, no model call).
 
     - mode by people (F6): `edit` («Igual al original») only for cuts where no person and
       no face was seen, the source is 9:16 (N5) and can be edited; anything else
@@ -715,8 +727,13 @@ def plan_from_analysis(
       about → `people_unclear`, never `edit`;
     - consecutive cuts shorter than 4 s are joined up to 10 s (P2), and, past
       `PARTS_MAX` parts, the shortest neighbours that fit; past that, the first six;
-    - a cut longer than 10 s becomes parts of at most 10 s, every one after the first an
-      `extend` («Sigue a la anterior») that starts on that same cut;
+    - a cut longer than 10 s becomes parts of at most 10 s, every one after the first born
+      `extend` (`original_mode`, «Sigue a la anterior») on that same cut;
+    - every part's `mode` is the mode rule's (EF-09, `video_pipeline.mode_choice`), with its
+      `mode_rule_version` and `mode_reason`: the same as above, except a split tail while
+      «Sigue a la anterior» is off (`extend_on`; None reads
+      `part_extend.extend_available()`), which is made `reference` (`extend_unavailable`)
+      and stays identifiable by `original_mode="extend"`;
     - `talks_to_camera` = speech in the cut and a face seen; a part whose cuts show
       nothing the analysis could see → `describe_it`, no description;
     - descriptions never assume age or gender (`neutral_people`).
@@ -733,10 +750,16 @@ def plan_from_analysis(
         and is_vertical(analysis.width, analysis.height)
     )
     reel_product = reel_product_noun(analysis)
+    context = ModeContext(
+        source="reel",
+        source_available=analysis.source_available,
+        edit_eligible=analysis.edit_eligible,
+        vertical=is_vertical(analysis.width, analysis.height),
+        extend_on=extend_available() if extend_on is None else extend_on,
+    )
     plan: list[VideoPartPlan] = []
     for group in _groups(shots, editable):
-        unclear = any(_people_unclear(shot) for shot in group)
-        mode = "edit" if editable and all(_edit_allowed(s) for s in group) else "reference"
+        unclear = any(people_unclear(shot) for shot in group)
         description = join_unique(shot_description(s, products, reel_product) for s in group)
         notices: list[PartNotice] = []
         if unclear:
@@ -750,13 +773,25 @@ def plan_from_analysis(
             "talks_to_camera": any(_talks(s) for s in group),
             "notices": tuple(notices),
         }
-        if len(group) == 1 and group[0].seconds > PART_MAX_SECONDS:
-            for at, seconds in enumerate(_split(group[0].seconds)):
-                made = mode if at == 0 else "extend"
-                plan.append(VideoPartPlan(mode=made, original_mode=made, seconds=seconds, **common))
-        else:
-            seconds = _seconds(_group_seconds(group))
-            plan.append(VideoPartPlan(mode=mode, original_mode=mode, seconds=seconds, **common))
+        lengths = (
+            _split(group[0].seconds)
+            if len(group) == 1 and group[0].seconds > PART_MAX_SECONDS
+            else [_seconds(_group_seconds(group))]
+        )
+        for at, seconds in enumerate(lengths):
+            # the grouping decides where a part is born `extend`; the rule decides its mode
+            choice = choose_part_mode(ModePart(shots=tuple(group), split_tail=at > 0), context)
+            plan.append(
+                VideoPartPlan(
+                    mode=choice.mode,
+                    original_mode="extend" if at > 0 else choice.mode,
+                    seconds=seconds,
+                    mode_rule_version=choice.rule_version,
+                    mode_reason=choice.reason_code,
+                    mode_changed_by_owner=False,
+                    **common,
+                )
+            )
     return tuple(plan[:PARTS_MAX])
 
 
@@ -845,7 +880,7 @@ def _window_clean(shots: Sequence[ShotAnalysis], own: set[int], start: int, end:
     """No cut of someone else's (a person or a face seen, or unknown) inside the window."""
     for shot in shots:
         inside = min(shot.end_s, end) - max(shot.start_s, start)
-        if shot.shot_index not in own and inside > _WINDOW_SLACK_S and not _edit_allowed(shot):
+        if shot.shot_index not in own and inside > _WINDOW_SLACK_S and not edit_allowed(shot):
             return False
     return True
 
@@ -871,7 +906,7 @@ def part_window(
     covered = sorted((s for s in shots if s.shot_index in own), key=lambda s: s.shot_index)
     if not covered or len(covered) != len(own):
         raise PartWindowRefused("window_unavailable")
-    if not all(_edit_allowed(shot) for shot in covered):
+    if not all(edit_allowed(shot) for shot in covered):
         raise PartWindowRefused("not_edit_eligible")
     length = part.generation_seconds
     source_end = source_seconds if source_seconds is not None else max(s.end_s for s in shots)
@@ -978,6 +1013,8 @@ def mark_parent_dirty(session: Session, child_id: UUID) -> None:
         """),
         {"child": child_id},
     )
+    # VE-13: the «Sigue a la anterior» part right after it, waiting for it, tries again
+    release_next_extend(session, child_id)
 
 
 def open_parent_join(session: Session, parent_id: UUID) -> None:
@@ -1234,6 +1271,8 @@ PART_MODE_IMAGE_ROLES: Mapping[str, frozenset[str]] = {
     "reference": frozenset(CLIP_IMAGE_ROLES),
     "extend": frozenset(CLIP_IMAGE_ROLES),
     "edit": frozenset(CLIP_IMAGE_ROLES),
+    # EF-02: «Tu video, con efectos» sends nothing to Seedance — it takes no photo
+    "local": frozenset(),
 }
 
 
@@ -1323,7 +1362,17 @@ def _child_brief(
         parts_request=None,  # the owner's ask (m-24921081), the parent's alone
         part=part,
         duration_seconds=part.generation_seconds,
-        clip_reference_mode={"reference": "motion", "edit": "edit", "extend": "extend"}[plan.mode],
+        clip_reference_mode=CLIP_MODE_OF_PART[plan.mode],
+        # EF-02: the child carries its part's recipe, never the parent's whole-video text
+        # (`video_pipeline.recipe_of` reads a child's from `part`); the effects pipeline
+        # version is the server's to stamp
+        effects=plan.effects,
+        text_layer=plan.text_layer,
+        segments=plan.segments,
+        mode_rule_version=plan.mode_rule_version,
+        mode_reason=plan.mode_reason,
+        mode_changed_by_owner=plan.mode_changed_by_owner,
+        effects_pipeline_version=0,
         clip_image_keys=photos,
         clip_image_roles=roles,
         clip_video_keys=video_keys,
@@ -1496,13 +1545,21 @@ class PartsService:
         wanted = [index for index in asked if index not in made_before]
         if not wanted:
             return [made_before[index] for index in asked]
-        # VE-13 continuity is not built: an active `extend` still to be made blocks new
+        # VE-13: while «Sigue a la anterior» is switched off (`QUALIFY_PARTS_EXTEND`, until
+        # a paid draft test proves it), an active `extend` still to be made blocks new
         # work (never silently made `reference`); one whose child exists already does not.
-        if any(
+        if not extend_available() and any(
             part.mode == "extend" and index not in removed and index not in made_before
             for index, part in enumerate(plan, 1)
         ):
             raise PartsExtendUnavailable()
+        # EF-02: «Tu video, con efectos» is not produced yet (EF-05/EF-06): an active
+        # `local` part still to be made blocks new work — never made as a Seedance part
+        if any(
+            part.mode == "local" and index not in removed and index not in made_before
+            for index, part in enumerate(plan, 1)
+        ):
+            raise PartsLocalUnavailable()
         source_entries = (*plan, *brief.media.parts_removed)
         if analysis is None:
             check_split_parts_for_tenant(tenant_id=tenant_id, parts=source_entries)
@@ -1747,6 +1804,7 @@ __all__ = [
     "PartsService",
     "PartsUnavailable",
     "PartsExtendUnavailable",
+    "PartsLocalUnavailable",
     "PartsSourceInvalid",
     "check_split_parts",
     "check_split_parts_for_tenant",

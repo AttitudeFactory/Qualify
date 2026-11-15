@@ -18,7 +18,16 @@ from decimal import Decimal
 from typing import Literal, get_args
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationInfo,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
+from pydantic_core import PydanticCustomError
 
 from qualify_creative.ad_destination import (
     AdCTA,
@@ -44,6 +53,7 @@ from qualify_creative.enums import (
     VoiceProfileStatus,
     VoiceSourceKind,
 )
+from qualify_creative.layer_spec.schema import LayoutId
 
 # Meta renders these two in fixed-width slots; longer strings are truncated with an
 # ellipsis in the ad unit, which reads as sloppy rather than as a design choice.
@@ -109,7 +119,9 @@ PARTS_REMOVED_MAX = PARTS_MAX * 2
 #: How a part is made: `reference` (new, from the product photos and the shot's sheet, no
 #: bytes of the original reel), `edit` (the original's window with the product in it),
 #: `extend` (continues the previous part — never the first one).
-PART_MODES = ("reference", "edit", "extend")
+#: EF-02 (ADR 50): `local` = «Tu video, con efectos» — the owner's own video with local
+#: effects, no Seedance, cost 0. Fails closed until EF-05/EF-06 produce it.
+PART_MODES = ("reference", "edit", "extend", "local")
 #: The longest description a part keeps (what the part shows), as long as a scene.
 PART_DESCRIPTION_MAX = 600
 
@@ -657,7 +669,220 @@ class SourcePinProvenance(BaseModel):
         return self
 
 
-PartMode = Literal["reference", "edit", "extend"]
+# ---------------------------------------------------------------------------
+# EF-02 (ADR 50): the recipe of a video with effects — what the owner chose, kept in the
+# brief's JSON so the final is composed again exactly as the preview he approved. Pure
+# data: frozen, JSON round-trips, nothing computed that is not in the JSON. The rules
+# that need the effects library (`qualify_creative.effects`) are NOT checked here — a
+# stored brief must always read even if an effect stops being offered — but by the pure
+# `qualify_api.creative.video_pipeline.validate_recipe` on every new request.
+
+#: Why a recipe is refused (`RecipeProblem.code`, and the `type` of the brief's own
+#: `ValidationError` for the structural ones). Codes, never client text: the screen
+#: chooses the words (`qualify-copy-es`). Stable: `test_recipe_refusals_are_pinned` fixes
+#: the list, so a rename is a deliberate change.
+RecipeRefusal = Literal[
+    "unknown_effect",  # the effect id is not in the library
+    "unknown_version",  # the effect exists, not at that version
+    "unknown_param",  # a parameter the effect does not take
+    "param_out_of_range",  # a parameter outside its range, or of the wrong type
+    "not_offered",  # an effect the library does not offer (`offered` false; D5 for «Con IA»)
+    "too_many_ai_effects",  # more than one `seedance_prompt` effect in one part
+    "too_many_of_effect",  # the same effect more times than its `max_per_part`
+    "effect_needs_own_video",  # an effect that works on the owner's video, without one
+    "transition_on_clip",  # a transition in a normal Clip (only between parts)
+    "transition_in_effects",  # a transition among a part's effects, not `transition_in`
+    "transition_not_a_transition",  # `transition_in` names an effect that is not one
+    "transition_on_first_part",  # the first part has no part before it to blend with
+    "local_needs_own_video",  # `local` without a stretch of the owner's video
+    "segments_length_mismatch",  # a `local` part whose stretches do not last its `seconds`
+    "local_length_out_of_range",  # a `local` Clip whose stretches last under 3 s or over 60 s
+    "local_with_ai_effect",  # `local` makes no Seedance call: no `seedance_prompt` effect
+    "local_unavailable",  # `local` is not produced yet (until EF-05/EF-06): fail closed
+    "recipe_unavailable",  # effects, video text, stretches or a transition: not composed yet
+    "effects_not_for_kind",  # effects, video text or stretches on a piece that is no video
+    "span_outside_part",  # an effect's or a text's times fall outside its part (or Clip)
+    "unknown_layout",  # the video text names an ADR 49 design not in 9:16 with a title
+    "malformed_key",  # a stretch's file key is not a tenant-rooted path
+    "foreign_key",  # a stretch's file is another business's
+]
+RECIPE_REFUSALS: tuple[str, ...] = get_args(RecipeRefusal)
+
+#: At most this many effects in one part or Clip, and stretches of own video.
+EFFECTS_MAX = 8
+SEGMENTS_MAX = 8
+#: The owner's text over the video (D1: drawn later by the compose step, not here).
+VIDEO_TEXT_MAX = 120
+VideoTextPlace = Literal["top", "middle", "bottom"]
+VIDEO_TEXT_PLACES: tuple[str, ...] = get_args(VideoTextPlace)
+#: How fast a stretch plays (D-T3: «Cámara rápida» is this speed): 1 = as recorded, up
+#: to 30×. The SAME bounds as `qualify_creative.video.speed.MIN_SPEED`/`MAX_SPEED`, which
+#: applies it (EF-04) — copied, not imported: importing `video` pulls PyAV and the whole
+#: video package into the schemas; `test_segment_speed_bounds_match_the_speed_step` pins
+#: that they agree. Checked by the type itself (no library needed).
+SEGMENT_SPEED_MIN = 1.0
+SEGMENT_SPEED_MAX = 30.0
+#: How long a `local` Clip made of stretches may last, at their speed: the SAME bounds as
+#: `video.speed.MIN_TOTAL_S`/`MAX_TOTAL_S` (copied for the same reason, pinned by the same
+#: test).
+LOCAL_TOTAL_MIN_S = 3.0
+LOCAL_TOTAL_MAX_S = 60.0
+SegmentRotation = Literal[0, 90, 180, 270]
+#: An effect id as the library writes it (`effects_data/vN.json`).
+EFFECT_ID_PATTERN = r"^[a-z][a-z0-9_]{0,39}$"
+EffectParamValue = bool | int | float | str
+
+
+def _span_problem(start: float | None, end: float | None, what: str) -> str | None:
+    if (start is None) != (end is None):
+        return f"{what} has its start and its end"
+    if start is not None and end is not None and end <= start:
+        return f"{what} ends after it starts"
+    return None
+
+
+class EffectUse(BaseModel):
+    """One effect the owner chose (EF-02): the library entry it is (`effect_id` at
+    `version`, `qualify_creative.effects`) and its parameters.
+
+    `start_s`/`end_s`, both or neither, are SECONDS OF THAT PART'S OWN OUTPUT, counted
+    from its start, speed already applied — in a normal Clip the part is the whole video.
+    None = the whole of the part (or Clip). What crosses parts, in seconds of the whole
+    video, belongs to the parent's recipe (ED-15), not here. This type checks only what
+    does not depend on the part (not negative, start before end); whether the times fall
+    in `[0, part length]` is `validate_recipe`'s.
+
+    `params` is stored as sorted `(name, value)` pairs — immutable and hashable, like
+    every field of a frozen part — and serialized as a JSON object, so it round-trips
+    either way. Whether the effect exists, is offered and its parameters are in range is
+    `validate_recipe`'s, against the library: this type only holds the choice."""
+
+    model_config = ConfigDict(frozen=True)
+
+    effect_id: str = Field(pattern=EFFECT_ID_PATTERN)
+    version: int = Field(ge=1)
+    params: tuple[tuple[str, EffectParamValue], ...] = Field(default=(), max_length=16)
+    start_s: float | None = Field(default=None, ge=0)
+    end_s: float | None = Field(default=None, gt=0)
+
+    @field_validator("params", mode="before")
+    @classmethod
+    def _params_from_mapping(cls, value: object) -> object:
+        if isinstance(value, dict):
+            return tuple(sorted(value.items()))
+        if isinstance(value, list | tuple):
+            pairs = [tuple(pair) if isinstance(pair, list) else pair for pair in value]
+            return tuple(sorted(pairs, key=lambda pair: str(pair[0]) if pair else ""))
+        return value
+
+    @field_serializer("params")
+    def _params_as_object(self, params: tuple[tuple[str, EffectParamValue], ...]) -> dict:
+        return dict(params)
+
+    @property
+    def param_values(self) -> dict[str, EffectParamValue]:
+        """The parameters as a fresh dict (a copy: the use itself never changes)."""
+        return dict(self.params)
+
+    @model_validator(mode="after")
+    def _coherent(self) -> EffectUse:
+        names = [name for name, _ in self.params]
+        if len(set(names)) != len(names):
+            raise ValueError("an effect's parameter is given once")
+        problem = _span_problem(self.start_s, self.end_s, "an effect's span")
+        if problem:
+            raise ValueError(problem)
+        return self
+
+
+class VideoTextLayer(BaseModel):
+    """The owner's text over the video (EF-02; drawn by the compose step, D1): what it
+    says, where (`top`/`middle`/`bottom`, inside the safe zones) and when it shows.
+
+    Times (`start_s`, `end_s`) are SECONDS OF THAT PART'S OWN OUTPUT, counted from its
+    start, speed already applied — in a normal Clip the part is the whole video. `start_s`
+    0 = the part's start; `end_s` None = until its end. The PARENT's text (`text_layer`
+    of a video by parts' parent) is of the whole joined video, from its start. What else
+    crosses parts belongs to the parent's recipe (ED-15), not here. Whether the times fall
+    in `[0, part length]` is `validate_recipe`'s.
+
+    D1 (ADR 50): the text is drawn with ADR 49's closed designs, never with styles of its
+    own. `layout_id`/`layout_version` name the design of `qualify_creative.layer_spec`
+    (`LayoutId`, `catalog_v1.json`) it is drawn with — both or neither; None = the compose
+    step's default design (EF-05/EF-19 decide it). Whether that design exists in 9:16
+    with a title is `validate_recipe`'s (`unknown_layout`), against the catalog: a stored
+    brief keeps reading whatever the catalog becomes."""
+
+    model_config = ConfigDict(frozen=True)
+
+    text: str = Field(min_length=1, max_length=VIDEO_TEXT_MAX)
+    place: VideoTextPlace = "bottom"
+    start_s: float = Field(default=0.0, ge=0)
+    end_s: float | None = Field(default=None, gt=0)
+    layout_id: LayoutId | None = None
+    layout_version: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def _coherent(self) -> VideoTextLayer:
+        if not self.text.strip():
+            raise ValueError("a video's text says something")
+        if (self.layout_id is None) != (self.layout_version is None):
+            raise ValueError("a video text's design names its layout and its version")
+        if self.end_s is not None and self.end_s <= self.start_s:
+            raise ValueError("a video's text disappears after it appears")
+        return self
+
+
+class SourceSegment(BaseModel):
+    """A stretch of the owner's own video (EF-02, «Preparar»/«Cortar»): the file
+    (`key`, checked to be the business's by `owned_by` before any read), from `start_s`
+    to `end_s` seconds of it, played at `speed` (1 = as recorded; «Cámara rápida» more)
+    and turned upright by `rotate` degrees clockwise (EF-03's «Girar»). Order in the
+    tuple = order in the video."""
+
+    model_config = ConfigDict(frozen=True)
+
+    key: str = Field(min_length=1, max_length=1024)
+    start_s: float = Field(ge=0)
+    end_s: float = Field(gt=0)
+    speed: float = Field(default=1.0, ge=SEGMENT_SPEED_MIN, le=SEGMENT_SPEED_MAX)
+    rotate: SegmentRotation = 0
+
+    @property
+    def output_seconds(self) -> float:
+        """How long the stretch lasts in the video, at its speed (derived, never stored)."""
+        return (self.end_s - self.start_s) / self.speed
+
+    @model_validator(mode="after")
+    def _coherent(self) -> SourceSegment:
+        if self.end_s <= self.start_s:
+            raise ValueError("a stretch of video ends after it starts")
+        return self
+
+
+def _local_problem(mode: str, segments: tuple[SourceSegment, ...]) -> PydanticCustomError | None:
+    """«Video propio» (EF-02): a `local` part or Clip is made from the owner's OWN video,
+    which means at least one `SourceSegment` — a stretch of a file the business uploaded
+    (`owned_by`, checked with the other keys before any read). A reference video
+    (`clip_video_keys`) or a reel's window is something Seedance follows, never «own
+    video»: `local` sends nothing to a vendor."""
+    if mode == "local" and not segments:
+        return PydanticCustomError(
+            "local_needs_own_video", "a local part is made from a stretch of the owner's video"
+        )
+    return None
+
+
+PartMode = Literal["reference", "edit", "extend", "local"]
+#: The child clip's `clip_reference_mode` for each part mode: the ONE table the brief's
+#: validator and `parts._child_brief` share (a new mode is a new row here, never a
+#: default that falls into a Seedance call).
+CLIP_MODE_OF_PART: dict[str, str] = {
+    "reference": "motion",
+    "edit": "edit",
+    "extend": "extend",
+    "local": "local",
+}
 #: What the plan learned about a part that the owner should read before creating it
 #: (VE-08, from the VE-04c UX review; UI-3 renders them, `qualify_api.creative.parts`
 #: holds the Spanish text): `people_unclear` — the analysis could not tell whether a
@@ -706,6 +931,18 @@ class _PartSource(BaseModel):
     clip_image_roles: tuple[str, ...] = Field(default=(), max_length=CLIP_MAX_IMAGES)
     clip_video_keys: tuple[str, ...] = Field(default=(), max_length=CLIP_MAX_VIDEOS)
     clip_audio_keys: tuple[str, ...] = Field(default=(), max_length=CLIP_MAX_AUDIOS)
+    #: EF-02 (ADR 50): the part's recipe — its effects, its text over the video and the
+    #: stretches of the owner's own video it is made from, in order. Empty / None on
+    #: every part stored before them: made byte for byte as before.
+    effects: tuple[EffectUse, ...] = Field(default=(), max_length=EFFECTS_MAX)
+    text_layer: VideoTextLayer | None = None
+    segments: tuple[SourceSegment, ...] = Field(default=(), max_length=SEGMENTS_MAX)
+    #: EF-02/EF-09: what the mode rule proposed — its version (0 = no rule, every part
+    #: before it), its reason as a code (never client text) — and whether the owner
+    #: changed the mode afterwards (the golden set's free label).
+    mode_rule_version: int = Field(default=0, ge=0)
+    mode_reason: str = Field(default="", max_length=40, pattern=r"^[a-z0-9_]*$")
+    mode_changed_by_owner: bool = False
 
     @property
     def generation_seconds(self) -> int:
@@ -767,6 +1004,9 @@ class _PartSource(BaseModel):
         ):
             # the join keeps the trim: a «2 s» part must not put 4 s in the video
             raise ValueError("a part's trim lasts the part's seconds")
+        local = _local_problem(self.mode, self.segments)
+        if local is not None:
+            raise local
         return self
 
 
@@ -774,6 +1014,20 @@ class VideoPartPlan(_PartSource):
     """One entry of a parent's plan (`MediaInputs.parts`, ADR 44 / VE-06): what the part
     shows, how it is made and how long it lasts in the joined video. Its position in the
     plan is its `part_index` (1-based, as `content_drafts.part_index`)."""
+
+    #: EF-02 (ADR 50): how this part blends with the part BEFORE it at the join (a
+    #: `transition` effect of the library: corte, fundido, barrido). Only here: a normal
+    #: Clip and a child's `PartRef` have no part before them to blend with. None = the
+    #: hard cut of today's join.
+    transition_in: EffectUse | None = None
+
+    @model_validator(mode="after")
+    def _transition_is_only_a_choice(self) -> VideoPartPlan:
+        if self.transition_in is not None and (
+            self.transition_in.start_s is not None or self.transition_in.end_s is not None
+        ):
+            raise ValueError("a transition between parts has no span of its own")
+        return self
 
     #: m-24984421: the mode the plan first gave this entry (`plan_from_analysis` sets
     #: it). The screen may make an orphan «Sigue a la anterior» new and later put it
@@ -812,6 +1066,9 @@ PartsScope = Literal["all", "first"]
 PartsRefusal = Literal[
     "unavailable",  # the generation queue is off
     "extend_unavailable",  # VE-13 continuity is not implemented
+    "local_unavailable",  # EF-02: a «Tu video, con efectos» part is not produced yet
+    "recipe_unavailable",  # EF-02: a part with effects or text — not composed yet
+    "effects_invalid",  # EF-02: a part's effects or stretches were refused (`RecipeRefused`)
     "text_missing",  # the video's text did not come out (or is not there yet)
     "needs_description",  # `part` still has to be described
     "needs_previous",  # `part` continues a part that is not created
@@ -988,8 +1245,24 @@ class MediaInputs(BaseModel):
     clip_image_roles: tuple[str, ...] = Field(default=(), max_length=CLIP_MAX_IMAGES)
     clip_video_keys: tuple[str, ...] = Field(default=(), max_length=CLIP_MAX_VIDEOS)
     #: Ordinary clips borrow motion; a reel replica edits one original video in place;
-    #: a part of a video by parts may continue the previous part (`extend`, ADR 44).
-    clip_reference_mode: Literal["motion", "edit", "extend"] = "motion"
+    #: a part of a video by parts may continue the previous part (`extend`, ADR 44);
+    #: `local` (EF-02, ADR 50) = the owner's own video with local effects, no Seedance —
+    #: refused before anything is written or paid until EF-05/EF-06 produce it.
+    clip_reference_mode: Literal["motion", "edit", "extend", "local"] = "motion"
+    #: EF-02 (ADR 50): a Clip's recipe, as `_PartSource` keeps a part's — on a CHILD it
+    #: is copied from its `part`; on the PARENT of a video by parts `text_layer` is the
+    #: whole video's text and `effects`/`segments` stay empty (each part has its own).
+    effects: tuple[EffectUse, ...] = Field(default=(), max_length=EFFECTS_MAX)
+    text_layer: VideoTextLayer | None = None
+    segments: tuple[SourceSegment, ...] = Field(default=(), max_length=SEGMENTS_MAX)
+    mode_rule_version: int = Field(default=0, ge=0)
+    mode_reason: str = Field(default="", max_length=40, pattern=r"^[a-z0-9_]*$")
+    mode_changed_by_owner: bool = False
+    #: Server-owned (EF-02, like `prompt_compiler_version`): which effects pipeline a NEW
+    #: execution was stamped with. 0 = every brief before it — and every brief until
+    #: EF-06 —, produced byte for byte by today's `_clip`; ≥ 1 delegates to
+    #: `qualify_api.creative.video_pipeline`. `create_draft` resets what a caller sends.
+    effects_pipeline_version: int = Field(default=0, ge=0)
     #: m-24820842 (founder, 2026-11-02): a reel replica may put the Brand Kit's approved
     #: CTAs on the text surfaces the original reel ALREADY shows (never new ones). Off by
     #: default; read only by the edit-clip prompt compiler 1 (`prompt_compiler_version`).
@@ -1122,6 +1395,9 @@ class MediaInputs(BaseModel):
             raise ValueError(f"duration_seconds must be one of {DURATIONS_SECONDS}")
         if self.engine not in AVATAR_ENGINES:
             raise ValueError(f"engine must be one of {AVATAR_ENGINES}")
+        local = _local_problem(self.clip_reference_mode, self.segments)
+        if local is not None:
+            raise local
         return self
 
 
@@ -1327,6 +1603,7 @@ class ContentBrief(BaseModel):
             if any(role not in CLIP_IMAGE_ROLES for role in media.clip_image_roles):
                 raise ValueError(f"a clip image's role is one of {CLIP_IMAGE_ROLES}")
         self._parts_are_coherent()
+        self._recipe_is_for_a_video()
         if media.source_reel is not None:
             if self.kind is not ContentKind.CLIP or media.clip_reference_mode != "edit":
                 raise ValueError("a source reel belongs to a reel replica")
@@ -1448,6 +1725,22 @@ class ContentBrief(BaseModel):
             return media.slides[0]
         return None
 
+    def _recipe_is_for_a_video(self) -> None:
+        """EF-02: effects, a video text and stretches of own video belong to a Clip (or a
+        part, which is a Clip); the parent of a video by parts keeps only the whole
+        video's text — each part carries its own effects and stretches."""
+        media = self.media
+        if self.kind is ContentKind.CLIP:
+            return
+        if self.kind is ContentKind.SHOT_VIDEO:
+            stray = bool(media.effects or media.segments)
+        else:
+            stray = bool(media.effects or media.segments or media.text_layer is not None)
+        if stray:
+            raise PydanticCustomError(
+                "effects_not_for_kind", "effects and stretches of video are for a video"
+            )
+
     def _parts_are_coherent(self) -> None:
         """Video by parts (ADR 44, VE-06): the parent holds a plan of 1 to `PARTS_MAX`
         parts and, of the clip inputs, only the images its parts take (m-24984421); a
@@ -1463,6 +1756,10 @@ class ContentBrief(BaseModel):
                 raise ValueError("a video by parts is not itself a part")
             if media.parts[0].mode == "extend":
                 raise ValueError("the first part cannot continue a previous one")
+            if media.parts[0].transition_in is not None:
+                raise PydanticCustomError(
+                    "transition_on_first_part", "the first part has no part before it"
+                )
             covered: dict[tuple[UUID, int], list[VideoPartPlan]] = {}
             previous: VideoPartPlan | None = None
             for plan in media.parts:
@@ -1520,7 +1817,7 @@ class ContentBrief(BaseModel):
             raise ValueError("a part of a video by parts is a clip")
         if part.mode == "extend" and part.index == 1:
             raise ValueError("the first part cannot continue a previous one")
-        expected = {"reference": "motion", "edit": "edit", "extend": "extend"}[part.mode]
+        expected = CLIP_MODE_OF_PART[part.mode]
         if media.clip_reference_mode != expected:
             raise ValueError(f"the {part.mode} part uses the {expected} reference mode")
 

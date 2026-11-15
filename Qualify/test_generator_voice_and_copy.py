@@ -1392,6 +1392,20 @@ def _clip_state_with_product() -> CreativeState:
     return state
 
 
+def test_with_the_clip_editor_on_a_clips_step_1_is_arma_tu_video(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """m-25026621: with `QUALIFY_CLIP_EDITOR` on, the Clip's first step is the editor;
+    the other steps keep their names."""
+    from . import clip_editor_vm
+
+    monkeypatch.setattr(clip_editor_vm, "CLIP_EDITOR_ON", True)
+    state = _clip_state_with_product()
+    state.choose_category("clip")
+    labels = [step["label"] for step in state.gen_view_steps]
+    assert labels == ["Arma tu video", "Qué decir", "Cómo la quieres", "Revisa y crea"]
+
+
 def test_a_clip_follows_the_ads_flow_and_starts_on_the_catalog_photo() -> None:
     """§ requests 2026-10-14/20: Clip is Referencias → Publicación → Datos clave →
     Contexto → Campaña → Resumen;
@@ -1403,7 +1417,7 @@ def test_a_clip_follows_the_ads_flow_and_starts_on_the_catalog_photo() -> None:
     assert state.gen_views == ["reference", "topic", "rules", "channel", "campaign", "summary"]
     labels = [step["label"] for step in state.gen_view_steps]
     assert labels == [
-        "Qué mostrar",
+        "Qué mostrar",  # QUALIFY_CLIP_EDITOR off (default)
         "Qué decir",
         "Cómo la quieres",
         "Revisa y crea",

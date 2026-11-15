@@ -38,7 +38,9 @@ from .test_creative_parts_db import _business, _service
 pytestmark = pytest.mark.db
 
 REEL = analysis(shot(0, 0.0, 5.0), shot(1, 5.0, 10.0), shot(2, 10.0, 15.0), shot(3, 15.0, 29.0))
-PLAN = plan_from_analysis(REEL)
+#: With «Sigue a la anterior» on (EF-09): the long cut's tail is `extend`, as every test
+#: here was written for, whatever `QUALIFY_PARTS_EXTEND` says where they run.
+PLAN = plan_from_analysis(REEL, extend_on=True)
 
 
 @pytest.fixture
@@ -134,7 +136,9 @@ def test_saved_source_identity_survives_edits_reorder_and_restore_db(world) -> N
             save(parts, removed)
         assert refused.value.reason in (PLAN_NOT_SAVED, PLAN_REPEATED_CUT, PLAN_INVALID)
     saved = read_parts_plan(tenant_id=tenant, parent_id=parent)
-    assert saved.parts == (edited, *PLAN[1:]) and saved.removed == ()
+    # EF-09: `edited` left the rule's `edit` for `reference`: the owner's change is marked
+    owners = edited.model_copy(update={"mode_changed_by_owner": True})
+    assert saved.parts == (owners, *PLAN[1:]) and saved.removed == ()
 
 
 def test_only_an_entry_born_extend_becomes_extend_again_db(world, monkeypatch) -> None:  # noqa: ANN001
@@ -394,3 +398,32 @@ def test_removed_public_edit_expiry_and_cleared_parent_photos_do_not_block_activ
             )
         assert refused.value.reason == PLAN_EDIT_UNAVAILABLE
     assert read_parts_plan(tenant_id=tenant, parent_id=parent) == saved
+
+
+def test_the_owner_changing_the_rules_mode_is_kept_on_the_parent_db(world) -> None:  # noqa: ANN001
+    """EF-09: `save_parts_plan` marks `mode_changed_by_owner` against the rule's proposal
+    (whatever the entry says), keeps the proposal's version and reason, clears the mark
+    when the owner goes back to it, and a reorder alone marks nothing."""
+    _, _, tenant, _, _, parent = world
+
+    def save(parts: tuple, removed: tuple = ()) -> object:  # type: ignore[type-arg]
+        return save_parts_plan(
+            tenant_id=tenant, parent_id=parent, parts=parts, removed=removed, analysis=REEL
+        )
+
+    assert PLAN[0].mode == "edit" and PLAN[0].mode_rule_version == 1
+    made_new = PLAN[0].model_copy(update={"mode": "reference"})
+    saved = save((made_new, *PLAN[1:]))
+    first = read_parts_plan(tenant_id=tenant, parent_id=parent).parts[0]
+    assert saved.parts[0] == first
+    assert first.mode == "reference" and first.mode_changed_by_owner is True
+    assert (first.mode_reason, first.mode_rule_version) == (
+        PLAN[0].mode_reason,
+        PLAN[0].mode_rule_version,
+    )
+    # back to the proposal, from the stored (marked) entry: cleared
+    back = save((first.model_copy(update={"mode": "edit"}), *PLAN[1:]))
+    assert back.parts == PLAN
+    # a reorder with a removal: nothing marked
+    reordered = save((PLAN[2], PLAN[0], PLAN[3], PLAN[4]), (PLAN[1],))
+    assert not any(p.mode_changed_by_owner for p in (*reordered.parts, *reordered.removed))
