@@ -304,3 +304,44 @@ def test_two_first_contact_captures_cannot_replace_each_other(seeded: tuple[UUID
     with tenant_session(TENANT) as session:
         row = session.get(DetailsRow, brand)
         assert row.connect["contact"]["whatsapp"] == numbers[results.index(True)]
+
+
+@pytest.mark.db
+def test_a_save_that_does_not_own_a_key_keeps_the_stored_one(
+    seeded: tuple[UUID, UUID],
+) -> None:
+    """m-25029206: Tu marca's other sections send `connect` without the rubro and its
+    etiquetas (`keep`): what another session saved there stays; a key it never had stays
+    absent; a save that sends them (a wizard) still writes them."""
+    brand, user = seeded
+    store = BrandKitStore()
+    new = [{"tag": "domicilios", "origin": "manual", "reason": "", "model": ""}]
+    store.save_details(
+        tenant_id=TENANT, brand_id=brand, user_id=user, documents={"connect": {"city": "A"}}
+    )
+    store.update_document_keys(
+        tenant_id=TENANT,
+        brand_id=brand,
+        user_id=user,
+        document="connect",
+        values={"rubro_text": "hamburguesas", "hashtags": new},
+    )
+    store.save_details(
+        tenant_id=TENANT,
+        brand_id=brand,
+        user_id=user,
+        documents={"connect": {"city": "B"}},
+        keep={"connect": ("rubro_text", "hashtags", "never_there")},
+    )
+    connect = store.load_details(tenant_id=TENANT, brand_id=brand).connect
+    assert connect["city"] == "B" and connect["hashtags"] == new
+    assert connect["rubro_text"] == "hamburguesas" and "never_there" not in connect
+    store.save_details(
+        tenant_id=TENANT,
+        brand_id=brand,
+        user_id=user,
+        documents={"connect": {"city": "B", "rubro_text": "otro", "hashtags": []}},
+        keep={"connect": ("rubro_text", "hashtags")},
+    )
+    connect = store.load_details(tenant_id=TENANT, brand_id=brand).connect
+    assert connect["rubro_text"] == "otro" and connect["hashtags"] == []

@@ -21,10 +21,20 @@ RUBRO_SECTION = "rubro"
 #: The rubro is a short description, not a text: what the input lets through.
 RUBRO_MAX_LENGTH = 200
 
-NOTE_SPACES = "Una etiqueta es una sola palabra, sin espacios."
-NOTE_CHARACTERS = "Usa solo letras, números o guion bajo (_), sin signos ni emojis."
-NOTE_TOO_LONG = f"Una etiqueta puede tener hasta {MAX_TAG_LENGTH} letras. Escribe una más corta."
+NOTE_CHARACTERS = (
+    "Usa solo letras, números o guion bajo, sin signos ni emojis. Por ejemplo: comidaarabe."
+)
+NOTE_TOO_LONG = (
+    f"Una etiqueta puede tener hasta {MAX_TAG_LENGTH} letras. Escribe una más corta, "
+    "por ejemplo: pizzeria."
+)
 NOTE_REPEATED = "Esa etiqueta ya está en tu lista."
+#: An old etiqueta (saved before this check) the catalog would refuse: shown marked, and
+#: «Guardar» waits until it is changed or removed — it never vanishes unseen.
+NOTE_INVALID_STORED = (
+    "Las etiquetas marcadas no sirven: quítalas con la ✕ y escríbelas de nuevo con solo "
+    "letras, números o guion bajo."
+)
 RUBRO_MISSING = "Escribe a qué se dedica tu negocio para poder guardar."
 
 
@@ -33,16 +43,35 @@ def clean_rubro(text: str) -> str:
     return " ".join(str(text or "").split())[:RUBRO_MAX_LENGTH]
 
 
+def stored_pills(raw: object) -> list[dict[str, str]]:
+    """The pills as the section edits them: only objects with a tag (anything else in the
+    stored list has nothing to show or keep), every value a string."""
+    if not isinstance(raw, list):
+        return []
+    return [
+        {str(k): str(v) for k, v in item.items()}
+        for item in raw
+        if isinstance(item, dict) and str(item.get("tag") or "").strip()
+    ]
+
+
+def invalid_tags(pills: list[dict[str, str]]) -> list[str]:
+    """The tags among `pills` the catalog would refuse — old ones the wizard let through."""
+    return [p["tag"] for p in pills if readable_tag(p.get("tag")) is None]
+
+
 def typed_tag(raw: str) -> tuple[str, str]:
     """What the owner typed as ONE tag: `(tag, "")` when the catalog would accept it, or
-    `("", note)` saying what to fix. Empty (or just «#») is `("", "")`: nothing to add."""
-    text = str(raw or "").strip()
-    if not text.lstrip("#").strip():
+    `("", note)` saying what to fix. Words are joined («comida árabe» → «comidaárabe»):
+    only signs, emojis or a tag over `MAX_TAG_LENGTH` are refused. Empty (or just «#») is
+    `("", "")`: nothing to add."""
+    text = "".join(str(raw or "").split())
+    if not text.lstrip("#"):
         return "", ""
     try:
         tag = normalize_tag(text)
-    except ValueError:
-        return "", NOTE_SPACES
+    except ValueError:  # a «#» inside the word: a sign like any other
+        return "", NOTE_CHARACTERS
     if len(tag) > MAX_TAG_LENGTH:
         return "", NOTE_TOO_LONG
     if readable_tag(tag) is None:
@@ -54,6 +83,7 @@ def add_typed(pills: list[dict[str, str]], raw: str) -> tuple[list[dict[str, str
     """`pills` with what was typed added through the wizard's `add_pills`. Returns the
     pills, the note to show ("" when all went well) and whether the text was taken —
     False keeps it in the input so it can be fixed (refused, or no room left)."""
+    pills = stored_pills(pills)  # a pill without a tag would break `add_pills`
     tag, note = typed_tag(raw)
     if not tag:  # refused (a note) — or nothing but «#», which simply closes the input
         return [dict(p) for p in pills], note, not note

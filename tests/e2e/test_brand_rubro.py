@@ -48,7 +48,7 @@ def test_the_owner_sees_and_changes_the_rubro_and_its_tags(
     page.goto(f"{app_server}/brand/kit")
     section = page.locator("#seccion-rubro")
     expect(section).to_be_visible(timeout=60_000)
-    expect(section.get_by_text("Todavía no tienes etiquetas", exact=False)).to_be_visible()
+    expect(section.get_by_text("Agrega hasta 5 palabras", exact=False)).to_be_visible()
     before = _connect(page)
     _shot(page, f"rubro-vacio-{width}")
 
@@ -63,17 +63,23 @@ def test_the_owner_sees_and_changes_the_rubro_and_its_tags(
     section.locator("#brand-rubro-text").fill("arepera de barrio")
     section.get_by_role("button", name="Agregar etiqueta").click()
     tag_input = section.get_by_label("Nueva etiqueta")
-    tag_input.fill("pan de bono")
+    tag_input.fill("c++")
     tag_input.press("Enter")
-    expect(section.get_by_text("Una etiqueta es una sola palabra, sin espacios.")).to_be_visible()
+    expect(section.get_by_text("Usa solo letras, números", exact=False)).to_be_visible()
     tag_input.fill("#Arepas")
     tag_input.press("Enter")
-    section.get_by_role("button", name="Agregar etiqueta").click()
-    section.get_by_label("Nueva etiqueta").fill("comida_casera")
-    section.get_by_label("Nueva etiqueta").press("Enter")
-    _shot(page, f"rubro-editando-{width}")
     expect(section.get_by_text("#arepas", exact=True)).to_be_visible()
-    expect(section.get_by_text("#comida_casera", exact=True)).to_be_visible()
+    # the input that closed on Enter must not add it again on its way out
+    page.wait_for_timeout(500)
+    expect(section.get_by_text("Esa etiqueta ya está en tu lista.")).to_have_count(0)
+    section.get_by_role("button", name="Agregar etiqueta").click()
+    section.get_by_label("Nueva etiqueta").fill("comida casera")  # joined into one
+    section.get_by_label("Nueva etiqueta").press("Enter")
+    expect(section.get_by_text("#comidacasera", exact=True)).to_be_visible()
+    page.wait_for_timeout(500)
+    expect(section.get_by_text("Esa etiqueta ya está en tu lista.")).to_have_count(0)
+    section.scroll_into_view_if_needed()
+    _shot(page, f"rubro-editando-{width}")
     # nothing on the page is wider than the phone
     assert page.evaluate("document.documentElement.scrollWidth") <= width + 1
 
@@ -85,7 +91,7 @@ def test_the_owner_sees_and_changes_the_rubro_and_its_tags(
 
     after = _connect(page)
     assert after["rubro_text"] == "arepera de barrio"
-    assert [pill["tag"] for pill in after["hashtags"]] == ["arepas", "comida_casera"]
+    assert [pill["tag"] for pill in after["hashtags"]] == ["arepas", "comidacasera"]
     assert all(set(pill) == {"tag", "origin", "reason", "model"} for pill in after["hashtags"])
     rest = {k: v for k, v in after.items() if k not in ("rubro_text", "hashtags")}
     assert rest == {k: v for k, v in before.items() if k not in ("rubro_text", "hashtags")}

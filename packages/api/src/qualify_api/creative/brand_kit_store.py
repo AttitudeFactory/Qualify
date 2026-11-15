@@ -250,9 +250,13 @@ class BrandKitStore:
         brand_id: UUID,
         user_id: UUID | None,
         documents: Mapping[str, Mapping[str, Any]],
+        keep: Mapping[str, Iterable[str]] | None = None,
     ) -> None:
         """Write the given documents (any of `logo_brief`/`connect`/`profile`); the
-        others keep what they had."""
+        others keep what they had. `keep` names, per document, keys this save does not
+        own: when the document sent lacks one, the stored value stays — read under the
+        same lock (m-25029206: Tu marca's other sections never write `connect.rubro_text`
+        / `connect.hashtags`, so a session loaded earlier cannot put old ones back)."""
         unknown = set(documents) - set(DETAIL_DOCUMENTS)
         if unknown:
             raise ValueError(f"unknown brand kit documents {sorted(unknown)}")
@@ -270,7 +274,12 @@ class BrandKitStore:
                 )
                 session.add(row)
             for name, document in documents.items():
-                setattr(row, name, carry_reserved(name, getattr(row, name), document))
+                stored = getattr(row, name)
+                out = carry_reserved(name, stored, document)
+                for key in (keep or {}).get(name, ()):
+                    if key not in out and stored and key in stored:
+                        out[key] = stored[key]
+                setattr(row, name, out)
             row.updated_by = user_id
             row.updated_at = datetime.now(UTC)
             session.flush()

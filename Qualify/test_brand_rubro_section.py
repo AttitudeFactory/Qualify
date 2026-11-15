@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from typing import Any
 from uuid import UUID
 
@@ -36,6 +37,18 @@ def _esc(text: str) -> str:
 # -- the pure part --------------------------------------------------------------------
 
 
+def test_words_typed_apart_are_joined_into_one_tag() -> None:
+    assert vm.typed_tag("comida árabe") == ("comidaárabe", "")
+    assert vm.typed_tag(" #Pan de Bono ") == ("pandebono", "")
+
+
+def test_a_stored_pill_without_a_tag_is_ignored_not_an_error() -> None:
+    pills = [{"origin": "ai"}, "x", {"tag": "arepas", "origin": "manual"}]
+    assert vm.stored_pills(pills) == [{"tag": "arepas", "origin": "manual"}]
+    out, note, taken = vm.add_typed(pills, "pizzeria")  # type: ignore[arg-type]
+    assert [p["tag"] for p in out] == ["arepas", "pizzeria"] and taken and note == ""
+
+
 def test_a_typed_tag_is_stored_as_the_catalog_reads_it() -> None:
     assert vm.typed_tag("  #CaféDeEspecialidad ") == ("cafédeespecialidad", "")
     assert vm.typed_tag("pan_de_bono") == ("pan_de_bono", "")
@@ -45,8 +58,8 @@ def test_a_typed_tag_is_stored_as_the_catalog_reads_it() -> None:
 @pytest.mark.parametrize(
     ("raw", "note"),
     [
-        ("pan de bono", vm.NOTE_SPACES),
         ("c++", vm.NOTE_CHARACTERS),
+        ("cafe#bar", vm.NOTE_CHARACTERS),
         ("café-bar", vm.NOTE_CHARACTERS),
         ("🍔", vm.NOTE_CHARACTERS),
         ("___", vm.NOTE_CHARACTERS),
@@ -133,8 +146,8 @@ def test_cambiar_edits_drafts_and_cancelar_saves_nothing(monkeypatch: pytest.Mon
     BrandEditState.set_rubro_draft.fn(editor, "hamburguesas a domicilio")
     _type(editor, "#Domicilios")
     assert not editor.adding_tag and editor.tag_input == ""
-    _type(editor, "con espacios")
-    assert editor.tag_note == vm.NOTE_SPACES and editor.tag_input == "con espacios"
+    _type(editor, "c++")
+    assert editor.tag_note == vm.NOTE_CHARACTERS and editor.tag_input == "c++"
     BrandEditState.tag_input_key.fn(editor, "Escape")
     BrandEditState.remove_tag.fn(editor, "smashburger")
     assert [p["tag"] for p in editor.tags_draft] == ["domicilios"]
@@ -163,6 +176,7 @@ class _Editor:
         self.tag_note = ""
         self.rubro_error = ""
         self.rubro_saving = False
+        self.invalid_tags: list[str] = []
 
     async def __aenter__(self) -> _Editor:
         return self
@@ -202,7 +216,7 @@ def test_guardar_writes_only_the_rubro_and_its_tags(monkeypatch: pytest.MonkeyPa
     connect = states[wiz.BrandConnectState]
     editor = _Editor(states)
     editor.rubro_draft = "  hamburguesas   a domicilio "
-    editor.tags_draft = [*connect.rubro_hashtags, {"tag": "c++", "origin": "manual"}]
+    editor.tags_draft = [*connect.rubro_hashtags, {"origin": "manual"}]  # no tag: ignored
     editor.tag_input = "Domicilios"  # still in its input: it counts
 
     async def ids(_state: Any) -> tuple[UUID, UUID, UUID]:
@@ -248,10 +262,10 @@ def test_an_invalid_tag_in_the_input_blocks_the_save(monkeypatch: pytest.MonkeyP
     _no_paid_calls(monkeypatch)
     editor = _Editor(_states())
     editor.rubro_draft = "hamburguesería"
-    editor.tag_input = "pan de bono"
+    editor.tag_input = "c++"
     monkeypatch.setattr(brand_finish, "save_rubro", lambda *a, **k: pytest.fail("saved"))
     assert _save(editor) == []
-    assert editor.tag_note == vm.NOTE_SPACES and editor.open_section == vm.RUBRO_SECTION
+    assert editor.tag_note == vm.NOTE_CHARACTERS and editor.open_section == vm.RUBRO_SECTION
 
 
 def test_an_empty_rubro_is_asked_for(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -310,3 +324,159 @@ def test_the_copy_is_plain_spanish_and_promises_nothing_extra() -> None:
     ).lower()
     for word in ("hashtag", "tiktok", "tendencia", "semana", "post", "brand"):
         assert word not in copy
+
+
+def test_an_old_invalid_tag_is_marked_and_blocks_the_save_until_removed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    states = _states()
+    states[wiz.BrandConnectState].rubro_hashtags.append({"tag": "c++", "origin": "manual"})
+    editor = _bind(states, monkeypatch)
+    asyncio.run(BrandEditState.open.fn(editor, vm.RUBRO_SECTION))
+    assert editor.invalid_tags == ["c++"]
+    fake = _Editor(states)
+    fake.invalid_tags = list(editor.invalid_tags)
+    monkeypatch.setattr(brand_finish, "save_rubro", lambda *a, **k: pytest.fail("saved"))
+    assert _save(fake) == []
+    assert fake.rubro_error == vm.NOTE_INVALID_STORED and fake.open_section == vm.RUBRO_SECTION
+    BrandEditState.remove_tag.fn(editor, "c++")
+    assert editor.invalid_tags == []
+
+
+def test_a_blur_after_enter_or_escape_adds_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    editor = _bind(_states(), monkeypatch)
+    asyncio.run(BrandEditState.open.fn(editor, vm.RUBRO_SECTION))
+    _type(editor, "arepas")
+    BrandEditState.tag_input_blur.fn(editor, "arepas")  # the closed input's late blur
+    assert editor.tag_note == ""
+    assert [p["tag"] for p in editor.tags_draft] == ["smashburger", "arepas"]
+    BrandEditState.open_tag_input.fn(editor)
+    BrandEditState.set_tag_input.fn(editor, "pizzeria")
+    BrandEditState.tag_input_key.fn(editor, "Escape")
+    BrandEditState.tag_input_blur.fn(editor, "pizzeria")
+    assert len(editor.tags_draft) == 2 and editor.tag_note == ""
+
+
+def test_a_visit_resets_the_section_and_a_stuck_spinner(monkeypatch: pytest.MonkeyPatch) -> None:
+    editor = _bind(_states(), monkeypatch)
+    editor.rubro_saving = True
+    editor.adding_tag = True
+    editor.tag_input = "c++"
+    editor.tag_note = vm.NOTE_CHARACTERS
+    editor.rubro_error = RUBRO_SAVE_FAILED
+    asyncio.run(BrandEditState.restart.fn(editor))
+    assert not editor.rubro_saving and not editor.adding_tag
+    assert (editor.tag_input, editor.tag_note, editor.rubro_error) == ("", "", "")
+
+
+def test_the_spinner_ends_whatever_the_session_lookup_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    editor = _Editor(_states())
+    editor.rubro_draft = "panadería"
+
+    async def boom(_state: Any) -> None:
+        raise KeyError("anything")
+
+    monkeypatch.setattr(brand_finish, "session_ids", boom)
+    assert _save(editor) == []
+    assert not editor.rubro_saving and editor.rubro_error == RUBRO_SAVE_FAILED
+
+
+def test_search_again_line_only_when_the_brand_can_search() -> None:
+    rendered = " ".join(str(part) for part in editor_module._rubro_editor())
+    assert _esc(editor_module.RUBRO_NO_SEARCH) in rendered
+    assert "profile_username" in str(editor_module._can_search_again())
+    assert "Agregar etiqueta" in rendered
+
+
+# -- a stale session never puts old etiquetas back (code review, should-fix 1) --------
+
+
+class _Store:
+    """`BrandKitStore`'s save semantics over one in-memory `connect` document."""
+
+    def __init__(self, connect: dict[str, Any]) -> None:
+        self.connect = dict(connect)
+
+    def save_details(self, *, documents: Any, keep: Any = None, **_kw: Any) -> None:
+        document = dict(documents["connect"])
+        for key in (keep or {}).get("connect", ()):
+            if key not in document and key in self.connect:
+                document[key] = self.connect[key]
+        self.connect = document
+
+    def update_document_keys(self, *, values: Any, **_kw: Any) -> None:
+        self.connect = {**self.connect, **values}
+
+    def replace_assets(self, **_kw: Any) -> None:
+        pass
+
+
+class _Lock:
+    def __init__(self, states: dict[type, Any]) -> None:
+        self.states = states
+
+    async def get_state(self, cls: type) -> Any:
+        return self.states[cls]
+
+
+def test_a_stale_session_saving_another_section_keeps_the_new_tags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    old = [{"tag": "smashburger", "origin": "ai", "reason": "", "model": ""}]
+    store = _Store({"rubro_text": "hamburguesería", "hashtags": old, "city": "Cúcuta"})
+    monkeypatch.setattr(brand_finish, "save_kit", lambda *a, **k: None)
+
+    # session A loaded the brand earlier: it holds the old rubro and etiquetas
+    session_a = _states()
+    session_a[wiz.BrandConnectState].city = "Cúcuta"
+    # session B saves new ones from «Tu rubro y tus etiquetas»
+    new = [{"tag": "domicilios", "origin": "manual", "reason": "", "model": ""}]
+    brand_finish.save_rubro(TENANT, BRAND, USER, "hamburguesas a domicilio", new, store=store)
+
+    # session A saves Colores: Tu marca's whole-kit save, no wizard flow
+    snapshot = asyncio.run(brand_finish.snapshot_states(_Lock(session_a), None))
+    assert snapshot.connect is not None and "hashtags" not in snapshot.connect
+    brand_finish.persist_brand_kit(
+        TENANT,
+        BRAND,
+        USER,
+        snapshot,
+        upload_dir=Path("."),
+        store=store,  # type: ignore[arg-type]
+    )
+    assert store.connect["hashtags"] == new
+    assert store.connect["rubro_text"] == "hamburguesas a domicilio"
+    assert store.connect["city"] == "Cúcuta"
+
+
+def test_the_wizards_document_is_unchanged() -> None:
+    """A wizard's save (any flow: `progress` given) writes the whole document, the rubro
+    and its etiquetas included — byte for byte what it wrote before m-25029206."""
+    connect = wiz.BrandConnectState()
+    connect.network = "instagram"
+    connect.username = "areperacarmen"
+    connect.rubro_text = "arepera"
+    connect.city = "Cúcuta"
+    connect.country_code = "CO"
+    connect.rubro_hashtags = [{"tag": "arepas", "origin": "ai", "reason": "r", "model": "m"}]
+    progress = {"flow": "connect", "completed": True}
+    expected = {
+        "network": "instagram",
+        "username": "areperacarmen",
+        "account_kind": "",
+        "has_maps": "",
+        "sector": "",
+        "rubro_text": "arepera",
+        "country_code": "CO",
+        "city": "Cúcuta",
+        "hashtags": [{"tag": "arepas", "origin": "ai", "reason": "r", "model": "m"}],
+        "voice_configured": False,
+        brand_finish.PROGRESS_KEY: progress,
+    }
+    assert json.dumps(brand_finish._connect_document(connect, progress)) == json.dumps(expected)
+    states = {**_states(), wiz.BrandConnectState: connect}
+    snapshot = asyncio.run(brand_finish.snapshot_states(_Lock(states), progress))
+    assert json.dumps(snapshot.connect) == json.dumps(expected)
+    assert snapshot.connect_keep == ()
