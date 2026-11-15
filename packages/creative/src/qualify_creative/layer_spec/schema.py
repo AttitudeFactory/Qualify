@@ -40,7 +40,10 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from qualify_creative.layer_spec.text_rules import price_problem
+
 SPEC_VERSION = 1
+
 CATALOG_FILE = "catalog_v1.json"
 SCHEMA_FILE = "layer_spec_v1.schema.json"
 
@@ -228,87 +231,16 @@ class CarouselPlace(_Strict):
 
 # -- free-text rules (catalog §1.8) -------------------------------------------------------
 
-#: a currency symbol, anywhere
-_CURRENCY_SYMBOL = re.compile(r"[$€£¥₡₲₱]")
-#: an amount word: a currency code or name, or «mil»/«k»/«lucas», glued or next to a digit
-#: («15 mil», «15mil», «A 20bs», «Por 5usd», «12 lucas», «20 soles», «USD 5»). Written-out
-#: numbers («Por veinte mil») are out of reach of a rule and left to the prompt.
-_AMOUNT_WORD = (
-    r"(?:cop|usd|us\$|ves|uyu|bs\.?|bsf|bss|eur|euros?|pesos?|soles?|bol[ií]vares|"
-    r"d[oó]lares?|lucas|mil|k)"
-)
-_AMOUNT = re.compile(
-    rf"\d\s*{_AMOUNT_WORD}(?![a-záéíóúñ])|(?<![a-záéíóúñ]){_AMOUNT_WORD}\s*\d",
-    re.IGNORECASE,
-)
-#: a price figure: a number with a thousands separator or with cents
-_SEPARATED = re.compile(r"\b\d{1,3}(?:[.,]\d{3})+\b|\b\d+[.,]\d{2}\b")
-#: a year (1900-2099) — only a year where its context says so (`_YEAR_CONTEXT`)
-_YEAR = re.compile(r"^(?:19|20)\d{2}$")
-#: what follows a number that is a quantity, not a price: a unit, a percentage or a thing
-#: counted («500 g», «100% natural», «1 litro», «2 personas», «en 5 minutos», «3 sabores»)
-_UNIT = re.compile(
-    r"\s*(?:%|(?:g|gr|grs|gramos|kg|kilos?|ml|l|litros?|cc|cm|m|metros?|m2|km|cuadras?|"
-    r"unidades|piezas?|porci[oó]n|porciones|personas?|sabores|ingredientes|opciones|"
-    r"tipos|pasos|segundos|minutos|min|horas|d[ií]as|semanas|meses|a[nñ]os)\b|m²)",
-    re.IGNORECASE,
-)
-#: the words that put a price after them («a 2000», «por 25», «solo 99», «desde 15»,
-#: «precio 18», «en 25»)
-_PRICE_WORDS = frozenset({"a", "por", "solo", "sólo", "desde", "precio", "en"})
-#: of those, the ones a year may follow («desde 1998», «en 2026»): a 4-digit 1900-2099
-#: after them is read as a year, anything else as a price — «Desde 1998» a year, «Desde
-#: 15» a price (resolved by range; the cost is that «Desde 2000» passes as a year)
-_YEAR_AFTER_PRICE_WORD = frozenset({"desde", "en"})
-#: the words a year may follow when no price word does («Novedades 2026», «temporada
-#: 2026», «edición 2026», «Navidad 2026», «el año 2026»); elsewhere a 3+ digit number is
-#: a price («Empanadas 2000»)
-_YEAR_CONTEXT = frozenset(
-    {
-        "edición",
-        "edicion",
-        "temporada",
-        "novedades",
-        "colección",
-        "coleccion",
-        "año",
-        "navidad",
-        "verano",
-        "invierno",
-        "del",
-        "de",
-    }
-)
-_WORD_BEFORE = re.compile(r"([^\W\d_]+)\s+$")
-_ANY_NUMBER = re.compile(r"(?<![\d.,])\d+(?![\d.,]\d)")
-#: a promotion count is no amount («2x1», «3 x 2»)
-_PROMO_AFTER = re.compile(r"\s*x\s*\d", re.IGNORECASE)
-_PROMO_BEFORE = re.compile(r"\d\s*x\s*$", re.IGNORECASE)
+#: the price rule lives in `text_rules` (REGLAS-001: normalised tokens and small tables,
+#: measured on `packages/api/evals/capa_texto/reglas_set.json`)
 _PHONE = re.compile(r"(?:\d[\s.-]?){7,}")
+_THOUSANDS = re.compile(r"\d{1,3}(?:[.,]\d{3})+")
 
 
-def _price_figure(text: str) -> bool:
-    """A number that reads as an amount: separated thousands or cents; any number right
-    after a price word unless it counts something or is a year where a year fits; or a
-    bare number of 3+ digits that is not a year in a year context."""
-    if _SEPARATED.search(text):
-        return True
-    for match in _ANY_NUMBER.finditer(text):
-        number, start, end = match.group(), match.start(), match.end()
-        if _PROMO_AFTER.match(text, end) or _PROMO_BEFORE.search(text, 0, start):
-            continue
-        if _UNIT.match(text, end):
-            continue
-        before = _WORD_BEFORE.search(text, 0, start)
-        word = before.group(1).lower() if before else ""
-        is_year = bool(_YEAR.match(number))
-        if word in _PRICE_WORDS:
-            if is_year and word in _YEAR_AFTER_PRICE_WORD:
-                continue
-            return True
-        if len(number) >= 3 and not (is_year and word in _YEAR_CONTEXT):
-            return True
-    return False
+def _is_phone(text: str) -> bool:
+    """Seven digits or more in a run — but an amount written in thousands («1.800.000») is a
+    price, not a phone number."""
+    return any(not _THOUSANDS.fullmatch(m.group().strip(" .-")) for m in _PHONE.finditer(text))
 
 
 _HOUR = re.compile(
@@ -331,11 +263,12 @@ def free_text_problems(text: str) -> list[str]:
     """Why a title, subtitle or call phrase breaks catalog §1.8 (empty: it passes). No
     datum travels in free text: prices, phones and hours enter only by reference."""
     problems = []
-    if _CURRENCY_SYMBOL.search(text) or _AMOUNT.search(text):
+    price = price_problem(text)
+    if price == "currency":
         problems.append("currency")
-    if _PHONE.search(text):
+    if _is_phone(text):
         problems.append("phone number")
-    elif _price_figure(text):
+    elif price == "price figure":
         problems.append("price figure")
     if _HOUR.search(text):
         problems.append("hour")

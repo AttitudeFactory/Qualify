@@ -48,8 +48,6 @@ import base64
 import logging
 import math
 import os
-import re
-import unicodedata
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
@@ -68,6 +66,7 @@ from qualify_creative.layer_spec import (
     is_script_family,
     title_limit,
 )
+from qualify_creative.layer_spec.text_rules import ContextSupport, claims_in
 from qualify_shared import observability
 
 from qualify_api.claude_tools import (
@@ -568,74 +567,48 @@ def _text(value: object) -> str | None:
     return text or None
 
 
-#: What a free text may not promise unless the brief or the saved data says it (UX review
-#: of capa-v1: invented promotions and opening hours passed, having no digits). A pattern's
-#: group `w`, when it has one, is the word looked up in the allowed sources.
-#: Plain language left out on purpose: a day after «tu/tus/su/sus/mi» («Tu sábado sabe
-#: mejor»); «abierto/cerrado» only with an availability word («abierto hoy», «estamos
-#: cerrados»), so «Cielo abierto» or «Recién abierto el horno» pass.
-_DAY = (
-    r"(?:lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bados?|domingos?|"
-    r"fin(?:es)? de semana)"
-)
-_AVAILABILITY = r"(?:hoy|ma[nñ]ana|todos|todo|los|las|desde|hasta|ya|siempre|24|este|esta)"
-_CLAIMS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    (
-        "a day",
-        re.compile(rf"(?<!\btu )(?<!\btus )(?<!\bsu )(?<!\bsus )(?<!\bmi )\b{_DAY}\b", re.I),
-    ),
-    ("every day", re.compile(r"\btodos los d[ií]as\b", re.IGNORECASE)),
-    (
-        "opening hours",
-        re.compile(
-            rf"\b(?P<w>abrimos|cerramos|24\s*horas)\b|"
-            rf"\b(?:estamos|seguimos|ya)\s+(?P<w2>abiert[oa]s?|cerrad[oa]s?)\b|"
-            rf"\b(?P<w3>abiert[oa]s?|cerrad[oa]s?)\s+{_AVAILABILITY}\b",
-            re.IGNORECASE,
-        ),
-    ),
-    (
-        "a discount",
-        re.compile(
-            r"-\s*\d+\s*%|\d+\s*%\s*(?:de\s+)?(?:descuento|dcto|off|menos)|"
-            r"\b(?:descuentos?|rebajas?)\b",
-            re.IGNORECASE,
-        ),
-    ),
-    ("something free", re.compile(r"\b(?:gratis|gratuit[oa]s?|de regalo)\b", re.IGNORECASE)),
-    ("delivery", re.compile(r"\b(?:domicilios?|env[ií]os?|delivery)\b", re.IGNORECASE)),
-    ("a promotion", re.compile(r"\b\d+\s*x\s*\d+\b", re.IGNORECASE)),
-)
-
-
-def _folded(text: str) -> str:
-    plain = unicodedata.normalize("NFKD", text.lower())
-    return " ".join("".join(c for c in plain if not unicodedata.combining(c)).split())
+#: What a free text may not promise unless the piece's context states it: the claim types and
+#: their tables live in `qualify_creative.layer_spec.text_rules` (REGLAS-001, measured on
+#: `packages/api/evals/capa_texto/reglas_set.json`).
+_CLAIM_NAMES = {
+    "day": "a day",
+    "every_day": "every day",
+    "hours": "opening hours",
+    "closure": "a closure",
+    "discount": "a discount",
+    "free": "something free",
+    "delivery": "delivery",
+    "promotion": "a promotion",
+    "novelty": "a novelty",
+}
 
 
 def unsupported_claims(text: str, request: LayerRequest) -> list[str]:
-    """What `text` promises — a day, opening hours, a discount, something free, delivery,
-    a 2x1 — that nothing handed to Claude says: «De qué trata la publicación» (topic and
-    scene), the approved hook and invitation, the catalog product names, the saved business
-    data. «100% natural» or «500 g» are no claim."""
-    source = _folded(
-        " ".join(
-            [request.topic, request.scene, request.hook, request.cta]
-            + [product.name for product in request.products]
-            + [request.facts.value(kind) or "" for kind in InfoKind]
-        )
+    """What `text` promises — a day, every day, opening hours, a closure, a discount,
+    something free, delivery, a promotion, a novelty — that the piece's context does not
+    state with the same type (days: the same days): «De qué trata la publicación» (topic and
+    scene), the approved hook and invitation, the saved business data. A product name is
+    never a claim nor support for one: «Tu Combo Domingo» is no schedule, and a product named
+    «Combo Domingo» does not let «Este domingo te esperamos» pass."""
+    claims = claims_in(text, product_names=[p.name for p in request.products])
+    if not claims.types:
+        return []
+    facts = request.facts
+    support = ContextSupport.of(
+        [
+            request.topic,
+            request.scene,
+            request.hook,
+            request.cta,
+            *(facts.value(kind) or "" for kind in InfoKind if kind is not InfoKind.HOURS),
+        ],
+        saved_hours=facts.value(InfoKind.HOURS),
     )
-    found = []
-    for what, pattern in _CLAIMS:
-        for match in pattern.finditer(text):
-            named = [g for g in (match.groupdict().values()) if g]
-            token = _folded(named[0] if named else match.group()).replace(" ", "")
-            if token and token in source.replace(" ", ""):
-                continue
-            if what == "opening hours" and request.facts.value(InfoKind.HOURS):
-                continue
-            found.append(f"«{match.group()}» ({what}) is not in the brief or the saved data")
-    return found
+    # quote the words that make the claim, not the whole text (the repair turn rewrites them)
+    return [
+        f"«{words}» ({_CLAIM_NAMES.get(kind, kind)}) is not in the brief or the saved data"
+        for kind, words in support.unsupported(claims)
+    ]
 
 
 def spec_from_answer(raw: dict[str, Any], request: LayerRequest, slide: SlideInput) -> LayerSpec:
