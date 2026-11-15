@@ -234,7 +234,9 @@ def legacy_promotions_target(params: Mapping[str, object]) -> str | None:
     kept = {
         ACCOUNT_PARAM: uuid_param(params, ACCOUNT_PARAM),
         FLOW_PARAM: flow if flow in PROMOTION_FLOWS else "",
-        STEP_PARAM: step if flow in PROMOTION_FLOWS and step.isdigit() and len(step) < 3 else "",
+        STEP_PARAM: step
+        if flow in PROMOTION_FLOWS and step.isascii() and step.isdigit() and len(step) < 3
+        else "",
     }
     return with_query(PROMOTIONS_ROUTE, **{SUB_PARAM: panel_sub(panel)}, **kept)
 

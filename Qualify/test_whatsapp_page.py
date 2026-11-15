@@ -443,6 +443,15 @@ def test_every_panel_has_an_address_that_reads_back(panel: str) -> None:
             {"tab": "campanas", "flujo": "promocion", "paso": "-1"},
             "/whatsapp/promociones?sub=enviadas&flujo=promocion",
         ),
+        # `str.isdigit` alone takes «²» or Arabic-Indic digits; only ASCII ones pass.
+        (
+            {"tab": "campanas", "flujo": "promocion", "paso": "٣"},
+            "/whatsapp/promociones?sub=enviadas&flujo=promocion",
+        ),
+        (
+            {"tab": "campanas", "flujo": "promocion", "paso": "²"},
+            "/whatsapp/promociones?sub=enviadas&flujo=promocion",
+        ),
         ({"tab": "plantillas", "paso": ["1", "2"]}, "/whatsapp/promociones?sub=aprobados"),
     ],
 )
@@ -485,6 +494,47 @@ def test_the_promotions_page_has_its_own_header_and_strip() -> None:
         assert present(label), label
     assert present(PROMOTIONS_TITLE) and present(PROMOTIONS_SUBTITLE)
     assert not present("Secciones de WhatsApp")  # the /whatsapp strip is not here
+
+
+def _mounts(component: rx.Component, gates: tuple[tuple[str, bool], ...] = ()) -> list:
+    """Every component with an `on_mount`, with the `rx.cond`s above it as (condition,
+    in its true branch)."""
+    found = []
+    if "on_mount" in (component.event_triggers or {}):
+        found.append((component, gates))
+    cond = getattr(component, "cond", None)  # an `rx.cond`: children = (true, false)
+    for index, child in enumerate(component.children):
+        here = gates if cond is None else (*gates, (str(cond), index == 0))
+        found.extend(_mounts(child, here))
+    return found
+
+
+@pytest.mark.parametrize(
+    ("page", "mine"),
+    [
+        (whatsapp_page.whatsapp_promotions_index, "promotions"),
+        (whatsapp_page.whatsapp_index, "whatsapp"),
+    ],
+)
+def test_no_panel_mounts_outside_its_pages_section(page: typing.Any, mine: str) -> None:
+    """m-25017862 (review 2026-11-14): both pages share `active_tab`, set a round trip
+    after the client switched page. Every panel — everything with an `on_mount` below
+    the shell — sits in the TRUE branch of this page's section condition, so the other
+    page's panel never mounts (nor loads) here. The menu's guided frame on `/whatsapp`
+    has its own condition, `active_tab == "menu"`, which no promotions panel meets."""
+    on_promotions = str(whatsapp_page._on_promotions_page())  # noqa: SLF001
+    gate = on_promotions if mine == "promotions" else str(~whatsapp_page._on_promotions_page())  # noqa: SLF001
+    panels = [
+        (component, gates)
+        for component, gates in _mounts(page())
+        # The shell's own: the menu (`nav`) and the route's history button.
+        if component.tag != "nav" and "q-route-pop" not in str(component.class_name)
+    ]
+    assert len(panels) >= 5  # the gate is not vacuous: the panels are really in the tree
+    for component, gates in panels:
+        menu_frame = any('"menu"' in cond and "active_tab" in cond and ok for cond, ok in gates)
+        assert (gate, True) in gates or menu_frame, (type(component).__name__, gates)
+        assert (gate, False) not in gates
 
 
 def test_promotions_route_is_registered_behind_login() -> None:
@@ -655,8 +705,8 @@ async def test_an_old_address_is_redirected_once_and_only_when_signed_in(
 ) -> None:
     """m-25017862: the loader leaves an old «Promociones» address alone (nothing set,
     nothing loaded); the page's history handler — its mount and every «atrás» — sends
-    it to the new page, with `replace`, and only with a session (`require_login` takes
-    a visitor without one to log in first)."""
+    it to the new page, with `replace`, and only with a session. A visitor without one
+    is `require_login`'s: it sends them to log in, and does not bring them back here."""
     expected = target or "/whatsapp/promociones?sub=enviadas&flujo=promocion&paso=2"
     state = _visit(path)
     assert WhatsAppState.enter_page.fn(state) == []  # type: ignore[attr-defined]
@@ -668,8 +718,9 @@ async def test_an_old_address_is_redirected_once_and_only_when_signed_in(
     _signed_in(monkeypatch, "00000000-0000-4000-8000-000000000001")
     events = await WhatsAppState.enter_history.fn(_visit(path), {"visit": "v"})  # type: ignore[attr-defined]
     assert len(events) == 1
-    rendered = str(events[0])
-    assert f'"{expected}"' in rendered and "replace" in rendered
+    # The same redirect `rx.redirect` builds — address AND `replace` (never a new step).
+    assert str(events[0].args) == str(rx.redirect(expected, replace=True).args)
+    assert str(events[0].args) != str(rx.redirect(expected).args)
 
 
 def test_tabs_exist_behind_the_agreed_hooks() -> None:

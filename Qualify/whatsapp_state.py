@@ -357,8 +357,8 @@ class WhatsAppState(rx.State):
         if moved is not None:
             # m-25017862: «Promociones» left this screen; a bookmark lands on its page —
             # once signed in. Without a session `require_login` sends the visitor to log
-            # in (and back here afterwards); a redirect now would only bounce through
-            # the new address on the way.
+            # in (it does not bring them back to this address afterwards); a redirect
+            # now would only bounce through the new address on the way there.
             signed_in = bool((await self.get_state(AuthState)).session_tenant_id)
             return [rx.redirect(moved, replace=True)] if signed_in else []
         await self.prepare_flow_address()
