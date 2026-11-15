@@ -217,7 +217,7 @@ def test_switching_pages_never_draws_the_other_pages_panel(
     _seed_whatsapp_number(page._qualify_e2e_tenant_id, page._qualify_e2e_user_id)  # noqa: SLF001
     page.set_viewport_size({"width": 1280, "height": 900})
     page.goto(f"{app_server}/whatsapp?tab=chats")
-    expect(page.locator(".q-wa-chats")).to_be_visible(timeout=60_000)
+    expect(page.locator(".q-wa-chats__list")).to_be_visible(timeout=60_000)
     page.evaluate(_WATCH_WRONG_PANEL)
 
     _menu(page).locator(f'a[href="{_ROUTE}"]').click()
@@ -227,7 +227,7 @@ def test_switching_pages_never_draws_the_other_pages_panel(
 
     _menu(page).locator('a[href^="/whatsapp"]').first.click()
     expect(page.get_by_role("heading", level=1, name="WhatsApp")).to_be_visible()
-    expect(page.locator(".q-wa-chats")).to_be_visible(timeout=60_000)
+    expect(page.locator(".q-wa-chats__list")).to_be_visible(timeout=60_000)
     assert page.evaluate("window.__qWrongPanel") == []
 
     # On a phone, /whatsapp's strip is two buttons in one row: «Promociones» left
@@ -263,7 +263,7 @@ def test_a_chats_links_land_on_the_right_page(chats_page) -> None:  # noqa: ANN0
     # The seeded number has a menu, so the tab opens on its guided frame; the chat list
     # is gone either way.
     expect(page.locator("main h1").first).to_be_visible(timeout=60_000)
-    expect(page.locator(".q-wa-chats")).to_have_count(0)
+    expect(page.locator(".q-wa-chats__list")).to_have_count(0)
     _shot(page, "ajustes-de-este-canal")
 
     page.goto(f"{base}{chat}&chat={ids['whatsapp_closed']}")
