@@ -19,7 +19,9 @@ Every control is the wizard's own renderer on the same `CreativeState` /
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
+import logging
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -27,6 +29,7 @@ import reflex as rx
 from qualify_creative.ad_destination import validate_ad_destination_url
 
 from . import brand_documents
+from . import brand_rubro_vm as rubro_vm
 from .ad_enhancements_ui import ad_enhancement_permissions
 from .brand_avatar_panel import brand_avatar_card
 from .catalog_vm import (
@@ -62,15 +65,25 @@ from .ui import (
     page_body,
     page_header,
     progress_panel,
+    removable_pill,
     skeleton_card,
+    tag,
     tone_badge,
 )
 from .ui import tokens as T
 from .voice_lab import VoiceLabState, voice_analysis_result, voice_lab_panel
 
+logger = logging.getLogger(__name__)
+
 #: The editor's sections, in page order — (key, title, icon, what it holds).
 SECTIONS: tuple[tuple[str, str, str, str], ...] = (
     ("marca", "Marca", "compass", "Qué te hace distinto, quién te compra y tu documento de marca."),
+    (
+        rubro_vm.RUBRO_SECTION,
+        "Tu rubro y tus etiquetas",
+        "tag",
+        "A qué se dedica tu negocio, con tus palabras, y hasta 5 etiquetas.",
+    ),
     ("brandboard", "Logo", "image", "Las versiones de tu logo y los otros elementos."),
     ("tipografia", "Tu letra", "type", "La letra con la que se te reconoce."),
     ("paleta", "Colores", "palette", "Los colores con los que se te reconoce."),
@@ -111,6 +124,26 @@ PERKS_SECTION = "ofrece"
 #: Its closed summary while the owner has written none.
 PERKS_EMPTY = "Todavía no has escrito nada"
 
+#: «Tu rubro y tus etiquetas» (m-25029206): what the etiquetas are for — true for every
+#: business today (the weekly trend read is a pilot, so it is not promised here).
+RUBRO_HELP = (
+    "Con tus etiquetas buscamos negocios parecidos al tuyo y te sugerimos etiquetas para "
+    "tus publicaciones. Escribe cada una todo junto, por ejemplo: comidaarabe, pizzeria, "
+    "ropadeportiva."
+)
+#: Saving runs no search: where a new one is asked for — shown only when «Buscar de
+#: nuevo» can run for this brand (it needs the brand's account, `refresh_discovery`).
+RUBRO_NO_SEARCH = (
+    "Para ver otros negocios parecidos al tuyo, toca «Buscar de nuevo» en su sección, más abajo."
+)
+RUBRO_TAGS_EMPTY = (
+    "Agrega hasta 5 palabras que describan tu negocio: con ellas buscamos negocios "
+    "parecidos al tuyo y te sugerimos etiquetas para tus publicaciones. Toca «Cambiar»."
+)
+RUBRO_ADD_TAG = "Agregar etiqueta"
+RUBRO_SAVE_FAILED = "No pudimos guardar tu rubro. Inténtalo de nuevo en un momento."
+RUBRO_NO_SESSION = "Tu sesión se cerró. Vuelve a entrar para seguir."
+
 #: The brandboard's files, put back by "Cancelar" with the kit's fields.
 _ASSET_FIELDS = ("logo_versions", "logo_version_context", "brand_extras", "font_files")
 
@@ -141,6 +174,22 @@ class BrandEditState(rx.State):
     #: drawn — the summary waits for the saved details, so its own mount says when
     #: (`referentes_in_view`; UX re-check 2: a timed wait gave up on a cold phone load).
     scroll_to_referentes: bool = False
+    #: «Tu rubro y tus etiquetas» (m-25029206) while open: drafts of their own, so
+    #: «Cancelar» only drops them — the saved ones stay in `BrandConnectState`.
+    rubro_draft: str = ""
+    tags_draft: list[dict[str, str]] = []
+    #: The etiqueta being typed: the input shows only after its «+» (like the wizard).
+    tag_input: str = ""
+    adding_tag: bool = False
+    #: What to fix in the etiqueta typed, or why it did not fit ("" none).
+    tag_note: str = ""
+    rubro_error: str = ""
+    rubro_saving: bool = False
+    #: Old etiquetas in the drafts the catalog would refuse: marked, and «Guardar» waits.
+    invalid_tags: list[str] = []
+    #: «Buscar de nuevo» can run for this brand (`rubro_vm.can_search_again`, the same
+    #: condition `refresh_discovery` checks): only then the line pointing at it shows.
+    can_search_again: bool = False
 
     @rx.event
     async def restart(self) -> rx.event.EventSpec | None:
@@ -153,6 +202,8 @@ class BrandEditState(rx.State):
         self.referentes_open = False
         self.voice_skipped = False
         self._before = {}
+        self._clear_rubro_drafts()
+        self.rubro_saving = False
         self._read_return_query()
         self.scroll_to_referentes = self.referentes_open
         connect = await self.get_state(BrandConnectState)
@@ -227,6 +278,14 @@ class BrandEditState(rx.State):
             "form": dataclasses.asdict(creative._kit_form()),
             **{field: _copy(getattr(wizard, field)) for field in _ASSET_FIELDS},
         }
+        if key == rubro_vm.RUBRO_SECTION:
+            connect = await self.get_state(BrandConnectState)
+            self.rubro_draft = connect.rubro_text
+            self.tags_draft = rubro_vm.stored_pills(connect.rubro_hashtags)
+            self.invalid_tags = rubro_vm.invalid_tags(self.tags_draft)
+            self.can_search_again = rubro_vm.can_search_again(
+                connect.profile_username, connect.username, connect.network
+            )
         self.open_section = key
 
     @rx.event
@@ -242,6 +301,152 @@ class BrandEditState(rx.State):
                 setattr(wizard, field, self._before[field])
         self.open_section = ""
         self._before = {}
+        self._clear_rubro_drafts()
+
+    def _clear_rubro_drafts(self) -> None:
+        self.rubro_draft = ""
+        self.tags_draft = []
+        self.tag_input = ""
+        self.adding_tag = False
+        self.tag_note = ""
+        self.rubro_error = ""
+        self.invalid_tags = []
+
+    @rx.event(background=True)
+    async def refresh_rubro(self) -> None:
+        """Every visit reads the rubro and its etiquetas from the database: a session
+        loaded earlier (another tab or phone) shows what is saved now, not its old copy
+        (`load_saved_details` keeps a session's own values) — m-25029206."""
+        from .brand_finish import load_rubro, session_ids
+
+        ids = await session_ids(self)
+        if ids is None:
+            return
+        try:
+            rubro, pills = await asyncio.to_thread(load_rubro, ids[0], ids[1])
+        except Exception as exc:  # the page still shows the session's copy
+            logger.warning("rubro not refreshed: %s", type(exc).__name__)
+            return
+        async with self:
+            connect = await self.get_state(BrandConnectState)
+            # a session that never loaded its details gets them all from
+            # `load_saved_details` (it fills `connect` only while the rubro is empty)
+            if not connect._details_loaded:
+                return
+            if (connect.rubro_text, connect.rubro_hashtags) == (rubro, pills):
+                return
+            connect.rubro_text = rubro
+            connect.rubro_hashtags = pills
+            connect.hashtags_rubro = rubro.strip()
+
+    # -- «Tu rubro y tus etiquetas» (m-25029206) ------------------------------------
+    # Its own handlers, NOT the wizard's: leaving the wizard's rubro input asks Claude
+    # for etiquetas (`BrandConnectState.rubro_input_blur` → `suggest_hashtags`); here the
+    # owner types them and nothing is suggested or searched.
+
+    @rx.event
+    def set_rubro_draft(self, value: str) -> None:
+        self.rubro_draft = value
+        self.rubro_error = ""
+
+    @rx.event
+    def open_tag_input(self) -> None:
+        self.adding_tag = True
+        self.tag_note = ""
+
+    @rx.event
+    def set_tag_input(self, value: str) -> None:
+        self.tag_input = value
+
+    @rx.event
+    def add_tag(self, _form: dict[str, Any] = {}) -> None:
+        """Enter in the etiqueta's input: the typed one joins the list, or the note says
+        what to fix and the text stays to be fixed."""
+        _take_typed_tag(self)
+
+    @rx.event
+    def tag_input_key(self, key: str) -> None:
+        """Escape closes the input and forgets what was typed."""
+        if key == "Escape":
+            self.adding_tag = False
+            self.tag_input = ""
+            self.tag_note = ""
+
+    @rx.event
+    def tag_input_blur(self, value: str) -> None:
+        """Leaving the input adds what was typed, like Enter; left empty, the button is
+        back. A blur from an input already closed (by Enter or Escape) does nothing."""
+        if not self.adding_tag:
+            return
+        if not value.strip():
+            self.adding_tag = False
+            self.tag_input = ""
+            return
+        self.tag_input = value
+        _take_typed_tag(self)
+
+    @rx.event
+    def remove_tag(self, tag: str) -> None:
+        self.tags_draft = rubro_vm.remove_tag(self.tags_draft, tag)
+        self.invalid_tags = rubro_vm.invalid_tags(self.tags_draft)
+        self.tag_note = ""
+        if not self.invalid_tags and self.rubro_error == rubro_vm.NOTE_INVALID_STORED:
+            self.rubro_error = ""
+
+    @rx.event(background=True)
+    async def save_rubro(self) -> AsyncIterator[rx.event.EventSpec | None]:
+        """«Guardar» on «Tu rubro y tus etiquetas»: ONLY `connect.rubro_text` and
+        `connect.hashtags` are written (`brand_finish.save_rubro`) — never the whole kit,
+        no search and no AI call. The session's copy follows, so a later save of another
+        section writes the new ones and not the old."""
+        from .brand_finish import save_rubro, session_ids
+
+        async with self:
+            if self.open_section != rubro_vm.RUBRO_SECTION or self.rubro_saving:
+                return
+            # an etiqueta still in its input counts, as leaving the input would add it
+            if self.tag_input.strip() and not _take_typed_tag(self):
+                return
+            connect = await self.get_state(BrandConnectState)
+            rubro = rubro_vm.clean_rubro(self.rubro_draft)
+            if not rubro and not connect.sector:
+                self.rubro_error = rubro_vm.RUBRO_MISSING
+                return
+            if rubro_vm.invalid_tags(self.tags_draft):
+                # an old etiqueta that no longer passes never vanishes unseen (U6)
+                self.invalid_tags = rubro_vm.invalid_tags(self.tags_draft)
+                self.rubro_error = rubro_vm.NOTE_INVALID_STORED
+                return
+            pills = rubro_vm.pills_for_save(self.tags_draft)
+            self.rubro_saving = True
+            self.rubro_error = ""
+        failed = RUBRO_SAVE_FAILED
+        try:
+            ids = await session_ids(self)
+            if ids is None:
+                failed = RUBRO_NO_SESSION
+            else:
+                await asyncio.to_thread(save_rubro, *ids, rubro, pills)
+                failed = ""
+        except Exception as exc:  # the database: the drafts stay, to try again
+            logger.warning("rubro not saved: %s", type(exc).__name__)
+        finally:
+            async with self:
+                self.rubro_saving = False
+        async with self:
+            if failed:
+                self.rubro_error = failed
+                return
+            connect = await self.get_state(BrandConnectState)
+            connect.rubro_text = rubro
+            connect.rubro_hashtags = pills
+            # the etiquetas of this rubro are the owner's: walking the wizard later does
+            # not ask Claude for others just because the text is new to the session
+            connect.hashtags_rubro = rubro
+            self.open_section = ""
+            self._before = {}
+            self._clear_rubro_drafts()
+        yield brand_documents.notify("Sección guardada.", "ok")
 
     @rx.event(background=True)
     async def save_section(
@@ -287,6 +492,19 @@ class BrandEditState(rx.State):
     @rx.event
     def skip_voice(self) -> None:
         self.voice_skipped = True
+
+
+def _take_typed_tag(editor: Any) -> bool:
+    """The etiqueta in the input, into the drafts (`brand_rubro_vm.add_typed`). True when
+    the text was taken (the input closes); False leaves it there with the note."""
+    pills, note, left = rubro_vm.add_typed_parts(editor.tags_draft, editor.tag_input)
+    editor.tags_draft = pills
+    editor.tag_note = note
+    # what was refused (or had no room) stays in the input to be fixed; the rest is in
+    editor.tag_input = left
+    if not left:
+        editor.adding_tag = False
+    return not left
 
 
 def _copy(value: Any) -> Any:
@@ -385,12 +603,155 @@ def _summary(key: str) -> rx.Component:
         return _summary_text(CreativeState.kit_ads_destination_url, "Sin enlace predeterminado")
     if key == PERKS_SECTION:
         return _summary_text(CreativeState.kit_perks_summary, PERKS_EMPTY)
+    if key == rubro_vm.RUBRO_SECTION:
+        return _rubro_summary()
     blurb = next(text for k, _t, _i, text in SECTIONS if k == key)
     return rx.text(blurb, size="2", color=T.TEXT_MUTED)
 
 
+def _rubro_summary() -> rx.Component:
+    """Closed: the rubro and its etiquetas as they are saved — with none, the invitation
+    to add them (most businesses have none yet, m-25029206)."""
+    return rx.vstack(
+        _summary_text(BrandConnectState.rubro_text, "Sin rubro"),
+        rx.cond(
+            BrandConnectState.rubro_hashtags.length() > 0,
+            rx.flex(
+                rx.foreach(
+                    BrandConnectState.rubro_hashtags,
+                    lambda pill: tag("#" + pill["tag"].to(str), size="2"),
+                ),
+                wrap="wrap",
+                gap="2",
+                width="100%",
+            ),
+            _faint(RUBRO_TAGS_EMPTY),
+        ),
+        spacing="2",
+        align_items="start",
+        width="100%",
+    )
+
+
+def _rubro_tag_pill(pill: rx.Var[dict[str, str]]) -> rx.Component:
+    invalid = BrandEditState.invalid_tags.contains(pill["tag"])
+    return removable_pill(
+        rx.fragment(rx.el.span("#", margin_right="2px"), pill["tag"]),
+        BrandEditState.remove_tag(pill["tag"]),
+        leading=rx.cond(
+            invalid,
+            rx.icon(
+                "triangle-alert",
+                size=12,
+                color=T.tone_color("warn"),
+                aria_label="Esta etiqueta no sirve, cámbiala",
+            ),
+        ),
+        remove_label="Quitar esta etiqueta",
+    )
+
+
+def _rubro_editor() -> tuple[rx.Component, ...]:
+    """Open: the rubro in the owner's words and the etiquetas — the wizard's pills with
+    their ✕ and «Agregar etiqueta», which opens the input (Enter or leaving it adds;
+    Escape cancels). An old etiqueta that no longer passes is marked, with what to do.
+    Nothing here is suggested: the owner types every etiqueta."""
+    has_room = BrandEditState.tags_draft.length() < rubro_vm.CHOSEN_HASHTAGS
+    return (
+        rx.vstack(
+            rx.el.label(
+                rx.text(
+                    "A qué se dedica tu negocio, con tus palabras",
+                    as_="span",
+                    size="2",
+                    weight="medium",
+                ),
+                html_for="brand-rubro-text",
+            ),
+            rx.input(
+                id="brand-rubro-text",
+                value=BrandEditState.rubro_draft,
+                on_change=BrandEditState.set_rubro_draft,
+                placeholder="Ej.: cafetería de especialidad para llevar",
+                max_length=rubro_vm.RUBRO_MAX_LENGTH,
+                size="3",
+                width="100%",
+                min_height="44px",
+            ),
+            spacing="2",
+            width="100%",
+            align_items="stretch",
+        ),
+        rx.vstack(
+            rx.text("Tus etiquetas (hasta 5)", size="2", weight="medium"),
+            rx.flex(
+                rx.foreach(BrandEditState.tags_draft, _rubro_tag_pill),
+                rx.cond(
+                    ~BrandEditState.adding_tag & has_room,
+                    rx.button(
+                        rx.icon("plus", size=T.ICON_SM),
+                        RUBRO_ADD_TAG,
+                        on_click=BrandEditState.open_tag_input,
+                        variant="soft",
+                        size="3",  # ≥ 44 px on a phone (N12)
+                        type="button",
+                    ),
+                ),
+                wrap="wrap",
+                column_gap="0.75rem",
+                row_gap="0.75rem",
+                align="center",
+                width="100%",
+            ),
+            rx.cond(
+                BrandEditState.adding_tag,
+                rx.form(
+                    rx.input(
+                        value=BrandEditState.tag_input,
+                        on_change=BrandEditState.set_tag_input,
+                        on_key_down=BrandEditState.tag_input_key,
+                        on_blur=BrandEditState.tag_input_blur,
+                        auto_focus=True,
+                        placeholder="Ej.: pizzeria",
+                        aria_label="Nueva etiqueta",
+                        max_length=80,
+                        size="3",
+                        width="100%",
+                        min_height="44px",
+                    ),
+                    on_submit=BrandEditState.add_tag,
+                    reset_on_submit=False,
+                    width="100%",
+                ),
+            ),
+            rx.cond(
+                BrandEditState.tag_note != "",
+                rx.text(BrandEditState.tag_note, size="2", color=T.TEXT_MUTED, role="status"),
+            ),
+            rx.cond(
+                (BrandEditState.invalid_tags.length() > 0)
+                & (BrandEditState.rubro_error != rubro_vm.NOTE_INVALID_STORED),
+                rx.text(rubro_vm.NOTE_INVALID_STORED, size="2", color=T.TEXT_MUTED),
+            ),
+            spacing="2",
+            width="100%",
+            align_items="start",
+        ),
+        rx.text(RUBRO_HELP, size="2", color=T.TEXT_MUTED),
+        rx.cond(
+            BrandEditState.can_search_again, rx.text(RUBRO_NO_SEARCH, size="2", color=T.TEXT_MUTED)
+        ),
+        rx.cond(
+            BrandEditState.rubro_error != "",
+            rx.box(callout(BrandEditState.rubro_error, "error"), role="alert", width="100%"),
+        ),
+    )
+
+
 def _editor(key: str) -> tuple[rx.Component, ...]:
     lists = {spec[0]: spec for spec in _KIT_LISTS}
+    if key == rubro_vm.RUBRO_SECTION:
+        return _rubro_editor()
     if key == "marca":
         return _identity_editor()
     if key == "brandboard":
@@ -446,6 +807,15 @@ def _editor(key: str) -> tuple[rx.Component, ...]:
         _kit_list_editor(*lists["claims"]),
         callout("Esto se comprueba siempre, incluso si desactivas el resto.", "warn"),
     )
+
+
+def _save_props(key: str) -> dict[str, Any]:
+    """What a section's «Guardar» does: «Enlace para anuncios» submits its form; «Tu
+    rubro y tus etiquetas» writes only those (`save_rubro`); every other one the kit."""
+    if key == rubro_vm.RUBRO_SECTION:
+        return {"on_click": BrandEditState.save_rubro, "loading": BrandEditState.rubro_saving}
+    action = {"type": "submit"} if key == "anuncios" else {"on_click": BrandEditState.save_section}
+    return {**action, "loading": CreativeState.kit_saving, "disabled": _busy()}
 
 
 def _busy() -> rx.Var[bool]:
@@ -520,19 +890,13 @@ def _section(key: str, title: str, icon: str, blurb: str) -> rx.Component:
                             size="3",
                             on_click=BrandEditState.cancel,
                             type="button",
-                            disabled=CreativeState.kit_saving,
+                            disabled=CreativeState.kit_saving | BrandEditState.rubro_saving,
                         ),
                         rx.button(
                             rx.icon("save", size=T.ICON_SM),
                             "Guardar",
                             size="3",
-                            **(
-                                {"type": "submit"}
-                                if key == "anuncios"
-                                else {"on_click": BrandEditState.save_section}
-                            ),
-                            loading=CreativeState.kit_saving,
-                            disabled=_busy(),
+                            **_save_props(key),
                         ),
                         spacing="2",
                         width="100%",

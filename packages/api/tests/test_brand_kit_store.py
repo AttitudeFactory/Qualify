@@ -190,6 +190,66 @@ def test_details_save_only_the_documents_given(seeded: tuple[UUID, UUID]) -> Non
 
 
 @pytest.mark.db
+def test_updating_some_keys_leaves_the_rest_of_the_document_and_kit_untouched(
+    seeded: tuple[UUID, UUID],
+) -> None:
+    """m-25029206: «Tu rubro y tus etiquetas» in Tu marca writes `rubro_text` and
+    `hashtags` only — every other key of `connect` (unknown ones, reserved ones, the
+    wizard's progress), the other documents and the kit itself stay as they were."""
+    brand, user = seeded
+    BrandKitService().upsert_kit(tenant_id=TENANT, brand_id=brand, kit=_kit(brand), user_id=user)
+    store = BrandKitStore()
+    store.save_details(
+        tenant_id=TENANT,
+        brand_id=brand,
+        user_id=None,
+        documents={
+            "connect": {
+                "city": "Cúcuta",
+                "rubro_text": "cafetería",
+                "hashtags": [{"tag": "cafe", "origin": "ai", "reason": "r", "model": "m"}],
+                "progress": {"flow": "connect", "completed": True},
+                "voice_configured": True,
+                "a_key_nobody_knows": {"nested": [1, 2]},
+            },
+            "profile": {"username": "cafedelparque"},
+        },
+    )
+    store.capture_whatsapp_contact(tenant_id=TENANT, brand_id=brand, number="573001234549")
+    with tenant_session(TENANT) as session:
+        before = session.get(DetailsRow, brand)
+        connect_before = dict(before.connect)
+        others_before = (dict(before.logo_brief), dict(before.profile))
+    kit_before = BrandKitService().get_kit(tenant_id=TENANT, brand_id=brand)
+    pills = [{"tag": "panaderia", "origin": "manual", "reason": "", "model": ""}]
+
+    store.update_document_keys(
+        tenant_id=TENANT,
+        brand_id=brand,
+        user_id=user,
+        document="connect",
+        values={"rubro_text": "panadería de barrio", "hashtags": pills},
+    )
+
+    with tenant_session(TENANT) as session:
+        row = session.get(DetailsRow, brand)
+        assert row.connect == {
+            **connect_before,
+            "rubro_text": "panadería de barrio",
+            "hashtags": pills,
+        }
+        assert (dict(row.logo_brief), dict(row.profile)) == others_before
+        assert row.updated_by == user
+    assert BrandKitService().get_kit(tenant_id=TENANT, brand_id=brand) == kit_before
+    # another tenant sees nothing of it; an unknown document is refused
+    assert store.load_details(tenant_id=OTHER, brand_id=brand).connect == {}
+    with pytest.raises(ValueError):
+        store.update_document_keys(
+            tenant_id=TENANT, brand_id=brand, user_id=user, document="x", values={}
+        )
+
+
+@pytest.mark.db
 def test_private_whatsapp_contact_is_atomic_hidden_and_preserved_across_wizard_saves(
     seeded: tuple[UUID, UUID],
 ) -> None:
@@ -244,3 +304,44 @@ def test_two_first_contact_captures_cannot_replace_each_other(seeded: tuple[UUID
     with tenant_session(TENANT) as session:
         row = session.get(DetailsRow, brand)
         assert row.connect["contact"]["whatsapp"] == numbers[results.index(True)]
+
+
+@pytest.mark.db
+def test_a_save_that_does_not_own_a_key_keeps_the_stored_one(
+    seeded: tuple[UUID, UUID],
+) -> None:
+    """m-25029206: Tu marca's other sections send `connect` without the rubro and its
+    etiquetas (`keep`): what another session saved there stays; a key it never had stays
+    absent; a save that sends them (a wizard) still writes them."""
+    brand, user = seeded
+    store = BrandKitStore()
+    new = [{"tag": "domicilios", "origin": "manual", "reason": "", "model": ""}]
+    store.save_details(
+        tenant_id=TENANT, brand_id=brand, user_id=user, documents={"connect": {"city": "A"}}
+    )
+    store.update_document_keys(
+        tenant_id=TENANT,
+        brand_id=brand,
+        user_id=user,
+        document="connect",
+        values={"rubro_text": "hamburguesas", "hashtags": new},
+    )
+    store.save_details(
+        tenant_id=TENANT,
+        brand_id=brand,
+        user_id=user,
+        documents={"connect": {"city": "B"}},
+        keep={"connect": ("rubro_text", "hashtags", "never_there")},
+    )
+    connect = store.load_details(tenant_id=TENANT, brand_id=brand).connect
+    assert connect["city"] == "B" and connect["hashtags"] == new
+    assert connect["rubro_text"] == "hamburguesas" and "never_there" not in connect
+    store.save_details(
+        tenant_id=TENANT,
+        brand_id=brand,
+        user_id=user,
+        documents={"connect": {"city": "B", "rubro_text": "otro", "hashtags": []}},
+        keep={"connect": ("rubro_text", "hashtags")},
+    )
+    connect = store.load_details(tenant_id=TENANT, brand_id=brand).connect
+    assert connect["rubro_text"] == "otro" and connect["hashtags"] == []

@@ -90,6 +90,14 @@ class KitSnapshot:
     #: «Lo que ofrece tu negocio»: None = this save did not edit them and the stored list
     #: stays; a tuple (even empty) replaces it. Only that section's «Guardar» sets it.
     business_perks: tuple[str, ...] | None = None
+    #: Keys of `connect` this save does not own: the stored values stay
+    #: (`BrandKitStore.save_details(keep=…)`). Tu marca's sections leave `RUBRO_KEYS` to
+    #: «Tu rubro y tus etiquetas» (m-25029206); a wizard's save owns them all.
+    connect_keep: tuple[str, ...] = ()
+
+
+#: `connect`'s keys «Tu rubro y tus etiquetas» owns once the kit exists (m-25029206).
+RUBRO_KEYS = ("rubro_text", "hashtags")
 
 
 class FilesNotSaved(RuntimeError):
@@ -203,8 +211,13 @@ def persist_brand_kit(
         if document is not None
     }
     if documents:
+        keep = {"connect": snapshot.connect_keep} if snapshot.connect_keep else None
         store.save_details(
-            tenant_id=tenant_id, brand_id=brand_id, user_id=user_id, documents=documents
+            tenant_id=tenant_id,
+            brand_id=brand_id,
+            user_id=user_id,
+            documents=documents,
+            **({"keep": keep} if keep else {}),
         )
     uploaded: dict[str, str] = {}
     try:
@@ -310,6 +323,47 @@ async def session_ids(state: Any) -> tuple[UUID, UUID, UUID] | None:
     return tenant_id, brand_id, user_id
 
 
+def hashtags_document(pills: list[dict[str, str]]) -> list[dict[str, str]]:
+    """`connect.hashtags` as it is stored: the pills of Tu rubro, each as it is on screen
+    (`{"tag", "origin", "reason", "model"}`, `creative_wizard_pages.add_pills`). The one
+    shape the wizard's finish and «Tu rubro» in Tu marca (m-25029206) both write."""
+    return [dict(item) for item in pills]
+
+
+def save_rubro(
+    tenant_id: UUID,
+    brand_id: UUID,
+    user_id: UUID,
+    rubro_text: str,
+    pills: list[dict[str, str]],
+    *,
+    store: BrandKitStore | None = None,
+) -> None:
+    """«Tu rubro» in Tu marca (m-25029206): ONLY `connect.rubro_text` and
+    `connect.hashtags` are written — the rest of `connect` and the whole kit stay as they
+    are (`BrandKitStore.update_document_keys`). No search, no AI call: the stored
+    referentes and the searches already run are left alone."""
+    (store or BrandKitStore()).update_document_keys(
+        tenant_id=tenant_id,
+        brand_id=brand_id,
+        user_id=user_id,
+        document="connect",
+        values={"rubro_text": rubro_text, "hashtags": hashtags_document(pills)},
+    )
+
+
+def load_rubro(tenant_id: UUID, brand_id: UUID) -> tuple[str, list[dict[str, str]]]:
+    """The rubro and its pills as stored now — what Tu marca shows on every visit, so a
+    session loaded earlier (another tab or phone) never shows old ones (m-25029206)."""
+    connect = BrandKitStore().load_details(tenant_id=tenant_id, brand_id=brand_id).connect
+    pills = [
+        {str(k): str(v) for k, v in item.items()}
+        for item in connect.get("hashtags") or []
+        if isinstance(item, dict)
+    ]
+    return str(connect.get("rubro_text") or ""), pills
+
+
 def _connect_document(
     connect: Any, progress: dict[str, Any] | None = None
 ) -> dict[str, Any] | None:
@@ -324,7 +378,7 @@ def _connect_document(
         "rubro_text": connect.rubro_text,
         "country_code": connect.country_code,
         "city": connect.city,
-        "hashtags": [dict(item) for item in connect.rubro_hashtags],
+        "hashtags": hashtags_document(connect.rubro_hashtags),
         # § request 2026-10-05: the Brand Kit editor's "Guardar voz" — until it is True,
         # Tu voz y tono is the first thing the editor shows
         "voice_configured": connect.voice_configured,
@@ -537,13 +591,23 @@ async def snapshot_states(
         "feeling": wizard.logo_brief_2,
         "references": wizard.logo_brief_3,
     }
+    connect_document = _connect_document(connect, progress)
+    connect_keep: tuple[str, ...] = ()
+    if progress is None:
+        # Tu marca (no wizard flow): the rubro and its etiquetas are «Tu rubro y tus
+        # etiquetas»'s alone — a session loaded before they changed elsewhere must not
+        # write its old copy back (m-25029206). A wizard's save writes them, as always.
+        connect_keep = RUBRO_KEYS
+        if connect_document is not None:
+            connect_document = {k: v for k, v in connect_document.items() if k not in RUBRO_KEYS}
     snapshot = KitSnapshot(
         form=creative._kit_form(),
         files=files,
         logo_brief=brief if any(v.strip() for v in brief.values()) else None,
-        connect=_connect_document(connect, progress),
+        connect=connect_document,
         profile=_profile_document(connect),
         business_perks=perks_for_save(creative.kit_business_perks) if with_perks else None,
+        connect_keep=connect_keep,
     )
     return snapshot
 

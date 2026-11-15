@@ -250,9 +250,13 @@ class BrandKitStore:
         brand_id: UUID,
         user_id: UUID | None,
         documents: Mapping[str, Mapping[str, Any]],
+        keep: Mapping[str, Iterable[str]] | None = None,
     ) -> None:
         """Write the given documents (any of `logo_brief`/`connect`/`profile`); the
-        others keep what they had."""
+        others keep what they had. `keep` names, per document, keys this save does not
+        own: when the document sent lacks one, the stored value stays — read under the
+        same lock (m-25029206: Tu marca's other sections never write `connect.rubro_text`
+        / `connect.hashtags`, so a session loaded earlier cannot put old ones back)."""
         unknown = set(documents) - set(DETAIL_DOCUMENTS)
         if unknown:
             raise ValueError(f"unknown brand kit documents {sorted(unknown)}")
@@ -270,7 +274,12 @@ class BrandKitStore:
                 )
                 session.add(row)
             for name, document in documents.items():
-                setattr(row, name, carry_reserved(name, getattr(row, name), document))
+                stored = getattr(row, name)
+                out = carry_reserved(name, stored, document)
+                for key in (keep or {}).get(name, ()):
+                    if key not in out and stored and key in stored:
+                        out[key] = stored[key]
+                setattr(row, name, out)
             row.updated_by = user_id
             row.updated_at = datetime.now(UTC)
             session.flush()
@@ -336,6 +345,39 @@ class BrandKitStore:
             row.updated_at = datetime.now(UTC)
             session.flush()
             return True
+
+    def update_document_keys(
+        self,
+        *,
+        tenant_id: UUID,
+        brand_id: UUID,
+        user_id: UUID | None,
+        document: str,
+        values: Mapping[str, Any],
+    ) -> None:
+        """Write SOME keys of one document as the owner (m-25029206: «Tu rubro» in Tu
+        marca writes `rubro_text` and `hashtags` only): every other key of the document,
+        reserved or not, stays exactly as it is in the database at this moment — read
+        under `FOR UPDATE` and written in the same transaction, like `set_document_key` —
+        and the row records who changed it, like `save_details`. A brand with no details
+        row yet gets one."""
+        if document not in DETAIL_DOCUMENTS:
+            raise ValueError(f"unknown brand kit document {document!r}")
+        with tenant_session(tenant_id) as session:
+            row = session.get(DetailsRow, brand_id, with_for_update=True)
+            if row is None:
+                row = DetailsRow(
+                    brand_id=brand_id,
+                    tenant_id=tenant_id,
+                    logo_brief={},
+                    connect={},
+                    profile={},
+                )
+                session.add(row)
+            setattr(row, document, {**(getattr(row, document) or {}), **dict(values)})
+            row.updated_by = user_id
+            row.updated_at = datetime.now(UTC)
+            session.flush()
 
     def load_avatar(self, *, tenant_id: UUID, brand_id: UUID) -> dict[str, Any] | None:
         """The brand avatar's stored record (`creative.brand_avatar.BrandAvatar`), or None."""

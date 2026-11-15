@@ -514,6 +514,8 @@ app.add_page(
         # connect flow's answers and the account as read, with its metrics
         BrandWizardState.load_saved_assets,
         BrandConnectState.load_saved_details,
+        # m-25029206: the rubro and its etiquetas as stored now, over a session's old copy
+        BrandEditState.refresh_rubro,
     ],
     title="Qualify · Tu marca",
 )
