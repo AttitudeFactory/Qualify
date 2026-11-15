@@ -206,9 +206,9 @@ def load_sources(
     )
     locale = read_business_locale(tenant_id)
     zone = locale.timezone if locale is not None else ""
+    country = locale.country if locale is not None else ""
     if not sources and (event_id is None or story):
         # m-24828982: a piece not yet published can be advertised from its own files.
-        country = locale.country if locale is not None else ""
         return [
             replace(row, default_country=country if country in COUNTRY_LABELS else "")
             for row in unpublished_sources(
@@ -272,6 +272,8 @@ def load_sources(
             lead_forms_error=forms_by_connection.get(source.connection_id, ([], ""))[1],
             greeting=greeting_by_brand.get(source.brand_id, GreetingVM()),
             chat_goal=chat_goal,
+            # «Cerca de mi negocio» targets around a point inside the business's country.
+            default_country=country if country in COUNTRY_LABELS else "",
         )
         for source in sources
     ], zone

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from uuid import UUID
 
-from qualify_api.ads.audience import AudienceDraft, InterestOption, LocationOption
+from qualify_api.ads.audience import AudienceDraft, InterestOption, LocationOption, MapPoint
 from qualify_api.ads.audience_service import (
     estimate_audience,
     load_audience,
@@ -17,7 +17,14 @@ from qualify_api.ads.audience_service import (
 from qualify_api.ads.custom_audiences import CustomAudienceSelection
 
 from .ad_custom_audiences_vm import CustomAudienceVM
-from .promotion_audience_vm import AudienceInterestVM, AudiencePlaceVM, AudienceReachVM, reach_label
+from .promotion_audience_vm import (
+    POINT_NAME,
+    AudienceInterestVM,
+    AudiencePlaceVM,
+    AudienceReachVM,
+    place_kind_label,
+    reach_label,
+)
 from .promotion_vm import PromotionDraftVM
 
 
@@ -35,6 +42,11 @@ def audience_from_form(form: PromotionDraftVM) -> AudienceDraft:
             else None
         ),
         radius_km=int(form.radius_km) if form.radius_km else None,
+        point=(
+            MapPoint(float(form.point_latitude), float(form.point_longitude), POINT_NAME)
+            if form.near and form.point_latitude and form.point_longitude
+            else None
+        ),
         age_min=18 if form.housing else int(form.age_min),
         age_max=65 if form.housing else int(form.age_max),
         gender="all" if form.housing else form.gender,
@@ -64,6 +76,9 @@ def form_audience_changes(audience: AudienceDraft) -> dict[str, object]:
         "location_country": place.country_code if place else "",
         "location_region": place.region if place else "",
         "radius_km": str(audience.radius_km) if audience.radius_km is not None else "",
+        "near": audience.point is not None,
+        "point_latitude": str(audience.point.latitude) if audience.point else "",
+        "point_longitude": str(audience.point.longitude) if audience.point else "",
         "age_min": str(audience.age_min),
         "age_max": str(audience.age_max),
         "gender": audience.gender,
@@ -97,9 +112,26 @@ def audience_scope(tenant: str, piece: str, source: str, account: str) -> dict[s
 
 
 def find_places(scope: dict[str, UUID], query: str, kind: str) -> list[AudiencePlaceVM]:
-    rows = asyncio.run(search_audience_locations(**scope, query=query, location_type=kind))
+    """«En una ciudad o región» searches both kinds (Meta's search takes one type per call);
+    cities come first."""
+    kinds = ("country",) if kind == "country" else ("city", "region")
+
+    async def search() -> list:
+        found = await asyncio.gather(
+            *(search_audience_locations(**scope, query=query, location_type=k) for k in kinds)
+        )
+        return [row for rows in found for row in rows]
+
     return [
-        AudiencePlaceVM(row.key, row.type, row.country_code, row.name, row.region) for row in rows
+        AudiencePlaceVM(
+            row.key,
+            row.type,
+            row.country_code,
+            row.name,
+            row.region,
+            place_kind_label(row.type) if kind != "country" else "",
+        )
+        for row in asyncio.run(search())
     ]
 
 

@@ -252,7 +252,7 @@ def test_direct_wizard_entry_refreshes_each_selected_account_once(
     monkeypatch.setattr(
         promotion_provider,
         "read_business_locale",
-        lambda *args: SimpleNamespace(timezone="America/Bogota"),
+        lambda *args: SimpleNamespace(timezone="America/Bogota", country="CO"),
     )
     missing = AccountHealthVM(blocks_preparation=True, label="Revisa el método de pago")
     monkeypatch.setattr(

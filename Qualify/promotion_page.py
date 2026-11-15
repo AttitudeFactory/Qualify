@@ -742,14 +742,7 @@ def _review() -> rx.Component:
                     _fact("Página de destino", S.form.link_url),
                 ),
                 _fact("Lugar de las personas", S.audience_location_label),
-                _fact(
-                    "Distancia",
-                    rx.cond(
-                        S.form.radius_km != "",
-                        S.form.radius_km + " km alrededor de la ciudad",
-                        "El lugar elegido",
-                    ),
-                ),
+                _fact("Distancia", S.audience_distance_label),
                 _fact("Personas", S.audience_people_label),
                 _fact("Intereses", S.audience_interests_label),
                 _fact("Público de Instagram", S.custom_selection_label),
