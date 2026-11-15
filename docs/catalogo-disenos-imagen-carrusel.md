@@ -170,7 +170,7 @@ borde más lejano del sujeto → `band` con la foto entera reducida (el fondo de
 `CoverPhoto`). Si falla 3: quitar `call_phrase`, luego `subtitle`; el título nunca se quita. Cada
 caída queda escrita en la capa (`fallbacks: [...]`) para que la segunda mirada (m-25017287) y la
 medición la vean. Un `plate` con tipografía de títulos manuscrita que no cabe en 1:1 cae así a
-`band` y conserva su precio (2026-11-15, §12); el precio no se quita en ningún paso de la cadena.
+`band` y conserva su precio (2026-11-15, §12). La cadena nunca quita el precio por falta de alto; un precio más ancho que su caja (el ancho del título) sí se quita y queda en `dropped_slots`. Si eso debería rechazar la pieza es una decisión pendiente del fundador.
 
 ### 1.8 Reglas de redacción para el prompt de la capa
 

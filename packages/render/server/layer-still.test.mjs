@@ -552,7 +552,10 @@ test('review 2 #3: a price that does not fit is reported, never dropped silently
 });
 
 test('review 2 #4: the engine revision is in the report and comes from the manifest', () => {
-  assert.ok(Number.isInteger(catalog.engine_revision) && catalog.engine_revision >= 2);
+  // pinned to the revision CONTRACT.md publishes («today N»), read, never hard-coded
+  const today = Number(/engine_revision`, today (\d+)\)/.exec(fs.readFileSync(path.join(here, '..', 'CONTRACT.md'), 'utf8'))?.[1]);
+  assert.ok(Number.isInteger(catalog.engine_revision));
+  assert.equal(catalog.engine_revision, today);
   const r = run({layout_id: 'plate', title: 'Tu pan', anchor: 'top_left', subject_box: [0.3, 0.6, 0.7, 0.9]});
   assert.equal(r.report.engine_revision, catalog.engine_revision);
 });
