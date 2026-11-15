@@ -30,19 +30,6 @@ S = IceBreakersState
 _TONES = ("ok", "warn", "error", "info", "neutral")
 
 
-def open_button(connection_id: rx.Var[str]) -> rx.Component:
-    """The door, for Conversaciones' header: «Preguntas iniciales» of `connection_id`."""
-    return rx.button(
-        rx.icon("message-circle-question", size=T.ICON_SM),
-        "Preguntas iniciales",
-        on_click=S.open_panel(connection_id),
-        variant="soft",
-        size="2",
-        type="button",
-        **T.tone_scheme("neutral"),
-    )
-
-
 def _status_pill() -> rx.Component:
     return rx.match(
         S.status.tone,
@@ -426,4 +413,4 @@ def ice_breakers_panel() -> rx.Component:
     )
 
 
-__all__ = ["ice_breakers_panel", "open_button"]
+__all__ = ["ice_breakers_panel"]

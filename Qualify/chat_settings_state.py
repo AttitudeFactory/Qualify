@@ -21,7 +21,6 @@ from collections.abc import AsyncIterator
 from uuid import UUID
 
 import reflex as rx
-from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState
 from .chat_settings_vm import (
@@ -53,6 +52,7 @@ class ChatSettingsState(rx.State):
     # (connection id, «@cuenta») and the tenant's time zone, for the drawer's context.
     _accounts: list[tuple[str, str]] = []
     _zone_name: str = ""
+    _visit: int = 0
 
     @rx.var
     def has_instagram(self) -> bool:
@@ -70,55 +70,79 @@ class ChatSettingsState(rx.State):
         return tenant_uuid(auth.session_tenant_id) if auth.session_tenant_id else None
 
     @rx.event
-    def enter_page(self) -> rx.event.EventSpec | None:
+    def enter_page(self) -> rx.event.EventSpec:
         """`/chats/ajustes` and `/chats/ajustes/instagram` on_load, after
-        `AuthState.require_login`."""
-        if self.loading:
-            return None
+        `AuthState.require_login`. Always reads again (cheap, no remote call): a load
+        that died with the worker must never leave the skeleton up for good."""
         return ChatSettingsState.load
 
     @rx.event(background=True)
     async def load(self) -> AsyncIterator[rx.event.EventSpec]:
+        """Read the two lists. Every outcome clears `loading`; only the latest of
+        overlapping loads writes (`_visit`)."""
         async with self:
-            if self.loading:
-                return
+            self._visit += 1
+            visit = self._visit
             self.loading = True
             self.load_error = ""
             tenant_id = await self._tenant()
             path = self.router.url.path.rstrip("/")
             requested = uuid_param(self.router.url.query_parameters, ACCOUNT_PARAM)
-        if tenant_id is None:
-            async with self:
-                self.loading = False
-                self.loaded = True
-                self.load_error = _NO_SESSION
-            return
-        gw = gateway()
+        target = ""
         try:
-            numbers = await asyncio.to_thread(numbers_for, tenant_id)
-            zone_name = await asyncio.to_thread(gw.timezone, tenant_id)
-            accounts = await asyncio.to_thread(gw.accounts, tenant_id)
-        except SQLAlchemyError as exc:
+            if tenant_id is None:
+                raise _NoSession
+            numbers, zone_name, pairs = await self._read(tenant_id)
+            async with self:
+                if visit != self._visit:
+                    return
+                self.has_whatsapp = bool(numbers)
+                self._accounts = pairs
+                self._zone_name = zone_name
+                self.instagram = instagram_rows(pairs)
+                if path == SETTINGS_INSTAGRAM_ROUTE:
+                    target = await self._account_to_open(requested)
+        except _NoSession:
+            async with self:
+                self.load_error = _NO_SESSION
+        except Exception as exc:  # noqa: BLE001 — any failure shows the retry, never a stuck skeleton
             logger.error("chat settings load failed: %s", type(exc).__name__)
             async with self:
-                self.loading = False
-                self.loaded = True
-                self.load_error = LOAD_FAILED
-            return
-        pairs = [(a.connection_id, a.label) for a in accounts]
-        async with self:
-            self.has_whatsapp = bool(numbers)
-            self._accounts = pairs
-            self._zone_name = zone_name
-            self.instagram = instagram_rows(pairs)
-            self.loading = False
-            self.loaded = True
-        if path == SETTINGS_INSTAGRAM_ROUTE:
-            target = account_to_open(requested, [account_id for account_id, _ in pairs])
-            if target:
-                from .ice_breakers_state import IceBreakersState
+                if visit == self._visit:
+                    self.load_error = LOAD_FAILED
+        finally:
+            async with self:
+                if visit == self._visit:
+                    self.loading = False
+                    self.loaded = True
+        if target:
+            from .ice_breakers_state import IceBreakersState
 
-                yield IceBreakersState.open_panel(target)
+            yield IceBreakersState.open_panel(target)
+
+    async def _read(self, tenant_id: UUID) -> tuple[list, str, list[tuple[str, str]]]:
+        """(numbers, time zone, Instagram (id, «@cuenta»)), off the event loop."""
+        gw = gateway()
+        numbers = await asyncio.to_thread(numbers_for, tenant_id)
+        zone_name = await asyncio.to_thread(gw.timezone, tenant_id)
+        accounts = await asyncio.to_thread(gw.accounts, tenant_id)
+        return numbers, zone_name, [(a.connection_id, a.label) for a in accounts]
+
+    async def _account_to_open(self, requested: str) -> str:
+        """The drawer to open on `/chats/ajustes/instagram`: `?cuenta=` when it is one
+        of this business's accounts and its drawer is not already open (a reload must
+        not reload — and so discard — what the owner is typing). Under `async with`."""
+        from .ice_breakers_state import IceBreakersState
+
+        target = account_to_open(requested, [account_id for account_id, _ in self._accounts])
+        drawer = await self.get_state(IceBreakersState)
+        if target and drawer.panel_open and drawer.connection_id == target:
+            return ""
+        return target
+
+
+class _NoSession(Exception):
+    """No business session: the hub says so instead of reading."""
 
 
 __all__ = ["ChatSettingsState"]

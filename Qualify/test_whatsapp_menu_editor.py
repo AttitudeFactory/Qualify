@@ -498,7 +498,7 @@ def test_preview_handoff_from_a_keyword() -> None:
 
 def test_publish_notice_copy() -> None:
     assert publish_notice(graph_ok=True)[1] == "ok"
-    prefix = "Tu WhatsApp ya responde con este menú, pero no tomó las preguntas iniciales."
+    prefix = "Tu menú ya está activo en WhatsApp, pero no tomó las preguntas iniciales."
     message, tone = publish_notice(graph_ok=False)
     assert message == f"{prefix} Vuelve a tocar «Publicar en mi WhatsApp» en un momento."
     assert tone == "warn"
@@ -549,7 +549,7 @@ def test_the_menu_tab_renders_its_sections() -> None:
         return text in rendered or escaped in rendered
 
     for text in (
-        "Menús de este número",
+        "Tus menús de bienvenida",
         "Nuevo menú",
         "Con lo que ya sabemos de tu negocio",
         "Publicar en mi WhatsApp",

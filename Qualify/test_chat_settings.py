@@ -7,8 +7,11 @@ import json
 import re
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
+from uuid import UUID
 
 import pytest
+from reflex.istate.data import ReflexURL, RouterData
 
 from .chat_settings_page import chat_settings_index
 from .chat_settings_state import ChatSettingsState
@@ -16,9 +19,11 @@ from .chat_settings_vm import (
     ALL_CHATS_ROWS,
     ALL_CHATS_TITLE,
     CHAT_SETTINGS_TITLE,
+    LOAD_FAILED,
     MENU_TITLE,
     STARTER_QUESTIONS_LINE,
     STARTER_QUESTIONS_TITLE,
+    WHATSAPP_NUMBER_ROWS,
     WHATSAPP_ROWS,
     account_to_open,
     instagram_rows,
@@ -62,14 +67,22 @@ def test_the_hub_has_three_cards_and_every_setting_of_today() -> None:
         assert _present(rendered, text), text
     keys = [row.key for row in ALL_CHATS_ROWS]
     assert keys == ["mensajes-guardados", "formas-de-pago", "como-llegar"]
+    # UX review U2: which network each works on, never where it is stored.
+    assert [row.detail for row in ALL_CHATS_ROWS] == [
+        "Escríbelos una vez y úsalos al responder. Por ahora, en tus chats de Instagram.",
+        "Tus datos y tu QR, listos para mandar desde el «+» del chat. Por ahora, en WhatsApp.",
+        "Tu dirección y el punto en el mapa, para mandarlos cuando te pregunten.",
+    ]
+    assert [row.key for row in WHATSAPP_NUMBER_ROWS] == ["formas-de-pago", "como-llegar"]
+    assert "S.has_whatsapp" in (_HERE / "chat_settings_page.py").read_text("utf-8")
     assert {row.href for row in ALL_CHATS_ROWS} == {
         "/responder?tab=mensajes",
         "/whatsapp?tab=numero&sub=pagos",
         "/whatsapp?tab=numero&sub=perfil",
     }
-    assert [row.title for row in WHATSAPP_ROWS] == [MENU_TITLE, STARTER_QUESTIONS_TITLE]
-    assert all(row.href == tab_url(TAB_MENU) for row in WHATSAPP_ROWS)
-    assert STARTER_QUESTIONS_LINE in WHATSAPP_ROWS[1].detail
+    # UX review U3: one WhatsApp row; its starter questions are part of the menu.
+    assert [(row.title, row.href) for row in WHATSAPP_ROWS] == [(MENU_TITLE, tab_url(TAB_MENU))]
+    assert "tus preguntas iniciales" in WHATSAPP_ROWS[0].detail
     # The Instagram drawer is on this page (its rows open it in place).
     assert "ice_breakers_panel()" in (_HERE / "chat_settings_page.py").read_text("utf-8")
 
@@ -105,8 +118,10 @@ def test_instagram_rows_name_the_account_only_when_there_are_several() -> None:
 def test_the_account_to_open_is_one_of_the_business() -> None:
     assert instagram_settings_href(_A) == f"/chats/ajustes/instagram?cuenta={_A}"
     assert account_to_open(_B, [_A, _B]) == _B
-    assert account_to_open("<script>", [_A, _B]) == _A
-    assert account_to_open("", []) == ""
+    # Code review: junk, missing or another business's account opens NOTHING.
+    assert account_to_open("<script>", [_A, _B]) == ""
+    assert account_to_open("", [_A]) == ""
+    assert account_to_open(_B, [_A]) == ""
 
 
 def test_account_context_is_only_for_the_loaded_accounts() -> None:
@@ -180,3 +195,99 @@ def test_the_whatsapp_settings_page_has_its_name_and_way_back() -> None:
     for text in (MENU_TITLE, CHAT_SETTINGS_TITLE, "/chats/ajustes"):
         assert _present(rendered, text), text
     assert not _present(rendered, "Secciones de WhatsApp")  # no messages strip here
+
+
+# --- the state: every outcome clears the skeleton (code review C1) -----------------------
+
+
+def _hub(path: str) -> ChatSettingsState:
+    state = ChatSettingsState()
+    state.router = RouterData(url=ReflexURL(f"http://localhost:3000{path}"))
+    return state
+
+
+async def _drain(events: Any) -> list[Any]:
+    return [event async for event in events]
+
+
+@pytest.fixture()
+def drawer(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    """The session (a tenant) and the Instagram drawer's state, stubbed on the class."""
+    panel = SimpleNamespace(panel_open=False, connection_id="")
+
+    async def tenant(self: ChatSettingsState) -> UUID:
+        return UUID(_A)
+
+    async def get_state(self: ChatSettingsState, cls: type) -> object:
+        return panel
+
+    monkeypatch.setattr(ChatSettingsState, "_tenant", tenant)
+    monkeypatch.setattr(ChatSettingsState, "get_state", get_state)
+    return panel
+
+
+def _reads(monkeypatch: pytest.MonkeyPatch, result: Any) -> None:
+    async def read(self: ChatSettingsState, tenant_id: UUID) -> Any:
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+    monkeypatch.setattr(ChatSettingsState, "_read", read)
+
+
+_TWO = ([object()], "America/Bogota", [(_A, "@bianki"), (_B, "@polette")])
+
+
+@pytest.mark.parametrize("error", [RuntimeError("boom"), OSError("gone"), ValueError("x")])
+async def test_any_failure_shows_the_retry_never_a_stuck_skeleton(
+    monkeypatch: pytest.MonkeyPatch, drawer: SimpleNamespace, error: BaseException
+) -> None:
+    _reads(monkeypatch, error)
+    state = _hub("/chats/ajustes")
+    assert await _drain(ChatSettingsState.load.fn(state)) == []
+    assert state.loading is False and state.loaded is True
+    assert state.load_error == LOAD_FAILED
+    # «Volver a intentar» is never dropped: entering again always reads again.
+    state.loading = True
+    assert ChatSettingsState.enter_page.fn(state) is not None
+
+
+async def test_the_hub_loads_both_lists_and_opens_no_drawer(
+    monkeypatch: pytest.MonkeyPatch, drawer: SimpleNamespace
+) -> None:
+    _reads(monkeypatch, _TWO)
+    state = _hub(f"/chats/ajustes?cuenta={_A}")
+    assert await _drain(ChatSettingsState.load.fn(state)) == []
+    assert state.has_whatsapp and [r.connection_id for r in state.instagram] == [_A, _B]
+    assert state.loading is False and state.load_error == ""
+
+
+async def test_the_instagram_address_opens_only_this_business_account(
+    monkeypatch: pytest.MonkeyPatch, drawer: SimpleNamespace
+) -> None:
+    _reads(monkeypatch, _TWO)
+    events = await _drain(ChatSettingsState.load.fn(_hub(f"/chats/ajustes/instagram?cuenta={_B}")))
+    assert len(events) == 1 and _B in str(events[0])
+    foreign = "00000000-0000-4000-8000-0000000000cc"
+    for query in (f"?cuenta={foreign}", "?cuenta=<script>", ""):
+        state = _hub(f"/chats/ajustes/instagram{query}")
+        assert await _drain(ChatSettingsState.load.fn(state)) == [], query
+
+
+async def test_a_reload_does_not_reopen_and_discard_the_open_drawer(
+    monkeypatch: pytest.MonkeyPatch, drawer: SimpleNamespace
+) -> None:
+    _reads(monkeypatch, _TWO)
+    drawer.panel_open, drawer.connection_id = True, _A
+    state = _hub(f"/chats/ajustes/instagram?cuenta={_A}")
+    assert await _drain(ChatSettingsState.load.fn(state)) == []
+
+
+async def test_without_a_session_the_hub_says_so(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def no_tenant(self: ChatSettingsState) -> None:
+        return None
+
+    monkeypatch.setattr(ChatSettingsState, "_tenant", no_tenant)
+    state = _hub("/chats/ajustes")
+    assert await _drain(ChatSettingsState.load.fn(state)) == []
+    assert state.loading is False and "sesión" in state.load_error

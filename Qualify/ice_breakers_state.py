@@ -264,7 +264,7 @@ class IceBreakersState(rx.State):
         self.panel_open = False
 
     @rx.event(background=True)
-    async def load(self) -> None:
+    async def load(self) -> AsyncIterator[rx.event.EventSpec]:
         async with self:
             if self.loading:
                 return
@@ -293,7 +293,16 @@ class IceBreakersState(rx.State):
             return
         async with self:
             if self.connection_id != str(connection):
-                return  # another account was opened meanwhile; its own load wins
+                # Another account was opened meanwhile: its own load bailed out while
+                # this one held `loading`, so free it and read that account now.
+                self.loading = False
+                stale = True
+            else:
+                stale = False
+        if stale:
+            yield IceBreakersState.load
+            return
+        async with self:
             self._apply(config)
             self.available = bool(availability.enabled)
             self._unavailable_reason = availability.reason if not availability.enabled else ""

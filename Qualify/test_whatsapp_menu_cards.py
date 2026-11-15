@@ -184,7 +184,7 @@ def test_another_menu_s_confirmation_names_the_one_it_replaces() -> None:
     assert cards[0].publish_lines == []
     assert cards[1].publish_button == "Publicar esta versión"  # not live: nothing to go back to
     assert cards[1].publish_lines == [
-        "Tu menú «Menú principal» deja de responder y este toma su lugar."
+        "Tu menú «Menú principal» deja de estar activo y este toma su lugar."
     ]
 
 

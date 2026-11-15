@@ -367,8 +367,8 @@ def _new_menu_dialog() -> rx.Component:
         rx.dialog.content(
             rx.dialog.title("Nuevo menú"),
             rx.dialog.description(
-                "Un número responde con un solo menú publicado a la vez. Puedes tener "
-                "varios guardados y publicar el que toque.",
+                "Un número tiene un solo menú activo a la vez. Puedes tener varios "
+                "guardados y publicar el que toque.",
                 size="2",
                 color=T.TEXT_MUTED,
             ),
@@ -760,14 +760,14 @@ def _menus_card() -> rx.Component:
     return card(
         rx.vstack(
             _section_title(
-                "Menús de este número",
+                "Tus menús de bienvenida",
                 _new_menu_dialog(),
                 heading_id=MENUS_HEADING_ID,
             ),
             rx.text(
-                "Tu WhatsApp responde con el menú que tú escribiste: saluda, muestra "
-                "preguntas iniciales, toma el pedido desde tu catálogo y te pasa el chat para "
-                "cerrarlo.",
+                "Tu menú de bienvenida le muestra al cliente lo que tú escribiste: tu saludo, "
+                "tus preguntas iniciales y tu catálogo para pedir. Para cerrar la venta, el "
+                "chat te llega a ti.",
                 size="2",
                 color=T.TEXT_MUTED,
             ),
@@ -789,13 +789,13 @@ def _menus_card() -> rx.Component:
                 ),
                 empty_state(
                     "list-tree",
-                    "Este número aún no tiene menú",
+                    "Todavía no tienes un menú de bienvenida",
                     "Créalo con lo que ya sabemos de tu negocio y completa lo que falte, o "
                     "empieza desde cero.",
                     # N8 (m-24842961): opens the same «Crear menú» dialog.
                     action=rx.button(
                         rx.icon("plus", size=16),
-                        "Crear menú",
+                        "Crear tu menú de bienvenida",
                         on_click=S.set_new_open(True),
                         variant="soft",
                         size="3",
@@ -925,7 +925,11 @@ def _next_step() -> rx.Component:
     return rx.vstack(
         rx.hstack(
             rx.icon("circle-check", size=T.ICON_MD, color=T.tone_color("ok", 11)),
-            rx.text("Listo: tu WhatsApp ya responde con este menú.", size="2", weight="medium"),
+            rx.text(
+                "Listo: tu menú de bienvenida ya está activo en WhatsApp.",
+                size="2",
+                weight="medium",
+            ),
             spacing="2",
             align="center",
         ),
@@ -1049,8 +1053,7 @@ def _pause_row() -> rx.Component:
             rx.text(
                 rx.cond(
                     S.menu.is_published,
-                    "En pausa, tu WhatsApp no responde con el menú; los mensajes "
-                    "llegan a Chats como siempre.",
+                    "En pausa, tu menú no está activo; los mensajes llegan a Chats como siempre.",
                     "Se puede pausar una vez publicado.",
                 ),
                 size="1",

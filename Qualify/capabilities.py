@@ -66,7 +66,7 @@ CAPABILITY_LABELS: dict[Capability, str] = {
     # WhatsApp (WA-05)
     Capability.WA_SEND: "Enviar mensajes de WhatsApp",
     Capability.WA_TEMPLATES: "Plantillas de mensajes",
-    Capability.WA_AUTOMATION: "Menú automático y bienvenida",
+    Capability.WA_AUTOMATION: "Menú de bienvenida",
     Capability.ADVERTISE: "Anunciar",
 }
 
@@ -108,7 +108,7 @@ CAPABILITY_DISABLED_REASONS: dict[Capability, str] = {
     ),
     Capability.WA_AUTOMATION: (
         "El acceso de WhatsApp no incluye el permiso de administración; sin él no se "
-        "puede publicar el menú automático ni la bienvenida."
+        "puede publicar el menú de bienvenida."
     ),
 }
 

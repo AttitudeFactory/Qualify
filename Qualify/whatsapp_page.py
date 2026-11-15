@@ -443,6 +443,9 @@ def back_to_chat_settings() -> rx.Component:
         href=CHAT_SETTINGS_ROUTE,
         underline="none",
         color=T.TEXT_MUTED,
+        display="inline-flex",
+        align_items="center",
+        min_height="44px",  # N12, as `back_to_guided` (`whatsapp_tab_menu.TARGET_MIN`)
     )
 
 

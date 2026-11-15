@@ -16,8 +16,9 @@ both channels (`STARTER_QUESTIONS_LINE`).
 What is NOT built here, on purpose (each its own ticket): one saved-messages library for
 every channel (BU-A8: today they are Instagram's «Plantillas»), payments and «Cómo
 llegar» as data of the business (BU-A14: today they are kept with the WhatsApp number,
-under «Tu número», which moves to «Tus redes» in BU-A10). Those rows say where the thing
-lives today and take the owner there.
+under «Tu número», which moves to «Tus redes» in BU-A10). Those rows say which network
+each works on today and take the owner to it; the two kept with the WhatsApp number
+are hidden without one.
 
 Pure: no Reflex, no database; `test_chat_settings.py` pins it.
 """
@@ -83,46 +84,46 @@ class InstagramRowVM:
     detail: str
 
 
+#: «Para todos tus chats» (UX review 2026-11-15): each row says which network it works
+#: on today, never where it is stored. The two that are kept with the WhatsApp number
+#: (`WHATSAPP_ONLY_KEYS`) are hidden when the business has none: they would lead to
+#: «Conecta tu WhatsApp».
 ALL_CHATS_ROWS: Final[tuple[SettingRowVM, ...]] = (
     SettingRowVM(
         "mensajes-guardados",
         "Mensajes guardados",
-        "Escríbelos una vez y úsalos al responder. Hoy están en tus chats de Instagram, "
-        "en «Plantillas».",
+        "Escríbelos una vez y úsalos al responder. Por ahora, en tus chats de Instagram.",
         SAVED_MESSAGES_HREF,
         "library",
     ),
     SettingRowVM(
         "formas-de-pago",
         "Formas de pago",
-        "Tus datos y tu QR, listos para mandar desde el «+» del chat. Hoy se guardan con "
-        "tu número de WhatsApp.",
+        "Tus datos y tu QR, listos para mandar desde el «+» del chat. Por ahora, en WhatsApp.",
         PAYMENTS_HREF,
         "wallet",
     ),
     SettingRowVM(
         "como-llegar",
         "Cómo llegar",
-        "Tu dirección y el punto en el mapa. Hoy se guardan en el perfil de tu número de WhatsApp.",
+        "Tu dirección y el punto en el mapa, para mandarlos cuando te pregunten.",
         DIRECTIONS_HREF,
         "map-pin",
     ),
 )
+WHATSAPP_ONLY_KEYS: Final = frozenset({"formas-de-pago", "como-llegar"})
+ALWAYS_ROWS: Final = tuple(r for r in ALL_CHATS_ROWS if r.key not in WHATSAPP_ONLY_KEYS)
+WHATSAPP_NUMBER_ROWS: Final = tuple(r for r in ALL_CHATS_ROWS if r.key in WHATSAPP_ONLY_KEYS)
 
+#: One row (UX review U3): the starter questions are part of the menu.
 WHATSAPP_ROWS: Final[tuple[SettingRowVM, ...]] = (
     SettingRowVM(
         "menu",
         MENU_TITLE,
-        "Tu bienvenida, tus productos y las respuestas a las preguntas de siempre.",
+        "Tu bienvenida, tus productos, tus preguntas iniciales y las respuestas a las "
+        "preguntas de siempre.",
         SETTINGS_WHATSAPP_ROUTE,
         "list",
-    ),
-    SettingRowVM(
-        "preguntas-iniciales",
-        STARTER_QUESTIONS_TITLE,
-        f"{STARTER_QUESTIONS_LINE}. Están dentro de tu menú, en «Más opciones (avanzado)».",
-        SETTINGS_WHATSAPP_ROUTE,
-        "message-circle-question",
     ),
 )
 
@@ -133,7 +134,7 @@ NO_WHATSAPP_ACTION: Final = "Ver cómo conectarlo"
 NO_WHATSAPP_HREF: Final = SETTINGS_WHATSAPP_ROUTE
 NO_INSTAGRAM: Final = "Todavía no tienes una cuenta de Instagram conectada."
 NO_INSTAGRAM_ACTION: Final = "Conectar en Tus redes"
-CONNECTIONS_NOTE: Final = "¿Tu WhatsApp o tu Instagram dejó de funcionar? Revísalo en Tus redes."
+CONNECTIONS_NOTE: Final = "¿Tu WhatsApp o tu Instagram dejó de funcionar?"
 CONNECTIONS_ACTION: Final = "Ir a Tus redes"
 LOAD_FAILED: Final = "No pudimos cargar tus cuentas. Revisa tu conexión y vuelve a intentarlo."
 RETRY: Final = "Volver a intentar"
@@ -165,8 +166,6 @@ def instagram_settings_href(connection_id: str) -> str:
 
 def account_to_open(requested: str, account_ids: list[str]) -> str:
     """On `SETTINGS_INSTAGRAM_ROUTE`: the account whose «Preguntas iniciales» opens — the
-    one in `?cuenta=` when it is one of the business's, else the first; "" without any.
-    Anything else in the address is ignored, never echoed."""
-    if requested in account_ids:
-        return requested
-    return account_ids[0] if account_ids else ""
+    one in `?cuenta=` only when it is one of the business's; anything else (missing,
+    junk, another business's) opens nothing (code review, 2026-11-15)."""
+    return requested if requested and requested in account_ids else ""

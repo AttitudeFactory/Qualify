@@ -362,7 +362,7 @@ def test_the_page_renders_the_panel() -> None:
         return text in rendered or escaped in rendered
 
     for text in (
-        "Preguntas iniciales",
+        "Lo que tu cliente puede tocar al abrir el chat",
         "Publicar en Instagram",
         "Ver qué muestra Instagram ahora",
         "Quitar de Instagram",
@@ -375,3 +375,22 @@ def test_the_page_renders_the_panel() -> None:
         assert present(text), text
     for hidden in ("QUALIFY_ICE_BREAKERS", "R6", "Publicar y quitar todavía"):
         assert not present(hidden), hidden
+
+
+async def test_a_load_overtaken_by_another_account_frees_loading_and_reloads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """m-25017861 review: the stale load used to return with `loading` still True, so
+    the newer account's own load had bailed out and nothing ever loaded it."""
+    world = _world()
+    state = await _opened(world)
+    real = provider.get_config
+
+    def switched(tenant_id: UUID, connection_id: UUID) -> Any:
+        state.connection_id = str(UNKNOWN)  # the owner opened another account meanwhile
+        return real(tenant_id, connection_id)
+
+    monkeypatch.setattr(provider, "get_config", switched)
+    events = await _drain(IceBreakersState.load.fn(state))
+    assert state.loading is False
+    assert len(events) == 1  # the load again, for the account now open

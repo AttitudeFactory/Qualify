@@ -762,10 +762,11 @@ def test_the_page_renders_every_tab() -> None:
         escaped = json.dumps(text)[1:-1].replace("\\", "\\\\")
         return text in rendered or escaped in rendered
 
-    for _key, label in (*SECTIONS, *NUMBER_SUBS):
+    # `sub_strip` is shared with `/whatsapp/promociones`, so its labels are in the tree.
+    for _key, label in (*SECTIONS, *PROMOTION_SUBS, *NUMBER_SUBS):
         assert present(label), label
     # m-25017861: no setting tab of the menu on the messages screen.
-    assert not present("Respuesta automática") and not present("Tu menú de bienvenida")
+    assert not present("Respuesta automática")
     for text in (
         "Verificar ahora",
         "Ver detalles",

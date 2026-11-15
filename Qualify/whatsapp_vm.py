@@ -54,11 +54,16 @@ from .connections_vm import whatsapp_label
 from .nav_url import uuid_param, with_query
 
 # --------------------------------------------------------------------------------------
-# Tabs (m-24842998 WHATSAPP-7). Three tasks on top, one of them with sub-tabs:
+# Tabs (m-24842998 WHATSAPP-7). Two tasks on top, one of them with sub-tabs:
 #
-#   Chats · Respuesta automática · Tu número
-#                                  └─ Estado · Perfil · Formas de pago · Códigos QR ·
-#                                     Actividad
+#   Chats · Tu número
+#           └─ Estado · Perfil · Formas de pago · Códigos QR · Actividad
+#
+# m-25017861 (BU-A9, decision D1, founder 2026-11-12): the menu («Tu menú de
+# bienvenida», decision vi) is a setting, so it left this screen for «Ajustes de chats ›
+# WhatsApp» (`SETTINGS_WHATSAPP_ROUTE`); `/whatsapp?tab=respuesta` and `?tab=menu`
+# redirect there (`legacy_settings_target`). Once Chats moves into «Por responder»
+# (BU-A11) and «Tu número» into «Tus redes» (BU-A10), nothing is left here.
 #
 # m-25017862 (BU-A12, decision D3 of docs/ux-chats-unificados.md, founder 2026-11-12):
 # «Promociones» is selling, not a setting, so it left that strip for its own menu entry

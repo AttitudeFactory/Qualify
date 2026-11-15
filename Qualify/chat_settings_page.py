@@ -19,8 +19,8 @@ import reflex as rx
 
 from .chat_settings_state import ChatSettingsState
 from .chat_settings_vm import (
-    ALL_CHATS_ROWS,
     ALL_CHATS_TITLE,
+    ALWAYS_ROWS,
     BACK_TO_CHATS,
     CHAT_SETTINGS_SUBTITLE,
     CHATS_HREF,
@@ -34,6 +34,7 @@ from .chat_settings_vm import (
     NO_WHATSAPP_ACTION,
     NO_WHATSAPP_HREF,
     RETRY,
+    WHATSAPP_NUMBER_ROWS,
     WHATSAPP_ROWS,
     WHATSAPP_TITLE,
     InstagramRowVM,
@@ -48,6 +49,8 @@ S = ChatSettingsState
 
 #: The phone's touch target (N12); the rows are the page's only controls.
 _ROW_MIN = "56px"
+#: N12: every other link of the page is a 44 px target too (as `back_to_guided`).
+TARGET_MIN = "44px"
 
 
 def _row_body(icon: str, title: str | rx.Var, detail: str | rx.Var) -> rx.Component:
@@ -115,9 +118,36 @@ def _plain_line(text: str, action: str, href: str) -> rx.Component:
     """No account of a channel: what is missing and the one link that fixes it (N8)."""
     return rx.vstack(
         rx.text(text, size="2", color=T.TEXT_MUTED),
-        rx.link(action, href=href, size="2", weight="medium"),
+        rx.link(
+            action,
+            href=href,
+            size="2",
+            weight="medium",
+            display="inline-flex",
+            align_items="center",
+            min_height=TARGET_MIN,
+        ),
         spacing="1",
         padding_y="0.75rem",
+        width="100%",
+    )
+
+
+def _all_chats_rows() -> rx.Component:
+    """«Mensajes guardados» always; «Formas de pago» and «Cómo llegar» only with a
+    WhatsApp number (UX review U2: without one they would open «Conecta tu WhatsApp»)."""
+    return card(
+        rx.vstack(
+            *[_link_row(row) for row in ALWAYS_ROWS],
+            rx.cond(
+                S.has_whatsapp,
+                rx.fragment(*[_link_row(row) for row in WHATSAPP_NUMBER_ROWS]),
+                rx.fragment(),
+            ),
+            spacing="1",
+            width="100%",
+        ),
+        padding="0.5rem 1rem",
         width="100%",
     )
 
@@ -181,6 +211,9 @@ def _back_to_chats() -> rx.Component:
         href=CHATS_HREF,
         underline="none",
         color=T.TEXT_MUTED,
+        display="inline-flex",
+        align_items="center",
+        min_height=TARGET_MIN,
     )
 
 
@@ -191,13 +224,21 @@ def chat_settings_index() -> rx.Component:
         page_header("Ajustes de chats", CHAT_SETTINGS_SUBTITLE, kicker=_back_to_chats()),
         page_body(
             rx.vstack(
-                section(ALL_CHATS_TITLE, _rows(*[_link_row(row) for row in ALL_CHATS_ROWS])),
+                section(ALL_CHATS_TITLE, _all_chats_rows()),
                 _channels(),
-                rx.text(
-                    CONNECTIONS_NOTE + " ",
-                    rx.link(CONNECTIONS_ACTION, href=CONNECTIONS_HREF),
-                    size="2",
-                    color=T.TEXT_MUTED,
+                rx.hstack(
+                    rx.text(CONNECTIONS_NOTE, size="2", color=T.TEXT_MUTED),
+                    rx.link(
+                        CONNECTIONS_ACTION,
+                        href=CONNECTIONS_HREF,
+                        size="2",
+                        display="inline-flex",
+                        align_items="center",
+                        min_height=TARGET_MIN,
+                    ),
+                    spacing="1",
+                    align="center",
+                    wrap="wrap",
                 ),
                 spacing="5",
                 width="100%",

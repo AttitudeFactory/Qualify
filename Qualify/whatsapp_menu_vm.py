@@ -2757,8 +2757,8 @@ def validate_menu_name(name: str, existing: Sequence[str]) -> str:
 # --------------------------------------------------------------------------------------
 
 PUBLISH_OK = (
-    "Listo: tu WhatsApp ya responde con este menú y muestra su bienvenida, sus preguntas "
-    "iniciales y sus comandos."
+    "Listo: tu menú de bienvenida ya está activo en WhatsApp, con su bienvenida, sus "
+    "preguntas iniciales y sus comandos."
 )
 
 # m-24842995: one main action. «Publicar en mi WhatsApp» saves the editor (when it has
@@ -2769,23 +2769,26 @@ PUBLISH_BUTTON = "Publicar en mi WhatsApp"
 SAVE_ONLY_BUTTON = "Guardar sin publicar"
 PUBLISH_CONFIRM_BUTTON = "Sí, publicar"
 PUBLISH_CONFIRM = (
-    "Al publicar, tu WhatsApp responde con los mensajes que tú escribiste en este menú, "
-    "nada más. Puedes tomar el control de cualquier chat desde Chats."
+    "Al publicar, tu menú de bienvenida queda activo en WhatsApp con los mensajes que tú "
+    "escribiste, nada más. Puedes atender tú cualquier chat desde Chats."
 )
 PUBLISH_CONFIRM_SAVES = "Primero guardamos tus cambios como una versión nueva."
-PUBLISH_CONFIRM_BACK_TO = "Tu WhatsApp vuelve a responder con la versión {n}."
-PUBLISH_CONFIRM_STARTS_WITH = "Tu WhatsApp empieza a responder con la versión {n}."
+PUBLISH_CONFIRM_BACK_TO = "Vuelve a estar activa la versión {n} de tu menú."
+PUBLISH_CONFIRM_STARTS_WITH = "Queda activa la versión {n} de tu menú."
 PUBLISH_CONFIRM_RESEND = (
-    "Este menú ya está respondiendo. Volvemos a enviar a WhatsApp la bienvenida, las "
+    "Este menú ya está activo. Volvemos a enviar a WhatsApp la bienvenida, las "
     "preguntas iniciales y los comandos."
 )
-PUBLISH_CONFIRM_REPLACES = "Tu menú «{name}» deja de responder y este toma su lugar."
+PUBLISH_CONFIRM_REPLACES = "Tu menú «{name}» deja de estar activo y este toma su lugar."
 PUBLISH_CONFIRM_PAUSED = (
-    "Tu menú está en pausa: después de publicar, tócalo en «Reanudar el menú» para que responda."
+    "Tu menú está en pausa: después de publicar, toca «Reanudar el menú» para que vuelva a "
+    "estar activo."
 )
 NEXT_STEP_QR = "Haz que te escriban: crea tu código QR para tu local o tus redes"
 # Publishing keeps the pause (the backend does not touch it): «listo» would be false.
-PUBLISHED_BUT_PAUSED = "Publicamos el menú, pero está en pausa: no responde hasta que lo reanudes."
+PUBLISHED_BUT_PAUSED = (
+    "Publicamos el menú, pero está en pausa: no estará activo hasta que lo reanudes."
+)
 RESUME_BUTTON = "Reanudar el menú"
 
 
@@ -2800,7 +2803,7 @@ def publish_confirm_lines(
     screen (`version` is the saved one the editor shows; ignored while `dirty`, since a
     new one is saved first), then — only when another menu of the number is the one
     answering — that it gets replaced, and — only when this menu is paused — that it
-    stays paused until resumed (so «ya está respondiendo» is not said of it)."""
+    stays paused until resumed (so «ya está activo» is not said of it)."""
     lines: list[str] = []
     if dirty:
         lines.append(PUBLISH_CONFIRM_SAVES)
@@ -2832,7 +2835,7 @@ def can_publish(
     return dirty or bool(editing_version_id)
 
 
-PUBLISH_PARTIAL = "Tu WhatsApp ya responde con este menú, pero no tomó las preguntas iniciales."
+PUBLISH_PARTIAL = "Tu menú ya está activo en WhatsApp, pero no tomó las preguntas iniciales."
 
 
 def publish_notice(
@@ -3001,7 +3004,7 @@ def catalog_note(count: int, brand: str) -> str:
     if count == 0:
         return (
             "La marca de este número no tiene productos activos: el paso «Productos del "
-            "catálogo» responde con su texto de catálogo vacío."
+            "catálogo» muestra su texto de catálogo vacío."
         )
     noun = "producto activo" if count == 1 else "productos activos"
     return f"La vista previa usa el catálogo real: {count} {noun} de {brand}."
