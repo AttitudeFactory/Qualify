@@ -5,7 +5,9 @@ Offline: the gateways are fakes that record what reached them; nothing is queued
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
+from types import SimpleNamespace
 from typing import Any
 from uuid import UUID
 
@@ -24,7 +26,7 @@ from . import whatsapp_chats_state as wa_module
 from .conversations_state import ConversationsState
 from .conversations_vm import EMPTY_ACCOUNT, EMPTY_THREAD
 from .conversations_vm import WINDOW_CLOSED_NOTICE as IG_WINDOW_CLOSED
-from .whatsapp_chats_state import WhatsAppChatsState
+from .whatsapp_chats_state import PickSend, WhatsAppChatsState
 from .whatsapp_chats_vm import EMPTY_THREAD as WA_EMPTY_THREAD
 from .whatsapp_chats_vm import WINDOW_CLOSED_NOTICE as WA_WINDOW_CLOSED
 
@@ -60,6 +62,18 @@ class Recorder:
 
     def reply(self, *args: Any, **kwargs: Any) -> Any:
         return self._hit("reply")
+
+    def send_template(self, *args: Any) -> Any:
+        return self._hit("send_template")
+
+    def confirm_payment(self, *args: Any) -> Any:
+        return self._hit("confirm_payment")
+
+    def reopen(self, *args: Any) -> Any:
+        return self._hit("reopen")
+
+    def takeover(self, *args: Any) -> Any:
+        return self._hit("takeover")
 
     def conversation(self, *args: Any) -> Any:
         raise DispatchThreadNotFound("gone")  # the window re-read fails: neutral words
@@ -211,3 +225,118 @@ def test_the_menu_pauses_on_send_through_the_same_whatsapp_service() -> None:
 
     source = inspect.getsource(whatsapp_chats_provider.ChatsGateway.send_text)
     assert "self._owned(" in source and "self.dispatcher.send_text(" in source
+
+
+# --- C1: an unexpected error never leaves a button busy ---------------------------------
+
+
+async def test_an_unexpected_error_clears_sending_and_keeps_the_draft(recorder: Recorder) -> None:
+    recorder.error = RuntimeError("a bug nobody listed")
+    wa = _wa()
+    await _drain(WhatsAppChatsState.send_message.fn(wa))
+    assert wa.sending is False and wa.draft_text == "hola"
+    assert wa.banner == wa_module._ACTION_FAILED
+    ig = _ig()
+    await _drain(ConversationsState.send_reply.fn(ig))
+    assert ig.sending is False and ig.draft_text == "hola"
+    assert ig.banner == ig_module._ACTION_FAILED
+    ig = _ig()
+    await _drain(ConversationsState.send_heart.fn(ig))
+    assert ig.sending is False and ig.banner == ig_module._ACTION_FAILED
+    wa = _wa()
+    await _drain(wa._act("close"))
+    assert wa.acting == "" and wa.banner == wa_module._ACTION_FAILED
+
+
+# --- C2: two fast taps queue one text ------------------------------------------------
+
+
+async def test_two_concurrent_taps_queue_one_text(recorder: Recorder) -> None:
+    for handler, make in (
+        (WhatsAppChatsState.send_message, _wa),
+        (ConversationsState.send_reply, _ig),
+    ):
+        recorder.calls.clear()
+        state = make()
+        await asyncio.gather(_drain(handler.fn(state)), _drain(handler.fn(state)))
+        assert len(recorder.calls) == 1, handler
+        assert state.sending is False
+
+
+# --- C3: a login that lost the business, on every path ----------------------------------
+
+
+async def test_not_a_member_is_worded_on_every_send_and_action(
+    recorder: Recorder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recorder.error = NotAMember()
+
+    ig = _ig()
+    await _drain(ConversationsState.send_heart.fn(ig))
+    assert ig.banner == NOT_A_MEMBER_MESSAGE and ig.sending is False
+
+    ig = _ig()
+    await _drain(ConversationsState.change_chat_status.fn(ig, "close", THREAD, ""))
+    assert ig.banner == NOT_A_MEMBER_MESSAGE and ig.chat_status_busy == ""
+
+    wa = _wa()
+    await _drain(wa._act("takeover"))
+    assert wa.banner == NOT_A_MEMBER_MESSAGE and wa.acting == ""
+
+    # The approved message (expired chat).
+    wa = _wa()
+    wa.tpl_selected, wa.tpl_reviewing, wa.tpl_fields = "tpl", True, []
+    monkeypatch.setattr(
+        WhatsAppChatsState, "_tpl_option", lambda self, _id: SimpleNamespace(template_id="tpl")
+    )
+    await _drain(WhatsAppChatsState.send_template.fn(wa))
+    assert wa.tpl_error == NOT_A_MEMBER_MESSAGE and wa.tpl_sending is False
+
+    # The «+» panel.
+    wa = _wa()
+    plan = PickSend(session=0, source="menu", thread_id=THREAD, connection_id=CONN, request_key="k")
+    monkeypatch.setattr(WhatsAppChatsState, "_begin_pick_send", lambda self: plan)
+    monkeypatch.setattr(wa_module, "call_pick", lambda gw, *args: recorder._hit("pick"))
+    await _drain(wa._send_pick())
+    assert wa.pick_send_error == NOT_A_MEMBER_MESSAGE
+
+    # «Pago recibido».
+    wa = _wa()
+    wa.pay_confirm_open, wa._pay_thread, wa.pay_message = True, THREAD, "Gracias, recibido."
+    await _drain(wa._pay(silent=False))
+    assert wa.pay_error == NOT_A_MEMBER_MESSAGE and wa.pay_busy is False
+    assert [name for name, _login in recorder.calls] == [
+        "reply",
+        "close",
+        "takeover",
+        "send_template",
+        "pick",
+        "confirm_payment",
+    ]
+    assert all(login == LOGIN for _name, login in recorder.calls)
+
+
+async def test_a_suggestion_is_not_decided_for_a_login_that_lost_the_business(
+    recorder: Recorder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    decided: list[str] = []
+
+    def refuse(tenant_id: UUID) -> None:
+        raise NotAMember()
+
+    async def decide(self: object, *args: Any) -> None:
+        decided.append("decided")
+
+    monkeypatch.setattr(ig_module, "require_acting_member", refuse)
+    monkeypatch.setattr(ConversationsState, "_decide_sent_draft", decide)
+    state = _ig()
+    state.suggestion = dataclasses.replace(state.suggestion, draft_id=str(UUID(int=7)), text="hola")
+    await _drain(ConversationsState.send_reply.fn(state))
+    assert decided == [] and recorder.calls == []
+    assert state.banner == NOT_A_MEMBER_MESSAGE
+
+
+async def test_no_login_is_left_acting_after_a_handler(recorder: Recorder) -> None:
+    await _drain(WhatsAppChatsState.send_message.fn(_wa()))
+    await _drain(ConversationsState.send_reply.fn(_ig()))
+    assert current_acting_login() is None

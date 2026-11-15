@@ -216,10 +216,10 @@ def test_logout_resets_the_counts() -> None:
 @pytest.mark.parametrize(
     ("module", "state", "handlers"),
     [
-        ("Qualify.conversations_state", "ConversationsState", ["send_reply"]),
+        ("Qualify.conversations_state", "ConversationsState", ["_reply_once"]),
         ("Qualify.replies_state", "RepliesState", ["_decide_and_send", "discard_draft"]),
         ("Qualify.followups_state", "FollowupsState", ["approve", "discard"]),
-        ("Qualify.whatsapp_chats_state", "WhatsAppChatsState", ["_send"]),
+        ("Qualify.whatsapp_chats_state", "WhatsAppChatsState", ["_send_once"]),
         ("Qualify.gallery_state", "GalleryState", ["quick_approve", "confirm_reject_post"]),
         ("Qualify.creative_state", "CreativeState", ["approve_selected", "reject_current"]),
         ("Qualify.conversations_state", "ConversationsState", ["load_conversation"]),

@@ -293,9 +293,10 @@ async def test_an_unexpected_error_never_leaves_the_button_spinning(
             raise RuntimeError("bug")
 
     monkeypatch.setattr(state_module, "gateway", lambda: _Boom())
-    with pytest.raises(RuntimeError):
-        await _act(state, "close")
+    # m-25027374 (C1): worded, never raised, and the button is free again.
+    await _act(state, "close")
     assert state.chat_status_busy == ""
+    assert state.banner == state_module._ACTION_FAILED
     state.chat_status_busy = "reopen"
     state._reset_conversation()
     assert state.chat_status_busy == ""

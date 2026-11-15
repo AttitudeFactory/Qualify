@@ -1354,6 +1354,9 @@ class WhatsAppChatsState(rx.State):
             if self.compose_error:
                 self._set_banner(self.compose_error, "warn")
                 return
+            # m-25027374 (C2): taken in the same lock that checked it — two fast taps
+            # cannot both pass (a text send carries no idempotency key).
+            self.sending = True
             mode = self.compose_mode
             text = self.draft_text
             titles = [self.button_1, self.button_2, self.button_3]
@@ -1372,6 +1375,7 @@ class WhatsAppChatsState(rx.State):
         async with self:
             if self.sending or not self.order.present or not self.can_compose:
                 return
+            self.sending = True  # C2: in the lock that checked it
         gw = gateway()
 
         def call(tenant: UUID, connection: UUID, thread: UUID, user: UUID) -> object:
@@ -1386,8 +1390,22 @@ class WhatsAppChatsState(rx.State):
         *,
         clear_composer: bool,
     ) -> AsyncIterator[rx.event.EventSpec]:
+        """The caller set `sending` under the lock that checked it (C2); this clears it
+        on every way out, an unexpected error included (C1, m-25027374)."""
+        try:
+            async for event in self._send_once(call, clear_composer=clear_composer):
+                yield event
+        finally:
+            async with self:
+                self.sending = False
+
+    async def _send_once(
+        self,
+        call: Callable[[UUID, UUID, UUID, UUID], object],
+        *,
+        clear_composer: bool,
+    ) -> AsyncIterator[rx.event.EventSpec]:
         async with self:
-            self.sending = True
             self.banner = ""
             thread_id, connection_id = self.open_thread_id, self._connection_id
             tenant_id = await self._tenant()
@@ -1446,7 +1464,7 @@ class WhatsAppChatsState(rx.State):
                 self.sending = False
                 self._set_banner(_REJECTED, "error")
             return
-        except _DB_ERRORS as exc:
+        except Exception as exc:  # noqa: BLE001 — C1: worded, never a spinning «Enviar»
             logger.error("whatsapp chats send failed: %s", type(exc).__name__)
             async with self:
                 self.sending = False
@@ -1654,7 +1672,7 @@ class WhatsAppChatsState(rx.State):
             error = TEMPLATE_FILL_HINT
         except ValueError:
             error = _REJECTED
-        except _DB_ERRORS as exc:
+        except Exception as exc:  # noqa: BLE001 — C1: worded, never a spinning «Enviar»
             # The key is kept: «Enviar» again retries the SAME intent and queues once.
             logger.error("whatsapp chats template send failed: %s", type(exc).__name__)
             error = _ACTION_FAILED
@@ -2180,7 +2198,7 @@ class WhatsAppChatsState(rx.State):
         failed = False
         try:
             if tenant_id is None or connection is None:
-                raise PermissionError
+                raise _NoSession
             gw = gateway()
             if not brand:
                 scope = await asyncio.to_thread(gw.picker_scope, tenant_id, connection)
@@ -2193,7 +2211,7 @@ class WhatsAppChatsState(rx.State):
                 if not picks:
                     # m-24986801 §4: the empty step says whether some wait for approval.
                     pending = await asyncio.to_thread(gw.seasonal_waiting, tenant_id, brand_id)
-        except PermissionError:
+        except _NoSession:
             picks = []
         except Exception as exc:  # noqa: BLE001 — the step says so and offers a retry
             logger.warning("whatsapp chats seasonal list failed: %s", type(exc).__name__)
@@ -2382,11 +2400,11 @@ class WhatsAppChatsState(rx.State):
             tenant, connection = tenant_id, _uuid(connection_id)
             thread, method = _uuid(thread_id), _uuid(method_id)
             if tenant is None or connection is None or thread is None or method is None:
-                raise PermissionError
+                raise _NoSession
             caption = await asyncio.to_thread(
                 gateway().payment_card_preview, tenant, connection, thread, method
             )
-        except PermissionError:
+        except _NoSession:
             error = _NO_SESSION
         except PaymentMethodNotFound:
             error = PAYMENT_GONE
@@ -2431,7 +2449,7 @@ class WhatsAppChatsState(rx.State):
         directions = EMPTY_DIRECTIONS
         try:
             if tenant_id is None or connection is None:
-                raise PermissionError
+                raise _NoSession
             if need_scope:
                 scope = await asyncio.to_thread(gw.picker_scope, tenant_id, connection)
                 brand = str(scope.brand_id) if scope.brand_id else ""
@@ -2475,7 +2493,7 @@ class WhatsAppChatsState(rx.State):
                     menu = MENU_NOT_ACTIVE_VM  # a state with its way out, not a failure
                 else:
                     menu = build_menu_preview(preview)
-        except PermissionError:
+        except _NoSession:
             failed = _NO_SESSION
             ok = False
         except Exception as exc:  # noqa: BLE001 — Postgres or R2 links: worded, never shown
@@ -2840,7 +2858,7 @@ class WhatsAppChatsState(rx.State):
                 self.acting = ""
                 self._set_banner(_ACTION_FAILED, "error")
             return
-        except _DB_ERRORS as exc:
+        except Exception as exc:  # noqa: BLE001 — C1: worded, never a stuck header button
             logger.error("whatsapp chats %s failed: %s", action, type(exc).__name__)
             async with self:
                 self.acting = ""

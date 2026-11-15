@@ -101,7 +101,7 @@ from qualify_api.inbox.channels import UnknownChannel as NotAnInboxChannel
 from qualify_api.inbox.dispatch import ActionNotSupported, DraftNotSupported
 from qualify_api.inbox.dispatch import ThreadNotFound as DispatchThreadNotFound
 from qualify_api.inbox.dispatch import WindowClosed as DispatchWindowClosed
-from qualify_api.tenancy.acting import acting_login
+from qualify_api.tenancy.acting import acting_login, require_acting_member
 from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState
@@ -229,6 +229,19 @@ _TEMPLATE_DELETED = "Plantilla borrada."
 _TOAST_MS = 4000
 #: m-25026457: what the header's one status button may ask for.
 CHAT_STATUS_ACTIONS = frozenset({"close", "reopen"})
+
+
+@dataclasses.dataclass(frozen=True)
+class _ReplyPlan:
+    """What one «Enviar» froze under the lock (m-25027374)."""
+
+    text: str
+    attachment: AttachmentVM
+    suggestion: DraftVM
+    buttons: list[ButtonVM]
+    quick_replies: list[str]
+    thread_id: str
+    connection_id: str
 
 
 class _NoSession(Exception):
@@ -1282,7 +1295,7 @@ class ConversationsState(rx.State):
             async with self:
                 self._set_banner(_ACTION_FAILED, "error")
             return
-        except _DB_ERRORS as exc:
+        except Exception as exc:  # noqa: BLE001 — C1: the `finally` above clears the button
             logger.error("conversations %s failed: %s", action, type(exc).__name__)
             async with self:
                 self._set_banner(_ACTION_FAILED, "error")
@@ -1730,6 +1743,17 @@ class ConversationsState(rx.State):
             thread_id, connection_id = self.open_thread_id, self.selected_connection_id
             tenant_id = await self._tenant()
             login = await self._login()
+        try:
+            async for event in self._heart_once(tenant_id, thread_id, connection_id, login):
+                yield event
+        finally:
+            # m-25027374 (C1): whatever happened, «Enviar» and ❤ never stay busy.
+            async with self:
+                self.sending = False
+
+    async def _heart_once(
+        self, tenant_id: UUID | None, thread_id: str, connection_id: str, login: UUID | None
+    ) -> AsyncIterator[rx.event.EventSpec]:
         thread, connection = _uuid(thread_id), _uuid(connection_id)
         try:
             if tenant_id is None or thread is None or connection is None:
@@ -1776,6 +1800,12 @@ class ConversationsState(rx.State):
                 self.sending = False
                 self._set_banner(_ACTION_FAILED, "error")
             return
+        except Exception as exc:  # noqa: BLE001 — C1: worded, never a stuck button
+            logger.error("conversations heart failed: %s", type(exc).__name__)
+            async with self:
+                self.sending = False
+                self._set_banner(_ACTION_FAILED, "error")
+            return
         async with self:
             self.sending = False
         yield rx.toast.info(_HEART_QUEUED, duration=_TOAST_MS)
@@ -1798,7 +1828,30 @@ class ConversationsState(rx.State):
             thread_id, connection_id = self.open_thread_id, self.selected_connection_id
             tenant_id = await self._tenant()
             login = await self._login()
-        thread, connection = _uuid(thread_id), _uuid(connection_id)
+        plan = _ReplyPlan(
+            text=text,
+            attachment=attachment,
+            suggestion=suggestion,
+            buttons=buttons,
+            quick_replies=quick_replies,
+            thread_id=thread_id,
+            connection_id=connection_id,
+        )
+        try:
+            async for event in self._reply_once(plan, tenant_id, login):
+                yield event
+        finally:
+            # m-25027374 (C1): whatever happened, «Enviar» never stays busy.
+            async with self:
+                self.sending = False
+
+    async def _reply_once(
+        self, plan: _ReplyPlan, tenant_id: UUID | None, login: UUID | None
+    ) -> AsyncIterator[rx.event.EventSpec | rx.event.EventHandler]:
+        text, attachment, suggestion = plan.text, plan.attachment, plan.suggestion
+        buttons, quick_replies = plan.buttons, plan.quick_replies
+        thread_id = plan.thread_id
+        thread, connection = _uuid(thread_id), _uuid(plan.connection_id)
         gw = gateway()
         try:
             if tenant_id is None or thread is None or connection is None:
@@ -1809,10 +1862,13 @@ class ConversationsState(rx.State):
                     self.sending = False
                     self._set_banner(_NO_USER, "error")
                 return
-            draft_id: UUID | None = None
-            if text and suggestion.draft_id:
-                draft_id = await self._decide_sent_draft(tenant_id, user, suggestion, text)
             with acting_login(login):
+                draft_id: UUID | None = None
+                if text and suggestion.draft_id:
+                    # C3: a login that lost the business records no verdict on the draft:
+                    # the membership is checked BEFORE the suggestion is decided.
+                    await asyncio.to_thread(require_acting_member, tenant_id)
+                    draft_id = await self._decide_sent_draft(tenant_id, user, suggestion, text)
                 if attachment.object_key:
                     await asyncio.to_thread(
                         gw.reply_media, tenant_id, connection, thread, user, attachment
@@ -1891,7 +1947,7 @@ class ConversationsState(rx.State):
                 self.sending = False
                 self._set_banner(_REJECTED, "error")
             return
-        except _DB_ERRORS as exc:
+        except Exception as exc:  # noqa: BLE001 — C1: worded, never a spinning «Enviar»
             logger.error("conversations reply failed: %s", type(exc).__name__)
             async with self:
                 self.sending = False
