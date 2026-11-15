@@ -589,11 +589,12 @@ textarea.q-reply-field::placeholder,
 
 /* U5 (UX review 2026-11-15): on a wide screen too, the chat header's top line stays in
    view while the owner types, pinned under the page's own sticky header (whose height
-   at ≥ 1024 px, with its back link, title and subtitle, is 9.6rem — measured at 1280). */
+   at ≥ 1024 px, with its back link, title and subtitle, ends 8.85rem below the panel's
+   scroll edge — measured at 1280 in both chats). */
 @media (min-width: 1024px) {
   .q-wa-chats--open .q-chat-head__top {
     position: sticky;
-    top: 9.6rem;
+    top: 8.85rem;
     z-index: 3;
     background:
       linear-gradient(var(--q-chat-tint-3), var(--q-chat-tint-3)),

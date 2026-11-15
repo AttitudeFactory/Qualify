@@ -229,7 +229,8 @@ def test_instagram_reply_box_on_a_phone(chats_page) -> None:  # noqa: ANN001
         "Nota de voz",
         "Enviar un corazón",
     ]
-    expect(box.get_by_role("button", name="Sugerir respuesta")).to_be_in_viewport()
+    suggest = box.get_by_role("button", name="Sugerir respuesta").bounding_box()
+    assert suggest is not None and suggest["x"] + suggest["width"] <= PHONE["width"]
     botones = box.get_by_role("button", name="Botones")
     assert botones.get_attribute("aria-pressed") is None  # one ARIA state: expanded
     expect(botones).to_have_attribute("aria-expanded", "false")
