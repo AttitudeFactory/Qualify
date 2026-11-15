@@ -230,18 +230,20 @@ def test_switching_pages_never_draws_the_other_pages_panel(
     expect(page.locator(".q-wa-chats")).to_be_visible(timeout=60_000)
     assert page.evaluate("window.__qWrongPanel") == []
 
-    # On a phone, /whatsapp's strip is three buttons in one row, «Promociones» gone.
+    # On a phone, /whatsapp's strip is two buttons in one row: «Promociones» left
+    # (m-25017862) and the menu left for «Ajustes de chats» (m-25017861).
     page.set_viewport_size({"width": 360, "height": 780})
     page.goto(f"{app_server}/whatsapp?tab=numero&sub=estado")
     strip = page.get_by_role("group", name="Secciones de WhatsApp")
     expect(strip).to_be_visible(timeout=60_000)
-    expect(strip.get_by_role("button")).to_have_text(["Chats", "Respuesta automática", "Tu número"])
-    _shot(page, "whatsapp-tres-secciones-360")
+    expect(strip.get_by_role("button")).to_have_text(["Chats", "Tu número"])
+    _shot(page, "whatsapp-dos-secciones-360")
 
 
 def test_a_chats_links_land_on_the_right_page(chats_page) -> None:  # noqa: ANN001
     """With the shared chat thread (m-25027371): «⋯» › «Ajustes de este canal» opens
-    WhatsApp's «Respuesta automática»; «Crear un mensaje aprobado», from a chat whose
+    «Ajustes de chats» › «Tu menú de bienvenida» (m-25017861); «Crear un mensaje
+    aprobado», from a chat whose
     window closed, opens «Promociones por WhatsApp» › «Mensajes aprobados»."""
     page = chats_page
     ids = page._qualify_e2e_chats  # noqa: SLF001
@@ -254,10 +256,10 @@ def test_a_chats_links_land_on_the_right_page(chats_page) -> None:  # noqa: ANN0
     expect(head).to_be_visible(timeout=60_000)
     head.get_by_role("button", name="Más acciones de este chat").click()
     page.get_by_role("menuitem", name="Ajustes de este canal").click()
-    expect(page).to_have_url(re.compile(r"/whatsapp\?tab=respuesta"), timeout=60_000)
+    expect(page).to_have_url(re.compile(r"/chats/ajustes/whatsapp(\?.*)?$"), timeout=60_000)
     lit = _menu(page).locator('[aria-current="page"]')
     expect(lit).to_have_count(1)
-    expect(lit).to_contain_text("WhatsApp")
+    expect(lit).to_contain_text("Ajustes de chats")
     # The seeded number has a menu, so the tab opens on its guided frame; the chat list
     # is gone either way.
     expect(page.locator("main h1").first).to_be_visible(timeout=60_000)

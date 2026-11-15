@@ -205,7 +205,7 @@ def test_thread_row_maps_name_number_preview_unread_and_mode() -> None:
     assert row.time_label == "hace 5 min"
     assert row.awaiting_reply  # m-25017859: the rule's verdict, not the unread count
     assert (row.window_tone, row.window_open) == ("ok", True)
-    assert (row.mode_label, row.mode_tone) == ("Responde el menú", "neutral")
+    assert (row.mode_label, row.mode_tone) == ("Usando tu menú", "neutral")
     assert row.agent_initials == ""
 
 

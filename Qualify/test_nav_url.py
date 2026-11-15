@@ -26,6 +26,7 @@ from .whatsapp_vm import (
     TAB_CHATS,
     TAB_CONTACTS,
     TAB_KEYS,
+    TAB_MENU,
     TAB_QR,
     TAB_TEMPLATES,
     promotions_panel,
@@ -70,9 +71,12 @@ def test_every_whatsapp_tab_has_an_address_and_reads_back() -> None:
     # m-25017862: a promotions panel lives on its own page and carries only the sub-tab.
     for key in TAB_KEYS:
         url = tab_url(key)
-        query = dict(part.split("=", 1) for part in url.split("?", 1)[1].split("&"))
+        query = dict(part.split("=", 1) for part in url.partition("?")[2].split("&") if part)
         if url.startswith("/whatsapp/promociones?"):
             assert promotions_panel(query["sub"]) == key
+        elif url == "/chats/ajustes/whatsapp":
+            # m-25017861: the menu's page draws only the menu; no parameter.
+            assert key == TAB_MENU
         else:
             assert url.startswith("/whatsapp?tab=")
             assert resolve_panel(query["tab"], query.get("sub", "")) == key
@@ -226,7 +230,9 @@ def test_routes_run_the_entry_handlers_on_load() -> None:
         start = source.index(anchor)
         return source[start : source.index(")", source.index("on_load", start)) + 1]
 
-    assert "WhatsAppState.enter_page" in block("    whatsapp_index,")
+    assert "WhatsAppState.enter_page" in block('    route="/whatsapp",')
+    assert "WhatsAppState.enter_page" in block('    route="/chats/ajustes/whatsapp",')
+    assert "ChatSettingsState.enter_page" in block('    route="/chats/ajustes",')
     # m-24842990: the comments and the private inbox are tabs of «Por responder»; its
     # entry hands each tab over to that list's own entry handler.
     assert "ResponderState.enter_page" in block("    responder_index,")

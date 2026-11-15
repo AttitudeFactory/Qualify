@@ -10,7 +10,7 @@ from .creative_pages import draft_detail_index
 from .responder_page import responder_header
 from .test_route_history import _node
 from .ui import tokens as T
-from .whatsapp_page import whatsapp_header
+from .whatsapp_page import whatsapp_header, whatsapp_settings_index
 from .whatsapp_tab_chats import _back_button as chats_back
 from .whatsapp_tab_menu import _advanced
 
@@ -99,8 +99,10 @@ def test_phone_back_buttons_name_the_list_and_live_in_existing_sticky_headers() 
     assert _shown(str(messages_back()), "Por responder")
     assert _shown(str(chats_back()), "Chats")
     assert _shown(str(responder_header()), "Por responder")
-    header = str(whatsapp_header())
-    assert _shown(header, "Chats") and _shown(header, "Volver a los 4 pasos")
+    assert _shown(str(whatsapp_header()), "Chats")
+    # m-25017861: the menu's long editor lives on «Ajustes de chats › WhatsApp».
+    settings = str(whatsapp_settings_index())
+    assert _shown(settings, "Volver a los 4 pasos") and _shown(settings, "Ajustes de chats")
     assert not _shown(str(_advanced()), "Volver a los 4 pasos")
     detail = str(draft_detail_index())
     assert "q-page-header" in detail

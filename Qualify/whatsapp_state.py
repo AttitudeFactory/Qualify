@@ -67,8 +67,10 @@ from .whatsapp_vm import (
     PROMOTIONS_ROUTE,
     QR_DEFAULT_CHANNEL,
     SECTION_KEYS,
+    SETTINGS_WHATSAPP_ROUTE,
     SUB_PARAM,
     TAB_KEYS,
+    TAB_MENU,
     TAB_PARAM,
     BusinessProfileVM,
     ProfileForm,
@@ -76,7 +78,7 @@ from .whatsapp_vm import (
     WhatsAppNumberVM,
     compose_qr_message,
     graph_error_notice,
-    legacy_promotions_target,
+    legacy_panel_target,
     needs_help,
     panel_route,
     panel_section,
@@ -284,14 +286,20 @@ class WhatsAppState(rx.State):
         """Set the panel from the address, or return where an old address now lives.
 
         `/whatsapp/promociones` (m-25017862) shows a promotions panel from `?sub=`;
-        `/whatsapp` reads `?tab=`/`?sub=`, except an old address of a promotions panel,
-        which is answered with its new place (the caller redirects, nothing is set)."""
+        `/chats/ajustes/whatsapp` (m-25017861) the menu; `/whatsapp` reads `?tab=`/`?sub=`,
+        except an old address of a panel that moved (promotions, the menu), which is
+        answered with its new place (the caller redirects, nothing is set)."""
         url = self.router.url
         params = url.query_parameters
-        if url.path.rstrip("/") == PROMOTIONS_ROUTE:
+        path = url.path.rstrip("/")
+        if path == PROMOTIONS_ROUTE:
             self.active_tab = promotions_panel(str(params.get(SUB_PARAM, "") or ""))
             return None
-        moved = legacy_promotions_target(params)
+        if path == SETTINGS_WHATSAPP_ROUTE:
+            # m-25017861: «Ajustes de chats › WhatsApp» draws the menu panel only.
+            self.active_tab = TAB_MENU
+            return None
+        moved = legacy_panel_target(params)
         if moved is not None:
             return moved
         self.active_tab = resolve_panel(
@@ -407,8 +415,9 @@ class WhatsAppState(rx.State):
 
     def _panel_address(self, panel: str) -> str:
         address = tab_url(panel)
+        joint = "&" if "?" in address else "?"
         connection = uuid_param({"cuenta": self.selected_connection_id}, "cuenta")
-        address += "&cuenta=" + connection if connection else ""
+        address += joint + "cuenta=" + connection if connection else ""
         # m-25017859: back on Chats, the address keeps the chip the owner picked, so a
         # reload shows it (the default chip needs no parameter).
         if panel == "chats" and self._chats_chip:

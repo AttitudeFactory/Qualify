@@ -69,7 +69,7 @@ def test_no_tool_words_on_the_whatsapp_screens(path: Path) -> None:
 
 
 def test_chat_badges_say_who_answers_and_until_when() -> None:
-    assert mode_pill(False) == ("Responde el menú", "neutral")
+    assert mode_pill(False) == ("Usando tu menú", "neutral")
     assert mode_pill(True) == ("Respondes tú", "info")
     now = datetime(2026, 10, 14, 12, 0, tzinfo=UTC)
     label, tone = window_pill(True, datetime(2026, 10, 14, 17, 0, tzinfo=UTC), now, UTC)
@@ -113,9 +113,7 @@ def test_screens_use_the_proposed_labels() -> None:
     assert '"Cuánto tardas en responder (la mitad de las veces)"' in metrics
     # m-25017862: the promotions left this screen, so its line no longer promises them.
     # «tu menú de bienvenida»: the founder's name (2026-11-14); the tab keeps its own.
-    assert WHATSAPP_SUBTITLE == (
-        "Atiende por WhatsApp: tus chats, tu menú de bienvenida y tu número."
-    )
+    assert WHATSAPP_SUBTITLE == ("Atiende por WhatsApp: tus chats y tu número.")
     assert "WHATSAPP_SUBTITLE" in inspect.getsource(whatsapp_page.whatsapp_header)
     assert PROMOTIONS_SUBTITLE == (
         "Envía promociones a los clientes que aceptaron recibirlas y mira cuántos las leyeron."

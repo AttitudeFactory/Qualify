@@ -116,7 +116,7 @@ def entry_label(kind: str, key: str | None) -> str:
     if kind == "command":
         return f"Comando /{key}" if key else "Comando"
     if kind == "ice_breaker":
-        return f"Atajo «{key}»" if key else "Atajo"
+        return f"Pregunta inicial «{key}»" if key else "Pregunta inicial"
     if kind == "keyword":
         return f"Palabra «{key}»" if key else "Palabra clave"
     return key or kind

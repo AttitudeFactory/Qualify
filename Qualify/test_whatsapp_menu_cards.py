@@ -184,7 +184,7 @@ def test_another_menu_s_confirmation_names_the_one_it_replaces() -> None:
     assert cards[0].publish_lines == []
     assert cards[1].publish_button == "Publicar esta versión"  # not live: nothing to go back to
     assert cards[1].publish_lines == [
-        "Tu menú «Menú principal» deja de responder y este toma su lugar."
+        "Tu menú «Menú principal» deja de estar activo y este toma su lugar."
     ]
 
 
@@ -650,8 +650,9 @@ def test_eliminar_is_never_offered_on_the_menu_that_answers() -> None:
     assert paused.can_delete and paused.delete_case == DELETE_PAUSED
     # Archiving does not clear WhatsApp's shortcuts (accepted for now): one line says
     # what really happens — a tap reaches the owner's Chats, no automatic answer.
-    assert "si alguien los toca, el mensaje te llega a tus Chats" in paused.delete_case
-    assert "Los atajos de inicio pueden seguir apareciendo" in paused.delete_case
+    assert "si alguien las toca, el mensaje te llega a tus Chats" in paused.delete_case
+    # m-25017861 (D5): «Atajos» are «Preguntas iniciales» in both channels.
+    assert "Las preguntas iniciales pueden seguir apareciendo" in paused.delete_case
     assert paused.active_help == "Es la versión que tendrán tus clientes cuando lo reanudes."
     assert paused.delete_label == "Eliminar el menú Principal"
     never = _card(_input(live=None, versions=[(V1, 1, None)]))
