@@ -746,7 +746,7 @@ def _review() -> rx.Component:
                     "Distancia",
                     rx.cond(
                         S.form.radius_km != "",
-                        S.form.radius_km + " km (pendiente de comprobar)",
+                        S.form.radius_km + " km alrededor de la ciudad",
                         "El lugar elegido",
                     ),
                 ),
