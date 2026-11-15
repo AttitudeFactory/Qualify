@@ -317,3 +317,70 @@ def test_the_repair_turn_bound_grows_by_the_answer_it_re_sends(monkeypatch) -> N
     # the first answer billed 300 output tokens: the repair re-sends them, plus our note
     assert 300 + 100 < ceilings[1] - ceilings[0] < 300 + 100 + 400
     assert budget.overruns == 0
+
+
+# -- capa-v3: the repair causes of CAPA-002 made impossible or visible ----------------------
+
+
+def _tool_and_text(request: LayerRequest) -> tuple[dict[str, Any], str]:
+    # a second answer for the repair turn when the first does not fit this piece
+    _, client = _run(request, _response([_slide()]), _response([_slide()], "t2"))
+    sent = client.requests[0]
+    return sent["tools"][0], sent["messages"][0]["content"][-1]["text"]
+
+
+def _slide_schema(tool: dict[str, Any]) -> dict[str, Any]:
+    return tool["input_schema"]["properties"]["slides"]["items"]["properties"]
+
+
+def test_only_products_with_a_price_can_be_a_price_reference() -> None:
+    tool, text = _tool_and_text(_request())
+    assert _slide_schema(tool)["price_product_id"]["enum"] == ["", str(PRODUCT.product_id)]
+    assert str(NO_PRICE.product_id) not in text  # an unpriced product has no id at all
+    assert "Limonada (sin precio guardado" in text
+
+
+def test_a_product_promotion_is_offered_no_data_blocks() -> None:
+    """Its layouts (plate, band, scrim) take none: CAPA-002 put blocks on `band` 6 times."""
+    tool, text = _tool_and_text(_request())
+    assert _slide_schema(tool)["info_blocks"]["items"]["enum"] == ["none"]
+    table = text.split("Diseños de esta pieza")[1].split("Datos guardados")[0]
+    assert "- band:" in table and "info_blocks vacío" in table and "info_card" not in table
+
+
+def test_free_ideas_with_data_are_offered_their_blocks_and_info_card() -> None:
+    tool, text = _tool_and_text(_request(piece_type=layer.FREE_IDEA))
+    assert set(_slide_schema(tool)["info_blocks"]["items"]["enum"]) == {"location", "contact"}
+    assert "- info_card:" in text and "info_card; si es un aviso" in text
+
+
+def test_band_in_1x1_says_subtitle_or_call_phrase() -> None:
+    _, text = _tool_and_text(_request(format="1:1"))
+    assert "en 1:1 subtitle O call_phrase, nunca los dos" in text
+    assert "title ideal 20, máx. 30" in text  # band 1:1 title: two thirds of 30
+
+
+def test_info_card_shows_the_block_limit_that_applies_to_the_slide() -> None:
+    """Over a photo an info_card keeps a photo strip: 4:5 takes 3 blocks, not 4 (schema)."""
+    _, with_photo = _tool_and_text(_request(piece_type=layer.BUSINESS_INFO))
+    assert "- info_card:" in with_photo and "info_blocks 1-3 (" in with_photo
+    no_photo = _request(piece_type=layer.BUSINESS_INFO, slides=(SlideInput(0, None),))
+    _, text = _tool_and_text(no_photo)
+    assert "info_blocks 1-4 (" in text
+
+
+def test_business_info_without_saved_data_is_written_as_a_free_idea() -> None:
+    request = _request(piece_type=layer.BUSINESS_INFO, facts=BusinessFacts())
+    assert layer.effective_request(request).piece_type == layer.FREE_IDEA
+    _, text = _tool_and_text(request)
+    assert "«Información de tu negocio»" not in text and "- plate:" in text
+    kept = _request(piece_type=layer.BUSINESS_INFO)
+    assert layer.effective_request(kept) is kept
+
+
+def test_business_info_takes_info_card_only() -> None:
+    request = _request(piece_type=layer.BUSINESS_INFO)
+    _, text = _tool_and_text(request)
+    assert "«Información de tu negocio»: info_card" in text
+    with pytest.raises(ValueError, match="is not one of info_card"):
+        layer.spec_from_answer(_slide(), request, request.slides[0])
