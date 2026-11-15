@@ -38,6 +38,9 @@ PINNED = {
     ("fresh", "claim"): (0.889, 0.667),
     # the 2026-11-15 reviewer's misses and the review's bugs: tuned on, dev-like
     ("revision", "claim"): (0.889, 0.889),
+    # written after the review's fixes were pushed (1ab66f88), measured once, never tuned on
+    ("heldout", "price"): (1.0, 1.0),
+    ("heldout", "claim"): (0.8, 1.0),
 }
 
 
@@ -47,7 +50,7 @@ def scores() -> dict[str, dict]:
     rows = ev.rows()
     return {
         split: ev.score([r for r in rows if r["split"] == split])
-        for split in ("dev", "test", "fresh", "revision")
+        for split in ("dev", "test", "fresh", "revision", "heldout")
     }
 
 
