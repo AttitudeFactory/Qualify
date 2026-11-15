@@ -12304,6 +12304,1082 @@
    "note": "",
    "split": "dev",
    "id": 607
+  },
+  {
+   "text": "Abrimos todos los festivos",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": false,
+   "claim": "day",
+   "source": "fresh",
+   "note": "",
+   "split": "fresh",
+   "id": 608
+  },
+  {
+   "text": "Atención de corrido toda la semana",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": false,
+   "claim": "every_day",
+   "source": "fresh",
+   "note": "",
+   "split": "fresh",
+   "id": 609
+  },
+  {
+   "text": "Pedidos a cualquier hora",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": false,
+   "claim": "every_day",
+   "source": "fresh",
+   "note": "",
+   "split": "fresh",
+   "id": 610
+  },
+  {
+   "text": "Te lo mandamos a tu casa",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": false,
+   "claim": "delivery",
+   "source": "fresh",
+   "note": "",
+   "split": "fresh",
+   "id": 611
+  },
+  {
+   "text": "Llega en moto a tu casa",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": false,
+   "claim": "delivery",
+   "source": "fresh",
+   "note": "",
+   "split": "fresh",
+   "id": 612
+  },
+  {
+   "text": "Dos hamburguesas por el precio de una",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": false,
+   "claim": "promotion",
+   "source": "fresh",
+   "note": "",
+   "split": "fresh",
+   "id": 613
+  },
+  {
+   "text": "Combo dúo con 15 % menos",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": false,
+   "claim": "discount",
+   "source": "fresh",
+   "note": "",
+   "split": "fresh",
+   "id": 614
+  },
+  {
+   "text": "Envío express",
+   "slot": "title",
+   "context": {
+    "topic": "Nueva colección de vestidos de temporada",
+    "scene": "Nueva colección de vestidos de temporada",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": []
+   },
+   "price": false,
+   "claim": "delivery",
+   "source": "fresh",
+   "note": "",
+   "split": "fresh",
+   "id": 615
+  },
+  {
+   "text": "Primera visita sin cargo",
+   "slot": "title",
+   "context": {
+    "topic": "Apartamento en venta en Cúcuta, 3 habitaciones y 2 baños",
+    "scene": "Apartamento en venta en Cúcuta, 3 habitaciones y 2 baños",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": []
+   },
+   "price": false,
+   "claim": "free",
+   "source": "fresh",
+   "note": "",
+   "split": "fresh",
+   "id": 616
+  },
+  {
+   "text": "Hasta agotar existencias",
+   "slot": "title",
+   "context": {
+    "topic": "Nueva colección de vestidos de temporada",
+    "scene": "Nueva colección de vestidos de temporada",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": []
+   },
+   "price": false,
+   "claim": "promotion",
+   "source": "fresh",
+   "note": "",
+   "split": "fresh",
+   "id": 617
+  },
+  {
+   "text": "Reabrimos el lunes",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": false,
+   "claim": "novelty",
+   "source": "fresh",
+   "note": "",
+   "split": "fresh",
+   "id": 618
+  },
+  {
+   "text": "Estrenamos carta",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": false,
+   "claim": "novelty",
+   "source": "fresh",
+   "note": "",
+   "split": "fresh",
+   "id": 619
+  },
+  {
+   "text": "Nuevos horarios desde este mes",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": false,
+   "claim": "hours",
+   "source": "fresh",
+   "note": "",
+   "split": "fresh",
+   "id": 620
+  },
+  {
+   "text": "Abierto de 8 a 8 de lunes a sábado",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": false,
+   "claim": "hours",
+   "source": "fresh",
+   "note": "",
+   "split": "fresh",
+   "id": 621
+  },
+  {
+   "text": "Cada fin de semana, música en vivo",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": false,
+   "claim": "day",
+   "source": "fresh",
+   "note": "",
+   "split": "fresh",
+   "id": 622
+  },
+  {
+   "text": "Feriados también abrimos",
+   "slot": "title",
+   "context": {
+    "topic": "Chivitos al pan en Montevideo",
+    "scene": "Chivitos al pan en Montevideo",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": []
+   },
+   "price": false,
+   "claim": "day",
+   "source": "fresh",
+   "note": "",
+   "split": "fresh",
+   "id": 623
+  },
+  {
+   "text": "Domingos y feriados",
+   "slot": "title",
+   "context": {
+    "topic": "Chivitos al pan en Montevideo",
+    "scene": "Chivitos al pan en Montevideo",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": []
+   },
+   "price": false,
+   "claim": "day",
+   "source": "fresh",
+   "note": "",
+   "split": "fresh",
+   "id": 624
+  },
+  {
+   "text": "Hoy y mañana, 2x1",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": false,
+   "claim": "promotion",
+   "source": "fresh",
+   "note": "",
+   "split": "fresh",
+   "id": 625
+  },
+  {
+   "text": "Happy hour de 5 a 7",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": false,
+   "claim": "promotion",
+   "source": "fresh",
+   "note": "",
+   "split": "fresh",
+   "id": 626
+  },
+  {
+   "text": "Descuentazo en botas",
+   "slot": "title",
+   "context": {
+    "topic": "Nueva colección de vestidos de temporada",
+    "scene": "Nueva colección de vestidos de temporada",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": []
+   },
+   "price": false,
+   "claim": "discount",
+   "source": "fresh",
+   "note": "",
+   "split": "fresh",
+   "id": 627
+  },
+  {
+   "text": "Ofertón del día",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": false,
+   "claim": "discount",
+   "source": "fresh",
+   "note": "",
+   "split": "fresh",
+   "id": 628
+  },
+  {
+   "text": "Te lo llevamos sin costo",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": false,
+   "claim": "delivery",
+   "source": "fresh",
+   "note": "",
+   "split": "fresh",
+   "id": 629
+  },
+  {
+   "text": "Envíos gratis a todo Montevideo",
+   "slot": "title",
+   "context": {
+    "topic": "Chivitos al pan en Montevideo",
+    "scene": "Chivitos al pan en Montevideo",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": []
+   },
+   "price": false,
+   "claim": "delivery",
+   "source": "fresh",
+   "note": "",
+   "split": "fresh",
+   "id": 630
+  },
+  {
+   "text": "Promo 2 x 15.000",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": true,
+   "claim": "promotion",
+   "source": "fresh",
+   "note": "",
+   "split": "fresh",
+   "id": 631
+  },
+  {
+   "text": "Recogé tu pedido en el local",
+   "slot": "title",
+   "context": {
+    "topic": "Chivitos al pan en Montevideo",
+    "scene": "Chivitos al pan en Montevideo",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": []
+   },
+   "price": false,
+   "claim": null,
+   "source": "fresh",
+   "note": "",
+   "split": "fresh",
+   "id": 632
+  },
+  {
+   "text": "Tu viernes empieza aquí",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": false,
+   "claim": null,
+   "source": "fresh",
+   "note": "",
+   "split": "fresh",
+   "id": 633
+  },
+  {
+   "text": "Sabor de domingo en casa",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": false,
+   "claim": null,
+   "source": "fresh",
+   "note": "",
+   "split": "fresh",
+   "id": 634
+  },
+  {
+   "text": "Abierto al público",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": false,
+   "claim": null,
+   "source": "fresh",
+   "note": "",
+   "split": "fresh",
+   "id": 635
+  },
+  {
+   "text": "Cerrado al vacío para que dure",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": false,
+   "claim": null,
+   "source": "fresh",
+   "note": "",
+   "split": "fresh",
+   "id": 636
+  },
+  {
+   "text": "Hecho en casa",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": false,
+   "claim": null,
+   "source": "fresh",
+   "note": "",
+   "split": "fresh",
+   "id": 637
+  },
+  {
+   "text": "Siempre fresco y crujiente",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": false,
+   "claim": null,
+   "source": "fresh",
+   "note": "",
+   "split": "fresh",
+   "id": 638
+  },
+  {
+   "text": "Gratinado al horno",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": false,
+   "claim": null,
+   "source": "fresh",
+   "note": "",
+   "split": "fresh",
+   "id": 639
+  },
+  {
+   "text": "Envío de amor en cada caja",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": false,
+   "claim": null,
+   "source": "fresh",
+   "note": "",
+   "split": "fresh",
+   "id": 640
+  },
+  {
+   "text": "Nuestra nueva receta",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": false,
+   "claim": null,
+   "source": "fresh",
+   "note": "",
+   "split": "fresh",
+   "id": 641
+  },
+  {
+   "text": "Promesa de sabor",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": false,
+   "claim": null,
+   "source": "fresh",
+   "note": "",
+   "split": "fresh",
+   "id": 642
+  },
+  {
+   "text": "Abrimos los domingos",
+   "slot": "title",
+   "context": {
+    "topic": "Salchipapa doradita para picar",
+    "scene": "Salchipapa doradita para picar",
+    "hook": "",
+    "cta": "",
+    "facts": {
+     "hours": "Martes a domingo, 5 p. m. a 11 p. m."
+    },
+    "products": []
+   },
+   "price": false,
+   "claim": null,
+   "source": "fresh",
+   "note": "",
+   "split": "fresh",
+   "id": 643
+  },
+  {
+   "text": "Solo 9.990 COP",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": true,
+   "claim": null,
+   "source": "fresh",
+   "note": "",
+   "split": "fresh",
+   "id": 644
+  },
+  {
+   "text": "Por 7 lucas",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": true,
+   "claim": null,
+   "source": "fresh",
+   "note": "",
+   "split": "fresh",
+   "id": 645
+  },
+  {
+   "text": "A 3 dolaritos",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": true,
+   "claim": null,
+   "source": "fresh",
+   "note": "",
+   "split": "fresh",
+   "id": 646
+  },
+  {
+   "text": "Combo a 12 mil quinientos",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": true,
+   "claim": null,
+   "source": "fresh",
+   "note": "",
+   "split": "fresh",
+   "id": 647
+  },
+  {
+   "text": "Apto de 3 alcobas por 280 millones",
+   "slot": "title",
+   "context": {
+    "topic": "Apartamento en venta en Cúcuta, 3 habitaciones y 2 baños",
+    "scene": "Apartamento en venta en Cúcuta, 3 habitaciones y 2 baños",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": []
+   },
+   "price": true,
+   "claim": null,
+   "source": "fresh",
+   "note": "",
+   "split": "fresh",
+   "id": 648
+  },
+  {
+   "text": "A $ 2.000 la unidad",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": true,
+   "claim": null,
+   "source": "fresh",
+   "note": "",
+   "split": "fresh",
+   "id": 649
+  },
+  {
+   "text": "Desde 99 mil por persona",
+   "slot": "title",
+   "context": {
+    "topic": "Plan a Cartagena, 4 días y 3 noches con hotel",
+    "scene": "Plan a Cartagena, 4 días y 3 noches con hotel",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": []
+   },
+   "price": true,
+   "claim": null,
+   "source": "fresh",
+   "note": "",
+   "split": "fresh",
+   "id": 650
+  },
+  {
+   "text": "Sale en 18",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": true,
+   "claim": null,
+   "source": "fresh",
+   "note": "",
+   "split": "fresh",
+   "id": 651
+  },
+  {
+   "text": "Precio por kilo: 22.000",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": true,
+   "claim": null,
+   "source": "fresh",
+   "note": "",
+   "split": "fresh",
+   "id": 652
+  },
+  {
+   "text": "12.000 cada uno",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": true,
+   "claim": null,
+   "source": "fresh",
+   "note": "",
+   "split": "fresh",
+   "id": 653
+  },
+  {
+   "text": "Cuesta lo mismo que un tinto",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": false,
+   "claim": null,
+   "source": "fresh",
+   "note": "",
+   "split": "fresh",
+   "id": 654
+  },
+  {
+   "text": "Vale la pena",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": false,
+   "claim": null,
+   "source": "fresh",
+   "note": "",
+   "split": "fresh",
+   "id": 655
+  },
+  {
+   "text": "Paquete de 5 noches",
+   "slot": "title",
+   "context": {
+    "topic": "Plan a Cartagena, 4 días y 3 noches con hotel",
+    "scene": "Plan a Cartagena, 4 días y 3 noches con hotel",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": []
+   },
+   "price": false,
+   "claim": null,
+   "source": "fresh",
+   "note": "",
+   "split": "fresh",
+   "id": 656
+  },
+  {
+   "text": "Llévalo en 3 cuotas",
+   "slot": "title",
+   "context": {
+    "topic": "Nueva colección de vestidos de temporada",
+    "scene": "Nueva colección de vestidos de temporada",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": []
+   },
+   "price": false,
+   "claim": null,
+   "source": "fresh",
+   "note": "",
+   "split": "fresh",
+   "id": 657
+  },
+  {
+   "text": "En 2 sabores",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": false,
+   "claim": null,
+   "source": "fresh",
+   "note": "",
+   "split": "fresh",
+   "id": 658
+  },
+  {
+   "text": "Calle 72 # 10-34",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": false,
+   "claim": null,
+   "source": "fresh",
+   "note": "",
+   "split": "fresh",
+   "id": 659
+  },
+  {
+   "text": "Edición 15 del festival",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": false,
+   "claim": null,
+   "source": "fresh",
+   "note": "",
+   "split": "fresh",
+   "id": 660
+  },
+  {
+   "text": "Desde el 2015 en el barrio",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": false,
+   "claim": null,
+   "source": "fresh",
+   "note": "",
+   "split": "fresh",
+   "id": 661
+  },
+  {
+   "text": "Pizza familiar de 12 porciones",
+   "slot": "title",
+   "context": {
+    "topic": "Empanadas recién horneadas en la panadería",
+    "scene": "Empanadas recién horneadas en la panadería",
+    "hook": "",
+    "cta": "",
+    "facts": {},
+    "products": [
+     "Empanada de carne"
+    ]
+   },
+   "price": false,
+   "claim": null,
+   "source": "fresh",
+   "note": "",
+   "split": "fresh",
+   "id": 662
   }
  ]
 }

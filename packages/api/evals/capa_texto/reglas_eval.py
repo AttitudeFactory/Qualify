@@ -107,7 +107,7 @@ def real_output_cost(selected: list[dict[str, Any]]) -> dict[str, Any]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--split", choices=["dev", "test", "all"], default="test")
+    parser.add_argument("--split", choices=["dev", "test", "fresh", "all"], default="test")
     parser.add_argument("--misses", action="store_true")
     args = parser.parse_args()
     data = rows()

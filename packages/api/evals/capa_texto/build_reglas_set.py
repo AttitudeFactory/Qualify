@@ -671,9 +671,74 @@ def build(capa: list[dict[str, Any]]) -> list[dict[str, Any]]:
         cut = max(1, round(len(members) * 0.35)) if len(members) > 1 else 0
         for i, r in enumerate(members):
             r["split"] = "test" if i < cut else "dev"
+    # written AFTER the rules were frozen, never used to change them: an honest look at new
+    # phrasings (the dev/test rows were written by the same person who wrote the tables)
+    for r in FRESH:
+        r["split"] = "fresh"
+        unique.append(r)
     for i, r in enumerate(unique):
         r["id"] = i
     return unique
+
+
+UY = ctx("Chivitos al pan en Montevideo")
+FRESH = [
+    row("Abrimos todos los festivos", PLAIN, claim="day", source="fresh"),
+    row("Atención de corrido toda la semana", PLAIN, claim="every_day", source="fresh"),
+    row("Pedidos a cualquier hora", PLAIN, claim="every_day", source="fresh"),
+    row("Te lo mandamos a tu casa", PLAIN, claim="delivery", source="fresh"),
+    row("Llega en moto a tu casa", PLAIN, claim="delivery", source="fresh"),
+    row("Dos hamburguesas por el precio de una", PLAIN, claim="promotion", source="fresh"),
+    row("Combo dúo con 15 % menos", PLAIN, claim="discount", source="fresh"),
+    row("Envío express", FASHION, claim="delivery", source="fresh"),
+    row("Primera visita sin cargo", REALTY, claim="free", source="fresh"),
+    row("Hasta agotar existencias", FASHION, claim="promotion", source="fresh"),
+    row("Reabrimos el lunes", PLAIN, claim="novelty", source="fresh"),
+    row("Estrenamos carta", PLAIN, claim="novelty", source="fresh"),
+    row("Nuevos horarios desde este mes", PLAIN, claim="hours", source="fresh"),
+    row("Abierto de 8 a 8 de lunes a sábado", PLAIN, claim="hours", source="fresh"),
+    row("Cada fin de semana, música en vivo", PLAIN, claim="day", source="fresh"),
+    row("Feriados también abrimos", UY, claim="day", source="fresh"),
+    row("Domingos y feriados", UY, claim="day", source="fresh"),
+    row("Hoy y mañana, 2x1", PLAIN, claim="promotion", source="fresh"),
+    row("Happy hour de 5 a 7", PLAIN, claim="promotion", source="fresh"),
+    row("Descuentazo en botas", FASHION, claim="discount", source="fresh"),
+    row("Ofertón del día", PLAIN, claim="discount", source="fresh"),
+    row("Te lo llevamos sin costo", PLAIN, claim="delivery", source="fresh"),
+    row("Envíos gratis a todo Montevideo", UY, claim="delivery", source="fresh"),
+    row("Promo 2 x 15.000", PLAIN, price=True, claim="promotion", source="fresh"),
+    row("Recogé tu pedido en el local", UY, source="fresh"),
+    row("Tu viernes empieza aquí", PLAIN, source="fresh"),
+    row("Sabor de domingo en casa", PLAIN, source="fresh"),
+    row("Abierto al público", PLAIN, source="fresh"),
+    row("Cerrado al vacío para que dure", PLAIN, source="fresh"),
+    row("Hecho en casa", PLAIN, source="fresh"),
+    row("Siempre fresco y crujiente", PLAIN, source="fresh"),
+    row("Gratinado al horno", PLAIN, source="fresh"),
+    row("Envío de amor en cada caja", PLAIN, source="fresh"),
+    row("Nuestra nueva receta", PLAIN, source="fresh"),
+    row("Promesa de sabor", PLAIN, source="fresh"),
+    row("Abrimos los domingos", TUE_SUN, source="fresh"),
+    row("Solo 9.990 COP", PLAIN, price=True, source="fresh"),
+    row("Por 7 lucas", PLAIN, price=True, source="fresh"),
+    row("A 3 dolaritos", PLAIN, price=True, source="fresh"),
+    row("Combo a 12 mil quinientos", PLAIN, price=True, source="fresh"),
+    row("Apto de 3 alcobas por 280 millones", REALTY, price=True, source="fresh"),
+    row("A $ 2.000 la unidad", PLAIN, price=True, source="fresh"),
+    row("Desde 99 mil por persona", TRAVEL, price=True, source="fresh"),
+    row("Sale en 18", PLAIN, price=True, source="fresh"),
+    row("Precio por kilo: 22.000", PLAIN, price=True, source="fresh"),
+    row("12.000 cada uno", PLAIN, price=True, source="fresh"),
+    row("Cuesta lo mismo que un tinto", PLAIN, source="fresh"),
+    row("Vale la pena", PLAIN, source="fresh"),
+    row("Paquete de 5 noches", TRAVEL, source="fresh"),
+    row("Llévalo en 3 cuotas", FASHION, source="fresh"),
+    row("En 2 sabores", PLAIN, source="fresh"),
+    row("Calle 72 # 10-34", PLAIN, source="fresh"),
+    row("Edición 15 del festival", PLAIN, source="fresh"),
+    row("Desde el 2015 en el barrio", PLAIN, source="fresh"),
+    row("Pizza familiar de 12 porciones", PLAIN, source="fresh"),
+]
 
 
 def main() -> int:

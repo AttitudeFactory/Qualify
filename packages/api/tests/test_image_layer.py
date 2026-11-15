@@ -172,7 +172,7 @@ def test_an_info_block_without_saved_data_is_refused() -> None:
     raw = _slide(
         layout_id="brand_fill",
         anchor="none",
-        title="Te esperamos este festivo",
+        title="Te esperamos en el local",  # «festivo» is a day claim (REGLAS-001)
         price_product_id="",
         info_blocks=["hours"],
     )

@@ -305,6 +305,7 @@ def test_a_promotion_count_is_not_a_price() -> None:
         "Ahora 10,50",
         "Por 15k",
         "Desde 2500",
+        "Por veinte mil",  # REGLAS-001: a written number before an amount word
         # second review: years and two-digit amounts after a price word
         "Empanadas a 2000",
         "Llévate 3 por 2000",
@@ -333,8 +334,6 @@ def test_a_price_in_any_spelling_is_refused(text: str) -> None:
         "Mil sabores en tu mesa",
         "Pesos pesados del sabor",
         "1 litro de limonada",
-        # written-out numbers are out of a rule's reach: left to the prompt
-        "Por veinte mil",
         # years where a year fits, counts and quantities after a price word
         "En 2026, más sabores",
         "Edición 2026",
