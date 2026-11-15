@@ -337,6 +337,39 @@ class BrandKitStore:
             session.flush()
             return True
 
+    def update_document_keys(
+        self,
+        *,
+        tenant_id: UUID,
+        brand_id: UUID,
+        user_id: UUID | None,
+        document: str,
+        values: Mapping[str, Any],
+    ) -> None:
+        """Write SOME keys of one document as the owner (m-25029206: «Tu rubro» in Tu
+        marca writes `rubro_text` and `hashtags` only): every other key of the document,
+        reserved or not, stays exactly as it is in the database at this moment — read
+        under `FOR UPDATE` and written in the same transaction, like `set_document_key` —
+        and the row records who changed it, like `save_details`. A brand with no details
+        row yet gets one."""
+        if document not in DETAIL_DOCUMENTS:
+            raise ValueError(f"unknown brand kit document {document!r}")
+        with tenant_session(tenant_id) as session:
+            row = session.get(DetailsRow, brand_id, with_for_update=True)
+            if row is None:
+                row = DetailsRow(
+                    brand_id=brand_id,
+                    tenant_id=tenant_id,
+                    logo_brief={},
+                    connect={},
+                    profile={},
+                )
+                session.add(row)
+            setattr(row, document, {**(getattr(row, document) or {}), **dict(values)})
+            row.updated_by = user_id
+            row.updated_at = datetime.now(UTC)
+            session.flush()
+
     def load_avatar(self, *, tenant_id: UUID, brand_id: UUID) -> dict[str, Any] | None:
         """The brand avatar's stored record (`creative.brand_avatar.BrandAvatar`), or None."""
         with tenant_session(tenant_id) as session:

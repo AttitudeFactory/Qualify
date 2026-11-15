@@ -310,6 +310,35 @@ async def session_ids(state: Any) -> tuple[UUID, UUID, UUID] | None:
     return tenant_id, brand_id, user_id
 
 
+def hashtags_document(pills: list[dict[str, str]]) -> list[dict[str, str]]:
+    """`connect.hashtags` as it is stored: the pills of Tu rubro, each as it is on screen
+    (`{"tag", "origin", "reason", "model"}`, `creative_wizard_pages.add_pills`). The one
+    shape the wizard's finish and «Tu rubro» in Tu marca (m-25029206) both write."""
+    return [dict(item) for item in pills]
+
+
+def save_rubro(
+    tenant_id: UUID,
+    brand_id: UUID,
+    user_id: UUID,
+    rubro_text: str,
+    pills: list[dict[str, str]],
+    *,
+    store: BrandKitStore | None = None,
+) -> None:
+    """«Tu rubro» in Tu marca (m-25029206): ONLY `connect.rubro_text` and
+    `connect.hashtags` are written — the rest of `connect` and the whole kit stay as they
+    are (`BrandKitStore.update_document_keys`). No search, no AI call: the stored
+    referentes and the searches already run are left alone."""
+    (store or BrandKitStore()).update_document_keys(
+        tenant_id=tenant_id,
+        brand_id=brand_id,
+        user_id=user_id,
+        document="connect",
+        values={"rubro_text": rubro_text, "hashtags": hashtags_document(pills)},
+    )
+
+
 def _connect_document(
     connect: Any, progress: dict[str, Any] | None = None
 ) -> dict[str, Any] | None:
@@ -324,7 +353,7 @@ def _connect_document(
         "rubro_text": connect.rubro_text,
         "country_code": connect.country_code,
         "city": connect.city,
-        "hashtags": [dict(item) for item in connect.rubro_hashtags],
+        "hashtags": hashtags_document(connect.rubro_hashtags),
         # § request 2026-10-05: the Brand Kit editor's "Guardar voz" — until it is True,
         # Tu voz y tono is the first thing the editor shows
         "voice_configured": connect.voice_configured,
