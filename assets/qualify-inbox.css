@@ -697,6 +697,16 @@ textarea.q-reply-field::placeholder,
     row-gap: 0.125rem;
   }
 }
+/* Between 1024 and 1279 px the pane is too narrow for the name and «Tomar el control»
+   on one row (seen at 1024: the name cut to its first letter): the action goes under
+   the line of pills, still in the header, the name keeps the row. */
+@media (min-width: 1024px) and (max-width: 1279px) {
+  .q-wa-chats--open .q-chat-head .q-chat-head__actions {
+    grid-column: 2 / 5;
+    grid-row: 3;
+    justify-self: start;
+  }
+}
 
 /* ── The open chat on a phone (m-25027374) ─────────────────────────────────────────────
    The conversation gets the screen: while a chat is open under 768 px, the page's own
