@@ -179,7 +179,7 @@ def test_a_fifty_letter_tag_fits_a_phone(signed_up_page, app_server: str) -> Non
     for box in boxes:
         assert box is not None and box["x"] >= 0 and box["x"] + box["width"] <= width
     assert abs(boxes[0]["y"] + boxes[0]["height"] / 2 - boxes[1]["y"] - boxes[1]["height"] / 2) < 8
-    clipped = section.get_by_text(long_tag, exact=True).first.evaluate(
+    clipped = section.get_by_text(long_tag).first.evaluate(
         "el => el.scrollWidth > el.clientWidth ? getComputedStyle(el).textOverflow : 'fits'"
     )
     assert clipped == "ellipsis"
