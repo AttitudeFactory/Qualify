@@ -198,7 +198,7 @@ def test_a_missing_preview_loop_gives_no_address(tmp_path: Path) -> None:
 
 def test_text_design_is_674s_scrim() -> None:
     top = c.text_design("top")
-    assert (top.layout_id, top.layout_version, top.anchor) == ("scrim", 2, "top")
+    assert (top.layout_id, top.layout_version, top.anchor) == ("scrim", 3, "top")
     assert top.top == round(270 / 1920, 4) and top.bottom == 0.2
     assert (top.font_px_max, top.font_px_min) == (112, 76)
     assert c.text_design("middle").anchor == "middle"

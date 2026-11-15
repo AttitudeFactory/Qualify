@@ -18,9 +18,9 @@
   },
   "cost_model": {"seconds_per_still": 3.0},
   "layer_catalog": {
-    "layout_version": 2,
-    "engine_revision": 2,
-    "engine_revision_doc": "Bump with ANY change to engine.ts, LayerStill.tsx, icons.tsx or the font loading that can move a pixel of a layer_still; it is part of the compose job id and object key (CONTRACT.md). 1 = first build; 2 = review round 2 (logo/counter collisions, price drop reported, strict fonts).",
+    "layout_version": 3,
+    "engine_revision": 3,
+    "engine_revision_doc": "Bump with ANY change to engine.ts, LayerStill.tsx, icons.tsx or the font loading that can move a pixel of a layer_still; it is part of the compose job id and object key (CONTRACT.md). 1 = first build; 2 = review round 2 (logo/counter collisions, price drop reported, strict fonts). 3 = band 1:1 up to 43 % of the height (2026-11-15).",
     "source": "docs/catalogo-disenos-imagen-carrusel.md (approved 2026-11-14); limits are [H] until m-25017292 measures them",
     "formats": {
       "4:5":  {"width": 1080, "height": 1350, "margin": 64, "safe": [64, 64, 1016, 1286], "title_zone_x": [64, 1016]},
@@ -82,7 +82,7 @@
         "formats": ["4:5", "1:1", "9:16"],
         "anchors": ["bottom", "top"], "default_anchor": "bottom",
         "container_color": true, "accent_word": true, "price": true,
-        "height": {"4:5": [0.32, 0.40], "1:1": [0.34, 0.42], "9:16": [0.40, 0.40]},
+        "height": {"4:5": [0.32, 0.40], "1:1": [0.34, 0.43], "9:16": [0.40, 0.40]},
         "story_band_top": 1150,
         "padding": 48,
         "slots": {

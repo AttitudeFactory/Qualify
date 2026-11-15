@@ -98,7 +98,7 @@ const layerStillDefaults: LayerStillProps = {
   layer: {
     spec_version: 1,
     layout_id: 'plate',
-    layout_version: 2,
+    layout_version: 3,
     format: '4:5',
     photo: {subject_box: [0.2, 0.55, 0.8, 0.95], logo_in_photo: false, base_has_invented_text: false},
     title: 'Tu pan, recién horneado',

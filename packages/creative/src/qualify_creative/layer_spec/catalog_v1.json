@@ -1,6 +1,6 @@
 {
   "_doc": "The closed catalog of image and carousel layouts, version 1 (docs/catalogo-disenos-imagen-carrusel.md, approved 2026-11-14; ADR 49 §2 item 2). Read by the Python LayerSpec (qualify_creative.layer_spec); packages/render keeps the same numbers in manifest.layer_catalog and test_layer_catalog_drift.py keeps the two equal. Character limits are [H] until m-25017292 measures them; a change here is a new layout_version. Slots: [max_chars, max_lines]; null = the slot does not exist in that layout and format.",
-  "layout_version": 2,
+  "layout_version": 3,
   "formats": ["4:5", "1:1", "9:16"],
   "_script_families_doc": "Heading families drawn as script/handwriting (the render's list): with one of them a plate title takes script_title (2026-11-15).",
   "script_families": ["Pacifico", "Dancing Script", "Lobster", "Great Vibes", "Caveat", "Satisfy", "Sacramento", "Kaushan Script", "Courgette", "Parisienne", "Allura", "Cookie", "Yellowtail", "Amatic SC", "Shadows Into Light", "Indie Flower", "Permanent Marker", "Homemade Apple", "Lobster Two", "Marck Script"],
