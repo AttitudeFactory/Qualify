@@ -86,6 +86,12 @@ Dos partes, porque una es del canal y otra del chat:
   `saved_messages`, `window` (`hours=24`, `after_window = approved_template | none`),
   `menu_handoff`, `payments`, `suggest_reply`, `close_reopen`, `read_receipts`. El VM traduce
   esto a los `can_*` que pide la UX (`ux-chats-unificados.md` §5).
+  **Como quedó construido** (m-25017843, PR #625; `assign` llegó con m-25027372, PR #678): los
+  campos de `ChannelCapabilities` en `inbox/channels.py` son `channel`, `attachments`,
+  `max_buttons`, `button_style`, `stickers`, `saved_messages`, `window_hours`, `after_window`,
+  `menu_handoff`, `payments`, `suggest_reply`, `close_reopen` y `assign` (WhatsApp sí, Instagram
+  no). No hay `voice_note` ni `read_receipts`, y la ventana son dos campos (`window_hours`,
+  `after_window`) en vez de `window`.
 - **Dinámica, del chat** — viene en cada fila de la consulta: `window_closes_at`,
   `automation` (`menu` / `owner` / `none`), `payment_status`, `status`, `pending`.
 
@@ -109,7 +115,12 @@ porque cuesta.
   no `before` solo como hoy (`chats.py:351`), para no perder hilos con el mismo instante.
 - Las acciones sobre un hilo (`enviar`, `cerrar`, `asignar`) reciben sólo `thread_id`; el
   despachador lee `channel` de la fila **bajo RLS** y llama al servicio del canal. El canal nunca
-  viene del cliente.
+  viene del cliente. **Construido** en m-25027372 (PR #678, fusionado el 2026-11-14):
+  `inbox/dispatch.py` (`ChatDispatcher`) con enviar texto, cerrar, reabrir y asignar; ninguna
+  pantalla lo usa todavía (lo usará el cuadro de respuesta único, m-25027374). Límites: solo
+  texto; comprobar la cuenta conectada y su estado sigue siendo trabajo de quien llama; sin clave
+  de idempotencia en los envíos de texto (como antes); cerrar en WhatsApp sin la comprobación de
+  pantalla vieja que tiene Instagram.
 - Costo: dos subconsultas correlacionadas por fila (pendiente y nombre) × 50 filas. Con el volumen
   de hoy (cientos de hilos por negocio) es trivial. Si el p95 de la página pasa de 300 ms, la
   salida es desnormalizar `last_outbound_at` en `threads` (migración pequeña), no otro almacén.
@@ -293,8 +304,8 @@ No decido el texto, sólo lo marco para el fundador y UX:
 | «Al responder, la respuesta automática se pausa en esta conversación.» | `Qualify/whatsapp_tab_chats.py:2481` |
 | «…tomar el control de la respuesta automática…» | `Qualify/whatsapp_tab_chats.py:2558` |
 | «…puede publicar el menú automático ni la bienvenida.» | `Qualify/capabilities.py:111` |
-| «Está respondiendo tu menú automático · Responder yo» (franja propuesta) | `docs/ux-chats-unificados.md:83` (ya marcada allí como pendiente de la decisión de nombres) y la maqueta `docs/mockups/chats-unificados.html` |
-| «WhatsApp: Respuesta automática» en el árbol de «Ajustes de chats» | `docs/ux-chats-unificados.md:63` |
+| «Está respondiendo tu menú automático · Responder yo» (franja propuesta) | `docs/ux-chats-unificados.md` §2 («Quién responde») y la maqueta `docs/mockups/chats-unificados.html`; decidido el 2026-11-14 (decisión (vi) de la épica): «Este cliente está usando tu menú · Responder yo» |
+| «WhatsApp: Respuesta automática» en el árbol de «Ajustes de chats» | `docs/ux-chats-unificados.md` §2 (árbol de «Ajustes de chats»); decidido el 2026-11-14 (decisión (vi) de la épica): «Tu menú de bienvenida» |
 | Aviso al cliente propuesto en esta nota, «Te responde el menú automático de {negocio}» | §5 P6 de esta nota. Lo lee el **cliente final**, no el dueño; la condición 3 habla de «la app». Si cae dentro, choca con ella; si no, es la vía para el aviso que Meta recomienda (§3.4) |
 | Nombre del corte M5, «Respuesta automática» dentro de «Ajustes de chats» | §4.2 de esta nota |
 
