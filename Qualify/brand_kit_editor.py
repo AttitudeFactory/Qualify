@@ -187,6 +187,9 @@ class BrandEditState(rx.State):
     rubro_saving: bool = False
     #: Old etiquetas in the drafts the catalog would refuse: marked, and «Guardar» waits.
     invalid_tags: list[str] = []
+    #: «Buscar de nuevo» can run for this brand (`rubro_vm.can_search_again`, the same
+    #: condition `refresh_discovery` checks): only then the line pointing at it shows.
+    can_search_again: bool = False
 
     @rx.event
     async def restart(self) -> rx.event.EventSpec | None:
@@ -280,6 +283,9 @@ class BrandEditState(rx.State):
             self.rubro_draft = connect.rubro_text
             self.tags_draft = rubro_vm.stored_pills(connect.rubro_hashtags)
             self.invalid_tags = rubro_vm.invalid_tags(self.tags_draft)
+            self.can_search_again = rubro_vm.can_search_again(
+                connect.profile_username, connect.username, connect.network
+            )
         self.open_section = key
 
     @rx.event
@@ -491,13 +497,14 @@ class BrandEditState(rx.State):
 def _take_typed_tag(editor: Any) -> bool:
     """The etiqueta in the input, into the drafts (`brand_rubro_vm.add_typed`). True when
     the text was taken (the input closes); False leaves it there with the note."""
-    pills, note, taken = rubro_vm.add_typed(editor.tags_draft, editor.tag_input)
+    pills, note, left = rubro_vm.add_typed_parts(editor.tags_draft, editor.tag_input)
     editor.tags_draft = pills
     editor.tag_note = note
-    if taken:
-        editor.tag_input = ""
+    # what was refused (or had no room) stays in the input to be fixed; the rest is in
+    editor.tag_input = left
+    if not left:
         editor.adding_tag = False
-    return taken
+    return not left
 
 
 def _copy(value: Any) -> Any:
@@ -644,13 +651,6 @@ def _rubro_tag_pill(pill: rx.Var[dict[str, str]]) -> rx.Component:
     )
 
 
-def _can_search_again() -> rx.Var[bool]:
-    """«Buscar de nuevo» runs only with the brand's account (`refresh_discovery`)."""
-    return (BrandConnectState.profile_username != "") | (
-        (BrandConnectState.username != "") & (BrandConnectState.network != "")
-    )
-
-
 def _rubro_editor() -> tuple[rx.Component, ...]:
     """Open: the rubro in the owner's words and the etiquetas — the wizard's pills with
     their ✕ and «Agregar etiqueta», which opens the input (Enter or leaving it adds;
@@ -738,7 +738,9 @@ def _rubro_editor() -> tuple[rx.Component, ...]:
             align_items="start",
         ),
         rx.text(RUBRO_HELP, size="2", color=T.TEXT_MUTED),
-        rx.cond(_can_search_again(), rx.text(RUBRO_NO_SEARCH, size="2", color=T.TEXT_MUTED)),
+        rx.cond(
+            BrandEditState.can_search_again, rx.text(RUBRO_NO_SEARCH, size="2", color=T.TEXT_MUTED)
+        ),
         rx.cond(
             BrandEditState.rubro_error != "",
             rx.box(callout(BrandEditState.rubro_error, "error"), role="alert", width="100%"),

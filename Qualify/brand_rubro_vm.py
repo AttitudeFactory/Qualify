@@ -10,6 +10,8 @@ make: a tag is kept only when the shared catalog would accept it
 
 from __future__ import annotations
 
+import re
+
 from qualify_api.hashtags import fold, normalize_tag
 from qualify_api.hashtags.weekly import MAX_TAG_LENGTH, readable_tag
 from qualify_api.referentes.discovery_seed import CHOSEN_HASHTAGS
@@ -29,6 +31,10 @@ NOTE_TOO_LONG = (
     "por ejemplo: pizzeria."
 )
 NOTE_REPEATED = "Esa etiqueta ya está en tu lista."
+#: Words typed apart became one etiqueta: said, so three typed as one is not missed.
+NOTE_JOINED = "La unimos en una sola: #{tag}. Si eran varias, sepáralas con comas."
+#: What separates etiquetas typed at once.
+_SEPARATORS = re.compile(r"[,;]")
 #: An old etiqueta (saved before this check) the catalog would refuse: shown marked, and
 #: «Guardar» waits until it is changed or removed — it never vanishes unseen.
 NOTE_INVALID_STORED = (
@@ -79,18 +85,46 @@ def typed_tag(raw: str) -> tuple[str, str]:
     return tag, ""
 
 
+def add_typed_parts(pills: list[dict[str, str]], raw: str) -> tuple[list[dict[str, str]], str, str]:
+    """`pills` with what was typed added through the wizard's `add_pills` — a comma or
+    a semicolon separates etiquetas («pizza, pasta, vino» adds three), each checked and
+    counted against the cap on its own. Returns the pills, the note to show ("" when all
+    went well) and what stays in the input: the parts refused or with no room left, so
+    they can be fixed ("" closes it)."""
+    out = stored_pills(pills)  # a pill without a tag would break `add_pills`
+    notes: list[str] = []
+    left: list[str] = []
+    for part in (p.strip() for p in _SEPARATORS.split(str(raw or ""))):
+        tag, note = typed_tag(part)
+        if not tag:  # refused (a note) — or nothing but «#», which adds nothing
+            if note:
+                notes.append(note)
+                left.append(part)
+            continue
+        if fold(tag) in {fold(p["tag"]) for p in out}:
+            notes.append(NOTE_REPEATED)
+            continue
+        grown, full = add_pills(out, [{"tag": tag, "origin": "manual"}])
+        if full:
+            notes.append(full)
+            left.append(part)
+            continue
+        out = grown
+        if len(part.lstrip("#").split()) > 1:
+            notes.append(NOTE_JOINED.format(tag=tag))
+    return out, " ".join(dict.fromkeys(notes)), ", ".join(left)
+
+
 def add_typed(pills: list[dict[str, str]], raw: str) -> tuple[list[dict[str, str]], str, bool]:
-    """`pills` with what was typed added through the wizard's `add_pills`. Returns the
-    pills, the note to show ("" when all went well) and whether the text was taken —
-    False keeps it in the input so it can be fixed (refused, or no room left)."""
-    pills = stored_pills(pills)  # a pill without a tag would break `add_pills`
-    tag, note = typed_tag(raw)
-    if not tag:  # refused (a note) — or nothing but «#», which simply closes the input
-        return [dict(p) for p in pills], note, not note
-    if fold(tag) in {fold(p.get("tag", "")) for p in pills}:
-        return [dict(p) for p in pills], NOTE_REPEATED, True
-    out, note = add_pills(pills, [{"tag": tag, "origin": "manual"}])
-    return out, note, len(out) > len(pills)
+    """`add_typed_parts`, with whether the whole text was taken instead of what is left."""
+    out, note, left = add_typed_parts(pills, raw)
+    return out, note, not left
+
+
+def can_search_again(profile_username: str, username: str, network: str) -> bool:
+    """«Buscar de nuevo» can run: exactly `BrandConnectState.refresh_discovery`'s own
+    condition — the brand's handle (read or typed) AND its network."""
+    return bool(profile_username or username.strip()) and bool(network)
 
 
 def remove_tag(pills: list[dict[str, str]], tag: str) -> list[dict[str, str]]:

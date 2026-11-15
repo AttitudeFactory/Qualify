@@ -11,6 +11,7 @@ from typing import Any
 from uuid import UUID
 
 import pytest
+from qualify_api.hashtags.weekly import readable_tag
 
 from . import brand_finish
 from . import brand_kit_editor as editor_module
@@ -386,8 +387,86 @@ def test_the_spinner_ends_whatever_the_session_lookup_raises(
 def test_search_again_line_only_when_the_brand_can_search() -> None:
     rendered = " ".join(str(part) for part in editor_module._rubro_editor())
     assert _esc(editor_module.RUBRO_NO_SEARCH) in rendered
-    assert "profile_username" in str(editor_module._can_search_again())
+    assert "can_search_again" in rendered
     assert "Agregar etiqueta" in rendered
+
+
+@pytest.mark.parametrize(
+    ("profile", "username", "network", "can"),
+    [
+        ("areperacarmen", "", "instagram", True),
+        ("", "areperacarmen", "tiktok", True),
+        ("areperacarmen", "", "", False),  # a handle without its network: it refuses
+        ("", "areperacarmen", "", False),
+        ("", "   ", "instagram", False),
+        ("", "", "", False),
+    ],
+)
+def test_the_search_again_line_follows_refresh_discoverys_own_condition(
+    monkeypatch: pytest.MonkeyPatch, profile: str, username: str, network: str, can: bool
+) -> None:
+    states = _states()
+    connect = states[wiz.BrandConnectState]
+    connect.profile_username, connect.username, connect.network = profile, username, network
+    editor = _bind(states, monkeypatch)
+    asyncio.run(BrandEditState.open.fn(editor, vm.RUBRO_SECTION))
+    assert editor.can_search_again is can
+    # the same answer as the guard at the top of `refresh_discovery`
+    refuses = not (connect.profile_username or connect.username.strip()) or not connect.network
+    assert can is not refuses
+
+
+def test_commas_and_semicolons_separate_tags() -> None:
+    out, note, left = vm.add_typed_parts([], "comidaarabe, pizzeria, ropadeportiva")
+    assert [p["tag"] for p in out] == ["comidaarabe", "pizzeria", "ropadeportiva"]
+    assert note == "" and left == ""
+    out, note, left = vm.add_typed_parts([], "pizza; pasta,vino")
+    assert [p["tag"] for p in out] == ["pizza", "pasta", "vino"] and note == "" and left == ""
+
+
+def test_words_joined_are_said_and_commas_still_split() -> None:
+    out, note, left = vm.add_typed_parts([], "pizza pasta vino")
+    assert [p["tag"] for p in out] == ["pizzapastavino"] and left == ""
+    assert note == vm.NOTE_JOINED.format(tag="pizzapastavino")
+    assert "#pizzapastavino" in note and "comas" in note
+    out, note, left = vm.add_typed_parts([], "comida árabe, pizza")
+    assert [p["tag"] for p in out] == ["comidaárabe", "pizza"]
+    assert note == vm.NOTE_JOINED.format(tag="comidaárabe") and left == ""
+
+
+def test_the_cap_takes_what_fits_and_keeps_the_rest_in_the_input() -> None:
+    pills = [{"tag": t, "origin": "manual"} for t in ("uno", "dos", "tres")]
+    out, note, left = vm.add_typed_parts(pills, "cuatro, c++, cinco, seis, siete")
+    assert [p["tag"] for p in out] == ["uno", "dos", "tres", "cuatro", "cinco"]
+    assert "Caben 5 etiquetas" in note and vm.NOTE_CHARACTERS in note
+    assert left == "c++, seis, siete"
+
+
+def test_typing_into_the_section_keeps_what_did_not_fit(monkeypatch: pytest.MonkeyPatch) -> None:
+    editor = _bind(_states(), monkeypatch)
+    asyncio.run(BrandEditState.open.fn(editor, vm.RUBRO_SECTION))
+    _type(editor, "pizza, c++")
+    assert [p["tag"] for p in editor.tags_draft] == ["smashburger", "pizza"]
+    assert editor.tag_input == "c++" and editor.adding_tag
+    BrandEditState.set_tag_input.fn(editor, "pizza pasta")
+    BrandEditState.add_tag.fn(editor)
+    assert editor.tag_note == vm.NOTE_JOINED.format(tag="pizzapasta") and not editor.adding_tag
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "comidaarabe, pizzeria, ropadeportiva",
+        "Comida Árabe; #Pan de Bono, café_bar",
+        "x" * 50 + ", " + "y" * 51 + ", ñandú",
+        "🍔, c++, ok_1, #, ,;",
+    ],
+)
+def test_every_tag_the_section_stores_is_one_the_weekly_read_accepts(raw: str) -> None:
+    out, _note, _left = vm.add_typed_parts([], raw)
+    stored = vm.pills_for_save(out)
+    assert stored and all(readable_tag(p["tag"]) == p["tag"] for p in stored)
+    assert all(not p["tag"].startswith("#") for p in stored)
 
 
 # -- a stale session never puts old etiquetas back (code review, should-fix 1) --------

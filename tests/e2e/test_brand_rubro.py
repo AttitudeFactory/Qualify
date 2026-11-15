@@ -78,6 +78,15 @@ def test_the_owner_sees_and_changes_the_rubro_and_its_tags(
     expect(section.get_by_text("#comidacasera", exact=True)).to_be_visible()
     page.wait_for_timeout(500)
     expect(section.get_by_text("Esa etiqueta ya está en tu lista.")).to_have_count(0)
+    joined = section.get_by_text("La unimos en una sola: #comidacasera.", exact=False)
+    expect(joined).to_be_visible()
+    joined.scroll_into_view_if_needed()
+    _shot(page, f"rubro-unidas-{width}")
+    # the helper's own example, commas and all, adds three
+    section.get_by_role("button", name="Agregar etiqueta").click()
+    section.get_by_label("Nueva etiqueta").fill("pizzeria, ropadeportiva")
+    section.get_by_label("Nueva etiqueta").press("Enter")
+    expect(section.get_by_text("#ropadeportiva", exact=True)).to_be_visible()
     section.scroll_into_view_if_needed()
     _shot(page, f"rubro-editando-{width}")
     # nothing on the page is wider than the phone
@@ -91,7 +100,12 @@ def test_the_owner_sees_and_changes_the_rubro_and_its_tags(
 
     after = _connect(page)
     assert after["rubro_text"] == "arepera de barrio"
-    assert [pill["tag"] for pill in after["hashtags"]] == ["arepas", "comidacasera"]
+    assert [pill["tag"] for pill in after["hashtags"]] == [
+        "arepas",
+        "comidacasera",
+        "pizzeria",
+        "ropadeportiva",
+    ]
     assert all(set(pill) == {"tag", "origin", "reason", "model"} for pill in after["hashtags"])
     rest = {k: v for k, v in after.items() if k not in ("rubro_text", "hashtags")}
     assert rest == {k: v for k, v in before.items() if k not in ("rubro_text", "hashtags")}
