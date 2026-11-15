@@ -22,6 +22,47 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
 
 ---
 
+<a id="reglas-001"></a>
+
+## REGLAS-001 — Las dos reglas de texto libre de la capa, medidas sin modelo (m-25017292) — 2026-11-15
+
+- **Qué se midió:** las dos reglas que revisan cada título, subtítulo e invitación de la capa antes de aceptarla: **precios** en texto libre (`free_text_problems`: «currency», «price figure») y **promesas sin respaldo** (`unsupported_claims`: días, todos los días, horario, cierre, descuento, gratis, domicilio, promoción, novedad que el encargo no dice). Evaluación sin llamadas a ningún modelo: **costo US$0**. Decisión del fundador del 2026-11-15: seguir afinándolas en vez de dejarlas como respaldo.
+- **Conjunto etiquetado** (`packages/api/evals/capa_texto/reglas_set.json`, construido con `build_reglas_set.py`; cada fila trae el texto, el espacio, el contexto que ve la regla —encargo, gancho e invitación aprobados, datos guardados, nombres de productos—, la etiqueta de precio, el tipo de promesa sin respaldo y la fuente): **663 filas**.
+  - 148 textos reales de CAPA-001/002/003 (`claude-sonnet-5-5`), con el contexto de su caso y las etiquetas humanas ya registradas (3 promesas sin respaldo, ningún precio). Son 148 y no 197 porque un texto repetido con el mismo contexto cuenta una vez.
+  - 22 casos de las rondas de revisión y de las listas «Antes de encender» de #674 y #696.
+  - 438 escritos y etiquetados por el ingeniero de creación: precios como se escriben en Colombia, Venezuela y Uruguay (pesos con «mil», «lucas», «k», «millones», «palos»; «$», «Bs», «REF», «USD», «UYU», «$U»; números escritos) y sus parecidos inocentes (años, cantidades, unidades, tallas, direcciones, teléfonos, rangos); promesas de los nueve tipos, cada una sin respaldo y, cuando aplica, la misma frase con un contexto que sí la respalda; comida, inmobiliaria, viajes y moda.
+  - 55 filas **«fresh»**, escritas después de congelar las reglas y nunca usadas para cambiarlas.
+  - Totales: 139 con precio, 152 con promesa sin respaldo (día 24, promoción 21, todos los días 21, descuento 18, domicilio 18, horario 14, gratis 14, novedad 14, cierre 8).
+- **Regla de etiquetado de promesas:** una promesa cuenta como respaldada solo si el contexto dice el **mismo tipo** —y, para días, los mismos días—. Los nombres de productos nunca respaldan nada (un producto «Combo Domingo» no es un horario). Una invitación para hoy o esta noche («Te esperamos hoy») no es promesa.
+- **División:** dev 395 / test 213 (35 %), estratificada por (precio, promesa, fuente), semilla 20261115; «fresh» aparte. Se afinó solo en dev. El primer resultado en test se leyó una vez, al final, y no se tocaron las reglas después.
+- **Cambio:** las reglas pasan a `qualify_creative/layer_spec/text_rules.py`. El texto se normaliza una vez (forma compatible, espacios duros, mayúsculas, tildes), se divide en palabras y números, y se decide con tablas pequeñas y explícitas: símbolos y palabras de moneda, palabras que anteceden un precio, unidades y conteos, palabras de dirección, código o talla, contextos de año, nombres de días con sus rangos («de martes a domingo»), frases por tipo de promesa. Un número de 7 cifras escrito en miles («1.800.000») es un precio, no un teléfono. Ninguna expresión regular con retroceso: un texto de 20.000 caracteres se revisa en menos de 0,4 s.
+
+| Regla | Partición | Antes (main) — precisión | Antes — exhaustividad | Después — precisión | Después — exhaustividad |
+|---|---|---|---|---|---|
+| Precios | test (213) | 1,000 | 0,933 | **1,000** | **1,000** |
+| Promesas | test (213) | 0,774 | 0,533 | **0,978** | **1,000** |
+| Precios | dev (395) | 0,937 | 0,892 | 1,000 | 1,000 |
+| Promesas | dev (395) | 0,817 | 0,590 | 1,000 | 1,000 |
+| Precios | **fresh** (55, nunca afinado) | — | — | 0,917 | 1,000 |
+| Promesas | **fresh** (55, nunca afinado) | — | — | 0,882 | **0,625** |
+
+- **Lectura honesta:** los números de dev y test son **optimistas**. El conjunto y las tablas los escribió la misma persona, y muchas filas de test comparten frase con una fila de dev (la misma promesa con otro contexto). La cifra realista para frases nuevas es la de «fresh»: los precios generalizan bien (atrapan los 11 y rechazan de más 1 texto inocente); las promesas atrapan 15 de 24.
+- **Costo sobre la salida real:** de los 145 textos reales de CAPA que estaban bien, **0** se enviarían a reparar (antes, 1: «Martes de shawarma 2x1», cuyo encargo decía «dos por uno» en letras). Lo que se marca va al turno de reparación; si la reparación falla, la imagen pierde primero la invitación y luego el subtítulo, y si el problema está en el título se queda sin capa esa imagen, nunca la pieza.
+- **Fallos en test, textuales:** precios, ninguno. Promesas, 1 falso rechazo: «Martes de sabor» (un lema que la regla lee como promesa del martes).
+- **Fallos en «fresh», textuales** (no se corrigieron, para que la cifra siga siendo honesta):
+  - Precios, falso rechazo: «Llévalo en 3 cuotas».
+  - Promesas, falsos rechazos: «Sabor de domingo en casa», «Envío de amor en cada caja».
+  - Promesas que pasaron: «Pedidos a cualquier hora», «Te lo mandamos a tu casa», «Llega en moto a tu casa», «Dos hamburguesas por el precio de una», «Hasta agotar existencias», «Nuevos horarios desde este mes», «Happy hour de 5 a 7», «Descuentazo en botas», «Ofertón del día».
+- **Lo que estas reglas no pueden atrapar, por diseño:**
+  - Promesas dichas con palabras que no están en las tablas: sinónimos, aumentativos («descuentazo», «ofertón»), anglicismos («happy hour») y verbos nuevos («te lo mandamos»). Cada palabra nueva es una fila más: rendimientos decrecientes.
+  - Lo que exige conocimiento del mundo: si «Desde 2000» es un año o un precio; si un lema («Martes de sabor») promete algo; si «cada noche» contradice un horario que solo dice «de 5 a 11».
+  - Lo que exige ver la imagen: un precio, un 2x1 o un horario escritos en la foto de Seedream; una promesa que el texto no dice pero la foto sugiere (un cartel de «abierto»).
+  - La verdad de lo que el encargo sí dice: si el dueño escribió «envío gratis» en el encargo, la regla lo deja pasar aunque no sea cierto.
+- **Pruebas:** `packages/api/tests/test_reglas_texto.py` corre el conjunto sin conexión en CI y fija las cifras medidas de cada partición (una regla que baje precisión o exhaustividad falla), el cero sobre la salida real y el tiempo con 20.000 caracteres. La prueba de rendimiento encontró un fallo real: `int()` sobre una serie de 20.000 cifras.
+- **Lectura:** seguir afinando con tablas tiene rendimientos decrecientes. En test ya no hay margen, y en frases nuevas las promesas caen al 62 %: cada ronda tapa las palabras vistas y deja pasar las siguientes. Lo que falta es de otra naturaleza (sinónimos, lemas, contexto, imagen) y le corresponde a la segunda mirada visual (m-25017287), con un modelo que lea la imagen y el encargo. Las reglas quedan como un filtro barato y determinista de lo evidente.
+
+---
+
 <a id="capa-003"></a>
 
 ## CAPA-003 — `capa-v3` y la primera corrida capa → render de punta a punta (m-25017292) — 2026-11-15
