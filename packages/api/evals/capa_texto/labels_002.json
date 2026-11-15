@@ -1,0 +1,11 @@
+{
+  "_rule": "Human labels for CAPA-002 (m-25017292), by the creative engineer, 2026-11-14. Key = <piece id>#<slide>.<slot>. Only texts WITH an invented datum are listed; every other text the run produced was read and labelled clean. price = an amount not given by the catalog; claim = a promotion, day/hours or delivery promise that neither the brief (topic, scene, hook, invitation), the saved data nor a product name says.",
+  "F3-horario-r1-v4#0.title": {
+    "claim": true,
+    "why": "every night; the brief says Tuesday to Sunday"
+  },
+  "G2-salchipapa-galeria-carrusel-5#3.subtitle": {
+    "claim": true,
+    "why": "borderline: reads as an unlimited-refill promise the brief does not make"
+  }
+}

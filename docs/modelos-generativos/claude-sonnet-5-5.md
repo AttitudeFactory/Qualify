@@ -122,16 +122,17 @@ Detalle, tabla completa y lo que queda sin medir: [`pruebas.md` § MEJORAR-TEXTO
 
 Detalle: [`pruebas.md` § MEJORAR-TEXTO-002](pruebas.md#mejorar-texto-002).
 
-## Uso CAPA-001: la capa de texto de imagen y carrusel (m-25017283), 2026-11-14
+## Uso CAPA-001 y CAPA-002: la capa de texto de imagen y carrusel (m-25017283, m-25017292), 2026-11-14
 
 | Campo | Valor |
 |---|---|
 | Código | `qualify_api.creative.image_pipeline.layer.write_layers`, función de consumo `capa-de-texto` |
-| Versión de prompt | `capa-v2` en el código (trato de tú, nada de días, horarios, descuentos, «gratis», domicilios ni promociones fuera del encargo, dos tercios de cada límite): **sin medir**; lo medido abajo es `capa-v1` |
+| Versión de prompt | `capa-v2` (trato de tú, nada de días, horarios, descuentos, «gratis», domicilios ni promociones fuera del encargo, dos tercios de cada límite): medido en CAPA-002; `capa-v1` en CAPA-001 |
 | Configuración | `claude-sonnet-5-5`, esfuerzo `low`, herramienta estricta `escribir_capa` (una entrada por imagen), `max_tokens` 4.000, tope de US$0,25 por pieza para todas sus llamadas (regeneración incluida); la foto va en base64 y se enmascara en Langfuse; el tope previo de cada turno cuenta las fotos con la regla de visión de Anthropic (≈ ancho × alto / 750 tras reducir a ≤ 1.568 px y ≈ 1,15 MP: ~1.530 tokens por base de Seedream) |
 | Reintentos | en la cola, cada llamada es un paso guardado: un reintento lee la respuesta y no vuelve a pagarla |
 | Interruptor | `QUALIFY_IMAGE_LAYER=on`; apagado por defecto (nada consume la capa hasta m-25017285) |
-| Costo medido | US$0,009–0,027 por foto, media US$0,016 (10 fotos, 4 reparaciones) |
-| Calidad medida | 10/10 capas válidas; `base_has_invented_text` de acuerdo con la etiqueta humana 9/10 |
+| Costo medido | `capa-v2` (CAPA-002): media US$0,013 por foto (US$0,010 sin reparación, US$0,022 con ella); carrusel entero en una llamada US$0,053 (6 diap.), US$0,080 (5) y US$0,131 (8). `capa-v1` (CAPA-001): media US$0,016 por foto |
+| Latencia medida | `capa-v2`: mediana 3,2 s y p95 6,3 s por foto; carrusel 14,0 s (6 diap.), 17,2 s (5) y 30,7 s (8) |
+| Calidad medida | `capa-v2`: 30/30 fotos y 19/19 diapositivas con capa válida, ninguna perdida; reparación en 27 % de las fotos (parámetros de `band`) y en 2 de 3 carruseles (`price_ref` a un producto sin precio); ningún precio inventado; `unsupported_claims` 0 marcas y 2 fugas pequeñas; 60 de 127 textos pasan de dos tercios del límite; `base_has_invented_text` 42/45 con la etiqueta humana. `capa-v1`: 10/10 válidas, 9/10 |
 
-Detalle: [`pruebas.md` § CAPA-001](pruebas.md#capa-001).
+Detalle: [`pruebas.md` § CAPA-002](pruebas.md#capa-002) y [§ CAPA-001](pruebas.md#capa-001).

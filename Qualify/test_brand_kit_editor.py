@@ -83,7 +83,8 @@ def test_the_page_opens_on_the_summary_not_on_the_ranking() -> None:
     referentes = json.dumps("Negocios parecidos al tuyo")[1:-1]
     assert all(rendered.index(t) < rendered.index(referentes) for t in titles)
     assert "referentes_open" in str(editor._referentes_section())
-    closed = str(editor._section(*SECTIONS[1]))  # Logo, the one the owner came to change
+    logo = next(spec for spec in SECTIONS if spec[0] == "brandboard")
+    closed = str(editor._section(*logo))  # Logo, the one the owner came to change
     assert "Cambiar" in closed and '"Editar"' not in closed
 
 
