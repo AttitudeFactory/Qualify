@@ -61,7 +61,6 @@ from qualify_api.creative.parts import (
     PART_MAX_SECONDS,
     ExtendOutOfOrder,
     PartsSourceInvalid,
-    _edit_allowed,
     _split,
     check_extend_parts,
     check_split_parts,
@@ -71,6 +70,7 @@ from qualify_api.creative.parts import (
     refuse_if_parent_purged,
 )
 from qualify_api.creative.service import UnknownDraft, brief_from_row
+from qualify_api.creative.video_pipeline.mode_choice import edit_allowed, proposed_mode
 from qualify_api.creative.video_pipeline.recipe import recipe_of_parts, validate_recipe
 from qualify_api.referentes.reel_analysis_types import ReelAnalysis
 
@@ -192,7 +192,7 @@ def _can_edit_source(part: VideoPartPlan, analysis: ReelAnalysis | None) -> bool
     ):
         return False
     shots = [s for s in analysis.shots if s.shot_index in part.shot_indexes]
-    if len(shots) != len(part.shot_indexes) or not all(_edit_allowed(s) for s in shots):
+    if len(shots) != len(part.shot_indexes) or not all(edit_allowed(s) for s in shots):
         return False
     try:
         part_window(part, analysis.shots, source_seconds=analysis.source_seconds)
@@ -271,7 +271,7 @@ def merge_short_part(
         not analysis.edit_eligible
         or not analysis.source_available
         or not is_vertical(analysis.width, analysis.height)
-        or not all(_edit_allowed(s) for s in shots)
+        or not all(edit_allowed(s) for s in shots)
     ):
         raise PartsPlanRefused(PLAN_MERGE_UNAVAILABLE)
     try:
@@ -386,8 +386,12 @@ def merged_recipe(
 
 #: What the owner may change of a saved part without it becoming another part: the
 #: editor's fields (UI-4) and, EF-02, its recipe — effects, text over the video,
-#: stretches of own video (owned keys, `check_parts_media_owned`), its transition and the
-#: mode rule's provenance that goes with the mode.
+#: stretches of own video (owned keys, `check_parts_media_owned`) and its transition.
+#: EF-09: the mode rule's provenance (`mode_rule_version`, `mode_reason`) is NOT here: it
+#: is what the server proposed, so `_signature` holds it to the saved part (or to the
+#: `merged_parts` candidate of «Juntar con la siguiente») — a browser that rewrote it would
+#: decide `mode_changed_by_owner` itself. That flag stays editable because the save
+#: recomputes it (`mark_owner_mode_changes`) and ignores what the entry says.
 _EDITOR_FIELDS = frozenset(
     {
         "mode",
@@ -401,8 +405,6 @@ _EDITOR_FIELDS = frozenset(
         "text_layer",
         "segments",
         "transition_in",
-        "mode_rule_version",
-        "mode_reason",
         "mode_changed_by_owner",
     }
 )
@@ -424,6 +426,10 @@ def _editable_match(entry: VideoPartPlan, saved: VideoPartPlan) -> bool:
 
 
 def _manual_addition(entry: VideoPartPlan) -> bool:
+    # TODO(EF-05/EF-06): once `choose_part_mode(source="own_video")` is wired to the parts
+    # added by hand, the server stamps them (`mode_rule_version` >= 1, `mode_reason`
+    # `own_video_local`); the empty-provenance requirement below must then accept that
+    # server-issued proposal instead of refusing it.
     return (
         (
             entry.mode == "reference"
@@ -444,6 +450,9 @@ def _manual_addition(entry: VideoPartPlan) -> bool:
         and not entry.talks_to_camera
         and "people_unclear" not in entry.notices
         and (bool(entry.description.strip()) or "describe_it" in entry.notices)
+        # EF-09: a part added by hand was never proposed by the mode rule
+        and entry.mode_rule_version == 0
+        and entry.mode_reason == ""
     )
 
 
@@ -521,6 +530,59 @@ def _same_entries(
             if not _manual_addition(entry):
                 return False
     return not left
+
+
+def _continues_previous(previous: VideoPartPlan | None, part: VideoPartPlan) -> bool:
+    """Whether `part` still sits right after the part it continues: the test
+    `check_extend_parts` applies to an `extend` (its first cut is the last cut of the
+    part before it, from the same analysis)."""
+    if previous is None:
+        return False
+    if not part.shot_indexes:
+        return True
+    return (
+        bool(previous.shot_indexes)
+        and previous.analysis_id == part.analysis_id
+        and part.shot_indexes[0] == previous.shot_indexes[-1]
+    )
+
+
+def mark_owner_mode_changes(
+    parts: Sequence[VideoPartPlan], *, removed: bool = False
+) -> tuple[VideoPartPlan, ...]:
+    """EF-09: `mode_changed_by_owner` of each entry, recomputed (pure): True exactly when
+    the rule proposed a mode for it (`mode_rule_version` ≥ 1 and a known `mode_reason`)
+    and the entry's `mode` is not that one. The proposal is read from the reason, never
+    from `original_mode` (a split tail made `reference` while «Sigue a la anterior» is off
+    is born `extend` but proposed `reference`) nor from the saved `mode` (after a first
+    change it is the owner's, and going back to the proposal must clear the flag). The
+    rule's version and reason are kept as they are; a part without a proposal (before
+    the rule, joined with `merged_parts`, added by hand) is never marked.
+
+    A tail the rule proposed `extend` that is now `reference` while its head no longer
+    sits right before it (removed or moved away) is not the owner's change either: the
+    screen made it new because an orphan `extend` is not a valid plan
+    (`reel_parts_vm._settle`). `removed=True` reads the removed entries, which follow no
+    part, so such a tail among them is never marked."""
+    marked: list[VideoPartPlan] = []
+    previous: VideoPartPlan | None = None
+    for part in parts:
+        proposal = proposed_mode(part.mode_rule_version, part.mode_reason)
+        changed = proposal is not None and part.mode != proposal
+        if (
+            changed
+            and proposal == "extend"
+            and part.mode == "reference"
+            and (removed or not _continues_previous(previous, part))
+        ):
+            changed = False  # orphaned by the screen, not chosen by the owner
+        marked.append(
+            part
+            if part.mode_changed_by_owner is changed
+            else part.model_copy(update={"mode_changed_by_owner": changed})
+        )
+        previous = part
+    return tuple(marked)
 
 
 def check_parts_media_owned(tenant_id: UUID, parts: Sequence[VideoPartPlan]) -> None:
@@ -618,6 +680,10 @@ def save_parts_plan(
                 photos = current.media.clip_image_keys or current.media.product_keys
             if position < len(parts) and entry.mode == "edit" and not photos:
                 raise PartsPlanRefused(PLAN_EDIT_UNAVAILABLE)
+        # EF-09: whether the owner changed the rule's mode is the server's to say — the
+        # entries' own flag is ignored (`mark_owner_mode_changes`)
+        parts = mark_owner_mode_changes(parts)
+        removed = mark_owner_mode_changes(removed, removed=True)
         try:
             edited = ContentBrief.model_validate(
                 {
@@ -670,6 +736,7 @@ __all__ = [
     "SavedPartsPlan",
     "check_edited_plan",
     "merge_short_part",
+    "mark_owner_mode_changes",
     "merged_recipe",
     "read_parts_plan",
     "save_parts_plan",
