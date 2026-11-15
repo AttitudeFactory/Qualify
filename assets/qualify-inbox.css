@@ -572,6 +572,14 @@ textarea.q-reply-field,
   overflow-y: auto;
   resize: none;
 }
+/* An empty box is one line: the hint never wraps (it would size the box to two). */
+.q-reply-field textarea::placeholder,
+textarea.q-reply-field::placeholder,
+.q-reply-field .rt-TextAreaInput::placeholder {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .q-reply-hidden-upload {
   display: none !important;
 }
@@ -616,6 +624,13 @@ textarea.q-reply-field,
   }
   .q-reply-tools::-webkit-scrollbar {
     display: none;
+  }
+  /* the text takes the width: «Enviar» keeps its word with less air around it */
+  .q-reply-send.rt-Button {
+    padding-inline: 0.75rem;
+  }
+  .q-wa-chats--open .q-chat-head__top {
+    gap: 0.25rem;
   }
   .q-reply-field textarea,
   textarea.q-reply-field,

@@ -1524,8 +1524,9 @@ def _quick_replies_panel() -> rx.Component:
 
 def _composer() -> rx.Component:
     """The one reply box (`reply_box.py`, m-25027374) with what Instagram can send. The
-    24 h line lives in the chat's header only (said once per screen); what the owner
-    must fix to answer (a disconnected account, a missing permission) stays here."""
+    open window's 24 h line lives in the chat's header only (said once per screen); what
+    the owner needs to act stays here: a disconnected account or a missing permission,
+    and why the box is off once the window closed (the header has no line then)."""
     box = INSTAGRAM_BOX
     tools: list[rx.Component] = []
     if draws(box, TOOL_BUTTONS):
@@ -1551,6 +1552,20 @@ def _composer() -> rx.Component:
             _hidden_upload(_MEDIA_UPLOAD_ID, MEDIA_ACCEPT, MAX_MEDIA_BYTES),
             _hidden_upload(_FILE_UPLOAD_ID, DOCUMENT_ACCEPT, MAX_DOCUMENT_BYTES),
             rx.cond(S.account_blocked_notice != "", callout(S.account_blocked_notice, "warn")),
+            # Only once the window is CLOSED: Instagram's header has no line then (an open
+            # window is said there, «Puedes escribirle hasta…»), and the owner must know
+            # why the box is off.
+            rx.cond(
+                S.window_closed_notice != "",
+                rx.hstack(
+                    rx.icon("clock-alert", size=T.ICON_SM, color=T.TEXT_MUTED, flex_shrink="0"),
+                    rx.text(S.window_closed_notice, size="1", color=T.TEXT_MUTED),
+                    spacing="2",
+                    align="center",
+                    class_name="q-conv-window",
+                ),
+                rx.fragment(),
+            ),
             _suggestion_chip(),
             _template_fill_notice(),
             _attachment_chip(),
