@@ -379,7 +379,8 @@ async def test_the_first_chat_reads_the_zone_and_draws_in_it(gw, monkeypatch) ->
     )
     monkeypatch.setattr(WhatsAppChatsState, "_now", lambda self: noon)
     monkeypatch.setattr(gw, "timezone", zone, raising=False)
-    monkeypatch.setattr(gw, "agents", lambda t: [], raising=False)
+    owner = AgentVM(user_id=str(UUID(int=7)), name="Ana", initials="A")
+    monkeypatch.setattr(gw, "agents", lambda t: [owner], raising=False)
     monkeypatch.setattr(gw, "conversation", lambda t, c, th: conv, raising=False)
     monkeypatch.setattr(
         gw,
@@ -410,3 +411,54 @@ def test_a_chat_drawn_before_its_row_states_no_window() -> None:
     ig = ConversationsState()
     ig.open_thread_id = "not-in-rows"
     assert ig.open_thread.window_line == ""
+
+
+async def test_another_business_in_the_same_session_reads_its_own_zone_and_members(
+    gw,  # noqa: ANN001, F811
+    monkeypatch,  # noqa: ANN001
+) -> None:
+    """m-25029799 review (C1): a business switch keeps this state, so the zone and the
+    members are re-read for the new business — «Asignar» never lists A's members on a
+    chat of B, and B's clock is B's own."""
+    from types import SimpleNamespace
+
+    from . import whatsapp_chats_state as state_module
+    from .test_whatsapp_chats import _message, _thread
+    from .test_whatsapp_chats_payments import CONN, THREAD
+
+    business = {"tenant": UUID(int=1)}
+    zones = {UUID(int=1): "America/Bogota", UUID(int=2): "America/Caracas"}
+    members = {
+        UUID(int=1): [AgentVM(user_id="a", name="Ana (A)", initials="A")],
+        UUID(int=2): [AgentVM(user_id="b", name="Beto (B)", initials="B")],
+    }
+    conv = SimpleNamespace(
+        summary=_thread(id=UUID(THREAD)),
+        messages=[_message()],
+        has_more=False,
+        unsent=[],
+        order=None,
+        previous_orders=(),
+        cart_ids=frozenset(),
+    )
+
+    async def tenant(self: object) -> UUID:
+        return business["tenant"]
+
+    monkeypatch.setattr(WhatsAppChatsState, "_tenant", tenant)
+    monkeypatch.setattr(gw, "timezone", lambda t: zones[t], raising=False)
+    monkeypatch.setattr(gw, "agents", lambda t: members[t], raising=False)
+    monkeypatch.setattr(gw, "conversation", lambda t, c, th: conv, raising=False)
+    monkeypatch.setattr(gw, "payment_status", lambda t, c, th: None, raising=False)
+    assert state_module.gateway() is gw
+    state = WhatsAppChatsState()
+    state._connection_id = CONN
+    state.open_thread_id = THREAD
+    await state._read_conversation(silent=False)
+    assert [a.name for a in state.agents] == ["Ana (A)"]
+    assert state._zone_name == "America/Bogota"
+    business["tenant"] = UUID(int=2)  # the owner switched business in this session
+    state.conv_loaded_for = ""
+    await state._read_conversation(silent=False)
+    assert [a.name for a in state.agents] == ["Beto (B)"]
+    assert state._zone_name == "America/Caracas"

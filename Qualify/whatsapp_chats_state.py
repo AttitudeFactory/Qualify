@@ -602,6 +602,8 @@ class WhatsAppChatsState(rx.State):
     _pending_writes: bool = False
     _replace_url: bool = False
     _zone_name: str = ""
+    #: The business `_zone_name` and `agents` were read for (m-25029799 review).
+    _context_tenant: str = ""
     _user_id: str = ""
     _records: list[MessageRecord] = []
     _unsent: list[UnsentItem] = []
@@ -1044,7 +1046,14 @@ class WhatsAppChatsState(rx.State):
                 self.conv_error = ""
             tenant_id = await self._tenant()
             older = list(self._records)
-            need_context = not self._zone_name  # the zone and the members, read together
+            # The zone and the members, read together — again for another business
+            # (a switch in the same session keeps this state): never A's members or
+            # clock on B's chat.
+            need_context = (
+                not self._zone_name
+                or not self.agents
+                or self._context_tenant != str(tenant_id or "")
+            )
         thread, connection = _uuid(thread_id), _uuid(connection_id)
         if tenant_id is None or thread is None or connection is None:
             async with self:
@@ -1095,6 +1104,7 @@ class WhatsAppChatsState(rx.State):
             if need_context:
                 self._zone_name = zone_name
                 self.agents = agents
+                self._context_tenant = str(tenant_id)
             self._records = merge_pages(older, conv.messages) if silent else conv.messages
             if not silent:
                 self.has_more = conv.has_more
