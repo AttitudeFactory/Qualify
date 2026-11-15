@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import json
 import logging
 from collections.abc import AsyncIterator
 from typing import Any
@@ -59,7 +60,9 @@ from .creative_wizard_pages import (  # the wizard's own controls, shared on pur
     _typography_editor,
 )
 from .ui import (
+    DragCard,
     app_shell,
+    asset_script,
     callout,
     card,
     page_body,
@@ -67,11 +70,13 @@ from .ui import (
     progress_panel,
     removable_pill,
     skeleton_card,
+    sort_handle,
     tag,
     tone_badge,
 )
 from .ui import tokens as T
 from .voice_lab import VoiceLabState, voice_analysis_result, voice_lab_panel
+from .whatsapp_menu_vm import MOVE_DOWN, MOVE_TO_TOP, MOVE_UP
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +146,12 @@ RUBRO_TAGS_EMPTY = (
     "parecidos al tuyo y te sugerimos etiquetas para tus publicaciones. Toca «Cambiar»."
 )
 RUBRO_ADD_TAG = "Agregar etiqueta"
+#: The open list's line on the order (m-25029206): why, and the three ways to change it.
+RUBRO_ORDER_HINT = (
+    f"{rubro_vm.ORDER_HELP} Arrástralas, usa «⋯» o escríbelas de nuevo en el orden que "
+    "quieras, separadas por comas."
+)
+_RANK_DRAG_JS = asset_script("rank-drag.js")
 RUBRO_SAVE_FAILED = "No pudimos guardar tu rubro. Inténtalo de nuevo en un momento."
 RUBRO_NO_SESSION = "Tu sesión se cerró. Vuelve a entrar para seguir."
 
@@ -190,6 +201,13 @@ class BrandEditState(rx.State):
     #: «Buscar de nuevo» can run for this brand (`rubro_vm.can_search_again`, the same
     #: condition `refresh_discovery` checks): only then the line pointing at it shows.
     can_search_again: bool = False
+    #: The order (m-25029206): the etiqueta lifted by its handle's keyboard ("" none),
+    #: the order when it was lifted (Escape puts it back), the one a drag picked up, and
+    #: what a screen reader hears after a move.
+    tag_lifted: str = ""
+    _lift_tags: list[str] = []
+    _tag_dragging: str = ""
+    tag_announce: str = ""
 
     @rx.event
     async def restart(self) -> rx.event.EventSpec | None:
@@ -311,6 +329,10 @@ class BrandEditState(rx.State):
         self.tag_note = ""
         self.rubro_error = ""
         self.invalid_tags = []
+        self.tag_lifted = ""
+        self._lift_tags = []
+        self._tag_dragging = ""
+        self.tag_announce = ""
 
     @rx.event(background=True)
     async def refresh_rubro(self) -> None:
@@ -392,6 +414,83 @@ class BrandEditState(rx.State):
         self.tag_note = ""
         if not self.invalid_tags and self.rubro_error == rubro_vm.NOTE_INVALID_STORED:
             self.rubro_error = ""
+        if self.tag_lifted == tag:
+            self.tag_lifted = ""
+
+    # -- the order (m-25029206, founder's report of 2026-11-15) — the WhatsApp menu
+    # answers' pattern: `sort_handle` + drag (`assets/rank-drag.js`) + «⋯» in words
+
+    @rx.var
+    def tag_rows(self) -> list[dict[str, str]]:
+        return rubro_vm.tag_rows(self.tags_draft, self.invalid_tags)
+
+    def _tags(self) -> list[str]:
+        return [p["tag"] for p in self.tags_draft]
+
+    def _move(self, tag: str, to: int) -> bool:
+        before = self._tags()
+        self.tags_draft = rubro_vm.move_tag(self.tags_draft, tag, to)
+        if self._tags() == before:
+            return False
+        self.tag_note = ""
+        self.tag_announce = rubro_vm.tag_place_text(tag, self._tags().index(tag), len(before))
+        return True
+
+    @rx.event
+    def move_tag(self, tag: str, to: str | int) -> rx.event.EventSpec | None:
+        """«⋯» → «Subir» / «Bajar» / «Mover al principio»."""
+        try:
+            target = int(to)
+        except (TypeError, ValueError):
+            return None
+        self._move(tag, target)
+        return None
+
+    @rx.event
+    def pick_tag(self, tag: str) -> None:
+        """`assets/rank-drag.js` lifted this row (`dragstart`)."""
+        self._tag_dragging = tag
+
+    @rx.event
+    def drop_tag(self, target: str) -> None:
+        """…and released it over `target`'s place (`drop`): the move is computed here."""
+        source, self._tag_dragging = self._tag_dragging, ""
+        tags = self._tags()
+        if source and target in tags and source != target:
+            self.tag_lifted = ""
+            self._move(source, tags.index(target))
+
+    @rx.event
+    def tag_key(self, tag: str, key: str) -> rx.event.EventSpec | None:
+        """The handle's keyboard, as in the WhatsApp menu: Espacio or Enter lifts and
+        drops, ↑/↓ move while lifted, Escape puts it back where it was."""
+        tags = self._tags()
+        if tag not in tags:
+            return None
+        focus = rx.call_script(_focus_tag_handle_script(tag))
+        if key in (" ", "Spacebar", "Enter"):
+            if self.tag_lifted != tag:
+                self.tag_lifted = tag
+                self._lift_tags = tags
+                self.tag_announce = rubro_vm.tag_lifted_text(tag, tags.index(tag), len(tags))
+                return None
+            self.tag_lifted = ""
+            self._lift_tags = []
+            self.tag_announce = rubro_vm.tag_place_text(tag, tags.index(tag), len(tags))
+            return focus
+        if self.tag_lifted != tag:
+            return None
+        if key == "Escape":
+            if tag in self._lift_tags:
+                self._move(tag, self._lift_tags.index(tag))
+            self.tag_lifted = ""
+            self._lift_tags = []
+            self.tag_announce = f"Listo, no cambiamos nada: «#{tag}» volvió a su lugar."
+            return focus
+        step = {"ArrowUp": -1, "ArrowDown": 1}.get(key)
+        if step is None or not self._move(tag, tags.index(tag) + step):
+            return None
+        return focus
 
     @rx.event(background=True)
     async def save_rubro(self) -> AsyncIterator[rx.event.EventSpec | None]:
@@ -492,6 +591,18 @@ class BrandEditState(rx.State):
     @rx.event
     def skip_voice(self) -> None:
         self.voice_skipped = True
+
+
+def _focus_tag_handle_script(tag: str) -> str:
+    """The row re-renders in its new place and the browser drops the focus: give it back
+    to that etiqueta's handle (`ui.sort_handle`, `data-sort-key`) — as the WhatsApp menu
+    answers do."""
+    return (
+        "window.setTimeout(function () { var k = " + json.dumps("tag-" + tag) + ";"
+        " var b = Array.prototype.find.call(document.querySelectorAll('[data-sort-key]'),"
+        " function (el) { return el.getAttribute('data-sort-key') === k; });"
+        " if (b) b.focus(); }, 80)"
+    )
 
 
 def _take_typed_tag(editor: Any) -> bool:
@@ -616,14 +727,25 @@ def _rubro_summary() -> rx.Component:
         _summary_text(BrandConnectState.rubro_text, "Sin rubro"),
         rx.cond(
             BrandConnectState.rubro_hashtags.length() > 0,
-            rx.flex(
-                rx.foreach(
-                    BrandConnectState.rubro_hashtags,
-                    lambda pill: tag("#" + pill["tag"].to(str), size="2"),
+            rx.vstack(
+                # numbered, in the saved order: the order matters (m-25029206)
+                rx.flex(
+                    rx.foreach(
+                        BrandConnectState.rubro_hashtags,
+                        lambda pill, i: tag(
+                            (i + 1).to_string() + ". #" + pill["tag"].to(str), size="2"
+                        ),
+                    ),
+                    wrap="wrap",
+                    gap="2",
+                    width="100%",
+                    role="list",
+                    aria_label="Tus etiquetas, en orden",
                 ),
-                wrap="wrap",
-                gap="2",
+                _faint(rubro_vm.ORDER_HELP),
+                spacing="1",
                 width="100%",
+                align_items="start",
             ),
             _faint(RUBRO_TAGS_EMPTY),
         ),
@@ -633,21 +755,95 @@ def _rubro_summary() -> rx.Component:
     )
 
 
-def _rubro_tag_pill(pill: rx.Var[dict[str, str]]) -> rx.Component:
-    invalid = BrandEditState.invalid_tags.contains(pill["tag"])
-    return removable_pill(
-        rx.fragment(rx.el.span("#", margin_right="2px"), pill["tag"]),
-        BrandEditState.remove_tag(pill["tag"]),
-        leading=rx.cond(
-            invalid,
-            rx.icon(
-                "triangle-alert",
-                size=12,
-                color=T.tone_color("warn"),
-                aria_label="Esta etiqueta no sirve, cámbiala",
+def _rubro_tag_menu(row: rx.Var[dict[str, str]]) -> rx.Component:
+    """«⋯»: the moves in words, for a finger, a mouse, the keyboard or a screen reader —
+    never only dragging (N12). The WhatsApp menu answers' menu, same words."""
+    return rx.menu.root(
+        rx.menu.trigger(
+            rx.icon_button(
+                rx.icon("ellipsis", size=T.ICON_MD),
+                variant="ghost",
+                size="3",
+                type="button",
+                aria_label=row["more_label"],
+                min_width="44px",
+                min_height="44px",
+                **T.tone_scheme("neutral"),
             ),
         ),
-        remove_label="Quitar esta etiqueta",
+        rx.menu.content(
+            rx.menu.item(
+                MOVE_UP,
+                on_click=BrandEditState.move_tag(row["tag"], row["up"]),
+                disabled=row["can_up"] == "",
+            ),
+            rx.menu.item(
+                MOVE_DOWN,
+                on_click=BrandEditState.move_tag(row["tag"], row["down"]),
+                disabled=row["can_down"] == "",
+            ),
+            rx.menu.item(
+                MOVE_TO_TOP,
+                on_click=BrandEditState.move_tag(row["tag"], "0"),
+                disabled=row["can_up"] == "",
+            ),
+            rx.menu.separator(),
+            rx.menu.item("Quitar", on_click=BrandEditState.remove_tag(row["tag"])),
+            align="end",
+        ),
+    )
+
+
+def _rubro_tag_row(row: rx.Var[dict[str, str]]) -> rx.Component:
+    """One etiqueta: its handle (drag, or Espacio + ↑/↓), its number, the pill with its
+    ✕ and «⋯» — the WhatsApp menu answers' row (`DragCard` + `sort_handle`)."""
+    invalid = row["invalid"] != ""
+    return DragCard.create(
+        rx.hstack(
+            rx.cond(
+                BrandEditState.tags_draft.length() > 1,
+                sort_handle(
+                    row["handle_label"],
+                    lambda key: BrandEditState.tag_key(row["tag"], key),
+                    key="tag-" + row["tag"].to(str),
+                    lifted=BrandEditState.tag_lifted == row["tag"],
+                ),
+                rx.box(width="0.5rem", flex_shrink="0"),
+            ),
+            rx.text(row["number"] + ".", size="2", weight="bold", class_name="q-nums"),
+            rx.box(
+                removable_pill(
+                    rx.fragment(rx.el.span("#", margin_right="2px"), row["tag"]),
+                    BrandEditState.remove_tag(row["tag"]),
+                    leading=rx.cond(
+                        invalid,
+                        rx.icon(
+                            "triangle-alert",
+                            size=12,
+                            color=T.tone_color("warn"),
+                            aria_label="Esta etiqueta no sirve, cámbiala",
+                        ),
+                    ),
+                    remove_label="Quitar esta etiqueta",
+                ),
+                min_width="0",
+                flex="1",
+            ),
+            _rubro_tag_menu(row),
+            spacing="2",
+            align="center",
+            width="100%",
+        ),
+        class_name="q-rank-card",
+        custom_attrs={
+            "data-rank-group": "rubro-tags",
+            "data-rank-key": row["tag"],
+            "role": "listitem",
+        },
+        on_drag_start=BrandEditState.pick_tag(row["tag"]),
+        on_drop=BrandEditState.drop_tag(row["tag"]),
+        key=row["tag"],
+        width="100%",
     )
 
 
@@ -656,7 +852,6 @@ def _rubro_editor() -> tuple[rx.Component, ...]:
     their ✕ and «Agregar etiqueta», which opens the input (Enter or leaving it adds;
     Escape cancels). An old etiqueta that no longer passes is marked, with what to do.
     Nothing here is suggested: the owner types every etiqueta."""
-    has_room = BrandEditState.tags_draft.length() < rubro_vm.CHOSEN_HASHTAGS
     return (
         rx.vstack(
             rx.el.label(
@@ -684,24 +879,35 @@ def _rubro_editor() -> tuple[rx.Component, ...]:
         ),
         rx.vstack(
             rx.text("Tus etiquetas (hasta 5)", size="2", weight="medium"),
-            rx.flex(
-                rx.foreach(BrandEditState.tags_draft, _rubro_tag_pill),
-                rx.cond(
-                    ~BrandEditState.adding_tag & has_room,
-                    rx.button(
-                        rx.icon("plus", size=T.ICON_SM),
-                        RUBRO_ADD_TAG,
-                        on_click=BrandEditState.open_tag_input,
-                        variant="soft",
-                        size="3",  # ≥ 44 px on a phone (N12)
-                        type="button",
-                    ),
-                ),
-                wrap="wrap",
-                column_gap="0.75rem",
-                row_gap="0.75rem",
-                align="center",
+            rx.cond(
+                BrandEditState.tags_draft.length() > 1,
+                rx.text(RUBRO_ORDER_HINT, size="2", color=T.TEXT_MUTED),
+            ),
+            rx.box(display="none", on_mount=rx.call_script(_RANK_DRAG_JS)),
+            rx.vstack(
+                rx.foreach(BrandEditState.tag_rows, _rubro_tag_row),
+                spacing="2",
                 width="100%",
+                role="list",
+                aria_label="Tus etiquetas, en orden",
+            ),
+            rx.text(
+                BrandEditState.tag_announce,
+                class_name="q-order-live",
+                role="status",
+                aria_live="polite",
+            ),
+            # always there, also with 5: typing them again in another order reorders
+            rx.cond(
+                ~BrandEditState.adding_tag,
+                rx.button(
+                    rx.icon("plus", size=T.ICON_SM),
+                    RUBRO_ADD_TAG,
+                    on_click=BrandEditState.open_tag_input,
+                    variant="soft",
+                    size="3",  # ≥ 44 px on a phone (N12)
+                    type="button",
+                ),
             ),
             rx.cond(
                 BrandEditState.adding_tag,

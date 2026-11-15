@@ -30,7 +30,12 @@ NOTE_TOO_LONG = (
     f"Una etiqueta puede tener hasta {MAX_TAG_LENGTH} letras. Escribe una más corta, "
     "por ejemplo: pizzeria."
 )
-NOTE_REPEATED = "Esa etiqueta ya está en tu lista."
+#: Typed etiquetas that were already there moved to the typed order: said, once.
+NOTE_REORDERED = "Las ordenamos como las escribiste."
+#: The wizard's own words for a full list (`add_pills`).
+_FULL_NOTE = f"Caben {CHOSEN_HASHTAGS} etiquetas: quita alguna para agregar otra."
+#: Why the order matters, in words true for every business.
+ORDER_HELP = "Pon primero las más importantes."
 #: Words typed apart became one etiqueta: said, so three typed as one is not missed.
 NOTE_JOINED = "La unimos en una sola: #{tag}. Si eran varias, sepáralas con comas."
 #: What separates etiquetas typed at once.
@@ -86,14 +91,25 @@ def typed_tag(raw: str) -> tuple[str, str]:
 
 
 def add_typed_parts(pills: list[dict[str, str]], raw: str) -> tuple[list[dict[str, str]], str, str]:
-    """`pills` with what was typed added through the wizard's `add_pills` — a comma or
-    a semicolon separates etiquetas («pizza, pasta, vino» adds three), each checked and
-    counted against the cap on its own. Returns the pills, the note to show ("" when all
-    went well) and what stays in the input: the parts refused or with no room left, so
-    they can be fixed ("" closes it)."""
-    out = stored_pills(pills)  # a pill without a tag would break `add_pills`
+    """`pills` with what was typed — THE TYPED ORDER WINS (m-25029206, founder's report of
+    2026-11-15). A comma or a semicolon separates etiquetas («pizza, pasta, vino» is
+    three), each checked on its own. Typing only new etiquetas adds them at the end, in
+    the typed order. As soon as the text names one already in the list, the list becomes
+    the typed etiquetas in the order typed — the ones already there MOVE to their typed
+    place, never refused as a repeat — followed by the ones not typed, in their order.
+
+    Nothing is ever removed without the owner's ✕: moving never changes the count, and a
+    NEW etiqueta that does not fit under `CHOSEN_HASHTAGS` stays in the input with
+    «Caben 5 etiquetas…». Returns the pills, the note to show ("" when all went well)
+    and what stays in the input: the parts refused or with no room left ("" closes it)."""
+    current = stored_pills(pills)  # a pill without a tag would break `add_pills`
+    by_fold = {fold(p["tag"]): p for p in current}
+    typed: list[dict[str, str]] = []
+    typed_folds: set[str] = set()
+    room = CHOSEN_HASHTAGS - len(current)
     notes: list[str] = []
     left: list[str] = []
+    moved = False
     for part in (p.strip() for p in _SEPARATORS.split(str(raw or ""))):
         tag, note = typed_tag(part)
         if not tag:  # refused (a note) — or nothing but «#», which adds nothing
@@ -101,18 +117,76 @@ def add_typed_parts(pills: list[dict[str, str]], raw: str) -> tuple[list[dict[st
                 notes.append(note)
                 left.append(part)
             continue
-        if fold(tag) in {fold(p["tag"]) for p in out}:
-            notes.append(NOTE_REPEATED)
+        key = fold(tag)
+        if key in typed_folds:  # typed twice in one go: the first place counts
             continue
-        grown, full = add_pills(out, [{"tag": tag, "origin": "manual"}])
-        if full:
-            notes.append(full)
+        if key in by_fold:
+            typed.append(dict(by_fold[key]))
+            typed_folds.add(key)
+            moved = True
+            continue
+        if room <= 0:
+            notes.append(_FULL_NOTE)
             left.append(part)
             continue
-        out = grown
+        new, _ = add_pills([], [{"tag": tag, "origin": "manual"}])
+        typed.extend(new)
+        typed_folds.add(key)
+        room -= 1
         if len(part.lstrip("#").split()) > 1:
             notes.append(NOTE_JOINED.format(tag=tag))
+    rest = [dict(p) for p in current if fold(p["tag"]) not in typed_folds]
+    # only new ones typed: an ordinary add, at the end; naming one already there means
+    # «this is my order» — the typed ones first, the rest after them
+    out = typed + rest if moved else rest + typed
+    if moved and [p["tag"] for p in out] != [p["tag"] for p in current]:
+        notes.append(NOTE_REORDERED)
     return out, " ".join(dict.fromkeys(notes)), ", ".join(left)
+
+
+def move_tag(pills: list[dict[str, str]], tag: str, to: int) -> list[dict[str, str]]:
+    """`tag` moved to place `to` (remove, then insert) — «Subir», «Bajar», «Mover al
+    principio», the handle's arrows and a drag all go through here. An unknown tag or a
+    place out of range leaves the list as it was."""
+    out = [dict(p) for p in pills]
+    tags = [p.get("tag") for p in out]
+    if tag not in tags or not 0 <= to < len(out):
+        return out
+    out.insert(to, out.pop(tags.index(tag)))
+    return out
+
+
+def tag_rows(pills: list[dict[str, str]], invalid: list[str]) -> list[dict[str, str]]:
+    """What each row of the open section shows: its number, and the words a screen reader
+    hears for the handle and the «⋯» (flags are "1" or "", as the view reads them)."""
+    count = len(pills)
+    return [
+        {
+            "tag": p["tag"],
+            "number": str(i + 1),
+            "index": str(i),
+            "up": str(i - 1),
+            "down": str(i + 1),
+            "can_up": "1" if i > 0 else "",
+            "can_down": "1" if i < count - 1 else "",
+            "invalid": "1" if p["tag"] in invalid else "",
+            "handle_label": f"Mover «#{p['tag']}», posición {i + 1} de {count}",
+            "more_label": f"Más opciones para «#{p['tag']}»",
+        }
+        for i, p in enumerate(pills)
+    ]
+
+
+def tag_place_text(tag: str, index: int, count: int) -> str:
+    """What a screen reader hears after a move."""
+    return f"#{tag}, posición {index + 1} de {count}"
+
+
+def tag_lifted_text(tag: str, index: int, count: int) -> str:
+    return (
+        f"Levantaste «#{tag}», posición {index + 1} de {count}. Muévela con las flechas y "
+        "suéltala con Espacio. Escape la deja donde estaba."
+    )
 
 
 def add_typed(pills: list[dict[str, str]], raw: str) -> tuple[list[dict[str, str]], str, bool]:
