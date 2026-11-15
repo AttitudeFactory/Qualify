@@ -396,9 +396,9 @@ def test_an_archiving_save_that_archived_nothing_leaves_old_entries_alone(seeded
     assert context["_orders_previous"] == [older]
 
 
-async def test_a_cart_whose_first_run_died_is_repaired_by_metas_retry(seeded) -> None:
-    """m-25018684: the message insert and the state save are two transactions. A lookup
-    failing between them makes Meta retry; the retry records the order and the handoff."""
+async def test_a_cart_whose_first_run_died_leaves_nothing_and_the_retry_records_it(seeded) -> None:
+    """m-25018684: a lookup failing after the cart's insert makes Meta retry; the retry
+    records the order and the handoff (one transaction since m-25017846)."""
     from sqlalchemy import func, select
 
     from qualify_api.webhooks.repository import ClaimedEvent
@@ -455,13 +455,19 @@ async def test_a_cart_whose_first_run_died_is_repaired_by_metas_retry(seeded) ->
 
     with pytest.raises(ConnectionError):
         await handle(event())
+    # m-25017846: thread, message and state are one transaction — the failed run left
+    # nothing, so Meta's retry is a first delivery.
+    with tenant_session(TENANT) as session:
+        assert (
+            session.scalars(select(Thread.id).where(Thread.external_thread_id == wa_id)).first()
+            is None
+        )
+
+    assert (await handle(event())).status == "processed"
     with tenant_session(TENANT) as session:
         thread_id = session.scalars(
             select(Thread.id).where(Thread.external_thread_id == wa_id)
         ).one()
-        assert session.get(WhatsAppThreadState, thread_id) is None
-
-    assert (await handle(event())).status == "processed"
     context = _context(thread_id)
     order = read_order(context)
     assert order is not None and order.source_message_id == wamid
