@@ -35,6 +35,47 @@ despliegue) y dejarla apagada. Costo máximo: 25 créditos al mes. Se reabre si 
 entrega 4 no muestra más alcance o si la pasada retrasa las lecturas de reels. Qué negocios
 cuentan como activos se decide cuando se abra a todos.
 
+**D3, reintentos (2026-11-15, aprobado por Herwin, m-25031643).** El 2026-11-15 el piloto hizo
+tres llamadas: una falló a las 04:59 UTC, una respondió bien a las 17:15:14 y la siguiente
+respondió 503 a las 17:15:34. Con la regla anterior cada fallo gastó uno de los 5 créditos de la
+semana y congeló al negocio 24 horas, aunque el proveedor no cobra los 503 (el 2026-11-14, 7 de
+14 lecturas a mano respondieron 503 y no se cobraron). Regla nueva
+(`qualify_api.hashtags.weekly`):
+
+- Un fallo pasajero del proveedor —HTTP 5xx, tiempo de espera agotado o error de red— no cuenta
+  para las 5 lecturas de la semana y no congela el día. El negocio se vuelve a intentar en la
+  siguiente revisión, con dos frenos para que los reinicios por despliegue no insistan: al
+  menos 3 horas después del último fallo pasajero (`MIN_RETRY_WAIT`; la revisión de cada 6 horas
+  siempre entra) y como mucho 4 fallos pasajeros por negocio en 24 horas móviles
+  (`MAX_UNBILLED_A_DAY`).
+- Todo lo demás sigue como antes: los bloqueos y topes del control de gasto (no reservan nada),
+  401/402/429 y los demás 4xx (el 404 sigue siendo una respuesta guardada) y una respuesta
+  pagada que no se pudo guardar cuentan como lectura cobrada y esperan un día. Una pasada sigue
+  deteniéndose en su primer fallo.
+- Cómo se distingue sin migración y sin tocar el control de gasto: el control sigue reservando 1
+  crédito antes de cada llamada; después, este módulo añade una fila de 0 créditos con la misma
+  clave y el sufijo `:kept` (respuesta guardada) o `:unbilled` (fallo pasajero). Una llamada sin
+  esa fila —incluidas las tres del 2026-11-15, anteriores a la regla— se trata como antes: cuenta
+  como cobrada y congela el día. Los topes diarios y mensuales del negocio siguen contando cada
+  llamada reservada, también las no cobradas.
+- El tope semanal sigue siendo duro para lo cobrado: 5 lecturas por negocio en cualquier periodo
+  de 7 días, sumadas sobre el registro y no sobre las etiquetas actuales, así que cambiar las
+  etiquetas a mitad de semana no compra más.
+
+**Peor caso por negocio y semana:** cobrado por el proveedor, 5 créditos (25 en un mes de 31
+días). Reservado en nuestro registro si fallara cada intento permitido: 5 + 4 × 7 = 33 créditos
+en 7 días (149 en 31 días, dentro del tope mensual de 600). Si el proveedor sí cobrara alguna
+llamada que nos dio tiempo agotado, lo cobrado podría subir como mucho en esos mismos 4 por día.
+
+**Qué pasa con el piloto al desplegar:** las tres filas del 2026-11-15 no tienen marca, así que
+cuentan como 3 lecturas cobradas y la última congela al negocio hasta el 2026-11-16 a las 17:15
+UTC; desde entonces le quedan 2 lecturas hasta el 2026-11-22 a las 04:59 UTC, cuando sale de la
+ventana la primera fila. Es a propósito: una fila de la que el registro no sabe cómo terminó
+nunca se devuelve. Si Herwin quiere devolver el 503 de las 17:15:34, basta con añadir a mano su
+fila `:unbilled` (una inserción, nada se borra ni se cambia): deja 3 lecturas en vez de 2; para
+quitar además el congelamiento hay que marcar `:kept` la llamada buena de las 17:15:14. El fallo
+de las 04:59 perdió su motivo y debe quedarse como está. Nada de esto se hizo desde este cambio.
+
 ## 1. Objetivo
 
 Que las pocas etiquetas que lleva una publicación sean las que la gente del rubro está viendo, sin

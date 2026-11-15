@@ -117,14 +117,35 @@ def _tick(vendor: Vendor, tenants: list[UUID]) -> weekly.TickReport:
     return weekly.run_tick(tenants, client_factory=vendor.client, env=ON)
 
 
+_MARKER_PARAMS = {
+    "f": sc.FEATURE_HASHTAG_WEEKLY,
+    "kept": f"%{weekly.KEPT_SUFFIX}",
+    "unbilled": f"%{weekly.UNBILLED_SUFFIX}",
+}
+
+
 def _weekly_rows(tenant: UUID) -> list[Any]:
+    """The weekly CALLS booked — not the 0-credit markers (m-25031643, `_marker_rows`)."""
     with tenant_session(tenant) as session:
         return session.execute(
             text(
                 "SELECT brand_id, credits FROM vendor_usage_events "
-                "WHERE feature = :f ORDER BY created_at"
+                "WHERE feature = :f AND request_key NOT LIKE :kept "
+                "AND request_key NOT LIKE :unbilled ORDER BY created_at"
             ),
-            {"f": sc.FEATURE_HASHTAG_WEEKLY},
+            _MARKER_PARAMS,
+        ).all()
+
+
+def _marker_rows(tenant: UUID) -> list[Any]:
+    with tenant_session(tenant) as session:
+        return session.execute(
+            text(
+                "SELECT brand_id, credits, usd_estimate, request_key FROM vendor_usage_events "
+                "WHERE feature = :f AND (request_key LIKE :kept "
+                "OR request_key LIKE :unbilled) ORDER BY created_at"
+            ),
+            _MARKER_PARAMS,
         ).all()
 
 
@@ -352,7 +373,50 @@ def test_five_weekly_credits_in_seven_days_hold_the_business() -> None:
             created_at=two_days_ago,
         )
         assert store.book(event, capped=False) is None
-    assert weekly.PostgresReadLog().credits_since(tenant, two_days_ago) == weekly.MAX_TAGS
+    ledger = weekly.summarize(weekly.PostgresReadLog().bookings_since(tenant, two_days_ago))
+    assert ledger.billed == weekly.MAX_TAGS
     vendor = Vendor(_word())
+    # the five are of unknown outcome and two days old: past the day, inside the week
     report = _tick(vendor, [tenant])
     assert vendor.requests == [] and report.outcomes[0].status == weekly.WEEK_SPENT
+
+
+def test_a_503_is_marked_unbilled_and_a_kept_answer_kept_in_the_ledger() -> None:
+    """m-25031643 against the live ledger: the markers pass 0117's CHECK (`credits >= 0`)
+    and the app role's append-only grant; a 0-credit row moves no cap; re-marking writes
+    nothing (UNIQUE (tenant_id, request_key))."""
+    tag, other = _word(), _word()
+    tenant = _business([tag, other])
+    vendor = Vendor(_word())
+    calls: list[str] = []
+
+    def flaky(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.params["hashtag"])
+        if len(calls) == 2:
+            return httpx.Response(503, json={"success": False, "error": "service_unavailable"})
+        return vendor.handler(request)
+
+    report = weekly.run_tick(
+        [tenant],
+        client_factory=lambda: httpx.Client(transport=httpx.MockTransport(flaky)),
+        env=ON,
+    )
+    (outcome,) = report.outcomes
+    assert outcome.read == [tag] and outcome.reason == weekly.UNBILLED
+    markers = _marker_rows(tenant)
+    assert [m.request_key.rsplit(":", 1)[1] for m in markers] == ["kept", "unbilled"]
+    assert {(m.credits, m.usd_estimate) for m in markers} == {(0, 0)}
+    assert all(m.brand_id is not None for m in markers)
+    log = weekly.PostgresReadLog()
+    week_ago = datetime.now(UTC) - weekly.REREAD_AFTER
+    ledger = weekly.summarize(log.bookings_since(tenant, week_ago))
+    assert ledger.billed == 1 and ledger.unknown_at is None and len(ledger.unbilled_at) == 1
+    spent = usage.PostgresUsageStore().spent(tenant, usage.SCRAPECREATORS)
+    assert spent.day == 2  # the gate's cap still counts both calls
+
+    key = markers[1].request_key.removesuffix(weekly.UNBILLED_SUFFIX)
+    log.mark(tenant, markers[1].brand_id, key, weekly.UNBILLED_SUFFIX)  # a re-run
+    assert len(_marker_rows(tenant)) == 2
+
+    held = _tick(vendor, [tenant])  # inside the 3-hour wait
+    assert held.outcomes[0].status == weekly.RETRY_WAIT and len(calls) == 2

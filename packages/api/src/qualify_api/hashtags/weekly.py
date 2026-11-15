@@ -34,32 +34,58 @@ at once):
    from the last `REREAD_AFTER` — for any region and whoever asked: this read for
    another business, a referentes search page — is not read again. A clean «nothing
    indexed» (HTTP 404) is kept as an answer too. A booking alone never counts as read.
-2. **One attempt a day.** A business with a `hashtag_weekly` booking in the last
-   `RETRY_AFTER` (24 h) is not attempted again: that booking was a pass that failed, was
-   capped or was cut short. It is how a failure is remembered without a new table — the
-   gate books before the request leaves, so every attempt leaves its row.
-3. **Five a week, hard.** A business's `hashtag_weekly` credits in any rolling 7 days
-   never exceed `MAX_TAGS`, counting every booking — kept answers and failures alike —
-   whatever its pills do (an owner who changes them every day still pays at most 5 a
-   week).
-4. **Headroom for the owner.** A business (not exempt from the cap) that already spent
+2. **An unexplained attempt holds the day.** A business with a `hashtag_weekly` booking
+   of UNKNOWN outcome (below) in the last `RETRY_AFTER` (24 h) is not attempted again:
+   that booking was a refusal (401/402/429, any other 4xx but 404, a body without
+   success), an answer that was paid but not kept, or a pass that died mid-call.
+3. **Five billed a week, hard.** A business's BILLED `hashtag_weekly` credits in any
+   rolling 7 days never exceed `MAX_TAGS` — every booking counts except the first credit
+   of a call marked unbilled (below); `:extra` rows always count. It is a sum over the
+   ledger, never over the current pills: an owner who changes them every day still pays
+   at most 5 a week.
+4. **A vendor outage costs a retry, not the day nor the week** (m-25031643, D3 of
+   2026-11-15). A call that failed with HTTP 5xx, a timeout or a network error
+   (`_transient`) is one the vendor does not bill (measured 2026-11-14/15: 503s were not
+   charged). It is marked unbilled, does not count in rule 3 and does not hold the day;
+   instead two brakes keep restarts from hammering the vendor: no new attempt until
+   `MIN_RETRY_WAIT` (3 h) after the last unbilled failure — so the 6-hourly check of the
+   reels worker always qualifies and a burst of deploys does not — and at most
+   `MAX_UNBILLED_A_DAY` (4) unbilled failures per business in any rolling 24 h.
+5. **Headroom for the owner.** A business (not exempt from the cap) that already spent
    more than `DAILY_HEADROOM` of its daily cap or `MONTHLY_HEADROOM` of its monthly one
    is skipped for now, booking nothing: what is left is for the searches it asks for.
-5. **One reader per hashtag.** Each read is taken under a claim on the hashtag itself
+6. **One reader per hashtag.** Each read is taken under a claim on the hashtag itself
    (`Claims.claim_tag`) and re-checked inside it, so two businesses sharing a hashtag at
    the same moment never both pay: the second finds the claim taken (and leaves it for a
    later pass) or the first one's kept answer.
-6. **Stop at the first failure.** A pass stops on its first error that is not a clean
-   «no results» answer; the remaining tags wait for the next day's attempt.
+7. **Stop at the first failure.** A pass stops on its first error that is not a clean
+   «no results» answer; the remaining tags wait for the next allowed attempt.
 
-Hard bound per business: 5 credits in any 7 days, so at most 25 in any 31-day month,
-for any mix of successes and failures (22 on average when healthy). The budget counts the
-credits the gate booked, not calls. A call is booked one credit before it leaves and
-the rest (`credits_charged`, measured at 1) after its answer, so a vendor charging N per
-call can overshoot a 7-day window by at most N−1 — its last call. That overshoot is NOT
-paid back the following week: the window and the kept answers both expire after 7 days,
-so a healthy business can overshoot in every window — at most 5 windows, i.e. 5×(N−1)
-extra in a 31-day month.
+**How the ledger tells billed from unbilled** (no migration, the gate untouched). The gate
+books every call as one `hashtag_weekly` row, `request_key = hashtag_weekly:<uuid>`,
+before it leaves; `vendor_usage_events` is append-only, so this module never changes that
+row. After the call it APPENDS a marker for it: a row of the same feature with
+`credits = 0` and `request_key = <that key>:kept` (the answer was kept: a 200 or a 404) or
+`<that key>:unbilled` (a transient failure). A marker adds nothing to any sum, so the
+gate's daily/monthly caps and the headroom keep counting every booked call — an unbilled
+one included — as conservatively as before. A call with no marker is of UNKNOWN outcome:
+it counts as billed (rule 3) and holds the day (rule 2), exactly what every booking did
+before this rule. So a marker that could not be written, a crash between the call and its
+marker, and every booking made before 2026-11-15's change all fall back to the old,
+stricter behaviour — never to a free retry. A marker is written under the business's
+claim with the call's own key + suffix, `ON CONFLICT DO NOTHING`: re-running it writes
+nothing.
+
+Bounds per business. **Billed:** at most `MAX_TAGS` (5) credits in any 7 days, so at most
+25 in any 31-day month (22 on average when healthy). A call is booked one credit before
+it leaves and the rest (`credits_charged`, measured at 1) after its answer, so a vendor
+charging N per call can overshoot a 7-day window by at most N−1 — its last call — in
+every window (5×(N−1) extra in a 31-day month). **Booked in our ledger** (what the caps
+and the headroom see): those 5 plus at most `MAX_UNBILLED_A_DAY` unbilled calls in any
+24 h, i.e. at most 5 + 4×7 = 33 credits in any 7 days if the vendor failed every allowed
+retry (4 × 31 + 25 = 149 in a 31-day month, under the 500 of `MONTHLY_HEADROOM`). A
+timeout is assumed unbilled like a 5xx (decision of 2026-11-15); a vendor that did bill a
+timed-out request would add at most those same 4 a day to the billed side.
 
 **Switches.** `QUALIFY_HASHTAG_WEEKLY_READ` is OFF unless set to 1/true/on/yes; with it
 off — or with the gate's `QUALIFY_SCRAPECREATORS_PAID` off, or no
@@ -92,6 +118,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any, Protocol
 from uuid import UUID
 
@@ -121,6 +148,7 @@ from qualify_api.vendors.scrapecreators import (
     FEATURE_HASHTAG_WEEKLY,
     ScrapeCreatorsBlocked,
     ScrapeCreatorsError,
+    last_request_key,
     metered_get,
     paid_switch_on,
 )
@@ -139,8 +167,23 @@ PATH = "/v1/tiktok/search/hashtag"
 MAX_TAGS = 5
 #: A hashtag with a kept answer inside this window is not read again.
 REREAD_AFTER = timedelta(days=7)
-#: A business with a weekly booking inside this window is not attempted again.
+#: A business with a weekly booking of unknown outcome (a refusal, an answer not kept, a
+#: pass that died mid-call) inside this window is not attempted again.
 RETRY_AFTER = timedelta(hours=24)
+#: After an unbilled failure (5xx, timeout, network) the business waits this long: less
+#: than the reels worker's 6-hour check (`reel_worker.HASHTAGS_EVERY`), so the next check
+#: always qualifies; more than a burst of deploys, so restarts do not hammer the vendor.
+MIN_RETRY_WAIT = timedelta(hours=3)
+#: At most this many unbilled failures per business in any rolling `UNBILLED_WINDOW`.
+MAX_UNBILLED_A_DAY = 4
+UNBILLED_WINDOW = timedelta(hours=24)
+#: The markers appended after a call to its booking's `request_key` (0-credit rows).
+KEPT_SUFFIX = ":kept"
+UNBILLED_SUFFIX = ":unbilled"
+#: The gate's own suffix for the credits charged beyond the first.
+EXTRA_SUFFIX = ":extra"
+#: `BusinessOutcome.reason` of a pass stopped by an unbilled failure.
+UNBILLED = "unbilled"
 #: Headroom left for what the owner asks for himself (UX review): above these shares of
 #: the business's caps the weekly read waits. 2/3 of 150 = 100; 5/6 of 600 = 500.
 DAILY_HEADROOM = usage.DAILY_CAP * 2 // 3
@@ -348,15 +391,90 @@ class RubroSource(Protocol):
     def rubro(self, tenant_id: UUID) -> BusinessRubro: ...
 
 
+@dataclass(frozen=True)
+class Booking:
+    """One `hashtag_weekly` row of `vendor_usage_events`: a call's booking, its `:extra`
+    credits or one of this module's 0-credit markers."""
+
+    request_key: str
+    credits: int
+    at: datetime
+
+
+_MARKERS = (KEPT_SUFFIX, UNBILLED_SUFFIX)
+
+
+@dataclass(frozen=True)
+class WeeklyLedger:
+    """What a business's weekly bookings say (module docstring, «How the ledger tells
+    billed from unbilled»): the billed credits, when the latest call of UNKNOWN outcome
+    was booked, and when each unbilled failure was marked."""
+
+    billed: int = 0
+    unknown_at: datetime | None = None
+    unbilled_at: tuple[datetime, ...] = ()
+
+    def unbilled_since(self, since: datetime) -> int:
+        return sum(1 for at in self.unbilled_at if at >= since)
+
+    @property
+    def last_unbilled(self) -> datetime | None:
+        return max(self.unbilled_at, default=None)
+
+
+def summarize(bookings: Sequence[Booking]) -> WeeklyLedger:
+    """Every credit counts as billed except the booked credit of a call marked unbilled;
+    a call (a row whose key carries no suffix) with neither marker is of unknown outcome.
+    A call marked both ways counts as kept (billed). Pure: the same rule for the
+    Postgres ledger and the offline fake."""
+    keys = {b.request_key for b in bookings}
+    billed = sum(b.credits for b in bookings)
+    unknown: list[datetime] = []
+    for b in bookings:
+        if b.request_key.endswith((*_MARKERS, EXTRA_SUFFIX)):
+            continue
+        if b.request_key + KEPT_SUFFIX in keys:
+            continue
+        if b.request_key + UNBILLED_SUFFIX in keys:
+            billed -= b.credits
+            continue
+        unknown.append(b.at)
+    return WeeklyLedger(
+        billed=billed,
+        unknown_at=max(unknown, default=None),
+        unbilled_at=tuple(
+            sorted(b.at for b in bookings if b.request_key.endswith(UNBILLED_SUFFIX))
+        ),
+    )
+
+
+def marker_event(
+    tenant_id: UUID, brand_id: UUID | None, request_key: str, suffix: str
+) -> usage.UsageEvent:
+    """The 0-credit row that says how the call booked as `request_key` ended."""
+    if suffix not in _MARKERS:
+        raise ValueError(f"unknown marker: {suffix!r}")
+    return usage.UsageEvent(
+        tenant_id=tenant_id,
+        brand_id=brand_id,
+        vendor=usage.SCRAPECREATORS,
+        feature=FEATURE_HASHTAG_WEEKLY,
+        credits=0,
+        usd_estimate=Decimal(0),
+        pricing_table_version=usage.PRICING_TABLE_VERSION,
+        request_key=f"{request_key}{suffix}",
+    )
+
+
 class ReadLog(Protocol):
-    def attempted_since(self, tenant_id: UUID, since: datetime) -> bool:
-        """Whether this business booked a weekly read at or after `since` (any attempt,
-        failed or not: the gate books before the request leaves)."""
+    def bookings_since(self, tenant_id: UUID, since: datetime) -> list[Booking]:
+        """This business's `hashtag_weekly` rows booked at or after `since` — calls,
+        `:extra` rows and markers alike."""
         ...
 
-    def credits_since(self, tenant_id: UUID, since: datetime) -> int:
-        """The `hashtag_weekly` credits this business booked at or after `since` — every
-        booking, kept answer or failure, `:extra` rows included."""
+    def mark(self, tenant_id: UUID, brand_id: UUID | None, request_key: str, suffix: str) -> None:
+        """Append the marker `suffix` for the call booked as `request_key` (idempotent:
+        the ledger's UNIQUE (tenant_id, request_key))."""
         ...
 
     def tag_read_since(self, tenant_id: UUID, tag: str, since: datetime) -> bool:
@@ -443,22 +561,17 @@ class MemoryReadLog:
     usage_store: usage.InMemoryUsageStore
     answers: dict[str, KeptAnswer] = field(default_factory=dict)
 
-    def attempted_since(self, tenant_id: UUID, since: datetime) -> bool:
-        return any(
-            e.feature == FEATURE_HASHTAG_WEEKLY
-            and e.created_at is not None
-            and e.created_at >= since
-            for e in self.usage_store.of(tenant_id)
-        )
-
-    def credits_since(self, tenant_id: UUID, since: datetime) -> int:
-        return sum(
-            e.credits
+    def bookings_since(self, tenant_id: UUID, since: datetime) -> list[Booking]:
+        return [
+            Booking(e.request_key, e.credits, e.created_at)
             for e in self.usage_store.of(tenant_id)
             if e.feature == FEATURE_HASHTAG_WEEKLY
             and e.created_at is not None
             and e.created_at >= since
-        )
+        ]
+
+    def mark(self, tenant_id: UUID, brand_id: UUID | None, request_key: str, suffix: str) -> None:
+        self.usage_store.book(marker_event(tenant_id, brand_id, request_key, suffix), capped=False)
 
     def tag_read_since(self, tenant_id: UUID, tag: str, since: datetime) -> bool:
         return any(
@@ -535,18 +648,9 @@ class PostgresClaims:
         return self._try(tenant_id, _CLAIM_TAG, tag)
 
 
-_ATTEMPTED = text(
+_BOOKINGS = text(
     """
-    SELECT EXISTS (
-        SELECT 1 FROM vendor_usage_events
-        WHERE tenant_id = :tenant AND vendor = :vendor AND feature = :feature
-          AND created_at >= :since
-    )
-    """
-)
-_CREDITS = text(
-    """
-    SELECT COALESCE(SUM(credits), 0) FROM vendor_usage_events
+    SELECT request_key, credits, created_at FROM vendor_usage_events
     WHERE tenant_id = :tenant AND vendor = :vendor AND feature = :feature
       AND created_at >= :since
     """
@@ -579,33 +683,24 @@ class PostgresReadLog:
     """`vendor_usage_events` (tenant RLS) for the business side, `vendor_payloads` (global,
     0036) for the hashtag side and the raw answers — all through `tenant_session`."""
 
-    def attempted_since(self, tenant_id: UUID, since: datetime) -> bool:
+    def bookings_since(self, tenant_id: UUID, since: datetime) -> list[Booking]:
         with tenant_session(tenant_id) as session:
-            return bool(
-                session.execute(
-                    _ATTEMPTED,
-                    {
-                        "tenant": tenant_id,
-                        "vendor": usage.SCRAPECREATORS,
-                        "feature": FEATURE_HASHTAG_WEEKLY,
-                        "since": since,
-                    },
-                ).scalar_one()
-            )
+            rows = session.execute(
+                _BOOKINGS,
+                {
+                    "tenant": tenant_id,
+                    "vendor": usage.SCRAPECREATORS,
+                    "feature": FEATURE_HASHTAG_WEEKLY,
+                    "since": since,
+                },
+            ).all()
+        return [Booking(r.request_key, int(r.credits), r.created_at) for r in rows]
 
-    def credits_since(self, tenant_id: UUID, since: datetime) -> int:
-        with tenant_session(tenant_id) as session:
-            return int(
-                session.execute(
-                    _CREDITS,
-                    {
-                        "tenant": tenant_id,
-                        "vendor": usage.SCRAPECREATORS,
-                        "feature": FEATURE_HASHTAG_WEEKLY,
-                        "since": since,
-                    },
-                ).scalar_one()
-            )
+    def mark(self, tenant_id: UUID, brand_id: UUID | None, request_key: str, suffix: str) -> None:
+        # the gate's own door to the ledger (`tenant_session(independent=True)`, its
+        # per-tenant lock, `ON CONFLICT (tenant_id, request_key) DO NOTHING`); uncapped:
+        # a 0-credit row could never cross a cap anyway
+        usage.store().book(marker_event(tenant_id, brand_id, request_key, suffix), capped=False)
 
     def tag_read_since(self, tenant_id: UUID, tag: str, since: datetime) -> bool:
         with tenant_session(tenant_id) as session:
@@ -672,9 +767,11 @@ def has_headroom(tenant_id: UUID, now: datetime) -> bool:
 #: `BusinessOutcome.status`
 NO_TAGS = "no_tags"
 UP_TO_DATE = "up_to_date"  # every tag has a kept answer from this week
-TRIED_TODAY = "tried_today"  # a weekly booking in the last 24 h
+TRIED_TODAY = "tried_today"  # a booking of unknown outcome in the last 24 h
 NO_HEADROOM = "no_headroom"
-WEEK_SPENT = "week_spent"  # `MAX_TAGS` weekly credits booked in the last 7 days
+WEEK_SPENT = "week_spent"  # `MAX_TAGS` billed weekly credits in the last 7 days
+RETRY_WAIT = "retry_wait"  # an unbilled failure less than `MIN_RETRY_WAIT` ago
+FAILURES_TODAY = "failures_today"  # `MAX_UNBILLED_A_DAY` unbilled failures in 24 h
 BUSY = "busy"  # another pass holds the business
 DONE = "done"
 FAILED = "failed"
@@ -730,16 +827,16 @@ def _read_tags(
     now: datetime,
     should_stop: Callable[[], bool] | None = None,
 ) -> None:
-    """Read `pending` until `MAX_TAGS` credits are booked in the last 7 days: each
+    """Read `pending` until `MAX_TAGS` billed credits are in the last 7 days: each
     hashtag under its own claim (`claim_tag`), re-checked inside it — a pass for another
     business may have kept it in the meantime — so two businesses sharing a hashtag never
     both pay for it. `should_stop` is asked before each hashtag: when it says so, the
     rest wait for a later pass (`reason=STOPPING`).
 
-    What counts is what the gate BOOKED — its first credit and the `:extra` row of what
-    the vendor reports beyond it (`credits_charged`) — re-read from the ledger before
-    each read, never a count of calls: with an N-credit call the week overshoots
-    `MAX_TAGS` by at most N−1."""
+    What counts is what the gate BOOKED and was not marked unbilled — its first credit and
+    the `:extra` row of what the vendor reports beyond it (`credits_charged`) — re-read
+    from the ledger before each read, never a count of calls: with an N-credit call the
+    week overshoots `MAX_TAGS` by at most N−1."""
     tenant = rubro.tenant_id
     usage.bind(client, usage.UsageCharge(tenant, rubro.brand_id))
     week = now - REREAD_AFTER
@@ -747,7 +844,7 @@ def _read_tags(
         if should_stop is not None and should_stop():
             outcome.reason = STOPPING
             return
-        if log.credits_since(tenant, week) >= MAX_TAGS:
+        if summarize(log.bookings_since(tenant, week)).billed >= MAX_TAGS:
             return
         with claims.claim_tag(tenant, tag) as taken:
             if not taken:
@@ -763,6 +860,39 @@ def _read_tags(
                 return
 
 
+def _transient(exc: ScrapeCreatorsError) -> bool:
+    """A failure the vendor does not bill: it answered 5xx, or the request timed out or
+    never reached it (`metered_get` chains the `httpx` error as the cause). Anything
+    else — 401/402/429, another 4xx, a body without success — is not."""
+    if exc.status_code is not None:
+        return 500 <= exc.status_code <= 599
+    return isinstance(exc.__cause__, (httpx.TimeoutException, httpx.NetworkError))
+
+
+def _booked_key(before: str | None) -> str | None:
+    """The request key the gate booked for the call just made, or None when it booked
+    none (the context's last key did not change)."""
+    key = last_request_key()
+    return key if key is not None and key != before else None
+
+
+def _mark(log: ReadLog, rubro: BusinessRubro, request_key: str | None, suffix: str) -> None:
+    """Append the call's marker. Never raises: without it the call is of unknown outcome
+    — counted as billed and holding the day — the stricter side."""
+    if request_key is None:
+        logger.warning("hashtags.weekly no booking to mark tenant=%s", rubro.tenant_id)
+        return
+    try:
+        log.mark(rubro.tenant_id, rubro.brand_id, request_key, suffix)
+    except Exception as exc:  # noqa: BLE001 - the stricter rule then applies
+        logger.warning(
+            "hashtags.weekly marker %s not written tenant=%s: %s",
+            suffix,
+            rubro.tenant_id,
+            type(exc).__name__,
+        )
+
+
 def _read_one(
     outcome: BusinessOutcome,
     rubro: BusinessRubro,
@@ -773,12 +903,17 @@ def _read_one(
     client: httpx.Client,
     now: datetime,
 ) -> bool:
-    """One paid read of `tag`; False when the pass must stop (a refusal, a failure)."""
+    """One paid read of `tag`; False when the pass must stop (a refusal, a failure).
+
+    After the call its booking gets its marker (`_mark`): `:unbilled` for a transient
+    failure, `:kept` once the answer is kept. A refusal and an answer not kept get none:
+    their credit counts and holds the day (`RETRY_AFTER`), as before m-25031643."""
     tenant = rubro.tenant_id
     params = {"hashtag": tag}
     if rubro.country_code:
         params["region"] = rubro.country_code
     status = 200
+    before = last_request_key()
     try:
         payload: dict[str, Any] = metered_get(client, PATH, params, feature=FEATURE_HASHTAG_WEEKLY)
     except ScrapeCreatorsBlocked as exc:
@@ -790,8 +925,12 @@ def _read_one(
             logger.warning("hashtags.weekly read failed tenant=%s: %s", tenant, exc)
             outcome.errors += 1
             outcome.status = FAILED
+            if _transient(exc):
+                outcome.reason = UNBILLED
+                _mark(log, rubro, _booked_key(before), UNBILLED_SUFFIX)
             return False
         payload, status = {}, 404
+    booked = _booked_key(before)
     credits = _int(payload.get("credits_charged")) or (1 if status == 200 else 0)
     try:
         log.keep(tenant, params, payload, status=status, credits=credits, now=now)
@@ -800,6 +939,7 @@ def _read_one(
         outcome.errors += 1
         outcome.status = FAILED
         return False
+    _mark(log, rubro, booked, KEPT_SUFFIX)
     outcome.read.append(tag)
     sightings = parse_videos(tag, payload, now=now)
     if sightings:
@@ -838,11 +978,19 @@ def read_business(
         if not pending:
             outcome.status = UP_TO_DATE
             return outcome
-        if log.attempted_since(tenant, now - RETRY_AFTER):
+        ledger = summarize(log.bookings_since(tenant, week))
+        if ledger.unknown_at is not None and ledger.unknown_at >= now - RETRY_AFTER:
             outcome.status = TRIED_TODAY
             return outcome
-        if log.credits_since(tenant, week) >= MAX_TAGS:
+        if ledger.billed >= MAX_TAGS:
             outcome.status = WEEK_SPENT
+            return outcome
+        if ledger.unbilled_since(now - UNBILLED_WINDOW) >= MAX_UNBILLED_A_DAY:
+            outcome.status = FAILURES_TODAY
+            return outcome
+        last = ledger.last_unbilled
+        if last is not None and now - last < MIN_RETRY_WAIT:
+            outcome.status = RETRY_WAIT
             return outcome
         if not has_headroom(tenant, now):
             outcome.status = NO_HEADROOM
@@ -957,6 +1105,15 @@ def run_tick(
 
 __all__ = [
     "DAILY_HEADROOM",
+    "EXTRA_SUFFIX",
+    "FAILURES_TODAY",
+    "KEPT_SUFFIX",
+    "MAX_UNBILLED_A_DAY",
+    "MIN_RETRY_WAIT",
+    "RETRY_WAIT",
+    "UNBILLED",
+    "UNBILLED_SUFFIX",
+    "UNBILLED_WINDOW",
     "LANGUAGE",
     "MAX_TAGS",
     "MAX_TAG_LENGTH",
@@ -970,6 +1127,7 @@ __all__ = [
     "STOPPING",
     "SWITCH_ENV",
     "WINDOW_DAYS",
+    "Booking",
     "BusinessOutcome",
     "BusinessRubro",
     "Claims",
@@ -982,13 +1140,16 @@ __all__ = [
     "ReadLog",
     "RubroSource",
     "TickReport",
+    "WeeklyLedger",
     "active_tenants",
     "business_rubro",
     "has_headroom",
+    "marker_event",
     "parse_videos",
     "read_business",
     "readable_tag",
     "rubro_tags",
     "run_tick",
+    "summarize",
     "switch_on",
 ]
