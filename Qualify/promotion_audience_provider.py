@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from uuid import UUID
 
-from qualify_api.ads.audience import AudienceDraft, InterestOption, LocationOption
+from qualify_api.ads.audience import AudienceDraft, InterestOption, LocationOption, MapPoint
 from qualify_api.ads.audience_service import (
     estimate_audience,
     load_audience,
@@ -17,7 +17,13 @@ from qualify_api.ads.audience_service import (
 from qualify_api.ads.custom_audiences import CustomAudienceSelection
 
 from .ad_custom_audiences_vm import CustomAudienceVM
-from .promotion_audience_vm import AudienceInterestVM, AudiencePlaceVM, AudienceReachVM, reach_label
+from .promotion_audience_vm import (
+    POINT_LABEL,
+    AudienceInterestVM,
+    AudiencePlaceVM,
+    AudienceReachVM,
+    reach_label,
+)
 from .promotion_vm import PromotionDraftVM
 
 
@@ -35,6 +41,11 @@ def audience_from_form(form: PromotionDraftVM) -> AudienceDraft:
             else None
         ),
         radius_km=int(form.radius_km) if form.radius_km else None,
+        point=(
+            MapPoint(float(form.point_latitude), float(form.point_longitude), POINT_LABEL)
+            if form.near and form.point_latitude and form.point_longitude
+            else None
+        ),
         age_min=18 if form.housing else int(form.age_min),
         age_max=65 if form.housing else int(form.age_max),
         gender="all" if form.housing else form.gender,
@@ -64,6 +75,9 @@ def form_audience_changes(audience: AudienceDraft) -> dict[str, object]:
         "location_country": place.country_code if place else "",
         "location_region": place.region if place else "",
         "radius_km": str(audience.radius_km) if audience.radius_km is not None else "",
+        "near": audience.point is not None,
+        "point_latitude": str(audience.point.latitude) if audience.point else "",
+        "point_longitude": str(audience.point.longitude) if audience.point else "",
         "age_min": str(audience.age_min),
         "age_max": str(audience.age_max),
         "gender": audience.gender,

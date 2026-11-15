@@ -44,12 +44,19 @@ from .promotion_audience_provider import (
     suggest_interests,
 )
 from .promotion_audience_vm import (
+    COUNTRY_UNKNOWN,
+    DEFAULT_POINT_DISTANCE,
     GENDER_LABELS,
+    LOCATION_FAILED,
     PLACEMENT_LABELS,
+    POINT_LABEL,
     AudienceInterestVM,
     AudiencePlaceVM,
     AudienceReachVM,
+    captured_point,
     placements_label,
+    point_distance_hint,
+    point_distance_label,
 )
 from .promotion_provider import (
     confirm_review,
@@ -111,6 +118,21 @@ from .ui.steps_vm import guard_step, parse_step_param, step_direction
 
 logger = logging.getLogger(__name__)
 
+# The browser's own location API (no map or address vendor). Every failure — no API, not a
+# secure page (localhost counts as secure), refused, unavailable, timed out — resolves to
+# {error}, so the callback always arrives and the state never stays «locating».
+LOCATE_SCRIPT = """new Promise((resolve) => {
+  if (!window.isSecureContext || !navigator.geolocation) {
+    resolve({error: "unsupported"});
+    return;
+  }
+  navigator.geolocation.getCurrentPosition(
+    (p) => resolve({latitude: p.coords.latitude, longitude: p.coords.longitude}),
+    (e) => resolve({error: String(e && e.code)}),
+    {enableHighAccuracy: true, timeout: 15000, maximumAge: 60000}
+  );
+})"""
+
 
 class PromotionState(rx.State):
     sources: list[PromotionSourceVM] = []
@@ -154,6 +176,9 @@ class PromotionState(rx.State):
     audience_error: str = ""
     audience_working: str = ""
     reach_loading: bool = False
+    # «Cerca de mi negocio»: waiting for the browser's location, and why it failed.
+    locating: bool = False
+    location_error: str = ""
     _audience_revision: str = ""
     _audience_search: str = ""
     _audience_version: int = 0
@@ -556,6 +581,8 @@ class PromotionState(rx.State):
 
     @rx.var
     def audience_location_label(self) -> str:
+        if self.form.near:
+            return POINT_LABEL
         return " · ".join(
             value
             for value in (
@@ -565,6 +592,87 @@ class PromotionState(rx.State):
             )
             if value
         )
+
+    @rx.var
+    def audience_distance_label(self) -> str:
+        if self.form.near:
+            return point_distance_label(self.form.radius_km)
+        if self.form.radius_km:
+            return self.form.radius_km + " km alrededor de la ciudad"
+        return "El lugar elegido"
+
+    @rx.var
+    def near_distance_hint(self) -> str:
+        return point_distance_hint(self.form.radius_km)
+
+    @rx.event
+    def choose_area(self, area: str) -> rx.event.EventSpec | None:
+        """«¿Dónde están tus clientes?»: near the business, a city or a whole country.
+
+        Any change clears the place and the point, so nothing of the other choice leaks."""
+        current = "near" if self.form.near else self.form.location_kind
+        if self.busy or area not in {"near", "city", "country"} or area == current:
+            return None
+        self.form = replace(
+            self.form,
+            near=area == "near",
+            point_latitude="",
+            point_longitude="",
+            location_kind="country" if area == "near" else area,
+            location_key="",
+            city_name="",
+            location_country="",
+            location_region="",
+            radius_km=DEFAULT_POINT_DISTANCE if area == "near" else "",
+        )
+        self.place_query = ""
+        self.place_results = []
+        self.location_error = ""
+        self.locating = False
+        self.error = ""
+        self._invalidate_audience()
+        return None if area == "near" else PromotionState.refresh_reach()
+
+    @rx.event
+    def locate(self) -> rx.event.EventSpec | None:
+        if self.busy or not self.form.near:
+            return None
+        source = next((row for row in self.sources if row.id == self.form.source_id), None)
+        if source is None or source.default_country not in COUNTRY_LABELS:
+            self.location_error = COUNTRY_UNKNOWN
+            return None
+        self.location_error = ""
+        self.locating = True
+        return rx.call_script(LOCATE_SCRIPT, callback=PromotionState.point_captured)
+
+    @rx.event
+    def point_captured(self, result: dict) -> rx.event.EventSpec | None:
+        """The browser's answer; ignored when the owner already left «Cerca de mi negocio»."""
+        waiting, self.locating = self.locating, False
+        if not waiting or self.busy or not self.form.near:
+            return None
+        point = captured_point(result)
+        if point is None:
+            self.location_error = LOCATION_FAILED
+            return None
+        source = next((row for row in self.sources if row.id == self.form.source_id), None)
+        country = source.default_country if source is not None else ""
+        if country not in COUNTRY_LABELS:
+            self.location_error = COUNTRY_UNKNOWN
+            return None
+        self.form = replace(
+            self.form,
+            point_latitude=point[0],
+            point_longitude=point[1],
+            location_kind="country",
+            location_key=country,
+            city_name=COUNTRY_LABELS[country],
+            location_country=country,
+            location_region="",
+        )
+        self.error = ""  # «Toca … usar mi ubicación» from an earlier «Siguiente» is done
+        self._invalidate_audience()
+        return PromotionState.refresh_reach()
 
     @rx.var
     def radius_out_of_range(self) -> bool:
@@ -1069,7 +1177,8 @@ class PromotionState(rx.State):
                 age_max="65",
                 gender="all",
                 interests=[],
-                radius_km="",
+                # Near the business the distance is the area itself, not an extra.
+                radius_km=self.form.radius_km if self.form.near else "",
                 custom_audiences=[
                     row for row in self.form.custom_audiences if row.kind != "lookalike"
                 ],
@@ -1358,6 +1467,8 @@ class PromotionState(rx.State):
         self.interest_query = ""
         self.place_results = []
         self.interest_results = []
+        self.locating = False
+        self.location_error = ""
         self._invalidate_audience()
         self._invalidate_review()
         return (

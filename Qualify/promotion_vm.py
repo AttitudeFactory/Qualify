@@ -13,7 +13,7 @@ from qualify_creative.ad_destination import AD_CTA_LABELS, AdCTA
 from .ad_custom_audiences_vm import CustomAudienceVM
 from .ad_enhancements_vm import BrandEnhancementsVM
 from .ad_health_vm import AccountHealthVM
-from .promotion_audience_vm import AudienceInterestVM
+from .promotion_audience_vm import COUNTRY_UNKNOWN, AudienceInterestVM, point_distance_problem
 
 STEP_TITLES = (
     "¿Qué publicación quieres promocionar?",
@@ -273,6 +273,11 @@ class PromotionDraftVM:
     location_country: str = ""
     location_region: str = ""
     radius_km: str = ""
+    # «Cerca de mi negocio»: the location is the business's country and the distance is
+    # around this point (6-decimal strings, both empty until the phone gives its location).
+    near: bool = False
+    point_latitude: str = ""
+    point_longitude: str = ""
     age_min: str = "18"
     age_max: str = "65"
     advantage_audience: bool = False
@@ -567,7 +572,12 @@ def step_problem(draft: PromotionDraftVM, step: int, timezone_name: str = "") ->
             return "Quita el público de personas parecidas antes de continuar con vivienda."
         if any(not row.available for row in draft.custom_audiences):
             return "Vuelve a consultar el público de Instagram o quítalo antes de continuar."
-        if not draft.location_key or not draft.city_name.strip():
+        if draft.near:
+            if not draft.point_latitude or not draft.point_longitude:
+                return "Toca «Estoy en el negocio: usar mi ubicación» para marcar tu negocio."
+            if not draft.location_key:
+                return COUNTRY_UNKNOWN
+        elif not draft.location_key or not draft.city_name.strip():
             return "Busca un lugar y elígelo entre los resultados de Meta."
         try:
             low, high = int(draft.age_min), int(draft.age_max)
@@ -576,9 +586,12 @@ def step_problem(draft: PromotionDraftVM, step: int, timezone_name: str = "") ->
             valid = False
         if not valid:
             return "Revisa las edades: entre 18 y 65."
-        if draft.radius_km and draft.location_kind != "city":
+        if draft.near:
+            problem = point_distance_problem(draft.radius_km)
+        elif draft.radius_km and draft.location_kind != "city":
             return "La distancia solo se usa alrededor de una ciudad. Bórrala para continuar."
-        problem = radius_problem(draft.radius_km)
+        else:
+            problem = radius_problem(draft.radius_km)
         if problem:
             return problem
         if draft.placement_mode == "manual" and not draft.placements:
