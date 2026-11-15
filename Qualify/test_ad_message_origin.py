@@ -176,6 +176,9 @@ class _ChatContext:
         self._records: list[Any] = []
         self.messages: list[Any] = []
         self.rendered = False
+        # m-25029799: the WhatsApp chat reads the zone and members with its first read.
+        self._zone_name = "UTC"
+        self.agents: list[Any] = []
 
     async def __aenter__(self) -> _ChatContext:
         return self

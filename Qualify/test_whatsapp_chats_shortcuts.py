@@ -342,6 +342,6 @@ def _chat_views() -> object:
     the single list of «Por responder» (`whatsapp_chat_pane` + `whatsapp_chat_layers`)."""
     import reflex as rx
 
-    from .whatsapp_tab_chats import chats_tab, whatsapp_chat_layers, whatsapp_chat_pane
+    from .whatsapp_tab_chats import whatsapp_chat_layers, whatsapp_chat_pane
 
-    return rx.fragment(chats_tab(), whatsapp_chat_pane(), whatsapp_chat_layers())
+    return rx.fragment(whatsapp_chat_pane(), whatsapp_chat_layers())

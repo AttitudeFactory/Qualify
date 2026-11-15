@@ -1,7 +1,8 @@
 """Reflex state of the single chat list under «Por responder» › «Mensajes»
 (m-25017859, BU-A3).
 
-It owns the list's filter and channel (from `?filtro=` / `?canal=`, N5), the loaded
+It owns the list's filter, channel and WhatsApp number (from `?filtro=` / `?canal=` /
+`?numero=`, N5; the number since m-25029799 retired WhatsApp's own list), the loaded
 pages (`list_inbox`, keyset cursor, «Ver más»), the chips' counts (`inbox_counts`, ONE
 statement, judged at the same instant as the page) and the expired notice's memory.
 The 15 s heartbeat re-reads the counts and as many pages as are on screen, in place:
@@ -48,6 +49,7 @@ from .conversations_state import ConversationsState
 from .inbox_list_provider import context, counts, page
 from .inbox_list_vm import (
     ALL_CHANNELS,
+    ALL_NUMBERS,
     CHANNELS,
     DEFAULT_FILTER,
     FILTER_AWAITING,
@@ -58,6 +60,7 @@ from .inbox_list_vm import (
     REFRESH_PAGES,
     ChipVM,
     EmptyVM,
+    NumberVM,
     as_chat_rows,
     channel_chips,
     channel_from_params,
@@ -67,12 +70,16 @@ from .inbox_list_vm import (
     explainer_shown,
     filter_chips,
     filter_from_params,
+    known_number,
     list_href,
     merge_refreshed,
     notice_text,
+    number_chips,
+    number_from_params,
     remembered_dismissal,
     show_channel_filter,
     show_notice,
+    show_number_filter,
 )
 from .nav_url import push_url_script
 from .tenant import tenant_uuid
@@ -126,7 +133,7 @@ async def _feed_cards(state: rx.State, tally: Any) -> None:
     this module."""
     from .responder_state import ResponderState
 
-    by = _Counts({c: dict(v) for c, v in tally.by_channel.items()})
+    by = _Counts({c: dict(v) for c, v in tally.by_channel.items()}, {})
     (await state.get_state(ResponderState)).merge_counts(
         messages=count_of(by, FILTER_AWAITING, CHANNEL_INSTAGRAM),
         whatsapp=count_of(by, FILTER_AWAITING, CHANNEL_WHATSAPP),
@@ -136,11 +143,16 @@ async def _feed_cards(state: rx.State, tally: Any) -> None:
 @dataclass(frozen=True)
 class _Counts:
     by_channel: dict[str, dict[str, int]]
+    by_connection: dict[str, dict[str, int]]
 
 
 class InboxListState(rx.State):
     filter_key: str = DEFAULT_FILTER
     channel: str = ALL_CHANNELS
+    #: m-25029799: one WhatsApp number of the business ("" = every number), always one of
+    #: `numbers` (`known_number`); with a number the list is that number's WhatsApp chats.
+    number: str = ALL_NUMBERS
+    numbers: list[NumberVM] = []
     rows: list[ChatRowVM] = []
     next_cursor: str = ""
     loaded: bool = False
@@ -150,6 +162,8 @@ class InboxListState(rx.State):
     more_error: str = ""
     #: `inbox_counts().by_channel` (backend channel names) for the chips.
     counts_by: dict[str, dict[str, int]] = {}
+    #: `inbox_counts().by_connection`: the chips of one number (m-25029799).
+    counts_by_number: dict[str, dict[str, int]] = {}
     counts_loaded: bool = False
     #: The UI channels with a connected account; None-equivalent until read.
     connected: list[str] = []
@@ -183,22 +197,35 @@ class InboxListState(rx.State):
     # Computed vars
     # ==================================================================================
 
+    def _tally(self) -> _Counts:
+        return _Counts(self.counts_by, self.counts_by_number)
+
     @rx.var
     def chips(self) -> list[ChipVM]:
-        tally = _Counts(self.counts_by) if self.counts_loaded else None
-        return filter_chips(tally, self.filter_key, self.channel)
+        tally = self._tally() if self.counts_loaded else None
+        return filter_chips(tally, self.filter_key, self.channel, self.number)
 
     @rx.var
     def show_channels(self) -> bool:
-        return show_channel_filter(_Counts(self.counts_by) if self.counts_loaded else None)
+        return show_channel_filter(self._tally() if self.counts_loaded else None)
 
     @rx.var
     def channel_options(self) -> list[ChipVM]:
         return channel_chips(self.channel)
 
     @rx.var
+    def show_numbers(self) -> bool:
+        """m-25029799: the number choice — two or more WhatsApp numbers, not on the
+        Instagram view."""
+        return show_number_filter(self.numbers, self.channel)
+
+    @rx.var
+    def number_options(self) -> list[ChipVM]:
+        return number_chips(self.numbers, self.number)
+
+    @rx.var
     def expired_count(self) -> int:
-        return count_of(_Counts(self.counts_by), FILTER_EXPIRED)
+        return count_of(self._tally(), FILTER_EXPIRED)
 
     @rx.var
     def notice_visible(self) -> bool:
@@ -249,8 +276,10 @@ class InboxListState(rx.State):
         self.error = ""
         self.more_error = ""
         self.counts_by = {}
+        self.counts_by_number = {}
         self.counts_loaded = False
         self.connected = []
+        self.numbers = []
         self.context_loaded = False
         self.explainer_open = self.explainer_dismissed = False
         self._zone_name = ""
@@ -259,6 +288,7 @@ class InboxListState(rx.State):
         self._scroll = []
         self.filter_key = DEFAULT_FILTER
         self.channel = ALL_CHANNELS
+        self.number = ALL_NUMBERS
 
     def _now(self) -> datetime:
         """The instant every read and the explanation's end date are judged at (tests
@@ -270,9 +300,7 @@ class InboxListState(rx.State):
         the owner reads)."""
         today = now.astimezone(_zone(self._zone_name)).date()
         # It is about numbers the owner can see: a connected chat channel holding chats.
-        about_something = bool(self.connected) and bool(
-            channels_with_chats(_Counts(self.counts_by))
-        )
+        about_something = bool(self.connected) and bool(channels_with_chats(self._tally()))
         self.explainer_open = about_something and explainer_shown(
             today, dismissed=self.explainer_dismissed
         )
@@ -296,17 +324,22 @@ class InboxListState(rx.State):
     @rx.event
     async def enter(self) -> rx.event.EventSpec | None:
         """`ResponderState.enter_page` on the «Mensajes» tab. The address is the truth
-        (N5): no `?filtro=` is «Por responder», no `?canal=` is every channel — nothing
-        sticks from an earlier visit. A different business starts from scratch."""
+        (N5): no `?filtro=` is «Por responder», no `?canal=` is every channel, no
+        `?numero=` every number — nothing sticks from an earlier visit. A number is
+        checked against the business's own once they are read (`load`). A different
+        business starts from scratch."""
         key, _tenant = await self._session()
         if key != self._tenant_key:
             self._tenant_key = key
             self._forget_business()
         params = self.router.url.query_parameters
         requested = filter_from_params(params) or DEFAULT_FILTER
-        channel = channel_from_params(params) or ALL_CHANNELS
-        if requested != self.filter_key or channel != self.channel:
-            self.filter_key, self.channel = requested, channel
+        number = number_from_params(params)
+        if self.context_loaded:
+            number = known_number(number, self.numbers)
+        channel = CHANNEL_WHATSAPP if number else (channel_from_params(params) or ALL_CHANNELS)
+        if requested != self.filter_key or channel != self.channel or number != self.number:
+            self.filter_key, self.channel, self.number = requested, channel, number
             self._clear_list()
         else:
             self._generation += 1  # a read already in flight lands on nothing
@@ -326,6 +359,22 @@ class InboxListState(rx.State):
         if channel not in CHANNELS and channel != ALL_CHANNELS:
             return None
         self.channel = channel
+        if channel != CHANNEL_WHATSAPP:
+            self.number = ALL_NUMBERS  # a number lists only WhatsApp chats
+        return self._relist()
+
+    @rx.event
+    def set_number(self, number: str | list[str]) -> list[rx.event.EventSpec] | None:
+        """m-25029799: one WhatsApp number of the business, or every one (""). Only ids
+        the business owns (`numbers`, read under its tenant); a number narrows the list
+        to WhatsApp."""
+        if not isinstance(number, str) or number == self.number:
+            return None
+        if number != ALL_NUMBERS and known_number(number, self.numbers) != number:
+            return None  # arrived over the wire: never another business's number
+        self.number = number
+        if number:
+            self.channel = CHANNEL_WHATSAPP
         return self._relist()
 
     def _clear_list(self) -> None:
@@ -338,7 +387,7 @@ class InboxListState(rx.State):
     def _relist(self) -> list[rx.event.EventSpec]:
         self._clear_list()
         return [
-            rx.call_script(push_url_script(list_href(self.filter_key, self.channel))),
+            rx.call_script(push_url_script(list_href(self.filter_key, self.channel, self.number))),
             InboxListState.load,
         ]
 
@@ -346,6 +395,7 @@ class InboxListState(rx.State):
     def open_expired(self) -> list[rx.event.EventSpec] | None:
         """The notice's «Ver»: the Instagram chats that expired unanswered."""
         self.filter_key = FILTER_EXPIRED
+        self.number = ALL_NUMBERS
         if self.channel == CHANNEL_WHATSAPP:
             self.channel = ALL_CHANNELS
         return self._relist()
@@ -361,10 +411,22 @@ class InboxListState(rx.State):
 
     def _effective_channel(self, tally: Any) -> str:
         """A channel filter whose chips are hidden (fewer than two channels hold chats)
-        is never the active one: the list is every channel then."""
+        is never the active one: the list is every channel then — except with a number
+        picked (m-25029799), which is always a WhatsApp one."""
+        if self.number:
+            self.channel = CHANNEL_WHATSAPP
+            return self.channel
         if self.channel != ALL_CHANNELS and not show_channel_filter(tally):
             self.channel = ALL_CHANNELS
         return self.channel
+
+    def _take_numbers(self, ctx: Any) -> None:
+        """The business's numbers from the context read (`ctx`, None when they were
+        read before), and the number on screen kept only if it is one of them — every
+        read checks it, whatever set it (the address, the browser)."""
+        if ctx is not None:
+            self.numbers = list(ctx.numbers)
+        self.number = known_number(self.number, self.numbers)
 
     @rx.event(background=True)
     async def load(self) -> Any:
@@ -395,10 +457,11 @@ class InboxListState(rx.State):
                 async with self:
                     if generation != self._generation:
                         return
-                    filter_key = self.filter_key
+                    self._take_numbers(ctx)
+                    filter_key, number = self.filter_key, self.number
                     channel = self._effective_channel(tally)
                 records, cursor, lens = await self._read_pages(
-                    tenant_id, filter_key, channel, pages, now
+                    tenant_id, filter_key, channel, pages, now, number
                 )
             except (*_DB_ERRORS, InvalidCursor) as exc:
                 logger.error("inbox list failed: %s", type(exc).__name__)
@@ -428,7 +491,13 @@ class InboxListState(rx.State):
                     self.loading = False
 
     async def _read_pages(
-        self, tenant_id: UUID, filter_key: str, channel: str, pages: int, now: datetime
+        self,
+        tenant_id: UUID,
+        filter_key: str,
+        channel: str,
+        pages: int,
+        now: datetime,
+        number: str = ALL_NUMBERS,
     ) -> tuple[list[Any], str, list[int]]:
         """`pages` pages in order, each one round trip; (rows, next cursor token, how
         many rows each page held)."""
@@ -437,7 +506,13 @@ class InboxListState(rx.State):
         cursor: str | None = None
         for _ in range(max(1, pages)):
             result = await asyncio.to_thread(
-                page, tenant_id, filter_key=filter_key, channel=channel, cursor=cursor, now=now
+                page,
+                tenant_id,
+                filter_key=filter_key,
+                channel=channel,
+                cursor=cursor,
+                now=now,
+                number=number,
             )
             records.extend(result.rows)
             lens.append(len(result.rows))
@@ -448,8 +523,11 @@ class InboxListState(rx.State):
 
     def _apply_counts(self, tally: Any) -> None:
         self.counts_by = {c: dict(v) for c, v in tally.by_channel.items()}
+        self.counts_by_number = {
+            a: dict(v) for a, v in (getattr(tally, "by_connection", None) or {}).items()
+        }
         self.counts_loaded = True
-        expired = count_of(_Counts(self.counts_by), FILTER_EXPIRED)
+        expired = count_of(self._tally(), FILTER_EXPIRED)
         if self._tenant_key in self._dismissed:
             self._dismissed = {
                 **self._dismissed,
@@ -467,13 +545,20 @@ class InboxListState(rx.State):
             generation = self._generation
             key, tenant_id = await self._session()
             filter_key, channel, cursor = self.filter_key, self.channel, self.next_cursor
+            number = self.number
         try:
             if tenant_id is None:
                 return
             now = self._now()
             try:
                 result = await asyncio.to_thread(
-                    page, tenant_id, filter_key=filter_key, channel=channel, cursor=cursor, now=now
+                    page,
+                    tenant_id,
+                    filter_key=filter_key,
+                    channel=channel,
+                    cursor=cursor,
+                    now=now,
+                    number=number,
                 )
             except (*_DB_ERRORS, InvalidCursor) as exc:
                 logger.error("inbox list page failed: %s", type(exc).__name__)
@@ -519,7 +604,7 @@ class InboxListState(rx.State):
                     generation = self._generation
                     pages = min(REFRESH_PAGES, max(1, self._pages))
                     key, tenant_id = await self._session()
-                    filter_key = self.filter_key
+                    filter_key, number = self.filter_key, self.number
                 if tenant_id is None:
                     break
                 now = self._now()
@@ -528,7 +613,7 @@ class InboxListState(rx.State):
                     async with self:
                         channel = self._effective_channel(tally)
                     records, cursor, lens = await self._read_pages(
-                        tenant_id, filter_key, channel, pages, now
+                        tenant_id, filter_key, channel, pages, now, number
                     )
                 except (*_DB_ERRORS, InvalidCursor) as exc:
                     logger.error("inbox list refresh failed: %s", type(exc).__name__)

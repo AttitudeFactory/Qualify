@@ -342,10 +342,13 @@ def test_the_header_window_line_once_closed() -> None:
 # --- the business's zone reaches a chat opened by its address ------------------------------
 
 
-async def test_a_chat_loaded_before_the_zone_is_redrawn_in_it(gw, monkeypatch) -> None:  # noqa: ANN001, F811
-    """Seen in the browser (m-25027371): a chat opened from «Por responder» can load
-    before the first list read knows the business's zone, and drew the UTC clock. The
-    list read redraws it: bubbles, separators, the order and the payment lines."""
+async def test_the_first_chat_reads_the_zone_and_draws_in_it(gw, monkeypatch) -> None:  # noqa: ANN001, F811
+    """Seen in the browser (m-25027371): a chat opened from «Por responder» drew the UTC
+    clock until the business's zone was known. m-25029799: no number list reads it any
+    more — the first conversation read does, before it draws: bubbles, separators, the
+    order and the payment lines, and the header's row (`thread_row`) from the chat."""
+    from types import SimpleNamespace
+
     from qualify_api.whatsapp.orders import OrderLine, OrderSummary
 
     from .test_whatsapp_chats import _message, _thread
@@ -353,34 +356,52 @@ async def test_a_chat_loaded_before_the_zone_is_redrawn_in_it(gw, monkeypatch) -
 
     noon = datetime(2026, 11, 14, 12, 0, tzinfo=UTC)
     at = datetime(2026, 11, 14, 3, 30, tzinfo=UTC)  # 2026-11-13 22:30 in Bogotá
-    monkeypatch.setattr(WhatsAppChatsState, "_now", lambda self: noon)
-    monkeypatch.setattr(gw, "timezone", lambda t: "America/Bogota", raising=False)
-    monkeypatch.setattr(gw, "agents", lambda t: [], raising=False)
-    monkeypatch.setattr(gw, "threads", lambda t, c: [_thread(id=UUID(THREAD))], raising=False)
-    state = WhatsAppChatsState()
-    state._connection_id = CONN
-    state.open_thread_id = THREAD
-    state.conv_loaded_for = THREAD
-    state._records = [_message(posted_at=at)]
-    state._order_raw = OrderSummary(
+    reads: list[str] = []
+
+    def zone(_tenant: object) -> str:
+        reads.append("zone")
+        return "America/Bogota"
+
+    order = OrderSummary(
         lines=(OrderLine(product_id="p", name="Shawarma", qty=1),),
         total=Decimal("25000"),
         currency="COP",
         confirmed_at=at,
     )
-    state._payment_raw = _status("received", confirmed_at=at + timedelta(minutes=10))
-    state._render_conversation()  # before the zone: UTC
-    assert state.messages[0].time_label == "03:30" and state.messages[0].day_label == "Hoy"
-
-    assert await WhatsAppChatsState._read_list(state, silent=False)
+    conv = SimpleNamespace(
+        summary=_thread(id=UUID(THREAD), contact_name="Laura Gómez"),
+        messages=[_message(posted_at=at)],
+        has_more=False,
+        unsent=[],
+        order=order,
+        previous_orders=(),
+        cart_ids=frozenset(),
+    )
+    monkeypatch.setattr(WhatsAppChatsState, "_now", lambda self: noon)
+    monkeypatch.setattr(gw, "timezone", zone, raising=False)
+    monkeypatch.setattr(gw, "agents", lambda t: [], raising=False)
+    monkeypatch.setattr(gw, "conversation", lambda t, c, th: conv, raising=False)
+    monkeypatch.setattr(
+        gw,
+        "payment_status",
+        lambda t, c, th: _status("received", confirmed_at=at + timedelta(minutes=10)),
+        raising=False,
+    )
+    state = WhatsAppChatsState()
+    state._connection_id = CONN
+    state.open_thread_id = THREAD
+    await state._read_conversation(silent=False)
     assert state.messages[0].time_label == "22:30" and state.messages[0].day_label == "Ayer"
     assert "22:30" in state.order.confirmed_label
     assert "22:40" in state.payment.confirmed_line
+    assert state.open_thread.title == "Laura Gómez"  # the header's row came with the chat
+    await state._read_conversation(silent=True)  # a refresh
+    assert reads == ["zone"]  # read once, not on every refresh
 
 
 def test_a_chat_drawn_before_its_row_states_no_window() -> None:
-    """A chat opened by its address draws its header before the list read brings its
-    row (or is outside the newest page): no window line, never a false «Pasaron 24 h»."""
+    """A chat opened by its address draws its header before its first read brings its
+    row: no window line, never a false «Pasaron 24 h»."""
     from .conversations_state import ConversationsState
 
     wa = WhatsAppChatsState()

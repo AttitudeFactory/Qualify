@@ -2,7 +2,9 @@
 
 The left pane of the tab (`conversations_page.messages_tab` puts the open chat of
 either channel at its right, m-25029798): the channel filter (only with chats on two or
-more channels), the chips, the «… ya no se pueden responder aquí» notice, the shared rows
+more channels), the number choice (only with two or more WhatsApp numbers, m-25029799:
+WhatsApp's own list is gone), the chips, the «… ya no se pueden responder aquí» notice,
+the shared rows
 (`chat_row.chat_row`) and «Ver más». Design-system pieces only (buttons as chips like the
 screens before it, `callout`, `empty_state`, `skeleton_rows`); every count and word comes
 from `inbox_list_vm` through `InboxListState`.
@@ -29,6 +31,7 @@ from .inbox_list_vm import (
     NOTHING_CONNECTED_TITLE,
     NOTICE_ACTION,
     NOTICE_DISMISS,
+    NUMBERS_ARIA,
     ChipVM,
 )
 from .next_steps_vm import CREATE_LABEL, CREATE_ROUTE
@@ -77,6 +80,25 @@ def _channel_filter() -> rx.Component:
             class_name="q-conv-filters",
             role="group",
             aria_label=CHANNELS_ARIA,
+        ),
+        rx.fragment(),
+    )
+
+
+def _number_filter() -> rx.Component:
+    """m-25029799: [Todos los números] [+57 300 …] [+57 311 …] — WhatsApp's «Elige un
+    número», only for a business with two or more numbers and not on the Instagram view.
+    Chips like the channel filter's: they wrap at 360 px, 44 px tall."""
+    return rx.cond(
+        L.show_numbers,
+        rx.flex(
+            rx.foreach(L.number_options, lambda c: _chip(c, L.set_number)),
+            wrap="wrap",
+            gap="0.4rem",
+            width="100%",
+            class_name="q-conv-filters",
+            role="group",
+            aria_label=NUMBERS_ARIA,
         ),
         rx.fragment(),
     )
@@ -310,7 +332,8 @@ def inbox_list_pane() -> rx.Component:
         # The chips paint with the first loaded list, together with the explanation
         # above them, so neither pushes the other once it appears.
         rx.cond(
-            L.counts_loaded, rx.vstack(_channel_filter(), _filters(), spacing="3", width="100%")
+            L.counts_loaded,
+            rx.vstack(_channel_filter(), _number_filter(), _filters(), spacing="3", width="100%"),
         ),
         _body(),
         _notice(),

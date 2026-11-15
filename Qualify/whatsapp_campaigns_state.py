@@ -19,7 +19,7 @@ ahora» (N13); closing the panel leaves the draft in the list.
 
 **Launch** goes through `CampaignService.launch` (resumes, never resends); the sends
 leave later through the outbox sender, so Meta's verdicts show up in the detail on
-«Actualizar» (in words, never as codes), next to «Ver respuestas en Chats» (N3).
+«Actualizar» (in words, never as codes), next to «Ver respuestas en Por responder» (N3).
 
 Every Postgres call runs in a background event, off-thread.
 """
@@ -101,7 +101,7 @@ from .whatsapp_templates_vm import (
     build_send_components,
     send_variables,
 )
-from .whatsapp_vm import TAB_CHATS, TAB_TEMPLATES
+from .whatsapp_vm import TAB_TEMPLATES
 
 logger = logging.getLogger(__name__)
 
@@ -828,10 +828,11 @@ class WhatsAppCampaignsState(rx.State):
 
     @rx.event
     def see_replies(self) -> rx.event.EventSpec:
-        """«Ver respuestas en Chats» (N3): close the promotion, open the Chats tab."""
+        """«Ver respuestas en Por responder» (N3): close the promotion, open the WhatsApp
+        chats where they are attended (m-25029799: «Por responder»)."""
         self.detail_open = False
         self.detail_id = ""
-        return WhatsAppState.select_tab(TAB_CHATS)
+        return WhatsAppState.open_chats
 
     @rx.event
     def create_approved_message(self) -> list[rx.event.EventSpec]:

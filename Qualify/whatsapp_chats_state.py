@@ -1,21 +1,24 @@
-"""Reflex state for the Chats tab of `/whatsapp` (WA-11, QUA-210).
+"""Reflex state of the open WhatsApp chat (WA-11, QUA-210), beside the single list of
+«Por responder» (m-25029798).
 
-A separate `rx.State`, not a substate of `WhatsAppState`: it only READS the shell's
-selection (`selected_connection_id`, server-side through `get_state`, never as an event
-argument from the browser) and owns everything else. It holds only the frozen VMs of
-`whatsapp_chats_vm.py` in client vars; the raw message records the «cargar anteriores» /
-refresh merge needs live in backend-only (`_`) vars and never reach the browser.
+A separate `rx.State`: it never depends on `WhatsAppState` (that is the `/whatsapp`
+screen's, which since m-25029799 holds only «Tu número»). It holds only the frozen VMs
+of `whatsapp_chats_vm.py` in client vars; the raw message records the «cargar
+anteriores» / refresh merge needs live in backend-only (`_`) vars and never reach the
+browser.
 
-**Loading.** The shell renders the active tab inside a box keyed by the selected number,
-so the tab root's `on_mount` (`enter`) fires on tab entry and on every number switch. It
-resets everything tied to another number and loads the list; a double mount (React dev
-mode) is absorbed by the `list_loading_for` guard.
+**No list here (m-25029799).** WhatsApp's own chat list — its chips, its number's
+threads, its payment marks — is gone: the single list of «Por responder»
+(`inbox_list_state`) lists and counts every chat. What the open chat's header needs (its
+name, number, window, who answers, closed or not) comes with the conversation itself
+(`Conversation.summary`, `thread_row`), and the business's time zone and members are
+read once with the first chat.
 
-**Refresh.** A hidden `rx.moment` heartbeat in the tab (15 s, client-side, unmounted with
-the tab — the `/inbox` pattern) calls `refresh`, which re-reads the list and the open
-conversation WITHOUT skeletons; `_refreshing` makes overlapping ticks a no-op. Every
-action refreshes immediately after it lands. Nothing blocks the UI: every Postgres call
-runs in a background event through `asyncio.to_thread`.
+**Refresh.** A hidden `rx.moment` heartbeat mounted with the open chat (15 s,
+client-side) calls `refresh`, which re-reads the conversation WITHOUT skeletons;
+`_refreshing` makes overlapping ticks a no-op. Every action refreshes immediately after
+it lands. Nothing blocks the UI: every Postgres call runs in a background event through
+`asyncio.to_thread`.
 
 **Sends** pause the menu automation server-side (WA-10); the header pill flips to
 «Persona» immediately (`_mark_paused`), before the refresh confirms it.
@@ -24,11 +27,8 @@ runs in a background event through `asyncio.to_thread`.
 single list, like an Instagram chat: `open_from_inbox` (a row of that list) and
 `restore_inbox_address` (the page's entry and every «atrás»: its `cuenta` + `chat`) open
 it through `_open_pending`, which first checks that the number is one of THIS business's
-(`numbers_for`, RLS) — `_owned` still guards every read and act. It never depends on
-`WhatsAppState` (that is the `/whatsapp` screen's). `/whatsapp`'s own Chats list (until
-m-25029799 retires it) opens its rows there too (`open_conversation` navigates), so there
-is one open chat to maintain. «‹ Por responder» (`back_to_inbox`) closes it in place and
-gives the list back its scroll.
+(`numbers_for`, RLS) — `_owned` still guards every read and act. «‹ Por responder»
+(`back_to_inbox`) closes it in place and gives the list back its scroll.
 
 **Inbound media (0061)** is fetched on click only (`request_media`): the id must be an
 inbound `has_media` message of the conversation already loaded (`_records`), so a forged
@@ -94,12 +94,9 @@ from qualify_api.whatsapp.template_reply import (
 from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState
-from .chat_row_vm import CHANNEL_WHATSAPP as INBOX_CHANNEL
-from .chat_row_vm import ChatRowVM
 from .chat_thread_vm import order_strip_label, show_assign
 from .nav_url import (
     close_flow_script,
-    filter_address_script,
     flow_param,
     inbox_back_script,
     inbox_chat_href,
@@ -117,7 +114,6 @@ from .whatsapp_chats_provider import NoOrder, gateway
 from .whatsapp_chats_vm import (
     COMPOSE_BUTTONS,
     COMPOSE_TEXT,
-    DEFAULT_FILTER,
     DIRECTIONS_FAILED,
     EMPTY_DIRECTIONS,
     EMPTY_MENU,
@@ -128,12 +124,6 @@ from .whatsapp_chats_vm import (
     EMPTY_PRODUCT,
     EMPTY_SEASONAL,
     EMPTY_THREAD,
-    FILTER_CLOSED,
-    FILTER_KEYS,
-    FILTER_OPEN,
-    FILTER_PAYMENT,
-    FILTER_SLUG,
-    FILTER_UNREAD,
     LEGACY_PICK_FLOW,
     MAX_BUTTON_TITLE_CHARS,
     MAX_CAPTION_CHARS,
@@ -212,7 +202,6 @@ from .whatsapp_chats_vm import (
     TemplateFieldVM,
     ThreadRowVM,
     UnsentItem,
-    as_chat_row,
     build_conversation,
     build_menu_preview,
     build_offer,
@@ -226,16 +215,9 @@ from .whatsapp_chats_vm import (
     build_thread_row,
     caption_count,
     caption_error,
-    carry_payment_marks,
     cart_details,
     composer_enabled,
-    filter_counts,
-    filter_empty_text,
-    filter_from_slug,
-    filter_label,
     filter_products,
-    filter_threads,
-    inbox_filter_slug,
     is_food_business,
     media_control_for,
     merge_pages,
@@ -258,15 +240,12 @@ from .whatsapp_chats_vm import (
     strip_payment_part,
     template_fields_complete,
     validate_compose,
-    with_payment_pills,
 )
 from .whatsapp_provider import numbers_for
-from .whatsapp_state import WhatsAppState
 
 logger = logging.getLogger(__name__)
 
 _NO_SESSION = "No hay ninguna sesión de negocio activa. Vuelve a iniciar sesión."
-_LIST_FAILED = "No se pudieron cargar las conversaciones. Vuelve a intentarlo en un momento."
 _CONV_FAILED = "No se pudo cargar esta conversación. Vuelve a intentarlo en un momento."
 _THREAD_GONE = "Esa conversación ya no está disponible en este número."
 _NO_USER = (
@@ -340,18 +319,6 @@ def _uuid(value: str) -> UUID | None:
 
 
 _Event = rx.event.EventSpec | rx.event.EventHandler
-
-
-def _payment_statuses(gw: Any, tenant_id: UUID, thread_ids: list[UUID]) -> dict[str, Any] | None:
-    """ONE read for the visible list (blocking). A failure never costs the chats list:
-    it answers None, so the caller can tell «nothing pending» from «could not read»."""
-    if not thread_ids:
-        return {}
-    try:
-        return {str(k): v for k, v in gw.payment_statuses(tenant_id, thread_ids).items()}
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("whatsapp chats payment statuses failed: %s", type(exc).__name__)
-        return None
 
 
 def _marked_offer(gw: Any, tenant_id: UUID, brand_id: UUID) -> Any:
@@ -515,21 +482,16 @@ def discard_photo(path: str) -> None:
 
 
 class WhatsAppChatsState(rx.State):
-    """State for the Chats tab."""
+    """State of the open WhatsApp chat in «Por responder»."""
 
-    # -- list ---------------------------------------------------------------------------
-    rows: list[ThreadRowVM] = []
+    #: The business's members a chat can be assigned to (read once, with the first chat).
     agents: list[AgentVM] = []
-    filter_key: str = DEFAULT_FILTER
-    list_loaded_for: str = ""
-    list_loading_for: str = ""
-    list_error: str = ""
-    #: the list's `payment_statuses` read failed (code review of m-24971198): the
-    #: payment filter says so instead of «nothing pending», and hides its count
-    statuses_failed: bool = False
 
     # -- conversation (m-25029798: open beside the single list of «Por responder») -------
     open_thread_id: str = ""
+    #: m-25029799: the open chat's own row (`Conversation.summary`, re-read with every
+    #: conversation read) — what its header draws. WhatsApp's own list is gone.
+    thread_row: ThreadRowVM = EMPTY_THREAD
     #: m-25029798: the open chat's own address in «Por responder» (with the list's view)
     #: and its number — the way back and the number of «Tu número» links from the chat.
     chat_return_href: str = ""
@@ -639,9 +601,6 @@ class WhatsAppChatsState(rx.State):
     _pending_thread: str = ""
     _pending_writes: bool = False
     _replace_url: bool = False
-    #: A chat opened by id that this number's newest `THREADS_LIMIT` do not hold: its
-    #: row stays while it is open (the header reads it).
-    _pinned_thread: str = ""
     _zone_name: str = ""
     _user_id: str = ""
     _records: list[MessageRecord] = []
@@ -676,33 +635,6 @@ class WhatsAppChatsState(rx.State):
     # ==================================================================================
 
     @rx.var
-    def visible_chat_rows(self) -> list[ChatRowVM]:
-        """m-25017844: the visible rows in the shape every channel's list draws."""
-        return [as_chat_row(r) for r in filter_threads(self.rows, self.filter_key)]
-
-    @rx.var
-    def filter_open_label(self) -> str:
-        return filter_label(FILTER_OPEN, filter_counts(self.rows)[FILTER_OPEN])
-
-    @rx.var
-    def filter_closed_label(self) -> str:
-        return filter_label(FILTER_CLOSED, filter_counts(self.rows)[FILTER_CLOSED])
-
-    @rx.var
-    def filter_unread_label(self) -> str:
-        return filter_label(FILTER_UNREAD, filter_counts(self.rows)[FILTER_UNREAD])
-
-    @rx.var
-    def filter_payment_label(self) -> str:
-        """«Pago por revisar · 2» — from the list's one `payment_statuses` read."""
-        count = 0 if self.statuses_failed else filter_counts(self.rows)[FILTER_PAYMENT]
-        return filter_label(FILTER_PAYMENT, count)
-
-    @rx.var
-    def filter_empty(self) -> str:
-        return filter_empty_text(self.filter_key, statuses_failed=self.statuses_failed)
-
-    @rx.var
     def payments_change_href(self) -> str:
         """«Cambiar estos datos» from the picker: Formas de pago, with the way back to
         this conversation (m-24971198)."""
@@ -715,23 +647,14 @@ class WhatsAppChatsState(rx.State):
         return payments_href(back, account=account)
 
     @rx.var
-    def list_ready(self) -> bool:
-        """`enter` clears `list_loaded_for` on a number switch, so set = this number."""
-        return self.list_loaded_for != ""
-
-    @rx.var
-    def list_empty(self) -> bool:
-        return self.list_loaded_for != "" and len(self.rows) == 0
-
-    @rx.var
     def has_open_thread(self) -> bool:
         return self.open_thread_id != ""
 
     @rx.var
     def open_thread(self) -> ThreadRowVM:
-        for row in self.rows:
-            if row.thread_id == self.open_thread_id:
-                return row
+        """The open chat's row, once its conversation was read (else an empty one)."""
+        if self.open_thread_id and self.thread_row.thread_id == self.open_thread_id:
+            return self.thread_row
         return EMPTY_THREAD
 
     @rx.var
@@ -930,164 +853,33 @@ class WhatsAppChatsState(rx.State):
             self._payment_raw, now=now, zone=zone, agents={a.user_id: a for a in self.agents}
         )
 
+    def _change_row(self, thread_id: str, **changes: Any) -> None:
+        """What an act changed, on the open chat's row before the refresh confirms it."""
+        if self.thread_row.thread_id == thread_id:
+            self.thread_row = dataclasses.replace(self.thread_row, **changes)
+
     def _mark_paused(self, thread_id: str, paused: bool) -> None:
         label, tone = mode_pill(paused)
-        self.rows = [
-            dataclasses.replace(r, automation_paused=paused, mode_label=label, mode_tone=tone)
-            if r.thread_id == thread_id
-            else r
-            for r in self.rows
-        ]
+        self._change_row(thread_id, automation_paused=paused, mode_label=label, mode_tone=tone)
 
     def _set_banner(self, message: str, tone: str) -> None:
         self.banner, self.banner_tone = message, tone
 
     # ==================================================================================
-    # Entry, list, filters
+    # Number and closing
     # ==================================================================================
 
-    @rx.event
-    async def enter(self) -> rx.event.EventSpec | None:
-        """`/whatsapp`'s Chats list `on_mount`: entry or number switch. It never decides
-        the chip: a remount (another WhatsApp tab and back, a number switch, back from
-        Galería) keeps the one the owner picked (`apply_address_filter` runs on
-        navigation). No chat is open on this screen (m-25029798: they open in «Por
-        responder»), so one left open there is closed here."""
-        if self.open_thread_id:
-            self._close_here()
-        elif self.pick_open:
-            self._reset_picker()  # back from Galería: the drawer does not reopen
-        shell = await self.get_state(WhatsAppState)
-        connection_id = shell.selected_connection_id
-        if not connection_id:
-            return None
-        if connection_id != self._connection_id:
-            self._switch_number(connection_id)
-        elif self.list_loading_for == connection_id:
-            return None  # a double mount while the first load is in flight
-        return WhatsAppChatsState.load_list
-
     def _switch_number(self, connection_id: str) -> None:
-        """Everything tied to another number goes (its rows, its open chat)."""
+        """Everything tied to another number goes (its open chat)."""
         self._connection_id = connection_id
-        self.rows = []
-        self.list_loaded_for = ""
-        self.list_loading_for = ""
-        self.list_error = ""
-        self.statuses_failed = False
         self.open_thread_id = ""
-        self._pinned_thread = ""
         self._reset_conversation()
 
     def _close_here(self) -> None:
         """The open chat closes, no address written (the caller says where to go)."""
         self.open_thread_id = ""
         self.chat_return_href = self.chat_account = ""
-        self._pinned_thread = ""
         self._reset_conversation()
-
-    @rx.event
-    async def apply_address_filter(self) -> None:
-        """m-24842990 / m-25017859: on a NAVIGATION to `/whatsapp` (its route
-        `on_load`, via `WhatsAppState.enter_page`) the address decides the chip: the
-        sidebar's badge link and the single list's deep link carry `?filtro=por-responder`
-        (`sin-leer`: the chip's old name), a bare `/whatsapp` is the default «Abiertos»."""
-        self.filter_key = filter_from_slug(self.router.url.query_parameters.get("filtro"))
-        (await self.get_state(WhatsAppState))._chats_chip = self._chip()
-
-    @rx.event
-    async def set_filter(self, key: str | list[str]) -> rx.event.EventSpec | None:
-        """A chip tap: the choice stands until the next navigation, and the address says
-        it (replaced, not pushed), so a reload shows the same chip. The page keeps it for
-        the addresses it writes later (a tab and back: `WhatsAppState._panel_address`)."""
-        if not isinstance(key, str) or key not in FILTER_KEYS:
-            return None
-        self.filter_key = key
-        (await self.get_state(WhatsAppState))._chats_chip = self._chip()
-        return rx.call_script(filter_address_script(FILTER_SLUG[key]))
-
-    def _chip(self) -> str:
-        """The `?filtro=` of the chip on screen; "" for the default (no parameter)."""
-        return "" if self.filter_key == DEFAULT_FILTER else FILTER_SLUG[self.filter_key]
-
-    @rx.event(background=True)
-    async def load_list(self) -> None:
-        await self._read_list(silent=False)
-
-    async def _read_list(self, *, silent: bool) -> bool:
-        """Re-read this number's threads. Returns False when it could not."""
-        async with self:
-            connection_id = self._connection_id
-            if not connection_id:
-                return False
-            if not silent:
-                self.list_loading_for = connection_id
-                self.list_error = ""
-            need_context = not self._zone_name or not self.agents
-            tenant_id = await self._tenant()
-        if tenant_id is None:
-            async with self:
-                self.list_loading_for = ""
-                self.list_error = _NO_SESSION
-            return False
-        connection = _uuid(connection_id)
-        if connection is None:
-            return False
-        gw = gateway()
-        try:
-            if need_context:
-                zone_name = await asyncio.to_thread(gw.timezone, tenant_id)
-                agents = await asyncio.to_thread(gw.agents, tenant_id)
-            threads = await asyncio.to_thread(gw.threads, tenant_id, connection)
-            statuses = await asyncio.to_thread(
-                _payment_statuses, gw, tenant_id, [t.id for t in threads]
-            )
-        except _DB_ERRORS as exc:
-            logger.error("whatsapp chats list failed: %s", type(exc).__name__)
-            async with self:
-                if self._connection_id == connection_id:
-                    self.list_loading_for = ""
-                    if not silent or not self.list_loaded_for:
-                        self.list_error = _LIST_FAILED
-            return False
-        async with self:
-            if self._connection_id != connection_id:
-                return False  # the operator switched numbers meanwhile
-            if need_context:
-                self._zone_name = zone_name
-                self.agents = agents
-                # m-25027371 (seen in the browser): a chat opened by its address (from
-                # «Por responder») can load before this first list read knows the
-                # business's zone, and its bubbles said the UTC clock until the next
-                # 15 s refresh. Redraw it in the right zone now.
-                if self.conv_loaded_for and self.conv_loaded_for == self.open_thread_id:
-                    self._render_conversation()
-            by_id = {a.user_id: a for a in self.agents}
-            zone = _zone(self._zone_name)
-            now = self._now()
-            rows = [build_thread_row(t, now=now, zone=zone, agents=by_id) for t in threads]
-            pinned = self._pinned_thread
-            if (
-                pinned
-                and pinned == self.open_thread_id
-                and pinned not in {r.thread_id for r in rows}
-            ):
-                # m-25029798: a chat opened from «Por responder» older than this
-                # number's newest `THREADS_LIMIT` keeps its row while it is open.
-                rows += [r for r in self.rows if r.thread_id == pinned]
-            if statuses is None:
-                # the statuses read failed: keep this number's previous marks (a silent
-                # refresh must not drop chats in and out of «Pago por revisar»)
-                same = self.list_loaded_for == connection_id
-                self.rows = carry_payment_marks(rows, self.rows if same else [])
-                self.statuses_failed = True
-            else:
-                self.rows = with_payment_pills(rows, statuses)
-                self.statuses_failed = False
-            self.list_loaded_for = connection_id
-            self.list_loading_for = ""
-            self.list_error = ""
-        return True
 
     # ==================================================================================
     # Conversation
@@ -1203,7 +995,6 @@ class WhatsAppChatsState(rx.State):
         if connection_id != self._connection_id:
             self._switch_number(connection_id)
         self.open_thread_id = thread_id
-        self._pinned_thread = ""
         self._reset_conversation()
         self.compose_mode = COMPOSE_TEXT
         href = inbox_chat_href(connection_id, thread_id, view=self._view())
@@ -1212,22 +1003,8 @@ class WhatsAppChatsState(rx.State):
         if writes:
             writer = replace_url_script if replace else push_url_script
             events.append(rx.call_script(writer(href)))
-        if self.list_loaded_for != connection_id and self.list_loading_for != connection_id:
-            events.append(WhatsAppChatsState.load_list)
         events.append(WhatsAppChatsState.load_conversation)
         return events
-
-    @rx.event
-    def open_conversation(self, thread_id: str) -> rx.event.EventSpec | None:
-        """A row of `/whatsapp`'s own Chats list (until m-25029799 retires it): its chat
-        opens in «Por responder», beside the single list narrowed to WhatsApp on the
-        closest chip — the one place a chat opens (m-25029798)."""
-        if not isinstance(thread_id, str):
-            return None
-        if thread_id not in {r.thread_id for r in self.rows}:
-            return None  # arrived over the wire; refuse an id the list does not hold
-        view = {"filtro": inbox_filter_slug(self.filter_key), "canal": INBOX_CHANNEL}
-        return rx.redirect(inbox_chat_href(self._connection_id, thread_id, view=view))
 
     @rx.event
     def leave_for_other_chat(self) -> None:
@@ -1267,14 +1044,21 @@ class WhatsAppChatsState(rx.State):
                 self.conv_error = ""
             tenant_id = await self._tenant()
             older = list(self._records)
+            need_context = not self._zone_name  # the zone and the members, read together
         thread, connection = _uuid(thread_id), _uuid(connection_id)
         if tenant_id is None or thread is None or connection is None:
             async with self:
                 self.conv_loading_for = ""
                 self.conv_error = _NO_SESSION if tenant_id is None else _CONV_FAILED
             return
+        gw = gateway()
         try:
-            conv = await asyncio.to_thread(gateway().conversation, tenant_id, connection, thread)
+            if need_context:
+                # The business's time zone (the bubbles' clock) and its members («⋯ ›
+                # Asignar»), once — m-25029799: read with the first chat, not a list.
+                zone_name = await asyncio.to_thread(gw.timezone, tenant_id)
+                agents = await asyncio.to_thread(gw.agents, tenant_id)
+            conv = await asyncio.to_thread(gw.conversation, tenant_id, connection, thread)
             payment, payment_read = await asyncio.to_thread(
                 _payment_status, gateway(), tenant_id, connection, thread
             )
@@ -1308,6 +1092,9 @@ class WhatsAppChatsState(rx.State):
                 or await self._tenant() != tenant_id
             ):
                 return  # a different session, number or conversation is now open
+            if need_context:
+                self._zone_name = zone_name
+                self.agents = agents
             self._records = merge_pages(older, conv.messages) if silent else conv.messages
             if not silent:
                 self.has_more = conv.has_more
@@ -1317,15 +1104,12 @@ class WhatsAppChatsState(rx.State):
             self._cart_ids = conv.cart_ids
             self._payment_raw = payment
             self._payment_unread = not payment_read
-            if thread_id not in {r.thread_id for r in self.rows}:
-                # m-25029798: opened from «Por responder» but older than this number's
-                # newest rows (or read before them): its own row, for the header.
-                by_id = {a.user_id: a for a in self.agents}
-                row = build_thread_row(
-                    conv.summary, now=self._now(), zone=_zone(self._zone_name), agents=by_id
-                )
-                self.rows = [*self.rows, row]
-                self._pinned_thread = thread_id
+            # m-25029799: the header's row comes with the conversation, on every read
+            # (there is no number list to take it from any more).
+            by_id = {a.user_id: a for a in self.agents}
+            self.thread_row = build_thread_row(
+                conv.summary, now=self._now(), zone=_zone(self._zone_name), agents=by_id
+            )
             self._render_conversation()
             self.conv_loaded_for = thread_id
             self.conv_loading_for = ""
@@ -1455,12 +1239,13 @@ class WhatsAppChatsState(rx.State):
 
     @rx.event(background=True)
     async def refresh(self) -> None:
+        """The open chat's 15 s heartbeat and the re-read after every act: the
+        conversation and its row, without a skeleton."""
         async with self:
-            if self._refreshing or not self.list_loaded_for or self.list_loading_for:
+            if self._refreshing or not self.open_thread_id or self.conv_loading_for:
                 return
             self._refreshing = True
         try:
-            await self._read_list(silent=True)
             await self._read_conversation(silent=True)
         finally:
             async with self:
@@ -2469,21 +2254,15 @@ class WhatsAppChatsState(rx.State):
         return [rx.call_script(close_flow_script(PICK_FLOW)), WhatsAppChatsState.open_templates]
 
     def _mark_window_closed(self, thread_id: str) -> None:
-        self.rows = [
-            dataclasses.replace(
-                r,
-                window_open=False,
-                window_label=WINDOW_CLOSED_PILL,
-                window_tone="neutral",
-                window_minutes=0,
-                # m-25027371: the header reads these — never «Quedan 5 min» on a closed chat
-                window_line=WINDOW_CLOSED_LINE,
-                window_line_tone="neutral",
-            )
-            if r.thread_id == thread_id
-            else r
-            for r in self.rows
-        ]
+        self._change_row(
+            thread_id,
+            window_open=False,
+            window_label=WINDOW_CLOSED_PILL,
+            window_tone="neutral",
+            # m-25027371: the header reads these — never «Quedan 5 min» on a closed chat
+            window_line=WINDOW_CLOSED_LINE,
+            window_line_tone="neutral",
+        )
 
     @rx.event
     def retry_pick_list(self) -> rx.event.EventHandler | None:
@@ -3040,11 +2819,6 @@ class WhatsAppChatsState(rx.State):
                 self._mark_paused(thread_id, action == "takeover")
             elif action in ("close", "reopen"):
                 closed = action == "close"
-                self.rows = [
-                    dataclasses.replace(r, status="closed" if closed else "open", is_closed=closed)
-                    if r.thread_id == thread_id
-                    else r
-                    for r in self.rows
-                ]
+                self._change_row(thread_id, status="closed" if closed else "open", is_closed=closed)
         yield WhatsAppChatsState.refresh
         yield _inbox_list_refresh()

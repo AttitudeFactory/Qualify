@@ -73,7 +73,7 @@ from .whatsapp_templates_vm import (
     validate_step,
     validate_template_form,
 )
-from .whatsapp_vm import TAB_CHATS, TAB_CONTACTS, graph_error_notice
+from .whatsapp_vm import TAB_CONTACTS, graph_error_notice
 
 logger = logging.getLogger(__name__)
 
@@ -511,7 +511,7 @@ class WhatsAppTemplatesState(rx.State):
     def see_chats(self) -> rx.event.EventSpec:
         """N3 after «Un aviso de pedido»: it is sent from that client's chat."""
         self._reset_form()
-        return WhatsAppState.select_tab(TAB_CHATS)
+        return WhatsAppState.open_chats
 
     @rx.event
     def set_language(self, language: str) -> None:

@@ -28,7 +28,8 @@ def test_conversation_links_round_trip_only_internal_ids() -> None:
     assert conversation_href("instagram", ACCOUNT, THREAD) == (
         f"/responder?tab=mensajes&cuenta={ACCOUNT}&chat={THREAD}"
     )
-    assert conversation_href("whatsapp", "Laura", "+573001234567") == "/whatsapp?tab=chats"
+    # m-25029799: no WhatsApp list to fall back to — junk ids give the single list.
+    assert conversation_href("whatsapp", "Laura", "+573001234567") == "/responder?tab=mensajes"
     assert thread_param({"cuenta": ACCOUNT, "chat": THREAD}, ACCOUNT) == THREAD
     assert thread_param({"cuenta": OTHER, "chat": THREAD}, ACCOUNT) == ""
     assert thread_param({"cuenta": "bad", "chat": THREAD}, ACCOUNT) == ""
@@ -48,7 +49,7 @@ def _node(script: str) -> object:
 def test_pushing_and_closing_a_detail_consumes_its_entry_without_losing_router_state() -> None:
     listing = conversation_href("whatsapp", ACCOUNT)
     detail = conversation_href("whatsapp", ACCOUNT, THREAD)
-    location = json.dumps({"pathname": "/whatsapp", "search": listing.split("/whatsapp")[1]})
+    location = json.dumps({"pathname": "/responder", "search": listing.split("/responder")[1]})
     script = f"""
 const result = [];
 const window = {{location: {location}}};

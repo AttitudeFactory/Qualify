@@ -1,7 +1,7 @@
 """m-24955648 part 2 — the payment in Chats, offline (`docs/ux-paso-de-pago.md` §4–§5).
 
-A real `WhatsAppChatsState` over a fake gateway: the list's pills from ONE
-`payment_statuses` read, the order card's «Pago recibido» (the exact message shown
+A real `WhatsAppChatsState` over a fake gateway: the order card's «Pago recibido» (the
+exact message shown
 before it goes; a closed window offers «Marcar pagado sin avisar»; nothing is sent
 without the owner's tap; a late result after switching chat is dropped), «No lo
 encuentro» (sends nothing), and the «+» → «Formas de pago».
@@ -30,7 +30,6 @@ from qualify_api.whatsapp.payment_status import (
 from qualify_api.whatsapp.payments import PaymentMethodNotFound
 
 from . import whatsapp_chats_state as state_module
-from . import whatsapp_tab_chats
 from .whatsapp_chats_provider import PickerScope
 from .whatsapp_chats_state import WhatsAppChatsState
 from .whatsapp_chats_vm import (
@@ -47,7 +46,6 @@ from .whatsapp_chats_vm import (
     payment_confirm_title,
     payment_pill,
     pick_step_title,
-    with_payment_pills,
 )
 
 TENANT = UUID("a0000000-0000-4000-8000-000000955648")
@@ -126,10 +124,6 @@ class FakeGateway:
     def mark_paid_without_message(self, tenant, connection, thread, user) -> None:
         self.calls.append(("silent", str(thread)))
 
-    def payment_statuses(self, tenant_id, thread_ids):
-        self.calls.append(("statuses", list(thread_ids)))
-        return {UUID(THREAD): _status("review")}
-
 
 @pytest.fixture
 def gw(monkeypatch: pytest.MonkeyPatch) -> FakeGateway:
@@ -164,7 +158,7 @@ def _row(thread_id: str = THREAD, *, open_window: bool = True) -> Any:
 def _state(payment: PaymentStatus | None = None, *, open_window: bool = True) -> Any:
     state = WhatsAppChatsState()
     state._connection_id = CONN
-    state.rows = [_row(open_window=open_window), _row(OTHER)]
+    state.thread_row = _row(open_window=open_window)
     state.open_thread_id = THREAD
     state._payment_raw = payment
     state._render_conversation()
@@ -217,31 +211,6 @@ def test_the_card_says_how_they_pay_and_who_confirmed() -> None:
     assert payment_confirm_title("María G.") == "¿Ya te llegó el pago de María G.?"
 
 
-def test_the_list_gets_its_pills_from_one_read(gw) -> None:
-    rows = with_payment_pills(
-        [_row(), _row(OTHER)],
-        {THREAD: _status("review"), OTHER: _status("awaiting")},
-    )
-    # m-25017844: the row reads marks, not a label — the shared row words the one pill.
-    assert (rows[0].payment_review, rows[0].payment_awaiting) == (True, False)
-    assert (rows[1].payment_review, rows[1].payment_awaiting) == (False, True)
-    statuses = state_module._payment_statuses(gw, TENANT, [UUID(THREAD), UUID(OTHER)])
-    assert [c for c in gw.calls if c[0] == "statuses"] == [
-        ("statuses", [UUID(THREAD), UUID(OTHER)])
-    ]  # one call for the whole list
-    assert set(statuses) == {THREAD}
-    assert state_module._payment_statuses(gw, TENANT, []) == {}
-
-
-def test_a_failing_status_read_never_breaks_the_list() -> None:
-    class Broken:
-        def payment_statuses(self, *a: Any) -> Any:
-            raise RuntimeError("db")
-
-    # None, not {}: «could not read» is not «nothing pending» (code review, m-24971198)
-    assert state_module._payment_statuses(Broken(), TENANT, [UUID(THREAD)]) is None
-
-
 # --- «Pago recibido» ------------------------------------------------------------------
 
 
@@ -255,7 +224,7 @@ async def test_pago_recibido_shows_the_message_then_sends_it_on_the_owners_tap(g
     assert gw.calls[0][0] == "confirm"
     assert gw.calls[0][1][1] == "¡Recibido, gracias María!"
     assert not state.pay_confirm_open and PAYMENT_PAID_TOAST in _text(events)
-    assert state.rows[0].automation_paused  # a person's message pauses the automation
+    assert state.thread_row.automation_paused  # a person's message pauses the automation
 
 
 async def test_a_closed_window_offers_marking_it_without_a_message(gw) -> None:
@@ -297,7 +266,7 @@ async def test_a_late_result_after_switching_chat_is_dropped(gw) -> None:
 
     gw.confirm_payment = switch_then_confirm  # type: ignore[method-assign]
     events = await _drain(state._pay(silent=False))
-    assert events == [] and not state.rows[0].automation_paused
+    assert events == [] and not state.thread_row.automation_paused
 
 
 def test_no_lo_encuentro_only_fills_the_composer(gw) -> None:
@@ -409,43 +378,6 @@ def test_pago_recibido_prefills_the_orders_own_text(gw) -> None:
 # --- m-24971198: «Pago por revisar», the way back to the chat, the preview ------------
 
 
-def test_the_payment_filter_uses_the_lists_one_read() -> None:
-    from .whatsapp_chats_vm import (
-        FILTER_PAYMENT,
-        FILTER_PAYMENT_EMPTY,
-        filter_counts,
-        filter_empty_text,
-        filter_label,
-        filter_threads,
-    )
-
-    rows = with_payment_pills(
-        [_row(), _row(OTHER)],
-        {THREAD: _status("review"), OTHER: _status("awaiting")},
-    )
-    assert [r.thread_id for r in filter_threads(rows, FILTER_PAYMENT)] == [THREAD]
-    assert filter_counts(rows)[FILTER_PAYMENT] == 1
-    assert filter_label(FILTER_PAYMENT, 1) == "Pago por revisar · 1"
-    assert filter_empty_text(FILTER_PAYMENT) == FILTER_PAYMENT_EMPTY
-    assert FILTER_PAYMENT_EMPTY == (
-        "No hay pagos por revisar. Cuando un cliente te mande su comprobante, su chat aparece aquí."
-    )
-
-
-def test_the_state_filters_and_keeps_the_filter_like_the_others(gw) -> None:
-    from .whatsapp_chats_vm import FILTER_PAYMENT, FILTER_PAYMENT_EMPTY
-
-    state = _state()
-    state.rows = with_payment_pills(state.rows, {THREAD: _status("review")})
-    state.filter_key = FILTER_PAYMENT  # the chip (its tap is tested in test_inbox_list)
-    assert [r.thread_id for r in state.visible_chat_rows] == [THREAD]
-    assert state.filter_payment_label == "Pago por revisar · 1"
-    state.rows = with_payment_pills(state.rows, {})  # a refresh: none left
-    state.rows = [dataclasses.replace(r, payment_review=False) for r in state.rows]
-    assert state.filter_key == FILTER_PAYMENT and state.visible_chat_rows == []
-    assert state.filter_empty == FILTER_PAYMENT_EMPTY
-
-
 def test_cambiar_estos_datos_carries_the_way_back_to_this_chat(gw) -> None:
     from urllib.parse import parse_qs, urlsplit
 
@@ -491,60 +423,23 @@ def test_the_way_back_is_one_link_not_a_button_inside_a_link() -> None:
     assert back.count("RadixThemesButton") == 1
 
 
-def test_the_four_filters_sit_two_by_two_with_pressed_state() -> None:
-    """UX review: four segments clip in the ≤340 px list column — a 2 x 2 grid instead."""
-    grid = whatsapp_tab_chats._filters()
-    rendered = str(grid)
-    assert grid.tag == "Grid" and len(grid.children) == 4
-    assert "aria-pressed" in rendered and "filter_payment_label" in rendered
-    assert "SegmentedControl" not in rendered
-
-
-async def test_a_failed_statuses_read_says_so_and_keeps_the_marks(gw, monkeypatch) -> None:
-    """Code review of m-24971198: a failed read never reads as «no hay pagos por revisar»,
-    a silent refresh keeps the previous marks, and the filter hides its count."""
-    from .test_whatsapp_chats import _thread
-    from .whatsapp_chats_vm import FILTER_PAYMENT, FILTER_PAYMENT_FAILED
-
-    threads = [_thread(id=UUID(THREAD)), _thread(id=UUID(OTHER))]
-    monkeypatch.setattr(gw, "timezone", lambda t: "UTC", raising=False)
-    monkeypatch.setattr(gw, "agents", lambda t: [], raising=False)
-    monkeypatch.setattr(gw, "threads", lambda t, c: threads, raising=False)
-    state = _state()
-    state.filter_key = FILTER_PAYMENT  # the chip (its tap is tested in test_inbox_list)
-    assert await WhatsAppChatsState._read_list(state, silent=False)
-    assert not state.statuses_failed and state.filter_payment_label == "Pago por revisar · 1"
-
-    def broken(*a: Any) -> Any:
-        raise RuntimeError("db")
-
-    monkeypatch.setattr(gw, "payment_statuses", broken)
-    assert await WhatsAppChatsState._read_list(state, silent=True)
-    assert state.statuses_failed
-    assert [r.thread_id for r in state.visible_chat_rows] == [THREAD]  # the mark is kept
-    assert state.filter_payment_label == "Pago por revisar"  # never a count it cannot know
-    state.rows = []
-    assert (
-        state.filter_empty
-        == FILTER_PAYMENT_FAILED
-        == ("No pudimos revisar los pagos. Inténtalo otra vez en un momento.")
-    )
-
-
 def test_the_way_back_refuses_a_chats_lookalike() -> None:
     from .whatsapp_payments_state import chat_return_path
 
     assert chat_return_path({"volver": "/whatsapp?tab=numero&a=tab=chats"}) == ""
     assert chat_return_path({"volver": "/whatsapp?tab=chats&tab=numero"}) == ""
     assert chat_return_path({"volver": "/whatsappx?tab=chats"}) == ""
-    assert chat_return_path({"volver": "/whatsapp?tab=chats"}) == "/whatsapp?tab=chats"
+    # m-25029799: WhatsApp's own LIST is gone — its address is no way back to a chat.
+    assert chat_return_path({"volver": "/whatsapp?tab=chats"}) == ""
+    chat = "/responder?tab=mensajes&cuenta=x&chat=y"
+    assert chat_return_path({"volver": chat}) == chat
 
 
 def _chat_views() -> object:
-    """m-25029798: `/whatsapp`'s number list plus the open chat, which is mounted beside
-    the single list of «Por responder» (`whatsapp_chat_pane` + `whatsapp_chat_layers`)."""
+    """The open chat, mounted beside the single list of «Por responder» (m-25029798;
+    m-25029799: WhatsApp has no list of its own)."""
     import reflex as rx
 
-    from .whatsapp_tab_chats import chats_tab, whatsapp_chat_layers, whatsapp_chat_pane
+    from .whatsapp_tab_chats import whatsapp_chat_layers, whatsapp_chat_pane
 
-    return rx.fragment(chats_tab(), whatsapp_chat_pane(), whatsapp_chat_layers())
+    return rx.fragment(whatsapp_chat_pane(), whatsapp_chat_layers())
