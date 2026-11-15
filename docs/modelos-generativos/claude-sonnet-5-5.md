@@ -133,6 +133,6 @@ Detalle: [`pruebas.md` § MEJORAR-TEXTO-002](pruebas.md#mejorar-texto-002).
 | Interruptor | `QUALIFY_IMAGE_LAYER=on`; apagado por defecto (nada consume la capa hasta m-25017285) |
 | Costo medido | `capa-v2` (CAPA-002): media US$0,013 por foto (US$0,010 sin reparación, US$0,022 con ella); carrusel entero en una llamada US$0,053 (6 diap.), US$0,080 (5) y US$0,131 (8). `capa-v1` (CAPA-001): media US$0,016 por foto |
 | Latencia medida | `capa-v2`: mediana 3,2 s y p95 6,3 s por foto; carrusel 14,0 s (6 diap.), 17,2 s (5) y 30,7 s (8) |
-| Calidad medida | `capa-v2`: 30/30 fotos y 19/19 diapositivas con capa válida, ninguna perdida; reparación en 27 % de las fotos (parámetros de `band`) y en 2 de 3 carruseles (`price_ref` a un producto sin precio); ningún precio inventado; `unsupported_claims` 0 marcas y 2 fugas pequeñas; 61 de 127 textos pasan de dos tercios del límite; `base_has_invented_text` 42/45 con la etiqueta humana. `capa-v1`: 10/10 válidas, 9/10 |
+| Calidad medida | `capa-v2`: 30/30 fotos y 19/19 diapositivas con capa válida, ninguna perdida; reparación en 27 % de las fotos (parámetros de `band`) y en 2 de 3 carruseles (`price_ref` a un producto sin precio); ningún precio inventado; `unsupported_claims` 0 marcas y 2 fugas pequeñas; 60 de 127 textos pasan de dos tercios del límite; `base_has_invented_text` 42/45 con la etiqueta humana. `capa-v1`: 10/10 válidas, 9/10 |
 
 Detalle: [`pruebas.md` § CAPA-002](pruebas.md#capa-002) y [§ CAPA-001](pruebas.md#capa-001).

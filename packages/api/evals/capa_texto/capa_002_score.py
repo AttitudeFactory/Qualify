@@ -7,14 +7,20 @@
 2. The known leaks and false rejections of PR #674 «Antes de encender», as a probe table.
 3. Copy quick read: business name in a title, «usted»/«vos» forms, English words, texts
    above two thirds of their slot limit.
+4. With `--base-labels` (FOTO-BASE-001's `scores.csv`, column `a_invented_text`, kept
+   outside the repo with that run's bases): `base_has_invented_text` against the human label
+   of every slide whose photo is an unmodified labelled base. The 1:1 crops are left out (a
+   crop can cut the invented letters away), so 49 photos give at most 45.
 
     PYTHONPATH=packages/api/src:packages/shared/src:packages/creative/src \\
-      uv run --no-sync python packages/api/evals/capa_texto/capa_002_score.py --run <out dir>
+      uv run --no-sync python packages/api/evals/capa_texto/capa_002_score.py --run <out dir> \\
+      [--base-labels <FOTO-BASE-001 scores.csv>]
 """
 
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import re
 from pathlib import Path
@@ -103,6 +109,7 @@ def _limit(layout: str, slot: str, fmt: str) -> int | None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--run", required=True)
+    parser.add_argument("--base-labels", help="FOTO-BASE-001 scores.csv (a_invented_text)")
     args = parser.parse_args()
     run = Path(args.run)
     cases = {c["id"]: c for c in json.loads(CASES.read_text(encoding="utf-8"))["cases"]}
@@ -169,8 +176,28 @@ def main() -> int:
             "false_negatives": s["fn"],
         }
 
+    base_check: dict[str, Any] | None = None
+    if args.base_labels:
+        with Path(args.base_labels).open(encoding="utf-8") as handle:
+            human = {r["job"]: r.get("a_invented_text", "") for r in csv.DictReader(handle)}
+        agree, compared, misses = 0, 0, []
+        for line in (run / "results.jsonl").read_text(encoding="utf-8").splitlines():
+            row = json.loads(line)
+            for position, spec in (row.get("layers") or {}).items():
+                photo = row["photos"][int(position)].removesuffix(".jpg")
+                if photo.endswith("-1x1") or human.get(photo) not in ("0", "1"):
+                    continue
+                compared += 1
+                said = str(int(bool(spec.get("invented_text"))))
+                if said == human[photo]:
+                    agree += 1
+                else:
+                    misses.append(f"{photo}: model {said}, human {human[photo]}")
+        base_check = {"agree": agree, "compared": compared, "misses": misses}
+
     report = {
         "texts": len(texts),
+        "base_has_invented_text": base_check,
         "price_rule": pr("price"),
         "claims_rule": pr("claims"),
         "over_two_thirds": over_two_thirds,

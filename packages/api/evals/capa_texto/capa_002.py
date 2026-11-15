@@ -85,7 +85,7 @@ CAPA_001 = [
     "G1-combo-galeria-s2-r1-v5",
     "G2-salchipapa-galeria-s1-r1-v4",
 ]
-#: twenty more bases of the same run (second repetition, the other compiler, F6)
+#: sixteen more bases of the same run (second repetition, the other compiler, F6)
 MORE = [
     "F1-ubicacion-r2-v5",
     "F2-te-espera-r2-v5",
@@ -179,17 +179,23 @@ def _square(src: Path, dest: Path) -> Path:
     return dest
 
 
-def plan(images: Path, out: Path, cases: dict[str, Any]) -> list[dict[str, Any]]:
+def plan(
+    images: Path, out: Path, cases: dict[str, Any], *, write: bool = True
+) -> list[dict[str, Any]]:
+    """The pieces to run. `write=False` (a dry run) names the square crops but writes
+    nothing to disk."""
     pieces = []
     squares = out / "square-inputs"
-    squares.mkdir(parents=True, exist_ok=True)
+    if write:
+        squares.mkdir(parents=True, exist_ok=True)
     for stem in CAPA_001 + MORE + SQUARE:
         case = cases[_case_of(stem)]
         fmt = _FORMATS.get(case["format"], "4:5")
         photo = images / f"{stem}.jpg"
         source = "CAPA-001" if stem in CAPA_001 else "m-25017279 (FOTO-BASE-001)"
         if stem in SQUARE:
-            photo, fmt = _square(photo, squares / f"{stem}-1x1.jpg"), "1:1"
+            square = squares / f"{stem}-1x1.jpg"
+            photo, fmt = (_square(photo, square) if write else square), "1:1"
             source = "m-25017279, cut to 1:1"
         data = stem in DATA_PIECES
         pieces.append(
@@ -317,7 +323,7 @@ def main() -> int:
 
     cases = {c["id"]: c for c in json.loads(CASES.read_text(encoding="utf-8"))["cases"]}
     out = Path(args.out)
-    pieces = plan(Path(args.images), out, cases)
+    pieces = plan(Path(args.images), out, cases, write=not args.dry_run)
     if args.only:
         pieces = [p for p in pieces if p["id"] in args.only]
     slides = sum(len(p["photos"]) for p in pieces)
