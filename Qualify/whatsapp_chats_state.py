@@ -52,7 +52,6 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -100,7 +99,6 @@ from .chat_row_vm import ChatRowVM
 from .chat_thread_vm import order_strip_label, show_assign
 from .nav_url import (
     close_flow_script,
-    conversation_href,
     filter_address_script,
     flow_param,
     inbox_back_script,
@@ -242,6 +240,7 @@ from .whatsapp_chats_vm import (
     media_control_for,
     merge_pages,
     mode_pill,
+    number_settings_href,
     payment_confirm_title,
     payments_href,
     photo_refusal,
@@ -531,6 +530,10 @@ class WhatsAppChatsState(rx.State):
 
     # -- conversation (m-25029798: open beside the single list of «Por responder») -------
     open_thread_id: str = ""
+    #: m-25029798: the open chat's own address in «Por responder» (with the list's view)
+    #: and its number — the way back and the number of «Tu número» links from the chat.
+    chat_return_href: str = ""
+    chat_account: str = ""
     messages: list[MessageVM] = []
     order: OrderCardVM = EMPTY_ORDER
     has_more: bool = False
@@ -705,9 +708,11 @@ class WhatsAppChatsState(rx.State):
         this conversation (m-24971198)."""
         if not self.open_thread_id:
             return payments_href()
-        return payments_href(
-            conversation_href("whatsapp", self._connection_id, self.open_thread_id)
-        )
+        back, account = self.chat_return_href, self.chat_account
+        if not back:  # opened before the address was known: rebuilt from the ids
+            back = inbox_chat_href(self._connection_id, self.open_thread_id)
+            account = self._connection_id
+        return payments_href(back, account=account)
 
     @rx.var
     def list_ready(self) -> bool:
@@ -977,6 +982,7 @@ class WhatsAppChatsState(rx.State):
     def _close_here(self) -> None:
         """The open chat closes, no address written (the caller says where to go)."""
         self.open_thread_id = ""
+        self.chat_return_href = self.chat_account = ""
         self._pinned_thread = ""
         self._reset_conversation()
 
@@ -1113,7 +1119,7 @@ class WhatsAppChatsState(rx.State):
         return WhatsAppChatsState.open_pending
 
     @rx.event
-    def restore_inbox_address(
+    async def restore_inbox_address(
         self,
     ) -> list[rx.event.EventSpec | rx.event.EventHandler] | rx.event.EventHandler | None:
         """«Por responder» › «Mensajes» entry, a reload and every «atrás» (m-25029798):
@@ -1131,10 +1137,23 @@ class WhatsAppChatsState(rx.State):
         if not connection or not thread:
             self._pending_connection = self._pending_thread = ""
             return _inbox_list_restore_scroll() if was_open else None
+        if await self._instagram_owns(connection):
+            # An Instagram chat's address (its pane opens it): no number to check.
+            self._pending_connection = self._pending_thread = ""
+            return None
         self._pending_connection, self._pending_thread = connection, thread
         self._pending_writes = False
         self._replace_url = False
         return WhatsAppChatsState.open_pending
+
+    async def _instagram_owns(self, connection_id: str) -> bool:
+        """`cuenta` is one of the business's Instagram accounts ALREADY read by the
+        Instagram pane (a reload may not have read them yet: then the number check runs
+        and finds nothing)."""
+        from .conversations_state import ConversationsState
+
+        instagram = await self.get_state(ConversationsState)
+        return connection_id in {a.connection_id for a in instagram.accounts}
 
     @rx.event(background=True)
     async def open_pending(self) -> AsyncIterator[rx.event.EventSpec | rx.event.EventHandler]:
@@ -1152,9 +1171,17 @@ class WhatsAppChatsState(rx.State):
         except _DB_ERRORS as exc:
             logger.error("whatsapp chats numbers failed: %s", type(exc).__name__)
             async with self:
-                if (self._pending_connection, self._pending_thread) == (connection_id, thread_id):
-                    self._pending_connection = self._pending_thread = ""
-                    self._set_banner(_CONV_FAILED, "error")
+                if (self._pending_connection, self._pending_thread) != (connection_id, thread_id):
+                    return
+                self._pending_connection = self._pending_thread = ""
+                self._set_banner(_CONV_FAILED, "error")
+                tapped, self._pending_writes = self._pending_writes, False
+                self._replace_url = False
+                # A tap: the chat it replaced (Instagram's) already gave way — the address
+                # says the list again, not a chat that is not on screen.
+                back = inbox_chat_href(view=self._view()) if tapped else ""
+            if back:
+                yield rx.call_script(replace_url_script(back))
             return
         async with self:
             if (self._pending_connection, self._pending_thread) != (connection_id, thread_id):
@@ -1179,10 +1206,11 @@ class WhatsAppChatsState(rx.State):
         self._pinned_thread = ""
         self._reset_conversation()
         self.compose_mode = COMPOSE_TEXT
+        href = inbox_chat_href(connection_id, thread_id, view=self._view())
+        self.chat_return_href, self.chat_account = href, connection_id
         events: list[rx.event.EventSpec | rx.event.EventHandler] = []
         if writes:
             writer = replace_url_script if replace else push_url_script
-            href = inbox_chat_href(connection_id, thread_id, view=self._view())
             events.append(rx.call_script(writer(href)))
         if self.list_loaded_for != connection_id and self.list_loading_for != connection_id:
             events.append(WhatsAppChatsState.load_list)
@@ -2067,8 +2095,11 @@ class WhatsAppChatsState(rx.State):
     def pick_profile_href(self) -> str:
         """Tu número › Perfil (the address and the map point), with the way back to this
         chat (`?volver=`, m-24945889 §1)."""
-        back = conversation_href("whatsapp", self._connection_id, self.open_thread_id)
-        return PROFILE_ROUTE + "&" + urlencode({"volver": back})
+        back, account = self.chat_return_href, self.chat_account
+        if not back and self.open_thread_id:  # opened before the address was known
+            back = inbox_chat_href(self._connection_id, self.open_thread_id)
+            account = self._connection_id
+        return number_settings_href(PROFILE_ROUTE, back, account)
 
     @rx.var
     def pick_flow_object(self) -> str:

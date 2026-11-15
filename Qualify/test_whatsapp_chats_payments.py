@@ -454,7 +454,7 @@ def test_cambiar_estos_datos_carries_the_way_back_to_this_chat(gw) -> None:
     state = _state()
     href = state.payments_change_href
     query = parse_qs(urlsplit(href).query)
-    assert href.startswith("/whatsapp?tab=numero&sub=pagos&volver=")
+    assert href.startswith(f"/whatsapp?tab=numero&sub=pagos&cuenta={CONN}&volver=")
     back = query["volver"][0]
     # m-25029798: the chat lives in «Por responder»; the old address is still accepted.
     assert back == f"/responder?tab=mensajes&cuenta={CONN}&chat={THREAD}"

@@ -1078,12 +1078,15 @@ class ConversationsState(rx.State):
             item = await asyncio.to_thread(gateway().thread_listing, tenant_id, connection, thread)
         except ThreadNotFound:
             async with self:
-                if self._pending_open == thread_id:
+                ours = self._pending_open == thread_id
+                if ours:
                     self._pending_open = ""
                     # Over another open chat the banner would read as about that one:
                     # then the toast alone says it.
                     if not self.open_thread_id:
                         self._set_banner(_THREAD_GONE, "warn")
+            if not ours:
+                return  # another chat (of either channel) was asked for meanwhile
             yield rx.toast.warning(_THREAD_GONE, duration=_TOAST_MS)
             yield _inbox_list_refresh()
             return
@@ -1155,8 +1158,11 @@ class ConversationsState(rx.State):
     @rx.event
     def leave_for_other_chat(self) -> list[rx.event.EventSpec] | None:
         """m-25029798: a WhatsApp row was tapped while this pane held a chat — it gives
-        way without writing an address (the WhatsApp chat's replaces it)."""
+        way without writing an address (the WhatsApp chat's replaces it). An Instagram
+        chat still being fetched (`_pending_open`: its account's list or the chat by id)
+        is dropped too, so it never opens behind the WhatsApp one."""
         self._replace_url = False
+        self._pending_open = ""
         if not self.open_thread_id:
             return None
         was_recording = self.recording

@@ -202,7 +202,7 @@ async def test_no_address_opens_the_empty_state_with_the_way_back(gw: FakeGatewa
     await state._load_pick(PICK_DIRECTIONS)
     assert state.pick_directions.empty and state.pick_can_send is False
     href = state.pick_profile_href
-    assert href.startswith("/whatsapp?tab=numero&sub=perfil&volver=")
+    assert href.startswith("/whatsapp?tab=numero&sub=perfil&cuenta=") and "&volver=" in href
     assert "%2Fresponder%3Ftab%3Dmensajes" in href and "chat%3D" in href  # m-25029798
     plan = PickSend(
         session=1, source=PICK_DIRECTIONS, thread_id="t", connection_id="c", request_key="k"

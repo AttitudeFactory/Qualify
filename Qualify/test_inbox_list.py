@@ -52,7 +52,6 @@ from .inbox_list_vm import (
     channel_chips,
     channel_from_params,
     channels_words,
-    chat_href,
     count_of,
     empty_for,
     filter_chips,
@@ -63,7 +62,7 @@ from .inbox_list_vm import (
     show_channel_filter,
     show_notice,
 )
-from .nav_url import conversation_href, thread_param
+from .nav_url import conversation_href, inbox_chat_href, thread_param
 from .whatsapp_chats_vm import AgentVM
 
 NOW = datetime(2026, 11, 13, 17, 0, tzinfo=UTC)
@@ -341,16 +340,14 @@ def test_a_chat_of_either_channel_has_one_address_in_por_responder() -> None:
     """m-25029798: the open chat's address is the list's own view plus `cuenta` + `chat`,
     whatever its channel; only canonical ids travel."""
     thread = str(uuid4())
-    href = chat_href(str(CONNECTION), thread, FILTER_ALL, CHANNEL_WHATSAPP)
+    view = {"filtro": "todos", "canal": CHANNEL_WHATSAPP}
+    href = inbox_chat_href(str(CONNECTION), thread, view=view)
     assert href == (
         f"/responder?tab=mensajes&filtro=todos&canal=whatsapp&cuenta={CONNECTION}&chat={thread}"
     )
     params = dict(p.split("=", 1) for p in href.split("?", 1)[1].split("&"))
     assert thread_param(params, str(CONNECTION)) == thread
-    assert chat_href(str(CONNECTION), thread) == (
-        f"/responder?tab=mensajes&filtro=por-responder&cuenta={CONNECTION}&chat={thread}"
-    )
-    assert chat_href("x", "<script>") == "/responder?tab=mensajes&filtro=por-responder"
+    assert inbox_chat_href("x", "<script>") == "/responder?tab=mensajes"
     # WhatsApp's own addresses of a chat now land in «Por responder» too.
     assert conversation_href("whatsapp", str(CONNECTION), thread) == (
         f"/responder?tab=mensajes&cuenta={CONNECTION}&chat={thread}"

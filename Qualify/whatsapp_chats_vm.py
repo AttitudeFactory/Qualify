@@ -1641,15 +1641,25 @@ PRODUCTS_ROUTE = "/catalog"
 PAYMENTS_ROUTE = "/whatsapp?tab=numero&sub=pagos"
 
 
-def payments_href(return_to: str = "") -> str:
+def payments_href(return_to: str = "", account: str = "") -> str:
     """«Cambiar estos datos» (m-24971198): Formas de pago with `?volver=` — the chat's
     own address (`nav_url.conversation_href`: only the account and chat ids it already
-    carries), so «‹ Volver al chat» leads back to that conversation."""
+    carries), so «‹ Volver al chat» leads back to that conversation. m-25029798: with
+    `account` (`?cuenta=`, the chat's number), so the screen opens on THAT number's
+    settings, not on whichever number `/whatsapp` last had selected."""
+    return number_settings_href(PAYMENTS_ROUTE, return_to, account)
+
+
+def number_settings_href(route: str, return_to: str = "", account: str = "") -> str:
+    """A «Tu número» panel `route` for the number `account` (a canonical UUID, else
+    left out) with the way back `return_to` (`?volver=`)."""
     from urllib.parse import urlencode  # noqa: PLC0415
 
-    if not return_to:
-        return PAYMENTS_ROUTE
-    return f"{PAYMENTS_ROUTE}&{urlencode({'volver': return_to})}"
+    from .nav_url import uuid_param  # noqa: PLC0415
+
+    params = {"cuenta": uuid_param({"cuenta": account}, "cuenta"), "volver": return_to}
+    kept = {k: v for k, v in params.items() if v}
+    return f"{route}&{urlencode(kept)}" if kept else route
 
 
 NEW_PRODUCT_ROUTE = "/catalog?nuevo=1"

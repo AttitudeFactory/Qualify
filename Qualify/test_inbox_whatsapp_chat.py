@@ -53,6 +53,21 @@ def numbers(monkeypatch: pytest.MonkeyPatch) -> list[UUID]:
     return asked
 
 
+#: The business's Instagram accounts the Instagram pane has read (`_instagram_owns`).
+_INSTAGRAM: list[str] = []
+
+
+@pytest.fixture(autouse=True)
+def instagram_accounts(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    _INSTAGRAM.clear()
+
+    async def owns(self: WhatsAppChatsState, connection_id: str) -> bool:
+        return connection_id in _INSTAGRAM
+
+    monkeypatch.setattr(WhatsAppChatsState, "_instagram_owns", owns)
+    return _INSTAGRAM
+
+
 def _at(state: Any, query: str) -> None:
     from reflex.istate.data import ReflexURL, RouterData
 
@@ -112,7 +127,7 @@ async def test_a_number_of_another_business_opens_nothing(numbers: list[UUID]) -
     WhatsAppChatsState.open_from_inbox.fn(state, THEIRS, THREAD)  # type: ignore[attr-defined]
     assert await _drain(WhatsAppChatsState.open_pending.fn(state)) == []  # type: ignore[attr-defined]
     assert state.open_thread_id == "" and state._connection_id == ""
-    spec = WhatsAppChatsState.restore_inbox_address.fn(state)  # type: ignore[attr-defined]
+    spec = await WhatsAppChatsState.restore_inbox_address.fn(state)  # type: ignore[attr-defined]
     assert spec is WhatsAppChatsState.open_pending
     assert await _drain(WhatsAppChatsState.open_pending.fn(state)) == []  # type: ignore[attr-defined]
     assert state.open_thread_id == "" and state.rows == []
@@ -133,7 +148,7 @@ async def test_a_chat_that_is_not_of_that_number_closes_with_the_notice(
     monkeypatch.setattr(state_module, "gateway", lambda: _GoneGateway())
     state = WhatsAppChatsState()
     _at(state, f"tab=mensajes&cuenta={MINE}&chat={OTHER_THREAD}")
-    WhatsAppChatsState.restore_inbox_address.fn(state)  # type: ignore[attr-defined]
+    await WhatsAppChatsState.restore_inbox_address.fn(state)  # type: ignore[attr-defined]
     await _drain(WhatsAppChatsState.open_pending.fn(state))  # type: ignore[attr-defined]
     assert state.open_thread_id == OTHER_THREAD  # opened only to be read through `_owned`
     await state._read_conversation(silent=False)
@@ -147,40 +162,40 @@ async def test_a_chat_that_is_not_of_that_number_closes_with_the_notice(
 async def test_the_address_opens_without_writing_one(numbers: list[UUID]) -> None:
     state = WhatsAppChatsState()
     _at(state, f"tab=mensajes&cuenta={MINE}&chat={THREAD}")
-    spec = WhatsAppChatsState.restore_inbox_address.fn(state)  # type: ignore[attr-defined]
+    spec = await WhatsAppChatsState.restore_inbox_address.fn(state)  # type: ignore[attr-defined]
     assert spec is WhatsAppChatsState.open_pending
     events = await _drain(WhatsAppChatsState.open_pending.fn(state))  # type: ignore[attr-defined]
     assert state.open_thread_id == THREAD
     assert "pushState" not in _text(events) and "replaceState" not in _text(events)
 
 
-def test_the_same_chat_in_the_address_only_moves_its_drawers() -> None:
+async def test_the_same_chat_in_the_address_only_moves_its_drawers() -> None:
     state = WhatsAppChatsState()
     state._connection_id, state.open_thread_id = MINE, THREAD
     _at(state, f"tab=mensajes&cuenta={MINE}&chat={THREAD}")
-    events = WhatsAppChatsState.restore_inbox_address.fn(state)  # type: ignore[attr-defined]
+    events = await WhatsAppChatsState.restore_inbox_address.fn(state)  # type: ignore[attr-defined]
     assert events == [WhatsAppChatsState.restore_flow, WhatsAppChatsState.restore_picker]
     assert state.open_thread_id == THREAD
 
 
-def test_back_to_the_list_address_closes_the_chat_and_gives_the_scroll_back() -> None:
+async def test_back_to_the_list_address_closes_the_chat_and_gives_the_scroll_back() -> None:
     from .inbox_list_state import InboxListState
 
     state = WhatsAppChatsState()
     state._connection_id, state.open_thread_id = MINE, THREAD
     _at(state, "tab=mensajes&filtro=todos")
-    spec = WhatsAppChatsState.restore_inbox_address.fn(state)  # type: ignore[attr-defined]
+    spec = await WhatsAppChatsState.restore_inbox_address.fn(state)  # type: ignore[attr-defined]
     assert spec is InboxListState.restore_scroll
     assert state.open_thread_id == ""
     # Nothing open, nothing asked: no scroll to give back.
-    assert WhatsAppChatsState.restore_inbox_address.fn(state) is None  # type: ignore[attr-defined]
+    assert (await WhatsAppChatsState.restore_inbox_address.fn(state)) is None  # type: ignore[attr-defined]
 
 
-def test_an_instagram_chat_in_the_address_closes_the_whatsapp_one() -> None:
+async def test_an_instagram_chat_in_the_address_closes_the_whatsapp_one() -> None:
     state = WhatsAppChatsState()
     state._connection_id, state.open_thread_id = MINE, THREAD
     _at(state, f"tab=mensajes&cuenta={uuid4()}&chat={uuid4()}")
-    spec = WhatsAppChatsState.restore_inbox_address.fn(state)  # type: ignore[attr-defined]
+    spec = await WhatsAppChatsState.restore_inbox_address.fn(state)  # type: ignore[attr-defined]
     assert state.open_thread_id == ""
     assert spec is WhatsAppChatsState.open_pending  # checked: not a number → nothing
 
@@ -344,3 +359,168 @@ def test_a_business_switch_or_logout_resets_the_open_chat() -> None:
     from .inbox_list_state import InboxListState
 
     assert {WhatsAppChatsState, InboxListState} <= set(business_state_classes())
+
+
+# --- review fixes (C1, C2 and the nits) -------------------------------------------------
+
+
+async def test_an_instagram_chat_address_asks_for_no_number_check(
+    numbers: list[UUID], instagram_accounts: list[str]
+) -> None:
+    """An Instagram account the Instagram pane already holds owns the `cuenta`: no
+    `numbers_for` read, nothing opens here (even with a WhatsApp chat id)."""
+    account = str(uuid4())
+    instagram_accounts.append(account)
+    state = WhatsAppChatsState()
+    _at(state, f"tab=mensajes&cuenta={account}&chat={THREAD}")
+    assert (await WhatsAppChatsState.restore_inbox_address.fn(state)) is None  # type: ignore[attr-defined]
+    assert numbers == [] and state.open_thread_id == "" and state._pending_thread == ""
+
+
+async def test_an_instagram_account_with_a_whatsapp_chat_id_opens_nothing(
+    numbers: list[UUID],
+) -> None:
+    """Before the Instagram pane read its accounts: the number check runs and refuses."""
+    state = WhatsAppChatsState()
+    _at(state, f"tab=mensajes&cuenta={uuid4()}&chat={THREAD}")
+    await WhatsAppChatsState.restore_inbox_address.fn(state)  # type: ignore[attr-defined]
+    assert await _drain(WhatsAppChatsState.open_pending.fn(state)) == []  # type: ignore[attr-defined]
+    assert state.open_thread_id == ""
+
+
+async def test_a_tenant_change_mid_flight_writes_nothing(
+    numbers: list[UUID], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = {"n": 0}
+
+    async def tenant(self: WhatsAppChatsState) -> UUID:
+        calls["n"] += 1
+        return TENANT if calls["n"] == 1 else UUID(int=7)  # logout / switch meanwhile
+
+    monkeypatch.setattr(WhatsAppChatsState, "_tenant", tenant)
+    state = WhatsAppChatsState()
+    _at(state, "tab=mensajes")
+    WhatsAppChatsState.open_from_inbox.fn(state, MINE, THREAD)  # type: ignore[attr-defined]
+    assert await _drain(WhatsAppChatsState.open_pending.fn(state)) == []  # type: ignore[attr-defined]
+    assert state.open_thread_id == "" and state._connection_id == ""
+
+
+async def test_a_failed_number_check_after_a_tap_puts_the_list_address_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sqlalchemy.exc import OperationalError
+
+    def numbers_for(tenant_id: UUID) -> list[Any]:
+        raise OperationalError("select", {}, Exception("down"))
+
+    async def tenant(self: WhatsAppChatsState) -> UUID:
+        return TENANT
+
+    monkeypatch.setattr(state_module, "numbers_for", numbers_for)
+    monkeypatch.setattr(WhatsAppChatsState, "_tenant", tenant)
+    state = WhatsAppChatsState()
+    _at(state, f"tab=mensajes&filtro=todos&cuenta={uuid4()}&chat={uuid4()}")  # Instagram's
+    WhatsAppChatsState.open_from_inbox.fn(state, MINE, THREAD, True)  # type: ignore[attr-defined]
+    events = await _drain(WhatsAppChatsState.open_pending.fn(state))  # type: ignore[attr-defined]
+    assert "replaceState" in _text(events) and "/responder?tab=mensajes&filtro=todos" in _text(
+        events
+    )
+    assert "chat=" not in _text(events)
+    assert state.open_thread_id == "" and state.banner != ""
+
+
+async def test_whatsapp_then_instagram_before_the_check_returns_opens_only_instagram(
+    numbers: list[UUID],
+) -> None:
+    """C1, one direction: a WhatsApp tap still being checked, then an Instagram tap —
+    the WhatsApp check lands on nothing."""
+    state = WhatsAppChatsState()
+    _at(state, "tab=mensajes")
+    WhatsAppChatsState.open_from_inbox.fn(state, MINE, THREAD)  # type: ignore[attr-defined]
+    WhatsAppChatsState.leave_for_other_chat.fn(state)  # type: ignore[attr-defined]
+    assert await _drain(WhatsAppChatsState.open_pending.fn(state)) == []  # type: ignore[attr-defined]
+    assert state.open_thread_id == ""
+
+
+async def test_instagram_then_whatsapp_before_instagram_loads_opens_only_whatsapp() -> None:
+    """C1, the other direction: an Instagram tap that waits for its account's list or
+    for the chat by id, then a WhatsApp tap — the late Instagram read opens nothing."""
+    from .conversations_state import ConversationsState
+    from .test_conversations_provider import OTHER_CONNECTION, _account
+
+    conv = ConversationsState()
+    conv.accounts = [_account(OTHER_CONNECTION, label="@otra")]
+    pending = str(uuid4())
+    ConversationsState.open_from_inbox.fn(conv, str(OTHER_CONNECTION), pending)  # type: ignore[attr-defined]
+    assert conv._pending_open == pending
+    ConversationsState.leave_for_other_chat.fn(conv)  # type: ignore[attr-defined]
+    assert conv._pending_open == ""
+    # the account's list lands: nothing is waiting any more
+    assert ConversationsState.open_pending.fn(conv) is None  # type: ignore[attr-defined]
+    assert conv.open_thread_id == ""
+
+
+async def test_an_action_after_a_channel_switch_acts_on_no_hidden_chat(
+    numbers: list[UUID], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After an Instagram row took the pane, a WhatsApp act (a late tap on its header)
+    finds no open chat and calls nothing."""
+    calls: list[str] = []
+
+    class _Gw:
+        def close(self, *a: Any) -> None:
+            calls.append("close")
+
+    monkeypatch.setattr(state_module, "gateway", lambda: _Gw())
+    state = WhatsAppChatsState()
+    state._connection_id, state.open_thread_id = MINE, THREAD
+    WhatsAppChatsState.leave_for_other_chat.fn(state)  # type: ignore[attr-defined]
+    assert await _drain(WhatsAppChatsState.close_conversation.fn(state)) == []  # type: ignore[attr-defined]
+    assert calls == []
+
+
+async def test_number_settings_links_name_the_chats_number_and_come_back_to_it(
+    numbers: list[UUID],
+) -> None:
+    """C2: «Cambiar estos datos» and «Completar / Poner en el mapa» open THAT number's
+    «Tu número» (`cuenta`), with the way back to the chat on the same list view."""
+    from urllib.parse import parse_qs, urlsplit
+
+    from .whatsapp_payments_state import chat_return_path
+
+    state = WhatsAppChatsState()
+    _at(state, "tab=mensajes&filtro=todos&canal=whatsapp")
+    WhatsAppChatsState.open_from_inbox.fn(state, MINE, THREAD)  # type: ignore[attr-defined]
+    await _drain(WhatsAppChatsState.open_pending.fn(state))  # type: ignore[attr-defined]
+    chat = f"/responder?tab=mensajes&filtro=todos&canal=whatsapp&cuenta={MINE}&chat={THREAD}"
+    for href, sub in ((state.payments_change_href, "pagos"), (state.pick_profile_href, "perfil")):
+        query = parse_qs(urlsplit(href).query)
+        assert query["sub"] == [sub] and query["cuenta"] == [MINE], href
+        assert query["volver"] == [chat], href
+        assert chat_return_path({"volver": query["volver"][0]}) == chat
+    WhatsAppChatsState.back_to_inbox.fn(state)  # type: ignore[attr-defined]
+    assert state.chat_account == "" and state.chat_return_href == ""
+
+
+async def test_leaving_por_responder_forgets_the_saved_scroll() -> None:
+    from typing import cast
+
+    from .inbox_list_state import InboxListState
+    from .responder_state import ResponderState
+
+    responder, inbox, chats = ResponderState(), InboxListState(), WhatsAppChatsState()
+    from .conversations_state import ConversationsState  # noqa: F401
+    from .followups_state import FollowupsState
+
+    followups = FollowupsState()
+    inbox._scroll = [640, 0]
+
+    async def get_state(self: Any, cls: Any) -> Any:
+        return {InboxListState: inbox, WhatsAppChatsState: chats, FollowupsState: followups}[cls]
+
+    import pytest as _pytest
+
+    with _pytest.MonkeyPatch.context() as mp:
+        mp.setattr(ResponderState, "get_state", get_state)
+        await ResponderState.leave_page_flows.fn(cast(Any, responder))  # type: ignore[attr-defined]
+    assert inbox._scroll == []

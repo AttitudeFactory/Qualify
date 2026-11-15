@@ -124,6 +124,9 @@ class ResponderState(rx.State):
         chats = await self.get_state(WhatsAppChatsState)
         chats.tpl_open = False
         chats.flow_ready = False
+        # …and the list's scroll saved when a chat opened is not put back on a later
+        # visit (it belonged to that open chat).
+        (await self.get_state(InboxListState))._scroll = []
 
     @rx.event
     def select_tab(self, tab: str | list[str]) -> rx.event.EventSpec | None:
