@@ -146,6 +146,9 @@ def test_every_old_list_address_lands_in_por_responder(  # noqa: ANN001
 ) -> None:
     page = chats_page
     page.set_viewport_size(DESKTOP)
+    page.goto(_origin(page) + "/whatsapp?tab=numero&sub=qr")
+    expect(page.get_by_role("heading", level=1, name="WhatsApp")).to_be_visible(timeout=60_000)
+    before = page.url
     page.goto(_origin(page) + old)
     expect(page).to_have_url(
         re.compile(rf"/responder\?tab=mensajes&filtro={chip}&canal=whatsapp$"), timeout=60_000
@@ -154,8 +157,9 @@ def test_every_old_list_address_lands_in_por_responder(  # noqa: ANN001
     expect(filters.locator('[aria-pressed="true"]')).to_contain_text(pressed, timeout=60_000)
     lit = page.locator('nav [aria-current="page"]')
     expect(lit.first).to_contain_text("Por responder")
-    # Replaced, not pushed: «atrás» never bounces back to the old address.
-    assert page.evaluate("history.length") <= 3
+    # Replaced, not pushed: «atrás» goes to the page before, never the old address.
+    page.go_back()
+    expect(page).to_have_url(before, timeout=30_000)
 
 
 def test_the_number_choice_narrows_and_survives_a_chat(chats_page) -> None:  # noqa: ANN001
@@ -202,7 +206,7 @@ def test_the_number_choice_narrows_and_survives_a_chat(chats_page) -> None:  # n
     # Another business's number in the address narrows nothing.
     page.goto(
         _origin(page)
-        + "/responder?tab=mensajes&canal=whatsapp&numero="
+        + "/responder?tab=mensajes&filtro=todos&canal=whatsapp&numero="
         + str(ids["instagram_connection"])
     )
     expect(_row(page, "Laura Gómez")).to_be_visible(timeout=60_000)
@@ -212,7 +216,7 @@ def test_the_number_choice_narrows_and_survives_a_chat(chats_page) -> None:  # n
 def test_one_number_draws_no_choice(chats_page) -> None:  # noqa: ANN001
     page = chats_page
     page.set_viewport_size(PHONE)
-    page.goto(_origin(page) + "/responder?tab=mensajes&canal=whatsapp")
+    page.goto(_origin(page) + "/responder?tab=mensajes&filtro=todos&canal=whatsapp")
     expect(page.locator(".q-conv-list .q-conv-row").first).to_be_visible(timeout=60_000)
     expect(page.get_by_role("group", name="De qué número de WhatsApp")).to_have_count(0)
 
@@ -230,6 +234,11 @@ def test_menu_and_inicio_reach_whatsapp_chats_in_por_responder(chats_page) -> No
     expect(respond).to_have_attribute("href", "/responder")
     respond.click()
     expect(page).to_have_url(re.compile(r"/responder"), timeout=60_000)
+    expect(page.locator(".q-wa-chats__list")).to_be_visible(timeout=60_000)
+    # The default chip is «Por responder»; every WhatsApp chat is under «Todos».
+    page.get_by_role("group", name="Qué chats ver").get_by_role(
+        "button", name=re.compile("^Todos")
+    ).click()
     expect(_row(page, "Laura Gómez")).to_be_visible(timeout=60_000)
     expect(page.locator('nav [aria-current="page"]').first).to_contain_text("Por responder")
     # Inicio's «Te escribieron» (both channels) opens the same list.
@@ -238,5 +247,10 @@ def test_menu_and_inicio_reach_whatsapp_chats_in_por_responder(chats_page) -> No
     expect(link.first).to_be_visible(timeout=60_000)
     link.first.click()
     expect(page).to_have_url(re.compile(r"/responder"), timeout=60_000)
+    expect(page.locator(".q-wa-chats__list")).to_be_visible(timeout=60_000)
+    # The default chip is «Por responder»; every WhatsApp chat is under «Todos».
+    page.get_by_role("group", name="Qué chats ver").get_by_role(
+        "button", name=re.compile("^Todos")
+    ).click()
     expect(_row(page, "Laura Gómez")).to_be_visible(timeout=60_000)
     expect(page.locator('nav [aria-current="page"]').first).to_contain_text("Por responder")
