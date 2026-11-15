@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import reflex as rx
 
-from .conversations_page import back_to_list_button, chat_is_open, messages_tab
+from .conversations_page import messages_tab
 from .followups_page import followups_panel
 from .inbox_page import comments_tab
 from .leads_page import leads_tab
@@ -243,13 +243,12 @@ def _tab_body() -> rx.Component:
 
 
 def responder_header() -> rx.Component:
+    """No back button of its own (m-25029798): the open chat's header carries the one
+    «‹ Por responder», on every size and for both channels (it used to repeat here on a
+    desk; on a phone the open chat already hid it)."""
     return page_header(
         "Por responder",
         "Las personas que te escribieron o comentaron y todavía esperan tu respuesta.",
-        kicker=rx.cond(
-            (R.active_tab == TAB_MESSAGES) & chat_is_open(),
-            back_to_list_button(),
-        ),
     )
 
 

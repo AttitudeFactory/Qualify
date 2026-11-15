@@ -152,7 +152,6 @@ from .ui import (
 )
 from .ui import tokens as T
 from .whatsapp_chats_state import WhatsAppChatsState as WA
-from .whatsapp_tab_chats import _back_button as whatsapp_back_button
 from .whatsapp_tab_chats import (
     whatsapp_chat_banner,
     whatsapp_chat_layers,
@@ -1652,12 +1651,6 @@ def _conversation_pane() -> rx.Component:
 def chat_is_open() -> rx.Var[bool]:
     """A chat of either channel is open beside the single list (m-25029798)."""
     return S.has_open_thread | WA.has_open_thread
-
-
-def back_to_list_button() -> rx.Component:
-    """«‹ Por responder» of whichever chat is open (the page header's, as Instagram's
-    has always been)."""
-    return rx.cond(WA.has_open_thread, whatsapp_back_button(), _back_button())
 
 
 # ======================================================================================

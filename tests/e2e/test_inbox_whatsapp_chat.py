@@ -76,9 +76,7 @@ def _thread_ready(page) -> None:  # noqa: ANN001
 
 
 def _panel_scroll(page) -> int:  # noqa: ANN001
-    return int(
-        page.evaluate("() => document.querySelector('main.q-panel')?.scrollTop || 0")
-    )
+    return int(page.evaluate("() => document.querySelector('main.q-panel')?.scrollTop || 0"))
 
 
 @pytest.mark.skipif(not os.environ.get("QUALIFY_E2E_SHOTS"), reason="QUALIFY_E2E_SHOTS not set")
@@ -123,7 +121,7 @@ def test_a_whatsapp_row_opens_beside_the_list(chats_page) -> None:  # noqa: ANN0
         )
     )
     where = page.evaluate(_WHERE)
-    assert where["backs"] <= 1, where
+    assert where["backs"] == 1, where
     assert "Por responder" in where["lit"], where
     assert where["title"] == "Por responder", where
     assert not where["whatsappFilters"], where
@@ -186,7 +184,7 @@ def test_a_whatsapp_row_opens_beside_the_list(chats_page) -> None:  # noqa: ANN0
 def test_the_closed_window_chat_offers_the_approved_message(chats_page) -> None:  # noqa: ANN001
     page = chats_page
     page.set_viewport_size(DESKTOP)
-    _list(page, "&filtro=todos")
+    _list(page, "&filtro=cerrados")
     _row(page, "Pedro Díaz").click()
     _thread_ready(page)
     page.get_by_role("button", name="Enviar un mensaje aprobado").click()
@@ -206,9 +204,7 @@ def test_phone_full_screen_back_keeps_filter_channel_and_scroll(chats_page) -> N
 
     page = chats_page
     ids = page._qualify_e2e_chats
-    fillers = seed_more_whatsapp_chats(
-        page._qualify_e2e_tenant_id, ids["whatsapp_connection"], 14
-    )
+    fillers = seed_more_whatsapp_chats(page._qualify_e2e_tenant_id, ids["whatsapp_connection"], 14)
     page.set_viewport_size(PHONE)
     _list(page, "&filtro=todos&canal=whatsapp")
     last = _row(page, "Cliente 14")
@@ -230,7 +226,7 @@ def test_phone_full_screen_back_keeps_filter_channel_and_scroll(chats_page) -> N
     page.wait_for_timeout(600)
     assert abs(_panel_scroll(page) - before) <= 4, (_panel_scroll(page), before)
     expect(_row(page, "Cliente 14")).to_be_in_viewport()
-    chips = page.get_by_role("group", name=re.compile("Filtrar"))
+    chips = page.get_by_role("group", name="Qué chats ver")
     expect(chips.get_by_role("button", name=re.compile("^Todos"))).to_have_attribute(
         "aria-pressed", "true"
     )

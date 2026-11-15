@@ -310,12 +310,17 @@ def test_por_responder_mounts_the_whatsapp_chat_and_its_layers_only_while_open()
     assert "q-wa-chats--open" in rendered
 
 
-def test_the_page_header_back_follows_the_open_chat() -> None:
+def test_one_back_button_the_open_chats_own() -> None:
+    """The page header no longer repeats «‹ Por responder» (two on a desk, for both
+    channels): each chat's header carries the only one."""
+    from .conversations_page import _back_button as instagram_back
     from .responder_page import responder_header
+    from .whatsapp_tab_chats import _back_button as whatsapp_back
 
     rendered = str(responder_header())
-    assert "back_to_inbox" in rendered and "close_conversation" in rendered
-    assert '"Por responder"' in rendered
+    assert "back_to_inbox" not in rendered and "close_conversation" not in rendered
+    assert "back_to_inbox" in str(whatsapp_back())
+    assert "close_conversation" in str(instagram_back())
 
 
 async def test_por_responder_entry_asks_the_whatsapp_pane_too(

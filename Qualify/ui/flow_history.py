@@ -33,6 +33,10 @@ _FLOW_INSTALL_SCRIPT = r"""
     const path = u.pathname.replace(/\/$/, '');
     const tab = u.searchParams.get('tab') || 'chats';
     const sub = u.searchParams.get('sub') || '';
+    // m-25029798: the WhatsApp chat's drawers live where the chat opens, beside the
+    // single list of «Por responder» (an old /whatsapp address redirects there).
+    const waChat = (path === '/whatsapp' && tab === 'chats') ||
+      (path === '/responder' && tab === 'mensajes');
     const parents = {
       producto: path === '/catalog',
       agregar: path === '/creadores',
@@ -43,8 +47,8 @@ _FLOW_INSTALL_SCRIPT = r"""
       menu: path === '/chats/ajustes/whatsapp',
       promocion: path === '/whatsapp/promociones' && (!sub || sub === 'enviadas'),
       'mensaje-aprobado': path === '/whatsapp/promociones' && sub === 'aprobados',
-      'mensaje-chat': path === '/whatsapp' && tab === 'chats',
-      enviar: path === '/whatsapp' && tab === 'chats',
+      'mensaje-chat': waChat,
+      enviar: waChat,
       'sticker-producto': path === '/brand/kit'
     };
     if (!parents[flow]) return;

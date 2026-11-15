@@ -86,6 +86,32 @@ console.log(JSON.stringify({{href:entries[pos].href,root:window.history.state.qF
     assert result["root"] == "/whatsapp?tab=chats"
 
 
+@pytest.mark.parametrize(
+    ("start", "flow", "writes"),
+    [
+        ("/responder?tab=mensajes&cuenta=a&chat=b", "mensaje-chat", True),
+        ("/responder?tab=mensajes&cuenta=a&chat=b", "enviar", True),
+        ("/responder?tab=comentarios", "mensaje-chat", False),
+    ],
+)
+def test_the_whatsapp_chat_drawers_write_their_step_in_por_responder(
+    start: str, flow: str, writes: bool
+) -> None:
+    """m-25029798: the chat opens beside the single list of «Por responder», so its
+    drawers' steps are written there (only on the «Mensajes» tab)."""
+    script = (
+        _HARNESS
+        + f"""
+entries[0].href={json.dumps(start)};apply();
+drawer={{dataset:{{flow:{json.dumps(flow)},step:'1'}}}};
+{_FLOW_SCRIPT}
+console.log(JSON.stringify({{href:entries[pos].href}}));
+"""
+    )
+    result = _node(script)
+    assert (f"flujo={flow}&paso=1" in result["href"]) is writes
+
+
 def test_guarded_direct_link_replaces_the_invalid_step_without_stacking_history() -> None:
     script = (
         _HARNESS
