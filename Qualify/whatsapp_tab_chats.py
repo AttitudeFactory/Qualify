@@ -61,7 +61,14 @@ from .chat_thread_vm import (
     WHATSAPP_SETTINGS_HREF,
 )
 from .r2_media import BACKEND_BASE
-from .reply_box import plus_menu, reply_box, reply_field, reply_tool, send_button
+from .reply_box import (
+    plus_menu,
+    reply_box,
+    reply_box_shell,
+    reply_field,
+    reply_tool,
+    send_button,
+)
 from .reply_box_vm import (
     BUTTONS_LABEL,
     FIELD_PLACEHOLDER,
@@ -1220,7 +1227,8 @@ def _button_fields() -> rx.Component:
 def _expired_composer() -> rx.Component:
     """m-24848535: the expired chat's way out, in place of the reply box. The header
     already says why (`window_line`, m-25027374: said once per screen)."""
-    return rx.vstack(
+    return reply_box_shell(
+        WHATSAPP_BOX,
         rx.button(
             rx.icon("message-square-text", size=T.ICON_SM),
             SEND_APPROVED_LABEL,
@@ -1229,10 +1237,6 @@ def _expired_composer() -> rx.Component:
             min_height=_TAP_MIN,
             width=rx.breakpoints(initial="100%", sm="auto"),
         ),
-        spacing="2",
-        width="100%",
-        padding_top="0.5rem",
-        class_name="q-wa-composer q-reply-box q-reply-box--whatsapp",
     )
 
 

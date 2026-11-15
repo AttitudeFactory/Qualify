@@ -177,6 +177,7 @@ from .nav_url import (
     uuid_param,
 )
 from .pending_state import PendingState
+from .reply_box_vm import SEND_FAILED_RETRY
 from .tenant import tenant_uuid
 
 logger = logging.getLogger(__name__)
@@ -205,7 +206,7 @@ _NO_SENDER = (
 )
 _REJECTED = "Instagram no acepta esa respuesta tal como está."
 _ACTION_FAILED = "No se pudo completar la acción. Vuelve a intentarlo en un momento."
-_NEEDS_APPROVAL = "La respuesta no salió: falta que la apruebes."
+_NEEDS_APPROVAL = SEND_FAILED_RETRY  # U3: one wording on both channels
 _ATTACH_FAILED = "No se pudo guardar el adjunto. Vuelve a intentarlo en un momento."
 _ATTACH_UNREADABLE = "No se pudo leer el archivo."
 _HIDDEN = "Mensaje eliminado para ti. La otra persona sigue viéndolo en Instagram."

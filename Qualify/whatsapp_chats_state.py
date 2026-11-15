@@ -102,13 +102,13 @@ from .nav_url import (
     uuid_param,
 )
 from .pending_state import PendingState
+from .reply_box_vm import SEND_FAILED_RETRY
 from .tenant import tenant_uuid
 from .ui.primitives import ORBIT_FOCUS_SCRIPT
 from .ui.steps import settle_step
 from .whatsapp_chats_provider import NoOrder, gateway
 from .whatsapp_chats_vm import (
     COMPOSE_BUTTONS,
-    COMPOSE_KEYS,
     COMPOSE_TEXT,
     DEFAULT_FILTER,
     DIRECTIONS_FAILED,
@@ -274,7 +274,7 @@ _TEMPLATES_FAILED = (
     "No se pudieron cargar tus mensajes aprobados. Vuelve a intentarlo en un momento."
 )
 _TEMPLATE_GONE = "Ese mensaje ya no está aprobado. Elige otro."
-_NEEDS_APPROVAL = "El mensaje no salió: falta que lo apruebes. Vuelve a tocar «Enviar»."
+_NEEDS_APPROVAL = SEND_FAILED_RETRY  # U3: one wording on both channels
 _TOAST_MS = 4000
 #: The «Sin asignar» item of the «Asignar» select.
 UNASSIGNED = "__none__"
@@ -1306,11 +1306,6 @@ class WhatsAppChatsState(rx.State):
     # ==================================================================================
     # Composer
     # ==================================================================================
-
-    @rx.event
-    def set_compose_mode(self, mode: str | list[str]) -> None:
-        if isinstance(mode, str) and mode in COMPOSE_KEYS:
-            self.compose_mode = mode
 
     @rx.event
     def toggle_buttons(self) -> None:

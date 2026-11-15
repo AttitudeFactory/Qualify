@@ -587,15 +587,50 @@ textarea.q-reply-field::placeholder,
   flex-shrink: 0;
 }
 
+/* U5 (UX review 2026-11-15): on a wide screen too, the chat header's top line stays in
+   view while the owner types, pinned under the page's own sticky header (whose height
+   at ≥ 1024 px, with its back link, title and subtitle, is 9.6rem — measured at 1280). */
+@media (min-width: 1024px) {
+  .q-wa-chats--open .q-chat-head__top {
+    position: sticky;
+    top: 9.6rem;
+    z-index: 3;
+    background:
+      linear-gradient(var(--q-chat-tint-3), var(--q-chat-tint-3)),
+      var(--color-panel-solid);
+  }
+}
+
 /* ── The open chat on a phone (m-25027374) ─────────────────────────────────────────────
    The conversation gets the screen: while a chat is open under 768 px, the page's own
-   header (business chip, title, subtitle) steps aside — the chat's header already says
-   «‹ Por responder» — and only the chat header's top line stays pinned. Keyed on the
-   open chat (`.q-wa-chats--open` + `.q-chat-thread`), never on a page, so the same rules
-   hold wherever the chat is mounted. The tools row scrolls sideways instead of wrapping,
-   and the messages take what is left above the reply box and the bottom bar. */
+   header stops being pinned and loses its business chip, back link, title and subtitle
+   (the title stays for screen readers: the page keeps its one h1); its actions —
+   WhatsApp's number selector, the colour toggle — stay, one short row that scrolls
+   away with the page. The chat's header already says «‹ Por responder», and its top
+   line stays pinned. Keyed on the open chat (`.q-wa-chats--open` + `.q-chat-thread`),
+   never on a page, so the same rules hold wherever the chat is mounted. The tools row
+   scrolls sideways (fading at its edge) instead of wrapping, and the messages take what
+   is left above the reply box and the bottom bar. */
 @media (max-width: 767px) {
   .q-panel:has(.q-wa-chats--open .q-chat-thread) .q-page-header {
+    position: static;
+    padding-block: 0.25rem;
+  }
+  /* the title block: out of sight, still read (one h1 per page, §8) */
+  .q-panel:has(.q-wa-chats--open .q-chat-thread) .q-page-header > :first-child {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+    border: 0;
+  }
+  /* …but nothing focusable hides in it: its back link is the chat header's twin */
+  .q-panel:has(.q-wa-chats--open .q-chat-thread) .q-page-header > :first-child button,
+  .q-panel:has(.q-wa-chats--open .q-chat-thread) .q-page-header > :first-child a {
     display: none;
   }
   .q-wa-chats--open .q-chat-head__top {
@@ -621,13 +656,17 @@ textarea.q-reply-field::placeholder,
     overflow-x: auto;
     scrollbar-width: none;
     padding-bottom: 2px;
+    padding-right: 1.5rem;
+    /* U1: the row continues past the edge — said with a fade, not a scrollbar */
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 2rem), transparent);
+    mask-image: linear-gradient(to right, #000 calc(100% - 2rem), transparent);
   }
   .q-reply-tools::-webkit-scrollbar {
     display: none;
   }
   /* the text takes the width: «Enviar» keeps its word with less air around it */
   .q-reply-send.rt-Button {
-    padding-inline: 0.75rem;
+    padding-inline: 0.625rem;
   }
   .q-wa-chats--open .q-chat-head__top {
     gap: 0.25rem;

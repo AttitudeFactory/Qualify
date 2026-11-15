@@ -18,9 +18,12 @@ from .reply_box_vm import (
     PLUS_CATALOGUE,
     SEND_DOORS,
     TOOL_BUTTONS,
+    TOOL_FILE,
     TOOL_HEART,
+    TOOL_PHOTO,
     TOOL_SAVED,
     TOOL_SUGGEST,
+    TOOL_VOICE,
     WHATSAPP_BOX,
     box_for,
     draws,
@@ -82,12 +85,15 @@ def test_instagram_has_no_payments_menu_or_directions_and_never_a_disabled_row()
     assert "Formas de pago" not in texts
     assert "Tu menú" not in texts
     assert "Cómo llegar" not in texts
-    assert texts == ["Fotos y videos", "Archivo", "Nota de voz"]
+    # 2026-11-15: photo, file and voice are tools (a real tap on the file input), so
+    # Instagram has no «+» rows today, and no «+».
+    assert texts == []
+    for key in (TOOL_PHOTO, TOOL_FILE, TOOL_VOICE):
+        assert draws(INSTAGRAM_BOX, key)
 
 
-@pytest.mark.parametrize("box", [WHATSAPP_BOX, INSTAGRAM_BOX], ids=lambda b: b.channel)
-def test_the_plus_fits_the_orbit_menu_rules(box) -> None:  # noqa: ANN001
-    rows = plus_rows(box)
+def test_the_plus_fits_the_orbit_menu_rules() -> None:
+    rows = plus_rows(WHATSAPP_BOX)
     assert ORBIT_MIN_ITEMS <= len(rows) <= ORBIT_MAX_ITEMS
     assert all(0 < len(r.text) <= ORBIT_MAX_TEXT for r in rows)
 

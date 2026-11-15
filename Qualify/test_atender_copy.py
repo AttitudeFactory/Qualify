@@ -252,9 +252,10 @@ def test_the_chat_reply_toast_names_the_person() -> None:
     assert reply_sent_message("María") == "Tu respuesta a María sale en unos segundos."
     assert reply_sent_message(UNKNOWN_PERSON) == "Tu respuesta sale en unos segundos."
     assert reply_sent_message("") == "Tu respuesta sale en unos segundos."
-    source = inspect.getsource(conversations_state.ConversationsState.send_reply.fn)
+    # m-25027374: the send's body is `_reply_once` (the event clears `sending`).
+    source = inspect.getsource(conversations_state.ConversationsState._reply_once)
     assert "rx.toast.info(reply_sent_message(who)" in source
-    heart = inspect.getsource(conversations_state.ConversationsState.send_heart.fn)
+    heart = inspect.getsource(conversations_state.ConversationsState._heart_once)
     assert "rx.toast.info(_HEART_QUEUED" in heart
     assert conversations_state._HEART_QUEUED == "Tu corazón sale en unos segundos."  # noqa: SLF001
 

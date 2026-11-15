@@ -141,6 +141,18 @@ def plus_menu(
     )
 
 
+def reply_box_shell(box: ReplyBoxVM, *children: rx.Component) -> rx.Component:
+    """The box's place when there is nothing to type (a closed window): the same frame,
+    holding only what the owner can do or read there."""
+    return rx.vstack(
+        *children,
+        spacing="2",
+        width="100%",
+        padding_top="0.5rem",
+        class_name=f"q-wa-composer q-reply-box q-reply-box--{box.channel}",
+    )
+
+
 def reply_box(
     box: ReplyBoxVM,
     *,
@@ -174,7 +186,8 @@ def reply_box(
             rx.box(field, flex="1", min_width="0"),
             send,
             align="end",
-            spacing="2",
+            # U4: a tight gap, so the text gets the width at 360 px
+            spacing="1",
             width="100%",
             class_name="q-reply-row",
         ),

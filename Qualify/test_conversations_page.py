@@ -67,9 +67,9 @@ def test_the_page_renders_list_conversation_composer_and_access_states() -> None
         "por verificar",
         "Ir a Tus redes",
         "Se muestran los últimos 50 mensajes",
-        "Escribe una respuesta",
-        # m-25027374: photo, file and voice note are rows of the «+»
-        "Fotos y videos",
+        "Escribe aquí",
+        # m-25027374: photo, file and voice note are tools of the box
+        "Foto o video",
         "Archivo",
         "Nota de voz",
         "Enviar un corazón",
@@ -170,7 +170,7 @@ def test_the_composer_offers_templates_and_their_manager() -> None:
         return text in rendered or escaped in rendered
 
     for text in (
-        "Plantillas",
+        "Mensajes guardados",
         "Administrar plantillas",
         "Nueva plantilla",
         "Aún no tienes plantillas en esta cuenta",
@@ -248,10 +248,10 @@ def test_the_composer_offers_quick_replies_and_template_buttons() -> None:
 
     for text in (
         "Botones",  # D5: Instagram's quick replies (m-25027374)
-        "Nueva respuesta rápida",
+        "Nuevo botón",
         "Agregar",
         "Cerrar los botones",  # D5 (m-25027374)
-        "Quitar esta respuesta rápida",
+        "Quitar este botón",
         "Botones que van con este mensaje",
         "Enviar sin botones",
         "Botones (opcional)",
@@ -322,7 +322,7 @@ def test_the_dm_send_button_says_enviar_like_whatsapp() -> None:
     from .whatsapp_chats_vm import SEND_LABEL as WHATSAPP_SEND_LABEL
 
     assert SEND_LABEL == "Enviar" == WHATSAPP_SEND_LABEL
-    source = inspect.getsource(conversations_page._composer)
+    source = inspect.getsource(conversations_page._live_composer)
     # m-25027374: «Enviar» is the shared reply box's `send_button` (`reply_box_vm`).
     from .reply_box_vm import SEND_LABEL as BOX_SEND_LABEL
 

@@ -117,6 +117,7 @@ from .reconnect_panel import reconnect_button, reconnect_result_panel
 from .reply_box import (
     plus_menu,
     reply_box,
+    reply_box_shell,
     reply_field,
     reply_icon_tool,
     reply_tool,
@@ -124,17 +125,21 @@ from .reply_box import (
 )
 from .reply_box_vm import (
     BUTTONS_LABEL,
+    FILE_LABEL,
     HEART_LABEL,
     INSTAGRAM_BOX,
-    PLUS_FILE,
-    PLUS_MEDIA,
-    PLUS_VOICE,
+    PHOTO_LABEL,
+    REPLY_LATER_LINE,
     SAVED_LABEL,
     SUGGEST_LABEL,
     TOOL_BUTTONS,
+    TOOL_FILE,
     TOOL_HEART,
+    TOOL_PHOTO,
     TOOL_SAVED,
     TOOL_SUGGEST,
+    TOOL_VOICE,
+    VOICE_LABEL,
     draws,
 )
 from .ui import (
@@ -633,43 +638,43 @@ def _messages() -> rx.Component:
 # --- composer -----------------------------------------------------------------------
 
 
-def _hidden_upload(upload_id: str, accept: dict, max_size: int) -> rx.Component:
-    """The file picker behind a «+» row (m-25027374): out of sight, opened by the row's
-    tap (`_open_picker`), never drawn as its own button."""
+def _attach_tool(
+    upload_id: str, icon: str, label: str, accept: dict, max_size: int
+) -> rx.Component:
+    """«Foto o video» / «Archivo»: the tool IS the file input's dropzone, so the picker
+    opens on the owner's own tap — no scripted `input.click()`, which iOS Safari may drop
+    (2026-11-15). The tool keeps its icon and name (m-25027374)."""
     off = ~S.can_compose | S.busy | S.has_attachment | S.recording
-    return rx.box(
-        dropzone(
-            rx.fragment(),
-            upload_id=upload_id,
-            on_drop=S.handle_attachment(rx.upload_files(upload_id=upload_id)),
-            accept=accept,
-            max_files=1,
-            max_size=max_size,
-            variant="bare",
-            disabled=off,
+    return dropzone(
+        reply_tool(icon, label, disabled=off),
+        upload_id=upload_id,
+        on_drop=S.handle_attachment(rx.upload_files(upload_id=upload_id)),
+        accept=accept,
+        max_files=1,
+        max_size=max_size,
+        variant="bare",
+        disabled=off,
+    )
+
+
+def _voice_tool() -> rx.Component:
+    """«Nota de voz»: starts the recorder; while it records, the dot, the timer,
+    «Cancelar» and «Listo» ride above the text (`_recording`)."""
+    return rx.cond(
+        S.recording | S.receiving_voice,
+        rx.fragment(),
+        reply_tool(
+            "mic",
+            VOICE_LABEL,
+            on_click=S.start_recording,
+            disabled=~S.can_compose | S.busy | S.has_attachment,
         ),
-        class_name="q-reply-hidden-upload",
     )
 
 
-def _open_picker(upload_id: str) -> rx.event.EventSpec:
-    """Client-side, inside the owner's tap: the browser only opens a file picker for a
-    click it can trace to the person."""
-    return rx.call_script(
-        f"(() => {{ const i = document.querySelector('#{upload_id} input[type=file]');"
-        " if (i) i.click(); })()"
-    )
-
-
-def _plus_select(key: str) -> rx.event.EventSpec | rx.event.EventHandler:
-    """What each Instagram «+» row opens (`reply_box_vm.plus_rows`); none sends."""
-    if key == PLUS_MEDIA:
-        return _open_picker(_MEDIA_UPLOAD_ID)
-    if key == PLUS_FILE:
-        return _open_picker(_FILE_UPLOAD_ID)
-    if key == PLUS_VOICE:
-        return S.start_recording
-    raise ValueError(f"Instagram has no door for the «+» row {key!r}")
+def _no_plus_row(key: str) -> rx.event.EventSpec:
+    """Instagram's «+» has no rows today (`reply_box_vm.plus_rows`): never called."""
+    raise ValueError(f"Instagram has no «+» row {key!r}")
 
 
 def _heart_button() -> rx.Component:
@@ -1338,7 +1343,7 @@ def templates_manager() -> rx.Component:
         title=S.templates_account_label,
         icon="library",
         description=(
-            "Mensajes guardados para empezar una respuesta. Los eliges en «Plantillas» y "
+            "Mensajes guardados para empezar una respuesta. Los eliges en «Mensajes guardados» y "
             "siempre puedes cambiarlos antes de enviar."
         ),
     )
@@ -1405,7 +1410,6 @@ def _quick_replies_toggle() -> rx.Component:
             BUTTONS_LABEL + " · " + S.quick_replies.length().to_string(),
             BUTTONS_LABEL,
         ),
-        pressed=S.quick_replies_open,
         on_click=S.toggle_quick_replies,
         disabled=~S.can_compose | S.busy | S.recording,
         aria_expanded=S.quick_replies_open,
@@ -1413,9 +1417,7 @@ def _quick_replies_toggle() -> rx.Component:
 
 
 def _quick_reply_chip(title: rx.Var[str], i: rx.Var[int]) -> rx.Component:
-    return removable_pill(
-        title, S.remove_quick_reply(i), remove_label="Quitar esta respuesta rápida"
-    )
+    return removable_pill(title, S.remove_quick_reply(i), remove_label="Quitar este botón")
 
 
 def _quick_replies_editor() -> rx.Component:
@@ -1437,7 +1439,7 @@ def _quick_replies_editor() -> rx.Component:
                     on_change=S.set_quick_reply_input,
                     placeholder="Ej.: Quiero pedir",
                     max_length=MAX_QUICK_REPLY_TITLE_CHARS,
-                    aria_label="Nueva respuesta rápida",
+                    aria_label="Nuevo botón",
                     flex="1",
                     min_width="0",
                 ),
@@ -1523,18 +1525,29 @@ def _quick_replies_panel() -> rx.Component:
 
 
 def _composer() -> rx.Component:
-    """The one reply box (`reply_box.py`, m-25027374) with what Instagram can send. The
-    open window's 24 h line lives in the chat's header only (said once per screen); what
-    the owner needs to act stays here: a disconnected account or a missing permission,
-    and why the box is off once the window closed (the header has no line then)."""
+    """The one reply box (`reply_box.py`, m-25027374) with what Instagram can send.
+
+    The 24 h line lives in the chat's header, open or closed (said once per screen).
+    With the window closed there is NO box — nothing to type into, nothing that looks
+    tappable — only the line «Cuando vuelva a escribir, podrás responderle aquí.»
+    (WhatsApp's pattern, UX review 2026-11-15). What the owner must fix to answer (a
+    disconnected account, a missing permission) stays above the box."""
+    return rx.cond(S.window_closed_notice != "", _closed_composer(), _live_composer())
+
+
+def _closed_composer() -> rx.Component:
+    return reply_box_shell(
+        INSTAGRAM_BOX,
+        rx.cond(S.account_blocked_notice != "", callout(S.account_blocked_notice, "warn")),
+        rx.text(REPLY_LATER_LINE, size="2", color=T.TEXT_MUTED),
+    )
+
+
+def _live_composer() -> rx.Component:
     box = INSTAGRAM_BOX
+    # U1 (UX review): what is used most first — «Sugerir respuesta» must not hide past
+    # the edge of a phone; the row scrolls sideways and fades where it continues.
     tools: list[rx.Component] = []
-    if draws(box, TOOL_BUTTONS):
-        tools.append(_quick_replies_toggle())
-    if draws(box, TOOL_SAVED):
-        tools.append(_templates_picker())
-    if draws(box, TOOL_HEART):
-        tools.append(_heart_button())
     if draws(box, TOOL_SUGGEST):
         tools.append(
             reply_tool(
@@ -1546,26 +1559,28 @@ def _composer() -> rx.Component:
                 tone="accent",
             )
         )
+    if draws(box, TOOL_BUTTONS):
+        tools.append(_quick_replies_toggle())
+    if draws(box, TOOL_SAVED):
+        tools.append(_templates_picker())
+    if draws(box, TOOL_PHOTO):
+        tools.append(
+            _attach_tool(_MEDIA_UPLOAD_ID, "image", PHOTO_LABEL, MEDIA_ACCEPT, MAX_MEDIA_BYTES)
+        )
+    if draws(box, TOOL_FILE):
+        tools.append(
+            _attach_tool(
+                _FILE_UPLOAD_ID, "paperclip", FILE_LABEL, DOCUMENT_ACCEPT, MAX_DOCUMENT_BYTES
+            )
+        )
+    if draws(box, TOOL_VOICE):
+        tools.append(_voice_tool())
+    if draws(box, TOOL_HEART):
+        tools.append(_heart_button())
     return reply_box(
         box,
         above=(
-            _hidden_upload(_MEDIA_UPLOAD_ID, MEDIA_ACCEPT, MAX_MEDIA_BYTES),
-            _hidden_upload(_FILE_UPLOAD_ID, DOCUMENT_ACCEPT, MAX_DOCUMENT_BYTES),
             rx.cond(S.account_blocked_notice != "", callout(S.account_blocked_notice, "warn")),
-            # Only once the window is CLOSED: Instagram's header has no line then (an open
-            # window is said there, «Puedes escribirle hasta…»), and the owner must know
-            # why the box is off.
-            rx.cond(
-                S.window_closed_notice != "",
-                rx.hstack(
-                    rx.icon("clock-alert", size=T.ICON_SM, color=T.TEXT_MUTED, flex_shrink="0"),
-                    rx.text(S.window_closed_notice, size="1", color=T.TEXT_MUTED),
-                    spacing="2",
-                    align="center",
-                    class_name="q-conv-window",
-                ),
-                rx.fragment(),
-            ),
             _suggestion_chip(),
             _template_fill_notice(),
             _attachment_chip(),
@@ -1579,11 +1594,7 @@ def _composer() -> rx.Component:
             _quick_replies_panel(),
         ),
         tools=tuple(tools),
-        plus=plus_menu(
-            box,
-            _plus_select,
-            disabled=~S.can_compose | S.busy | S.has_attachment | S.recording,
-        ),
+        plus=plus_menu(box, _no_plus_row, disabled=~S.can_compose | S.busy),
         field=reply_field(
             S.draft_text,
             S.set_draft_text,

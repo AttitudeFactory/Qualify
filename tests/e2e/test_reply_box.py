@@ -142,6 +142,14 @@ def _box(page):  # noqa: ANN001, ANN202
     return page.locator(".q-chat-thread .q-reply-box")
 
 
+def _page_header_steps_aside(page) -> None:  # noqa: ANN001
+    header = page.locator(".q-page-header")
+    assert header.evaluate("el => getComputedStyle(el).position") == "static"
+    expect(header.get_by_role("heading", level=1)).to_have_count(1)  # still read
+    expect(page.locator(".q-business-chip")).to_be_hidden()
+    expect(page.locator(".q-chat-head__top")).to_be_visible()
+
+
 def _only_send_is_solid(page) -> None:  # noqa: ANN001
     solid = _box(page).locator(".rt-Button.rt-variant-solid")
     expect(solid).to_have_count(1)
@@ -163,8 +171,9 @@ def test_whatsapp_reply_box_on_a_phone(chats_page) -> None:  # noqa: ANN001
     page.set_viewport_size(PHONE)
     _open(page, _whatsapp(ids, "whatsapp_open"))
     box = _box(page)
-    # The conversation gets the screen: no page header, the chat's top line pinned.
-    expect(page.locator(".q-page-header")).to_be_hidden()
+    # The conversation gets the screen: the page header is no longer pinned and shows
+    # no title (still one h1 for screen readers); the chat's top line is pinned.
+    _page_header_steps_aside(page)
     top = page.locator(".q-chat-head__top")
     assert top.evaluate("el => getComputedStyle(el).position") == "sticky"
     expect(top.get_by_role("button", name="Por responder")).to_be_visible()
@@ -204,21 +213,34 @@ def test_instagram_reply_box_on_a_phone(chats_page) -> None:  # noqa: ANN001
     page.set_viewport_size(PHONE)
     _open(page, _instagram(ids, "instagram_open"))
     box = _box(page)
-    expect(page.locator(".q-page-header")).to_be_hidden()
+    _page_header_steps_aside(page)
     # The 24 h is said once, in the header — not again over the box.
     expect(page.locator(".q-chat-head__rest .q-chat-window")).to_have_count(1)
     expect(box.get_by_text("Instagram solo permite responder")).to_have_count(0)
-    for name in ("Botones", "Mensajes guardados", "Enviar un corazón", "Sugerir respuesta"):
-        expect(box.get_by_role("button", name=name)).to_have_count(1)
+    # U1: the most used first, so «Sugerir respuesta» is on screen at 360 px.
+    tools = box.locator(".q-reply-tools .q-reply-tool")
+    names = [(t.get_attribute("aria-label") or t.inner_text()).strip() for t in tools.all()]
+    assert names == [
+        "Sugerir respuesta",
+        "Botones",
+        "Mensajes guardados",
+        "Foto o video",
+        "Archivo",
+        "Nota de voz",
+        "Enviar un corazón",
+    ]
+    expect(box.get_by_role("button", name="Sugerir respuesta")).to_be_in_viewport()
+    botones = box.get_by_role("button", name="Botones")
+    assert botones.get_attribute("aria-pressed") is None  # one ARIA state: expanded
+    expect(botones).to_have_attribute("aria-expanded", "false")
     expect(box.get_by_role("button", name="Respuestas rápidas")).to_have_count(0)
     _only_send_is_solid(page)
-    # Only what Instagram can send: no payments, menu or directions; none disabled.
-    assert _plus_rows(page) == ["Fotos y videos", "Archivo", "Nota de voz"]
-    # A row opens the file picker inside the owner's tap (nothing is chosen or sent here).
-    for row in ("Fotos y videos", "Archivo"):
-        box.get_by_role("button", name="Enviar algo al cliente").click()
+    # No «+» on Instagram today (no business row it can send yet); nothing disabled.
+    expect(box.get_by_role("button", name="Enviar algo al cliente")).to_have_count(0)
+    # The tool IS the file input's target: the picker opens on the owner's own tap.
+    for tool in ("Foto o video", "Archivo"):
         with page.expect_file_chooser(timeout=5_000) as chooser:
-            page.locator(".q-orbit-menu [role=menuitem]", has_text=row).click()
+            box.get_by_role("button", name=tool).click()
         assert chooser.value is not None
     assert page.evaluate(_SMALL_CONTROLS, _CONTROLS) == []
     assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
@@ -242,10 +264,13 @@ def test_closed_windows_keep_only_what_the_owner_can_do(chats_page) -> None:  # 
     expect(box.get_by_role("button", name="Enviar", exact=True)).to_have_count(0)
     _open(page, _instagram(ids, "instagram_closed"))
     box = _box(page)
-    # The header says nothing once Instagram's window closed: the box says why it is off.
-    expect(page.locator(".q-chat-head__rest .q-chat-window")).to_have_count(0)
-    expect(box.get_by_text("Ya no puedes responder")).to_have_count(1)
-    expect(box.get_by_role("button", name="Enviar", exact=True)).to_be_disabled()
+    # U2: the reason is in the header; no box to type into, only when it comes back.
+    expect(page.locator(".q-chat-head__rest .q-chat-window")).to_have_text(
+        "Pasaron 24 h: Instagram no deja responder desde aquí"
+    )
+    expect(box).to_have_text("Cuando vuelva a escribir, podrás responderle aquí.")
+    expect(box.get_by_role("textbox")).to_have_count(0)
+    expect(box.get_by_role("button")).to_have_count(0)
 
 
 def test_on_a_wide_screen_the_page_header_stays(chats_page) -> None:  # noqa: ANN001
@@ -257,3 +282,10 @@ def test_on_a_wide_screen_the_page_header_stays(chats_page) -> None:  # noqa: AN
         expect(page.locator(".q-page-header")).to_be_visible()
         _only_send_is_solid(page)
         assert page.evaluate(_SMALL_CONTROLS, _CONTROLS) == []
+        # U5: while typing, the chat's top line stays in view under the page header.
+        _box_in_view(page)
+        top = page.locator(".q-chat-head__top").bounding_box()
+        header = page.locator(".q-page-header").bounding_box()
+        assert top is not None and header is not None
+        assert top["y"] >= header["y"] + header["height"] - 1
+        assert top["y"] + top["height"] <= DESKTOP["height"]

@@ -16,10 +16,11 @@ Two layers, kept apart on purpose:
   only when both agree. Instagram's API takes an image, so the descriptor allows
   «Tus productos», but Qualify has no door yet that sends a catalog photo to an
   Instagram chat — drawing it would be a button that leads nowhere (N8). Each such gap
-  is listed in `MISSING_DOORS` so the next story can close it.
+  is listed by `missing_doors()` so the next story can close it.
 
 The «+» rows (`plus_rows`) are the same catalogue on every channel, in one order; the
-channel only removes rows. Strings here are client-facing Spanish (`qualify-copy-es`).
+channel only removes rows. With fewer than two rows (Instagram today) there is no «+».
+Strings here are client-facing Spanish (`qualify-copy-es`).
 """
 
 from __future__ import annotations
@@ -48,7 +49,12 @@ VOICE_LABEL: Final = "Nota de voz"
 HEART_LABEL: Final = "Enviar un corazón"
 SUGGEST_LABEL: Final = "Sugerir respuesta"
 FIELD_LABEL: Final = "Tu respuesta"
-FIELD_PLACEHOLDER: Final = "Escribe una respuesta…"
+#: U4 (UX review, 2026-11-15): short enough for one line at 360 px.
+FIELD_PLACEHOLDER: Final = "Escribe aquí…"
+#: U2: Instagram's closed window — no box; this line where the box was.
+REPLY_LATER_LINE: Final = "Cuando vuelva a escribir, podrás responderle aquí."
+#: U3: one wording for a send that did not go, on both channels.
+SEND_FAILED_RETRY: Final = "El mensaje no salió. Vuelve a tocar «Enviar» para mandarlo."
 #: Decision (vi), 2026-11-14: the menu bot is «Tu menú de bienvenida»; the note under
 #: WhatsApp's box stops saying «respuesta automática». NEW TEXT awaiting the founder.
 MENU_PAUSE_NOTE: Final = "Al responder, tu menú de bienvenida se pausa en esta conversación."
@@ -125,8 +131,6 @@ PLUS_MENU: Final = "menu"
 PLUS_PAYMENTS: Final = "payments"
 PLUS_DIRECTIONS: Final = "directions"
 PLUS_MEDIA: Final = "media"
-PLUS_FILE: Final = "file"
-PLUS_VOICE: Final = "voice"
 PLUS_CATALOGUE: Final[tuple[tuple[str, str, str], ...]] = (
     (PLUS_PRODUCTS, "package", "Tus productos"),
     (PLUS_OFFER, "tag", "Tu oferta"),
@@ -134,9 +138,11 @@ PLUS_CATALOGUE: Final[tuple[tuple[str, str, str], ...]] = (
     (PLUS_PAYMENTS, "wallet", "Formas de pago"),
     (PLUS_DIRECTIONS, "map-pin", "Cómo llegar"),
     (PLUS_MEDIA, "images", "Fotos y videos"),
-    (PLUS_FILE, "paperclip", FILE_LABEL),
-    (PLUS_VOICE, "mic", VOICE_LABEL),
 )
+#: Instagram's photo, file and voice note are TOOLS, not «+» rows (2026-11-15): picking a
+#: file must be the owner's own tap on the file input (iOS Safari drops a scripted
+#: `input.click()` that runs after the event queue), and `orbit_menu`'s rows cannot host
+#: the input without a variant of the design system.
 
 #: What each screen's provider sends today, by tool and «+» row. A row the descriptor
 #: allows but this table lacks is a missing door (`MISSING_DOORS`), not a hidden bug.
@@ -158,9 +164,9 @@ SEND_DOORS: Final[dict[str, frozenset[str]]] = {
             TOOL_SAVED,
             TOOL_HEART,
             TOOL_SUGGEST,
-            PLUS_MEDIA,
-            PLUS_FILE,
-            PLUS_VOICE,
+            TOOL_PHOTO,
+            TOOL_FILE,
+            TOOL_VOICE,
         }
     ),
 }
@@ -173,6 +179,9 @@ def _allowed(box: ReplyBoxVM, key: str) -> bool:
         TOOL_SAVED: box.can_saved,
         TOOL_HEART: box.can_heart,
         TOOL_SUGGEST: box.can_suggest,
+        TOOL_PHOTO: box.can_photo,
+        TOOL_FILE: box.can_file,
+        TOOL_VOICE: box.can_voice,
         PLUS_PRODUCTS: box.can_photo,
         PLUS_OFFER: box.can_photo,
         # WhatsApp's menu is a list message answered by the automatic menu.
@@ -182,8 +191,6 @@ def _allowed(box: ReplyBoxVM, key: str) -> bool:
         # with BU-A15 (SEND_DOORS), so today it is a missing door there, not a refusal.
         PLUS_DIRECTIONS: True,
         PLUS_MEDIA: box.can_photo,
-        PLUS_FILE: box.can_file,
-        PLUS_VOICE: box.can_voice,
     }[key]
 
 
@@ -199,6 +206,9 @@ def missing_doors(box: ReplyBoxVM) -> tuple[str, ...]:
         TOOL_SAVED,
         TOOL_HEART,
         TOOL_SUGGEST,
+        TOOL_PHOTO,
+        TOOL_FILE,
+        TOOL_VOICE,
         *(key for key, _icon, _text in PLUS_CATALOGUE),
     )
     doors = SEND_DOORS.get(box.channel, frozenset())

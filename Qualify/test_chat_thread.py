@@ -322,7 +322,10 @@ def test_the_header_window_line_once_closed() -> None:
     assert WINDOW_CLOSED_LINE.endswith("aprobado por WhatsApp")
     old = ig_thread(inbound=IG_NOW - timedelta(days=2), outbound=None)
     ig = ig_build(ig_view(old), None, now=IG_NOW, zone=IG_ZONE)
-    assert not ig.window_open and ig.window_line == ""
+    # m-25027374: Instagram's closed window is said in the header (no box below it)
+    from .chat_thread_vm import INSTAGRAM_WINDOW_CLOSED_LINE
+
+    assert not ig.window_open and ig.window_line == INSTAGRAM_WINDOW_CLOSED_LINE
     # no message of the person left (m-25018661): no window to state either
     gone = ig_thread(inbound=None, outbound=IG_NOW - timedelta(hours=1))
     assert ig_build(ig_view(gone), None, now=IG_NOW, zone=IG_ZONE).window_line == ""
