@@ -33,7 +33,7 @@ from .chat_row_vm import (
     unknown_contact,
 )
 from .conversations_vm import NO_MESSAGES_YET, OUTBOUND_PREFIX, UNSUPPORTED_PREVIEW, media_label
-from .nav_url import conversation_href, scalar_param, with_query
+from .nav_url import inbox_chat_href, scalar_param, with_query
 from .whatsapp_chats_vm import FILTER_PAYMENT_EMPTY, phone_label, relative_time
 
 ROUTE: Final = "/responder"
@@ -232,10 +232,16 @@ def list_href(filter_key: str = DEFAULT_FILTER, channel: str = ALL_CHANNELS) -> 
     return with_query(ROUTE, tab=TAB, **{FILTER_PARAM: slug, CHANNEL_PARAM: canal})
 
 
-def whatsapp_chat_href(connection_id: str, thread_id: str) -> str:
-    """Today's WhatsApp chat (`/whatsapp?tab=chats&cuenta=…&chat=…`), marked as opened
-    from this list so its «‹ Por responder» comes back here."""
-    return conversation_href("whatsapp", connection_id, thread_id, from_inbox=True)
+def chat_href(
+    connection_id: str, thread_id: str, filter_key: str = DEFAULT_FILTER, channel: str = ""
+) -> str:
+    """m-25029798: an open chat of this list, of either channel — the list's own view
+    (`filtro`, `canal`) plus the account and the chat — so «atrás» and a reload keep
+    both the list and the chat."""
+    view = {FILTER_PARAM: _KEY_TO_SLUG.get(filter_key, _KEY_TO_SLUG[DEFAULT_FILTER])}
+    if channel in CHANNELS:
+        view[CHANNEL_PARAM] = channel
+    return inbox_chat_href(connection_id, thread_id, view=view)
 
 
 # ======================================================================================

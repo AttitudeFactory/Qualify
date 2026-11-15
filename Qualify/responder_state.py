@@ -48,6 +48,7 @@ from .responder_vm import (
 )
 from .tenant import tenant_uuid
 from .ui.route_history import history_ack_value, route_history_ready
+from .whatsapp_chats_state import WhatsAppChatsState
 
 logger = logging.getLogger(__name__)
 
@@ -93,9 +94,11 @@ class ResponderState(rx.State):
         events: list[rx.event.EventSpec] = [ResponderState.load_counts]
         if self.active_tab == TAB_MESSAGES:
             # m-25017859: the single list (its `?filtro=` / `?canal=`) and the Instagram
-            # pane beside it (accounts + the chat in the address).
+            # pane beside it (accounts + the chat in the address); m-25029798: the
+            # WhatsApp chat in the address, in the same pane.
             events.append(InboxListState.enter)
             events.append(ConversationsState.enter_page)
+            events.append(WhatsAppChatsState.restore_inbox_address)
         elif self.active_tab == TAB_BUYERS:
             events.append(FollowupsState.enter_page)
         elif self.active_tab == TAB_COMMENTS:
@@ -117,6 +120,10 @@ class ResponderState(rx.State):
     async def leave_page_flows(self) -> None:
         followups = await self.get_state(FollowupsState)
         followups.flow_card_id = ""
+        # m-25029798: the WhatsApp chat's drawers never reopen by themselves elsewhere.
+        chats = await self.get_state(WhatsAppChatsState)
+        chats.tpl_open = False
+        chats.flow_ready = False
 
     @rx.event
     def select_tab(self, tab: str | list[str]) -> rx.event.EventSpec | None:

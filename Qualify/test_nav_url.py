@@ -251,7 +251,7 @@ def test_back_links_name_their_destination() -> None:
 
     for component, label, handler in (
         (messages_back(), "Por responder", "close_conversation"),
-        (chats_back(), "Chats", "back_to_list"),
+        (chats_back(), "Por responder", "back_to_inbox"),
         (_reel_detail_header(), "Comentarios", "back_to_reel_list"),
     ):
         rendered = str(component)

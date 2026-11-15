@@ -172,6 +172,21 @@ FILTER_SLUG: dict[str, str] = {
 }
 
 
+#: m-25029798: a row of this list opens its chat in «Por responder», on the single
+#: list's closest chip (it has no «Abiertos» until m-25029799: «Todos» holds them).
+_INBOX_SLUG: dict[str, str] = {
+    "open": "todos",
+    "closed": "cerrados",
+    "unread": "por-responder",
+    "payment": "pago-por-revisar",
+}
+
+
+def inbox_filter_slug(filter_key: str) -> str:
+    """The single list's `?filtro=` closest to this list's chip `filter_key`."""
+    return _INBOX_SLUG.get(filter_key, "todos")
+
+
 def filter_from_slug(slug: object) -> str:
     """The chip a navigation's `?filtro=` asks for; anything else (none, unknown) is the
     default «Abiertos»."""

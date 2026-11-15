@@ -7,10 +7,20 @@ statement, judged at the same instant as the page) and the expired notice's memo
 The 15 s heartbeat re-reads the counts and as many pages as are on screen, in place:
 rows are replaced, never cleared, so the scroll and the open chat stay.
 
-Opening a chat hands over to TODAY'S chat of its channel: an Instagram row opens the
-thread pane of this same page (`ConversationsState.open_from_inbox`); a WhatsApp row goes
-to `/whatsapp?tab=chats&cuenta=…&chat=…&desde=por-responder`, whose «‹ Por responder»
-comes back here (`inbox_return_href`) to the scroll recorded on the way out.
+Opening a chat (m-25029798): a row of either channel opens its chat in the pane at the
+right of this list — `ConversationsState.open_from_inbox` for Instagram,
+`WhatsAppChatsState.open_from_inbox` for WhatsApp — at one address of the same shape
+(`/responder?tab=mensajes&…&cuenta=…&chat=…`); the other channel's chat, if one was open,
+closes first. On the way in the browser reports where the list was; when the chat
+closes («‹ Por responder», the browser's «atrás», another address) the channel's state
+asks `restore_scroll`, which puts it back.
+
+**Why the scroll was lost (m-25029798).** The page does not scroll the document: the
+app shell's panel (`main.q-panel`, `ui.layout.app_shell`) is the scroll container. The
+list recorded `window.scrollY` (always 0) and restored with `window.scrollTo`, so on a
+phone — where the list box is not a scroller of its own — nothing came back; on a desk
+only the list box's own offset did. It now records and restores the panel's
+`scrollTop` (and the list box's), for both channels.
 
 **What stays on the client: nothing.** The app has no tenant-namespaced client-storage
 pattern, so the notice's «tell them once» memory lives in this session state, keyed by
@@ -63,7 +73,6 @@ from .inbox_list_vm import (
     remembered_dismissal,
     show_channel_filter,
     show_notice,
-    whatsapp_chat_href,
 )
 from .nav_url import push_url_script
 from .tenant import tenant_uuid
@@ -76,26 +85,30 @@ _NO_SESSION = "No hay ninguna sesión de negocio activa. Vuelve a iniciar sesió
 
 #: The list's scroll box (desktop) — `.q-wa-scroll--list` of the page.
 LIST_DOM_ID = "q-inbox-list"
-#: What the browser reports on the way out to a WhatsApp chat: the page's and the
-#: list box's scroll, so the way back lands where the owner was.
+#: The app shell's panel: the page's scroll container (never the document).
+PANEL_SELECTOR = "main.q-panel"
 #: The chips' group (`inbox_list_page.CHIPS_CLASS`): «Entendido» hands the focus to its
 #: first chip without scrolling.
 _FOCUS_FIRST_CHIP_JS = (
     "document.querySelector('.q-inbox-chips button')?.focus({ preventScroll: true });"
 )
+#: What the browser reports on the way into a chat: the panel's and the list box's
+#: scroll, so the way back lands where the owner was.
 _SCROLL_JS = (
-    "[Math.round(window.scrollY || 0),"
+    f"[Math.round((document.querySelector('{PANEL_SELECTOR}') || {{}}).scrollTop || 0),"
     f" Math.round((document.getElementById('{LIST_DOM_ID}') || {{}}).scrollTop || 0)]"
 )
 
 
-def _restore_scroll_js(page_y: int, list_y: int) -> str:
-    # After the rows (kept in state) are drawn again; ints only, never pasted text.
+def _restore_scroll_js(panel_y: int, list_y: int) -> str:
+    # Once the list is drawn again (a phone shows it only when the chat closes); ints
+    # only, never pasted text.
     return (
-        "setTimeout(() => {"
-        f" window.scrollTo(0, {int(page_y)});"
+        "setTimeout(() => requestAnimationFrame(() => {"
+        f" const p = document.querySelector('{PANEL_SELECTOR}');"
+        f" if (p) p.scrollTop = {int(panel_y)};"
         f" const el = document.getElementById('{LIST_DOM_ID}');"
-        f" if (el) el.scrollTop = {int(list_y)}; }}, 80);"
+        f" if (el) el.scrollTop = {int(list_y)}; }}), 60);"
     )
 
 
@@ -161,7 +174,9 @@ class InboxListState(rx.State):
     _loading_for: int = -1
     #: tenant id → the expired count the owner dismissed («tell them once»).
     _dismissed: dict[str, int] = {}
-    _pending_href: str = ""
+    #: The row tapped, while the browser reports the scroll (`open_row` → `open_at`).
+    _opening: str = ""
+    #: [panel, list box] scroll when a chat opened; put back when it closes.
     _scroll: list[int] = []
 
     # ==================================================================================
@@ -213,11 +228,6 @@ class InboxListState(rx.State):
     @rx.var
     def empty(self) -> EmptyVM:
         return empty_for(self.filter_key, self.connected)
-
-    @rx.var
-    def inbox_return_href(self) -> str:
-        """Where «‹ Por responder» of a WhatsApp chat lands: this list, as it was."""
-        return list_href(self.filter_key, self.channel)
 
     @rx.var
     def show_skeleton(self) -> bool:
@@ -361,7 +371,7 @@ class InboxListState(rx.State):
         """Counts, then the pages on screen (one after a new view), of the view on screen
         when it STARTED; a view changed meanwhile (`_generation`) discards it — its own
         load is already queued. Rows already on screen stay until the new ones arrive
-        (back from a chat: no flash, the scroll is restored)."""
+        (back from a chat: no flash; the scroll is the closing chat's `restore_scroll`)."""
         async with self:
             generation = self._generation
             if self._loading_for == generation:
@@ -372,7 +382,6 @@ class InboxListState(rx.State):
             key, tenant_id = await self._session()
             need_context = not self.context_loaded
             pages = max(1, self._pages) if self.loaded else 1
-            scroll = list(self._scroll)
         try:
             if tenant_id is None:
                 async with self:
@@ -412,9 +421,6 @@ class InboxListState(rx.State):
                 self.next_cursor = cursor
                 self._pages = pages
                 self.loaded = True
-                self._scroll = []
-            if scroll:
-                yield rx.call_script(_restore_scroll_js(*scroll[:2]))
         finally:
             async with self:
                 if self._loading_for == generation:
@@ -567,29 +573,51 @@ class InboxListState(rx.State):
 
     @rx.event
     def open_row(self, thread_id: str) -> rx.event.EventSpec | None:
-        """A tap on a row: today's chat of its channel. Only ids the list holds."""
-        row = next((r for r in self.rows if r.thread_id == thread_id), None)
-        if row is None:
+        """A tap on a row: first the browser reports where the list is (`open_at`).
+        Only ids the list holds."""
+        if not any(r.thread_id == thread_id for r in self.rows):
             return None
-        if row.channel == CHANNEL_INSTAGRAM:
-            return ConversationsState.open_from_inbox(row.connection_id, row.thread_id)
-        if row.channel == CHANNEL_WHATSAPP:
-            self._pending_href = whatsapp_chat_href(row.connection_id, row.thread_id)
-            return rx.call_script(_SCROLL_JS, callback=InboxListState.leave_for_whatsapp)
-        return None
+        self._opening = thread_id
+        return rx.call_script(_SCROLL_JS, callback=InboxListState.open_at)
 
     @rx.event
-    def leave_for_whatsapp(self, scroll: Any = None) -> rx.event.EventSpec | None:
-        """The browser reported where the list was: remember it, then go."""
-        href, self._pending_href = self._pending_href, ""
-        if not href:
+    async def open_at(self, scroll: Any = None) -> list[rx.event.EventSpec] | None:
+        """Record the scroll, then open the row's chat in the pane beside this list
+        (m-25029798: both channels alike). The other channel's open chat closes first,
+        and the address of the new one REPLACES the previous chat's (back goes to the
+        list, never to a chat in between), as Instagram did between its own chats."""
+        from .whatsapp_chats_state import WhatsAppChatsState
+
+        thread_id, self._opening = self._opening, ""
+        row = next((r for r in self.rows if r.thread_id == thread_id), None)
+        if row is None or row.channel not in (CHANNEL_INSTAGRAM, CHANNEL_WHATSAPP):
             return None
         if isinstance(scroll, list) and len(scroll) >= 2:
             try:
                 self._scroll = [max(0, int(scroll[0])), max(0, int(scroll[1]))]
             except (TypeError, ValueError):
                 self._scroll = []
-        return rx.redirect(href)
+        instagram = await self.get_state(ConversationsState)
+        whatsapp = await self.get_state(WhatsAppChatsState)
+        replace = bool(instagram.open_thread_id or whatsapp.open_thread_id)
+        if row.channel == CHANNEL_INSTAGRAM:
+            return [
+                WhatsAppChatsState.leave_for_other_chat,
+                ConversationsState.open_from_inbox(row.connection_id, row.thread_id, replace),
+            ]
+        return [
+            ConversationsState.leave_for_other_chat,
+            WhatsAppChatsState.open_from_inbox(row.connection_id, row.thread_id, replace),
+        ]
+
+    @rx.event
+    def restore_scroll(self) -> rx.event.EventSpec | None:
+        """A chat beside this list closed: back to the scroll it had when it opened
+        (once; a chat opened by its address recorded none)."""
+        scroll, self._scroll = self._scroll, []
+        if len(scroll) < 2:
+            return None
+        return rx.call_script(_restore_scroll_js(scroll[0], scroll[1]))
 
     @rx.event
     def show_awaiting(self) -> list[rx.event.EventSpec] | None:

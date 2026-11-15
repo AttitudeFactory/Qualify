@@ -45,13 +45,11 @@ from .ui import (
 )
 from .ui import tokens as T
 from .ui.route_history import route_history
-from .whatsapp_chats_state import WhatsAppChatsState
 from .whatsapp_location_ui import back_to_chat_link, map_point_block
 from .whatsapp_menu_state import WhatsAppMenuState
 from .whatsapp_metrics_block import metrics_block
 from .whatsapp_state import WhatsAppState
 from .whatsapp_tab_campaigns import campaigns_tab
-from .whatsapp_tab_chats import _back_button as chats_back_button
 from .whatsapp_tab_chats import chats_tab
 from .whatsapp_tab_contacts import contacts_tab
 from .whatsapp_tab_menu import back_to_guided, menu_step_frame, menu_tab
@@ -170,15 +168,9 @@ def number_selector() -> rx.Component:
 
 
 def whatsapp_header() -> rx.Component:
-    return page_header(
-        "WhatsApp",
-        WHATSAPP_SUBTITLE,
-        number_selector(),
-        kicker=rx.cond(
-            (WhatsAppState.active_tab == TAB_CHATS) & WhatsAppChatsState.has_open_thread,
-            chats_back_button(),
-        ),
-    )
+    """No back button: no chat opens on this screen (m-25029798, they open in «Por
+    responder», whose header carries «‹ Por responder»)."""
+    return page_header("WhatsApp", WHATSAPP_SUBTITLE, number_selector())
 
 
 def _phone_choice(

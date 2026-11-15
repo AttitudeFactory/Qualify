@@ -11,9 +11,9 @@ Layout (docs/design-system.md §9.1): `app_shell(page_header(...), page_body(...
    (N5). From the `md` breakpoint up a segmented control; on a phone a select — the
    segments do not fit 360 px and N12 allows no sideways scroll for tabs.
 3. **The open tab's list** — only that tab is in the tree, so only its state loads.
-   «Mensajes» is the single list of every chat channel with the Instagram chat beside it
-   (`conversations_page.messages_tab`, m-25017859; a WhatsApp row opens today's WhatsApp
-   chat, whose «‹ Por responder» comes back); the others are their screens' own content
+   «Mensajes» is the single list of every chat channel with the open chat of either
+   channel beside it (`conversations_page.messages_tab`, m-25017859, m-25029798); the
+   others are their screens' own content
    (`followups_page.followups_panel`, `inbox_page.comments_tab`, `leads_page.leads_tab`).
    The «WhatsApp» tab left: `?tab=whatsapp` redirects to «Mensajes» narrowed to WhatsApp.
 
@@ -25,9 +25,7 @@ from __future__ import annotations
 
 import reflex as rx
 
-from .conversations_page import _back_button as messages_back_button
-from .conversations_page import messages_tab
-from .conversations_state import ConversationsState
+from .conversations_page import back_to_list_button, chat_is_open, messages_tab
 from .followups_page import followups_panel
 from .inbox_page import comments_tab
 from .leads_page import leads_tab
@@ -249,8 +247,8 @@ def responder_header() -> rx.Component:
         "Por responder",
         "Las personas que te escribieron o comentaron y todavía esperan tu respuesta.",
         kicker=rx.cond(
-            (R.active_tab == TAB_MESSAGES) & ConversationsState.has_open_thread,
-            messages_back_button(),
+            (R.active_tab == TAB_MESSAGES) & chat_is_open(),
+            back_to_list_button(),
         ),
     )
 

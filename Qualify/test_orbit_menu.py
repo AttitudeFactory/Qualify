@@ -85,9 +85,8 @@ def test_the_composer_offers_the_six_approved_rows_in_order() -> None:
     assert PICK_PHOTO not in {k for k, _i, _t in PICK_SOURCE_CARDS}
     assert all(len(text) <= 16 for _k, _i, text in PICK_SOURCE_CARDS)
     assert PICK_MENU_LABEL == "Enviar algo al cliente"
-    from . import whatsapp_tab_chats
 
-    rendered = str(whatsapp_tab_chats.chats_tab())
+    rendered = str(_chat_views())
     menu = rendered[rendered.index("data-orbit-trigger") :]
     order = [menu.index(json.dumps(t)[1:-1]) for _k, _i, t in PICK_SOURCE_CARDS]
     assert order == sorted(order)  # top to bottom: show, order, pay
@@ -151,3 +150,13 @@ def test_an_address_from_before_the_plus_is_tidied_not_reopened() -> None:
     with patch.object(WhatsAppChatsState, "router", new_callable=PropertyMock, return_value=router):
         event = state.restore_picker()
     assert "foto-menu" in str(event) and not state.pick_open
+
+
+def _chat_views() -> object:
+    """m-25029798: `/whatsapp`'s number list plus the open chat, which is mounted beside
+    the single list of «Por responder» (`whatsapp_chat_pane` + `whatsapp_chat_layers`)."""
+    import reflex as rx
+
+    from .whatsapp_tab_chats import chats_tab, whatsapp_chat_layers, whatsapp_chat_pane
+
+    return rx.fragment(chats_tab(), whatsapp_chat_pane(), whatsapp_chat_layers())

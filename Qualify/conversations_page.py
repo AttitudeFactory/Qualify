@@ -151,6 +151,13 @@ from .ui import (
     tone_badge,
 )
 from .ui import tokens as T
+from .whatsapp_chats_state import WhatsAppChatsState as WA
+from .whatsapp_tab_chats import _back_button as whatsapp_back_button
+from .whatsapp_tab_chats import (
+    whatsapp_chat_banner,
+    whatsapp_chat_layers,
+    whatsapp_chat_pane,
+)
 
 S = ConversationsState
 _TONES = ("ok", "warn", "error", "info", "neutral")
@@ -1619,19 +1626,38 @@ def _conversation() -> rx.Component:
 
 
 def _conversation_pane() -> rx.Component:
-    return rx.box(
-        rx.cond(
-            S.has_open_thread,
-            _conversation(),
-            rx.vstack(
-                _banner(S.banner, S.banner_tone),
-                no_chat_open("Ábrela para leer el historial y responder desde la cuenta correcta."),
-                width="100%",
+    """The right pane: the open chat of either channel (m-25029798), else the hint."""
+    return rx.cond(
+        WA.has_open_thread,
+        whatsapp_chat_pane(),
+        rx.box(
+            rx.cond(
+                S.has_open_thread,
+                _conversation(),
+                rx.vstack(
+                    _banner(S.banner, S.banner_tone),
+                    whatsapp_chat_banner(),
+                    no_chat_open(
+                        "Ábrela para leer el historial y responder desde la cuenta correcta."
+                    ),
+                    width="100%",
+                ),
             ),
+            class_name="q-wa-chats__conv",
+            width="100%",
         ),
-        class_name="q-wa-chats__conv",
-        width="100%",
     )
+
+
+def chat_is_open() -> rx.Var[bool]:
+    """A chat of either channel is open beside the single list (m-25029798)."""
+    return S.has_open_thread | WA.has_open_thread
+
+
+def back_to_list_button() -> rx.Component:
+    """«‹ Por responder» of whichever chat is open (the page header's, as Instagram's
+    has always been)."""
+    return rx.cond(WA.has_open_thread, whatsapp_back_button(), _back_button())
 
 
 # ======================================================================================
@@ -1677,10 +1703,11 @@ def _instagram_tools() -> rx.Component:
 
 
 def messages_tab() -> rx.Component:
-    """«Por responder» › «Mensajes» (m-24842990; m-25017859): the single list of every
-    connected chat channel (`inbox_list_page`) at the left, and this screen's Instagram
-    chat pane at the right — a WhatsApp row opens today's WhatsApp chat on its own
-    screen. Under 768 px one pane at a time (`.q-wa-chats--open`)."""
+    """«Por responder» › «Mensajes» (m-24842990; m-25017859; m-25029798): the single list
+    of every connected chat channel (`inbox_list_page`) at the left, and the open chat of
+    either channel at the right — Instagram's from this module, WhatsApp's the mountable
+    piece of `whatsapp_tab_chats` (its layers only while it is open). Under 768 px one
+    pane at a time (`.q-wa-chats--open`)."""
     return rx.vstack(
         reconnect_result_panel(),
         _heartbeat(),
@@ -1691,11 +1718,12 @@ def messages_tab() -> rx.Component:
             inbox_list_pane(),
             _conversation_pane(),
             class_name=rx.cond(
-                S.has_open_thread,
+                chat_is_open(),
                 "q-wa-chats q-conv-chats q-wa-chats--open",
                 "q-wa-chats q-conv-chats",
             ),
         ),
+        rx.cond(WA.has_open_thread, whatsapp_chat_layers()),
         templates_manager(),
         spacing="4",
         width="100%",

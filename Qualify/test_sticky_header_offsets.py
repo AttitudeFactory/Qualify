@@ -97,9 +97,12 @@ def _shown(rendered: str, text: str) -> bool:
 
 def test_phone_back_buttons_name_the_list_and_live_in_existing_sticky_headers() -> None:
     assert _shown(str(messages_back()), "Por responder")
-    assert _shown(str(chats_back()), "Chats")
+    # m-25029798: a WhatsApp chat opens only in «Por responder»: its back says so, and
+    # the WhatsApp screen's header has no back of its own.
+    assert _shown(str(chats_back()), "Por responder")
     assert _shown(str(responder_header()), "Por responder")
-    assert _shown(str(whatsapp_header()), "Chats")
+    assert not _shown(str(whatsapp_header()), "Por responder")
+    assert not _shown(str(whatsapp_header()), "Chats")
     # m-25017861: the menu's long editor lives on «Ajustes de chats › WhatsApp».
     settings = str(whatsapp_settings_index())
     assert _shown(settings, "Volver a los 4 pasos") and _shown(settings, "Ajustes de chats")

@@ -82,10 +82,14 @@ def back_url_script(url: str) -> str:
     )
 
 
-#: m-25017859: `?desde=por-responder` on a WhatsApp chat opened from the single list of
-#: «Por responder», so its back button returns to that list (not the number's own).
+#: m-25017859: `?desde=por-responder` was on a WhatsApp chat opened from the single list
+#: of «Por responder» while that chat lived on `/whatsapp`. m-25029798: the chat opens in
+#: «Por responder» itself; an old address carrying it redirects there, dropping it.
 FROM_PARAM = "desde"
 FROM_INBOX = "por-responder"
+#: The single list of «Por responder» (`/responder?tab=mensajes`), where every chat opens.
+INBOX_ROUTE = "/responder"
+INBOX_TAB = "mensajes"
 #: The canonical `?filtro=` of WhatsApp › Chats' «Por responder» chip (the menu's
 #: WhatsApp badge and a chat opened from the single list land on it).
 WHATSAPP_AWAITING_SLUG = "por-responder"
@@ -112,29 +116,52 @@ def list_view(params: Mapping[str, object]) -> dict[str, str]:
     return {k: s for k in LIST_VIEW_PARAMS if (s := _slug(params.get(k, "")).lower())}
 
 
+def inbox_chat_href(
+    connection_id: str = "", thread_id: str = "", *, view: Mapping[str, str] | None = None
+) -> str:
+    """m-25029798: the one address of an open chat, whatever its channel —
+    `/responder?tab=mensajes[&filtro=…&canal=…]&cuenta=<account>&chat=<thread>` — or, with
+    no chat, the single list (the account kept as Instagram's has always been). Only
+    canonical UUIDs and the list's own `view` slugs travel."""
+    ids = {"cuenta": connection_id, "chat": thread_id}
+    safe = {key: uuid_param(ids, key) for key in ids}
+    kept = {k: _slug(v) for k, v in (view or {}).items() if k in LIST_VIEW_PARAMS}
+    return with_query(INBOX_ROUTE, tab=INBOX_TAB, **kept, **safe)
+
+
 def conversation_href(
     channel: str,
     connection_id: str = "",
     thread_id: str = "",
     *,
-    from_inbox: bool = False,
     view: Mapping[str, str] | None = None,
     chip: str = "",
 ) -> str:
-    """Canonical owner-facing routes carrying only internal account/thread IDs (plus,
-    on WhatsApp, the `?desde=` of the single list and the chip it opens on, or the
-    owner's own chip `chip` — "" for the default, which needs no parameter; on the
-    single list, its `view` slugs)."""
-    ids = {"cuenta": connection_id, "chat": thread_id}
-    safe = {key: uuid_param(ids, key) for key in ids}
-    if channel == "whatsapp":
-        if from_inbox and safe["chat"]:
-            origin = {"filtro": WHATSAPP_AWAITING_SLUG, FROM_PARAM: FROM_INBOX}
-        else:
-            origin = {"filtro": _slug(chip)} if _slug(chip) else {}
-        return with_query("/whatsapp", tab="chats", **safe, **origin)
-    kept = {k: _slug(v) for k, v in (view or {}).items() if k in LIST_VIEW_PARAMS}
-    return with_query("/responder", tab="mensajes", **kept, **safe)
+    """Canonical owner-facing routes carrying only internal account/thread IDs. A chat
+    of either channel opens in «Por responder» (`inbox_chat_href`, m-25029798); without
+    a chat, WhatsApp's own list stays at `/whatsapp?tab=chats` with the owner's chip
+    `chip` ("" for the default, which needs no parameter) until m-25029799 retires it."""
+    if channel == "whatsapp" and not uuid_param({"chat": thread_id}, "chat"):
+        safe = uuid_param({"cuenta": connection_id}, "cuenta")
+        origin = {"filtro": _slug(chip)} if _slug(chip) else {}
+        return with_query("/whatsapp", tab="chats", cuenta=safe, **origin)
+    return inbox_chat_href(connection_id, thread_id, view=view)
+
+
+def inbox_back_script(fallback: str) -> str:
+    """«‹ Por responder» from an open chat (m-25029798, both channels): when the step
+    before this one is the single list (any filter or channel, no chat open), go back
+    to it — the history entry is consumed, so «atrás» never reopens the chat; otherwise
+    (a chat opened by its address) the address becomes `fallback` in place."""
+    target = json.dumps(fallback)
+    return (
+        "(() => { const p = window.history.state?.qPrevHref;"
+        f" const list = typeof p === 'string' && p.split('?')[0].replace(/\\/$/, '')"
+        f" === {json.dumps(INBOX_ROUTE)} && !/[?&]chat=/.test(p)"
+        f" && !/[?&]tab=(?!{INBOX_TAB}(&|$))/.test(p);"
+        " if (list) { window.history.back(); return; }"
+        f" window.history.replaceState(window.history.state, '', {target}); }})();"
+    )
 
 
 def thread_param(params: Mapping[str, object], connection_id: str) -> str:

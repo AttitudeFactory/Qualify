@@ -51,7 +51,7 @@ from .connection_copy import (
     connection_status_display as connection_status_display,
 )
 from .connections_vm import whatsapp_label
-from .nav_url import uuid_param, with_query
+from .nav_url import inbox_chat_href, uuid_param, with_query
 
 # --------------------------------------------------------------------------------------
 # Tabs (m-24842998 WHATSAPP-7). Two tasks on top, one of them with sub-tabs:
@@ -187,6 +187,10 @@ PROMOTION_FLOWS: frozenset[str] = frozenset({"promocion", "mensaje-aprobado"})
 OBJECT_PARAM: Final = "objeto"
 #: The `?flujo=` of the menu's guided editor (`ui/flow_history.py`).
 MENU_FLOW: Final = "menu"
+#: m-25029798: an open chat's `?chat=` and the `?flujo=` of its approved-message drawer
+#: (`whatsapp_chats_state.restore_flow`), carried when an old chat address moves.
+CHAT_PARAM: Final = "chat"
+CHAT_TEMPLATE_FLOW: Final = "mensaje-chat"
 MENU_SUBTITLE: Final = (
     "Lo que tu cliente ve al escribirte: tu bienvenida, tus productos y las preguntas de "
     "siempre. Tú sigues atendiendo en tus chats."
@@ -310,9 +314,40 @@ def legacy_settings_target(params: Mapping[str, object]) -> str | None:
     return with_query(SETTINGS_WHATSAPP_ROUTE, **kept)
 
 
+def legacy_chat_target(params: Mapping[str, object]) -> str | None:
+    """m-25029798: where an old address of an OPEN WhatsApp chat lands now —
+    `/whatsapp?tab=chats&cuenta=…&chat=…` (with or without `&filtro=…&desde=…`) →
+    `/responder?tab=mensajes&cuenta=…&chat=…` — or None when the address is not one (the
+    number's list stays here). Same whitelist rule as `legacy_promotions_target`: the
+    number and the chat (canonical UUIDs, both required: the chat opens only on its
+    number), and the approved-message drawer if it was open (`flujo=mensaje-chat`, `paso`
+    a step number, `objeto` the message, a UUID); anything else is dropped, never echoed.
+    The ids are only carried: «Por responder» checks they are this business's."""
+    panel = resolve_panel(_text(params.get(TAB_PARAM)), _text(params.get(SUB_PARAM)))
+    if panel != TAB_CHATS:
+        return None
+    account, chat = uuid_param(params, ACCOUNT_PARAM), uuid_param(params, CHAT_PARAM)
+    if not account or not chat:
+        return None
+    flow = _text(params.get(FLOW_PARAM))
+    step = _text(params.get(STEP_PARAM))
+    in_flow = flow == CHAT_TEMPLATE_FLOW
+    kept = {
+        FLOW_PARAM: CHAT_TEMPLATE_FLOW if in_flow else "",
+        STEP_PARAM: step if in_flow and step.isascii() and step.isdigit() and len(step) < 3 else "",
+        OBJECT_PARAM: uuid_param(params, OBJECT_PARAM) if in_flow else "",
+    }
+    return with_query(inbox_chat_href(account, chat), **kept)
+
+
 def legacy_panel_target(params: Mapping[str, object]) -> str | None:
-    """An old `/whatsapp` address of a panel that moved to another page, or None."""
-    return legacy_promotions_target(params) or legacy_settings_target(params)
+    """An old `/whatsapp` address of a panel or a chat that moved to another page, or
+    None."""
+    return (
+        legacy_promotions_target(params)
+        or legacy_settings_target(params)
+        or legacy_chat_target(params)
+    )
 
 
 def _text(value: object) -> str:

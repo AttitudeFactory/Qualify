@@ -353,13 +353,13 @@ async def test_no_methods_shows_the_way_to_add_them(gw) -> None:
     state.open_pick(PICK_PAYMENTS)
     await _drain(WhatsAppChatsState.load_pick_payments.fn(state))
     assert state.pick_payments == [] and state.pick_step == 1 and not state.pick_reviewing
-    rendered = str(whatsapp_tab_chats.chats_tab())
+    rendered = str(_chat_views())
     for words in (PAYMENTS_EMPTY_TITLE, "payments_change_href", "Formas de pago"):
         assert json.dumps(words)[1:-1] in rendered, words
 
 
 def test_the_chat_carries_the_payment_actions() -> None:
-    rendered = str(whatsapp_tab_chats.chats_tab())
+    rendered = str(_chat_views())
     for words in (
         "Pago recibido",
         "No lo encuentro",
@@ -456,9 +456,19 @@ def test_cambiar_estos_datos_carries_the_way_back_to_this_chat(gw) -> None:
     query = parse_qs(urlsplit(href).query)
     assert href.startswith("/whatsapp?tab=numero&sub=pagos&volver=")
     back = query["volver"][0]
-    assert back == f"/whatsapp?tab=chats&cuenta={CONN}&chat={THREAD}"
+    # m-25029798: the chat lives in «Por responder»; the old address is still accepted.
+    assert back == f"/responder?tab=mensajes&cuenta={CONN}&chat={THREAD}"
     assert chat_return_path({"volver": back}) == back
-    for bad in ("https://otro.sitio", "//otro.sitio", "/catalog", "/whatsapp?tab=menu"):
+    old = f"/whatsapp?tab=chats&cuenta={CONN}&chat={THREAD}"
+    assert chat_return_path({"volver": old}) == old
+    for bad in (
+        "https://otro.sitio",
+        "//otro.sitio",
+        "/catalog",
+        "/whatsapp?tab=menu",
+        "/responder?tab=comentarios&chat=x",
+        "/responder?tab=mensajes",
+    ):
         assert chat_return_path({"volver": bad}) == ""
     assert chat_return_path({}) == ""
 
@@ -528,3 +538,13 @@ def test_the_way_back_refuses_a_chats_lookalike() -> None:
     assert chat_return_path({"volver": "/whatsapp?tab=chats&tab=numero"}) == ""
     assert chat_return_path({"volver": "/whatsappx?tab=chats"}) == ""
     assert chat_return_path({"volver": "/whatsapp?tab=chats"}) == "/whatsapp?tab=chats"
+
+
+def _chat_views() -> object:
+    """m-25029798: `/whatsapp`'s number list plus the open chat, which is mounted beside
+    the single list of «Por responder» (`whatsapp_chat_pane` + `whatsapp_chat_layers`)."""
+    import reflex as rx
+
+    from .whatsapp_tab_chats import chats_tab, whatsapp_chat_layers, whatsapp_chat_pane
+
+    return rx.fragment(chats_tab(), whatsapp_chat_pane(), whatsapp_chat_layers())

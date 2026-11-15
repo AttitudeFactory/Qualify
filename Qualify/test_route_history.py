@@ -21,8 +21,9 @@ def test_uuid_reader_refuses_names_phones_repeated_and_malformed_values(bad: obj
 
 
 def test_conversation_links_round_trip_only_internal_ids() -> None:
+    # m-25029798: a chat of either channel opens in «Por responder».
     assert conversation_href("whatsapp", ACCOUNT, THREAD) == (
-        f"/whatsapp?tab=chats&cuenta={ACCOUNT}&chat={THREAD}"
+        f"/responder?tab=mensajes&cuenta={ACCOUNT}&chat={THREAD}"
     )
     assert conversation_href("instagram", ACCOUNT, THREAD) == (
         f"/responder?tab=mensajes&cuenta={ACCOUNT}&chat={THREAD}"
