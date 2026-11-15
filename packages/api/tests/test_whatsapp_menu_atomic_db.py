@@ -520,3 +520,137 @@ async def test_a_waiter_on_a_held_conversation_times_out_into_the_retry(business
         holder.join(10)
     state = _state(business, thread_id)
     assert state is not None and state.attempts == 0  # the timed-out step left nothing
+
+
+class _Faults:
+    """Fault hooks shared by every wrapper of one test (see `FaultyRepo`)."""
+
+    def __init__(self) -> None:
+        self.fail_outbox_for: set[str] = set()
+        self.fail_insert_once: set[str] = set()
+        self.fail_state_reads = 0
+        self.current: str | None = None
+
+
+class _FaultyCalls:
+    """Delegates to the real repository (direct or bound to a transaction), with the
+    faults of `_Faults` injected in front of the real calls."""
+
+    def __init__(self, inner: Any, faults: _Faults) -> None:
+        self._inner = inner
+        self._faults = faults
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    def insert_inbound_message(self, **kwargs: Any) -> bool:
+        wamid = kwargs["external_message_id"]
+        if wamid in self._faults.fail_insert_once:
+            self._faults.fail_insert_once.discard(wamid)
+            raise ConnectionError("transient")
+        self._faults.current = wamid
+        return self._inner.insert_inbound_message(**kwargs)
+
+    def enqueue_outbox(self, **kwargs: Any) -> UUID:
+        if self._faults.current in self._faults.fail_outbox_for:
+            raise ValueError("always fails")
+        return self._inner.enqueue_outbox(**kwargs)
+
+    def get_thread_state(self, thread_id: UUID) -> Any:
+        if self._faults.fail_state_reads:
+            self._faults.fail_state_reads -= 1
+            raise ConnectionError("transient")
+        return self._inner.get_thread_state(thread_id)
+
+    def transaction(self) -> Any:
+        inner_cm = self._inner.transaction()
+        faults = self._faults
+
+        class _Cm:
+            def __enter__(self) -> _FaultyCalls:
+                return _FaultyCalls(inner_cm.__enter__(), faults)
+
+            def __exit__(self, *exc: Any) -> Any:
+                return inner_cm.__exit__(*exc)
+
+        return _Cm()
+
+
+class FaultyRepo(_FaultyCalls):
+    def __init__(self) -> None:
+        self.faults = _Faults()
+        super().__init__(PostgresWhatsAppInboxRepository(), self.faults)
+
+
+async def test_the_last_try_never_pauses_a_chat_whose_message_was_already_answered(
+    business,
+) -> None:
+    a_wa, b_wa = _wa_id(), _wa_id()
+    event = _event(business, a_wa, "Hola")
+    second = _event(business, b_wa, "Hola").value
+    event.value["contacts"] += second["contacts"]
+    event.value["messages"] += second["messages"]
+    first_id, second_id = (m["id"] for m in event.value["messages"])
+
+    repo = FaultyRepo()
+    repo.faults.fail_outbox_for = {second_id}
+    handle = _handler(repo)
+    with pytest.raises(ValueError):
+        await handle(_with_attempts(event, 1))  # A committed with its reply; B failed
+    thread_a = _thread_id(business, a_wa)
+    assert thread_a is not None and _thread_id(business, b_wa) is None
+    replies_a = _outbox(business, thread_a)
+    answered = _state(business, thread_a)
+    assert replies_a and answered is not None and answered.automation_paused_at is None
+
+    repo.faults.fail_insert_once = {first_id}  # A's replay hits a blip on the last try
+    assert (await handle(_with_attempts(event, MAX_ATTEMPTS))).status == "processed"
+
+    after = _state(business, thread_a)
+    assert after is not None
+    assert (after.node_id, after.attempts, after.context, after.automation_paused_at) == (
+        answered.node_id,
+        answered.attempts,
+        answered.context,
+        None,
+    )
+    assert _outbox(business, thread_a) == replies_a
+    thread_b = _thread_id(business, b_wa)
+    assert thread_b is not None
+    handed = _state(business, thread_b)
+    assert handed is not None and handed.automation_paused_at is not None
+    assert handed.context[CTX_HANDOFF]["reason"] == AUTOMATION_ERROR_REASON
+    assert _outbox(business, thread_b) == []
+
+
+async def test_a_media_proof_stored_on_the_last_try_moves_the_payment_to_review(
+    business,
+) -> None:
+    wa_id = _wa_id()
+    await _handler(PostgresWhatsAppInboxRepository())(_event(business, wa_id, "Hola"))
+    thread_id = _thread_id(business, wa_id)
+    assert thread_id is not None
+    with tenant_session(business["tenant"]) as session:
+        row = session.get(WhatsAppThreadState, thread_id)
+        row.context = {
+            **row.context,
+            "_payment": {"choice": "method", "name": "Pago móvil", "status": "awaiting"},
+        }
+    rows_before = _outbox(business, thread_id)
+
+    event = _event(business, wa_id, "x")
+    proof = event.value["messages"][0]
+    proof.pop("text")
+    proof.update(type="image", image={"id": "media-1", "mime_type": "image/jpeg"})
+    repo = FaultyRepo()
+    repo.faults.fail_state_reads = 1  # the main path fails; the fallback runs
+
+    assert (await _handler(repo)(_with_attempts(event, MAX_ATTEMPTS))).status == "processed"
+
+    state = _state(business, thread_id)
+    assert state is not None
+    assert state.context["_payment"]["status"] == "review"
+    assert state.context["_payment"]["review_message_id"] == proof["id"]
+    assert state.automation_paused_at is not None
+    assert state.context[CTX_HANDOFF]["reason"] == AUTOMATION_ERROR_REASON
+    assert _outbox(business, thread_id) == rows_before

@@ -92,7 +92,9 @@ does not drop the message: a second transaction stores it WITHOUT any automation
 hands the conversation to a person the way the menu's own handoff does —
 `automation_paused_at` set and `_handoff` with reason `AUTOMATION_ERROR_REASON` — so it
 is «Por responder» (`inbox/awaiting.py` 3a). Nothing is sent, no outbox row is written;
-the error is logged as `whatsapp_automation_failed_handed_to_person`.
+the error is logged as `whatsapp_automation_failed_handed_to_person`. A message already
+stored (answered on an earlier attempt) is never re-handled, and a chat already with a
+person keeps its handoff (`_store_for_a_person`).
 
 **The payment step (m-24955648).** `payment_loader(phone_row_id)` gives the business's
 active payment methods (`whatsapp.payments.load_payment_options_for_phone`, read as this
@@ -919,10 +921,35 @@ def whatsapp_messages_handler(
         """m-25017846, the last attempt after a failure: the message is stored with no
         automation at all (no loader, no engine, no outbox row) and the conversation
         goes to a person exactly as a menu handoff leaves it — paused, `_handoff` set.
-        The rest of the stored state (order, payment record, menu version) is kept."""
-        upsert, _inserted = _store_message(tx, ctx, message, names)
+        The rest of the stored state (order, payment record, menu version) is kept.
+
+        - A message ALREADY stored (a change whose earlier message committed with its
+          reply on a previous attempt, replayed now) is left alone: the menu answered
+          it, so the conversation is not paused nor its state touched.
+        - A conversation already paused (handed to a person, or taken over by the
+          owner) keeps its `_handoff`: only the message is stored.
+        - A payment proof: a MEDIA message (`PROOF_MEDIA_TYPES`) moves «Esperando el
+          pago» to «Pago por revisar» as the normal path does (the guarded
+          `mark_payment_review`, no loader). A TEXT proof is not re-marked here — telling
+          it from a menu keyword needs the published menu (`_may_be_a_payment_proof`),
+          a loader this path must not call; the chat is still «Por responder» through
+          the pause, and a person reads the text."""
+        upsert, inserted = _store_message(tx, ctx, message, names)
+        if not inserted:
+            return upsert.thread_id
         stored = tx.get_thread_state(upsert.thread_id)
         now = clock()
+        if stored is not None and message.type in PROOF_MEDIA_TYPES:
+            record = stored.context.get(CTX_PAYMENT_RECORD)
+            if isinstance(record, dict) and record.get("status") == STATUS_AWAITING:
+                tx.mark_payment_review(
+                    tenant_id=ctx.tenant_id,
+                    thread_id=upsert.thread_id,
+                    message_id=message.id,
+                    at=now,
+                )
+        if stored is not None and stored.paused_at is not None:
+            return upsert.thread_id
         context = dict(stored.context) if stored is not None else {}
         context[CTX_HANDOFF] = {
             "reason": AUTOMATION_ERROR_REASON,
