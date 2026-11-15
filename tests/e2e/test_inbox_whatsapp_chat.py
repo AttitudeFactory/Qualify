@@ -174,10 +174,9 @@ def test_capture_whatsapp_in_inbox(chats_page) -> None:  # noqa: ANN001
                     "fit": page.evaluate(_FIT),
                     "room": page.evaluate(_ROOM),
                 }
-            page.goto(_origin(page) + "/whatsapp?tab=chats&filtro=todos")
-            expect(page.get_by_role("button", name="Ir a Por responder")).to_be_visible(
-                timeout=60_000
-            )
+            # m-25029799: `/whatsapp` keeps «Tu número» only.
+            page.goto(_origin(page) + "/whatsapp")
+            expect(page.get_by_role("group", name="Tu número").first).to_be_attached(timeout=60_000)
             page.wait_for_timeout(600)
             page.screenshot(path=str(out / f"{label}-whatsapp-tab-{size_name}-{scheme}.png"))
     (out / f"{label}-where.json").write_text(json.dumps(report, indent=1), encoding="utf-8")
@@ -400,14 +399,15 @@ def test_old_whatsapp_chat_addresses_land_in_por_responder(chats_page) -> None: 
         expect(page.locator(".q-chat-head").first.get_by_role("heading")).to_have_text(
             "Laura Gómez"
         )
-    # The WhatsApp screen itself stays put (no loop): its list, the number, settings.
-    for stays in ("/whatsapp", "/whatsapp?tab=chats", "/chats/ajustes/whatsapp"):
+    # The WhatsApp screen itself stays put (no loop): «Tu número» and the settings.
+    for stays in ("/whatsapp", "/whatsapp?tab=numero&sub=qr", "/chats/ajustes/whatsapp"):
         page.goto(_origin(page) + stays)
         page.wait_for_timeout(2_000)
         assert "/responder" not in page.url, (stays, page.url)
-    # A row of WhatsApp's own Chats list opens the chat in «Por responder» too.
+    # m-25029799: WhatsApp's own list is gone — its address lands on the single list.
     page.goto(_origin(page) + "/whatsapp?tab=chats&filtro=todos")
-    page.locator(".q-wa-scroll--list .q-conv-row").filter(has_text="Laura Gómez").first.click()
+    expect(page).to_have_url(re.compile(r"/responder\?tab=mensajes&filtro=todos&canal=whatsapp$"))
+    _row(page, "Laura Gómez").click()
     _thread_ready(page)
     expect(page).to_have_url(re.compile(rf"/responder\?.*chat={ids['whatsapp_open']}"))
 

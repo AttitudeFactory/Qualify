@@ -216,8 +216,9 @@ def test_switching_pages_never_draws_the_other_pages_panel(
     page = signed_up_page
     _seed_whatsapp_number(page._qualify_e2e_tenant_id, page._qualify_e2e_user_id)  # noqa: SLF001
     page.set_viewport_size({"width": 1280, "height": 900})
-    page.goto(f"{app_server}/whatsapp?tab=chats")
-    expect(page.locator(".q-wa-chats__list")).to_be_visible(timeout=60_000)
+    # m-25029799: `/whatsapp` draws «Tu número» only (its chats are in «Por responder»).
+    page.goto(f"{app_server}/whatsapp")
+    expect(page.get_by_text("Ver detalles").first).to_be_visible(timeout=60_000)
     page.evaluate(_WATCH_WRONG_PANEL)
 
     _menu(page).locator(f'a[href="{_ROUTE}"]').click()
@@ -227,17 +228,21 @@ def test_switching_pages_never_draws_the_other_pages_panel(
 
     _menu(page).locator('a[href^="/whatsapp"]').first.click()
     expect(page.get_by_role("heading", level=1, name="WhatsApp")).to_be_visible()
-    expect(page.locator(".q-wa-chats__list")).to_be_visible(timeout=60_000)
+    expect(page.get_by_text("Ver detalles").first).to_be_visible(timeout=60_000)
+    expect(page.locator(".q-wa-chats__list")).to_have_count(0)
     assert page.evaluate("window.__qWrongPanel") == []
 
-    # On a phone, /whatsapp's strip is two buttons in one row: «Promociones» left
-    # (m-25017862) and the menu left for «Ajustes de chats» (m-25017861).
+    # On a phone, /whatsapp's only strip is «Tu número»'s (m-25029799: no «Chats»;
+    # «Promociones» and the menu left before, m-25017862 / m-25017861).
     page.set_viewport_size({"width": 360, "height": 780})
     page.goto(f"{app_server}/whatsapp?tab=numero&sub=estado")
-    strip = page.get_by_role("group", name="Secciones de WhatsApp")
+    strip = page.get_by_role("group", name="Tu número")
     expect(strip).to_be_visible(timeout=60_000)
-    expect(strip.get_by_role("button")).to_have_text(["Chats", "Tu número"])
-    _shot(page, "whatsapp-dos-secciones-360")
+    expect(strip.get_by_role("button")).to_have_text(
+        ["Estado", "Perfil", "Formas de pago", "Códigos QR", "Actividad"]
+    )
+    expect(page.get_by_role("group", name="Secciones de WhatsApp")).to_have_count(0)
+    _shot(page, "whatsapp-tu-numero-360")
 
 
 def test_a_chats_links_land_on_the_right_page(chats_page) -> None:  # noqa: ANN001
