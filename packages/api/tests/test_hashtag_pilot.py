@@ -338,7 +338,12 @@ def test_a_ten_minute_booking_lag_still_reads_on_days_0_7_and_14(
     assert days == [0, 7, 14]
     assert len(vendor.requests) == 6  # two tags, three weeks
     events = [e for e in _ledger().of(PILOT) if e.feature == "hashtag_weekly"]
-    assert len(events) == 6
+    calls = [e for e in events if e.credits]
+    assert len(calls) == 6 and sum(e.credits for e in events) == 6
+    # m-25031643: each kept answer appends its 0-credit `:kept` marker
+    assert sorted(e.request_key for e in events if not e.credits) == sorted(
+        f"{e.request_key}{weekly.KEPT_SUFFIX}" for e in calls
+    )
 
 
 def test_restarts_are_still_free(monkeypatch: pytest.MonkeyPatch) -> None:

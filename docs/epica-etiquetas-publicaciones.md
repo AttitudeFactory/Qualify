@@ -35,6 +35,52 @@ despliegue) y dejarla apagada. Costo máximo: 25 créditos al mes. Se reabre si 
 entrega 4 no muestra más alcance o si la pasada retrasa las lecturas de reels. Qué negocios
 cuentan como activos se decide cuando se abra a todos.
 
+**D3, reintentos (2026-11-15, aprobado por Herwin, m-25031643).** El 2026-11-15 el piloto hizo
+tres llamadas: una falló a las 04:59 UTC, una respondió bien a las 17:15:14 y la siguiente
+respondió 503 a las 17:15:34. Con la regla anterior cada fallo gastó uno de los 5 créditos de la
+semana y congeló al negocio 24 horas, aunque el proveedor no cobra los 503 (el 2026-11-14, 7 de
+14 lecturas a mano respondieron 503 y no se cobraron). Regla nueva
+(`qualify_api.hashtags.weekly`):
+
+- Solo es «no cobrado» lo que se midió como no cobrado o lo que nunca salió: la respuesta HTTP
+  503 (medida el 2026-11-14: 7 de 14 lecturas respondieron 503 y ninguna se cobró; el
+  2026-11-15 volvió a aparecer en producción —2 de 3 llamadas fallaron, una con 503
+  confirmado—, lo que dice cuán seguido pasa, no si se cobra) y una llamada que no llegó a enviarse (no se pudo
+  conectar o no hubo conexión libre). Esa llamada no cuenta para las 5 lecturas de la semana y
+  no congela el día. El negocio se vuelve a intentar en la siguiente revisión, con dos frenos
+  para que los reinicios por despliegue no insistan: al menos 3 horas después del último fallo
+  no cobrado (`MIN_RETRY_WAIT`; la revisión de cada 6 horas siempre entra) y como mucho 4 fallos
+  no cobrados por negocio en 24 horas móviles (`MAX_UNBILLED_A_DAY`). La lista de respuestas no
+  cobradas (`UNBILLED_STATUSES`) solo crece con una prueba medida y documentada del proveedor.
+- Todo lo demás cuenta como lectura cobrada y espera un día, como antes, porque el proveedor
+  pudo haberla cobrado: los demás 5xx (500, 502, 504, 520 a 524), un tiempo de espera agotado
+  o un error después de enviar la llamada, 401/402/429 y los demás 4xx (el 404 sigue siendo una
+  respuesta guardada), una respuesta sin éxito y una respuesta pagada que no se pudo guardar.
+  Los bloqueos y topes del control de gasto no reservan nada. Una pasada sigue deteniéndose en
+  su primer fallo.
+- Cómo se distingue sin migración y sin tocar el control de gasto: el control sigue reservando 1
+  crédito antes de cada llamada; después, este módulo añade una fila de 0 créditos con la misma
+  clave y el sufijo `:kept` (respuesta guardada) o `:unbilled` (fallo no cobrado). Una llamada
+  sin esa fila —incluidas las tres del 2026-11-15, anteriores a la regla— se trata como antes:
+  cuenta como cobrada y congela el día. Los topes diarios y mensuales del negocio siguen
+  contando cada llamada reservada, también las no cobradas.
+- El tope semanal de lo cobrado: 5 lecturas por negocio en cualquier periodo de 7 días, sumadas
+  sobre el registro y no sobre las etiquetas actuales, así que cambiar las etiquetas a mitad de
+  semana no compra más. Se sostiene mientras el proveedor no cobre los 503 (el 2026-11-14, 7 de
+  14 lecturas respondieron 503 y ninguna se cobró); cualquier otro fallo ya se cuenta como
+  cobrado.
+
+**Peor caso por negocio y semana:** cobrado por el proveedor, 5 créditos (25 en un mes de 31
+días), con la misma condición sobre los 503. Reservado en nuestro registro si fallara cada
+intento permitido: 5 + 4 × 7 = 33 créditos en 7 días (149 en 31 días, dentro del tope mensual
+de 600). Los fallos que no son «no cobrados» entran en las 5 y congelan el día, así que no
+cambian ninguna de las dos cifras.
+
+**Qué pasa con el piloto al desplegar:** las tres llamadas del 2026-11-15 son anteriores a las
+marcas, así que cuentan como cobradas: al piloto le quedan 2 lecturas hasta el 2026-11-22 a las
+04:59 UTC y queda en espera hasta el 2026-11-16 a las 17:15 UTC. Devolver esos créditos sería
+una escritura en producción que necesita el sí explícito de Herwin, y no se hizo.
+
 ## 1. Objetivo
 
 Que las pocas etiquetas que lleva una publicación sean las que la gente del rubro está viendo, sin
