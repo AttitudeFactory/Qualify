@@ -38,15 +38,19 @@ at once):
    of UNKNOWN outcome (below) in the last `RETRY_AFTER` (24 h) is not attempted again:
    that booking was a refusal (401/402/429, any other 4xx but 404, a body without
    success), an answer that was paid but not kept, or a pass that died mid-call.
-3. **Five billed a week, hard.** A business's BILLED `hashtag_weekly` credits in any
-   rolling 7 days never exceed `MAX_TAGS` — every booking counts except the first credit
-   of a call marked unbilled (below); `:extra` rows always count. It is a sum over the
-   ledger, never over the current pills: an owner who changes them every day still pays
-   at most 5 a week.
+3. **Five billed a week.** A business's BILLED `hashtag_weekly` credits in any rolling 7
+   days never exceed `MAX_TAGS` — every booking counts except the first credit of a call
+   marked unbilled (below); `:extra` rows always count. It is a sum over the ledger, never
+   over the current pills: an owner who changes them every day still pays at most 5 a
+   week. The bound rests on one measured fact: the vendor does not bill a 503 (2026-11-14:
+   7 of 14 reads answered 503, none billed). Any other failure is counted as billed.
 4. **A vendor outage costs a retry, not the day nor the week** (m-25031643, D3 of
-   2026-11-15). A call that failed with HTTP 5xx, a timeout or a network error
-   (`_transient`) is one the vendor does not bill (measured 2026-11-14/15: 503s were not
-   charged). It is marked unbilled, does not count in rule 3 and does not hold the day;
+   2026-11-15). Unbilled is ONLY what was measured as not billed or what never left:
+   an HTTP status in `UNBILLED_STATUSES` (503) or a request that was never sent
+   (`httpx.ConnectError`, `ConnectTimeout`, `PoolTimeout`) — `_transient`. Any other
+   5xx (500, 502, 504, 520-524), a read/write timeout or error, a protocol error or
+   anything unknown may have been billed: no marker, unknown outcome (rule 2). An
+   unbilled call is marked, does not count in rule 3 and does not hold the day;
    instead two brakes keep restarts from hammering the vendor: no new attempt until
    `MIN_RETRY_WAIT` (3 h) after the last unbilled failure — so the 6-hourly check of the
    reels worker always qualifies and a burst of deploys does not — and at most
@@ -64,17 +68,17 @@ at once):
 **How the ledger tells billed from unbilled** (no migration, the gate untouched). The gate
 books every call as one `hashtag_weekly` row, `request_key = hashtag_weekly:<uuid>`,
 before it leaves; `vendor_usage_events` is append-only, so this module never changes that
-row. After the call it APPENDS a marker for it: a row of the same feature with
-`credits = 0` and `request_key = <that key>:kept` (the answer was kept: a 200 or a 404) or
-`<that key>:unbilled` (a transient failure). A marker adds nothing to any sum, so the
-gate's daily/monthly caps and the headroom keep counting every booked call — an unbilled
-one included — as conservatively as before. A call with no marker is of UNKNOWN outcome:
-it counts as billed (rule 3) and holds the day (rule 2), exactly what every booking did
-before this rule. So a marker that could not be written, a crash between the call and its
-marker, and every booking made before 2026-11-15's change all fall back to the old,
-stricter behaviour — never to a free retry. A marker is written under the business's
-claim with the call's own key + suffix, `ON CONFLICT DO NOTHING`: re-running it writes
-nothing.
+row. After the call it APPENDS a marker for it: a row of the same feature with `credits =
+0` and `request_key = <that key>:kept` (the answer was kept: a 200 or a 404) or `<that
+key>:unbilled` (a failure `_transient` says was not billed). A marker adds nothing to any
+sum, so the gate's daily/monthly caps and the headroom keep counting every booked call —
+an unbilled one included — as conservatively as before. A call with no marker is of
+UNKNOWN outcome: it counts as billed (rule 3) and holds the day (rule 2), exactly what
+every booking did before this rule. So a marker that could not be written, a crash between
+the call and its marker, and every booking made before 2026-11-15's change all fall back
+to the old, stricter behaviour — never to a free retry. A marker is written under the
+business's claim with the call's own key + suffix, `ON CONFLICT DO NOTHING`: re-running it
+writes nothing.
 
 Bounds per business. **Billed:** at most `MAX_TAGS` (5) credits in any 7 days, so at most
 25 in any 31-day month (22 on average when healthy). A call is booked one credit before
@@ -83,9 +87,8 @@ charging N per call can overshoot a 7-day window by at most N−1 — its last c
 every window (5×(N−1) extra in a 31-day month). **Booked in our ledger** (what the caps
 and the headroom see): those 5 plus at most `MAX_UNBILLED_A_DAY` unbilled calls in any
 24 h, i.e. at most 5 + 4×7 = 33 credits in any 7 days if the vendor failed every allowed
-retry (4 × 31 + 25 = 149 in a 31-day month, under the 500 of `MONTHLY_HEADROOM`). A
-timeout is assumed unbilled like a 5xx (decision of 2026-11-15); a vendor that did bill a
-timed-out request would add at most those same 4 a day to the billed side.
+retry (4 × 31 + 25 = 149 in a 31-day month, under the 500 of `MONTHLY_HEADROOM`). Failures
+that are not unbilled count among the 5 and hold the day, so they change neither number.
 
 **Switches.** `QUALIFY_HASHTAG_WEEKLY_READ` is OFF unless set to 1/true/on/yes; with it
 off — or with the gate's `QUALIFY_SCRAPECREATORS_PAID` off, or no
@@ -170,7 +173,13 @@ REREAD_AFTER = timedelta(days=7)
 #: A business with a weekly booking of unknown outcome (a refusal, an answer not kept, a
 #: pass that died mid-call) inside this window is not attempted again.
 RETRY_AFTER = timedelta(hours=24)
-#: After an unbilled failure (5xx, timeout, network) the business waits this long: less
+#: HTTP statuses the vendor was MEASURED not to bill (503: 2026-11-14, 7 of 14 manual
+#: reads answered 503, none billed; 2026-11-15 in production). This set only grows with
+#: a measured vendor test documented in `docs/epica-etiquetas-publicaciones.md` (D3).
+UNBILLED_STATUSES = frozenset({503})
+#: Request errors where the request was never sent, so nothing could be billed.
+_NEVER_SENT = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
+#: After an unbilled failure (503, a request never sent) the business waits this long: less
 #: than the reels worker's 6-hour check (`reel_worker.HASHTAGS_EVERY`), so the next check
 #: always qualifies; more than a burst of deploys, so restarts do not hammer the vendor.
 MIN_RETRY_WAIT = timedelta(hours=3)
@@ -861,12 +870,13 @@ def _read_tags(
 
 
 def _transient(exc: ScrapeCreatorsError) -> bool:
-    """A failure the vendor does not bill: it answered 5xx, or the request timed out or
-    never reached it (`metered_get` chains the `httpx` error as the cause). Anything
-    else — 401/402/429, another 4xx, a body without success — is not."""
+    """A failure the vendor does not bill: a status in `UNBILLED_STATUSES` (measured), or
+    a request that was never sent (`metered_get` chains the `httpx` error as the cause).
+    Anything else — another 5xx, a read/write timeout or error, a protocol error, any
+    4xx, a body without success, the unknown — may have been billed: not transient."""
     if exc.status_code is not None:
-        return 500 <= exc.status_code <= 599
-    return isinstance(exc.__cause__, (httpx.TimeoutException, httpx.NetworkError))
+        return exc.status_code in UNBILLED_STATUSES
+    return isinstance(exc.__cause__, _NEVER_SENT)
 
 
 def _booked_key(before: str | None) -> str | None:
@@ -913,6 +923,9 @@ def _read_one(
     if rubro.country_code:
         params["region"] = rubro.country_code
     status = 200
+    # `_booked_key(before)` rests on: the gate raises `ScrapeCreatorsError` only after it
+    # booked and set the key (before it, only `ScrapeCreatorsBlocked`), and the ContextVar
+    # is per thread/task while this pass is synchronous — so a changed key is this call's.
     before = last_request_key()
     try:
         payload: dict[str, Any] = metered_get(client, PATH, params, feature=FEATURE_HASHTAG_WEEKLY)
@@ -1112,6 +1125,7 @@ __all__ = [
     "MIN_RETRY_WAIT",
     "RETRY_WAIT",
     "UNBILLED",
+    "UNBILLED_STATUSES",
     "UNBILLED_SUFFIX",
     "UNBILLED_WINDOW",
     "LANGUAGE",

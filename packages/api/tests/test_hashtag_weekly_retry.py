@@ -4,11 +4,13 @@ nor the week (`qualify_api.hashtags.weekly`, D3 of 2026-11-15).
 What it pins, offline (every vendor answer comes from an `httpx.MockTransport`; the gate's
 ledger is the in-memory one, its clock moved by the test):
 
-- a 5xx, a timeout or a network error is marked unbilled (a 0-credit `:unbilled` row):
-  it does not reduce the week's 5 reads and does not hold the day;
+- a 503 or a request never sent (connect error/timeout, pool timeout) is marked
+  unbilled (a 0-credit `:unbilled` row): it does not reduce the week's 5 reads and does
+  not hold the day; any other failure (another 5xx, a read/write timeout or error, a
+  protocol error) gets no marker — counted as billed and the day held;
 - the next attempt waits `MIN_RETRY_WAIT` (3 h) — refused before, allowed at — and a
   business gets at most `MAX_UNBILLED_A_DAY` (4) unbilled failures in any 24 h;
-- 5 billed reads a week stays hard when the owner changes the tags mid-week;
+- 5 billed reads a week holds when the owner changes the tags mid-week;
 - refusals (4xx but 404, 402, a body without success), gate blocks and an answer not
   kept behave as before: counted, no marker, the day held (a block books nothing);
 - a marker that cannot be written falls back to that stricter rule;
@@ -193,23 +195,71 @@ def test_at_most_four_unbilled_failures_a_day(monkeypatch: pytest.MonkeyPatch) -
 @pytest.mark.parametrize(
     "failure",
     [
-        504,
-        500,
-        httpx.ReadTimeout("slow"),
-        httpx.ConnectTimeout("slow"),
+        503,
         httpx.ConnectError("refused"),
+        httpx.ConnectTimeout("slow"),
+        httpx.PoolTimeout("pool"),
     ],
-    ids=["504", "500", "read-timeout", "connect-timeout", "network"],
+    ids=["503", "connect-error", "connect-timeout", "pool-timeout"],
 )
-def test_timeouts_network_errors_and_5xx_are_unbilled(
+def test_a_503_and_a_request_never_sent_are_unbilled(
     monkeypatch: pytest.MonkeyPatch, failure: int | Exception
 ) -> None:
     business = _business("a1")
     log = weekly.MemoryReadLog(_ledger())
-    outcome = _run(Script(failure), business, log, _at(monkeypatch, T0))
+    script = Script(failure)
+    outcome = _run(script, business, log, _at(monkeypatch, T0))
     assert outcome.status == weekly.FAILED and outcome.reason == weekly.UNBILLED
     assert len(_markers(business.tenant_id, weekly.UNBILLED_SUFFIX)) == 1
     assert _ledger_of(log, business.tenant_id, T0).billed == 0
+    retry = _run(script, business, log, _at(monkeypatch, T0 + weekly.MIN_RETRY_WAIT))
+    assert retry.status == weekly.DONE and script.requests == ["a1", "a1"]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        500,
+        502,
+        504,
+        524,
+        httpx.ReadTimeout("slow"),
+        httpx.ReadError("reset"),
+        httpx.WriteTimeout("slow"),
+        httpx.WriteError("broken"),
+        httpx.RemoteProtocolError("disconnected"),
+    ],
+    ids=[
+        "500",
+        "502",
+        "504",
+        "524",
+        "read-timeout",
+        "read-error",
+        "write-timeout",
+        "write-error",
+        "remote-protocol",
+    ],
+)
+def test_a_failure_the_vendor_may_have_billed_counts_and_holds_the_day(
+    monkeypatch: pytest.MonkeyPatch, failure: int | Exception
+) -> None:
+    """Only what was measured as not billed (503) or never left is unbilled; anything
+    else is of unknown outcome — counted as billed and held a day."""
+    business = _business("a1")
+    log = weekly.MemoryReadLog(_ledger())
+    script = Script(failure)
+    outcome = _run(script, business, log, _at(monkeypatch, T0))
+    assert outcome.status == weekly.FAILED and outcome.reason is None
+    assert _markers(business.tenant_id, weekly.UNBILLED_SUFFIX) == []
+    ledger = _ledger_of(log, business.tenant_id, T0)
+    assert ledger.billed == 1 and ledger.unknown_at == T0
+    held = _run(script, business, log, _at(monkeypatch, T0 + weekly.MIN_RETRY_WAIT))
+    assert held.status == weekly.TRIED_TODAY and script.requests == ["a1"]
+
+
+def test_the_unbilled_statuses_are_only_the_measured_503() -> None:
+    assert weekly.UNBILLED_STATUSES == frozenset({503})
 
 
 # -- what is not transient keeps the rule from before ------------------------------------
@@ -419,3 +469,32 @@ def test_the_2026_11_15_ledger_is_read_with_the_old_strictness(
     assert spent.status == weekly.WEEK_SPENT
     after = _run(script, rubro, log, _at(monkeypatch, datetime(2026, 11, 22, 5, 0, tzinfo=UTC)))
     assert after.read == ["wrap"]
+
+
+# -- the gate invariant `_booked_key` rests on -------------------------------------------
+
+
+@pytest.mark.parametrize("failure", [503, 500, httpx.ConnectError("refused")])
+def test_a_gate_error_comes_after_its_booking_and_its_key(failure: int | Exception) -> None:
+    """`metered_get` raises `ScrapeCreatorsError` only after it booked the call and set
+    `last_request_key` to that booking's key; a refusal before booking is
+    `ScrapeCreatorsBlocked` and leaves the key unchanged."""
+    business = _business("a1")
+    client = usage.bind(Script(failure).client(), usage.UsageCharge(business.tenant_id))
+    before = sc.last_request_key()
+    with pytest.raises(sc.ScrapeCreatorsError) as raised:
+        sc.metered_get(client, weekly.PATH, {"hashtag": "a1"}, feature=sc.FEATURE_HASHTAG_WEEKLY)
+    assert not isinstance(raised.value, sc.ScrapeCreatorsBlocked)
+    key = sc.last_request_key()
+    assert key is not None and key != before
+    assert [e.request_key for e in _weekly_events(business.tenant_id)] == [key]
+
+
+def test_a_gate_refusal_books_nothing_and_keeps_the_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    business = _business("a1")
+    monkeypatch.setenv(sc.PAID_SWITCH_ENV, "0")
+    client = usage.bind(Script().client(), usage.UsageCharge(business.tenant_id))
+    before = sc.last_request_key()
+    with pytest.raises(sc.ScrapeCreatorsBlocked):
+        sc.metered_get(client, weekly.PATH, {"hashtag": "a1"}, feature=sc.FEATURE_HASHTAG_WEEKLY)
+    assert sc.last_request_key() == before and _weekly_events(business.tenant_id) == []

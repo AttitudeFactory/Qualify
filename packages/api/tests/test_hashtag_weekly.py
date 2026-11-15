@@ -393,12 +393,13 @@ def test_a_hashtag_read_more_than_a_week_ago_is_read_again() -> None:
 # -- failures: stop at the first, one attempt a day (review item 1) -----------------------
 
 
-@pytest.mark.parametrize("status", [400, 401, 403, 429])
+@pytest.mark.parametrize("status", [400, 401, 403, 429, 500, 502, 504, 524])
 def test_a_refusing_vendor_costs_one_credit_and_is_not_retried_the_same_day(
     status: int,
 ) -> None:
-    """Non-transient refusals keep the rule from before m-25031643: the credit counts,
-    no marker is written, and the business waits a day."""
+    """Refusals and every 5xx but 503 keep the rule from before m-25031643 (a 500 still
+    waits a day): the vendor may have billed them, so the credit counts, no marker is
+    written, and the business waits a day."""
     vendor = Vendor(status=status)
     business = _business("a1", "b1", "c1", "d1", "e1")
     log = weekly.MemoryReadLog(_ledger())
@@ -760,10 +761,11 @@ def _simulate_month(
     change_every: int,
     fails: Any = lambda day: False,
     charge: int = 1,
+    fail_status: int = 500,
 ) -> list[usage.UsageEvent]:
     """31 days, a pass every 12 hours, the owner's five pills replaced every
-    `change_every` days; the vendor answers 500 on the days `fails` says and charges
-    `charge` credits per answer."""
+    `change_every` days; the vendor answers `fail_status` on the days `fails` says and
+    charges `charge` credits per answer."""
     monkeypatch.setattr(usage, "datetime", _ClockedDatetime)
     business = _business("x")
     log, claims = weekly.MemoryReadLog(_ledger()), weekly.MemoryClaims()
@@ -774,7 +776,7 @@ def _simulate_month(
         _Clock.at = start + timedelta(hours=12 * half_day)
         tags = tuple(f"p{day // change_every}x{i}" for i in range(5))
         rubro = weekly.BusinessRubro(business.tenant_id, tags, "CO", business.brand_id)
-        vendor = Vendor(status=500 if fails(day) else 200, charge=charge)
+        vendor = Vendor(status=fail_status if fails(day) else 200, charge=charge)
         weekly.run_tick(
             [business.tenant_id],
             source=weekly.MemoryRubroSource({business.tenant_id: rubro}),
@@ -820,9 +822,11 @@ def test_changing_pills_never_buys_more_than_five_reads_a_week(
 def test_an_intermittently_failing_vendor_stays_inside_the_same_bound(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """m-25031643: the 500s are unbilled, so they no longer count in the week — what the
+    """m-25031643: the 503s are unbilled, so they no longer count in the week — what the
     vendor bills stays at 5 a week; what the ledger books adds at most 4 a day."""
-    events = _simulate_month(monkeypatch, change_every=2, fails=lambda day: day % 3 == 1)
+    events = _simulate_month(
+        monkeypatch, change_every=2, fails=lambda day: day % 3 == 1, fail_status=503
+    )
     assert events  # it did read and fail along the way
     unbilled = {
         e.request_key.removesuffix(weekly.UNBILLED_SUFFIX)
@@ -833,6 +837,16 @@ def test_an_intermittently_failing_vendor_stays_inside_the_same_bound(
     assert _max_in_any_week(billed) <= weekly.MAX_TAGS
     assert sum(e.credits for e in billed) <= 25
     assert _max_in_any_week(events) <= weekly.MAX_TAGS + weekly.MAX_UNBILLED_A_DAY * 7
+
+
+def test_a_vendor_failing_with_500_stays_inside_five_booked_a_week(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 500 may be billed: no marker, so every booking counts in the week, as before."""
+    events = _simulate_month(monkeypatch, change_every=2, fails=lambda day: day % 3 == 1)
+    assert events and _markers(events[0].tenant_id, weekly.UNBILLED_SUFFIX) == []
+    assert _max_in_any_week(events) <= weekly.MAX_TAGS
+    assert sum(e.credits for e in events) <= 25
 
 
 def test_a_business_that_spent_its_week_waits_even_with_new_pills() -> None:
