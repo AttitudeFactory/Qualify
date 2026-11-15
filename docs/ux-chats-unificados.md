@@ -77,10 +77,9 @@ Tus redes (Tu negocio)               ← ¿está conectado? (absorbe «Tu númer
 Promociones por WhatsApp (Publica)   ← junto a «Anuncios» (D3)
 ```
 
-(*) Nombre **pendiente de la decisión de nombres del fundador (condición 3 de m-24789557)**:
-ningún texto puede decir ni sugerir que Qualify responde solo. Alternativa de la revisión de
-experiencia independiente, no decidida: «Tu menú de bienvenida». La maqueta todavía muestra el
-nombre anterior hasta que el fundador decida.
+(*) Nombre decidido por el fundador el 2026-11-14 (decisión (vi) de la épica, «Sí, los de UX»;
+condición 3 de m-24789557): **«Tu menú de bienvenida»** en lugar de «Respuesta automática». La
+maqueta todavía muestra el nombre anterior.
 
 - **Una fila** (la de Instagram): foto o inicial, glifo del canal en la esquina, punto que respira
   cuando el cliente espera, nombre, hora, vista previa con «Tú: », **una sola** píldora de atención
@@ -95,9 +94,8 @@ nombre anterior hasta que el fundador decida.
 - **Quién responde** (solo WhatsApp con respuesta automática): una franja justo encima del cuadro de
   respuesta, «Está respondiendo tu menú automático · Responder yo», o «Estás respondiendo tú ·
   Devolver al menú». Está pegada a donde el dueño escribe porque es lo que cambia al escribir.
-  El texto de la franja está **pendiente de la decisión de nombres del fundador (condición 3 de
-  m-24789557)**; alternativa de la revisión de experiencia independiente, no decidida: «Este
-  cliente está usando tu menú · Responder yo». La maqueta todavía muestra el texto anterior.
+  El texto de la franja lo decidió el fundador el 2026-11-14 (decisión (vi) de la épica): **«Este
+  cliente está usando tu menú · Responder yo»**. La maqueta todavía muestra el texto anterior.
 - **Un cuadro de respuesta**, el mismo en los dos canales, en tres renglones:
   1. el texto;
   2. herramientas de todos los días, con icono **y** nombre corto: Foto o video · Botones ·
@@ -239,6 +237,11 @@ su ícono); para no tener reglas distintas por tema, se usa `gray-12` en claro y
 claro también pasa).
 
 TikTok (`purple`) no se midió: no tiene chat todavía.
+
+*Nota (2026-11-14): el punto (1) ya no vale. m-25027371 (PR #688) volvió a medir en la pantalla
+construida, peor caso entre 360 y 1280 px: texto, hora y marcas del negocio 13,05 / 6,35 (WhatsApp
+claro / oscuro) y 12,39 / 7,96 (Instagram); hora del cliente 5,17 / 5,16; con el lavado debajo de
+los mensajes, hora del cliente en oscuro 4,67 (WhatsApp) / 4,83 (Instagram). Todo pasa 4,5:1.*
 
 **Qué no se midió.** (1) La pantalla real: el tinte de Instagram no está construido; esto es la
 hoja real con la burbuja armada a mano. BU-A5 vuelve a medir en la app, en los dos temas, al

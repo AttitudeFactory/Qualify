@@ -72,8 +72,9 @@ configuración separada de los mensajes, menos pestañas y submenús) `[UX §0]`
 - **Dependencias cargadas en Meegle («Bloqueado por»):** m-25017859 ← m-25017843, m-25017844;
   m-25017866 ← m-25017846; m-25017868 ← m-25017866; m-25027371 ← m-25017860;
   m-25027374 ← m-25027371, m-25027372; m-25027373 ← m-25017861.
-- **Fuera de las historias:** el error m-25027369 (Issue sin el campo «Feature»), encontrado al
-  revisar la lista única en producción el 2026-11-14 (§5).
+- **Fuera de las historias:** el error m-25027369 (Issue sin el campo «Feature»), encontrado en
+  producción en la noche del 2026-11-13 al 2026-11-14, al revisar la lista única recién desplegada
+  (PR #665); ticket creado a las 00:46 del 2026-11-14 (§5).
 
 | Id provisional | Ticket | Prioridad |
 |---|---|---|
@@ -309,8 +310,9 @@ canal, con dos outboxes y dos workers `[arq §1.2, §1.3]`. Cortes de origen C1�
 >
 > **Los chats ya se pueden ver en local:** `tests/e2e/chat_fixtures.py` siembra en el entorno de
 > pruebas de navegador un número de WhatsApp y una cuenta de Instagram con chats en cada estado
-> (abierto, cerrado, ventana cerrada, pedido, envío fallido) y una segunda persona con acceso, sin
-> llamar a Meta ni encolar envíos; la prueba es `tests/e2e/test_chat_thread.py`.
+> (abierto, cerrado, ventana cerrada, pedido, envío fallido) y una segunda persona con acceso. No
+> llama a Meta y no deja nada que un proceso pueda enviar (las filas de envío `pending` / `dead`
+> están en una conexión sin credencial y el entorno corre sin procesos de envío); la prueba es `tests/e2e/test_chat_thread.py`.
 >
 > **Límites conocidos:** en el celular la conversación tiene poco espacio (encabezado de la página
 > ≈ 29 % de la pantalla, cuadro de respuesta ≈ 30 %, barra inferior ≈ 10 %; anterior a esta
@@ -345,7 +347,7 @@ canal, con dos outboxes y dos workers `[arq §1.2, §1.3]`. Cortes de origen C1�
         trae etiqueta y hay algo pendiente adentro (pruebas
         `test_the_strip_names_the_payment_only_when_the_header_does_not` y
         `test_the_order_card_opens_inside_the_strip_unchanged`).
-- **Texto para el cliente:** «‹ Por responder», «Asignar», «Cerrar chat», «Ajustes de este canal»,
+- **Texto para el cliente:** «‹ Por responder», «Asignar», «Cerrar chat» (entregado: «Cerrar», como en m-25026457), «Ajustes de este canal»,
   «Pedido · {N} productos · {total} · Pago por revisar», «Pago recibido», «Pedido listo» `[UX §2]`.
   Línea de ventana: «Puedes escribirle hasta las {hora}» **[supuesto PO, propuesto]**.
 - **Fuera de alcance:** cuadro de respuesta (BU-A7); franja «quién responde» (BU-B8).
@@ -975,10 +977,9 @@ el nombre de las tablas `[arq §3.1, «Conclusión»]`. Cortes de origen M1–M7
 ## 5. Primer incremento y lo que corre en paralelo
 
 **Primer incremento — fusionado (2026-11-13):** m-25017843 (PR #625) y m-25017844 (PR #624)
-Done; m-25017859 (PRs #649 y #665) fusionada y desplegada el 2026-11-13, RESOLVED y sin ver en un
-navegador;
-m-25026457 (BU-A13, PR #653) en producción, RESOLVED y sin ver en un navegador. El 2026-11-14 la
-lista se usó en producción en escritorio (ver m-25017859); falta el celular y «Cerrar» de verdad.
+Done; m-25017859 (PRs #649 y #665) fusionada y desplegada el 2026-11-13, RESOLVED; m-25026457
+(BU-A13, PR #653) en producción, RESOLVED. El 2026-11-14 la lista se usó en producción en
+escritorio (ver m-25017859). Sin ver: «Cerrar» de m-25026457 usado de verdad y el ancho de celular.
 
 **Segundo incremento — en curso (2026-11-14):** lo que pidió el fundador, igualar la pantalla del
 chat y separar los ajustes (§6 (viii) 1). Fusionados el 2026-11-14: m-25017860 (PR #677),
@@ -987,7 +988,8 @@ vio en producción en escritorio, no en celular. Abierto: m-25017862 (PR #693). 
 por los mismos archivos: m-25017861 → m-25027373; y m-25027374 cuando el fundador dé el visto
 bueno al «+» en Instagram.
 
-**Encontrado en producción al revisar la lista única (2026-11-14), arreglado:** m-25027369. Desde el
+**Encontrado en producción en la noche del 2026-11-13 al 2026-11-14, al revisar la lista única
+recién desplegada (PR #665), arreglado:** m-25027369 (ticket creado a las 00:46 del 2026-11-14). Desde el
 PR #588 (2026-11-10), `assets/glass-nav.js` corría antes de la hidratación: React lanzaba el error
 #418 en toda página con menú lateral, la hoja de estilos global quedaba cargada dos veces y se
 veían a la vez los controles de celular y los de escritorio. El PR #676 (fusionado el 2026-11-14)
@@ -1250,7 +1252,9 @@ Decisiones del fundador del 2026-11-14 (hora de Colombia), en sus palabras:
 1. **«exacto. Del pedido original falta lo más grande: igualar la pantalla del chat y separar los
    ajustes».** Lo que sigue al primer incremento es la misma pantalla de chat y el mismo cuadro de
    respuesta en los dos canales (partes B, C y G de la maqueta: m-25027371, m-25027374) y los
-   ajustes aparte de los mensajes (parte F: m-25017861, m-25027373).
+   ajustes aparte de los mensajes (parte F: m-25017861, m-25027373). Lo dijo pocos minutos
+   después de la medianoche (hora de Colombia); las descripciones de los cuatro tickets creados a
+   las 00:48 (m-25027371, m-25027372, m-25027373, m-25027374) dicen «2026-11-13» por error.
 2. **«Sí, los de UX»** — nombres del menú: decisión (vi), arriba.
 3. **«Solo «Promociones»»** (m-25017862). La entrada del menú lateral (y de «Más» en el celular)
    dice «Promociones»; la página conserva el título «Promociones por WhatsApp». La eligió sobre la
@@ -1412,7 +1416,8 @@ ninguna pantalla lo usa) y m-25027371 (BU-A5, PR #688: Qualify/chat_thread.py + 
 Decisiones en §6: (ii), (vi) nombres del menú, (vii) lista única, (viii) qué sigue y «Promociones».
 Los chats se ven en local con tests/e2e/chat_fixtures.py (test_chat_thread.py).
 Siguiente (lo que pidió el fundador: igualar la pantalla del chat y separar los ajustes):
-- Antes que nada: m-25017862 (PR #693) fusionado con CI verde (el fundador ya lo aprobó).
+- m-25017862 (PR #693): aprobado por el fundador el 2026-11-14 para fusionar cuando el CI esté en
+  verde («Sí, cuando esté verde»); sin fusionar al escribir esto. m-25017861 empieza después.
 - reflex-ui-engineer (único dueño de whatsapp_tab_chats.py, conversations_page.py y el menú
   lateral, en serie): m-25017861 «Ajustes de chats» con los nombres de (vi) («Tu menú de
   bienvenida», «Usar en WhatsApp» / «Usar en Instagram»); saca «WhatsApp» de «Atiende» y el menú
