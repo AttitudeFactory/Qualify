@@ -382,7 +382,7 @@ def _store_cart_row(world: World) -> None:
     )
 
 
-async def test_a_lookup_failure_after_the_insert_is_repaired_by_the_replay() -> None:
+async def test_a_lookup_failure_leaves_nothing_and_the_retry_records_the_cart_once() -> None:
     product = CartProduct(str(PRODUCT), "Shawarma mixto", Decimal("30"), "USD")
     world = World(products={str(PRODUCT): product})
     world.fail_lookups = 1
@@ -390,7 +390,9 @@ async def test_a_lookup_failure_after_the_insert_is_repaired_by_the_replay() -> 
 
     with pytest.raises(ConnectionError):
         await world.handle(_event(value))
-    assert (CONN, WAMID) in world.repo.messages  # the row landed, the state did not
+    # m-25017846: the message and the state are one transaction — nothing landed, so
+    # the retry is a first delivery (before, the row landed and the replay repaired).
+    assert (CONN, WAMID) not in world.repo.messages
     assert world.repo.states == {}
 
     outcome = await world.handle(_event(value))  # Meta retries
@@ -403,6 +405,28 @@ async def test_a_lookup_failure_after_the_insert_is_repaired_by_the_replay() -> 
     assert state.context[CTX_HANDOFF]["reason"] == CART_HANDOFF_REASON
     assert state.paused_at == NOW
     assert world.repo.outbox == [] and world.menu_calls == []
+
+
+async def test_a_cart_row_stored_by_an_older_build_without_its_state_is_repaired() -> None:
+    """The repair path (`replay=True`, `orders.cart_needs_repair`) still matters for a
+    cart whose message row a pre-m-25017846 build stored in its own transaction and
+    then died before saving the state (in flight at deploy)."""
+    product = CartProduct(str(PRODUCT), "Shawarma mixto", Decimal("30"), "USD")
+    world = World(products={str(PRODUCT): product})
+    _store_cart_row(world)
+    assert world.repo.states == {}
+
+    outcome = await world.handle(_event(_value(retailer_ids=(str(PRODUCT), "nqryix03ez"))))
+
+    assert outcome.status == "processed"
+    state = world.state()
+    order = read_order(state.context)
+    assert order is not None and order.source_message_id == WAMID
+    assert order.lines[0].name == "Shawarma mixto"
+    assert state.context[CTX_HANDOFF]["reason"] == CART_HANDOFF_REASON
+    assert state.paused_at == NOW
+    assert world.repo.outbox == [] and world.menu_calls == []
+    assert len(world.lookups) == 1
 
 
 async def test_a_replay_of_a_cart_on_record_changes_nothing() -> None:
