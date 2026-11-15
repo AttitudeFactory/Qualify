@@ -106,26 +106,29 @@ def test_the_instagram_chats_settings_link_lands_there(chats_page) -> None:  # n
     ids = page._qualify_e2e_chats  # noqa: SLF001
     base = re.match(r"https?://[^/]+", page.url)[0]
     page.set_viewport_size({"width": 1280, "height": 900})
-    page.goto(
-        f"{base}/responder?tab=mensajes&cuenta={ids['instagram_connection']}"
-        f"&chat={ids['instagram_open']}"
-    )
-    head = page.locator(".q-chat-head").first
-    expect(head).to_be_visible(timeout=60_000)
-    # D1: the messages screen no longer has the «Preguntas iniciales» door.
-    expect(page.locator("main").get_by_role("button", name="Preguntas iniciales")).to_have_count(0)
-    head.get_by_role("button", name="Más acciones de este chat").click()
-    page.get_by_role("menuitem", name="Ajustes de este canal").click()
-    expect(page).to_have_url(
-        f"{base}/chats/ajustes/instagram?cuenta={ids['instagram_connection']}", timeout=60_000
-    )
-    drawer = page.get_by_role("dialog")
-    expect(drawer).to_be_visible(timeout=60_000)
-    expect(drawer.get_by_text(_LINE)).to_be_visible()
-    lit = _menu(page).locator('[aria-current="page"]')
-    expect(lit).to_contain_text("Ajustes de chats")
     for mode in ("dark", "light"):
-        _theme(page, mode)
+        page.goto(
+            f"{base}/responder?tab=mensajes&cuenta={ids['instagram_connection']}"
+            f"&chat={ids['instagram_open']}"
+        )
+        head = page.locator(".q-chat-head").first
+        expect(head).to_be_visible(timeout=60_000)
+        _theme(page, mode)  # before the drawer: its overlay covers the toggle
+        # D1: the messages screen no longer has the «Preguntas iniciales» door.
+        main = page.locator("main")
+        expect(main.get_by_role("button", name="Preguntas iniciales")).to_have_count(0)
+        head.get_by_role("button", name="Más acciones de este chat").click()
+        page.get_by_role("menuitem", name="Ajustes de este canal").click()
+        expect(page).to_have_url(
+            f"{base}/chats/ajustes/instagram?cuenta={ids['instagram_connection']}",
+            timeout=60_000,
+        )
+        drawer = page.get_by_role("dialog")
+        expect(drawer).to_be_visible(timeout=60_000)
+        expect(drawer.get_by_text(_LINE)).to_be_visible()
+        lit = _menu(page).locator('[aria-current="page"]')
+        expect(lit).to_contain_text("Ajustes de chats")
+        page.wait_for_timeout(500)
         _shot(page, f"instagram-ajustes-de-este-canal-1280-{mode}")
 
 
@@ -148,7 +151,8 @@ def test_the_menus_old_address_lands_in_ajustes(chats_page) -> None:  # noqa: AN
         page.get_by_text(re.compile("Tu menú de bienvenida|Ajustes de chats")).first
     ).to_be_visible(timeout=60_000)
     for mode in ("dark", "light"):
-        _theme(page, mode) if page.locator(".q-page-header").count() else None
+        if page.locator(".q-page-header").count():  # the guided frame has no toggle
+            _theme(page, mode)
         _shot(page, f"whatsapp-menu-1280-{mode}")
     page.set_viewport_size({"width": 360, "height": 780})
     page.reload()

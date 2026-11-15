@@ -55,7 +55,7 @@ def _row_body(icon: str, title: str | rx.Var, detail: str | rx.Var) -> rx.Compon
         rx.icon(icon, size=T.ICON_MD, color=T.TEXT_MUTED, flex_shrink="0"),
         rx.vstack(
             rx.text(title, size="3", weight="medium", color=T.TEXT_STRONG),
-            rx.text(detail, size="2", color=T.TEXT_MUTED, text_align="left"),
+            rx.text(detail, size="2", weight="regular", color=T.TEXT_MUTED, text_align="left"),
             spacing="0",
             align_items="start",
             min_width="0",
@@ -101,7 +101,10 @@ def _instagram_row(row: InstagramRowVM) -> rx.Component:
         width="100%",
         height="auto",
         min_height=_ROW_MIN,
+        # the ghost button's negative margin would pull it out of line with the links
+        margin="0",
         padding_x="0",
+        padding_y="0.5rem",
         justify_content="start",
         type="button",
         **T.tone_scheme("neutral"),
