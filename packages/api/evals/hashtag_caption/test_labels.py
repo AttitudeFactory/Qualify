@@ -14,6 +14,7 @@ import pytest
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
+import leak_guard  # noqa: E402
 import run_eval  # noqa: E402
 
 DATA = json.loads((HERE / "cases.json").read_text(encoding="utf-8"))
@@ -59,9 +60,13 @@ def test_split_is_fixed_and_balanced() -> None:
 
 
 def test_no_identifying_strings() -> None:
-    raw = (HERE / "cases.json").read_text(encoding="utf-8").lower()
-    for leaked in ("korner", "bianki", "agustinos", "machiri", "+58", "424"):
-        assert leaked not in raw
+    # the guarded words live only as digests (`leak_guard`); CI runs the same guard over
+    # every committed data file (packages/api/tests/test_hashtag_caption_eval_leaks.py)
+    for path in leak_guard.committed_files():
+        assert not leak_guard.leaks(path.read_text(encoding="utf-8")), path.name
+    raw = (HERE / "cases.json").read_text(encoding="utf-8")
+    for fragment in ("+58", "424"):  # no phone number
+        assert fragment not in raw
 
 
 def test_watched_is_the_products_top_20() -> None:
