@@ -1,6 +1,6 @@
 # ADR 49 — Pipeline de imagen y carrusel: foto base de Seedream, capa de texto de Claude, composición en Remotion
 
-**Estado:** `[FIRMADO — por Herwin Rey (fundador) el 2026-11-13]` · propuesto por principal-architect el mismo día. El fundador respondió una por una las siete elecciones; quedan registradas en §8 y rigen sobre el resto del documento.
+**Estado:** `[FIRMADO — por Herwin Rey (fundador) el 2026-11-13]` · propuesto por principal-architect el mismo día. El fundador respondió una por una las siete elecciones; quedan registradas en §8 y rigen sobre el resto del documento. **Enmiendas:** 2026-11-14 (edición del dueño, §2.1 y §2.3) y 2026-11-16 (decisiones del fundador sobre la edición, la espera del render, el precio que no cabe y el candado de la Galería: §2.3, §2.4, §2.6 y §8.1).
 **Épica:** m-25017272 (`docs/epica-refactor-imagen-carrusel.md`) · **Historias de la Fase 1:** m-25017278, m-25017279, m-25017283, m-25017285, m-25017286, m-25017287, m-25017288, m-25017292, m-25017293.
 **Evidencia:** revisión de arquitectura de la Fase 1 del 2026-11-13 (un comentario por ticket en Meegle) y el código en `main` a esa fecha.
 **Numeración:** el 48 es `docs/adr-48-catalogo-whatsapp-carga-por-api.md` (PR #618, ya en `main`). Esta decisión es la **49**.
@@ -50,7 +50,7 @@ Las cifras marcadas **[H]** son estimaciones y las mide m-25017292. Ninguna sale
 **La imagen y el carrusel se producen en cuatro etapas con contratos tipados entre ellas, en un módulo propio. Seedream 5.0 pro solo hace la foto base, que se guarda. Una llamada de Claude con la foto escribe la capa de texto, elige un diseño de un conjunto cerrado y avisa si la base trae letras inventadas. Remotion compone. Otra llamada de Claude revisa la imagen compuesta y la corrige una vez. Ningún píxel de la pieza lo dibuja Pillow.**
 
 1. **Foto base solo de Seedream 5.0 pro, guardada** (§8.7: no se comparan modelos). El prompt de la escena no menciona texto, títulos, botones ni franjas. La base se guarda en `t/{tenant}/generated/{draft_id}/base/…` con su fila en `image_assets`: sha256, `vendor_task_id`, modelo, `rendered_prompt`, versión de prompt. Una fila con `vendor_task_id` nunca se vuelve a enviar (ADR 41 §8). Si la llamada de la capa informa letras o botones inventados, la base se regenera **una sola vez**, y ese tope lo impone una clave única sobre el intento, no un `if`. *(Enmienda 2026-11-14, en producción desde la migración `0165`, PR #664: la fila de la base va en una tabla propia `piece_base_photos`, no en `image_assets`; ver el bloque «Foto base» de la enmienda de §2.1.)*
-2. **La capa de texto es de Claude, sobre un esquema cerrado.** `LayerSpec` (pydantic) con título, subtítulo, frase de llamado opcional, bloques de información y un campo `base_has_invented_text` (§8.2). `layout_id` sale de un enum versionado que comparten Python y `packages/render/src/props.ts`, con largo máximo por campo según el diseño. El precio entra **por referencia** (`product_id` → precio del catálogo al componer), nunca como texto escrito por el modelo; hoy no se dibuja (decisión #10), pero el esquema ya no permite inventarlo.
+2. **La capa de texto es de Claude, sobre un esquema cerrado.** `LayerSpec` (pydantic) con título, subtítulo, frase de llamado opcional, bloques de información y un campo `base_has_invented_text` (§8.2). `layout_id` sale de un enum versionado que comparten Python y `packages/render/src/props.ts`, con largo máximo por campo según el diseño. El precio entra **por referencia** (`product_id` → precio del catálogo al componer), nunca como texto escrito por el modelo; hoy no se dibuja (decisión #10), pero el esquema ya no permite inventarlo. *(El 2026-11-14 el fundador lo devolvió como una línea de texto, catálogo §4 y §12. El 2026-11-16 decidió que un precio que no cabe en su caja hace rechazar la capa para que Claude reescriba el texto, y que una pieza con precio nunca se publica sin él (§8.1, D5); todavía no está construido.)*
 3. **Remotion compone.** Las props de Remotion se derivan de la capa, no al revés: cambiar de diseño no vuelve a llamar a Claude. Una pieza de imagen es una foto fija; un carrusel son N fotos fijas con contador de diapositiva. Cada foto se convierte a JPEG con las dimensiones exactas y se guarda en R2 como `slide-N.jpg` en cuanto termina, antes de que el limpiador del render la borre.
 4. **Revisión de la imagen compuesta, activa desde el inicio** (§8.3). Una llamada de Claude mira lo compuesto; si encuentra un defecto, escribe una capa corregida (fila hija, `source='model'`) y se recompone **una vez**, sin volver a llamar a Seedream.
 5. **Sin composición en Pillow y sin respaldo en Pillow.** `render_ad_slides`, `render_carousel_slide` y `text_layer` se borran en m-25017293, que también pasa a Remotion el camino viejo de carrusel dentro de `STATIC_FLYER` (§8.1). Pillow sigue solo para convertir y reducir archivos.
@@ -139,7 +139,7 @@ Un carrusel de N diapositivas son **N trabajos de render**, cada uno con `jobId 
 > **Anular la aprobación dentro de una versión (ADR 32/41), en una sola transacción con la edición:**
 > - insertar la capa nueva;
 > - borrar la confirmación (`confirmed_sha256` y su clave de R2) y devolver la pieza a «Por aprobar»;
-> - sacar de la programación sus eventos `scheduled` (y los futuros de una recurrente), conservando la fecha elegida como sugerencia para cuando el dueño vuelva a aprobar;
+> - sacar de la programación sus eventos `scheduled` (y los futuros de una recurrente), guardando la fecha elegida para cuando el dueño vuelva a aprobar (qué pasa con esa fecha al volver a aprobar: decisión del fundador del 2026-11-16, abajo);
 > - encolar la composición.
 >
 > Si un evento está en `publishing` en ese momento, la edición se rechaza («Se está publicando ahora; espera un momento»). El guardián de publicación (ADR 41 §3.4), que compara el sha256 del objeto con el confirmado, sigue siendo la última barrera aunque algo falle.
@@ -154,10 +154,11 @@ Un carrusel de N diapositivas son **N trabajos de render**, cada uno con `jobId 
 >
 > **Docstrings:** el del modelo `PieceLayer` ya describe la edición en la misma versión y coincide con esta decisión. El de la migración `0163` (la idea de que «una versión nueva vuelve a derivar de la misma capa vieja: el dueño edita, vuelve, edita de nuevo») queda superado para la edición del dueño: vale solo para «rehacer». Alinear el código es tarea de m-25017283/m-25017288.
 >
-> **Queda abierto para el fundador:**
-> - **(i)** Después de una edición del dueño, ¿la revisión automática de lo compuesto (§8.3) puede cambiar los textos que él tecleó, o solo el acomodo? Propuesta: no toca los campos del dueño; solo puede pedirle que revise.
-> - **(ii)** Al volver a aprobar, ¿la publicación vuelve sola a la fecha que tenía, o el dueño la programa de nuevo? Propuesta: se le ofrece la misma fecha con un toque.
-> - **(iii)** ¿Se puede editar una publicación **ya publicada**? Lo publicado en Meta no cambia. Propuesta: no se edita; se ofrece «Crear otra» a partir de ella.
+> **Decisiones del fundador del 2026-11-16 sobre las tres preguntas que esta enmienda dejaba abiertas** (rigen; las preguntas y propuestas originales quedan en §8.1 como registro):
+> - **(i) La revisión de lo compuesto nunca reescribe un texto que el dueño editó; solo avisa** (m-25017287, m-25017288). Sobre los campos que el dueño tecleó (`source='owner_edit'`), la revisión no escribe una capa corregida: deja un aviso para que él decida. La decisión habla solo de los textos que él tecleó: lo demás (los campos que no tocó y el acomodo: diseño, `anchor`, `container_color`, `accent_word`) queda como en §2 punto 4, una corrección como máximo. Si la historia encuentra que cambiar el acomodo obliga a reescribir un texto del dueño (por ejemplo, porque no cabe), gana esta regla: no se reescribe, se avisa.
+> - **(ii) Volver a aprobar devuelve la fecha programada si todavía no pasó** (m-25017288). Al volver a aprobar, la pieza vuelve sola a la fecha que tenía (la guardada al anular la aprobación, arriba). Si esa fecha ya pasó, la pieza queda aprobada **sin fecha** y el dueño la programa cuando quiera. Nunca se publica en una fecha pasada por haber vuelto a aprobar.
+> - **(iii) Una publicación ya publicada se puede editar** (m-25017288; el fundador eligió esto en lugar de la recomendación «Crear otra»). Editarla crea una **versión nueva, sin aprobar**; la versión publicada queda intacta como registro de lo que salió en Meta (lo publicado en Meta no cambia). Es la única edición de texto que abre una revisión en `piece_versions` sobre la misma base, porque la versión publicada no puede cambiar debajo de su registro; la versión nueva sigue el camino normal (aprobar, programar, publicar). Dos límites que ya existían siguen valiendo: una pieza anterior a este pipeline no se recompone (solo «Crear otra», §8.5), y una pieza publicada cuya foto de la Galería se quitó pasados los 30 días (§2.6, 6c) se edita eligiendo otra foto, que es «rehacer».
+>   - **Sigue abierto para el fundador:** si **volver a publicar** la versión corregida consume una creación.
 
 En `media.py` queda solo el despacho por `ContentKind`. La etapa `compose` habla con `RemotionRenderClient`; no reusa `_template` tal cual. Cada etapa se puede probar sin red con dobles de los clientes.
 
@@ -165,7 +166,7 @@ En `media.py` queda solo el despacho por `ContentKind`. La etapa `compose` habla
 
 - **Estados de la pieza:** `base_ready` → `composing` → `compose_waiting` (con `next_attempt_at` y espera creciente) → `ready` · `failed`.
 - **Trabajo en `creative_jobs`** (ADR 41) con `kind='compose'` y la clave natural `(tenant_id, draft_id, kind, revision, position)` *(enmienda 2026-11-14: más el id de la capa, porque una revisión admite varias ediciones; ver §2.3)*. El `jobId` del render sale de §2.2. Seedream no se vuelve a llamar: la base está guardada con su `vendor_task_id`.
-- **Tope de 10 minutos** (§8.4). Se cuenta desde el primer intento fallido porque el render no respondía, es decir, desde que la pieza entra en `compose_waiting`, no desde que entró a la cola: una pieza que solo espera turno detrás de otras no falla por eso. Pasados los 10 minutos, la pieza queda `failed`, **sin descontar otra creación**, con un botón para reintentar que reusa la base y la capa.
+- **Tope de 10 minutos** (§8.4). Se cuenta desde el primer intento fallido porque el render no respondía, es decir, desde que la pieza entra en `compose_waiting`, no desde que entró a la cola: una pieza que solo espera turno detrás de otras no falla por eso. **Decisión del fundador (2026-11-16, m-25017293):** el plazo cuenta desde el **primer** fallo y ningún intento posterior lo reinicia; un reintento que vuelve a fallar no le da otros 10 minutos a la pieza. Pasados los 10 minutos, la pieza queda `failed`, **sin descontar otra creación**, con un botón para reintentar que reusa la base y la capa.
 - **Lo que ve el dueño:** «La estamos terminando» mientras espera; si falla, «No pudimos terminar tu publicación. Inténtalo de nuevo; no se te descuenta otra creación.» El chequeo de salud del render con alerta lo hace m-25017289.
 - **Precondición:** la cola de ADR 41 activa para imagen y carrusel en producción, y el despachador `inline` retirado para esos tipos, **antes** de borrar Pillow. Los hilos de `InlineDispatcher` mueren al reiniciar y no dejan reintento durable.
 
@@ -181,6 +182,12 @@ En `media.py` queda solo el despacho por `ContentKind`. La etapa `compose` habla
 ### 2.6 «Usar mi foto» referencia la Galería, y la Galería no deja borrar lo que una pieza usa
 
 Decisión del fundador (§8.6): *«referencia a la galería, pero no debería dejar eliminar algo de galería si se está usando de referencia para una pieza»*.
+
+> **Enmienda 2026-11-16 — el fundador respondió las subpreguntas 6a–6d de §8** (m-25017286). Rigen sobre el resto de esta sección; los párrafos de abajo ya están corregidos donde decían otra cosa.
+> - **6a. Cualquier pieza que use la foto bloquea su borrado, también un borrador sin aprobar.** El aviso de rechazo ofrece descartar ese borrador ahí mismo.
+> - **6b. El candado aplica solo a las piezas NUEVAS:** las creadas con «Usar mi foto» cuando salga, también cuando usan una foto de producto del Catálogo. Las piezas que ya existen (incluidas las que arma hoy `gallery_piece.py`) conservan su propia copia de los bytes y no se rellenan ni se migran. Reemplazar la foto de un producto sigue permitido: la pieza conserva la que usó.
+> - **6c. Una pieza publicada protege su foto 30 días desde la publicación.** Después, la foto se puede quitar: la publicación se sigue viendo igual en la aplicación (se muestra la imagen compuesta), pero ya no se puede recomponer con esa foto; para editarla, el dueño elige otra. Los borradores, las piezas aprobadas y las programadas protegen la foto **sin límite de tiempo**. Los 30 días son una propuesta aceptada, **no una cifra medida**.
+> - **6d. Cortar en la Galería un video que usa una pieza guarda el resultado como un video nuevo y deja el original intacto;** el corte no se bloquea. Ver «Corte de un video en uso» abajo: hoy el código hace lo contrario.
 
 **Tabla de referencias `piece_media_refs`** (misma migración que `piece_layers`, o la de m-25017286; **enmienda 2026-11-14:** no entró en `0163`, la crea la migración de m-25017286):
 
@@ -203,8 +210,8 @@ Concurrencia: crear la referencia toma el bloqueo `FOR KEY SHARE` de la FK sobre
 - «Quitar» de la Galería (`remove_business_media`), uno por uno.
 - Quitar varios a la vez, si existe o cuando exista: quita los libres y dice cuáles se quedaron.
 - El conciliador diario: solo termina medios que ya tienen lápida, así que no salta el candado; no hace falta cambiarlo, pero un test lo fija.
-- El corte de un video (deja la lápida en el original): queda rechazado si el original está en uso.
-- Quitar o reemplazar una foto de producto en Catálogo (`remove_media`), cuando la referencia es a esa fila de `product_media`.
+- El corte de un video: **no se rechaza** (6d, 2026-11-16; antes decía que quedaba rechazado si el original estaba en uso). Si una pieza usa el original, el corte deja el original intacto y las partes quedan como videos nuevos; ver «Corte de un video en uso».
+- Quitar una foto de producto en Catálogo (`remove_media`), cuando la referencia es a esa fila de `product_media`. **Reemplazarla sigue permitido** (6b, 2026-11-16): la pieza conserva la foto que usó; cómo se conserva (que el reemplazo no borre la fila referenciada, o que la referencia apunte a una fila que no se toca) lo resuelve m-25017286.
 - La purga de piezas de ADR 39 y el borrado de un negocio: no borran medios de la Galería; el borrado de un negocio borra primero sus piezas y con ellas las referencias.
 
 **Lo que ve el dueño cuando se rechaza** (español llano, `qualify-copy-es`):
@@ -212,17 +219,28 @@ Concurrencia: crear la referencia toma el bloqueo `FOR KEY SHARE` de la FK sobre
 
 Con varias publicaciones: «…la usan 3 de tus publicaciones: «{título 1}», «{título 2}» y otra más.» Cada título lleva a su publicación. El mensaje no dice «referencia», «pieza» ni «borrador».
 
+Si la que la usa es una publicación sin aprobar, el aviso ofrece descartarla ahí mismo (6a, 2026-11-16), con su confirmación; al descartarla se libera la foto y el dueño puede quitarla. El texto exacto lo escribe m-25017286 con `qualify-copy-es`.
+
 **Cómo se libera:**
 1. **La pieza se borra:** `ON DELETE CASCADE`.
 2. **La pieza deja de usar la foto:** al recomponer o cambiar la foto, las referencias se reescriben para la revisión vigente. Las revisiones viejas no retienen nada, porque no se recomponen.
 3. **La purga de ADR 39:** cuando la pieza queda marcada `media_purged_at`, se borran sus referencias en la misma transacción. Se libera por la marca en la base de datos, no por el éxito del borrado en R2: con el bloqueo del bucket sobre `t/` (#491) los bytes de la pieza pueden quedar, y eso no debe dejar la foto de la Galería bloqueada para siempre.
+4. **30 días después de publicada** (6c, 2026-11-16): una pieza publicada deja de proteger su foto. Como el disparador rechaza la lápida mientras exista una fila en `piece_media_refs`, la historia tiene que hacer que esa protección venza sola: o el disparador ignora las referencias de piezas publicadas hace más de 30 días, o una tarea periódica las borra. La elección es de m-25017286; la regla es que el dueño pueda quitar la foto el día 31 sin que nadie intervenga. Una pieza publicada que además sigue programada (un evento futuro o una recurrente) cuenta como programada y protege sin límite.
 
 **Cruce con ADR 39 y ADR 47:**
-- Los medios de la Galería no caducan (ADR 47); la pieza sí. Una pieza publicada retiene su foto hasta **90 días después de su último uso**. Una pieza con evento `scheduled` o recurrente la retiene mientras siga programada.
+- Los medios de la Galería no caducan (ADR 47); la pieza sí. Una pieza publicada retiene su foto **30 días desde la publicación** (6c, 2026-11-16; antes decía «hasta 90 días después de su último uso»). Una pieza por aprobar, aprobada o con evento `scheduled` o recurrente la retiene sin límite de tiempo, mientras siga en ese estado.
 - El candado protege **poder recomponer**, no la publicación: el publicador lee la imagen compuesta de `generated/`, no la foto de la Galería.
 - La foto de la Galería vive en `gallery/` (fuera de `t/`); el bloqueo de R2 no le afecta.
 
-**Alcance:** el mismo candado aplica a las piezas que ya arma `gallery_piece.py` con medios de la Galería; hoy esas piezas no tienen candado. Ver la subpregunta 6b de §8.
+**Alcance (6b, 2026-11-16; reemplaza el párrafo anterior, que extendía el candado a las piezas de `gallery_piece.py`):** el candado aplica solo a las piezas nuevas creadas con «Usar mi foto», también cuando usan una foto de producto del Catálogo. Las piezas que ya existen, incluidas las que arma hoy `gallery_piece.py`, conservan su propia copia de los bytes; la migración de m-25017286 **no** rellena referencias hacia atrás.
+
+**Corte de un video en uso (6d, 2026-11-16).** Hechos del código leídos el 2026-11-16 (lectura, no ejecución):
+- «Cortar video» es el recorte. Hoy el trabajador (`packages/api/src/qualify_api/catalog/media_worker.py`, `_save_parts` y `_finish_cut`) crea filas nuevas de `business_media` y objetos en R2 para los tramos que se conservan, pone la lápida al original en la misma transacción y después **borra** la fila del original y su carpeta de R2 («a saved cut is never undone»).
+- El único candado de borrado que existe hoy es «el video se está cortando» (`remove_business_media`, `catalog/business_media.py`, `CUTTING_TEXT`). `piece_media_refs` no existe en ningún código ni migración (solo la nombra el docstring de `0163`).
+
+Por eso 6d **cambia el comportamiento**: cuando una pieza usa el video, el corte tiene que conservar el original. La lectura más simple: el corte no borra (ni pone la lápida a) un original que tiene referencia, y los dos videos quedan en la Galería, el original y sus partes. El mecanismo exacto lo decide m-25017286. Tiene que encajar con el disparador de arriba: hoy la lápida del original va en la **misma** transacción que guarda las partes (`_save_parts`), así que un disparador que la rechace haría fallar el trabajo justo al guardar las partes. El corte tiene que mirar la referencia antes (con el original bloqueado) y, si existe, guardar las partes sin lápida y cerrar el trabajo sin borrar el original. Un corte nunca debe terminar fallido por chocar con el candado.
+
+**Riesgo abierto, independiente de esta épica:** los planes de clips y partes guardan la clave de R2 del original como texto (`clip_video_keys` y los tramos de video propio en `creative/parts_plan.py`), sin referencia en la base de datos. Cortar hoy un video de la Galería borra el original y puede romper un proyecto de clips que todavía no terminó de producirse. Es una lectura del código, no se reprodujo. Queda para un ticket propio.
 
 ## 3. Condiciones que tienen que cumplirse (bloqueantes)
 
@@ -230,7 +248,7 @@ Con varias publicaciones: «…la usan 3 de tus publicaciones: «{título 1}», 
 2. **Clave del render con contenido.** Ningún trabajo nuevo usa `_template_job_id`; la clave es la de §2.2.
 3. **Cola en producción.** m-25017293 no empieza hasta que m-25017277 confirme `QUALIFY_CREATIVE_DISPATCHER=queue` (o equivalente) para imagen y carrusel en producción.
 4. **Recomponer anula la aprobación y tiene fecha de vencimiento.** *(Enmienda 2026-11-14: vale igual para la edición del dueño dentro de la misma versión, que además saca la pieza de la programación; ver §2.3.)* Recomponer invalida `confirmed_sha256` (ADR 32 doble aprobación, ADR 41 §3.3) y la pieza vuelve a «por aprobar». Después de la purga de ADR 39, o para piezas anteriores a este pipeline (no tienen base guardada), no hay recomposición: la pantalla ofrece solo «Crear otra» (§8.5).
-5. **El candado de la Galería existe en la base de datos antes de que «Usar mi foto» salga** (m-25017286): disparador, FK `RESTRICT`, el mensaje para el dueño y tests `-m db` que prueben que la lápida se rechaza y que otro negocio no ve ni bloquea nada.
+5. **El candado de la Galería existe en la base de datos antes de que «Usar mi foto» salga** (m-25017286): disparador, FK `RESTRICT`, el mensaje para el dueño y tests `-m db` que prueben que la lápida se rechaza y que otro negocio no ve ni bloquea nada. *(Enmienda 2026-11-16, 6a–6d: los tests también fijan que un borrador sin aprobar bloquea, que una pieza publicada deja de bloquear a los 30 días, y que cortar un video en uso deja el original y no falla el trabajo.)*
 
 ## 4. Opciones consideradas
 
@@ -277,8 +295,10 @@ Con varias publicaciones: «…la usan 3 de tus publicaciones: «{título 1}», 
   - Dos llamadas a Claude con imagen en **toda** pieza, también en «Usar mi foto», que no cobra creación: ~US$0,02–0,04 [H] por pieza que no se recuperan con el cupo.
   - Si el render cae más de 10 minutos, las piezas fallan (sin cobro) y el dueño tiene que reintentar; antes Pillow las terminaba.
   - Las piezas viejas dejan de poder editarse.
-  - El dueño puede encontrarse con que no puede quitar una foto de su Galería durante hasta 90 días después del último uso de una publicación, o mientras esté programada.
-  - El candado toca código que ya está en producción (`remove_business_media`, `remove_media`, el corte) y un tipo de pieza que ya existe (`gallery_piece.py`).
+  - El dueño puede encontrarse con que no puede quitar una foto de su Galería mientras una publicación por aprobar, aprobada o programada la use, o durante 30 días desde que se publicó (6c, 2026-11-16; antes decía 90 días después del último uso).
+  - Cortar un video en uso deja dos videos en la Galería (el original y sus partes) en lugar de reemplazar el original (6d, 2026-11-16).
+  - El candado toca código que ya está en producción (`remove_business_media`, `remove_media`, el corte de `media_worker.py`). Las piezas que ya arma `gallery_piece.py` quedan fuera (6b, 2026-11-16).
+  - Una publicación ya publicada se puede editar (2026-11-16): cada corrección es una versión nueva, y queda abierto si volver a publicarla consume una creación.
 - **Operación.** El perfil `render` (1536m, concurrencia 1) pasa a estar en el camino de toda imagen. Si un carrusel de 10 tarda demasiado, el tope de diapositivas se ajusta (decisión #14).
 
 ## 7. Qué queda abierto para la medición (m-25017292)
@@ -286,7 +306,8 @@ Con varias publicaciones: «…la usan 3 de tus publicaciones: «{título 1}», 
 Sin comparación de modelos de Seedream (§8.7). Se mide:
 - Tiempo por foto fija, sobrecosto por trabajo y memoria máxima en el perfil `render`; tiempo de un carrusel de 10 a concurrencia 1 → tope de diapositivas.
 - Tokens, costo y latencia reales de las dos llamadas de Claude con imagen; si el campo `base_has_invented_text` detecta las letras inventadas tan bien como una llamada aparte.
-- La revisión de lo compuesto (m-25017287): costo y latencia por pieza, y **qué parte de las imágenes corrige de verdad**.
+- La revisión de lo compuesto (m-25017287): costo y latencia por pieza, y **qué parte de las imágenes corrige de verdad**; desde el 2026-11-16, también cuántas veces solo avisa porque el texto es del dueño.
+- **No es de la medición, pero tampoco está medido** (2026-11-16): los 30 días de 6c son una propuesta aceptada. Cuando el candado esté en producción, contar cuántas veces un dueño choca con él y cuántas publicaciones se editan después de 30 días; eso es lo que lo reabre (§9).
 
 ## 8. Decisiones del fundador al firmar (2026-11-13)
 
@@ -300,11 +321,29 @@ Sin comparación de modelos de Seedream (§8.7). Se mide:
 | 6 | Foto del dueño en «Usar mi foto» | **Variante propia:** *«referencia a la galería, pero no debería dejar eliminar algo de galería si se está usando de referencia para una pieza»*. La pieza referencia la foto, sin copia, y la Galería rechaza borrarla mientras una pieza la use (§2.6) | **No** (se recomendaba una copia por pieza) |
 | 7 | Modelo de la foto base | **Seedream 5.0 pro**, sin comparar modelos; m-25017292 deja fuera la comparación pro/lite/flash | **No** (se proponía elegir con la medición) |
 
-**Subpreguntas que deja abiertas la decisión 6** (las responde el fundador; mientras tanto, se construye con la opción marcada):
+**Subpreguntas que dejaba abiertas la decisión 6** — *respondidas por el fundador el 2026-11-16; las respuestas están en §8.1 y en §2.6. Las preguntas quedan como registro:*
 - **6a. ¿Una pieza sin aprobar también bloquea el borrado?** Propuesta: sí, cualquier pieza que exista (por aprobar, aprobada, programada o publicada), con un enlace para borrarla desde el mismo aviso. Alternativa: solo las aprobadas o programadas, y que una pieza por aprobar pierda la foto (y la posibilidad de recomponer) si el dueño la borra.
 - **6b. ¿El candado aplica también a las piezas que ya arma la Galería (`gallery_piece.py`) y a las fotos de producto del Catálogo?** Propuesta: sí, la misma tabla para las dos. Las piezas ya existentes ganan el candado cuando se carguen sus referencias; hace falta decidir si se cargan hacia atrás (relleno en la migración) o solo para las piezas nuevas.
 - **6c. ¿Una publicación ya publicada debe retener la foto hasta 90 días?** La foto solo sirve para recomponer, y una pieza publicada rara vez se recompone. Alternativa: liberar la foto al publicar, y que esa pieza ya no se pueda recomponer.
 - **6d. Videos de la Galería:** el corte de un video usado por una pieza queda rechazado. ¿Se acepta, o el corte debe crear partes nuevas sin poner la lápida en el original mientras esté en uso?
+
+### 8.1 Decisiones del fundador del 2026-11-16
+
+Tomadas por Herwin Rey (fundador) el 2026-11-16. Rigen sobre §2.3, §2.4, §2.6 y sobre las subpreguntas de arriba; esas secciones ya están corregidas.
+
+| # | Tema (historia) | Decisión | ¿Coincide con la recomendación? |
+|---|---|---|---|
+| D1 | Revisión de lo compuesto y textos del dueño (m-25017287, m-25017288) | La revisión nunca reescribe un texto que el dueño editó; solo avisa (§2.3, (i)) | Sí |
+| D2 | Volver a aprobar después de editar (m-25017288) | Editar anula la aprobación (ya firmado el 2026-11-14). Volver a aprobar devuelve la fecha programada si todavía no pasó; si pasó, la pieza queda aprobada sin fecha (§2.3, (ii)) | Parecida (se proponía ofrecer la fecha con un toque) |
+| D3 | Editar una publicación ya publicada (m-25017288) | Se puede: crea una versión nueva sin aprobar y la versión publicada queda intacta como registro (§2.3, (iii)). **Abierto:** si volver a publicar la versión corregida consume una creación | **No** (se recomendaba «Crear otra») |
+| D4 | Espera del render (m-25017293) | Los 10 minutos cuentan desde el primer fallo y ningún intento posterior los reinicia (§2.4) | Sí |
+| D5 | Precio que no cabe en su caja (historia que conecte `compose_layer` con la generación real) | La capa se rechaza para que Claude reescriba el texto; una pieza con precio nunca se publica sin él. **No está construido:** hoy el compositor quita el precio más ancho que su caja (`dropped_slots`, `packages/render/CONTRACT.md`, catálogo §1.7) | — (era una decisión pendiente, sin recomendación escrita) |
+| D6a | Borrador sin aprobar (m-25017286) | Cualquier pieza que use la foto bloquea su borrado, también un borrador sin aprobar; el aviso ofrece descartar ese borrador ahí mismo | Sí |
+| D6b | Alcance del candado (m-25017286) | Solo piezas nuevas creadas con «Usar mi foto», también con fotos de producto del Catálogo. Las existentes conservan su copia de los bytes; sin relleno ni migración. Reemplazar la foto de un producto sigue permitido; la pieza conserva la que usó | En parte (se proponía la misma tabla para todo, con relleno por decidir) |
+| D6c | Pieza publicada (m-25017286) | Protege su foto 30 días desde la publicación; después se puede quitar, la publicación se sigue viendo igual en la aplicación pero no se recompone con esa foto (para editarla, otra foto). Borradores, aprobadas y programadas protegen sin límite. 30 días: propuesta aceptada, no medida | Variante (se discutían 90 días o liberar al publicar) |
+| D6d | Corte de un video en uso (m-25017286) | Cortar guarda el resultado como video nuevo y deja el original intacto; el corte no se bloquea. Cambia el comportamiento actual del trabajador de corte (§2.6, «Corte de un video en uso») | Sí (era la alternativa planteada en la pregunta) |
+
+**Abiertos después del 2026-11-16:** (1) si volver a publicar una versión corregida consume una creación (D3); (2) el riesgo de los planes de clips que guardan la clave de R2 del original como texto (§2.6), para un ticket propio.
 
 ## 9. Qué lo reabriría
 
@@ -312,6 +351,8 @@ Sin comparación de modelos de Seedream (§8.7). Se mide:
 - **Tope de 10 minutos (§8.4):** si en un mes más del 1 % de las piezas falla por el tope mientras el render se recupera solo en menos de 30 minutos, se vuelve a proponer un tope más largo.
 - **Seedream 5.0 pro (§8.7):** si su precio sube, si el fundador o un cliente reportan caídas de calidad, o si BytePlus cambia el manejo de datos del preset.
 - **Candado de la Galería (§8.6):** si los dueños reportan más de una vez al mes que no pueden quitar fotos, o si el soporte tiene que liberar referencias a mano: se revisa la variante de copia por pieza.
+- **30 días de una publicada (D6c, 2026-11-16):** si un dueño pide editar publicaciones de más de 30 días y ya no tiene la foto más de una vez al mes, se lleva al fundador alargar el plazo; si los dueños chocan con el candado por publicaciones recientes, acortarlo.
+- **Volver a publicar una versión corregida (D3, 2026-11-16):** se decide si consume creación antes de que m-25017288 salga con la edición de publicadas.
 - Un trabajo con varios puertos ahorra más de ~2 s por diapositiva sin perder la reanudación.
 - El render, con concurrencia 1, deja piezas en «La estamos terminando» más de 5 min en el p95 durante una semana: subir la memoria o la concurrencia con su tabla de opciones.
 - Un cliente pide editar piezas anteriores a este pipeline más de una vez.
