@@ -1,5 +1,6 @@
 """Physical reference pruning through the real producer/router, with offline vendors."""
 
+import json
 from decimal import Decimal
 from uuid import uuid4
 
@@ -254,3 +255,44 @@ def test_vision_generation_and_estimation_use_identical_image_inputs():
         "data": "YWJj",
     }
     assert messages[0]["content"][-1]["text"] == request.rendered_prompt.volatile_suffix
+
+
+def _clip_selection_request(first: str, videos: tuple[str, ...]) -> tuple[dict, list[str]]:
+    """The selector's request for a clip with brand candidates, built offline."""
+    from .test_creative_clip import _tiny_mp4
+
+    selector = Selector(photo_indices=[])
+    producer, _, _ = setup_selector(selector)
+    producer._seedance_reference_model = "dreamina-seedance-2-0-mini-260615"
+    for key in {first, *videos}:
+        if key.endswith(".mp4"):
+            producer._store.files[key] = _tiny_mp4()
+    brief = _brief(
+        ContentKind.CLIP, clip_first_frame_key=first, clip_video_keys=videos, **selection()
+    )
+    refs = producer.prepare_brand_references(
+        tenant_id=TENANT_ID, draft_id=uuid4(), brief=brief, kit=_kit()
+    )
+    producer._select_resources(TENANT_ID, brief, refs, BUDGET, [])
+    (request,) = selector.requests
+    return json.loads(request.rendered_prompt.volatile_suffix), request.params["input_images"]
+
+
+def test_clip_opened_by_a_video_shows_the_selector_its_first_frame_once():
+    """Production 2026-11-15 (draft 703b4d55): a clip made only from gallery videos takes
+    its opening frame from the first one; the selector preview read the mp4 bytes as an
+    image and the owner saw «No pudimos abrir una de tus imágenes»."""
+    video = f"uploads/{TENANT_ID}/v1.mp4"
+    payload, images = _clip_selection_request(video, (video, f"uploads/{TENANT_ID}/v2.mp4"))
+    assert payload["scene_frames"] == 1  # the opening frame IS the first video's frame
+    assert len(images) == 5  # four brand candidates + that one frame
+    assert all(url.startswith("data:image/jpeg;base64,") for url in images)
+
+
+def test_clip_opened_by_an_image_keeps_both_scene_frames():
+    """Unchanged contract: an image opening plus a reference video are two frames."""
+    payload, images = _clip_selection_request(
+        f"uploads/{TENANT_ID}/p1.jpg", (f"uploads/{TENANT_ID}/v1.mp4",)
+    )
+    assert payload["scene_frames"] == 2
+    assert len(images) == 6  # four brand candidates + the image + the video's frame
