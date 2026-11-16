@@ -35,6 +35,8 @@ Two rules the callers can rely on:
   view count and the first known date, never a second row. «Popular» is
   `recent_views` — the views of the posts carrying the tag that were posted in the last
   `POPULAR_WINDOW_DAYS` — and `resolve_popular` is `resolve` re-ordered by it.
+- **What goes with the rubro** (m-25032581) is `companions`: the other tags on the posts
+  the weekly read found for a business's rubro tags, by posts and views. Read-only.
 """
 
 from __future__ import annotations
@@ -256,6 +258,70 @@ class RecentViews:
 
 
 @dataclass(frozen=True)
+class CompanionTag:
+    """A tag that accompanies a business's rubro tags on the read posts (m-25032581):
+    `posts` is how many distinct such posts carry it, `views` their summed views (a post
+    with unknown views counts 0)."""
+
+    tag: str
+    posts: int
+    views: int
+
+
+#: What `companions` returns unless told otherwise: a generic (`fyp`), place or noise tag
+#: says nothing about what a caption is about.
+COMPANION_KINDS = ("topic", "unknown")
+#: Whose posts `companions` reads by default: the weekly TikTok read per rubro tag
+#: (m-25026378), the one read made of the business's own rubro tags.
+COMPANION_SOURCES = ("hashtag_weekly",)
+_WORD_ONLY = re.compile(r"\w+")
+
+
+@dataclass(frozen=True)
+class _CompanionRow:
+    """One sighting of a candidate companion on a carrying post."""
+
+    tag: str
+    seen_count: int
+    network: str
+    post_id: str
+    views: int | None
+
+
+def _collapse_companions(rows: Iterable[_CompanionRow], limit: int) -> tuple[CompanionTag, ...]:
+    """Both implementations' last step: the rows grouped by slug (`fold`), each post once
+    per slug (its highest known views), spelled the word-only way, else the most seen
+    spelling; ordered by posts, views, tag; cut at `limit`."""
+    posts: dict[str, dict[tuple[str, str], int]] = {}
+    spellings: dict[str, dict[str, tuple[int, int]]] = {}
+    for row in rows:
+        slug = fold(row.tag)
+        if not slug:
+            continue
+        key = (row.network, row.post_id)
+        per_post = posts.setdefault(slug, {})
+        per_post[key] = max(per_post.get(key, 0), row.views or 0)
+        names = spellings.setdefault(slug, {})
+        carried, seen = names.get(row.tag, (0, row.seen_count))
+        names[row.tag] = (carried + 1, max(seen, row.seen_count))
+    out = []
+    for slug, per_post in posts.items():
+        names = spellings[slug]
+        tag = min(
+            names,
+            key=lambda name: (
+                0 if _WORD_ONLY.fullmatch(name) else 1,
+                -names[name][0],
+                -names[name][1],
+                name,
+            ),
+        )
+        out.append(CompanionTag(tag=tag, posts=len(per_post), views=sum(per_post.values())))
+    out.sort(key=lambda c: (-c.posts, -c.views, c.tag))
+    return tuple(out[: max(limit, 0)])
+
+
+@dataclass(frozen=True)
 class ReelPost:
     """One `public_reels` row (0117) as the catalog reads it — a reels read already paid
     for, re-read for its caption, views and date."""
@@ -401,6 +467,28 @@ class HashtagRepository(Protocol):
           `resolve`'s.
 
         Each hit carries `recent_views`/`recent_posts` whatever its tier."""
+        ...
+
+    def companions(
+        self,
+        tenant_id: UUID,
+        tags: Iterable[str],
+        *,
+        window_days: int = POPULAR_WINDOW_DAYS,
+        now: datetime | None = None,
+        limit: int = 20,
+        kinds: Sequence[str] = COMPANION_KINDS,
+        sources: Sequence[str] = COMPANION_SOURCES,
+    ) -> tuple[CompanionTag, ...]:
+        """The tags that accompany `tags` (a business's rubro tags) on the read posts
+        (m-25032581). A post counts when it carries at least one of `tags` through a
+        sighting from `sources` posted in the last `window_days` before `now` (a post with
+        no known date never counts, as in `recent_views`); every OTHER tag on such a post
+        whose `kind` is in `kinds` is a companion, with how many such posts carry it and
+        their summed views. `tags` themselves are left out by slug (`Shawarma` =
+        `shawarma`), and tags sharing a slug are one companion, spelled with word
+        characters only (else the most seen spelling). Ordered by posts, then views, then
+        tag; at most `limit`. `()` for no tags. Read-only."""
         ...
 
     def public_reels_since(self, tenant_id: UUID, since: datetime) -> tuple[ReelPost, ...]:
@@ -758,6 +846,39 @@ class MemoryHashtagRepository:
             now=now,
         )
 
+    def companions(
+        self,
+        tenant_id: UUID,
+        tags: Iterable[str],
+        *,
+        window_days: int = POPULAR_WINDOW_DAYS,
+        now: datetime | None = None,
+        limit: int = 20,
+        kinds: Sequence[str] = COMPANION_KINDS,
+        sources: Sequence[str] = COMPANION_SOURCES,
+    ) -> tuple[CompanionTag, ...]:
+        own = {slug for slug in (fold(t) for t in tags) if slug}
+        if not own:
+            return ()
+        cutoff = _cutoff(window_days, now)
+        carriers = {
+            (network, post)
+            for (tag, network, post), s in self._sightings.items()
+            if fold(tag) in own
+            and s.source in sources
+            and s.posted_at is not None
+            and s.posted_at >= cutoff
+        }
+        rows = []
+        for (tag, network, post), s in self._sightings.items():
+            stored = self._tags.get(tag)
+            if (network, post) not in carriers or stored is None:
+                continue
+            if stored.kind not in kinds or fold(tag) in own:
+                continue
+            rows.append(_CompanionRow(tag, stored.seen_count, network, post, s.views))
+        return _collapse_companions(rows, limit)
+
     def public_reels_since(self, tenant_id: UUID, since: datetime) -> tuple[ReelPost, ...]:
         return tuple(r for r in self.public_reels if r.taken_at >= since)
 
@@ -957,6 +1078,25 @@ _RECENT_VIEWS = text(
     FROM hashtag_post_sightings s JOIN hashtags h ON h.id = s.hashtag_id
     WHERE h.tag = ANY(:tags) AND s.posted_at >= :cutoff
     GROUP BY h.tag
+    """
+)
+
+#: m-25032581: the posts carrying one of the rubro's slugs through a sighting of
+#: `:sources` posted since `:cutoff`, and every other tag of `:kinds` on them. The final
+#: grouping (slug collapse, order, limit) is `_collapse_companions`, shared with the
+#: memory implementation; a rubro's read is a few dozen posts, so the rows are few.
+_COMPANIONS = text(
+    """
+    WITH carriers AS (
+        SELECT DISTINCT s.network, s.post_id
+        FROM hashtag_post_sightings s JOIN hashtags h ON h.id = s.hashtag_id
+        WHERE h.slug = ANY(:slugs) AND s.source = ANY(:sources) AND s.posted_at >= :cutoff
+    )
+    SELECT h.tag, h.seen_count, s.network, s.post_id, s.views
+    FROM carriers c
+    JOIN hashtag_post_sightings s ON s.network = c.network AND s.post_id = c.post_id
+    JOIN hashtags h ON h.id = s.hashtag_id
+    WHERE h.kind = ANY(:kinds) AND NOT (h.slug = ANY(:slugs))
     """
 )
 
@@ -1189,6 +1329,34 @@ class PostgresHashtagRepository:
             kinds=kinds,
             window_days=window_days,
             now=now,
+        )
+
+    def companions(
+        self,
+        tenant_id: UUID,
+        tags: Iterable[str],
+        *,
+        window_days: int = POPULAR_WINDOW_DAYS,
+        now: datetime | None = None,
+        limit: int = 20,
+        kinds: Sequence[str] = COMPANION_KINDS,
+        sources: Sequence[str] = COMPANION_SOURCES,
+    ) -> tuple[CompanionTag, ...]:
+        own = sorted({slug for slug in (fold(t) for t in tags) if slug})
+        if not own:
+            return ()
+        cutoff = _cutoff(window_days, now)
+        params = {
+            "slugs": own,
+            "sources": list(sources),
+            "kinds": list(kinds),
+            "cutoff": cutoff,
+        }
+        with tenant_session(tenant_id) as session:
+            rows = session.execute(_COMPANIONS, params).all()
+        return _collapse_companions(
+            (_CompanionRow(r.tag, int(r.seen_count), r.network, r.post_id, r.views) for r in rows),
+            limit,
         )
 
     def public_reels_since(self, tenant_id: UUID, since: datetime) -> tuple[ReelPost, ...]:

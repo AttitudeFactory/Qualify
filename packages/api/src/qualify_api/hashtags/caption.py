@@ -43,6 +43,13 @@ KINDS: tuple[str, ...] = ("popular", "nicho", "marca")
 MAX_PICKS = 12
 CAPTION_MAX_CHARS = 4000  # what the model is shown — a caption is at most 2,200
 
+#: The prompt with the watched tags (m-25032581). A call without them sends exactly the
+#: previous prompt, byte for byte, so it is booked as `PROMPT_VERSION_WITHOUT_WATCHED`.
+PROMPT_VERSION = "caption-hashtags/2"
+PROMPT_VERSION_WITHOUT_WATCHED = "caption-hashtags/1"
+#: At most this many watched tags reach the model.
+MAX_WATCHED = 20
+
 
 @dataclass(frozen=True)
 class SeenTag:
@@ -50,6 +57,16 @@ class SeenTag:
 
     tag: str
     seen_count: int
+
+
+@dataclass(frozen=True)
+class WatchedTag:
+    """A tag that accompanies the business's own rubro tags on the most watched videos
+    the weekly read found (m-25032581; `HashtagRepository.companions`)."""
+
+    tag: str
+    views: int  # summed views of the rubro's read videos carrying it (last 90 days)
+    posts: int  # how many of those videos
 
 
 @dataclass(frozen=True)
@@ -78,6 +95,38 @@ Reglas:
 - Nada genérico sin relación con el texto (#love, #instagood) ni repetidos.
 - El motivo es una frase corta en español."""
 
+#: Appended to `SYSTEM` only when watched tags are sent (m-25032581). `SYSTEM` itself is
+#: never edited: a call without them is today's request byte for byte.
+WATCHED_ADDENDUM = """Hashtags que acompañan a los del negocio:
+- Son hashtags que aparecen junto a los hashtags del propio negocio en los videos recientes \
+más vistos de su rubro (se indican las vistas sumadas y en cuántos videos aparecen).
+- Prefiérelos cuando encajen con lo que dice el texto.
+- Uno visto en un solo video es una pista débil.
+- Nunca elijas el nombre de otro negocio o de otra cuenta.
+- Nunca elijas uno que no encaje con el texto solo porque tiene muchas vistas.
+- Son videos de TikTok y no dicen nada de «tendencia hoy»."""
+
+
+def _views_label(views: int) -> str:
+    """`2,4 M de vistas`, `12 mil vistas`, `850 vistas` — compact and unambiguous."""
+    if views >= 1_000_000:
+        number = f"{views / 1_000_000:.1f}".rstrip("0").rstrip(".").replace(".", ",")
+        return f"{number} M de vistas"
+    if views >= 1_000:
+        return f"{views // 1_000} mil vistas"
+    return "1 vista" if views == 1 else f"{views} vistas"
+
+
+def _watched_block(watched: Sequence[WatchedTag]) -> list[str]:
+    lines = [
+        "Hashtags que acompañan a los del negocio en los videos recientes más vistos de su "
+        "rubro (TikTok, últimos 90 días):"
+    ]
+    for item in watched[:MAX_WATCHED]:
+        videos = "1 video" if item.posts == 1 else f"{item.posts} videos"
+        lines.append(f"- {item.tag} ({_views_label(item.views)}, {videos})")
+    return lines
+
 
 def _tool(max_picks: int) -> dict[str, Any]:
     return strict_tool(
@@ -101,13 +150,21 @@ def _tool(max_picks: int) -> dict[str, Any]:
     )
 
 
-def _message(caption: str, seen: Sequence[SeenTag], current: Sequence[str]) -> str:
+def _message(
+    caption: str,
+    seen: Sequence[SeenTag],
+    current: Sequence[str],
+    watched: Sequence[WatchedTag] = (),
+) -> str:
     lines = [f"Texto de la publicación:\n«{caption[:CAPTION_MAX_CHARS]}»", ""]
     if seen:
         lines.append("Hashtags del catálogo (vistos en publicaciones reales, veces vistos):")
         lines.extend(f"- {t.tag} ({t.seen_count})" for t in seen)
     else:
         lines.append("El catálogo no tiene hashtags para este tema todavía.")
+    if watched:
+        lines.append("")
+        lines.extend(_watched_block(watched))
     if current:
         lines.append("")
         lines.append("Ya elegidos (no los repitas): " + ", ".join(current))
@@ -128,27 +185,36 @@ def suggest_for_caption(
     *,
     attribution: Attribution,
     seen: Sequence[SeenTag] = (),
+    watched: Sequence[WatchedTag] = (),
     current: Sequence[str] = (),
     api_key: str,
     max_picks: int = MAX_PICKS,
     client_factory: ClientFactory | None = None,
 ) -> list[CaptionHashtag]:
     """Up to `max_picks` hashtags for the whole caption, best first, none already in
-    `current`. Raises `ClaudeToolError` (via `create_turn`) on a refusal or truncation."""
+    `current`. Raises `ClaudeToolError` (via `create_turn`) on a refusal or truncation.
+
+    `watched` (m-25032581) adds `WATCHED_ADDENDUM` to the system prompt and a block of at
+    most `MAX_WATCHED` tags to the message; without it the request is the previous one,
+    byte for byte. The call is booked with its prompt version (`Attribution.versioned`):
+    `PROMPT_VERSION` with watched tags, `PROMPT_VERSION_WITHOUT_WATCHED` without."""
     if not caption.strip():
         return []
+    watched = tuple(watched)[:MAX_WATCHED]
     client = (client_factory or default_client)(api_key)
     meter = Meter(CAPTION_MODEL)
     response = create_turn(
         client,
         CAPTION_MODEL,
         meter,
-        system=SYSTEM,
-        messages=[{"role": "user", "content": _message(caption, seen, current)}],
+        system=f"{SYSTEM}\n\n{WATCHED_ADDENDUM}" if watched else SYSTEM,
+        messages=[{"role": "user", "content": _message(caption, seen, current, watched)}],
         tools=[_tool(max_picks)],
         tool_choice=forced_or_auto(CAPTION_MODEL, SUGGEST_TOOL),
         max_tokens=2048,
-        attribution=attribution,
+        attribution=attribution.versioned(
+            PROMPT_VERSION if watched else PROMPT_VERSION_WITHOUT_WATCHED
+        ),
     )
     use = next((u for u in tool_uses(response) if u.name == SUGGEST_TOOL), None)
     if use is None:
