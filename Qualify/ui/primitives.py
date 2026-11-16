@@ -630,7 +630,7 @@ def loading_spinner(size: str = "md") -> rx.Component:
     return rx.el.svg(
         _loader_layer("q-loader-faint"),
         _loader_layer("q-loader-ink"),
-        class_name="q-spinner",
+        class_name="q-spinner q-spinner--sm" if size == "sm" else "q-spinner",
         view_box="0 0 24 24",
         style={"width": diameter, "height": diameter, "flex_shrink": "0"},
         role="status",

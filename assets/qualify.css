@@ -1014,6 +1014,9 @@ button.q-biz-trigger:disabled { cursor: progress; opacity: 0.8; }
   animation: q-enter var(--q-dur-slow) var(--q-ease) both;
 }
 .q-step-body[data-dir="back"] > * { --q-from-x: -18px; }
+/* the 18 px slide never shows a horizontal scrollbar (360 px phones); `clip`, not
+   `hidden`: no scroll container, so the sticky foot keeps working */
+.q-step-body { overflow-x: clip; }
 @media (prefers-reduced-motion: reduce) {
   .q-step-body > * { animation: none; }
   .q-step-bar-fill { transition: none; }
@@ -1108,7 +1111,9 @@ button.q-biz-trigger:disabled { cursor: progress; opacity: 0.8; }
      q-fade   sc-fade: from an opacity (--q-from-opacity, 0 by default)
      q-pop    sc-pop: from a scale on the independent `scale` property, so it composes
               with any `transform` the element (or a library like Sonner) already uses
-     q-pulse  sc-pulse: up to 1.12 — run it an even number of times, `alternate`
+     q-pulse  sc-pulse: up to 1.12 — run it an even number of times, `alternate`, so it
+              ends at rest; the exception is a loader (or a «grabando» dot), which
+              loops `infinite` for as long as the work lasts
      q-ping   a ring going out and fading (the landing loader's ping), box-shadow only
      q-trace  LiquidLoading «trace»: a stroke draws, holds, drains (`ui.loading_spinner`) */
 @property --q-from-x { syntax: "<length>"; inherits: false; initial-value: 0px; }
@@ -1151,19 +1156,17 @@ button.q-biz-trigger:disabled { cursor: progress; opacity: 0.8; }
 .q-settle > *:nth-child(5) { animation-delay: 280ms; }
 .q-settle > *:nth-child(n + 6) { animation-delay: 350ms; }
 
-/* An empty state's icon pops in like the result badge at the end of a landing scene. */
+/* An empty state's icon pops in like the result badge at the end of a landing scene:
+   scale only, never from invisible (the q-settle rule). */
 .q-empty > * > svg:first-child {
-  animation:
-    q-pop var(--q-dur-slow) var(--q-spring) 120ms both,
-    q-fade var(--q-dur) var(--q-ease) 120ms both;
+  animation: q-pop var(--q-dur-slow) var(--q-spring) 120ms both;
 }
 
 /* ── Reduced motion (global, as the landing: global.css, KIT:869-879) ─────────
    Motion here is decorative, never informational, so it is turned off whole:
    animations cut to 0.01 ms (above 0 so `animationend` still fires — Radix waits for
-   it), no delays, transitions at 0 s (0.01 ms would start a transition on every
-   property from its initial value). Nothing in `assets/*.js` waits for
-   `transitionend`. */
+   it), no delays, transitions at 0.01 ms (not the landing's 0 s: above 0 so
+   `transitionend` still fires — vaul and Sonner wait for it). */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -1171,11 +1174,12 @@ button.q-biz-trigger:disabled { cursor: progress; opacity: 0.8; }
     animation-duration: 0.01ms !important;
     animation-delay: 0s !important;
     animation-iteration-count: 1 !important;
-    transition-duration: 0s !important;
+    transition-duration: 0.01ms !important;
     transition-delay: 0s !important;
     scroll-behavior: auto !important;
   }
-  /* The one delay that is not motion: the «tarda más de lo normal» hint waits 12 s. */
+  /* A delay used as a TIMER is not motion and needs an exemption here, like this one:
+     the «tarda más de lo normal» hint waits 12 s. */
   .q-slow-hint { animation-delay: 12s !important; }
   .q-lift:hover { transform: none; }
   /* buttons and choice cards: after their skin («Buttons, reduced motion» below) */
@@ -1560,6 +1564,14 @@ button.q-biz-trigger:disabled { cursor: progress; opacity: 0.8; }
 .q-spinner .q-loader-ink .q-loader-waves path:nth-child(1) { animation-delay: 0.44s; }
 .q-spinner .q-loader-ink .q-loader-waves path:nth-child(2) { animation-delay: 0.56s; }
 .q-spinner .q-loader-ink .q-loader-waves path:nth-child(3) { animation-delay: 0.68s; }
+/* `sm` (inside a busy button, next to a sentence): a shorter round with no hold, so it
+   reads as «working» at a glance; `md`/`lg` keep the landing's 2.8 s with its hold. */
+@keyframes q-trace-run {
+  0% { stroke-dashoffset: 1; }
+  50% { stroke-dashoffset: 0; }
+  100% { stroke-dashoffset: -1; }
+}
+.q-spinner--sm .q-loader-ink path { animation-name: q-trace-run; animation-duration: 1.6s; }
 @media (prefers-reduced-motion: reduce) {
   .radix-themes .rt-Skeleton::after { animation: none; }
   .q-spinner .q-loader-ink path,

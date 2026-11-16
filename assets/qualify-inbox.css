@@ -64,6 +64,7 @@
   white-space: nowrap;
 }
 .q-wa-scroll {
+  overflow-x: clip; /* the bubbles slide in 18 px from the side */
   overflow-y: auto;
   overscroll-behavior: contain;
 }
@@ -420,16 +421,19 @@
 /* A message's entrance, as the landing's chat (StepInbox si-in-left / si-in-right): the
    customer's bubble comes in from the left, ours from the right, growing from 90 %.
    Transform only, never opacity (the q-settle rule) — a frozen animation leaves it a
-   little off and small, never invisible. The row is keyed by message id, so only a NEW
-   bubble plays it. */
+   little off and small, never invisible. Only the NEWEST bubble plays it (the last row of
+   the thread): opening a chat never replays its history, and a reply that arrives — the
+   rows are keyed by message id — becomes the last row and plays once. */
 .q-chat-msg {
   --q-from-y: 0px;
   --q-from-scale: 0.9;
-  animation: q-enter var(--q-dur-slow) var(--q-spring) both;
   transform-origin: bottom center;
 }
 .q-chat-msg--out { --q-from-x: 18px; transform-origin: bottom right; }
 .q-chat-msg--in { --q-from-x: -18px; transform-origin: bottom left; }
+.q-chat-scroll > * > :last-child .q-chat-msg {
+  animation: q-enter var(--q-dur-slow) var(--q-spring) both;
+}
 /* A context line (an ad, a story, a tap) stacks above the customer's bubble. */
 .q-chat-msg--context {
   flex-direction: column;
@@ -795,7 +799,7 @@ textarea.q-reply-field::placeholder,
 }
 /* m-24984052 kept: no entrance and no breathing under «reducir movimiento». */
 @media (prefers-reduced-motion: reduce) {
-  .q-chat-msg {
+  .q-chat-scroll > * > :last-child .q-chat-msg {
     animation: none;
   }
 }

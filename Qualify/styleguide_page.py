@@ -804,19 +804,31 @@ def _motion_demo() -> rx.Component:
                         class_name="q-settle",
                     ),
                     rx.text(
-                        ".q-chat-msg — el cliente por la izquierda, tú por la derecha",
+                        ".q-chat-msg — el cliente por la izquierda, tú por la derecha "
+                        "(en un chat, sólo la burbuja más nueva)",
                         size="1",
                         color=T.TEXT_MUTED,
                     ),
-                    rx.box(
-                        chat_bubble(
-                            rx.text("¿Tienen envío a domicilio?", size="2"), direction="in"
-                        ),
-                        class_name="q-wa-msg q-wa-msg--in q-chat-msg q-chat-msg--in",
-                    ),
-                    rx.box(
-                        chat_bubble(rx.text("¡Sí! Llegamos en 30 minutos.", size="2")),
-                        class_name="q-wa-msg q-wa-msg--out q-chat-msg q-chat-msg--out",
+                    *(
+                        # each sample is the newest row of its own thread, so both play
+                        rx.box(
+                            rx.vstack(
+                                rx.box(
+                                    rx.box(
+                                        chat_bubble(rx.text(text, size="2"), direction=side),
+                                        class_name=f"q-wa-msg q-wa-msg--{side} q-chat-msg "
+                                        f"q-chat-msg--{side}",
+                                    )
+                                ),
+                                width="100%",
+                            ),
+                            class_name="q-wa-scroll q-chat-scroll",
+                            width="100%",
+                        )
+                        for side, text in (
+                            ("in", "¿Tienen envío a domicilio?"),
+                            ("out", "¡Sí! Llegamos en 30 minutos."),
+                        )
                     ),
                     rx.text(
                         "empty_state — el icono aparece con muelle", size="1", color=T.TEXT_MUTED

@@ -718,7 +718,7 @@
     radial-gradient(60% 55% at 20% 115%, var(--red-a6), transparent 70%),
     radial-gradient(55% 50% at 70% 120%, var(--orange-a6), transparent 70%),
     linear-gradient(0deg, var(--orange-a3), transparent 55%);
-  animation: q-embers 2.6s var(--q-ease) infinite alternate;
+  animation: q-embers 2.6s var(--q-ease) 4 alternate; /* a few rounds, then still */
 }
 @keyframes q-embers {
   0%   { opacity: 0.65; transform: translateY(1px); }
@@ -734,7 +734,7 @@
     radial-gradient(1.5px 1.5px at 67% 22%, rgba(255, 255, 255, 0.85), transparent 60%),
     radial-gradient(1px 1px at 88% 12%, rgba(255, 255, 255, 0.8), transparent 60%),
     linear-gradient(180deg, var(--sky-a5), var(--indigo-a2) 45%, transparent 70%);
-  animation: q-frost 4s var(--q-ease) infinite alternate;
+  animation: q-frost 4s var(--q-ease) 4 alternate;
 }
 @keyframes q-frost { from { opacity: 0.7; } to { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) {

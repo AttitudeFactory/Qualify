@@ -181,20 +181,22 @@ bloque anidado nunca toma la distancia de su padre.
 |---|---|---|---|
 | `q-settle` (8 px, 40 ms entre bloques, tope 160 ms) | entrada de toda página (`page_body`), auth, listas | `q-enter`: 18 px, **70 ms** entre bloques, desde el 6.º todos a 350 ms | `.q-reveal--stagger` |
 | `q-step-in-next` / `q-step-in-back` (8 px) | cuerpo del paso a paso (§4.5) | `q-enter` con `--q-from-x` ±18 px | `sc-from-right` / `sc-from-left` |
-| `q-conv-pop` (6 px abajo, 97 %) | burbujas de Conversaciones y WhatsApp (`.q-chat-msg`) | `q-enter`: el cliente entra por la izquierda, tú por la derecha, desde 90 %, con muelle | `si-in-left` / `si-in-right` (StepInbox) |
+| `q-conv-pop` (6 px abajo, 97 %) | burbujas de Conversaciones y WhatsApp (`.q-chat-msg`) | `q-enter`: el cliente entra por la izquierda, tú por la derecha, desde 90 %, con muelle; **sólo la burbuja más nueva** (la última fila del hilo): abrir un chat no repite el historial. El contenedor (`.q-wa-scroll`) recorta en horizontal | `si-in-left` / `si-in-right` (StepInbox) |
 | `q-progress-in` | `progress_panel` y su comentario de etapa | `q-enter` + `q-fade` (sube 18 px y aparece) | `.q-reveal` |
 | `q-content-in` (0,55 → 1) | `.q-content-ready` | `q-fade` con `--q-from-opacity: 0.55` | `sc-fade` |
 | `q-orbit-rise` / `q-orbit-fade` | píldoras del «+» (`orbit_menu`) | `q-enter` (12 px) + `q-fade`; con movimiento reducido sólo `q-fade` | `sc-in` / `sc-fade` |
 | `q-deck-enter` | la tarjeta de la baraja del Brand Kit | `q-enter` (14 px, 96 %) + `q-fade` | `sc-in` |
 | `q-toast-pop` | toasts | `q-pop` desde 0,82 | `sc-pop` |
 | `q-cr-slide-land` | una diapositiva soltada (Generador) | `q-pop` desde 1,07 | `sc-pop` |
-| `q-spin` (anillo del kit) | `loading_spinner` en toda la app, también dentro de botones ocupados | `q-trace` + `q-pulse` sobre la marca Q (`MARK_Q`/`MARK_WAVES`) | `LiquidLoading` «trace» |
+| `q-spin` (anillo del kit) | `loading_spinner` en toda la app, también dentro de botones ocupados | `q-trace` + `q-pulse` sobre la marca Q (`MARK_Q`/`MARK_WAVES`); en `sm` (botones ocupados) `q-trace-run`, 1,6 s sin pausa, para que se lea «trabajando» | `LiquidLoading` «trace» |
 | `q-conv-breathe` (infinito) | punto de no leído (Chats) · punto de grabación | `q-pulse`: el de no leído late 4 veces y para; el de grabación late mientras graba (dice «grabando») | `sc-pulse` |
-| `q-flicker` (infinito) | llama de «caliente» (Planificador, tarjetas) | `q-pulse` 6 veces y para | `sc-pulse` |
+| `q-flicker` (infinito) | llama de «Por probar» (Planificador, tarjetas) | `q-pulse` 6 veces y para | `sc-pulse` |
 | `q-pulse` del Planificador (anillo) · `q-clip-wait` | punto «en vivo» · botón de un clip que carga | `q-ping` (con `--q-ping-color`) | ping del cargador |
 | `q-cr-sheen` · `q-progress-sweep` | tarjeta fantasma del Generador · barra de progreso | `q-shimmer` (eran el mismo barrido, duplicado) | — (barrido del kit) |
-| — (nuevo) | icono de `empty_state` | `q-pop` + `q-fade` con muelle | `sc-pop` del final de cada escena |
-| apagado global con `transition-duration: 0.01ms` y sin tocar retardos | toda la app | como la landing: animaciones a 0,01 ms, **retardos a 0**, transiciones a **0 s**; botones y `choice_card` no suben ni se hunden | `global.css` (KIT:869-879), `LinkButton` |
+| — (nuevo) | icono de `empty_state` | `q-pop` con muelle (sólo escala: nunca parte de invisible) | `sc-pop` del final de cada escena |
+| apagado global con `transition-duration: 0.01ms` y sin tocar retardos | toda la app | como la landing: animaciones a 0,01 ms, **retardos a 0**, transiciones a 0,01 ms (no los 0 s de la landing: así `transitionend` sigue llegando a vaul y Sonner); botones y `choice_card` no suben ni se hunden | `global.css` (KIT:869-879), `LinkButton` |
+| `q-embers` / `q-frost` (infinitos) | chips de temperatura del Planificador | los mismos, 4 vueltas `alternate` y quietos | regla de la landing: lo que se mueve solo para antes de 5 s |
+| `q-step-in-*` en JS (±8 px) | paso a paso del menú de WhatsApp (`whatsapp_menu_state._guided_settle`) | ±18 px, igual que `.q-step-body` (que además recorta en horizontal: el desliz no saca barra en 360 px) | `sc-from-*` |
 
 **Se quedan como están** (la landing no tiene nada equivalente; son de una interacción
 propia de la app): `q-shimmer` (skeleton, del kit), `q-progress-creep` (avance de una
@@ -202,7 +204,7 @@ espera sin progreso real), `q-drawer-in` (panel lateral), la cápsula y la etiqu
 sidebar (`q-glass-shimmer`, `q-glass-travel-*`, `q-glass-label-shimmer`, del kit), la
 baraja y el ordenar del Brand Kit (`q-deck-nudge`, `q-deck-float`, `q-zone-*-pop`,
 `q-fly-*`, `q-rank-flash`, `q-rank-pulse`), `q-conv-pulse` (fila con mensaje nuevo),
-`q-embers`/`q-frost` (chips caliente/frío del Planificador) y `q-slow-hint-show`, que no
+y `q-slow-hint-show`, que no
 es movimiento sino un aviso a los 12 s (por eso conserva su retardo aun con movimiento
 reducido). Los botones ya se movían como los de la landing (suben 2 px, `scale(0.975)` al
 pulsar): sin cambios.
