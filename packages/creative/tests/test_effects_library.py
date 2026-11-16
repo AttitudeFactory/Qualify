@@ -439,13 +439,19 @@ def test_a_video_text_names_its_design_with_both_fields() -> None:
     from qualify_creative.effects import text_layer_problems
     from qualify_creative.layer_spec import LAYOUT_VERSION, LayoutId
 
-    named = VideoTextLayer(text="Hola", layout_id=LayoutId.BAND, layout_version=LAYOUT_VERSION)
+    named = VideoTextLayer(text="Hola", layout_id=LayoutId.SCRIM, layout_version=LAYOUT_VERSION)
     assert VideoTextLayer.model_validate_json(named.model_dump_json()) == named
     assert text_layer_problems(named, part=1) == ()
     assert text_layer_problems(VideoTextLayer(text="Hola"), part=1) == ()
     with pytest.raises(ValidationError, match="layout"):
         VideoTextLayer(text="Hola", layout_id=LayoutId.BAND)
-    for layout_id, version in ((LayoutId.PHOTO_ONLY, LAYOUT_VERSION), (LayoutId.BAND, 99)):
+    # EF-05: a design the video's text layer does not draw (band, plate…) is refused too
+    for layout_id, version in (
+        (LayoutId.PHOTO_ONLY, LAYOUT_VERSION),
+        (LayoutId.BAND, 99),
+        (LayoutId.BAND, LAYOUT_VERSION),
+        (LayoutId.PLATE, LAYOUT_VERSION),
+    ):
         layer = VideoTextLayer(text="Hola", layout_id=layout_id, layout_version=version)
         problems = text_layer_problems(layer, part=2)
         assert [(p.code, p.part, p.field) for p in problems] == [
