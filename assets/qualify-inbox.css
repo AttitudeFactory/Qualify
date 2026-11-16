@@ -132,11 +132,8 @@
   border-radius: 9999px;
   background: var(--accent-9);
   box-shadow: 0 0 0 2px var(--q-control-fill);
-  animation: q-conv-breathe 1.8s var(--q-ease) infinite;
-}
-@keyframes q-conv-breathe {
-  0%, 100% { transform: scale(1); }
-  50% { transform: scale(1.25); }
+  /* a few beats when it shows, then still (landing sc-pulse; stops within 5 s) */
+  animation: q-pulse 0.9s var(--q-ease) 4 alternate;
 }
 /* A row whose newest inbound arrived since the last refresh: one soft pulse on the edge. */
 .q-conv-row--fresh {
@@ -154,10 +151,6 @@
   background: var(--q-control-fill);
   box-shadow: inset 0 0 0 1px var(--q-control-edge);
   font-variant-numeric: tabular-nums;
-}
-@keyframes q-conv-pop {
-  from { transform: translateY(6px) scale(0.97); }
-  to { transform: none; }
 }
 .q-conv-seen {
   padding-right: 0.25rem;
@@ -299,7 +292,8 @@
   height: 0.6rem;
   border-radius: 9999px;
   background: var(--red-9);
-  animation: q-conv-breathe 1s var(--q-ease) infinite;
+  /* beats for as long as it records: it says «grabando» (essential, not decoration) */
+  animation: q-pulse 0.5s var(--q-ease) infinite alternate;
 }
 .q-conv-timer {
   font-size: 12px;
@@ -423,15 +417,19 @@
   border-radius: var(--q-radius-control);
   background: var(--q-chat-scroll-wash), var(--gray-a2);
 }
-/* A message's entrance: transform only, never opacity (the q-settle rule) — a frozen
-   animation leaves it 6 px low and slightly small, never invisible. The row is keyed by
-   message id, so only a NEW bubble plays it. */
+/* A message's entrance, as the landing's chat (StepInbox si-in-left / si-in-right): the
+   customer's bubble comes in from the left, ours from the right, growing from 90 %.
+   Transform only, never opacity (the q-settle rule) — a frozen animation leaves it a
+   little off and small, never invisible. The row is keyed by message id, so only a NEW
+   bubble plays it. */
 .q-chat-msg {
-  animation: q-conv-pop var(--q-dur-slow) var(--q-spring) both;
+  --q-from-y: 0px;
+  --q-from-scale: 0.9;
+  animation: q-enter var(--q-dur-slow) var(--q-spring) both;
   transform-origin: bottom center;
 }
-.q-chat-msg--out { transform-origin: bottom right; }
-.q-chat-msg--in { transform-origin: bottom left; }
+.q-chat-msg--out { --q-from-x: 18px; transform-origin: bottom right; }
+.q-chat-msg--in { --q-from-x: -18px; transform-origin: bottom left; }
 /* A context line (an ad, a story, a tap) stacks above the customer's bubble. */
 .q-chat-msg--context {
   flex-direction: column;

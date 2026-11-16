@@ -84,14 +84,21 @@ STEPS_DEMO_ROUTE = "/design/pasos"
 
 class DrawerDemoState(rx.State):
     """The style guide's only state: whether the sample drawer is open, and which of
-    its sample steps is current. Nothing tenant-bound."""
+    its sample steps is current, and the motion samples' round. Nothing tenant-bound."""
 
     open: bool = False
     step: int = 1
+    #: bumped by «Repetir» in «Movimiento»: the samples are keyed by it, so they remount
+    #: and play their entrances again
+    motion_round: int = 0
 
     @rx.event
     def set_open(self, value: bool) -> None:
         self.open = value
+
+    @rx.event
+    def replay_motion(self) -> None:
+        self.motion_round += 1
 
     @rx.event
     def go(self, index: int) -> None:
@@ -766,6 +773,87 @@ def _motion_row(name: str, value: str, use: str) -> rx.Component:
     )
 
 
+def _motion_demo() -> rx.Component:
+    """The landing's entrances in the app's classes (docs/design-system.md §3.3.1): the
+    page cascade, the chat bubbles, an empty state, a beat. «Repetir» remounts them."""
+    return card(
+        rx.vstack(
+            rx.hstack(
+                rx.text("Entradas (las mismas de la landing)", size="2", weight="medium"),
+                rx.button(
+                    rx.icon("rotate-ccw", size=T.ICON_SM),
+                    "Repetir",
+                    on_click=DrawerDemoState.replay_motion,
+                    variant="soft",
+                    size="2",
+                ),
+                justify="between",
+                align="center",
+                width="100%",
+            ),
+            rx.box(
+                rx.vstack(
+                    rx.text(
+                        ".q-settle — sube 18 px, 70 ms entre bloques", size="1", color=T.TEXT_MUTED
+                    ),
+                    rx.grid(
+                        *(card(rx.text(f"Bloque {i}", size="2")) for i in range(1, 5)),
+                        columns=rx.breakpoints(initial="2", md="4"),
+                        spacing="3",
+                        width="100%",
+                        class_name="q-settle",
+                    ),
+                    rx.text(
+                        ".q-chat-msg — el cliente por la izquierda, tú por la derecha",
+                        size="1",
+                        color=T.TEXT_MUTED,
+                    ),
+                    rx.box(
+                        chat_bubble(
+                            rx.text("¿Tienen envío a domicilio?", size="2"), direction="in"
+                        ),
+                        class_name="q-wa-msg q-wa-msg--in q-chat-msg q-chat-msg--in",
+                    ),
+                    rx.box(
+                        chat_bubble(rx.text("¡Sí! Llegamos en 30 minutos.", size="2")),
+                        class_name="q-wa-msg q-wa-msg--out q-chat-msg q-chat-msg--out",
+                    ),
+                    rx.text(
+                        "empty_state — el icono aparece con muelle", size="1", color=T.TEXT_MUTED
+                    ),
+                    empty_state(
+                        "inbox",
+                        "Aún no hay mensajes",
+                        "Cuando un cliente te escriba, lo verás aquí.",
+                    ),
+                    rx.hstack(
+                        rx.box(rx.icon("flame", size=14), class_name="q-temp q-temp--hot"),
+                        rx.text(
+                            "q-pulse — late unas veces y se queda quieto",
+                            size="1",
+                            color=T.TEXT_MUTED,
+                        ),
+                        align="center",
+                        spacing="2",
+                    ),
+                    spacing="3",
+                    width="100%",
+                ),
+                key=DrawerDemoState.motion_round,
+                width="100%",
+            ),
+            rx.text(
+                "Con «reducir movimiento» del sistema nada de esto se mueve: todo aparece en "
+                "su sitio.",
+                size="1",
+                color=T.TEXT_FAINT,
+            ),
+            spacing="3",
+            width="100%",
+        )
+    )
+
+
 def _motion_section() -> rx.Component:
     return section(
         "Movimiento y elevación",
@@ -845,6 +933,7 @@ def _motion_section() -> rx.Component:
             spacing="3",
             width="100%",
         ),
+        _motion_demo(),
         description="Las mismas curvas en todo el producto; la elevación no decora.",
         spacing="4",
     )
@@ -1095,6 +1184,7 @@ def _states() -> rx.Component:
                 rx.text("Trabajo en curso = spinner", size="2", weight="medium"),
                 rx.text(
                     "Algo se está haciendo: scraping, generando, sincronizando, publicando. "
+                    "El cargador de la landing: la marca se llena de color trazo a trazo. "
                     "Siempre junto a la frase que dice qué pasa.",
                     size="1",
                     color=T.TEXT_MUTED,
@@ -1667,7 +1757,7 @@ def _components_section() -> rx.Component:
         ),
         _bottom_bar_sample(),
         rx.text(
-            "Mientras se crea una publicación (m-24973458): el anillo ocupa el lugar del "
+            "Mientras se crea una publicación (m-24973458): el cargador ocupa el lugar del "
             "icono de «Crear publicación» en el menú y de «Crear» en la barra, en todas las "
             "pantallas, hasta que la publicación termina o falla.",
             size="2",

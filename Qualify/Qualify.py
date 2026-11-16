@@ -153,7 +153,7 @@ app = QualifyApp(
     # to miss there, not that the corner itself was wrong. Fixed two ways instead of
     # by relocating it: the "Built with Reflex" badge that used to sit in the same
     # corner is now disabled (rxconfig.py), and the toast itself gets an attention
-    # cue on entrance — see `q-toast-pop`/`[data-sonner-toast]` in assets/qualify.css.
+    # cue on entrance — see `q-pop` on `[data-sonner-toast]` in assets/qualify.css.
     toaster=rx.toast.provider(position="bottom-right", close_button=True),
     # The creator-discovery cards' pictures (`avatar_proxy.py`): a FastAPI app mounted
     # on the same backend, so the browser never touches a vendor's signed URL.

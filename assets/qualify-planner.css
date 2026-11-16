@@ -620,9 +620,9 @@
   width: 8px; height: 8px; flex-shrink: 0; border-radius: 999px;
   background: var(--grass-9);
   box-shadow: 0 0 0 0 var(--grass-a7);
-  animation: q-pulse 2s var(--q-ease) infinite;
+  --q-ping-color: var(--grass-a7);
+  animation: q-ping 2s var(--q-ease) infinite;
 }
-@keyframes q-pulse { 70% { box-shadow: 0 0 0 7px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
 .q-confirm-bar {
   padding: 0.6rem 0.75rem;
   border-radius: var(--q-radius-card);

@@ -78,10 +78,6 @@
 .q-deck-card.q-deck-settled {
   animation: q-deck-float 3.2s ease-in-out infinite;
 }
-@keyframes q-deck-enter {
-  from { opacity: 0; transform: translateY(14px) scale(0.96); }
-  to   { opacity: 1; transform: none; }
-}
 @keyframes q-deck-nudge {
   0%, 100% { transform: none; }
   30%      { transform: translateX(-14px) rotate(-2.5deg); }
@@ -92,8 +88,12 @@
   50%      { transform: translateY(-4px); }
 }
 .q-deck-enter {
+  /* comes in like a landing scene card (sc-in): rising and growing, fading in */
+  --q-from-y: 14px;
+  --q-from-scale: 0.96;
   animation:
-    q-deck-enter var(--q-dur-slow) var(--q-ease) both,
+    q-enter var(--q-dur-slow) var(--q-ease) both,
+    q-fade var(--q-dur-slow) var(--q-ease) both,
     q-deck-nudge 1.1s var(--q-ease) 0.9s 1,
     q-deck-float 3.2s ease-in-out 2.2s infinite;
 }

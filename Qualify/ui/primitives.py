@@ -368,6 +368,7 @@ def empty_state(
         ),
         padding=T.PAD_EMPTY,
         width="100%",
+        class_name="q-empty",  # the icon pops in (assets/qualify.css)
     )
 
 
@@ -427,13 +428,28 @@ def skeleton_rows(
 
 
 #: `loading_spinner`'s one real variant — size. There is no light/dark variant to
-#: pick: the ring (`.q-spinner` in `assets/qualify.css`) is the kit's — a quiet track
-#: in the gray scale and the accent on top. size -> (diameter, ring track).
-_SPINNER_SIZES: dict[str, tuple[str, str]] = {
-    "sm": ("1.25rem", "2px"),  # inline, next to the sentence that says what is happening
-    "md": ("2.25rem", "3px"),  # a standalone wait (default)
-    "lg": ("3.5rem", "4px"),  # a full-panel wait — e.g. the Brand Kit wizard's own
+#: pick: the mark (`.q-spinner` in `assets/qualify.css`) is in Radix accent variables.
+_SPINNER_SIZES: dict[str, str] = {
+    "sm": "1.25rem",  # inline, next to the sentence that says what is happening
+    "md": "2.25rem",  # a standalone wait (default)
+    "lg": "3.5rem",  # a full-panel wait — e.g. the Brand Kit wizard's own
 }
+
+# The Lucide `radar` icon (ISC), rotated 90° so its needle is the tail of a Q, and split
+# in two layers: the Q (inner ring, centre dot, needle) and the waves (outer ring, the
+# stray dot). Same 24-unit paths as the icon — nothing redrawn. Used by `qualify_mark`
+# (layout) and by `loading_spinner`.
+MARK_Q: tuple[str, ...] = (
+    "M16.24 7.76A6 6 0 1 0 8.23 16.67",
+    "M17.99 11.66A6 6 0 0 1 15.77 16.67",
+    "M12 18h.01",
+    "m13.41 10.59 5.66-5.66",
+)
+MARK_WAVES: tuple[str, ...] = (
+    "M19.07 4.93A10 10 0 0 0 6.99 3.34",
+    "M2.29 9.62A10 10 0 1 0 21.31 8.35",
+    "M4 6h.01",
+)
 
 
 class DragCard(rx.el.Div):
@@ -584,19 +600,39 @@ def asset_script(name: str) -> str:
     return (_ASSETS / name).read_text(encoding="utf-8")
 
 
+def _loader_layer(class_name: str) -> rx.Component:
+    """One copy of the mark for the loader; every path has length 1 so CSS can dash it."""
+    svg = rx.el.svg
+    length = {"pathLength": "1"}
+    return svg.g(
+        svg.g(
+            *(svg.path(d=d, custom_attrs=length) for d in MARK_WAVES),
+            class_name="q-loader-waves",
+        ),
+        svg.g(
+            *(svg.path(d=d, custom_attrs=length) for d in MARK_Q),
+            svg.circle(cx=12, cy=12, r=2),
+            class_name="q-loader-q",
+        ),
+        class_name=class_name,
+        transform="rotate(90 12 12)",
+    )
+
+
 def loading_spinner(size: str = "md") -> rx.Component:
-    """Work in progress — scraping, generating, syncing, publishing. The kit's ring
-    (`.q-spinner`), never Radix's own `rx.spinner`, and never for content that is merely
-    loading (that is a skeleton, see the rule above). Inside a button's busy state too:
-    `rx.cond(busy, loading_spinner("sm"), rx.icon(...))` keeps the icon slot."""
-    diameter, track = _SPINNER_SIZES.get(size, _SPINNER_SIZES["md"])
-    return rx.box(
+    """Work in progress — scraping, generating, syncing, publishing. The landing's
+    loader (LiquidLoading «trace», `.q-spinner`): the Qualify mark whose strokes fill
+    with the accent one after another. Never Radix's own `rx.spinner`, and never for
+    content that is merely loading (that is a skeleton, see the rule above). Inside a
+    button's busy state too: `rx.cond(busy, loading_spinner("sm"), rx.icon(...))`
+    keeps the icon slot."""
+    diameter = _SPINNER_SIZES.get(size, _SPINNER_SIZES["md"])
+    return rx.el.svg(
+        _loader_layer("q-loader-faint"),
+        _loader_layer("q-loader-ink"),
         class_name="q-spinner",
-        width=diameter,
-        height=diameter,
-        min_width=diameter,
-        min_height=diameter,
-        style={"--q-spinner-track": track},
+        view_box="0 0 24 24",
+        style={"width": diameter, "height": diameter, "flex_shrink": "0"},
         role="status",
         aria_label="Cargando",
     )
