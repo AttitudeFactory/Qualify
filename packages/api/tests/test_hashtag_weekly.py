@@ -926,3 +926,115 @@ def test_a_hashtag_kept_while_waiting_for_its_claim_is_not_paid() -> None:
     vendor = Vendor()
     report, _, _ = _tick(vendor, [business], log=log, claims=_KeptMeanwhile())
     assert vendor.requests == [] and report.outcomes[0].fresh == ["shawarma"]
+
+
+# -- m-25032581: rule classification at no cost, and only readable tags -----------------
+
+
+def _with_tags(tag: str, *co_tags: str) -> dict[str, Any]:
+    desc = " ".join(f"#{t}" for t in (tag, *co_tags))
+    return {"aweme_list": [_video(f"{tag}-{_word()}", days_ago=2, views=900, desc=desc)]}
+
+
+def test_a_new_generic_or_place_tag_is_classified_by_rule() -> None:
+    co_tag = _word()
+    vendor = Vendor({"shawarma": _with_tags("shawarma", "like", "fyp", "cucutafood", co_tag)})
+    _, _, repo = _tick(vendor, [_business("shawarma")])
+    kinds = {
+        t: (repo.get(uuid4(), t).kind, repo.get(uuid4(), t).classified_by)
+        for t in ("like", "fyp", "cucutafood", co_tag)
+    }
+    assert kinds == {
+        "like": ("generic", "rule"),
+        "fyp": ("generic", "rule"),
+        "cucutafood": ("place", "rule"),
+        co_tag: ("unknown", "rule"),  # no rule settles it: it stays for later
+    }
+    # nothing counted as a search sighting, and the queue still skips them
+    assert all(repo.get(uuid4(), t).seen_count == 0 for t in kinds)
+    queued = {t.tag for t in repo.needs_classification(uuid4(), limit=100_000)}
+    assert not queued & set(kinds)
+
+
+def test_a_later_read_repairs_a_tag_left_unknown() -> None:
+    repo = MemoryHashtagRepository()
+    # an earlier read (before m-25032581) stored `like` as unknown
+    repo.record_post_sightings(
+        uuid4(),
+        [
+            NewPostSighting(
+                tag="like",
+                network="tiktok",
+                post_id="old-1",
+                source=weekly.SOURCE,
+                source_ref=weekly.SOURCE_REF,
+                parser_version="tiktok-hashtag-weekly/1",
+            )
+        ],
+    )
+    assert repo.get(uuid4(), "like").kind == "unknown"
+    _tick(Vendor({"shawarma": _with_tags("shawarma", "like")}), [_business("shawarma")], repo=repo)
+    assert repo.get(uuid4(), "like").kind == "generic"
+
+
+def test_a_manual_or_ai_decision_is_never_overwritten_by_the_rule() -> None:
+    from qualify_api.hashtags import Classification
+
+    repo = MemoryHashtagRepository()
+    repo.record_post_sightings(
+        uuid4(),
+        [
+            NewPostSighting(
+                tag=tag,
+                network="tiktok",
+                post_id="old-2",
+                source="referentes",
+                source_ref="tiktok:hashtag",
+                parser_version="test/1",
+            )
+            for tag in ("like", "fyp")
+        ],
+    )
+    repo.apply_classifications(
+        uuid4(),
+        [
+            Classification("like", "topic", "food_drink", classified_by="manual"),
+            Classification("fyp", "noise", classified_by="ai"),
+        ],
+    )
+    _tick(
+        Vendor({"shawarma": _with_tags("shawarma", "like", "fyp")}),
+        [_business("shawarma")],
+        repo=repo,
+    )
+    assert (repo.get(uuid4(), "like").kind, repo.get(uuid4(), "like").classified_by) == (
+        "topic",
+        "manual",
+    )
+    assert (repo.get(uuid4(), "fyp").kind, repo.get(uuid4(), "fyp").classified_by) == (
+        "noise",
+        "ai",
+    )
+
+
+def test_a_flag_spelling_is_not_stored_apart() -> None:
+    now = datetime.now(UTC)
+    video = _video("v-flag", days_ago=1, desc="Rico #tachira_venezuela🇻🇪", now=now)
+    video["text_extra"] = [{"hashtag_name": "tachira_venezuela🇻🇪"}, {"hashtag_name": "🍔"}]
+    tags = {s.tag for s in weekly.parse_videos("shawarma", {"aweme_list": [video]}, now=now)}
+    assert tags == {"shawarma", "tachira_venezuela"}
+    assert weekly.PARSER_VERSION == "tiktok-hashtag-weekly/2"
+
+
+def test_a_failed_classification_never_loses_the_sightings(monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = MemoryHashtagRepository()
+
+    def _broken(*_args: object, **_kwargs: object) -> int:
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(repo, "apply_classifications", _broken)
+    report, _, _ = _tick(
+        Vendor({"shawarma": _with_tags("shawarma", "like")}), [_business("shawarma")], repo=repo
+    )
+    outcome = report.outcomes[0]
+    assert outcome.sightings == 2 and outcome.errors == 1 and outcome.read == ["shawarma"]
