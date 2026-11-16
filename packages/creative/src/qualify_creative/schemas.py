@@ -725,6 +725,13 @@ SEGMENTS_MAX = 8
 VIDEO_TEXT_MAX = 120
 #: ED-15 (D-T2): at most this many texts over one part, one Clip or the whole video.
 TEXT_LAYERS_MAX = 3
+#: EF-05 (Deivid, 2026-11-16: «Que el dueño elija»): how long a text takes to appear, in
+#: seconds — the owner picks it, from 0.3 to 1.0 s (both included); 0.5 s when not chosen
+#: (and for every text stored before the field existed). Applied by the compose step
+#: (`video_pipeline.compose`): a text on screen for less than twice it fades for half its time.
+VIDEO_TEXT_FADE_MIN_S = 0.3
+VIDEO_TEXT_FADE_MAX_S = 1.0
+VIDEO_TEXT_FADE_DEFAULT_S = 0.5
 #: ED-15 (D-T1): a still photo among the stretches lasts 1 to 5 s of the video.
 PHOTO_SECONDS_MIN = 1.0
 PHOTO_SECONDS_MAX = 5.0
@@ -839,6 +846,11 @@ class VideoTextLayer(BaseModel):
     end_s: float | None = Field(default=None, gt=0)
     layout_id: LayoutId | None = None
     layout_version: int | None = Field(default=None, ge=1)
+    #: EF-05: the fade in the owner chose (`VIDEO_TEXT_FADE_MIN_S`-`VIDEO_TEXT_FADE_MAX_S`);
+    #: a stored text without it reads as `VIDEO_TEXT_FADE_DEFAULT_S`.
+    fade_s: float = Field(
+        default=VIDEO_TEXT_FADE_DEFAULT_S, ge=VIDEO_TEXT_FADE_MIN_S, le=VIDEO_TEXT_FADE_MAX_S
+    )
 
     @model_validator(mode="after")
     def _coherent(self) -> VideoTextLayer:

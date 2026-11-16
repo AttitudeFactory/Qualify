@@ -19,7 +19,8 @@ import {AbsoluteFill, Img, type CalculateMetadataFunction} from 'remotion';
 import manifest from '../../../templates/layer_still/manifest.json';
 import {resolveBrandFamilies, useExactFamilies} from '../../fonts';
 import {normalizeProps, paletteOf, type PropsInput} from '../../props';
-import {resolveLayer, type Catalog, type Format, type LayerSpec, type Resolved} from './engine';
+import {resolveLayer, type Catalog, type Format, type Ink, type LayerSpec, type Measure, type Resolved, type TextBlock} from './engine';
+import type {Fonts} from '../../fonts';
 import {Icon} from './icons';
 import {layerProblems} from './spec.mjs';
 
@@ -52,20 +53,12 @@ const naturalSize = async (src: string): Promise<{width: number; height: number}
   return {width: img.naturalWidth, height: img.naturalHeight};
 };
 
-export const layerStillMetadata: CalculateMetadataFunction<LayerStillProps> = async ({props}) => {
-  const base = normalizeProps(props);
-  const format = formatOf(base.meta?.port);
-  const photoSrc = base.photos[0] ?? '';
-  const problems = layerProblems(CATALOG, props.layer, {
-    formats: [format],
-    hasPhoto: !!photoSrc,
-    headingFamily: base.brand.fonts.heading,
-  });
-  if (problems.length > 0) throw new Error(`invalid_parameters: ${problems.join('; ')}`);
-
-  // the same families (and the same timeout → fallback rule) the component draws with
-  const families = await resolveBrandFamilies(base.brand.fonts.heading, base.brand.fonts.body);
-  await document.fonts.ready;
+/**
+ * The canvas text measurer of the composition (shared with `video_text`, EF-05, so a video
+ * text is measured exactly as an image's): `measure` = advance width, `ink` = glyph metrics,
+ * both with the families that are then drawn.
+ */
+export const canvasMeasurer = (families: {heading: string; body: string}): {measure: Measure; ink: Ink} => {
   const canvas = document.createElement('canvas');
   const g = canvas.getContext('2d');
   if (!g) throw new Error('layer_still: no 2D canvas to measure text');
@@ -86,6 +79,24 @@ export const layerStillMetadata: CalculateMetadataFunction<LayerStillProps> = as
       fontDescent: m.fontBoundingBoxDescent,
     };
   };
+  return {measure, ink};
+};
+
+export const layerStillMetadata: CalculateMetadataFunction<LayerStillProps> = async ({props}) => {
+  const base = normalizeProps(props);
+  const format = formatOf(base.meta?.port);
+  const photoSrc = base.photos[0] ?? '';
+  const problems = layerProblems(CATALOG, props.layer, {
+    formats: [format],
+    hasPhoto: !!photoSrc,
+    headingFamily: base.brand.fonts.heading,
+  });
+  if (problems.length > 0) throw new Error(`invalid_parameters: ${problems.join('; ')}`);
+
+  // the same families (and the same timeout → fallback rule) the component draws with
+  const families = await resolveBrandFamilies(base.brand.fonts.heading, base.brand.fonts.body);
+  await document.fonts.ready;
+  const {measure, ink} = canvasMeasurer(families);
   const photo = photoSrc ? await naturalSize(photoSrc) : null;
   const texts = base.texts;
   const resolved = resolveLayer({
@@ -142,7 +153,8 @@ const Photo: React.FC<{src: string; placement: NonNullable<Resolved['photo']>}> 
   );
 };
 
-const Scrim: React.FC<{scrim: NonNullable<Resolved['scrim']>}> = ({scrim}) => {
+/** The scrim gradient (shared with `video_text`, EF-05: the same shadow under a video text). */
+export const Scrim: React.FC<{scrim: NonNullable<Resolved['scrim']>}> = ({scrim}) => {
   const top = Math.min(scrim.start, scrim.end);
   const height = Math.abs(scrim.end - scrim.start);
   // gradient runs from the transparent start towards the edge
@@ -161,6 +173,39 @@ const Scrim: React.FC<{scrim: NonNullable<Resolved['scrim']>}> = ({scrim}) => {
     />
   );
 };
+
+/**
+ * Every resolved text line, placed explicitly with `white-space: nowrap` (what is drawn is what
+ * was measured). Shared with `video_text` (EF-05): a video text is drawn by this same code.
+ */
+export const TextBlocks: React.FC<{texts: TextBlock[]; fonts: Fonts}> = ({texts, fonts}) => (
+  <>
+    {texts.flatMap((t) =>
+      t.lines.map((l, li) => (
+        <div
+          key={`${t.slot}-${li}`}
+          style={{
+            position: 'absolute',
+            left: l.x,
+            top: l.y,
+            fontFamily: t.role === 'heading' ? fonts.heading : fonts.body,
+            fontWeight: t.weight,
+            fontSize: t.size,
+            lineHeight: `${t.size * t.lineHeight}px`,
+            whiteSpace: 'nowrap',
+            letterSpacing: 0,
+          }}
+        >
+          {l.spans.map((s, si) => (
+            <span key={si} style={{color: s.color}}>
+              {s.text}
+            </span>
+          ))}
+        </div>
+      )),
+    )}
+  </>
+);
 
 export const LayerStill: React.FC<LayerStillProps> = (raw) => {
   const props = normalizeProps(raw);
@@ -185,30 +230,7 @@ export const LayerStill: React.FC<LayerStillProps> = (raw) => {
       {resolved.icons.map((ic, i) => (
         <Icon key={`i${i}`} {...ic} />
       ))}
-      {resolved.texts.flatMap((t) =>
-        t.lines.map((l, li) => (
-          <div
-            key={`${t.slot}-${li}`}
-            style={{
-              position: 'absolute',
-              left: l.x,
-              top: l.y,
-              fontFamily: t.role === 'heading' ? fonts.heading : fonts.body,
-              fontWeight: t.weight,
-              fontSize: t.size,
-              lineHeight: `${t.size * t.lineHeight}px`,
-              whiteSpace: 'nowrap',
-              letterSpacing: 0,
-            }}
-          >
-            {l.spans.map((s, si) => (
-              <span key={si} style={{color: s.color}}>
-                {s.text}
-              </span>
-            ))}
-          </div>
-        )),
-      )}
+      <TextBlocks texts={resolved.texts} fonts={fonts} />
       {resolved.logo && logo ? (
         <div
           style={{

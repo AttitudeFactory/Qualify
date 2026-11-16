@@ -446,7 +446,9 @@ def text_layer_problems(
     or Clip's `[0, length]` in seconds of its own output, None = not checked —
     (`span_outside_part`), and, D1, a design it names is one of the current catalog's
     (`layer_spec`, `layout_version`) that exists in 9:16 with a title slot — the text is
-    that slot (`unknown_layout`). `field` names it in the problems (`text_layers[1]`)."""
+    that slot — and that the video's text layer draws (EF-05: `video_text` v1 draws only
+    `scrim`, `render.video_text.SUPPORTED_LAYOUTS`) (`unknown_layout`). `field` names it
+    in the problems (`text_layers[1]`)."""
     if layer is None:
         return ()
     found: list[RecipeProblem] = []
@@ -454,6 +456,8 @@ def text_layer_problems(
         found.append(RecipeProblem(code="span_outside_part", part=part, field=field))
     if layer.layout_id is None:
         return tuple(found)
+    from qualify_creative.render.video_text import SUPPORTED_LAYOUTS  # noqa: PLC0415
+
     data = catalog()
     layout = data["layouts"].get(layer.layout_id.value, {})
     title = (layout.get("slots", {}).get("title") or {}).get("9:16")
@@ -461,6 +465,8 @@ def text_layer_problems(
         layer.layout_version != data["layout_version"]
         or "9:16" not in layout.get("formats", ())
         or not title
+        # EF-05: only a design the video's text layer draws (`video_text` v1: the scrim)
+        or layer.layout_id.value not in SUPPORTED_LAYOUTS
     ):
         found.append(RecipeProblem(code="unknown_layout", part=part, field=f"{field}.layout_id"))
     return tuple(found)

@@ -635,8 +635,9 @@ def test_the_same_effect_chosen_differently_is_refused(other: EffectUse) -> None
     [
         VideoTextLayer(text="Otra cosa", place="top"),
         VideoTextLayer(text="Shawarma mixto", place="bottom"),
+        # the design named explicitly (EF-05: the scrim is the one a video text draws)
         VideoTextLayer(
-            text="Shawarma mixto", place="top", layout_id="band", layout_version=LAYOUT_VERSION
+            text="Shawarma mixto", place="top", layout_id="scrim", layout_version=LAYOUT_VERSION
         ),
     ],
     ids=["words", "place", "design"],
@@ -971,3 +972,13 @@ def test_a_parts_child_never_carries_the_parents_video_recipe() -> None:
     child = _child_brief(parent, entry, 1, None)
     assert child.media.video_recipe is None and child.media.part is not None
     assert recipe_of(child)[0].effects == (SMOKE,)
+
+
+def test_a_text_that_meets_itself_with_another_fade_is_one_text_with_the_first_fade() -> None:
+    """EF-05 (owner-chosen fade): a text that runs on across the join never appears again,
+    so the second part's fade has nothing to fade — the same words, place and design are
+    one text, with the fade it appeared with (the first part's)."""
+    slow = WORDS.model_copy(update={"fade_s": 1.0})
+    merged = merge_short_part(_cut(0, 2, text_layer=WORDS), _cut(1, 3, text_layer=slow), REEL)
+    assert merged.text_layers == (WORDS.model_copy(update={"start_s": 0.0, "end_s": 5.0}),)
+    assert merged.text_layers[0].fade_s == 0.5

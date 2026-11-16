@@ -5,7 +5,8 @@
 # output, checks it with `file`, prints wall-clock render times. Exit 1 on any failure.
 set -euo pipefail
 BASE="${1:-http://127.0.0.1:3200}"
-HERE="$(cd "$(dirname "$0")" && pwd)"
+# Git Bash: `pwd -W` gives C:/… so the native curl can read `-F file=@…`; elsewhere plain pwd.
+HERE="$(cd "$(dirname "$0")" && { pwd -W 2>/dev/null || pwd; })"
 OUT="$HERE/smoke-out"
 mkdir -p "$OUT"
 
@@ -83,6 +84,21 @@ poll "$J3"; T1=$(now); echo "layer_still wall-clock: $(( (T1 - T0) / 1000 )) s"
 curl -fsS "$BASE/jobs/$J3" | json outputs.feed.report.layout_rendered
 curl -fsS -o "$OUT/layer_still_feed.png" "$BASE/jobs/$J3/outputs/feed"
 file "$OUT/layer_still_feed.png"
+
+echo "== video_text (EF-05): 422 on a place the template does not have"
+curl -sS -o /dev/null -w "%{http_code}" -X POST "$BASE/estimate" -H 'content-type: application/json' \
+  -d "{\"templateId\":\"video_text\",\"version\":1,\"props\":{\"brand\":{},\"texts\":{\"text\":\"Hola\",\"place\":\"left\",\"layout_id\":\"scrim\",\"layout_version\":3}}}" | grep -q 422 \
+  && echo "unknown place → 422" || { echo "expected 422"; exit 1; }
+
+echo "== video_text (EF-05): one transparent overlay, report on the output"
+J4=$(uuid); T0=$(now)
+VT="{\"text\":\"Pan de masa madre recién horneado, café de origen y postres caseros todos los días\",\"place\":\"bottom\",\"layout_id\":\"scrim\",\"layout_version\":3}"
+curl -fsS -o /dev/null -w "POST /render → %{http_code}\n" -X POST "$BASE/render" -H 'content-type: application/json' \
+  -d "{\"jobId\":\"$J4\",\"templateId\":\"video_text\",\"version\":1,\"props\":{\"brand\":{\"name\":\"Polette\",\"palette\":[\"#F4C2C2\",\"#5A2A27\"],\"fonts\":{\"heading\":\"Poppins\",\"body\":\"Inter\"}},\"texts\":$VT}}"
+poll "$J4"; T1=$(now); echo "video_text wall-clock: $(( (T1 - T0) / 1000 )) s"
+curl -fsS "$BASE/jobs/$J4" | json outputs.overlay.report.lines
+curl -fsS -o "$OUT/video_text_overlay.png" "$BASE/jobs/$J4/outputs/overlay"
+file "$OUT/video_text_overlay.png" | tee /dev/stderr | grep -q "RGBA" || { echo "expected a transparent PNG"; exit 1; }
 
 ls -la "$OUT"
 echo "== OK"

@@ -37,6 +37,7 @@ def test_field_names_are_ef02s() -> None:
         "end_s",
         "layout_id",
         "layout_version",
+        "fade_s",  # EF-05
     ]
     assert list(c.EffectUse.__dataclass_fields__) == [
         "effect_id",
@@ -373,3 +374,31 @@ def test_the_text_design_is_the_image_catalog_s_current_one() -> None:
         text="Hoy", layout_id=c.TEXT_LAYOUT_ID, layout_version=c.TEXT_LAYOUT_VERSION
     )
     assert text_layer_problems(layer, part=None) == ()
+
+
+# -- EF-05 (m-25026573): the fade the owner chooses ---------------------------------------
+
+
+def test_a_text_fade_is_chosen_between_its_limits() -> None:
+    assert (c.VIDEO_TEXT_FADE_MIN_S, c.VIDEO_TEXT_FADE_DEFAULT_S, c.VIDEO_TEXT_FADE_MAX_S) == (
+        0.3,
+        0.5,
+        1.0,
+    )
+
+    def problems(fade: float) -> list[str]:
+        return c.recipe_problems(c.PartRecipe(text_layer=c.VideoTextLayer("Hoy", fade_s=fade)))
+
+    assert problems(0.3) == [] and problems(1.0) == [] and problems(0.5) == []
+    assert "bad_text_fade" in problems(0.29)
+    assert "bad_text_fade" in problems(1.01)
+    assert c.VideoTextLayer("Hoy").fade_s == 0.5
+
+
+def test_a_text_fade_round_trips_and_an_old_text_reads_the_default() -> None:
+    recipe = c.PartRecipe(text_layers=(c.VideoTextLayer("Hoy", place="top", fade_s=0.8),))
+    data = c.to_dict(recipe)
+    assert data["text_layers"][0]["fade_s"] == 0.8  # type: ignore[index]
+    assert c.from_dict(data) == recipe
+    old = {"text_layers": [{"text": "Hoy", "place": "top", "start_s": 0, "end_s": None}]}
+    assert c.from_dict(old).text_layers[0].fade_s == 0.5

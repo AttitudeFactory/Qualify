@@ -1,0 +1,304 @@
+"""Compose: the owner's texts over an assembled video (EF-05, m-25026573; D1 of ADR 50).
+
+The stage after the video is assembled (EF-06's prepare → speed → still photos → concat):
+up to `TEXT_LAYERS_MAX` texts (`VideoTextLayer`), each drawn by the render service as a
+transparent PNG with ADR 49's closed designs (`qualify_creative.render.video_text`, the
+`layer_still` engine and components — no second drawing path, no Pillow text) and laid over
+the frames it shows on by PyAV (`qualify_creative.video.text_overlay`), with a fade in.
+
+Public API (EF-06 calls it at its `# EF-05` hook)::
+
+    result = compose_text_layers(
+        video_path, out_path, text_layers, brand, render_client=client_or_factory
+    )
+    result.path      # the video to keep: `out_path` when composed, `video_path` when not
+    result.composed  # False when there is no text: nothing was rendered nor written
+    result.params    # provenance to merge into the piece's params (`text_layers` key)
+
+- `text_layers`: the part's (or Clip's) `VideoTextLayer`s, times in SECONDS OF THE ASSEMBLED
+  VIDEO'S OUTPUT from its first frame (speed already applied) — the recipe's own times. An
+  `end_s` past the video's end just lasts until the end.
+- `brand`: the tenant's `BrandKit` (its `typeface` is the face drawn, as in the images), or
+  the CONTRACT §2 brand mapping.
+- `render_client`: a `RemotionRenderClient`, or a no-argument callable that builds one
+  (called only when there is a text).
+
+Failures (each one leaves `out_path` absent and `video_path` untouched, so the owner keeps
+what they had; no AI provider is called, the cost is 0):
+
+- `ComposeUnavailable` — the render service is down, timed out or failed: the piece fails
+  WITHOUT charging (ADR 49 §6: a composition that cannot run never takes a creation), with
+  `OWNER_MESSAGE_UNAVAILABLE`, which does not blame the owner. `transient` = retry later.
+- `ComposeRejected` (a `ComposeUnavailable` with `transient` False) — the service rejected
+  what we sent (a 422 that is not a refusal of the text): our bug; `OWNER_MESSAGE_REJECTED`
+  promises no retry.
+- `TextLayerRefused` — the service cannot draw one text in its place (a word wider than the
+  screen); `index` says which text. Retrying the same text gives the same answer.
+- `qualify_creative.video.text_overlay.TextOverlayError` — the assembled video itself is
+  unreadable or not 9:16 (a pipeline bug, not the owner's).
+
+Determinism: the PNG of a text is a pure function of (text, place, design, brand fonts and
+palette, the two pixel revisions) — its render job id is too —, and the overlay encodes on one
+thread: the same video and recipe give the same decoded frames (`decoded_frame_hashes`).
+"""
+
+from __future__ import annotations
+
+import hashlib
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from qualify_creative.render.client import RemotionRenderClient, RenderServiceError
+from qualify_creative.render.video_text import (
+    VideoTextImage,
+    VideoTextRefused,
+    VideoTextRequest,
+    brand_props,
+    render_video_text,
+)
+from qualify_creative.schemas import VIDEO_TEXT_FADE_DEFAULT_S, VideoTextLayer
+from qualify_creative.video.text_overlay import OVERLAY_X264, TimedLayer, overlay_text_layers
+
+#: The version of this stage (how texts become pixels over a video): bumped with any change
+#: to the timing, the fade or the overlay that moves a pixel. Recorded with every piece.
+COMPOSE_VERSION = "video_text_compose-v1"
+#: The fade in of a text that does not choose one, in seconds. Deivid, 2026-11-16 («Que el
+#: dueño elija»): each text carries its own `VideoTextLayer.fade_s`, 0.3-1.0 s (the ticket's
+#: «fundido de entrada de 0,3 a 1,0 s»), 0.5 s by default — this is that default. A text
+#: shown for less than twice its fade fades for half its time instead. The fade is PyAV's
+#: alpha ramp only: it never reaches the render, so the PNG (and its job id) do not depend
+#: on it; the per-text provenance records it.
+FADE_IN_SECONDS = VIDEO_TEXT_FADE_DEFAULT_S
+#: How long one text may wait for its render (the service draws one still in ~1-3 s).
+RENDER_TIMEOUT_SECONDS = 180.0
+
+#: What the owner reads when the render service could not draw the texts: the problem is ours,
+#: nothing they did, and nothing was charged.
+OWNER_MESSAGE_UNAVAILABLE = (
+    "No pudimos poner los textos sobre tu video en este momento. No se descontó de tus "
+    "creaciones. Inténtalo de nuevo en unos minutos."
+)
+#: What the owner reads when the render service rejected what we sent (a 422 that is not a
+#: refusal of the text): our fault, a retry would get the same answer, so none is promised.
+OWNER_MESSAGE_REJECTED = (
+    "No pudimos poner los textos sobre tu video por un problema de nuestra parte. "
+    "No se descontó de tus creaciones."
+)
+#: What the owner reads when one text cannot be drawn in its place, naming it: a word wider
+#: than the screen (`word_too_wide`, by far the likely one), or any other reason.
+#: `{number}` is 1-based; `{text}` is the owner's own text.
+OWNER_MESSAGE_WORD_TOO_WIDE = (
+    "El texto {number} («{text}») tiene una palabra demasiado larga para la pantalla. "
+    "Cámbiala por una más corta o pártela en dos, y vuelve a intentarlo."
+)
+OWNER_MESSAGE_REFUSED = (
+    "El texto {number} («{text}») no cabe en la pantalla. Acórtalo y vuelve a intentarlo."
+)
+
+RenderClientFactory = Callable[[], RemotionRenderClient]
+
+
+class ComposeUnavailable(Exception):
+    """The render service could not draw the texts (down, timed out, failed). The piece
+    fails without charging; `owner_message` is what the owner reads."""
+
+    code = "text_layer_unavailable"
+    charge = False
+
+    def __init__(self, detail: str, *, service_code: str | None = None, transient: bool = True):
+        super().__init__(detail)
+        self.detail = detail
+        self.service_code = service_code
+        self.transient = transient
+        self.owner_message = OWNER_MESSAGE_UNAVAILABLE
+
+
+class ComposeRejected(ComposeUnavailable):
+    """The render service rejected what we sent (``invalid_parameters`` without a refusal of
+    the text — a design v1 does not draw, a stale catalog version): our bug, NOT transient —
+    retrying gives the same answer. Also fails without charging."""
+
+    code = "text_layer_rejected"
+
+    def __init__(self, detail: str, *, service_code: str | None = None) -> None:
+        super().__init__(detail, service_code=service_code, transient=False)
+        self.owner_message = OWNER_MESSAGE_REJECTED
+
+
+class TextLayerRefused(Exception):
+    """Text number `index` (0-based, in the order given) cannot be drawn in its place:
+    `reason` is the service's (`word_too_wide`, `title_does_not_fit`, `outside_safe_zone`)."""
+
+    code = "text_layer_refused"
+    charge = False
+
+    def __init__(self, index: int, reason: str, detail: str, text: str = "") -> None:
+        super().__init__(f"text {index}: {reason} {detail}".strip())
+        self.index = index
+        self.reason = reason
+        self.detail = detail
+        self.text = text
+        template = (
+            OWNER_MESSAGE_WORD_TOO_WIDE if reason == "word_too_wide" else OWNER_MESSAGE_REFUSED
+        )
+        self.owner_message = template.format(number=index + 1, text=" ".join(text.split()))
+
+
+@dataclass(frozen=True)
+class ComposeResult:
+    path: Path
+    composed: bool
+    params: Mapping[str, Any] = field(default_factory=dict)
+
+
+def fade_in_seconds(layer: VideoTextLayer, video_seconds: float | None = None) -> float:
+    """The text's own `fade_s`, or half its time on screen when that is shorter (until its
+    `end_s`, or the video's end when that comes first)."""
+    ends = [e for e in (layer.end_s, video_seconds) if e is not None]
+    end = min(ends) if ends else None
+    if end is None:
+        return layer.fade_s
+    return round(max(0.0, min(layer.fade_s, (end - layer.start_s) / 2)), 6)
+
+
+def _client(render_client: RemotionRenderClient | RenderClientFactory) -> RemotionRenderClient:
+    if isinstance(render_client, RemotionRenderClient):
+        return render_client
+    if callable(render_client):
+        try:
+            return render_client()
+        except Exception as exc:  # noqa: BLE001 — no client = no render: as a service down
+            raise ComposeUnavailable(f"render client could not be built: {exc}") from exc
+    return render_client  # a duck-typed client (tests)
+
+
+def _draw(
+    client: RemotionRenderClient, index: int, request: VideoTextRequest, timeout: float
+) -> VideoTextImage:
+    try:
+        return render_video_text(client, request, timeout_seconds=timeout)
+    except VideoTextRefused as exc:
+        raise TextLayerRefused(index, exc.reason, exc.detail, request.text) from exc
+    except RenderServiceError as exc:
+        detail = f"text {index}: render service {exc.code}: {exc.message}"
+        if exc.code == "invalid_parameters" or exc.status == 422:
+            raise ComposeRejected(detail, service_code=exc.code) from exc
+        raise ComposeUnavailable(detail, service_code=exc.code) from exc
+    except Exception as exc:  # noqa: BLE001 — unreachable service (httpx.TransportError…)
+        raise ComposeUnavailable(f"text {index}: render service unreachable: {exc}") from exc
+
+
+def _file_sha256(path: Path) -> str | None:
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1 << 20), b""):
+                digest.update(chunk)
+    except OSError:  # the overlay reports a missing or unreadable file itself
+        return None
+    return digest.hexdigest()
+
+
+def _video_seconds(path: Path) -> float | None:
+    import av  # noqa: PLC0415
+
+    try:
+        with av.open(str(path)) as source:
+            stream = source.streams.video[0]
+            if stream.duration is not None:
+                return float(stream.duration * stream.time_base)
+            if source.duration is not None:
+                return source.duration / 1_000_000
+    except Exception:  # noqa: BLE001 — the overlay reports an unreadable file itself
+        return None
+    return None
+
+
+def compose_text_layers(
+    video_path: Path | str,
+    out_path: Path | str,
+    text_layers: Sequence[VideoTextLayer],
+    brand: Any,
+    *,
+    render_client: RemotionRenderClient | RenderClientFactory,
+    timeout_seconds: float = RENDER_TIMEOUT_SECONDS,
+) -> ComposeResult:
+    """The texts over `video_path`, written to `out_path` (see the module's docstring).
+    Every text is drawn BEFORE anything is encoded: a render failure writes nothing."""
+    video_path, out_path = Path(video_path), Path(out_path)
+    layers = tuple(text_layers)
+    if not layers:
+        # no text: the stage does not run (the output is exactly the input)
+        return ComposeResult(path=video_path, composed=False, params={})
+    brand_map = brand_props(brand)
+    client = _client(render_client)
+    source_sha256 = _file_sha256(video_path)
+    seconds = _video_seconds(video_path)
+    drawn: list[tuple[VideoTextLayer, VideoTextImage, float]] = []
+    for index, layer in enumerate(layers):
+        request = VideoTextRequest(
+            text=layer.text,
+            place=layer.place,
+            brand=brand_map,
+            layout_id=layer.layout_id.value if layer.layout_id is not None else None,
+            layout_version=layer.layout_version,
+        )
+        image = _draw(client, index, request, timeout_seconds)
+        drawn.append((layer, image, fade_in_seconds(layer, seconds)))
+    result = overlay_text_layers(
+        video_path,
+        out_path,
+        [
+            TimedLayer(png=image.png, start_s=layer.start_s, end_s=layer.end_s, fade_in_s=fade)
+            for layer, image, fade in drawn
+        ],
+    )
+    params = {
+        "text_layers": {
+            "compose_version": COMPOSE_VERSION,
+            "source_sha256": source_sha256,
+            "fade_default_s": FADE_IN_SECONDS,
+            "x264": dict(OVERLAY_X264),
+            "cost_usd": "0",
+            "frames": result.frames,
+            "fps": result.fps,
+            "size": [result.width, result.height],
+            "layers": [
+                {
+                    **dict(image.provenance),
+                    "place": layer.place,
+                    "start_s": layer.start_s,
+                    "end_s": layer.end_s,
+                    # the fade the owner chose, and the one applied (shorter on a brief text)
+                    "fade_s": layer.fade_s,
+                    "fade_in_s": fade,
+                    "text_sha256": hashlib.sha256(layer.text.strip().encode("utf-8")).hexdigest(),
+                    "png_sha256": hashlib.sha256(image.png).hexdigest(),
+                    "lines": list(image.report.get("lines") or []),
+                    "size_px": image.report.get("size"),
+                    "cover": image.report.get("cover"),
+                }
+                for layer, image, fade in drawn
+            ],
+        }
+    }
+    return ComposeResult(path=result.path, composed=True, params=params)
+
+
+__all__ = [
+    "COMPOSE_VERSION",
+    "FADE_IN_SECONDS",
+    "OWNER_MESSAGE_REFUSED",
+    "OWNER_MESSAGE_UNAVAILABLE",
+    "OWNER_MESSAGE_WORD_TOO_WIDE",
+    "OWNER_MESSAGE_REJECTED",
+    "ComposeRejected",
+    "ComposeResult",
+    "ComposeUnavailable",
+    "RenderClientFactory",
+    "TextLayerRefused",
+    "compose_text_layers",
+    "fade_in_seconds",
+]

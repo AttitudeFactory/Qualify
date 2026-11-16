@@ -36,6 +36,11 @@ SEGMENTS_MAX = 8
 VIDEO_TEXT_MAX = 120
 #: ED-15 (D-T2): at most this many texts over one part (or Clip).
 TEXT_LAYERS_MAX = 3
+#: EF-05 (Deivid, 2026-11-16: «Que el dueño elija»): how long a text takes to appear, 0.3 to
+#: 1.0 s (both included), 0.5 s when not chosen or stored before the field existed.
+VIDEO_TEXT_FADE_MIN_S = 0.3
+VIDEO_TEXT_FADE_MAX_S = 1.0
+VIDEO_TEXT_FADE_DEFAULT_S = 0.5
 #: ED-15 (D-T1): a still photo among the stretches shows 1 to 5 s, from 0, at speed 1.
 PHOTO_SECONDS_MIN = 1.0
 PHOTO_SECONDS_MAX = 5.0
@@ -135,7 +140,8 @@ class VideoTextLayer:
     of the part's OUTPUT, after its speed, so they move with the part on their own when
     parts are reordered. A `start_s` None arriving in JSON is read as 0.0.
     `layout_id`/`layout_version` name the layer_spec catalog design it is drawn with
-    (EF-02, ADR 49 D1): both or neither."""
+    (EF-02, ADR 49 D1): both or neither. `fade_s`: how long it takes to appear (EF-05,
+    `VIDEO_TEXT_FADE_MIN_S`-`VIDEO_TEXT_FADE_MAX_S`); missing in JSON = the default."""
 
     text: str
     place: str = "bottom"
@@ -143,6 +149,7 @@ class VideoTextLayer:
     end_s: float | None = None
     layout_id: str | None = None
     layout_version: int | None = None
+    fade_s: float = VIDEO_TEXT_FADE_DEFAULT_S
 
 
 @dataclass(frozen=True)
@@ -515,6 +522,8 @@ def recipe_problems(recipe: PartRecipe) -> list[str]:
         has_id, has_version = bool(layer.layout_id), layer.layout_version is not None
         if has_id != has_version or (has_version and (layer.layout_version or 0) < 1):
             problems.append("bad_text_layout")
+        if not VIDEO_TEXT_FADE_MIN_S <= layer.fade_s <= VIDEO_TEXT_FADE_MAX_S:
+            problems.append("bad_text_fade")
     if any(_overlaps(spans) for spans in texts_at.values()):
         problems.append("texts_overlap")
     return list(dict.fromkeys(problems))
@@ -539,7 +548,7 @@ def _param(value: object) -> EffectParamValue:
 
 
 def _layer_dict(layer: VideoTextLayer) -> dict[str, object]:
-    return {
+    data: dict[str, object] = {
         "text": layer.text,
         "place": layer.place,
         "start_s": _round(layer.start_s),
@@ -547,6 +556,11 @@ def _layer_dict(layer: VideoTextLayer) -> dict[str, object]:
         "layout_id": layer.layout_id,
         "layout_version": layer.layout_version,
     }
+    # EF-05: the fade travels when the owner chose one; the default is left out, so a text
+    # without a choice keeps v1's exact shape (as a video stretch writes no `kind`, ED-15)
+    if _round(layer.fade_s) != VIDEO_TEXT_FADE_DEFAULT_S:
+        data["fade_s"] = _round(layer.fade_s)
+    return data
 
 
 def to_dict(recipe: PartRecipe) -> dict[str, object]:
@@ -647,6 +661,10 @@ def _layer_of(raw: object) -> VideoTextLayer:
         end_s=_opt_num(raw.get("end_s")),
         layout_id=_opt_layout_id(raw.get("layout_id")),
         layout_version=_opt_layout_version(raw.get("layout_version")),
+        # EF-05: a text stored before the fade was chosen reads with the default
+        fade_s=_round(
+            _num(raw.get("fade_s") if raw.get("fade_s") is not None else VIDEO_TEXT_FADE_DEFAULT_S)
+        ),
     )
 
 

@@ -1,0 +1,29 @@
+{
+  "id": "video_text",
+  "version": 1,
+  "name": "Texto del dueño sobre un video",
+  "niche": [],
+  "serves_angles": ["video_text_overlay"],
+  "inputs": {
+    "text":           {"type": "string", "max": 120},
+    "place":          {"type": "string", "enum": ["top", "middle", "bottom"]},
+    "layout_id":      {"type": "string", "enum": ["scrim"]},
+    "layout_version": {"type": "number", "min": 1},
+    "brand":          {"type": "brand_kit"}
+  },
+  "outputs": {
+    "overlay": {"kind": "still", "width": 1080, "height": 1920, "composition": "video-text-v1--overlay", "format": "9:16"}
+  },
+  "cost_model": {"seconds_per_still": 3.0},
+  "video_text": {
+    "overlay_revision": 1,
+    "overlay_revision_doc": "Bump with ANY change to src/templates/video_text/* that can move a pixel of the overlay. The layer_still engine it reuses (engine.ts, LayerStill.tsx's Scrim and TextBlocks, the font loading) is pinned by layer_still's own layer_catalog.engine_revision, echoed as report.engine_revision; Python puts BOTH in the job id.",
+    "source": "EF-05 (m-25026573): the owner's text over a video, drawn with ADR 49's scrim (layer_still catalog, format 9:16) on a transparent canvas",
+    "image_template": "layer_still@1",
+    "format": "9:16",
+    "layouts": ["scrim"],
+    "title_lines": 7,
+    "cover_steps": [0.45, 0.5, 0.55, 0.6, 0.65],
+    "middle_center_y": 960
+  }
+}

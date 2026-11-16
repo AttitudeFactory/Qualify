@@ -56,6 +56,10 @@ def test_shared_limits_are_equal(screen: ModuleType) -> None:
     assert screen.PHOTO_SECONDS_MIN == schemas.PHOTO_SECONDS_MIN
     assert screen.PHOTO_SECONDS_MAX == schemas.PHOTO_SECONDS_MAX
     assert tuple(screen.SEGMENT_KINDS) == tuple(schemas.SEGMENT_KINDS)
+    # EF-05: the fade the owner chooses
+    assert screen.VIDEO_TEXT_FADE_MIN_S == schemas.VIDEO_TEXT_FADE_MIN_S
+    assert screen.VIDEO_TEXT_FADE_MAX_S == schemas.VIDEO_TEXT_FADE_MAX_S
+    assert screen.VIDEO_TEXT_FADE_DEFAULT_S == schemas.VIDEO_TEXT_FADE_DEFAULT_S
 
 
 def test_the_screens_v2_codes_are_the_backends(screen: ModuleType) -> None:
@@ -150,3 +154,17 @@ def test_a_v2_recipe_the_screen_writes_reads_the_same_in_the_backend(
     ]
     back = screen.from_dict(part.model_dump(mode="json"))
     assert back == recipe
+
+
+def test_a_text_fade_the_screen_writes_reads_the_same_in_the_backend(screen: ModuleType) -> None:
+    """EF-05: the fade the owner chose travels in the text dict; a dict without it reads
+    as the default on both sides."""
+    layer = screen.VideoTextLayer("Hoy", place="top", fade_s=0.8)
+    data = screen.to_dict(screen.PartRecipe(text_layers=(layer,)))
+    raw = data["text_layers"][0]
+    assert raw["fade_s"] == 0.8
+    assert schemas.VideoTextLayer.model_validate(raw).fade_s == 0.8
+    old = {k: v for k, v in raw.items() if k != "fade_s"}
+    assert schemas.VideoTextLayer.model_validate(old).fade_s == schemas.VIDEO_TEXT_FADE_DEFAULT_S
+    back = screen.from_dict({"text_layers": [old]})
+    assert back.text_layers[0].fade_s == screen.VIDEO_TEXT_FADE_DEFAULT_S
