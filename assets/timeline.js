@@ -4,8 +4,8 @@
 // script writes its value text («0:05 de 0:12»), the clock over the tracks and the CSS
 // variable `--tl-t` the desktop playhead is drawn with. On a phone (`--tl-mode: phone`,
 // set by the container query in qualify-creative.css) the tracks slide under a fixed
-// playhead: scrolling the tracks moves the time, and moving the time (keyboard) scrolls
-// the tracks. It also passes ←/→/Escape on a block or a handle to the screen (a hidden
+// playhead: scrolling the tracks (or tapping the ruler, which scrolls them) moves the
+// time, and moving the time (keyboard) scrolls the tracks. It also passes ←/→/Escape on a block or a handle to the screen (a hidden
 // button, as `edit-preview.js` does), keeps those arrows from scrolling the tracks, and
 // keeps the focus on a block the keyboard just moved (the list re-renders by position).
 (function () {
@@ -53,13 +53,32 @@
     if (p.canvas) p.canvas.style.setProperty("--tl-t", String(t));
   }
 
+  function stepOf(seconds) {
+    return Math.round(seconds / STEP) * STEP;
+  }
+
+  // The tracks follow the playhead's value — unless they already rest inside its ½ s (a
+  // slide or a linked preview put them at an exact time: never snap that back). No
+  // «ignore the next scroll» flag: a write the browser clamps fires no scroll and would
+  // leave it stuck, swallowing the owner's next slide; the scroll handler is idempotent.
   function scrollTo(p) {
-    if (!p.scroller || !isPhone(p)) return;
+    if (!p.scroller || !p.scrub || !isPhone(p)) return;
+    var px = pxPerSecond(p);
     var t = parseFloat(p.scrub.value) || 0;
-    var left = Math.round(t * pxPerSecond(p));
-    if (Math.abs(p.scroller.scrollLeft - left) < 1) return;
-    p.root.__qTlIgnore = true;
-    p.scroller.scrollLeft = left;
+    if (stepOf(p.scroller.scrollLeft / px) === stepOf(t)) return;
+    p.scroller.scrollLeft = Math.round(t * px);
+  }
+
+  // A tap on the phone's ruler slides the tracks so the tapped time sits under the
+  // playhead (on a desktop the playhead's own input covers the ruler).
+  function tapRuler(p, clientX) {
+    if (!p.scroller || !p.canvas || !p.scrub || !isPhone(p)) return;
+    var px = pxPerSecond(p);
+    var box = p.canvas.getBoundingClientRect();
+    var pad = parseFloat(getComputedStyle(p.canvas).paddingLeft) || 0;
+    var total = parseFloat(p.scrub.max) || 0;
+    var t = Math.min(Math.max((clientX - box.left - p.canvas.clientLeft - pad) / px, 0), total);
+    p.scroller.scrollLeft = Math.round(t * px);
   }
 
   // The menu's liquid lens (`.q-glass-blob`, styled in qualify.css) under the chosen
@@ -181,19 +200,23 @@
       if (!el || !el.classList || !el.classList.contains("q-tl__scroller")) return;
       var root = el.closest("[data-q-timeline]");
       if (!root) return;
-      if (root.__qTlIgnore) {
-        root.__qTlIgnore = false;
-        return;
-      }
       var p = parts(root);
       if (!isPhone(p) || !p.scrub) return;
       var total = parseFloat(p.scrub.max) || 0;
-      var t = Math.min(Math.max(el.scrollLeft / pxPerSecond(p), 0), total);
-      p.scrub.value = String(Math.round(t / STEP) * STEP);
+      var t = stepOf(Math.min(Math.max(el.scrollLeft / pxPerSecond(p), 0), total));
+      if (t === (parseFloat(p.scrub.value) || 0)) return; // same ½ s: nothing to repaint
+      p.scrub.value = String(t);
       paint(p);
     },
     true
   );
+
+  document.addEventListener("click", function (e) {
+    var el = e.target;
+    var ruler = el && el.closest ? el.closest(".q-tl__ruler") : null;
+    var root = ruler ? ruler.closest("[data-q-timeline]") : null;
+    if (root) tapRuler(parts(root), e.clientX);
+  });
 
   // After a move the block's id lands on another node: focus it once it does.
   var refocusId = null;

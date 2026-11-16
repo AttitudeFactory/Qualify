@@ -75,3 +75,57 @@ def test_the_preview_renders_with_its_words_and_hooks() -> None:
 def test_the_preview_takes_an_undo_line_and_the_script_mounts() -> None:
     assert "Deshacer" in str(_preview(undo_on=True).render())
     assert ep.edit_preview_script().render()["name"] == "RadixThemesBox"
+
+
+# -- ED-01b m-25029106: the preview in sequence ----------------------------------------
+
+
+class _SequenceState(rx.State):
+    """A stand-in for the screen's state: the length and time reports."""
+
+    heard: str = ""
+
+    @rx.event
+    def on_duration(self, key: str, seconds: float, width: int, height: int) -> None:
+        self.heard = f"{key}:{seconds}"
+
+    @rx.event
+    def on_time(self, t: float, reason: str) -> None:
+        self.heard = f"{t}:{reason}"
+
+
+def _sequence() -> str:
+    v = rx.Var.create
+    return str(
+        ep.edit_sequence_preview(
+            sequence=v('{"blocks": [], "texts": [], "effects": []}'),
+            texts=v([]).to(list[dict[str, str]]),
+            effects=v([]).to(list[dict[str, str]]),
+            slower=v(False),
+            on_duration=_SequenceState.on_duration,
+            on_time=_SequenceState.on_time,
+            note_text="Así va quedando",
+            broken_text="No pudimos mostrar este video aquí. Igual lo verás completo antes de "
+            "aprobarlo.",
+            slower_text="En la vista previa se ve más lento que en el video final.",
+            play_label="Ver cómo va quedando",
+            pause_label="Pausar la vista previa",
+            sound_label="Activar sonido",
+            mute_label="Quitar sonido",
+            region_label="Vista previa de tu video",
+        ).render()
+    )
+
+
+def test_the_sequence_sound_button_carries_both_labels() -> None:
+    rendered = _sequence()
+    # «Activar sonido» while muted; the script swaps to `data-mute-label` when it sounds
+    assert "Activar sonido" in rendered
+    assert "data-mute-label" in rendered and "Quitar sonido" in rendered
+
+
+def test_the_sequence_broken_notice_is_announced_and_the_dot_can_hide() -> None:
+    rendered = _sequence()
+    assert "aria-live" in rendered and "polite" in rendered
+    assert "data-edit-seq-broken" in rendered
+    assert "q-edit-seq__dot" in rendered  # hidden by CSS while the clock has no time

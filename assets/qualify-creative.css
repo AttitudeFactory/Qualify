@@ -1298,3 +1298,69 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
 .q-tl-island > * { position: relative; z-index: 1; }
 .q-tl-add { display: flex; align-items: center; min-height: 44px; }
 .q-tl-panel__field { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
+
+/* ── The preview in sequence (ED-01b m-25029106): `ui.edit_sequence_preview` ──────────
+   Two `<video>` take turns (the hidden one holds the next block, already seeked: it
+   stays laid out — `visibility`, never `display` — so it keeps decoding), a photo is an
+   `<img>`, a block with nothing to show a card with its name. `assets/edit-preview.js`
+   sets `data-on` on what shows at the clock's time; texts and effects too. */
+/* Size: the preview is what the owner watches, so it gets the room. Desktop: the
+   height left above the timeline (~62svh, at most 40rem); phone: almost the whole
+   width, capped so the timeline still peeks below. `cqw` is the preview's own width. */
+.q-edit-seq { container-type: inline-size; }
+.q-edit-seq .q-edit-preview__frame { height: min(62svh, 40rem, 100cqw * 16 / 9); }
+@media (max-width: 767px) {
+  .q-edit-seq .q-edit-preview__frame { height: min(70svh, 100cqw * 16 / 9); }
+}
+.q-edit-seq .q-edit-seq__layer { visibility: hidden; }
+.q-edit-seq .q-edit-seq__layer[data-on] { visibility: visible; }
+.q-edit-seq .q-edit-seq__overlay:not([data-on]) { display: none; }
+/* Each block carries its own turn — the video's AND the photo's (both share the
+   centred base above: top/left 50% and translate(-50%, -50%)). */
+.q-edit-seq .q-edit-preview__video[data-rotate="90"],
+.q-edit-seq .q-edit-preview__video[data-rotate="270"],
+.q-edit-seq .q-edit-preview__poster[data-rotate="90"],
+.q-edit-seq .q-edit-preview__poster[data-rotate="270"] {
+  width: 177.7778%;
+  height: 56.25%;
+  max-width: none; /* the global `img, video { max-width: 100% }` would square it */
+}
+.q-edit-seq .q-edit-preview__video[data-rotate="90"],
+.q-edit-seq .q-edit-preview__poster[data-rotate="90"] { transform: translate(-50%, -50%) rotate(90deg); }
+.q-edit-seq .q-edit-preview__video[data-rotate="180"],
+.q-edit-seq .q-edit-preview__poster[data-rotate="180"] { transform: translate(-50%, -50%) rotate(180deg); }
+.q-edit-seq .q-edit-preview__video[data-rotate="270"],
+.q-edit-seq .q-edit-preview__poster[data-rotate="270"] { transform: translate(-50%, -50%) rotate(270deg); }
+/* «0:04 de 0:14 · Así va quedando»: no stray « · » while the clock has no time yet. */
+.q-edit-seq .q-edit-preview__time:empty + .q-edit-seq__dot { display: none; }
+/* A block's name sits in the lower third: the ▶ button is centred on the frame. The
+   bottom padding is a share of the frame's width (40% of a 9:16 width ≈ 22% of its
+   height), above the broken notice. */
+.q-edit-seq__card {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: var(--space-4) var(--space-4) 40%;
+  font-size: var(--font-size-3);
+  font-weight: 600;
+  text-align: center;
+  color: var(--gray-12);
+  background: var(--accent-a4);
+}
+.q-edit-seq__broken {
+  position: absolute;
+  left: 6%;
+  right: 6%;
+  bottom: 6%;
+  z-index: 4;
+  margin: 0;
+  padding: var(--space-2);
+  border-radius: var(--q-radius-control);
+  font-size: var(--font-size-1);
+  text-align: center;
+  color: var(--gray-12);
+  background: var(--color-panel-solid);
+}
