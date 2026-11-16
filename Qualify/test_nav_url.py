@@ -23,7 +23,7 @@ from .nav_url import push_url_script, replace_url_script, with_query
 from .whatsapp_state import WhatsAppState
 from .whatsapp_vm import (
     DEFAULT_TAB,
-    TAB_CHATS,
+    TAB_CONNECTION,
     TAB_CONTACTS,
     TAB_KEYS,
     TAB_MENU,
@@ -81,7 +81,9 @@ def test_every_whatsapp_tab_has_an_address_and_reads_back() -> None:
             assert url.startswith("/whatsapp?tab=")
             assert resolve_panel(query["tab"], query.get("sub", "")) == key
     assert tab_url(TAB_TEMPLATES) == "/whatsapp/promociones?sub=aprobados"
-    assert tab_url("junk") == tab_url(DEFAULT_TAB) == "/whatsapp?tab=chats"
+    # m-25029799: no «Chats» tab — the screen opens on «Tu número › Estado».
+    assert tab_url("junk") == tab_url(DEFAULT_TAB) == "/whatsapp?tab=numero&sub=estado"
+    assert "chats" not in TAB_KEYS
 
 
 def test_conversations_view_round_trips_in_the_owners_words() -> None:
@@ -115,17 +117,17 @@ def test_whatsapp_tab_change_writes_the_address() -> None:
 
 
 def test_whatsapp_tab_on_the_other_page_is_a_navigation() -> None:
-    """m-25017862: a promotions panel from `/whatsapp` (and the chats from «Promociones
-    por WhatsApp») is a change of page — a redirect, so the menu lights the right entry;
-    the arriving page's `enter_page` sets the panel."""
+    """m-25017862: a promotions panel from `/whatsapp` (and «Tu número» from
+    «Promociones por WhatsApp») is a change of page — a redirect, so the menu lights the
+    right entry; the arriving page's `enter_page` sets the panel."""
     state = WhatsAppState()
     spec = WhatsAppState.select_tab.fn(state, TAB_TEMPLATES)  # type: ignore[attr-defined]
     assert "/whatsapp/promociones?sub=aprobados" in str(spec)
     assert "pushState" not in str(spec)
     assert state.active_tab == DEFAULT_TAB
     state.active_tab = TAB_TEMPLATES
-    back = WhatsAppState.select_tab.fn(state, TAB_CHATS)  # type: ignore[attr-defined]
-    assert "/whatsapp?tab=chats" in str(back) and "pushState" not in str(back)
+    back = WhatsAppState.select_tab.fn(state, TAB_CONNECTION)  # type: ignore[attr-defined]
+    assert "/whatsapp?tab=numero" in str(back) and "pushState" not in str(back)
     # Inside «Promociones por WhatsApp», a sub-tab stays an in-place history step.
     inside = WhatsAppState.select_tab.fn(state, TAB_CONTACTS)  # type: ignore[attr-defined]
     assert "/whatsapp/promociones?sub=clientes" in _script_of(inside)

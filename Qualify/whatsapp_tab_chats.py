@@ -1,14 +1,12 @@
-"""`/whatsapp` → Chats tab (WA-11, QUA-210): where a person attends the number's
-WhatsApp conversations — read, answer, take over from the menu, assign, close.
+"""The open WhatsApp chat (WA-11, QUA-210): where a person attends one WhatsApp
+conversation — read, answer, take over from the menu, assign, close.
 
-**Two places (m-25029798).** The open chat is ONE piece — `whatsapp_chat_pane()` plus
-`whatsapp_chat_layers()` — mounted only beside the single list of «Por responder»
-(`conversations_page.messages_tab`), where an Instagram chat opens too: two panes on
-desktop, one at a time under 768 px with «‹ Por responder» (`.q-wa-chats--open` in
-`assets/qualify-inbox.css`). `chats_tab()` is `/whatsapp`'s number list (until m-25029799
-retires it), rendered inside a box keyed by the selected number so its `on_mount`
-(`WhatsAppChatsState.enter`) fires on entry and on every number switch; its rows open the
-chat in «Por responder». States are TONES through
+**One place (m-25029798, m-25029799).** The open chat is ONE piece —
+`whatsapp_chat_pane()` plus `whatsapp_chat_layers()` — mounted only beside the single list
+of «Por responder» (`conversations_page.messages_tab`), where an Instagram chat opens too:
+two panes on desktop, one at a time under 768 px with «‹ Por responder»
+(`.q-wa-chats--open` in `assets/qualify-inbox.css`). WhatsApp's own chat list on
+`/whatsapp` is gone (m-25029799): that list lists every chat. States are TONES through
 `signal_pill` / `tone_badge` / `callout`; content loading is a skeleton, work in progress
 (sending) is the button's own `loading`.
 
@@ -32,9 +30,8 @@ from __future__ import annotations
 
 import reflex as rx
 
-from .chat_row import chat_row
 from .chat_row import tone_pill as _tone_pill
-from .chat_row_vm import CHANNEL_WHATSAPP, ChatRowVM
+from .chat_row_vm import CHANNEL_WHATSAPP
 from .chat_thread import (
     TAP_MIN,
     back_button,
@@ -117,10 +114,6 @@ from .whatsapp_chats_vm import (
     DIRECTIONS_NO_POINT,
     DIRECTIONS_PUT_ON_MAP,
     DRAFTS_ROUTE,
-    FILTER_CLOSED,
-    FILTER_OPEN,
-    FILTER_PAYMENT,
-    FILTER_UNREAD,
     MAX_BUTTON_TITLE_CHARS,
     MAX_PHOTO_BYTES,
     MEDIA_AUDIO,
@@ -224,8 +217,6 @@ from .whatsapp_chats_vm import (
     TemplateChoiceVM,
     TemplateFieldVM,
 )
-from .whatsapp_state import WhatsAppState
-from .whatsapp_vm import TAB_QR
 
 S = WhatsAppChatsState
 _TONES = ("ok", "warn", "error", "info", "neutral")
@@ -236,10 +227,6 @@ _REFRESH_MS = 15_000
 _TAP_MIN = TAP_MIN
 #: WhatsApp gives no profile picture: the header shows the initials or the person icon.
 _NO_PICTURE: rx.Var[str] = rx.Var.create("")
-#: U3 (UX review of m-25029798; new texts, awaiting the founder).
-MOVED_NOTICE = "Tus chats de WhatsApp ahora se abren en «Por responder», junto a los de Instagram."
-MOVED_ACTION = "Ir a Por responder"
-MOVED_HREF = "/responder?tab=mensajes&canal=whatsapp"
 
 
 # ======================================================================================
@@ -260,130 +247,9 @@ def _banner(message: rx.Var[str], tone: rx.Var[str]) -> rx.Component:
 
 
 def _heartbeat() -> rx.Component:
-    """The 15 s refresh — `react-moment`'s own interval, hidden, gone with what mounts
-    it (this number's list, or the open chat in «Por responder»)."""
+    """The 15 s refresh — `react-moment`'s own interval, hidden, gone with the open chat
+    that mounts it (`whatsapp_chat_layers`)."""
     return rx.moment(interval=_REFRESH_MS, on_change=lambda _tick: S.refresh, display="none")
-
-
-# ======================================================================================
-# Thread list
-# ======================================================================================
-
-
-def _thread_row(row: ChatRowVM) -> rx.Component:
-    """m-25017844: the row Conversaciones draws too (`chat_row`), fed by this channel's
-    adapter (`whatsapp_chats_vm.as_chat_row`, via `S.visible_chat_rows`)."""
-    return chat_row(
-        row,
-        is_open=row.thread_id == S.open_thread_id,
-        on_open=S.open_conversation(row.thread_id),
-    )
-
-
-def _filter_options() -> list[tuple[str, rx.Var[str]]]:
-    return [
-        (FILTER_OPEN, S.filter_open_label),
-        (FILTER_CLOSED, S.filter_closed_label),
-        (FILTER_UNREAD, S.filter_unread_label),
-        (FILTER_PAYMENT, S.filter_payment_label),
-    ]
-
-
-def _filter_button(key: str, label: rx.Var[str]) -> rx.Component:
-    """One filter as a button for the phone grid; `aria-pressed` says which one is on."""
-    active = S.filter_key == key
-    return rx.button(
-        label,
-        on_click=S.set_filter(key),
-        variant=rx.cond(active, "soft", "ghost"),
-        size="2",
-        width="100%",
-        height="auto",
-        min_height="44px",
-        white_space="normal",
-        padding_y="0.5rem",
-        custom_attrs={"aria-pressed": rx.cond(active, "true", "false")},
-        **T.tone_scheme("neutral"),
-    )
-
-
-def _filters() -> rx.Component:
-    """The four filters in the page's 2 x 2 arrangement (as `_choice_strip` in
-    whatsapp_page): the list column is at most 340 px wide at every size, so a
-    four-item `segmented_control` would clip «Pago por revisar» on a phone and a desk."""
-    return rx.grid(
-        *[_filter_button(key, label) for key, label in _filter_options()],
-        columns="2",
-        spacing="2",
-        width="100%",
-        role="group",
-        aria_label="Filtrar chats",
-    )
-
-
-def _list_body() -> rx.Component:
-    return rx.cond(
-        S.list_error != "",
-        rx.vstack(
-            callout(S.list_error, "error"),
-            rx.button(
-                rx.icon("refresh-cw", size=T.ICON_SM),
-                "Reintentar",
-                on_click=S.load_list,
-                variant="soft",
-                size="2",
-                **T.tone_scheme("neutral"),
-            ),
-            width="100%",
-            spacing="3",
-        ),
-        rx.cond(
-            S.list_ready,
-            rx.cond(
-                S.list_empty,
-                empty_state(
-                    "messages-square",
-                    "Aún no hay conversaciones en este número",
-                    "Cuando un cliente escriba a este número de WhatsApp, su conversación "
-                    "aparece aquí y puedes responderla desde esta pantalla.",
-                    # N8 (m-24842961): a QR code is how customers start writing.
-                    action=rx.button(
-                        rx.icon("qr-code", size=16),
-                        "Crear un código QR",
-                        on_click=WhatsAppState.select_tab(TAB_QR),
-                        variant="soft",
-                        size="3",
-                    ),
-                ),
-                rx.cond(
-                    S.visible_chat_rows.length() > 0,
-                    rx.vstack(
-                        rx.foreach(S.visible_chat_rows, _thread_row),
-                        spacing="2",
-                        width="100%",
-                        class_name="q-wa-scroll q-wa-scroll--list",
-                    ),
-                    rx.text(
-                        S.filter_empty,
-                        size="2",
-                        color=T.TEXT_MUTED,
-                        padding="1rem 0.25rem",
-                    ),
-                ),
-            ),
-            skeleton_rows(6, height="4.75rem", radius=T.RADIUS_CARD),
-        ),
-    )
-
-
-def _list_pane() -> rx.Component:
-    return rx.vstack(
-        _filters(),
-        _list_body(),
-        spacing="3",
-        width="100%",
-        class_name="q-wa-chats__list",
-    )
 
 
 # ======================================================================================
@@ -2621,34 +2487,6 @@ def _conversation() -> rx.Component:
     )
 
 
-def _moved_notice() -> rx.Component:
-    """U3 (UX review of m-25029798; new text, awaiting the founder): a row of this list
-    now opens its chat in «Por responder» — said once, above the list, with the way
-    there."""
-    return callout(
-        rx.flex(
-            rx.text(MOVED_NOTICE, size="2", flex="1", min_width="12rem"),
-            rx.link(
-                rx.button(
-                    MOVED_ACTION,
-                    variant="soft",
-                    size="2",
-                    min_height=_TAP_MIN,
-                    type="button",
-                    **T.tone_scheme("info"),
-                ),
-                href=MOVED_HREF,
-            ),
-            align="center",
-            wrap="wrap",
-            gap="0.5rem",
-            width="100%",
-        ),
-        "info",
-        size="1",
-    )
-
-
 def whatsapp_chat_pane() -> rx.Component:
     """m-25029798: the open WhatsApp chat — header, order, thread and reply box — as one
     piece, mounted in the pane beside the single list of «Por responder»
@@ -2672,22 +2510,4 @@ def whatsapp_chat_layers() -> rx.Component:
         _templates_drawer(),
         _picker_drawer(),
         _payment_confirm_dialog(),
-    )
-
-
-def chats_tab() -> rx.Component:
-    """`/whatsapp` › Chats: this number's list (until m-25029799 moves it into «Por
-    responder»); a row opens its chat in «Por responder» (`open_conversation`). The
-    15 s heartbeat refreshes the list."""
-    return rx.box(
-        _heartbeat(),
-        rx.vstack(
-            _moved_notice(),
-            _banner(S.banner, S.banner_tone),
-            _list_pane(),
-            spacing="3",
-            width="100%",
-        ),
-        on_mount=S.enter,
-        width="100%",
     )

@@ -113,6 +113,11 @@ def test_every_owner_visible_count_equals_the_unified_list_on_every_case() -> No
         assert chips.count("por_responder", ch) == n, ch
     assert read_home_counts(biz.tenant_id, now=now).people_waiting == menu.messages
     assert chips.por_responder == count_inbox(biz.tenant_id, now=now) == len(listed)
+    # m-25029799: the menu's «Por responder» is the only entry that counts chats now (the
+    # «WhatsApp» entry lost its badge). Its chat part is the two channels' counts, each
+    # chat once — exactly the unified list's length, never a WhatsApp chat twice.
+    assert menu.messages + menu.whatsapp == len(listed) == len(set(listed))
+    assert menu.total == menu.messages + menu.whatsapp + menu.buyers + menu.comments
     for f in INBOX_FILTERS:
         for ch in (None, "dm", "whatsapp"):
             assert chips.count(f, ch) == count_inbox(

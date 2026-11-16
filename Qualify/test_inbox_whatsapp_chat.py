@@ -108,7 +108,9 @@ async def test_the_tapped_chat_opens_at_its_por_responder_address(numbers: list[
         text
     )
     assert "/whatsapp" not in text
-    assert WhatsAppChatsState.load_list in events and WhatsAppChatsState.load_conversation in events
+    # m-25029799: no number list is read to open it — only the conversation.
+    assert WhatsAppChatsState.load_conversation in events
+    assert not hasattr(WhatsAppChatsState, "load_list")
 
 
 async def test_a_second_chat_replaces_the_address_of_the_first(numbers: list[UUID]) -> None:
@@ -130,13 +132,19 @@ async def test_a_number_of_another_business_opens_nothing(numbers: list[UUID]) -
     spec = await WhatsAppChatsState.restore_inbox_address.fn(state)  # type: ignore[attr-defined]
     assert spec is WhatsAppChatsState.open_pending
     assert await _drain(WhatsAppChatsState.open_pending.fn(state)) == []  # type: ignore[attr-defined]
-    assert state.open_thread_id == "" and state.rows == []
+    assert state.open_thread_id == "" and state.thread_row.thread_id == ""
 
 
 @dataclass
 class _GoneGateway:
     """The provider's `_owned`: a chat that is not this number's (another number, another
     business, an Instagram chat) is `ThreadNotFound`."""
+
+    def timezone(self, tenant: UUID) -> str:
+        return "America/Bogota"
+
+    def agents(self, tenant: UUID) -> list[Any]:
+        return []
 
     def conversation(self, tenant: UUID, connection: UUID, thread: UUID) -> Any:
         raise ThreadNotFound(str(thread))
@@ -208,23 +216,6 @@ def test_an_instagram_row_makes_the_whatsapp_chat_give_way_silently() -> None:
     assert state.open_thread_id == "" and state._pending_thread == ""
 
 
-def test_whatsapps_own_list_opens_its_rows_in_por_responder() -> None:
-    from .whatsapp_chats_vm import EMPTY_THREAD, FILTER_CLOSED
-
-    state = WhatsAppChatsState()
-    state._connection_id = MINE
-    state.filter_key = FILTER_CLOSED
-    state.rows = [EMPTY_THREAD.__class__(**{**EMPTY_THREAD.__dict__, "thread_id": THREAD})]
-    spec = WhatsAppChatsState.open_conversation.fn(state, THREAD)  # type: ignore[attr-defined]
-    text = _text(spec)
-    assert (
-        f"/responder?tab=mensajes&filtro=cerrados&canal=whatsapp&cuenta={MINE}&chat={THREAD}"
-        in (text)
-    )
-    assert state.open_thread_id == ""  # nothing opens on /whatsapp
-    assert WhatsAppChatsState.open_conversation.fn(state, str(uuid4())) is None  # type: ignore[attr-defined]
-
-
 # --- addresses --------------------------------------------------------------------------
 
 
@@ -291,16 +282,22 @@ def test_the_old_address_keeps_only_whitelisted_values() -> None:
 @pytest.mark.parametrize(
     "query",
     [
-        {"tab": "chats"},  # the list stays
+        # m-25029799: the list itself moved — it lands on the list of «Por responder».
+        {"tab": "chats"},
         {"tab": "chats", "filtro": "cerrados"},
         {"tab": "chats", "chat": THREAD},  # no number: the chat cannot be placed
         {"tab": "chats", "cuenta": MINE, "chat": "Laura"},
         {"tab": "chats", "cuenta": [MINE], "chat": THREAD},
-        {"tab": "numero", "cuenta": MINE, "chat": THREAD},  # another panel
     ],
 )
-def test_no_redirect_for_anything_else(query: dict[str, Any]) -> None:
-    assert legacy_chat_target(query) is None
+def test_a_chat_that_cannot_be_placed_lands_on_the_list(query: dict[str, Any]) -> None:
+    target = legacy_chat_target(query)
+    assert target is not None and target.startswith("/responder?tab=mensajes&filtro=")
+    assert "canal=whatsapp" in target and "chat=" not in target
+
+
+def test_no_redirect_for_another_panel() -> None:
+    assert legacy_chat_target({"tab": "numero", "cuenta": MINE, "chat": THREAD}) is None
 
 
 def test_the_redirect_never_loops() -> None:
@@ -582,13 +579,13 @@ def test_with_a_chat_open_the_list_extras_step_aside() -> None:
     assert "sea de Instagram o de WhatsApp" in EMPTY_PANE_TEXT
 
 
-def test_whatsapps_own_list_says_where_its_chats_open() -> None:
-    from .whatsapp_tab_chats import MOVED_ACTION, MOVED_HREF, MOVED_NOTICE, chats_tab
+def test_whatsapp_has_no_list_of_its_own_any_more() -> None:
+    """m-25029799: the list that said «ahora se abren en Por responder» is gone with its
+    notice — every chat is listed in «Por responder»."""
+    from . import whatsapp_tab_chats
 
-    rendered = str(chats_tab())
-    assert "Por responder" in MOVED_NOTICE and MOVED_ACTION == "Ir a Por responder"
-    assert MOVED_HREF.startswith("/responder?tab=mensajes")
-    assert "Elige una conversación" not in rendered and "q-wa-chats__conv" not in rendered
+    for gone in ("chats_tab", "MOVED_NOTICE", "MOVED_ACTION", "MOVED_HREF", "_filters"):
+        assert not hasattr(whatsapp_tab_chats, gone), gone
 
 
 def test_a_desk_closes_the_chat_with_its_own_x() -> None:

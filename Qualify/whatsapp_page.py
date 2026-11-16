@@ -7,10 +7,14 @@ every state is a TONE (`ok`/`warn`/`error`/`info`/`neutral`) through `signal_pil
 `platform_badge("whatsapp")`.
 
 **The shell** (m-24842998). Header + number selector (only when the tenant has more than
-one number) + two task tabs (Chats · Tu número) + a second,
-smaller strip for «Tu número»'s panels + the active panel's body. From `md` up the strips
-are segmented controls; on a phone they are a grid of 44 px buttons, so they fit at
+one number) + «Tu número»'s strip of panels + the active panel's body. From `md` up the
+strip is a segmented control; on a phone it is a grid of 44 px buttons, so it fits at
 360 px without sliding sideways (N12).
+
+**No chats here (m-25029799, BU-A11).** The «Chats» tab is gone: WhatsApp's chats are
+attended only in «Por responder», beside Instagram's (`whatsapp_tab_chats` keeps the open
+chat that pane mounts). An old address of the list redirects there
+(`whatsapp_vm.legacy_chat_target`), so this page draws «Tu número» only.
 
 **«Promociones por WhatsApp»** (m-25017862, decision D3): the promotions panels (Enviadas
 · Mensajes aprobados · Clientes que aceptaron) left the strip for their own menu entry,
@@ -18,8 +22,8 @@ next to «Anuncios», at `/whatsapp/promociones` (`whatsapp_promotions_index`). 
 state, same panels, same number selector; only the header and the strip differ. The body renders
 ONLY the active panel, inside a box keyed by `WhatsAppState.selected_connection_id`, so a
 panel's root `on_mount` fires on entry and on every number switch: that is how Perfil
-and QR load their data, and how Chats (WA-11, `whatsapp_tab_chats.py`) and the automatic
-reply (WA-16, `whatsapp_tab_menu.py`) plug in from their own files.
+and QR load their data, and how the automatic reply (WA-16, `whatsapp_tab_menu.py`)
+plugs in from its own file.
 """
 
 from __future__ import annotations
@@ -50,7 +54,6 @@ from .whatsapp_menu_state import WhatsAppMenuState
 from .whatsapp_metrics_block import metrics_block
 from .whatsapp_state import WhatsAppState
 from .whatsapp_tab_campaigns import campaigns_tab
-from .whatsapp_tab_chats import chats_tab
 from .whatsapp_tab_contacts import contacts_tab
 from .whatsapp_tab_menu import back_to_guided, menu_step_frame, menu_tab
 from .whatsapp_tab_payments import payments_tab
@@ -58,6 +61,8 @@ from .whatsapp_tab_templates import templates_tab
 from .whatsapp_vm import (
     CHAT_SETTINGS_ROUTE,
     CHAT_SETTINGS_TITLE,
+    CHATS_MOVED_ACTION,
+    CHATS_MOVED_NOTICE,
     DETAILS_TOGGLE,
     MAX_ABOUT_CHARS,
     MAX_ADDRESS_CHARS,
@@ -72,6 +77,7 @@ from .whatsapp_vm import (
     NO_NUMBER_NEXT,
     NO_NUMBER_TITLE,
     NUMBER_SUBS,
+    NUMBER_TITLE,
     PROMOTION_SUBS,
     PROMOTIONS_SUBTITLE,
     PROMOTIONS_TITLE,
@@ -79,10 +85,8 @@ from .whatsapp_vm import (
     REVIEW_ACTION,
     SECTION_NUMBER,
     SECTION_PROMOTIONS,
-    SECTIONS,
     TAB_ACTIVITY,
     TAB_CAMPAIGNS,
-    TAB_CHATS,
     TAB_CONNECTION,
     TAB_CONTACTS,
     TAB_MENU,
@@ -158,7 +162,13 @@ def number_selector() -> rx.Component:
     return rx.cond(
         WhatsAppState.has_many_numbers,
         rx.select.root(
-            rx.select.trigger(placeholder="Elige un número", width="280px"),
+            # m-25029799 (UX review): on a phone the column's width, leaving room for
+            # the theme button on the same row; 280 px from `sm` up. 44 px tall (N12).
+            rx.select.trigger(
+                placeholder="Elige un número",
+                width=rx.breakpoints(initial="calc(100% - 4.5rem)", sm="280px"),
+                min_height="44px",
+            ),
             rx.select.content(rx.foreach(WhatsAppState.numbers, _number_item)),
             value=WhatsAppState.selected_connection_id,
             on_change=WhatsAppState.select_connection,
@@ -168,20 +178,20 @@ def number_selector() -> rx.Component:
 
 
 def whatsapp_header() -> rx.Component:
-    """No back button: no chat opens on this screen (m-25029798, they open in «Por
-    responder», whose header carries «‹ Por responder»)."""
+    """No back button: no chat opens on this screen (m-25029798/m-25029799: they open
+    and are attended in «Por responder»)."""
     return page_header("WhatsApp", WHATSAPP_SUBTITLE, number_selector())
 
 
 def _phone_choice(
-    key: str, label: str, value: rx.Var[str], on_pick: rx.event.EventHandler, solid: bool
+    key: str, label: str, value: rx.Var[str], on_pick: rx.event.EventHandler
 ) -> rx.Component:
     """One tab as a button, for the phone grid. `aria-pressed` says which one is on."""
     active = value == key
     return rx.button(
         label,
         on_click=on_pick(key),
-        variant=rx.cond(active, "solid" if solid else "soft", "soft" if solid else "ghost"),
+        variant=rx.cond(active, "soft", "ghost"),
         size="2",
         width="100%",
         height="auto",
@@ -189,7 +199,7 @@ def _phone_choice(
         padding_y="0.5rem",
         custom_attrs={"aria-pressed": rx.cond(active, "true", "false")},
         **_TAP,
-        **({} if solid else T.tone_scheme("neutral")),
+        **T.tone_scheme("neutral"),
     )
 
 
@@ -200,7 +210,6 @@ def _choice_strip(
     *,
     label: str,
     phone_columns: str,
-    solid: bool,
     size: str,
 ) -> rx.Component:
     """N12: the same choices as a `segmented_control` from `md` up and, on a phone, as a
@@ -217,7 +226,7 @@ def _choice_strip(
             width="100%",
         ),
         rx.grid(
-            *[_phone_choice(key, text, value, on_pick, solid) for key, text in options],
+            *[_phone_choice(key, text, value, on_pick) for key, text in options],
             columns=phone_columns,
             spacing="2",
             display=_PHONE_ONLY,
@@ -228,24 +237,10 @@ def _choice_strip(
     )
 
 
-def tab_strip() -> rx.Component:
-    """The two tasks (m-24842998, m-25017862, m-25017861): Chats · Tu número. «Tu número»
-    opens a second, smaller strip (`sub_strip`). The menu left for «Ajustes de chats»."""
-    return _choice_strip(
-        SECTIONS,
-        WhatsAppState.active_section,
-        WhatsAppState.select_section,
-        label="Secciones de WhatsApp",
-        phone_columns="2",
-        solid=True,
-        size="3",
-    )
-
-
 def sub_strip() -> rx.Component:
     """Promociones por WhatsApp › Enviadas · Mensajes aprobados · Clientes que aceptaron
     (its page's only strip); Tu número › Estado · Perfil · Formas de pago · Códigos QR ·
-    Actividad. «Chats» has no sub-tabs (m-25017173): it opens the chat list directly."""
+    Actividad — `/whatsapp`'s only strip since its «Chats» tab left (m-25029799)."""
     return rx.match(
         WhatsAppState.active_section,
         (
@@ -256,7 +251,6 @@ def sub_strip() -> rx.Component:
                 WhatsAppState.select_sub,
                 label=PROMOTIONS_TITLE,
                 phone_columns="3",
-                solid=False,
                 size="2",
             ),
         ),
@@ -266,13 +260,39 @@ def sub_strip() -> rx.Component:
                 NUMBER_SUBS,
                 WhatsAppState.active_sub,
                 WhatsAppState.select_sub,
-                label="Tu número",
+                label=NUMBER_TITLE,
                 phone_columns="2",
-                solid=False,
                 size="2",
             ),
         ),
         rx.fragment(),
+    )
+
+
+def chats_moved_notice() -> rx.Component:
+    """m-25029799 (UX review): where the chats went — one line above «Tu número», the
+    design system's info callout, with «Ir a Por responder» (this number's chats)."""
+    return callout(
+        rx.flex(
+            rx.text(CHATS_MOVED_NOTICE, size="2", flex="1", min_width="12rem"),
+            rx.link(
+                rx.button(
+                    CHATS_MOVED_ACTION,
+                    variant="soft",
+                    size="2",
+                    type="button",
+                    **_TAP,
+                    **T.tone_scheme("info"),
+                ),
+                href=WhatsAppState.chats_href,
+            ),
+            align="center",
+            wrap="wrap",
+            gap="0.5rem",
+            width="100%",
+        ),
+        "info",
+        size="1",
     )
 
 
@@ -286,7 +306,6 @@ def tab_body() -> rx.Component:
     return rx.box(
         rx.match(
             WhatsAppState.active_tab,
-            (TAB_CHATS, chats_tab()),
             (TAB_CONNECTION, connection_tab()),
             (TAB_PROFILE, profile_tab()),
             (TAB_PAYMENTS, payments_tab()),
@@ -296,7 +315,7 @@ def tab_body() -> rx.Component:
             (TAB_TEMPLATES, templates_tab()),
             (TAB_CONTACTS, contacts_tab()),
             (TAB_CAMPAIGNS, campaigns_tab()),
-            chats_tab(),
+            connection_tab(),
         ),
         key=f"{WhatsAppState.selected_connection_id}:{WhatsAppState.active_tab}",
         class_name="q-settle q-content-ready",
@@ -360,7 +379,7 @@ def _whatsapp_body(*strips: rx.Component, mine: rx.Var[bool]) -> rx.Component:
     m-25017862: both pages read the one shared `active_tab`, which the arriving page's
     `enter_page` sets a server round trip AFTER the client has switched page. Until then
     `mine` is false and the page shows a skeleton — never the other page's panel under
-    its own header, and never that panel's `on_mount` load (the chat list's, say)."""
+    its own header, and never that panel's `on_mount` load (the QR codes', say)."""
     panel = rx.cond(
         mine,
         rx.fragment(*strips, tab_body()),
@@ -409,7 +428,7 @@ def whatsapp_index() -> rx.Component:
             on_leave=WhatsAppState.leave_page_flows,
         ),
         whatsapp_header(),
-        _whatsapp_body(tab_strip(), sub_strip(), mine=_on_whatsapp_page()),
+        _whatsapp_body(chats_moved_notice(), sub_strip(), mine=_on_whatsapp_page()),
     )
 
 

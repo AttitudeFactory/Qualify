@@ -112,7 +112,7 @@ async def _drain(events: Any) -> list[Any]:
 def _wa() -> WhatsAppChatsState:
     state = WhatsAppChatsState()
     state._connection_id = CONN
-    state.rows = [dataclasses.replace(WA_EMPTY_THREAD, thread_id=THREAD, window_open=True)]
+    state.thread_row = dataclasses.replace(WA_EMPTY_THREAD, thread_id=THREAD, window_open=True)
     state.open_thread_id = THREAD
     state.draft_text = "hola"
     return state

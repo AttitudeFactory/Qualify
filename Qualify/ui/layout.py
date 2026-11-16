@@ -42,7 +42,6 @@ from ..business_vm import (
 )
 from ..creators_access import CreatorsAccessState
 from ..generation_state import BUSY_TEXT, GenerationState
-from ..nav_url import WHATSAPP_AWAITING_HREF
 from ..pending_state import HEARTBEAT_MS, PendingState
 from ..r2_media import BACKEND_BASE
 from . import tokens as T
@@ -84,10 +83,11 @@ NAV_ZONES: list[tuple[str, str, list[Item]]] = [
             # One place to answer (founder decision 3): messages, buyers, comments,
             # WhatsApp chats and interested people are tabs of «Por responder».
             ("Por responder", "messages-square", RESPOND_ROUTE, True),
-            # WA-12: the WhatsApp module keeps its chats and the number; its promotions
-            # have their own entry in «Publica» (m-25017862), its menu is in «Ajustes de
-            # chats» (m-25017861). It leaves the menu when its chats move into «Por
-            # responder» (BU-A11) and «Tu número» into «Tus redes» (BU-A10).
+            # WA-12: the WhatsApp module. m-25029799 (BU-A11): its chats are attended
+            # only in «Por responder» (they count there, once); what is left here is
+            # «Tu número» — no chats, no badge. Its promotions have their own entry in
+            # «Publica» (m-25017862), its menu is in «Ajustes de chats» (m-25017861). It
+            # leaves the menu when «Tu número» moves into «Tus redes» (m-25027373).
             ("WhatsApp", "message-circle", "/whatsapp", True),
             # m-25017861 (D1, founder 2026-11-12): what the owner prepares once (the
             # menu, the starter questions…) lives apart from the messages, last in the
@@ -153,8 +153,9 @@ NAV_BUSINESS: list[Item] = [
 # (badge text, tone, spoken name). `warn` only where people wait for an answer;
 # `neutral` (the tone of «Pronto») where nothing is urgent. At 0 nothing is rendered.
 NAV_COUNTERS: dict[str, tuple[rx.Var, str, rx.Var]] = {
+    # m-25029799: WhatsApp's chats count only here (`attention.total`, each chat once);
+    # the «WhatsApp» entry holds no chats any more, so it carries no number.
     "Por responder": (PendingState.respond_badge, "warn", PendingState.respond_aria),
-    "WhatsApp": (PendingState.whatsapp_badge, "warn", PendingState.whatsapp_aria),
     "Por aprobar": (PendingState.approve_badge, "neutral", PendingState.approve_aria),
     "Tu semana": (PendingState.schedule_badge, "neutral", PendingState.schedule_aria),
 }
@@ -169,15 +170,6 @@ NAV_BUSY: dict[str, rx.Var] = {"Crear publicación": GenerationState.busy}
 #: name is the link's accessible name and the collapsed rail's label (`data-label`), so
 #: «Promociones» is still told apart from «Anuncios» by a screen reader and in zen.
 NAV_FULL_NAMES: dict[str, str] = {"Promociones": "Promociones por WhatsApp"}
-
-#: m-25017859: where an entry's link lands when it is not the bare route. The WhatsApp
-#: badge counts the «Por responder» rule, so WITH a badge its entry opens the chats on
-#: that chip — the number is the length of the list it opens (N11); without one it opens
-#: the chats on their usual «Abiertos» (coordinator's decision, 2026-11-13, pending the
-#: founder). The route stays the key «you are here» matches on.
-NAV_HREFS: dict[str, rx.Var | str] = {
-    "/whatsapp": rx.cond(PendingState.whatsapp > 0, WHATSAPP_AWAITING_HREF, "/whatsapp"),
-}
 
 
 def busy_icon(icon: rx.Component, busy: rx.Var | bool | None) -> rx.Component:
@@ -544,7 +536,9 @@ def _nav_item(
             ),
             busy=busy,
         ),
-        href=NAV_HREFS.get(route, route),
+        # m-25029799: every entry opens its bare route (the «WhatsApp» entry no longer
+        # opens chats on its badge's chip: it has no chats and no badge).
+        href=route,
         width="100%",
         underline="none",
         aria_current=rx.cond(active, "page", ""),

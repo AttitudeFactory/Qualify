@@ -33,9 +33,15 @@ def test_accuracy_and_the_way_back() -> None:
     assert "a unos 300 m" in approximate_note(290)
     from .whatsapp_payments_state import chat_return_path  # #542's one rule
 
-    good = "/whatsapp?tab=chats&cuenta=x"
+    good = "/responder?tab=mensajes&cuenta=x&chat=y"
     assert chat_return_path({"volver": good}) == good
-    for bad in ("", "/whatsapp?tab=numero&a=tab=chats", "/catalog", "/whatsapp?tab=chats&tab=x"):
+    for bad in (
+        "",
+        "/whatsapp?tab=numero&a=tab=chats",
+        "/catalog",
+        "/whatsapp?tab=chats&tab=x",
+        "/whatsapp?tab=chats&cuenta=x",  # m-25029799: the retired list, not a chat
+    ):
         assert chat_return_path({"volver": bad}) == "", bad
 
 

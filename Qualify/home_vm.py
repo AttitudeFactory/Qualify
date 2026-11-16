@@ -22,6 +22,8 @@ from dataclasses import dataclass, field
 
 from qualify_api.home import HomeCounts
 
+from .nav_url import WHATSAPP_CHATS_HREF
+
 # Destinations. A query names the filter the list opens with (N11); the receiving
 # screens read it (`inbox_list_vm.filter_from_params`, `planner_vm.gallery_filter_from_param`).
 # m-25017859: `people_waiting` counts Instagram chats under the «Por responder» rule, so it
@@ -32,7 +34,8 @@ DRAFTS_TO_APPROVE_URL = "/drafts?estado=por-completar"
 VIDEOS_EXPIRING_URL = "/drafts?estado=por-completar&orden=vence"
 COMMENTS_URL = "/inbox"
 CONVERSATIONS_URL = "/conversations"
-WHATSAPP_CHATS_URL = "/whatsapp?tab=chats"
+# m-25029799: WhatsApp's chats are attended in «Por responder», narrowed to WhatsApp.
+WHATSAPP_CHATS_URL = WHATSAPP_CHATS_HREF
 # m-24843003: mentions are Resultados › «Quién habla de ti».
 MENTIONS_URL = "/resultados?tab=menciones"
 CONNECTIONS_URL = "/connections"

@@ -56,8 +56,9 @@ def due(last_read_at: float, ttl_s: float, now: float, *, force: bool) -> bool:
 
 
 class PendingState(rx.State):
+    #: Everyone waiting, WhatsApp chats included, each once (m-25029799: the «WhatsApp»
+    #: entry lost its own badge — its chats are attended only in «Por responder»).
     respond: int = 0
-    whatsapp: int = 0
     approve: int = 0
     schedule: int = 0
 
@@ -88,10 +89,6 @@ class PendingState(rx.State):
         return entry_aria_label("Por responder", self.respond)
 
     @rx.var
-    def whatsapp_aria(self) -> str:
-        return entry_aria_label("WhatsApp", self.whatsapp)
-
-    @rx.var
     def approve_aria(self) -> str:
         return entry_aria_label("Por aprobar", self.approve)
 
@@ -104,10 +101,6 @@ class PendingState(rx.State):
         return badge_text(self.respond)
 
     @rx.var
-    def whatsapp_badge(self) -> str:
-        return badge_text(self.whatsapp)
-
-    @rx.var
     def approve_badge(self) -> str:
         return badge_text(self.approve)
 
@@ -118,7 +111,6 @@ class PendingState(rx.State):
     def _counts(self) -> MenuCounts:
         return MenuCounts(
             respond=self.respond,
-            whatsapp=self.whatsapp,
             approve=self.approve,
             schedule=self.schedule,
         )
@@ -158,7 +150,7 @@ class PendingState(rx.State):
                     self._publications_at, PUBLICATIONS_TTL_S, now, force=force
                 )
                 if tenant_id is None:
-                    self.respond = self.whatsapp = self.approve = self.schedule = 0
+                    self.respond = self.approve = self.schedule = 0
                     read_attention_now = read_publications_now = False
                 self._busy_since = now if (read_attention_now or read_publications_now) else 0.0
                 total = self._counts().total
@@ -178,7 +170,6 @@ class PendingState(rx.State):
                     done_at = time.time()
                     if attention is not None:
                         self.respond = clamp(attention.total)
-                        self.whatsapp = clamp(attention.whatsapp)
                         self._attention_at = done_at
                         # m-25017859: «Por responder»'s cards follow this same poll (the
                         # comments and «Quieren comprar» figures); no read of their own.

@@ -144,7 +144,6 @@ def test_account_context_is_only_for_the_loaded_accounts() -> None:
         ),
         ({"tab": "menu", "flujo": "menu", "paso": "999"}, "/chats/ajustes/whatsapp?flujo=menu"),
         ({"tab": "menu", "objeto": _B}, "/chats/ajustes/whatsapp"),  # no form, no id
-        ({"tab": "chats"}, None),
         ({"tab": "numero", "sub": "pagos"}, None),
         ({}, None),
     ],

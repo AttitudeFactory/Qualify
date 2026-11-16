@@ -39,13 +39,7 @@ from urllib.parse import urlencode
 
 from .ad_message_vm import ad_origin_href, ad_origin_label
 from .catalog_vm import CHATS_RETURN_PATH, RETURN_PARAM
-from .chat_row_vm import (
-    CHANNEL_WHATSAPP,
-    ChatRowVM,
-    build_chat_row,
-    letter_initials,
-    minutes_left,
-)
+from .chat_row_vm import letter_initials
 from .chat_thread_vm import mark_days, window_line
 from .reply_box_vm import PLUS_LABEL, WHATSAPP_BOX, plus_rows
 from .seasonal_vm import CREATE_HREF as SEASONAL_LIBRARY_CREATE_HREF
@@ -68,8 +62,6 @@ MAX_CAPTION_CHARS = 1024
 
 #: The newest page of a conversation, and of «cargar anteriores».
 MESSAGES_PAGE = 50
-#: The thread list: one number's conversations, newest activity first.
-THREADS_LIMIT = 200
 
 MEDIA_NOT_CAPTURED = "[foto, audio o archivo — no se guardó una copia para verlo aquí]"
 
@@ -151,61 +143,9 @@ WINDOW_CLOSED_LINE = "Pasaron 24 h: solo puedes enviarle un mensaje ya aprobado 
 NO_MESSAGES_YET = "Sin mensajes todavía"
 OUTBOUND_PREFIX = "Tú: "
 
-FILTER_OPEN = "open"
-FILTER_CLOSED = "closed"
-#: m-25017859: the chats that wait for the owner's reply under the ONE «Por responder»
-#: rule (`ThreadSummary.awaiting_reply`) — the number on the menu's WhatsApp badge. The
-#: key keeps its old value so old links (`?filtro=sin-leer`) still land here.
-FILTER_UNREAD = "unread"
-#: The chip's words, in ONE place: it lists the chats that wait for a reply, so it cannot
-#: be «Sin leer». UX proposal (m-25017859) awaiting the founder's confirmation.
-AWAITING_FILTER_LABEL = "Por responder"
-#: `?filtro=` values that open the chats on that chip (the second one is its old name).
-AWAITING_FILTER_SLUGS = frozenset({"por-responder", "sin-leer"})
-#: m-25017859: every chip's `?filtro=`, so the address says the chip on screen (a reload
-#: or «atrás» shows it) — the first slug of each is the one written.
-FILTER_SLUG: dict[str, str] = {
-    "open": "abiertos",
-    "closed": "cerrados",
-    "unread": "por-responder",
-    "payment": "pago-por-revisar",
-}
-
-
-#: m-25029798: a row of this list opens its chat in «Por responder», on the single
-#: list's closest chip (it has no «Abiertos» until m-25029799: «Todos» holds them).
-_INBOX_SLUG: dict[str, str] = {
-    "open": "todos",
-    "closed": "cerrados",
-    "unread": "por-responder",
-    "payment": "pago-por-revisar",
-}
-
-
-def inbox_filter_slug(filter_key: str) -> str:
-    """The single list's `?filtro=` closest to this list's chip `filter_key`."""
-    return _INBOX_SLUG.get(filter_key, "todos")
-
-
-def filter_from_slug(slug: object) -> str:
-    """The chip a navigation's `?filtro=` asks for; anything else (none, unknown) is the
-    default «Abiertos»."""
-    value = slug.strip().lower() if isinstance(slug, str) else ""
-    if value in AWAITING_FILTER_SLUGS:
-        return "unread"
-    return next((k for k, s in FILTER_SLUG.items() if s == value), "open")
-
-
-#: m-24971198: the chats whose customer answered after the payment card (spec §4).
-FILTER_PAYMENT = "payment"
-FILTERS: tuple[tuple[str, str], ...] = (
-    (FILTER_OPEN, "Abiertos"),
-    (FILTER_CLOSED, "Cerrados"),
-    (FILTER_UNREAD, AWAITING_FILTER_LABEL),
-    (FILTER_PAYMENT, "Pago por revisar"),
-)
-FILTER_KEYS = frozenset(key for key, _label in FILTERS)
-DEFAULT_FILTER = FILTER_OPEN
+# m-25029799: WhatsApp's own chat list (its chips «Abiertos · Cerrados · Por responder ·
+# Pago por revisar», its rows) is gone — the single list of «Por responder»
+# (`inbox_list_vm`) lists and counts every chat. This module keeps the open chat's VMs.
 
 COMPOSE_TEXT = "text"
 COMPOSE_BUTTONS = "buttons"
@@ -459,16 +399,8 @@ class ThreadRowVM:
     agent_initials: str
     status: str
     is_closed: bool
-    #: «Pago por revisar»: the filter's own test and the row's most urgent pill.
-    payment_review: bool = False
-    #: m-25017844 (UX review): «Esperando el pago» — the row's pill when nothing beats it.
-    payment_awaiting: bool = False
-    #: m-25017844: minutes until the window closes when under an hour, else 0 — the
-    #: shared row's «Quedan N min para responder».
-    window_minutes: int = 0
-    #: m-25017859: the «Por responder» rule's verdict (`ThreadSummary.awaiting_reply`):
-    #: the waiting dot and the «Por responder» chip.
-    awaiting_reply: bool = False
+    # m-25029799: no list-row fields any more (payment marks, the waiting dot, «Quedan N
+    # min»): the single list of «Por responder» draws the rows (`inbox_list_vm`).
     #: m-25027371: the open chat's header — the person's initials ("" → the person
     #: icon) and the shared window line («Puedes escribirle hasta las …»).
     initials: str = ""
@@ -540,78 +472,10 @@ def build_thread_row(
         agent_initials=agent.initials if agent else "",
         status=thread.status,
         is_closed=thread.status == "closed",
-        window_minutes=minutes_left(thread.window.open, thread.window.closes_at, now),
-        awaiting_reply=bool(getattr(thread, "awaiting_reply", False)),
         initials=letter_initials(name),
         window_line=line,
         window_line_tone=line_tone,
     )
-
-
-def as_chat_row(row: ThreadRowVM) -> ChatRowVM:
-    """m-25017844: this channel's row in the shared shape (`chat_row_vm`). The «Por
-    responder» rule (m-25017859) is the waiting dot; a closed chat is muted wherever a
-    chip mixes open and closed ones («Pago por revisar»); «Usando tu menú» /
-    «Respondes tú» and «Cerrado» leave the row (the chat and the filter say them); the
-    payment to check and the window about to close fold into the one pill («Esperando
-    el pago» too). No second line (UX doc §2): the title is the profile name, else the
-    number, as before; initials come only from the name's letters (a number-only
-    contact gets the person icon)."""
-    named = row.subtitle != ""
-    return build_chat_row(
-        thread_id=row.thread_id,
-        channel=CHANNEL_WHATSAPP,
-        title=row.title,
-        preview=row.preview,
-        time_label=row.time_label,
-        waiting=row.awaiting_reply,
-        closed=row.is_closed,
-        initials_from=row.title if named else "",
-        payment_review=row.payment_review,
-        payment_awaiting=row.payment_awaiting,
-        reply_within_minutes=row.window_minutes,
-        agent_initials=row.agent_initials,
-        agent_name=row.agent_name,
-    )
-
-
-def filter_threads(rows: Iterable[ThreadRowVM], key: str) -> list[ThreadRowVM]:
-    """Abiertos = status open · Cerrados = status closed · Por responder = the rule's
-    verdict (`awaiting_reply`, m-25017859: the same chats the menu's WhatsApp badge
-    counts) · Pago por revisar. An unknown key falls back to Abiertos."""
-    if key == FILTER_CLOSED:
-        return [r for r in rows if r.is_closed]
-    if key == FILTER_UNREAD:
-        return [r for r in rows if r.awaiting_reply]
-    if key == FILTER_PAYMENT:
-        return [r for r in rows if r.payment_review]
-    return [r for r in rows if not r.is_closed]
-
-
-#: What the list says when a filter has nothing (m-24971198 gives «Pago por revisar»
-#: its own words; the others keep the general line).
-FILTER_EMPTY = "No hay conversaciones con este filtro."
-FILTER_PAYMENT_EMPTY = (
-    "No hay pagos por revisar. Cuando un cliente te mande su comprobante, su chat aparece aquí."
-)
-
-
-FILTER_PAYMENT_FAILED = "No pudimos revisar los pagos. Inténtalo otra vez en un momento."
-
-
-def filter_empty_text(key: str, *, statuses_failed: bool = False) -> str:
-    if key != FILTER_PAYMENT:
-        return FILTER_EMPTY
-    return FILTER_PAYMENT_FAILED if statuses_failed else FILTER_PAYMENT_EMPTY
-
-
-def filter_counts(rows: Sequence[ThreadRowVM]) -> dict[str, int]:
-    return {key: len(filter_threads(rows, key)) for key, _label in FILTERS}
-
-
-def filter_label(key: str, count: int) -> str:
-    label = dict(FILTERS).get(key, key)
-    return f"{label} · {count}" if count else label
 
 
 # ======================================================================================
@@ -2439,50 +2303,6 @@ def build_payment(
         confirmed_line=confirmed,
         confirm_text=str(getattr(payment, "confirm_text", "") or ""),
     )
-
-
-def with_payment_pills(
-    rows: Sequence[ThreadRowVM], statuses: Mapping[str, Any]
-) -> list[ThreadRowVM]:
-    """The list's rows with their payment marks (one `payment_statuses` read for all):
-    «Pago por revisar» and «Esperando el pago» are what the row can show; «Pago
-    recibido» / «Paga al recibir» stay in the chat's header."""
-    out: list[ThreadRowVM] = []
-    for row in rows:
-        payment = statuses.get(row.thread_id)
-        if payment is None:
-            out.append(row)
-            continue
-        out.append(
-            replace(
-                row,
-                payment_review=payment.status == "review",
-                payment_awaiting=payment.status == "awaiting",
-            )
-        )
-    return out
-
-
-def carry_payment_marks(
-    rows: Sequence[ThreadRowVM], previous: Sequence[ThreadRowVM]
-) -> list[ThreadRowVM]:
-    """When the statuses read fails: each chat keeps the payment pill and mark it had
-    (by thread id), so a refresh never makes «Pago por revisar» flicker."""
-    before = {r.thread_id: r for r in previous}
-    out: list[ThreadRowVM] = []
-    for row in rows:
-        old = before.get(row.thread_id)
-        if old is None:
-            out.append(row)
-            continue
-        out.append(
-            replace(
-                row,
-                payment_review=old.payment_review,
-                payment_awaiting=old.payment_awaiting,
-            )
-        )
-    return out
 
 
 @dataclass(frozen=True)

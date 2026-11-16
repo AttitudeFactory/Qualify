@@ -2,13 +2,13 @@
 
 Pure view model — no Reflex, no database — so every rule is tested directly.
 
-Four menu entries carry a number, each counted with the rule of the list it opens:
+Three menu entries carry a number, each counted with the rule of the list it opens:
 
 - **Por responder** — everyone waiting for an answer, as «Por responder» counts them
   (`qualify_api.attention`, the single count of ATENDER-1, m-24842990): Instagram
   messages pending, people who want to buy, comment replies ready to approve and
-  WhatsApp chats with an unanswered message.
-- **WhatsApp** — the WhatsApp chats of that same count (its «Sin leer» filter).
+  WhatsApp chats with an unanswered message — each chat once. Since m-25029799 the
+  «WhatsApp» entry carries no number of its own: its chats are attended only here.
 - **Por aprobar** — publications generated and waiting for the owner's approval
   (`ApprovalStatus.PENDING`). Only those: approving one always takes it out of the
   number, which is the story's second criterion.
@@ -16,7 +16,7 @@ Four menu entries carry a number, each counted with the rule of the list it open
   «Sin programar» list, `PlannerService.list_unscheduled`).
 
 With 0 an entry shows nothing. The tab title starts with «(N)», N being every pending
-thing once: WhatsApp is already inside Por responder, so it is not added twice.
+thing once.
 """
 
 from __future__ import annotations
@@ -37,13 +37,12 @@ class MenuCounts:
     """What waits for the owner, per menu entry. Never negative."""
 
     respond: int = 0
-    whatsapp: int = 0
     approve: int = 0
     schedule: int = 0
 
     @property
     def total(self) -> int:
-        """Every pending thing once (WhatsApp is part of `respond`)."""
+        """Every pending thing once (WhatsApp's chats are part of `respond`)."""
         return self.respond + self.approve + self.schedule
 
     @property
@@ -76,7 +75,6 @@ def badge_text(count: int) -> str:
 # (singular, plural) — the plural carries «{n}».
 _ENTRY_SPOKEN: dict[str, tuple[str, str]] = {
     "Por responder": ("1 persona espera tu respuesta", "{n} personas esperan tu respuesta"),
-    "WhatsApp": ("1 chat sin responder", "{n} chats sin responder"),
     "Por aprobar": (
         "1 publicación espera tu aprobación",
         "{n} publicaciones esperan tu aprobación",

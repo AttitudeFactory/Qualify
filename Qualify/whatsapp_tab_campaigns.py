@@ -1,6 +1,6 @@
 """`/whatsapp` → Campañas tab (WA-20, QUA-219): the number's promotions, the «Enviar una
 promoción» wizard in three steps (m-24842996: mensaje → a quién → revisar) and the
-promotion's detail (summary, sends, «Ver respuestas en Chats», «Cancelar»).
+promotion's detail (summary, sends, «Ver respuestas en Por responder», «Cancelar»).
 
 Same hook as the other tabs: rendered only while active, inside the shell's box keyed by
 the number; the root's `on_mount` loads. The page never talks to the provider.

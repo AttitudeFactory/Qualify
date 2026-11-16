@@ -352,9 +352,8 @@ def test_a_chat_of_either_channel_has_one_address_in_por_responder() -> None:
     assert conversation_href("whatsapp", str(CONNECTION), thread) == (
         f"/responder?tab=mensajes&cuenta={CONNECTION}&chat={thread}"
     )
-    assert conversation_href("whatsapp", str(CONNECTION), chip="cerrados") == (
-        f"/whatsapp?tab=chats&cuenta={CONNECTION}&filtro=cerrados"
-    )
+    # m-25029799: WhatsApp's own list is gone — no address of a chat leads there.
+    assert "/whatsapp" not in conversation_href("whatsapp", str(CONNECTION))
 
 
 # --- the expired notice ---------------------------------------------------------------------
@@ -433,25 +432,41 @@ class _Fake:
         self.rows, self.size, self.reads = rows, size, 0
         self.expired, self.channels_with_chats = 0, ("whatsapp",)
         self.asked: list[tuple[str, str]] = []
+        #: m-25029799: the number each page was read for, and the business's numbers.
+        self.asked_numbers: list[str] = []
+        self.numbers: list[Any] = []
+        self.numbers_reads = 0
         #: Set to hold the NEXT page read until `release` is set (a read in flight).
         self.hold_next = False
         self.entered = threading.Event()
         self.release = threading.Event()
 
-    def page(self, tenant_id: UUID, *, filter_key: str, channel: str, cursor: Any, now: Any):
+    def page(
+        self,
+        tenant_id: UUID,
+        *,
+        filter_key: str,
+        channel: str,
+        cursor: Any,
+        now: Any,
+        number: str = "",
+    ):
         if self.hold_next:
             self.hold_next = False
             self.entered.set()
             self.release.wait(5)
         self.reads += 1
         self.asked.append((filter_key, channel))
+        self.asked_numbers.append(number)
+        # m-25029799: one number narrows to that number's chats (as `list_inbox` does).
+        mine = [r for r in self.rows if not number or str(r.connection_id) == number]
         start = 0
         if cursor:
             after = InboxCursor.decode(cursor)
-            start = next(i for i, r in enumerate(self.rows) if r.thread_id == after.thread_id) + 1
+            start = next(i for i, r in enumerate(mine) if r.thread_id == after.thread_id) + 1
         rows = [
             dataclasses.replace(r, counterpart_name=f"{filter_key}:{r.counterpart_name}")
-            for r in self.rows
+            for r in mine
         ]
         chunk = tuple(rows[start : start + self.size])
         more = start + self.size < len(rows)
@@ -461,10 +476,29 @@ class _Fake:
         n = len(self.rows)
         by = {c: {"por_responder": n, "todos": n} for c in self.channels_with_chats}
         by.setdefault("dm", {})["ventana_vencida"] = self.expired
-        return counts(**by)
+        tally = counts(**by)
+        per: dict[str, dict[str, int]] = {}
+        for r in self.rows:
+            one = per.setdefault(str(r.connection_id), {"por_responder": 0, "todos": 0})
+            one["por_responder"] += 1
+            one["todos"] += 1
+        return InboxCounts(
+            by_channel=tally.by_channel,
+            by_connection=per,
+            connection_channels={a: "whatsapp" for a in per},
+        )
+
+    def read_numbers(self, tenant_id: UUID) -> tuple[Any, ...]:
+        self.numbers_reads += 1
+        return tuple(self.numbers)
 
     def context(self, tenant_id: UUID) -> InboxContext:
-        return InboxContext(zone_name="America/Bogota", agents=(), connected=(CHANNEL_WHATSAPP,))
+        return InboxContext(
+            zone_name="America/Bogota",
+            agents=(),
+            connected=(CHANNEL_WHATSAPP,),
+            numbers=tuple(self.numbers),
+        )
 
 
 @pytest.fixture
@@ -477,6 +511,7 @@ def fake(monkeypatch: pytest.MonkeyPatch) -> _Fake:
     monkeypatch.setattr(state_module, "page", fake.page)
     monkeypatch.setattr(state_module, "counts", fake.counts)
     monkeypatch.setattr(state_module, "context", fake.context)
+    monkeypatch.setattr(state_module, "numbers", fake.read_numbers)
 
     async def session(self: InboxListState) -> tuple[str, UUID]:
         return "tenant-a", UUID(int=1)
@@ -840,7 +875,7 @@ async def _tick(state: InboxListState) -> None:
 
 
 def _chip_count(state: InboxListState) -> int:
-    return count_of(state_module._Counts(state.counts_by), FILTER_AWAITING)
+    return count_of(state_module._Counts(state.counts_by, {}), FILTER_AWAITING)
 
 
 async def test_a_new_chat_at_the_top_keeps_the_row_pushed_across_the_seam(fake: _Fake) -> None:
@@ -1009,18 +1044,18 @@ def test_the_chips_are_44_px_pressed_and_wrap() -> None:
         assert text in rendered or escaped in rendered, text
 
 
-def test_the_whatsapp_badge_opens_the_chip_it_counts() -> None:
-    """The menu's WhatsApp badge counts the «Por responder» rule: its entry opens
-    WhatsApp › Chats on that chip, whose `?filtro=` the chats screen reads."""
-    from .ui.layout import NAV_HREFS, sidebar
-    from .whatsapp_chats_vm import AWAITING_FILTER_SLUGS
+def test_the_whatsapp_entry_opens_tu_numero_with_no_chats_badge() -> None:
+    """m-25029799: WhatsApp's chats are attended (and counted) only in «Por responder»;
+    the «WhatsApp» entry leads to «Tu número» with no number of its own."""
+    from .ui.layout import NAV_COUNTERS, NAV_ZONES, sidebar
 
-    # Coordinator's decision (2026-11-13): the chip only with a badge; else «Abiertos».
-    href = str(NAV_HREFS["/whatsapp"])
-    assert "pending_state.whatsapp" in href and "> 0" in href
-    assert '"/whatsapp?tab=chats&filtro=por-responder"' in href and ': "/whatsapp")' in href
-    assert "por-responder" in AWAITING_FILTER_SLUGS
-    assert "filtro=por-responder" in str(sidebar())
+    assert "WhatsApp" not in NAV_COUNTERS and "Por responder" in NAV_COUNTERS
+    atiende = {zone: items for zone, _t, items in NAV_ZONES}["listen"]
+    assert [label for label, *_ in atiende] == ["Por responder", "WhatsApp", "Ajustes de chats"]
+    assert ("WhatsApp", "message-circle", "/whatsapp", True) in atiende
+    rendered = str(sidebar())
+    assert "tab=chats" not in rendered and "filtro=por-responder" not in rendered
+    assert "whatsapp_badge" not in rendered
 
 
 def test_opening_a_waiting_chat_keeps_its_rule_pill() -> None:
@@ -1067,103 +1102,6 @@ async def test_a_gone_chat_over_another_open_one_is_only_a_toast(
     out = await _drain(ConversationsState.open_by_id.fn(conv))  # type: ignore[attr-defined]
     assert conv.banner == ""
     assert any("toast" in str(e).lower() for e in out)
-
-
-def _wa_at(state: Any, query: str) -> None:
-    from reflex.istate.data import ReflexURL, RouterData
-
-    state.router = RouterData(url=ReflexURL(f"http://localhost/whatsapp?{query}"))
-
-
-@pytest.fixture
-def wa(monkeypatch: pytest.MonkeyPatch) -> Any:
-    from .whatsapp_chats_state import WhatsAppChatsState
-    from .whatsapp_state import WhatsAppState
-
-    shell = WhatsAppState()  # no number selected: `enter` stops before any read
-    _SHELL[:] = [shell]
-
-    async def the_shell(self: Any, cls: Any) -> Any:
-        assert cls is WhatsAppState
-        return shell
-
-    monkeypatch.setattr(WhatsAppChatsState, "get_state", the_shell)
-    return WhatsAppChatsState()
-
-
-_SHELL: list[Any] = []
-
-
-async def test_the_whatsapp_chip_survives_a_reload_after_a_chat_or_a_tab_round_trip(
-    wa: Any,
-) -> None:
-    """Every address the page writes later keeps the picked chip's slug (the default
-    chip needs none), so a reload lands on what the owner saw."""
-    from .whatsapp_chats_state import WhatsAppChatsState
-    from .whatsapp_chats_vm import FILTER_CLOSED, FILTER_OPEN
-
-    _wa_at(wa, "tab=chats")
-    await WhatsAppChatsState.apply_address_filter.fn(wa)  # type: ignore[attr-defined]
-    await WhatsAppChatsState.set_filter.fn(wa, FILTER_CLOSED)  # type: ignore[attr-defined]
-    shell = _SHELL[0]
-    assert "filtro=cerrados" in shell._panel_address("chats")  # a tab and back
-    assert "filtro" not in shell._panel_address("menu")
-    await WhatsAppChatsState.set_filter.fn(wa, FILTER_OPEN)  # type: ignore[attr-defined]
-    assert "filtro" not in shell._panel_address("chats")  # the default needs none
-    assert conversation_href("whatsapp", str(CONNECTION), chip="cerrados").endswith(
-        "&filtro=cerrados"
-    )
-    assert "filtro" not in conversation_href("whatsapp", str(CONNECTION))
-
-
-async def test_whatsapp_navigation_with_filtro_applies_it_and_without_it_is_abiertos(
-    wa: Any,
-) -> None:
-    from .whatsapp_chats_state import WhatsAppChatsState
-    from .whatsapp_chats_vm import DEFAULT_FILTER, FILTER_UNREAD
-
-    _wa_at(wa, "tab=chats&filtro=por-responder")  # the badge / the single list's link
-    await WhatsAppChatsState.apply_address_filter.fn(wa)  # type: ignore[attr-defined]
-    assert wa.filter_key == FILTER_UNREAD
-    _wa_at(wa, "tab=chats")  # a bare /whatsapp, arrived at by navigation
-    await WhatsAppChatsState.apply_address_filter.fn(wa)  # type: ignore[attr-defined]
-    assert wa.filter_key == DEFAULT_FILTER
-
-
-async def test_a_remount_keeps_the_picked_chip_even_with_a_stale_filtro(wa: Any) -> None:
-    from .whatsapp_chats_state import WhatsAppChatsState
-    from .whatsapp_chats_vm import FILTER_CLOSED
-
-    _wa_at(wa, "tab=chats&filtro=por-responder")
-    await WhatsAppChatsState.apply_address_filter.fn(wa)  # type: ignore[attr-defined]
-    spec = await WhatsAppChatsState.set_filter.fn(wa, FILTER_CLOSED)  # type: ignore[attr-defined]
-    assert "replaceState" in str(spec) and "cerrados" in str(spec)  # the address says it
-    await WhatsAppChatsState.enter.fn(wa)  # type: ignore[attr-defined]  # a remount
-    assert wa.filter_key == FILTER_CLOSED
-
-
-async def test_a_picked_chip_survives_a_tab_switch_and_back(wa: Any) -> None:
-    """Another WhatsApp tab and back is a pushState (no `on_load`), then a remount."""
-    from .whatsapp_chats_state import WhatsAppChatsState
-    from .whatsapp_chats_vm import FILTER_PAYMENT
-
-    _wa_at(wa, "tab=chats")
-    await WhatsAppChatsState.apply_address_filter.fn(wa)  # type: ignore[attr-defined]
-    await WhatsAppChatsState.set_filter.fn(wa, FILTER_PAYMENT)  # type: ignore[attr-defined]
-    _wa_at(wa, "tab=menu")
-    _wa_at(wa, "tab=chats")
-    await WhatsAppChatsState.enter.fn(wa)  # type: ignore[attr-defined]
-    assert wa.filter_key == FILTER_PAYMENT
-
-
-def test_only_the_route_on_load_decides_the_chip() -> None:
-    import inspect
-
-    from .whatsapp_chats_state import WhatsAppChatsState
-    from .whatsapp_state import WhatsAppState
-
-    assert "apply_address_filter" in inspect.getsource(WhatsAppState.enter_page.fn)  # type: ignore[attr-defined]
-    assert "filter_key" not in inspect.getsource(WhatsAppChatsState.enter.fn)  # type: ignore[attr-defined]
 
 
 def test_off_mensajes_the_sidebar_poll_refreshes_the_chat_cards_too() -> None:

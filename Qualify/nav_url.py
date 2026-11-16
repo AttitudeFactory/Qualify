@@ -90,15 +90,30 @@ FROM_INBOX = "por-responder"
 #: The single list of «Por responder» (`/responder?tab=mensajes`), where every chat opens.
 INBOX_ROUTE = "/responder"
 INBOX_TAB = "mensajes"
-#: The canonical `?filtro=` of WhatsApp › Chats' «Por responder» chip (the menu's
-#: WhatsApp badge and a chat opened from the single list land on it).
-WHATSAPP_AWAITING_SLUG = "por-responder"
-WHATSAPP_AWAITING_HREF = f"/whatsapp?tab=chats&filtro={WHATSAPP_AWAITING_SLUG}"
+#: m-25029799: WhatsApp's chats are attended only there — the list narrowed to WhatsApp
+#: (every number). Where a link «to the WhatsApp chats» lands.
+WHATSAPP_CHATS_HREF = f"{INBOX_ROUTE}?tab={INBOX_TAB}&canal=whatsapp"
+
+
+def whatsapp_chats_href(number: str = "", filter_slug: str = "") -> str:
+    """m-25029799: the WhatsApp chats in «Por responder» — on the chip `filter_slug` (one
+    of the list's own slugs, "" = its default) and, for a business with several
+    numbers, narrowed to `number` (a connection id; the list keeps it only if it is the
+    business's). Only a slug and a canonical UUID travel."""
+    return with_query(
+        INBOX_ROUTE,
+        tab=INBOX_TAB,
+        filtro=_slug(filter_slug).lower(),
+        canal="whatsapp",
+        numero=uuid_param({"numero": number}, "numero"),
+    )
 
 
 #: m-25017859: the single list's own view (`?filtro=` / `?canal=`) rides along the
 #: Instagram chat addresses it opens, so «atrás» and a reload keep the list as it was.
 LIST_VIEW_PARAMS = ("filtro", "canal")
+#: m-25029799: and the WhatsApp number picked in it (a connection id, never a slug).
+NUMBER_VIEW_PARAM = "numero"
 
 
 def _slug(value: object) -> str:
@@ -112,20 +127,26 @@ def _slug(value: object) -> str:
 
 
 def list_view(params: Mapping[str, object]) -> dict[str, str]:
-    """The `?filtro=` / `?canal=` of the current address, if they are plain slugs."""
-    return {k: s for k in LIST_VIEW_PARAMS if (s := _slug(params.get(k, "")).lower())}
+    """The `?filtro=` / `?canal=` of the current address, if they are plain slugs, and
+    its `?numero=` if it is a canonical UUID (m-25029799)."""
+    view = {k: s for k in LIST_VIEW_PARAMS if (s := _slug(params.get(k, "")).lower())}
+    if number := uuid_param(params, NUMBER_VIEW_PARAM):
+        view[NUMBER_VIEW_PARAM] = number
+    return view
 
 
 def inbox_chat_href(
     connection_id: str = "", thread_id: str = "", *, view: Mapping[str, str] | None = None
 ) -> str:
     """m-25029798: the one address of an open chat, whatever its channel —
-    `/responder?tab=mensajes[&filtro=…&canal=…]&cuenta=<account>&chat=<thread>` — or, with
-    no chat, the single list (the account kept as Instagram's has always been). Only
-    canonical UUIDs and the list's own `view` slugs travel."""
+    `/responder?tab=mensajes[&filtro=…&canal=…&numero=…]&cuenta=<account>&chat=<thread>`
+    — or, with no chat, the single list (the account kept as Instagram's has always
+    been). Only canonical UUIDs and the list's own `view` slugs travel."""
     ids = {"cuenta": connection_id, "chat": thread_id}
     safe = {key: uuid_param(ids, key) for key in ids}
-    kept = {k: _slug(v) for k, v in (view or {}).items() if k in LIST_VIEW_PARAMS}
+    given = view or {}
+    kept = {k: _slug(v) for k, v in given.items() if k in LIST_VIEW_PARAMS}
+    kept[NUMBER_VIEW_PARAM] = uuid_param(given, NUMBER_VIEW_PARAM)
     return with_query(INBOX_ROUTE, tab=INBOX_TAB, **kept, **safe)
 
 
@@ -135,16 +156,12 @@ def conversation_href(
     thread_id: str = "",
     *,
     view: Mapping[str, str] | None = None,
-    chip: str = "",
 ) -> str:
-    """Canonical owner-facing routes carrying only internal account/thread IDs. A chat
-    of either channel opens in «Por responder» (`inbox_chat_href`, m-25029798); without
-    a chat, WhatsApp's own list stays at `/whatsapp?tab=chats` with the owner's chip
-    `chip` ("" for the default, which needs no parameter) until m-25029799 retires it."""
-    if channel == "whatsapp" and not uuid_param({"chat": thread_id}, "chat"):
-        safe = uuid_param({"cuenta": connection_id}, "cuenta")
-        origin = {"filtro": _slug(chip)} if _slug(chip) else {}
-        return with_query("/whatsapp", tab="chats", cuenta=safe, **origin)
+    """Canonical owner-facing routes carrying only internal account/thread IDs: a chat
+    of either `channel` opens in «Por responder» (`inbox_chat_href`, m-25029798), and
+    m-25029799 retired WhatsApp's own list, the one place a WhatsApp address without a
+    chat used to lead."""
+    del channel  # every channel's chat has the same address now
     return inbox_chat_href(connection_id, thread_id, view=view)
 
 
@@ -172,13 +189,15 @@ def thread_param(params: Mapping[str, object], connection_id: str) -> str:
     return uuid_param(params, "chat")
 
 
-def filter_address_script(slug: str) -> str:
-    """JS that sets `?filtro=` of the current address in place (no new history step),
-    keeping every other parameter. `slug` is one of the app's own chip slugs."""
-    value = json.dumps(_slug(slug))
+def drop_param_script(key: str) -> str:
+    """JS that removes one parameter (`key`, one of the app's own) from the current
+    address in place — no new history step — and keeps every other one, an open chat's
+    `cuenta`/`chat` included (m-25029799 review)."""
+    name = json.dumps(_slug(key))
     return (
         "(() => { const u = new URL(window.location.href);"
-        f" u.searchParams.set('filtro', {value});"
+        f" if (!u.searchParams.has({name})) return;"
+        f" u.searchParams.delete({name});"
         " window.history.replaceState(window.history.state, '', u.pathname + u.search + u.hash);"
         " })();"
     )

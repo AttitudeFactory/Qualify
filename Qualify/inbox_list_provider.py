@@ -17,7 +17,7 @@ from qualify_api.inbox.unified import InboxCounts, InboxPage, inbox_counts, list
 
 from .chat_row_vm import CHANNEL_INSTAGRAM, CHANNEL_WHATSAPP
 from .conversations_provider import gateway as conversations_gateway
-from .inbox_list_vm import PAGE_SIZE, UI_TO_BACKEND
+from .inbox_list_vm import PAGE_SIZE, UI_TO_BACKEND, NumberVM
 from .whatsapp_chats_provider import gateway as whatsapp_gateway
 from .whatsapp_chats_vm import AgentVM
 from .whatsapp_provider import numbers_for
@@ -29,6 +29,9 @@ class InboxContext:
     agents: tuple[AgentVM, ...]
     #: The UI channels with a connected account (the empty state names only these).
     connected: tuple[str, ...]
+    #: m-25029799: the business's WhatsApp numbers (RLS-scoped read), newest first — the
+    #: number choice, and the check that a `?numero=` is one of them.
+    numbers: tuple[NumberVM, ...] = ()
 
 
 def page(
@@ -39,7 +42,10 @@ def page(
     cursor: str | None,
     now: datetime,
     limit: int = PAGE_SIZE,
+    number: str = "",
 ) -> InboxPage:
+    """One page; `number` (a connection id the state already checked is the business's)
+    narrows it to that WhatsApp number."""
     return list_inbox(
         tenant_id,
         filter=filter_key,  # type: ignore[arg-type]
@@ -47,6 +53,7 @@ def page(
         cursor=cursor or None,
         limit=limit,
         now=now,
+        connection_id=UUID(number) if number else None,
     )
 
 
@@ -54,15 +61,26 @@ def counts(tenant_id: UUID, *, now: datetime) -> InboxCounts:
     return inbox_counts(tenant_id, now=now)
 
 
+def numbers(tenant_id: UUID) -> tuple[NumberVM, ...]:
+    """The business's WhatsApp numbers, newest first (one RLS-scoped read): re-read on
+    every entry of the list (m-25029799 review), so a number connected meanwhile is
+    offered without closing the tab."""
+    return tuple(
+        NumberVM(connection_id=n.connection_id, label=n.label) for n in numbers_for(tenant_id)
+    )
+
+
 def context(tenant_id: UUID) -> InboxContext:
     wa = whatsapp_gateway()
     connected: list[str] = []
     if conversations_gateway().accounts(tenant_id):
         connected.append(CHANNEL_INSTAGRAM)
-    if numbers_for(tenant_id):
+    found = numbers(tenant_id)
+    if found:
         connected.append(CHANNEL_WHATSAPP)
     return InboxContext(
         zone_name=wa.timezone(tenant_id),
         agents=tuple(wa.agents(tenant_id)),
         connected=tuple(connected),
+        numbers=found,
     )

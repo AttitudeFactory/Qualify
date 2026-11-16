@@ -22,6 +22,8 @@ from urllib.parse import urlencode
 
 from qualify_api.home import ResultsCounts
 
+from .nav_url import WHATSAPP_CHATS_HREF
+
 RESULTS_ROUTE = "/resultados"
 TAB_PARAM = "tab"
 
@@ -62,7 +64,8 @@ COMMENTS_URL = "/inbox"
 PLANNER_URL = "/planner"
 CONNECTIONS_URL = "/connections"
 CREATE_URL = "/create"
-WHATSAPP_CHATS_URL = "/whatsapp?tab=chats"
+# m-25029799: WhatsApp's chats are attended in «Por responder», narrowed to WhatsApp.
+WHATSAPP_CHATS_URL = WHATSAPP_CHATS_HREF
 WHATSAPP_MODULE_URL = "/whatsapp"
 WHATSAPP_NUMBERS_URL = "/whatsapp?tab=conexion"
 WHATSAPP_QR_URL = "/whatsapp?tab=qr"

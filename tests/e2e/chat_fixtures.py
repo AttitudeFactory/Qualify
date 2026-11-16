@@ -468,3 +468,84 @@ def seed_more_whatsapp_chats(
             )
             ids.append(str(row.id))
     return ids
+
+
+def seed_second_number(
+    tenant_id: uuid.UUID, user_id: uuid.UUID, *, now: datetime | None = None
+) -> dict[str, str]:
+    """m-25029799: a SECOND WhatsApp number of the business, with one chat waiting
+    («Sofía Ruiz») and one answered («Mateo Gil»), so «Por responder» draws its number
+    choice. No credential, no worker: nothing is sent. Returns the ids by name."""
+    from qualify_api.connections.models import SocialConnection
+    from qualify_api.inbox.models import Thread
+    from qualify_api.tenancy.models import Brand
+    from qualify_api.whatsapp.models import WhatsAppPhoneNumber
+    from qualify_shared.db.session import tenant_session
+    from sqlalchemy import select
+
+    now = now or datetime.now(UTC)
+    _platform_app()
+    ids: dict[str, str] = {}
+    with tenant_session(tenant_id) as session:
+        brand_id = session.scalar(select(Brand.id).order_by(Brand.created_at))
+        conn = SocialConnection(
+            id=uuid.uuid4(),
+            tenant_id=tenant_id,
+            brand_id=brand_id,
+            platform_app_id=E2E_PLATFORM_APP,
+            platform="whatsapp",
+            account_type="business",
+            external_account_id=f"e2e-wa2-{uuid.uuid4().hex[:8]}",
+            external_username="Arepera Sede Norte",
+            granted_scopes=["whatsapp_business_messaging", "whatsapp_business_management"],
+            status="active",
+            access_posture="development",
+            current_credential_version=1,
+            connected_by_user_id=user_id,
+        )
+        session.add(conn)
+        session.flush()
+        session.add(
+            WhatsAppPhoneNumber(
+                id=uuid.uuid4(),
+                tenant_id=tenant_id,
+                brand_id=brand_id,
+                connection_id=conn.id,
+                waba_id="e2e-waba",
+                phone_number_id=f"e2e-pn2-{uuid.uuid4().hex[:8]}",
+                display_phone_number="+57 311 111 1111",
+                verified_name="Sede Norte",
+            )
+        )
+        for name, phone, minutes, answered in (
+            ("Sofía Ruiz", "573111000001", 20, False),
+            ("Mateo Gil", "573111000002", 50, True),
+        ):
+            at = now - timedelta(minutes=minutes)
+            row = Thread(
+                id=uuid.uuid4(),
+                tenant_id=tenant_id,
+                connection_id=conn.id,
+                channel="whatsapp",
+                external_thread_id=phone,
+                status="open",
+                last_message_at=at + timedelta(minutes=1) if answered else at,
+                last_inbound_at=at,
+                counterpart_name=name,
+            )
+            session.add(row)
+            session.flush()
+            session.add(_message(row, direction="inbound", at=at, text="Hola, ¿tienen domicilio?"))
+            if answered:
+                session.add(
+                    _message(
+                        row,
+                        direction="outbound",
+                        at=at + timedelta(minutes=1),
+                        text="¡Sí! Te lo llevamos.",
+                        status="read",
+                    )
+                )
+            ids[name] = str(row.id)
+        ids["connection"] = str(conn.id)
+    return ids

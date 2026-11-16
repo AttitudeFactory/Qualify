@@ -29,6 +29,8 @@ from .connections_vm import WHATSAPP_RECONNECT_HINT
 from .ui.layout import NAV_ITEMS, NAV_ZONES
 from .whatsapp_state import WhatsAppState
 from .whatsapp_vm import (
+    CHATS_MOVED_ACTION,
+    CHATS_MOVED_NOTICE,
     DEFAULT_TAB,
     EMPTY_NUMBER,
     EMPTY_PROFILE,
@@ -38,6 +40,7 @@ from .whatsapp_vm import (
     NO_NUMBER_GAINS,
     NO_NUMBER_TITLE,
     NUMBER_SUBS,
+    NUMBER_TITLE,
     PROMOTION_SUBS,
     PROMOTIONS_ROUTE,
     PROMOTIONS_SUBTITLE,
@@ -45,11 +48,9 @@ from .whatsapp_vm import (
     QR_CHANNELS,
     REVIEW_ACTION,
     SECTION_KEYS,
-    SECTIONS,
     SUBTABS,
     TAB_ACTIVITY,
     TAB_CAMPAIGNS,
-    TAB_CHATS,
     TAB_CONNECTION,
     TAB_CONTACTS,
     TAB_KEYS,
@@ -59,6 +60,7 @@ from .whatsapp_vm import (
     TAB_QR,
     TAB_TEMPLATES,
     VERTICAL_KEYS,
+    WHATSAPP_SUBTITLE,
     BusinessProfileVM,
     ProfileForm,
     QrCodeVM,
@@ -70,6 +72,7 @@ from .whatsapp_vm import (
     graph_error_notice,
     health_display,
     is_promotions_panel,
+    legacy_chat_target,
     legacy_promotions_target,
     name_status_display,
     needs_help,
@@ -316,15 +319,16 @@ def test_graph_error_hides_internal_codes_and_provider_jargon() -> None:
 # --- 5. shell, placeholders, route, nav ------------------------------------------------
 
 
-def test_two_tabs_named_as_tasks() -> None:
+def test_one_task_left_tu_numero() -> None:
     """m-24842998: the top tabs (guide §3), the secondary ones grouped inside.
     m-25017862 (D3): «Promociones» left the strip for its own menu entry.
-    m-25017861 (D1): the menu left it for «Ajustes de chats»; no setting tab is left on
-    the messages screen but «Tu número», which moves to «Tus redes» in BU-A10."""
-    assert [label for _, label in SECTIONS] == ["Chats", "Tu número"]
-    assert "respuesta" in SECTION_KEYS and "respuesta" not in dict(SECTIONS)
-    # Its panels are still a section an old address can name (it then redirects).
-    assert "promociones" in SECTION_KEYS and "promociones" not in dict(SECTIONS)
+    m-25017861 (D1): the menu left it for «Ajustes de chats».
+    m-25029799 (BU-A11): the chats left for «Por responder» — «Tu número» (and its five
+    sub-tabs, unchanged: m-25027373 moves them) is all `/whatsapp` draws."""
+    assert NUMBER_TITLE == "Tu número"
+    assert "chats" not in SECTION_KEYS and "chats" not in SUBTABS
+    # The other sections are still ones an old address can name (it then redirects).
+    assert {"respuesta", "promociones", "numero"} == set(SECTION_KEYS)
     assert [label for _, label in PROMOTION_SUBS] == [
         "Enviadas",
         "Mensajes aprobados",
@@ -337,11 +341,8 @@ def test_two_tabs_named_as_tasks() -> None:
         "Códigos QR",
         "Actividad",
     ]
-    # m-25017173: «Chats» is one panel, no sub-tabs (the stickers sub-tab is gone).
-    assert [panel for panel, _slug, _label in SUBTABS["chats"]] == [TAB_CHATS]
     # Every panel the body renders sits under exactly one top tab.
     assert TAB_KEYS == {
-        TAB_CHATS,
         TAB_MENU,
         TAB_CAMPAIGNS,
         TAB_TEMPLATES,
@@ -355,7 +356,8 @@ def test_two_tabs_named_as_tasks() -> None:
 
 
 def test_tabs_and_default() -> None:
-    assert DEFAULT_TAB == TAB_CHATS
+    # m-25029799: no «Chats» tab — the screen opens on «Tu número › Estado».
+    assert DEFAULT_TAB == TAB_CONNECTION
     assert resolve_tab("qr") == TAB_QR
     assert resolve_tab("<script>") == DEFAULT_TAB
     assert resolve_tab("") == DEFAULT_TAB
@@ -364,7 +366,7 @@ def test_tabs_and_default() -> None:
 @pytest.mark.parametrize(
     ("tab", "sub", "panel"),
     [
-        ("chats", "", TAB_CHATS),
+        ("chats", "", DEFAULT_TAB),  # m-25029799: redirected before it is ever read
         ("respuesta", "", TAB_MENU),
         ("promociones", "", TAB_CAMPAIGNS),
         ("promociones", "enviadas", TAB_CAMPAIGNS),
@@ -568,17 +570,16 @@ def test_addresses_are_the_owner_words() -> None:
     assert tab_url(TAB_CAMPAIGNS) == "/whatsapp/promociones?sub=enviadas"
     assert tab_url(TAB_CONTACTS) == "/whatsapp/promociones?sub=clientes"
     assert tab_url(TAB_QR) == "/whatsapp?tab=numero&sub=qr"
-    assert tab_url(TAB_CHATS) == "/whatsapp?tab=chats"  # no sub without sub-tabs
+    assert tab_url(TAB_CONNECTION) == "/whatsapp?tab=numero&sub=estado"
     assert tab_url(TAB_MENU) == "/chats/ajustes/whatsapp"  # m-25017861
-    assert tab_url("<script>") == "/whatsapp?tab=chats"
+    assert tab_url("<script>") == "/whatsapp?tab=numero&sub=estado"
 
 
 def test_sections_and_subs_of_a_panel() -> None:
     assert panel_section(TAB_CONTACTS) == "promociones" and panel_sub(TAB_CONTACTS) == "clientes"
     assert panel_section(TAB_ACTIVITY) == "numero" and panel_sub(TAB_ACTIVITY) == "actividad"
-    assert panel_section(TAB_CHATS) == "chats" and panel_sub(TAB_CHATS) == ""
     assert sub_panel("promociones", "aprobados") == TAB_TEMPLATES
-    assert sub_panel("chats", "") == ""  # the default panel is not picked by an empty sub
+    assert sub_panel("chats", "") == ""  # m-25029799: no such section any more
 
 
 @pytest.mark.parametrize(
@@ -646,7 +647,7 @@ def test_the_strips_fit_a_phone() -> None:
     start = source.index("def _choice_strip(")
     block = source[start : source.index("\n\n\n", start)]
     assert "_PHONE_ONLY" in block and "_DESKTOP_ONLY" in block
-    assert 'overflow_x="auto"' not in source[source.index("def tab_strip(") :][:400]
+    assert "def tab_strip(" not in source  # m-25029799: one section, no section strip
     assert '_TAP = {"min_height": "44px"}' in source
 
 
@@ -684,7 +685,7 @@ def _signed_in(monkeypatch: pytest.MonkeyPatch, tenant: str) -> None:
 @pytest.mark.parametrize(
     ("path", "panel"),
     [
-        ("/whatsapp", TAB_CHATS),
+        ("/whatsapp", TAB_CONNECTION),  # m-25029799: «Tu número», no chats
         ("/chats/ajustes/whatsapp", TAB_MENU),
         ("/chats/ajustes/whatsapp/?tab=numero", TAB_MENU),  # only the menu here
         ("/whatsapp?tab=numero&sub=qr", TAB_QR),
@@ -698,7 +699,7 @@ def test_entering_a_page_shows_the_panel_of_its_address(path: str, panel: str) -
     state = _visit(path)
     events = WhatsAppState.enter_page.fn(state)  # type: ignore[attr-defined]
     assert state.active_tab == panel
-    assert len(events) == 3  # the chip, the stale forms, then the numbers
+    assert len(events) == 2  # the stale forms, then the numbers (no chip: m-25029799)
 
 
 _OLD = [
@@ -717,6 +718,12 @@ _OLD = [
         "&paso=3&objeto=00000000-0000-4000-8000-0000000000bb",
     ),
     ("/whatsapp?tab=respuesta&flujo=promocion&paso=2&objeto=junk", "/chats/ajustes/whatsapp"),
+    # m-25029799: WhatsApp's chat list moved into «Por responder».
+    ("/whatsapp?tab=chats", "/responder?tab=mensajes&filtro=todos&canal=whatsapp"),
+    (
+        f"/whatsapp?tab=chats&filtro=sin-leer&cuenta={_UUID}",
+        f"/responder?tab=mensajes&filtro=por-responder&canal=whatsapp&numero={_UUID}",
+    ),
 ]
 
 
@@ -745,13 +752,10 @@ async def test_an_old_address_is_redirected_once_and_only_when_signed_in(
 
 
 def test_tabs_exist_behind_the_agreed_hooks() -> None:
-    for component in (whatsapp_tab_chats.chats_tab(), whatsapp_tab_menu.menu_tab()):
-        assert isinstance(component, rx.Component)
-    rendered = str(whatsapp_tab_chats.chats_tab().render())
-    # WA-11 replaced the Chats placeholder; its root loads on mount.
-    assert "Los chats llegan con la siguiente entrega" not in rendered
-    # m-25029798 (U3): nothing opens here; the list says where its chats open now.
-    assert "Elige una conversaci" not in rendered and "Ir a Por responder" in rendered
+    assert isinstance(whatsapp_tab_menu.menu_tab(), rx.Component)
+    # m-25029799: the Chats tab is gone; only the chat «Por responder» mounts is left.
+    assert not hasattr(whatsapp_tab_chats, "chats_tab")
+    assert not hasattr(whatsapp_page, "tab_strip")
 
 
 def test_the_page_renders_every_tab() -> None:
@@ -764,8 +768,15 @@ def test_the_page_renders_every_tab() -> None:
         return text in rendered or escaped in rendered
 
     # `sub_strip` is shared with `/whatsapp/promociones`, so its labels are in the tree.
-    for _key, label in (*SECTIONS, *PROMOTION_SUBS, *NUMBER_SUBS):
+    for _key, label in (*PROMOTION_SUBS, *NUMBER_SUBS):
         assert present(label), label
+    assert present(WHATSAPP_SUBTITLE)
+    # m-25029799: no chats on this screen — no «Chats» tab, no list, no filters; one
+    # line says where they went, with the way there (UX review).
+    for gone in ("Secciones de WhatsApp", "Filtrar chats", "Abiertos"):
+        assert not present(gone), gone
+    assert present(CHATS_MOVED_NOTICE) and present(CHATS_MOVED_ACTION)
+    assert "chats_href" in rendered
     # m-25017861: no setting tab of the menu on the messages screen.
     assert not present("Respuesta automática")
     for text in (
@@ -873,23 +884,10 @@ def test_the_connect_request_is_a_ticket_the_support_service_accepts() -> None:
     assert topic == "connect_accounts" and context == {"screen": "whatsapp"}
 
 
-# --- m-25017173: «Chats» without sub-tabs ---------------------------------------------
+# --- m-25029799: the chats left for «Por responder» ------------------------------------
 
 
-def test_chats_has_no_sub_tabs_and_old_sticker_links_open_the_chats() -> None:
-    # A bookmarked `?tab=chats&sub=stickers` (m-24986801 §4) or any junk `sub` opens
-    # the chats, never an error; the chats' address carries no `sub`.
-    assert resolve_panel("chats", "stickers") == TAB_CHATS
-    assert resolve_panel("chats", "") == TAB_CHATS
-    assert resolve_panel("chats", "junk") == TAB_CHATS
-    assert tab_url(TAB_CHATS) == "/whatsapp?tab=chats"
-    assert panel_section(TAB_CHATS) == "chats" and panel_sub(TAB_CHATS) == ""
-    assert sub_panel("chats", "stickers") == ""
-    assert "stickers" not in TAB_KEYS
-    assert resolve_tab("stickers") == TAB_CHATS
-
-
-def test_the_chats_section_draws_no_second_strip() -> None:
+def test_no_sticker_or_chat_strip_on_the_page() -> None:
     from .whatsapp_page import sub_strip, tab_body
 
     strip = str(sub_strip().render())
@@ -898,3 +896,60 @@ def test_the_chats_section_draws_no_second_strip() -> None:
     assert "Mensajes aprobados" in strip and "Formas de pago" in strip
     body = str(tab_body().render())
     assert "Stickers y videos de tu marca" not in body
+    assert "WhatsAppChatsState" not in body  # no list, no chat state on this page
+
+
+_C, _T = _UUID, "00000000-0000-4000-8000-0000000000cc"
+_INBOX = "/responder?tab=mensajes"
+
+
+@pytest.mark.parametrize(
+    ("query", "target"),
+    [
+        # Every chip of the old list lands on its equivalent in «Por responder».
+        ({"tab": "chats"}, f"{_INBOX}&filtro=todos&canal=whatsapp"),
+        ({"tab": "chats", "filtro": "abiertos"}, f"{_INBOX}&filtro=todos&canal=whatsapp"),
+        ({"tab": "chats", "filtro": "cerrados"}, f"{_INBOX}&filtro=cerrados&canal=whatsapp"),
+        (
+            {"tab": "chats", "filtro": "por-responder"},
+            f"{_INBOX}&filtro=por-responder&canal=whatsapp",
+        ),
+        ({"tab": "chats", "filtro": "sin-leer"}, f"{_INBOX}&filtro=por-responder&canal=whatsapp"),
+        (
+            {"tab": "chats", "filtro": "pago-por-revisar"},
+            f"{_INBOX}&filtro=pago-por-revisar&canal=whatsapp",
+        ),
+        ({"tab": "chats", "filtro": "Sin-Leer"}, f"{_INBOX}&filtro=por-responder&canal=whatsapp"),
+        # The number the list showed rides along; junk never does.
+        (
+            {"tab": "chats", "filtro": "cerrados", "cuenta": _C},
+            f"{_INBOX}&filtro=cerrados&canal=whatsapp&numero={_C}",
+        ),
+        (
+            {"tab": "chats", "cuenta": "<script>", "filtro": "<b>", "x": "y"},
+            f"{_INBOX}&filtro=todos&canal=whatsapp",
+        ),
+        ({"tab": "chats", "filtro": ["cerrados", "x"]}, f"{_INBOX}&filtro=todos&canal=whatsapp"),
+        # m-24986801's sticker sub-tab of the list.
+        ({"tab": "chats", "sub": "stickers"}, f"{_INBOX}&filtro=todos&canal=whatsapp"),
+        # The chats were the screen's default tab: a chip with no `tab` is the list too.
+        ({"filtro": "sin-leer"}, f"{_INBOX}&filtro=por-responder&canal=whatsapp"),
+        # An open chat still lands on that chat (m-25029798).
+        ({"tab": "chats", "cuenta": _C, "chat": _T}, f"{_INBOX}&cuenta={_C}&chat={_T}"),
+        ({"cuenta": _C, "chat": _T}, f"{_INBOX}&cuenta={_C}&chat={_T}"),
+    ],
+)
+def test_every_old_address_of_the_chat_list_lands_in_por_responder(
+    query: dict[str, object], target: str
+) -> None:
+    assert legacy_chat_target(query) == target
+    # And never back on `/whatsapp`: the target is no address this page redirects.
+    assert not target.startswith("/whatsapp")
+
+
+@pytest.mark.parametrize(
+    "query",
+    [{}, {"tab": "numero"}, {"tab": "numero", "sub": "qr"}, {"cuenta": _C}, {"tab": "x"}],
+)
+def test_tu_numero_and_a_bare_whatsapp_stay(query: dict[str, object]) -> None:
+    assert legacy_chat_target(query) is None

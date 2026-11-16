@@ -20,9 +20,6 @@ from qualify_api.whatsapp.menus.engine import format_money as engine_format_mone
 from qualify_api.whatsapp.orders import read_order
 
 from .whatsapp_chats_vm import (
-    FILTER_CLOSED,
-    FILTER_OPEN,
-    FILTER_UNREAD,
     MEDIA_AUDIO,
     MEDIA_DOCUMENT,
     MEDIA_EXPIRED,
@@ -50,9 +47,6 @@ from .whatsapp_chats_vm import (
     build_thread_row,
     composer_enabled,
     failure_label,
-    filter_counts,
-    filter_label,
-    filter_threads,
     format_money,
     initials,
     merge_pages,
@@ -202,7 +196,6 @@ def test_thread_row_maps_name_number_preview_unread_and_mode() -> None:
     assert row.subtitle == "+573001234567"
     assert row.preview == "¿Tienen domicilio?"
     assert row.time_label == "hace 5 min"
-    assert row.awaiting_reply  # m-25017859: the rule's verdict, not the unread count
     assert (row.window_tone, row.window_open) == ("ok", True)
     assert (row.mode_label, row.mode_tone) == ("Usando tu menú", "neutral")
     assert row.agent_initials == ""
@@ -222,7 +215,6 @@ def test_thread_row_without_name_shows_the_number_and_outbound_prefix() -> None:
     assert row.title == "+573001234567"
     assert row.subtitle == ""
     assert row.preview == "Tú: ¿Tienen domicilio?"
-    assert not row.awaiting_reply
 
 
 def test_thread_row_paused_assigned_and_closed() -> None:
@@ -273,43 +265,6 @@ def test_initials() -> None:
     assert initials("bianki") == "B"
     assert initials("ana.perez@x.co") == "AP"
     assert initials("  ") == "?"
-
-
-# --- filters -------------------------------------------------------------------------
-
-
-def test_filters_split_open_closed_and_por_responder_by_the_rule() -> None:
-    """m-25017859: the chip the menu's WhatsApp badge opens lists by the «Por responder»
-    rule (`awaiting_reply`), not by unread messages: read but unanswered waits, answered
-    with unread does not, closed never does."""
-    rows = [
-        build_thread_row(_thread(id=uuid4(), unread_count=1), now=NOW, zone=ZONE),
-        build_thread_row(_thread(id=uuid4(), unread_count=0), now=NOW, zone=ZONE),
-        build_thread_row(
-            _thread(id=uuid4(), unread_count=2, awaiting_reply=False), now=NOW, zone=ZONE
-        ),
-        build_thread_row(
-            _thread(id=uuid4(), status="closed", unread_count=3, awaiting_reply=False),
-            now=NOW,
-            zone=ZONE,
-        ),
-    ]
-    assert len(filter_threads(rows, FILTER_OPEN)) == 3
-    assert len(filter_threads(rows, FILTER_CLOSED)) == 1
-    assert [r.thread_id for r in filter_threads(rows, FILTER_UNREAD)] == [
-        rows[0].thread_id,
-        rows[1].thread_id,
-    ]
-    assert len(filter_threads(rows, "junk")) == 3
-    assert filter_counts(rows) == {
-        FILTER_OPEN: 3,
-        FILTER_CLOSED: 1,
-        FILTER_UNREAD: 2,
-        "payment": 0,  # m-24971198: «Pago por revisar» (its own tests)
-    }
-    # UX proposal awaiting the founder, in ONE constant (`AWAITING_FILTER_LABEL`).
-    assert filter_label(FILTER_UNREAD, 2) == "Por responder · 2"
-    assert filter_label(FILTER_CLOSED, 0) == "Cerrados"
 
 
 # --- messages and ticks --------------------------------------------------------------
@@ -644,7 +599,7 @@ def test_the_tab_talks_to_the_state_only() -> None:
     assert not any("provider" in name or name.startswith("qualify_api") for name in imported)
 
 
-def test_the_tab_renders_list_conversation_and_composer() -> None:
+def test_the_chat_renders_conversation_and_composer() -> None:
     import json
 
     rendered = str(_chat_views().render())
@@ -654,7 +609,6 @@ def test_the_tab_renders_list_conversation_and_composer() -> None:
         return text in rendered or escaped in rendered
 
     for text in (
-        "Ir a Por responder",  # m-25029798 (U3): no empty pane here any more
         "Tomar el control",
         "Devolver al menú",
         "Cerrar",
@@ -664,7 +618,6 @@ def test_the_tab_renders_list_conversation_and_composer() -> None:
         "Enviar",
         "Botones",
         "Enviar algo al cliente",
-        "Aún no hay conversaciones en este número",
         "Imagen recibida",
         "Abrir original",
         "Abrir video",
@@ -798,10 +751,10 @@ def test_template_choice_and_fields_vm() -> None:
 
 
 def _chat_views() -> object:
-    """m-25029798: `/whatsapp`'s number list plus the open chat, which is mounted beside
-    the single list of «Por responder» (`whatsapp_chat_pane` + `whatsapp_chat_layers`)."""
+    """The open chat, mounted beside the single list of «Por responder» (m-25029798:
+    `whatsapp_chat_pane` + `whatsapp_chat_layers`; m-25029799: no WhatsApp list)."""
     import reflex as rx
 
-    from .whatsapp_tab_chats import chats_tab, whatsapp_chat_layers, whatsapp_chat_pane
+    from .whatsapp_tab_chats import whatsapp_chat_layers, whatsapp_chat_pane
 
-    return rx.fragment(chats_tab(), whatsapp_chat_pane(), whatsapp_chat_layers())
+    return rx.fragment(whatsapp_chat_pane(), whatsapp_chat_layers())
