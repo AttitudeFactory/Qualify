@@ -197,6 +197,7 @@ bloque anidado nunca toma la distancia de su padre.
 | apagado global con `transition-duration: 0.01ms` y sin tocar retardos | toda la app | como la landing: animaciones a 0,01 ms, **retardos a 0**, transiciones a 0,01 ms (no los 0 s de la landing: así `transitionend` sigue llegando a vaul y Sonner); botones y `choice_card` no suben ni se hunden | `global.css` (KIT:869-879), `LinkButton` |
 | `q-embers` / `q-frost` (infinitos) | chips de temperatura del Planificador | brasas 2 × 2,4 s, escarcha 2 × 2 s (menos de 5 s); cada vuelta empieza y termina en el aspecto de reposo, así nada salta al parar | regla de la landing: lo que se mueve solo para antes de 5 s |
 | `q-step-in-*` en JS (±8 px) | paso a paso del menú de WhatsApp (`whatsapp_menu_state._guided_settle`) | ±18 px, igual que `.q-step-body` (que además recorta en horizontal: el desliz no saca barra en 360 px) | `sc-from-*` |
+| — (la 404 de Reflex, en inglés y sin salida) | página no encontrada (`not_found_page.py`, ruta 404 de Reflex) | «Esta página no existe» con la escena líquida, variante «charco» (`q-nf-*`: nivel y vaivén del líquido, la Q que se mece, dos ondas; 4,8 s y para en reposo); la página entra con `.q-settle`; «Ir al inicio» lleva a Inicio con sesión y al login sin ella | `NotFoundLiquid` «puddle» + `404.astro` |
 
 **Se quedan como están** (la landing no tiene nada equivalente; son de una interacción
 propia de la app): `q-shimmer` (skeleton, del kit), `q-progress-creep` (avance de una
@@ -218,7 +219,7 @@ pulsar): sin cambios.
 | Revelado al hacer scroll (`.js-reveal`, `src/scripts/liquid.ts`) | depende de JS (IntersectionObserver); en la app la cascada corre al montar la página |
 | `ScrapeLoader` / `ScrapeLoaderV2` | lo maneja un script (saltos al azar, progreso por `data-progress`) |
 | `LiquidLoading` «charge» y «drops» | variantes alternativas de la landing; la app usa «trace», la de por defecto |
-| `NotFoundLiquid` (404) | la app no tiene una 404 propia (usa la de Reflex); hacerla es una pantalla nueva con su texto, fuera de este cambio |
+| `NotFoundLiquid` «pour» | variante alternativa; la 404 de la app usa «puddle», como la landing (tabla de arriba) |
 
 Demo en vivo: `/design` → «Movimiento y elevación» (botón «Repetir»).
 
