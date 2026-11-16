@@ -82,6 +82,9 @@ class SocialConnection(Base):
     # 0057 (WA-04) the column is nullable ONLY for `platform = 'whatsapp'` (a WABA number
     # has no Facebook Page): `ck_conn_linked_page_by_platform` keeps ADR 25 intact.
     linked_page_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # ADR 29 (0170, m-24849197): Meta's `client_business_id` from a BISU token; NULL for
+    # user tokens and every connection made before it.
+    client_business_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     granted_scopes: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False)
     access_posture: Mapped[str] = mapped_column(Text, nullable=False)  # ADR 22a: data

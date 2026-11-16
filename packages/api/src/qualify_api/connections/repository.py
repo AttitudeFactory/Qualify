@@ -69,6 +69,9 @@ class GrantInput:
     token_type: str
     issued_at: datetime
     expires_at: datetime | None
+    # ADR 29 (m-24849197): Meta's client business on a BISU token; None for user tokens
+    # and for the platforms that have no such concept (TikTok, WhatsApp).
+    client_business_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -153,6 +156,7 @@ class PostgresConnectionRepository:
                     external_account_id=grant.external_account_id,
                     external_username=grant.external_username,
                     linked_page_id=grant.linked_page_id,
+                    client_business_id=grant.client_business_id,
                     granted_scopes=list(grant.granted_scopes),
                     status="pending",
                     access_posture=grant.access_posture,
@@ -171,6 +175,11 @@ class PostgresConnectionRepository:
                 connection.brand_id = grant.brand_id or connection.brand_id
                 connection.external_username = grant.external_username
                 connection.linked_page_id = grant.linked_page_id
+                # A NULL read (user token, or a failed /me) never erases a known business;
+                # a different non-NULL value replaces it (the token is the authority).
+                connection.client_business_id = (
+                    grant.client_business_id or connection.client_business_id
+                )
                 connection.granted_scopes = list(grant.granted_scopes)
                 connection.access_posture = grant.access_posture
                 connection.platform_app_id = grant.platform_app_id

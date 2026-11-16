@@ -100,6 +100,7 @@ def world(monkeypatch: pytest.MonkeyPatch) -> tuple[UUID, UUID, UUID, FakeObject
             external_account_id=f"ig-{uuid4()}",
             external_username="erase_me",
             linked_page_id="page-test",
+            client_business_id="cb-erase-me",
             granted_scopes=["basic"],
             status="active",
             access_posture="development",
@@ -166,6 +167,7 @@ def test_manual_purge_manifest_survives_r2_failure_and_retries_without_credentia
         row = session.get(SocialConnection, cid)
         assert row.external_account_id == f"purged:{cid}"
         assert row.external_username is None and row.granted_scopes == [] and row.purged_at
+        assert row.client_business_id is None
         audit = session.execute(
             text("""SELECT object_keys,counts FROM connection_purge_requests
             WHERE connection_id=:cid"""),

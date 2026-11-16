@@ -30,8 +30,10 @@ from qualify_api.connections.events import DomainEventName, InMemoryEventPublish
 from qualify_api.connections.meta_oauth import (
     HttpMetaOAuthClient,
     LinkedPage,
+    MetaOAuthError,
     TokenGrant,
     _parse_accounts_response,
+    _parse_client_business_response,
 )
 from qualify_api.connections.page_subscription import (
     EVENT_PAGE_SUBSCRIBE_FAILED,
@@ -104,6 +106,8 @@ class FakeMetaOAuthClient:
         self.issued_states: list[str] = []
         self.authorize_redirects: list[str] = []
         self.exchange_redirects: list[str] = []
+        # m-24849197: what `/me?fields=client_business_id` answers; an Exception is raised.
+        self.client_business: str | Exception | None = None
 
     def authorization_url(
         self,
@@ -128,6 +132,11 @@ class FakeMetaOAuthClient:
 
     async def list_granted_scopes(self, access_token: str) -> tuple[str, ...]:
         return self.scopes
+
+    async def get_client_business_id(self, access_token: str) -> str | None:
+        if isinstance(self.client_business, Exception):
+            raise self.client_business
+        return self.client_business
 
 
 @dataclass
@@ -955,6 +964,70 @@ async def test_live_accounts_request_asks_for_the_access_token_field() -> None:
     )
     await client.list_linked_pages("user-token")
     assert "access_token" in seen["fields"].split(",")
+
+
+# --------------------------------------------------------------------------------------
+# ADR 29 — client_business_id (m-24849197)
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_bisu_token_stores_its_client_business_id() -> None:
+    harness = build_harness()
+    harness.oauth.client_business = "998877"
+    result = await complete(harness, code="c", state=start_and_extract_state(harness))
+    assert result.outcome is ConnectOutcome.ACTIVE
+    assert harness.repo.only().grant.client_business_id == "998877"
+
+
+@pytest.mark.asyncio
+async def test_user_token_without_client_business_connects_with_null(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    harness = build_harness()
+    with caplog.at_level(logging.INFO, logger="qualify_api.connections.service"):
+        result = await complete(harness, code="c", state=start_and_extract_state(harness))
+    assert result.outcome is ConnectOutcome.ACTIVE
+    assert harness.repo.only().grant.client_business_id is None
+    assert "no client_business_id" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_failed_client_business_read_never_fails_the_connection(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    harness = build_harness()
+    harness.oauth.client_business = MetaOAuthError(f"GET /me failed {TOKEN}")
+    with caplog.at_level(logging.INFO, logger="qualify_api.connections.service"):
+        result = await complete(harness, code="c", state=start_and_extract_state(harness))
+    assert result.outcome is ConnectOutcome.ACTIVE
+    assert harness.repo.only().grant.client_business_id is None
+    assert "client_business_id read failed: MetaOAuthError" in caplog.text
+    assert TOKEN not in caplog.text  # only the exception type is logged
+
+
+def test_client_business_parser() -> None:
+    assert _parse_client_business_response({"client_business_id": "42", "id": "1"}) == "42"
+    assert _parse_client_business_response({"client_business_id": 42}) == "42"
+    assert _parse_client_business_response({"id": "1"}) is None
+    assert _parse_client_business_response({"client_business_id": ""}) is None
+
+
+@pytest.mark.asyncio
+async def test_live_client_business_request_names_the_field() -> None:
+    seen: dict[str, str] = {}
+
+    def capture(request: httpx.Request) -> httpx.Response:
+        seen.update(dict(request.url.params), path=request.url.path)
+        return httpx.Response(200, json={"id": "1", "client_business_id": "77"})
+
+    client = HttpMetaOAuthClient(
+        MetaOAuthSettings(app_id="a", app_secret="s", redirect_uri="https://cb", state_secret="k"),
+        transport=httpx.MockTransport(capture),
+    )
+    assert await client.get_client_business_id("bisu-token") == "77"
+    assert seen["path"].endswith("/me")
+    assert seen["fields"] == "client_business_id"
 
 
 def _dialog_params(*, config_id: str | None) -> dict[str, str]:
