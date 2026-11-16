@@ -81,8 +81,10 @@ P = prioridad, T = tamaño. «Bloqueado por» está cargado en Meegle.
 | m-25017287 | Claude mira la imagen compuesta y la corrige una vez | creative (medición datasci) | P2/S | 283, 285 |
 | m-25017288 | Cambiar el texto recompone gratis, sin otra foto | creative + ui | P1/M | 279, 283, 285 |
 | m-25017289 | Chequeo de salud del render con alerta | platform | P1/S | — |
-| m-25017292 | Medición: pipeline nuevo vs actual, Seedream pro/lite/flash, tiempo de carrusel | datasci | P1/M | 279, 283, 285, 287 |
+| m-25017292 | Medición: pipeline nuevo vs actual y tiempo de carrusel (sin comparar Seedream pro/lite/flash: decisión A7) | datasci | P1/M | 279, 283, 285, 287 |
 | m-25017293 | Quitar Pillow; si el render cae, cola y reintento («la estamos terminando») | creative | P1/M | 277, 285, 289, 292 |
+
+Decisiones del fundador del 2026-11-16 que cambian estas historias (detalle al final, tabla «Decisiones del fundador (2026-11-16)»): m-25017286 (B6a–B6d, candado de la Galería y corte de videos), m-25017287 (B1, no reescribe textos del dueño), m-25017288 (B1–B3, volver a aprobar y editar publicadas), m-25017293 (B4, la espera de 10 minutos no se reinicia).
 
 ### Fase 2 — Carrusel completo (depende de Fase 1)
 
@@ -142,12 +144,28 @@ sin planificador. — *pendiente*
 
 ## Preguntas abiertas para el fundador
 
+*Estado al 2026-11-16: la 1 y la 2 las respondió al firmar ADR 49 (A3 y A7), la 3 quedó en la
+decisión #14 (10, sujeto a la medición) y la 4 en la decisión #12 («Usar mi foto» no consume
+creación). Siguen abiertas las dos de abajo, «Abiertas después del 2026-11-16».*
+
 1. **Costo de la verificación visual** (m-25017287): si la medición muestra que sube el costo por
-   pieza, ¿se activa igual o queda apagada?
-2. **Modelo de la foto base** (m-25017292): pro, lite o flash según calidad/costo medidos.
-3. **Tope de diapositivas**: 10 si el render a concurrencia 1 lo aguanta; si no, el tope medido.
+   pieza, ¿se activa igual o queda apagada? — *respondida: A3, activa desde el inicio.*
+2. **Modelo de la foto base** (m-25017292): pro, lite o flash según calidad/costo medidos. —
+   *respondida: A7, Seedream 5.0 pro sin comparar.*
+3. **Tope de diapositivas**: 10 si el render a concurrencia 1 lo aguanta; si no, el tope medido. —
+   *decisión #14.*
 4. **«Usar mi foto»** no llama a Seedream: ¿sigue contando como una creación o cuesta menos?
-   Hoy no se cambia la regla de cuota; cambiarla es decisión suya.
+   Hoy no se cambia la regla de cuota; cambiarla es decisión suya. — *respondida: decisión #12, no
+   consume creación.*
+
+**Abiertas después del 2026-11-16:**
+
+5. **Volver a publicar una versión corregida** de una publicación ya publicada (B3): ¿consume una
+   creación?
+6. **Riesgo de los planes de clips** (fuera de esta épica, para un ticket propio): guardan la clave
+   de R2 del video original como texto (`creative/parts_plan.py`); cortar hoy ese video en la
+   Galería lo borra y puede romper un proyecto de clips que todavía no terminó. Lectura del código
+   del 2026-11-16, no reproducido. Ver ADR 49 §2.6.
 
 ## Fuera de alcance
 
@@ -186,5 +204,31 @@ Detalle y consecuencias en `docs/adr-49-pipeline-imagen-carrusel.md` §8. Rigen 
 | A3 | Revisión de la imagen compuesta (m-25017287) | **Activa desde el inicio** (contra la recomendación de dejarla apagada hasta medir); la medición de costo, tiempo y cuántas imágenes corrige es lo que la reabriría |
 | A4 | Espera de la composición si el render cae | **10 minutos**; después la pieza queda fallida, con «Reintentar» y sin descontar otra creación |
 | A5 | Piezas anteriores al pipeline | No se recomponen; solo «Crear otra» |
-| A6 | Foto del dueño en «Usar mi foto» | Se usa la foto de la Galería sin copiarla, y la Galería no deja quitar una foto mientras una publicación la use (aviso con el nombre de la publicación). Quedan subpreguntas abiertas en ADR 49 §8 (6a–6d) |
+| A6 | Foto del dueño en «Usar mi foto» | Se usa la foto de la Galería sin copiarla, y la Galería no deja quitar una foto mientras una publicación la use (aviso con el nombre de la publicación). Las subpreguntas 6a–6d de ADR 49 §8 se respondieron el 2026-11-16 (B6a–B6d, abajo) |
 | A7 | Modelo de la foto base | Seedream 5.0 pro; no se comparan modelos. m-25017292 mide solo el tiempo del carrusel y el costo de la revisión visual |
+
+## Decisiones del fundador (2026-11-16)
+
+Tomadas por Herwin Rey (fundador) el 2026-11-16. Detalle y consecuencias en
+`docs/adr-49-pipeline-imagen-carrusel.md` §2.3, §2.4, §2.6 y §8.1 (allí se llaman D1–D6d), y en
+`docs/catalogo-disenos-imagen-carrusel.md` §1.7, §4 y §12. Rigen sobre lo anterior de este documento.
+
+| # | Historia | Tema | Decisión |
+|---|---|---|---|
+| B1 | m-25017287, m-25017288 | Revisión visual y textos del dueño | La revisión visual nunca reescribe un texto que el dueño editó; solo avisa |
+| B2 | m-25017288 | Volver a aprobar después de editar | Editar anula la aprobación (ya decidido el 2026-11-14). Al volver a aprobar, la publicación vuelve a su fecha programada si esa fecha no pasó; si pasó, queda aprobada sin fecha |
+| B3 | m-25017288 | Editar una publicación ya publicada | Se puede. Editarla crea una versión nueva sin aprobar; la versión publicada queda intacta como registro. El fundador lo eligió en lugar de la recomendación «Crear otra». **Abierto:** si volver a publicar la versión corregida consume una creación |
+| B4 | m-25017293 | Espera si el render cae | Los 10 minutos cuentan desde el primer fallo; ningún intento posterior los reinicia |
+| B5 | Historia que conecte `compose_layer` con la generación real | Precio que no cabe en su caja | La capa se rechaza para que Claude reescriba el texto; una pieza con precio nunca se publica sin él. **No está construido:** hoy el compositor quita el precio más ancho que su caja |
+| B6a | m-25017286 | ¿Un borrador sin aprobar bloquea quitar la foto? | Sí: cualquier pieza que use la foto bloquea su borrado; el aviso ofrece descartar ese borrador ahí mismo |
+| B6b | m-25017286 | ¿A qué piezas aplica el candado? | Solo a las nuevas creadas con «Usar mi foto» cuando salga, también con fotos de producto del Catálogo. Las piezas que ya existen conservan su propia copia y no se rellenan ni se migran. Reemplazar la foto de un producto sigue permitido; la pieza conserva la que usó |
+| B6c | m-25017286 | Publicaciones ya publicadas | Protegen su foto 30 días desde la publicación; después se puede quitar: la publicación se sigue viendo igual en la aplicación, pero no se puede recomponer con esa foto (para editarla, el dueño elige otra). Borradores, aprobadas y programadas la protegen sin límite. Los 30 días son una propuesta aceptada, no una cifra medida |
+| B6d | m-25017286 | Cortar un video que usa una publicación | El corte guarda el resultado como video nuevo y deja el original intacto; no se bloquea |
+
+**Lo que cambia en el código por B6d** (lectura del código del 2026-11-16, no ejecutado): hoy el
+corte (`catalog/media_worker.py`, `_save_parts` y `_finish_cut`) guarda las partes como videos
+nuevos y después **borra** el original y su carpeta en R2. Con B6d, si una publicación usa el
+original, el corte tiene que conservarlo (lo más simple: no borrarlo, y quedan los dos en la
+Galería). El mecanismo lo decide m-25017286 y debe encajar con el candado de ADR 49 §2.6 sin que el
+corte falle después de guardar las partes. Hoy el único candado de borrado es «el video se está
+cortando» (`remove_business_media`); `piece_media_refs` todavía no existe.

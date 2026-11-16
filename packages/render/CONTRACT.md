@@ -108,7 +108,7 @@ composition both apply it. The caller must send the SAME resolved title face the
 was given (`BrandKit.typeface`: the heading face, else the body one), or Python accepts a
 script title the render refuses.
 
-**Band 1:1 height** (2026-11-15, `layout_version` 3, `engine_revision` 3): a 1:1 `band` may take up to 43 % of the height (was 42 %), so a script `plate` that falls to `band` keeps its price line. The fallback chain never drops the price for lack of height; a price line wider than its box (the title's width) is still dropped and reported in `dropped_slots` — whether that should refuse the piece instead is an open founder decision.
+**Band 1:1 height** (2026-11-15, `layout_version` 3, `engine_revision` 3): a 1:1 `band` may take up to 43 % of the height (was 42 %), so a script `plate` that falls to `band` keeps its price line. The fallback chain never drops the price for lack of height; a price line wider than its box (the title's width) is still dropped and reported in `dropped_slots`. **Decided by the founder on 2026-11-16, not built yet:** a price that does not fit its box must make the layer be refused so Claude rewrites the text, and a piece with a price is never published without it (ADR 49 §8.1, D5); it lands with the story that wires `compose_layer` to live generation.
 
 **Engine revision** (`layer_catalog.engine_revision`, today 3). The template version pins the
 props contract; the engine revision pins the pixels. It is bumped with ANY change to
