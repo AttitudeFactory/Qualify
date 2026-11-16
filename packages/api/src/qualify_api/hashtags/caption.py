@@ -98,12 +98,20 @@ Reglas:
 #: Appended to `SYSTEM` only when watched tags are sent (m-25032581). `SYSTEM` itself is
 #: never edited: a call without them is today's request byte for byte.
 WATCHED_ADDENDUM = """Hashtags que acompañan a los del negocio:
-- Son hashtags que aparecen junto a los hashtags del propio negocio en los videos recientes \
-más vistos de su rubro (se indican las vistas sumadas y en cuántos videos aparecen).
-- Prefiérelos cuando encajen con lo que dice el texto.
-- Uno visto en un solo video es una pista débil.
-- Nunca elijas el nombre de otro negocio o de otra cuenta.
-- Nunca elijas uno que no encaje con el texto solo porque tiene muchas vistas.
+- Son hashtags que aparecen junto a los hashtags del propio negocio en videos recientes \
+de su rubro (se indican las vistas sumadas y en cuántos videos aparecen). Los publicó \
+gente que no es este negocio: muchos no sirven para este texto.
+- Toma uno SOLO si nombra algo que el texto dice: el producto, un ingrediente, la \
+ocasión o el lugar del texto. Lo normal es que encajen pocos o ninguno; no rellenes con \
+ellos.
+- El que sí encaja (el ingrediente o el tipo de comida que el texto nombra, en una palabra \
+común) ponlo entre los cinco primeros: es lo que la gente de su rubro busca.
+- Si un hashtag no es una palabra o frase común (lleva un nombre propio, un apodo o una \
+marca, como #tacosdonpepe o #burgerlarry), es el nombre de otro negocio o de una \
+cuenta: nunca lo elijas, aunque lleve el nombre del plato.
+- Hashtags de recetas o de cocinar en casa solo si el texto enseña a preparar algo.
+- Las vistas no hacen que encaje: un video viral puede llevar hashtags que no tienen \
+nada que ver con este texto. Uno visto en un solo video es una pista débil.
 - Son videos de TikTok y no dicen nada de «tendencia hoy»."""
 
 
