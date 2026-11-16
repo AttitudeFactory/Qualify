@@ -1360,6 +1360,7 @@ def _child_brief(
         parts_removed=(),
         parts_provenance=None,  # the plan's (VE-14), the parent's alone
         parts_request=None,  # the owner's ask (m-24921081), the parent's alone
+        video_recipe=None,  # ED-15: the whole video's recipe, the parent's alone
         part=part,
         duration_seconds=part.generation_seconds,
         clip_reference_mode=CLIP_MODE_OF_PART[plan.mode],
@@ -1367,7 +1368,7 @@ def _child_brief(
         # (`video_pipeline.recipe_of` reads a child's from `part`); the effects pipeline
         # version is the server's to stamp
         effects=plan.effects,
-        text_layer=plan.text_layer,
+        text_layers=plan.text_layers,
         segments=plan.segments,
         mode_rule_version=plan.mode_rule_version,
         mode_reason=plan.mode_reason,

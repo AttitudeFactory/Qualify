@@ -34,7 +34,8 @@ from qualify_creative.schemas import (
     VideoTextLayer,
 )
 
-LIBRARY = load_effects()
+#: These tests are of the library v1 (ED-15 made v2 the default; v1 reads unchanged).
+LIBRARY = load_effects("v1")
 RAW = json.loads(
     (Path(__file__).parents[1] / "src" / "qualify_creative" / "effects_data" / "v1.json").read_text(
         encoding="utf-8"
@@ -115,6 +116,13 @@ def test_recipe_refusals_are_pinned() -> None:
         "unknown_layout",
         "malformed_key",
         "foreign_key",
+        # ED-15 (contract v2), appended
+        "too_many_texts",
+        "texts_overlap",
+        "effect_uses_overlap",
+        "photo_with_speed",
+        "photo_length_out_of_range",
+        "photo_not_from_start",
     )
 
 
@@ -156,7 +164,8 @@ def test_every_default_is_within_its_range() -> None:
 
 
 def test_the_library_is_loaded_once() -> None:
-    assert load_effects() is load_effects("v1")
+    assert load_effects() is load_effects("v2")  # ED-15: v2 is what new requests use
+    assert load_effects("v1") is load_effects("v1")
 
 
 def test_an_unknown_library_version_is_a_key_error() -> None:

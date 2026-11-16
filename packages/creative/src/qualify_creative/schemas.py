@@ -13,15 +13,18 @@ so `render_prompt` can rely on byte-identical output for the cacheable prefix.
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from datetime import datetime
 from decimal import Decimal
-from typing import Literal, get_args
+from typing import Annotated, Literal, NamedTuple, get_args
 from uuid import UUID
 
 from pydantic import (
+    AfterValidator,
     BaseModel,
     ConfigDict,
     Field,
+    ValidationError,
     ValidationInfo,
     field_serializer,
     field_validator,
@@ -705,6 +708,13 @@ RecipeRefusal = Literal[
     "unknown_layout",  # the video text names an ADR 49 design not in 9:16 with a title
     "malformed_key",  # a stretch's file key is not a tenant-rooted path
     "foreign_key",  # a stretch's file is another business's
+    # ED-15 (contract v2): appended, never reordered
+    "too_many_texts",  # more than `TEXT_LAYERS_MAX` texts over one part, Clip or video
+    "texts_overlap",  # two texts in the same `place` show at the same time
+    "effect_uses_overlap",  # two uses of the same effect cover the same seconds
+    "photo_with_speed",  # a still photo played at a speed other than 1
+    "photo_length_out_of_range",  # a still photo shown under 1 s or over 5 s
+    "photo_not_from_start",  # a still photo's stretch does not start at 0
 ]
 RECIPE_REFUSALS: tuple[str, ...] = get_args(RecipeRefusal)
 
@@ -713,6 +723,14 @@ EFFECTS_MAX = 8
 SEGMENTS_MAX = 8
 #: The owner's text over the video (D1: drawn later by the compose step, not here).
 VIDEO_TEXT_MAX = 120
+#: ED-15 (D-T2): at most this many texts over one part, one Clip or the whole video.
+TEXT_LAYERS_MAX = 3
+#: ED-15 (D-T1): a still photo among the stretches lasts 1 to 5 s of the video.
+PHOTO_SECONDS_MIN = 1.0
+PHOTO_SECONDS_MAX = 5.0
+#: What a stretch is made from: a stretch of a video, or a still photo held on screen.
+SegmentKind = Literal["video", "photo"]
+SEGMENT_KINDS: tuple[str, ...] = get_args(SegmentKind)
 VideoTextPlace = Literal["top", "middle", "bottom"]
 VIDEO_TEXT_PLACES: tuple[str, ...] = get_args(VideoTextPlace)
 #: How fast a stretch plays (D-T3: «Cámara rápida» is this speed): 1 = as recorded, up
@@ -801,10 +819,10 @@ class VideoTextLayer(BaseModel):
 
     Times (`start_s`, `end_s`) are SECONDS OF THAT PART'S OWN OUTPUT, counted from its
     start, speed already applied — in a normal Clip the part is the whole video. `start_s`
-    0 = the part's start; `end_s` None = until its end. The PARENT's text (`text_layer`
-    of a video by parts' parent) is of the whole joined video, from its start. What else
-    crosses parts belongs to the parent's recipe (ED-15), not here. Whether the times fall
-    in `[0, part length]` is `validate_recipe`'s.
+    0 = the part's start; `end_s` None = until its end. The PARENT's texts
+    (`MediaInputs.text_layers` of a video by parts' parent, and `VideoRecipe.text_layers`,
+    ED-15) are of the whole joined video, from its start. Whether the times fall in
+    `[0, part length]` is `validate_recipe`'s.
 
     D1 (ADR 50): the text is drawn with ADR 49's closed designs, never with styles of its
     own. `layout_id`/`layout_version` name the design of `qualify_creative.layer_spec`
@@ -838,7 +856,14 @@ class SourceSegment(BaseModel):
     (`key`, checked to be the business's by `owned_by` before any read), from `start_s`
     to `end_s` seconds of it, played at `speed` (1 = as recorded; «Cámara rápida» more)
     and turned upright by `rotate` degrees clockwise (EF-03's «Girar»). Order in the
-    tuple = order in the video."""
+    tuple = order in the video.
+
+    ED-15 (D-T1): `kind` says what the file is. `video` (the default: every stretch
+    stored before it) is the above. `photo` is a still photo held on screen: the SAME
+    tuple, in the same order as the videos — no type of its own —, from `start_s` 0 to
+    `end_s` = how long it shows (`PHOTO_SECONDS_MIN`-`PHOTO_SECONDS_MAX`), at `speed` 1,
+    `rotate` allowed. Those rules need no library and never change, so the type checks
+    them, each with its `RecipeRefusal` code as the error's `type`."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -847,6 +872,7 @@ class SourceSegment(BaseModel):
     end_s: float = Field(gt=0)
     speed: float = Field(default=1.0, ge=SEGMENT_SPEED_MIN, le=SEGMENT_SPEED_MAX)
     rotate: SegmentRotation = 0
+    kind: SegmentKind = "video"
 
     @property
     def output_seconds(self) -> float:
@@ -857,7 +883,60 @@ class SourceSegment(BaseModel):
     def _coherent(self) -> SourceSegment:
         if self.end_s <= self.start_s:
             raise ValueError("a stretch of video ends after it starts")
+        if self.kind == "photo":
+            if self.start_s != 0:
+                raise PydanticCustomError(
+                    "photo_not_from_start", "a photo is shown from its start (start_s 0)"
+                )
+            if self.speed != 1:
+                raise PydanticCustomError("photo_with_speed", "a photo has no speed of its own")
+            if not PHOTO_SECONDS_MIN <= self.end_s <= PHOTO_SECONDS_MAX:
+                raise PydanticCustomError(
+                    "photo_length_out_of_range",
+                    "a photo shows {low} to {high} seconds",
+                    {"low": PHOTO_SECONDS_MIN, "high": PHOTO_SECONDS_MAX},
+                )
         return self
+
+
+def _at_most_three_texts(layers: tuple[VideoTextLayer, ...]) -> tuple[VideoTextLayer, ...]:
+    if len(layers) > TEXT_LAYERS_MAX:
+        raise PydanticCustomError(
+            "too_many_texts", "at most {limit} texts over the video", {"limit": TEXT_LAYERS_MAX}
+        )
+    return layers
+
+
+#: ED-15 (D-T2): the texts over one part, one Clip or the whole video, in order — at most
+#: `TEXT_LAYERS_MAX` (`too_many_texts`, the error's `type`). Whether two of them in the
+#: same place overlap needs the part's length (`end_s` None = until its end): that is
+#: `validate_recipe`'s (`texts_overlap`).
+TextLayers = Annotated[tuple[VideoTextLayer, ...], AfterValidator(_at_most_three_texts)]
+
+
+def _text_layers_from_legacy(value: object) -> object:
+    """ED-15 compatibility: a recipe stored (or sent by the screen) with EF-02's single
+    `text_layer` reads as `text_layers` of one. Both keys may come together (the screen
+    while it moves to v2): the old one is kept first unless `text_layers` already holds
+    it; null is «no text». Any other input is left for the field to validate."""
+    if not isinstance(value, dict) or "text_layer" not in value:
+        return value
+    data = dict(value)
+    legacy = data.pop("text_layer")
+    layers = data.get("text_layers")
+    if legacy is None:
+        if layers is None and "text_layers" in data:
+            data["text_layers"] = ()
+        return data
+    current = tuple(layers or ())
+    try:
+        already = VideoTextLayer.model_validate(legacy) in {
+            VideoTextLayer.model_validate(layer) for layer in current
+        }
+    except ValidationError:
+        already = False  # the field reports what is wrong with either
+    data["text_layers"] = current if already else (legacy, *current)
+    return data
 
 
 def _local_problem(mode: str, segments: tuple[SourceSegment, ...]) -> PydanticCustomError | None:
@@ -931,11 +1010,12 @@ class _PartSource(BaseModel):
     clip_image_roles: tuple[str, ...] = Field(default=(), max_length=CLIP_MAX_IMAGES)
     clip_video_keys: tuple[str, ...] = Field(default=(), max_length=CLIP_MAX_VIDEOS)
     clip_audio_keys: tuple[str, ...] = Field(default=(), max_length=CLIP_MAX_AUDIOS)
-    #: EF-02 (ADR 50): the part's recipe — its effects, its text over the video and the
-    #: stretches of the owner's own video it is made from, in order. Empty / None on
-    #: every part stored before them: made byte for byte as before.
+    #: EF-02 (ADR 50): the part's recipe — its effects, its texts over the video (ED-15:
+    #: up to `TEXT_LAYERS_MAX`; a stored `text_layer` reads as one) and the stretches of
+    #: the owner's own video or photos it is made from, in order. Empty on every part
+    #: stored before them: made byte for byte as before.
     effects: tuple[EffectUse, ...] = Field(default=(), max_length=EFFECTS_MAX)
-    text_layer: VideoTextLayer | None = None
+    text_layers: TextLayers = ()
     segments: tuple[SourceSegment, ...] = Field(default=(), max_length=SEGMENTS_MAX)
     #: EF-02/EF-09: what the mode rule proposed — its version (0 = no rule, every part
     #: before it), its reason as a code (never client text) — and whether the owner
@@ -943,6 +1023,11 @@ class _PartSource(BaseModel):
     mode_rule_version: int = Field(default=0, ge=0)
     mode_reason: str = Field(default="", max_length=40, pattern=r"^[a-z0-9_]*$")
     mode_changed_by_owner: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy_text_layer(cls, value: object) -> object:
+        return _text_layers_from_legacy(value)
 
     @property
     def generation_seconds(self) -> int:
@@ -1121,6 +1206,129 @@ class PartRef(_PartSource):
     index: int = Field(ge=1, le=PARTS_MAX)
 
 
+class PartRecipe(BaseModel):
+    """One part of the engine's work (a Clip is a recipe of one): its 1-based `index`
+    in the video, how it is made (`mode`), its length in the video (`seconds`), its
+    effects, its texts over the video and the stretches of own video (or photos) it uses,
+    how it blends with the part before it (`transition_in`, None in a Clip) and what the
+    mode rule said. Pure data: frozen, JSON round-trips, nothing derived is stored.
+
+    Its times are seconds of THE PART'S own output, from its start, speed applied (as
+    `EffectUse`/`VideoTextLayer` say). Defined here (ED-15) so a parent's `VideoRecipe`
+    can hold it; `qualify_api.creative.video_pipeline` re-exports it under the same name.
+    A stored `text_layer` reads as `text_layers` of one."""
+
+    model_config = ConfigDict(frozen=True)
+
+    index: int = Field(ge=1, le=PARTS_MAX)
+    mode: PartMode = "reference"
+    seconds: float = Field(gt=0)
+    effects: tuple[EffectUse, ...] = Field(default=(), max_length=EFFECTS_MAX)
+    text_layers: TextLayers = ()
+    segments: tuple[SourceSegment, ...] = Field(default=(), max_length=SEGMENTS_MAX)
+    transition_in: EffectUse | None = None
+    mode_rule_version: int = Field(default=0, ge=0)
+    mode_reason: str = ""
+    mode_changed_by_owner: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy_text_layer(cls, value: object) -> object:
+        return _text_layers_from_legacy(value)
+
+    @property
+    def has_own_video(self) -> bool:
+        """«Video propio»: at least one stretch of a file the owner uploaded."""
+        return bool(self.segments)
+
+
+class VideoRecipe(BaseModel):
+    """The recipe of a whole video by parts (ED-15), kept on the parent
+    (`MediaInputs.video_recipe`): its parts in video order (`PartRecipe`, indexes 1..N)
+    and what crosses them — `text_layers` (up to `TEXT_LAYERS_MAX`) and `effects` (up to
+    `EFFECTS_MAX`) whose times are SECONDS OF THE WHOLE VIDEO, from its start (`end_s`
+    None = until its end; an effect with no span = the whole video). What lives inside a
+    part stays relative to that part, as in EF-02.
+
+    The type checks only what needs no library; `validate_video_recipe` checks the rest
+    (spans inside `[0, seconds]`, overlaps, `max_per_part`). When the parts are reordered
+    or trimmed, `refit_video_recipe` keeps each block at its absolute time."""
+
+    model_config = ConfigDict(frozen=True)
+
+    parts: tuple[PartRecipe, ...] = Field(min_length=1, max_length=PARTS_MAX)
+    text_layers: TextLayers = ()
+    effects: tuple[EffectUse, ...] = Field(default=(), max_length=EFFECTS_MAX)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy_text_layer(cls, value: object) -> object:
+        return _text_layers_from_legacy(value)
+
+    @model_validator(mode="after")
+    def _parts_in_order(self) -> VideoRecipe:
+        if [part.index for part in self.parts] != list(range(1, len(self.parts) + 1)):
+            raise ValueError("a video's parts are numbered 1 to N in video order")
+        return self
+
+    @property
+    def seconds(self) -> float:
+        """How long the whole video lasts: its parts' lengths, joined (derived)."""
+        return float(sum(part.seconds for part in self.parts))
+
+
+class RefitVideoRecipe(NamedTuple):
+    """What `refit_video_recipe` gives back: the recipe on its new parts, and every block
+    of the whole video it had to take out because it would start at or after the new end
+    (in their original order) — returned, never lost in silence: the screen tells the
+    owner which texts and effects no longer fit."""
+
+    recipe: VideoRecipe
+    dropped_text_layers: tuple[VideoTextLayer, ...]
+    dropped_effects: tuple[EffectUse, ...]
+
+
+def refit_video_recipe(recipe: VideoRecipe, parts: Sequence[PartRecipe]) -> RefitVideoRecipe:
+    """The whole video's recipe after its parts were reordered, added, removed or trimmed
+    (pure): `parts` is the new order (renumbered 1..N here). Each part's own effects and
+    texts move with it untouched — their times are the part's. Each block of the WHOLE
+    video (`text_layers`, `effects`) keeps its ABSOLUTE time: a block ending past the new
+    end is cut at it; one that would START at or after it is taken out and returned in
+    `dropped_*` (the decision of ED-15: dropped and reported, not refused — reordering
+    must always be possible). A block with no end (a text's `end_s` None, an effect with
+    no span) still runs to the end, whatever it is now. An empty `parts` is a
+    `ValueError`: a video by parts has at least one part."""
+    if not parts:
+        raise ValueError("a video by parts keeps at least one part")
+    renumbered = tuple(
+        part if part.index == at else part.model_copy(update={"index": at})
+        for at, part in enumerate(parts, 1)
+    )
+    total = float(sum(part.seconds for part in renumbered))
+    texts: list[VideoTextLayer] = []
+    dropped_texts: list[VideoTextLayer] = []
+    for layer in recipe.text_layers:
+        if layer.start_s >= total:
+            dropped_texts.append(layer)
+        elif layer.end_s is not None and layer.end_s > total:
+            texts.append(layer.model_copy(update={"end_s": total}))
+        else:
+            texts.append(layer)
+    effects: list[EffectUse] = []
+    dropped_effects: list[EffectUse] = []
+    for use in recipe.effects:
+        if use.start_s is None or use.end_s is None:
+            effects.append(use)
+        elif use.start_s >= total:
+            dropped_effects.append(use)
+        elif use.end_s > total:
+            effects.append(use.model_copy(update={"end_s": total}))
+        else:
+            effects.append(use)
+    refit = VideoRecipe(parts=renumbered, text_layers=tuple(texts), effects=tuple(effects))
+    return RefitVideoRecipe(refit, tuple(dropped_texts), tuple(dropped_effects))
+
+
 class MediaInputs(BaseModel):
     """What the operator hands the generator besides the words — per `ContentKind`,
     every image optional unless the kind cannot work without it. Keys are the upload
@@ -1250,10 +1458,11 @@ class MediaInputs(BaseModel):
     #: refused before anything is written or paid until EF-05/EF-06 produce it.
     clip_reference_mode: Literal["motion", "edit", "extend", "local"] = "motion"
     #: EF-02 (ADR 50): a Clip's recipe, as `_PartSource` keeps a part's — on a CHILD it
-    #: is copied from its `part`; on the PARENT of a video by parts `text_layer` is the
-    #: whole video's text and `effects`/`segments` stay empty (each part has its own).
+    #: is copied from its `part`; on the PARENT of a video by parts `text_layers` are the
+    #: whole video's texts and `effects`/`segments` stay empty (each part has its own).
+    #: ED-15: up to `TEXT_LAYERS_MAX` texts; a stored `text_layer` reads as one.
     effects: tuple[EffectUse, ...] = Field(default=(), max_length=EFFECTS_MAX)
-    text_layer: VideoTextLayer | None = None
+    text_layers: TextLayers = ()
     segments: tuple[SourceSegment, ...] = Field(default=(), max_length=SEGMENTS_MAX)
     mode_rule_version: int = Field(default=0, ge=0)
     mode_reason: str = Field(default="", max_length=40, pattern=r"^[a-z0-9_]*$")
@@ -1321,6 +1530,15 @@ class MediaInputs(BaseModel):
     #: parts and the outcome of the last attempt. None on a parent whose parts are
     #: created only on the screen's own ask, and on any other piece.
     parts_request: PartsRequest | None = None
+    #: Video by parts, the PARENT (ED-15): the recipe of the whole video — its
+    #: parts and what crosses them, in seconds of the WHOLE video (`VideoRecipe`). None
+    #: on every brief stored before it and on any other piece (`effects_not_for_kind`).
+    video_recipe: VideoRecipe | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy_text_layer(cls, value: object) -> object:
+        return _text_layers_from_legacy(value)
 
     @model_validator(mode="before")
     @classmethod
@@ -1728,14 +1946,20 @@ class ContentBrief(BaseModel):
     def _recipe_is_for_a_video(self) -> None:
         """EF-02: effects, a video text and stretches of own video belong to a Clip (or a
         part, which is a Clip); the parent of a video by parts keeps only the whole
-        video's text — each part carries its own effects and stretches."""
+        video's texts and (ED-15) its `video_recipe` — each part carries its own effects
+        and stretches."""
         media = self.media
         if self.kind is ContentKind.CLIP:
-            return
-        if self.kind is ContentKind.SHOT_VIDEO:
+            stray = media.video_recipe is not None  # a whole video's recipe is a parent's
+        elif self.kind is ContentKind.SHOT_VIDEO:
             stray = bool(media.effects or media.segments)
         else:
-            stray = bool(media.effects or media.segments or media.text_layer is not None)
+            stray = bool(
+                media.effects
+                or media.segments
+                or media.text_layers
+                or media.video_recipe is not None
+            )
         if stray:
             raise PydanticCustomError(
                 "effects_not_for_kind", "effects and stretches of video are for a video"

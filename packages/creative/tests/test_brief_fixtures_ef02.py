@@ -19,16 +19,17 @@ from qualify_creative.schemas import ContentBrief
 
 FIXTURES = Path(__file__).parent / "fixtures" / "briefs_f55f1d73"
 
-#: The recipe fields EF-02 added, with the default every older brief reads.
+#: The recipe fields EF-02 added (ED-15: `text_layers` in place of `text_layer`), with the
+#: default every older brief reads.
 _RECIPE_DEFAULTS: dict[str, Any] = {
     "effects": [],
-    "text_layer": None,
+    "text_layers": [],
     "segments": [],
     "mode_rule_version": 0,
     "mode_reason": "",
     "mode_changed_by_owner": False,
 }
-_MEDIA_DEFAULTS = {**_RECIPE_DEFAULTS, "effects_pipeline_version": 0}
+_MEDIA_DEFAULTS = {**_RECIPE_DEFAULTS, "effects_pipeline_version": 0, "video_recipe": None}
 _PLAN_DEFAULTS = {**_RECIPE_DEFAULTS, "transition_in": None}
 #: Brief fields main added after the fixtures were taken (`awareness_level`, 94fa4556).
 _LATER_BRIEF_DEFAULTS: dict[str, Any] = {"awareness_level": None}
