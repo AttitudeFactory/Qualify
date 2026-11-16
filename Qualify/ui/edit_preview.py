@@ -270,4 +270,186 @@ def edit_preview(
     )
 
 
-__all__ = ["REPORT_GLOBAL", "SCRIPT", "edit_preview", "edit_preview_script"]
+# -- ED-01b m-25029106: the preview in sequence ----------------------------------------
+
+#: The pure clock the sequence engine uses (`window.__qEditSeqCore`, tested with node).
+SEQ_CORE_SCRIPT = "edit-sequence-core.js"
+#: The global the script fills before pressing the hidden time button.
+TIME_GLOBAL = "window.__qEditSeqTime"
+
+
+def edit_sequence_script() -> rx.Component:
+    """Mount the sequence's clock and `assets/edit-preview.js` (sequence mode included);
+    both guard against running twice — a second run only attaches new previews."""
+    script = asset_script(SEQ_CORE_SCRIPT) + ";" + asset_script(SCRIPT)
+    return rx.box(display="none", on_mount=rx.call_script(script))
+
+
+def _time_trigger(on_time: object) -> rx.Component:
+    """The hidden button the script presses on a PAUSE and after a SEEK (never per
+    frame): the handler receives `(t, reason)` — «pause» or «seek»."""
+    t = rx.Var(f"Number(({TIME_GLOBAL} || {{}}).t || 0)", _var_type=float)
+    reason = rx.Var(f"String(({TIME_GLOBAL} || {{}}).reason || '')", _var_type=str)
+    return rx.el.button(
+        type="button",
+        on_click=on_time(t, reason),  # type: ignore[operator]
+        tab_index=-1,
+        aria_hidden="true",
+        display="none",
+        custom_attrs={"data-edit-seq-time-trigger": ""},
+    )
+
+
+def _seq_text(row: rx.Var) -> rx.Component:
+    """A text of the sequence: hidden until the script marks it on (`data-on`)."""
+    return rx.box(
+        rx.el.p(row["text"], class_name="q-edit-preview__text-line"),
+        class_name="q-edit-preview__text q-edit-seq__overlay",
+        custom_attrs={
+            "data-place": row["place"],
+            "data-layout": "scrim",
+            "data-long": "false",
+            "data-seq-text": row["index"],
+        },
+    )
+
+
+def _seq_effect(row: rx.Var) -> rx.Component:
+    """An effect's loop (only when its file exists), shown while it is on."""
+    return rx.cond(
+        row["url"] != "",
+        rx.el.video(
+            src=row["url"],
+            muted=True,
+            loop=True,
+            plays_inline=True,
+            preload="auto",
+            tab_index=-1,
+            aria_hidden="true",
+            custom_attrs={"data-edit-effect": "", "data-seq-effect": row["index"]},
+            class_name="q-edit-preview__effect q-edit-seq__overlay",
+        ),
+    )
+
+
+def edit_sequence_preview(
+    *,
+    sequence: rx.Var[str],
+    texts: rx.Var[list[dict[str, str]]],
+    effects: rx.Var[list[dict[str, str]]],
+    slower: rx.Var[bool],
+    on_duration: object,
+    on_time: object,
+    note_text: str,
+    broken_text: str,
+    slower_text: str,
+    play_label: str,
+    pause_label: str,
+    sound_label: str,
+    mute_label: str,
+    region_label: str,
+) -> rx.Component:
+    """The preview of a whole video in order (ED-01b): `sequence` is
+    `edit_sequence.PreviewSequence.to_json()`; `texts`/`effects` its overlays as rows
+    (`text`, `place`, `url`, `index` — strings), drawn here and switched on and off by
+    the script on the final video's clock. Two `<video>` take turns (the next one is
+    preloaded), a photo is an `<img>`, a block with nothing to show (or a failed video) a
+    card with its name — and `broken_text` when it failed. Put it and a `timeline` in
+    one `[data-edit-sync]` box and their clocks are one. The sound button says
+    `sound_label` while muted and `mute_label` while the sound is on (the script swaps
+    them, like ▶/❚❚). The single-stretch `edit_preview` is unchanged."""
+    layer = "q-edit-preview__video q-edit-seq__layer"
+    frame = rx.box(
+        rx.image(
+            alt="",
+            class_name="q-edit-preview__poster q-edit-seq__layer",
+            custom_attrs={"data-edit-seq-photo": ""},
+        ),
+        rx.el.div(
+            class_name="q-edit-seq__card q-edit-seq__layer",
+            custom_attrs={"data-edit-seq-card": ""},
+        ),
+        *(
+            rx.el.video(
+                muted=True,
+                plays_inline=True,
+                preload="auto",
+                tab_index=-1,
+                aria_hidden="true",
+                custom_attrs={"data-edit-seq-video": name},
+                class_name=layer,
+            )
+            for name in ("a", "b")
+        ),
+        rx.foreach(effects, _seq_effect),
+        rx.foreach(texts, _seq_text),
+        # the notice is announced when it appears: its live region is always rendered
+        rx.el.div(
+            rx.el.p(
+                broken_text,
+                class_name="q-edit-seq__broken q-edit-seq__overlay",
+                custom_attrs={"data-edit-seq-broken": ""},
+            ),
+            aria_live="polite",
+            class_name="q-edit-seq__live",
+        ),
+        rx.el.button(
+            rx.icon("play", size=22, aria_hidden="true", class_name="q-edit-preview__glyph-play"),
+            rx.icon("pause", size=22, aria_hidden="true", class_name="q-edit-preview__glyph-pause"),
+            type="button",
+            aria_label=play_label,
+            title=play_label,
+            custom_attrs={"data-edit-play-btn": "", "data-pause-label": pause_label},
+            class_name="q-clip__btn q-edit-preview__play",
+        ),
+        rx.el.button(
+            rx.box(
+                rx.icon("volume-x", size=14, aria_hidden="true"), class_name="q-clip__sound-off"
+            ),
+            rx.box(rx.icon("volume-2", size=14, aria_hidden="true"), class_name="q-clip__sound-on"),
+            type="button",
+            aria_label=sound_label,
+            title=sound_label,
+            aria_pressed="false",
+            custom_attrs={"data-edit-sound": "", "data-mute-label": mute_label},
+            class_name="q-clip__btn q-clip__sound q-edit-preview__sound",
+        ),
+        class_name="q-edit-preview__frame",
+    )
+    return rx.box(
+        frame,
+        rx.hstack(
+            rx.el.span(
+                custom_attrs={"data-edit-seq-time": ""},
+                class_name="q-edit-preview__time q-nums",
+            ),
+            # « · » only once the clock has a time (CSS: an empty time hides it)
+            rx.text(
+                "·", size="1", color=T.TEXT_MUTED, aria_hidden="true", class_name="q-edit-seq__dot"
+            ),
+            rx.text(note_text, size="1", color=T.TEXT_MUTED),
+            spacing="1",
+            align="center",
+            justify="center",
+            wrap="wrap",
+            width="100%",
+        ),
+        rx.cond(slower, rx.text(slower_text, size="1", color=T.TEXT_MUTED, text_align="center")),
+        _duration_trigger(on_duration),
+        _time_trigger(on_time),
+        role="region",
+        aria_label=region_label,
+        custom_attrs={"data-edit-seq-host": "", "data-edit-seq": sequence},
+        class_name="q-edit-preview q-edit-seq",
+    )
+
+
+__all__ = [
+    "REPORT_GLOBAL",
+    "SCRIPT",
+    "SEQ_CORE_SCRIPT",
+    "edit_preview",
+    "edit_preview_script",
+    "edit_sequence_preview",
+    "edit_sequence_script",
+]

@@ -13,6 +13,7 @@ from typing import Any
 
 import reflex as rx
 
+from . import edit_sequence
 from .ui import (
     app_shell,
     callout,
@@ -52,6 +53,7 @@ from .ui import (
 )
 from .ui import timeline_vm as tl_vm
 from .ui import tokens as T
+from .ui.edit_preview import edit_sequence_preview, edit_sequence_script
 from .ui.layout import (
     NAV_BOTTOM,
     bottom_bar_frame,
@@ -236,6 +238,12 @@ _TL_OVERLAYS: list[dict[str, Any]] = [
     },
     {"id": "vapor-1", "kind": "effect", "label": "Vapor", "start": 2.0, "end": 9.0},
 ]
+# ED-01b m-25029106: what the sample's preview in sequence can show. The repo has no
+# sample video (nothing heavy is added), so a video block is a card with its name, timed
+# on the same clock; the photo is the Q isotype, already in `assets/`.
+_TL_SOURCES = {"foto-3": "/qualify-icon.svg"}
+_SEQ_SAYS = {"pause": "pausa", "seek": "búsqueda"}
+
 # What «Agregar» would open (the sample adds nothing: it says it in the live line).
 _TL_ADD_SAYS = {
     "media": "Aquí se abriría el cajón de fotos y videos.",
@@ -253,10 +261,46 @@ class TimelineDemoState(rx.State):
     overlays: list[dict[str, Any]] = [dict(item) for item in _TL_OVERLAYS]
     selected: str = ""
     status: str = ""
+    #: ED-01b: what the screen last heard of the preview's clock (only on a pause or a
+    #: seek — never per frame), to show the channel works.
+    heard: str = ""
 
     @rx.var
     def total(self) -> str:
         return tl_vm.num(tl_vm.total_seconds(self.media))
+
+    def _sequence(self) -> edit_sequence.PreviewSequence:
+        return edit_sequence.from_timeline(self.media, self.overlays, _TL_SOURCES)
+
+    @rx.var
+    def sequence_json(self) -> str:
+        """ED-01b: the preview in sequence of the sample (the same lists as the timeline,
+        so the playhead and the preview's time are one clock)."""
+        return self._sequence().to_json()
+
+    @rx.var
+    def sequence_texts(self) -> list[dict[str, str]]:
+        return [
+            {"text": o.text, "place": o.place, "index": str(i)}
+            for i, o in enumerate(self._sequence().texts)
+        ]
+
+    @rx.var
+    def sequence_effects(self) -> list[dict[str, str]]:
+        return [{"url": o.url, "index": str(i)} for i, o in enumerate(self._sequence().effects)]
+
+    @rx.var
+    def sequence_slower(self) -> bool:
+        return self._sequence().slower
+
+    @rx.event
+    def heard_length(self, key: str, seconds: float, width: int, height: int) -> None:
+        """A source's length (none in the sample: it has no video)."""
+
+    @rx.event
+    def heard_time(self, t: float, reason: str) -> None:
+        said = _SEQ_SAYS.get(reason, reason)
+        self.heard = f"La pantalla supo la hora: {tl_vm.clock(float(t))} ({said})."
 
     @rx.var
     def media_rows(self) -> list[dict[str, str]]:
@@ -348,6 +392,7 @@ class TimelineDemoState(rx.State):
         self.overlays = [dict(item) for item in _TL_OVERLAYS]
         self.selected = ""
         self.status = ""
+        self.heard = ""
 
 
 _TONES = ["accent", "ok", "warn", "error", "info", "neutral"]
@@ -1703,13 +1748,51 @@ def _timeline_section() -> rx.Component:
                 "elegido y su barra flota en una isla: arriba de la pista en el celular, "
                 "debajo en escritorio. En el panel: «Velocidad» de un video y el lugar de "
                 "un texto. Lo que no hace la demo: arrastrar, cortar de verdad y los "
-                "botones de la barra (sin acción).",
+                "botones de la barra (sin acción). Encima, la vista previa en secuencia "
+                "(ED-01b) con el mismo reloj que el cabezal: ▶ la reproduce de punta a punta "
+                "y vuelve a empezar, mover el cabezal busca, y los textos y el efecto salen "
+                "en su hora. El repositorio no tiene videos de ejemplo: cada video es una "
+                "tarjeta con su nombre (con su tiempo y su velocidad) y la foto es el "
+                "isotipo.",
                 size="2",
                 color=T.TEXT_MUTED,
             ),
             card(
                 rx.vstack(
                     timeline_script(),
+                    # ED-01b: the preview in sequence and the timeline share one clock
+                    # (same `[data-edit-sync]` box): ▶ plays end to end, the playhead
+                    # follows, moving the playhead seeks
+                    edit_sequence_script(),
+                    rx.box(
+                        edit_sequence_preview(
+                            sequence=s.sequence_json,
+                            texts=s.sequence_texts,
+                            effects=s.sequence_effects,
+                            slower=s.sequence_slower,
+                            on_duration=s.heard_length,
+                            on_time=s.heard_time,
+                            note_text="Así va quedando",
+                            broken_text=(
+                                "No pudimos mostrar este video aquí. Igual lo verás "
+                                "completo antes de aprobarlo."
+                            ),
+                            slower_text=(
+                                "En la vista previa se ve más lento que en el video final."
+                            ),
+                            play_label="Ver cómo va quedando",
+                            pause_label="Pausar la vista previa",
+                            sound_label="Activar sonido",
+                            mute_label="Quitar sonido",
+                            region_label="Vista previa de tu video",
+                        ),
+                        rx.cond(
+                            s.heard != "",
+                            rx.text(s.heard, size="1", color=T.TEXT_MUTED, text_align="center"),
+                        ),
+                        width="100%",
+                        margin_x="auto",
+                    ),
                     timeline_layout(
                         timeline(
                             media=s.media_rows,
@@ -1745,6 +1828,7 @@ def _timeline_section() -> rx.Component:
                     spacing="3",
                     width="100%",
                     align_items="stretch",
+                    custom_attrs={"data-edit-sync": ""},
                 ),
             ),
             description="Regla, cabezal, tres pistas, bloque elegido con tiradores, barra "
