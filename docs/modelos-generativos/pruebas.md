@@ -22,6 +22,76 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
 
 ---
 
+<a id="hashtags-pie-001"></a>
+
+## HASHTAGS-PIE-001 — «Sugerir con IA» de hashtags: prompt de hoy contra el que lee las etiquetas vigiladas del rubro (m-25032581) — 2026-11-15 · NO PASA EN TEST
+
+- **Modelo:** `claude-haiku-4-5`, revisión `claude-haiku-4-5-20251001`, herramienta forzada `sugerir_hashtags`, `max_tokens` 2048, hasta 12 etiquetas. Ficha: [claude-haiku-4-5.md](claude-haiku-4-5.md).
+- **Qué se comparó:** `qualify_api.hashtags.caption.suggest_for_caption`.
+  - `caption-hashtags/1` es el prompt de hoy. Sin `watched` el módulo envía exactamente la petición anterior, verificado byte a byte en los 34 casos.
+  - `caption-hashtags/2` agrega `WATCHED_ADDENDUM` al SYSTEM y un bloque con las etiquetas que acompañan a las del rubro en los videos más vistos de la lectura semanal de TikTok.
+- **Conjunto:** `packages/api/evals/hashtag_caption/`, **34 textos reales** de borradores del negocio piloto (shawarma y ensaladas, San Cristóbal).
+  - Anonimizados: nombre del negocio y del local cambiados; sin teléfono, dirección ni web.
+  - Partición fija: **dev 18 / test 16**. Incluye 2 controles reales sin comida (un tutorial de videojuegos), helado, un jugo en Barquisimeto y textos cortos aprobados.
+  - Reglas de etiquetado escritas antes de etiquetar; trampas por clase: otro negocio, relleno, otro lugar, vigilada que no encaja.
+  - Tres pasadas de adjudicación declaradas en el README.
+- **Lista vigilada:** armada con el código del producto (`readable_tag`, `rule_classifications`, `companions`) desde una foto de 25 videos del 2026-11-15.
+  - `tachira_venezuela🇻🇪` ya no llega al modelo.
+  - De 20 etiquetas, 3 son nombres de otros negocios o creadores (`amirexpress`, `yaalashawarma`, `manosalsazon`) y 6 son de recetas.
+  - La lista de producción cambia cada semana: desde el 16-nov sale `comidasaludable`.
+- **Variantes de `seen`:**
+  - `none`: catálogo vacío.
+  - `own`: las etiquetas que el texto ya tenía, conteo 1; es optimista.
+  - El catálogo real del piloto **no se reprodujo** (sin acceso a producción).
+- **Repeticiones:**
+  - línea base: 3;
+  - `/2` original en dev: 3;
+  - rondas de ajuste en dev: 1 (por el tope);
+  - test: 1 corrida con 2 repeticiones.
+  - Langfuse no estaba levantado: puntuador local y resultados en `results/`.
+
+**Hallazgo de la línea base:** sin catálogo, el prompt de hoy pone **etiquetas mal escritas entre las cinco «Mejor»**: 10–14 % del top 5 (`sancrystobal`, `sancristo`, `enalada`, `comidaderrapida`). Además es muy inestable: el top 5 de dos pulsaciones comparte ≈20 %. Con las etiquetas propias como catálogo baja a ≈2 %.
+
+**Resultados, top 5, media (mín–máx):**
+
+| Clase | dev base `none` | dev `/2` original | dev `/2` final (1 rep.) | test base `none` | test `/2` final `watched` | test base `own` | test `/2` final `own+watched` |
+|---|---|---|---|---|---|---|---|
+| Otro negocio | 0 | **0.133 (0.100–0.167)** | 0 | 0.004 | 0 | 0 | 0 |
+| Relleno | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| Otro lugar | 0.011 | 0.004 | 0.011 | 0.004 | 0.006 | 0.004 | 0 |
+| Vigilada que no encaja | 0.007 | **0.155** | 0 | 0.021 | **0.044 (0.037–0.050)** | 0.004 | **0.037 (0.025–0.050)** |
+| Encaja | 0.852 | 0.667 | 0.911 | 0.800 | 0.887 | 0.975 | **0.944** |
+| Mal escrita | 0.104 | 0.026 | 0.067 | 0.138 | 0.044 | 0.017 | 0.019 |
+| Toma de vigiladas que encajan | 0.030 | 0.300 | 0.507 | 0.013 | **0.408** | 0 | **0.275** |
+
+- **Barra:** cero otros negocios en el top 5; ninguna trampa más de 2 puntos sobre su base; mal escritas y «encaja» no peores en más de 2 puntos; toma claramente mayor.
+- **Dev pasa con la redacción final. Test no pasa:**
+  - «vigilada que no encaja» sube 2,3 y 3,3 puntos (con `comidacasera` como aceptable: 4,4 y 3,1);
+  - «encaja» de `own+watched` baja 3,1 puntos.
+- **Qué falla en test:** el modelo pone `carne`, `pollo` o `comidasaludable` en textos que no los nombran, como «¿Cómo llegar?».
+- **Qué funcionó:** el `/2` original elegía `yaalashawarma` (40 de 108 veces en el top 5) y `amirexpress`; la ronda 1 lo llevó a 0 y test lo confirma.
+- **Rondas** (solo `WATCHED_ADDENDUM`, SYSTEM intacto):
+  1. Tomar solo lo que el texto nombra; la prueba de la palabra común contra nombres de cuentas; recetas solo si el texto enseña a cocinar.
+  2. Poner entre los cinco primeros la que sí encaja.
+
+**Costo:**
+- **US$0.0034** por llamada con `/1` y **US$0.0041** con `/2` (≈1.980 tokens de entrada y ≈430 de salida, tabla v7).
+- Por negocio y mes (supuesto: 60–160 pulsaciones al mes, del ritmo del piloto, ≈80 textos al mes): **US$0.20–0.55** con `/1` y **US$0.25–0.66** con `/2`.
+
+**Gasto total de la prueba:**
+- fase 1: US$0.690 (206 llamadas);
+- fase 2: US$0.846 registrados (208 llamadas), más ≤ US$0.44 sin registrar de dos corridas detenidas (una duplicada por error de comando y una colgada en conexiones muertas). Ninguna dejó resultados.
+- Registrado: **US$1.536**; peor caso ≈ US$1.98.
+
+**Qué no se reprodujo:**
+- el catálogo real del piloto (`seen`);
+- la lista vigilada de una semana distinta del 15-nov;
+- Langfuse.
+
+**Recomendación (no decisión):** no activar `/2` con la lista tal como sale hoy. Antes, filtrar la lista: sin nombres de cuentas y sin recetas para quien vende comida. Otra opción es darle al modelo solo las vigiladas que el texto nombra. La próxima versión se mide con casos nuevos de test.
+
+---
+
 <a id="reglas-001"></a>
 
 ## REGLAS-001 — Las dos reglas de texto libre de la capa, medidas sin modelo (m-25017292) — 2026-11-15
