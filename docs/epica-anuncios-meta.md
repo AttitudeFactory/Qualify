@@ -79,8 +79,8 @@ Qué botón vale para qué objetivo no está en la referencia del enum: ADS-00 l
 | Requisito | Estado | Nota |
 |---|---|---|
 | Verificación del negocio (portfolio Qualify.co) | ✅ 2026-10-05 | Requisito de todo acceso avanzado |
-| `ads_management`, `ads_read`, `pages_manage_ads`, `business_management` | ❌ no pedidos | `ads_management` depende de `pages_read_engagement` + `pages_show_list` |
-| `leads_retrieval` (+ `pages_manage_metadata`) | ❌ | Solo para anuncios de clientes potenciales |
+| `ads_management`, `ads_read`, `pages_manage_ads`, `business_management` | ⚠️ dependen de la configuración (2026-11-16) | El código sabe pedirlos (`config.py` `ads_requested_scopes`, `meta_oauth.py:212-214` con `request_ads=True`), pero el botón de la app renueva el permiso **principal** con `request_ads=False` (`Qualify/ad_accounts_provider.py` `begin_ads_connect`, desde 8df99ebda, m-24828972). En producción se piden solo si están en `QUALIFY_META_SCOPES` o en la configuración de `QUALIFY_META_CONFIG_ID`. Lo concedido se lee de `/me/permissions`. `ads_management` depende de `pages_read_engagement` + `pages_show_list` |
+| `leads_retrieval` (+ `pages_manage_metadata`) | ⚠️ dependen de la configuración | No están en la lista del código: salen de `QUALIFY_META_SCOPES` / `QUALIFY_META_CONFIG_ID`. Sin ellos, el formulario de clientes potenciales queda deshabilitado con «Actualiza el acceso con Meta…» (`ads/lead_forms_service.py:46-54`) |
 | **Acceso avanzado** a los permisos de anuncios | ❌ | **Sin él solo se manejan cuentas publicitarias de quien tenga rol en la app.** Con ADR 29 eso cubre a los clientes que administra el fundador (Bianki, Polette, la inmobiliaria). El cliente dos necesita App Review |
 | **Nivel de acceso de la Marketing API** (Limited → Full) | Limited por defecto | Full exige ≥500 llamadas en 15 días con <15 % de errores. Limited: tope de 60 puntos (escritura = 3), bloqueo de 300 s, 300 + 40×anuncios activos por hora |
 | **App en modo Live** | ✅ (fundador, 2026-10-21) | Evita el subcódigo 1885183 («post creado por una app en modo desarrollo»). ADS-00 confirma que una publicación de Qualify se puede promocionar |

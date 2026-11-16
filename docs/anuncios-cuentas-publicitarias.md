@@ -18,10 +18,16 @@ Conexiones borra estas credenciales y los metadatos de cuentas mediante su rol l
 El código **no cambia el panel de Meta**. Antes de probar el consentimiento real, un
 administrador debe configurar Facebook Login for Business para permitir elegir cuentas
 publicitarias, además de los activos orgánicos, y los permisos `ads_management`, `ads_read`,
-`pages_manage_ads` y `business_management`. Se puede indicar una configuración separada en
-`QUALIFY_META_ADS_CONFIG_ID`. La configuración orgánica `QUALIFY_META_CONFIG_ID` permanece
-separada; sin una configuración adicional, el diálogo de anuncios envía la lista de permisos
-por `scope`. La concesión real se lee de `/me/permissions`; pedir un permiso no lo concede.
+`pages_manage_ads` y `business_management`.
+
+**Cómo se piden hoy (2026-11-16, m-25039488).** El botón de anuncios de la app no abre un
+diálogo de anuncios aparte: renueva el permiso **principal** de Meta con `request_ads=False`
+(`Qualify/ad_accounts_provider.py` `begin_ads_connect`, desde 8df99ebda, m-24828972). Por eso,
+en producción, esos permisos tienen que estar en `QUALIFY_META_SCOPES` o en la configuración
+de `QUALIFY_META_CONFIG_ID`. El camino con `request_ads=True` sigue en el código
+(`config.py` `ads_requested_scopes`, `QUALIFY_META_ADS_CONFIG_ID`, `meta_oauth.py:212-226`),
+pero ninguna pantalla lo usa. La concesión real se lee de `/me/permissions`; pedir un permiso
+no lo concede.
 
 No se ha ejecutado consentimiento real ni se ha verificado el acceso de la aplicación a
 estos permisos en esta entrega. La revisión de permisos de Meta queda en m-24828986.
