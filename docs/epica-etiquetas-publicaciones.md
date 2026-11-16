@@ -81,6 +81,43 @@ marcas, así que cuentan como cobradas: al piloto le quedan 2 lecturas hasta el 
 04:59 UTC y queda en espera hasta el 2026-11-16 a las 17:15 UTC. Devolver esos créditos sería
 una escritura en producción que necesita el sí explícito de Herwin, y no se hizo.
 
+**D4 — Las etiquetas leídas llegan a «Sugerir con IA» (2026-11-15/16, m-25032581).** Revisado en
+producción el 2026-11-15, solo con consultas: la lectura semanal guardaba las etiquetas que
+acompañan a los videos, pero casi no llegaban a las sugerencias. 40 de las 66 etiquetas leídas
+quedaron sin clasificar y ninguna enlazada a las palabras del rubro; una etiqueta así solo
+aparece si el texto trae esa misma palabra, y las vistas solo reordenan las etiquetas ya
+enlazadas. Para un texto con «ensalada» el buscador devolvía `shawarma`, `food`, `foodie` y
+`halal`, no `comidasaludable` (2,4 M de vistas) ni `ensaladasaludable`. La muestra es pequeña:
+25 videos tras el filtro de español y 90 días.
+
+- **Elegido por Herwin (2026-11-15), opción 1 de cuatro:** «Sugerir con IA» recibe además las
+  etiquetas que acompañan a las del rubro del negocio en los videos leídos, con sus vistas y en
+  cuántos videos aparecen, y el modelo toma las que encajan con el texto
+  (`HashtagRepository.companions`, `caption.suggest_for_caption(watched=…)`, prompt
+  `caption-hashtags/2`). Sin lista, la petición al modelo es la de antes, byte a byte. No escribe
+  en el catálogo compartido. Descartadas: enlazar por regla a las palabras del rubro (con la
+  muestra de hoy enlazaba un dato útil y dos nombres de otros negocios, y es difícil de
+  deshacer), lo mismo clasificando antes con IA, y no construir.
+- **Medido (HASHTAGS-PIE-001, `docs/modelos-generativos/pruebas.md`):** 34 textos reales del
+  piloto, anonimizados, 18 para ajustar y 16 de prueba. El prompt nuevo **no pasó la barra
+  fijada antes de correr**: en la prueba, la etiqueta leída que no encaja con el texto sube 2,3
+  y 3,3 puntos (barra: 2) y con catálogo las sugerencias que encajan bajan 3,1 puntos. Sí sube
+  el uso de etiquetas leídas que encajan (de 1 % a 41 % sin catálogo, de 0 % a 28 % con
+  catálogo) y no propone nombres de otros negocios. La recomendación del análisis era entregar
+  sin activar el prompt nuevo.
+- **Decisión de Herwin (2026-11-16): se entrega todo, con el prompt nuevo activo.** Manda esta
+  decisión sobre la recomendación. Riesgo que se asume: entre las cinco «Mejor» puede aparecer
+  una etiqueta leída que no encaja con el texto (en la prueba, cerca de 4 de cada 100; por
+  ejemplo `carne` y `pollo` en un texto de «¿Cómo llegar?»). El dueño sigue eligiendo cada
+  etiqueta antes de publicar.
+- **También entra:** la lectura semanal clasifica por regla las etiquetas nuevas (la lista de
+  genéricas, lugares y temas conocidos), lo que repara en la siguiente lectura las que quedaron
+  sin clasificar, y ya no guarda la variante con emoji de una etiqueta como fila aparte.
+- **Costo:** USD 0,0041 por uso de «Sugerir con IA» con la lista (USD 0,0034 sin ella), medido.
+- **Se reabre si** el dueño del piloto reporta etiquetas que no encajan, o al medir la próxima
+  versión (filtrar la lista antes de dársela al modelo), que necesita casos de prueba nuevos:
+  los 16 de hoy ya se usaron.
+
 ## 1. Objetivo
 
 Que las pocas etiquetas que lleva una publicación sean las que la gente del rubro está viendo, sin

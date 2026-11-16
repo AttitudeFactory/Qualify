@@ -90,6 +90,8 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
 
 **Recomendación (no decisión):** no activar `/2` con la lista tal como sale hoy. Antes, filtrar la lista: sin nombres de cuentas y sin recetas para quien vende comida. Otra opción es darle al modelo solo las vigiladas que el texto nombra. La próxima versión se mide con casos nuevos de test.
 
+**Decisión del fundador (2026-11-16):** Herwin decidió entregar `/2` activo pese a no pasar la barra en test. Queda registrado en `docs/epica-etiquetas-publicaciones.md` (D4) con el riesgo que se asume.
+
 ---
 
 <a id="reglas-001"></a>
