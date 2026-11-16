@@ -136,6 +136,21 @@
 }
 .q-rv-chip--suggest:hover { color: var(--accent-11); background: var(--accent-a3); box-shadow: inset 0 0 0 1px var(--accent-a7); }
 .q-rv-chip--suggest:focus-visible { outline: 2px solid var(--accent-8); outline-offset: 2px; }
+/* m-25032581: an AI idea = its chip (tap adds) + the «i» that opens its reason. The pair
+   wraps as one; the «i» is 38 x 28 px and its target bleeds to 44 x 44 (N12) into the
+   gap after it (0.4rem) and the rows above/below instead of growing the row. */
+.q-rv-idea { display: inline-flex; align-items: center; gap: 0; }
+.q-rv-chip-why {
+  all: unset; box-sizing: border-box; cursor: pointer;
+  position: relative;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 2.4rem; height: 1.75rem; border-radius: var(--q-radius-control);
+  color: var(--gray-10);
+  transition: color var(--q-dur-fast) var(--q-ease), background var(--q-dur-fast) var(--q-ease);
+}
+.q-rv-chip-why::after { content: ""; position: absolute; inset: -0.5rem -0.35rem -0.5rem 0; }
+.q-rv-chip-why:hover, .q-rv-chip-why[data-state="open"] { color: var(--accent-11); background: var(--accent-a3); }
+.q-rv-chip-why:focus-visible { outline: 2px solid var(--accent-8); outline-offset: 1px; }
 .q-rv-suggest {
   display: flex; flex-direction: column; gap: 0.5rem;
   padding: 0.65rem 0.75rem;

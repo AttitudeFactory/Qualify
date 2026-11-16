@@ -2085,6 +2085,7 @@ class CreativeState(rx.State):
                 FEATURE,
                 SeenTag,
                 WatchedTag,
+                named_in_text,
                 suggest_for_caption,
             )
 
@@ -2134,7 +2135,8 @@ class CreativeState(rx.State):
                 api_key=api_key,
                 attribution=attribution,
             )
-            # Picks come best first (`suggest_for_caption`); the first five are marked.
+            # Picks come best first (`suggest_for_caption`); the first five eligible are
+            # marked — a watched tag only when the text names it (m-25032581).
             return mark_best_ideas(
                 [
                     HashtagIdeaVM(
@@ -2142,6 +2144,8 @@ class CreativeState(rx.State):
                         kind=p.kind,
                         reason=p.reason,
                         seen_label=seen_label(p.seen_count),
+                        watched=p.watched,
+                        in_text=p.watched and named_in_text(p.tag, caption),
                     )
                     for p in picks
                 ]

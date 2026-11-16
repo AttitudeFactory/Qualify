@@ -2341,7 +2341,7 @@ def remove_phrase(current: str, phrase: str) -> str:
 
 HASHTAG_KIND_LABELS: dict[str, str] = {
     "popular": "Populares",
-    "nicho": "De nicho",
+    "nicho": "De tu tipo de negocio",  # m-25032581: the words BEST_IDEAS_EXPLAINED uses
     "marca": "Locales y de marca",
 }
 
@@ -2354,15 +2354,33 @@ class HashtagIdeaVM:
     kind: str  # popular / nicho / marca
     reason: str
     seen_label: str = ""  # "visto 1.2k veces" when the catalog has seen it on real posts
-    best: bool = False  # among the first HASHTAG_RECOMMENDED of the AI's own order
+    best: bool = False  # among the first HASHTAG_RECOMMENDED eligible ones of the AI's order
+    #: m-25032581: the pick is a tag watched on the rubro's videos (not a catalog one) …
+    watched: bool = False
+    #: … and the publication's text names it (`caption.named_in_text`). Not rendered.
+    in_text: bool = False
+
+
+def best_eligible(idea: HashtagIdeaVM) -> bool:
+    """m-25032581 (UX review): a watched tag earns «Mejor» only when the text names it —
+    measured: `carne` and `pollo` reached the top five of a «¿Cómo llegar?» text. Any
+    other pick is eligible as before."""
+    return not idea.watched or idea.in_text
 
 
 def mark_best_ideas(
     ideas: list[HashtagIdeaVM], limit: int = HASHTAG_RECOMMENDED
 ) -> list[HashtagIdeaVM]:
     """m-25026376: `suggest_for_caption` returns its picks best first, so the best are
-    simply the first `limit` of that order — marked, never reordered."""
-    return [replace(idea, best=i < limit) for i, idea in enumerate(ideas)]
+    the first `limit` ELIGIBLE ones of that order (`best_eligible`) — marked, never
+    reordered nor dropped: a watched tag the text does not name stays a plain idea."""
+    marked: list[HashtagIdeaVM] = []
+    left = limit
+    for idea in ideas:
+        best = left > 0 and best_eligible(idea)
+        left -= best
+        marked.append(replace(idea, best=best))
+    return marked
 
 
 def best_ideas_to_add(ideas: list[HashtagIdeaVM], chosen: list[str]) -> list[str]:

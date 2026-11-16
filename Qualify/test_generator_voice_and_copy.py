@@ -2455,6 +2455,19 @@ def test_the_tag_suggestions_agree_with_etiquetas() -> None:
     assert "Sugeridas para tu texto" in rendered
     assert "Sugeridos" not in rendered
     assert "de nicho" not in rendered and "La IA" not in rendered
+    # m-25032581 (UX review): the group heading speaks like the explanation above it
+    assert "De nicho" not in rendered and "De tu tipo de negocio" in rendered
+
+
+def test_each_ai_idea_opens_its_reason_by_touch_and_keyboard() -> None:
+    """m-25032581 (UX review): the reason is not only a `title` (never shown on a phone):
+    a real button next to each chip, with an accessible name, opens it in a popover."""
+    from .creative_pages import _ai_hashtags
+
+    rendered = str(_ai_hashtags())
+    assert 'className:"q-rv-chip-why",type:"button"' in rendered
+    assert "Por qu\\u00e9 te sugerimos #" in rendered  # the compiled JS escapes «é»
+    assert "RadixThemesPopover.Trigger" in rendered
 
 
 async def test_the_parts_card_writing_the_story_forgets_the_cards(

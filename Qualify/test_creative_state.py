@@ -1143,3 +1143,36 @@ async def test_a_companions_failure_leaves_the_suggestion_working(monkeypatch) -
     assert received == [{"seen": ["shawarmalovers", "shawarmacasero"], "watched": []}]
     assert state.ai_hashtags_loading is False
     assert state.ai_hashtags_note == "No hubo sugerencias nuevas para este texto."
+
+
+async def test_a_watched_pick_the_text_does_not_name_is_shown_without_best(monkeypatch) -> None:
+    """m-25032581 (UX review): the model's watched picks stay on screen, but «Mejor» and
+    «Agregar las N mejores» only count the ones the text names (`named_in_text`)."""
+    from qualify_api.hashtags import caption as caption_module
+    from qualify_api.hashtags.caption import CaptionHashtag
+
+    _catalog(monkeypatch)
+    picks = [
+        CaptionHashtag("bianki", "marca", "Tu marca"),
+        CaptionHashtag("carne", "nicho", "Se ve mucho", watched=True),
+        CaptionHashtag("pollo", "nicho", "Lo nombras", watched=True),
+        CaptionHashtag("comollegar", "nicho", "El tema"),
+        CaptionHashtag("sancristobal", "marca", "El lugar"),
+        CaptionHashtag("comidarapida", "popular", "Amplio"),
+        CaptionHashtag("tachira", "marca", "La zona"),
+    ]
+    monkeypatch.setattr(caption_module, "suggest_for_caption", lambda *a, **k: picks)
+    monkeypatch.setenv("QUALIFY_ANTHROPIC_API_KEY", "test-key-not-used")
+    state = _state(monkeypatch)
+    state.edit_caption = "¿Cómo llegar? Te esperamos con el pollo de siempre"
+    await _suggest(state)
+    assert [h.tag for h in state.ai_hashtags] == [p.tag for p in picks]
+    assert [h.tag for h in state.ai_hashtags if h.best] == [
+        "bianki",
+        "pollo",
+        "comollegar",
+        "sancristobal",
+        "comidarapida",
+    ]
+    assert state.ai_best_to_add == [h.tag for h in state.ai_hashtags if h.best]
+    assert state.ai_best_button_label == "Agregar las 5 mejores"
