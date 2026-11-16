@@ -96,12 +96,15 @@ def _picture(c: rx.Var[ChoiceVM]) -> rx.Component:
 
 
 def _tile(c: rx.Var[ChoiceVM], on_pick: Callable[[rx.Var[str]], Any]) -> rx.Component:
-    on = c.order > 0
+    # chosen here (its number), or — the generator's «Tu Galería», m-25026648 — already
+    # among the slot's files («Ya está»): both drawn chosen, as every other tab draws
+    # what the slot holds (CM-5 never sets `added`)
+    on = (c.order > 0) | c.added
     return rx.el.button(
         rx.box(
             _picture(c),
             rx.cond(
-                on,
+                c.order > 0,
                 # the place in the publication: solid accent, readable over any photo
                 rx.center(
                     rx.text(c.order, size="2", weight="bold"),

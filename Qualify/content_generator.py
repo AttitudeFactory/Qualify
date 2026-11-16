@@ -435,9 +435,10 @@ def _options_panel() -> rx.Component:
                     align_items="start",
                     display=rx.breakpoints({"0px": "none", "900px": "flex"}),
                 ),
-                # Deivid 2026-11-13 (round 9): «Producto» right above the options
-                # ED-05 (m-25026630): on «Arma tu video» the row lives in «Fotos y videos»
-                rx.cond(~CreativeState.clip_editor_on_screen, _product_chip()),
+                # Deivid 2026-11-13 (round 9): «Producto» right above the options —
+                # on «Arma tu video» too (Deivid 2026-11-17: back here, above «Guion para
+                # grabar», as before ED-05; its «Cambiar» opens the editor's side panel)
+                _product_chip(),
                 rx.box(
                     _kind_picker(),
                     id="create-kind-options",
@@ -680,6 +681,48 @@ def _key_src(key: rx.Var[str]) -> rx.Var[str]:
     )
 
 
+#: «Publicaciones» marks each thumbnail with what the publication is (Deivid 2026-11-17:
+#: «quiero que haya una manera de distinguir cuales son videos, galerias e imagenes»):
+#: `creative_provider.piece_kind` → its icon and its name (read before the title).
+PIECE_KIND_ICONS = {"video": "film", "gallery": "gallery-horizontal", "image": "image"}
+PIECE_KIND_NAMES = {"video": "Video", "gallery": "Carrusel", "image": "Imagen"}
+
+
+def _piece_kind_name(kind: rx.Var[str]) -> rx.Var[str]:
+    return rx.match(  # type: ignore[return-value]
+        kind,
+        ("video", PIECE_KIND_NAMES["video"]),
+        ("gallery", PIECE_KIND_NAMES["gallery"]),
+        PIECE_KIND_NAMES["image"],
+    )
+
+
+def _piece_kind_mark(kind: rx.Var[str], count: rx.Var[str] | None = None) -> rx.Component:
+    """The publication's kind in the thumbnail's corner: an icon on a glass chip (the
+    name is in the tile's `aria-label`/`title` and in hidden text). `count`: a whole
+    gallery's number of files beside its icon (ED-10), "" for none."""
+    icon = rx.match(
+        kind,
+        ("video", rx.icon(PIECE_KIND_ICONS["video"], size=12, aria_hidden="true")),
+        ("gallery", rx.icon(PIECE_KIND_ICONS["gallery"], size=12, aria_hidden="true")),
+        rx.icon(PIECE_KIND_ICONS["image"], size=12, aria_hidden="true"),
+    )
+    if count is None:
+        return rx.box(
+            icon,
+            rx.el.span(_piece_kind_name(kind), class_name="q-edit-sr"),
+            class_name="q-cr-kind",
+            data_kind=kind,
+        )
+    return rx.box(
+        icon,
+        rx.cond(count != "", rx.el.span(count, aria_hidden="true")),
+        rx.el.span(_piece_kind_name(kind), class_name="q-edit-sr"),
+        class_name=rx.cond(count != "", "q-cr-kind q-cr-kind--count", "q-cr-kind"),
+        data_kind=kind,
+    )
+
+
 def _picker_tile(
     src: rx.Var[str],
     has: rx.Var[bool],
@@ -689,13 +732,26 @@ def _picker_tile(
     label: rx.Var[str] | str,
     *,
     video: bool = False,
+    kind: rx.Var[str] | None = None,
+    count: rx.Var[str] | None = None,
 ) -> rx.Component:
     """One file of a slot's gallery; a video file shows its first frame as the preview
-    (§ request 2026-10-15) instead of a film glyph."""
+    (§ request 2026-10-15) instead of a film glyph. A publication's file (`kind`) wears
+    its kind — video, gallery or image — in a corner and in its name; a whole gallery
+    (`count`, ED-10) also how many files it brings."""
+    name: rx.Var[str] | str = label
+    if kind is not None:
+        many = (
+            rx.cond(count != "", " de " + count.to(str) + " archivos", "").to(str)
+            if count is not None
+            else ""
+        )
+        name = _piece_kind_name(kind).to(str) + many + ": " + label
     return choice_card(
         rx.box(
             _video_thumb(src) if video else media_thumb(src, size="4.5rem", icon=icon, has=has),
             rx.cond(selected, rx.box(choice_card_check(), class_name="q-cr-ghost-check")),
+            _piece_kind_mark(kind, count) if kind is not None else rx.fragment(),
             position="relative",
         ),
         selected=selected,
@@ -703,8 +759,8 @@ def _picker_tile(
         on_select=on_select,
         padding="0.3rem",
         width="auto",
-        aria_label=label,
-        title=label,
+        aria_label=name,
+        title=name,
     )
 
 
@@ -782,12 +838,15 @@ def _picker_video_tile(
     on_play: object = None,
     sound: bool = False,
     busy: rx.Var[bool] | None = None,
+    checked: rx.Var[bool] | None = None,
 ) -> rx.Component:
     """A video in a slot's picker: its poster (`poster` — a stock video's, or a bank's
     thumbnail) or its first frame, with the round play in the centre. Play shows it
     moving in the SAME frame — the picker never grows or shifts (§ request 2026-10-19);
     a click on it picks it, the pause shown on hover stops it. `sound`: a bank's preview,
-    which may be heard (an imported file has no audio)."""
+    which may be heard (an imported file has no audio). `checked`: what `aria-checked`
+    and the check say when the ring is also on for a wait (`busy`); None = `selected`."""
+    chosen = selected if checked is None else checked
     thumb = (
         media_thumb(
             poster,
@@ -802,7 +861,7 @@ def _picker_video_tile(
     tile = choice_card(
         rx.box(
             thumb,
-            rx.cond(selected, rx.box(choice_card_check(), class_name="q-cr-ghost-check")),
+            rx.cond(chosen, rx.box(choice_card_check(), class_name="q-cr-ghost-check")),
             *(
                 [rx.cond(busy, rx.center(loading_spinner("sm"), class_name="q-cr-stock-busy"))]
                 if busy is not None
@@ -811,6 +870,7 @@ def _picker_video_tile(
             position="relative",
         ),
         selected=selected,
+        checked=chosen,
         role="checkbox",
         on_select=on_select,
         padding="0.3rem",
@@ -829,8 +889,8 @@ def _picker_video_tile(
             custom_attrs={"referrerPolicy": "no-referrer"},
             class_name="q-cr-pick-video",
         ),
-        _pick_hit(on_select, selected, label),
-        rx.cond(selected, rx.box(choice_card_check(), class_name="q-cr-ghost-check")),
+        _pick_hit(on_select, chosen, label),
+        rx.cond(chosen, rx.box(choice_card_check(), class_name="q-cr-ghost-check")),
         _pause_button(small=True),
         *([_sound_button(small=True)] if sound else []),
         class_name=rx.cond(selected, "q-cr-pick-player q-cr-pick-player--on", "q-cr-pick-player"),
@@ -889,9 +949,16 @@ def _picker_note(text: rx.Var[str] | str) -> rx.Component:
 
 def _inspiration_hit_tile(tile: rx.Var[dict[str, str]], target: str, image: bool) -> rx.Component:
     """One hit of a slot's inspiration search: a click imports it and puts it in the
-    slot (the tile shows the wait); a video plays in its frame first, with its sound."""
+    slot (the tile shows the wait); a video plays in its frame first, with its sound.
+    While the slot holds it the tile is marked (border, check, `aria-checked`), as in
+    «Tus productos» and «Tu Galería»; tapped again it leaves the slot (ED-10, Deivid
+    2026-11-17: the slot holds the stored file's key, never the bank's id — the
+    `inspiration_held_hits` link is what the tile compares)."""
     busy = CreativeState.inspiration_importing == tile["id"]
     media = "image" if image else "video"
+    ref = f"{media}|" + tile["id"].to(str)
+    held = CreativeState.inspiration_held_hits[target].to(list[str]).contains(ref)
+    marked = busy | held
     on_select = CreativeState.use_inspiration_hit(target, tile["id"], media)
     if image:
         return choice_card(
@@ -903,10 +970,12 @@ def _inspiration_hit_tile(tile: rx.Var[dict[str, str]], target: str, image: bool
                     custom_attrs={"referrerpolicy": "no-referrer"},
                 ),
                 rx.cond(busy, rx.center(loading_spinner("sm"), class_name="q-cr-stock-busy")),
+                rx.cond(held, rx.box(choice_card_check(), class_name="q-cr-ghost-check")),
                 position="relative",
             ),
-            selected=busy,
-            role="button",
+            selected=marked,
+            checked=held,  # the wait draws the ring; only a held hit is chosen
+            role="checkbox",
             on_select=on_select,
             disabled=CreativeState.inspiration_importing != "",
             padding="0.3rem",
@@ -918,12 +987,13 @@ def _inspiration_hit_tile(tile: rx.Var[dict[str, str]], target: str, image: bool
         tile["id"],
         tile["thumb"],
         tile["preview"],
-        busy,
+        marked,
         on_select,
         tile["author"],
         on_play=CreativeState.play_stock_video(tile["id"]),
         sound=True,
         busy=busy,
+        checked=held,
     )
 
 
@@ -1528,6 +1598,7 @@ def _media_picker(
                         CreativeState.pick_media(target, "pieces", item["key"]),
                         icon,
                         item["label"],
+                        kind=item["kind"].to(str),
                     ),
                 ),
                 wrap="wrap",
@@ -1613,6 +1684,7 @@ def _mixed_media_picker(target: str, upload: rx.Component) -> rx.Component:
             pick("pieces", item["key"], media),
             "image" if media == "image" else "film",
             item["label"],
+            kind=item["kind"].to(str),
         )
 
     piece_images, piece_videos = CreativeState.piece_images, CreativeState.piece_videos
@@ -2108,31 +2180,31 @@ def _clip_upload_tab() -> rx.Component:
 
 
 def _clip_pieces_tab() -> rx.Component:
-    """The Clip drawer's «Publicaciones»: the brand's pieces, photos and videos together;
-    a tap puts it in the references (or takes it out)."""
-    images, videos = CreativeState.piece_images, CreativeState.piece_videos
-    held_images = CreativeState.picker_selected["clip_images"].to(list[str])
-    held_videos = CreativeState.picker_selected["clip_videos"].to(list[str])
+    """The Clip drawer's «Publicaciones»: the brand's pieces, ONE tile per publication
+    (ED-10, Deivid 2026-11-17: «cuando selecciona una galería solo trae una imagen, no
+    todo su contenido») — a gallery shows its cover and its number of files, and a tap
+    puts all of them in the Clip's media in their order (or, all in, takes them out)."""
+    tiles = CreativeState.clip_piece_tiles
 
-    def tile(item: rx.Var[dict[str, str]], video: bool) -> rx.Component:
-        target, held = ("clip_videos", held_videos) if video else ("clip_images", held_images)
+    def tile(item: rx.Var[dict[str, str]]) -> rx.Component:
         return _picker_tile(
             BACKEND_BASE + item["view"],
             item["view"] != "",
-            held.contains(item["key"]),
-            CreativeState.pick_media(target, "pieces", item["key"]),
-            "film" if video else "image",
+            item["held"] == "1",
+            CreativeState.pick_clip_piece(item["piece"]),
+            "image",  # no picture yet: the corner chip still says what it is
             item["label"],
+            kind=item["kind"].to(str),
+            count=item["count"].to(str),
         )
 
     return rx.cond(
         CreativeState.pieces_loading,
         _picker_note("Cargando tus publicaciones…"),
         rx.cond(
-            (images.length() + videos.length()) > 0,
+            tiles.length() > 0,
             rx.flex(
-                rx.foreach(images, lambda item: tile(item, False)),
-                rx.foreach(videos, lambda item: tile(item, True)),
+                rx.foreach(tiles, tile),
                 wrap="wrap",
                 spacing="2",
                 width="100%",
@@ -2159,10 +2231,12 @@ def _clip_inspiration_tab() -> rx.Component:
     )
 
 
-def _clip_drawer_body() -> rx.Component:
+def _clip_drawer_body(*, inline: bool = False) -> rx.Component:
     """The Clip's selector in the drawer (m-24985141, Deivid: «todo integrado junto a
     elegir fotos, videos o audios»): «Tus productos · Tu Galería · Subir · Publicaciones
-    · Inspiración». The same for a video in parts — nothing here is about parts."""
+    · Inspiración». The same for a video in parts — nothing here is about parts.
+    `inline`: inside «Arma tu video»'s own side panel (no drawer foot there: «Tu Galería»
+    carries its «Agregar» under its tiles)."""
     from .gen_gallery_pick_page import gallery_tab
 
     held_images = CreativeState.picker_selected["clip_images"].to(list[str])
@@ -2207,7 +2281,7 @@ def _clip_drawer_body() -> rx.Component:
                     )
                 ),
             ),
-            ("gallery", gallery_tab()),
+            ("gallery", gallery_tab(inline=MEDIA_DRAWER_CLIP if inline else "")),
             ("upload", _clip_upload_tab()),
             ("pieces", _clip_pieces_tab()),
             _clip_inspiration_tab(),
@@ -5826,66 +5900,19 @@ def _reel_wait_view() -> rx.Component:
     )
 
 
-def _clip_editor_product_row() -> rx.Component:
-    """ED-05 (m-25026630): the side panel's «Producto» row, moved into «Fotos y videos» —
-    «Tu producto: {nombre}» · «Cambiar», or «Elegir un producto»; the same bubbles and the
-    same drawer («Tus productos»), the focus coming back to it (`PRODUCT_ROW_ID`)."""
-    chosen = CreativeState.selected_product_id != ""
-    label = rx.cond(chosen, clip_editor_vm.PRODUCT_CHANGE_LABEL, clip_editor_vm.PRODUCT_CHOOSE)
-    return rx.hstack(
-        _product_bubbles(),
-        rx.cond(
-            chosen,
-            rx.text(
-                clip_editor_vm.PRODUCT_PREFIX + CreativeState.brief_product_ref,
-                size="2",
-                weight="medium",
-                truncate=True,
-                title=CreativeState.brief_product_ref,
-                flex="1 1 0",
-                min_width="0",
-            ),
-            rx.box(flex="1 1 0"),
-        ),
-        rx.button(
-            rx.cond(chosen, clip_editor_vm.PRODUCT_CHANGE, clip_editor_vm.PRODUCT_CHOOSE),
-            variant="soft",
-            color_scheme="gray",
-            size="2",
-            min_height="44px",
-            flex_shrink="0",
-            on_click=CreativeState.change_product,
-            id=PRODUCT_ROW_ID,
-            aria_haspopup="dialog",
-            aria_label=label,
-        ),
-        spacing="3",
-        align="center",
-        width="100%",
-    )
-
-
 def _clip_editor_media() -> rx.Component:
-    """ED-05 (m-25026630) «Fotos y videos»: the product row, what the Clip already uses
-    (its tiles, each with its ✕), the SAME media drawer of today («Agregar fotos o
-    videos»), the clip's order when there are two files or more, and the brand's
-    resources — nothing new, only moved."""
-    opener = "media-open-clip"
-    several = CreativeState.clip_strip.length() > 1
+    """«¿Con qué lo armamos?», the first tab of «Arma tu video»'s ONE side panel (Deivid
+    2026-11-17): what the Clip already uses (its tiles, each with its ✕ — an
+    «Inspiración» among them, which is a reference for the AI and never a block of the
+    timeline), then the SAME selector the Clip's media drawer has (`_clip_drawer_body`:
+    products, «Tu Galería», uploads, publications, «Inspiración») right here — no second
+    panel on top — and the brand's resources. The «Producto» row is above the options
+    again; the order is the timeline's own."""
     return rx.vstack(
-        _clip_editor_product_row(),
-        # one file: its tile; two or more: «Orden de tu video» alone (it has the ✕) —
-        # only the audios, which the order does not hold, keep their tiles
         rx.cond(
             CreativeState.clip_reference_tiles.length() > 0,
             rx.flex(
-                rx.foreach(
-                    CreativeState.clip_reference_tiles,
-                    lambda tile: rx.cond(
-                        ~several | (tile["kind"] == clip_gallery_vm.AUDIO),
-                        _ref_tile(tile),
-                    ),
-                ),
+                rx.foreach(CreativeState.clip_reference_tiles, _ref_tile),
                 gap="0.75rem",
                 wrap="wrap",
                 width="100%",
@@ -5894,35 +5921,7 @@ def _clip_editor_media() -> rx.Component:
         _ref_note(CreativeState.clip_notes_line),
         _ref_note(CreativeState.gallery_pick_note),
         _product_change_note(),
-        rx.button(
-            rx.icon("images", size=T.ICON_MD, aria_hidden="true"),
-            clip_editor_vm.ADD_MEDIA,
-            variant="soft",
-            size="3",
-            min_height="44px",
-            id=opener,
-            aria_haspopup="dialog",
-            on_click=CreativeState.open_media_drawer(MEDIA_DRAWER_CLIP, "", opener),
-        ),
-        rx.cond(
-            CreativeState.clip_strip.length() > 1,
-            _clip_block(
-                clip_editor_vm.ORDER_TITLE,
-                clip_editor_vm.ORDER_HINT,
-                rx.flex(
-                    rx.foreach(CreativeState.clip_strip, _clip_strip_item),
-                    _script_on_mount(_SLIDE_DRAG_JS),
-                    spacing="3",
-                    wrap="wrap",
-                ),
-                # what sits between the first and the last file is a reference — only the
-                # advanced video model takes it (same note as «Qué mostrar»)
-                rx.cond(
-                    CreativeState.clip_strip.length() > 2,
-                    callout(CLIP_MIDDLE_NOTE, "info"),
-                ),
-            ),
-        ),
+        _clip_drawer_body(inline=True),
         _brand_resources(),
         _upload_error(),
         spacing="4",
@@ -5932,28 +5931,9 @@ def _clip_editor_media() -> rx.Component:
 
 
 def _clip_editor() -> rx.Component:
-    """ED-02 (m-25026621): «Arma tu video» — the preview, the card and the tools."""
-
-    poster = _key_src(CreativeState.clip_edit_poster_key)
-    key = CreativeState.clip_edit_video_key
-    thumb = rx.cond(
-        key != "",
-        rx.cond(
-            CreativeState.piece_views.contains(key),
-            _slide_thumb(CreativeState.piece_views[key].to(str), rx.Var.create("video"), "3.5rem"),
-            _video_thumb(rx.get_upload_url(key), size="3.5rem"),
-        ),
-        media_thumb(
-            rx.cond(CreativeState.clip_edit_poster_key != "", poster, ""),
-            size="3.5rem",
-            icon="film",
-        ),
-    )
-    return arma_tu_video(
-        _clip_editor_media(),
-        rx.cond(CreativeState.clip_edit_poster_key != "", poster, ""),
-        thumb,
-    )
+    """ED-10 (m-25026648): «Arma tu video» — the preview in sequence, the timeline, its
+    bar and the chosen block's panel."""
+    return arma_tu_video(_clip_editor_media())
 
 
 def _step_show() -> rx.Component:
@@ -6457,7 +6437,12 @@ def _create_view() -> rx.Component:
                     _summary_view(),
                 ),
                 width="100%",
-                max_width="52rem",
+                # the Clip's timeline editor gets a wider step; the other steps stay at 52rem
+                max_width=rx.cond(
+                    CreativeState.clip_editor_shown & (CreativeState.gen_step_key == "show"),
+                    "72rem",
+                    "52rem",
+                ),
                 margin_x="auto",
                 class_name="q-settle",
                 key=CreativeState.gen_step_key,

@@ -174,3 +174,97 @@ def test_a_video_still_at_its_480p_draft_is_not_offered() -> None:
     keys = [piece.object_key for piece in reader.files(tenant_id=TENANT_P, brand_id=brand)]
     assert video in keys
     assert reader.file(tenant_id=TENANT_P, brand_id=brand, object_key=video) is not None
+
+
+def _fresh_brand(tenant_id: UUID) -> UUID:
+    """A brand of its own, so earlier runs' pieces never reach the listing."""
+    _brands(tenant_id, 1)  # makes sure the tenant exists
+    with admin_session() as session:
+        brand = Brand(tenant_id=tenant_id, name=f"limit-{uuid4().hex[:8]}")
+        session.add(brand)
+        session.flush()
+        return brand.id
+
+
+def _piece_of(tenant_id: UUID, brand_id: UUID, count: int) -> list[str]:
+    """A piece with `count` image slides, in its own transaction: its keys in order."""
+    with tenant_session(tenant_id) as session:
+        brief = creative.ContentBrief(
+            tenant_id=tenant_id,
+            brand_id=brand_id,
+            objective="sale",
+            topic=f"pieza de {count}",
+            platform="instagram",
+            format="feed_4_5",
+            intent="organic",
+            content_type="promotion",
+            image_route="template_only",
+        )
+        session.add(brief)
+        session.flush()
+        draft = creative.ContentDraft(
+            tenant_id=tenant_id,
+            brief_id=brief.id,
+            brand_id=brand_id,
+            status="generated",
+            pipeline_version="test",
+        )
+        session.add(draft)
+        session.flush()
+        keys = [f"t/{tenant_id}/generated/{draft.id}/r1/slide-{n}.jpg" for n in range(count)]
+        # inserted out of order: the listing orders by position, not insertion
+        for position in reversed(range(count)):
+            session.add(
+                creative.ImageAsset(
+                    tenant_id=tenant_id,
+                    draft_id=draft.id,
+                    media_url=keys[position],
+                    object_key=keys[position],
+                    content_type="image/jpeg",
+                    media_type="image",
+                    position=position,
+                    params={},
+                )
+            )
+        session.flush()
+        return keys
+
+
+def test_the_limit_never_splits_a_piece() -> None:
+    """m-25026648: the cap counts files but cuts between pieces. Pieces of 2, 2 and 1
+    files (newest last) with a cap of 3: the two newest come whole (4 files), the
+    oldest — which would start past the cap — stays out."""
+    brand = _fresh_brand(TENANT_P)
+    oldest = _piece_of(TENANT_P, brand, 1)
+    middle = _piece_of(TENANT_P, brand, 2)
+    newest = _piece_of(TENANT_P, brand, 2)
+
+    files = DbPieceFiles().files(tenant_id=TENANT_P, brand_id=brand, limit=3)
+
+    assert [piece.object_key for piece in files] == newest + middle
+    assert not set(oldest) & {piece.object_key for piece in files}
+    # each piece's files stay together and in position order
+    assert [piece.position for piece in files] == [0, 1, 0, 1]
+    assert len({piece.draft_id for piece in files}) == 2
+
+
+def test_a_piece_bigger_than_the_limit_comes_whole() -> None:
+    brand = _fresh_brand(TENANT_P)
+    older = _piece_of(TENANT_P, brand, 1)
+    big = _piece_of(TENANT_P, brand, 5)
+
+    files = DbPieceFiles().files(tenant_id=TENANT_P, brand_id=brand, limit=3)
+
+    assert [piece.object_key for piece in files] == big
+    assert older[0] not in {piece.object_key for piece in files}
+
+
+def test_under_the_limit_every_piece_is_listed_newest_first() -> None:
+    brand = _fresh_brand(TENANT_P)
+    first = _piece_of(TENANT_P, brand, 2)
+    second = _piece_of(TENANT_P, brand, 1)
+    third = _piece_of(TENANT_P, brand, 3)
+
+    files = DbPieceFiles().files(tenant_id=TENANT_P, brand_id=brand)
+
+    assert [piece.object_key for piece in files] == third + second + first

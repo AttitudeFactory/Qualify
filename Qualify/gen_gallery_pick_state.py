@@ -60,8 +60,10 @@ class GenGalleryPickState(rx.State):
     #: token → the key an earlier «Agregar» copied a business medium to (review #4: a
     #: second «Agregar» of the same medium never copies it again).
     _copied: dict[str, str] = {}
-    #: The tokens already among the slot's files (marked «Ya está»).
+    #: The tokens already among the slot's files (marked «Ya está», drawn chosen).
     held: list[str] = []
+    #: token → the slot's key it is held as (`_sync_held`), to take it out on a tap.
+    _held_keys: dict[str, str] = {}
 
     def _marked(self, choices: list[ChoiceVM] | tuple[ChoiceVM, ...]) -> list[ChoiceVM]:
         held = set(self.held)
@@ -95,12 +97,13 @@ class GenGalleryPickState(rx.State):
         else:
             keys = set(creative.picker_selected.get(target, []))
         keys.discard("")
-        held = []
+        held: dict[str, str] = {}
         for c in [*self._business, *(c for g in self._products for c in g.choices)]:
             key = self._copied.get(c.token) or c.thumb or c.video
-            if key in keys or self._copied.get(c.token) in keys:
-                held.append(c.token)
-        self.held = held
+            if key in keys:
+                held[c.token] = key
+        self.held = list(held)
+        self._held_keys = held
 
     @rx.event
     async def reset_choice(self) -> None:
@@ -182,6 +185,15 @@ class GenGalleryPickState(rx.State):
         if target != self._target:
             self._target = target
             self.chosen = []
+        if token in self.held and target == MEDIA_DRAWER_CLIP:
+            # m-25026648 (Deivid: «no aparecen seleccionadas»): a tile already among the
+            # Clip's references is drawn chosen, and a tap takes it out — as a tap does
+            # in «Tus productos» and «Publicaciones» — instead of choosing it twice
+            self.chosen = [t for t in self.chosen if t != token]
+            self.error = ""
+            if creative.drop_clip_reference(self._held_keys.get(token, "")):
+                self._sync_held(creative, target)
+            return
         photo_room, video_room = creative.gallery_room(target)
         self.chosen, self.error = pick_limit(
             self.chosen,

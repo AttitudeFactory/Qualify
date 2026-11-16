@@ -348,6 +348,7 @@ def edit_sequence_preview(
     sound_label: str,
     mute_label: str,
     region_label: str,
+    clock: bool = True,
 ) -> rx.Component:
     """The preview of a whole video in order (ED-01b): `sequence` is
     `edit_sequence.PreviewSequence.to_json()`; `texts`/`effects` its overlays as rows
@@ -357,7 +358,11 @@ def edit_sequence_preview(
     card with its name — and `broken_text` when it failed. Put it and a `timeline` in
     one `[data-edit-sync]` box and their clocks are one. The sound button says
     `sound_label` while muted and `mute_label` while the sound is on (the script swaps
-    them, like ▶/❚❚). The single-stretch `edit_preview` is unchanged."""
+    them, like ▶/❚❚). The single-stretch `edit_preview` is unchanged.
+
+    ``clock`` False (ED-10's editor): no «{t} de {total}» under the frame — the linked
+    timeline's clock over the tracks is the only one; with ``note_text`` "" too, the
+    line under the frame is not drawn at all (the frame gets its height)."""
     layer = "q-edit-preview__video q-edit-seq__layer"
     frame = rx.box(
         rx.image(
@@ -416,9 +421,8 @@ def edit_sequence_preview(
         ),
         class_name="q-edit-preview__frame",
     )
-    return rx.box(
-        frame,
-        rx.hstack(
+    time = (
+        [
             rx.el.span(
                 custom_attrs={"data-edit-seq-time": ""},
                 class_name="q-edit-preview__time q-nums",
@@ -427,13 +431,28 @@ def edit_sequence_preview(
             rx.text(
                 "·", size="1", color=T.TEXT_MUTED, aria_hidden="true", class_name="q-edit-seq__dot"
             ),
-            rx.text(note_text, size="1", color=T.TEXT_MUTED),
-            spacing="1",
-            align="center",
-            justify="center",
-            wrap="wrap",
-            width="100%",
-        ),
+        ]
+        if clock
+        else []
+    )
+    note = (
+        [
+            rx.hstack(
+                *time,
+                *([rx.text(note_text, size="1", color=T.TEXT_MUTED)] if note_text else []),
+                spacing="1",
+                align="center",
+                justify="center",
+                wrap="wrap",
+                width="100%",
+            )
+        ]
+        if clock or note_text
+        else []
+    )
+    return rx.box(
+        frame,
+        *note,
         rx.cond(slower, rx.text(slower_text, size="1", color=T.TEXT_MUTED, text_align="center")),
         _duration_trigger(on_duration),
         _time_trigger(on_time),

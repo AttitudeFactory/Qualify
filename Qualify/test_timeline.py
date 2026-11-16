@@ -62,6 +62,7 @@ def test_media_track_has_no_gaps_and_full_names() -> None:
     assert rows[1]["start_handle"] == "Inicio de Video 2"
     assert rows[1]["end_handle"] == "Final de Video 2"
     assert rows[1]["help"] == "Usa las flechas para cambiarlo de lugar."
+    assert rows[1]["help_id"] == "q-tl-help-move"
     # A photo has only its end handle («Duración», 1–5 s).
     assert rows[2]["has_start"] == "" and rows[2]["end_label"] == "Duración"
     assert rows[2]["end_text"] == "Se ve 2 s"
@@ -73,6 +74,10 @@ def test_overlay_names() -> None:
     assert texts[0]["name"] == "Texto «2×1 hoy», de 0:00 a 0:06"
     assert effects[0]["name"] == "Vapor, de 0:02 a 0:09"
     assert effects[0]["panel"] == "Vapor · de 0:02 a 0:09"
+    # ED-10 UX review: a text or an effect says what its arrows do
+    for row in (texts[0], effects[0]):
+        assert row["help"] == "Usa las flechas para cambiar cuándo sale."
+        assert row["help_id"] == "q-tl-help-time"
     assert effects[0]["start_label"] == "Empieza" and effects[0]["end_label"] == "Termina"
 
 
@@ -122,15 +127,23 @@ def test_keyboard_move_and_shift() -> None:
 
 def test_actions_follow_the_proposal() -> None:
     labels = {key: [label for label, _ in items] for key, items in vm.ACTIONS.items()}
-    assert [text for _, _, text in vm.ADD_OPTIONS] == ["Foto o video", "Texto", "Efecto", "Idea"]
+    # ED-10: «Pedir una idea» fits the orbit's pill (16 characters at most)
+    assert [text for _, _, text in vm.ADD_OPTIONS] == [
+        "Foto o video",
+        "Texto",
+        "Efecto",
+        "Pedir una idea",
+    ]
+    assert all(len(text) <= 16 for _, _, text in vm.ADD_OPTIONS)
     assert [icon for _, icon, _ in vm.ADD_OPTIONS] == [
         "image-plus",
         "type",
         "sparkles",
         "lightbulb",
     ]
-    assert labels["video"] == ["Cortar aquí", "Velocidad", "Girar", "Quitar"]
-    assert labels["photo"] == ["Duración", "Girar", "Quitar"]
+    # ED-10: «Velocidad» and «Duración» live in the panel only (one place each)
+    assert labels["video"] == ["Cortar aquí", "Girar", "Quitar"]
+    assert labels["photo"] == ["Girar", "Quitar"]
     assert labels["text"] == ["Editar texto", "Quitar"]
     assert labels["effect"] == ["Cambiar efecto", "Quitar"]
     assert all(len(items) <= 4 for items in vm.ACTIONS.values())
@@ -185,9 +198,14 @@ def test_component_renders_the_accessible_anatomy() -> None:
     assert '"slider"' in rendered and "aria-valuetext" in rendered
     assert '"status"' in rendered
     assert "aria-pressed" in rendered or "ariaPressed" in rendered
-    # An empty «Textos» track says how to add one, phone and desktop wording.
-    assert _has(rendered, "Toca + y elige Texto")
-    assert _has(rendered, "Haz clic en + y elige Texto")
+    # An empty track draws no hint text; its accessible name says it is empty.
+    assert "Toca + y elige" not in rendered and "Haz clic en + y elige" not in rendered
+    assert _has(rendered, "Pista de textos vacía")
+    assert _has(rendered, "Pista de efectos vacía")
+    # the blocks' help: one hidden span each, read through `aria-describedby`
+    assert "aria-describedby" in rendered and 'aria-description"' not in rendered
+    assert "q-tl-help-move" in rendered and "q-tl-help-time" in rendered
+    assert _has(rendered, "Usa las flechas para cambiar cuándo sale.")
     assert "data-q-timeline" in rendered and "--tl-total" in rendered
 
 
@@ -195,7 +213,7 @@ def test_action_bar_and_panel_render() -> None:
     actions = str(
         tl.timeline_actions(_State.selected, on_add=lambda key: rx.console_log(key)).render()
     )
-    for label in ("Cortar aquí", "Duración", "Editar texto", "Cambiar efecto"):
+    for label in ("Cortar aquí", "Girar", "Editar texto", "Cambiar efecto"):
         assert _has(actions, label)
     # The chosen block's buttons are the kit's glass (`surface`), in a glass island.
     assert '"surface"' in actions and '"soft"' not in actions.split("q-orbit")[0]
@@ -240,7 +258,14 @@ def test_speed_and_place_in_the_view_model() -> None:
     assert vm.set_speed(_MEDIA, "p3", "5")[2].get("speed") is None  # a photo has none
     texts = vm.overlay_blocks(vm.set_place(_OVERLAYS, "t1", "bottom"), "text", 11)
     assert texts[0]["place"] == "bottom"
-    assert [label for _, label, _ in vm.SPEEDS] == ["Normal", "×5", "×10", "×20"]
+    assert [label for _, label, _ in vm.SPEEDS] == [
+        "×1",
+        "×2",
+        "×3",
+        "×5",
+        "×10",
+        "×20",
+    ]
 
 
 def test_lens_and_island_exist() -> None:
@@ -311,3 +336,118 @@ def test_keys_reach_the_screen_through_one_hidden_button() -> None:
     script = (_ASSETS / tl.SCRIPT).read_text(encoding="utf-8")
     assert "data-tl-key-trigger" in script and "__qTimelineKey" in script
     assert "ArrowLeft" in script and "Escape" in script and "preventDefault" in script
+
+
+# ---------------------------------------------------------------------------------------
+# ED-10 m-25026648: drag and drop, values beside ± ½ s, the bar's name
+# ---------------------------------------------------------------------------------------
+
+
+def test_move_to_drops_a_block_at_an_index_without_gaps() -> None:
+    assert [m["id"] for m in vm.move_to(_MEDIA, "v1", 2)] == ["v2", "p3", "v1"]
+    assert [m["id"] for m in vm.move_to(_MEDIA, "p3", 0)] == ["p3", "v1", "v2"]
+    assert [m["id"] for m in vm.move_to(_MEDIA, "v2", 99)] == ["v1", "p3", "v2"]
+    assert [m["id"] for m in vm.move_to(_MEDIA, "v2", -5)] == ["v2", "v1", "p3"]
+    assert [m["id"] for m in vm.move_to(_MEDIA, "nope", 0)] == ["v1", "v2", "p3"]
+    moved = vm.move_to(_MEDIA, "p3", 0)
+    rows = vm.media_blocks(moved)
+    assert [r["start"] for r in rows] == ["0", "2", "6"]  # laid end to end again
+    assert vm.total_seconds(moved) == vm.total_seconds(_MEDIA)
+
+
+def test_px_to_seconds_and_the_magnet() -> None:
+    assert vm.px_to_seconds(88, 44) == 2.0
+    assert vm.px_to_seconds(10, 0) == 0.0
+    assert vm.track_scale(phone=True) == 44.0
+    assert vm.track_scale(phone=False, width=960, total=12) == 80.0
+    assert vm.track_scale(phone=False, width=960, total=0) == 44.0
+    # 11 px at 44 px/s = 0.25 s: a half rounds up, like the script
+    assert vm.seconds_from_drag(2.0, 11, 44, length=3.0, total=12.0) == 2.5
+    assert vm.seconds_from_drag(2.0, 10, 44, length=3.0, total=12.0) == 2.0
+    assert vm.seconds_from_drag(2.0, -9999, 44, length=3.0, total=12.0) == 0.0
+    assert vm.seconds_from_drag(2.0, 9999, 44, length=3.0, total=12.0) == 9.0
+
+
+def test_each_nudge_shows_its_value() -> None:
+    rows = vm.media_blocks(_MEDIA)
+    assert (rows[1]["start_value"], rows[1]["end_value"]) == ("Desde 0:04", "Hasta 0:09")
+    assert (rows[2]["start_value"], rows[2]["end_value"]) == ("", "Se ve 2 s")
+    text = vm.overlay_blocks(_OVERLAYS, "text", 11)[0]
+    assert (text["start_value"], text["end_value"]) == ("Empieza 0:00", "Termina 0:06")
+    panel = str(
+        tl.timeline_panel(
+            rx.Var.create(rows[1]), on_nudge=lambda *a: rx.console_log("n"), on_done=_State.pick("")
+        ).render()
+    )
+    assert "start_value" in panel and "end_value" in panel
+
+
+def test_the_bar_is_named_after_the_chosen_block() -> None:
+    assert vm.actions_label("Video 1") == "Acciones de Video 1"
+    assert vm.actions_label("") == "Acciones"
+    rendered = str(
+        tl.timeline_actions(
+            rx.Var.create("video"), on_add=lambda key: rx.console_log(key), label="Video 1"
+        ).render()
+    )
+    assert _has(rendered, "Acciones de Video 1")
+    only = {"video": (("Quitar", "trash-2"),)}
+    mine = str(
+        tl.timeline_actions(
+            rx.Var.create("video"), on_add=lambda key: rx.console_log(key), actions=only
+        ).render()
+    )
+    assert _has(mine, "Quitar") and not _has(mine, "Cortar aquí")
+
+
+def test_a_drop_reaches_the_screen_through_a_hidden_button() -> None:
+    class _Drag(_State):
+        @rx.event
+        def drop(self, block_id: str, what: str, value: float) -> None:
+            pass
+
+    rendered = str(
+        tl.timeline(
+            media=_Drag.media,
+            texts=_Drag.texts,
+            effects=_Drag.effects,
+            ticks=_Drag.ticks,
+            total="11",
+            selected=_Drag.selected,
+            on_select=_Drag.pick,
+            on_drag=_Drag.drop,
+        ).render()
+    )
+    assert "data-tl-drag-trigger" in rendered and tl.DROP_GLOBAL in rendered
+    assert "data-tl-start" in rendered and "data-tl-len" in rendered
+    assert "data-tl-no-drag" not in rendered
+    assert _has(rendered, vm.LIFT_HINT)
+    # without `on_drag` nothing drags
+    assert "data-tl-no-drag" in _rendered()
+    drag = (_ASSETS / tl.DRAG_SCRIPT).read_text(encoding="utf-8")
+    assert "data-tl-drag-trigger" in drag and "__qTimelineDrop" in drag
+    assert "q-tl__scroller" in drag  # positions measured against the tracks' scroll
+    assert "touchmove" in drag and "contextmenu" in drag
+
+
+def test_the_playhead_script_follows_the_review() -> None:
+    script = (_ASSETS / tl.SCRIPT).read_text(encoding="utf-8")
+    # no observer on the whole page; the observers go when the timeline does
+    assert ".observe(document.body" not in script
+    assert "disconnect" in script and "sweep" in script
+    # reduced motion read when it is used, not once at load
+    assert "function reduceMotion()" in script
+    # crossing the phone/desktop line puts the tracks back on the playhead
+    assert "__qTlMode" in script
+    # Escape inside a block's panel gives the block back; the panel comes into view
+    assert "data-tl-panel" in script and "scrollIntoView" in script
+    assert "prefers-reduced-motion" in script
+    mount = tl.timeline_script()
+    assert "on_mount" in mount.event_triggers and "on_unmount" in mount.event_triggers
+    assert "sweep" in str(mount.event_triggers["on_unmount"])
+
+
+def test_the_bar_can_go_under_the_tracks() -> None:
+    stack = str(tl.timeline_layout(rx.text("t"), rx.text("a"), bar_below=True).render())
+    assert "q-tl-stack--bar-below" in stack
+    assert ".q-tl-stack--bar-below .q-tl-stack__actions { order: 2; }" in _CSS

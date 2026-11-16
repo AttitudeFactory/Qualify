@@ -487,6 +487,35 @@ a.q-gcard-media { display: block; text-decoration: none; color: inherit; }
   box-shadow: inset 0 0 0 1px var(--q-control-edge);
 }
 .q-cr-ghost-check { position: absolute; top: 0.6rem; right: 0.6rem; z-index: 1; }
+/* «Publicaciones»: what each publication is — video, gallery (carousel) or image — as
+   an icon chip in the thumbnail's bottom-left corner (Deivid 2026-11-17). */
+.q-cr-kind {
+  position: absolute;
+  left: 0.4rem;
+  bottom: 0.4rem;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.4rem;
+  height: 1.4rem;
+  border-radius: 9999px;
+  color: var(--gray-12);
+  background: var(--q-control-fill);
+  box-shadow: inset 0 0 0 1px var(--q-control-edge);
+  backdrop-filter: blur(6px);
+  pointer-events: none;
+}
+/* A whole gallery in the Clip's «Publicaciones» (ED-10): its number of files beside
+   the icon, so the chip grows into a pill. */
+.q-cr-kind--count {
+  width: auto;
+  gap: 0.2rem;
+  padding: 0 0.4rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
 .q-choice-card--on .q-cr-ghost-head { color: var(--accent-11); background: var(--accent-a3); }
 .q-cr-ghost::after {
   content: "";
@@ -824,10 +853,10 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
 }
 
 /* ── «Arma tu video» (ED-01…ED-05): the Clip's first step as an editor ─────────────
-   The live preview on top (fixed while the tools scroll, ~36svh tall; ~20svh while a
-   field of the editor has the focus, so the keyboard leaves room), the card «Tu video»,
-   then the tools (`.q-edit-tools` on the `lq-segmented` of `.q-source-seg`). Preview and
-   tools sit side by side only when the STEP is wide enough (`.q-edit-host` is the size
+   The live preview on top (fixed while the panel scrolls; ~20svh while a field of the
+   editor has the focus, so the keyboard leaves room), then — ED-10 — the timeline, its
+   bar and the chosen block's panel (`.q-edit--timeline`, below). Preview and panel
+   sit side by side only when the STEP is wide enough (`.q-edit-host` is the size
    container, never the window: a narrow desktop with the side panel stacks them).
    `ui.edit_preview` + `assets/edit-preview.js`. */
 .q-edit-host { container: edit-host / inline-size; width: 100%; min-width: 0; }
@@ -850,6 +879,10 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
   .q-edit { grid-template-columns: minmax(15rem, 18rem) minmax(0, 1fr); align-items: start; }
   .q-edit__preview { top: var(--space-3); background: transparent; padding-block: 0; }
   .q-edit-preview__frame { height: auto; width: 100%; max-height: 70vh; }
+  /* «Arma tu video» (ED-10) on a wide step: ONE column, the preview centred on top and
+     scrolling with the page (Deivid, 2026-11-16: «quiero que esté centrado») */
+  .q-edit--timeline { grid-template-columns: minmax(0, 1fr); }
+  .q-edit--timeline > .q-edit__preview { position: static; }
 }
 /* a field of the editor with the focus (the keyboard is up on a phone): the frame
    shrinks and the note hides, only while stacked */
@@ -862,11 +895,6 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
   }
 }
 
-/* The tools: the chosen one's name and the others' icon (`.q-source-seg`) while the
-   tools' column is narrow (a phone; the 305 px column at 1280); every name from 30rem. */
-@container edit-main (min-width: 30rem) {
-  .radix-themes .q-edit-tools .rt-SegmentedControlItem[data-state="off"] .q-source-seg__text { display: inline; }
-}
 
 /* «Cortar»: Radix's two-handle slider, each handle a 44 px target around a 22 px dot. */
 /* Radix's PRIMITIVE slider ships no styles at all (Reflex's `add_style` does not reach
@@ -1190,19 +1218,6 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
   box-shadow: 0 0 0 2px var(--color-panel-solid);
 }
 .q-tl__handle:focus-visible { outline: 2px solid var(--accent-8); outline-offset: -2px; border-radius: var(--q-radius-control); }
-.q-tl__empty {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  padding: 0 var(--space-2);
-  border: 1px dashed var(--gray-a7);
-  border-radius: var(--q-radius-control);
-  font-size: var(--font-size-1);
-  color: var(--gray-11);
-  white-space: nowrap;
-}
-.q-tl__hint-desk { display: none; }
 .q-tl__head {
   position: absolute;
   top: 0;
@@ -1244,8 +1259,6 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
   .q-tl__scrub { pointer-events: auto; }
   .q-tl__head--fixed { display: none; }
   .q-tl__head--move { display: block; }
-  .q-tl__hint-phone { display: none; }
-  .q-tl__hint-desk { display: inline; }
 }
 
 /* The action bar and the chosen block's panel: every target ≥ 44 px, 8 px from the
@@ -1374,4 +1387,83 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
   text-align: center;
   color: var(--gray-12);
   background: var(--color-panel-solid);
+}
+
+/* ── ED-10 m-25026648: the timeline in «Arma tu video» (`clip_editor_view`) ──────────
+   Phone (stacked): preview · timeline (tracks, then the bar) · the chosen block's
+   panel. The preview takes the height the step leaves (`--q-edit-frame-h`, measured by
+   `assets/edit-room.js`; the fallback guesses the rest of the step at ~38rem), never
+   under 9rem: head, preview, tracks, bar and foot without scrolling the page. With a
+   block chosen it gives room to its panel (30svh). Wide step (Deivid, 2026-11-16): the
+   same column, the preview centred and min(62svh, 40rem) tall whatever is chosen; what
+   «Agregar» opens goes in the side panel (`ui.drawer`), never beside the preview. */
+.q-edit--timeline { grid-template-areas: "preview" "timeline" "main" "parts"; }
+.q-edit--timeline > .q-edit__parts { grid-area: parts; min-width: 0; }
+.q-edit--timeline > .q-edit__preview { grid-area: preview; }
+.q-edit--timeline > .q-edit__main { grid-area: main; }
+.q-edit--timeline > .q-edit__timeline { grid-area: timeline; min-width: 0; }
+.q-edit--timeline .q-edit-seq .q-edit-preview__frame {
+  height: var(--q-edit-frame-h, clamp(9rem, calc(100dvh - 38rem), 70svh));
+  max-height: calc(100cqw * 16 / 9);
+}
+.q-edit--timeline[data-chosen="true"] .q-edit-seq .q-edit-preview__frame {
+  height: min(var(--q-edit-frame-h, 30svh), 30svh);
+}
+@container edit-host (min-width: 46rem) {
+  .q-edit--timeline .q-edit-seq .q-edit-preview__frame,
+  .q-edit--timeline[data-chosen="true"] .q-edit-seq .q-edit-preview__frame {
+    /* `width: auto`: the wide step's `width: 100%` would stretch the 9:16 frame */
+    width: auto;
+    height: min(62svh, 40rem, 100cqw * 16 / 9);
+    max-height: none;
+  }
+}
+/* A chosen block's panel scrolled into view clears a phone's fixed foot. */
+.q-edit--timeline .q-tl-panel { scroll-margin-bottom: calc(var(--q-bottom-bar-h, 0px) + 2 * var(--q-gap)); }
+
+/* The bar under the tracks at every size (`timeline_layout(bar_below=True)`). */
+.q-tl-stack--bar-below .q-tl-stack__track { order: 1; }
+.q-tl-stack--bar-below .q-tl-stack__actions { order: 2; }
+.q-tl-stack--bar-below .q-tl-stack__panel { order: 3; }
+
+/* The live line and «Deshacer» beside it (the line is the `role="status"`). */
+.q-tl__live { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); min-height: 1.25rem; }
+.q-tl__live .q-tl__status { flex: 1 1 auto; min-width: 0; }
+.q-tl__live .rt-Button { flex: none; }
+
+/* Drag and drop (`assets/timeline-drag.js`): no grip (D-T6); a long press never selects
+   text nor opens the phone's menu; the lifted block rises over the others, which make
+   room live; a text or effect shows the time it would start at. */
+.q-tl__block { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+.q-tl__item--shifting,
+.q-tl__item--settle,
+.q-tl__item--return { transition: transform var(--q-dur-fast, 150ms) var(--q-ease, ease); }
+.q-tl__item--lifted { z-index: 6; cursor: grabbing; }
+.q-tl__item--lifted .q-tl__block {
+  border: 2px solid var(--accent-9);
+  box-shadow: 0 6px 18px var(--black-a5);
+}
+.q-tl__item[data-tl-time]::after {
+  content: attr(data-tl-time);
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 0;
+  padding: 0 var(--space-1);
+  border-radius: var(--q-radius-control);
+  background: var(--accent-9);
+  color: var(--accent-contrast);
+  font-size: var(--font-size-1);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.5;
+  white-space: nowrap;
+  pointer-events: none;
+}
+[data-q-timeline][data-tl-dragging] { -webkit-user-select: none; user-select: none; }
+.q-tl__lift { margin: 0; font-size: var(--font-size-1); color: var(--gray-11); }
+.q-tl__lift:empty { display: none; }
+@media (prefers-reduced-motion: reduce) {
+  .q-tl__item--shifting,
+  .q-tl__item--settle,
+  .q-tl__item--return { transition: none; }
 }

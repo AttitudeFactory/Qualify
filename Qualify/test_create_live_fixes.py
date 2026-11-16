@@ -191,6 +191,8 @@ async def test_an_import_records_the_words_that_brought_the_hit(monkeypatch) -> 
     await CreativeState.use_inspiration_hit.fn(state, "background", TILE["id"], "image")
     assert imported == ["hamburguesa local"]
 
+    # a new hit (ED-10: a second tap on the SAME hit takes it out, it never re-imports)
+    state.inspiration_hit_keys = {}
     state.inspiration_queries = {"background": "local de noche"}
     await CreativeState.search_inspiration.fn(state, "background")
     assert state.stock_results_for == "background"

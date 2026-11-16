@@ -142,3 +142,13 @@ def test_a_video_that_never_loads_does_not_freeze_the_clock() -> None:
         " core.waitVerdict({ready: false, loading: false, rounds: 1})];"
     )
     assert got == [15000, "ready", "wait", "wait", "broken", "broken"]
+
+
+def test_the_clock_shows_whole_seconds_while_playing() -> None:
+    """ED-10 UX note: playing, whole seconds (tenths change every frame); paused, the
+    tenths."""
+    got = _run(
+        "return [core.clockShown(4.37, true), core.clockShown(4.37, false),"
+        " core.clockShown(59.99, true), core.clockShown(-1, true)];"
+    )
+    assert got == ["0:04", "0:04,4", "0:59", "0:00"]
