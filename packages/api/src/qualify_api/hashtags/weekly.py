@@ -138,13 +138,13 @@ from qualify_api.creators.repository import (
 )
 from qualify_api.hashtags.catalog import classify_tag
 from qualify_api.hashtags.repository import (
+    MAX_TAG_LENGTH,
     POPULAR_WINDOW_DAYS,
     Classification,
     HashtagRepository,
     NewPostSighting,
     PostgresHashtagRepository,
-    fold,
-    normalize_tag,
+    readable_tag,
 )
 from qualify_api.referentes.discovery_seed import DiscoverySeed
 from qualify_api.referentes.reel_schedule import ScheduledBrand, is_active
@@ -204,8 +204,6 @@ MONTHLY_HEADROOM = usage.MONTHLY_CAP * 5 // 6
 #: Only videos posted inside this window count — the same 90 days «popular» sums.
 WINDOW_DAYS = POPULAR_WINDOW_DAYS
 LANGUAGE = "es"
-#: A hashtag longer than this is not a rubro pill anyone types; it is not read.
-MAX_TAG_LENGTH = 50
 
 SOURCE = "hashtag_weekly"
 SOURCE_REF = "tiktok:hashtag_weekly"
@@ -219,7 +217,6 @@ PARSER_VERSION = "tiktok-hashtag-weekly/2"
 _NO_SEED = DiscoverySeed(handle="", niches=())
 
 _HASHTAG_IN_TEXT = re.compile(r"#(\w+)")
-_WORD = re.compile(r"\w+")
 _COUNTRY = re.compile(r"[A-Z]{2}")
 #: A gate refusal that holds for every business (the switch, the floor, a 402): the tick
 #: stops. A cap refusal (`usage.CAP_REASONS`) only stops that business.
@@ -247,23 +244,6 @@ class BusinessRubro:
     tags: tuple[str, ...]
     country_code: str | None = None
     brand_id: UUID | None = None
-
-
-def readable_tag(raw: object) -> str | None:
-    """The tag as the catalog stores it, or None when the catalog would refuse its
-    sightings or it is not a hashtag at all: one token (`normalize_tag`), letters or digits
-    in it (`fold`), only word characters — what the catalog reads as a `#tag` in a caption
-    (`#(\\w+)`) — and at most `MAX_TAG_LENGTH` long. `🍔`, `c++`, `...` and a 300-character
-    pill are None."""
-    if not isinstance(raw, str):
-        return None
-    try:
-        tag = normalize_tag(raw)
-    except ValueError:
-        return None
-    if len(tag) > MAX_TAG_LENGTH or not _WORD.fullmatch(tag) or not fold(tag):
-        return None
-    return tag
 
 
 def rubro_tags(connect: Mapping[str, Any] | None, *, limit: int = MAX_TAGS) -> tuple[str, ...]:

@@ -120,6 +120,29 @@ def fold(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", ascii_only.lower())
 
 
+#: A hashtag longer than this is not one anyone types: never a rubro pill the weekly read
+#: pays for, never a companion shown to a model.
+MAX_TAG_LENGTH = 50
+_WORD = re.compile(r"\w+")
+
+
+def readable_tag(raw: object) -> str | None:
+    """The tag as the catalog stores it, or None when the catalog would refuse its
+    sightings or it is not a hashtag at all: one token (`normalize_tag`), letters or digits
+    in it (`fold`), only word characters — what the catalog reads as a `#tag` in a caption
+    (`#(\\w+)`) — and at most `MAX_TAG_LENGTH` long. `🍔`, `c++`, `...` and a 300-character
+    pill are None. (Moved from `weekly` in m-25032581: `companions` applies it too.)"""
+    if not isinstance(raw, str):
+        return None
+    try:
+        tag = normalize_tag(raw)
+    except ValueError:
+        return None
+    if len(tag) > MAX_TAG_LENGTH or not _WORD.fullmatch(tag) or not fold(tag):
+        return None
+    return tag
+
+
 def _check(value: str, allowed: tuple[str, ...], what: str) -> str:
     if value not in allowed:
         raise ValueError(f"{what} must be one of {allowed}, got {value!r}")
@@ -274,29 +297,38 @@ COMPANION_KINDS = ("topic", "unknown")
 #: Whose posts `companions` reads by default: the weekly TikTok read per rubro tag
 #: (m-25026378), the one read made of the business's own rubro tags.
 COMPANION_SOURCES = ("hashtag_weekly",)
-_WORD_ONLY = re.compile(r"\w+")
 
 
 @dataclass(frozen=True)
 class _CompanionRow:
-    """One sighting of a candidate companion on a carrying post."""
+    """One sighting of a candidate companion on a carrying post, whatever its kind."""
 
     tag: str
+    kind: str
     seen_count: int
     network: str
     post_id: str
     views: int | None
 
 
-def _collapse_companions(rows: Iterable[_CompanionRow], limit: int) -> tuple[CompanionTag, ...]:
+def _collapse_companions(
+    rows: Iterable[_CompanionRow], limit: int, kinds: Sequence[str]
+) -> tuple[CompanionTag, ...]:
     """Both implementations' last step: the rows grouped by slug (`fold`), each post once
-    per slug (its highest known views), spelled the word-only way, else the most seen
-    spelling; ordered by posts, views, tag; cut at `limit`."""
+    per slug (its highest known views), ordered by posts, views, tag; cut at `limit`.
+
+    Public hashtags are untrusted text that reaches a model prompt (review of
+    m-25032581), so whatever the row's age: a slug is dropped whole when ANY of its
+    spellings has a kind outside `kinds` (`tachira_venezuela🇻🇪` goes with its `place`
+    twin), and a spelling the catalog would not read as a `#tag` (`readable_tag`: word
+    characters only, at most `MAX_TAG_LENGTH`) never names, counts or reaches anyone."""
+    rows = list(rows)
+    excluded = {fold(row.tag) for row in rows if row.kind not in kinds}
     posts: dict[str, dict[tuple[str, str], int]] = {}
     spellings: dict[str, dict[str, tuple[int, int]]] = {}
     for row in rows:
         slug = fold(row.tag)
-        if not slug:
+        if not slug or slug in excluded or readable_tag(row.tag) != row.tag:
             continue
         key = (row.network, row.post_id)
         per_post = posts.setdefault(slug, {})
@@ -307,15 +339,7 @@ def _collapse_companions(rows: Iterable[_CompanionRow], limit: int) -> tuple[Com
     out = []
     for slug, per_post in posts.items():
         names = spellings[slug]
-        tag = min(
-            names,
-            key=lambda name: (
-                0 if _WORD_ONLY.fullmatch(name) else 1,
-                -names[name][0],
-                -names[name][1],
-                name,
-            ),
-        )
+        tag = min(names, key=lambda name: (-names[name][0], -names[name][1], name))
         out.append(CompanionTag(tag=tag, posts=len(per_post), views=sum(per_post.values())))
     out.sort(key=lambda c: (-c.posts, -c.views, c.tag))
     return tuple(out[: max(limit, 0)])
@@ -872,12 +896,10 @@ class MemoryHashtagRepository:
         rows = []
         for (tag, network, post), s in self._sightings.items():
             stored = self._tags.get(tag)
-            if (network, post) not in carriers or stored is None:
+            if (network, post) not in carriers or stored is None or fold(tag) in own:
                 continue
-            if stored.kind not in kinds or fold(tag) in own:
-                continue
-            rows.append(_CompanionRow(tag, stored.seen_count, network, post, s.views))
-        return _collapse_companions(rows, limit)
+            rows.append(_CompanionRow(tag, stored.kind, stored.seen_count, network, post, s.views))
+        return _collapse_companions(rows, limit, kinds)
 
     def public_reels_since(self, tenant_id: UUID, since: datetime) -> tuple[ReelPost, ...]:
         return tuple(r for r in self.public_reels if r.taken_at >= since)
@@ -1082,9 +1104,15 @@ _RECENT_VIEWS = text(
 )
 
 #: m-25032581: the posts carrying one of the rubro's slugs through a sighting of
-#: `:sources` posted since `:cutoff`, and every other tag of `:kinds` on them. The final
-#: grouping (slug collapse, order, limit) is `_collapse_companions`, shared with the
-#: memory implementation; a rubro's read is a few dozen posts, so the rows are few.
+#: `:sources` posted since `:cutoff`, and every other tag on them with its kind. The
+#: kind filter, slug collapse, order and limit are `_collapse_companions`, shared with the
+#: memory implementation (a slug is dropped when ANY spelling has an excluded kind, so
+#: the SQL cannot filter by kind per row); a rubro's read is a few dozen posts.
+#:
+#: The second join (`hashtag_post_sightings` by `(network, post_id)`) has no supporting
+#: index: the unique key leads with `hashtag_id`. At 556 rows / 296 kB (production,
+#: 2026-11-16) the scan is negligible; when the table grows, the fix is an index on
+#: `hashtag_post_sightings (network, post_id)`. Until then `COMPANIONS_TIMEOUT` bounds it.
 _COMPANIONS = text(
     """
     WITH carriers AS (
@@ -1092,13 +1120,24 @@ _COMPANIONS = text(
         FROM hashtag_post_sightings s JOIN hashtags h ON h.id = s.hashtag_id
         WHERE h.slug = ANY(:slugs) AND s.source = ANY(:sources) AND s.posted_at >= :cutoff
     )
-    SELECT h.tag, h.seen_count, s.network, s.post_id, s.views
+    SELECT h.tag, h.kind, h.seen_count, s.network, s.post_id, s.views
     FROM carriers c
     JOIN hashtag_post_sightings s ON s.network = c.network AND s.post_id = c.post_id
     JOIN hashtags h ON h.id = s.hashtag_id
-    WHERE h.kind = ANY(:kinds) AND NOT (h.slug = ANY(:slugs))
+    WHERE NOT (h.slug = ANY(:slugs))
     """
 )
+
+#: `companions` runs on an owner's click («Sugerir con IA»): a slow scan fails fast
+#: (Postgres cancels it) and the editor's best-effort path goes on without the list.
+COMPANIONS_TIMEOUT = "1500ms"
+#: Local to the transaction (`is_local`), restored right after the read, so a caller's
+#: wider unit of work (`tenant_session` reuses an open one) keeps its own limit.
+_SET_TIMEOUT = text(
+    "SELECT current_setting('statement_timeout') AS previous, "
+    "set_config('statement_timeout', :timeout, true)"
+)
+_RESTORE_TIMEOUT = text("SELECT set_config('statement_timeout', :timeout, true)")
 
 _PUBLIC_REELS_SINCE = text(
     """
@@ -1346,17 +1385,18 @@ class PostgresHashtagRepository:
         if not own:
             return ()
         cutoff = _cutoff(window_days, now)
-        params = {
-            "slugs": own,
-            "sources": list(sources),
-            "kinds": list(kinds),
-            "cutoff": cutoff,
-        }
+        params = {"slugs": own, "sources": list(sources), "cutoff": cutoff}
         with tenant_session(tenant_id) as session:
+            previous = session.execute(_SET_TIMEOUT, {"timeout": COMPANIONS_TIMEOUT}).one()
             rows = session.execute(_COMPANIONS, params).all()
+            session.execute(_RESTORE_TIMEOUT, {"timeout": previous.previous})
         return _collapse_companions(
-            (_CompanionRow(r.tag, int(r.seen_count), r.network, r.post_id, r.views) for r in rows),
+            (
+                _CompanionRow(r.tag, r.kind, int(r.seen_count), r.network, r.post_id, r.views)
+                for r in rows
+            ),
             limit,
+            kinds,
         )
 
     def public_reels_since(self, tenant_id: UUID, since: datetime) -> tuple[ReelPost, ...]:
