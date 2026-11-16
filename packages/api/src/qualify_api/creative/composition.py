@@ -378,10 +378,9 @@ def production_content_service() -> ContentService:
     seedance = SeedanceVideoAdapter(model=seedance_model, base_url=ark_base_url)
     # the brand's logo may live in R2 (Brand Kit, 2026-10-01): read it there
     store = R2ReadingMediaStore(LocalMediaStore(media_root()))
-    remotion = RemotionTemplateAdapter(
-        RemotionRenderClient(os.environ.get(RENDER_URL_ENV) or DEFAULT_RENDER_URL),
-        read_media=store.read,
-    )
+    # one client of our render service: the templates' and a local video's texts (EF-05)
+    render_client = RemotionRenderClient(os.environ.get(RENDER_URL_ENV) or DEFAULT_RENDER_URL)
+    remotion = RemotionTemplateAdapter(render_client, read_media=store.read)
     router = CreativeRouter(
         # the models under test are traced in Langfuse (Claude, Seedream, Seedance —
         # not Remotion, 2026-10-13); a no-op without LANGFUSE_* keys
@@ -477,6 +476,8 @@ def production_content_service() -> ContentService:
             part_joins=_part_joins(),
             # VE-13: the previous part a «Sigue a la anterior» part continues
             previous_parts=_previous_parts(),
+            # EF-06 + EF-05: a `local` video's texts, drawn by the same render service
+            render_client=render_client,
         ),
     )
     service.dispatcher = (

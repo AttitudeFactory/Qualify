@@ -397,11 +397,6 @@ def test_the_effects_pipeline_version_is_the_servers() -> None:
         ({"text_layers": (WORDS,)}, "text_layers"),
         # stretches of a Clip that is NOT `local`: Seedance would only follow them
         ({"segments": (_stretch(),)}, "segments"),
-        # EF-05 draws the texts: a `local` Clip with a text is refused for its text only
-        (
-            {"clip_reference_mode": "local", "segments": (_stretch(),), "text_layers": (WORDS,)},
-            "text_layers",
-        ),
     ],
 )
 def test_any_recipe_is_refused_until_the_engine_exists(media: dict, field: str) -> None:
@@ -417,6 +412,60 @@ def test_any_recipe_is_refused_until_the_engine_exists(media: dict, field: str) 
         ("recipe_unavailable", None, field)
     ]
     assert repo.drafts == {} and dispatcher.calls == []
+
+
+def test_a_local_piece_carries_its_texts_now_that_the_compose_draws_them() -> None:
+    """EF-06 + EF-05: the texts of a `local` Clip or a `local` part are drawn over the
+    built video, so they are no longer `recipe_unavailable`; a text over a part that is
+    NOT `local` (Seedance) still is, and so are a local piece's effects."""
+    from qualify_api.creative.video_pipeline.recipe import unbuilt_recipe_problems
+
+    local_clip = _clip(clip_reference_mode="local", segments=(_stretch(),), text_layers=(WORDS,))
+    assert unbuilt_recipe_problems(local_clip) == ()
+    parent = parent_brief(
+        VideoPartPlan(seconds=5, description="Uno.", text_layers=(WORDS,)),
+        VideoPartPlan(
+            mode="local",
+            seconds=5,
+            segments=(_stretch(),),
+            description="Dos.",
+            text_layers=(WORDS,),
+        ),
+        VideoPartPlan(
+            mode="local", seconds=5, segments=(_stretch(),), description="Tres.", effects=(SMOKE,)
+        ),
+    )
+    assert [(p.code, p.part, p.field) for p in unbuilt_recipe_problems(parent)] == [
+        ("recipe_unavailable", 1, "text_layers"),
+        ("recipe_unavailable", 3, "effects"),
+    ]
+
+
+def test_a_local_text_in_a_design_the_video_does_not_draw_is_unknown_layout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """EF-05 draws only the `scrim` over a video: a `local` Clip whose text asks for the
+    band is refused as `unknown_layout` on that text — before any row or charge — and not
+    as `recipe_unavailable`."""
+    from qualify_creative.layer_spec import LayoutId
+
+    from qualify_api.creative.queue_dispatch import SWITCH
+
+    monkeypatch.setenv(SWITCH, "queue")
+    band = VideoTextLayer(text="Hola", layout_id=LayoutId.BAND, layout_version=LAYOUT_VERSION)
+    brief = _clip(clip_reference_mode="local", segments=(_stretch(),), text_layers=(band,))
+    service, repo, dispatcher = make_service(kit=make_kit(), voice=make_voice())
+    with pytest.raises(RecipeRefused) as refused:
+        service.create_draft(tenant_id=TENANT_ID, brand_id=BRAND_ID, brief=brief, user_id=USER_ID)
+    assert [(p.code, p.part, p.field) for p in refused.value.problems] == [
+        ("unknown_layout", None, "text_layers[0].layout_id")
+    ]
+    assert repo.drafts == {} and dispatcher.calls == []
+    # the scrim, at the catalog's version, goes on
+    scrim = band.model_copy(update={"layout_id": LayoutId.SCRIM})
+    ok = _clip(clip_reference_mode="local", segments=(_stretch(),), text_layers=(scrim,))
+    draft = service.create_draft(tenant_id=TENANT_ID, brand_id=BRAND_ID, brief=ok, user_id=USER_ID)
+    assert draft in repo.drafts
 
 
 def test_a_parent_with_a_recipe_is_refused_but_its_plan_may_be_saved(

@@ -368,10 +368,12 @@ def unbuilt_recipe_problems(brief: ContentBrief) -> tuple[RecipeProblem, ...]:
     pays for a video without what he chose.
 
     EF-06 makes a `local` part or Clip from its stretches of own video and photos (cut,
-    turned, sped up, held still: `video_pipeline.local`), so neither `local` nor the
-    stretches of a `local` piece are refused any more. Still refused
-    (`recipe_unavailable`) until the effects engine draws them: effects (layers, EF-08),
-    a video text (EF-05's compose), a transition (`fundido`/`barrido`), stretches of a
+    turned, sped up, held still: `video_pipeline.local`), and EF-05's compose draws the
+    texts over it, so neither `local` nor the stretches nor the texts of a `local` piece
+    are refused any more (a text's design is still checked: only the `scrim` is drawn,
+    `unknown_layout`). Still refused (`recipe_unavailable`) until the effects engine
+    draws them: effects (layers, EF-08), a text over a piece that is not `local` (no
+    compose runs after Seedance), a transition (`fundido`/`barrido`), stretches of a
     piece that is not `local` (Seedance would only follow them), the parent's
     whole-video texts and its `video_recipe` (ED-15).
     Saving a plan with effects stays free and allowed (`parts_plan`); only creating or
@@ -380,11 +382,12 @@ def unbuilt_recipe_problems(brief: ContentBrief) -> tuple[RecipeProblem, ...]:
     in_clip = brief.kind is ContentKind.CLIP and brief.media.part is None
     for part in recipe_of(brief):
         number = None if in_clip else part.index
+        local = part.mode == "local"
         for field, value in (
             ("effects", part.effects),
-            # EF-05: the compose step draws the texts over the built video
-            ("text_layers", part.text_layers),
-            ("segments", part.segments if part.mode != "local" else ()),
+            # EF-05: the compose step draws the texts over a `local` piece's built video
+            ("text_layers", part.text_layers if not local else ()),
+            ("segments", part.segments if not local else ()),
             ("transition_in", part.transition_in),
         ):
             if value:

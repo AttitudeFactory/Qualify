@@ -22,12 +22,16 @@ The steps, per stretch in the recipe's order:
    still for its `end_s` seconds (`video.photo_hold`, D-T1) at the prepared size;
 3. «Cámara rápida» (EF-04) lays every stretch end to end at its `speed` (a photo at 1), 30
    fps, hard cuts, no gaps: the video lasts the sum of the stretches at their speed;
-4. `# EF-05`: the compose step (the part's texts over the built video) goes here;
+4. «Textos sobre el video» (EF-05, `compose.compose_text_layers`): the part's (or Clip's)
+   `text_layers` drawn by our own render service (Remotion, cost 0, in the Brand Kit's
+   typeface and palette) and laid over the built video with each text's own fade
+   (`fade_s`); skipped when there is no text;
 5. the MP4 (and a poster) are kept in R2 under the draft's revision (`_Saver`, retried).
 
 Provenance (rule 6) in the asset's `params.local`: the recipe contract, the effects
 pipeline version, the pricing table (`LOCAL_PRICING_VERSION`, where `local_video` costs
-0.00 a second), the steps' versions and the speed step's own `SpeedResult.params()`. The
+0.00 a second), the steps' versions, the speed step's own `SpeedResult.params()` and, when
+there are texts, the compose step's own `params["text_layers"]`. The
 asset carries no `draft` block (there is no Seedance final to order: it is publishable
 as it is) and `ai_generated=False` — Instagram's «hecho con IA» is read from what was
 made, not from the kind.
@@ -106,10 +110,22 @@ LOCAL_PART_FAILED_TEXT = (
 LOCAL_NEEDS_WORKER_TEXT = (
     "Por ahora no podemos armar videos con tus fotos y videos. Elige otra forma de crearlo."
 )
+#: The texts could not be laid over the built video for a reason of ours (the built video
+#: unreadable or not 9:16, `TextOverlayError`): that error's message is technical and in
+#: English, never shown. A local piece never takes a creation, so the promise holds.
+LOCAL_COMPOSE_FAILED_TEXT = (
+    "No pudimos terminar tu video por un problema nuestro. No se descontó de tus creaciones. "
+    "Inténtalo de nuevo en unos minutos."
+)
+LOCAL_PART_COMPOSE_FAILED_TEXT = (
+    "No pudimos terminar el video de esta parte por un problema nuestro. No se descontó de "
+    "tus creaciones. Inténtalo de nuevo en unos minutos."
+)
 #: A part says «esta parte» where the whole piece says «tu video».
 _PART_TEXTS = {
     LOCAL_SOURCE_FAILED_TEXT: LOCAL_PART_FAILED_TEXT,
     LOCAL_SAVE_FAILED_TEXT: LOCAL_PART_SAVE_FAILED_TEXT,
+    LOCAL_COMPOSE_FAILED_TEXT: LOCAL_PART_COMPOSE_FAILED_TEXT,
 }
 #: How often the preparation's lease is renewed while the video is made (None =
 #: `lease_kept`'s own, a third of the lease). Tests shorten it.
@@ -119,7 +135,9 @@ LEASE_RENEW_EVERY_S: float | None = None
 class LocalVideoFailed(Exception):
     """The local video could not be made: `failure` (a `FailureReason` value), a stable
     `code` (`unreadable`, `missing`, `read_failed`, `save_failed`, `foreign`, `source`,
-    `price`), the owner's `detail`; `raw` only reaches the log."""
+    `price`, and the compose step's `text_layer_unavailable`, `text_layer_rejected`,
+    `text_layer_refused`, `text_overlay_failed`), the owner's `detail`; `raw` only reaches
+    the log. None of them charges anything: a local piece never takes a creation."""
 
     def __init__(self, failure: str, detail: str, raw: str = "", *, code: str = "source") -> None:
         super().__init__(raw or detail)
@@ -165,6 +183,9 @@ class LocalRender:
     speed: dict[str, Any]
     steps: dict[str, Any]
     warnings: tuple[dict[str, Any], ...] = field(default_factory=tuple)
+    #: The compose step's provenance (`compose_text_layers(...).params["text_layers"]`),
+    #: None when the part has no text (the step did not run).
+    text_layers: dict[str, Any] | None = None
 
 
 def _reference(index: int, segment: SourceSegment) -> str:
@@ -221,11 +242,18 @@ def render_local_part(
     store: Any,
     root: Path,
     beat: Callable[[], None] | None = None,
+    brand: Any = None,
+    render_client: Any = None,
 ) -> LocalRender:
     """Make `part`'s video in `root` (see the module): prepared stretches and held photos,
-    sped up and laid end to end. Raises `LocalVideoFailed`; a picture problem of the
-    pixels' own (`VideoSourceError`: unreadable, rotated, out of range, too short or too
-    long once sped up) is the owner's to fix, not retried."""
+    sped up and laid end to end, then the part's texts over it. Raises `LocalVideoFailed`;
+    a picture problem of the pixels' own (`VideoSourceError`: unreadable, rotated, out of
+    range, too short or too long once sped up) is the owner's to fix, not retried.
+
+    `brand` is the tenant's `BrandKit` (its typeface and palette draw the texts) and
+    `render_client` the render service's `RemotionRenderClient` (or a callable that builds
+    one): both used only when the part has a text. Without a client a text fails as the
+    service being down — never a video without the texts the owner chose."""
     from qualify_creative.video._source import VideoSourceError  # noqa: PLC0415
     from qualify_creative.video.photo_hold import HOLD_VERSION, render_photo_hold  # noqa: PLC0415
     from qualify_creative.video.prepare import (  # noqa: PLC0415
@@ -321,15 +349,21 @@ def render_local_part(
             raw=f"{type(exc).__name__}: {exc}",
             code="unreadable",
         ) from exc
-    # EF-05: the compose step goes here — the part's texts (`part.text_layers`, seconds of
-    # THIS part's output from 0, speed applied: `result.plan.segments[i].out_start_s` /
-    # `out_end_s` place each stretch on that clock) drawn over `result.path`, the video
-    # already built. Until it lands, `unbuilt_recipe_problems` refuses any text.
+    # EF-05: the part's texts (`part.text_layers`, seconds of THIS part's output from 0,
+    # speed applied — the recipe's own clock) drawn over the video already built
+    composed = _compose(part, result.path, root / "local-texts.mp4", brand, render_client)
+    if composed.composed and beat is not None:
+        # the render and the second encode can take minutes: mark the draft alive again
+        beat()
     steps: dict[str, Any] = {"prepare": PREPARE_VERSION, "speed": result.version}
     if photos:
         steps["photo_hold"] = HOLD_VERSION
+    text_params: dict[str, Any] | None = None
+    if composed.composed:
+        text_params = dict(composed.params["text_layers"])
+        steps["compose"] = text_params["compose_version"]
     return LocalRender(
-        path=result.path,
+        path=composed.path,
         width=result.width,
         height=result.height,
         seconds=result.duration_s,
@@ -337,7 +371,67 @@ def render_local_part(
         speed=result.params(),
         steps=steps,
         warnings=tuple(warnings),
+        text_layers=text_params,
     )
+
+
+def _no_render_client() -> Any:
+    """No render service wired (a producer built without one): a text cannot be drawn —
+    `compose_text_layers` reads it as the service being down (`ComposeUnavailable`)."""
+    raise RuntimeError("no render client wired for the local video's texts")
+
+
+def _compose(part: PartRecipe, video: Path, out: Path, brand: Any, render_client: Any) -> Any:
+    """EF-05's compose over the built `video` (no text: nothing runs and `video` is kept),
+    its failures as `LocalVideoFailed` with what the owner reads. None charges anything
+    (a local piece takes no creation; ADR 49 §6) and each leaves `video` as it was."""
+    from qualify_creative.video.text_overlay import TextOverlayError  # noqa: PLC0415
+
+    from qualify_api.creative.video_pipeline.compose import (  # noqa: PLC0415
+        ComposeRejected,
+        ComposeUnavailable,
+        TextLayerRefused,
+        compose_text_layers,
+    )
+
+    try:
+        return compose_text_layers(
+            video,
+            out,
+            part.text_layers,
+            brand,
+            render_client=render_client if render_client is not None else _no_render_client,
+        )
+    except TextLayerRefused as exc:
+        # one text does not fit in its place: the owner's to change, named in his words
+        raise LocalVideoFailed(
+            FailureReason.INVALID_PARAMETERS.value,
+            exc.owner_message,
+            raw=str(exc),
+            code=exc.code,
+        ) from exc
+    except ComposeUnavailable as exc:
+        # the render service down or timed out, or refusing what we sent (`ComposeRejected`,
+        # not transient): ours, said with the stage's own message (nothing discounted)
+        raise LocalVideoFailed(
+            (
+                FailureReason.INVALID_PARAMETERS.value
+                if isinstance(exc, ComposeRejected)
+                else FailureReason.DEPENDENCY_FAILED.value
+            ),
+            exc.owner_message,
+            raw=exc.detail,
+            code=exc.code,
+        ) from exc
+    except TextOverlayError as exc:
+        # the built video itself unreadable or not 9:16: a bug of ours — its message is
+        # technical (English) and only reaches the log
+        raise LocalVideoFailed(
+            FailureReason.RENDER_ERROR.value,
+            LOCAL_COMPOSE_FAILED_TEXT,
+            raw=f"{type(exc).__name__}: {exc}",
+            code="text_overlay_failed",
+        ) from exc
 
 
 def _unreadable(exc: BaseException) -> bool:
@@ -429,6 +523,8 @@ def produce_local(
     allowed: bool = True,
     run: Any = None,
     lease_store: Any = None,
+    brand: Any = None,
+    render_client: Any = None,
 ) -> MediaOutcome:
     """The `local` Clip of `brief` as the producer's outcome — never raises for the
     owner's files: the outcome carries the failure. `allowed` is False outside the
@@ -438,7 +534,8 @@ def produce_local(
     renewed while the video is made (`pipeline.lease_kept`, as the parts' join does) —
     preparing and speeding up a minute of 1080×1920 can outlast it, and a lost lease
     would throw the video away at the final write and make it again on every pass.
-    `lease_store` is the `PipelineStore` (a test's double)."""
+    `lease_store` is the `PipelineStore` (a test's double). `brand` and `render_client`
+    draw the recipe's texts (`render_local_part`), inside the same kept lease."""
     part_ref = brief.media.part
     in_part = part_ref is not None
     failed_text = LOCAL_PART_FAILED_TEXT if in_part else LOCAL_SOURCE_FAILED_TEXT
@@ -474,7 +571,13 @@ def produce_local(
             tempfile.TemporaryDirectory(prefix=_WORKDIR_PREFIX) as folder,
         ):
             made = render_local_part(
-                part, tenant_id=tenant_id, store=store, root=Path(folder), beat=beat
+                part,
+                tenant_id=tenant_id,
+                store=store,
+                root=Path(folder),
+                beat=beat,
+                brand=brand,
+                render_client=render_client,
             )
             cost = local_price(made.seconds)
             if cost != 0:  # the price guard: a local video never pays a vendor
@@ -512,6 +615,9 @@ def produce_local(
             "warnings": list(made.warnings),
         },
     }
+    if made.text_layers is not None:
+        # EF-05's provenance: design, pixel revisions, fade chosen and applied, hashes
+        params["local"]["text_layers"] = made.text_layers
     if part_ref is not None:
         params["part"] = _part_meta(part_ref, key, made.seconds)
     write = MediaWrite(
@@ -540,7 +646,9 @@ def produce_local(
 
 
 __all__ = [
+    "LOCAL_COMPOSE_FAILED_TEXT",
     "LOCAL_EFFECTS_PIPELINE_VERSION",
+    "LOCAL_PART_COMPOSE_FAILED_TEXT",
     "LOCAL_MODEL_ID",
     "LOCAL_PRICING_VERSION",
     "LOCAL_PROVIDER",
