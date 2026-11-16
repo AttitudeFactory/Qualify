@@ -69,6 +69,21 @@ def test_it_opens_above_never_flipped_and_marks_each_option() -> None:
     assert "Enviar algo al cliente" in rendered
 
 
+def test_to_the_right_it_opens_a_row_beside_the_button() -> None:
+    """Deivid, 2026-11-16 («Arma tu video»): the options open to the right of the «+»,
+    the nearest first; WhatsApp's default stays the column above."""
+    rendered = str(orbit_menu("Agregar", _items(3), direction="right")).replace(" ", "")
+    for marker in ('"right"', '"center"', "avoidCollisions:false", "q-orbit-menu--right"):
+        assert marker in rendered, marker
+    assert '"top"' not in rendered
+    menu = orbit_menu("Agregar", _items(3), direction="right")
+    order = [str(item.style["--q-orbit-i"]).strip('"') for item in menu.children[1].children]
+    assert order == ["0", "1", "2"]  # the first option is the nearest to the «+»
+    assert "q-orbit-menu--right" not in str(orbit_menu("Enviar algo", _items(3)))
+    with pytest.raises(ValueError):
+        orbit_menu("Agregar", _items(3), direction="down")  # type: ignore[arg-type]
+
+
 def test_the_composer_offers_the_six_approved_rows_in_order() -> None:
     """m-24945889 (founder, 2026-11-08): Tus productos · Tu oferta · Tu menú · Formas de
     pago · Cómo llegar · Fotos y videos — six, `orbit_menu`'s maximum."""

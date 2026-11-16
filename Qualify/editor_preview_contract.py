@@ -286,8 +286,9 @@ def text_is_long(text: str) -> bool:
 #: `camara_rapida` `EffectUse` carries empty `params` (EF-02's library v1 also lists a
 #: `speed` parameter — one of the two must go).
 FAST_MOTION = "camara_rapida"
-#: The speeds «Velocidad» offers (×10 by default).
-FAST_MOTION_SPEEDS: tuple[int, ...] = (5, 10, 20)
+#: The speeds «Velocidad» offers (×10 by default); each one only when the result lasts
+#: 3–60 s (Deivid 2026-11-17: ×2 and ×3 so a video of 6 s or more can use it).
+FAST_MOTION_SPEEDS: tuple[int, ...] = (2, 3, 5, 10, 20)
 FAST_MOTION_DEFAULT = 10
 
 #: The effects the Clip offers, in the order the screen lists them (EF-02 library v1:

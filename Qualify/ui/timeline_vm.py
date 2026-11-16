@@ -41,16 +41,19 @@ TRACK_EFFECT = "effect"
 #: Copy (§4, exact).
 GROUP_LABEL = "Línea de tiempo de tu video"
 TRACK_LABELS = {TRACK_MEDIA: "Fotos y videos", TRACK_TEXT: "Textos", TRACK_EFFECT: "Efectos"}
-EMPTY_HINT_PHONE = {
-    TRACK_TEXT: "Toca + y elige Texto",
-    TRACK_EFFECT: "Toca + y elige Efecto",
-}
-EMPTY_HINT_DESKTOP = {
-    TRACK_TEXT: "Haz clic en + y elige Texto",
-    TRACK_EFFECT: "Haz clic en + y elige Efecto",
+#: An empty track's accessible name (review of ED-10: «Textos, vacía» read as a list).
+EMPTY_TRACK_NAMES = {
+    TRACK_MEDIA: "Pista de fotos y videos vacía",
+    TRACK_TEXT: "Pista de textos vacía",
+    TRACK_EFFECT: "Pista de efectos vacía",
 }
 PLAYHEAD_LABEL = "Momento del video"
 MOVE_HELP = "Usa las flechas para cambiarlo de lugar."
+#: A text's or an effect's help: the arrows move it in time (ED-10 UX review).
+TIME_HELP = "Usa las flechas para cambiar cuándo sale."
+#: Each help lives once, in a hidden span of the timeline; a block points at it with
+#: `aria-describedby` (as «Velocidad»'s reasons do), never `aria-description`.
+HELP_IDS = {MOVE_HELP: "q-tl-help-move", TIME_HELP: "q-tl-help-time"}
 DONE_LABEL = "Listo"
 MINUS_HALF = "− ½ s"
 PLUS_HALF = "+ ½ s"
@@ -62,21 +65,31 @@ ADD_OPTIONS: tuple[tuple[str, str, str], ...] = (
     ("media", "image-plus", "Foto o video"),
     ("text", "type", "Texto"),
     ("effect", "sparkles", "Efecto"),
-    ("idea", "lightbulb", "Idea"),
+    # ED-10: «Pedir una idea» fits the orbit's pill (≤ 16 characters, 44 px tall)
+    ("idea", "lightbulb", "Pedir una idea"),
 )
 
 #: The chosen block's action bar (§4): label and lucide icon, at most 4, by its kind.
+#: «Velocidad» and «Duración» live in the block's panel only (ED-10 UX note: one place).
 ACTIONS: dict[str, tuple[tuple[str, str], ...]] = {
     "video": (
         ("Cortar aquí", "scissors"),
-        ("Velocidad", "gauge"),
         ("Girar", "rotate-cw"),
         ("Quitar", "trash-2"),
     ),
-    "photo": (("Duración", "timer"), ("Girar", "rotate-cw"), ("Quitar", "trash-2")),
+    "photo": (("Girar", "rotate-cw"), ("Quitar", "trash-2")),
     "text": (("Editar texto", "pencil"), ("Quitar", "trash-2")),
     "effect": (("Cambiar efecto", "sparkles"), ("Quitar", "trash-2")),
 }
+#: The bar's accessible name: «Acciones de Video 1» (ED-10 UX note).
+ACTIONS_PREFIX = "Acciones de "
+#: Said in the live line while a block is lifted (phone, §4).
+LIFT_HINT = "Suelta donde quieras ponerlo."
+
+
+def actions_label(label: str) -> str:
+    """The chosen block's bar name: «Acciones de Video 1» («Acciones» alone without one)."""
+    return f"{ACTIONS_PREFIX}{label}" if label else "Acciones"
 
 
 def snap(seconds: float) -> float:
@@ -113,9 +126,13 @@ def num(value: float) -> str:
     return str(int(value)) if value == int(value) else f"{value:.1f}"
 
 
-#: «Velocidad» of a video block (D-T3 = A): value, visible text, accessible name.
+#: «Velocidad» of a video block (D-T3 = A): value, visible text, accessible name. Normal
+#: reads «×1» (six equal columns fit a 375 px panel; «Normal» was cut — ED-10 UX review)
+#: and is named «Velocidad normal».
 SPEEDS: tuple[tuple[str, str, str], ...] = (
-    ("1", "Normal", "Velocidad normal"),
+    ("1", "×1", "Velocidad normal"),
+    ("2", "×2", "2 veces más rápido"),
+    ("3", "×3", "3 veces más rápido"),
     ("5", "×5", "5 veces más rápido"),
     ("10", "×10", "10 veces más rápido"),
     ("20", "×20", "20 veces más rápido"),
@@ -187,6 +204,8 @@ def media_blocks(media: list[dict[str, Any]]) -> list[dict[str, str]]:
                 "end_label": "Duración",
                 "start_text": "",
                 "end_text": f"Se ve {amount(length)} s",
+                "start_value": "",
+                "end_value": f"Se ve {amount(length)} s",
                 "start_now": "0",
                 "start_min": "0",
                 "start_max": "0",
@@ -202,6 +221,8 @@ def media_blocks(media: list[dict[str, Any]]) -> list[dict[str, str]]:
                 "end_label": "Hasta",
                 "start_text": clock(item["src_start"]),
                 "end_text": clock(item["src_end"]),
+                "start_value": f"Desde {clock(item['src_start'])}",
+                "end_value": f"Hasta {clock(item['src_end'])}",
                 "start_now": num(item["src_start"]),
                 "start_min": "0",
                 "start_max": num(float(item["src_end"]) - MIN_S),
@@ -218,6 +239,7 @@ def media_blocks(media: list[dict[str, Any]]) -> list[dict[str, str]]:
                 "name": name,
                 "panel": panel,
                 "help": MOVE_HELP,
+                "help_id": HELP_IDS[MOVE_HELP],
                 "thumb": str(item.get("thumb", "")),
                 "speed": _speed_value(item),
                 "speed_tag": f"×{_speed_value(item)}" if speed_of(item) > 1 else "",
@@ -258,7 +280,8 @@ def overlay_blocks(overlays: list[dict[str, Any]], kind: str, total: float) -> l
                 "label": label,
                 "name": name,
                 "panel": panel,
-                "help": "",
+                "help": TIME_HELP,
+                "help_id": HELP_IDS[TIME_HELP],
                 "thumb": "",
                 "speed": "1",
                 "speed_tag": "",
@@ -272,6 +295,8 @@ def overlay_blocks(overlays: list[dict[str, Any]], kind: str, total: float) -> l
                 "end_label": "Termina",
                 "start_text": clock(start),
                 "end_text": clock(end),
+                "start_value": f"Empieza {clock(start)}",
+                "end_value": f"Termina {clock(end)}",
                 "start_now": num(start),
                 "start_min": "0",
                 "start_max": num(end - MIN_S),
@@ -388,6 +413,42 @@ def shift(
             item = {**item, "start": start, "end": start + length}
         moved.append(item)
     return moved
+
+
+def move_to(media: list[dict[str, Any]], block_id: str, index: int) -> list[dict[str, Any]]:
+    """A video or photo dropped at ``index`` (drag and drop, ED-10): it leaves its place
+    and the others close up (remove-then-insert, `assets/timeline-drag-core.js`'s
+    `layoutShifts`); an index past either end lands at that end. Never a gap."""
+    order = [dict(item) for item in media]
+    at = next((i for i, item in enumerate(order) if item["id"] == block_id), None)
+    if at is None:
+        return order
+    item = order.pop(at)
+    order.insert(min(max(int(index), 0), len(order)), item)
+    return order
+
+
+def px_to_seconds(px: float, px_per_second: float) -> float:
+    """A horizontal drag of ``px`` pixels in seconds at the track's scale (0 without one)."""
+    return float(px) / float(px_per_second) if px_per_second > 0 else 0.0
+
+
+def track_scale(*, phone: bool, width: float = 0.0, total: float = 0.0) -> float:
+    """Pixels per second: a phone's fixed 44 px (D-T5); a desktop's tracks fill the width,
+    so the width over the video's seconds."""
+    if phone or total <= 0 or width <= 0:
+        return float(PX_PER_SECOND)
+    return float(width) / float(total)
+
+
+def seconds_from_drag(
+    start: float, px: float, px_per_second: float, *, length: float, total: float
+) -> float:
+    """A text or effect dragged ``px`` pixels: its new start on the ½ s magnet (a half
+    rounds up, like the script), never before 0:00 nor ending after the video — the same
+    number `assets/timeline-drag-core.js` `shiftedStart` shows in the bubble."""
+    moved = math.floor((float(start) + px_to_seconds(px, px_per_second)) / STEP_S + 0.5)
+    return min(max(moved * STEP_S, 0.0), max(float(total) - float(length), 0.0))
 
 
 def move(media: list[dict[str, Any]], block_id: str, step: int) -> list[dict[str, Any]]:

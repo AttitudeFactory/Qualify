@@ -103,6 +103,12 @@
     return tenth ? text + "," + tenth : text;
   }
 
+  /* The clock as the screen shows it (ED-10 UX note): while playing, whole seconds
+     (tenths that change every frame cannot be read); paused, to the tenth. */
+  function clockShown(seconds, playing) {
+    return clock(playing ? Math.floor(Math.max(Number(seconds) || 0, 0)) : seconds);
+  }
+
   /* The phone timeline (its tracks slide under a fixed playhead: `left` px = `t` × `px`).
      The clock and the owner share one scroller, so who moves it decides:
 
@@ -169,6 +175,7 @@
     nextVideo: nextVideo,
     advance: advance,
     clock: clock,
+    clockShown: clockShown,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (root) root.__qEditSeqCore = api;

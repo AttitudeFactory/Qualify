@@ -109,24 +109,43 @@ class DbPieceFiles:
         self, *, tenant_id: UUID, brand_id: UUID, limit: int = DEFAULT_PIECE_LIMIT
     ) -> list[PieceFile]:
         """The brand's stored images and videos, the most recent piece first and each
-        piece's files in their order."""
+        piece's files in their order.
+
+        m-25026648: `limit` caps FILES but never splits a piece — a piece whose files
+        start before the cap comes whole, even if that runs a little past it; the
+        pieces after it are left out. Cutting by file rows used to hand a gallery half
+        of the piece sitting on the edge."""
+        newest_first = (ContentDraft.created_at.desc(), ContentDraft.id.desc())
+        # With an ORDER BY and the default RANGE frame, a row's running count includes
+        # its peers — every file of its own piece — so subtracting the piece's own count
+        # leaves the files of the newer pieces only.
+        files_before = (
+            func.count().over(order_by=newest_first)
+            - func.count().over(partition_by=ContentDraft.id)
+        ).label("files_before")
+        listed = (
+            select(ImageAsset.id.label("asset_id"), files_before)
+            .join(ContentDraft, ContentDraft.id == ImageAsset.draft_id)
+            .where(
+                ContentDraft.brand_id == brand_id,
+                ImageAsset.object_key.is_not(None),
+                ImageAsset.media_type.in_(("image", "video")),
+                ContentDraft.media_purged_at.is_(None),  # m-24828907
+                # VE-08: a part's files show inside its video by parts, never loose
+                ContentDraft.parent_draft_id.is_(None),
+                _NOT_A_PENDING_DRAFT,
+                visible_version(ImageAsset),
+            )
+            .subquery()
+        )
         with tenant_session(tenant_id) as session:
             rows = session.execute(
                 select(ImageAsset, ContentDraft, ContentBrief.topic)
+                .join(listed, listed.c.asset_id == ImageAsset.id)
                 .join(ContentDraft, ContentDraft.id == ImageAsset.draft_id)
                 .join(ContentBrief, ContentBrief.id == ContentDraft.brief_id)
-                .where(
-                    ContentDraft.brand_id == brand_id,
-                    ImageAsset.object_key.is_not(None),
-                    ImageAsset.media_type.in_(("image", "video")),
-                    ContentDraft.media_purged_at.is_(None),  # m-24828907
-                    # VE-08: a part's files show inside its video by parts, never loose
-                    ContentDraft.parent_draft_id.is_(None),
-                    _NOT_A_PENDING_DRAFT,
-                    visible_version(ImageAsset),
-                )
-                .order_by(ContentDraft.created_at.desc(), ImageAsset.position)
-                .limit(limit)
+                .where(listed.c.files_before < limit)
+                .order_by(*newest_first, ImageAsset.position)
             ).all()
             titles = _titles(session, {draft.id: draft.selected_variant_id for _, draft, _ in rows})
             return [replace(_piece(*row), title=titles.get(row[1].id, "")) for row in rows]

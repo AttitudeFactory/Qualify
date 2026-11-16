@@ -34,14 +34,24 @@ from .primitives import OrbitItem, asset_script, media_thumb, orbit_menu
 
 #: The script's name under `assets/`.
 SCRIPT = "timeline.js"
+#: ED-10 m-25026648: drag and drop — the pure math (tested with node) and the DOM half.
+DRAG_CORE_SCRIPT = "timeline-drag-core.js"
+DRAG_SCRIPT = "timeline-drag.js"
 
 Rows = rx.Var[list[dict[str, str]]]
 Row = rx.Var[dict[str, str]]
 
 
 def timeline_script() -> rx.Component:
-    """Mount `assets/timeline.js` once (its guard keeps one set of listeners)."""
-    return rx.box(display="none", on_mount=rx.call_script(asset_script(SCRIPT)))
+    """Mount `assets/timeline.js` and the drag and drop (ED-10). Their guards keep one set
+    of document listeners; a second mount only attaches the timelines now on the page,
+    and the unmount lets go of the observers of a timeline that left (ED-10 review)."""
+    script = ";".join(asset_script(name) for name in (DRAG_CORE_SCRIPT, DRAG_SCRIPT, SCRIPT))
+    return rx.box(
+        display="none",
+        on_mount=rx.call_script(script),
+        on_unmount=rx.call_script("window.__qTimeline && window.__qTimeline.sweep();"),
+    )
 
 
 #: The global the script fills before pressing the hidden key button.
@@ -63,6 +73,27 @@ def _key_trigger(on_key: Callable[[str, str, str], Any]) -> rx.Component:
         aria_hidden="true",
         display="none",
         custom_attrs={"data-tl-key-trigger": ""},
+    )
+
+
+#: The global the drag script fills before pressing the hidden drop button.
+DROP_GLOBAL = "window.__qTimelineDrop"
+
+
+def _drag_trigger(on_drag: Callable[[str, str, float], Any]) -> rx.Component:
+    """The hidden button `assets/timeline-drag.js` presses when a block is dropped: the
+    handler receives `(id, what, value)` — «move» and the new index of a video or photo,
+    or «time» and the new start (seconds) of a text or effect."""
+    block_id = rx.Var(f"String(({DROP_GLOBAL} || {{}}).id || '')", _var_type=str)
+    what = rx.Var(f"String(({DROP_GLOBAL} || {{}}).what || '')", _var_type=str)
+    value = rx.Var(f"Number(({DROP_GLOBAL} || {{}}).value || 0)", _var_type=float)
+    return rx.el.button(
+        type="button",
+        on_click=on_drag(block_id, what, value),
+        tab_index=-1,
+        aria_hidden="true",
+        display="none",
+        custom_attrs={"data-tl-drag-trigger": ""},
     )
 
 
@@ -116,15 +147,20 @@ def _block(
         aria_label=row["name"],
         aria_pressed=rx.cond(chosen, "true", "false"),
         custom_attrs={
-            "aria-description": row["help"],
+            # its help is read once, from the timeline's hidden span (`vm.HELP_IDS`)
+            "aria-describedby": row["help_id"],
             "data-tl-block": row["kind"],
             "data-tl-id": row["id"],
+            # where it sits and how long, in seconds (the drag reads them)
+            "data-tl-start": row["start"],
+            "data-tl-len": row["length"],
         },
     )
     return rx.el.div(
         button,
+        # a row may say it has no handles the screen moves yet (``handles`` "")
         rx.cond(
-            chosen,
+            chosen & (row["handles"] != ""),
             rx.fragment(
                 rx.cond(row["has_start"] != "", _handle(row, "start")),
                 _handle(row, "end"),
@@ -140,26 +176,19 @@ def _block(
 def _lane(
     track: str,
     rows: Rows,
-    *,
-    empty_hint: bool,
     **block_props: Any,
 ) -> rx.Component:
-    blocks = rx.foreach(rows, lambda row: _block(row, **block_props))
-    content: rx.Component = blocks
-    if empty_hint:
-        content = rx.cond(
-            rows.length() > 0,  # type: ignore[attr-defined]
-            blocks,
-            rx.el.div(
-                rx.el.span(vm.EMPTY_HINT_PHONE[track], class_name="q-tl__hint-phone"),
-                rx.el.span(vm.EMPTY_HINT_DESKTOP[track], class_name="q-tl__hint-desk"),
-                class_name="q-tl__empty",
-            ),
-        )
+    """One track. An empty one stays a blank row of the same height (no hint text); its
+    accessible name says it is empty."""
+    label = vm.TRACK_LABELS[track]
     return rx.el.div(
-        content,
+        rx.foreach(rows, lambda row: _block(row, **block_props)),
         role="list",
-        aria_label=vm.TRACK_LABELS[track],
+        aria_label=rx.cond(
+            rows.length() > 0,  # type: ignore[attr-defined]
+            label,
+            vm.EMPTY_TRACK_NAMES[track],
+        ),
         class_name=f"q-tl__lane q-tl__lane--{track}",
     )
 
@@ -175,6 +204,8 @@ def timeline(
     on_select: Callable[[str], Any],
     status: rx.Var[str] | str = "",
     on_key: Callable[[str, str, str], Any] | None = None,
+    on_drag: Callable[[str, str, float], Any] | None = None,
+    status_action: rx.Component | None = None,
 ) -> rx.Component:
     """The timeline of one video.
 
@@ -185,8 +216,12 @@ def timeline(
     clicked (or Enter). ``on_key(id, edge, key)``: ←/→/Escape on a block (``edge`` "":
     ←/→ move it, Escape lets it go — §3.7) or on a handle (``edge`` "start"/"end": ←/→ =
     ½ s).
-    ``status``: the live line («Moviste el video 2.»). The playhead is the browser's
-    (`timeline_script`, mounted by the screen once)."""
+    ``status``: the live line («Moviste el video 2.»), a polite `role="status"`;
+    ``status_action`` sits beside it (the screen's «Deshacer»). ``on_drag(id, what,
+    value)``: a block dropped (ED-10, `assets/timeline-drag.js`) — «move» with the new
+    index of a video or photo, «time» with the new start of a text or effect; without
+    it nothing drags. The playhead is the browser's (`timeline_script`, mounted by the
+    screen)."""
     block_props = {"selected": selected, "on_select": on_select}
     names = rx.el.div(
         rx.el.span(class_name="q-tl__name q-tl__name--ruler"),
@@ -219,9 +254,9 @@ def timeline(
     canvas = rx.el.div(
         ruler,
         scrub,
-        _lane(vm.TRACK_MEDIA, media, empty_hint=False, **block_props),
-        _lane(vm.TRACK_TEXT, texts, empty_hint=True, **block_props),
-        _lane(vm.TRACK_EFFECT, effects, empty_hint=True, **block_props),
+        _lane(vm.TRACK_MEDIA, media, **block_props),
+        _lane(vm.TRACK_TEXT, texts, **block_props),
+        _lane(vm.TRACK_EFFECT, effects, **block_props),
         rx.el.div(class_name="q-tl__head q-tl__head--move", aria_hidden="true"),
         class_name="q-tl__canvas",
     )
@@ -236,13 +271,27 @@ def timeline(
             rx.el.div(class_name="q-tl__head q-tl__head--fixed", aria_hidden="true"),
             class_name="q-tl__frame",
         ),
-        rx.el.p(status, role="status", class_name="q-tl__status"),
+        rx.el.div(
+            rx.el.p(status, role="status", class_name="q-tl__status"),
+            *([status_action] if status_action is not None else []),
+            class_name="q-tl__live",
+        ),
+        # the blocks' help, read through `aria-describedby` (never shown)
+        rx.el.div(
+            *(rx.el.span(text, id=help_id) for text, help_id in vm.HELP_IDS.items()),
+            class_name="q-edit-sr",
+        ),
         *([_key_trigger(on_key)] if on_key is not None else []),
+        *([_drag_trigger(on_drag)] if on_drag is not None else []),
         role="group",
         aria_label=vm.GROUP_LABEL,
         class_name="q-tl",
         style={"--tl-total": total, "--tl-px": f"{vm.PX_PER_SECOND}px"},
-        custom_attrs={"data-q-timeline": ""},
+        custom_attrs={
+            "data-q-timeline": "",
+            "data-tl-lift-text": vm.LIFT_HINT,
+            **({} if on_drag is not None else {"data-tl-no-drag": ""}),
+        },
     )
 
 
@@ -262,13 +311,15 @@ def _action_button(label: str, icon: str, on_action: Callable[[str], Any] | None
 
 def timeline_add(on_add: Callable[[str], Any]) -> rx.Component:
     """«Agregar» with nothing chosen: the kit's `orbit_menu` — «+» turns into «×» and
-    opens «Foto o video · Texto · Efecto · Idea» above it. ``on_add(key)`` OPENS the
+    opens «Foto o video · Texto · Efecto · Idea» to its right. ``on_add(key)`` OPENS the
     flow of that option (the drawer, the text field, the effects list), never adds by
     itself."""
     return rx.el.div(
         orbit_menu(
             vm.ADD_LABEL,
             [OrbitItem(key, icon, text, on_add(key)) for key, icon, text in vm.ADD_OPTIONS],
+            # Deivid, 2026-11-16: the options open to the right of the «+», not above it
+            direction="right",
         ),
         class_name="q-tl-add",
     )
@@ -279,17 +330,31 @@ def timeline_actions(
     *,
     on_add: Callable[[str], Any],
     on_action: Callable[[str], Any] | None = None,
+    label: rx.Var[str] | str = "",
+    actions: dict[str, tuple[tuple[str, str], ...]] | None = None,
 ) -> rx.Component:
     """What the owner can do now (§2): with nothing chosen (``kind`` ""), «Agregar»
     (`timeline_add`); with a video, a photo, a text or an effect chosen, its up-to-4
-    `surface` buttons floating in a glass island (`.q-island`). ``on_action(label)``."""
+    `surface` buttons floating in a glass island (`.q-island`). ``on_action(label)``.
+    ``label``: the chosen block's short name — the bar is «Acciones de Video 1»
+    (`aria-label`). ``actions``: a screen's own buttons by kind (default `vm.ACTIONS`;
+    a kind with none shows no island)."""
+    by_kind = vm.ACTIONS if actions is None else actions
+    name: rx.Var[str] | str = (
+        vm.actions_label(label)
+        if isinstance(label, str)
+        else rx.cond(label != "", vm.ACTIONS_PREFIX + label, "Acciones")
+    )
 
     def bar(key: str) -> rx.Component:
+        items = by_kind.get(key, ())
+        if not items:
+            return rx.fragment()
         return rx.el.div(
-            *(_action_button(label, icon, on_action) for label, icon in vm.ACTIONS[key]),
+            *(_action_button(text, icon, on_action) for text, icon in items),
             class_name="q-island q-tl-island q-tl-actions",
             role="toolbar",
-            aria_label="Acciones",
+            aria_label=name,
         )
 
     return rx.match(
@@ -325,7 +390,7 @@ def _segmented(
             on_change=on_change,
             size="2",
             aria_label=label,
-            class_name="q-source-seg q-tl-seg",
+            class_name="q-source-seg q-tl-seg q-seg-fill",
         ),
         width="100%",
         min_width="0",
@@ -335,8 +400,15 @@ def _segmented(
 def _nudge_row(
     label: rx.Var[str], row: Row, edge: str, on_nudge: Callable[[str, str, float], Any]
 ) -> rx.Component:
+    """«Desde 0:04 [− ½ s] [+ ½ s]»: the value beside its buttons (ED-10 UX note), so the
+    owner sees what each tap did; the group is named by the plain label («Desde»)."""
     return rx.el.div(
-        rx.text(label, size="2", weight="medium", class_name="q-tl-panel__label"),
+        rx.text(
+            row[f"{edge}_value"],
+            size="2",
+            weight="medium",
+            class_name="q-tl-panel__label q-nums",
+        ),
         rx.button(
             vm.MINUS_HALF,
             variant="soft",
@@ -366,12 +438,17 @@ def timeline_panel(
     on_done: Any,
     on_speed: Callable[[str, str], Any] | None = None,
     on_place: Callable[[str, str], Any] | None = None,
+    extra: rx.Component | None = None,
+    nudges: rx.Var[bool] | bool = True,
 ) -> rx.Component:
     """The chosen block's panel (§1.2/§1.3): its title, «Desde/Hasta» (a video),
     «Duración» (a photo) or «Empieza/Termina» (a text or effect) with «− ½ s / + ½ s»,
     «Velocidad» Normal · ×5 · ×10 · ×20 for a video (``on_speed(id, value)``), the
     text's place «Arriba · En el medio · Abajo» (``on_place(id, value)``), and «Listo»,
-    which lets the block go. ``on_nudge(id, edge, delta)``."""
+    which lets the block go. ``on_nudge(id, edge, delta)``; ``nudges`` False hides the
+    «− ½ s / + ½ s» rows (a block whose times the screen cannot change yet). ``extra``:
+    the screen's own fields, before «Listo». Escape inside the panel lets the block go
+    too (`assets/timeline.js`, `data-tl-panel`)."""
     extras: list[rx.Component] = []
     if on_speed is not None:
         extras.append(
@@ -405,14 +482,18 @@ def timeline_panel(
                 ),
             )
         )
-    return rx.el.div(
-        rx.text(row["panel"], size="2", weight="bold"),
+    rows = rx.fragment(
         rx.cond(
             row["start_label"] != "",
             _nudge_row(row["start_label"], row, "start", on_nudge),
         ),
         _nudge_row(row["end_label"], row, "end", on_nudge),
+    )
+    return rx.el.div(
+        rx.text(row["panel"], size="2", weight="bold"),
+        rows if isinstance(nudges, bool) and nudges else rx.cond(nudges, rows),
         *extras,
+        *([extra] if extra is not None else []),
         rx.el.div(
             rx.button(
                 vm.DONE_LABEL, type="button", on_click=on_done, class_name="q-tl-actions__btn"
@@ -420,6 +501,10 @@ def timeline_panel(
             class_name="q-tl-panel__done",
         ),
         class_name="q-tl-panel",
+        tab_index=-1,
+        role="group",
+        aria_label=row["panel"],
+        custom_attrs={"data-tl-panel": row["id"]},
     )
 
 
@@ -427,13 +512,17 @@ def timeline_layout(
     timeline_view: rx.Component,
     actions: rx.Component,
     panel: rx.Component | None = None,
+    *,
+    bar_below: bool = False,
 ) -> rx.Component:
     """The timeline with its action bar and its panel, in their places: on a phone the
     bar sits ABOVE the tracks (in the flow: it never covers the tracks nor the
-    playhead), on a desktop under them; the panel always last (`.q-tl-stack`)."""
+    playhead), on a desktop under them; the panel always last (`.q-tl-stack`).
+    ``bar_below``: the bar under the tracks at every size (the editor, ED-10: preview,
+    tracks, bar, panel — top to bottom)."""
     return rx.el.div(
         rx.el.div(actions, class_name="q-tl-stack__actions"),
         rx.el.div(timeline_view, class_name="q-tl-stack__track"),
         *([rx.el.div(panel, class_name="q-tl-stack__panel")] if panel is not None else []),
-        class_name="q-tl-stack",
+        class_name="q-tl-stack q-tl-stack--bar-below" if bar_below else "q-tl-stack",
     )

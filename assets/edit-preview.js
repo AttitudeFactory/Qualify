@@ -391,7 +391,8 @@
     var canvas = root.querySelector(".q-tl__canvas");
     var label = root.querySelector(".q-tl__clock");
     var total = core().total(seqState(host).seq);
-    var text = core().clock(t) + " de " + core().clock(total);
+    // playing: whole seconds (tenths flicker); paused: to the tenth (ED-10 UX note)
+    var text = core().clockShown(t, seqState(host).playing) + " de " + core().clock(total);
     if (scrub) {
       scrub.value = String(t);
       scrub.setAttribute("aria-valuetext", text);
@@ -430,7 +431,7 @@
     var c = core();
     var total = c.total(st.seq);
     var out = host.querySelector("[data-edit-seq-time]");
-    var text = c.clock(st.t) + " de " + c.clock(total);
+    var text = c.clockShown(st.t, st.playing) + " de " + c.clock(total);
     if (out && out.textContent !== text) out.textContent = text;
     var texts = c.activeAt(st.seq.texts, st.t);
     var effects = c.activeAt(st.seq.effects, st.t);
@@ -677,6 +678,7 @@
       if (!el.paused) el.pause();
     });
     host.setAttribute("data-edit-state", "idle");
+    if (st.seq) seqPaint(host); // paused: the clock shows its tenths again
     seqLabel(host);
     if (was && !quiet) seqReportTime(host, "pause");
   }
