@@ -94,8 +94,10 @@ enlazadas. Para un texto con «ensalada» el buscador devolvía `shawarma`, `foo
   etiquetas que acompañan a las del rubro del negocio en los videos leídos, con sus vistas y en
   cuántos videos aparecen, y el modelo toma las que encajan con el texto
   (`HashtagRepository.companions`, `caption.suggest_for_caption(watched=…)`, prompt
-  `caption-hashtags/2`). Sin lista, la petición al modelo es la de antes, byte a byte. No escribe
-  en el catálogo compartido. Descartadas: enlazar por regla a las palabras del rubro (con la
+  `caption-hashtags/2`). Sin lista, la petición al modelo es la de antes, byte a byte. Esta
+  consulta no escribe en el catálogo compartido ni enlaza nada a las palabras del rubro (lo
+  único que escribe este cambio son las clasificaciones por regla de la lectura semanal, más
+  abajo). Descartadas: enlazar por regla a las palabras del rubro (con la
   muestra de hoy enlazaba un dato útil y dos nombres de otros negocios, y es difícil de
   deshacer), lo mismo clasificando antes con IA, y no construir.
 - **Medido (HASHTAGS-PIE-001, `docs/modelos-generativos/pruebas.md`):** 34 textos reales del

@@ -36,7 +36,7 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
   - Reglas de etiquetado escritas antes de etiquetar; trampas por clase: otro negocio, relleno, otro lugar, vigilada que no encaja.
   - Tres pasadas de adjudicación declaradas en el README.
 - **Lista vigilada:** armada con el código del producto (`readable_tag`, `rule_classifications`, `companions`) desde una foto de 25 videos del 2026-11-15.
-  - `tachira_venezuela🇻🇪` ya no llega al modelo.
+  - `tachira_venezuela🇻🇪` ya no llega al modelo: la lectura deja de guardarla y, para las filas guardadas antes del cambio, la consulta descarta lo que no sea una etiqueta legible (hallazgo de la revisión de código, corregido antes del PR).
   - De 20 etiquetas, 3 son nombres de otros negocios o creadores (`amirexpress`, `yaalashawarma`, `manosalsazon`) y 6 son de recetas.
   - La lista de producción cambia cada semana: desde el 16-nov sale `comidasaludable`.
 - **Variantes de `seen`:**
