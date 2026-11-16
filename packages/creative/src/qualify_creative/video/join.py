@@ -37,7 +37,9 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
+from qualify_creative.video._source import VideoSourceError, frame_rotation
 from qualify_creative.video.fit import DETAIL_X264, _cover_crop, _layer_frame
+from qualify_creative.video.upright import upright_filters
 
 #: The joined soundtrack: AAC-LC, 48 kHz stereo — what Instagram and Seedance both use.
 JOIN_SAMPLE_RATE = 48_000
@@ -324,6 +326,9 @@ def _join(
             nonlocal total
             if not poster:
                 jpeg = io.BytesIO()
+                # already upright: `_part_video`'s graph turned the pixels (EF-01). The
+                # frame still carries the source's display matrix, so `upright_image`
+                # here would turn it a second time.
                 frame.to_image().save(jpeg, format="JPEG", quality=90)
                 poster.append(jpeg.getvalue())
             frame.pts = total  # one tick per frame: unstamped frames all land at 0
@@ -365,6 +370,22 @@ def _join(
     return total, (poster[0] if poster else None)
 
 
+def _part_rotation(av: Any, clip: JoinClip, threads: int | None = None) -> int:
+    """The part's display rotation (EF-01): its first decoded frame's, as `fit` reads it
+    (`frame_rotation`: 0/90/180/270). 0 when nothing decodes — `_part_video` then fails on
+    that as before. A turn that is not a right angle is the part's fault: a `JoinError`."""
+    with av.open(str(clip.path)) as source:
+        stream = source.streams.video[0]
+        if threads is not None:
+            _bound(stream.codec_context, threads)
+        try:
+            for frame in source.decode(stream):
+                return frame_rotation(frame)
+        except VideoSourceError as error:
+            raise JoinError(f"{clip.path.name}: {error}") from error
+    return 0
+
+
 def _part_video(
     av: Any,
     clip: JoinClip,
@@ -378,10 +399,15 @@ def _part_video(
 ) -> None:
     """Decode the part once and hand `frames` output frames to `emit`, each the source
     frame shown at that tick of the common rate (repeated or dropped as the rates
-    differ), cover-cropped and scaled to `size`, with `overlay` on top."""
+    differ), cover-cropped and scaled to `size`, with `overlay` on top.
+
+    Upright (EF-01): a phone part's display rotation is applied first in the graph
+    (`upright_filters`, FFmpeg's `transpose` in YUV), so the crop and the scale work on
+    the size a player shows. A part without one gets exactly the graph it had before."""
     width, height = size
     start = clip.start_s
     stop = start + frames / rate  # the kept interval, relative to the first frame
+    turn_filters = upright_filters(_part_rotation(av, clip, threads))
     with av.open(str(clip.path)) as source:
         stream = source.streams.video[0]
         if threads is not None:
@@ -393,7 +419,13 @@ def _part_video(
         scale = graph.add("scale", f"{width}:{height}")
         to_yuv = graph.add("format", "yuv420p")
         sink = graph.add("buffersink")
-        video_in.link_to(crop)
+        head = video_in
+        for spec in turn_filters:
+            name, _, args = spec.partition("=")
+            turn = graph.add(name, args or None)
+            head.link_to(turn)
+            head = turn
+        head.link_to(crop)
         crop.link_to(scale)
         last = scale
         layer_in = None
@@ -593,6 +625,7 @@ def encode_segment(
                     nonlocal written
                     if poster and not first:
                         jpeg = io.BytesIO()
+                        # already upright from `_part_video`'s graph (see `_join`'s emit)
                         frame.to_image().save(jpeg, format="JPEG", quality=90)
                         first.append(jpeg.getvalue())
                     frame.pts = written

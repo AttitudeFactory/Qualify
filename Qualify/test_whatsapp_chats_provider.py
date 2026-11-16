@@ -136,21 +136,17 @@ def world() -> World:
     return World()
 
 
-def test_threads_are_scoped_to_the_number(world: World) -> None:
-    mine = world.thread(inbound_ago=timedelta(minutes=5))
-    world.thread(number=OTHER_NUMBER, inbound_ago=timedelta(minutes=5))
-    world.thread(tenant=OTHER_TENANT, inbound_ago=timedelta(minutes=5))
-    rows = world.gateway.threads(TENANT, NUMBER)
-    assert [r.id for r in rows] == [mine]
-    assert rows[0].contact_name == "Laura Gómez"
-    assert rows[0].window.open
+def _threads(gateway: object) -> list:
+    """This number's chats as the service reads them (m-25029799: the gateway lost its
+    number list — the single list of «Por responder» lists every chat)."""
+    return gateway.service.list_threads(  # type: ignore[attr-defined]
+        TENANT, connection_id=NUMBER, status=None, limit=200
+    )
 
 
-def test_threads_list_both_statuses(world: World) -> None:
-    a = world.thread(inbound_ago=timedelta(minutes=5))
-    world.service.close(TENANT, a)
-    world.thread(inbound_ago=timedelta(minutes=1))
-    assert {r.status for r in world.gateway.threads(TENANT, NUMBER)} == {"open", "closed"}
+def test_the_gateway_has_no_number_list(world: World) -> None:
+    assert not hasattr(world.gateway, "threads")
+    assert not hasattr(world.gateway, "payment_statuses")
 
 
 def test_conversation_of_another_number_reads_as_missing(world: World) -> None:
@@ -236,7 +232,7 @@ def test_send_text_pauses_automation_and_queues(world: World) -> None:
     row = world.outbox.rows[outbox_id]
     assert (row.kind, row.payload["text"]["body"]) == ("reply", "Hola Laura")
     assert row.created_by_user_id == USER
-    assert world.gateway.threads(TENANT, NUMBER)[0].automation_paused is True
+    assert _threads(world.gateway)[0].automation_paused is True
 
 
 def test_send_buttons_body(world: World) -> None:
@@ -259,7 +255,7 @@ def test_closed_window_refuses_before_writing(world: World) -> None:
     with pytest.raises(dispatch.WindowClosed):  # m-25027374: the dispatcher's, one per channel
         world.gateway.send_text(TENANT, NUMBER, thread_id, USER, "hola")
     assert world.outbox.rows == {}
-    assert world.gateway.threads(TENANT, NUMBER)[0].automation_paused is False
+    assert _threads(world.gateway)[0].automation_paused is False
 
 
 def test_order_ready_uses_the_stored_order(world: World) -> None:
@@ -276,19 +272,19 @@ def test_actions_assign_close_reopen_takeover_resume(world: World) -> None:
     thread_id = world.thread(inbound_ago=timedelta(minutes=5))
     gw = world.gateway
     gw.assign(TENANT, NUMBER, thread_id, USER)
-    assert gw.threads(TENANT, NUMBER)[0].assigned_agent_id == USER
+    assert _threads(gw)[0].assigned_agent_id == USER
     with pytest.raises(UnknownAgent):
         gw.assign(TENANT, NUMBER, thread_id, uuid4())
     gw.assign(TENANT, NUMBER, thread_id, None)
-    assert gw.threads(TENANT, NUMBER)[0].assigned_agent_id is None
+    assert _threads(gw)[0].assigned_agent_id is None
     gw.close(TENANT, NUMBER, thread_id)
-    assert gw.threads(TENANT, NUMBER)[0].status == "closed"
+    assert _threads(gw)[0].status == "closed"
     gw.reopen(TENANT, NUMBER, thread_id)
-    assert gw.threads(TENANT, NUMBER)[0].status == "open"
+    assert _threads(gw)[0].status == "open"
     gw.takeover(TENANT, NUMBER, thread_id, USER)
-    assert gw.threads(TENANT, NUMBER)[0].automation_paused is True
+    assert _threads(gw)[0].automation_paused is True
     gw.resume(TENANT, NUMBER, thread_id)
-    assert gw.threads(TENANT, NUMBER)[0].automation_paused is False
+    assert _threads(gw)[0].automation_paused is False
 
 
 def test_acting_user_and_agents_come_from_the_store(world: World) -> None:

@@ -9,9 +9,19 @@ Tree (docs/ux-chats-unificados.md §2):
 
     Por responder › Mensajes
       [Todos] [Instagram] [WhatsApp]          only with chats on 2+ channels; no TikTok
+      [Todos los números ▾]                   one select, only with 2+ WhatsApp numbers
       [Por responder · N] [Todos · N] [Cerrados · N] (+ [Pago por revisar · N] if N ≥ 1)
       «N chats de Instagram ya no se pueden responder aquí · Ver»   (in «Por responder»)
       the rows · «Ver más»
+
+**WhatsApp's own list, retired (m-25029799).** Its chips land here: «Abiertos» (the
+open chats of the number on screen, answered or not) is «Todos» — the same rule
+(`status = 'open'`), proven against WhatsApp's own read in
+`packages/api/tests/test_inbox_unified_numbers_db.py`; its old `sin-leer` is «Por
+responder»; and its «Elige un número» is the number choice above the chips, drawn only
+for a business with two or more WhatsApp numbers (`?numero=<connection id>`), counted by
+`inbox_counts` per account. Instagram accounts are never split: the list has always
+shown them together, as it shows every number together until one is picked.
 
 Pure: no Reflex, no database.
 """
@@ -33,8 +43,8 @@ from .chat_row_vm import (
     unknown_contact,
 )
 from .conversations_vm import NO_MESSAGES_YET, OUTBOUND_PREFIX, UNSUPPORTED_PREVIEW, media_label
-from .nav_url import scalar_param, with_query
-from .whatsapp_chats_vm import FILTER_PAYMENT_EMPTY, phone_label, relative_time
+from .nav_url import scalar_param, uuid_param, with_query
+from .whatsapp_chats_vm import phone_label, relative_time
 
 ROUTE: Final = "/responder"
 TAB: Final = "mensajes"
@@ -51,6 +61,9 @@ CHANNELS: Final[tuple[str, ...]] = (CHANNEL_INSTAGRAM, CHANNEL_WHATSAPP)
 CHANNEL_PARAM: Final = "canal"
 ALL_CHANNELS: Final = ""
 ALL_CHANNELS_LABEL: Final = "Todos"
+#: m-25029799: one WhatsApp number (a connection id). "" = every number.
+NUMBER_PARAM: Final = "numero"
+ALL_NUMBERS: Final = ""
 
 # --------------------------------------------------------------------------------------
 # Filters (`qualify_api.inbox.unified.INBOX_FILTERS`)
@@ -83,6 +96,9 @@ FILTER_SLUGS: Final[Mapping[str, str]] = {
     "cerrados": FILTER_CLOSED,
     "pago-por-revisar": FILTER_PAYMENT,
     "sin-responder-a-tiempo": FILTER_EXPIRED,
+    # m-25029799: WhatsApp's retired list. Its «Abiertos» (open chats, answered or not)
+    # is this list's «Todos»; its «Sin leer» became «Por responder» (m-25017859).
+    "abiertos": FILTER_ALL,
     # The Instagram-only chips this list replaces (old links, Inicio's old card): the
     # chats that waited («Pendientes», «Leídas» — read but not answered) wait under the
     # rule; «Abiertas» / «Todas» / «Respondidas» are open chats; «Cerradas» closed ones.
@@ -165,6 +181,10 @@ def explainer_shown(today: date, *, dismissed: bool) -> bool:
 MORE_LABEL: Final = "Ver más"
 FILTERS_ARIA: Final = "Qué chats ver"
 CHANNELS_ARIA: Final = "De qué red"
+#: m-25029799 — NEW TEXTS, NOT DECIDED BY THE FOUNDER: the number choice that replaces
+#: WhatsApp's «Elige un número» inside «Por responder».
+NUMBERS_ARIA: Final = "De qué número de WhatsApp"
+ALL_NUMBERS_LABEL: Final = "Todos los números"
 
 NOTICE_ONE: Final = "1 chat de Instagram ya no se puede responder aquí"
 NOTICE_MANY: Final = "{n} chats de Instagram ya no se pueden responder aquí"
@@ -175,10 +195,20 @@ EMPTY_AWAITING_TITLE: Final = "Ya respondiste a todos."
 EMPTY_AWAITING_BODY: Final = "Aquí verás a quien te escriba por {channels}."
 EMPTY_ALL: Final = "Todavía no tienes chats. Aquí verás a quien te escriba por {channels}."
 EMPTY_CLOSED: Final = "No tienes chats cerrados."
+#: m-24971198's own words for an empty «Pago por revisar» (moved here from WhatsApp's
+#: retired list, m-25029799; unchanged).
+EMPTY_PAYMENT: Final = (
+    "No hay pagos por revisar. Cuando un cliente te mande su comprobante, su chat aparece aquí."
+)
 EMPTY_EXPIRED: Final = (
     "Ningún chat de Instagram se quedó sin responder a tiempo en la última semana."
 )
 EMPTY_BACK: Final = "Ver por responder"
+#: m-25029799 (UX review): the WhatsApp view's way out — WhatsApp's own empty list's
+#: words («Crear un código QR», unchanged) and «Tu número › Códigos QR».
+EMPTY_QR_ACTION: Final = "qr"
+EMPTY_QR_LABEL: Final = "Crear un código QR"
+EMPTY_QR_HREF: Final = "/whatsapp?tab=numero&sub=qr"
 
 NOTHING_CONNECTED_TITLE: Final = "Aún no tienes WhatsApp ni Instagram conectados"
 NOTHING_CONNECTED_BODY: Final = (
@@ -225,11 +255,32 @@ def channel_from_params(params: Mapping[str, object]) -> str | None:
     return value if value in CHANNELS else ALL_CHANNELS
 
 
-def list_href(filter_key: str = DEFAULT_FILTER, channel: str = ALL_CHANNELS) -> str:
-    """The single list's address: `/responder?tab=mensajes&filtro=…&canal=…`."""
+def number_from_params(params: Mapping[str, object]) -> str:
+    """`?numero=` → a canonical connection id, else "" (every number). Whether it is one
+    of THIS business's numbers is the state's check (`known_number`)."""
+    return uuid_param(params, NUMBER_PARAM)
+
+
+def known_number(number: str, numbers: Sequence[NumberVM]) -> str:
+    """`number` when it is one of the business's WhatsApp numbers AND the choice is drawn
+    (two or more numbers), else "" — an id from an address or the browser never narrows
+    the list to an account it does not own, nor to a number the owner cannot un-pick."""
+    if not number or len(numbers) < 2:
+        return ""
+    return number if any(n.connection_id == number for n in numbers) else ""
+
+
+def list_href(
+    filter_key: str = DEFAULT_FILTER, channel: str = ALL_CHANNELS, number: str = ALL_NUMBERS
+) -> str:
+    """The single list's address: `/responder?tab=mensajes&filtro=…&canal=…&numero=…`
+    (a number is a WhatsApp one: it always rides with `canal=whatsapp`)."""
     slug = _KEY_TO_SLUG.get(filter_key, _KEY_TO_SLUG[DEFAULT_FILTER])
-    canal = channel if channel in CHANNELS else ""
-    return with_query(ROUTE, tab=TAB, **{FILTER_PARAM: slug, CHANNEL_PARAM: canal})
+    numero = uuid_param({NUMBER_PARAM: number}, NUMBER_PARAM)
+    canal = CHANNEL_WHATSAPP if numero else (channel if channel in CHANNELS else "")
+    return with_query(
+        ROUTE, tab=TAB, **{FILTER_PARAM: slug, CHANNEL_PARAM: canal, NUMBER_PARAM: numero}
+    )
 
 
 # ======================================================================================
@@ -238,9 +289,11 @@ def list_href(filter_key: str = DEFAULT_FILTER, channel: str = ALL_CHANNELS) -> 
 
 
 class CountsLike(Protocol):
-    """`qualify_api.inbox.unified.InboxCounts` (backend channel names)."""
+    """`qualify_api.inbox.unified.InboxCounts` (backend channel names; per account since
+    m-25029799)."""
 
     by_channel: Mapping[str, Mapping[str, int]]
+    by_connection: Mapping[str, Mapping[str, int]]
 
 
 @dataclass(frozen=True)
@@ -250,10 +303,20 @@ class ChipVM:
     pressed: bool
 
 
-def count_of(counts: CountsLike | None, filter_key: str, channel: str = ALL_CHANNELS) -> int:
-    """How many chats `filter_key` lists on `channel` (every channel with "")."""
+def count_of(
+    counts: CountsLike | None,
+    filter_key: str,
+    channel: str = ALL_CHANNELS,
+    number: str = ALL_NUMBERS,
+) -> int:
+    """How many chats `filter_key` lists on `channel` (every channel with ""), or on one
+    WhatsApp `number` (m-25029799: that number's own count, whatever `channel` says — a
+    number is always a WhatsApp one)."""
     if counts is None:
         return 0
+    if number:
+        by_number = getattr(counts, "by_connection", None) or {}
+        return max(0, int(by_number.get(number, {}).get(filter_key, 0)))
     backend = [UI_TO_BACKEND[channel]] if channel in UI_TO_BACKEND else list(counts.by_channel)
     return sum(max(0, int(counts.by_channel.get(c, {}).get(filter_key, 0))) for c in backend)
 
@@ -264,17 +327,21 @@ def chip_label(filter_key: str, count: int) -> str:
     return f"{label} · {count}" if count > 0 else label
 
 
-def filter_chips(counts: CountsLike | None, active: str, channel: str) -> list[ChipVM]:
+def filter_chips(
+    counts: CountsLike | None, active: str, channel: str, number: str = ALL_NUMBERS
+) -> list[ChipVM]:
     """«Por responder» · «Todos» · «Cerrados», plus «Pago por revisar · N» only with N ≥ 1
     and «Sin responder a tiempo · N» only while it is the filter on screen. Counted on the
-    channel the list shows."""
+    channel the list shows — on the number, when one is picked (m-25029799)."""
     keys = list(BASE_FILTERS)
-    if count_of(counts, FILTER_PAYMENT, channel) > 0 or active == FILTER_PAYMENT:
+    if count_of(counts, FILTER_PAYMENT, channel, number) > 0 or active == FILTER_PAYMENT:
         keys.append(FILTER_PAYMENT)
     if active == FILTER_EXPIRED:
         keys.append(FILTER_EXPIRED)
     return [
-        ChipVM(key=k, label=chip_label(k, count_of(counts, k, channel)), pressed=k == active)
+        ChipVM(
+            key=k, label=chip_label(k, count_of(counts, k, channel, number)), pressed=k == active
+        )
         for k in keys
     ]
 
@@ -297,6 +364,41 @@ def channel_chips(active: str) -> list[ChipVM]:
     return [ChipVM(key=ALL_CHANNELS, label=ALL_CHANNELS_LABEL, pressed=active == ALL_CHANNELS)] + [
         ChipVM(key=c, label=channel_label(c), pressed=active == c) for c in CHANNELS
     ]
+
+
+# ======================================================================================
+# The number choice (m-25029799: WhatsApp's «Elige un número», now in «Por responder»)
+# ======================================================================================
+
+
+@dataclass(frozen=True)
+class NumberVM:
+    """One WhatsApp number of the business: its connection id and its words
+    («+57 300 000 0000 · Arepera», `whatsapp_vm.build_number_vm`'s label)."""
+
+    connection_id: str
+    label: str
+
+
+def show_number_filter(numbers: Sequence[NumberVM], channel: str) -> bool:
+    """Only for a business with two or more WhatsApp numbers, and never on the Instagram
+    view (a number lists no Instagram chat)."""
+    return len(numbers) >= 2 and channel != CHANNEL_INSTAGRAM
+
+
+#: The select's value for «Todos los números» (a Radix select item cannot be "").
+ALL_NUMBERS_KEY: Final = "todos"
+
+
+def number_options(numbers: Sequence[NumberVM]) -> list[NumberVM]:
+    """The one-line select (UX review of m-25029799, as `/whatsapp`'s own number
+    picker): «Todos los números», then each number in the business's own order."""
+    return [NumberVM(connection_id=ALL_NUMBERS_KEY, label=ALL_NUMBERS_LABEL), *numbers]
+
+
+def number_select_value(number: str) -> str:
+    """The select's value for the number on screen ("" = every number)."""
+    return number or ALL_NUMBERS_KEY
 
 
 # ======================================================================================
@@ -344,21 +446,27 @@ def channels_words(connected: Sequence[str]) -> str:
 class EmptyVM:
     title: str
     body: str
-    #: The way out: "" (none), "create" (the next publication) or "awaiting" (back to
-    #: «Por responder»).
+    #: The way out: "" (none), "create" (the next publication), "qr" (a WhatsApp QR
+    #: code, on the WhatsApp view) or "awaiting" (back to «Por responder»).
     action: str
 
 
-def empty_for(filter_key: str, connected: Sequence[str]) -> EmptyVM:
+def empty_for(filter_key: str, connected: Sequence[str], channel: str = ALL_CHANNELS) -> EmptyVM:
+    """The empty list's words and way out. On the WhatsApp view (m-25029799, UX review)
+    the way out is a QR code — how customers start writing on WhatsApp — as WhatsApp's
+    own list offered, instead of the next publication."""
     words = channels_words(connected)
+    # The WhatsApp view, or a business whose only chat channel is WhatsApp.
+    whatsapp = channel == CHANNEL_WHATSAPP or list(connected) == [CHANNEL_WHATSAPP]
+    first = EMPTY_QR_ACTION if whatsapp else "create"
     if filter_key == FILTER_AWAITING:
-        return EmptyVM(EMPTY_AWAITING_TITLE, EMPTY_AWAITING_BODY.format(channels=words), "create")
+        return EmptyVM(EMPTY_AWAITING_TITLE, EMPTY_AWAITING_BODY.format(channels=words), first)
     if filter_key == FILTER_ALL:
-        return EmptyVM("", EMPTY_ALL.format(channels=words), "create")
+        return EmptyVM("", EMPTY_ALL.format(channels=words), first)
     if filter_key == FILTER_CLOSED:
         return EmptyVM("", EMPTY_CLOSED, "awaiting")
     if filter_key == FILTER_PAYMENT:
-        return EmptyVM("", FILTER_PAYMENT_EMPTY, "awaiting")
+        return EmptyVM("", EMPTY_PAYMENT, "awaiting")
     return EmptyVM("", EMPTY_EXPIRED, "awaiting")
 
 

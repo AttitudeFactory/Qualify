@@ -28,6 +28,7 @@ def test_field_names_are_ef02s() -> None:
         "end_s",
         "speed",
         "rotate",
+        "kind",  # ED-15
     ]
     assert list(c.VideoTextLayer.__dataclass_fields__) == [
         "text",
@@ -36,6 +37,7 @@ def test_field_names_are_ef02s() -> None:
         "end_s",
         "layout_id",
         "layout_version",
+        "fade_s",  # EF-05
     ]
     assert list(c.EffectUse.__dataclass_fields__) == [
         "effect_id",
@@ -44,7 +46,13 @@ def test_field_names_are_ef02s() -> None:
         "start_s",
         "end_s",
     ]
-    assert list(c.PartRecipe.__dataclass_fields__) == ["effects", "text_layer", "segments"]
+    assert list(c.PartRecipe.__dataclass_fields__) == [
+        "effects",
+        "text_layer",
+        "segments",
+        "text_layers",  # ED-15
+    ]
+    assert c.SourceSegment("k", 0, 2).kind == "video"
     assert c.SourceSegment("k", 0, 2).speed == 1.0
     assert c.SourceSegment("k", 0, 2).rotate == 0
     assert c.VideoTextLayer("x").place == "bottom"
@@ -57,8 +65,11 @@ def test_round_trip_rounds_to_the_hundredth() -> None:
     )
     data = c.to_dict(recipe)
     assert data["segments"] == [
-        {"key": "k", "start_s": 1.23, "end_s": 5.99, "speed": 2.0, "rotate": 0}
+        {"key": "k", "start_s": 1.23, "end_s": 5.99, "speed": 2.0, "rotate": 0}  # v1's shape
     ]
+    photo = c.to_dict(c.PartRecipe(segments=(c.SourceSegment("p", 0, 3, kind="photo"),)))
+    assert photo["segments"][0]["kind"] == "photo"  # type: ignore[index]
+    assert data["text_layers"] == []
     assert data["effects"][0]["params"] == {"intensity": 0.67}  # type: ignore[index]
     assert data["text_layer"] is None
     back = c.from_dict(data)
@@ -112,7 +123,7 @@ def test_recipe_problems() -> None:
     for code in (
         "bad_effect_id",
         "bad_effect_version",
-        "effect_twice",
+        "effect_uses_overlap",  # ED-15: was `effect_twice`
         "effect_span",
         "text_empty",
         "bad_text_place",
@@ -123,6 +134,105 @@ def test_recipe_problems() -> None:
     assert "text_too_long" in c.recipe_problems(
         c.PartRecipe(text_layer=c.VideoTextLayer("a" * 121))
     )
+
+
+# -- ED-15 (m-25029105): contract v2 -----------------------------------------------------
+
+
+def test_v2_limits() -> None:
+    assert c.TEXT_LAYERS_MAX == 3
+    assert (c.PHOTO_SECONDS_MIN, c.PHOTO_SECONDS_MAX) == (1.0, 5.0)
+    assert c.SEGMENT_KINDS == ("video", "photo")
+
+
+def test_text_layer_and_text_layers_stay_in_step() -> None:
+    first, second = c.VideoTextLayer("Hoy", place="top"), c.VideoTextLayer("Ya", end_s=3)
+    alone = c.PartRecipe(text_layer=first)
+    assert alone.text_layers == (first,) and alone.text_layer == first
+    both = c.PartRecipe(text_layers=(first, second))
+    assert both.text_layer == first
+    assert c.PartRecipe(text_layer=first, text_layers=(first, second)).text_layers == (
+        first,
+        second,
+    )
+    assert c.PartRecipe(text_layer=first, text_layers=(second,)).text_layers == (first, second)
+    assert c.PartRecipe().text_layer is None and c.PartRecipe().text_layers == ()
+
+
+def test_a_v1_recipe_reads_the_same() -> None:
+    v1 = {
+        "effects": [{"effect_id": "humo_capa", "version": 1, "params": {}}],
+        "text_layer": {"text": "Hoy", "place": "top", "layout_id": "scrim", "layout_version": 1},
+        "segments": [{"key": "k", "start_s": 0, "end_s": 4, "speed": 2, "rotate": 90}],
+    }
+    recipe = c.from_dict(v1)
+    assert recipe.segments[0].kind == "video"
+    assert recipe.text_layers == (recipe.text_layer,)
+    assert recipe.text_layer == c.VideoTextLayer(
+        "Hoy", place="top", layout_id="scrim", layout_version=1
+    )
+    assert c.recipe_problems(recipe) == []
+
+
+def test_a_v2_recipe_round_trips() -> None:
+    texts = (
+        c.VideoTextLayer("Abre hoy", place="top", start_s=0, end_s=3),
+        c.VideoTextLayer("Pide ya", place="top", start_s=3, end_s=6),
+        c.VideoTextLayer("Domicilios", place="bottom"),
+    )
+    recipe = c.PartRecipe(
+        effects=(
+            c.EffectUse("humo_capa", 1, (), 0.0, 2.0),
+            c.EffectUse("humo_capa", 1, (), 4.0, 6.0),
+        ),
+        segments=(
+            c.SourceSegment("a.mp4", 0, 4),
+            c.SourceSegment("p.jpg", 0, 3, kind="photo", rotate=90),
+            c.SourceSegment("b.mp4", 2, 6, speed=2.0),
+        ),
+        text_layers=texts,
+    )
+    assert c.recipe_problems(recipe) == []
+    assert all(c.segment_problems(s, 0) == [] for s in recipe.segments)
+    data = c.to_dict(recipe)
+    assert data["text_layer"] == data["text_layers"][0]  # type: ignore[index]
+    assert c.from_dict(data) == recipe
+    assert c.used_seconds(recipe.segments) == 8.0  # the photo is not the owner's video
+
+
+def test_v2_problems() -> None:
+    four = c.PartRecipe(
+        text_layers=tuple(c.VideoTextLayer(f"t{i}", start_s=i, end_s=i + 1) for i in range(4))
+    )
+    assert "too_many_texts" in c.recipe_problems(four)
+    top_twice = c.PartRecipe(
+        text_layers=(
+            c.VideoTextLayer("a", place="top", end_s=4),
+            c.VideoTextLayer("b", place="top", start_s=2, end_s=6),
+        )
+    )
+    assert c.recipe_problems(top_twice) == ["texts_overlap"]
+    stacked = c.PartRecipe(
+        effects=(
+            c.EffectUse("vapor_capa", 1, (), 0.0, 3.0),
+            c.EffectUse("vapor_capa", 1, (), 2.0, 5.0),
+        )
+    )
+    assert c.recipe_problems(stacked) == ["effect_uses_overlap"]
+    whole_and_span = c.PartRecipe(
+        effects=(c.EffectUse("vapor_capa"), c.EffectUse("vapor_capa", 1, (), 2.0, 5.0))
+    )
+    assert c.recipe_problems(whole_and_span) == ["effect_uses_overlap"]
+
+
+def test_photo_problems() -> None:
+    photo = c.SourceSegment
+    assert c.segment_problems(photo("p", 0, 1, kind="photo"), 0) == []
+    assert c.segment_problems(photo("p", 0, 3, speed=2.0, kind="photo"), 0) == ["photo_with_speed"]
+    assert c.segment_problems(photo("p", 0, 6, kind="photo"), 0) == ["photo_length_out_of_range"]
+    assert c.segment_problems(photo("p", 0, 0.5, kind="photo"), 0) == ["photo_length_out_of_range"]
+    assert c.segment_problems(photo("p", 1, 3, kind="photo"), 0) == ["photo_not_from_start"]
+    assert c.segment_problems(photo("p", 0, 2, kind="gif"), 0) == ["bad_kind"]
 
 
 def test_whole_video_is_up_to_fifteen_seconds() -> None:
@@ -264,3 +374,31 @@ def test_the_text_design_is_the_image_catalog_s_current_one() -> None:
         text="Hoy", layout_id=c.TEXT_LAYOUT_ID, layout_version=c.TEXT_LAYOUT_VERSION
     )
     assert text_layer_problems(layer, part=None) == ()
+
+
+# -- EF-05 (m-25026573): the fade the owner chooses ---------------------------------------
+
+
+def test_a_text_fade_is_chosen_between_its_limits() -> None:
+    assert (c.VIDEO_TEXT_FADE_MIN_S, c.VIDEO_TEXT_FADE_DEFAULT_S, c.VIDEO_TEXT_FADE_MAX_S) == (
+        0.3,
+        0.5,
+        1.0,
+    )
+
+    def problems(fade: float) -> list[str]:
+        return c.recipe_problems(c.PartRecipe(text_layer=c.VideoTextLayer("Hoy", fade_s=fade)))
+
+    assert problems(0.3) == [] and problems(1.0) == [] and problems(0.5) == []
+    assert "bad_text_fade" in problems(0.29)
+    assert "bad_text_fade" in problems(1.01)
+    assert c.VideoTextLayer("Hoy").fade_s == 0.5
+
+
+def test_a_text_fade_round_trips_and_an_old_text_reads_the_default() -> None:
+    recipe = c.PartRecipe(text_layers=(c.VideoTextLayer("Hoy", place="top", fade_s=0.8),))
+    data = c.to_dict(recipe)
+    assert data["text_layers"][0]["fade_s"] == 0.8  # type: ignore[index]
+    assert c.from_dict(data) == recipe
+    old = {"text_layers": [{"text": "Hoy", "place": "top", "start_s": 0, "end_s": None}]}
+    assert c.from_dict(old).text_layers[0].fade_s == 0.5

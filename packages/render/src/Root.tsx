@@ -20,6 +20,7 @@ import stickerManifestV1 from '../templates/sticker/manifest.v1.json';
 import {CELL, SHEET, StickerPreview, StickerSheet, type StickerProps} from './templates/sticker/Sticker';
 import {FIXTURE_PHOTO, FixturePhoto} from './templates/layer_still/FixturePhoto';
 import {LayerStill, PORTS as LAYER_PORTS, layerStillMetadata, type LayerStillProps} from './templates/layer_still/LayerStill';
+import {OVERLAY as VIDEO_TEXT_OVERLAY, VideoText, videoTextMetadata, type VideoTextProps} from './templates/video_text/VideoText';
 import seasonalVideoManifest from '../templates/seasonal_video/manifest.json';
 import {
   FPS as SEASONAL_VIDEO_FPS,
@@ -123,6 +124,14 @@ const layerStillCompositions = (): React.ReactNode[] =>
     />
   ));
 
+// EF-05 (m-25026573): `video_text` v1 — the owner's text over a video, a transparent PNG drawn
+// by layer_still's engine and components (VideoText.tsx); PyAV lays it over the frames.
+const videoTextDefaults: VideoTextProps = {
+  meta: {templateId: 'video_text', version: 1, port: 'overlay'},
+  brand: {name: 'Panadería La Espiga', palette: ['#B5532A', '#FFFFFF', '#FFF4E6'], fonts: {heading: 'Poppins', body: 'Inter'}, logo: null},
+  texts: {text: 'Pan recién horneado todos los días', place: 'bottom', layout_id: 'scrim', layout_version: 3},
+};
+
 type PromoManifest = typeof promoManifest | typeof promoManifestV1;
 type PortSpec = {kind: string; width: number; height: number; composition: string};
 
@@ -196,6 +205,14 @@ export const RemotionRoot: React.FC = () => {
         calculateMetadata={seasonalVideoMetadata}
       />
       {layerStillCompositions()}
+      <Still
+        id={VIDEO_TEXT_OVERLAY.composition}
+        component={VideoText}
+        width={VIDEO_TEXT_OVERLAY.width}
+        height={VIDEO_TEXT_OVERLAY.height}
+        defaultProps={videoTextDefaults}
+        calculateMetadata={videoTextMetadata}
+      />
       <Still
         id="layer-still-fixture-photo"
         component={FixturePhoto}

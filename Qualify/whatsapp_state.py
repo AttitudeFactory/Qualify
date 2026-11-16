@@ -39,7 +39,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState
 from .connections_provider import request_support
-from .nav_url import flow_param, push_url_script, scalar_param, uuid_param
+from .nav_url import flow_param, push_url_script, scalar_param, uuid_param, whatsapp_chats_href
 from .tenant import tenant_uuid
 from .ui.route_history import history_ack_value, route_history_ready
 from .whatsapp_provider import (
@@ -66,7 +66,6 @@ from .whatsapp_vm import (
     MAX_QR_MESSAGE_CHARS,
     PROMOTIONS_ROUTE,
     QR_DEFAULT_CHANNEL,
-    SECTION_KEYS,
     SETTINGS_WHATSAPP_ROUTE,
     SUB_PARAM,
     TAB_KEYS,
@@ -152,9 +151,6 @@ class WhatsAppState(rx.State):
     # -- shell ---------------------------------------------------------------------------
     numbers: list[WhatsAppNumberVM] = []
     selected_connection_id: str = ""
-    #: m-25017859 (backend only): the Chats chip's `?filtro=` ("" = the default), kept
-    #: on the address of the Chats tab when the owner comes back to it.
-    _chats_chip: str = ""
     active_tab: str = resolve_tab("")
     is_loading: bool = False
     load_error: str = ""
@@ -225,6 +221,11 @@ class WhatsAppState(rx.State):
     @rx.var
     def active_sub(self) -> str:
         return panel_sub(self.active_tab)
+
+    @rx.var
+    def chats_href(self) -> str:
+        """m-25029799: this number's chats in «Por responder» (`/whatsapp`'s notice)."""
+        return whatsapp_chats_href(self.selected_connection_id)
 
     @rx.var
     def selected_number(self) -> WhatsAppNumberVM:
@@ -312,20 +313,13 @@ class WhatsAppState(rx.State):
         """`/whatsapp` and `/whatsapp/promociones` on_load: pick the panel from the
         address and load the numbers. Also runs on «atrás» (a real navigation), so the
         previous tab comes back."""
-        from .whatsapp_chats_state import WhatsAppChatsState
-
         if self._read_address() is not None:
-            # m-25017862: an old address of «Promociones». `enter_history` (the page's
-            # mount, and every «atrás») is the ONE place that redirects it, so the two
-            # handlers never both send the browser away; nothing is loaded meanwhile.
+            # An old address of a panel that moved (promotions, the menu, the chats of
+            # m-25029799). `enter_history` (the page's mount, and every «atrás») is the
+            # ONE place that redirects it, so the two handlers never both send the
+            # browser away; nothing is loaded meanwhile.
             return []
-        # m-25017859: a navigation (not a remount of the Chats section) lets the address
-        # decide the Chats chip.
-        return [
-            WhatsAppChatsState.apply_address_filter,
-            WhatsAppState.prepare_flow_address,
-            WhatsAppState.load_numbers,
-        ]
+        return [WhatsAppState.prepare_flow_address, WhatsAppState.load_numbers]
 
     @rx.event
     async def prepare_flow_address(self) -> None:
@@ -404,7 +398,7 @@ class WhatsAppState(rx.State):
         if panel == self.active_tab:
             return None
         if panel_route(panel) != panel_route(self.active_tab):
-            # m-25017862: from «Promociones por WhatsApp» to the chats (or back) is a
+            # m-25017862: from «Promociones por WhatsApp» to «Tu número» (or back) is a
             # change of page, so a real navigation: the menu lights the right entry, and
             # the arriving page's `enter_page` sets the panel (no flash of it here).
             return rx.redirect(self._panel_address(panel))
@@ -418,10 +412,6 @@ class WhatsAppState(rx.State):
         joint = "&" if "?" in address else "?"
         connection = uuid_param({"cuenta": self.selected_connection_id}, "cuenta")
         address += joint + "cuenta=" + connection if connection else ""
-        # m-25017859: back on Chats, the address keeps the chip the owner picked, so a
-        # reload shows it (the default chip needs no parameter).
-        if panel == "chats" and self._chats_chip:
-            address += "&filtro=" + self._chats_chip
         return address
 
     @rx.event
@@ -432,13 +422,11 @@ class WhatsAppState(rx.State):
         return self._show_panel(resolve_tab(tab))
 
     @rx.event
-    def select_section(self, section: str | list[str]) -> rx.event.EventSpec | None:
-        """A top tab: its first sub-tab (`on_change` of a segmented control, or a tap)."""
-        if not isinstance(section, str) or section not in SECTION_KEYS:
-            return None
-        if section == panel_section(self.active_tab):
-            return None
-        return self._show_panel(resolve_panel(section))
+    def open_chats(self) -> rx.event.EventSpec:
+        """m-25029799: «Ir a los chats» / «Ver respuestas en Por responder» from a
+        promotions panel — WhatsApp's chats are attended only in «Por responder», on the
+        number on screen (the list keeps it only if it is this business's)."""
+        return rx.redirect(whatsapp_chats_href(self.selected_connection_id))
 
     @rx.event
     def select_sub(self, sub: str | list[str]) -> rx.event.EventSpec | None:

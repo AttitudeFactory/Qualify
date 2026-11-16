@@ -15,6 +15,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from qualify_creative.enums import ContentFormat, ContentKind, FailureReason
+from qualify_creative.layer_spec import LAYOUT_VERSION
 from qualify_creative.schemas import (
     ContentBrief,
     EffectUse,
@@ -22,6 +23,7 @@ from qualify_creative.schemas import (
     PartRef,
     SourceSegment,
     VideoPartPlan,
+    VideoRecipe,
     VideoTextLayer,
 )
 
@@ -46,6 +48,7 @@ from qualify_api.creative.video_pipeline import (
     recipe_of,
     validate_brief_recipe,
     validate_recipe,
+    validate_video_recipe,
 )
 
 from .test_content_service import (
@@ -127,6 +130,13 @@ def _codes(problems: tuple) -> list[str]:
     return [p.code for p in problems]
 
 
+def ledger_price(row: Any) -> tuple[str, int, int, int]:
+    """What a charge row of the in-memory ledger priced: (kind, creations, vistas previas,
+    video seconds)."""
+    price = row.price
+    return price.request_kind, price.weight, price.videos, price.video_seconds
+
+
 # ---------------------------------------------------------------------------
 # recipe_of
 
@@ -135,7 +145,7 @@ def test_a_clip_is_a_recipe_of_one_part_with_its_effects() -> None:
     brief = _clip(effects=(SMOKE, TEXT), text_layer=WORDS, mode_reason="own_video_local")
     (part,) = recipe_of(brief)
     assert (part.index, part.mode, part.seconds) == (1, "reference", 5)
-    assert part.effects == (SMOKE, TEXT) and part.text_layer == WORDS
+    assert part.effects == (SMOKE, TEXT) and part.text_layers == (WORDS,)
     assert part.transition_in is None and part.mode_reason == "own_video_local"
     edit = _clip(
         clip_reference_mode="edit",
@@ -161,7 +171,7 @@ def test_a_parent_is_its_plan_in_order_with_its_transitions() -> None:
     assert [p.seconds for p in recipe] == [5, 4, 6]
     assert [p.effects for p in recipe] == [(SMOKE,), (), (FAST,)]
     assert [p.transition_in for p in recipe] == [None, FADE, None]
-    assert recipe[1].text_layer == WORDS and recipe[2].mode == "local"
+    assert recipe[1].text_layers == (WORDS,) and recipe[2].mode == "local"
 
 
 def test_a_child_is_its_part_at_its_index() -> None:
@@ -178,7 +188,7 @@ def test_a_part_child_carries_its_parts_recipe_never_the_parents_text() -> None:
     entry = VideoPartPlan(seconds=5, description="Uno.", effects=(SMOKE,), transition_in=None)
     parent = parent_brief(entry, text_layer=VideoTextLayer(text="Todo el video"))
     child = _child_brief(parent, entry, 1, None)
-    assert child.media.effects == (SMOKE,) and child.media.text_layer is None
+    assert child.media.effects == (SMOKE,) and child.media.text_layers == ()
     assert child.media.part is not None and child.media.part.effects == (SMOKE,)
     assert recipe_of(child)[0].effects == (SMOKE,)
 
@@ -191,7 +201,7 @@ def test_other_kinds_have_no_recipe() -> None:
 def test_a_brief_from_before_the_recipe_has_an_empty_valid_recipe(path: Path) -> None:
     brief = ContentBrief.model_validate(json.loads(path.read_text(encoding="utf-8")))
     for part in recipe_of(brief):
-        assert part.effects == () and part.segments == () and part.text_layer is None
+        assert part.effects == () and part.segments == () and part.text_layers == ()
         assert part.transition_in is None and part.mode != "local"
     assert validate_brief_recipe(brief, tenant_id=TENANT_ID) == ()
 
@@ -337,20 +347,19 @@ def test_saving_a_plan_with_a_stretch_of_another_business_is_refused(
 
 
 # ---------------------------------------------------------------------------
-# `local` fails closed until EF-05/EF-06: never a Seedance call, never a charge
+# `local` (EF-06): its stretches are made; what the engine does not draw yet fails closed
 
 
-def test_a_local_clip_is_refused_before_any_row_or_dispatch() -> None:
+def test_a_local_clip_with_effects_is_refused_before_any_row_or_dispatch() -> None:
+    """EF-06 makes a `local` Clip from its stretches; its EFFECTS (layers, EF-08) are
+    still refused — and only they: neither `local` nor its stretches."""
     service, repo, dispatcher = make_service(kit=make_kit(), voice=make_voice())
     brief = _clip(clip_reference_mode="local", segments=(_stretch(),), effects=(FAST,))
     with pytest.raises(RecipeRefused) as refused:
         service.create_draft(tenant_id=TENANT_ID, brand_id=BRAND_ID, brief=brief, user_id=USER_ID)
-    assert _codes(refused.value.problems) == [
-        "local_unavailable",
-        "recipe_unavailable",  # its effects
-        "recipe_unavailable",  # its stretches
+    assert [(p.code, p.field) for p in refused.value.problems] == [
+        ("recipe_unavailable", "effects")
     ]
-    assert refused.value.reason == "local_unavailable"
     assert repo.drafts == {} and repo.briefs == {} and dispatcher.calls == []
 
 
@@ -384,13 +393,21 @@ def test_the_effects_pipeline_version_is_the_servers() -> None:
     ("media", "field"),
     [
         ({"effects": (SMOKE,)}, "effects"),
-        ({"text_layer": WORDS}, "text_layer"),
+        ({"text_layer": WORDS}, "text_layers"),  # the v1 key reads as `text_layers`
+        ({"text_layers": (WORDS,)}, "text_layers"),
+        # stretches of a Clip that is NOT `local`: Seedance would only follow them
         ({"segments": (_stretch(),)}, "segments"),
+        # EF-05 draws the texts: a `local` Clip with a text is refused for its text only
+        (
+            {"clip_reference_mode": "local", "segments": (_stretch(),), "text_layers": (WORDS,)},
+            "text_layers",
+        ),
     ],
 )
 def test_any_recipe_is_refused_until_the_engine_exists(media: dict, field: str) -> None:
     """EF-02: the owner never pays for a video without what he chose — a Clip with effects,
-    a text over the video or stretches of own video is refused before any row."""
+    a text over the video or stretches of own video (outside `local`) is refused before
+    any row."""
     service, repo, dispatcher = make_service(kit=make_kit(), voice=make_voice())
     with pytest.raises(RecipeRefused) as refused:
         service.create_draft(
@@ -414,7 +431,7 @@ def test_a_parent_with_a_recipe_is_refused_but_its_plan_may_be_saved(
     parent = parent_brief(*plan, text_layer=WORDS)
     assert [(p.code, p.part, p.field) for p in unbuilt_recipe_problems(parent)] == [
         ("recipe_unavailable", 2, "transition_in"),
-        ("recipe_unavailable", None, "text_layer"),
+        ("recipe_unavailable", None, "text_layers"),
     ]
     service, repo, _ = make_service(kit=make_kit(), voice=make_voice())
     with pytest.raises(RecipeRefused):
@@ -453,11 +470,14 @@ def test_the_parents_whole_video_text_is_validated() -> None:
     parent = parent_brief(VideoPartPlan(seconds=5, description="Uno."), text_layer=bad)
     problems = validate_brief_recipe(parent)
     assert [(p.code, p.part, p.field) for p in problems] == [
-        ("unknown_layout", None, "text_layer.layout_id")
+        ("unknown_layout", None, "text_layers[0].layout_id")
     ]
 
 
-def test_a_plan_with_a_local_part_makes_no_part_and_charges_nothing() -> None:
+def test_a_plan_with_a_local_part_makes_it_and_charges_it_nothing() -> None:
+    """EF-06: a `local` part is made like the others — its child stamped for the local
+    pipeline, its charge of 0 creations, 0 vistas previas, 0 seconds (D3); the
+    `reference` part beside it is charged as before."""
     plan = (
         VideoPartPlan(seconds=5, description="Uno."),
         VideoPartPlan(seconds=5, description="Dos."),
@@ -468,23 +488,32 @@ def test_a_plan_with_a_local_part_makes_no_part_and_charges_nothing() -> None:
     repo.briefs[repo.drafts[parent].brief_id] = brief.model_copy(
         update={"media": brief.media.model_copy(update={"parts": (plan[0], local)})}
     )
-    before = dict(ledger.rows)
-    calls = len(router.budgets)
-    with pytest.raises(PartsLocalUnavailable) as refused:
-        parts.create_parts(tenant_id=TENANT_ID, parent_id=parent, user_id=USER_ID)
-    assert refusal_of(refused.value) == ("local_unavailable", None, 0)
-    assert repo.parts_of(tenant_id=TENANT_ID, parent_id=parent) == ()
-    assert ledger.rows == before and dispatcher.calls == [] and len(router.budgets) == calls
+    ids = parts.create_parts(tenant_id=TENANT_ID, parent_id=parent, user_id=USER_ID)
+    assert len(ids) == 2 and len(dispatcher.calls) == 2
+    child = repo.briefs[repo.drafts[ids[1]].brief_id]
+    assert child.media.clip_reference_mode == "local"
+    assert child.media.effects_pipeline_version == 1
+    first = repo.briefs[repo.drafts[ids[0]].brief_id]
+    assert first.media.effects_pipeline_version == 0
+    assert parts.estimated_usd([child]) == 0
+    prices = {key[0]: row for key, row in ledger.rows.items()}
+    assert ledger_price(prices[ids[1]]) == ("local_video", 0, 0, 0)
+    assert ledger_price(prices[ids[0]])[2] == 1  # the `reference` part: one vista previa
 
 
-def test_a_parent_with_a_local_part_is_refused_at_creation() -> None:
+def test_a_stored_local_refusal_still_reads() -> None:
+    """EF-06 no longer raises `PartsLocalUnavailable`; a refusal stored before it reads."""
+    assert refusal_of(PartsLocalUnavailable()) == ("local_unavailable", None, 0)
+
+
+def test_a_parent_with_a_local_part_may_be_created() -> None:
+    """EF-06: a `local` part is made — the parent with one is no longer refused."""
     service, repo, _ = make_service(kit=make_kit(), voice=make_voice())
     local = VideoPartPlan(mode="local", seconds=5, segments=(_stretch(),), description="Uno.")
-    with pytest.raises(RecipeRefused, match="local_unavailable"):
-        service.create_draft(
-            tenant_id=TENANT_ID, brand_id=BRAND_ID, brief=parent_brief(local), user_id=USER_ID
-        )
-    assert repo.drafts == {}
+    service.create_draft(
+        tenant_id=TENANT_ID, brand_id=BRAND_ID, brief=parent_brief(local), user_id=USER_ID
+    )
+    assert len(repo.drafts) == 1
 
 
 def test_a_recipe_refusal_of_a_part_is_a_stored_code() -> None:
@@ -494,13 +523,16 @@ def test_a_recipe_refusal_of_a_part_is_a_stored_code() -> None:
     assert refusal_of(refused) == ("effects_invalid", 2, 0)
 
 
-def test_the_producer_never_sends_a_local_clip_to_seedance() -> None:
+def test_the_producer_never_sends_an_unstamped_local_clip_to_seedance() -> None:
+    """A `local` brief the server never stamped (`effects_pipeline_version` 0: stored
+    before EF-06) is refused before any read — never made as a Seedance clip."""
     from .test_creative_media import TENANT_ID as MEDIA_TENANT
     from .test_creative_media import MemoryStore, SpyVendor, _produce, _producer
 
     vendor = SpyVendor()
     stretch = _stretch(f"uploads/{MEDIA_TENANT}/mi-cocina.mp4")
     brief = _clip(clip_reference_mode="local", segments=(stretch,))
+    assert brief.media.effects_pipeline_version == 0
     outcome = _produce(_producer(MemoryStore(), vendor), brief, uuid4())
     assert outcome.failure == FailureReason.INVALID_PARAMETERS.value
     assert outcome.detail == LOCAL_CLIP_UNAVAILABLE
@@ -540,7 +572,7 @@ def test_reordering_keeps_each_parts_effects(monkeypatch: pytest.MonkeyPatch) ->
     save_parts_plan(tenant_id=TENANT_ID, parent_id=uuid4(), parts=(two, three, one))
     assert _saved_parts(row) == (two, three, one)
     assert [p.effects for p in _saved_parts(row)] == [(TEXT,), (), (SMOKE,)]
-    assert _saved_parts(row)[0].text_layer == WORDS
+    assert _saved_parts(row)[0].text_layers == (WORDS,)
     assert _saved_parts(row)[1].transition_in == FADE
 
 
@@ -603,13 +635,35 @@ def test_the_same_effect_chosen_differently_is_refused(other: EffectUse) -> None
     [
         VideoTextLayer(text="Otra cosa", place="top"),
         VideoTextLayer(text="Shawarma mixto", place="bottom"),
-        VideoTextLayer(text="Shawarma mixto", place="top", layout_id="band", layout_version=1),
+        # the design named explicitly (EF-05: the scrim is the one a video text draws)
+        VideoTextLayer(
+            text="Shawarma mixto", place="top", layout_id="scrim", layout_version=LAYOUT_VERSION
+        ),
     ],
     ids=["words", "place", "design"],
 )
-def test_joining_two_parts_with_different_texts_is_refused(other: VideoTextLayer) -> None:
+def test_joining_two_parts_with_different_texts_keeps_both(other: VideoTextLayer) -> None:
+    """ED-15: a part holds up to 3 texts, so two different texts are both kept, each at
+    its own place in the joined part (EF-02 refused them: one text per part)."""
+    merged = merge_short_part(_cut(0, 2, text_layer=WORDS), _cut(1, 3, text_layer=other), REEL)
+    assert merged.text_layers == (
+        WORDS.model_copy(update={"start_s": 0.0, "end_s": 2.0}),
+        other.model_copy(update={"start_s": 2.0, "end_s": 5.0}),
+    )
+
+
+def test_joining_parts_with_more_than_three_texts_is_refused() -> None:
+    """ED-15: the joined part keeps every text of both — never more than 3."""
+    two = (
+        VideoTextLayer(text="Uno", place="top"),
+        VideoTextLayer(text="Dos", place="bottom"),
+    )
+    others = (
+        VideoTextLayer(text="Tres", place="top"),
+        VideoTextLayer(text="Cuatro", place="bottom"),
+    )
     with pytest.raises(PartsPlanRefused) as refused:
-        merge_short_part(_cut(0, 2, text_layer=WORDS), _cut(1, 3, text_layer=other), REEL)
+        merge_short_part(_cut(0, 2, text_layers=two), _cut(1, 3, text_layers=others), REEL)
     assert refused.value.reason == PLAN_MERGE_TEXT
 
 
@@ -637,7 +691,7 @@ def test_joining_two_parts_keeps_both_parts_effects(monkeypatch: pytest.MonkeyPa
         embers.model_copy(update={"start_s": 2.5, "end_s": 4.5}),
         VAPOR.model_copy(update={"start_s": 2.0, "end_s": 5.0}),
     )
-    assert merged.text_layer == WORDS.model_copy(update={"start_s": 2.0, "end_s": 5.0})
+    assert merged.text_layers == (WORDS.model_copy(update={"start_s": 2.0, "end_s": 5.0}),)
     assert merged.transition_in is None  # the first part's (none): the fade is now inside
     assert (merged.mode, merged.mode_reason, merged.mode_rule_version) == (
         "edit",
@@ -649,7 +703,7 @@ def test_joining_two_parts_keeps_both_parts_effects(monkeypatch: pytest.MonkeyPa
     row = _saving(monkeypatch, parent_brief(first, second, third))
     save_parts_plan(tenant_id=TENANT_ID, parent_id=uuid4(), parts=(merged, third), analysis=REEL)
     saved = _saved_parts(row)
-    assert saved[0].effects == merged.effects and saved[0].text_layer == merged.text_layer
+    assert saved[0].effects == merged.effects and saved[0].text_layers == merged.text_layers
     assert saved[0].shot_indexes == (0, 1) and saved[1] == third
 
 
@@ -696,20 +750,24 @@ def test_the_same_effect_that_does_not_meet_is_refused_never_filled_in() -> None
 
 def test_a_text_for_the_whole_part_gets_explicit_times() -> None:
     _, text = merged_recipe(_cut(0, 2, text_layer=WORDS), _cut(1, 3))
-    assert text == WORDS.model_copy(update={"start_s": 0.0, "end_s": 2.0})
+    assert text == (WORDS.model_copy(update={"start_s": 0.0, "end_s": 2.0}),)
     _, same = merged_recipe(_cut(0, 2, text_layer=WORDS), _cut(1, 3, text_layer=WORDS))
-    assert same == WORDS.model_copy(update={"start_s": 0.0, "end_s": 5.0})
+    assert same == (WORDS.model_copy(update={"start_s": 0.0, "end_s": 5.0}),)
     ending = WORDS.model_copy(update={"start_s": 1.0, "end_s": 2.0})
     starting = WORDS.model_copy(update={"start_s": 0.0, "end_s": 1.0})
     _, met = merged_recipe(_cut(0, 2, text_layer=ending), _cut(1, 3, text_layer=starting))
-    assert met == WORDS.model_copy(update={"start_s": 1.0, "end_s": 3.0})
+    assert met == (WORDS.model_copy(update={"start_s": 1.0, "end_s": 3.0}),)
 
 
-def test_the_same_text_that_does_not_meet_is_refused() -> None:
+def test_the_same_text_that_does_not_meet_stays_two_texts() -> None:
+    """ED-15: the same words at 0-2 s of the first part and at 1-2 s of the second do not
+    meet: two texts (0-2 and 3-4 s of the joined part), never one filled in between."""
     late = WORDS.model_copy(update={"start_s": 1.0, "end_s": 2.0})
-    with pytest.raises(PartsPlanRefused) as refused:
-        merge_short_part(_cut(0, 2, text_layer=WORDS), _cut(1, 3, text_layer=late), REEL)
-    assert refused.value.reason == PLAN_MERGE_TEXT
+    merged = merge_short_part(_cut(0, 2, text_layer=WORDS), _cut(1, 3, text_layer=late), REEL)
+    assert merged.text_layers == (
+        WORDS.model_copy(update={"start_s": 0.0, "end_s": 2.0}),
+        WORDS.model_copy(update={"start_s": 3.0, "end_s": 4.0}),
+    )
 
 
 def test_a_join_of_fractional_cuts_fits_the_joined_length() -> None:
@@ -729,7 +787,7 @@ def test_a_join_of_fractional_cuts_fits_the_joined_length() -> None:
         TEXT.model_copy(update={"start_s": 0.0, "end_s": 2.0}),
         SMOKE.model_copy(update={"start_s": 2.0, "end_s": 4.0}),
     )
-    assert merged.text_layer == WORDS.model_copy(update={"start_s": 0.0, "end_s": 2.0})
+    assert merged.text_layers == (WORDS.model_copy(update={"start_s": 0.0, "end_s": 2.0}),)
     lost = EffectUse(effect_id="humo_capa", version=1, start_s=2.5, end_s=3.0)
     with pytest.raises(PartsPlanRefused) as refused:
         merge_short_part(cut(0, 2), cut(1, 3, effects=(lost,)), reel)  # would start at 4.5
@@ -824,8 +882,10 @@ def test_a_local_part_must_last_its_seconds() -> None:
     short = SourceSegment(key=OWN, start_s=0.0, end_s=6.0, speed=3.0)
     part = PartRecipe(index=1, mode="local", seconds=5, segments=(short,))
     problems = validate_recipe((part,), video_by_parts=True)
-    assert [(p.code, p.part, p.field) for p in problems] == [
-        ("segments_length_mismatch", 1, "segments")
+    # option A: 2 s is also under the speed step's 3 s
+    assert [(p.code, p.part, p.field, p.duration_s) for p in problems] == [
+        ("local_length_out_of_range", 1, "segments", 2.0),
+        ("segments_length_mismatch", 1, "segments", 2.0),
     ]
     fits = SourceSegment(key=OWN, start_s=0.0, end_s=15.3, speed=3.0)  # 5.1 s: within 0.5
     ok = part.model_copy(update={"segments": (fits,)})
@@ -838,3 +898,87 @@ def test_a_local_clip_lasts_3_to_60_seconds(end_s: float, ok: bool) -> None:
     clip = PartRecipe(index=1, mode="local", seconds=5, segments=(stretch,))
     problems = validate_recipe((clip,), video_by_parts=False)
     assert _codes(problems) == ([] if ok else ["local_length_out_of_range"])
+
+
+# ---------------------------------------------------------------------------
+# ED-15: the parent's VideoRecipe — what crosses parts, in seconds of the whole video
+
+
+def _whole(**fields: Any) -> VideoRecipe:
+    parts = (PartRecipe(index=1, seconds=5), PartRecipe(index=2, seconds=4))
+    return VideoRecipe(parts=parts, **fields)
+
+
+def test_a_parent_without_a_video_recipe_reads_and_with_one_round_trips() -> None:
+    plan = (
+        VideoPartPlan(seconds=5, description="Uno."),
+        VideoPartPlan(seconds=4, description="Dos."),
+    )
+    stored = json.loads(parent_brief(*plan).model_dump_json())
+    del stored["media"]["video_recipe"]  # a parent stored before ED-15
+    assert ContentBrief.model_validate(stored).media.video_recipe is None
+    recipe = _whole(
+        text_layers=(WORDS.model_copy(update={"start_s": 3.0, "end_s": 7.0}),),
+        effects=(SMOKE.model_copy(update={"start_s": 4.0, "end_s": 6.0}),),
+    )
+    parent = parent_brief(*plan, video_recipe=recipe)
+    again = ContentBrief.model_validate_json(parent.model_dump_json())
+    assert again == parent and again.media.video_recipe == recipe
+    assert validate_brief_recipe(parent, tenant_id=TENANT_ID) == ()
+
+
+def test_a_video_recipe_is_only_a_parents() -> None:
+    with pytest.raises(ValueError, match="effects_not_for_kind"):
+        _clip(video_recipe=_whole())
+
+
+def test_a_video_recipe_has_a_parts_limits_in_whole_video_seconds() -> None:
+    late = WORDS.model_copy(update={"start_s": 8.0, "end_s": 10.0})  # the video lasts 9 s
+    clash = (
+        WORDS.model_copy(update={"start_s": 0.0, "end_s": 4.0}),
+        WORDS.model_copy(update={"text": "Otro", "start_s": 3.0, "end_s": 5.0}),
+    )
+    twice = (VAPOR.model_copy(update={"start_s": 5.0, "end_s": 8.0}),) * 2
+    problems = validate_video_recipe(_whole(text_layers=(*clash, late), effects=twice))
+    assert [(p.code, p.part, p.field) for p in problems] == [
+        ("span_outside_part", None, "text_layers[2]"),
+        ("texts_overlap", None, "text_layers[1]"),
+        ("too_many_of_effect", None, "effects[1]"),  # v1 (this file's library): one use
+    ]
+    fade = validate_video_recipe(_whole(effects=(FADE,)))
+    assert [(p.code, p.part) for p in fade] == [("transition_in_effects", None)]
+
+
+def test_a_parent_with_a_video_recipe_is_refused_until_the_engine_exists() -> None:
+    from qualify_api.creative.video_pipeline.recipe import unbuilt_recipe_problems
+
+    parent = parent_brief(
+        VideoPartPlan(seconds=5, description="Uno."),
+        VideoPartPlan(seconds=4, description="Dos."),
+        video_recipe=_whole(),
+    )
+    assert [(p.code, p.part, p.field) for p in unbuilt_recipe_problems(parent)] == [
+        ("recipe_unavailable", None, "video_recipe")
+    ]
+
+
+def test_a_parts_child_never_carries_the_parents_video_recipe() -> None:
+    from qualify_api.creative.parts import _child_brief
+
+    entry = VideoPartPlan(seconds=5, description="Uno.", effects=(SMOKE,))
+    parent = parent_brief(
+        entry, VideoPartPlan(seconds=4, description="Dos."), video_recipe=_whole()
+    )
+    child = _child_brief(parent, entry, 1, None)
+    assert child.media.video_recipe is None and child.media.part is not None
+    assert recipe_of(child)[0].effects == (SMOKE,)
+
+
+def test_a_text_that_meets_itself_with_another_fade_is_one_text_with_the_first_fade() -> None:
+    """EF-05 (owner-chosen fade): a text that runs on across the join never appears again,
+    so the second part's fade has nothing to fade — the same words, place and design are
+    one text, with the fade it appeared with (the first part's)."""
+    slow = WORDS.model_copy(update={"fade_s": 1.0})
+    merged = merge_short_part(_cut(0, 2, text_layer=WORDS), _cut(1, 3, text_layer=slow), REEL)
+    assert merged.text_layers == (WORDS.model_copy(update={"start_s": 0.0, "end_s": 5.0}),)
+    assert merged.text_layers[0].fade_s == 0.5

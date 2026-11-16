@@ -59,7 +59,8 @@ PER_USER_LIMIT_NOTICE = (
     "Si alguien ya recibió muchas promociones esta semana, WhatsApp no le entrega la tuya y "
     "no se le cobra."
 )
-SEE_REPLIES = "Ver respuestas en Chats"
+#: m-25029799 — NEW TEXT, NOT DECIDED BY THE FOUNDER: the «Chats» tab it named is gone.
+SEE_REPLIES = "Ver respuestas en Por responder"
 
 RATE_CARD_NOTICE = "Tarifas de referencia pendientes: el costo es aproximado."
 #: m-24842994: «opt-in» in the owner's words.

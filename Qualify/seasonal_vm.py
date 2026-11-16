@@ -15,6 +15,8 @@ from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Final
 
+from .nav_url import WHATSAPP_CHATS_HREF
+
 # -- words ---------------------------------------------------------------------------------
 
 SECTION_TITLE: Final = "Stickers y videos de tu marca"
@@ -119,7 +121,8 @@ SEND_HINT: Final = (
     "Se mandan desde un chat de WhatsApp: toca «+» › «Fotos y videos» y elige los de tu marca."
 )
 SEND_LINK_LABEL: Final = "Ir a tus chats"
-SEND_LINK_HREF: Final = "/whatsapp?tab=chats"
+# m-25029799: the chats are attended in «Por responder», narrowed to WhatsApp.
+SEND_LINK_HREF: Final = WHATSAPP_CHATS_HREF
 
 #: Row statuses (`SeasonalMediaService`).
 PENDING: Final = "pending"

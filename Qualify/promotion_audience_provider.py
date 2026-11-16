@@ -14,6 +14,7 @@ from qualify_api.ads.audience_service import (
     search_audience_locations,
     suggest_audience_interests,
 )
+from qualify_api.ads.business_location import get_business_location, save_business_location
 from qualify_api.ads.custom_audiences import CustomAudienceSelection
 
 from .ad_custom_audiences_vm import CustomAudienceVM
@@ -22,6 +23,7 @@ from .promotion_audience_vm import (
     AudienceInterestVM,
     AudiencePlaceVM,
     AudienceReachVM,
+    captured_point,
     place_kind_label,
     reach_label,
 )
@@ -112,16 +114,9 @@ def audience_scope(tenant: str, piece: str, source: str, account: str) -> dict[s
 
 
 def find_places(scope: dict[str, UUID], query: str, kind: str) -> list[AudiencePlaceVM]:
-    """«En una ciudad o región» searches both kinds (Meta's search takes one type per call);
-    cities come first."""
+    """«En una ciudad o región» searches both kinds in one Meta call; cities come first."""
     kinds = ("country",) if kind == "country" else ("city", "region")
-
-    async def search() -> list:
-        found = await asyncio.gather(
-            *(search_audience_locations(**scope, query=query, location_type=k) for k in kinds)
-        )
-        return [row for rows in found for row in rows]
-
+    found = asyncio.run(search_audience_locations(**scope, query=query, location_types=kinds))
     return [
         AudiencePlaceVM(
             row.key,
@@ -131,7 +126,7 @@ def find_places(scope: dict[str, UUID], query: str, kind: str) -> list[AudienceP
             row.region,
             place_kind_label(row.type) if kind != "country" else "",
         )
-        for row in asyncio.run(search())
+        for row in sorted(found, key=lambda row: kinds.index(row.type))
     ]
 
 
@@ -165,3 +160,14 @@ def read_saved_audience(scope: dict[str, UUID]) -> tuple[dict[str, object], int]
 def store_audience(scope: dict[str, UUID], form: PromotionDraftVM, version: int) -> int:
     saved = save_audience(**scope, audience=audience_from_form(form), expected_version=version)
     return saved.version
+
+
+def read_business_location(tenant_id: UUID) -> tuple[str, str] | None:
+    """The business's saved point as the form's 6-decimal strings, or None."""
+    saved = get_business_location(tenant_id)
+    return captured_point({"latitude": saved[0], "longitude": saved[1]}) if saved else None
+
+
+def store_business_location(tenant_id: UUID, user_id: UUID, latitude: str, longitude: str) -> None:
+    """Only on the owner's explicit tap; raises AudienceUnavailable with a Spanish message."""
+    save_business_location(tenant_id, user_id, float(latitude), float(longitude))

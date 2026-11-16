@@ -107,11 +107,9 @@ def test_the_menu_is_only_drawn_in_the_live_composer() -> None:
 
 def test_choosing_an_option_opens_never_sends() -> None:
     state = WhatsAppChatsState()
-    state.rows = [
-        dataclasses.replace(
-            EMPTY_THREAD, thread_id="t", window_open=True, window_label="x", window_tone="ok"
-        )
-    ]
+    state.thread_row = dataclasses.replace(
+        EMPTY_THREAD, thread_id="t", window_open=True, window_label="x", window_tone="ok"
+    )
     state.open_thread_id = "t"
     events = state.open_pick(PICK_PRODUCTS)
     assert state.pick_open and state.pick_step == 1 and not state.pick_sending
@@ -157,6 +155,6 @@ def _chat_views() -> object:
     the single list of «Por responder» (`whatsapp_chat_pane` + `whatsapp_chat_layers`)."""
     import reflex as rx
 
-    from .whatsapp_tab_chats import chats_tab, whatsapp_chat_layers, whatsapp_chat_pane
+    from .whatsapp_tab_chats import whatsapp_chat_layers, whatsapp_chat_pane
 
-    return rx.fragment(chats_tab(), whatsapp_chat_pane(), whatsapp_chat_layers())
+    return rx.fragment(whatsapp_chat_pane(), whatsapp_chat_layers())

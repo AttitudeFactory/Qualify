@@ -75,7 +75,7 @@ class WhatsAppLocationState(rx.State):
     @rx.event
     def read_return(self) -> None:
         """Perfil mounted: «‹ Volver al chat» only for the app's own chats address."""
-        # #542's rule, the one for every `?volver=` to a chat: exact /whatsapp + tab=chats
+        # #542's rule, the one for every `?volver=` to a chat: an open chat of «Por responder»
         self.return_to = chat_return_path(self.router.url.query_parameters)
 
     @rx.event(background=True)

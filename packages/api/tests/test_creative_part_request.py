@@ -327,6 +327,48 @@ def test_the_owners_tap_records_and_raises_the_refusal_then_creates() -> None:
         )
 
 
+def test_a_local_part_outside_3_to_60_seconds_keeps_its_code_and_length() -> None:
+    """EF-06 (option A): a plan edited after the parent was created with a 2 s `local`
+    part — the kept refusal says `local_length_out_of_range`, which part and how long it
+    lasts (never `effects_invalid`), and nothing is made nor charged."""
+    from qualify_creative.schemas import SourceSegment
+
+    parts, content, repo, ledger, dispatcher, _, parent = world(
+        plan=(VideoPartPlan(seconds=5), VideoPartPlan(seconds=5)),
+        media={"parts_request": PartsRequest()},
+    )
+    stretch = SourceSegment(key=f"uploads/{TENANT_ID}/mi-cocina.mp4", start_s=0.0, end_s=2.0)
+    local = VideoPartPlan(mode="local", seconds=2, segments=(stretch,))
+    brief = repo.briefs[repo.drafts[parent].brief_id]
+    plan = (brief.media.parts[0], local)
+    repo.briefs[repo.drafts[parent].brief_id] = brief.model_copy(
+        update={"media": brief.media.model_copy(update={"parts": plan})}
+    )
+    rows = dict(ledger.rows)
+    stored = requests(parts, content, repo).after_generation(tenant_id=TENANT_ID, parent_id=parent)
+    assert stored is not None
+    assert (stored.refused, stored.part, stored.duration_s) == ("local_length_out_of_range", 2, 2.0)
+    assert _children(repo, parent) == [] and ledger.rows == rows and dispatcher.calls == []
+
+
+def test_the_length_is_kept_only_with_its_own_code() -> None:
+    """Review 2: `duration_s` travels only when the kept code is
+    `local_length_out_of_range` — a refusal that `recipe_unavailable` wins keeps None."""
+    from qualify_creative.effects import RecipeProblem
+
+    from qualify_api.creative.part_request import refusal_duration
+    from qualify_api.creative.video_pipeline.recipe import RecipeRefused
+
+    length = RecipeProblem(
+        code="local_length_out_of_range", part=2, field="segments", duration_s=2.0
+    )
+    text = RecipeProblem(code="recipe_unavailable", part=2, field="text_layers")
+    assert refusal_duration(RecipeRefused((length,))) == 2.0
+    assert refusal_of(RecipeRefused((length, text)))[0] == "recipe_unavailable"  # type: ignore[index]
+    assert refusal_duration(RecipeRefused((length, text))) is None
+    assert refusal_duration(PartNeedsPrevious(2)) is None and refusal_duration(None) is None
+
+
 def test_every_refusal_has_a_code() -> None:
     assert refusal_of(PartNeedsDescription(3)) == ("needs_description", 3, 0)
     assert refusal_of(PartNeedsPrevious(2)) == ("needs_previous", 2, 0)

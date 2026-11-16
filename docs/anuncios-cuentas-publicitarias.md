@@ -1,15 +1,19 @@
 # Conectar una cuenta publicitaria (m-24828972)
 
 La conexión orgánica sigue usando el permiso y la credencial de Página que ya tenía.
-«Autorizar anuncios» inicia un consentimiento adicional para una conexión de Instagram
-existente. La intención viaja dentro del estado firmado, con vencimiento, un solo uso y
-la misma protección de navegador del flujo orgánico. Se comprueba de nuevo la pertenencia
-del usuario al negocio al empezar y al regresar del consentimiento.
+«Actualizar acceso con Meta» (`Qualify/ad_accounts_ui.py`) renueva el permiso principal de
+una conexión de Instagram existente con `request_ads=False` (desde 8df99ebda): no hay un
+consentimiento de anuncios aparte y no viaja ninguna intención de anuncios en el estado
+firmado. El flujo conserva el vencimiento, el solo uso y la protección de navegador del
+flujo orgánico. Se comprueba de nuevo la pertenencia del usuario al negocio al empezar y al
+regresar del consentimiento. La ruta HTTP (`http/connections_routes.py`) todavía acepta
+`request_ads: true`, pero ninguna pantalla la usa.
 
 El resultado guarda **el token de usuario**, cifrado y separado del token de Página.
 `ad_oauth_credentials` es de solo inserción para la aplicación; únicamente el rol de
 credenciales puede leer el cifrado. Cada fila corresponde a una versión exacta de la
-conexión. Una reconexión sin anuncios invalida la autorización anterior para anuncios;
+conexión. Una reconexión conserva la autorización para anuncios si Meta vuelve a conceder
+`ads_management` (`connections/service.py:376-378`); si no lo concede, la invalida;
 una revocación, eliminación o vencimiento también la bloquea. La eliminación de datos de
 Conexiones borra estas credenciales y los metadatos de cuentas mediante su rol limitado.
 
@@ -18,10 +22,16 @@ Conexiones borra estas credenciales y los metadatos de cuentas mediante su rol l
 El código **no cambia el panel de Meta**. Antes de probar el consentimiento real, un
 administrador debe configurar Facebook Login for Business para permitir elegir cuentas
 publicitarias, además de los activos orgánicos, y los permisos `ads_management`, `ads_read`,
-`pages_manage_ads` y `business_management`. Se puede indicar una configuración separada en
-`QUALIFY_META_ADS_CONFIG_ID`. La configuración orgánica `QUALIFY_META_CONFIG_ID` permanece
-separada; sin una configuración adicional, el diálogo de anuncios envía la lista de permisos
-por `scope`. La concesión real se lee de `/me/permissions`; pedir un permiso no lo concede.
+`pages_manage_ads` y `business_management`.
+
+**Cómo se piden hoy (2026-11-16, m-25039488).** El botón de anuncios de la app no abre un
+diálogo de anuncios aparte: renueva el permiso **principal** de Meta con `request_ads=False`
+(`Qualify/ad_accounts_provider.py` `begin_ads_connect`, desde 8df99ebda, m-24828972). Por eso,
+en producción, esos permisos tienen que estar en `QUALIFY_META_SCOPES` o en la configuración
+de `QUALIFY_META_CONFIG_ID`. El camino con `request_ads=True` sigue en el código
+(`config.py` `ads_requested_scopes`, `QUALIFY_META_ADS_CONFIG_ID`, `meta_oauth.py:212-226`),
+pero ninguna pantalla lo usa. La concesión real se lee de `/me/permissions`; pedir un permiso
+no lo concede.
 
 No se ha ejecutado consentimiento real ni se ha verificado el acceso de la aplicación a
 estos permisos en esta entrega. La revisión de permisos de Meta queda en m-24828986.

@@ -36,7 +36,9 @@ being cached. Number scoping is the state's: it only asks for message ids of the
 conversation it loaded through `conversation` (which `_owned` already scoped to the
 number); RLS bounds the read to the tenant either way.
 
-**Number scoping.** The tab shows ONE number (`WhatsAppState.selected_connection_id`).
+**Number scoping.** A chat opens on its number (the `cuenta` of its address in «Por
+responder», checked to be one of the business's). Since m-25029799 there is no number
+list here: the single list of «Por responder» (`inbox.unified`) lists the chats.
 Every thread-level call re-reads the thread and refuses (`ThreadNotFound`) one that
 belongs to another number of the same tenant, so a stale or forged thread id from the
 browser can never act across numbers — RLS already stops it across tenants.
@@ -109,7 +111,6 @@ from sqlalchemy import func, select
 
 from .whatsapp_chats_vm import (
     MESSAGES_PAGE,
-    THREADS_LIMIT,
     AgentVM,
     DirectionsVM,
     SeasonalPickVM,
@@ -426,12 +427,6 @@ class ChatsGateway:
         return self._store.user_id_for_email(tenant_id, email)
 
     # --- reads -------------------------------------------------------------------------
-
-    def threads(self, tenant_id: UUID, connection_id: UUID) -> list[ThreadSummary]:
-        """All of this number's conversations (both statuses: the filters are local)."""
-        return self.service.list_threads(
-            tenant_id, connection_id=connection_id, status=None, limit=THREADS_LIMIT
-        )
 
     def _owned(self, tenant_id: UUID, connection_id: UUID, thread_id: UUID) -> ThreadSummary:
         summary = self.service.get_thread_summary(tenant_id, thread_id)
@@ -756,12 +751,6 @@ class ChatsGateway:
     ) -> PaymentStatus | None:
         self._owned(tenant_id, connection_id, thread_id)
         return self.payments.payment_for(tenant_id, thread_id)
-
-    def payment_statuses(
-        self, tenant_id: UUID, thread_ids: Sequence[UUID]
-    ) -> dict[UUID, PaymentStatus]:
-        """For the chats list (RLS bounds it to the tenant; the ids come from `threads`)."""
-        return self.payments.payments_for(tenant_id, thread_ids)
 
     def confirm_payment(
         self,

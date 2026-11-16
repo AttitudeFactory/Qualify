@@ -160,6 +160,10 @@ class TemplateManifest(BaseModel):
     #: `qualify_creative/layer_spec/catalog_v1.json`; a test comparing the two lands with
     #: whichever of the two branches merges second.
     layer_catalog: dict[str, Any] | None = None
+    #: `video_text` (EF-05, m-25026573): how the owner's text over a video reuses
+    #: `layer_still`'s catalog — its own `overlay_revision`, the title lines and scrim heights
+    #: a video text may take, the centre of «middle». See `qualify_creative.render.video_text`.
+    video_text: dict[str, Any] | None = None
 
     @model_validator(mode="after")
     def _well_formed(self) -> TemplateManifest:

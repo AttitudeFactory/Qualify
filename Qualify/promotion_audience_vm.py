@@ -58,6 +58,17 @@ def reach_label(lower: int, upper: int) -> str:
 # «Cerca de mi negocio» (m-24828977): a distance around the phone's location at the business.
 POINT_NAME = "Tu negocio"  # MapPoint.name: internal, Meta never receives it
 POINT_CAPTURED = "Listo: usamos la ubicación de tu negocio"
+# m-25038694: the business location saved on the tenant, so the owner need not be there.
+POINT_FROM_SAVED = "Usamos la ubicación guardada de tu negocio"
+POINT_LOADING = "Buscando la ubicación guardada de tu negocio…"
+# A good reading at the business is saved right away (UX review, m-25038694).
+BUSINESS_LOCATION_SAVED = (
+    "Guardamos la ubicación de tu negocio. La próxima vez la usamos aunque no estés allí."
+)
+BUSINESS_LOCATION_UPDATED = "Listo: actualizamos la ubicación de tu negocio."
+BUSINESS_LOCATION_SAVE_FAILED = (
+    "No pudimos guardarla para la próxima vez, pero este anuncio sí la usa."
+)
 NEAR_PLACE_LABEL = "Cerca de tu negocio"
 NEAR_HOUSING = "No disponible para anuncios de vivienda."
 POINT_DISTANCES = ("1", "3", "5", "10")
@@ -86,6 +97,16 @@ LOCATION_IMPRECISE = (
     "del teléfono y vuelve a intentarlo, o elige «En una ciudad o región»."
 )
 COUNTRY_UNKNOWN = "No sabemos en qué país está tu negocio. Elige «En una ciudad o región»."
+NEAR_LOCATION_MISSING = "Toca «Estoy en el negocio: usar mi ubicación» para marcar tu negocio."
+LOCATE_BUTTON_ID = "audience-locate"
+CITY_RADIUS_EMPTY_HINT = (
+    "Si la dejas vacía, el anuncio se muestra en toda la ciudad. "
+    "Si escribes una distancia, que sea de 17 km o más."
+)
+CITY_RADIUS_WRONG_HINT = (
+    "Escribe una distancia entre 17 y 80 km, o déjala vacía para usar toda la ciudad. "
+    "Para llegar más cerca, elige «Cerca de mi negocio»."
+)
 NEAR_HOUSING_PROBLEM = (
     "«Cerca de mi negocio» no está disponible para anuncios de vivienda. "
     "Elige «En una ciudad o región»."

@@ -6,7 +6,6 @@ the fallback name, the accessible name — and both pages draw the same `chat_ro
 
 from __future__ import annotations
 
-import dataclasses
 import re
 from datetime import timedelta
 from pathlib import Path
@@ -39,22 +38,13 @@ from .inbox_list_vm import as_chat_row as inbox_chat_row
 from .replies_vm import COMMERCIAL_BADGE
 from .test_inbox_list import NOW as IG_NOW
 from .test_inbox_list import ZONE as IG_ZONE
-from .test_inbox_list import ig_row
+from .test_inbox_list import ig_row, inbox_row
 from .test_whatsapp_chats import NOW as WA_NOW
 from .test_whatsapp_chats import ZONE as WA_ZONE
 from .test_whatsapp_chats import _thread as wa_thread
 from .whatsapp_chats_state import WhatsAppChatsState
-from .whatsapp_chats_vm import (
-    AWAITING_FILTER_LABEL,
-    FILTER_UNREAD,
-    OUTBOUND_PREFIX,
-    WINDOW_CLOSED_LINE,
-    window_pill,
-)
-from .whatsapp_chats_vm import FILTERS as WA_FILTERS
-from .whatsapp_chats_vm import as_chat_row as wa_chat_row
+from .whatsapp_chats_vm import WINDOW_CLOSED_LINE, window_pill
 from .whatsapp_chats_vm import build_thread_row as wa_build
-from .whatsapp_chats_vm import filter_threads as wa_filter
 
 _CSS = Path(__file__).resolve().parent.parent / "assets" / "qualify-inbox.css"
 
@@ -174,13 +164,9 @@ def test_row_and_chat_header_say_the_same_minutes() -> None:
         header, _tone = window_words(True, IG_NOW + left, IG_NOW, IG_ZONE)
         assert ig.pill_label == f"Quedan {said} min para responder"
         assert header.startswith(f"Quedan {said} min para responder: ")
-        wa_row = wa_chat_row(
-            wa_build(
-                wa_thread(window=WindowView(open=True, closes_at=WA_NOW + left)),
-                now=WA_NOW,
-                zone=WA_ZONE,
-            )
-        )
+        # m-25029799: a WhatsApp row is the single list's too (WhatsApp's own is gone).
+        wa_row = inbox_chat_row(inbox_row(window_closes_at=IG_NOW + left), now=IG_NOW, zone=IG_ZONE)
+        assert wa_row is not None
         wa_header, _ = window_pill(True, WA_NOW + left, WA_NOW, WA_ZONE)
         assert wa_row.pill_label == f"Quedan {said} min para responder"
         # m-25027371: the header and the send panel use the row's words too
@@ -202,10 +188,11 @@ def test_initials_come_from_letters_only() -> None:
 
 
 def test_whatsapp_profile_names_never_give_a_symbol_as_initial() -> None:
+    """The open chat's header (m-25029799: the row is the single list's, tested in
+    `test_inbox_list`)."""
+
     def initials(name: str | None) -> str:
-        return wa_chat_row(
-            wa_build(wa_thread(contact_name=name), now=WA_NOW, zone=WA_ZONE)
-        ).initials
+        return wa_build(wa_thread(contact_name=name), now=WA_NOW, zone=WA_ZONE).initials
 
     assert initials("🇨🇴 Laura") == "L"
     assert initials("~Juan") == "J"
@@ -227,7 +214,10 @@ def test_the_fallback_names_the_channel() -> None:
 
 
 def test_a_whatsapp_chat_with_neither_name_nor_number() -> None:
-    row = wa_chat_row(wa_build(wa_thread(contact_name=None, wa_id=""), now=WA_NOW, zone=WA_ZONE))
+    row = inbox_chat_row(
+        inbox_row(counterpart_name=None, counterpart_phone=None), now=IG_NOW, zone=IG_ZONE
+    )
+    assert row is not None
     assert row.title == "Cliente de WhatsApp" and row.initials == ""
 
 
@@ -248,98 +238,7 @@ def test_the_accessible_name_says_the_channel_and_the_one_rule() -> None:
     )
 
 
-# --- WhatsApp → shared row ------------------------------------------------------------------
-
-
-def test_whatsapp_row_in_the_shared_shape() -> None:
-    row = wa_chat_row(wa_build(wa_thread(), now=WA_NOW, zone=WA_ZONE))
-    assert row.channel == CHANNEL_WHATSAPP
-    assert (row.title, row.initials) == ("Laura Gómez", "LG")
-    # No second line (UX doc §2): the phone is not on the row nor in its accessible name.
-    assert not hasattr(row, "second_line") and "+57" not in row.aria_label
-    assert row.preview == "¿Tienen domicilio?" and row.time_label == "hace 5 min"
-    assert row.waiting  # m-25017859: the rule's verdict → the dot
-    assert row.pill_label == ""  # window comfortably open, no payment: no pill
-    assert row.aria_label == "Laura Gómez, por WhatsApp, por responder"
-    # Read but unanswered still waits; answered (whatever the unread count) does not.
-    read = wa_chat_row(wa_build(wa_thread(unread_count=0), now=WA_NOW, zone=WA_ZONE))
-    assert read.waiting
-    answered = wa_build(wa_thread(unread_count=3, awaiting_reply=False), now=WA_NOW, zone=WA_ZONE)
-    assert not wa_chat_row(answered).waiting
-
-
-def test_whatsapp_row_drops_mode_and_closed_and_keeps_one_pill() -> None:
-    closing = WindowView(open=True, closes_at=WA_NOW + timedelta(minutes=30))
-    vm = wa_build(
-        wa_thread(
-            unread_count=0,
-            awaiting_reply=False,
-            status="closed",
-            automation_paused=True,
-            last_message_direction="outbound",
-            last_message_preview="Ya va en camino",
-            window=closing,
-        ),
-        now=WA_NOW,
-        zone=WA_ZONE,
-    )
-    row = wa_chat_row(vm)
-    assert row.preview == OUTBOUND_PREFIX + "Ya va en camino" and not row.waiting
-    assert (row.pill_label, row.pill_tone) == ("Quedan 30 min para responder", "warn")
-    assert row.closed  # muted where a chip mixes open and closed chats
-    awaiting = wa_chat_row(dataclasses.replace(vm, payment_awaiting=True))
-    assert awaiting.pill_label == "Quedan 30 min para responder"  # the closing window wins
-    calm = wa_chat_row(dataclasses.replace(vm, payment_awaiting=True, window_minutes=0))
-    assert (calm.pill_label, calm.pill_tone) == ("Esperando el pago", "neutral")
-    review = wa_chat_row(dataclasses.replace(vm, payment_review=True, payment_awaiting=True))
-    assert review.pill_label == PAYMENT_REVIEW_PILL
-    for gone in ("Cerrado", "Usando tu menú", "Respondes tú"):
-        assert gone not in (row.pill_label, row.aria_label)
-    assert row.aria_label.endswith(", cerrado, Quedan 30 min para responder")
-
-
-def test_whatsapp_assigned_agent_stays_on_the_row() -> None:
-    vm = dataclasses.replace(
-        wa_build(wa_thread(), now=WA_NOW, zone=WA_ZONE), agent_initials="YR", agent_name="Yesika"
-    )
-    assert (wa_chat_row(vm).agent_initials, wa_chat_row(vm).agent_name) == ("YR", "Yesika")
-
-
-# --- the states: the chat rows follow the lists ---------------------------------------------
-
-
-def test_whatsapp_state_chat_rows_follow_filter_and_refresh() -> None:
-    state = WhatsAppChatsState()
-    rows = [
-        wa_build(
-            wa_thread(id=f"00000000-0000-0000-0000-00000000000{i}", **kw), now=WA_NOW, zone=WA_ZONE
-        )
-        for i, kw in enumerate(
-            (
-                {},
-                {"unread_count": 0, "awaiting_reply": False},
-                {"status": "closed", "unread_count": 3, "awaiting_reply": False},
-            ),
-            start=1,
-        )
-    ]
-    rows[1] = dataclasses.replace(rows[1], payment_review=True)
-    state.rows = rows
-    for key, _label in WA_FILTERS:
-        state.filter_key = key
-        assert [r.thread_id for r in state.visible_chat_rows] == [
-            r.thread_id for r in wa_filter(state.rows, key)
-        ]
-    # m-25017859: the chip the badge opens lists by the rule, not by the unread count —
-    # the closed chat with 3 unread is not there; its label is ONE constant.
-    state.filter_key = FILTER_UNREAD
-    assert [r.thread_id for r in state.visible_chat_rows] == [rows[0].thread_id]
-    assert state.filter_unread_label == f"{AWAITING_FILTER_LABEL} · 1"
-    assert AWAITING_FILTER_LABEL == "Por responder"
-    state.filter_key = WA_FILTERS[0][0]
-    state.rows = rows[:1]  # a refresh
-    assert [r.thread_id for r in state.visible_chat_rows] == [rows[0].thread_id]
-    assert state.visible_chat_rows[0] == wa_chat_row(rows[0])
+# --- the open WhatsApp chat's row (m-25029799: no WhatsApp list any more) ---------------------
 
 
 def test_whatsapp_window_closed_while_choosing_clears_the_minutes() -> None:
@@ -349,21 +248,18 @@ def test_whatsapp_window_closed_while_choosing_clears_the_minutes() -> None:
         now=WA_NOW,
         zone=WA_ZONE,
     )
-    state.rows = [closing]
-    assert state.visible_chat_rows[0].pill_label == "Quedan 5 min para responder"
-    assert closing.window_line == "Quedan 5 min para responder"
+    state.thread_row = closing
+    state.open_thread_id = closing.thread_id
+    assert state.open_thread.window_line == "Quedan 5 min para responder"
     state._mark_window_closed(closing.thread_id)
-    marked = state.rows[0]
-    assert (marked.window_open, marked.window_tone, marked.window_minutes) == (
-        False,
-        "neutral",
-        0,
-    )
-    assert state.visible_chat_rows[0].pill_label == ""
+    marked = state.thread_row
+    assert (marked.window_open, marked.window_tone) == (False, "neutral")
     # m-25027371: the open chat's header line closes with it (never «Quedan 5 min»)
     assert (marked.window_line, marked.window_line_tone) == (WINDOW_CLOSED_LINE, "neutral")
-    state.open_thread_id = closing.thread_id
     assert state.open_thread.window_line == WINDOW_CLOSED_LINE
+    # Another chat's id changes nothing.
+    state._mark_window_closed("00000000-0000-0000-0000-00000000dead")
+    assert state.thread_row == marked
 
 
 def test_whatsapp_window_fields_change_together() -> None:
@@ -380,12 +276,12 @@ def test_whatsapp_window_fields_change_together() -> None:
 # --- the rendered row -----------------------------------------------------------------------
 
 
-def test_both_lists_render_the_shared_row() -> None:
-    wa = str(whatsapp_tab_chats.chats_tab())
-    assert "visible_chat_rows" in wa and "visible_rows" not in wa
-    assert ROW_KEY_HANDLER._js_expr in wa  # the shared row, keyboard and all
+def test_the_single_list_renders_the_shared_row_and_whatsapp_has_no_list() -> None:
+    """m-25029799: one list draws every chat's row; WhatsApp's own list is gone."""
     single = str(inbox_list_page.inbox_list_pane())
     assert "inbox_list_state" in single and ROW_KEY_HANDLER._js_expr in single
+    assert not hasattr(whatsapp_tab_chats, "chats_tab")
+    assert "visible_chat_rows" not in str(whatsapp_tab_chats.whatsapp_chat_pane())
     from . import conversations_page
 
     # m-25027371: one thread too — both chats draw their header pills with one helper.

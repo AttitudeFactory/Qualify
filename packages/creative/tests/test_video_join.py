@@ -6,6 +6,7 @@ from __future__ import annotations
 import io
 from fractions import Fraction
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -14,7 +15,12 @@ np = pytest.importorskip("numpy")
 
 from qualify_creative.compose import text_layer  # noqa: E402
 from qualify_creative.video import JoinClip, JoinError, join_clips  # noqa: E402
-from qualify_creative.video.join import JOIN_SAMPLE_RATE, JOIN_VERSION  # noqa: E402
+from qualify_creative.video.join import (  # noqa: E402
+    JOIN_SAMPLE_RATE,
+    JOIN_VERSION,
+    concat_segments,
+    encode_segment,
+)
 
 SIZE = (180, 320)  # a small 9:16
 
@@ -276,3 +282,172 @@ def test_a_missing_or_corrupt_part_is_a_join_error(tmp_path: Path) -> None:
         assert caught.value.__cause__ is not None
     assert not (tmp_path / "join.mp4").exists()
     assert not list(tmp_path.glob("*.partial.mp4"))  # nothing left beside it
+
+
+# --- EF-01 in the join (m-25029131): a phone part comes out upright --------------------
+
+#: `video-rotated-<n>.mp4` (`fixtures/make_rotated_fixtures.py`): 64×36 stored, 1 s at
+#: 10 fps, a display matrix of n° counter-clockwise; a red band on the stored top edge and
+#: a blue one on the stored left edge. Turned 90° the red band ends on the left and the
+#: blue one at the bottom; turned 270° (an iPhone held upright) red right, blue top.
+FIXTURES = Path(__file__).parent / "fixtures"
+TURNED_EDGES = {90: ("left", "bottom"), 270: ("right", "top")}
+UPRIGHT_SIZE = (72, 128)  # the turned 36×64 at twice its size: no crop, only the scale
+
+
+def _rotated_part(tmp_path: Path, rotation: int) -> Path:
+    path = tmp_path / f"phone-{rotation}.mp4"
+    path.write_bytes((FIXTURES / f"video-rotated-{rotation}.mp4").read_bytes())
+    return path
+
+
+def _edges(pixels: np.ndarray) -> dict[str, tuple[int, ...]]:
+    """The colour at the middle of each edge of an RGB picture (rows × columns × 3)."""
+    height, width = pixels.shape[:2]
+    return {
+        "left": tuple(pixels[height // 2, 2]),
+        "right": tuple(pixels[height // 2, width - 3]),
+        "top": tuple(pixels[2, width // 2]),
+        "bottom": tuple(pixels[height - 3, width // 2]),
+    }
+
+
+def _assert_upright(pixels: np.ndarray, rotation: int) -> None:
+    """Portrait, and turned the way a player shows it — not merely stretched to portrait."""
+    height, width = pixels.shape[:2]
+    assert height > width, f"{width}×{height} is lying down"
+    red_edge, blue_edge = TURNED_EDGES[rotation]
+    edges = _edges(pixels)
+    red, blue = edges[red_edge], edges[blue_edge]
+    assert red[0] > 180 and red[1] < 80 and red[2] < 80, edges
+    assert blue[2] > 180 and blue[0] < 80 and blue[1] < 80, edges
+
+
+def _frames(data_or_path: bytes | Path) -> tuple[tuple[int, int], list[Any]]:
+    source = io.BytesIO(data_or_path) if isinstance(data_or_path, bytes) else str(data_or_path)
+    with av.open(source) as out:
+        stream = out.streams.video[0]
+        size = (stream.codec_context.width, stream.codec_context.height)
+        return size, list(out.decode(stream))
+
+
+@pytest.mark.parametrize("rotation", [90, 270])
+def test_a_phone_part_is_joined_upright(tmp_path: Path, rotation: int) -> None:
+    phone = _rotated_part(tmp_path, rotation)
+    vertical = _part(tmp_path / "vertical.mp4", size=(36, 64), seconds=0.5, fps=10, audio=False)
+    out = tmp_path / "join.mp4"
+    joined = join_clips([JoinClip(phone), JoinClip(vertical)], out=out, size=UPRIGHT_SIZE, fps=10)
+
+    assert (joined.width, joined.height) == UPRIGHT_SIZE
+    assert joined.frames == 15  # 1 s + 0.5 s at 10 fps
+    size, frames = _frames(out)
+    assert size == UPRIGHT_SIZE
+    assert len(frames) == 15
+    assert frames[0].rotation == 0  # the turn is in the pixels, no matrix written
+    _assert_upright(frames[0].to_ndarray(format="rgb24"), rotation)
+    _assert_upright(frames[9].to_ndarray(format="rgb24"), rotation)  # the part's last frame
+
+    assert joined.poster is not None
+    from PIL import Image  # noqa: PLC0415
+
+    poster = Image.open(io.BytesIO(joined.poster))
+    assert poster.size == UPRIGHT_SIZE
+    _assert_upright(np.asarray(poster.convert("RGB")), rotation)
+
+
+def test_a_phone_part_after_a_vertical_one_is_upright_too(tmp_path: Path) -> None:
+    vertical = _part(tmp_path / "vertical.mp4", size=(36, 64), seconds=0.5, fps=10, audio=False)
+    phone = _rotated_part(tmp_path, 270)
+    out = tmp_path / "join.mp4"
+    join_clips([JoinClip(vertical), JoinClip(phone)], out=out, size=UPRIGHT_SIZE, fps=10)
+    size, frames = _frames(out)
+    assert size == UPRIGHT_SIZE and len(frames) == 15
+    _assert_upright(frames[5].to_ndarray(format="rgb24"), 270)
+
+
+def test_a_part_turned_by_no_right_angle_is_a_join_error(tmp_path: Path) -> None:
+    good = _part(tmp_path / "good.mp4", size=(36, 64), seconds=0.5, fps=10, audio=False)
+    tilted = _rotated_part(tmp_path, 45)
+    with pytest.raises(JoinError, match="phone-45.mp4"):
+        join_clips([JoinClip(good), JoinClip(tilted)], out=tmp_path / "j.mp4", size=UPRIGHT_SIZE)
+    assert not (tmp_path / "j.mp4").exists()
+
+
+def test_a_phone_segment_is_upright_and_concatenates_upright(tmp_path: Path) -> None:
+    """The VE-10b path: `encode_segment` shares `_part_video`, so a phone part's segment
+    — and its poster — are upright, and `concat_segments` keeps them so."""
+    phone = encode_segment(
+        JoinClip(_rotated_part(tmp_path, 270)),
+        out=tmp_path / "seg-1.mp4",
+        pcm_out=tmp_path / "seg-1.pcm",
+        size=UPRIGHT_SIZE,
+        fps=10,
+        fade_out=True,
+        poster=True,
+    )
+    vertical = encode_segment(
+        JoinClip(_part(tmp_path / "v.mp4", size=(36, 64), seconds=0.5, fps=10, audio=False)),
+        out=tmp_path / "seg-2.mp4",
+        pcm_out=tmp_path / "seg-2.pcm",
+        size=UPRIGHT_SIZE,
+        fps=10,
+        fade_in=True,
+    )
+    assert phone.frames == 10
+    size, frames = _frames(phone.path)
+    assert size == UPRIGHT_SIZE
+    _assert_upright(frames[0].to_ndarray(format="rgb24"), 270)
+    assert phone.poster is not None
+    from PIL import Image  # noqa: PLC0415
+
+    _assert_upright(np.asarray(Image.open(io.BytesIO(phone.poster)).convert("RGB")), 270)
+
+    joined = concat_segments([phone, vertical], out=tmp_path / "final.mp4", fps=10)
+    assert (joined.width, joined.height) == UPRIGHT_SIZE
+    assert joined.frames == 15
+    size, frames = _frames(joined.path)
+    assert size == UPRIGHT_SIZE and len(frames) == 15
+    _assert_upright(frames[0].to_ndarray(format="rgb24"), 270)
+
+
+def test_without_a_turn_the_join_graph_is_the_one_before_ef01(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A part with no display matrix gets exactly the graph `_part_video` built before
+    EF-01 (1616ee18): the same nodes, in the same order, with the same arguments."""
+    calls: list[tuple[str, object]] = []
+    real_graph = av.filter.Graph
+
+    class _SpyGraph:
+        """Records what `_part_video` adds, then hands it to a real graph."""
+
+        def __init__(self) -> None:
+            self._graph = real_graph()
+
+        def add_buffer(self, template: object = None, **kwargs: object) -> object:
+            calls.append(("buffer", type(template).__name__))
+            return self._graph.add_buffer(template=template, **kwargs)
+
+        def add(self, filter: str, args: object = None, **kwargs: object) -> object:  # noqa: A002
+            calls.append((filter, args))
+            return self._graph.add(filter, args, **kwargs)
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self._graph, name)
+
+    part = _part(tmp_path / "plain.mp4", size=(36, 64), seconds=0.5, fps=10, audio=False)
+    layer = text_layer(size=UPRIGHT_SIZE, cta="Pide ya", palette=("#1F2937", "#0EA5A4"))
+    monkeypatch.setattr(av.filter, "Graph", _SpyGraph)
+    join_clips([JoinClip(part)], out=tmp_path / "j.mp4", size=UPRIGHT_SIZE, fps=10, overlay=layer)
+    width, height = UPRIGHT_SIZE
+    overlay_buffer = calls.pop(5)
+    assert overlay_buffer[0] == "buffer"
+    assert str(overlay_buffer[1]).startswith(f"video_size={UPRIGHT_SIZE[0]}x{UPRIGHT_SIZE[1]}")
+    assert calls == [
+        ("buffer", "VideoStream"),
+        ("crop", f"w='min(iw,ih*{width}/{height})':h='min(ih,iw*{height}/{width})'"),
+        ("scale", f"{width}:{height}"),
+        ("format", "yuv420p"),
+        ("buffersink", None),
+        ("overlay", "x=0:y=0:format=auto:eof_action=repeat"),
+    ]

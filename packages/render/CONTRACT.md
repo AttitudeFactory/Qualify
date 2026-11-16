@@ -108,7 +108,7 @@ composition both apply it. The caller must send the SAME resolved title face the
 was given (`BrandKit.typeface`: the heading face, else the body one), or Python accepts a
 script title the render refuses.
 
-**Band 1:1 height** (2026-11-15, `layout_version` 3, `engine_revision` 3): a 1:1 `band` may take up to 43 % of the height (was 42 %), so a script `plate` that falls to `band` keeps its price line. The fallback chain never drops the price for lack of height; a price line wider than its box (the title's width) is still dropped and reported in `dropped_slots` — whether that should refuse the piece instead is an open founder decision.
+**Band 1:1 height** (2026-11-15, `layout_version` 3, `engine_revision` 3): a 1:1 `band` may take up to 43 % of the height (was 42 %), so a script `plate` that falls to `band` keeps its price line. The fallback chain never drops the price for lack of height; a price line wider than its box (the title's width) is still dropped and reported in `dropped_slots`. **Decided by the founder on 2026-11-16, not built yet:** a price that does not fit its box must make the layer be refused so Claude rewrites the text, and a piece with a price is never published without it (ADR 49 §8.1, D5); it lands with the story that wires `compose_layer` to live generation.
 
 **Engine revision** (`layer_catalog.engine_revision`, today 3). The template version pins the
 props contract; the engine revision pins the pixels. It is bumped with ANY change to
@@ -119,6 +119,32 @@ new object, never «same key, different pixels». Fonts follow the same rule: a 
 Google Fonts catalogue knows is measured AND drawn with that face or the job fails (`timeout` /
 `dependency_failed`) — it never silently falls back to Noto Sans under the same key; only an
 unknown family uses the fallback, deterministically, with a `warnings` entry.
+
+`video_text` **v1** (EF-05, m-25026573; D1 of ADR 50) draws the owner's text over a video as
+ONE transparent PNG (port `overlay`, 1080×1920, format 9:16) that Python lays over every frame
+with PyAV (`qualify_creative.video.text_overlay`, called by
+`qualify_api.creative.video_pipeline.compose`) — Remotion never encodes the video. Ports:
+`texts.text` (string, ≤ 120, the editor's `VIDEO_TEXT_MAX`), `texts.place` (`top` · `middle` ·
+`bottom`), `texts.layout_id` (`scrim` only in v1), `texts.layout_version` (must equal
+layer_still's `layer_catalog.layout_version`), `brand` (fonts and palette; no logo). It is NOT a
+second layer system: the composition (`src/templates/video_text/`) imports layer_still's
+catalog, its fonts rule, its canvas measurer (`canvasMeasurer`), its engine (`resolveLayer`)
+and its `Scrim` and `TextBlocks` components; a text that fits a 9:16 image's scrim is laid out
+with the identical boxes (`server/video-text.test.mjs`). What a video adds, on a COPY of the
+catalog (`manifest.video_text`): the title may take `title_lines` lines (an image title 2), the
+scrim grows through `cover_steps` when the text is too tall for 45 % (the text still sits over
+≥ 60 %), the place is never moved by the image's fallback chain (a fallback is a failure), and
+«middle» — which the scrim has not — centres the lines on `middle_center_y` with the scrim
+mirrored around them. Every line stays inside the 9:16 safe zone (y 270–1536 — Instagram's
+250 px top / 300 px bottom are inside it). A text that cannot be drawn fails with
+`invalid_parameters` and a `refusal` whose `slot` is `text` (`word_too_wide`,
+`title_does_not_fit`, `outside_safe_zone`). The report (`outputs.overlay.report`) carries
+`place`, `lines`, `size`, `cover`, `text_box`, `engine_revision` (layer_still's — the shared
+engine) and `overlay_revision` (`manifest.video_text.overlay_revision`, bumped with any change
+under `src/templates/video_text/` that moves a pixel); Python puts both revisions AND a digest of the manifest's `video_text` block (title lines, scrim heights, the centre of «middle») in the job id. Because the service hands back a finished job — failed or cancelled too — under its id, Python resubmits a text whose job it gets back already failed or cancelled under a derived id (`uuid5(job_id, "attempt-N")`, at most 5), so a retry renders afresh; a refusal is not retried (the same text is refused again). The attempt is recorded with the piece.
+Exporting `Scrim`, `TextBlocks` and `canvasMeasurer` from `LayerStill.tsx` moved no pixel
+(layer_still story renders hash-identical before and after), so layer_still's
+`engine_revision` stays 3.
 
 Order of the 422 checks (changed with m-25017285): `POST /estimate` and `/render` now check
 that every `asset://` exists **before** validating the props against the manifest, because a

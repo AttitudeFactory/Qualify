@@ -158,8 +158,9 @@ class PartsExtendUnavailable(PartsUnavailable):
 
 
 class PartsLocalUnavailable(PartsUnavailable):
-    """EF-02: a «Tu video, con efectos» part (`local`) is not produced until EF-05/EF-06
-    — refused before any child, charge or queue write, never made as a Seedance part."""
+    """EF-02: a «Tu video, con efectos» part (`local`) could not be produced. Not raised
+    since EF-06 makes `local` parts (`video_pipeline.local`); kept so a stored refusal
+    (`local_unavailable`) and its callers still read."""
 
     reason = "local_unavailable"
 
@@ -1360,6 +1361,7 @@ def _child_brief(
         parts_removed=(),
         parts_provenance=None,  # the plan's (VE-14), the parent's alone
         parts_request=None,  # the owner's ask (m-24921081), the parent's alone
+        video_recipe=None,  # ED-15: the whole video's recipe, the parent's alone
         part=part,
         duration_seconds=part.generation_seconds,
         clip_reference_mode=CLIP_MODE_OF_PART[plan.mode],
@@ -1367,7 +1369,7 @@ def _child_brief(
         # (`video_pipeline.recipe_of` reads a child's from `part`); the effects pipeline
         # version is the server's to stamp
         effects=plan.effects,
-        text_layer=plan.text_layer,
+        text_layers=plan.text_layers,
         segments=plan.segments,
         mode_rule_version=plan.mode_rule_version,
         mode_reason=plan.mode_reason,
@@ -1458,6 +1460,8 @@ class PartsService:
         total = Decimal(0)
         for brief in briefs:
             media = brief.media
+            if media.clip_reference_mode == "local":
+                continue  # EF-06: made here, from the owner's own video — USD 0
             total += self._weights.generated_video_usd(
                 media.duration_seconds,
                 reference_videos=len(media.clip_video_keys),
@@ -1553,13 +1557,9 @@ class PartsService:
             for index, part in enumerate(plan, 1)
         ):
             raise PartsExtendUnavailable()
-        # EF-02: «Tu video, con efectos» is not produced yet (EF-05/EF-06): an active
-        # `local` part still to be made blocks new work — never made as a Seedance part
-        if any(
-            part.mode == "local" and index not in removed and index not in made_before
-            for index, part in enumerate(plan, 1)
-        ):
-            raise PartsLocalUnavailable()
+        # EF-06: a `local` part («Tu video, con efectos») is made by the creative worker
+        # from its stretches at cost 0 (`video_pipeline.local`), like any other part's
+        # child — its recipe checked by `prepare_new_generation` before any row
         source_entries = (*plan, *brief.media.parts_removed)
         if analysis is None:
             check_split_parts_for_tenant(tenant_id=tenant_id, parts=source_entries)

@@ -259,7 +259,7 @@ def _row(thread_id: str = THREAD, *, window_open: bool = True, tone: str = "ok")
 def _state() -> WhatsAppChatsState:
     state = WhatsAppChatsState()
     state._connection_id = CONN
-    state.rows = [_row(), _row(OTHER_THREAD)]
+    state.thread_row = _row()
     state.open_thread_id = THREAD
     return state
 
@@ -350,7 +350,7 @@ def test_errors_never_carry_the_exception_text() -> None:
 
 def test_the_button_only_opens_while_the_chat_may_get_a_free_message() -> None:
     state = WhatsAppChatsState()
-    state.rows = [_row(window_open=False, tone="neutral")]
+    state.thread_row = _row(window_open=False, tone="neutral")
     state.open_thread_id = THREAD
     assert state.open_pick(PICK_PRODUCTS) is None
     assert state.pick_open is False  # outside the 24 h `_expired_composer` stays
@@ -575,7 +575,7 @@ async def test_a_caption_over_the_limit_switches_send_off(gw: FakeGateway) -> No
 
 def test_back_keeps_the_choice_and_step_one_closes() -> None:
     state = WhatsAppChatsState()
-    state.rows = [_row()]
+    state.thread_row = _row()
     state.open_thread_id = THREAD
     _open_media(state, PICK_PIECES)
     state.pick_pieces = []  # nothing loaded: a forged id is refused
@@ -678,6 +678,6 @@ def _chat_views() -> object:
     the single list of «Por responder» (`whatsapp_chat_pane` + `whatsapp_chat_layers`)."""
     import reflex as rx
 
-    from .whatsapp_tab_chats import chats_tab, whatsapp_chat_layers, whatsapp_chat_pane
+    from .whatsapp_tab_chats import whatsapp_chat_layers, whatsapp_chat_pane
 
-    return rx.fragment(chats_tab(), whatsapp_chat_pane(), whatsapp_chat_layers())
+    return rx.fragment(whatsapp_chat_pane(), whatsapp_chat_layers())

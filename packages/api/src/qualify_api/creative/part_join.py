@@ -167,6 +167,21 @@ class PartJoinStore(Protocol):
 # pure rules
 
 
+def is_local_part(params: Mapping[str, Any] | None) -> bool:
+    """EF-06: a part made here from the owner's own video (`video_pipeline.local`): its
+    asset has the `local` provenance and no `draft` block — no Seedance preview, no final
+    to order. Its file IS its final (made at full size), so the join reads it as ready
+    both for the joined preview and for the 1080p final. Pure."""
+    data = params or {}
+    return isinstance(data.get("local"), Mapping) and draft_state(data) is None
+
+
+def parts_ai_generated(parts: Sequence[PartPreview]) -> bool:
+    """EF-06: the joined video is AI imagery as soon as ONE part is (any part made by a
+    vendor); a video joined only from `local` parts is the owner's own. Pure."""
+    return any(not is_local_part(part.params) for part in parts)
+
+
 def _number(value: Any) -> float | None:
     if isinstance(value, bool) or not isinstance(value, int | float):
         return None
@@ -261,6 +276,8 @@ def ready_parts(
         source = part.join_source
         if not source or not owned_by(tenant_id, source):
             return None
+        if is_local_part(part.params):
+            continue  # EF-06: made here, no vista previa to wait for nor to expire
         block = draft_state(part.params)
         if block is None or block.get("status") not in _JOINABLE[part.status]:
             return None
@@ -556,6 +573,8 @@ def join_preview(
                 poster_key = None
     width, height = JOIN_PREVIEW_SIZE
     duration = _duration(parts, spans)
+    # EF-06: «hecho con IA» follows what the parts are — any vendor part makes it AI
+    ai_generated = parts_ai_generated(parts)
     return MediaWrite(
         position=0,
         media_type="video",
@@ -567,9 +586,10 @@ def join_preview(
         model_id=JOIN_VERSION,
         provider=JOIN_PROVIDER,
         content_type=MP4,
-        ai_generated=True,  # made of AI clips: the parent keeps the AI disclosure
+        ai_generated=ai_generated,
         params={
             "thumbnail_key": poster_key,
+            "ai_generated": ai_generated,
             "duration_seconds": duration,
             "resolution": f"{height}p",
             # rule 6 — what was joined, how, by which recipe, at what cost
@@ -815,10 +835,15 @@ class DbPartJoins:
             session.execute(
                 text("""
                 UPDATE content_drafts SET preview_key = :preview,
-                    requires_ai_disclosure = true
+                    requires_ai_disclosure = :ai
                 WHERE id = :p
             """),
-                {"p": parent_id, "preview": write.params.get("thumbnail_key") or write.media_url},
+                {
+                    "p": parent_id,
+                    "preview": write.params.get("thumbnail_key") or write.media_url,
+                    # EF-06: what was joined says it — only `local` parts: not AI
+                    "ai": write.ai_generated,
+                },
             )
         logger.info("parent %s: joined preview %s saved", parent_id, fingerprint)
         return True

@@ -134,11 +134,9 @@ def chat(world: World, monkeypatch: pytest.MonkeyPatch) -> tuple[WhatsAppChatsSt
     thread = str(world.thread(inbound_ago=timedelta(minutes=5)))
     state = WhatsAppChatsState()
     state._connection_id = str(NUMBER)
-    state.rows = [
-        dataclasses.replace(
-            EMPTY_THREAD, thread_id=thread, window_open=True, window_label="x", window_tone="ok"
-        )
-    ]
+    state.thread_row = dataclasses.replace(
+        EMPTY_THREAD, thread_id=thread, window_open=True, window_label="x", window_tone="ok"
+    )
     state.open_thread_id = thread
     return state, send
 
@@ -273,7 +271,10 @@ def test_the_empty_step_links_and_its_words() -> None:
         assert text in rendered or json.dumps(text)[1:-1].replace("\\", "\\\\") in rendered, text
     # m-25017173: WhatsApp › Chats has no stickers sub-tab; creating opens Tu marca,
     # with the way back to the chats.
-    assert SEASONAL_CREATE_HREF == "/brand/kit?crear=temporada&volver=%2Fwhatsapp%3Ftab%3Dchats"
+    # m-25029799: back to the chats of «Por responder» (WhatsApp's own list is gone).
+    assert SEASONAL_CREATE_HREF == (
+        "/brand/kit?crear=temporada&volver=%2Fresponder%3Ftab%3Dmensajes%26canal%3Dwhatsapp"
+    )
     assert SEASONAL_PENDING_HREF == "/drafts?ver=stickers"
 
 
@@ -403,8 +404,12 @@ def test_the_create_link_s_way_back_is_safe_and_says_chats() -> None:
     params = {k: v[0] for k, v in parse_qs(urlsplit(SEASONAL_CREATE_HREF).query).items()}
     assert params["crear"] == "temporada"
     back = return_path_from_query(params)
-    assert back == "/whatsapp?tab=chats"
+    # m-25029799: back to the chats of «Por responder» (WhatsApp's own list is gone).
+    assert back == "/responder?tab=mensajes&canal=whatsapp"
     assert return_label_for(back) == "Volver a tus chats"
+    # Review C5: an old `?volver=` to WhatsApp's retired list still says where it leads.
+    assert return_label_for("/whatsapp?tab=chats") == "Volver a tus chats"
+    assert return_label_for("/whatsapp?tab=numero") == RETURN_LABEL
     assert return_label_for("/create") == RETURN_LABEL
     assert return_path_from_query({"volver": "https://example.com/whatsapp"}) == ""
     assert "en Tu marca" in SEASONAL_EMPTY_TEXT
@@ -416,6 +421,6 @@ def _chat_views() -> object:
     the single list of «Por responder» (`whatsapp_chat_pane` + `whatsapp_chat_layers`)."""
     import reflex as rx
 
-    from .whatsapp_tab_chats import chats_tab, whatsapp_chat_layers, whatsapp_chat_pane
+    from .whatsapp_tab_chats import whatsapp_chat_layers, whatsapp_chat_pane
 
-    return rx.fragment(chats_tab(), whatsapp_chat_pane(), whatsapp_chat_layers())
+    return rx.fragment(whatsapp_chat_pane(), whatsapp_chat_layers())

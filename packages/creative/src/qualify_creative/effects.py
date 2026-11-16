@@ -40,14 +40,21 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from qualify_creative.layer_spec.schema import catalog
-from qualify_creative.schemas import EFFECT_ID_PATTERN, EffectUse, RecipeRefusal, VideoTextLayer
+from qualify_creative.schemas import (
+    EFFECT_ID_PATTERN,
+    TEXT_LAYERS_MAX,
+    EffectUse,
+    RecipeRefusal,
+    VideoTextLayer,
+)
 
 _DATA_DIR = Path(__file__).parent / "effects_data"
 #: The files `preview_asset` names (`preview_file`): `effects/<id>/v<n>/x` → here `<id>/v<n>/x`.
 _ASSETS_DIR = Path(__file__).parent / "effects_assets"
 
-#: The library a new request is checked against.
-EFFECTS_LIBRARY_VERSION = "v1"
+#: The library a new request is checked against. ED-15: v2 — v1's entries, with the
+#: layers repeatable (`max_per_part` 3); v1 still loads and reads exactly as before.
+EFFECTS_LIBRARY_VERSION = "v2"
 
 EffectStage = Literal["prepare", "local", "seedance_prompt", "compose", "transition"]
 EffectScope = Literal["part", "between_parts"]
@@ -278,7 +285,12 @@ def _load_effects(version: str) -> EffectsLibrary:
 class RecipeProblem(BaseModel):
     """One problem of a recipe: its stable `code`, the 1-based `part` it is in (None =
     the Clip, or the whole video by parts), the `field` (`effects[1].params.speed`,
-    `transition_in`, `segments[0].key`, `mode`) and the effect it is about, if any."""
+    `transition_in`, `segments[0].key`, `mode`) and the effect it is about, if any.
+
+    EF-06 (Deivid, 2026-11-16, option A): a length problem of a `local` piece
+    (`local_length_out_of_range`, `segments_length_mismatch`) also says how long the
+    stretches last at their speed, `duration_s`, rounded to 0.1 s — so the screen can say
+    «tu video dura 2,0 s». None on every other problem."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -286,6 +298,7 @@ class RecipeProblem(BaseModel):
     part: int | None = None
     field: str = ""
     effect_id: str | None = None
+    duration_s: float | None = None
 
 
 def effect_use_problems(
@@ -328,6 +341,28 @@ def _inside(start: float | None, end: float | None, window: tuple[float, float] 
     )
 
 
+def _span(
+    start: float | None, end: float | None, window: tuple[float, float] | None
+) -> tuple[float, float]:
+    """The seconds a block covers: None times are its window's edges (no window: from 0,
+    and without end)."""
+    low, high = window if window is not None else (0.0, float("inf"))
+    return (low if start is None else start, high if end is None else end)
+
+
+def _overlapping(spans: list[tuple[int, tuple[float, float]]]) -> list[int]:
+    """The positions whose span starts before an earlier-starting one ends (meeting at a
+    second is not overlapping), in the order given."""
+    found: list[int] = []
+    ordered = sorted(spans, key=lambda item: (item[1][0], item[0]))
+    reach = float("-inf")
+    for at, (start, end) in ordered:
+        if start < reach - _EPSILON:
+            found.append(at)
+        reach = max(reach, end)
+    return sorted(found)
+
+
 def part_effect_problems(
     effects: tuple[EffectUse, ...],
     library: EffectsLibrary,
@@ -345,10 +380,16 @@ def part_effect_problems(
     with one, a `local` part with no Seedance effect, and every span inside `window` —
     `[0, length]` of the part (or Clip), in seconds of its own output (None: not
     checked).
+    ED-15: an effect the library lets repeat (`max_per_part` > 1) may be used again only
+    where no other use of it is — two uses covering the same seconds are
+    `effect_uses_overlap` (a use with no span covers the whole part, so a repeated effect
+    names its start and end). Over `max_per_part` is `too_many_of_effect` alone.
     `in_clip`: a normal Clip, where a transition is `transition_on_clip`. Pure."""
     found: list[RecipeProblem] = []
     ai = 0
     counts: dict[tuple[str, int], int] = {}
+    spans: dict[tuple[str, int], list[tuple[int, tuple[float, float]]]] = {}
+    limits: dict[tuple[str, int], int] = {}
     for at, use in enumerate(effects):
         field = f"effects[{at}]"
         found.extend(effect_use_problems(use, library, part=part, field=field))
@@ -378,8 +419,19 @@ def part_effect_problems(
         counts[key] = counts.get(key, 0) + 1
         if counts[key] == entry.max_per_part + 1:
             problem("too_many_of_effect")
+        spans.setdefault(key, []).append((at, _span(use.start_s, use.end_s, window)))
+        limits[key] = entry.max_per_part
         if "own_video" in entry.needs and not has_own_video:
             problem("effect_needs_own_video")
+    for key, uses in spans.items():
+        if len(uses) > limits[key]:
+            continue  # already `too_many_of_effect`
+        for at in _overlapping(uses):
+            found.append(
+                RecipeProblem(
+                    code="effect_uses_overlap", part=part, field=f"effects[{at}]", effect_id=key[0]
+                )
+            )
     return tuple(found)
 
 
@@ -388,19 +440,24 @@ def text_layer_problems(
     *,
     part: int | None,
     window: tuple[float, float] | None = None,
+    field: str = "text_layer",
 ) -> tuple[RecipeProblem, ...]:
     """A video text (pure; the catalog is cached): its times inside `window` — its part's
     or Clip's `[0, length]` in seconds of its own output, None = not checked —
     (`span_outside_part`), and, D1, a design it names is one of the current catalog's
     (`layer_spec`, `layout_version`) that exists in 9:16 with a title slot — the text is
-    that slot (`unknown_layout`)."""
+    that slot — and that the video's text layer draws (EF-05: `video_text` v1 draws only
+    `scrim`, `render.video_text.SUPPORTED_LAYOUTS`) (`unknown_layout`). `field` names it
+    in the problems (`text_layers[1]`)."""
     if layer is None:
         return ()
     found: list[RecipeProblem] = []
     if not _inside(layer.start_s, layer.end_s, window):
-        found.append(RecipeProblem(code="span_outside_part", part=part, field="text_layer"))
+        found.append(RecipeProblem(code="span_outside_part", part=part, field=field))
     if layer.layout_id is None:
         return tuple(found)
+    from qualify_creative.render.video_text import SUPPORTED_LAYOUTS  # noqa: PLC0415
+
     data = catalog()
     layout = data["layouts"].get(layer.layout_id.value, {})
     title = (layout.get("slots", {}).get("title") or {}).get("9:16")
@@ -408,8 +465,38 @@ def text_layer_problems(
         layer.layout_version != data["layout_version"]
         or "9:16" not in layout.get("formats", ())
         or not title
+        # EF-05: only a design the video's text layer draws (`video_text` v1: the scrim)
+        or layer.layout_id.value not in SUPPORTED_LAYOUTS
     ):
-        found.append(RecipeProblem(code="unknown_layout", part=part, field="text_layer.layout_id"))
+        found.append(RecipeProblem(code="unknown_layout", part=part, field=f"{field}.layout_id"))
+    return tuple(found)
+
+
+def text_layers_problems(
+    layers: tuple[VideoTextLayer, ...],
+    *,
+    part: int | None,
+    window: tuple[float, float] | None = None,
+    field: str = "text_layers",
+) -> tuple[RecipeProblem, ...]:
+    """The texts over one part, Clip or whole video (ED-15, pure): each one on its own
+    (`text_layer_problems`, field `text_layers[i]`), at most `TEXT_LAYERS_MAX`
+    (`too_many_texts` — the types refuse more already; this keeps a recipe built around
+    them honest), and no two in the same `place` showing at the same time
+    (`texts_overlap`, on the later one; `end_s` None = until the window's end, meeting at
+    a second is fine). Texts in different places may show together."""
+    found: list[RecipeProblem] = []
+    if len(layers) > TEXT_LAYERS_MAX:
+        found.append(
+            RecipeProblem(code="too_many_texts", part=part, field=f"{field}[{TEXT_LAYERS_MAX}]")
+        )
+    by_place: dict[str, list[tuple[int, tuple[float, float]]]] = {}
+    for at, layer in enumerate(layers):
+        found.extend(text_layer_problems(layer, part=part, window=window, field=f"{field}[{at}]"))
+        by_place.setdefault(layer.place, []).append((at, _span(layer.start_s, layer.end_s, window)))
+    for spans in by_place.values():
+        for at in _overlapping(spans):
+            found.append(RecipeProblem(code="texts_overlap", part=part, field=f"{field}[{at}]"))
     return tuple(found)
 
 
@@ -456,5 +543,6 @@ __all__ = [
     "preview_file",
     "part_effect_problems",
     "text_layer_problems",
+    "text_layers_problems",
     "transition_problems",
 ]

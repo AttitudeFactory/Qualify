@@ -48,9 +48,11 @@ def test_unreadable_counts_read_as_zero() -> None:
 
 
 def test_the_total_counts_whatsapp_once() -> None:
-    # WhatsApp chats are already inside «Por responder» (ATENDER-1's single count).
-    counts = MenuCounts(respond=5, whatsapp=2, approve=3, schedule=1)
+    # WhatsApp chats are inside «Por responder» (ATENDER-1's single count); since
+    # m-25029799 no other entry carries them.
+    counts = MenuCounts(respond=5, approve=3, schedule=1)
     assert counts.total == 9
+    assert not hasattr(counts, "whatsapp")
     assert MenuCounts().total == 0
 
 
@@ -178,7 +180,8 @@ def test_a_count_is_read_when_due_or_forced() -> None:
 
 def test_bookkeeping_stays_on_the_server() -> None:
     sent_to_browser = set(PendingState.vars)
-    assert {"respond", "whatsapp", "approve", "schedule"} <= sent_to_browser
+    assert {"respond", "approve", "schedule"} <= sent_to_browser
+    assert "whatsapp" not in sent_to_browser  # m-25029799: no WhatsApp entry badge
     assert not {"_attention_at", "_publications_at", "_busy_since", "_again"} & sent_to_browser
 
 
@@ -187,7 +190,7 @@ def test_bookkeeping_stays_on_the_server() -> None:
 
 def test_each_counted_entry_is_a_real_menu_entry() -> None:
     labels = {label for label, _icon, _route, enabled in layout.NAV_ITEMS if enabled}
-    assert set(layout.NAV_COUNTERS) == {"Por responder", "WhatsApp", "Por aprobar", "Tu semana"}
+    assert set(layout.NAV_COUNTERS) == {"Por responder", "Por aprobar", "Tu semana"}
     assert set(layout.NAV_COUNTERS) <= labels
 
 
@@ -245,8 +248,7 @@ def test_counting_actions_refresh_the_menu(module: str, state: str, handlers: li
         ("Por responder", 0, "Por responder"),
         ("Por responder", 1, "Por responder: 1 persona espera tu respuesta"),
         ("Por responder", 3, "Por responder: 3 personas esperan tu respuesta"),
-        ("WhatsApp", 1, "WhatsApp: 1 chat sin responder"),
-        ("WhatsApp", 2, "WhatsApp: 2 chats sin responder"),
+        ("WhatsApp", 2, "WhatsApp"),  # m-25029799: it counts nothing any more
         ("Por aprobar", 1, "Por aprobar: 1 publicación espera tu aprobación"),
         ("Por aprobar", 4, "Por aprobar: 4 publicaciones esperan tu aprobación"),
         ("Tu semana", 1, "Tu semana: 1 publicación aprobada sin día"),
@@ -266,8 +268,8 @@ def test_the_phone_more_button_says_how_much_waits_inside() -> None:
     assert more_button_aria_label(0) == "Más: abrir el menú"
     assert more_button_aria_label(1) == "Más: abrir el menú. 1 publicación por aprobar"
     assert more_button_aria_label(5) == "Más: abrir el menú. 5 publicaciones por aprobar"
-    assert MenuCounts(respond=4, whatsapp=1, approve=2, schedule=3).more == 2
-    assert MenuCounts(whatsapp=3).more == 0
+    assert MenuCounts(respond=4, approve=2, schedule=3).more == 2
+    assert MenuCounts(respond=3).more == 0
     rendered = str(layout._bottom_bar().render())
     assert "more_badge" in rendered and "more_aria" in rendered
     assert "q-menu-count" in rendered
@@ -277,7 +279,6 @@ def test_only_people_waiting_are_shown_in_the_warning_tone() -> None:
     tones = {label: tone for label, (_text, tone, _aria) in layout.NAV_COUNTERS.items()}
     assert tones == {
         "Por responder": "warn",
-        "WhatsApp": "warn",
         "Por aprobar": "neutral",
         "Tu semana": "neutral",
     }

@@ -170,7 +170,7 @@ borde más lejano del sujeto → `band` con la foto entera reducida (el fondo de
 `CoverPhoto`). Si falla 3: quitar `call_phrase`, luego `subtitle`; el título nunca se quita. Cada
 caída queda escrita en la capa (`fallbacks: [...]`) para que la segunda mirada (m-25017287) y la
 medición la vean. Un `plate` con tipografía de títulos manuscrita que no cabe en 1:1 cae así a
-`band` y conserva su precio (2026-11-15, §12). La cadena nunca quita el precio por falta de alto; un precio más ancho que su caja (el ancho del título) sí se quita y queda en `dropped_slots`. Si eso debería rechazar la pieza es una decisión pendiente del fundador.
+`band` y conserva su precio (2026-11-15, §12). La cadena nunca quita el precio por falta de alto. **Precio más ancho que su caja (el ancho del título) — decisión del fundador del 2026-11-16 (§4, §12):** la capa se rechaza para que Claude reescriba el texto, y una pieza con precio nunca se publica sin él. **Todavía no está construido:** hoy el compositor quita ese precio y lo informa en `dropped_slots`; el cambio va con la historia que conecte `compose_layer` con la generación real.
 
 ### 1.8 Reglas de redacción para el prompt de la capa
 
@@ -607,6 +607,11 @@ preferencia. «—» = esa combinación no existe.
   varios productos; nunca suelto sobre la foto.
 - **Una vez por producto y por imagen.** En un carrusel, el precio de un producto va en su diapositiva
   de desarrollo, no se repite en la portada ni en el cierre.
+- **Si el precio no cabe, no se quita** `[F]` (decisión del fundador del 2026-11-16, §12): un precio
+  más ancho que su caja hace rechazar la capa, y Claude reescribe el texto para que quepa. Una pieza
+  con precio nunca se publica sin él. **No está construido:** hoy el compositor lo quita y lo deja en
+  `dropped_slots` (§1.7); el cambio va con la historia que conecte `compose_layer` con la
+  generación real.
 
 ### Logo
 
@@ -807,7 +812,9 @@ HOY                         NUEVO · Datos del negocio   SI FALTA LA DIRECCIÓN
 **Segunda mirada (m-25017287):** su lista: ¿algo tapa el producto?, ¿se lee todo?, ¿hay letras
 inventadas?, ¿el logo sale dos veces?, ¿el título dice algo o es una etiqueta?, ¿el diseño corresponde
 a la foto?, ¿hubo `fallbacks`? Si corrige, solo puede cambiar diseño, `anchor`, `container_color`,
-`accent_word` o acortar textos; no puede inventar datos.
+`accent_word` o acortar textos; no puede inventar datos. **Nunca reescribe ni acorta un texto que el
+dueño editó; sobre esos textos solo avisa** `[F]` (decisión del fundador del 2026-11-16, ADR 49 §2.3
+y §8.1).
 
 ## 10. Hipótesis y cómo validarlas
 
@@ -859,3 +866,8 @@ Siguen siendo hipótesis, a validar con composiciones reales (m-25017292) y con 
 **2026-11-15 — límites bajados** (fundador: «Sí, bájalos»). Las composiciones reales de la hoja de contacto de m-25017285 rechazaron textos que estaban dentro del límite, así que se bajan tres títulos: `brand_fill` en 4:5 de 60 a 45 caracteres; `info_card` en 1:1 de 24 a 18 (sigue en 1 línea); y `plate` con una tipografía de títulos manuscrita, 24 caracteres en 2 líneas en todos los formatos. La versión del catálogo pasa a `layout_version` 2. Siguen siendo hipótesis hasta medirlos con marcas reales.
 
 **2026-11-15 — la franja 1:1 sube del 42 al 43 % del alto** (fundador: «Sí, súbelo a 43 %»). Un `plate` en 1:1 con tipografía de títulos manuscrita que no cabe cae a `band`, y ahí un título en Pacifico a su tamaño mínimo (84 px, 2 líneas) más el precio necesitaban 346,7 px de los 341,6 que dejaba el 42 %: con el 43 % (352,4 px) caben sin quitar el precio. La versión del catálogo pasa a `layout_version` 3 y el compositor a `engine_revision` 3. Medido en un solo caso (la imagen 36 de la vista previa); sigue siendo una hipótesis.
+
+**2026-11-16 — decisiones del fundador que tocan el catálogo** (detalle en ADR 49 §8.1):
+
+- **Precio que no cabe:** un precio más ancho que su caja hace rechazar la capa para que Claude reescriba el texto; una pieza con precio nunca se publica sin él. Reemplaza la «decisión pendiente» de §1.7. **No está construido:** hoy el compositor quita ese precio (`dropped_slots`); va con la historia que conecte `compose_layer` con la generación real.
+- **Segunda mirada y textos del dueño:** nunca reescribe un texto que el dueño editó; solo avisa (§9).

@@ -77,9 +77,11 @@ from qualify_api.creative.part_join import (
     _missing,
     _read_logo,
     io_failure,
+    is_local_part,
     join_fingerprint,
     join_key,
     part_span,
+    parts_ai_generated,
     ready_parts,
 )
 from qualify_api.creative.pipeline import CheckpointError, PipelineStore, current_preparation
@@ -222,6 +224,8 @@ def final_parts(snapshot: PartsToJoin, tenant_id: UUID) -> tuple[PartPreview, ..
     for part in ordered:
         if part.status != APPROVED or part.purged or part.version_id is None:
             return None
+        if is_local_part(part.params):
+            continue  # EF-06: its own file is its final (`raw_key`)
         block = draft_state(part.params) or {}
         if block.get("status") != PART_FINAL or raw_key(part) is None:
             return None
@@ -229,7 +233,10 @@ def final_parts(snapshot: PartsToJoin, tenant_id: UUID) -> tuple[PartPreview, ..
 
 
 def raw_key(part: PartPreview) -> str | None:
-    """The part's paid raw 1080p in the store (`raw_final.key`), or None."""
+    """The part's paid raw 1080p in the store (`raw_final.key`), or None. EF-06: a
+    `local` part's own file — made at full size, nothing paid, nothing to wait for."""
+    if is_local_part(part.params):
+        return part.join_source or part.object_key
     raw = (draft_state(part.params) or {}).get("raw_final")
     key = raw.get("key") if isinstance(raw, Mapping) else None
     return key if isinstance(key, str) and key else None
@@ -656,11 +663,13 @@ def join_final(
         model_id=JOIN_VERSION,
         provider=JOIN_PROVIDER,
         content_type=MP4,
-        ai_generated=True,
+        # EF-06: AI as soon as one part is a vendor's; only `local` parts: the owner's
+        ai_generated=parts_ai_generated(parts),
         params={
             "thumbnail_key": poster_key,
             "duration_seconds": duration,
             "resolution": f"{width}p",
+            "ai_generated": parts_ai_generated(parts),
             "join_final": provenance,
             "draft": {
                 **block,
