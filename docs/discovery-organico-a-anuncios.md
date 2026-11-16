@@ -57,11 +57,11 @@ Una publicación propia, **publicada desde Qualify** (`publish_attempts.status='
 | 3 | **Mínimo de publicaciones** para afirmar algo | **≥ 8** maduras del mismo tipo; si no, «sin datos suficientes», nunca un cero (ruling R10) | `[H]`: más exigente que `MIN_SAMPLE = 3` de `cm-1` porque aquí la consecuencia es gastar dinero |
 | 4 | **Alcance relativo** ≥ **2 ×** la mediana | 2,0 | `LIFT_HIGHLIGHT = 2.0`, el mismo umbral de «destacado» de m-24946127 |
 | 5 | **Interacción relativa** ≥ mediana de la cuenta ((me gusta + comentarios + guardados + compartidos) ÷ vistas) | ≥ 1,0 × | Descarta lo que tuvo vistas pero no gustó (patrón «empujado» de `growth/organic.py`) |
-| 6 | **No promocionada** ya (sin promoción en Qualify y `boost_ads_list` vacío) | — | `view_count` incluye vistas pagadas (§2): sin este filtro un anuncio parecería «orgánico con potencial» |
+| 6 | **Nunca promocionada**: ninguna promoción en Qualify con ese `source_media_id`, **en cualquier estado** (también pausada o terminada), y `boost_ads_list` vacío | — | `total_views_count` y `total_like_count` incluyen lo pagado (§2): sin este filtro un anuncio parecería «orgánico con potencial». **Límite:** `boost_ads_list` solo lista anuncios `ACTIVE`, así que una promoción hecha **fuera de Qualify** y ya terminada no se detecta y puede inflar la cifra |
 | 7 | **Elegible**: la comprobación de ADS-06 pasaría (dueño, `IMAGE`/`VIDEO`, no historia) **y** `boost_eligibility_info` no la descarta | — | `live_wizard.py:176-191`; `boost_eligibility_info` por confirmar (§4) |
 | 8 | Ritmo: como mucho **1 aviso por marca por semana**; el rechazo silencia esa publicación | 1/sem | `[H]`, para no convertir el aviso en ruido |
 
-Métrica de alcance: **v0** = `view_count` (reels) o `like_count + comments_count` (fotos);
+Métrica de alcance: **v0** = `total_views_count` (reels y videos; el único campo de vistas para medios propios — `view_count` es solo de Business Discovery, §2) o `like_count + comments_count` (fotos, solo orgánicos);
 **v1** = `reach` de `/insights` (necesita `instagram_manage_insights`, §2). Cambiar un umbral o
 una ventana = nueva versión (`po-1`…), como `CREATOR_METRICS_VERSION`.
 
@@ -76,15 +76,15 @@ cumple con la regla 3.
 
 **Qué pide la app hoy** (`[V]`, código):
 - Flujo normal: los scopes salen de `QUALIFY_META_SCOPES` (env, nunca en código —
-  `config.py:49-51`). En el `.env` local de desarrollo: `instagram_basic`,
+  `config.py:49-51`; `.env.example` lo deja vacío). En el `.env` **sin versionar** de la máquina
+  de desarrollo (leído el 2026-11-16): `instagram_basic`,
   `instagram_content_publish`, `pages_show_list`, `pages_read_engagement`, `business_management`,
   `instagram_manage_comments`, `instagram_manage_messages`, `pages_messaging`.
   **No incluye `instagram_manage_insights`.**
 - Flujo de anuncios: añade `ads_management`, `ads_read`, `pages_manage_ads`,
   `business_management` (`config.py:58-63`, `meta_oauth.py:212-214`).
 - Si producción usa `QUALIFY_META_CONFIG_ID`, **la configuración de Facebook Login for Business
-  decide qué se pide**, no el parámetro `scope` (`meta_oauth.py:217-226`;
-  `docs/conversaciones-limitaciones-meta.md:38`). El valor de producción no está en el repo →
+  decide qué se pide**, no el parámetro `scope` (`meta_oauth.py:217-219`). El valor de producción no está en el repo →
   **por confirmar** con `GET /me/permissions` de una conexión de producción.
 
 **Métricas por publicación** (documentación oficial; `[V]` doc = corpus
@@ -97,7 +97,9 @@ el 2026-11-16):
 |---|---|---|---|---|
 | `like_count` | campo del nodo media | foto, reel | `instagram_basic` + `pages_read_engagement` (+ `ads_read` o `ads_management` si el rol viene por Business Manager) | **Sí**, ya pedidos (dev). Prod por confirmar |
 | `comments_count` | campo | foto, reel | igual | **Sí** |
-| `view_count` | campo | reel | igual — **incluye vistas pagadas y orgánicas** | **Sí** |
+| `total_views_count` | campo | **solo video** (reel) | igual — **incluye vistas pagadas y repeticiones**; no hay campo de vistas solo orgánicas en el nodo | **Sí** según la doc; por confirmar en vivo |
+| `total_like_count`, `total_comments_count` | campo | foto, reel | igual — incluyen lo pagado | **Sí** según la doc; por confirmar en vivo |
+| `view_count` | campo | reel | **«Available for Business Discovery API only»**: sirve para cuentas ajenas, **no** para los medios propios | No aplica |
 | `saved_count` | campo («solo el dueño o colaborador») | foto, reel | igual | **Sí** según la doc; **por confirmar en vivo** (ADR 25) |
 | `shares_count`, `reposts_count` | campo | foto, reel | igual | **Sí** según la doc; por confirmar en vivo |
 | `boost_eligibility_info`, `boost_ads_list` | campo | foto, reel | igual (no lista permiso propio) | **Sí** según la doc; forma de la respuesta **por confirmar** (m-24828971) |
@@ -125,45 +127,55 @@ marca → ~60 GET/marca/mes, **USD 0** (Graph API sin coste por llamada) y ~720 
 
 ## 3. Recomendación al cliente
 
-**Dónde** (tres bocetos):
+**Dónde** (nombres reales del menú: «Por aprobar», «Tu semana», «Anuncios»):
 
 | Boceto | Lugar | Veredicto |
 |---|---|---|
-| **A** | Etiqueta y aviso en la **tarjeta de la publicación** (Piezas, `post_card.py`) y en su **panel del Planificador** (`planner_drawer.py`), junto al botón «Promocionar» que ya existe | **Recomendado**: el dueño ya mira ahí lo que publicó; reutiliza la salida existente |
-| B | Un aviso semanal en la página de **Anuncios** | Complemento: sirve a quien ya anuncia; no llega a quien nunca entró |
-| C | En **Interacciones** | **Descartado**: esa pantalla es para responder a personas; mezclar dinero confunde |
+| **A** | **Una tarjeta arriba de «Tu semana»** que enlaza a la publicación | **Principal**: es lo que el dueño abre; con el aviso solo en la tarjeta de la publicación, la ventana de 72 h–7 días vencería sin que lo vea |
+| A′ | Etiqueta en la tarjeta de la publicación (`post_card.py`) y en su panel de «Tu semana» (`planner_drawer.py`) | **Secundario**. En esa tarjeta el botón del aviso **reemplaza** a «Promocionar»: una sola acción principal |
+| B | «Anuncios», una sola vez, solo para «sin datos suficientes» | Complemento |
+| C | Interacciones | **Descartado**: esa pantalla es para responder a personas; mezclar dinero confunde |
 
 ```
+Tu semana
 ┌──────────────────────────────────────────────┐
-│ [miniatura]  Publicada el martes              │
+│ [miniatura]  Tu publicación del martes      › │
 │ ★ Le está yendo muy bien                      │
-│ Se vio 4.200 veces en sus primeros 3 días:    │
-│ 4 veces más que tus publicaciones de siempre. │
+│ En 4 días se vio el triple de lo que suele    │
+│ ver una publicación tuya.                     │
+│ Si la promocionas, la verán más personas de   │
+│ tu zona. Tú decides cuánto gastar.            │
 │ Nada se gasta hasta que tú lo confirmes.      │
-│ [ Ver cómo promocionarla ]   [ Ahora no ]     │
+│ [ Ver cómo promocionarla ]   [ No, gracias ]  │
 └──────────────────────────────────────────────┘
+  lunes · martes · miércoles … (la semana de hoy)
 ```
 
 **Textos exactos** (revisados con `qualify-copy-es`: español llano, «publicación», «anuncio»,
-sin anglicismos, cifras propias, «veces» en lugar de «×»):
+sin anglicismos, cifras propias en palabras, sin decimales):
 
 | Momento | Texto |
 |---|---|
 | Etiqueta | «Le está yendo muy bien» |
-| Aviso (reel) | «Se vio {vistas} veces en sus primeros 3 días: {n} veces más que tus publicaciones de siempre.» |
-| Aviso (foto) | «Recibió {interacciones} me gusta y comentarios en sus primeros 3 días: {n} veces más que tus publicaciones de siempre.» |
+| Aviso (reel) | «En {días} días se vio {el doble \| el triple \| {n} veces} de lo que suele ver una publicación tuya.» |
+| Aviso (foto) | «En {días} días recibió {el doble \| el triple \| {n} veces} los me gusta y comentarios que suele recibir una publicación tuya.» |
+| Beneficio, sin promesas | «Si la promocionas, la verán más personas de tu zona. Tú decides cuánto gastar.» (+ «desde {mínimo}» cuando ADS-00 confirme el mínimo en COP) |
 | Garantía (siempre visible) | «Nada se gasta hasta que tú lo confirmes.» |
 | Aceptar (botón) | «Ver cómo promocionarla» |
-| Rechazar (botón) | «Ahora no» |
-| Tras rechazar | «Listo. No te volveremos a sugerir esta publicación.» |
-| Sin datos suficientes | «Todavía no tenemos suficientes publicaciones tuyas para comparar. Cuando las tengamos, te diremos cuál conviene promocionar.» |
+| Rechazar (botón) | «No, gracias» |
+| Tras rechazar | «Listo, no te la volveremos a sugerir. Si cambias de idea, tócala y elige Promocionar.» |
+| Sin datos suficientes (una vez, en «Anuncios») | «Cuando tengas {faltan} publicaciones más, te diremos cuál le está yendo mejor para promocionarla.» |
 
-**Qué pasa al aceptar:** abre el asistente que ya existe (`/drafts/{id}/promote`, ADS-06). Se
+`{días}` = días reales desde la publicación (3 a 7). `{n}` se redondea hacia abajo a entero:
+2 → «el doble», 3 → «el triple», 4 o más → «{n} veces».
+
+**Qué pasa al aceptar:** abre el asistente que ya existe (`/drafts/{id}/promote`, ADS-06), con
+«‹ Tu semana» para volver (`PromotionState.back_label`, `Qualify/promotion_state.py:169`). Se
 prepara **en pausa**; el cliente revisa presupuesto, fechas y público; **solo su confirmación
 explícita** pide la activación. El aviso **no** prepara nada por su cuenta.
 
 > **Regla, sin excepción:** toda acción publicitaria exige **consentimiento explícito del
-> cliente** y **confirmación explícita antes de activar** (ADR 38 D4, ADS-16; condición de las
+> cliente** y **confirmación explícita antes de activar** (ADR 38 «Consecuencias», `docs/adr-38-anuncios-meta.md:39`, y ADS-16; condición de las
 > Self-Serve Ad Terms de Meta). **Este discovery no aprueba ninguna automatización**: ni crear,
 > ni preparar, ni activar «con un clic» sin la revisión del asistente.
 
@@ -189,9 +201,24 @@ explícita** pide la activación. El aviso **no** prepara nada por su cuenta.
 | Qué mide | Cómo | Umbral para seguir `[H]` |
 |---|---|---|
 | H1 — concentración | Retrospectiva §6 | En ≥ 2 cuentas con ≥ 20 publicaciones maduras: el 10 % superior concentra ≥ 40 % de las vistas, y ≥ 1 candidata `po-0` por mes por cuenta |
-| H2 — aceptación | % de avisos con «Ver cómo promocionarla» → % que confirman la activación | ≥ 20 % abren, ≥ 5 % activan, en 8 semanas con ≥ 5 marcas |
+| H2 — aceptación (señal, no prueba) | % de avisos con «Ver cómo promocionarla» → % que confirman la activación, guardando **quién** tocó (dueño o equipo operador) | ≥ 20 % abren, ≥ 5 % activan, en 8 semanas con ≥ 5 marcas — es una señal para OA-7, **no confirma H2** (abajo) |
 | H3 — elegibilidad | % de candidatas `po-0` descartadas por `boost_eligibility_info` o por tipo | Si > 50 %, la regla 7 va primero (no avisar de lo que no se puede promocionar) |
 | Acierto | Resultados del anuncio (ADS-09, m-24828979: coste por resultado) de recomendadas vs promocionadas a mano | Coste por resultado de las recomendadas ≤ el de las elegidas a mano |
+
+**H2 completa:** *el dueño de un negocio pequeño acepta promocionar una publicación con más
+frecuencia cuando el aviso le muestra una comparación con sus propias publicaciones («se vio el
+triple de lo que suele ver una publicación tuya») que cuando le da una recomendación genérica
+(«esta publicación podría funcionar como anuncio»).* La medición de arriba **no puede
+confirmarla**: no tiene grupo de control (todos ven la versión con cifras), la muestra es mínima
+(≥ 5 marcas) y hoy quien toca suele ser el **equipo operador**, no el dueño.
+
+**Prueba de concepto cualitativa** (barata, antes de construir OA-4): dentro de las entrevistas
+de `docs/perfil-cliente-pyme.md` §5, mostrar las dos versiones del aviso en papel o captura,
+anotar sus palabras textuales y cuál elegiría. Preguntas propuestas para esa §5 (no se edita el
+perfil en este ticket):
+- «¿Vuelve a mirar sus publicaciones después de publicarlas? ¿Dónde?»
+- «Si Qualify te dice "esta publicación se vio el triple de lo normal", ¿la promocionarías? ¿Qué
+  más necesitas saber?»
 
 Cada aviso guarda procedencia: id de la publicación, versión de la fórmula (`po-0`), valores
 usados y fecha de lectura; y una clave de idempotencia por (marca, publicación, versión).
@@ -211,20 +238,21 @@ las cuentas de Qualify.co y de los negocios que administra.
 
 **Cómo correrla después (solo lectura, sin gastar, sin tokens en el doc):**
 
-1. Publicaciones (en producción, por `tenant_session` o la consola de solo lectura):
+1. Publicaciones — **una marca a la vez**, bajo `tenant_session` con el `tenant_id` de esa marca (RLS hace el resto; el `WHERE` lo deja explícito). No se usa `admin_session` para esto: es de aprovisionamiento.
    ```sql
    SELECT pa.tenant_id, pa.connection_id, pa.published_media_id,
           pa.media_product_type, pa.settled_at
    FROM publish_attempts pa
-   WHERE pa.status = 'published' AND pa.published_media_id IS NOT NULL
+   WHERE pa.tenant_id = :tenant_id
+     AND pa.status = 'published' AND pa.published_media_id IS NOT NULL
      AND pa.settled_at > now() - interval '180 days'
    ORDER BY pa.tenant_id, pa.settled_at;
    ```
 2. Por cada `published_media_id`, con el token de la conexión (vía `credential_session`, nunca
    impreso), un GET con scopes ya concedidos:
-   `GET /{media-id}?fields=media_type,media_product_type,timestamp,like_count,comments_count,view_count,saved_count,shares_count,boost_ads_list,boost_eligibility_info`
+   `GET /{media-id}?fields=media_type,media_product_type,timestamp,like_count,comments_count,total_views_count,total_like_count,saved_count,shares_count,boost_ads_list,boost_eligibility_info`
    — guardar la respuesta cruda (sin token) en el scratchpad.
-3. Calcular por cuenta y tipo: distribución de `view_count` (o me gusta + comentarios) ÷ mediana,
+3. Calcular por cuenta y tipo, **excluyendo las publicaciones promocionadas alguna vez** (regla 6): distribución de `total_views_count` (o me gusta + comentarios) ÷ mediana,
    % de vistas del 10 % superior, número de candidatas `po-0`, y motivos de
    `boost_eligibility_info` (H3).
 4. Alternativa sin credencial de Meta: `just sc instagram user-posts --handle <cuenta> --cache-max-age 7d`
@@ -236,7 +264,7 @@ las cuentas de Qualify.co y de los negocios que administra.
 | Hipótesis | Veredicto | Por qué |
 |---|---|---|
 | **H1** concentración del alcance | **Sin evidencia propia — por confirmar** | Plausible (`cm-1` ya separa «destacados» en creadores), pero no hay un solo dato de cuentas propias |
-| **H2** acepta más una cifra propia | **Sin evidencia — por confirmar** | Solo se mide con avisos reales (§5); hoy no hay ningún aviso |
+| **H2** acepta más una cifra propia | **Sin evidencia — por confirmar** | Hoy no hay ningún aviso; primero la prueba cualitativa de §5, luego la señal cuantitativa de OA-7 |
 | **H3** la elegibilidad descarta candidatas | **Parcialmente cierto por diseño, magnitud por confirmar** | Qualify ya descarta historias y carruseles (`live_wizard.py`); el campo de Meta existe pero sus motivos dependen de m-24828971 |
 
 ---
@@ -248,7 +276,7 @@ las cuentas de Qualify.co y de los negocios que administra.
 | OA-1 | Retrospectiva de solo lectura §6 sobre Qualify.co y los negocios del fundador; publicar el resultado aquí | Visto bueno del fundador; credencial de producción (o CLI de ScrapeCreators) | S |
 | OA-2 | Leer y guardar contadores por publicación (72 h y 7 d) con los scopes actuales, en un worker idempotente con procedencia | OA-1 confirma H1; tabla nueva con RLS (`qualify-migration`) | M |
 | OA-3 | Regla `po-0` versionada (pura, con tests), reutilizando las constantes de `cm-1` | OA-2 | S |
-| OA-4 | Aviso en Piezas y Planificador (boceto A) con los textos de §3, que abre el asistente de ADS-06 | OA-3; m-24828971 y m-24828976 probados en vivo; ADS-16 | M |
+| OA-4 | Aviso arriba de «Tu semana» y etiqueta en la tarjeta de la publicación (bocetos A y A′) con los textos de §3, que abre el asistente de ADS-06 | OA-3; prueba cualitativa de H2 (§5); m-24828971 y m-24828976 probados en vivo; ADS-16 | M |
 | OA-5 | Leer `boost_eligibility_info` / `boost_ads_list` en la comprobación de ADS-06 y en la regla 7 | m-24828971 (forma real del campo) | S |
 | OA-6 | v1 con `reach` y `/insights`: pedir `instagram_manage_insights`, reconectar, App Review | Decisión del fundador; ADS-15 / épica de App Review | M |
 | OA-7 | Medición de H2 y del acierto con ADS-09 | OA-4 en uso ≥ 8 semanas | S |
