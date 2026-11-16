@@ -218,8 +218,8 @@ app.add_page(styleguide_index, route="/design", title="Qualify · Design system"
 # m-24840374: the app's own 404, in place of Reflex's default. The route is Reflex's
 # 404 slug; the client router shows it for any unknown path, and the export's
 # 404.html (Caddy's `try_files` fallback) is the SPA shell that renders it. No session
-# needed: the button picks Inicio or the login by itself.
-app.add_page(not_found_index, route="/404", title="Página no encontrada · Qualify")
+# needed: the button goes to `/`, which routes every visitor on its own.
+app.add_page(not_found_index, route="/404", title="Esta página no existe · Qualify")
 # PASOS-2 (m-24852241): the step frame's live sample; `enter` reads `?paso=` on load and
 # on the browser's «atrás», so each step has its own address.
 app.add_page(

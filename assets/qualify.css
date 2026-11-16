@@ -2665,9 +2665,15 @@ button.q-biz-trigger:disabled { cursor: progress; opacity: 0.8; }
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 2cqw;
+  /* Fixed: a cqw gap would be measured against the scene's parent, not the scene. */
+  gap: 8px;
   width: min(460px, 100%);
   container-type: inline-size;
+}
+/* Small phones: the button shows without scrolling at 360 × 560. */
+@media (max-width: 640px) {
+  .q-not-found { padding-block: 24px 32px; }
+  .q-nf-scene { width: min(300px, 100%); }
 }
 .q-nf-digits {
   font-family: var(--default-font-family);

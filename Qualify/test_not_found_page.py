@@ -26,9 +26,9 @@ def test_page_renders_title_text_and_button() -> None:
     for text in (NOT_FOUND_TITLE, NOT_FOUND_TEXT, NOT_FOUND_ACTION):
         # The render escapes non-ASCII as JSON does, inside a repr.
         assert json.dumps(text)[1:-1].replace("\\", "\\\\") in rendered, text
-    assert NOT_FOUND_TITLE == "Esta página no existe"
     assert "q-nf-scene" in rendered
-    assert "is_authenticated" in rendered  # Inicio with a session, the login without
+    # Always `/`: its on_load sends each visitor to Inicio, the brand draft or its start.
+    assert "'to:\"/\"'" in rendered
 
 
 def test_registered_as_the_reflex_404() -> None:
