@@ -155,6 +155,7 @@ async def test_read_only_wire_calls_and_safe_normalized_results(monkeypatch):
         "data": [
             {"key": "456", "name": "Táchira", "type": "region", "country_code": "VE"},
             {"key": "123", "name": "Cúcuta", "type": "city", "country_code": "CO"},
+            {"key": "456", "name": "Táchira city", "type": "city", "country_code": "VE"},
             {"key": "CO", "name": "Colombia", "type": "country", "country_code": "CO"},
         ]
     }
@@ -165,9 +166,15 @@ async def test_read_only_wire_calls_and_safe_normalized_results(monkeypatch):
     assert len(api.calls) == calls + 1
     assert api.calls[-1][2]["type"] == "adgeolocation"
     assert api.calls[-1][2]["location_types"] == ["city", "region"]
+    assert api.calls[-1][2]["limit"] == 50  # the page is shared by both kinds
     # On the wire: GET search?type=adgeolocation&location_types=["city","region"]
     assert client_module._encode(api.calls[-1][2])["location_types"] == '["city","region"]'
-    assert [(row.key, row.type) for row in found] == [("456", "region"), ("123", "city")]
+    # Deduped by (type, key): the same key as a city and a region are two places.
+    assert [(row.key, row.type) for row in found] == [
+        ("456", "region"),
+        ("123", "city"),
+        ("456", "city"),
+    ]
     with pytest.raises(AudienceUnavailable):
         await service.search_audience_locations(**ids, query="ta", location_types=())
     api.responses[("GET", "act_12/reachestimate")] = {

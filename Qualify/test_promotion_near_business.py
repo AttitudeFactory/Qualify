@@ -12,12 +12,14 @@ from . import promotion_audience_provider as provider
 from .promotion_audience_ui import promotion_audience
 from .promotion_audience_vm import (
     COUNTRY_UNKNOWN,
+    LOCATE_BUTTON_ID,
     LOCATION_DENIED,
     LOCATION_FAILED,
     LOCATION_IMPRECISE,
     LOCATION_NOT_FOUND,
     LOCATION_UNSUPPORTED,
     NEAR_HOUSING_PROBLEM,
+    NEAR_LOCATION_MISSING,
     POINT_NAME,
     captured_point,
     location_problem,
@@ -358,26 +360,56 @@ def test_the_next_error_shows_once_by_the_location_button() -> None:
     context.reviewed = False
     context.step = 3
     PromotionState.choose_area.fn(context, "near")
-    assert PromotionState.next_step.fn(context) is None
-    assert "usar mi ubicación" in context.error
+    event = PromotionState.next_step.fn(context)
+    assert context.error == NEAR_LOCATION_MISSING
+    # The inline message sits by the button: scroll it into view and focus it.
+    assert event is not None and LOCATE_BUTTON_ID in repr(event)
     assert PromotionState.error_by_locate.fget(context)  # top banner off, inline on
-    # A failed reading says its own thing; the «Siguiente» error goes back to the top.
-    context.location_error = LOCATION_DENIED
-    assert not PromotionState.error_by_locate.fget(context)
-    context.location_error = ""
     captured(context)
     assert context.error == "" and not PromotionState.error_by_locate.fget(context)
     # Other steps keep the top banner.
     context.form = replace(context.form, point_latitude="")
-    context.error, context.step = "Algo falta", 1
+    context.error, context.step = NEAR_LOCATION_MISSING, 1
     assert not PromotionState.error_by_locate.fget(context)
     # The page hides the top banner only for this case; the step shows it once.
     rendered = repr(promotion_audience().render())
     assert rendered.count("error_by_locate") == 1
+    assert LOCATE_BUTTON_ID in rendered
+
+
+def test_another_audience_problem_stays_in_the_top_banner() -> None:
+    context = NearContext()
+    context.reviewed = False
+    context.step = 3
+    PromotionState.choose_area.fn(context, "near")
+    context.form = replace(context.form, housing=True)  # e.g. a saved housing draft
+    assert PromotionState.next_step.fn(context) is None
+    assert context.error == NEAR_HOUSING_PROBLEM
+    assert not PromotionState.error_by_locate.fget(context)
+
+
+def test_a_denied_reading_clears_the_next_error() -> None:
+    context = NearContext()
+    context.reviewed = False
+    context.step = 3
+    PromotionState.choose_area.fn(context, "near")
+    PromotionState.next_step.fn(context)
+    assert context.error == NEAR_LOCATION_MISSING
+    captured(context, {"error": "1"})
+    assert context.error == "" and context.location_error == LOCATION_DENIED
+    assert not PromotionState.error_by_locate.fget(context)
+
+
+def test_city_distance_hint_is_off_while_typing_one_digit() -> None:
+    context = NearContext()
+    cases = (("", False), ("2", False), ("0", True), ("20", False), ("12", True))
+    for value, wrong in (*cases, ("81", True), ("150", True)):
+        context.form = replace(context.form, radius_km=value)
+        assert PromotionState.radius_out_of_range.fget(context) is wrong, value
 
 
 def test_help_texts_hide_once_done() -> None:
-    """«Tócalo…» goes once the location is taken; the 17 km help once a valid distance is."""
+    """«Tócalo…» goes once the location is taken; each city distance text has its case."""
     rendered = repr(promotion_audience().render())
 
     def condition_of(text: str) -> str:
@@ -386,5 +418,6 @@ def test_help_texts_hide_once_done() -> None:
         return rendered[start : rendered.index("true_value", start)]
 
     assert "point_latitude" in condition_of("calo cuando est")
-    city = condition_of("Para una ciudad, la distancia")
-    assert "radius_km" in city and "radius_out_of_range" in city
+    assert "radius_km" in condition_of("Si la dejas vac")
+    assert "radius_out_of_range" in condition_of("Escribe una distancia entre 17 y 80")
+    assert "Para una ciudad, la distancia" not in rendered

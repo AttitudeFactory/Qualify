@@ -167,13 +167,14 @@ def _locations(
                 row["key"],
                 row["name"],
                 row["type"],
-                row.get("country_code", row["key"] if kinds == ("country",) else ""),
+                row.get("country_code", row["key"] if set(kinds) == {"country"} else ""),
                 row.get("region", ""),
             )
             option.validate()
         except (KeyError, TypeError, ValueError):
             continue
-        if option.type in kinds and option.key not in {item.key for item in result}:
+        seen = {(item.type, item.key) for item in result}
+        if option.type in kinds and (option.type, option.key) not in seen:
             result.append(option)
     return tuple(result)
 
@@ -243,7 +244,7 @@ async def search_audience_locations(
                 "type": "adgeolocation",
                 "q": _query(query),
                 "location_types": list(location_types),
-                "limit": 25,
+                "limit": 25 * len(location_types),  # one call shares the page between kinds
             },
         ),
         location_types,

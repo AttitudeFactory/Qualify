@@ -6,7 +6,10 @@ import reflex as rx
 
 from .ad_custom_audiences_ui import custom_audiences
 from .promotion_audience_vm import (
+    CITY_RADIUS_EMPTY_HINT,
+    CITY_RADIUS_WRONG_HINT,
     GENDER_LABELS,
+    LOCATE_BUTTON_ID,
     NEAR_HOUSING,
     PLACEMENT_LABELS,
     POINT_CAPTURED,
@@ -357,6 +360,7 @@ def _near_business() -> rx.Component:
             rx.button(
                 rx.icon("locate-fixed", size=18),
                 "Estoy en el negocio: usar mi ubicación",
+                id=LOCATE_BUTTON_ID,
                 on_click=S.locate,
                 loading=S.locating,
                 disabled=S.busy,
@@ -471,20 +475,18 @@ def _place_search() -> rx.Component:
                     "radius_km",
                     S.form.radius_km,
                 ),
-                # Explains the empty field and is the error out of 17-80 km; a valid
-                # distance needs neither.
+                # Empty: what empty means. Out of 17-80 km: the fix. Valid: nothing.
                 rx.cond(
-                    (S.form.radius_km == "") | S.radius_out_of_range,
+                    S.form.radius_km == "",
+                    rx.text(CITY_RADIUS_EMPTY_HINT, size="2", color=T.TEXT_MUTED),
+                ),
+                rx.cond(
+                    S.radius_out_of_range,
                     rx.text(
-                        "Para una ciudad, la distancia mínima es 17 km. Si quieres llegar más "
-                        "cerca, elige «Cerca de mi negocio». Si la dejas vacía, el anuncio se "
-                        "muestra en toda la ciudad.",
+                        CITY_RADIUS_WRONG_HINT,
                         size="2",
-                        color=rx.cond(
-                            S.radius_out_of_range,
-                            T.tone_color("error", 11),
-                            T.TEXT_MUTED,
-                        ),
+                        color=T.tone_color("error", 11),
+                        aria_live="polite",
                     ),
                 ),
                 # Open whenever a distance exists, so a saved one outside 17-80 km shows;
