@@ -1,15 +1,19 @@
 # Conectar una cuenta publicitaria (m-24828972)
 
 La conexión orgánica sigue usando el permiso y la credencial de Página que ya tenía.
-«Autorizar anuncios» inicia un consentimiento adicional para una conexión de Instagram
-existente. La intención viaja dentro del estado firmado, con vencimiento, un solo uso y
-la misma protección de navegador del flujo orgánico. Se comprueba de nuevo la pertenencia
-del usuario al negocio al empezar y al regresar del consentimiento.
+«Actualizar acceso con Meta» (`Qualify/ad_accounts_ui.py`) renueva el permiso principal de
+una conexión de Instagram existente con `request_ads=False` (desde 8df99ebda): no hay un
+consentimiento de anuncios aparte y no viaja ninguna intención de anuncios en el estado
+firmado. El flujo conserva el vencimiento, el solo uso y la protección de navegador del
+flujo orgánico. Se comprueba de nuevo la pertenencia del usuario al negocio al empezar y al
+regresar del consentimiento. La ruta HTTP (`http/connections_routes.py`) todavía acepta
+`request_ads: true`, pero ninguna pantalla la usa.
 
 El resultado guarda **el token de usuario**, cifrado y separado del token de Página.
 `ad_oauth_credentials` es de solo inserción para la aplicación; únicamente el rol de
 credenciales puede leer el cifrado. Cada fila corresponde a una versión exacta de la
-conexión. Una reconexión sin anuncios invalida la autorización anterior para anuncios;
+conexión. Una reconexión conserva la autorización para anuncios si Meta vuelve a conceder
+`ads_management` (`connections/service.py:376-378`); si no lo concede, la invalida;
 una revocación, eliminación o vencimiento también la bloquea. La eliminación de datos de
 Conexiones borra estas credenciales y los metadatos de cuentas mediante su rol limitado.
 
