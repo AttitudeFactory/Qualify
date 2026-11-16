@@ -60,13 +60,13 @@ Preguntar primero a Bianki y Polette: «¿Mira los estados de WhatsApp de otros 
 ## 6. Textos propuestos (`qualify-copy-es`)
 
 - Título del bloque (hoy «Espacios en Facebook e Instagram», `promotion_audience_ui.py:220`): **«Dónde aparece»**; opciones **«Que Meta elija»** / **«Elegirlos yo»**.
-- Resumen automático (hoy «Meta elige dónde mostrarlo en Facebook e Instagram», `promotion_audience_ui.py:244` y `promotion_audience_vm.py:47`): **«Meta elige dónde mostrarlo en Facebook, Instagram y, si se puede, en los estados de WhatsApp.»**
+- Resumen automático (hoy «Meta elige dónde mostrarlo en Facebook e Instagram», `promotion_audience_ui.py:244` y `promotion_audience_vm.py:46`): **«Meta elige dónde mostrarlo en Facebook, Instagram y, si se puede, en los estados de WhatsApp.»**
 - Casilla (dentro de «Elegirlos yo» / «Más opciones»): **«WhatsApp: estados»**. Ayuda: «Tu anuncio sale entre los estados de WhatsApp, en pantalla completa, y trae un botón para que te escriban. Lo ven las personas del público que elegiste, no solo tus contactos. Va siempre junto con las historias de Instagram.»
-- Pieza que no es vertical: casilla desactivada con «Necesita una foto o un video vertical.»
+- Pieza que no es vertical: casilla desactivada con «Necesita una foto o un video vertical.» `[H]`: [1] solo describe los Estados en 9:16; si Meta rechaza o no entrega lo no vertical queda **por confirmar en WS-1**.
 - Al marcarla: aviso breve «Marcamos también Instagram: historias. Meta lo pide así.»; la casilla de historias queda bloqueada con el motivo visible «Va junto con WhatsApp: estados. Meta no deja uno sin el otro.» Al desmarcar WhatsApp, historias se desbloquea pero sigue marcada.
 - Vivienda declarada: casilla visible y desactivada con «Los anuncios de vivienda no pueden salir en los estados de WhatsApp: es una regla de Meta.» Si ya estaba marcada: «Quitamos los estados de WhatsApp porque es un anuncio de vivienda. Instagram: historias sigue marcado y ya puedes quitarlo.»
 - Revisión: «Dónde puede salir» antes de la comprobación de Meta; «Dónde sale» después.
-- Si Meta quitó los Estados (leído con el anuncio en pausa, **antes** de aprobar; también en el detalle del anuncio): «Meta no lo mostrará en los estados de WhatsApp. Tu presupuesto se usa en Instagram (historias). Puedes aprobarlo así o volver a elegir dónde aparece.» Botones **«Aprobar así»** / **«Volver»**. Sin adivinar la causa hasta WS-1.
+- Si Meta quitó los Estados (leído con el anuncio en pausa, **antes** de aprobar; también en el detalle del anuncio): «Meta no lo mostrará en los estados de WhatsApp. Tu anuncio sigue en los demás lugares elegidos. Puedes aprobarlo así o volver a elegir dónde aparece.» Botones **«Aprobar así»** / **«Volver»**. Sin adivinar la causa hasta WS-1.
 - Si WS-1 muestra que no se entrega en Venezuela: casilla desactivada por país con «Los estados de WhatsApp todavía no están disponibles para anuncios en Venezuela.» (rama de WS-3).
 
 ## 7. Riesgos
@@ -83,13 +83,13 @@ Preguntar primero a Bianki y Polette: «¿Mira los estados de WhatsApp de otros 
 |---|---|---|
 | WS-1 | Dentro de m-24828971 y con el visto bueno del dueño: un conjunto que **se queda en `PAUSED`, nunca se activa y no gasta nada**, con Estados + historias de Instagram (`validate_only` y luego creado), en Bianki o Polette, con los tres creativos de Qualify (publicación existente, pieza sin publicar con `asset_feed_spec`, `link_data` simple); leer `effective_*_positions`, `targeting` devuelto y un `adpreviews` con `ad_format=WHATSAPP_STATUS_MEDIA`; probar también «Que Meta elija» con todas las posiciones de Instagram | m-24828971 |
 | WS-2 | Prueba de atribución: un mensaje real desde un anuncio en Estados llega con o sin `referral` | WS-1, ADS-10 (m-24828980) |
-| WS-3 | Opción B: Estados en `PLACEMENTS` y en «Que Meta elija» (apagado hasta WS-2), casilla manual con la regla de historias, Vivienda, pieza vertical, `user_age_unknown` explícito, lista de comprobación ampliada, la segmentación fija de `unpublished_service.py:473` y los textos de §6 (incluidos `promotion_audience_ui.py:220`, `:244` y `promotion_audience_vm.py:47`) | WS-1 verde, ADS-07 (m-24828977) |
+| WS-3 | Opción B (enviar siempre `whatsapp_positions: ["status"]` explícito: `whatsapp` sin posiciones podría encender también `marketing_messages`, según [2]): Estados en `PLACEMENTS` y en «Que Meta elija» (apagado hasta WS-2), casilla manual con la regla de historias, Vivienda, pieza vertical, `user_age_unknown` explícito, lista de comprobación ampliada, la segmentación fija de `unpublished_service.py:473` y los textos de §6 (incluidos `promotion_audience_ui.py:220`, `:244` y `promotion_audience_vm.py:46`) | WS-1 verde, ADS-07 (m-24828977) |
 | WS-4 | Lectura de `effective_whatsapp_positions` con el anuncio en pausa, antes de aprobar; aviso «Aprobar así» / «Volver» en la revisión y en el detalle del anuncio | WS-3 |
 | WS-5 | Resultados por ubicación (`publisher_platform`, `platform_position`) en ADS-09 | WS-3, ADS-09 (m-24828979) |
 
 ## 9. Recomendación: **ESPERAR** a m-24828971; luego **SEGUIR** con WS-3/WS-4
 
-La API ya lo permite, los tres países no están excluidos y el cambio es una casilla. Pero tres cosas de las que depende el diseño (si sale con nuestros creativos, si Meta lo quita en silencio, si se puede atribuir el chat) solo se cierran con la prueba en vivo, que ya está planificada y no cuesta un ticket aparte: basta con sumar WS-1 a su guion. **Reabrir como PARAR** si WS-1 muestra que Meta excluye los Estados con todos nuestros creativos. **Pasar a SEGUIR antes** si un dueño lo pide con presupuesto.
+La API ya lo permite, los tres países no están excluidos y el cambio es una casilla y un ajuste en «Que Meta elija». Pero tres cosas de las que depende el diseño (si sale con nuestros creativos, si Meta lo quita en silencio, si se puede atribuir el chat) solo se cierran con la prueba en vivo, que ya está planificada y no cuesta un ticket aparte: basta con sumar WS-1 a su guion. **Reabrir como PARAR** si WS-1 muestra que Meta excluye los Estados con todos nuestros creativos. **Pasar a SEGUIR antes** si un dueño lo pide con presupuesto.
 
 ## 10. Por confirmar
 
