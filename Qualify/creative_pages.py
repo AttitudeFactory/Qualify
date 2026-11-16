@@ -69,6 +69,7 @@ from .r2_media import BACKEND_BASE
 from .seasonal_ui import fold_summary
 from .stories_page import story_share_button_id, story_share_from_url
 from .stories_vm import STORY_SHARE_BUSY, STORY_SHARE_HELP, STORY_SHARE_LABEL
+from .story_mark_ui import story_mark_control
 from .ui import (
     app_shell,
     callout,
@@ -3473,6 +3474,8 @@ def _parts_parent_made() -> rx.Component:
             | (draft.status == "staged")
             | (draft.status == "published"),
         ),
+        # m-25040496: the owner marks a piece he uses as an Instagram historia
+        story_mark_control(draft.draft_id),
         spacing="4",
         width="100%",
     )
@@ -3625,6 +3628,8 @@ def _single_piece_detail() -> rx.Component:
                         | (CreativeState.draft.status == "staged")
                         | (CreativeState.draft.status == "published"),
                     ),
+                    # m-25040496: «Es una historia», in any approval state
+                    story_mark_control(CreativeState.draft.draft_id),
                     # m-24921091: an approved video can also go to the
                     # owner's TikTok (never published from here).
                     tiktok_draft_card(),

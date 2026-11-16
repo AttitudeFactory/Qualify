@@ -53,8 +53,16 @@ def _shot(page, name: str) -> None:  # noqa: ANN001 — a Playwright Page
         page.screenshot(path=str(Path(_SHOTS) / f"{name}.png"), full_page=True)
 
 
-def _seed_story(tenant_id: uuid.UUID, user_id: uuid.UUID) -> None:
-    """A 9:16 historia the owner published from «Publicar» an hour ago."""
+def _seed_story(
+    tenant_id: uuid.UUID,
+    user_id: uuid.UUID,
+    *,
+    product_type: str = "STORIES",
+    size: tuple[int, int] = (540, 960),
+    caption: str = _CAPTION,
+) -> uuid.UUID:
+    """A piece the owner published from «Publicar» an hour ago (a 9:16 historia by
+    default). Returns its draft id."""
     from qualify_api.connections.models import SocialConnection
     from qualify_api.planner.immediate import Outcome, record_publication
     from qualify_api.publishing.models import PublishAttempt
@@ -69,7 +77,7 @@ def _seed_story(tenant_id: uuid.UUID, user_id: uuid.UUID) -> None:
     key = f"t/{tenant_id}/media/{connection_id}/{uuid.uuid4()}"
     image = pytest.importorskip("PIL.Image")
     buf = io.BytesIO()
-    image.new("RGB", (540, 960), (20, 120, 110)).save(buf, "JPEG")
+    image.new("RGB", size, (20, 120, 110)).save(buf, "JPEG")
     path = OBJECTS_DIR / key
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(buf.getvalue())
@@ -83,8 +91,8 @@ def _seed_story(tenant_id: uuid.UUID, user_id: uuid.UUID) -> None:
                 tenant_id=tenant_id,
                 connection_id=connection_id,
                 idempotency_key=f"e2e-story:{attempt_id}:0",
-                caption=_CAPTION,
-                media_product_type="STORIES",
+                caption=caption,
+                media_product_type=product_type,
                 adapter_version="e2e",
                 status="published",
                 published_media_id="e2e-story",
@@ -96,6 +104,8 @@ def _seed_story(tenant_id: uuid.UUID, user_id: uuid.UUID) -> None:
         )
     result = record_publication(tenant_id=tenant_id, attempt_id=attempt_id, user_id=user_id)
     assert result.outcome is Outcome.RECORDED, result
+    assert result.draft_id is not None
+    return result.draft_id
 
 
 def _as_phone(page, agent: str) -> None:  # noqa: ANN001 — a Playwright Page
@@ -163,3 +173,54 @@ def test_a_historia_is_labelled_filtered_and_shared_only_on_android(
     assert shared[0]["type"] == "image/jpeg"
     assert shared[0]["name"] == "historia.jpg"
     assert shared[0]["size"] > 0
+
+
+def test_marking_a_piece_as_a_historia_on_its_page_shows_it_in_historias(
+    pre_fase_c_page,  # noqa: ANN001 — a Playwright Page with an Instagram account
+    app_server: str,
+) -> None:
+    if os.environ.get("QUALIFY_E2E_BASE_URL") and not os.environ.get("QUALIFY_E2E_OBJECTS_DIR"):
+        pytest.skip("an external app must run with QUALIFY_OBJECT_STORE_DIR (see conftest)")
+    page = pre_fase_c_page
+    page.set_viewport_size({"width": 375, "height": 900})
+    draft_id = _seed_story(
+        page._qualify_e2e_tenant_id,
+        page._qualify_e2e_user_id,
+        product_type="IMAGE",
+        size=(800, 1000),
+        caption="Ensalada de la casa #feed",
+    )
+    _as_phone(page, _ANDROID)
+
+    # «Aprobados»: a feed picture, not a historia yet
+    page.goto(f"{app_server}/aprobados")
+    card = page.locator(".q-gcard").filter(has_text="Ensalada de la casa")
+    expect(card).to_have_count(1, timeout=60_000)
+    expect(card.get_by_text("Historia", exact=True)).to_have_count(0)
+
+    # its own page: «Es una historia», then back to «Aprobados»
+    page.goto(f"{app_server}/drafts/{draft_id}?desde=aprobados")
+    switch = page.get_by_role("switch")
+    expect(switch).to_be_visible(timeout=60_000)
+    expect(switch).to_have_attribute("aria-checked", "false")
+    expect(page.get_by_text("Es una historia")).to_be_visible()
+    switch.click()
+    expect(
+        page.get_by_text("Listo: ahora es una historia. La encuentras en Aprobados")
+    ).to_be_visible(timeout=30_000)
+    expect(switch).to_have_attribute("aria-checked", "true")
+    _shot(page, "historia-switch-375")
+
+    page.goto(f"{app_server}/aprobados")
+    expect(card.get_by_text("Historia", exact=True)).to_be_visible(timeout=60_000)
+    expect(card.get_by_role("button", name="Abrir en Instagram")).to_be_visible()
+    page.locator("#approved-posts-kind").click()
+    page.get_by_role("option", name="Historias").click()
+    expect(card).to_have_count(1)
+
+    # undo: it is a feed picture again
+    page.goto(f"{app_server}/drafts/{draft_id}")
+    switch = page.get_by_role("switch")
+    expect(switch).to_have_attribute("aria-checked", "true", timeout=60_000)
+    switch.click()
+    expect(page.get_by_text("Listo: vuelve a ser una publicación.")).to_be_visible(timeout=30_000)
