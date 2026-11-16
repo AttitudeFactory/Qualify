@@ -195,7 +195,7 @@ bloque anidado nunca toma la distancia de su padre.
 | `q-cr-sheen` · `q-progress-sweep` | tarjeta fantasma del Generador · barra de progreso | `q-shimmer` (eran el mismo barrido, duplicado) | — (barrido del kit) |
 | — (nuevo) | icono de `empty_state` | `q-pop` con muelle (sólo escala: nunca parte de invisible) | `sc-pop` del final de cada escena |
 | apagado global con `transition-duration: 0.01ms` y sin tocar retardos | toda la app | como la landing: animaciones a 0,01 ms, **retardos a 0**, transiciones a 0,01 ms (no los 0 s de la landing: así `transitionend` sigue llegando a vaul y Sonner); botones y `choice_card` no suben ni se hunden | `global.css` (KIT:869-879), `LinkButton` |
-| `q-embers` / `q-frost` (infinitos) | chips de temperatura del Planificador | los mismos, 4 vueltas `alternate` y quietos | regla de la landing: lo que se mueve solo para antes de 5 s |
+| `q-embers` / `q-frost` (infinitos) | chips de temperatura del Planificador | brasas 2 × 2,4 s, escarcha 2 × 2 s (menos de 5 s); cada vuelta empieza y termina en el aspecto de reposo, así nada salta al parar | regla de la landing: lo que se mueve solo para antes de 5 s |
 | `q-step-in-*` en JS (±8 px) | paso a paso del menú de WhatsApp (`whatsapp_menu_state._guided_settle`) | ±18 px, igual que `.q-step-body` (que además recorta en horizontal: el desliz no saca barra en 360 px) | `sc-from-*` |
 
 **Se quedan como están** (la landing no tiene nada equivalente; son de una interacción
