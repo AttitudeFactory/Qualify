@@ -108,10 +108,29 @@ enlazadas. Para un texto con «ensalada» el buscador devolvía `shawarma`, `foo
   catálogo) y no propone nombres de otros negocios. La recomendación del análisis era entregar
   sin activar el prompt nuevo.
 - **Decisión de Herwin (2026-11-16): se entrega todo, con el prompt nuevo activo.** Manda esta
-  decisión sobre la recomendación. Riesgo que se asume: entre las cinco «Mejor» puede aparecer
-  una etiqueta leída que no encaja con el texto (en la prueba, cerca de 4 de cada 100; por
-  ejemplo `carne` y `pollo` en un texto de «¿Cómo llegar?»). El dueño sigue eligiendo cada
-  etiqueta antes de publicar.
+  decisión sobre la recomendación. El dueño sigue eligiendo cada etiqueta antes de publicar.
+- **Sugerencias de la revisión de experiencia, aplicadas a pedido de Herwin antes del merge
+  (2026-11-16/17), y lo que cambió en la medición:**
+  - «Mejor» solo marca una etiqueta leída si el texto de la publicación la nombra (palabras
+    completas, con tolerancia de plural); se marcan las cinco primeras que cumplen. Una
+    etiqueta leída que no cumple se sigue mostrando, sin la marca.
+  - Una etiqueta leída solo se muestra si el texto la nombra o si el catálogo la tiene como
+    tema; así dejan de mostrarse los nombres de otros negocios que venían en los videos.
+  - Las etiquetas propias de una plataforma (`foodtok`) no llegan al modelo, y el modelo
+    escribe el motivo con palabras del texto, sin mencionar TikTok ni usar inglés.
+  - En la pantalla, cada sugerencia tiene un botón «i» que abre el motivo (antes no se podía
+    leer en el celular); «De nicho» pasó a «De tu tipo de negocio» y «Locales y de marca» a
+    «De tu zona y tu marca».
+  - **Resultado (mismos 34 textos; los 16 de prueba ya estaban usados, así que es una
+    comprobación de regresión y no una prueba nueva):** las cinco «Mejor» **pasan la barra**
+    en los dos grupos de casos: ningún nombre de otro negocio, ninguna etiqueta leída que no
+    encaje, y el uso de etiquetas leídas que encajan sube de 1 % a 21 % sin catálogo y de 0 % a
+    12,5 % con catálogo. Los motivos que mencionan la plataforma bajan de 8–20 % a 0,6–2 %.
+  - **Riesgo que queda:** entre las sugerencias **sin marca**, cuando hay catálogo, las
+    etiquetas leídas que no encajan con el texto son 4,5–5 % de lo que se muestra (0,4–0,6 %
+    antes), por etiquetas de tema que el texto no nombra (`carne` en un texto de «¿Cómo
+    llegar?»). El filtro también deja fuera cerca de una sugerencia útil por uso, casi siempre
+    `arabe`, porque los textos de shawarma no escriben «árabe».
 - **También entra:** la lectura semanal clasifica por regla las etiquetas nuevas (la lista de
   genéricas, lugares y temas conocidos), lo que repara en la siguiente lectura las que quedaron
   sin clasificar, y ya no guarda la variante con emoji de una etiqueta como fila aparte.

@@ -129,3 +129,16 @@ documento y cambia `[H]` → `[E]` citando quién y cuándo.
    ¿Cómo lo eligió (seguidores, lo que veía en sus reels, un conocido)? ¿Cómo le pagó: con producto
    («canje»), con dinero o con una visita al local? ¿Cómo le escribió? ¿Qué le habría gustado saber
    antes de pagarle? (Agregada el 2026-11-04 para el módulo Creadores, `docs/ux-creadores.md` §8.)
+10. Cuando le sugerimos etiquetas para una publicación, ¿le importa saber por qué se las sugerimos,
+    o solo toca «Agregar las mejores» y sigue? ¿Qué razón le daría más confianza: «tu texto habla
+    de esto», «se ve en publicaciones reales» o «la usan los videos más vistos de negocios como el
+    tuyo»? (Agregada el 2026-11-16 para m-25032581, revisión de experiencia del PR #728.)
+    - **Hipótesis `[H]`:** el dueño casi nunca abre el porqué; agrega las marcadas y sigue. Si lo
+      abre, confía más en una razón atada a su propio texto que en una cifra o en «lo que se ve».
+      Por eso hoy solo mostramos el motivo del modelo al tocar la «i» y no agregamos un rótulo
+      fijo de origen («la usan los videos más vistos…») sobre las etiquetas que vienen de videos.
+    - **Cómo comprobarlo:** en la entrevista, con la pantalla real en su celular, pedirle que
+      agregue etiquetas a una publicación suya sin explicarle nada. Anotar si toca la «i» y qué
+      dice al leer el motivo. Después mostrarle las tres razones de arriba y preguntarle con cuál
+      agregaría la etiqueta sin dudar. Si al menos 3 de 5 dueños abren la «i» o eligen la razón
+      de los videos, se propone el rótulo de origen dentro de la ventana del porqué, no en el chip.
